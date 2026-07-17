@@ -69,7 +69,32 @@ impl X86JitCpu {
         code: &[u8],
         segments: RealSegments,
     ) -> Result<Self, CpuError> {
-        let mut vm = Vm::new(VmConfig::flat(ram_bytes));
+        // RAM fills the whole flat space; no room is reserved for MMIO windows.
+        Self::new_real16_mmio(ram_bytes, ram_bytes, cs, ip, code, segments)
+    }
+
+    /// Build a **real-mode (16-bit)** CPU whose flat guest space spans
+    /// `space_bytes` but whose RAM covers only `[0, ram_bytes)`.
+    ///
+    /// The gap `[ram_bytes, space_bytes)` is left unmapped so the embedder can add
+    /// MMIO-trapped windows above conventional RAM with [`X86JitCpu::map_mmio`] —
+    /// the layout a PC needs for the video buffer at `0xB8000`, which sits above
+    /// low RAM but below the top of the addressable space. A `Trap` window may not
+    /// overlap RAM, so RAM must stop at or below each window's base.
+    ///
+    /// Everything else matches [`X86JitCpu::new_real16`]: RAM is `RWX`, `code` is
+    /// loaded at `(cs << 4) + ip` through the `Vm` API (so self-modifying-code
+    /// tracking sees it), and the segment/stack registers are seeded from
+    /// `segments` because the `x86jit` core does not lift `mov Sreg, r16`.
+    pub fn new_real16_mmio(
+        space_bytes: u64,
+        ram_bytes: u64,
+        cs: u16,
+        ip: u16,
+        code: &[u8],
+        segments: RealSegments,
+    ) -> Result<Self, CpuError> {
+        let mut vm = Vm::new(VmConfig::flat(space_bytes));
         vm.set_cpu_mode(CpuMode::Real16);
         vm.map(0, ram_bytes as usize, Prot::RWX, RegionKind::Ram)
             .map_err(|e| CpuError::Memory(format!("{e:?}")))?;
@@ -199,6 +224,10 @@ impl Cpu for X86JitCpu {
 
     fn complete_mmio_read(&mut self, value: u64) {
         self.cpu.complete_mmio_read(value);
+    }
+
+    fn complete_mmio_write(&mut self) {
+        self.cpu.complete_mmio_write();
     }
 
     fn inject_irq(&mut self, vector: u8) {

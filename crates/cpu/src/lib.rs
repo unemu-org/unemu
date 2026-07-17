@@ -147,6 +147,15 @@ pub trait Cpu {
     /// [`Cpu::run`].
     fn complete_mmio_read(&mut self, value: u64);
 
+    /// Acknowledge a serviced [`CpuStop::MmioWrite`] before the next [`Cpu::run`].
+    ///
+    /// Unlike a port `out` (which retires immediately), a trapped store leaves the
+    /// instruction pointer on the faulting instruction and the block re-executes
+    /// from it. This tells the retried store the side effect is already done — so
+    /// it does not trap a second time and execution moves on. Without this call a
+    /// guest that writes MMIO spins on the same store forever.
+    fn complete_mmio_write(&mut self);
+
     /// Inject a hardware interrupt request for `vector` (§5.2).
     ///
     /// The backend queues the vector and delivers it at the next `run()`

@@ -204,6 +204,10 @@ impl<C: Cpu> Machine<C> {
                 }
                 CpuStop::MmioWrite { addr, size, value } => {
                     self.bus.mmio_write(addr, size, value)?;
+                    // A trapped store leaves the CPU parked on the instruction;
+                    // acknowledge it so the retried store skips the trap and the
+                    // guest advances (a port `out`, by contrast, self-retires).
+                    self.cpu.complete_mmio_write();
                 }
                 CpuStop::MmioRead { addr, size } => {
                     let value = self.bus.mmio_read(addr, size)?;
