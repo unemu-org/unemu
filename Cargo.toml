@@ -8,6 +8,7 @@ members = [
     "crates/cpu",
     "crates/machine",
     "crates/devices",
+    "crates/video",
     "crates/testkit",
     "crates/cli",
 ]
@@ -35,4 +36,5 @@ chipset = { path = "crates/chipset" }
 cpu = { path = "crates/cpu" }
 machine = { path = "crates/machine" }
 devices = { path = "crates/devices" }
+video = { path = "crates/video" }
 testkit = { path = "crates/testkit" }
