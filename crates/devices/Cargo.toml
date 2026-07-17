@@ -1,0 +1,16 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+[package]
+name = "devices"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+description = "Concrete emulated chips. M1: the 16550 UART (serial) (§7.2)."
+
+[dependencies]
+thiserror.workspace = true
+device.workspace = true
+
+[dev-dependencies]
+testkit.workspace = true

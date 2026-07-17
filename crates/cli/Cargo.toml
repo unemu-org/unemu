@@ -1,0 +1,24 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+[package]
+name = "cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+description = "Frontend binary: build a Machine with SerialChipset, run a blob, serial to stdout (§3.1)."
+
+[[bin]]
+name = "unemupc98"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+device.workspace = true
+bus.workspace = true
+cpu.workspace = true
+chipset.workspace = true
+machine.workspace = true
+
+[dev-dependencies]
+testkit.workspace = true

@@ -1,0 +1,18 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+[package]
+name = "machine"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+description = "Composition root: assembles and runs a Machine from a Cpu + Bus (§3.1)."
+
+[dependencies]
+thiserror.workspace = true
+device.workspace = true
+cpu.workspace = true
+bus.workspace = true
+
+[dev-dependencies]
+testkit.workspace = true

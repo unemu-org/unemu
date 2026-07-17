@@ -1,0 +1,13 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+[package]
+name = "bus"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+description = "Bus swap seam: executes the chipset-declared port/MMIO decode map (§3.3, §4.1)."
+
+[dependencies]
+thiserror.workspace = true
+device.workspace = true

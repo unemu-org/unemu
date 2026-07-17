@@ -1,0 +1,38 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+[workspace]
+resolver = "2"
+members = [
+    "crates/device",
+    "crates/bus",
+    "crates/chipset",
+    "crates/cpu",
+    "crates/machine",
+    "crates/devices",
+    "crates/testkit",
+    "crates/cli",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "AGPL-3.0-or-later"
+rust-version = "1.75"
+repository = "https://github.com/mikolajmikolajczyk/unemupc98"
+
+[workspace.dependencies]
+# Library error enums (§conventions: thiserror for stable library errors).
+thiserror = "1"
+# Frontend/test-only error plumbing.
+anyhow = "1"
+# CPU core: pinned git dependency on the pc-emulator worktree branch (decision-2).
+# NOT a bare path dep — that breaks nix build / CI.
+x86jit-core = { git = "file:///home/mikolaj/src/x86jit", branch = "pc-emulator" }
+
+# Internal crates share the workspace version.
+device = { path = "crates/device" }
+bus = { path = "crates/bus" }
+chipset = { path = "crates/chipset" }
+cpu = { path = "crates/cpu" }
+machine = { path = "crates/machine" }
+devices = { path = "crates/devices" }
+testkit = { path = "crates/testkit" }
