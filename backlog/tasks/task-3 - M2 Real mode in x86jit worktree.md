@@ -17,9 +17,9 @@ with independent exit criteria.
 
 ## Acceptance Criteria
 
-- [ ] (a) Segment registers (CS/DS/ES/SS) in `CpuState` (append-only, offset test)
+- [x] (a) Segment registers (CS/DS/ES/SS) in `CpuState` (append-only, offset test)
       + 16-bit decode + `segment:offset` addressing with 64K/`SP` wrap; oracle:
-      SingleStepTests + Unicorn 16-bit.
+      Unicorn 16-bit (6/6 differential). Merged to `pc-emulator` @ ce51d88.
 - [ ] (b) `INT` / `IRET` / IVT + `IF` in `Flags` + exceptions vectored through the
       IVT (mode-dependent `Exit::Exception`/`Syscall`).
 - [ ] (c) `inject_irq` / `irq_ack` per the decision-4 contract; retired-instruction
