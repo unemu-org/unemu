@@ -37,21 +37,36 @@
 //! | `0xA7` | Disable aux (mouse)         | yes      | sets command-byte bit 5       |
 //! | `0xA8` | Enable aux (mouse)          | yes      | clears command-byte bit 5     |
 //! | `0xA9` | Test aux port               | yes      | → `0x00` (no error)          |
+//! | `0xC0` | Read input port             | yes      | → benign strap value         |
 //! | `0xD0` | Read output port            | yes      | → output buffer              |
 //! | `0xD1` | Write output port           | yes      | next `0x60` write; bit 1 = A20 |
+//! | `0xD4` | Write byte to aux (mouse)   | yes      | next `0x60` write routed to aux |
+//!
+//! ## PS/2 auxiliary (mouse) channel: interface present, no device
+//!
+//! The stock BIOS probes the aux channel (aux-interface test `0xA9`, aux
+//! enable/disable, `0xD4` write-to-aux). We model the **interface as present and
+//! healthy** — `0xA9` returns "no error" — but **no mouse is attached**. A byte
+//! routed to the aux device via `0xD4` is accepted and **dropped**: no aux output
+//! byte, no aux ACK, no aux OBF. The BIOS's mouse-detection reads then time out
+//! cleanly (`jc .timeout`) rather than blocking on a byte that never arrives.
+//!
+//! ## Keyboard reset / BAT
+//!
+//! A plain host-to-keyboard byte (`0x60` data write) is acknowledged with a single
+//! `0xFA` (ACK). The one keyboard command interpreted is **reset** (`0xFF`): it is
+//! ACKed with `0xFA` and then, modelling the keyboard's power-on self-test passing,
+//! yields `0xAA` (**BAT OK**) so the BIOS's post-reset wait for `0xAA` completes.
 //!
 //! Deliberately **not** modelled (decoded as no-ops where a byte is consumed):
-//! - **The PS/2 auxiliary (mouse) device** and the aux output buffer / IRQ12.
-//!   The aux enable/disable command bits are stored, but no mouse is attached and
-//!   `0xD4` (write-to-aux) is not modelled.
+//! - **The PS/2 auxiliary (mouse) device** itself and the aux output buffer / IRQ12
+//!   (see the aux-channel note above — the interface answers, no device does).
 //! - **Password / security commands** (`0xA4`–`0xA6`).
 //! - **`0xFE` pulse-reset** (system reset via the output port) and `0xF0`–`0xFF`
 //!   output-line pulses: the CPU-reset seam is out of scope here.
-//! - **Keyboard-side command semantics**: a byte written to the keyboard (a plain
-//!   `0x60` data write) is acknowledged with a single `0xFA` (ACK) byte; the
-//!   keyboard's own command set (LED set, typematic, reset/BAT `0xAA`, scancode
-//!   set select) is not interpreted.
-//! - **Input port** read (`0xC0`) and **test inputs** (`0xE0`).
+//! - **Keyboard-side command semantics** beyond reset/ACK: the keyboard's own
+//!   command set (LED set, typematic, scancode set select) is not interpreted.
+//! - **Test inputs** read (`0xE0`).
 
 use std::collections::VecDeque;
 
@@ -100,6 +115,19 @@ const SELF_TEST_PASS: u8 = 0x55;
 const IFACE_TEST_PASS: u8 = 0x00;
 /// Keyboard acknowledge byte returned for a host-to-keyboard data write.
 const KBD_ACK: u8 = 0xFA;
+/// Keyboard "reset" command; the host writes it to the keyboard via `0x60`.
+const KBD_CMD_RESET: u8 = 0xFF;
+/// Basic-assurance-test "OK" byte the keyboard emits after a successful reset.
+const KBD_BAT_OK: u8 = 0xAA;
+
+/// Value returned for a read-input-port (`0xC0`) command.
+///
+/// The input port carries board straps the BIOS samples but that a headless AT
+/// has no real wiring for. A benign constant keeps POST moving: keyboard **not
+/// inhibited** (bit 7), color/CGA-class display (bit 6 clear), manufacturing
+/// jumper **absent** (bit 5 set, i.e. normal operation rather than the factory
+/// test loop). The low nibble is unwired and read as zero.
+const INPUT_PORT_VALUE: u8 = 0b1010_0000;
 
 /// Default command byte at power-on: keyboard enabled, interrupts off,
 /// translation off. The BIOS reprograms this early in POST.
@@ -119,6 +147,9 @@ enum Expect {
     CommandByte,
     /// The new output port value (after command `0xD1`).
     OutputPort,
+    /// A byte to route to the auxiliary (mouse) device (after command `0xD4`).
+    /// With no mouse attached the byte is dropped.
+    AuxData,
 }
 
 impl Expect {
@@ -127,6 +158,7 @@ impl Expect {
             Expect::KeyboardData => 0,
             Expect::CommandByte => 1,
             Expect::OutputPort => 2,
+            Expect::AuxData => 3,
         }
     }
 
@@ -134,6 +166,7 @@ impl Expect {
         match bits {
             1 => Expect::CommandByte,
             2 => Expect::OutputPort,
+            3 => Expect::AuxData,
             _ => Expect::KeyboardData,
         }
     }
@@ -321,12 +354,14 @@ impl I8042 {
             }
             0xA7 => self.command_byte |= CB_AUX_DISABLE,
             0xA8 => self.command_byte &= !CB_AUX_DISABLE,
+            0xC0 => self.respond(INPUT_PORT_VALUE),
             0xD0 => {
                 let op = self.output_port;
                 self.respond(op);
             }
             0xD1 => self.expect = Expect::OutputPort,
-            // Unmodelled commands (password, aux write, resets, …) are ignored.
+            0xD4 => self.expect = Expect::AuxData,
+            // Unmodelled commands (password, output-line pulses, resets, …) are ignored.
             _ => {}
         }
     }
@@ -336,10 +371,13 @@ impl I8042 {
         self.last_was_command = false;
         match self.expect {
             Expect::KeyboardData => {
-                // Host-to-keyboard byte: acknowledge, but do not interpret the
-                // keyboard command set.
-                self.expect = Expect::KeyboardData;
+                // Host-to-keyboard byte: acknowledge. The keyboard command set is
+                // not interpreted, except reset, which additionally reports its
+                // power-on self-test (BAT) as passing so the BIOS's wait completes.
                 self.input_queue.push_back(KBD_ACK);
+                if byte == KBD_CMD_RESET {
+                    self.input_queue.push_back(KBD_BAT_OK);
+                }
                 self.refill_output();
             }
             Expect::CommandByte => {
@@ -350,6 +388,12 @@ impl I8042 {
             }
             Expect::OutputPort => {
                 self.output_port = byte;
+                self.expect = Expect::KeyboardData;
+            }
+            Expect::AuxData => {
+                // Routed to the (absent) mouse: accept and drop it. No aux device
+                // answers, so no byte reaches the output buffer and the BIOS's
+                // mouse-detect read times out cleanly instead of hanging.
                 self.expect = Expect::KeyboardData;
             }
         }
@@ -757,6 +801,79 @@ mod tests {
                 reason: "unsupported snapshot version",
             }
         );
+    }
+
+    #[test]
+    fn read_input_port_returns_benign_value() {
+        let mut kbc = I8042::new();
+        kbc.port_write(PORT_CMD, 1, 0xC0).unwrap();
+        assert_eq!(kbc.port_read(PORT_DATA, 1).unwrap() as u8, INPUT_PORT_VALUE);
+        // Bit 7 (keyboard not inhibited) and bit 5 (manufacturing jumper absent)
+        // must be set, else some BIOSes treat the board as locked or in test mode.
+        assert_ne!(INPUT_PORT_VALUE & (1 << 7), 0);
+        assert_ne!(INPUT_PORT_VALUE & (1 << 5), 0);
+    }
+
+    #[test]
+    fn enable_disable_toggle_command_byte_bits() {
+        let mut kbc = I8042::new();
+        kbc.port_write(PORT_CMD, 1, 0xAD).unwrap();
+        assert_ne!(kbc.command_byte() & CB_KBD_DISABLE, 0);
+        kbc.port_write(PORT_CMD, 1, 0xAE).unwrap();
+        assert_eq!(kbc.command_byte() & CB_KBD_DISABLE, 0);
+        kbc.port_write(PORT_CMD, 1, 0xA7).unwrap();
+        assert_ne!(kbc.command_byte() & CB_AUX_DISABLE, 0);
+        kbc.port_write(PORT_CMD, 1, 0xA8).unwrap();
+        assert_eq!(kbc.command_byte() & CB_AUX_DISABLE, 0);
+    }
+
+    #[test]
+    fn aux_write_with_no_mouse_produces_no_byte() {
+        let mut kbc = I8042::new();
+        // Route a mouse reset (0xFF) to the absent aux device.
+        kbc.port_write(PORT_CMD, 1, 0xD4).unwrap();
+        kbc.port_write(PORT_DATA, 1, 0xFF).unwrap();
+        // No aux device answers: the output buffer stays empty, so a detect read
+        // sees no OBF and the BIOS times out rather than hanging.
+        assert_eq!(kbc.port_read(PORT_CMD, 1).unwrap() as u8 & ST_OBF, 0);
+        assert!(!kbc.irq_pending());
+        // The controller is back to expecting keyboard data.
+        kbc.port_write(PORT_DATA, 1, 0xED).unwrap();
+        assert_eq!(kbc.port_read(PORT_DATA, 1).unwrap(), u32::from(KBD_ACK));
+    }
+
+    #[test]
+    fn aux_interface_test_passes_without_a_device() {
+        let mut kbc = I8042::new();
+        kbc.port_write(PORT_CMD, 1, 0xA9).unwrap();
+        assert_eq!(
+            kbc.port_read(PORT_DATA, 1).unwrap(),
+            u32::from(IFACE_TEST_PASS)
+        );
+    }
+
+    #[test]
+    fn keyboard_reset_yields_ack_then_bat() {
+        let mut kbc = I8042::new();
+        kbc.port_write(PORT_DATA, 1, u32::from(KBD_CMD_RESET))
+            .unwrap();
+        assert_eq!(kbc.port_read(PORT_DATA, 1).unwrap(), u32::from(KBD_ACK));
+        assert_eq!(kbc.port_read(PORT_DATA, 1).unwrap(), u32::from(KBD_BAT_OK));
+        // Nothing left after the reset handshake.
+        assert_eq!(kbc.port_read(PORT_CMD, 1).unwrap() as u8 & ST_OBF, 0);
+    }
+
+    #[test]
+    fn aux_expect_survives_save_restore() {
+        let mut kbc = I8042::new();
+        // Leave the controller mid-0xD4 (expecting an aux byte), then snapshot.
+        kbc.port_write(PORT_CMD, 1, 0xD4).unwrap();
+        let blob = kbc.save();
+        let mut restored = I8042::new();
+        restored.restore(&blob).unwrap();
+        // The pending aux byte is still dropped after restore; no byte appears.
+        restored.port_write(PORT_DATA, 1, 0xFF).unwrap();
+        assert_eq!(restored.port_read(PORT_CMD, 1).unwrap() as u8 & ST_OBF, 0);
     }
 
     #[test]
