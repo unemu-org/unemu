@@ -91,16 +91,27 @@ plus `backlog task list --plain` when picking up. Keep it current.
 
 ## Status — to do (next)
 
-1. **Consume `RegionKind::Rom` in the emulator** (decision-9): bump the `x86jit`
-   pin to a rev with the ROM seam, add a ROM region to the machine/CPU for a BIOS
-   at `F0000h` (read-only, executable), and a loader. The x86jit seam already exists.
-2. **test386.asm** (task-7) — bootable full-machine CPU validation ROM, once ROM
-   loading + more boot infrastructure exist (depends on 1).
-3. **Residual 286 fidelity** (optional): ~341 #6 opcodes iced decodes but 286
-   rejects; string-op #GP; `leave`/`ins`/`outs`. Full A20 gate (decision-8).
-   The RTC **periodic** interrupt (register A rate bits) is stored but not
-   generated — only update-ended/alarm drive IRQ8 today.
-4. **Real BIOS/DOS** (later): needs the deferred items in `deferred.md`.
+**North star: boot FreeDOS to a prompt** (decision-12) — real mode, ready-made
+open BIOS (Kiselev Xi8088), 286-class; 386/protected mode deferred. The arc, in
+order (each a golden), tasks task-13 → task-22:
+
+1. **M4.5 — real-mode CPU completeness, corpus-first** (task-13, x86jit): drive the
+   SST/80286 corpus to near-100% in 2–3 batched merges, ONE re-pin. Known gaps:
+   LES/LDS, LAHF/SAHF, PUSHA/POPA, ENTER, INS/OUTS, ESC/FPU policy. (The test386
+   spike found SAHF; corpus-first turns the BIOS run into validation, not discovery.)
+2. **M5a — machine hardening** (task-14…18 + task-12): open-bus policy (undecoded
+   ports → 0xFF, unmapped reads → 0xFF, A20 wrap) — without it a real BIOS aborts
+   in its first hundred instructions; POST-code port 0x80 (wire the existing
+   `PostPort`); port 0x61 with a vclock refresh-bit toggle; CGA ports 0x3D8/9 + a
+   0x3DA retrace bit off the vclock; CMOS NVRAM seeding (checksum); map the BIOS ROM.
+3. **M5b — boot the BIOS** (task-19 fact-check spike, then task-20): vendor the
+   Kiselev Xi8088 ROM, POST to INT 19h, golden on the POST-code stream + screen.
+4. **M6 — disk** (task-21): one controller (XT-IDE PIO HDD vs µPD765 floppy — chosen
+   after the task-19 fact-check) + a prebuilt FreeDOS image; INT 13h reads sector 0.
+5. **M7 — FreeDOS to the prompt** (task-22): the north star, deterministic golden.
+
+Side quests (optional): push test386 further (lift SAHF → next wall — subsumed by
+M4.5); residual 286 fidelity; full A20 gate (decision-8); RTC periodic interrupt.
 
 ## Key file map (emulator)
 

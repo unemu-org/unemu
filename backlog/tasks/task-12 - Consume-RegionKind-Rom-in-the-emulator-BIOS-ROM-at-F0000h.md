@@ -4,9 +4,11 @@ title: 'Consume RegionKind::Rom in the emulator (BIOS ROM at F0000h)'
 status: To Do
 assignee: []
 created_date: '2026-07-17 19:06'
+updated_date: '2026-07-17 20:29'
 labels:
-  - x86jit
   - machine
+  - cpu
+  - dos
 dependencies: []
 ---
 
@@ -23,3 +25,9 @@ The x86jit RegionKind::Rom seam landed on x86jit main (3ff42a5): read-only execu
 - [ ] #3 Guest can fetch/execute from the ROM; a store into it is a no-op (golden)
 - [ ] #4 No regression: full workspace test + clippy + fmt green
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Reframed as M5a (BIOS-ROM mapping) 2026-07-17. The x86jit pin bump (AC1) is DONE — pin is at 3ff42a5 with RegionKind::Rom. Remaining: map a BIOS ROM read-only executable at its ROM address (top of 1 MB) with the reset vector; verify ROM swallows write-probes silently during BIOS memory sizing. Feeds task-21 (boot the Kiselev BIOS).
+<!-- SECTION:NOTES:END -->
