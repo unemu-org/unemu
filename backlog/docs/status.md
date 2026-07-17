@@ -18,6 +18,10 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
 
 ## Recently landed
 
+- **Real-mode fault delivery on x86jit `main`** (`task-11`) @ cbba7d9: in-guest
+  `#UD` (invalid-on-286 opcodes), `BOUND`/`#BR`, and the 80286 segment-limit /
+  instruction-length `#GP` — all Real16-gated. 80286 corpus jumped to **95.98%
+  decided / 92.91% exception delivery**; no Long64 regression.
 - **M4 devices + first graphics** (`task-5`, device level): 8042 keyboard, MC146818
   CMOS/RTC, 8237 DMA (via a `note_write`-safe `DmaMemory` handle), and VGA text
   mode as a `Device` behind the new `FrameSink` seam (`video` crate) with a

@@ -1,7 +1,7 @@
 ---
 id: task-11
 title: Model the 80286 segment-limit #GP fault in real mode (in x86jit)
-status: In Progress
+status: Done
 assignee: []
 created_date: 2026-07-17 00:00
 labels: [x86jit, fidelity]
@@ -23,15 +23,20 @@ deliberately out of scope for the lift-gap effort (task-8).
 
 ## Acceptance Criteria
 
-- [ ] Decide whether to model it (weigh: 286 fidelity + corpus pass rate vs cost
-      and any DOS/BIOS reliance on 8086-wrap). Record the decision.
-- [ ] If yes: enforce the 64 KB offset limit on real-mode memory access and vector
-      `#GP(13)` in-guest through the IVT (mirroring the `#DE` delivery path), gated
-      to real mode; Long64/Compat32 unchanged.
-- [ ] The 286 corpus `#13` and affected memory-form cases pass; no Long64 regression.
+- [x] Modelled: enforce the 64 KB offset limit on real-mode effective-address
+      memory access and vector `#GP(13)` in-guest, gated to real mode (`Code16` /
+      `mode.wraps_16()`); Long64/Compat32 unchanged. Also the 286 >10-byte
+      instruction-length `#GP`. Vector is `#GP(13)` even for SS-relative operands
+      (corpus-confirmed, not `#SS`).
+- [x] Also closed here: **`#UD` in-guest delivery** for genuinely-invalid-on-286
+      opcodes (iced invalid-decode signal; unlifted-but-valid opcodes stay a real
+      gap, not masked) — the task-8 residual — and **`BOUND`/`#BR`**.
+- [x] 286 corpus: decided pass 0.9518 → **0.9598**, exception delivery 0.5940 →
+      **0.9291** (#GP 25→3117, #UD 1264→9275, BOUND 17→3101). No vector regressed,
+      no Long64 regression (full jit suite 203/0). Merged to x86jit `main` @ cbba7d9.
 
 ## Notes
 
-Related unlifted `#UD`/`#BR` delivery gaps are handled by the lift-gap effort
-(task-8), which wires unlifted-opcode → in-guest `#UD`. This task is specifically
-the segment-limit `#GP`.
+Residual, out of the effective-address seam (separate follow-up if wanted): the
+~341 remaining #6 are opcodes iced decodes but the 286 rejects; string-op (#GP)
+and `leave`/`ins`/`outs` cases have their own addressing path.
