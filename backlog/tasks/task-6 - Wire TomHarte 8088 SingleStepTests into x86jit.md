@@ -35,6 +35,12 @@ here because it is on our roadmap and gated on the real-mode work (task-3).
 
 Merged to `pc-emulator` @ 20c8d62.
 
+**Later retired** (@ 96b4fa7): once the authoritative SingleStepTests/80286 corpus
+(`task-10`) landed, the 8088 oracle was redundant and produced false failures on
+8088-vs-286 generation differences, so it was removed. The 286 corpus is now the
+sole real-mode silicon oracle. (This task served its purpose: it built the loader
+pattern the 286 oracle reused and produced the first gap list.)
+
 ## Notes
 
 Corpus: `SingleStepTests/ProcessorTests` (x86 = 8088). Do this after M2(c) so the

@@ -23,13 +23,11 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   complete instruction set — now lives on x86jit main, entirely gated so the
   Long64/Compat32 (PS4) paths are byte-identical. `pc-emulator` is fast-forwarded
   to main; no drift. 80286 corpus 89.7%/95.2%, cf16 34/34, PS4 jit suite intact.
-- SingleStepTests/80286 authoritative silicon oracle (`task-10`) on the x86jit
-  `pc-emulator` branch — our exact target CPU: 1,478,000 tests, **79.3% overall /
-  91.9% decided**. Surfaced real target-CPU gaps (LOCK mis-decode, missing
-  segment-limit `#GP` → `task-11`, under-delivered `#UD`, unlifted opcodes →
-  `task-8`). Being closed by the lift-gap effort now in flight.
-- TomHarte 8088 silicon oracle (`task-6`): 1,824,000 tests, 83.6% / 92.9%. Kept as
-  a secondary regression net for shared 8086/8088 behaviour.
+- SingleStepTests/80286 authoritative silicon oracle (`task-10`) — our exact
+  target CPU, now the **sole** real-mode oracle on x86jit `main`: 1,478,000 tests,
+  **89.7% overall / 95.2% decided** after the lift-gap work. The redundant 8088
+  oracle (`task-6`) was retired — it produced false failures on 8088-vs-286
+  differences and the 286 corpus supersedes it.
 
 - Timer-interrupt boot (`task-4`): the real-mode machine takes an IRQ0 timer
   interrupt via the in-guest IVT and prints to serial. `AtChipset` = 16550 UART +
