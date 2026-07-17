@@ -1,11 +1,19 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Intel 8259A Programmable Interrupt Controller (§7.3).
 //!
-//! Models a **single master 8259A** at ports `0x20` (command) and `0x21`
-//! (data), the IBM PC/AT's primary interrupt controller. It aggregates eight
-//! input request lines (IRQ0–IRQ7) into one INTR to the CPU and answers the
-//! CPU's INTA cycle with an 8-bit interrupt vector, `vector_base + irq` (§5.1,
-//! §5.4).
+//! Models **one 8259A chip**. It aggregates eight input request lines into one
+//! INTR to the CPU and answers the CPU's INTA cycle with an 8-bit interrupt
+//! vector, `vector_base + irq` (§5.1, §5.4).
+//!
+//! The IBM PC/AT wires **two** of these chips in a cascade: a master at ports
+//! `0x20`/`0x21` carrying IRQ0–IRQ7, and a slave at `0xA0`/`0xA1` carrying
+//! IRQ8–IRQ15 whose INT output feeds the master's IRQ2 input. A single
+//! [`Pic8259`] plays either role — [`Pic8259::new`] wires it as the master and
+//! [`Pic8259::new_slave`] as the slave, the only difference being which port
+//! pair it decodes. The two chips are coordinated into a 16-line controller by
+//! the `chipset` crate's cascade wrapper; this module models one chip and
+//! exposes the priority queries (`highest_pending`, `highest_in_service`) that
+//! wrapper needs to route a cascaded acknowledge and EOI to the right chip.
 //!
 //! The chip carries two faces:
 //! - the [`Device`] face — its programming ports, decoded at `0x20`/`0x21`;
@@ -45,26 +53,33 @@
 //! ## Coverage matrix (datasheet feature → status)
 //!
 //! Modelled:
-//! - Single master PIC, ports `0x20`/`0x21`.
+//! - A single chip decoding either the master ports `0x20`/`0x21` or the slave
+//!   ports `0xA0`/`0xA1`, selected at construction.
+//! - **Cascade / slave PIC**: a master and a slave combine into the PC/AT's 16
+//!   input lines (IRQ0–IRQ15), the slave's INT output feeding master IRQ2. The
+//!   two-chip coordination — a cascaded acknowledge fetching the slave's vector,
+//!   and an EOI clearing both chips — lives in the `chipset` cascade wrapper,
+//!   built on this chip's `highest_pending` / `highest_in_service` queries.
+//!   ICW3 (which line the cascade is on) is still accepted and ignored; the
+//!   wrapper hardwires the cascade to IRQ2 as every PC/AT does.
 //! - ICW1–ICW4 initialization state machine; ICW2 sets the vector base.
 //! - 8086/8088 mode (ICW4 `µPM` bit); the only interrupt-vector mode a PC uses.
-//! - IRR / ISR / IMR with fixed priority (IRQ0 highest … IRQ7 lowest).
+//! - IRR / ISR / IMR with fixed priority (line 0 highest … line 7 lowest).
 //! - OCW1 (IMR programming).
 //! - OCW2 non-specific EOI (`0x20`) and specific EOI (`0x60 | level`).
 //! - OCW3 read-register select (read IRR / ISR through the command port).
 //! - Edge-triggered request latching.
 //!
 //! Skipped (documented gaps; not needed for timer/keyboard bring-up):
-//! - **Cascade / slave PIC** (`0xA0`/`0xA1`, IRQ2 cascade). Only the master's
-//!   IRQ0–IRQ7 are modelled. ICW1's cascade request and ICW3 are accepted and
-//!   ignored.
 //! - **Level-triggered mode** (ICW1 `LTIM`): input latching is always edge-based.
 //! - **Rotating / automatic-rotation priority** (OCW2 rotate bits): priority is
 //!   fixed. Rotate commands are accepted but do not rotate.
 //! - **Automatic EOI** (ICW4 `AEOI`): the bit is stored but auto-EOI is not
 //!   performed; software must issue an explicit EOI.
 //! - **Special mask mode** and **special fully-nested mode** (OCW3 SMM / ICW4
-//!   SFNM).
+//!   SFNM). In particular the cascade wrapper handles one in-flight cascaded
+//!   interrupt at a time: two slave interrupts nested on top of each other (the
+//!   case SFNM exists for) are not modelled.
 //! - **Poll mode** (OCW3 poll bit).
 //! - **Buffered mode** (ICW4 buffered bits).
 
@@ -73,10 +88,12 @@ use device::{AccessDir, Device, DeviceError, InterruptController, TraceEvent, VC
 /// Stable device name reported by [`Device::name`].
 const NAME: &str = "8259a-pic";
 
-/// Command port (A0 = 0): ICW1, OCW2, OCW3.
+/// Master command port (A0 = 0), the default port base: ICW1, OCW2, OCW3. The
+/// matching data port (A0 = 1) is one above it: ICW2/ICW3/ICW4 during init,
+/// OCW1 (IMR) afterwards.
 const PORT_COMMAND: u16 = 0x20;
-/// Data port (A0 = 1): ICW2/ICW3/ICW4 during init, OCW1 (IMR) afterwards.
-const PORT_DATA: u16 = 0x21;
+/// Slave command port base on the PC/AT; its data port is `0xA1`.
+const SLAVE_PORT_COMMAND: u16 = 0xA0;
 
 /// ICW1 identifier bit (D4): a command-port write with this set starts init.
 const ICW1_INIT: u8 = 0x10;
@@ -158,6 +175,9 @@ pub struct Pic8259 {
     /// Last level of each input line, to detect rising edges for edge-triggered
     /// latching. Bit per line; `1` = the line is currently high.
     line_level: u8,
+    /// Command-port address this chip decodes; its data port is `port_base + 1`.
+    /// `0x20` for the master, `0xA0` for the slave.
+    port_base: u16,
     /// Trace events observed since the last [`Device::take_trace`].
     trace: Vec<TraceEvent>,
     /// Virtual time of the most recent [`Device::tick`], stamped onto traces.
@@ -171,12 +191,30 @@ impl Default for Pic8259 {
 }
 
 impl Pic8259 {
-    /// Create a master 8259A in its power-on state.
+    /// Create a master 8259A (ports `0x20`/`0x21`) in its power-on state.
     ///
     /// All registers are clear and no initialization has been performed; the
     /// guest must run the ICW1–ICW4 sequence before any vector is meaningful.
     #[must_use]
     pub fn new() -> Self {
+        Self::with_port_base(PORT_COMMAND)
+    }
+
+    /// Create a slave 8259A (ports `0xA0`/`0xA1`) in its power-on state.
+    ///
+    /// Identical to [`Pic8259::new`] except for the port pair it decodes. On the
+    /// PC/AT the slave's INT output feeds the master's IRQ2 input; that wiring is
+    /// the cascade wrapper's job, not the chip's — this chip only knows it
+    /// answers at the slave ports and programs its own vector base (`0x70` under
+    /// the PC BIOS, so IRQ8 is vector `0x70`).
+    #[must_use]
+    pub fn new_slave() -> Self {
+        Self::with_port_base(SLAVE_PORT_COMMAND)
+    }
+
+    /// Create an 8259A in its power-on state decoding `port_base` / `port_base+1`.
+    #[must_use]
+    fn with_port_base(port_base: u16) -> Self {
         Self {
             irr: 0,
             isr: 0,
@@ -187,6 +225,7 @@ impl Pic8259 {
             init_state: InitState::Ready,
             read_select: ReadSelect::Irr,
             line_level: 0,
+            port_base,
             trace: Vec::new(),
             now: VClock::ZERO,
         }
@@ -220,8 +259,13 @@ impl Pic8259 {
     ///
     /// A line qualifies when it is requested (IRR), not masked (IMR), and no
     /// line of equal-or-higher priority is already in service (ISR). Priority is
-    /// fixed with IRQ0 highest, so the search runs low bit to high bit.
-    fn highest_pending(&self) -> Option<u8> {
+    /// fixed with line 0 highest, so the search runs low bit to high bit.
+    ///
+    /// The cascade wrapper reads this to decide whether the master's winning
+    /// line is the cascade input (line 2), and to pick the slave line whose
+    /// vector a cascaded acknowledge should return.
+    #[must_use]
+    pub fn highest_pending(&self) -> Option<u8> {
         let requestable = self.irr & !self.imr;
         for irq in 0u8..8 {
             let bit = 1u8 << irq;
@@ -309,14 +353,21 @@ impl Pic8259 {
         }
     }
 
+    /// The highest-priority line currently in service (top of the ISR), or
+    /// `None` if nothing is in service.
+    ///
+    /// A non-specific EOI clears exactly this line. The cascade wrapper reads it
+    /// to tell whether the interrupt being ended came in through the cascade
+    /// (master line 2 in service), so it can also EOI the slave.
+    #[must_use]
+    pub fn highest_in_service(&self) -> Option<u8> {
+        (0u8..8).find(|&irq| self.isr & (1u8 << irq) != 0)
+    }
+
     /// Clear the highest-priority in-service bit (non-specific EOI).
     fn clear_highest_in_service(&mut self) {
-        for irq in 0u8..8 {
-            let bit = 1u8 << irq;
-            if self.isr & bit != 0 {
-                self.isr &= !bit;
-                return;
-            }
+        if let Some(irq) = self.highest_in_service() {
+            self.isr &= !(1u8 << irq);
         }
     }
 
@@ -374,16 +425,18 @@ impl Device for Pic8259 {
     }
 
     fn port_read(&mut self, port: u16, size: u8) -> Result<u32, DeviceError> {
-        let value = match port {
-            PORT_COMMAND => match self.read_select {
+        let value = match port.checked_sub(self.port_base) {
+            // Command port: OCW3 selects which register reads back.
+            Some(0) => match self.read_select {
                 ReadSelect::Irr => u32::from(self.irr),
                 ReadSelect::Isr => u32::from(self.isr),
             },
-            PORT_DATA => u32::from(self.imr),
-            _ => {
+            // Data port: the interrupt mask.
+            Some(1) => u32::from(self.imr),
+            other => {
                 return Err(DeviceError::UnmappedRegister {
                     kind: "port",
-                    offset: u64::from(port.wrapping_sub(PORT_COMMAND)),
+                    offset: u64::from(other.unwrap_or(port)),
                 });
             }
         };
@@ -393,13 +446,13 @@ impl Device for Pic8259 {
 
     fn port_write(&mut self, port: u16, size: u8, value: u32) -> Result<(), DeviceError> {
         let byte = value as u8;
-        match port {
-            PORT_COMMAND => self.write_command(byte),
-            PORT_DATA => self.write_data(byte),
-            _ => {
+        match port.checked_sub(self.port_base) {
+            Some(0) => self.write_command(byte),
+            Some(1) => self.write_data(byte),
+            other => {
                 return Err(DeviceError::UnmappedRegister {
                     kind: "port",
-                    offset: u64::from(port.wrapping_sub(PORT_COMMAND)),
+                    offset: u64::from(other.unwrap_or(port)),
                 });
             }
         }
@@ -437,7 +490,8 @@ impl Device for Pic8259 {
     }
 
     fn reset(&mut self) {
-        *self = Pic8259::new();
+        // Keep the wired role (master vs slave port pair); reset only chip state.
+        *self = Pic8259::with_port_base(self.port_base);
     }
 
     fn save(&self) -> Vec<u8> {
@@ -513,8 +567,12 @@ mod tests {
     use super::*;
     use testkit::MockBus;
 
+    /// Master data port (A0 = 1): ICW2/ICW3/ICW4 during init, OCW1 afterwards.
+    const PORT_DATA: u16 = PORT_COMMAND + 1;
     /// Real-mode PC vector base for the master PIC: IRQ0 → vector 0x08.
     const BASE: u8 = 0x08;
+    /// Real-mode PC vector base for the slave PIC: IRQ8 → vector 0x70.
+    const SLAVE_BASE: u8 = 0x70;
 
     /// ICW4 `µPM` bit (D0): 8086/8088 mode (vs MCS-80/85). PCs always set it.
     const ICW4_8086: u8 = 0x01;
@@ -833,5 +891,70 @@ mod tests {
             .into_iter()
             .any(|ev| matches!(ev, TraceEvent::Port { at, .. } if at == VClock(7)));
         assert!(traced);
+    }
+
+    /// Run the ICW1–ICW4 sequence on a slave through its own ports.
+    fn init_slave(pic: &mut Pic8259) {
+        pic.port_write(SLAVE_PORT_COMMAND, 1, u32::from(ICW1_INIT | ICW1_IC4))
+            .unwrap();
+        // ICW2: slave vector base 0x70.
+        pic.port_write(SLAVE_PORT_COMMAND + 1, 1, u32::from(SLAVE_BASE))
+            .unwrap();
+        // ICW3: slave identity (which master line it cascades on) — ignored.
+        pic.port_write(SLAVE_PORT_COMMAND + 1, 1, 0x02).unwrap();
+        // ICW4: 8086 mode.
+        pic.port_write(SLAVE_PORT_COMMAND + 1, 1, u32::from(ICW4_8086))
+            .unwrap();
+    }
+
+    #[test]
+    fn slave_decodes_its_own_port_pair() {
+        let mut pic = Pic8259::new_slave();
+        init_slave(&mut pic);
+        assert_eq!(pic.vector_base(), SLAVE_BASE);
+        // IMR reads back through the slave data port, not the master's.
+        pic.port_write(SLAVE_PORT_COMMAND + 1, 1, 0x5A).unwrap();
+        assert_eq!(pic.port_read(SLAVE_PORT_COMMAND + 1, 1).unwrap(), 0x5A);
+        // The master ports are unmapped on a slave chip.
+        assert!(pic.port_read(PORT_COMMAND, 1).is_err());
+    }
+
+    #[test]
+    fn slave_latches_and_resolves_its_lines() {
+        let mut pic = Pic8259::new_slave();
+        init_slave(&mut pic);
+        // Line 0 of the slave is IRQ8; its vector is the slave base.
+        pic.set_irq_line(0, true);
+        assert_eq!(pic.irr(), 0x01);
+        // A higher-priority slave line preempts a pending lower one.
+        pic.set_irq_line(2, true);
+        assert_eq!(pic.poll(), Some(SLAVE_BASE));
+        assert_eq!(pic.acknowledge(), Some(SLAVE_BASE));
+        assert_eq!(pic.highest_in_service(), Some(0));
+    }
+
+    #[test]
+    fn highest_in_service_tracks_isr_top() {
+        let mut pic = Pic8259::new();
+        init_master(&mut pic);
+        assert_eq!(pic.highest_in_service(), None);
+        pic.set_irq_line(4, true);
+        pic.acknowledge().unwrap();
+        assert_eq!(pic.highest_in_service(), Some(4));
+        // A nested higher-priority interrupt becomes the new top of the ISR.
+        pic.set_irq_line(1, true);
+        pic.acknowledge().unwrap();
+        assert_eq!(pic.highest_in_service(), Some(1));
+    }
+
+    #[test]
+    fn reset_keeps_slave_port_wiring() {
+        let mut pic = Pic8259::new_slave();
+        init_slave(&mut pic);
+        pic.reset();
+        // Back to power-on state, but still a slave: master ports stay unmapped.
+        assert_eq!(pic.vector_base(), 0);
+        assert!(pic.port_read(PORT_COMMAND, 1).is_err());
+        assert!(pic.port_read(SLAVE_PORT_COMMAND, 1).is_ok());
     }
 }
