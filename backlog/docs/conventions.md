@@ -1,0 +1,78 @@
+# Coding conventions
+
+Generic conventions that apply regardless of stack. Stack-specific rules (language idioms, framework patterns, formatter config) go in the **Stack-specific** section at the bottom — filled at bootstrap.
+
+## File naming
+
+- Pick **one** casing per category and stick with it (e.g. PascalCase for components, kebab-case for scripts, snake_case for modules). Document the choice in Stack-specific.
+- One unit per file (one component, one class, one primary export). Co-locate tightly related sibling files (CSS module next to component, test next to source).
+
+## Imports
+
+- Cross-folder imports go through a folder's barrel / public entry, not into its internals. The barrel is the contract; internals are not.
+- Prefer path aliases (`@core`, `@services`, ...) over deep relative paths once the project grows past ~3 directory levels.
+
+## Comments
+
+- **Default: no comment.** Names do the work.
+- Add only when the *why* is non-obvious: hidden constraint, subtle invariant, workaround for a specific bug, surprising behavior.
+- Never explain *what* the code does — well-named identifiers already do that.
+- Don't reference the current task / fix / PR ("added for X", "handles case from #123") — that belongs in the commit message, not the source file.
+
+## Commits
+
+- Conventional Commits by default (`feat:`, `fix:`, `chore:`, `docs:`, `refactor:`, `test:`, `release:`). If your project uses a different convention, document in Stack-specific.
+- GPG-signed. The `gpg-uid-guard` pre-commit hook refuses to sign if `user.email` has no matching UID on `user.signingkey`.
+- **Never commit without explicit user request.** This rule supersedes any plan acceptance.
+
+## Phase / scope discipline
+
+- Don't pre-empt later milestones. If a task is scoped to a later milestone, don't half-implement it during earlier work.
+- If a refactor would be cleaner alongside a bug fix but isn't required, defer it — create a backlog task instead.
+- Don't add error handling, fallbacks, or validation for scenarios that can't happen at the call site. Trust internal code; validate only at system boundaries (user input, external APIs).
+
+## UI / output text (if applicable)
+
+- Terse. Lowercase. No emoji in UI text or logs unless the project explicitly opts in.
+
+## When in doubt
+
+- Read the relevant decision: `ls backlog/decisions/` (see [`decisions.md`](decisions.md)).
+- Check active work: `backlog task list --plain`.
+- Ask the user. Solo project — they're the only deciding authority.
+
+---
+
+## Stack-specific (Rust)
+
+- **Edition**: 2021. **MSRV**: track x86jit's (currently 1.75); bump only with a
+  decision. **Workspace**: one Cargo workspace, one crate per swap-layer
+  (`cpu`, `bus`, `chipset`, `device`, `devices/*`, `video`, `machine`, `cli`,
+  `testkit`).
+- **Clippy**: `cargo clippy --all-targets --all-features -- -D warnings` is the
+  gate. **Format**: `cargo fmt`, default rustfmt.
+- **Error handling**: `thiserror` for library error enums with stable variants
+  (bus faults, device errors); `anyhow` only in `cli`/tests. Never `unwrap`/
+  `expect` in library code outside tests — return a typed error.
+- **Naming**: model real hardware — device types named after the chip
+  (`Uart16550`, `Pic8259`, `Pit8253`, `I8042`). One device per module.
+- **Language**: all code, comments, and identifiers in **English** (Polish only in
+  chat with the maintainer — see AGENTS.md).
+- **License headers**: each source file carries an SPDX line
+  `// SPDX-License-Identifier: AGPL-3.0-or-later`.
+- **Doc-comments (docs-first rule)**: every public module and trait has a `//!` /
+  `///` doc-comment naming the modelled hardware and cross-referencing
+  `backlog/docs/design/spec.md` (`§` style). Datasheet deviations are documented.
+- **Determinism**: no `std::time`, `Instant`, `SystemTime`, or RNG in the
+  execution path. Virtual time = retired instructions.
+- **Memory writes**: guest RAM is mutated only through the x86jit `Vm` API that
+  runs `note_write` (SMC safety) — never a raw buffer write. See the memory decision.
+- **x86jit dependency**: pinned git dep + local `[patch]` onto the worktree;
+  never a bare `path` dep (breaks `nix build`/CI).
+
+## Test strategy
+
+See [`testing.md`](testing.md): device unit tests on a mock bus, fuzz +
+property-based, golden/trace tests (deterministic, pin the x86jit rev),
+boot/integration ROMs, SingleStepTests differential for real mode, snapshot/replay.
+No device or machine feature merges without its tests.

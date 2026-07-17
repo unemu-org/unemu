@@ -1,0 +1,32 @@
+# Logs
+logs
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editors
+.vscode/*
+!.vscode/extensions.json
+.idea
+*.swp
+*.swo
+*.sw?
+*~
+
+# Local-only
+*.local
+.envrc.local
+
+# direnv cache (Nix flake users)
+.direnv/
+
+# Skills: .agents/skills/ is vendored (committed). .claude/skills/ holds symlinks into
+# it, generated on demand by scripts/skills-bootstrap.sh — not committed.
+.claude/skills/
+
+# --- Rust ---
+target/
+# Golden-test scratch / captured traces
+/tmp-golden/
