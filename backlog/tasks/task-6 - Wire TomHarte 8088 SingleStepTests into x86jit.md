@@ -1,7 +1,7 @@
 ---
 id: task-6
 title: Wire TomHarte 8088 SingleStepTests as a real-mode CPU oracle (in x86jit)
-status: To Do
+status: Done
 assignee: []
 created_date: 2026-07-17 00:00
 labels: [x86jit, oracle]
@@ -24,14 +24,16 @@ here because it is on our roadmap and gated on the real-mode work (task-3).
 
 ## Acceptance Criteria
 
-- [ ] A corpus loader in `x86jit-tests` that reads the SingleStepTests 8088 JSON
-      (fetched, not vendored into git) into the existing `VectorInput` harness.
-- [ ] Run the corpus against the `CpuMode::Real16` interpreter; report per-opcode
-      pass/fail; final CPU+memory state must match.
-- [ ] (Stretch) Validate the cycle/bus trace where x86jit models it; otherwise
-      document that only architectural state is checked, not timing.
-- [ ] Triage: any opcode the corpus exercises that x86jit does not yet lift in
-      real mode is listed (drives follow-up lift work), not silently skipped.
+- [x] Corpus loader + runner in `x86jit-tests` (`src/harte.rs`, `tests/harte8088.rs`);
+      corpus fetched via `vendor/8088/fetch.sh`, gitignored (492 MB), never vendored.
+      Added `Vcpu::step_instruction` (additive single-step primitive).
+- [x] Runs against the `CpuMode::Real16` interpreter with per-opcode reporting.
+      First run: **1,824,000 tests — 83.6% overall, 92.9% decided** pass rate.
+- [x] Only architectural state is compared (not the cycle/bus trace); flag
+      comparison uses the corpus's own per-opcode undefined-flag masks.
+- [x] Gap list produced (drives task-8 / task-9), nothing silently skipped.
+
+Merged to `pc-emulator` @ 20c8d62.
 
 ## Notes
 

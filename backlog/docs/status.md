@@ -17,9 +17,15 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   (c) IRQ injection + retired-instruction counter — all merged to the x86jit
   `pc-emulator` branch (differential cf16 16/16 vs Unicorn MODE_16). Graduating
   `pc-emulator` → x86jit `main` (PS4 benchmark + churn cleanup) is a later gate.
-- TomHarte 8088 oracle in x86jit (`task-6`) — in progress.
+- Nothing actively in progress. Next candidates: `task-8` (close the real-mode
+  lift gaps the 8088 corpus found), `task-9` (separate 8088-vs-286 differences
+  from real failures), M4 devices + VGA text (`task-5`).
 
 ## Recently landed
+
+- TomHarte 8088 silicon oracle (`task-6`) on the x86jit `pc-emulator` branch:
+  1,824,000 per-instruction tests, **83.6% overall / 92.9% decided** pass rate on
+  the first run. Produced the gap list now tracked as `task-8` / `task-9`.
 
 - Timer-interrupt boot (`task-4`): the real-mode machine takes an IRQ0 timer
   interrupt via the in-guest IVT and prints to serial. `AtChipset` = 16550 UART +
