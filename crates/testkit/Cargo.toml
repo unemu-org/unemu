@@ -1,0 +1,13 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+[package]
+name = "testkit"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+description = "Test harness: mock bus/device scripts and a MockCpu so devices test without x86jit (§10)."
+
+[dependencies]
+device.workspace = true
+cpu.workspace = true

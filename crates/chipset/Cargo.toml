@@ -1,0 +1,14 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+[package]
+name = "chipset"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+description = "Chipset swap seam: declares the decode map + device set + interrupt controller (§3.2, §3.3)."
+
+[dependencies]
+device.workspace = true
+bus.workspace = true
+devices.workspace = true
