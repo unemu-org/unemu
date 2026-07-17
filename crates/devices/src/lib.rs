@@ -10,7 +10,9 @@
 pub mod pic8259;
 pub mod pit8253;
 pub mod uart16550;
+pub mod vga_text;
 
 pub use pic8259::Pic8259;
 pub use pit8253::Pit8253;
 pub use uart16550::Uart16550;
+pub use vga_text::VgaText;
