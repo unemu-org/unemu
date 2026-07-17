@@ -169,6 +169,10 @@ impl Cpu for MockCpu {
         self.completions.push(value);
     }
 
+    fn complete_mmio_write(&mut self) {
+        // Scripted stops advance on their own; nothing to acknowledge here.
+    }
+
     fn inject_irq(&mut self, vector: u8) {
         self.injected.push(vector);
         self.pending_irq = true;

@@ -34,8 +34,10 @@ dependencies = [
  "chipset",
  "cpu",
  "device",
+ "devices",
  "machine",
  "testkit",
+ "video",
 ]
 
 [[package]]

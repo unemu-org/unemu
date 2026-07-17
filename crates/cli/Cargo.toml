@@ -19,6 +19,8 @@ bus.workspace = true
 cpu.workspace = true
 chipset.workspace = true
 machine.workspace = true
+devices.workspace = true
+video.workspace = true
 
 [dev-dependencies]
 testkit.workspace = true
