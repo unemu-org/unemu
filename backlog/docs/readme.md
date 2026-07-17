@@ -9,6 +9,7 @@ below are hand-maintained.
 
 | File | Purpose |
 |------|---------|
+| [`handoff.md`](handoff.md) | **Start here.** Session handoff: how we work (the multi-agent loop), repo/worktree topology, status, and what's next. |
 | [`architecture.md`](architecture.md) | Repo shape, data flow, module map. |
 | [`commands.md`](commands.md) | Build, test, run, typecheck, lint commands. |
 | [`conventions.md`](conventions.md) | Coding conventions: file naming, imports, comments, commits. |
