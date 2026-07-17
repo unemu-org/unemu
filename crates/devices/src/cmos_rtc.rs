@@ -43,6 +43,7 @@
 //! | Alarm interrupt (AF/AIE)              | yes      | with `0xC0` "don't care" match |
 //! | NMI-disable bit (`0x70` bit 7)        | yes      | stored + exposed               |
 //! | Register D VRT (valid RAM & time)     | yes      | reads back set                 |
+//! | Config NVRAM seed + AT checksum       | yes      | opt-in via [`CmosConfig`]      |
 //!
 //! Deliberately **not** modelled:
 //! - **Periodic interrupt** (register A rate-select RS bits): the rate bits are
@@ -83,6 +84,39 @@ const REG_A: usize = 0x0A;
 const REG_B: usize = 0x0B;
 const REG_C: usize = 0x0C;
 const REG_D: usize = 0x0D;
+
+// Standard PC/AT configuration NVRAM indices. These sit past the RTC/control
+// registers in the general-purpose CMOS storage the BIOS reads at POST.
+/// Diagnostic status: nonzero bits flag POST problems (power loss, checksum
+/// mismatch, config/memory-size mismatch, bad time). All-clear = 0x00.
+const REG_DIAGNOSTIC: usize = 0x0E;
+/// Shutdown status byte the BIOS uses to route a reset. Normal boot = 0x00.
+const REG_SHUTDOWN: usize = 0x0F;
+/// Floppy drive types: high nibble = drive 0, low nibble = drive 1
+/// (0 = none, 4 = 1.44 MB 3.5").
+const REG_FLOPPY_TYPE: usize = 0x10;
+/// Hard-disk type byte (high nibble = drive 0, low = drive 1; 0 = none).
+const REG_HDD_TYPE: usize = 0x12;
+/// Equipment installed byte (floppy/coprocessor/display/drive-count bits).
+const REG_EQUIPMENT: usize = 0x14;
+/// Base (conventional) memory size in KB, little-endian low byte.
+const REG_BASE_MEM_LO: usize = 0x15;
+/// Base memory size high byte.
+const REG_BASE_MEM_HI: usize = 0x16;
+/// Extended memory size (KB above 1 MB), little-endian low byte.
+const REG_EXT_MEM_LO: usize = 0x17;
+/// Extended memory size high byte.
+const REG_EXT_MEM_HI: usize = 0x18;
+/// Configuration checksum, high byte (see [`CHECKSUM_RANGE`]).
+const REG_CHECKSUM_HI: usize = 0x2E;
+/// Configuration checksum, low byte.
+const REG_CHECKSUM_LO: usize = 0x2F;
+
+/// NVRAM indices covered by the standard AT configuration checksum, inclusive.
+/// The BIOS sums these bytes into a 16-bit word and compares against the value
+/// stored big-endian at 0x2E/0x2F; a mismatch drops POST into the interactive
+/// SETUP prompt, so seeding must store the matching sum.
+const CHECKSUM_RANGE: std::ops::RangeInclusive<usize> = 0x10..=0x2D;
 
 /// Register A bit 7: update in progress (read-only).
 const A_UIP: u8 = 1 << 7;
@@ -210,6 +244,53 @@ fn from_bcd(value: u8) -> u8 {
     (value >> 4) * 10 + (value & 0x0F)
 }
 
+/// Standard PC/AT configuration seeded into the CMOS NVRAM (§7.6).
+///
+/// A stock BIOS reads its machine configuration — floppy/HDD types, base and
+/// extended memory size, the equipment byte — from CMOS NVRAM and validates a
+/// checksum over that area before continuing POST. A blank NVRAM (our power-on
+/// state) fails the checksum, and the firmware then stops at an interactive
+/// "press F1 to run SETUP" prompt that a headless boot cannot answer. Passing
+/// this to [`CmosRtc::with_config`] writes the bytes the BIOS expects plus a
+/// matching checksum, so POST proceeds unattended.
+///
+/// [`CmosConfig::default`] describes a plain AT: one 1.44 MB floppy, no
+/// hard disk, EGA/VGA display, 640 KB base memory, no extended memory.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct CmosConfig {
+    /// Floppy drive type nibbles at index 0x10: high = drive 0, low = drive 1
+    /// (0 = absent, 4 = 1.44 MB 3.5"). Default `0x40` — one 1.44 MB drive 0.
+    pub floppy_types: u8,
+    /// Hard-disk type byte at index 0x12 (0 = none). Default `0x00`.
+    pub hard_disk_types: u8,
+    /// Equipment installed byte at index 0x14. See [`CmosConfig::default`] for
+    /// the bit assignment. Default `0x01`.
+    pub equipment: u8,
+    /// Base (conventional) memory size in KB. Default 640.
+    pub base_memory_kb: u16,
+    /// Extended memory size in KB above 1 MB. Default 0 (plain 1 MB machine).
+    pub extended_memory_kb: u16,
+}
+
+impl Default for CmosConfig {
+    fn default() -> Self {
+        // Equipment byte (index 0x14), bit by bit:
+        //   bit 0    = 1  a floppy/boot diskette drive is installed
+        //   bit 1    = 0  no math coprocessor (80287)
+        //   bits 2-3 = 00 unused on the AT
+        //   bits 4-5 = 00 primary display is EGA/VGA (the adapter BIOS owns the
+        //                 mode; 01/10 would select 40/80-col CGA, 11 MDA)
+        //   bits 6-7 = 00 one floppy drive installed (01 = two, ...)
+        CmosConfig {
+            floppy_types: 0x40,
+            hard_disk_types: 0x00,
+            equipment: 0x01,
+            base_memory_kb: 640,
+            extended_memory_kb: 0,
+        }
+    }
+}
+
 /// The MC146818 CMOS/RTC device (§7.6).
 ///
 /// Decodes ports `0x70`/`0x71`. Drives **IRQ8** through [`Device::irq_pending`]
@@ -271,6 +352,48 @@ impl CmosRtc {
         self.second_ticks = second_ticks.max(1);
         self.uip_ticks = uip_ticks.min(self.second_ticks);
         self
+    }
+
+    /// Seed the configuration NVRAM with a valid AT layout so a stock BIOS's
+    /// POST checksum passes and it does not stop at the SETUP prompt. Opt-in:
+    /// [`CmosRtc::new`] leaves the NVRAM blank as a real battery-dead chip would.
+    #[must_use]
+    pub fn with_config(mut self, config: CmosConfig) -> Self {
+        self.seed_config(&config);
+        self
+    }
+
+    /// Write the standard configuration bytes and recompute the checksum. The
+    /// diagnostic (0x0E) and shutdown (0x0F) status bytes are cleared so the
+    /// BIOS sees no prior fault.
+    pub fn seed_config(&mut self, config: &CmosConfig) {
+        self.nvram[REG_DIAGNOSTIC] = 0x00;
+        self.nvram[REG_SHUTDOWN] = 0x00;
+        self.nvram[REG_FLOPPY_TYPE] = config.floppy_types;
+        self.nvram[REG_HDD_TYPE] = config.hard_disk_types;
+        self.nvram[REG_EQUIPMENT] = config.equipment;
+        let base = config.base_memory_kb.to_le_bytes();
+        self.nvram[REG_BASE_MEM_LO] = base[0];
+        self.nvram[REG_BASE_MEM_HI] = base[1];
+        let ext = config.extended_memory_kb.to_le_bytes();
+        self.nvram[REG_EXT_MEM_LO] = ext[0];
+        self.nvram[REG_EXT_MEM_HI] = ext[1];
+        self.write_config_checksum();
+    }
+
+    /// 16-bit sum of the config bytes the BIOS protects ([`CHECKSUM_RANGE`]).
+    fn config_checksum(&self) -> u16 {
+        CHECKSUM_RANGE
+            .map(|i| u16::from(self.nvram[i]))
+            .fold(0u16, u16::wrapping_add)
+    }
+
+    /// Store the current [`config_checksum`](Self::config_checksum) big-endian
+    /// at 0x2E (high) / 0x2F (low), the order the AT BIOS reads it back in.
+    fn write_config_checksum(&mut self) {
+        let [hi, lo] = self.config_checksum().to_be_bytes();
+        self.nvram[REG_CHECKSUM_HI] = hi;
+        self.nvram[REG_CHECKSUM_LO] = lo;
     }
 
     /// Seed the broken-down time. Values are plain binary (0-based month/day are
@@ -902,5 +1025,74 @@ mod tests {
         bus.port_write(PORT_INDEX, 1, u32::from(REG_D as u8))
             .unwrap();
         assert_ne!(bus.port_read(PORT_DATA, 1).unwrap() as u8 & D_VRT, 0);
+    }
+
+    #[test]
+    fn seeded_config_reads_back_through_ports() {
+        let mut rtc = CmosRtc::new().with_config(CmosConfig::default());
+        // The BIOS reads these through the 0x70/0x71 index/data protocol.
+        assert_eq!(read_reg(&mut rtc, REG_DIAGNOSTIC as u8), 0x00);
+        assert_eq!(read_reg(&mut rtc, REG_SHUTDOWN as u8), 0x00);
+        assert_eq!(read_reg(&mut rtc, REG_FLOPPY_TYPE as u8), 0x40);
+        assert_eq!(read_reg(&mut rtc, REG_HDD_TYPE as u8), 0x00);
+        assert_eq!(read_reg(&mut rtc, REG_EQUIPMENT as u8), 0x01);
+        assert_eq!(read_reg(&mut rtc, REG_BASE_MEM_LO as u8), 0x80);
+        assert_eq!(read_reg(&mut rtc, REG_BASE_MEM_HI as u8), 0x02); // 640 KB
+        assert_eq!(read_reg(&mut rtc, REG_EXT_MEM_LO as u8), 0x00);
+        assert_eq!(read_reg(&mut rtc, REG_EXT_MEM_HI as u8), 0x00);
+    }
+
+    #[test]
+    fn seeded_checksum_matches_config_bytes() {
+        let mut rtc = CmosRtc::new().with_config(CmosConfig::default());
+        // Independently recompute the BIOS check: sum of 0x10..=0x2D, compared
+        // against the big-endian word stored at 0x2E/0x2F.
+        let sum: u16 = (0x10u8..=0x2D)
+            .map(|i| u16::from(read_reg(&mut rtc, i)))
+            .fold(0u16, u16::wrapping_add);
+        let stored = (u16::from(read_reg(&mut rtc, REG_CHECKSUM_HI as u8)) << 8)
+            | u16::from(read_reg(&mut rtc, REG_CHECKSUM_LO as u8));
+        assert_eq!(stored, sum, "stored checksum must equal the config sum");
+    }
+
+    #[test]
+    fn custom_config_reseeds_checksum() {
+        let config = CmosConfig {
+            floppy_types: 0x24, // two drives: 1.2 MB (2) and 1.44 MB (4)
+            extended_memory_kb: 15 * 1024,
+            ..CmosConfig::default()
+        };
+        let mut rtc = CmosRtc::new().with_config(config);
+        let sum: u16 = (0x10u8..=0x2D)
+            .map(|i| u16::from(read_reg(&mut rtc, i)))
+            .fold(0u16, u16::wrapping_add);
+        let stored = (u16::from(read_reg(&mut rtc, REG_CHECKSUM_HI as u8)) << 8)
+            | u16::from(read_reg(&mut rtc, REG_CHECKSUM_LO as u8));
+        assert_eq!(stored, sum);
+    }
+
+    #[test]
+    fn new_leaves_config_blank() {
+        // Seeding is opt-in: a plain construction is still a blank power-on chip.
+        let mut rtc = CmosRtc::new();
+        assert_eq!(read_reg(&mut rtc, REG_FLOPPY_TYPE as u8), 0x00);
+        assert_eq!(read_reg(&mut rtc, REG_CHECKSUM_HI as u8), 0x00);
+        assert_eq!(read_reg(&mut rtc, REG_CHECKSUM_LO as u8), 0x00);
+    }
+
+    #[test]
+    fn seeded_config_survives_save_restore() {
+        let rtc = CmosRtc::new().with_config(CmosConfig::default());
+        let blob = rtc.save();
+        let mut restored = CmosRtc::new();
+        restored.restore(&blob).unwrap();
+        assert_eq!(read_reg(&mut restored, REG_FLOPPY_TYPE as u8), 0x40);
+        assert_eq!(read_reg(&mut restored, REG_BASE_MEM_HI as u8), 0x02);
+        let sum: u16 = (0x10u8..=0x2D)
+            .map(|i| u16::from(read_reg(&mut restored, i)))
+            .fold(0u16, u16::wrapping_add);
+        let stored = (u16::from(read_reg(&mut restored, REG_CHECKSUM_HI as u8)) << 8)
+            | u16::from(read_reg(&mut restored, REG_CHECKSUM_LO as u8));
+        assert_eq!(stored, sum);
     }
 }
