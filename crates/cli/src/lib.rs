@@ -16,20 +16,22 @@
 //! first-class tracing seam (§3.2), never a concrete-device downcast.
 
 use anyhow::{Context, Result};
-use bus::Bus;
+use bus::{Bus, DecodeMap, PortRange};
 use chipset::{
-    AtChipset, Chipset, SerialChipset, AT_CMOS_RTC_INDEX, AT_I8042_INDEX, AT_UART_INDEX,
-    AT_VGA_INDEX, COM1_BASE,
+    AtChipset, Chipset, NoInterruptController, SerialChipset, AT_CMOS_RTC_INDEX, AT_I8042_INDEX,
+    AT_UART_INDEX, AT_VGA_INDEX, COM1_BASE, COM1_TOP,
 };
 use cpu::x86jit_backend::RealSegments;
-use cpu::X86JitCpu;
+use cpu::{Cpu, CpuError, CpuReg, X86JitCpu};
 use device::{AccessDir, TraceEvent};
+use devices::post_port::POST_PORT;
 use devices::vga_text::{
     COLS, CRTC_CURSOR_HIGH_INDEX, CRTC_CURSOR_LOW_INDEX, CRTC_CURSOR_START_INDEX, CRTC_DATA_PORT,
     CRTC_INDEX_PORT, CRTC_START_HIGH_INDEX, CRTC_START_LOW_INDEX, ROWS, TEXT_BUFFER_BASE,
     TEXT_BUFFER_LEN,
 };
-use machine::{IrqLine, Machine};
+use devices::{PostPort, Uart16550};
+use machine::{IrqLine, Machine, MachineError, RunOutcome};
 use video::{render_text_mode, CaptureFrameSink, Frame, FrameSink, TextGrid, TextModeState};
 
 /// Guest RAM size for the flat address space (64 KiB).
@@ -289,6 +291,196 @@ pub const VGA_TEXT_PROGRAM: &[u8] = &[
     0x89, 0x06, 0x02, 0x00, // mov [0x0002],ax  -> cell 1 @ 0xB8002
     0xF4,                   // hlt
 ];
+
+/// Flat guest space for the test386 smoke run: the whole 1 MiB is RAM (§3.1).
+///
+/// The spike maps no ROM region and no unmapped hole — the diagnostic image is
+/// loaded into RAM at the top 64 KiB and executed from the reset vector.
+pub const TEST386_SPACE: u64 = 0x10_0000;
+/// Segment the test386 image is loaded at: the top 64 KiB begins at `0xF0000`.
+pub const TEST386_LOAD_SEG: u16 = 0xF000;
+/// Reset entry point: `CS:IP = F000:FFF0` → linear `0xFFFF0`, the reset vector's
+/// far jump into the diagnostic's POST entry.
+pub const TEST386_RESET_IP: u16 = 0xFFF0;
+/// Cooperative run quantum for the test386 machine, in `x86jit` block units (§6.2).
+///
+/// A finite quantum (unlike the built-in demos' `None`) so a guest that spins
+/// without any port I/O or halt still returns to the machine loop periodically,
+/// where the retired-instruction cap can stop it. The value only bounds how often
+/// the cap is checked; it does not affect a run that reaches a natural stop.
+pub const TEST386_QUANTUM: Option<u64> = Some(65_536);
+/// Total retired-instruction safety cap for the test386 smoke run (§6).
+///
+/// A generous bound: the diagnostic is expected to stop early (an instruction the
+/// real-mode core does not lift), long before this. It exists only so a spin
+/// cannot hang the test; reaching it is a clean stop, not a failure.
+pub const TEST386_MAX_RETIRED: u64 = 5_000_000;
+
+/// Why the test386 smoke run stopped (§3.1). Captured on **every** exit path so
+/// the POST progress stream is never lost to an error return.
+///
+/// This is a diagnostic classification for the report, not a golden: assertions
+/// pin the *variant*, never an address (NASM output shifts stop addresses with
+/// the toolchain, so any address lives in `detail` for humans only).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum StopReason {
+    /// The guest executed `hlt` and the machine terminated.
+    Halt,
+    /// The core hit a decodable instruction it does not lift (e.g. a segment-
+    /// register load the real-mode backend does not model). `detail` records the
+    /// faulting address for the report.
+    Unsupported {
+        /// Human-readable location of the unlifted instruction.
+        detail: String,
+    },
+    /// The guest touched an address or port the minimal machine does not map.
+    Unmapped {
+        /// Human-readable description of the unmapped access.
+        detail: String,
+    },
+    /// The guest raised a CPU exception the machine escaped to the host.
+    Exception {
+        /// x86 exception vector.
+        vector: u8,
+    },
+    /// The retired-instruction safety cap was reached before a natural stop.
+    BudgetExhausted,
+}
+
+/// The result of the test386 smoke run (§3.1): the captured POST progress bytes
+/// and why execution stopped.
+#[derive(Clone, Debug)]
+pub struct Test386Run {
+    /// Checkpoint bytes the guest wrote to the POST port `0x190`, in order.
+    pub post: Vec<u8>,
+    /// Why the run ended (for the report; assertions pin only the variant).
+    pub stop: StopReason,
+}
+
+/// Boot the third-party test386 diagnostic image from RAM and record how far it
+/// gets — an exploratory smoke test of the reset → real-mode-execution →
+/// POST-capture plumbing, **not** full CPU validation (§3.1, §5).
+///
+/// The whole 1 MiB is RAM; the 64 KiB `blob` is loaded at `0xF0000` and execution
+/// starts at the reset vector `F000:FFF0`, whose far jump enters the diagnostic's
+/// POST sequence. The machine decodes just two devices — the POST checkpoint port
+/// at `0x190` and a COM1 UART (in case a build variant enables serial) — behind a
+/// [`NoInterruptController`]: the diagnostic runs `cli`, so wiring an IRQ that
+/// could never be delivered would keep the host loop from ever terminating.
+///
+/// The POST byte stream is captured through the tracing seam on **every** exit
+/// path. A real-mode-only core is expected to stop early on a 386 diagnostic, and
+/// that stop surfaces as an `Err` from the machine (an unlifted instruction) — so
+/// the error is classified into [`StopReason`] rather than propagated, and the
+/// captured checkpoints are drained regardless of how the run ended.
+pub fn run_test386(blob: &[u8]) -> Test386Run {
+    // Minimal device set: POST port (index 0) + COM1 UART (index 1). No PIC and
+    // no IRQ wiring — the guest masks interrupts, so an undeliverable IRQ would
+    // stall termination.
+    let devices: Vec<Box<dyn device::Device>> = vec![
+        Box::new(PostPort::new()),
+        Box::new(Uart16550::new(COM1_BASE)),
+    ];
+    let map = DecodeMap {
+        ports: vec![
+            PortRange {
+                ports: POST_PORT..=POST_PORT,
+                device: 0,
+            },
+            PortRange {
+                ports: COM1_BASE..=COM1_TOP,
+                device: 1,
+            },
+        ],
+        mmio: Vec::new(),
+    };
+    let bus = Bus::new(devices, map);
+
+    // Load the image at 0xF0000 (RIP left at 0), then point execution at the
+    // reset vector so the far jump there enters the POST sequence.
+    let cpu = X86JitCpu::new_real16(
+        TEST386_SPACE,
+        TEST386_LOAD_SEG,
+        0x0000,
+        blob,
+        RealSegments::flat(TEST386_LOAD_SEG),
+    );
+    let mut cpu = match cpu {
+        Ok(cpu) => cpu,
+        Err(e) => {
+            return Test386Run {
+                post: Vec::new(),
+                stop: StopReason::Unmapped {
+                    detail: format!("building cpu: {e}"),
+                },
+            }
+        }
+    };
+    cpu.set_reg(CpuReg::Rip, u64::from(TEST386_RESET_IP));
+
+    // No interrupt source is wired, so `None` idle limit terminates on the first
+    // halt; the retired cap guards against a spin that never halts.
+    let mut machine = Machine::new(
+        cpu,
+        bus,
+        Box::new(NoInterruptController),
+        TEST386_QUANTUM,
+        Vec::new(),
+        None,
+    );
+
+    let result = machine.run_bounded(Some(TEST386_MAX_RETIRED));
+    // Record where execution stopped for the human-readable report (never an
+    // assertion target — stop addresses shift with the assembler toolchain).
+    let rip = machine.cpu().reg(CpuReg::Rip);
+    let stop = match result {
+        Ok(RunOutcome::Halted) => StopReason::Halt,
+        Ok(RunOutcome::RetiredCapReached) => StopReason::BudgetExhausted,
+        Err(MachineError::Cpu(CpuError::UnsupportedInstruction { addr })) => {
+            StopReason::Unsupported {
+                detail: format!("unsupported instruction at {addr:#x} (rip {rip:#x})"),
+            }
+        }
+        Err(MachineError::Cpu(CpuError::Unmapped { addr })) => StopReason::Unmapped {
+            detail: format!("unmapped guest access at {addr:#x} (rip {rip:#x})"),
+        },
+        Err(MachineError::Cpu(CpuError::Memory(msg))) => StopReason::Unmapped {
+            detail: format!("guest memory error: {msg} (rip {rip:#x})"),
+        },
+        Err(MachineError::Bus(e)) => StopReason::Unmapped {
+            detail: format!("{e} (rip {rip:#x})"),
+        },
+        Err(MachineError::Exception { vector }) => StopReason::Exception { vector },
+    };
+
+    // Drain the POST checkpoint bytes from the tracing seam regardless of how the
+    // run ended — the whole point is to see progress even on an error stop.
+    let post = drain_post(&mut machine, 0);
+    Test386Run { post, stop }
+}
+
+/// Reconstruct the POST checkpoint byte stream from the POST port's trace (§3.2
+/// tracing seam). Each guest write to `0x190` surfaces as a `TraceEvent::Port`
+/// write; the machine core sees only `&dyn Device`, never a concrete downcast.
+fn drain_post(machine: &mut Machine<X86JitCpu>, post_index: usize) -> Vec<u8> {
+    let mut out = Vec::new();
+    if let Some(dev) = machine.bus_mut().device_mut(post_index) {
+        for event in dev.take_trace() {
+            if let TraceEvent::Port {
+                port,
+                dir: AccessDir::Write,
+                value,
+                ..
+            } = event
+            {
+                if port == POST_PORT {
+                    out.push(value as u8);
+                }
+            }
+        }
+    }
+    out
+}
 
 /// Assemble the serial machine, run `blob` in Long64, and return the bytes the
 /// guest sent to COM1 (§3.1).

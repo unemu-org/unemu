@@ -161,7 +161,7 @@ version = "0.1.0"
 [[package]]
 name = "x86jit-core"
 version = "0.3.0"
-source = "git+file:///home/mikolaj/src/x86jit?branch=pc-emulator#a4f6ae598118c1b204837c6ba4ef5b59cf31a85f"
+source = "git+file:///home/mikolaj/src/x86jit?branch=pc-emulator#3ff42a5265ee8f40913615d65823b16dffbc4f49"
 dependencies = [
  "iced-x86",
 ]
