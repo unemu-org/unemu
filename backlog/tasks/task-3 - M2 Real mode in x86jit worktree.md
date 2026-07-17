@@ -1,7 +1,7 @@
 ---
 id: task-3
 title: M2 — Real mode in x86jit (worktree, three sub-seams)
-status: To Do
+status: In Progress
 assignee: []
 created_date: 2026-07-17 00:00
 labels: [milestone-2]
