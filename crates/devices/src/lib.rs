@@ -7,11 +7,17 @@
 //! path uses the [`pic8259::Pic8259`] controller (§7.3) and the
 //! [`pit8253::Pit8253`] timer (§7.4).
 
+pub mod cmos_rtc;
+pub mod dma8237;
+pub mod i8042;
 pub mod pic8259;
 pub mod pit8253;
 pub mod uart16550;
 pub mod vga_text;
 
+pub use cmos_rtc::CmosRtc;
+pub use dma8237::{Dma8237, DmaMemory, TransferType};
+pub use i8042::I8042;
 pub use pic8259::Pic8259;
 pub use pit8253::Pit8253;
 pub use uart16550::Uart16550;
