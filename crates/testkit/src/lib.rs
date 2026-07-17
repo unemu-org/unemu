@@ -84,23 +84,48 @@ impl MockBus {
 /// each [`Cpu::run`] pops the next one. Values supplied through
 /// [`Cpu::complete_port_in`] / [`Cpu::complete_mmio_read`] are recorded so a
 /// test can assert what the guest would have seen.
+///
+/// It also models the interrupt-clock seam enough to test the `machine` wiring:
+/// each `run()` bumps the retired-instruction counter by a configurable stride
+/// (default 1), and [`Cpu::inject_irq`] records the vector so a test can assert
+/// the acknowledge-at-inject path fired exactly once per PIT period.
 #[derive(Default)]
 pub struct MockCpu {
     program: VecDeque<CpuStop>,
     regs: [u64; 9],
     /// Values the machine completed pending reads with, in order.
     pub completions: Vec<u64>,
+    /// Retired instructions charged per `run()` (the virtual-clock stride).
+    retired_per_run: u64,
+    /// Retired-instruction counter, advanced on each `run()`.
+    retired: u64,
+    /// Vectors the machine injected via [`Cpu::inject_irq`], in order.
+    pub injected: Vec<u8>,
+    /// Whether an injected vector is still "pending" (models the CPU gate). A
+    /// test clears it via [`MockCpu::clear_pending_irq`] to model delivery.
+    pending_irq: bool,
 }
 
 impl MockCpu {
     /// Build a mock CPU that will return `program`'s stops in order, then
-    /// [`CpuStop::Halt`] once exhausted.
+    /// [`CpuStop::Halt`] once exhausted. Each `run()` retires one instruction.
     pub fn new(program: Vec<CpuStop>) -> Self {
         Self {
             program: program.into(),
             regs: [0; 9],
             completions: Vec::new(),
+            retired_per_run: 1,
+            retired: 0,
+            injected: Vec::new(),
+            pending_irq: false,
         }
+    }
+
+    /// Set how many instructions each `run()` retires — the stride the machine
+    /// converts into virtual-clock ticks.
+    pub fn with_retired_per_run(mut self, stride: u64) -> Self {
+        self.retired_per_run = stride;
+        self
     }
 
     fn reg_slot(reg: CpuReg) -> usize {
@@ -120,6 +145,11 @@ impl MockCpu {
 
 impl Cpu for MockCpu {
     fn run(&mut self, _budget: Option<u64>) -> Result<CpuStop, CpuError> {
+        // Model the CPU delivering any queued interrupt at the run() boundary:
+        // an injected vector is consumed by the time the next stop is reached, so
+        // the machine may acknowledge the next request.
+        self.pending_irq = false;
+        self.retired += self.retired_per_run;
         Ok(self.program.pop_front().unwrap_or(CpuStop::Halt))
     }
 
@@ -137,6 +167,19 @@ impl Cpu for MockCpu {
 
     fn complete_mmio_read(&mut self, value: u64) {
         self.completions.push(value);
+    }
+
+    fn inject_irq(&mut self, vector: u8) {
+        self.injected.push(vector);
+        self.pending_irq = true;
+    }
+
+    fn has_pending_irq(&self) -> bool {
+        self.pending_irq
+    }
+
+    fn retired(&self) -> u64 {
+        self.retired
     }
 }
 

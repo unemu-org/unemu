@@ -3,14 +3,16 @@
 //!
 //! [`Cpu`] is the first of the six swap seams from
 //! `backlog/docs/architecture.md`: it abstracts the CPU core so the `machine`
-//! composition root never names a concrete backend. Today the only backend is
-//! [`X86JitCpu`], wrapping the `x86jit-core` recompiler in **Long64** mode.
+//! composition root never names a concrete backend. The only backend is
+//! [`X86JitCpu`], wrapping the `x86jit-core` recompiler; it runs either in
+//! **Long64** mode (the serial walking skeleton) or in **Real16** mode (an
+//! IBM PC/AT-style boot that takes hardware interrupts).
 //!
-//! The current backend exploits the integration surface that already works in
-//! `x86jit` without any CPU change: `Exit::PortIo` + `complete_port_in` for ISA
-//! port I/O, and `RegionKind::Trap` MMIO (§2.1). Real-mode execution,
-//! IVT-vectored interrupts and hardware IRQ injection are future work in the CPU
-//! core and are not driven from here yet.
+//! The backend exploits the integration surface `x86jit` exposes: `Exit::PortIo`
+//! with `complete_port_in` for ISA port I/O, and `RegionKind::Trap` MMIO (§2.1).
+//! In real mode it additionally forwards hardware IRQ injection to the core
+//! ([`Cpu::inject_irq`]), which delivers the vector in-guest through the IVT, and
+//! exposes the retired-instruction counter that drives the virtual clock (§6).
 
 pub mod x86jit_backend;
 
@@ -121,9 +123,8 @@ pub enum CpuError {
 /// The CPU swap seam (§3.2 seam 1).
 ///
 /// A backend implements execution ([`Cpu::run`]), register access, the
-/// completion handshakes for pending port/MMIO reads, and the IRQ-injection
-/// contract (§5.2). The IRQ methods are currently no-op stubs; a real CPU-side
-/// injection path is future work.
+/// completion handshakes for pending port/MMIO reads, the IRQ-injection contract
+/// (§5.2), and the retired-instruction counter that measures virtual time (§6).
 pub trait Cpu {
     /// Run guest code until an [`CpuStop`] is hit or `budget` blocks execute.
     ///
@@ -148,18 +149,35 @@ pub trait Cpu {
 
     /// Inject a hardware interrupt request for `vector` (§5.2).
     ///
-    /// Currently a no-op. A real injection path must gate injection to
-    /// between-`run()` boundaries, defer it while a read completion is pending,
-    /// and honour the STI shadow and HLT wakeup; that is future work in the CPU
-    /// core. The default no-op lets the machine run without an interrupt
-    /// controller.
+    /// The backend queues the vector and delivers it at the next `run()`
+    /// boundary once the guest's `IF` is set, no memory/port completion is
+    /// outstanding, and the one-instruction STI shadow has elapsed (that gating
+    /// lives in the CPU core). Delivery is in-guest through the real-mode IVT: it
+    /// pushes FLAGS/CS/IP, clears `IF`, and vectors the handler. A queued vector
+    /// is held (never dropped) until it can be delivered, which is what wakes a
+    /// `hlt`ed guest. The default is a no-op so a backend without an interrupt
+    /// path still runs.
     fn inject_irq(&mut self, _vector: u8) {}
 
-    /// Acknowledge an interrupt (INTA) and return the dispatched vector (§5.4).
+    /// Whether an injected vector is still queued and not yet delivered.
     ///
-    /// Currently a no-op — see [`Cpu::inject_irq`]. Returns `None` because no
-    /// interrupts are taken yet.
-    fn irq_ack(&mut self) -> Option<u8> {
-        None
+    /// The machine loop consults this so it only performs one PIC INTA →
+    /// [`Cpu::inject_irq`] at a time: while a vector is in flight (masked by
+    /// `IF`, held by the STI shadow, or waiting on a completion) no new one is
+    /// acknowledged. The default is `false` for a backend that takes no
+    /// interrupts.
+    fn has_pending_irq(&self) -> bool {
+        false
+    }
+
+    /// Retired-instruction count since reset — the deterministic virtual-time
+    /// base (§6, virtual-clock model in `architecture.md`).
+    ///
+    /// A monotone counter of guest instructions that have completed. The machine
+    /// advances the virtual clock from the *delta* of this value across a
+    /// `run()`, never from wall time, so device timing (and every golden) is
+    /// reproducible. The default is `0` for a backend that does not count.
+    fn retired(&self) -> u64 {
+        0
     }
 }

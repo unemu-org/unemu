@@ -80,27 +80,38 @@ Needs new work in x86jit (behind `CpuMode::Real16`, see decisions):
 code: **layout changes are an ABI hazard for the PS4 path** — append-only, with
 an offset-assertion test.
 
-## Interrupt model *(planned)*
+## Interrupt model
 
-- Devices raise IRQ lines; the `InterruptController` (8259 PIC) aggregates them
-  into a single INTR to the CPU.
-- **Injection happens only between `run()` calls.** Chained blocks don't return to
-  the dispatcher mid-run; in the deterministic model devices tick on `run()`
-  boundaries, so interrupt latency = the budget quantum. The quantum value is
-  recorded because goldens depend on it.
-- **Forbidden while `pending_mmio` / `pending_port_in` is set** (instruction
-  mid-retry at the faulting RIP); `inject_irq` returns "deferred" then.
-- **STI shadow** (an interrupt must not enter immediately after `sti`) and
-  **HLT wakeup** (`Exit::Hlt` then a later IRQ resumes past the `hlt`) are modelled.
-- **INTA**: on INTR the CPU asks the PIC `irq_ack() -> vector`; the PIC updates
-  its ISR/IRR. The vector is dispatched through the real-mode IVT.
+Implemented for the first hardware-interrupt milestone (real-mode timer boot):
 
-## Virtual clock model *(planned)*
+- Devices raise IRQ *lines* (a level); the `InterruptController` (8259 PIC)
+  aggregates them into a single INTR to the CPU.
+- **Edge-detect in the integration layer.** A device drives a level (the PIT's
+  counter-0 OUT), but the PIC is edge-triggered. The `machine` samples each wired
+  device line after every PIT clock and, on a rising edge, pulses the PIC input
+  (`set_irq_line(irq, true)` then `false`) — one PIC request per timer period.
+  The devices deliberately do not edge-detect; that is the machine's job.
+- **Acknowledge-at-inject.** When the CPU has no injected vector in flight
+  (`has_pending_irq()`), the machine runs INTA on the PIC (`acknowledge()`,
+  IRR→ISR, returns `base+irq`) and injects the vector (`inject_irq`). Only one
+  vector is in flight at a time, so the PIC's ISR and the CPU's queue stay in
+  step and the guest's EOI (an `out` port write through the bus, reaching the
+  *same* shared PIC) matches the INTA that set the ISR.
+- **Injection is delivered only between `run()` calls**, in-guest through the
+  real-mode IVT, once the guest's `IF` is set, no memory/port completion is
+  outstanding, and the one-instruction STI shadow has elapsed — all gated by the
+  CPU core. A queued vector is held, never dropped, which is also what wakes a
+  `hlt`ed guest (**HLT wakeup**).
 
-- Virtual time is measured in **retired instructions** (a cheap instruction
-  counter added in the lifter as part of the real-mode seam), **not in blocks**.
-  Block boundaries depend on the lifter version, so block-based goldens would
-  break on every x86jit merge.
+## Virtual clock model
+
+- Virtual time is measured in **retired instructions** (a counter in the CPU
+  core), **not in blocks**. Block boundaries depend on the lifter version, so
+  block-based goldens would break on every x86jit merge.
+- The `machine` advances the clock from the retired-instruction *delta* across
+  each `run()` by a fixed documented ratio (one PIT input clock per retired
+  instruction — a modelling approximation, not a cycle-accurate 1.193 MHz
+  timebase), then ticks devices one PIT clock at a time.
 - PIT/RTC tick off the virtual clock → reproducible goldens. Each golden pins the
   x86jit revision; the re-baseline procedure is documented in the clock decision.
 
