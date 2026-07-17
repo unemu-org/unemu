@@ -19,6 +19,16 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
 
 ## Recently landed
 
+- **test386.asm boots as a smoke test** (`task-7`, spike): the third-party 386
+  CPU-test ROM boots from RAM at `0xF0000` (reset `F000:FFF0`), reaches **POST
+  `[0x00, 0x01]`**, and stops at `SAHF` (`0x9E`) in the conditional-jump test — the
+  next unlifted real-mode op. This surfaced (and fixed) a **stale x86jit pin**: the
+  emulator was 13 commits behind `pc-emulator`, before the far-jmp/seg-load lift;
+  bumped to `3ff42a5` (also brings in-guest `#UD`/`#GP` + `RegionKind::Rom`), no
+  regression. New `PostPort` (0x190 capture), `Machine::run_bounded` + a retired
+  cap, and `run_test386` (captures POST on every exit path). `vendor/test386`
+  builds the image from a pinned commit (GPL-3.0, gitignored). To push further:
+  lift `SAHF`/`LAHF`, then POST 3 needs FS/GS, POST 8 needs protected mode.
 - **M4 integration — the full AT interrupt/graphics wiring** (`task-5`): the M4
   devices are now wired into the machine. Keyboard scancodes raise **IRQ1** through
   the master PIC and a guest handler reads them; guest stores into the `0xB8000`
