@@ -36,3 +36,7 @@ target/
 # from a pinned commit by vendor/test386/fetch.sh, not checked in.
 /vendor/test386/test386.asm/
 /vendor/test386/test386.bin
+# Kiselev 8088_bios (Xi8088 config): the upstream clone and the assembled BIOS
+# are rebuilt from a pinned commit by vendor/kiselev-bios/fetch.sh, not checked in.
+/vendor/kiselev-bios/8088_bios/
+/vendor/kiselev-bios/bios-xi8088.bin
