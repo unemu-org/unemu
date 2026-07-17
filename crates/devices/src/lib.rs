@@ -17,7 +17,7 @@ pub mod sys_control;
 pub mod uart16550;
 pub mod vga_text;
 
-pub use cmos_rtc::CmosRtc;
+pub use cmos_rtc::{CmosConfig, CmosRtc};
 pub use dma8237::{Dma8237, DmaMemory, TransferType};
 pub use i8042::I8042;
 pub use pic8259::Pic8259;
