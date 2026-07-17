@@ -134,10 +134,6 @@ impl InterruptController for SharedPic {
 }
 
 /// The master input line the slave's INT output is wired to on every PC/AT.
-// A chipset registers the pair and hands it to the machine; until that wiring
-// lands there is no in-crate caller, so the lib-only build would flag the type
-// as unused.
-#[allow(dead_code)]
 const CASCADE_IRQ: u8 = 2;
 
 /// A cascaded master + slave 8259 pair presented as one 16-line controller
@@ -169,17 +165,12 @@ const CASCADE_IRQ: u8 = 2;
 ///
 /// [`end_of_interrupt`]: InterruptController::end_of_interrupt
 /// [`acknowledge`]: InterruptController::acknowledge
-// Registered by a chipset and driven by the machine as its interrupt
-// controller; that wiring is separate integration work, so the crate has no
-// in-tree caller yet.
-#[allow(dead_code)]
 #[derive(Clone)]
 pub struct CascadedPic {
     master: SharedPic,
     slave: SharedPic,
 }
 
-#[allow(dead_code)]
 impl CascadedPic {
     /// Wrap a fresh master + slave pair, each unprogrammed.
     pub fn new() -> Self {
