@@ -13,7 +13,8 @@
 //! - [`AtChipset`]: a PC/AT-style set — UART at COM1, a cascaded 8259 PIC pair
 //!   (master at `0x20`/`0x21`, slave at `0xA0`/`0xA1`), 8253 PIT at `0x40`–`0x43`,
 //!   8042 keyboard controller at `0x60`/`0x64`, a VGA text card (CRTC at
-//!   `0x3D4`/`0x3D5`, text buffer at `0xB8000`), and an MC146818 CMOS/RTC at
+//!   `0x3D4`/`0x3D5`, CGA-compatible mode/colour/status registers at
+//!   `0x3D8`–`0x3DA`, text buffer at `0xB8000`), and an MC146818 CMOS/RTC at
 //!   `0x70`/`0x71` — with the cascaded PIC pair wired as the interrupt controller,
 //!   enough to boot a real-mode guest that takes a timer, keyboard, or RTC
 //!   interrupt (IRQ0/IRQ1/IRQ8) and paints the text screen (§5, §7, §9).
@@ -24,7 +25,10 @@ pub use shared_pic::{CascadedPic, SharedPic};
 
 use bus::{DecodeMap, MmioRange, PortRange};
 use device::Device;
-use devices::vga_text::{CRTC_DATA_PORT, CRTC_INDEX_PORT, TEXT_BUFFER_BASE, TEXT_BUFFER_LEN};
+use devices::vga_text::{
+    CGA_MODE_CONTROL_PORT, CGA_STATUS_PORT, CRTC_DATA_PORT, CRTC_INDEX_PORT, TEXT_BUFFER_BASE,
+    TEXT_BUFFER_LEN,
+};
 use devices::{CmosRtc, Pit8253, Uart16550, VgaText, I8042};
 
 // The interrupt-controller seam lives next to the `Device` trait; the chipset
@@ -309,6 +313,12 @@ impl Chipset for AtChipset {
                 },
                 PortRange {
                     ports: CRTC_INDEX_PORT..=CRTC_DATA_PORT,
+                    device: AT_VGA_INDEX,
+                },
+                // The CGA-compatible mode/colour/status registers a stock BIOS
+                // drives; 0x3D6/0x3D7 between the CRTC pair and these are undecoded.
+                PortRange {
+                    ports: CGA_MODE_CONTROL_PORT..=CGA_STATUS_PORT,
                     device: AT_VGA_INDEX,
                 },
                 PortRange {
