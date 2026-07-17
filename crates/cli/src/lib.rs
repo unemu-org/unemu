@@ -5,9 +5,9 @@
 //! the same paths the binary uses. Two machines are assembled here:
 //!
 //! - [`run_serial`]: a Long64 blob on the [`SerialChipset`] (one 16550 UART) —
-//!   the serial walking skeleton (M1).
+//!   the minimal serial-output path.
 //! - [`run_boot`]: a **real-mode** blob on the [`AtChipset`] (UART + 8259 PIC +
-//!   8253 PIT) that programs the timer, takes IRQ0, and prints to serial (M3).
+//!   8253 PIT) that programs the timer, takes IRQ0, and prints to serial.
 //!
 //! Both return the bytes the guest sent to COM1, reconstructed through the
 //! first-class tracing seam (§3.2), never a concrete-device downcast.

@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Real-mode timer-interrupt boot golden test (§5, §7, §10).
 //!
-//! This is the M3 milestone: the first time the machine takes a **hardware
-//! interrupt**. A hand-encoded **real-mode** guest runs on the [`AtChipset`]
+//! The first end-to-end path where the machine takes a **hardware interrupt**.
+//! A hand-encoded **real-mode** guest runs on the [`AtChipset`]
 //! (16550 UART + 8259 PIC + 8253 PIT) through the real `X86JitCpu` in
 //! `CpuMode::Real16`. It:
 //!
