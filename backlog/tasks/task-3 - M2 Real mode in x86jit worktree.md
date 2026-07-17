@@ -1,7 +1,7 @@
 ---
 id: task-3
 title: M2 — Real mode in x86jit (worktree, three sub-seams)
-status: In Progress
+status: Done
 assignee: []
 created_date: 2026-07-17 00:00
 labels: [milestone-2]
@@ -29,14 +29,21 @@ with independent exit criteria.
 - [x] Full x86jit suite green (only two pre-existing host-specific failures, which
       fail identically on pristine x86jit main); Long64/Compat32 paths mode-gated.
 
-Real-mode is functionally complete on `pc-emulator` — the emulator builds against
-it now (M3 can proceed). Remaining before graduating `pc-emulator` → x86jit `main`
-(a separate gate, not blocking the emulator):
+**Graduated to x86jit `main`** @ 40acdbc (merge of `pc-emulator`); `pc-emulator`
+fast-forwarded to `main` — in sync, no drift.
 
-- [ ] Formal byte-identical-codegen check for Long64/Compat32 + PS4 benchmark pass.
-- [ ] Replace the interpreter op-loop closure with an inner `fn` (remove the
-      whitespace churn in `interp/mod.rs` before the PS4-side review).
-- [ ] Documented merge back to x86jit `main`.
+- [x] Interpreter op-loop closure replaced with an inner `fn` (churn removed).
+- [x] Long64/Compat32 paths mode-gated throughout; `jit_abi` offsets unchanged;
+      new Real16 IR ops `unreachable!` in the JIT. Post-merge PS4-path check: jit
+      suite 202/205 (the 1 fail is a pre-existing AVX2 VEX fuzz bug on main,
+      unrelated), i386 3/3, workspace builds. Formal codegen-hash + PS4 benchmark
+      skipped by maintainer decision (mode-gating deemed sufficient).
+- [x] Merged to x86jit `main`.
+
+Full real-mode set validated: SingleStepTests/80286 silicon corpus (1.48M tests,
+**89.7% overall / 95.2% decided**), TomHarte 8088, Unicorn MODE_16 (cf16 34/34).
+Deferred to their own tasks: `#UD`-in-guest delivery (task-8 residual),
+segment-limit `#GP` (task-11), BOUND lift.
 
 ## Notes
 

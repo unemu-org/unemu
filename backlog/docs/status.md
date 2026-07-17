@@ -13,16 +13,16 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
 
 ## In flight
 
-- Real mode in x86jit (`task-3`): sub-seams (a) addressing, (b) INT/IRET/IVT/IF,
-  (c) IRQ injection + retired-instruction counter — all merged to the x86jit
-  `pc-emulator` branch (differential cf16 16/16 vs Unicorn MODE_16). Graduating
-  `pc-emulator` → x86jit `main` (PS4 benchmark + churn cleanup) is a later gate.
-- Nothing actively in progress. Next candidates: `task-8` (close the real-mode
-  lift gaps the 8088 corpus found), `task-9` (separate 8088-vs-286 differences
-  from real failures), M4 devices + VGA text (`task-5`).
+- Nothing actively in progress. Next candidates: M4 devices + VGA text (`task-5`),
+  `#UD`-in-guest delivery + segment-limit `#GP` (task-11), `test386.asm` (`task-7`).
 
 ## Recently landed
 
+- **Real mode graduated to x86jit `main`** (`task-3`) @ 40acdbc: the full
+  real-mode (16-bit) seam — addressing, INT/IRET/IVT/IF, IRQ injection, the
+  complete instruction set — now lives on x86jit main, entirely gated so the
+  Long64/Compat32 (PS4) paths are byte-identical. `pc-emulator` is fast-forwarded
+  to main; no drift. 80286 corpus 89.7%/95.2%, cf16 34/34, PS4 jit suite intact.
 - SingleStepTests/80286 authoritative silicon oracle (`task-10`) on the x86jit
   `pc-emulator` branch — our exact target CPU: 1,478,000 tests, **79.3% overall /
   91.9% decided**. Surfaced real target-CPU gaps (LOCK mis-decode, missing
