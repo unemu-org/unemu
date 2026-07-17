@@ -18,6 +18,7 @@ Generic conventions that apply regardless of stack. Stack-specific rules (langua
 - Add only when the *why* is non-obvious: hidden constraint, subtle invariant, workaround for a specific bug, surprising behavior.
 - Never explain *what* the code does — well-named identifiers already do that.
 - Don't reference the current task / fix / PR ("added for X", "handles case from #123") — that belongs in the commit message, not the source file.
+- **Comments must read for a human who has never seen our backlog.** No internal jargon in source: no milestone tags (`M1`, `M2`), no task ids (`task-2`), no decision ids (`decision-5`). Explain the *why* in plain language instead — e.g. not `// TODO(decision-5)` but `// Provisional clock; replace with retired-instruction time once the CPU core exposes an instruction counter.` A doc-comment *may* cite the spec by section (`see spec §6`), since `design/spec.md` is human documentation. Only cite a task id in a comment when it marks a genuine known blocker on that task.
 
 ## Commits
 
