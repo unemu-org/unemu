@@ -1,9 +1,10 @@
 ---
 id: TASK-13
 title: M4.5 — Drive x86jit real-mode lift to near-100% of the SST/80286 corpus
-status: To Do
+status: In Progress
 assignee: []
 created_date: '2026-07-17 20:28'
+updated_date: '2026-07-17 21:40'
 labels:
   - x86jit
   - cpu

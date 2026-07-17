@@ -4,6 +4,7 @@ title: M6 — Disk controller + INT 13h boot-sector read
 status: To Do
 assignee: []
 created_date: '2026-07-17 20:29'
+updated_date: '2026-07-17 21:49'
 labels:
   - devices
   - dos
@@ -24,3 +25,9 @@ Add ONE disk controller and get the BIOS's INT 13h to read sector 0 of a FreeDOS
 - [ ] #2 A backing FreeDOS image is read deterministically (sector granularity)
 - [ ] #3 BIOS INT 13h reads sector 0 to 0x7C00 and INT 19h transfers control to it (observed)
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Disk path DECIDED (task-19): uPD765 floppy — built into the Xi8088 BIOS INT 13h, drives FDC 0x3F2-0x3F7 + our existing 8237 DMA channel 2 (page reg 0x81). Boot a FreeDOS 1.44M floppy image (no partition table/MBR). XT-IDE HDD (PIO + XUB 8KiB option ROM @ 0x320 + option-ROM scan) is a DEFERRED step 2. Model the uPD765 command/result phases, IRQ6 seek-complete, motor timing off the vclock.
+<!-- SECTION:NOTES:END -->

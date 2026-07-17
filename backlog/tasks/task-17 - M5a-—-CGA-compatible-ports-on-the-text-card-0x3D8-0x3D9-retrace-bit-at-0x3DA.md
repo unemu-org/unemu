@@ -6,6 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-07-17 20:28'
+updated_date: '2026-07-17 21:49'
 labels:
   - devices
   - video
@@ -25,3 +26,9 @@ A stock BIOS drives our text card as CGA via INT 10h: mode-control 0x3D8, color-
 - [ ] #2 0x3DA status register: retrace bit toggles off the virtual clock so INT 10h retrace waits terminate
 - [ ] #3 Unit test: a retrace-wait loop makes progress; existing VGA text golden unaffected
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Confirmed by task-19 against Kiselev source: BIOS 6845 driver writes 0x3D8 (mode, set-mode) + 0x3D9 (color, INT10 AH=0Bh) and BUSY-WAITS on 0x3DA polling bit 3 (0x08 vsync, both edges) and bit 0 (0x01). 0x3DA read MUST toggle these off the vclock or POST/scroll spins forever. This is THE boot-blocking video gap.
+<!-- SECTION:NOTES:END -->

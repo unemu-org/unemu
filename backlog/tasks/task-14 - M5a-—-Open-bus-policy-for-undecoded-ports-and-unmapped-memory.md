@@ -1,9 +1,10 @@
 ---
 id: TASK-14
 title: M5a — Open-bus policy for undecoded ports and unmapped memory
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-07-17 20:28'
+updated_date: '2026-07-17 21:47'
 labels:
   - bus
   - machine
@@ -24,3 +25,9 @@ A real BIOS touches many undecoded ports/addresses in its first hundred instruct
 - [ ] #3 A trace/log of untouched-port accesses is kept for diagnostics
 - [ ] #4 Existing goldens unaffected; unit tests for open-bus + wrap
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Merged 2026-07-17. Port-level open-bus in bus (UndecodedPortAccess::OpenBus default, Fault for strict). Memory open-bus = full 1MB RAM+ROM map (task-20, no core hook). A20-off wrap = potential x86jit Real16 change, deferred unless early POST needs it.
+<!-- SECTION:NOTES:END -->
