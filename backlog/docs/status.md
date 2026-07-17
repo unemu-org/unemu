@@ -13,11 +13,27 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
 
 ## In flight
 
-- Nothing actively in progress. Next candidates: M4 devices + VGA text (`task-5`),
-  `#UD`-in-guest delivery + segment-limit `#GP` (task-11), `test386.asm` (`task-7`).
+- Nothing actively in progress. Next candidates: consume `RegionKind::Rom` in the
+  emulator (a BIOS ROM at `F0000h`; the x86jit seam now exists), `test386.asm`
+  (`task-7`), residual 286 fidelity.
 
 ## Recently landed
 
+- **M4 integration — the full AT interrupt/graphics wiring** (`task-5`): the M4
+  devices are now wired into the machine. Keyboard scancodes raise **IRQ1** through
+  the master PIC and a guest handler reads them; guest stores into the `0xB8000`
+  text window are trapped as MMIO and rendered into a `TextGrid` through the
+  `FrameSink` seam; and the **8259 slave/cascade** now carries **IRQ8–IRQ15**, with
+  the MC146818 RTC's update-ended interrupt reaching the CPU across the
+  slave→master-IRQ2 cascade. `AtChipset` device set is
+  `[UART, master PIC, PIT, 8042, VGA, slave PIC, RTC]`. Added `Cpu::complete_mmio_write`
+  (a trapped store is now acknowledged so the guest advances past it). Golden tests
+  for keyboard, VGA text, and the RTC cascade path. Workspace: **163 tests pass**.
+- **`RegionKind::Rom` on x86jit `main`** @ 3ff42a5: read-only executable memory for
+  a masked BIOS/option ROM — reads and fetches take the inlined RAM path at full
+  speed, stores are silently dropped on the interpreter path. Purely additive to the
+  region-kind match arms; Long64/Compat32 codegen byte-identical (jit 203/0,
+  smc 15/0), `jit_abi` offsets unchanged. Not yet consumed by the emulator.
 - **Real-mode fault delivery on x86jit `main`** (`task-11`) @ cbba7d9: in-guest
   `#UD` (invalid-on-286 opcodes), `BOUND`/`#BR`, and the 80286 segment-limit /
   instruction-length `#GP` — all Real16-gated. 80286 corpus jumped to **95.98%
@@ -25,8 +41,8 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
 - **M4 devices + first graphics** (`task-5`, device level): 8042 keyboard, MC146818
   CMOS/RTC, 8237 DMA (via a `note_write`-safe `DmaMemory` handle), and VGA text
   mode as a `Device` behind the new `FrameSink` seam (`video` crate) with a
-  rendered-frame golden. All isolated + unit/golden tested; workspace 145 tests
-  pass. Machine wiring (keyboard→IRQ1, VGA→sink) is the integration follow-up.
+  rendered-frame golden. All isolated + unit/golden tested. (Now wired into the
+  machine — see the M4 integration entry above.)
 - **Real mode graduated to x86jit `main`** (`task-3`) @ 40acdbc: the full
   real-mode (16-bit) seam — addressing, INT/IRET/IVT/IF, IRQ injection, the
   complete instruction set — now lives on x86jit main, entirely gated so the

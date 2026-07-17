@@ -15,7 +15,7 @@ plus `backlog task list --plain` when picking up. Keep it current.
 - **`~/src/x86jit`** — the CPU core, a **separate repo**. Its `main` is the
   PS4-emulator production branch. Real-mode work happens on branch **`pc-emulator`**
   (dev worktree `~/src/x86jit-pc`). **Current: `x86jit main == pc-emulator`** — the
-  full real-mode seam graduated to `main` (cbba7d9), in sync, no drift.
+  full real-mode seam plus `RegionKind::Rom` are on `main` (3ff42a5), in sync, no drift.
 - The emulator depends on `x86jit-core` as a **git dep** (`branch = pc-emulator`)
   with `Cargo.lock` pinning the rev — never a bare path dep (breaks CI/nix).
 
@@ -73,24 +73,34 @@ plus `backlog task list --plain` when picking up. Keep it current.
   8253 PIT; PIT OUT → edge-detect → PIC → `inject_irq`; clock from retired count.
 - **M4 devices (device level)** — 8042 KBC, MC146818 CMOS/RTC, 8237 DMA (via a
   `note_write`-safe `DmaMemory` handle), and VGA text behind the new `FrameSink`
-  seam (`video` crate). All isolated + unit/golden tested. Workspace: 145 tests.
+  seam (`video` crate). All isolated + unit/golden tested.
+- **M4 integration** (task-5, done) — the M4 devices are wired into the AT machine:
+  keyboard scancodes → `I8042` → **IRQ1** → master PIC → guest handler; guest stores
+  into the `0xB8000` text window trap as MMIO → `render_text_mode` → `FrameSink`;
+  and the **8259 slave/cascade** carries **IRQ8–IRQ15**, with the RTC's update-ended
+  interrupt reaching the CPU across the slave→master-IRQ2 cascade. `CascadedPic` is
+  the 16-line controller; `AtChipset` = `[UART, master PIC, PIT, 8042, VGA, slave PIC, RTC]`.
+  Added `Cpu::complete_mmio_write` (a trapped store is acknowledged so the guest
+  advances). Keyboard / VGA-text / RTC-cascade goldens. **Workspace: 163 tests.**
+- **`RegionKind::Rom` on x86jit `main`** — read-only executable memory (masked
+  BIOS/option ROM): reads/fetches inline at RAM speed, stores dropped on the
+  interpreter path. Byte-identical Long64/Compat32 codegen (jit 203/0, smc 15/0).
+  **Not yet consumed by the emulator** — that wiring is the next ROM step.
 - **Oracles**: 80286 corpus wired as the sole real-mode oracle; Unicorn MODE_16
   (`cf16`, 40 tests).
 
 ## Status — to do (next)
 
-1. **M4 integration** (task-5 residual, the immediate next step): wire the M4
-   devices into the AT machine — keyboard scancodes → `I8042` → IRQ1 → PIC;
-   VGA text buffer → `render_text_mode` → a real `FrameSink`; RTC on a slave PIC
-   (needs the 8259 **cascade/slave** modelled — currently master-only). Pattern:
-   like the M3.2 machine wiring in `crates/machine/src/lib.rs`.
-2. **`RegionKind::Rom`** (decision-9) — for a BIOS at `F0000h` (read-only,
-   executable); a second small x86jit seam.
-3. **test386.asm** (task-7) — bootable full-machine CPU validation ROM, once ROM
-   loading + more boot infrastructure exist.
-4. **Residual 286 fidelity** (optional): ~341 #6 opcodes iced decodes but 286
+1. **Consume `RegionKind::Rom` in the emulator** (decision-9): bump the `x86jit`
+   pin to a rev with the ROM seam, add a ROM region to the machine/CPU for a BIOS
+   at `F0000h` (read-only, executable), and a loader. The x86jit seam already exists.
+2. **test386.asm** (task-7) — bootable full-machine CPU validation ROM, once ROM
+   loading + more boot infrastructure exist (depends on 1).
+3. **Residual 286 fidelity** (optional): ~341 #6 opcodes iced decodes but 286
    rejects; string-op #GP; `leave`/`ins`/`outs`. Full A20 gate (decision-8).
-5. **Real BIOS/DOS** (later): needs the deferred items in `deferred.md`.
+   The RTC **periodic** interrupt (register A rate bits) is stored but not
+   generated — only update-ended/alarm drive IRQ8 today.
+4. **Real BIOS/DOS** (later): needs the deferred items in `deferred.md`.
 
 ## Key file map (emulator)
 

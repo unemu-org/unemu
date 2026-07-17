@@ -1,18 +1,23 @@
 ---
 id: task-5
-title: M4 — 8042 keyboard, CMOS/RTC, 8237 DMA, first VGA text mode
-status: In Progress
+title: 'M4 — 8042 keyboard, CMOS/RTC, 8237 DMA, first VGA text mode'
+status: Done
 assignee: []
-created_date: 2026-07-17 00:00
-labels: [milestone-4]
-dependencies: [task-4]
+created_date: '2026-07-17 00:00'
+updated_date: '2026-07-17 19:05'
+labels:
+  - milestone-4
+dependencies:
+  - task-4
 priority: low
 ---
 
 ## Description
 
+<!-- SECTION:DESCRIPTION:BEGIN -->
 Broaden the device set and add the first graphics mode. VGA text lands as an
 ordinary `Device` plus a `FrameSink`, proving the graphics seam.
+<!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria
 
@@ -31,6 +36,12 @@ Device-level M4 complete (all four isolated + unit/golden tested; workspace 145
 tests pass). **Remaining (integration follow-up):** wire them into the AT machine
 — keyboard scancodes → I8042 → IRQ1 → PIC; VGA text buffer → renderer → a real
 `FrameSink`; RTC on a slave PIC (IRQ8) once cascade is modelled. Tracked here.
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+M4 integration complete 2026-07-17. Keyboard IRQ1 + VGA text FrameSink + slave PIC cascade (CascadedPic) + RTC on IRQ8 all wired into AtChipset. Cpu::complete_mmio_write added. Goldens: keyboard, vga_text, rtc cascade. Workspace 163 tests.
+<!-- SECTION:NOTES:END -->
 
 ## Notes
 

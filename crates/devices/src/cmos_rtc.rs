@@ -25,11 +25,11 @@
 //! ## IRQ8
 //!
 //! The RTC's interrupt output is **IRQ8**, exposed through
-//! [`Device::irq_pending`]. On the AT, IRQ8 is a line on the *slave* 8259 PIC,
-//! which is not modelled yet — so nothing consumes this line. The query exists so
-//! the interrupt seam is complete: [`Device::irq_vector`] returns `None` because
-//! the PIC owns vectoring (§5.4). Reading register C clears the flags and
-//! deasserts the line, as on hardware.
+//! [`Device::irq_pending`]. On the AT, IRQ8 is a line on the *slave* 8259 PIC;
+//! the machine edge-detects this output onto that slave input, which cascades
+//! into the master at IRQ2. [`Device::irq_vector`] returns `None` because the
+//! PIC owns vectoring (§5.4). Reading register C clears the flags and deasserts
+//! the line, as on hardware.
 //!
 //! ## Coverage matrix (datasheet vs modelled)
 //!
@@ -544,8 +544,8 @@ impl Device for CmosRtc {
     }
 
     fn irq_pending(&self) -> bool {
-        // IRQ8 is asserted whenever register C's IRQF is set. Nothing consumes it
-        // until the slave PIC is modelled; the query completes the seam.
+        // IRQ8 is asserted whenever register C's IRQF is set; the machine wires
+        // this output onto the slave PIC's IRQ8 input.
         self.nvram[REG_C] & C_IRQF != 0
     }
 
