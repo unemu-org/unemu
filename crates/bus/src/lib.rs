@@ -148,6 +148,18 @@ impl Bus {
             .collect()
     }
 
+    /// The current IRQ-line level of the device at `index`, or `None` if the
+    /// index is out of range (§5.1).
+    ///
+    /// This is the raw line level (`irq_pending`), not an edge: the integration
+    /// layer edge-detects it before pulsing the interrupt controller, since a
+    /// device (the PIT) drives a *level* while the PIC is edge-triggered. The
+    /// machine names a device only by the wiring index the chipset declared, not
+    /// by a concrete type.
+    pub fn device_irq_line(&self, index: usize) -> Option<bool> {
+        self.devices.get(index).map(|d| d.irq_pending())
+    }
+
     /// Borrow a device by index (for tests and CLI serial draining).
     pub fn device(&self, index: usize) -> Option<&dyn Device> {
         self.devices.get(index).map(|b| b.as_ref())

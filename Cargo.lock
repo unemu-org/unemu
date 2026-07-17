@@ -154,7 +154,7 @@ checksum = "e6e4313cd5fcd3dad5cafa179702e2b244f760991f45397d14d4ebf38247da75"
 [[package]]
 name = "x86jit-core"
 version = "0.3.0"
-source = "git+file:///home/mikolaj/src/x86jit?branch=pc-emulator#66a2b34a7f2a50e9e53e62853bcdf91a98b4db2d"
+source = "git+file:///home/mikolaj/src/x86jit?branch=pc-emulator#a4f6ae598118c1b204837c6ba4ef5b59cf31a85f"
 dependencies = [
  "iced-x86",
 ]

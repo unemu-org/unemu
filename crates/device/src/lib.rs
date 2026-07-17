@@ -15,11 +15,10 @@ use thiserror::Error;
 
 /// Virtual time base (see spec §6.1).
 ///
-/// A monotonic counter shared by every device's [`Device::tick`]. It is
-/// currently advanced once per CPU `run()` boundary. The intended final unit is
-/// retired guest instructions, sourced from a counter in the CPU core; when that
-/// counter is available this stays a `u64` and only the tick unit changes, so
-/// this type does not need to change.
+/// A monotonic counter shared by every device's [`Device::tick`], measured in
+/// PIT input clocks. The machine advances it from the CPU's retired-instruction
+/// delta by a fixed documented ratio (§6, virtual-clock model), never from wall
+/// time — so device timing and every golden are reproducible.
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct VClock(pub u64);
 
@@ -114,8 +113,9 @@ pub enum DeviceError {
 /// - [`Device::tick`]: advance internal timers/state to virtual time `now`
 ///   (§6). Called on `run()` boundaries; no wall-clock.
 /// - [`Device::irq_pending`] / [`Device::irq_vector`]: the device's IRQ line and
-///   the vector it would drive on INTA (§5). Acting on injected interrupts in
-///   the CPU is not yet wired up; the query exists so the seam is complete.
+///   the vector it would drive on INTA (§5). The machine edge-detects a device's
+///   line onto the interrupt controller and injects the acknowledged vector into
+///   the CPU (see the `machine` crate).
 /// - [`Device::reset`]: return to power-on register state.
 /// - [`Device::save`] / [`Device::restore`]: snapshot/replay (§7).
 /// - [`Device::take_trace`]: drain observed events for golden tests.
