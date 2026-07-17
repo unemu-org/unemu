@@ -1,7 +1,7 @@
 ---
 id: task-1
 title: M0 — Bootstrap template, docs, and harness plan
-status: In Progress
+status: Done
 assignee: []
 created_date: 2026-07-17 00:00
 labels: [milestone-0]
@@ -17,18 +17,18 @@ the project rules, and design the architecture + test harness as documentation
 
 ## Acceptance Criteria
 
-- [ ] Template transplanted; `BOOTSTRAP.md` removed, `LICENSE` = AGPL-3.0-or-later,
+- [x] Template transplanted; `BOOTSTRAP.md` removed, `LICENSE` = AGPL-3.0-or-later,
       project `README.md`.
-- [ ] `AGENTS.md`: language rule (PL chat / EN artifacts), x86jit worktree + merge
+- [x] `AGENTS.md`: language rule (PL chat / EN artifacts), x86jit worktree + merge
       discipline, engineering hard rules (test/swap/docs/determinism).
-- [ ] `backlog/docs/architecture.md`: six swap seams, interrupt model, virtual
+- [x] `backlog/docs/architecture.md`: six swap seams, interrupt model, virtual
       clock model, memory/DMA (`note_write`) model.
-- [ ] `backlog/docs/testing.md`: unit + fuzz/property + coverage matrix + golden +
+- [x] `backlog/docs/testing.md`: unit + fuzz/property + coverage matrix + golden +
       SingleStepTests differential + snapshot/replay.
-- [ ] `backlog/docs/design/spec.md`: numbered spec outline.
-- [ ] `backlog/decisions/`: ADRs (target, worktree, real mode, IRQ contract,
+- [x] `backlog/docs/design/spec.md`: numbered spec outline.
+- [x] `backlog/decisions/`: ADRs (target, worktree, real mode, IRQ contract,
       clock, note_write, traits, A20, ROM, 286, license).
-- [ ] `flake.nix` carries the Rust toolchain + nasm + qemu; `nix develop` enters.
+- [x] `flake.nix` carries the Rust toolchain + nasm + qemu; `nix develop` enters.
 
 ## Notes
 

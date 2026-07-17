@@ -6,16 +6,18 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
 
 ## Works
 
-Nothing yet — no emulator code. M0 (bootstrap + design docs) is the current work.
+- Bootstrap, architecture docs, ADRs, roadmap (`task-1`).
+- Walking skeleton (`task-2`): Cargo workspace with the `cpu` / `bus` / `chipset` /
+  `device` seams, an x86jit Long64 backend, a 16550 UART, and a deterministic
+  golden where a guest writes "hello" to COM1 over port I/O. `cargo test`: 18 pass.
 
 ## In flight
 
-- M0 — bootstrap, docs, harness plan (`task-1`). See
-  `backlog task list -s "In Progress" --plain`.
+None. Next up: real mode in x86jit (`task-3`).
 
 ## Broken / regressions
 
-None (no code yet).
+None.
 
 ## Not started
 

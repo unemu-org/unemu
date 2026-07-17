@@ -1,7 +1,7 @@
 ---
 id: task-2
 title: M1 — Walking skeleton (bus, cpu trait, device trait, UART, serial golden)
-status: To Do
+status: Done
 assignee: []
 created_date: 2026-07-17 00:00
 labels: [milestone-1]
@@ -17,15 +17,15 @@ Device → golden end to end before touching the CPU.
 
 ## Acceptance Criteria
 
-- [ ] Cargo workspace with `cli`, `machine`, `cpu`, `bus`, `device`, `devices`,
-      `testkit` crates (traits + minimal impls).
-- [ ] `cpu` trait with an x86jit `Long64` backend; `bus` executes a chipset-declared
+- [x] Cargo workspace with `cli`, `machine`, `cpu`, `bus`, `chipset`, `device`,
+      `devices`, `testkit` crates (traits + minimal impls).
+- [x] `cpu` trait with an x86jit `Long64` backend; `bus` executes a chipset-declared
       decode; `device` trait includes `tick`, IRQ line, `reset`, `save`/`restore`,
       trace — from day one.
-- [ ] `Uart16550` device with isolation unit tests on a mock bus.
-- [ ] Golden test: a `Long64` guest writes "hello" to the UART via `out dx, al`;
+- [x] `Uart16550` device with isolation unit tests on a mock bus.
+- [x] Golden test: a `Long64` guest writes "hello" to the UART via `out dx, al`;
       captured serial output matches a committed golden.
-- [ ] Every source file has the AGPL SPDX header and module/trait doc-comments.
+- [x] Every source file has the AGPL SPDX header and module/trait doc-comments.
 
 ## Notes
 
