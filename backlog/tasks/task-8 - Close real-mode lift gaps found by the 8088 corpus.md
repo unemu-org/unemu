@@ -1,7 +1,7 @@
 ---
 id: task-8
 title: Close the real-mode lift gaps the 8088 corpus surfaced (in x86jit)
-status: To Do
+status: Done
 assignee: []
 created_date: 2026-07-17 00:00
 labels: [x86jit, oracle]
