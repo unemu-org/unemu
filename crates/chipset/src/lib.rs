@@ -15,31 +15,35 @@ use bus::{DecodeMap, PortRange};
 use device::Device;
 use devices::Uart16550;
 
+// The interrupt-controller seam lives next to the `Device` trait; the chipset
+// only needs to name it and provide a default no-op implementation.
+pub use device::InterruptController;
+
 /// COM1 base port on the IBM PC/AT (§7.2).
 pub const COM1_BASE: u16 = 0x3F8;
 /// COM1 top port (base + 7; the 16550 decodes eight registers).
 pub const COM1_TOP: u16 = 0x3FF;
 
-/// Interrupt-controller seam (§5.1), currently a stub.
+/// A no-op interrupt controller: no lines, never acknowledges (§5.1).
 ///
-/// In a real machine this is the 8259 PIC: it aggregates device IRQ lines into a
-/// single INTR and answers INTA with a vector (§5.4). No PIC is modelled yet and
-/// no interrupts are taken, so the trait is declared to fix the seam in place,
-/// with the no-op [`NoInterruptController`] as its only implementation. A real
-/// PIC replaces it later.
-pub trait InterruptController {
-    /// The vector to dispatch on INTA, or `None` when no line is asserted.
-    fn ack(&mut self) -> Option<u8>;
-}
-
-/// A no-op interrupt controller: never asserts, never acknowledges (§5.1).
+/// The default controller for a chipset that models no PIC yet: every method is
+/// inert so no interrupt is ever taken. The [`devices::Pic8259`] replaces it in a
+/// chipset that wires up interrupts.
 #[derive(Default)]
 pub struct NoInterruptController;
 
 impl InterruptController for NoInterruptController {
-    fn ack(&mut self) -> Option<u8> {
+    fn set_irq_line(&mut self, _irq: u8, _level: bool) {}
+
+    fn poll(&self) -> Option<u8> {
         None
     }
+
+    fn acknowledge(&mut self) -> Option<u8> {
+        None
+    }
+
+    fn end_of_interrupt(&mut self) {}
 }
 
 /// The chipset swap seam (§3.2 seam 2, §3.3).
