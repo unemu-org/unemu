@@ -10,6 +10,12 @@
 //! - The **CRTC** (CRT controller): an indexed register file behind two ports,
 //!   `0x3D4` (index) and `0x3D5` (data). Writing the index port selects a
 //!   register; reads/writes of the data port hit the selected register.
+//! - A small **CGA-compatible register surface** a stock PC BIOS drives when it
+//!   treats this card as a 6845 CGA: the mode-control register (`0x3D8`), the
+//!   colour-select register (`0x3D9`), and the input status register (`0x3DA`).
+//!   Modelling these is what lets an off-the-shelf BIOS's INT 10h run: it writes
+//!   mode/colour and, before touching video memory, busy-waits on the status
+//!   register's vertical-retrace bit.
 //!
 //! The card is an ordinary [`Device`]: it owns registers and memory and nothing
 //! else. It does **not** implement the presentation seam — turning its memory
@@ -24,16 +30,25 @@
 //! - The registers a text renderer interprets: cursor location high/low
 //!   (`0x0E`/`0x0F`), display start address high/low (`0x0C`/`0x0D`), and the
 //!   cursor-disable bit of cursor-start (`0x0A`, bit 5).
+//! - The CGA mode-control (`0x3D8`) and colour-select (`0x3D9`) registers, as
+//!   storage: a BIOS write is recorded and reads back, but no graphics mode is
+//!   entered — the card always renders text mode 3.
+//! - The CGA input status register (`0x3DA`): its display-enable (bit 0) and
+//!   vertical-retrace (bit 3) bits, cycled deterministically so a BIOS
+//!   both-edges retrace wait terminates (see [`VgaText::cga_status`]).
 //!
 //! ## Deviations from real hardware (not modelled)
 //! - No attribute controller, sequencer, graphics controller, or DAC — only the
-//!   CRTC and the text buffer. Mode setting (INT 10h / register programming to
-//!   *enter* mode 3) is out of scope; the device is a text buffer + CRTC.
+//!   CRTC, the CGA register surface above, and the text buffer. The card never
+//!   leaves text mode: the graphics-mode bits of the CGA mode-control register
+//!   are stored but not acted on.
 //! - No planar/graphics memory: the buffer is a plain byte array, correct for
 //!   text mode but not for the 0xA0000 graphics window.
-//! - No display timing / retrace: [`Device::tick`] only stamps virtual time onto
-//!   traces. The input status register (`0x3DA`) and its retrace bits are not
-//!   decoded, and the cursor does not blink on its own.
+//! - No real display timing: the status register's retrace/display bits are a
+//!   deterministic per-read phase, not derived from a pixel clock, and the card
+//!   drives no vertical-retrace interrupt. The colour-select register's border/
+//!   background/palette choice is stored but not rendered. The cursor does not
+//!   blink on its own.
 //! - Cursor scanline shape (`0x0A`/`0x0B` low bits) is stored but only the
 //!   cursor-disable bit is interpreted.
 
@@ -57,6 +72,21 @@ pub const CRTC_INDEX_PORT: u16 = 0x3D4;
 /// CRTC data port (colour). Reads/writes the selected register.
 pub const CRTC_DATA_PORT: u16 = 0x3D5;
 
+/// CGA mode-control register (`0x3D8`). Write-only on real CGA; a BIOS uses it to
+/// select the video mode. We store the byte and keep rendering text mode 3.
+pub const CGA_MODE_CONTROL_PORT: u16 = 0x3D8;
+/// CGA colour-select register (`0x3D9`). Selects border/background/palette; we
+/// store the byte but do not render its colours yet.
+pub const CGA_COLOR_SELECT_PORT: u16 = 0x3D9;
+/// CGA input status register (`0x3DA`, read-only). A BIOS polls its
+/// vertical-retrace bit before writing video memory.
+pub const CGA_STATUS_PORT: u16 = 0x3DA;
+
+/// Display-enable bit of the CGA status register (bit 0).
+const CGA_STATUS_DISPLAY_ENABLE: u8 = 0x01;
+/// Vertical-retrace bit of the CGA status register (bit 3).
+const CGA_STATUS_VERTICAL_RETRACE: u8 = 0x08;
+
 /// Number of CRTC registers modelled (indices `0x00..=0x18`).
 const CRTC_REG_COUNT: usize = 0x19;
 
@@ -77,8 +107,9 @@ const CURSOR_DISABLE: u8 = 0x20;
 /// Snapshot layout version tag, first byte of [`Device::save`] output.
 const SNAPSHOT_VERSION: u8 = 1;
 
-/// Fixed-size snapshot header: version + CRTC index + the CRTC register file.
-const SNAPSHOT_HEADER_LEN: usize = 1 + 1 + CRTC_REG_COUNT;
+/// Fixed-size snapshot header: version + CRTC index + the CRTC register file +
+/// the CGA mode-control and colour-select bytes.
+const SNAPSHOT_HEADER_LEN: usize = 1 + 1 + CRTC_REG_COUNT + 2;
 
 /// The VGA text-mode device (§9.2).
 ///
@@ -91,6 +122,17 @@ pub struct VgaText {
     crtc_index: u8,
     /// The CRTC register file. All 25 registers store; a subset is interpreted.
     crtc: [u8; CRTC_REG_COUNT],
+    /// CGA mode-control register (`0x3D8`). Stored so a BIOS mode set does not
+    /// fault; graphics-mode bits are recorded but not acted on (text mode 3 only).
+    mode_control: u8,
+    /// CGA colour-select register (`0x3D9`). Stored; the border/background/palette
+    /// it selects is not rendered yet.
+    color_select: u8,
+    /// Free-running counter bumped on every read of the CGA status register
+    /// (`0x3DA`), driving its retrace/display-enable bits through their phases.
+    /// See [`VgaText::cga_status`] for why the phase advances per read, not per
+    /// tick.
+    status_reads: u64,
     /// Trace events observed since the last [`Device::take_trace`].
     trace: Vec<TraceEvent>,
     /// Virtual time of the most recent [`Device::tick`], stamped onto traces.
@@ -105,6 +147,9 @@ impl VgaText {
             vram: vec![0; TEXT_BUFFER_LEN],
             crtc_index: 0,
             crtc: [0; CRTC_REG_COUNT],
+            mode_control: 0,
+            color_select: 0,
+            status_reads: 0,
             trace: Vec::new(),
             now: VClock::ZERO,
         }
@@ -134,6 +179,38 @@ impl VgaText {
     #[must_use]
     pub fn cursor_visible(&self) -> bool {
         self.crtc[usize::from(CRTC_CURSOR_START_INDEX)] & CURSOR_DISABLE == 0
+    }
+
+    /// Current CGA status byte (`0x3DA`), advancing the free-running retrace phase.
+    ///
+    /// A stock BIOS busy-waits on this register before touching video memory: it
+    /// spins until the vertical-retrace bit goes high, then spins until it goes
+    /// low again (both edges), to write only during retrace and avoid CGA "snow".
+    /// That whole wait runs inside a single CPU quantum, so no device [`tick`]
+    /// happens between iterations and the virtual clock does **not** advance
+    /// mid-loop. Deriving the retrace bit from virtual time would therefore leave
+    /// it constant across the wait and hang the BIOS forever.
+    ///
+    /// So the bits cycle off a counter bumped on each read instead: successive
+    /// reads always see the bits change, so any both-edges wait completes in a
+    /// bounded number of reads. It reads no wall clock, so it stays deterministic.
+    ///
+    /// Phase, in the low bits of the read count: bit 0 (display-enable) toggles
+    /// every read (both edges seen within 2 reads); bit 3 (vertical retrace)
+    /// toggles every second read (both edges seen within 4 reads).
+    ///
+    /// [`tick`]: Device::tick
+    fn cga_status(&mut self) -> u8 {
+        let count = self.status_reads;
+        self.status_reads = count.wrapping_add(1);
+        let mut status = 0;
+        if count & 0b01 != 0 {
+            status |= CGA_STATUS_DISPLAY_ENABLE;
+        }
+        if count & 0b10 != 0 {
+            status |= CGA_STATUS_VERTICAL_RETRACE;
+        }
+        status
     }
 
     /// Byte offset of `addr` within the text buffer window, or an unmapped-MMIO
@@ -184,6 +261,12 @@ impl Device for VgaText {
         let value = match port {
             CRTC_INDEX_PORT => u32::from(self.crtc_index),
             CRTC_DATA_PORT => u32::from(self.crtc[usize::from(self.crtc_index) % CRTC_REG_COUNT]),
+            // Real CGA mode-control/colour-select are write-only, but returning
+            // the last value written is simpler than modelling a floating bus and
+            // is harmless — a BIOS writes these, it does not read them back.
+            CGA_MODE_CONTROL_PORT => u32::from(self.mode_control),
+            CGA_COLOR_SELECT_PORT => u32::from(self.color_select),
+            CGA_STATUS_PORT => u32::from(self.cga_status()),
             _ => {
                 return Err(DeviceError::UnmappedRegister {
                     kind: "port",
@@ -203,6 +286,11 @@ impl Device for VgaText {
                 let index = usize::from(self.crtc_index) % CRTC_REG_COUNT;
                 self.crtc[index] = byte;
             }
+            CGA_MODE_CONTROL_PORT => self.mode_control = byte,
+            CGA_COLOR_SELECT_PORT => self.color_select = byte,
+            // The status register is read-only; ignore a write rather than fault
+            // the machine on a stray one.
+            CGA_STATUS_PORT => {}
             _ => {
                 return Err(DeviceError::UnmappedRegister {
                     kind: "port",
@@ -261,6 +349,8 @@ impl Device for VgaText {
         blob.push(SNAPSHOT_VERSION);
         blob.push(self.crtc_index);
         blob.extend_from_slice(&self.crtc);
+        blob.push(self.mode_control);
+        blob.push(self.color_select);
         blob.extend_from_slice(&self.vram);
         blob
     }
@@ -280,6 +370,8 @@ impl Device for VgaText {
         }
         self.crtc_index = snapshot[1];
         self.crtc.copy_from_slice(&snapshot[2..2 + CRTC_REG_COUNT]);
+        self.mode_control = snapshot[2 + CRTC_REG_COUNT];
+        self.color_select = snapshot[2 + CRTC_REG_COUNT + 1];
         self.vram.copy_from_slice(&snapshot[SNAPSHOT_HEADER_LEN..]);
         Ok(())
     }
@@ -387,13 +479,80 @@ mod tests {
     #[test]
     fn unmapped_port_is_rejected() {
         let mut vga = VgaText::new();
+        // 0x3DB is between the CRTC pair and the CGA registers and belongs to no
+        // register the card decodes.
         assert_eq!(
-            vga.port_read(0x3DA, 1).unwrap_err(),
+            vga.port_read(0x3DB, 1).unwrap_err(),
             DeviceError::UnmappedRegister {
                 kind: "port",
-                offset: 0x3DA,
+                offset: 0x3DB,
             }
         );
+    }
+
+    #[test]
+    fn cga_mode_and_color_registers_round_trip() {
+        let mut vga = VgaText::new();
+        // Mode 3 as a stock BIOS programs it, plus a colour-select value.
+        vga.port_write(CGA_MODE_CONTROL_PORT, 1, 0x29).unwrap();
+        vga.port_write(CGA_COLOR_SELECT_PORT, 1, 0x30).unwrap();
+        assert_eq!(vga.port_read(CGA_MODE_CONTROL_PORT, 1).unwrap(), 0x29);
+        assert_eq!(vga.port_read(CGA_COLOR_SELECT_PORT, 1).unwrap(), 0x30);
+    }
+
+    #[test]
+    fn writing_status_register_is_ignored_not_faulted() {
+        let mut vga = VgaText::new();
+        // Read-only register: a write must be accepted (no fault) and change
+        // nothing the guest can observe on read-back.
+        vga.port_write(CGA_STATUS_PORT, 1, 0xFF).unwrap();
+    }
+
+    #[test]
+    fn status_retrace_bit_sees_both_edges_within_bounded_reads() {
+        // Model the BIOS busy-wait: spin until the vertical-retrace bit is high,
+        // then spin until it is low again. No tick happens between reads (one CPU
+        // quantum), so this only terminates if the bit cycles per read.
+        let mut vga = VgaText::new();
+        // Vertical-retrace bit (bit 3) — the bit the BIOS's `test al,8` checks.
+        const RETRACE: u32 = 0x08;
+        let mut reads = 0u32;
+        // Wait for retrace high.
+        loop {
+            reads += 1;
+            assert!(reads < 100, "retrace bit never went high");
+            if vga.port_read(CGA_STATUS_PORT, 1).unwrap() & RETRACE != 0 {
+                break;
+            }
+        }
+        // Wait for retrace low again (the second edge).
+        loop {
+            reads += 1;
+            assert!(reads < 100, "retrace bit never went low");
+            if vga.port_read(CGA_STATUS_PORT, 1).unwrap() & RETRACE == 0 {
+                break;
+            }
+        }
+    }
+
+    #[test]
+    fn status_display_enable_bit_toggles_each_read() {
+        let mut vga = VgaText::new();
+        let r0 = vga.port_read(CGA_STATUS_PORT, 1).unwrap() & 0x01;
+        let r1 = vga.port_read(CGA_STATUS_PORT, 1).unwrap() & 0x01;
+        assert_ne!(r0, r1, "display-enable bit must change between reads");
+    }
+
+    #[test]
+    fn cga_registers_survive_save_restore() {
+        let mut vga = VgaText::new();
+        vga.port_write(CGA_MODE_CONTROL_PORT, 1, 0x29).unwrap();
+        vga.port_write(CGA_COLOR_SELECT_PORT, 1, 0x0F).unwrap();
+        let blob = vga.save();
+        let mut restored = VgaText::new();
+        restored.restore(&blob).unwrap();
+        assert_eq!(restored.port_read(CGA_MODE_CONTROL_PORT, 1).unwrap(), 0x29);
+        assert_eq!(restored.port_read(CGA_COLOR_SELECT_PORT, 1).unwrap(), 0x0F);
     }
 
     #[test]
