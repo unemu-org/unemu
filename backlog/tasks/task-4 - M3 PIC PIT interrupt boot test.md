@@ -1,7 +1,7 @@
 ---
 id: task-4
 title: M3 — 8259 PIC + 8253 PIT + interrupt boot test
-status: To Do
+status: Done
 assignee: []
 created_date: 2026-07-17 00:00
 labels: [milestone-3]
@@ -22,11 +22,12 @@ through the IRQ-injection contract and boot a real-mode program end to end.
       Merged @ ac28202. (Cascade/slave deferred.)
 - [x] `Pit8253` device (counters 0/1/2, modes 0/2/3, divisor→period property test,
       counter-latch readback) with unit tests + coverage matrix. Merged @ b9ece59.
-- [ ] Integration (M3.2): switch the machine to Real16, bump the x86jit dep to the
-      `pc-emulator` rev, wire PIT OUT → PIC IRQ0 → `cpu.inject_irq`, drive the
-      virtual clock from the retired-instruction counter.
-- [ ] Boot golden test: a real-mode program programs the PIT, takes the timer IRQ,
-      and prints to serial; deterministic output pinned to an x86jit rev.
+- [x] Integration: machine switched to Real16 (embedder seeds CS/DS/ES/SS/IP),
+      x86jit dep bumped to the `pc-emulator` rev, PIT OUT → edge-detect → PIC IRQ0
+      → `cpu.inject_irq`, virtual clock driven from the retired-instruction counter.
+      Merged @ 432954e.
+- [x] Boot golden test: a real-mode program programs the PIT, takes the timer IRQ,
+      and prints five markers to serial; deterministic, pinned to x86jit a4f6ae59.
 
 ## Notes
 

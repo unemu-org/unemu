@@ -39,6 +39,15 @@ Things **deliberately not implemented**. If something seems missing and is liste
 - **Revisit when:** M4 — VGA text as the first `FrameSink`.
 - **Tracked in:** task-5.
 
+### Real-mode segment-register loads (`mov Sreg, r/m`) and far transfers
+
+- **Why deferred:** x86jit's real mode does not yet lift `mov Sreg, r16`/`pop Sreg`
+  or far `jmp`/`call`/`retf` (CS reloads other than `INT`/`IRET`). The emulator's
+  boot programs work around this: the machine seeds CS/DS/ES/SS before running.
+- **Revisit when:** running a real BIOS/DOS/bootloader, which loads segment
+  registers itself — needs these lifted in x86jit (a further real-mode extension).
+- **Tracked in:** decision-3 (real-mode scope), task-7 (test386.asm / real BIOS).
+
 ### Real (unmodified) BIOS
 
 - **Why deferred:** Start from a minimal BIOS stub; x86jit models a modern CPU, so

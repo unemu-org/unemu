@@ -15,10 +15,16 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
 
 - Real mode in x86jit (`task-3`): sub-seams (a) addressing, (b) INT/IRET/IVT/IF,
   (c) IRQ injection + retired-instruction counter — all merged to the x86jit
-  `pc-emulator` branch (differential cf16 16/16 vs Unicorn MODE_16). The emulator
-  can build against it. Graduating `pc-emulator` → x86jit `main` (PS4 benchmark +
-  churn cleanup) is a later, separate gate.
-- Next: real devices + Real16 boot (`task-4`).
+  `pc-emulator` branch (differential cf16 16/16 vs Unicorn MODE_16). Graduating
+  `pc-emulator` → x86jit `main` (PS4 benchmark + churn cleanup) is a later gate.
+- TomHarte 8088 oracle in x86jit (`task-6`) — in progress.
+
+## Recently landed
+
+- Timer-interrupt boot (`task-4`): the real-mode machine takes an IRQ0 timer
+  interrupt via the in-guest IVT and prints to serial. `AtChipset` = 16550 UART +
+  8259 PIC + 8253 PIT; PIT OUT → edge-detect → PIC → `inject_irq`; deterministic
+  virtual clock from the retired-instruction counter. Boot golden passes.
 
 ## Broken / regressions
 
