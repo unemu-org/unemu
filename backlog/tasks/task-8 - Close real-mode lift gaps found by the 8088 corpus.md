@@ -17,16 +17,25 @@ merge discipline as the other real-mode seams; validate each with the corpus.
 
 ## Acceptance Criteria
 
-- [ ] Lift the unsupported ops the corpus reports (~97k tests): `LOOP` (`E2`),
-      the BCD family `DAA`/`DAS`/`AAA`/`AAS`/`AAM`/`AAD` (`27`/`2F`/`37`/`3F`/`D4`/`D5`),
-      and `CLC`/`STC`/`CMC` (`F8`/`F9`/`F5`).
-- [ ] Lift the undocumented `/6` shift alias (`D0`–`D3` reg=6 behaves as `/4` SHL)
-      — ~26k reported failures.
-- [ ] Investigate the `DIV`/`IDIV` divergences (`F6`/`F7` reg=6,7 — ~24k failures):
-      determine per case whether it is a genuine interpreter bug or an 8088
-      quirk/undefined behaviour our 286 target does not share. Fix the real bugs.
-- [ ] Corpus pass rate improves and each closed gap is confirmed by the corpus.
-- [ ] No Long64/Compat32 regression; `cf16` still green.
+- [x] Lifted `LOOP`/`LOOPE`/`LOOPNE`/`JCXZ`, the BCD family
+      (`DAA`/`DAS`/`AAA`/`AAS`/`AAM`/`AAD`), `CLC`/`STC`/`CMC`, plus `SALC`/`XLAT`
+      and `mov`/`push`/`pop Sreg` and far `JMP`/`CALL`/`RETF`. LOCK-prefix decode
+      fixed (Real16 `NO_INVALID_CHECK` — 286 executes lock-on-register).
+- [x] `/6` shift alias: no code needed — iced decodes `D0`–`D3` `/6` as `SAL`
+      (= the 286 `/4` alias); the 8088-only `SETMO` quirk is deliberately not
+      reproduced.
+- [x] `DIV`/`IDIV`: no bug — register forms already 286-correct (quotient-overflow
+      `#DE`, sign, remainder), verified vs Unicorn. The 8088 corpus diffs were 8088
+      sign quirks + the `#DE` saved-IP difference; the memory-form diffs are the
+      segment-limit `#GP` (task-11), not logic bugs.
+- [x] 8088 affected-opcode decided pass rate 0.15 → 0.83; each op validated vs
+      Unicorn MODE_16 (incl. a 4096-case BCD sweep). Merged to `pc-emulator` @ 2ca0d50.
+- [x] No Long64/Compat32 regression; `cf16` 34/34; jit_abi offsets unchanged.
+
+Residual (small follow-up, intentionally left so the oracle gap list stays honest):
+`#UD`-in-guest delivery for unlifted/invalid Real16 opcodes (currently returns
+`Exit::UnknownInstruction`), needing a per-opcode "valid on 286?" determination.
+Tracked here for pickup with task-11.
 
 ## Notes
 
