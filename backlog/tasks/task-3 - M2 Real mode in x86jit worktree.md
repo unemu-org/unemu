@@ -20,8 +20,9 @@ with independent exit criteria.
 - [x] (a) Segment registers (CS/DS/ES/SS) in `CpuState` (append-only, offset test)
       + 16-bit decode + `segment:offset` addressing with 64K/`SP` wrap; oracle:
       Unicorn 16-bit (6/6 differential). Merged to `pc-emulator` @ ce51d88.
-- [ ] (b) `INT` / `IRET` / IVT + `IF` in `Flags` + exceptions vectored through the
-      IVT (mode-dependent `Exit::Exception`/`Syscall`).
+- [x] (b) `INT` / `IRET` / IVT + `IF` in `Flags` (pad byte, ABI-safe) + `#DE`/`#UD`
+      vectored through the IVT in real mode. Merged to `pc-emulator` @ ce369c8.
+      Deferred: TF flag, STI shadow, far jmp/call/retf.
 - [ ] (c) `inject_irq` / `irq_ack` per the decision-4 contract; retired-instruction
       counter for the virtual clock (decision-5).
 - [ ] `Long64`/`Compat32` codegen byte-identical (hash test); full x86jit suite
