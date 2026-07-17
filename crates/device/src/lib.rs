@@ -162,6 +162,43 @@ pub trait Device {
     }
 }
 
+/// The interrupt-controller seam between the device IRQ lines and the CPU (§5).
+///
+/// A real machine routes device IRQ lines through an 8259 PIC, which aggregates
+/// them into a single INTR to the CPU and answers the CPU's INTA cycle with an
+/// interrupt vector (§5.1, §5.4). This trait is that seam: devices (the PIT, the
+/// keyboard controller, …) drive input lines with [`InterruptController::set_irq_line`],
+/// and the CPU integration polls, acknowledges and end-of-interrupts through the
+/// remaining methods.
+///
+/// The trait is deliberately minimal and lives here, next to [`Device`], so both
+/// the concrete controller device and the `chipset` seam can name it without a
+/// heavier dependency. The `machine`/`cpu` wiring — asking for a vector on INTR
+/// and injecting it — is later integration work; this trait only fixes the shape
+/// that wiring will call.
+pub trait InterruptController {
+    /// Drive input IRQ line `irq` to `level` (`true` = asserted).
+    ///
+    /// This is how devices raise and lower their request lines. Whether a rising
+    /// level actually latches a request depends on the controller's trigger mode
+    /// and mask.
+    fn set_irq_line(&mut self, irq: u8, level: bool);
+
+    /// The vector the controller would dispatch on INTA right now, if any: the
+    /// highest-priority pending, unmasked, not-already-in-service request
+    /// resolved to its vector (§5.4). Does not change controller state.
+    fn poll(&self) -> Option<u8>;
+
+    /// Perform an INTA (interrupt-acknowledge) cycle: latch the highest-priority
+    /// serviceable request into the in-service state and return its vector, or
+    /// `None` if nothing is serviceable (§5.4).
+    fn acknowledge(&mut self) -> Option<u8>;
+
+    /// End-of-interrupt: clear the highest-priority in-service request, allowing
+    /// lower-priority requests to be serviced again (§5.4).
+    fn end_of_interrupt(&mut self);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
