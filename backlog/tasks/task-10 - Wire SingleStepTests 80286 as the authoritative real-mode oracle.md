@@ -1,7 +1,7 @@
 ---
 id: task-10
 title: Wire SingleStepTests/80286 as the authoritative real-mode oracle (in x86jit)
-status: In Progress
+status: Done
 assignee: []
 created_date: 2026-07-17 00:00
 labels: [x86jit, oracle]
@@ -25,13 +25,16 @@ vendored (gitignored), mirroring the 8088 setup.
 
 ## Acceptance Criteria
 
-- [ ] Loader + runner in `x86jit-tests` reading the 286 `v1_real_mode` corpus
-      (MOO→JSON or direct MOO parse), run against the `CpuMode::Real16` interpreter
-      via `Vcpu::step_instruction`.
-- [ ] Compares final CPU state + memory + exception delivery (the 286 set records
-      exceptions — validates our in-guest IVT `#DE`/`#UD`).
-- [ ] Reports overall + per-opcode pass rate; genuine failures get a repro.
-- [ ] Corpus fetched via a `fetch.sh`, gitignored; test skips cleanly when absent.
+- [x] Loader + runner in `x86jit-tests` (direct MOO parser, skips cycle traces),
+      run against the `CpuMode::Real16` interpreter via `Vcpu::step_instruction`.
+- [x] Compares final CPU state + memory + in-guest IVT exception frames.
+- [x] Reports overall + per-opcode pass rate with repros. First run: 1,478,000
+      tests — **79.3% overall / 91.9% decided**.
+- [x] Corpus fetched via `vendor/80286/fetch.sh`, gitignored; skips when absent.
+
+Merged to `pc-emulator` @ 79e88da. Surfaced: LOCK-prefix mis-decode, missing 286
+segment-limit `#GP` (→ task-11), under-delivered `#UD`, and the unlifted-opcode
+list (→ task-8).
 
 ## Notes
 
