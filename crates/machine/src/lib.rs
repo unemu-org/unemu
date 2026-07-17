@@ -92,6 +92,22 @@ pub enum MachineError {
     },
 }
 
+/// Why [`Machine::run_bounded`] returned control to the caller (§3.1).
+///
+/// The natural stop is [`RunOutcome::Halted`] — the guest halted and the
+/// interrupt source fell quiescent, or there is nothing left to make progress.
+/// [`RunOutcome::RetiredCapReached`] means a total retired-instruction cap was
+/// hit first: a safety net so a guest that spins (a never-halting loop that keeps
+/// retiring instructions) cannot run forever. Reaching the cap is a clean stop,
+/// not an error, so any output captured up to that point is preserved.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum RunOutcome {
+    /// The guest halted with no more interrupts to service (the natural end).
+    Halted,
+    /// The total retired-instruction cap was reached before a natural stop.
+    RetiredCapReached,
+}
+
 /// A running machine: a CPU seam, a bus seam, and an interrupt controller (§3.1).
 pub struct Machine<C: Cpu> {
     cpu: C,
@@ -177,13 +193,33 @@ impl<C: Cpu> Machine<C> {
 
     /// Run until the guest halts with no more interrupts to service (§3.1).
     ///
+    /// Unbounded: equivalent to [`Machine::run_bounded`] with no cap, discarding
+    /// the [`RunOutcome`] (an uncapped run can only end on [`RunOutcome::Halted`]).
+    /// Every existing frontend uses this; the bounded form is for a guest that may
+    /// spin without halting.
+    pub fn run(&mut self) -> Result<(), MachineError> {
+        self.run_bounded(None).map(|_| ())
+    }
+
+    /// Run until the guest halts, or until `max_retired` guest instructions have
+    /// retired — whichever comes first (§3.1, §6).
+    ///
     /// Each iteration runs the CPU for one quantum, services the resulting stop
     /// against the bus, drives the deterministic clock from the retired delta,
     /// ticks the devices, edge-detects the wired IRQ lines onto the PIC, and —
     /// when nothing is already in flight — acknowledges and injects a serviceable
     /// vector. A halted guest is kept alive until the interrupt source falls
-    /// quiescent (see the module docs), then the machine stops.
-    pub fn run(&mut self) -> Result<(), MachineError> {
+    /// quiescent (see the module docs), then the machine stops with
+    /// [`RunOutcome::Halted`].
+    ///
+    /// `max_retired` is a safety net measured in retired instructions (the same
+    /// deterministic virtual-time base as the clock, never wall time): a guest
+    /// that never halts — an unsupported instruction is not reached, and it keeps
+    /// retiring in a loop — would otherwise run forever. When the cap is reached
+    /// the machine stops cleanly with [`RunOutcome::RetiredCapReached`], leaving
+    /// captured device output intact for the caller to drain. `None` imposes no
+    /// cap.
+    pub fn run_bounded(&mut self, max_retired: Option<u64>) -> Result<RunOutcome, MachineError> {
         let mut idle_halts: u64 = 0;
         loop {
             let stop = self.cpu.run(self.quantum)?;
@@ -227,13 +263,21 @@ impl<C: Cpu> Machine<C> {
                     } else {
                         idle_halts += 1;
                         match self.idle_limit {
-                            Some(limit) if idle_halts >= limit => return Ok(()),
+                            Some(limit) if idle_halts >= limit => return Ok(RunOutcome::Halted),
                             // No idle limit: a halt with nothing pending and no
                             // way to make progress would spin forever, so stop.
-                            None => return Ok(()),
+                            None => return Ok(RunOutcome::Halted),
                             _ => {}
                         }
                     }
+                }
+            }
+
+            // Safety net: a spinning guest never reaches a halt or an error, so
+            // cap total retired instructions and stop cleanly, preserving output.
+            if let Some(cap) = max_retired {
+                if self.cpu.retired() >= cap {
+                    return Ok(RunOutcome::RetiredCapReached);
                 }
             }
         }
@@ -458,6 +502,21 @@ mod tests {
         let mut machine = machine_with(program);
         let err = machine.run().unwrap_err();
         assert!(matches!(err, MachineError::Exception { vector: 6 }));
+    }
+
+    #[test]
+    fn retired_cap_terminates_a_spinning_guest() {
+        // A guest that keeps retiring without ever halting: a long run of
+        // budget-exhausted yields (far more than the cap). Without a cap the
+        // machine would keep looping; the cap must stop it cleanly at the bound.
+        let cap = 5;
+        let program = vec![CpuStop::BudgetExhausted; 1000];
+        let mut machine = machine_with(program);
+        let outcome = machine.run_bounded(Some(cap)).expect("run");
+        assert_eq!(outcome, RunOutcome::RetiredCapReached);
+        // 1:1 retired-per-run, so the machine stops the first boundary at which
+        // the retired count reaches the cap — exactly `cap` instructions in.
+        assert_eq!(machine.clock(), VClock(cap));
     }
 
     #[test]
