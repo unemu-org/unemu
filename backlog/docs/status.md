@@ -18,6 +18,11 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
 
 ## Recently landed
 
+- **M4 devices + first graphics** (`task-5`, device level): 8042 keyboard, MC146818
+  CMOS/RTC, 8237 DMA (via a `note_write`-safe `DmaMemory` handle), and VGA text
+  mode as a `Device` behind the new `FrameSink` seam (`video` crate) with a
+  rendered-frame golden. All isolated + unit/golden tested; workspace 145 tests
+  pass. Machine wiring (keyboard→IRQ1, VGA→sink) is the integration follow-up.
 - **Real mode graduated to x86jit `main`** (`task-3`) @ 40acdbc: the full
   real-mode (16-bit) seam — addressing, INT/IRET/IVT/IF, IRQ injection, the
   complete instruction set — now lives on x86jit main, entirely gated so the
