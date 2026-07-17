@@ -10,20 +10,22 @@
 //! Two concrete chipsets:
 //! - [`SerialChipset`]: a single 16550 UART at COM1 and no interrupt controller
 //!   — the Long64 serial walking skeleton (§7.2).
-//! - [`AtChipset`]: a PC/AT-style set — UART at COM1, 8259 PIC at `0x20`/`0x21`,
-//!   8253 PIT at `0x40`–`0x43`, 8042 keyboard controller at `0x60`/`0x64`, and a
-//!   VGA text card (CRTC at `0x3D4`/`0x3D5`, text buffer at `0xB8000`) — with the
-//!   PIC wired as the interrupt controller, enough to boot a real-mode guest that
-//!   takes a timer or keyboard interrupt and paints the text screen (§5, §7, §9).
+//! - [`AtChipset`]: a PC/AT-style set — UART at COM1, a cascaded 8259 PIC pair
+//!   (master at `0x20`/`0x21`, slave at `0xA0`/`0xA1`), 8253 PIT at `0x40`–`0x43`,
+//!   8042 keyboard controller at `0x60`/`0x64`, a VGA text card (CRTC at
+//!   `0x3D4`/`0x3D5`, text buffer at `0xB8000`), and an MC146818 CMOS/RTC at
+//!   `0x70`/`0x71` — with the cascaded PIC pair wired as the interrupt controller,
+//!   enough to boot a real-mode guest that takes a timer, keyboard, or RTC
+//!   interrupt (IRQ0/IRQ1/IRQ8) and paints the text screen (§5, §7, §9).
 
 mod shared_pic;
 
-pub use shared_pic::SharedPic;
+pub use shared_pic::{CascadedPic, SharedPic};
 
 use bus::{DecodeMap, MmioRange, PortRange};
 use device::Device;
 use devices::vga_text::{CRTC_DATA_PORT, CRTC_INDEX_PORT, TEXT_BUFFER_BASE, TEXT_BUFFER_LEN};
-use devices::{Pit8253, Uart16550, VgaText, I8042};
+use devices::{CmosRtc, Pit8253, Uart16550, VgaText, I8042};
 
 // The interrupt-controller seam lives next to the `Device` trait; the chipset
 // only needs to name it and provide a default no-op implementation.
@@ -38,6 +40,18 @@ pub const COM1_TOP: u16 = 0x3FF;
 pub const PIC_COMMAND: u16 = 0x20;
 /// Master 8259 PIC data port.
 pub const PIC_DATA: u16 = 0x21;
+
+/// Slave 8259 PIC command port; carries IRQ8–IRQ15, cascaded onto master IRQ2
+/// (§7.3).
+pub const SLAVE_PIC_COMMAND: u16 = 0xA0;
+/// Slave 8259 PIC data port.
+pub const SLAVE_PIC_DATA: u16 = 0xA1;
+
+/// MC146818 CMOS/RTC index port (write selects the register; its top bit is the
+/// NMI-disable control) (§7.6).
+pub const CMOS_INDEX_PORT: u16 = 0x70;
+/// MC146818 CMOS/RTC data port (window into the selected index).
+pub const CMOS_DATA_PORT: u16 = 0x71;
 
 /// 8253 PIT base port (counter 0 data) (§7.4).
 pub const PIT_BASE: u16 = 0x40;
@@ -141,33 +155,57 @@ pub const AT_I8042_INDEX: usize = 3;
 /// Device index of the VGA text card in the [`AtChipset`] device set. A renderer
 /// reads its text buffer through the tracing seam after a run (§9.2).
 pub const AT_VGA_INDEX: usize = 4;
-
-/// PC/AT-style chipset: UART + 8259 PIC + 8253 PIT + 8042 keyboard + VGA text,
-/// PIC as the controller (§7, §9).
+/// Device index of the slave 8259 PIC in the [`AtChipset`] device set (ports
+/// `0xA0`/`0xA1`). It is a separate bus entry from the master PIC, but both are
+/// the two [`Device`] faces of the one [`CascadedPic`] the machine drives, so a
+/// guest EOI to either chip reaches the shared controller (§5.1).
+pub const AT_SLAVE_PIC_INDEX: usize = 5;
+/// Device index of the MC146818 CMOS/RTC in the [`AtChipset`] device set (ports
+/// `0x70`/`0x71`).
 ///
-/// The device set is `[UART, PIC, PIT, 8042, VGA]`. The PIC is a [`SharedPic`]:
-/// the same live chip backs both its bus [`Device`] entry (guest programming +
-/// EOI) and the [`InterruptController`] the machine drives. Two device lines are
-/// interrupt sources the machine edge-detects onto the PIC (§5.1): the PIT's
-/// counter-0 OUT (IRQ0) and the 8042's keyboard-byte-ready line (IRQ1). The VGA
-/// card drives no line — it is memory the renderer reads after the run. The
-/// chipset only declares the parts and the decode map.
+/// Its update-ended output is the IRQ8 source; a frontend wires
+/// `IrqLine { device: AT_CMOS_RTC_INDEX, irq: 8 }` so the machine edge-detects it
+/// onto the slave PIC, which cascades it into the master at IRQ2 (§5.1).
+pub const AT_CMOS_RTC_INDEX: usize = 6;
+
+/// PC/AT-style chipset: UART + cascaded 8259 PICs + 8253 PIT + 8042 keyboard +
+/// VGA text + MC146818 CMOS/RTC, the cascaded PIC pair as the controller
+/// (§7, §9).
+///
+/// The device set is `[UART, master PIC, PIT, 8042, VGA, slave PIC, RTC]`. The
+/// interrupt controller is a [`CascadedPic`]: a master (`0x20`/`0x21`) carrying
+/// IRQ0–IRQ7 and a slave (`0xA0`/`0xA1`) carrying IRQ8–IRQ15, the slave cascaded
+/// into master IRQ2. Each chip's [`Device`] face is a separate bus entry (guest
+/// programming + EOI), and the same live pair is the machine's controller, so a
+/// guest EOI to either chip reaches the state the machine's INTA set. Three
+/// device lines are interrupt sources the machine edge-detects onto the PIC
+/// (§5.1): the PIT's counter-0 OUT (IRQ0), the 8042's keyboard-byte-ready line
+/// (IRQ1), and the RTC's update-ended output (IRQ8, on the slave). The VGA card
+/// drives no line — it is memory the renderer reads after the run. The chipset
+/// only declares the parts and the decode map.
 pub struct AtChipset {
-    pic: SharedPic,
+    pic: CascadedPic,
     /// Scancodes pre-loaded into the keyboard controller's input queue before the
     /// machine runs. The frontend owns the concrete keyboard only here, before the
     /// devices are boxed behind `dyn Device`, so this is where key input is seeded
     /// without the machine core ever naming the 8042.
     keyboard_input: Vec<u8>,
+    /// Virtual-clock timing for the RTC (ticks per second, UIP window), or `None`
+    /// for the real ~1.193 MHz-derived default. A headless golden that must see an
+    /// update-ended interrupt within a bounded run sets a small ratio here; the
+    /// timing is in virtual clocks, never wall time (§6).
+    rtc_timing: Option<(u64, u64)>,
 }
 
 impl AtChipset {
-    /// Create the PC/AT chipset with a fresh, unprogrammed PIC, PIT, keyboard, and
-    /// a blank VGA text card, and no pending key input.
+    /// Create the PC/AT chipset with a fresh, unprogrammed PIC pair, PIT,
+    /// keyboard, a blank VGA text card, and a real-timed RTC, and no pending key
+    /// input.
     pub fn new() -> Self {
         Self {
-            pic: SharedPic::new(),
+            pic: CascadedPic::new(),
             keyboard_input: Vec::new(),
+            rtc_timing: None,
         }
     }
 
@@ -180,8 +218,25 @@ impl AtChipset {
     /// enables keyboard interrupts, exactly as if typed at power-on.
     pub fn with_keyboard_input(scancodes: &[u8]) -> Self {
         Self {
-            pic: SharedPic::new(),
+            pic: CascadedPic::new(),
             keyboard_input: scancodes.to_vec(),
+            rtc_timing: None,
+        }
+    }
+
+    /// Create the PC/AT chipset with the RTC on a fast, deterministic update
+    /// tick: `second_ticks` virtual clocks per RTC second and `uip_ticks` for the
+    /// update-in-progress window.
+    ///
+    /// The real per-second ratio is over a million clocks, far more than a bounded
+    /// headless run advances, so a golden that must observe an update-ended
+    /// interrupt (IRQ8) sets a small ratio here. Only the timing changes; the RTC
+    /// still reads no wall clock, so the run stays deterministic (§6).
+    pub fn with_rtc_timing(second_ticks: u64, uip_ticks: u64) -> Self {
+        Self {
+            pic: CascadedPic::new(),
+            keyboard_input: Vec::new(),
+            rtc_timing: Some((second_ticks, uip_ticks)),
         }
     }
 }
@@ -207,17 +262,26 @@ impl Chipset for AtChipset {
             keyboard.push_scancode(scancode);
         }
         let vga = VgaText::new();
-        // The PIC handle is cloned: one clone drives the bus device face, the
-        // other becomes the machine's interrupt controller. Both share one chip.
-        let pic_device = self.pic.clone();
+        let mut rtc = CmosRtc::new();
+        if let Some((second_ticks, uip_ticks)) = self.rtc_timing {
+            rtc = rtc.with_timing(second_ticks, uip_ticks);
+        }
+        // Each PIC chip's device face is cloned off the one live pair: the master
+        // and slave clones drive their bus device entries (guest programming +
+        // EOI), while the pair itself becomes the machine's interrupt controller.
+        // All three handles share the same two chips.
+        let master_device = self.pic.master_device();
+        let slave_device = self.pic.slave_device();
         let controller: Box<dyn InterruptController> = Box::new(self.pic);
 
         let devices: Vec<Box<dyn Device>> = vec![
-            Box::new(uart),       // index 0 (AT_UART_INDEX)
-            Box::new(pic_device), // index 1 (AT_PIC_INDEX)
-            Box::new(pit),        // index 2 (AT_PIT_INDEX)
-            Box::new(keyboard),   // index 3 (AT_I8042_INDEX)
-            Box::new(vga),        // index 4 (AT_VGA_INDEX)
+            Box::new(uart),          // index 0 (AT_UART_INDEX)
+            Box::new(master_device), // index 1 (AT_PIC_INDEX)
+            Box::new(pit),           // index 2 (AT_PIT_INDEX)
+            Box::new(keyboard),      // index 3 (AT_I8042_INDEX)
+            Box::new(vga),           // index 4 (AT_VGA_INDEX)
+            Box::new(slave_device),  // index 5 (AT_SLAVE_PIC_INDEX)
+            Box::new(rtc),           // index 6 (AT_CMOS_RTC_INDEX)
         ];
         let map = DecodeMap {
             ports: vec![
@@ -246,6 +310,14 @@ impl Chipset for AtChipset {
                 PortRange {
                     ports: CRTC_INDEX_PORT..=CRTC_DATA_PORT,
                     device: AT_VGA_INDEX,
+                },
+                PortRange {
+                    ports: SLAVE_PIC_COMMAND..=SLAVE_PIC_DATA,
+                    device: AT_SLAVE_PIC_INDEX,
+                },
+                PortRange {
+                    ports: CMOS_INDEX_PORT..=CMOS_DATA_PORT,
+                    device: AT_CMOS_RTC_INDEX,
                 },
             ],
             mmio: vec![MmioRange {

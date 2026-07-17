@@ -8,14 +8,18 @@
 //!   the minimal serial-output path.
 //! - [`run_boot`]: a **real-mode** blob on the [`AtChipset`] (UART + 8259 PIC +
 //!   8253 PIT) that programs the timer, takes IRQ0, and prints to serial.
+//! - [`run_rtc`]: a **real-mode** blob on the [`AtChipset`] that programs the
+//!   cascaded PIC pair and the MC146818 RTC, takes IRQ8 across the slave→master
+//!   cascade, and prints to serial.
 //!
-//! Both return the bytes the guest sent to COM1, reconstructed through the
+//! They return the bytes the guest sent to COM1, reconstructed through the
 //! first-class tracing seam (§3.2), never a concrete-device downcast.
 
 use anyhow::{Context, Result};
 use bus::Bus;
 use chipset::{
-    AtChipset, Chipset, SerialChipset, AT_I8042_INDEX, AT_UART_INDEX, AT_VGA_INDEX, COM1_BASE,
+    AtChipset, Chipset, SerialChipset, AT_CMOS_RTC_INDEX, AT_I8042_INDEX, AT_UART_INDEX,
+    AT_VGA_INDEX, COM1_BASE,
 };
 use cpu::x86jit_backend::RealSegments;
 use cpu::X86JitCpu;
@@ -187,6 +191,85 @@ pub const KBD_SCANCODE: u8 = 0x1E;
 /// up after this many idle halts.
 pub const KBD_IDLE_LIMIT: u64 = 200;
 
+/// Linear address of the IRQ8 (RTC) handler in [`RTC_PROGRAM`]. It is poked into
+/// IVT entry `0x70` by the main program (CS = 0, so the linear address equals the
+/// offset); it must match the handler's position after the 64-byte main program.
+pub const RTC_HANDLER_OFFSET: u16 = 0x7C00 + 64;
+
+/// The marker byte the RTC demo's IRQ8 handler transmits to COM1 (`'R'`). The
+/// demo's serial output is exactly this one byte.
+pub const RTC_MARKER: u8 = b'R';
+
+/// Virtual clocks per RTC second for the demo. The real ratio is over a million
+/// clocks; a bounded headless run never advances that far, so the RTC is built
+/// with this small ratio (via [`AtChipset::with_rtc_timing`]) and the
+/// update-ended interrupt fires a few dozen boundaries into the `hlt` loop. It is
+/// still virtual time (retired-instruction-derived), so the run is deterministic.
+pub const RTC_SECOND_TICKS: u64 = 64;
+/// Update-in-progress window for the demo RTC, in virtual clocks.
+pub const RTC_UIP_TICKS: u64 = 8;
+
+/// Consecutive halted boundaries with no interrupt before the RTC machine
+/// declares the source quiescent and stops (§5). After the single update-ended
+/// interrupt the handler masks the master PIC (the cascade line included), so no
+/// further vector is serviceable and the machine gives up after this many idle
+/// halts. Comfortably longer than one RTC second so a live clock is never
+/// mistaken for a dead one before it first fires.
+pub const RTC_IDLE_LIMIT: u64 = 200;
+
+/// The built-in real-mode RTC update-ended interrupt demo (§5, §7).
+///
+/// A hand-encoded 16-bit program (no assembler). The embedder seeds the segment
+/// registers and stack (the `x86jit` core does not lift `mov Sreg, r16`), so the
+/// program starts straight at device setup: it writes an IRQ8 handler address
+/// into IVT entry `0x70` (`0x0000:0x01C0`), programs the master 8259 (ICW1–ICW4,
+/// vector base `0x08`, IRQ2 unmasked for the cascade) and the slave 8259 (ICW1–
+/// ICW4, vector base `0x70`, IRQ8 unmasked), enables the RTC's update-ended
+/// interrupt (register B bit 4, UIE), `sti`, then loops on `hlt`. Once a full RTC
+/// second ticks the RTC raises IRQ8; the machine edge-detects it onto the slave
+/// PIC, which cascades into the master at IRQ2, and injects vector `0x70`. The
+/// handler emits a marker byte `R` to COM1, ends the cascaded interrupt with an
+/// EOI to **both** the slave (`0xA0`) and the master (`0x20`), reads register C of
+/// the RTC to deassert IRQ8, masks all master IRQs so the source falls quiescent,
+/// and `iret`s. Every instruction's bytes are documented in the `rtc_golden`
+/// integration test.
+#[rustfmt::skip]
+pub const RTC_PROGRAM: &[u8] = &[
+    // ---- main program @ 0x7C00 (segments + SP seeded by the embedder) ----
+    0xC7, 0x06, 0xC0, 0x01, 0x40, 0x7C, // mov word [0x01C0],0x7C40  (IVT0x70 IP)
+    0xC7, 0x06, 0xC2, 0x01, 0x00, 0x00, // mov word [0x01C2],0x0000  (IVT0x70 CS)
+    0xB0, 0x11, 0xE6, 0x20,             // mov al,0x11 ; out 0x20,al  (master ICW1)
+    0xB0, 0x08, 0xE6, 0x21,             // mov al,0x08 ; out 0x21,al  (master ICW2: base 0x08)
+    0xB0, 0x04, 0xE6, 0x21,             // mov al,0x04 ; out 0x21,al  (master ICW3: slave on IRQ2)
+    0xB0, 0x01, 0xE6, 0x21,             // mov al,0x01 ; out 0x21,al  (master ICW4: 8086)
+    0xB0, 0xFB, 0xE6, 0x21,             // mov al,0xFB ; out 0x21,al  (master IMR: unmask IRQ2)
+    0xB0, 0x11, 0xE6, 0xA0,             // mov al,0x11 ; out 0xA0,al  (slave ICW1)
+    0xB0, 0x70, 0xE6, 0xA1,             // mov al,0x70 ; out 0xA1,al  (slave ICW2: base 0x70)
+    0xB0, 0x02, 0xE6, 0xA1,             // mov al,0x02 ; out 0xA1,al  (slave ICW3: identity 2)
+    0xB0, 0x01, 0xE6, 0xA1,             // mov al,0x01 ; out 0xA1,al  (slave ICW4: 8086)
+    0xB0, 0xFE, 0xE6, 0xA1,             // mov al,0xFE ; out 0xA1,al  (slave IMR: unmask IRQ8)
+    0xB0, 0x0B, 0xE6, 0x70,             // mov al,0x0B ; out 0x70,al  (select RTC reg B)
+    0xB0, 0x12, 0xE6, 0x71,             // mov al,0x12 ; out 0x71,al  (reg B = 24h | UIE)
+    0xFB,                               // sti
+    0xF4,                               // hlt          <- loop target @ 0x7C3D
+    0xEB, 0xFD,                         // jmp $-3 (back to hlt)
+    // ---- IRQ8 handler @ 0x7C40 ----
+    0x50,                               // push ax
+    0x52,                               // push dx
+    0xB0, 0x52,                         // mov al,0x52 ('R')
+    0xBA, 0xF8, 0x03,                   // mov dx,0x03F8            (COM1 THR)
+    0xEE,                               // out dx,al                (transmit marker)
+    0xB0, 0x20, 0xE6, 0xA0,             // mov al,0x20 ; out 0xA0,al (EOI slave)
+    0xB0, 0x20, 0xE6, 0x20,             // mov al,0x20 ; out 0x20,al (EOI master)
+    0xB0, 0x0C, 0xE6, 0x70,             // mov al,0x0C ; out 0x70,al (select RTC reg C)
+    0xBA, 0x71, 0x00,                   // mov dx,0x0071            (RTC data port)
+    0xEC,                               // in al,dx                 (read reg C -> deassert IRQ8)
+    0xB0, 0xFF, 0xE6, 0x21,             // mov al,0xFF ; out 0x21,al (mask all master IRQs)
+    0x5A,                               // pop dx
+    0x58,                               // pop ax
+    0xCF,                               // iret
+];
+
 /// Segment the VGA text demo points DS/ES at so a near store reaches the text
 /// buffer: `0xB800 << 4 == 0xB8000`, the base of the colour text page.
 pub const VGA_TEXT_SEGMENT: u16 = 0xB800;
@@ -274,6 +357,41 @@ pub fn run_keyboard(blob: &[u8], scancodes: &[u8]) -> Result<Vec<u8>> {
         irq: 1,
     }];
     let mut machine = Machine::new(cpu, bus, pic, QUANTUM, irq_lines, Some(KBD_IDLE_LIMIT));
+
+    machine.run().context("running machine")?;
+
+    Ok(drain_serial(&mut machine, AT_UART_INDEX))
+}
+
+/// Assemble the PC/AT machine with a fast-ticking RTC, run `blob` in real mode,
+/// and return the bytes the guest sent to COM1 (§5, §7).
+///
+/// The RTC's update-ended output ([`AT_CMOS_RTC_INDEX`]) is wired to PIC input
+/// IRQ8, which lives on the *slave* 8259; the machine edge-detects it onto the
+/// cascaded pair, where it surfaces to the CPU through the master's IRQ2 cascade.
+/// This is the first path where an interrupt reaches the CPU across the cascade.
+/// The RTC is built with a small per-second tick ratio ([`RTC_SECOND_TICKS`]) so
+/// the update-ended interrupt fires within a bounded run; the timing is virtual,
+/// so the output stays deterministic.
+pub fn run_rtc(blob: &[u8]) -> Result<Vec<u8>> {
+    let (devices, map, pic) = AtChipset::with_rtc_timing(RTC_SECOND_TICKS, RTC_UIP_TICKS).build();
+    let bus = Bus::new(devices, map);
+
+    let cpu = X86JitCpu::new_real16(
+        RAM_BYTES,
+        BOOT_CS,
+        BOOT_IP,
+        blob,
+        RealSegments::flat(BOOT_CS),
+    )
+    .context("building real-mode cpu")?;
+
+    // Wire the RTC (device index 6) update-ended line to PIC IRQ8 (slave line 0).
+    let irq_lines = vec![IrqLine {
+        device: AT_CMOS_RTC_INDEX,
+        irq: 8,
+    }];
+    let mut machine = Machine::new(cpu, bus, pic, QUANTUM, irq_lines, Some(RTC_IDLE_LIMIT));
 
     machine.run().context("running machine")?;
 
