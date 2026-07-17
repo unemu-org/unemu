@@ -1,7 +1,7 @@
 ---
 id: task-11
 title: Model the 80286 segment-limit #GP fault in real mode (in x86jit)
-status: To Do
+status: In Progress
 assignee: []
 created_date: 2026-07-17 00:00
 labels: [x86jit, fidelity]

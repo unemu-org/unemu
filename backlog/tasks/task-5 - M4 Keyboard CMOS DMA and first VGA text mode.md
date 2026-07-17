@@ -1,7 +1,7 @@
 ---
 id: task-5
 title: M4 — 8042 keyboard, CMOS/RTC, 8237 DMA, first VGA text mode
-status: To Do
+status: In Progress
 assignee: []
 created_date: 2026-07-17 00:00
 labels: [milestone-4]
