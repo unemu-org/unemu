@@ -23,11 +23,20 @@ with independent exit criteria.
 - [x] (b) `INT` / `IRET` / IVT + `IF` in `Flags` (pad byte, ABI-safe) + `#DE`/`#UD`
       vectored through the IVT in real mode. Merged to `pc-emulator` @ ce369c8.
       Deferred: TF flag, STI shadow, far jmp/call/retf.
-- [ ] (c) `inject_irq` / `irq_ack` per the decision-4 contract; retired-instruction
-      counter for the virtual clock (decision-5).
-- [ ] `Long64`/`Compat32` codegen byte-identical (hash test); full x86jit suite
-      green; no PS4 benchmark regression.
-- [ ] Documented merge back to x86jit `main` when the seam is whole.
+- [x] (c) `inject_irq` (between-run delivery, IF/pending/STI-shadow/HLT-wakeup gating)
+      + retired-instruction counter on `Vcpu` (no `CpuState`/`jit_abi` change).
+      Merged to `pc-emulator` @ b6f0082. cf16 differential 16/16.
+- [x] Full x86jit suite green (only two pre-existing host-specific failures, which
+      fail identically on pristine x86jit main); Long64/Compat32 paths mode-gated.
+
+Real-mode is functionally complete on `pc-emulator` — the emulator builds against
+it now (M3 can proceed). Remaining before graduating `pc-emulator` → x86jit `main`
+(a separate gate, not blocking the emulator):
+
+- [ ] Formal byte-identical-codegen check for Long64/Compat32 + PS4 benchmark pass.
+- [ ] Replace the interpreter op-loop closure with an inner `fn` (remove the
+      whitespace churn in `interp/mod.rs` before the PS4-side review).
+- [ ] Documented merge back to x86jit `main`.
 
 ## Notes
 
