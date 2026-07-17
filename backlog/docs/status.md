@@ -19,6 +19,20 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
 
 ## Recently landed
 
+- **DOS-boot groundwork — M4.5 + M5a machine hardening** (tasks 13–19, 23): the
+  push toward booting FreeDOS on the AT via the Kiselev Xi8088 open BIOS
+  (decision-12). **Real-mode CPU driven to 99.63% decided on the SST/80286 corpus**
+  (was 96.20%), lifting LES/LDS, LAHF/SAHF, PUSHA/POPA, ENTER, real-mode LEAVE, and
+  fixing real-mode string ops to use `ds<<4`/`es<<4` bases instead of a flat base 0
+  (the biggest fix — ~45k corpus fails; string ops are everywhere in a BIOS/DOS).
+  No PS4 regression; x86jit pin bumped to 68e0ee1. Machine hardened for a real
+  BIOS: open-bus default for undecoded ports (0xFF read, no-op write), CGA
+  mode/colour/status ports with a per-read retrace bit, the full 8042 AT command
+  set (self-test/interface-test/input-port/aux/BAT), port 0x61 with a per-read
+  refresh bit, and seeded CMOS NVRAM with a valid AT checksum. All device-level;
+  the BIOS machine assembly (task-20) composes them. BIOS fact-check (task-19)
+  confirmed the Xi8088 config: master+slave cascade (no 0xA0 collision), 32 KiB ROM
+  at 0xF8000, built-in µPD765 floppy INT 13h, 6845 CGA. Workspace: **205 tests**.
 - **test386.asm boots as a smoke test** (`task-7`, spike): the third-party 386
   CPU-test ROM boots from RAM at `0xF0000` (reset `F000:FFF0`), reaches **POST
   `[0x00, 0x01]`**, and stops at `SAHF` (`0x9E`) in the conditional-jump test — the
