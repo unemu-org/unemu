@@ -9,6 +9,7 @@ members = [
     "crates/machine",
     "crates/devices",
     "crates/video",
+    "crates/assembly",
     "crates/testkit",
     "crates/cli",
 ]
