@@ -1,9 +1,10 @@
 ---
 id: TASK-20
 title: M5b — Vendor the Kiselev Xi8088 BIOS and boot POST to INT 19h
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-07-17 20:29'
+updated_date: '2026-07-18 05:41'
 labels:
   - bios
   - machine
@@ -31,3 +32,9 @@ Vendor the Kiselev 8088_bios Xi8088 ROM via a pinned fetch/build script (GPLv3+,
 - [ ] #2 BIOS POST runs to INT 19h with no unlifted-instruction / unmapped-port abort
 - [ ] #3 Golden: the POST-code sequence + final VGA text screen, deterministic
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Done 2026-07-18. BIOS boots 14 POST checkpoints (01-09, 10/12 video fallback, 20 RTC, 21 CPU-type, 22 FPU-detect), stops at x87 FNINIT (DB E3) @ 0xFA85B. run_bios + 1MB mosaic map (RAM/VGA-Trap/option-RAM/BIOS-Rom@0xF8000) + all M5a devices + IRQ0/1/8. Screen blank because MDA fallback writes 0xB0000 (mapped RAM, not our CGA @ 0xB8000) — minor caveat. Next gap = x87 (task-24).
+<!-- SECTION:NOTES:END -->

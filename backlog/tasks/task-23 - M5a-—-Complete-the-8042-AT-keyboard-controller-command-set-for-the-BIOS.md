@@ -1,9 +1,10 @@
 ---
 id: TASK-23
 title: M5a — Complete the 8042 AT keyboard-controller command set for the BIOS
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-07-17 21:49'
+updated_date: '2026-07-17 22:04'
 labels:
   - devices
   - dos

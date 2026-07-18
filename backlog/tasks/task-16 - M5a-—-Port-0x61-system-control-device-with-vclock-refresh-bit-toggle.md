@@ -1,9 +1,10 @@
 ---
 id: TASK-16
 title: M5a — Port 0x61 system-control device (with vclock refresh-bit toggle)
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-07-17 20:28'
+updated_date: '2026-07-17 22:11'
 labels:
   - devices
   - dos

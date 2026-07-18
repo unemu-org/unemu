@@ -3,10 +3,10 @@ id: TASK-17
 title: >-
   M5a — CGA-compatible ports on the text card (0x3D8/0x3D9 + retrace bit at
   0x3DA)
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-07-17 20:28'
-updated_date: '2026-07-17 21:49'
+updated_date: '2026-07-17 21:58'
 labels:
   - devices
   - video

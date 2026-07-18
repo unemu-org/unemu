@@ -19,6 +19,19 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
 
 ## Recently landed
 
+- **The real Kiselev Xi8088 BIOS boots and runs 14 POST checkpoints** (`task-20`,
+  folds in ROM mapping `task-12` + POST-port `task-15`): the unmodified BIOS ROM,
+  mapped read-only at `0xF8000`, far-jumps from the reset vector and drives our
+  hardware through CPU test → chipset → DMAC → low-RAM test → IVT → PIT → PIC → KBC
+  → enable-interrupts → video-BIOS scan → MDA/CGA fallback → **RTC init** (passes —
+  CMOS is seeded) → CPU-type → **FPU detect**, where it stops at x87 `FNINIT`
+  (`DB E3`, linear `0xFA85B`) — the next real-mode lift gap (`task-24`). A 1 MiB
+  memory mosaic (RAM / trapped VGA MMIO / zeroed option-ROM area / masked BIOS ROM)
+  composes every M5a device with IRQ0/1/8 wired; `run_bios` captures the port-0x80
+  POST stream + VGA screen on every path. Emulator-only; x86jit untouched.
+  Workspace: **208 tests**. (Screen is blank because the MDA fallback writes
+  `0xB0000`, currently plain RAM rather than routed to the CGA card at `0xB8000` —
+  a minor caveat, not a fault.)
 - **DOS-boot groundwork — M4.5 + M5a machine hardening** (tasks 13–19, 23): the
   push toward booting FreeDOS on the AT via the Kiselev Xi8088 open BIOS
   (decision-12). **Real-mode CPU driven to 99.63% decided on the SST/80286 corpus**

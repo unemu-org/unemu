@@ -1,9 +1,10 @@
 ---
 id: TASK-15
 title: M5a — Wire the POST-code port (0x80) into the machine for BIOS observability
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-07-17 20:28'
+updated_date: '2026-07-18 05:41'
 labels:
   - devices
   - machine

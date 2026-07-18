@@ -1,10 +1,10 @@
 ---
 id: TASK-12
 title: 'Consume RegionKind::Rom in the emulator (BIOS ROM at F0000h)'
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-07-17 19:06'
-updated_date: '2026-07-17 21:49'
+updated_date: '2026-07-18 05:41'
 labels:
   - machine
   - cpu

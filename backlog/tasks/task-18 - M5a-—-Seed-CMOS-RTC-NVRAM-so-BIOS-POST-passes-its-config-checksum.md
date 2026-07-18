@@ -1,9 +1,10 @@
 ---
 id: TASK-18
 title: M5a — Seed CMOS/RTC NVRAM so BIOS POST passes its config checksum
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-07-17 20:28'
+updated_date: '2026-07-17 22:12'
 labels:
   - devices
   - dos
