@@ -296,6 +296,7 @@ mod tests {
                     index: 0x70,
                     data: 0x71,
                     seed: true,
+                    timing: None,
                 }),
                 vec![PortWindow::new(0x70, 0x71)],
             )

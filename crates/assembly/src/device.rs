@@ -158,6 +158,15 @@ pub struct CmosCfg {
     /// Whether to seed the AT configuration NVRAM (and its checksum) so a stock
     /// BIOS's POST passes unattended.
     pub seed: bool,
+    /// Override the RTC's virtual-clock timing as `(second_ticks, uip_ticks)`, or
+    /// `None` for the real ~1.193 MHz-derived default.
+    ///
+    /// The real per-second ratio is over a million virtual clocks — far more than
+    /// a bounded headless run advances — so a machine that must observe an
+    /// update-ended interrupt (IRQ8) within a short run sets a small ratio here.
+    /// The timing is still measured in virtual clocks, never wall time, so the run
+    /// stays deterministic.
+    pub timing: Option<(u64, u64)>,
 }
 
 /// VGA/MDA text-card parameters (§9.2).

@@ -1,27 +1,30 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Machine assembly for the frontend (§3.1).
+//! Machine runners for the frontend (§3.1).
 //!
 //! The `cli` crate is split lib + bin so the golden integration tests can call
-//! the same paths the binary uses. Two machines are assembled here:
+//! the same paths the binary uses. Every PC-family runner here now builds a
+//! declarative [`assembly::MachineConfig`] from a preset, realises it with
+//! [`assembly::assemble`], and drives the resulting machine — addressing devices
+//! by role through the assembler's device-index map, never a hardcoded bus index.
+//! The former hand-assembled paths are kept alongside as `run_*_legacy` twins, the
+//! A/B baseline each config path is proved byte-for-byte equal to (they are
+//! removed once the legacy chipset layer is retired).
 //!
-//! - [`run_serial`]: a Long64 blob on the [`SerialChipset`] (one 16550 UART) —
-//!   the minimal serial-output path.
-//! - [`run_boot`]: a **real-mode** blob on the [`AtChipset`] (UART + 8259 PIC +
-//!   8253 PIT) that programs the timer, takes IRQ0, and prints to serial.
-//! - [`run_rtc`]: a **real-mode** blob on the [`AtChipset`] that programs the
-//!   cascaded PIC pair and the MC146818 RTC, takes IRQ8 across the slave→master
-//!   cascade, and prints to serial.
+//! The lone exception is [`run_serial`]: the Long64 serial skeleton is one 16550
+//! UART assembled inline (trait-free), not through a config preset — a declarative
+//! mode axis for a single Long64 user would not earn its keep.
 //!
-//! They return the bytes the guest sent to COM1, reconstructed through the
-//! first-class tracing seam (§3.2), never a concrete-device downcast.
+//! Runners return their observables (COM1 bytes, POST stream, text screens)
+//! reconstructed through the first-class tracing seam (§3.2), never a
+//! concrete-device downcast.
 
 use anyhow::{Context, Result};
+use assembly::{assemble, AssembledMachine, DeviceId, MachineConfig};
 use bus::{Bus, DecodeMap, MmioRange, PortRange};
 use chipset::{
-    AtChipset, CascadedPic, Chipset, NoInterruptController, SerialChipset, AT_CMOS_RTC_INDEX,
-    AT_I8042_INDEX, AT_UART_INDEX, AT_VGA_INDEX, CMOS_DATA_PORT, CMOS_INDEX_PORT, COM1_BASE,
-    COM1_TOP, KBD_CMD, KBD_DATA, PIC_COMMAND, PIC_DATA, PIT_BASE, PIT_TOP, SLAVE_PIC_COMMAND,
-    SLAVE_PIC_DATA,
+    AtChipset, CascadedPic, Chipset, NoInterruptController, AT_CMOS_RTC_INDEX, AT_I8042_INDEX,
+    AT_UART_INDEX, AT_VGA_INDEX, CMOS_DATA_PORT, CMOS_INDEX_PORT, COM1_BASE, COM1_TOP, KBD_CMD,
+    KBD_DATA, PIC_COMMAND, PIC_DATA, PIT_BASE, PIT_TOP, SLAVE_PIC_COMMAND, SLAVE_PIC_DATA,
 };
 use cpu::x86jit_backend::RealSegments;
 use cpu::{Cpu, CpuError, CpuReg, X86JitCpu};
@@ -381,6 +384,57 @@ pub struct Test386Run {
 /// the error is classified into [`StopReason`] rather than propagated, and the
 /// captured checkpoints are drained regardless of how the run ended.
 pub fn run_test386(blob: &[u8]) -> Test386Run {
+    let config = assembly::test386(blob.to_vec());
+    let AssembledMachine {
+        mut machine,
+        device_index,
+    } = match assemble(&config, None) {
+        Ok(assembled) => assembled,
+        Err(e) => {
+            return Test386Run {
+                post: Vec::new(),
+                stop: StopReason::Unmapped {
+                    detail: format!("building machine: {e}"),
+                },
+            }
+        }
+    };
+
+    let result = machine.run_bounded(Some(TEST386_MAX_RETIRED));
+    let rip = machine.cpu().reg(CpuReg::Rip);
+    let stop = classify_test386_stop(rip, result);
+    let post = drain_post_at(&mut machine, device_index[&DeviceId::Post], POST_PORT);
+    Test386Run { post, stop }
+}
+
+/// Classify how a POST-only (no video) run stopped, reading the RIP for the
+/// human-readable `detail` (never an assertion target — stop addresses shift with
+/// the assembler toolchain).
+fn classify_test386_stop(rip: u64, result: Result<RunOutcome, MachineError>) -> StopReason {
+    match result {
+        Ok(RunOutcome::Halted) => StopReason::Halt,
+        Ok(RunOutcome::RetiredCapReached) => StopReason::BudgetExhausted,
+        Err(MachineError::Cpu(CpuError::UnsupportedInstruction { addr })) => {
+            StopReason::Unsupported {
+                detail: format!("unsupported instruction at {addr:#x} (rip {rip:#x})"),
+            }
+        }
+        Err(MachineError::Cpu(CpuError::Unmapped { addr })) => StopReason::Unmapped {
+            detail: format!("unmapped guest access at {addr:#x} (rip {rip:#x})"),
+        },
+        Err(MachineError::Cpu(CpuError::Memory(msg))) => StopReason::Unmapped {
+            detail: format!("guest memory error: {msg} (rip {rip:#x})"),
+        },
+        Err(MachineError::Bus(e)) => StopReason::Unmapped {
+            detail: format!("{e} (rip {rip:#x})"),
+        },
+        Err(MachineError::Exception { vector }) => StopReason::Exception { vector },
+    }
+}
+
+/// The legacy hand-assembled test386 runner, kept as the A/B baseline the config
+/// path is proved against (deleted with the other legacy paths in a later task).
+pub fn run_test386_legacy(blob: &[u8]) -> Test386Run {
     // Minimal device set: POST port (index 0) + COM1 UART (index 1). No PIC and
     // no IRQ wiring — the guest masks interrupts, so an undeliverable IRQ would
     // stall termination.
@@ -593,7 +647,60 @@ pub struct BiosRun {
 /// whole point is to see how far POST got even when the run ends on an
 /// instruction the real-mode core does not lift.
 pub fn run_bios(rom: &[u8]) -> BiosRun {
+    run_bios_config(assembly::bios(rom.to_vec(), None, BIOS_QUANTUM), false)
+}
+
+/// The legacy hand-assembled no-floppy BIOS runner, kept as the A/B baseline
+/// (deleted with the other legacy paths in a later task).
+pub fn run_bios_legacy(rom: &[u8]) -> BiosRun {
     run_bios_inner(rom, None)
+}
+
+/// Assemble a BIOS machine from `config`, run it, and capture every observable
+/// output path into a [`BiosRun`] (§3.1).
+///
+/// `poll_to_prompt` chooses how far the run goes: the plain BIOS/POST paths run to
+/// the retired cap ([`BIOS_MAX_RETIRED`]); the FreeDOS path polls to the FreeCOM
+/// date prompt and stops there rather than spinning the idle busy-poll to the cap.
+/// Devices are addressed by role through the assembler's device-index map, not a
+/// hardcoded bus index.
+fn run_bios_config(config: MachineConfig, poll_to_prompt: bool) -> BiosRun {
+    let AssembledMachine {
+        mut machine,
+        device_index,
+    } = match assemble(&config, Some(BIOS_IDLE_LIMIT)) {
+        Ok(assembled) => assembled,
+        Err(e) => {
+            return BiosRun {
+                post: Vec::new(),
+                screen: blank_screen(),
+                mda: blank_screen(),
+                com1: Vec::new(),
+                stop: StopReason::Unmapped {
+                    detail: format!("building machine: {e}"),
+                },
+            }
+        }
+    };
+
+    let result = if poll_to_prompt {
+        boot_to_date_prompt(&mut machine)
+    } else {
+        machine.run_bounded(Some(BIOS_MAX_RETIRED))
+    };
+
+    let stop = classify_bios_stop(&machine, result);
+    let post = drain_post_at(&mut machine, device_index[&DeviceId::Post], 0x80);
+    let screen = render_vga(&mut machine, device_index[&DeviceId::Vga]);
+    let mda = render_mda(&machine);
+    let com1 = drain_serial(&mut machine, device_index[&DeviceId::Uart]);
+    BiosRun {
+        post,
+        screen,
+        mda,
+        com1,
+        stop,
+    }
 }
 
 /// Assemble the full PC/AT BIOS machine as [`run_bios`] does, but with a µPD765
@@ -607,6 +714,15 @@ pub fn run_bios(rom: &[u8]) -> BiosRun {
 /// completion. `floppy` is a raw disk image (typically [`FLOPPY_IMAGE_BYTES`]
 /// bytes for a 1.44 MB disk); [`bootable_floppy_image`] builds a minimal one.
 pub fn run_bios_boot(rom: &[u8], floppy: Vec<u8>) -> BiosRun {
+    run_bios_config(
+        assembly::bios(rom.to_vec(), Some(floppy), BIOS_QUANTUM),
+        false,
+    )
+}
+
+/// The legacy hand-assembled floppy-boot BIOS runner, kept as the A/B baseline
+/// (deleted with the other legacy paths in a later task).
+pub fn run_bios_boot_legacy(rom: &[u8], floppy: Vec<u8>) -> BiosRun {
     run_bios_inner(rom, Some(floppy))
 }
 
@@ -623,6 +739,15 @@ pub fn run_bios_boot(rom: &[u8], floppy: Vec<u8>) -> BiosRun {
 /// the MDA console the BIOS actually writes to ([`BiosRun::mda`]), COM1, and the
 /// classified [`BiosRun::stop`].
 pub fn run_freedos(rom: &[u8], floppy: Vec<u8>) -> BiosRun {
+    run_bios_config(
+        assembly::bios(rom.to_vec(), Some(floppy), BIOS_QUANTUM),
+        true,
+    )
+}
+
+/// The legacy hand-assembled FreeDOS runner, kept as the A/B baseline (deleted
+/// with the other legacy paths in a later task).
+pub fn run_freedos_legacy(rom: &[u8], floppy: Vec<u8>) -> BiosRun {
     let mut machine = match assemble_bios_machine(rom, Some(floppy)) {
         Ok(machine) => machine,
         Err(e) => {
@@ -1298,6 +1423,20 @@ pub fn bootable_floppy_image() -> Vec<u8> {
 /// command state machine, 8237 transfer into guest memory, and the boot jump —
 /// deterministically and fast.
 pub fn run_floppy_boot() -> Result<Vec<u8>> {
+    let config = assembly::floppy_boot(FLOPPY_LOADER.to_vec(), bootable_floppy_image());
+    let AssembledMachine {
+        mut machine,
+        device_index,
+    } = assemble(&config, None).context("assembling floppy-boot machine")?;
+
+    machine.run().context("running machine")?;
+
+    Ok(drain_serial(&mut machine, device_index[&DeviceId::Uart]))
+}
+
+/// The legacy hand-assembled floppy-boot runner, kept as the A/B baseline
+/// (deleted with the other legacy paths in a later task).
+pub fn run_floppy_boot_legacy() -> Result<Vec<u8>> {
     let devices: Vec<Box<dyn Device>> = vec![
         Box::new(Uart16550::new(COM1_BASE)),                   // 0
         Box::new(Dma8237::new()),                              // 1
@@ -1359,16 +1498,36 @@ pub fn run_floppy_boot() -> Result<Vec<u8>> {
 /// Assemble the serial machine, run `blob` in Long64, and return the bytes the
 /// guest sent to COM1 (§3.1).
 pub fn run_serial(blob: &[u8]) -> Result<Vec<u8>> {
-    let (devices, map, pic) = SerialChipset::new().build();
+    // The Long64 serial skeleton is a single 16550 UART at COM1 and nothing else.
+    // It is assembled inline (trait-free) rather than through a config preset: it
+    // is the one Long64 machine, and giving the declarative config a mode axis for
+    // a single user would not earn its keep. A guest write to COM1 THR surfaces on
+    // the tracing seam, drained back after the run.
+    let devices: Vec<Box<dyn Device>> = vec![Box::new(Uart16550::new(COM1_BASE))];
+    let map = DecodeMap {
+        ports: vec![PortRange {
+            ports: COM1_BASE..=COM1_TOP,
+            device: 0,
+        }],
+        mmio: Vec::new(),
+    };
     let bus = Bus::new(devices, map);
 
     let cpu = X86JitCpu::new(RAM_BYTES, ENTRY, blob).context("building cpu")?;
-    // No interrupt wiring: `None` idle limit terminates on the guest's `hlt`.
-    let mut machine = Machine::new(cpu, bus, pic, QUANTUM, Vec::new(), None);
+    // No interrupt hardware: a null controller acknowledges nothing, and the
+    // `None` idle limit terminates on the guest's `hlt`.
+    let mut machine = Machine::new(
+        cpu,
+        bus,
+        Box::new(NoInterruptController),
+        QUANTUM,
+        Vec::new(),
+        None,
+    );
 
     machine.run().context("running machine")?;
 
-    Ok(drain_serial(&mut machine, AT_UART_INDEX))
+    Ok(drain_serial(&mut machine, 0))
 }
 
 /// Assemble the PC/AT machine, run `blob` in real mode, and return the bytes the
@@ -1377,6 +1536,20 @@ pub fn run_serial(blob: &[u8]) -> Result<Vec<u8>> {
 /// The PIT counter-0 OUT line (bus device index `2`) is wired to PIC input IRQ0;
 /// the machine edge-detects it and acknowledges/injects the timer vector.
 pub fn run_boot(blob: &[u8]) -> Result<Vec<u8>> {
+    let config = assembly::at_boot(blob.to_vec());
+    let AssembledMachine {
+        mut machine,
+        device_index,
+    } = assemble(&config, Some(BOOT_IDLE_LIMIT)).context("assembling boot machine")?;
+
+    machine.run().context("running machine")?;
+
+    Ok(drain_serial(&mut machine, device_index[&DeviceId::Uart]))
+}
+
+/// The legacy hand-assembled boot runner, kept as the A/B baseline (deleted with
+/// the other legacy paths in a later task).
+pub fn run_boot_legacy(blob: &[u8]) -> Result<Vec<u8>> {
     let (devices, map, pic) = AtChipset::new().build();
     let bus = Bus::new(devices, map);
 
@@ -1405,6 +1578,25 @@ pub fn run_boot(blob: &[u8]) -> Result<Vec<u8>> {
 /// wired to PIC input IRQ1; the machine edge-detects it and acknowledges/injects
 /// the keyboard vector once the guest enables keyboard interrupts and sets `IF`.
 pub fn run_keyboard(blob: &[u8], scancodes: &[u8]) -> Result<Vec<u8>> {
+    let config = assembly::at_keyboard(blob.to_vec());
+    let AssembledMachine {
+        mut machine,
+        device_index,
+    } = assemble(&config, Some(KBD_IDLE_LIMIT)).context("assembling keyboard machine")?;
+
+    // Queue the scancodes into the 8042 before the run, exactly as the legacy
+    // chipset seeded them at construction — the guest raises IRQ1 for each once it
+    // enables keyboard interrupts.
+    inject_scancodes(&mut machine, device_index[&DeviceId::Keyboard], scancodes);
+
+    machine.run().context("running machine")?;
+
+    Ok(drain_serial(&mut machine, device_index[&DeviceId::Uart]))
+}
+
+/// The legacy hand-assembled keyboard runner, kept as the A/B baseline (deleted
+/// with the other legacy paths in a later task).
+pub fn run_keyboard_legacy(blob: &[u8], scancodes: &[u8]) -> Result<Vec<u8>> {
     let (devices, map, pic) = AtChipset::with_keyboard_input(scancodes).build();
     let bus = Bus::new(devices, map);
 
@@ -1440,6 +1632,20 @@ pub fn run_keyboard(blob: &[u8], scancodes: &[u8]) -> Result<Vec<u8>> {
 /// the update-ended interrupt fires within a bounded run; the timing is virtual,
 /// so the output stays deterministic.
 pub fn run_rtc(blob: &[u8]) -> Result<Vec<u8>> {
+    let config = assembly::at_rtc(blob.to_vec(), RTC_SECOND_TICKS, RTC_UIP_TICKS);
+    let AssembledMachine {
+        mut machine,
+        device_index,
+    } = assemble(&config, Some(RTC_IDLE_LIMIT)).context("assembling rtc machine")?;
+
+    machine.run().context("running machine")?;
+
+    Ok(drain_serial(&mut machine, device_index[&DeviceId::Uart]))
+}
+
+/// The legacy hand-assembled RTC runner, kept as the A/B baseline (deleted with
+/// the other legacy paths in a later task).
+pub fn run_rtc_legacy(blob: &[u8]) -> Result<Vec<u8>> {
     let (devices, map, pic) = AtChipset::with_rtc_timing(RTC_SECOND_TICKS, RTC_UIP_TICKS).build();
     let bus = Bus::new(devices, map);
 
@@ -1472,6 +1678,28 @@ pub fn run_rtc(blob: &[u8]) -> Result<Vec<u8>> {
 /// stores surface on the bus and reach the card. Nothing runs a wall clock, so
 /// the produced grid is deterministic.
 pub fn run_vga_text(blob: &[u8]) -> Result<TextGrid> {
+    let config = assembly::at_vga_text(blob.to_vec());
+    let AssembledMachine {
+        mut machine,
+        device_index,
+    } = assemble(&config, None).context("assembling vga-text machine")?;
+
+    machine.run().context("running machine")?;
+
+    let grid = render_vga(&mut machine, device_index[&DeviceId::Vga]);
+    // Exercise the presentation seam: hand the frame to a capture sink and read it
+    // back, exactly as a terminal or windowed presenter would receive it.
+    let mut sink = CaptureFrameSink::new();
+    sink.present(&Frame::Text(grid));
+    Ok(sink
+        .last_text()
+        .cloned()
+        .expect("capture sink holds the presented text frame"))
+}
+
+/// The legacy hand-assembled VGA-text runner, kept as the A/B baseline (deleted
+/// with the other legacy paths in a later task).
+pub fn run_vga_text_legacy(blob: &[u8]) -> Result<TextGrid> {
     let (devices, map, pic) = AtChipset::new().build();
     let bus = Bus::new(devices, map);
 
