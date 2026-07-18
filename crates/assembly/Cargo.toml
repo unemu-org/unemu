@@ -6,7 +6,7 @@ edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 repository.workspace = true
-description = "Declarative machine-configuration data model + validation (the assembler that turns it into a Machine lands here later) (§3.1)."
+description = "Declarative machine-configuration data model, validation, and the assembler that turns it into a running Machine (§3.1)."
 
 [dependencies]
 thiserror.workspace = true
@@ -19,3 +19,6 @@ bus.workspace = true
 device.workspace = true
 devices.workspace = true
 video.workspace = true
+# The one shared 8259 interrupt controller: a live master/slave pair presented
+# both as two bus device faces and as the machine's single controller seam.
+chipset.workspace = true
