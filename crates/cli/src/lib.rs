@@ -642,6 +642,28 @@ pub const DOS_DATE_PROMPT: &str = "Enter new date";
 /// boundaries have no fresh IRQ0, so the pending IRQ1 is acknowledged and INT 09h
 /// runs. The boot to the shell prompt is only ~25M instructions, so the finer
 /// quantum costs no measurable extra time.
+///
+/// ## Why this is a driver knob, not a model fix
+///
+/// This is the one interrupt-fidelity limitation that stays in the frontend: it is
+/// a granularity tradeoff, not an edge-detection bug. Interrupt latency in this
+/// emulator is quantised to the run quantum — devices tick and the interrupt path
+/// is serviced only on `run()` boundaries, and only one vector is acknowledged per
+/// boundary. Real hardware clears IRQ0's line between its ~55 ms periods, leaving
+/// gaps in which a pending IRQ1 wins; batching many periods into one coarse quantum
+/// collapses those gaps.
+///
+/// A faithful in-model fix would bound how much virtual time may elapse between
+/// interrupt-service points regardless of the caller's quantum — i.e. run the CPU
+/// in sub-quanta no longer than about one timer period so the interrupt path is
+/// revisited before IRQ0 is re-latched. That cannot be done without re-running the
+/// CPU between service points (an injected vector is only delivered on the next
+/// `run()`), so it amounts to the machine capping the quantum itself. Doing that
+/// globally would shift every interrupt-timing-sensitive golden that boots on the
+/// coarse [`BIOS_QUANTUM`] (the BIOS-POST and FreeDOS-boot captures are tuned to
+/// it), so it is deliberately left as this per-run knob until a fix can be shown
+/// golden-neutral. Choosing the injection quantum is exactly the "budget quantum =
+/// interrupt latency" contract the interrupt-injection design already records.
 pub const DOS_INTERACTIVE_QUANTUM: Option<u64> = Some(64);
 
 /// Retired-instruction step between prompt-detection polls in the interactive
@@ -650,17 +672,9 @@ pub const DOS_INTERACTIVE_QUANTUM: Option<u64> = Some(64);
 /// hundreds of millions of instructions the BIOS POST and boot retire.
 pub const DOS_INTERACTIVE_POLL_STEP: u64 = 25_000_000;
 
-/// Retired-instruction step while waiting for the 8042 to drain one injected
-/// scancode (INT 09h reads it) before the next byte is injected.
-pub const DOS_INTERACTIVE_KEY_STEP: u64 = 200_000;
-
-/// Upper bound on [`DOS_INTERACTIVE_KEY_STEP`] chunks spent waiting for a single
-/// scancode to drain before giving up on it — a safety net against a wedged run,
-/// never reached in a healthy session (each key drains in one chunk).
-pub const DOS_INTERACTIVE_KEY_MAX_CHUNKS: u32 = 400;
-
-/// Retired-instruction budget granted after the last scancode, for FreeCOM to
-/// finish the command and print its output before the console is read.
+/// Retired-instruction budget granted after the script is queued, for INT 09h to
+/// deliver every scancode and FreeCOM to finish the command and print its output
+/// before the console is read.
 pub const DOS_INTERACTIVE_COMMAND_BUDGET: u64 = 80_000_000;
 
 /// Boot a real FreeDOS floppy image on the Kiselev BIOS machine and drive the
@@ -668,27 +682,32 @@ pub const DOS_INTERACTIVE_COMMAND_BUDGET: u64 = 80_000_000;
 /// into a command (§3.1, §5, §7.5).
 ///
 /// Same firmware, FDC, and DMA as [`run_freedos`], but the machine runs on the
-/// finer [`DOS_INTERACTIVE_QUANTUM`] and is driven in three phases:
+/// finer [`DOS_INTERACTIVE_QUANTUM`] and is driven in two phases:
 ///
 /// 1. **Boot to the prompt.** Step in [`DOS_INTERACTIVE_POLL_STEP`] chunks until
 ///    FreeCOM boots and blocks at its date prompt ([`DOS_DATE_PROMPT`] on the MDA
 ///    console). Keys must wait for DOS to own the keyboard: injected at power-on
 ///    they are consumed or corrupted by the BIOS keyboard-reset handshake and the
 ///    POST buffer flush, and the prompt never advances.
-/// 2. **Type the script.** Inject `scancodes` **one at a time** — each a set-1
-///    (XT) make/break byte, exactly what INT 09h reads at `0x60` (this machine
-///    models no translation). After each, run until the 8042 output buffer drains
-///    (INT 09h has read the byte and dropped IRQ1) before injecting the next. One
-///    at a time is required: pushing the whole script at once refills the output
-///    buffer the instant the prior byte is read, so the IRQ1 line never falls and
-///    rises again and only the first keystroke is ever delivered. Per-byte
-///    injection gives each a clean IRQ1 edge, so INT 09h translates it into the
-///    BDA keyboard ring where DOS's INT 16h reads pop it.
-/// 3. **Run the command.** After the last key, run [`DOS_INTERACTIVE_COMMAND_BUDGET`]
-///    more so FreeCOM processes the ring, runs the command, and prints its output.
+/// 2. **Type the script and run the command.** Queue the whole `scancodes` script
+///    into the 8042 at once — each a set-1 (XT) make/break byte, exactly what INT
+///    09h reads at `0x60` (this machine models no translation) — then run
+///    [`DOS_INTERACTIVE_COMMAND_BUDGET`] more. The 8042 delivers queued bytes
+///    serially, shifting the next in on a tick after each read, so every scancode
+///    drops and re-raises the IRQ1 line on its own and INT 09h gets a clean edge
+///    per byte; INT 09h translates each into the BDA keyboard ring where DOS's INT
+///    16h reads pop it, then FreeCOM runs the command and prints its output.
 ///
 /// A short script such as `\r\rDIR\r` (accept the date, accept the time, then type
 /// `DIR` + Enter) reaches the `A:\>` prompt and a directory listing.
+///
+/// The still-finer-than-boot quantum is a deliberate concession, not the input
+/// path's requirement: the machine acknowledges at most one PIC vector per run
+/// quantum, so on the coarse boot quantum a busy-polling FreeCOM lets the periodic
+/// timer IRQ0 win every priority race and starves the keyboard IRQ1 (see
+/// [`DOS_INTERACTIVE_QUANTUM`]). A per-byte injection pace is no longer needed —
+/// that was the 8042's edge-collapsing behaviour, now fixed in the controller
+/// model.
 ///
 /// Fully deterministic — every boundary falls on a retired-instruction count,
 /// never wall time (§6) — so the session reproduces byte for byte. The returned
@@ -724,27 +743,18 @@ pub fn run_freedos_interactive(rom: &[u8], floppy: Vec<u8>, scancodes: &[u8]) ->
         }
     };
 
-    // Phase 2: type the script one scancode at a time, draining each before the
-    // next so every byte is a clean IRQ1 edge.
+    // Phase 2: queue the whole script at once and run the command. The 8042 now
+    // delivers queued bytes serially — one per tick after each read (see its
+    // serial-delivery model) — so each scancode drops and re-raises the IRQ1 line
+    // on its own, giving INT 09h a clean edge per byte without the driver having to
+    // pace injection one key at a time.
     if result.is_ok() && mda_contains(&machine, DOS_DATE_PROMPT) {
-        for &scancode in scancodes {
-            inject_scancodes(&mut machine, BIOS_I8042_INDEX, &[scancode]);
-            let mut chunks = 0;
-            while kbc_irq_pending(&mut machine, BIOS_I8042_INDEX) && result.is_ok() {
-                cap = (cap + DOS_INTERACTIVE_KEY_STEP).min(BIOS_MAX_RETIRED);
-                result = machine.run_bounded(Some(cap));
-                chunks += 1;
-                if chunks >= DOS_INTERACTIVE_KEY_MAX_CHUNKS || cap >= BIOS_MAX_RETIRED {
-                    break;
-                }
-            }
-        }
+        inject_scancodes(&mut machine, BIOS_I8042_INDEX, scancodes);
 
-        // Phase 3: let FreeCOM process the ring and run the command.
-        if result.is_ok() {
-            cap = (cap + DOS_INTERACTIVE_COMMAND_BUDGET).min(BIOS_MAX_RETIRED);
-            result = machine.run_bounded(Some(cap));
-        }
+        // Run on so INT 09h delivers each queued scancode into the BDA key ring and
+        // FreeCOM processes the line input, runs the command, and prints its output.
+        cap = (cap + DOS_INTERACTIVE_COMMAND_BUDGET).min(BIOS_MAX_RETIRED);
+        result = machine.run_bounded(Some(cap));
     }
 
     let stop = classify_bios_stop(&machine, result);
@@ -759,17 +769,6 @@ pub fn run_freedos_interactive(rom: &[u8], floppy: Vec<u8>, scancodes: &[u8]) ->
         com1,
         stop,
     }
-}
-
-/// Whether the 8042 at bus index `kbc_index` is asserting IRQ1 (a keyboard byte is
-/// in its output buffer, unread). Paces one-at-a-time scancode injection: once it
-/// falls, INT 09h has read the byte and the controller is ready for the next.
-fn kbc_irq_pending(machine: &mut Machine<X86JitCpu>, kbc_index: usize) -> bool {
-    machine
-        .bus_mut()
-        .device_mut(kbc_index)
-        .map(|d| d.irq_pending())
-        .unwrap_or(false)
 }
 
 /// Whether the MDA console currently holds `needle` (used to detect a shell prompt
