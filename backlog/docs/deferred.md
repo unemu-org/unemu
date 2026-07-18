@@ -48,6 +48,28 @@ Things **deliberately not implemented**. If something seems missing and is liste
   registers itself — needs these lifted in x86jit (a further real-mode extension).
 - **Tracked in:** decision-3 (real-mode scope), task-7 (test386.asm / real BIOS).
 
+### Snapshot / save-restore of a running machine
+
+- **Why deferred:** The machine-config layer makes `MachineConfig` identifiable
+  (`Eq`/`Debug`) precisely so a future snapshot feature has a stable machine
+  identity to hang off, and the `Device` contract carries `save`/`restore` from
+  day one (decision-7). But wiring up whole-machine snapshot/replay is a
+  standalone feature, not part of building the config layer — designing it now
+  would pre-empt work with no current consumer.
+- **Revisit when:** A replay/debug or golden-snapshot workflow needs to freeze
+  and restore a running machine.
+- **Tracked in:** decision-7, [`design/machine-config.md`](design/machine-config.md).
+
+### `run_serial` Long64 skeleton in the machine-config layer
+
+- **Why deferred:** `run_serial` is the only Long64 (non-real-mode) consumer.
+  Adding a CPU-mode axis to `MachineConfig` for one outlier would grow the whole
+  config to serve it. The skeleton is instead inlined trait-free (or the runner
+  and its golden are deleted); either way the config gains no mode dimension. A
+  deleted `run_serial` + golden is intentional, not a regression to restore.
+- **Revisit when:** A second Long64 consumer appears and justifies a mode axis.
+- **Tracked in:** [`design/machine-config.md`](design/machine-config.md) (Non-goals).
+
 ### Real (unmodified) BIOS
 
 - **Why deferred:** Start from a minimal BIOS stub; x86jit models a modern CPU, so
