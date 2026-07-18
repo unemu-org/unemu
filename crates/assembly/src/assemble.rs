@@ -112,14 +112,12 @@ pub enum AssemblyError {
 /// derive and seed the CMOS from the memory map and drives; and assemble the
 /// machine.
 ///
-/// `idle_limit` is the run-loop bound on how long a halted guest is kept alive
-/// waiting for an interrupt before the machine declares the source quiescent. It
-/// is a run concern that will move into `RunPolicy` later; for now it is a
-/// parameter here so the caller keeps control of it.
-pub fn assemble(
-    config: &MachineConfig,
-    idle_limit: Option<u64>,
-) -> Result<AssembledMachine, AssemblyError> {
+/// The **idle limit** — how long a halted guest is kept alive waiting for an
+/// interrupt before the machine declares the source quiescent — is *not* set here.
+/// It is a "how we run" concern that belongs to [`RunPolicy`](crate::RunPolicy),
+/// so the assembled machine is built without one and the run driver
+/// ([`run`](crate::run)) stamps it on before the loop runs.
+pub fn assemble(config: &MachineConfig) -> Result<AssembledMachine, AssemblyError> {
     // A validated config does not fail assembly for configuration reasons; run
     // the checks first so any inconsistency surfaces as a precise ConfigError.
     config.validate()?;
@@ -180,13 +178,15 @@ pub fn assemble(
     let irq_lines = build_irq_lines(config, &device_index);
     let dma_wirings = build_dma_wirings(config, &device_index);
 
+    // The machine is built with no idle limit; the run policy stamps it on before
+    // the loop runs (idle_limit is a "how we run" concern, not machine identity).
     let machine = Machine::new(
         cpu,
         Bus::new(devices, map),
         controller,
         config.clock.quantum,
         irq_lines,
-        idle_limit,
+        None,
     )
     .with_dma_wirings(dma_wirings);
 
@@ -619,12 +619,12 @@ mod tests {
 
     #[test]
     fn reference_config_assembles() {
-        assert!(assemble(&reference_config(), Some(64)).is_ok());
+        assert!(assemble(&reference_config()).is_ok());
     }
 
     #[test]
     fn device_index_map_follows_config_order() {
-        let assembled = assemble(&reference_config(), Some(64)).expect("assembles");
+        let assembled = assemble(&reference_config()).expect("assembles");
         let map = &assembled.device_index;
         // The devices land in config order, each role at its own bus slot; the
         // master and slave PIC faces are two distinct slots of the one live chip.
@@ -647,7 +647,7 @@ mod tests {
         let config = reference_config();
         let index = {
             // Rebuild the index the same way assemble does, to assert the map.
-            let assembled = assemble(&config, Some(64)).expect("assembles");
+            let assembled = assemble(&config).expect("assembles");
             assembled.device_index
         };
         let map = build_decode_map(&config, &index);
@@ -682,7 +682,7 @@ mod tests {
     #[test]
     fn wiring_tables_resolve_ids_to_indices() {
         let config = reference_config();
-        let assembled = assemble(&config, Some(64)).expect("assembles");
+        let assembled = assemble(&config).expect("assembles");
         let index = &assembled.device_index;
 
         let irqs = build_irq_lines(&config, index);
@@ -718,7 +718,7 @@ mod tests {
         // The ROM is loaded at its base and reads back through the CPU seam; low
         // RAM is writable. This proves the memory mosaic was laid out, without a
         // full boot.
-        let mut assembled = assemble(&reference_config(), Some(64)).expect("assembles");
+        let mut assembled = assemble(&reference_config()).expect("assembles");
         let cpu = assembled.machine.cpu();
         let mut rom = [0xFFu8; 4];
         cpu.read_mem(ROM_BASE, &mut rom).expect("rom readable");
@@ -735,7 +735,7 @@ mod tests {
         let mut config = reference_config();
         // A stray UART window over the PIT's 0x40 base is an unallowed overlap.
         config.devices[0].ports.push(PortWindow::single(0x40));
-        let result = assemble(&config, Some(64));
+        let result = assemble(&config);
         assert!(matches!(
             result,
             Err(AssemblyError::Config(ConfigError::PortOverlap {
@@ -771,7 +771,7 @@ mod tests {
             images: Vec::new(),
             output: OutputConfig::default(),
         };
-        let assembled = assemble(&config, None).expect("assembles");
+        let assembled = assemble(&config).expect("assembles");
         assert_eq!(assembled.device_index[&DeviceId::Uart], 0);
     }
 
