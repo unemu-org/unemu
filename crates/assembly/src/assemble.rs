@@ -344,7 +344,12 @@ fn build_fdc_drives(config: &MachineConfig) -> [Option<Drive>; 4] {
             // ready", matching an open drive door.
             Err(_) => continue,
         };
-        slots[slot] = Some(Drive::new(to_device_geometry(geometry), image));
+        let geometry = to_device_geometry(geometry);
+        slots[slot] = Some(if drive.write_protect {
+            Drive::new_read_only(geometry, image)
+        } else {
+            Drive::new(geometry, image)
+        });
     }
     slots
 }
@@ -613,6 +618,7 @@ mod tests {
                 size: FloppyGeometry::HD_1_44.image_bytes(),
             },
             controller_slot: 0,
+            write_protect: false,
         }];
 
         MachineConfig {
@@ -809,6 +815,7 @@ mod tests {
                     size: FloppyGeometry::HD_1_2.image_bytes(),
                 },
                 controller_slot: 0,
+                write_protect: false,
             },
             DriveConfig {
                 kind: DriveKind::Floppy {
@@ -818,6 +825,7 @@ mod tests {
                     size: FloppyGeometry::DD_720K.image_bytes(),
                 },
                 controller_slot: 1,
+                write_protect: false,
             },
         ];
         config
@@ -853,6 +861,45 @@ mod tests {
         assert!(assemble(&config).is_ok());
     }
 
+    #[test]
+    fn write_protect_flag_routes_to_the_mounted_drive() {
+        // Two drives on one controller: slot 0 writable (the default), slot 1
+        // write-protected. The flag must reach the device drive it belongs to.
+        let mut config = reference_config();
+        config.drives = vec![
+            DriveConfig {
+                kind: DriveKind::Floppy {
+                    geometry: FloppyGeometry::HD_1_44,
+                },
+                image: ImageSource::Blank {
+                    size: FloppyGeometry::HD_1_44.image_bytes(),
+                },
+                controller_slot: 0,
+                write_protect: false,
+            },
+            DriveConfig {
+                kind: DriveKind::Floppy {
+                    geometry: FloppyGeometry::HD_1_44,
+                },
+                image: ImageSource::Blank {
+                    size: FloppyGeometry::HD_1_44.image_bytes(),
+                },
+                controller_slot: 1,
+                write_protect: true,
+            },
+        ];
+
+        let slots = build_fdc_drives(&config);
+        assert!(
+            !slots[0].as_ref().expect("slot 0 mounted").write_protected,
+            "the default drive is writable"
+        );
+        assert!(
+            slots[1].as_ref().expect("slot 1 mounted").write_protected,
+            "the flagged drive is mounted write-protected"
+        );
+    }
+
     /// The reference machine carrying a single floppy of `geometry` backed by
     /// `image` in slot 0.
     fn single_floppy_config(geometry: FloppyGeometry, image: ImageSource) -> MachineConfig {
@@ -861,6 +908,7 @@ mod tests {
             kind: DriveKind::Floppy { geometry },
             image,
             controller_slot: 0,
+            write_protect: false,
         }];
         config
     }

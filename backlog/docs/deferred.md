@@ -92,3 +92,28 @@ Things **deliberately not implemented**. If something seems missing and is liste
   286-detection quirks would break a period BIOS.
 - **Revisit when:** A real BIOS blob is a goal.
 - **Tracked in:** decision-10.
+
+### Host-file write-back for a floppy WRITE
+
+- **Why deferred:** The µPD765 WRITE DATA path commits sectors to the mounted
+  drive's image **in memory only**. A file-backed image (`ImageSource::File`) is
+  read once at assembly; nothing writes the mutated bytes back to the host file, so
+  a fresh run always starts from the original on-disk image. Persisting writes needs
+  a write-back policy (flush-on-exit vs. copy-on-write vs. in-place) and touches the
+  image-loading seam, which no current goal exercises — every golden and boot flow
+  reads media or writes it only within a single run.
+- **Revisit when:** A guest must persist across runs — e.g. installing to a floppy
+  image, or a DOS session that must survive a restart.
+- **Tracked in:** none yet.
+
+### DOS-level file-create write golden
+
+- **Why deferred:** The floppy WRITE is proven today at the controller level (a
+  hand-encoded guest programs the 8237 + µPD765 to write and read back a sector) and
+  through unit tests. Driving a full DOS to create a file (`echo > A:\FILE`) and
+  verifying it through the guest's own FAT12 driver is a much larger end-to-end path
+  — it needs an interactive DOS session and a FAT12 read-back — with no incremental
+  value over the direct write golden until DOS write flows are the target.
+- **Revisit when:** DOS is driven to write a file and the result must be verified
+  end to end through the filesystem.
+- **Tracked in:** none yet.

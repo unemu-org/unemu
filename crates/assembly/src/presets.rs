@@ -256,6 +256,7 @@ fn floppy_drive_geo(image: ImageSource, geometry: FloppyGeometry, slot: u8) -> D
         kind: DriveKind::Floppy { geometry },
         image,
         controller_slot: slot,
+        write_protect: false,
     }
 }
 
@@ -343,6 +344,61 @@ pub fn at_rtc(blob: Vec<u8>, second_ticks: u64, uip_ticks: u64) -> MachineConfig
         blob,
         at_device_set(None, None, Some(8), Some((second_ticks, uip_ticks))),
     )
+}
+
+/// The floppy WRITE demo: the AT device set plus an 8237 and a µPD765 backed by a
+/// **blank writable** floppy, with `program` at `0x7C00` and `pattern` preloaded
+/// at `pattern_base` in flat 64 KiB RAM.
+///
+/// The guest drives the controller directly (no BIOS): it programs the 8237 for a
+/// memory→device transfer of `pattern`, issues WRITE DATA, then programs the 8237
+/// the other way and issues READ DATA to pull the just-written sector back into a
+/// separate buffer. The floppy starts blank (all zeroes), so the pattern the guest
+/// reads back can only have come from its own write. No interrupt source is wired;
+/// the guest polls the controller through the result phase and the machine
+/// services the DMA on its run boundaries.
+pub fn at_fdc_write(program: Vec<u8>, pattern: Vec<u8>, pattern_base: u64) -> MachineConfig {
+    let mut devices = at_device_set(None, None, None, None);
+    devices.push(dma(vec![
+        PortWindow::new(0x00, 0x0F),
+        PortWindow::new(0x80, 0x8F),
+    ]));
+    devices.push(fdc(vec![PortWindow::new(FDC_BASE, FDC_TOP)], None, Some(2)));
+
+    let blank = ImageSource::Blank {
+        size: FloppyGeometry::DD_360K.image_bytes(),
+    };
+    MachineConfig {
+        cpu: CpuConfig {
+            chip: CpuChip::I80286,
+            reset: ResetSpec::Entry {
+                cs: DEMO_CS,
+                ip: DEMO_IP,
+            },
+            segments: SegmentSeed::flat(DEMO_CS),
+        },
+        clock: ClockConfig::default(),
+        memory: MemoryConfig {
+            address_space_bytes: DEMO_RAM_BYTES,
+            ram: vec![RamRegion::new(0, DEMO_RAM_BYTES)],
+            mmio: Vec::new(),
+        },
+        devices,
+        drives: vec![floppy_drive_geo(blank, FloppyGeometry::DD_360K, 0)],
+        images: vec![
+            LoadImage {
+                base: (u64::from(DEMO_CS) << 4) + u64::from(DEMO_IP),
+                source: ImageSource::Inline(program),
+                kind: ImageKind::RamLoad,
+            },
+            LoadImage {
+                base: pattern_base,
+                source: ImageSource::Inline(pattern),
+                kind: ImageKind::RamLoad,
+            },
+        ],
+        output: OutputConfig::default(),
+    }
 }
 
 /// The VGA text demo: `blob` runs with DS/ES pointed at the colour text page, the
