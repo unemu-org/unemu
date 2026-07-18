@@ -20,7 +20,8 @@
 
 use anyhow::{Context, Result};
 use assembly::{
-    assemble, AssembledMachine, ConsoleProbe, DeviceId, MachineConfig, RunPolicy, StopCondition,
+    assemble, AssembledMachine, ConsoleProbe, DeviceId, InjectionSchedule, KeyboardStimulus,
+    MachineConfig, RunPolicy, StopCondition,
 };
 use bus::{Bus, DecodeMap, MmioRange, PortRange};
 use chipset::{
@@ -44,6 +45,7 @@ use devices::{
     CmosConfig, CmosRtc, Dma8237, Pit8253, PostPort, SysControl, Uart16550, Upd765, VgaText, I8042,
 };
 use machine::{DmaWiring, IrqLine, Machine, MachineError, RunOutcome};
+use std::collections::HashMap;
 use video::{render_text_mode, CaptureFrameSink, Frame, FrameSink, TextGrid, TextModeState};
 
 /// Guest RAM size for the flat address space (64 KiB).
@@ -649,7 +651,47 @@ pub struct BiosRun {
 /// whole point is to see how far POST got even when the run ends on an
 /// instruction the real-mode core does not lift.
 pub fn run_bios(rom: &[u8]) -> BiosRun {
-    run_bios_config(assembly::bios(rom.to_vec(), None, BIOS_QUANTUM), false)
+    run_bios_config(assembly::bios(rom.to_vec(), None, BIOS_QUANTUM), |_| {
+        bios_natural_policy()
+    })
+}
+
+/// The natural-stop policy the plain BIOS/POST boots run under: cap the total
+/// retired instructions at [`BIOS_MAX_RETIRED`], declare the interrupt source
+/// quiescent after [`BIOS_IDLE_LIMIT`] idle boundaries, and stop when the guest
+/// halts (relocated out of machine construction into the policy).
+fn bios_natural_policy() -> RunPolicy {
+    RunPolicy::natural(Some(BIOS_MAX_RETIRED), Some(BIOS_IDLE_LIMIT))
+}
+
+/// The MDA console probe the FreeDOS runs read back to detect FreeCOM's prompt:
+/// the monochrome text window at [`MDA_BUFFER_BASE`], rendered exactly as the
+/// frontend renders that console so a needle match here is what the caller sees.
+fn mda_console_probe() -> ConsoleProbe {
+    ConsoleProbe {
+        base: MDA_BUFFER_BASE,
+        cols: COLS,
+        rows: ROWS,
+    }
+}
+
+/// The prompt-poll policy the FreeDOS runs share: step to FreeCOM's date prompt on
+/// the MDA console in [`DOS_INTERACTIVE_POLL_STEP`] chunks, then queue `stimuli` and
+/// run `then_budget` more so the shell processes them. The plain FreeDOS boot passes
+/// no stimuli and a zero budget (it stops at the prompt); the interactive run passes
+/// the keyboard script and [`DOS_INTERACTIVE_COMMAND_BUDGET`].
+fn freedos_prompt_policy(stimuli: Vec<KeyboardStimulus>, then_budget: u64) -> RunPolicy {
+    RunPolicy {
+        retired_cap: Some(BIOS_MAX_RETIRED),
+        idle_limit: Some(BIOS_IDLE_LIMIT),
+        stop: StopCondition::PromptThen {
+            console: mda_console_probe(),
+            needle: DOS_DATE_PROMPT.to_string(),
+            poll_step: DOS_INTERACTIVE_POLL_STEP,
+            then_budget,
+        },
+        stimuli,
+    }
 }
 
 /// The legacy hand-assembled no-floppy BIOS runner, kept as the A/B baseline
@@ -658,15 +700,18 @@ pub fn run_bios_legacy(rom: &[u8]) -> BiosRun {
     run_bios_inner(rom, None)
 }
 
-/// Assemble a BIOS machine from `config`, run it, and capture every observable
-/// output path into a [`BiosRun`] (§3.1).
+/// Assemble a BIOS machine from `config`, run it under the policy `build_policy`
+/// derives, and capture every observable output path into a [`BiosRun`] (§3.1).
 ///
-/// `poll_to_prompt` chooses how far the run goes: the plain BIOS/POST paths run to
-/// the retired cap ([`BIOS_MAX_RETIRED`]); the FreeDOS path polls to the FreeCOM
-/// date prompt and stops there rather than spinning the idle busy-poll to the cap.
-/// Devices are addressed by role through the assembler's device-index map, not a
-/// hardcoded bus index.
-fn run_bios_config(config: MachineConfig, poll_to_prompt: bool) -> BiosRun {
+/// "How we run" is a [`RunPolicy`], not part of the machine, and `build_policy`
+/// builds it *after* assembly so a stimulus can address the keyboard controller by
+/// role through the assembler's device-index map (never a hardcoded bus index) —
+/// exactly how the interactive FreeDOS run resolves its 8042. The plain BIOS/POST
+/// paths hand back a natural-stop policy; the FreeDOS paths a prompt-poll one.
+fn run_bios_config(
+    config: MachineConfig,
+    build_policy: impl FnOnce(&HashMap<DeviceId, usize>) -> RunPolicy,
+) -> BiosRun {
     let AssembledMachine {
         mut machine,
         device_index,
@@ -685,29 +730,7 @@ fn run_bios_config(config: MachineConfig, poll_to_prompt: bool) -> BiosRun {
         }
     };
 
-    // "How we run" is a RunPolicy, not part of the machine: the plain BIOS/POST
-    // path runs to a natural stop under the retired cap; the FreeDOS path polls to
-    // the FreeCOM date prompt on the MDA console and stops there. Both carry the
-    // idle limit the machine used to be constructed with (relocated into the policy).
-    let policy = if poll_to_prompt {
-        RunPolicy {
-            retired_cap: Some(BIOS_MAX_RETIRED),
-            idle_limit: Some(BIOS_IDLE_LIMIT),
-            stop: StopCondition::PromptThen {
-                console: ConsoleProbe {
-                    base: MDA_BUFFER_BASE,
-                    cols: COLS,
-                    rows: ROWS,
-                },
-                needle: DOS_DATE_PROMPT.to_string(),
-                poll_step: DOS_INTERACTIVE_POLL_STEP,
-                then_budget: 0,
-            },
-            stimuli: Vec::new(),
-        }
-    } else {
-        RunPolicy::natural(Some(BIOS_MAX_RETIRED), Some(BIOS_IDLE_LIMIT))
-    };
+    let policy = build_policy(&device_index);
     let result = assembly::run(&mut machine, &policy);
 
     let stop = classify_bios_stop(&machine, result);
@@ -737,7 +760,7 @@ fn run_bios_config(config: MachineConfig, poll_to_prompt: bool) -> BiosRun {
 pub fn run_bios_boot(rom: &[u8], floppy: Vec<u8>) -> BiosRun {
     run_bios_config(
         assembly::bios(rom.to_vec(), Some(floppy), BIOS_QUANTUM),
-        false,
+        |_| bios_natural_policy(),
     )
 }
 
@@ -762,7 +785,7 @@ pub fn run_bios_boot_legacy(rom: &[u8], floppy: Vec<u8>) -> BiosRun {
 pub fn run_freedos(rom: &[u8], floppy: Vec<u8>) -> BiosRun {
     run_bios_config(
         assembly::bios(rom.to_vec(), Some(floppy), BIOS_QUANTUM),
-        true,
+        |_| freedos_prompt_policy(Vec::new(), 0),
     )
 }
 
@@ -910,6 +933,29 @@ pub const DOS_INTERACTIVE_COMMAND_BUDGET: u64 = 80_000_000;
 /// [`BiosRun`] carries every observable output path, so the resulting `A:\>`
 /// prompt and command output land in the MDA console ([`BiosRun::mda`]).
 pub fn run_freedos_interactive(rom: &[u8], floppy: Vec<u8>, scancodes: &[u8]) -> BiosRun {
+    // The machine is the BIOS+floppy shape on the fine interactive quantum (guest-
+    // visible interrupt latency, so it lives in the config's clock — see
+    // [`DOS_INTERACTIVE_QUANTUM`]); the run is a prompt-poll policy that boots to the
+    // date prompt, queues the keyboard script into the 8042, then runs the command
+    // budget. The 8042 is addressed by role: the stimulus takes its bus index from
+    // the assembler's device-index map, not a hardcoded constant.
+    let script = scancodes.to_vec();
+    run_bios_config(
+        assembly::bios(rom.to_vec(), Some(floppy), DOS_INTERACTIVE_QUANTUM),
+        |device_index| {
+            let stimulus = KeyboardStimulus {
+                keyboard_index: device_index[&DeviceId::Keyboard],
+                scancodes: script,
+                schedule: InjectionSchedule::AfterPrompt,
+            };
+            freedos_prompt_policy(vec![stimulus], DOS_INTERACTIVE_COMMAND_BUDGET)
+        },
+    )
+}
+
+/// The legacy hand-assembled interactive FreeDOS runner, kept as the A/B baseline
+/// (deleted with the other legacy paths in a later task).
+pub fn run_freedos_interactive_legacy(rom: &[u8], floppy: Vec<u8>, scancodes: &[u8]) -> BiosRun {
     let mut machine =
         match assemble_bios_machine_quantum(rom, Some(floppy), DOS_INTERACTIVE_QUANTUM) {
             Ok(machine) => machine,
