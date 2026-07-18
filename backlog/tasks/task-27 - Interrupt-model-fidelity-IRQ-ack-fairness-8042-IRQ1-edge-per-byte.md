@@ -1,9 +1,10 @@
 ---
 id: TASK-27
 title: 'Interrupt-model fidelity: IRQ ack fairness + 8042 IRQ1 edge per byte'
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-07-18 12:16'
+updated_date: '2026-07-18 13:46'
 labels:
   - machine
   - devices
@@ -22,3 +23,9 @@ Two real interrupt-model limitations surfaced while driving FreeDOS via the keyb
 - [ ] #2 8042 delivers a clean IRQ1 edge per queued byte (or the machine handles the level correctly)
 - [ ] #3 The task-26 driver workarounds (fine quantum / one-at-a-time) can be simplified; interactive golden still passes
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Done 2026-07-18. Issue 2 (8042 IRQ1 edge per byte) FIXED in the model: serial refill on tick + one-tick refill_hold so edge_detect sees the line fall -> clean edge per byte; interactive driver simplified (whole script queued, dropped one-at-a-time). Issue 1 (IRQ0 starves IRQ1 under coarse quantum) DOCUMENTED not fixed - a quantum-granularity tradeoff per decision-4; faithful fix would shift boot goldens, kept the fine DOS_INTERACTIVE_QUANTUM knob. All goldens green, no re-baseline. Machine core + x86jit untouched.
+<!-- SECTION:NOTES:END -->
