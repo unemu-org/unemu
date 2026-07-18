@@ -47,6 +47,12 @@
 //!   DREQ/DACK handshake latency.
 //! - **Compressed timing / rotating priority / the temporary register readback**
 //!   beyond returning the last byte.
+//! - **Mode/direction mismatch**: the requested transfer direction
+//!   ([`service_write`] for device→memory, [`service_read`] for memory→device) is
+//!   trusted to match the channel's programmed [`TransferType`]. A guest that
+//!   programs a write-transfer mode but drives a read-direction request (or vice
+//!   versa) is not detected — parity with the other simplifications above, which
+//!   model register effects rather than policing guest misconfiguration.
 
 use device::{AccessDir, Device, DeviceError, DmaMemory, TraceEvent, VClock};
 
@@ -535,6 +541,10 @@ impl Device for Dma8237 {
 
     fn dma_service_write(&mut self, channel: u8, mem: &mut dyn DmaMemory, data: &[u8]) -> usize {
         self.service_write(usize::from(channel), mem, data)
+    }
+
+    fn dma_service_read(&mut self, channel: u8, mem: &mut dyn DmaMemory, out: &mut [u8]) -> usize {
+        self.service_read(usize::from(channel), mem, out)
     }
 
     fn take_trace(&mut self) -> Vec<TraceEvent> {
