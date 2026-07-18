@@ -44,11 +44,12 @@
 //! kernel initialises and prints its banner, and it hands off to `COMMAND.COM`
 //! (FreeCOM), which starts and prompts for the date. With no `AUTOEXEC.BAT`,
 //! FreeCOM asks for the date/time before giving the `A:\>` prompt; the run stops
-//! there **waiting for keyboard input that never arrives in a headless run**. The
-//! guest idles in the DOS INT 16h keyboard wait while the timer IRQ0 keeps
-//! ticking, so no interrupt source falls quiescent and the run ends at the
-//! retired-instruction cap (`StopReason::BudgetExhausted`) — a terminal
-//! wait-for-input state, not a spin.
+//! there **waiting for keyboard input that never arrives in a headless run**.
+//! `run_freedos` polls the console and stops as soon as that date prompt appears
+//! rather than spinning the ~2 billion idle INT 16h busy-poll instructions to the
+//! full cap — the boot itself is only ~25M instructions, so the whole run is a few
+//! seconds. The stop is still `StopReason::BudgetExhausted` (a poll-chunk cap
+//! reached at a terminal wait-for-input state, not a spin or an unlifted op).
 //!
 //! Reaching the shell required modelling the monochrome (MDA) input status
 //! register at port `0x3BA`: the BIOS's INT 10h read/write-character routines
