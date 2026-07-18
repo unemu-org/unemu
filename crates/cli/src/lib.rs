@@ -537,14 +537,25 @@ const BIOS_POST_INDEX: usize = 8;
 const BIOS_FDC_INDEX: usize = 9;
 const BIOS_DMA_INDEX: usize = 10;
 
-/// The result of a full BIOS boot run (§3.1): the POST checkpoint stream, the
-/// rendered text screen, and why execution stopped.
+/// Base of the monochrome (MDA) text window. When the option-ROM scan finds no
+/// video BIOS, the Kiselev POST falls back to an MDA/CGA console whose INT 10h
+/// teletype writes glyphs here rather than to the colour page at `0xB8000`. This
+/// spike maps `0xB0000` as plain conventional RAM, so the console text is read
+/// back from guest memory after the run.
+pub const MDA_BUFFER_BASE: u64 = 0x0B_0000;
+
+/// The result of a full BIOS boot run (§3.1): the POST checkpoint stream, both
+/// text windows, the serial stream, and why execution stopped.
 #[derive(Clone, Debug)]
 pub struct BiosRun {
     /// Checkpoint bytes the BIOS wrote to POST port `0x80`, in order.
     pub post: Vec<u8>,
-    /// The VGA text screen as rendered from the card after the run.
+    /// The colour (CGA/VGA) text page at `0xB8000`, rendered from the card.
     pub screen: TextGrid,
+    /// The monochrome (MDA) text window at `0xB0000`, read back from guest RAM.
+    /// This is where the Kiselev BIOS's INT 10h console actually writes after its
+    /// no-video-BIOS MDA fallback, so a booted guest's console text lands here.
+    pub mda: TextGrid,
     /// Bytes the guest transmitted to COM1 (a booted sector's serial output).
     pub com1: Vec<u8>,
     /// Why the run ended (assertions pin only the variant, never an address).
@@ -595,6 +606,22 @@ pub fn run_bios(rom: &[u8]) -> BiosRun {
 /// completion. `floppy` is a raw disk image (typically [`FLOPPY_IMAGE_BYTES`]
 /// bytes for a 1.44 MB disk); [`bootable_floppy_image`] builds a minimal one.
 pub fn run_bios_boot(rom: &[u8], floppy: Vec<u8>) -> BiosRun {
+    run_bios_inner(rom, Some(floppy))
+}
+
+/// Boot a real FreeDOS floppy image on the Kiselev BIOS machine and report how
+/// far the FreeDOS boot chain gets (§3.1, §5, §7.7).
+///
+/// This is exactly [`run_bios_boot`] — the same firmware, FDC, and DMA — named
+/// for its purpose: `floppy` is a bootable 1.44 MB FreeDOS image (FAT12 BPB, a
+/// FreeDOS boot sector, an 8086 `KERNEL.SYS` and `COMMAND.COM` in the root). The
+/// BIOS's INT 19h loads sector 0 and jumps to it, the FreeDOS boot sector loads
+/// the kernel, and the kernel initialises and hands off to the shell. The
+/// returned [`BiosRun`] carries every observable output path so the stop point
+/// is captured whatever it is: the POST stream, the colour page ([`BiosRun::screen`]),
+/// the MDA console the BIOS actually writes to ([`BiosRun::mda`]), COM1, and the
+/// classified [`BiosRun::stop`].
+pub fn run_freedos(rom: &[u8], floppy: Vec<u8>) -> BiosRun {
     run_bios_inner(rom, Some(floppy))
 }
 
@@ -707,6 +734,7 @@ fn run_bios_inner(rom: &[u8], floppy: Option<Vec<u8>>) -> BiosRun {
             return BiosRun {
                 post: Vec::new(),
                 screen: blank_screen(),
+                mda: blank_screen(),
                 com1: Vec::new(),
                 stop: StopReason::Unmapped {
                     detail: format!("building cpu: {e}"),
@@ -757,13 +785,40 @@ fn run_bios_inner(rom: &[u8], floppy: Option<Vec<u8>>) -> BiosRun {
 
     let post = drain_post_at(&mut machine, BIOS_POST_INDEX, 0x80);
     let screen = render_vga(&mut machine, BIOS_VGA_INDEX);
+    let mda = render_mda(&machine);
     let com1 = drain_serial(&mut machine, BIOS_UART_INDEX);
     BiosRun {
         post,
         screen,
+        mda,
         com1,
         stop,
     }
+}
+
+/// Read back the monochrome (MDA) text window at [`MDA_BUFFER_BASE`] from guest
+/// RAM and render it into a [`TextGrid`] (§9.2).
+///
+/// Unlike the colour page at `0xB8000` — trapped MMIO reconstructed from the
+/// card's trace — the MDA window is plain conventional RAM in this machine, so
+/// its 80×25 two-bytes-per-cell contents are read directly through the CPU's
+/// `read_mem` seam after the run. The MDA CRTC ports (`0x3B4`/`0x3B5`) are not
+/// decoded here, so the display-start and cursor registers are unknown; the grid
+/// is rendered from cell 0 with the cursor hidden, which is faithful for a
+/// console that scrolls its buffer rather than panning the CRTC start address.
+fn render_mda(machine: &Machine<X86JitCpu>) -> TextGrid {
+    let mut vram = vec![0u8; TEXT_BUFFER_LEN];
+    let cells = (usize::from(COLS) * usize::from(ROWS) * 2).min(vram.len());
+    // A short read leaves the tail blank rather than failing the whole render.
+    let _ = machine.cpu().read_mem(MDA_BUFFER_BASE, &mut vram[..cells]);
+    render_text_mode(&TextModeState {
+        vram: &vram,
+        cols: COLS,
+        rows: ROWS,
+        start_cell: 0,
+        cursor_cell: 0,
+        cursor_visible: false,
+    })
 }
 
 /// Build the BIOS machine's CPU with the full 1 MiB mosaic address space and the

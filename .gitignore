@@ -40,3 +40,8 @@ target/
 # are rebuilt from a pinned commit by vendor/kiselev-bios/fetch.sh, not checked in.
 /vendor/kiselev-bios/8088_bios/
 /vendor/kiselev-bios/bios-xi8088.bin
+# FreeDOS boot floppy: the fetched release archives, the boot-sector source clone,
+# and the assembled 1.44 MB image are rebuilt by vendor/freedos/fetch.sh, not
+# checked in (FreeDOS is GPL; used unmodified as a read-only fixture).
+/vendor/freedos/build/
+/vendor/freedos/freedos.img
