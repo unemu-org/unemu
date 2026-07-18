@@ -39,6 +39,10 @@
             pkgs.nasm
             pkgs.binutils # ld, objcopy for flat binaries
 
+            # --- FreeDOS boot-floppy build (vendor/freedos/fetch.sh) ---
+            pkgs.mtools # mformat/mcopy/mdir — lay down the FAT12 filesystem
+            pkgs.dosfstools # mkfs.fat — FAT12 formatting
+
             # --- optional differential oracles (final-state / serial compare) ---
             pkgs.qemu
 
