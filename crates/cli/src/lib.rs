@@ -623,7 +623,57 @@ pub fn run_bios_boot(rom: &[u8], floppy: Vec<u8>) -> BiosRun {
 /// the MDA console the BIOS actually writes to ([`BiosRun::mda`]), COM1, and the
 /// classified [`BiosRun::stop`].
 pub fn run_freedos(rom: &[u8], floppy: Vec<u8>) -> BiosRun {
-    run_bios_inner(rom, Some(floppy))
+    let mut machine = match assemble_bios_machine(rom, Some(floppy)) {
+        Ok(machine) => machine,
+        Err(e) => {
+            return BiosRun {
+                post: Vec::new(),
+                screen: blank_screen(),
+                mda: blank_screen(),
+                com1: Vec::new(),
+                stop: StopReason::Unmapped {
+                    detail: format!("building cpu: {e}"),
+                },
+            }
+        }
+    };
+
+    // Boot only until FreeCOM blocks at its date prompt, then stop. The boot itself
+    // is ~25M retired instructions; once FreeCOM reaches the prompt it busy-polls
+    // INT 16h forever (headless — no key, and the timer keeps it non-quiescent), so
+    // running to the full `BIOS_MAX_RETIRED` cap would spin ~2 billion idle
+    // instructions producing no new console output. Polling to the prompt captures
+    // the same final screen in a fraction of the time.
+    let result = boot_to_date_prompt(&mut machine);
+
+    let stop = classify_bios_stop(&machine, result);
+    let post = drain_post_at(&mut machine, BIOS_POST_INDEX, 0x80);
+    let screen = render_vga(&mut machine, BIOS_VGA_INDEX);
+    let mda = render_mda(&machine);
+    let com1 = drain_serial(&mut machine, BIOS_UART_INDEX);
+    BiosRun {
+        post,
+        screen,
+        mda,
+        com1,
+        stop,
+    }
+}
+
+/// Run the BIOS machine until FreeCOM boots and blocks at its date prompt
+/// ([`DOS_DATE_PROMPT`] on the MDA console), or until an error, or the full
+/// [`BIOS_MAX_RETIRED`] cap — whichever comes first. Steps in
+/// [`DOS_INTERACTIVE_POLL_STEP`] chunks so the run stops promptly instead of
+/// spinning to the cap while FreeCOM idles headlessly at the prompt.
+fn boot_to_date_prompt(machine: &mut Machine<X86JitCpu>) -> Result<RunOutcome, MachineError> {
+    let mut cap: u64 = 0;
+    loop {
+        cap = (cap + DOS_INTERACTIVE_POLL_STEP).min(BIOS_MAX_RETIRED);
+        let r = machine.run_bounded(Some(cap));
+        if r.is_err() || mda_contains(machine, DOS_DATE_PROMPT) || cap >= BIOS_MAX_RETIRED {
+            break r;
+        }
+    }
 }
 
 /// A substring of the FreeCOM startup date prompt, used to detect that the shell
@@ -730,18 +780,11 @@ pub fn run_freedos_interactive(rom: &[u8], floppy: Vec<u8>, scancodes: &[u8]) ->
             }
         };
 
-    // Cumulative retired-instruction cap; each phase grows it and runs the machine
-    // on. `run_bounded` stops when the cumulative retired count reaches the cap.
-    let mut cap: u64 = 0;
-
-    // Phase 1: boot until FreeCOM blocks at the date prompt.
-    let mut result = loop {
-        cap = (cap + DOS_INTERACTIVE_POLL_STEP).min(BIOS_MAX_RETIRED);
-        let r = machine.run_bounded(Some(cap));
-        if r.is_err() || mda_contains(&machine, DOS_DATE_PROMPT) || cap >= BIOS_MAX_RETIRED {
-            break r;
-        }
-    };
+    // Phase 1: boot until FreeCOM blocks at the date prompt. `boot_to_date_prompt`
+    // tracks its own cumulative cap; phase 2 grows it further from where phase 1
+    // left the machine (the retired count is cumulative across `run_bounded` calls).
+    let mut result = boot_to_date_prompt(&mut machine);
+    let mut cap = machine.cpu().retired();
 
     // Phase 2: queue the whole script at once and run the command. The 8042 now
     // delivers queued bytes serially — one per tick after each read (see its
