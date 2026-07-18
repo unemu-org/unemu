@@ -19,11 +19,12 @@
 
 use cli::testing::{assert_bios_run_eq, assert_test386_run_eq};
 use cli::{
-    bootable_floppy_image, run_bios, run_bios_boot, run_bios_boot_legacy, run_bios_legacy,
-    run_boot, run_boot_legacy, run_floppy_boot, run_floppy_boot_legacy, run_freedos,
-    run_freedos_legacy, run_keyboard, run_keyboard_legacy, run_rtc, run_rtc_legacy, run_test386,
-    run_test386_legacy, run_vga_text, run_vga_text_legacy, BOOT_PROGRAM, KBD_PROGRAM, KBD_SCANCODE,
-    RTC_PROGRAM, VGA_TEXT_PROGRAM,
+    bootable_floppy_image, dos_dir_script, run_bios, run_bios_boot, run_bios_boot_legacy,
+    run_bios_legacy, run_boot, run_boot_legacy, run_floppy_boot, run_floppy_boot_legacy,
+    run_freedos, run_freedos_interactive, run_freedos_interactive_legacy, run_freedos_legacy,
+    run_keyboard, run_keyboard_legacy, run_rtc, run_rtc_legacy, run_test386, run_test386_legacy,
+    run_vga_text, run_vga_text_legacy, BOOT_PROGRAM, KBD_PROGRAM, KBD_SCANCODE, RTC_PROGRAM,
+    VGA_TEXT_PROGRAM,
 };
 use std::path::PathBuf;
 
@@ -122,5 +123,27 @@ fn freedos_config_matches_legacy() {
     };
     let legacy = run_freedos_legacy(&rom, img.clone());
     let got = run_freedos(&rom, img);
+    assert_bios_run_eq(&legacy, &got);
+}
+
+#[ignore = "slow: runs the full FreeDOS boot + interactive DIR twice; needs the vendored fixtures"]
+#[test]
+fn freedos_interactive_config_matches_legacy() {
+    let (Ok(rom), Ok(img)) = (
+        std::fs::read(vendor("kiselev-bios/bios-xi8088.bin")),
+        std::fs::read(vendor("freedos/freedos.img")),
+    ) else {
+        eprintln!(
+            "skipping: BIOS ROM or FreeDOS image not found — run the vendor fetch.sh scripts"
+        );
+        return;
+    };
+    // The scariest port: the cap ladder, the fine interactive quantum, the
+    // inject-on-prompt cadence, and the command budget must all reproduce through
+    // the config + RunPolicy path, so the config run reaches `A:\` and the DIR
+    // listing byte-for-byte identically to the hand-assembled legacy twin.
+    let script = dos_dir_script();
+    let legacy = run_freedos_interactive_legacy(&rom, img.clone(), &script);
+    let got = run_freedos_interactive(&rom, img, &script);
     assert_bios_run_eq(&legacy, &got);
 }
