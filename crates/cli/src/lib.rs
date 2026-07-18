@@ -274,6 +274,128 @@ pub const RTC_PROGRAM: &[u8] = &[
     0xCF,                               // iret
 ];
 
+/// Guest-physical base of the write demo's source buffer: the distinctive sector
+/// the guest hands to the DMA controller for the floppy WRITE lives here, preloaded
+/// by the preset. Below the read-back buffer and the program, all within 64 KiB.
+pub const FDC_WRITE_SRC: u64 = 0x0600;
+
+/// Guest-physical base of the write demo's read-back buffer: the READ DATA that
+/// follows the write streams the just-written sector here, where the guest then
+/// compares it against the pattern. Starts as cleared RAM (zeroes).
+pub const FDC_WRITE_DST: u16 = 0x0A00;
+
+/// The marker byte the write demo emits to COM1 when the sector it read back
+/// matches the sector it wrote (`'W'`). The demo's serial output is exactly this
+/// one byte; an empty capture means the read-back did not match the write.
+pub const FDC_WRITE_MARKER: u8 = b'W';
+
+/// Total-retired stop for the write demo. The guest writes, reads back, emits its
+/// marker, and then spins in place (`jmp $`) with no interrupt source wired; with
+/// nothing to wake it the run reaches this cap and stops (a clean
+/// [`RunOutcome::RetiredCapReached`], as the busy-polling floppy-boot guest also
+/// does). It is far above the ~150 instructions the guest retires before the
+/// marker, so the marker always emits.
+pub const FDC_WRITE_RETIRED_CAP: u64 = 5_000;
+
+/// The distinctive 512-byte sector the write demo commits to the blank floppy.
+///
+/// Preloaded into guest RAM at [`FDC_WRITE_SRC`] and, after the write→read cycle,
+/// expected byte-for-byte in the read-back buffer. Byte `i` is `0xC0 ^ i`, so the
+/// first four bytes are `C0 C1 C2 C3` — the immediates [`FDC_WRITE_PROGRAM`]
+/// compares the read-back buffer against. Every byte of the compared prefix is
+/// non-zero, so it cannot be spoofed by the blank (all-zero) floppy: only an actual
+/// write of this pattern can make the read-back match.
+#[must_use]
+pub fn fdc_write_pattern() -> Vec<u8> {
+    (0..512u32).map(|i| 0xC0u8 ^ i as u8).collect()
+}
+
+/// The built-in real-mode floppy WRITE demo (§7, §7.7, §7.8).
+///
+/// A hand-encoded 16-bit program (no assembler). The embedder seeds the segment
+/// registers and stack (the `x86jit` core does not lift `mov Sreg, r16`), so the
+/// program starts straight at device setup. With a blank writable floppy in drive
+/// 0 it: brings the µPD765 out of reset (DOR: not-reset + DMA-enable + motor), then
+/// programs the 8237 channel 2 for a memory→device transfer of one 512-byte sector
+/// from [`FDC_WRITE_SRC`] and issues WRITE DATA (drive 0, C=0/H=0/R=1). The machine
+/// services the DMA on the boundary of the last parameter byte, so the sector is
+/// committed and the result phase is ready by the guest's next instruction; the
+/// guest drains the seven result bytes. It then programs channel 2 the other way
+/// (device→memory) into [`FDC_WRITE_DST`] and issues READ DATA for the same CHS,
+/// pulling the just-written sector back. Finally it compares the first four
+/// read-back bytes against the pattern and, on a full match, emits [`FDC_WRITE_MARKER`]
+/// to COM1, then busy-spins on a port read (`in al,dx ; jmp $-3`). The port read
+/// yields to the machine each iteration, so the run stops cleanly at
+/// [`FDC_WRITE_RETIRED_CAP`] (the busy-guest idiom) rather than looping forever
+/// inside one CPU quantum. Because the floppy starts blank, a match proves the
+/// write reached media. Every instruction's bytes are documented in the
+/// `fdc_write_golden` integration test.
+#[rustfmt::skip]
+pub const FDC_WRITE_PROGRAM: &[u8] = &[
+    // ---- bring the FDC out of reset (DOR @ 0x3F2) ----
+    0xB0, 0x1C,                         // mov al,0x1C            (not-reset|DMA|motor0, drive 0)
+    0xBA, 0xF2, 0x03,                   // mov dx,0x03F2          (DOR)
+    0xEE,                               // out dx,al
+    // ---- program 8237 ch2: memory -> device (read), src 0x0600, 512 bytes ----
+    0xB0, 0x06, 0xE6, 0x0A,             // mov al,0x06 ; out 0x0A,al  (mask ch2)
+    0xB0, 0x00, 0xE6, 0x0C,             // mov al,0x00 ; out 0x0C,al  (clear flip-flop)
+    0xB0, 0x4A, 0xE6, 0x0B,             // mov al,0x4A ; out 0x0B,al  (mode: ch2 read single)
+    0xB0, 0x00, 0xE6, 0x04,             // mov al,0x00 ; out 0x04,al  (addr low)
+    0xB0, 0x06, 0xE6, 0x04,             // mov al,0x06 ; out 0x04,al  (addr high -> 0x0600)
+    0xB0, 0x00, 0xE6, 0x81,             // mov al,0x00 ; out 0x81,al  (page ch2)
+    0xB0, 0xFF, 0xE6, 0x05,             // mov al,0xFF ; out 0x05,al  (count low)
+    0xB0, 0x01, 0xE6, 0x05,             // mov al,0x01 ; out 0x05,al  (count high -> 512)
+    0xB0, 0x02, 0xE6, 0x0A,             // mov al,0x02 ; out 0x0A,al  (unmask ch2)
+    // ---- WRITE DATA (0x05): drive 0, C=0 H=0 R=1 N=2 EOT=1 (DATA @ 0x3F5) ----
+    0xBA, 0xF5, 0x03,                   // mov dx,0x03F5          (DATA)
+    0xB0, 0x05, 0xEE,                   // mov al,0x05 ; out dx,al  (WRITE DATA)
+    0xB0, 0x00, 0xEE,                   // mov al,0x00 ; out dx,al  (drive/head)
+    0xB0, 0x00, 0xEE,                   // mov al,0x00 ; out dx,al  (cylinder)
+    0xB0, 0x00, 0xEE,                   // mov al,0x00 ; out dx,al  (head)
+    0xB0, 0x01, 0xEE,                   // mov al,0x01 ; out dx,al  (sector R=1)
+    0xB0, 0x02, 0xEE,                   // mov al,0x02 ; out dx,al  (N=2, 512-byte sector)
+    0xB0, 0x01, 0xEE,                   // mov al,0x01 ; out dx,al  (EOT=1)
+    0xB0, 0x1B, 0xEE,                   // mov al,0x1B ; out dx,al  (GPL)
+    0xB0, 0xFF, 0xEE,                   // mov al,0xFF ; out dx,al  (DTL)
+    // ---- drain the 7 WRITE result bytes so the controller returns to idle ----
+    0xEC, 0xEC, 0xEC, 0xEC, 0xEC, 0xEC, 0xEC, // in al,dx x7
+    // ---- program 8237 ch2: device -> memory (write), dst 0x0A00, 512 bytes ----
+    0xB0, 0x06, 0xE6, 0x0A,             // mov al,0x06 ; out 0x0A,al  (mask ch2)
+    0xB0, 0x00, 0xE6, 0x0C,             // mov al,0x00 ; out 0x0C,al  (clear flip-flop)
+    0xB0, 0x46, 0xE6, 0x0B,             // mov al,0x46 ; out 0x0B,al  (mode: ch2 write single)
+    0xB0, 0x00, 0xE6, 0x04,             // mov al,0x00 ; out 0x04,al  (addr low)
+    0xB0, 0x0A, 0xE6, 0x04,             // mov al,0x0A ; out 0x04,al  (addr high -> 0x0A00)
+    0xB0, 0x00, 0xE6, 0x81,             // mov al,0x00 ; out 0x81,al  (page ch2)
+    0xB0, 0xFF, 0xE6, 0x05,             // mov al,0xFF ; out 0x05,al  (count low)
+    0xB0, 0x01, 0xE6, 0x05,             // mov al,0x01 ; out 0x05,al  (count high -> 512)
+    0xB0, 0x02, 0xE6, 0x0A,             // mov al,0x02 ; out 0x0A,al  (unmask ch2)
+    // ---- READ DATA (0x06): same CHS, streams the sector into 0x0A00 ----
+    0xBA, 0xF5, 0x03,                   // mov dx,0x03F5          (DATA)
+    0xB0, 0x06, 0xEE,                   // mov al,0x06 ; out dx,al  (READ DATA)
+    0xB0, 0x00, 0xEE,                   // mov al,0x00 ; out dx,al  (drive/head)
+    0xB0, 0x00, 0xEE,                   // mov al,0x00 ; out dx,al  (cylinder)
+    0xB0, 0x00, 0xEE,                   // mov al,0x00 ; out dx,al  (head)
+    0xB0, 0x01, 0xEE,                   // mov al,0x01 ; out dx,al  (sector R=1)
+    0xB0, 0x02, 0xEE,                   // mov al,0x02 ; out dx,al  (N=2)
+    0xB0, 0x01, 0xEE,                   // mov al,0x01 ; out dx,al  (EOT=1)
+    0xB0, 0x1B, 0xEE,                   // mov al,0x1B ; out dx,al  (GPL)
+    0xB0, 0xFF, 0xEE,                   // mov al,0xFF ; out dx,al  (DTL)
+    // ---- compare read-back [0x0A00..0x0A04] to the pattern, emit 'W' on match ----
+    0x80, 0x3E, 0x00, 0x0A, 0xC0,       // cmp byte [0x0A00],0xC0
+    0x75, 0x1B,                         // jne end (+27)
+    0x80, 0x3E, 0x01, 0x0A, 0xC1,       // cmp byte [0x0A01],0xC1
+    0x75, 0x14,                         // jne end (+20)
+    0x80, 0x3E, 0x02, 0x0A, 0xC2,       // cmp byte [0x0A02],0xC2
+    0x75, 0x0D,                         // jne end (+13)
+    0x80, 0x3E, 0x03, 0x0A, 0xC3,       // cmp byte [0x0A03],0xC3
+    0x75, 0x06,                         // jne end (+6)
+    0xB0, 0x57,                         // mov al,0x57 ('W')
+    0xBA, 0xF8, 0x03,                   // mov dx,0x03F8          (COM1 THR)
+    0xEE,                               // out dx,al               (transmit marker)
+    0xEC,                               // in al,dx     (I/O-yielding spin)  <- end
+    0xEB, 0xFD,                         // jmp $-3 (back to the in)
+];
+
 /// Segment the VGA text demo points DS/ES at so a near store reaches the text
 /// buffer: `0xB800 << 4 == 0xB8000`, the base of the colour text page.
 pub const VGA_TEXT_SEGMENT: u16 = 0xB800;
@@ -1105,6 +1227,29 @@ pub fn run_rtc(blob: &[u8]) -> Result<Vec<u8>> {
     assembly::run(
         &mut machine,
         &RunPolicy::natural(None, Some(RTC_IDLE_LIMIT)),
+    )
+    .context("running machine")?;
+
+    Ok(drain_serial(&mut machine, device_index[&DeviceId::Uart]))
+}
+
+/// Assemble the floppy-WRITE machine, run `program` in real mode, and return the
+/// captured COM1 bytes (§7.7, §7.8).
+///
+/// The machine mounts a blank writable floppy; `program` drives the µPD765 and
+/// 8237 to write a preloaded sector to media and read it back, emitting
+/// [`FDC_WRITE_MARKER`] on a match. Nothing runs a wall clock, so the capture is
+/// deterministic: a successful write→read cycle yields exactly `b"W"`.
+pub fn run_fdc_write(program: &[u8]) -> Result<Vec<u8>> {
+    let config = assembly::at_fdc_write(program.to_vec(), fdc_write_pattern(), FDC_WRITE_SRC);
+    let AssembledMachine {
+        mut machine,
+        device_index,
+    } = assemble(&config).context("assembling fdc-write machine")?;
+
+    assembly::run(
+        &mut machine,
+        &RunPolicy::natural(Some(FDC_WRITE_RETIRED_CAP), None),
     )
     .context("running machine")?;
 

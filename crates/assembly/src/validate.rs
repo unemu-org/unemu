@@ -359,6 +359,7 @@ mod tests {
                 size: FloppyGeometry::HD_1_44.image_bytes(),
             },
             controller_slot: 0,
+            write_protect: false,
         }];
 
         MachineConfig {

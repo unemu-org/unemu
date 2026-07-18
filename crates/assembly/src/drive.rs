@@ -126,4 +126,9 @@ pub struct DriveConfig {
     pub image: ImageSource,
     /// The controller drive slot this drive occupies.
     pub controller_slot: u8,
+    /// Whether the mounted disk is write-protected. Set means a guest WRITE to
+    /// the disk faults (not-writable) and never mutates the image; the default
+    /// (`false`) is a writable disk. The flag lives on the drive because it is a
+    /// property of the mounted medium, not of the controller.
+    pub write_protect: bool,
 }

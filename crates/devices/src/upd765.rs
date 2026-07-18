@@ -36,6 +36,11 @@
 //! the not-ready status; a READ outside the drive's geometry terminates
 //! abnormally with a no-data status.
 //!
+//! A WRITE mutates the mounted image **in memory only**: it changes the drive's
+//! backing `Vec`, but nothing writes those bytes back to a host image file — a
+//! fresh run starts again from the on-disk image. Persisting a write to a
+//! file-backed image is deliberately out of scope here.
+//!
 //! ## Coverage matrix (datasheet vs modelled)
 //!
 //! | Command                        | Opcode | Modelled | Notes                          |
