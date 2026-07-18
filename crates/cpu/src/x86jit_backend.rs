@@ -111,6 +111,67 @@ impl X86JitCpu {
         Ok(Self { vm, cpu })
     }
 
+    /// Build a **real-mode (16-bit)** CPU over a flat guest address space of
+    /// `space_bytes` with **no regions mapped** — the embedder lays out the whole
+    /// memory map itself with [`X86JitCpu::map_ram`], [`X86JitCpu::map_rom`], and
+    /// [`X86JitCpu::map_mmio`].
+    ///
+    /// This is the constructor a full PC needs: its address space is a mosaic of
+    /// conventional RAM, a trapped video window, an option-ROM scan area, and a
+    /// masked BIOS ROM at the top — not the single flat RAM block the built-in
+    /// demos use. Nothing is loaded here (a BIOS ROM is its own code, mapped with
+    /// [`X86JitCpu::map_rom`]); this only seeds the segment and stack registers and
+    /// points CS:IP at the reset entry.
+    ///
+    /// As with [`X86JitCpu::new_real16`], the segment registers are seeded here
+    /// because the `x86jit` core models segment *bases* for addressing; a real-mode
+    /// guest starts from these rather than setting them up from nothing.
+    pub fn new_real16_bare(
+        space_bytes: u64,
+        cs: u16,
+        ip: u16,
+        segments: RealSegments,
+    ) -> Result<Self, CpuError> {
+        let mut vm = Vm::new(VmConfig::flat(space_bytes));
+        vm.set_cpu_mode(CpuMode::Real16);
+        let mut cpu = vm.new_vcpu();
+        cpu.set_reg(Reg::Cs, u64::from(cs));
+        cpu.set_reg(Reg::Ds, u64::from(segments.ds));
+        cpu.set_reg(Reg::Es, u64::from(segments.es));
+        cpu.set_reg(Reg::Ss, u64::from(segments.ss));
+        cpu.set_reg(Reg::Rsp, u64::from(segments.sp));
+        cpu.set_reg(Reg::Rip, u64::from(ip));
+        Ok(Self { vm, cpu })
+    }
+
+    /// Map a conventional RAM window `[base, base + size)` as `RWX` `Ram`.
+    ///
+    /// For an embedder building a mosaic address space with
+    /// [`X86JitCpu::new_real16_bare`]: the low 640 KiB, the upper-memory probe
+    /// area, and the zeroed option-ROM scan region are all plain RAM.
+    pub fn map_ram(&mut self, base: u64, size: u64) -> Result<(), CpuError> {
+        self.vm
+            .map(base, size as usize, Prot::RWX, RegionKind::Ram)
+            .map_err(|e| CpuError::Memory(format!("{e:?}")))
+    }
+
+    /// Map a masked **ROM** window at `base` sized to `blob` and load `blob` into
+    /// it (a BIOS or option ROM).
+    ///
+    /// The region is `RegionKind::Rom`: fetches and reads run at RAM speed and
+    /// code executes straight out of it, while a guest store into it is silently
+    /// dropped (the masked-ROM contract) rather than faulting. Contents are loaded
+    /// through the `Vm` write path, which bypasses the region kind — the only way
+    /// to populate a ROM, which is immutable to the guest thereafter.
+    pub fn map_rom(&mut self, base: u64, blob: &[u8]) -> Result<(), CpuError> {
+        self.vm
+            .map(base, blob.len(), Prot::RX, RegionKind::Rom)
+            .map_err(|e| CpuError::Memory(format!("{e:?}")))?;
+        self.vm
+            .write_bytes(base, blob)
+            .map_err(|e| CpuError::Memory(format!("{e:?}")))
+    }
+
     /// Write `bytes` into guest RAM at linear address `addr` through the `Vm`
     /// API (so SMC tracking sees it). For an embedder that seeds the IVT or a
     /// device table into low memory before execution.
@@ -118,6 +179,22 @@ impl X86JitCpu {
         self.vm
             .write_bytes(addr, bytes)
             .map_err(|e| CpuError::Memory(format!("{e:?}")))
+    }
+
+    /// Read `buf.len()` bytes of guest memory at linear address `addr` through the
+    /// `Vm` API. For a runner that reads back the bytes at the stopping CS:IP to
+    /// disassemble where a run ended.
+    pub fn read_mem(&self, addr: u64, buf: &mut [u8]) -> Result<(), CpuError> {
+        self.vm
+            .read_bytes(addr, buf)
+            .map_err(|e| CpuError::Memory(format!("{e:?}")))
+    }
+
+    /// The current code-segment selector (real mode). The [`Cpu`] trait exposes
+    /// only the general-purpose registers and RIP; a runner that wants the linear
+    /// CS:IP of the stopping instruction reads the segment here.
+    pub fn code_segment(&self) -> u64 {
+        self.cpu.reg(Reg::Cs)
     }
 
     /// Map a memory-mapped-I/O (trapped) window `[base, base + size)`.
@@ -244,5 +321,63 @@ impl Cpu for X86JitCpu {
 
     fn retired(&self) -> u64 {
         self.cpu.retired_instructions()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A masked BIOS ROM is fetch/read-executable but immutable to the guest: code
+    /// runs straight out of a `map_rom` region, a read from it returns the ROM
+    /// bytes, and a guest store aimed back into it is silently dropped rather than
+    /// faulting. The program stores a word into its own ROM, reads the same
+    /// location back into AX, then halts — if the store landed, AX would hold the
+    /// stored value; because it is dropped, AX holds the original ROM bytes.
+    #[test]
+    fn rom_executes_and_reads_but_a_store_into_it_is_dropped() {
+        // DS = CS = 0xF000, so DS:0x0000 resolves to phys 0xF0000 — the ROM's own
+        // first bytes, which are this program's opcodes.
+        //   C7 06 00 00 34 12   mov word [0x0000], 0x1234   (store into ROM)
+        //   A1 00 00            mov ax, [0x0000]            (read it back)
+        //   F4                  hlt
+        #[rustfmt::skip]
+        let code = [
+            0xC7, 0x06, 0x00, 0x00, 0x34, 0x12,
+            0xA1, 0x00, 0x00,
+            0xF4,
+        ];
+        let mut cpu = X86JitCpu::new_real16_bare(
+            0x10_0000,
+            0xF000,
+            0x0000,
+            RealSegments {
+                ds: 0xF000,
+                es: 0xF000,
+                ss: 0x0000,
+                sp: 0x0F00,
+            },
+        )
+        .expect("bare real-mode cpu");
+        cpu.map_rom(0xF_0000, &code).expect("map rom");
+
+        // Drive to the halt (a small budget per quantum; the program is a handful
+        // of instructions, so this converges immediately).
+        loop {
+            match cpu.run(Some(64)).expect("run") {
+                CpuStop::Halt => break,
+                CpuStop::BudgetExhausted => continue,
+                other => panic!("unexpected stop before hlt: {other:?}"),
+            }
+        }
+
+        // The store was dropped: AX read back the original ROM bytes at 0xF0000,
+        // which are the opcode `C7 06` → little-endian word 0x06C7, not 0x1234.
+        assert_eq!(cpu.reg(CpuReg::Rax) & 0xFFFF, 0x06C7);
+
+        // The backing is likewise untouched when read directly through the ROM.
+        let mut buf = [0u8; 2];
+        cpu.read_mem(0xF_0000, &mut buf).expect("read rom");
+        assert_eq!(u16::from_le_bytes(buf), 0x06C7);
     }
 }
