@@ -15,14 +15,17 @@ pub mod pit8253;
 pub mod post_port;
 pub mod sys_control;
 pub mod uart16550;
+pub mod upd765;
 pub mod vga_text;
 
 pub use cmos_rtc::{CmosConfig, CmosRtc};
-pub use dma8237::{Dma8237, DmaMemory, TransferType};
+pub use device::{DmaMemory, DmaRequest};
+pub use dma8237::{Dma8237, TransferType};
 pub use i8042::I8042;
 pub use pic8259::Pic8259;
 pub use pit8253::Pit8253;
 pub use post_port::PostPort;
 pub use sys_control::SysControl;
 pub use uart16550::Uart16550;
+pub use upd765::Upd765;
 pub use vga_text::VgaText;

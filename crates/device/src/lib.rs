@@ -102,6 +102,44 @@ pub enum DeviceError {
     },
 }
 
+/// A guest-memory handle for DMA transfers (§7.7).
+///
+/// A DMA controller moves bytes between an I/O device and guest RAM, but no
+/// device may hold a reference into that RAM: writes must run through the path
+/// that fires the JIT's `note_write` hook, or self-modifying-code tracking stops
+/// invalidating translated blocks the transfer overwrites (see the memory model
+/// in `backlog/docs/architecture.md`, §4.3). The machine implements this trait
+/// over the CPU's `Vm` API and hands it to the controller per transfer; unit
+/// tests implement it over a plain buffer. Addresses are full 24-bit physical
+/// addresses (a channel's page latch combined with its 16-bit offset).
+pub trait DmaMemory {
+    /// Read one byte of guest memory at physical `addr`.
+    fn dma_read(&self, addr: u32) -> u8;
+
+    /// Write one byte of guest memory at physical `addr` (must run `note_write`).
+    fn dma_write(&mut self, addr: u32, value: u8);
+}
+
+/// A device→memory DMA transfer a requesting device (the floppy controller) has
+/// queued for the machine to run through the DMA controller (§7.7).
+///
+/// The requester produces the bytes (a floppy read pulls them from its backing
+/// image) and names the DMA channel they belong to; it does **not** name the
+/// destination address — that lives in the DMA controller's channel registers,
+/// which the guest programmed. The machine pulls this with
+/// [`Device::take_dma_request`], streams `data` through the controller's
+/// [`Device::dma_service_write`] (which writes each byte via [`DmaMemory`] and
+/// advances the channel), then reports the byte count back with
+/// [`Device::dma_complete`] so the requester can finish its result phase and
+/// raise its completion interrupt.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DmaRequest {
+    /// The DMA channel the transfer runs on (channel 2 for the PC floppy).
+    pub channel: u8,
+    /// The bytes to move into guest memory, in order.
+    pub data: Vec<u8>,
+}
+
 /// The device swap seam (§3.2 seam 4, §7.1).
 ///
 /// Every emulated chip implements this. Method contracts:
@@ -154,6 +192,36 @@ pub trait Device {
 
     /// Restore device state from a [`Device::save`] blob.
     fn restore(&mut self, snapshot: &[u8]) -> Result<(), DeviceError>;
+
+    /// A queued device→memory DMA transfer, if this device (a bus master such as
+    /// the floppy controller) has one pending (§7.7).
+    ///
+    /// The machine drains this each boundary and, for a device wired to a DMA
+    /// controller, runs the returned bytes through the controller's
+    /// [`Device::dma_service_write`] before delivering the byte count back with
+    /// [`Device::dma_complete`]. Default `None`: a device that never masters the
+    /// bus has nothing to hand over.
+    fn take_dma_request(&mut self) -> Option<DmaRequest> {
+        None
+    }
+
+    /// Finish a DMA transfer the machine ran on this device's behalf: `transferred`
+    /// bytes reached memory (§7.7). The requester advances its transfer state,
+    /// fills its result phase, and raises its completion interrupt. Default no-op.
+    fn dma_complete(&mut self, transferred: usize) {
+        let _ = transferred;
+    }
+
+    /// Act as the DMA controller for a device→memory transfer: write `data` to
+    /// guest memory through `mem` on `channel`, advancing the channel's address
+    /// and count, and return the number of bytes moved (§7.7).
+    ///
+    /// Only a DMA controller (the 8237) overrides this; every other device
+    /// inherits the no-op default that moves nothing.
+    fn dma_service_write(&mut self, channel: u8, mem: &mut dyn DmaMemory, data: &[u8]) -> usize {
+        let _ = (channel, mem, data);
+        0
+    }
 
     /// Drain and return the trace events observed since the last call (§3.2
     /// tracing seam). Empty `Vec` by default for devices that do not trace.

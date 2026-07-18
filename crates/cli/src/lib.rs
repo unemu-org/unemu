@@ -28,13 +28,16 @@ use cpu::{Cpu, CpuError, CpuReg, X86JitCpu};
 use device::{AccessDir, Device, TraceEvent};
 use devices::post_port::POST_PORT;
 use devices::sys_control::SYS_CONTROL_PORT;
+use devices::upd765::FLOPPY_IMAGE_BYTES;
 use devices::vga_text::{
     CGA_MODE_CONTROL_PORT, CGA_STATUS_PORT, COLS, CRTC_CURSOR_HIGH_INDEX, CRTC_CURSOR_LOW_INDEX,
     CRTC_CURSOR_START_INDEX, CRTC_DATA_PORT, CRTC_INDEX_PORT, CRTC_START_HIGH_INDEX,
     CRTC_START_LOW_INDEX, ROWS, TEXT_BUFFER_BASE, TEXT_BUFFER_LEN,
 };
-use devices::{CmosConfig, CmosRtc, Pit8253, PostPort, SysControl, Uart16550, VgaText, I8042};
-use machine::{IrqLine, Machine, MachineError, RunOutcome};
+use devices::{
+    CmosConfig, CmosRtc, Dma8237, Pit8253, PostPort, SysControl, Uart16550, Upd765, VgaText, I8042,
+};
+use machine::{DmaWiring, IrqLine, Machine, MachineError, RunOutcome};
 use video::{render_text_mode, CaptureFrameSink, Frame, FrameSink, TextGrid, TextModeState};
 
 /// Guest RAM size for the flat address space (64 KiB).
@@ -530,6 +533,9 @@ const BIOS_SLAVE_PIC_INDEX: usize = 5;
 const BIOS_RTC_INDEX: usize = 6;
 const BIOS_SYS_CONTROL_INDEX: usize = 7;
 const BIOS_POST_INDEX: usize = 8;
+// Appended only when a floppy is attached, so the indices above stay stable.
+const BIOS_FDC_INDEX: usize = 9;
+const BIOS_DMA_INDEX: usize = 10;
 
 /// The result of a full BIOS boot run (§3.1): the POST checkpoint stream, the
 /// rendered text screen, and why execution stopped.
@@ -539,6 +545,8 @@ pub struct BiosRun {
     pub post: Vec<u8>,
     /// The VGA text screen as rendered from the card after the run.
     pub screen: TextGrid,
+    /// Bytes the guest transmitted to COM1 (a booted sector's serial output).
+    pub com1: Vec<u8>,
     /// Why the run ended (assertions pin only the variant, never an address).
     pub stop: StopReason,
 }
@@ -573,6 +581,24 @@ pub struct BiosRun {
 /// whole point is to see how far POST got even when the run ends on an
 /// instruction the real-mode core does not lift.
 pub fn run_bios(rom: &[u8]) -> BiosRun {
+    run_bios_inner(rom, None)
+}
+
+/// Assemble the full PC/AT BIOS machine as [`run_bios`] does, but with a µPD765
+/// floppy controller (ports `0x3F0..=0x3F7`, IRQ6) driven by an 8237 DMA
+/// controller (ports `0x00..=0x0F` and the page latches `0x81..=0x8F`) backed by
+/// `floppy`, and boot it (§3.1, §5, §7.7).
+///
+/// This is the path the BIOS's INT 13h / INT 19h use to load a boot sector: the
+/// controller reads the sector from `floppy`, the machine moves it into the guest
+/// buffer through the 8237 (the SMC-safe `note_write` path), and IRQ6 signals
+/// completion. `floppy` is a raw disk image (typically [`FLOPPY_IMAGE_BYTES`]
+/// bytes for a 1.44 MB disk); [`bootable_floppy_image`] builds a minimal one.
+pub fn run_bios_boot(rom: &[u8], floppy: Vec<u8>) -> BiosRun {
+    run_bios_inner(rom, Some(floppy))
+}
+
+fn run_bios_inner(rom: &[u8], floppy: Option<Vec<u8>>) -> BiosRun {
     // Each PIC chip's device face is cloned off the one live pair; the pair itself
     // is the machine's interrupt controller, so a guest EOI to either chip reaches
     // the state the machine's INTA set.
@@ -583,7 +609,7 @@ pub fn run_bios(rom: &[u8]) -> BiosRun {
 
     let rtc = CmosRtc::new().with_config(CmosConfig::default());
 
-    let devices: Vec<Box<dyn Device>> = vec![
+    let mut devices: Vec<Box<dyn Device>> = vec![
         Box::new(Uart16550::new(COM1_BASE)), // 0
         Box::new(master_device),             // 1
         Box::new(Pit8253::new()),            // 2
@@ -594,57 +620,79 @@ pub fn run_bios(rom: &[u8]) -> BiosRun {
         Box::new(SysControl::new()),         // 7
         Box::new(PostPort::with_port(0x80)), // 8
     ];
+    if let Some(image) = floppy.clone() {
+        devices.push(Box::new(Upd765::with_image(image))); // 9
+        devices.push(Box::new(Dma8237::new())); // 10
+    }
 
+    let mut ports = vec![
+        PortRange {
+            ports: COM1_BASE..=COM1_TOP,
+            device: BIOS_UART_INDEX,
+        },
+        PortRange {
+            ports: PIC_COMMAND..=PIC_DATA,
+            device: BIOS_MASTER_PIC_INDEX,
+        },
+        PortRange {
+            ports: PIT_BASE..=PIT_TOP,
+            device: BIOS_PIT_INDEX,
+        },
+        // The 8042 decodes two non-adjacent ports (0x60 and 0x64).
+        PortRange {
+            ports: KBD_DATA..=KBD_DATA,
+            device: BIOS_I8042_INDEX,
+        },
+        PortRange {
+            ports: KBD_CMD..=KBD_CMD,
+            device: BIOS_I8042_INDEX,
+        },
+        // Port 0x61 system-control latch (refresh bit the BIOS times against).
+        PortRange {
+            ports: SYS_CONTROL_PORT..=SYS_CONTROL_PORT,
+            device: BIOS_SYS_CONTROL_INDEX,
+        },
+        // POST checkpoint port 0x80 (see the DMA-overlap note above).
+        PortRange {
+            ports: 0x80..=0x80,
+            device: BIOS_POST_INDEX,
+        },
+        PortRange {
+            ports: CMOS_INDEX_PORT..=CMOS_DATA_PORT,
+            device: BIOS_RTC_INDEX,
+        },
+        PortRange {
+            ports: CRTC_INDEX_PORT..=CRTC_DATA_PORT,
+            device: BIOS_VGA_INDEX,
+        },
+        PortRange {
+            ports: CGA_MODE_CONTROL_PORT..=CGA_STATUS_PORT,
+            device: BIOS_VGA_INDEX,
+        },
+        PortRange {
+            ports: SLAVE_PIC_COMMAND..=SLAVE_PIC_DATA,
+            device: BIOS_SLAVE_PIC_INDEX,
+        },
+    ];
+    if floppy.is_some() {
+        // The floppy controller and the 8237 DMA it transfers through. Port 0x80
+        // stays the POST checkpoint above; the DMA's page latches decode from 0x81
+        // up, so the overlap at 0x80 resolves to POST and 0x81 to channel 2's page.
+        ports.push(PortRange {
+            ports: 0x3F0..=0x3F7,
+            device: BIOS_FDC_INDEX,
+        });
+        ports.push(PortRange {
+            ports: 0x00..=0x0F,
+            device: BIOS_DMA_INDEX,
+        });
+        ports.push(PortRange {
+            ports: 0x81..=0x8F,
+            device: BIOS_DMA_INDEX,
+        });
+    }
     let map = DecodeMap {
-        ports: vec![
-            PortRange {
-                ports: COM1_BASE..=COM1_TOP,
-                device: BIOS_UART_INDEX,
-            },
-            PortRange {
-                ports: PIC_COMMAND..=PIC_DATA,
-                device: BIOS_MASTER_PIC_INDEX,
-            },
-            PortRange {
-                ports: PIT_BASE..=PIT_TOP,
-                device: BIOS_PIT_INDEX,
-            },
-            // The 8042 decodes two non-adjacent ports (0x60 and 0x64).
-            PortRange {
-                ports: KBD_DATA..=KBD_DATA,
-                device: BIOS_I8042_INDEX,
-            },
-            PortRange {
-                ports: KBD_CMD..=KBD_CMD,
-                device: BIOS_I8042_INDEX,
-            },
-            // Port 0x61 system-control latch (refresh bit the BIOS times against).
-            PortRange {
-                ports: SYS_CONTROL_PORT..=SYS_CONTROL_PORT,
-                device: BIOS_SYS_CONTROL_INDEX,
-            },
-            // POST checkpoint port 0x80 (see the DMA-overlap note above).
-            PortRange {
-                ports: 0x80..=0x80,
-                device: BIOS_POST_INDEX,
-            },
-            PortRange {
-                ports: CMOS_INDEX_PORT..=CMOS_DATA_PORT,
-                device: BIOS_RTC_INDEX,
-            },
-            PortRange {
-                ports: CRTC_INDEX_PORT..=CRTC_DATA_PORT,
-                device: BIOS_VGA_INDEX,
-            },
-            PortRange {
-                ports: CGA_MODE_CONTROL_PORT..=CGA_STATUS_PORT,
-                device: BIOS_VGA_INDEX,
-            },
-            PortRange {
-                ports: SLAVE_PIC_COMMAND..=SLAVE_PIC_DATA,
-                device: BIOS_SLAVE_PIC_INDEX,
-            },
-        ],
+        ports,
         mmio: vec![MmioRange {
             addrs: TEXT_BUFFER_BASE..=TEXT_BUFFER_BASE + TEXT_BUFFER_LEN as u64 - 1,
             device: BIOS_VGA_INDEX,
@@ -659,6 +707,7 @@ pub fn run_bios(rom: &[u8]) -> BiosRun {
             return BiosRun {
                 post: Vec::new(),
                 screen: blank_screen(),
+                com1: Vec::new(),
                 stop: StopReason::Unmapped {
                     detail: format!("building cpu: {e}"),
                 },
@@ -666,7 +715,7 @@ pub fn run_bios(rom: &[u8]) -> BiosRun {
         }
     };
     // Wire the interrupt sources the BIOS's POST and INT layer rely on.
-    let irq_lines = vec![
+    let mut irq_lines = vec![
         IrqLine {
             device: BIOS_PIT_INDEX,
             irq: 0,
@@ -680,6 +729,19 @@ pub fn run_bios(rom: &[u8]) -> BiosRun {
             irq: 8,
         },
     ];
+    let mut dma_wirings = Vec::new();
+    if floppy.is_some() {
+        // IRQ6 is a master-PIC line; the controller drives it on command
+        // completion. The floppy controller masters the bus through the 8237.
+        irq_lines.push(IrqLine {
+            device: BIOS_FDC_INDEX,
+            irq: 6,
+        });
+        dma_wirings.push(DmaWiring {
+            requester: BIOS_FDC_INDEX,
+            controller: BIOS_DMA_INDEX,
+        });
+    }
     let mut machine = Machine::new(
         cpu,
         bus,
@@ -687,14 +749,21 @@ pub fn run_bios(rom: &[u8]) -> BiosRun {
         BIOS_QUANTUM,
         irq_lines,
         Some(BIOS_IDLE_LIMIT),
-    );
+    )
+    .with_dma_wirings(dma_wirings);
 
     let result = machine.run_bounded(Some(BIOS_MAX_RETIRED));
     let stop = classify_bios_stop(&machine, result);
 
     let post = drain_post_at(&mut machine, BIOS_POST_INDEX, 0x80);
     let screen = render_vga(&mut machine, BIOS_VGA_INDEX);
-    BiosRun { post, screen, stop }
+    let com1 = drain_serial(&mut machine, BIOS_UART_INDEX);
+    BiosRun {
+        post,
+        screen,
+        com1,
+        stop,
+    }
 }
 
 /// Build the BIOS machine's CPU with the full 1 MiB mosaic address space and the
@@ -798,6 +867,149 @@ fn blank_screen() -> TextGrid {
         cursor_cell: 0,
         cursor_visible: false,
     })
+}
+
+// ---------------------------------------------------------------------------
+// Fast floppy-boot demo: drive the FDC + 8237 to load a boot sector, no BIOS.
+// ---------------------------------------------------------------------------
+
+/// Load offset of the hand-encoded floppy-boot loader (CS = 0, so linear too).
+pub const FLOPPY_LOADER_IP: u16 = 0x7E00;
+/// Where the loader deposits and jumps to the boot sector (classic boot address).
+pub const FLOPPY_BOOT_TARGET: u16 = 0x7C00;
+/// The byte the minimal boot sector transmits to COM1 to prove it executed.
+pub const FLOPPY_BOOT_MARKER: u8 = b'B';
+
+/// A hand-encoded real-mode loader (no assembler) that reads sector 0 of the
+/// floppy into `0x7C00` and far-jumps to it — a self-contained stand-in for the
+/// BIOS INT 13h/INT 19h boot path, so the FDC → 8237 → memory → IRQ6 plumbing is
+/// exercised deterministically without a multi-minute BIOS POST. Every byte is
+/// documented in the `floppy_boot_golden` integration test.
+///
+/// It programs 8237 channel 2 for a device→memory transfer to physical `0x07C00`
+/// (512 bytes), enables the FDC (DOR: motor 0, DMA, out of reset), issues READ
+/// DATA for C0/H0/R1, then `jmp 0x0000:0x7C00`. The machine runs the DMA transfer
+/// as the READ command completes, so the sector is in memory before the jump.
+#[rustfmt::skip]
+pub const FLOPPY_LOADER: &[u8] = &[
+    // ---- program 8237 channel 2 (device -> memory, phys 0x07C00, 512 bytes) ----
+    0xB0, 0x06, 0xE6, 0x0A, // mov al,0x06 ; out 0x0A,al  (mask channel 2)
+    0xB0, 0x00, 0xE6, 0x0C, // mov al,0x00 ; out 0x0C,al  (clear flip-flop)
+    0xB0, 0x46, 0xE6, 0x0B, // mov al,0x46 ; out 0x0B,al  (mode: ch2, write, single)
+    0xB0, 0x00, 0xE6, 0x04, // mov al,0x00 ; out 0x04,al  (address low)
+    0xB0, 0x7C, 0xE6, 0x04, // mov al,0x7C ; out 0x04,al  (address high -> 0x7C00)
+    0xB0, 0x00, 0xE6, 0x81, // mov al,0x00 ; out 0x81,al  (channel 2 page = 0)
+    0xB0, 0xFF, 0xE6, 0x05, // mov al,0xFF ; out 0x05,al  (count low  = 0x01FF)
+    0xB0, 0x01, 0xE6, 0x05, // mov al,0x01 ; out 0x05,al  (count high -> 512 bytes)
+    0xB0, 0x02, 0xE6, 0x0A, // mov al,0x02 ; out 0x0A,al  (unmask channel 2)
+    // ---- enable the floppy controller ----
+    0xBA, 0xF2, 0x03,       // mov dx,0x03F2
+    0xB0, 0x1C,             // mov al,0x1C  (motor 0 on, DMA enable, out of reset)
+    0xEE,                   // out dx,al
+    // ---- issue READ DATA (C0 H0 R1, N2, EOT1) via the data register ----
+    0xBA, 0xF5, 0x03,       // mov dx,0x03F5
+    0xB0, 0x06, 0xEE,       // mov al,0x06 ; out dx,al  (READ DATA opcode)
+    0xB0, 0x00, 0xEE,       // mov al,0x00 ; out dx,al  (drive 0, head 0)
+    0xB0, 0x00, 0xEE,       // mov al,0x00 ; out dx,al  (cylinder 0)
+    0xB0, 0x00, 0xEE,       // mov al,0x00 ; out dx,al  (head 0)
+    0xB0, 0x01, 0xEE,       // mov al,0x01 ; out dx,al  (sector 1)
+    0xB0, 0x02, 0xEE,       // mov al,0x02 ; out dx,al  (N = 2 -> 512 bytes)
+    0xB0, 0x01, 0xEE,       // mov al,0x01 ; out dx,al  (EOT = 1)
+    0xB0, 0x1B, 0xEE,       // mov al,0x1B ; out dx,al  (GPL)
+    0xB0, 0xFF, 0xEE,       // mov al,0xFF ; out dx,al  (DTL)
+    // ---- hand control to the loaded boot sector ----
+    0xEA, 0x00, 0x7C, 0x00, 0x00, // jmp 0x0000:0x7C00
+];
+
+/// The minimal boot sector carried at LBA 0 of [`bootable_floppy_image`]: write
+/// `'B'` to COM1 and halt.
+#[rustfmt::skip]
+const FLOPPY_BOOT_SECTOR: &[u8] = &[
+    0xBA, 0xF8, 0x03, // mov dx,0x03F8   (COM1 THR)
+    0xB0, b'B',       // mov al,'B'
+    0xEE,             // out dx,al
+    0xF4,             // hlt
+];
+
+/// Build a minimal bootable 1.44 MB floppy image: the boot sector at offset 0
+/// (writing `'B'` to COM1, then `hlt`) with the `0x55 0xAA` signature at offset
+/// 510, and the rest zeroed. A real FreeDOS image is separate later work; this
+/// keeps the boot test self-contained.
+#[must_use]
+pub fn bootable_floppy_image() -> Vec<u8> {
+    let mut image = vec![0u8; FLOPPY_IMAGE_BYTES];
+    image[..FLOPPY_BOOT_SECTOR.len()].copy_from_slice(FLOPPY_BOOT_SECTOR);
+    image[510] = 0x55;
+    image[511] = 0xAA;
+    image
+}
+
+/// Assemble a minimal real-mode machine — COM1 UART, 8237 DMA, µPD765 floppy
+/// controller backed by [`bootable_floppy_image`] — run the [`FLOPPY_LOADER`],
+/// and return the bytes the guest sent to COM1 (§7.7).
+///
+/// The loader drives the controller to read the boot sector into `0x7C00` over
+/// DMA and jumps to it; the sector transmits [`FLOPPY_BOOT_MARKER`] and halts, so
+/// a successful boot returns exactly that byte. This proves the whole path — FDC
+/// command state machine, 8237 transfer into guest memory, and the boot jump —
+/// deterministically and fast.
+pub fn run_floppy_boot() -> Result<Vec<u8>> {
+    let devices: Vec<Box<dyn Device>> = vec![
+        Box::new(Uart16550::new(COM1_BASE)),                   // 0
+        Box::new(Dma8237::new()),                              // 1
+        Box::new(Upd765::with_image(bootable_floppy_image())), // 2
+    ];
+    let map = DecodeMap {
+        ports: vec![
+            PortRange {
+                ports: COM1_BASE..=COM1_TOP,
+                device: 0,
+            },
+            PortRange {
+                ports: 0x00..=0x0F,
+                device: 1,
+            },
+            PortRange {
+                ports: 0x80..=0x8F,
+                device: 1,
+            },
+            PortRange {
+                ports: 0x3F0..=0x3F7,
+                device: 2,
+            },
+        ],
+        mmio: Vec::new(),
+    };
+    let bus = Bus::new(devices, map);
+
+    let cpu = X86JitCpu::new_real16(
+        RAM_BYTES,
+        BOOT_CS,
+        FLOPPY_LOADER_IP,
+        FLOPPY_LOADER,
+        RealSegments::flat(BOOT_CS),
+    )
+    .context("building real-mode cpu")?;
+
+    // No interrupt wiring: the DMA transfer is synchronous, so the loader jumps to
+    // the boot sector without waiting on IRQ6; `None` idle limit halts on the
+    // boot sector's `hlt`.
+    let mut machine = Machine::new(
+        cpu,
+        bus,
+        Box::new(NoInterruptController),
+        QUANTUM,
+        Vec::new(),
+        None,
+    )
+    .with_dma_wirings(vec![DmaWiring {
+        requester: 2,
+        controller: 1,
+    }]);
+
+    machine.run().context("running machine")?;
+
+    Ok(drain_serial(&mut machine, 0))
 }
 
 /// Assemble the serial machine, run `blob` in Long64, and return the bytes the

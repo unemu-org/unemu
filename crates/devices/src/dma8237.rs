@@ -48,7 +48,7 @@
 //! - **Compressed timing / rotating priority / the temporary register readback**
 //!   beyond returning the last byte.
 
-use device::{AccessDir, Device, DeviceError, TraceEvent, VClock};
+use device::{AccessDir, Device, DeviceError, DmaMemory, TraceEvent, VClock};
 
 /// Stable device name reported by [`Device::name`].
 const NAME: &str = "8237-dma";
@@ -105,20 +105,6 @@ impl TransferType {
             _ => TransferType::Illegal,
         }
     }
-}
-
-/// A guest-memory handle for DMA transfers.
-///
-/// Implemented by the machine over the `Vm` API so `dma_write` runs the JIT's
-/// `note_write` SMC hook (§4.3). The DMA device receives this per transfer and
-/// never keeps a reference to guest memory. Addresses are full 24-bit physical
-/// addresses (page latch combined with the channel's 16-bit offset).
-pub trait DmaMemory {
-    /// Read one byte of guest memory at physical `addr`.
-    fn dma_read(&self, addr: u32) -> u8;
-
-    /// Write one byte of guest memory at physical `addr` (must run `note_write`).
-    fn dma_write(&mut self, addr: u32, value: u8);
 }
 
 /// One DMA channel's address and count registers.
@@ -545,6 +531,10 @@ impl Device for Dma8237 {
         self.flip_flop = snapshot[off + 4] != 0;
         self.temp = snapshot[off + 5];
         Ok(())
+    }
+
+    fn dma_service_write(&mut self, channel: u8, mem: &mut dyn DmaMemory, data: &[u8]) -> usize {
+        self.service_write(usize::from(channel), mem, data)
     }
 
     fn take_trace(&mut self) -> Vec<TraceEvent> {

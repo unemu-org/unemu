@@ -179,6 +179,24 @@ pub trait Cpu {
         false
     }
 
+    /// Read one byte of guest physical memory for a DMA transfer.
+    ///
+    /// A DMA controller moves bytes between a device and guest RAM through the
+    /// machine, which routes each byte here so the access uses the same `Vm` path
+    /// as the CPU (§4.3). The default returns open-bus `0xFF` for a backend with
+    /// no guest memory (the mock CPU).
+    fn guest_dma_read(&self, addr: u32) -> u8 {
+        let _ = addr;
+        0xFF
+    }
+
+    /// Write one byte of guest physical memory for a DMA transfer, running the
+    /// core's `note_write` self-modifying-code hook (§4.3, §6). The default is a
+    /// no-op for a backend with no guest memory (the mock CPU).
+    fn guest_dma_write(&mut self, addr: u32, value: u8) {
+        let _ = (addr, value);
+    }
+
     /// Retired-instruction count since reset — the deterministic virtual-time
     /// base (§6, virtual-clock model in `architecture.md`).
     ///

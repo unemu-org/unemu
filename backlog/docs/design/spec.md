@@ -56,7 +56,7 @@ IVT-vectored `INT`/exceptions — added under `CpuMode::Real16`.
 §7.1 `Device` contract (mmio/port, `tick`, IRQ, `reset`, `save`/`restore`, trace).
 §7.2 16550 UART (serial) — first device.
 §7.3 8259 PIC. §7.4 8253 PIT. §7.5 8042 keyboard controller.
-§7.6 CMOS/RTC. §7.7 8237 DMA.
+§7.6 CMOS/RTC. §7.7 8237 DMA. §7.8 µPD765 floppy controller (reads via §7.7 DMA).
 
 ## §8 Firmware
 
