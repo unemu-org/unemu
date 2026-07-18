@@ -4,7 +4,7 @@
 //! [`X86JitCpu`] wraps an `x86jit-core` [`Vm`] + [`Vcpu`] and maps the core's
 //! [`Exit`] variants onto the backend-neutral [`CpuStop`]. It runs in **Long64**
 //! mode (the serial skeleton, [`X86JitCpu::new`]) or in **Real16** mode (a PC/AT
-//! boot that takes hardware interrupts, [`X86JitCpu::new_real16`]). It uses the
+//! boot that takes hardware interrupts, [`X86JitCpu::new_real16_bare`]). It uses the
 //! `x86jit` integration surface: `Exit::PortIo` (`in`/`out`), `RegionKind::Trap`
 //! MMIO, and — in real mode — IVT-vectored hardware IRQ injection.
 //!
@@ -44,74 +44,6 @@ impl X86JitCpu {
     }
 
     /// Build a **real-mode (16-bit)** CPU over a flat guest address space of
-    /// `ram_bytes`, seed the four segment registers, load `code` at the linear
-    /// address `(cs << 4) + ip`, and set the instruction pointer to `ip`.
-    ///
-    /// The whole space is mapped `RWX` `Ram` (the guest programs the IVT and the
-    /// devices itself via ordinary stores/`out`); MMIO-trapped windows are added
-    /// with [`X86JitCpu::map_mmio`] before execution. Code is written through the
-    /// `Vm` API so the core's self-modifying-code tracking sees the write.
-    ///
-    /// In real mode a segment base is `selector << 4`; the embedder passes the
-    /// selectors and this seeds CS/DS/ES/SS to the same value (the common flat
-    /// low-memory layout a boot blob uses). The stack pointer is seeded from
-    /// `segments.sp`. Hardware IRQs injected with [`Cpu::inject_irq`] are then
-    /// delivered in-guest through the IVT (§5.2).
-    ///
-    /// The embedder seeds the segment and stack registers because the `x86jit`
-    /// core does not lift `mov Sreg, r16` (it models segment *bases* for
-    /// addressing, not selector-loading instructions); a real-mode boot blob
-    /// therefore relies on this seeding instead of setting up its own segments.
-    pub fn new_real16(
-        ram_bytes: u64,
-        cs: u16,
-        ip: u16,
-        code: &[u8],
-        segments: RealSegments,
-    ) -> Result<Self, CpuError> {
-        // RAM fills the whole flat space; no room is reserved for MMIO windows.
-        Self::new_real16_mmio(ram_bytes, ram_bytes, cs, ip, code, segments)
-    }
-
-    /// Build a **real-mode (16-bit)** CPU whose flat guest space spans
-    /// `space_bytes` but whose RAM covers only `[0, ram_bytes)`.
-    ///
-    /// The gap `[ram_bytes, space_bytes)` is left unmapped so the embedder can add
-    /// MMIO-trapped windows above conventional RAM with [`X86JitCpu::map_mmio`] —
-    /// the layout a PC needs for the video buffer at `0xB8000`, which sits above
-    /// low RAM but below the top of the addressable space. A `Trap` window may not
-    /// overlap RAM, so RAM must stop at or below each window's base.
-    ///
-    /// Everything else matches [`X86JitCpu::new_real16`]: RAM is `RWX`, `code` is
-    /// loaded at `(cs << 4) + ip` through the `Vm` API (so self-modifying-code
-    /// tracking sees it), and the segment/stack registers are seeded from
-    /// `segments` because the `x86jit` core does not lift `mov Sreg, r16`.
-    pub fn new_real16_mmio(
-        space_bytes: u64,
-        ram_bytes: u64,
-        cs: u16,
-        ip: u16,
-        code: &[u8],
-        segments: RealSegments,
-    ) -> Result<Self, CpuError> {
-        let mut vm = Vm::new(VmConfig::flat(space_bytes));
-        vm.set_cpu_mode(CpuMode::Real16);
-        vm.map(0, ram_bytes as usize, Prot::RWX, RegionKind::Ram)
-            .map_err(|e| CpuError::Memory(format!("{e:?}")))?;
-        let load = (u64::from(cs) << 4) + u64::from(ip);
-        vm.write_bytes(load, code)
-            .map_err(|e| CpuError::Memory(format!("{e:?}")))?;
-        let mut cpu = vm.new_vcpu();
-        cpu.set_reg(Reg::Cs, u64::from(cs));
-        cpu.set_reg(Reg::Ds, u64::from(segments.ds));
-        cpu.set_reg(Reg::Es, u64::from(segments.es));
-        cpu.set_reg(Reg::Ss, u64::from(segments.ss));
-        cpu.set_reg(Reg::Rsp, u64::from(segments.sp));
-        cpu.set_reg(Reg::Rip, u64::from(ip));
-        Ok(Self { vm, cpu })
-    }
-
-    /// Build a **real-mode (16-bit)** CPU over a flat guest address space of
     /// `space_bytes` with **no regions mapped** — the embedder lays out the whole
     /// memory map itself with [`X86JitCpu::map_ram`], [`X86JitCpu::map_rom`], and
     /// [`X86JitCpu::map_mmio`].
@@ -123,9 +55,9 @@ impl X86JitCpu {
     /// [`X86JitCpu::map_rom`]); this only seeds the segment and stack registers and
     /// points CS:IP at the reset entry.
     ///
-    /// As with [`X86JitCpu::new_real16`], the segment registers are seeded here
-    /// because the `x86jit` core models segment *bases* for addressing; a real-mode
-    /// guest starts from these rather than setting them up from nothing.
+    /// The segment registers are seeded here because the `x86jit` core models
+    /// segment *bases* for addressing (it does not lift `mov Sreg, r16`); a
+    /// real-mode guest starts from these rather than setting them up from nothing.
     pub fn new_real16_bare(
         space_bytes: u64,
         cs: u16,
@@ -211,7 +143,7 @@ impl X86JitCpu {
 /// The data-segment selectors and stack pointer a real-mode guest starts with
 /// (§17.6).
 ///
-/// CS and IP are passed separately to [`X86JitCpu::new_real16`] (they fix the
+/// CS and IP are passed separately to [`X86JitCpu::new_real16_bare`] (they fix the
 /// code-fetch address); this groups DS/ES/SS and the initial SP. A boot blob that
 /// runs from a single flat low-memory segment uses [`RealSegments::flat`], which
 /// sets the three data segments equal to the code segment and picks a default

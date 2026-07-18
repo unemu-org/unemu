@@ -3,7 +3,7 @@
 //!
 //! The first end-to-end path where an interrupt reaches the CPU **across the
 //! master/slave 8259 cascade**. A hand-encoded **real-mode** guest runs on the
-//! [`AtChipset`] (UART + cascaded 8259 pair + PIT + 8042 + VGA + MC146818 RTC)
+//! PC/AT machine shape (UART + cascaded 8259 pair + PIT + 8042 + VGA + MC146818 RTC)
 //! through the real `X86JitCpu` in `CpuMode::Real16`. It:
 //!
 //! 1. writes an IRQ8 handler address into IVT entry `0x70` (`0x0000:0x01C0`);
@@ -28,7 +28,7 @@
 //! count and the RTC ticks off it (§6).
 //!
 //! The segment registers and stack pointer are seeded by the embedder
-//! (`X86JitCpu::new_real16`) because the `x86jit` core does not lift
+//! (`X86JitCpu::new_real16_bare`) because the `x86jit` core does not lift
 //! `mov Sreg, r16`; the guest starts straight at device setup.
 //!
 //! ## Pinned CPU revision

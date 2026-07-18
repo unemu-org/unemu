@@ -2,7 +2,7 @@
 //! Real-mode timer-interrupt boot golden test (§5, §7, §10).
 //!
 //! The first end-to-end path where the machine takes a **hardware interrupt**.
-//! A hand-encoded **real-mode** guest runs on the [`AtChipset`]
+//! A hand-encoded **real-mode** guest runs on the PC/AT machine shape
 //! (16550 UART + 8259 PIC + 8253 PIT) through the real `X86JitCpu` in
 //! `CpuMode::Real16`. It:
 //!
@@ -20,7 +20,7 @@
 //! retired-instruction count and the PIT ticks off it (§6).
 //!
 //! The segment registers and stack pointer are seeded by the embedder
-//! (`X86JitCpu::new_real16`) because the `x86jit` core does not lift
+//! (`X86JitCpu::new_real16_bare`) because the `x86jit` core does not lift
 //! `mov Sreg, r16`; the guest starts straight at device setup.
 //!
 //! ## Pinned CPU revision

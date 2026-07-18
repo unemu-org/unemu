@@ -2,7 +2,7 @@
 //! Real-mode VGA text-mode golden test (§9.2, §10).
 //!
 //! The first end-to-end path where the machine paints the **text screen**. A
-//! hand-encoded **real-mode** guest runs on the [`AtChipset`] through the real
+//! hand-encoded **real-mode** guest runs on the PC/AT machine shape through the real
 //! `X86JitCpu` in `CpuMode::Real16`. The embedder seeds DS/ES to `0xB800` so a
 //! near word store reaches the colour text buffer at `0xB8000`, which is mapped
 //! as trapped MMIO; the guest writes two glyph+attribute cells ("Hi", bright
