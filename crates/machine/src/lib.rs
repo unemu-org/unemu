@@ -237,6 +237,18 @@ impl<C: Cpu> Machine<C> {
         self.idle_limit
     }
 
+    /// Set the idle limit after construction — the "how we run" bound on how many
+    /// consecutive halted boundaries pass with no injected interrupt before the
+    /// machine declares the source quiescent and stops (`None` never gives up).
+    ///
+    /// The idle limit is a run concern, not part of what the machine *is*, so the
+    /// run-policy layer above owns it and stamps it here before driving the loop.
+    /// [`Machine::new`] still accepts an initial value so the pre-policy assembly
+    /// paths stay byte-identical; this setter is how the policy relocates it.
+    pub fn set_idle_limit(&mut self, idle_limit: Option<u64>) {
+        self.idle_limit = idle_limit;
+    }
+
     /// Run until the guest halts with no more interrupts to service (§3.1).
     ///
     /// Unbounded: equivalent to [`Machine::run_bounded`] with no cap, discarding

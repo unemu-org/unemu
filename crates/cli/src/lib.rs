@@ -19,7 +19,9 @@
 //! concrete-device downcast.
 
 use anyhow::{Context, Result};
-use assembly::{assemble, AssembledMachine, DeviceId, MachineConfig};
+use assembly::{
+    assemble, AssembledMachine, ConsoleProbe, DeviceId, MachineConfig, RunPolicy, StopCondition,
+};
 use bus::{Bus, DecodeMap, MmioRange, PortRange};
 use chipset::{
     AtChipset, CascadedPic, Chipset, NoInterruptController, AT_CMOS_RTC_INDEX, AT_I8042_INDEX,
@@ -388,7 +390,7 @@ pub fn run_test386(blob: &[u8]) -> Test386Run {
     let AssembledMachine {
         mut machine,
         device_index,
-    } = match assemble(&config, None) {
+    } = match assemble(&config) {
         Ok(assembled) => assembled,
         Err(e) => {
             return Test386Run {
@@ -668,7 +670,7 @@ fn run_bios_config(config: MachineConfig, poll_to_prompt: bool) -> BiosRun {
     let AssembledMachine {
         mut machine,
         device_index,
-    } = match assemble(&config, Some(BIOS_IDLE_LIMIT)) {
+    } = match assemble(&config) {
         Ok(assembled) => assembled,
         Err(e) => {
             return BiosRun {
@@ -683,11 +685,30 @@ fn run_bios_config(config: MachineConfig, poll_to_prompt: bool) -> BiosRun {
         }
     };
 
-    let result = if poll_to_prompt {
-        boot_to_date_prompt(&mut machine)
+    // "How we run" is a RunPolicy, not part of the machine: the plain BIOS/POST
+    // path runs to a natural stop under the retired cap; the FreeDOS path polls to
+    // the FreeCOM date prompt on the MDA console and stops there. Both carry the
+    // idle limit the machine used to be constructed with (relocated into the policy).
+    let policy = if poll_to_prompt {
+        RunPolicy {
+            retired_cap: Some(BIOS_MAX_RETIRED),
+            idle_limit: Some(BIOS_IDLE_LIMIT),
+            stop: StopCondition::PromptThen {
+                console: ConsoleProbe {
+                    base: MDA_BUFFER_BASE,
+                    cols: COLS,
+                    rows: ROWS,
+                },
+                needle: DOS_DATE_PROMPT.to_string(),
+                poll_step: DOS_INTERACTIVE_POLL_STEP,
+                then_budget: 0,
+            },
+            stimuli: Vec::new(),
+        }
     } else {
-        machine.run_bounded(Some(BIOS_MAX_RETIRED))
+        RunPolicy::natural(Some(BIOS_MAX_RETIRED), Some(BIOS_IDLE_LIMIT))
     };
+    let result = assembly::run(&mut machine, &policy);
 
     let stop = classify_bios_stop(&machine, result);
     let post = drain_post_at(&mut machine, device_index[&DeviceId::Post], 0x80);
@@ -1427,7 +1448,7 @@ pub fn run_floppy_boot() -> Result<Vec<u8>> {
     let AssembledMachine {
         mut machine,
         device_index,
-    } = assemble(&config, None).context("assembling floppy-boot machine")?;
+    } = assemble(&config).context("assembling floppy-boot machine")?;
 
     machine.run().context("running machine")?;
 
@@ -1540,9 +1561,16 @@ pub fn run_boot(blob: &[u8]) -> Result<Vec<u8>> {
     let AssembledMachine {
         mut machine,
         device_index,
-    } = assemble(&config, Some(BOOT_IDLE_LIMIT)).context("assembling boot machine")?;
+    } = assemble(&config).context("assembling boot machine")?;
 
-    machine.run().context("running machine")?;
+    // Natural run to quiescence under the demo's idle limit — relocated from the
+    // machine's construction into the run policy. No retired cap: the demo masks
+    // its timer and halts on its own.
+    assembly::run(
+        &mut machine,
+        &RunPolicy::natural(None, Some(BOOT_IDLE_LIMIT)),
+    )
+    .context("running machine")?;
 
     Ok(drain_serial(&mut machine, device_index[&DeviceId::Uart]))
 }
@@ -1582,14 +1610,19 @@ pub fn run_keyboard(blob: &[u8], scancodes: &[u8]) -> Result<Vec<u8>> {
     let AssembledMachine {
         mut machine,
         device_index,
-    } = assemble(&config, Some(KBD_IDLE_LIMIT)).context("assembling keyboard machine")?;
+    } = assemble(&config).context("assembling keyboard machine")?;
 
     // Queue the scancodes into the 8042 before the run, exactly as the legacy
     // chipset seeded them at construction — the guest raises IRQ1 for each once it
     // enables keyboard interrupts.
     inject_scancodes(&mut machine, device_index[&DeviceId::Keyboard], scancodes);
 
-    machine.run().context("running machine")?;
+    // Natural run under the demo's idle limit (relocated into the run policy).
+    assembly::run(
+        &mut machine,
+        &RunPolicy::natural(None, Some(KBD_IDLE_LIMIT)),
+    )
+    .context("running machine")?;
 
     Ok(drain_serial(&mut machine, device_index[&DeviceId::Uart]))
 }
@@ -1636,9 +1669,14 @@ pub fn run_rtc(blob: &[u8]) -> Result<Vec<u8>> {
     let AssembledMachine {
         mut machine,
         device_index,
-    } = assemble(&config, Some(RTC_IDLE_LIMIT)).context("assembling rtc machine")?;
+    } = assemble(&config).context("assembling rtc machine")?;
 
-    machine.run().context("running machine")?;
+    // Natural run under the demo's idle limit (relocated into the run policy).
+    assembly::run(
+        &mut machine,
+        &RunPolicy::natural(None, Some(RTC_IDLE_LIMIT)),
+    )
+    .context("running machine")?;
 
     Ok(drain_serial(&mut machine, device_index[&DeviceId::Uart]))
 }
@@ -1682,7 +1720,7 @@ pub fn run_vga_text(blob: &[u8]) -> Result<TextGrid> {
     let AssembledMachine {
         mut machine,
         device_index,
-    } = assemble(&config, None).context("assembling vga-text machine")?;
+    } = assemble(&config).context("assembling vga-text machine")?;
 
     machine.run().context("running machine")?;
 

@@ -247,28 +247,40 @@ one-off variation clones a preset's config and edits fields. Added in task-31.
 ## RunPolicy — "how we run" is not "what the machine is"
 
 `MachineConfig` describes the machine. It does **not** describe the run. Those
-are split:
+are split (implemented in task-32, in the `assembly` crate next to the assembler):
 
 ```
 RunPolicy {
-    retired_cap:        u64,          // safety bound on total retired instructions
-    stop_when_prompt:   bool,         // stop at the FreeCOM prompt vs. run to cap
-    keyboard_script:    Vec<u8>,      // scancodes to inject
-    injection_schedule: …,            // WHEN to inject them
-    idle_limit:         u64,          // stop after this many idle iterations
+    retired_cap: Option<u64>,          // safety bound on total retired instructions
+    idle_limit:  Option<u64>,          // halted boundaries before the source is quiescent
+    stop:        StopCondition,        // Natural | PromptThen { console, needle, poll_step, then_budget }
+    stimuli:     Vec<KeyboardStimulus>,// scancodes + WHEN to inject (InjectionSchedule)
 }
 ```
 
+The stop *shape* is an enum, not a `bool`: `StopCondition::Natural` runs to a
+halt/quiescence (the POST boots and demos); `StopCondition::PromptThen` folds the
+old `boot_to_date_prompt` loop — poll the `console` in `poll_step` retired-instruction
+chunks until `needle` shows, then, if stimuli are scheduled, inject them and run
+`then_budget` more. Scancode injection is a `KeyboardStimulus` (bytes + an
+`InjectionSchedule`, today `AfterPrompt`); it is the **mechanism** the interactive
+FreeDOS port (task-36) drives — task-32 provides it, task-36 is the caller.
+
 `idle_limit` — the "device declares its source quiescent, stop" bound — is a
-run-loop concern, so it **moves out of the machine description into
-`RunPolicy`**. The retired-instruction cap, the stop-at-prompt behaviour, and the
-keyboard script + injection cadence are all run policy, not machine identity.
+run-loop concern, so it **moved out of the machine description into `RunPolicy`**.
+`Machine::new` keeps accepting an initial value (a shim so the pre-config `*_legacy`
+A/B baselines stay byte-identical) and `assemble` no longer takes it; the run
+driver `run(machine, policy)` stamps the policy's `idle_limit` onto the machine
+before the loop. **Quantum stays in `MachineConfig`** (`ClockConfig`): it is
+guest-visible interrupt latency (decision-4), part of what the machine *is*, not
+how it is run.
 
 **The injection cadence is part of the golden identity.** *When* scancodes are
 injected and how often the loop polls for a pending IRQ is not a free tuning
 knob: it changes which interrupts are taken and therefore the observable output.
-A golden trace is valid only against a fixed `RunPolicy` cadence, exactly as it
-is valid only against a pinned CPU revision. Introduced in task-32.
+`RunPolicy` derives `Eq`/`Debug` for exactly this reason. A golden trace is valid
+only against a fixed `RunPolicy` cadence, exactly as it is valid only against a
+pinned CPU revision. Introduced in task-32.
 
 ## Migration strategy
 

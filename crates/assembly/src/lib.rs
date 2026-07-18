@@ -46,6 +46,7 @@ mod machine;
 mod memory;
 mod output;
 mod presets;
+mod run;
 mod validate;
 
 pub use assemble::{assemble, derive_cmos_config, AssembledMachine, AssemblyError};
@@ -62,3 +63,4 @@ pub use machine::MachineConfig;
 pub use memory::{MemoryConfig, MmioWindow, RamRegion};
 pub use output::{FrameSinkKind, OutputConfig};
 pub use presets::{at_boot, at_keyboard, at_rtc, at_vga_text, bios, floppy_boot, test386};
+pub use run::{run, ConsoleProbe, InjectionSchedule, KeyboardStimulus, RunPolicy, StopCondition};
