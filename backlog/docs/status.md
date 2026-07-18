@@ -19,6 +19,21 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
 
 ## Recently landed
 
+- **Real FreeDOS boots on the machine** (`task-20`–`task-22`): the unmodified
+  Kiselev Xi8088 BIOS completes its **entire** POST, renders its full
+  hardware-detection screen via INT 10h (80C88, seeded RTC, MDA, 1.44 MB floppy,
+  640 KiB RAM — all detected correctly), and its INT 19h loads and jumps to a real
+  **FreeDOS** 8086 floppy image over the modelled **µPD765 floppy controller +
+  8237 DMA** (`Booting OS...`). The whole BIOS + machine stack works under real
+  firmware. FreeDOS itself loads but spins early in its boot chain
+  (`BudgetExhausted`, not an unlifted instruction) before a kernel banner — the
+  remaining work is that spin (`task-25`). Along the way: x87 `FNINIT` lifted
+  (`task-24`, cleared BIOS FPU detect), the µPD765 + a machine-orchestrated
+  DMA-bus-master seam (`Cpu::guest_dma_write` → `note_write`, SMC-safe), ROM
+  mapping at `0xF8000`, and the POST/observability plumbing. BIOS console output
+  lands in the MDA window at `0xB0000` (the BIOS's no-video-BIOS path selects MDA);
+  `BiosRun.mda` reads it back. Workspace: **223 tests** (+3 slow boot goldens
+  `#[ignore]`).
 - **The real Kiselev Xi8088 BIOS boots and runs 14 POST checkpoints** (`task-20`,
   folds in ROM mapping `task-12` + POST-port `task-15`): the unmodified BIOS ROM,
   mapped read-only at `0xF8000`, far-jumps from the reset vector and drives our
