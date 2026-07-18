@@ -32,7 +32,8 @@ use devices::upd765::FLOPPY_IMAGE_BYTES;
 use devices::vga_text::{
     CGA_MODE_CONTROL_PORT, CGA_STATUS_PORT, COLS, CRTC_CURSOR_HIGH_INDEX, CRTC_CURSOR_LOW_INDEX,
     CRTC_CURSOR_START_INDEX, CRTC_DATA_PORT, CRTC_INDEX_PORT, CRTC_START_HIGH_INDEX,
-    CRTC_START_LOW_INDEX, ROWS, TEXT_BUFFER_BASE, TEXT_BUFFER_LEN,
+    CRTC_START_LOW_INDEX, MDA_CRTC_DATA_PORT, MDA_CRTC_INDEX_PORT, MDA_STATUS_PORT, ROWS,
+    TEXT_BUFFER_BASE, TEXT_BUFFER_LEN,
 };
 use devices::{
     CmosConfig, CmosRtc, Dma8237, Pit8253, PostPort, SysControl, Uart16550, Upd765, VgaText, I8042,
@@ -625,7 +626,15 @@ pub fn run_freedos(rom: &[u8], floppy: Vec<u8>) -> BiosRun {
     run_bios_inner(rom, Some(floppy))
 }
 
-fn run_bios_inner(rom: &[u8], floppy: Option<Vec<u8>>) -> BiosRun {
+/// Assemble the full PC/AT BIOS machine (devices, decode map, 1 MiB memory mosaic
+/// with the ROM loaded, interrupt and DMA wiring) without running it, so a caller
+/// can drive it directly. The normal boot path ([`run_bios_inner`]) runs it to the
+/// retired cap; exposing the assembled machine also lets a test or diagnostic tool
+/// step it and inspect guest state (CS:IP, memory) to locate where a boot stops.
+pub fn assemble_bios_machine(
+    rom: &[u8],
+    floppy: Option<Vec<u8>>,
+) -> Result<Machine<X86JitCpu>, CpuError> {
     // Each PIC chip's device face is cloned off the one live pair; the pair itself
     // is the machine's interrupt controller, so a guest EOI to either chip reaches
     // the state the machine's INTA set.
@@ -696,6 +705,17 @@ fn run_bios_inner(rom: &[u8], floppy: Option<Vec<u8>>) -> BiosRun {
             ports: CGA_MODE_CONTROL_PORT..=CGA_STATUS_PORT,
             device: BIOS_VGA_INDEX,
         },
+        // Monochrome (MDA) port aliases the Kiselev BIOS drives in its MDA console
+        // path: the CRTC at 0x3B4/0x3B5 and the input status register at 0x3BA
+        // (whose retrace bits the INT 10h read/write-character routines poll).
+        PortRange {
+            ports: MDA_CRTC_INDEX_PORT..=MDA_CRTC_DATA_PORT,
+            device: BIOS_VGA_INDEX,
+        },
+        PortRange {
+            ports: MDA_STATUS_PORT..=MDA_STATUS_PORT,
+            device: BIOS_VGA_INDEX,
+        },
         PortRange {
             ports: SLAVE_PIC_COMMAND..=SLAVE_PIC_DATA,
             device: BIOS_SLAVE_PIC_INDEX,
@@ -728,20 +748,7 @@ fn run_bios_inner(rom: &[u8], floppy: Option<Vec<u8>>) -> BiosRun {
     let bus = Bus::new(devices, map);
 
     // Lay out the full 1 MiB mosaic (no unmapped holes), then load the ROM.
-    let cpu = match build_bios_cpu(rom) {
-        Ok(cpu) => cpu,
-        Err(e) => {
-            return BiosRun {
-                post: Vec::new(),
-                screen: blank_screen(),
-                mda: blank_screen(),
-                com1: Vec::new(),
-                stop: StopReason::Unmapped {
-                    detail: format!("building cpu: {e}"),
-                },
-            }
-        }
-    };
+    let cpu = build_bios_cpu(rom)?;
     // Wire the interrupt sources the BIOS's POST and INT layer rely on.
     let mut irq_lines = vec![
         IrqLine {
@@ -770,7 +777,7 @@ fn run_bios_inner(rom: &[u8], floppy: Option<Vec<u8>>) -> BiosRun {
             controller: BIOS_DMA_INDEX,
         });
     }
-    let mut machine = Machine::new(
+    let machine = Machine::new(
         cpu,
         bus,
         controller,
@@ -779,6 +786,24 @@ fn run_bios_inner(rom: &[u8], floppy: Option<Vec<u8>>) -> BiosRun {
         Some(BIOS_IDLE_LIMIT),
     )
     .with_dma_wirings(dma_wirings);
+    Ok(machine)
+}
+
+fn run_bios_inner(rom: &[u8], floppy: Option<Vec<u8>>) -> BiosRun {
+    let mut machine = match assemble_bios_machine(rom, floppy) {
+        Ok(machine) => machine,
+        Err(e) => {
+            return BiosRun {
+                post: Vec::new(),
+                screen: blank_screen(),
+                mda: blank_screen(),
+                com1: Vec::new(),
+                stop: StopReason::Unmapped {
+                    detail: format!("building cpu: {e}"),
+                },
+            }
+        }
+    };
 
     let result = machine.run_bounded(Some(BIOS_MAX_RETIRED));
     let stop = classify_bios_stop(&machine, result);
