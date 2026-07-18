@@ -318,6 +318,15 @@ fn build_dma_wirings(
 /// Only floppy drives are mounted here; a slot past the fourth position is
 /// ignored (validation bounds slots to the controller's declared count). The
 /// config geometry maps directly to the controller's own geometry type.
+///
+/// This is the pattern a future fixed-disk controller reuses. A
+/// [`DriveKind::HardDisk`] drive is *skipped* here — there is no IDE/ATA device
+/// yet — but when one is added it plugs into exactly this seam: a
+/// `build_ide_drives(config)` that filters `config.drives` for `HardDisk` and
+/// routes them into the new device by their `controller_slot`, called from the
+/// device-construction match arm just as [`DeviceKind::Fdc`] calls this. No new
+/// assembler architecture is needed — the drive list, the slot routing, and the
+/// CMOS derivation are already in place; only the target device is missing.
 fn build_fdc_drives(config: &MachineConfig) -> [Option<Drive>; 4] {
     let mut slots: [Option<Drive>; 4] = [None, None, None, None];
     for drive in &config.drives {
@@ -380,9 +389,12 @@ pub fn derive_cmos_config(config: &MachineConfig) -> CmosConfig {
                 }
             }
             DriveKind::HardDisk { .. } => {
-                // A hard disk present but not otherwise modelled: mark its nibble
-                // as "type stored in the extended table" (0xF), the encoding a
-                // BIOS uses for drives beyond the built-in type list.
+                // A hard disk present but with no controller device to serve it
+                // yet: the CMOS still derives its nibble here, so the day a future
+                // IDE/ATA device is added, an attached HardDisk drive already
+                // reports itself to the BIOS with no change to this function. Mark
+                // the nibble "type stored in the extended table" (0xF), the
+                // encoding a BIOS uses for drives beyond the built-in type list.
                 match drive.controller_slot {
                     0 => hard_disk_types |= 0xF0,
                     1 => hard_disk_types |= 0x0F,
@@ -781,5 +793,142 @@ mod tests {
         assert_eq!(floppy_cmos_type(&FloppyGeometry::HD_1_2), 2);
         assert_eq!(floppy_cmos_type(&FloppyGeometry::DD_720K), 3);
         assert_eq!(floppy_cmos_type(&FloppyGeometry::DD_360K), 1);
+    }
+
+    /// The reference machine with two floppies attached: a 1.2 MB drive A: in slot
+    /// 0 and a 720 KB drive B: in slot 1, each with a correctly sized blank image.
+    fn two_floppy_config() -> MachineConfig {
+        let mut config = reference_config();
+        config.drives = vec![
+            DriveConfig {
+                kind: DriveKind::Floppy {
+                    geometry: FloppyGeometry::HD_1_2,
+                },
+                image: ImageSource::Blank {
+                    size: FloppyGeometry::HD_1_2.image_bytes(),
+                },
+                controller_slot: 0,
+            },
+            DriveConfig {
+                kind: DriveKind::Floppy {
+                    geometry: FloppyGeometry::DD_720K,
+                },
+                image: ImageSource::Blank {
+                    size: FloppyGeometry::DD_720K.image_bytes(),
+                },
+                controller_slot: 1,
+            },
+        ];
+        config
+    }
+
+    #[test]
+    fn two_floppies_route_to_slots_and_derive_cmos_with_no_manual_edit() {
+        let config = two_floppy_config();
+
+        // (a) Both drives land in the controller's slots, each carrying the exact
+        // geometry the config named — slot 0 is the 1.2 MB drive, slot 1 the 720 KB.
+        let slots = build_fdc_drives(&config);
+        assert_eq!(
+            slots[0].as_ref().expect("slot 0 mounted").geometry,
+            to_device_geometry(&FloppyGeometry::HD_1_2)
+        );
+        assert_eq!(
+            slots[1].as_ref().expect("slot 1 mounted").geometry,
+            to_device_geometry(&FloppyGeometry::DD_720K)
+        );
+        assert!(slots[2].is_none() && slots[3].is_none());
+
+        // (b) The CMOS floppy nibbles and equipment byte fall out of the attached
+        // drives alone — no caller ever edits CMOS. High nibble = slot 0 (1.2 MB →
+        // code 2), low nibble = slot 1 (720 KB → code 3); equipment bit 0 set (a
+        // floppy is present) and bits 6-7 = 01 (two drives installed).
+        let cmos = derive_cmos_config(&config);
+        assert_eq!(cmos.floppy_types, 0x23);
+        assert_eq!(cmos.equipment & 0x01, 0x01);
+        assert_eq!(cmos.equipment >> 6, 0b01);
+
+        // And the whole machine assembles from that config unchanged.
+        assert!(assemble(&config).is_ok());
+    }
+
+    /// The reference machine carrying a single floppy of `geometry` backed by
+    /// `image` in slot 0.
+    fn single_floppy_config(geometry: FloppyGeometry, image: ImageSource) -> MachineConfig {
+        let mut config = reference_config();
+        config.drives = vec![DriveConfig {
+            kind: DriveKind::Floppy { geometry },
+            image,
+            controller_slot: 0,
+        }];
+        config
+    }
+
+    #[test]
+    fn a_guest_reads_at_the_configured_geometry_and_faults_past_it() {
+        const SECTOR: usize = 512;
+        // µPD765 data/DOR ports; the guest drives these through the assembled bus.
+        const DOR: u16 = 0x3F2;
+        const DATA: u16 = 0x3F5;
+
+        // A 360 KB drive spans 40 cylinders (0..=39). Seed a distinctive first
+        // sector so the queued DMA bytes are recognisable.
+        let mut image = vec![0u8; FloppyGeometry::DD_360K.image_bytes() as usize];
+        for (i, b) in image.iter_mut().take(SECTOR).enumerate() {
+            *b = (i % 251) as u8;
+        }
+        let config =
+            single_floppy_config(FloppyGeometry::DD_360K, ImageSource::Inline(image.clone()));
+        let mut assembled = assemble(&config).expect("assembles");
+        let idx = assembled.device_index[&DeviceId::Fdc];
+        let bus = assembled.machine.bus_mut();
+        let fdc = bus.device_mut(idx).expect("fdc is on the bus");
+
+        // Bring the controller out of reset (not-reset, DMA, motor 0, drive 0) and
+        // drain the four post-reset sense polls, exactly as a BIOS would.
+        fdc.port_write(DOR, 1, 0x1C).unwrap();
+        for _ in 0..4 {
+            fdc.port_write(DATA, 1, 0x08).unwrap(); // SENSE INTERRUPT STATUS
+            let _ = fdc.port_read(DATA, 1).unwrap();
+            let _ = fdc.port_read(DATA, 1).unwrap();
+        }
+
+        // READ DATA at C=0 H=0 R=1 — a valid sector on a 360 KB disk. The
+        // controller reads the configured drive's sector 0 and queues it for DMA.
+        let read = [0x06u8, 0x00, 0x00, 0x00, 0x01, 0x02, 0x01, 0x1B, 0xFF];
+        for &b in &read {
+            fdc.port_write(DATA, 1, u32::from(b)).unwrap();
+        }
+        let request = fdc
+            .take_dma_request()
+            .expect("an in-geometry read queues a DMA transfer");
+        assert_eq!(
+            &request.data[..],
+            &image[..SECTOR],
+            "the queued bytes are the configured drive's sector 0"
+        );
+        fdc.dma_complete(SECTOR);
+        let st0 = fdc.port_read(DATA, 1).unwrap() as u8;
+        assert_eq!(st0 & 0xC0, 0, "normal termination for an in-geometry read");
+        for _ in 0..6 {
+            let _ = fdc.port_read(DATA, 1).unwrap(); // drain the rest of the result
+        }
+
+        // READ DATA at C=40 — one past a 360 KB disk's last cylinder, though it
+        // would be valid on a 1.44 MB disk (80 cylinders). The controller honours
+        // the CONFIGURED geometry: there is no data field, so it faults with no
+        // transfer instead of reading a 1.44 MB-shaped sector.
+        let past = [0x06u8, 0x00, 40, 0x00, 0x01, 0x02, 0x01, 0x1B, 0xFF];
+        for &b in &past {
+            fdc.port_write(DATA, 1, u32::from(b)).unwrap();
+        }
+        assert!(
+            fdc.take_dma_request().is_none(),
+            "an out-of-geometry read queues no transfer"
+        );
+        let st0 = fdc.port_read(DATA, 1).unwrap() as u8;
+        let st1 = fdc.port_read(DATA, 1).unwrap() as u8;
+        assert_eq!(st0 & 0x40, 0x40, "abnormal termination (ST0 IC = 01)");
+        assert_eq!(st1 & 0x04, 0x04, "ST1 ND: no data field past the geometry");
     }
 }

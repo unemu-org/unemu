@@ -87,6 +87,15 @@ pub enum DriveKind {
         geometry: FloppyGeometry,
     },
     /// A fixed (hard) disk.
+    ///
+    /// This variant is the **attachment seam for a future XT-IDE/ATA device**. A
+    /// `HardDisk` drive is first-class config today — it is validated, it derives
+    /// its CMOS `hard_disk_types` nibble, and it binds to a controller by
+    /// `controller_slot` — but the assembler skips it during device construction
+    /// because no fixed-disk controller is modelled yet. When one lands it plugs
+    /// into the same routing the floppy uses (see `build_fdc_drives` in the
+    /// assembler): filter `drives` for `HardDisk` and route by `controller_slot`,
+    /// no new config shape required.
     HardDisk {
         /// The disk's geometry.
         geometry: HardDiskGeometry,

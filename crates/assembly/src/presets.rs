@@ -244,15 +244,25 @@ fn fdc(ports: Vec<PortWindow>, irq: Option<u8>, dma_channel: Option<u8>) -> Devi
     dc
 }
 
-/// A single 1.44 MB floppy in drive slot 0 backed by `image`.
-fn floppy_drive(image: ImageSource) -> DriveConfig {
+/// A floppy of the given `geometry` in drive slot `slot`, backed by `image`.
+///
+/// The one place a preset attaches a floppy: geometry and slot are parameters, so
+/// a machine with a 1.2 MB drive A: and a 720 KB drive B: is two calls, and the
+/// CMOS floppy nibbles + equipment byte follow automatically from
+/// [`derive_cmos_config`](crate::assemble::derive_cmos_config) — no hand-edited
+/// CMOS. [`floppy_drive`] is the common single-drive, high-density default.
+fn floppy_drive_geo(image: ImageSource, geometry: FloppyGeometry, slot: u8) -> DriveConfig {
     DriveConfig {
-        kind: DriveKind::Floppy {
-            geometry: FloppyGeometry::HD_1_44,
-        },
+        kind: DriveKind::Floppy { geometry },
         image,
-        controller_slot: 0,
+        controller_slot: slot,
     }
+}
+
+/// A single 1.44 MB floppy in drive slot 0 backed by `image` — the default the
+/// BIOS and floppy-boot machines take.
+fn floppy_drive(image: ImageSource) -> DriveConfig {
+    floppy_drive_geo(image, FloppyGeometry::HD_1_44, 0)
 }
 
 // ---------------------------------------------------------------------------
@@ -542,5 +552,46 @@ pub fn bios(rom: Vec<u8>, floppy: Option<Vec<u8>>, quantum: Option<u64>) -> Mach
             kind: ImageKind::Rom,
         }],
         output: OutputConfig::default(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn floppy_drive_default_is_high_density_slot_zero() {
+        // The BIOS and floppy-boot machines take this default; it must stay a
+        // single 1.44 MB drive A: so their goldens are untouched.
+        let drive = floppy_drive(ImageSource::Blank {
+            size: FloppyGeometry::HD_1_44.image_bytes(),
+        });
+        assert_eq!(
+            drive.kind,
+            DriveKind::Floppy {
+                geometry: FloppyGeometry::HD_1_44
+            }
+        );
+        assert_eq!(drive.controller_slot, 0);
+    }
+
+    #[test]
+    fn floppy_drive_geo_honours_its_geometry_and_slot() {
+        // A different drive type in a different slot — the capability the maintainer
+        // wants: attach, say, a 720 KB drive B: with no CMOS hand-editing.
+        let drive = floppy_drive_geo(
+            ImageSource::Blank {
+                size: FloppyGeometry::DD_720K.image_bytes(),
+            },
+            FloppyGeometry::DD_720K,
+            1,
+        );
+        assert_eq!(
+            drive.kind,
+            DriveKind::Floppy {
+                geometry: FloppyGeometry::DD_720K
+            }
+        );
+        assert_eq!(drive.controller_slot, 1);
     }
 }

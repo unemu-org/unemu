@@ -180,6 +180,29 @@ living in three places:
 `DriveConfig` and floppy geometry are fleshed out in task-34; the top-level
 placement and slot routing are fixed here.
 
+### The fixed-disk (IDE/HDD) attachment seam
+
+`DriveKind` is `Floppy { geometry } | HardDisk { geometry }`. The floppy side is
+wired end-to-end: the assembler routes each `Floppy` drive into the µPD765's
+drive slots by `controller_slot`, and the CMOS `floppy_types` nibbles and
+equipment byte are *derived* from the attached floppies, so attaching a second
+drive of a different geometry needs no manual CMOS edit — the whole point of the
+"attach different drive types" story.
+
+The `HardDisk` variant is deliberately the **seam a future XT-IDE/ATA device
+plugs into with no new assembler architecture**. A `HardDisk` drive is already
+first-class config: it is validated, it binds to a controller by
+`controller_slot`, and the CMOS `hard_disk_types` nibble is already derived from
+it. What is missing is only the *device*: the assembler skips `HardDisk` during
+device construction because no fixed-disk controller is modelled yet. When one is
+added, it reuses the exact floppy pattern — a `build_ide_drives(config)` that
+filters `drives` for `HardDisk` and routes them into the new device by
+`controller_slot`, called from the `DeviceKind` match arm just as the µPD765's
+`build_fdc_drives` is called today. The drive list, the slot routing, and the
+CMOS derivation are all in place; adding fixed-disk support is a new `Device`, not
+a new config shape. The IDE/ATA device itself is deferred (see
+[`deferred.md`](../deferred.md)).
+
 ## The assembler
 
 `fn assemble(config: &MachineConfig) -> Result<Assembled, ConfigError>` is the
