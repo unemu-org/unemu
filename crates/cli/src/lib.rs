@@ -356,7 +356,7 @@ pub enum StopReason {
 
 /// The result of the test386 smoke run (§3.1): the captured POST progress bytes
 /// and why execution stopped.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Test386Run {
     /// Checkpoint bytes the guest wrote to the POST port `0x190`, in order.
     pub post: Vec<u8>,
@@ -547,7 +547,7 @@ pub const MDA_BUFFER_BASE: u64 = 0x0B_0000;
 
 /// The result of a full BIOS boot run (§3.1): the POST checkpoint stream, both
 /// text windows, the serial stream, and why execution stopped.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BiosRun {
     /// Checkpoint bytes the BIOS wrote to POST port `0x80`, in order.
     pub post: Vec<u8>,
@@ -1602,4 +1602,190 @@ fn drain_serial(machine: &mut Machine<X86JitCpu>, uart_index: usize) -> Vec<u8> 
         }
     }
     out
+}
+
+/// A/B result-equality helpers for the config-machine migration (§3.1).
+///
+/// The migration replaces each hand-assembled `run_*` machine with one assembled
+/// from a config, and proves equivalence by running both and asserting their
+/// results are byte-identical. A bare `assert_eq!` on a whole [`BiosRun`] dumps
+/// two large structs and leaves you to spot the difference; these helpers compare
+/// field by field so a divergence *names* the field (and, for the text windows,
+/// the first row that differs) instead.
+///
+/// Serial results are plain `Vec<u8>` — compare those directly with `assert_eq!`.
+pub mod testing {
+    use crate::{BiosRun, Test386Run};
+    use video::TextGrid;
+
+    /// If the two grids differ, describe the difference: a dimension mismatch, the
+    /// first differing text row, or (when the glyphs match but attributes or the
+    /// cursor differ) a note that the visible text is identical. `None` when equal.
+    fn text_grid_diff(field: &str, legacy: &TextGrid, got: &TextGrid) -> Option<String> {
+        if legacy == got {
+            return None;
+        }
+        if legacy.cols() != got.cols() || legacy.rows() != got.rows() {
+            return Some(format!(
+                "{field}: dimensions {}x{} vs {}x{}",
+                legacy.cols(),
+                legacy.rows(),
+                got.cols(),
+                got.rows()
+            ));
+        }
+        let legacy_rows = legacy.rows_as_strings();
+        let got_rows = got.rows_as_strings();
+        for (row, (a, b)) in legacy_rows.iter().zip(got_rows.iter()).enumerate() {
+            if a != b {
+                return Some(format!(
+                    "{field}: first differing row {row}: {a:?} vs {b:?}"
+                ));
+            }
+        }
+        Some(format!(
+            "{field}: cells or cursor differ (visible text identical)"
+        ))
+    }
+
+    /// Assert two [`BiosRun`]s are equal, panicking with a per-field diff (which of
+    /// post / screen / mda / com1 / stop differs) on mismatch.
+    ///
+    /// `legacy` is the reference (hand-assembled) result; `got` is the
+    /// config-assembled one.
+    pub fn assert_bios_run_eq(legacy: &BiosRun, got: &BiosRun) {
+        let mut diffs = Vec::new();
+        if legacy.post != got.post {
+            diffs.push(format!(
+                "post: {} bytes vs {} bytes ({:?} vs {:?})",
+                legacy.post.len(),
+                got.post.len(),
+                legacy.post,
+                got.post
+            ));
+        }
+        if let Some(msg) = text_grid_diff("screen", &legacy.screen, &got.screen) {
+            diffs.push(msg);
+        }
+        if let Some(msg) = text_grid_diff("mda", &legacy.mda, &got.mda) {
+            diffs.push(msg);
+        }
+        if legacy.com1 != got.com1 {
+            diffs.push(format!(
+                "com1: {} bytes vs {} bytes",
+                legacy.com1.len(),
+                got.com1.len()
+            ));
+        }
+        if legacy.stop != got.stop {
+            diffs.push(format!("stop: {:?} vs {:?}", legacy.stop, got.stop));
+        }
+        assert!(
+            diffs.is_empty(),
+            "BiosRun mismatch (legacy vs got):\n  {}",
+            diffs.join("\n  ")
+        );
+    }
+
+    /// Assert two [`Test386Run`]s are equal, panicking with a per-field diff (post
+    /// / stop) on mismatch. `legacy` is the reference result; `got` is the
+    /// config-assembled one.
+    pub fn assert_test386_run_eq(legacy: &Test386Run, got: &Test386Run) {
+        let mut diffs = Vec::new();
+        if legacy.post != got.post {
+            diffs.push(format!(
+                "post: {} bytes vs {} bytes ({:?} vs {:?})",
+                legacy.post.len(),
+                got.post.len(),
+                legacy.post,
+                got.post
+            ));
+        }
+        if legacy.stop != got.stop {
+            diffs.push(format!("stop: {:?} vs {:?}", legacy.stop, got.stop));
+        }
+        assert!(
+            diffs.is_empty(),
+            "Test386Run mismatch (legacy vs got):\n  {}",
+            diffs.join("\n  ")
+        );
+    }
+}
+
+#[cfg(test)]
+mod ab_harness_tests {
+    use crate::testing::{assert_bios_run_eq, assert_test386_run_eq};
+    use crate::{BiosRun, StopReason, Test386Run};
+    use video::{render_text_mode, TextGrid, TextModeState};
+
+    /// A single-row text grid whose glyphs are `glyphs` (attribute fixed).
+    fn one_row_grid(glyphs: &[u8]) -> TextGrid {
+        let mut vram = Vec::with_capacity(glyphs.len() * 2);
+        for &g in glyphs {
+            vram.push(g);
+            vram.push(0x07);
+        }
+        render_text_mode(&TextModeState {
+            vram: &vram,
+            cols: glyphs.len() as u16,
+            rows: 1,
+            start_cell: 0,
+            cursor_cell: 0,
+            cursor_visible: false,
+        })
+    }
+
+    fn sample_bios_run() -> BiosRun {
+        BiosRun {
+            post: vec![0x01, 0x02, 0x03],
+            screen: one_row_grid(b"HELLO"),
+            mda: one_row_grid(b"READY"),
+            com1: vec![b'h', b'i'],
+            stop: StopReason::Halt,
+        }
+    }
+
+    #[test]
+    fn equal_bios_runs_pass() {
+        assert_bios_run_eq(&sample_bios_run(), &sample_bios_run());
+    }
+
+    #[test]
+    #[should_panic(expected = "stop")]
+    fn differing_stop_names_the_field() {
+        let mut got = sample_bios_run();
+        got.stop = StopReason::BudgetExhausted;
+        assert_bios_run_eq(&sample_bios_run(), &got);
+    }
+
+    #[test]
+    #[should_panic(expected = "mda: first differing row 0")]
+    fn differing_mda_row_names_the_field_and_row() {
+        let mut got = sample_bios_run();
+        got.mda = one_row_grid(b"HALT!");
+        assert_bios_run_eq(&sample_bios_run(), &got);
+    }
+
+    #[test]
+    fn equal_test386_runs_pass() {
+        let run = Test386Run {
+            post: vec![0xAA, 0xBB],
+            stop: StopReason::Halt,
+        };
+        assert_test386_run_eq(&run, &run.clone());
+    }
+
+    #[test]
+    #[should_panic(expected = "post")]
+    fn differing_test386_post_names_the_field() {
+        let legacy = Test386Run {
+            post: vec![0xAA, 0xBB],
+            stop: StopReason::Halt,
+        };
+        let got = Test386Run {
+            post: vec![0xAA],
+            stop: StopReason::Halt,
+        };
+        assert_test386_run_eq(&legacy, &got);
+    }
 }
