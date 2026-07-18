@@ -626,6 +626,213 @@ pub fn run_freedos(rom: &[u8], floppy: Vec<u8>) -> BiosRun {
     run_bios_inner(rom, Some(floppy))
 }
 
+/// A substring of the FreeCOM startup date prompt, used to detect that the shell
+/// has booted and is blocked on keyboard input before the script is injected.
+pub const DOS_DATE_PROMPT: &str = "Enter new date";
+
+/// Cooperative run quantum for the interactive FreeDOS machine (§6.2), far finer
+/// than the boot-path [`BIOS_QUANTUM`].
+///
+/// The machine acknowledges and injects at most one PIC vector per quantum, at the
+/// quantum boundary. With the coarse boot quantum, a busy-polling guest retires
+/// many timer periods per quantum, so a fresh higher-priority timer IRQ0 is latched
+/// every boundary and always wins the PIC's priority race — a pending keyboard IRQ1
+/// is starved forever and never delivered. A quantum finer than one timer period
+/// (BIOS divisor 65536 → ~65536 retired instructions per period) means most
+/// boundaries have no fresh IRQ0, so the pending IRQ1 is acknowledged and INT 09h
+/// runs. The boot to the shell prompt is only ~25M instructions, so the finer
+/// quantum costs no measurable extra time.
+pub const DOS_INTERACTIVE_QUANTUM: Option<u64> = Some(64);
+
+/// Retired-instruction step between prompt-detection polls in the interactive
+/// FreeDOS run (§6). Small enough to inject promptly once FreeCOM reaches its
+/// date prompt, large enough that the poll overhead is negligible against the
+/// hundreds of millions of instructions the BIOS POST and boot retire.
+pub const DOS_INTERACTIVE_POLL_STEP: u64 = 25_000_000;
+
+/// Retired-instruction step while waiting for the 8042 to drain one injected
+/// scancode (INT 09h reads it) before the next byte is injected.
+pub const DOS_INTERACTIVE_KEY_STEP: u64 = 200_000;
+
+/// Upper bound on [`DOS_INTERACTIVE_KEY_STEP`] chunks spent waiting for a single
+/// scancode to drain before giving up on it — a safety net against a wedged run,
+/// never reached in a healthy session (each key drains in one chunk).
+pub const DOS_INTERACTIVE_KEY_MAX_CHUNKS: u32 = 400;
+
+/// Retired-instruction budget granted after the last scancode, for FreeCOM to
+/// finish the command and print its output before the console is read.
+pub const DOS_INTERACTIVE_COMMAND_BUDGET: u64 = 80_000_000;
+
+/// Boot a real FreeDOS floppy image on the Kiselev BIOS machine and drive the
+/// shell interactively with a **keyboard script**, past its startup prompts and
+/// into a command (§3.1, §5, §7.5).
+///
+/// Same firmware, FDC, and DMA as [`run_freedos`], but the machine runs on the
+/// finer [`DOS_INTERACTIVE_QUANTUM`] and is driven in three phases:
+///
+/// 1. **Boot to the prompt.** Step in [`DOS_INTERACTIVE_POLL_STEP`] chunks until
+///    FreeCOM boots and blocks at its date prompt ([`DOS_DATE_PROMPT`] on the MDA
+///    console). Keys must wait for DOS to own the keyboard: injected at power-on
+///    they are consumed or corrupted by the BIOS keyboard-reset handshake and the
+///    POST buffer flush, and the prompt never advances.
+/// 2. **Type the script.** Inject `scancodes` **one at a time** — each a set-1
+///    (XT) make/break byte, exactly what INT 09h reads at `0x60` (this machine
+///    models no translation). After each, run until the 8042 output buffer drains
+///    (INT 09h has read the byte and dropped IRQ1) before injecting the next. One
+///    at a time is required: pushing the whole script at once refills the output
+///    buffer the instant the prior byte is read, so the IRQ1 line never falls and
+///    rises again and only the first keystroke is ever delivered. Per-byte
+///    injection gives each a clean IRQ1 edge, so INT 09h translates it into the
+///    BDA keyboard ring where DOS's INT 16h reads pop it.
+/// 3. **Run the command.** After the last key, run [`DOS_INTERACTIVE_COMMAND_BUDGET`]
+///    more so FreeCOM processes the ring, runs the command, and prints its output.
+///
+/// A short script such as `\r\rDIR\r` (accept the date, accept the time, then type
+/// `DIR` + Enter) reaches the `A:\>` prompt and a directory listing.
+///
+/// Fully deterministic — every boundary falls on a retired-instruction count,
+/// never wall time (§6) — so the session reproduces byte for byte. The returned
+/// [`BiosRun`] carries every observable output path, so the resulting `A:\>`
+/// prompt and command output land in the MDA console ([`BiosRun::mda`]).
+pub fn run_freedos_interactive(rom: &[u8], floppy: Vec<u8>, scancodes: &[u8]) -> BiosRun {
+    let mut machine =
+        match assemble_bios_machine_quantum(rom, Some(floppy), DOS_INTERACTIVE_QUANTUM) {
+            Ok(machine) => machine,
+            Err(e) => {
+                return BiosRun {
+                    post: Vec::new(),
+                    screen: blank_screen(),
+                    mda: blank_screen(),
+                    com1: Vec::new(),
+                    stop: StopReason::Unmapped {
+                        detail: format!("building cpu: {e}"),
+                    },
+                }
+            }
+        };
+
+    // Cumulative retired-instruction cap; each phase grows it and runs the machine
+    // on. `run_bounded` stops when the cumulative retired count reaches the cap.
+    let mut cap: u64 = 0;
+
+    // Phase 1: boot until FreeCOM blocks at the date prompt.
+    let mut result = loop {
+        cap = (cap + DOS_INTERACTIVE_POLL_STEP).min(BIOS_MAX_RETIRED);
+        let r = machine.run_bounded(Some(cap));
+        if r.is_err() || mda_contains(&machine, DOS_DATE_PROMPT) || cap >= BIOS_MAX_RETIRED {
+            break r;
+        }
+    };
+
+    // Phase 2: type the script one scancode at a time, draining each before the
+    // next so every byte is a clean IRQ1 edge.
+    if result.is_ok() && mda_contains(&machine, DOS_DATE_PROMPT) {
+        for &scancode in scancodes {
+            inject_scancodes(&mut machine, BIOS_I8042_INDEX, &[scancode]);
+            let mut chunks = 0;
+            while kbc_irq_pending(&mut machine, BIOS_I8042_INDEX) && result.is_ok() {
+                cap = (cap + DOS_INTERACTIVE_KEY_STEP).min(BIOS_MAX_RETIRED);
+                result = machine.run_bounded(Some(cap));
+                chunks += 1;
+                if chunks >= DOS_INTERACTIVE_KEY_MAX_CHUNKS || cap >= BIOS_MAX_RETIRED {
+                    break;
+                }
+            }
+        }
+
+        // Phase 3: let FreeCOM process the ring and run the command.
+        if result.is_ok() {
+            cap = (cap + DOS_INTERACTIVE_COMMAND_BUDGET).min(BIOS_MAX_RETIRED);
+            result = machine.run_bounded(Some(cap));
+        }
+    }
+
+    let stop = classify_bios_stop(&machine, result);
+    let post = drain_post_at(&mut machine, BIOS_POST_INDEX, 0x80);
+    let screen = render_vga(&mut machine, BIOS_VGA_INDEX);
+    let mda = render_mda(&machine);
+    let com1 = drain_serial(&mut machine, BIOS_UART_INDEX);
+    BiosRun {
+        post,
+        screen,
+        mda,
+        com1,
+        stop,
+    }
+}
+
+/// Whether the 8042 at bus index `kbc_index` is asserting IRQ1 (a keyboard byte is
+/// in its output buffer, unread). Paces one-at-a-time scancode injection: once it
+/// falls, INT 09h has read the byte and the controller is ready for the next.
+fn kbc_irq_pending(machine: &mut Machine<X86JitCpu>, kbc_index: usize) -> bool {
+    machine
+        .bus_mut()
+        .device_mut(kbc_index)
+        .map(|d| d.irq_pending())
+        .unwrap_or(false)
+}
+
+/// Whether the MDA console currently holds `needle` (used to detect a shell prompt
+/// while stepping the interactive FreeDOS run).
+fn mda_contains(machine: &Machine<X86JitCpu>, needle: &str) -> bool {
+    render_mda(machine)
+        .rows_as_strings()
+        .join("\n")
+        .contains(needle)
+}
+
+/// Queue a keyboard `scancodes` script into the 8042 at bus index `kbc_index`,
+/// reaching the concrete controller through the [`Device::as_any_mut`] downcast
+/// seam — the machine core still sees only `&mut dyn Device`.
+fn inject_scancodes(machine: &mut Machine<X86JitCpu>, kbc_index: usize, scancodes: &[u8]) {
+    if let Some(dev) = machine.bus_mut().device_mut(kbc_index) {
+        if let Some(kbc) = dev.as_any_mut().and_then(|a| a.downcast_mut::<I8042>()) {
+            for &scancode in scancodes {
+                kbc.push_scancode(scancode);
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Keyboard script: set-1 (XT) make/break scancodes for driving the DOS shell.
+// ---------------------------------------------------------------------------
+//
+// The BIOS INT 09h keyboard table expects set-1 codes and this machine's 8042
+// performs no translation, so the exact make/break bytes below are what INT 09h
+// reads at port 0x60. Each key press is a make code followed by its break code
+// (make | 0x80).
+
+/// `Enter` — set-1 make/break. INT 09h maps it to carriage return (`\r`), which
+/// terminates a DOS input line.
+pub const KEY_ENTER: [u8; 2] = [0x1C, 0x9C];
+/// `D` — set-1 make/break.
+pub const KEY_D: [u8; 2] = [0x20, 0xA0];
+/// `I` — set-1 make/break.
+pub const KEY_I: [u8; 2] = [0x17, 0x97];
+/// `R` — set-1 make/break.
+pub const KEY_R: [u8; 2] = [0x13, 0x93];
+
+/// The keyboard script that drives FreeCOM from its date prompt to a `DIR`
+/// listing: accept the date (Enter), accept the time (Enter), then type `DIR`
+/// and run it (Enter). Each key contributes its make **and** break code.
+///
+/// FreeCOM, started with no `AUTOEXEC.BAT`, prompts for the date and then the
+/// time before giving `A:\>`; an empty line (a bare Enter) keeps the current
+/// value. So two Enters clear both prompts, and `DIR`+Enter runs the directory
+/// listing at the shell.
+#[must_use]
+pub fn dos_dir_script() -> Vec<u8> {
+    let mut script = Vec::new();
+    script.extend_from_slice(&KEY_ENTER); // accept the date
+    script.extend_from_slice(&KEY_ENTER); // accept the time
+    script.extend_from_slice(&KEY_D);
+    script.extend_from_slice(&KEY_I);
+    script.extend_from_slice(&KEY_R);
+    script.extend_from_slice(&KEY_ENTER); // run DIR
+    script
+}
+
 /// Assemble the full PC/AT BIOS machine (devices, decode map, 1 MiB memory mosaic
 /// with the ROM loaded, interrupt and DMA wiring) without running it, so a caller
 /// can drive it directly. The normal boot path ([`run_bios_inner`]) runs it to the
@@ -634,6 +841,21 @@ pub fn run_freedos(rom: &[u8], floppy: Vec<u8>) -> BiosRun {
 pub fn assemble_bios_machine(
     rom: &[u8],
     floppy: Option<Vec<u8>>,
+) -> Result<Machine<X86JitCpu>, CpuError> {
+    assemble_bios_machine_quantum(rom, floppy, BIOS_QUANTUM)
+}
+
+/// As [`assemble_bios_machine`], but with an explicit cooperative run `quantum`.
+///
+/// The boot/POST path uses the default [`BIOS_QUANTUM`]; the interactive keyboard
+/// path uses a much finer quantum ([`DOS_INTERACTIVE_QUANTUM`]) so the machine
+/// returns to its interrupt-service point often enough that a pending keyboard
+/// IRQ1 is not perpetually starved by the periodic timer IRQ0 (see
+/// [`run_freedos_interactive`]).
+fn assemble_bios_machine_quantum(
+    rom: &[u8],
+    floppy: Option<Vec<u8>>,
+    quantum: Option<u64>,
 ) -> Result<Machine<X86JitCpu>, CpuError> {
     // Each PIC chip's device face is cloned off the one live pair; the pair itself
     // is the machine's interrupt controller, so a guest EOI to either chip reaches
@@ -781,7 +1003,7 @@ pub fn assemble_bios_machine(
         cpu,
         bus,
         controller,
-        BIOS_QUANTUM,
+        quantum,
         irq_lines,
         Some(BIOS_IDLE_LIMIT),
     )

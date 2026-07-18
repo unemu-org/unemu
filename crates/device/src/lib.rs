@@ -228,6 +228,18 @@ pub trait Device {
     fn take_trace(&mut self) -> Vec<TraceEvent> {
         Vec::new()
     }
+
+    /// Downcast escape hatch for host-side driving of a concrete device, when the
+    /// machine core only holds `&mut dyn Device`. It exists for out-of-band input
+    /// the bus cannot express — e.g. the frontend injecting keyboard scancodes
+    /// into the 8042 mid-run, mirroring bytes arriving from a real keyboard.
+    ///
+    /// Defaults to `None`: a device opts in by returning `Some(self)`. It is not a
+    /// guest-visible seam and must never be used from the emulated execution path;
+    /// only the embedding frontend reaches for it.
+    fn as_any_mut(&mut self) -> Option<&mut dyn core::any::Any> {
+        None
+    }
 }
 
 /// The interrupt-controller seam between the device IRQ lines and the CPU (§5).
