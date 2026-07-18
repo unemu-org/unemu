@@ -48,7 +48,7 @@
 
 use bus::{Bus, BusError};
 use cpu::{Cpu, CpuError, CpuStop};
-use device::{InterruptController, VClock};
+use device::{DmaMemory, InterruptController, VClock};
 use thiserror::Error;
 
 /// Retired guest instructions per PIT input clock (§6).
@@ -71,6 +71,39 @@ pub struct IrqLine {
     pub device: usize,
     /// The PIC input line this device's OUT is wired to (e.g. `0` for the PIT).
     pub irq: u8,
+}
+
+/// One wired coupling between a bus-master device and a DMA controller (§7.7).
+///
+/// A device such as the floppy controller cannot reach guest memory itself; it
+/// queues a [`device::DmaRequest`] and relies on a DMA controller (the 8237) to
+/// move the bytes. This declares *which* device masters the bus (`requester`) and
+/// *which* controller runs its transfers (`controller`), both by their index in
+/// the bus's device set — the machine never names either concrete type, exactly
+/// as [`IrqLine`] wires interrupts by index.
+#[derive(Copy, Clone, Debug)]
+pub struct DmaWiring {
+    /// Index of the bus-master device (e.g. the floppy controller).
+    pub requester: usize,
+    /// Index of the DMA controller that services the requester's transfers.
+    pub controller: usize,
+}
+
+/// Bridges the CPU's guest-memory access to the [`DmaMemory`] handle a DMA
+/// controller expects, so every DMA byte goes through the `Vm` `note_write` path
+/// (§4.3). Lives only for the duration of one transfer.
+struct CpuDmaMemory<'a, C: Cpu> {
+    cpu: &'a mut C,
+}
+
+impl<C: Cpu> DmaMemory for CpuDmaMemory<'_, C> {
+    fn dma_read(&self, addr: u32) -> u8 {
+        self.cpu.guest_dma_read(addr)
+    }
+
+    fn dma_write(&mut self, addr: u32, value: u8) {
+        self.cpu.guest_dma_write(addr, value);
+    }
 }
 
 /// Errors from running a [`Machine`] (§3.1).
@@ -130,6 +163,9 @@ pub struct Machine<C: Cpu> {
     /// machine declares the interrupt source quiescent and stops. `None` never
     /// gives up (only safe when an interrupt is guaranteed to keep firing).
     idle_limit: Option<u64>,
+    /// Bus-master → DMA-controller couplings drained each boundary (§7.7). Empty
+    /// for a machine with no DMA (the serial and timer demos).
+    dma_wirings: Vec<DmaWiring>,
 }
 
 impl<C: Cpu> Machine<C> {
@@ -163,7 +199,17 @@ impl<C: Cpu> Machine<C> {
             last_retired: 0,
             clock_remainder: 0,
             idle_limit,
+            dma_wirings: Vec::new(),
         }
+    }
+
+    /// Declare the bus-master → DMA-controller couplings this machine services
+    /// (§7.7), returning the machine for chaining. A machine with no bus-master
+    /// device leaves this empty (the default).
+    #[must_use]
+    pub fn with_dma_wirings(mut self, wirings: Vec<DmaWiring>) -> Self {
+        self.dma_wirings = wirings;
+        self
     }
 
     /// The CPU backend (for post-run inspection).
@@ -273,6 +319,11 @@ impl<C: Cpu> Machine<C> {
                 }
             }
 
+            // Run any DMA transfer a bus master queued while servicing the stop
+            // (a floppy READ programs its transfer, then the 8237 moves the bytes
+            // into guest RAM before the guest runs again).
+            self.service_dma();
+
             // Safety net: a spinning guest never reaches a halt or an error, so
             // cap total retired instructions and stop cleanly, preserving output.
             if let Some(cap) = max_retired {
@@ -337,6 +388,39 @@ impl<C: Cpu> Machine<C> {
                 // the input so the next period's rising edge latches again.
                 self.pic.set_irq_line(line.irq, true);
                 self.pic.set_irq_line(line.irq, false);
+            }
+        }
+    }
+
+    /// Run each wired bus master's pending DMA transfer through its DMA
+    /// controller (§7.7), the cross-device path a floppy READ needs.
+    ///
+    /// The requester (the floppy controller) hands over the sector bytes it read
+    /// from its backing image; the machine streams them through the controller's
+    /// channel — writing each byte to guest RAM via the `note_write` path (§4.3),
+    /// advancing the channel's address and count — then reports the byte count
+    /// back so the requester finishes its result phase and raises its interrupt.
+    /// This is the only place a device's bytes reach memory without the device
+    /// holding a memory reference: the requester never sees an address, the
+    /// controller never sees the disk, and the SMC-safe seam is preserved.
+    fn service_dma(&mut self) {
+        for i in 0..self.dma_wirings.len() {
+            let wiring = self.dma_wirings[i];
+            let request = self
+                .bus
+                .device_mut(wiring.requester)
+                .and_then(|dev| dev.take_dma_request());
+            let Some(request) = request else {
+                continue;
+            };
+            let mut mem = CpuDmaMemory { cpu: &mut self.cpu };
+            let transferred = self
+                .bus
+                .device_mut(wiring.controller)
+                .map(|ctrl| ctrl.dma_service_write(request.channel, &mut mem, &request.data))
+                .unwrap_or(0);
+            if let Some(dev) = self.bus.device_mut(wiring.requester) {
+                dev.dma_complete(transferred);
             }
         }
     }

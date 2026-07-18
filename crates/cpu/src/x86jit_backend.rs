@@ -319,6 +319,23 @@ impl Cpu for X86JitCpu {
         self.cpu.has_pending_irq()
     }
 
+    fn guest_dma_read(&self, addr: u32) -> u8 {
+        let mut buf = [0u8; 1];
+        // A DMA target that falls outside mapped RAM reads as open bus, matching
+        // an ISA master that no memory responds to.
+        match self.vm.read_bytes(u64::from(addr), &mut buf) {
+            Ok(()) => buf[0],
+            Err(_) => 0xFF,
+        }
+    }
+
+    fn guest_dma_write(&mut self, addr: u32, value: u8) {
+        // Goes through the `Vm` write path so the core's self-modifying-code
+        // tracking invalidates any translated block the transfer overwrites — the
+        // reason a DMA controller never touches guest RAM directly.
+        let _ = self.vm.write_bytes(u64::from(addr), &[value]);
+    }
+
     fn retired(&self) -> u64 {
         self.cpu.retired_instructions()
     }
