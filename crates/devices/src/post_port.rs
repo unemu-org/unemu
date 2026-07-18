@@ -1,16 +1,23 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! POST checkpoint port (§7.1 device seam).
 //!
-//! A tiny write-only diagnostic port at `0x190`. Power-on self-test firmware
-//! writes a one-byte checkpoint code here at each stage it reaches; on real
-//! hardware the byte lights a diagnostic card or a debug LED display. The
-//! emulator models it purely as a capture point: every byte the guest writes is
-//! recorded on the [`Device`] tracing seam, so a runner reconstructs the POST
-//! progress stream through [`Device::take_trace`] — the same first-class seam the
-//! UART uses to carry serial bytes off the machine, never an ad-hoc side channel.
+//! A tiny write-only diagnostic port. Power-on self-test firmware writes a
+//! one-byte checkpoint code here at each stage it reaches; on real hardware the
+//! byte lights a diagnostic card or a debug LED display. The emulator models it
+//! purely as a capture point: every byte the guest writes is recorded on the
+//! [`Device`] tracing seam, so a runner reconstructs the POST progress stream
+//! through [`Device::take_trace`] — the same first-class seam the UART uses to
+//! carry serial bytes off the machine, never an ad-hoc side channel.
 //!
-//! This exists so a diagnostic ROM (test386) can report how far it executes even
-//! when the run ends on an unsupported instruction rather than a clean halt.
+//! The decoded port is configurable: [`PostPort::new`] decodes the test386
+//! diagnostic's `0x190`, while a stock PC BIOS emits its checkpoints on the
+//! conventional `0x80` and is wired with [`PostPort::with_port`]. The two never
+//! run in the same machine, so a single field selects which port the instance
+//! answers.
+//!
+//! This exists so a diagnostic ROM (test386) or a stock BIOS can report how far
+//! it executes even when the run ends on an unsupported instruction rather than a
+//! clean halt.
 //!
 //! ## Deviations from real hardware
 //! - Read-only-meaningful in one direction: reads return `0xFF` (an open bus /
@@ -22,7 +29,8 @@ use device::{AccessDir, Device, DeviceError, TraceEvent, VClock};
 /// Stable device name reported by [`Device::name`].
 const NAME: &str = "post-port";
 
-/// The single port decoded: the conventional PC diagnostic POST port.
+/// The default port decoded by [`PostPort::new`]: the test386 diagnostic's POST
+/// port. A stock PC BIOS instead uses `0x80`; see [`PostPort::with_port`].
 pub const POST_PORT: u16 = 0x190;
 
 /// Value returned for a read: an unimplemented/open-bus read.
@@ -30,27 +38,47 @@ const OPEN_BUS: u32 = 0xFF;
 
 /// The POST checkpoint port device (§7.1).
 ///
-/// Decodes the one port [`POST_PORT`]. Writes surface on the tracing seam as
-/// [`TraceEvent::Port`] writes to [`POST_PORT`]; a consumer holding only a
-/// `&mut dyn Device` drains them to recover the checkpoint byte stream.
-#[derive(Default)]
+/// Decodes a single, configurable port ([`PostPort::port`]). Writes surface on
+/// the tracing seam as [`TraceEvent::Port`] writes to that port; a consumer
+/// holding only a `&mut dyn Device` drains them to recover the checkpoint byte
+/// stream.
 pub struct PostPort {
+    /// The one port this instance decodes ([`POST_PORT`] for test386, `0x80` for
+    /// a stock BIOS).
+    port: u16,
     /// Trace events observed since the last [`Device::take_trace`].
     trace: Vec<TraceEvent>,
     /// Virtual time of the most recent [`Device::tick`], stamped onto traces.
     now: VClock,
 }
 
+impl Default for PostPort {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl PostPort {
-    /// Create a POST port decoding [`POST_PORT`].
+    /// Create a POST port decoding [`POST_PORT`] (the test386 diagnostic port).
     #[must_use]
     pub fn new() -> Self {
-        Self::default()
+        Self::with_port(POST_PORT)
+    }
+
+    /// Create a POST port decoding `port` — for a stock PC BIOS, whose POST
+    /// checkpoints land on `0x80` rather than the test386 diagnostic's `0x190`.
+    #[must_use]
+    pub fn with_port(port: u16) -> Self {
+        Self {
+            port,
+            trace: Vec::new(),
+            now: VClock::ZERO,
+        }
     }
 
     /// Reject any port outside this device's single decoded port.
     fn check(&self, port: u16) -> Result<(), DeviceError> {
-        if port == POST_PORT {
+        if port == self.port {
             Ok(())
         } else {
             Err(DeviceError::UnmappedRegister {
@@ -190,6 +218,33 @@ mod tests {
     fn read_returns_open_bus() {
         let mut port = PostPort::new();
         assert_eq!(port.port_read(POST_PORT, 1).unwrap(), 0xFF);
+    }
+
+    #[test]
+    fn with_port_decodes_the_bios_post_port() {
+        // A BIOS-configured instance answers 0x80 and rejects the test386 0x190.
+        let mut port = PostPort::with_port(0x80);
+        port.port_write(0x80, 1, 0x42).unwrap();
+        let bytes: Vec<u8> = port
+            .take_trace()
+            .into_iter()
+            .filter_map(|ev| match ev {
+                TraceEvent::Port {
+                    dir: AccessDir::Write,
+                    value,
+                    ..
+                } => Some(value as u8),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(bytes, vec![0x42]);
+        assert_eq!(
+            port.port_write(POST_PORT, 1, 0).unwrap_err(),
+            DeviceError::UnmappedRegister {
+                kind: "port",
+                offset: u64::from(POST_PORT),
+            }
+        );
     }
 
     #[test]

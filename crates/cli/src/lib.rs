@@ -16,21 +16,24 @@
 //! first-class tracing seam (§3.2), never a concrete-device downcast.
 
 use anyhow::{Context, Result};
-use bus::{Bus, DecodeMap, PortRange};
+use bus::{Bus, DecodeMap, MmioRange, PortRange};
 use chipset::{
-    AtChipset, Chipset, NoInterruptController, SerialChipset, AT_CMOS_RTC_INDEX, AT_I8042_INDEX,
-    AT_UART_INDEX, AT_VGA_INDEX, COM1_BASE, COM1_TOP,
+    AtChipset, CascadedPic, Chipset, NoInterruptController, SerialChipset, AT_CMOS_RTC_INDEX,
+    AT_I8042_INDEX, AT_UART_INDEX, AT_VGA_INDEX, CMOS_DATA_PORT, CMOS_INDEX_PORT, COM1_BASE,
+    COM1_TOP, KBD_CMD, KBD_DATA, PIC_COMMAND, PIC_DATA, PIT_BASE, PIT_TOP, SLAVE_PIC_COMMAND,
+    SLAVE_PIC_DATA,
 };
 use cpu::x86jit_backend::RealSegments;
 use cpu::{Cpu, CpuError, CpuReg, X86JitCpu};
-use device::{AccessDir, TraceEvent};
+use device::{AccessDir, Device, TraceEvent};
 use devices::post_port::POST_PORT;
+use devices::sys_control::SYS_CONTROL_PORT;
 use devices::vga_text::{
-    COLS, CRTC_CURSOR_HIGH_INDEX, CRTC_CURSOR_LOW_INDEX, CRTC_CURSOR_START_INDEX, CRTC_DATA_PORT,
-    CRTC_INDEX_PORT, CRTC_START_HIGH_INDEX, CRTC_START_LOW_INDEX, ROWS, TEXT_BUFFER_BASE,
-    TEXT_BUFFER_LEN,
+    CGA_MODE_CONTROL_PORT, CGA_STATUS_PORT, COLS, CRTC_CURSOR_HIGH_INDEX, CRTC_CURSOR_LOW_INDEX,
+    CRTC_CURSOR_START_INDEX, CRTC_DATA_PORT, CRTC_INDEX_PORT, CRTC_START_HIGH_INDEX,
+    CRTC_START_LOW_INDEX, ROWS, TEXT_BUFFER_BASE, TEXT_BUFFER_LEN,
 };
-use devices::{PostPort, Uart16550};
+use devices::{CmosConfig, CmosRtc, Pit8253, PostPort, SysControl, Uart16550, VgaText, I8042};
 use machine::{IrqLine, Machine, MachineError, RunOutcome};
 use video::{render_text_mode, CaptureFrameSink, Frame, FrameSink, TextGrid, TextModeState};
 
@@ -480,6 +483,321 @@ fn drain_post(machine: &mut Machine<X86JitCpu>, post_index: usize) -> Vec<u8> {
         }
     }
     out
+}
+
+// ---------------------------------------------------------------------------
+// Full BIOS machine: load a real 32 KiB PC BIOS ROM and boot it (§3.1, §5, §9).
+// ---------------------------------------------------------------------------
+
+/// The full 1 MiB guest address space of the BIOS machine.
+pub const BIOS_SPACE: u64 = 0x10_0000;
+/// Top of conventional (640 KiB) RAM — RAM covers `[0, 0xA0000)`.
+pub const BIOS_CONVENTIONAL_TOP: u64 = 0x0A_0000;
+/// Base of the option-ROM scan area `[0xC0000, 0xF8000)`, mapped as zeroed RAM so
+/// the BIOS's `0x55AA` signature scan finds nothing and skips it cleanly.
+pub const BIOS_OPTION_ROM_BASE: u64 = 0x0C_0000;
+/// Base of the 32 KiB masked BIOS ROM: `[0xF8000, 0x100000)`.
+pub const BIOS_ROM_BASE: u64 = 0x0F_8000;
+/// Reset code segment: `CS = 0xF000`.
+pub const BIOS_RESET_CS: u16 = 0xF000;
+/// Reset instruction pointer: `IP = 0xFFF0` → linear `0xFFFF0`, inside the ROM,
+/// where the reset far jump enters POST.
+pub const BIOS_RESET_IP: u16 = 0xFFF0;
+
+/// Cooperative run quantum for the BIOS machine, in `x86jit` block units (§6.2).
+///
+/// Finite (unlike the built-in demos' `None`) so a guest that spins without any
+/// port I/O or halt still returns to the machine loop, where the retired cap and
+/// the clock/interrupt path run. It only bounds how often the cap is checked.
+pub const BIOS_QUANTUM: Option<u64> = Some(65_536);
+/// Retired-instruction safety cap for the BIOS run (§6). POST plus a 640 KiB
+/// memory test is hundreds of millions of instructions; this is a generous bound
+/// so a spin cannot hang the run. Reaching it is a clean stop, not a failure.
+pub const BIOS_MAX_RETIRED: u64 = 2_000_000_000;
+/// Consecutive halted boundaries with no serviceable interrupt before the machine
+/// declares the interrupt source quiescent and stops. Large so a BIOS that halts
+/// waiting for a slow timer tick is not cut off mid-POST.
+pub const BIOS_IDLE_LIMIT: u64 = 1_000_000;
+
+// Device indices in the BIOS machine's device set. Distinct from the AtChipset
+// layout because this set adds the system-control port and a BIOS POST port.
+const BIOS_UART_INDEX: usize = 0;
+const BIOS_MASTER_PIC_INDEX: usize = 1;
+const BIOS_PIT_INDEX: usize = 2;
+const BIOS_I8042_INDEX: usize = 3;
+const BIOS_VGA_INDEX: usize = 4;
+const BIOS_SLAVE_PIC_INDEX: usize = 5;
+const BIOS_RTC_INDEX: usize = 6;
+const BIOS_SYS_CONTROL_INDEX: usize = 7;
+const BIOS_POST_INDEX: usize = 8;
+
+/// The result of a full BIOS boot run (§3.1): the POST checkpoint stream, the
+/// rendered text screen, and why execution stopped.
+#[derive(Clone, Debug)]
+pub struct BiosRun {
+    /// Checkpoint bytes the BIOS wrote to POST port `0x80`, in order.
+    pub post: Vec<u8>,
+    /// The VGA text screen as rendered from the card after the run.
+    pub screen: TextGrid,
+    /// Why the run ended (assertions pin only the variant, never an address).
+    pub stop: StopReason,
+}
+
+/// Assemble the full PC/AT BIOS machine, map the 32 KiB `rom` at `0xF8000`, and
+/// boot it from the reset vector — an exploratory spike of how far a real BIOS's
+/// POST gets on a real-mode-only core (§3.1, §5, §9).
+///
+/// The address space is a full 1 MiB mosaic with no unmapped holes, so a POST
+/// probe never aborts on unmapped memory:
+///
+/// - `[0x00000, 0xA0000)` — 640 KiB conventional RAM (RWX).
+/// - `[0xA0000, 0xB8000)` — RAM (the BIOS may probe this graphics-adapter window).
+/// - `[0xB8000, 0xC0000)` — the VGA colour text buffer, trapped MMIO routed to the
+///   text card.
+/// - `[0xC0000, 0xF8000)` — zeroed RAM standing in for the option-ROM scan area:
+///   the BIOS's `0x55AA` signature scan finds nothing and skips it (no option ROM
+///   this spike).
+/// - `[0xF8000, 0x100000)` — the masked 32 KiB BIOS ROM, loaded with `rom`.
+///
+/// The cascaded 8259 pair, 8253 PIT, 8042, seeded MC146818 CMOS/RTC, VGA text
+/// card, port-`0x61` system-control latch, and a POST port at `0x80` are all
+/// decoded. The PIT counter-0 OUT is wired to IRQ0, the 8042 to IRQ1, and the RTC
+/// update-ended line to IRQ8; the BIOS programs the PICs itself.
+///
+/// **Port `0x80` decode.** On a real AT the DMA page registers overlap `0x80`;
+/// this spike wires no 8237 (floppy DMA is later work), so `0x80` is decoded to
+/// the POST port and any stray DMA-page write elsewhere is absorbed by the bus's
+/// open-bus default.
+///
+/// The POST stream and the text screen are captured on **every** exit path — the
+/// whole point is to see how far POST got even when the run ends on an
+/// instruction the real-mode core does not lift.
+pub fn run_bios(rom: &[u8]) -> BiosRun {
+    // Each PIC chip's device face is cloned off the one live pair; the pair itself
+    // is the machine's interrupt controller, so a guest EOI to either chip reaches
+    // the state the machine's INTA set.
+    let pic = CascadedPic::new();
+    let master_device = pic.master_device();
+    let slave_device = pic.slave_device();
+    let controller = Box::new(pic);
+
+    let rtc = CmosRtc::new().with_config(CmosConfig::default());
+
+    let devices: Vec<Box<dyn Device>> = vec![
+        Box::new(Uart16550::new(COM1_BASE)), // 0
+        Box::new(master_device),             // 1
+        Box::new(Pit8253::new()),            // 2
+        Box::new(I8042::new()),              // 3
+        Box::new(VgaText::new()),            // 4
+        Box::new(slave_device),              // 5
+        Box::new(rtc),                       // 6
+        Box::new(SysControl::new()),         // 7
+        Box::new(PostPort::with_port(0x80)), // 8
+    ];
+
+    let map = DecodeMap {
+        ports: vec![
+            PortRange {
+                ports: COM1_BASE..=COM1_TOP,
+                device: BIOS_UART_INDEX,
+            },
+            PortRange {
+                ports: PIC_COMMAND..=PIC_DATA,
+                device: BIOS_MASTER_PIC_INDEX,
+            },
+            PortRange {
+                ports: PIT_BASE..=PIT_TOP,
+                device: BIOS_PIT_INDEX,
+            },
+            // The 8042 decodes two non-adjacent ports (0x60 and 0x64).
+            PortRange {
+                ports: KBD_DATA..=KBD_DATA,
+                device: BIOS_I8042_INDEX,
+            },
+            PortRange {
+                ports: KBD_CMD..=KBD_CMD,
+                device: BIOS_I8042_INDEX,
+            },
+            // Port 0x61 system-control latch (refresh bit the BIOS times against).
+            PortRange {
+                ports: SYS_CONTROL_PORT..=SYS_CONTROL_PORT,
+                device: BIOS_SYS_CONTROL_INDEX,
+            },
+            // POST checkpoint port 0x80 (see the DMA-overlap note above).
+            PortRange {
+                ports: 0x80..=0x80,
+                device: BIOS_POST_INDEX,
+            },
+            PortRange {
+                ports: CMOS_INDEX_PORT..=CMOS_DATA_PORT,
+                device: BIOS_RTC_INDEX,
+            },
+            PortRange {
+                ports: CRTC_INDEX_PORT..=CRTC_DATA_PORT,
+                device: BIOS_VGA_INDEX,
+            },
+            PortRange {
+                ports: CGA_MODE_CONTROL_PORT..=CGA_STATUS_PORT,
+                device: BIOS_VGA_INDEX,
+            },
+            PortRange {
+                ports: SLAVE_PIC_COMMAND..=SLAVE_PIC_DATA,
+                device: BIOS_SLAVE_PIC_INDEX,
+            },
+        ],
+        mmio: vec![MmioRange {
+            addrs: TEXT_BUFFER_BASE..=TEXT_BUFFER_BASE + TEXT_BUFFER_LEN as u64 - 1,
+            device: BIOS_VGA_INDEX,
+        }],
+    };
+    let bus = Bus::new(devices, map);
+
+    // Lay out the full 1 MiB mosaic (no unmapped holes), then load the ROM.
+    let cpu = match build_bios_cpu(rom) {
+        Ok(cpu) => cpu,
+        Err(e) => {
+            return BiosRun {
+                post: Vec::new(),
+                screen: blank_screen(),
+                stop: StopReason::Unmapped {
+                    detail: format!("building cpu: {e}"),
+                },
+            }
+        }
+    };
+    // Wire the interrupt sources the BIOS's POST and INT layer rely on.
+    let irq_lines = vec![
+        IrqLine {
+            device: BIOS_PIT_INDEX,
+            irq: 0,
+        },
+        IrqLine {
+            device: BIOS_I8042_INDEX,
+            irq: 1,
+        },
+        IrqLine {
+            device: BIOS_RTC_INDEX,
+            irq: 8,
+        },
+    ];
+    let mut machine = Machine::new(
+        cpu,
+        bus,
+        controller,
+        BIOS_QUANTUM,
+        irq_lines,
+        Some(BIOS_IDLE_LIMIT),
+    );
+
+    let result = machine.run_bounded(Some(BIOS_MAX_RETIRED));
+    let stop = classify_bios_stop(&machine, result);
+
+    let post = drain_post_at(&mut machine, BIOS_POST_INDEX, 0x80);
+    let screen = render_vga(&mut machine, BIOS_VGA_INDEX);
+    BiosRun { post, screen, stop }
+}
+
+/// Build the BIOS machine's CPU with the full 1 MiB mosaic address space and the
+/// ROM loaded at `0xF8000`, pointed at the reset vector.
+fn build_bios_cpu(rom: &[u8]) -> Result<X86JitCpu, CpuError> {
+    // Segments start flat at the reset CS; the BIOS reloads them via its reset
+    // far jump, which the real-mode core now lifts. SP is left at the default; the
+    // BIOS sets up its own stack before pushing.
+    let mut cpu = X86JitCpu::new_real16_bare(
+        BIOS_SPACE,
+        BIOS_RESET_CS,
+        BIOS_RESET_IP,
+        RealSegments::flat(BIOS_RESET_CS),
+    )?;
+    // 640 KiB conventional RAM + the graphics-adapter probe window below the text
+    // buffer, as one RAM region up to the trapped video page.
+    cpu.map_ram(0, TEXT_BUFFER_BASE)?;
+    // The colour text page is trapped MMIO (mapped on the bus to the VGA card);
+    // it must be a hole in RAM, so RAM resumes above it.
+    cpu.map_mmio(TEXT_BUFFER_BASE, TEXT_BUFFER_LEN as u64)?;
+    // Zeroed option-ROM scan area: [0xC0000, 0xF8000). No 0x55AA signature, so the
+    // BIOS's option-ROM scan finds nothing and moves on.
+    cpu.map_ram(BIOS_OPTION_ROM_BASE, BIOS_ROM_BASE - BIOS_OPTION_ROM_BASE)?;
+    // The masked 32 KiB BIOS ROM at the top of the space.
+    cpu.map_rom(BIOS_ROM_BASE, rom)?;
+    Ok(cpu)
+}
+
+/// Classify how the BIOS run stopped into a [`StopReason`], reading back the bytes
+/// at the stopping CS:IP so an unlifted/faulting instruction can be disassembled
+/// for the report (§3.1). Addresses live in `detail` for humans only.
+fn classify_bios_stop(
+    machine: &Machine<X86JitCpu>,
+    result: Result<RunOutcome, MachineError>,
+) -> StopReason {
+    let ip = machine.cpu().reg(CpuReg::Rip);
+    let cs = machine.cpu().code_segment();
+    let linear = (cs << 4).wrapping_add(ip) & 0xF_FFFF;
+    let mut bytes = [0u8; 16];
+    let hex = if machine.cpu().read_mem(linear, &mut bytes).is_ok() {
+        bytes
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<Vec<_>>()
+            .join(" ")
+    } else {
+        "<unreadable>".to_string()
+    };
+    let site = format!("cs:ip {cs:#06x}:{ip:#06x} (linear {linear:#07x}) bytes [{hex}]");
+    match result {
+        Ok(RunOutcome::Halted) => StopReason::Halt,
+        Ok(RunOutcome::RetiredCapReached) => StopReason::BudgetExhausted,
+        Err(MachineError::Cpu(CpuError::UnsupportedInstruction { addr })) => {
+            StopReason::Unsupported {
+                detail: format!("unsupported instruction at {addr:#x}; {site}"),
+            }
+        }
+        Err(MachineError::Cpu(CpuError::Unmapped { addr })) => StopReason::Unmapped {
+            detail: format!("unmapped guest access at {addr:#x}; {site}"),
+        },
+        Err(MachineError::Cpu(CpuError::Memory(msg))) => StopReason::Unmapped {
+            detail: format!("guest memory error: {msg}; {site}"),
+        },
+        Err(MachineError::Bus(e)) => StopReason::Unmapped {
+            detail: format!("{e}; {site}"),
+        },
+        Err(MachineError::Exception { vector }) => StopReason::Exception { vector },
+    }
+}
+
+/// Drain a POST checkpoint byte stream from the port device at `index`, keeping
+/// only writes to `post_port` (§3.2 tracing seam).
+fn drain_post_at(machine: &mut Machine<X86JitCpu>, index: usize, post_port: u16) -> Vec<u8> {
+    let mut out = Vec::new();
+    if let Some(dev) = machine.bus_mut().device_mut(index) {
+        for event in dev.take_trace() {
+            if let TraceEvent::Port {
+                port,
+                dir: AccessDir::Write,
+                value,
+                ..
+            } = event
+            {
+                if port == post_port {
+                    out.push(value as u8);
+                }
+            }
+        }
+    }
+    out
+}
+
+/// A cleared 80×25 text grid, for a BIOS run that failed before any video output.
+fn blank_screen() -> TextGrid {
+    let vram = vec![0u8; TEXT_BUFFER_LEN];
+    render_text_mode(&TextModeState {
+        vram: &vram,
+        cols: COLS,
+        rows: ROWS,
+        start_cell: 0,
+        cursor_cell: 0,
+        cursor_visible: false,
+    })
 }
 
 /// Assemble the serial machine, run `blob` in Long64, and return the bytes the
