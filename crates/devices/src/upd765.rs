@@ -22,11 +22,19 @@
 //! phase and raises IRQ6. The controller never holds a memory reference and the
 //! 8237 never sees the disk.
 //!
-//! ## Geometry
+//! ## Geometry and per-drive media
 //!
-//! Fixed to a 1.44 MB high-density floppy: 80 cylinders × 2 heads × 18 sectors ×
-//! 512 bytes. A CHS address maps to an image offset by
-//! `lba = (cyl * 2 + head) * 18 + (sector - 1)`, `offset = lba * 512`.
+//! Geometry is per-drive data, not a hardcoded constant. Each of the four
+//! drive-select positions the DOR can address may carry its own
+//! [`Drive`]: a [`FloppyGeometry`] (cylinders × heads × sectors, 512-byte
+//! sectors) plus a raw backing image. The four standard PC floppy formats are
+//! provided as [`FloppyGeometry`] constants — 1.44 MB (80×2×18), 1.2 MB
+//! (80×2×15), 720 KB (80×2×9), and 360 KB (40×2×9) — so drive 0 and drive 1 can
+//! differ. A CHS address maps to an image offset with the addressed drive's own
+//! geometry by `lba = (cyl * heads + head) * sectors_per_track + (sector - 1)`,
+//! `offset = lba * 512`. A READ to an unattached drive terminates abnormally with
+//! the not-ready status; a READ outside the drive's geometry terminates
+//! abnormally with a no-data status.
 //!
 //! ## Coverage matrix (datasheet vs modelled)
 //!
@@ -85,17 +93,95 @@ const MSR_BUSY: u8 = 1 << 4;
 /// The DMA channel the PC floppy controller is wired to.
 const FLOPPY_DMA_CHANNEL: u8 = 2;
 
-/// Cylinders on a 1.44 MB floppy.
-const CYLINDERS: u32 = 80;
-/// Heads (double-sided).
-const HEADS: u32 = 2;
-/// Sectors per track.
-const SECTORS_PER_TRACK: u32 = 18;
-/// Bytes per sector.
+/// Bytes per sector. Every standard PC floppy format uses 512-byte sectors.
 const SECTOR_SIZE: usize = 512;
-/// Total size of a 1.44 MB image in bytes.
-pub const FLOPPY_IMAGE_BYTES: usize =
-    (CYLINDERS * HEADS * SECTORS_PER_TRACK) as usize * SECTOR_SIZE;
+
+/// Total size of a 1.44 MB image in bytes, kept as a public constant for the
+/// callers that seed a default high-density disk.
+pub const FLOPPY_IMAGE_BYTES: usize = FloppyGeometry::HD1440.image_bytes();
+
+/// The physical layout of a floppy disk: cylinders, heads, and sectors per
+/// track, with a fixed 512-byte sector. This is the data the CHS→offset mapping
+/// and the total image size are derived from, so a drive's format is a value the
+/// machine configures rather than a constant baked into the controller.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct FloppyGeometry {
+    /// Number of cylinders (tracks per side).
+    pub cylinders: u32,
+    /// Number of heads (recording surfaces): 1 single-sided, 2 double-sided.
+    pub heads: u32,
+    /// Sectors per track.
+    pub sectors_per_track: u32,
+}
+
+impl FloppyGeometry {
+    /// 1.44 MB high-density 3.5″ floppy: 80 cylinders × 2 heads × 18 sectors.
+    pub const HD1440: Self = Self {
+        cylinders: 80,
+        heads: 2,
+        sectors_per_track: 18,
+    };
+    /// 1.2 MB high-density 5.25″ floppy: 80 cylinders × 2 heads × 15 sectors.
+    pub const HD1200: Self = Self {
+        cylinders: 80,
+        heads: 2,
+        sectors_per_track: 15,
+    };
+    /// 720 KB double-density 3.5″ floppy: 80 cylinders × 2 heads × 9 sectors.
+    pub const DD720: Self = Self {
+        cylinders: 80,
+        heads: 2,
+        sectors_per_track: 9,
+    };
+    /// 360 KB double-density 5.25″ floppy: 40 cylinders × 2 heads × 9 sectors.
+    pub const DD360: Self = Self {
+        cylinders: 40,
+        heads: 2,
+        sectors_per_track: 9,
+    };
+
+    /// Total size in bytes of a raw image with this geometry.
+    #[must_use]
+    pub const fn image_bytes(&self) -> usize {
+        (self.cylinders * self.heads * self.sectors_per_track) as usize * SECTOR_SIZE
+    }
+
+    /// Byte offset of a CHS sector within an image of this geometry. Sector
+    /// numbers are 1-based on the wire, so sector 1 is the first on the track.
+    fn chs_to_offset(&self, cylinder: u8, head: u8, sector: u8) -> usize {
+        let lba = (u32::from(cylinder) * self.heads + u32::from(head)) * self.sectors_per_track
+            + u32::from(sector.saturating_sub(1));
+        lba as usize * SECTOR_SIZE
+    }
+
+    /// Whether a CHS address lies within this geometry (a valid, readable
+    /// sector). Sectors are 1-based, so sector 0 is out of range.
+    fn contains(&self, cylinder: u8, head: u8, sector: u8) -> bool {
+        u32::from(cylinder) < self.cylinders
+            && u32::from(head) < self.heads
+            && sector >= 1
+            && u32::from(sector) <= self.sectors_per_track
+    }
+}
+
+/// A floppy mounted in one of the controller's four drive positions: its
+/// [`FloppyGeometry`] plus the raw backing image (read-only for the boot path).
+#[derive(Clone, Debug)]
+pub struct Drive {
+    /// Physical format of the mounted disk.
+    pub geometry: FloppyGeometry,
+    /// Raw image bytes; typically [`FloppyGeometry::image_bytes`] long. Reads
+    /// past the end of a short image return zero.
+    pub image: Vec<u8>,
+}
+
+impl Drive {
+    /// Mount `image` with the given `geometry`.
+    #[must_use]
+    pub fn new(geometry: FloppyGeometry, image: Vec<u8>) -> Self {
+        Self { geometry, image }
+    }
+}
 
 /// Snapshot layout version tag.
 const SNAPSHOT_VERSION: u8 = 1;
@@ -106,6 +192,12 @@ const ST0_SEEK_END: u8 = 1 << 5;
 /// reported by each of the four polling SENSE INTERRUPT STATUS calls a reset
 /// raises.
 const ST0_POLL: u8 = 0b1100_0000;
+/// ST0 interrupt-code bits 7-6 == `01`: the command terminated abnormally.
+const ST0_ABNORMAL: u8 = 0b0100_0000;
+/// ST0 bit 3 (NR): the addressed drive is not ready (no disk mounted).
+const ST0_NOT_READY: u8 = 1 << 3;
+/// ST1 bit 2 (ND): no data — the requested sector was not found on the track.
+const ST1_NO_DATA: u8 = 1 << 2;
 
 /// Which phase of the command protocol the controller is in.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -162,9 +254,9 @@ pub struct Upd765 {
     pending_request: Option<DmaRequest>,
     /// The READ context whose result phase is completed once the DMA finishes.
     pending_read: Option<PendingRead>,
-    /// Backing disk image (read-only for the boot path). Empty when no disk is
-    /// attached; a read of unbacked media returns zeroed sectors.
-    image: Vec<u8>,
+    /// Media mounted in each of the four drive positions the DOR can select.
+    /// `None` is an empty drive bay; a READ addressed to one is "not ready".
+    drives: [Option<Drive>; 4],
     /// Trace events observed since the last [`Device::take_trace`].
     trace: Vec<TraceEvent>,
     /// Virtual time of the most recent [`Device::tick`], stamped onto traces.
@@ -188,18 +280,32 @@ impl Upd765 {
             reset_poll: 0,
             pending_request: None,
             pending_read: None,
-            image: Vec::new(),
+            drives: [None, None, None, None],
             trace: Vec::new(),
             now: VClock::ZERO,
         }
     }
 
-    /// Create a controller backed by `image` (a raw floppy image, typically
-    /// [`FLOPPY_IMAGE_BYTES`] bytes for a 1.44 MB disk).
+    /// Create a controller with a single 1.44 MB disk mounted in drive 0, backed
+    /// by `image` (typically [`FLOPPY_IMAGE_BYTES`] bytes). This is the legacy
+    /// single-drive entry point; it is exactly `with_drives` carrying one
+    /// high-density drive.
     #[must_use]
     pub fn with_image(image: Vec<u8>) -> Self {
+        Self::with_drives([
+            Some(Drive::new(FloppyGeometry::HD1440, image)),
+            None,
+            None,
+            None,
+        ])
+    }
+
+    /// Create a controller with media mounted per drive position. Each entry
+    /// carries its own geometry, so drive 0 and drive 1 may differ.
+    #[must_use]
+    pub fn with_drives(drives: [Option<Drive>; 4]) -> Self {
         Self {
-            image,
+            drives,
             ..Self::new()
         }
     }
@@ -214,13 +320,6 @@ impl Upd765 {
     #[must_use]
     pub fn present_cylinder(&self, drive: usize) -> u8 {
         self.present_cylinder[drive & 0b11]
-    }
-
-    /// Compute the byte offset of a CHS sector within a 1.44 MB image.
-    fn chs_to_offset(cylinder: u8, head: u8, sector: u8) -> usize {
-        let lba = (u32::from(cylinder) * HEADS + u32::from(head)) * SECTORS_PER_TRACK
-            + u32::from(sector.saturating_sub(1));
-        lba as usize * SECTOR_SIZE
     }
 
     /// The full main status register byte for the current phase.
@@ -387,6 +486,35 @@ impl Upd765 {
         let sector_size_code = self.command[5];
         let end_of_track = self.command[6];
 
+        // Resolve the addressed drive's mounted media; an empty bay is not ready.
+        let Some(media) = self.drives[usize::from(drive)].as_ref() else {
+            self.read_fault(
+                drive,
+                head,
+                cylinder,
+                sector,
+                sector_size_code,
+                ST0_NOT_READY,
+                0,
+            );
+            return;
+        };
+        let geometry = media.geometry;
+
+        // An address outside the drive's geometry has no matching data field.
+        if !geometry.contains(cylinder, param_head, sector) {
+            self.read_fault(
+                drive,
+                head,
+                cylinder,
+                sector,
+                sector_size_code,
+                0,
+                ST1_NO_DATA,
+            );
+            return;
+        }
+
         // Reads span R..=EOT on the one track; the 8237's programmed count clamps
         // how many of those bytes actually land in memory.
         let last = end_of_track.max(sector);
@@ -394,9 +522,9 @@ impl Upd765 {
         let mut data = Vec::with_capacity(sector_count as usize * SECTOR_SIZE);
         for i in 0..sector_count {
             let s = sector + i as u8;
-            let offset = Self::chs_to_offset(cylinder, param_head, s);
+            let offset = geometry.chs_to_offset(cylinder, param_head, s);
             for j in 0..SECTOR_SIZE {
-                data.push(self.image.get(offset + j).copied().unwrap_or(0));
+                data.push(media.image.get(offset + j).copied().unwrap_or(0));
             }
         }
 
@@ -412,6 +540,26 @@ impl Upd765 {
             data,
         });
         self.phase = Phase::Execution;
+    }
+
+    /// Terminate a READ DATA abnormally without a DMA transfer: build the
+    /// seven-byte result with the given ST0/ST1 fault bits and raise IRQ6.
+    #[allow(clippy::too_many_arguments)]
+    fn read_fault(
+        &mut self,
+        drive: u8,
+        head: u8,
+        cylinder: u8,
+        sector: u8,
+        sector_size_code: u8,
+        st0_extra: u8,
+        st1: u8,
+    ) {
+        self.st0 = ST0_ABNORMAL | st0_extra | (head << 2) | drive;
+        self.raise_irq();
+        self.result = vec![self.st0, st1, 0, cylinder, head, sector, sector_size_code];
+        self.result_index = 0;
+        self.phase = Phase::Result;
     }
 
     /// Complete a READ transfer once the machine has moved `transferred` bytes:
@@ -574,9 +722,9 @@ impl Device for Upd765 {
     }
 
     fn reset(&mut self) {
-        // A controller reset clears the registers but does not eject the disk.
-        let image = std::mem::take(&mut self.image);
-        *self = Self::with_image(image);
+        // A controller reset clears the registers but does not eject any disk.
+        let drives = std::mem::take(&mut self.drives);
+        *self = Self::with_drives(drives);
     }
 
     fn save(&self) -> Vec<u8> {
@@ -693,9 +841,10 @@ mod tests {
             .collect()
     }
 
-    /// A controller out of reset with the DMA/interrupt path enabled.
-    fn ready_fdc(image: Vec<u8>) -> Upd765 {
-        let mut fdc = Upd765::with_image(image);
+    /// A controller with the given per-drive media, out of reset with the
+    /// DMA/interrupt path enabled and the reset polls drained.
+    fn ready_drives(drives: [Option<Drive>; 4]) -> Upd765 {
+        let mut fdc = Upd765::with_drives(drives);
         // Leave reset (bit 2), enable DMA (bit 3), motor 0 on (bit 4), drive 0.
         fdc.port_write(DOR, 1, 0x1C).unwrap();
         // The reset raises IRQ6 and queues the four polling senses; drain them so
@@ -706,6 +855,16 @@ mod tests {
         }
         fdc.irq = false;
         fdc
+    }
+
+    /// A ready controller with a single 1.44 MB disk in drive 0 (legacy shape).
+    fn ready_fdc(image: Vec<u8>) -> Upd765 {
+        ready_drives([
+            Some(Drive::new(FloppyGeometry::HD1440, image)),
+            None,
+            None,
+            None,
+        ])
     }
 
     #[test]
@@ -722,10 +881,39 @@ mod tests {
 
     #[test]
     fn chs_maps_to_image_offset() {
-        assert_eq!(Upd765::chs_to_offset(0, 0, 1), 0);
-        assert_eq!(Upd765::chs_to_offset(0, 0, 2), SECTOR_SIZE);
-        assert_eq!(Upd765::chs_to_offset(0, 1, 1), 18 * SECTOR_SIZE);
-        assert_eq!(Upd765::chs_to_offset(1, 0, 1), 36 * SECTOR_SIZE);
+        let g = FloppyGeometry::HD1440;
+        assert_eq!(g.chs_to_offset(0, 0, 1), 0);
+        assert_eq!(g.chs_to_offset(0, 0, 2), SECTOR_SIZE);
+        assert_eq!(g.chs_to_offset(0, 1, 1), 18 * SECTOR_SIZE);
+        assert_eq!(g.chs_to_offset(1, 0, 1), 36 * SECTOR_SIZE);
+    }
+
+    #[test]
+    fn chs_offset_and_size_track_the_geometry() {
+        // 360 KB has 9 sectors per track over 40 cylinders, so head 1 and the
+        // next cylinder sit at different offsets than a 1.44 MB disk would.
+        let g = FloppyGeometry::DD360;
+        assert_eq!(g.image_bytes(), 40 * 2 * 9 * SECTOR_SIZE);
+        assert_eq!(g.chs_to_offset(0, 0, 1), 0);
+        assert_eq!(g.chs_to_offset(0, 1, 1), 9 * SECTOR_SIZE);
+        assert_eq!(g.chs_to_offset(1, 0, 1), 18 * SECTOR_SIZE);
+
+        // 1.2 MB and 720 KB image sizes.
+        assert_eq!(
+            FloppyGeometry::HD1200.image_bytes(),
+            80 * 2 * 15 * SECTOR_SIZE
+        );
+        assert_eq!(
+            FloppyGeometry::DD720.image_bytes(),
+            80 * 2 * 9 * SECTOR_SIZE
+        );
+        assert_eq!(FloppyGeometry::HD1440.image_bytes(), FLOPPY_IMAGE_BYTES);
+
+        // A cylinder past a 40-cylinder disk, or a sector past the track, is out.
+        assert!(!FloppyGeometry::DD360.contains(40, 0, 1));
+        assert!(!FloppyGeometry::DD360.contains(0, 0, 10));
+        assert!(!FloppyGeometry::DD360.contains(0, 2, 1));
+        assert!(FloppyGeometry::DD360.contains(39, 1, 9));
     }
 
     #[test]
@@ -900,7 +1088,11 @@ mod tests {
         assert_eq!(fdc.present_cylinder(0), 0, "registers cleared");
         assert_eq!(fdc.dor, 0);
         assert!(!fdc.irq_pending());
-        assert_eq!(fdc.image, image, "the disk stays attached across reset");
+        assert_eq!(
+            fdc.drives[0].as_ref().map(|d| &d.image),
+            Some(&image),
+            "the disk stays attached across reset"
+        );
     }
 
     #[test]
@@ -952,5 +1144,173 @@ mod tests {
             fdc.port_read(0x3E0, 1),
             Err(DeviceError::UnmappedRegister { kind: "port", .. })
         ));
+    }
+
+    /// A distinctive full-geometry image whose every byte is a function of its
+    /// offset and a per-disk seed, so a read landing on the wrong offset or the
+    /// wrong drive is caught byte-for-byte.
+    fn patterned(geometry: FloppyGeometry, seed: u8) -> Vec<u8> {
+        let mut img = vec![0u8; geometry.image_bytes()];
+        for (i, b) in img.iter_mut().enumerate() {
+            *b = seed ^ (i % 251) as u8;
+        }
+        img
+    }
+
+    /// Issue a single-sector READ DATA, run the DMA to completion, drain the
+    /// result phase, and return the sector bytes the controller pulled.
+    fn read_sector(fdc: &mut Upd765, drive_head: u8, c: u8, h: u8, r: u8) -> Vec<u8> {
+        command(fdc, &[0x06, drive_head, c, h, r, 0x02, r, 0x1B, 0xFF]);
+        let data = fdc
+            .take_dma_request()
+            .expect("a valid read queues a DMA request")
+            .data;
+        fdc.dma_complete(data.len());
+        let _ = results(fdc, 7);
+        data
+    }
+
+    #[test]
+    fn read_uses_the_drive_geometry_for_the_offset() {
+        // Read cylinder 1 on both a 360 KB and a 1.44 MB disk: the same CHS lands
+        // at different image offsets because the geometries differ.
+        for geometry in [
+            FloppyGeometry::DD360,
+            FloppyGeometry::DD720,
+            FloppyGeometry::HD1200,
+            FloppyGeometry::HD1440,
+        ] {
+            let image = patterned(geometry, 0x33);
+            let mut fdc =
+                ready_drives([Some(Drive::new(geometry, image.clone())), None, None, None]);
+            let data = read_sector(&mut fdc, 0x00, 1, 0, 1);
+            let offset = geometry.chs_to_offset(1, 0, 1);
+            assert_eq!(
+                data,
+                image[offset..offset + SECTOR_SIZE],
+                "read must use {geometry:?} to compute the offset"
+            );
+        }
+    }
+
+    #[test]
+    fn drives_zero_and_one_carry_independent_media() {
+        let img0 = patterned(FloppyGeometry::DD360, 0x11);
+        let img1 = patterned(FloppyGeometry::HD1440, 0xEE);
+        let mut fdc = ready_drives([
+            Some(Drive::new(FloppyGeometry::DD360, img0.clone())),
+            Some(Drive::new(FloppyGeometry::HD1440, img1.clone())),
+            None,
+            None,
+        ]);
+
+        // Drive 0 (drive-select bits 00) reads its own 360 KB media at the 360 KB
+        // offset for C=1; drive 1 (bits 01) reads its 1.44 MB media at the 1.44 MB
+        // offset for the same CHS. Neither sees the other's disk.
+        let d0 = read_sector(&mut fdc, 0x00, 1, 0, 1);
+        let o0 = FloppyGeometry::DD360.chs_to_offset(1, 0, 1);
+        assert_eq!(d0, img0[o0..o0 + SECTOR_SIZE], "drive 0 reads 360 KB media");
+
+        let d1 = read_sector(&mut fdc, 0x01, 1, 0, 1);
+        let o1 = FloppyGeometry::HD1440.chs_to_offset(1, 0, 1);
+        assert_eq!(
+            d1,
+            img1[o1..o1 + SECTOR_SIZE],
+            "drive 1 reads 1.44 MB media"
+        );
+        assert_ne!(d0, d1, "the two drives return different bytes");
+    }
+
+    #[test]
+    fn read_outside_geometry_terminates_abnormally() {
+        // Cylinder 60 does not exist on a 40-cylinder 360 KB disk.
+        let image = patterned(FloppyGeometry::DD360, 0x22);
+        let mut fdc = ready_drives([
+            Some(Drive::new(FloppyGeometry::DD360, image)),
+            None,
+            None,
+            None,
+        ]);
+        command(
+            &mut fdc,
+            &[0x06, 0x00, 60, 0x00, 0x01, 0x02, 0x01, 0x1B, 0xFF],
+        );
+        assert!(
+            fdc.take_dma_request().is_none(),
+            "an out-of-geometry read moves no data"
+        );
+        let res = results(&mut fdc, 7);
+        assert_eq!(res[0] & 0xC0, ST0_ABNORMAL, "ST0 abnormal termination");
+        assert_eq!(res[1] & ST1_NO_DATA, ST1_NO_DATA, "ST1 no-data");
+    }
+
+    #[test]
+    fn read_from_empty_drive_bay_is_not_ready() {
+        // Only drive 0 is populated; a read addressed to drive 1 finds no disk.
+        let mut fdc = ready_fdc(patterned(FloppyGeometry::HD1440, 0x44));
+        command(
+            &mut fdc,
+            &[0x06, 0x01, 0x00, 0x00, 0x01, 0x02, 0x01, 0x1B, 0xFF],
+        );
+        assert!(fdc.take_dma_request().is_none(), "no media, no transfer");
+        let res = results(&mut fdc, 7);
+        assert_eq!(res[0] & 0xC0, ST0_ABNORMAL, "abnormal termination");
+        assert_eq!(res[0] & ST0_NOT_READY, ST0_NOT_READY, "ST0 not-ready");
+    }
+
+    /// Build a real FAT12 360 KB image with `mformat` (from the devShell's
+    /// mtools), attach it as a 360 KB drive, and read sector 0 through the full
+    /// command path — proving a non-1.44 MB geometry reads a genuine on-disk
+    /// filesystem, boot signature and all.
+    #[test]
+    fn reads_a_real_fat12_360k_image() {
+        use std::process::Command;
+
+        let path = std::env::temp_dir().join(format!(
+            "upd765_360k_{}_{}.img",
+            std::process::id(),
+            line!()
+        ));
+        let out = Command::new("mformat")
+            .args(["-C", "-f", "360", "-v", "TEST360", "-i"])
+            .arg(&path)
+            .arg("::")
+            .output()
+            .expect("mformat must be on PATH (provided by the devShell's mtools)");
+        assert!(
+            out.status.success(),
+            "mformat failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+
+        let image = std::fs::read(&path).expect("read the freshly formatted image");
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(
+            image.len(),
+            FloppyGeometry::DD360.image_bytes(),
+            "a 360 KB image is exactly 40*2*9*512 bytes"
+        );
+
+        let mut fdc = ready_drives([
+            Some(Drive::new(FloppyGeometry::DD360, image.clone())),
+            None,
+            None,
+            None,
+        ]);
+
+        // Sector 1 (LBA 0) is the boot sector; mformat writes the 0x55 0xAA
+        // signature at the end of it.
+        let boot = read_sector(&mut fdc, 0x00, 0, 0, 1);
+        assert_eq!(boot.len(), SECTOR_SIZE);
+        assert_eq!(
+            &boot[..],
+            &image[..SECTOR_SIZE],
+            "sector 0 matches the image"
+        );
+        assert_eq!(
+            (boot[510], boot[511]),
+            (0x55, 0xAA),
+            "the FAT12 boot sector carries the boot signature"
+        );
     }
 }
