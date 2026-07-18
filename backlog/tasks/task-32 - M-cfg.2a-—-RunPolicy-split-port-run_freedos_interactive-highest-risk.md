@@ -1,10 +1,10 @@
 ---
 id: TASK-32
 title: M-cfg.2a — RunPolicy split + port run_freedos_interactive (highest risk)
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-07-18 16:24'
-updated_date: '2026-07-18 16:33'
+updated_date: '2026-07-18 18:35'
 labels:
   - architecture
   - config

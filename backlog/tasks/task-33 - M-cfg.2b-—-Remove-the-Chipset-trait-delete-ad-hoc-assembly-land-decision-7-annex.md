@@ -3,10 +3,10 @@ id: TASK-33
 title: >-
   M-cfg.2b — Remove the Chipset trait, delete ad-hoc assembly, land decision-7
   annex
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-07-18 16:24'
-updated_date: '2026-07-18 16:34'
+updated_date: '2026-07-18 19:16'
 labels:
   - architecture
   - config

@@ -3,10 +3,10 @@ id: TASK-28
 title: >-
   M-cfg.0 — Machine-config design doc + decision-7 annex (Chipset trait
   replacement)
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-07-18 16:23'
-updated_date: '2026-07-18 16:33'
+updated_date: '2026-07-18 17:03'
 labels:
   - architecture
   - docs

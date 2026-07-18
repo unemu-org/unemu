@@ -1,10 +1,10 @@
 ---
 id: TASK-31
 title: M-cfg.1c — Presets + port the PC-family run_* to config (A/B equality)
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-07-18 16:24'
-updated_date: '2026-07-18 16:33'
+updated_date: '2026-07-18 18:09'
 labels:
   - architecture
   - config

@@ -1,10 +1,10 @@
 ---
 id: TASK-34
 title: M-cfg.3 — DriveConfig + floppy geometries (the seam under IDE/HDD)
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-07-18 16:25'
-updated_date: '2026-07-18 16:34'
+updated_date: '2026-07-18 17:09'
 labels:
   - architecture
   - config

@@ -1,9 +1,10 @@
 ---
 id: TASK-36
 title: M-cfg.2b — Port run_freedos_interactive to config + RunPolicy (the scary one)
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-07-18 16:33'
+updated_date: '2026-07-18 18:51'
 labels:
   - architecture
   - config

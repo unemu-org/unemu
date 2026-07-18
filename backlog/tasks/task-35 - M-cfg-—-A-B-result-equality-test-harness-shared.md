@@ -1,9 +1,10 @@
 ---
 id: TASK-35
 title: M-cfg — A/B result-equality test harness (shared)
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-07-18 16:33'
+updated_date: '2026-07-18 19:27'
 labels:
   - architecture
   - config

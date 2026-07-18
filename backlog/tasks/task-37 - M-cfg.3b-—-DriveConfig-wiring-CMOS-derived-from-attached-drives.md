@@ -1,9 +1,10 @@
 ---
 id: TASK-37
 title: M-cfg.3b — DriveConfig wiring + CMOS derived from attached drives
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-07-18 16:34'
+updated_date: '2026-07-18 19:27'
 labels:
   - architecture
   - config

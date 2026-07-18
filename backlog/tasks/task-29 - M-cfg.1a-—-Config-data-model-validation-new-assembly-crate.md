@@ -1,10 +1,10 @@
 ---
 id: TASK-29
 title: M-cfg.1a — Config data model + validation (new assembly crate)
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-07-18 16:24'
-updated_date: '2026-07-18 16:33'
+updated_date: '2026-07-18 17:16'
 labels:
   - architecture
   - config

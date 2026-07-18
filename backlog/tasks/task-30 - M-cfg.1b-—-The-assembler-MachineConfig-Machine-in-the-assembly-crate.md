@@ -1,10 +1,10 @@
 ---
 id: TASK-30
 title: 'M-cfg.1b — The assembler: MachineConfig -> Machine (in the assembly crate)'
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-07-18 16:24'
-updated_date: '2026-07-18 16:33'
+updated_date: '2026-07-18 17:30'
 labels:
   - architecture
   - config
