@@ -31,6 +31,7 @@ anyhow = "1"
 x86jit-core = { git = "file:///home/mikolaj/src/x86jit", branch = "pc-emulator" }
 
 # Internal crates share the workspace version.
+assembly = { path = "crates/assembly" }
 device = { path = "crates/device" }
 bus = { path = "crates/bus" }
 chipset = { path = "crates/chipset" }

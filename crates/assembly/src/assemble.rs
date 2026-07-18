@@ -149,11 +149,14 @@ pub fn assemble(
             }
             DeviceKind::Keyboard(_) => Box::new(I8042::new()),
             DeviceKind::Rtc(c) => {
-                if c.seed {
-                    Box::new(CmosRtc::new().with_config(cmos))
-                } else {
-                    Box::new(CmosRtc::new())
+                let mut rtc = CmosRtc::new();
+                if let Some((second_ticks, uip_ticks)) = c.timing {
+                    rtc = rtc.with_timing(second_ticks, uip_ticks);
                 }
+                if c.seed {
+                    rtc = rtc.with_config(cmos);
+                }
+                Box::new(rtc)
             }
             DeviceKind::Vga(_) => Box::new(VgaText::new()),
             DeviceKind::SysControl(_) => Box::new(SysControl::new()),
@@ -532,6 +535,7 @@ mod tests {
                     index: 0x70,
                     data: 0x71,
                     seed: true,
+                    timing: None,
                 }),
                 vec![PortWindow::new(0x70, 0x71)],
             )
