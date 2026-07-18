@@ -70,6 +70,22 @@ Things **deliberately not implemented**. If something seems missing and is liste
 - **Revisit when:** A second Long64 consumer appears and justifies a mode axis.
 - **Tracked in:** [`design/machine-config.md`](design/machine-config.md) (Non-goals).
 
+### Fixed-disk (XT-IDE / ATA) controller device
+
+- **Why deferred:** The config side of fixed disks is done — `DriveKind::HardDisk`
+  is first-class `MachineConfig` data, it binds to a controller by
+  `controller_slot`, and the CMOS `hard_disk_types` nibble already derives from an
+  attached hard disk. What is missing is only the *device* that serves it. The
+  first end-to-end target is headless serial and floppy boot; a fixed-disk
+  controller has no current consumer, and modelling ATA register semantics is a
+  standalone device task, not part of the config layer. The seam is built so
+  adding one is a new `Device` plus a `build_ide_drives`-style router, with no new
+  assembler architecture (see
+  [`design/machine-config.md`](design/machine-config.md), the fixed-disk seam).
+- **Revisit when:** A boot flow or guest needs to read or write a hard disk (e.g.
+  installing DOS to an HDD image rather than booting a floppy).
+- **Tracked in:** [`design/machine-config.md`](design/machine-config.md).
+
 ### Real (unmodified) BIOS
 
 - **Why deferred:** Start from a minimal BIOS stub; x86jit models a modern CPU, so
