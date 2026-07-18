@@ -17,20 +17,24 @@
 //! code then its break code; the machine models no scancode translation, so the
 //! exact bytes are what the BIOS INT 09h handler reads at port `0x60`.
 //!
-//! Two machine behaviours make this work, both handled by the driver rather than
-//! by changing hardware models:
+//! Two conditions make this work:
 //!
-//! - **Deferred injection.** Keys queued at power-on are consumed or corrupted by
-//!   the BIOS keyboard-reset handshake and the POST buffer flush, so the prompt
-//!   never advances. The script is injected only once DOS owns the keyboard.
-//! - **One key at a time on a fine quantum.** The machine acknowledges one PIC
-//!   vector per run quantum; on the coarse boot quantum a busy-polling guest lets
-//!   the periodic timer IRQ0 win every priority race and starves the keyboard
-//!   IRQ1 forever, so the interactive run uses a quantum finer than one timer
-//!   period. And because the 8042 refills its output buffer the instant a byte is
-//!   read, pushing the whole script at once never lets IRQ1 fall and rise again —
-//!   so each scancode is injected separately, after the prior one drains, giving
-//!   every byte a clean IRQ1 edge.
+//! - **Deferred injection (driver).** Keys queued at power-on are consumed or
+//!   corrupted by the BIOS keyboard-reset handshake and the POST buffer flush, so
+//!   the prompt never advances. The script is injected only once DOS owns the
+//!   keyboard.
+//! - **A fine run quantum (driver).** The machine acknowledges one PIC vector per
+//!   run quantum; on the coarse boot quantum a busy-polling guest lets the periodic
+//!   timer IRQ0 win every priority race and starves the keyboard IRQ1 forever, so
+//!   the interactive run uses a quantum finer than one timer period. This is a
+//!   quantum-granularity tradeoff, documented on `DOS_INTERACTIVE_QUANTUM`.
+//!
+//! The whole script is queued into the 8042 at once: the controller delivers
+//! queued bytes serially — shifting the next in on a tick after each read — so
+//! every scancode drops and re-raises the IRQ1 line on its own and INT 09h gets a
+//! clean edge per byte. (Earlier the 8042 refilled its output buffer the instant a
+//! byte was read, collapsing the queued bytes into one sustained level; that is now
+//! fixed in the controller model, so the driver no longer paces keys one at a time.)
 //!
 //! ## Observed session (this CPU revision)
 //!

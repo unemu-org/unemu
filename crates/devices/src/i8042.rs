@@ -14,6 +14,19 @@
 //! sets OBF, and — when keyboard interrupts are enabled — asserts the **IRQ1**
 //! line surfaced through [`Device::irq_pending`].
 //!
+//! ## Serial delivery of queued bytes (one IRQ1 edge per byte)
+//!
+//! The keyboard link is serial: a byte becomes available in the output buffer on
+//! a controller *tick*, not the instant the previous byte is read at `0x60`. When
+//! the CPU reads a byte the buffer empties and the IRQ1 line falls; only a later
+//! [`Device::tick`] shifts the next queued byte in and re-raises the line. This
+//! matters because the machine's PIC is edge-triggered: it latches one interrupt
+//! per *rising* edge of the line. If a read instantly refilled the buffer the line
+//! would never fall, so several queued scancodes would collapse into one sustained
+//! high level and interrupt only once. Delivering on a tick — after holding one
+//! tick so the fall is observed — gives every queued byte its own rising edge and
+//! therefore its own IRQ1.
+//!
 //! ## A20 gate
 //!
 //! Command `0xD1` (write output port) latches a new output port; bit 1 is the
@@ -228,6 +241,10 @@ pub struct I8042 {
     expect: Expect,
     /// Scancodes waiting to enter the output buffer.
     input_queue: VecDeque<u8>,
+    /// Set when a read empties the output buffer, to hold the next serial refill
+    /// for one tick so the IRQ1 line is observed low (its falling edge) before the
+    /// next queued byte re-raises it. Ephemeral (one tick); not snapshotted.
+    refill_hold: bool,
     /// Trace events observed since the last [`Device::take_trace`].
     trace: Vec<TraceEvent>,
     /// Virtual time of the most recent [`Device::tick`], stamped onto traces.
@@ -248,6 +265,7 @@ impl I8042 {
             output_port: OUTPUT_PORT_RESET,
             expect: Expect::KeyboardData,
             input_queue: VecDeque::new(),
+            refill_hold: false,
             trace: Vec::new(),
             now: VClock::ZERO,
         }
@@ -325,8 +343,12 @@ impl I8042 {
         let value = self.output_buffer;
         self.output_full = false;
         self.source = Source::Empty;
-        // A freed buffer immediately accepts the next queued scancode.
-        self.refill_output();
+        // Do not refill here: the keyboard link is serial, so the next queued byte
+        // shifts in on a later `tick`, not the instant this one is read. Emptying
+        // the buffer drops the IRQ1 line now; holding the refill one tick (below)
+        // lets the machine's edge detector see that fall before the next byte
+        // re-raises the line, giving one rising edge — one IRQ1 — per byte.
+        self.refill_hold = true;
         value
     }
 
@@ -469,6 +491,16 @@ impl Device for I8042 {
 
     fn tick(&mut self, now: VClock) {
         self.now = now;
+        // Serial delivery: shift the next queued byte into the output buffer on a
+        // tick (see the module docs). After a read empties the buffer, hold off one
+        // tick so the IRQ1 line is observed low before the next byte re-raises it —
+        // without that pause several queued bytes would present as one sustained
+        // level and the edge-triggered PIC would latch only the first.
+        if self.refill_hold {
+            self.refill_hold = false;
+        } else {
+            self.refill_output();
+        }
     }
 
     fn irq_pending(&self) -> bool {
@@ -551,6 +583,9 @@ impl Device for I8042 {
         self.expect = expect;
         self.source = source;
         self.input_queue = body.iter().copied().collect();
+        // The one-tick serial refill hold is ephemeral; a restored controller
+        // delivers its next queued byte on the following tick.
+        self.refill_hold = false;
         Ok(())
     }
 
@@ -653,8 +688,15 @@ mod tests {
         kbc.push_scancode(0x10);
         kbc.push_scancode(0x11);
         kbc.push_scancode(0x12);
+        // The first byte is available at once; each later byte shifts in serially,
+        // on a tick after the prior one is read (the hold tick lets the line fall,
+        // the next tick delivers). See the serial-delivery module docs.
         assert_eq!(kbc.port_read(PORT_DATA, 1).unwrap(), 0x10);
+        kbc.tick(VClock(1)); // hold: line observed low
+        kbc.tick(VClock(2)); // delivers 0x11
         assert_eq!(kbc.port_read(PORT_DATA, 1).unwrap(), 0x11);
+        kbc.tick(VClock(3));
+        kbc.tick(VClock(4));
         assert_eq!(kbc.port_read(PORT_DATA, 1).unwrap(), 0x12);
     }
 
@@ -783,8 +825,11 @@ mod tests {
         assert_eq!(restored.command_byte(), CB_KBD_INT);
         assert!(!restored.a20_enabled());
         assert_eq!(restored.irq_pending(), kbc.irq_pending());
-        // Queue survives and drains identically.
+        // Queue survives and drains identically: 0x50 is in the buffer, 0x51 shifts
+        // in on a tick after 0x50 is read (serial delivery).
         assert_eq!(restored.port_read(PORT_DATA, 1).unwrap(), 0x50);
+        restored.tick(VClock(1));
+        restored.tick(VClock(2));
         assert_eq!(restored.port_read(PORT_DATA, 1).unwrap(), 0x51);
     }
 
@@ -863,8 +908,13 @@ mod tests {
         let mut kbc = I8042::new();
         kbc.port_write(PORT_DATA, 1, u32::from(KBD_CMD_RESET))
             .unwrap();
+        // ACK is available at once; BAT OK shifts in on a tick after ACK is read.
         assert_eq!(kbc.port_read(PORT_DATA, 1).unwrap(), u32::from(KBD_ACK));
+        kbc.tick(VClock(1));
+        kbc.tick(VClock(2));
         assert_eq!(kbc.port_read(PORT_DATA, 1).unwrap(), u32::from(KBD_BAT_OK));
+        kbc.tick(VClock(3));
+        kbc.tick(VClock(4));
         // Nothing left after the reset handshake.
         assert_eq!(kbc.port_read(PORT_CMD, 1).unwrap() as u8 & ST_OBF, 0);
     }
