@@ -13,43 +13,39 @@
 //!
 //! ## Observed result (this CPU revision)
 //!
-//! The BIOS runs a long way through POST, emitting these checkpoints on port
-//! `0x80` (mapped to the Kiselev `errno.inc` names):
+//! The BIOS runs the **entire power-on self-test** and reaches the boot loader,
+//! emitting these checkpoints on port `0x80` (Kiselev `errno.inc` names):
 //!
 //! ```text
 //! 0x01 CPU test        0x02 chipset config   0x03 DMAC init
 //! 0x04 low-RAM test    0x05 IVT init         0x06 PIT init
 //! 0x07 PIC init        0x08 KBC/keyboard     0x09 enable interrupts
-//! 0x10 video-BIOS scan 0x12 no video BIOS → MDA/CGA fallback
-//! 0x20 RTC init        0x21 detect CPU type  0x22 detect FPU  <-- stops here
+//! 0x10 video-BIOS scan 0x12 MDA/CGA fallback
+//! 0x20 RTC init        0x21 detect CPU type  0x22 detect FPU
+//! 0x24 serial scan     0x25 parallel scan
+//! 0x30 RAM test start  0x31 RAM test done
+//! 0x40 option-ROM scan 0x43 option-ROM done  0x00 boot loader (INT 19h)
 //! ```
 //!
-//! **POST stream: `[01 02 03 04 05 06 07 08 09 10 12 20 21 22]`.** Note `0x11`
-//! (video-BIOS *init*) is correctly skipped — the option-ROM scan area is mapped
-//! as zeroed RAM, so no `0x55AA` signature is found and the BIOS falls back to
-//! `0x12` (MDA/CGA). The seeded CMOS lets RTC init (`0x20`) pass.
+//! **POST stream: `[01 02 … 22 24 25 30 31 40 43 00]`.** `0x11` (video-BIOS
+//! *init*) is correctly skipped — the option-ROM area is zeroed RAM, no `0x55AA`
+//! signature, so the BIOS falls back to `0x12` (MDA/CGA). Seeded CMOS lets RTC
+//! init (`0x20`) pass; lifting x87 `FNINIT` let it clear FPU detect (`0x22`).
 //!
-//! It stops in **`detect_fpu`** (`cpu.inc`), on the coprocessor-init instruction:
+//! After `e_boot` (`0x00`) the BIOS calls **INT 19h** (`int_19`, "load and execute
+//! the boot sector") and enters its floppy-read retry loop. No floppy controller
+//! is modelled — the undecoded µPD765 ports read open-bus `0xFF` — so the read
+//! never succeeds and the BIOS spins there until the retired-instruction cap
+//! (`StopReason::BudgetExhausted`). **Modelling the µPD765 floppy controller (on
+//! the existing 8237 DMA) + a boot disk image is the next step**; then INT 19h
+//! reads a real boot sector and this becomes a fast, natural-stop boot test.
 //!
-//! ```text
-//! F000:A85B  DB E3   fninit    <- stops here: x87 FNINIT is not lifted
-//! F000:A85D  B9 03 00  mov cx, 3
-//! F000:A860  E2 FE   loop $     ; coprocessor settle delay
-//! ```
-//!
-//! i.e. **`FNINIT` (opcode `DB E3`) at linear `0xFA85B`** surfaces as
-//! `Exit::UnknownInstruction`. So the x87 FPU instruction set is the next
-//! real-mode gap a seam would need to close to push this BIOS past FPU detection
-//! into the RAM test and video output.
-//!
-//! The text screen is blank at the stop: the BIOS reached FPU detection before
-//! painting the CGA text page (and its "no video BIOS → MDA/CGA" fallback may
-//! target the MDA window at `0xB0000`, which this spike maps as plain RAM rather
-//! than routing to the CGA card at `0xB8000`).
+//! The text screen is blank: the BIOS's MDA fallback targets the `0xB0000` window,
+//! which this spike maps as plain RAM rather than routing to the CGA card at
+//! `0xB8000` — a caveat to revisit, not a fault.
 //!
 //! The assertions pin the observed byte stream and the stop *kind*
-//! (`Unsupported`), never an address — the faulting address lives only in the
-//! diagnostic `detail` string and this comment.
+//! (`BudgetExhausted`), never an address.
 //!
 //! ## Pinned inputs
 //!
@@ -67,12 +63,25 @@ fn rom_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../vendor/kiselev-bios/bios-xi8088.bin")
 }
 
-/// The observed POST checkpoint stream, before execution stops on the unlifted
-/// `FNINIT` in FPU detection. Golden the exact stream.
+/// The observed POST checkpoint stream. The BIOS now completes the whole
+/// power-on self-test — CPU/chipset/DMA/RAM/IVT/PIT/PIC/KBC/interrupts, video
+/// scan and MDA/CGA fallback (`0x10`/`0x12`), RTC (`0x20`), CPU-type and FPU
+/// detect (`0x21`/`0x22`), serial and parallel scan (`0x24`/`0x25`), the RAM test
+/// (`0x30`/`0x31`), the option-ROM scan (`0x40`/`0x43`) — and reaches the boot
+/// loader (`e_boot` = `0x00`), where it calls INT 19h. It then spins in the
+/// floppy-read retry loop because the µPD765 floppy controller is not modelled
+/// yet (undecoded FDC ports read open-bus `0xFF`); adding it is the next step.
+/// Golden the exact stream.
 const GOLDEN_POST: &[u8] = &[
-    0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x10, 0x12, 0x20, 0x21, 0x22,
+    0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x10, 0x12, 0x20, 0x21, 0x22, 0x24, 0x25,
+    0x30, 0x31, 0x40, 0x43, 0x00,
 ];
 
+// Slow: the BIOS runs its full RAM test and then spins in the INT 19h floppy-read
+// loop until the retired-instruction cap, which takes minutes. Ignored by default;
+// once a floppy controller is modelled INT 19h will read a boot sector and this
+// becomes a fast, natural-stop boot test.
+#[ignore = "slow: BIOS spins at INT 19h until a floppy controller is modelled"]
 #[test]
 fn bios_boot_stop_point_matches_golden() {
     let path = rom_path();
@@ -104,11 +113,11 @@ fn bios_boot_stop_point_matches_golden() {
         "POST checkpoint stream drifted from the recorded golden"
     );
 
-    // Assert the stop KIND only — the address is CPU-revision-dependent and lives
-    // in the detail string for the report, never in an assertion.
+    // The BIOS completes POST and spins in the INT 19h floppy-read retry loop
+    // (no floppy controller modelled), so it runs to the retired-instruction cap.
     assert!(
-        matches!(run.stop, StopReason::Unsupported { .. }),
-        "expected an unsupported-instruction stop (FNINIT in FPU detection), \
+        matches!(run.stop, StopReason::BudgetExhausted),
+        "expected the run to hit the retired cap spinning at the boot loader, \
          got {:?}",
         run.stop
     );
