@@ -13,6 +13,7 @@ name = "assembly"
 version = "0.1.0"
 dependencies = [
  "bus",
+ "chipset",
  "cpu",
  "device",
  "devices",

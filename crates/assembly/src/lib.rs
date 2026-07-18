@@ -3,14 +3,14 @@
 //!
 //! A [`MachineConfig`] is a **pure-data description** of one emulated computer:
 //! its CPU, virtual clock, memory map, device set, drives, loadable images, and
-//! output. It names *what* the machine is made of, never *how* to wire it up —
-//! turning this description into a running machine (a [`bus::Bus`] with a
+//! output. It names *what* the machine is made of, never *how* to wire it up.
+//! Turning this description into a running machine (a [`bus::Bus`] with a
 //! [`bus::DecodeMap`], the [`machine::IrqLine`] / [`machine::DmaWiring`] tables,
-//! and a [`machine::Machine`]) is the job of the assembler, which lands in this
-//! crate later. Keeping the description separate from the assembly step is what
-//! makes a machine reproducible and snapshot-comparable: the whole config derives
-//! [`PartialEq`]/[`Eq`], so two configs — or a config and a golden — can be
-//! compared byte-for-byte.
+//! and a [`machine::Machine`]) is the job of [`assemble`], the single data-driven
+//! realiser in this crate. Keeping the description separate from the assembly step
+//! is what makes a machine reproducible and snapshot-comparable: the whole config
+//! derives [`PartialEq`]/[`Eq`], so two configs — or a config and a golden — can
+//! be compared byte-for-byte.
 //!
 //! ## What is modelled
 //!
@@ -35,6 +35,7 @@
 //! match its geometry. Every failure is a distinct [`ConfigError`], and the
 //! validators are unit-tested here without assembling a machine.
 
+mod assemble;
 mod clock;
 mod cpu;
 mod device;
@@ -46,6 +47,7 @@ mod memory;
 mod output;
 mod validate;
 
+pub use assemble::{assemble, derive_cmos_config, AssembledMachine, AssemblyError};
 pub use clock::ClockConfig;
 pub use cpu::{CpuChip, CpuConfig, ResetSpec, SegmentSeed};
 pub use device::{
