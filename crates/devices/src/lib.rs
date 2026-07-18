@@ -27,5 +27,5 @@ pub use pit8253::Pit8253;
 pub use post_port::PostPort;
 pub use sys_control::SysControl;
 pub use uart16550::Uart16550;
-pub use upd765::Upd765;
+pub use upd765::{Drive, FloppyGeometry, Upd765};
 pub use vga_text::VgaText;
