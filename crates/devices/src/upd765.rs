@@ -46,10 +46,13 @@
 //! | SEEK                           | `0x0F` | yes      | set present cylinder, IRQ6     |
 //! | READ ID                        | `0x4A` | yes      | current C/H/R/N                |
 //! | READ DATA                      | `0x06` | yes      | DMA transfer to memory, IRQ6   |
+//! | WRITE DATA                     | `0x05` | yes      | DMA transfer from memory, IRQ6 |
 //!
 //! Deliberately **not** modelled:
-//! - **WRITE DATA / FORMAT TRACK / WRITE DELETED** and the other write-side
-//!   commands: the boot path only reads. The backing image is read-only here.
+//! - **WRITE DELETED DATA** (`0x09`), **SENSE DRIVE STATUS** (`0x04`, whose ST3
+//!   is the other place the write-protect line surfaces on real hardware), and
+//!   **FORMAT TRACK**: the modelled write path is a plain WRITE DATA. A protected
+//!   disk is still honoured — WRITE DATA to one faults with ST1 not-writable.
 //! - **Non-DMA (PIO) transfer mode**: transfers always go through the 8237. The
 //!   DOR's DMA-enable bit is honoured for interrupt gating but the controller has
 //!   no data-port streaming path.
@@ -57,8 +60,8 @@
 //!   times are accepted and discarded; seeks and reads complete immediately in
 //!   virtual time. There is no index-pulse or rotational-latency model.
 //! - **The multitrack (MT) / skip (SK) modifiers and MFM/FM selection**: the high
-//!   command bits are decoded off but do not change the transfer (every access is
-//!   treated as a normal MFM read within one track).
+//!   command bits are decoded off but do not change the transfer — on both READ
+//!   and WRITE every access is treated as a normal MFM transfer within one track.
 
 use device::{
     AccessDir, Device, DeviceError, DmaMemory, DmaOp, DmaOutcome, DmaRequest, TraceEvent, VClock,
@@ -167,21 +170,40 @@ impl FloppyGeometry {
 }
 
 /// A floppy mounted in one of the controller's four drive positions: its
-/// [`FloppyGeometry`] plus the raw backing image (read-only for the boot path).
+/// [`FloppyGeometry`] plus the raw backing image, and whether the disk carries a
+/// write-protect tab.
 #[derive(Clone, Debug)]
 pub struct Drive {
     /// Physical format of the mounted disk.
     pub geometry: FloppyGeometry,
     /// Raw image bytes; typically [`FloppyGeometry::image_bytes`] long. Reads
-    /// past the end of a short image return zero.
+    /// past the end of a short image return zero; a write past the end grows it.
     pub image: Vec<u8>,
+    /// Whether the disk is write-protected. A WRITE DATA to a protected disk
+    /// terminates abnormally (ST1 not-writable) and never mutates the image.
+    pub write_protected: bool,
 }
 
 impl Drive {
-    /// Mount `image` with the given `geometry`.
+    /// Mount a writable `image` with the given `geometry`.
     #[must_use]
     pub fn new(geometry: FloppyGeometry, image: Vec<u8>) -> Self {
-        Self { geometry, image }
+        Self {
+            geometry,
+            image,
+            write_protected: false,
+        }
+    }
+
+    /// Mount a write-protected `image` with the given `geometry`: reads behave as
+    /// normal, but a WRITE DATA is rejected with the not-writable status.
+    #[must_use]
+    pub fn new_read_only(geometry: FloppyGeometry, image: Vec<u8>) -> Self {
+        Self {
+            geometry,
+            image,
+            write_protected: true,
+        }
     }
 }
 
@@ -200,6 +222,8 @@ const ST0_ABNORMAL: u8 = 0b0100_0000;
 const ST0_NOT_READY: u8 = 1 << 3;
 /// ST1 bit 2 (ND): no data — the requested sector was not found on the track.
 const ST1_NO_DATA: u8 = 1 << 2;
+/// ST1 bit 1 (NW): not writable — a WRITE addressed a write-protected disk.
+const ST1_NOT_WRITABLE: u8 = 1 << 1;
 
 /// Which phase of the command protocol the controller is in.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -220,6 +244,23 @@ enum Phase {
 struct PendingRead {
     drive: u8,
     head: u8,
+    cylinder: u8,
+    sector: u8,
+    sector_size_code: u8,
+}
+
+/// Context captured when a WRITE DATA enters execution, used to commit the DMA
+/// bytes to media and build the result phase once the transfer completes.
+///
+/// Unlike [`PendingRead`] this also carries `param_head` — the head field from
+/// the command parameters — because committing the bytes needs the same
+/// CHS→offset mapping the read path uses, while the result phase reports the
+/// drive-select head.
+#[derive(Copy, Clone, Debug)]
+struct PendingWrite {
+    drive: u8,
+    head: u8,
+    param_head: u8,
     cylinder: u8,
     sector: u8,
     sector_size_code: u8,
@@ -252,10 +293,13 @@ pub struct Upd765 {
     /// Remaining post-reset SENSE INTERRUPT STATUS polls that report the
     /// abnormal / ready-change status a controller reset raises for each drive.
     reset_poll: u8,
-    /// A READ transfer queued for the machine to run through the 8237.
+    /// A transfer queued for the machine to run through the 8237 (READ moves
+    /// device→memory, WRITE moves memory→device).
     pending_request: Option<DmaRequest>,
     /// The READ context whose result phase is completed once the DMA finishes.
     pending_read: Option<PendingRead>,
+    /// The WRITE context whose media commit and result phase follow the DMA.
+    pending_write: Option<PendingWrite>,
     /// Media mounted in each of the four drive positions the DOR can select.
     /// `None` is an empty drive bay; a READ addressed to one is "not ready".
     drives: [Option<Drive>; 4],
@@ -282,6 +326,7 @@ impl Upd765 {
             reset_poll: 0,
             pending_request: None,
             pending_read: None,
+            pending_write: None,
             drives: [None, None, None, None],
             trace: Vec::new(),
             now: VClock::ZERO,
@@ -346,6 +391,7 @@ impl Upd765 {
             0x0F => Some(3), // SEEK: 2 parameters
             0x0A => Some(2), // READ ID: 1 parameter
             0x06 => Some(9), // READ DATA: 8 parameters
+            0x05 => Some(9), // WRITE DATA: 8 parameters
             _ => None,
         }
     }
@@ -363,6 +409,7 @@ impl Upd765 {
             self.result_index = 0;
             self.pending_request = None;
             self.pending_read = None;
+            self.pending_write = None;
             self.reset_poll = 4;
             self.irq = true;
         }
@@ -412,6 +459,7 @@ impl Upd765 {
             0x0F => self.cmd_seek(),
             0x0A => self.cmd_read_id(),
             0x06 => self.cmd_read_data(),
+            0x05 => self.cmd_write_data(),
             _ => self.finish_no_result(),
         }
     }
@@ -490,7 +538,7 @@ impl Upd765 {
 
         // Resolve the addressed drive's mounted media; an empty bay is not ready.
         let Some(media) = self.drives[usize::from(drive)].as_ref() else {
-            self.read_fault(
+            self.command_fault(
                 drive,
                 head,
                 cylinder,
@@ -505,7 +553,7 @@ impl Upd765 {
 
         // An address outside the drive's geometry has no matching data field.
         if !geometry.contains(cylinder, param_head, sector) {
-            self.read_fault(
+            self.command_fault(
                 drive,
                 head,
                 cylinder,
@@ -544,10 +592,10 @@ impl Upd765 {
         self.phase = Phase::Execution;
     }
 
-    /// Terminate a READ DATA abnormally without a DMA transfer: build the
-    /// seven-byte result with the given ST0/ST1 fault bits and raise IRQ6.
+    /// Terminate a READ or WRITE DATA abnormally without a DMA transfer: build
+    /// the seven-byte result with the given ST0/ST1 fault bits and raise IRQ6.
     #[allow(clippy::too_many_arguments)]
-    fn read_fault(
+    fn command_fault(
         &mut self,
         drive: u8,
         head: u8,
@@ -583,6 +631,133 @@ impl Upd765 {
             read.head,
             next_sector,
             read.sector_size_code,
+        ];
+        self.result_index = 0;
+        self.phase = Phase::Result;
+    }
+
+    /// WRITE DATA: request the sectors from `R` to `EOT` on the addressed track be
+    /// pulled out of memory over DMA and committed to the backing image. The
+    /// result phase and IRQ6 follow once the machine reports the transfer
+    /// complete. Mirrors [`Upd765::cmd_read_data`] with the DMA direction
+    /// reversed.
+    fn cmd_write_data(&mut self) {
+        let drive_head = self.command[1];
+        let drive = drive_head & 0b11;
+        let head = (drive_head >> 2) & 1;
+        let cylinder = self.command[2];
+        let param_head = self.command[3];
+        let sector = self.command[4];
+        let sector_size_code = self.command[5];
+        let end_of_track = self.command[6];
+
+        // Resolve the addressed drive's mounted media; an empty bay is not ready.
+        let Some(media) = self.drives[usize::from(drive)].as_ref() else {
+            self.command_fault(
+                drive,
+                head,
+                cylinder,
+                sector,
+                sector_size_code,
+                ST0_NOT_READY,
+                0,
+            );
+            return;
+        };
+        let geometry = media.geometry;
+
+        // A write-protected disk rejects the command before any media is touched.
+        if media.write_protected {
+            self.command_fault(
+                drive,
+                head,
+                cylinder,
+                sector,
+                sector_size_code,
+                0,
+                ST1_NOT_WRITABLE,
+            );
+            return;
+        }
+
+        // An address outside the drive's geometry has no matching data field.
+        if !geometry.contains(cylinder, param_head, sector) {
+            self.command_fault(
+                drive,
+                head,
+                cylinder,
+                sector,
+                sector_size_code,
+                0,
+                ST1_NO_DATA,
+            );
+            return;
+        }
+
+        // Writes span R..=EOT on the one track; the 8237's programmed count clamps
+        // how many of those bytes memory actually supplies.
+        let last = end_of_track.max(sector);
+        let sector_count = u32::from(last.saturating_sub(sector)) + 1;
+
+        self.pending_write = Some(PendingWrite {
+            drive,
+            head,
+            param_head,
+            cylinder,
+            sector,
+            sector_size_code,
+        });
+        self.pending_request = Some(DmaRequest {
+            channel: FLOPPY_DMA_CHANNEL,
+            op: DmaOp::FromMemory {
+                len: sector_count as usize * SECTOR_SIZE,
+            },
+        });
+        self.phase = Phase::Execution;
+    }
+
+    /// Commit a WRITE transfer once the machine has pulled `bytes` out of memory:
+    /// write them into the addressed drive's image, advance the sector, build the
+    /// seven-byte result, and raise IRQ6. Mirrors [`Upd765::complete_read`].
+    ///
+    /// A floppy write is atomic per sector. If terminal count cut the DMA short
+    /// mid-sector, the last partially-supplied sector is still committed whole
+    /// with its tail zero-filled — so the number of sectors written rounds *up*
+    /// (the read path, which reports how many whole sectors reached memory, rounds
+    /// down). A write that runs past a short backing image grows the image,
+    /// mirroring the read path treating past-the-end bytes as zero.
+    fn complete_write(&mut self, bytes: Vec<u8>) {
+        let Some(write) = self.pending_write.take() else {
+            return;
+        };
+        let sectors_written = bytes.len().div_ceil(SECTOR_SIZE);
+        if sectors_written > 0 {
+            if let Some(media) = self.drives[usize::from(write.drive)].as_mut() {
+                let offset =
+                    media
+                        .geometry
+                        .chs_to_offset(write.cylinder, write.param_head, write.sector);
+                let end = offset + sectors_written * SECTOR_SIZE;
+                if media.image.len() < end {
+                    media.image.resize(end, 0);
+                }
+                // Clear the whole sector-aligned region first so a short final
+                // sector's tail is zero, then overlay the supplied bytes.
+                media.image[offset..end].fill(0);
+                media.image[offset..offset + bytes.len()].copy_from_slice(&bytes);
+            }
+        }
+        let next_sector = write.sector + sectors_written as u8;
+        self.st0 = (write.head << 2) | write.drive;
+        self.raise_irq();
+        self.result = vec![
+            self.st0,
+            0,
+            0,
+            write.cylinder,
+            write.head,
+            next_sector,
+            write.sector_size_code,
         ];
         self.result_index = 0;
         self.phase = Phase::Result;
@@ -722,9 +897,7 @@ impl Device for Upd765 {
     fn dma_complete(&mut self, outcome: DmaOutcome) {
         match outcome {
             DmaOutcome::ToMemory { transferred } => self.complete_read(transferred),
-            // This controller only issues read (device→memory) transfers, so a
-            // memory→device outcome never returns to it.
-            DmaOutcome::FromMemory(_) => debug_assert!(false, "fdc issued no read-from-memory"),
+            DmaOutcome::FromMemory(bytes) => self.complete_write(bytes),
         }
     }
 
@@ -799,6 +972,7 @@ impl Device for Upd765 {
         // A snapshot is taken at rest, never mid-transfer.
         self.pending_request = None;
         self.pending_read = None;
+        self.pending_write = None;
         Ok(())
     }
 
@@ -1085,6 +1259,201 @@ mod tests {
             );
         }
         assert!(fdc.irq_pending());
+    }
+
+    /// Program an 8237 channel 2 for a memory→device (read) transfer at physical
+    /// `address`, moving `count + 1` bytes — the direction a floppy WRITE drains.
+    fn program_dma_from_memory(dma: &mut Dma8237, address: u32, count: u16) {
+        let addr = address as u16;
+        dma.port_write(0x0A, 1, 0x06).unwrap(); // mask channel 2
+        dma.port_write(0x0C, 1, 0).unwrap(); // clear flip-flop
+        dma.port_write(0x0B, 1, 0x4A).unwrap(); // mode: ch2, read, single
+        dma.port_write(0x04, 1, u32::from(addr & 0xFF)).unwrap(); // addr low
+        dma.port_write(0x04, 1, u32::from(addr >> 8)).unwrap(); // addr high
+        dma.port_write(0x81, 1, address >> 16).unwrap(); // page (channel 2)
+        dma.port_write(0x05, 1, u32::from(count & 0xFF)).unwrap(); // count low
+        dma.port_write(0x05, 1, u32::from(count >> 8)).unwrap(); // count high
+        dma.port_write(0x0A, 1, 0x02).unwrap(); // unmask channel 2
+    }
+
+    #[test]
+    fn write_data_commits_memory_then_reads_back_identical() {
+        // Drive 0 starts with an empty image, so the write must also grow the
+        // backing buffer to hold the sector.
+        let mut fdc = ready_fdc(Vec::new());
+        let mut dma = Dma8237::new();
+        let mut mem = MockMem::default();
+
+        // A distinctive sector sitting in guest memory at physical 0x07C00.
+        let pattern: Vec<u8> = (0..SECTOR_SIZE).map(|i| (0x5A ^ i) as u8).collect();
+        for (i, &b) in pattern.iter().enumerate() {
+            mem.dma_write(0x07C00 + i as u32, b);
+        }
+        program_dma_from_memory(&mut dma, 0x07C00, (SECTOR_SIZE - 1) as u16);
+
+        // WRITE DATA: drive/head 0, C=0, H=0, R=1, N=2, EOT=1.
+        command(
+            &mut fdc,
+            &[0x05, 0x00, 0x00, 0x00, 0x01, 0x02, 0x01, 0x1B, 0xFF],
+        );
+        assert_eq!(
+            fdc.msr(),
+            MSR_BUSY,
+            "the write execution phase reports BUSY only (host drives no data port)"
+        );
+        assert!(
+            !fdc.irq_pending(),
+            "no interrupt until the transfer completes"
+        );
+
+        let request = fdc
+            .take_dma_request()
+            .expect("a write queues a DMA request");
+        let DmaOp::FromMemory { len } = request.op else {
+            panic!("a floppy write queues a memory -> device transfer");
+        };
+        assert_eq!(len, SECTOR_SIZE, "one sector requested from memory");
+        let mut buf = vec![0u8; len];
+        let n = dma.dma_service_read(request.channel, &mut mem, &mut buf);
+        assert_eq!(n, SECTOR_SIZE, "the whole sector transfers");
+        buf.truncate(n);
+        fdc.dma_complete(DmaOutcome::FromMemory(buf));
+
+        assert!(fdc.irq_pending(), "IRQ6 rises on write completion");
+        let res = results(&mut fdc, 7);
+        assert_eq!(res[0] & 0xC0, 0, "ST0 normal termination");
+        assert_eq!(res[5], 2, "next sector = R + 1");
+
+        // Read the same CHS back through the controller: the bytes committed to
+        // media are byte-identical to what was written from memory.
+        let read_back = read_sector(&mut fdc, 0x00, 0, 0, 1);
+        assert_eq!(
+            read_back, pattern,
+            "the sector reads back exactly as written"
+        );
+    }
+
+    #[test]
+    fn write_to_empty_bay_faults_not_ready() {
+        let mut fdc = ready_fdc(vec![0u8; SECTOR_SIZE]); // drive 0 only
+                                                         // Address drive 1, an empty bay.
+        command(
+            &mut fdc,
+            &[0x05, 0x01, 0x00, 0x00, 0x01, 0x02, 0x01, 0x1B, 0xFF],
+        );
+        assert!(
+            fdc.take_dma_request().is_none(),
+            "an empty bay queues no transfer"
+        );
+        let res = results(&mut fdc, 7);
+        assert_eq!(res[0] & 0x40, 0x40, "ST0 abnormal termination");
+        assert_eq!(res[0] & 0x08, 0x08, "ST0 NR: drive not ready");
+    }
+
+    #[test]
+    fn write_out_of_geometry_faults_no_data() {
+        // 360 KB disk has 40 cylinders; cylinder 40 is one past the last.
+        let mut fdc = ready_drives([
+            Some(Drive::new(FloppyGeometry::DD360, vec![0u8; SECTOR_SIZE])),
+            None,
+            None,
+            None,
+        ]);
+        command(
+            &mut fdc,
+            &[0x05, 0x00, 40, 0x00, 0x01, 0x02, 0x01, 0x1B, 0xFF],
+        );
+        assert!(
+            fdc.take_dma_request().is_none(),
+            "an out-of-geometry write queues no transfer"
+        );
+        let res = results(&mut fdc, 7);
+        assert_eq!(res[0] & 0x40, 0x40, "ST0 abnormal termination");
+        assert_eq!(
+            res[1] & 0x04,
+            0x04,
+            "ST1 ND: no data field past the geometry"
+        );
+    }
+
+    #[test]
+    fn write_to_protected_disk_faults_not_writable() {
+        let original = vec![0xAAu8; SECTOR_SIZE];
+        let mut fdc = ready_drives([
+            Some(Drive::new_read_only(
+                FloppyGeometry::HD1440,
+                original.clone(),
+            )),
+            None,
+            None,
+            None,
+        ]);
+        command(
+            &mut fdc,
+            &[0x05, 0x00, 0x00, 0x00, 0x01, 0x02, 0x01, 0x1B, 0xFF],
+        );
+        assert!(
+            fdc.take_dma_request().is_none(),
+            "a protected disk queues no transfer"
+        );
+        let res = results(&mut fdc, 7);
+        assert_eq!(res[0] & 0x40, 0x40, "ST0 abnormal termination");
+        assert_eq!(res[1] & 0x02, 0x02, "ST1 NW: not writable");
+        assert_eq!(
+            fdc.drives[0].as_ref().map(|d| &d.image),
+            Some(&original),
+            "the image is not mutated"
+        );
+    }
+
+    #[test]
+    fn write_terminal_count_zero_fills_partial_sector() {
+        // Drive 0 starts empty; a short write must grow the image and commit a
+        // whole sector even though only part of it was supplied.
+        let mut fdc = ready_fdc(Vec::new());
+        let mut dma = Dma8237::new();
+        let mut mem = MockMem::default();
+
+        const SUPPLIED: usize = 100;
+        let pattern: Vec<u8> = (0..SUPPLIED).map(|i| (0xC3 ^ i) as u8).collect();
+        for (i, &b) in pattern.iter().enumerate() {
+            mem.dma_write(0x07C00 + i as u32, b);
+        }
+        // Program only 100 bytes (count 99): terminal count cuts the sector short.
+        program_dma_from_memory(&mut dma, 0x07C00, (SUPPLIED - 1) as u16);
+
+        command(
+            &mut fdc,
+            &[0x05, 0x00, 0x00, 0x00, 0x01, 0x02, 0x01, 0x1B, 0xFF],
+        );
+        let request = fdc
+            .take_dma_request()
+            .expect("a write queues a DMA request");
+        let DmaOp::FromMemory { len } = request.op else {
+            panic!("a floppy write queues a memory -> device transfer");
+        };
+        let mut buf = vec![0u8; len];
+        let n = dma.dma_service_read(request.channel, &mut mem, &mut buf);
+        assert_eq!(n, SUPPLIED, "terminal count clamps the transfer");
+        buf.truncate(n);
+        fdc.dma_complete(DmaOutcome::FromMemory(buf));
+
+        let res = results(&mut fdc, 7);
+        assert_eq!(
+            res[5], 2,
+            "one whole sector committed (ceil), so next sector = R + 1"
+        );
+        let image = &fdc.drives[0].as_ref().unwrap().image;
+        assert_eq!(
+            image.len(),
+            SECTOR_SIZE,
+            "the short image grew to hold the sector"
+        );
+        assert_eq!(&image[..SUPPLIED], &pattern[..], "supplied bytes committed");
+        assert!(
+            image[SUPPLIED..SECTOR_SIZE].iter().all(|&b| b == 0),
+            "the tail of the partial sector is zero-filled"
+        );
     }
 
     #[test]
