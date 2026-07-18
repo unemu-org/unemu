@@ -60,7 +60,9 @@
 //!   command bits are decoded off but do not change the transfer (every access is
 //!   treated as a normal MFM read within one track).
 
-use device::{AccessDir, Device, DeviceError, DmaMemory, DmaRequest, TraceEvent, VClock};
+use device::{
+    AccessDir, Device, DeviceError, DmaMemory, DmaOp, DmaOutcome, DmaRequest, TraceEvent, VClock,
+};
 
 /// Stable device name reported by [`Device::name`].
 const NAME: &str = "upd765-fdc";
@@ -537,7 +539,7 @@ impl Upd765 {
         });
         self.pending_request = Some(DmaRequest {
             channel: FLOPPY_DMA_CHANNEL,
-            data,
+            op: DmaOp::ToMemory(data),
         });
         self.phase = Phase::Execution;
     }
@@ -717,8 +719,13 @@ impl Device for Upd765 {
         self.pending_request.take()
     }
 
-    fn dma_complete(&mut self, transferred: usize) {
-        self.complete_read(transferred);
+    fn dma_complete(&mut self, outcome: DmaOutcome) {
+        match outcome {
+            DmaOutcome::ToMemory { transferred } => self.complete_read(transferred),
+            // This controller only issues read (device→memory) transfers, so a
+            // memory→device outcome never returns to it.
+            DmaOutcome::FromMemory(_) => debug_assert!(false, "fdc issued no read-from-memory"),
+        }
     }
 
     fn reset(&mut self) {
@@ -1015,13 +1022,19 @@ mod tests {
 
         let request = fdc.take_dma_request().expect("a DMA request is queued");
         assert_eq!(request.channel, FLOPPY_DMA_CHANNEL);
-        assert_eq!(request.data, image, "the queued bytes are sector 0");
+        assert_eq!(
+            request.op,
+            DmaOp::ToMemory(image.clone()),
+            "the queued bytes are sector 0, moved device -> memory"
+        );
         assert!(
             fdc.take_dma_request().is_none(),
             "the request is taken once"
         );
 
-        fdc.dma_complete(SECTOR_SIZE);
+        fdc.dma_complete(DmaOutcome::ToMemory {
+            transferred: SECTOR_SIZE,
+        });
         assert!(fdc.irq_pending(), "IRQ6 rises on transfer completion");
         let res = results(&mut fdc, 7);
         assert_eq!(res[0] & 0xC0, 0, "ST0 normal termination");
@@ -1057,9 +1070,12 @@ mod tests {
             &[0x06, 0x00, 0x00, 0x00, 0x01, 0x02, 0x01, 0x1B, 0xFF],
         );
         let request = fdc.take_dma_request().expect("queued request");
-        let n = dma.dma_service_write(request.channel, &mut mem, &request.data);
+        let DmaOp::ToMemory(data) = request.op else {
+            panic!("a floppy read queues a device -> memory transfer");
+        };
+        let n = dma.dma_service_write(request.channel, &mut mem, &data);
         assert_eq!(n, SECTOR_SIZE, "the whole sector transfers");
-        fdc.dma_complete(n);
+        fdc.dma_complete(DmaOutcome::ToMemory { transferred: n });
 
         for (i, &expected) in image.iter().enumerate() {
             assert_eq!(
@@ -1161,11 +1177,16 @@ mod tests {
     /// result phase, and return the sector bytes the controller pulled.
     fn read_sector(fdc: &mut Upd765, drive_head: u8, c: u8, h: u8, r: u8) -> Vec<u8> {
         command(fdc, &[0x06, drive_head, c, h, r, 0x02, r, 0x1B, 0xFF]);
-        let data = fdc
+        let DmaOp::ToMemory(data) = fdc
             .take_dma_request()
             .expect("a valid read queues a DMA request")
-            .data;
-        fdc.dma_complete(data.len());
+            .op
+        else {
+            panic!("a floppy read queues a device -> memory transfer");
+        };
+        fdc.dma_complete(DmaOutcome::ToMemory {
+            transferred: data.len(),
+        });
         let _ = results(fdc, 7);
         data
     }

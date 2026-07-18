@@ -101,6 +101,7 @@ dependencies = [
  "bus",
  "cpu",
  "device",
+ "devices",
  "testkit",
  "thiserror",
 ]

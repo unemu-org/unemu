@@ -492,6 +492,7 @@ mod tests {
     use crate::image::LoadImage;
     use crate::memory::{MemoryConfig, MmioWindow, RamRegion};
     use crate::output::OutputConfig;
+    use device::{DmaOp, DmaOutcome};
 
     const SPACE: u64 = 0x10_0000;
     const TEXT_BASE: u64 = 0xB_8000;
@@ -902,12 +903,17 @@ mod tests {
         let request = fdc
             .take_dma_request()
             .expect("an in-geometry read queues a DMA transfer");
+        let DmaOp::ToMemory(data) = request.op else {
+            panic!("a floppy read queues a device -> memory transfer");
+        };
         assert_eq!(
-            &request.data[..],
+            &data[..],
             &image[..SECTOR],
             "the queued bytes are the configured drive's sector 0"
         );
-        fdc.dma_complete(SECTOR);
+        fdc.dma_complete(DmaOutcome::ToMemory {
+            transferred: SECTOR,
+        });
         let st0 = fdc.port_read(DATA, 1).unwrap() as u8;
         assert_eq!(st0 & 0xC0, 0, "normal termination for an in-geometry read");
         for _ in 0..6 {

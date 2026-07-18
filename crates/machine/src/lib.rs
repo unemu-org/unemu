@@ -48,7 +48,7 @@
 
 use bus::{Bus, BusError};
 use cpu::{Cpu, CpuError, CpuStop};
-use device::{DmaMemory, InterruptController, VClock};
+use device::{DmaMemory, DmaOp, DmaOutcome, InterruptController, VClock};
 use thiserror::Error;
 
 /// Retired guest instructions per PIT input clock (§6).
@@ -405,15 +405,22 @@ impl<C: Cpu> Machine<C> {
     }
 
     /// Run each wired bus master's pending DMA transfer through its DMA
-    /// controller (§7.7), the cross-device path a floppy READ needs.
+    /// controller (§7.7), the cross-device path a floppy transfer needs.
     ///
-    /// The requester (the floppy controller) hands over the sector bytes it read
-    /// from its backing image; the machine streams them through the controller's
-    /// channel — writing each byte to guest RAM via the `note_write` path (§4.3),
-    /// advancing the channel's address and count — then reports the byte count
-    /// back so the requester finishes its result phase and raises its interrupt.
-    /// This is the only place a device's bytes reach memory without the device
-    /// holding a memory reference: the requester never sees an address, the
+    /// The seam is symmetric. For a device→memory ([`DmaOp::ToMemory`]) request —
+    /// what a floppy READ queues — the requester hands over the bytes it read from
+    /// its backing image; the machine streams them through the controller's
+    /// channel, writing each to guest RAM via the `note_write` path (§4.3), and
+    /// reports the byte count back. For a memory→device ([`DmaOp::FromMemory`])
+    /// request — what a floppy WRITE queues — the machine reads the requested
+    /// length out of guest RAM through the same channel, truncates the buffer to
+    /// what the channel actually transferred (terminal count may cut it short, and
+    /// the requester must never see uninitialised tail bytes), and hands the bytes
+    /// back. Either way the controller advances the channel's address and count,
+    /// then the requester finishes its result phase and raises its interrupt.
+    ///
+    /// This is the only place a device's bytes cross to or from memory without the
+    /// device holding a memory reference: the requester never sees an address, the
     /// controller never sees the disk, and the SMC-safe seam is preserved.
     fn service_dma(&mut self) {
         for i in 0..self.dma_wirings.len() {
@@ -426,13 +433,28 @@ impl<C: Cpu> Machine<C> {
                 continue;
             };
             let mut mem = CpuDmaMemory { cpu: &mut self.cpu };
-            let transferred = self
-                .bus
-                .device_mut(wiring.controller)
-                .map(|ctrl| ctrl.dma_service_write(request.channel, &mut mem, &request.data))
-                .unwrap_or(0);
+            let outcome = match request.op {
+                DmaOp::ToMemory(data) => {
+                    let transferred = self
+                        .bus
+                        .device_mut(wiring.controller)
+                        .map(|ctrl| ctrl.dma_service_write(request.channel, &mut mem, &data))
+                        .unwrap_or(0);
+                    DmaOutcome::ToMemory { transferred }
+                }
+                DmaOp::FromMemory { len } => {
+                    let mut buf = vec![0u8; len];
+                    let transferred = self
+                        .bus
+                        .device_mut(wiring.controller)
+                        .map(|ctrl| ctrl.dma_service_read(request.channel, &mut mem, &mut buf))
+                        .unwrap_or(0);
+                    buf.truncate(transferred);
+                    DmaOutcome::FromMemory(buf)
+                }
+            };
             if let Some(dev) = self.bus.device_mut(wiring.requester) {
-                dev.dma_complete(transferred);
+                dev.dma_complete(outcome);
             }
         }
     }
@@ -461,7 +483,7 @@ impl<C: Cpu> Machine<C> {
 mod tests {
     use super::*;
     use bus::{DecodeMap, PortRange};
-    use device::{Device, DeviceError, TraceEvent};
+    use device::{Device, DeviceError, DmaRequest, TraceEvent};
     use testkit::MockCpu;
 
     /// A minimal capture device: records port writes, so the loop can be tested
@@ -735,5 +757,225 @@ mod tests {
         // private counter, so assert the CPU received the matching injections.
         assert_eq!(machine.cpu().injected.len(), 5);
         assert!(machine.cpu().injected.iter().all(|&v| v == 0x08));
+    }
+
+    /// A minimal CPU backend with a flat guest-memory buffer, so the DMA seam can
+    /// be exercised end to end without x86jit. The DMA path reads and writes guest
+    /// RAM through the `guest_dma_*` methods, which back onto this buffer.
+    struct MemCpu {
+        mem: Vec<u8>,
+    }
+
+    impl MemCpu {
+        fn new(size: usize) -> Self {
+            Self { mem: vec![0; size] }
+        }
+
+        fn seed(&mut self, addr: u32, bytes: &[u8]) {
+            let at = addr as usize;
+            self.mem[at..at + bytes.len()].copy_from_slice(bytes);
+        }
+    }
+
+    impl Cpu for MemCpu {
+        fn run(&mut self, _budget: Option<u64>) -> Result<CpuStop, CpuError> {
+            Ok(CpuStop::Halt)
+        }
+        fn reg(&self, _reg: cpu::CpuReg) -> u64 {
+            0
+        }
+        fn set_reg(&mut self, _reg: cpu::CpuReg, _value: u64) {}
+        fn complete_port_in(&mut self, _value: u64) {}
+        fn complete_mmio_read(&mut self, _value: u64) {}
+        fn complete_mmio_write(&mut self) {}
+        fn guest_dma_read(&self, addr: u32) -> u8 {
+            self.mem[addr as usize]
+        }
+        fn guest_dma_write(&mut self, addr: u32, value: u8) {
+            self.mem[addr as usize] = value;
+        }
+        fn retired(&self) -> u64 {
+            0
+        }
+    }
+
+    /// A bus master that queues a single memory→device transfer and captures the
+    /// outcome the machine hands back, so a test can assert the seam delivered the
+    /// right bytes without inspecting a concrete controller.
+    #[derive(Default)]
+    struct FromMemoryRequester {
+        pending: Option<DmaRequest>,
+        received: Option<DmaOutcome>,
+    }
+
+    impl Device for FromMemoryRequester {
+        fn name(&self) -> &'static str {
+            "from-memory-requester"
+        }
+        fn port_read(&mut self, _port: u16, _size: u8) -> Result<u32, DeviceError> {
+            Ok(0)
+        }
+        fn port_write(&mut self, _port: u16, _size: u8, _value: u32) -> Result<(), DeviceError> {
+            Ok(())
+        }
+        fn mmio_read(&mut self, addr: u64, _size: u8) -> Result<u64, DeviceError> {
+            Err(DeviceError::UnmappedRegister {
+                kind: "mmio",
+                offset: addr,
+            })
+        }
+        fn mmio_write(&mut self, addr: u64, _size: u8, _value: u64) -> Result<(), DeviceError> {
+            Err(DeviceError::UnmappedRegister {
+                kind: "mmio",
+                offset: addr,
+            })
+        }
+        fn tick(&mut self, _now: VClock) {}
+        fn irq_pending(&self) -> bool {
+            false
+        }
+        fn irq_vector(&self) -> Option<u8> {
+            None
+        }
+        fn reset(&mut self) {}
+        fn save(&self) -> Vec<u8> {
+            Vec::new()
+        }
+        fn restore(&mut self, _snapshot: &[u8]) -> Result<(), DeviceError> {
+            Ok(())
+        }
+        fn take_dma_request(&mut self) -> Option<DmaRequest> {
+            self.pending.take()
+        }
+        fn dma_complete(&mut self, outcome: DmaOutcome) {
+            self.received = Some(outcome);
+        }
+        fn as_any_mut(&mut self) -> Option<&mut dyn core::any::Any> {
+            Some(self)
+        }
+    }
+
+    /// DMA channel the mock requester runs on (the PC floppy channel).
+    const READ_CHANNEL: u8 = 2;
+
+    /// Build a real 8237 programmed for a memory→device (read) transfer on
+    /// channel 2 at physical `address`, transferring `count + 1` bytes.
+    fn programmed_read_dma(address: u16, count: u16) -> devices::Dma8237 {
+        let mut dma = devices::Dma8237::new();
+        dma.port_write(0x0A, 1, 0x06).unwrap(); // mask channel 2
+        dma.port_write(0x0C, 1, 0).unwrap(); // clear flip-flop
+        dma.port_write(0x0B, 1, 0x4A).unwrap(); // mode: ch2, read, single
+        dma.port_write(0x04, 1, u32::from(address & 0xFF)).unwrap(); // addr low
+        dma.port_write(0x04, 1, u32::from(address >> 8)).unwrap(); // addr high
+        dma.port_write(0x81, 1, 0x00).unwrap(); // page latch (channel 2)
+        dma.port_write(0x05, 1, u32::from(count & 0xFF)).unwrap(); // count low
+        dma.port_write(0x05, 1, u32::from(count >> 8)).unwrap(); // count high
+        dma.port_write(0x0A, 1, 0x02).unwrap(); // unmask channel 2
+        dma
+    }
+
+    /// Assemble a machine whose bus holds the mock requester (index 0) and the
+    /// programmed 8237 (index 1), wired together, over `cpu`'s guest memory.
+    fn dma_machine(
+        cpu: MemCpu,
+        requester: FromMemoryRequester,
+        dma: devices::Dma8237,
+    ) -> Machine<MemCpu> {
+        let devices: Vec<Box<dyn Device>> = vec![Box::new(requester), Box::new(dma)];
+        let map = DecodeMap {
+            ports: Vec::new(),
+            mmio: Vec::new(),
+        };
+        Machine::new(
+            cpu,
+            Bus::new(devices, map),
+            Box::new(NoIc),
+            None,
+            Vec::new(),
+            Some(1),
+        )
+        .with_dma_wirings(vec![DmaWiring {
+            requester: 0,
+            controller: 1,
+        }])
+    }
+
+    /// Read the outcome the requester captured after a serviced transfer.
+    fn captured_outcome(machine: &mut Machine<MemCpu>) -> DmaOutcome {
+        machine
+            .bus
+            .device_mut(0)
+            .and_then(|dev| dev.as_any_mut())
+            .and_then(|any| any.downcast_mut::<FromMemoryRequester>())
+            .and_then(|req| req.received.take())
+            .expect("the requester received a completion")
+    }
+
+    #[test]
+    fn service_dma_from_memory_delivers_read_bytes() {
+        const ADDRESS: u16 = 0x0010;
+        let pattern: Vec<u8> = (0..8u8).map(|i| 0xB0 ^ i).collect();
+
+        let mut cpu = MemCpu::new(0x1000);
+        cpu.seed(u32::from(ADDRESS), &pattern);
+
+        // count+1 == pattern.len() so the whole request transfers.
+        let dma = programmed_read_dma(ADDRESS, (pattern.len() - 1) as u16);
+        let requester = FromMemoryRequester {
+            pending: Some(DmaRequest {
+                channel: READ_CHANNEL,
+                op: DmaOp::FromMemory { len: pattern.len() },
+            }),
+            received: None,
+        };
+
+        let mut machine = dma_machine(cpu, requester, dma);
+        machine.service_dma();
+
+        match captured_outcome(&mut machine) {
+            DmaOutcome::FromMemory(bytes) => {
+                assert_eq!(
+                    bytes, pattern,
+                    "the requester gets exactly the seeded bytes"
+                );
+            }
+            other => panic!("expected a FromMemory outcome, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn service_dma_from_memory_truncates_at_terminal_count() {
+        const ADDRESS: u16 = 0x0010;
+        let pattern: Vec<u8> = (0..8u8).map(|i| 0xC0 ^ i).collect();
+        // The requester asks for 8 bytes but the channel is programmed for only 4
+        // (count 3 -> 4 bytes), so terminal count cuts the transfer short.
+        const REQUESTED: usize = 8;
+        const AVAILABLE: usize = 4;
+
+        let mut cpu = MemCpu::new(0x1000);
+        cpu.seed(u32::from(ADDRESS), &pattern);
+
+        let dma = programmed_read_dma(ADDRESS, (AVAILABLE - 1) as u16);
+        let requester = FromMemoryRequester {
+            pending: Some(DmaRequest {
+                channel: READ_CHANNEL,
+                op: DmaOp::FromMemory { len: REQUESTED },
+            }),
+            received: None,
+        };
+
+        let mut machine = dma_machine(cpu, requester, dma);
+        machine.service_dma();
+
+        match captured_outcome(&mut machine) {
+            DmaOutcome::FromMemory(bytes) => {
+                assert_eq!(
+                    bytes,
+                    pattern[..AVAILABLE],
+                    "the buffer is truncated to what the channel transferred; no uninitialised tail"
+                );
+            }
+            other => panic!("expected a FromMemory outcome, got {other:?}"),
+        }
     }
 }

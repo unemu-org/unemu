@@ -19,7 +19,7 @@ pub mod upd765;
 pub mod vga_text;
 
 pub use cmos_rtc::{CmosConfig, CmosRtc};
-pub use device::{DmaMemory, DmaRequest};
+pub use device::{DmaMemory, DmaOp, DmaOutcome, DmaRequest};
 pub use dma8237::{Dma8237, TransferType};
 pub use i8042::I8042;
 pub use pic8259::Pic8259;
