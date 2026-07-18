@@ -19,21 +19,28 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
 
 ## Recently landed
 
-- **Real FreeDOS boots on the machine** (`task-20`–`task-22`): the unmodified
-  Kiselev Xi8088 BIOS completes its **entire** POST, renders its full
-  hardware-detection screen via INT 10h (80C88, seeded RTC, MDA, 1.44 MB floppy,
-  640 KiB RAM — all detected correctly), and its INT 19h loads and jumps to a real
-  **FreeDOS** 8086 floppy image over the modelled **µPD765 floppy controller +
-  8237 DMA** (`Booting OS...`). The whole BIOS + machine stack works under real
-  firmware. FreeDOS itself loads but spins early in its boot chain
-  (`BudgetExhausted`, not an unlifted instruction) before a kernel banner — the
-  remaining work is that spin (`task-25`). Along the way: x87 `FNINIT` lifted
-  (`task-24`, cleared BIOS FPU detect), the µPD765 + a machine-orchestrated
-  DMA-bus-master seam (`Cpu::guest_dma_write` → `note_write`, SMC-safe), ROM
-  mapping at `0xF8000`, and the POST/observability plumbing. BIOS console output
-  lands in the MDA window at `0xB0000` (the BIOS's no-video-BIOS path selects MDA);
-  `BiosRun.mda` reads it back. Workspace: **223 tests** (+3 slow boot goldens
-  `#[ignore]`).
+- **🏆 FreeDOS boots to a shell prompt — the north star** (`task-20`–`task-25`):
+  the unmodified Kiselev Xi8088 BIOS completes its entire POST, renders its
+  hardware-detection screen via INT 10h, and its INT 19h loads a real **FreeDOS**
+  8086 floppy over the modelled **µPD765 floppy controller + 8237 DMA**;
+  `KERNEL.SYS` loads and inits and hands off to `COMMAND.COM` (FreeCOM), which
+  reaches its prompt:
+  ```text
+  FreeDOS kernel 2044 (build 2044 OEM:0xfd) [compiled Jan 25 2026]
+  FreeCom version 0.86 - WATCOMC - XMS_Swap
+  Current date is Tue 01-01-1980
+  Enter new date (mm-dd-[cc]yy):
+  ```
+  It then idles headless in the INT 16h keyboard wait. The whole stack runs under
+  real firmware + a real OS. Key steps: x87 `FNINIT` lifted (`task-24`, cleared
+  BIOS FPU detect); the µPD765 + a machine-orchestrated DMA-bus-master seam
+  (`Cpu::guest_dma_write` → `note_write`, SMC-safe, `task-21`); BIOS ROM at
+  `0xF8000` (`task-20`); and the final fix (`task-25`) — the BIOS runs its console
+  in **MDA** mode, so its INT 10h read-char busy-waits on the mono status port
+  `0x3BA`, which the machine only decoded for CGA (`0x3DA`); aliasing the mono
+  ports (`0x3B4/0x3B5/0x3BA`) onto the text card cleared the spin. Console output
+  lands in the MDA window at `0xB0000` (`BiosRun.mda`). Workspace: **226 tests**
+  (+3 slow boot goldens `#[ignore]`; the FreeDOS one reaches the prompt in ~9 min).
 - **The real Kiselev Xi8088 BIOS boots and runs 14 POST checkpoints** (`task-20`,
   folds in ROM mapping `task-12` + POST-port `task-15`): the unmodified BIOS ROM,
   mapped read-only at `0xF8000`, far-jumps from the reset vector and drives our

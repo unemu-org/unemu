@@ -1,9 +1,10 @@
 ---
 id: TASK-25
 title: M7 — Diagnose and fix the FreeDOS early-boot spin
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-07-18 07:48'
+updated_date: '2026-07-18 09:06'
 labels:
   - dos
   - devices
@@ -24,3 +25,9 @@ FreeDOS boots via the BIOS (INT 19h loads + jumps to the FreeDOS boot sector) bu
 - [ ] #2 Root cause fixed (FDC read pattern / interrupt delivery / BIOS service — whichever it is)
 - [ ] #3 FreeDOS prints its kernel banner; ideally reaches the A: command prompt (golden)
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Done 2026-07-18. Spin was BIOS INT 10h AH=08h busy-waiting on MDA mono status 0x3BA (we decoded only CGA 0x3DA); open-bus 0xFF stuck the retrace bit. Fix: alias mono ports 0x3B4/5/BA onto VgaText. FreeDOS boots to the FreeCOM shell prompt (kernel 2044 + FreeCom 0.86, date prompt), then idles in INT 16h keyboard wait headless. FDC/DMA/INT13h already worked. No x86jit change.
+<!-- SECTION:NOTES:END -->
