@@ -5,15 +5,12 @@
 //! The end-to-end path is CLI → Machine → Bus → Device → serial out.
 //!
 //! Usage:
-//! - `unemupc98` — the built-in Long64 "hello" serial demo on the
-//!   [`SerialChipset`].
-//! - `unemupc98 --boot` — the built-in real-mode timer-interrupt demo on the
-//!   [`AtChipset`] (prints five `.` markers via IRQ0).
+//! - `unemupc98` — the built-in Long64 "hello" serial demo (a lone 16550 UART).
+//! - `unemupc98 --boot` — the built-in real-mode timer-interrupt demo on the PC/AT
+//!   machine shape (prints five `.` markers via IRQ0).
 //! - `unemupc98 <BLOB>` — map a flat Long64 binary at the entry point and run it.
 //!
 //! [`Machine`]: machine::Machine
-//! [`SerialChipset`]: chipset::SerialChipset
-//! [`AtChipset`]: chipset::AtChipset
 
 use std::io::Write;
 

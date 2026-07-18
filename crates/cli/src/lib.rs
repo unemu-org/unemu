@@ -6,9 +6,6 @@
 //! declarative [`assembly::MachineConfig`] from a preset, realises it with
 //! [`assembly::assemble`], and drives the resulting machine — addressing devices
 //! by role through the assembler's device-index map, never a hardcoded bus index.
-//! The former hand-assembled paths are kept alongside as `run_*_legacy` twins, the
-//! A/B baseline each config path is proved byte-for-byte equal to (they are
-//! removed once the legacy chipset layer is retired).
 //!
 //! The lone exception is [`run_serial`]: the Long64 serial skeleton is one 16550
 //! UART assembled inline (trait-free), not through a config preset — a declarative
@@ -23,28 +20,19 @@ use assembly::{
     assemble, AssembledMachine, ConsoleProbe, DeviceId, InjectionSchedule, KeyboardStimulus,
     MachineConfig, RunPolicy, StopCondition,
 };
-use bus::{Bus, DecodeMap, MmioRange, PortRange};
-use chipset::{
-    AtChipset, CascadedPic, Chipset, NoInterruptController, AT_CMOS_RTC_INDEX, AT_I8042_INDEX,
-    AT_UART_INDEX, AT_VGA_INDEX, CMOS_DATA_PORT, CMOS_INDEX_PORT, COM1_BASE, COM1_TOP, KBD_CMD,
-    KBD_DATA, PIC_COMMAND, PIC_DATA, PIT_BASE, PIT_TOP, SLAVE_PIC_COMMAND, SLAVE_PIC_DATA,
-};
-use cpu::x86jit_backend::RealSegments;
+use bus::{Bus, DecodeMap, PortRange};
+use chipset::{NoInterruptController, COM1_BASE, COM1_TOP};
 use cpu::{Cpu, CpuError, CpuReg, X86JitCpu};
 use device::{AccessDir, Device, TraceEvent};
 use devices::post_port::POST_PORT;
-use devices::sys_control::SYS_CONTROL_PORT;
 use devices::upd765::FLOPPY_IMAGE_BYTES;
 use devices::vga_text::{
-    CGA_MODE_CONTROL_PORT, CGA_STATUS_PORT, COLS, CRTC_CURSOR_HIGH_INDEX, CRTC_CURSOR_LOW_INDEX,
-    CRTC_CURSOR_START_INDEX, CRTC_DATA_PORT, CRTC_INDEX_PORT, CRTC_START_HIGH_INDEX,
-    CRTC_START_LOW_INDEX, MDA_CRTC_DATA_PORT, MDA_CRTC_INDEX_PORT, MDA_STATUS_PORT, ROWS,
-    TEXT_BUFFER_BASE, TEXT_BUFFER_LEN,
+    COLS, CRTC_CURSOR_HIGH_INDEX, CRTC_CURSOR_LOW_INDEX, CRTC_CURSOR_START_INDEX, CRTC_DATA_PORT,
+    CRTC_INDEX_PORT, CRTC_START_HIGH_INDEX, CRTC_START_LOW_INDEX, ROWS, TEXT_BUFFER_BASE,
+    TEXT_BUFFER_LEN,
 };
-use devices::{
-    CmosConfig, CmosRtc, Dma8237, Pit8253, PostPort, SysControl, Uart16550, Upd765, VgaText, I8042,
-};
-use machine::{DmaWiring, IrqLine, Machine, MachineError, RunOutcome};
+use devices::{Uart16550, I8042};
+use machine::{Machine, MachineError, RunOutcome};
 use std::collections::HashMap;
 use video::{render_text_mode, CaptureFrameSink, Frame, FrameSink, TextGrid, TextModeState};
 
@@ -218,7 +206,7 @@ pub const RTC_MARKER: u8 = b'R';
 
 /// Virtual clocks per RTC second for the demo. The real ratio is over a million
 /// clocks; a bounded headless run never advances that far, so the RTC is built
-/// with this small ratio (via [`AtChipset::with_rtc_timing`]) and the
+/// with this small ratio (the `at_rtc` preset's fast-tick timing) and the
 /// update-ended interrupt fires a few dozen boundaries into the `hlt` loop. It is
 /// still virtual time (retired-instruction-derived), so the run is deterministic.
 pub const RTC_SECOND_TICKS: u64 = 64;
@@ -436,117 +424,6 @@ fn classify_test386_stop(rip: u64, result: Result<RunOutcome, MachineError>) -> 
     }
 }
 
-/// The legacy hand-assembled test386 runner, kept as the A/B baseline the config
-/// path is proved against (deleted with the other legacy paths in a later task).
-pub fn run_test386_legacy(blob: &[u8]) -> Test386Run {
-    // Minimal device set: POST port (index 0) + COM1 UART (index 1). No PIC and
-    // no IRQ wiring — the guest masks interrupts, so an undeliverable IRQ would
-    // stall termination.
-    let devices: Vec<Box<dyn device::Device>> = vec![
-        Box::new(PostPort::new()),
-        Box::new(Uart16550::new(COM1_BASE)),
-    ];
-    let map = DecodeMap {
-        ports: vec![
-            PortRange {
-                ports: POST_PORT..=POST_PORT,
-                device: 0,
-            },
-            PortRange {
-                ports: COM1_BASE..=COM1_TOP,
-                device: 1,
-            },
-        ],
-        mmio: Vec::new(),
-    };
-    let bus = Bus::new(devices, map);
-
-    // Load the image at 0xF0000 (RIP left at 0), then point execution at the
-    // reset vector so the far jump there enters the POST sequence.
-    let cpu = X86JitCpu::new_real16(
-        TEST386_SPACE,
-        TEST386_LOAD_SEG,
-        0x0000,
-        blob,
-        RealSegments::flat(TEST386_LOAD_SEG),
-    );
-    let mut cpu = match cpu {
-        Ok(cpu) => cpu,
-        Err(e) => {
-            return Test386Run {
-                post: Vec::new(),
-                stop: StopReason::Unmapped {
-                    detail: format!("building cpu: {e}"),
-                },
-            }
-        }
-    };
-    cpu.set_reg(CpuReg::Rip, u64::from(TEST386_RESET_IP));
-
-    // No interrupt source is wired, so `None` idle limit terminates on the first
-    // halt; the retired cap guards against a spin that never halts.
-    let mut machine = Machine::new(
-        cpu,
-        bus,
-        Box::new(NoInterruptController),
-        TEST386_QUANTUM,
-        Vec::new(),
-        None,
-    );
-
-    let result = machine.run_bounded(Some(TEST386_MAX_RETIRED));
-    // Record where execution stopped for the human-readable report (never an
-    // assertion target — stop addresses shift with the assembler toolchain).
-    let rip = machine.cpu().reg(CpuReg::Rip);
-    let stop = match result {
-        Ok(RunOutcome::Halted) => StopReason::Halt,
-        Ok(RunOutcome::RetiredCapReached) => StopReason::BudgetExhausted,
-        Err(MachineError::Cpu(CpuError::UnsupportedInstruction { addr })) => {
-            StopReason::Unsupported {
-                detail: format!("unsupported instruction at {addr:#x} (rip {rip:#x})"),
-            }
-        }
-        Err(MachineError::Cpu(CpuError::Unmapped { addr })) => StopReason::Unmapped {
-            detail: format!("unmapped guest access at {addr:#x} (rip {rip:#x})"),
-        },
-        Err(MachineError::Cpu(CpuError::Memory(msg))) => StopReason::Unmapped {
-            detail: format!("guest memory error: {msg} (rip {rip:#x})"),
-        },
-        Err(MachineError::Bus(e)) => StopReason::Unmapped {
-            detail: format!("{e} (rip {rip:#x})"),
-        },
-        Err(MachineError::Exception { vector }) => StopReason::Exception { vector },
-    };
-
-    // Drain the POST checkpoint bytes from the tracing seam regardless of how the
-    // run ended — the whole point is to see progress even on an error stop.
-    let post = drain_post(&mut machine, 0);
-    Test386Run { post, stop }
-}
-
-/// Reconstruct the POST checkpoint byte stream from the POST port's trace (§3.2
-/// tracing seam). Each guest write to `0x190` surfaces as a `TraceEvent::Port`
-/// write; the machine core sees only `&dyn Device`, never a concrete downcast.
-fn drain_post(machine: &mut Machine<X86JitCpu>, post_index: usize) -> Vec<u8> {
-    let mut out = Vec::new();
-    if let Some(dev) = machine.bus_mut().device_mut(post_index) {
-        for event in dev.take_trace() {
-            if let TraceEvent::Port {
-                port,
-                dir: AccessDir::Write,
-                value,
-                ..
-            } = event
-            {
-                if port == POST_PORT {
-                    out.push(value as u8);
-                }
-            }
-        }
-    }
-    out
-}
-
 // ---------------------------------------------------------------------------
 // Full BIOS machine: load a real 32 KiB PC BIOS ROM and boot it (§3.1, §5, §9).
 // ---------------------------------------------------------------------------
@@ -580,21 +457,6 @@ pub const BIOS_MAX_RETIRED: u64 = 2_000_000_000;
 /// declares the interrupt source quiescent and stops. Large so a BIOS that halts
 /// waiting for a slow timer tick is not cut off mid-POST.
 pub const BIOS_IDLE_LIMIT: u64 = 1_000_000;
-
-// Device indices in the BIOS machine's device set. Distinct from the AtChipset
-// layout because this set adds the system-control port and a BIOS POST port.
-const BIOS_UART_INDEX: usize = 0;
-const BIOS_MASTER_PIC_INDEX: usize = 1;
-const BIOS_PIT_INDEX: usize = 2;
-const BIOS_I8042_INDEX: usize = 3;
-const BIOS_VGA_INDEX: usize = 4;
-const BIOS_SLAVE_PIC_INDEX: usize = 5;
-const BIOS_RTC_INDEX: usize = 6;
-const BIOS_SYS_CONTROL_INDEX: usize = 7;
-const BIOS_POST_INDEX: usize = 8;
-// Appended only when a floppy is attached, so the indices above stay stable.
-const BIOS_FDC_INDEX: usize = 9;
-const BIOS_DMA_INDEX: usize = 10;
 
 /// Base of the monochrome (MDA) text window. When the option-ROM scan finds no
 /// video BIOS, the Kiselev POST falls back to an MDA/CGA console whose INT 10h
@@ -694,12 +556,6 @@ fn freedos_prompt_policy(stimuli: Vec<KeyboardStimulus>, then_budget: u64) -> Ru
     }
 }
 
-/// The legacy hand-assembled no-floppy BIOS runner, kept as the A/B baseline
-/// (deleted with the other legacy paths in a later task).
-pub fn run_bios_legacy(rom: &[u8]) -> BiosRun {
-    run_bios_inner(rom, None)
-}
-
 /// Assemble a BIOS machine from `config`, run it under the policy `build_policy`
 /// derives, and capture every observable output path into a [`BiosRun`] (§3.1).
 ///
@@ -764,12 +620,6 @@ pub fn run_bios_boot(rom: &[u8], floppy: Vec<u8>) -> BiosRun {
     )
 }
 
-/// The legacy hand-assembled floppy-boot BIOS runner, kept as the A/B baseline
-/// (deleted with the other legacy paths in a later task).
-pub fn run_bios_boot_legacy(rom: &[u8], floppy: Vec<u8>) -> BiosRun {
-    run_bios_inner(rom, Some(floppy))
-}
-
 /// Boot a real FreeDOS floppy image on the Kiselev BIOS machine and report how
 /// far the FreeDOS boot chain gets (§3.1, §5, §7.7).
 ///
@@ -787,62 +637,6 @@ pub fn run_freedos(rom: &[u8], floppy: Vec<u8>) -> BiosRun {
         assembly::bios(rom.to_vec(), Some(floppy), BIOS_QUANTUM),
         |_| freedos_prompt_policy(Vec::new(), 0),
     )
-}
-
-/// The legacy hand-assembled FreeDOS runner, kept as the A/B baseline (deleted
-/// with the other legacy paths in a later task).
-pub fn run_freedos_legacy(rom: &[u8], floppy: Vec<u8>) -> BiosRun {
-    let mut machine = match assemble_bios_machine(rom, Some(floppy)) {
-        Ok(machine) => machine,
-        Err(e) => {
-            return BiosRun {
-                post: Vec::new(),
-                screen: blank_screen(),
-                mda: blank_screen(),
-                com1: Vec::new(),
-                stop: StopReason::Unmapped {
-                    detail: format!("building cpu: {e}"),
-                },
-            }
-        }
-    };
-
-    // Boot only until FreeCOM blocks at its date prompt, then stop. The boot itself
-    // is ~25M retired instructions; once FreeCOM reaches the prompt it busy-polls
-    // INT 16h forever (headless — no key, and the timer keeps it non-quiescent), so
-    // running to the full `BIOS_MAX_RETIRED` cap would spin ~2 billion idle
-    // instructions producing no new console output. Polling to the prompt captures
-    // the same final screen in a fraction of the time.
-    let result = boot_to_date_prompt(&mut machine);
-
-    let stop = classify_bios_stop(&machine, result);
-    let post = drain_post_at(&mut machine, BIOS_POST_INDEX, 0x80);
-    let screen = render_vga(&mut machine, BIOS_VGA_INDEX);
-    let mda = render_mda(&machine);
-    let com1 = drain_serial(&mut machine, BIOS_UART_INDEX);
-    BiosRun {
-        post,
-        screen,
-        mda,
-        com1,
-        stop,
-    }
-}
-
-/// Run the BIOS machine until FreeCOM boots and blocks at its date prompt
-/// ([`DOS_DATE_PROMPT`] on the MDA console), or until an error, or the full
-/// [`BIOS_MAX_RETIRED`] cap — whichever comes first. Steps in
-/// [`DOS_INTERACTIVE_POLL_STEP`] chunks so the run stops promptly instead of
-/// spinning to the cap while FreeCOM idles headlessly at the prompt.
-fn boot_to_date_prompt(machine: &mut Machine<X86JitCpu>) -> Result<RunOutcome, MachineError> {
-    let mut cap: u64 = 0;
-    loop {
-        cap = (cap + DOS_INTERACTIVE_POLL_STEP).min(BIOS_MAX_RETIRED);
-        let r = machine.run_bounded(Some(cap));
-        if r.is_err() || mda_contains(machine, DOS_DATE_PROMPT) || cap >= BIOS_MAX_RETIRED {
-            break r;
-        }
-    }
 }
 
 /// A substring of the FreeCOM startup date prompt, used to detect that the shell
@@ -953,68 +747,6 @@ pub fn run_freedos_interactive(rom: &[u8], floppy: Vec<u8>, scancodes: &[u8]) ->
     )
 }
 
-/// The legacy hand-assembled interactive FreeDOS runner, kept as the A/B baseline
-/// (deleted with the other legacy paths in a later task).
-pub fn run_freedos_interactive_legacy(rom: &[u8], floppy: Vec<u8>, scancodes: &[u8]) -> BiosRun {
-    let mut machine =
-        match assemble_bios_machine_quantum(rom, Some(floppy), DOS_INTERACTIVE_QUANTUM) {
-            Ok(machine) => machine,
-            Err(e) => {
-                return BiosRun {
-                    post: Vec::new(),
-                    screen: blank_screen(),
-                    mda: blank_screen(),
-                    com1: Vec::new(),
-                    stop: StopReason::Unmapped {
-                        detail: format!("building cpu: {e}"),
-                    },
-                }
-            }
-        };
-
-    // Phase 1: boot until FreeCOM blocks at the date prompt. `boot_to_date_prompt`
-    // tracks its own cumulative cap; phase 2 grows it further from where phase 1
-    // left the machine (the retired count is cumulative across `run_bounded` calls).
-    let mut result = boot_to_date_prompt(&mut machine);
-    let mut cap = machine.cpu().retired();
-
-    // Phase 2: queue the whole script at once and run the command. The 8042 now
-    // delivers queued bytes serially — one per tick after each read (see its
-    // serial-delivery model) — so each scancode drops and re-raises the IRQ1 line
-    // on its own, giving INT 09h a clean edge per byte without the driver having to
-    // pace injection one key at a time.
-    if result.is_ok() && mda_contains(&machine, DOS_DATE_PROMPT) {
-        inject_scancodes(&mut machine, BIOS_I8042_INDEX, scancodes);
-
-        // Run on so INT 09h delivers each queued scancode into the BDA key ring and
-        // FreeCOM processes the line input, runs the command, and prints its output.
-        cap = (cap + DOS_INTERACTIVE_COMMAND_BUDGET).min(BIOS_MAX_RETIRED);
-        result = machine.run_bounded(Some(cap));
-    }
-
-    let stop = classify_bios_stop(&machine, result);
-    let post = drain_post_at(&mut machine, BIOS_POST_INDEX, 0x80);
-    let screen = render_vga(&mut machine, BIOS_VGA_INDEX);
-    let mda = render_mda(&machine);
-    let com1 = drain_serial(&mut machine, BIOS_UART_INDEX);
-    BiosRun {
-        post,
-        screen,
-        mda,
-        com1,
-        stop,
-    }
-}
-
-/// Whether the MDA console currently holds `needle` (used to detect a shell prompt
-/// while stepping the interactive FreeDOS run).
-fn mda_contains(machine: &Machine<X86JitCpu>, needle: &str) -> bool {
-    render_mda(machine)
-        .rows_as_strings()
-        .join("\n")
-        .contains(needle)
-}
-
 /// Queue a keyboard `scancodes` script into the 8042 at bus index `kbc_index`,
 /// reaching the concrete controller through the [`Device::as_any_mut`] downcast
 /// seam — the machine core still sees only `&mut dyn Device`.
@@ -1067,216 +799,6 @@ pub fn dos_dir_script() -> Vec<u8> {
     script
 }
 
-/// Assemble the full PC/AT BIOS machine (devices, decode map, 1 MiB memory mosaic
-/// with the ROM loaded, interrupt and DMA wiring) without running it, so a caller
-/// can drive it directly. The normal boot path ([`run_bios_inner`]) runs it to the
-/// retired cap; exposing the assembled machine also lets a test or diagnostic tool
-/// step it and inspect guest state (CS:IP, memory) to locate where a boot stops.
-pub fn assemble_bios_machine(
-    rom: &[u8],
-    floppy: Option<Vec<u8>>,
-) -> Result<Machine<X86JitCpu>, CpuError> {
-    assemble_bios_machine_quantum(rom, floppy, BIOS_QUANTUM)
-}
-
-/// As [`assemble_bios_machine`], but with an explicit cooperative run `quantum`.
-///
-/// The boot/POST path uses the default [`BIOS_QUANTUM`]; the interactive keyboard
-/// path uses a much finer quantum ([`DOS_INTERACTIVE_QUANTUM`]) so the machine
-/// returns to its interrupt-service point often enough that a pending keyboard
-/// IRQ1 is not perpetually starved by the periodic timer IRQ0 (see
-/// [`run_freedos_interactive`]).
-fn assemble_bios_machine_quantum(
-    rom: &[u8],
-    floppy: Option<Vec<u8>>,
-    quantum: Option<u64>,
-) -> Result<Machine<X86JitCpu>, CpuError> {
-    // Each PIC chip's device face is cloned off the one live pair; the pair itself
-    // is the machine's interrupt controller, so a guest EOI to either chip reaches
-    // the state the machine's INTA set.
-    let pic = CascadedPic::new();
-    let master_device = pic.master_device();
-    let slave_device = pic.slave_device();
-    let controller = Box::new(pic);
-
-    let rtc = CmosRtc::new().with_config(CmosConfig::default());
-
-    let mut devices: Vec<Box<dyn Device>> = vec![
-        Box::new(Uart16550::new(COM1_BASE)), // 0
-        Box::new(master_device),             // 1
-        Box::new(Pit8253::new()),            // 2
-        Box::new(I8042::new()),              // 3
-        Box::new(VgaText::new()),            // 4
-        Box::new(slave_device),              // 5
-        Box::new(rtc),                       // 6
-        Box::new(SysControl::new()),         // 7
-        Box::new(PostPort::with_port(0x80)), // 8
-    ];
-    if let Some(image) = floppy.clone() {
-        devices.push(Box::new(Upd765::with_image(image))); // 9
-        devices.push(Box::new(Dma8237::new())); // 10
-    }
-
-    let mut ports = vec![
-        PortRange {
-            ports: COM1_BASE..=COM1_TOP,
-            device: BIOS_UART_INDEX,
-        },
-        PortRange {
-            ports: PIC_COMMAND..=PIC_DATA,
-            device: BIOS_MASTER_PIC_INDEX,
-        },
-        PortRange {
-            ports: PIT_BASE..=PIT_TOP,
-            device: BIOS_PIT_INDEX,
-        },
-        // The 8042 decodes two non-adjacent ports (0x60 and 0x64).
-        PortRange {
-            ports: KBD_DATA..=KBD_DATA,
-            device: BIOS_I8042_INDEX,
-        },
-        PortRange {
-            ports: KBD_CMD..=KBD_CMD,
-            device: BIOS_I8042_INDEX,
-        },
-        // Port 0x61 system-control latch (refresh bit the BIOS times against).
-        PortRange {
-            ports: SYS_CONTROL_PORT..=SYS_CONTROL_PORT,
-            device: BIOS_SYS_CONTROL_INDEX,
-        },
-        // POST checkpoint port 0x80 (see the DMA-overlap note above).
-        PortRange {
-            ports: 0x80..=0x80,
-            device: BIOS_POST_INDEX,
-        },
-        PortRange {
-            ports: CMOS_INDEX_PORT..=CMOS_DATA_PORT,
-            device: BIOS_RTC_INDEX,
-        },
-        PortRange {
-            ports: CRTC_INDEX_PORT..=CRTC_DATA_PORT,
-            device: BIOS_VGA_INDEX,
-        },
-        PortRange {
-            ports: CGA_MODE_CONTROL_PORT..=CGA_STATUS_PORT,
-            device: BIOS_VGA_INDEX,
-        },
-        // Monochrome (MDA) port aliases the Kiselev BIOS drives in its MDA console
-        // path: the CRTC at 0x3B4/0x3B5 and the input status register at 0x3BA
-        // (whose retrace bits the INT 10h read/write-character routines poll).
-        PortRange {
-            ports: MDA_CRTC_INDEX_PORT..=MDA_CRTC_DATA_PORT,
-            device: BIOS_VGA_INDEX,
-        },
-        PortRange {
-            ports: MDA_STATUS_PORT..=MDA_STATUS_PORT,
-            device: BIOS_VGA_INDEX,
-        },
-        PortRange {
-            ports: SLAVE_PIC_COMMAND..=SLAVE_PIC_DATA,
-            device: BIOS_SLAVE_PIC_INDEX,
-        },
-    ];
-    if floppy.is_some() {
-        // The floppy controller and the 8237 DMA it transfers through. Port 0x80
-        // stays the POST checkpoint above; the DMA's page latches decode from 0x81
-        // up, so the overlap at 0x80 resolves to POST and 0x81 to channel 2's page.
-        ports.push(PortRange {
-            ports: 0x3F0..=0x3F7,
-            device: BIOS_FDC_INDEX,
-        });
-        ports.push(PortRange {
-            ports: 0x00..=0x0F,
-            device: BIOS_DMA_INDEX,
-        });
-        ports.push(PortRange {
-            ports: 0x81..=0x8F,
-            device: BIOS_DMA_INDEX,
-        });
-    }
-    let map = DecodeMap {
-        ports,
-        mmio: vec![MmioRange {
-            addrs: TEXT_BUFFER_BASE..=TEXT_BUFFER_BASE + TEXT_BUFFER_LEN as u64 - 1,
-            device: BIOS_VGA_INDEX,
-        }],
-    };
-    let bus = Bus::new(devices, map);
-
-    // Lay out the full 1 MiB mosaic (no unmapped holes), then load the ROM.
-    let cpu = build_bios_cpu(rom)?;
-    // Wire the interrupt sources the BIOS's POST and INT layer rely on.
-    let mut irq_lines = vec![
-        IrqLine {
-            device: BIOS_PIT_INDEX,
-            irq: 0,
-        },
-        IrqLine {
-            device: BIOS_I8042_INDEX,
-            irq: 1,
-        },
-        IrqLine {
-            device: BIOS_RTC_INDEX,
-            irq: 8,
-        },
-    ];
-    let mut dma_wirings = Vec::new();
-    if floppy.is_some() {
-        // IRQ6 is a master-PIC line; the controller drives it on command
-        // completion. The floppy controller masters the bus through the 8237.
-        irq_lines.push(IrqLine {
-            device: BIOS_FDC_INDEX,
-            irq: 6,
-        });
-        dma_wirings.push(DmaWiring {
-            requester: BIOS_FDC_INDEX,
-            controller: BIOS_DMA_INDEX,
-        });
-    }
-    let machine = Machine::new(
-        cpu,
-        bus,
-        controller,
-        quantum,
-        irq_lines,
-        Some(BIOS_IDLE_LIMIT),
-    )
-    .with_dma_wirings(dma_wirings);
-    Ok(machine)
-}
-
-fn run_bios_inner(rom: &[u8], floppy: Option<Vec<u8>>) -> BiosRun {
-    let mut machine = match assemble_bios_machine(rom, floppy) {
-        Ok(machine) => machine,
-        Err(e) => {
-            return BiosRun {
-                post: Vec::new(),
-                screen: blank_screen(),
-                mda: blank_screen(),
-                com1: Vec::new(),
-                stop: StopReason::Unmapped {
-                    detail: format!("building cpu: {e}"),
-                },
-            }
-        }
-    };
-
-    let result = machine.run_bounded(Some(BIOS_MAX_RETIRED));
-    let stop = classify_bios_stop(&machine, result);
-
-    let post = drain_post_at(&mut machine, BIOS_POST_INDEX, 0x80);
-    let screen = render_vga(&mut machine, BIOS_VGA_INDEX);
-    let mda = render_mda(&machine);
-    let com1 = drain_serial(&mut machine, BIOS_UART_INDEX);
-    BiosRun {
-        post,
-        screen,
-        mda,
-        com1,
-        stop,
-    }
-}
-
 /// Read back the monochrome (MDA) text window at [`MDA_BUFFER_BASE`] from guest
 /// RAM and render it into a [`TextGrid`] (§9.2).
 ///
@@ -1300,32 +822,6 @@ fn render_mda(machine: &Machine<X86JitCpu>) -> TextGrid {
         cursor_cell: 0,
         cursor_visible: false,
     })
-}
-
-/// Build the BIOS machine's CPU with the full 1 MiB mosaic address space and the
-/// ROM loaded at `0xF8000`, pointed at the reset vector.
-fn build_bios_cpu(rom: &[u8]) -> Result<X86JitCpu, CpuError> {
-    // Segments start flat at the reset CS; the BIOS reloads them via its reset
-    // far jump, which the real-mode core now lifts. SP is left at the default; the
-    // BIOS sets up its own stack before pushing.
-    let mut cpu = X86JitCpu::new_real16_bare(
-        BIOS_SPACE,
-        BIOS_RESET_CS,
-        BIOS_RESET_IP,
-        RealSegments::flat(BIOS_RESET_CS),
-    )?;
-    // 640 KiB conventional RAM + the graphics-adapter probe window below the text
-    // buffer, as one RAM region up to the trapped video page.
-    cpu.map_ram(0, TEXT_BUFFER_BASE)?;
-    // The colour text page is trapped MMIO (mapped on the bus to the VGA card);
-    // it must be a hole in RAM, so RAM resumes above it.
-    cpu.map_mmio(TEXT_BUFFER_BASE, TEXT_BUFFER_LEN as u64)?;
-    // Zeroed option-ROM scan area: [0xC0000, 0xF8000). No 0x55AA signature, so the
-    // BIOS's option-ROM scan finds nothing and moves on.
-    cpu.map_ram(BIOS_OPTION_ROM_BASE, BIOS_ROM_BASE - BIOS_OPTION_ROM_BASE)?;
-    // The masked 32 KiB BIOS ROM at the top of the space.
-    cpu.map_rom(BIOS_ROM_BASE, rom)?;
-    Ok(cpu)
 }
 
 /// Classify how the BIOS run stopped into a [`StopReason`], reading back the bytes
@@ -1501,67 +997,6 @@ pub fn run_floppy_boot() -> Result<Vec<u8>> {
     Ok(drain_serial(&mut machine, device_index[&DeviceId::Uart]))
 }
 
-/// The legacy hand-assembled floppy-boot runner, kept as the A/B baseline
-/// (deleted with the other legacy paths in a later task).
-pub fn run_floppy_boot_legacy() -> Result<Vec<u8>> {
-    let devices: Vec<Box<dyn Device>> = vec![
-        Box::new(Uart16550::new(COM1_BASE)),                   // 0
-        Box::new(Dma8237::new()),                              // 1
-        Box::new(Upd765::with_image(bootable_floppy_image())), // 2
-    ];
-    let map = DecodeMap {
-        ports: vec![
-            PortRange {
-                ports: COM1_BASE..=COM1_TOP,
-                device: 0,
-            },
-            PortRange {
-                ports: 0x00..=0x0F,
-                device: 1,
-            },
-            PortRange {
-                ports: 0x80..=0x8F,
-                device: 1,
-            },
-            PortRange {
-                ports: 0x3F0..=0x3F7,
-                device: 2,
-            },
-        ],
-        mmio: Vec::new(),
-    };
-    let bus = Bus::new(devices, map);
-
-    let cpu = X86JitCpu::new_real16(
-        RAM_BYTES,
-        BOOT_CS,
-        FLOPPY_LOADER_IP,
-        FLOPPY_LOADER,
-        RealSegments::flat(BOOT_CS),
-    )
-    .context("building real-mode cpu")?;
-
-    // No interrupt wiring: the DMA transfer is synchronous, so the loader jumps to
-    // the boot sector without waiting on IRQ6; `None` idle limit halts on the
-    // boot sector's `hlt`.
-    let mut machine = Machine::new(
-        cpu,
-        bus,
-        Box::new(NoInterruptController),
-        QUANTUM,
-        Vec::new(),
-        None,
-    )
-    .with_dma_wirings(vec![DmaWiring {
-        requester: 2,
-        controller: 1,
-    }]);
-
-    machine.run().context("running machine")?;
-
-    Ok(drain_serial(&mut machine, 0))
-}
-
 /// Assemble the serial machine, run `blob` in Long64, and return the bytes the
 /// guest sent to COM1 (§3.1).
 pub fn run_serial(blob: &[u8]) -> Result<Vec<u8>> {
@@ -1621,30 +1056,6 @@ pub fn run_boot(blob: &[u8]) -> Result<Vec<u8>> {
     Ok(drain_serial(&mut machine, device_index[&DeviceId::Uart]))
 }
 
-/// The legacy hand-assembled boot runner, kept as the A/B baseline (deleted with
-/// the other legacy paths in a later task).
-pub fn run_boot_legacy(blob: &[u8]) -> Result<Vec<u8>> {
-    let (devices, map, pic) = AtChipset::new().build();
-    let bus = Bus::new(devices, map);
-
-    let cpu = X86JitCpu::new_real16(
-        RAM_BYTES,
-        BOOT_CS,
-        BOOT_IP,
-        blob,
-        RealSegments::flat(BOOT_CS),
-    )
-    .context("building real-mode cpu")?;
-
-    // Wire PIT (device index 2) counter-0 OUT to PIC IRQ0.
-    let irq_lines = vec![IrqLine { device: 2, irq: 0 }];
-    let mut machine = Machine::new(cpu, bus, pic, QUANTUM, irq_lines, Some(BOOT_IDLE_LIMIT));
-
-    machine.run().context("running machine")?;
-
-    Ok(drain_serial(&mut machine, AT_UART_INDEX))
-}
-
 /// Assemble the PC/AT machine with `scancodes` queued in the keyboard, run `blob`
 /// in real mode, and return the bytes the guest sent to COM1 (§5, §7).
 ///
@@ -1671,33 +1082,6 @@ pub fn run_keyboard(blob: &[u8], scancodes: &[u8]) -> Result<Vec<u8>> {
     .context("running machine")?;
 
     Ok(drain_serial(&mut machine, device_index[&DeviceId::Uart]))
-}
-
-/// The legacy hand-assembled keyboard runner, kept as the A/B baseline (deleted
-/// with the other legacy paths in a later task).
-pub fn run_keyboard_legacy(blob: &[u8], scancodes: &[u8]) -> Result<Vec<u8>> {
-    let (devices, map, pic) = AtChipset::with_keyboard_input(scancodes).build();
-    let bus = Bus::new(devices, map);
-
-    let cpu = X86JitCpu::new_real16(
-        RAM_BYTES,
-        BOOT_CS,
-        BOOT_IP,
-        blob,
-        RealSegments::flat(BOOT_CS),
-    )
-    .context("building real-mode cpu")?;
-
-    // Wire the keyboard controller (device index 3) byte-ready line to PIC IRQ1.
-    let irq_lines = vec![IrqLine {
-        device: AT_I8042_INDEX,
-        irq: 1,
-    }];
-    let mut machine = Machine::new(cpu, bus, pic, QUANTUM, irq_lines, Some(KBD_IDLE_LIMIT));
-
-    machine.run().context("running machine")?;
-
-    Ok(drain_serial(&mut machine, AT_UART_INDEX))
 }
 
 /// Assemble the PC/AT machine with a fast-ticking RTC, run `blob` in real mode,
@@ -1727,33 +1111,6 @@ pub fn run_rtc(blob: &[u8]) -> Result<Vec<u8>> {
     Ok(drain_serial(&mut machine, device_index[&DeviceId::Uart]))
 }
 
-/// The legacy hand-assembled RTC runner, kept as the A/B baseline (deleted with
-/// the other legacy paths in a later task).
-pub fn run_rtc_legacy(blob: &[u8]) -> Result<Vec<u8>> {
-    let (devices, map, pic) = AtChipset::with_rtc_timing(RTC_SECOND_TICKS, RTC_UIP_TICKS).build();
-    let bus = Bus::new(devices, map);
-
-    let cpu = X86JitCpu::new_real16(
-        RAM_BYTES,
-        BOOT_CS,
-        BOOT_IP,
-        blob,
-        RealSegments::flat(BOOT_CS),
-    )
-    .context("building real-mode cpu")?;
-
-    // Wire the RTC (device index 6) update-ended line to PIC IRQ8 (slave line 0).
-    let irq_lines = vec![IrqLine {
-        device: AT_CMOS_RTC_INDEX,
-        irq: 8,
-    }];
-    let mut machine = Machine::new(cpu, bus, pic, QUANTUM, irq_lines, Some(RTC_IDLE_LIMIT));
-
-    machine.run().context("running machine")?;
-
-    Ok(drain_serial(&mut machine, AT_UART_INDEX))
-}
-
 /// Assemble the PC/AT machine, run `blob` in real mode, then render the VGA text
 /// card into a [`TextGrid`] and present it to a [`CaptureFrameSink`] (§9.2).
 ///
@@ -1773,49 +1130,6 @@ pub fn run_vga_text(blob: &[u8]) -> Result<TextGrid> {
     let grid = render_vga(&mut machine, device_index[&DeviceId::Vga]);
     // Exercise the presentation seam: hand the frame to a capture sink and read it
     // back, exactly as a terminal or windowed presenter would receive it.
-    let mut sink = CaptureFrameSink::new();
-    sink.present(&Frame::Text(grid));
-    Ok(sink
-        .last_text()
-        .cloned()
-        .expect("capture sink holds the presented text frame"))
-}
-
-/// The legacy hand-assembled VGA-text runner, kept as the A/B baseline (deleted
-/// with the other legacy paths in a later task).
-pub fn run_vga_text_legacy(blob: &[u8]) -> Result<TextGrid> {
-    let (devices, map, pic) = AtChipset::new().build();
-    let bus = Bus::new(devices, map);
-
-    // The text buffer at 0xB8000 sits above low RAM, so the flat guest space must
-    // extend past it while RAM stops at its base — a Trap window may not overlap
-    // RAM. RAM below the window is ample for the guest's code and stack.
-    let mut cpu = X86JitCpu::new_real16_mmio(
-        TEXT_BUFFER_BASE + TEXT_BUFFER_LEN as u64,
-        TEXT_BUFFER_BASE,
-        BOOT_CS,
-        BOOT_IP,
-        blob,
-        RealSegments {
-            ds: VGA_TEXT_SEGMENT,
-            es: VGA_TEXT_SEGMENT,
-            ss: BOOT_CS,
-            sp: RealSegments::DEFAULT_SP,
-        },
-    )
-    .context("building real-mode cpu")?;
-    // Trap the colour text page so stores into it surface as MMIO on the bus.
-    cpu.map_mmio(TEXT_BUFFER_BASE, TEXT_BUFFER_LEN as u64)
-        .context("mapping VGA text MMIO window")?;
-
-    // No interrupt wiring: `None` idle limit terminates on the guest's `hlt`.
-    let mut machine = Machine::new(cpu, bus, pic, QUANTUM, Vec::new(), None);
-
-    machine.run().context("running machine")?;
-
-    let grid = render_vga(&mut machine, AT_VGA_INDEX);
-    // Exercise the presentation seam: hand the frame to a capture sink and read
-    // it back, exactly as a terminal or windowed presenter would receive it.
     let mut sink = CaptureFrameSink::new();
     sink.present(&Frame::Text(grid));
     Ok(sink
@@ -1914,190 +1228,4 @@ fn drain_serial(machine: &mut Machine<X86JitCpu>, uart_index: usize) -> Vec<u8> 
         }
     }
     out
-}
-
-/// A/B result-equality helpers for the config-machine migration (§3.1).
-///
-/// The migration replaces each hand-assembled `run_*` machine with one assembled
-/// from a config, and proves equivalence by running both and asserting their
-/// results are byte-identical. A bare `assert_eq!` on a whole [`BiosRun`] dumps
-/// two large structs and leaves you to spot the difference; these helpers compare
-/// field by field so a divergence *names* the field (and, for the text windows,
-/// the first row that differs) instead.
-///
-/// Serial results are plain `Vec<u8>` — compare those directly with `assert_eq!`.
-pub mod testing {
-    use crate::{BiosRun, Test386Run};
-    use video::TextGrid;
-
-    /// If the two grids differ, describe the difference: a dimension mismatch, the
-    /// first differing text row, or (when the glyphs match but attributes or the
-    /// cursor differ) a note that the visible text is identical. `None` when equal.
-    fn text_grid_diff(field: &str, legacy: &TextGrid, got: &TextGrid) -> Option<String> {
-        if legacy == got {
-            return None;
-        }
-        if legacy.cols() != got.cols() || legacy.rows() != got.rows() {
-            return Some(format!(
-                "{field}: dimensions {}x{} vs {}x{}",
-                legacy.cols(),
-                legacy.rows(),
-                got.cols(),
-                got.rows()
-            ));
-        }
-        let legacy_rows = legacy.rows_as_strings();
-        let got_rows = got.rows_as_strings();
-        for (row, (a, b)) in legacy_rows.iter().zip(got_rows.iter()).enumerate() {
-            if a != b {
-                return Some(format!(
-                    "{field}: first differing row {row}: {a:?} vs {b:?}"
-                ));
-            }
-        }
-        Some(format!(
-            "{field}: cells or cursor differ (visible text identical)"
-        ))
-    }
-
-    /// Assert two [`BiosRun`]s are equal, panicking with a per-field diff (which of
-    /// post / screen / mda / com1 / stop differs) on mismatch.
-    ///
-    /// `legacy` is the reference (hand-assembled) result; `got` is the
-    /// config-assembled one.
-    pub fn assert_bios_run_eq(legacy: &BiosRun, got: &BiosRun) {
-        let mut diffs = Vec::new();
-        if legacy.post != got.post {
-            diffs.push(format!(
-                "post: {} bytes vs {} bytes ({:?} vs {:?})",
-                legacy.post.len(),
-                got.post.len(),
-                legacy.post,
-                got.post
-            ));
-        }
-        if let Some(msg) = text_grid_diff("screen", &legacy.screen, &got.screen) {
-            diffs.push(msg);
-        }
-        if let Some(msg) = text_grid_diff("mda", &legacy.mda, &got.mda) {
-            diffs.push(msg);
-        }
-        if legacy.com1 != got.com1 {
-            diffs.push(format!(
-                "com1: {} bytes vs {} bytes",
-                legacy.com1.len(),
-                got.com1.len()
-            ));
-        }
-        if legacy.stop != got.stop {
-            diffs.push(format!("stop: {:?} vs {:?}", legacy.stop, got.stop));
-        }
-        assert!(
-            diffs.is_empty(),
-            "BiosRun mismatch (legacy vs got):\n  {}",
-            diffs.join("\n  ")
-        );
-    }
-
-    /// Assert two [`Test386Run`]s are equal, panicking with a per-field diff (post
-    /// / stop) on mismatch. `legacy` is the reference result; `got` is the
-    /// config-assembled one.
-    pub fn assert_test386_run_eq(legacy: &Test386Run, got: &Test386Run) {
-        let mut diffs = Vec::new();
-        if legacy.post != got.post {
-            diffs.push(format!(
-                "post: {} bytes vs {} bytes ({:?} vs {:?})",
-                legacy.post.len(),
-                got.post.len(),
-                legacy.post,
-                got.post
-            ));
-        }
-        if legacy.stop != got.stop {
-            diffs.push(format!("stop: {:?} vs {:?}", legacy.stop, got.stop));
-        }
-        assert!(
-            diffs.is_empty(),
-            "Test386Run mismatch (legacy vs got):\n  {}",
-            diffs.join("\n  ")
-        );
-    }
-}
-
-#[cfg(test)]
-mod ab_harness_tests {
-    use crate::testing::{assert_bios_run_eq, assert_test386_run_eq};
-    use crate::{BiosRun, StopReason, Test386Run};
-    use video::{render_text_mode, TextGrid, TextModeState};
-
-    /// A single-row text grid whose glyphs are `glyphs` (attribute fixed).
-    fn one_row_grid(glyphs: &[u8]) -> TextGrid {
-        let mut vram = Vec::with_capacity(glyphs.len() * 2);
-        for &g in glyphs {
-            vram.push(g);
-            vram.push(0x07);
-        }
-        render_text_mode(&TextModeState {
-            vram: &vram,
-            cols: glyphs.len() as u16,
-            rows: 1,
-            start_cell: 0,
-            cursor_cell: 0,
-            cursor_visible: false,
-        })
-    }
-
-    fn sample_bios_run() -> BiosRun {
-        BiosRun {
-            post: vec![0x01, 0x02, 0x03],
-            screen: one_row_grid(b"HELLO"),
-            mda: one_row_grid(b"READY"),
-            com1: vec![b'h', b'i'],
-            stop: StopReason::Halt,
-        }
-    }
-
-    #[test]
-    fn equal_bios_runs_pass() {
-        assert_bios_run_eq(&sample_bios_run(), &sample_bios_run());
-    }
-
-    #[test]
-    #[should_panic(expected = "stop")]
-    fn differing_stop_names_the_field() {
-        let mut got = sample_bios_run();
-        got.stop = StopReason::BudgetExhausted;
-        assert_bios_run_eq(&sample_bios_run(), &got);
-    }
-
-    #[test]
-    #[should_panic(expected = "mda: first differing row 0")]
-    fn differing_mda_row_names_the_field_and_row() {
-        let mut got = sample_bios_run();
-        got.mda = one_row_grid(b"HALT!");
-        assert_bios_run_eq(&sample_bios_run(), &got);
-    }
-
-    #[test]
-    fn equal_test386_runs_pass() {
-        let run = Test386Run {
-            post: vec![0xAA, 0xBB],
-            stop: StopReason::Halt,
-        };
-        assert_test386_run_eq(&run, &run.clone());
-    }
-
-    #[test]
-    #[should_panic(expected = "post")]
-    fn differing_test386_post_names_the_field() {
-        let legacy = Test386Run {
-            post: vec![0xAA, 0xBB],
-            stop: StopReason::Halt,
-        };
-        let got = Test386Run {
-            post: vec![0xAA],
-            stop: StopReason::Halt,
-        };
-        assert_test386_run_eq(&legacy, &got);
-    }
 }

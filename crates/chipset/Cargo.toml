@@ -6,9 +6,8 @@ edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 repository.workspace = true
-description = "Chipset swap seam: declares the decode map + device set + interrupt controller (§3.2, §3.3)."
+description = "8259 PIC composition (shared/cascaded) + the null interrupt controller (§5.1, §3.3)."
 
 [dependencies]
 device.workspace = true
-bus.workspace = true
 devices.workspace = true

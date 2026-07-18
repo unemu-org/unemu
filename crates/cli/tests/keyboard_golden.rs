@@ -2,7 +2,7 @@
 //! Real-mode keyboard-interrupt golden test (§5, §7, §10).
 //!
 //! The machine takes a **keyboard hardware interrupt** (IRQ1). A hand-encoded
-//! **real-mode** guest runs on the [`AtChipset`] (UART + 8259 PIC + 8253 PIT +
+//! **real-mode** guest runs on the PC/AT machine shape (UART + 8259 PIC + 8253 PIT +
 //! 8042 keyboard + VGA) through the real `X86JitCpu` in `CpuMode::Real16`. It:
 //!
 //! 1. writes an IRQ1 handler address into IVT entry 9 (`0x0000:0x0024`);
