@@ -19,6 +19,15 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
 
 ## Recently landed
 
+- **Interactive FreeDOS — keyboard to a running command** (`task-26`): a scancode
+  script fed through the 8042 drives FreeCOM past its date/time prompts to the
+  `A:\` prompt and runs `DIR`, listing `KERNEL.SYS` + `COMMAND.COM` — the full
+  input path (scancode → 8042 → IRQ1 → BIOS INT 09h → BDA ring → INT 16h → DOS)
+  end to end. Frontend-only driver (`run_freedos_interactive`); the models are
+  untouched. Two genuine interrupt-model limitations were found and worked around
+  in the driver (IRQ0 starving IRQ1 under a coarse quantum; the 8042 refilling its
+  output buffer so IRQ1's level never re-edges) — faithful fixes tracked in
+  `task-27`. Interactive golden reaches the prompt in ~25 s (`#[ignore]`).
 - **🏆 FreeDOS boots to a shell prompt — the north star** (`task-20`–`task-25`):
   the unmodified Kiselev Xi8088 BIOS completes its entire POST, renders its
   hardware-detection screen via INT 10h, and its INT 19h loads a real **FreeDOS**
