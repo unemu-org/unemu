@@ -557,6 +557,12 @@ impl Device for I8042 {
     fn take_trace(&mut self) -> Vec<TraceEvent> {
         std::mem::take(&mut self.trace)
     }
+
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        // Opt into the host-side downcast seam so the frontend can inject keyboard
+        // scancodes ([`I8042::push_scancode`]) into this controller mid-run.
+        Some(self)
+    }
 }
 
 #[cfg(test)]
