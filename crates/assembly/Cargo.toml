@@ -1,0 +1,21 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+[package]
+name = "assembly"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+description = "Declarative machine-configuration data model + validation (the assembler that turns it into a Machine lands here later) (§3.1)."
+
+[dependencies]
+thiserror.workspace = true
+# The seams whose types the configuration names. The config is declarative data
+# about these crates' hardware; the assembler (a later task) turns it into the
+# concrete Bus/DecodeMap/IrqLine/Machine those crates define.
+machine.workspace = true
+cpu.workspace = true
+bus.workspace = true
+device.workspace = true
+devices.workspace = true
+video.workspace = true
