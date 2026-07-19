@@ -1,9 +1,10 @@
 ---
 id: TASK-42
 title: 'DOS-level file-create write golden (echo > A:\FILE via FAT12)'
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-07-18 23:47'
+updated_date: '2026-07-19 06:15'
 labels:
   - test
   - fdc
@@ -22,3 +23,9 @@ The floppy WRITE path is proven at the controller level (task-40 real-machine wr
 - [ ] #1 A FreeDOS golden creates a file from the keyboard and observes it back (DIR/TYPE or sector diff), deterministic
 - [ ] #2 Exercises the FAT12 write path through the real DOS + uPD765 WRITE DATA end to end
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Done 2026-07-19. DOS-level write golden landed: crates/cli/tests/dos_write_golden.rs (freedos_writes_a_file_from_the_keyboard) drives FreeCOM 'echo x>zz'+'dir', asserts ZZ in the on-disk listing + 3 file(s). Merged @ 9edd1f8.
+<!-- SECTION:NOTES:END -->
