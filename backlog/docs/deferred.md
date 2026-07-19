@@ -105,15 +105,3 @@ Things **deliberately not implemented**. If something seems missing and is liste
 - **Revisit when:** A guest must persist across runs — e.g. installing to a floppy
   image, or a DOS session that must survive a restart.
 - **Tracked in:** none yet.
-
-### DOS-level file-create write golden
-
-- **Why deferred:** The floppy WRITE is proven today at the controller level (a
-  hand-encoded guest programs the 8237 + µPD765 to write and read back a sector) and
-  through unit tests. Driving a full DOS to create a file (`echo > A:\FILE`) and
-  verifying it through the guest's own FAT12 driver is a much larger end-to-end path
-  — it needs an interactive DOS session and a FAT12 read-back — with no incremental
-  value over the direct write golden until DOS write flows are the target.
-- **Revisit when:** DOS is driven to write a file and the result must be verified
-  end to end through the filesystem.
-- **Tracked in:** none yet.

@@ -921,6 +921,93 @@ pub fn dos_dir_script() -> Vec<u8> {
     script
 }
 
+/// Set-1 (XT) make code for the lowercase letters, digits, space, and `.` that
+/// the shell scripts type. The 8042 performs no translation, so these are the
+/// exact bytes the BIOS INT 09h handler reads at port `0x60`; INT 09h maps them
+/// (with the shift state) to the ASCII FreeCOM's line input sees.
+fn set1_make(c: char) -> u8 {
+    match c {
+        'a' => 0x1E,
+        'b' => 0x30,
+        'c' => 0x2E,
+        'd' => 0x20,
+        'e' => 0x12,
+        'f' => 0x21,
+        'g' => 0x22,
+        'h' => 0x23,
+        'i' => 0x17,
+        'j' => 0x24,
+        'k' => 0x25,
+        'l' => 0x26,
+        'm' => 0x32,
+        'n' => 0x31,
+        'o' => 0x18,
+        'p' => 0x19,
+        'q' => 0x10,
+        'r' => 0x13,
+        's' => 0x1F,
+        't' => 0x14,
+        'u' => 0x16,
+        'v' => 0x2F,
+        'w' => 0x11,
+        'x' => 0x2D,
+        'y' => 0x15,
+        'z' => 0x2C,
+        ' ' => 0x39,
+        '.' => 0x34,
+        '0' => 0x0B,
+        '1' => 0x02,
+        '2' => 0x03,
+        '3' => 0x04,
+        '4' => 0x05,
+        '5' => 0x06,
+        '6' => 0x07,
+        '7' => 0x08,
+        '8' => 0x09,
+        '9' => 0x0A,
+        _ => panic!("no set-1 scancode for {c:?}"),
+    }
+}
+
+/// Append `text` to a keyboard `script` as set-1 make/break pairs. `>` is typed
+/// as **Shift+`.`** (its US-layout combination): a left-shift make brackets the
+/// `.` key and a left-shift break releases it, so INT 09h reads a shifted `.` and
+/// yields `>`. Every other character is a plain make-then-break key.
+fn type_set1(script: &mut Vec<u8>, text: &str) {
+    const LSHIFT_MAKE: u8 = 0x2A;
+    const LSHIFT_BREAK: u8 = 0xAA;
+    for c in text.chars() {
+        if c == '>' {
+            let dot = set1_make('.');
+            script.extend_from_slice(&[LSHIFT_MAKE, dot, dot | 0x80, LSHIFT_BREAK]);
+        } else {
+            let m = set1_make(c);
+            script.extend_from_slice(&[m, m | 0x80]);
+        }
+    }
+}
+
+/// The keyboard script that drives FreeCOM to **create a file on the floppy** and
+/// list it: accept the date (Enter), accept the time (Enter), type `echo x>zz`
+/// (redirect one byte into a new file `ZZ`) + Enter, then type `dir` + Enter.
+///
+/// `echo x>zz` makes FreeCOM open `ZZ` for output and write the line to it, which
+/// DOS commits through INT 21h → INT 13h → the µPD765 WRITE DATA path onto the
+/// FAT12 media (a directory entry plus one data sector). `dir` then reads the
+/// directory back **from disk**, so a run where `ZZ` appears in the listing proves
+/// the whole DOS write path reached media — not just that the keys arrived.
+#[must_use]
+pub fn dos_write_file_script() -> Vec<u8> {
+    let mut script = Vec::new();
+    script.extend_from_slice(&KEY_ENTER); // accept the date
+    script.extend_from_slice(&KEY_ENTER); // accept the time
+    type_set1(&mut script, "echo x>zz");
+    script.extend_from_slice(&KEY_ENTER); // create the file
+    type_set1(&mut script, "dir");
+    script.extend_from_slice(&KEY_ENTER); // list the directory from disk
+    script
+}
+
 /// Read back the monochrome (MDA) text window at [`MDA_BUFFER_BASE`] from guest
 /// RAM and render it into a [`TextGrid`] (§9.2).
 ///
