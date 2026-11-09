@@ -43,9 +43,12 @@ impl MachineConfig {
         Ok(())
     }
 
-    /// Every CPU run must yield after a finite, positive number of blocks so
-    /// device ticks and the virtual-time cap cannot be starved by guest code.
+    /// Legacy execution needs a finite block budget to regain control. Corrected
+    /// execution has its own finite step bound and never uses the block quantum.
     fn check_quantum(&self) -> Result<(), ConfigError> {
+        if self.clock.interrupt_timing == machine::InterruptTiming::Corrected {
+            return Ok(());
+        }
         match self.clock.quantum {
             Some(1..) => Ok(()),
             quantum => Err(ConfigError::InvalidQuantum(quantum)),

@@ -17,3 +17,4 @@ bus.workspace = true
 [dev-dependencies]
 testkit.workspace = true
 devices.workspace = true
+chipset.workspace = true

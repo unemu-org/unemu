@@ -27,6 +27,7 @@ pub struct X86JitCpu {
     vm: Vm,
     cpu: Vcpu,
     dma_regions: Vec<(std::ops::Range<u64>, RegionKind)>,
+    completed_steps: u64,
 }
 
 impl X86JitCpu {
@@ -49,6 +50,7 @@ impl X86JitCpu {
             vm,
             cpu,
             dma_regions: vec![(0..ram_bytes, RegionKind::Ram)],
+            completed_steps: 0,
         })
     }
 
@@ -86,6 +88,7 @@ impl X86JitCpu {
             vm,
             cpu,
             dma_regions: Vec::new(),
+            completed_steps: 0,
         })
     }
 
@@ -296,6 +299,7 @@ impl Cpu for X86JitCpu {
                 },
             })?;
         let steps = run.steps();
+        self.completed_steps += steps;
         let stop = match run.into_stop() {
             StepStop::Exit(exit) => CpuStepStop::Exit(self.map_exit(exit)?),
             StepStop::IrqReady => CpuStepStop::IrqReady,
@@ -306,6 +310,10 @@ impl Cpu for X86JitCpu {
             }
         };
         Ok(CpuStepRun { steps, stop })
+    }
+
+    fn completed_steps(&self) -> u64 {
+        self.completed_steps
     }
 
     fn irq_ready(&self) -> bool {
@@ -377,6 +385,38 @@ impl Cpu for X86JitCpu {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn completed_steps_survives_error_exits_and_zero_budget_calls() {
+        for unsupported in [false, true] {
+            let mut cpu =
+                X86JitCpu::new_real16_bare(0x10000, 0, 0x7C00, RealSegments::flat(0)).unwrap();
+            cpu.map_ram(0, 0x8000).unwrap();
+            // MOV CX, 3; REP STOSB; NOP, then a faulting unit with no charge.
+            let mut code = vec![0xB9, 3, 0, 0xF3, 0xAA, 0x90];
+            code.extend_from_slice(if unsupported {
+                &[0x6C]
+            } else {
+                &[0xA0, 0, 0x90]
+            });
+            cpu.write_mem(0x7C00, &code).unwrap();
+            cpu.set_reg(CpuReg::Rdi, 0x600);
+            assert_eq!(cpu.completed_steps(), 0);
+            assert_eq!(cpu.run_steps(2).unwrap().steps, 2);
+            assert_eq!(cpu.completed_steps(), 2);
+            assert_eq!(cpu.retired(), 1);
+            let error = cpu.run_steps(64).unwrap_err();
+            if unsupported {
+                assert!(matches!(error, CpuError::UnsupportedInstruction { .. }));
+            } else {
+                assert!(matches!(error, CpuError::Unmapped { addr: 0x9000 }));
+            }
+            assert_eq!(cpu.completed_steps(), 5);
+            assert_eq!(cpu.retired(), 3);
+            assert_eq!(cpu.run_steps(0).unwrap().steps, 0);
+            assert_eq!(cpu.completed_steps(), 5);
+        }
+    }
 
     #[test]
     fn run_steps_cuts_inside_cached_real16_block() {
@@ -740,6 +780,7 @@ mod tests {
         let mut vcpu = vm.new_vcpu();
         vcpu.set_reg(Reg::Rip, 0x1000);
         let mut cpu = X86JitCpu {
+            completed_steps: 0,
             vm,
             cpu: vcpu,
             dma_regions: vec![(0..0x2000, RegionKind::Ram)],

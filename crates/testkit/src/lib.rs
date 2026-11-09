@@ -119,6 +119,7 @@ pub struct MockCpu {
     retired_per_run: u64,
     /// Retired-instruction counter, advanced by legacy runs or scripted steps.
     retired: u64,
+    completed_steps: u64,
     /// Vectors the machine injected via [`Cpu::inject_irq`], in order.
     pub injected: Vec<u8>,
     /// Whether an injected vector is queued until a run boundary with IF set.
@@ -141,6 +142,7 @@ impl MockCpu {
             completions: Vec::new(),
             retired_per_run: 1,
             retired: 0,
+            completed_steps: 0,
             injected: Vec::new(),
             pending_irq: false,
             interrupts_enabled: false,
@@ -230,9 +232,14 @@ impl Cpu for MockCpu {
                 .push(*self.injected.last().expect("pending vector"));
             self.pending_irq = false;
         }
+        self.completed_steps += step.run.steps;
         self.retired += step.retired;
         self.irq_ready = step.irq_ready;
         Ok(step.run)
+    }
+
+    fn completed_steps(&self) -> u64 {
+        self.completed_steps
     }
 
     fn irq_ready(&self) -> bool {
@@ -314,7 +321,9 @@ mod tests {
         assert_eq!(zero.steps, 0);
         assert_eq!(zero.stop, CpuStepStop::Exit(CpuStop::BudgetExhausted));
         assert!(!cpu.irq_ready());
+        assert_eq!(cpu.completed_steps(), 0);
         assert_eq!(cpu.run_steps(7).unwrap(), run);
+        assert_eq!(cpu.completed_steps(), 3);
         assert_eq!(cpu.retired(), 0); // A partial REP can consume steps without retiring.
         assert!(cpu.irq_ready());
         assert_eq!(cpu.step_budgets, vec![0, 7]);
@@ -322,6 +331,7 @@ mod tests {
             cpu.run_steps(1),
             Err(CpuError::UnexpectedExit { .. })
         ));
+        assert_eq!(cpu.completed_steps(), 3);
     }
 
     #[test]

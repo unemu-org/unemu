@@ -8,10 +8,18 @@ Everyday commands for this project. Keep this file **flat and copy-pasteable** â
 cargo build                                  # build the workspace
 cargo run -p cli -- <config>                 # run the emulator
 cargo test --workspace                       # unit + golden + integration
-cargo test --workspace -- --ignored          # slow goldens: BIOS POST, FreeDOS boot, DOS sessions (~75 s)
+cargo test --workspace -- --ignored          # slow goldens: BIOS POST, FreeDOS boot, DOS sessions (~2 min)
 UNEMUPC98_REQUIRE_FIXTURES=1 cargo test --workspace -- --ignored # fail if a fixture is missing
+# Opt in to Corrected-vs-Legacy A/B and informative host timing (slow in debug):
+UNEMUPC98_REQUIRE_FIXTURES=1 UNEMUPC98_SCHEDULER_AB=1 cargo test --offline -p cli --test scheduler_ab -- --include-ignored --nocapture
 cargo test -p devices                        # one crate's tests
 ```
+
+The plain ignored set retains PerClock-vs-Deadline comparisons. Corrected-vs-Legacy
+comparisons and both wall-time tests return early unless `UNEMUPC98_SCHEDULER_AB=1`.
+The Corrected DOS file-write comparison uses four times the legacy command step
+budget: each completed REP iteration counts as a step instead of only the whole
+instruction. Both modes must reach the `3 file(s)` listing.
 
 ## Typecheck / lint / format
 

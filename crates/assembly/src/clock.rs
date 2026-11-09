@@ -12,12 +12,15 @@ use crate::error::ConfigError;
 /// config when those arrive.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ClockConfig {
-    /// Device timer dispatch under the unchanged CPU/IRQ loop, default per-clock.
+    /// CPU/IRQ boundary semantics, defaulting to the legacy golden behavior.
+    pub interrupt_timing: machine::InterruptTiming,
+    /// Device timer dispatch, independent of interrupt timing; default per-clock.
     pub engine: machine::SchedulerEngine,
     /// Numerator A of the CPU rate A/B, in retired steps per PIT input clock.
     /// B is [`Self::retired_per_pit_clock_denominator`]. Both must be positive;
-    /// validation rejects zero. A step is a retired instruction as reported by
-    /// the CPU seam. This is a modelling ratio, not a frequency or cycle cost.
+    /// validation rejects zero. Corrected timing also counts REP iterations;
+    /// legacy timing uses the CPU's whole-instruction retirement counter.
+    /// This is a modelling ratio, not a frequency or cycle cost.
     /// The default `1/1` preserves the golden timebase. Fractional PIT clocks
     /// carry across CPU calls; HLT advances whole PIT clocks independently.
     pub retired_per_pit_clock: u64,
@@ -26,8 +29,9 @@ pub struct ClockConfig {
     /// B=3 emits three clocks per step. The ratio need not be reduced.
     pub retired_per_pit_clock_denominator: u64,
     /// Cooperative run budget in CPU-core block units. Defaults to 65,536,
-    /// matching the BIOS boot budget. Governs interrupt latency, so goldens
-    /// depend on it. Validation rejects `None` and `Some(0)` so devices and
+    /// matching the BIOS boot budget. Used only by Legacy; Corrected ignores it.
+    /// In Legacy it governs interrupt latency, so goldens
+    /// depend on it. Legacy validation rejects `None` and `Some(0)` so devices and
     /// safety-cap checks regain control even when the guest never performs I/O.
     ///
     /// [`machine::Machine::run_bounded`] checks its virtual-time cap after each
@@ -41,6 +45,7 @@ impl Default for ClockConfig {
     fn default() -> Self {
         Self {
             engine: machine::SchedulerEngine::default(),
+            interrupt_timing: machine::InterruptTiming::default(),
             retired_per_pit_clock: machine::RETIRED_PER_PIT_CLOCK,
             retired_per_pit_clock_denominator: 1,
             quantum: Some(65_536),

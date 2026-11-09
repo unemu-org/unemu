@@ -203,6 +203,7 @@ pub fn assemble_with_observation(
         None,
     )
     .with_scheduler_engine(config.clock.engine)
+    .with_interrupt_timing(config.clock.interrupt_timing)
     .with_cpu_rate(rate_numerator, rate_denominator)
     .with_dma_wirings(dma_wirings);
 
@@ -712,6 +713,23 @@ mod tests {
             assemble(&config).unwrap().machine.scheduler_engine(),
             machine::SchedulerEngine::Deadline
         );
+    }
+
+    #[test]
+    fn corrected_timing_ignores_the_legacy_block_quantum() {
+        let mut config = reference_config();
+        assert_eq!(
+            assemble(&config).unwrap().machine.interrupt_timing(),
+            machine::InterruptTiming::Legacy
+        );
+        config.clock.interrupt_timing = machine::InterruptTiming::Corrected;
+        for quantum in [None, Some(0), Some(64)] {
+            config.clock.quantum = quantum;
+            assert_eq!(
+                assemble(&config).unwrap().machine.interrupt_timing(),
+                machine::InterruptTiming::Corrected
+            );
+        }
     }
 
     #[test]

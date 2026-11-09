@@ -53,8 +53,12 @@ pub struct CapEndpoint {
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Normalisations {
-    /// Add this constant to right-hand access times only. No shift is inferred.
+    /// Add to right-hand access times and their OCW2 observations. INTA never
+    /// shifts; no offset is inferred.
     pub right_access_shift: i64,
+    /// MMIO already stops before retirement in the legacy loop. Override its
+    /// shift when ports move to instruction start but MMIO times stay put.
+    pub right_mmio_shift: Option<i64>,
     /// Never removes trailing accesses or normalises a halt/error into a cap.
     pub cap_endpoint: Option<CapEndpoint>,
 }
@@ -79,9 +83,40 @@ fn equivalent(left: &Event, right: &Event, options: Normalisations, final_pair: 
         {
             *at = VClock(left_time);
         }
-        return i128::from(left_time)
-            == i128::from(right_time) + i128::from(options.right_access_shift)
+        let shift = if matches!(
+            right,
+            Event::Access {
+                access: TraceEvent::Mmio { .. },
+                ..
+            }
+        ) {
+            options
+                .right_mmio_shift
+                .unwrap_or(options.right_access_shift)
+        } else {
+            options.right_access_shift
+        };
+        return i128::from(left_time) == i128::from(right_time) + i128::from(shift)
             && left == &shifted;
+    }
+    // An OCW2 observation belongs to its OUT transaction. Shift it together
+    // with that access, while INTA retains its actual acceptance timestamp.
+    if let (
+        Event::Pic(PicObservation::Eoi {
+            at: la,
+            command: lc,
+            value: Some(lv),
+        }),
+        Event::Pic(PicObservation::Eoi {
+            at: ra,
+            command: rc,
+            value: Some(rv),
+        }),
+    ) = (left, right)
+    {
+        return lc == rc
+            && lv == rv
+            && i128::from(la.0) == i128::from(ra.0) + i128::from(options.right_access_shift);
     }
     if final_pair {
         if let (
@@ -166,20 +201,30 @@ pub fn compare(
 #[derive(Clone, Copy, Debug)]
 pub enum Workload {
     Serial,
+    SerialReal16,
     Boot,
     Keyboard,
     Rtc,
     VgaText,
     BiosPost,
     FreeDosPrompt,
+    DosDir,
+    DosWrite,
+    FloppyBoot,
+    FdcWrite,
+    Test386,
 }
 
-pub const FAST_WORKLOADS: [Workload; 5] = [
+pub const FAST_WORKLOADS: [Workload; 9] = [
     Workload::Serial,
+    Workload::SerialReal16,
     Workload::Boot,
     Workload::Keyboard,
     Workload::Rtc,
     Workload::VgaText,
+    Workload::FloppyBoot,
+    Workload::FdcWrite,
+    Workload::Test386,
 ];
 
 pub struct Prepared {
@@ -196,8 +241,22 @@ mod fixtures;
 pub fn prepare(workload: Workload) -> Result<Option<Prepared>> {
     let mut policy = RunPolicy::natural(None, None);
     let assembled = match workload {
-        Workload::Serial => {
-            let cpu = X86JitCpu::new(cli::RAM_BYTES, cli::ENTRY, cli::HELLO_PROGRAM)?;
+        Workload::Serial | Workload::SerialReal16 => {
+            let cpu = if matches!(workload, Workload::Serial) {
+                X86JitCpu::new(cli::RAM_BYTES, cli::ENTRY, cli::HELLO_PROGRAM)?
+            } else {
+                // Preserve the Long64 golden above. The additional Real16
+                // workload exercises the same serial operations with steps.
+                let mut cpu = X86JitCpu::new_real16_bare(
+                    0x10000,
+                    0,
+                    0x7C00,
+                    cpu::x86jit_backend::RealSegments::flat(0),
+                )?;
+                cpu.map_ram(0, 0x10000)?;
+                cpu.write_mem(0x7C00, &cli::HELLO_PROGRAM[1..])?;
+                cpu
+            };
             let bus = Bus::new(
                 vec![Box::new(Uart16550::new(chipset::COM1_BASE))],
                 DecodeMap {
@@ -251,12 +310,31 @@ pub fn prepare(workload: Workload) -> Result<Option<Prepared>> {
         Workload::VgaText => {
             assembly::assemble(&assembly::at_vga_text(cli::VGA_TEXT_PROGRAM.to_vec()))?
         }
-        Workload::BiosPost | Workload::FreeDosPrompt => {
+        Workload::FloppyBoot => assembly::assemble(&assembly::floppy_boot(
+            cli::FLOPPY_LOADER.to_vec(),
+            cli::bootable_floppy_image(),
+        ))?,
+        Workload::FdcWrite => {
+            policy.retired_cap = Some(cli::FDC_WRITE_RETIRED_CAP);
+            assembly::assemble(&assembly::at_fdc_write(
+                cli::FDC_WRITE_PROGRAM.to_vec(),
+                cli::fdc_write_pattern(),
+                cli::FDC_WRITE_SRC,
+            ))?
+        }
+        Workload::Test386 => {
+            let Some(image) = fixtures::fixture("test386/test386.bin") else {
+                return Ok(None);
+            };
+            policy.retired_cap = Some(cli::TEST386_MAX_RETIRED);
+            assembly::assemble(&assembly::test386(image))?
+        }
+        Workload::BiosPost | Workload::FreeDosPrompt | Workload::DosDir | Workload::DosWrite => {
             let Some(rom) = fixtures::fixture("kiselev-bios/bios-xi8088.bin") else {
                 return Ok(None);
             };
             anyhow::ensure!(rom.len() == 32768, "Xi8088 BIOS must be 32 KiB");
-            let floppy = if matches!(workload, Workload::FreeDosPrompt) {
+            let floppy = if !matches!(workload, Workload::BiosPost) {
                 let Some(image) = fixtures::fixture("freedos/freedos.img") else {
                     return Ok(None);
                 };
@@ -282,7 +360,28 @@ pub fn prepare(workload: Workload) -> Result<Option<Prepared>> {
                     then_budget: 0,
                 };
             }
-            assembly::assemble(&assembly::bios(rom, floppy, cli::BIOS_QUANTUM))?
+            let interactive = matches!(workload, Workload::DosDir | Workload::DosWrite);
+            let quantum = if interactive {
+                cli::DOS_INTERACTIVE_QUANTUM
+            } else {
+                cli::BIOS_QUANTUM
+            };
+            let assembled = assembly::assemble(&assembly::bios(rom, floppy, quantum))?;
+            if interactive {
+                policy.stimuli.push(assembly::KeyboardStimulus {
+                    keyboard_index: assembled.device_index[&DeviceId::Keyboard],
+                    scancodes: if matches!(workload, Workload::DosWrite) {
+                        cli::dos_write_file_script()
+                    } else {
+                        cli::dos_dir_script()
+                    },
+                    schedule: assembly::InjectionSchedule::AfterPrompt,
+                });
+                if let StopCondition::PromptThen { then_budget, .. } = &mut policy.stop {
+                    *then_budget = cli::DOS_INTERACTIVE_COMMAND_BUDGET;
+                }
+            }
+            assembled
         }
     };
     Ok(Some(Prepared {
@@ -524,5 +623,55 @@ pub fn run_workload_engine(
     Ok(prepare(workload)?.map(|mut prepared| {
         prepared.machine = prepared.machine.with_scheduler_engine(engine);
         observe_with(prepared, assembly::run)
+    }))
+}
+
+/// Run either CPU/IRQ semantics with the same device dispatch and policy.
+pub fn run_workload_timing(
+    workload: Workload,
+    timing: machine::InterruptTiming,
+    engine: machine::SchedulerEngine,
+) -> Result<Option<Stream>> {
+    Ok(prepare(workload)?.map(|mut prepared| {
+        prepared.machine = prepared
+            .machine
+            .with_scheduler_engine(engine)
+            .with_interrupt_timing(timing);
+        if matches!(workload, Workload::DosWrite) && timing == machine::InterruptTiming::Corrected {
+            // REP iterations consume steps, so the command needs more time than
+            // the legacy whole-instruction budget to reach its final listing.
+            if let StopCondition::PromptThen { then_budget, .. } = &mut prepared.policy.stop {
+                *then_budget *= 4;
+            }
+        }
+        observe_with(prepared, |machine, policy| {
+            let result = assembly::run(machine, policy);
+            if result.is_ok()
+                && matches!(
+                    workload,
+                    Workload::FreeDosPrompt | Workload::DosDir | Workload::DosWrite
+                )
+            {
+                let mut bytes = vec![0; 80 * 25 * 2];
+                machine
+                    .cpu()
+                    .read_mem(cli::MDA_BUFFER_BASE, &mut bytes)
+                    .unwrap();
+                let console: String = bytes
+                    .chunks_exact(2)
+                    .map(|cell| char::from(cell[0]))
+                    .collect();
+                let expected = match workload {
+                    Workload::DosDir => "2 file(s)",
+                    Workload::DosWrite => "3 file(s)",
+                    _ => cli::DOS_DATE_PROMPT,
+                };
+                assert!(
+                    console.contains(expected),
+                    "{workload:?} {timing:?}: expected {expected} on console: {console}"
+                );
+            }
+            result
+        })
     }))
 }

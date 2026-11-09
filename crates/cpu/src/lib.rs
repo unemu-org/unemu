@@ -198,14 +198,23 @@ pub trait Cpu {
     /// - Budget exhaustion or IRQ readiness: no unit is in flight; the next
     ///   unit starts at `steps`. An instruction's own exit wins on the last unit.
     ///
-    /// Complete bus effects before acknowledging an interrupt. Errors carry no
-    /// step count, so callers must propagate them rather than resume scheduling.
+    /// Complete bus effects before acknowledging an interrupt. On error, charge
+    /// the delta of [`Cpu::completed_steps`] before propagating the error.
     /// REP restart follows Intel SDM Vol. 3A §7.6 (Program or Task Restart);
     /// the port-handoff count is an engine convention, not hardware timing.
     fn run_steps(&mut self, _max_steps: u64) -> Result<CpuStepRun, CpuError> {
         Err(CpuError::UnexpectedExit {
             what: "step-bounded execution is unsupported by this backend or mode".to_string(),
         })
+    }
+
+    /// Completed scheduling units across step-bounded runs, including error exits (§6).
+    ///
+    /// Uses the same units as [`CpuStepRun::steps`], including REP iterations.
+    /// Read the delta around [`Cpu::run_steps`] to retain completed work when
+    /// the call returns an error. The default is zero for unsupported backends.
+    fn completed_steps(&self) -> u64 {
+        0
     }
 
     /// Whether a maskable IRQ can be accepted at this completed boundary (§5.2).

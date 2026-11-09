@@ -56,8 +56,8 @@
 use std::num::NonZeroU64;
 
 use bus::{Bus, BusError};
-use cpu::{Cpu, CpuError, CpuStop};
-use device::{DmaMemory, DmaOp, DmaOutcome, InterruptController, VClock};
+use cpu::{Cpu, CpuError, CpuStepStop, CpuStop};
+use device::{DmaMemory, DmaOp, DmaOutcome, InterruptController, NextEvent, VClock};
 use thiserror::Error;
 
 /// Default retired guest instructions per PIT input clock (§6).
@@ -69,8 +69,8 @@ pub const RETIRED_PER_PIT_CLOCK: u64 = 1;
 
 /// Device dispatch policy under the same CPU/IRQ loop (§6).
 ///
-/// Both engines preserve the legacy instruction batching and interrupt ordering;
-/// only device timer visits differ. See `backlog/docs/design/scheduler.md`,
+/// The engine selects device timer visits independently of [`InterruptTiming`].
+/// It preserves the selected instruction batching and interrupt ordering. See `backlog/docs/design/scheduler.md`,
 /// §Migration and A/B gates.
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
 pub enum SchedulerEngine {
@@ -79,6 +79,17 @@ pub enum SchedulerEngine {
     PerClock,
     /// Tick legacy devices every clock and scheduled devices only when due.
     Deadline,
+}
+
+/// Interrupt acceptance policy; see `backlog/docs/design/scheduler.md`,
+/// §Interrupt acceptance and instruction transactions.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+pub enum InterruptTiming {
+    /// Preserve block-batched execution and eager acknowledgement.
+    #[default]
+    Legacy,
+    /// Finish each instruction transaction before accepting a ready IRQ.
+    Corrected,
 }
 
 /// One wired connection from a device IRQ line to a PIC input (§5.1).
@@ -160,6 +171,13 @@ pub enum MachineError {
     },
 }
 
+fn scheduler_error(what: &str) -> MachineError {
+    CpuError::UnexpectedExit {
+        what: format!("scheduler: {what}"),
+    }
+    .into()
+}
+
 /// Why [`Machine::run_bounded`] returned control to the caller (§3.1).
 ///
 /// The natural stop is [`RunOutcome::Halted`] — the guest halted and the
@@ -184,6 +202,9 @@ pub struct Machine<C: Cpu> {
     clock: VClock,
     quantum: Option<u64>,
     engine: SchedulerEngine,
+    interrupt_timing: InterruptTiming,
+    completed_steps: u64,
+    step_limit: NonZeroU64,
     /// HLT remains suspended across runner calls until an IRQ can wake the CPU.
     halted: bool,
     /// Total PIT clocks spent halted, charged to the virtual-time safety cap.
@@ -239,6 +260,9 @@ impl<C: Cpu> Machine<C> {
             clock: VClock::ZERO,
             quantum,
             engine: SchedulerEngine::default(),
+            interrupt_timing: InterruptTiming::default(),
+            completed_steps: 0,
+            step_limit: NonZeroU64::new(65_536).unwrap_or(NonZeroU64::MIN),
             halted: false,
             halted_clocks: 0,
             idle_clocks: 0,
@@ -271,6 +295,27 @@ impl<C: Cpu> Machine<C> {
     pub fn with_scheduler_engine(mut self, engine: SchedulerEngine) -> Self {
         self.engine = engine;
         self
+    }
+
+    /// Select instruction-boundary IRQ acceptance before the first run.
+    /// Corrected timing uses step budgets and ignores the legacy block quantum.
+    #[must_use]
+    pub fn with_interrupt_timing(mut self, timing: InterruptTiming) -> Self {
+        self.interrupt_timing = timing;
+        self
+    }
+
+    /// Bound host cooperation in corrected mode, independently of the legacy
+    /// block quantum. Smaller calls cannot move a device or IRQ boundary.
+    #[must_use]
+    pub fn with_step_limit(mut self, limit: NonZeroU64) -> Self {
+        self.step_limit = limit;
+        self
+    }
+
+    /// The selected CPU/IRQ timing policy.
+    pub fn interrupt_timing(&self) -> InterruptTiming {
+        self.interrupt_timing
     }
 
     /// The selected device timer dispatch policy.
@@ -309,16 +354,22 @@ impl<C: Cpu> Machine<C> {
 
     /// Total virtual time in instruction-equivalent units (§6).
     ///
-    /// For CPU rate A/B, this is the retired count plus
+    /// For CPU rate A/B, this is the active count plus
     /// `floor(halted_clocks * A / B)`, saturating at `u64::MAX`. The floor applies
     /// to accumulated halted clocks, so fractional instruction equivalents survive
     /// separate halts and runner calls. Halted clocks do not consume the running
     /// CPU's fractional PIT-clock remainder. Unlike [`Cpu::retired`], this advances
     /// during HLT too, so run caps and scheduled targets bound busy and idle time.
+    /// Legacy uses whole-instruction retirements; corrected timing uses completed
+    /// steps, including individual REP iterations.
     pub fn virtual_time(&self) -> u64 {
         let halted = u128::from(self.halted_clocks) * u128::from(self.cpu_rate_numerator.get())
             / u128::from(self.cpu_rate_denominator.get());
-        (u128::from(self.cpu.retired()) + halted).min(u128::from(u64::MAX)) as u64
+        let active = match self.interrupt_timing {
+            InterruptTiming::Legacy => self.cpu.retired(),
+            InterruptTiming::Corrected => self.completed_steps,
+        };
+        (u128::from(active) + halted).min(u128::from(u64::MAX)) as u64
     }
 
     /// The configured idle limit (halted PIT clocks before quiescence).
@@ -364,8 +415,18 @@ impl<C: Cpu> Machine<C> {
     /// The cap is checked after each CPU quantum and each halted clock; a CPU
     /// quantum may overshoot it. Reaching it returns
     /// [`RunOutcome::RetiredCapReached`], preserving captured device output.
-    /// `None` imposes no cap.
+    /// `None` imposes no cap. With [`InterruptTiming::Corrected`], execution is
+    /// step-bounded and the stopping instruction finishes before a ready IRQ is
+    /// acknowledged. Active caps are exact; halted caps round up to a whole PIT
+    /// clock at fractional CPU rates. The legacy block quantum is ignored.
     pub fn run_bounded(&mut self, max_retired: Option<u64>) -> Result<RunOutcome, MachineError> {
+        match self.interrupt_timing {
+            InterruptTiming::Legacy => self.run_bounded_legacy(max_retired),
+            InterruptTiming::Corrected => self.run_bounded_corrected(max_retired),
+        }
+    }
+
+    fn run_bounded_legacy(&mut self, max_retired: Option<u64>) -> Result<RunOutcome, MachineError> {
         loop {
             if max_retired.is_some_and(|cap| self.virtual_time() >= cap) {
                 return Ok(RunOutcome::RetiredCapReached);
@@ -448,6 +509,223 @@ impl<C: Cpu> Machine<C> {
             // (a floppy READ programs its transfer, then the 8237 moves the bytes
             // into guest RAM before the guest runs again).
             self.service_dma()?;
+        }
+    }
+
+    fn next_deadline(&self) -> Result<Option<VClock>, MachineError> {
+        let mut next = None;
+        let mut index = 0;
+        while let Some(device) = self.bus.device(index) {
+            let event = if self.engine == SchedulerEngine::PerClock {
+                NextEvent::EveryPitClock
+            } else {
+                device.next_event(self.clock)
+            };
+            let at = match event {
+                NextEvent::Dormant => {
+                    index += 1;
+                    continue;
+                }
+                NextEvent::EveryPitClock => VClock(
+                    self.clock
+                        .0
+                        .checked_add(1)
+                        .ok_or_else(|| scheduler_error("clock exhausted"))?,
+                ),
+                NextEvent::At(at) => at,
+            };
+            if at <= self.clock {
+                return Err(scheduler_error("device deadline did not advance"));
+            }
+            next = Some(next.map_or(at, |previous: VClock| previous.min(at)));
+            index += 1;
+        }
+        Ok(next)
+    }
+
+    // Visit transitions at their own times so a short low pulse cannot vanish
+    // inside a slow CPU step or a halted jump.
+    fn advance_corrected_to(&mut self, target: VClock) -> Result<(), MachineError> {
+        while self.clock < target {
+            let at = self.next_deadline()?.map_or(target, |at| at.min(target));
+            self.clock = at;
+            match self.engine {
+                SchedulerEngine::PerClock => self.bus.tick_all(at),
+                SchedulerEngine::Deadline => {
+                    self.bus.tick_due(at);
+                }
+            }
+            self.edge_detect();
+        }
+        Ok(())
+    }
+
+    fn charge_steps(&mut self, steps: u64) -> Result<(), MachineError> {
+        self.completed_steps = self
+            .completed_steps
+            .checked_add(steps)
+            .ok_or_else(|| scheduler_error("step counter exhausted"))?;
+        let total = u128::from(self.clock_remainder)
+            + u128::from(steps) * u128::from(self.cpu_rate_denominator.get());
+        let rate = u128::from(self.cpu_rate_numerator.get());
+        let clocks =
+            u64::try_from(total / rate).map_err(|_| scheduler_error("clock interval exhausted"))?;
+        self.clock_remainder = (total % rate) as u64;
+        let target = self
+            .clock
+            .0
+            .checked_add(clocks)
+            .ok_or_else(|| scheduler_error("clock exhausted"))?;
+        self.advance_corrected_to(VClock(target))
+    }
+
+    fn settle_corrected(&mut self) -> Result<(), MachineError> {
+        self.bus.settle();
+        self.edge_detect();
+        for _ in 0..1024 {
+            let transferred = self.service_dma_pass()?;
+            self.bus.settle();
+            self.edge_detect();
+            if !transferred {
+                return Ok(());
+            }
+        }
+        Err(scheduler_error("DMA completion made no progress"))
+    }
+
+    fn run_bounded_corrected(&mut self, cap: Option<u64>) -> Result<RunOutcome, MachineError> {
+        let mut completing = false;
+        let mut no_progress = 0;
+        self.settle_corrected()?;
+        loop {
+            if !completing {
+                // Policy observations and hard caps win over a new INTA.
+                if cap.is_some_and(|cap| self.virtual_time() >= cap) {
+                    return Ok(RunOutcome::RetiredCapReached);
+                }
+                if self.cpu.irq_ready() && !self.cpu.has_pending_irq() && self.pic.poll().is_some()
+                {
+                    if let Some(vector) = self.pic.acknowledge() {
+                        self.cpu.inject_irq(vector);
+                    }
+                }
+                if self.halted {
+                    if !self.cpu.interrupts_enabled() {
+                        return Ok(RunOutcome::Halted);
+                    }
+                    if self.cpu.has_pending_irq() {
+                        self.halted = false;
+                        self.idle_clocks = 0;
+                    } else {
+                        let Some(limit) = self.idle_limit else {
+                            return Ok(RunOutcome::Halted);
+                        };
+                        if self.idle_clocks >= limit {
+                            return Ok(RunOutcome::Halted);
+                        }
+                        let mut clocks = limit - self.idle_clocks;
+                        if let Some(deadline) = self.next_deadline()? {
+                            clocks = clocks.min(deadline.0 - self.clock.0);
+                        }
+                        if let Some(cap) = cap {
+                            let a = u128::from(self.cpu_rate_numerator.get());
+                            let b = u128::from(self.cpu_rate_denominator.get());
+                            let credit = u128::from(self.halted_clocks) * a % b;
+                            let room = u128::from(cap - self.virtual_time()) * b - credit;
+                            clocks =
+                                clocks.min(u64::try_from(room.div_ceil(a)).unwrap_or(u64::MAX));
+                        }
+                        let target = self
+                            .clock
+                            .0
+                            .checked_add(clocks)
+                            .ok_or_else(|| scheduler_error("clock exhausted"))?;
+                        self.advance_corrected_to(VClock(target))?;
+                        self.halted_clocks = self
+                            .halted_clocks
+                            .checked_add(clocks)
+                            .ok_or_else(|| scheduler_error("halted clock counter exhausted"))?;
+                        self.idle_clocks += clocks;
+                        self.settle_corrected()?;
+                        continue;
+                    }
+                }
+            }
+
+            let mut budget = cap
+                .map_or(u64::MAX, |cap| cap - self.virtual_time())
+                .min(self.step_limit.get());
+            if completing || (self.pic.poll().is_some() && !self.cpu.irq_ready()) {
+                budget = 1;
+            } else if let Some(deadline) = self.next_deadline()? {
+                let clocks = u128::from(deadline.0 - self.clock.0);
+                let phase = clocks * u128::from(self.cpu_rate_numerator.get())
+                    - u128::from(self.clock_remainder);
+                let steps = phase.div_ceil(u128::from(self.cpu_rate_denominator.get()));
+                budget = budget.min(u64::try_from(steps).unwrap_or(u64::MAX));
+            }
+            let before = self.cpu.completed_steps();
+            let run = match self.cpu.run_steps(budget) {
+                Ok(run) => run,
+                Err(error) => {
+                    self.charge_steps(self.cpu.completed_steps() - before)?;
+                    self.settle_corrected()?;
+                    return Err(error.into());
+                }
+            };
+            if run.steps == 0 {
+                no_progress += 1;
+                if no_progress > 1024 {
+                    return Err(scheduler_error("instruction completion made no progress"));
+                }
+            } else {
+                no_progress = 0;
+            }
+            let stop = match run.stop {
+                CpuStepStop::IrqReady => CpuStop::BudgetExhausted,
+                CpuStepStop::Exit(stop) => stop,
+            };
+            let counted_stop = matches!(
+                stop,
+                CpuStop::PortOut { .. } | CpuStop::PortIn { .. } | CpuStop::Halt
+            );
+            let prefix = if counted_stop {
+                run.steps
+                    .checked_sub(1)
+                    .ok_or_else(|| scheduler_error("counted stop completed no steps"))?
+            } else {
+                run.steps
+            };
+            self.charge_steps(prefix)?;
+            self.bus.settle();
+            self.edge_detect();
+            completing = false;
+            match stop {
+                CpuStop::PortOut { port, size, value } => {
+                    self.bus.port_write(port, size, value as u32)?
+                }
+                CpuStop::PortIn { port, size } => {
+                    let value = self.bus.port_read(port, size)?;
+                    self.cpu.complete_port_in(u64::from(value));
+                }
+                CpuStop::MmioWrite { addr, size, value } => {
+                    self.bus.mmio_write(addr, size, value)?;
+                    self.cpu.complete_mmio_write();
+                    completing = true;
+                }
+                CpuStop::MmioRead { addr, size } => {
+                    let value = self.bus.mmio_read(addr, size)?;
+                    self.cpu.complete_mmio_read(value);
+                    completing = true;
+                }
+                CpuStop::Exception { vector } => return Err(MachineError::Exception { vector }),
+                CpuStop::Halt => self.halted = true,
+                CpuStop::BudgetExhausted => {}
+            }
+            if counted_stop {
+                self.charge_steps(1)?;
+            }
+            self.settle_corrected()?;
         }
     }
 
@@ -543,6 +821,11 @@ impl<C: Cpu> Machine<C> {
     /// Bus faults propagate just like CPU MMIO faults; a failed transfer does
     /// not report a successful completion to the requester.
     fn service_dma(&mut self) -> Result<(), BusError> {
+        self.service_dma_pass().map(|_| ())
+    }
+
+    fn service_dma_pass(&mut self) -> Result<bool, BusError> {
+        let mut transferred = false;
         for i in 0..self.dma_wirings.len() {
             let wiring = self.dma_wirings[i];
             let request = self
@@ -552,6 +835,7 @@ impl<C: Cpu> Machine<C> {
             let Some(request) = request else {
                 continue;
             };
+            transferred = true;
             let mut mem = CpuDmaMemory {
                 cpu: &mut self.cpu,
                 read_offset: std::cell::Cell::new(0),
@@ -594,7 +878,7 @@ impl<C: Cpu> Machine<C> {
                 dev.dma_complete(outcome);
             }
         }
-        Ok(())
+        Ok(transferred)
     }
 
     /// Acknowledge-at-inject (§5.1, §5.4): if the CPU has no injected IRQ in
@@ -1807,3 +2091,6 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+mod corrected_tests;
