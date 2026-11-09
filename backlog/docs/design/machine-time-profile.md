@@ -163,3 +163,38 @@ Workload definitions come from `crates/cli/src/lib.rs`,
 tests `crates/cli/tests/{bios_boot,freedos_boot,dos_interactive}_golden.rs`.
 The CPU revision is pinned by `Cargo.toml` / `Cargo.lock`; fixtures are listed
 above. The tables remain the retained result after the temporary code is removed.
+
+## Re-measurement after adopting corrected timing (2026-11-09)
+
+Same host and toolchain, release build, x86jit pinned at `70be008`, main after
+the corrected loop became the only loop. Method: the release build of the
+interactive DOS golden (`dos_interactive_golden`, BIOS POST, FreeDOS boot to the
+date prompt, `DIR`) sampled with the macOS `sample` tool at 1 ms, three runs;
+inclusive samples of the test thread grouped by frame. The whole session takes
+about 0.85 s for roughly 11 million steps. Categories overlap (lifting happens
+inside dispatch; invalidation is reached from guest stores).
+
+| Inclusive share of the session | Run 1 | Run 2 | Run 3 |
+|---|---|---|---|
+| CPU core, `Vcpu::run_steps` | 98.9 % | 98.2 % | 97.1 % |
+| — translation-cache invalidation (`Memory::dispatch_smc` → `TranslationCache::invalidate_range`) | 50.6 % | 46.1 % | 49.4 % |
+| — dispatch and block resolution | 25.5 % | 29.2 % | 25.6 % |
+| — interpreting IR | 21.3 % | 21.2 % | 20.4 % |
+| — decoding and lifting to IR | 18.9 % | 21.5 % | 19.9 % |
+| bus: port and MMIO access, settle, deadlines | 0.4 % | 1.0 % | 1.9 % |
+| devices | 0.2 % | 0.2 % | 0.3 % |
+
+Findings:
+
+- The machine side (bus, devices, scheduler) is now **under 2 %** of the DOS
+  session; the old per-clock tick path (11–13 % above) is gone.
+- About **half of all time** is self-modifying-code bookkeeping in the CPU core:
+  guest stores into pages that also hold translated code invalidate a range of
+  the translation cache, and the invalidation itself is the cost. Real-mode DOS
+  and BIOS code keeps data next to code, so ordinary stores hit code pages.
+- Interpreting the IR is only about a fifth of the time; lifting cold code is
+  another fifth. Isolated interpreter loops run at 13–19 ns per instruction with
+  warm blocks and 67–71 ns on first execution (lift included).
+- The remaining large speed-ups are in the CPU core, not in this repository;
+  they were reported to the CPU core project together with the interpreter
+  measurements.
