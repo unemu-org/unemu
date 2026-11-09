@@ -576,10 +576,13 @@ pub const BIOS_RESET_IP: u16 = 0xFFF0;
 /// the clock/interrupt path run. It only bounds how often the cap is checked.
 pub const BIOS_QUANTUM: Option<u64> = Some(65_536);
 /// Virtual-time safety cap for the BIOS run, in instruction equivalents (§6).
-/// POST plus a 640 KiB memory test is hundreds of millions of instructions; this
-/// is a generous bound so a spin cannot hang the run. Reaching it is a clean stop,
+/// A generous bound so a spin cannot hang the run. Reaching it is a clean stop,
 /// not a failure.
 pub const BIOS_MAX_RETIRED: u64 = 2_000_000_000;
+/// Retired-instruction cap for the BIOS POST golden (§3.1, §9), twice the measured
+/// POST length: POST completes within 5 million instructions at the pinned CPU
+/// revision. Re-measure if the CPU pin or BIOS changes.
+pub const BIOS_GOLDEN_MAX_RETIRED: u64 = 10_000_000;
 /// Consecutive halted PIT clocks with no serviceable interrupt before the machine
 /// declares the interrupt source quiescent and stops. Large so a BIOS that halts
 /// waiting for a timer tick is not cut off mid-POST: this exceeds the standard
@@ -641,8 +644,17 @@ pub struct BiosRun {
 /// whole point is to see how far POST got even when the run ends on an
 /// instruction the real-mode core does not lift.
 pub fn run_bios(rom: &[u8]) -> BiosRun {
+    run_bios_with_cap(rom, BIOS_MAX_RETIRED)
+}
+
+/// Boot the same PC/AT BIOS machine as [`run_bios`] with a caller-supplied
+/// virtual-time cap in instruction equivalents (§3.1, §6, §9).
+///
+/// The POST golden uses [`BIOS_GOLDEN_MAX_RETIRED`] to capture the complete POST
+/// stream without spending the full safety budget in the no-floppy boot loop.
+pub fn run_bios_with_cap(rom: &[u8], cap: u64) -> BiosRun {
     run_bios_config(assembly::bios(rom.to_vec(), None, BIOS_QUANTUM), |_| {
-        bios_natural_policy()
+        RunPolicy::natural(Some(cap), Some(BIOS_IDLE_LIMIT))
     })
 }
 

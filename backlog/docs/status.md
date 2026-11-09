@@ -19,9 +19,10 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   `assemble()` and run under a `RunPolicy`; presets replace the old hand-written runners.
 - **CPU:** x86jit `CpuMode::Real16` (interpreter-only), pinned to x86jit `main` @ `b0c9ae5`
   (decision-13).
-- **Tests:** MEASURED 2026-11-09 at that pin: `cargo test --workspace` 277 passed, 0 failed,
+- **Tests:** MEASURED 2026-11-09 at that pin: `cargo test --workspace` 306 passed, 0 failed,
   5 ignored; the 5 slow goldens (`-- --ignored`: BIOS POST, INT 19h floppy read, FreeDOS prompt,
-  `DIR`, file write) pass, ~23 min in a debug build; clippy `-D warnings` and `fmt --check` clean.
+  `DIR`, file write) pass in ~75 s (dependencies optimized in the dev profile); clippy
+  `-D warnings` and `fmt --check` clean.
 
 ## In flight
 

@@ -111,7 +111,7 @@ nix develop                 # toolchain — or direnv auto-loads it
 bd --version                # beads ≥ 1.3.1, installed on the host (not in the devShell; dev-setup.md)
 cargo build
 cargo test --workspace                                  # unit + golden + integration
-cargo test --workspace -- --ignored                     # slow goldens: BIOS POST, FreeDOS boot, DOS sessions
+cargo test --workspace -- --ignored                     # slow goldens: BIOS POST, FreeDOS boot, DOS sessions (~75 s)
 cargo clippy --all-targets --all-features -- -D warnings
 cargo fmt --check
 ```

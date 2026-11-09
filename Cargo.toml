@@ -42,3 +42,9 @@ machine = { path = "crates/machine" }
 devices = { path = "crates/devices" }
 video = { path = "crates/video" }
 testkit = { path = "crates/testkit" }
+
+# Optimize dependencies (the CPU core and its decoder) even in dev/test builds,
+# because emulator tests spend most of their time inside them. Workspace crates
+# stay unoptimized with debug assertions and overflow checks.
+[profile.dev.package."*"]
+opt-level = 3

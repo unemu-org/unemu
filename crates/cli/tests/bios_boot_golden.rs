@@ -2,7 +2,7 @@
 //! BIOS boot spike: load the real Kiselev Xi8088 ROM and see how far POST gets
 //! (§3.1, §5, §9).
 //!
-//! Assembles the full PC/AT machine ([`run_bios`]) — cascaded 8259 pair, 8253
+//! Assembles the full PC/AT machine ([`run_bios_with_cap`]) — cascaded 8259 pair, 8253
 //! PIT, 8042, seeded MC146818 CMOS/RTC, VGA text card, port-`0x61` system
 //! control, POST port at `0x80` — over a full 1 MiB address space with the 32 KiB
 //! BIOS mapped as masked ROM at `0xF8000`, and boots it from the reset vector
@@ -33,12 +33,9 @@
 //! init (`0x20`) pass; lifting x87 `FNINIT` let it clear FPU detect (`0x22`).
 //!
 //! After `e_boot` (`0x00`) the BIOS calls **INT 19h** (`int_19`, "load and execute
-//! the boot sector") and enters its floppy-read retry loop. No floppy controller
-//! is modelled — the undecoded µPD765 ports read open-bus `0xFF` — so the read
-//! never succeeds and the BIOS spins there until the retired-instruction cap
-//! (`StopReason::BudgetExhausted`). **Modelling the µPD765 floppy controller (on
-//! the existing 8237 DMA) + a boot disk image is the next step**; then INT 19h
-//! reads a real boot sector and this becomes a fast, natural-stop boot test.
+//! the boot sector") and enters its floppy-read retry loop. This configuration
+//! attaches no floppy, so the read never succeeds and the BIOS spins there until
+//! the retired-instruction cap (`StopReason::BudgetExhausted`).
 //!
 //! The text screen is blank: the BIOS's MDA fallback targets the `0xB0000` window,
 //! which this spike maps as plain RAM rather than routing to the CGA card at
@@ -55,7 +52,7 @@
 //!   The stop point is only meaningful against a known CPU revision; re-baseline
 //!   the golden if `FNINIT` (or a nearer instruction) gains real-mode support.
 
-use cli::{run_bios, StopReason};
+use cli::{run_bios_with_cap, StopReason, BIOS_GOLDEN_MAX_RETIRED};
 use std::path::PathBuf;
 
 /// Absolute path to the (gitignored) built Xi8088 BIOS image.
@@ -69,19 +66,16 @@ fn rom_path() -> PathBuf {
 /// detect (`0x21`/`0x22`), serial and parallel scan (`0x24`/`0x25`), the RAM test
 /// (`0x30`/`0x31`), the option-ROM scan (`0x40`/`0x43`) — and reaches the boot
 /// loader (`e_boot` = `0x00`), where it calls INT 19h. It then spins in the
-/// floppy-read retry loop because the µPD765 floppy controller is not modelled
-/// yet (undecoded FDC ports read open-bus `0xFF`); adding it is the next step.
+/// floppy-read retry loop because this configuration attaches no floppy.
 /// Golden the exact stream.
 const GOLDEN_POST: &[u8] = &[
     0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x10, 0x12, 0x20, 0x21, 0x22, 0x24, 0x25,
     0x30, 0x31, 0x40, 0x43, 0x00,
 ];
 
-// Slow: the BIOS runs its full RAM test and then spins in the INT 19h floppy-read
-// loop until the retired-instruction cap, which takes minutes. Ignored by default;
-// once a floppy controller is modelled INT 19h will read a boot sector and this
-// becomes a fast, natural-stop boot test.
-#[ignore = "slow: BIOS spins at INT 19h until a floppy controller is modelled"]
+// The BIOS ROM is fetched and built separately, so this test stays opt-in.
+// With no floppy attached, INT 19h spins until the shortened golden cap.
+#[ignore = "requires fetched BIOS ROM; no floppy attached, so INT 19h runs to the golden cap"]
 #[test]
 fn bios_boot_stop_point_matches_golden() {
     let path = rom_path();
@@ -96,7 +90,7 @@ fn bios_boot_stop_point_matches_golden() {
     };
     assert_eq!(rom.len(), 32768, "Xi8088 BIOS is a 32 KiB image");
 
-    let run = run_bios(&rom);
+    let run = run_bios_with_cap(&rom, BIOS_GOLDEN_MAX_RETIRED);
 
     // End-to-end proof of the plumbing: reset → far jump → real-mode exec out of
     // masked ROM → POST capture. The stream must reach at least the first POST
@@ -114,7 +108,7 @@ fn bios_boot_stop_point_matches_golden() {
     );
 
     // The BIOS completes POST and spins in the INT 19h floppy-read retry loop
-    // (no floppy controller modelled), so it runs to the retired-instruction cap.
+    // (no floppy attached), so it runs to the retired-instruction cap.
     assert!(
         matches!(run.stop, StopReason::BudgetExhausted),
         "expected the run to hit the retired cap spinning at the boot loader, \

@@ -8,7 +8,7 @@ Everyday commands for this project. Keep this file **flat and copy-pasteable** â
 cargo build                                  # build the workspace
 cargo run -p cli -- <config>                 # run the emulator
 cargo test --workspace                       # unit + golden + integration
-cargo test --workspace -- --ignored          # slow goldens: BIOS POST, FreeDOS boot, DOS sessions
+cargo test --workspace -- --ignored          # slow goldens: BIOS POST, FreeDOS boot, DOS sessions (~75 s)
 cargo test -p devices                        # one crate's tests
 ```
 

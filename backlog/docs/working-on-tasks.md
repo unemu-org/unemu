@@ -78,7 +78,8 @@ A bead closes only when all of these hold on `main`:
 Plus, when the change warrants it:
 
 - the slow goldens, `cargo test --workspace -- --ignored` (BIOS POST, FreeDOS boot, the DOS
-  sessions; the gitignored fixtures under `vendor/` must be fetched — a missing fixture skips) —
+  sessions; about 75 s; the gitignored fixtures under `vendor/` must be fetched — a missing
+  fixture skips) —
   whenever the `cpu`, `machine`, `assembly` or `devices` crates change or the x86jit pin moves;
 - an A/B equality test when a refactor claims to change nothing observable;
 - a mutation check on a new golden: break the feature, watch the golden fail.
