@@ -9,6 +9,267 @@ use cpu::{CpuStepRun, CpuStepStop};
 use device::Device;
 use testkit::{MockCpu, MockCpuStep};
 
+/// A dormant observer distinguishes access synchronization from unnecessary
+/// whole-bus visits at ordinary instruction boundaries.
+struct SyncProbe {
+    calls: std::rc::Rc<std::cell::RefCell<Vec<VClock>>>,
+    queries: std::rc::Rc<std::cell::Cell<usize>>,
+}
+
+impl Device for SyncProbe {
+    fn name(&self) -> &'static str {
+        "sync-probe"
+    }
+    fn port_read(&mut self, _: u16, _: u8) -> Result<u32, device::DeviceError> {
+        Ok(0)
+    }
+    fn port_write(&mut self, _: u16, _: u8, _: u32) -> Result<(), device::DeviceError> {
+        Ok(())
+    }
+    fn mmio_read(&mut self, _: u64, _: u8) -> Result<u64, device::DeviceError> {
+        Ok(0)
+    }
+    fn mmio_write(&mut self, _: u64, _: u8, _: u64) -> Result<(), device::DeviceError> {
+        Ok(())
+    }
+    fn tick(&mut self, now: VClock) {
+        self.calls.borrow_mut().push(now);
+    }
+    fn next_event(&self, _: VClock) -> NextEvent {
+        self.queries.set(self.queries.get() + 1);
+        NextEvent::Dormant
+    }
+    fn irq_pending(&self) -> bool {
+        false
+    }
+    fn irq_vector(&self) -> Option<u8> {
+        None
+    }
+    fn reset(&mut self) {}
+    fn save(&self) -> Vec<u8> {
+        Vec::new()
+    }
+    fn restore(&mut self, _: &[u8]) -> Result<(), device::DeviceError> {
+        Ok(())
+    }
+}
+
+#[test]
+fn compute_boundaries_do_not_synchronize_dormant_devices() {
+    let calls = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let cpu = MockCpu::new(Vec::new()).with_step_program(vec![
+        step(4, 2, CpuStop::BudgetExhausted, false),
+        step(
+            2,
+            1,
+            CpuStop::PortOut {
+                port: 0x123,
+                size: 1,
+                value: 0,
+            },
+            false,
+        ),
+        step(1, 1, CpuStop::BudgetExhausted, false),
+    ]);
+    let mut machine = Machine::new(
+        cpu,
+        Bus::new(
+            vec![Box::new(SyncProbe {
+                calls: calls.clone(),
+                queries: Default::default(),
+            })],
+            DecodeMap {
+                ports: vec![PortRange {
+                    ports: 0x123..=0x123,
+                    device: 0,
+                }],
+                mmio: Vec::new(),
+            },
+        ),
+        Box::new(chipset::NoInterruptController),
+        Some(64),
+        Vec::new(),
+        None,
+    )
+    .with_scheduler_engine(SchedulerEngine::Deadline)
+    .with_interrupt_timing(InterruptTiming::Corrected);
+    assert_eq!(
+        machine.run_bounded(Some(4)).unwrap(),
+        RunOutcome::RetiredCapReached
+    );
+    // Initial state, the accessed device at instruction start, then coupled
+    // state after the actual access. Pure computation needs no synchronization.
+    assert_eq!(*calls.borrow(), [VClock(0), VClock(2), VClock(3)]);
+}
+
+#[test]
+fn compute_boundaries_reuse_the_bus_deadline_cache() {
+    let queries = std::rc::Rc::new(std::cell::Cell::new(0));
+    let cpu = MockCpu::new(Vec::new()).with_step_program(vec![
+        step(2, 2, CpuStop::BudgetExhausted, false),
+        step(2, 2, CpuStop::BudgetExhausted, false),
+    ]);
+    let mut machine = Machine::new(
+        cpu,
+        Bus::new(
+            vec![Box::new(SyncProbe {
+                calls: Default::default(),
+                queries: queries.clone(),
+            })],
+            DecodeMap::default(),
+        ),
+        Box::new(chipset::NoInterruptController),
+        Some(64),
+        Vec::new(),
+        None,
+    )
+    .with_step_limit(NonZeroU64::new(2).unwrap())
+    .with_scheduler_engine(SchedulerEngine::Deadline)
+    .with_interrupt_timing(InterruptTiming::Corrected);
+    machine.run_bounded(Some(4)).unwrap();
+    // The initial synchronization invalidates one answer; the replacement
+    // remains valid across both CPU slices and both clock advances.
+    assert_eq!(queries.get(), 2);
+}
+
+/// Two device faces share a gate, so accessing one changes the other's deadline.
+struct CoupledDeadline {
+    writer: bool,
+    armed: std::rc::Rc<std::cell::Cell<bool>>,
+    fired: std::rc::Rc<std::cell::RefCell<Vec<VClock>>>,
+}
+
+impl Device for CoupledDeadline {
+    fn name(&self) -> &'static str {
+        "coupled-deadline"
+    }
+    fn port_read(&mut self, _: u16, _: u8) -> Result<u32, device::DeviceError> {
+        Ok(0)
+    }
+    fn port_write(&mut self, _: u16, _: u8, _: u32) -> Result<(), device::DeviceError> {
+        assert!(self.writer);
+        self.armed.set(true);
+        Ok(())
+    }
+    fn mmio_read(&mut self, _: u64, _: u8) -> Result<u64, device::DeviceError> {
+        Ok(0)
+    }
+    fn mmio_write(&mut self, _: u64, _: u8, _: u64) -> Result<(), device::DeviceError> {
+        self.port_write(0, 1, 0)
+    }
+    fn tick(&mut self, now: VClock) {
+        if !self.writer && self.armed.get() && now >= VClock(2) {
+            self.fired.borrow_mut().push(now);
+            self.armed.set(false);
+        }
+    }
+    fn next_event(&self, _: VClock) -> NextEvent {
+        if !self.writer && self.armed.get() {
+            NextEvent::At(VClock(2))
+        } else {
+            NextEvent::Dormant
+        }
+    }
+    fn irq_pending(&self) -> bool {
+        false
+    }
+    fn irq_vector(&self) -> Option<u8> {
+        None
+    }
+    fn reset(&mut self) {}
+    fn save(&self) -> Vec<u8> {
+        vec![u8::from(self.armed.get())]
+    }
+    fn restore(&mut self, _: &[u8]) -> Result<(), device::DeviceError> {
+        Ok(())
+    }
+}
+
+#[test]
+fn stopping_access_refreshes_coupled_deadlines_before_charging_its_step() {
+    for engine in [SchedulerEngine::PerClock, SchedulerEngine::Deadline] {
+        let armed = std::rc::Rc::new(std::cell::Cell::new(false));
+        let fired = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let devices: Vec<Box<dyn Device>> = [true, false]
+            .into_iter()
+            .map(|writer| {
+                Box::new(CoupledDeadline {
+                    writer,
+                    armed: armed.clone(),
+                    fired: fired.clone(),
+                }) as Box<dyn Device>
+            })
+            .collect();
+        let cpu = MockCpu::new(Vec::new()).with_step_program(vec![step(
+            1,
+            1,
+            CpuStop::PortOut {
+                port: 0x123,
+                size: 1,
+                value: 0,
+            },
+            false,
+        )]);
+        let mut machine = Machine::new(
+            cpu,
+            Bus::new(
+                devices,
+                DecodeMap {
+                    ports: vec![PortRange {
+                        ports: 0x123..=0x123,
+                        device: 0,
+                    }],
+                    mmio: Vec::new(),
+                },
+            ),
+            Box::new(chipset::NoInterruptController),
+            Some(64),
+            Vec::new(),
+            None,
+        )
+        .with_cpu_rate(NonZeroU64::new(1).unwrap(), NonZeroU64::new(4).unwrap())
+        .with_scheduler_engine(engine)
+        .with_interrupt_timing(InterruptTiming::Corrected);
+        machine.run_bounded(Some(1)).unwrap();
+        assert_eq!(*fired.borrow(), [VClock(2)], "{engine:?}");
+    }
+}
+
+/// Intel 8259A datasheet, Interrupt Sequence and OCW2: diagnostics observe
+/// controller operations without requiring an autonomous PIC clock visit.
+#[test]
+fn dormant_pic_observations_use_bus_time_without_pic_accesses() {
+    let mut pic = SharedPic::new();
+    for (port, value) in [(0x20, 0x11), (0x21, 8), (0x21, 4), (0x21, 1)] {
+        pic.port_write(port, 1, value).unwrap();
+    }
+    let mut bus = Bus::new(vec![Box::new(pic.clone())], DecodeMap::default());
+    let log = pic.observe(bus.observation_clock());
+    let before = pic.save();
+    bus.tick_due(VClock(42));
+    assert_eq!(pic.save(), before);
+    pic.set_irq_line(0, true);
+    pic.acknowledge().unwrap();
+    bus.tick_due(VClock(47));
+    pic.end_of_interrupt();
+    let before_drain = pic.save();
+    assert_eq!(
+        log.take(),
+        [
+            PicObservation::Acknowledge {
+                at: VClock(42),
+                vector: 8
+            },
+            PicObservation::Eoi {
+                at: VClock(47),
+                command: 0x20,
+                value: None
+            },
+        ]
+    );
+    assert_eq!(pic.save(), before_drain);
+}
+
 fn step(budget: u64, steps: u64, stop: CpuStop, ready: bool) -> MockCpuStep {
     MockCpuStep {
         max_steps: budget,
@@ -22,12 +283,12 @@ fn step(budget: u64, steps: u64, stop: CpuStop, ready: bool) -> MockCpuStep {
 }
 
 fn pending_machine(script: Vec<MockCpuStep>) -> (Machine<MockCpu>, chipset::PicObservationLog) {
+    let step_limit = script.iter().map(|step| step.max_steps).max().unwrap_or(1);
     let mut pic = SharedPic::new();
     for (port, value) in [(0x20, 0x11), (0x21, 8), (0x21, 4), (0x21, 1)] {
         pic.port_write(port, 1, value).unwrap();
     }
     pic.set_irq_line(0, true);
-    let log = pic.observe();
     let bus = Bus::new(
         vec![Box::new(pic.clone())],
         DecodeMap {
@@ -38,6 +299,7 @@ fn pending_machine(script: Vec<MockCpuStep>) -> (Machine<MockCpu>, chipset::PicO
             mmio: Vec::new(),
         },
     );
+    let log = pic.observe(bus.observation_clock());
     let legacy = script
         .iter()
         .map(|step| match step.run.stop {
@@ -50,6 +312,7 @@ fn pending_machine(script: Vec<MockCpuStep>) -> (Machine<MockCpu>, chipset::PicO
         .with_step_program(script);
     (
         Machine::new(cpu, bus, Box::new(pic), Some(64), Vec::new(), None)
+            .with_step_limit(NonZeroU64::new(step_limit).unwrap())
             .with_scheduler_engine(SchedulerEngine::Deadline)
             .with_interrupt_timing(InterruptTiming::Corrected),
         log,
@@ -316,7 +579,7 @@ fn real_mode_mov_ss_mov_sp_keeps_irq_off_the_stack_switch() {
     for (port, value) in [(0x20, 0x11), (0x21, 8), (0x21, 4), (0x21, 1)] {
         pic.port_write(port, 1, value).unwrap();
     }
-    let log = pic.observe();
+    let observer = pic.clone();
     let mut machine = Machine::new(
         cpu,
         Bus::new(Vec::new(), DecodeMap::default()),
@@ -327,6 +590,7 @@ fn real_mode_mov_ss_mov_sp_keeps_irq_off_the_stack_switch() {
     )
     .with_scheduler_engine(SchedulerEngine::Deadline)
     .with_interrupt_timing(InterruptTiming::Corrected);
+    let log = observer.observe(machine.bus.observation_clock());
     // Return exactly after MOV SS, then assert INTR during its shadow.
     machine.run_bounded(Some(3)).unwrap();
     assert!(!machine.cpu.irq_ready());
@@ -364,7 +628,7 @@ fn real_mode_pending_irq_stops_between_rep_iterations() {
         for (port, value) in [(0x20, 0x11), (0x21, 8), (0x21, 4), (0x21, 1)] {
             pic.port_write(port, 1, value).unwrap();
         }
-        let log = pic.observe();
+        let observer = pic.clone();
         let mut machine = Machine::new(
             cpu,
             Bus::new(Vec::new(), DecodeMap::default()),
@@ -375,6 +639,7 @@ fn real_mode_pending_irq_stops_between_rep_iterations() {
         )
         .with_scheduler_engine(SchedulerEngine::Deadline)
         .with_interrupt_timing(InterruptTiming::Corrected);
+        let log = observer.observe(machine.bus.observation_clock());
         machine.run_bounded(Some(2)).unwrap();
         machine.pic.set_irq_line(0, true);
         if split_at_ready_boundary {
@@ -429,7 +694,7 @@ fn stopping_eoi_releases_next_request_before_inta() {
 
 #[test]
 fn mmio_replays_finish_before_inta_and_are_charged_once() {
-    let (mut machine, log) = pending_machine(vec![
+    let (mut machine, _) = pending_machine(vec![
         step(
             1,
             0,
@@ -461,7 +726,7 @@ fn mmio_replays_finish_before_inta_and_are_charged_once() {
         .unwrap()
         .clone();
     machine.bus = Bus::new(
-        vec![Box::new(shared), Box::new(devices::VgaText::new())],
+        vec![Box::new(shared.clone()), Box::new(devices::VgaText::new())],
         DecodeMap {
             ports: vec![PortRange {
                 ports: 0x20..=0x21,
@@ -473,6 +738,7 @@ fn mmio_replays_finish_before_inta_and_are_charged_once() {
             }],
         },
     );
+    let log = shared.observe(machine.bus.observation_clock());
     machine.run_bounded(Some(2)).unwrap();
     let trace = machine.bus.device_mut(1).unwrap().take_trace();
     assert!(matches!(
@@ -705,7 +971,7 @@ fn real_mode_sti_nop_accepts_before_the_next_device_deadline() {
             pic.port_write(port, 1, value).unwrap();
         }
         pic.set_irq_line(0, true);
-        let log = pic.observe();
+        let observer = pic.clone();
         let capture = device::ByteCapture::new(8);
         let mut uart = devices::Uart16550::new(0x3F8);
         uart.byte_output()
@@ -730,6 +996,7 @@ fn real_mode_sti_nop_accepts_before_the_next_device_deadline() {
         )
         .with_scheduler_engine(SchedulerEngine::Deadline)
         .with_interrupt_timing(InterruptTiming::Corrected);
+        let log = observer.observe(machine.bus.observation_clock());
         if split_at_ready_boundary {
             machine.run_bounded(Some(2)).unwrap();
             assert!(log.take().is_empty());
@@ -837,7 +1104,7 @@ fn out_drains_dma_and_follow_on_completion_before_inta() {
     let completed_at = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
     machine.bus = Bus::new(
         vec![
-            Box::new(shared),
+            Box::new(shared.clone()),
             Box::new(DmaTrigger {
                 queued: false,
                 completions: completions.clone(),
@@ -860,6 +1127,7 @@ fn out_drains_dma_and_follow_on_completion_before_inta() {
         requester: 1,
         controller: 2,
     }]);
+    let log = shared.observe(machine.bus.observation_clock());
     machine.run_bounded(Some(1)).unwrap();
     assert_eq!(completions.get(), 2);
     assert_eq!(*completed_at.borrow(), [VClock(1), VClock(1)]);

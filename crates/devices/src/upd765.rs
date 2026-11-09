@@ -79,7 +79,8 @@
 //!   search for the next, missing sector (NEC µPD765 datasheet, READ DATA).
 
 use device::{
-    AccessDir, Device, DeviceError, DmaMemory, DmaOp, DmaOutcome, DmaRequest, TraceEvent, VClock,
+    AccessDir, Device, DeviceError, DmaMemory, DmaOp, DmaOutcome, DmaRequest, NextEvent,
+    TraceEvent, VClock,
 };
 
 /// Stable device name reported by [`Device::name`].
@@ -1010,6 +1011,13 @@ impl Device for Upd765 {
         self.now = now;
     }
 
+    /// NEC µPD765 datasheet, SPECIFY, SEEK and RECALIBRATE: step/head timings
+    /// are accepted but not enforced here. Reset IRQ and seeks finish on port
+    /// access; READ/WRITE DATA finishes on DMA completion, with no timed phase.
+    fn next_event(&self, _: VClock) -> NextEvent {
+        NextEvent::Dormant
+    }
+
     fn irq_pending(&self) -> bool {
         self.irq
     }
@@ -1133,6 +1141,75 @@ mod tests {
     use crate::dma8237::Dma8237;
     use std::collections::HashMap;
     use testkit::MockBus;
+
+    /// NEC µPD765 datasheet, SPECIFY, SEEK, RECALIBRATE and READ/WRITE DATA:
+    /// this functional model completes seeks/reset on access and transfers on
+    /// DMA completion; SPECIFY timings do not create an autonomous phase.
+    #[test]
+    fn dormant_fdc_matches_per_clock_reset_seek_dma_and_traces() {
+        let mut reference = MockBus::new(Box::new(Upd765::with_image(vec![0x5A; 512])));
+        let mut scheduled = MockBus::new(Box::new(Upd765::with_image(vec![0x5A; 512])));
+        for (index, bytes) in [
+            vec![], // Release reset, then drain the four sense results.
+            vec![0x03, 0xDF, 0x02],
+            vec![0x0F, 0, 7],
+            vec![0x07, 0],
+            vec![0x46, 0, 0, 0, 1, 2, 1, 0x1B, 0xFF],
+            vec![0x45, 0, 0, 0, 1, 2, 1, 0x1B, 0xFF],
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let target = 1 + index as u64 * 13107;
+            while reference.clock().0 < target {
+                reference.tick(1);
+            }
+            assert_eq!(
+                scheduled.device().next_event(VClock(target)),
+                device::NextEvent::Dormant
+            );
+            scheduled.device_mut().sync(VClock(target));
+            for bus in [&mut reference, &mut scheduled] {
+                if bytes.is_empty() {
+                    bus.port_write(DOR, 1, 0x1C).unwrap();
+                    assert!(bus.device().irq_pending());
+                    for _ in 0..4 {
+                        bus_command(bus, &[0x08]);
+                        bus_results(bus, 2);
+                    }
+                } else {
+                    bus_command(bus, &bytes);
+                    if matches!(index, 2 | 3) {
+                        assert!(bus.device().irq_pending());
+                        bus_command(bus, &[0x08]);
+                        bus_results(bus, 2);
+                    } else if index >= 4 {
+                        assert!(!bus.device().irq_pending());
+                        finish_test_dma(bus, 512, true);
+                        assert!(bus.device().irq_pending());
+                        bus_results(bus, 7);
+                    }
+                }
+                assert_eq!(
+                    bus.device().next_event(VClock(target)),
+                    device::NextEvent::Dormant
+                );
+            }
+            assert_eq!(
+                reference.port_read(MSR, 1).unwrap(),
+                scheduled.port_read(MSR, 1).unwrap()
+            );
+            assert_eq!(reference.device().save(), scheduled.device().save());
+            assert_eq!(
+                reference.device().irq_pending(),
+                scheduled.device().irq_pending()
+            );
+            assert_eq!(
+                reference.device_mut().take_trace(),
+                scheduled.device_mut().take_trace()
+            );
+        }
+    }
 
     /// A sparse mock guest memory implementing the SMC-safe DMA seam.
     #[derive(Default)]

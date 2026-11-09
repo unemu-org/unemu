@@ -512,35 +512,29 @@ impl<C: Cpu> Machine<C> {
         }
     }
 
-    fn next_deadline(&self) -> Result<Option<VClock>, MachineError> {
-        let mut next = None;
-        let mut index = 0;
-        while let Some(device) = self.bus.device(index) {
-            let event = if self.engine == SchedulerEngine::PerClock {
-                NextEvent::EveryPitClock
-            } else {
-                device.next_event(self.clock)
-            };
-            let at = match event {
-                NextEvent::Dormant => {
-                    index += 1;
-                    continue;
-                }
-                NextEvent::EveryPitClock => VClock(
-                    self.clock
-                        .0
-                        .checked_add(1)
-                        .ok_or_else(|| scheduler_error("clock exhausted"))?,
-                ),
-                NextEvent::At(at) => at,
-            };
-            if at <= self.clock {
-                return Err(scheduler_error("device deadline did not advance"));
+    fn next_deadline(&mut self) -> Result<Option<VClock>, MachineError> {
+        let event = if self.engine == SchedulerEngine::PerClock {
+            if self.bus.device(0).is_none() {
+                return Ok(None);
             }
-            next = Some(next.map_or(at, |previous: VClock| previous.min(at)));
-            index += 1;
+            NextEvent::EveryPitClock
+        } else {
+            self.bus.next_event()
+        };
+        let at = match event {
+            NextEvent::Dormant => return Ok(None),
+            NextEvent::EveryPitClock => VClock(
+                self.clock
+                    .0
+                    .checked_add(1)
+                    .ok_or_else(|| scheduler_error("clock exhausted"))?,
+            ),
+            NextEvent::At(at) => at,
+        };
+        if at <= self.clock {
+            return Err(scheduler_error("device deadline did not advance"));
         }
-        Ok(next)
+        Ok(Some(at))
     }
 
     // Visit transitions at their own times so a short low pulse cannot vanish
@@ -579,16 +573,19 @@ impl<C: Cpu> Machine<C> {
         self.advance_corrected_to(VClock(target))
     }
 
-    fn settle_corrected(&mut self) -> Result<(), MachineError> {
-        self.bus.settle();
-        self.edge_detect();
-        for _ in 0..1024 {
-            let transferred = self.service_dma_pass()?;
+    fn settle_corrected(&mut self, accessed: bool) -> Result<(), MachineError> {
+        if accessed {
+            // An access can change a coupled device as well as its own pins.
+            // Ordinary instruction boundaries have no such side effects.
             self.bus.settle();
             self.edge_detect();
-            if !transferred {
+        }
+        for _ in 0..1024 {
+            if !self.service_dma_pass()? {
                 return Ok(());
             }
+            self.bus.settle();
+            self.edge_detect();
         }
         Err(scheduler_error("DMA completion made no progress"))
     }
@@ -596,7 +593,7 @@ impl<C: Cpu> Machine<C> {
     fn run_bounded_corrected(&mut self, cap: Option<u64>) -> Result<RunOutcome, MachineError> {
         let mut completing = false;
         let mut no_progress = 0;
-        self.settle_corrected()?;
+        self.settle_corrected(true)?;
         loop {
             if !completing {
                 // Policy observations and hard caps win over a new INTA.
@@ -646,7 +643,7 @@ impl<C: Cpu> Machine<C> {
                             .checked_add(clocks)
                             .ok_or_else(|| scheduler_error("halted clock counter exhausted"))?;
                         self.idle_clocks += clocks;
-                        self.settle_corrected()?;
+                        self.settle_corrected(false)?;
                         continue;
                     }
                 }
@@ -672,7 +669,7 @@ impl<C: Cpu> Machine<C> {
                 Ok(run) => run,
                 Err(error) => {
                     self.charge_steps(self.cpu.completed_steps() - before)?;
-                    self.settle_corrected()?;
+                    self.settle_corrected(false)?;
                     return Err(error.into());
                 }
             };
@@ -700,8 +697,13 @@ impl<C: Cpu> Machine<C> {
                 run.steps
             };
             self.charge_steps(prefix)?;
-            self.bus.settle();
-            self.edge_detect();
+            let accessed = matches!(
+                stop,
+                CpuStop::PortOut { .. }
+                    | CpuStop::PortIn { .. }
+                    | CpuStop::MmioWrite { .. }
+                    | CpuStop::MmioRead { .. }
+            );
             completing = false;
             match stop {
                 CpuStop::PortOut { port, size, value } => {
@@ -725,10 +727,15 @@ impl<C: Cpu> Machine<C> {
                 CpuStop::Halt => self.halted = true,
                 CpuStop::BudgetExhausted => {}
             }
+            if accessed {
+                // A register can gate another device's timer. Refresh every
+                // deadline before advancing through the stopping instruction.
+                self.bus.invalidate_deadlines();
+            }
             if counted_stop {
                 self.charge_steps(1)?;
             }
-            self.settle_corrected()?;
+            self.settle_corrected(accessed)?;
         }
     }
 

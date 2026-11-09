@@ -54,7 +54,9 @@
 //!   versa) is not detected — parity with the other simplifications above, which
 //!   model register effects rather than policing guest misconfiguration.
 
-use device::{AccessDir, Device, DeviceError, DmaMemory, DmaTransfer, TraceEvent, VClock};
+use device::{
+    AccessDir, Device, DeviceError, DmaMemory, DmaTransfer, NextEvent, TraceEvent, VClock,
+};
 
 /// Stable device name reported by [`Device::name`].
 const NAME: &str = "8237-dma";
@@ -480,6 +482,12 @@ impl Device for Dma8237 {
         self.now = now;
     }
 
+    /// Intel 8237A datasheet, Single Transfer Mode: channel state advances on
+    /// explicit DMA service. Bus arbitration timing is outside this model.
+    fn next_event(&self, _: VClock) -> NextEvent {
+        NextEvent::Dormant
+    }
+
     fn irq_pending(&self) -> bool {
         // The 8237 has no interrupt output; devices that use DMA raise their own
         // IRQ (e.g. the floppy controller).
@@ -578,6 +586,52 @@ mod tests {
     use super::*;
     use std::collections::HashMap;
     use testkit::MockBus;
+
+    /// Intel 8237A datasheet, Single Transfer Mode and Autoinitialization:
+    /// channel registers advance on service, not on elapsed PIT clocks.
+    #[test]
+    fn dormant_dma_matches_per_clock_registers_memory_and_traces() {
+        for mode in [0x04, 0x14, 0x24] {
+            let mut reference = Dma8237::new();
+            let mut scheduled = Dma8237::new();
+            program(&mut reference, 2, mode, 1, 0x1234, 3);
+            program(&mut scheduled, 2, mode, 1, 0x1234, 3);
+            let mut reference = MockBus::new(Box::new(reference));
+            let mut scheduled = MockBus::new(Box::new(scheduled));
+            let mut reference_mem = MockMem::default();
+            let mut scheduled_mem = MockMem::default();
+            for target in [1, 31, 1000, 65537] {
+                while reference.clock().0 < target {
+                    reference.tick(1);
+                }
+                assert_eq!(
+                    scheduled.device().next_event(VClock(target)),
+                    device::NextEvent::Dormant
+                );
+                scheduled.device_mut().sync(VClock(target));
+                let data = [1, 2, 3, 4];
+                assert_eq!(
+                    reference
+                        .device_mut()
+                        .dma_service_write(2, &mut reference_mem, &data),
+                    scheduled
+                        .device_mut()
+                        .dma_service_write(2, &mut scheduled_mem, &data)
+                );
+                assert_eq!(
+                    reference.port_read(8, 1).unwrap(),
+                    scheduled.port_read(8, 1).unwrap()
+                );
+                assert_eq!(reference_mem.cells, scheduled_mem.cells);
+                assert_eq!(reference_mem.writes, scheduled_mem.writes);
+                assert_eq!(reference.device().save(), scheduled.device().save());
+                assert_eq!(
+                    reference.device_mut().take_trace(),
+                    scheduled.device_mut().take_trace()
+                );
+            }
+        }
+    }
 
     /// A sparse mock guest memory implementing the SMC-safe write seam. Records
     /// every write so a test can prove DMA went through the handle, not a raw

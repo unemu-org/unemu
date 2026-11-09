@@ -170,7 +170,7 @@ fn observation_log_records_inta_and_eoi_without_changing_service_state() {
     use device::VClock;
 
     let mut controller = SharedPic::new();
-    let log = controller.observe();
+    let log = controller.observe(std::rc::Rc::new(|| VClock(17)));
     let mut bus = MockBus::new(Box::new(controller.clone()));
     for (port, value) in [(0x20, 0x11), (0x21, 8), (0x21, 4), (0x21, 1)] {
         bus.port_write(port, 1, value).unwrap();
@@ -215,7 +215,9 @@ fn cascade_observation_records_only_the_cpu_vector_and_both_eois() {
     use device::VClock;
 
     let (mut controller, mut master, mut slave) = init_cascade();
-    let log = controller.master_device().observe();
+    let log = controller
+        .master_device()
+        .observe(std::rc::Rc::new(|| VClock(25)));
     master.tick(25);
     slave.tick(25);
     controller.set_irq_line(8, true);
@@ -255,7 +257,7 @@ fn observation_is_opt_in_and_does_not_mistake_initialization_or_ocw3_for_eoi() {
     controller.set_irq_line(0, true);
     assert_eq!(controller.acknowledge(), Some(8));
     controller.end_of_interrupt();
-    let log = controller.observe();
+    let log = controller.observe(std::rc::Rc::new(|| device::VClock::ZERO));
     assert!(log.take().is_empty());
     let mut bus = MockBus::new(Box::new(controller));
     bus.port_write(0x20, 1, 0x30).unwrap();

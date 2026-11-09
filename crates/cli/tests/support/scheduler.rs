@@ -14,7 +14,7 @@ use anyhow::Result;
 use assembly::{AssembledMachine, ConsoleProbe, DeviceId, RunPolicy, StopCondition};
 use bus::{Bus, DecodeMap, PortRange};
 use chipset::{NoInterruptController, PicObservation, PicObservationLog, SharedPic};
-use cpu::X86JitCpu;
+use cpu::{Cpu, CpuReg, X86JitCpu};
 use device::{
     Device, DeviceError, DmaMemory, DmaOutcome, DmaRequest, NextEvent, TraceEvent, VClock,
 };
@@ -35,6 +35,12 @@ pub enum Event {
         access: TraceEvent,
     },
     Pic(PicObservation),
+    FinalState {
+        ram: Vec<(u64, u64, u64)>,
+        devices: Vec<(DeviceId, String, u64)>,
+        registers: Vec<(CpuReg, u64)>,
+        code_segment: u64,
+    },
     Stop {
         at: VClock,
         virtual_time: u64,
@@ -231,6 +237,7 @@ pub struct Prepared {
     pub machine: Machine<X86JitCpu>,
     pub device_index: HashMap<DeviceId, usize>,
     pub policy: RunPolicy,
+    ram_regions: Vec<assembly::RamRegion>,
 }
 
 #[path = "fixtures.rs"]
@@ -240,6 +247,11 @@ mod fixtures;
 /// Missing optional firmware/media returns `None`; other assembly/I/O errors fail.
 pub fn prepare(workload: Workload) -> Result<Option<Prepared>> {
     let mut policy = RunPolicy::natural(None, None);
+    let mut ram_regions = vec![assembly::RamRegion::new(0, cli::RAM_BYTES)];
+    let mut assemble = |config: &assembly::MachineConfig| {
+        ram_regions = config.memory.ram.clone();
+        assembly::assemble(config)
+    };
     let assembled = match workload {
         Workload::Serial | Workload::SerialReal16 => {
             let cpu = if matches!(workload, Workload::Serial) {
@@ -282,12 +294,11 @@ pub fn prepare(workload: Workload) -> Result<Option<Prepared>> {
         }
         Workload::Boot => {
             policy.idle_limit = Some(cli::BOOT_IDLE_LIMIT);
-            assembly::assemble(&assembly::at_boot(cli::BOOT_PROGRAM.to_vec()))?
+            assemble(&assembly::at_boot(cli::BOOT_PROGRAM.to_vec()))?
         }
         Workload::Keyboard => {
             policy.idle_limit = Some(cli::KBD_IDLE_LIMIT);
-            let mut assembled =
-                assembly::assemble(&assembly::at_keyboard(cli::KBD_PROGRAM.to_vec()))?;
+            let mut assembled = assemble(&assembly::at_keyboard(cli::KBD_PROGRAM.to_vec()))?;
             assembled
                 .machine
                 .bus_mut()
@@ -301,22 +312,20 @@ pub fn prepare(workload: Workload) -> Result<Option<Prepared>> {
         }
         Workload::Rtc => {
             policy.idle_limit = Some(cli::RTC_IDLE_LIMIT);
-            assembly::assemble(&assembly::at_rtc(
+            assemble(&assembly::at_rtc(
                 cli::RTC_PROGRAM.to_vec(),
                 cli::RTC_SECOND_TICKS,
                 cli::RTC_UIP_TICKS,
             ))?
         }
-        Workload::VgaText => {
-            assembly::assemble(&assembly::at_vga_text(cli::VGA_TEXT_PROGRAM.to_vec()))?
-        }
-        Workload::FloppyBoot => assembly::assemble(&assembly::floppy_boot(
+        Workload::VgaText => assemble(&assembly::at_vga_text(cli::VGA_TEXT_PROGRAM.to_vec()))?,
+        Workload::FloppyBoot => assemble(&assembly::floppy_boot(
             cli::FLOPPY_LOADER.to_vec(),
             cli::bootable_floppy_image(),
         ))?,
         Workload::FdcWrite => {
             policy.retired_cap = Some(cli::FDC_WRITE_RETIRED_CAP);
-            assembly::assemble(&assembly::at_fdc_write(
+            assemble(&assembly::at_fdc_write(
                 cli::FDC_WRITE_PROGRAM.to_vec(),
                 cli::fdc_write_pattern(),
                 cli::FDC_WRITE_SRC,
@@ -327,7 +336,7 @@ pub fn prepare(workload: Workload) -> Result<Option<Prepared>> {
                 return Ok(None);
             };
             policy.retired_cap = Some(cli::TEST386_MAX_RETIRED);
-            assembly::assemble(&assembly::test386(image))?
+            assemble(&assembly::test386(image))?
         }
         Workload::BiosPost | Workload::FreeDosPrompt | Workload::DosDir | Workload::DosWrite => {
             let Some(rom) = fixtures::fixture("kiselev-bios/bios-xi8088.bin") else {
@@ -366,7 +375,7 @@ pub fn prepare(workload: Workload) -> Result<Option<Prepared>> {
             } else {
                 cli::BIOS_QUANTUM
             };
-            let assembled = assembly::assemble(&assembly::bios(rom, floppy, quantum))?;
+            let assembled = assemble(&assembly::bios(rom, floppy, quantum))?;
             if interactive {
                 policy.stimuli.push(assembly::KeyboardStimulus {
                     keyboard_index: assembled.device_index[&DeviceId::Keyboard],
@@ -388,6 +397,7 @@ pub fn prepare(workload: Workload) -> Result<Option<Prepared>> {
         machine: assembled.machine,
         device_index: assembled.device_index,
         policy,
+        ram_regions,
     }))
 }
 
@@ -551,6 +561,74 @@ fn observed_device_preserves_byte_output_after_draining_traces() {
     assert_eq!(capture.drain().unwrap(), b"A");
 }
 
+// FNV-1a fixes the diagnostic hash across hosts and Rust versions.
+fn state_hash(bytes: &[u8]) -> u64 {
+    bytes.iter().fold(0xcbf29ce484222325, |hash, byte| {
+        (hash ^ u64::from(*byte)).wrapping_mul(0x100000001b3)
+    })
+}
+
+#[test]
+fn final_state_detects_untraced_ram_register_and_device_changes() {
+    let observe = |changed| {
+        let mut cpu = X86JitCpu::new(cli::RAM_BYTES, cli::ENTRY, cli::HELLO_PROGRAM).unwrap();
+        let mut uart = Uart16550::new(0x3F8);
+        match changed {
+            1 => cpu.write_mem(0x600, &[42]).unwrap(),
+            2 => cpu.set_reg(CpuReg::Rax, 42),
+            3 => uart.port_write(0x3FB, 1, 3).unwrap(),
+            _ => {}
+        }
+        observe_with(
+            Prepared {
+                machine: Machine::new(
+                    cpu,
+                    Bus::new(vec![Box::new(uart)], DecodeMap::default()),
+                    Box::new(NoInterruptController),
+                    cli::QUANTUM,
+                    Vec::new(),
+                    None,
+                ),
+                device_index: HashMap::from([(DeviceId::Uart, 0)]),
+                policy: RunPolicy::natural(None, None),
+                ram_regions: vec![assembly::RamRegion::new(0, cli::RAM_BYTES)],
+            },
+            |_, _| Ok(RunOutcome::Halted),
+        )
+    };
+    let baseline = observe(0);
+    assert!(matches!(
+        baseline.as_slice(),
+        [Event::FinalState { .. }, Event::Stop { .. }]
+    ));
+    for changed in 1..=3 {
+        let stream = observe(changed);
+        let diff = compare(&baseline, &stream, Normalisations::default()).unwrap_err();
+        assert_eq!(diff.index, 0);
+        match (&baseline[0], &stream[0]) {
+            (
+                Event::FinalState {
+                    ram: left_ram,
+                    devices: left_devices,
+                    registers: left_regs,
+                    ..
+                },
+                Event::FinalState {
+                    ram: right_ram,
+                    devices: right_devices,
+                    registers: right_regs,
+                    ..
+                },
+            ) => {
+                assert_eq!(left_ram == right_ram, changed != 1);
+                assert_eq!(left_regs == right_regs, changed != 2);
+                assert_eq!(left_devices == right_devices, changed != 3);
+            }
+            _ => panic!("missing final state"),
+        }
+    }
+}
+
 /// Engine selection stays at the call site; the default calls the legacy driver.
 /// The observer wraps the existing bus devices without changing the run quantum.
 pub fn observe_with(
@@ -558,6 +636,7 @@ pub fn observe_with(
     engine: impl FnOnce(&mut Machine<X86JitCpu>, &RunPolicy) -> Result<RunOutcome, MachineError>,
 ) -> Stream {
     let stream = SharedStream::default();
+    let clock = prepared.machine.bus().observation_clock();
     let mut pic = Vec::new();
     let mut devices: Vec<_> = prepared
         .device_index
@@ -574,7 +653,9 @@ pub fn observe_with(
             .as_any_mut()
             .and_then(|any| any.downcast_mut::<SharedPic>())
         {
-            pic.push(shared.observe());
+            // Dormant PICs must observe bus time, independent of device ticks.
+            let log = shared.observe(clock.clone());
+            pic.push(log);
         }
     }
     for (id, index) in devices {
@@ -594,12 +675,58 @@ pub fn observe_with(
         });
     }
     let result = engine(&mut prepared.machine, &prepared.policy);
+    prepared.machine.bus_mut().settle();
     drain_pic(&pic, &stream);
     let reason = match result {
         Ok(RunOutcome::Halted) => Stop::Halted,
         Ok(RunOutcome::RetiredCapReached) => Stop::CapReached,
         Err(error) => Stop::Error(error.to_string()),
     };
+    let ram = prepared
+        .ram_regions
+        .iter()
+        .map(|region| {
+            let mut bytes = vec![0; region.size as usize];
+            prepared
+                .machine
+                .cpu()
+                .read_mem(region.base, &mut bytes)
+                .unwrap();
+            (region.base, region.size, state_hash(&bytes))
+        })
+        .collect();
+    let devices = (0..)
+        .map_while(|index| {
+            prepared.machine.bus().device(index).map(|device| {
+                let id = prepared
+                    .device_index
+                    .iter()
+                    .find_map(|(&id, &slot)| (slot == index).then_some(id))
+                    .expect("device id");
+                (id, device.name().to_string(), state_hash(&device.save()))
+            })
+        })
+        .collect();
+    let registers = [
+        CpuReg::Rax,
+        CpuReg::Rcx,
+        CpuReg::Rdx,
+        CpuReg::Rbx,
+        CpuReg::Rsp,
+        CpuReg::Rbp,
+        CpuReg::Rsi,
+        CpuReg::Rdi,
+        CpuReg::Rip,
+    ]
+    .into_iter()
+    .map(|reg| (reg, prepared.machine.cpu().reg(reg)))
+    .collect();
+    stream.borrow_mut().push(Event::FinalState {
+        ram,
+        devices,
+        registers,
+        code_segment: prepared.machine.cpu().code_segment(),
+    });
     stream.borrow_mut().push(Event::Stop {
         at: prepared.machine.clock(),
         virtual_time: prepared.machine.virtual_time(),

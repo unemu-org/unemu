@@ -89,6 +89,36 @@ fn deadline_matches_per_clock_on_every_fast_workload() {
 }
 
 #[test]
+fn corrected_deadline_matches_per_clock_on_every_fast_real16_workload() {
+    for workload in scheduler::FAST_WORKLOADS {
+        // The core's step-bounded execution supports Real16 only.
+        if matches!(workload, Workload::Serial) {
+            continue;
+        }
+        let Some(left) = scheduler::run_workload_timing(
+            workload,
+            machine::InterruptTiming::Corrected,
+            SchedulerEngine::PerClock,
+        )
+        .unwrap() else {
+            continue;
+        };
+        let right = scheduler::run_workload_timing(
+            workload,
+            machine::InterruptTiming::Corrected,
+            SchedulerEngine::Deadline,
+        )
+        .unwrap()
+        .unwrap();
+        assert!(left
+            .iter()
+            .any(|event| matches!(event, Event::FinalState { .. })));
+        compare(&left, &right, Normalisations::default())
+            .unwrap_or_else(|diff| panic!("{workload:?}: {diff}"));
+    }
+}
+
+#[test]
 fn serial_workload_has_no_per_clock_devices() {
     let prepared = scheduler::prepare(Workload::Serial).unwrap().unwrap();
     for index in prepared.device_index.values() {
@@ -484,6 +514,69 @@ fn scheduler_ab_enabled() -> bool {
     std::env::var("UNEMUPC98_SCHEDULER_AB").is_ok_and(|value| value == "1")
 }
 
+/// Keep complete, unnormalised streams across scheduler optimisations. Recording
+/// uses create_new so a comparison cannot accidentally replace its reference.
+#[test]
+#[ignore = "requires firmware/media and an explicit stream reference directory"]
+fn scheduler_streams_unchanged() {
+    let Ok(directory) = std::env::var("UNEMUPC98_SCHEDULER_STREAMS") else {
+        eprintln!("skipping scheduler streams: UNEMUPC98_SCHEDULER_STREAMS is unset");
+        return;
+    };
+    let record = std::env::var("UNEMUPC98_RECORD_STREAMS").is_ok_and(|value| value == "1");
+    for workload in scheduler::FAST_WORKLOADS.into_iter().chain([
+        Workload::BiosPost,
+        Workload::FreeDosPrompt,
+        Workload::DosDir,
+    ]) {
+        for timing in [
+            machine::InterruptTiming::Legacy,
+            machine::InterruptTiming::Corrected,
+        ] {
+            if matches!(workload, Workload::Serial) && timing == machine::InterruptTiming::Corrected
+            {
+                continue;
+            }
+            for engine in [SchedulerEngine::PerClock, SchedulerEngine::Deadline] {
+                let Some(stream) =
+                    scheduler::run_workload_timing(workload, timing, engine).unwrap()
+                else {
+                    continue;
+                };
+                let path = std::path::Path::new(&directory)
+                    .join(format!("{workload:?}-{timing:?}-{engine:?}.txt"));
+                let contents = format!("{stream:#?}\n");
+                if record {
+                    use std::io::Write;
+                    let mut file = std::fs::OpenOptions::new()
+                        .write(true)
+                        .create_new(true)
+                        .open(&path)
+                        .unwrap();
+                    file.write_all(contents.as_bytes()).unwrap();
+                } else {
+                    let expected = std::fs::read_to_string(&path).unwrap();
+                    for (line, (left, right)) in expected.lines().zip(contents.lines()).enumerate()
+                    {
+                        assert_eq!(left, right, "{}: line {}", path.display(), line + 1);
+                    }
+                    assert_eq!(
+                        expected.lines().count(),
+                        contents.lines().count(),
+                        "{}: stream length",
+                        path.display()
+                    );
+                }
+                eprintln!(
+                    "{workload:?} {timing:?} {engine:?}: {} events {}",
+                    stream.len(),
+                    if record { "recorded" } else { "unchanged" }
+                );
+            }
+        }
+    }
+}
+
 fn report_timing(workload: Workload) {
     use machine::InterruptTiming;
     let Some(left) = scheduler::run_workload_timing(
@@ -609,7 +702,8 @@ fn interrupt_timing_wall_times() {
             machine::InterruptTiming::Corrected,
         ] {
             let mut samples = Vec::new();
-            for _ in 0..3 {
+            let mut expected_counts = None;
+            for sample in 1..=3 {
                 let Some(mut prepared) = scheduler::prepare(workload).unwrap() else {
                     continue;
                 };
@@ -621,12 +715,24 @@ fn interrupt_timing_wall_times() {
                 let result = assembly::run(&mut prepared.machine, &prepared.policy).unwrap();
                 samples.push(start.elapsed());
                 assert_eq!(result, machine::RunOutcome::RetiredCapReached);
+                let counts = (
+                    prepared.machine.virtual_time(),
+                    prepared.machine.cpu().retired(),
+                );
+                assert_eq!(*expected_counts.get_or_insert(counts), counts);
+                eprintln!(
+                    "{workload:?} {timing:?} sample {sample}: {:.6} s; steps={}, retired={}",
+                    samples.last().unwrap().as_secs_f64(),
+                    counts.0,
+                    counts.1
+                );
             }
             if samples.len() == 3 {
                 samples.sort_unstable();
                 eprintln!(
-                    "{workload:?} {timing:?}: median of 3 {:.6} s",
-                    samples[1].as_secs_f64()
+                    "{workload:?} {timing:?}: median of 3 {:.6} s; {:.3} ns/instruction",
+                    samples[1].as_secs_f64(),
+                    samples[1].as_secs_f64() * 1e9 / expected_counts.unwrap().1 as f64
                 );
             }
         }

@@ -106,8 +106,9 @@ pub struct Bus {
     /// Policy for a port access no device decodes (§4.1). Open-bus by default.
     undecoded_ports: UndecodedPortAccess,
     /// Virtual time of the most recent [`Bus::tick_all`] or [`Bus::tick_due`],
-    /// stamped onto open-bus traces so they share the devices' clock.
-    now: VClock,
+    /// stamped onto open-bus traces and shared with diagnostic observers, even
+    /// when their devices are dormant.
+    now: std::rc::Rc<std::cell::Cell<VClock>>,
     /// Open-bus accesses observed since the last [`Bus::take_open_bus_trace`].
     ///
     /// An undecoded port has no device to record it on the [`Device`] tracing
@@ -130,7 +131,7 @@ impl Bus {
             devices,
             map,
             undecoded_ports: UndecodedPortAccess::default(),
-            now: VClock::ZERO,
+            now: std::rc::Rc::new(std::cell::Cell::new(VClock::ZERO)),
             open_bus_trace: Vec::new(),
         }
     }
@@ -146,6 +147,13 @@ impl Bus {
     /// The current undecoded-port policy (§4.1).
     pub fn undecoded_ports(&self) -> UndecodedPortAccess {
         self.undecoded_ports
+    }
+
+    /// Share a read-only view of virtual bus time with diagnostic observers
+    /// whose devices may be dormant. Reading it does not synchronize hardware.
+    pub fn observation_clock(&self) -> std::rc::Rc<dyn Fn() -> VClock> {
+        let now = self.now.clone();
+        std::rc::Rc::new(move || now.get())
     }
 
     /// Drain the open-bus accesses absorbed since the last call.
@@ -246,7 +254,7 @@ impl Bus {
     /// current virtual time (§6) — never wall time, so goldens stay reproducible.
     fn trace_open_bus(&mut self, port: u16, size: u8, dir: AccessDir, value: u32) {
         self.open_bus_trace.push(TraceEvent::Port {
-            at: self.now,
+            at: self.now.get(),
             port,
             size,
             dir,
@@ -280,7 +288,7 @@ impl Bus {
 
     /// Advance every device to virtual time `now` (§6).
     pub fn tick_all(&mut self, now: VClock) {
-        self.now = now;
+        self.now.set(now);
         self.deadlines.fill(None);
         for dev in &mut self.devices {
             dev.tick(now);
@@ -297,7 +305,7 @@ impl Bus {
     pub fn tick_due(&mut self, now: VClock) -> bool {
         let mut changed = std::mem::take(&mut self.pins_dirty);
         for (dev, slot) in self.devices.iter_mut().zip(&mut self.deadlines) {
-            let event = *slot.get_or_insert_with(|| dev.next_event(self.now));
+            let event = *slot.get_or_insert_with(|| dev.next_event(self.now.get()));
             let due = match event {
                 NextEvent::EveryPitClock => true,
                 NextEvent::At(at) => at <= now,
@@ -311,17 +319,41 @@ impl Bus {
                 changed = true;
             }
         }
-        self.now = now;
+        self.now.set(now);
         changed
+    }
+
+    /// Earliest autonomous event, reusing the same per-device answers as
+    /// [`Bus::tick_due`]. Access, mutation and synchronization invalidate those
+    /// answers; querying a CPU budget does not. Whole-clock arithmetic is widened
+    /// so an exhausted clock still returns EveryPitClock for the caller to reject.
+    pub fn next_event(&mut self) -> NextEvent {
+        let now = self.now.get();
+        self.devices
+            .iter()
+            .zip(&mut self.deadlines)
+            .map(|(dev, slot)| *slot.get_or_insert_with(|| dev.next_event(now)))
+            .min_by_key(|event| match event {
+                NextEvent::EveryPitClock => u128::from(now.0) + 1,
+                NextEvent::At(at) => u128::from(at.0),
+                NextEvent::Dormant => u128::MAX,
+            })
+            .unwrap_or(NextEvent::Dormant)
+    }
+
+    /// Forget cached deadlines after an access that may affect coupled devices.
+    /// This only invalidates scheduling answers; it does not synchronize hardware.
+    pub fn invalidate_deadlines(&mut self) {
+        self.deadlines.fill(None);
     }
 
     fn sync_access(&mut self, index: usize) {
         let dev = &mut self.devices[index];
         let event = self.deadlines[index]
             .take()
-            .unwrap_or_else(|| dev.next_event(self.now));
+            .unwrap_or_else(|| dev.next_event(self.now.get()));
         if event != NextEvent::EveryPitClock {
-            dev.sync(self.now);
+            dev.sync(self.now.get());
         }
         self.pins_dirty = true;
     }
@@ -613,6 +645,82 @@ mod tests {
             .filter(|(call, _)| *call == "tick")
             .collect();
         assert_eq!(ticks, [("tick", VClock(4)), ("tick", VClock(10))]);
+    }
+
+    #[test]
+    fn budget_queries_share_dispatch_cache_and_refresh_after_mutation() {
+        let (mut bus, calls) = timed_bus(NextEvent::Dormant);
+        let clock = bus.observation_clock();
+        let queries = || {
+            calls
+                .borrow()
+                .iter()
+                .filter(|(call, _)| *call == "query")
+                .count()
+        };
+        for _ in 0..3 {
+            assert_eq!(bus.next_event(), NextEvent::Dormant);
+        }
+        assert_eq!(queries(), 1);
+        bus.tick_due(VClock(7));
+        assert_eq!(clock(), VClock(7));
+        assert_eq!(bus.device(0).unwrap().save(), 0u64.to_le_bytes());
+        assert_eq!(queries(), 1);
+        bus.port_write(0x100, 1, 12).unwrap();
+        for _ in 0..3 {
+            assert_eq!(bus.next_event(), NextEvent::At(VClock(12)));
+        }
+        assert_eq!(queries(), 2);
+        bus.tick_due(VClock(11));
+        assert_eq!(bus.next_event(), NextEvent::At(VClock(12)));
+        assert_eq!(queries(), 2);
+        bus.tick_due(VClock(12));
+        assert_eq!(bus.next_event(), NextEvent::Dormant);
+        assert_eq!(queries(), 3);
+        bus.device_mut(0).unwrap().reset();
+        assert_eq!(bus.next_event(), NextEvent::At(VClock(13)));
+        assert_eq!(queries(), 4);
+        bus.tick_all(VClock(13));
+        assert_eq!(bus.next_event(), NextEvent::Dormant);
+        assert_eq!(queries(), 5);
+        bus.settle();
+        assert_eq!(bus.next_event(), NextEvent::Dormant);
+        assert_eq!(queries(), 6);
+    }
+
+    #[test]
+    fn minimum_deadline_preserves_every_clock_dormancy_and_invalid_deadlines() {
+        let calls = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let devices = [
+            NextEvent::Dormant,
+            NextEvent::At(VClock(17)),
+            NextEvent::EveryPitClock,
+        ]
+        .into_iter()
+        .map(|event| {
+            Box::new(TimedDevice {
+                now: VClock::ZERO,
+                event,
+                calls: calls.clone(),
+            }) as Box<dyn Device>
+        })
+        .collect();
+        let mut bus = Bus::new(devices, DecodeMap::default());
+        assert_eq!(bus.next_event(), NextEvent::EveryPitClock);
+        bus.device_mut(0).unwrap().port_write(0, 1, 0).unwrap();
+        assert_eq!(bus.next_event(), NextEvent::At(VClock::ZERO));
+        bus.device_mut(0).unwrap().port_read(0, 1).unwrap();
+        bus.device_mut(2).unwrap().port_read(0, 1).unwrap();
+        assert_eq!(bus.next_event(), NextEvent::At(VClock(17)));
+        bus.device_mut(1).unwrap().port_read(0, 1).unwrap();
+        assert_eq!(bus.next_event(), NextEvent::Dormant);
+        assert_eq!(
+            Bus::new(Vec::new(), DecodeMap::default()).next_event(),
+            NextEvent::Dormant
+        );
+        let (mut bus, _) = timed_bus(NextEvent::EveryPitClock);
+        bus.tick_all(VClock(u64::MAX));
+        assert_eq!(bus.next_event(), NextEvent::EveryPitClock);
     }
 
     #[test]

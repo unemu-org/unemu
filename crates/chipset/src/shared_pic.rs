@@ -34,7 +34,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use device::{Device, DeviceError, InterruptController, TraceEvent, VClock};
+use device::{Device, DeviceError, InterruptController, NextEvent, TraceEvent, VClock};
 use devices::Pic8259;
 
 /// An observed Intel 8259A interrupt sequence or OCW2 EOI command (§5.1).
@@ -53,10 +53,9 @@ pub enum PicObservation {
     },
 }
 
-#[derive(Default)]
 struct Recording {
-    now: VClock,
-    events: Option<Vec<PicObservation>>,
+    clock: Rc<dyn Fn() -> VClock>,
+    events: Vec<PicObservation>,
 }
 
 /// Optional, shared PIC observations for a test harness (§5.1, §10).
@@ -65,32 +64,33 @@ struct Recording {
 /// It is separate from snapshots and port traces so draining diagnostics cannot
 /// alter chip state or fabricate guest port accesses.
 #[derive(Clone, Default)]
-pub struct PicObservationLog(Rc<RefCell<Recording>>);
+pub struct PicObservationLog(Rc<RefCell<Option<Recording>>>);
 
 impl PicObservationLog {
     /// Drain observations from both faces of the controller in execution order.
     pub fn take(&self) -> Vec<PicObservation> {
         self.0
             .borrow_mut()
-            .events
             .as_mut()
-            .map(std::mem::take)
+            .map(|recording| std::mem::take(&mut recording.events))
             .unwrap_or_default()
     }
 
     fn acknowledge(&self, vector: u8) {
-        let mut recording = self.0.borrow_mut();
-        let at = recording.now;
-        if let Some(events) = &mut recording.events {
-            events.push(PicObservation::Acknowledge { at, vector });
+        if let Some(recording) = self.0.borrow_mut().as_mut() {
+            let at = (recording.clock)();
+            recording
+                .events
+                .push(PicObservation::Acknowledge { at, vector });
         }
     }
 
     fn eoi(&self, command: u16, value: Option<u8>) {
-        let mut recording = self.0.borrow_mut();
-        let at = recording.now;
-        if let Some(events) = &mut recording.events {
-            events.push(PicObservation::Eoi { at, command, value });
+        if let Some(recording) = self.0.borrow_mut().as_mut() {
+            let at = (recording.clock)();
+            recording
+                .events
+                .push(PicObservation::Eoi { at, command, value });
         }
     }
 }
@@ -130,13 +130,21 @@ impl SharedPic {
     }
 
     /// Enable diagnostic recording shared with the controller and both chips.
-    /// Repeated calls preserve pending observations.
-    pub fn observe(&self) -> PicObservationLog {
-        self.observations
-            .0
-            .borrow_mut()
-            .events
-            .get_or_insert_with(Vec::new);
+    ///
+    /// Pass the bus's read-only observation clock: a dormant PIC receives no
+    /// ticks, so its last device access cannot timestamp INTA or EOI. Reading
+    /// this clock must not synchronize hardware or change machine state.
+    /// Repeated calls update the clock while preserving pending observations.
+    pub fn observe(&self, clock: Rc<dyn Fn() -> VClock>) -> PicObservationLog {
+        let mut recording = self.observations.0.borrow_mut();
+        if let Some(recording) = recording.as_mut() {
+            recording.clock = clock;
+        } else {
+            *recording = Some(Recording {
+                clock,
+                events: Vec::new(),
+            });
+        }
         self.observations.clone()
     }
 
@@ -196,7 +204,12 @@ impl Device for SharedPic {
 
     fn tick(&mut self, now: VClock) {
         self.inner.borrow_mut().tick(now);
-        self.observations.0.borrow_mut().now = now;
+    }
+
+    /// Intel 8259A datasheet, Interrupt Sequence and OCW2: only line edges,
+    /// register accesses and INTA change requests; no autonomous timer runs.
+    fn next_event(&self, _: VClock) -> NextEvent {
+        NextEvent::Dormant
     }
 
     fn irq_pending(&self) -> bool {
@@ -399,6 +412,66 @@ impl InterruptController for CascadedPic {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Intel 8259A datasheet, Interrupt Sequence and OCW2: elapsed time cannot
+    /// change IRR/ISR; line edges, INTA and EOI do, on either device face.
+    #[test]
+    fn dormant_faces_match_per_clock_interrupts_and_traces() {
+        for slave in [false, true] {
+            let mut reference = if slave {
+                SharedPic::new_slave()
+            } else {
+                SharedPic::new()
+            };
+            let mut scheduled = if slave {
+                SharedPic::new_slave()
+            } else {
+                SharedPic::new()
+            };
+            let command = if slave { SLAVE_CMD } else { MASTER_CMD };
+            let base = if slave { SLAVE_BASE } else { MASTER_BASE };
+            init_chip(&mut reference, command, command + 1, base, 2);
+            init_chip(&mut scheduled, command, command + 1, base, 2);
+            let clock = Rc::new(std::cell::Cell::new(VClock::ZERO));
+            let observation_clock: Rc<dyn Fn() -> VClock> = {
+                let clock = clock.clone();
+                Rc::new(move || clock.get())
+            };
+            let reference_log = reference.observe(observation_clock.clone());
+            let scheduled_log = scheduled.observe(observation_clock);
+            let mut reference_bus = testkit::MockBus::new(Box::new(reference.clone()));
+            let mut scheduled_bus = testkit::MockBus::new(Box::new(scheduled.clone()));
+            for target in [1, 31, 1000, 65537] {
+                clock.set(VClock(target));
+                while reference_bus.clock().0 < target {
+                    reference_bus.tick(1);
+                }
+                assert_eq!(
+                    scheduled_bus.device().next_event(VClock(target)),
+                    device::NextEvent::Dormant
+                );
+                scheduled_bus.device_mut().sync(VClock(target));
+                for pic in [&mut reference, &mut scheduled] {
+                    pic.set_irq_line(3, true);
+                    pic.set_irq_line(3, false);
+                    assert_eq!(pic.acknowledge(), Some(base + 3));
+                }
+                assert_eq!(
+                    reference_bus.port_read(command + 1, 1).unwrap(),
+                    scheduled_bus.port_read(command + 1, 1).unwrap()
+                );
+                for bus in [&mut reference_bus, &mut scheduled_bus] {
+                    bus.port_write(command, 1, 0x20).unwrap();
+                }
+                assert_eq!(reference_bus.device().save(), scheduled_bus.device().save());
+                assert_eq!(
+                    reference_bus.device_mut().take_trace(),
+                    scheduled_bus.device_mut().take_trace()
+                );
+                assert_eq!(reference_log.take(), scheduled_log.take());
+            }
+        }
+    }
 
     // Master ports and the PC BIOS vector base (IRQ0 → 0x08).
     const MASTER_CMD: u16 = 0x20;
