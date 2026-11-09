@@ -40,8 +40,7 @@ fn with_watchdog(name: &str, run: impl FnOnce()) {
 #[test]
 fn real16_spin_reaches_cap_with_default_clock() {
     with_watchdog("real16_spin_reaches_cap_with_default_clock", || {
-        // A self-jump is not counted by the core's retirement counter; use a
-        // two-instruction loop so the test measures the machine's cap instead.
+        // A two-instruction loop; the self-jump case has its own test below.
         let config = at_boot(vec![0xFB, 0x90, 0xEB, 0xFD]); // STI; NOP; JMP NOP
         let mut assembled = assemble(&config).expect("assemble Real16 machine");
         assert_eq!(
@@ -53,6 +52,23 @@ fn real16_spin_reaches_cap_with_default_clock() {
         // Each loop block retires two instructions, plus the initial STI.
         assert!(retired <= 32 + 2 * config.clock.quantum.expect("finite quantum") + 1);
         assert_eq!(assembled.machine.virtual_time(), retired);
+    });
+}
+
+#[test]
+fn real16_self_jump_idle_advances_virtual_time() {
+    with_watchdog("real16_self_jump_idle_advances_virtual_time", || {
+        // `sti; jmp $` is how a real-mode program idles while it waits for an
+        // interrupt. Each iteration of the self-jump must count as a retired
+        // instruction, otherwise virtual time freezes, no device ticks, and the
+        // run never reaches its cap.
+        let config = at_boot(vec![0xFB, 0xEB, 0xFE]); // STI; JMP $
+        let mut assembled = assemble(&config).expect("assemble Real16 machine");
+        assert_eq!(
+            assembled.machine.run_bounded(Some(1_000)).expect("run"),
+            RunOutcome::RetiredCapReached
+        );
+        assert!(assembled.machine.virtual_time() >= 1_000);
     });
 }
 
