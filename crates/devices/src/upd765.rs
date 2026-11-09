@@ -39,9 +39,9 @@
 //! (80×2×15), 720 KB (80×2×9), and 360 KB (40×2×9) — so drive 0 and drive 1 can
 //! differ. A CHS address maps to an image offset with the addressed drive's own
 //! geometry by `lba = (cyl * heads + head) * sectors_per_track + (sector - 1)`,
-//! `offset = lba * 512`. A READ to an unattached drive terminates abnormally with
-//! the not-ready status; a READ outside the drive's geometry terminates
-//! abnormally with a no-data status.
+//! `offset = lba * 512`. An empty bay supplies no index pulses: READ ID and
+//! READ/WRITE DATA wait in execution until reset. An address outside mounted
+//! media's geometry terminates abnormally with a no-data status.
 //!
 //! A WRITE mutates the mounted image **in memory only**: it changes the drive's
 //! backing `Vec`, but nothing writes those bytes back to a host image file — a
@@ -53,24 +53,58 @@
 //! | Command                        | Opcode | Modelled | Notes                          |
 //! |--------------------------------|--------|----------|--------------------------------|
 //! | SPECIFY                        | `0x03` | yes      | timings accepted, not enforced |
-//! | RECALIBRATE                    | `0x07` | yes      | seek to cylinder 0, IRQ6       |
+//! | RECALIBRATE                    | `0x07` | partial  | PCN=0; empty bay: SE+EC, abnormal IRQ6 |
 //! | SENSE INTERRUPT STATUS         | `0x08` | yes      | ST0 + PCN, or invalid if idle  |
 //! | SEEK                           | `0x0F` | yes      | set present cylinder, IRQ6     |
-//! | READ ID                        | `0x4A` | yes      | current C/H/R/N                |
+//! | READ ID                        | `0x4A` | partial  | mounted: synthetic R=1/N=2; empty: waits for index |
 //! | READ DATA                      | `0x06` | yes      | DMA transfer to memory, IRQ6   |
 //! | WRITE DATA                     | `0x05` | yes      | DMA transfer from memory, IRQ6 |
 //!
+//! IBM Personal Computer AT Technical Reference, Fixed Disk and Diskette
+//! Drive Adapter, Digital Input Register (3F7h) and Interface Lines: connector
+//! pin 34 is Diskette Change, not READY. The board model holds the FDC's RDY
+//! active for all four selects, consistent with the four RESET ready-change
+//! polls (NEC µPD765A datasheet, RESET / SENSE INTERRUPT STATUS).
+//! ASSUMED: RDY is held high independently of the selected slot; the available
+//! adapter logic diagram, sheet 4 of 9, does not resolve the tie unambiguously.
+//! No drive-presence/media distinction is modelled: an empty slot supplies
+//! neither TRACK 0 nor index. NEC µPD765A, SEEK / RECALIBRATE and ST0: SEEK
+//! reaches NCN normally; RECALIBRATE clears PCN even when TRACK 0 is absent,
+//! then ends with SE+EC and IC=01 after 77 unsuccessful steps. The step delay
+//! is collapsed, as for mounted seeks. READ ID / ST1 MA requires index pulses
+//! to end an unsuccessful ID search; without them there is no result or IRQ.
+//! This also applies to READ/WRITE DATA's ID search. The controller remains
+//! Dormant deterministically; a BIOS's timer IRQs or polling instruction budget
+//! can expire its software timeout, then DOR reset aborts the search and makes
+//! the four reset SIS results available. No controller timeout is invented.
+//!
+//! IBM PC AT Technical Reference, Digital Output Register (3F2h), bit 3 and
+//! adapter logic diagram sheet 5 of 9: IRQ6 is pending interrupt AND bit 3.
+//! ASSUMED: a DMA request is retained while the same gate is closed. Real
+//! hardware would end a data transfer with an overrun (ST1 OR) when bytes are
+//! not serviced in time; this model has no data-rate timing, so it waits.
+//!
 //! Deliberately **not** modelled:
+//! - **Rotating READ ID**: the datasheet's first ID encountered depends on
+//!   rotational phase, absent from the flat-sector image. The model always
+//!   chooses R=1/N=2 on a present track, rather than inventing angular position.
+//! - **Fault-result CHRN without a readable ID**: NEC µPD765A datasheet,
+//!   Command Symbol Description (H/HD) and Instruction Set require H=HD in
+//!   valid commands; no mismatched-head result is specified. Assumption:
+//!   pre-transfer failures echo command C/R/N and physical HD as result H;
+//!   an empty-bay READ ID has no result CHRN. Logical-ID error reporting
+//!   needs an ID-field/rotational model and is not claimed.
 //! - **WRITE DELETED DATA** (`0x09`), **SENSE DRIVE STATUS** (`0x04`, whose ST3
 //!   is the other place the write-protect line surfaces on real hardware), and
 //!   **FORMAT TRACK**: the modelled write path is a plain WRITE DATA. A protected
 //!   disk is still honoured — WRITE DATA to one faults with ST1 not-writable.
 //! - **Non-DMA (PIO) transfer mode**: transfers always go through the 8237. The
-//!   DOR's DMA-enable bit is honoured for interrupt gating but the controller has
+//!   DOR's DMA-enable bit gates IRQ6 and DMA requests, but the controller has
 //!   no data-port streaming path.
 //! - **Cycle-accurate timing**: SPECIFY's step-rate / head-load / head-unload
-//!   times are accepted and discarded; seeks and reads complete immediately in
-//!   virtual time. There is no index-pulse or rotational-latency model.
+//!   times are accepted and discarded; seeks complete immediately, and mounted
+//!   reads finish on DMA completion. No rotational-latency model exists; empty
+//!   bays never synthesize index pulses.
 //! - **The skip (SK) modifier and MFM/FM selection**: SK and MFM do not change
 //!   the transfer; READ and WRITE treat the raw image as normal MFM sectors.
 //! - **TC-dependent error termination**: DMA completion reports a byte count,
@@ -82,6 +116,10 @@
 //! and request data, and the absolute trace time base. Mounted media and wiring
 //! belong to the receiving instance and must match the saved controller. This
 //! model has no timed execution deadlines (NEC µPD765 datasheet, Execution Phase).
+//! Snapshot v3 stores the interrupt latch before the DOR gate and permits an
+//! empty-bay ID search without DMA; earlier versions are rejected. Restore
+//! validates the waiting opcode, full command, empty slot, and absence of
+//! results and DMA before accepting that execution phase.
 
 use device::{
     AccessDir, Device, DeviceError, DmaOp, DmaOutcome, DmaRequest, NextEvent, TraceEvent, VClock,
@@ -228,7 +266,7 @@ impl Drive {
 }
 
 /// Snapshot layout version tag.
-const SNAPSHOT_VERSION: u8 = 2;
+const SNAPSHOT_VERSION: u8 = 3;
 
 /// ST0 bit 5: seek end (set after a completed RECALIBRATE / SEEK).
 const ST0_SEEK_END: u8 = 1 << 5;
@@ -238,8 +276,8 @@ const ST0_SEEK_END: u8 = 1 << 5;
 const ST0_POLL: u8 = 0b1100_0000;
 /// ST0 interrupt-code bits 7-6 == `01`: the command terminated abnormally.
 const ST0_ABNORMAL: u8 = 0b0100_0000;
-/// ST0 bit 3 (NR): the addressed drive is not ready (no disk mounted).
-const ST0_NOT_READY: u8 = 1 << 3;
+/// ST0 bit 4 (EC): TRACK 0 was not reached within 77 recalibration steps.
+const ST0_EQUIPMENT_CHECK: u8 = 1 << 4;
 /// ST1 bit 2 (ND): no data — the requested sector was not found on the track.
 /// NEC µPD765 / Intel 8272A datasheets, Status Register 1, No Data.
 const ST1_NO_DATA: u8 = 1 << 2;
@@ -317,7 +355,7 @@ pub struct Upd765 {
     present_cylinder: [u8; 4],
     /// Status register 0 from the last completed command.
     st0: u8,
-    /// IRQ6 line level (asserted on command completion, cleared when serviced).
+    /// Controller interrupt latch, before the DOR bit-3 bus gate.
     irq: bool,
     /// Remaining post-reset SENSE INTERRUPT STATUS polls that report the
     /// abnormal / ready-change status a controller reset raises for each drive.
@@ -330,7 +368,7 @@ pub struct Upd765 {
     /// The WRITE context whose media commit and result phase follow the DMA.
     pending_write: Option<PendingWrite>,
     /// Media mounted in each of the four drive positions the DOR can select.
-    /// `None` is an empty drive bay; a READ addressed to one is "not ready".
+    /// `None` supplies neither TRACK 0 nor index pulses; RDY remains active.
     drives: [Option<Drive>; 4],
     /// Trace events observed since the last [`Device::take_trace`].
     trace: device::TraceBuffer,
@@ -389,7 +427,7 @@ impl Upd765 {
     /// The current IRQ6 line level, for tests and the machine's edge detector.
     #[must_use]
     pub fn irq_line(&self) -> bool {
-        self.irq
+        self.irq && self.dor & DOR_DMA_ENABLE != 0
     }
 
     /// The present cylinder recorded for `drive`, for tests.
@@ -425,7 +463,9 @@ impl Upd765 {
         }
     }
 
-    /// Handle a write to the digital output register, detecting the reset edge.
+    /// IBM PC AT Technical Reference, Fixed Disk and Diskette Drive Adapter,
+    /// Digital Output Register: bit 3 gates reset-completion IRQ6 too.
+    /// NEC µPD765A datasheet, RESET: reset completion is sensed with SIS.
     fn write_dor(&mut self, value: u8) {
         let leaving_reset = self.dor & DOR_NOT_RESET == 0 && value & DOR_NOT_RESET != 0;
         self.dor = value;
@@ -440,7 +480,7 @@ impl Upd765 {
             self.pending_read = None;
             self.pending_write = None;
             self.reset_poll = 4;
-            self.irq = true;
+            self.raise_irq();
         }
     }
 
@@ -500,23 +540,30 @@ impl Upd765 {
     }
 
     /// RECALIBRATE: seek the selected drive to cylinder 0 and raise IRQ6. The
-    /// result is read later via SENSE INTERRUPT STATUS.
+    /// result is read later via SENSE INTERRUPT STATUS. NEC µPD765A datasheet,
+    /// RECALIBRATE: PCN is cleared before checking TRACK 0; failure after 77
+    /// steps reports equipment check, with the step delay collapsed here.
     fn cmd_recalibrate(&mut self) {
         let drive = self.command[1] & 0b11;
-        self.present_cylinder[usize::from(drive)] = 0;
         self.st0 = ST0_SEEK_END | drive;
+        self.present_cylinder[usize::from(drive)] = 0;
+        if self.drives[usize::from(drive)].is_none() {
+            self.st0 |= ST0_ABNORMAL | ST0_EQUIPMENT_CHECK;
+        }
         self.raise_irq();
         self.finish_no_result();
     }
 
     /// SEEK: set the selected drive's present cylinder and raise IRQ6.
+    /// NEC µPD765A datasheet, SEEK: the PCN counter advances to NCN without
+    /// position feedback. The AT adapter keeps RDY active even for an empty bay.
     fn cmd_seek(&mut self) {
         let drive_head = self.command[1];
         let drive = drive_head & 0b11;
         let head = (drive_head >> 2) & 1;
         let cylinder = self.command[2];
-        self.present_cylinder[usize::from(drive)] = cylinder;
         self.st0 = ST0_SEEK_END | (head << 2) | drive;
+        self.present_cylinder[usize::from(drive)] = cylinder;
         self.raise_irq();
         self.finish_no_result();
     }
@@ -549,12 +596,17 @@ impl Upd765 {
         self.phase = Phase::Result;
     }
 
-    /// READ ID: report the C/H/R/N of the current position and raise IRQ6.
+    /// READ ID: report synthetic C/H/R/N on mounted media. Without index pulses,
+    /// stay in execution until reset (NEC µPD765A, READ ID and ST1 MA).
     fn cmd_read_id(&mut self) {
         let drive_head = self.command[1];
         let drive = drive_head & 0b11;
         let head = (drive_head >> 2) & 1;
         let cylinder = self.present_cylinder[usize::from(drive)];
+        if self.drives[usize::from(drive)].is_none() {
+            self.phase = Phase::Execution;
+            return;
+        }
         self.st0 = (head << 2) | drive;
         self.raise_irq();
         self.result = vec![self.st0, 0, 0, cylinder, head, 1, 2];
@@ -576,17 +628,10 @@ impl Upd765 {
         let sector = self.command[4];
         let sector_size_code = self.command[5];
 
-        // Resolve the addressed drive's mounted media; an empty bay is not ready.
+        // With RDY active and no index pulses, the ID search has no endpoint
+        // (NEC µPD765A datasheet, READ DATA and Status Register 1, MA).
         let Some(media) = self.drives[usize::from(drive)].as_ref() else {
-            self.command_fault(
-                drive,
-                head,
-                cylinder,
-                sector,
-                sector_size_code,
-                ST0_NOT_READY,
-                0,
-            );
+            self.phase = Phase::Execution;
             return;
         };
         let geometry = media.geometry;
@@ -769,17 +814,10 @@ impl Upd765 {
         let sector = self.command[4];
         let sector_size_code = self.command[5];
 
-        // Resolve the addressed drive's mounted media; an empty bay is not ready.
+        // With RDY active and no index pulses, the ID search has no endpoint
+        // (NEC µPD765A datasheet, READ DATA and Status Register 1, MA).
         let Some(media) = self.drives[usize::from(drive)].as_ref() else {
-            self.command_fault(
-                drive,
-                head,
-                cylinder,
-                sector,
-                sector_size_code,
-                ST0_NOT_READY,
-                0,
-            );
+            self.phase = Phase::Execution;
             return;
         };
         let geometry = media.geometry;
@@ -898,11 +936,9 @@ impl Upd765 {
         self.phase = Phase::Result;
     }
 
-    /// Assert the IRQ6 line if the DMA/interrupt path is enabled in the DOR.
+    /// Latch controller completion independently of the adapter's bus gate.
     fn raise_irq(&mut self) {
-        if self.dor & DOR_DMA_ENABLE != 0 {
-            self.irq = true;
-        }
+        self.irq = true;
     }
 
     /// Finish a command that has no result phase, returning to idle.
@@ -1010,8 +1046,8 @@ impl Device for Upd765 {
     }
 
     fn tick(&mut self, now: VClock) {
-        // No autonomous timed behaviour: seeks and reads complete immediately in
-        // virtual time. The clock is stamped onto traces only.
+        // Empty-bay searches cannot advance without external index pulses;
+        // mounted transfers finish through DMA. This clock only stamps traces.
         self.now = now;
     }
 
@@ -1023,7 +1059,7 @@ impl Device for Upd765 {
     }
 
     fn irq_pending(&self) -> bool {
-        self.irq
+        self.irq_line()
     }
 
     fn irq_vector(&self) -> Option<u8> {
@@ -1033,7 +1069,11 @@ impl Device for Upd765 {
     }
 
     fn take_dma_request(&mut self) -> Option<DmaRequest> {
-        self.pending_request.take()
+        if self.dor & DOR_DMA_ENABLE != 0 {
+            self.pending_request.take()
+        } else {
+            None
+        }
     }
 
     fn dma_complete(&mut self, outcome: DmaOutcome) {
@@ -1312,7 +1352,15 @@ impl Device for Upd765 {
                         && result_index == 0
                         && pending_tag == 0
                 }
-                Phase::Execution => pending_tag != 0 && result.is_empty() && result_index == 0,
+                Phase::Execution => {
+                    let waiting_for_index = pending_tag == 0
+                        && matches!(command.first().map(|op| op & 0x1F), Some(5 | 6 | 0x0A))
+                        && command_len == expected
+                        && self.drives[usize::from(command[1] & 3)].is_none();
+                    (pending_tag != 0 || waiting_for_index)
+                        && result.is_empty()
+                        && result_index == 0
+                }
                 Phase::Result => {
                     result_consistent
                         && result_index < result_len
@@ -1356,10 +1404,162 @@ impl Device for Upd765 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use testkit::MockBus;
+
+    #[test]
+    fn dor_clearing_gate_removes_existing_irq() {
+        let mut bus = MockBus::new(Box::new(ready_fdc(Vec::new())));
+        bus_command(&mut bus, &[0x0F, 0, 7]);
+        assert!(bus.device().irq_pending());
+        bus.port_write(DOR, 1, 4).unwrap();
+        assert!(!bus.device().irq_pending());
+        bus.port_write(DOR, 1, 12).unwrap();
+        assert!(bus.device().irq_pending());
+    }
+
+    #[test]
+    fn dor_gate_retains_dma_request() {
+        let mut bus = MockBus::new(Box::new(ready_fdc(vec![0x5A; SECTOR_SIZE])));
+        bus.port_write(DOR, 1, 4).unwrap();
+        bus_command(&mut bus, &[6, 0, 0, 0, 1, 2, 1, 0x1B, 0xFF]);
+        assert!(bus.device_mut().take_dma_request().is_none());
+        bus.port_write(DOR, 1, 12).unwrap();
+        let request = bus.device_mut().take_dma_request().unwrap();
+        assert!(matches!(request.op, DmaOp::ToMemory(bytes) if bytes == vec![0x5A; SECTOR_SIZE]));
+    }
+
+    #[test]
+    fn empty_bay_recalibrate_clears_pcn_and_reports_equipment_check() {
+        let mut fdc = ready_fdc(Vec::new());
+        fdc.present_cylinder[1] = 90;
+        let mut bus = MockBus::new(Box::new(fdc));
+        bus_command(&mut bus, &[7, 1]);
+        bus_command(&mut bus, &[8]);
+        assert_eq!(
+            bus_results(&mut bus, 2),
+            vec![ST0_ABNORMAL | ST0_SEEK_END | 0x10 | 1, 0]
+        );
+    }
+
+    #[test]
+    fn wait_snapshot_rejects_inconsistent_state_atomically() {
+        let mut bus = MockBus::new(Box::new(ready_fdc(Vec::new())));
+        bus_command(&mut bus, &[0x4A, 1]);
+        let saved = bus.device().save();
+        for (index, value) in [(0, 2), (12, 0x03), (13, 0), (11, 1)] {
+            let mut invalid = saved.clone();
+            invalid[index] = value;
+            assert!(bus.device_mut().restore(&invalid).is_err(), "index={index}");
+            assert_eq!(bus.device().save(), saved);
+        }
+        let mut mounted = MockBus::new(Box::new(ready_drives([
+            None,
+            Some(Drive::new(FloppyGeometry::HD1440, Vec::new())),
+            None,
+            None,
+        ])));
+        let before = mounted.device().save();
+        assert!(mounted.device_mut().restore(&saved).is_err());
+        assert_eq!(mounted.device().save(), before);
+    }
+
+    #[test]
+    fn dor_gate_exposes_and_hides_pending_irq() {
+        let mut bus = MockBus::new(Box::new(Upd765::new()));
+        bus.port_write(DOR, 1, 4).unwrap();
+        assert!(!bus.device().irq_pending());
+        bus.port_write(DOR, 1, 12).unwrap();
+        assert!(bus.device().irq_pending());
+        bus.port_write(DOR, 1, 4).unwrap();
+        assert!(!bus.device().irq_pending());
+        bus_command(&mut bus, &[8]);
+        assert_eq!(bus_results(&mut bus, 2), vec![ST0_POLL, 0]);
+        for _ in 0..3 {
+            bus_command(&mut bus, &[8]);
+            bus_results(&mut bus, 2);
+        }
+        bus_command(&mut bus, &[0x0F, 1, 7]);
+        assert!(!bus.device().irq_pending());
+        let saved = bus.device().save();
+        bus.device_mut().restore(&saved).unwrap();
+        bus.port_write(DOR, 1, 12).unwrap();
+        assert!(bus.device().irq_pending());
+        bus.port_write(DOR, 1, 4).unwrap();
+        assert!(!bus.device().irq_pending());
+        bus_command(&mut bus, &[8]);
+        assert_eq!(bus_results(&mut bus, 2), vec![ST0_SEEK_END | 1, 7]);
+        bus.port_write(DOR, 1, 12).unwrap();
+        assert!(!bus.device().irq_pending());
+    }
+
+    #[test]
+    fn empty_bay_seek_and_recalibrate_follow_at_signals() {
+        let mut bus = MockBus::new(Box::new(ready_fdc(Vec::new())));
+        bus_command(&mut bus, &[0x0F, 5, 90]);
+        assert!(bus.device().irq_pending());
+        bus_command(&mut bus, &[8]);
+        assert_eq!(bus_results(&mut bus, 2), vec![ST0_SEEK_END | 5, 90]);
+        bus_command(&mut bus, &[7, 1]);
+        assert!(bus.device().irq_pending());
+        bus_command(&mut bus, &[8]);
+        assert_eq!(
+            bus_results(&mut bus, 2),
+            vec![ST0_ABNORMAL | ST0_SEEK_END | 0x10 | 1, 0]
+        );
+    }
+
+    #[test]
+    fn empty_bay_data_commands_wait_without_dma_or_irq() {
+        for opcode in [5, 6] {
+            let mut bus = MockBus::new(Box::new(ready_fdc(Vec::new())));
+            bus_command(&mut bus, &[opcode, 1, 0, 0, 1, 2, 1, 0x1B, 0xFF]);
+            bus.tick(1_000_000);
+            assert_eq!(bus.port_read(MSR, 1).unwrap(), u32::from(MSR_BUSY));
+            assert!(!bus.device().irq_pending());
+            assert!(bus.device_mut().take_dma_request().is_none());
+            let saved = bus.device().save();
+            bus.device_mut().restore(&saved).unwrap();
+            assert_eq!(bus.device().save(), saved);
+        }
+    }
+
+    #[test]
+    fn empty_bay_read_id_waits_until_reset() {
+        let mut bus = MockBus::new(Box::new(ready_fdc(Vec::new())));
+        bus_command(&mut bus, &[0x4A, 1]);
+        for elapsed in [1, 1000, 1_000_000] {
+            bus.tick(elapsed);
+            assert_eq!(bus.port_read(MSR, 1).unwrap(), u32::from(MSR_BUSY));
+            assert!(!bus.device().irq_pending());
+            assert_eq!(bus.device().next_event(VClock(elapsed)), NextEvent::Dormant);
+            assert!(bus.device_mut().take_dma_request().is_none());
+        }
+        let saved = bus.device().save();
+        bus.device_mut().restore(&saved).unwrap();
+        assert_eq!(bus.device().save(), saved);
+        bus_command(&mut bus, &[8]);
+        assert_eq!(bus.port_read(MSR, 1).unwrap(), u32::from(MSR_BUSY));
+        bus.port_write(DOR, 1, 0).unwrap();
+        bus.port_write(DOR, 1, 12).unwrap();
+        assert!(bus.device().irq_pending());
+        bus_command(&mut bus, &[8]);
+        assert_eq!(bus_results(&mut bus, 2), vec![ST0_POLL, 0]);
+    }
+
+    #[test]
+    fn fidelity_reset_irq_obeys_dor_gate() {
+        let mut bus = MockBus::new(Box::new(Upd765::new()));
+        bus.port_write(DOR, 1, 4).unwrap();
+        assert!(!bus.device().irq_pending());
+        for drive in 0..4 {
+            bus_command(&mut bus, &[0x08]);
+            assert_eq!(bus_results(&mut bus, 2), vec![ST0_POLL | drive, 0]);
+        }
+    }
+
     use crate::dma8237::Dma8237;
     use device::DmaMemory;
     use std::collections::HashMap;
-    use testkit::MockBus;
 
     /// NEC µPD765 datasheet, SPECIFY, SEEK, RECALIBRATE and READ/WRITE DATA:
     /// this functional model completes seeks/reset on access and transfers on
@@ -1646,9 +1846,9 @@ mod tests {
     fn sense_without_pending_interrupt_returns_one_invalid_byte() {
         let mut bus = MockBus::new(Box::new(ready_fdc(Vec::new())));
         // Consume a seek completion so the controller has a stale ST0 and PCN.
-        bus_command(&mut bus, &[0x0F, 0x01, 25]);
+        bus_command(&mut bus, &[0x0F, 0x00, 25]);
         bus_command(&mut bus, &[0x08]);
-        assert_eq!(bus_results(&mut bus, 2), [ST0_SEEK_END | 1, 25]);
+        assert_eq!(bus_results(&mut bus, 2), [ST0_SEEK_END, 25]);
         for _ in 0..2 {
             bus_command(&mut bus, &[0x08]);
             assert_eq!(
@@ -2158,23 +2358,6 @@ mod tests {
     }
 
     #[test]
-    fn write_to_empty_bay_faults_not_ready() {
-        let mut fdc = ready_fdc(vec![0u8; SECTOR_SIZE]); // drive 0 only
-                                                         // Address drive 1, an empty bay.
-        command(
-            &mut fdc,
-            &[0x05, 0x01, 0x00, 0x00, 0x01, 0x02, 0x01, 0x1B, 0xFF],
-        );
-        assert!(
-            fdc.take_dma_request().is_none(),
-            "an empty bay queues no transfer"
-        );
-        let res = results(&mut fdc, 7);
-        assert_eq!(res[0] & 0x40, 0x40, "ST0 abnormal termination");
-        assert_eq!(res[0] & 0x08, 0x08, "ST0 NR: drive not ready");
-    }
-
-    #[test]
     fn write_out_of_geometry_faults_no_data() {
         // 360 KB disk has 40 cylinders; cylinder 40 is one past the last.
         let mut fdc = ready_drives([
@@ -2460,20 +2643,6 @@ mod tests {
         let res = results(&mut fdc, 7);
         assert_eq!(res[0] & 0xC0, ST0_ABNORMAL, "ST0 abnormal termination");
         assert_eq!(res[1] & ST1_NO_DATA, ST1_NO_DATA, "ST1 no-data");
-    }
-
-    #[test]
-    fn read_from_empty_drive_bay_is_not_ready() {
-        // Only drive 0 is populated; a read addressed to drive 1 finds no disk.
-        let mut fdc = ready_fdc(patterned(FloppyGeometry::HD1440, 0x44));
-        command(
-            &mut fdc,
-            &[0x06, 0x01, 0x00, 0x00, 0x01, 0x02, 0x01, 0x1B, 0xFF],
-        );
-        assert!(fdc.take_dma_request().is_none(), "no media, no transfer");
-        let res = results(&mut fdc, 7);
-        assert_eq!(res[0] & 0xC0, ST0_ABNORMAL, "abnormal termination");
-        assert_eq!(res[0] & ST0_NOT_READY, ST0_NOT_READY, "ST0 not-ready");
     }
 
     /// Build a real FAT12 360 KB image with `mformat` (from the devShell's

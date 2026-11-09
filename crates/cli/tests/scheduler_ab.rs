@@ -91,6 +91,51 @@ fn deadline_matches_per_clock_on_every_fast_workload() {
     }
 }
 
+/// Intel 8254 datasheet, Mode 2: OUT is low at count=1 and rises on reload.
+/// With the Boot guest's divisor 20, the initial load at 18 precedes the rising edge by 20
+/// clocks; the ready HLT boundary accepts IRQ0 at that same clock.
+#[test]
+fn fidelity_mode2_timer_trace_uses_count_one_low_phase() {
+    for engine in [SchedulerEngine::PerClock, SchedulerEngine::Deadline] {
+        let stream = scheduler::run_workload_engine(Workload::Boot, engine)
+            .unwrap()
+            .unwrap();
+        let first_inta = stream.iter().find_map(|event| match event {
+            Event::Pic(chipset::PicObservation::Acknowledge { at, vector: 8, .. }) => Some(at.0),
+            _ => None,
+        });
+        let first_byte = stream.iter().find_map(|event| match event {
+            Event::Access {
+                access:
+                    TraceEvent::Port {
+                        at,
+                        port: 0x3F8,
+                        dir: AccessDir::Write,
+                        ..
+                    },
+                ..
+            } => Some(at.0),
+            _ => None,
+        });
+        let stop = stream.last().and_then(|event| match event {
+            Event::Stop { at, .. } => Some(at.0),
+            _ => None,
+        });
+        assert_eq!(
+            (first_inta, first_byte, stop),
+            (Some(38), Some(43), Some(335))
+        );
+        assert!(matches!(
+            stream.last(),
+            Some(Event::Stop {
+                at: VClock(335),
+                reason: Stop::Halted,
+                ..
+            })
+        ));
+    }
+}
+
 #[test]
 fn serial_workload_has_no_per_clock_devices() {
     let prepared = scheduler::prepare(Workload::SerialReal16).unwrap().unwrap();
@@ -160,7 +205,7 @@ fn pit_restore_at_clock_50_matches_both_engines() {
         reference.tick(1);
         expected.push(reference.device().irq_pending());
     }
-    assert_eq!(expected.iter().position(|out| !out), Some(50));
+    assert_eq!(expected.iter().position(|out| !out), Some(49));
 
     for engine in [SchedulerEngine::PerClock, SchedulerEngine::Deadline] {
         let mut bus = bus::Bus::new(

@@ -24,6 +24,11 @@
 //! at counter 0 equals the programmed divisor exactly (the core datasheet
 //! invariant). See the coverage matrix below.
 //!
+//! Intel 8254 datasheet, Modes 2 and 3: rewriting a running counter takes
+//! effect at the end of the current period (Mode 2) or half-period (Mode 3).
+//! Only a complete two-byte count is eligible for loading; the current Mode 3
+//! half keeps its original odd/even duration.
+//!
 //! ## Coverage matrix (datasheet vs modelled)
 //!
 //! Access modes (command bits 5-4):
@@ -64,6 +69,11 @@
 //!   GATE is software-controllable via port `0x61` on the real machine; that port
 //!   belongs to a different chip and is out of scope here.
 //! - **The status-latch command** and the null-count flag.
+//! - **Divisor 1 in Modes 2/3**: unsupported waveform. Intel 8254 datasheet,
+//!   Mode 2 explicitly forbids 1; Mode 3's (N-1)/2 low half would be zero.
+//!   Assumption retained for deterministic compatibility, without a silicon
+//!   fidelity claim: Mode 2 stays low after its first pulse; Mode 3 alternates
+//!   one high clock and 32768 low clocks through the binary wrap.
 //!
 //! Snapshots contain all counter registers, byte/latch phases and the absolute
 //! PIT time base. OUT deadlines are derived from those saved counter phases.
@@ -84,7 +94,7 @@ const COMMAND: u16 = 0x43;
 const COUNTERS: usize = 3;
 
 /// Snapshot layout version tag, first byte of [`Device::save`] output.
-const SNAPSHOT_VERSION: u8 = 2;
+const SNAPSHOT_VERSION: u8 = 3;
 
 /// The access mode selected by command bits 5-4, controlling how the LSB/MSB of
 /// a counter are written and read.
@@ -148,7 +158,11 @@ struct Counter {
     bcd: bool,
     /// The reload value written by the guest; `0` means 65536.
     reload: u16,
-    /// The live counting element. Loads one tick after a write; mode 3 clears
+    /// Reload that established the current period/half-period.
+    active_reload: u16,
+    /// First byte of an incomplete two-byte write, isolated from live reloads.
+    write_low: u8,
+    /// The live counting element. Loads one tick after an initial write; mode 3 clears
     /// the reload's low bit so the decrement-by-two sequence can reach zero.
     count: u16,
     /// Current OUT pin level.
@@ -159,8 +173,8 @@ struct Counter {
     read_phase: BytePhase,
     /// Latched value for a counter-latch readback, if one is pending.
     latch: Option<u16>,
-    /// Set after a full reload write; the counting element loads on the next
-    /// tick, reproducing the 8254's one-clock load delay.
+    /// Initial/software load pending on the next clock. Running Modes 2/3
+    /// instead adopt a complete reload at their period/half-period boundary.
     reload_pending: bool,
     /// Whether the counter has ever been programmed (has a live count).
     armed: bool,
@@ -174,6 +188,8 @@ impl Counter {
             access: Access::LoHi,
             bcd: false,
             reload: 0,
+            active_reload: 0,
+            write_low: 0,
             count: 0,
             out: true,
             write_phase: BytePhase::Low,
@@ -205,6 +221,7 @@ impl Counter {
         self.access = Access::from_command(cmd);
         self.bcd = cmd & 1 != 0;
         self.write_phase = BytePhase::Low;
+        self.write_low = 0;
         self.read_phase = BytePhase::Low;
         self.latch = None;
         self.reload_pending = false;
@@ -235,11 +252,12 @@ impl Counter {
             }
             Access::LoHi => match self.write_phase {
                 BytePhase::Low => {
-                    self.reload = (self.reload & 0xFF00) | u16::from(byte);
+                    self.write_low = byte;
                     self.write_phase = BytePhase::High;
                 }
                 BytePhase::High => {
-                    self.reload = (self.reload & 0x00FF) | (u16::from(byte) << 8);
+                    self.reload = u16::from(self.write_low) | (u16::from(byte) << 8);
+                    self.write_low = 0;
                     self.write_phase = BytePhase::Low;
                     self.arm_reload();
                 }
@@ -248,10 +266,10 @@ impl Counter {
     }
 
     /// Mark that a complete reload value has been written; the counting element
-    /// loads on the next tick.
+    /// loads at the mode's next legal boundary.
     fn arm_reload(&mut self) {
+        self.reload_pending = self.reload_pending || !self.armed || !matches!(self.mode, 2 | 3);
         self.armed = true;
-        self.reload_pending = true;
         // Modes 0 drop OUT low immediately when a new count is written.
         if self.mode == 0 {
             self.out = false;
@@ -289,7 +307,7 @@ impl Counter {
     /// Mode 3: odd high halves include the clock spent at zero. A zero even
     /// count wraps through 65536; this also preserves the model's divisor-1 case.
     fn mode3_edge(&self) -> u64 {
-        if self.reload & 1 != 0 && self.out {
+        if self.active_reload & 1 != 0 && self.out {
             u64::from(self.count) / 2 + 1
         } else if self.count == 0 {
             32768
@@ -307,6 +325,7 @@ impl Counter {
         }
         if self.reload_pending {
             self.reload_pending = false;
+            self.active_reload = self.reload;
             self.count = self.initial() as u16;
             if self.mode == 3 {
                 self.count &= !1;
@@ -329,19 +348,19 @@ impl Counter {
                 self.count = self.count.wrapping_sub(clocks as u16);
             }
             2 => {
-                let falling = if self.count == 0 {
+                let reloading = if self.count == 0 {
                     65536
                 } else {
                     u64::from(self.count)
                 };
-                if clocks < falling {
+                if clocks < reloading {
                     self.count = self.count.wrapping_sub(clocks as u16);
-                    self.out = true;
                 } else {
-                    let phase = (clocks - falling) % u64::from(self.initial());
+                    self.active_reload = self.reload;
+                    let phase = (clocks - reloading) % u64::from(self.initial());
                     self.count = (self.initial() as u16).wrapping_sub(phase as u16);
-                    self.out = phase != 0;
                 }
+                self.out = self.count != 1;
             }
             3 => {
                 // After the first edge the reload defines both half-periods.
@@ -358,6 +377,7 @@ impl Counter {
                     }
                     clocks -= edge;
                     self.out = !self.out;
+                    self.active_reload = self.reload;
                     self.count = self.reload & !1;
                     clocks %= high + low;
                 }
@@ -372,6 +392,7 @@ impl Counter {
         // The reload written last tick loads now (one-clock 8254 load delay).
         if self.reload_pending {
             self.reload_pending = false;
+            self.active_reload = self.reload;
             self.count = self.initial() as u16;
             if self.mode == 3 {
                 self.count &= !1;
@@ -415,14 +436,12 @@ impl Counter {
     #[cfg(test)]
     fn tick_mode2(&mut self) {
         if self.count == 1 {
-            // Passing through 1: emit the one-clock OUT-low pulse and reload.
-            self.out = false;
+            self.active_reload = self.reload;
             self.count = self.initial() as u16;
         } else {
-            // Normal count-down; OUT is high the rest of the period.
-            self.out = true;
             self.count = self.count.wrapping_sub(1);
         }
+        self.out = self.count != 1;
     }
 
     /// Intel 8254 datasheet, Mode 3 ("Square Wave Mode"): decrement by two,
@@ -431,15 +450,17 @@ impl Counter {
     /// high half of (N+1)/2 clocks and a low half of (N-1)/2 clocks.
     #[cfg(test)]
     fn tick_mode3(&mut self) {
-        let odd_high = self.reload & 1 != 0 && self.out;
+        let odd_high = self.active_reload & 1 != 0 && self.out;
         if odd_high && self.count == 0 {
             self.out = false;
+            self.active_reload = self.reload;
             self.count = self.reload & !1;
             return;
         }
         self.count = self.count.wrapping_sub(2);
         if self.count == 0 && !odd_high {
             self.out = !self.out;
+            self.active_reload = self.reload;
             self.count = self.reload & !1;
         }
     }
@@ -604,9 +625,9 @@ impl Device for Pit8253 {
                 2 if !c.out => 1,
                 2 => {
                     if c.count == 0 {
-                        65536
+                        65535
                     } else {
-                        u64::from(c.count)
+                        u64::from(c.count.saturating_sub(1)).max(1)
                     }
                 }
                 3 => c.mode3_edge(),
@@ -640,8 +661,8 @@ impl Device for Pit8253 {
 
     fn save(&self) -> Vec<u8> {
         // Layout: version, then per counter: mode, access, flags, reload(2),
-        // count(2), latch(2); followed by the absolute PIT clock(8).
-        let mut blob = Vec::with_capacity(1 + COUNTERS * 9 + 8);
+        // count(2), latch(2), active reload(2), write LSB; then PIT clock(8).
+        let mut blob = Vec::with_capacity(1 + COUNTERS * 12 + 8);
         blob.push(SNAPSHOT_VERSION);
         for c in &self.counters {
             blob.push(c.mode);
@@ -672,13 +693,15 @@ impl Device for Pit8253 {
             blob.extend_from_slice(&c.reload.to_le_bytes());
             blob.extend_from_slice(&c.count.to_le_bytes());
             blob.extend_from_slice(&c.latch.unwrap_or(0).to_le_bytes());
+            blob.extend_from_slice(&c.active_reload.to_le_bytes());
+            blob.push(c.write_low);
         }
         blob.extend_from_slice(&self.now.0.to_le_bytes());
         blob
     }
 
     fn restore(&mut self, snapshot: &[u8]) -> Result<(), DeviceError> {
-        const PER_COUNTER: usize = 1 + 1 + 1 + 2 + 2 + 2;
+        const PER_COUNTER: usize = 1 + 1 + 1 + 2 + 2 + 2 + 2 + 1;
         let expected = 1 + COUNTERS * PER_COUNTER + 8;
         if snapshot.len() != expected {
             return Err(DeviceError::InvalidSnapshot {
@@ -700,6 +723,7 @@ impl Device for Pit8253 {
             if snapshot[off] > 5
                 || !(1..=3).contains(&snapshot[off + 1])
                 || flags & 0x80 != 0
+                || (flags & 0x04 == 0 && snapshot[off + 11] != 0)
                 || (flags & 0x10 != 0 && flags & 0x20 == 0)
                 || (snapshot[off + 1] != 3 && flags & 0x0C != 0)
                 || (snapshot[off] == 3 && flags & 0x20 != 0 && flags & 0x10 == 0 && count & 1 != 0)
@@ -727,6 +751,8 @@ impl Device for Pit8253 {
             };
             c.reload_pending = flags & (1 << 4) != 0;
             c.armed = flags & (1 << 5) != 0;
+            c.active_reload = u16::from_le_bytes([snapshot[off + 9], snapshot[off + 10]]);
+            c.write_low = snapshot[off + 11];
             c.reload = u16::from_le_bytes([snapshot[off + 3], snapshot[off + 4]]);
             c.count = u16::from_le_bytes([snapshot[off + 5], snapshot[off + 6]]);
             let latch = u16::from_le_bytes([snapshot[off + 7], snapshot[off + 8]]);
@@ -760,6 +786,99 @@ impl Device for Pit8253 {
 mod tests {
     use super::*;
     use testkit::MockBus;
+
+    fn fidelity_pit_bus(mode: u8, divisor: u8) -> MockBus {
+        let mut bus = MockBus::new(Box::new(Pit8253::new()));
+        bus.port_write(CMD, 1, cmd(0, 3, mode, 0)).unwrap();
+        bus.port_write(C0, 1, u32::from(divisor)).unwrap();
+        bus.port_write(C0, 1, 0).unwrap();
+        bus.tick(1);
+        bus
+    }
+
+    fn fidelity_count(bus: &mut MockBus) -> u16 {
+        bus.port_write(CMD, 1, 0).unwrap();
+        let lo = bus.port_read(C0, 1).unwrap() as u16;
+        lo | ((bus.port_read(C0, 1).unwrap() as u16) << 8)
+    }
+
+    #[test]
+    fn fidelity_mode3_odd_half_keeps_its_extra_clock_after_even_reload() {
+        let mut bus = fidelity_pit_bus(3, 5);
+        bus.tick(1);
+        bus.port_write(C0, 1, 4).unwrap();
+        bus.port_write(C0, 1, 0).unwrap();
+        bus.tick(1);
+        assert_eq!(fidelity_count(&mut bus), 0);
+        assert!(bus.device().irq_pending());
+        bus.tick(1);
+        assert!(!bus.device().irq_pending());
+        assert_eq!(fidelity_count(&mut bus), 4);
+    }
+
+    #[test]
+    fn fidelity_rewriting_before_initial_load_keeps_load_pending() {
+        for mode in [2, 3] {
+            let mut bus = MockBus::new(Box::new(Pit8253::new()));
+            bus.port_write(CMD, 1, cmd(0, 3, mode, 0)).unwrap();
+            for reload in [8, 4] {
+                bus.port_write(C0, 1, reload).unwrap();
+                bus.port_write(C0, 1, 0).unwrap();
+            }
+            bus.tick(1);
+            assert_eq!(fidelity_count(&mut bus), 4);
+        }
+    }
+
+    #[test]
+    fn fidelity_mode2_reload_waits_for_current_period() {
+        let mut bus = fidelity_pit_bus(2, 8);
+        bus.tick(2);
+        bus.port_write(C0, 1, 4).unwrap();
+        bus.port_write(C0, 1, 0).unwrap();
+        bus.tick(1);
+        assert_eq!(fidelity_count(&mut bus), 5);
+        bus.tick(4);
+        assert_eq!(fidelity_count(&mut bus), 1);
+        assert!(!bus.device().irq_pending());
+        bus.tick(1);
+        assert_eq!(fidelity_count(&mut bus), 4);
+        assert!(bus.device().irq_pending());
+    }
+
+    #[test]
+    fn fidelity_mode3_reload_waits_for_current_half() {
+        let mut bus = fidelity_pit_bus(3, 8);
+        bus.tick(1);
+        bus.port_write(C0, 1, 5).unwrap();
+        bus.port_write(C0, 1, 0).unwrap();
+        bus.tick(1);
+        assert_eq!(fidelity_count(&mut bus), 4);
+        bus.tick(2);
+        assert!(!bus.device().irq_pending());
+        assert_eq!(fidelity_count(&mut bus), 4);
+        bus.tick(2);
+        assert!(bus.device().irq_pending());
+        bus.tick(3);
+        assert!(!bus.device().irq_pending());
+    }
+
+    #[test]
+    fn fidelity_mode3_partial_reload_does_not_change_parity() {
+        let mut bus = fidelity_pit_bus(3, 4);
+        bus.port_write(C0, 1, 5).unwrap();
+        let snapshot = bus.device().save();
+        let mut restored = MockBus::new(Box::new(Pit8253::new()));
+        restored.device_mut().restore(&snapshot).unwrap();
+        restored.tick(1);
+        for b in [&mut bus, &mut restored] {
+            b.tick(2);
+            assert!(!b.device().irq_pending());
+            assert_eq!(fidelity_count(b), 4);
+            b.tick(2);
+            assert!(b.device().irq_pending());
+        }
+    }
 
     const C0: u16 = 0x40;
     const C1: u16 = 0x41;
@@ -809,7 +928,7 @@ mod tests {
                 assert_eq!(reference.read_data(), scheduled.read_data());
                 compare_jump(&mut reference, &mut scheduled, 13);
                 assert_eq!(reference.read_data(), scheduled.read_data());
-                // A low-byte write changes reload before a new load is armed.
+                // A partial write must leave the current counting phase intact.
                 reference.write_data(5);
                 scheduled.write_data(5);
                 compare_jump(&mut reference, &mut scheduled, 19);
@@ -936,10 +1055,10 @@ mod tests {
         program_c0(&mut pit, 2, 5);
         assert_eq!(pit.next_event(VClock::ZERO), NextEvent::At(VClock(1)));
         tick(&mut pit, 1);
-        assert_eq!(pit.next_event(VClock(1)), NextEvent::At(VClock(6)));
-        tick(&mut pit, 5);
+        assert_eq!(pit.next_event(VClock(1)), NextEvent::At(VClock(5)));
+        tick(&mut pit, 4);
         assert!(!pit.out(0));
-        assert_eq!(pit.next_event(VClock(6)), NextEvent::At(VClock(7)));
+        assert_eq!(pit.next_event(VClock(5)), NextEvent::At(VClock(6)));
     }
 
     #[test]

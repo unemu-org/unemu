@@ -15,6 +15,17 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   controller, MC146818 CMOS/RTC (seeded NVRAM), 8237 DMA, µPD765 floppy (read + write), port 0x61,
   POST port 0x80, VGA/CGA text with MDA port aliases, all behind the `Device` trait with mock-bus
   tests; text output reaches a `FrameSink`.
+- **Device fidelity:** PIT Modes 2/3 adopt complete reloads at period/half-period
+  boundaries and isolate incomplete LSB writes. RTC periodic PF/PIE uses a
+  rational 32,768 Hz divider and rounded-up PIT deadlines, including IRQ8 wake
+  from HLT; periodic and calendar phases remain an explicitly documented
+  approximation. CRTC indices decode five bits; cursor comparison uses the full
+  16-bit address while scanout wraps at the CPU aperture by assumption. FDC
+  IRQ6 and DMA requests obey DOR bit 3. With RDY active, empty-bay SEEK succeeds,
+  RECALIBRATE reports equipment check with PCN=0, and ID/data searches wait for
+  reset without an interrupt. Per-device module matrices record the remaining
+  unsupported cases and assumptions; changed expectations are listed in
+  [scheduler adoption](design/scheduler.md#adoption).
 - **Machines are declarative.** A `MachineConfig` (the `assembly` crate) is built by one
   `assemble()` and run under a `RunPolicy`; presets replace the old hand-written runners.
 - **CPU pin:** `70be0087b583f1e38bf3479d92e90e89ef998cf1` (x86jit `main`).

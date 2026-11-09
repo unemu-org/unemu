@@ -157,40 +157,47 @@ pub use device::TextModeState;
 
 /// Render VGA text video memory into a [`TextGrid`] (§9.2).
 ///
-/// Reads `cols * rows` cells starting at `start_cell`, two bytes each. Cells that
-/// fall past the end of `vram` render as blank (glyph 0, attr 0) rather than
-/// panicking. The cursor's grid position is `cursor_cell - start_cell`; a cursor
-/// before the start address or past the last row is reported not visible.
+/// IBM VGA Technical Reference, CRT Controller Registers, Start Address and
+/// Cursor Location: scanout and cursor comparison use video-memory addresses.
+/// The cursor compares the full 16-bit location with the address counter.
+/// ASSUMED: scanout wraps at the supplied CPU memory aperture (complete cells,
+/// at most 65,536), rather than modelling VGA plane/address-mode wiring.
+/// Empty memory renders blank; zero dimensions hide the cursor.
 #[must_use]
 pub fn render_text_mode(state: &TextModeState) -> TextGrid {
     let cols = state.cols;
     let rows = state.rows;
     let count = usize::from(cols) * usize::from(rows);
+    let memory_cells = (state.vram.len() / 2).min(65536);
     let mut cells = Vec::with_capacity(count);
     for i in 0..count {
-        let cell_index = usize::from(state.start_cell) + i;
-        let byte = cell_index * 2;
-        let glyph = state.vram.get(byte).copied().unwrap_or(0);
-        let attr = state.vram.get(byte + 1).copied().unwrap_or(0);
-        cells.push(TextCell { glyph, attr });
+        let cell = if memory_cells == 0 {
+            TextCell { glyph: 0, attr: 0 }
+        } else {
+            let byte = (((usize::from(state.start_cell) + i) & 0xFFFF) % memory_cells) * 2;
+            TextCell {
+                glyph: state.vram[byte],
+                attr: state.vram[byte + 1],
+            }
+        };
+        cells.push(cell);
     }
 
-    let cursor = if state.cursor_cell >= state.start_cell {
-        let rel = state.cursor_cell - state.start_cell;
-        let col = rel % cols;
-        let row = rel / cols;
-        Cursor {
-            col,
-            row,
-            visible: state.cursor_visible && row < rows,
-        }
-    } else {
-        Cursor {
-            col: 0,
-            row: 0,
-            visible: false,
-        }
+    let mut cursor = Cursor {
+        col: 0,
+        row: 0,
+        visible: false,
     };
+    if cols != 0 && rows != 0 && memory_cells != 0 {
+        let rel = usize::from(state.cursor_cell.wrapping_sub(state.start_cell));
+        if rel < count {
+            cursor = Cursor {
+                col: (rel % usize::from(cols)) as u16,
+                row: (rel / usize::from(cols)) as u16,
+                visible: state.cursor_visible,
+            };
+        }
+    }
 
     TextGrid {
         cols,
@@ -241,6 +248,73 @@ impl FrameSink for CaptureFrameSink {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cursor_compares_full_sixteen_bit_address() {
+        let vram = vec![0; 0x8000];
+        for cursor_cell in [0x4000, 0x8000, 0xC000, 0xFFFF] {
+            let grid = render_text_mode(&TextModeState {
+                vram: &vram,
+                cols: 80,
+                rows: 25,
+                start_cell: 0,
+                cursor_cell,
+                cursor_visible: true,
+            });
+            assert!(!grid.cursor().visible, "cursor={cursor_cell:#x}");
+        }
+        let grid = render_text_mode(&TextModeState {
+            vram: &vram,
+            cols: 3,
+            rows: 1,
+            start_cell: 0xFFFF,
+            cursor_cell: 0,
+            cursor_visible: true,
+        });
+        assert_eq!(
+            grid.cursor(),
+            Cursor {
+                col: 1,
+                row: 0,
+                visible: true
+            }
+        );
+    }
+
+    #[test]
+    fn fidelity_scanout_wrap_does_not_wrap_cursor_comparison() {
+        let grid = render_text_mode(&TextModeState {
+            vram: &[b'A', 7, b'B', 7, b'C', 7, b'D', 7],
+            cols: 3,
+            rows: 1,
+            start_cell: 3,
+            cursor_cell: 0,
+            cursor_visible: true,
+        });
+        assert_eq!(grid.to_dump(), "DAB");
+        assert_eq!(
+            grid.cursor(),
+            Cursor {
+                col: 0,
+                row: 0,
+                visible: false
+            }
+        );
+    }
+
+    #[test]
+    fn fidelity_zero_width_frame_is_empty_and_has_no_cursor() {
+        let grid = render_text_mode(&TextModeState {
+            vram: &[],
+            cols: 0,
+            rows: 25,
+            start_cell: 0,
+            cursor_cell: 0,
+            cursor_visible: true,
+        });
+        assert!(grid.cells.is_empty());
+        assert!(!grid.cursor().visible);
+    }
 
     /// Build a 4-cell-wide vram fragment "AB" with attributes.
     fn vram_ab() -> Vec<u8> {
@@ -298,7 +372,7 @@ mod tests {
     }
 
     #[test]
-    fn cursor_before_start_is_hidden() {
+    fn cursor_before_start_stays_outside_grid() {
         let vram = vec![0u8; 8];
         let grid = render_text_mode(&TextModeState {
             vram: &vram,

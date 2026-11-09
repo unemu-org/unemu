@@ -15,7 +15,7 @@
 //! second. Each second increments the time and raises the update-ended flag; the
 //! **update-in-progress (UIP)** flag in register A is asserted during the short
 //! window before each update. Setting the SET bit (register B bit 7) freezes the
-//! clock, exactly as on real silicon.
+//! calendar updates while the periodic divider keeps running.
 //!
 //! Motorola MC146818 datasheet, "Update Cycle" and "Registers A–C", describes
 //! the UIP/update and interrupt flags. Deadlines preserve the configured PIT
@@ -44,6 +44,7 @@
 //! | Time/date registers, BCD & binary    | yes      | per register B DM bit          |
 //! | 12/24-hour mode                       | yes      | per register B bit 1, PM = `0x80` |
 //! | Per-second update + UIP flag          | yes      | driven by `tick`               |
+//! | Periodic interrupt (PF/PIE)          | partial  | rational 32,768 Hz divider; phase separate from calendar counter |
 //! | Update-ended interrupt (UF/UIE)       | yes      | drives IRQ8 line               |
 //! | Alarm interrupt (AF/AIE)              | yes      | with `0xC0` "don't care" match |
 //! | NMI-disable bit (`0x70` bit 7)        | yes      | stored + exposed               |
@@ -58,12 +59,26 @@
 //! carry rules, so guest writes cannot overflow the host's time fields.
 //!
 //! Deliberately **not** modelled:
-//! - **Periodic interrupt** (register A rate-select RS bits): the rate bits are
-//!   stored, but no periodic (PF) interrupt is generated. Boot firmware programs
-//!   the periodic timer for services this project does not run.
 //! - **The square-wave output** (register B SQWE / the SQW pin).
 //! - **Daylight-savings auto-adjust** (register B DSE): the bit is stored only.
-//! - **Oscillator control** via register A DV bits beyond the SET-bit freeze.
+//! - **Oscillator control** beyond the AT's DV=010 (32,768 Hz) time base:
+//!   other DV selections suppress periodic events; calendar timing retains the
+//!   configured second period. Divider-reset startup delay is not modelled.
+//!   There is no board oscillator switching interface in this device.
+//!
+//! Motorola MC146818A datasheet, Periodic Interrupt Selection, Table 5 and
+//! Registers A–C: PF latches independently of PIE; SET stops calendar updates,
+//! not the periodic divider. Events round up to whole PIT clocks with carried
+//! oscillator phase. Assumption: the selected divider tap's falling edges are
+//! aligned to oscillator counts divisible by its period, with phase zero on
+//! first entering DV=010. Unsupported DV values freeze this phase; DV=11x
+//! clears it. The datasheet does not define a battery-backed power-on phase.
+//! ASSUMED approximation: periodic phase and the calendar update counter are
+//! separate. SET freezes only the calendar counter; divider reset clears only
+//! periodic phase. Updates and periodic edges can therefore lose alignment after
+//! either operation. MC146818A, Update Cycle and Figure 15 (Update-Ended and
+//! Periodic Interrupt Relationship), relates UIP/UF to PF through the shared
+//! divider; that hardware relationship is not reproduced by these counters.
 //!
 //! Snapshots contain CMOS RAM, calendar, interrupt/UIP state, the subsecond
 //! phase, timing ratios and the absolute PIT time base. UIP and second deadlines
@@ -84,7 +99,7 @@ const PORT_DATA: u16 = 0x71;
 const NVRAM_LEN: usize = 64;
 
 /// Snapshot layout version tag.
-const SNAPSHOT_VERSION: u8 = 2;
+const SNAPSHOT_VERSION: u8 = 3;
 
 // CMOS register indices.
 const REG_SECONDS: usize = 0x00;
@@ -148,7 +163,7 @@ const B_SQWE: u8 = 1 << 3;
 const B_UIE: u8 = 1 << 4;
 /// Register B bit 5: alarm interrupt enable.
 const B_AIE: u8 = 1 << 5;
-/// Register B bit 6: periodic interrupt enable (stored only).
+/// Register B bit 6: periodic interrupt enable.
 const B_PIE: u8 = 1 << 6;
 /// Register B bit 7: SET — freeze the clock for programming.
 const B_SET: u8 = 1 << 7;
@@ -157,7 +172,7 @@ const B_SET: u8 = 1 << 7;
 const C_UF: u8 = 1 << 4;
 /// Register C bit 5: alarm flag.
 const C_AF: u8 = 1 << 5;
-/// Register C bit 6: periodic flag (not generated; cleared by RESET).
+/// Register C bit 6: periodic flag (read-to-clear).
 const C_PF: u8 = 1 << 6;
 /// Register C bit 7: interrupt request flag (OR of the enabled flags).
 const C_IRQF: u8 = 1 << 7;
@@ -337,6 +352,10 @@ pub struct CmosRtc {
     accum: u64,
     /// Virtual-clock ticks that make one RTC second.
     second_ticks: u64,
+    /// Fractional oscillator clocks, in units of 1 / second_ticks.
+    oscillator_phase: u64,
+    /// Whole oscillator clocks within the current 32,768-clock divider cycle.
+    divider_phase: u16,
     /// Width of the UIP window before each update.
     uip_ticks: u64,
     /// Whether the update-in-progress window is currently open.
@@ -365,6 +384,8 @@ impl CmosRtc {
             nmi_disabled: false,
             accum: 0,
             second_ticks: DEFAULT_SECOND_TICKS,
+            oscillator_phase: 0,
+            divider_phase: 0,
             uip_ticks: DEFAULT_UIP_TICKS,
             uip: false,
             trace: device::TraceBuffer::default(),
@@ -551,7 +572,13 @@ impl CmosRtc {
             REG_MONTH => self.time.month = self.decode(value),
             REG_YEAR => self.time.year = self.decode(value),
             // Register A UIP bit is read-only; keep the rest.
-            REG_A => self.nvram[REG_A] = value & !A_UIP,
+            REG_A => {
+                self.nvram[REG_A] = value & !A_UIP;
+                if value & 0x60 == 0x60 {
+                    self.oscillator_phase = 0;
+                    self.divider_phase = 0;
+                }
+            }
             REG_B => self.nvram[REG_B] = value,
             // Register C is read-only; writes are ignored.
             REG_C => {}
@@ -627,13 +654,13 @@ impl CmosRtc {
         }
     }
 
-    /// Recompute register C's IRQF from the enabled flags. The periodic flag
-    /// (PF) is intentionally excluded: periodic interrupts are not generated (see
-    /// the coverage matrix).
+    /// Recompute IRQF from all three flag/enable pairs (MC146818A, Register C).
     fn refresh_irqf(&mut self) {
         let b = self.nvram[REG_B];
         let c = self.nvram[REG_C];
-        let active = ((c & C_UF != 0) && (b & B_UIE != 0)) || ((c & C_AF != 0) && (b & B_AIE != 0));
+        let active = ((c & C_UF != 0) && (b & B_UIE != 0))
+            || ((c & C_AF != 0) && (b & B_AIE != 0))
+            || ((c & C_PF != 0) && (b & B_PIE != 0));
         if active {
             self.nvram[REG_C] |= C_IRQF;
         } else {
@@ -648,6 +675,38 @@ impl CmosRtc {
         if self.alarm_matches() {
             self.nvram[REG_C] |= C_AF;
         }
+        self.refresh_irqf();
+    }
+
+    /// MC146818A datasheet, Table 5, 32.768 kHz time base: RS=1/2
+    /// reuse the 256/128 Hz taps; RS=0 disables periodic events.
+    fn periodic_divisor(&self) -> Option<u64> {
+        if self.nvram[REG_A] & 0x70 != 0x20 {
+            return None;
+        }
+        match self.nvram[REG_A] & 0x0F {
+            0 => None,
+            1 => Some(128),
+            2 => Some(256),
+            rate => Some(1 << (rate - 1)),
+        }
+    }
+
+    fn advance_periodic(&mut self, elapsed: u64) {
+        if self.nvram[REG_A] & 0x70 != 0x20 {
+            return;
+        }
+        // u128 holds a full u64 clock jump multiplied by the oscillator rate.
+        let phase = u128::from(self.oscillator_phase) + u128::from(elapsed) * 32768;
+        let ticks = phase / u128::from(self.second_ticks);
+        self.oscillator_phase = (phase % u128::from(self.second_ticks)) as u64;
+        if let Some(divisor) = self.periodic_divisor() {
+            let until_edge = divisor - u64::from(self.divider_phase) % divisor;
+            if ticks >= u128::from(until_edge) {
+                self.nvram[REG_C] |= C_PF;
+            }
+        }
+        self.divider_phase = ((u128::from(self.divider_phase) + ticks) % 32768) as u16;
         self.refresh_irqf();
     }
 
@@ -737,7 +796,8 @@ impl Device for CmosRtc {
         if elapsed == 0 {
             return;
         }
-        // The SET bit freezes the oscillator: no advance, no UIP.
+        self.advance_periodic(elapsed);
+        // SET inhibits calendar updates, while the periodic divider keeps running.
         if self.nvram[REG_B] & B_SET != 0 {
             self.uip = false;
             return;
@@ -756,13 +816,14 @@ impl Device for CmosRtc {
     }
 
     fn next_event(&self, _now: VClock) -> NextEvent {
-        let clocks = if self.nvram[REG_B] & B_SET != 0 {
+        let calendar_clocks = if self.nvram[REG_B] & B_SET != 0 {
             if !self.uip {
-                return NextEvent::Dormant;
+                u64::MAX
+            } else {
+                // SET clears a pre-existing UIP on the next clock, as in the
+                // per-clock model, rather than during a zero-elapsed access.
+                1
             }
-            // SET clears a pre-existing UIP on the next clock, as in the
-            // per-clock model, rather than during a zero-elapsed access.
-            1
         } else {
             let uip_start = self.second_ticks - self.uip_ticks;
             if self.uip != (self.accum >= uip_start) {
@@ -773,6 +834,22 @@ impl Device for CmosRtc {
                 self.second_ticks - self.accum
             }
         };
+        // Once PF is latched, further edges cannot change any observable flag
+        // until register C is read. Access synchronization still carries phase.
+        let periodic_clocks = self
+            .periodic_divisor()
+            .filter(|_| self.nvram[REG_C] & C_PF == 0)
+            .map(|divisor| {
+                let ticks = divisor - u64::from(self.divider_phase) % divisor;
+                let numerator = u128::from(ticks) * u128::from(self.second_ticks)
+                    - u128::from(self.oscillator_phase);
+                u64::try_from(numerator.div_ceil(32768)).unwrap_or(u64::MAX)
+            })
+            .unwrap_or(u64::MAX);
+        let clocks = calendar_clocks.min(periodic_clocks);
+        if clocks == u64::MAX {
+            return NextEvent::Dormant;
+        }
         self.now
             .0
             .checked_add(clocks)
@@ -800,7 +877,7 @@ impl Device for CmosRtc {
     }
 
     fn save(&self) -> Vec<u8> {
-        let mut blob = Vec::with_capacity(1 + NVRAM_LEN + 7 + 1 + 1 + 8 * 4);
+        let mut blob = Vec::with_capacity(1 + NVRAM_LEN + 7 + 1 + 1 + 8 * 4 + 10);
         blob.push(SNAPSHOT_VERSION);
         blob.extend_from_slice(&self.nvram);
         blob.push(self.time.second);
@@ -815,12 +892,14 @@ impl Device for CmosRtc {
         blob.extend_from_slice(&self.accum.to_le_bytes());
         blob.extend_from_slice(&self.second_ticks.to_le_bytes());
         blob.extend_from_slice(&self.uip_ticks.to_le_bytes());
+        blob.extend_from_slice(&self.oscillator_phase.to_le_bytes());
+        blob.extend_from_slice(&self.divider_phase.to_le_bytes());
         blob.extend_from_slice(&self.now.0.to_le_bytes());
         blob
     }
 
     fn restore(&mut self, snapshot: &[u8]) -> Result<(), DeviceError> {
-        const LEN: usize = 1 + NVRAM_LEN + 7 + 1 + 1 + 32;
+        const LEN: usize = 1 + NVRAM_LEN + 7 + 1 + 1 + 32 + 10;
         if snapshot.len() != LEN {
             return Err(DeviceError::InvalidSnapshot {
                 device: NAME,
@@ -838,7 +917,11 @@ impl Device for CmosRtc {
         let accum = read_timing(timing);
         let second_ticks = read_timing(timing + 8);
         let uip_ticks = read_timing(timing + 16);
+        let oscillator_phase = read_timing(timing + 24);
+        let divider_phase = u16::from_le_bytes([snapshot[timing + 32], snapshot[timing + 33]]);
         if second_ticks == 0
+            || oscillator_phase >= second_ticks
+            || divider_phase >= 32768
             || accum >= second_ticks
             || uip_ticks > second_ticks
             || snapshot[1 + NVRAM_LEN + 7] >= NVRAM_LEN as u8
@@ -878,6 +961,8 @@ impl Device for CmosRtc {
         self.accum = read_u64(off);
         self.second_ticks = read_u64(off + 8);
         self.uip_ticks = read_u64(off + 16);
+        self.oscillator_phase = oscillator_phase;
+        self.divider_phase = divider_phase;
         self.now = VClock(u64::from_le_bytes(std::array::from_fn(|i| {
             snapshot[snapshot.len() - 8 + i]
         })));
@@ -901,6 +986,92 @@ impl Device for CmosRtc {
 mod tests {
     use super::*;
     use testkit::MockBus;
+
+    #[test]
+    fn fidelity_periodic_deadlines_round_up_without_drift() {
+        let mut bus = MockBus::new(Box::new(CmosRtc::new()));
+        bus_write_reg(&mut bus, REG_A, 0x26);
+        bus_write_reg(&mut bus, REG_B, B_24HOUR | B_PIE);
+        for period in 1u64..=1024 {
+            let expected = (period * DEFAULT_SECOND_TICKS).div_ceil(1024);
+            assert_eq!(
+                bus.device().next_event(bus.clock()),
+                NextEvent::At(VClock(expected))
+            );
+            bus.tick(expected - bus.clock().0);
+            assert!(bus.device().irq_pending());
+            assert_eq!(
+                bus_read_reg(&mut bus, REG_C) & (C_PF | C_IRQF),
+                C_PF | C_IRQF
+            );
+            assert!(!bus.device().irq_pending());
+            // UIP is an independent earlier deadline near the second boundary.
+            if period == 1022 {
+                bus.tick(DEFAULT_SECOND_TICKS - DEFAULT_UIP_TICKS - bus.clock().0);
+            }
+        }
+    }
+
+    #[test]
+    fn fidelity_periodic_flag_is_independent_of_pie_and_set() {
+        let mut bus = MockBus::new(Box::new(CmosRtc::new()));
+        bus_write_reg(&mut bus, REG_A, 0x26);
+        bus_write_reg(&mut bus, REG_B, B_24HOUR | B_SET);
+        bus.tick(DEFAULT_SECOND_TICKS.div_ceil(1024));
+        assert!(!bus.device().irq_pending());
+        bus_write_reg(&mut bus, REG_B, B_24HOUR | B_SET | B_PIE);
+        assert!(bus.device().irq_pending());
+        assert_eq!(bus_read_reg(&mut bus, REG_C), C_PF | C_IRQF);
+        assert_eq!(bus_read_reg(&mut bus, REG_SECONDS), 0);
+    }
+
+    #[test]
+    fn fidelity_periodic_rate_disable_divider_reset_and_device_reset() {
+        let mut bus = MockBus::new(Box::new(CmosRtc::new()));
+        bus_write_reg(&mut bus, REG_A, 0x26);
+        bus_write_reg(&mut bus, REG_B, B_SET | B_PIE);
+        bus.tick(1000);
+        bus.device_mut().reset();
+        bus_write_reg(&mut bus, REG_B, B_SET | B_PIE);
+        assert_eq!(
+            bus.device().next_event(bus.clock()),
+            NextEvent::At(VClock(1166))
+        );
+        bus.tick(166);
+        assert!(bus.device().irq_pending());
+        bus_read_reg(&mut bus, REG_C);
+        bus_write_reg(&mut bus, REG_A, 0x20);
+        assert_eq!(bus.device().next_event(bus.clock()), NextEvent::Dormant);
+        bus.tick(100);
+        assert_eq!(bus_read_reg(&mut bus, REG_C), 0);
+        bus_write_reg(&mut bus, REG_A, 0x66);
+        bus.tick(100);
+        assert_eq!(bus_read_reg(&mut bus, REG_C), 0);
+        bus_write_reg(&mut bus, REG_A, 0x26);
+        assert_eq!(
+            bus.device().next_event(bus.clock()),
+            NextEvent::At(VClock(bus.clock().0 + 1166))
+        );
+    }
+
+    #[test]
+    fn fidelity_periodic_rates_and_snapshot_phase() {
+        for (rs, hz) in [(1, 256u64), (2, 128), (3, 8192), (6, 1024), (15, 2)] {
+            let mut bus = MockBus::new(Box::new(CmosRtc::new()));
+            bus_write_reg(&mut bus, REG_A, 0x20 | rs);
+            bus_write_reg(&mut bus, REG_B, B_24HOUR | B_PIE);
+            let deadline = DEFAULT_SECOND_TICKS.div_ceil(hz);
+            bus.tick(deadline - 1);
+            assert_eq!(bus_read_reg(&mut bus, REG_C) & C_PF, 0);
+            let mut copy = CmosRtc::new();
+            copy.restore(&bus.device().save()).unwrap();
+            bus.tick(1);
+            copy.sync(VClock(deadline));
+            assert_eq!(copy.save(), bus.device().save());
+            assert!(copy.irq_pending());
+            assert_eq!(bus_read_reg(&mut bus, REG_C) & C_PF, C_PF);
+        }
+    }
 
     #[test]
     fn bounded_calendar_catch_up_matches_second_steps_and_guest_written_dates() {
@@ -1020,6 +1191,7 @@ mod tests {
 
     fn reference_clock(rtc: &mut CmosRtc, clock: u64) {
         rtc.now = VClock(clock);
+        rtc.advance_periodic(1);
         if rtc.nvram[REG_B] & B_SET != 0 {
             rtc.uip = false;
             return;
@@ -1447,13 +1619,13 @@ mod tests {
     }
 
     #[test]
-    fn periodic_flag_never_generated() {
-        // Rate bits stored but PF is documented as not modelled.
+    fn periodic_flag_latches_without_interrupt_enable() {
+        // PF latches even when PIE masks the interrupt output.
         let mut rtc = CmosRtc::new().with_timing(10, 2);
         write_reg(&mut rtc, REG_A as u8, 0x26); // a periodic rate
         write_reg(&mut rtc, REG_B as u8, B_24HOUR);
         rtc.tick(VClock(1000));
-        assert_eq!(read_reg(&mut rtc, REG_C as u8) & C_PF, 0);
+        assert_eq!(read_reg(&mut rtc, REG_C as u8) & C_PF, C_PF);
     }
 
     #[test]

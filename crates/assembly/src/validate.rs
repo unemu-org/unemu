@@ -26,6 +26,7 @@ impl MachineConfig {
     /// when [`crate::assemble`] reads the sources and validates their bytes.
     pub fn validate(&self) -> Result<(), ConfigError> {
         self.check_unique_device_ids()?;
+        self.check_uart_bases()?;
         self.check_port_overlaps()?;
         self.check_mmio_devices_present()?;
         self.check_mmio_sizes()?;
@@ -47,6 +48,21 @@ impl MachineConfig {
         for (i, dev) in self.devices.iter().enumerate() {
             if self.devices[..i].iter().any(|d| d.id == dev.id) {
                 return Err(ConfigError::DuplicateDeviceId(dev.id));
+            }
+        }
+        Ok(())
+    }
+
+    /// The constructor's programmer-error guard must never reject validated data.
+    fn check_uart_bases(&self) -> Result<(), ConfigError> {
+        for dev in &self.devices {
+            if let DeviceKind::Uart(uart) = &dev.kind {
+                if uart.base > 0xFFF8 {
+                    return Err(ConfigError::UartPortWindowOutOfSpace {
+                        device: dev.id,
+                        base: uart.base,
+                    });
+                }
             }
         }
         Ok(())
@@ -469,6 +485,23 @@ mod tests {
             images,
             output: OutputConfig::default(),
         }
+    }
+
+    #[test]
+    fn uart_window_must_fit_port_space() {
+        let mut config = valid_config();
+        for base in 0xFFF9..=0xFFFF {
+            find_device(&mut config, DeviceId::Uart).kind = DeviceKind::Uart(UartCfg { base });
+            assert_eq!(
+                config.validate(),
+                Err(ConfigError::UartPortWindowOutOfSpace {
+                    device: DeviceId::Uart,
+                    base
+                })
+            );
+        }
+        find_device(&mut config, DeviceId::Uart).kind = DeviceKind::Uart(UartCfg { base: 0xFFF8 });
+        assert_eq!(config.validate(), Ok(()));
     }
 
     #[test]

@@ -49,6 +49,25 @@ fn rtc_update_interrupt_emits_marker_across_cascade() {
     assert_bytes_eq(&serial, &[RTC_MARKER]);
 }
 
+/// MC146818A datasheet, Periodic Interrupt Selection and Registers A–C:
+/// PIE alone must wake HLT through IRQ8, with UIE/AIE disabled.
+#[test]
+fn fidelity_periodic_interrupt_wakes_hlt_across_cascade() {
+    let mut program = RTC_PROGRAM.to_vec();
+    program[4..6].copy_from_slice(&(RTC_HANDLER_OFFSET + 8).to_le_bytes());
+    assert_eq!(program[57], 0x12);
+    program[57] = 0x42; // 24-hour mode + PIE, without UIE or AIE.
+    program.splice(
+        52..52,
+        [
+            0xB0, 0x0A, 0xE6, 0x70, // select register A
+            0xB0, 0x2F, 0xE6, 0x71, // 32,768 Hz time base, 2 Hz periodic tap
+        ],
+    );
+    let serial = run_rtc(&program).expect("periodic machine run");
+    assert_bytes_eq(&serial, &[RTC_MARKER]);
+}
+
 /// Guard the hand-encoded program bytes so an accidental edit is caught
 /// independently of the run, and document every instruction's exact bytes.
 ///

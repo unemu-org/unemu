@@ -63,7 +63,7 @@
 //!   ICW3 (which line the cascade is on) is still accepted and ignored; the
 //!   wrapper hardwires the cascade to IRQ2 as every PC/AT does.
 //! - ICW1–ICW4 initialization state machine; ICW2 sets the vector base.
-//! - 8086/8088 mode (ICW4 `µPM` bit); the only interrupt-vector mode a PC uses.
+//! - 8086/8088 interrupt vectoring; ICW4 `µPM` is stored but not decoded.
 //! - IRR / ISR / IMR with fixed priority (line 0 highest … line 7 lowest).
 //! - OCW1 (IMR programming).
 //! - OCW2 non-specific EOI (`0x20`) and specific EOI (`0x60 | level`).
@@ -81,7 +81,15 @@
 //!   interrupt at a time: two slave interrupts nested on top of each other (the
 //!   case SFNM exists for) are not modelled.
 //! - **Poll mode** (OCW3 poll bit).
+//! - **MCS-80/85 vectoring** (`µPM=0`, also selected when ICW4 is omitted):
+//!   vectoring still uses the 8086/8088 path. Intel 8259A datasheet,
+//!   Initialization Command Words (ICW4) and Interrupt Sequence.
 //! - **Buffered mode** (ICW4 buffered bits).
+//! - **Spurious IRQ7/IRQ15** (Intel 8259A datasheet, Interrupt Sequence): no
+//!   default IR7 vector or spurious ISR semantics. Poll and acknowledge are one
+//!   atomic machine transaction, with no separate INTR/INTA pin interval in
+//!   which a request can disappear. The cascade wrapper withdraws stale IRQ2
+//!   requests; modelling the electrical race requires that interval first.
 //!
 //! Snapshots contain request/service/mask and initialization registers,
 //! read selection, input line levels and the absolute trace time base. Keeping
@@ -342,6 +350,11 @@ impl Pic8259 {
         if byte & ICW1_INIT != 0 {
             // ICW1: restart initialization. IMR and priority state are cleared.
             self.icw1 = byte;
+            // Intel 8259A datasheet, Initialization Command Words: omitting
+            // ICW4 selects zero for every ICW4 function, even after re-init.
+            if byte & ICW1_IC4 == 0 {
+                self.icw4 = 0;
+            }
             self.imr = 0;
             self.isr = 0;
             self.irr = 0;
@@ -563,7 +576,8 @@ impl Device for Pic8259 {
                 });
             }
         };
-        if snapshot[4] & 7 != 0
+        if (snapshot[5] & ICW1_IC4 == 0 && snapshot[6] != 0)
+            || snapshot[4] & 7 != 0
             || snapshot[8] > 1
             || (snapshot[7] != 0 && snapshot[5] & ICW1_INIT == 0)
             || (snapshot[7] == 2 && snapshot[5] & ICW1_SNGL != 0)
@@ -610,6 +624,25 @@ impl Device for Pic8259 {
 mod tests {
     use super::*;
     use testkit::MockBus;
+
+    #[test]
+    fn restore_rejects_icw4_without_ic4_atomically() {
+        let mut bus = MockBus::new(Box::new(Pic8259::new()));
+        let before = bus.device().save();
+        let mut invalid = before.clone();
+        invalid[6] = 1;
+        assert!(bus.device_mut().restore(&invalid).is_err());
+        assert_eq!(bus.device().save(), before);
+    }
+
+    #[test]
+    fn fidelity_icw1_without_ic4_clears_old_icw4() {
+        let mut bus = MockBus::new(Box::new(Pic8259::new()));
+        for (port, value) in [(0x20, 0x13), (0x21, 0x20), (0x21, 0x1F), (0x20, 0x12)] {
+            bus.port_write(port, 1, value).unwrap();
+        }
+        assert_eq!(bus.device().save()[6], 0);
+    }
 
     /// Master data port (A0 = 1): ICW2/ICW3/ICW4 during init, OCW1 afterwards.
     const PORT_DATA: u16 = PORT_COMMAND + 1;

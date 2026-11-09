@@ -12,6 +12,15 @@ use crate::device::DeviceId;
 /// test can assert the exact failure a malformed config produces.
 #[derive(Clone, Debug, PartialEq, Eq, Error)]
 pub enum ConfigError {
+    /// All eight UART registers must fit in the 16-bit I/O space.
+    #[error("uart {device:?} base {base:#x} leaves no room for eight ports")]
+    UartPortWindowOutOfSpace {
+        /// The configured UART.
+        device: DeviceId,
+        /// The first register's port.
+        base: u16,
+    },
+
     /// The requested role is absent or does not expose the requested capability.
     #[error("unsupported observation output: {device:?} {output:?}")]
     UnsupportedObservationOutput {

@@ -3,7 +3,7 @@
 //!
 //! Models the 16550's eight consecutive port-mapped registers at
 //! `base..=base+7` (COM1's `base` is `0x3F8`). This is the subset needed to
-//! carry transmitted bytes off the machine for golden tests; it faithfully
+//! carry transmitted bytes to an optional output sink for golden tests; it faithfully
 //! reproduces the register *map* and the DLAB banking, and documents every
 //! behaviour it deliberately does not model yet.
 //!
@@ -17,6 +17,11 @@
 //!   always reports "no interrupt pending".
 //! - No input source: the receiver holding register (RBR) always reads `0` and
 //!   the LSR data-ready bit is always clear.
+//! - **MCR loopback** is stored only: no internal TX-to-RX or modem-signal
+//!   loopback (National Semiconductor NS16550A datasheet, Modem Control
+//!   Register, bit 4). It needs the unmodelled receive/modem paths.
+//! - **MSR** always reads zero: modem inputs and delta flags are absent
+//!   (NS16550A datasheet, Modem Status Register); there is no modem endpoint.
 //!
 //! Transmitted bytes go directly to the optional sink; the UART retains no
 //! output history. Without a sink, bytes are discarded without allocating.
@@ -97,8 +102,14 @@ impl Uart16550 {
     /// Create a 16550 decoding the eight ports at `base..=base+7`.
     ///
     /// COM1 uses `base == 0x3F8`.
+    ///
+    /// # Panics
+    /// Panics if `base > 0xFFF8`: eight registers must fit in the I/O space.
+    /// This is a programmer-error guard; assembly validates user configuration
+    /// before constructing the device.
     #[must_use]
     pub fn new(base: u16) -> Self {
+        assert!(base <= 0xFFF8, "UART base must leave room for eight ports");
         Self {
             base,
             ier: 0,
@@ -319,6 +330,19 @@ impl Device for Uart16550 {
 mod tests {
     use super::*;
     use testkit::MockBus;
+
+    #[test]
+    #[should_panic(expected = "UART base must leave room for eight ports")]
+    fn fidelity_rejects_wrapping_port_window() {
+        let _bus = MockBus::new(Box::new(Uart16550::new(0xFFF9)));
+    }
+
+    #[test]
+    fn fidelity_last_valid_port_window_includes_scratch() {
+        let mut bus = MockBus::new(Box::new(Uart16550::new(0xFFF8)));
+        bus.port_write(0xFFFF, 1, 0x5A).unwrap();
+        assert_eq!(bus.port_read(0xFFFF, 1).unwrap(), 0x5A);
+    }
 
     const COM1: u16 = 0x3F8;
 

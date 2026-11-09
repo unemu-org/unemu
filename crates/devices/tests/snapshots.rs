@@ -532,3 +532,47 @@ fn fdc_continues_each_command_prefix_result_and_dma_phase() {
         }
     }
 }
+
+#[test]
+fn rtc_rejects_invalid_periodic_phase_without_mutation() {
+    let mut bus = MockBus::new(Box::new(CmosRtc::new()));
+    let valid = bus.device().save();
+    for (offset, bytes) in [
+        (valid.len() - 18, u64::MAX.to_le_bytes().to_vec()),
+        (valid.len() - 10, 32768u16.to_le_bytes().to_vec()),
+    ] {
+        let mut blob = valid.clone();
+        blob[offset..offset + bytes.len()].copy_from_slice(&bytes);
+        assert!(matches!(
+            bus.device_mut().restore(&blob),
+            Err(DeviceError::InvalidSnapshot { .. })
+        ));
+        assert_eq!(bus.device().save(), valid);
+    }
+}
+
+#[test]
+fn pit_rejects_unpaired_write_lsb_without_mutation() {
+    let mut bus = MockBus::new(Box::new(Pit8253::new()));
+    let valid = bus.device().save();
+    let mut blob = valid.clone();
+    blob[12] = 0x55;
+    assert!(matches!(
+        bus.device_mut().restore(&blob),
+        Err(DeviceError::InvalidSnapshot { .. })
+    ));
+    assert_eq!(bus.device().save(), valid);
+}
+
+#[test]
+fn vga_rejects_out_of_range_index_without_mutation() {
+    let mut bus = MockBus::new(Box::new(VgaText::new()));
+    let valid = bus.device().save();
+    let mut blob = valid.clone();
+    blob[1] = 0x20;
+    assert!(matches!(
+        bus.device_mut().restore(&blob),
+        Err(DeviceError::InvalidSnapshot { .. })
+    ));
+    assert_eq!(bus.device().save(), valid);
+}

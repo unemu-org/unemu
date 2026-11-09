@@ -47,6 +47,11 @@
 //!   vertical-retrace (bit 3) bits, cycled deterministically so a BIOS
 //!   both-edges retrace wait terminates (see [`VgaText::status_register`]).
 //!
+//! IBM VGA Technical Reference, CRT Controller Registers, Address Register:
+//! only index bits 4–0 select a register; indices 19h–1Fh are reserved.
+//! Assumption for reserved accesses: ignore writes and return zero on reads,
+//! since the reference specifies no data value. They never alias valid registers.
+//!
 //! ## Deviations from real hardware (not modelled)
 //! - No attribute controller, sequencer, graphics controller, or DAC — only the
 //!   CRTC, the CGA register surface above, and the text buffer. The card never
@@ -130,7 +135,7 @@ pub const CRTC_CURSOR_LOW_INDEX: u8 = 0x0F;
 const CURSOR_DISABLE: u8 = 0x20;
 
 /// Snapshot layout version tag, first byte of [`Device::save`] output.
-const SNAPSHOT_VERSION: u8 = 2;
+const SNAPSHOT_VERSION: u8 = 3;
 
 /// Fixed-size snapshot header: version + CRTC index + the CRTC register file +
 /// the CGA mode/colour bytes, status-read phase and absolute trace clock.
@@ -294,9 +299,12 @@ impl Device for VgaText {
     fn port_read(&mut self, port: u16, size: u8) -> Result<u32, DeviceError> {
         let value = match port {
             CRTC_INDEX_PORT | MDA_CRTC_INDEX_PORT => u32::from(self.crtc_index),
-            CRTC_DATA_PORT | MDA_CRTC_DATA_PORT => {
-                u32::from(self.crtc[usize::from(self.crtc_index) % CRTC_REG_COUNT])
-            }
+            CRTC_DATA_PORT | MDA_CRTC_DATA_PORT => u32::from(
+                self.crtc
+                    .get(usize::from(self.crtc_index))
+                    .copied()
+                    .unwrap_or(0),
+            ),
             // Real CGA mode-control/colour-select are write-only, but returning
             // the last value written is simpler than modelling a floating bus and
             // is harmless — a BIOS writes these, it does not read them back.
@@ -317,10 +325,11 @@ impl Device for VgaText {
     fn port_write(&mut self, port: u16, size: u8, value: u32) -> Result<(), DeviceError> {
         let byte = value as u8;
         match port {
-            CRTC_INDEX_PORT | MDA_CRTC_INDEX_PORT => self.crtc_index = byte,
+            CRTC_INDEX_PORT | MDA_CRTC_INDEX_PORT => self.crtc_index = byte & 0x1F,
             CRTC_DATA_PORT | MDA_CRTC_DATA_PORT => {
-                let index = usize::from(self.crtc_index) % CRTC_REG_COUNT;
-                self.crtc[index] = byte;
+                if let Some(register) = self.crtc.get_mut(usize::from(self.crtc_index)) {
+                    *register = byte;
+                }
             }
             CGA_MODE_CONTROL_PORT => self.mode_control = byte,
             CGA_COLOR_SELECT_PORT => self.color_select = byte,
@@ -412,6 +421,12 @@ impl Device for VgaText {
                 reason: "unsupported snapshot version",
             });
         }
+        if snapshot[1] > 0x1F {
+            return Err(DeviceError::InvalidSnapshot {
+                device: NAME,
+                reason: "invalid CRTC index",
+            });
+        }
         self.status_reads = u64::from_le_bytes(std::array::from_fn(|i| snapshot[29 + i]));
         self.crtc_index = snapshot[1];
         self.crtc.copy_from_slice(&snapshot[2..2 + CRTC_REG_COUNT]);
@@ -443,6 +458,24 @@ mod tests {
     use testkit::MockBus;
 
     #[test]
+    fn fidelity_reserved_crtc_indices_do_not_alias_registers() {
+        let mut bus = MockBus::new(Box::new(VgaText::new()));
+        for (index_port, data_port) in [(0x3D4, 0x3D5), (0x3B4, 0x3B5)] {
+            for index in 25..32 {
+                bus.port_write(index_port, 1, index - 25).unwrap();
+                bus.port_write(data_port, 1, 0x5A).unwrap();
+                bus.port_write(index_port, 1, index).unwrap();
+                bus.port_write(data_port, 1, 0xEE).unwrap();
+                assert_eq!(bus.port_read(data_port, 1).unwrap(), 0);
+                bus.port_write(index_port, 1, index - 25).unwrap();
+                assert_eq!(bus.port_read(data_port, 1).unwrap(), 0x5A);
+            }
+            bus.port_write(index_port, 1, 0xEC).unwrap();
+            assert_eq!(bus.port_read(index_port, 1).unwrap(), 0x0C);
+        }
+    }
+
+    #[test]
     fn observation_scanout_is_passive_repeatable_and_tracks_aliases() {
         let mut bus = MockBus::new(Box::new(crate::trace_policy_tests::traced(VgaText::new())));
         bus.tick(37);
@@ -467,8 +500,7 @@ mod tests {
         assert_eq!(expected_trace.len(), 9);
         // A scanout must not advance the per-read status phase.
         assert_eq!(bus.port_read(MDA_STATUS_PORT, 1).unwrap(), 0);
-        bus.port_write(MDA_CRTC_INDEX_PORT, 1, 0x0A + CRTC_REG_COUNT as u32)
-            .unwrap();
+        bus.port_write(MDA_CRTC_INDEX_PORT, 1, 0x0A | 0xE0).unwrap();
         bus.port_write(CRTC_DATA_PORT, 1, 0x20).unwrap();
         assert!(!bus.device().text_scanout().unwrap().cursor_visible);
         bus.device_mut().restore(&saved).unwrap();

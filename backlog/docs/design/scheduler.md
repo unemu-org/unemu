@@ -85,6 +85,47 @@ These are reviewed migration observations, not replacement byte/screen goldens.
 | DIR endpoint, frozen old 80M command policy | 105000274 → 105000000 | (a) systematic | Exact endpoint; separate from the calibrated command budget below. |
 | `prompt_and_stimulus_budgets_start_from_current_virtual_time` | Endpoint 32 → 35 | run policy (not hardware timing) | The prompt poll ends at 25; the full requested 10 command steps must execute before stopping. A cap at 32 now fails before key injection instead of truncating the command. |
 
+Device fidelity follow-up (2026-11-10), with the same CPU pin and corrected
+loop. These are hardware-model changes, not scheduler normalisations:
+
+| Workload/test | Old → new | Reason and measured evidence |
+|---|---|---|
+| Mode-2 initial divisor 5, isolated PIT deadlines | OUT low at 6 → 5; high at 7 → 6 | Intel 8254 datasheet, Mode 2: count loads at clock 1, OUT becomes low at count=1 (clock 5), then rises and reloads at 6. The former model reloaded while driving OUT low. `deadlines_follow_only_channel_zero_loads_and_out_edges` and the mid-period rewrite regression check both phases. |
+| Mode-2 divisor 100 restored at clock 50 | First low at 101 → 100 (sample index 50 → 49) | Same count=1 correction. `pit_restore_at_clock_50_matches_both_engines` compares every pin sample through clock 251 after restore. |
+| Timer boot, first INTA / first UART OUT / halted stop | 39 / 44 / 336 → 38 / 43 / 335 | PIT initial load remains at 18. Its rising reload edge is now at 38; ready HLT accepts IRQ0 there, moving the handler and idle-stop endpoint by one clock. `fidelity_mode2_timer_trace_uses_count_one_low_phase` checks the tuple under both engines; running it against the original PIT produces `(39, 44, 336)`. Serial remains five dots. |
+| VGA synthetic register-alias snapshot (initial fixture; superseded below) | Cell (0,0) `A/4E` → blank; `A/4E` is at (1,0); cursor (2,0), hidden → (0,0), visible | The guest writes CRTC indices 26h/28h/23h. IBM VGA Technical Reference, CRT Controller Address Register, decodes bits 4–0: these select 06h/08h/03h, not 0Dh/0Fh/0Ah as modulo 25 did. Display start and cursor remain zero. At that stage the guest bytes were unchanged; the review fixture below restores end-to-end start/cursor coverage. |
+| Four-cell renderer aperture, start=2, cursor=0 (review correction) | Visible at (0,1) → hidden on a 2×2 grid | IBM VGA Technical Reference, Cursor Location: the full 16-bit cursor location compares with the address counter. Scanout's CPU-aperture wrap is an explicit modelling assumption; it must not alias cursor addresses. |
+| VGA start/cursor guest (review correction) | Guest indices 26h/28h/23h → 2Dh/2Fh/2Ah; blank at (0,0), cursor (0,0) visible → `A/4E` at (0,0), cursor (2,0) hidden | The revised guest decodes to 0Dh/0Fh/0Ah using bits 4–0, exercising start address, cursor location and disable end to end. The separate device test still rejects modulo-25 aliasing. |
+| Empty bay, SEEK head 1 to cylinder 90 / RECALIBRATE from PCN 90 | SIS `6D 00` → `25 5A`; `69 5A` → `71 00` | RDY is held active by the AT board model. NEC µPD765A, SEEK / RECALIBRATE: SEEK advances PCN without position feedback; RECALIBRATE clears PCN first and reports SE+EC after 77 failed TRACK 0 steps. Mock-bus regressions failed on HEAD with the old pairs. |
+| Empty bay, READ ID / READ DATA / WRITE DATA | Immediate abnormal/not-ready result and IRQ → execution waits without a result, IRQ or DMA until reset | NEC µPD765A, READ ID / READ DATA and ST1 MA: an unsuccessful ID search needs index pulses to terminate. An empty slot supplies none. The BIOS can time out in software and reset the controller; all 13 fixture-required slow tests, including BIOS POST, BIOS floppy and DOS goldens, pass without changing their assertions. |
+| Isolated RTC register C, periodic rate enabled with PIE clear | PF=0 → PF=40h | Motorola MC146818A datasheet, Register C and Table 5: PF latches independently of PIE. Calendar/update/alarm timing is unchanged; the new oscillator phase is independent of SET. |
+
+Board evidence for the empty-bay and DOR corrections: IBM **Personal Computer
+AT Technical Reference**, [Fixed Disk and Diskette Drive Adapter](https://www.minuszerodegrees.net/oa/OA%20-%20IBM%20PC%20AT%20Fixed%20Disk%20and%20Diskette%20Drive%20Adapter.pdf),
+Digital Output Register (3F2h), p. 12; Digital Input Register (3F7h), p. 13;
+Interface Lines, p. 40; logic diagrams, sheets 4–5 of 9. Pin 34 is Diskette
+Change, read at 3F7h bit 7. ASSUMED: RDY remains active independently of the
+selected slot; the available sheet-4 scan does not unambiguously resolve the
+electrical tie. This is consistent with the existing four ready-change reset
+polls. Command/PCN/status evidence is NEC **µPD765A/µPD7265**
+[datasheet](https://hxc2001.com/download/datasheet/floppy/thirdparty/FDC/NEC/upd765A.pdf),
+RESET, SEEK, RECALIBRATE, READ ID, READ DATA, SENSE INTERRUPT STATUS and ST0/ST1.
+No step-pulse delay or rotational phase is added.
+
+The passive VGA isolation fixture now exercises ignored upper index bits
+(`EAh → 0Ah`) instead of modulo-25 aliasing (`23h → 0Ah`). The idle-SIS fixture
+seeks mounted drive 0 instead of empty bay 1; its successful cylinder-25
+completion remains the prerequisite for testing a later idle SIS.
+
+PIT and RTC snapshot versions move from 2 to 3 to carry, respectively, the
+current reload and incomplete LSB, and the fractional oscillator/divider phase.
+VGA version 3 restricts the saved CRTC index to its five-bit hardware domain.
+Restore rejects malformed phases/indices before mutating device state. UART
+output and snapshot format follow the observation model (register-only v3).
+The FDC review correction uses snapshot v3: the IRQ byte is the pre-gate
+interrupt latch and execution may wait for index without a DMA context. Restore
+rejects earlier versions and inconsistent wait states.
+
 The BIOS-floppy divergence is excluded from classes (a)/(b): both engines use
 the same corrected timing, and the CPU defect is pinned rather than accepted.
 Removing the Long64 `hello` demo/golden and replacing no-argument output with
@@ -425,8 +466,13 @@ A–C,” and Table 6, defines oscillator/divider behavior and the UIP/update
 relationship; see the [manufacturer datasheet](https://pccomponents.com/datasheets/MOTO-MC146818.PDF).
 The present `1_193`-PIT-tick UIP window and frozen SET accumulation are emulator
 approximations, not proof of that hardware timing. Scheduling must preserve
-them during A/B; modeling real divider/reset/periodic behavior needs separate
-device tests and reviewed golden changes.
+them during A/B. Periodic PF/PIE and divider phase now have separate device
+regressions and an IRQ8/HLT integration test. The calendar counter and periodic
+phase remain separate: SET freezes the former and divider reset clears the
+latter, so their edges can lose alignment. This is an ASSUMED approximation,
+not the shared-divider relationship shown in MC146818A, Update Cycle,
+Figure 15 (Update-Ended and Periodic Interrupt Relationship). Accurate alignment
+and divider-reset startup timing remain unmodelled.
 
 For a later accurate system-control model, route PIT1 refresh requests and PIT2
 OUT/GATE through declared signal wiring. IBM **Personal Computer AT Technical

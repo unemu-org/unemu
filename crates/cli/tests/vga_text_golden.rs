@@ -60,14 +60,16 @@ fn vga_text_writes_render_into_the_grid() {
 }
 
 #[test]
-fn vga_snapshot_uses_the_cards_register_index_aliases() {
-    // Exercise register-index aliases so a frontend register mirror cannot
-    // silently ignore the display start and cursor selected by the guest.
+fn vga_snapshot_decodes_five_bit_indices_for_start_and_cursor() {
+    // IBM VGA Technical Reference, CRT Controller Address Register: bits 4–0
+    // select the register. Upper bits in 2Dh/2Fh/2Ah are ignored: move start
+    // to cell 1, cursor to cell 3, and disable the cursor via register 0Ah.
     let program = [
-        0xB8, b'A', 0x4E, 0xA3, 2, 0, 0xBA, 0xD4, 0x03, 0xB8, 0x26, 1, 0xEF, 0xB8, 0x28, 3, 0xEF,
-        0xB8, 0x23, 0x20, 0xEF, 0xF4,
+        0xB8, b'A', 0x4E, 0xA3, 2, 0, 0xBA, 0xD4, 0x03, 0xB8, 0x2D, 1, 0xEF, 0xB8, 0x2F, 3, 0xEF,
+        0xB8, 0x2A, 0x20, 0xEF, 0xF4,
     ];
     let grid = run_vga_text(&program).unwrap();
+    assert_eq!(grid.cell(1, 0), Some(&TextCell { glyph: 0, attr: 0 }));
     assert_eq!(
         grid.cell(0, 0),
         Some(&TextCell {
