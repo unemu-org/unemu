@@ -44,6 +44,13 @@
 //! | NMI-disable bit (`0x70` bit 7)        | yes      | stored + exposed               |
 //! | Register D VRT (valid RAM & time)     | yes      | reads back set                 |
 //! | Config NVRAM seed + AT checksum       | yes      | opt-in via [`CmosConfig`]      |
+//! | RESET input                          | yes      | clears interrupt enables/flags and SQWE; preserves clock/calendar/RAM |
+//!
+//! Motorola MC146818 datasheet, "Time, Calendar, and Alarm Locations", Table 3,
+//! specifies the valid register ranges. Out-of-range values have undefined
+//! behaviour on the chip. The model accepts them, decodes BCD nibbles without
+//! validation, and wraps binary increments at 256 before applying the normal
+//! carry rules, so guest writes cannot overflow the host's time fields.
 //!
 //! Deliberately **not** modelled:
 //! - **Periodic interrupt** (register A rate-select RS bits): the rate bits are
@@ -125,10 +132,14 @@ const A_UIP: u8 = 1 << 7;
 const B_24HOUR: u8 = 1 << 1;
 /// Register B bit 2: binary data mode (else BCD).
 const B_BINARY: u8 = 1 << 2;
+/// Register B bit 3: square-wave output enable.
+const B_SQWE: u8 = 1 << 3;
 /// Register B bit 4: update-ended interrupt enable.
 const B_UIE: u8 = 1 << 4;
 /// Register B bit 5: alarm interrupt enable.
 const B_AIE: u8 = 1 << 5;
+/// Register B bit 6: periodic interrupt enable (stored only).
+const B_PIE: u8 = 1 << 6;
 /// Register B bit 7: SET — freeze the clock for programming.
 const B_SET: u8 = 1 << 7;
 
@@ -136,6 +147,8 @@ const B_SET: u8 = 1 << 7;
 const C_UF: u8 = 1 << 4;
 /// Register C bit 5: alarm flag.
 const C_AF: u8 = 1 << 5;
+/// Register C bit 6: periodic flag (not generated; cleared by RESET).
+const C_PF: u8 = 1 << 6;
 /// Register C bit 7: interrupt request flag (OR of the enabled flags).
 const C_IRQF: u8 = 1 << 7;
 
@@ -200,17 +213,17 @@ impl RtcTime {
 
     /// Advance by one second, carrying through the whole date.
     fn advance_one_second(&mut self) {
-        self.second += 1;
+        self.second = self.second.wrapping_add(1);
         if self.second < 60 {
             return;
         }
         self.second = 0;
-        self.minute += 1;
+        self.minute = self.minute.wrapping_add(1);
         if self.minute < 60 {
             return;
         }
         self.minute = 0;
-        self.hour += 1;
+        self.hour = self.hour.wrapping_add(1);
         if self.hour < 24 {
             return;
         }
@@ -220,12 +233,12 @@ impl RtcTime {
         } else {
             self.weekday + 1
         };
-        self.day += 1;
+        self.day = self.day.wrapping_add(1);
         if self.day <= Self::days_in_month(self.month, self.year) {
             return;
         }
         self.day = 1;
-        self.month += 1;
+        self.month = self.month.wrapping_add(1);
         if self.month <= 12 {
             return;
         }
@@ -535,6 +548,9 @@ impl CmosRtc {
     }
 
     /// Whether the alarm registers match the current time (with don't-cares).
+    /// Motorola MC146818 datasheet, "Time, Calendar, and Alarm Locations",
+    /// Table 3: the hour alarm uses the same 12/24-hour format and PM bit as
+    /// the hour register, in both binary and BCD modes.
     fn alarm_matches(&self) -> bool {
         let field = |alarm_idx: usize, now: u8| {
             let a = self.nvram[alarm_idx];
@@ -542,7 +558,8 @@ impl CmosRtc {
         };
         field(REG_SECONDS_ALARM, self.time.second)
             && field(REG_MINUTES_ALARM, self.time.minute)
-            && field(REG_HOURS_ALARM, self.time.hour)
+            && (self.nvram[REG_HOURS_ALARM] >= ALARM_DONT_CARE
+                || self.decode_hour(self.nvram[REG_HOURS_ALARM]) == self.time.hour)
     }
 
     /// Recompute register C's IRQF from the enabled flags. The periodic flag
@@ -676,14 +693,13 @@ impl Device for CmosRtc {
         None
     }
 
+    /// Motorola MC146818 datasheet, "RESET — RESET, INPUT": RESET leaves
+    /// clock, calendar and RAM running, clearing only the interrupt enables,
+    /// interrupt flags and square-wave enable. Retaining the virtual time base
+    /// and update phase prevents an extra or missed second after reset.
     fn reset(&mut self) {
-        let time = self.time;
-        let second_ticks = self.second_ticks;
-        let uip_ticks = self.uip_ticks;
-        *self = CmosRtc::new().with_timing(second_ticks, uip_ticks);
-        // Preserve wall time across a controller reset, as a battery-backed clock
-        // does; only volatile control/flag state returns to power-on.
-        self.time = time;
+        self.nvram[REG_B] &= !(B_PIE | B_AIE | B_UIE | B_SQWE);
+        self.nvram[REG_C] &= !(C_IRQF | C_PF | C_AF | C_UF);
     }
 
     fn save(&self) -> Vec<u8> {
@@ -759,10 +775,6 @@ mod tests {
     use super::*;
     use testkit::MockBus;
 
-    /// Register C bit 6: periodic flag. Not generated (see the coverage matrix);
-    /// referenced only to assert it stays clear.
-    const C_PF: u8 = 1 << 6;
-
     /// Select `index` (NMI left enabled) then read `0x71`.
     fn read_reg(rtc: &mut CmosRtc, index: u8) -> u8 {
         rtc.port_write(PORT_INDEX, 1, u32::from(index)).unwrap();
@@ -773,6 +785,158 @@ mod tests {
     fn write_reg(rtc: &mut CmosRtc, index: u8, value: u8) {
         rtc.port_write(PORT_INDEX, 1, u32::from(index)).unwrap();
         rtc.port_write(PORT_DATA, 1, u32::from(value)).unwrap();
+    }
+
+    fn bus_read_reg(bus: &mut MockBus, index: usize) -> u8 {
+        bus.port_write(PORT_INDEX, 1, index as u32).unwrap();
+        bus.port_read(PORT_DATA, 1).unwrap() as u8
+    }
+
+    fn bus_write_reg(bus: &mut MockBus, index: usize, value: u8) {
+        bus.port_write(PORT_INDEX, 1, index as u32).unwrap();
+        bus.port_write(PORT_DATA, 1, u32::from(value)).unwrap();
+    }
+
+    fn invalid_time_writes_do_not_panic(binary: bool) {
+        let mut panicked = Vec::new();
+        for index in [
+            REG_SECONDS,
+            REG_MINUTES,
+            REG_HOURS,
+            REG_WEEKDAY,
+            REG_DAY,
+            REG_MONTH,
+            REG_YEAR,
+        ] {
+            let result = std::panic::catch_unwind(|| {
+                let mut rtc = CmosRtc::new().with_timing(10, 2);
+                rtc.set_time(59, 59, 23, 7, 31, 12, 99);
+                let mut bus = MockBus::new(Box::new(rtc));
+                let mode = B_24HOUR | if binary { B_BINARY } else { 0 };
+                bus_write_reg(&mut bus, REG_B, mode);
+                bus_write_reg(&mut bus, index, 0xFF);
+                bus.tick(10);
+                // Exercise guest reads too, including BCD encoding of invalid data.
+                for register in 0..=REG_YEAR {
+                    bus_read_reg(&mut bus, register);
+                }
+            });
+            if result.is_err() {
+                panicked.push(index);
+            }
+        }
+        assert!(
+            panicked.is_empty(),
+            "panicked for time registers {panicked:?}"
+        );
+    }
+
+    #[test]
+    fn invalid_binary_time_writes_do_not_panic() {
+        invalid_time_writes_do_not_panic(true);
+    }
+
+    #[test]
+    fn invalid_bcd_time_writes_do_not_panic() {
+        invalid_time_writes_do_not_panic(false);
+    }
+
+    #[test]
+    fn reset_preserves_battery_backed_registers() {
+        let mut rtc = CmosRtc::new()
+            .with_timing(10, 2)
+            .with_config(CmosConfig::default());
+        rtc.set_time(5, 6, 17, 4, 25, 12, 24);
+        let mut bus = MockBus::new(Box::new(rtc));
+        bus_write_reg(&mut bus, REG_B, B_BINARY | B_UIE);
+        bus_write_reg(&mut bus, REG_SECONDS_ALARM, 0xC0);
+        bus_write_reg(&mut bus, REG_MINUTES_ALARM, 42);
+        bus_write_reg(&mut bus, REG_HOURS_ALARM, HOUR_PM | 5);
+        bus_write_reg(&mut bus, REG_SHUTDOWN, 0x0A);
+        bus_write_reg(&mut bus, 0x30, 0xAB);
+        bus_write_reg(&mut bus, REG_A, 0x26);
+        bus.tick(10);
+        assert!(bus.device().irq_pending());
+        let indices: Vec<_> = (0..=REG_A).chain(REG_D..NVRAM_LEN).collect();
+        let before: Vec<_> = indices
+            .iter()
+            .map(|&index| bus_read_reg(&mut bus, index))
+            .collect();
+        bus.device_mut().reset();
+        for (index, expected) in indices.into_iter().zip(before) {
+            assert_eq!(
+                bus_read_reg(&mut bus, index),
+                expected,
+                "register {index:#x}"
+            );
+        }
+    }
+
+    #[test]
+    fn reset_clears_only_interrupt_enables_square_wave_and_flags() {
+        for control in 0..=u8::MAX {
+            let mut rtc = CmosRtc::new();
+            rtc.nvram[REG_B] = control;
+            // PF is not generated by the model, but RESET must clear it too.
+            rtc.nvram[REG_C] = C_IRQF | C_PF | C_AF | C_UF;
+            let mut bus = MockBus::new(Box::new(rtc));
+            bus.device_mut().reset();
+            assert_eq!(bus_read_reg(&mut bus, REG_B), control & !0x78);
+            assert_eq!(bus_read_reg(&mut bus, REG_C), 0);
+            assert!(!bus.device().irq_pending());
+        }
+    }
+
+    #[test]
+    fn reset_preserves_clock_base_and_update_phase() {
+        let mut bus = MockBus::new(Box::new(CmosRtc::new().with_timing(10, 2)));
+        bus.tick(29);
+        assert_eq!(bus_read_reg(&mut bus, REG_SECONDS), 0x02);
+        assert_ne!(bus_read_reg(&mut bus, REG_A) & A_UIP, 0);
+        bus.device_mut().reset();
+        assert_ne!(bus_read_reg(&mut bus, REG_A) & A_UIP, 0);
+        bus.tick(0);
+        assert_eq!(bus_read_reg(&mut bus, REG_SECONDS), 0x02);
+        bus.tick(1);
+        assert_eq!(bus_read_reg(&mut bus, REG_SECONDS), 0x03);
+        assert_eq!(bus_read_reg(&mut bus, REG_A) & A_UIP, 0);
+        assert_ne!(bus_read_reg(&mut bus, REG_C) & C_UF, 0);
+        assert!(!bus.device().irq_pending());
+    }
+
+    fn twelve_hour_alarms_match_am_and_pm(binary: bool) {
+        for hour in (13..24).chain(0..13) {
+            for alarm_hour in 0..24 {
+                let mut rtc = CmosRtc::new().with_timing(10, 2);
+                rtc.set_time(0, 0, hour, 1, 1, 1, 0);
+                let mut bus = MockBus::new(Box::new(rtc));
+                bus_write_reg(&mut bus, REG_B, B_AIE | if binary { B_BINARY } else { 0 });
+                bus_write_reg(&mut bus, REG_SECONDS_ALARM, 1);
+                bus_write_reg(&mut bus, REG_MINUTES_ALARM, 0);
+                let twelve = if alarm_hour % 12 == 0 {
+                    12
+                } else {
+                    alarm_hour % 12
+                };
+                let encoded = if binary { twelve } else { to_bcd(twelve) };
+                let pm = if alarm_hour >= 12 { HOUR_PM } else { 0 };
+                bus_write_reg(&mut bus, REG_HOURS_ALARM, encoded | pm);
+                bus.tick(10);
+                let matches = hour == alarm_hour;
+                assert_eq!(bus.device().irq_pending(), matches, "{hour}, {alarm_hour}");
+                assert_eq!(bus_read_reg(&mut bus, REG_C) & C_AF != 0, matches);
+            }
+        }
+    }
+
+    #[test]
+    fn twelve_hour_bcd_alarms_match_am_and_pm() {
+        twelve_hour_alarms_match_am_and_pm(false);
+    }
+
+    #[test]
+    fn twelve_hour_binary_alarms_match_am_and_pm() {
+        twelve_hour_alarms_match_am_and_pm(true);
     }
 
     #[test]
