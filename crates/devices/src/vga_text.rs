@@ -155,7 +155,7 @@ pub struct VgaText {
     /// advances per read, not per tick.
     status_reads: u64,
     /// Trace events observed since the last [`Device::take_trace`].
-    trace: Vec<TraceEvent>,
+    trace: device::TraceBuffer,
     /// Virtual time of the most recent [`Device::tick`], stamped onto traces.
     now: VClock,
 }
@@ -171,7 +171,7 @@ impl VgaText {
             mode_control: 0,
             color_select: 0,
             status_reads: 0,
-            trace: Vec::new(),
+            trace: device::TraceBuffer::default(),
             now: VClock::ZERO,
         }
     }
@@ -377,7 +377,9 @@ impl Device for VgaText {
     }
 
     fn reset(&mut self) {
+        let trace_policy = self.trace.policy();
         *self = VgaText::new();
+        self.trace.set_policy(trace_policy);
     }
 
     fn save(&self) -> Vec<u8> {
@@ -412,8 +414,16 @@ impl Device for VgaText {
         Ok(())
     }
 
+    fn set_trace_policy(&mut self, policy: device::TracePolicy) {
+        self.trace.set_policy(policy);
+    }
+
+    fn trace_dropped(&self) -> u64 {
+        self.trace.dropped()
+    }
+
     fn take_trace(&mut self) -> Vec<TraceEvent> {
-        std::mem::take(&mut self.trace)
+        self.trace.take()
     }
 }
 
@@ -424,7 +434,7 @@ mod tests {
 
     #[test]
     fn observation_scanout_is_passive_repeatable_and_tracks_aliases() {
-        let mut bus = MockBus::new(Box::new(VgaText::new()));
+        let mut bus = MockBus::new(Box::new(crate::trace_policy_tests::traced(VgaText::new())));
         bus.tick(37);
         bus.mmio_write(TEXT_BUFFER_BASE + 0x240, 2, 0x1F41).unwrap();
         for (index, value) in [(0x0C, 1), (0x0D, 0x20), (0x0E, 1), (0x0F, 0x22)] {
@@ -462,8 +472,10 @@ mod tests {
 
     #[test]
     fn dormant_matches_per_clock_seeded_accesses_and_long_jumps() {
-        let mut reference = MockBus::new(Box::new(VgaText::new()));
-        let mut scheduled = MockBus::new(Box::new(VgaText::new()));
+        let mut reference =
+            MockBus::new(Box::new(crate::trace_policy_tests::traced(VgaText::new())));
+        let mut scheduled =
+            MockBus::new(Box::new(crate::trace_policy_tests::traced(VgaText::new())));
         let mut seed = 0x8042_1468_1816_5501u64;
         for step in 0..128 {
             assert_eq!(
@@ -806,7 +818,7 @@ mod tests {
     fn mmio_write_is_traced_with_virtual_time() {
         // Prove the card runs under the isolation harness and its MMIO writes
         // surface on the tracing seam with the current virtual time.
-        let mut bus = MockBus::new(Box::new(VgaText::new()));
+        let mut bus = MockBus::new(Box::new(crate::trace_policy_tests::traced(VgaText::new())));
         bus.tick(4);
         let cell = u64::from(b'H') | (0x1F << 8);
         bus.mmio_write(cell_addr(0), 2, cell).unwrap();

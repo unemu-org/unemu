@@ -5,7 +5,7 @@
 //! one-byte checkpoint code here at each stage it reaches; on real hardware the
 //! byte lights a diagnostic card or a debug LED display. The emulator models it
 //! as a capture point: every accepted write emits its low byte to a semantic
-//! sink. Access traces remain available for existing consumers. See
+//! sink. Access traces are separately opt-in and bounded. See
 //! `backlog/docs/design/observation.md`, §Typed capabilities and route ownership.
 //!
 //! The decoded port is configurable: [`PostPort::new`] decodes the test386
@@ -54,7 +54,7 @@ pub struct PostPort {
     /// sink unless an observation route binds one.
     sink: Box<dyn ByteSink>,
     /// Trace events observed since the last [`Device::take_trace`].
-    trace: Vec<TraceEvent>,
+    trace: device::TraceBuffer,
     /// Virtual time of the most recent [`Device::tick`], stamped onto traces.
     now: VClock,
 }
@@ -79,7 +79,7 @@ impl PostPort {
         Self {
             port,
             sink: Box::new(DiscardByteSink),
-            trace: Vec::new(),
+            trace: device::TraceBuffer::default(),
             now: VClock::ZERO,
         }
     }
@@ -186,8 +186,16 @@ impl Device for PostPort {
         Ok(())
     }
 
+    fn set_trace_policy(&mut self, policy: device::TracePolicy) {
+        self.trace.set_policy(policy);
+    }
+
+    fn trace_dropped(&self) -> u64 {
+        self.trace.dropped()
+    }
+
     fn take_trace(&mut self) -> Vec<TraceEvent> {
-        std::mem::take(&mut self.trace)
+        self.trace.take()
     }
 }
 
@@ -199,7 +207,7 @@ mod tests {
     #[test]
     fn observation_sink_preserves_repetitions_low_bytes_and_reset_epoch() {
         let capture = device::ByteCapture::new(5);
-        let mut bus = MockBus::new(Box::new(PostPort::new()));
+        let mut bus = MockBus::new(Box::new(crate::trace_policy_tests::traced(PostPort::new())));
         let output = bus.device_mut().byte_output().unwrap();
         assert_eq!(output.kind(), device::ByteStreamKind::PostCheckpoints);
         output.bind_sink(Box::new(capture.clone()));
@@ -237,8 +245,10 @@ mod tests {
 
     #[test]
     fn dormant_matches_per_clock_seeded_accesses_and_long_jumps() {
-        let mut reference = MockBus::new(Box::new(PostPort::new()));
-        let mut scheduled = MockBus::new(Box::new(PostPort::new()));
+        let mut reference =
+            MockBus::new(Box::new(crate::trace_policy_tests::traced(PostPort::new())));
+        let mut scheduled =
+            MockBus::new(Box::new(crate::trace_policy_tests::traced(PostPort::new())));
         let mut seed = 0x8042_1468_1816_5501u64;
         for step in 0..128 {
             assert_eq!(
@@ -284,7 +294,7 @@ mod tests {
 
     #[test]
     fn writes_surface_on_trace_in_order() {
-        let mut bus = MockBus::new(Box::new(PostPort::new()));
+        let mut bus = MockBus::new(Box::new(crate::trace_policy_tests::traced(PostPort::new())));
         bus.port_write(POST_PORT, 1, 0x00).unwrap();
         bus.port_write(POST_PORT, 1, 0x01).unwrap();
         bus.port_write(POST_PORT, 1, 0x02).unwrap();
@@ -308,7 +318,7 @@ mod tests {
 
     #[test]
     fn trace_is_drained_on_take() {
-        let mut port = PostPort::new();
+        let mut port = crate::trace_policy_tests::traced(PostPort::new());
         port.port_write(POST_PORT, 1, 0x42).unwrap();
         assert_eq!(port.take_trace().len(), 1);
         assert!(port.take_trace().is_empty());
@@ -336,7 +346,7 @@ mod tests {
     #[test]
     fn with_port_decodes_the_bios_post_port() {
         // A BIOS-configured instance answers 0x80 and rejects the test386 0x190.
-        let mut port = PostPort::with_port(0x80);
+        let mut port = crate::trace_policy_tests::traced(PostPort::with_port(0x80));
         port.port_write(0x80, 1, 0x42).unwrap();
         let bytes: Vec<u8> = port
             .take_trace()

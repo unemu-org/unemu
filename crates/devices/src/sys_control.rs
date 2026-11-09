@@ -82,7 +82,7 @@ pub struct SysControl {
     /// for why the phase advances per read, not per [`Device::tick`].
     reads: u64,
     /// Trace events observed since the last [`Device::take_trace`].
-    trace: Vec<TraceEvent>,
+    trace: device::TraceBuffer,
     /// Virtual time of the most recent [`Device::tick`], stamped onto traces.
     now: VClock,
 }
@@ -245,8 +245,16 @@ impl Device for SysControl {
         Ok(())
     }
 
+    fn set_trace_policy(&mut self, policy: device::TracePolicy) {
+        self.trace.set_policy(policy);
+    }
+
+    fn trace_dropped(&self) -> u64 {
+        self.trace.dropped()
+    }
+
     fn take_trace(&mut self) -> Vec<TraceEvent> {
-        std::mem::take(&mut self.trace)
+        self.trace.take()
     }
 }
 
@@ -257,8 +265,12 @@ mod tests {
 
     #[test]
     fn dormant_matches_per_clock_seeded_accesses_and_long_jumps() {
-        let mut reference = MockBus::new(Box::new(SysControl::new()));
-        let mut scheduled = MockBus::new(Box::new(SysControl::new()));
+        let mut reference = MockBus::new(Box::new(crate::trace_policy_tests::traced(
+            SysControl::new(),
+        )));
+        let mut scheduled = MockBus::new(Box::new(crate::trace_policy_tests::traced(
+            SysControl::new(),
+        )));
         let mut seed = 0x8042_1468_1816_5501u64;
         for step in 0..128 {
             assert_eq!(
@@ -461,7 +473,9 @@ mod tests {
 
     #[test]
     fn writes_and_reads_surface_on_trace() {
-        let mut bus = MockBus::new(Box::new(SysControl::new()));
+        let mut bus = MockBus::new(Box::new(crate::trace_policy_tests::traced(
+            SysControl::new(),
+        )));
         bus.port_write(SYS_CONTROL_PORT, 1, 0x03).unwrap();
         bus.port_read(SYS_CONTROL_PORT, 1).unwrap();
         let events = bus.device_mut().take_trace();

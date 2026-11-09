@@ -333,7 +333,7 @@ pub struct CmosRtc {
     /// Whether the update-in-progress window is currently open.
     uip: bool,
     /// Trace events observed since the last [`Device::take_trace`].
-    trace: Vec<TraceEvent>,
+    trace: device::TraceBuffer,
     /// Virtual time of the most recent [`Device::tick`], stamped onto traces.
     now: VClock,
 }
@@ -358,7 +358,7 @@ impl CmosRtc {
             second_ticks: DEFAULT_SECOND_TICKS,
             uip_ticks: DEFAULT_UIP_TICKS,
             uip: false,
-            trace: Vec::new(),
+            trace: device::TraceBuffer::default(),
             now: VClock::ZERO,
         }
     }
@@ -737,6 +737,7 @@ impl Device for CmosRtc {
     /// interrupt flags and square-wave enable. Retaining the virtual time base
     /// and update phase prevents an extra or missed second after reset.
     fn reset(&mut self) {
+        self.trace.clear();
         self.nvram[REG_B] &= !(B_PIE | B_AIE | B_UIE | B_SQWE);
         self.nvram[REG_C] &= !(C_IRQF | C_PF | C_AF | C_UF);
     }
@@ -804,8 +805,16 @@ impl Device for CmosRtc {
         Ok(())
     }
 
+    fn set_trace_policy(&mut self, policy: device::TracePolicy) {
+        self.trace.set_policy(policy);
+    }
+
+    fn trace_dropped(&self) -> u64 {
+        self.trace.dropped()
+    }
+
     fn take_trace(&mut self) -> Vec<TraceEvent> {
-        std::mem::take(&mut self.trace)
+        self.trace.take()
     }
 }
 
@@ -887,9 +896,12 @@ mod tests {
     #[test]
     fn scheduled_matches_per_clock_seeded_accesses_and_long_jumps() {
         for (second, window) in [(1, 0), (1, 1), (10, 0), (10, 2), (10, 10), (127, 19)] {
-            let mut reference = CmosRtc::new().with_timing(second, window);
+            let mut reference =
+                crate::trace_policy_tests::traced(CmosRtc::new()).with_timing(second, window);
             reference.set_time(58, 59, 23, 7, 28, 2, 0);
-            let mut scheduled = MockBus::new(Box::new(CmosRtc::new().with_timing(second, window)));
+            let mut scheduled = MockBus::new(Box::new(
+                crate::trace_policy_tests::traced(CmosRtc::new()).with_timing(second, window),
+            ));
             scheduled.device_mut().restore(&reference.save()).unwrap();
             let mut seed = 0x8042_1468_1816_5501u64;
             let mut expected_edges = Vec::new();

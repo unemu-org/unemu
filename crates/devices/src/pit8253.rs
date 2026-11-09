@@ -451,7 +451,7 @@ impl Counter {
 pub struct Pit8253 {
     counters: [Counter; COUNTERS],
     /// Trace events observed since the last [`Device::take_trace`].
-    trace: Vec<TraceEvent>,
+    trace: device::TraceBuffer,
     /// Virtual time of the most recent [`Device::tick`], stamped onto traces.
     now: VClock,
 }
@@ -462,7 +462,7 @@ impl Pit8253 {
     pub fn new() -> Self {
         Self {
             counters: [Counter::new(), Counter::new(), Counter::new()],
-            trace: Vec::new(),
+            trace: device::TraceBuffer::default(),
             now: VClock::ZERO,
         }
     }
@@ -629,7 +629,9 @@ impl Device for Pit8253 {
     }
 
     fn reset(&mut self) {
+        let trace_policy = self.trace.policy();
         *self = Pit8253::new();
+        self.trace.set_policy(trace_policy);
     }
 
     fn save(&self) -> Vec<u8> {
@@ -718,8 +720,16 @@ impl Device for Pit8253 {
         Ok(())
     }
 
+    fn set_trace_policy(&mut self, policy: device::TracePolicy) {
+        self.trace.set_policy(policy);
+    }
+
+    fn trace_dropped(&self) -> u64 {
+        self.trace.dropped()
+    }
+
     fn take_trace(&mut self) -> Vec<TraceEvent> {
-        std::mem::take(&mut self.trace)
+        self.trace.take()
     }
 }
 
@@ -816,8 +826,9 @@ mod tests {
     fn mock_bus_deadline_jumps_preserve_state_accesses_and_complete_out_history() {
         for mode in [0, 2, 3] {
             for reload in [0u16, 1, 2, 3, 5, 8, 1193, u16::MAX] {
-                let mut reference = Pit8253::new();
-                let mut scheduled = MockBus::new(Box::new(Pit8253::new()));
+                let mut reference = crate::trace_policy_tests::traced(Pit8253::new());
+                let mut scheduled =
+                    MockBus::new(Box::new(crate::trace_policy_tests::traced(Pit8253::new())));
                 for channel in 0..3 {
                     let data = C0 + u16::from(channel);
                     for (port, value) in [
@@ -1318,7 +1329,7 @@ mod tests {
 
     #[test]
     fn trace_seam_records_accesses() {
-        let mut pit = Pit8253::new();
+        let mut pit = crate::trace_policy_tests::traced(Pit8253::new());
         pit.tick(VClock(3));
         program_c0(&mut pit, 2, 12);
         let writes: Vec<(u16, u32)> = pit

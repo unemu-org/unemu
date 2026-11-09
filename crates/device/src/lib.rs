@@ -8,8 +8,12 @@
 //!
 //! The contract carries **port** and **MMIO** access, [`Device::tick`] on the
 //! virtual clock, an IRQ line query, [`Device::reset`], `save`/`restore`, and
-//! trace emission — present on **every** device from the start (see spec §7.1),
-//! so snapshotting and golden tracing never have to be retrofitted.
+//! optional bounded access tracing (see spec §7.1). Trace policy defaults to
+//! [`TracePolicy::Off`] independently of display or byte-output observation;
+//! snapshots contain hardware state, never trace histories or counters.
+
+pub mod trace;
+pub use trace::{TraceBuffer, TracePolicy};
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -526,8 +530,20 @@ pub trait Device {
         DmaTransfer::default()
     }
 
+    /// Select access recording independently of semantic output. Defaults to Off.
+    /// Reconfiguration clears history and drop counts; hardware reset preserves
+    /// the policy. Neither policy nor diagnostics belong in hardware snapshots.
+    fn set_trace_policy(&mut self, _policy: TracePolicy) {}
+
+    /// Events overwritten since configuration or hardware reset. Draining does
+    /// not clear this saturating counter. Off records nothing and counts no drops.
+    fn trace_dropped(&self) -> u64 {
+        0
+    }
+
     /// Drain and return the trace events observed since the last call (§3.2
-    /// tracing seam). Empty `Vec` by default for devices that do not trace.
+    /// tracing seam), oldest retained first. Does not reset [`Device::trace_dropped`].
+    /// Empty by default and whenever recording is Off.
     fn take_trace(&mut self) -> Vec<TraceEvent> {
         Vec::new()
     }

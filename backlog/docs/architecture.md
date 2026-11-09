@@ -87,7 +87,8 @@ integration tests as an oracle with the same CPU/IRQ rules. No production
 
 [`Bus`](../../crates/bus/src/lib.rs) splits wider port accesses into consecutive,
 independently decoded byte cycles, low byte first. Undecoded ports default to
-all-ones reads/dropped writes with tracing; strict faulting is selectable.
+all-ones reads/dropped writes; optional bounded tracing and strict faulting are
+selectable.
 Undecoded MMIO faults. Read results use `complete_port_in` or
 `complete_mmio_read`; trapped writes require `complete_mmio_write` so retrying
 the instruction does not repeat the device side effect.
@@ -139,7 +140,11 @@ the bytes read, truncated to the controller's actual transfer length.
 `assemble_with_observation` binds requested routes by `DeviceId` and validates
 capabilities before execution. `AssembledMachine::capture_text` captures display
 state at a stamped machine boundary; semantic byte sinks collect UART TX and
-POST independently of access tracing. Capture preserves saved device state and
+POST independently of access tracing. `ObservationPolicy.trace` selects Off
+(default) or `Ring { capacity }` for every device and the open bus. All recorders
+share overwrite-oldest behavior and cumulative drop counters; draining retains
+the count. Diagnostics and their policy are excluded from hardware snapshots.
+Capture preserves saved device state and
 does not consume traces. BIOS runners return the colour grid, MDA RAM-probe
 grid, COM1/POST streams, final floppy media and classified stop. Prompt detection
 uses the same RAM text renderer as the MDA console. `run_vga_text` presents its
@@ -207,9 +212,10 @@ not copied into this workspace
   a feature-gated test oracle; the harness compares ordered accesses, INTA/EOI,
   RAM, registers, saved device state and stop endpoints without normalization
   between the two engines. Phase profiling after adoption is separate work.
-- **Observation:** [`design/observation.md`](design/observation.md) proposes
-  replacing replay and output downcasts with typed device capabilities and
-  assembly-owned observation routes. The migration has not landed.
+- **Observation:** [`design/observation.md`](design/observation.md) describes
+  typed device capabilities and assembly-owned observation routes. Access traces
+  are now opt-in, bounded and independent of semantic output; the document retains
+  the historical inventory and describes the remaining observation work.
 
 [`design/machine-config.md`](design/machine-config.md) explains composition;
 [`design/spec.md`](design/spec.md) specifies hardware coverage and seams;

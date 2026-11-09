@@ -195,7 +195,9 @@ pub fn assemble_with_observation(
     // The machine is built with no idle limit; the run policy stamps it on before
     // the loop runs (idle_limit is a "how we run" concern, not machine identity).
     let (rate_numerator, rate_denominator) = config.clock.cpu_rate()?;
-    let machine = Machine::new(cpu, Bus::new(devices, map), controller, irq_lines, None)
+    let mut bus = Bus::new(devices, map);
+    bus.set_trace_policy(observation_policy.trace);
+    let machine = Machine::new(cpu, bus, controller, irq_lines, None)
         .with_cpu_rate(rate_numerator, rate_denominator)
         .with_dma_wirings(dma_wirings);
 
@@ -545,6 +547,7 @@ mod tests {
             ),
         ] {
             let policy = ObservationPolicy {
+                trace: device::TracePolicy::Off,
                 routes: vec![ObservationRequest {
                     device,
                     output,

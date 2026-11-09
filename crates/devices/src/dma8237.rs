@@ -148,7 +148,7 @@ pub struct Dma8237 {
     /// Temporary register (`0x0D` read).
     temp: u8,
     /// Trace events observed since the last [`Device::take_trace`].
-    trace: Vec<TraceEvent>,
+    trace: device::TraceBuffer,
     /// Virtual time of the most recent [`Device::tick`], stamped onto traces.
     now: VClock,
 }
@@ -167,7 +167,7 @@ impl Dma8237 {
             mask: 0x0F,
             flip_flop: false,
             temp: 0,
-            trace: Vec::new(),
+            trace: device::TraceBuffer::default(),
             now: VClock::ZERO,
         }
     }
@@ -499,7 +499,9 @@ impl Device for Dma8237 {
     }
 
     fn reset(&mut self) {
+        let trace_policy = self.trace.policy();
         *self = Dma8237::new();
+        self.trace.set_policy(trace_policy);
     }
 
     fn save(&self) -> Vec<u8> {
@@ -576,8 +578,16 @@ impl Device for Dma8237 {
         self.service_read(usize::from(channel), mem, out)
     }
 
+    fn set_trace_policy(&mut self, policy: device::TracePolicy) {
+        self.trace.set_policy(policy);
+    }
+
+    fn trace_dropped(&self) -> u64 {
+        self.trace.dropped()
+    }
+
     fn take_trace(&mut self) -> Vec<TraceEvent> {
-        std::mem::take(&mut self.trace)
+        self.trace.take()
     }
 }
 
@@ -592,8 +602,8 @@ mod tests {
     #[test]
     fn dormant_dma_matches_per_clock_registers_memory_and_traces() {
         for mode in [0x04, 0x14, 0x24] {
-            let mut reference = Dma8237::new();
-            let mut scheduled = Dma8237::new();
+            let mut reference = crate::trace_policy_tests::traced(Dma8237::new());
+            let mut scheduled = crate::trace_policy_tests::traced(Dma8237::new());
             program(&mut reference, 2, mode, 1, 0x1234, 3);
             program(&mut scheduled, 2, mode, 1, 0x1234, 3);
             let mut reference = MockBus::new(Box::new(reference));

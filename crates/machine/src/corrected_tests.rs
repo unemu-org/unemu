@@ -781,6 +781,9 @@ fn mmio_replays_finish_before_inta_and_are_charged_once() {
             }],
         },
     );
+    machine
+        .bus
+        .set_trace_policy(device::TracePolicy::Ring { capacity: 16 });
     let log = shared.observe(machine.bus.observation_clock());
     machine.run_bounded(Some(2)).unwrap();
     let trace = machine.bus.device_mut(1).unwrap().take_trace();
@@ -962,6 +965,9 @@ fn real_mode_mmio_and_port_effects_settle_at_the_exact_final_cap() {
             None,
         )
         .with_scheduler_engine(SchedulerEngine::Deadline);
+        machine
+            .bus
+            .set_trace_policy(device::TracePolicy::Ring { capacity: 16 });
         assert_eq!(
             machine.run_bounded(Some(cap)).unwrap(),
             RunOutcome::RetiredCapReached
@@ -1225,6 +1231,9 @@ fn zero_step_counted_stops_return_scheduler_errors() {
         CpuStop::Halt,
     ] {
         let (mut machine, _) = pending_machine(vec![step(1, 0, stop, false)]);
+        machine
+            .bus
+            .set_trace_policy(device::TracePolicy::Ring { capacity: 16 });
         let error = machine.run_bounded(Some(1)).unwrap_err();
         assert!(error
             .to_string()
@@ -1260,6 +1269,9 @@ fn real_mode_error_prefix_is_charged_independently_of_step_splits() {
             )
             .with_scheduler_engine(engine)
             .with_step_limit(NonZeroU64::new(limit).unwrap());
+            machine
+                .bus
+                .set_trace_policy(device::TracePolicy::Ring { capacity: 16 });
             assert!(matches!(
                 machine.run_bounded(Some(100)),
                 Err(MachineError::Cpu(CpuError::Unmapped { addr: 0x9000 }))

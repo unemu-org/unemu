@@ -12,7 +12,10 @@
 //! cycles, low byte first, each decoded independently (IBM Personal Computer AT
 //! Technical Reference, "System Board", "I/O Channel"; see
 //! `backlog/docs/design/spec.md` §4.1). Device and open-bus traces therefore
-//! record byte cycles. A future 16-bit device, such as an IDE data port, will
+//! record byte cycles when explicitly enabled. Recording defaults to Off; both
+//! use [`device::TraceBuffer`] and the same bounded-ring/drop-count contract.
+//! See `backlog/docs/design/observation.md`, §Traces and later audio. A future
+//! 16-bit device, such as an IDE data port, will
 //! need an explicit opt-in to receive whole words; no such opt-in exists yet.
 //!
 //! It also drives [`Bus::tick_all`] (advance every device on the virtual clock,
@@ -112,9 +115,9 @@ pub struct Bus {
     /// Open-bus accesses observed since the last [`Bus::take_open_bus_trace`].
     ///
     /// An undecoded port has no device to record it on the [`Device`] tracing
-    /// seam, yet a BIOS-boot golden still wants to see which stray ports were
-    /// poked. The bus therefore keeps its own trace of the accesses it absorbs.
-    open_bus_trace: Vec<TraceEvent>,
+    /// seam, so explicitly enabled diagnostics use the same bounded recorder
+    /// as devices.
+    open_bus_trace: device::TraceBuffer,
 }
 
 impl Bus {
@@ -132,7 +135,7 @@ impl Bus {
             map,
             undecoded_ports: UndecodedPortAccess::default(),
             now: std::rc::Rc::new(std::cell::Cell::new(VClock::ZERO)),
-            open_bus_trace: Vec::new(),
+            open_bus_trace: device::TraceBuffer::default(),
         }
     }
 
@@ -156,13 +159,27 @@ impl Bus {
         std::rc::Rc::new(move || now.get())
     }
 
+    /// Configure every device and the open-bus recorder with one explicit policy.
+    /// Clears diagnostic histories and drop counts without changing hardware.
+    pub fn set_trace_policy(&mut self, policy: device::TracePolicy) {
+        self.open_bus_trace.set_policy(policy);
+        for device in &mut self.devices {
+            device.set_trace_policy(policy);
+        }
+    }
+
+    /// Open-bus events overwritten since trace configuration, preserved on drain.
+    pub fn open_bus_trace_dropped(&self) -> u64 {
+        self.open_bus_trace.dropped()
+    }
+
     /// Drain the open-bus accesses absorbed since the last call.
     ///
     /// Mirrors [`Device::take_trace`] for accesses that never reached a device:
-    /// each undecoded port read/write the bus serviced under
+    /// with recording enabled, each undecoded port read/write serviced under
     /// [`UndecodedPortAccess::OpenBus`] appears here as a [`TraceEvent::Port`].
     pub fn take_open_bus_trace(&mut self) -> Vec<TraceEvent> {
-        std::mem::take(&mut self.open_bus_trace)
+        self.open_bus_trace.take()
     }
 
     /// Resolve a port to its device index, or `None` if undecoded.
@@ -190,8 +207,8 @@ impl Bus {
     /// earlier byte cycles have already completed.
     ///
     /// An undecoded port under [`UndecodedPortAccess::OpenBus`] returns all-ones
-    /// (0xFF per byte) and is recorded on the open-bus trace, matching a real
-    /// ISA bus that no device drives; under [`UndecodedPortAccess::Fault`] it
+    /// (0xFF per byte), matching a real ISA bus that no device drives, and is
+    /// recorded on the open-bus trace when its trace policy records; under [`UndecodedPortAccess::Fault`] it
     /// raises [`BusError::UnmappedPort`].
     pub fn port_read(&mut self, port: u16, size: u8) -> Result<u32, BusError> {
         if size > 1 {
@@ -225,7 +242,8 @@ impl Bus {
     /// cycles have already completed.
     ///
     /// An undecoded port under [`UndecodedPortAccess::OpenBus`] drops the write
-    /// (no listener drives the bus) and records it on the open-bus trace; under
+    /// (no listener drives the bus) and optionally records it on the bounded
+    /// trace; under
     /// [`UndecodedPortAccess::Fault`] it raises [`BusError::UnmappedPort`].
     pub fn port_write(&mut self, port: u16, size: u8, value: u32) -> Result<(), BusError> {
         if size > 1 {
@@ -428,7 +446,7 @@ mod tests {
     struct ByteRegisters {
         base: u16,
         values: Vec<u8>,
-        trace: Vec<TraceEvent>,
+        trace: device::TraceBuffer,
     }
 
     impl Device for ByteRegisters {
@@ -487,8 +505,14 @@ mod tests {
             self.values.copy_from_slice(snapshot);
             Ok(())
         }
+        fn set_trace_policy(&mut self, policy: device::TracePolicy) {
+            self.trace.set_policy(policy);
+        }
+        fn trace_dropped(&self) -> u64 {
+            self.trace.dropped()
+        }
         fn take_trace(&mut self) -> Vec<TraceEvent> {
-            std::mem::take(&mut self.trace)
+            self.trace.take()
         }
     }
 
@@ -810,10 +834,12 @@ mod tests {
             devices.push(Box::new(ByteRegisters {
                 base,
                 values: values.to_vec(),
-                trace: Vec::new(),
+                trace: device::TraceBuffer::default(),
             }));
         }
-        Bus::new(devices, map)
+        let mut bus = Bus::new(devices, map);
+        bus.set_trace_policy(device::TracePolicy::Ring { capacity: 100 });
+        bus
     }
 
     fn port_event(port: u16, dir: AccessDir, value: u32) -> TraceEvent {
@@ -991,6 +1017,32 @@ mod tests {
     }
 
     #[test]
+    fn open_bus_trace_is_off_by_default_and_ring_retains_newest_events() {
+        let mut bus = bus_decoding(0x60);
+        for i in 0..5 {
+            bus.port_write(0x80, 1, i).unwrap();
+        }
+        assert!(bus.take_open_bus_trace().is_empty());
+        assert_eq!(bus.open_bus_trace_dropped(), 0);
+        bus.set_trace_policy(device::TracePolicy::Ring { capacity: 2 });
+        for i in 0..5 {
+            bus.port_write(0x80, 1, i).unwrap();
+        }
+        assert_eq!(
+            bus.take_open_bus_trace(),
+            vec![
+                port_event(0x80, AccessDir::Write, 3),
+                port_event(0x80, AccessDir::Write, 4),
+            ]
+        );
+        assert_eq!(bus.open_bus_trace_dropped(), 3);
+        assert!(bus.take_open_bus_trace().is_empty());
+        assert_eq!(bus.open_bus_trace_dropped(), 3);
+        bus.set_trace_policy(device::TracePolicy::Off);
+        assert_eq!(bus.open_bus_trace_dropped(), 0);
+    }
+
+    #[test]
     fn open_bus_is_the_default_policy() {
         assert_eq!(
             bus_decoding(0x60).undecoded_ports(),
@@ -1016,6 +1068,7 @@ mod tests {
     #[test]
     fn open_bus_accesses_are_traced_with_the_virtual_clock() {
         let mut bus = bus_decoding(0x60);
+        bus.set_trace_policy(device::TracePolicy::Ring { capacity: 2 });
         bus.tick_all(VClock(7));
         bus.port_write(0x80, 1, 0xAB).unwrap();
         let _ = bus.port_read(0x3DA, 1).unwrap();
@@ -1047,6 +1100,7 @@ mod tests {
     #[test]
     fn decoded_ports_bypass_open_bus_and_are_not_traced() {
         let mut bus = bus_decoding(0x60);
+        bus.set_trace_policy(device::TracePolicy::Ring { capacity: 2 });
         assert_eq!(bus.port_read(0x60, 1).unwrap(), 0x42);
         bus.port_write(0x60, 1, 0x99).unwrap();
         assert!(bus.take_open_bus_trace().is_empty());
@@ -1055,6 +1109,7 @@ mod tests {
     #[test]
     fn strict_mode_still_faults_on_undecoded_ports() {
         let mut bus = bus_decoding(0x60).with_undecoded_ports(UndecodedPortAccess::Fault);
+        bus.set_trace_policy(device::TracePolicy::Ring { capacity: 2 });
         assert!(matches!(
             bus.port_read(0x80, 1),
             Err(BusError::UnmappedPort { port: 0x80 })

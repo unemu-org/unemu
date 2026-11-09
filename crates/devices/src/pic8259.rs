@@ -179,7 +179,7 @@ pub struct Pic8259 {
     /// `0x20` for the master, `0xA0` for the slave.
     port_base: u16,
     /// Trace events observed since the last [`Device::take_trace`].
-    trace: Vec<TraceEvent>,
+    trace: device::TraceBuffer,
     /// Virtual time of the most recent [`Device::tick`], stamped onto traces.
     now: VClock,
 }
@@ -226,7 +226,7 @@ impl Pic8259 {
             read_select: ReadSelect::Irr,
             line_level: 0,
             port_base,
-            trace: Vec::new(),
+            trace: device::TraceBuffer::default(),
             now: VClock::ZERO,
         }
     }
@@ -502,8 +502,10 @@ impl Device for Pic8259 {
     }
 
     fn reset(&mut self) {
+        let trace_policy = self.trace.policy();
         // Keep the wired role (master vs slave port pair); reset only chip state.
         *self = Pic8259::with_port_base(self.port_base);
+        self.trace.set_policy(trace_policy);
     }
 
     fn save(&self) -> Vec<u8> {
@@ -569,8 +571,16 @@ impl Device for Pic8259 {
         Ok(())
     }
 
+    fn set_trace_policy(&mut self, policy: device::TracePolicy) {
+        self.trace.set_policy(policy);
+    }
+
+    fn trace_dropped(&self) -> u64 {
+        self.trace.dropped()
+    }
+
     fn take_trace(&mut self) -> Vec<TraceEvent> {
-        std::mem::take(&mut self.trace)
+        self.trace.take()
     }
 }
 
@@ -908,7 +918,7 @@ mod tests {
     fn mock_bus_isolation_harness() {
         // Prove the device runs under the isolation harness and its programming
         // ports resolve through `&mut dyn Device`.
-        let mut bus = MockBus::new(Box::new(Pic8259::new()));
+        let mut bus = MockBus::new(Box::new(crate::trace_policy_tests::traced(Pic8259::new())));
         bus.tick(7);
         bus.port_write(PORT_COMMAND, 1, u32::from(ICW1_INIT | ICW1_IC4))
             .unwrap();

@@ -1,9 +1,50 @@
 # Observing machine output
 
-Design spike, 2026-11-09. This document proposes an observation seam; it does not
-describe an implemented public API. The accompanying VGA prototype is disposable
-and must not be committed with this document. Source references below use paths
-and symbols so they survive removal of the prototype.
+Design and migration record, 2026-11-09. Typed scanout and semantic byte sinks
+are implemented. The inventory and prototype evidence below describe the earlier
+implementation; the trace policy and its migration gate are now implemented.
+
+## Implemented access trace policy
+
+`device::TracePolicy` has two modes: `Off` (the default) and
+`Ring { capacity }`. Every concrete device and the open bus use the same
+`TraceBuffer`. Off retains no events, counts no drops and allocates no history.
+A ring retains the newest events in access order, overwriting the oldest and
+incrementing a saturating `u64` drop counter. Capacity zero retains nothing and
+counts every event as dropped. `Device::take_trace` and
+`Bus::take_open_bus_trace` drain retained events without clearing the counters;
+`Device::trace_dropped` and `Bus::open_bus_trace_dropped` report lost events.
+A drain is bounded by the configured capacity.
+
+`ObservationPolicy.trace` explicitly selects the policy for all devices and the
+open bus during assembly. `assemble`, presets and all production CLI capture
+policies leave it Off. Selecting serial/POST output or a display never enables
+tracing. `Bus::set_trace_policy` can also configure an existing machine; both
+this operation and device-level reconfiguration discard prior history and reset
+the counters. Hardware reset preserves policy and starts a new diagnostic
+history. `SharedPic` forwards policy, drain and counter to its one live chip.
+
+Machine timing tests in `crates/machine/src/corrected_tests.rs` also explicitly
+select rings when asserting port/MMIO timestamps. Shared-PIC tests verify that
+cloned faces configure and drain one recorder and expose the same drop count.
+
+Snapshots exclude trace events, policy and counters. All ten device snapshot
+formats already excluded access traces, so no version bump is necessary.
+Restore neither emits nor restores diagnostics; the host's existing trace epoch
+continues. Per-device isolation tests check that draining a trace cannot change
+snapshot bytes and restoring into a fresh device cannot import history.
+
+Trace-consuming unit tests opt into rings sized above their bounded access
+counts. The scheduler A/B harness uses a 16-event ring per device, drains after
+each transaction and asserts zero drops. Its complete comparison stream remains
+a test-owned oracle. A slow CLI regression runs BIOS POST to its golden cap,
+BIOS floppy boot, FreeDOS prompt, DIR and file-write sessions with Off and a
+two-event overflowing ring. It checks every device/open-bus retained length and
+observed drops, and compares the complete `BiosRun`: serial, POST, both screens
+(including attributes/cursors), capture stamps, final media and stop reason.
+
+No new environment variable or CLI option is needed; the policy is a Rust
+observation/configuration choice.
 
 ## Recommendation
 
@@ -273,14 +314,14 @@ a real MDA-device task, not this migration.
 
 ### Traces and later audio
 
-Introduce `TracePolicy::Off` by default and an explicitly sized ring policy with
+Implemented: `TracePolicy::Off` by default, plus an explicitly sized ring with
 deterministic overwrite-oldest behavior, retained-order drain and a dropped-event
-count. Include both device access buffers and `Bus::open_bus_trace`; `SharedPic`
-delegates configuration to its existing inner device rather than recording
-again. A shared recorder implementation can hold the policy and enforce the
-same capacity/overflow contract everywhere. Trace tests opt in and assert no
-drops before checking their expected event sequences. Off must avoid recording
-allocations altogether. Debugger filters may be added only when needed.
+count. This covers both device access buffers and `Bus::open_bus_trace`;
+`SharedPic` delegates to its existing inner device rather than recording again.
+The shared recorder enforces the same capacity/overflow contract everywhere.
+Trace tests explicitly select sufficient capacity or assert zero drops before
+checking sequences. Off avoids recording allocations altogether. Debugger
+filters remain deferred until needed.
 
 The trace bound must not affect semantic streams or current scanout. Turning
 tracing off, draining it early or overflowing its ring must yield the same
@@ -322,9 +363,10 @@ format is implemented by this spike.
    FreeDOS boot, interactive DIR and DOS write-session goldens, checking unchanged
    text, markers, POST and stop kinds. Route `FrameSinkKind` through the facade;
    ensure headless and capture modes yield identical machine results.
-6. Delete production replay and output downcasts, make access traces opt-in and
-   bounded, and repeat the comparisons with tracing off and tiny overflowing
-   rings. Keep bounded-oracle mode only in tests if it still serves a diagnostic
+6. **Trace migration done:** production output no longer uses replay/downcasts;
+   access traces are opt-in and bounded. The slow regression compares tracing
+   Off against tiny overflowing rings across all five BIOS/DOS golden workloads.
+   Keep bounded-oracle mode only in tests if it still serves a diagnostic
    purpose. No committed golden fixture is rewritten merely to accommodate an
    observation implementation change.
 
@@ -386,12 +428,11 @@ slow-suite success is inferred from a named BIOS run.
 | `cargo fmt --check` | Exit 0 |
 | `git diff --check` | Exit 0 |
 
-READ evidence is the path/symbol inventory above. Proposed capability/sink APIs,
-trace bounds, output-overflow behavior and audio are design assumptions, not
-implemented or benchmarked results. The complete ignored suite was not run;
-FreeDOS and interactive-session byte equivalence, restore equivalence and
-tracing-off/overflow independence remain implementation gates. The disposable
-test names and production prototype are not part of the documentation commit.
+This is historical prototype evidence. At that stage the complete ignored suite
+had not run, and FreeDOS/session byte equivalence, restore equivalence and
+tracing-off/overflow independence were still gates. The implemented trace policy
+and regression above now cover the trace gate; audio remains deferred. No
+prototype timing number above measures the bounded recorder.
 
 ## Proposed implementation beads
 

@@ -329,7 +329,7 @@ pub struct Upd765 {
     /// `None` is an empty drive bay; a READ addressed to one is "not ready".
     drives: [Option<Drive>; 4],
     /// Trace events observed since the last [`Device::take_trace`].
-    trace: Vec<TraceEvent>,
+    trace: device::TraceBuffer,
     /// Virtual time of the most recent [`Device::tick`], stamped onto traces.
     now: VClock,
 }
@@ -353,7 +353,7 @@ impl Upd765 {
             pending_read: None,
             pending_write: None,
             drives: [None, None, None, None],
-            trace: Vec::new(),
+            trace: device::TraceBuffer::default(),
             now: VClock::ZERO,
         }
     }
@@ -1046,9 +1046,11 @@ impl Device for Upd765 {
     }
 
     fn reset(&mut self) {
+        let trace_policy = self.trace.policy();
         // A controller reset clears the registers but does not eject any disk.
         let drives = std::mem::take(&mut self.drives);
         *self = Self::with_drives(drives);
+        self.trace.set_policy(trace_policy);
     }
 
     fn save(&self) -> Vec<u8> {
@@ -1130,8 +1132,16 @@ impl Device for Upd765 {
         device::DmaTransfer::default()
     }
 
+    fn set_trace_policy(&mut self, policy: device::TracePolicy) {
+        self.trace.set_policy(policy);
+    }
+
+    fn trace_dropped(&self) -> u64 {
+        self.trace.dropped()
+    }
+
     fn take_trace(&mut self) -> Vec<TraceEvent> {
-        std::mem::take(&mut self.trace)
+        self.trace.take()
     }
 }
 

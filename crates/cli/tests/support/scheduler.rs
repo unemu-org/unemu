@@ -414,6 +414,7 @@ impl ObservedDevice {
         drain_pic(&self.pic, &self.stream);
     }
     fn after(&mut self) {
+        assert_eq!(self.inner.trace_dropped(), 0, "transaction trace overflow");
         self.stream
             .borrow_mut()
             .extend(
@@ -487,6 +488,12 @@ impl Device for ObservedDevice {
     fn restore(&mut self, snapshot: &[u8]) -> Result<(), DeviceError> {
         self.inner.restore(snapshot)
     }
+    fn set_trace_policy(&mut self, policy: device::TracePolicy) {
+        self.inner.set_trace_policy(policy);
+    }
+    fn trace_dropped(&self) -> u64 {
+        self.inner.trace_dropped()
+    }
     fn take_trace(&mut self) -> Vec<TraceEvent> {
         self.inner.take_trace()
     }
@@ -525,6 +532,9 @@ fn observed_device_preserves_scanout_after_draining_traces() {
         stream: SharedStream::default(),
         pic: Vec::new(),
     }));
+    display
+        .device_mut()
+        .set_trace_policy(device::TracePolicy::Ring { capacity: 2 });
     display.mmio_write(0xB8000, 2, 0x4E41).unwrap();
     assert!(display.device_mut().take_trace().is_empty());
     assert_eq!(
@@ -541,6 +551,9 @@ fn observed_device_preserves_byte_output_after_draining_traces() {
         stream: SharedStream::default(),
         pic: Vec::new(),
     }));
+    serial
+        .device_mut()
+        .set_trace_policy(device::TracePolicy::Ring { capacity: 2 });
     let capture = device::ByteCapture::new(4);
     serial
         .device_mut()
@@ -663,7 +676,8 @@ pub fn observe_with(
             .expect("device");
         // A placeholder permits moving the box out without a bus API change.
         let mut inner = std::mem::replace(slot, Box::new(Uart16550::new(0)));
-        inner.take_trace();
+        // Each transaction emits at most one access before the wrapper drains it.
+        inner.set_trace_policy(device::TracePolicy::Ring { capacity: 16 });
         *slot = Box::new(ObservedDevice {
             inner,
             id,

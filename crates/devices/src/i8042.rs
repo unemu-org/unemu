@@ -307,7 +307,7 @@ pub struct I8042 {
     /// Earliest next keyboard byte after the host releases the serial link.
     keyboard_ready_at: Option<VClock>,
     /// Trace events observed since the last [`Device::take_trace`].
-    trace: Vec<TraceEvent>,
+    trace: device::TraceBuffer,
     /// Virtual time of the most recent [`Device::tick`], stamped onto traces.
     now: VClock,
 }
@@ -330,7 +330,7 @@ impl I8042 {
             controller_reply: None,
             refill_hold: false,
             keyboard_ready_at: None,
-            trace: Vec::new(),
+            trace: device::TraceBuffer::default(),
             now: VClock::ZERO,
         }
     }
@@ -638,7 +638,9 @@ impl Device for I8042 {
     }
 
     fn reset(&mut self) {
+        let trace_policy = self.trace.policy();
         *self = I8042::new();
+        self.trace.set_policy(trace_policy);
     }
 
     fn save(&self) -> Vec<u8> {
@@ -770,8 +772,16 @@ impl Device for I8042 {
         Ok(())
     }
 
+    fn set_trace_policy(&mut self, policy: device::TracePolicy) {
+        self.trace.set_policy(policy);
+    }
+
+    fn trace_dropped(&self) -> u64 {
+        self.trace.dropped()
+    }
+
     fn take_trace(&mut self) -> Vec<TraceEvent> {
-        std::mem::take(&mut self.trace)
+        self.trace.take()
     }
 
     fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
@@ -1105,8 +1115,9 @@ mod tests {
             for (inhibit, controller_reply) in
                 [(false, false), (false, true), (true, false), (true, true)]
             {
-                let mut reference = I8042::new();
-                let mut jumped = MockBus::new(Box::new(I8042::new()));
+                let mut reference = crate::trace_policy_tests::traced(I8042::new());
+                let mut jumped =
+                    MockBus::new(Box::new(crate::trace_policy_tests::traced(I8042::new())));
                 for kbc in [&mut reference, bus_keyboard(&mut jumped)] {
                     kbc.port_write(PORT_CMD, 1, 0x60).unwrap();
                     kbc.port_write(PORT_DATA, 1, u32::from(CB_KBD_INT)).unwrap();
@@ -1150,8 +1161,8 @@ mod tests {
 
     #[test]
     fn scheduled_matches_per_clock_seeded_accesses_and_long_jumps() {
-        let mut reference = I8042::new();
-        let mut scheduled = MockBus::new(Box::new(I8042::new()));
+        let mut reference = crate::trace_policy_tests::traced(I8042::new());
+        let mut scheduled = MockBus::new(Box::new(crate::trace_policy_tests::traced(I8042::new())));
         let mut seed = 0x8042_1468_1816_5501u64;
         let mut expected_edges = Vec::new();
         let mut actual_edges = Vec::new();

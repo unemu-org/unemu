@@ -85,6 +85,9 @@ pub struct ObservationRequest {
 /// does not select CPU cooperation size or schedule capture boundaries.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ObservationPolicy {
+    /// Access diagnostics for every device and the open bus, independent of routes.
+    /// Defaults to Off, including when semantic output capture is requested.
+    pub trace: device::TracePolicy,
     /// Outputs to resolve and bind before guest execution.
     pub routes: Vec<ObservationRequest>,
 }
@@ -273,6 +276,7 @@ mod tests {
         ));
         config.devices.reverse();
         let policy = ObservationPolicy {
+            trace: device::TracePolicy::Off,
             routes: vec![
                 request(DeviceId::Vga, OutputKind::TextScanout, 0),
                 request(
@@ -355,6 +359,7 @@ mod tests {
             vec![PortWindow::single(0x190)],
         ));
         let policy = ObservationPolicy {
+            trace: device::TracePolicy::Ring { capacity: 100 },
             routes: vec![
                 request(
                     DeviceId::Uart,
@@ -441,6 +446,7 @@ mod tests {
     fn display_capture_stamps_halted_virtual_time_separately_from_retired() {
         let config = crate::at_vga_text(vec![0xFB, 0xF4]);
         let policy = ObservationPolicy {
+            trace: device::TracePolicy::Off,
             routes: vec![request(DeviceId::Vga, OutputKind::TextScanout, 0)],
         };
         let mut assembled = assemble_with_observation(&config, &policy).unwrap();
@@ -469,6 +475,7 @@ mod tests {
             8,
         );
         let policy = ObservationPolicy {
+            trace: device::TracePolicy::Off,
             routes: vec![route, route],
         };
         assert!(matches!(assemble_with_observation(&config, &policy),
@@ -504,6 +511,7 @@ mod tests {
     fn observation_byte_overflow_fails_drains_until_explicit_epoch() {
         let config = crate::at_boot(vec![0xF4]);
         let policy = ObservationPolicy {
+            trace: device::TracePolicy::Off,
             routes: vec![request(
                 DeviceId::Uart,
                 OutputKind::Bytes(ByteStreamKind::SerialTx),

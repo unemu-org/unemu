@@ -57,8 +57,8 @@ const SNAPSHOT_HEADER_LEN: usize = 1 + 5 + 1 + 1 + 4;
 /// observer receives a copy without changing snapshot bytes. The legacy buffer
 /// remains unbounded until a separate snapshot-version migration removes it.
 /// See `backlog/docs/design/observation.md`, §Sinks, bounds and lifecycle.
-/// The trace records all port accesses, including divisor-latch writes, so it
-/// must not be treated as a transmitted byte stream: the National Semiconductor
+/// When enabled, the bounded trace records port accesses, including divisor-latch
+/// writes, so it must not be treated as a transmitted byte stream: the National Semiconductor
 /// PC16550D datasheet, Line Control Register (DLAB), assigns offsets +0/+1 to
 /// the divisor latches when DLAB is set.
 pub struct Uart16550 {
@@ -83,7 +83,7 @@ pub struct Uart16550 {
     /// Optional observer receiving a copy; binding must not change saved state.
     sink: Option<Box<dyn ByteSink>>,
     /// Trace events observed since the last [`Device::take_trace`].
-    trace: Vec<TraceEvent>,
+    trace: device::TraceBuffer,
     /// Virtual time of the most recent [`Device::tick`], stamped onto traces.
     now: VClock,
 }
@@ -105,7 +105,7 @@ impl Uart16550 {
             dlm: 0,
             output: Vec::new(),
             sink: None,
-            trace: Vec::new(),
+            trace: device::TraceBuffer::default(),
             now: VClock::ZERO,
         }
     }
@@ -248,11 +248,13 @@ impl Device for Uart16550 {
     }
 
     fn reset(&mut self) {
+        let trace_policy = self.trace.policy();
         // Capture epochs belong to the host; a hardware reset keeps the route.
         let base = self.base;
         let sink = self.sink.take();
         *self = Uart16550::new(base);
         self.sink = sink;
+        self.trace.set_policy(trace_policy);
     }
 
     fn save(&self) -> Vec<u8> {
@@ -311,8 +313,16 @@ impl Device for Uart16550 {
         Ok(())
     }
 
+    fn set_trace_policy(&mut self, policy: device::TracePolicy) {
+        self.trace.set_policy(policy);
+    }
+
+    fn trace_dropped(&self) -> u64 {
+        self.trace.dropped()
+    }
+
     fn take_trace(&mut self) -> Vec<TraceEvent> {
-        std::mem::take(&mut self.trace)
+        self.trace.take()
     }
 
     fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
@@ -379,7 +389,9 @@ mod tests {
     #[test]
     fn observation_sink_receives_only_accepted_thr_bytes_and_survives_reset() {
         let capture = device::ByteCapture::new(4);
-        let mut bus = MockBus::new(Box::new(Uart16550::new(COM1)));
+        let mut bus = MockBus::new(Box::new(crate::trace_policy_tests::traced(Uart16550::new(
+            COM1,
+        ))));
         let output = bus.device_mut().byte_output().unwrap();
         assert_eq!(output.kind(), device::ByteStreamKind::SerialTx);
         output.bind_sink(Box::new(capture.clone()));
@@ -405,8 +417,12 @@ mod tests {
 
     #[test]
     fn dormant_matches_per_clock_seeded_accesses_and_long_jumps() {
-        let mut reference = MockBus::new(Box::new(Uart16550::new(0x3F8)));
-        let mut scheduled = MockBus::new(Box::new(Uart16550::new(0x3F8)));
+        let mut reference = MockBus::new(Box::new(crate::trace_policy_tests::traced(
+            Uart16550::new(0x3F8),
+        )));
+        let mut scheduled = MockBus::new(Box::new(crate::trace_policy_tests::traced(
+            Uart16550::new(0x3F8),
+        )));
         let mut seed = 0x8042_1468_1816_5501u64;
         for step in 0..128 {
             assert_eq!(
@@ -487,7 +503,9 @@ mod tests {
 
     #[test]
     fn mock_bus_output_excludes_divisor_writes() {
-        let mut bus = MockBus::new(Box::new(Uart16550::new(COM1)));
+        let mut bus = MockBus::new(Box::new(crate::trace_policy_tests::traced(Uart16550::new(
+            COM1,
+        ))));
         bus.port_write(COM1 + 3, 1, 0x83).unwrap();
         bus.port_write(COM1, 1, 0x42).unwrap();
         bus.port_write(COM1 + 1, 1, 0x01).unwrap();
@@ -613,7 +631,7 @@ mod tests {
 
     #[test]
     fn hello_via_output_and_trace() {
-        let mut uart = Uart16550::new(COM1);
+        let mut uart = crate::trace_policy_tests::traced(Uart16550::new(COM1));
         for &byte in b"hello" {
             uart.port_write(COM1, 1, u32::from(byte)).unwrap();
         }
@@ -643,7 +661,9 @@ mod tests {
     fn mock_bus_isolation_harness() {
         // Prove the device runs under the isolation harness and the trace seam
         // survives a round trip through `&mut dyn Device`.
-        let mut bus = MockBus::new(Box::new(Uart16550::new(COM1)));
+        let mut bus = MockBus::new(Box::new(crate::trace_policy_tests::traced(Uart16550::new(
+            COM1,
+        ))));
         bus.tick(3); // stamp a non-zero virtual time onto subsequent traces.
         for &byte in b"hello" {
             bus.port_write(COM1, 1, u32::from(byte)).unwrap();

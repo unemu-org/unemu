@@ -678,6 +678,13 @@ fn run_bios_config(
         }
     };
 
+    run_bios_assembled(&mut assembled, build_policy)
+}
+
+fn run_bios_assembled(
+    assembled: &mut AssembledMachine,
+    build_policy: impl FnOnce(&HashMap<DeviceId, usize>) -> RunPolicy,
+) -> BiosRun {
     let device_index = &assembled.device_index;
     let policy = build_policy(device_index);
     let machine = &mut assembled.machine;
@@ -1299,6 +1306,7 @@ pub fn run_vga_text(blob: &[u8]) -> Result<TextGrid> {
 
 fn display_policy() -> ObservationPolicy {
     ObservationPolicy {
+        trace: device::TracePolicy::Off,
         routes: vec![ObservationRequest {
             device: DeviceId::Vga,
             output: OutputKind::TextScanout,
@@ -1314,6 +1322,7 @@ const STREAM_BYTE_LIMIT: usize = 1024 * 1024;
 
 fn byte_policy(device: DeviceId, kind: ByteStreamKind) -> ObservationPolicy {
     ObservationPolicy {
+        trace: device::TracePolicy::Off,
         routes: vec![ObservationRequest {
             device,
             output: OutputKind::Bytes(kind),
@@ -1382,11 +1391,11 @@ mod tests {
 
     #[test]
     fn vga_snapshot_repeated_capture_preserves_the_grid() {
-        let mut assembled = assemble_with_observation(
-            &assembly::at_vga_text(VGA_TEXT_PROGRAM.to_vec()),
-            &display_policy(),
-        )
-        .unwrap();
+        let mut policy = display_policy();
+        policy.trace = device::TracePolicy::Ring { capacity: 100 };
+        let mut assembled =
+            assemble_with_observation(&assembly::at_vga_text(VGA_TEXT_PROGRAM.to_vec()), &policy)
+                .unwrap();
         assembled.machine.run().unwrap();
         let index = assembled.device_index[&DeviceId::Vga];
         let before = assembled.machine.bus().device(index).unwrap().save();
@@ -1485,5 +1494,102 @@ mod tests {
         assert!(
             matches!(stop, StopReason::ObservationFailed { detail } if detail.contains("1-byte limit"))
         );
+    }
+}
+
+#[cfg(test)]
+#[path = "../tests/support/fixtures.rs"]
+mod trace_fixtures;
+
+#[cfg(test)]
+mod bounded_trace_tests {
+    use super::*;
+    use device::TracePolicy;
+
+    fn assert_bounds(assembled: &mut AssembledMachine, capacity: usize) -> u64 {
+        let mut drops = assembled.machine.bus().open_bus_trace_dropped();
+        assert!(assembled.machine.bus_mut().take_open_bus_trace().len() <= capacity);
+        for (&id, &index) in &assembled.device_index {
+            let device = assembled.machine.bus_mut().device_mut(index).unwrap();
+            let dropped = device.trace_dropped();
+            let events = device.take_trace();
+            assert!(events.len() <= capacity, "{id:?}: {}", events.len());
+            eprintln!("{id:?}: retained={}, dropped={dropped}", events.len());
+            drops += dropped;
+        }
+        drops
+    }
+
+    #[test]
+    #[ignore = "slow: compares all BIOS/DOS golden outputs with tracing off and overflowing"]
+    fn bios_and_dos_outputs_ignore_trace_overflow_and_post_buffers_stay_bounded() {
+        let (Some(rom), Some(image)) = (
+            trace_fixtures::fixture("kiselev-bios/bios-xi8088.bin"),
+            trace_fixtures::fixture("freedos/freedos.img"),
+        ) else {
+            return;
+        };
+        for workload in ["post", "floppy", "prompt", "dir", "write"] {
+            let floppy = match workload {
+                "post" => None,
+                "floppy" => Some(bootable_floppy_image()),
+                _ => Some(image.clone()),
+            };
+            let config = assembly::bios(rom.clone(), floppy);
+            let mut results = Vec::new();
+            for trace in [TracePolicy::Off, TracePolicy::Ring { capacity: 2 }] {
+                let mut observation = bios_observation_policy();
+                observation.trace = trace;
+                let mut assembled = assemble_with_observation(&config, &observation).unwrap();
+                let result = run_bios_assembled(&mut assembled, |indices| match workload {
+                    "post" => {
+                        RunPolicy::natural(Some(BIOS_GOLDEN_MAX_RETIRED), Some(BIOS_IDLE_LIMIT))
+                    }
+                    "floppy" => bios_natural_policy(),
+                    _ => {
+                        let script = match workload {
+                            "dir" => dos_dir_script(),
+                            "write" => dos_write_file_script(),
+                            _ => Vec::new(),
+                        };
+                        let interactive = !script.is_empty();
+                        let stimuli = if interactive {
+                            vec![KeyboardStimulus {
+                                keyboard_index: indices[&DeviceId::Keyboard],
+                                scancodes: script,
+                                schedule: InjectionSchedule::AfterPrompt,
+                            }]
+                        } else {
+                            Vec::new()
+                        };
+                        freedos_prompt_policy(
+                            stimuli,
+                            if interactive {
+                                DOS_INTERACTIVE_COMMAND_BUDGET
+                            } else {
+                                0
+                            },
+                        )
+                    }
+                });
+                assert!(!result.post.is_empty(), "{workload} must execute BIOS POST");
+                assert!(!matches!(result.stop, StopReason::ObservationFailed { .. }));
+                if workload == "post" {
+                    assert_eq!(result.stop, StopReason::BudgetExhausted);
+                }
+                let capacity = if trace == TracePolicy::Off { 0 } else { 2 };
+                let drops = assert_bounds(&mut assembled, capacity);
+                if trace == TracePolicy::Off {
+                    assert_eq!(drops, 0);
+                } else {
+                    assert!(drops > 0, "{workload} must exercise overflow");
+                }
+                results.push(result);
+            }
+            assert_eq!(
+                results[0], results[1],
+                "{workload}: all outputs and stop must agree"
+            );
+        }
     }
 }

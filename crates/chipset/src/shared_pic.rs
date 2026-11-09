@@ -232,6 +232,14 @@ impl Device for SharedPic {
         self.inner.borrow_mut().restore(snapshot)
     }
 
+    fn set_trace_policy(&mut self, policy: device::TracePolicy) {
+        self.inner.borrow_mut().set_trace_policy(policy);
+    }
+
+    fn trace_dropped(&self) -> u64 {
+        self.inner.borrow().trace_dropped()
+    }
+
     fn take_trace(&mut self) -> Vec<TraceEvent> {
         self.inner.borrow_mut().take_trace()
     }
@@ -413,6 +421,28 @@ impl InterruptController for CascadedPic {
 mod tests {
     use super::*;
 
+    #[test]
+    fn cloned_pic_faces_share_trace_policy_history_and_drop_count() {
+        let pic = SharedPic::new();
+        let mut bus = testkit::MockBus::new(Box::new(pic.clone()));
+        bus.port_read(0x21, 1).unwrap();
+        let mut host = pic.clone();
+        assert!(host.take_trace().is_empty());
+        host.set_trace_policy(device::TracePolicy::Ring { capacity: 2 });
+        for _ in 0..5 {
+            bus.port_read(0x21, 1).unwrap();
+        }
+        assert_eq!(host.trace_dropped(), 3);
+        assert_eq!(bus.device().trace_dropped(), 3);
+        assert_eq!(host.take_trace().len(), 2);
+        assert!(bus.device_mut().take_trace().is_empty());
+        assert_eq!(bus.device().trace_dropped(), 3);
+        host.set_trace_policy(device::TracePolicy::Off);
+        bus.port_read(0x21, 1).unwrap();
+        assert!(host.take_trace().is_empty());
+        assert_eq!(host.trace_dropped(), 0);
+    }
+
     /// Intel 8259A datasheet, Interrupt Sequence and OCW2: elapsed time cannot
     /// change IRR/ISR; line edges, INTA and EOI do, on either device face.
     #[test]
@@ -428,6 +458,8 @@ mod tests {
             } else {
                 SharedPic::new()
             };
+            reference.set_trace_policy(device::TracePolicy::Ring { capacity: 100 });
+            scheduled.set_trace_policy(device::TracePolicy::Ring { capacity: 100 });
             let command = if slave { SLAVE_CMD } else { MASTER_CMD };
             let base = if slave { SLAVE_BASE } else { MASTER_BASE };
             init_chip(&mut reference, command, command + 1, base, 2);
