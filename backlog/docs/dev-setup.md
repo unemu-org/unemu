@@ -86,8 +86,14 @@ Cargo's registry, git database and `target/` are cached using `flake.lock` and
 
 The gates check the devShell, formatting, publication safety, Clippy, workspace
 tests, fixture builds and slow goldens. Fixtures are built by the three
-`vendor/{kiselev-bios,freedos,test386}/fetch.sh` scripts with network access and
-the devShell's tools, including `nasm` and `mtools`. Each gate still runs after
+`vendor/{kiselev-bios,freedos,test386}/fetch.sh` scripts and the devShell's tools,
+including `nasm` and `mtools` 4.0.49. The scripts fetch only missing pinned commits
+or release archives and check every output against its pinned SHA-256 hash.
+Retain their gitignored source clones and FreeDOS `build/*.zip` archives for
+offline rebuilds. FreeDOS fixes its serial, label and timestamps using mtools'
+`SOURCE_DATE_EPOCH` support; see `vendor/freedos/README.md`. Portable size checks
+and `sha256sum`/`shasum -a 256` also allow running the scripts outside the devShell
+with equivalent tools. Each gate still runs after
 earlier failures. The final commit status, `ci / x86_64`, names failed steps.
 
 Run a gate from the repository root with `bash scripts/ci-gate.sh <step>`;

@@ -2193,12 +2193,25 @@ mod tests {
             std::process::id(),
             line!()
         ));
-        let out = Command::new("mformat")
+        let out = match Command::new("mformat")
             .args(["-C", "-f", "360", "-v", "TEST360", "-i"])
             .arg(&path)
             .arg("::")
             .output()
-            .expect("mformat must be on PATH (provided by the devShell's mtools)");
+        {
+            Ok(out) => out,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                let message = "missing mformat — run this test in nix develop (mtools)";
+                assert!(
+                    std::env::var_os("UNEMUPC98_REQUIRE_FIXTURES").as_deref()
+                        != Some(std::ffi::OsStr::new("1")),
+                    "{message}"
+                );
+                eprintln!("skipping: {message}");
+                return;
+            }
+            Err(error) => panic!("cannot run mformat: {error}"),
+        };
         assert!(
             out.status.success(),
             "mformat failed: {}",

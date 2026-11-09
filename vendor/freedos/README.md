@@ -31,8 +31,20 @@ No `FDCONFIG.SYS`/`AUTOEXEC.BAT` is placed: with none present the kernel loads
 | Boot sector `boot/boot.asm` | `github.com/FDOS/kernel` source | commit `8535ddb7a783f94b3aae844c8fe7f5ccce9037eb` (tag `ke2044`) |
 
 Archive SHA-256 sums are checked in `fetch.sh`; the assembled boot sector is
-size-checked (512 bytes) and the final image is checked for size (1,474,560) and
-the `0x55AA` signature.
+size-checked (512 bytes). The final image is checked for size (1,474,560), the
+`0x55AA` signature and SHA-256:
+`b7b088333f7f30584d768941fecea8288b63f2d61e13ec6c9472439eda66e51f`.
+A hash mismatch fails the build and reports both hashes. Check sources and tools;
+changing a pinned output hash requires deliberately rebuilding and reviewing the
+goldens' expectations.
+
+The volume label is `FREEDOS`, and its serial is fixed at `2895-9853` to match
+the DOS session goldens. `SOURCE_DATE_EPOCH=315532800` and `TZ=UTC` fix all mtools
+volume-label and file creation, access and modification timestamps at the FAT
+epoch, 1980-01-01 00:00:00 UTC. `mcopy` deliberately omits `-m`, so archive and
+host file mtimes do not enter the image. Use mtools with `SOURCE_DATE_EPOCH`
+support (the devShell provides 4.0.49); an incompatible build fails the image hash
+check.
 
 ## License
 
@@ -48,4 +60,9 @@ vendor/freedos/fetch.sh          # builds vendor/freedos/freedos.img
 ```
 
 Requires `git`, `nasm`, `unzip`, `curl`, and mtools (`mformat`/`mcopy`/`mdir`) —
-all in the flake devShell. The image and the fetched archives are gitignored.
+all in the flake devShell. SHA-256 uses `sha256sum` or macOS's `shasum -a 256`;
+size and boot-signature checks also use portable utilities. The image, archives
+and source clone are gitignored. Once `build/ke2044_86f16.zip`,
+`build/command.zip` and the pinned commit in `build/kernel-src/` are cached,
+rebuilding needs no network. Cached archives are still hash-checked; missing
+archives or commits are fetched as before.

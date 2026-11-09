@@ -36,8 +36,8 @@
 //!  Volume in drive A is FREEDOS
 //!  Volume Serial Number is 2895-9853
 //!  Directory of A:\
-//! KERNEL   SYS        45,868  01-01-80  1:00a
-//! COMMAND  COM        87,772  01-01-80  1:00a
+//! KERNEL   SYS        45,868  01-01-80 12:00a
+//! COMMAND  COM        87,772  01-01-80 12:00a
 //! ZZ                       3  01-01-80 12:00a
 //!          3 file(s)        133,643 bytes
 //!          0 dir(s)       1,323,008 bytes free

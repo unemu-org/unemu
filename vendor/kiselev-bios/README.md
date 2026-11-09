@@ -23,7 +23,7 @@ model byte of `0FCh` (pretends to be an IBM PC/AT).
   spanning `0xF8000`–`0xFFFFF`.
 - The CPU reset entry `F000:FFF0` (`0xFFFF0`) lands at offset **`0x7FF0`** in the
   image and far-jumps to `cold_start` / POST.
-- SHA-256 of the pinned build: `1ad458acb1f22dee6b3d9b6bd95e83218a7ddc5389fa2b2c67a4001e689c81a8`.
+- SHA-256 of the pinned build (checked by `fetch.sh`): `1ad458acb1f22dee6b3d9b6bd95e83218a7ddc5389fa2b2c67a4001e689c81a8`.
 
 The upstream `Makefile` also emits 128 KiB `*.rom` flash-programmer images
 (`bios-xi8088-noide.rom`, `bios-xi8088-xtide.rom`) that pad the BIOS and,
@@ -54,3 +54,15 @@ Neither the upstream clone (`8088_bios/`) nor the build product
 (`bios-xi8088.bin`) is checked in — both are `.gitignore`d. Run `fetch.sh`
 (which needs `git` and `nasm`, both in the flake devShell) to produce
 `bios-xi8088.bin` locally.
+
+## Reproducible and offline builds
+
+`fetch.sh` checks the output hash, so changes in assembler output cannot silently
+change golden fixtures. A mismatch reports the file and both hashes. Check the
+pinned sources and toolchain; deliberately rebuild and review the goldens'
+expectations before updating the expected output hash.
+
+The script uses portable size checks and either `sha256sum` or `shasum -a 256`
+(on macOS); the flake devShell supplies the build tools. When the clone already
+contains the pinned commit, rebuilding skips the network. A missing clone or
+commit is fetched as before.

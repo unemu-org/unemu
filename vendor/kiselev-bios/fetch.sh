@@ -9,6 +9,26 @@
 # Requires `git` and `nasm` on PATH (both are in the flake devShell).
 set -euo pipefail
 
+# Both GNU/Linux and macOS provide one of these SHA-256 tools.
+if command -v sha256sum >/dev/null 2>&1; then
+	SHA256=(sha256sum)
+elif command -v shasum >/dev/null 2>&1; then
+	SHA256=(shasum -a 256)
+else
+	echo "missing SHA-256 tool: install sha256sum or shasum (or use nix develop)" >&2
+	exit 1
+fi
+
+check_sha256() {
+	local file="$1" expected="$2" actual
+	actual="$("${SHA256[@]}" "$file" | awk '{print $1}')"
+	if [ "$actual" != "$expected" ]; then
+		echo "SHA-256 mismatch for $file: expected $expected, got $actual" >&2
+		echo "Check the pinned sources and toolchain; deliberately rebuild the goldens' expectations before updating the expected output hash." >&2
+		exit 1
+	fi
+}
+
 # Pinned upstream revision. A golden boot trace is only valid against a known
 # BIOS revision, so this is hard-coded rather than tracking a moving branch.
 REPO="https://github.com/skiselev/8088_bios"
@@ -21,8 +41,14 @@ OUT="$HERE/bios-xi8088.bin"                # gitignored build product
 if [ ! -d "$SRC_DIR/.git" ]; then
 	git clone "$REPO" "$SRC_DIR"
 fi
-git -C "$SRC_DIR" fetch --depth 1 origin "$COMMIT" 2>/dev/null || git -C "$SRC_DIR" fetch origin
-git -C "$SRC_DIR" checkout --quiet "$COMMIT"
+# A cached commit is sufficient for offline builds; fetch only missing objects.
+if ! git -C "$SRC_DIR" cat-file -e "$COMMIT^{commit}" 2>/dev/null; then
+	git -C "$SRC_DIR" fetch --depth 1 origin "$COMMIT" 2>/dev/null \
+		|| git -C "$SRC_DIR" fetch origin
+fi
+if [ "$(git -C "$SRC_DIR" rev-parse HEAD)" != "$COMMIT" ]; then
+	git -C "$SRC_DIR" checkout --quiet "$COMMIT"
+fi
 
 # Build the Xi8088 configuration (MACHINE_XI8088): a full AT-style config with two
 # cascaded 8259 PICs, 8042 keyboard controller, MC146818 RTC, and floppy INT 13h.
@@ -33,10 +59,10 @@ git -C "$SRC_DIR" checkout --quiet "$COMMIT"
 nasm -i"$SRC_DIR/src/" -DMACHINE_XI8088 -O9 -f bin -o "$OUT" \
 	-l "$SRC_DIR/src/bios-xi8088.lst" "$SRC_DIR/src/bios.asm" -w-all
 
-SIZE="$(stat -c %s "$OUT")"
+SIZE="$(wc -c < "$OUT" | tr -d '[:space:]')"
 if [ "$SIZE" -ne 32768 ]; then
 	echo "unexpected bios-xi8088.bin size: $SIZE bytes (expected 32768)" >&2
 	exit 1
 fi
+check_sha256 "$OUT" "1ad458acb1f22dee6b3d9b6bd95e83218a7ddc5389fa2b2c67a4001e689c81a8"
 echo "built $OUT ($SIZE bytes) from $COMMIT"
-echo "sha256: $(sha256sum "$OUT" | cut -d' ' -f1)"

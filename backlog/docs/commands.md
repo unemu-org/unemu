@@ -49,14 +49,22 @@ bash scripts/ci-gate.sh guard
 bash scripts/ci-gate.sh clippy
 bash scripts/ci-gate.sh deny                     # licences, bans, sources; all features
 bash scripts/ci-gate.sh tests
-bash scripts/ci-gate.sh fixtures                 # network fetch + build BIOS, FreeDOS, test386
+bash scripts/ci-gate.sh fixtures                 # build/hash-check BIOS, FreeDOS, test386; fetch missing inputs
 bash scripts/ci-gate.sh goldens                  # slow tests (~2 min); requires fixtures
 ```
 
 Fixture-dependent tests print a skip message when a fetched vendor file is missing.
 Set `UNEMUPC98_REQUIRE_FIXTURES=1` to make a missing fixture fail with its path and
 fetch script instead. The `goldens` gate always sets this variable, so a failed or
-incomplete fixture fetch cannot silently pass CI.
+incomplete fixture fetch cannot silently pass CI. The µPD765 FAT12 test follows
+the same policy when `mformat` is missing and points to `nix develop`.
+
+All three fixture scripts check pinned output SHA-256 hashes and rebuild offline
+when their pinned source commits and release archives are cached. FreeDOS also
+fixes the volume serial (`2895-9853`), label (`FREEDOS`) and all filesystem
+timestamps (1980-01-01 UTC). A hash mismatch requires checking the sources and
+toolchain and deliberately rebuilding the goldens' expectations before changing
+the expected hash. See each `vendor/*/README.md` for cache paths and hashes.
 
 Each gate uses `nix develop --no-update-lock-file --command` (except `guard`, which
 runs directly), preserves its exit status, and tees combined output to the gitignored
