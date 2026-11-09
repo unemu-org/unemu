@@ -47,6 +47,8 @@ was created under; after a reparent `bd show` is authoritative.
 | `validation` | machine-level validation ROMs and oracles (test386 and similar) |
 | `storage` | disk media, controllers and image persistence |
 | `tests-ci` | test infrastructure, CI lanes and tooling gates |
+| `scheduler` | event-driven device scheduling, clock domains, CPU speed |
+| `observation` | observable output from device state, not replayed traces |
 
 A new theme gets a new epic; do not stretch an existing one to fit.
 
