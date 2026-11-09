@@ -40,9 +40,12 @@ use video::{render_text_mode, CaptureFrameSink, Frame, FrameSink, TextGrid, Text
 pub const RAM_BYTES: u64 = 0x1_0000;
 /// Entry point the Long64 serial blob is loaded at and RIP is set to.
 pub const ENTRY: u64 = 0x1000;
-/// Cooperative run quantum in `x86jit` block units (§6.2). The built-in demos are
-/// short blocks, so any budget completes them; `None` runs to a non-budget stop.
-pub const QUANTUM: Option<u64> = None;
+/// Cooperative run quantum in `x86jit` block units (§6.2), matching the BIOS
+/// boot budget so a guest spinning without I/O still yields to device ticks and
+/// virtual-time cap checks. [`Machine::run_bounded`] checks the cap after each
+/// quantum; overshoot is at most one quantum's retired instructions, which can
+/// exceed its block count. Virtual time is still measured in retired instructions.
+pub const QUANTUM: Option<u64> = Some(65_536);
 
 /// The built-in serial demo: write "hello" to COM1 THR via `out dx, al`, then
 /// `hlt`.

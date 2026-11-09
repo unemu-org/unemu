@@ -21,8 +21,8 @@ impl MachineConfig {
     ///
     /// The checks run in a fixed order (device identity, port decode, MMIO
     /// decode, address-space bounds, interrupt wiring, DMA wiring, drive
-    /// binding, image geometry) so a given malformed config always yields the
-    /// same [`ConfigError`].
+    /// binding, image geometry, clock quantum) so a given malformed config always
+    /// yields the same [`ConfigError`].
     pub fn validate(&self) -> Result<(), ConfigError> {
         self.check_unique_device_ids()?;
         self.check_port_overlaps()?;
@@ -34,7 +34,17 @@ impl MachineConfig {
         self.check_dma_controllers_present()?;
         self.check_drive_controllers()?;
         self.check_image_geometry()?;
+        self.check_quantum()?;
         Ok(())
+    }
+
+    /// Every CPU run must yield after a finite, positive number of blocks so
+    /// device ticks and the virtual-time cap cannot be starved by guest code.
+    fn check_quantum(&self) -> Result<(), ConfigError> {
+        match self.clock.quantum {
+            Some(1..) => Ok(()),
+            quantum => Err(ConfigError::InvalidQuantum(quantum)),
+        }
     }
 
     /// No [`DeviceId`] appears twice.
@@ -380,6 +390,26 @@ mod tests {
     #[test]
     fn valid_config_passes() {
         assert_eq!(valid_config().validate(), Ok(()));
+    }
+
+    #[test]
+    fn an_unbounded_or_zero_quantum_is_rejected() {
+        for quantum in [None, Some(0)] {
+            let mut config = valid_config();
+            config.clock.quantum = quantum;
+            assert_eq!(config.validate(), Err(ConfigError::InvalidQuantum(quantum)));
+            assert_eq!(
+                config.validate().expect_err("invalid quantum").to_string(),
+                format!("clock quantum must be a positive finite block budget (got {quantum:?})")
+            );
+        }
+    }
+
+    #[test]
+    fn a_positive_finite_quantum_passes() {
+        let mut config = valid_config();
+        config.clock.quantum = Some(1);
+        assert_eq!(config.validate(), Ok(()));
     }
 
     #[test]

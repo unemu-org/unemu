@@ -521,7 +521,8 @@ pub fn floppy_boot(loader: Vec<u8>, floppy: Vec<u8>) -> MachineConfig {
 /// masked at `0xF8000`, the cascaded 8259 pair, PIT, 8042, VGA text card,
 /// CMOS/RTC (seeded), the port-`0x61` latch, and a POST port at `0x80`, booting
 /// from the reset vector. `quantum` sets the cooperative run budget (the coarse
-/// boot quantum, or the fine interactive one).
+/// boot quantum, or the fine interactive one). Validation requires a positive
+/// finite budget: `None` and `Some(0)` are rejected.
 ///
 /// `floppy` chooses the disk story:
 ///

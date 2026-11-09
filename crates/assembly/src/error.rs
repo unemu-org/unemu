@@ -12,6 +12,10 @@ use crate::device::DeviceId;
 /// test can assert the exact failure a malformed config produces.
 #[derive(Clone, Debug, PartialEq, Eq, Error)]
 pub enum ConfigError {
+    /// An unbounded or zero block budget prevents cooperative clock progress.
+    #[error("clock quantum must be a positive finite block budget (got {0:?})")]
+    InvalidQuantum(Option<u64>),
+
     /// The same [`DeviceId`] appears on more than one device.
     #[error("duplicate device id {0:?}")]
     DuplicateDeviceId(DeviceId),

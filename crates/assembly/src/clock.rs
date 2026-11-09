@@ -14,9 +14,15 @@ pub struct ClockConfig {
     /// against; it is deliberately not the real ~1.193182 MHz timebase. See
     /// [`machine::RETIRED_PER_PIT_CLOCK`], which this defaults to.
     pub retired_per_pit_clock: u64,
-    /// Cooperative run budget in CPU-core block units, or `None` to run each
-    /// quantum to a non-budget stop. Governs interrupt latency, so goldens
-    /// depend on it.
+    /// Cooperative run budget in CPU-core block units. Defaults to 65,536,
+    /// matching the BIOS boot budget. Governs interrupt latency, so goldens
+    /// depend on it. Validation rejects `None` and `Some(0)` so devices and
+    /// safety-cap checks regain control even when the guest never performs I/O.
+    ///
+    /// [`machine::Machine::run_bounded`] checks its virtual-time cap after each
+    /// quantum: overshoot is at most the instructions retired in one quantum,
+    /// not this block count. The budget does not change the retired-instruction
+    /// timebase.
     pub quantum: Option<u64>,
 }
 
@@ -24,7 +30,7 @@ impl Default for ClockConfig {
     fn default() -> Self {
         Self {
             retired_per_pit_clock: machine::RETIRED_PER_PIT_CLOCK,
-            quantum: None,
+            quantum: Some(65_536),
         }
     }
 }
