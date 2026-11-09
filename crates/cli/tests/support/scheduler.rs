@@ -218,6 +218,7 @@ pub fn prepare(workload: Workload) -> Result<Option<Prepared>> {
                     None,
                 ),
                 device_index: HashMap::from([(DeviceId::Uart, 0)]),
+                observation: assembly::Observation::default(),
             }
         }
         Workload::Boot => {

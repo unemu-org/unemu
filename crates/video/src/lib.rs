@@ -152,28 +152,8 @@ impl TextGrid {
     }
 }
 
-/// The inputs [`render_text_mode`] needs from a text-mode video card (§9.2).
-///
-/// Deliberately plain data (a memory slice + a handful of register-derived
-/// scalars) so the renderer depends on no concrete device type — a VGA card, a
-/// CGA card, or a test fixture all populate the same struct.
-pub struct TextModeState<'a> {
-    /// Text video memory: two bytes per cell (glyph, then attribute),
-    /// little-endian within a 16-bit cell. Read starting at `start_cell`.
-    pub vram: &'a [u8],
-    /// Visible columns (80 for mode 3).
-    pub cols: u16,
-    /// Visible rows (25 for mode 3).
-    pub rows: u16,
-    /// Display start address, in cells (CRTC start-address registers). The
-    /// top-left cell is at byte offset `start_cell * 2`.
-    pub start_cell: u16,
-    /// Absolute cursor location, in cells (CRTC cursor-location registers). Its
-    /// grid position is measured relative to `start_cell`.
-    pub cursor_cell: u16,
-    /// Whether the card is displaying the cursor at all.
-    pub cursor_visible: bool,
-}
+/// Hardware-neutral scanout consumed by the text renderer (§9.2).
+pub use device::TextModeState;
 
 /// Render VGA text video memory into a [`TextGrid`] (§9.2).
 ///

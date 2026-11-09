@@ -4,10 +4,9 @@
 //! A tiny write-only diagnostic port. Power-on self-test firmware writes a
 //! one-byte checkpoint code here at each stage it reaches; on real hardware the
 //! byte lights a diagnostic card or a debug LED display. The emulator models it
-//! purely as a capture point: every byte the guest writes is recorded on the
-//! [`Device`] tracing seam, so a runner reconstructs the POST progress stream
-//! through [`Device::take_trace`], the first-class observation seam, never an
-//! ad-hoc side channel.
+//! as a capture point: every accepted write emits its low byte to a semantic
+//! sink. Access traces remain available for existing consumers. See
+//! `backlog/docs/design/observation.md`, §Typed capabilities and route ownership.
 //!
 //! The decoded port is configurable: [`PostPort::new`] decodes the test386
 //! diagnostic's `0x190`, while a stock PC BIOS emits its checkpoints on the
@@ -24,7 +23,10 @@
 //!   unimplemented read), matching that no real POST card drives a read value.
 //! - No display or latch state beyond the trace: the byte is observed, not held.
 
-use device::{AccessDir, Device, DeviceError, NextEvent, TraceEvent, VClock};
+use device::{
+    AccessDir, ByteOutput, ByteSink, ByteStreamKind, Device, DeviceError, DiscardByteSink,
+    NextEvent, TraceEvent, VClock,
+};
 
 /// Stable device name reported by [`Device::name`].
 const NAME: &str = "post-port";
@@ -40,12 +42,17 @@ const OPEN_BUS: u32 = 0xFF;
 ///
 /// Decodes a single, configurable port ([`PostPort::port`]). Writes surface on
 /// the tracing seam as [`TraceEvent::Port`] writes to that port; a consumer
-/// holding only a `&mut dyn Device` drains them to recover the checkpoint byte
-/// stream.
+/// can instead bind [`Device::byte_output`] to receive accepted low bytes
+/// directly. Port `0x80` lies in the AT's DMA page-register range but is not
+/// used as a page register; PC BIOSes write their POST checkpoint codes there
+/// by convention (the Xi8088 BIOS does so through its `post_reg` port).
 pub struct PostPort {
     /// The one port this instance decodes ([`POST_PORT`] for test386, `0x80` for
     /// a stock BIOS).
     port: u16,
+    /// Where each accepted write's low byte is also delivered; a discarding
+    /// sink unless an observation route binds one.
+    sink: Box<dyn ByteSink>,
     /// Trace events observed since the last [`Device::take_trace`].
     trace: Vec<TraceEvent>,
     /// Virtual time of the most recent [`Device::tick`], stamped onto traces.
@@ -71,6 +78,7 @@ impl PostPort {
     pub fn with_port(port: u16) -> Self {
         Self {
             port,
+            sink: Box::new(DiscardByteSink),
             trace: Vec::new(),
             now: VClock::ZERO,
         }
@@ -89,7 +97,21 @@ impl PostPort {
     }
 }
 
+impl ByteOutput for PostPort {
+    fn kind(&self) -> ByteStreamKind {
+        ByteStreamKind::PostCheckpoints
+    }
+
+    fn bind_sink(&mut self, sink: Box<dyn ByteSink>) {
+        self.sink = sink;
+    }
+}
+
 impl Device for PostPort {
+    fn byte_output(&mut self) -> Option<&mut dyn ByteOutput> {
+        Some(self)
+    }
+
     fn name(&self) -> &'static str {
         NAME
     }
@@ -108,6 +130,7 @@ impl Device for PostPort {
 
     fn port_write(&mut self, port: u16, size: u8, value: u32) -> Result<(), DeviceError> {
         self.check(port)?;
+        self.sink.push(value as u8);
         self.trace.push(TraceEvent::Port {
             at: self.now,
             port,
@@ -172,6 +195,45 @@ impl Device for PostPort {
 mod tests {
     use super::*;
     use testkit::MockBus;
+
+    #[test]
+    fn observation_sink_preserves_repetitions_low_bytes_and_reset_epoch() {
+        let capture = device::ByteCapture::new(5);
+        let mut bus = MockBus::new(Box::new(PostPort::new()));
+        let output = bus.device_mut().byte_output().unwrap();
+        assert_eq!(output.kind(), device::ByteStreamKind::PostCheckpoints);
+        output.bind_sink(Box::new(capture.clone()));
+        for value in [0x1234, 0x1234, 0, 0xFF] {
+            bus.port_write(POST_PORT, 4, value).unwrap();
+        }
+        bus.port_read(POST_PORT, 1).unwrap();
+        assert!(bus.port_write(POST_PORT + 1, 1, 7).is_err());
+        bus.device_mut().take_trace();
+        bus.device_mut().reset();
+        bus.device_mut().restore(&[]).unwrap();
+        bus.port_write(POST_PORT, 1, 0x42).unwrap();
+        assert_eq!(capture.drain().unwrap(), [0x34, 0x34, 0, 0xFF, 0x42]);
+    }
+
+    #[test]
+    fn observation_overflow_is_latched_without_stopping_guest_writes() {
+        let capture = device::ByteCapture::new(2);
+        let mut bus = MockBus::new(Box::new(PostPort::new()));
+        bus.device_mut()
+            .byte_output()
+            .unwrap()
+            .bind_sink(Box::new(capture.clone()));
+        for value in 0..8 {
+            bus.port_write(POST_PORT, 1, value).unwrap();
+        }
+        assert_eq!(capture.buffered_len(), 2);
+        assert_eq!(capture.drain(), Err(device::ByteOverflow { limit: 2 }));
+        bus.device_mut().reset();
+        assert_eq!(capture.drain(), Err(device::ByteOverflow { limit: 2 }));
+        capture.start_epoch();
+        bus.port_write(POST_PORT, 1, 0xFF).unwrap();
+        assert_eq!(capture.drain().unwrap(), [0xFF]);
+    }
 
     #[test]
     fn dormant_matches_per_clock_seeded_accesses_and_long_jumps() {

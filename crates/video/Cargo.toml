@@ -9,3 +9,4 @@ repository.workspace = true
 description = "Presentation swap seam: the FrameSink trait and the text-mode frame (§9.1, §9.2)."
 
 [dependencies]
+device.workspace = true

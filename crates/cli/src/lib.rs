@@ -506,6 +506,7 @@ pub fn run_test386(blob: &[u8]) -> Test386Run {
     let AssembledMachine {
         mut machine,
         device_index,
+        ..
     } = match assemble(&config) {
         Ok(assembled) => assembled,
         Err(e) => {
@@ -717,6 +718,7 @@ fn run_bios_config(
     let AssembledMachine {
         mut machine,
         device_index,
+        ..
     } = match assemble(&config) {
         Ok(assembled) => assembled,
         Err(e) => {
@@ -1265,6 +1267,7 @@ pub fn run_floppy_boot() -> Result<Vec<u8>> {
     let AssembledMachine {
         mut machine,
         device_index,
+        ..
     } = assemble(&config).context("assembling floppy-boot machine")?;
 
     machine.run().context("running machine")?;
@@ -1316,6 +1319,7 @@ pub fn run_boot(blob: &[u8]) -> Result<Vec<u8>> {
     let AssembledMachine {
         mut machine,
         device_index,
+        ..
     } = assemble(&config).context("assembling boot machine")?;
 
     // Natural run to quiescence under the demo's idle limit — relocated from the
@@ -1341,6 +1345,7 @@ pub fn run_keyboard(blob: &[u8], scancodes: &[u8]) -> Result<Vec<u8>> {
     let AssembledMachine {
         mut machine,
         device_index,
+        ..
     } = assemble(&config).context("assembling keyboard machine")?;
 
     // Queue the scancodes into the 8042 before the run, exactly as the legacy
@@ -1373,6 +1378,7 @@ pub fn run_rtc(blob: &[u8]) -> Result<Vec<u8>> {
     let AssembledMachine {
         mut machine,
         device_index,
+        ..
     } = assemble(&config).context("assembling rtc machine")?;
 
     // Natural run under the demo's idle limit (relocated into the run policy).
@@ -1397,6 +1403,7 @@ pub fn run_fdc_write(program: &[u8]) -> Result<Vec<u8>> {
     let AssembledMachine {
         mut machine,
         device_index,
+        ..
     } = assemble(&config).context("assembling fdc-write machine")?;
 
     assembly::run(
@@ -1420,6 +1427,7 @@ pub fn run_vga_text(blob: &[u8]) -> Result<TextGrid> {
     let AssembledMachine {
         mut machine,
         device_index,
+        ..
     } = assemble(&config).context("assembling vga-text machine")?;
 
     machine.run().context("running machine")?;

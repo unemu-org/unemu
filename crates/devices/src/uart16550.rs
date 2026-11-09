@@ -18,7 +18,10 @@
 //! - No input source: the receiver holding register (RBR) always reads `0` and
 //!   the LSR data-ready bit is always clear.
 
-use device::{AccessDir, Device, DeviceError, NextEvent, TraceEvent, VClock};
+use device::{
+    AccessDir, ByteOutput, ByteSink, ByteStreamKind, Device, DeviceError, NextEvent, TraceEvent,
+    VClock,
+};
 
 /// Stable device name reported by [`Device::name`].
 const NAME: &str = "16550-uart";
@@ -49,8 +52,10 @@ const SNAPSHOT_HEADER_LEN: usize = 1 + 5 + 1 + 1 + 4;
 /// The 16550 UART device (§7.2).
 ///
 /// Constructed with the COM port base address; decodes the eight ports
-/// `base..=base+7`. Transmitted bytes accumulate in an internal sink (drained
-/// with [`Uart16550::take_output`], accessible through [`Device::as_any_mut`]).
+/// `base..=base+7`. Until a semantic sink is bound, transmitted bytes use the
+/// compatibility buffer drained with [`Uart16550::take_output`]. A bound route
+/// owns subsequent bytes exclusively, avoiding a second unbounded history.
+/// See `backlog/docs/design/observation.md`, §Sinks, bounds and lifecycle.
 /// The trace records all port accesses, including divisor-latch writes, so it
 /// must not be treated as a transmitted byte stream: the National Semiconductor
 /// PC16550D datasheet, Line Control Register (DLAB), assigns offsets +0/+1 to
@@ -71,8 +76,12 @@ pub struct Uart16550 {
     dll: u8,
     /// Divisor latch high (+1, DLAB=1). Stored; baud rate is not modelled.
     dlm: u8,
-    /// Transmitted bytes, in order. Drained via [`Uart16550::take_output`].
+    /// Transmitted bytes, in order, while no observation sink is bound. Drained
+    /// via [`Uart16550::take_output`].
     output: Vec<u8>,
+    /// The bound observation sink for transmitted bytes, if any; when bound,
+    /// transmitted bytes go here instead of `output`.
+    sink: Option<Box<dyn ByteSink>>,
     /// Trace events observed since the last [`Device::take_trace`].
     trace: Vec<TraceEvent>,
     /// Virtual time of the most recent [`Device::tick`], stamped onto traces.
@@ -95,18 +104,19 @@ impl Uart16550 {
             dll: 0,
             dlm: 0,
             output: Vec::new(),
+            sink: None,
             trace: Vec::new(),
             now: VClock::ZERO,
         }
     }
 
-    /// Drain and return the bytes transmitted through THR so far.
+    /// Drain bytes transmitted before a semantic sink was bound.
     #[must_use]
     pub fn take_output(&mut self) -> Vec<u8> {
         std::mem::take(&mut self.output)
     }
 
-    /// Borrow the bytes transmitted through THR without draining them.
+    /// Borrow bytes transmitted before a semantic sink was bound.
     #[must_use]
     pub fn output(&self) -> &[u8] {
         &self.output
@@ -141,7 +151,21 @@ impl Uart16550 {
     }
 }
 
+impl ByteOutput for Uart16550 {
+    fn kind(&self) -> ByteStreamKind {
+        ByteStreamKind::SerialTx
+    }
+
+    fn bind_sink(&mut self, sink: Box<dyn ByteSink>) {
+        self.sink = Some(sink);
+    }
+}
+
 impl Device for Uart16550 {
+    fn byte_output(&mut self) -> Option<&mut dyn ByteOutput> {
+        Some(self)
+    }
+
     fn name(&self) -> &'static str {
         NAME
     }
@@ -171,7 +195,13 @@ impl Device for Uart16550 {
         let byte = value as u8;
         match offset {
             0 if self.dlab() => self.dll = byte,
-            0 => self.output.push(byte), // THR: transmit instantaneously.
+            0 => {
+                if let Some(sink) = &mut self.sink {
+                    sink.push(byte);
+                } else {
+                    self.output.push(byte);
+                }
+            }
             1 if self.dlab() => self.dlm = byte,
             1 => self.ier = byte,
             2 => self.fcr = byte,
@@ -218,9 +248,11 @@ impl Device for Uart16550 {
     }
 
     fn reset(&mut self) {
-        // Return to power-on state, including clearing the transmit sink.
+        // Capture epochs belong to the host; a hardware reset keeps the route.
         let base = self.base;
+        let sink = self.sink.take();
         *self = Uart16550::new(base);
+        self.sink = sink;
     }
 
     fn save(&self) -> Vec<u8> {
@@ -294,6 +326,33 @@ mod tests {
     use testkit::MockBus;
 
     const COM1: u16 = 0x3F8;
+
+    #[test]
+    fn observation_sink_receives_only_accepted_thr_bytes_and_survives_reset() {
+        let capture = device::ByteCapture::new(4);
+        let mut bus = MockBus::new(Box::new(Uart16550::new(COM1)));
+        let output = bus.device_mut().byte_output().unwrap();
+        assert_eq!(output.kind(), device::ByteStreamKind::SerialTx);
+        output.bind_sink(Box::new(capture.clone()));
+        bus.port_write(COM1, 2, 0x1241).unwrap();
+        bus.port_write(COM1 + 3, 1, 0x80).unwrap();
+        bus.port_write(COM1, 1, 0xFF).unwrap();
+        bus.port_write(COM1 + 1, 1, 0x12).unwrap();
+        bus.port_read(COM1, 1).unwrap();
+        assert!(bus.port_write(COM1 - 1, 1, 0x42).is_err());
+        let snapshot = bus.device().save();
+        assert_eq!(snapshot.len(), SNAPSHOT_HEADER_LEN);
+        assert_eq!(&snapshot[8..12], &[0; 4]);
+        bus.device_mut().restore(&snapshot).unwrap();
+        bus.device_mut().take_trace();
+        assert_eq!(capture.drain().unwrap(), b"A");
+        bus.device_mut().reset();
+        for byte in [0, 0xFF, 0xFF] {
+            bus.port_write(COM1, 1, byte).unwrap();
+        }
+        assert_eq!(capture.drain().unwrap(), [0, 0xFF, 0xFF]);
+        assert!(capture.drain().unwrap().is_empty());
+    }
 
     #[test]
     fn dormant_matches_per_clock_seeded_accesses_and_long_jumps() {

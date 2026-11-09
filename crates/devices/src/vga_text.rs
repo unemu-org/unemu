@@ -1,6 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! IBM VGA in colour text mode 3, 80×25 (§7, §9.2).
 //!
+//! IBM VGA Technical Reference, Alphanumeric Modes and CRT Controller
+//! Registers (Start Address, Cursor Location, Cursor Start). Passive scanout is
+//! described in `backlog/docs/design/observation.md`, §Typed capabilities and
+//! route ownership.
+//!
 //! Models the two hardware surfaces a text-mode VGA presents to the guest:
 //!
 //! - The **text buffer**: 32 KiB of video memory mapped at MMIO `0xB8000`. Each
@@ -57,7 +62,7 @@
 //! - Cursor scanline shape (`0x0A`/`0x0B` low bits) is stored but only the
 //!   cursor-disable bit is interpreted.
 
-use device::{AccessDir, Device, DeviceError, NextEvent, TraceEvent, VClock};
+use device::{AccessDir, Device, DeviceError, NextEvent, TextModeState, TraceEvent, VClock};
 
 /// Stable device name reported by [`Device::name`].
 const NAME: &str = "vga-text";
@@ -267,6 +272,17 @@ impl Default for VgaText {
 }
 
 impl Device for VgaText {
+    fn text_scanout(&self) -> Option<TextModeState<'_>> {
+        Some(TextModeState {
+            vram: self.vram(),
+            cols: COLS,
+            rows: ROWS,
+            start_cell: self.start_cell(),
+            cursor_cell: self.cursor_cell(),
+            cursor_visible: self.cursor_visible(),
+        })
+    }
+
     fn name(&self) -> &'static str {
         NAME
     }
@@ -405,6 +421,39 @@ impl Device for VgaText {
 mod tests {
     use super::*;
     use testkit::MockBus;
+
+    #[test]
+    fn observation_scanout_is_passive_repeatable_and_tracks_aliases() {
+        let mut bus = MockBus::new(Box::new(VgaText::new()));
+        bus.tick(37);
+        bus.mmio_write(TEXT_BUFFER_BASE + 0x240, 2, 0x1F41).unwrap();
+        for (index, value) in [(0x0C, 1), (0x0D, 0x20), (0x0E, 1), (0x0F, 0x22)] {
+            bus.port_write(MDA_CRTC_INDEX_PORT, 1, index).unwrap();
+            bus.port_write(MDA_CRTC_DATA_PORT, 1, value).unwrap();
+        }
+        let saved = bus.device().save();
+        let clock = bus.clock();
+        assert!(bus.device().text_scanout().is_some());
+        let expected_trace = bus.device_mut().take_trace();
+        let first = bus.device().text_scanout().unwrap();
+        assert_eq!((first.cols, first.rows), (COLS, ROWS));
+        assert_eq!((first.start_cell, first.cursor_cell), (0x120, 0x122));
+        assert_eq!(&first.vram[0x240..0x242], &[0x41, 0x1F]);
+        assert!(first.cursor_visible);
+        assert_eq!(first, bus.device().text_scanout().unwrap());
+        assert_eq!(bus.device().save(), saved);
+        assert_eq!(bus.clock(), clock);
+        assert!(bus.device_mut().take_trace().is_empty());
+        assert_eq!(expected_trace.len(), 9);
+        // A scanout must not advance the per-read status phase.
+        assert_eq!(bus.port_read(MDA_STATUS_PORT, 1).unwrap(), 0);
+        bus.port_write(MDA_CRTC_INDEX_PORT, 1, 0x0A + CRTC_REG_COUNT as u32)
+            .unwrap();
+        bus.port_write(CRTC_DATA_PORT, 1, 0x20).unwrap();
+        assert!(!bus.device().text_scanout().unwrap().cursor_visible);
+        bus.device_mut().restore(&saved).unwrap();
+        assert!(bus.device().text_scanout().unwrap().cursor_visible);
+    }
 
     /// MMIO address of text cell `n`.
     fn cell_addr(n: u64) -> u64 {

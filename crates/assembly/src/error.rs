@@ -12,6 +12,24 @@ use crate::device::DeviceId;
 /// test can assert the exact failure a malformed config produces.
 #[derive(Clone, Debug, PartialEq, Eq, Error)]
 pub enum ConfigError {
+    /// The requested role is absent or does not expose the requested capability.
+    #[error("unsupported observation output: {device:?} {output:?}")]
+    UnsupportedObservationOutput {
+        /// Requested device role.
+        device: DeviceId,
+        /// Missing or mismatched capability.
+        output: crate::OutputKind,
+    },
+
+    /// Multiple collectors would compete for the same output channel.
+    #[error("duplicate observation route: {device:?} {output:?}")]
+    DuplicateObservationRoute {
+        /// Requested device role.
+        device: DeviceId,
+        /// Duplicated channel.
+        output: crate::OutputKind,
+    },
+
     /// A file source could not be materialised before validation of its bytes.
     #[error("cannot read image file {path}: {message}")]
     ImageRead {

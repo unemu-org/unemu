@@ -44,12 +44,15 @@ mod error;
 mod image;
 mod machine;
 mod memory;
+mod observation;
 mod output;
 mod presets;
 mod run;
 mod validate;
 
-pub use assemble::{assemble, derive_cmos_config, AssembledMachine, AssemblyError};
+pub use assemble::{
+    assemble, assemble_with_observation, derive_cmos_config, AssembledMachine, AssemblyError,
+};
 pub use clock::ClockConfig;
 pub use cpu::{CpuChip, CpuConfig, ResetSpec, SegmentSeed};
 pub use device::{
@@ -61,6 +64,10 @@ pub use error::ConfigError;
 pub use image::{ImageKind, ImageSource, LoadImage};
 pub use machine::MachineConfig;
 pub use memory::{MemoryConfig, MmioWindow, RamRegion};
+pub use observation::{
+    Observation, ObservationError, ObservationPolicy, ObservationRequest, ObservationRoute,
+    OutputKind,
+};
 pub use output::OutputConfig;
 pub use presets::{
     at_boot, at_fdc_write, at_keyboard, at_rtc, at_vga_text, bios, floppy_boot, test386,

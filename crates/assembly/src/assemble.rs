@@ -53,6 +53,7 @@ use crate::drive::{DriveKind, FloppyGeometry};
 use crate::error::ConfigError;
 use crate::image::{ImageKind, ImageSource};
 use crate::machine::MachineConfig;
+use crate::observation::{Observation, ObservationPolicy};
 
 /// Top of conventional (base) memory: 640 KiB. RAM below this is what the BIOS
 /// reports as base memory; RAM in `[0xA0000, 0x100000)` is the video/adapter/ROM
@@ -73,6 +74,8 @@ pub struct AssembledMachine {
     pub machine: Machine<X86JitCpu>,
     /// Stable device role → its index in the bus device set.
     pub device_index: HashMap<DeviceId, usize>,
+    /// Validated observation routes and their bounded, run-scoped collectors.
+    pub observation: Observation,
 }
 
 /// A way assembling a validated [`MachineConfig`] can fail (§3.1).
@@ -108,6 +111,18 @@ pub enum AssemblyError {
 /// so the assembled machine is built without one and the run driver
 /// ([`run`](crate::run)) stamps it on before the loop runs.
 pub fn assemble(config: &MachineConfig) -> Result<AssembledMachine, AssemblyError> {
+    assemble_with_observation(config, &ObservationPolicy::default())
+}
+
+/// Assemble hardware and resolve explicitly requested observation routes.
+///
+/// Missing or mismatched capabilities are [`ConfigError`]s before execution.
+/// Capture choices are separate from guest hardware configuration; existing
+/// [`assemble`] callers retain their current capture paths.
+pub fn assemble_with_observation(
+    config: &MachineConfig,
+    observation_policy: &ObservationPolicy,
+) -> Result<AssembledMachine, AssemblyError> {
     // A validated config does not fail assembly for configuration reasons; run
     // the checks first so any inconsistency surfaces as a precise ConfigError.
     config.validate()?;
@@ -163,6 +178,8 @@ pub fn assemble(config: &MachineConfig) -> Result<AssembledMachine, AssemblyErro
         device_index.insert(dc.id, index);
     }
 
+    let observation = Observation::bind(observation_policy, &device_index, &mut devices)?;
+
     // The machine needs exactly one controller. If the config has no PIC (an
     // interrupt-free machine), a null controller keeps the loop total.
     let controller: Box<dyn InterruptController> = match pic {
@@ -192,6 +209,7 @@ pub fn assemble(config: &MachineConfig) -> Result<AssembledMachine, AssemblyErro
     Ok(AssembledMachine {
         machine,
         device_index,
+        observation,
     })
 }
 
@@ -506,6 +524,41 @@ impl InterruptController for NullInterruptController {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn observation_rejects_missing_or_mismatched_capabilities() {
+        use crate::{ObservationPolicy, ObservationRequest, OutputKind};
+        let config = crate::at_boot(vec![0xF4]);
+        for (device, output) in [
+            (DeviceId::Uart, OutputKind::TextScanout),
+            (
+                DeviceId::Vga,
+                OutputKind::Bytes(device::ByteStreamKind::SerialTx),
+            ),
+            (
+                DeviceId::Uart,
+                OutputKind::Bytes(device::ByteStreamKind::PostCheckpoints),
+            ),
+            (
+                DeviceId::Post,
+                OutputKind::Bytes(device::ByteStreamKind::PostCheckpoints),
+            ),
+        ] {
+            let policy = ObservationPolicy {
+                routes: vec![ObservationRequest {
+                    device,
+                    output,
+                    byte_limit: 8,
+                }],
+            };
+            assert!(matches!(
+                crate::assemble_with_observation(&config, &policy),
+                Err(AssemblyError::Config(ConfigError::UnsupportedObservationOutput {
+                    device: actual_device, output: actual_output,
+                })) if actual_device == device && actual_output == output
+            ));
+        }
+    }
     use crate::clock::ClockConfig;
     use crate::cpu::{CpuConfig, ResetSpec, SegmentSeed};
     use crate::device::{

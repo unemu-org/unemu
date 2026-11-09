@@ -16,13 +16,13 @@ crate: image loading belongs to `assembly`, and guest assets live under `vendor/
 
 | Crate | Responsibility | Runtime dependencies | Test-only dependencies |
 | --- | --- | --- | --- |
-| `device` | Hardware-neutral contracts: `Device`, `InterruptController`, `DmaMemory`, `VClock`, `NextEvent`, access traces and DMA messages | `thiserror` | None |
+| `device` | Hardware-neutral contracts: `Device`, `InterruptController`, `DmaMemory`, `VClock`, `NextEvent`, access traces, DMA messages, and the observation capabilities (text scanout, byte output, `ByteCapture`) | `thiserror` | None |
 | `cpu` | `Cpu`/`CpuStop` seam and `X86JitCpu`, which owns the core's `Vm` and `Vcpu` | `x86jit-core`, `thiserror` | None |
 | `bus` | Owns boxed devices and executes a port/MMIO `DecodeMap`; open-bus policy and ticking | `device`, `thiserror` | None |
 | `devices` | UART 16550, PIC 8259, PIT 8253, 8042, CMOS/RTC, DMA 8237, uPD765 floppy controller, VGA text, system control and POST port | `device`, `thiserror` | `testkit`, `video` |
 | `chipset` | Shared/cascaded PIC composition, null interrupt controller, AT port constants; no `Chipset` trait | `device`, `devices` | `testkit` |
 | `machine` | Generic `Machine<C: Cpu>` and execution/clock/IRQ/DMA loop | `cpu`, `bus`, `device`, `thiserror` | `testkit`, `devices` |
-| `video` | `FrameSink`, text frames/grids, text-mode renderer and capture sink | None | None |
+| `video` | `FrameSink`, text frames/grids, text-mode renderer and capture sink | `device` | None |
 | `assembly` | `MachineConfig`, validation, presets, image/device construction, wiring, and `RunPolicy` driver | `machine`, `cpu`, `bus`, `device`, `devices`, `video`, `chipset`, `thiserror` | None |
 | `testkit` | Single-device `MockBus`, scripted `MockCpu`, golden assertions | `device`, `cpu` | None |
 | `cli` | Binary and runner library: guest programs, assembly/policy selection, output capture and stop diagnostics | `assembly`, `device`, `bus`, `cpu`, `chipset`, `machine`, `devices`, `video`, `anyhow` | `testkit` |
@@ -132,6 +132,12 @@ controller supplies addresses/counts, and the machine lends a temporary
 the bytes read, truncated to the controller's actual transfer length.
 
 ### Observation and traces today
+
+Devices can expose a read-only text scanout (the VGA card) and a semantic byte
+output (UART transmit, POST checkpoints); `assembly` resolves observation routes
+by `DeviceId` at assembly time and exposes them as `AssembledMachine.observation`
+(`backlog/docs/design/observation.md`). The CLI does not use them yet; it still
+captures as described below.
 
 `TraceEvent::{Port, Mmio}` records timestamp, direction, address/port, width and
 value. Devices drain access history with `take_trace`; the bus separately drains

@@ -11,7 +11,125 @@
 //! trace emission — present on **every** device from the start (see spec §7.1),
 //! so snapshotting and golden tracing never have to be retrofitted.
 
+use std::cell::RefCell;
+use std::rc::Rc;
+
 use thiserror::Error;
+
+/// The units and meaning of a device's semantic byte output.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub enum ByteStreamKind {
+    /// Accepted UART transmit-holding-register bytes, excluding divisor writes.
+    SerialTx,
+    /// Accepted POST writes, including repeated checkpoint codes.
+    PostCheckpoints,
+}
+
+/// A host receiver for semantic bytes, never a guest-access decoder.
+///
+/// Implementations must not block on I/O, call back into the machine, or alter
+/// guest timing/interrupts. See `backlog/docs/design/observation.md`, §Sinks,
+/// bounds and lifecycle. PC16550D datasheet, Transmitter Holding Register:
+/// a byte represents accepted transmission, not a raw write to a port number.
+pub trait ByteSink {
+    /// Accept one emitted byte; capture failure must not affect guest execution.
+    fn push(&mut self, byte: u8);
+}
+
+/// The allocation-free default receiver for unobserved semantic output.
+#[derive(Default)]
+pub struct DiscardByteSink;
+
+impl ByteSink for DiscardByteSink {
+    fn push(&mut self, _byte: u8) {}
+}
+
+/// Optional semantic producer implemented by UARTs and checkpoint ports.
+///
+/// Assembly binds one sink before execution. Device reset preserves the binding;
+/// restore never re-emits historical bytes. See `backlog/docs/design/observation.md`,
+/// §Sinks, bounds and lifecycle; PC16550D datasheet, Transmitter Holding Register.
+pub trait ByteOutput {
+    /// Describe the emitted bytes so routing can reject a mismatched request.
+    fn kind(&self) -> ByteStreamKind;
+
+    /// Install the route's sink. Binding itself emits no bytes.
+    fn bind_sink(&mut self, sink: Box<dyn ByteSink>);
+}
+
+/// Capture exceeded its explicit pending-byte limit in the current epoch.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Error)]
+#[error("byte capture exceeded its {limit}-byte limit")]
+pub struct ByteOverflow {
+    /// Maximum number of bytes retained between drains.
+    pub limit: usize,
+}
+
+#[derive(Debug)]
+struct CapturedBytes {
+    bytes: Vec<u8>,
+    limit: usize,
+    overflow: bool,
+}
+
+/// A bounded, single-threaded capture sink and its shared host handle.
+///
+/// At most `limit` pending bytes are retained. Further bytes are discarded and
+/// overflow latches: every drain fails until [`ByteCapture::start_epoch`], so a
+/// partial stream cannot pass a golden assertion. Hardware continues unchanged.
+/// Clones share one history; only the observation facade should drain it and
+/// distribute the resulting batch. See `backlog/docs/design/observation.md`,
+/// §Sinks, bounds and lifecycle.
+#[derive(Clone, Debug)]
+pub struct ByteCapture(Rc<RefCell<CapturedBytes>>);
+
+impl ByteCapture {
+    /// Start an empty capture with an explicit pending-byte bound (zero allowed).
+    #[must_use]
+    pub fn new(limit: usize) -> Self {
+        Self(Rc::new(RefCell::new(CapturedBytes {
+            bytes: Vec::new(),
+            limit,
+            overflow: false,
+        })))
+    }
+
+    /// Drain a complete batch, or report latched overflow without yielding a
+    /// misleading partial capture. Draining does not clear an overflow.
+    pub fn drain(&self) -> Result<Vec<u8>, ByteOverflow> {
+        let mut capture = self.0.borrow_mut();
+        if capture.overflow {
+            return Err(ByteOverflow {
+                limit: capture.limit,
+            });
+        }
+        Ok(std::mem::take(&mut capture.bytes))
+    }
+
+    /// Explicitly discard prior capture data and clear overflow for a fresh run.
+    pub fn start_epoch(&self) {
+        let mut capture = self.0.borrow_mut();
+        capture.bytes.clear();
+        capture.overflow = false;
+    }
+
+    /// Number of retained bytes, always at most the configured limit.
+    #[must_use]
+    pub fn buffered_len(&self) -> usize {
+        self.0.borrow().bytes.len()
+    }
+}
+
+impl ByteSink for ByteCapture {
+    fn push(&mut self, byte: u8) {
+        let mut capture = self.0.borrow_mut();
+        if capture.overflow || capture.bytes.len() == capture.limit {
+            capture.overflow = true;
+        } else {
+            capture.bytes.push(byte);
+        }
+    }
+}
 
 /// Virtual time base (see spec §6.1).
 ///
@@ -217,6 +335,34 @@ pub enum DmaOutcome {
     },
 }
 
+/// Borrowed text scanout from a card, without guest I/O (§9.2).
+///
+/// IBM VGA Technical Reference, Alphanumeric Modes and CRT Controller
+/// Registers; see `backlog/docs/design/observation.md`, §Typed capabilities
+/// and route ownership. Addresses remain in cells, as stored by the card.
+///
+/// Deliberately plain data (a memory slice + a handful of register-derived
+/// scalars) so the renderer depends on no concrete device type — a VGA card, a
+/// CGA card, or a test fixture all populate the same struct.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct TextModeState<'a> {
+    /// Text video memory: two bytes per cell (glyph, then attribute),
+    /// little-endian within a 16-bit cell. Read starting at `start_cell`.
+    pub vram: &'a [u8],
+    /// Visible columns (80 for mode 3).
+    pub cols: u16,
+    /// Visible rows (25 for mode 3).
+    pub rows: u16,
+    /// Display start address, in cells (CRTC start-address registers). The
+    /// top-left cell is at byte offset `start_cell * 2`.
+    pub start_cell: u16,
+    /// Absolute cursor location, in cells (CRTC cursor-location registers). Its
+    /// grid position is measured relative to `start_cell`.
+    pub cursor_cell: u16,
+    /// Whether the card is displaying the cursor at all.
+    pub cursor_visible: bool,
+}
+
 /// The device swap seam (§3.2 seam 4, §7.1).
 ///
 /// Every emulated chip implements this. Method contracts:
@@ -234,6 +380,9 @@ pub enum DmaOutcome {
 /// - [`Device::reset`]: return to power-on register state.
 /// - [`Device::save`] / [`Device::restore`]: snapshot/replay (§7).
 /// - [`Device::take_trace`]: drain observed events for golden tests.
+/// - [`Device::text_scanout`] / [`Device::byte_output`]: optional, side-effect-free
+///   observation capabilities (the screen a card displays; the bytes a device
+///   emits as output), routed by the assembly crate. Default: unsupported.
 ///
 /// Before each port or MMIO access, the bus calls [`Device::sync`] at its current
 /// whole-PIT clock for devices that opt out of [`NextEvent::EveryPitClock`].
@@ -243,6 +392,21 @@ pub enum DmaOutcome {
 /// invalidate the bus's cached deadline; the next query sees the resulting state.
 /// See `backlog/docs/design/scheduler.md`, §Access synchronization and invalidation.
 pub trait Device {
+    /// Borrow current text memory and register-derived scanout together.
+    ///
+    /// This is a passive host query: no guest accesses, synchronization, trace
+    /// recording or drains. See `backlog/docs/design/observation.md`,
+    /// §Typed capabilities and route ownership. Unsupported by default.
+    fn text_scanout(&self) -> Option<TextModeState<'_>> {
+        None
+    }
+
+    /// Optional semantic byte producer, used by assembly to bind a sink once.
+    /// Querying the capability must not change guest-visible state.
+    fn byte_output(&mut self) -> Option<&mut dyn ByteOutput> {
+        None
+    }
+
     /// Stable, human-readable chip name (e.g. `"16550-uart"`). Used in traces
     /// and errors.
     fn name(&self) -> &'static str;
@@ -415,6 +579,29 @@ pub trait InterruptController {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn byte_capture_zero_limit_latches_overflow_until_new_epoch() {
+        let mut capture = ByteCapture::new(0);
+        assert_eq!(capture.drain(), Ok(Vec::new()));
+        capture.push(0);
+        assert_eq!(capture.buffered_len(), 0);
+        assert_eq!(capture.drain(), Err(ByteOverflow { limit: 0 }));
+        capture.start_epoch();
+        assert_eq!(capture.drain(), Ok(Vec::new()));
+    }
+
+    #[test]
+    fn byte_capture_drains_complete_batches_with_one_shared_history() {
+        let capture = ByteCapture::new(2);
+        let mut producer = capture.clone();
+        producer.push(0);
+        producer.push(0xFF);
+        assert_eq!(capture.drain().unwrap(), [0, 0xFF]);
+        assert_eq!(producer.buffered_len(), 0);
+        producer.push(42);
+        assert_eq!(capture.drain().unwrap(), [42]);
+    }
 
     #[test]
     fn vclock_advances_monotonically() {
