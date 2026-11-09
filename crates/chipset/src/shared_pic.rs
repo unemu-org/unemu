@@ -24,6 +24,12 @@
 //! [`CascadedPic::slave_device`]) so the chipset can decode both port pairs; the
 //! single-chip [`SharedPic`] stays usable on its own for chipsets that model
 //! only the master.
+//!
+//! The cascade input alone is level-gated per the Intel 8259A datasheet,
+//! "Edge and Level Triggered Modes": slave INT falling before INTA withdraws
+//! master IRR2 from priority resolution. Device-driven lines stay edge-latched.
+//! The slave IR7 vector is a defensive fallback for a cascade INTA with no
+//! slave request ("Interrupt Sequence"); see `backlog/docs/design/spec.md` §5.1.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -39,6 +45,7 @@ use devices::Pic8259;
 #[derive(Clone)]
 pub struct SharedPic {
     inner: Rc<RefCell<Pic8259>>,
+    cascade_master: Option<Rc<RefCell<Pic8259>>>,
 }
 
 impl SharedPic {
@@ -46,6 +53,7 @@ impl SharedPic {
     pub fn new() -> Self {
         Self {
             inner: Rc::new(RefCell::new(Pic8259::new())),
+            cascade_master: None,
         }
     }
 
@@ -53,6 +61,25 @@ impl SharedPic {
     pub fn new_slave() -> Self {
         Self {
             inner: Rc::new(RefCell::new(Pic8259::new_slave())),
+            cascade_master: None,
+        }
+    }
+
+    /// Propagate slave INT to master IR2, including changes from guest writes.
+    ///
+    /// Intel 8259A datasheet, "Cascade Mode" and "Edge and Level Triggered
+    /// Modes": the slave's serviceable requests drive INT, and IR2 must stay
+    /// high until INTA. INT and INTA share a machine boundary here, so a low
+    /// INT withdraws IRR2 before priority resolution. Repeated high levels
+    /// preserve edge detection without inventing requests.
+    fn sync_cascade(&self) {
+        if let Some(master) = &self.cascade_master {
+            let slave_int = self.inner.borrow().irq_pending();
+            let mut master = master.borrow_mut();
+            master.set_irq_line(CASCADE_IRQ, slave_int);
+            if !slave_int {
+                master.withdraw_request(CASCADE_IRQ);
+            }
         }
     }
 }
@@ -75,7 +102,9 @@ impl Device for SharedPic {
     }
 
     fn port_write(&mut self, port: u16, size: u8, value: u32) -> Result<(), DeviceError> {
-        self.inner.borrow_mut().port_write(port, size, value)
+        self.inner.borrow_mut().port_write(port, size, value)?;
+        self.sync_cascade();
+        Ok(())
     }
 
     fn mmio_read(&mut self, addr: u64, size: u8) -> Result<u64, DeviceError> {
@@ -163,6 +192,13 @@ const CASCADE_IRQ: u8 = 2;
 /// slave interrupts nested on top of each other (special fully-nested mode) are
 /// not modelled.
 ///
+/// Intel 8259A datasheet, "Edge and Level Triggered Modes": only the cascade
+/// input is level-gated. Slave INT falling before INTA withdraws master IRR2,
+/// allowing another master request to win or leaving no interrupt. Guest port
+/// writes therefore cannot cause a spurious cascade INTA. The slave IR7 vector
+/// ("Interrupt Sequence") remains a defensive fallback if a cascade INTA finds
+/// no slave request; it leaves slave ISR clear while master IR2 needs an EOI.
+///
 /// [`end_of_interrupt`]: InterruptController::end_of_interrupt
 /// [`acknowledge`]: InterruptController::acknowledge
 #[derive(Clone)]
@@ -174,10 +210,10 @@ pub struct CascadedPic {
 impl CascadedPic {
     /// Wrap a fresh master + slave pair, each unprogrammed.
     pub fn new() -> Self {
-        Self {
-            master: SharedPic::new(),
-            slave: SharedPic::new_slave(),
-        }
+        let master = SharedPic::new();
+        let mut slave = SharedPic::new_slave();
+        slave.cascade_master = Some(Rc::clone(&master.inner));
+        Self { master, slave }
     }
 
     /// The master chip's [`Device`] face (decoded at `0x20`/`0x21`).
@@ -198,16 +234,14 @@ impl CascadedPic {
     /// The slave asserts its INT whenever it has a serviceable request. The
     /// master latches IRQ2 on the rising edge, exactly as edge-triggered wiring
     /// would; when the slave's request moves into service (or is masked away)
-    /// the line drops again.
+    /// the line drops again and any pending master IRR2 is withdrawn per the
+    /// Intel 8259A datasheet, "Edge and Level Triggered Modes".
     ///
-    /// This runs on every line/acknowledge/EOI operation. Reprogramming the
-    /// slave mask goes through its [`Device`] face, which this wrapper does not
-    /// observe, so unmasking an already-pending slave line re-establishes the
-    /// cascade only on the line's next edge — the normal order (unmask, then the
-    /// device asserts) is unaffected.
+    /// Intel 8259A datasheet, "Cascade Mode": this runs on slave line,
+    /// acknowledge and EOI operations; the shared slave handle also propagates
+    /// INT after every guest port write.
     fn sync_cascade(&mut self) {
-        let slave_int = self.slave.inner.borrow().irq_pending();
-        self.master.set_irq_line(CASCADE_IRQ, slave_int);
+        self.slave.sync_cascade();
     }
 }
 
@@ -232,7 +266,11 @@ impl InterruptController for CascadedPic {
         // The master resolves priority first. A winning cascade line means the
         // vector comes from the slave's own highest-priority pending line.
         if self.master.inner.borrow().highest_pending() == Some(CASCADE_IRQ) {
-            self.slave.poll()
+            Some(
+                self.slave
+                    .poll()
+                    .unwrap_or_else(|| self.slave.inner.borrow().vector_base() + 7),
+            )
         } else {
             self.master.poll()
         }
@@ -243,11 +281,14 @@ impl InterruptController for CascadedPic {
         if master_line == Some(CASCADE_IRQ) {
             // Cascaded INTA: the slave supplies the vector and moves its line
             // into service; the master's IRQ2 moves into service in step.
-            let vector = self.slave.acknowledge();
+            let vector = self
+                .slave
+                .acknowledge()
+                .unwrap_or_else(|| self.slave.inner.borrow().vector_base() + 7);
             self.master.acknowledge();
             // The slave's INT typically drops now that its line is in service.
             self.sync_cascade();
-            vector
+            Some(vector)
         } else {
             self.master.acknowledge()
         }
@@ -327,6 +368,20 @@ mod tests {
         pic.set_irq_line(15, true);
         // IRQ15 is slave line 7 → vector 0x77.
         assert_eq!(pic.acknowledge(), Some(SLAVE_BASE + 7));
+    }
+
+    #[test]
+    fn direct_cascade_input_without_slave_request_uses_defensive_ir7_vector() {
+        let mut pic = init_pair();
+        // The controller face permits driving IR2 directly, bypassing slave INT.
+        pic.set_irq_line(CASCADE_IRQ, true);
+        assert_eq!(pic.poll(), Some(SLAVE_BASE + 7));
+        assert_eq!(pic.acknowledge(), Some(SLAVE_BASE + 7));
+        assert_eq!(pic.slave.inner.borrow().isr(), 0);
+        assert_eq!(pic.master.inner.borrow().isr(), 1 << CASCADE_IRQ);
+        pic.end_of_interrupt();
+        assert_eq!(pic.master.inner.borrow().isr(), 0);
+        assert_eq!(pic.poll(), None);
     }
 
     #[test]

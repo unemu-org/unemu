@@ -255,6 +255,18 @@ impl Pic8259 {
         self.vector_base
     }
 
+    /// Withdraw a latched request without changing its input level or ISR.
+    ///
+    /// Intel 8259A datasheet, "Edge and Level Triggered Modes": an IR input
+    /// must remain high until after the falling edge of the first INTA. The
+    /// cascade wrapper uses this when slave INT falls before INTA; device
+    /// pulses retain their edge-latched requests unless explicitly withdrawn.
+    pub fn withdraw_request(&mut self, line: u8) {
+        if line < 8 {
+            self.irr &= !(1u8 << line);
+        }
+    }
+
     /// The highest-priority line that may be serviced right now, or `None`.
     ///
     /// A line qualifies when it is requested (IRR), not masked (IMR), and no
@@ -652,6 +664,29 @@ mod tests {
         pic.set_irq_line(1, false);
         pic.set_irq_line(1, true);
         assert_eq!(pic.irr(), 0x02);
+    }
+
+    #[test]
+    fn withdrawing_request_preserves_other_requests_service_and_edge_detection() {
+        let mut pic = Pic8259::new();
+        init_master(&mut pic);
+        pic.set_irq_line(2, true);
+        assert_eq!(pic.acknowledge(), Some(BASE + 2));
+        pic.set_irq_line(2, false);
+        pic.set_irq_line(2, true);
+        pic.set_irq_line(6, true);
+        assert_eq!(pic.irr(), 0x44);
+
+        pic.withdraw_request(2);
+        assert_eq!(pic.irr(), 0x40);
+        assert_eq!(pic.isr(), 0x04);
+        pic.set_irq_line(2, true);
+        assert_eq!(pic.irr(), 0x40);
+        pic.set_irq_line(2, false);
+        pic.set_irq_line(2, true);
+        assert_eq!(pic.irr(), 0x44);
+        pic.withdraw_request(8);
+        assert_eq!(pic.irr(), 0x44);
     }
 
     #[test]

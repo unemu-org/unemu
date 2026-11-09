@@ -11,3 +11,6 @@ description = "8259 PIC composition (shared/cascaded) + the null interrupt contr
 [dependencies]
 device.workspace = true
 devices.workspace = true
+
+[dev-dependencies]
+testkit.workspace = true
