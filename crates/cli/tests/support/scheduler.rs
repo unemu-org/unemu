@@ -8,7 +8,7 @@
 //! across devices and Intel 8259A INTA/EOI (datasheet, "Interrupt Sequence" and
 //! "End of Interrupt"). Sorting completed per-device traces would lose that order.
 
-use std::{cell::RefCell, collections::HashMap, fmt, path::PathBuf, rc::Rc};
+use std::{cell::RefCell, collections::HashMap, fmt, rc::Rc};
 
 use anyhow::Result;
 use assembly::{AssembledMachine, ConsoleProbe, DeviceId, RunPolicy, StopCondition};
@@ -188,19 +188,8 @@ pub struct Prepared {
     pub policy: RunPolicy,
 }
 
-fn fixture(relative: &str) -> Result<Option<Vec<u8>>> {
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../vendor")
-        .join(relative);
-    match std::fs::read(&path) {
-        Ok(bytes) => Ok(Some(bytes)),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            eprintln!("skipping: missing fixture {}", path.display());
-            Ok(None)
-        }
-        Err(error) => Err(error.into()),
-    }
-}
+#[path = "fixtures.rs"]
+mod fixtures;
 
 /// Uses the same presets, programs, quantum, inputs and policies as CLI goldens.
 /// Missing optional firmware/media returns `None`; other assembly/I/O errors fail.
@@ -262,12 +251,12 @@ pub fn prepare(workload: Workload) -> Result<Option<Prepared>> {
             assembly::assemble(&assembly::at_vga_text(cli::VGA_TEXT_PROGRAM.to_vec()))?
         }
         Workload::BiosPost | Workload::FreeDosPrompt => {
-            let Some(rom) = fixture("kiselev-bios/bios-xi8088.bin")? else {
+            let Some(rom) = fixtures::fixture("kiselev-bios/bios-xi8088.bin") else {
                 return Ok(None);
             };
             anyhow::ensure!(rom.len() == 32768, "Xi8088 BIOS must be 32 KiB");
             let floppy = if matches!(workload, Workload::FreeDosPrompt) {
-                let Some(image) = fixture("freedos/freedos.img")? else {
+                let Some(image) = fixtures::fixture("freedos/freedos.img") else {
                     return Ok(None);
                 };
                 anyhow::ensure!(image.len() == 1_474_560, "FreeDOS floppy must be 1.44 MB");

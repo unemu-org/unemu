@@ -20,7 +20,7 @@
 //! The machine services the DMA on its run boundaries (both directions), exactly
 //! as the floppy READ golden relies on — so the write is committed and the sector
 //! is read back within the same run. Because the floppy starts **blank** (all
-//! zeroes) and the compared pattern bytes are all non-zero, a match can only mean
+//! zeroes) and the pattern contains non-zero bytes throughout, a match can only mean
 //! the guest's own write reached media: a broken or no-op write leaves the sector
 //! zero, the read-back mismatches, and no marker is emitted. The captured serial is
 //! the golden (`b"W"`), fully deterministic because nothing in the path reads a
@@ -36,7 +36,7 @@
 //! path runs the same pinned `x86jit-core` rev as the other CPU-driven goldens —
 //! the rev in `Cargo.lock`. Re-baseline when that rev moves.
 
-use cli::{fdc_write_pattern, run_fdc_write, FDC_WRITE_MARKER, FDC_WRITE_PROGRAM};
+use cli::{fdc_write_pattern, run_fdc_write, FDC_WRITE_MARKER, FDC_WRITE_PROGRAM, FDC_WRITE_SRC};
 use testkit::golden::assert_bytes_eq;
 
 #[test]
@@ -102,20 +102,22 @@ fn fdc_write_commits_a_sector_and_reads_it_back() {
 ///   7C88: B0 01 EE           mov al,0x01 ; out dx,al      ; EOT=1
 ///   7C8B: B0 1B EE           mov al,0x1B ; out dx,al      ; GPL
 ///   7C8E: B0 FF EE           mov al,0xFF ; out dx,al      ; DTL
-///   ; --- compare read-back [0x0A00..0x0A04] to the pattern, emit 'W' on match ---
-///   7C91: 80 3E 00 0A C0     cmp byte [0x0A00],0xC0
-///   7C96: 75 1B              jne end (+27)
-///   7C98: 80 3E 01 0A C1     cmp byte [0x0A01],0xC1
-///   7C9D: 75 14              jne end (+20)
-///   7C9F: 80 3E 02 0A C2     cmp byte [0x0A02],0xC2
-///   7CA4: 75 0D              jne end (+13)
-///   7CA6: 80 3E 03 0A C3     cmp byte [0x0A03],0xC3
-///   7CAB: 75 06              jne end (+6)
-///   7CAD: B0 57              mov al,0x57 ('W')
-///   7CAF: BA F8 03           mov dx,0x03F8                ; COM1 THR
-///   7CB2: EE                 out dx,al                    ; transmit marker
-///   7CB3: EC                 in al,dx                     ; I/O-yielding spin  <- end
-///   7CB4: EB FD              jmp $-3                      ; back to the in
+///   ; --- compare all 512 read-back bytes, regenerating 0xC0 ^ index ---
+///   7C91: BE 00 0A           mov si,0x0A00
+///   7C94: B9 00 02           mov cx,512
+///   7C97: 31 DB              xor bx,bx
+///   7C99: 8A C3              mov al,bl                    ; compare loop
+///   7C9B: 34 C0              xor al,0xC0
+///   7C9D: 38 04              cmp [si],al
+///   7C9F: 75 0A              jne end (+10)
+///   7CA1: 46                 inc si
+///   7CA2: 43                 inc bx
+///   7CA3: E2 F4              loop compare (-12)
+///   7CA5: B0 57              mov al,0x57 ('W')
+///   7CA7: BA F8 03           mov dx,0x03F8                ; COM1 THR
+///   7CAA: EE                 out dx,al                    ; transmit marker
+///   7CAB: EC                 in al,dx                     ; I/O-yielding spin  <- end
+///   7CAC: EB FD              jmp $-3                      ; back to the in
 /// ```
 #[test]
 fn fdc_write_program_bytes_are_the_documented_encoding() {
@@ -161,33 +163,41 @@ fn fdc_write_program_bytes_are_the_documented_encoding() {
         0xB0, 0x01, 0xEE,                               // EOT=1
         0xB0, 0x1B, 0xEE,                               // GPL
         0xB0, 0xFF, 0xEE,                               // DTL
-        0x80, 0x3E, 0x00, 0x0A, 0xC0, 0x75, 0x1B,       // cmp [0x0A00],0xC0 ; jne end
-        0x80, 0x3E, 0x01, 0x0A, 0xC1, 0x75, 0x14,       // cmp [0x0A01],0xC1 ; jne end
-        0x80, 0x3E, 0x02, 0x0A, 0xC2, 0x75, 0x0D,       // cmp [0x0A02],0xC2 ; jne end
-        0x80, 0x3E, 0x03, 0x0A, 0xC3, 0x75, 0x06,       // cmp [0x0A03],0xC3 ; jne end
+        0xBE, 0x00, 0x0A,                               // mov si,0x0A00
+        0xB9, 0x00, 0x02,                               // mov cx,512
+        0x31, 0xDB,                                     // xor bx,bx
+        0x8A, 0xC3, 0x34, 0xC0,                         // mov al,bl ; xor al,0xC0
+        0x38, 0x04, 0x75, 0x0A,                         // cmp [si],al ; jne end
+        0x46, 0x43, 0xE2, 0xF4,                         // inc si ; inc bx ; loop compare
         0xB0, 0x57, 0xBA, 0xF8, 0x03, 0xEE,             // mov al,'W' ; mov dx,0x3F8 ; out dx,al
         0xEC, 0xEB, 0xFD,                               // in al,dx ; jmp $-3 (I/O-yielding spin, end)
     ];
     assert_eq!(FDC_WRITE_PROGRAM, expected);
 
-    // The compare immediates must equal the pattern's first four bytes, or the
-    // guest would look for the wrong bytes and the golden could pass on a broken
-    // write. Every compared byte must also be non-zero, so a blank floppy cannot
-    // spoof the match.
-    let pattern = fdc_write_pattern();
-    assert_eq!(pattern.len(), 512);
-    // Immediates sit at the last byte of each 5-byte `cmp byte [imm16], imm8`
-    // (the four compares begin at program offsets 145, 152, 159, 166).
-    let compare_imms = [expected[149], expected[156], expected[163], expected[170]];
-    assert_eq!(
-        compare_imms,
-        [pattern[0], pattern[1], pattern[2], pattern[3]]
-    );
-    assert!(
-        compare_imms.iter().all(|&b| b != 0),
-        "compared bytes are non-zero"
-    );
+    assert_eq!(fdc_write_pattern().len(), 512);
 
     // The marker the guest transmits is the byte the golden asserts.
     assert_eq!(FDC_WRITE_MARKER, b'W');
+}
+
+#[test]
+fn fdc_write_rejects_corruption_in_every_sector_byte() {
+    // Corrupt the DMA source before WRITE DATA. Expected bytes are regenerated
+    // independently by the guest, so even a damaged source must be rejected.
+    for offset in 0u16..512 {
+        let address = FDC_WRITE_SRC + u64::from(offset);
+        let mut program = vec![
+            0xC6,
+            0x06,
+            address as u8,
+            (address >> 8) as u8,
+            fdc_write_pattern()[usize::from(offset)] ^ 0xFF,
+        ];
+        program.extend_from_slice(FDC_WRITE_PROGRAM);
+        let serial = run_fdc_write(&program).expect("machine run");
+        assert!(
+            serial.is_empty(),
+            "corrupted sector byte {offset} was accepted"
+        );
+    }
 }

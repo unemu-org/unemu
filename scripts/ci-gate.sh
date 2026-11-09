@@ -25,7 +25,7 @@ case "$step" in
             bash vendor/test386/fetch.sh
         ')
         ;;
-    goldens) gate_command+=(cargo test --locked --workspace -- --ignored) ;;
+    goldens) gate_command+=(env UNEMUPC98_REQUIRE_FIXTURES=1 cargo test --locked --workspace -- --ignored) ;;
     *) usage ;;
 esac
 

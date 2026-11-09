@@ -297,7 +297,7 @@ pub const FDC_WRITE_MARKER: u8 = b'W';
 /// marker, and then spins in place (`jmp $`) with no interrupt source wired; with
 /// nothing to wake it the run reaches this cap and stops (a clean
 /// [`RunOutcome::RetiredCapReached`], as the busy-polling floppy-boot guest also
-/// does). It is far above the ~150 instructions the guest retires before the
+/// does). It exceeds the ~3,700 instructions the guest retires before the
 /// marker, so the marker always emits.
 pub const FDC_WRITE_RETIRED_CAP: u64 = 5_000;
 
@@ -305,10 +305,8 @@ pub const FDC_WRITE_RETIRED_CAP: u64 = 5_000;
 ///
 /// Preloaded into guest RAM at [`FDC_WRITE_SRC`] and, after the write→read cycle,
 /// expected byte-for-byte in the read-back buffer. Byte `i` is `0xC0 ^ i`, so the
-/// first four bytes are `C0 C1 C2 C3` — the immediates [`FDC_WRITE_PROGRAM`]
-/// compares the read-back buffer against. Every byte of the compared prefix is
-/// non-zero, so it cannot be spoofed by the blank (all-zero) floppy: only an actual
-/// write of this pattern can make the read-back match.
+/// guest regenerates this value for every read-back byte. The sector contains
+/// non-zero bytes throughout, so a blank floppy cannot spoof the match.
 #[must_use]
 pub fn fdc_write_pattern() -> Vec<u8> {
     (0..512u32).map(|i| 0xC0u8 ^ i as u8).collect()
@@ -326,8 +324,8 @@ pub fn fdc_write_pattern() -> Vec<u8> {
 /// committed and the result phase is ready by the guest's next instruction; the
 /// guest drains the seven result bytes. It then programs channel 2 the other way
 /// (device→memory) into [`FDC_WRITE_DST`] and issues READ DATA for the same CHS,
-/// pulling the just-written sector back. Finally it compares the first four
-/// read-back bytes against the pattern and, on a full match, emits [`FDC_WRITE_MARKER`]
+/// pulling the just-written sector back. Finally it compares all 512 read-back
+/// bytes against the pattern and, on a full match, emits [`FDC_WRITE_MARKER`]
 /// to COM1, then busy-spins on a port read (`in al,dx ; jmp $-3`). The port read
 /// yields to the machine each iteration, so the run stops cleanly at
 /// [`FDC_WRITE_RETIRED_CAP`] (the busy-guest idiom) rather than looping forever
@@ -384,15 +382,17 @@ pub const FDC_WRITE_PROGRAM: &[u8] = &[
     0xB0, 0x01, 0xEE,                   // mov al,0x01 ; out dx,al  (EOT=1)
     0xB0, 0x1B, 0xEE,                   // mov al,0x1B ; out dx,al  (GPL)
     0xB0, 0xFF, 0xEE,                   // mov al,0xFF ; out dx,al  (DTL)
-    // ---- compare read-back [0x0A00..0x0A04] to the pattern, emit 'W' on match ----
-    0x80, 0x3E, 0x00, 0x0A, 0xC0,       // cmp byte [0x0A00],0xC0
-    0x75, 0x1B,                         // jne end (+27)
-    0x80, 0x3E, 0x01, 0x0A, 0xC1,       // cmp byte [0x0A01],0xC1
-    0x75, 0x14,                         // jne end (+20)
-    0x80, 0x3E, 0x02, 0x0A, 0xC2,       // cmp byte [0x0A02],0xC2
-    0x75, 0x0D,                         // jne end (+13)
-    0x80, 0x3E, 0x03, 0x0A, 0xC3,       // cmp byte [0x0A03],0xC3
-    0x75, 0x06,                         // jne end (+6)
+    // ---- regenerate the pattern and compare the entire read-back sector ----
+    0xBE, 0x00, 0x0A,                   // mov si,0x0A00
+    0xB9, 0x00, 0x02,                   // mov cx,512
+    0x31, 0xDB,                         // xor bx,bx              (byte index)
+    0x8A, 0xC3,                         // mov al,bl              <- compare loop
+    0x34, 0xC0,                         // xor al,0xC0
+    0x38, 0x04,                         // cmp [si],al
+    0x75, 0x0A,                         // jne end (+10)
+    0x46,                               // inc si
+    0x43,                               // inc bx
+    0xE2, 0xF4,                         // loop compare (-12)
     0xB0, 0x57,                         // mov al,0x57 ('W')
     0xBA, 0xF8, 0x03,                   // mov dx,0x03F8          (COM1 THR)
     0xEE,                               // out dx,al               (transmit marker)
@@ -600,9 +600,12 @@ pub const BIOS_IDLE_LIMIT: u64 = 1_000_000;
 pub const MDA_BUFFER_BASE: u64 = 0x0B_0000;
 
 /// The result of a full BIOS boot run (§3.1): the POST checkpoint stream, both
-/// text windows, the serial stream, and why execution stopped.
+/// text windows, the serial stream, final floppy media, and why execution stopped.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BiosRun {
+    /// Final drive-0 media read from the controller after execution (§7.7).
+    /// `None` means no floppy controller was mounted or media could not be read.
+    pub floppy_image: Option<Vec<u8>>,
     /// Checkpoint bytes the BIOS wrote to POST port `0x80`, in order.
     pub post: Vec<u8>,
     /// The colour (CGA/VGA) text page at `0xB8000`, rendered from the card.
@@ -718,6 +721,7 @@ fn run_bios_config(
         Ok(assembled) => assembled,
         Err(e) => {
             return BiosRun {
+                floppy_image: None,
                 post: Vec::new(),
                 screen: blank_screen(),
                 mda: blank_screen(),
@@ -737,13 +741,51 @@ fn run_bios_config(
     let screen = render_vga(&mut machine, device_index[&DeviceId::Vga]);
     let mda = render_mda(&machine);
     let com1 = drain_serial(&mut machine, device_index[&DeviceId::Uart]);
+    let floppy_image = device_index
+        .get(&DeviceId::Fdc)
+        .and_then(|&index| machine.bus_mut().device_mut(index))
+        .and_then(|fdc| read_bios_floppy_image(fdc.as_mut()));
     BiosRun {
+        floppy_image,
         post,
         screen,
         mda,
         com1,
         stop,
     }
+}
+
+/// Read the BIOS preset's 1.44 MB drive directly through the controller, bypassing
+/// DOS's cache. NEC µPD765 datasheet, READ DATA and Result Phase; see §7.7.
+/// Controller reset preserves media and makes reads independent of the phase the
+/// guest left behind. No guest instructions or virtual clocks run during capture.
+fn read_bios_floppy_image(fdc: &mut dyn Device) -> Option<Vec<u8>> {
+    fdc.reset();
+    fdc.port_write(0x3F2, 1, 0x1C).ok()?;
+    let mut image = Vec::with_capacity(FLOPPY_IMAGE_BYTES);
+    for cylinder in 0u8..80 {
+        for head in 0..2 {
+            for byte in [0x06, head << 2, cylinder, head, 1, 2, 18, 0x1B, 0xFF] {
+                fdc.port_write(0x3F5, 1, u32::from(byte)).ok()?;
+            }
+            let request = fdc.take_dma_request()?;
+            let device::DmaOp::ToMemory(bytes) = request.op else {
+                return None;
+            };
+            if bytes.len() != 18 * 512 {
+                return None;
+            }
+            fdc.dma_complete(device::DmaOutcome::ToMemory {
+                transferred: bytes.len(),
+                terminal_count: true,
+            });
+            image.extend_from_slice(&bytes);
+            for _ in 0..7 {
+                fdc.port_read(0x3F5, 1).ok()?;
+            }
+        }
+    }
+    Some(image)
 }
 
 /// Assemble the full PC/AT BIOS machine as [`run_bios`] does, but with a µPD765

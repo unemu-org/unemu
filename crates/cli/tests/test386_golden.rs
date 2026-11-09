@@ -52,12 +52,8 @@
 //!   the golden if `SAHF` (or a nearer instruction) gains real-mode support.
 
 use cli::{run_test386, StopReason};
-use std::path::PathBuf;
-
-/// Absolute path to the (gitignored) built test386 image.
-fn image_path() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../vendor/test386/test386.bin")
-}
+#[path = "support/fixtures.rs"]
+mod fixtures;
 
 /// The observed POST checkpoint stream: `POST 0` then `POST 1`, before execution
 /// stops on the unlifted `SAHF` in the POST 1 conditional-jump test. Golden the
@@ -66,14 +62,7 @@ const GOLDEN_POST: &[u8] = &[0x00, 0x01];
 
 #[test]
 fn test386_smoke_stop_point_matches_golden() {
-    let path = image_path();
-    let Ok(blob) = std::fs::read(&path) else {
-        // Mirror the corpus-absent skip pattern: the image is fetched/built, not
-        // committed, so a clean checkout without it simply skips (never fails).
-        eprintln!(
-            "skipping: test386 image not found at {} — run vendor/test386/fetch.sh",
-            path.display()
-        );
+    let Some(blob) = fixtures::fixture("test386/test386.bin") else {
         return;
     };
     assert_eq!(

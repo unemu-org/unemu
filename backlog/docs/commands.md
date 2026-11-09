@@ -9,6 +9,7 @@ cargo build                                  # build the workspace
 cargo run -p cli -- <config>                 # run the emulator
 cargo test --workspace                       # unit + golden + integration
 cargo test --workspace -- --ignored          # slow goldens: BIOS POST, FreeDOS boot, DOS sessions (~75 s)
+UNEMUPC98_REQUIRE_FIXTURES=1 cargo test --workspace -- --ignored # fail if a fixture is missing
 cargo test -p devices                        # one crate's tests
 ```
 
@@ -34,6 +35,11 @@ bash scripts/ci-gate.sh tests
 bash scripts/ci-gate.sh fixtures                 # network fetch + build BIOS, FreeDOS, test386
 bash scripts/ci-gate.sh goldens                  # slow tests (~2 min); requires fixtures
 ```
+
+Fixture-dependent tests print a skip message when a fetched vendor file is missing.
+Set `UNEMUPC98_REQUIRE_FIXTURES=1` to make a missing fixture fail with its path and
+fetch script instead. The `goldens` gate always sets this variable, so a failed or
+incomplete fixture fetch cannot silently pass CI.
 
 Each gate uses `nix develop --no-update-lock-file --command` (except `guard`, which
 runs directly), preserves its exit status, and tees combined output to the gitignored

@@ -53,12 +53,8 @@
 //!   the golden if `FNINIT` (or a nearer instruction) gains real-mode support.
 
 use cli::{run_bios_with_cap, StopReason, BIOS_GOLDEN_MAX_RETIRED};
-use std::path::PathBuf;
-
-/// Absolute path to the (gitignored) built Xi8088 BIOS image.
-fn rom_path() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../vendor/kiselev-bios/bios-xi8088.bin")
-}
+#[path = "support/fixtures.rs"]
+mod fixtures;
 
 /// The observed POST checkpoint stream. The BIOS now completes the whole
 /// power-on self-test — CPU/chipset/DMA/RAM/IVT/PIT/PIC/KBC/interrupts, video
@@ -78,14 +74,7 @@ const GOLDEN_POST: &[u8] = &[
 #[ignore = "requires fetched BIOS ROM; no floppy attached, so INT 19h runs to the golden cap"]
 #[test]
 fn bios_boot_stop_point_matches_golden() {
-    let path = rom_path();
-    let Ok(rom) = std::fs::read(&path) else {
-        // Mirror the fixture-absent skip pattern: the ROM is fetched/built, not
-        // committed, so a clean checkout without it simply skips (never fails).
-        eprintln!(
-            "skipping: BIOS ROM not found at {} — run vendor/kiselev-bios/fetch.sh",
-            path.display()
-        );
+    let Some(rom) = fixtures::fixture("kiselev-bios/bios-xi8088.bin") else {
         return;
     };
     assert_eq!(rom.len(), 32768, "Xi8088 BIOS is a 32 KiB image");

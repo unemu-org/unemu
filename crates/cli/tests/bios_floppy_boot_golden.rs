@@ -29,21 +29,13 @@
 //! stop kind.
 
 use cli::{bootable_floppy_image, run_bios_boot, FLOPPY_BOOT_MARKER};
-use std::path::PathBuf;
-
-fn rom_path() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../vendor/kiselev-bios/bios-xi8088.bin")
-}
+#[path = "support/fixtures.rs"]
+mod fixtures;
 
 #[ignore = "slow-ish: runs the full BIOS POST before INT 19h"]
 #[test]
 fn bios_int19_reads_boot_sector_over_the_floppy() {
-    let path = rom_path();
-    let Ok(rom) = std::fs::read(&path) else {
-        eprintln!(
-            "skipping: BIOS ROM not found at {} — run vendor/kiselev-bios/fetch.sh",
-            path.display()
-        );
+    let Some(rom) = fixtures::fixture("kiselev-bios/bios-xi8088.bin") else {
         return;
     };
     assert_eq!(rom.len(), 32768, "Xi8088 BIOS is a 32 KiB image");

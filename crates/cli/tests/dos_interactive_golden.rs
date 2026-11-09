@@ -74,24 +74,16 @@
 //! - CPU: `x86jit-core`, the rev pinned in `Cargo.lock`.
 
 use cli::{dos_dir_script, run_freedos_interactive, StopReason};
-use std::path::PathBuf;
-
-fn vendor(p: &str) -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../vendor")
-        .join(p)
-}
+#[path = "support/fixtures.rs"]
+mod fixtures;
 
 #[ignore = "slow: runs the BIOS POST then the interactive FreeDOS boot"]
 #[test]
 fn freedos_runs_dir_from_the_keyboard() {
-    let (Ok(rom), Ok(img)) = (
-        std::fs::read(vendor("kiselev-bios/bios-xi8088.bin")),
-        std::fs::read(vendor("freedos/freedos.img")),
+    let (Some(rom), Some(img)) = (
+        fixtures::fixture("kiselev-bios/bios-xi8088.bin"),
+        fixtures::fixture("freedos/freedos.img"),
     ) else {
-        eprintln!(
-            "skipping: BIOS ROM or FreeDOS image not found — run the vendor fetch.sh scripts"
-        );
         return;
     };
     assert_eq!(img.len(), 1_474_560, "FreeDOS floppy is a 1.44 MB image");
