@@ -73,7 +73,8 @@ pub struct ObservationRequest {
     pub device: DeviceId,
     /// Capability the configured device must support.
     pub output: OutputKind,
-    /// Maximum pending stream bytes between drains; ignored for text scanout.
+    /// Maximum total stream bytes per capture epoch; ignored for text scanout.
+    /// Drains release memory without renewing the budget.
     /// Overflow fails observation until a new epoch, without stopping hardware.
     pub byte_limit: usize,
 }
@@ -139,7 +140,10 @@ pub struct Observation {
 }
 
 impl Observation {
-    pub(crate) fn bind(
+    /// Resolve routes against a manually assembled device set before execution.
+    /// This supports inline machines using the same collectors as config presets.
+    /// Missing roles, invalid slots and unsupported capabilities are config errors.
+    pub fn bind(
         policy: &ObservationPolicy,
         device_index: &HashMap<DeviceId, usize>,
         devices: &mut [Box<dyn Device>],
@@ -159,14 +163,17 @@ impl Observation {
                 .get(&device)
                 .copied()
                 .ok_or(ConfigError::UnsupportedObservationOutput { device, output })?;
+            let producer_device = devices
+                .get_mut(index)
+                .ok_or(ConfigError::UnsupportedObservationOutput { device, output })?;
             match output {
                 OutputKind::TextScanout => {
-                    if devices[index].text_scanout().is_none() {
+                    if producer_device.text_scanout().is_none() {
                         return Err(ConfigError::UnsupportedObservationOutput { device, output });
                     }
                 }
                 OutputKind::Bytes(kind) => {
-                    let producer = devices[index]
+                    let producer = producer_device
                         .byte_output()
                         .filter(|producer| producer.kind() == kind)
                         .ok_or(ConfigError::UnsupportedObservationOutput { device, output })?;
@@ -337,6 +344,97 @@ mod tests {
             .drain_bytes(DeviceId::Uart, ByteStreamKind::SerialTx)
             .unwrap()
             .is_empty());
+    }
+
+    #[test]
+    fn stream_facade_preserves_divisor_banking_byte_cycles_and_reset_history() {
+        let mut config = crate::at_boot(vec![0xF4]);
+        config.devices.push(DeviceConfig::new(
+            DeviceId::Post,
+            DeviceKind::Post(PostPortCfg { port: 0x190 }),
+            vec![PortWindow::single(0x190)],
+        ));
+        let policy = ObservationPolicy {
+            routes: vec![
+                request(
+                    DeviceId::Uart,
+                    OutputKind::Bytes(ByteStreamKind::SerialTx),
+                    4,
+                ),
+                request(
+                    DeviceId::Post,
+                    OutputKind::Bytes(ByteStreamKind::PostCheckpoints),
+                    5,
+                ),
+            ],
+        };
+        let mut assembled = assemble_with_observation(&config, &policy).unwrap();
+        let bus = assembled.machine.bus_mut();
+        bus.port_write(0x3FB, 1, 0x83).unwrap();
+        bus.port_write(0x3F8, 2, 0x0142).unwrap();
+        bus.port_write(0x3FB, 1, 3).unwrap();
+        bus.port_write(0x3F8, 2, 0x004F).unwrap();
+        bus.port_write(0x3F8, 1, u32::from(b'K')).unwrap();
+        for byte in [0, 0xFF] {
+            bus.port_write(0x3F8, 1, byte).unwrap();
+        }
+        for value in [0x1234, 0x1234, 0, 0xFF] {
+            bus.port_write(0x190, 4, value).unwrap();
+        }
+        assert_eq!(bus.port_read(0x190, 2).unwrap(), 0xFFFF);
+        for device in [DeviceId::Uart, DeviceId::Post] {
+            let dev = bus.device_mut(assembled.device_index[&device]).unwrap();
+            let state = dev.save();
+            dev.take_trace();
+            dev.reset();
+            dev.restore(&state).unwrap();
+        }
+        assert_eq!(
+            assembled
+                .observation
+                .drain_bytes(DeviceId::Uart, ByteStreamKind::SerialTx)
+                .unwrap(),
+            b"OK\0\xff"
+        );
+        assert_eq!(
+            assembled
+                .observation
+                .drain_bytes(DeviceId::Post, ByteStreamKind::PostCheckpoints)
+                .unwrap(),
+            [0x34, 0x34, 0, 0xFF]
+        );
+        assembled
+            .machine
+            .bus_mut()
+            .port_write(0x190, 1, 42)
+            .unwrap();
+        assert_eq!(
+            assembled
+                .observation
+                .drain_bytes(DeviceId::Post, ByteStreamKind::PostCheckpoints)
+                .unwrap(),
+            [42]
+        );
+        assembled
+            .machine
+            .bus_mut()
+            .port_write(0x190, 1, 43)
+            .unwrap();
+        assert!(matches!(
+            assembled
+                .observation
+                .drain_bytes(DeviceId::Post, ByteStreamKind::PostCheckpoints),
+            Err(ObservationError::ByteOverflow { .. })
+        ));
+        assembled.observation.start_epoch();
+        assembled.machine.bus_mut().port_write(0x190, 1, 7).unwrap();
+        assert_eq!(
+            assembled
+                .observation
+                .drain_bytes(DeviceId::Post, ByteStreamKind::PostCheckpoints)
+                .unwrap(),
+            [7]
+        );
     }
 
     #[test]

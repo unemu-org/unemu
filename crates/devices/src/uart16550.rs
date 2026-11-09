@@ -52,9 +52,10 @@ const SNAPSHOT_HEADER_LEN: usize = 1 + 5 + 1 + 1 + 4;
 /// The 16550 UART device (§7.2).
 ///
 /// Constructed with the COM port base address; decodes the eight ports
-/// `base..=base+7`. Until a semantic sink is bound, transmitted bytes use the
-/// compatibility buffer drained with [`Uart16550::take_output`]. A bound route
-/// owns subsequent bytes exclusively, avoiding a second unbounded history.
+/// `base..=base+7`. Pending bytes stay in the legacy buffer drained with
+/// [`Uart16550::take_output`] because snapshot v1 serializes that buffer. A bound
+/// observer receives a copy without changing snapshot bytes. The legacy buffer
+/// remains unbounded until a separate snapshot-version migration removes it.
 /// See `backlog/docs/design/observation.md`, §Sinks, bounds and lifecycle.
 /// The trace records all port accesses, including divisor-latch writes, so it
 /// must not be treated as a transmitted byte stream: the National Semiconductor
@@ -76,11 +77,10 @@ pub struct Uart16550 {
     dll: u8,
     /// Divisor latch high (+1, DLAB=1). Stored; baud rate is not modelled.
     dlm: u8,
-    /// Transmitted bytes, in order, while no observation sink is bound. Drained
-    /// via [`Uart16550::take_output`].
+    /// Pending transmitted bytes retained for snapshot v1 compatibility,
+    /// independently of observation policy. Drained via [`Uart16550::take_output`].
     output: Vec<u8>,
-    /// The bound observation sink for transmitted bytes, if any; when bound,
-    /// transmitted bytes go here instead of `output`.
+    /// Optional observer receiving a copy; binding must not change saved state.
     sink: Option<Box<dyn ByteSink>>,
     /// Trace events observed since the last [`Device::take_trace`].
     trace: Vec<TraceEvent>,
@@ -110,13 +110,13 @@ impl Uart16550 {
         }
     }
 
-    /// Drain bytes transmitted before a semantic sink was bound.
+    /// Drain pending transmitted bytes, independently of the observation sink.
     #[must_use]
     pub fn take_output(&mut self) -> Vec<u8> {
         std::mem::take(&mut self.output)
     }
 
-    /// Borrow bytes transmitted before a semantic sink was bound.
+    /// Borrow pending transmitted bytes, independently of the observation sink.
     #[must_use]
     pub fn output(&self) -> &[u8] {
         &self.output
@@ -196,10 +196,10 @@ impl Device for Uart16550 {
         match offset {
             0 if self.dlab() => self.dll = byte,
             0 => {
+                // Snapshot v1 includes pending output, so observing cannot consume it.
+                self.output.push(byte);
                 if let Some(sink) = &mut self.sink {
                     sink.push(byte);
-                } else {
-                    self.output.push(byte);
                 }
             }
             1 if self.dlab() => self.dlm = byte,
@@ -328,6 +328,55 @@ mod tests {
     const COM1: u16 = 0x3F8;
 
     #[test]
+    fn snapshot_and_pending_output_are_independent_of_sink_binding() {
+        let mut plain = MockBus::new(Box::new(Uart16550::new(COM1)));
+        let mut routed = MockBus::new(Box::new(Uart16550::new(COM1)));
+        let capture = device::ByteCapture::new(3);
+        routed
+            .device_mut()
+            .byte_output()
+            .unwrap()
+            .bind_sink(Box::new(capture.clone()));
+        for bus in [&mut plain, &mut routed] {
+            bus.port_write(COM1 + 3, 1, 0x80).unwrap();
+            bus.port_write(COM1, 1, 12).unwrap();
+            bus.port_write(COM1 + 1, 1, 1).unwrap();
+            bus.port_write(COM1 + 3, 1, 3).unwrap();
+            for byte in [0, 0xFF, 0xFF, 42] {
+                bus.port_write(COM1, 1, byte).unwrap();
+            }
+        }
+        let snapshot = plain.device().save();
+        assert_eq!(routed.device().save(), snapshot);
+        assert_eq!(snapshot[0], 1);
+        assert_eq!(&snapshot[8..], &[4, 0, 0, 0, 0, 0xFF, 0xFF, 42]);
+        assert_eq!(capture.drain(), Err(device::ByteOverflow { limit: 3 }));
+        assert_eq!(routed.device().save(), snapshot);
+        capture.start_epoch();
+        for bus in [&mut plain, &mut routed] {
+            bus.device_mut().reset();
+            bus.device_mut().restore(&snapshot).unwrap();
+            assert_eq!(bus.device().save(), snapshot);
+            let uart = bus
+                .device_mut()
+                .as_any_mut()
+                .unwrap()
+                .downcast_mut::<Uart16550>()
+                .unwrap();
+            assert_eq!(uart.take_output(), [0, 0xFF, 0xFF, 42]);
+        }
+        assert!(
+            capture.drain().unwrap().is_empty(),
+            "restore must not emit history"
+        );
+        for bus in [&mut plain, &mut routed] {
+            bus.port_write(COM1, 1, 7).unwrap();
+        }
+        assert_eq!(capture.drain().unwrap(), [7]);
+        assert_eq!(routed.device().save(), plain.device().save());
+    }
+
+    #[test]
     fn observation_sink_receives_only_accepted_thr_bytes_and_survives_reset() {
         let capture = device::ByteCapture::new(4);
         let mut bus = MockBus::new(Box::new(Uart16550::new(COM1)));
@@ -341,8 +390,8 @@ mod tests {
         bus.port_read(COM1, 1).unwrap();
         assert!(bus.port_write(COM1 - 1, 1, 0x42).is_err());
         let snapshot = bus.device().save();
-        assert_eq!(snapshot.len(), SNAPSHOT_HEADER_LEN);
-        assert_eq!(&snapshot[8..12], &[0; 4]);
+        assert_eq!(snapshot.len(), SNAPSHOT_HEADER_LEN + 1);
+        assert_eq!(&snapshot[8..12], &[1, 0, 0, 0]);
         bus.device_mut().restore(&snapshot).unwrap();
         bus.device_mut().take_trace();
         assert_eq!(capture.drain().unwrap(), b"A");

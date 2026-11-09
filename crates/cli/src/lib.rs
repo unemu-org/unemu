@@ -12,20 +12,19 @@
 //! mode axis for a single Long64 user would not earn its keep.
 //!
 //! Runners return their observables (COM1 bytes, POST stream, text screens)
-//! through the UART's transmitted-output sink for COM1 and the first-class
-//! tracing seam (§3.2) for POST. Text screens use the card-state observation facade.
+//! through semantic byte routes for COM1 and POST. Text screens use the
+//! card-state observation facade. All captures share assembly-owned routing.
 
 use anyhow::{Context, Result};
 use assembly::{
-    assemble, assemble_with_observation, AssembledMachine, ConsoleProbe, DeviceId,
-    InjectionSchedule, KeyboardStimulus, MachineConfig, ObservationPolicy, ObservationRequest,
+    assemble_with_observation, AssembledMachine, ConsoleProbe, DeviceId, InjectionSchedule,
+    KeyboardStimulus, MachineConfig, Observation, ObservationPolicy, ObservationRequest,
     OutputKind, RunPolicy, StopCondition,
 };
 use bus::{Bus, DecodeMap, PortRange};
 use chipset::{NoInterruptController, COM1_BASE, COM1_TOP};
 use cpu::{Cpu, CpuError, CpuReg, X86JitCpu};
-use device::{AccessDir, Device, TraceEvent};
-use devices::post_port::POST_PORT;
+use device::{ByteStreamKind, Device};
 use devices::upd765::FLOPPY_IMAGE_BYTES;
 use devices::vga_text::{COLS, ROWS, TEXT_BUFFER_LEN};
 use devices::{Uart16550, I8042};
@@ -470,6 +469,11 @@ pub enum StopReason {
     },
     /// The retired-instruction safety cap was reached before a natural stop.
     BudgetExhausted,
+    /// Requested output is incomplete or unavailable; guest execution has stopped.
+    ObservationFailed {
+        /// Capture diagnostic, including the producing route and byte limit.
+        detail: String,
+    },
 }
 
 /// The result of the test386 smoke run (§3.1): the captured POST progress bytes
@@ -493,7 +497,7 @@ pub struct Test386Run {
 /// [`NoInterruptController`]: the diagnostic runs `cli`, so wiring an IRQ that
 /// could never be delivered would keep the host loop from ever terminating.
 ///
-/// The POST byte stream is captured through the tracing seam on **every** exit
+/// The POST byte stream is captured through its semantic sink on **every** exit
 /// path. A real-mode-only core is expected to stop early on a 386 diagnostic, and
 /// that stop surfaces as an `Err` from the machine (an unlifted instruction) — so
 /// the error is classified into [`StopReason`] rather than propagated, and the
@@ -502,9 +506,9 @@ pub fn run_test386(blob: &[u8]) -> Test386Run {
     let config = assembly::test386(blob.to_vec());
     let AssembledMachine {
         mut machine,
-        device_index,
+        observation,
         ..
-    } = match assemble(&config) {
+    } = match assemble_with_observation(&config, &post_policy()) {
         Ok(assembled) => assembled,
         Err(e) => {
             return Test386Run {
@@ -518,8 +522,8 @@ pub fn run_test386(blob: &[u8]) -> Test386Run {
 
     let result = machine.run_bounded(Some(TEST386_MAX_RETIRED));
     let rip = machine.cpu().reg(CpuReg::Rip);
-    let stop = classify_test386_stop(rip, result);
-    let post = drain_post_at(&mut machine, device_index[&DeviceId::Post], POST_PORT);
+    let mut stop = classify_test386_stop(rip, result);
+    let post = stream_or_fail(capture_post(&observation), &mut stop);
     Test386Run { post, stop }
 }
 
@@ -724,7 +728,7 @@ fn run_bios_config(
     config: MachineConfig,
     build_policy: impl FnOnce(&HashMap<DeviceId, usize>) -> RunPolicy,
 ) -> BiosRun {
-    let mut assembled = match assemble_with_observation(&config, &display_policy()) {
+    let mut assembled = match assemble_with_observation(&config, &bios_observation_policy()) {
         Ok(assembled) => assembled,
         Err(e) => {
             return BiosRun {
@@ -747,7 +751,7 @@ fn run_bios_config(
     let result = assembly::run(machine, &policy);
 
     let mut stop = classify_bios_stop(machine, result);
-    let post = drain_post_at(machine, device_index[&DeviceId::Post], 0x80);
+    let post = stream_or_fail(capture_post(&assembled.observation), &mut stop);
     let (screen, screen_stamp) = match assembled.capture_text(DeviceId::Vga) {
         Ok(capture) => {
             let stamp = ScreenStamp {
@@ -766,7 +770,7 @@ fn run_bios_config(
     };
     let machine = &mut assembled.machine;
     let mda = render_mda(machine);
-    let com1 = drain_serial(machine, device_index[&DeviceId::Uart]);
+    let com1 = stream_or_fail(capture_serial(&assembled.observation), &mut stop);
     let floppy_image = device_index
         .get(&DeviceId::Fdc)
         .and_then(|&index| machine.bus_mut().device_mut(index))
@@ -1168,28 +1172,6 @@ fn classify_bios_stop(
     }
 }
 
-/// Drain a POST checkpoint byte stream from the port device at `index`, keeping
-/// only writes to `post_port` (§3.2 tracing seam).
-fn drain_post_at(machine: &mut Machine<X86JitCpu>, index: usize, post_port: u16) -> Vec<u8> {
-    let mut out = Vec::new();
-    if let Some(dev) = machine.bus_mut().device_mut(index) {
-        for event in dev.take_trace() {
-            if let TraceEvent::Port {
-                port,
-                dir: AccessDir::Write,
-                value,
-                ..
-            } = event
-            {
-                if port == post_port {
-                    out.push(value as u8);
-                }
-            }
-        }
-    }
-    out
-}
-
 /// A cleared 80×25 text grid, for a BIOS run that failed before any video output.
 fn blank_screen() -> TextGrid {
     let vram = vec![0u8; TEXT_BUFFER_LEN];
@@ -1291,13 +1273,14 @@ pub fn run_floppy_boot() -> Result<Vec<u8>> {
     let config = assembly::floppy_boot(FLOPPY_LOADER.to_vec(), bootable_floppy_image());
     let AssembledMachine {
         mut machine,
-        device_index,
+        observation,
         ..
-    } = assemble(&config).context("assembling floppy-boot machine")?;
+    } = assemble_with_observation(&config, &serial_policy())
+        .context("assembling floppy-boot machine")?;
 
     machine.run().context("running machine")?;
 
-    Ok(drain_serial(&mut machine, device_index[&DeviceId::Uart]))
+    capture_serial(&observation)
 }
 
 /// Assemble the serial machine, run `blob` in Long64, and return the bytes the
@@ -1307,7 +1290,10 @@ pub fn run_serial(blob: &[u8]) -> Result<Vec<u8>> {
     // It is assembled inline (trait-free) rather than through a config preset: it
     // is the one Long64 machine, and giving the declarative config a mode axis for
     // a single user would not earn its keep.
-    let devices: Vec<Box<dyn Device>> = vec![Box::new(Uart16550::new(COM1_BASE))];
+    let mut devices: Vec<Box<dyn Device>> = vec![Box::new(Uart16550::new(COM1_BASE))];
+    let device_index = HashMap::from([(DeviceId::Uart, 0)]);
+    let observation = Observation::bind(&serial_policy(), &device_index, &mut devices)
+        .context("binding serial observation")?;
     let map = DecodeMap {
         ports: vec![PortRange {
             ports: COM1_BASE..=COM1_TOP,
@@ -1331,7 +1317,7 @@ pub fn run_serial(blob: &[u8]) -> Result<Vec<u8>> {
 
     machine.run().context("running machine")?;
 
-    Ok(drain_serial(&mut machine, 0))
+    capture_serial(&observation)
 }
 
 /// Assemble the PC/AT machine, run `blob` in real mode, and return the bytes the
@@ -1343,9 +1329,9 @@ pub fn run_boot(blob: &[u8]) -> Result<Vec<u8>> {
     let config = assembly::at_boot(blob.to_vec());
     let AssembledMachine {
         mut machine,
-        device_index,
+        observation,
         ..
-    } = assemble(&config).context("assembling boot machine")?;
+    } = assemble_with_observation(&config, &serial_policy()).context("assembling boot machine")?;
 
     // Natural run to quiescence under the demo's idle limit — relocated from the
     // machine's construction into the run policy. No retired cap: the demo masks
@@ -1356,7 +1342,7 @@ pub fn run_boot(blob: &[u8]) -> Result<Vec<u8>> {
     )
     .context("running machine")?;
 
-    Ok(drain_serial(&mut machine, device_index[&DeviceId::Uart]))
+    capture_serial(&observation)
 }
 
 /// Assemble the PC/AT machine with `scancodes` queued in the keyboard, run `blob`
@@ -1369,9 +1355,10 @@ pub fn run_keyboard(blob: &[u8], scancodes: &[u8]) -> Result<Vec<u8>> {
     let config = assembly::at_keyboard(blob.to_vec());
     let AssembledMachine {
         mut machine,
+        observation,
         device_index,
-        ..
-    } = assemble(&config).context("assembling keyboard machine")?;
+    } = assemble_with_observation(&config, &serial_policy())
+        .context("assembling keyboard machine")?;
 
     // Queue the scancodes into the 8042 before the run, exactly as the legacy
     // chipset seeded them at construction — the guest raises IRQ1 for each once it
@@ -1385,7 +1372,7 @@ pub fn run_keyboard(blob: &[u8], scancodes: &[u8]) -> Result<Vec<u8>> {
     )
     .context("running machine")?;
 
-    Ok(drain_serial(&mut machine, device_index[&DeviceId::Uart]))
+    capture_serial(&observation)
 }
 
 /// Assemble the PC/AT machine with a fast-ticking RTC, run `blob` in real mode,
@@ -1402,9 +1389,9 @@ pub fn run_rtc(blob: &[u8]) -> Result<Vec<u8>> {
     let config = assembly::at_rtc(blob.to_vec(), RTC_SECOND_TICKS, RTC_UIP_TICKS);
     let AssembledMachine {
         mut machine,
-        device_index,
+        observation,
         ..
-    } = assemble(&config).context("assembling rtc machine")?;
+    } = assemble_with_observation(&config, &serial_policy()).context("assembling rtc machine")?;
 
     // Natural run under the demo's idle limit (relocated into the run policy).
     assembly::run(
@@ -1413,7 +1400,7 @@ pub fn run_rtc(blob: &[u8]) -> Result<Vec<u8>> {
     )
     .context("running machine")?;
 
-    Ok(drain_serial(&mut machine, device_index[&DeviceId::Uart]))
+    capture_serial(&observation)
 }
 
 /// Assemble the floppy-WRITE machine, run `program` in real mode, and return the
@@ -1427,9 +1414,10 @@ pub fn run_fdc_write(program: &[u8]) -> Result<Vec<u8>> {
     let config = assembly::at_fdc_write(program.to_vec(), fdc_write_pattern(), FDC_WRITE_SRC);
     let AssembledMachine {
         mut machine,
-        device_index,
+        observation,
         ..
-    } = assemble(&config).context("assembling fdc-write machine")?;
+    } = assemble_with_observation(&config, &serial_policy())
+        .context("assembling fdc-write machine")?;
 
     assembly::run(
         &mut machine,
@@ -1437,7 +1425,7 @@ pub fn run_fdc_write(program: &[u8]) -> Result<Vec<u8>> {
     )
     .context("running machine")?;
 
-    Ok(drain_serial(&mut machine, device_index[&DeviceId::Uart]))
+    capture_serial(&observation)
 }
 
 /// Assemble the PC/AT machine, run `blob` in real mode, then render the VGA text
@@ -1475,18 +1463,58 @@ fn display_policy() -> ObservationPolicy {
     }
 }
 
-/// Drain the COM1 byte stream from the UART's transmitted-output sink (§7.2).
-///
-/// The UART already distinguishes THR writes from divisor-latch writes. Reading
-/// its output through the frontend's downcast seam keeps that distinction in
-/// one place; replaying port writes would also capture baud-rate programming.
-fn drain_serial(machine: &mut Machine<X86JitCpu>, uart_index: usize) -> Vec<u8> {
-    if let Some(dev) = machine.bus_mut().device_mut(uart_index) {
-        if let Some(uart) = dev.as_any_mut().and_then(|a| a.downcast_mut::<Uart16550>()) {
-            return uart.take_output();
+/// Each requested stream accepts at most 1 MiB across the whole run, including
+/// drained batches. This frontend bound leaves ample room for boot diagnostics
+/// while making runaway guest output fail capture; it does not cap guest execution.
+const STREAM_BYTE_LIMIT: usize = 1024 * 1024;
+
+fn byte_policy(device: DeviceId, kind: ByteStreamKind) -> ObservationPolicy {
+    ObservationPolicy {
+        routes: vec![ObservationRequest {
+            device,
+            output: OutputKind::Bytes(kind),
+            byte_limit: STREAM_BYTE_LIMIT,
+        }],
+    }
+}
+
+fn serial_policy() -> ObservationPolicy {
+    byte_policy(DeviceId::Uart, ByteStreamKind::SerialTx)
+}
+
+fn post_policy() -> ObservationPolicy {
+    byte_policy(DeviceId::Post, ByteStreamKind::PostCheckpoints)
+}
+
+fn bios_observation_policy() -> ObservationPolicy {
+    let mut policy = display_policy();
+    policy.routes.extend(serial_policy().routes);
+    policy.routes.extend(post_policy().routes);
+    policy
+}
+
+fn stream_or_fail(result: Result<Vec<u8>>, stop: &mut StopReason) -> Vec<u8> {
+    match result {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            *stop = StopReason::ObservationFailed {
+                detail: format!("{error:#}"),
+            };
+            Vec::new()
         }
     }
-    Vec::new()
+}
+
+fn capture_serial(observation: &Observation) -> Result<Vec<u8>> {
+    observation
+        .drain_bytes(DeviceId::Uart, ByteStreamKind::SerialTx)
+        .context("capturing COM1")
+}
+
+fn capture_post(observation: &Observation) -> Result<Vec<u8>> {
+    observation
+        .drain_bytes(DeviceId::Post, ByteStreamKind::PostCheckpoints)
+        .context("capturing POST checkpoints")
 }
 
 #[cfg(test)]
@@ -1535,7 +1563,8 @@ mod tests {
     fn bios_snapshot_survives_a_cpu_error_stop() {
         let mut rom = vec![0; 32768];
         let program = [
-            0xB8, 0, 0xB8, 0x8E, 0xD8, 0xB8, b'X', 0x4E, 0xA3, 0, 0, 0x0F, 0x05,
+            0xB8, 0, 0xB8, 0x8E, 0xD8, 0xB8, b'X', 0x4E, 0xA3, 0, 0, 0xBA, 0xF8, 0x03, 0xB0, b'Z',
+            0xEE, 0xB0, 0, 0xE6, 0x80, 0xE6, 0x80, 0xB0, 0xFF, 0xE6, 0x80, 0x0F, 0x05,
         ];
         rom[..program.len()].copy_from_slice(&program);
         rom[0x7FF0..0x7FF5].copy_from_slice(&[0xEA, 0, 0, 0, 0xF8]);
@@ -1552,6 +1581,8 @@ mod tests {
                 attr: 0x4E
             })
         );
+        assert_eq!(run.com1, b"Z");
+        assert_eq!(run.post, [0, 0, 0xFF]);
         let stamp = run.screen_stamp.unwrap();
         assert!(stamp.retired > 0);
         assert_eq!(stamp.virtual_time, stamp.retired);
@@ -1567,42 +1598,33 @@ mod tests {
     }
 
     #[test]
-    fn drain_serial_excludes_divisor_writes() {
-        let bus = Bus::new(
-            vec![Box::new(Uart16550::new(COM1_BASE))],
-            DecodeMap {
-                ports: vec![PortRange {
-                    ports: COM1_BASE..=COM1_TOP,
-                    device: 0,
-                }],
-                mmio: Vec::new(),
-            },
+    fn stream_overflow_is_an_explicit_failed_run() {
+        let policy = byte_policy(DeviceId::Uart, ByteStreamKind::SerialTx);
+        let mut tiny = policy;
+        tiny.routes[0].byte_limit = 1;
+        let mut assembled =
+            assemble_with_observation(&assembly::at_boot(vec![0xF4]), &tiny).unwrap();
+        assembled
+            .machine
+            .bus_mut()
+            .port_write(COM1_BASE, 1, 0)
+            .unwrap();
+        assembled
+            .machine
+            .bus_mut()
+            .port_write(COM1_BASE, 1, 0xFF)
+            .unwrap();
+        let mut stop = StopReason::Halt;
+        let bytes = stream_or_fail(
+            assembled
+                .observation
+                .drain_bytes(DeviceId::Uart, ByteStreamKind::SerialTx)
+                .map_err(Into::into),
+            &mut stop,
         );
-        let cpu = X86JitCpu::new(RAM_BYTES, ENTRY, &[0xF4]).unwrap();
-        let mut machine = Machine::new(
-            cpu,
-            bus,
-            Box::new(NoInterruptController),
-            QUANTUM,
-            Vec::new(),
-            None,
+        assert!(bytes.is_empty());
+        assert!(
+            matches!(stop, StopReason::ObservationFailed { detail } if detail.contains("1-byte limit"))
         );
-        let uart = machine.bus_mut().device_mut(0).unwrap();
-        uart.port_write(COM1_BASE + 3, 1, 0x83).unwrap();
-        uart.port_write(COM1_BASE, 1, 0x42).unwrap();
-        uart.port_write(COM1_BASE + 1, 1, 0x01).unwrap();
-        uart.port_write(COM1_BASE + 3, 1, 0x03).unwrap();
-        for &byte in b"OK\0\xff" {
-            uart.port_write(COM1_BASE, 1, u32::from(byte)).unwrap();
-        }
-
-        assert_eq!(drain_serial(&mut machine, 0), b"OK\0\xff");
-        assert!(drain_serial(&mut machine, 0).is_empty());
-
-        let uart = machine.bus_mut().device_mut(0).unwrap();
-        uart.port_write(COM1_BASE, 1, u32::from(b'!')).unwrap();
-        let _ = uart.take_trace();
-        assert_eq!(drain_serial(&mut machine, 0), b"!");
-        assert!(drain_serial(&mut machine, 0).is_empty());
     }
 }

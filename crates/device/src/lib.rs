@@ -57,11 +57,11 @@ pub trait ByteOutput {
     fn bind_sink(&mut self, sink: Box<dyn ByteSink>);
 }
 
-/// Capture exceeded its explicit pending-byte limit in the current epoch.
+/// Capture exceeded its explicit byte limit in the current epoch.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Error)]
 #[error("byte capture exceeded its {limit}-byte limit")]
 pub struct ByteOverflow {
-    /// Maximum number of bytes retained between drains.
+    /// Maximum number of bytes accepted during one capture epoch.
     pub limit: usize,
 }
 
@@ -69,14 +69,18 @@ pub struct ByteOverflow {
 struct CapturedBytes {
     bytes: Vec<u8>,
     limit: usize,
+    accepted: usize,
     overflow: bool,
 }
 
 /// A bounded, single-threaded capture sink and its shared host handle.
 ///
-/// At most `limit` pending bytes are retained. Further bytes are discarded and
-/// overflow latches: every drain fails until [`ByteCapture::start_epoch`], so a
-/// partial stream cannot pass a golden assertion. Hardware continues unchanged.
+/// At most `limit` bytes are accepted per epoch, including bytes already drained.
+/// Draining releases buffered bytes without replenishing the budget, bounding
+/// the concatenated result independently of host drain cadence. Further bytes
+/// are discarded and overflow latches: every drain fails until
+/// [`ByteCapture::start_epoch`], so a partial stream cannot pass a golden
+/// assertion. Hardware continues unchanged.
 /// Clones share one history; only the observation facade should drain it and
 /// distribute the resulting batch. See `backlog/docs/design/observation.md`,
 /// §Sinks, bounds and lifecycle.
@@ -84,12 +88,13 @@ struct CapturedBytes {
 pub struct ByteCapture(Rc<RefCell<CapturedBytes>>);
 
 impl ByteCapture {
-    /// Start an empty capture with an explicit pending-byte bound (zero allowed).
+    /// Start an empty capture with an explicit per-epoch byte bound (zero allowed).
     #[must_use]
     pub fn new(limit: usize) -> Self {
         Self(Rc::new(RefCell::new(CapturedBytes {
             bytes: Vec::new(),
             limit,
+            accepted: 0,
             overflow: false,
         })))
     }
@@ -110,6 +115,7 @@ impl ByteCapture {
     pub fn start_epoch(&self) {
         let mut capture = self.0.borrow_mut();
         capture.bytes.clear();
+        capture.accepted = 0;
         capture.overflow = false;
     }
 
@@ -123,10 +129,11 @@ impl ByteCapture {
 impl ByteSink for ByteCapture {
     fn push(&mut self, byte: u8) {
         let mut capture = self.0.borrow_mut();
-        if capture.overflow || capture.bytes.len() == capture.limit {
+        if capture.overflow || capture.accepted == capture.limit {
             capture.overflow = true;
         } else {
             capture.bytes.push(byte);
+            capture.accepted += 1;
         }
     }
 }
@@ -581,6 +588,24 @@ mod tests {
     use super::*;
 
     #[test]
+    fn byte_capture_limit_covers_the_whole_epoch_across_drains() {
+        let capture = ByteCapture::new(2);
+        let mut producer = capture.clone();
+        producer.push(0);
+        assert_eq!(capture.drain().unwrap(), [0]);
+        producer.push(0xFF);
+        assert_eq!(capture.drain().unwrap(), [0xFF]);
+        producer.push(42);
+        assert_eq!(capture.buffered_len(), 0);
+        assert_eq!(capture.drain(), Err(ByteOverflow { limit: 2 }));
+        assert_eq!(producer.drain(), Err(ByteOverflow { limit: 2 }));
+        capture.start_epoch();
+        producer.push(7);
+        producer.push(8);
+        assert_eq!(capture.drain().unwrap(), [7, 8]);
+    }
+
+    #[test]
     fn byte_capture_zero_limit_latches_overflow_until_new_epoch() {
         let mut capture = ByteCapture::new(0);
         assert_eq!(capture.drain(), Ok(Vec::new()));
@@ -593,7 +618,7 @@ mod tests {
 
     #[test]
     fn byte_capture_drains_complete_batches_with_one_shared_history() {
-        let capture = ByteCapture::new(2);
+        let capture = ByteCapture::new(3);
         let mut producer = capture.clone();
         producer.push(0);
         producer.push(0xFF);
