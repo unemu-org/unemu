@@ -129,6 +129,21 @@ pub enum CpuError {
     },
 }
 
+/// Result of one DMA byte cycle in the guest physical memory map (§4.3).
+///
+/// Intel 8237A datasheet, Pin Description (MEMR/MEMW): DMA drives memory bus
+/// cycles independently of CPU instruction execution.
+/// The CPU backend has no devices: a trapped address must be dispatched by the
+/// machine through its MMIO bus before completing the request to the bus master.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[must_use]
+pub enum DmaAccess<T> {
+    /// Memory serviced the cycle, including a dropped ROM or unmapped write.
+    Complete(T),
+    /// A trapped window requires an MMIO byte cycle at the same address.
+    Mmio,
+}
+
 /// The CPU swap seam (§3.2 seam 1).
 ///
 /// A backend implements execution ([`Cpu::run`]), register access, the
@@ -193,22 +208,25 @@ pub trait Cpu {
         false
     }
 
-    /// Read one byte of guest physical memory for a DMA transfer.
+    /// Read one byte of guest physical memory for a DMA transfer (§4.3).
     ///
-    /// A DMA controller moves bytes between a device and guest RAM through the
-    /// machine, which routes each byte here so the access uses the same `Vm` path
-    /// as the CPU (§4.3). The default returns open-bus `0xFF` for a backend with
-    /// no guest memory (the mock CPU).
-    fn guest_dma_read(&self, addr: u32) -> u8 {
+    /// RAM and ROM return their bytes; a trapped window returns
+    /// [`DmaAccess::Mmio`] so the machine can call its bus's MMIO read. The
+    /// default returns open-bus `0xFF` for a backend with no guest memory.
+    fn guest_dma_read(&self, addr: u32) -> DmaAccess<u8> {
         let _ = addr;
-        0xFF
+        DmaAccess::Complete(0xFF)
     }
 
-    /// Write one byte of guest physical memory for a DMA transfer, running the
-    /// core's `note_write` self-modifying-code hook (§4.3, §6). The default is a
-    /// no-op for a backend with no guest memory (the mock CPU).
-    fn guest_dma_write(&mut self, addr: u32, value: u8) {
+    /// Write one DMA byte according to the guest physical memory map (§4.3).
+    ///
+    /// RAM writes must run the core's `note_write` self-modifying-code hook.
+    /// ROM writes are dropped; a trapped window returns [`DmaAccess::Mmio`]
+    /// without modifying backing memory, so the machine can dispatch the write.
+    /// The default drops the write for a backend with no guest memory.
+    fn guest_dma_write(&mut self, addr: u32, value: u8) -> DmaAccess<()> {
         let _ = (addr, value);
+        DmaAccess::Complete(())
     }
 
     /// Retired-instruction count since reset — the deterministic virtual-time

@@ -198,10 +198,11 @@ not copied into this workspace
 - DMA byte access uses `Vm::read_bytes` / `write_bytes`; writes run `note_write`
   for self-modifying-code invalidation
   ([decision-6](../decisions/decision-6%20-%20Guest%20memory%20writes%20via%20note_write%20for%20SMC%20safety.md)).
-  **Known limit:** these are host backing-memory APIs, not guest bus accesses:
-  they bypass ROM guest-write protection and MMIO trap dispatch. DMA is safe
-  for the intended RAM buffers, not a faithful DMA-to-ROM/MMIO model. Read
-  errors return `0xFF`; write errors are discarded by the current byte seam.
+  The backend remembers the regions it mapped: a DMA write into ROM is
+  dropped and a DMA read from ROM returns ROM bytes, while a byte in a trapped
+  MMIO window is handed back to the machine (`DmaAccess::Mmio`), which runs it
+  as a bus MMIO cycle on the owning device. Read errors return `0xFF`; write
+  errors are discarded by the current byte seam.
 
 ## In flight and further reading
 

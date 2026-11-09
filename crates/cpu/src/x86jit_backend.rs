@@ -14,7 +14,7 @@
 
 use x86jit_core::{CpuMode, Exit, PortDir, Prot, Reg, RegionKind, Vcpu, Vm, VmConfig};
 
-use crate::{Cpu, CpuError, CpuReg, CpuStop};
+use crate::{Cpu, CpuError, CpuReg, CpuStop, DmaAccess};
 
 /// A CPU backed by the `x86jit` interpreter core (§2.1).
 ///
@@ -23,6 +23,7 @@ use crate::{Cpu, CpuError, CpuReg, CpuStop};
 pub struct X86JitCpu {
     vm: Vm,
     cpu: Vcpu,
+    dma_regions: Vec<(std::ops::Range<u64>, RegionKind)>,
 }
 
 impl X86JitCpu {
@@ -41,7 +42,11 @@ impl X86JitCpu {
             .map_err(|e| CpuError::Memory(format!("{e:?}")))?;
         let mut cpu = vm.new_vcpu();
         cpu.set_reg(Reg::Rip, entry);
-        Ok(Self { vm, cpu })
+        Ok(Self {
+            vm,
+            cpu,
+            dma_regions: vec![(0..ram_bytes, RegionKind::Ram)],
+        })
     }
 
     /// Build a **real-mode (16-bit)** CPU over a flat guest address space of
@@ -74,7 +79,11 @@ impl X86JitCpu {
         cpu.set_reg(Reg::Ss, u64::from(segments.ss));
         cpu.set_reg(Reg::Rsp, u64::from(segments.sp));
         cpu.set_reg(Reg::Rip, u64::from(ip));
-        Ok(Self { vm, cpu })
+        Ok(Self {
+            vm,
+            cpu,
+            dma_regions: Vec::new(),
+        })
     }
 
     /// Map a conventional RAM window `[base, base + size)` as `RWX` `Ram`.
@@ -83,9 +92,7 @@ impl X86JitCpu {
     /// [`X86JitCpu::new_real16_bare`]: the low 640 KiB, the upper-memory probe
     /// area, and the zeroed option-ROM scan region are all plain RAM.
     pub fn map_ram(&mut self, base: u64, size: u64) -> Result<(), CpuError> {
-        self.vm
-            .map(base, size as usize, Prot::RWX, RegionKind::Ram)
-            .map_err(|e| CpuError::Memory(format!("{e:?}")))
+        self.map_region(base, size as usize, Prot::RWX, RegionKind::Ram)
     }
 
     /// Map a masked **ROM** window at `base` sized to `blob` and load `blob` into
@@ -97,9 +104,7 @@ impl X86JitCpu {
     /// through the `Vm` write path, which bypasses the region kind — the only way
     /// to populate a ROM, which is immutable to the guest thereafter.
     pub fn map_rom(&mut self, base: u64, blob: &[u8]) -> Result<(), CpuError> {
-        self.vm
-            .map(base, blob.len(), Prot::RX, RegionKind::Rom)
-            .map_err(|e| CpuError::Memory(format!("{e:?}")))?;
+        self.map_region(base, blob.len(), Prot::RX, RegionKind::Rom)?;
         self.vm
             .write_bytes(base, blob)
             .map_err(|e| CpuError::Memory(format!("{e:?}")))
@@ -135,9 +140,30 @@ impl X86JitCpu {
     /// Loads/stores in this range yield `Exit::MmioRead`/`Exit::MmioWrite`,
     /// surfaced as [`CpuStop::MmioRead`]/[`CpuStop::MmioWrite`] (§4.2, §5.2).
     pub fn map_mmio(&mut self, base: u64, size: u64) -> Result<(), CpuError> {
+        self.map_region(base, size as usize, Prot::RW, RegionKind::Trap)
+    }
+
+    fn map_region(
+        &mut self,
+        base: u64,
+        size: usize,
+        prot: Prot,
+        kind: RegionKind,
+    ) -> Result<(), CpuError> {
         self.vm
-            .map(base, size as usize, Prot::RW, RegionKind::Trap)
-            .map_err(|e| CpuError::Memory(format!("{e:?}")))
+            .map(base, size, prot, kind)
+            .map_err(|e| CpuError::Memory(format!("{e:?}")))?;
+        // Vm's host loader API bypasses region kinds. Keep the successful maps
+        // here so DMA cycles obey the guest map without involving any devices.
+        self.dma_regions.push((base..base + size as u64, kind));
+        Ok(())
+    }
+
+    fn dma_region_kind(&self, addr: u32) -> Option<RegionKind> {
+        self.dma_regions
+            .iter()
+            .find(|(range, _)| range.contains(&u64::from(addr)))
+            .map(|(_, kind)| *kind)
     }
 }
 
@@ -278,21 +304,25 @@ impl Cpu for X86JitCpu {
         self.cpu.has_pending_irq()
     }
 
-    fn guest_dma_read(&self, addr: u32) -> u8 {
-        let mut buf = [0u8; 1];
-        // A DMA target that falls outside mapped RAM reads as open bus, matching
-        // an ISA master that no memory responds to.
-        match self.vm.read_bytes(u64::from(addr), &mut buf) {
-            Ok(()) => buf[0],
-            Err(_) => 0xFF,
+    fn guest_dma_read(&self, addr: u32) -> DmaAccess<u8> {
+        if self.dma_region_kind(addr) == Some(RegionKind::Trap) {
+            return DmaAccess::Mmio;
         }
+        let mut buf = [0xFF; 1];
+        let _ = self.vm.read_bytes(u64::from(addr), &mut buf);
+        DmaAccess::Complete(buf[0])
     }
 
-    fn guest_dma_write(&mut self, addr: u32, value: u8) {
-        // Goes through the `Vm` write path so the core's self-modifying-code
-        // tracking invalidates any translated block the transfer overwrites — the
-        // reason a DMA controller never touches guest RAM directly.
-        let _ = self.vm.write_bytes(u64::from(addr), &[value]);
+    fn guest_dma_write(&mut self, addr: u32, value: u8) -> DmaAccess<()> {
+        match self.dma_region_kind(addr) {
+            Some(RegionKind::Trap) => DmaAccess::Mmio,
+            Some(RegionKind::Ram) => {
+                // Vm records note_write, invalidating code overwritten by DMA.
+                let _ = self.vm.write_bytes(u64::from(addr), &[value]);
+                DmaAccess::Complete(())
+            }
+            _ => DmaAccess::Complete(()),
+        }
     }
 
     fn retired(&self) -> u64 {
@@ -355,6 +385,44 @@ mod tests {
         let mut buf = [0u8; 2];
         cpu.read_mem(0xF_0000, &mut buf).expect("read rom");
         assert_eq!(u16::from_le_bytes(buf), 0x06C7);
+    }
+
+    #[test]
+    fn dma_rom_write_is_dropped_and_reads_return_rom_bytes() {
+        let mut cpu = real_mode_cpu(&[0xF4]);
+        cpu.map_rom(0xF_0000, &[0xA5, 0x5A]).expect("map rom");
+
+        assert_eq!(cpu.guest_dma_write(0xF_0000, 0x11), DmaAccess::Complete(()));
+        assert_eq!(cpu.guest_dma_write(0xF_0001, 0x22), DmaAccess::Complete(()));
+
+        let mut bytes = [0; 2];
+        cpu.read_mem(0xF_0000, &mut bytes).expect("read rom");
+        assert_eq!(bytes, [0xA5, 0x5A]);
+        assert_eq!(cpu.guest_dma_read(0xF_0000), DmaAccess::Complete(0xA5));
+        assert_eq!(cpu.guest_dma_read(0xF_0001), DmaAccess::Complete(0x5A));
+    }
+
+    #[test]
+    fn dma_ram_write_invalidates_cached_code() {
+        // mov ax, 0x1234; out 0xE9, al; hlt
+        let mut cpu = real_mode_cpu(&[0xB8, 0x34, 0x12, 0xE6, 0xE9, 0xF4]);
+        assert!(matches!(
+            run_to_stop(&mut cpu).expect("run"),
+            CpuStop::PortOut { .. }
+        ));
+        assert_eq!(cpu.reg(CpuReg::Rax) & 0xFFFF, 0x1234);
+        cpu.vm.watch_range(0x7C01, 1);
+
+        assert_eq!(cpu.guest_dma_write(0x7C01, 0x78), DmaAccess::Complete(()));
+        assert_eq!(cpu.guest_dma_read(0x7C01), DmaAccess::Complete(0x78));
+        assert_eq!(cpu.vm.take_dirty_ranges(), vec![(0x7000, 0x1000)]);
+        cpu.set_reg(CpuReg::Rip, 0x7C00);
+
+        assert!(matches!(
+            run_to_stop(&mut cpu).expect("rerun"),
+            CpuStop::PortOut { .. }
+        ));
+        assert_eq!(cpu.reg(CpuReg::Rax) & 0xFFFF, 0x1278);
     }
 
     /// Base of the trapped colour text window the MMIO tests aim at.
@@ -482,7 +550,11 @@ mod tests {
         vm.write_bytes(0x1000, &[0xF4]).expect("load hlt");
         let mut vcpu = vm.new_vcpu();
         vcpu.set_reg(Reg::Rip, 0x1000);
-        let mut cpu = X86JitCpu { vm, cpu: vcpu };
+        let mut cpu = X86JitCpu {
+            vm,
+            cpu: vcpu,
+            dma_regions: vec![(0..0x2000, RegionKind::Ram)],
+        };
 
         match cpu.run(None) {
             Err(CpuError::UnexpectedExit { what }) => {

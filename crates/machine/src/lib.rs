@@ -110,20 +110,34 @@ pub struct DmaWiring {
     pub controller: usize,
 }
 
-/// Bridges the CPU's guest-memory access to the [`DmaMemory`] handle a DMA
-/// controller expects, so every DMA byte goes through the `Vm` `note_write` path
-/// (§4.3). Lives only for the duration of one transfer.
+/// Bridges DMA memory cycles to the CPU map (§4.3), keeping RAM writes on the
+/// `note_write` path and queuing trapped bytes for bus dispatch. The controller
+/// borrows the bus during a transfer, so MMIO is serviced after that borrow ends,
+/// before the requester receives completion or any guest execution resumes.
 struct CpuDmaMemory<'a, C: Cpu> {
     cpu: &'a mut C,
+    read_offset: std::cell::Cell<usize>,
+    mmio_reads: std::cell::RefCell<Vec<(usize, u32)>>,
+    mmio_writes: Vec<(u32, u8)>,
 }
 
 impl<C: Cpu> DmaMemory for CpuDmaMemory<'_, C> {
     fn dma_read(&self, addr: u32) -> u8 {
-        self.cpu.guest_dma_read(addr)
+        let offset = self.read_offset.get();
+        self.read_offset.set(offset + 1);
+        match self.cpu.guest_dma_read(addr) {
+            cpu::DmaAccess::Complete(value) => value,
+            cpu::DmaAccess::Mmio => {
+                self.mmio_reads.borrow_mut().push((offset, addr));
+                0xFF
+            }
+        }
     }
 
     fn dma_write(&mut self, addr: u32, value: u8) {
-        self.cpu.guest_dma_write(addr, value);
+        if self.cpu.guest_dma_write(addr, value) == cpu::DmaAccess::Mmio {
+            self.mmio_writes.push((addr, value));
+        }
     }
 }
 
@@ -377,7 +391,7 @@ impl<C: Cpu> Machine<C> {
                     self.tick_clock();
                     self.halted_clocks += 1;
                     self.service_interrupts();
-                    self.service_dma();
+                    self.service_dma()?;
                     if !self.cpu.has_pending_irq() {
                         self.idle_clocks += 1;
                     }
@@ -433,7 +447,7 @@ impl<C: Cpu> Machine<C> {
             // Run any DMA transfer a bus master queued while servicing the stop
             // (a floppy READ programs its transfer, then the 8237 moves the bytes
             // into guest RAM before the guest runs again).
-            self.service_dma();
+            self.service_dma()?;
         }
     }
 
@@ -511,13 +525,14 @@ impl<C: Cpu> Machine<C> {
     /// The seam is symmetric. For a device→memory ([`DmaOp::ToMemory`]) request —
     /// what a floppy READ queues — the requester hands over the bytes it read from
     /// its backing image; the machine streams them through the controller's
-    /// channel, writing each to guest RAM via the `note_write` path (§4.3), and
-    /// reports the byte count and TC signal back. For a memory→device request
+    /// channel, writing RAM via the `note_write` path (§4.3), dropping ROM
+    /// writes, dispatching trapped windows through the MMIO bus, and reporting
+    /// the byte count and TC signal back. For a memory→device request
     /// ([`DmaOp::FromMemory`]) — what a floppy WRITE queues — the machine reads
-    /// the requested
-    /// length out of guest RAM through the same channel, truncates the buffer to
-    /// what the channel actually transferred (terminal count may cut it short, and
-    /// the requester must never see uninitialised tail bytes), and hands the bytes
+    /// the requested length from guest RAM, ROM or MMIO through the same channel,
+    /// truncates the buffer to what the channel actually transferred (terminal
+    /// count may cut it short, and the requester must never see uninitialised
+    /// tail bytes), and hands the bytes
     /// back with the TC signal. Either way the controller advances the channel's
     /// address and count, then the requester finishes its result phase and raises
     /// its interrupt.
@@ -525,7 +540,9 @@ impl<C: Cpu> Machine<C> {
     /// This is the only place a device's bytes cross to or from memory without the
     /// device holding a memory reference: the requester never sees an address, the
     /// controller never sees the disk, and the SMC-safe seam is preserved.
-    fn service_dma(&mut self) {
+    /// Bus faults propagate just like CPU MMIO faults; a failed transfer does
+    /// not report a successful completion to the requester.
+    fn service_dma(&mut self) -> Result<(), BusError> {
         for i in 0..self.dma_wirings.len() {
             let wiring = self.dma_wirings[i];
             let request = self
@@ -535,7 +552,12 @@ impl<C: Cpu> Machine<C> {
             let Some(request) = request else {
                 continue;
             };
-            let mut mem = CpuDmaMemory { cpu: &mut self.cpu };
+            let mut mem = CpuDmaMemory {
+                cpu: &mut self.cpu,
+                read_offset: std::cell::Cell::new(0),
+                mmio_reads: std::cell::RefCell::new(Vec::new()),
+                mmio_writes: Vec::new(),
+            };
             let outcome = match request.op {
                 DmaOp::ToMemory(data) => {
                     let transfer = self
@@ -543,6 +565,9 @@ impl<C: Cpu> Machine<C> {
                         .device_mut(wiring.controller)
                         .map(|ctrl| ctrl.dma_service_write(request.channel, &mut mem, &data))
                         .unwrap_or_default();
+                    for (addr, value) in mem.mmio_writes {
+                        self.bus.mmio_write(u64::from(addr), 1, u64::from(value))?;
+                    }
                     DmaOutcome::ToMemory {
                         transferred: transfer.transferred,
                         terminal_count: transfer.terminal_count,
@@ -556,6 +581,9 @@ impl<C: Cpu> Machine<C> {
                         .map(|ctrl| ctrl.dma_service_read(request.channel, &mut mem, &mut buf))
                         .unwrap_or_default();
                     buf.truncate(transfer.transferred);
+                    for (offset, addr) in mem.mmio_reads.into_inner() {
+                        buf[offset] = self.bus.mmio_read(u64::from(addr), 1)? as u8;
+                    }
                     DmaOutcome::FromMemory {
                         bytes: buf,
                         terminal_count: transfer.terminal_count,
@@ -566,6 +594,7 @@ impl<C: Cpu> Machine<C> {
                 dev.dma_complete(outcome);
             }
         }
+        Ok(())
     }
 
     /// Acknowledge-at-inject (§5.1, §5.4): if the CPU has no injected IRQ in
@@ -1438,11 +1467,12 @@ mod tests {
         fn complete_port_in(&mut self, _value: u64) {}
         fn complete_mmio_read(&mut self, _value: u64) {}
         fn complete_mmio_write(&mut self) {}
-        fn guest_dma_read(&self, addr: u32) -> u8 {
-            self.mem[addr as usize]
+        fn guest_dma_read(&self, addr: u32) -> cpu::DmaAccess<u8> {
+            cpu::DmaAccess::Complete(self.mem[addr as usize])
         }
-        fn guest_dma_write(&mut self, addr: u32, value: u8) {
+        fn guest_dma_write(&mut self, addr: u32, value: u8) -> cpu::DmaAccess<()> {
             self.mem[addr as usize] = value;
+            cpu::DmaAccess::Complete(())
         }
         fn retired(&self) -> u64 {
             0
@@ -1551,7 +1581,7 @@ mod tests {
     }
 
     /// Read the outcome the requester captured after a serviced transfer.
-    fn captured_outcome(machine: &mut Machine<MemCpu>) -> DmaOutcome {
+    fn captured_outcome<C: Cpu>(machine: &mut Machine<C>) -> DmaOutcome {
         machine
             .bus
             .device_mut(0)
@@ -1559,6 +1589,146 @@ mod tests {
             .and_then(|any| any.downcast_mut::<FromMemoryRequester>())
             .and_then(|req| req.received.take())
             .expect("the requester received a completion")
+    }
+
+    /// A byte-wide memory-mapped device with observable read side effects.
+    struct DmaMmioDevice {
+        bytes: [u8; 2],
+        reads: u8,
+    }
+
+    impl Device for DmaMmioDevice {
+        fn name(&self) -> &'static str {
+            "dma-mmio"
+        }
+        fn port_read(&mut self, _: u16, _: u8) -> Result<u32, DeviceError> {
+            Ok(0)
+        }
+        fn port_write(&mut self, _: u16, _: u8, _: u32) -> Result<(), DeviceError> {
+            Ok(())
+        }
+        fn mmio_read(&mut self, addr: u64, size: u8) -> Result<u64, DeviceError> {
+            assert_eq!(size, 1);
+            self.reads += 1;
+            Ok(u64::from(self.bytes[(addr - 0xB8000) as usize]))
+        }
+        fn mmio_write(&mut self, addr: u64, size: u8, value: u64) -> Result<(), DeviceError> {
+            assert_eq!(size, 1);
+            self.bytes[(addr - 0xB8000) as usize] = value as u8;
+            Ok(())
+        }
+        fn tick(&mut self, _: VClock) {}
+        fn irq_pending(&self) -> bool {
+            false
+        }
+        fn irq_vector(&self) -> Option<u8> {
+            None
+        }
+        fn reset(&mut self) {}
+        fn save(&self) -> Vec<u8> {
+            vec![self.bytes[0], self.bytes[1], self.reads]
+        }
+        fn restore(&mut self, _: &[u8]) -> Result<(), DeviceError> {
+            Ok(())
+        }
+    }
+
+    fn mapped_dma_machine(op: DmaOp, count: u16) -> Machine<cpu::X86JitCpu> {
+        use cpu::x86jit_backend::RealSegments;
+        let mut cpu = cpu::X86JitCpu::new_real16_bare(0x10_0000, 0, 0x7C00, RealSegments::flat(0))
+            .expect("cpu");
+        cpu.map_ram(0xB7FFE, 2).expect("ram before mmio");
+        cpu.map_mmio(0xB8000, 2).expect("mmio");
+        cpu.map_rom(0xB8002, &[0xA5, 0x5A]).expect("rom");
+        cpu.map_ram(0xB8004, 2).expect("ram after rom");
+        cpu.write_mem(0xB7FFE, &[0x11, 0x22]).expect("seed ram");
+        cpu.write_mem(0xB8000, &[0xEE, 0xEE])
+            .expect("seed mmio backing");
+        cpu.write_mem(0xB8004, &[0x33, 0x44]).expect("seed ram");
+        let mut dma = programmed_read_dma(0x7FFE, count);
+        dma.port_write(0x81, 1, 0x0B).expect("page");
+        if matches!(op, DmaOp::ToMemory(_)) {
+            dma.port_write(0x0B, 1, 0x46).expect("write mode");
+        }
+        let requester = FromMemoryRequester {
+            pending: Some(DmaRequest {
+                channel: READ_CHANNEL,
+                op,
+            }),
+            received: None,
+        };
+        let bus = Bus::new(
+            vec![
+                Box::new(requester),
+                Box::new(dma),
+                Box::new(DmaMmioDevice {
+                    bytes: [0x66, 0x77],
+                    reads: 0,
+                }),
+            ],
+            DecodeMap {
+                ports: Vec::new(),
+                mmio: vec![bus::MmioRange {
+                    addrs: 0xB8000..=0xB8001,
+                    device: 2,
+                }],
+            },
+        );
+        Machine::new(cpu, bus, Box::new(NoIc), None, Vec::new(), Some(1)).with_dma_wirings(vec![
+            DmaWiring {
+                requester: 0,
+                controller: 1,
+            },
+        ])
+    }
+
+    #[test]
+    fn service_dma_write_routes_mmio_and_preserves_rom_across_boundaries() {
+        let mut machine = mapped_dma_machine(DmaOp::ToMemory(vec![1, 2, 3, 4, 5, 6, 7, 8]), 6);
+        machine.service_dma().expect("dma");
+        assert_eq!(
+            machine.bus().device(2).expect("mmio device").save(),
+            vec![3, 4, 0]
+        );
+        let mut bytes = [0; 2];
+        machine
+            .cpu()
+            .read_mem(0xB8000, &mut bytes)
+            .expect("backing");
+        assert_eq!(bytes, [0xEE, 0xEE]);
+        machine.cpu().read_mem(0xB8002, &mut bytes).expect("rom");
+        assert_eq!(bytes, [0xA5, 0x5A]);
+        machine.cpu().read_mem(0xB7FFE, &mut bytes).expect("ram");
+        assert_eq!(bytes, [1, 2]);
+        machine.cpu().read_mem(0xB8004, &mut bytes).expect("ram");
+        assert_eq!(bytes, [7, 0x44]);
+        assert!(matches!(
+            captured_outcome(&mut machine),
+            DmaOutcome::ToMemory {
+                transferred: 7,
+                terminal_count: true
+            }
+        ));
+    }
+
+    #[test]
+    fn service_dma_read_routes_mmio_and_reads_rom_across_boundaries() {
+        let mut machine = mapped_dma_machine(DmaOp::FromMemory { len: 8 }, 6);
+        machine.service_dma().expect("dma");
+        assert_eq!(
+            machine.bus().device(2).expect("mmio device").save(),
+            vec![0x66, 0x77, 2]
+        );
+        match captured_outcome(&mut machine) {
+            DmaOutcome::FromMemory {
+                bytes,
+                terminal_count,
+            } => {
+                assert!(terminal_count);
+                assert_eq!(bytes, [0x11, 0x22, 0x66, 0x77, 0xA5, 0x5A, 0x33]);
+            }
+            other => panic!("expected memory read, got {other:?}"),
+        }
     }
 
     #[test]
@@ -1580,7 +1750,7 @@ mod tests {
         };
 
         let mut machine = dma_machine(cpu, requester, dma);
-        machine.service_dma();
+        machine.service_dma().expect("dma");
 
         match captured_outcome(&mut machine) {
             DmaOutcome::FromMemory {
@@ -1619,7 +1789,7 @@ mod tests {
         };
 
         let mut machine = dma_machine(cpu, requester, dma);
-        machine.service_dma();
+        machine.service_dma().expect("dma");
 
         match captured_outcome(&mut machine) {
             DmaOutcome::FromMemory {
