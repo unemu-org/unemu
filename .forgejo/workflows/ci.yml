@@ -87,6 +87,11 @@ jobs:
         if: ${{ !cancelled() }}
         run: bash scripts/ci-gate.sh clippy
 
+      - name: Licences and dependency policy
+        id: deny
+        if: ${{ !cancelled() }}
+        run: bash scripts/ci-gate.sh deny
+
       - name: Tests
         id: tests
         if: ${{ !cancelled() }}
@@ -130,6 +135,7 @@ jobs:
             fmt=${{ steps.fmt.outcome }}
             guard=${{ steps.guard.outcome }}
             clippy=${{ steps.clippy.outcome }}
+            deny=${{ steps.deny.outcome }}
             tests=${{ steps.tests.outcome }}
             fixtures=${{ steps.fixtures.outcome }}
             goldens=${{ steps.goldens.outcome }}

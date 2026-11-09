@@ -34,6 +34,7 @@
             pkgs.clippy
             pkgs.rustfmt
             pkgs.rust-analyzer
+            pkgs.cargo-deny
 
             # --- guest test-ROM build (hand-assembled real-mode / long-mode programs) ---
             pkgs.nasm

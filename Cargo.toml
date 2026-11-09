@@ -30,18 +30,18 @@ anyhow = "1"
 # golden trace) runs against a known CPU. Not a bare path dependency — that breaks
 # nix build and CI. To develop against a local x86jit checkout, add a gitignored
 # [patch] override instead of editing this line.
-x86jit-core = { git = "https://git.lab.mikolajczyk.org/unemu-org/x86jit", rev = "f6f2720281432e9382702ba4b882381c21d578a1" }
+x86jit-core = { version = "0.3", git = "https://git.lab.mikolajczyk.org/unemu-org/x86jit", rev = "f6f2720281432e9382702ba4b882381c21d578a1" }
 
 # Internal crates share the workspace version.
-assembly = { path = "crates/assembly" }
-device = { path = "crates/device" }
-bus = { path = "crates/bus" }
-chipset = { path = "crates/chipset" }
-cpu = { path = "crates/cpu" }
-machine = { path = "crates/machine" }
-devices = { path = "crates/devices" }
-video = { path = "crates/video" }
-testkit = { path = "crates/testkit" }
+assembly = { path = "crates/assembly", version = "0.1.0" }
+device = { path = "crates/device", version = "0.1.0" }
+bus = { path = "crates/bus", version = "0.1.0" }
+chipset = { path = "crates/chipset", version = "0.1.0" }
+cpu = { path = "crates/cpu", version = "0.1.0" }
+machine = { path = "crates/machine", version = "0.1.0" }
+devices = { path = "crates/devices", version = "0.1.0" }
+video = { path = "crates/video", version = "0.1.0" }
+testkit = { path = "crates/testkit", version = "0.1.0" }
 
 # Optimize dependencies (the CPU core and its decoder) even in dev/test builds,
 # because emulator tests spend most of their time inside them. Workspace crates

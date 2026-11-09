@@ -78,12 +78,16 @@ A bead closes only when all of these hold on `main`:
 3. `cargo fmt --check` is clean.
 
 The Forgejo CI lane runs these checks via `scripts/ci-gate.sh`, plus the publication
-guard and the slow goldens after building their fixtures. Use
+guard, `cargo deny --all-features check licenses bans sources` on every run,
+and the slow goldens after building their fixtures. Use
 `bash scripts/ci-gate.sh <step>` to run the same gate locally; see
 [`commands.md` § CI](commands.md#ci).
 
 Plus, when the change warrants it:
 
+- `cargo deny --all-features check licenses bans sources` whenever the dependency
+  set changes (including features, sources, and licence policy), following x86jit's
+  conditional Definition of Done;
 - the slow goldens, `cargo test --workspace -- --ignored` (BIOS POST, FreeDOS boot, the DOS
   sessions; about 75 s; the gitignored fixtures under `vendor/` must be fetched — a missing
   fixture skips) —

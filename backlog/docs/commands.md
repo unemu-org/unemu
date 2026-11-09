@@ -19,7 +19,15 @@ cargo test -p devices                        # one crate's tests
 cargo clippy --all-targets --all-features -- -D warnings
 cargo fmt --all
 cargo fmt --all -- --check                   # CI check
+cargo deny --all-features list               # inspect dependency licences
+cargo deny --all-features check licenses bans sources
 ```
+
+The `deny.toml` allowlist covers the all-features graph: AGPL-3.0-or-later for
+workspace crates, MIT, Apache-2.0, and Unicode-3.0 for dependencies. New licences
+require review before extending it. Unknown registries and git sources are denied;
+only the pinned x86jit repository is explicitly allowed. Wildcard dependencies
+are denied and duplicate versions warn. These checks do not need the advisory database.
 
 ## CI
 
@@ -31,6 +39,7 @@ bash scripts/ci-gate.sh devshell
 bash scripts/ci-gate.sh fmt
 bash scripts/ci-gate.sh guard
 bash scripts/ci-gate.sh clippy
+bash scripts/ci-gate.sh deny                     # licences, bans, sources; all features
 bash scripts/ci-gate.sh tests
 bash scripts/ci-gate.sh fixtures                 # network fetch + build BIOS, FreeDOS, test386
 bash scripts/ci-gate.sh goldens                  # slow tests (~2 min); requires fixtures

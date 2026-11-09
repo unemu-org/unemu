@@ -4,7 +4,7 @@
 set -euo pipefail
 
 usage() {
-    echo 'Usage: bash scripts/ci-gate.sh {devshell|fmt|guard|clippy|tests|fixtures|goldens}' >&2
+    echo 'Usage: bash scripts/ci-gate.sh {devshell|fmt|guard|clippy|deny|tests|fixtures|goldens}' >&2
     exit 2
 }
 
@@ -17,6 +17,7 @@ case "$step" in
     fmt) gate_command+=(cargo fmt --check) ;;
     guard) gate_command=(bash scripts/publication-guard.sh) ;;
     clippy) gate_command+=(cargo clippy --locked --all-targets --all-features -- -D warnings) ;;
+    deny) gate_command+=(cargo deny --all-features check licenses bans sources) ;;
     tests) gate_command+=(cargo test --locked --workspace) ;;
     fixtures)
         gate_command+=(bash -euc '
