@@ -56,7 +56,9 @@ was created under; after a reparent `bd show` is authoritative.
 
 The four phase epics follow the scope decision (decision-16). Each ends in a milestone bead
 (`bd list --type milestone`); the last one is the project's goal line. Later phases stay coarse
-until the phase before them is close to done.
+until the phase before them is close to done. Before any phase, the foundation milestone (label
+`foundation`) gathers the open work that finishes the 286 machine across the other epics; it
+blocks the first bead of phases A and B.
 
 A new theme gets a new epic; do not stretch an existing one to fit.
 

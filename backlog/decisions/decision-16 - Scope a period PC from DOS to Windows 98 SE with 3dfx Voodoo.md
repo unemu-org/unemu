@@ -57,7 +57,11 @@ determinism.
    bead.
 7. **Phases, planned with decreasing detail.** Each phase is an epic; its exit
    is a milestone bead. A phase is broken into fine tasks only when the phase
-   before it is close to done; later phases stay coarse on purpose.
+   before it is close to done; later phases stay coarse on purpose. **No phase
+   starts before the 286 foundation is finished**: a foundation milestone bead
+   (corrected interrupt timing as the only loop, bounded opt-in traces, the
+   remaining review defects, reproducible fixtures, backend tests) gates the
+   first bead of phases A and B.
 
    | Phase | Epic key | Scope | Exit milestone |
    |-------|----------|-------|----------------|
