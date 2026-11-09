@@ -178,6 +178,19 @@ pub struct DmaRequest {
     pub op: DmaOp,
 }
 
+/// Bytes moved and the TC signal produced by one DMA service (§7.7).
+///
+/// Intel 8237A datasheet, Current Word Count Register and End of Process:
+/// TC/EOP occurs when the word count underflows, including with autoinitialize.
+/// Exhausting the request buffer alone does not assert TC.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+pub struct DmaTransfer {
+    /// Number of bytes moved during this service.
+    pub transferred: usize,
+    /// Whether the channel reached terminal count during this service.
+    pub terminal_count: bool,
+}
+
 /// The result the machine hands a requester once its queued [`DmaRequest`] has
 /// run through the DMA controller (§7.7).
 ///
@@ -191,10 +204,17 @@ pub enum DmaOutcome {
     ToMemory {
         /// Number of bytes that reached guest memory.
         transferred: usize,
+        /// Whether the DMA channel asserted TC during this transfer.
+        terminal_count: bool,
     },
     /// The memory→device ([`DmaOp::FromMemory`]) transfer produced these bytes,
     /// in order.
-    FromMemory(Vec<u8>),
+    FromMemory {
+        /// Bytes read from guest memory, truncated to the completed transfer.
+        bytes: Vec<u8>,
+        /// Whether the DMA channel asserted TC during this transfer.
+        terminal_count: bool,
+    },
 }
 
 /// The device swap seam (§3.2 seam 4, §7.1).
@@ -302,27 +322,37 @@ pub trait Device {
 
     /// Act as the DMA controller for a device→memory transfer: write `data` to
     /// guest memory through `mem` on `channel`, advancing the channel's address
-    /// and count, and return the number of bytes moved (§7.7).
+    /// and count, and return the byte count and TC signal (§7.7).
     ///
     /// Only a DMA controller (the 8237) overrides this; every other device
     /// inherits the no-op default that moves nothing.
-    fn dma_service_write(&mut self, channel: u8, mem: &mut dyn DmaMemory, data: &[u8]) -> usize {
+    fn dma_service_write(
+        &mut self,
+        channel: u8,
+        mem: &mut dyn DmaMemory,
+        data: &[u8],
+    ) -> DmaTransfer {
         let _ = (channel, mem, data);
-        0
+        DmaTransfer::default()
     }
 
     /// Act as the DMA controller for a memory→device transfer: read bytes from
     /// guest memory through `mem` on `channel` into `out`, advancing the channel's
-    /// address and count, and return the number of bytes moved (§7.7). The
+    /// address and count, and return the byte count and TC signal (§7.7). The
     /// transfer stops at terminal count, so fewer than `out.len()` bytes may be
     /// read; the machine truncates its buffer to the returned count before handing
     /// it to the requester.
     ///
     /// Only a DMA controller (the 8237) overrides this; every other device
     /// inherits the no-op default that moves nothing.
-    fn dma_service_read(&mut self, channel: u8, mem: &mut dyn DmaMemory, out: &mut [u8]) -> usize {
+    fn dma_service_read(
+        &mut self,
+        channel: u8,
+        mem: &mut dyn DmaMemory,
+        out: &mut [u8],
+    ) -> DmaTransfer {
         let _ = (channel, mem, out);
-        0
+        DmaTransfer::default()
     }
 
     /// Drain and return the trace events observed since the last call (§3.2

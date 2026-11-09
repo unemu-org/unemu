@@ -54,7 +54,7 @@
 //!   versa) is not detected — parity with the other simplifications above, which
 //!   model register effects rather than policing guest misconfiguration.
 
-use device::{AccessDir, Device, DeviceError, DmaMemory, TraceEvent, VClock};
+use device::{AccessDir, Device, DeviceError, DmaMemory, DmaTransfer, TraceEvent, VClock};
 
 /// Stable device name reported by [`Device::name`].
 const NAME: &str = "8237-dma";
@@ -198,13 +198,19 @@ impl Dma8237 {
     /// Perform a device→memory ("write") transfer of `data` on `channel`,
     /// writing each byte through `mem` and stepping the channel address/count.
     /// Stops at terminal count or when `data` is exhausted. Returns the number of
-    /// bytes transferred.
+    /// bytes transferred and whether TC was asserted.
+    /// Intel 8237A datasheet, Current Word Count Register and End of Process.
     ///
     /// The caller selects this method when the channel's [`TransferType`] is
     /// `Write`; `Verify` steps the channel without touching memory.
-    pub fn service_write(&mut self, channel: usize, mem: &mut dyn DmaMemory, data: &[u8]) -> usize {
+    pub fn service_write(
+        &mut self,
+        channel: usize,
+        mem: &mut dyn DmaMemory,
+        data: &[u8],
+    ) -> DmaTransfer {
         let verify = self.transfer_type(channel) == TransferType::Verify;
-        let mut transferred = 0;
+        let mut result = DmaTransfer::default();
         for &byte in data {
             if !self.channel_ready(channel) {
                 break;
@@ -213,36 +219,39 @@ impl Dma8237 {
                 let addr = self.physical_address(channel);
                 mem.dma_write(addr, byte);
             }
-            transferred += 1;
+            result.transferred += 1;
             if self.advance_channel(channel) {
+                result.terminal_count = true;
                 break;
             }
         }
-        transferred
+        result
     }
 
     /// Perform a memory→device ("read") transfer on `channel`, filling `out` with
     /// bytes read through `mem` and stepping the channel. Stops at terminal count
-    /// or when `out` is full. Returns the number of bytes transferred.
+    /// or when `out` is full. Reports the byte count and whether TC was asserted.
+    /// Intel 8237A datasheet, Current Word Count Register and End of Process.
     pub fn service_read(
         &mut self,
         channel: usize,
         mem: &mut dyn DmaMemory,
         out: &mut [u8],
-    ) -> usize {
-        let mut transferred = 0;
+    ) -> DmaTransfer {
+        let mut result = DmaTransfer::default();
         for slot in out.iter_mut() {
             if !self.channel_ready(channel) {
                 break;
             }
             let addr = self.physical_address(channel);
             *slot = mem.dma_read(addr);
-            transferred += 1;
+            result.transferred += 1;
             if self.advance_channel(channel) {
+                result.terminal_count = true;
                 break;
             }
         }
-        transferred
+        result
     }
 
     /// Step a channel's address and count after one byte. Returns `true` when
@@ -539,11 +548,21 @@ impl Device for Dma8237 {
         Ok(())
     }
 
-    fn dma_service_write(&mut self, channel: u8, mem: &mut dyn DmaMemory, data: &[u8]) -> usize {
+    fn dma_service_write(
+        &mut self,
+        channel: u8,
+        mem: &mut dyn DmaMemory,
+        data: &[u8],
+    ) -> DmaTransfer {
         self.service_write(usize::from(channel), mem, data)
     }
 
-    fn dma_service_read(&mut self, channel: u8, mem: &mut dyn DmaMemory, out: &mut [u8]) -> usize {
+    fn dma_service_read(
+        &mut self,
+        channel: u8,
+        mem: &mut dyn DmaMemory,
+        out: &mut [u8],
+    ) -> DmaTransfer {
         self.service_read(usize::from(channel), mem, out)
     }
 
@@ -645,6 +664,65 @@ mod tests {
     }
 
     #[test]
+    fn service_reports_tc_for_this_call_in_single_block_and_autoinit_modes() {
+        for mode in [0x40, 0x80] {
+            for autoinit in [0, MODE_AUTOINIT] {
+                for from_memory in [false, true] {
+                    let mut dma = Dma8237::new();
+                    let mut mem = MockMem::default();
+                    let direction = if from_memory { 0b1000 } else { 0b0100 };
+                    program(&mut dma, 2, mode | autoinit | direction, 0, 0, 2);
+                    let mut bus = MockBus::new(Box::new(dma));
+                    let mut service = |bus: &mut MockBus, len| {
+                        if from_memory {
+                            bus.device_mut()
+                                .dma_service_read(2, &mut mem, &mut vec![0; len])
+                        } else {
+                            bus.device_mut()
+                                .dma_service_write(2, &mut mem, &vec![0x5A; len])
+                        }
+                    };
+                    assert_eq!(service(&mut bus, 0), DmaTransfer::default());
+                    assert_eq!(
+                        service(&mut bus, 1),
+                        DmaTransfer {
+                            transferred: 1,
+                            terminal_count: false
+                        }
+                    );
+                    assert_eq!(
+                        service(&mut bus, 4),
+                        DmaTransfer {
+                            transferred: 2,
+                            terminal_count: true
+                        }
+                    );
+                    // An unread TC status bit from the previous service is not
+                    // a new TC pulse, even after autoinitialize reloads the count.
+                    assert_eq!(
+                        service(&mut bus, 1),
+                        DmaTransfer {
+                            transferred: usize::from(autoinit != 0),
+                            terminal_count: false
+                        }
+                    );
+                    assert_eq!(bus.port_read(0x08, 1).unwrap() & 4, 4);
+                    assert_eq!(bus.port_read(0x08, 1).unwrap() & 4, 0);
+                    if autoinit != 0 {
+                        assert_eq!(
+                            service(&mut bus, 2),
+                            DmaTransfer {
+                                transferred: 2,
+                                terminal_count: true
+                            }
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
     fn write_transfer_writes_memory_through_handle() {
         let mut dma = Dma8237::new();
         let mut mem = MockMem::default();
@@ -653,7 +731,7 @@ mod tests {
         assert_eq!(dma.transfer_type(1), TransferType::Write);
         let data = [0xDE, 0xAD, 0xBE, 0xEF];
         let n = dma.service_write(1, &mut mem, &data);
-        assert_eq!(n, 4);
+        assert_eq!(n.transferred, 4);
         // All four bytes landed at 0x02_0100.. through the handle.
         assert_eq!(mem.writes.len(), 4);
         for (i, &b) in data.iter().enumerate() {
@@ -674,7 +752,7 @@ mod tests {
         assert_eq!(dma.transfer_type(2), TransferType::Read);
         let mut out = [0u8; 4];
         let n = dma.service_read(2, &mut mem, &mut out);
-        assert_eq!(n, 4);
+        assert_eq!(n.transferred, 4);
         assert_eq!(out, [1, 2, 3, 4]);
     }
 
@@ -709,7 +787,7 @@ mod tests {
         // count 1 => 2 bytes max; hand it 5.
         program(&mut dma, 0, 0b0100, 0x00, 0x0000, 1);
         let n = dma.service_write(0, &mut mem, &[1, 2, 3, 4, 5]);
-        assert_eq!(n, 2, "must transfer only count+1 bytes");
+        assert_eq!(n.transferred, 2, "must transfer only count+1 bytes");
     }
 
     #[test]
@@ -720,7 +798,7 @@ mod tests {
         program(&mut dma, 0, 0b0000_0000, 0x00, 0x0000, 3);
         assert_eq!(dma.transfer_type(0), TransferType::Verify);
         let n = dma.service_write(0, &mut mem, &[1, 2, 3, 4]);
-        assert_eq!(n, 4);
+        assert_eq!(n.transferred, 4);
         assert!(mem.writes.is_empty(), "verify must not touch memory");
     }
 
@@ -732,7 +810,7 @@ mod tests {
         // Re-mask channel 0.
         dma.port_write(0x0A, 1, 0b100).unwrap();
         let n = dma.service_write(0, &mut mem, &[1, 2, 3]);
-        assert_eq!(n, 0);
+        assert_eq!(n.transferred, 0);
         assert!(mem.writes.is_empty());
     }
 
@@ -742,7 +820,7 @@ mod tests {
         let mut mem = MockMem::default();
         program(&mut dma, 0, 0b0100, 0x00, 0x0000, 3);
         dma.port_write(0x08, 1, u32::from(CMD_DISABLE)).unwrap();
-        assert_eq!(dma.service_write(0, &mut mem, &[1, 2]), 0);
+        assert_eq!(dma.service_write(0, &mut mem, &[1, 2]).transferred, 0);
     }
 
     #[test]

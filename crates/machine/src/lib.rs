@@ -512,13 +512,15 @@ impl<C: Cpu> Machine<C> {
     /// what a floppy READ queues — the requester hands over the bytes it read from
     /// its backing image; the machine streams them through the controller's
     /// channel, writing each to guest RAM via the `note_write` path (§4.3), and
-    /// reports the byte count back. For a memory→device ([`DmaOp::FromMemory`])
-    /// request — what a floppy WRITE queues — the machine reads the requested
+    /// reports the byte count and TC signal back. For a memory→device request
+    /// ([`DmaOp::FromMemory`]) — what a floppy WRITE queues — the machine reads
+    /// the requested
     /// length out of guest RAM through the same channel, truncates the buffer to
     /// what the channel actually transferred (terminal count may cut it short, and
     /// the requester must never see uninitialised tail bytes), and hands the bytes
-    /// back. Either way the controller advances the channel's address and count,
-    /// then the requester finishes its result phase and raises its interrupt.
+    /// back with the TC signal. Either way the controller advances the channel's
+    /// address and count, then the requester finishes its result phase and raises
+    /// its interrupt.
     ///
     /// This is the only place a device's bytes cross to or from memory without the
     /// device holding a memory reference: the requester never sees an address, the
@@ -536,22 +538,28 @@ impl<C: Cpu> Machine<C> {
             let mut mem = CpuDmaMemory { cpu: &mut self.cpu };
             let outcome = match request.op {
                 DmaOp::ToMemory(data) => {
-                    let transferred = self
+                    let transfer = self
                         .bus
                         .device_mut(wiring.controller)
                         .map(|ctrl| ctrl.dma_service_write(request.channel, &mut mem, &data))
-                        .unwrap_or(0);
-                    DmaOutcome::ToMemory { transferred }
+                        .unwrap_or_default();
+                    DmaOutcome::ToMemory {
+                        transferred: transfer.transferred,
+                        terminal_count: transfer.terminal_count,
+                    }
                 }
                 DmaOp::FromMemory { len } => {
                     let mut buf = vec![0u8; len];
-                    let transferred = self
+                    let transfer = self
                         .bus
                         .device_mut(wiring.controller)
                         .map(|ctrl| ctrl.dma_service_read(request.channel, &mut mem, &mut buf))
-                        .unwrap_or(0);
-                    buf.truncate(transferred);
-                    DmaOutcome::FromMemory(buf)
+                        .unwrap_or_default();
+                    buf.truncate(transfer.transferred);
+                    DmaOutcome::FromMemory {
+                        bytes: buf,
+                        terminal_count: transfer.terminal_count,
+                    }
                 }
             };
             if let Some(dev) = self.bus.device_mut(wiring.requester) {
@@ -1575,7 +1583,11 @@ mod tests {
         machine.service_dma();
 
         match captured_outcome(&mut machine) {
-            DmaOutcome::FromMemory(bytes) => {
+            DmaOutcome::FromMemory {
+                bytes,
+                terminal_count,
+            } => {
+                assert!(terminal_count);
                 assert_eq!(
                     bytes, pattern,
                     "the requester gets exactly the seeded bytes"
@@ -1610,7 +1622,11 @@ mod tests {
         machine.service_dma();
 
         match captured_outcome(&mut machine) {
-            DmaOutcome::FromMemory(bytes) => {
+            DmaOutcome::FromMemory {
+                bytes,
+                terminal_count,
+            } => {
+                assert!(terminal_count);
                 assert_eq!(
                     bytes,
                     pattern[..AVAILABLE],

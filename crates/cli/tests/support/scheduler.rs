@@ -400,10 +400,20 @@ impl Device for ObservedDevice {
     fn dma_complete(&mut self, outcome: DmaOutcome) {
         self.inner.dma_complete(outcome);
     }
-    fn dma_service_write(&mut self, channel: u8, mem: &mut dyn DmaMemory, data: &[u8]) -> usize {
+    fn dma_service_write(
+        &mut self,
+        channel: u8,
+        mem: &mut dyn DmaMemory,
+        data: &[u8],
+    ) -> device::DmaTransfer {
         self.inner.dma_service_write(channel, mem, data)
     }
-    fn dma_service_read(&mut self, channel: u8, mem: &mut dyn DmaMemory, out: &mut [u8]) -> usize {
+    fn dma_service_read(
+        &mut self,
+        channel: u8,
+        mem: &mut dyn DmaMemory,
+        out: &mut [u8],
+    ) -> device::DmaTransfer {
         self.inner.dma_service_read(channel, mem, out)
     }
     fn as_any_mut(&mut self) -> Option<&mut dyn core::any::Any> {

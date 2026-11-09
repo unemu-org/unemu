@@ -1015,6 +1015,7 @@ mod tests {
         );
         fdc.dma_complete(DmaOutcome::ToMemory {
             transferred: SECTOR,
+            terminal_count: true,
         });
         let st0 = fdc.port_read(DATA, 1).unwrap() as u8;
         assert_eq!(st0 & 0xC0, 0, "normal termination for an in-geometry read");

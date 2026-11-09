@@ -17,7 +17,7 @@
 //! the sector bytes from its backing image and **queues** them as a
 //! [`device::DmaRequest`] on channel 2. The machine drains the request, streams
 //! the bytes through the 8237's channel (which writes guest RAM through the
-//! SMC-safe `note_write` path, §4.3), and reports the byte count back through
+//! SMC-safe `note_write` path, §4.3), and reports the byte count and TC through
 //! [`Device::dma_complete`] — at which point the controller finishes its result
 //! phase and raises IRQ6. The controller never holds a memory reference and the
 //! 8237 never sees the disk.
@@ -240,6 +240,10 @@ const ST0_NOT_READY: u8 = 1 << 3;
 const ST1_NO_DATA: u8 = 1 << 2;
 /// ST1 bit 1 (NW): not writable — a WRITE addressed a write-protected disk.
 const ST1_NOT_WRITABLE: u8 = 1 << 1;
+/// NEC µPD765 / Intel 8272A datasheets, Status Register 1, End of Cylinder.
+const ST1_END_OF_CYLINDER: u8 = 1 << 7;
+/// NEC µPD765 / Intel 8272A datasheets, Status Register 1, Overrun.
+const ST1_OVERRUN: u8 = 1 << 4;
 
 /// Which phase of the command protocol the controller is in.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -263,6 +267,8 @@ struct PendingRead {
     cylinder: u8,
     sector: u8,
     sector_size_code: u8,
+    requested: usize,
+    missing_sector: bool,
 }
 
 /// Context captured when a WRITE DATA enters execution, used to commit the DMA
@@ -280,6 +286,8 @@ struct PendingWrite {
     cylinder: u8,
     sector: u8,
     sector_size_code: u8,
+    requested: usize,
+    missing_sector: bool,
 }
 
 /// The NEC µPD765 / Intel 8272A floppy disk controller (§7.8).
@@ -603,12 +611,19 @@ impl Upd765 {
             }
         }
 
+        let requested = data.len();
+        let missing_sector = self
+            .data_sectors(param_head, sector)
+            .nth(requested / SECTOR_SIZE)
+            .is_some();
         self.pending_read = Some(PendingRead {
             drive,
             head,
             cylinder,
             sector,
             sector_size_code,
+            requested,
+            missing_sector,
         });
         self.pending_request = Some(DmaRequest {
             channel: FLOPPY_DMA_CHANNEL,
@@ -676,10 +691,33 @@ impl Upd765 {
         self.phase = Phase::Result;
     }
 
+    /// TC terminates READ/WRITE normally even when EOT exceeds the geometry.
+    /// Without TC, a stalled DMA is an overrun; consuming the valid prefix leaves
+    /// either a missing sector (ND) or the command's EOT limit (EN).
+    /// NEC µPD765 datasheet, Functional Description of Commands, READ DATA /
+    /// WRITE DATA and Status Registers 0/1; Intel 8272A datasheet, Command
+    /// Descriptions, READ DATA / WRITE DATA and Status Register 1, OR / ND / EN.
+    fn transfer_status(
+        transferred: usize,
+        requested: usize,
+        terminal_count: bool,
+        missing_sector: bool,
+    ) -> u8 {
+        if terminal_count {
+            0
+        } else if transferred < requested {
+            ST1_OVERRUN
+        } else if missing_sector {
+            ST1_NO_DATA
+        } else {
+            ST1_END_OF_CYLINDER
+        }
+    }
+
     /// Complete a READ transfer once the machine has moved `transferred` bytes:
     /// advance the sector past what was read, build the seven-byte result, and
     /// raise IRQ6.
-    fn complete_read(&mut self, transferred: usize) {
+    fn complete_read(&mut self, transferred: usize, terminal_count: bool) {
         let Some(read) = self.pending_read.take() else {
             return;
         };
@@ -691,11 +729,17 @@ impl Upd765 {
             .take(sectors_done)
             .last()
             .map_or(read.head, |(h, _)| h);
-        self.st0 = (active_head << 2) | read.drive;
+        let st1 = Self::transfer_status(
+            transferred,
+            read.requested,
+            terminal_count,
+            read.missing_sector,
+        );
+        self.st0 = (active_head << 2) | read.drive | if st1 == 0 { 0 } else { ST0_ABNORMAL };
         self.raise_irq();
         self.result = vec![
             self.st0,
-            0,
+            st1,
             0,
             cylinder,
             head,
@@ -768,6 +812,11 @@ impl Upd765 {
             .take_while(|&(h, s)| geometry.contains(cylinder, h, s))
             .count();
 
+        let requested = sector_count * SECTOR_SIZE;
+        let missing_sector = self
+            .data_sectors(param_head, sector)
+            .nth(sector_count)
+            .is_some();
         self.pending_write = Some(PendingWrite {
             drive,
             head,
@@ -775,6 +824,8 @@ impl Upd765 {
             cylinder,
             sector,
             sector_size_code,
+            requested,
+            missing_sector,
         });
         self.pending_request = Some(DmaRequest {
             channel: FLOPPY_DMA_CHANNEL,
@@ -795,7 +846,7 @@ impl Upd765 {
     /// (the read path, which reports how many whole sectors reached memory, rounds
     /// down). A write that runs past a short backing image grows the image,
     /// mirroring the read path treating past-the-end bytes as zero.
-    fn complete_write(&mut self, bytes: Vec<u8>) {
+    fn complete_write(&mut self, bytes: Vec<u8>, terminal_count: bool) {
         let Some(write) = self.pending_write.take() else {
             return;
         };
@@ -821,11 +872,17 @@ impl Upd765 {
             .take(sectors_written)
             .last()
             .map_or(write.head, |(h, _)| h);
-        self.st0 = (active_head << 2) | write.drive;
+        let st1 = Self::transfer_status(
+            bytes.len(),
+            write.requested,
+            terminal_count,
+            write.missing_sector,
+        );
+        self.st0 = (active_head << 2) | write.drive | if st1 == 0 { 0 } else { ST0_ABNORMAL };
         self.raise_irq();
         self.result = vec![
             self.st0,
-            0,
+            st1,
             0,
             cylinder,
             head,
@@ -969,8 +1026,14 @@ impl Device for Upd765 {
 
     fn dma_complete(&mut self, outcome: DmaOutcome) {
         match outcome {
-            DmaOutcome::ToMemory { transferred } => self.complete_read(transferred),
-            DmaOutcome::FromMemory(bytes) => self.complete_write(bytes),
+            DmaOutcome::ToMemory {
+                transferred,
+                terminal_count,
+            } => self.complete_read(transferred, terminal_count),
+            DmaOutcome::FromMemory {
+                bytes,
+                terminal_count,
+            } => self.complete_write(bytes, terminal_count),
         }
     }
 
@@ -1049,9 +1112,14 @@ impl Device for Upd765 {
         Ok(())
     }
 
-    fn dma_service_write(&mut self, _channel: u8, _mem: &mut dyn DmaMemory, _data: &[u8]) -> usize {
+    fn dma_service_write(
+        &mut self,
+        _channel: u8,
+        _mem: &mut dyn DmaMemory,
+        _data: &[u8],
+    ) -> device::DmaTransfer {
         // The floppy controller is a DMA *requester*, never the controller.
-        0
+        device::DmaTransfer::default()
     }
 
     fn take_trace(&mut self) -> Vec<TraceEvent> {
@@ -1133,6 +1201,151 @@ mod tests {
             .collect()
     }
 
+    fn finish_test_dma(bus: &mut MockBus, transferred: usize, terminal_count: bool) {
+        let request = bus.device_mut().take_dma_request().unwrap();
+        let outcome = match request.op {
+            DmaOp::ToMemory(_) => DmaOutcome::ToMemory {
+                transferred,
+                terminal_count,
+            },
+            DmaOp::FromMemory { .. } => DmaOutcome::FromMemory {
+                bytes: vec![0x5A; transferred],
+                terminal_count,
+            },
+        };
+        bus.device_mut().dma_complete(outcome);
+        assert!(bus.device().irq_pending());
+    }
+
+    #[test]
+    fn dma_count_distinguishes_eot_and_missing_sector_from_tc() {
+        for opcode in [0x06, 0x05, 0x86, 0x85] {
+            for (sector, eot, fault) in [(1, 1, ST1_END_OF_CYLINDER), (18, 36, ST1_NO_DATA)] {
+                for count in [511, 1023] {
+                    let mut fdc = MockBus::new(Box::new(ready_fdc(Vec::new())));
+                    let mut dma = Dma8237::new();
+                    let mut mem = MockMem::default();
+                    program_dma_from_memory(&mut dma, 0, count);
+                    if opcode & 0x1F == 6 {
+                        dma.port_write(0x0B, 1, 0x46).unwrap();
+                    }
+                    let mut dma = MockBus::new(Box::new(dma));
+                    bus_command(&mut fdc, &[opcode, 4, 7, 1, sector, 2, eot, 0x1B, 0xFF]);
+                    let request = fdc.device_mut().take_dma_request().unwrap();
+                    let outcome = match request.op {
+                        DmaOp::ToMemory(data) => {
+                            let transfer = dma.device_mut().dma_service_write(
+                                request.channel,
+                                &mut mem,
+                                &data,
+                            );
+                            assert_eq!(transfer.transferred, SECTOR_SIZE);
+                            DmaOutcome::ToMemory {
+                                transferred: transfer.transferred,
+                                terminal_count: transfer.terminal_count,
+                            }
+                        }
+                        DmaOp::FromMemory { len } => {
+                            let mut bytes = vec![0; len];
+                            let transfer = dma.device_mut().dma_service_read(
+                                request.channel,
+                                &mut mem,
+                                &mut bytes,
+                            );
+                            assert_eq!(transfer.transferred, SECTOR_SIZE);
+                            bytes.truncate(transfer.transferred);
+                            DmaOutcome::FromMemory {
+                                bytes,
+                                terminal_count: transfer.terminal_count,
+                            }
+                        }
+                    };
+                    fdc.device_mut().dma_complete(outcome);
+                    assert!(fdc.device().irq_pending());
+                    let result = bus_results(&mut fdc, 7);
+                    assert_eq!(
+                        result[..3],
+                        if count == 511 {
+                            [4, 0, 0]
+                        } else {
+                            [ST0_ABNORMAL | 4, fault, 0]
+                        }
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn dma_eot_without_tc_reports_end_of_cylinder() {
+        for opcode in [0x06, 0x05, 0x86, 0x85] {
+            for tc in [false, true] {
+                let mut bus = MockBus::new(Box::new(ready_fdc(Vec::new())));
+                bus_command(&mut bus, &[opcode, 4, 7, 1, 1, 2, 1, 0x1B, 0xFF]);
+                finish_test_dma(&mut bus, SECTOR_SIZE, tc);
+                let result = bus_results(&mut bus, 7);
+                assert_eq!(
+                    &result[..3],
+                    &[
+                        4 | if tc { 0 } else { ST0_ABNORMAL },
+                        if tc { 0 } else { 0x80 },
+                        0
+                    ]
+                );
+                if tc {
+                    assert_eq!(
+                        &result[3..],
+                        &[8, if opcode & 0x80 != 0 { 0 } else { 1 }, 1, 2]
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn dma_short_without_tc_reports_overrun() {
+        for opcode in [0x06, 0x05, 0x86, 0x85] {
+            for transferred in [0, 127, SECTOR_SIZE, SECTOR_SIZE + 127] {
+                let mut bus = MockBus::new(Box::new(ready_fdc(Vec::new())));
+                bus_command(&mut bus, &[opcode, 4, 7, 1, 1, 2, 2, 0x1B, 0xFF]);
+                finish_test_dma(&mut bus, transferred, false);
+                assert_eq!(&bus_results(&mut bus, 7)[..3], &[ST0_ABNORMAL | 4, 0x10, 0]);
+            }
+        }
+    }
+
+    #[test]
+    fn dma_missing_sector_after_prefix_without_tc_reports_no_data() {
+        for opcode in [0x06, 0x05, 0x86, 0x85] {
+            let mut bus = MockBus::new(Box::new(ready_fdc(Vec::new())));
+            bus_command(&mut bus, &[opcode, 0, 7, 0, 18, 2, 36, 0x1B, 0xFF]);
+            finish_test_dma(&mut bus, SECTOR_SIZE, false);
+            assert_eq!(
+                bus_results(&mut bus, 7),
+                [ST0_ABNORMAL, ST1_NO_DATA, 0, 7, 0, 19, 2]
+            );
+        }
+    }
+
+    #[test]
+    fn dma_tc_before_missing_sector_preserves_normal_result() {
+        for opcode in [0x06, 0x05, 0x86, 0x85] {
+            for transferred in [127, SECTOR_SIZE] {
+                let mut bus = MockBus::new(Box::new(ready_fdc(Vec::new())));
+                bus_command(&mut bus, &[opcode, 0, 7, 0, 1, 2, 36, 0x1B, 0xFF]);
+                finish_test_dma(&mut bus, transferred, true);
+                let result = bus_results(&mut bus, 7);
+                assert_eq!(&result[..3], &[0, 0, 0]);
+                let sectors = if opcode & 0x1F == 5 {
+                    transferred.div_ceil(SECTOR_SIZE)
+                } else {
+                    transferred / SECTOR_SIZE
+                };
+                assert_eq!(&result[3..], &[7, 0, 1 + sectors as u8, 2]);
+            }
+        }
+    }
+
     #[test]
     fn sense_without_pending_interrupt_returns_one_invalid_byte() {
         let mut bus = MockBus::new(Box::new(ready_fdc(Vec::new())));
@@ -1168,8 +1381,12 @@ mod tests {
                 let outcome = match request.op {
                     DmaOp::ToMemory(_) => DmaOutcome::ToMemory {
                         transferred: 2 * SECTOR_SIZE,
+                        terminal_count: true,
                     },
-                    DmaOp::FromMemory { .. } => DmaOutcome::FromMemory(vec![0x5A; 2 * SECTOR_SIZE]),
+                    DmaOp::FromMemory { .. } => DmaOutcome::FromMemory {
+                        bytes: vec![0x5A; 2 * SECTOR_SIZE],
+                        terminal_count: true,
+                    },
                 };
                 bus.device_mut().dma_complete(outcome);
                 let result = bus_results(&mut bus, 7);
@@ -1194,8 +1411,12 @@ mod tests {
                 let outcome = match request.op {
                     DmaOp::ToMemory(_) => DmaOutcome::ToMemory {
                         transferred: SECTOR_SIZE,
+                        terminal_count: true,
                     },
-                    DmaOp::FromMemory { .. } => DmaOutcome::FromMemory(vec![0x5A; SECTOR_SIZE]),
+                    DmaOp::FromMemory { .. } => DmaOutcome::FromMemory {
+                        bytes: vec![0x5A; SECTOR_SIZE],
+                        terminal_count: true,
+                    },
                 };
                 bus.device_mut().dma_complete(outcome);
                 assert_eq!(bus_results(&mut bus, 7), [4, 0, 0, 7, 1, sector + 1, 2]);
@@ -1229,6 +1450,7 @@ mod tests {
         assert_eq!(data, expected);
         bus.device_mut().dma_complete(DmaOutcome::ToMemory {
             transferred: data.len(),
+            terminal_count: true,
         });
         let result = bus_results(&mut bus, 7);
         assert_eq!(&result[1..], &[0, 0, 8, 0, 1, 2]);
@@ -1263,7 +1485,10 @@ mod tests {
             let offset = geometry.chs_to_offset(7, head, sector);
             expected[offset..offset + SECTOR_SIZE].copy_from_slice(&data);
         }
-        bus.device_mut().dma_complete(DmaOutcome::FromMemory(bytes));
+        bus.device_mut().dma_complete(DmaOutcome::FromMemory {
+            bytes,
+            terminal_count: true,
+        });
         assert_eq!(&bus_results(&mut bus, 7)[1..], &[0, 0, 8, 0, 1, 2]);
         // Read every sector of both tracks through the public DMA seam.
         for head in 0..2 {
@@ -1275,6 +1500,7 @@ mod tests {
             assert_eq!(data, expected[offset..offset + 9 * SECTOR_SIZE]);
             bus.device_mut().dma_complete(DmaOutcome::ToMemory {
                 transferred: data.len(),
+                terminal_count: true,
             });
             let _ = bus_results(&mut bus, 7);
         }
@@ -1300,17 +1526,20 @@ mod tests {
                     assert_eq!(data, image[offset..offset + SECTOR_SIZE]);
                     DmaOutcome::ToMemory {
                         transferred: data.len(),
+                        terminal_count: true,
                     }
                 }
                 DmaOp::FromMemory { len } => {
                     assert_eq!(len, SECTOR_SIZE, "no write into another track");
-                    DmaOutcome::FromMemory(vec![0xAA; len])
+                    DmaOutcome::FromMemory {
+                        bytes: vec![0xAA; len],
+                        terminal_count: true,
+                    }
                 }
             };
             bus.device_mut().dma_complete(outcome);
             assert!(bus.device().irq_pending());
-            // A byte count cannot distinguish TC on the last valid sector from
-            // a search for the absent next sector; preserve the TC result.
+            // TC on the last valid sector prevents a search for the absent next ID.
             assert_eq!(bus_results(&mut bus, 7), [0, 0, 0, 7, 0, 10, 2]);
             // The next track remains byte-identical even after WRITE DATA.
             bus_command(&mut bus, &[0x06, 4, 7, 1, 1, 2, 1, 0x1B, 0xFF]);
@@ -1321,6 +1550,7 @@ mod tests {
             assert_eq!(data, image[offset..offset + SECTOR_SIZE]);
             bus.device_mut().dma_complete(DmaOutcome::ToMemory {
                 transferred: data.len(),
+                terminal_count: true,
             });
             let _ = bus_results(&mut bus, 7);
         }
@@ -1499,6 +1729,7 @@ mod tests {
 
         fdc.dma_complete(DmaOutcome::ToMemory {
             transferred: SECTOR_SIZE,
+            terminal_count: true,
         });
         assert!(fdc.irq_pending(), "IRQ6 rises on transfer completion");
         let res = results(&mut fdc, 7);
@@ -1539,8 +1770,11 @@ mod tests {
             panic!("a floppy read queues a device -> memory transfer");
         };
         let n = dma.dma_service_write(request.channel, &mut mem, &data);
-        assert_eq!(n, SECTOR_SIZE, "the whole sector transfers");
-        fdc.dma_complete(DmaOutcome::ToMemory { transferred: n });
+        assert_eq!(n.transferred, SECTOR_SIZE, "the whole sector transfers");
+        fdc.dma_complete(DmaOutcome::ToMemory {
+            transferred: n.transferred,
+            terminal_count: n.terminal_count,
+        });
 
         for (i, &expected) in image.iter().enumerate() {
             assert_eq!(
@@ -1606,9 +1840,12 @@ mod tests {
         assert_eq!(len, SECTOR_SIZE, "one sector requested from memory");
         let mut buf = vec![0u8; len];
         let n = dma.dma_service_read(request.channel, &mut mem, &mut buf);
-        assert_eq!(n, SECTOR_SIZE, "the whole sector transfers");
-        buf.truncate(n);
-        fdc.dma_complete(DmaOutcome::FromMemory(buf));
+        assert_eq!(n.transferred, SECTOR_SIZE, "the whole sector transfers");
+        buf.truncate(n.transferred);
+        fdc.dma_complete(DmaOutcome::FromMemory {
+            bytes: buf,
+            terminal_count: n.terminal_count,
+        });
 
         assert!(fdc.irq_pending(), "IRQ6 rises on write completion");
         let res = results(&mut fdc, 7);
@@ -1698,7 +1935,7 @@ mod tests {
     }
 
     #[test]
-    fn write_terminal_count_zero_fills_partial_sector() {
+    fn writeterminal_count_zero_fills_partial_sector() {
         // Drive 0 starts empty; a short write must grow the image and commit a
         // whole sector even though only part of it was supplied.
         let mut fdc = ready_fdc(Vec::new());
@@ -1725,9 +1962,15 @@ mod tests {
         };
         let mut buf = vec![0u8; len];
         let n = dma.dma_service_read(request.channel, &mut mem, &mut buf);
-        assert_eq!(n, SUPPLIED, "terminal count clamps the transfer");
-        buf.truncate(n);
-        fdc.dma_complete(DmaOutcome::FromMemory(buf));
+        assert_eq!(
+            n.transferred, SUPPLIED,
+            "terminal count clamps the transfer"
+        );
+        buf.truncate(n.transferred);
+        fdc.dma_complete(DmaOutcome::FromMemory {
+            bytes: buf,
+            terminal_count: n.terminal_count,
+        });
 
         let res = results(&mut fdc, 7);
         assert_eq!(&res[3..], &[1, 0, 1, 2], "the completed sector reaches EOT");
@@ -1843,6 +2086,7 @@ mod tests {
         };
         fdc.dma_complete(DmaOutcome::ToMemory {
             transferred: data.len(),
+            terminal_count: true,
         });
         let _ = results(fdc, 7);
         data
