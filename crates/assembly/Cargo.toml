@@ -22,3 +22,7 @@ video.workspace = true
 # The one shared 8259 interrupt controller: a live master/slave pair presented
 # both as two bus device faces and as the machine's single controller seam.
 chipset.workspace = true
+
+[features]
+default = []
+reference-scheduler = ["machine/reference-scheduler"]

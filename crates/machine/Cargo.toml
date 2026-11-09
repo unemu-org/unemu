@@ -18,3 +18,7 @@ bus.workspace = true
 testkit.workspace = true
 devices.workspace = true
 chipset.workspace = true
+
+[features]
+default = []
+reference-scheduler = []

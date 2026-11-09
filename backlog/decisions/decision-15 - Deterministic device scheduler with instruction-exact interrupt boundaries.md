@@ -12,6 +12,10 @@ deciders: Mikołaj Mikołajczyk
 
 Accepted — 2026-11-09. Extends [[decision-5]] and [[decision-14]]; replaces the
 block-quantized interrupt latency and eager acknowledgement of [[decision-4]].
+Adopted 2026-11-09: corrected timing is the only machine loop, the per-clock
+engine survives only as a test-time reference oracle, and the long-mode machine
+path was retired (design: `backlog/docs/design/scheduler.md` §Adoption, which
+also records a CPU-core defect pinned until the next re-pin).
 Design: `backlog/docs/design/scheduler.md` (the proposal) as amended by the
 adversarial review recorded below; where they differ, this record wins.
 

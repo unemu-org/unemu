@@ -56,6 +56,9 @@ fn deadline_matches_per_clock_on_every_fast_workload() {
         assert!(left
             .iter()
             .any(|event| matches!(event, Event::Access { .. })));
+        assert!(left
+            .iter()
+            .any(|event| matches!(event, Event::FinalState { .. })));
         compare(&left, &right, Normalisations::default())
             .unwrap_or_else(|diff| panic!("{workload:?}: {diff}"));
         match workload {
@@ -89,38 +92,8 @@ fn deadline_matches_per_clock_on_every_fast_workload() {
 }
 
 #[test]
-fn corrected_deadline_matches_per_clock_on_every_fast_real16_workload() {
-    for workload in scheduler::FAST_WORKLOADS {
-        // The core's step-bounded execution supports Real16 only.
-        if matches!(workload, Workload::Serial) {
-            continue;
-        }
-        let Some(left) = scheduler::run_workload_timing(
-            workload,
-            machine::InterruptTiming::Corrected,
-            SchedulerEngine::PerClock,
-        )
-        .unwrap() else {
-            continue;
-        };
-        let right = scheduler::run_workload_timing(
-            workload,
-            machine::InterruptTiming::Corrected,
-            SchedulerEngine::Deadline,
-        )
-        .unwrap()
-        .unwrap();
-        assert!(left
-            .iter()
-            .any(|event| matches!(event, Event::FinalState { .. })));
-        compare(&left, &right, Normalisations::default())
-            .unwrap_or_else(|diff| panic!("{workload:?}: {diff}"));
-    }
-}
-
-#[test]
 fn serial_workload_has_no_per_clock_devices() {
-    let prepared = scheduler::prepare(Workload::Serial).unwrap().unwrap();
+    let prepared = scheduler::prepare(Workload::SerialReal16).unwrap().unwrap();
     for index in prepared.device_index.values() {
         let device = prepared.machine.bus().device(*index).unwrap();
         assert_ne!(
@@ -189,9 +162,11 @@ fn pit_restore_at_clock_50_matches_both_engines() {
 
 #[test]
 fn injected_write_reports_the_first_real_difference_with_context() {
-    let left = scheduler::run_workload(Workload::Serial).unwrap().unwrap();
+    let left = scheduler::run_workload(Workload::SerialReal16)
+        .unwrap()
+        .unwrap();
     let right = scheduler::observe_with(
-        scheduler::prepare(Workload::Serial).unwrap().unwrap(),
+        scheduler::prepare(Workload::SerialReal16).unwrap().unwrap(),
         |machine, policy| {
             machine
                 .bus_mut()
@@ -359,6 +334,60 @@ fn deadline_matches_per_clock_on_freedos_prompt() {
     assert_optional_workload(Workload::FreeDosPrompt);
 }
 
+/// KNOWN CPU-CORE DEFECT: after the boot sector halts, the BIOS-to-floppy run
+/// leaves the end of code segment 0, and the pinned core decodes a real-mode
+/// block past the 16-bit IP wrap. The result then depends on the step budget,
+/// so the two engines diverge. This test pins the divergence; once the core is
+/// fixed and re-pinned it fails, and it must become an equality check through
+/// `assert_optional_workload` like its neighbours.
+#[test]
+#[ignore = "requires BIOS and floppy fixtures; pins a known CPU-core divergence"]
+fn deadline_diverges_from_per_clock_on_bios_floppy_until_the_core_is_fixed() {
+    let Some(left) =
+        scheduler::run_workload_engine(Workload::BiosFloppy, SchedulerEngine::PerClock).unwrap()
+    else {
+        return;
+    };
+    let right = scheduler::run_workload_engine(Workload::BiosFloppy, SchedulerEngine::Deadline)
+        .unwrap()
+        .unwrap();
+    // Final snapshots follow the last access and precede Stop. Compare the
+    // execution events here to pin the missing OUT against the actual stop;
+    // equality gates elsewhere still compare the complete saved state.
+    let execution = |stream: Vec<Event>| {
+        stream
+            .into_iter()
+            .filter(|event| !matches!(event, Event::FinalState { .. }))
+            .collect::<Vec<_>>()
+    };
+    let difference = compare(&execution(left), &execution(right), Normalisations::default())
+        .expect_err("the engines now agree on BiosFloppy: the CPU-core defect is fixed, turn this back into an equality check");
+    assert_eq!(difference.index, 349_290, "{difference}");
+    assert_eq!(
+        difference.left,
+        Some(access(5_899_026, 0x42)),
+        "{difference}"
+    );
+    assert!(
+        matches!(&difference.right, Some(Event::Stop {
+        at: VClock(5_899_248), reason: Stop::Error(error), ..
+    }) if error.contains("unsupported instruction")),
+        "{difference}"
+    );
+}
+
+#[test]
+#[ignore = "requires BIOS and FreeDOS fixtures; runs DIR with both engines"]
+fn deadline_matches_per_clock_on_dos_dir() {
+    assert_optional_workload(Workload::DosDir);
+}
+
+#[test]
+#[ignore = "requires BIOS and FreeDOS fixtures; writes and lists a file with both engines"]
+fn deadline_matches_per_clock_on_dos_write() {
+    assert_optional_workload(Workload::DosWrite);
+}
+
 fn assert_optional_workload(workload: Workload) {
     let Some(left) = scheduler::run_workload_engine(workload, SchedulerEngine::PerClock).unwrap()
     else {
@@ -470,7 +499,8 @@ fn mmio_shift_preserves_device_address_direction_and_value() {
 #[test]
 #[ignore = "requires BIOS/FreeDOS fixtures; informative machine wall times"]
 fn scheduler_engine_wall_times() {
-    if !scheduler_ab_enabled() {
+    if !std::env::var("UNEMUPC98_SCHEDULER_WALL_TIMES").is_ok_and(|value| value == "1") {
+        eprintln!("skipping scheduler wall times: set UNEMUPC98_SCHEDULER_WALL_TIMES=1");
         return;
     }
     for workload in [Workload::BiosPost, Workload::FreeDosPrompt] {
@@ -510,10 +540,6 @@ fn scheduler_engine_wall_times() {
     }
 }
 
-fn scheduler_ab_enabled() -> bool {
-    std::env::var("UNEMUPC98_SCHEDULER_AB").is_ok_and(|value| value == "1")
-}
-
 /// Keep complete, unnormalised streams across scheduler optimisations. Recording
 /// uses create_new so a comparison cannot accidentally replace its reference.
 #[test]
@@ -526,215 +552,43 @@ fn scheduler_streams_unchanged() {
     let record = std::env::var("UNEMUPC98_RECORD_STREAMS").is_ok_and(|value| value == "1");
     for workload in scheduler::FAST_WORKLOADS.into_iter().chain([
         Workload::BiosPost,
+        Workload::BiosFloppy,
         Workload::FreeDosPrompt,
         Workload::DosDir,
+        Workload::DosWrite,
     ]) {
-        for timing in [
-            machine::InterruptTiming::Legacy,
-            machine::InterruptTiming::Corrected,
-        ] {
-            if matches!(workload, Workload::Serial) && timing == machine::InterruptTiming::Corrected
-            {
+        for engine in [SchedulerEngine::PerClock, SchedulerEngine::Deadline] {
+            let Some(stream) = scheduler::run_workload_engine(workload, engine).unwrap() else {
                 continue;
-            }
-            for engine in [SchedulerEngine::PerClock, SchedulerEngine::Deadline] {
-                let Some(stream) =
-                    scheduler::run_workload_timing(workload, timing, engine).unwrap()
-                else {
-                    continue;
-                };
-                let path = std::path::Path::new(&directory)
-                    .join(format!("{workload:?}-{timing:?}-{engine:?}.txt"));
-                let contents = format!("{stream:#?}\n");
-                if record {
-                    use std::io::Write;
-                    let mut file = std::fs::OpenOptions::new()
-                        .write(true)
-                        .create_new(true)
-                        .open(&path)
-                        .unwrap();
-                    file.write_all(contents.as_bytes()).unwrap();
-                } else {
-                    let expected = std::fs::read_to_string(&path).unwrap();
-                    for (line, (left, right)) in expected.lines().zip(contents.lines()).enumerate()
-                    {
-                        assert_eq!(left, right, "{}: line {}", path.display(), line + 1);
-                    }
-                    assert_eq!(
-                        expected.lines().count(),
-                        contents.lines().count(),
-                        "{}: stream length",
-                        path.display()
-                    );
+            };
+            let path =
+                std::path::Path::new(&directory).join(format!("{workload:?}-{engine:?}.txt"));
+            let contents = format!("{stream:#?}\n");
+            if record {
+                use std::io::Write;
+                let mut file = std::fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(&path)
+                    .unwrap();
+                file.write_all(contents.as_bytes()).unwrap();
+            } else {
+                let expected = std::fs::read_to_string(&path).unwrap();
+                for (line, (left, right)) in expected.lines().zip(contents.lines()).enumerate() {
+                    assert_eq!(left, right, "{}: line {}", path.display(), line + 1);
                 }
-                eprintln!(
-                    "{workload:?} {timing:?} {engine:?}: {} events {}",
-                    stream.len(),
-                    if record { "recorded" } else { "unchanged" }
+                assert_eq!(
+                    expected.lines().count(),
+                    contents.lines().count(),
+                    "{}: stream length",
+                    path.display()
                 );
             }
-        }
-    }
-}
-
-fn report_timing(workload: Workload) {
-    use machine::InterruptTiming;
-    let Some(left) = scheduler::run_workload_timing(
-        workload,
-        InterruptTiming::Legacy,
-        SchedulerEngine::Deadline,
-    )
-    .unwrap() else {
-        return;
-    };
-    let right = scheduler::run_workload_timing(
-        workload,
-        InterruptTiming::Corrected,
-        SchedulerEngine::Deadline,
-    )
-    .unwrap()
-    .unwrap();
-    if matches!(workload, Workload::Serial) {
-        assert!(
-            matches!(right.last(), Some(Event::Stop { reason: Stop::Error(message), .. })
-            if message.contains("step-bounded execution is unsupported"))
-        );
-    } else if !matches!(workload, Workload::Test386) {
-        assert!(
-            !matches!(
-                right.last(),
-                Some(Event::Stop {
-                    reason: Stop::Error(_),
-                    ..
-                })
-            ),
-            "{workload:?}: {:?}",
-            right.last()
-        );
-    }
-    // Corrected returns at the exact policy target. The bounded endpoint
-    // normalization cannot remove any extra access from the legacy trace.
-    let cap = match right.last() {
-        Some(Event::Stop {
-            virtual_time,
-            reason: Stop::CapReached,
-            ..
-        }) => *virtual_time,
-        _ => 0,
-    };
-    let options = Normalisations {
-        right_access_shift: 1,
-        right_mmio_shift: Some(0),
-        cap_endpoint: Some(CapEndpoint {
-            cap,
-            max_overshoot: 1_000_000,
-        }),
-    };
-    match compare(&left, &right, options) {
-        Ok(()) => eprintln!("{workload:?}: identical (normalisations enabled)"),
-        Err(diff) => eprintln!("{workload:?}: differs (normalisations enabled)\n{diff}"),
-    }
-    // The reference changes only timer dispatch, retaining corrected semantics.
-    let reference = scheduler::run_workload_timing(
-        workload,
-        InterruptTiming::Corrected,
-        SchedulerEngine::PerClock,
-    )
-    .unwrap()
-    .unwrap();
-    compare(&reference, &right, Normalisations::default())
-        .unwrap_or_else(|diff| panic!("corrected reference {workload:?}: {diff}"));
-    eprintln!(
-        "{workload:?}: Legacy {:?} ({} events); Corrected {:?} ({} events); reference identical",
-        left.last(),
-        left.len(),
-        right.last(),
-        right.len()
-    );
-    if matches!(workload, Workload::DosWrite) {
-        eprintln!("DosWrite: both modes reached the 3 file(s) listing; Corrected command budget factor 4 (REP iterations count as steps)");
-    }
-}
-
-#[test]
-fn corrected_timing_reports_every_fast_workload() {
-    if !scheduler_ab_enabled() {
-        return;
-    }
-    for workload in scheduler::FAST_WORKLOADS {
-        report_timing(workload);
-    }
-}
-
-#[test]
-#[ignore = "requires firmware/media; compares legacy and corrected interrupt timing"]
-fn corrected_timing_reports_firmware_and_dos_sessions() {
-    if !scheduler_ab_enabled() {
-        return;
-    }
-    for workload in [
-        Workload::BiosPost,
-        Workload::FreeDosPrompt,
-        Workload::DosDir,
-    ] {
-        report_timing(workload);
-    }
-}
-
-#[test]
-#[ignore = "requires firmware/media; compares legacy and corrected DOS file-write interrupt timing"]
-fn corrected_timing_reports_dos_file_write() {
-    if !scheduler_ab_enabled() {
-        return;
-    }
-    report_timing(Workload::DosWrite);
-}
-
-#[test]
-#[ignore = "requires firmware/media; release wall time of interrupt timing modes"]
-fn interrupt_timing_wall_times() {
-    if !scheduler_ab_enabled() {
-        return;
-    }
-    for workload in [Workload::BiosPost, Workload::FreeDosPrompt] {
-        for timing in [
-            machine::InterruptTiming::Legacy,
-            machine::InterruptTiming::Corrected,
-        ] {
-            let mut samples = Vec::new();
-            let mut expected_counts = None;
-            for sample in 1..=3 {
-                let Some(mut prepared) = scheduler::prepare(workload).unwrap() else {
-                    continue;
-                };
-                prepared.machine = prepared
-                    .machine
-                    .with_scheduler_engine(SchedulerEngine::Deadline)
-                    .with_interrupt_timing(timing);
-                let start = std::time::Instant::now();
-                let result = assembly::run(&mut prepared.machine, &prepared.policy).unwrap();
-                samples.push(start.elapsed());
-                assert_eq!(result, machine::RunOutcome::RetiredCapReached);
-                let counts = (
-                    prepared.machine.virtual_time(),
-                    prepared.machine.cpu().retired(),
-                );
-                assert_eq!(*expected_counts.get_or_insert(counts), counts);
-                eprintln!(
-                    "{workload:?} {timing:?} sample {sample}: {:.6} s; steps={}, retired={}",
-                    samples.last().unwrap().as_secs_f64(),
-                    counts.0,
-                    counts.1
-                );
-            }
-            if samples.len() == 3 {
-                samples.sort_unstable();
-                eprintln!(
-                    "{workload:?} {timing:?}: median of 3 {:.6} s; {:.3} ns/instruction",
-                    samples[1].as_secs_f64(),
-                    samples[1].as_secs_f64() * 1e9 / expected_counts.unwrap().1 as f64
-                );
-            }
+            eprintln!(
+                "{workload:?} {engine:?}: {} events {}",
+                stream.len(),
+                if record { "recorded" } else { "unchanged" }
+            );
         }
     }
 }

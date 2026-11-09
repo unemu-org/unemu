@@ -23,11 +23,9 @@
 //!   corrupted by the BIOS keyboard-reset handshake and the POST buffer flush, so
 //!   the prompt never advances. The script is injected only once DOS owns the
 //!   keyboard.
-//! - **A fine run quantum (driver).** The machine acknowledges one PIC vector per
-//!   run quantum; on the coarse boot quantum a busy-polling guest lets the periodic
-//!   timer IRQ0 win every priority race and starves the keyboard IRQ1 forever, so
-//!   the interactive run uses a quantum finer than one timer period. This is a
-//!   quantum-granularity tradeoff, documented on `DOS_INTERACTIVE_QUANTUM`.
+//! - **Instruction-boundary interrupts.** IRQ1 is accepted between completed
+//!   instructions when IF and interrupt shadows allow it; PIT IRQ0 cannot starve
+//!   the keyboard merely because the host grants a large cooperation budget.
 //!
 //! The whole script is queued into the 8042 at once: the controller delivers
 //! queued bytes serially — shifting the next in on a tick after each read — so
@@ -46,7 +44,7 @@
 //!
 //! ```text
 //! Enter new date (mm-dd-[cc]yy):
-//! Current time is 12:00:20.81 am
+//! Current time is 12:00:07.41 am
 //! Enter new time:
 //! A:\>dir
 //!  Volume in drive A is FREEDOS

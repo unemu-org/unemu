@@ -64,15 +64,17 @@ Things **deliberately not implemented**. If something seems missing and is liste
   and restore a running machine.
 - **Tracked in:** decision-7, [`design/machine-config.md`](design/machine-config.md).
 
-### `run_serial` Long64 skeleton in the machine-config layer
+### Retired Long64 machine skeleton
 
-- **Why deferred:** `run_serial` is the only Long64 (non-real-mode) consumer.
-  Adding a CPU-mode axis to `MachineConfig` for one outlier would grow the whole
-  config to serve it. The skeleton is instead inlined trait-free (or the runner
-  and its golden are deleted); either way the config gains no mode dimension. A
-  deleted `run_serial` + golden is intentional, not a regression to restore.
-- **Revisit when:** A second Long64 consumer appears and justifies a mode axis.
-- **Tracked in:** [`design/machine-config.md`](design/machine-config.md) (Non-goals).
+- **Why removed:** Adoption of instruction-boundary timing intentionally deletes
+  `run_serial`, `HELLO_PROGRAM`, the Long64 CLI blob mode/default demo, and
+  `golden_serial.rs`. The machine runs step-bounded Real16 CPUs only; the CPU
+  adapter's own Long64 unit tests remain. This is not a regression to restore
+  and does not justify a CPU-mode axis in `MachineConfig`.
+- **Revisit when:** An independently justified machine target requires another
+  CPU mode and provides an execution/timing oracle. Long64 is outside the
+  current PC/AT-to-Windows-98 goal line.
+- **Design:** [`design/machine-config.md`](design/machine-config.md), Non-goals.
 
 ### Fixed-disk (XT-IDE / ATA) controller device
 

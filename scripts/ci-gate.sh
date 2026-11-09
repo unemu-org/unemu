@@ -16,7 +16,12 @@ case "$step" in
     devshell) gate_command+=(rustc --version) ;;
     fmt) gate_command+=(cargo fmt --check) ;;
     guard) gate_command=(bash scripts/publication-guard.sh) ;;
-    clippy) gate_command+=(cargo clippy --locked --all-targets --all-features -- -D warnings) ;;
+    clippy)
+        gate_command+=(bash -euc '
+            cargo clippy --locked --all-targets --all-features -- -D warnings
+            cargo clippy --locked -p cli --bin unemupc98 -- -D warnings
+        ')
+        ;;
     deny) gate_command+=(cargo deny --all-features check licenses bans sources) ;;
     tests) gate_command+=(cargo test --locked --workspace) ;;
     fixtures)

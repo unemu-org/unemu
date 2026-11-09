@@ -9,12 +9,11 @@
 //!
 //! ## What belongs to the machine vs. the run
 //!
-//! The **quantum** stays in [`ClockConfig`](crate::ClockConfig): the cooperative
-//! run budget *is* the interrupt latency (decision-4, §6.2) — it changes which
-//! interrupts the guest takes and is therefore guest-visible timing, part of what
-//! the machine *is*. The **idle limit**, the **retired cap**, the **stop
-//! condition**, and the **stimuli** are how we *run* the machine, so they live
-//! here.
+//! The clock ratio belongs to the machine. The idle limit, step cap, stop
+//! condition, and stimuli belong to the run. By contract, cooperation size does
+//! not affect instruction boundaries or interrupt acceptance. The pinned CPU
+//! violates that contract at 16-bit IP wrap and when a store changes unexecuted
+//! bytes of the current block (scheduler design §Adoption).
 //!
 //! ## The cadence is part of the golden identity
 //!
@@ -96,7 +95,9 @@ pub enum StopCondition {
     /// If the policy carries [`InjectionSchedule::AfterPrompt`] stimuli, they are
     /// queued once the prompt is reached and the machine then runs `then_budget`
     /// more instruction-equivalent units so the shell processes them; with no
-    /// stimuli the run stops at the prompt and `then_budget` is unused.
+    /// stimuli the run stops at the prompt and `then_budget` is unused. If the
+    /// overall cap cannot accommodate the full budget, return an error before
+    /// injecting any keys.
     PromptThen {
         /// Where to read the console text back from guest memory.
         console: ConsoleProbe,
@@ -182,15 +183,20 @@ pub fn run(
                 .filter(|s| matches!(s.schedule, InjectionSchedule::AfterPrompt))
                 .collect();
             if prompt_reached && !after_prompt.is_empty() {
+                let now = machine.virtual_time();
+                let remaining = policy
+                    .retired_cap
+                    .map_or(u64::MAX - now, |cap| cap.saturating_sub(now));
+                if remaining < *then_budget {
+                    return Err(MachineError::InsufficientCommandBudget {
+                        required: *then_budget,
+                        remaining,
+                    });
+                }
                 for stim in after_prompt {
                     inject_scancodes(machine, stim.keyboard_index, &stim.scancodes);
                 }
-                // Grant the post-prompt budget from where the boot left the machine
-                // (virtual time is cumulative across run_bounded calls),
-                // clamped to the overall cap.
-                let target = machine.virtual_time().saturating_add(*then_budget);
-                let cap = policy.retired_cap.map_or(target, |c| target.min(c));
-                return machine.run_bounded(Some(cap));
+                return machine.run_bounded(Some(now + *then_budget));
             }
             result
         }
@@ -269,6 +275,57 @@ mod tests {
     use cpu::Cpu;
 
     #[test]
+    fn late_prompt_rejects_partial_command_budget_before_injecting_keys() {
+        for cap in [10, 15, 19] {
+            let mut cpu =
+                X86JitCpu::new_real16_bare(0x10000, 0, 0x7C00, RealSegments::flat(0)).unwrap();
+            cpu.map_ram(0, 0x10000).unwrap();
+            cpu.write_mem(0x7C00, &[0xEB, 0xFE]).unwrap();
+            cpu.write_mem(0x1000, b">\x07").unwrap();
+            let bus = Bus::new(
+                vec![Box::new(I8042::new())],
+                DecodeMap {
+                    ports: vec![bus::PortRange {
+                        ports: 0x60..=0x60,
+                        device: 0,
+                    }],
+                    mmio: Vec::new(),
+                },
+            );
+            let mut machine = Machine::new(
+                cpu,
+                bus,
+                Box::new(chipset::NoInterruptController),
+                Vec::new(),
+                None,
+            );
+            let policy = RunPolicy {
+                retired_cap: Some(cap),
+                idle_limit: None,
+                stop: StopCondition::PromptThen {
+                    console: ConsoleProbe {
+                        base: 0x1000,
+                        cols: 1,
+                        rows: 1,
+                    },
+                    needle: ">".into(),
+                    poll_step: 10,
+                    then_budget: 10,
+                },
+                stimuli: vec![KeyboardStimulus {
+                    keyboard_index: 0,
+                    scancodes: vec![0x1C],
+                    schedule: InjectionSchedule::AfterPrompt,
+                }],
+            };
+            let error = run(&mut machine, &policy).unwrap_err();
+            assert!(error.to_string().contains("insufficient command budget"));
+            assert_eq!(machine.virtual_time(), 10);
+            assert_eq!(machine.bus_mut().port_read(0x60, 1).unwrap(), 0);
+        }
+    }
+
+    #[test]
     fn prompt_poll_stops_on_if_clear_halt_with_or_without_cap() {
         for retired_cap in [Some(1000), None] {
             let mut cpu =
@@ -279,7 +336,6 @@ mod tests {
                 cpu,
                 Bus::new(Vec::new(), DecodeMap::default()),
                 Box::new(chipset::NoInterruptController),
-                Some(16),
                 Vec::new(),
                 None,
             );
@@ -314,7 +370,6 @@ mod tests {
             cpu,
             Bus::new(vec![Box::new(I8042::new())], DecodeMap::default()),
             Box::new(chipset::NoInterruptController),
-            Some(16),
             Vec::new(),
             Some(100),
         );
@@ -335,7 +390,7 @@ mod tests {
         );
         assert_eq!(machine.virtual_time(), 15);
         let policy = RunPolicy {
-            retired_cap: Some(32),
+            retired_cap: Some(35),
             idle_limit: Some(100),
             stop: StopCondition::PromptThen {
                 console,
@@ -353,7 +408,7 @@ mod tests {
             run(&mut machine, &policy).expect("prompt and stimulus"),
             RunOutcome::RetiredCapReached
         );
-        assert_eq!(machine.virtual_time(), 32);
+        assert_eq!(machine.virtual_time(), 35);
         assert_eq!(machine.cpu().retired(), 2);
     }
 }

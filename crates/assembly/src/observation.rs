@@ -82,7 +82,7 @@ pub struct ObservationRequest {
 /// Run-scoped observation choices, separate from guest hardware identity.
 ///
 /// The default selects no routes and allocates no stream history. This policy
-/// does not select guest CPU quantum or schedule capture boundaries.
+/// does not select CPU cooperation size or schedule capture boundaries.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ObservationPolicy {
     /// Outputs to resolve and bind before guest execution.

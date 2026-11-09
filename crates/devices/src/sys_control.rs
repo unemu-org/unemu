@@ -342,8 +342,8 @@ mod tests {
     #[test]
     fn refresh_bit_sees_both_edges_within_bounded_reads() {
         // Model the BIOS `AT_DELAY` busy-wait: spin until the refresh bit is high,
-        // then spin until it is low again. No tick happens between reads (one CPU
-        // quantum), so this only terminates if the bit cycles per read.
+        // then spin until it is low again. This isolated test deliberately omits
+        // ticks to verify the compatibility model toggles the bit per read.
         let mut dev = SysControl::new();
         let mut reads = 0u32;
         // Wait for the refresh bit to go high.

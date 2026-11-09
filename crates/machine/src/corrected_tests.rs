@@ -87,12 +87,10 @@ fn compute_boundaries_do_not_synchronize_dormant_devices() {
             },
         ),
         Box::new(chipset::NoInterruptController),
-        Some(64),
         Vec::new(),
         None,
     )
-    .with_scheduler_engine(SchedulerEngine::Deadline)
-    .with_interrupt_timing(InterruptTiming::Corrected);
+    .with_scheduler_engine(SchedulerEngine::Deadline);
     assert_eq!(
         machine.run_bounded(Some(4)).unwrap(),
         RunOutcome::RetiredCapReached
@@ -119,17 +117,78 @@ fn compute_boundaries_reuse_the_bus_deadline_cache() {
             DecodeMap::default(),
         ),
         Box::new(chipset::NoInterruptController),
-        Some(64),
         Vec::new(),
         None,
     )
     .with_step_limit(NonZeroU64::new(2).unwrap())
-    .with_scheduler_engine(SchedulerEngine::Deadline)
-    .with_interrupt_timing(InterruptTiming::Corrected);
+    .with_scheduler_engine(SchedulerEngine::Deadline);
     machine.run_bounded(Some(4)).unwrap();
     // The initial synchronization invalidates one answer; the replacement
     // remains valid across both CPU slices and both clock advances.
     assert_eq!(queries.get(), 2);
+}
+
+#[test]
+fn bus_errors_charge_completed_steps_and_settle_before_returning() {
+    for engine in [SchedulerEngine::PerClock, SchedulerEngine::Deadline] {
+        for stop in [
+            CpuStop::PortOut {
+                port: 0x123,
+                size: 1,
+                value: 0,
+            },
+            CpuStop::PortIn {
+                port: 0x123,
+                size: 1,
+            },
+            CpuStop::MmioWrite {
+                addr: 0x123,
+                size: 1,
+                value: 0,
+            },
+            CpuStop::MmioRead {
+                addr: 0x123,
+                size: 1,
+            },
+        ] {
+            // Port exits count their stopping step; deferred MMIO exits do not.
+            let completed = if matches!(stop, CpuStop::PortIn { .. } | CpuStop::PortOut { .. }) {
+                3
+            } else {
+                2
+            };
+            let calls = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+            let cpu = MockCpu::new(Vec::new()).with_step_program(vec![
+                step(1, 1, CpuStop::BudgetExhausted, false),
+                step(1, 1, CpuStop::BudgetExhausted, false),
+                step(1, completed - 2, stop, false),
+            ]);
+            let bus = Bus::new(
+                vec![Box::new(SyncProbe {
+                    calls: calls.clone(),
+                    queries: Default::default(),
+                })],
+                DecodeMap::default(),
+            )
+            .with_undecoded_ports(bus::UndecodedPortAccess::Fault);
+            let mut machine = Machine::new(
+                cpu,
+                bus,
+                Box::new(chipset::NoInterruptController),
+                Vec::new(),
+                None,
+            )
+            .with_scheduler_engine(engine)
+            .with_step_limit(NonZeroU64::new(1).unwrap());
+            assert!(matches!(
+                machine.run_bounded(Some(3)),
+                Err(MachineError::Bus(_))
+            ));
+            assert_eq!(machine.virtual_time(), completed);
+            assert_eq!(machine.clock(), VClock(completed));
+            assert_eq!(calls.borrow().last(), Some(&VClock(completed)));
+        }
+    }
 }
 
 /// Two device faces share a gate, so accessing one changes the other's deadline.
@@ -223,13 +282,11 @@ fn stopping_access_refreshes_coupled_deadlines_before_charging_its_step() {
                 },
             ),
             Box::new(chipset::NoInterruptController),
-            Some(64),
             Vec::new(),
             None,
         )
         .with_cpu_rate(NonZeroU64::new(1).unwrap(), NonZeroU64::new(4).unwrap())
-        .with_scheduler_engine(engine)
-        .with_interrupt_timing(InterruptTiming::Corrected);
+        .with_scheduler_engine(engine);
         machine.run_bounded(Some(1)).unwrap();
         assert_eq!(*fired.borrow(), [VClock(2)], "{engine:?}");
     }
@@ -300,21 +357,13 @@ fn pending_machine(script: Vec<MockCpuStep>) -> (Machine<MockCpu>, chipset::PicO
         },
     );
     let log = pic.observe(bus.observation_clock());
-    let legacy = script
-        .iter()
-        .map(|step| match step.run.stop {
-            CpuStepStop::Exit(stop) => stop,
-            CpuStepStop::IrqReady => CpuStop::BudgetExhausted,
-        })
-        .collect();
-    let cpu = MockCpu::new(legacy)
+    let cpu = MockCpu::new(Vec::new())
         .with_interrupts_enabled(true)
         .with_step_program(script);
     (
-        Machine::new(cpu, bus, Box::new(pic), Some(64), Vec::new(), None)
+        Machine::new(cpu, bus, Box::new(pic), Vec::new(), None)
             .with_step_limit(NonZeroU64::new(step_limit).unwrap())
-            .with_scheduler_engine(SchedulerEngine::Deadline)
-            .with_interrupt_timing(InterruptTiming::Corrected),
+            .with_scheduler_engine(SchedulerEngine::Deadline),
         log,
     )
 }
@@ -547,12 +596,10 @@ fn deadline_budget_uses_cpu_rate_and_carried_phase() {
         cpu,
         Bus::new(vec![Box::new(clocked)], DecodeMap::default()),
         Box::new(chipset::NoInterruptController),
-        Some(64),
         Vec::new(),
         None,
     )
     .with_scheduler_engine(SchedulerEngine::Deadline)
-    .with_interrupt_timing(InterruptTiming::Corrected)
     .with_cpu_rate(NonZeroU64::new(5).unwrap(), NonZeroU64::new(2).unwrap());
     machine.run_bounded(Some(5)).unwrap();
     assert_eq!(machine.clock(), VClock(2));
@@ -584,12 +631,10 @@ fn real_mode_mov_ss_mov_sp_keeps_irq_off_the_stack_switch() {
         cpu,
         Bus::new(Vec::new(), DecodeMap::default()),
         Box::new(pic),
-        Some(64),
         Vec::new(),
         None,
     )
-    .with_scheduler_engine(SchedulerEngine::Deadline)
-    .with_interrupt_timing(InterruptTiming::Corrected);
+    .with_scheduler_engine(SchedulerEngine::Deadline);
     let log = observer.observe(machine.bus.observation_clock());
     // Return exactly after MOV SS, then assert INTR during its shadow.
     machine.run_bounded(Some(3)).unwrap();
@@ -633,12 +678,10 @@ fn real_mode_pending_irq_stops_between_rep_iterations() {
             cpu,
             Bus::new(Vec::new(), DecodeMap::default()),
             Box::new(pic),
-            Some(64),
             Vec::new(),
             None,
         )
-        .with_scheduler_engine(SchedulerEngine::Deadline)
-        .with_interrupt_timing(InterruptTiming::Corrected);
+        .with_scheduler_engine(SchedulerEngine::Deadline);
         let log = observer.observe(machine.bus.observation_clock());
         machine.run_bounded(Some(2)).unwrap();
         machine.pic.set_irq_line(0, true);
@@ -767,6 +810,37 @@ struct ScheduledLine {
     ticks: std::rc::Rc<std::cell::RefCell<Vec<VClock>>>,
     high: bool,
 }
+
+#[test]
+fn halt_delivers_vector_latched_during_halt_without_idle_wait() {
+    for engine in [SchedulerEngine::PerClock, SchedulerEngine::Deadline] {
+        for idle_limit in [None, Some(0)] {
+            let (mut machine, _) = pending_machine(vec![
+                step(1, 1, CpuStop::Halt, true),
+                step(1, 1, CpuStop::Halt, false),
+            ]);
+            machine.pic.acknowledge();
+            machine.pic.end_of_interrupt();
+            machine.pic.set_irq_line(0, false);
+            machine.bus = Bus::new(
+                vec![Box::new(ScheduledLine {
+                    every_clock: true,
+                    ticks: Default::default(),
+                    high: false,
+                })],
+                DecodeMap::default(),
+            );
+            machine.irq_lines = vec![IrqLine { device: 0, irq: 0 }];
+            machine.last_levels = vec![None];
+            machine.set_idle_limit(idle_limit);
+            machine = machine.with_scheduler_engine(engine);
+            assert_eq!(machine.run_bounded(None).unwrap(), RunOutcome::Halted);
+            assert_eq!(machine.cpu.delivered, [8]);
+            assert_eq!(machine.virtual_time(), 2);
+            assert_eq!(machine.halted_clocks, 0);
+        }
+    }
+}
 impl Device for ScheduledLine {
     fn name(&self) -> &'static str {
         "scheduled-line"
@@ -884,12 +958,10 @@ fn real_mode_mmio_and_port_effects_settle_at_the_exact_final_cap() {
                 },
             ),
             Box::new(chipset::NoInterruptController),
-            Some(64),
             Vec::new(),
             None,
         )
-        .with_scheduler_engine(SchedulerEngine::Deadline)
-        .with_interrupt_timing(InterruptTiming::Corrected);
+        .with_scheduler_engine(SchedulerEngine::Deadline);
         assert_eq!(
             machine.run_bounded(Some(cap)).unwrap(),
             RunOutcome::RetiredCapReached
@@ -916,40 +988,36 @@ fn real_mode_mmio_and_port_effects_settle_at_the_exact_final_cap() {
 }
 
 #[test]
-fn real_mode_step_limits_and_legacy_quanta_do_not_move_observables() {
+fn real_mode_step_limits_do_not_move_observables() {
     use cpu::x86jit_backend::{RealSegments, X86JitCpu};
     let mut expected = None;
     for limit in [1, 64, 65_536] {
-        for quantum in [1, 64, 65_536] {
-            let mut cpu =
-                X86JitCpu::new_real16_bare(0x10000, 0, 0x7C00, RealSegments::flat(0)).unwrap();
-            cpu.map_ram(0, 0x10000).unwrap();
-            // NOP; MOV AL, 42; OUT E9h, AL; JMP back to NOP.
-            cpu.write_mem(0x7C00, &[0x90, 0xB0, 42, 0xE6, 0xE9, 0xEB, 0xF9])
-                .unwrap();
-            let mut machine = Machine::new(
-                cpu,
-                Bus::new(Vec::new(), DecodeMap::default()),
-                Box::new(chipset::NoInterruptController),
-                Some(quantum),
-                Vec::new(),
-                None,
-            )
-            .with_scheduler_engine(SchedulerEngine::Deadline)
-            .with_interrupt_timing(InterruptTiming::Corrected)
-            .with_step_limit(NonZeroU64::new(limit).unwrap());
-            machine.run_bounded(Some(100)).unwrap();
-            let actual = (
-                machine.clock(),
-                machine.cpu.reg(cpu::CpuReg::Rip),
-                machine.bus.take_open_bus_trace(),
-            );
-            assert_eq!(
-                actual,
-                expected.get_or_insert_with(|| actual.clone()).clone()
-            );
-            assert_eq!(machine.cpu.retired(), 100);
-        }
+        let mut cpu =
+            X86JitCpu::new_real16_bare(0x10000, 0, 0x7C00, RealSegments::flat(0)).unwrap();
+        cpu.map_ram(0, 0x10000).unwrap();
+        // NOP; MOV AL, 42; OUT E9h, AL; JMP back to NOP.
+        cpu.write_mem(0x7C00, &[0x90, 0xB0, 42, 0xE6, 0xE9, 0xEB, 0xF9])
+            .unwrap();
+        let mut machine = Machine::new(
+            cpu,
+            Bus::new(Vec::new(), DecodeMap::default()),
+            Box::new(chipset::NoInterruptController),
+            Vec::new(),
+            None,
+        )
+        .with_scheduler_engine(SchedulerEngine::Deadline)
+        .with_step_limit(NonZeroU64::new(limit).unwrap());
+        machine.run_bounded(Some(100)).unwrap();
+        let actual = (
+            machine.clock(),
+            machine.cpu.reg(cpu::CpuReg::Rip),
+            machine.bus.take_open_bus_trace(),
+        );
+        assert_eq!(
+            actual,
+            expected.get_or_insert_with(|| actual.clone()).clone()
+        );
+        assert_eq!(machine.cpu.retired(), 100);
     }
 }
 
@@ -990,12 +1058,10 @@ fn real_mode_sti_nop_accepts_before_the_next_device_deadline() {
                 },
             ),
             Box::new(pic),
-            Some(65_536),
             Vec::new(),
             None,
         )
-        .with_scheduler_engine(SchedulerEngine::Deadline)
-        .with_interrupt_timing(InterruptTiming::Corrected);
+        .with_scheduler_engine(SchedulerEngine::Deadline);
         let log = observer.observe(machine.bus.observation_clock());
         if split_at_ready_boundary {
             machine.run_bounded(Some(2)).unwrap();
@@ -1189,12 +1255,10 @@ fn real_mode_error_prefix_is_charged_independently_of_step_splits() {
                     DecodeMap::default(),
                 ),
                 Box::new(chipset::NoInterruptController),
-                Some(64),
                 Vec::new(),
                 None,
             )
             .with_scheduler_engine(engine)
-            .with_interrupt_timing(InterruptTiming::Corrected)
             .with_step_limit(NonZeroU64::new(limit).unwrap());
             assert!(matches!(
                 machine.run_bounded(Some(100)),
@@ -1234,11 +1298,9 @@ fn halted_fractional_rate_rounds_up_to_reach_the_cap() {
         cpu,
         Bus::new(Vec::new(), DecodeMap::default()),
         Box::new(BoundedPolls(std::cell::Cell::new(0))),
-        Some(64),
         Vec::new(),
         None,
     )
-    .with_interrupt_timing(InterruptTiming::Corrected)
     .with_cpu_rate(NonZeroU64::new(2).unwrap(), NonZeroU64::new(3).unwrap());
     machine.set_idle_limit(Some(10));
     assert_eq!(
@@ -1249,4 +1311,89 @@ fn halted_fractional_rate_rounds_up_to_reach_the_cap() {
     assert_eq!(machine.virtual_time(), 2);
     assert_eq!(machine.idle_clocks, 2);
     assert_eq!(machine.cpu.retired(), 1);
+}
+
+/// Intel 80286 and 80287 Programmer's Reference Manual, §§2.3.2 and 2.3.4:
+/// instruction fetch uses CS and the 16-bit IP, independently of host call size.
+///
+/// KNOWN CPU-CORE DEFECT: the pinned core keeps decoding a real-mode block past
+/// the 16-bit IP wrap, so a 64-step budget runs the linear bytes after the
+/// segment. The test pins that defect: it panics today. Once the core is fixed
+/// and re-pinned it stops panicking and fails; then remove `should_panic`.
+#[test]
+#[should_panic(expected = "limit=64")]
+fn real_mode_wrapped_fetch_is_independent_of_step_partitions() {
+    use cpu::x86jit_backend::{RealSegments, X86JitCpu};
+
+    for cs in [0, 0x100] {
+        for limit in [1, 64, 65_536] {
+            let mut cpu =
+                X86JitCpu::new_real16_bare(0x30000, cs, 0xFFFE, RealSegments::flat(0)).unwrap();
+            cpu.map_ram(0, 0x30000).unwrap();
+            let base = u64::from(cs) << 4;
+            // Each NOP fits inside CS. Linear bytes beyond CS deliberately
+            // differ from the instruction at the wrapped IP.
+            cpu.write_mem(base + 0xFFFE, &[0x90, 0x90, 0x43, 0xF4])
+                .unwrap();
+            cpu.write_mem(base, &[0x42, 0xF4]).unwrap();
+            let mut steps = 0;
+            loop {
+                let run = cpu
+                    .run_steps(limit.min(4 - steps), Default::default())
+                    .unwrap();
+                assert!(run.steps > 0);
+                steps += run.steps;
+                match run.stop {
+                    CpuStepStop::Exit(CpuStop::Halt) => break,
+                    CpuStepStop::Exit(CpuStop::BudgetExhausted) => assert!(steps < 4),
+                    other => panic!("unexpected stop: {other:?}"),
+                }
+            }
+            assert_eq!(steps, 4);
+            assert_eq!(cpu.reg(cpu::CpuReg::Rdx), 1, "CS={cs:x}, limit={limit}");
+            assert_eq!(cpu.reg(cpu::CpuReg::Rbx), 0, "CS={cs:x}, limit={limit}");
+            assert_eq!(cpu.reg(cpu::CpuReg::Rip), 2, "CS={cs:x}, limit={limit}");
+        }
+    }
+}
+
+/// The same contract for a store into the next instruction of the current
+/// block: `mov byte [0x7C06], 0x42` patches the immediate of the following
+/// `mov al, 0`. Whatever value the instruction sees, it must not depend on the
+/// step budget.
+///
+/// KNOWN CPU-CORE DEFECT: with a one-step budget the patched byte is fetched
+/// (AL = 0x42); with a 64-step budget the pinned core runs the instruction it
+/// decoded before the store (AL = 0). The test pins that defect: it panics
+/// today. Once the core is fixed and re-pinned it stops panicking and fails;
+/// then remove `should_panic`.
+#[test]
+#[should_panic(expected = "store into the current block")]
+fn real_mode_store_into_current_block_is_independent_of_step_partitions() {
+    use cpu::x86jit_backend::{RealSegments, X86JitCpu};
+
+    let mut results = Vec::new();
+    for limit in [1, 64] {
+        let mut cpu =
+            X86JitCpu::new_real16_bare(0x10000, 0, 0x7C00, RealSegments::flat(0)).unwrap();
+        cpu.map_ram(0, 0x10000).unwrap();
+        cpu.write_mem(0x7C00, &[0xC6, 0x06, 0x06, 0x7C, 0x42, 0xB0, 0x00, 0xF4])
+            .unwrap();
+        let mut steps = 0;
+        loop {
+            let run = cpu.run_steps(limit, Default::default()).unwrap();
+            steps += run.steps;
+            match run.stop {
+                CpuStepStop::Exit(CpuStop::Halt) => break,
+                CpuStepStop::Exit(CpuStop::BudgetExhausted) => assert!(steps < 3),
+                other => panic!("unexpected stop: {other:?}"),
+            }
+        }
+        assert_eq!(steps, 3);
+        results.push(cpu.reg(cpu::CpuReg::Rax) & 0xFF);
+    }
+    assert_eq!(
+        results[0], results[1],
+        "store into the current block: AL depends on the step budget"
+    );
 }

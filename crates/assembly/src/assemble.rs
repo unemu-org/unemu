@@ -133,7 +133,8 @@ pub fn assemble_with_observation(
     let config = resolved.as_ref();
     config.validate()?;
 
-    let cpu = build_cpu(config)?;
+    let mut cpu = build_cpu(config)?;
+    validate_step_cpu(&mut cpu)?;
     let cmos = derive_cmos_config(config);
 
     // Instantiate devices in config order, recording each role's bus index. The
@@ -194,24 +195,22 @@ pub fn assemble_with_observation(
     // The machine is built with no idle limit; the run policy stamps it on before
     // the loop runs (idle_limit is a "how we run" concern, not machine identity).
     let (rate_numerator, rate_denominator) = config.clock.cpu_rate()?;
-    let machine = Machine::new(
-        cpu,
-        Bus::new(devices, map),
-        controller,
-        config.clock.quantum,
-        irq_lines,
-        None,
-    )
-    .with_scheduler_engine(config.clock.engine)
-    .with_interrupt_timing(config.clock.interrupt_timing)
-    .with_cpu_rate(rate_numerator, rate_denominator)
-    .with_dma_wirings(dma_wirings);
+    let machine = Machine::new(cpu, Bus::new(devices, map), controller, irq_lines, None)
+        .with_cpu_rate(rate_numerator, rate_denominator)
+        .with_dma_wirings(dma_wirings);
 
     Ok(AssembledMachine {
         machine,
         device_index,
         observation,
     })
+}
+
+/// A zero-step probe rejects unsupported backends without executing guest code.
+fn validate_step_cpu(cpu: &mut impl cpu::Cpu) -> Result<(), ConfigError> {
+    cpu.run_steps(0, cpu::StepRunOptions::default())
+        .map(|_| ())
+        .map_err(|error| ConfigError::StepBoundedCpuRequired(error.to_string()))
 }
 
 /// Build the CPU with the whole memory mosaic laid out and the reset entry seeded
@@ -702,34 +701,14 @@ mod tests {
     }
 
     #[test]
-    fn configured_scheduler_engine_reaches_the_machine() {
-        let mut config = reference_config();
-        assert_eq!(
-            assemble(&config).unwrap().machine.scheduler_engine(),
-            machine::SchedulerEngine::PerClock
-        );
-        config.clock.engine = machine::SchedulerEngine::Deadline;
-        assert_eq!(
-            assemble(&config).unwrap().machine.scheduler_engine(),
-            machine::SchedulerEngine::Deadline
-        );
-    }
-
-    #[test]
-    fn corrected_timing_ignores_the_legacy_block_quantum() {
-        let mut config = reference_config();
-        assert_eq!(
-            assemble(&config).unwrap().machine.interrupt_timing(),
-            machine::InterruptTiming::Legacy
-        );
-        config.clock.interrupt_timing = machine::InterruptTiming::Corrected;
-        for quantum in [None, Some(0), Some(64)] {
-            config.clock.quantum = quantum;
-            assert_eq!(
-                assemble(&config).unwrap().machine.interrupt_timing(),
-                machine::InterruptTiming::Corrected
-            );
-        }
+    fn non_step_bounded_cpu_is_a_clear_configuration_error() {
+        let mut cpu = X86JitCpu::new(0x10000, 0x1000, &[0xF4]).unwrap();
+        let error = validate_step_cpu(&mut cpu).unwrap_err();
+        assert!(matches!(error, ConfigError::StepBoundedCpuRequired(_)));
+        assert!(error
+            .to_string()
+            .contains("Real16 CPU with step-bounded execution"));
+        assert_eq!(cpu.retired(), 0);
     }
 
     #[test]

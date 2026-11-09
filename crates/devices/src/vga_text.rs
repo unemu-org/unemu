@@ -657,8 +657,8 @@ mod tests {
     #[test]
     fn status_retrace_bit_sees_both_edges_within_bounded_reads() {
         // Model the BIOS busy-wait: spin until the vertical-retrace bit is high,
-        // then spin until it is low again. No tick happens between reads (one CPU
-        // quantum), so this only terminates if the bit cycles per read.
+        // then spin until it is low again. This isolated test deliberately omits
+        // ticks to verify the compatibility model toggles the bit per read.
         let mut vga = VgaText::new();
         // Vertical-retrace bit (bit 3) — the bit the BIOS's `test al,8` checks.
         const RETRACE: u32 = 0x08;

@@ -59,8 +59,7 @@ or clock fields in them.
 | Runner / result | Every output field or successful return value | Current golden / frontend consumers |
 | --- | --- | --- |
 | `run_test386` → `Test386Run` | `post: Vec<u8>`, `stop: StopReason` | `crates/cli/tests/test386_golden.rs`: exact POST bytes and unsupported-stop variant |
-| `run_bios`, `run_bios_with_cap`, `run_bios_boot`, `run_freedos`, `run_freedos_interactive` → `BiosRun` via `run_bios_config` | `post: Vec<u8>`, `screen: TextGrid`, `mda: TextGrid`, `com1: Vec<u8>`, `stop: StopReason` | `bios_boot_golden.rs`: exact POST and cap-stop variant; `bios_floppy_boot_golden.rs`: exact COM1 marker and diagnostic stop print; `freedos_boot_golden.rs`, `dos_interactive_golden.rs`, `dos_write_golden.rs`: MDA console substrings and cap-stop variant. All paths under `crates/cli/tests/`. **No existing test asserts `BiosRun.screen`.** |
-| `run_serial` → `Result<Vec<u8>>` | COM1 bytes | `golden_serial.rs`: exact `hello`; `crates/cli/src/main.rs`: stdout, default demo or blob |
+| `run_bios`, `run_bios_with_cap`, `run_bios_boot`, `run_freedos`, `run_freedos_interactive` → `BiosRun` via `run_bios_config` | `post: Vec<u8>`, `screen: TextGrid`, `screen_stamp: Option<ScreenStamp>`, `mda: TextGrid`, `com1: Vec<u8>`, `floppy_image: Option<Vec<u8>>`, `stop: StopReason` | `bios_boot_golden.rs`: exact POST and cap-stop variant; `bios_floppy_boot_golden.rs`: exact COM1 marker and diagnostic stop print; `freedos_boot_golden.rs`, `dos_interactive_golden.rs`, `dos_write_golden.rs`: MDA console substrings and cap-stop variant. All paths under `crates/cli/tests/`. BIOS goldens also assert display cursor and capture stamps; snapshot tests cover the colour grid. |
 | `run_boot` → `Result<Vec<u8>>` | COM1 bytes | `boot_golden.rs`: exact timer markers; `main.rs --boot`: stdout |
 | `run_keyboard` → `Result<Vec<u8>>` | COM1 bytes | `keyboard_golden.rs`: exact queued scancode |
 | `run_rtc` → `Result<Vec<u8>>` | COM1 bytes | `rtc_golden.rs`: exact RTC marker |
@@ -162,8 +161,9 @@ kind with ambiguous units.
 and collectors. Resolve a display or stream by stable `DeviceId` and output
 channel at assembly time; validate capabilities then. An unavailable or
 mismatched requested output is an explicit configuration error, not a blank
-screen or empty serial stream. The `run_serial` inline Long64 machine binds the
-same capabilities manually and needs no new machine-config CPU-mode axis.
+screen or empty serial stream. The former Long64 `run_serial` demo and
+`golden_serial.rs` are removed; all machine runners use assembled Real16 CPUs.
+`main.rs` offers `--boot`; no arguments print usage.
 
 The facade can call a hardware-neutral machine/device visitor to borrow display
 capabilities. The machine core only enumerates configured slots and stamps
@@ -219,8 +219,7 @@ deferred; an eventual replay design must specify stream epochs/cursors.
 or explicitly requested stream capture. `Capture` connects `CaptureFrameSink`
 to the same rendered frames a window would receive. Store collection limits,
 display-selection requests and capture cadence in an observation/run policy
-beside `RunPolicy`, not as guest hardware identity. Do not change the guest CPU
-quantum to service a window's repaint requests.
+beside `RunPolicy`, not as guest hardware identity. Do not change the guest's step bounds to service a window's repaint requests.
 
 ### Deterministic boundaries and assertions
 

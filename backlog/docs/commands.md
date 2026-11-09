@@ -6,25 +6,33 @@ Everyday commands for this project. Keep this file **flat and copy-pasteable** â
 
 ```sh
 cargo build                                  # build the workspace
-cargo run -p cli -- <config>                 # run the emulator
+cargo run -p cli -- --boot                   # Real16 timer demo; no args print usage
 cargo test --workspace                       # unit + golden + integration
 cargo test --workspace -- --ignored          # slow goldens: BIOS POST, FreeDOS boot, DOS sessions (~2 min)
 UNEMUPC98_REQUIRE_FIXTURES=1 cargo test --workspace -- --ignored # fail if a fixture is missing
-# Opt in to Corrected-vs-Legacy A/B and informative host timing (slow in debug):
-UNEMUPC98_REQUIRE_FIXTURES=1 UNEMUPC98_SCHEDULER_AB=1 cargo test --offline -p cli --test scheduler_ab -- --include-ignored --nocapture
+# Corrected per-clock oracle versus production deadlines (no environment gate):
+UNEMUPC98_REQUIRE_FIXTURES=1 cargo test --offline -p cli --test scheduler_ab -- --include-ignored --nocapture
+# Opt-in host timing only, BIOS POST and FreeDOS prompt, median of three per engine:
+UNEMUPC98_REQUIRE_FIXTURES=1 UNEMUPC98_SCHEDULER_WALL_TIMES=1 cargo test --offline --release -p cli --test scheduler_ab scheduler_engine_wall_times -- --ignored --nocapture
 cargo test -p devices                        # one crate's tests
 ```
 
-The plain ignored set retains PerClock-vs-Deadline comparisons. Corrected-vs-Legacy
-comparisons and both wall-time tests return early unless `UNEMUPC98_SCHEDULER_AB=1`.
-The Corrected DOS file-write comparison uses four times the legacy command step
-budget: each completed REP iteration counts as a step instead of only the whole
-instruction. Both modes must reach the `3 file(s)` listing.
+The ignored set includes firmware/DOS goldens and corrected PerClock-vs-Deadline
+comparisons, including final RAM/register/device state. The per-clock engine is
+available through the non-default `reference-scheduler` feature enabled by CLI
+dev-dependencies, never through `MachineConfig`. Legacy comparisons and
+`UNEMUPC98_SCHEDULER_AB` are retired. Step budgets include REP iterations; the
+command budget is calibrated to the final DOS file-write listing. No arguments
+print usage to stdout with status 0; unknown or extra arguments print usage to
+stderr with status 2. The informative
+`scheduler_engine_wall_times` test skips with one line unless
+`UNEMUPC98_SCHEDULER_WALL_TIMES=1` is set, including in ordinary slow/CI runs.
 
 ## Typecheck / lint / format
 
 ```sh
 cargo clippy --all-targets --all-features -- -D warnings
+cargo clippy --locked -p cli --bin unemupc98 -- -D warnings # production, no reference-scheduler
 cargo fmt --all
 cargo fmt --all -- --check                   # CI check
 cargo deny --all-features list               # inspect dependency licences
@@ -69,7 +77,8 @@ the expected hash. See each `vendor/*/README.md` for cache paths and hashes.
 Each gate uses `nix develop --no-update-lock-file --command` (except `guard`, which
 runs directly), preserves its exit status, and tees combined output to the gitignored
 `ci-logs/<step>.log`. Set `CI_LOG_DIR` to choose another log directory. Cargo builds/tests
-use `--locked`; formatting uses `cargo fmt --check`. CI runs every gate even after failures,
+use `--locked`; the clippy gate lints all features and then the production CLI
+binary without dev-dependency feature unification; formatting uses `cargo fmt --check`. CI runs every gate even after failures,
 saves the Cargo cache, and reports failing steps in commit status `ci / x86_64`.
 See [`dev-setup.md`](dev-setup.md#ci) for the runner and cache setup.
 

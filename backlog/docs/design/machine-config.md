@@ -96,24 +96,21 @@ picks the right constructor from data instead of the caller picking it by hand.
 
 ```
 ClockConfig {
-    retired_per_pit_clock: u64,   // a documented ratio CONSTANT, not a frequency
-    quantum:               u64,   // cooperative run budget = interrupt latency
+    retired_per_pit_clock:             u64, // positive numerator A
+    retired_per_pit_clock_denominator: u64, // positive denominator B
 }
 ```
 
-`retired_per_pit_clock` is a **ratio**, not a Hz value: virtual time is measured
-in retired instructions (decision-5, §6.1), so "how many retired instructions
-pass per PIT tick" is a pure ratio with no wall-clock meaning. `quantum` is a
-**first-class field**, not an afterthought: the cooperative run budget *is* the
-interrupt latency (decision-4, §6.2) — how often the machine returns to its
-service point so a pending IRQ is taken. It belongs to the machine's timing
-identity and is part of the golden identity of any run that takes interrupts.
-
-> Note: the current `run_*` code documents the quantum in "x86jit block units."
-> Block boundaries are a lifter implementation detail and must not be a unit of
-> virtual time (§6.1, decision-5). The config expresses the budget in the
-> retired-instruction terms the clock is actually defined in; reconciling the
-> loop to that is part of task-30.
+The CPU rate A/B counts completed steps per PIT input clock. An instruction is
+one step and each completed REP iteration is one step. The carried remainder
+preserves the ratio across CPU calls. This is a modelling ratio, not a nominal
+frequency. Block quantum and interrupt-timing selection have been removed:
+interrupts are accepted only at completed instruction boundaries after bus and
+DMA effects, with IF and STI/SS-load shadows respected. Cooperation size is not
+machine identity. Production always uses the deadline engine; the non-default
+`reference-scheduler` feature exposes a per-clock oracle only to tests, outside
+`MachineConfig`. Assembly probes zero-step execution and returns a clear
+`StepBoundedCpuRequired` config error for an unsupported CPU.
 
 Neither struct carries a frequency axis or a behavioural CPU-type toggle today —
 see [Non-goals](#non-goals) for why, and why keeping the structs is nonetheless
@@ -289,14 +286,10 @@ chunks until `needle` shows, then, if stimuli are scheduled, inject them and run
 `InjectionSchedule`, today `AfterPrompt`); it is the **mechanism** the interactive
 FreeDOS port (task-36) drives — task-32 provides it, task-36 is the caller.
 
-`idle_limit` — the "device declares its source quiescent, stop" bound — is a
-run-loop concern, so it **moved out of the machine description into `RunPolicy`**.
-`Machine::new` keeps accepting an initial value (a shim so the pre-config `*_legacy`
-A/B baselines stay byte-identical) and `assemble` no longer takes it; the run
-driver `run(machine, policy)` stamps the policy's `idle_limit` onto the machine
-before the loop. **Quantum stays in `MachineConfig`** (`ClockConfig`): it is
-guest-visible interrupt latency (decision-4), part of what the machine *is*, not
-how it is run.
+`idle_limit` is a run-policy concern: assembly starts without an idle wait and
+`run(machine, policy)` applies it before executing. The active cap counts steps,
+including REP iterations, plus accumulated halted instruction equivalents. The
+cap is exact during execution; halted caps round up to a whole PIT clock.
 
 **The injection cadence is part of the golden identity.** *When* scancodes are
 injected and how often the loop polls for a pending IRQ is not a free tuning
@@ -344,14 +337,12 @@ Resolved here so the trait removal (task-33) is unblocked:
   `run_vga_text` — are **ported to the config path in task-31**. They are small
   and the AT-class config already covers everything they need; there is no reason
   to keep them as hand-written assembly.
-- **`run_serial` is the exception.** It is a **Long64** walking skeleton (a
-  single UART, no interrupt controller) — the only non-real-mode consumer. Adding
-  a CPU-mode axis to `MachineConfig` for one user would grow the whole config to
-  serve an outlier. Instead: **inline `run_serial`'s ~18-line assembly trait-free
-  (recommended)** so it stops depending on the `Chipset` trait without polluting
-  the config, **or delete it and its golden** if it has outlived its purpose.
-  Either way the config does **not** grow a mode axis. Stated in
-  [Non-goals](#non-goals).
+- **`run_serial` and its Long64 golden are intentionally removed.** The Long64
+  walking skeleton has served its purpose. `HELLO_PROGRAM`, flat Long64 blob
+  loading and the default CLI demo are retired with the legacy machine loop.
+  `--boot` remains the Real16 timer demo; no arguments print usage and point at
+  DOS goldens. The CPU adapter retains its own Long64 unit tests. Machine config
+  has no CPU-mode axis and this removal is not a regression to restore.
 
 ## Non-goals
 
@@ -365,11 +356,11 @@ Deliberately out of scope. Do not implement these unprompted.
   behavioural mode, and the CPU core models one part. `CpuConfig.chip` is a
   marker with one variant today; a second *behavioural* variant waits for a
   consumer and a differential oracle.
-- **No CPU-mode axis in the config.** `run_serial`'s Long64 case is handled by
-  inlining/deletion, not by adding a mode dimension to `MachineConfig` (see
+- **No CPU-mode axis in the config.** `run_serial`'s Long64 case was intentionally
+  deleted, without adding a mode dimension to `MachineConfig` (see
   above).
-- **Any deleted demo.** If `run_serial` (and its golden) is deleted rather than
-  inlined, that removal is intentional and recorded — not a regression to
+- **Any deleted demo.** `run_serial` (and its golden) was deleted;
+  that removal is intentional and recorded — not a regression to
   restore.
 - **No config file format / serialization.** `MachineConfig` is Rust data. A
   textual/serialized machine description is a later concern; the `Eq`/`Debug`

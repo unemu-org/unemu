@@ -6,7 +6,7 @@ edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 repository.workspace = true
-description = "CPU swap seam: the Cpu trait plus the x86jit-backed Long64 backend (§2, §3.2)."
+description = "CPU swap seam: the Cpu trait plus the x86jit-backed backend (§2, §3.2)."
 
 [dependencies]
 thiserror.workspace = true

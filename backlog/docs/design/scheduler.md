@@ -1,14 +1,123 @@
 # Deterministic device scheduler
 
-Design spike, 2026-11-09. Status: proposed; no scheduler or CPU implementation
-is included. CPU source inspected at `b0c9ae52820dffc1e2cb75c4928a670788a916d0`
-(`b0c9ae5`). This document proposes an extension to
-[decision-5](../../decisions/decision-5%20-%20Virtual%20clock%20in%20retired%20instructions.md),
-and changes to the boundary rules in
-[decision-4](../../decisions/decision-4%20-%20Hardware%20IRQ%20injection%20contract.md)
-and the single-clock implementation in
-[decision-14](../../decisions/decision-14%20-%20Virtual%20time%20advances%20while%20the%20CPU%20is%20halted.md).
-Acceptance of the proposed decision below is required before those rules change.
+Design and adoption record, 2026-11-09. The accepted review outcome is
+[decision-15](../../decisions/decision-15%20-%20Deterministic%20device%20scheduler%20with%20instruction-exact%20interrupt%20boundaries.md).
+Corrected timing and deadline dispatch are adopted as the only production loop.
+The pinned CPU defect and its temporary regression expectations are recorded below. The
+original proposal is retained as design history where explicitly superseded.
+
+## Adoption
+
+Corrected instruction-boundary timing is the only machine loop. Production uses
+`Deadline`; `InterruptTiming`, the legacy block loop and `ClockConfig.quantum`
+are removed. CPU rate A/B counts completed steps, including REP iterations, with
+carried phase. Assembly verifies zero-step execution before building devices and
+rejects unsupported CPUs with a configuration error. Long64 machine runners and
+CLI blob loading are intentionally retired; CPU adapter tests remain.
+
+The non-default `reference-scheduler` feature exposes `PerClock` and its setter
+in the machine crate. Assembly forwards that feature, and CLI enables it only
+in dev-dependencies for integration tests. `MachineConfig` has no engine field:
+a production config cannot select the oracle, even when features are unified by
+an all-targets test build. Both engines share instruction-start access times,
+completed-transaction-before-INTA ordering, IF/STI/SS readiness, exact active
+caps, and halted event/bound jumps. Their ordered streams must match without
+normalization, including `FinalState` (RAM hashes, registers, saved device state).
+
+The pinned CPU revision is `70be0087b583f1e38bf3479d92e90e89ef998cf1`.
+It decodes a Real16 block past the 16-bit IP wrap and does not observe stores
+into not-yet-executed bytes of the current block. Consequently execution can
+depend on the step budget, contrary to the CPU seam contract. This is an
+upstream CPU defect, not an accepted scheduler timing difference.
+
+Three passing tests intentionally pin the defect:
+
+- `real_mode_wrapped_fetch_is_independent_of_step_partitions` is a device-free
+  CPU regression marked `#[should_panic(expected = "limit=64")]`. It requires
+  the known partition-dependent failure rather than claiming independence.
+- `real_mode_store_into_current_block_is_independent_of_step_partitions` does
+  the same for a store into the next instruction of the current block
+  (`#[should_panic(expected = "store into the current block")]`).
+- `deadline_diverges_from_per_clock_on_bios_floppy_until_the_core_is_fixed`
+  pins the first execution-event difference at index 349,290: per-clock emits
+  OUT `0x3F8`, value `0x42`, at clock 5,899,026; deadline instead stops at
+  5,899,248 with an error containing `unsupported instruction`. Final snapshots
+  are omitted only for this defect diagnostic so the absent OUT is compared
+  directly with Stop; all equality gates retain `FinalState`.
+
+The first measured state difference precedes that OUT: at 5,899,021, CS:IP
+`0000:0003`, byte `003A` is `B7` versus `F8` and FLAGS is `0286` versus `0282`
+(per-clock versus deadline). State matched at 5,899,020; SP first differs at
+5,899,022 (`00F6` versus `00F8`). Returning to dispatch refetches wrapped bytes;
+continuing inside the decoded block does not.
+
+Exit rule on a fully gated upstream fix and re-pin: remove `should_panic` from
+both CPU regressions; turn the BiosFloppy test back into an equality check through
+`assert_optional_workload`; run both engines and all slow goldens. Expect the
+production BIOS-to-floppy golden's current `com1 == [B]` to change: the oracle
+currently emits a second `0x42` at 5,899,026 when execution runs off segment 0.
+Derive the new full-stream expectation from the corrected per-clock oracle and
+inspect the execution, rather than blindly re-baselining the production output.
+
+Legacy-versus-corrected tests and `UNEMUPC98_SCHEDULER_AB` are deleted. Comparator
+unit tests retain explicit instruction-start shifts and bounded cap endpoint
+normalization for reviewing migration evidence. They never shift INTA, discard
+accesses or normalize final state. The following old/new observations classify
+all changed migration expectations: **(a) systematic** accounting/timestamp or
+exact-cap changes; **(b) real ordering** changes in when effects become visible.
+These are reviewed migration observations, not replacement byte/screen goldens.
+
+| Workload/test | Old → new | Class | Reason |
+|---|---|---|---|
+| SerialReal16, RTC, synthetic floppy; ordinary port events in all workloads | Port access completion timestamp → instruction-start timestamp (−1 clock at 1/1); MMIO shift 0 | (a) systematic | Accesses happen before charging the stopping port instruction; bytes and access order preserved. Stops remain 12, 284 and 45 respectively; VGA stop remains 5. |
+| Timer boot PIT divisor high-byte write | 18 → 17 | (a) systematic | OUT timestamp now denotes instruction start (Intel 8254, Mode 2). |
+| Timer boot INTA vector 8 | 40 → 39 | (b) real ordering | Earlier divisor programming moves the timer edge and HLT wake one clock earlier; INTA occurs only at a ready boundary after bus effects (Intel 8259A, Interrupt Sequence; Intel 80286, HLT). INTA is never normalized. |
+| Timer boot first UART OUT; stop | 46 → 44; 337 → 336 | (b) real ordering, plus (a) for OUT start | One clock from earlier INTA plus one from access-start stamping; five serial dots unchanged. |
+| Keyboard `FinalState`, 8042 hash | 5226027366141998341 → 12846667287079830168 | (a) systematic | Verified in `i8042.rs`: `read_data` schedules `keyboard_ready_at = now + KEYBOARD_BYTE_CLOCKS` after consuming a keyboard byte; `save` serializes both `now` and that deadline. The one-clock earlier read changes the saved deadline. Access/INTA/EOI otherwise agree after the port shift; RAM/registers/serial/stop 233 unchanged. Saved state remains compared. |
+| test386 POST port timestamp | 86 → 85 | (a) systematic | Port access-start stamping; POST bytes unchanged. |
+| test386 CPU-error stop clock | 86 → 159 (virtual time 159 → 159) | (b) real ordering | Charge the 73 completed prefix steps before propagating the CPU error; the old early return lost those device clocks. Unsupported instruction and CPU/RAM/POST state unchanged; no INTA here. |
+| BIOS POST checkpoint 05 (also BIOS-floppy/DOS prefix) | 131188 → 180336 (+49148) | (a) systematic | Three REP STOSW with CX=0x4000 at ROM offsets 612a/6141/6155 add 3×(16384−1)=49149 completed iterations; access-start subtracts one. |
+| FDC write/readback cap and trailing access | 5001 → 5000; legacy IN COM1 at 5001 absent; RIP 31916 → 31915 | (a) systematic | Exact cap prevents the extra instruction/access; sector and serial `W` unchanged. The comparator does not discard that extra access. |
+| `real16_spin_reaches_cap_with_default_clock` | retired range 32..=131105 → exactly 32 | (a) systematic | Exact active cap; virtual time still equals completed steps. |
+| `real16_self_jump_idle_advances_virtual_time` | virtual time ≥1000 → exactly 1000 | (a) systematic | Exact cap, including the self-jump's completed steps. |
+| BIOS cap, frozen old policy | 10059627 → 10000000 | (a) systematic | Block overshoot removed. |
+| FreeDOS prompt poll endpoint, frozen old policy | 25191999 → 25000000 | (a) systematic | Block overshoot removed. This was only a coarse observation, not the first appearance of the prompt. |
+| DIR endpoint, frozen old 80M command policy | 105000274 → 105000000 | (a) systematic | Exact endpoint; separate from the calibrated command budget below. |
+| `prompt_and_stimulus_budgets_start_from_current_virtual_time` | Endpoint 32 → 35 | run policy (not hardware timing) | The prompt poll ends at 25; the full requested 10 command steps must execute before stopping. A cap at 32 now fails before key injection instead of truncating the command. |
+
+The BIOS-floppy divergence is excluded from classes (a)/(b): both engines use
+the same corrected timing, and the CPU defect is pinned rather than accepted.
+Removing the Long64 `hello` demo/golden and replacing no-argument output with
+usage is an intentional interface change, not a hardware expectation change.
+
+Policy calibration with the pinned fixtures (completed steps, not host time):
+
+| Policy | Observed milestone | Bound and margin |
+|---|---|---|
+| FDC write/readback | `W` OUT starts at 3,673, completes at 3,674 | 5,000 unchanged: 1,326 steps |
+| test386 | Unsupported instruction after 159 steps | 5,000,000 → 1,024: 865 steps |
+| BIOS POST | Final POST OUT starts at 5,526,624, completes at 5,526,625 | 10,000,000 unchanged: 4,473,375 steps |
+| FreeDOS prompt | First 1,000-step poll at 8,109,000; replay to 8,108,000 then single-step polls: first appearance 8,108,258 | Poll 25,000,000 → 1,000,000; detects at 9,000,000 |
+| DIR and file-write/DIR | With injection at 9,000,000, final listing and `A:\>` by 10,000,000 (DIR) / 10,250,000 (write/DIR), sampled every 250,000 steps | Command budget 80,000,000 → 2,000,000: at least 750,000 steps of margin for both commands |
+| Overall BIOS/DOS | Prompt poll rounds up to 9,000,000 | Original 2,000,000,000 → adoption 32,000,000 → 12,000,000: one extra 1,000,000-step boot poll plus the full 2,000,000 command budget |
+
+The policy checks remaining room before injecting any keys. A prompt after
+10,000,000 with a nonempty script and a 2,000,000 budget produces an explicit
+`InsufficientCommandBudget` error (`PolicyFailed` in the frontend), never a
+silently shortened command run. The historical four-times-80,000,000 workaround
+is not carried forward. Screens, serial/POST bytes and media contents retain
+independent golden assertions. Changing injection cadence also changes the
+reported DOS time (12:00:20.81 am → 12:00:07.41 am); it is a run-policy
+change rather than a hardware rebaseline.
+
+The informative release wall-time test requires
+`UNEMUPC98_SCHEDULER_WALL_TIMES=1`; otherwise it prints one skip line. It measures
+the two corrected engines outside execution, using medians of three. Phase
+profiling is separate from scheduler correctness.
+
+The sections below preserve the proposal and migration history. The accepted
+review outcome and adoption above supersede earlier proposed representations
+and legacy compatibility paths.
 
 ## Answer and limits of the hypothesis
 
@@ -575,6 +684,8 @@ boundaries for replay; deterministic tests supply the record directly.
 
 ## Migration and A/B gates
 
+Historical sequence, completed by the adoption above.
+
 First freeze fixtures, CPU pin, config, block quantum, policies/input cadence,
 and model version. Use two orthogonal comparison axes: **device dispatch**
 (single-clock reference versus scheduled) and **CPU/IRQ semantics** (legacy
@@ -678,7 +789,7 @@ hardware fidelity beyond the listed contracts remains to be tested.
 
 ## Proposed implementation beads
 
-These are proposed titles and scopes for the supervisor, not created issues.
+These historical titles describe proposed scopes, not an open-work inventory.
 Order is dependency order; the existing INTA-ordering issue should be linked
 to item 7 rather than duplicated.
 

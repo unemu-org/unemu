@@ -58,7 +58,10 @@ fn bios_int19_reads_boot_sector_over_the_floppy() {
     assert!(stamp.virtual_time >= stamp.retired);
 
     // INT 19h loaded sector 0 at 0x7C00 and jumped to it; the sector transmitted
-    // its marker to COM1. The complete stream must contain only that marker.
+    // its marker to COM1. This single-byte expectation pins a CPU-core defect:
+    // after execution runs off segment 0, the per-clock oracle writes a second
+    // 0x42 to 0x3F8 at clock 5,899,026. When the core is fixed, derive the full
+    // expected stream from that oracle before updating this assertion.
     eprintln!("stop: {:?}", run.stop);
     eprintln!("com1: {:02x?}", run.com1);
     assert_eq!(

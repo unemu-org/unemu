@@ -16,7 +16,7 @@
 //!
 //! - [`CpuConfig`] — the modelled chip, the reset entry point, and the seeded
 //!   real-mode segment registers ([`cpu::x86jit_backend::RealSegments`]).
-//! - [`ClockConfig`] — the deterministic virtual-clock ratio and run quantum.
+//! - [`ClockConfig`] — the deterministic virtual-clock ratio.
 //! - [`MemoryConfig`] — the RAM regions and MMIO windows of the address space.
 //! - [`DeviceConfig`] — one entry per modelled chip ([`devices`]), carrying its
 //!   role ([`DeviceId`]), decoded port windows, IRQ line, and DMA wiring.

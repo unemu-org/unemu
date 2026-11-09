@@ -20,7 +20,7 @@ use crate::output::OutputConfig;
 pub struct MachineConfig {
     /// The CPU: modelled chip, reset entry, seeded segments.
     pub cpu: CpuConfig,
-    /// The virtual clock: the deterministic ratio and run quantum.
+    /// The virtual clock: the deterministic step-to-PIT ratio.
     pub clock: ClockConfig,
     /// The memory map: address-space size, RAM regions, MMIO windows.
     pub memory: MemoryConfig,

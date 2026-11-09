@@ -4,8 +4,8 @@
 use std::process::Command;
 use std::time::{Duration, Instant};
 
-use assembly::{assemble, at_boot, ClockConfig};
-use cpu::{Cpu, CpuStop, X86JitCpu};
+use assembly::{assemble, at_boot};
+use cpu::Cpu;
 use machine::RunOutcome;
 
 // A subprocess lets the parent kill and reap an unbounded CPU run on regression;
@@ -48,9 +48,7 @@ fn real16_spin_reaches_cap_with_default_clock() {
             RunOutcome::RetiredCapReached
         );
         let retired = assembled.machine.cpu().retired();
-        assert!(retired >= 32);
-        // Each loop block retires two instructions, plus the initial STI.
-        assert!(retired <= 32 + 2 * config.clock.quantum.expect("finite quantum") + 1);
+        assert_eq!(retired, 32);
         assert_eq!(assembled.machine.virtual_time(), retired);
     });
 }
@@ -68,24 +66,6 @@ fn real16_self_jump_idle_advances_virtual_time() {
             assembled.machine.run_bounded(Some(1_000)).expect("run"),
             RunOutcome::RetiredCapReached
         );
-        assert!(assembled.machine.virtual_time() >= 1_000);
+        assert_eq!(assembled.machine.virtual_time(), 1_000);
     });
-}
-
-#[test]
-fn long64_spin_yields_with_serial_quantum() {
-    with_watchdog("long64_spin_yields_with_serial_quantum", || {
-        let mut cpu =
-            X86JitCpu::new(cli::RAM_BYTES, cli::ENTRY, &[0xEB, 0xFE]).expect("Long64 JMP $");
-        assert_eq!(
-            cpu.run(cli::QUANTUM).expect("run"),
-            CpuStop::BudgetExhausted
-        );
-    });
-}
-
-#[test]
-fn default_quanta_match_the_bios_block_budget() {
-    assert_eq!(ClockConfig::default().quantum, Some(65_536));
-    assert_eq!(cli::QUANTUM, Some(65_536));
 }

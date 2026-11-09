@@ -4,15 +4,16 @@
 //! [`Cpu`] is the first of the six swap seams from
 //! `backlog/docs/architecture.md`: it abstracts the CPU core so the `machine`
 //! composition root never names a concrete backend. The only backend is
-//! [`X86JitCpu`], wrapping the `x86jit-core` recompiler; it runs either in
-//! **Long64** mode (the serial walking skeleton) or in **Real16** mode (an
-//! IBM PC/AT-style boot that takes hardware interrupts).
+//! [`X86JitCpu`], wrapping the `x86jit-core` recompiler; it runs in
+//! **Real16** mode for IBM PC/AT machines. **Long64** remains available for
+//! standalone adapter tests; machine assembly requires step-bounded Real16.
 //!
 //! The backend exploits the integration surface `x86jit` exposes: `Exit::PortIo`
 //! with `complete_port_in` for ISA port I/O, and `RegionKind::Trap` MMIO (§2.1).
 //! In real mode it additionally forwards hardware IRQ injection to the core
 //! ([`Cpu::inject_irq`]), which delivers the vector in-guest through the IVT, and
-//! exposes the retired-instruction counter that drives the virtual clock (§6).
+//! exposes completed steps (including REP iterations) for virtual time (§6),
+//! alongside whole-instruction retirement counts for diagnostics.
 
 pub mod x86jit_backend;
 
@@ -175,15 +176,15 @@ pub enum DmaAccess<T> {
 
 /// The CPU swap seam (§3.2 seam 1).
 ///
-/// A backend implements execution ([`Cpu::run`]), register access, the
-/// completion handshakes for pending port/MMIO reads, the IRQ-injection contract
-/// (§5.2), and the retired-instruction counter that measures virtual time (§6).
+/// A backend implements step-bounded execution ([`Cpu::run_steps`]), register
+/// access, port/MMIO completion handshakes, the IRQ-injection contract (§5.2),
+/// and completed-step accounting for virtual time (§6).
 pub trait Cpu {
     /// Run guest code until an [`CpuStop`] is hit or `budget` blocks execute.
     ///
-    /// `budget` is the cooperative quantum in `x86jit` block units (§6.2);
-    /// `None` runs until a non-budget stop. Devices tick on `run()` boundaries,
-    /// so this value governs interrupt latency and goldens depend on it.
+    /// `budget` counts `x86jit` blocks; `None` runs until a non-budget stop.
+    /// This adapter API remains for standalone CPU callers. The machine uses
+    /// [`Cpu::run_steps`] and schedules devices at completed-step boundaries.
     fn run(&mut self, budget: Option<u64>) -> Result<CpuStop, CpuError>;
 
     /// Run at most `max_steps` scheduling units (§6).
@@ -318,13 +319,12 @@ pub trait Cpu {
         DmaAccess::Complete(())
     }
 
-    /// Retired-instruction count since reset — the deterministic virtual-time
-    /// base (§6, virtual-clock model in `architecture.md`).
+    /// Whole-instruction retirement count since reset (§6).
     ///
-    /// A monotone counter of guest instructions that have completed. The machine
-    /// advances the virtual clock from the *delta* of this value across a
-    /// `run()`, never from wall time, so device timing (and every golden) is
-    /// reproducible. The default is `0` for a backend that does not count.
+    /// A monotone diagnostic counter. Machine time uses [`Cpu::completed_steps`]
+    /// instead so individual REP iterations consume time before the whole
+    /// instruction retires. Neither counter depends on wall time.
+    /// The default is `0` for a backend that does not count.
     fn retired(&self) -> u64 {
         0
     }

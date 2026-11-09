@@ -7,10 +7,6 @@
 //! [`assembly::assemble`], and drives the resulting machine — addressing devices
 //! by role through the assembler's device-index map, never a hardcoded bus index.
 //!
-//! The lone exception is [`run_serial`]: the Long64 serial skeleton is one 16550
-//! UART assembled inline (trait-free), not through a config preset — a declarative
-//! mode axis for a single Long64 user would not earn its keep.
-//!
 //! Runners return their observables (COM1 bytes, POST stream, text screens)
 //! through semantic byte routes for COM1 and POST. Text screens use the
 //! card-state observation facade. All captures share assembly-owned routing.
@@ -21,58 +17,14 @@ use assembly::{
     KeyboardStimulus, MachineConfig, Observation, ObservationPolicy, ObservationRequest,
     OutputKind, RunPolicy, StopCondition,
 };
-use bus::{Bus, DecodeMap, PortRange};
-use chipset::{NoInterruptController, COM1_BASE, COM1_TOP};
 use cpu::{Cpu, CpuError, CpuReg, X86JitCpu};
 use device::{ByteStreamKind, Device};
 use devices::upd765::FLOPPY_IMAGE_BYTES;
 use devices::vga_text::{COLS, ROWS, TEXT_BUFFER_LEN};
-use devices::{Uart16550, I8042};
+use devices::I8042;
 use machine::{Machine, MachineError, RunOutcome};
 use std::collections::HashMap;
 use video::{render_text_mode, CaptureFrameSink, Frame, FrameSink, TextGrid, TextModeState};
-
-/// Guest RAM size for the flat address space (64 KiB).
-pub const RAM_BYTES: u64 = 0x1_0000;
-/// Entry point the Long64 serial blob is loaded at and RIP is set to.
-pub const ENTRY: u64 = 0x1000;
-/// Cooperative run quantum in `x86jit` block units (§6.2), matching the BIOS
-/// boot budget so a guest spinning without I/O still yields to device ticks and
-/// virtual-time cap checks. [`Machine::run_bounded`] checks the cap after each
-/// quantum; overshoot is at most one quantum's retired instructions, which can
-/// exceed its block count. Virtual time is still measured in retired instructions.
-pub const QUANTUM: Option<u64> = Some(65_536);
-
-/// The built-in serial demo: write "hello" to COM1 THR via `out dx, al`, then
-/// `hlt`.
-///
-/// Hand-encoded Long64 machine code (verified against the iced-x86 disassembler
-/// in `x86jit-core`). Byte-for-byte:
-///
-/// ```text
-/// 66 BA F8 03   mov dx, 0x3F8   ; COM1 THR port into DX
-/// B0 68         mov al, 'h'     ; 0x68
-/// EE            out dx, al
-/// B0 65         mov al, 'e'     ; 0x65
-/// EE            out dx, al
-/// B0 6C         mov al, 'l'     ; 0x6C
-/// EE            out dx, al
-/// B0 6C         mov al, 'l'     ; 0x6C
-/// EE            out dx, al
-/// B0 6F         mov al, 'o'     ; 0x6F
-/// EE            out dx, al
-/// F4            hlt
-/// ```
-#[rustfmt::skip]
-pub const HELLO_PROGRAM: &[u8] = &[
-    0x66, 0xBA, 0xF8, 0x03,
-    0xB0, b'h', 0xEE,
-    0xB0, b'e', 0xEE,
-    0xB0, b'l', 0xEE,
-    0xB0, b'l', 0xEE,
-    0xB0, b'o', 0xEE,
-    0xF4,
-];
 
 /// Load segment/IP for the real-mode boot blob (classic boot address, CS = 0).
 ///
@@ -289,12 +241,9 @@ pub const FDC_WRITE_DST: u16 = 0x0A00;
 /// one byte; an empty capture means the read-back did not match the write.
 pub const FDC_WRITE_MARKER: u8 = b'W';
 
-/// Total-retired stop for the write demo. The guest writes, reads back, emits its
-/// marker, and then spins in place (`jmp $`) with no interrupt source wired; with
-/// nothing to wake it the run reaches this cap and stops (a clean
-/// [`RunOutcome::RetiredCapReached`], as the busy-polling floppy-boot guest also
-/// does). It exceeds the ~3,700 instructions the guest retires before the
-/// marker, so the marker always emits.
+/// Step cap for the write/readback demo (§6). At the pinned inputs its `W`
+/// marker is written at instruction-start step 3,673 (completed at 3,674).
+/// 5,000 leaves 1,326 completed steps of margin before stopping the idle loop.
 pub const FDC_WRITE_RETIRED_CAP: u64 = 5_000;
 
 /// The distinctive 512-byte sector the write demo commits to the blank floppy.
@@ -325,7 +274,7 @@ pub fn fdc_write_pattern() -> Vec<u8> {
 /// to COM1, then busy-spins on a port read (`in al,dx ; jmp $-3`). The port read
 /// yields to the machine each iteration, so the run stops cleanly at
 /// [`FDC_WRITE_RETIRED_CAP`] (the busy-guest idiom) rather than looping forever
-/// inside one CPU quantum. Because the floppy starts blank, a match proves the
+/// before the next CPU step. Because the floppy starts blank, a match proves the
 /// write reached media. Every instruction's bytes are documented in the
 /// `fdc_write_golden` integration test.
 #[rustfmt::skip]
@@ -416,29 +365,10 @@ pub const VGA_TEXT_PROGRAM: &[u8] = &[
     0xF4,                   // hlt
 ];
 
-/// Flat guest space for the test386 smoke run: the whole 1 MiB is RAM (§3.1).
-///
-/// The spike maps no ROM region and no unmapped hole — the diagnostic image is
-/// loaded into RAM at the top 64 KiB and executed from the reset vector.
-pub const TEST386_SPACE: u64 = 0x10_0000;
-/// Segment the test386 image is loaded at: the top 64 KiB begins at `0xF0000`.
-pub const TEST386_LOAD_SEG: u16 = 0xF000;
-/// Reset entry point: `CS:IP = F000:FFF0` → linear `0xFFFF0`, the reset vector's
-/// far jump into the diagnostic's POST entry.
-pub const TEST386_RESET_IP: u16 = 0xFFF0;
-/// Cooperative run quantum for the test386 machine, in `x86jit` block units (§6.2).
-///
-/// A finite quantum (unlike the built-in demos' `None`) so a guest that spins
-/// without any port I/O or halt still returns to the machine loop periodically,
-/// where the retired-instruction cap can stop it. The value only bounds how often
-/// the cap is checked; it does not affect a run that reaches a natural stop.
-pub const TEST386_QUANTUM: Option<u64> = Some(65_536);
-/// Total retired-instruction safety cap for the test386 smoke run (§6).
-///
-/// A generous bound: the diagnostic is expected to stop early (an instruction the
-/// real-mode core does not lift), long before this. It exists only so a spin
-/// cannot hang the test; reaching it is a clean stop, not a failure.
-pub const TEST386_MAX_RETIRED: u64 = 5_000_000;
+/// Step safety cap for test386 (§6). The pinned diagnostic reaches its unsupported
+/// instruction after 159 completed steps; 1,024 leaves 865 steps of margin while
+/// still bounding a regression that spins instead of reporting that stop.
+pub const TEST386_MAX_RETIRED: u64 = 1_024;
 
 /// Why the test386 smoke run stopped (§3.1). Captured on **every** exit path so
 /// the POST progress stream is never lost to an error return.
@@ -467,6 +397,11 @@ pub enum StopReason {
         /// x86 exception vector.
         vector: u8,
     },
+    /// The run policy could not grant its complete command budget.
+    PolicyFailed {
+        /// Human-readable budget error.
+        detail: String,
+    },
     /// The retired-instruction safety cap was reached before a natural stop.
     BudgetExhausted,
     /// Requested output is incomplete or unavailable; guest execution has stopped.
@@ -494,8 +429,8 @@ pub struct Test386Run {
 /// starts at the reset vector `F000:FFF0`, whose far jump enters the diagnostic's
 /// POST sequence. The machine decodes just two devices — the POST checkpoint port
 /// at `0x190` and a COM1 UART (in case a build variant enables serial) — behind a
-/// [`NoInterruptController`]: the diagnostic runs `cli`, so wiring an IRQ that
-/// could never be delivered would keep the host loop from ever terminating.
+/// [`chipset::NoInterruptController`]: the diagnostic runs with interrupts
+/// disabled and needs no interrupt source. The step cap bounds execution.
 ///
 /// The POST byte stream is captured through its semantic sink on **every** exit
 /// path. A real-mode-only core is expected to stop early on a 386 diagnostic, and
@@ -551,6 +486,9 @@ fn classify_test386_stop(rip: u64, result: Result<RunOutcome, MachineError>) -> 
         Err(MachineError::Bus(e)) => StopReason::Unmapped {
             detail: format!("{e} (rip {rip:#x})"),
         },
+        Err(error @ MachineError::InsufficientCommandBudget { .. }) => StopReason::PolicyFailed {
+            detail: error.to_string(),
+        },
         Err(MachineError::Exception { vector }) => StopReason::Exception { vector },
     }
 }
@@ -574,24 +512,19 @@ pub const BIOS_RESET_CS: u16 = 0xF000;
 /// where the reset far jump enters POST.
 pub const BIOS_RESET_IP: u16 = 0xFFF0;
 
-/// Cooperative run quantum for the BIOS machine, in `x86jit` block units (§6.2).
-///
-/// Finite (unlike the built-in demos' `None`) so a guest that spins without any
-/// port I/O or halt still returns to the machine loop, where the retired cap and
-/// the clock/interrupt path run. It only bounds how often the cap is checked.
-pub const BIOS_QUANTUM: Option<u64> = Some(65_536);
-/// Virtual-time safety cap for the BIOS run, in instruction equivalents (§6).
-/// A generous bound so a spin cannot hang the run. Reaching it is a clean stop,
-/// not a failure.
-pub const BIOS_MAX_RETIRED: u64 = 2_000_000_000;
-/// Retired-instruction cap for the BIOS POST golden (§3.1, §9), twice the measured
-/// POST length: POST completes within 5 million instructions at the pinned CPU
-/// revision. Re-measure if the CPU pin or BIOS changes.
+/// Step-equivalent safety cap for BIOS/DOS runs (§6). The pinned date prompt
+/// first appears at step 8,108,258 (single-step sampling after 8,108,000).
+/// Round up to the 9,000,000 poll, allow one extra 1,000,000-step poll of boot
+/// delay, then reserve the full 2,000,000-step command budget: 12,000,000.
+/// A later prompt with insufficient command room is an explicit policy failure.
+pub const BIOS_MAX_RETIRED: u64 = 12_000_000;
+/// Step cap for the BIOS POST golden (§3.1, §9). The final POST byte is written
+/// at step 5,526,624, completing at 5,526,625. The retained 10,000,000 cap leaves
+/// 4,473,375 steps to observe the no-media INT 19h retry loop.
 pub const BIOS_GOLDEN_MAX_RETIRED: u64 = 10_000_000;
-/// Consecutive halted PIT clocks with no serviceable interrupt before the machine
-/// declares the interrupt source quiescent and stops. Large so a BIOS that halts
-/// waiting for a timer tick is not cut off mid-POST: this exceeds the standard
-/// 18.2 Hz tick period (65536 PIT clocks, Intel 8254 datasheet, Mode 3).
+/// Halted PIT-clock bound. The BIOS timer reload is 65,536 (Intel 8254 datasheet,
+/// Mode 3); retaining 1,000,000 permits that full interval plus 934,464 clocks
+/// of margin, so timer waits survive POST instead of ending at a short HLT.
 pub const BIOS_IDLE_LIMIT: u64 = 1_000_000;
 
 /// Base of the monochrome (MDA) text window. When the option-ROM scan finds no
@@ -673,7 +606,7 @@ pub fn run_bios(rom: &[u8]) -> BiosRun {
 /// The POST golden uses [`BIOS_GOLDEN_MAX_RETIRED`] to capture the complete POST
 /// stream without spending the full safety budget in the no-floppy boot loop.
 pub fn run_bios_with_cap(rom: &[u8], cap: u64) -> BiosRun {
-    run_bios_config(assembly::bios(rom.to_vec(), None, BIOS_QUANTUM), |_| {
+    run_bios_config(assembly::bios(rom.to_vec(), None), |_| {
         RunPolicy::natural(Some(cap), Some(BIOS_IDLE_LIMIT))
     })
 }
@@ -830,10 +763,9 @@ fn read_bios_floppy_image(fdc: &mut dyn Device) -> Option<Vec<u8>> {
 /// completion. `floppy` is a raw disk image (typically [`FLOPPY_IMAGE_BYTES`]
 /// bytes for a 1.44 MB disk); [`bootable_floppy_image`] builds a minimal one.
 pub fn run_bios_boot(rom: &[u8], floppy: Vec<u8>) -> BiosRun {
-    run_bios_config(
-        assembly::bios(rom.to_vec(), Some(floppy), BIOS_QUANTUM),
-        |_| bios_natural_policy(),
-    )
+    run_bios_config(assembly::bios(rom.to_vec(), Some(floppy)), |_| {
+        bios_natural_policy()
+    })
 }
 
 /// Boot a real FreeDOS floppy image on the Kiselev BIOS machine and report how
@@ -849,69 +781,32 @@ pub fn run_bios_boot(rom: &[u8], floppy: Vec<u8>) -> BiosRun {
 /// the MDA console the BIOS actually writes to ([`BiosRun::mda`]), COM1, and the
 /// classified [`BiosRun::stop`].
 pub fn run_freedos(rom: &[u8], floppy: Vec<u8>) -> BiosRun {
-    run_bios_config(
-        assembly::bios(rom.to_vec(), Some(floppy), BIOS_QUANTUM),
-        |_| freedos_prompt_policy(Vec::new(), 0),
-    )
+    run_bios_config(assembly::bios(rom.to_vec(), Some(floppy)), |_| {
+        freedos_prompt_policy(Vec::new(), 0)
+    })
 }
 
 /// A substring of the FreeCOM startup date prompt, used to detect that the shell
 /// has booted and is blocked on keyboard input before the script is injected.
 pub const DOS_DATE_PROMPT: &str = "Enter new date";
 
-/// Cooperative run quantum for the interactive FreeDOS machine (§6.2), far finer
-/// than the boot-path [`BIOS_QUANTUM`].
-///
-/// The machine acknowledges and injects at most one PIC vector per quantum, at the
-/// quantum boundary. With the coarse boot quantum, a busy-polling guest retires
-/// many timer periods per quantum, so a fresh higher-priority timer IRQ0 is latched
-/// every boundary and always wins the PIC's priority race — a pending keyboard IRQ1
-/// is starved forever and never delivered. A quantum finer than one timer period
-/// (BIOS divisor 65536 → ~65536 retired instructions per period) means most
-/// boundaries have no fresh IRQ0, so the pending IRQ1 is acknowledged and INT 09h
-/// runs. The boot to the shell prompt is only ~25M instructions, so the finer
-/// quantum costs no measurable extra time.
-///
-/// ## Why this is a driver knob, not a model fix
-///
-/// This is the one interrupt-fidelity limitation that stays in the frontend: it is
-/// a granularity tradeoff, not an edge-detection bug. Interrupt latency in this
-/// emulator is quantised to the run quantum — devices tick and the interrupt path
-/// is serviced only on `run()` boundaries, and only one vector is acknowledged per
-/// boundary. Real hardware clears IRQ0's line between its ~55 ms periods, leaving
-/// gaps in which a pending IRQ1 wins; batching many periods into one coarse quantum
-/// collapses those gaps.
-///
-/// A faithful in-model fix would bound how much virtual time may elapse between
-/// interrupt-service points regardless of the caller's quantum — i.e. run the CPU
-/// in sub-quanta no longer than about one timer period so the interrupt path is
-/// revisited before IRQ0 is re-latched. That cannot be done without re-running the
-/// CPU between service points (an injected vector is only delivered on the next
-/// `run()`), so it amounts to the machine capping the quantum itself. Doing that
-/// globally would shift every interrupt-timing-sensitive golden that boots on the
-/// coarse [`BIOS_QUANTUM`] (the BIOS-POST and FreeDOS-boot captures are tuned to
-/// it), so it is deliberately left as this per-run knob until a fix can be shown
-/// golden-neutral. Choosing the injection quantum is exactly the "budget quantum =
-/// interrupt latency" contract the interrupt-injection design already records.
-pub const DOS_INTERACTIVE_QUANTUM: Option<u64> = Some(64);
+/// Step interval for prompt polling (§6). The pinned prompt first appears at
+/// 8,108,258; 1,000,000-step polls detect it at 9,000,000, leaving room for
+/// another full poll of boot delay plus the command budget before the cap.
+pub const DOS_INTERACTIVE_POLL_STEP: u64 = 1_000_000;
 
-/// Retired-instruction step between prompt-detection polls in the interactive
-/// FreeDOS run (§6). Small enough to inject promptly once FreeCOM reaches its
-/// date prompt, large enough that the poll overhead is negligible against the
-/// hundreds of millions of instructions the BIOS POST and boot retire.
-pub const DOS_INTERACTIVE_POLL_STEP: u64 = 25_000_000;
-
-/// Retired-instruction budget granted after the script is queued, for INT 09h to
-/// deliver every scancode and FreeCOM to finish the command and print its output
-/// before the console is read.
-pub const DOS_INTERACTIVE_COMMAND_BUDGET: u64 = 80_000_000;
+/// Post-injection step budget (§6). With injection at 9,000,000 and sampling
+/// every 250,000 steps, DIR returns to `A:\>` within 1,000,000 steps and
+/// echo/write/DIR within 1,250,000; 2,000,000 leaves at least 750,000 of margin.
+/// REP iterations count too.
+pub const DOS_INTERACTIVE_COMMAND_BUDGET: u64 = 2_000_000;
 
 /// Boot a real FreeDOS floppy image on the Kiselev BIOS machine and drive the
 /// shell interactively with a **keyboard script**, past its startup prompts and
 /// into a command (§3.1, §5, §7.5).
 ///
-/// Same firmware, FDC, and DMA as [`run_freedos`], but the machine runs on the
-/// finer [`DOS_INTERACTIVE_QUANTUM`] and is driven in two phases:
+/// Same firmware, FDC, DMA and instruction-boundary timing as [`run_freedos`],
+/// driven in two phases:
 ///
 /// 1. **Boot to the prompt.** Step in [`DOS_INTERACTIVE_POLL_STEP`] chunks until
 ///    FreeCOM boots and blocks at its date prompt ([`DOS_DATE_PROMPT`] on the MDA
@@ -930,37 +825,20 @@ pub const DOS_INTERACTIVE_COMMAND_BUDGET: u64 = 80_000_000;
 /// A short script such as `\r\rDIR\r` (accept the date, accept the time, then type
 /// `DIR` + Enter) reaches the `A:\>` prompt and a directory listing.
 ///
-/// The still-finer-than-boot quantum is a deliberate concession, not the input
-/// path's requirement: the machine acknowledges at most one PIC vector per run
-/// quantum, so on the coarse boot quantum a busy-polling FreeCOM lets the periodic
-/// timer IRQ0 win every priority race and starves the keyboard IRQ1 (see
-/// [`DOS_INTERACTIVE_QUANTUM`]). A per-byte injection pace is no longer needed —
-/// that was the 8042's edge-collapsing behaviour, now fixed in the controller
-/// model.
-///
 /// Fully deterministic — every boundary falls on a retired-instruction count,
 /// never wall time (§6) — so the session reproduces byte for byte. The returned
 /// [`BiosRun`] carries every observable output path, so the resulting `A:\>`
 /// prompt and command output land in the MDA console ([`BiosRun::mda`]).
 pub fn run_freedos_interactive(rom: &[u8], floppy: Vec<u8>, scancodes: &[u8]) -> BiosRun {
-    // The machine is the BIOS+floppy shape on the fine interactive quantum (guest-
-    // visible interrupt latency, so it lives in the config's clock — see
-    // [`DOS_INTERACTIVE_QUANTUM`]); the run is a prompt-poll policy that boots to the
-    // date prompt, queues the keyboard script into the 8042, then runs the command
-    // budget. The 8042 is addressed by role: the stimulus takes its bus index from
-    // the assembler's device-index map, not a hardcoded constant.
     let script = scancodes.to_vec();
-    run_bios_config(
-        assembly::bios(rom.to_vec(), Some(floppy), DOS_INTERACTIVE_QUANTUM),
-        |device_index| {
-            let stimulus = KeyboardStimulus {
-                keyboard_index: device_index[&DeviceId::Keyboard],
-                scancodes: script,
-                schedule: InjectionSchedule::AfterPrompt,
-            };
-            freedos_prompt_policy(vec![stimulus], DOS_INTERACTIVE_COMMAND_BUDGET)
-        },
-    )
+    run_bios_config(assembly::bios(rom.to_vec(), Some(floppy)), |device_index| {
+        let stimulus = KeyboardStimulus {
+            keyboard_index: device_index[&DeviceId::Keyboard],
+            scancodes: script,
+            schedule: InjectionSchedule::AfterPrompt,
+        };
+        freedos_prompt_policy(vec![stimulus], DOS_INTERACTIVE_COMMAND_BUDGET)
+    })
 }
 
 /// Queue a keyboard `scancodes` script into the 8042 at bus index `kbc_index`,
@@ -1168,6 +1046,9 @@ fn classify_bios_stop(
         Err(MachineError::Bus(e)) => StopReason::Unmapped {
             detail: format!("{e}; {site}"),
         },
+        Err(error @ MachineError::InsufficientCommandBudget { .. }) => StopReason::PolicyFailed {
+            detail: error.to_string(),
+        },
         Err(MachineError::Exception { vector }) => StopReason::Exception { vector },
     }
 }
@@ -1277,43 +1158,6 @@ pub fn run_floppy_boot() -> Result<Vec<u8>> {
         ..
     } = assemble_with_observation(&config, &serial_policy())
         .context("assembling floppy-boot machine")?;
-
-    machine.run().context("running machine")?;
-
-    capture_serial(&observation)
-}
-
-/// Assemble the serial machine, run `blob` in Long64, and return the bytes the
-/// guest sent to COM1 (§3.1).
-pub fn run_serial(blob: &[u8]) -> Result<Vec<u8>> {
-    // The Long64 serial skeleton is a single 16550 UART at COM1 and nothing else.
-    // It is assembled inline (trait-free) rather than through a config preset: it
-    // is the one Long64 machine, and giving the declarative config a mode axis for
-    // a single user would not earn its keep.
-    let mut devices: Vec<Box<dyn Device>> = vec![Box::new(Uart16550::new(COM1_BASE))];
-    let device_index = HashMap::from([(DeviceId::Uart, 0)]);
-    let observation = Observation::bind(&serial_policy(), &device_index, &mut devices)
-        .context("binding serial observation")?;
-    let map = DecodeMap {
-        ports: vec![PortRange {
-            ports: COM1_BASE..=COM1_TOP,
-            device: 0,
-        }],
-        mmio: Vec::new(),
-    };
-    let bus = Bus::new(devices, map);
-
-    let cpu = X86JitCpu::new(RAM_BYTES, ENTRY, blob).context("building cpu")?;
-    // No interrupt hardware: a null controller acknowledges nothing, and the
-    // `None` idle limit terminates on the guest's `hlt`.
-    let mut machine = Machine::new(
-        cpu,
-        bus,
-        Box::new(NoInterruptController),
-        QUANTUM,
-        Vec::new(),
-        None,
-    );
 
     machine.run().context("running machine")?;
 
@@ -1522,6 +1366,21 @@ mod tests {
     use super::*;
 
     #[test]
+    fn divisor_programming_keeps_exact_serial_stream() {
+        // National Semiconductor PC16550D datasheet, Line Control Register:
+        // DLAB redirects offsets 0/1 to the divisor latches, not serial TX.
+        let program = [
+            0xFA, // CLI
+            0xBA, 0xFB, 0x03, 0xB0, 0x80, 0xEE, // DLAB on
+            0xBA, 0xF8, 0x03, 0xB0, 0x34, 0xEE, // divisor low
+            0x42, 0xB0, 0x12, 0xEE, // divisor high
+            0xBA, 0xFB, 0x03, 0xB0, 0x03, 0xEE, // DLAB off, 8N1
+            0xBA, 0xF8, 0x03, 0xB0, b'O', 0xEE, 0xB0, b'K', 0xEE, 0xF4,
+        ];
+        assert_eq!(run_boot(&program).unwrap(), b"OK");
+    }
+
+    #[test]
     fn vga_snapshot_repeated_capture_preserves_the_grid() {
         let mut assembled = assemble_with_observation(
             &assembly::at_vga_text(VGA_TEXT_PROGRAM.to_vec()),
@@ -1590,7 +1449,7 @@ mod tests {
 
     #[test]
     fn bios_assembly_failure_has_no_screen_stamp() {
-        let mut config = assembly::bios(vec![0xF4; 32768], None, BIOS_QUANTUM);
+        let mut config = assembly::bios(vec![0xF4; 32768], None);
         config.devices.retain(|device| device.id != DeviceId::Vga);
         let run = run_bios_config(config, |_| RunPolicy::natural(Some(100), None));
         assert!(matches!(run.stop, StopReason::Unmapped { .. }));
@@ -1607,12 +1466,12 @@ mod tests {
         assembled
             .machine
             .bus_mut()
-            .port_write(COM1_BASE, 1, 0)
+            .port_write(chipset::COM1_BASE, 1, 0)
             .unwrap();
         assembled
             .machine
             .bus_mut()
-            .port_write(COM1_BASE, 1, 0xFF)
+            .port_write(chipset::COM1_BASE, 1, 0xFF)
             .unwrap();
         let mut stop = StopReason::Halt;
         let bytes = stream_or_fail(

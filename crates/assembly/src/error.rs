@@ -108,9 +108,9 @@ pub enum ConfigError {
         addr: u64,
     },
 
-    /// An unbounded or zero block budget prevents cooperative clock progress.
-    #[error("clock quantum must be a positive finite block budget (got {0:?})")]
-    InvalidQuantum(Option<u64>),
+    /// The backend cannot provide exact instruction/REP-iteration step bounds.
+    #[error("machine requires a Real16 CPU with step-bounded execution: {0}")]
+    StepBoundedCpuRequired(String),
 
     /// A rational CPU rate must have a positive numerator and denominator.
     #[error(

@@ -12,9 +12,7 @@
 //! The old `AtChipset` / `SerialChipset` chipsets are exactly these presets in a
 //! different guise: where the chipset trait returned a device set + decode map,
 //! a preset returns the pure-data config the assembler realises into the same
-//! parts. The one exception is the Long64 serial skeleton, which stays a tiny
-//! hand-inlined device set in the frontend (no config mode-axis for a single
-//! Long64 user).
+//! parts. All presets construct step-bounded Real16 machines.
 
 use crate::clock::ClockConfig;
 use crate::cpu::{CpuChip, CpuConfig, ResetSpec, SegmentSeed};
@@ -432,11 +430,8 @@ pub fn test386(image: Vec<u8>) -> MachineConfig {
             segments: SegmentSeed::flat(TEST386_LOAD_SEG),
         },
         clock: ClockConfig {
-            engine: machine::SchedulerEngine::PerClock,
-            interrupt_timing: machine::InterruptTiming::Legacy,
             retired_per_pit_clock: machine::RETIRED_PER_PIT_CLOCK,
             retired_per_pit_clock_denominator: 1,
-            quantum: Some(65_536),
         },
         memory: MemoryConfig {
             address_space_bytes: MIB,
@@ -498,9 +493,8 @@ pub fn floppy_boot(loader: Vec<u8>, floppy: Vec<u8>) -> MachineConfig {
 /// The full PC/AT BIOS machine: the 1 MiB memory mosaic with the 32 KiB `rom`
 /// masked at `0xF8000`, the cascaded 8259 pair, PIT, 8042, VGA text card,
 /// CMOS/RTC (seeded), the port-`0x61` latch, and a POST port at `0x80`, booting
-/// from the reset vector. `quantum` sets the cooperative run budget (the coarse
-/// boot quantum, or the fine interactive one). Validation requires a positive
-/// finite budget: `None` and `Some(0)` are rejected.
+/// from the reset vector. CPU work uses exact steps and interrupts are accepted
+/// only at completed instruction boundaries.
 ///
 /// `floppy` chooses the disk story:
 ///
@@ -512,7 +506,7 @@ pub fn floppy_boot(loader: Vec<u8>, floppy: Vec<u8>) -> MachineConfig {
 ///   machine still declares a 1.44 MB drive in CMOS (a real AT always does, and the
 ///   original spike seeded the same CMOS), so a floppy drive is present for the
 ///   CMOS derivation but the controller decodes no ports and takes no interrupt.
-pub fn bios(rom: Vec<u8>, floppy: Option<Vec<u8>>, quantum: Option<u64>) -> MachineConfig {
+pub fn bios(rom: Vec<u8>, floppy: Option<Vec<u8>>) -> MachineConfig {
     let mut devices = vec![
         uart(),
         master_pic(),
@@ -561,11 +555,8 @@ pub fn bios(rom: Vec<u8>, floppy: Option<Vec<u8>>, quantum: Option<u64>) -> Mach
             segments: SegmentSeed::flat(RESET_CS),
         },
         clock: ClockConfig {
-            engine: machine::SchedulerEngine::PerClock,
-            interrupt_timing: machine::InterruptTiming::Legacy,
             retired_per_pit_clock: machine::RETIRED_PER_PIT_CLOCK,
             retired_per_pit_clock_denominator: 1,
-            quantum,
         },
         memory: MemoryConfig {
             address_space_bytes: MIB,
@@ -643,8 +634,8 @@ mod tests {
             at_fdc_write(vec![0; 512], vec![0; 512], 0x8000),
             test386(vec![0; 0x1_0000]),
             floppy_boot(vec![0; 512], floppy.clone()),
-            bios(vec![0; 0x8000], None, Some(65_536)),
-            bios(vec![0; 0x8000], Some(floppy), Some(65_536)),
+            bios(vec![0; 0x8000], None),
+            bios(vec![0; 0x8000], Some(floppy)),
         ] {
             assert_eq!(config.validate(), Ok(()));
             assert!(crate::assemble(&config).is_ok());

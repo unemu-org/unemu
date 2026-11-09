@@ -47,8 +47,9 @@ IVT-vectored `INT`/exceptions — added under `CpuMode::Real16`.
 
 ## §6 Virtual clock
 
-§6.1 Retired-instruction time base (not blocks).
-§6.2 Budget quantum and interrupt latency.
+§6.1 Completed-step time base, including REP iterations (not blocks).
+§6.2 Step bounds, instruction-start accesses and IRQ-readiness ordering; see
+[`scheduler.md`](scheduler.md#adoption) for the pinned CPU partition defect.
 §6.3 Golden pinning + re-baseline procedure.
 
 ## §7 Devices

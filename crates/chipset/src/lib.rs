@@ -12,7 +12,7 @@
 //!   EOI) and an [`InterruptController`] face (INTA) over the *same* register
 //!   state.
 //! - [`NoInterruptController`] — a null controller for a machine that models no
-//!   PIC (the Long64 serial skeleton), so no interrupt is ever taken.
+//!   PIC (for example, the Real16 diagnostic), so no interrupt is ever taken.
 //!
 //! The port-address constants for the parts an AT machine decodes live here too,
 //! shared by the assembler's presets.
@@ -48,7 +48,7 @@ pub const PIT_TOP: u16 = 0x43;
 
 /// A no-op interrupt controller: no lines, never acknowledges (§5.1).
 ///
-/// The controller for a machine that models no PIC (the serial skeleton): every
+/// The controller for a machine that models no PIC (for example, the Real16 diagnostic): every
 /// method is inert so no interrupt is ever taken. A machine with a PIC uses the
 /// real [`SharedPic`] / [`CascadedPic`] instead.
 #[derive(Default)]

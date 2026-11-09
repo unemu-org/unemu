@@ -38,21 +38,8 @@ impl MachineConfig {
         self.check_dma_controllers_present()?;
         self.check_drive_controllers()?;
         self.check_image_geometry()?;
-        self.check_quantum()?;
         self.clock.cpu_rate()?;
         Ok(())
-    }
-
-    /// Legacy execution needs a finite block budget to regain control. Corrected
-    /// execution has its own finite step bound and never uses the block quantum.
-    fn check_quantum(&self) -> Result<(), ConfigError> {
-        if self.clock.interrupt_timing == machine::InterruptTiming::Corrected {
-            return Ok(());
-        }
-        match self.clock.quantum {
-            Some(1..) => Ok(()),
-            quantum => Err(ConfigError::InvalidQuantum(quantum)),
-        }
     }
 
     /// No [`DeviceId`] appears twice.
@@ -517,26 +504,6 @@ mod tests {
             config.clock.retired_per_pit_clock_denominator = denominator;
             assert_eq!(config.validate(), Ok(()));
         }
-    }
-
-    #[test]
-    fn an_unbounded_or_zero_quantum_is_rejected() {
-        for quantum in [None, Some(0)] {
-            let mut config = valid_config();
-            config.clock.quantum = quantum;
-            assert_eq!(config.validate(), Err(ConfigError::InvalidQuantum(quantum)));
-            assert_eq!(
-                config.validate().expect_err("invalid quantum").to_string(),
-                format!("clock quantum must be a positive finite block budget (got {quantum:?})")
-            );
-        }
-    }
-
-    #[test]
-    fn a_positive_finite_quantum_passes() {
-        let mut config = valid_config();
-        config.clock.quantum = Some(1);
-        assert_eq!(config.validate(), Ok(()));
     }
 
     #[test]
