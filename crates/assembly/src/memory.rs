@@ -41,7 +41,7 @@ impl RamRegion {
 pub struct MmioWindow {
     /// Guest-physical base address.
     pub base: u64,
-    /// Window size in bytes.
+    /// Window size in bytes; validation rejects zero.
     pub size: u64,
     /// The device this window traps to.
     pub device: DeviceId,

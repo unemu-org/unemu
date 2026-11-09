@@ -103,10 +103,7 @@ fn uart() -> DeviceConfig {
 fn master_pic() -> DeviceConfig {
     DeviceConfig::new(
         DeviceId::MasterPic,
-        DeviceKind::Pic(PicCfg {
-            command: PIC_COMMAND,
-            cascade: true,
-        }),
+        DeviceKind::Pic(PicCfg { cascade: true }),
         vec![PortWindow::new(PIC_COMMAND, PIC_DATA)],
     )
 }
@@ -115,10 +112,7 @@ fn master_pic() -> DeviceConfig {
 fn slave_pic() -> DeviceConfig {
     DeviceConfig::new(
         DeviceId::SlavePic,
-        DeviceKind::Pic(PicCfg {
-            command: SLAVE_PIC_COMMAND,
-            cascade: false,
-        }),
+        DeviceKind::Pic(PicCfg { cascade: false }),
         vec![PortWindow::new(SLAVE_PIC_COMMAND, SLAVE_PIC_DATA)],
     )
 }
@@ -127,7 +121,7 @@ fn slave_pic() -> DeviceConfig {
 fn pit(irq: Option<u8>) -> DeviceConfig {
     let dc = DeviceConfig::new(
         DeviceId::Pit,
-        DeviceKind::Pit(PitCfg { base: PIT_BASE }),
+        DeviceKind::Pit(PitCfg {}),
         vec![PortWindow::new(PIT_BASE, PIT_TOP)],
     );
     match irq {
@@ -141,10 +135,7 @@ fn pit(irq: Option<u8>) -> DeviceConfig {
 fn keyboard(irq: Option<u8>) -> DeviceConfig {
     let dc = DeviceConfig::new(
         DeviceId::Keyboard,
-        DeviceKind::Keyboard(I8042Cfg {
-            data: KBD_DATA,
-            command: KBD_CMD,
-        }),
+        DeviceKind::Keyboard(I8042Cfg {}),
         vec![PortWindow::single(KBD_DATA), PortWindow::single(KBD_CMD)],
     );
     match irq {
@@ -159,12 +150,7 @@ fn keyboard(irq: Option<u8>) -> DeviceConfig {
 fn rtc(seed: bool, timing: Option<(u64, u64)>, irq: Option<u8>) -> DeviceConfig {
     let dc = DeviceConfig::new(
         DeviceId::Rtc,
-        DeviceKind::Rtc(CmosCfg {
-            index: CMOS_INDEX_PORT,
-            data: CMOS_DATA_PORT,
-            seed,
-            timing,
-        }),
+        DeviceKind::Rtc(CmosCfg { seed, timing }),
         vec![PortWindow::new(CMOS_INDEX_PORT, CMOS_DATA_PORT)],
     );
     match irq {
@@ -185,22 +171,14 @@ fn vga(bios_aliases: bool) -> DeviceConfig {
         ports.push(PortWindow::new(MDA_CRTC_INDEX_PORT, MDA_CRTC_DATA_PORT));
         ports.push(PortWindow::single(MDA_STATUS_PORT));
     }
-    DeviceConfig::new(
-        DeviceId::Vga,
-        DeviceKind::Vga(VgaTextCfg {
-            crtc_index: CRTC_INDEX_PORT,
-        }),
-        ports,
-    )
+    DeviceConfig::new(DeviceId::Vga, DeviceKind::Vga(VgaTextCfg {}), ports)
 }
 
 /// The port-`0x61` system-control latch.
 fn sys_control() -> DeviceConfig {
     DeviceConfig::new(
         DeviceId::SysControl,
-        DeviceKind::SysControl(SysControlCfg {
-            port: SYS_CONTROL_PORT,
-        }),
+        DeviceKind::SysControl(SysControlCfg {}),
         vec![PortWindow::single(SYS_CONTROL_PORT)],
     )
 }
@@ -218,7 +196,7 @@ fn post(port: u16) -> DeviceConfig {
 /// latches — the exact latch range differs between machines that overlap the
 /// POST port and those that do not).
 fn dma(ports: Vec<PortWindow>) -> DeviceConfig {
-    DeviceConfig::new(DeviceId::Dma, DeviceKind::Dma(DmaCfg { base: 0x00 }), ports)
+    DeviceConfig::new(DeviceId::Dma, DeviceKind::Dma(DmaCfg {}), ports)
 }
 
 /// A µPD765 floppy controller offering two drive slots, decoding `ports`, with
@@ -226,10 +204,7 @@ fn dma(ports: Vec<PortWindow>) -> DeviceConfig {
 fn fdc(ports: Vec<PortWindow>, irq: Option<u8>, dma_channel: Option<u8>) -> DeviceConfig {
     let mut dc = DeviceConfig::new(
         DeviceId::Fdc,
-        DeviceKind::Fdc(FdcCfg {
-            base: FDC_BASE,
-            drive_slots: 2,
-        }),
+        DeviceKind::Fdc(FdcCfg { drive_slots: 2 }),
         ports,
     );
     if let Some(line) = irq {
@@ -654,5 +629,23 @@ mod tests {
             }
         );
         assert_eq!(drive.controller_slot, 1);
+    }
+    #[test]
+    fn every_preset_accepts_valid_images() {
+        let floppy = vec![0; FloppyGeometry::HD_1_44.image_bytes() as usize];
+        for config in [
+            at_boot(vec![0; 512]),
+            at_keyboard(vec![0; 512]),
+            at_rtc(vec![0; 512], 100, 10),
+            at_vga_text(vec![0; 512]),
+            at_fdc_write(vec![0; 512], vec![0; 512], 0x8000),
+            test386(vec![0; 0x1_0000]),
+            floppy_boot(vec![0; 512], floppy.clone()),
+            bios(vec![0; 0x8000], None, Some(65_536)),
+            bios(vec![0; 0x8000], Some(floppy), Some(65_536)),
+        ] {
+            assert_eq!(config.validate(), Ok(()));
+            assert!(crate::assemble(&config).is_ok());
+        }
     }
 }

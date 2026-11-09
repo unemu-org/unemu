@@ -113,31 +113,20 @@ pub struct UartCfg {
     pub base: u16,
 }
 
-/// 8253 PIT parameters (§7.4).
+/// 8253 PIT selection (§7.4); port decoding lives in [`DeviceConfig::ports`].
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub struct PitCfg {
-    /// Base port (counters 0-2 and the control word decode from here: `0x40`).
-    pub base: u16,
-}
+pub struct PitCfg {}
 
 /// 8259 PIC parameters (§7.3).
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct PicCfg {
-    /// Command port (the data port is `command + 1`). Master `0x20`, slave
-    /// `0xA0`.
-    pub command: u16,
     /// Whether this PIC is cascaded (the master half of a master/slave pair).
     pub cascade: bool,
 }
 
-/// 8042 keyboard-controller parameters (§7.5).
+/// 8042 keyboard-controller selection (§7.5); ports live in [`DeviceConfig::ports`].
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub struct I8042Cfg {
-    /// Data port (`0x60`).
-    pub data: u16,
-    /// Command/status port (`0x64`).
-    pub command: u16,
-}
+pub struct I8042Cfg {}
 
 /// MC146818 CMOS/RTC parameters (§7.6).
 ///
@@ -151,10 +140,6 @@ pub struct I8042Cfg {
 /// [`devices::CmosConfig`], the seed the assembler builds.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct CmosCfg {
-    /// Index/NMI-control port (`0x70`).
-    pub index: u16,
-    /// Data port (`0x71`).
-    pub data: u16,
     /// Whether to seed the AT configuration NVRAM (and its checksum) so a stock
     /// BIOS's POST passes unattended.
     pub seed: bool,
@@ -171,20 +156,14 @@ pub struct CmosCfg {
 
 /// VGA/MDA text-card parameters (§9.2).
 ///
-/// The card's port bases only; the text buffer it exposes is an MMIO window and
-/// lives in [`crate::MemoryConfig`] (single home), not here.
+/// Port decoding lives in [`DeviceConfig::ports`]; the text buffer is an MMIO
+/// window in [`crate::MemoryConfig`].
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub struct VgaTextCfg {
-    /// CRTC index port (the data port is `crtc_index + 1`: `0x3D4`/`0x3D5`).
-    pub crtc_index: u16,
-}
+pub struct VgaTextCfg {}
 
-/// System-control-port parameters (§7).
+/// System-control selection (§7); port decoding lives in [`DeviceConfig::ports`].
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub struct SysControlCfg {
-    /// The control port (`0x61`).
-    pub port: u16,
-}
+pub struct SysControlCfg {}
 
 /// POST-checkpoint-port parameters (§7).
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -201,19 +180,14 @@ pub struct PostPortCfg {
 /// offers.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct FdcCfg {
-    /// Base port (`0x3F0`).
-    pub base: u16,
     /// Number of drive slots this controller offers (a standard FDC drives two,
     /// units 0 and 1).
     pub drive_slots: u8,
 }
 
-/// 8237 DMA-controller parameters (§7.7).
+/// 8237 DMA-controller selection (§7.7); ports live in [`DeviceConfig::ports`].
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub struct DmaCfg {
-    /// Base port of the channel registers (`0x00`).
-    pub base: u16,
-}
+pub struct DmaCfg {}
 
 /// The chip-specific parameters of a [`DeviceConfig`] (§7).
 ///

@@ -12,6 +12,84 @@ use crate::device::DeviceId;
 /// test can assert the exact failure a malformed config produces.
 #[derive(Clone, Debug, PartialEq, Eq, Error)]
 pub enum ConfigError {
+    /// A file source could not be materialised before validation of its bytes.
+    #[error("cannot read image file {path}: {message}")]
+    ImageRead {
+        /// The configured backing file.
+        path: std::path::PathBuf,
+        /// The underlying I/O error message.
+        message: String,
+    },
+
+    /// Empty MMIO windows cannot form an inclusive bus decode range.
+    #[error("mmio window for {device:?} at {base:#x} must have a nonzero size")]
+    EmptyMmioWindow {
+        /// The target device.
+        device: DeviceId,
+        /// The empty window's base.
+        base: u64,
+    },
+
+    /// The cascaded AT controller exposes only IRQ0 through IRQ15.
+    #[error("device {device:?} uses irq line {line}; the model supports irq lines 0 through 15")]
+    InvalidIrqLine {
+        /// The interrupt source.
+        device: DeviceId,
+        /// The unsupported PIC input.
+        line: u8,
+    },
+
+    /// Each face of the shared PIC pair may be exposed only once.
+    #[error("duplicate pic face (cascade={cascade}) on {a:?} and {b:?}")]
+    DuplicatePicFace {
+        /// One device exposing the face.
+        a: DeviceId,
+        /// The other device exposing the face.
+        b: DeviceId,
+        /// Whether the duplicated face is the master.
+        cascade: bool,
+    },
+
+    /// The floppy device's sector size is fixed, rather than configurable.
+    #[error("drive {drive_index} uses {bytes_per_sector}-byte sectors; the floppy model supports 512-byte sectors only")]
+    UnsupportedFloppySectorSize {
+        /// Index in the drive list.
+        drive_index: usize,
+        /// The requested sector size.
+        bytes_per_sector: u32,
+    },
+
+    /// A loaded image would occupy a trapped device window.
+    #[error("image {image_index} overlaps mmio for {device:?} at {addr:#x}")]
+    ImageOverlapsMmio {
+        /// Index in the image list.
+        image_index: usize,
+        /// The device owning the window.
+        device: DeviceId,
+        /// A shared address.
+        addr: u64,
+    },
+
+    /// Loading order must not decide which image's bytes survive.
+    #[error("images {a} and {b} overlap at {addr:#x}")]
+    ImageOverlap {
+        /// One index in the image list.
+        a: usize,
+        /// The other index in the image list.
+        b: usize,
+        /// A shared address.
+        addr: u64,
+    },
+
+    /// A RAM load must fit entirely in the declared RAM regions.
+    #[error("ram-load image {image_index} covers unmapped ram at {addr:#x}")]
+    ImageOutsideRam {
+        /// Index in the image list.
+        image_index: usize,
+        /// The first address without RAM backing.
+        addr: u64,
+    },
+
     /// An unbounded or zero block budget prevents cooperative clock progress.
     #[error("clock quantum must be a positive finite block budget (got {0:?})")]
     InvalidQuantum(Option<u64>),

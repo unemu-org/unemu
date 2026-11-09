@@ -36,6 +36,7 @@
 //! *product* of assembly ([`derive_cmos_config`]), computed from the memory map
 //! and the attached drives, not a value the caller supplies.
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 
 use bus::{Bus, DecodeMap, MmioRange, PortRange};
@@ -76,10 +77,9 @@ pub struct AssembledMachine {
 
 /// A way assembling a validated [`MachineConfig`] can fail (§3.1).
 ///
-/// A configuration inconsistency is caught up front by [`MachineConfig::validate`]
-/// and surfaced as [`AssemblyError::Config`]; the remaining failures are physical
-/// (the CPU core rejecting a memory map, or a backing image file that cannot be
-/// read), not configuration bugs.
+/// Configuration inconsistencies and unreadable backing files surface as
+/// [`AssemblyError::Config`] before hardware is built. The remaining failures
+/// come from the CPU core rejecting a memory operation.
 #[derive(Debug, thiserror::Error)]
 pub enum AssemblyError {
     /// The configuration is internally inconsistent (validation ran first).
@@ -90,16 +90,6 @@ pub enum AssemblyError {
     /// a `Trap` window overlapping RAM the config did not catch).
     #[error("cpu memory map: {0}")]
     Cpu(#[from] cpu::CpuError),
-
-    /// A backing image named a file that could not be read at load time.
-    #[error("reading image file {path}: {source}")]
-    Image {
-        /// The path that failed to read.
-        path: String,
-        /// The underlying I/O error.
-        #[source]
-        source: std::io::Error,
-    },
 }
 
 /// Turn a [`MachineConfig`] into a running [`Machine`] and its device-index map
@@ -120,6 +110,12 @@ pub enum AssemblyError {
 pub fn assemble(config: &MachineConfig) -> Result<AssembledMachine, AssemblyError> {
     // A validated config does not fail assembly for configuration reasons; run
     // the checks first so any inconsistency surfaces as a precise ConfigError.
+    config.validate()?;
+
+    // Validate the bytes that will actually be mounted, without a second file
+    // read that could observe a different length or contents.
+    let resolved = resolve_file_sources(config)?;
+    let config = resolved.as_ref();
     config.validate()?;
 
     let cpu = build_cpu(config)?;
@@ -159,7 +155,7 @@ pub fn assemble(config: &MachineConfig) -> Result<AssembledMachine, AssemblyErro
             DeviceKind::Vga(_) => Box::new(VgaText::new()),
             DeviceKind::SysControl(_) => Box::new(SysControl::new()),
             DeviceKind::Post(c) => Box::new(PostPort::with_port(c.port)),
-            DeviceKind::Fdc(_) => Box::new(Upd765::with_drives(build_fdc_drives(config))),
+            DeviceKind::Fdc(_) => Box::new(Upd765::with_drives(build_fdc_drives(config)?)),
             DeviceKind::Dma(_) => Box::new(Dma8237::new()),
         };
         let index = devices.len();
@@ -233,15 +229,41 @@ fn build_cpu(config: &MachineConfig) -> Result<X86JitCpu, AssemblyError> {
 
 /// Materialise an image's bytes: inline bytes verbatim, a blank run of zeroes, or
 /// a file read from disk at load time.
-fn load_image_bytes(source: &ImageSource) -> Result<Vec<u8>, AssemblyError> {
+fn load_image_bytes(source: &ImageSource) -> Result<Vec<u8>, ConfigError> {
     match source {
         ImageSource::Inline(bytes) => Ok(bytes.clone()),
         ImageSource::Blank { size } => Ok(vec![0u8; *size as usize]),
-        ImageSource::File(path) => std::fs::read(path).map_err(|source| AssemblyError::Image {
-            path: path.display().to_string(),
-            source,
+        ImageSource::File(path) => std::fs::read(path).map_err(|source| ConfigError::ImageRead {
+            path: path.clone(),
+            message: source.to_string(),
         }),
     }
+}
+
+/// Resolve file lengths before validating placement and disk geometry. Inline
+/// presets borrow their config so the common path needs no additional copy.
+fn resolve_file_sources(config: &MachineConfig) -> Result<Cow<'_, MachineConfig>, ConfigError> {
+    if !config
+        .images
+        .iter()
+        .map(|image| &image.source)
+        .chain(config.drives.iter().map(|drive| &drive.image))
+        .any(|source| matches!(source, ImageSource::File(_)))
+    {
+        return Ok(Cow::Borrowed(config));
+    }
+    let mut resolved = config.clone();
+    for source in resolved
+        .images
+        .iter_mut()
+        .map(|image| &mut image.source)
+        .chain(resolved.drives.iter_mut().map(|drive| &mut drive.image))
+    {
+        if matches!(source, ImageSource::File(_)) {
+            *source = ImageSource::Inline(load_image_bytes(source)?);
+        }
+    }
+    Ok(Cow::Owned(resolved))
 }
 
 /// Build the port + MMIO decode map from the device windows, sorted so the map is
@@ -330,7 +352,7 @@ fn build_dma_wirings(
 /// device-construction match arm just as [`DeviceKind::Fdc`] calls this. No new
 /// assembler architecture is needed — the drive list, the slot routing, and the
 /// CMOS derivation are already in place; only the target device is missing.
-fn build_fdc_drives(config: &MachineConfig) -> [Option<Drive>; 4] {
+fn build_fdc_drives(config: &MachineConfig) -> Result<[Option<Drive>; 4], ConfigError> {
     let mut slots: [Option<Drive>; 4] = [None, None, None, None];
     for drive in &config.drives {
         let DriveKind::Floppy { geometry } = &drive.kind else {
@@ -340,13 +362,7 @@ fn build_fdc_drives(config: &MachineConfig) -> [Option<Drive>; 4] {
         if slot >= slots.len() {
             continue;
         }
-        let image = match load_image_bytes(&drive.image) {
-            Ok(bytes) => bytes,
-            // A file-backed drive whose bytes are unavailable mounts as an empty
-            // bay rather than failing assembly; the boot path reads it as "not
-            // ready", matching an open drive door.
-            Err(_) => continue,
-        };
+        let image = load_image_bytes(&drive.image)?;
         let geometry = to_device_geometry(geometry);
         slots[slot] = Some(if drive.write_protect {
             Drive::new_read_only(geometry, image)
@@ -354,7 +370,7 @@ fn build_fdc_drives(config: &MachineConfig) -> [Option<Drive>; 4] {
             Drive::new(geometry, image)
         });
     }
-    slots
+    Ok(slots)
 }
 
 /// Convert a config [`FloppyGeometry`] into the floppy controller's own geometry
@@ -522,40 +538,29 @@ mod tests {
             ),
             DeviceConfig::new(
                 DeviceId::Pit,
-                DeviceKind::Pit(PitCfg { base: 0x40 }),
+                DeviceKind::Pit(PitCfg {}),
                 vec![PortWindow::new(0x40, 0x43)],
             )
             .with_irq(0),
             DeviceConfig::new(
                 DeviceId::MasterPic,
-                DeviceKind::Pic(PicCfg {
-                    command: 0x20,
-                    cascade: true,
-                }),
+                DeviceKind::Pic(PicCfg { cascade: true }),
                 vec![PortWindow::new(0x20, 0x21)],
             ),
             DeviceConfig::new(
                 DeviceId::SlavePic,
-                DeviceKind::Pic(PicCfg {
-                    command: 0xA0,
-                    cascade: false,
-                }),
+                DeviceKind::Pic(PicCfg { cascade: false }),
                 vec![PortWindow::new(0xA0, 0xA1)],
             ),
             DeviceConfig::new(
                 DeviceId::Keyboard,
-                DeviceKind::Keyboard(I8042Cfg {
-                    data: 0x60,
-                    command: 0x64,
-                }),
+                DeviceKind::Keyboard(I8042Cfg {}),
                 vec![PortWindow::single(0x60), PortWindow::single(0x64)],
             )
             .with_irq(1),
             DeviceConfig::new(
                 DeviceId::Rtc,
                 DeviceKind::Rtc(CmosCfg {
-                    index: 0x70,
-                    data: 0x71,
                     seed: true,
                     timing: None,
                 }),
@@ -564,12 +569,12 @@ mod tests {
             .with_irq(8),
             DeviceConfig::new(
                 DeviceId::Vga,
-                DeviceKind::Vga(VgaTextCfg { crtc_index: 0x3D4 }),
+                DeviceKind::Vga(VgaTextCfg {}),
                 vec![PortWindow::new(0x3D4, 0x3D5)],
             ),
             DeviceConfig::new(
                 DeviceId::SysControl,
-                DeviceKind::SysControl(SysControlCfg { port: 0x61 }),
+                DeviceKind::SysControl(SysControlCfg {}),
                 vec![PortWindow::single(0x61)],
             ),
             DeviceConfig::new(
@@ -579,10 +584,7 @@ mod tests {
             ),
             DeviceConfig::new(
                 DeviceId::Fdc,
-                DeviceKind::Fdc(FdcCfg {
-                    base: 0x3F0,
-                    drive_slots: 2,
-                }),
+                DeviceKind::Fdc(FdcCfg { drive_slots: 2 }),
                 vec![PortWindow::new(0x3F0, 0x3F7)],
             )
             .with_irq(6)
@@ -592,7 +594,7 @@ mod tests {
             }),
             DeviceConfig::new(
                 DeviceId::Dma,
-                DeviceKind::Dma(DmaCfg { base: 0x00 }),
+                DeviceKind::Dma(DmaCfg {}),
                 // 0x81..=0x8F is the page-latch block; it sits above the POST
                 // latch at 0x80, so the two never share a byte.
                 vec![PortWindow::new(0x00, 0x0F), PortWindow::new(0x81, 0x8F)],
@@ -889,7 +891,7 @@ mod tests {
 
         // (a) Both drives land in the controller's slots, each carrying the exact
         // geometry the config named — slot 0 is the 1.2 MB drive, slot 1 the 720 KB.
-        let slots = build_fdc_drives(&config);
+        let slots = build_fdc_drives(&config).expect("drives mounted");
         assert_eq!(
             slots[0].as_ref().expect("slot 0 mounted").geometry,
             to_device_geometry(&FloppyGeometry::HD_1_2)
@@ -941,7 +943,7 @@ mod tests {
             },
         ];
 
-        let slots = build_fdc_drives(&config);
+        let slots = build_fdc_drives(&config).expect("drives mounted");
         assert!(
             !slots[0].as_ref().expect("slot 0 mounted").write_protected,
             "the default drive is writable"
@@ -1036,5 +1038,106 @@ mod tests {
         let st1 = fdc.port_read(DATA, 1).unwrap() as u8;
         assert_eq!(st0 & 0x40, 0x40, "abnormal termination (ST0 IC = 01)");
         assert_eq!(st1 & 0x04, 0x04, "ST1 ND: no data field past the geometry");
+    }
+
+    #[test]
+    fn unreadable_floppy_file_is_an_error() {
+        let mut config = reference_config();
+        config.drives[0].image = ImageSource::File(std::path::PathBuf::new());
+        assert!(
+            matches!(assemble(&config), Err(AssemblyError::Config(ConfigError::ImageRead { path, message })) if path.as_os_str().is_empty() && !message.is_empty())
+        );
+    }
+
+    #[test]
+    fn file_backed_floppy_geometry_is_checked() {
+        let mut config = reference_config();
+        config.drives[0].image =
+            ImageSource::File(concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml").into());
+        assert!(
+            matches!(assemble(&config), Err(AssemblyError::Config(ConfigError::ImageGeometryMismatch { drive_index: 0, expected: 1_474_560, actual })) if actual == include_bytes!("../Cargo.toml").len() as u64)
+        );
+    }
+
+    #[test]
+    fn file_backed_load_image_bounds_are_checked() {
+        let mut config = reference_config();
+        config.images[0] = LoadImage {
+            base: SPACE - 1,
+            source: ImageSource::File(concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml").into()),
+            kind: ImageKind::RamLoad,
+        };
+        assert!(
+            matches!(assemble(&config), Err(AssemblyError::Config(ConfigError::RegionOutOfSpace { base, end, space })) if base == SPACE - 1 && end == base + include_bytes!("../Cargo.toml").len() as u64 && space == SPACE),
+            "file bounds must produce a config error"
+        );
+    }
+
+    fn file_source() -> ImageSource {
+        ImageSource::File(concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml").into())
+    }
+
+    #[test]
+    fn file_backed_load_over_mmio_is_rejected() {
+        let mut config = reference_config();
+        config.images[0] = LoadImage {
+            base: TEXT_BASE,
+            source: file_source(),
+            kind: ImageKind::Rom,
+        };
+        assert!(matches!(
+            assemble(&config),
+            Err(AssemblyError::Config(ConfigError::ImageOverlapsMmio {
+                image_index: 0,
+                device: DeviceId::Vga,
+                addr: TEXT_BASE
+            }))
+        ));
+    }
+
+    #[test]
+    fn file_backed_load_over_another_image_is_rejected() {
+        let mut config = reference_config();
+        config.images.push(LoadImage {
+            base: ROM_BASE + 1,
+            source: file_source(),
+            kind: ImageKind::Rom,
+        });
+        assert!(
+            matches!(assemble(&config), Err(AssemblyError::Config(ConfigError::ImageOverlap { a: 0, b: 1, addr })) if addr == ROM_BASE + 1)
+        );
+    }
+
+    #[test]
+    fn file_backed_ram_load_outside_ram_is_rejected() {
+        let mut config = reference_config();
+        config.images[0] = LoadImage {
+            base: ROM_BASE,
+            source: file_source(),
+            kind: ImageKind::RamLoad,
+        };
+        assert!(matches!(
+            assemble(&config),
+            Err(AssemblyError::Config(ConfigError::ImageOutsideRam {
+                image_index: 0,
+                addr: ROM_BASE
+            }))
+        ));
+    }
+
+    #[test]
+    fn file_backed_ram_load_preserves_bytes_and_source_config() {
+        let mut config = reference_config();
+        config.images[0] = LoadImage {
+            base: 0,
+            source: file_source(),
+            kind: ImageKind::RamLoad,
+        };
+        let assembled = assemble(&config).expect("readable RAM load assembles");
+        let expected = include_bytes!("../Cargo.toml");
+        let mut actual = vec![0; expected.len()];
+        assembled.machine.cpu().read_mem(0, &mut actual).unwrap();
+        assert_eq!(actual, expected);
+        assert_eq!(config.images[0].source, file_source());
     }
 }

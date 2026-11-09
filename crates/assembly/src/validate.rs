@@ -8,6 +8,7 @@
 
 use crate::device::DeviceKind;
 use crate::error::ConfigError;
+use crate::image::ImageKind;
 use crate::machine::MachineConfig;
 
 /// Whether two half-open ranges `[a_base, a_end)` and `[b_base, b_end)` share any
@@ -19,18 +20,21 @@ fn ranges_overlap(a_base: u64, a_end: u64, b_base: u64, b_end: u64) -> bool {
 impl MachineConfig {
     /// Validate this configuration, returning the first inconsistency found.
     ///
-    /// The checks run in a fixed order (device identity, port decode, MMIO
-    /// decode, address-space bounds, interrupt wiring, DMA wiring, drive
-    /// binding, image geometry, clock quantum, CPU rate) so a malformed config always
-    /// yields the same [`ConfigError`].
+    /// The checks run in a fixed order (identity, ports, MMIO, image placement,
+    /// interrupt and DMA wiring, drive binding and geometry, clock) so malformed
+    /// configs always yield the same [`ConfigError`]. File lengths are checked
+    /// when [`crate::assemble`] reads the sources and validates their bytes.
     pub fn validate(&self) -> Result<(), ConfigError> {
         self.check_unique_device_ids()?;
         self.check_port_overlaps()?;
         self.check_mmio_devices_present()?;
+        self.check_mmio_sizes()?;
         self.check_mmio_overlaps()?;
         self.check_mmio_vs_ram()?;
         self.check_regions_in_space()?;
+        self.check_image_placement()?;
         self.check_irq_conflicts()?;
+        self.check_pic_faces()?;
         self.check_dma_controllers_present()?;
         self.check_drive_controllers()?;
         self.check_image_geometry()?;
@@ -90,6 +94,18 @@ impl MachineConfig {
         for w in &self.memory.mmio {
             if !self.devices.iter().any(|d| d.id == w.device) {
                 return Err(ConfigError::MmioDeviceMissing(w.device));
+            }
+        }
+        Ok(())
+    }
+
+    fn check_mmio_sizes(&self) -> Result<(), ConfigError> {
+        for window in &self.memory.mmio {
+            if window.size == 0 {
+                return Err(ConfigError::EmptyMmioWindow {
+                    device: window.device,
+                    base: window.base,
+                });
             }
         }
         Ok(())
@@ -155,6 +171,9 @@ impl MachineConfig {
     fn check_irq_conflicts(&self) -> Result<(), ConfigError> {
         for (i, a) in self.devices.iter().enumerate() {
             let Some(line) = a.irq else { continue };
+            if line >= 16 {
+                return Err(ConfigError::InvalidIrqLine { device: a.id, line });
+            }
             for b in &self.devices[i + 1..] {
                 if b.irq == Some(line) {
                     return Err(ConfigError::IrqConflict {
@@ -162,6 +181,86 @@ impl MachineConfig {
                         b: b.id,
                         line,
                     });
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn check_pic_faces(&self) -> Result<(), ConfigError> {
+        for (i, a) in self.devices.iter().enumerate() {
+            let DeviceKind::Pic(pic) = &a.kind else {
+                continue;
+            };
+            for b in &self.devices[i + 1..] {
+                if matches!(&b.kind, DeviceKind::Pic(other) if pic.cascade == other.cascade) {
+                    return Err(ConfigError::DuplicatePicFace {
+                        a: a.id,
+                        b: b.id,
+                        cascade: pic.cascade,
+                    });
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// File lengths are checked by the same pass after assembly reads them.
+    fn check_image_placement(&self) -> Result<(), ConfigError> {
+        for (i, image) in self.images.iter().enumerate() {
+            let Some(size) = image.source.known_len() else {
+                continue;
+            };
+            if size == 0 {
+                continue;
+            }
+            let end = image.base.saturating_add(size);
+            for window in &self.memory.mmio {
+                if ranges_overlap(image.base, end, window.base, window.end()) {
+                    return Err(ConfigError::ImageOverlapsMmio {
+                        image_index: i,
+                        device: window.device,
+                        addr: image.base.max(window.base),
+                    });
+                }
+            }
+            for (j, other) in self.images.iter().enumerate().skip(i + 1) {
+                let Some(other_size) = other.source.known_len() else {
+                    continue;
+                };
+                if other_size > 0
+                    && ranges_overlap(
+                        image.base,
+                        end,
+                        other.base,
+                        other.base.saturating_add(other_size),
+                    )
+                {
+                    return Err(ConfigError::ImageOverlap {
+                        a: i,
+                        b: j,
+                        addr: image.base.max(other.base),
+                    });
+                }
+            }
+            if image.kind == ImageKind::RamLoad {
+                let mut covered = image.base;
+                while covered < end {
+                    let next = self
+                        .memory
+                        .ram
+                        .iter()
+                        .filter(|region| region.base <= covered && covered < region.end())
+                        .map(|region| region.end())
+                        .max()
+                        .unwrap_or(covered);
+                    if next == covered {
+                        return Err(ConfigError::ImageOutsideRam {
+                            image_index: i,
+                            addr: covered,
+                        });
+                    }
+                    covered = next;
                 }
             }
         }
@@ -209,6 +308,14 @@ impl MachineConfig {
     /// its geometry.
     fn check_image_geometry(&self) -> Result<(), ConfigError> {
         for (drive_index, drive) in self.drives.iter().enumerate() {
+            if let crate::drive::DriveKind::Floppy { geometry } = drive.kind {
+                if geometry.bytes_per_sector != 512 {
+                    return Err(ConfigError::UnsupportedFloppySectorSize {
+                        drive_index,
+                        bytes_per_sector: geometry.bytes_per_sector,
+                    });
+                }
+            }
             if let Some(actual) = drive.image.known_len() {
                 let expected = drive.kind.image_bytes();
                 if actual != expected {
@@ -272,40 +379,29 @@ mod tests {
             ),
             dev(
                 DeviceId::Pit,
-                DeviceKind::Pit(PitCfg { base: 0x40 }),
+                DeviceKind::Pit(PitCfg {}),
                 vec![PortWindow::new(0x40, 0x43)],
             )
             .with_irq(0),
             dev(
                 DeviceId::MasterPic,
-                DeviceKind::Pic(PicCfg {
-                    command: 0x20,
-                    cascade: true,
-                }),
+                DeviceKind::Pic(PicCfg { cascade: true }),
                 vec![PortWindow::new(0x20, 0x21)],
             ),
             dev(
                 DeviceId::SlavePic,
-                DeviceKind::Pic(PicCfg {
-                    command: 0xA0,
-                    cascade: false,
-                }),
+                DeviceKind::Pic(PicCfg { cascade: false }),
                 vec![PortWindow::new(0xA0, 0xA1)],
             ),
             dev(
                 DeviceId::Keyboard,
-                DeviceKind::Keyboard(I8042Cfg {
-                    data: 0x60,
-                    command: 0x64,
-                }),
+                DeviceKind::Keyboard(I8042Cfg {}),
                 vec![PortWindow::single(0x60), PortWindow::single(0x64)],
             )
             .with_irq(1),
             dev(
                 DeviceId::Rtc,
                 DeviceKind::Rtc(CmosCfg {
-                    index: 0x70,
-                    data: 0x71,
                     seed: true,
                     timing: None,
                 }),
@@ -314,12 +410,12 @@ mod tests {
             .with_irq(8),
             dev(
                 DeviceId::Vga,
-                DeviceKind::Vga(VgaTextCfg { crtc_index: 0x3D4 }),
+                DeviceKind::Vga(VgaTextCfg {}),
                 vec![PortWindow::new(0x3D4, 0x3D5)],
             ),
             dev(
                 DeviceId::SysControl,
-                DeviceKind::SysControl(SysControlCfg { port: 0x61 }),
+                DeviceKind::SysControl(SysControlCfg {}),
                 vec![PortWindow::single(0x61)],
             ),
             dev(
@@ -329,10 +425,7 @@ mod tests {
             ),
             dev(
                 DeviceId::Fdc,
-                DeviceKind::Fdc(FdcCfg {
-                    base: 0x3F0,
-                    drive_slots: 2,
-                }),
+                DeviceKind::Fdc(FdcCfg { drive_slots: 2 }),
                 vec![PortWindow::new(0x3F0, 0x3F7)],
             )
             .with_irq(6)
@@ -342,7 +435,7 @@ mod tests {
             }),
             dev(
                 DeviceId::Dma,
-                DeviceKind::Dma(DmaCfg { base: 0x00 }),
+                DeviceKind::Dma(DmaCfg {}),
                 vec![PortWindow::new(0x00, 0x0F), PortWindow::new(0x81, 0x8F)],
             ),
         ];
@@ -648,7 +741,7 @@ mod tests {
     }
 
     #[test]
-    fn a_file_backed_image_skips_the_geometry_check() {
+    fn file_geometry_validation_is_deferred_until_assembly() {
         let mut config = valid_config();
         // A file's size is unknown without I/O, so geometry cannot be checked
         // here — validation must not fail on it.
@@ -663,5 +756,188 @@ mod tests {
         assert_eq!(real.ds, 0x1234);
         assert_eq!(real.ss, 0x1234);
         assert_eq!(real.sp, seed.sp);
+    }
+
+    #[test]
+    fn zero_size_mmio_is_rejected() {
+        let mut config = valid_config();
+        config.memory.mmio[0] = MmioWindow::new(0, 0, DeviceId::Vga);
+        assert_eq!(
+            config.validate(),
+            Err(ConfigError::EmptyMmioWindow {
+                device: DeviceId::Vga,
+                base: 0
+            })
+        );
+    }
+
+    #[test]
+    fn irq_outside_pic_inputs_is_rejected() {
+        for line in [16, u8::MAX] {
+            let mut config = valid_config();
+            find_device(&mut config, DeviceId::Pit).irq = Some(line);
+            assert_eq!(
+                config.validate(),
+                Err(ConfigError::InvalidIrqLine {
+                    device: DeviceId::Pit,
+                    line
+                })
+            );
+        }
+    }
+
+    #[test]
+    fn duplicate_pic_faces_are_rejected() {
+        for cascade in [true, false] {
+            let mut config = valid_config();
+            for device in &mut config.devices {
+                if let DeviceKind::Pic(pic) = &mut device.kind {
+                    pic.cascade = cascade;
+                }
+            }
+            assert_eq!(
+                config.validate(),
+                Err(ConfigError::DuplicatePicFace {
+                    a: DeviceId::MasterPic,
+                    b: DeviceId::SlavePic,
+                    cascade
+                })
+            );
+        }
+    }
+
+    #[test]
+    fn unsupported_floppy_sector_size_is_rejected() {
+        let mut config = valid_config();
+        let geometry = FloppyGeometry {
+            bytes_per_sector: 256,
+            ..FloppyGeometry::HD_1_44
+        };
+        config.drives[0].kind = DriveKind::Floppy { geometry };
+        config.drives[0].image = ImageSource::Blank {
+            size: geometry.image_bytes(),
+        };
+        assert_eq!(
+            config.validate(),
+            Err(ConfigError::UnsupportedFloppySectorSize {
+                drive_index: 0,
+                bytes_per_sector: 256
+            })
+        );
+        assert_eq!(
+            config.validate().unwrap_err().to_string(),
+            "drive 0 uses 256-byte sectors; the floppy model supports 512-byte sectors only"
+        );
+    }
+
+    #[test]
+    fn image_over_mmio_is_rejected() {
+        for kind in [ImageKind::Rom, ImageKind::RamLoad] {
+            let mut config = valid_config();
+            config.images[0] = LoadImage {
+                base: TEXT_BASE,
+                source: ImageSource::Blank { size: 1 },
+                kind,
+            };
+            assert_eq!(
+                config.validate(),
+                Err(ConfigError::ImageOverlapsMmio {
+                    image_index: 0,
+                    device: DeviceId::Vga,
+                    addr: TEXT_BASE
+                })
+            );
+        }
+    }
+
+    #[test]
+    fn overlapping_images_are_rejected() {
+        let mut config = valid_config();
+        config.images.push(LoadImage {
+            base: ROM_BASE + 1,
+            source: ImageSource::Blank { size: 1 },
+            kind: ImageKind::Rom,
+        });
+        assert_eq!(
+            config.validate(),
+            Err(ConfigError::ImageOverlap {
+                a: 0,
+                b: 1,
+                addr: ROM_BASE + 1
+            })
+        );
+    }
+
+    #[test]
+    fn ram_load_outside_ram_is_rejected() {
+        let mut config = valid_config();
+        config.images[0].kind = ImageKind::RamLoad;
+        assert_eq!(
+            config.validate(),
+            Err(ConfigError::ImageOutsideRam {
+                image_index: 0,
+                addr: ROM_BASE
+            })
+        );
+    }
+
+    #[test]
+    fn ram_load_crossing_a_ram_hole_is_rejected() {
+        let mut config = valid_config();
+        config.memory.ram = vec![RamRegion::new(0, 16), RamRegion::new(32, 16)];
+        config.images[0] = LoadImage {
+            base: 8,
+            source: ImageSource::Blank { size: 32 },
+            kind: ImageKind::RamLoad,
+        };
+        assert_eq!(
+            config.validate(),
+            Err(ConfigError::ImageOutsideRam {
+                image_index: 0,
+                addr: 16
+            })
+        );
+    }
+
+    #[test]
+    fn ram_load_can_span_adjacent_regions_in_any_order() {
+        let mut config = valid_config();
+        config.memory.ram = vec![RamRegion::new(16, 16), RamRegion::new(0, 16)];
+        config.images[0] = LoadImage {
+            base: 8,
+            source: ImageSource::Blank { size: 24 },
+            kind: ImageKind::RamLoad,
+        };
+        assert_eq!(config.validate(), Ok(()));
+    }
+
+    #[test]
+    fn adjacent_images_and_empty_images_do_not_overlap() {
+        let mut config = valid_config();
+        config.images = vec![
+            LoadImage {
+                base: 0,
+                source: ImageSource::Blank { size: 16 },
+                kind: ImageKind::RamLoad,
+            },
+            LoadImage {
+                base: 16,
+                source: ImageSource::Blank { size: 16 },
+                kind: ImageKind::RamLoad,
+            },
+            LoadImage {
+                base: 8,
+                source: ImageSource::Blank { size: 0 },
+                kind: ImageKind::RamLoad,
+            },
+        ];
+        assert_eq!(config.validate(), Ok(()));
+    }
+
+    #[test]
+    fn highest_pic_input_is_valid() {
+        let mut config = valid_config();
+        find_device(&mut config, DeviceId::Pit).irq = Some(15);
+        assert_eq!(config.validate(), Ok(()));
     }
 }

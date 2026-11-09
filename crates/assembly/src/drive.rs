@@ -18,7 +18,7 @@ pub struct FloppyGeometry {
     pub heads: u32,
     /// Sectors per track.
     pub sectors_per_track: u32,
-    /// Bytes per sector.
+    /// Bytes per sector. Validation accepts 512 only, matching the current FDC.
     pub bytes_per_sector: u32,
 }
 
