@@ -118,6 +118,15 @@ pub enum CpuError {
         /// Guest RIP of the offending instruction.
         addr: u64,
     },
+    /// The core stopped for a reason the machine has no handling for (a host
+    /// yield request, exhausted JIT code space, or an exit kind newer than this
+    /// backend). Kept apart from [`CpuError::UnsupportedInstruction`] so such a
+    /// stop is never mistaken for a missing opcode.
+    #[error("unhandled cpu exit: {what}")]
+    UnexpectedExit {
+        /// Which exit the core returned, with its details.
+        what: String,
+    },
 }
 
 /// The CPU swap seam (§3.2 seam 1).

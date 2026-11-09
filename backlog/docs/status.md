@@ -17,22 +17,18 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   tests; text output reaches a `FrameSink`.
 - **Machines are declarative.** A `MachineConfig` (the `assembly` crate) is built by one
   `assemble()` and run under a `RunPolicy`; presets replace the old hand-written runners.
-- **CPU:** x86jit `CpuMode::Real16` (interpreter-only), 99.63% decided on the SingleStepTests 80286
-  corpus at the pinned revision.
-- **Tests:** MEASURED 2026-11-09 against the pinned x86jit rev 865467e: `cargo test --workspace`
-  273 passed, 0 failed, 5 ignored (the slow goldens); clippy `-D warnings` clean; `fmt --check`
-  clean.
+- **CPU:** x86jit `CpuMode::Real16` (interpreter-only), pinned to x86jit `main` @ `b0c9ae5`
+  (decision-13).
+- **Tests:** MEASURED 2026-11-09 at that pin: `cargo test --workspace` 277 passed, 0 failed,
+  5 ignored; the 5 slow goldens (`-- --ignored`: BIOS POST, INT 19h floppy read, FreeDOS prompt,
+  `DIR`, file write) pass, ~23 min in a debug build; clippy `-D warnings` and `fmt --check` clean.
 
 ## In flight
 
-Nothing is claimed. Highest-priority ready work: the x86jit re-pin (`upc-f7j.1`, P0), then the
-P1 defects from the whole-code review (epic `upc-kk2`).
+The P1 defects from the whole-code review (epic `upc-kk2`).
 
 ## Broken / known defects
 
-- **A fresh checkout does not build** (`upc-f7j.1`): the x86jit pin names a deleted branch at a
-  host-local URL. Workaround: a local `[patch]` override (`dev-setup.md` § CPU core). x86jit's
-  current `main` changed the `Exit` API; the adaptation is small (MEASURED: 273/0/5 with it).
 - **Whole-code review 2026-11-09** found defects that today's goldens do not catch — HLT resumes the
   guest without an interrupt, a cascaded INTA can wedge the PIC, PIT mode 3 stops on an odd
   divisor, COM1 capture includes baud-divisor bytes. One bead each under `upc-kk2`, `upc-sk3`,

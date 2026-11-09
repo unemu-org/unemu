@@ -46,7 +46,7 @@ Generic conventions that apply regardless of stack. Stack-specific rules (langua
 
 ## Stack-specific (Rust)
 
-- **Edition**: 2021. **MSRV**: track x86jit's (currently 1.75); bump only with a
+- **Edition**: 2021. **MSRV**: track x86jit's (currently 1.88); bump only with a
   decision. **Workspace**: one Cargo workspace, one crate per swap-layer
   (`cpu`, `bus`, `chipset`, `device`, `devices/*`, `video`, `machine`, `cli`,
   `testkit`).
@@ -68,8 +68,9 @@ Generic conventions that apply regardless of stack. Stack-specific rules (langua
   execution path. Virtual time = retired instructions.
 - **Memory writes**: guest RAM is mutated only through the x86jit `Vm` API that
   runs `note_write` (SMC safety) — never a raw buffer write. See the memory decision.
-- **x86jit dependency**: pinned git dep + local `[patch]` onto the worktree;
-  never a bare `path` dep (breaks `nix build`/CI).
+- **x86jit dependency**: git dep pinned to an exact rev of x86jit `main`; a gitignored
+  `[patch]` onto a local checkout for development; never a bare `path` dep (breaks
+  `nix build`/CI). See decision-13.
 
 ## Test strategy
 

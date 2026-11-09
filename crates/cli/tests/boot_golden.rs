@@ -26,9 +26,10 @@
 //! ## Pinned CPU revision
 //!
 //! Golden traces are only valid against a known CPU revision (AGENTS.md). This
-//! golden was recorded against `x86jit-core` (branch `pc-emulator`) rev
-//! **`a4f6ae598118c1b204837c6ba4ef5b59cf31a85f`** — the rev pinned in
-//! `Cargo.lock`. Re-baseline the golden when that rev moves.
+//! golden was recorded against `x86jit-core` rev
+//! **`a4f6ae598118c1b204837c6ba4ef5b59cf31a85f`** and still passes unchanged at
+//! the rev now pinned in `Cargo.lock`. Re-run it whenever that pin moves, and
+//! re-baseline it only if the new rev changes the trace.
 
 use cli::{run_boot, BOOT_HANDLER_OFFSET, BOOT_PROGRAM};
 use testkit::golden::assert_bytes_eq;

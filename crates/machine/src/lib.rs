@@ -681,7 +681,7 @@ mod tests {
         fn tick(&mut self, now: VClock) {
             // Drive the line low for one clock every 4 ticks, else high — a
             // mode-2-like OUT so the rising edge recurs once per period.
-            self.level = now.0 % 4 != 0;
+            self.level = !now.0.is_multiple_of(4);
         }
         fn irq_pending(&self) -> bool {
             self.level

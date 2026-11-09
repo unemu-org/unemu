@@ -26,16 +26,15 @@ and test harness are being designed. See:
 - `backlog/docs/testing.md` — the test-harness strategy
 - `backlog/docs/design/spec.md` — the growing numbered specification
 - `backlog/decisions/` — architecture decision records (ADRs)
-- `backlog task list --plain` — the roadmap (milestones M0–M4)
+- `bd ready --exclude-type epic` — open work (beads; see `backlog/docs/working-on-tasks.md`)
 
 ## CPU core: x86jit
 
-The CPU is not vendored. `x86jit` lives in its own repository and is developed
-for this project inside a dedicated **git worktree** on a `pc-emulator` branch,
-consumed as a pinned git dependency. Real-mode support (segments, `IF`, IVT,
-hardware IRQ injection) is added there under `CpuMode::Real16`, then merged back
-to `x86jit` main under strict criteria so the primary consumer (PS4 emulation)
-is never disturbed. See `backlog/decisions/` for the merge discipline.
+The CPU is not vendored. `x86jit` lives in its own repository with its own
+tracker and gates, and this project consumes it as a git dependency pinned to an
+exact revision of its `main`. Real-mode support (segments, `IF`, IVT, hardware IRQ
+injection) lives there under `CpuMode::Real16`, gated so the engine's other modes
+are unaffected. See decision-13 in `backlog/decisions/`.
 
 ## Getting started
 

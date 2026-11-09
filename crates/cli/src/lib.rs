@@ -539,6 +539,9 @@ fn classify_test386_stop(rip: u64, result: Result<RunOutcome, MachineError>) -> 
         Err(MachineError::Cpu(CpuError::Memory(msg))) => StopReason::Unmapped {
             detail: format!("guest memory error: {msg} (rip {rip:#x})"),
         },
+        Err(MachineError::Cpu(e @ CpuError::UnexpectedExit { .. })) => StopReason::Unmapped {
+            detail: format!("{e} (rip {rip:#x})"),
+        },
         Err(MachineError::Bus(e)) => StopReason::Unmapped {
             detail: format!("{e} (rip {rip:#x})"),
         },
@@ -1067,6 +1070,9 @@ fn classify_bios_stop(
         },
         Err(MachineError::Cpu(CpuError::Memory(msg))) => StopReason::Unmapped {
             detail: format!("guest memory error: {msg}; {site}"),
+        },
+        Err(MachineError::Cpu(e @ CpuError::UnexpectedExit { .. })) => StopReason::Unmapped {
+            detail: format!("{e}; {site}"),
         },
         Err(MachineError::Bus(e)) => StopReason::Unmapped {
             detail: format!("{e}; {site}"),

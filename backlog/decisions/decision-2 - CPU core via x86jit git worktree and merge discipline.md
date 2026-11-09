@@ -2,7 +2,7 @@
 id: decision-2
 title: CPU core via x86jit git worktree + merge discipline
 date: 2026-07-17
-status: Accepted
+status: Superseded by decision-13
 deciders: Mikołaj Mikołajczyk
 ---
 
@@ -10,7 +10,9 @@ deciders: Mikołaj Mikołajczyk
 
 ## Status
 
-Accepted — 2026-07-17.
+Accepted — 2026-07-17. **Superseded by [[decision-13]]** on 2026-11-09: the
+`pc-emulator` branch is gone, real mode is on x86jit `main`, and the merge gates
+below are now x86jit's own rules.
 
 ## Context
 

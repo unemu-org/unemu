@@ -45,8 +45,9 @@
 //!
 //! - test386 image: `barotto/test386.asm` @
 //!   `cfd052d1e64d5375dea5a681c1eadeed64ceda2c` (built by `vendor/test386/fetch.sh`).
-//! - CPU: `x86jit-core` (branch `pc-emulator`) rev
-//!   `3ff42a5265ee8f40913615d65823b16dffbc4f49`, the rev pinned in `Cargo.lock`.
+//! - CPU: recorded against `x86jit-core` rev
+//!   `3ff42a5265ee8f40913615d65823b16dffbc4f49`; it still passes at the rev now
+//!   pinned in `Cargo.lock`.
 //!   The stop point is only meaningful against a known CPU revision; re-baseline
 //!   the golden if `SAHF` (or a nearer instruction) gains real-mode support.
 

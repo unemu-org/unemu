@@ -51,7 +51,7 @@
 //!
 //! - BIOS ROM: Sergey Kiselev `8088_bios`, Xi8088 config, built by
 //!   `vendor/kiselev-bios/fetch.sh` (32 KiB, gitignored).
-//! - CPU: `x86jit-core` (branch `pc-emulator`), the rev pinned in `Cargo.lock`.
+//! - CPU: `x86jit-core`, the rev pinned in `Cargo.lock`.
 //!   The stop point is only meaningful against a known CPU revision; re-baseline
 //!   the golden if `FNINIT` (or a nearer instruction) gains real-mode support.
 

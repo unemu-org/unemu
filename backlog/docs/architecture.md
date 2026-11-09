@@ -33,8 +33,8 @@ crates/
 backlog/        # tasks, docs, decisions (this tree)
 ```
 
-The CPU core (`x86jit`) is an external pinned git dependency, developed in a
-worktree — see `AGENTS.md` and the worktree decision.
+The CPU core (`x86jit`) is an external git dependency pinned to an exact revision
+of x86jit `main` — see `AGENTS.md` and decision-13.
 
 ## Swap seams (the swappability contract)
 

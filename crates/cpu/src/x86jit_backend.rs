@@ -8,8 +8,9 @@
 //! `x86jit` integration surface: `Exit::PortIo` (`in`/`out`), `RegionKind::Trap`
 //! MMIO, and — in real mode — IVT-vectored hardware IRQ injection.
 //!
-//! `x86jit-core` is depended on through a git ref rather than a plain path so a
-//! clean checkout or CI can resolve it without the local worktree present.
+//! `x86jit-core` is depended on through a git dependency pinned to an exact
+//! revision rather than a plain path, so a clean checkout or CI resolves the same
+//! CPU without any local x86jit checkout present.
 
 use x86jit_core::{CpuMode, Exit, PortDir, Prot, Reg, RegionKind, Vcpu, Vm, VmConfig};
 
@@ -200,21 +201,43 @@ impl Cpu for X86JitCpu {
                 size,
                 dir,
                 value,
+                ..
             } => match dir {
                 PortDir::In => Ok(CpuStop::PortIn { port, size }),
                 PortDir::Out => Ok(CpuStop::PortOut { port, size, value }),
             },
-            Exit::MmioRead { addr, size } => Ok(CpuStop::MmioRead { addr, size }),
-            Exit::MmioWrite { addr, size, value } => Ok(CpuStop::MmioWrite { addr, size, value }),
+            // Each MMIO exit is one complete transfer at its own address and
+            // width. The fields skipped here only place that transfer inside a
+            // wider operand, which the core delivers as several exits at the same
+            // instruction, so servicing `addr`/`size` alone is still exact.
+            Exit::MmioRead { addr, size, .. } => Ok(CpuStop::MmioRead { addr, size }),
+            Exit::MmioWrite {
+                addr, size, value, ..
+            } => Ok(CpuStop::MmioWrite { addr, size, value }),
             Exit::Hlt => Ok(CpuStop::Halt),
             Exit::Exception { vector, .. } => Ok(CpuStop::Exception { vector }),
             Exit::BudgetExhausted => Ok(CpuStop::BudgetExhausted),
             Exit::UnmappedMemory { addr, .. } => Err(CpuError::Unmapped { addr }),
             Exit::UnknownInstruction { addr, .. } => Err(CpuError::UnsupportedInstruction { addr }),
-            // The current serial programs contain no `syscall`/`int 0x80`, so
-            // this cannot occur; guest-vectored interrupts are future work.
+            // Only `syscall`/`sysenter`, or `int 0x80` outside real mode, end up
+            // here: in real mode every `int n` is delivered inside the guest
+            // through the IVT, and the long-mode serial programs make no system
+            // calls. RIP has already moved past the instruction.
             Exit::Syscall => Err(CpuError::UnsupportedInstruction {
                 addr: self.cpu.reg(Reg::Rip),
+            }),
+            // Nothing in this backend requests a host yield, and the interpreter
+            // the machine runs on never fills a JIT code cache; either stop means
+            // the embedding is not what this backend expects.
+            Exit::CodeSpaceExhausted { addr, .. } => Err(CpuError::UnexpectedExit {
+                what: format!("jit code space exhausted at {addr:#x}"),
+            }),
+            Exit::Interrupted => Err(CpuError::UnexpectedExit {
+                what: "interrupted by a host yield request".to_string(),
+            }),
+            // The core may add exit kinds; report one by name rather than guess.
+            other => Err(CpuError::UnexpectedExit {
+                what: format!("{other:?}"),
             }),
         }
     }
@@ -328,5 +351,141 @@ mod tests {
         let mut buf = [0u8; 2];
         cpu.read_mem(0xF_0000, &mut buf).expect("read rom");
         assert_eq!(u16::from_le_bytes(buf), 0x06C7);
+    }
+
+    /// Base of the trapped colour text window the MMIO tests aim at.
+    const VIDEO_BASE: u64 = 0xB_8000;
+
+    /// A real-mode CPU that runs `code` from `0000:7C00` over conventional RAM,
+    /// with a trapped window at [`VIDEO_BASE`] and DS/ES pointing into it, so a
+    /// near `[disp16]` operand lands at `VIDEO_BASE + disp16`.
+    fn real_mode_cpu(code: &[u8]) -> X86JitCpu {
+        let mut cpu = X86JitCpu::new_real16_bare(
+            0x10_0000,
+            0x0000,
+            0x7C00,
+            RealSegments {
+                ds: 0xB800,
+                es: 0xB800,
+                ss: 0x0000,
+                sp: RealSegments::DEFAULT_SP,
+            },
+        )
+        .expect("bare real-mode cpu");
+        cpu.map_ram(0, 0xA_0000).expect("map ram");
+        cpu.map_mmio(VIDEO_BASE, 0x8000).expect("map mmio");
+        cpu.write_mem(0x7C00, code).expect("load code");
+        cpu
+    }
+
+    /// Run until the first stop that is not a budget yield.
+    fn run_to_stop(cpu: &mut X86JitCpu) -> Result<CpuStop, CpuError> {
+        loop {
+            match cpu.run(Some(64)) {
+                Ok(CpuStop::BudgetExhausted) => continue,
+                other => return other,
+            }
+        }
+    }
+
+    /// A real-mode word store into a trapped window reaches the machine as one
+    /// `MmioWrite` with the guest's linear address, width and value. Once the
+    /// machine acknowledges it, the retried store does not trap again and the
+    /// guest runs on to its `hlt`.
+    #[test]
+    fn real_mode_store_to_trapped_window_surfaces_as_one_mmio_write() {
+        //   B8 48 1F      mov ax, 0x1F48
+        //   89 06 02 00   mov [0x0002], ax    ; DS:0x0002 = 0xB8002
+        //   F4            hlt
+        let mut cpu = real_mode_cpu(&[0xB8, 0x48, 0x1F, 0x89, 0x06, 0x02, 0x00, 0xF4]);
+
+        assert_eq!(
+            run_to_stop(&mut cpu).expect("run"),
+            CpuStop::MmioWrite {
+                addr: VIDEO_BASE + 2,
+                size: 2,
+                value: 0x1F48,
+            }
+        );
+        cpu.complete_mmio_write();
+        assert_eq!(run_to_stop(&mut cpu).expect("run"), CpuStop::Halt);
+    }
+
+    /// A real-mode word load from a trapped window reaches the machine as one
+    /// `MmioRead`, and the value the machine supplies is what the guest receives.
+    #[test]
+    fn real_mode_load_from_trapped_window_surfaces_as_one_mmio_read() {
+        //   A1 04 00      mov ax, [0x0004]    ; DS:0x0004 = 0xB8004
+        //   F4            hlt
+        let mut cpu = real_mode_cpu(&[0xA1, 0x04, 0x00, 0xF4]);
+
+        assert_eq!(
+            run_to_stop(&mut cpu).expect("run"),
+            CpuStop::MmioRead {
+                addr: VIDEO_BASE + 4,
+                size: 2,
+            }
+        );
+        cpu.complete_mmio_read(0xBEEF);
+        assert_eq!(run_to_stop(&mut cpu).expect("run"), CpuStop::Halt);
+        assert_eq!(cpu.reg(CpuReg::Rax) & 0xFFFF, 0xBEEF);
+    }
+
+    /// A host yield request is not something the guest did, so it must not be
+    /// reported as a missing opcode. Guest state stays resumable: the next run
+    /// carries on to the `hlt`.
+    #[test]
+    fn host_yield_request_is_an_unexpected_exit() {
+        let mut cpu = real_mode_cpu(&[0xF4]);
+        cpu.cpu.exit_request().request_exit();
+
+        match cpu.run(None) {
+            Err(CpuError::UnexpectedExit { what }) => {
+                assert!(what.contains("interrupted"), "{what}")
+            }
+            other => panic!("expected an unexpected-exit error, got {other:?}"),
+        }
+        assert_eq!(run_to_stop(&mut cpu).expect("run"), CpuStop::Halt);
+    }
+
+    /// A backend whose JIT code storage has run out. It still hands blocks back
+    /// for interpretation, which is what a real backend falls back to.
+    struct ExhaustedCodeSpace;
+
+    impl x86jit_core::Backend for ExhaustedCodeSpace {
+        fn code_space_exhausted(&self) -> bool {
+            true
+        }
+
+        fn materialize(
+            &self,
+            ir: &x86jit_core::IrBlock,
+            _consistency: x86jit_core::MemConsistency,
+            _mmio: Option<(u64, u64)>,
+            _guest_base: u64,
+        ) -> x86jit_core::CachedBlock {
+            x86jit_core::CachedBlock::Interpreted(std::sync::Arc::new(ir.clone()))
+        }
+    }
+
+    /// Exhausted JIT code space is reported once, as an unexpected exit that
+    /// names it rather than as a missing opcode; execution then continues.
+    #[test]
+    fn exhausted_code_space_is_an_unexpected_exit() {
+        let mut vm = Vm::with_backend(VmConfig::flat(0x2000), Box::new(ExhaustedCodeSpace));
+        vm.map(0, 0x2000, Prot::RWX, RegionKind::Ram)
+            .expect("map ram");
+        vm.write_bytes(0x1000, &[0xF4]).expect("load hlt");
+        let mut vcpu = vm.new_vcpu();
+        vcpu.set_reg(Reg::Rip, 0x1000);
+        let mut cpu = X86JitCpu { vm, cpu: vcpu };
+
+        match cpu.run(None) {
+            Err(CpuError::UnexpectedExit { what }) => {
+                assert!(what.contains("code space exhausted at 0x1000"), "{what}")
+            }
+            other => panic!("expected an unexpected-exit error, got {other:?}"),
+        }
+        assert_eq!(cpu.run(None).expect("run"), CpuStop::Halt);
     }
 }

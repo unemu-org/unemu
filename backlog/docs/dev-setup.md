@@ -64,9 +64,21 @@ Cargo resolves the override without fetching the pinned URL, so this also works 
 cannot reach it. Check the checkout out at the revision in `Cargo.lock`: goldens are only valid
 against the pinned CPU revision.
 
-> **Known defect (bead `upc-f7j.1`).** The pin still names a deleted branch at a host-local URL,
-> so a fresh checkout does not build without the override above, and x86jit's current `main` has
-> a changed `Exit` API. The bead re-pins and adapts the backend.
+The pinned URL is x86jit's origin on the maintainer's forge, which requires
+authentication. Cargo cannot prompt, so fetch through the git CLI — with credentials, or by
+rewriting the URL to the SSH remote for the one command:
+
+```sh
+CARGO_NET_GIT_FETCH_WITH_CLI=true \
+GIT_CONFIG_COUNT=1 \
+GIT_CONFIG_KEY_0='url.git@git-ssh.lab.mikolajczyk.org:.insteadOf' \
+GIT_CONFIG_VALUE_0='https://git.lab.mikolajczyk.org/' \
+cargo fetch
+```
+
+After one successful fetch the checkout is cached and builds work offline. Moving the pin
+(edit the `rev` in `Cargo.toml`, then fetch as above) is its own bead: the Definition of Done
+plus the slow goldens. See decision-13.
 
 ## beads (`bd`)
 
