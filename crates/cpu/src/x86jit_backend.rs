@@ -251,13 +251,22 @@ impl X86JitCpu {
             Exit::BudgetExhausted => Ok(CpuStop::BudgetExhausted),
             Exit::UnmappedMemory { addr, .. } => Err(CpuError::Unmapped { addr }),
             Exit::UnknownInstruction { addr, .. } => Err(CpuError::UnsupportedInstruction { addr }),
-            // Only `syscall`/`sysenter`, or `int 0x80` outside real mode, end up
+            // Only `syscall`, or `int 0x80` outside real mode, end up
             // here: in real mode every `int n` is delivered inside the guest
             // through the IVT, and the long-mode serial programs make no system
-            // calls. RIP has already moved past the instruction.
-            Exit::Syscall => Err(CpuError::UnsupportedInstruction {
-                addr: self.cpu.reg(Reg::Rip),
-            }),
+            // calls. The evidence retains the instruction address after RIP
+            // has advanced, so diagnostics identify the opcode to implement.
+            Exit::Syscall => {
+                let evidence =
+                    self.cpu
+                        .syscall_evidence()
+                        .ok_or_else(|| CpuError::UnexpectedExit {
+                            what: "syscall exit without instruction evidence".to_string(),
+                        })?;
+                Err(CpuError::UnsupportedInstruction {
+                    addr: evidence.rip(),
+                })
+            }
             // Nothing in this backend requests a host yield, and the interpreter
             // the machine runs on never fills a JIT code cache; either stop means
             // the embedding is not what this backend expects.
@@ -848,6 +857,181 @@ mod tests {
         cpu.complete_mmio_read(0xBEEF);
         assert_eq!(run_to_stop(&mut cpu).expect("run"), CpuStop::Halt);
         assert_eq!(cpu.reg(CpuReg::Rax) & 0xFFFF, 0xBEEF);
+    }
+
+    #[test]
+    fn real_mode_mmio_read_and_write_resume_from_nonzero_code_segment() {
+        let mut cpu = X86JitCpu::new_real16_bare(
+            0x10_0000,
+            0x07C0,
+            0,
+            RealSegments {
+                ds: 0xB800,
+                es: 0xB800,
+                ..RealSegments::flat(0)
+            },
+        )
+        .unwrap();
+        cpu.map_ram(0, 0xA_0000).unwrap();
+        cpu.map_mmio(VIDEO_BASE, 0x8000).unwrap();
+        // mov ax, [4]; inc bx; mov [2], ax; inc cx; hlt
+        cpu.write_mem(0x7C00, &[0xA1, 4, 0, 0x43, 0x89, 0x06, 2, 0, 0x41, 0xF4])
+            .unwrap();
+
+        assert_eq!(
+            run_to_stop(&mut cpu).unwrap(),
+            CpuStop::MmioRead {
+                addr: VIDEO_BASE + 4,
+                size: 2,
+            }
+        );
+        assert_eq!(cpu.reg(CpuReg::Rip), 0);
+        cpu.complete_mmio_read(0xBEEF);
+        assert_eq!(
+            cpu.run_steps(1, StepRunOptions::default()).unwrap(),
+            CpuStepRun {
+                steps: 1,
+                stop: CpuStepStop::Exit(CpuStop::BudgetExhausted),
+            }
+        );
+        assert_eq!(cpu.reg(CpuReg::Rip), 3);
+        assert_eq!(cpu.reg(CpuReg::Rax), 0xBEEF);
+        assert_eq!(cpu.reg(CpuReg::Rbx), 0);
+
+        assert_eq!(
+            run_to_stop(&mut cpu).unwrap(),
+            CpuStop::MmioWrite {
+                addr: VIDEO_BASE + 2,
+                size: 2,
+                value: 0xBEEF,
+            }
+        );
+        assert_eq!(cpu.reg(CpuReg::Rip), 4);
+        assert_eq!(cpu.reg(CpuReg::Rbx), 1);
+        cpu.complete_mmio_write();
+        assert_eq!(
+            cpu.run_steps(1, StepRunOptions::default()).unwrap(),
+            CpuStepRun {
+                steps: 1,
+                stop: CpuStepStop::Exit(CpuStop::BudgetExhausted),
+            }
+        );
+        assert_eq!(cpu.reg(CpuReg::Rip), 8);
+        assert_eq!(cpu.reg(CpuReg::Rcx), 0);
+        assert_eq!(run_to_stop(&mut cpu).unwrap(), CpuStop::Halt);
+        assert_eq!(cpu.reg(CpuReg::Rip), 10);
+        assert_eq!(cpu.reg(CpuReg::Rcx), 1);
+        assert_eq!(cpu.code_segment(), 0x07C0);
+        assert_eq!(cpu.retired(), 5);
+    }
+
+    #[test]
+    fn long64_mmio_moves_complete_each_part() {
+        const MMIO: u64 = 0x4000;
+        let value = 0x1122334455667788_99AABBCCDDEEFF00u128;
+        for store in [false, true] {
+            // Intel SDM Vol. 2B, MOVDQU, Operation (128-bit load/store).
+            // Copy to RAM after the trapped move to observe the completed operand.
+            let code = [
+                0xF3,
+                0x0F,
+                if store { 0x7F } else { 0x6F },
+                0x00,
+                0xF3,
+                0x0F,
+                0x7F,
+                0x03,
+                0xF4,
+            ];
+            let vm = Vm::new(VmConfig::flat(0x10000));
+            let vcpu = vm.new_vcpu();
+            let mut cpu = X86JitCpu {
+                vm,
+                cpu: vcpu,
+                dma_regions: Vec::new(),
+                completed_steps: 0,
+            };
+            cpu.map_ram(0, MMIO).unwrap();
+            cpu.map_mmio(MMIO, 0x1000).unwrap();
+            cpu.write_mem(0x1000, &code).unwrap();
+            cpu.set_reg(CpuReg::Rip, 0x1000);
+            cpu.set_reg(CpuReg::Rax, MMIO);
+            cpu.set_reg(CpuReg::Rbx, 0x2000);
+            cpu.cpu.set_xmm(0, if store { value } else { u128::MAX });
+            let mut written = [0u8; 16];
+            for part in 0..2u8 {
+                // Inspect the core metadata before the adapter discards it.
+                let exit = cpu.cpu.run(&cpu.vm, None);
+                let (addr, size, total_size, actual_part) = match &exit {
+                    Exit::MmioRead {
+                        addr,
+                        size,
+                        total_size,
+                        part,
+                        ..
+                    } if !store => (*addr, *size, *total_size, *part),
+                    Exit::MmioWrite {
+                        addr,
+                        size,
+                        total_size,
+                        part,
+                        ..
+                    } if store => (*addr, *size, *total_size, *part),
+                    other => panic!("unexpected exit: {other:?}"),
+                };
+                assert_eq!(
+                    (addr, size, total_size, actual_part),
+                    (MMIO + u64::from(part) * 8, 8, 16, part)
+                );
+                assert_eq!(cpu.reg(CpuReg::Rip), 0x1000);
+                let chunk = (value >> (u32::from(part) * 64)) as u64;
+                if store {
+                    let stop = cpu.map_exit(exit).unwrap();
+                    let CpuStop::MmioWrite {
+                        addr: write_addr,
+                        size: write_size,
+                        value: write_value,
+                    } = stop
+                    else {
+                        panic!("unexpected stop: {stop:?}");
+                    };
+                    assert_eq!((write_addr, write_size, write_value), (addr, size, chunk));
+                    let offset = usize::from(part) * 8;
+                    written[offset..offset + 8].copy_from_slice(&write_value.to_le_bytes());
+                    cpu.complete_mmio_write();
+                } else {
+                    assert_eq!(
+                        cpu.map_exit(exit).unwrap(),
+                        CpuStop::MmioRead { addr, size }
+                    );
+                    cpu.complete_mmio_read(chunk);
+                }
+            }
+            assert_eq!(cpu.run(None).unwrap(), CpuStop::Halt);
+            assert_eq!(cpu.cpu.xmm(0), value);
+            let mut memory = [0; 16];
+            cpu.read_mem(0x2000, &mut memory).unwrap();
+            assert_eq!(memory, value.to_le_bytes());
+            if store {
+                assert_eq!(written, value.to_le_bytes());
+            }
+        }
+    }
+
+    #[test]
+    fn syscall_error_reports_instruction_address_instead_of_resume_rip() {
+        for opcode in [[0x0F, 0x05], [0xCD, 0x80]] {
+            let mut cpu =
+                X86JitCpu::new(0x2000, 0x1000, &[0x90, opcode[0], opcode[1], 0xF4]).unwrap();
+            let error = cpu.run(None).unwrap_err();
+            assert!(
+                matches!(error, CpuError::UnsupportedInstruction { addr: 0x1001 }),
+                "{opcode:02x?}: {error:?}"
+            );
+            assert_eq!(cpu.cpu.syscall_evidence().map(|e| e.rip()), Some(0x1001));
+            assert_eq!(cpu.reg(CpuReg::Rip), 0x1003);
+            assert_eq!(cpu.run(None).unwrap(), CpuStop::Halt);
+        }
     }
 
     /// A host yield request is not something the guest did, so it must not be
