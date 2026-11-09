@@ -589,7 +589,7 @@ fn corrected_timing_reports_firmware_and_dos_sessions() {
 }
 
 #[test]
-#[ignore = "requires firmware/media; KNOWN FAILURE: under the corrected loop the DOS file-write session does not reach the DIR summary yet - kept as the reproducer"]
+#[ignore = "requires firmware/media; compares legacy and corrected DOS file-write interrupt timing"]
 fn corrected_timing_reports_dos_file_write() {
     if !scheduler_ab_enabled() {
         return;
