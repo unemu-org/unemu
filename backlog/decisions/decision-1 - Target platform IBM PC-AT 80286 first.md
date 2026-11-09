@@ -10,7 +10,9 @@ deciders: Mikołaj Mikołajczyk
 
 ## Status
 
-Accepted — 2026-07-17.
+Accepted — 2026-07-17. Scope extended by [[decision-16]] (2026-11-09): the 286
+AT is the first machine profile, not the end target; the out-of-scope items
+below are now scheduled in that decision's phases.
 
 ## Context
 

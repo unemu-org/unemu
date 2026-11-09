@@ -18,14 +18,17 @@ Things **deliberately not implemented**. If something seems missing and is liste
 
 - **Why deferred:** Target is IBM PC/AT-class (80286). The 286 has no paging;
   protected mode is not needed for real-mode boot. APIC/PCI are 386+/later-era.
-- **Revisit when:** A later target machine generation is chosen.
-- **Tracked in:** decision-1.
+- **Revisit when:** Phase B (protected mode, paging) and phase C (PCI) of
+  decision-16, which chose the later machine generations. APIC stays out: the
+  target span runs on the 8259 pair.
+- **Tracked in:** decision-1, decision-16; epics `protected-mode` and `win9x-base`.
 
 ### Full A20 gate (via 8042)
 
 - **Why deferred:** A20 modelled as always-on for M1–M3 to unblock early boot.
-- **Revisit when:** A boot flow requires A20 toggling.
-- **Tracked in:** decision-8.
+- **Revisit when:** A boot flow requires A20 toggling — protected-mode code
+  does (decision-16, phase B).
+- **Tracked in:** decision-8; the A20 bead in epic `protected-mode`.
 
 ### `RegionKind::Rom` in x86jit
 
@@ -36,8 +39,9 @@ Things **deliberately not implemented**. If something seems missing and is liste
 ### Graphics beyond serial (VGA text, framebuffer)
 
 - **Why deferred:** First E2E target is headless serial (deterministic goldens).
-- **Revisit when:** M4 — VGA text as the first `FrameSink`.
-- **Tracked in:** task-5.
+- **Revisit when:** VGA text landed (task-5). A window is phase A of
+  decision-16; a pixel framebuffer is phase C.
+- **Tracked in:** task-5; epics `skeleton` and `win9x-base`.
 
 ### Real-mode segment-register loads (`mov Sreg, r/m`) and far transfers
 

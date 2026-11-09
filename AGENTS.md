@@ -15,6 +15,11 @@ x86 recompiler, consumed as a pinned git dependency (see below). It is a
 boots an unmodified open BIOS and FreeDOS from a floppy image, headless and
 deterministic, captured for golden tests.
 
+The 286 AT is the first machine profile, not the end target. The goal line is
+a period PC that runs Windows 98 SE games on an emulated 3dfx Voodoo, reached
+in four phases, each an epic in beads; Windows XP-era machines are a non-goal
+(`backlog/decisions/decision-16*`). Check new work against that goal line.
+
 Open work is tracked in **beads** (`bd`, issue prefix `upc`), a Dolt-backed issue tracker — the
 same workflow as `x86jit`. Its database lives in `.beads/` (gitignored) and reaches other machines
 only through `bd dolt push` → `refs/dolt/data` on `origin`. Knowledge — design, decisions, guides —

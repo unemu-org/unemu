@@ -49,6 +49,14 @@ was created under; after a reparent `bd show` is authoritative.
 | `tests-ci` | test infrastructure, CI lanes and tooling gates |
 | `scheduler` | event-driven device scheduling, clock domains, CPU speed |
 | `observation` | observable output from device state, not replayed traces |
+| `skeleton` | phase A of decision-16: the display through a real card to a window, host keyboard |
+| `protected-mode` | phase B: 386 protected mode, paging, A20, a 386 profile — DOS-extended programs |
+| `win9x-base` | phase C: PCI, VBE, audio, IDE, mouse, Pentium features — Windows 98 SE to the desktop |
+| `voodoo` | phase D, the target: Windows 98 SE with a 3dfx Voodoo card |
+
+The four phase epics follow the scope decision (decision-16). Each ends in a milestone bead
+(`bd list --type milestone`); the last one is the project's goal line. Later phases stay coarse
+until the phase before them is close to done.
 
 A new theme gets a new epic; do not stretch an existing one to fit.
 
