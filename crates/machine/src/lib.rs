@@ -263,9 +263,8 @@ impl<C: Cpu> Machine<C> {
     }
 
     /// Bound host cooperation in steps. By contract, smaller calls cannot move
-    /// device or IRQ boundaries. The pinned CPU violates this for 16-bit IP wrap
-    /// and stores into unexecuted bytes of the current block; see scheduler
-    /// design §Adoption for the regression tests and re-pin requirements.
+    /// device or IRQ boundaries; device-free CPU regressions hold the core to it
+    /// (scheduler design §Adoption).
     #[must_use]
     pub fn with_step_limit(mut self, limit: NonZeroU64) -> Self {
         self.step_limit = limit;

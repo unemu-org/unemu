@@ -3,7 +3,7 @@
 Design and adoption record, 2026-11-09. The accepted review outcome is
 [decision-15](../../decisions/decision-15%20-%20Deterministic%20device%20scheduler%20with%20instruction-exact%20interrupt%20boundaries.md).
 Corrected timing and deadline dispatch are adopted as the only production loop.
-The pinned CPU defect and its temporary regression expectations are recorded below. The
+A CPU-core defect found during adoption, and its resolution, is recorded below. The
 original proposal is retained as design history where explicitly superseded.
 
 ## Adoption
@@ -24,40 +24,32 @@ completed-transaction-before-INTA ordering, IF/STI/SS readiness, exact active
 caps, and halted event/bound jumps. Their ordered streams must match without
 normalization, including `FinalState` (RAM hashes, registers, saved device state).
 
-The pinned CPU revision is `70be0087b583f1e38bf3479d92e90e89ef998cf1`.
-It decodes a Real16 block past the 16-bit IP wrap and does not observe stores
-into not-yet-executed bytes of the current block. Consequently execution can
-depend on the step budget, contrary to the CPU seam contract. This is an
-upstream CPU defect, not an accepted scheduler timing difference.
+During adoption the CPU core (then pinned at
+`70be0087b583f1e38bf3479d92e90e89ef998cf1`) decoded a Real16 block past the
+16-bit IP wrap and did not observe stores into not-yet-executed bytes of the
+current block, so execution could depend on the step budget, contrary to the
+CPU seam contract. The BIOS-to-floppy run exposed it: after the boot sector
+halts and the timer wakes it, execution runs off the end of segment 0, and the
+deadline engine diverged from the per-clock oracle at clock 5,899,021. Three
+tests pinned the defect until the core was fixed.
 
-Three passing tests intentionally pin the defect:
-
-- `real_mode_wrapped_fetch_is_independent_of_step_partitions` is a device-free
-  CPU regression marked `#[should_panic(expected = "limit=64")]`. It requires
-  the known partition-dependent failure rather than claiming independence.
-- `real_mode_store_into_current_block_is_independent_of_step_partitions` does
-  the same for a store into the next instruction of the current block
-  (`#[should_panic(expected = "store into the current block")]`).
-- `deadline_diverges_from_per_clock_on_bios_floppy_until_the_core_is_fixed`
-  pins the first execution-event difference at index 349,290: per-clock emits
-  OUT `0x3F8`, value `0x42`, at clock 5,899,026; deadline instead stops at
-  5,899,248 with an error containing `unsupported instruction`. Final snapshots
-  are omitted only for this defect diagnostic so the absent OUT is compared
-  directly with Stop; all equality gates retain `FinalState`.
-
-The first measured state difference precedes that OUT: at 5,899,021, CS:IP
-`0000:0003`, byte `003A` is `B7` versus `F8` and FLAGS is `0286` versus `0282`
-(per-clock versus deadline). State matched at 5,899,020; SP first differs at
-5,899,022 (`00F6` versus `00F8`). Returning to dispatch refetches wrapped bytes;
-continuing inside the decoded block does not.
-
-Exit rule on a fully gated upstream fix and re-pin: remove `should_panic` from
-both CPU regressions; turn the BiosFloppy test back into an equality check through
-`assert_optional_workload`; run both engines and all slow goldens. Expect the
-production BIOS-to-floppy golden's current `com1 == [B]` to change: the oracle
-currently emits a second `0x42` at 5,899,026 when execution runs off segment 0.
-Derive the new full-stream expectation from the corrected per-clock oracle and
-inspect the execution, rather than blindly re-baselining the production output.
+The core fixed both (a Real16 block ends at CS:FFFF and a fetch crossing FFFFh
+raises the general-protection exception; a store into a later instruction of
+the running block ends the block after the storing instruction) and the pin
+moved to `54fad1766a458df7cedb6c0b4b5d50742628ef75`. Now
+`real_mode_wrapped_fetch_is_independent_of_step_partitions` and
+`real_mode_store_into_current_block_is_independent_of_step_partitions` assert
+budget independence, and `deadline_matches_per_clock_on_bios_floppy` compares
+the full BiosFloppy stream, `FinalState` included, without normalisation. The
+production BIOS-to-floppy golden keeps its single COM1 `B`. Inspected at the
+new pin: the run-off reaches the end of segment 0, an instruction crossing
+FFFFh raises the general-protection exception (interrupt 13), which shares its
+real-mode vector with IRQ5; the BIOS handler reads the master PIC's ISR (OCW3
+0Bh, port 20h), finds nothing in service and returns, and the guest re-faults
+in that loop (final CS:IP F000:FF2F, stable SP) until the step cap, instead of
+stopping on an unsupported instruction. The golden asserts the marker, not
+the stop kind. The old per-clock oracle's second `0x42` came from executing the
+straddling bytes as if they were not faulting.
 
 Legacy-versus-corrected tests and `UNEMUPC98_SCHEDULER_AB` are deleted. Comparator
 unit tests retain explicit instruction-start shifts and bounded cap endpoint
@@ -127,7 +119,8 @@ interrupt latch and execution may wait for index without a DMA context. Restore
 rejects earlier versions and inconsistent wait states.
 
 The BIOS-floppy divergence is excluded from classes (a)/(b): both engines use
-the same corrected timing, and the CPU defect is pinned rather than accepted.
+the same corrected timing, and the cause was a CPU-core defect, fixed upstream
+and re-pinned, not a scheduler difference.
 Removing the Long64 `hello` demo/golden and replacing no-argument output with
 usage is an intentional interface change, not a hardware expectation change.
 

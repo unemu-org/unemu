@@ -28,7 +28,7 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   [scheduler adoption](design/scheduler.md#adoption).
 - **Machines are declarative.** A `MachineConfig` (the `assembly` crate) is built by one
   `assemble()` and run under a `RunPolicy`; presets replace the old hand-written runners.
-- **CPU pin:** `70be0087b583f1e38bf3479d92e90e89ef998cf1` (x86jit `main`).
+- **CPU pin:** `54fad1766a458df7cedb6c0b4b5d50742628ef75` (x86jit `main`).
 - **CPU:** pinned x86jit `CpuMode::Real16` interpreter with exact step bounds,
   per-iteration REP time, STI/SS-load inhibition and interrupt-readiness stops.
 - **Scheduler:** deadline dispatch is the sole production engine. INTA follows
@@ -47,19 +47,6 @@ Post-adoption phase profiling remains separate from scheduler correctness.
 The P2 findings from the whole-code review (epics `upc-kk2`, `upc-sk3`, `upc-x83`).
 
 ## Broken / known defects
-
-- **Pinned CPU-core defect:** Real16 blocks decode past 16-bit IP wrap and miss
-  stores into not-yet-executed bytes of the current block, so step partitions can
-  change execution. `real_mode_wrapped_fetch_is_independent_of_step_partitions`
-  and `real_mode_store_into_current_block_is_independent_of_step_partitions`
-  pin the two failures with `should_panic`.
-- **Pinned BIOS-floppy divergence:** the inverted engine test pins event 349,290:
-  per-clock OUT `0x3F8 = 0x42` at 5,899,026 versus deadline unsupported-instruction
-  stop at 5,899,248. The production golden's single `B` is defect-dependent and
-  expected to change on a CPU fix. On re-pin remove `should_panic`, restore the
-  BiosFloppy equality check through `assert_optional_workload`, and derive the
-  production serial expectation from the corrected per-clock oracle, never by
-  blindly re-baselining. See [scheduler adoption](design/scheduler.md#adoption).
 
 - **Whole-code review 2026-11-09:** its four P1 defects are fixed (HLT now halts, a cascaded
   INTA can no longer wedge the PIC pair, PIT mode 3 runs with odd divisors, COM1 capture excludes

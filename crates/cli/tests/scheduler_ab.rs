@@ -414,46 +414,15 @@ fn deadline_matches_per_clock_on_freedos_prompt() {
     assert_optional_workload(Workload::FreeDosPrompt);
 }
 
-/// KNOWN CPU-CORE DEFECT: after the boot sector halts, the BIOS-to-floppy run
-/// leaves the end of code segment 0, and the pinned core decodes a real-mode
-/// block past the 16-bit IP wrap. The result then depends on the step budget,
-/// so the two engines diverge. This test pins the divergence; once the core is
-/// fixed and re-pinned it fails, and it must become an equality check through
-/// `assert_optional_workload` like its neighbours.
+/// After the boot sector halts and the timer wakes it, the BIOS-to-floppy run
+/// reaches the end of code segment 0, where an instruction crossing offset
+/// FFFFh raises the general-protection exception (interrupt 13; Intel 80286 and
+/// 80287 Programmer's Reference Manual, real-address-mode exceptions) and the
+/// guest loops through the BIOS handler. Both engines must agree through it.
 #[test]
-#[ignore = "requires BIOS and floppy fixtures; pins a known CPU-core divergence"]
-fn deadline_diverges_from_per_clock_on_bios_floppy_until_the_core_is_fixed() {
-    let Some(left) =
-        scheduler::run_workload_engine(Workload::BiosFloppy, SchedulerEngine::PerClock).unwrap()
-    else {
-        return;
-    };
-    let right = scheduler::run_workload_engine(Workload::BiosFloppy, SchedulerEngine::Deadline)
-        .unwrap()
-        .unwrap();
-    // Final snapshots follow the last access and precede Stop. Compare the
-    // execution events here to pin the missing OUT against the actual stop;
-    // equality gates elsewhere still compare the complete saved state.
-    let execution = |stream: Vec<Event>| {
-        stream
-            .into_iter()
-            .filter(|event| !matches!(event, Event::FinalState { .. }))
-            .collect::<Vec<_>>()
-    };
-    let difference = compare(&execution(left), &execution(right), Normalisations::default())
-        .expect_err("the engines now agree on BiosFloppy: the CPU-core defect is fixed, turn this back into an equality check");
-    assert_eq!(difference.index, 349_290, "{difference}");
-    assert_eq!(
-        difference.left,
-        Some(access(5_899_026, 0x42)),
-        "{difference}"
-    );
-    assert!(
-        matches!(&difference.right, Some(Event::Stop {
-        at: VClock(5_899_248), reason: Stop::Error(error), ..
-    }) if error.contains("unsupported instruction")),
-        "{difference}"
-    );
+#[ignore = "requires BIOS and floppy fixtures; compares completed instruction engines"]
+fn deadline_matches_per_clock_on_bios_floppy() {
+    assert_optional_workload(Workload::BiosFloppy);
 }
 
 #[test]

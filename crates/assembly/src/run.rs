@@ -11,9 +11,7 @@
 //!
 //! The clock ratio belongs to the machine. The idle limit, step cap, stop
 //! condition, and stimuli belong to the run. By contract, cooperation size does
-//! not affect instruction boundaries or interrupt acceptance. The pinned CPU
-//! violates that contract at 16-bit IP wrap and when a store changes unexecuted
-//! bytes of the current block (scheduler design §Adoption).
+//! not affect instruction boundaries or interrupt acceptance.
 //!
 //! ## The cadence is part of the golden identity
 //!

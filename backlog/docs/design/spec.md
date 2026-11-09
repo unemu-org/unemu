@@ -49,7 +49,7 @@ IVT-vectored `INT`/exceptions — added under `CpuMode::Real16`.
 
 §6.1 Completed-step time base, including REP iterations (not blocks).
 §6.2 Step bounds, instruction-start accesses and IRQ-readiness ordering; see
-[`scheduler.md`](scheduler.md#adoption) for the pinned CPU partition defect.
+[`scheduler.md`](scheduler.md#adoption) for the budget-independence contract.
 §6.3 Golden pinning + re-baseline procedure.
 
 ## §7 Devices

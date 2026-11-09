@@ -171,9 +171,9 @@ instructions or consuming the running clock remainder. `Machine::virtual_time`
 is completed steps plus `floor(total_halted_clocks * A / B)`, saturating
 at `u64::MAX`. Caps and policy targets use these instruction equivalents;
 device clocks use `VClock`. Golden runs depend on the CPU revision, config and
-policy cadence. Host cooperation size cannot change timing by contract; the
-pinned CPU violates this at CS wrap and same-block stores. The two intentional
-regression expectations and re-pin exit rule are in [scheduler adoption](design/scheduler.md#adoption).
+policy cadence. Host cooperation size cannot change timing by contract;
+device-free CPU regressions and the per-clock-versus-deadline comparisons hold
+the CPU core to it (see [scheduler adoption](design/scheduler.md#adoption)).
 
 ## x86jit integration
 

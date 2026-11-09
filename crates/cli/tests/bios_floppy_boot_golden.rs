@@ -21,12 +21,16 @@
 //! IRQ6, INT 13h, INT 19h, boot jump) works against real firmware.
 //!
 //! The minimal boot sector emits its marker then `hlt`s without looping, so under
-//! the BIOS's live timer it is woken by IRQ0 and runs off into the zeroed sector
-//! padding, eventually hitting an instruction the real-mode core does not lift —
-//! a `StopReason::Unsupported`, reached in well under a second. A looping boot
-//! sector would instead spin to the retired cap (minutes); the run-off is the
-//! faster, honest stop for this spike. The value is the COM1 marker, not the
-//! stop kind.
+//! the BIOS's live timer it is woken by IRQ0 and runs off through the sector
+//! padding to the end of segment 0. There an instruction crosses offset FFFFh,
+//! which raises the general-protection exception (interrupt 13; Intel 80286 and
+//! 80287 Programmer's Reference Manual, real-address-mode exceptions). On the PC
+//! that vector is shared with IRQ5: the BIOS handler reads the master PIC's
+//! in-service register (OCW3 0Bh, then port 20h), finds no IRQ in service and
+//! returns, the instruction faults again, and the guest loops in the handler
+//! (CS:IP F000:FF2F at the end) until the step cap. Observed at x86jit
+//! `54fad1766a458df7cedb6c0b4b5d50742628ef75` with the pinned Kiselev BIOS. The
+//! value is the COM1 marker, not the stop kind.
 
 use cli::{bootable_floppy_image, run_bios_boot, FLOPPY_BOOT_MARKER};
 #[path = "support/fixtures.rs"]
@@ -58,10 +62,10 @@ fn bios_int19_reads_boot_sector_over_the_floppy() {
     assert!(stamp.virtual_time >= stamp.retired);
 
     // INT 19h loaded sector 0 at 0x7C00 and jumped to it; the sector transmitted
-    // its marker to COM1. This single-byte expectation pins a CPU-core defect:
-    // after execution runs off segment 0, the per-clock oracle writes a second
-    // 0x42 to 0x3F8 at clock 5,899,026. When the core is fixed, derive the full
-    // expected stream from that oracle before updating this assertion.
+    // its marker to COM1. After the halt, the run-off ends in the interrupt-13
+    // loop described above and writes nothing more to COM1 before the step cap;
+    // the scheduler A/B harness compares both engines over the first 10 million
+    // steps of this run.
     eprintln!("stop: {:?}", run.stop);
     eprintln!("com1: {:02x?}", run.com1);
     assert_eq!(

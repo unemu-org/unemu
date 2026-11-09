@@ -1327,13 +1327,7 @@ fn halted_fractional_rate_rounds_up_to_reach_the_cap() {
 
 /// Intel 80286 and 80287 Programmer's Reference Manual, §§2.3.2 and 2.3.4:
 /// instruction fetch uses CS and the 16-bit IP, independently of host call size.
-///
-/// KNOWN CPU-CORE DEFECT: the pinned core keeps decoding a real-mode block past
-/// the 16-bit IP wrap, so a 64-step budget runs the linear bytes after the
-/// segment. The test pins that defect: it panics today. Once the core is fixed
-/// and re-pinned it stops panicking and fails; then remove `should_panic`.
 #[test]
-#[should_panic(expected = "limit=64")]
 fn real_mode_wrapped_fetch_is_independent_of_step_partitions() {
     use cpu::x86jit_backend::{RealSegments, X86JitCpu};
 
@@ -1372,15 +1366,9 @@ fn real_mode_wrapped_fetch_is_independent_of_step_partitions() {
 /// The same contract for a store into the next instruction of the current
 /// block: `mov byte [0x7C06], 0x42` patches the immediate of the following
 /// `mov al, 0`. Whatever value the instruction sees, it must not depend on the
-/// step budget.
-///
-/// KNOWN CPU-CORE DEFECT: with a one-step budget the patched byte is fetched
-/// (AL = 0x42); with a 64-step budget the pinned core runs the instruction it
-/// decoded before the store (AL = 0). The test pins that defect: it panics
-/// today. Once the core is fixed and re-pinned it stops panicking and fails;
-/// then remove `should_panic`.
+/// step budget; the core ends the block after a store into a later
+/// instruction of it, so the next instruction sees the new byte (AL = 0x42).
 #[test]
-#[should_panic(expected = "store into the current block")]
 fn real_mode_store_into_current_block_is_independent_of_step_partitions() {
     use cpu::x86jit_backend::{RealSegments, X86JitCpu};
 
