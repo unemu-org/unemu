@@ -77,8 +77,8 @@ Needs new work in x86jit (behind `CpuMode::Real16`, see decisions):
 - Hardware IRQ injection (see interrupt model).
 
 ⚠️ `CpuState` is `#[repr(C)]` with offsets baked into `jit_abi.rs` and generated
-code: **layout changes are an ABI hazard for the PS4 path** — append-only, with
-an offset-assertion test.
+code: **layout changes are an ABI hazard for the engine's other modes** —
+append-only, with an offset-assertion test.
 
 ## Interrupt model
 

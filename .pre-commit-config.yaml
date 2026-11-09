@@ -22,6 +22,14 @@ repos:
 
   - repo: local
     hooks:
+      - id: publication-guard
+        name: publication-safe tracked text
+        language: system
+        entry: scripts/publication-guard.sh
+        pass_filenames: false
+        always_run: true
+        stages: [pre-commit]
+
       - id: markdownlint
         name: markdownlint
         language: system

@@ -30,5 +30,5 @@ The Kiselev BIOS POST reaches checkpoint 0x22 (detect FPU) and stops at x87 FNIN
 ## Implementation Notes
 
 <!-- SECTION:NOTES:BEGIN -->
-Done 2026-07-18. Lifted x87 FNINIT/FINIT + FNCLEX/FCLEX (were absent from x87 dispatch, #UD in all modes). x87 helper-routed (interp+JIT call exec_x87) so 2 FpuKind variants + exec arms cover both, no cranelift, no CpuState change. No PS4 regression. Pin 865467e. BIOS now runs past FPU-detect (much deeper — investigating new stop). Deferred: FNSTENV/FLDENV/FNSAVE/FRSTOR.
+Done 2026-07-18. Lifted x87 FNINIT/FINIT + FNCLEX/FCLEX (were absent from x87 dispatch, #UD in all modes). x87 helper-routed (interp+JIT call exec_x87) so 2 FpuKind variants + exec arms cover both, no cranelift, no CpuState change. No regression in the engine's other modes. Pin 865467e. BIOS now runs past FPU-detect (much deeper — investigating new stop). Deferred: FNSTENV/FLDENV/FNSAVE/FRSTOR.
 <!-- SECTION:NOTES:END -->

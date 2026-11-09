@@ -42,14 +42,15 @@ sub-seams with independent exit criteria:
 - **(c)** hardware IRQ injection — see [[decision-4]].
 
 `CpuState` / `jit_abi` changes are **append-only** with an offset-assertion test
-(ABI hazard for the PS4 path). Merge back to main per [[decision-2]].
+(ABI hazard for the engine's other modes). Merge back to main per [[decision-2]].
 
 ## Consequences
 
-- (+) True PC boot; isolated from the PS4 code path by `CpuMode::Real16`.
+- (+) True PC boot; isolated from the engine's other modes by `CpuMode::Real16`.
 - (−) Largest single work item; touches the hot flags/addressing paths.
 
 ## Trigger to revisit
 
 If the append-only ABI constraint blocks a needed `CpuState` change, escalate a
-layout decision (with a coordinated PS4-side offset bump).
+layout decision (with a coordinated offset bump for the CPU core's other
+consumers).

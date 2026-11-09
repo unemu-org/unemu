@@ -29,5 +29,5 @@ Corpus-first CPU completeness before booting a real BIOS. Enumerate every unlift
 ## Implementation Notes
 
 <!-- SECTION:NOTES:BEGIN -->
-Done 2026-07-18. Corpus 96.20->99.63% decided. Lifted LES/LDS, LAHF/SAHF, PUSHA/POPA, ENTER, real-mode LEAVE, string-op ds<<4/es<<4 bases (45k fail fix), REPNZ, D8/287. No PS4 regression. Deferred: 286 multi-bit shift OF (shared hot path, needs cf16/long differential), SS:SP + word-string segment-limit faults. cf16 unavailable on host (libLLVM 22.1). Pin 68e0ee1.
+Done 2026-07-18. Corpus 96.20->99.63% decided. Lifted LES/LDS, LAHF/SAHF, PUSHA/POPA, ENTER, real-mode LEAVE, string-op ds<<4/es<<4 bases (45k fail fix), REPNZ, D8/287. No regression in the engine's other modes. Deferred: 286 multi-bit shift OF (shared hot path, needs cf16/long differential), SS:SP + word-string segment-limit faults. cf16 unavailable on host (libLLVM 22.1). Pin 68e0ee1.
 <!-- SECTION:NOTES:END -->

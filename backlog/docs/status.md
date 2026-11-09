@@ -88,11 +88,12 @@ The P2 findings from the whole-code review (epics `upc-kk2`, `upc-sk3`, `upc-x83
   (was 96.20%), lifting LES/LDS, LAHF/SAHF, PUSHA/POPA, ENTER, real-mode LEAVE, and
   fixing real-mode string ops to use `ds<<4`/`es<<4` bases instead of a flat base 0
   (the biggest fix — ~45k corpus fails; string ops are everywhere in a BIOS/DOS).
-  No PS4 regression; x86jit pin bumped to 68e0ee1. Machine hardened for a real
-  BIOS: open-bus default for undecoded ports (0xFF read, no-op write), CGA
-  mode/colour/status ports with a per-read retrace bit, the full 8042 AT command
-  set (self-test/interface-test/input-port/aux/BAT), port 0x61 with a per-read
-  refresh bit, and seeded CMOS NVRAM with a valid AT checksum. All device-level;
+  No regression in the engine's other modes; x86jit pin bumped to 68e0ee1.
+  Machine hardened for a real BIOS: open-bus default for undecoded ports
+  (0xFF read, no-op write), CGA mode/colour/status ports with a per-read retrace
+  bit, the full 8042 AT command set (self-test/interface-test/input-port/aux/BAT),
+  port 0x61 with a per-read refresh bit, and seeded CMOS NVRAM with a valid AT
+  checksum. All device-level;
   the BIOS machine assembly (task-20) composes them. BIOS fact-check (task-19)
   confirmed the Xi8088 config: master+slave cascade (no 0xA0 collision), 32 KiB ROM
   at 0xF8000, built-in µPD765 floppy INT 13h, 6845 CGA. Workspace: **205 tests**.
@@ -133,8 +134,9 @@ The P2 findings from the whole-code review (epics `upc-kk2`, `upc-sk3`, `upc-x83
 - **Real mode graduated to x86jit `main`** (`task-3`) @ 40acdbc: the full
   real-mode (16-bit) seam — addressing, INT/IRET/IVT/IF, IRQ injection, the
   complete instruction set — now lives on x86jit main, entirely gated so the
-  Long64/Compat32 (PS4) paths are byte-identical. `pc-emulator` is fast-forwarded
-  to main; no drift. 80286 corpus 89.7%/95.2%, cf16 34/34, PS4 jit suite intact.
+  engine's other modes (Long64/Compat32) are byte-identical. `pc-emulator` is
+  fast-forwarded to main; no drift. 80286 corpus 89.7%/95.2%, cf16 34/34,
+  JIT suite for the engine's other modes intact.
 - SingleStepTests/80286 authoritative silicon oracle (`task-10`) — our exact
   target CPU, now the **sole** real-mode oracle on x86jit `main`: 1,478,000 tests,
   **89.7% overall / 95.2% decided** after the lift-gap work. The redundant 8088

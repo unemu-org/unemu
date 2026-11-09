@@ -34,10 +34,11 @@ fast-forwarded to `main` — in sync, no drift.
 
 - [x] Interpreter op-loop closure replaced with an inner `fn` (churn removed).
 - [x] Long64/Compat32 paths mode-gated throughout; `jit_abi` offsets unchanged;
-      new Real16 IR ops `unreachable!` in the JIT. Post-merge PS4-path check: jit
-      suite 202/205 (the 1 fail is a pre-existing AVX2 VEX fuzz bug on main,
-      unrelated), i386 3/3, workspace builds. Formal codegen-hash + PS4 benchmark
-      skipped by maintainer decision (mode-gating deemed sufficient).
+      new Real16 IR ops `unreachable!` in the JIT. Post-merge check of the engine's
+      other modes: jit suite 202/205 (the 1 fail is a pre-existing AVX2 VEX fuzz bug
+      on main, unrelated), i386 3/3, workspace builds. Formal codegen-hash +
+      benchmark for the engine's other modes skipped by maintainer decision
+      (mode-gating deemed sufficient).
 - [x] Merged to x86jit `main`.
 
 Full real-mode set validated: SingleStepTests/80286 silicon corpus (1.48M tests,
