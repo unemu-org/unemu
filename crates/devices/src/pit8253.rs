@@ -5,9 +5,10 @@
 //! `0x42` are the three counters' data ports and `0x43` is the mode/command
 //! register. Each counter is an independent 16-bit down-counter clocked by the
 //! PIT input clock. On the PC/AT that input is the ~1.193182 MHz OSC/12 signal,
-//! but this device models **counts, not real time**: every [`Device::tick`]
-//! represents exactly one input clock edge, and the emulator is responsible for
-//! feeding ticks at the PIT clock rate through the virtual clock (§6). This keeps
+//! but this device models **counts, not real time**: [`Device::tick`] catches up
+//! arithmetically to the supplied PIT input clock. Only channel 0 OUT transitions
+//! and its pending load require clock visits; accesses synchronize all counters
+//! through [`Device::sync`] before reading, latching or programming (§6). This keeps
 //! the device deterministic and testable without a wall clock.
 //!
 //! Counter 0's OUT pin is wired to IRQ0 on the real machine; here it is surfaced
@@ -64,7 +65,7 @@
 //!   belongs to a different chip and is out of scope here.
 //! - **The status-latch command** and the null-count flag.
 
-use device::{AccessDir, Device, DeviceError, TraceEvent, VClock};
+use device::{AccessDir, Device, DeviceError, NextEvent, TraceEvent, VClock};
 
 /// Stable device name reported by [`Device::name`].
 const NAME: &str = "8253-pit";
@@ -133,7 +134,7 @@ enum BytePhase {
 }
 
 /// One of the three independent counting channels.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct Counter {
     /// Operating mode 0..=5 as programmed (6/7 are folded to 2/3).
     mode: u8,
@@ -280,6 +281,88 @@ impl Counter {
         }
     }
 
+    /// Clocks until the next Mode 3 OUT transition. Intel 8254 datasheet,
+    /// Mode 3: odd high halves include the clock spent at zero. A zero even
+    /// count wraps through 65536; this also preserves the model's divisor-1 case.
+    fn mode3_edge(&self) -> u64 {
+        if self.reload & 1 != 0 && self.out {
+            u64::from(self.count) / 2 + 1
+        } else if self.count == 0 {
+            32768
+        } else {
+            u64::from(self.count) / 2
+        }
+    }
+
+    /// Arithmetic equivalent of repeated input edges, including the one-clock
+    /// load delay (Intel 8254 datasheet, Modes 0, 2 and 3). Byte/latch phases
+    /// belong to accesses and must survive advancement unchanged.
+    fn advance(&mut self, mut clocks: u64) {
+        if clocks == 0 {
+            return;
+        }
+        if self.reload_pending {
+            self.reload_pending = false;
+            self.count = self.initial() as u16;
+            if self.mode == 3 {
+                self.count &= !1;
+            }
+            clocks -= 1;
+        }
+        if clocks == 0 || !self.armed {
+            return;
+        }
+        match self.mode {
+            0 => {
+                let terminal = if self.count == 0 {
+                    65536
+                } else {
+                    u64::from(self.count)
+                };
+                if clocks >= terminal {
+                    self.out = true;
+                }
+                self.count = self.count.wrapping_sub(clocks as u16);
+            }
+            2 => {
+                let falling = if self.count == 0 {
+                    65536
+                } else {
+                    u64::from(self.count)
+                };
+                if clocks < falling {
+                    self.count = self.count.wrapping_sub(clocks as u16);
+                    self.out = true;
+                } else {
+                    let phase = (clocks - falling) % u64::from(self.initial());
+                    self.count = (self.initial() as u16).wrapping_sub(phase as u16);
+                    self.out = phase != 0;
+                }
+            }
+            3 => {
+                // After the first edge the reload defines both half-periods.
+                // Reduce whole periods so at most two further edges remain,
+                // regardless of the jump length or a partially written reload.
+                let half = u64::from(self.reload & !1) / 2;
+                let low = if half == 0 { 32768 } else { half };
+                let high = if self.reload & 1 != 0 { half + 1 } else { low };
+                while clocks != 0 {
+                    let edge = self.mode3_edge();
+                    if clocks < edge {
+                        self.count = self.count.wrapping_sub((clocks * 2) as u16);
+                        break;
+                    }
+                    clocks -= edge;
+                    self.out = !self.out;
+                    self.count = self.reload & !1;
+                    clocks %= high + low;
+                }
+            }
+            _ => self.count = self.count.wrapping_sub(clocks as u16),
+        }
+    }
+
+    #[cfg(test)]
     /// Advance the counting element by one input clock edge.
     fn tick(&mut self) {
         // The reload written last tick loads now (one-clock 8254 load delay).
@@ -308,6 +391,7 @@ impl Counter {
 
     /// Mode 0: interrupt on terminal count. OUT stays low after a reload and
     /// goes high when the count reaches 0, then remains high.
+    #[cfg(test)]
     fn tick_mode0(&mut self) {
         if self.count == 0 {
             // Already at terminal count; keep wrapping like the real counter.
@@ -324,6 +408,7 @@ impl Counter {
     /// exactly one clock when the count reaches 1, then the counter reloads to
     /// its initial value and OUT returns high. Successive OUT-low pulses are
     /// `initial` clocks apart.
+    #[cfg(test)]
     fn tick_mode2(&mut self) {
         if self.count == 1 {
             // Passing through 1: emit the one-clock OUT-low pulse and reload.
@@ -340,6 +425,7 @@ impl Counter {
     /// reloading N for even divisors or N-1 for odd divisors. An odd divisor
     /// holds OUT high for one extra clock after the count expires, giving a
     /// high half of (N+1)/2 clocks and a low half of (N-1)/2 clocks.
+    #[cfg(test)]
     fn tick_mode3(&mut self) {
         let odd_high = self.reload & 1 != 0 && self.out;
         if odd_high && self.count == 0 {
@@ -487,11 +573,47 @@ impl Device for Pit8253 {
         // Each virtual-clock tick beyond the last one is one PIT input clock.
         let elapsed = now.0.saturating_sub(self.now.0);
         self.now = now;
-        for _ in 0..elapsed {
-            for counter in &mut self.counters {
-                counter.tick();
-            }
+        for counter in &mut self.counters {
+            counter.advance(elapsed);
         }
+    }
+
+    fn next_event(&self, _now: VClock) -> NextEvent {
+        let c = &self.counters[0];
+        let clocks = if c.reload_pending {
+            // The load does not necessarily change OUT, but establishes the
+            // counter phase and the reference loop's first observed pin level.
+            1
+        } else if !c.armed {
+            return NextEvent::Dormant;
+        } else {
+            match c.mode {
+                0 if c.out => return NextEvent::Dormant,
+                0 => {
+                    if c.count == 0 {
+                        65536
+                    } else {
+                        u64::from(c.count)
+                    }
+                }
+                2 if !c.out && c.count == 1 && c.reload == 1 => return NextEvent::Dormant,
+                2 if !c.out => 1,
+                2 => {
+                    if c.count == 0 {
+                        65536
+                    } else {
+                        u64::from(c.count)
+                    }
+                }
+                3 => c.mode3_edge(),
+                // Unsupported modes decrement but do not change OUT.
+                _ => return NextEvent::Dormant,
+            }
+        };
+        self.now
+            .0
+            .checked_add(clocks)
+            .map_or(NextEvent::Dormant, |at| NextEvent::At(VClock(at)))
     }
 
     fn irq_pending(&self) -> bool {
@@ -627,6 +749,163 @@ mod tests {
     fn tick(pit: &mut Pit8253, n: u64) {
         let base = pit.now.0;
         pit.tick(VClock(base + n));
+    }
+
+    fn compare_jump(reference: &mut Counter, scheduled: &mut Counter, clocks: u64) {
+        for _ in 0..clocks {
+            reference.tick();
+        }
+        scheduled.advance(clocks);
+        assert_eq!(reference, scheduled, "jump {clocks}");
+    }
+
+    #[test]
+    fn arithmetic_matches_original_stepper_for_every_mode_and_u16_reload() {
+        for mode in [0, 2, 3] {
+            for reload in 0..=u16::MAX {
+                let mut reference = Counter::new();
+                reference.program(cmd(0, 0b11, mode, 0) as u8);
+                reference.write_data(reload as u8);
+                reference.write_data((reload >> 8) as u8);
+                let mut scheduled = reference.clone();
+                for clocks in [0, 1, 2, 17] {
+                    compare_jump(&mut reference, &mut scheduled, clocks);
+                }
+                reference.latch_count();
+                scheduled.latch_count();
+                assert_eq!(reference.read_data(), scheduled.read_data());
+                compare_jump(&mut reference, &mut scheduled, 13);
+                assert_eq!(reference.read_data(), scheduled.read_data());
+                // A low-byte write changes reload before a new load is armed.
+                reference.write_data(5);
+                scheduled.write_data(5);
+                compare_jump(&mut reference, &mut scheduled, 19);
+                reference.write_data(0);
+                scheduled.write_data(0);
+                for clocks in [0, 1, 37] {
+                    compare_jump(&mut reference, &mut scheduled, clocks);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn arithmetic_preserves_wraps_terminal_counts_and_byte_access_modes() {
+        for mode in [0, 2, 3, 6, 7] {
+            for reload in [0, 1, 2, 3, 5, 8, 1193, u16::MAX] {
+                for access in [1, 2, 3] {
+                    let mut reference = Counter::new();
+                    reference.program(cmd(0, access, mode, 0) as u8);
+                    reference.write_data(reload as u8);
+                    if access == 3 {
+                        reference.write_data((reload >> 8) as u8);
+                    }
+                    let mut scheduled = reference.clone();
+                    for clocks in [1, 65535, 1, 1, 131073] {
+                        compare_jump(&mut reference, &mut scheduled, clocks);
+                        reference.latch_count();
+                        scheduled.latch_count();
+                        assert_eq!(reference.read_data(), scheduled.read_data());
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn mock_bus_deadline_jumps_preserve_state_accesses_and_complete_out_history() {
+        for mode in [0, 2, 3] {
+            for reload in [0u16, 1, 2, 3, 5, 8, 1193, u16::MAX] {
+                let mut reference = Pit8253::new();
+                let mut scheduled = MockBus::new(Box::new(Pit8253::new()));
+                for channel in 0..3 {
+                    let data = C0 + u16::from(channel);
+                    for (port, value) in [
+                        (CMD, cmd(channel, 3, mode, 0)),
+                        (data, u32::from(reload & 255)),
+                        (data, u32::from(reload >> 8)),
+                    ] {
+                        reference.port_write(port, 1, value).unwrap();
+                        scheduled.port_write(port, 1, value).unwrap();
+                    }
+                }
+                let mut expected_edges = Vec::new();
+                let mut actual_edges = Vec::new();
+                let mut expected_level = reference.out(0);
+                let mut actual_level = scheduled.device().irq_pending();
+                let end = 196615;
+                while scheduled.clock().0 < end {
+                    let now = scheduled.clock().0;
+                    let access = (now / 997 + 1) * 997;
+                    let due = match scheduled.device().next_event(scheduled.clock()) {
+                        NextEvent::At(at) => at.0,
+                        NextEvent::Dormant => end,
+                        NextEvent::EveryPitClock => panic!("PIT must provide deadlines"),
+                    };
+                    let target = due.min(access).min(end);
+                    assert!(target > now);
+                    for clock in now + 1..=target {
+                        for counter in &mut reference.counters {
+                            counter.tick();
+                        }
+                        reference.now = VClock(clock);
+                        if reference.out(0) != expected_level {
+                            expected_level = reference.out(0);
+                            expected_edges.push((clock, expected_level));
+                        }
+                    }
+                    scheduled.tick(target - now);
+                    if scheduled.device().irq_pending() != actual_level {
+                        actual_level = scheduled.device().irq_pending();
+                        actual_edges.push((target, actual_level));
+                    }
+                    assert_eq!(
+                        reference.save(),
+                        scheduled.device().save(),
+                        "mode {mode}, reload {reload}, clock {target}"
+                    );
+                    if target == access {
+                        // Leave channel 2's latch partially consumed while its
+                        // counter continues; latch commands must not replace it.
+                        for channel in 0..3 {
+                            let value = cmd(channel, 0, 0, 0);
+                            reference.port_write(CMD, 1, value).unwrap();
+                            scheduled.port_write(CMD, 1, value).unwrap();
+                            let data = C0 + u16::from(channel);
+                            assert_eq!(
+                                reference.port_read(data, 1).unwrap(),
+                                scheduled.port_read(data, 1).unwrap()
+                            );
+                            if channel != 2 {
+                                assert_eq!(
+                                    reference.port_read(data, 1).unwrap(),
+                                    scheduled.port_read(data, 1).unwrap()
+                                );
+                            }
+                        }
+                        assert_eq!(reference.take_trace(), scheduled.device_mut().take_trace());
+                    }
+                }
+                assert_eq!(expected_edges, actual_edges, "mode {mode}, reload {reload}");
+            }
+        }
+    }
+
+    #[test]
+    fn deadlines_follow_only_channel_zero_loads_and_out_edges() {
+        let mut pit = Pit8253::new();
+        assert_eq!(pit.next_event(VClock::ZERO), NextEvent::Dormant);
+        pit.port_write(CMD, 1, cmd(1, 0b11, 3, 0)).unwrap();
+        pit.port_write(C1, 1, 3).unwrap();
+        pit.port_write(C1, 1, 0).unwrap();
+        assert_eq!(pit.next_event(VClock::ZERO), NextEvent::Dormant);
+        program_c0(&mut pit, 2, 5);
+        assert_eq!(pit.next_event(VClock::ZERO), NextEvent::At(VClock(1)));
+        tick(&mut pit, 1);
+        assert_eq!(pit.next_event(VClock(1)), NextEvent::At(VClock(6)));
+        tick(&mut pit, 5);
+        assert!(!pit.out(0));
+        assert_eq!(pit.next_event(VClock(6)), NextEvent::At(VClock(7)));
     }
 
     #[test]

@@ -457,6 +457,7 @@ pub fn test386(image: Vec<u8>) -> MachineConfig {
             segments: SegmentSeed::flat(TEST386_LOAD_SEG),
         },
         clock: ClockConfig {
+            engine: machine::SchedulerEngine::PerClock,
             retired_per_pit_clock: machine::RETIRED_PER_PIT_CLOCK,
             retired_per_pit_clock_denominator: 1,
             quantum: Some(65_536),
@@ -584,6 +585,7 @@ pub fn bios(rom: Vec<u8>, floppy: Option<Vec<u8>>, quantum: Option<u64>) -> Mach
             segments: SegmentSeed::flat(RESET_CS),
         },
         clock: ClockConfig {
+            engine: machine::SchedulerEngine::PerClock,
             retired_per_pit_clock: machine::RETIRED_PER_PIT_CLOCK,
             retired_per_pit_clock_denominator: 1,
             quantum,

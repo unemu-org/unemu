@@ -4,7 +4,9 @@
 #[path = "support/scheduler.rs"]
 mod scheduler;
 
+use cpu::Cpu;
 use device::{AccessDir, TraceEvent, VClock};
+use machine::SchedulerEngine;
 use scheduler::{compare, CapEndpoint, Event, Normalisations, Stop, Workload};
 
 fn access(at: u64, value: u32) -> Event {
@@ -29,10 +31,14 @@ fn cap(at: u64) -> Event {
 }
 
 #[test]
-fn legacy_matches_itself_on_every_fast_workload() {
+fn deadline_matches_per_clock_on_every_fast_workload() {
     for workload in scheduler::FAST_WORKLOADS {
-        let left = scheduler::run_workload(workload).unwrap().unwrap();
-        let right = scheduler::run_workload(workload).unwrap().unwrap();
+        let left = scheduler::run_workload_engine(workload, SchedulerEngine::PerClock)
+            .unwrap()
+            .unwrap();
+        let right = scheduler::run_workload_engine(workload, SchedulerEngine::Deadline)
+            .unwrap()
+            .unwrap();
         assert!(
             matches!(
                 left.last(),
@@ -76,6 +82,61 @@ fn legacy_matches_itself_on_every_fast_workload() {
             ))),
             _ => {}
         }
+    }
+}
+
+/// Intel 8254 datasheet, Mode 2: OUT pulses low for one clock at terminal count.
+/// A restored running count must advance from the bus clock of the restore.
+#[test]
+fn pit_restore_at_clock_50_matches_both_engines() {
+    use device::Device;
+
+    let mut pit = devices::Pit8253::new();
+    for (port, value) in [(0x43, 0x34), (0x40, 100), (0x40, 0)] {
+        pit.port_write(port, 1, value).unwrap();
+    }
+    let mut reference = testkit::MockBus::new(Box::new(pit));
+    reference.tick(1);
+    let snapshot = reference.device().save();
+    reference.tick(49);
+    reference.device_mut().restore(&snapshot).unwrap();
+    let mut expected = Vec::new();
+    for _ in 51..=251 {
+        reference.tick(1);
+        expected.push(reference.device().irq_pending());
+    }
+    assert_eq!(expected.iter().position(|out| !out), Some(99));
+
+    for engine in [SchedulerEngine::PerClock, SchedulerEngine::Deadline] {
+        let mut bus = bus::Bus::new(
+            vec![Box::new(devices::Pit8253::new())],
+            bus::DecodeMap {
+                ports: vec![bus::PortRange {
+                    ports: 0x40..=0x43,
+                    device: 0,
+                }],
+                mmio: Vec::new(),
+            },
+        );
+        for (port, value) in [(0x43, 0x34), (0x40, 100), (0x40, 0)] {
+            bus.port_write(port, 1, value).unwrap();
+        }
+        let tick = |bus: &mut bus::Bus, clock| match engine {
+            SchedulerEngine::PerClock => bus.tick_all(VClock(clock)),
+            SchedulerEngine::Deadline => {
+                bus.tick_due(VClock(clock));
+            }
+        };
+        for clock in 1..=50 {
+            tick(&mut bus, clock);
+        }
+        bus.device_mut(0).unwrap().restore(&snapshot).unwrap();
+        let mut actual = Vec::new();
+        for clock in 51..=251 {
+            tick(&mut bus, clock);
+            actual.push(bus.device_irq_line(0).unwrap());
+        }
+        assert_eq!(actual, expected, "{engine:?}");
     }
 }
 
@@ -240,21 +301,24 @@ fn unequal_lengths_report_the_missing_event() {
 // Same opt-in boundary as the firmware goldens; absent fixtures still skip.
 #[test]
 #[ignore = "requires BIOS fixture and runs POST twice"]
-fn legacy_matches_itself_on_bios_post() {
+fn deadline_matches_per_clock_on_bios_post() {
     assert_optional_workload(Workload::BiosPost);
 }
 
 #[test]
 #[ignore = "requires BIOS and FreeDOS fixtures and boots to the prompt twice"]
-fn legacy_matches_itself_on_freedos_prompt() {
+fn deadline_matches_per_clock_on_freedos_prompt() {
     assert_optional_workload(Workload::FreeDosPrompt);
 }
 
 fn assert_optional_workload(workload: Workload) {
-    let Some(left) = scheduler::run_workload(workload).unwrap() else {
+    let Some(left) = scheduler::run_workload_engine(workload, SchedulerEngine::PerClock).unwrap()
+    else {
         return;
     };
-    let right = scheduler::run_workload(workload).unwrap().unwrap();
+    let right = scheduler::run_workload_engine(workload, SchedulerEngine::Deadline)
+        .unwrap()
+        .unwrap();
     assert!(
         matches!(
             left.last(),
@@ -350,5 +414,30 @@ fn mmio_shift_preserves_device_address_direction_and_value() {
         mmio(1, 0xB8000, AccessDir::Write, 0x1F49),
     ] {
         assert!(compare(&left, &[changed], options).is_err());
+    }
+}
+
+/// Informative host timing only; fixture construction and stream observers are
+/// outside the measured interval. Use a release build for reported comparisons.
+#[test]
+#[ignore = "requires BIOS/FreeDOS fixtures; informative machine wall times"]
+fn scheduler_engine_wall_times() {
+    for workload in [Workload::BiosPost, Workload::FreeDosPrompt] {
+        for engine in [SchedulerEngine::PerClock, SchedulerEngine::Deadline] {
+            let Some(mut prepared) = scheduler::prepare(workload).unwrap() else {
+                continue;
+            };
+            prepared.machine = prepared.machine.with_scheduler_engine(engine);
+            let start = std::time::Instant::now();
+            let outcome = assembly::run(&mut prepared.machine, &prepared.policy).unwrap();
+            let elapsed = start.elapsed();
+            assert_eq!(outcome, machine::RunOutcome::RetiredCapReached);
+            eprintln!(
+                "{workload:?} {engine:?}: {:.6} s; clock={}, retired={}",
+                elapsed.as_secs_f64(),
+                prepared.machine.clock().0,
+                prepared.machine.cpu().retired()
+            );
+        }
     }
 }

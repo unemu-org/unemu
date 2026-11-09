@@ -189,6 +189,7 @@ pub fn assemble(config: &MachineConfig) -> Result<AssembledMachine, AssemblyErro
         irq_lines,
         None,
     )
+    .with_scheduler_engine(config.clock.engine)
     .with_cpu_rate(rate_numerator, rate_denominator)
     .with_dma_wirings(dma_wirings);
 
@@ -642,6 +643,20 @@ mod tests {
     #[test]
     fn reference_config_assembles() {
         assert!(assemble(&reference_config()).is_ok());
+    }
+
+    #[test]
+    fn configured_scheduler_engine_reaches_the_machine() {
+        let mut config = reference_config();
+        assert_eq!(
+            assemble(&config).unwrap().machine.scheduler_engine(),
+            machine::SchedulerEngine::PerClock
+        );
+        config.clock.engine = machine::SchedulerEngine::Deadline;
+        assert_eq!(
+            assemble(&config).unwrap().machine.scheduler_engine(),
+            machine::SchedulerEngine::Deadline
+        );
     }
 
     #[test]

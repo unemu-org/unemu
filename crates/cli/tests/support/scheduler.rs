@@ -15,7 +15,9 @@ use assembly::{AssembledMachine, ConsoleProbe, DeviceId, RunPolicy, StopConditio
 use bus::{Bus, DecodeMap, PortRange};
 use chipset::{NoInterruptController, PicObservation, PicObservationLog, SharedPic};
 use cpu::X86JitCpu;
-use device::{Device, DeviceError, DmaMemory, DmaOutcome, DmaRequest, TraceEvent, VClock};
+use device::{
+    Device, DeviceError, DmaMemory, DmaOutcome, DmaRequest, NextEvent, TraceEvent, VClock,
+};
 use devices::{Uart16550, I8042};
 use machine::{Machine, MachineError, RunOutcome};
 
@@ -368,6 +370,12 @@ impl Device for ObservedDevice {
     fn tick(&mut self, now: VClock) {
         self.inner.tick(now);
     }
+    fn sync(&mut self, now: VClock) {
+        self.inner.sync(now);
+    }
+    fn next_event(&self, now: VClock) -> NextEvent {
+        self.inner.next_event(now)
+    }
     fn irq_pending(&self) -> bool {
         self.inner.irq_pending()
     }
@@ -465,4 +473,15 @@ pub fn observe_with(
 
 pub fn run_workload(workload: Workload) -> Result<Option<Stream>> {
     Ok(prepare(workload)?.map(|prepared| observe_with(prepared, assembly::run)))
+}
+
+/// Run the same prepared workload and policy with an explicit device engine.
+pub fn run_workload_engine(
+    workload: Workload,
+    engine: machine::SchedulerEngine,
+) -> Result<Option<Stream>> {
+    Ok(prepare(workload)?.map(|mut prepared| {
+        prepared.machine = prepared.machine.with_scheduler_engine(engine);
+        observe_with(prepared, assembly::run)
+    }))
 }

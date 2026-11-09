@@ -20,7 +20,7 @@
 
 use std::ops::RangeInclusive;
 
-use device::{AccessDir, Device, DeviceError, TraceEvent, VClock};
+use device::{AccessDir, Device, DeviceError, NextEvent, TraceEvent, VClock};
 use thiserror::Error;
 
 /// A contiguous port range routed to one device (§4.1).
@@ -99,10 +99,14 @@ pub enum BusError {
 pub struct Bus {
     devices: Vec<Box<dyn Device>>,
     map: DecodeMap,
+    deadlines: Vec<Option<NextEvent>>,
+    /// Accesses may change a pin even when no autonomous timer is due. Sample
+    /// those changes at the next clock, preserving the reference loop's order.
+    pins_dirty: bool,
     /// Policy for a port access no device decodes (§4.1). Open-bus by default.
     undecoded_ports: UndecodedPortAccess,
-    /// Virtual time of the most recent [`Bus::tick_all`], stamped onto open-bus
-    /// traces so they carry the same deterministic clock as device traces.
+    /// Virtual time of the most recent [`Bus::tick_all`] or [`Bus::tick_due`],
+    /// stamped onto open-bus traces so they share the devices' clock.
     now: VClock,
     /// Open-bus accesses observed since the last [`Bus::take_open_bus_trace`].
     ///
@@ -121,6 +125,8 @@ impl Bus {
     /// [`Bus::with_undecoded_ports`] to select strict faulting instead.
     pub fn new(devices: Vec<Box<dyn Device>>, map: DecodeMap) -> Self {
         Self {
+            deadlines: vec![None; devices.len()],
+            pins_dirty: true,
             devices,
             map,
             undecoded_ports: UndecodedPortAccess::default(),
@@ -189,7 +195,10 @@ impl Bus {
             return Ok(value);
         }
         match self.port_device(port) {
-            Some(idx) => Ok(self.devices[idx].port_read(port, size)?),
+            Some(idx) => {
+                self.sync_access(idx);
+                Ok(self.devices[idx].port_read(port, size)?)
+            }
             None => match self.undecoded_ports {
                 UndecodedPortAccess::OpenBus => {
                     let value = open_bus_value(size);
@@ -219,7 +228,10 @@ impl Bus {
             return Ok(());
         }
         match self.port_device(port) {
-            Some(idx) => Ok(self.devices[idx].port_write(port, size, value)?),
+            Some(idx) => {
+                self.sync_access(idx);
+                Ok(self.devices[idx].port_write(port, size, value)?)
+            }
             None => match self.undecoded_ports {
                 UndecodedPortAccess::OpenBus => {
                     self.trace_open_bus(port, size, AccessDir::Write, value);
@@ -253,6 +265,7 @@ impl Bus {
         let idx = self
             .mmio_device(addr)
             .ok_or(BusError::UnmappedMmio { addr })?;
+        self.sync_access(idx);
         Ok(self.devices[idx].mmio_read(addr, size)?)
     }
 
@@ -261,14 +274,67 @@ impl Bus {
         let idx = self
             .mmio_device(addr)
             .ok_or(BusError::UnmappedMmio { addr })?;
+        self.sync_access(idx);
         Ok(self.devices[idx].mmio_write(addr, size, value)?)
     }
 
     /// Advance every device to virtual time `now` (§6).
     pub fn tick_all(&mut self, now: VClock) {
         self.now = now;
+        self.deadlines.fill(None);
         for dev in &mut self.devices {
             dev.tick(now);
+        }
+    }
+
+    /// Tick due devices in bus order at one whole PIT boundary (§6).
+    ///
+    /// Scheduled deadlines are refreshed after ticks; EveryPitClock answers
+    /// stay cached until access or mutation invalidates them. Returning true
+    /// requests IRQ sampling, including pin changes
+    /// caused by accesses since the previous clock. Dormant devices receive no
+    /// clock visits; unmigrated devices retain exactly one visit per boundary.
+    pub fn tick_due(&mut self, now: VClock) -> bool {
+        let mut changed = std::mem::take(&mut self.pins_dirty);
+        for (dev, slot) in self.devices.iter_mut().zip(&mut self.deadlines) {
+            let event = *slot.get_or_insert_with(|| dev.next_event(self.now));
+            let due = match event {
+                NextEvent::EveryPitClock => true,
+                NextEvent::At(at) => at <= now,
+                NextEvent::Dormant => false,
+            };
+            if due {
+                dev.tick(now);
+                if event != NextEvent::EveryPitClock {
+                    *slot = Some(dev.next_event(now));
+                }
+                changed = true;
+            }
+        }
+        self.now = now;
+        changed
+    }
+
+    fn sync_access(&mut self, index: usize) {
+        let dev = &mut self.devices[index];
+        let event = self.deadlines[index]
+            .take()
+            .unwrap_or_else(|| dev.next_event(self.now));
+        if event != NextEvent::EveryPitClock {
+            dev.sync(self.now);
+        }
+        self.pins_dirty = true;
+    }
+
+    /// Bring every scheduled device's lazy state to the current bus clock.
+    ///
+    /// Call before reading device snapshots through [`Bus::device`]. Devices
+    /// using [`NextEvent::EveryPitClock`] are already current and receive no
+    /// extra tick. Synchronization invalidates deadlines and requests pin
+    /// sampling at the next clock, just like a device access.
+    pub fn settle(&mut self) {
+        for index in 0..self.devices.len() {
+            self.sync_access(index);
         }
     }
 
@@ -296,12 +362,19 @@ impl Bus {
     }
 
     /// Borrow a device by index (for tests and CLI serial draining).
+    ///
+    /// State reflects the device's last synchronization, which may precede the
+    /// bus clock. Call [`Bus::settle`] first when current state is needed, such
+    /// as when saving a snapshot.
     pub fn device(&self, index: usize) -> Option<&dyn Device> {
         self.devices.get(index).map(|b| b.as_ref())
     }
 
-    /// Mutably borrow a device by index.
+    /// Mutably borrow a device by index after synchronizing it to the bus clock.
     pub fn device_mut(&mut self, index: usize) -> Option<&mut Box<dyn Device>> {
+        if index < self.devices.len() {
+            self.sync_access(index);
+        }
         self.devices.get_mut(index)
     }
 }
@@ -385,6 +458,237 @@ mod tests {
         fn take_trace(&mut self) -> Vec<TraceEvent> {
             std::mem::take(&mut self.trace)
         }
+    }
+
+    type CallLog = std::rc::Rc<std::cell::RefCell<Vec<(&'static str, VClock)>>>;
+
+    struct TimedDevice {
+        now: VClock,
+        event: NextEvent,
+        calls: CallLog,
+    }
+
+    impl TimedDevice {
+        fn record(&self, call: &'static str) {
+            self.calls.borrow_mut().push((call, self.now));
+        }
+    }
+
+    impl Device for TimedDevice {
+        fn name(&self) -> &'static str {
+            "timed"
+        }
+        fn port_read(&mut self, _: u16, _: u8) -> Result<u32, DeviceError> {
+            self.record("port_read");
+            self.event = NextEvent::Dormant;
+            Ok(self.now.0 as u32)
+        }
+        fn port_write(&mut self, _: u16, _: u8, value: u32) -> Result<(), DeviceError> {
+            self.record("port_write");
+            self.event = NextEvent::At(VClock(u64::from(value)));
+            Ok(())
+        }
+        fn mmio_read(&mut self, _: u64, _: u8) -> Result<u64, DeviceError> {
+            self.record("mmio_read");
+            Ok(self.now.0)
+        }
+        fn mmio_write(&mut self, _: u64, _: u8, _: u64) -> Result<(), DeviceError> {
+            self.record("mmio_write");
+            Ok(())
+        }
+        fn tick(&mut self, now: VClock) {
+            self.now = now;
+            self.record("tick");
+            if self.event != NextEvent::EveryPitClock {
+                self.event = NextEvent::Dormant;
+            }
+        }
+        fn sync(&mut self, now: VClock) {
+            self.now = now;
+            self.record("sync");
+        }
+        fn next_event(&self, _: VClock) -> NextEvent {
+            self.record("query");
+            self.event
+        }
+        fn irq_pending(&self) -> bool {
+            false
+        }
+        fn irq_vector(&self) -> Option<u8> {
+            None
+        }
+        fn reset(&mut self) {
+            self.event = NextEvent::At(VClock(self.now.0 + 1));
+        }
+        fn save(&self) -> Vec<u8> {
+            self.now.0.to_le_bytes().to_vec()
+        }
+        fn restore(&mut self, _: &[u8]) -> Result<(), DeviceError> {
+            self.reset();
+            Ok(())
+        }
+    }
+
+    fn timed_bus(event: NextEvent) -> (Bus, CallLog) {
+        let calls = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let bus = Bus::new(
+            vec![Box::new(TimedDevice {
+                now: VClock::ZERO,
+                event,
+                calls: calls.clone(),
+            })],
+            DecodeMap {
+                ports: vec![PortRange {
+                    ports: 0x100..=0x101,
+                    device: 0,
+                }],
+                mmio: vec![MmioRange {
+                    addrs: 0x1000..=0x1001,
+                    device: 0,
+                }],
+            },
+        );
+        (bus, calls)
+    }
+
+    #[test]
+    fn lazy_sync_precedes_each_port_byte_and_mmio_access() {
+        for event in [NextEvent::Dormant, NextEvent::At(VClock(99))] {
+            let (mut bus, calls) = timed_bus(event);
+            for clock in 1..=7 {
+                bus.tick_due(VClock(clock));
+            }
+            assert_eq!(calls.borrow().as_slice(), [("query", VClock::ZERO)]);
+            assert_eq!(bus.port_read(0x100, 2).unwrap(), 0x0707);
+            bus.port_write(0x100, 2, 0x6363).unwrap();
+            assert_eq!(bus.mmio_read(0x1000, 1).unwrap(), 7);
+            bus.mmio_write(0x1000, 1, 0).unwrap();
+            let actual: Vec<_> = calls
+                .borrow()
+                .iter()
+                .copied()
+                .filter(|(call, _)| *call != "query")
+                .collect();
+            assert_eq!(
+                actual,
+                [
+                    ("sync", VClock(7)),
+                    ("port_read", VClock(7)),
+                    ("sync", VClock(7)),
+                    ("port_read", VClock(7)),
+                    ("sync", VClock(7)),
+                    ("port_write", VClock(7)),
+                    ("sync", VClock(7)),
+                    ("port_write", VClock(7)),
+                    ("sync", VClock(7)),
+                    ("mmio_read", VClock(7)),
+                    ("sync", VClock(7)),
+                    ("mmio_write", VClock(7)),
+                ]
+            );
+        }
+    }
+
+    #[test]
+    fn access_and_mutable_borrows_invalidate_cached_deadlines() {
+        let (mut bus, calls) = timed_bus(NextEvent::Dormant);
+        bus.tick_due(VClock(1));
+        bus.port_write(0x100, 1, 4).unwrap();
+        bus.tick_due(VClock(2));
+        bus.tick_due(VClock(3));
+        bus.tick_due(VClock(4));
+        bus.port_write(0x100, 1, 9).unwrap();
+        bus.tick_due(VClock(5));
+        bus.port_read(0x100, 1).unwrap(); // Cancels the cached event at 9.
+        for clock in 6..=9 {
+            bus.tick_due(VClock(clock));
+        }
+        bus.device_mut(0).unwrap().restore(&[]).unwrap();
+        assert_eq!(calls.borrow().last(), Some(&("sync", VClock(9))));
+        bus.tick_due(VClock(10));
+        let ticks: Vec<_> = calls
+            .borrow()
+            .iter()
+            .copied()
+            .filter(|(call, _)| *call == "tick")
+            .collect();
+        assert_eq!(ticks, [("tick", VClock(4)), ("tick", VClock(10))]);
+    }
+
+    #[test]
+    fn every_clock_answer_is_cached_until_access_or_mutation() {
+        let (mut bus, calls) = timed_bus(NextEvent::EveryPitClock);
+        for clock in 1..=10 {
+            bus.tick_due(VClock(clock));
+        }
+        let queries = || {
+            calls
+                .borrow()
+                .iter()
+                .filter(|(call, _)| *call == "query")
+                .count()
+        };
+        assert_eq!(queries(), 1);
+        bus.mmio_read(0x1000, 1).unwrap();
+        assert_eq!(queries(), 1);
+        bus.tick_due(VClock(11));
+        assert_eq!(queries(), 2);
+        bus.device_mut(0).unwrap();
+        assert_eq!(queries(), 2);
+        bus.tick_due(VClock(12));
+        assert_eq!(queries(), 3);
+        bus.port_write(0x100, 1, 14).unwrap();
+        bus.tick_due(VClock(13));
+        assert_eq!(queries(), 4);
+        bus.tick_due(VClock(14));
+        assert_eq!(queries(), 5);
+    }
+
+    #[test]
+    fn settle_updates_all_lazy_snapshots_without_extra_every_clock_ticks() {
+        let calls = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let devices: Vec<Box<dyn Device>> = [
+            NextEvent::Dormant,
+            NextEvent::At(VClock(100)),
+            NextEvent::EveryPitClock,
+        ]
+        .into_iter()
+        .map(|event| {
+            Box::new(TimedDevice {
+                now: VClock::ZERO,
+                event,
+                calls: calls.clone(),
+            }) as Box<dyn Device>
+        })
+        .collect();
+        let mut bus = Bus::new(devices, DecodeMap::default());
+        for clock in 1..=50 {
+            bus.tick_due(VClock(clock));
+        }
+        assert_eq!(bus.device(0).unwrap().save(), 0u64.to_le_bytes());
+        assert_eq!(bus.device(1).unwrap().save(), 0u64.to_le_bytes());
+        calls.borrow_mut().clear();
+        bus.settle();
+        for index in 0..3 {
+            assert_eq!(bus.device(index).unwrap().save(), 50u64.to_le_bytes());
+        }
+        assert_eq!(
+            calls.borrow().as_slice(),
+            [("sync", VClock(50)), ("sync", VClock(50))]
+        );
+    }
+
+    #[test]
+    fn every_clock_devices_receive_no_access_sync_or_duplicate_ticks() {
+        let (mut bus, calls) = timed_bus(NextEvent::EveryPitClock);
+        for clock in 1..=3 {
+            bus.tick_due(VClock(clock));
+            bus.mmio_read(0x1000, 1).unwrap();
+            bus.mmio_write(0x1000, 1, 0).unwrap();
+        }
+        let calls = calls.borrow();
+        assert!(!calls.iter().any(|(call, _)| *call == "sync"));
+        assert_eq!(calls.iter().filter(|(call, _)| *call == "tick").count(), 3);
     }
 
     fn register_bus(registers: &[(u16, &[u8])]) -> Bus {

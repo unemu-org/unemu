@@ -215,14 +215,13 @@ pub enum DmaOutcome {
 /// - [`Device::save`] / [`Device::restore`]: snapshot/replay (§7).
 /// - [`Device::take_trace`]: drain observed events for golden tests.
 ///
-/// Scheduled devices will need an access timestamp for lazy synchronization
-/// (see `backlog/docs/design/scheduler.md`, §Access synchronization and
-/// invalidation, as amended by §Review outcome). The intended additive shape is
-/// `port_read_at(&mut self, now: VClock, port: u16, size: u8)`, delegating to
-/// `port_read` by default, with matching port-write and MMIO wrappers. Existing
-/// signatures remain the compatibility seam. These wrappers are deferred until
-/// a caller needs them; ticking a legacy device just to stamp an access could
-/// change its state.
+/// Before each port or MMIO access, the bus calls [`Device::sync`] at its current
+/// whole-PIT clock for devices that opt out of [`NextEvent::EveryPitClock`].
+/// Synchronization catches counters up and stamps traces without consuming an
+/// access or changing byte/latch phases. It must be idempotent at the same time.
+/// Legacy devices receive no extra ticks. Accesses and mutable device borrows
+/// invalidate the bus's cached deadline; the next query sees the resulting state.
+/// See `backlog/docs/design/scheduler.md`, §Access synchronization and invalidation.
 pub trait Device {
     /// Stable, human-readable chip name (e.g. `"16550-uart"`). Used in traces
     /// and errors.
@@ -243,12 +242,21 @@ pub trait Device {
     /// Advance internal state to virtual time `now` (§6).
     fn tick(&mut self, now: VClock);
 
+    /// Synchronize a scheduled device before access at `now` (§6).
+    ///
+    /// The default delegates to `tick`; scheduled implementations must support
+    /// arithmetic catch-up, including a zero elapsed interval. The bus never
+    /// calls this adapter for an `EveryPitClock` device.
+    fn sync(&mut self, now: VClock) {
+        self.tick(now);
+    }
+
     /// Report the next observable autonomous transition without changing state.
     ///
     /// The accepted scheduler contract (`backlog/docs/design/scheduler.md`,
     /// §Review outcome) keeps unmigrated devices on every PIT clock. A scheduled
     /// device may return a future deadline or declare itself dormant; the
-    /// machine's current per-clock loop does not consult this hint yet.
+    /// deadline engine consults this hint; the reference engine ticks every clock.
     fn next_event(&self, now: VClock) -> NextEvent {
         let _ = now;
         NextEvent::EveryPitClock

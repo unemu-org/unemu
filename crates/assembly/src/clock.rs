@@ -12,6 +12,8 @@ use crate::error::ConfigError;
 /// config when those arrive.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ClockConfig {
+    /// Device timer dispatch under the unchanged CPU/IRQ loop, default per-clock.
+    pub engine: machine::SchedulerEngine,
     /// Numerator A of the CPU rate A/B, in retired steps per PIT input clock.
     /// B is [`Self::retired_per_pit_clock_denominator`]. Both must be positive;
     /// validation rejects zero. A step is a retired instruction as reported by
@@ -38,6 +40,7 @@ pub struct ClockConfig {
 impl Default for ClockConfig {
     fn default() -> Self {
         Self {
+            engine: machine::SchedulerEngine::default(),
             retired_per_pit_clock: machine::RETIRED_PER_PIT_CLOCK,
             retired_per_pit_clock_denominator: 1,
             quantum: Some(65_536),

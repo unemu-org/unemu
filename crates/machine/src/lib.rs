@@ -67,6 +67,20 @@ use thiserror::Error;
 /// timebase. Non-default rates are set with [`Machine::with_cpu_rate`].
 pub const RETIRED_PER_PIT_CLOCK: u64 = 1;
 
+/// Device dispatch policy under the same CPU/IRQ loop (§6).
+///
+/// Both engines preserve the legacy instruction batching and interrupt ordering;
+/// only device timer visits differ. See `backlog/docs/design/scheduler.md`,
+/// §Migration and A/B gates.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+pub enum SchedulerEngine {
+    /// Tick every device at every whole PIT clock (the reference behavior).
+    #[default]
+    PerClock,
+    /// Tick legacy devices every clock and scheduled devices only when due.
+    Deadline,
+}
+
 /// One wired connection from a device IRQ line to a PIC input (§5.1).
 ///
 /// Declares *which* device (by its index in the chipset-declared device set)
@@ -155,6 +169,7 @@ pub struct Machine<C: Cpu> {
     pic: Box<dyn InterruptController>,
     clock: VClock,
     quantum: Option<u64>,
+    engine: SchedulerEngine,
     /// HLT remains suspended across runner calls until an IRQ can wake the CPU.
     halted: bool,
     /// Total PIT clocks spent halted, charged to the virtual-time safety cap.
@@ -209,6 +224,7 @@ impl<C: Cpu> Machine<C> {
             pic,
             clock: VClock::ZERO,
             quantum,
+            engine: SchedulerEngine::default(),
             halted: false,
             halted_clocks: 0,
             idle_clocks: 0,
@@ -234,6 +250,18 @@ impl<C: Cpu> Machine<C> {
         self.cpu_rate_numerator = numerator;
         self.cpu_rate_denominator = denominator;
         self
+    }
+
+    /// Select device timer dispatch before running the machine (§6).
+    #[must_use]
+    pub fn with_scheduler_engine(mut self, engine: SchedulerEngine) -> Self {
+        self.engine = engine;
+        self
+    }
+
+    /// The selected device timer dispatch policy.
+    pub fn scheduler_engine(&self) -> SchedulerEngine {
+        self.engine
     }
 
     /// Declare the bus-master → DMA-controller couplings this machine services
@@ -410,14 +438,15 @@ impl<C: Cpu> Machine<C> {
     }
 
     /// Advance the virtual clock from the retired-instruction delta, ticking the
-    /// devices **one PIT input clock at a time** and edge-detecting the wired IRQ
-    /// lines after each single clock (§6, §5.1).
+    /// devices **one PIT input clock at a time** (§6, §5.1). PerClock samples
+    /// wired IRQ lines after every clock; Deadline samples when a device was
+    /// ticked or an access or mutation may have changed a pin.
     ///
     /// One clock at a time is required, not one big jump: a device drives a level
     /// that can pulse for a single clock (the PIT's mode-2 OUT-low pulse). A bulk
     /// `tick_all` across several clocks would collapse the pulse and lose the
-    /// edge; sampling after every clock catches the rising edge exactly once per
-    /// timer period.
+    /// edge. Sampling at each observable transition catches the rising edge
+    /// exactly once per timer period.
     fn advance_clock(&mut self) {
         let retired = self.cpu.retired();
         let delta = retired.saturating_sub(self.last_retired);
@@ -438,8 +467,17 @@ impl<C: Cpu> Machine<C> {
 
     fn tick_clock(&mut self) {
         self.clock = self.clock.advance(1);
-        self.bus.tick_all(self.clock);
-        self.edge_detect();
+        match self.engine {
+            SchedulerEngine::PerClock => {
+                self.bus.tick_all(self.clock);
+                self.edge_detect();
+            }
+            SchedulerEngine::Deadline => {
+                if self.bus.tick_due(self.clock) {
+                    self.edge_detect();
+                }
+            }
+        }
     }
 
     /// Edge-detect the wired device IRQ lines onto the PIC (§5.1).
@@ -960,6 +998,71 @@ mod tests {
         // private counter, so assert the CPU received the matching injections.
         assert_eq!(machine.cpu().injected.len(), 5);
         assert!(machine.cpu().injected.iter().all(|&v| v == 0x08));
+    }
+
+    #[test]
+    fn deadline_and_per_clock_preserve_every_pit_irq0_edge() {
+        use devices::Pit8253;
+
+        fn edges(engine: SchedulerEngine, mode: u8, reload: u16) -> Vec<VClock> {
+            let bus = Bus::new(
+                vec![Box::new(Pit8253::new())],
+                DecodeMap {
+                    ports: vec![PortRange {
+                        ports: 0x40..=0x43,
+                        device: 0,
+                    }],
+                    mmio: Vec::new(),
+                },
+            );
+            let mut machine = Machine::new(
+                MockCpu::new(Vec::new()),
+                bus,
+                Box::<CountingIc>::default(),
+                None,
+                vec![IrqLine { device: 0, irq: 0 }],
+                None,
+            )
+            .with_scheduler_engine(engine);
+            let mut edges = Vec::new();
+            for clock in 1..=140000 {
+                // Reprogram after a long dormant interval and midway through
+                // an active period; no legacy device supplies extra samples.
+                if [20, 97, 70000].contains(&clock) {
+                    machine
+                        .bus_mut()
+                        .port_write(0x43, 1, 0x30 | u32::from(mode << 1))
+                        .unwrap();
+                    machine
+                        .bus_mut()
+                        .port_write(0x40, 1, u32::from(reload & 255))
+                        .unwrap();
+                    machine
+                        .bus_mut()
+                        .port_write(0x40, 1, u32::from(reload >> 8))
+                        .unwrap();
+                }
+                machine.tick_clock();
+                if machine.pic.acknowledge().is_some() {
+                    edges.push(machine.clock());
+                }
+            }
+            edges
+        }
+
+        for mode in [0, 2, 3] {
+            for reload in [0, 1, 2, 3, 5, 8, 1193] {
+                let reference = edges(SchedulerEngine::PerClock, mode, reload);
+                assert_eq!(
+                    reference,
+                    edges(SchedulerEngine::Deadline, mode, reload),
+                    "mode {mode}, reload {reload}"
+                );
+                if reload != 1 || mode != 2 {
+                    assert!(!reference.is_empty());
+                }
+            }
+        }
     }
 
     fn halted_machine(program: Vec<CpuStop>, limit: Option<u64>) -> Machine<MockCpu> {
