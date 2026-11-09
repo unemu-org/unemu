@@ -19,7 +19,7 @@
 
 mod shared_pic;
 
-pub use shared_pic::{CascadedPic, SharedPic};
+pub use shared_pic::{CascadedPic, PicObservation, PicObservationLog, SharedPic};
 
 // The interrupt-controller seam lives next to the `Device` trait; this crate only
 // needs to name it and provide a default no-op implementation.

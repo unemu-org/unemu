@@ -37,6 +37,64 @@ use std::rc::Rc;
 use device::{Device, DeviceError, InterruptController, TraceEvent, VClock};
 use devices::Pic8259;
 
+/// An observed Intel 8259A interrupt sequence or OCW2 EOI command (§5.1).
+///
+/// Intel 8259A datasheet, "Interrupt Sequence" and "End of Interrupt": a
+/// cascaded INTA supplies one CPU vector, while each chip receives its own EOI.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PicObservation {
+    /// The vector returned to the CPU, not the internal cascade vector.
+    Acknowledge { at: VClock, vector: u8 },
+    /// An EOI through a command port (`Some`) or the controller seam (`None`).
+    Eoi {
+        at: VClock,
+        command: u16,
+        value: Option<u8>,
+    },
+}
+
+#[derive(Default)]
+struct Recording {
+    now: VClock,
+    events: Option<Vec<PicObservation>>,
+}
+
+/// Optional, shared PIC observations for a test harness (§5.1, §10).
+///
+/// Recording allocates events only after [`SharedPic::observe`] is called.
+/// It is separate from snapshots and port traces so draining diagnostics cannot
+/// alter chip state or fabricate guest port accesses.
+#[derive(Clone, Default)]
+pub struct PicObservationLog(Rc<RefCell<Recording>>);
+
+impl PicObservationLog {
+    /// Drain observations from both faces of the controller in execution order.
+    pub fn take(&self) -> Vec<PicObservation> {
+        self.0
+            .borrow_mut()
+            .events
+            .as_mut()
+            .map(std::mem::take)
+            .unwrap_or_default()
+    }
+
+    fn acknowledge(&self, vector: u8) {
+        let mut recording = self.0.borrow_mut();
+        let at = recording.now;
+        if let Some(events) = &mut recording.events {
+            events.push(PicObservation::Acknowledge { at, vector });
+        }
+    }
+
+    fn eoi(&self, command: u16, value: Option<u8>) {
+        let mut recording = self.0.borrow_mut();
+        let at = recording.now;
+        if let Some(events) = &mut recording.events {
+            events.push(PicObservation::Eoi { at, command, value });
+        }
+    }
+}
+
 /// A shared handle to one live 8259 PIC (§5.1).
 ///
 /// Clone it to hand the same PIC to the bus (its [`Device`] face) and to the
@@ -46,6 +104,8 @@ use devices::Pic8259;
 pub struct SharedPic {
     inner: Rc<RefCell<Pic8259>>,
     cascade_master: Option<Rc<RefCell<Pic8259>>>,
+    observations: PicObservationLog,
+    command: u16,
 }
 
 impl SharedPic {
@@ -54,6 +114,8 @@ impl SharedPic {
         Self {
             inner: Rc::new(RefCell::new(Pic8259::new())),
             cascade_master: None,
+            observations: PicObservationLog::default(),
+            command: 0x20,
         }
     }
 
@@ -62,7 +124,20 @@ impl SharedPic {
         Self {
             inner: Rc::new(RefCell::new(Pic8259::new_slave())),
             cascade_master: None,
+            observations: PicObservationLog::default(),
+            command: 0xA0,
         }
+    }
+
+    /// Enable diagnostic recording shared with the controller and both chips.
+    /// Repeated calls preserve pending observations.
+    pub fn observe(&self) -> PicObservationLog {
+        self.observations
+            .0
+            .borrow_mut()
+            .events
+            .get_or_insert_with(Vec::new);
+        self.observations.clone()
     }
 
     /// Propagate slave INT to master IR2, including changes from guest writes.
@@ -103,6 +178,10 @@ impl Device for SharedPic {
 
     fn port_write(&mut self, port: u16, size: u8, value: u32) -> Result<(), DeviceError> {
         self.inner.borrow_mut().port_write(port, size, value)?;
+        // ICW1 and OCW3 take precedence over OCW2, even if bit 5 is set.
+        if port == self.command && value as u8 & 0x38 == 0x20 {
+            self.observations.eoi(port, Some(value as u8));
+        }
         self.sync_cascade();
         Ok(())
     }
@@ -117,6 +196,7 @@ impl Device for SharedPic {
 
     fn tick(&mut self, now: VClock) {
         self.inner.borrow_mut().tick(now);
+        self.observations.0.borrow_mut().now = now;
     }
 
     fn irq_pending(&self) -> bool {
@@ -142,6 +222,10 @@ impl Device for SharedPic {
     fn take_trace(&mut self) -> Vec<TraceEvent> {
         self.inner.borrow_mut().take_trace()
     }
+
+    fn as_any_mut(&mut self) -> Option<&mut dyn core::any::Any> {
+        Some(self)
+    }
 }
 
 impl InterruptController for SharedPic {
@@ -154,11 +238,14 @@ impl InterruptController for SharedPic {
     }
 
     fn acknowledge(&mut self) -> Option<u8> {
-        self.inner.borrow_mut().acknowledge()
+        let vector = self.inner.borrow_mut().acknowledge()?;
+        self.observations.acknowledge(vector);
+        Some(vector)
     }
 
     fn end_of_interrupt(&mut self) {
         self.inner.borrow_mut().end_of_interrupt();
+        self.observations.eoi(self.command, None);
     }
 }
 
@@ -213,6 +300,7 @@ impl CascadedPic {
         let master = SharedPic::new();
         let mut slave = SharedPic::new_slave();
         slave.cascade_master = Some(Rc::clone(&master.inner));
+        slave.observations = master.observations.clone();
         Self { master, slave }
     }
 
@@ -281,11 +369,11 @@ impl InterruptController for CascadedPic {
         if master_line == Some(CASCADE_IRQ) {
             // Cascaded INTA: the slave supplies the vector and moves its line
             // into service; the master's IRQ2 moves into service in step.
-            let vector = self
-                .slave
-                .acknowledge()
-                .unwrap_or_else(|| self.slave.inner.borrow().vector_base() + 7);
-            self.master.acknowledge();
+            let slave_vector = self.slave.inner.borrow_mut().acknowledge();
+            let vector =
+                slave_vector.unwrap_or_else(|| self.slave.inner.borrow().vector_base() + 7);
+            self.master.inner.borrow_mut().acknowledge();
+            self.master.observations.acknowledge(vector);
             // The slave's INT typically drops now that its line is in service.
             self.sync_cascade();
             Some(vector)

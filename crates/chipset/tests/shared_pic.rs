@@ -163,3 +163,102 @@ fn reinitializing_slave_withdraws_latched_cascade_request() {
     assert_eq!(read_register(&mut master, 0x20, 0x0B), 0);
     assert_eq!(read_register(&mut master, 0x20, 0x0A), 0);
 }
+
+#[test]
+fn observation_log_records_inta_and_eoi_without_changing_service_state() {
+    use chipset::PicObservation;
+    use device::VClock;
+
+    let mut controller = SharedPic::new();
+    let log = controller.observe();
+    let mut bus = MockBus::new(Box::new(controller.clone()));
+    for (port, value) in [(0x20, 0x11), (0x21, 8), (0x21, 4), (0x21, 1)] {
+        bus.port_write(port, 1, value).unwrap();
+    }
+    bus.tick(17);
+    assert_eq!(controller.acknowledge(), None);
+    controller.set_irq_line(0, true);
+    assert_eq!(controller.acknowledge(), Some(8));
+    assert_eq!(controller.poll(), None);
+    assert_eq!(read_register(&mut bus, 0x20, 0x0B), 1);
+    bus.port_write(0x20, 1, 0x60).unwrap();
+    assert_eq!(read_register(&mut bus, 0x20, 0x0B), 0);
+    assert_eq!(
+        log.take(),
+        vec![
+            PicObservation::Acknowledge {
+                at: VClock(17),
+                vector: 8
+            },
+            PicObservation::Eoi {
+                at: VClock(17),
+                command: 0x20,
+                value: Some(0x60)
+            },
+        ]
+    );
+    assert!(log.take().is_empty());
+    controller.end_of_interrupt();
+    assert_eq!(
+        log.take(),
+        vec![PicObservation::Eoi {
+            at: VClock(17),
+            command: 0x20,
+            value: None
+        }]
+    );
+}
+
+#[test]
+fn cascade_observation_records_only_the_cpu_vector_and_both_eois() {
+    use chipset::PicObservation;
+    use device::VClock;
+
+    let (mut controller, mut master, mut slave) = init_cascade();
+    let log = controller.master_device().observe();
+    master.tick(25);
+    slave.tick(25);
+    controller.set_irq_line(8, true);
+    assert_eq!(controller.acknowledge(), Some(0x70));
+    slave.port_write(0xA0, 1, 0x20).unwrap();
+    master.port_write(0x20, 1, 0x20).unwrap();
+    assert_eq!(
+        log.take(),
+        vec![
+            PicObservation::Acknowledge {
+                at: VClock(25),
+                vector: 0x70
+            },
+            PicObservation::Eoi {
+                at: VClock(25),
+                command: 0xA0,
+                value: Some(0x20)
+            },
+            PicObservation::Eoi {
+                at: VClock(25),
+                command: 0x20,
+                value: Some(0x20)
+            },
+        ]
+    );
+    controller.set_irq_line(8, false);
+    controller.set_irq_line(8, true);
+    assert_eq!(controller.acknowledge(), Some(0x70));
+    controller.end_of_interrupt();
+    assert_eq!(log.take().len(), 3);
+}
+
+#[test]
+fn observation_is_opt_in_and_does_not_mistake_initialization_or_ocw3_for_eoi() {
+    let mut controller = SharedPic::new();
+    init_master(&mut controller);
+    controller.set_irq_line(0, true);
+    assert_eq!(controller.acknowledge(), Some(8));
+    controller.end_of_interrupt();
+    let log = controller.observe();
+    assert!(log.take().is_empty());
+    let mut bus = MockBus::new(Box::new(controller));
+    bus.port_write(0x20, 1, 0x30).unwrap();
+    bus.port_write(0x20, 1, 0x28).unwrap();
+    assert!(log.take().is_empty());
+}
