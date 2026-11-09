@@ -32,6 +32,29 @@
 //! model's IRQ visibility policy, not a keyboard baud-rate model. See
 //! `backlog/docs/design/scheduler.md` § Device migration inventory.
 //!
+//! ## Bounded buffering and response ordering
+//!
+//! IBM Personal Computer AT Technical Reference (March 1984), "Keyboard Buffer"
+//! (p. 4-3), specifies a 16-character keyboard FIFO; "Keyboard Controller"
+//! requires the host to receive an acknowledgement before sending the
+//! next keyboard byte. This model limits queued keyboard replies to 16 bytes;
+//! overflow drops the whole new reply (ACK and BAT together for reset), preserving
+//! older bytes. This limit is a compatibility policy for a host that does not
+//! wait for ACK, not a claim that the physical keyboard buffers 16 responses.
+//! The host scancode queue stages an entire frontend script, rather than modelling
+//! the physical keyboard FIFO, and does not consume reply capacity. Physical FIFO
+//! overruns and the reserved seventeenth overrun-code position are not modelled.
+//!
+//! Intel UPI-41A/41AH/42/42AH User's Manual, "General Handshaking Protocol"
+//! (p. 60, step 5), requires the UPI to wait for OBF=0 before writing DBBOUT.
+//! Accordingly, a controller reply waits behind an occupied output buffer,
+//! without displacing its keyboard byte. One pending controller reply is kept
+//! and gets the next free output slot before further keyboard traffic, since
+//! the controller can service its command while the keyboard link is blocked.
+//! Further replies issued before that slot drains are dropped (keep oldest);
+//! pipelined controller commands and firmware execution timing are not modelled.
+//! Controller replies retain the existing polling-only policy (no IRQ1).
+//!
 //! ## A20 gate
 //!
 //! Command `0xD1` (write output port) latches a new output port; bit 1 is the
@@ -100,7 +123,10 @@ const PORT_DATA: u16 = 0x60;
 const PORT_CMD: u16 = 0x64;
 
 /// Snapshot layout version tag, first byte of [`Device::save`] output.
-const SNAPSHOT_VERSION: u8 = 1;
+const SNAPSHOT_VERSION: u8 = 2;
+
+/// Maximum queued keyboard reply bytes; see the module buffering policy.
+const KEYBOARD_REPLY_CAPACITY: usize = 16;
 
 /// Status register bit 0: output buffer full (a byte is ready to read at `0x60`).
 const ST_OBF: u8 = 1 << 0;
@@ -220,6 +246,12 @@ impl Source {
     }
 }
 
+/// A staged keyboard byte, tagged so frontend scripts do not consume reply slots.
+struct KeyboardByte {
+    value: u8,
+    is_reply: bool,
+}
+
 /// The 8042 keyboard controller (§7.5).
 ///
 /// Decodes ports `0x60` and `0x64`. Drives the **IRQ1** line through
@@ -244,11 +276,15 @@ pub struct I8042 {
     output_port: u8,
     /// What the next `0x60` write means.
     expect: Expect,
-    /// Scancodes waiting to enter the output buffer.
-    input_queue: VecDeque<u8>,
+    /// Scancodes and keyboard replies waiting to enter the output buffer.
+    input_queue: VecDeque<KeyboardByte>,
+    /// Only command replies count toward the keyboard-side capacity limit.
+    queued_replies: usize,
+    /// A controller reply waiting for the host to empty DBBOUT.
+    controller_reply: Option<u8>,
     /// Set when a read empties the output buffer, to hold the next serial refill
     /// for one tick so the IRQ1 line is observed low (its falling edge) before the
-    /// next queued byte re-raises it. Ephemeral (one tick); not snapshotted.
+    /// next queued byte re-raises it. Preserved in snapshots.
     refill_hold: bool,
     /// Trace events observed since the last [`Device::take_trace`].
     trace: Vec<TraceEvent>,
@@ -270,6 +306,8 @@ impl I8042 {
             output_port: OUTPUT_PORT_RESET,
             expect: Expect::KeyboardData,
             input_queue: VecDeque::new(),
+            queued_replies: 0,
+            controller_reply: None,
             refill_hold: false,
             trace: Vec::new(),
             now: VClock::ZERO,
@@ -277,10 +315,14 @@ impl I8042 {
     }
 
     /// Push a scancode from the keyboard into the input queue. If the output
-    /// buffer is free it moves in immediately, setting OBF and (when enabled)
-    /// asserting IRQ1.
+    /// buffer is free and no IRQ visibility hold is active, it moves in immediately,
+    /// setting OBF and (when enabled) asserting IRQ1. This host staging queue
+    /// accepts whole frontend scripts; see the module buffering policy.
     pub fn push_scancode(&mut self, scancode: u8) {
-        self.input_queue.push_back(scancode);
+        self.input_queue.push_back(KeyboardByte {
+            value: scancode,
+            is_reply: false,
+        });
         self.refill_output();
     }
 
@@ -323,24 +365,34 @@ impl I8042 {
         st
     }
 
-    /// Load the next queued scancode into the output buffer if it is free and the
-    /// keyboard interface is enabled.
+    /// A waiting controller reply precedes keyboard traffic once DBBOUT is free.
     fn refill_output(&mut self) {
-        if self.output_full || self.command_byte & CB_KBD_DISABLE != 0 {
+        if self.output_full {
             return;
         }
-        if let Some(scancode) = self.input_queue.pop_front() {
-            self.output_buffer = scancode;
+        if let Some(byte) = self.controller_reply.take() {
+            self.output_buffer = byte;
+            self.output_full = true;
+            self.source = Source::Controller;
+            return;
+        }
+        if self.refill_hold || self.command_byte & CB_KBD_DISABLE != 0 {
+            return;
+        }
+        if let Some(byte) = self.input_queue.pop_front() {
+            if byte.is_reply {
+                self.queued_replies -= 1;
+            }
+            self.output_buffer = byte.value;
             self.output_full = true;
             self.source = Source::Keyboard;
         }
     }
 
-    /// Place a controller-sourced response byte into the output buffer.
+    /// Wait for OBF=0 as required by Intel's General Handshaking Protocol.
     fn respond(&mut self, byte: u8) {
-        self.output_buffer = byte;
-        self.output_full = true;
-        self.source = Source::Controller;
+        self.controller_reply.get_or_insert(byte);
+        self.refill_output();
     }
 
     /// Read and consume the output buffer (data-port read).
@@ -401,9 +453,21 @@ impl I8042 {
                 // Host-to-keyboard byte: acknowledge. The keyboard command set is
                 // not interpreted, except reset, which additionally reports its
                 // power-on self-test (BAT) as passing so the BIOS's wait completes.
-                self.input_queue.push_back(KBD_ACK);
-                if byte == KBD_CMD_RESET {
-                    self.input_queue.push_back(KBD_BAT_OK);
+                let reply_len = if byte == KBD_CMD_RESET { 2 } else { 1 };
+                // Keep reset's ACK/BAT together: a lone ACK promises a BAT that
+                // would never arrive, and a lone BAT has no matching command ACK.
+                if self.queued_replies + reply_len <= KEYBOARD_REPLY_CAPACITY {
+                    self.input_queue.push_back(KeyboardByte {
+                        value: KBD_ACK,
+                        is_reply: true,
+                    });
+                    if byte == KBD_CMD_RESET {
+                        self.input_queue.push_back(KeyboardByte {
+                            value: KBD_BAT_OK,
+                            is_reply: true,
+                        });
+                    }
+                    self.queued_replies += reply_len;
                 }
                 self.refill_output();
             }
@@ -514,8 +578,8 @@ impl Device for I8042 {
     fn next_event(&self, _now: VClock) -> NextEvent {
         if self.refill_hold
             || (!self.output_full
-                && self.command_byte & CB_KBD_DISABLE == 0
-                && !self.input_queue.is_empty())
+                && (self.controller_reply.is_some()
+                    || (self.command_byte & CB_KBD_DISABLE == 0 && !self.input_queue.is_empty())))
         {
             self.now
                 .0
@@ -544,8 +608,10 @@ impl Device for I8042 {
 
     fn save(&self) -> Vec<u8> {
         // Layout: version, command byte, output port, output buffer, flags,
-        // expect, source, queue length (2), queue bytes.
-        let mut blob = Vec::with_capacity(8 + self.input_queue.len());
+        // expect, source, queue length (8), pending controller reply, queue pairs
+        // (value, is_reply). Host scripts can exceed a u16 byte count.
+        // Version 2 preserves the IRQ hold and pending reply in flag bits 3/4.
+        let mut blob = Vec::with_capacity(16 + 2 * self.input_queue.len());
         blob.push(SNAPSHOT_VERSION);
         blob.push(self.command_byte);
         blob.push(self.output_port);
@@ -560,17 +626,26 @@ impl Device for I8042 {
         if self.last_was_command {
             flags |= 1 << 2;
         }
+        if self.refill_hold {
+            flags |= 1 << 3;
+        }
+        if self.controller_reply.is_some() {
+            flags |= 1 << 4;
+        }
         blob.push(flags);
         blob.push(self.expect.to_bits());
         blob.push(self.source.to_bits());
-        let len = self.input_queue.len() as u16;
+        let len = self.input_queue.len() as u64;
         blob.extend_from_slice(&len.to_le_bytes());
-        blob.extend(self.input_queue.iter().copied());
+        blob.push(self.controller_reply.unwrap_or(0));
+        for byte in &self.input_queue {
+            blob.extend([byte.value, u8::from(byte.is_reply)]);
+        }
         blob
     }
 
     fn restore(&mut self, snapshot: &[u8]) -> Result<(), DeviceError> {
-        const HEADER: usize = 1 + 1 + 1 + 1 + 1 + 1 + 1 + 2;
+        const HEADER: usize = 1 + 1 + 1 + 1 + 1 + 1 + 1 + 8 + 1;
         if snapshot.len() < HEADER {
             return Err(DeviceError::InvalidSnapshot {
                 device: NAME,
@@ -589,12 +664,34 @@ impl Device for I8042 {
         let flags = snapshot[4];
         let expect = Expect::from_bits(snapshot[5]);
         let source = Source::from_bits(snapshot[6]);
-        let len = u16::from_le_bytes([snapshot[7], snapshot[8]]) as usize;
+        let len = u64::from_le_bytes([
+            snapshot[7],
+            snapshot[8],
+            snapshot[9],
+            snapshot[10],
+            snapshot[11],
+            snapshot[12],
+            snapshot[13],
+            snapshot[14],
+        ]);
         let body = &snapshot[HEADER..];
-        if body.len() != len {
+        if !body.len().is_multiple_of(2) || (body.len() / 2) as u64 != len {
             return Err(DeviceError::InvalidSnapshot {
                 device: NAME,
                 reason: "queue length mismatch",
+            });
+        }
+        if body.chunks_exact(2).any(|pair| pair[1] > 1) {
+            return Err(DeviceError::InvalidSnapshot {
+                device: NAME,
+                reason: "invalid keyboard byte tag",
+            });
+        }
+        let queued_replies = body.chunks_exact(2).filter(|pair| pair[1] != 0).count();
+        if queued_replies > KEYBOARD_REPLY_CAPACITY {
+            return Err(DeviceError::InvalidSnapshot {
+                device: NAME,
+                reason: "keyboard replies exceed capacity",
             });
         }
         self.command_byte = command_byte;
@@ -605,10 +702,16 @@ impl Device for I8042 {
         self.last_was_command = flags & (1 << 2) != 0;
         self.expect = expect;
         self.source = source;
-        self.input_queue = body.iter().copied().collect();
-        // The one-tick serial refill hold is ephemeral; a restored controller
-        // delivers its next queued byte on the following tick.
-        self.refill_hold = false;
+        self.input_queue = body
+            .chunks_exact(2)
+            .map(|pair| KeyboardByte {
+                value: pair[0],
+                is_reply: pair[1] != 0,
+            })
+            .collect();
+        self.queued_replies = queued_replies;
+        self.refill_hold = flags & (1 << 3) != 0;
+        self.controller_reply = (flags & (1 << 4) != 0).then_some(snapshot[15]);
         Ok(())
     }
 
@@ -632,6 +735,207 @@ mod tests {
     /// modelled, so it exists only to exercise the command-byte round trip.
     const CB_AUX_INT: u8 = 1 << 1;
 
+    fn bus_keyboard(bus: &mut MockBus) -> &mut I8042 {
+        bus.device_mut()
+            .as_any_mut()
+            .unwrap()
+            .downcast_mut::<I8042>()
+            .unwrap()
+    }
+
+    #[test]
+    fn response_flood_stays_bounded_and_snapshot_restores() {
+        let mut bus = MockBus::new(Box::new(I8042::new()));
+        bus.port_write(PORT_CMD, 1, 0xAD).unwrap();
+        for _ in 0..65_537 {
+            bus.port_write(PORT_DATA, 1, 0xED).unwrap();
+        }
+        let blob = bus.device().save();
+        bus.device_mut().reset();
+        bus.device_mut().restore(&blob).unwrap();
+        assert_eq!(bus_keyboard(&mut bus).input_queue.len(), 16);
+        bus.port_write(PORT_CMD, 1, 0xAE).unwrap();
+        for _ in 0..16 {
+            assert_ne!(bus.port_read(PORT_CMD, 1).unwrap() as u8 & ST_OBF, 0);
+            assert_eq!(bus.port_read(PORT_DATA, 1).unwrap(), u32::from(KBD_ACK));
+            bus.tick(2);
+        }
+        assert_eq!(bus.port_read(PORT_CMD, 1).unwrap() as u8 & ST_OBF, 0);
+    }
+
+    #[test]
+    fn response_overflow_drops_whole_reset_reply_and_preserves_fifo() {
+        let mut bus = MockBus::new(Box::new(I8042::new()));
+        bus.port_write(PORT_CMD, 1, 0xAD).unwrap();
+        bus_keyboard(&mut bus).push_scancode(0x1E);
+        for _ in 0..15 {
+            bus.port_write(PORT_DATA, 1, 0xED).unwrap();
+        }
+        // Only one position remains: neither ACK nor BAT may be queued alone.
+        bus.port_write(PORT_DATA, 1, u32::from(KBD_CMD_RESET))
+            .unwrap();
+        assert_eq!(bus_keyboard(&mut bus).queued_replies, 15);
+        bus.port_write(PORT_DATA, 1, 0xED).unwrap();
+        bus.port_write(PORT_DATA, 1, 0xED).unwrap();
+        assert_eq!(bus_keyboard(&mut bus).queued_replies, 16);
+        bus.port_write(PORT_CMD, 1, 0xAE).unwrap();
+        assert_eq!(bus.port_read(PORT_DATA, 1).unwrap(), 0x1E);
+        for _ in 0..16 {
+            bus.tick(2);
+            assert_eq!(bus.port_read(PORT_DATA, 1).unwrap(), u32::from(KBD_ACK));
+        }
+        bus.tick(2);
+        assert_eq!(bus.port_read(PORT_CMD, 1).unwrap() as u8 & ST_OBF, 0);
+        // Space becomes usable again after draining.
+        bus.port_write(PORT_DATA, 1, u32::from(KBD_CMD_RESET))
+            .unwrap();
+        assert_eq!(bus.port_read(PORT_DATA, 1).unwrap(), u32::from(KBD_ACK));
+        bus.tick(2);
+        assert_eq!(bus.port_read(PORT_DATA, 1).unwrap(), u32::from(KBD_BAT_OK));
+    }
+
+    #[test]
+    fn host_scancode_script_exceeds_u16_without_consuming_reply_capacity() {
+        let mut bus = MockBus::new(Box::new(I8042::new()));
+        bus.port_write(PORT_CMD, 1, 0xAD).unwrap();
+        for byte in 0..65_537u32 {
+            bus_keyboard(&mut bus).push_scancode(byte as u8);
+        }
+        let blob = bus.device().save();
+        bus.device_mut().reset();
+        bus.device_mut().restore(&blob).unwrap();
+        assert_eq!(bus_keyboard(&mut bus).input_queue.len(), 65_537);
+        assert_eq!(bus_keyboard(&mut bus).queued_replies, 0);
+        bus.port_write(PORT_DATA, 1, 0xED).unwrap();
+        assert_eq!(bus_keyboard(&mut bus).queued_replies, 1);
+        bus.port_write(PORT_CMD, 1, 0xAE).unwrap();
+        for byte in 0..65_537u32 {
+            assert_eq!(bus.port_read(PORT_DATA, 1).unwrap(), u32::from(byte as u8));
+            bus.tick(2);
+        }
+        assert_eq!(bus.port_read(PORT_DATA, 1).unwrap(), u32::from(KBD_ACK));
+        bus.tick(2);
+        assert_eq!(bus.port_read(PORT_CMD, 1).unwrap() as u8 & ST_OBF, 0);
+    }
+
+    #[test]
+    fn controller_reply_waits_behind_keyboard_and_precedes_queued_scancodes() {
+        for command in [0x20, 0xAA, 0xAB, 0xA9, 0xC0, 0xD0] {
+            let mut bus = MockBus::new(Box::new(I8042::new()));
+            bus.port_write(PORT_CMD, 1, 0x60).unwrap();
+            bus.port_write(PORT_DATA, 1, u32::from(CB_KBD_INT)).unwrap();
+            bus_keyboard(&mut bus).push_scancode(0x1E);
+            bus_keyboard(&mut bus).push_scancode(0x9E);
+            bus.port_write(PORT_CMD, 1, command).unwrap();
+            assert!(bus.device().irq_pending());
+            let blob = bus.device().save();
+            bus.device_mut().reset();
+            bus.device_mut().restore(&blob).unwrap();
+            assert_eq!(bus.port_read(PORT_DATA, 1).unwrap(), 0x1E);
+            assert!(!bus.device().irq_pending());
+            bus.tick(2);
+            let expected = match command {
+                0x20 => CB_KBD_INT,
+                0xAA => SELF_TEST_PASS,
+                0xC0 => INPUT_PORT_VALUE,
+                0xD0 => OUTPUT_PORT_RESET,
+                _ => IFACE_TEST_PASS,
+            };
+            assert_ne!(bus.port_read(PORT_CMD, 1).unwrap() as u8 & ST_OBF, 0);
+            assert!(!bus.device().irq_pending());
+            assert_eq!(bus.port_read(PORT_DATA, 1).unwrap(), u32::from(expected));
+            bus.tick(2);
+            assert!(bus.device().irq_pending());
+            assert_eq!(bus.port_read(PORT_DATA, 1).unwrap(), 0x9E);
+        }
+    }
+
+    #[test]
+    fn controller_reply_slot_preserves_first_response_when_host_pipelines() {
+        let mut bus = MockBus::new(Box::new(I8042::new()));
+        bus_keyboard(&mut bus).push_scancode(0x1E);
+        bus.port_write(PORT_CMD, 1, 0xD0).unwrap();
+        for _ in 0..32 {
+            bus.port_write(PORT_CMD, 1, 0xAA).unwrap();
+        }
+        assert_eq!(bus.port_read(PORT_DATA, 1).unwrap(), 0x1E);
+        // Controller replies must progress even with the keyboard inhibited.
+        bus.port_write(PORT_CMD, 1, 0xAD).unwrap();
+        assert_eq!(
+            bus.device().next_event(bus.clock()),
+            NextEvent::At(VClock(1))
+        );
+        bus.tick(1);
+        assert_eq!(bus.port_read(PORT_CMD, 1).unwrap() as u8 & ST_OBF, 0);
+        assert_eq!(
+            bus.device().next_event(bus.clock()),
+            NextEvent::At(VClock(2))
+        );
+        bus.device_mut().sync(VClock(1));
+        assert_eq!(bus.port_read(PORT_CMD, 1).unwrap() as u8 & ST_OBF, 0);
+        bus.tick(99);
+        assert_eq!(
+            bus.port_read(PORT_DATA, 1).unwrap(),
+            u32::from(OUTPUT_PORT_RESET)
+        );
+        bus.tick(100);
+        assert_eq!(bus.port_read(PORT_CMD, 1).unwrap() as u8 & ST_OBF, 0);
+    }
+
+    #[test]
+    fn all_keyboard_refill_paths_respect_low_irq_hold() {
+        for path in 0..4 {
+            let mut bus = MockBus::new(Box::new(I8042::new()));
+            bus.port_write(PORT_CMD, 1, 0x60).unwrap();
+            bus.port_write(PORT_DATA, 1, u32::from(CB_KBD_INT)).unwrap();
+            bus_keyboard(&mut bus).push_scancode(0x1E);
+            if path == 1 || path == 2 {
+                bus_keyboard(&mut bus).push_scancode(0x9E);
+            }
+            assert!(bus.device().irq_pending());
+            assert_eq!(bus.port_read(PORT_DATA, 1).unwrap(), 0x1E);
+            match path {
+                0 => bus_keyboard(&mut bus).push_scancode(0x9E),
+                1 => {
+                    bus.port_write(PORT_CMD, 1, 0x60).unwrap();
+                    bus.port_write(PORT_DATA, 1, u32::from(CB_KBD_INT)).unwrap();
+                }
+                2 => {
+                    bus.port_write(PORT_CMD, 1, 0xAD).unwrap();
+                    bus.port_write(PORT_CMD, 1, 0xAE).unwrap();
+                }
+                _ => bus.port_write(PORT_DATA, 1, 0xED).unwrap(),
+            }
+            bus.device_mut().sync(VClock::ZERO);
+            assert!(!bus.device().irq_pending(), "refill path {path}");
+            assert_eq!(bus.port_read(PORT_CMD, 1).unwrap() as u8 & ST_OBF, 0);
+            bus.tick(1);
+            assert!(!bus.device().irq_pending());
+            bus.tick(1);
+            assert!(bus.device().irq_pending());
+            let expected = if path == 3 { KBD_ACK } else { 0x9E };
+            assert_eq!(bus.port_read(PORT_DATA, 1).unwrap(), u32::from(expected));
+        }
+    }
+
+    #[test]
+    fn snapshot_preserves_low_irq_hold_before_host_injection() {
+        let mut bus = MockBus::new(Box::new(I8042::new()));
+        bus.port_write(PORT_CMD, 1, 0x60).unwrap();
+        bus.port_write(PORT_DATA, 1, u32::from(CB_KBD_INT)).unwrap();
+        bus_keyboard(&mut bus).push_scancode(0x1E);
+        bus.port_read(PORT_DATA, 1).unwrap();
+        let blob = bus.device().save();
+        bus.device_mut().reset();
+        bus.device_mut().restore(&blob).unwrap();
+        bus_keyboard(&mut bus).push_scancode(0x9E);
+        assert!(!bus.device().irq_pending());
+        bus.tick(1);
+        assert!(!bus.device().irq_pending());
+        bus.tick(1);
+        assert!(bus.device().irq_pending());
+    }
+
     fn reference_clock(kbc: &mut I8042, clock: u64) {
         kbc.now = VClock(clock);
         if kbc.refill_hold {
@@ -651,6 +955,9 @@ mod tests {
         let mut expected_level = false;
         let mut actual_level = false;
         let mut pin_sample = u64::MAX;
+        let mut saw_full_queue = false;
+        let mut saw_pending_reply = false;
+        let mut saw_held_keyboard = false;
         for step in 0..256 {
             seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
             let jump = if step % 31 == 0 {
@@ -701,19 +1008,32 @@ mod tests {
             scheduled.device_mut().sync(VClock(access));
             match step % 10 {
                 0 | 1 => {
-                    reference.push_scancode(seed as u8);
-                    scheduled
-                        .device_mut()
-                        .as_any_mut()
-                        .unwrap()
-                        .downcast_mut::<I8042>()
-                        .unwrap()
-                        .push_scancode(seed as u8);
+                    let count = if step % 20 == 0 { 32 } else { 1 };
+                    for offset in 0..count {
+                        let byte = (seed as u8).wrapping_add(offset);
+                        reference.push_scancode(byte);
+                        bus_keyboard(&mut scheduled).push_scancode(byte);
+                    }
                 }
-                2 | 3 => assert_eq!(
-                    reference.port_read(PORT_DATA, 1).unwrap(),
-                    scheduled.port_read(PORT_DATA, 1).unwrap()
-                ),
+                2 | 3 => {
+                    assert_eq!(
+                        reference.port_read(PORT_DATA, 1).unwrap(),
+                        scheduled.port_read(PORT_DATA, 1).unwrap()
+                    );
+                    // Same-clock host traffic cannot bypass the low IRQ hold.
+                    reference.push_scancode(0x1E);
+                    bus_keyboard(&mut scheduled).push_scancode(0x1E);
+                    for (port, value) in [
+                        (PORT_DATA, 0xFF),
+                        (PORT_CMD, 0x60),
+                        (PORT_DATA, u32::from(CB_KBD_INT)),
+                        (PORT_CMD, 0xAD),
+                        (PORT_CMD, 0xAE),
+                    ] {
+                        reference.port_write(port, 1, value).unwrap();
+                        scheduled.port_write(port, 1, value).unwrap();
+                    }
+                }
                 4 => assert_eq!(
                     reference.port_read(PORT_CMD, 1).unwrap(),
                     scheduled.port_read(PORT_CMD, 1).unwrap()
@@ -731,11 +1051,19 @@ mod tests {
                         [0xAD, 0xAE, 0xAA, 0xAB, 0x20, 0xD0, 0xD1, 0xD4][(seed >> 8) as usize % 8];
                     reference.port_write(PORT_CMD, 1, command).unwrap();
                     scheduled.port_write(PORT_CMD, 1, command).unwrap();
+                    // Exercise a busy output buffer, a full reply slot, and
+                    // controller progress with the keyboard interface disabled.
+                    for command in [0xD0, 0xAA, 0xAD] {
+                        reference.port_write(PORT_CMD, 1, command).unwrap();
+                        scheduled.port_write(PORT_CMD, 1, command).unwrap();
+                    }
                 }
                 7 | 8 => {
                     let value = if step % 2 == 0 { 0xFF } else { seed as u32 };
-                    reference.port_write(PORT_DATA, 1, value).unwrap();
-                    scheduled.port_write(PORT_DATA, 1, value).unwrap();
+                    for _ in 0..20 {
+                        reference.port_write(PORT_DATA, 1, value).unwrap();
+                        scheduled.port_write(PORT_DATA, 1, value).unwrap();
+                    }
                 }
                 _ => {
                     let snapshot = reference.save();
@@ -743,6 +1071,9 @@ mod tests {
                     scheduled.device_mut().restore(&snapshot).unwrap();
                 }
             }
+            saw_full_queue |= reference.queued_replies == KEYBOARD_REPLY_CAPACITY;
+            saw_pending_reply |= reference.controller_reply.is_some();
+            saw_held_keyboard |= reference.refill_hold && !reference.input_queue.is_empty();
             // Access-induced line changes are sampled on the next clock by both engines.
             assert_eq!(reference.save(), scheduled.device().save());
             assert_eq!(reference.irq_pending(), scheduled.device().irq_pending());
@@ -751,6 +1082,7 @@ mod tests {
         }
         assert_eq!(expected_edges, actual_edges);
         assert!(expected_edges.iter().any(|(_, level)| *level));
+        assert!(saw_full_queue && saw_pending_reply && saw_held_keyboard);
     }
 
     #[test]
@@ -885,6 +1217,10 @@ mod tests {
         kbc.port_write(PORT_CMD, 1, 0x60).unwrap();
         kbc.port_write(PORT_DATA, 1, u32::from(CB_KBD_INT)).unwrap();
         kbc.push_scancode(0x21);
+        assert!(!kbc.irq_pending());
+        kbc.tick(VClock(1));
+        assert!(!kbc.irq_pending());
+        kbc.tick(VClock(2));
         assert!(kbc.irq_pending());
         // Reading the byte deasserts the line.
         kbc.port_read(PORT_DATA, 1).unwrap();
@@ -1026,6 +1362,36 @@ mod tests {
                 reason: "unsupported snapshot version",
             }
         );
+    }
+
+    #[test]
+    fn restore_rejects_oversized_queue_and_old_version_without_mutation() {
+        let mut bus = MockBus::new(Box::new(I8042::new()));
+        bus.port_write(PORT_CMD, 1, 0xD0).unwrap();
+        let original = bus.device().save();
+        let mut oversized = original.clone();
+        oversized[7..15].copy_from_slice(&17u64.to_le_bytes());
+        for _ in 0..17 {
+            oversized.extend([KBD_ACK, 1]);
+        }
+        assert_eq!(
+            bus.device_mut().restore(&oversized).unwrap_err(),
+            DeviceError::InvalidSnapshot {
+                device: NAME,
+                reason: "keyboard replies exceed capacity",
+            }
+        );
+        assert_eq!(bus.device().save(), original);
+        let mut old_version = original.clone();
+        old_version[0] = 1;
+        assert_eq!(
+            bus.device_mut().restore(&old_version).unwrap_err(),
+            DeviceError::InvalidSnapshot {
+                device: NAME,
+                reason: "unsupported snapshot version",
+            }
+        );
+        assert_eq!(bus.device().save(), original);
     }
 
     #[test]
