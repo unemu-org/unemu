@@ -256,6 +256,8 @@ impl Dma8237 {
 
     /// Step a channel's address and count after one byte. Returns `true` when
     /// terminal count is reached (TC flagged; autoinit reload or self-mask).
+    /// Intel 8237A datasheet, Current Word Count Register: TC is the count's
+    /// underflow to 0xFFFF, which remains readable unless autoinitialize reloads it.
     fn advance_channel(&mut self, channel: usize) -> bool {
         let decrement = self.channels[channel].mode & MODE_DECREMENT != 0;
         let autoinit = self.channels[channel].mode & MODE_AUTOINIT != 0;
@@ -266,9 +268,10 @@ impl Dma8237 {
             } else {
                 ch.current_address.wrapping_add(1)
             };
+            ch.current_count = ch.current_count.wrapping_sub(1);
         }
         // The 8237 transfers count+1 bytes: terminal count is the underflow from 0.
-        if self.channels[channel].current_count == 0 {
+        if self.channels[channel].current_count == 0xFFFF {
             self.status |= 1 << channel; // TC flag for this channel
             if autoinit {
                 let ch = &mut self.channels[channel];
@@ -279,7 +282,6 @@ impl Dma8237 {
             }
             true
         } else {
-            self.channels[channel].current_count -= 1;
             false
         }
     }
@@ -719,6 +721,75 @@ mod tests {
                     }
                 }
             }
+        }
+    }
+
+    fn read_count_through_bus(bus: &mut MockBus, channel: u16) -> u16 {
+        bus.port_write(0x0C, 1, 0).unwrap();
+        let port = channel * 2 + 1;
+        let low = bus.port_read(port, 1).unwrap() as u8;
+        let high = bus.port_read(port, 1).unwrap() as u8;
+        u16::from_le_bytes([low, high])
+    }
+
+    fn assert_count_readback_at_terminal_count(mode: u8) {
+        for from_memory in [false, true] {
+            for count in [0, 0x0102] {
+                let mut dma = Dma8237::new();
+                let mut mem = MockMem::default();
+                let direction = if from_memory { 0b1000 } else { 0b0100 };
+                program(&mut dma, 2, mode | direction, 0, 0, count);
+                let mut bus = MockBus::new(Box::new(dma));
+                let mut service = |bus: &mut MockBus, len| {
+                    if from_memory {
+                        bus.device_mut()
+                            .dma_service_read(2, &mut mem, &mut vec![0; len])
+                    } else {
+                        bus.device_mut()
+                            .dma_service_write(2, &mut mem, &vec![0x5A; len])
+                    }
+                };
+                let partial = count / 2;
+                assert_eq!(
+                    service(&mut bus, usize::from(partial)),
+                    DmaTransfer {
+                        transferred: usize::from(partial),
+                        terminal_count: false,
+                    }
+                );
+                assert_eq!(read_count_through_bus(&mut bus, 2), count - partial);
+                let remaining = usize::from(count - partial) + 1;
+                assert_eq!(
+                    service(&mut bus, remaining + 1),
+                    DmaTransfer {
+                        transferred: remaining,
+                        terminal_count: true,
+                    }
+                );
+                let expected = if mode & MODE_AUTOINIT != 0 {
+                    count
+                } else {
+                    0xFFFF
+                };
+                assert_eq!(read_count_through_bus(&mut bus, 2), expected);
+            }
+        }
+    }
+
+    #[test]
+    fn count_readback_after_terminal_count_in_single_mode() {
+        assert_count_readback_at_terminal_count(0x40);
+    }
+
+    #[test]
+    fn count_readback_after_terminal_count_in_block_mode() {
+        assert_count_readback_at_terminal_count(0x80);
+    }
+
+    #[test]
+    fn count_readback_after_terminal_count_with_autoinit() {
+        for mode in [0x40, 0x80] {
+            assert_count_readback_at_terminal_count(mode | MODE_AUTOINIT);
         }
     }
 
