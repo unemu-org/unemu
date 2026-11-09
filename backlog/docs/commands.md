@@ -20,6 +20,28 @@ cargo fmt --all
 cargo fmt --all -- --check                   # CI check
 ```
 
+## CI
+
+Forgejo Actions runs `.forgejo/workflows/ci.yml` on pushes to `main` and manual
+dispatches on the x86-64 runner. From the repository root, run the same gates locally:
+
+```sh
+bash scripts/ci-gate.sh devshell
+bash scripts/ci-gate.sh fmt
+bash scripts/ci-gate.sh guard
+bash scripts/ci-gate.sh clippy
+bash scripts/ci-gate.sh tests
+bash scripts/ci-gate.sh fixtures                 # network fetch + build BIOS, FreeDOS, test386
+bash scripts/ci-gate.sh goldens                  # slow tests (~2 min); requires fixtures
+```
+
+Each gate uses `nix develop --no-update-lock-file --command` (except `guard`, which
+runs directly), preserves its exit status, and tees combined output to the gitignored
+`ci-logs/<step>.log`. Set `CI_LOG_DIR` to choose another log directory. Cargo builds/tests
+use `--locked`; formatting uses `cargo fmt --check`. CI runs every gate even after failures,
+saves the Cargo cache, and reports failing steps in commit status `ci / x86_64`.
+See [`dev-setup.md`](dev-setup.md#ci) for the runner and cache setup.
+
 ## x86jit (CPU core)
 
 ```sh

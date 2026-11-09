@@ -64,21 +64,38 @@ Cargo resolves the override without fetching the pinned URL, so this also works 
 cannot reach it. Check the checkout out at the revision in `Cargo.lock`: goldens are only valid
 against the pinned CPU revision.
 
-The pinned URL is x86jit's origin on the maintainer's forge, which requires
-authentication. Cargo cannot prompt, so fetch through the git CLI — with credentials, or by
-rewriting the URL to the SSH remote for the one command:
+The pinned HTTPS URL and x86jit's oracles submodule are anonymously fetchable.
+No credentials or SSH URL rewrite are needed:
 
 ```sh
-CARGO_NET_GIT_FETCH_WITH_CLI=true \
-GIT_CONFIG_COUNT=1 \
-GIT_CONFIG_KEY_0='url.git@git-ssh.lab.mikolajczyk.org:.insteadOf' \
-GIT_CONFIG_VALUE_0='https://git.lab.mikolajczyk.org/' \
-cargo fetch
+cargo fetch --locked
 ```
 
 After one successful fetch the checkout is cached and builds work offline. Moving the pin
-(edit the `rev` in `Cargo.toml`, then fetch as above) is its own bead: the Definition of Done
+(edit the `rev` in `Cargo.toml`, then update `Cargo.lock`) is its own bead: the Definition of Done
 plus the slow goldens. See decision-13.
+
+## CI
+
+`.forgejo/workflows/ci.yml` runs on pushes to `main` and via `workflow_dispatch`.
+The Forgejo runner's `ubuntu-latest` label uses a `node:20-bookworm` container on
+x86-64 Linux without systemd. The workflow installs Nix using pinned installer
+v3.24.1 with `--init none` and the build sandbox disabled, then uses the flake devShell.
+Cargo's registry, git database and `target/` are cached using `flake.lock` and
+`Cargo.lock`; CI never needs dependency credentials.
+
+The gates check the devShell, formatting, publication safety, Clippy, workspace
+tests, fixture builds and slow goldens. Fixtures are built by the three
+`vendor/{kiselev-bios,freedos,test386}/fetch.sh` scripts with network access and
+the devShell's tools, including `nasm` and `mtools`. Each gate still runs after
+earlier failures. The final commit status, `ci / x86_64`, names failed steps.
+
+Run a gate from the repository root with `bash scripts/ci-gate.sh <step>`;
+see [`commands.md`](commands.md#ci) for the full sequence. The script enters
+`nix develop --no-update-lock-file` for every gate except the publication guard,
+which needs no devShell. Cargo builds/tests use `--locked`. Combined output is
+saved to `ci-logs/<step>.log` (gitignored); set `CI_LOG_DIR` to change the directory.
+The script preserves failures through `tee` so it can be used as a local gate too.
 
 ## beads (`bd`)
 

@@ -77,6 +77,11 @@ A bead closes only when all of these hold on `main`:
 2. `cargo clippy --all-targets --all-features -- -D warnings` is clean.
 3. `cargo fmt --check` is clean.
 
+The Forgejo CI lane runs these checks via `scripts/ci-gate.sh`, plus the publication
+guard and the slow goldens after building their fixtures. Use
+`bash scripts/ci-gate.sh <step>` to run the same gate locally; see
+[`commands.md` § CI](commands.md#ci).
+
 Plus, when the change warrants it:
 
 - the slow goldens, `cargo test --workspace -- --ignored` (BIOS POST, FreeDOS boot, the DOS
