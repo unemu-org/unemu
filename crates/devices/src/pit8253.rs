@@ -64,6 +64,10 @@
 //!   GATE is software-controllable via port `0x61` on the real machine; that port
 //!   belongs to a different chip and is out of scope here.
 //! - **The status-latch command** and the null-count flag.
+//!
+//! Snapshots contain all counter registers, byte/latch phases and the absolute
+//! PIT time base. OUT deadlines are derived from those saved counter phases.
+//! See Intel 8254 datasheet, Counter Programming and Modes 0, 2 and 3.
 
 use device::{AccessDir, Device, DeviceError, NextEvent, TraceEvent, VClock};
 
@@ -80,7 +84,7 @@ const COMMAND: u16 = 0x43;
 const COUNTERS: usize = 3;
 
 /// Snapshot layout version tag, first byte of [`Device::save`] output.
-const SNAPSHOT_VERSION: u8 = 1;
+const SNAPSHOT_VERSION: u8 = 2;
 
 /// The access mode selected by command bits 5-4, controlling how the LSB/MSB of
 /// a counter are written and read.
@@ -636,8 +640,8 @@ impl Device for Pit8253 {
 
     fn save(&self) -> Vec<u8> {
         // Layout: version, then per counter: mode, access, flags, reload(2),
-        // count(2), phases, latch-present + latch(2).
-        let mut blob = Vec::with_capacity(1 + COUNTERS * 12);
+        // count(2), latch(2); followed by the absolute PIT clock(8).
+        let mut blob = Vec::with_capacity(1 + COUNTERS * 9 + 8);
         blob.push(SNAPSHOT_VERSION);
         for c in &self.counters {
             blob.push(c.mode);
@@ -669,12 +673,13 @@ impl Device for Pit8253 {
             blob.extend_from_slice(&c.count.to_le_bytes());
             blob.extend_from_slice(&c.latch.unwrap_or(0).to_le_bytes());
         }
+        blob.extend_from_slice(&self.now.0.to_le_bytes());
         blob
     }
 
     fn restore(&mut self, snapshot: &[u8]) -> Result<(), DeviceError> {
         const PER_COUNTER: usize = 1 + 1 + 1 + 2 + 2 + 2;
-        let expected = 1 + COUNTERS * PER_COUNTER;
+        let expected = 1 + COUNTERS * PER_COUNTER + 8;
         if snapshot.len() != expected {
             return Err(DeviceError::InvalidSnapshot {
                 device: NAME,
@@ -690,6 +695,21 @@ impl Device for Pit8253 {
         let mut counters = [Counter::new(), Counter::new(), Counter::new()];
         for (i, c) in counters.iter_mut().enumerate() {
             let off = 1 + i * PER_COUNTER;
+            let flags = snapshot[off + 2];
+            let count = u16::from_le_bytes([snapshot[off + 5], snapshot[off + 6]]);
+            if snapshot[off] > 5
+                || !(1..=3).contains(&snapshot[off + 1])
+                || flags & 0x80 != 0
+                || (flags & 0x10 != 0 && flags & 0x20 == 0)
+                || (snapshot[off + 1] != 3 && flags & 0x0C != 0)
+                || (snapshot[off] == 3 && flags & 0x20 != 0 && flags & 0x10 == 0 && count & 1 != 0)
+                || (flags & 0x40 == 0 && snapshot[off + 7..off + 9] != [0, 0])
+            {
+                return Err(DeviceError::InvalidSnapshot {
+                    device: NAME,
+                    reason: "invalid counter state",
+                });
+            }
             c.mode = snapshot[off];
             c.access = Access::from_bits(snapshot[off + 1]);
             let flags = snapshot[off + 2];
@@ -717,6 +737,9 @@ impl Device for Pit8253 {
             };
         }
         self.counters = counters;
+        self.now = VClock(u64::from_le_bytes(std::array::from_fn(|i| {
+            snapshot[snapshot.len() - 8 + i]
+        })));
         Ok(())
     }
 
@@ -1290,9 +1313,6 @@ mod tests {
         let blob = pit.save();
         let mut restored = Pit8253::new();
         restored.restore(&blob).unwrap();
-        // The trace clock is not part of the snapshot, so align it to the source
-        // before comparing tick-driven behaviour.
-        restored.now = pit.now;
 
         for n in 0..COUNTERS {
             assert_eq!(restored.count(n), pit.count(n), "count {n}");

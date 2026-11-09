@@ -82,6 +82,11 @@
 //!   case SFNM exists for) are not modelled.
 //! - **Poll mode** (OCW3 poll bit).
 //! - **Buffered mode** (ICW4 buffered bits).
+//!
+//! Snapshots contain request/service/mask and initialization registers,
+//! read selection, input line levels and the absolute trace time base. Keeping
+//! line levels preserves edge detection (Intel 8259A datasheet, Edge and Level
+//! Triggered Modes). Port wiring is supplied by the receiving instance.
 
 use device::{AccessDir, Device, DeviceError, InterruptController, TraceEvent, VClock};
 
@@ -118,10 +123,11 @@ const OCW3_READ: u8 = 0x02;
 const OCW3_READ_ISR: u8 = 0x01;
 
 /// Snapshot layout version tag, first byte of [`Device::save`] output.
-const SNAPSHOT_VERSION: u8 = 1;
+const SNAPSHOT_VERSION: u8 = 2;
 /// Snapshot length: version + irr + isr + imr + base + icw1 + icw4 + state +
-/// read_isr flag.
-const SNAPSHOT_LEN: usize = 9;
+/// read_isr flag + input line levels (one byte each), then the 8-byte clock of
+/// the last synchronisation.
+const SNAPSHOT_LEN: usize = 18;
 
 /// Which register a command-port read returns, set by OCW3 (§7.3).
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -516,7 +522,7 @@ impl Device for Pic8259 {
             InitState::ExpectIcw3 => 2,
             InitState::ExpectIcw4 => 3,
         };
-        vec![
+        let mut blob = vec![
             SNAPSHOT_VERSION,
             self.irr,
             self.isr,
@@ -526,7 +532,10 @@ impl Device for Pic8259 {
             self.icw4,
             init_state,
             read_isr,
-        ]
+            self.line_level,
+        ];
+        blob.extend_from_slice(&self.now.0.to_le_bytes());
+        blob
     }
 
     fn restore(&mut self, snapshot: &[u8]) -> Result<(), DeviceError> {
@@ -554,6 +563,17 @@ impl Device for Pic8259 {
                 });
             }
         };
+        if snapshot[4] & 7 != 0
+            || snapshot[8] > 1
+            || (snapshot[7] != 0 && snapshot[5] & ICW1_INIT == 0)
+            || (snapshot[7] == 2 && snapshot[5] & ICW1_SNGL != 0)
+            || (snapshot[7] == 3 && snapshot[5] & ICW1_IC4 == 0)
+        {
+            return Err(DeviceError::InvalidSnapshot {
+                device: NAME,
+                reason: "invalid interrupt state",
+            });
+        }
         self.irr = snapshot[1];
         self.isr = snapshot[2];
         self.imr = snapshot[3];
@@ -566,8 +586,10 @@ impl Device for Pic8259 {
         } else {
             ReadSelect::Irr
         };
-        // The input-line levels are not snapshotted; on restore no line is held.
-        self.line_level = 0;
+        self.line_level = snapshot[9];
+        self.now = VClock(u64::from_le_bytes(std::array::from_fn(|i| {
+            snapshot[snapshot.len() - 8 + i]
+        })));
         Ok(())
     }
 

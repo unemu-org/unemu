@@ -30,6 +30,11 @@
 //! master IRR2 from priority resolution. Device-driven lines stay edge-latched.
 //! The slave IR7 vector is a defensive fallback for a cascade INTA with no
 //! slave request ("Interrupt Sequence"); see `backlog/docs/design/spec.md` §5.1.
+//!
+//! Each device face saves and validates its underlying PIC snapshot, including
+//! input levels and the absolute trace time base. Shared wiring and observation
+//! logs remain host state; restore both chip faces when restoring a cascade.
+//! See Intel 8259A datasheet, Cascade Mode.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -441,6 +446,78 @@ mod tests {
         bus.port_read(0x21, 1).unwrap();
         assert!(host.take_trace().is_empty());
         assert_eq!(host.trace_dropped(), 0);
+    }
+
+    #[test]
+    fn shared_faces_validate_snapshots_and_preserve_held_inputs() {
+        for slave in [false, true] {
+            let make = || {
+                if slave {
+                    SharedPic::new_slave()
+                } else {
+                    SharedPic::new()
+                }
+            };
+            let command = if slave { SLAVE_CMD } else { MASTER_CMD };
+            let mut source = make();
+            source.sync(VClock(251));
+            source.set_irq_line(7, true);
+            source.acknowledge();
+            source.end_of_interrupt();
+            let mut bus = testkit::MockBus::new(Box::new(source.clone()));
+            let valid = bus.device().save();
+            let mut restored = make();
+            restored.restore(&valid).unwrap();
+            restored.set_irq_line(7, true);
+            assert_eq!(restored.poll(), source.poll());
+            assert_eq!(restored.poll(), None);
+            source.take_trace();
+            for at in [251, 252, 1000] {
+                source.sync(VClock(at));
+                restored.sync(VClock(at));
+                assert_eq!(source.port_read(command, 1), restored.port_read(command, 1));
+                assert_eq!(source.save(), restored.save());
+                assert_eq!(source.take_trace(), restored.take_trace());
+            }
+            for length in 0..valid.len() {
+                assert!(matches!(
+                    bus.device_mut().restore(&valid[..length]),
+                    Err(DeviceError::InvalidSnapshot { .. })
+                ));
+            }
+            for index in 0..valid.len() {
+                for value in [0, 1, 0x7F, 0xFF] {
+                    let mut blob = valid.clone();
+                    blob[index] = value;
+                    bus.device_mut().restore(&valid).unwrap();
+                    match bus.device_mut().restore(&blob) {
+                        Ok(()) => {
+                            bus.device_mut().sync(VClock(252));
+                            bus.device().next_event(VClock(252));
+                            bus.device().irq_vector();
+                            bus.port_read(command, 1).unwrap();
+                            bus.port_write(command, 1, 0x20).unwrap();
+                        }
+                        Err(DeviceError::InvalidSnapshot { .. }) => {
+                            assert_eq!(bus.device().save(), valid)
+                        }
+                        Err(error) => panic!("unexpected restore error: {error}"),
+                    }
+                }
+            }
+            let mut blob = valid.clone();
+            blob[4] = 0xFF;
+            assert!(matches!(
+                bus.device_mut().restore(&blob),
+                Err(DeviceError::InvalidSnapshot { .. })
+            ));
+            blob = valid;
+            blob.push(0);
+            assert!(matches!(
+                bus.device_mut().restore(&blob),
+                Err(DeviceError::InvalidSnapshot { .. })
+            ));
+        }
     }
 
     /// Intel 8259A datasheet, Interrupt Sequence and OCW2: elapsed time cannot

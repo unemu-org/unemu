@@ -53,6 +53,10 @@
 //!   programs a write-transfer mode but drives a read-direction request (or vice
 //!   versa) is not detected — parity with the other simplifications above, which
 //!   model register effects rather than policing guest misconfiguration.
+//!
+//! Snapshots contain channel/page/control registers, the byte flip-flop and
+//! the absolute trace time base. Transfers have no timed deadlines in this
+//! model (Intel 8237A datasheet, Single Transfer Mode).
 
 use device::{
     AccessDir, Device, DeviceError, DmaMemory, DmaTransfer, NextEvent, TraceEvent, VClock,
@@ -77,7 +81,7 @@ const CHANNELS: usize = 4;
 const PAGE_LATCHES: usize = 16;
 
 /// Snapshot layout version tag.
-const SNAPSHOT_VERSION: u8 = 1;
+const SNAPSHOT_VERSION: u8 = 2;
 
 /// Page-latch offset (within `0x80..=0x8F`) that supplies each channel's page:
 /// channel 0 → `0x87`, 1 → `0x83`, 2 → `0x81`, 3 → `0x82`.
@@ -505,7 +509,7 @@ impl Device for Dma8237 {
     }
 
     fn save(&self) -> Vec<u8> {
-        let mut blob = Vec::with_capacity(1 + CHANNELS * 9 + PAGE_LATCHES + 5);
+        let mut blob = Vec::with_capacity(1 + CHANNELS * 9 + PAGE_LATCHES + 6 + 8);
         blob.push(SNAPSHOT_VERSION);
         for ch in &self.channels {
             blob.extend_from_slice(&ch.current_address.to_le_bytes());
@@ -521,11 +525,12 @@ impl Device for Dma8237 {
         blob.push(self.mask);
         blob.push(u8::from(self.flip_flop));
         blob.push(self.temp);
+        blob.extend_from_slice(&self.now.0.to_le_bytes());
         blob
     }
 
     fn restore(&mut self, snapshot: &[u8]) -> Result<(), DeviceError> {
-        const LEN: usize = 1 + CHANNELS * 9 + PAGE_LATCHES + 6;
+        const LEN: usize = 1 + CHANNELS * 9 + PAGE_LATCHES + 6 + 8;
         if snapshot.len() != LEN {
             return Err(DeviceError::InvalidSnapshot {
                 device: NAME,
@@ -536,6 +541,21 @@ impl Device for Dma8237 {
             return Err(DeviceError::InvalidSnapshot {
                 device: NAME,
                 reason: "unsupported snapshot version",
+            });
+        }
+        let control = 1 + CHANNELS * 9 + PAGE_LATCHES;
+        if snapshot[control + 1] & !0x0F != 0
+            || snapshot[control + 2] & !0x0F != 0
+            || snapshot[control + 3] & !0x0F != 0
+            || snapshot[control + 4] > 1
+            || (0..CHANNELS).any(|i| {
+                let mode = snapshot[1 + i * 9 + 8];
+                mode != 0 && usize::from(mode & 3) != i
+            })
+        {
+            return Err(DeviceError::InvalidSnapshot {
+                device: NAME,
+                reason: "invalid DMA register state",
             });
         }
         let mut off = 1;
@@ -557,6 +577,9 @@ impl Device for Dma8237 {
         self.mask = snapshot[off + 3];
         self.flip_flop = snapshot[off + 4] != 0;
         self.temp = snapshot[off + 5];
+        self.now = VClock(u64::from_le_bytes(std::array::from_fn(|i| {
+            snapshot[snapshot.len() - 8 + i]
+        })));
         Ok(())
     }
 

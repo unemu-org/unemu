@@ -61,6 +61,10 @@
 //!   blink on its own.
 //! - Cursor scanline shape (`0x0A`/`0x0B` low bits) is stored but only the
 //!   cursor-disable bit is interpreted.
+//!
+//! Snapshots contain CRTC/CGA registers, VRAM, the per-read retrace phase
+//! and the absolute trace time base. There are no pixel-clock deadlines in this
+//! model (IBM VGA Technical Reference, CRT Controller Registers).
 
 use device::{AccessDir, Device, DeviceError, NextEvent, TextModeState, TraceEvent, VClock};
 
@@ -126,11 +130,11 @@ pub const CRTC_CURSOR_LOW_INDEX: u8 = 0x0F;
 const CURSOR_DISABLE: u8 = 0x20;
 
 /// Snapshot layout version tag, first byte of [`Device::save`] output.
-const SNAPSHOT_VERSION: u8 = 1;
+const SNAPSHOT_VERSION: u8 = 2;
 
 /// Fixed-size snapshot header: version + CRTC index + the CRTC register file +
-/// the CGA mode-control and colour-select bytes.
-const SNAPSHOT_HEADER_LEN: usize = 1 + 1 + CRTC_REG_COUNT + 2;
+/// the CGA mode/colour bytes, status-read phase and absolute trace clock.
+const SNAPSHOT_HEADER_LEN: usize = 1 + 1 + CRTC_REG_COUNT + 2 + 16;
 
 /// The VGA text-mode device (§9.2).
 ///
@@ -389,6 +393,8 @@ impl Device for VgaText {
         blob.extend_from_slice(&self.crtc);
         blob.push(self.mode_control);
         blob.push(self.color_select);
+        blob.extend_from_slice(&self.status_reads.to_le_bytes());
+        blob.extend_from_slice(&self.now.0.to_le_bytes());
         blob.extend_from_slice(&self.vram);
         blob
     }
@@ -406,11 +412,15 @@ impl Device for VgaText {
                 reason: "unsupported snapshot version",
             });
         }
+        self.status_reads = u64::from_le_bytes(std::array::from_fn(|i| snapshot[29 + i]));
         self.crtc_index = snapshot[1];
         self.crtc.copy_from_slice(&snapshot[2..2 + CRTC_REG_COUNT]);
         self.mode_control = snapshot[2 + CRTC_REG_COUNT];
         self.color_select = snapshot[2 + CRTC_REG_COUNT + 1];
         self.vram.copy_from_slice(&snapshot[SNAPSHOT_HEADER_LEN..]);
+        self.now = VClock(u64::from_le_bytes(std::array::from_fn(|i| {
+            snapshot[SNAPSHOT_HEADER_LEN - 8 + i]
+        })));
         Ok(())
     }
 

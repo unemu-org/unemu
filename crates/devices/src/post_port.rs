@@ -22,6 +22,11 @@
 //! - Read-only-meaningful in one direction: reads return `0xFF` (an open bus /
 //!   unimplemented read), matching that no real POST card drives a read value.
 //! - No display or latch state beyond the trace: the byte is observed, not held.
+//!
+//! Snapshots contain the absolute trace time base; decoded-port wiring and
+//! the host output sink belong to the receiving instance. Historical output and
+//! access traces are not replayed. See IBM Personal Computer AT Technical
+//! Reference, System Board I/O Address Map (diagnostic port 80h).
 
 use device::{
     AccessDir, ByteOutput, ByteSink, ByteStreamKind, Device, DeviceError, DiscardByteSink,
@@ -178,11 +183,19 @@ impl Device for PostPort {
     }
 
     fn save(&self) -> Vec<u8> {
-        // Stateless beyond the transient trace; nothing to snapshot.
-        Vec::new()
+        let mut blob = vec![1];
+        blob.extend_from_slice(&self.now.0.to_le_bytes());
+        blob
     }
 
-    fn restore(&mut self, _snapshot: &[u8]) -> Result<(), DeviceError> {
+    fn restore(&mut self, snapshot: &[u8]) -> Result<(), DeviceError> {
+        if snapshot.len() != 9 || snapshot[0] != 1 {
+            return Err(DeviceError::InvalidSnapshot {
+                device: NAME,
+                reason: "unsupported snapshot format",
+            });
+        }
+        self.now = VClock(u64::from_le_bytes(std::array::from_fn(|i| snapshot[1 + i])));
         Ok(())
     }
 
@@ -218,7 +231,8 @@ mod tests {
         assert!(bus.port_write(POST_PORT + 1, 1, 7).is_err());
         bus.device_mut().take_trace();
         bus.device_mut().reset();
-        bus.device_mut().restore(&[]).unwrap();
+        let snapshot = bus.device().save();
+        bus.device_mut().restore(&snapshot).unwrap();
         bus.port_write(POST_PORT, 1, 0x42).unwrap();
         assert_eq!(capture.drain().unwrap(), [0x34, 0x34, 0, 0xFF, 0x42]);
     }

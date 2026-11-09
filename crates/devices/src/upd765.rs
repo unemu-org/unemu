@@ -77,10 +77,14 @@
 //!   without the terminal-count signal. Exhausting the valid sector IDs retains
 //!   normal completion: TC at that boundary cannot be distinguished from a
 //!   search for the next, missing sector (NEC µPD765 datasheet, READ DATA).
+//!
+//! Snapshots contain registers, command/result phases, pending DMA context
+//! and request data, and the absolute trace time base. Mounted media and wiring
+//! belong to the receiving instance and must match the saved controller. This
+//! model has no timed execution deadlines (NEC µPD765 datasheet, Execution Phase).
 
 use device::{
-    AccessDir, Device, DeviceError, DmaMemory, DmaOp, DmaOutcome, DmaRequest, NextEvent,
-    TraceEvent, VClock,
+    AccessDir, Device, DeviceError, DmaOp, DmaOutcome, DmaRequest, NextEvent, TraceEvent, VClock,
 };
 
 /// Stable device name reported by [`Device::name`].
@@ -224,7 +228,7 @@ impl Drive {
 }
 
 /// Snapshot layout version tag.
-const SNAPSHOT_VERSION: u8 = 1;
+const SNAPSHOT_VERSION: u8 = 2;
 
 /// ST0 bit 5: seek end (set after a completed RECALIBRATE / SEEK).
 const ST0_SEEK_END: u8 = 1 << 5;
@@ -1076,6 +1080,54 @@ impl Device for Upd765 {
         blob.push(self.result.len() as u8);
         blob.extend_from_slice(&self.result);
         blob.push(self.result_index as u8);
+        blob.extend_from_slice(&self.now.0.to_le_bytes());
+        let pending = self
+            .pending_read
+            .map(|r| {
+                (
+                    1,
+                    r.drive,
+                    r.head,
+                    self.command[3],
+                    r.cylinder,
+                    r.sector,
+                    r.sector_size_code,
+                    r.requested,
+                    r.missing_sector,
+                )
+            })
+            .or_else(|| {
+                self.pending_write.map(|w| {
+                    (
+                        2,
+                        w.drive,
+                        w.head,
+                        w.param_head,
+                        w.cylinder,
+                        w.sector,
+                        w.sector_size_code,
+                        w.requested,
+                        w.missing_sector,
+                    )
+                })
+            });
+        if let Some((tag, drive, head, param_head, cylinder, sector, size, requested, missing)) =
+            pending
+        {
+            blob.extend([tag, drive, head, param_head, cylinder, sector, size]);
+            blob.extend_from_slice(&(requested as u32).to_le_bytes());
+            blob.push(u8::from(missing));
+        } else {
+            blob.push(0);
+        }
+        blob.push(u8::from(self.pending_request.is_some()));
+        if let Some(DmaRequest {
+            op: DmaOp::ToMemory(bytes),
+            ..
+        }) = &self.pending_request
+        {
+            blob.extend_from_slice(bytes);
+        }
         blob
     }
 
@@ -1089,47 +1141,203 @@ impl Device for Upd765 {
         if next()? != SNAPSHOT_VERSION {
             return Err(bad("unsupported snapshot version"));
         }
-        self.dor = next()?;
-        self.phase = match next()? {
+        let dor = next()?;
+        let phase = match next()? {
             0 => Phase::Idle,
             1 => Phase::Command,
             2 => Phase::Execution,
             3 => Phase::Result,
             _ => return Err(bad("invalid phase tag")),
         };
-        self.st0 = next()?;
-        self.irq = next()? != 0;
-        self.reset_poll = next()?;
-        for pcn in &mut self.present_cylinder {
+        let st0 = next()?;
+        let irq = next()?;
+        let reset_poll = next()?;
+        let mut present_cylinder = [0; 4];
+        for pcn in &mut present_cylinder {
             *pcn = next()?;
         }
-        self.expected = usize::from(next()?);
+        let expected = usize::from(next()?);
         let command_len = usize::from(next()?);
-        self.command.clear();
+        if command_len > 9 || !matches!(expected, 0 | 1 | 2 | 3 | 9) || irq > 1 || reset_poll > 4 {
+            return Err(bad("invalid command state"));
+        }
+        let mut command = Vec::new();
         for _ in 0..command_len {
-            self.command.push(next()?);
+            command.push(next()?);
         }
         let result_len = usize::from(next()?);
-        self.result.clear();
-        for _ in 0..result_len {
-            self.result.push(next()?);
+        if result_len > 7 {
+            return Err(bad("invalid result length"));
         }
-        self.result_index = usize::from(next()?);
-        // A snapshot is taken at rest, never mid-transfer.
-        self.pending_request = None;
-        self.pending_read = None;
-        self.pending_write = None;
+        let mut result = Vec::new();
+        for _ in 0..result_len {
+            result.push(next()?);
+        }
+        let result_index = usize::from(next()?);
+        let mut clock = [0; 8];
+        for byte in &mut clock {
+            *byte = next()?;
+        }
+        let now = VClock(u64::from_le_bytes(clock));
+        let pending_tag = next()?;
+        let mut pending_read = None;
+        let mut pending_write = None;
+        let mut requested = 0;
+        if pending_tag != 0 {
+            if pending_tag > 2
+                || phase != Phase::Execution
+                || command_len != 9
+                || expected != 9
+                || command[0] & 0x1F != if pending_tag == 1 { 6 } else { 5 }
+            {
+                return Err(bad("inconsistent transfer phase"));
+            }
+            let drive = next()?;
+            let head = next()?;
+            let param_head = next()?;
+            let cylinder = next()?;
+            let sector = next()?;
+            let sector_size_code = next()?;
+            let mut count = [0; 4];
+            for byte in &mut count {
+                *byte = next()?;
+            }
+            requested = u32::from_le_bytes(count) as usize;
+            let missing_sector = next()?;
+            if drive != command[1] & 3
+                || head != (command[1] >> 2) & 1
+                || param_head != command[3]
+                || cylinder != command[2]
+                || sector != command[4]
+                || sector_size_code != command[5]
+                || requested == 0
+                || requested > 510 * SECTOR_SIZE
+                || !requested.is_multiple_of(SECTOR_SIZE)
+                || missing_sector > 1
+            {
+                return Err(bad("invalid transfer context"));
+            }
+            let Some(media) = &self.drives[usize::from(drive)] else {
+                return Err(bad("transfer requires mounted media"));
+            };
+            if !media.geometry.contains(cylinder, param_head, sector)
+                || (pending_tag == 2 && media.write_protected)
+            {
+                return Err(bad("transfer incompatible with media"));
+            }
+            let eot = command[6];
+            let next_head = command[0] & 0x80 != 0 && param_head == 0 && sector <= eot;
+            let mut sectors = (sector..=eot.max(sector))
+                .map(|r| (param_head, r))
+                .chain((1..=eot).filter(|_| next_head).map(|r| (1, r)));
+            for _ in 0..requested / SECTOR_SIZE {
+                if !sectors
+                    .next()
+                    .is_some_and(|(h, r)| media.geometry.contains(cylinder, h, r))
+                {
+                    return Err(bad("transfer length exceeds media"));
+                }
+            }
+            let following = sectors.next();
+            if following.is_some_and(|(h, r)| media.geometry.contains(cylinder, h, r))
+                || (missing_sector != 0) != following.is_some()
+            {
+                return Err(bad("inconsistent transfer boundary"));
+            }
+            if pending_tag == 1 {
+                pending_read = Some(PendingRead {
+                    drive,
+                    head,
+                    cylinder,
+                    sector,
+                    sector_size_code,
+                    requested,
+                    missing_sector: missing_sector != 0,
+                });
+            } else {
+                pending_write = Some(PendingWrite {
+                    drive,
+                    head,
+                    param_head,
+                    cylinder,
+                    sector,
+                    sector_size_code,
+                    requested,
+                    missing_sector: missing_sector != 0,
+                });
+            }
+        }
+        let request_tag = next()?;
+        if request_tag > 1 || (request_tag != 0 && pending_tag == 0) {
+            return Err(bad("invalid DMA request tag"));
+        }
+        let pending_request = if request_tag != 0 {
+            let op = if pending_tag == 1 {
+                let mut bytes = Vec::new();
+                for _ in 0..requested {
+                    bytes.push(next()?);
+                }
+                DmaOp::ToMemory(bytes)
+            } else {
+                DmaOp::FromMemory { len: requested }
+            };
+            Some(DmaRequest {
+                channel: FLOPPY_DMA_CHANNEL,
+                op,
+            })
+        } else {
+            None
+        };
+        if it.next().is_some() {
+            return Err(bad("trailing snapshot bytes"));
+        }
+        let valid_command = command.first().and_then(|&op| Self::command_length(op));
+        let command_consistent =
+            command.is_empty() || (valid_command == Some(expected) && command_len <= expected);
+        let result_consistent = match command.first().map(|op| op & 0x1F) {
+            Some(8) => matches!(result_len, 1 | 2),
+            Some(5 | 6 | 0x0A) => result_len == 7,
+            None => result_len == 1,
+            _ => false,
+        };
+        let valid_phase = command_consistent
+            && match phase {
+                Phase::Idle => {
+                    command.is_empty() && result.is_empty() && result_index == 0 && pending_tag == 0
+                }
+                Phase::Command => {
+                    !command.is_empty()
+                        && command_len < expected
+                        && result.is_empty()
+                        && result_index == 0
+                        && pending_tag == 0
+                }
+                Phase::Execution => pending_tag != 0 && result.is_empty() && result_index == 0,
+                Phase::Result => {
+                    result_consistent
+                        && result_index < result_len
+                        && pending_tag == 0
+                        && (command.is_empty() || command_len == expected)
+                }
+            };
+        if !valid_phase {
+            return Err(bad("inconsistent command phase"));
+        }
+        self.dor = dor;
+        self.phase = phase;
+        self.st0 = st0;
+        self.irq = irq != 0;
+        self.reset_poll = reset_poll;
+        self.present_cylinder = present_cylinder;
+        self.expected = expected;
+        self.command = command;
+        self.result = result;
+        self.result_index = result_index;
+        self.now = now;
+        self.pending_request = pending_request;
+        self.pending_read = pending_read;
+        self.pending_write = pending_write;
         Ok(())
-    }
-
-    fn dma_service_write(
-        &mut self,
-        _channel: u8,
-        _mem: &mut dyn DmaMemory,
-        _data: &[u8],
-    ) -> device::DmaTransfer {
-        // The floppy controller is a DMA *requester*, never the controller.
-        device::DmaTransfer::default()
     }
 
     fn set_trace_policy(&mut self, policy: device::TracePolicy) {
@@ -1149,6 +1357,7 @@ impl Device for Upd765 {
 mod tests {
     use super::*;
     use crate::dma8237::Dma8237;
+    use device::DmaMemory;
     use std::collections::HashMap;
     use testkit::MockBus;
 

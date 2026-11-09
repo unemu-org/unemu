@@ -112,6 +112,10 @@
 //! - **Keyboard-side command semantics** beyond reset/ACK: the keyboard's own
 //!   command set (LED set, typematic, scancode set select) is not interpreted.
 //! - **Test inputs** read (`0xE0`).
+//!
+//! Snapshots contain controller registers, tagged keyboard queues, pending
+//! replies, IRQ refill holds, the absolute PIT time base and the pending serial
+//! frame deadline (Intel 8042 datasheet, Data Bus Buffer and Interrupts).
 
 use std::collections::VecDeque;
 
@@ -711,6 +715,26 @@ impl Device for I8042 {
         let output_port = snapshot[2];
         let output_buffer = snapshot[3];
         let flags = snapshot[4];
+        if flags & !0x3D != 0
+            || snapshot[5] > 3
+            || snapshot[6] > 2
+            || (flags & 1 != 0) != (snapshot[6] != 0)
+            || (flags & 0x10 == 0 && snapshot[15] != 0)
+            || (flags & 0x20 == 0 && snapshot[24..32] != [0; 8])
+        {
+            return Err(DeviceError::InvalidSnapshot {
+                device: NAME,
+                reason: "invalid keyboard controller state",
+            });
+        }
+        let now = u64::from_le_bytes(std::array::from_fn(|i| snapshot[16 + i]));
+        let ready_at = u64::from_le_bytes(std::array::from_fn(|i| snapshot[24 + i]));
+        if flags & 0x20 != 0 && (ready_at < now || ready_at - now > KEYBOARD_BYTE_CLOCKS) {
+            return Err(DeviceError::InvalidSnapshot {
+                device: NAME,
+                reason: "invalid keyboard deadline",
+            });
+        }
         let expect = Expect::from_bits(snapshot[5]);
         let source = Source::from_bits(snapshot[6]);
         let len = u64::from_le_bytes([

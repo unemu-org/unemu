@@ -64,6 +64,11 @@
 //! - **The square-wave output** (register B SQWE / the SQW pin).
 //! - **Daylight-savings auto-adjust** (register B DSE): the bit is stored only.
 //! - **Oscillator control** via register A DV bits beyond the SET-bit freeze.
+//!
+//! Snapshots contain CMOS RAM, calendar, interrupt/UIP state, the subsecond
+//! phase, timing ratios and the absolute PIT time base. UIP and second deadlines
+//! are derived from that phase (MC146818 datasheet, Update Cycle). Guest-written
+//! calendar bytes remain unrestricted, just as on the register interface.
 
 use device::{AccessDir, Device, DeviceError, NextEvent, TraceEvent, VClock};
 
@@ -79,7 +84,7 @@ const PORT_DATA: u16 = 0x71;
 const NVRAM_LEN: usize = 64;
 
 /// Snapshot layout version tag.
-const SNAPSHOT_VERSION: u8 = 1;
+const SNAPSHOT_VERSION: u8 = 2;
 
 // CMOS register indices.
 const REG_SECONDS: usize = 0x00;
@@ -233,6 +238,10 @@ impl RtcTime {
             return;
         }
         self.hour = 0;
+        self.advance_one_day();
+    }
+
+    fn advance_one_day(&mut self) {
         self.weekday = if self.weekday >= 7 {
             1
         } else {
@@ -567,6 +576,57 @@ impl CmosRtc {
                 || self.decode_hour(self.nvram[REG_HOURS_ALARM]) == self.time.hour)
     }
 
+    /// Bound catch-up even when a restored time base precedes a very large
+    /// clock. Calendar and alarm state repeats daily apart from the date; the
+    /// two-digit calendar repeats every 36525 days (MC146818, Time and Calendar).
+    fn advance_seconds(&mut self, mut seconds: u64) {
+        while seconds != 0
+            && (self.time.second >= 60 || self.time.minute >= 60 || self.time.hour >= 24)
+        {
+            self.tick_one_second();
+            seconds -= 1;
+        }
+        let mut days = seconds / 86400;
+        if days != 0 {
+            let alarm_possible = |index, limit| {
+                self.nvram[index] >= ALARM_DONT_CARE || self.decode(self.nvram[index]) < limit
+            };
+            if alarm_possible(REG_SECONDS_ALARM, 60)
+                && alarm_possible(REG_MINUTES_ALARM, 60)
+                && (self.nvram[REG_HOURS_ALARM] >= ALARM_DONT_CARE
+                    || self.decode_hour(self.nvram[REG_HOURS_ALARM]) < 24)
+            {
+                self.nvram[REG_C] |= C_AF;
+            }
+            self.nvram[REG_C] |= C_UF;
+            // Guest writes may leave invalid dates. A finite prefix of daily
+            // carries normalizes them before whole calendar cycles can be skipped.
+            while days != 0
+                && (self.time.year >= 100
+                    || !(1..=12).contains(&self.time.month)
+                    || self.time.day == 0
+                    || self.time.day > RtcTime::days_in_month(self.time.month, self.time.year)
+                    || !(1..=7).contains(&self.time.weekday))
+            {
+                self.time.advance_one_day();
+                days -= 1;
+            }
+            let cycles = days / 36525;
+            if cycles != 0 {
+                self.time.weekday =
+                    ((u64::from(self.time.weekday - 1) + (cycles % 7) * 6) % 7 + 1) as u8;
+                days %= 36525;
+            }
+            for _ in 0..days {
+                self.time.advance_one_day();
+            }
+            self.refresh_irqf();
+        }
+        for _ in 0..seconds % 86400 {
+            self.tick_one_second();
+        }
+    }
+
     /// Recompute register C's IRQF from the enabled flags. The periodic flag
     /// (PF) is intentionally excluded: periodic interrupts are not generated (see
     /// the coverage matrix).
@@ -690,10 +750,7 @@ impl Device for CmosRtc {
             // the partial second first so even a u64-sized jump cannot overflow.
             let after = elapsed - remaining;
             self.accum = after % self.second_ticks;
-            self.tick_one_second();
-            for _ in 0..after / self.second_ticks {
-                self.tick_one_second();
-            }
+            self.advance_seconds(1 + after / self.second_ticks);
         }
         self.uip = self.accum >= self.second_ticks - self.uip_ticks;
     }
@@ -743,7 +800,7 @@ impl Device for CmosRtc {
     }
 
     fn save(&self) -> Vec<u8> {
-        let mut blob = Vec::with_capacity(1 + NVRAM_LEN + 7 + 1 + 1 + 8 * 3);
+        let mut blob = Vec::with_capacity(1 + NVRAM_LEN + 7 + 1 + 1 + 8 * 4);
         blob.push(SNAPSHOT_VERSION);
         blob.extend_from_slice(&self.nvram);
         blob.push(self.time.second);
@@ -758,11 +815,12 @@ impl Device for CmosRtc {
         blob.extend_from_slice(&self.accum.to_le_bytes());
         blob.extend_from_slice(&self.second_ticks.to_le_bytes());
         blob.extend_from_slice(&self.uip_ticks.to_le_bytes());
+        blob.extend_from_slice(&self.now.0.to_le_bytes());
         blob
     }
 
     fn restore(&mut self, snapshot: &[u8]) -> Result<(), DeviceError> {
-        const LEN: usize = 1 + NVRAM_LEN + 7 + 1 + 1 + 24;
+        const LEN: usize = 1 + NVRAM_LEN + 7 + 1 + 1 + 32;
         if snapshot.len() != LEN {
             return Err(DeviceError::InvalidSnapshot {
                 device: NAME,
@@ -773,6 +831,24 @@ impl Device for CmosRtc {
             return Err(DeviceError::InvalidSnapshot {
                 device: NAME,
                 reason: "unsupported snapshot version",
+            });
+        }
+        let read_timing = |off| u64::from_le_bytes(std::array::from_fn(|i| snapshot[off + i]));
+        let timing = 1 + NVRAM_LEN + 7 + 2;
+        let accum = read_timing(timing);
+        let second_ticks = read_timing(timing + 8);
+        let uip_ticks = read_timing(timing + 16);
+        if second_ticks == 0
+            || accum >= second_ticks
+            || uip_ticks > second_ticks
+            || snapshot[1 + NVRAM_LEN + 7] >= NVRAM_LEN as u8
+            || snapshot[1 + NVRAM_LEN + 8] & !3 != 0
+            || snapshot[1 + REG_A] & A_UIP != 0
+            || snapshot[1 + REG_C] & 0x0F != 0
+        {
+            return Err(DeviceError::InvalidSnapshot {
+                device: NAME,
+                reason: "invalid clock state",
             });
         }
         let mut off = 1;
@@ -802,6 +878,9 @@ impl Device for CmosRtc {
         self.accum = read_u64(off);
         self.second_ticks = read_u64(off + 8);
         self.uip_ticks = read_u64(off + 16);
+        self.now = VClock(u64::from_le_bytes(std::array::from_fn(|i| {
+            snapshot[snapshot.len() - 8 + i]
+        })));
         Ok(())
     }
 
@@ -822,6 +901,66 @@ impl Device for CmosRtc {
 mod tests {
     use super::*;
     use testkit::MockBus;
+
+    #[test]
+    fn bounded_calendar_catch_up_matches_second_steps_and_guest_written_dates() {
+        for (second, minute, hour, day, month, year) in [
+            (58, 59, 23, 28, 2, 0),
+            (58, 59, 23, 31, 12, 99),
+            (255, 255, 255, 255, 255, 255),
+            (99, 99, 99, 0, 0, 200),
+        ] {
+            for alarm in [0, 0xC0, 0xFF, 0x59] {
+                let mut fast = CmosRtc::new().with_timing(1, 0);
+                fast.set_time(second, minute, hour, 255, day, month, year);
+                fast.nvram[REG_SECONDS_ALARM] = alarm;
+                fast.nvram[REG_B] |= B_UIE | B_AIE;
+                let mut stepped = CmosRtc::new();
+                stepped.restore(&fast.save()).unwrap();
+                let seconds = 3 * 86400 + 123;
+                fast.advance_seconds(seconds);
+                for _ in 0..seconds {
+                    stepped.tick_one_second();
+                }
+                assert_eq!(fast.save(), stepped.save());
+            }
+        }
+    }
+
+    #[test]
+    fn restored_rtc_handles_maximum_clock_jump_without_unbounded_second_loop() {
+        let source = CmosRtc::new().with_timing(1, 0);
+        let mut restored = CmosRtc::new();
+        restored.restore(&source.save()).unwrap();
+        restored.sync(VClock(u64::MAX));
+        let total_days = u64::MAX / 86400;
+        let mut days = total_days % 36525;
+        let mut year = 0;
+        while days >= if year % 4 == 0 { 366 } else { 365 } {
+            days -= if year % 4 == 0 { 366 } else { 365 };
+            year += 1;
+        }
+        let mut month = 1;
+        while days >= u64::from(RtcTime::days_in_month(month, year)) {
+            days -= u64::from(RtcTime::days_in_month(month, year));
+            month += 1;
+        }
+        assert_eq!(
+            restored.time,
+            RtcTime {
+                second: (u64::MAX % 60) as u8,
+                minute: (u64::MAX / 60 % 60) as u8,
+                hour: (u64::MAX / 3600 % 24) as u8,
+                weekday: ((6 + total_days % 7) % 7 + 1) as u8,
+                day: days as u8 + 1,
+                month,
+                year,
+            }
+        );
+        assert_eq!(restored.now, VClock(u64::MAX));
+        assert_eq!(restored.accum, 0);
+        assert_eq!(restored.nvram[REG_C], C_UF | C_AF);
+    }
 
     /// Select `index` (NMI left enabled) then read `0x71`.
     fn read_reg(rtc: &mut CmosRtc, index: u8) -> u8 {
@@ -1377,7 +1516,6 @@ mod tests {
         let blob = rtc.save();
         let mut restored = CmosRtc::new();
         restored.restore(&blob).unwrap();
-        restored.now = rtc.now;
 
         assert_eq!(
             read_reg(&mut restored, REG_SECONDS as u8),

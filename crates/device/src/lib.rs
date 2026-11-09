@@ -467,10 +467,20 @@ pub trait Device {
     /// Return to power-on register state.
     fn reset(&mut self);
 
-    /// Serialize device state for snapshot/replay (§7, day-one).
+    /// Serialize device state for snapshot/replay (§7).
+    ///
+    /// The caller must first synchronize the device to the current machine
+    /// clock with [`Device::sync`] (or settle all scheduled devices on the bus).
+    /// Devices advance lazily, so saving without synchronization can retain
+    /// stale counters or deadlines. Restore the corresponding global clock
+    /// alongside the device: snapshots retain their absolute time base.
     fn save(&self) -> Vec<u8>;
 
     /// Restore device state from a [`Device::save`] blob.
+    ///
+    /// Reject malformed or inconsistent input with [`DeviceError::InvalidSnapshot`]
+    /// without changing the device. The blob must never cause a panic or an
+    /// unbounded transition when the restored device resumes execution.
     fn restore(&mut self, snapshot: &[u8]) -> Result<(), DeviceError>;
 
     /// A queued DMA transfer, if this device (a bus master such as the floppy

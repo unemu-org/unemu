@@ -33,6 +33,10 @@
 //! - Real timer-2 output: bit 5 is a benign toggle, not the PIT channel-2 pin.
 //! - Parity / I/O-channel-check NMI generation: the enable bits latch no error
 //!   and raise no NMI; the status bits always read clean.
+//!
+//! Snapshots contain the control nibble, per-read status phase and absolute
+//! trace time base. There are no timed deadlines in this compatibility model.
+//! See IBM Personal Computer AT Technical Reference, System Timers.
 
 use device::{AccessDir, Device, DeviceError, NextEvent, TraceEvent, VClock};
 
@@ -64,9 +68,9 @@ const IOCHK_STATUS: u8 = 0x40;
 const PARITY_STATUS: u8 = 0x80;
 
 /// Snapshot format version for [`Device::save`] / [`Device::restore`].
-const SNAPSHOT_VERSION: u8 = 1;
-/// Snapshot length: version + control byte + 8-byte read counter.
-const SNAPSHOT_LEN: usize = 1 + 1 + 8;
+const SNAPSHOT_VERSION: u8 = 2;
+/// Snapshot length: version, control byte, read counter and absolute trace clock.
+const SNAPSHOT_LEN: usize = 1 + 1 + 8 + 8;
 
 /// The PC/AT system-control port device (§7.1).
 ///
@@ -222,6 +226,7 @@ impl Device for SysControl {
         blob.push(SNAPSHOT_VERSION);
         blob.push(self.control);
         blob.extend_from_slice(&self.reads.to_le_bytes());
+        blob.extend_from_slice(&self.now.0.to_le_bytes());
         blob
     }
 
@@ -238,10 +243,19 @@ impl Device for SysControl {
                 reason: "unsupported snapshot version",
             });
         }
-        self.control = snapshot[1] & CONTROL_MASK;
+        if snapshot[1] & !CONTROL_MASK != 0 {
+            return Err(DeviceError::InvalidSnapshot {
+                device: NAME,
+                reason: "invalid control bits",
+            });
+        }
+        self.control = snapshot[1];
         let mut counter = [0u8; 8];
-        counter.copy_from_slice(&snapshot[2..SNAPSHOT_LEN]);
+        counter.copy_from_slice(&snapshot[2..10]);
         self.reads = u64::from_le_bytes(counter);
+        self.now = VClock(u64::from_le_bytes(std::array::from_fn(|i| {
+            snapshot[snapshot.len() - 8 + i]
+        })));
         Ok(())
     }
 

@@ -17,6 +17,11 @@
 //!   always reports "no interrupt pending".
 //! - No input source: the receiver holding register (RBR) always reads `0` and
 //!   the LSR data-ready bit is always clear.
+//!
+//! Snapshots contain registers, pending output bytes and the absolute trace
+//! time base; port wiring and output sinks belong to the receiving instance.
+//! Transmission has no timed deadlines here (PC16550D datasheet, Transmitter
+//! Holding Register). Restore does not emit historical bytes to a sink.
 
 use device::{
     AccessDir, ByteOutput, ByteSink, ByteStreamKind, Device, DeviceError, NextEvent, TraceEvent,
@@ -43,19 +48,19 @@ const MSR_IDLE: u32 = 0x00;
 const LCR_DLAB: u8 = 0x80;
 
 /// Snapshot layout version tag, first byte of [`Device::save`] output.
-const SNAPSHOT_VERSION: u8 = 1;
+const SNAPSHOT_VERSION: u8 = 2;
 
 /// Fixed-size header of a snapshot: version + 5 register bytes (IER, FCR, LCR,
-/// MCR, scratch) + DLL + DLM + 4-byte little-endian output length.
-const SNAPSHOT_HEADER_LEN: usize = 1 + 5 + 1 + 1 + 4;
+/// MCR, scratch), DLL, DLM, output length and absolute trace clock.
+const SNAPSHOT_HEADER_LEN: usize = 1 + 5 + 1 + 1 + 4 + 8;
 
 /// The 16550 UART device (§7.2).
 ///
 /// Constructed with the COM port base address; decodes the eight ports
 /// `base..=base+7`. Pending bytes stay in the legacy buffer drained with
-/// [`Uart16550::take_output`] because snapshot v1 serializes that buffer. A bound
+/// [`Uart16550::take_output`] because snapshot v2 serializes that buffer. A bound
 /// observer receives a copy without changing snapshot bytes. The legacy buffer
-/// remains unbounded until a separate snapshot-version migration removes it.
+/// remains unbounded until a separate output-buffer migration removes it.
 /// See `backlog/docs/design/observation.md`, §Sinks, bounds and lifecycle.
 /// When enabled, the bounded trace records port accesses, including divisor-latch
 /// writes, so it must not be treated as a transmitted byte stream: the National Semiconductor
@@ -77,7 +82,7 @@ pub struct Uart16550 {
     dll: u8,
     /// Divisor latch high (+1, DLAB=1). Stored; baud rate is not modelled.
     dlm: u8,
-    /// Pending transmitted bytes retained for snapshot v1 compatibility,
+    /// Pending transmitted bytes retained for snapshot v2 compatibility,
     /// independently of observation policy. Drained via [`Uart16550::take_output`].
     output: Vec<u8>,
     /// Optional observer receiving a copy; binding must not change saved state.
@@ -196,7 +201,7 @@ impl Device for Uart16550 {
         match offset {
             0 if self.dlab() => self.dll = byte,
             0 => {
-                // Snapshot v1 includes pending output, so observing cannot consume it.
+                // The snapshot includes pending output, so observing cannot consume it.
                 self.output.push(byte);
                 if let Some(sink) = &mut self.sink {
                     sink.push(byte);
@@ -269,6 +274,7 @@ impl Device for Uart16550 {
         blob.push(self.dlm);
         let len = self.output.len() as u32;
         blob.extend_from_slice(&len.to_le_bytes());
+        blob.extend_from_slice(&self.now.0.to_le_bytes());
         blob.extend_from_slice(&self.output);
         blob
     }
@@ -310,6 +316,9 @@ impl Device for Uart16550 {
         self.dll = dll;
         self.dlm = dlm;
         self.output = body.to_vec();
+        self.now = VClock(u64::from_le_bytes(std::array::from_fn(|i| {
+            snapshot[12 + i]
+        })));
         Ok(())
     }
 
@@ -358,8 +367,9 @@ mod tests {
         }
         let snapshot = plain.device().save();
         assert_eq!(routed.device().save(), snapshot);
-        assert_eq!(snapshot[0], 1);
-        assert_eq!(&snapshot[8..], &[4, 0, 0, 0, 0, 0xFF, 0xFF, 42]);
+        assert_eq!(snapshot[0], SNAPSHOT_VERSION);
+        assert_eq!(&snapshot[8..12], &[4, 0, 0, 0]);
+        assert_eq!(&snapshot[SNAPSHOT_HEADER_LEN..], &[0, 0xFF, 0xFF, 42]);
         assert_eq!(capture.drain(), Err(device::ByteOverflow { limit: 3 }));
         assert_eq!(routed.device().save(), snapshot);
         capture.start_epoch();

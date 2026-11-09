@@ -105,8 +105,44 @@ fn serial_workload_has_no_per_clock_devices() {
     }
 }
 
+#[test]
+fn settling_before_snapshot_clears_expired_dormant_keyboard_deadline() {
+    use device::Device;
+    let mut keyboard = devices::I8042::new();
+    keyboard.push_scancode(0x1E);
+    let mut bus = bus::Bus::new(
+        vec![Box::new(keyboard)],
+        bus::DecodeMap {
+            ports: vec![bus::PortRange {
+                ports: 0x60..=0x64,
+                device: 0,
+            }],
+            mmio: vec![],
+        },
+    );
+    bus.port_read(0x60, 1).unwrap();
+    bus.tick_due(VClock(1));
+    bus.tick_due(VClock(2000));
+    bus.settle();
+    let snapshot = bus.device(0).unwrap().save();
+    let mut restored = devices::I8042::new();
+    restored.restore(&snapshot).unwrap();
+    restored.push_scancode(0x9E);
+    assert_eq!(restored.port_read(0x64, 1).unwrap() & 1, 1);
+    assert_eq!(restored.port_read(0x60, 1).unwrap(), 0x9E);
+    let timestamp = restored.take_trace();
+    assert!(timestamp.iter().all(|event| matches!(
+        event,
+        device::TraceEvent::Port {
+            at: VClock(2000),
+            ..
+        }
+    )));
+}
+
 /// Intel 8254 datasheet, Mode 2: OUT pulses low for one clock at terminal count.
-/// A restored running count must advance from the bus clock of the restore.
+/// A running count restored at the clock it was saved at continues exactly
+/// as the original under both engines.
 #[test]
 fn pit_restore_at_clock_50_matches_both_engines() {
     use device::Device;
@@ -116,16 +152,15 @@ fn pit_restore_at_clock_50_matches_both_engines() {
         pit.port_write(port, 1, value).unwrap();
     }
     let mut reference = testkit::MockBus::new(Box::new(pit));
-    reference.tick(1);
+    reference.tick(50);
     let snapshot = reference.device().save();
-    reference.tick(49);
     reference.device_mut().restore(&snapshot).unwrap();
     let mut expected = Vec::new();
     for _ in 51..=251 {
         reference.tick(1);
         expected.push(reference.device().irq_pending());
     }
-    assert_eq!(expected.iter().position(|out| !out), Some(99));
+    assert_eq!(expected.iter().position(|out| !out), Some(50));
 
     for engine in [SchedulerEngine::PerClock, SchedulerEngine::Deadline] {
         let mut bus = bus::Bus::new(

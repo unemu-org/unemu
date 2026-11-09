@@ -1398,6 +1398,7 @@ mod tests {
                 .unwrap();
         assembled.machine.run().unwrap();
         let index = assembled.device_index[&DeviceId::Vga];
+        assembled.machine.bus_mut().settle();
         let before = assembled.machine.bus().device(index).unwrap().save();
         let first = assembled.capture_text(DeviceId::Vga).unwrap();
         let second = assembled.capture_text(DeviceId::Vga).unwrap();
