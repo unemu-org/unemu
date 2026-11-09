@@ -109,6 +109,14 @@ pub struct CpuStepRun {
     pub stop: CpuStepStop,
 }
 
+/// Optional boundary stops for step-bounded execution (§6).
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+pub struct StepRunOptions {
+    /// Stop at the first completed boundary where [`Cpu::irq_ready`] is true.
+    /// An already-ready CPU returns zero steps; queued IRQ delivery comes first.
+    pub stop_when_irq_ready: bool,
+}
+
 /// Why a step-bounded run returned (§6).
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum CpuStepStop {
@@ -186,6 +194,12 @@ pub trait Cpu {
     /// effects, including interrupt delivery or device completion consumption.
     /// The default returns [`CpuError::UnexpectedExit`] without execution.
     /// Unsupported modes and an outstanding IN value also return that error.
+    /// With `options.stop_when_irq_ready`, return [`CpuStepStop::IrqReady`] at
+    /// the first eligible boundary, including between REP iterations. Budget
+    /// exhaustion wins over readiness, and a queued eligible IRQ is delivered
+    /// before the readiness check, without consuming a step. The readiness
+    /// stop never splits an unfinished IN or MMIO unit or an interrupt shadow
+    /// (Intel 80286 Programmer's Reference Manual, §3.11.2 and §9.2).
     ///
     /// The stopping instruction's share of [`CpuStepRun::steps`] is:
     ///
@@ -202,7 +216,11 @@ pub trait Cpu {
     /// the delta of [`Cpu::completed_steps`] before propagating the error.
     /// REP restart follows Intel SDM Vol. 3A §7.6 (Program or Task Restart);
     /// the port-handoff count is an engine convention, not hardware timing.
-    fn run_steps(&mut self, _max_steps: u64) -> Result<CpuStepRun, CpuError> {
+    fn run_steps(
+        &mut self,
+        _max_steps: u64,
+        _options: StepRunOptions,
+    ) -> Result<CpuStepRun, CpuError> {
         Err(CpuError::UnexpectedExit {
             what: "step-bounded execution is unsupported by this backend or mode".to_string(),
         })

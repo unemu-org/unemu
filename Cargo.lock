@@ -181,7 +181,7 @@ dependencies = [
 [[package]]
 name = "x86jit-core"
 version = "0.3.0"
-source = "git+https://git.lab.mikolajczyk.org/unemu-org/x86jit?rev=e46ba9c0af90df615fa13724cfd46bec3bb9772c#e46ba9c0af90df615fa13724cfd46bec3bb9772c"
+source = "git+https://git.lab.mikolajczyk.org/unemu-org/x86jit?rev=70be0087b583f1e38bf3479d92e90e89ef998cf1#70be0087b583f1e38bf3479d92e90e89ef998cf1"
 dependencies = [
  "iced-x86",
 ]

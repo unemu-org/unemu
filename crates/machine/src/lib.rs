@@ -655,7 +655,10 @@ impl<C: Cpu> Machine<C> {
             let mut budget = cap
                 .map_or(u64::MAX, |cap| cap - self.virtual_time())
                 .min(self.step_limit.get());
-            if completing || (self.pic.poll().is_some() && !self.cpu.irq_ready()) {
+            let options = cpu::StepRunOptions {
+                stop_when_irq_ready: self.pic.poll().is_some() && !self.cpu.irq_ready(),
+            };
+            if completing {
                 budget = 1;
             } else if let Some(deadline) = self.next_deadline()? {
                 let clocks = u128::from(deadline.0 - self.clock.0);
@@ -665,7 +668,7 @@ impl<C: Cpu> Machine<C> {
                 budget = budget.min(u64::try_from(steps).unwrap_or(u64::MAX));
             }
             let before = self.cpu.completed_steps();
-            let run = match self.cpu.run_steps(budget) {
+            let run = match self.cpu.run_steps(budget, options) {
                 Ok(run) => run,
                 Err(error) => {
                     self.charge_steps(self.cpu.completed_steps() - before)?;

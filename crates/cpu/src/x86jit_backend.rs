@@ -17,7 +17,7 @@ use x86jit_core::{
     VmConfig,
 };
 
-use crate::{Cpu, CpuError, CpuReg, CpuStepRun, CpuStepStop, CpuStop, DmaAccess};
+use crate::{Cpu, CpuError, CpuReg, CpuStepRun, CpuStepStop, CpuStop, DmaAccess, StepRunOptions};
 
 /// A CPU backed by the `x86jit` interpreter core (§2.1).
 ///
@@ -281,10 +281,18 @@ impl Cpu for X86JitCpu {
         self.map_exit(exit)
     }
 
-    fn run_steps(&mut self, max_steps: u64) -> Result<CpuStepRun, CpuError> {
+    fn run_steps(
+        &mut self,
+        max_steps: u64,
+        options: StepRunOptions,
+    ) -> Result<CpuStepRun, CpuError> {
         let run = self
             .cpu
-            .run_steps(&self.vm, max_steps, StepOptions::default())
+            .run_steps(
+                &self.vm,
+                max_steps,
+                StepOptions::default().with_stop_when_irq_ready(options.stop_when_irq_ready),
+            )
             .map_err(|error| match error {
                 StepRunError::UnsupportedMode => CpuError::UnexpectedExit {
                     what: "step-bounded execution is unsupported by this backend or mode"
@@ -387,6 +395,101 @@ mod tests {
     use super::*;
 
     #[test]
+    fn readiness_option_stops_after_sti_protected_rep_iteration() {
+        let mut cpu =
+            X86JitCpu::new_real16_bare(0x10000, 0, 0x7C00, RealSegments::flat(0)).unwrap();
+        cpu.map_ram(0, 0x10000).unwrap();
+        // MOV CX, 3; STI; REP STOSB; HLT.
+        cpu.write_mem(0x7C00, &[0xB9, 3, 0, 0xFB, 0xF3, 0xAA, 0xF4])
+            .unwrap();
+        cpu.set_reg(CpuReg::Rdi, 0x600);
+        let options = StepRunOptions {
+            stop_when_irq_ready: true,
+        };
+        assert_eq!(
+            cpu.run_steps(64, options).unwrap(),
+            CpuStepRun {
+                steps: 3,
+                stop: CpuStepStop::IrqReady,
+            }
+        );
+        assert_eq!(cpu.retired(), 2);
+        assert_eq!(cpu.reg(CpuReg::Rcx), 2);
+        assert_eq!(cpu.reg(CpuReg::Rip), 0x7C04);
+        assert_eq!(
+            cpu.run_steps(0, options).unwrap(),
+            CpuStepRun {
+                steps: 0,
+                stop: CpuStepStop::Exit(CpuStop::BudgetExhausted),
+            }
+        );
+        assert_eq!(
+            cpu.run_steps(64, options).unwrap(),
+            CpuStepRun {
+                steps: 0,
+                stop: CpuStepStop::IrqReady,
+            }
+        );
+        // Delivery precedes the ready stop and adds no step to the handler's HLT.
+        cpu.write_mem(0x20, &[0, 0x80, 0, 0]).unwrap();
+        cpu.write_mem(0x8000, &[0xF4]).unwrap();
+        cpu.inject_irq(8);
+        assert_eq!(
+            cpu.run_steps(64, options).unwrap(),
+            CpuStepRun {
+                steps: 1,
+                stop: CpuStepStop::Exit(CpuStop::Halt),
+            }
+        );
+        assert!(!cpu.has_pending_irq());
+        assert_eq!(cpu.completed_steps(), 4);
+        assert_eq!(cpu.reg(CpuReg::Rcx), 2);
+    }
+
+    #[test]
+    fn readiness_option_waits_for_port_and_mmio_completion() {
+        let options = StepRunOptions {
+            stop_when_irq_ready: true,
+        };
+        // The IN or MMIO load is the instruction protected by STI.
+        let mut input = real_mode_cpu(&[0xFB, 0xE4, 0x80, 0xF4]);
+        let run = input.run_steps(64, options).unwrap();
+        assert_eq!(run.steps, 2);
+        assert!(matches!(
+            run.stop,
+            CpuStepStop::Exit(CpuStop::PortIn { .. })
+        ));
+        assert!(!input.irq_ready());
+        input.complete_port_in(0x42);
+        assert_eq!(
+            input.run_steps(64, options).unwrap(),
+            CpuStepRun {
+                steps: 0,
+                stop: CpuStepStop::IrqReady,
+            }
+        );
+        assert_eq!(input.reg(CpuReg::Rax), 0x42);
+
+        let mut mmio = real_mode_cpu(&[0xFB, 0xA0, 0, 0, 0xF4]);
+        let run = mmio.run_steps(64, options).unwrap();
+        assert_eq!(run.steps, 1);
+        assert!(matches!(
+            run.stop,
+            CpuStepStop::Exit(CpuStop::MmioRead { .. })
+        ));
+        assert!(!mmio.irq_ready());
+        mmio.complete_mmio_read(0x43);
+        assert_eq!(
+            mmio.run_steps(64, options).unwrap(),
+            CpuStepRun {
+                steps: 1,
+                stop: CpuStepStop::IrqReady,
+            }
+        );
+        assert_eq!(mmio.reg(CpuReg::Rax), 0x43);
+    }
+
+    #[test]
     fn completed_steps_survives_error_exits_and_zero_budget_calls() {
         for unsupported in [false, true] {
             let mut cpu =
@@ -402,10 +505,13 @@ mod tests {
             cpu.write_mem(0x7C00, &code).unwrap();
             cpu.set_reg(CpuReg::Rdi, 0x600);
             assert_eq!(cpu.completed_steps(), 0);
-            assert_eq!(cpu.run_steps(2).unwrap().steps, 2);
+            assert_eq!(
+                cpu.run_steps(2, StepRunOptions::default()).unwrap().steps,
+                2
+            );
             assert_eq!(cpu.completed_steps(), 2);
             assert_eq!(cpu.retired(), 1);
-            let error = cpu.run_steps(64).unwrap_err();
+            let error = cpu.run_steps(64, StepRunOptions::default()).unwrap_err();
             if unsupported {
                 assert!(matches!(error, CpuError::UnsupportedInstruction { .. }));
             } else {
@@ -413,7 +519,10 @@ mod tests {
             }
             assert_eq!(cpu.completed_steps(), 5);
             assert_eq!(cpu.retired(), 3);
-            assert_eq!(cpu.run_steps(0).unwrap().steps, 0);
+            assert_eq!(
+                cpu.run_steps(0, StepRunOptions::default()).unwrap().steps,
+                0
+            );
             assert_eq!(cpu.completed_steps(), 5);
         }
     }
@@ -433,7 +542,7 @@ mod tests {
         for n in [0, 7, 1, 9] {
             let ip = cpu.reg(CpuReg::Rip);
             let ax = cpu.reg(CpuReg::Rax);
-            let run = cpu.run_steps(n).unwrap();
+            let run = cpu.run_steps(n, StepRunOptions::default()).unwrap();
             assert_eq!(
                 run,
                 crate::CpuStepRun {
@@ -450,7 +559,7 @@ mod tests {
     #[test]
     fn run_steps_attributes_out_to_last_step_and_mmio_to_next_step() {
         let mut out = real_mode_cpu(&[0x90, 0xE6, 0x80, 0xF4]);
-        let run = out.run_steps(2).unwrap();
+        let run = out.run_steps(2, StepRunOptions::default()).unwrap();
         assert_eq!(run.steps, 2);
         assert_eq!(
             run.stop,
@@ -481,7 +590,7 @@ mod tests {
             ),
         ] {
             let mut cpu = real_mode_cpu(&[0x90, opcode, 0, 0, 0xF4]);
-            let run = cpu.run_steps(2).unwrap();
+            let run = cpu.run_steps(2, StepRunOptions::default()).unwrap();
             assert_eq!(run.steps, 1);
             assert_eq!(run.stop, crate::CpuStepStop::Exit(stop));
             assert_eq!(cpu.reg(CpuReg::Rip), 0x7C01);
@@ -491,7 +600,7 @@ mod tests {
                 CpuStop::MmioWrite { .. } => cpu.complete_mmio_write(),
                 _ => unreachable!(),
             }
-            let replay = cpu.run_steps(1).unwrap();
+            let replay = cpu.run_steps(1, StepRunOptions::default()).unwrap();
             assert_eq!(replay.steps, 1);
             assert_eq!(
                 replay.stop,
@@ -508,12 +617,18 @@ mod tests {
         flags.if_ = true;
         cpu.cpu.set_flags(flags);
         assert!(cpu.irq_ready());
-        assert_eq!(cpu.run_steps(1).unwrap().steps, 1);
+        assert_eq!(
+            cpu.run_steps(1, StepRunOptions::default()).unwrap().steps,
+            1
+        );
         assert!(cpu.interrupts_enabled());
         assert!(!cpu.irq_ready());
-        cpu.run_steps(0).unwrap();
+        cpu.run_steps(0, StepRunOptions::default()).unwrap();
         assert!(!cpu.irq_ready());
-        assert_eq!(cpu.run_steps(1).unwrap().steps, 1);
+        assert_eq!(
+            cpu.run_steps(1, StepRunOptions::default()).unwrap().steps,
+            1
+        );
         assert!(cpu.irq_ready());
         assert!(!cpu.has_pending_irq());
     }
@@ -523,7 +638,7 @@ mod tests {
         let mut cpu = X86JitCpu::new(0x1000, 0, &[0x90, 0xF4]).unwrap();
         for n in [0, 1] {
             assert!(matches!(
-                cpu.run_steps(n),
+                cpu.run_steps(n, StepRunOptions::default()),
                 Err(CpuError::UnexpectedExit { what }) if what == "step-bounded execution is unsupported by this backend or mode"
             ));
             assert_eq!(cpu.reg(CpuReg::Rip), 0);
@@ -538,7 +653,7 @@ mod tests {
         let mut flags = cpu.cpu.flags();
         flags.if_ = true;
         cpu.cpu.set_flags(flags);
-        let run = cpu.run_steps(1).unwrap();
+        let run = cpu.run_steps(1, StepRunOptions::default()).unwrap();
         assert_eq!(run.steps, 1);
         assert_eq!(
             run.stop,
@@ -548,16 +663,19 @@ mod tests {
             })
         );
         assert!(!cpu.irq_ready());
-        assert_eq!(cpu.run_steps(0).unwrap().steps, 0);
+        assert_eq!(
+            cpu.run_steps(0, StepRunOptions::default()).unwrap().steps,
+            0
+        );
         assert!(
-            matches!(cpu.run_steps(1), Err(CpuError::UnexpectedExit { what }) if what == "pending port input must be completed before step-bounded execution")
+            matches!(cpu.run_steps(1, StepRunOptions::default()), Err(CpuError::UnexpectedExit { what }) if what == "pending port input must be completed before step-bounded execution")
         );
         assert_eq!(cpu.reg(CpuReg::Rip), 0x7C02);
         assert_eq!(cpu.retired(), 1);
         cpu.complete_port_in(0x42);
         assert!(cpu.irq_ready());
         assert_eq!(cpu.retired(), 1);
-        let run = cpu.run_steps(1).unwrap();
+        let run = cpu.run_steps(1, StepRunOptions::default()).unwrap();
         assert_eq!(run.steps, 1);
         assert_eq!(run.stop, crate::CpuStepStop::Exit(CpuStop::Halt));
         assert_eq!(cpu.reg(CpuReg::Rax), 0x42);

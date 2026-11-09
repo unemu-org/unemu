@@ -75,10 +75,96 @@ fn mask_in_cli_section_cancels_pending_request_without_inta() {
     let outcome = machine.run_bounded(Some(2)).unwrap();
     assert!(machine.cpu.injected.is_empty());
     assert_eq!(outcome, RunOutcome::RetiredCapReached);
+    assert_eq!(
+        machine.cpu.step_options,
+        [
+            cpu::StepRunOptions {
+                stop_when_irq_ready: true
+            },
+            cpu::StepRunOptions::default(),
+        ]
+    );
     assert!(!log
         .take()
         .iter()
         .any(|e| matches!(e, PicObservation::Acknowledge { .. })));
+}
+
+#[test]
+fn long_cli_section_reaches_irq_readiness_in_one_run() {
+    let (mut machine, _) = pending_machine(vec![
+        MockCpuStep {
+            run: CpuStepRun {
+                steps: 4002,
+                stop: CpuStepStop::IrqReady,
+            },
+            ..step(4096, 4002, CpuStop::BudgetExhausted, true)
+        },
+        step(94, 1, CpuStop::Halt, false),
+    ]);
+    // No device deadline interrupts the CLI section, STI and protected unit.
+    machine.bus = Bus::new(Vec::new(), DecodeMap::default());
+    machine.cpu = machine.cpu.with_interrupts_enabled(false);
+    assert_eq!(machine.run_bounded(Some(4096)).unwrap(), RunOutcome::Halted);
+    assert_eq!(machine.cpu.step_budgets, [4096, 94]);
+    assert_eq!(
+        machine.cpu.step_options,
+        [
+            cpu::StepRunOptions {
+                stop_when_irq_ready: true
+            },
+            cpu::StepRunOptions::default(),
+        ]
+    );
+    assert_eq!(machine.cpu.delivered, [8]);
+    assert_eq!(machine.virtual_time(), 4003);
+}
+
+#[test]
+fn pending_irq_run_obeys_deadline_cap_and_step_limit() {
+    for (cap, limit, budgets) in [
+        (80, 4096, vec![80]),
+        (120, 4096, vec![100, 20]),
+        (120, 64, vec![64, 36, 20]),
+    ] {
+        let script = budgets
+            .iter()
+            .map(|&budget| step(budget, budget, CpuStop::BudgetExhausted, false))
+            .collect();
+        let (mut machine, log) = pending_machine(script);
+        machine.cpu = machine.cpu.with_interrupts_enabled(false);
+        machine = machine.with_step_limit(NonZeroU64::new(limit).unwrap());
+        let ticks = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        machine.bus = Bus::new(
+            vec![Box::new(ScheduledLine {
+                every_clock: false,
+                ticks: ticks.clone(),
+                high: false,
+            })],
+            DecodeMap::default(),
+        );
+        assert_eq!(
+            machine.run_bounded(Some(cap)).unwrap(),
+            RunOutcome::RetiredCapReached
+        );
+        assert_eq!(machine.cpu.step_budgets, budgets);
+        assert!(machine
+            .cpu
+            .step_options
+            .iter()
+            .all(|options| options.stop_when_irq_ready));
+        assert_eq!(machine.clock(), VClock(cap));
+        assert_eq!(
+            *ticks.borrow(),
+            if cap >= 100 {
+                vec![VClock(100)]
+            } else {
+                Vec::new()
+            }
+        );
+        assert!(machine.cpu.injected.is_empty());
+        assert!(log.take().is_empty());
+    }
 }
 
 #[test]
@@ -230,6 +316,7 @@ fn real_mode_mov_ss_mov_sp_keeps_irq_off_the_stack_switch() {
     for (port, value) in [(0x20, 0x11), (0x21, 8), (0x21, 4), (0x21, 1)] {
         pic.port_write(port, 1, value).unwrap();
     }
+    let log = pic.observe();
     let mut machine = Machine::new(
         cpu,
         Bus::new(Vec::new(), DecodeMap::default()),
@@ -244,11 +331,64 @@ fn real_mode_mov_ss_mov_sp_keeps_irq_off_the_stack_switch() {
     machine.run_bounded(Some(3)).unwrap();
     assert!(!machine.cpu.irq_ready());
     machine.pic.set_irq_line(0, true);
+    machine.run_bounded(Some(4)).unwrap();
+    assert!(log.take().is_empty());
+    assert!(!machine.cpu.has_pending_irq());
     assert_eq!(machine.run_bounded(Some(100)).unwrap(), RunOutcome::Halted);
     let mut saved = [0; 2];
     machine.cpu.read_mem(0x600, &mut saved).unwrap();
     assert_eq!(u16::from_le_bytes(saved), 0x0FFA);
     assert_eq!(machine.cpu.reg(cpu::CpuReg::Rsp), 0x1000);
+    assert!(matches!(
+        log.take().as_slice(),
+        [PicObservation::Acknowledge { vector: 8, .. }]
+    ));
+}
+
+#[test]
+fn real_mode_pending_irq_stops_between_rep_iterations() {
+    for split_at_ready_boundary in [false, true] {
+        use cpu::x86jit_backend::{RealSegments, X86JitCpu};
+        let mut cpu =
+            X86JitCpu::new_real16_bare(0x10000, 0, 0x7C00, RealSegments::flat(0)).unwrap();
+        cpu.map_ram(0, 0x10000).unwrap();
+        // MOV CX, 3; STI; REP STOSB; CLI; HLT.
+        cpu.write_mem(0x7C00, &[0xB9, 3, 0, 0xFB, 0xF3, 0xAA, 0xFA, 0xF4])
+            .unwrap();
+        cpu.set_reg(cpu::CpuReg::Rdi, 0x600);
+        // Save the remaining iteration count before returning to REP.
+        cpu.write_mem(0x8000, &[0x89, 0x0E, 0x10, 0x06, 0xCF])
+            .unwrap();
+        cpu.write_mem(0x20, &[0, 0x80, 0, 0]).unwrap();
+        let mut pic = SharedPic::new();
+        for (port, value) in [(0x20, 0x11), (0x21, 8), (0x21, 4), (0x21, 1)] {
+            pic.port_write(port, 1, value).unwrap();
+        }
+        let log = pic.observe();
+        let mut machine = Machine::new(
+            cpu,
+            Bus::new(Vec::new(), DecodeMap::default()),
+            Box::new(pic),
+            Some(64),
+            Vec::new(),
+            None,
+        )
+        .with_scheduler_engine(SchedulerEngine::Deadline)
+        .with_interrupt_timing(InterruptTiming::Corrected);
+        machine.run_bounded(Some(2)).unwrap();
+        machine.pic.set_irq_line(0, true);
+        if split_at_ready_boundary {
+            machine.run_bounded(Some(3)).unwrap();
+            assert!(log.take().is_empty());
+            assert!(!machine.cpu.has_pending_irq());
+        }
+        assert_eq!(machine.run_bounded(Some(100)).unwrap(), RunOutcome::Halted);
+        let mut remaining = [0; 2];
+        machine.cpu.read_mem(0x610, &mut remaining).unwrap();
+        assert_eq!(u16::from_le_bytes(remaining), 2);
+        assert_eq!(machine.virtual_time(), 9);
+        assert_eq!(machine.cpu.retired(), 7);
+    }
 }
 
 #[test]
@@ -549,51 +689,59 @@ fn real_mode_step_limits_and_legacy_quanta_do_not_move_observables() {
 
 #[test]
 fn real_mode_sti_nop_accepts_before_the_next_device_deadline() {
-    use cpu::x86jit_backend::{RealSegments, X86JitCpu};
-    let mut cpu = X86JitCpu::new_real16_bare(0x10000, 0, 0x7C00, RealSegments::flat(0)).unwrap();
-    cpu.map_ram(0, 0x10000).unwrap();
-    cpu.set_reg(cpu::CpuReg::Rdx, 0x3F8);
-    cpu.set_reg(cpu::CpuReg::Rsp, 0x7000);
-    cpu.write_mem(0x7C00, &[0xFB, 0x90, 0xB0, b'P', 0xEE, 0xFA, 0xF4])
-        .unwrap();
-    cpu.write_mem(0x8000, &[0xB0, b'I', 0xEE, 0xCF]).unwrap();
-    cpu.write_mem(0x20, &[0, 0x80, 0, 0]).unwrap();
-    let mut pic = SharedPic::new();
-    for (port, value) in [(0x20, 0x11), (0x21, 8), (0x21, 4), (0x21, 1)] {
-        pic.port_write(port, 1, value).unwrap();
+    for split_at_ready_boundary in [false, true] {
+        use cpu::x86jit_backend::{RealSegments, X86JitCpu};
+        let mut cpu =
+            X86JitCpu::new_real16_bare(0x10000, 0, 0x7C00, RealSegments::flat(0)).unwrap();
+        cpu.map_ram(0, 0x10000).unwrap();
+        cpu.set_reg(cpu::CpuReg::Rdx, 0x3F8);
+        cpu.set_reg(cpu::CpuReg::Rsp, 0x7000);
+        cpu.write_mem(0x7C00, &[0xFB, 0x90, 0xB0, b'P', 0xEE, 0xFA, 0xF4])
+            .unwrap();
+        cpu.write_mem(0x8000, &[0xB0, b'I', 0xEE, 0xCF]).unwrap();
+        cpu.write_mem(0x20, &[0, 0x80, 0, 0]).unwrap();
+        let mut pic = SharedPic::new();
+        for (port, value) in [(0x20, 0x11), (0x21, 8), (0x21, 4), (0x21, 1)] {
+            pic.port_write(port, 1, value).unwrap();
+        }
+        pic.set_irq_line(0, true);
+        let log = pic.observe();
+        let capture = device::ByteCapture::new(8);
+        let mut uart = devices::Uart16550::new(0x3F8);
+        uart.byte_output()
+            .unwrap()
+            .bind_sink(Box::new(capture.clone()));
+        let mut machine = Machine::new(
+            cpu,
+            Bus::new(
+                vec![Box::new(uart)],
+                DecodeMap {
+                    ports: vec![PortRange {
+                        ports: 0x3F8..=0x3FF,
+                        device: 0,
+                    }],
+                    mmio: Vec::new(),
+                },
+            ),
+            Box::new(pic),
+            Some(65_536),
+            Vec::new(),
+            None,
+        )
+        .with_scheduler_engine(SchedulerEngine::Deadline)
+        .with_interrupt_timing(InterruptTiming::Corrected);
+        if split_at_ready_boundary {
+            machine.run_bounded(Some(2)).unwrap();
+            assert!(log.take().is_empty());
+            assert!(!machine.cpu.has_pending_irq());
+        }
+        assert_eq!(machine.run_bounded(Some(100)).unwrap(), RunOutcome::Halted);
+        assert_eq!(capture.drain().unwrap(), b"IP");
+        assert!(matches!(
+            log.take().as_slice(),
+            [PicObservation::Acknowledge { vector: 8, .. }]
+        ));
     }
-    pic.set_irq_line(0, true);
-    let log = pic.observe();
-    let capture = device::ByteCapture::new(8);
-    let mut uart = devices::Uart16550::new(0x3F8);
-    uart.byte_output()
-        .unwrap()
-        .bind_sink(Box::new(capture.clone()));
-    let mut machine = Machine::new(
-        cpu,
-        Bus::new(
-            vec![Box::new(uart)],
-            DecodeMap {
-                ports: vec![PortRange {
-                    ports: 0x3F8..=0x3FF,
-                    device: 0,
-                }],
-                mmio: Vec::new(),
-            },
-        ),
-        Box::new(pic),
-        Some(65_536),
-        Vec::new(),
-        None,
-    )
-    .with_scheduler_engine(SchedulerEngine::Deadline)
-    .with_interrupt_timing(InterruptTiming::Corrected);
-    assert_eq!(machine.run_bounded(Some(100)).unwrap(), RunOutcome::Halted);
-    assert_eq!(capture.drain().unwrap(), b"IP");
-    assert!(matches!(
-        log.take().as_slice(),
-        [PicObservation::Acknowledge { vector: 8, .. }]
-    ));
 }
 
 /// A bus write queues DMA, and its first completion queues immediate follow-on

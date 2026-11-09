@@ -15,7 +15,7 @@
 
 use std::collections::VecDeque;
 
-use cpu::{Cpu, CpuError, CpuReg, CpuStepRun, CpuStepStop, CpuStop};
+use cpu::{Cpu, CpuError, CpuReg, CpuStepRun, CpuStepStop, CpuStop, StepRunOptions};
 use device::{Device, DeviceError, VClock};
 
 /// A mock bus that drives one device in isolation (§10).
@@ -112,6 +112,8 @@ pub struct MockCpu {
     irq_ready: bool,
     /// Budgets supplied to [`Cpu::run_steps`], including zero-budget calls.
     pub step_budgets: Vec<u64>,
+    /// Options supplied to [`Cpu::run_steps`], paired with [`Self::step_budgets`].
+    pub step_options: Vec<StepRunOptions>,
     regs: [u64; 9],
     /// Values the machine completed pending reads with, in order.
     pub completions: Vec<u64>,
@@ -138,6 +140,7 @@ impl MockCpu {
             step_program: VecDeque::new(),
             irq_ready: false,
             step_budgets: Vec::new(),
+            step_options: Vec::new(),
             regs: [0; 9],
             completions: Vec::new(),
             retired_per_run: 1,
@@ -208,12 +211,29 @@ impl Cpu for MockCpu {
         Ok(self.program.pop_front().unwrap_or(CpuStop::Halt))
     }
 
-    fn run_steps(&mut self, max_steps: u64) -> Result<CpuStepRun, CpuError> {
+    fn run_steps(
+        &mut self,
+        max_steps: u64,
+        options: StepRunOptions,
+    ) -> Result<CpuStepRun, CpuError> {
         self.step_budgets.push(max_steps);
+        self.step_options.push(options);
         if max_steps == 0 {
             return Ok(CpuStepRun {
                 steps: 0,
                 stop: CpuStepStop::Exit(CpuStop::BudgetExhausted),
+            });
+        }
+        if self.pending_irq && self.irq_ready {
+            self.delivered
+                .push(*self.injected.last().expect("pending vector"));
+            self.pending_irq = false;
+            self.irq_ready = false;
+        }
+        if options.stop_when_irq_ready && self.irq_ready {
+            return Ok(CpuStepRun {
+                steps: 0,
+                stop: CpuStepStop::IrqReady,
             });
         }
         let step = self
@@ -227,10 +247,12 @@ impl Cpu for MockCpu {
             step.run.steps <= max_steps,
             "mock result exceeds step budget"
         );
-        if self.pending_irq && self.irq_ready {
-            self.delivered
-                .push(*self.injected.last().expect("pending vector"));
-            self.pending_irq = false;
+        if step.run.stop == CpuStepStop::IrqReady {
+            assert!(
+                options.stop_when_irq_ready,
+                "unsolicited mock readiness stop"
+            );
+            assert!(step.irq_ready, "mock readiness stop must be IRQ-ready");
         }
         self.completed_steps += step.run.steps;
         self.retired += step.retired;
@@ -305,6 +327,44 @@ mod tests {
     use cpu::{CpuStepRun, CpuStepStop};
 
     #[test]
+    fn ready_stop_defers_to_zero_budget_and_queued_delivery() {
+        let mut cpu = MockCpu::new(vec![])
+            .with_irq_ready(true)
+            .with_step_program(vec![MockCpuStep {
+                max_steps: 8,
+                run: CpuStepRun {
+                    steps: 1,
+                    stop: CpuStepStop::Exit(CpuStop::Halt),
+                },
+                retired: 1,
+                irq_ready: false,
+            }]);
+        let options = StepRunOptions {
+            stop_when_irq_ready: true,
+        };
+        assert_eq!(
+            cpu.run_steps(0, options).unwrap(),
+            CpuStepRun {
+                steps: 0,
+                stop: CpuStepStop::Exit(CpuStop::BudgetExhausted),
+            }
+        );
+        assert_eq!(
+            cpu.run_steps(8, options).unwrap(),
+            CpuStepRun {
+                steps: 0,
+                stop: CpuStepStop::IrqReady,
+            }
+        );
+        assert_eq!(cpu.completed_steps(), 0);
+        cpu.inject_irq(8);
+        assert_eq!(cpu.run_steps(8, options).unwrap().steps, 1);
+        assert_eq!(cpu.delivered, [8]);
+        assert_eq!(cpu.completed_steps(), 1);
+        assert_eq!(cpu.step_options, [options; 3]);
+    }
+
+    #[test]
     fn stepped_script_tracks_budget_retirement_and_readiness() {
         let run = CpuStepRun {
             steps: 3,
@@ -317,18 +377,27 @@ mod tests {
             irq_ready: true,
         }]);
         assert!(!cpu.irq_ready());
-        let zero = cpu.run_steps(0).unwrap();
+        let zero = cpu.run_steps(0, StepRunOptions::default()).unwrap();
         assert_eq!(zero.steps, 0);
         assert_eq!(zero.stop, CpuStepStop::Exit(CpuStop::BudgetExhausted));
         assert!(!cpu.irq_ready());
         assert_eq!(cpu.completed_steps(), 0);
-        assert_eq!(cpu.run_steps(7).unwrap(), run);
+        assert_eq!(
+            cpu.run_steps(
+                7,
+                StepRunOptions {
+                    stop_when_irq_ready: true
+                }
+            )
+            .unwrap(),
+            run
+        );
         assert_eq!(cpu.completed_steps(), 3);
         assert_eq!(cpu.retired(), 0); // A partial REP can consume steps without retiring.
         assert!(cpu.irq_ready());
         assert_eq!(cpu.step_budgets, vec![0, 7]);
         assert!(matches!(
-            cpu.run_steps(1),
+            cpu.run_steps(1, StepRunOptions::default()),
             Err(CpuError::UnexpectedExit { .. })
         ));
         assert_eq!(cpu.completed_steps(), 3);
@@ -362,12 +431,12 @@ mod tests {
             },
         ]);
         cpu.inject_irq(0x20);
-        cpu.run_steps(1).unwrap();
+        cpu.run_steps(1, StepRunOptions::default()).unwrap();
         assert!(cpu.has_pending_irq());
         assert!(cpu.delivered.is_empty());
-        cpu.run_steps(0).unwrap();
+        cpu.run_steps(0, StepRunOptions::default()).unwrap();
         assert!(cpu.has_pending_irq());
-        cpu.run_steps(1).unwrap();
+        cpu.run_steps(1, StepRunOptions::default()).unwrap();
         assert!(!cpu.has_pending_irq());
         assert_eq!(cpu.delivered, vec![0x20]);
         assert_eq!(cpu.retired(), 2);
