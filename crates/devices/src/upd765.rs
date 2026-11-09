@@ -22,6 +22,13 @@
 //! phase and raises IRQ6. The controller never holds a memory reference and the
 //! 8237 never sees the disk.
 //!
+//! READ/WRITE DATA honour MT: after EOT on head 0, a multi-track command
+//! continues at sector 1 on head 1 of the same cylinder. Each sector is checked
+//! against the physical geometry before mapping it into the backing image.
+//! See NEC µPD765 datasheet, Functional Description of Commands, READ DATA /
+//! WRITE DATA and Table 2; Intel 8272A datasheet, Command Descriptions, READ DATA
+//! / WRITE DATA and Table 8.
+//!
 //! ## Geometry and per-drive media
 //!
 //! Geometry is per-drive data, not a hardcoded constant. Each of the four
@@ -47,7 +54,7 @@
 //! |--------------------------------|--------|----------|--------------------------------|
 //! | SPECIFY                        | `0x03` | yes      | timings accepted, not enforced |
 //! | RECALIBRATE                    | `0x07` | yes      | seek to cylinder 0, IRQ6       |
-//! | SENSE INTERRUPT STATUS         | `0x08` | yes      | ST0 + present cylinder         |
+//! | SENSE INTERRUPT STATUS         | `0x08` | yes      | ST0 + PCN, or invalid if idle  |
 //! | SEEK                           | `0x0F` | yes      | set present cylinder, IRQ6     |
 //! | READ ID                        | `0x4A` | yes      | current C/H/R/N                |
 //! | READ DATA                      | `0x06` | yes      | DMA transfer to memory, IRQ6   |
@@ -64,9 +71,12 @@
 //! - **Cycle-accurate timing**: SPECIFY's step-rate / head-load / head-unload
 //!   times are accepted and discarded; seeks and reads complete immediately in
 //!   virtual time. There is no index-pulse or rotational-latency model.
-//! - **The multitrack (MT) / skip (SK) modifiers and MFM/FM selection**: the high
-//!   command bits are decoded off but do not change the transfer — on both READ
-//!   and WRITE every access is treated as a normal MFM transfer within one track.
+//! - **The skip (SK) modifier and MFM/FM selection**: SK and MFM do not change
+//!   the transfer; READ and WRITE treat the raw image as normal MFM sectors.
+//! - **TC-dependent error termination**: DMA completion reports a byte count,
+//!   without the terminal-count signal. Exhausting the valid sector IDs retains
+//!   normal completion: TC at that boundary cannot be distinguished from a
+//!   search for the next, missing sector (NEC µPD765 datasheet, READ DATA).
 
 use device::{
     AccessDir, Device, DeviceError, DmaMemory, DmaOp, DmaOutcome, DmaRequest, TraceEvent, VClock,
@@ -226,6 +236,7 @@ const ST0_ABNORMAL: u8 = 0b0100_0000;
 /// ST0 bit 3 (NR): the addressed drive is not ready (no disk mounted).
 const ST0_NOT_READY: u8 = 1 << 3;
 /// ST1 bit 2 (ND): no data — the requested sector was not found on the track.
+/// NEC µPD765 / Intel 8272A datasheets, Status Register 1, No Data.
 const ST1_NO_DATA: u8 = 1 << 2;
 /// ST1 bit 1 (NW): not writable — a WRITE addressed a write-protected disk.
 const ST1_NOT_WRITABLE: u8 = 1 << 1;
@@ -259,8 +270,8 @@ struct PendingRead {
 ///
 /// Unlike [`PendingRead`] this also carries `param_head` — the head field from
 /// the command parameters — because committing the bytes needs the same
-/// CHS→offset mapping the read path uses, while the result phase reports the
-/// drive-select head.
+/// CHS→offset mapping the read path uses. `head` retains the drive-select head
+/// from which the result ID advances.
 #[derive(Copy, Clone, Debug)]
 struct PendingWrite {
     drive: u8,
@@ -499,8 +510,18 @@ impl Upd765 {
 
     /// SENSE INTERRUPT STATUS: report ST0 and the present cylinder, clearing the
     /// pending interrupt. After a reset the first four calls report the drive-poll
-    /// status instead.
+    /// status instead. With nothing pending, return only invalid-command ST0.
+    /// See NEC µPD765 datasheet, Functional Description of Commands, SENSE
+    /// INTERRUPT STATUS / INVALID; Intel 8272A datasheet, Command Descriptions,
+    /// SENSE INTERRUPT STATUS / INVALID.
     fn cmd_sense_interrupt(&mut self) {
+        if self.reset_poll == 0 && !self.irq {
+            self.st0 = 0x80;
+            self.result = vec![self.st0];
+            self.result_index = 0;
+            self.phase = Phase::Result;
+            return;
+        }
         let (st0, pcn) = if self.reset_poll > 0 {
             let drive = 4 - self.reset_poll;
             self.reset_poll -= 1;
@@ -528,9 +549,11 @@ impl Upd765 {
         self.phase = Phase::Result;
     }
 
-    /// READ DATA: pull the sectors from `R` to `EOT` on the addressed track out
-    /// of the backing image and queue them as a DMA request. The result phase and
-    /// IRQ6 follow once the machine reports the transfer complete.
+    /// READ DATA: queue sectors through EOT, continuing onto head 1 when MT is
+    /// set. Only sector IDs within the physical geometry can reach the image;
+    /// an invalid starting CHS returns ND (NEC µPD765 datasheet, READ DATA;
+    /// Intel 8272A datasheet, READ DATA and Status Register 1, ND).
+    /// Result and IRQ6 follow DMA completion.
     fn cmd_read_data(&mut self) {
         let drive_head = self.command[1];
         let drive = drive_head & 0b11;
@@ -539,7 +562,6 @@ impl Upd765 {
         let param_head = self.command[3];
         let sector = self.command[4];
         let sector_size_code = self.command[5];
-        let end_of_track = self.command[6];
 
         // Resolve the addressed drive's mounted media; an empty bay is not ready.
         let Some(media) = self.drives[usize::from(drive)].as_ref() else {
@@ -570,14 +592,12 @@ impl Upd765 {
             return;
         }
 
-        // Reads span R..=EOT on the one track; the 8237's programmed count clamps
-        // how many of those bytes actually land in memory.
-        let last = end_of_track.max(sector);
-        let sector_count = u32::from(last.saturating_sub(sector)) + 1;
-        let mut data = Vec::with_capacity(sector_count as usize * SECTOR_SIZE);
-        for i in 0..sector_count {
-            let s = sector + i as u8;
-            let offset = geometry.chs_to_offset(cylinder, param_head, s);
+        let mut data = Vec::new();
+        for (h, s) in self
+            .data_sectors(param_head, sector)
+            .take_while(|&(h, s)| geometry.contains(cylinder, h, s))
+        {
+            let offset = geometry.chs_to_offset(cylinder, h, s);
             for j in 0..SECTOR_SIZE {
                 data.push(media.image.get(offset + j).copied().unwrap_or(0));
             }
@@ -597,8 +617,47 @@ impl Upd765 {
         self.phase = Phase::Execution;
     }
 
-    /// Terminate a READ or WRITE DATA abnormally without a DMA transfer: build
-    /// the seven-byte result with the given ST0/ST1 fault bits and raise IRQ6.
+    /// Sector IDs in transfer order. MT spans at most the two sides of one
+    /// cylinder, not the next cylinder (NEC µPD765 datasheet, READ DATA,
+    /// Multi-Track; Intel 8272A datasheet, READ DATA, Transfer Capacity).
+    fn data_sectors(&self, head: u8, sector: u8) -> impl Iterator<Item = (u8, u8)> {
+        let eot = self.command[6];
+        let next_head = self.command[0] & 0x80 != 0 && head == 0 && sector <= eot;
+        (sector..=eot.max(sector))
+            .map(move |r| (head, r))
+            .chain((1..=eot).filter(move |_| next_head).map(|r| (1, r)))
+    }
+
+    /// Result ID after a transfer terminated by the host: at EOT, R becomes 1;
+    /// MT complements H, and C advances unless MT ended on side 0. N is unchanged.
+    /// NEC µPD765 datasheet, READ DATA, Table 2; Intel 8272A datasheet, READ DATA,
+    /// Table 8, ID Information When Processor Terminates Command.
+    fn result_chs(
+        &self,
+        mut cylinder: u8,
+        mut head: u8,
+        mut sector: u8,
+        sectors_done: usize,
+    ) -> (u8, u8, u8) {
+        let mt = self.command[0] & 0x80 != 0;
+        for _ in 0..sectors_done {
+            if sector == self.command[6] {
+                sector = 1;
+                if !mt || head == 1 {
+                    cylinder = cylinder.wrapping_add(1);
+                }
+                if mt {
+                    head ^= 1;
+                }
+            } else {
+                sector = sector.wrapping_add(1);
+            }
+        }
+        (cylinder, head, sector)
+    }
+
+    /// Terminate a READ or WRITE DATA abnormally: build the seven-byte result
+    /// with the given ST0/ST1 fault bits and raise IRQ6.
     #[allow(clippy::too_many_arguments)]
     fn command_fault(
         &mut self,
@@ -624,16 +683,22 @@ impl Upd765 {
         let Some(read) = self.pending_read.take() else {
             return;
         };
-        let sectors_done = (transferred / SECTOR_SIZE) as u8;
-        let next_sector = read.sector + sectors_done;
-        self.st0 = (read.head << 2) | read.drive;
+        let sectors_done = transferred / SECTOR_SIZE;
+        let (cylinder, head, next_sector) =
+            self.result_chs(read.cylinder, read.head, read.sector, sectors_done);
+        let active_head = self
+            .data_sectors(read.head, read.sector)
+            .take(sectors_done)
+            .last()
+            .map_or(read.head, |(h, _)| h);
+        self.st0 = (active_head << 2) | read.drive;
         self.raise_irq();
         self.result = vec![
             self.st0,
             0,
             0,
-            read.cylinder,
-            read.head,
+            cylinder,
+            head,
             next_sector,
             read.sector_size_code,
         ];
@@ -641,7 +706,7 @@ impl Upd765 {
         self.phase = Phase::Result;
     }
 
-    /// WRITE DATA: request the sectors from `R` to `EOT` on the addressed track be
+    /// WRITE DATA: request sectors through EOT and, with MT, head 1, to be
     /// pulled out of memory over DMA and committed to the backing image. The
     /// result phase and IRQ6 follow once the machine reports the transfer
     /// complete. Mirrors [`Upd765::cmd_read_data`] with the DMA direction
@@ -654,7 +719,6 @@ impl Upd765 {
         let param_head = self.command[3];
         let sector = self.command[4];
         let sector_size_code = self.command[5];
-        let end_of_track = self.command[6];
 
         // Resolve the addressed drive's mounted media; an empty bay is not ready.
         let Some(media) = self.drives[usize::from(drive)].as_ref() else {
@@ -699,10 +763,10 @@ impl Upd765 {
             return;
         }
 
-        // Writes span R..=EOT on the one track; the 8237's programmed count clamps
-        // how many of those bytes memory actually supplies.
-        let last = end_of_track.max(sector);
-        let sector_count = u32::from(last.saturating_sub(sector)) + 1;
+        let sector_count = self
+            .data_sectors(param_head, sector)
+            .take_while(|&(h, s)| geometry.contains(cylinder, h, s))
+            .count();
 
         self.pending_write = Some(PendingWrite {
             drive,
@@ -715,7 +779,7 @@ impl Upd765 {
         self.pending_request = Some(DmaRequest {
             channel: FLOPPY_DMA_CHANNEL,
             op: DmaOp::FromMemory {
-                len: sector_count as usize * SECTOR_SIZE,
+                len: sector_count * SECTOR_SIZE,
             },
         });
         self.phase = Phase::Execution;
@@ -736,31 +800,35 @@ impl Upd765 {
             return;
         };
         let sectors_written = bytes.len().div_ceil(SECTOR_SIZE);
-        if sectors_written > 0 {
-            if let Some(media) = self.drives[usize::from(write.drive)].as_mut() {
-                let offset =
-                    media
-                        .geometry
-                        .chs_to_offset(write.cylinder, write.param_head, write.sector);
-                let end = offset + sectors_written * SECTOR_SIZE;
+        let sectors = self.data_sectors(write.param_head, write.sector);
+        if let Some(media) = self.drives[usize::from(write.drive)].as_mut() {
+            for ((head, sector), chunk) in sectors.zip(bytes.chunks(SECTOR_SIZE)) {
+                let offset = media.geometry.chs_to_offset(write.cylinder, head, sector);
+                let end = offset + SECTOR_SIZE;
                 if media.image.len() < end {
                     media.image.resize(end, 0);
                 }
                 // Clear the whole sector-aligned region first so a short final
                 // sector's tail is zero, then overlay the supplied bytes.
                 media.image[offset..end].fill(0);
-                media.image[offset..offset + bytes.len()].copy_from_slice(&bytes);
+                media.image[offset..offset + chunk.len()].copy_from_slice(chunk);
             }
         }
-        let next_sector = write.sector + sectors_written as u8;
-        self.st0 = (write.head << 2) | write.drive;
+        let (cylinder, head, next_sector) =
+            self.result_chs(write.cylinder, write.head, write.sector, sectors_written);
+        let active_head = self
+            .data_sectors(write.head, write.sector)
+            .take(sectors_written)
+            .last()
+            .map_or(write.head, |(h, _)| h);
+        self.st0 = (active_head << 2) | write.drive;
         self.raise_irq();
         self.result = vec![
             self.st0,
             0,
             0,
-            write.cylinder,
-            write.head,
+            cylinder,
+            head,
             next_sector,
             write.sector_size_code,
         ];
@@ -1053,6 +1121,224 @@ mod tests {
         ])
     }
 
+    fn bus_command(bus: &mut MockBus, bytes: &[u8]) {
+        for &byte in bytes {
+            bus.port_write(DATA, 1, u32::from(byte)).unwrap();
+        }
+    }
+
+    fn bus_results(bus: &mut MockBus, count: usize) -> Vec<u8> {
+        (0..count)
+            .map(|_| bus.port_read(DATA, 1).unwrap() as u8)
+            .collect()
+    }
+
+    #[test]
+    fn sense_without_pending_interrupt_returns_one_invalid_byte() {
+        let mut bus = MockBus::new(Box::new(ready_fdc(Vec::new())));
+        // Consume a seek completion so the controller has a stale ST0 and PCN.
+        bus_command(&mut bus, &[0x0F, 0x01, 25]);
+        bus_command(&mut bus, &[0x08]);
+        assert_eq!(bus_results(&mut bus, 2), [ST0_SEEK_END | 1, 25]);
+        for _ in 0..2 {
+            bus_command(&mut bus, &[0x08]);
+            assert_eq!(
+                bus.port_read(MSR, 1).unwrap() as u8,
+                MSR_RQM | MSR_DIO | MSR_BUSY
+            );
+            assert_eq!(bus_results(&mut bus, 1), [0x80]);
+            assert_eq!(bus.port_read(MSR, 1).unwrap() as u8, MSR_RQM);
+            assert!(!bus.device().irq_pending());
+        }
+    }
+
+    #[test]
+    fn data_result_at_eot_advances_chrn_for_both_heads_and_mt_modes() {
+        for opcode in [0x06, 0x05] {
+            for (mt, head, expected_c, expected_h) in
+                [(0, 0, 8, 0), (0, 1, 8, 1), (0x80, 0, 7, 1), (0x80, 1, 8, 0)]
+            {
+                let mut bus = MockBus::new(Box::new(ready_fdc(Vec::new())));
+                bus_command(
+                    &mut bus,
+                    &[mt | opcode, head << 2, 7, head, 2, 2, 3, 0x1B, 0xFF],
+                );
+                let request = bus.device_mut().take_dma_request().unwrap();
+                assert_eq!(request.channel, FLOPPY_DMA_CHANNEL);
+                let outcome = match request.op {
+                    DmaOp::ToMemory(_) => DmaOutcome::ToMemory {
+                        transferred: 2 * SECTOR_SIZE,
+                    },
+                    DmaOp::FromMemory { .. } => DmaOutcome::FromMemory(vec![0x5A; 2 * SECTOR_SIZE]),
+                };
+                bus.device_mut().dma_complete(outcome);
+                let result = bus_results(&mut bus, 7);
+                assert_eq!(
+                    &result[1..],
+                    &[0, 0, expected_c, expected_h, 1, 2],
+                    "opcode={opcode:#x}, MT={mt:#x}, head={head}"
+                );
+                assert_eq!(result[0] & 0xC0, 0);
+                assert_eq!(bus.port_read(MSR, 1).unwrap() as u8, MSR_RQM);
+            }
+        }
+    }
+
+    #[test]
+    fn data_result_before_eot_keeps_existing_bytes() {
+        for opcode in [0x06, 0x05, 0x86, 0x85, 0xE6, 0xC5] {
+            for (sector, eot) in [(2, 4), (18, 36)] {
+                let mut bus = MockBus::new(Box::new(ready_fdc(Vec::new())));
+                bus_command(&mut bus, &[opcode, 0x04, 7, 1, sector, 2, eot, 0x1B, 0xFF]);
+                let request = bus.device_mut().take_dma_request().unwrap();
+                let outcome = match request.op {
+                    DmaOp::ToMemory(_) => DmaOutcome::ToMemory {
+                        transferred: SECTOR_SIZE,
+                    },
+                    DmaOp::FromMemory { .. } => DmaOutcome::FromMemory(vec![0x5A; SECTOR_SIZE]),
+                };
+                bus.device_mut().dma_complete(outcome);
+                assert_eq!(bus_results(&mut bus, 7), [4, 0, 0, 7, 1, sector + 1, 2]);
+            }
+        }
+    }
+
+    #[test]
+    fn multitrack_read_continues_at_sector_one_on_head_one() {
+        let geometry = FloppyGeometry::DD360;
+        let image = patterned(geometry, 0xA3);
+        let mut bus = MockBus::new(Box::new(ready_drives([
+            Some(Drive::new(geometry, image.clone())),
+            None,
+            None,
+            None,
+        ])));
+        // EOT is smaller than the physical track: continuation must skip the
+        // remaining sectors on head 0 rather than use a contiguous image slice.
+        bus_command(&mut bus, &[0x86, 0, 7, 0, 2, 2, 3, 0x1B, 0xFF]);
+        let request = bus.device_mut().take_dma_request().unwrap();
+        let DmaOp::ToMemory(data) = request.op else {
+            panic!("READ DMA direction")
+        };
+        let mut expected = Vec::new();
+        for (head, sector) in [(0, 2), (0, 3), (1, 1), (1, 2), (1, 3)] {
+            let offset = geometry.chs_to_offset(7, head, sector);
+            expected.extend_from_slice(&image[offset..offset + SECTOR_SIZE]);
+        }
+        assert_eq!(data.len(), expected.len());
+        assert_eq!(data, expected);
+        bus.device_mut().dma_complete(DmaOutcome::ToMemory {
+            transferred: data.len(),
+        });
+        let result = bus_results(&mut bus, 7);
+        assert_eq!(&result[1..], &[0, 0, 8, 0, 1, 2]);
+    }
+
+    #[test]
+    fn multitrack_write_continues_on_head_one_without_touching_track_tail() {
+        let geometry = FloppyGeometry::DD360;
+        let original = patterned(geometry, 0xC7);
+        let mut bus = MockBus::new(Box::new(ready_drives([
+            Some(Drive::new(geometry, original.clone())),
+            None,
+            None,
+            None,
+        ])));
+        bus_command(&mut bus, &[0x85, 0, 7, 0, 2, 2, 3, 0x1B, 0xFF]);
+        let request = bus.device_mut().take_dma_request().unwrap();
+        assert_eq!(
+            request.op,
+            DmaOp::FromMemory {
+                len: 5 * SECTOR_SIZE
+            }
+        );
+        let mut expected = original;
+        let mut bytes = Vec::new();
+        for (index, (head, sector)) in [(0, 2), (0, 3), (1, 1), (1, 2), (1, 3)]
+            .into_iter()
+            .enumerate()
+        {
+            let data = vec![0x30 + index as u8; SECTOR_SIZE];
+            bytes.extend_from_slice(&data);
+            let offset = geometry.chs_to_offset(7, head, sector);
+            expected[offset..offset + SECTOR_SIZE].copy_from_slice(&data);
+        }
+        bus.device_mut().dma_complete(DmaOutcome::FromMemory(bytes));
+        assert_eq!(&bus_results(&mut bus, 7)[1..], &[0, 0, 8, 0, 1, 2]);
+        // Read every sector of both tracks through the public DMA seam.
+        for head in 0..2 {
+            bus_command(&mut bus, &[0x06, head << 2, 7, head, 1, 2, 9, 0x1B, 0xFF]);
+            let DmaOp::ToMemory(data) = bus.device_mut().take_dma_request().unwrap().op else {
+                panic!("READ DMA direction")
+            };
+            let offset = geometry.chs_to_offset(7, head, 1);
+            assert_eq!(data, expected[offset..offset + 9 * SECTOR_SIZE]);
+            bus.device_mut().dma_complete(DmaOutcome::ToMemory {
+                transferred: data.len(),
+            });
+            let _ = bus_results(&mut bus, 7);
+        }
+    }
+
+    #[test]
+    fn data_stops_at_physical_track_without_aliasing_next_track() {
+        for opcode in [0x06, 0x05, 0x86, 0x85] {
+            let geometry = FloppyGeometry::DD360;
+            let image = patterned(geometry, 0x5C);
+            let mut bus = MockBus::new(Box::new(ready_drives([
+                Some(Drive::new(geometry, image.clone())),
+                None,
+                None,
+                None,
+            ])));
+            bus_command(&mut bus, &[opcode, 0, 7, 0, 9, 2, 10, 0x1B, 0xFF]);
+            let request = bus.device_mut().take_dma_request().unwrap();
+            let outcome = match request.op {
+                DmaOp::ToMemory(data) => {
+                    let offset = geometry.chs_to_offset(7, 0, 9);
+                    assert_eq!(data.len(), SECTOR_SIZE, "no sector 10 from another track");
+                    assert_eq!(data, image[offset..offset + SECTOR_SIZE]);
+                    DmaOutcome::ToMemory {
+                        transferred: data.len(),
+                    }
+                }
+                DmaOp::FromMemory { len } => {
+                    assert_eq!(len, SECTOR_SIZE, "no write into another track");
+                    DmaOutcome::FromMemory(vec![0xAA; len])
+                }
+            };
+            bus.device_mut().dma_complete(outcome);
+            assert!(bus.device().irq_pending());
+            // A byte count cannot distinguish TC on the last valid sector from
+            // a search for the absent next sector; preserve the TC result.
+            assert_eq!(bus_results(&mut bus, 7), [0, 0, 0, 7, 0, 10, 2]);
+            // The next track remains byte-identical even after WRITE DATA.
+            bus_command(&mut bus, &[0x06, 4, 7, 1, 1, 2, 1, 0x1B, 0xFF]);
+            let DmaOp::ToMemory(data) = bus.device_mut().take_dma_request().unwrap().op else {
+                panic!("READ DMA direction")
+            };
+            let offset = geometry.chs_to_offset(7, 1, 1);
+            assert_eq!(data, image[offset..offset + SECTOR_SIZE]);
+            bus.device_mut().dma_complete(DmaOutcome::ToMemory {
+                transferred: data.len(),
+            });
+            let _ = bus_results(&mut bus, 7);
+        }
+    }
+
+    #[test]
+    fn data_starting_past_physical_track_faults_without_dma() {
+        for opcode in [0x06, 0x05] {
+            let mut bus = MockBus::new(Box::new(ready_fdc(Vec::new())));
+            bus_command(&mut bus, &[opcode, 4, 7, 1, 19, 2, 19, 0x1B, 0xFF]);
+            assert!(bus.device_mut().take_dma_request().is_none());
+            assert_eq!(
+                bus_results(&mut bus, 7),
+                [ST0_ABNORMAL | 4, ST1_NO_DATA, 0, 7, 1, 19, 2]
+            );
+        }
+    }
+
     #[test]
     fn power_on_state_is_idle_and_ready() {
         let fdc = Upd765::new();
@@ -1217,8 +1503,8 @@ mod tests {
         assert!(fdc.irq_pending(), "IRQ6 rises on transfer completion");
         let res = results(&mut fdc, 7);
         assert_eq!(res[0] & 0xC0, 0, "ST0 normal termination");
-        assert_eq!(res[3], 0, "result cylinder");
-        assert_eq!(res[5], 2, "next sector = R + 1");
+        assert_eq!(res[3], 1, "result cylinder advances at EOT");
+        assert_eq!(res[5], 1, "result sector resets at EOT");
         assert_eq!(res[6], 2, "N echoed");
     }
 
@@ -1327,7 +1613,7 @@ mod tests {
         assert!(fdc.irq_pending(), "IRQ6 rises on write completion");
         let res = results(&mut fdc, 7);
         assert_eq!(res[0] & 0xC0, 0, "ST0 normal termination");
-        assert_eq!(res[5], 2, "next sector = R + 1");
+        assert_eq!(&res[3..], &[1, 0, 1, 2], "result ID advances at EOT");
 
         // Read the same CHS back through the controller: the bytes committed to
         // media are byte-identical to what was written from memory.
@@ -1444,10 +1730,7 @@ mod tests {
         fdc.dma_complete(DmaOutcome::FromMemory(buf));
 
         let res = results(&mut fdc, 7);
-        assert_eq!(
-            res[5], 2,
-            "one whole sector committed (ceil), so next sector = R + 1"
-        );
+        assert_eq!(&res[3..], &[1, 0, 1, 2], "the completed sector reaches EOT");
         let image = &fdc.drives[0].as_ref().unwrap().image;
         assert_eq!(
             image.len(),
