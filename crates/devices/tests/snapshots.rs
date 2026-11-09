@@ -211,6 +211,93 @@ checks!(
 );
 
 #[test]
+fn uart_output_mebibyte_does_not_grow_device_state() {
+    use std::{cell::Cell, rc::Rc};
+
+    struct CheckingSink(Rc<Cell<usize>>);
+    impl device::ByteSink for CheckingSink {
+        fn push(&mut self, byte: u8) {
+            let count = self.0.get();
+            assert_eq!(byte, count as u8);
+            self.0.set(count + 1);
+        }
+    }
+
+    const BYTES: usize = 1024 * 1024;
+    for mode in 0..3 {
+        let mut bus = MockBus::new(Box::new(Uart16550::new(0x3F8)));
+        let count = Rc::new(Cell::new(0));
+        let capture = device::ByteCapture::new(3);
+        match mode {
+            0 => {}
+            1 => bus
+                .device_mut()
+                .byte_output()
+                .unwrap()
+                .bind_sink(Box::new(CheckingSink(count.clone()))),
+            _ => bus
+                .device_mut()
+                .byte_output()
+                .unwrap()
+                .bind_sink(Box::new(capture.clone())),
+        }
+        let before = bus.device().save();
+        for index in 0..BYTES {
+            bus.port_write(0x3F8, 1, u32::from(index as u8)).unwrap();
+        }
+        let after = bus.device().save();
+        assert_eq!(after.len(), before.len(), "sink mode {mode}");
+        assert_eq!(after, before, "transmit history is not device state");
+        assert!(bus.device_mut().take_trace().is_empty());
+        assert_eq!(bus.device().trace_dropped(), 0);
+        if mode == 1 {
+            assert_eq!(count.get(), BYTES);
+        } else if mode == 2 {
+            assert_eq!(capture.buffered_len(), 3);
+            assert_eq!(capture.drain(), Err(device::ByteOverflow { limit: 3 }));
+        }
+    }
+}
+
+#[test]
+fn uart_output_legacy_snapshots_are_rejected_without_mutation() {
+    let mut bus = MockBus::new(Box::new(Uart16550::new(0x3F8)));
+    bus.port_write(0x3FF, 1, 0xA5).unwrap();
+    bus.tick(123);
+    let before = bus.device().save();
+    for version in [1, 2] {
+        let mut legacy = vec![version, 1, 2, 3, 4, 5, 6, 7];
+        legacy.extend_from_slice(&3u32.to_le_bytes());
+        legacy.extend_from_slice(&42u64.to_le_bytes());
+        legacy.extend_from_slice(b"old");
+        assert!(matches!(
+            bus.device_mut().restore(&legacy),
+            Err(DeviceError::InvalidSnapshot {
+                reason: "unsupported snapshot version",
+                ..
+            })
+        ));
+        assert_eq!(bus.device().save(), before);
+    }
+    assert_eq!(&before[..8], &[3, 0, 0, 0, 0, 0xA5, 0, 0]);
+    assert_eq!(&before[8..], &123u64.to_le_bytes());
+    for length in 0..before.len() {
+        assert!(matches!(
+            bus.device_mut().restore(&before[..length]),
+            Err(DeviceError::InvalidSnapshot { .. })
+        ));
+        assert_eq!(bus.device().save(), before);
+    }
+    let mut trailing = before.clone();
+    trailing.push(0);
+    assert!(matches!(
+        bus.device_mut().restore(&trailing),
+        Err(DeviceError::InvalidSnapshot { .. })
+    ));
+    assert_eq!(bus.device().save(), before);
+}
+
+#[test]
 fn rtc_rejects_invalid_timing() {
     let mut rtc = CmosRtc::new();
     let valid = rtc.save();

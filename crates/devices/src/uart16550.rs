@@ -18,10 +18,14 @@
 //! - No input source: the receiver holding register (RBR) always reads `0` and
 //!   the LSR data-ready bit is always clear.
 //!
-//! Snapshots contain registers, pending output bytes and the absolute trace
-//! time base; port wiring and output sinks belong to the receiving instance.
+//! Transmitted bytes go directly to the optional sink; the UART retains no
+//! output history. Without a sink, bytes are discarded without allocating.
+//! Snapshots contain registers and the absolute trace time base; port wiring
+//! and output sinks belong to the receiving instance. Snapshot v3 rejects the
+//! earlier formats that included output history.
 //! Transmission has no timed deadlines here (PC16550D datasheet, Transmitter
 //! Holding Register). Restore does not emit historical bytes to a sink.
+//! See `backlog/docs/design/observation.md`, §Sinks, bounds and lifecycle.
 
 use device::{
     AccessDir, ByteOutput, ByteSink, ByteStreamKind, Device, DeviceError, NextEvent, TraceEvent,
@@ -48,19 +52,18 @@ const MSR_IDLE: u32 = 0x00;
 const LCR_DLAB: u8 = 0x80;
 
 /// Snapshot layout version tag, first byte of [`Device::save`] output.
-const SNAPSHOT_VERSION: u8 = 2;
+const SNAPSHOT_VERSION: u8 = 3;
 
-/// Fixed-size header of a snapshot: version + 5 register bytes (IER, FCR, LCR,
-/// MCR, scratch), DLL, DLM, output length and absolute trace clock.
-const SNAPSHOT_HEADER_LEN: usize = 1 + 5 + 1 + 1 + 4 + 8;
+/// Fixed-size snapshot: version + 5 register bytes (IER, FCR, LCR, MCR,
+/// scratch), DLL, DLM and absolute trace clock.
+const SNAPSHOT_LEN: usize = 1 + 5 + 1 + 1 + 8;
 
 /// The 16550 UART device (§7.2).
 ///
 /// Constructed with the COM port base address; decodes the eight ports
-/// `base..=base+7`. Pending bytes stay in the legacy buffer drained with
-/// [`Uart16550::take_output`] because snapshot v2 serializes that buffer. A bound
-/// observer receives a copy without changing snapshot bytes. The legacy buffer
-/// remains unbounded until a separate output-buffer migration removes it.
+/// `base..=base+7`. Accepted THR writes emit directly to a bound sink without
+/// retaining a second history. Capture limits and drains belong to the host;
+/// binding or draining a sink does not change snapshot bytes.
 /// See `backlog/docs/design/observation.md`, §Sinks, bounds and lifecycle.
 /// When enabled, the bounded trace records port accesses, including divisor-latch
 /// writes, so it must not be treated as a transmitted byte stream: the National Semiconductor
@@ -82,10 +85,7 @@ pub struct Uart16550 {
     dll: u8,
     /// Divisor latch high (+1, DLAB=1). Stored; baud rate is not modelled.
     dlm: u8,
-    /// Pending transmitted bytes retained for snapshot v2 compatibility,
-    /// independently of observation policy. Drained via [`Uart16550::take_output`].
-    output: Vec<u8>,
-    /// Optional observer receiving a copy; binding must not change saved state.
+    /// Optional receiver; binding must not change saved state.
     sink: Option<Box<dyn ByteSink>>,
     /// Trace events observed since the last [`Device::take_trace`].
     trace: device::TraceBuffer,
@@ -108,23 +108,10 @@ impl Uart16550 {
             scratch: 0,
             dll: 0,
             dlm: 0,
-            output: Vec::new(),
             sink: None,
             trace: device::TraceBuffer::default(),
             now: VClock::ZERO,
         }
-    }
-
-    /// Drain pending transmitted bytes, independently of the observation sink.
-    #[must_use]
-    pub fn take_output(&mut self) -> Vec<u8> {
-        std::mem::take(&mut self.output)
-    }
-
-    /// Borrow pending transmitted bytes, independently of the observation sink.
-    #[must_use]
-    pub fn output(&self) -> &[u8] {
-        &self.output
     }
 
     /// Whether the DLAB bit is currently set in the LCR.
@@ -201,8 +188,6 @@ impl Device for Uart16550 {
         match offset {
             0 if self.dlab() => self.dll = byte,
             0 => {
-                // The snapshot includes pending output, so observing cannot consume it.
-                self.output.push(byte);
                 if let Some(sink) = &mut self.sink {
                     sink.push(byte);
                 }
@@ -263,7 +248,7 @@ impl Device for Uart16550 {
     }
 
     fn save(&self) -> Vec<u8> {
-        let mut blob = Vec::with_capacity(SNAPSHOT_HEADER_LEN + self.output.len());
+        let mut blob = Vec::with_capacity(SNAPSHOT_LEN);
         blob.push(SNAPSHOT_VERSION);
         blob.push(self.ier);
         blob.push(self.fcr);
@@ -272,18 +257,15 @@ impl Device for Uart16550 {
         blob.push(self.scratch);
         blob.push(self.dll);
         blob.push(self.dlm);
-        let len = self.output.len() as u32;
-        blob.extend_from_slice(&len.to_le_bytes());
         blob.extend_from_slice(&self.now.0.to_le_bytes());
-        blob.extend_from_slice(&self.output);
         blob
     }
 
     fn restore(&mut self, snapshot: &[u8]) -> Result<(), DeviceError> {
-        if snapshot.len() < SNAPSHOT_HEADER_LEN {
+        if snapshot.len() < SNAPSHOT_LEN {
             return Err(DeviceError::InvalidSnapshot {
                 device: NAME,
-                reason: "snapshot shorter than header",
+                reason: "snapshot shorter than fixed layout",
             });
         }
         if snapshot[0] != SNAPSHOT_VERSION {
@@ -299,13 +281,10 @@ impl Device for Uart16550 {
         let scratch = snapshot[5];
         let dll = snapshot[6];
         let dlm = snapshot[7];
-        let len =
-            u32::from_le_bytes([snapshot[8], snapshot[9], snapshot[10], snapshot[11]]) as usize;
-        let body = &snapshot[SNAPSHOT_HEADER_LEN..];
-        if body.len() != len {
+        if snapshot.len() != SNAPSHOT_LEN {
             return Err(DeviceError::InvalidSnapshot {
                 device: NAME,
-                reason: "output length mismatch",
+                reason: "snapshot has trailing bytes",
             });
         }
         self.ier = ier;
@@ -315,10 +294,7 @@ impl Device for Uart16550 {
         self.scratch = scratch;
         self.dll = dll;
         self.dlm = dlm;
-        self.output = body.to_vec();
-        self.now = VClock(u64::from_le_bytes(std::array::from_fn(|i| {
-            snapshot[12 + i]
-        })));
+        self.now = VClock(u64::from_le_bytes(std::array::from_fn(|i| snapshot[8 + i])));
         Ok(())
     }
 
@@ -346,8 +322,17 @@ mod tests {
 
     const COM1: u16 = 0x3F8;
 
+    fn capture_output(device: &mut dyn Device) -> device::ByteCapture {
+        let capture = device::ByteCapture::new(16);
+        device
+            .byte_output()
+            .unwrap()
+            .bind_sink(Box::new(capture.clone()));
+        capture
+    }
+
     #[test]
-    fn snapshot_and_pending_output_are_independent_of_sink_binding() {
+    fn snapshot_is_independent_of_sink_binding_and_capture_history() {
         let mut plain = MockBus::new(Box::new(Uart16550::new(COM1)));
         let mut routed = MockBus::new(Box::new(Uart16550::new(COM1)));
         let capture = device::ByteCapture::new(3);
@@ -368,8 +353,7 @@ mod tests {
         let snapshot = plain.device().save();
         assert_eq!(routed.device().save(), snapshot);
         assert_eq!(snapshot[0], SNAPSHOT_VERSION);
-        assert_eq!(&snapshot[8..12], &[4, 0, 0, 0]);
-        assert_eq!(&snapshot[SNAPSHOT_HEADER_LEN..], &[0, 0xFF, 0xFF, 42]);
+        assert_eq!(snapshot.len(), SNAPSHOT_LEN);
         assert_eq!(capture.drain(), Err(device::ByteOverflow { limit: 3 }));
         assert_eq!(routed.device().save(), snapshot);
         capture.start_epoch();
@@ -377,13 +361,6 @@ mod tests {
             bus.device_mut().reset();
             bus.device_mut().restore(&snapshot).unwrap();
             assert_eq!(bus.device().save(), snapshot);
-            let uart = bus
-                .device_mut()
-                .as_any_mut()
-                .unwrap()
-                .downcast_mut::<Uart16550>()
-                .unwrap();
-            assert_eq!(uart.take_output(), [0, 0xFF, 0xFF, 42]);
         }
         assert!(
             capture.drain().unwrap().is_empty(),
@@ -412,8 +389,7 @@ mod tests {
         bus.port_read(COM1, 1).unwrap();
         assert!(bus.port_write(COM1 - 1, 1, 0x42).is_err());
         let snapshot = bus.device().save();
-        assert_eq!(snapshot.len(), SNAPSHOT_HEADER_LEN + 1);
-        assert_eq!(&snapshot[8..12], &[1, 0, 0, 0]);
+        assert_eq!(snapshot.len(), SNAPSHOT_LEN);
         bus.device_mut().restore(&snapshot).unwrap();
         bus.device_mut().take_trace();
         assert_eq!(capture.drain().unwrap(), b"A");
@@ -478,13 +454,13 @@ mod tests {
     }
 
     #[test]
-    fn thr_write_appends_to_output() {
+    fn thr_write_emits_to_sink() {
         let mut uart = Uart16550::new(COM1);
+        let capture = capture_output(&mut uart);
         uart.port_write(COM1, 1, u32::from(b'A')).unwrap();
         uart.port_write(COM1, 1, u32::from(b'B')).unwrap();
-        assert_eq!(uart.take_output(), b"AB");
-        // Draining leaves the sink empty.
-        assert!(uart.take_output().is_empty());
+        assert_eq!(capture.drain().unwrap(), b"AB");
+        assert!(capture.drain().unwrap().is_empty());
     }
 
     #[test]
@@ -496,6 +472,7 @@ mod tests {
     #[test]
     fn dlab_banks_divisor_latch_then_restores_thr() {
         let mut uart = Uart16550::new(COM1);
+        let capture = capture_output(&mut uart);
         // Set DLAB (LCR bit 7) at +3.
         uart.port_write(COM1 + 3, 1, u32::from(LCR_DLAB)).unwrap();
         // With DLAB set, +0/+1 are DLL/DLM.
@@ -506,7 +483,7 @@ mod tests {
         // Clear DLAB: +0 is THR again, so a write transmits rather than banking.
         uart.port_write(COM1 + 3, 1, 0).unwrap();
         uart.port_write(COM1, 1, u32::from(b'Z')).unwrap();
-        assert_eq!(uart.take_output(), b"Z");
+        assert_eq!(capture.drain().unwrap(), b"Z");
         // Divisor latch retained its value.
         assert_eq!(uart.port_read(COM1 + 3, 1).unwrap(), 0);
     }
@@ -516,6 +493,7 @@ mod tests {
         let mut bus = MockBus::new(Box::new(crate::trace_policy_tests::traced(Uart16550::new(
             COM1,
         ))));
+        let capture = capture_output(bus.device_mut());
         bus.port_write(COM1 + 3, 1, 0x83).unwrap();
         bus.port_write(COM1, 1, 0x42).unwrap();
         bus.port_write(COM1 + 1, 1, 0x01).unwrap();
@@ -526,14 +504,9 @@ mod tests {
             bus.port_write(COM1, 1, u32::from(byte)).unwrap();
         }
 
-        let uart = bus
-            .device_mut()
-            .as_any_mut()
-            .and_then(|a| a.downcast_mut::<Uart16550>())
-            .expect("UART output must be accessible through the device seam");
-        assert_eq!(uart.take_output(), b"OK\0\xff");
-        assert!(uart.take_output().is_empty());
-        assert!(uart.take_trace().iter().any(|event| matches!(
+        assert_eq!(capture.drain().unwrap(), b"OK\0\xff");
+        assert!(capture.drain().unwrap().is_empty());
+        assert!(bus.device_mut().take_trace().iter().any(|event| matches!(
             event,
             TraceEvent::Port {
                 port: COM1,
@@ -554,6 +527,7 @@ mod tests {
     #[test]
     fn save_restore_round_trip_preserves_state() {
         let mut uart = Uart16550::new(COM1);
+        let capture = capture_output(&mut uart);
         uart.port_write(COM1 + 3, 1, u32::from(LCR_DLAB)).unwrap();
         uart.port_write(COM1, 1, 0x03).unwrap(); // DLL
         uart.port_write(COM1 + 1, 1, 0x00).unwrap(); // DLM
@@ -565,9 +539,14 @@ mod tests {
 
         let blob = uart.save();
         let mut restored = Uart16550::new(COM1);
+        let restored_capture = capture_output(&mut restored);
         restored.restore(&blob).unwrap();
 
-        assert_eq!(restored.output(), b"hi");
+        assert_eq!(capture.drain().unwrap(), b"hi");
+        assert!(restored_capture.drain().unwrap().is_empty());
+        assert_eq!(restored.save(), blob);
+        restored.port_write(COM1, 1, u32::from(b'!')).unwrap();
+        assert_eq!(restored_capture.drain().unwrap(), b"!");
         assert_eq!(restored.port_read(COM1 + 4, 1).unwrap(), 0x0B);
         assert_eq!(restored.port_read(COM1 + 7, 1).unwrap(), 0x7E);
         // DLL survives (read it back through the DLAB view).
@@ -585,7 +564,7 @@ mod tests {
             err,
             DeviceError::InvalidSnapshot {
                 device: NAME,
-                reason: "snapshot shorter than header",
+                reason: "snapshot shorter than fixed layout",
             }
         );
     }
@@ -630,22 +609,24 @@ mod tests {
     }
 
     #[test]
-    fn reset_clears_state() {
+    fn reset_clears_registers_and_preserves_host_output() {
         let mut uart = Uart16550::new(COM1);
+        let capture = capture_output(&mut uart);
         uart.port_write(COM1, 1, u32::from(b'x')).unwrap();
         uart.port_write(COM1 + 7, 1, 0x42).unwrap();
         uart.reset();
-        assert!(uart.output().is_empty());
+        assert_eq!(capture.drain().unwrap(), b"x");
         assert_eq!(uart.port_read(COM1 + 7, 1).unwrap(), 0);
     }
 
     #[test]
     fn hello_via_output_and_trace() {
         let mut uart = crate::trace_policy_tests::traced(Uart16550::new(COM1));
+        let capture = capture_output(&mut uart);
         for &byte in b"hello" {
             uart.port_write(COM1, 1, u32::from(byte)).unwrap();
         }
-        assert_eq!(uart.output(), b"hello");
+        assert_eq!(capture.drain().unwrap(), b"hello");
 
         // The tracing seam must yield one Port write to `base` per THR byte.
         let writes: Vec<u32> = uart

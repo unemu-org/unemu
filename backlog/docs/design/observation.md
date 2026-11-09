@@ -46,6 +46,29 @@ observed drops, and compares the complete `BiosRun`: serial, POST, both screens
 No new environment variable or CLI option is needed; the policy is a Rust
 observation/configuration choice.
 
+## UART output ownership and snapshot compatibility
+
+The UART sends accepted THR bytes directly to its bound `ByteSink`, without
+retaining a device-owned output history. With no sink, transmission discards
+the byte without allocating. Assembly already binds COM1 to one explicitly
+bounded `ByteCapture`; consumers drain that collector through
+`Observation::drain_bytes`. No assembly wiring change is needed. Divisor-latch
+writes still emit nothing, and sink overflow does not change device state.
+
+UART snapshot v3 is exactly 16 bytes: version, IER, FCR, LCR, MCR, scratch,
+DLL, DLM, then the little-endian 64-bit absolute trace clock. It excludes
+transmitted bytes and the former output-length field. Versions 1 and 2 are
+rejected rather than importing host capture history. Restore rejects every
+truncation and trailing byte before changing registers or time, retains the
+receiving instance's port base and sink, and emits no historical output.
+Hardware reset also retains the sink; capture epochs remain host-owned.
+
+An isolated mock-bus regression transmits 1 MiB each with no sink, an
+order-checking counting sink, and an overflowing three-byte capture. It checks
+unchanged snapshot bytes and length, no retained access traces, complete ordered
+sink delivery, and bounded capture retention. Snapshot tests separately cover
+legacy-version rejection without mutation and continuation through the sink.
+
 ## Recommendation
 
 Observe **state for displays** and **semantic emissions for streams**. A display
@@ -241,12 +264,11 @@ frames** is allowed; silently dropping captured serial/POST bytes is not.
 
 Output buffering therefore cannot simply move from an unbounded trace `Vec` to
 an unbounded device queue. Direct sink emission removes that queue; captures
-remain explicitly bounded, selected and run-scoped. For a transition retaining
-`take_output`, keep one capture owner/adapter rather than duplicating UART bytes
-in two independent histories. Preserve existing UART `save`/`restore` tests and
-snapshot bytes while that adapter exists. Separating pending host output from
-UART snapshot data needs an explicit version/compatibility step; it is not a
-reason to redesign whole-machine snapshots here.
+remain explicitly bounded, selected and run-scoped. The UART has no
+`output`/`take_output` buffer or compatibility adapter. Its snapshot v3 excludes
+host output history and rejects the earlier formats, as specified in
+§ UART output ownership and snapshot compatibility. Whole-machine snapshots
+remain outside this output-ownership change.
 
 Starting a fresh run clears capture state. Device reset preserves installed
 routes/sink bindings; the facade explicitly decides when to start a new capture
