@@ -8,6 +8,13 @@
 //! holds **no** decode *policy*: which ports/addresses map where is the
 //! chipset's business.
 //!
+//! All current port devices are 8-bit. Wider accesses use consecutive byte
+//! cycles, low byte first, each decoded independently (IBM Personal Computer AT
+//! Technical Reference, "System Board", "I/O Channel"; see
+//! `backlog/docs/design/spec.md` §4.1). Device and open-bus traces therefore
+//! record byte cycles. A future 16-bit device, such as an IDE data port, will
+//! need an explicit opt-in to receive whole words; no such opt-in exists yet.
+//!
 //! It also drives [`Bus::tick_all`] (advance every device on the virtual clock,
 //! §6) and [`Bus::poll_irqs`] (aggregate pending IRQ lines, §5.1).
 
@@ -164,11 +171,23 @@ impl Bus {
 
     /// Dispatch a guest `in` at `port`, `size` bytes wide.
     ///
+    /// Wider reads decode each byte separately and combine them little-endian.
+    /// Port numbers wrap in the 16-bit port space. A fault stops the access;
+    /// earlier byte cycles have already completed.
+    ///
     /// An undecoded port under [`UndecodedPortAccess::OpenBus`] returns all-ones
     /// (0xFF per byte) and is recorded on the open-bus trace, matching a real
     /// ISA bus that no device drives; under [`UndecodedPortAccess::Fault`] it
     /// raises [`BusError::UnmappedPort`].
     pub fn port_read(&mut self, port: u16, size: u8) -> Result<u32, BusError> {
+        if size > 1 {
+            let mut value = 0;
+            for offset in 0..size {
+                let byte = self.port_read(port.wrapping_add(u16::from(offset)), 1)?;
+                value |= (byte & 0xFF) << (8 * offset);
+            }
+            return Ok(value);
+        }
         match self.port_device(port) {
             Some(idx) => Ok(self.devices[idx].port_read(port, size)?),
             None => match self.undecoded_ports {
@@ -184,10 +203,21 @@ impl Bus {
 
     /// Dispatch a guest `out` of `value` at `port`, `size` bytes wide.
     ///
+    /// Wider writes decode each byte separately, low byte first. Port numbers
+    /// wrap in the 16-bit port space. A fault stops the access; earlier byte
+    /// cycles have already completed.
+    ///
     /// An undecoded port under [`UndecodedPortAccess::OpenBus`] drops the write
     /// (no listener drives the bus) and records it on the open-bus trace; under
     /// [`UndecodedPortAccess::Fault`] it raises [`BusError::UnmappedPort`].
     pub fn port_write(&mut self, port: u16, size: u8, value: u32) -> Result<(), BusError> {
+        if size > 1 {
+            for offset in 0..size {
+                let byte = (value >> (8 * offset)) & 0xFF;
+                self.port_write(port.wrapping_add(u16::from(offset)), 1, byte)?;
+            }
+            return Ok(());
+        }
         match self.port_device(port) {
             Some(idx) => Ok(self.devices[idx].port_write(port, size, value)?),
             None => match self.undecoded_ports {
@@ -289,6 +319,210 @@ fn open_bus_value(size: u8) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct ByteRegisters {
+        base: u16,
+        values: Vec<u8>,
+        trace: Vec<TraceEvent>,
+    }
+
+    impl Device for ByteRegisters {
+        fn name(&self) -> &'static str {
+            "byte-registers"
+        }
+        fn port_read(&mut self, port: u16, size: u8) -> Result<u32, DeviceError> {
+            let value = u32::from(self.values[usize::from(port - self.base)]);
+            self.trace.push(TraceEvent::Port {
+                at: VClock::ZERO,
+                port,
+                size,
+                dir: AccessDir::Read,
+                value,
+            });
+            Ok(value)
+        }
+        fn port_write(&mut self, port: u16, size: u8, value: u32) -> Result<(), DeviceError> {
+            self.values[usize::from(port - self.base)] = value as u8;
+            self.trace.push(TraceEvent::Port {
+                at: VClock::ZERO,
+                port,
+                size,
+                dir: AccessDir::Write,
+                value,
+            });
+            Ok(())
+        }
+        fn mmio_read(&mut self, addr: u64, _size: u8) -> Result<u64, DeviceError> {
+            Err(DeviceError::UnmappedRegister {
+                kind: "mmio",
+                offset: addr,
+            })
+        }
+        fn mmio_write(&mut self, addr: u64, _size: u8, _value: u64) -> Result<(), DeviceError> {
+            Err(DeviceError::UnmappedRegister {
+                kind: "mmio",
+                offset: addr,
+            })
+        }
+        fn tick(&mut self, _now: VClock) {}
+        fn irq_pending(&self) -> bool {
+            false
+        }
+        fn irq_vector(&self) -> Option<u8> {
+            None
+        }
+        fn reset(&mut self) {
+            self.values.fill(0);
+            self.trace.clear();
+        }
+        fn save(&self) -> Vec<u8> {
+            self.values.clone()
+        }
+        fn restore(&mut self, snapshot: &[u8]) -> Result<(), DeviceError> {
+            self.values.copy_from_slice(snapshot);
+            Ok(())
+        }
+        fn take_trace(&mut self) -> Vec<TraceEvent> {
+            std::mem::take(&mut self.trace)
+        }
+    }
+
+    fn register_bus(registers: &[(u16, &[u8])]) -> Bus {
+        let mut devices: Vec<Box<dyn Device>> = Vec::new();
+        let mut map = DecodeMap::default();
+        for &(base, values) in registers {
+            map.ports.push(PortRange {
+                ports: base..=base + (values.len() - 1) as u16,
+                device: devices.len(),
+            });
+            devices.push(Box::new(ByteRegisters {
+                base,
+                values: values.to_vec(),
+                trace: Vec::new(),
+            }));
+        }
+        Bus::new(devices, map)
+    }
+
+    fn port_event(port: u16, dir: AccessDir, value: u32) -> TraceEvent {
+        TraceEvent::Port {
+            at: VClock::ZERO,
+            port,
+            size: 1,
+            dir,
+            value,
+        }
+    }
+
+    #[test]
+    fn word_out_sets_crtc_index_then_data() {
+        let mut bus = register_bus(&[(0x3D4, &[0, 0])]);
+        bus.port_write(0x3D4, 2, 0x120E).unwrap();
+        assert_eq!(bus.device(0).unwrap().save(), [0x0E, 0x12]);
+        assert_eq!(
+            bus.device_mut(0).unwrap().take_trace(),
+            [
+                port_event(0x3D4, AccessDir::Write, 0x0E),
+                port_event(0x3D5, AccessDir::Write, 0x12),
+            ]
+        );
+    }
+
+    #[test]
+    fn word_write_decodes_each_device() {
+        let mut bus = register_bus(&[(0x100, &[0]), (0x101, &[0])]);
+        bus.port_write(0x100, 2, 0xABCD).unwrap();
+        assert_eq!(bus.device(0).unwrap().save(), [0xCD]);
+        assert_eq!(bus.device(1).unwrap().save(), [0xAB]);
+    }
+
+    #[test]
+    fn word_read_combines_devices_little_endian() {
+        let mut bus = register_bus(&[(0x100, &[0x34]), (0x101, &[0x12])]);
+        assert_eq!(bus.port_read(0x100, 2).unwrap(), 0x1234);
+        for (index, port, value) in [(0, 0x100, 0x34), (1, 0x101, 0x12)] {
+            assert_eq!(
+                bus.device_mut(index).unwrap().take_trace(),
+                [port_event(port, AccessDir::Read, value)]
+            );
+        }
+    }
+
+    #[test]
+    fn word_access_applies_open_bus_to_undecoded_high_byte() {
+        let mut bus = register_bus(&[(0x100, &[0x34])]);
+        assert_eq!(bus.port_read(0x100, 2).unwrap(), 0xFF34);
+        bus.port_write(0x100, 2, 0xABCD).unwrap();
+        assert_eq!(bus.device(0).unwrap().save(), [0xCD]);
+        assert_eq!(
+            bus.take_open_bus_trace(),
+            [
+                port_event(0x101, AccessDir::Read, 0xFF),
+                port_event(0x101, AccessDir::Write, 0xAB),
+            ]
+        );
+    }
+
+    #[test]
+    fn word_access_faults_on_undecoded_high_byte_after_low_byte() {
+        let mut bus =
+            register_bus(&[(0x100, &[0x34])]).with_undecoded_ports(UndecodedPortAccess::Fault);
+        assert!(matches!(
+            bus.port_read(0x100, 2),
+            Err(BusError::UnmappedPort { port: 0x101 })
+        ));
+        assert!(matches!(
+            bus.port_write(0x100, 2, 0xABCD),
+            Err(BusError::UnmappedPort { port: 0x101 })
+        ));
+        assert_eq!(bus.device(0).unwrap().save(), [0xCD]);
+        assert_eq!(
+            bus.device_mut(0).unwrap().take_trace(),
+            [
+                port_event(0x100, AccessDir::Read, 0x34),
+                port_event(0x100, AccessDir::Write, 0xCD),
+            ]
+        );
+        assert!(bus.take_open_bus_trace().is_empty());
+    }
+
+    #[test]
+    fn dword_access_uses_four_byte_cycles_in_order() {
+        let mut bus = register_bus(&[(0x100, &[0, 0, 0, 0])]);
+        bus.port_write(0x100, 4, 0x7856_3412).unwrap();
+        assert_eq!(bus.port_read(0x100, 4).unwrap(), 0x7856_3412);
+        let mut expected = Vec::new();
+        for dir in [AccessDir::Write, AccessDir::Read] {
+            for (offset, value) in [0x12, 0x34, 0x56, 0x78].into_iter().enumerate() {
+                expected.push(port_event(0x100 + offset as u16, dir, value));
+            }
+        }
+        assert_eq!(bus.device_mut(0).unwrap().take_trace(), expected);
+    }
+
+    #[test]
+    fn word_access_wraps_at_end_of_port_space() {
+        let mut bus = register_bus(&[(0xFFFF, &[0]), (0, &[0])]);
+        bus.port_write(0xFFFF, 2, 0x1234).unwrap();
+        assert_eq!(bus.device(0).unwrap().save(), [0x34]);
+        assert_eq!(bus.device(1).unwrap().save(), [0x12]);
+        assert_eq!(bus.port_read(0xFFFF, 2).unwrap(), 0x1234);
+    }
+
+    #[test]
+    fn byte_access_keeps_value_width_and_neighbor_unchanged() {
+        let mut bus = register_bus(&[(0x3D4, &[0x0E, 0x12])]);
+        assert_eq!(bus.port_read(0x3D5, 1).unwrap(), 0x12);
+        bus.port_write(0x3D4, 1, 0x0F).unwrap();
+        assert_eq!(bus.device(0).unwrap().save(), [0x0F, 0x12]);
+        assert_eq!(
+            bus.device_mut(0).unwrap().take_trace(),
+            [
+                port_event(0x3D5, AccessDir::Read, 0x12),
+                port_event(0x3D4, AccessDir::Write, 0x0F),
+            ]
+        );
+    }
 
     /// A device decoding a single port, so the decoded path can be exercised
     /// alongside the undecoded open-bus path.
