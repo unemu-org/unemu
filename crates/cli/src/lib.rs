@@ -12,8 +12,8 @@
 //! mode axis for a single Long64 user would not earn its keep.
 //!
 //! Runners return their observables (COM1 bytes, POST stream, text screens)
-//! reconstructed through the first-class tracing seam (§3.2), never a
-//! concrete-device downcast.
+//! through the UART's transmitted-output sink for COM1 and the first-class
+//! tracing seam (§3.2) for POST and text screens.
 
 use anyhow::{Context, Result};
 use assembly::{
@@ -1218,8 +1218,7 @@ pub fn run_serial(blob: &[u8]) -> Result<Vec<u8>> {
     // The Long64 serial skeleton is a single 16550 UART at COM1 and nothing else.
     // It is assembled inline (trait-free) rather than through a config preset: it
     // is the one Long64 machine, and giving the declarative config a mode axis for
-    // a single user would not earn its keep. A guest write to COM1 THR surfaces on
-    // the tracing seam, drained back after the run.
+    // a single user would not earn its keep.
     let devices: Vec<Box<dyn Device>> = vec![Box::new(Uart16550::new(COM1_BASE))];
     let map = DecodeMap {
         ports: vec![PortRange {
@@ -1379,8 +1378,8 @@ pub fn run_vga_text(blob: &[u8]) -> Result<TextGrid> {
 /// Reconstruct a [`TextGrid`] from the VGA card's trace (§3.2 tracing seam, §9.2).
 ///
 /// The machine core sees only `&dyn Device`, so the card's memory and CRTC state
-/// are read back through the same tracing seam the serial drain uses — never a
-/// concrete-device downcast. Every MMIO write into the text window is replayed
+/// are read back through the tracing seam rather than a concrete-device downcast.
+/// Every MMIO write into the text window is replayed
 /// into a fresh buffer (the card powers on cleared, so unwritten cells stay
 /// blank), and every CRTC port write is replayed to recover the display start
 /// address and cursor, which [`render_text_mode`] then resolves into the grid.
@@ -1443,27 +1442,61 @@ fn render_vga(machine: &mut Machine<X86JitCpu>, vga_index: usize) -> TextGrid {
     })
 }
 
-/// Reconstruct the COM1 byte stream from the UART's trace (§3.2 tracing seam).
+/// Drain the COM1 byte stream from the UART's transmitted-output sink (§7.2).
 ///
-/// The machine core sees only `&dyn Device`, so the transmitted bytes are read
-/// back through the tracing seam: each THR write to `COM1_BASE` surfaces as a
-/// `TraceEvent::Port { dir: Write, port: COM1_BASE, .. }`.
+/// The UART already distinguishes THR writes from divisor-latch writes. Reading
+/// its output through the frontend's downcast seam keeps that distinction in
+/// one place; replaying port writes would also capture baud-rate programming.
 fn drain_serial(machine: &mut Machine<X86JitCpu>, uart_index: usize) -> Vec<u8> {
-    let mut out = Vec::new();
     if let Some(dev) = machine.bus_mut().device_mut(uart_index) {
-        for event in dev.take_trace() {
-            if let TraceEvent::Port {
-                port,
-                dir: AccessDir::Write,
-                value,
-                ..
-            } = event
-            {
-                if port == COM1_BASE {
-                    out.push(value as u8);
-                }
-            }
+        if let Some(uart) = dev.as_any_mut().and_then(|a| a.downcast_mut::<Uart16550>()) {
+            return uart.take_output();
         }
     }
-    out
+    Vec::new()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn drain_serial_excludes_divisor_writes() {
+        let bus = Bus::new(
+            vec![Box::new(Uart16550::new(COM1_BASE))],
+            DecodeMap {
+                ports: vec![PortRange {
+                    ports: COM1_BASE..=COM1_TOP,
+                    device: 0,
+                }],
+                mmio: Vec::new(),
+            },
+        );
+        let cpu = X86JitCpu::new(RAM_BYTES, ENTRY, &[0xF4]).unwrap();
+        let mut machine = Machine::new(
+            cpu,
+            bus,
+            Box::new(NoInterruptController),
+            QUANTUM,
+            Vec::new(),
+            None,
+        );
+        let uart = machine.bus_mut().device_mut(0).unwrap();
+        uart.port_write(COM1_BASE + 3, 1, 0x83).unwrap();
+        uart.port_write(COM1_BASE, 1, 0x42).unwrap();
+        uart.port_write(COM1_BASE + 1, 1, 0x01).unwrap();
+        uart.port_write(COM1_BASE + 3, 1, 0x03).unwrap();
+        for &byte in b"OK\0\xff" {
+            uart.port_write(COM1_BASE, 1, u32::from(byte)).unwrap();
+        }
+
+        assert_eq!(drain_serial(&mut machine, 0), b"OK\0\xff");
+        assert!(drain_serial(&mut machine, 0).is_empty());
+
+        let uart = machine.bus_mut().device_mut(0).unwrap();
+        uart.port_write(COM1_BASE, 1, u32::from(b'!')).unwrap();
+        let _ = uart.take_trace();
+        assert_eq!(drain_serial(&mut machine, 0), b"!");
+        assert!(drain_serial(&mut machine, 0).is_empty());
+    }
 }

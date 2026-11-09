@@ -50,9 +50,11 @@ const SNAPSHOT_HEADER_LEN: usize = 1 + 5 + 1 + 1 + 4;
 ///
 /// Constructed with the COM port base address; decodes the eight ports
 /// `base..=base+7`. Transmitted bytes accumulate in an internal sink (drained
-/// with [`Uart16550::take_output`]) and are simultaneously surfaced on the
-/// [`Device`] tracing seam as [`TraceEvent::Port`] writes to `base`, which is
-/// how consumers that only hold a `&mut dyn Device` reconstruct the output.
+/// with [`Uart16550::take_output`], accessible through [`Device::as_any_mut`]).
+/// The trace records all port accesses, including divisor-latch writes, so it
+/// must not be treated as a transmitted byte stream: the National Semiconductor
+/// PC16550D datasheet, Line Control Register (DLAB), assigns offsets +0/+1 to
+/// the divisor latches when DLAB is set.
 pub struct Uart16550 {
     base: u16,
     /// Interrupt Enable Register (+1, DLAB=0). Stored; raises no IRQ yet.
@@ -276,6 +278,10 @@ impl Device for Uart16550 {
     fn take_trace(&mut self) -> Vec<TraceEvent> {
         std::mem::take(&mut self.trace)
     }
+
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
+    }
 }
 
 #[cfg(test)]
@@ -317,6 +323,37 @@ mod tests {
         assert_eq!(uart.take_output(), b"Z");
         // Divisor latch retained its value.
         assert_eq!(uart.port_read(COM1 + 3, 1).unwrap(), 0);
+    }
+
+    #[test]
+    fn mock_bus_output_excludes_divisor_writes() {
+        let mut bus = MockBus::new(Box::new(Uart16550::new(COM1)));
+        bus.port_write(COM1 + 3, 1, 0x83).unwrap();
+        bus.port_write(COM1, 1, 0x42).unwrap();
+        bus.port_write(COM1 + 1, 1, 0x01).unwrap();
+        assert_eq!(bus.port_read(COM1, 1).unwrap(), 0x42);
+        assert_eq!(bus.port_read(COM1 + 1, 1).unwrap(), 0x01);
+        bus.port_write(COM1 + 3, 1, 0x03).unwrap();
+        for &byte in b"OK\0\xff" {
+            bus.port_write(COM1, 1, u32::from(byte)).unwrap();
+        }
+
+        let uart = bus
+            .device_mut()
+            .as_any_mut()
+            .and_then(|a| a.downcast_mut::<Uart16550>())
+            .expect("UART output must be accessible through the device seam");
+        assert_eq!(uart.take_output(), b"OK\0\xff");
+        assert!(uart.take_output().is_empty());
+        assert!(uart.take_trace().iter().any(|event| matches!(
+            event,
+            TraceEvent::Port {
+                port: COM1,
+                dir: AccessDir::Write,
+                value: 0x42,
+                ..
+            }
+        )));
     }
 
     #[test]
@@ -445,7 +482,7 @@ mod tests {
     #[test]
     fn mock_bus_isolation_harness() {
         // Prove the device runs under the isolation harness and the trace seam
-        // survives a round trip through `&mut dyn Device` (the golden's path).
+        // survives a round trip through `&mut dyn Device`.
         let mut bus = MockBus::new(Box::new(Uart16550::new(COM1)));
         bus.tick(3); // stamp a non-zero virtual time onto subsequent traces.
         for &byte in b"hello" {

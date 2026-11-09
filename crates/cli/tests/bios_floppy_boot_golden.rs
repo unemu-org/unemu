@@ -51,12 +51,12 @@ fn bios_int19_reads_boot_sector_over_the_floppy() {
     let run = run_bios_boot(&rom, bootable_floppy_image());
 
     // INT 19h loaded sector 0 at 0x7C00 and jumped to it; the sector transmitted
-    // its marker to COM1. That byte appearing at all proves the whole disk path.
+    // its marker to COM1. The complete stream must contain only that marker.
     eprintln!("stop: {:?}", run.stop);
     eprintln!("com1: {:02x?}", run.com1);
-    assert!(
-        run.com1.contains(&FLOPPY_BOOT_MARKER),
-        "expected the booted sector's marker on COM1 (INT 19h boot), got {:02x?}",
-        run.com1
+    assert_eq!(
+        run.com1,
+        [FLOPPY_BOOT_MARKER],
+        "expected only the booted sector's marker on COM1 (INT 19h boot)"
     );
 }

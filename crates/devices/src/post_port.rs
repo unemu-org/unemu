@@ -6,8 +6,8 @@
 //! byte lights a diagnostic card or a debug LED display. The emulator models it
 //! purely as a capture point: every byte the guest writes is recorded on the
 //! [`Device`] tracing seam, so a runner reconstructs the POST progress stream
-//! through [`Device::take_trace`] — the same first-class seam the UART uses to
-//! carry serial bytes off the machine, never an ad-hoc side channel.
+//! through [`Device::take_trace`], the first-class observation seam, never an
+//! ad-hoc side channel.
 //!
 //! The decoded port is configurable: [`PostPort::new`] decodes the test386
 //! diagnostic's `0x190`, while a stock PC BIOS emits its checkpoints on the

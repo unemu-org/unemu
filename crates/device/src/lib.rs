@@ -285,9 +285,10 @@ pub trait Device {
     }
 
     /// Downcast escape hatch for host-side driving of a concrete device, when the
-    /// machine core only holds `&mut dyn Device`. It exists for out-of-band input
+    /// machine core only holds `&mut dyn Device`. It exists for out-of-band traffic
     /// the bus cannot express — e.g. the frontend injecting keyboard scancodes
-    /// into the 8042 mid-run, mirroring bytes arriving from a real keyboard.
+    /// into the 8042 mid-run, mirroring bytes arriving from a real keyboard, or
+    /// draining the bytes a UART actually transmitted.
     ///
     /// Defaults to `None`: a device opts in by returning `Some(self)`. It is not a
     /// guest-visible seam and must never be used from the emulated execution path;

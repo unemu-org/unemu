@@ -15,8 +15,8 @@ pub enum FrameSinkKind {
 /// The output section of a [`crate::MachineConfig`] (§9).
 ///
 /// Kept deliberately minimal: how a machine is *observed* is mostly not part of
-/// its identity (serial and video output are captured for free through the trace
-/// seam, so there is no `serial_capture` flag here). What remains is the one
+/// its identity (serial output is drained from the UART and video output is read
+/// back through the trace seam, so there is no `serial_capture` flag here). What remains is the one
 /// genuine machine-shaping choice — which [`video::FrameSink`] the frames go to —
 /// and this struct is its home so a future presenter option does not force a
 /// config restructure.
