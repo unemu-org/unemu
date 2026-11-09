@@ -45,3 +45,16 @@ target/
 # checked in (FreeDOS is GPL; used unmodified as a read-only fixture).
 /vendor/freedos/build/
 /vendor/freedos/freedos.img
+
+# repoctx local index (generated)
+.repoctx/
+
+# Beads / Dolt files (added by bd init)
+.dolt/
+.beads/**/*.db
+.beads-credential-key
+.beads/proxieddb/
+*.gate.lock*
+
+# Local x86jit override for development (see backlog/docs/dev-setup.md § CPU core)
+.cargo/config.toml

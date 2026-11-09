@@ -6,8 +6,9 @@ Everyday commands for this project. Keep this file **flat and copy-pasteable** �
 
 ```sh
 cargo build                                  # build the workspace
-cargo run -p cli -- <config>                 # run the emulator (once cli exists)
-cargo test                                   # unit + golden + integration
+cargo run -p cli -- <config>                 # run the emulator
+cargo test --workspace                       # unit + golden + integration
+cargo test --workspace -- --ignored          # slow goldens: BIOS POST, FreeDOS boot, DOS sessions
 cargo test -p devices                        # one crate's tests
 ```
 
@@ -19,17 +20,19 @@ cargo fmt --all
 cargo fmt --all -- --check                   # CI check
 ```
 
-## x86jit worktree (CPU core)
+## x86jit (CPU core)
 
 ```sh
-# create the dev worktree once (from the x86jit repo)
-git -C ~/src/x86jit worktree add ../x86jit-pc pc-emulator
-# this repo depends on it via a pinned git dep + a local [patch]/.cargo/config.toml override
-git -C ~/src/x86jit-pc status                # work on the CPU seam here
+# develop against a local x86jit checkout: a gitignored override, never a path dep in Cargo.toml
+cat > .cargo/config.toml <<'TOML'
+[patch."<the git URL x86jit-core is pinned to in Cargo.toml>"]
+x86jit-core = { path = "<your x86jit checkout>/x86jit-core" }
+TOML
+git -C <your x86jit checkout> rev-parse HEAD    # must match the rev in Cargo.lock for goldens to be valid
 ```
 
-Before merging a seam back to x86jit `main`, run x86jit's own full suite
-(interp / JIT / Unicorn / fuzz) — see the merge-discipline decision.
+A change the machine needs from the CPU lands in x86jit under its own beads and gate; this repo
+then re-pins and re-runs the slow goldens. See `dev-setup.md` § CPU core.
 
 ## Guest test-ROMs
 
@@ -46,22 +49,29 @@ pre-commit run --all-files                          # run active hooks
 pre-commit run --all-files --hook-stage manual      # run staged-as-manual hooks too
 ```
 
-## Backlog.md
-
-See the [`backlog` skill](../../.agents/skills/backlog/SKILL.md) and `backlog instructions overview`
-for the canonical cheat-sheet. Most-used:
+## beads (`bd`) — open work
 
 ```sh
-backlog task create "<title>" -d "<desc>" --ac "<criterion>"
-backlog task list --plain                       # AI-friendly view
-backlog task list -s "In Progress" --plain
-backlog task <id> --plain                        # show one task
-backlog task edit <id> -s "In Progress" --plan "<approach>"
-backlog task edit <id> --check-ac 1 --notes "<progress>"
-backlog task edit <id> -s Done
-backlog board                                    # interactive kanban
-backlog browser                                  # web UI
+bd memories                                      # the shared working rules — read first
+bd ready --exclude-type epic                     # unblocked work, highest priority first
+bd list --status in_progress                     # what is claimed
+bd show <id>                                     # one bead
+bd list --type epic                              # the themes
+bd create --title "<t>" --description "<d>" --acceptance "<ac>" --type task --priority P2 \
+          --parent <epic-id> --no-inherit-labels --labels <labels>
+bd update <id> --claim                           # before writing code
+bd update <id> --append-notes "<progress>"       # never --notes on an existing bead
+bd close <id> --reason "<commit> — <what landed>"
+bd list --external-ref backlog:TASK-41           # the bead an old task id became
+```
+
+Details: [`working-on-tasks.md`](working-on-tasks.md).
+
+## Backlog.md — docs and decisions only
+
+```sh
 backlog doc create "<title>"                      # → docs/doc-N - Title.md
 backlog decision create "<title>"                 # → decisions/decision-N - Title.md
-backlog config                                   # view/edit config.yml
 ```
+
+Never `backlog task create`: tasks moved to beads.

@@ -6,8 +6,10 @@ Domain and project terminology. One term per entry. Keep definitions short — l
 
 - **LLE** — low-level emulation: modelling hardware at the device/register level
   (vs high-level emulation, which shims APIs).
-- **x86jit** — the external x86 JIT (`~/src/x86jit`) used as the CPU core; consumed
-  via a git worktree on the `pc-emulator` branch.
+- **x86jit** — the external x86 recompiler used as the CPU core; a separate project
+  (beads prefix `xj`), consumed as a git dependency pinned to an exact revision of its `main`.
+- **bead** — one unit of open work in the beads (`bd`) tracker; ids look like `upc-kk2.3`
+  (the dotted suffix names the parent epic). Foreign ids carry a tag: `xj-6vd.9 (x86jit)`.
 - **seam** — a self-contained swap boundary or capability with its own tests; also
   the unit of merge back to x86jit `main` (see decision-2).
 - **swap seam** — one of the six trait boundaries (`Cpu`, `Chipset`, `Bus`,

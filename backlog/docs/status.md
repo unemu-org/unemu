@@ -1,21 +1,44 @@
 # Status
 
-Snapshot of what works, what's in flight, what's broken. **Not the roadmap** — roadmap lives in Backlog.md tasks (`backlog task list --plain`).
+Snapshot of what works, what's in flight, what's broken. **Not the roadmap** — open work lives in
+beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
-Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status — if you can't keep it fresh, link straight to `backlog task list` filters instead.
+Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
-## Works
+## Works (as of 2026-11-09, main @ c88cf3f)
 
-- Bootstrap, architecture docs, ADRs, roadmap (`task-1`).
-- Walking skeleton (`task-2`): Cargo workspace with the `cpu` / `bus` / `chipset` /
-  `device` seams, an x86jit Long64 backend, a 16550 UART, and a deterministic
-  golden where a guest writes "hello" to COM1 over port I/O. `cargo test`: 18 pass.
+- **An unmodified open BIOS boots FreeDOS from a floppy, headless and deterministic.** The Kiselev
+  Xi8088 BIOS completes POST and its INT 19h loads a FreeDOS 8086 floppy over the µPD765 floppy
+  controller + 8237 DMA; FreeCOM reaches its prompt, and a scancode script drives it to `A:\>`,
+  runs `DIR`, and creates a file (`echo x>zz`) that the controller commits to the in-memory image.
+- **Devices:** 16550 UART, 8259 PIC pair (master + slave cascade), 8253 PIT, 8042 keyboard
+  controller, MC146818 CMOS/RTC (seeded NVRAM), 8237 DMA, µPD765 floppy (read + write), port 0x61,
+  POST port 0x80, VGA/CGA text with MDA port aliases, all behind the `Device` trait with mock-bus
+  tests; text output reaches a `FrameSink`.
+- **Machines are declarative.** A `MachineConfig` (the `assembly` crate) is built by one
+  `assemble()` and run under a `RunPolicy`; presets replace the old hand-written runners.
+- **CPU:** x86jit `CpuMode::Real16` (interpreter-only), 99.63% decided on the SingleStepTests 80286
+  corpus at the pinned revision.
+- **Tests:** MEASURED 2026-11-09 against the pinned x86jit rev 865467e: `cargo test --workspace`
+  273 passed, 0 failed, 5 ignored (the slow goldens); clippy `-D warnings` clean; `fmt --check`
+  clean.
 
 ## In flight
 
-- Nothing actively in progress. Next candidates: consume `RegionKind::Rom` in the
-  emulator (a BIOS ROM at `F0000h`; the x86jit seam now exists), `test386.asm`
-  (`task-7`), residual 286 fidelity.
+Nothing is claimed. Highest-priority ready work: the x86jit re-pin (`upc-f7j.1`, P0), then the
+P1 defects from the whole-code review (epic `upc-kk2`).
+
+## Broken / known defects
+
+- **A fresh checkout does not build** (`upc-f7j.1`): the x86jit pin names a deleted branch at a
+  host-local URL. Workaround: a local `[patch]` override (`dev-setup.md` § CPU core). x86jit's
+  current `main` changed the `Exit` API; the adaptation is small (MEASURED: 273/0/5 with it).
+- **Whole-code review 2026-11-09** found defects that today's goldens do not catch — HLT resumes the
+  guest without an interrupt, a cascaded INTA can wedge the PIC, PIT mode 3 stops on an odd
+  divisor, COM1 capture includes baud-divisor bytes. One bead each under `upc-kk2`, `upc-sk3`,
+  `upc-x83`.
+- Floppy writes are volatile (in-memory only; `upc-sk3.1`).
+- No CI and no git remote (`upc-x83.3`, `upc-d86`).
 
 ## Recently landed
 
@@ -127,10 +150,6 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   8259 PIC + 8253 PIT; PIT OUT → edge-detect → PIC → `inject_irq`; deterministic
   virtual clock from the retired-instruction counter. Boot golden passes.
 
-## Broken / regressions
-
-None.
-
 ## Not started
 
-See `backlog task list --plain` (or `backlog board`) filtered by label/milestone. Don't duplicate the task list here.
+See `bd ready --exclude-type epic` and `bd list --type epic`. Don't duplicate the bead list here.

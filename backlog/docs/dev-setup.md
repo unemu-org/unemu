@@ -48,20 +48,44 @@ The `flake.nix` devShell provides the Rust toolchain (`rustc`, `cargo`, `clippy`
 `qemu` (optional differential oracle), and `jq` (fetching the SingleStepTests
 corpus). Enter with `nix develop` or let direnv auto-load it.
 
-### CPU core: x86jit worktree
+### CPU core: x86jit
 
-The CPU is an external pinned **git** dependency (not vendored). For development,
-create a git worktree of x86jit and override the dep onto it locally:
+The CPU is an external **git** dependency pinned to an exact revision of x86jit `main` (not
+vendored, never a bare `path` dependency in `Cargo.toml` — that breaks `nix build` / CI). For
+development, override it onto a local checkout with a `[patch]` in `.cargo/config.toml`, which is
+gitignored:
 
-```sh
-git -C ~/src/x86jit worktree add ../x86jit-pc pc-emulator   # once
+```toml
+[patch."<the git URL x86jit-core is pinned to in Cargo.toml>"]
+x86jit-core = { path = "<your x86jit checkout>/x86jit-core" }
 ```
 
-`Cargo.toml` pins the x86jit git rev; a local `[patch]` (or `.cargo/config.toml`)
-points at `~/src/x86jit-pc` for editing. A bare `path` dependency is **not** used
-— it breaks `nix build` / CI. See the worktree decision in `backlog/decisions/`.
+Cargo resolves the override without fetching the pinned URL, so this also works on a machine that
+cannot reach it. Check the checkout out at the revision in `Cargo.lock`: goldens are only valid
+against the pinned CPU revision.
+
+> **Known defect (bead `upc-f7j.1`).** The pin still names a deleted branch at a host-local URL,
+> so a fresh checkout does not build without the override above, and x86jit's current `main` has
+> a changed `Exit` API. The bead re-pins and adapts the backend.
+
+## beads (`bd`)
+
+Open work is tracked with [beads](https://github.com/steveyegge/beads) (`bd`). It is **not** in the
+devShell: x86jit's database was created by `bd` 1.3.1 and the pinned nixpkgs carries an older one;
+use the same host-installed `bd` ≥ 1.3.1 for both projects (e.g. `brew install beads`, or a release
+binary from the upstream repository) and check with `bd --version`.
+
+On a fresh clone the issue database is not in git (`.beads/embeddeddolt/` is ignored). Once
+`origin` carries `refs/dolt/data`, recreate it with `bd bootstrap` (non-destructive; see
+`bd bootstrap --help`). Use `bootstrap`, not `bd init`, in a clone that already has `.beads/`:
+`init` mints a new project identity. `bd init`, and the first `bd dolt push --yes` (which adopts
+`origin` and writes `sync.remote` to `.beads/config.yaml`), each make a git commit on their own —
+even with `--skip-hooks` — so after any bd setup command check `git log -1` and `git status`.
+
+Until a remote exists the database lives on one machine only; `bd backup` makes a Dolt-native
+backup.
 
 ### MSRV
 
-Track x86jit's MSRV (currently 1.75). The Nix `rustc` should satisfy it; if you
+Track x86jit's MSRV (the `rust-version` in its workspace `Cargo.toml`). The Nix `rustc` should satisfy it; if you
 pin a channel later, add a `rust-toolchain.toml` and record the decision.

@@ -5,10 +5,10 @@ This project records decisions in **two** places. Pick the right one — don't i
 | Surface | Use when | Lifetime |
 |---------|----------|----------|
 | **Backlog decision** (`backlog/decisions/`) | The choice constrains app shape, public contracts, layering, error/test/runtime semantics, or is a cross-cutting tool/library/process call. Hard to reverse, or affects future contributors. This is the home for what other projects call ADRs. | Project-lifetime, append-only in spirit |
-| **Task note / comment** | The decision is bound to one task. Example: "for `task-12` we chose encoding X over Y because of constraint Z." | Bound to that task |
+| **Bead note** (`bd update <id> --append-notes`) | The decision is bound to one bead. Example: "for `upc-f7j.1` we chose X over Y because of constraint Z." | Bound to that bead |
 
-If a decision outlives the immediate task, it's a `backlog decision`. If it only explains one
-task's implementation, it's a task note. There is no separate ADR folder — architecture-grade
+If a decision outlives the immediate bead, it's a `backlog decision`. If it only explains one
+bead's implementation, it's a bead note. There is no separate ADR folder — architecture-grade
 decisions live in `backlog/decisions/` alongside lighter ones (tag or title them so they're easy
 to find).
 
@@ -35,14 +35,12 @@ To reverse an accepted decision, write a new one that supersedes it and update t
 Status line to `Superseded by decision-NNN` with a back-link. Editing typos is fine; editing the
 substance of an accepted decision is not.
 
-## Recording a task-bound decision
+## Recording a bead-bound decision
 
-Attach it to the task instead — it stays next to the work:
+Attach it to the bead instead — it stays next to the work:
 
 ```sh
-backlog task edit <id> --notes "Decided: <choice> over <alt> — <one-sentence reason>. Revisit if <condition>."
-# or, as a threaded comment:
-backlog task edit <id> --comment "Decided: <choice> over <alt> — <reason>."
+bd update <id> --append-notes "Decided: <choice> over <alt> — <one-sentence reason>. Revisit if <condition>."
 ```
 
 ## When it's weighty enough to record at all
@@ -55,12 +53,12 @@ Write a `backlog decision` when the choice:
 - **Was contested or non-obvious** — there were real alternatives and future-you will want the why.
 - **Has stakeholder implications** — onboarding, distribution, licensing, hosting.
 
-Skip it (a task note or commit message is enough) when the choice:
+Skip it (a bead note or commit message is enough) when the choice:
 
 - Is a **tool swap** doable in a day (formatter, linter, package manager, devShell tech).
 - Is **DX convenience** with no behavioral effect (editor config, direnv, shell aliases).
 - Is a **library swap** in a single layer with no contract change.
-- Is a **status update or roadmap item** — those are tasks, not decisions.
+- Is a **status update or roadmap item** — those are beads, not decisions.
 
 ### Edge cases — record a decision if the answer is "yes"
 
