@@ -85,6 +85,20 @@ fn deadline_matches_per_clock_on_every_fast_workload() {
     }
 }
 
+#[test]
+fn serial_workload_has_no_per_clock_devices() {
+    let prepared = scheduler::prepare(Workload::Serial).unwrap().unwrap();
+    for index in prepared.device_index.values() {
+        let device = prepared.machine.bus().device(*index).unwrap();
+        assert_ne!(
+            device.next_event(prepared.machine.clock()),
+            device::NextEvent::EveryPitClock,
+            "{} still requests per-clock visits",
+            device.name()
+        );
+    }
+}
+
 /// Intel 8254 datasheet, Mode 2: OUT pulses low for one clock at terminal count.
 /// A restored running count must advance from the bus clock of the restore.
 #[test]
@@ -423,21 +437,38 @@ fn mmio_shift_preserves_device_address_direction_and_value() {
 #[ignore = "requires BIOS/FreeDOS fixtures; informative machine wall times"]
 fn scheduler_engine_wall_times() {
     for workload in [Workload::BiosPost, Workload::FreeDosPrompt] {
-        for engine in [SchedulerEngine::PerClock, SchedulerEngine::Deadline] {
-            let Some(mut prepared) = scheduler::prepare(workload).unwrap() else {
-                continue;
-            };
-            prepared.machine = prepared.machine.with_scheduler_engine(engine);
-            let start = std::time::Instant::now();
-            let outcome = assembly::run(&mut prepared.machine, &prepared.policy).unwrap();
-            let elapsed = start.elapsed();
-            assert_eq!(outcome, machine::RunOutcome::RetiredCapReached);
-            eprintln!(
-                "{workload:?} {engine:?}: {:.6} s; clock={}, retired={}",
-                elapsed.as_secs_f64(),
-                prepared.machine.clock().0,
-                prepared.machine.cpu().retired()
-            );
+        let engines = [SchedulerEngine::PerClock, SchedulerEngine::Deadline];
+        let mut samples = [Vec::new(), Vec::new()];
+        let mut expected_counts = None;
+        for sample in 1..=3 {
+            for (index, engine) in engines.into_iter().enumerate() {
+                let Some(mut prepared) = scheduler::prepare(workload).unwrap() else {
+                    continue;
+                };
+                prepared.machine = prepared.machine.with_scheduler_engine(engine);
+                let start = std::time::Instant::now();
+                let outcome = assembly::run(&mut prepared.machine, &prepared.policy).unwrap();
+                let elapsed = start.elapsed();
+                assert_eq!(outcome, machine::RunOutcome::RetiredCapReached);
+                let counts = (prepared.machine.clock().0, prepared.machine.cpu().retired());
+                assert_eq!(*expected_counts.get_or_insert(counts), counts);
+                samples[index].push(elapsed);
+                eprintln!(
+                    "{workload:?} {engine:?} sample {sample}: {:.6} s; clock={}, retired={}",
+                    elapsed.as_secs_f64(),
+                    counts.0,
+                    counts.1
+                );
+            }
+        }
+        for (engine, mut times) in engines.into_iter().zip(samples) {
+            if times.len() == 3 {
+                times.sort_unstable();
+                eprintln!(
+                    "{workload:?} {engine:?} median of 3: {:.6} s",
+                    times[1].as_secs_f64()
+                );
+            }
         }
     }
 }

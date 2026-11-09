@@ -24,7 +24,7 @@
 //!   unimplemented read), matching that no real POST card drives a read value.
 //! - No display or latch state beyond the trace: the byte is observed, not held.
 
-use device::{AccessDir, Device, DeviceError, TraceEvent, VClock};
+use device::{AccessDir, Device, DeviceError, NextEvent, TraceEvent, VClock};
 
 /// Stable device name reported by [`Device::name`].
 const NAME: &str = "post-port";
@@ -137,6 +137,10 @@ impl Device for PostPort {
         self.now = now;
     }
 
+    fn next_event(&self, _now: VClock) -> NextEvent {
+        NextEvent::Dormant
+    }
+
     fn irq_pending(&self) -> bool {
         false
     }
@@ -168,6 +172,53 @@ impl Device for PostPort {
 mod tests {
     use super::*;
     use testkit::MockBus;
+
+    #[test]
+    fn dormant_matches_per_clock_seeded_accesses_and_long_jumps() {
+        let mut reference = MockBus::new(Box::new(PostPort::new()));
+        let mut scheduled = MockBus::new(Box::new(PostPort::new()));
+        let mut seed = 0x8042_1468_1816_5501u64;
+        for step in 0..128 {
+            assert_eq!(
+                scheduled.device().next_event(reference.clock()),
+                device::NextEvent::Dormant
+            );
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+            let clocks = if step % 31 == 0 {
+                100_003
+            } else {
+                (seed >> 32) % 17
+            };
+            for _ in 0..clocks {
+                reference.tick(1);
+                assert!(!reference.device().irq_pending());
+            }
+            scheduled.device_mut().sync(reference.clock());
+            assert_eq!(reference.device().save(), scheduled.device().save());
+            assert_eq!(
+                reference.device().irq_pending(),
+                scheduled.device().irq_pending()
+            );
+            if seed & 1 == 0 {
+                reference.port_write(POST_PORT, 1, seed as u32).unwrap();
+                scheduled.port_write(POST_PORT, 1, seed as u32).unwrap();
+            } else {
+                assert_eq!(
+                    reference.port_read(POST_PORT, 1).unwrap(),
+                    scheduled.port_read(POST_PORT, 1).unwrap()
+                );
+            }
+            assert_eq!(reference.device().save(), scheduled.device().save());
+            assert_eq!(
+                reference.device().irq_pending(),
+                scheduled.device().irq_pending()
+            );
+            assert_eq!(
+                reference.device_mut().take_trace(),
+                scheduled.device_mut().take_trace()
+            );
+        }
+    }
 
     #[test]
     fn writes_surface_on_trace_in_order() {

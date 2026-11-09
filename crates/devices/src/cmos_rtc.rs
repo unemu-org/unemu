@@ -17,6 +17,11 @@
 //! window before each update. Setting the SET bit (register B bit 7) freezes the
 //! clock, exactly as on real silicon.
 //!
+//! Motorola MC146818 datasheet, "Update Cycle" and "Registers A–C", describes
+//! the UIP/update and interrupt flags. Deadlines preserve the configured PIT
+//! clocks per second and frozen SET phase; see
+//! `backlog/docs/design/scheduler.md` § Device migration inventory.
+//!
 //! Time is kept internally in binary and encoded on read / decoded on write
 //! according to register B: the DM bit (bit 2) selects binary vs **BCD**, and the
 //! 24/12 bit (bit 1) selects the hour format. This keeps the BCD conversion in
@@ -60,7 +65,7 @@
 //! - **Daylight-savings auto-adjust** (register B DSE): the bit is stored only.
 //! - **Oscillator control** via register A DV bits beyond the SET-bit freeze.
 
-use device::{AccessDir, Device, DeviceError, TraceEvent, VClock};
+use device::{AccessDir, Device, DeviceError, NextEvent, TraceEvent, VClock};
 
 /// Stable device name reported by [`Device::name`].
 const NAME: &str = "mc146818-rtc";
@@ -669,18 +674,52 @@ impl Device for CmosRtc {
     fn tick(&mut self, now: VClock) {
         let elapsed = now.0.saturating_sub(self.now.0);
         self.now = now;
+        if elapsed == 0 {
+            return;
+        }
         // The SET bit freezes the oscillator: no advance, no UIP.
         if self.nvram[REG_B] & B_SET != 0 {
             self.uip = false;
             return;
         }
-        self.accum += elapsed;
-        while self.accum >= self.second_ticks {
-            self.accum -= self.second_ticks;
+        let remaining = self.second_ticks - self.accum;
+        if elapsed < remaining {
+            self.accum += elapsed;
+        } else {
+            // Only second boundaries need division or calendar work. Subtract
+            // the partial second first so even a u64-sized jump cannot overflow.
+            let after = elapsed - remaining;
+            self.accum = after % self.second_ticks;
             self.tick_one_second();
+            for _ in 0..after / self.second_ticks {
+                self.tick_one_second();
+            }
         }
-        // UIP reads set during the window just before the next update.
         self.uip = self.accum >= self.second_ticks - self.uip_ticks;
+    }
+
+    fn next_event(&self, _now: VClock) -> NextEvent {
+        let clocks = if self.nvram[REG_B] & B_SET != 0 {
+            if !self.uip {
+                return NextEvent::Dormant;
+            }
+            // SET clears a pre-existing UIP on the next clock, as in the
+            // per-clock model, rather than during a zero-elapsed access.
+            1
+        } else {
+            let uip_start = self.second_ticks - self.uip_ticks;
+            if self.uip != (self.accum >= uip_start) {
+                1
+            } else if !self.uip && self.uip_ticks != 0 {
+                uip_start - self.accum
+            } else {
+                self.second_ticks - self.accum
+            }
+        };
+        self.now
+            .0
+            .checked_add(clocks)
+            .map_or(NextEvent::Dormant, |at| NextEvent::At(VClock(at)))
     }
 
     fn irq_pending(&self) -> bool {
@@ -829,6 +868,190 @@ mod tests {
             panicked.is_empty(),
             "panicked for time registers {panicked:?}"
         );
+    }
+
+    fn reference_clock(rtc: &mut CmosRtc, clock: u64) {
+        rtc.now = VClock(clock);
+        if rtc.nvram[REG_B] & B_SET != 0 {
+            rtc.uip = false;
+            return;
+        }
+        rtc.accum += 1;
+        if rtc.accum >= rtc.second_ticks {
+            rtc.accum -= rtc.second_ticks;
+            rtc.tick_one_second();
+        }
+        rtc.uip = rtc.accum >= rtc.second_ticks - rtc.uip_ticks;
+    }
+
+    #[test]
+    fn scheduled_matches_per_clock_seeded_accesses_and_long_jumps() {
+        for (second, window) in [(1, 0), (1, 1), (10, 0), (10, 2), (10, 10), (127, 19)] {
+            let mut reference = CmosRtc::new().with_timing(second, window);
+            reference.set_time(58, 59, 23, 7, 28, 2, 0);
+            let mut scheduled = MockBus::new(Box::new(CmosRtc::new().with_timing(second, window)));
+            scheduled.device_mut().restore(&reference.save()).unwrap();
+            let mut seed = 0x8042_1468_1816_5501u64;
+            let mut expected_edges = Vec::new();
+            let mut actual_edges = Vec::new();
+            let mut expected_level = false;
+            let mut actual_level = false;
+            let mut pin_sample = u64::MAX;
+            for step in 0..128 {
+                seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+                let jump = if step % 31 == 0 {
+                    10_003
+                } else {
+                    (seed >> 32) % (second * 2 + 1)
+                };
+                let access = scheduled.clock().0 + jump;
+                loop {
+                    let due = match scheduled.device().next_event(scheduled.clock()) {
+                        device::NextEvent::At(at) => {
+                            assert!(at > scheduled.clock());
+                            at.0
+                        }
+                        device::NextEvent::Dormant => u64::MAX,
+                        device::NextEvent::EveryPitClock => panic!("RTC still polls every clock"),
+                    };
+                    let target = access.min(due).min(pin_sample);
+                    let previous_clock = scheduled.clock().0;
+                    for clock in scheduled.clock().0 + 1..=target {
+                        reference_clock(&mut reference, clock);
+                        if reference.irq_pending() != expected_level {
+                            expected_level = reference.irq_pending();
+                            expected_edges.push((clock, expected_level));
+                        }
+                    }
+                    scheduled.tick(target - scheduled.clock().0);
+                    assert_eq!(
+                        reference.save(),
+                        scheduled.device().save(),
+                        "timing {second}/{window}, clock {target}"
+                    );
+                    assert_eq!(reference.irq_pending(), scheduled.device().irq_pending());
+                    if target > previous_clock && scheduled.device().irq_pending() != actual_level {
+                        actual_level = scheduled.device().irq_pending();
+                        actual_edges.push((target, actual_level));
+                    }
+                    if target == pin_sample {
+                        pin_sample = u64::MAX;
+                    }
+                    if target == access {
+                        break;
+                    }
+                }
+                scheduled.device_mut().sync(VClock(access));
+                let (index, value) = match step % 8 {
+                    0 => (
+                        REG_B,
+                        B_UIE
+                            | B_AIE
+                            | if seed & 0x100 != 0 {
+                                B_BINARY | B_24HOUR
+                            } else {
+                                0
+                            },
+                    ),
+                    1 => (
+                        REG_SECONDS_ALARM,
+                        if seed & 0x100 != 0 { 0xC0 } else { seed as u8 },
+                    ),
+                    2 => (REG_MINUTES_ALARM, 0xC0),
+                    3 => (REG_HOURS_ALARM, 0xC0),
+                    4 => (REG_B, B_SET | B_UIE | B_AIE | B_24HOUR),
+                    5 => (REG_SECONDS, seed as u8),
+                    6 => (REG_A, seed as u8),
+                    _ => (0x10 + (seed >> 8) as usize % 32, seed as u8),
+                };
+                write_reg(&mut reference, index as u8, value);
+                bus_write_reg(&mut scheduled, index, value);
+                for index in [
+                    REG_A,
+                    REG_SECONDS,
+                    REG_MINUTES,
+                    REG_HOURS,
+                    REG_DAY,
+                    REG_MONTH,
+                    REG_YEAR,
+                    REG_C,
+                ] {
+                    assert_eq!(
+                        read_reg(&mut reference, index as u8),
+                        bus_read_reg(&mut scheduled, index)
+                    );
+                    assert_eq!(reference.irq_pending(), scheduled.device().irq_pending());
+                }
+                if step % 17 == 0 {
+                    reference.reset();
+                    scheduled.device_mut().reset();
+                }
+                if step % 19 == 0 {
+                    let snapshot = reference.save();
+                    reference.restore(&snapshot).unwrap();
+                    scheduled.device_mut().restore(&snapshot).unwrap();
+                }
+                assert_eq!(reference.save(), scheduled.device().save());
+                assert_eq!(reference.take_trace(), scheduled.device_mut().take_trace());
+                pin_sample = access + 1;
+            }
+            assert_eq!(expected_edges, actual_edges);
+            assert!(expected_edges.iter().any(|(_, level)| *level));
+        }
+    }
+
+    #[test]
+    fn deadlines_follow_uip_update_and_set_without_zero_elapsed_changes() {
+        let mut rtc = CmosRtc::new().with_timing(10, 2);
+        assert_eq!(
+            rtc.next_event(VClock::ZERO),
+            device::NextEvent::At(VClock(8))
+        );
+        rtc.tick(VClock(8));
+        assert!(rtc.uip);
+        assert_eq!(rtc.next_event(VClock(8)), device::NextEvent::At(VClock(10)));
+        write_reg(&mut rtc, REG_B as u8, B_SET);
+        rtc.sync(VClock(8));
+        assert!(rtc.uip);
+        assert_eq!(rtc.next_event(VClock(8)), device::NextEvent::At(VClock(9)));
+        rtc.tick(VClock(9));
+        assert!(!rtc.uip);
+        assert_eq!(rtc.next_event(VClock(9)), device::NextEvent::Dormant);
+        rtc.sync(VClock(100));
+        write_reg(&mut rtc, REG_B as u8, B_UIE);
+        assert_eq!(
+            rtc.next_event(VClock(100)),
+            device::NextEvent::At(VClock(101))
+        );
+        rtc.tick(VClock(101));
+        assert!(rtc.uip);
+        rtc.tick(VClock(102));
+        assert!(rtc.irq_pending());
+        assert_eq!(rtc.time.second, 1);
+        assert_eq!(read_reg(&mut rtc, REG_C as u8), C_UF | C_IRQF);
+        assert!(!rtc.irq_pending());
+    }
+
+    #[test]
+    fn catch_up_without_deadline_visits_matches_per_clock() {
+        for (second, window) in [(1, 1), (10, 2), (127, 0), (127, 127)] {
+            let mut reference = CmosRtc::new().with_timing(second, window);
+            let mut scheduled = MockBus::new(Box::new(CmosRtc::new().with_timing(second, window)));
+            for index in [REG_SECONDS_ALARM, REG_MINUTES_ALARM, REG_HOURS_ALARM] {
+                write_reg(&mut reference, index as u8, 0xC0);
+                bus_write_reg(&mut scheduled, index, 0xC0);
+            }
+            write_reg(&mut reference, REG_B as u8, B_UIE | B_AIE | B_24HOUR);
+            bus_write_reg(&mut scheduled, REG_B, B_UIE | B_AIE | B_24HOUR);
+            for target in [0, 1, 1, 2, 128, 10_003, 200_003] {
+                for clock in reference.now.0 + 1..=target {
+                    reference_clock(&mut reference, clock);
+                }
+                scheduled.device_mut().sync(VClock(target));
+                assert_eq!(reference.save(), scheduled.device().save());
+                assert_eq!(reference.irq_pending(), scheduled.device().irq_pending());
+            }
+        }
     }
 
     #[test]

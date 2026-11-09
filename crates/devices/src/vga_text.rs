@@ -57,7 +57,7 @@
 //! - Cursor scanline shape (`0x0A`/`0x0B` low bits) is stored but only the
 //!   cursor-disable bit is interpreted.
 
-use device::{AccessDir, Device, DeviceError, TraceEvent, VClock};
+use device::{AccessDir, Device, DeviceError, NextEvent, TraceEvent, VClock};
 
 /// Stable device name reported by [`Device::name`].
 const NAME: &str = "vga-text";
@@ -203,22 +203,17 @@ impl VgaText {
     ///
     /// A stock BIOS busy-waits on this register before touching video memory: it
     /// spins until the retrace bit goes high, then spins until it goes low again
-    /// (both edges), to write only during retrace and avoid CGA "snow". That whole
-    /// wait runs inside a single CPU quantum, so no device [`tick`] happens between
-    /// iterations and the virtual clock does **not** advance mid-loop. Deriving the
-    /// retrace bit from virtual time would therefore leave it constant across the
-    /// wait and hang the BIOS forever.
-    ///
-    /// So the bits cycle off a counter bumped on each read instead: successive
-    /// reads always see the bits change, so any both-edges wait completes in a
-    /// bounded number of reads. It reads no wall clock, so it stays deterministic.
+    /// (both edges), to write only during retrace and avoid CGA "snow". This
+    /// compatibility model advances the phase on reads, independently of virtual
+    /// time, so both edges remain observable even at a single clock. Scheduling
+    /// preserves that approximation; a real retrace clock is a separate model
+    /// change (see `backlog/docs/design/scheduler.md` § Device migration inventory).
     ///
     /// Phase, in the low bits of the read count: bit 0 toggles every read (both
     /// edges seen within 2 reads); bit 3 toggles every second read (both edges
     /// seen within 4 reads). The mono read-character routine polls bit 0, the
     /// write path bit 3 then bit 0, so toggling both unblocks either.
     ///
-    /// [`tick`]: Device::tick
     fn status_register(&mut self) -> u8 {
         let count = self.status_reads;
         self.status_reads = count.wrapping_add(1);
@@ -351,6 +346,10 @@ impl Device for VgaText {
         self.now = now;
     }
 
+    fn next_event(&self, _now: VClock) -> NextEvent {
+        NextEvent::Dormant
+    }
+
     fn irq_pending(&self) -> bool {
         // A text-mode VGA drives no IRQ line in this model (no vertical-retrace
         // interrupt wired).
@@ -410,6 +409,83 @@ mod tests {
     /// MMIO address of text cell `n`.
     fn cell_addr(n: u64) -> u64 {
         TEXT_BUFFER_BASE + n * 2
+    }
+
+    #[test]
+    fn dormant_matches_per_clock_seeded_accesses_and_long_jumps() {
+        let mut reference = MockBus::new(Box::new(VgaText::new()));
+        let mut scheduled = MockBus::new(Box::new(VgaText::new()));
+        let mut seed = 0x8042_1468_1816_5501u64;
+        for step in 0..128 {
+            assert_eq!(
+                scheduled.device().next_event(reference.clock()),
+                device::NextEvent::Dormant
+            );
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+            let clocks = if step % 31 == 0 {
+                100_003
+            } else {
+                (seed >> 32) % 17
+            };
+            for _ in 0..clocks {
+                reference.tick(1);
+                assert!(!reference.device().irq_pending());
+            }
+            scheduled.device_mut().sync(reference.clock());
+            assert_eq!(reference.device().save(), scheduled.device().save());
+            assert_eq!(
+                reference.device().irq_pending(),
+                scheduled.device().irq_pending()
+            );
+            match seed % 4 {
+                0 => {
+                    let addr = TEXT_BUFFER_BASE + ((seed >> 8) % TEXT_BUFFER_LEN as u64);
+                    reference.mmio_write(addr, 2, seed).unwrap();
+                    scheduled.mmio_write(addr, 2, seed).unwrap();
+                    assert_eq!(
+                        reference.mmio_read(addr, 2).unwrap(),
+                        scheduled.mmio_read(addr, 2).unwrap()
+                    );
+                }
+                1 => {
+                    for port in [
+                        CRTC_INDEX_PORT,
+                        CRTC_DATA_PORT,
+                        CGA_MODE_CONTROL_PORT,
+                        CGA_COLOR_SELECT_PORT,
+                    ] {
+                        reference.port_write(port, 1, seed as u32).unwrap();
+                        scheduled.port_write(port, 1, seed as u32).unwrap();
+                        assert_eq!(
+                            reference.port_read(port, 1).unwrap(),
+                            scheduled.port_read(port, 1).unwrap()
+                        );
+                    }
+                }
+                _ => {
+                    for port in [
+                        CGA_STATUS_PORT,
+                        MDA_STATUS_PORT,
+                        CGA_STATUS_PORT,
+                        MDA_STATUS_PORT,
+                    ] {
+                        assert_eq!(
+                            reference.port_read(port, 1).unwrap(),
+                            scheduled.port_read(port, 1).unwrap()
+                        );
+                    }
+                }
+            }
+            assert_eq!(reference.device().save(), scheduled.device().save());
+            assert_eq!(
+                reference.device().irq_pending(),
+                scheduled.device().irq_pending()
+            );
+            assert_eq!(
+                reference.device_mut().take_trace(),
+                scheduled.device_mut().take_trace()
+            );
+        }
     }
 
     #[test]

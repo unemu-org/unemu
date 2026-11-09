@@ -27,6 +27,11 @@
 //! tick so the fall is observed — gives every queued byte its own rising edge and
 //! therefore its own IRQ1.
 //!
+//! Intel 8042 datasheet, "Data Bus Buffer" and "Interrupts", describes the
+//! host buffer interface. The two PIT boundaries above are the compatibility
+//! model's IRQ visibility policy, not a keyboard baud-rate model. See
+//! `backlog/docs/design/scheduler.md` § Device migration inventory.
+//!
 //! ## A20 gate
 //!
 //! Command `0xD1` (write output port) latches a new output port; bit 1 is the
@@ -83,7 +88,7 @@
 
 use std::collections::VecDeque;
 
-use device::{AccessDir, Device, DeviceError, TraceEvent, VClock};
+use device::{AccessDir, Device, DeviceError, NextEvent, TraceEvent, VClock};
 
 /// Stable device name reported by [`Device::name`].
 const NAME: &str = "8042-kbc";
@@ -490,16 +495,34 @@ impl Device for I8042 {
     }
 
     fn tick(&mut self, now: VClock) {
+        let elapsed = now.0.saturating_sub(self.now.0);
         self.now = now;
-        // Serial delivery: shift the next queued byte into the output buffer on a
-        // tick (see the module docs). After a read empties the buffer, hold off one
-        // tick so the IRQ1 line is observed low before the next byte re-raises it —
-        // without that pause several queued bytes would present as one sustained
-        // level and the edge-triggered PIC would latch only the first.
+        if elapsed == 0 {
+            return;
+        }
+        // A read holds the line low through the first clock; only the second
+        // clock may refill. Access synchronization must not consume that hold.
         if self.refill_hold {
             self.refill_hold = false;
+            if elapsed == 1 {
+                return;
+            }
+        }
+        self.refill_output();
+    }
+
+    fn next_event(&self, _now: VClock) -> NextEvent {
+        if self.refill_hold
+            || (!self.output_full
+                && self.command_byte & CB_KBD_DISABLE == 0
+                && !self.input_queue.is_empty())
+        {
+            self.now
+                .0
+                .checked_add(1)
+                .map_or(NextEvent::Dormant, |at| NextEvent::At(VClock(at)))
         } else {
-            self.refill_output();
+            NextEvent::Dormant
         }
     }
 
@@ -608,6 +631,157 @@ mod tests {
     /// Command-byte bit 1: aux-interrupt (IRQ12) enable. Stored only; no mouse is
     /// modelled, so it exists only to exercise the command-byte round trip.
     const CB_AUX_INT: u8 = 1 << 1;
+
+    fn reference_clock(kbc: &mut I8042, clock: u64) {
+        kbc.now = VClock(clock);
+        if kbc.refill_hold {
+            kbc.refill_hold = false;
+        } else {
+            kbc.refill_output();
+        }
+    }
+
+    #[test]
+    fn scheduled_matches_per_clock_seeded_accesses_and_long_jumps() {
+        let mut reference = I8042::new();
+        let mut scheduled = MockBus::new(Box::new(I8042::new()));
+        let mut seed = 0x8042_1468_1816_5501u64;
+        let mut expected_edges = Vec::new();
+        let mut actual_edges = Vec::new();
+        let mut expected_level = false;
+        let mut actual_level = false;
+        let mut pin_sample = u64::MAX;
+        for step in 0..256 {
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+            let jump = if step % 31 == 0 {
+                100_003
+            } else {
+                (seed >> 32) % 9
+            };
+            let access = scheduled.clock().0 + jump;
+            loop {
+                let due = match scheduled.device().next_event(scheduled.clock()) {
+                    device::NextEvent::At(at) => {
+                        assert!(at > scheduled.clock());
+                        at.0
+                    }
+                    device::NextEvent::Dormant => u64::MAX,
+                    device::NextEvent::EveryPitClock => panic!("keyboard still polls every clock"),
+                };
+                let target = access.min(due).min(pin_sample);
+                let previous_clock = scheduled.clock().0;
+                for clock in scheduled.clock().0 + 1..=target {
+                    reference_clock(&mut reference, clock);
+                    if reference.irq_pending() != expected_level {
+                        expected_level = reference.irq_pending();
+                        expected_edges.push((clock, expected_level));
+                    }
+                }
+                scheduled.tick(target - scheduled.clock().0);
+                if target > previous_clock && scheduled.device().irq_pending() != actual_level {
+                    actual_level = scheduled.device().irq_pending();
+                    actual_edges.push((target, actual_level));
+                }
+                assert_eq!(reference.save(), scheduled.device().save());
+                assert_eq!(reference.irq_pending(), scheduled.device().irq_pending());
+                let kbc = scheduled
+                    .device_mut()
+                    .as_any_mut()
+                    .unwrap()
+                    .downcast_mut::<I8042>()
+                    .unwrap();
+                assert_eq!(reference.refill_hold, kbc.refill_hold);
+                if target == pin_sample {
+                    pin_sample = u64::MAX;
+                }
+                if target == access {
+                    break;
+                }
+            }
+            scheduled.device_mut().sync(VClock(access));
+            match step % 10 {
+                0 | 1 => {
+                    reference.push_scancode(seed as u8);
+                    scheduled
+                        .device_mut()
+                        .as_any_mut()
+                        .unwrap()
+                        .downcast_mut::<I8042>()
+                        .unwrap()
+                        .push_scancode(seed as u8);
+                }
+                2 | 3 => assert_eq!(
+                    reference.port_read(PORT_DATA, 1).unwrap(),
+                    scheduled.port_read(PORT_DATA, 1).unwrap()
+                ),
+                4 => assert_eq!(
+                    reference.port_read(PORT_CMD, 1).unwrap(),
+                    scheduled.port_read(PORT_CMD, 1).unwrap()
+                ),
+                5 => {
+                    reference.port_write(PORT_CMD, 1, 0x60).unwrap();
+                    scheduled.port_write(PORT_CMD, 1, 0x60).unwrap();
+                    let value =
+                        u32::from(CB_KBD_INT | if seed & 0x100 != 0 { CB_KBD_DISABLE } else { 0 });
+                    reference.port_write(PORT_DATA, 1, value).unwrap();
+                    scheduled.port_write(PORT_DATA, 1, value).unwrap();
+                }
+                6 => {
+                    let command =
+                        [0xAD, 0xAE, 0xAA, 0xAB, 0x20, 0xD0, 0xD1, 0xD4][(seed >> 8) as usize % 8];
+                    reference.port_write(PORT_CMD, 1, command).unwrap();
+                    scheduled.port_write(PORT_CMD, 1, command).unwrap();
+                }
+                7 | 8 => {
+                    let value = if step % 2 == 0 { 0xFF } else { seed as u32 };
+                    reference.port_write(PORT_DATA, 1, value).unwrap();
+                    scheduled.port_write(PORT_DATA, 1, value).unwrap();
+                }
+                _ => {
+                    let snapshot = reference.save();
+                    reference.restore(&snapshot).unwrap();
+                    scheduled.device_mut().restore(&snapshot).unwrap();
+                }
+            }
+            // Access-induced line changes are sampled on the next clock by both engines.
+            assert_eq!(reference.save(), scheduled.device().save());
+            assert_eq!(reference.irq_pending(), scheduled.device().irq_pending());
+            assert_eq!(reference.take_trace(), scheduled.device_mut().take_trace());
+            pin_sample = access + 1;
+        }
+        assert_eq!(expected_edges, actual_edges);
+        assert!(expected_edges.iter().any(|(_, level)| *level));
+    }
+
+    #[test]
+    fn refill_deadlines_preserve_hold_zero_elapsed_and_catch_up() {
+        let mut kbc = I8042::new();
+        assert_eq!(kbc.next_event(VClock::ZERO), device::NextEvent::Dormant);
+        kbc.port_write(PORT_CMD, 1, 0x60).unwrap();
+        kbc.port_write(PORT_DATA, 1, u32::from(CB_KBD_INT)).unwrap();
+        kbc.push_scancode(0x1E);
+        kbc.push_scancode(0x9E);
+        kbc.port_read(PORT_DATA, 1).unwrap();
+        assert_eq!(
+            kbc.next_event(VClock::ZERO),
+            device::NextEvent::At(VClock(1))
+        );
+        kbc.sync(VClock::ZERO);
+        assert!(kbc.refill_hold);
+        kbc.tick(VClock(1));
+        assert!(!kbc.irq_pending());
+        assert_eq!(kbc.next_event(VClock(1)), device::NextEvent::At(VClock(2)));
+        kbc.sync(VClock(1));
+        assert!(!kbc.irq_pending());
+        kbc.tick(VClock(2));
+        assert!(kbc.irq_pending());
+        assert_eq!(kbc.next_event(VClock(2)), device::NextEvent::Dormant);
+        kbc.push_scancode(0x30);
+        kbc.port_read(PORT_DATA, 1).unwrap();
+        kbc.sync(VClock(100_003));
+        assert!(kbc.irq_pending());
+        assert_eq!(kbc.port_read(PORT_DATA, 1).unwrap(), 0x30);
+    }
 
     #[test]
     fn power_on_state() {

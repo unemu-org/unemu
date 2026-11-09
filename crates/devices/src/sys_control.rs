@@ -34,7 +34,7 @@
 //! - Parity / I/O-channel-check NMI generation: the enable bits latch no error
 //!   and raise no NMI; the status bits always read clean.
 
-use device::{AccessDir, Device, DeviceError, TraceEvent, VClock};
+use device::{AccessDir, Device, DeviceError, NextEvent, TraceEvent, VClock};
 
 /// Stable device name reported by [`Device::name`].
 const NAME: &str = "sys-control";
@@ -112,16 +112,12 @@ impl SysControl {
     /// The BIOS `AT_DELAY` short-delay routine busy-waits on the **refresh** bit
     /// (bit 4): it reads this port in a tight loop and counts how many iterations
     /// pass before the bit flips, using that as a fine time reference. On real
-    /// hardware the bit toggles at the DRAM refresh rate. That whole loop runs
-    /// inside a single CPU quantum, so no device [`tick`] happens between reads and
-    /// the virtual clock does **not** advance mid-loop. Deriving the refresh bit
-    /// from virtual time would therefore leave it constant across the wait and hang
-    /// the BIOS forever.
-    ///
-    /// So the status bits cycle off a counter bumped on each read instead, exactly
-    /// as the CGA status register's retrace bit does: successive reads always see
-    /// the refresh bit change, so any wait-for-toggle completes in a bounded number
-    /// of reads. It reads no wall clock, so it stays deterministic.
+    /// hardware the bit toggles at the DRAM refresh rate (IBM Personal Computer AT
+    /// Technical Reference, "System Timers", p. 1-22). This compatibility model
+    /// instead advances the status phase on reads, independently of virtual time,
+    /// so both edges remain observable even at a single clock. Scheduling must
+    /// preserve that phase until real PIT1/PIT2 wiring is modelled; see
+    /// `backlog/docs/design/scheduler.md` § Device migration inventory.
     ///
     /// Phase, in the low bits of the read count taken *before* this read:
     /// - bit 4 (refresh detect) toggles every read — both a 0→1 and a 1→0 edge are
@@ -132,7 +128,6 @@ impl SysControl {
     /// The error-status bits (6 and 7) always read clean: this model latches no
     /// parity or I/O-channel-check error.
     ///
-    /// [`tick`]: Device::tick
     fn status_byte(&mut self) -> u8 {
         let count = self.reads;
         self.reads = count.wrapping_add(1);
@@ -201,6 +196,10 @@ impl Device for SysControl {
         self.now = now;
     }
 
+    fn next_event(&self, _now: VClock) -> NextEvent {
+        NextEvent::Dormant
+    }
+
     fn irq_pending(&self) -> bool {
         // The system-control port drives no IRQ line in this model (parity /
         // I/O-channel-check NMIs are not generated).
@@ -255,6 +254,56 @@ impl Device for SysControl {
 mod tests {
     use super::*;
     use testkit::MockBus;
+
+    #[test]
+    fn dormant_matches_per_clock_seeded_accesses_and_long_jumps() {
+        let mut reference = MockBus::new(Box::new(SysControl::new()));
+        let mut scheduled = MockBus::new(Box::new(SysControl::new()));
+        let mut seed = 0x8042_1468_1816_5501u64;
+        for step in 0..128 {
+            assert_eq!(
+                scheduled.device().next_event(reference.clock()),
+                device::NextEvent::Dormant
+            );
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+            let clocks = if step % 31 == 0 {
+                100_003
+            } else {
+                (seed >> 32) % 17
+            };
+            for _ in 0..clocks {
+                reference.tick(1);
+                assert!(!reference.device().irq_pending());
+            }
+            scheduled.device_mut().sync(reference.clock());
+            assert_eq!(reference.device().save(), scheduled.device().save());
+            assert_eq!(
+                reference.device().irq_pending(),
+                scheduled.device().irq_pending()
+            );
+            if seed & 1 == 0 {
+                reference.port_write(0x61, 1, seed as u32).unwrap();
+                scheduled.port_write(0x61, 1, seed as u32).unwrap();
+            } else {
+                // Consecutive reads at one clock retain the refresh/PIT2 phases.
+                for _ in 0..4 {
+                    assert_eq!(
+                        reference.port_read(0x61, 1).unwrap(),
+                        scheduled.port_read(0x61, 1).unwrap()
+                    );
+                }
+            }
+            assert_eq!(reference.device().save(), scheduled.device().save());
+            assert_eq!(
+                reference.device().irq_pending(),
+                scheduled.device().irq_pending()
+            );
+            assert_eq!(
+                reference.device_mut().take_trace(),
+                scheduled.device_mut().take_trace()
+            );
+        }
+    }
 
     #[test]
     fn control_nibble_writes_and_reads_back() {

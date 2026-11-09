@@ -18,7 +18,7 @@
 //! - No input source: the receiver holding register (RBR) always reads `0` and
 //!   the LSR data-ready bit is always clear.
 
-use device::{AccessDir, Device, DeviceError, TraceEvent, VClock};
+use device::{AccessDir, Device, DeviceError, NextEvent, TraceEvent, VClock};
 
 /// Stable device name reported by [`Device::name`].
 const NAME: &str = "16550-uart";
@@ -204,6 +204,10 @@ impl Device for Uart16550 {
         self.now = now;
     }
 
+    fn next_event(&self, _now: VClock) -> NextEvent {
+        NextEvent::Dormant
+    }
+
     fn irq_pending(&self) -> bool {
         // No THRE/RX interrupts are modelled yet; COM1's IRQ4 line comes later.
         false
@@ -290,6 +294,54 @@ mod tests {
     use testkit::MockBus;
 
     const COM1: u16 = 0x3F8;
+
+    #[test]
+    fn dormant_matches_per_clock_seeded_accesses_and_long_jumps() {
+        let mut reference = MockBus::new(Box::new(Uart16550::new(0x3F8)));
+        let mut scheduled = MockBus::new(Box::new(Uart16550::new(0x3F8)));
+        let mut seed = 0x8042_1468_1816_5501u64;
+        for step in 0..128 {
+            assert_eq!(
+                scheduled.device().next_event(reference.clock()),
+                device::NextEvent::Dormant
+            );
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+            let clocks = if step % 31 == 0 {
+                100_003
+            } else {
+                (seed >> 32) % 17
+            };
+            for _ in 0..clocks {
+                reference.tick(1);
+                assert!(!reference.device().irq_pending());
+            }
+            scheduled.device_mut().sync(reference.clock());
+            assert_eq!(reference.device().save(), scheduled.device().save());
+            assert_eq!(
+                reference.device().irq_pending(),
+                scheduled.device().irq_pending()
+            );
+            let port = 0x3F8 + ((seed >> 8) % 8) as u16;
+            if seed & 1 == 0 {
+                reference.port_write(port, 1, seed as u32).unwrap();
+                scheduled.port_write(port, 1, seed as u32).unwrap();
+            } else {
+                assert_eq!(
+                    reference.port_read(port, 1).unwrap(),
+                    scheduled.port_read(port, 1).unwrap()
+                );
+            }
+            assert_eq!(reference.device().save(), scheduled.device().save());
+            assert_eq!(
+                reference.device().irq_pending(),
+                scheduled.device().irq_pending()
+            );
+            assert_eq!(
+                reference.device_mut().take_trace(),
+                scheduled.device_mut().take_trace()
+            );
+        }
+    }
 
     #[test]
     fn thr_write_appends_to_output() {
