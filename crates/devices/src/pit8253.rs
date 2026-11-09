@@ -41,12 +41,16 @@
 //! | 0    | Interrupt on terminal count   | yes      | OUT low until TC, then high |
 //! | 1    | Hardware retriggerable one-shot | no     | needs a real GATE input   |
 //! | 2    | Rate generator                | yes      | IRQ0 timer tick mode      |
-//! | 3    | Square wave generator         | yes      | BIOS 18.2 Hz tick default |
+//! | 3    | Square wave generator         | yes      | Even/odd divisors; 0 means 65536 |
 //! | 4    | Software triggered strobe     | no       | rarely used on the PC     |
 //! | 5    | Hardware triggered strobe     | no       | needs a real GATE input   |
 //!
 //! Modes 6 and 7 alias to modes 2 and 3 on real silicon; this model applies the
 //! same aliasing.
+//!
+//! Per the Intel 8254 datasheet, Mode 3 ("Square Wave Mode"), OUT starts high.
+//! Even counts give equal high/low halves; odd counts load N-1 and keep OUT high
+//! for (N+1)/2 clocks and low for (N-1)/2 clocks.
 //!
 //! Deliberately **not** modelled:
 //! - **BCD counting** (command bit 0): the bit is stored and echoed in the
@@ -139,7 +143,8 @@ struct Counter {
     bcd: bool,
     /// The reload value written by the guest; `0` means 65536.
     reload: u16,
-    /// The live counting element. Loaded from `reload` one tick after a write.
+    /// The live counting element. Loads one tick after a write; mode 3 clears
+    /// the reload's low bit so the decrement-by-two sequence can reach zero.
     count: u16,
     /// Current OUT pin level.
     out: bool,
@@ -281,6 +286,9 @@ impl Counter {
         if self.reload_pending {
             self.reload_pending = false;
             self.count = self.initial() as u16;
+            if self.mode == 3 {
+                self.count &= !1;
+            }
             return;
         }
         if !self.armed {
@@ -328,15 +336,21 @@ impl Counter {
         }
     }
 
-    /// Mode 3: square wave generator. OUT alternates high/low with a full period
-    /// equal to the initial count; the counter decrements by two per tick.
+    /// Intel 8254 datasheet, Mode 3 ("Square Wave Mode"): decrement by two,
+    /// reloading N for even divisors or N-1 for odd divisors. An odd divisor
+    /// holds OUT high for one extra clock after the count expires, giving a
+    /// high half of (N+1)/2 clocks and a low half of (N-1)/2 clocks.
     fn tick_mode3(&mut self) {
-        // Decrement by two each clock; toggle OUT when the count reaches zero,
-        // reloading for the next half-period.
+        let odd_high = self.reload & 1 != 0 && self.out;
+        if odd_high && self.count == 0 {
+            self.out = false;
+            self.count = self.reload & !1;
+            return;
+        }
         self.count = self.count.wrapping_sub(2);
-        if self.count == 0 {
+        if self.count == 0 && !odd_high {
             self.out = !self.out;
-            self.count = self.initial() as u16;
+            self.count = self.reload & !1;
         }
     }
 }
@@ -758,6 +772,96 @@ mod tests {
         let highs = levels.iter().filter(|&&b| b).count();
         let lows = levels.len() - highs;
         assert_eq!(highs, lows, "even-divisor square wave must be 50% duty");
+    }
+
+    fn assert_mode3_waveform(divisor: u16) {
+        let mut bus = MockBus::new(Box::new(Pit8253::new()));
+        bus.port_write(CMD, 1, cmd(0, 0b11, 3, 0)).unwrap();
+        bus.port_write(C0, 1, u32::from(divisor & 0xFF)).unwrap();
+        bus.port_write(C0, 1, u32::from(divisor >> 8)).unwrap();
+        assert!(bus.device().irq_pending());
+        bus.tick(1); // The load clock precedes the first high half-period.
+        assert!(bus.device().irq_pending());
+
+        let period = if divisor == 0 {
+            65536
+        } else {
+            u64::from(divisor)
+        };
+        let high_clocks = period.div_ceil(2);
+        let mut rising_edges = Vec::new();
+        let mut falling_edges = Vec::new();
+        let mut previous = true;
+        for clock in 1..=period * 3 {
+            bus.tick(1);
+            let out = bus.device().irq_pending();
+            assert_eq!(
+                out,
+                clock % period < high_clocks,
+                "divisor {divisor}, clock {clock}: incorrect OUT/IRQ0 level"
+            );
+            if previous && !out {
+                falling_edges.push(clock);
+            } else if !previous && out {
+                rising_edges.push(clock);
+            }
+            previous = out;
+        }
+        assert_eq!(rising_edges, vec![period, period * 2, period * 3]);
+        assert_eq!(
+            falling_edges,
+            vec![high_clocks, period + high_clocks, period * 2 + high_clocks]
+        );
+    }
+
+    #[test]
+    fn mode3_odd_divisor_3_has_exact_high_low_clocks_and_irq_edges() {
+        assert_mode3_waveform(3);
+    }
+
+    #[test]
+    fn mode3_odd_divisor_5_has_exact_high_low_clocks_and_irq_edges() {
+        assert_mode3_waveform(5);
+    }
+
+    #[test]
+    fn mode3_odd_divisor_1193_has_exact_high_low_clocks_and_irq_edges() {
+        assert_mode3_waveform(1193);
+    }
+
+    #[test]
+    fn mode3_even_divisor_has_exact_high_low_clocks_and_irq_edges() {
+        assert_mode3_waveform(8);
+    }
+
+    #[test]
+    fn mode3_zero_divisor_has_65536_clock_period() {
+        assert_mode3_waveform(0);
+    }
+
+    #[test]
+    fn mode3_odd_count_expires_one_clock_before_out_falls() {
+        let mut bus = MockBus::new(Box::new(Pit8253::new()));
+        bus.port_write(CMD, 1, cmd(0, 0b11, 3, 0)).unwrap();
+        bus.port_write(C0, 1, 5).unwrap();
+        bus.port_write(C0, 1, 0).unwrap();
+        bus.tick(1);
+
+        for (expected_count, expected_out) in [
+            (4, true),
+            (2, true),
+            (0, true),
+            (4, false),
+            (2, false),
+            (4, true),
+        ] {
+            bus.port_write(CMD, 1, cmd(0, 0b00, 0, 0)).unwrap();
+            let lo = bus.port_read(C0, 1).unwrap();
+            let hi = bus.port_read(C0, 1).unwrap();
+            assert_eq!((hi << 8) | lo, expected_count);
+            assert_eq!(bus.device().irq_pending(), expected_out);
+            bus.tick(1);
+        }
     }
 
     #[test]
