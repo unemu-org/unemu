@@ -833,3 +833,27 @@ CPU frequency behavior, or finer-than-supported domain resolution. Revisit the
 linear deadline scan or return strategy only when new phase measurements show
 them material. Host pacing or audio playback alone is not a reason to weaken
 deterministic virtual time.
+
+## Review outcome (2026-11-09)
+
+An adversarial review accepted the direction with changes; the accepted form is
+**decision-15**, which wins where this proposal differs:
+
+- **Blocker:** the CPU core does not model the one-instruction interrupt inhibit
+  after an SS load (`mov ss` / `pop ss`). Instruction-exact delivery must not be
+  enabled until it exists; it is part of the stage-1 request.
+- Time stays in whole PIT clocks (`VClock(u64)`); other domains keep rational
+  phases and round events up to the next PIT clock. The 128-bit, 2^32-per-clock
+  instants above are dropped.
+- Unwired PIT channels (refresh, speaker) are synchronised lazily, never
+  scheduled.
+- A REP string iteration is one step of CPU time, so device time advances inside
+  long string operations and an interrupt can be taken between iterations.
+- The stage-1 request to the CPU core is narrowed to: an instruction-exact
+  budget in steps, counting `jmp $`, the SS-load inhibit, an interrupt-readiness
+  query and an optional stop when an interrupt becomes acceptable. Completion
+  resumption, an acceptance callback and a zero-progress yield stay in the
+  emulator.
+- Bead 2 (CPU ratio) folds into the time-model bead; the legacy outer loop stays
+  untouched until adoption; a golden comparator normalises the documented
+  systematic shifts before corrected timing is reviewed.
