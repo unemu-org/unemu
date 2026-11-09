@@ -12,9 +12,12 @@
 //! revision rather than a plain path, so a clean checkout or CI resolves the same
 //! CPU without any local x86jit checkout present.
 
-use x86jit_core::{CpuMode, Exit, PortDir, Prot, Reg, RegionKind, Vcpu, Vm, VmConfig};
+use x86jit_core::{
+    CpuMode, Exit, PortDir, Prot, Reg, RegionKind, StepOptions, StepRunError, StepStop, Vcpu, Vm,
+    VmConfig,
+};
 
-use crate::{Cpu, CpuError, CpuReg, CpuStop, DmaAccess};
+use crate::{Cpu, CpuError, CpuReg, CpuStepRun, CpuStepStop, CpuStop, DmaAccess};
 
 /// A CPU backed by the `x86jit` interpreter core (§2.1).
 ///
@@ -219,9 +222,9 @@ fn to_core_reg(reg: CpuReg) -> Reg {
     }
 }
 
-impl Cpu for X86JitCpu {
-    fn run(&mut self, budget: Option<u64>) -> Result<CpuStop, CpuError> {
-        match self.cpu.run(&self.vm, budget) {
+impl X86JitCpu {
+    fn map_exit(&self, exit: Exit) -> Result<CpuStop, CpuError> {
+        match exit {
             Exit::PortIo {
                 port,
                 size,
@@ -267,6 +270,47 @@ impl Cpu for X86JitCpu {
             }),
         }
     }
+}
+
+impl Cpu for X86JitCpu {
+    fn run(&mut self, budget: Option<u64>) -> Result<CpuStop, CpuError> {
+        let exit = self.cpu.run(&self.vm, budget);
+        self.map_exit(exit)
+    }
+
+    fn run_steps(&mut self, max_steps: u64) -> Result<CpuStepRun, CpuError> {
+        let run = self
+            .cpu
+            .run_steps(&self.vm, max_steps, StepOptions::default())
+            .map_err(|error| match error {
+                StepRunError::UnsupportedMode => CpuError::UnexpectedExit {
+                    what: "step-bounded execution is unsupported by this backend or mode"
+                        .to_string(),
+                },
+                StepRunError::PendingPortIn => CpuError::UnexpectedExit {
+                    what: "pending port input must be completed before step-bounded execution"
+                        .to_string(),
+                },
+                other => CpuError::UnexpectedExit {
+                    what: format!("{other:?}"),
+                },
+            })?;
+        let steps = run.steps();
+        let stop = match run.into_stop() {
+            StepStop::Exit(exit) => CpuStepStop::Exit(self.map_exit(exit)?),
+            StepStop::IrqReady => CpuStepStop::IrqReady,
+            other => {
+                return Err(CpuError::UnexpectedExit {
+                    what: format!("{other:?}"),
+                })
+            }
+        };
+        Ok(CpuStepRun { steps, stop })
+    }
+
+    fn irq_ready(&self) -> bool {
+        self.cpu.irq_ready()
+    }
 
     fn reg(&self, reg: CpuReg) -> u64 {
         self.cpu.reg(to_core_reg(reg))
@@ -291,7 +335,7 @@ impl Cpu for X86JitCpu {
     fn inject_irq(&mut self, vector: u8) {
         // Real mode only: the core queues the vector and delivers it in-guest
         // through the IVT at the next `run()` boundary once IF is set, no
-        // completion is outstanding, and the STI shadow has elapsed. In Long64
+        // completion is outstanding, and the STI/SS-load shadow has elapsed. In Long64
         // this is inert (the core never sets `pending_irq` outside real mode).
         self.cpu.inject_irq(vector);
     }
@@ -333,6 +377,151 @@ impl Cpu for X86JitCpu {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn run_steps_cuts_inside_cached_real16_block() {
+        let mut code = vec![0x40; 100]; // inc ax
+        code.extend_from_slice(&[0xE6, 0x80, 0xF4]);
+        let mut cpu = real_mode_cpu(&code);
+        assert!(matches!(
+            run_to_stop(&mut cpu).unwrap(),
+            CpuStop::PortOut { .. }
+        ));
+        cpu.set_reg(CpuReg::Rip, 0x7C00);
+        cpu.set_reg(CpuReg::Rax, 0);
+        let before = cpu.retired();
+        for n in [0, 7, 1, 9] {
+            let ip = cpu.reg(CpuReg::Rip);
+            let ax = cpu.reg(CpuReg::Rax);
+            let run = cpu.run_steps(n).unwrap();
+            assert_eq!(
+                run,
+                crate::CpuStepRun {
+                    steps: n,
+                    stop: crate::CpuStepStop::Exit(CpuStop::BudgetExhausted),
+                }
+            );
+            assert_eq!(cpu.reg(CpuReg::Rip), ip + n);
+            assert_eq!(cpu.reg(CpuReg::Rax), ax + n);
+        }
+        assert_eq!(cpu.retired() - before, 17);
+    }
+
+    #[test]
+    fn run_steps_attributes_out_to_last_step_and_mmio_to_next_step() {
+        let mut out = real_mode_cpu(&[0x90, 0xE6, 0x80, 0xF4]);
+        let run = out.run_steps(2).unwrap();
+        assert_eq!(run.steps, 2);
+        assert_eq!(
+            run.stop,
+            crate::CpuStepStop::Exit(CpuStop::PortOut {
+                port: 0x80,
+                size: 1,
+                value: 0,
+            })
+        );
+        assert_eq!(out.reg(CpuReg::Rip), 0x7C03);
+        assert_eq!(out.retired(), 2);
+
+        for (opcode, stop) in [
+            (
+                0xA0,
+                CpuStop::MmioRead {
+                    addr: VIDEO_BASE,
+                    size: 1,
+                },
+            ),
+            (
+                0xA2,
+                CpuStop::MmioWrite {
+                    addr: VIDEO_BASE,
+                    size: 1,
+                    value: 0,
+                },
+            ),
+        ] {
+            let mut cpu = real_mode_cpu(&[0x90, opcode, 0, 0, 0xF4]);
+            let run = cpu.run_steps(2).unwrap();
+            assert_eq!(run.steps, 1);
+            assert_eq!(run.stop, crate::CpuStepStop::Exit(stop));
+            assert_eq!(cpu.reg(CpuReg::Rip), 0x7C01);
+            assert_eq!(cpu.retired(), 1);
+            match stop {
+                CpuStop::MmioRead { .. } => cpu.complete_mmio_read(0x42),
+                CpuStop::MmioWrite { .. } => cpu.complete_mmio_write(),
+                _ => unreachable!(),
+            }
+            let replay = cpu.run_steps(1).unwrap();
+            assert_eq!(replay.steps, 1);
+            assert_eq!(
+                replay.stop,
+                crate::CpuStepStop::Exit(CpuStop::BudgetExhausted)
+            );
+            assert_eq!(cpu.reg(CpuReg::Rip), 0x7C04);
+        }
+    }
+
+    #[test]
+    fn irq_ready_waits_for_instruction_after_mov_ss() {
+        let mut cpu = real_mode_cpu(&[0x8E, 0xD0, 0x90, 0xF4]); // mov ss, ax; nop; hlt
+        let mut flags = cpu.cpu.flags();
+        flags.if_ = true;
+        cpu.cpu.set_flags(flags);
+        assert!(cpu.irq_ready());
+        assert_eq!(cpu.run_steps(1).unwrap().steps, 1);
+        assert!(cpu.interrupts_enabled());
+        assert!(!cpu.irq_ready());
+        cpu.run_steps(0).unwrap();
+        assert!(!cpu.irq_ready());
+        assert_eq!(cpu.run_steps(1).unwrap().steps, 1);
+        assert!(cpu.irq_ready());
+        assert!(!cpu.has_pending_irq());
+    }
+
+    #[test]
+    fn run_steps_rejects_long64_without_guest_changes() {
+        let mut cpu = X86JitCpu::new(0x1000, 0, &[0x90, 0xF4]).unwrap();
+        for n in [0, 1] {
+            assert!(matches!(
+                cpu.run_steps(n),
+                Err(CpuError::UnexpectedExit { what }) if what == "step-bounded execution is unsupported by this backend or mode"
+            ));
+            assert_eq!(cpu.reg(CpuReg::Rip), 0);
+            assert_eq!(cpu.retired(), 0);
+            assert!(!cpu.irq_ready());
+        }
+    }
+
+    #[test]
+    fn run_steps_requires_port_in_completion() {
+        let mut cpu = real_mode_cpu(&[0xE4, 0x80, 0xF4]);
+        let mut flags = cpu.cpu.flags();
+        flags.if_ = true;
+        cpu.cpu.set_flags(flags);
+        let run = cpu.run_steps(1).unwrap();
+        assert_eq!(run.steps, 1);
+        assert_eq!(
+            run.stop,
+            crate::CpuStepStop::Exit(CpuStop::PortIn {
+                port: 0x80,
+                size: 1
+            })
+        );
+        assert!(!cpu.irq_ready());
+        assert_eq!(cpu.run_steps(0).unwrap().steps, 0);
+        assert!(
+            matches!(cpu.run_steps(1), Err(CpuError::UnexpectedExit { what }) if what == "pending port input must be completed before step-bounded execution")
+        );
+        assert_eq!(cpu.reg(CpuReg::Rip), 0x7C02);
+        assert_eq!(cpu.retired(), 1);
+        cpu.complete_port_in(0x42);
+        assert!(cpu.irq_ready());
+        assert_eq!(cpu.retired(), 1);
+        let run = cpu.run_steps(1).unwrap();
+        assert_eq!(run.steps, 1);
+        assert_eq!(run.stop, crate::CpuStepStop::Exit(CpuStop::Halt));
+        assert_eq!(cpu.reg(CpuReg::Rax), 0x42);
+    }
 
     /// A masked BIOS ROM is fetch/read-executable but immutable to the guest: code
     /// runs straight out of a `map_rom` region, a read from it returns the ROM

@@ -15,7 +15,7 @@
 
 use std::collections::VecDeque;
 
-use cpu::{Cpu, CpuError, CpuReg, CpuStop};
+use cpu::{Cpu, CpuError, CpuReg, CpuStepRun, CpuStepStop, CpuStop};
 use device::{Device, DeviceError, VClock};
 
 /// A mock bus that drives one device in isolation (§10).
@@ -78,6 +78,22 @@ impl MockBus {
     }
 }
 
+/// One scripted step-bounded call for [`MockCpu`] (§10).
+///
+/// Steps and whole-instruction retirements are independent so a test can model
+/// a REP slice that completes iterations without finishing the instruction.
+#[derive(Copy, Clone, Debug)]
+pub struct MockCpuStep {
+    /// Expected positive budget; a mismatch fails the test.
+    pub max_steps: u64,
+    /// Result returned by this call.
+    pub run: CpuStepRun,
+    /// Whole instructions retired during this call.
+    pub retired: u64,
+    /// Interrupt readiness after this call, independent of the mock's IF flag.
+    pub irq_ready: bool,
+}
+
 /// A [`Cpu`] backend that replays a canned [`CpuStop`] program (§10).
 ///
 /// Lets `machine`/`bus` be exercised without `x86jit`: push a script of stops;
@@ -92,12 +108,16 @@ impl MockBus {
 #[derive(Default)]
 pub struct MockCpu {
     program: VecDeque<CpuStop>,
+    step_program: VecDeque<MockCpuStep>,
+    irq_ready: bool,
+    /// Budgets supplied to [`Cpu::run_steps`], including zero-budget calls.
+    pub step_budgets: Vec<u64>,
     regs: [u64; 9],
     /// Values the machine completed pending reads with, in order.
     pub completions: Vec<u64>,
     /// Retired instructions charged per `run()` (the virtual-clock stride).
     retired_per_run: u64,
-    /// Retired-instruction counter, advanced on each `run()`.
+    /// Retired-instruction counter, advanced by legacy runs or scripted steps.
     retired: u64,
     /// Vectors the machine injected via [`Cpu::inject_irq`], in order.
     pub injected: Vec<u8>,
@@ -114,6 +134,9 @@ impl MockCpu {
     pub fn new(program: Vec<CpuStop>) -> Self {
         Self {
             program: program.into(),
+            step_program: VecDeque::new(),
+            irq_ready: false,
+            step_budgets: Vec::new(),
             regs: [0; 9],
             completions: Vec::new(),
             retired_per_run: 1,
@@ -135,6 +158,22 @@ impl MockCpu {
     /// Set guest IF for interrupt and HLT tests (disabled at reset).
     pub fn with_interrupts_enabled(mut self, enabled: bool) -> Self {
         self.interrupts_enabled = enabled;
+        self
+    }
+
+    /// Script positive-budget step runs independently of the legacy stop list.
+    /// Zero-budget calls have no guest effects and do not consume the script.
+    /// An exhausted script returns an error so unexpected execution fails tests.
+    /// Readiness is scripted explicitly; completion methods only record values.
+    pub fn with_step_program(mut self, program: Vec<MockCpuStep>) -> Self {
+        self.step_program = program.into();
+        self
+    }
+
+    /// Set initial interrupt readiness, including shadows/completions, for tests
+    /// that need a boundary different from the mock's separate IF flag.
+    pub fn with_irq_ready(mut self, ready: bool) -> Self {
+        self.irq_ready = ready;
         self
     }
 
@@ -165,6 +204,39 @@ impl Cpu for MockCpu {
         }
         self.retired += self.retired_per_run;
         Ok(self.program.pop_front().unwrap_or(CpuStop::Halt))
+    }
+
+    fn run_steps(&mut self, max_steps: u64) -> Result<CpuStepRun, CpuError> {
+        self.step_budgets.push(max_steps);
+        if max_steps == 0 {
+            return Ok(CpuStepRun {
+                steps: 0,
+                stop: CpuStepStop::Exit(CpuStop::BudgetExhausted),
+            });
+        }
+        let step = self
+            .step_program
+            .pop_front()
+            .ok_or_else(|| CpuError::UnexpectedExit {
+                what: "mock step script exhausted".to_string(),
+            })?;
+        assert_eq!(step.max_steps, max_steps, "unexpected mock step budget");
+        assert!(
+            step.run.steps <= max_steps,
+            "mock result exceeds step budget"
+        );
+        if self.pending_irq && self.irq_ready {
+            self.delivered
+                .push(*self.injected.last().expect("pending vector"));
+            self.pending_irq = false;
+        }
+        self.retired += step.retired;
+        self.irq_ready = step.irq_ready;
+        Ok(step.run)
+    }
+
+    fn irq_ready(&self) -> bool {
+        self.irq_ready
     }
 
     fn reg(&self, reg: CpuReg) -> u64 {
@@ -217,5 +289,79 @@ pub mod golden {
             String::from_utf8_lossy(actual),
             String::from_utf8_lossy(expected),
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use cpu::{CpuStepRun, CpuStepStop};
+
+    #[test]
+    fn stepped_script_tracks_budget_retirement_and_readiness() {
+        let run = CpuStepRun {
+            steps: 3,
+            stop: CpuStepStop::IrqReady,
+        };
+        let mut cpu = MockCpu::new(vec![]).with_step_program(vec![MockCpuStep {
+            max_steps: 7,
+            run,
+            retired: 0,
+            irq_ready: true,
+        }]);
+        assert!(!cpu.irq_ready());
+        let zero = cpu.run_steps(0).unwrap();
+        assert_eq!(zero.steps, 0);
+        assert_eq!(zero.stop, CpuStepStop::Exit(CpuStop::BudgetExhausted));
+        assert!(!cpu.irq_ready());
+        assert_eq!(cpu.run_steps(7).unwrap(), run);
+        assert_eq!(cpu.retired(), 0); // A partial REP can consume steps without retiring.
+        assert!(cpu.irq_ready());
+        assert_eq!(cpu.step_budgets, vec![0, 7]);
+        assert!(matches!(
+            cpu.run_steps(1),
+            Err(CpuError::UnexpectedExit { .. })
+        ));
+    }
+
+    #[test]
+    fn stepped_script_is_independent_of_legacy_stops_and_uses_ready_gate() {
+        let run = CpuStepRun {
+            steps: 1,
+            stop: CpuStepStop::Exit(CpuStop::Halt),
+        };
+        let mut cpu = MockCpu::new(vec![CpuStop::PortOut {
+            port: 0x80,
+            size: 1,
+            value: 0,
+        }])
+        .with_interrupts_enabled(true)
+        .with_irq_ready(false)
+        .with_step_program(vec![
+            MockCpuStep {
+                max_steps: 1,
+                run,
+                retired: 1,
+                irq_ready: true,
+            },
+            MockCpuStep {
+                max_steps: 1,
+                run,
+                retired: 1,
+                irq_ready: false,
+            },
+        ]);
+        cpu.inject_irq(0x20);
+        cpu.run_steps(1).unwrap();
+        assert!(cpu.has_pending_irq());
+        assert!(cpu.delivered.is_empty());
+        cpu.run_steps(0).unwrap();
+        assert!(cpu.has_pending_irq());
+        cpu.run_steps(1).unwrap();
+        assert!(!cpu.has_pending_irq());
+        assert_eq!(cpu.delivered, vec![0x20]);
+        assert_eq!(cpu.retired(), 2);
+        assert!(matches!(cpu.run(Some(1)).unwrap(), CpuStop::PortOut { .. }));
+        assert_eq!(cpu.retired(), 3);
     }
 }

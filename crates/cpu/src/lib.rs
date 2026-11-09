@@ -46,7 +46,7 @@ pub enum CpuReg {
     Rip,
 }
 
-/// Why [`Cpu::run`] returned control to the machine loop.
+/// Why [`Cpu::run`] or [`Cpu::run_steps`] returned control to the machine loop.
 ///
 /// The backend-neutral counterpart of `x86jit`'s `Exit` (§5.2). The `machine`
 /// loop matches on this and dispatches to the bus, never seeing the underlying
@@ -95,8 +95,28 @@ pub enum CpuStop {
         /// x86 exception vector.
         vector: u8,
     },
-    /// The run budget (quantum) was exhausted — a cooperative yield (§6.2).
+    /// The run budget was exhausted: blocks for [`Cpu::run`], steps for
+    /// [`Cpu::run_steps`] — a cooperative yield (§6.2).
     BudgetExhausted,
+}
+
+/// Result of a step-bounded CPU run (§6).
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct CpuStepRun {
+    /// Completed scheduling units in this call; see [`Cpu::run_steps`].
+    pub steps: u64,
+    /// Why execution returned to the embedder.
+    pub stop: CpuStepStop,
+}
+
+/// Why a step-bounded run returned (§6).
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum CpuStepStop {
+    /// An ordinary CPU exit, including step-budget exhaustion.
+    Exit(CpuStop),
+    /// A completed boundary where a maskable IRQ can be accepted.
+    /// No instruction is in flight and no vector has been acknowledged.
+    IrqReady,
 }
 
 /// Errors from the [`Cpu`] seam (§2).
@@ -120,8 +140,9 @@ pub enum CpuError {
     },
     /// The core stopped for a reason the machine has no handling for (a host
     /// yield request, exhausted JIT code space, or an exit kind newer than this
-    /// backend). Kept apart from [`CpuError::UnsupportedInstruction`] so such a
-    /// stop is never mistaken for a missing opcode.
+    /// backend), or a refused step-bounded call. Kept apart from
+    /// [`CpuError::UnsupportedInstruction`] so such a stop is never mistaken for
+    /// a missing opcode.
     #[error("unhandled cpu exit: {what}")]
     UnexpectedExit {
         /// Which exit the core returned, with its details.
@@ -157,6 +178,47 @@ pub trait Cpu {
     /// so this value governs interrupt latency and goldens depend on it.
     fn run(&mut self, budget: Option<u64>) -> Result<CpuStop, CpuError>;
 
+    /// Run at most `max_steps` scheduling units (§6).
+    ///
+    /// One unit is a completed instruction or a completed REP iteration. An
+    /// empty REP counts once. This is separate from [`Cpu::retired`], which
+    /// counts whole instructions. A supported zero-budget call has no guest
+    /// effects, including interrupt delivery or device completion consumption.
+    /// The default returns [`CpuError::UnexpectedExit`] without execution.
+    /// Unsupported modes and an outstanding IN value also return that error.
+    ///
+    /// The stopping instruction's share of [`CpuStepRun::steps`] is:
+    ///
+    /// - Port IN/OUT and HLT: the last counted unit; its start is `steps - 1`.
+    ///   IN counts at handoff even though its value is still pending; supplying
+    ///   that value adds no step. Complete it before another positive-budget run.
+    /// - MMIO, faults, fetch failures and unsupported instructions: zero; all
+    ///   counted units precede the incomplete unit, whose start is `steps`.
+    ///   A REP exiting mid-iteration counts only its completed iterations.
+    /// - Budget exhaustion or IRQ readiness: no unit is in flight; the next
+    ///   unit starts at `steps`. An instruction's own exit wins on the last unit.
+    ///
+    /// Complete bus effects before acknowledging an interrupt. Errors carry no
+    /// step count, so callers must propagate them rather than resume scheduling.
+    /// REP restart follows Intel SDM Vol. 3A §7.6 (Program or Task Restart);
+    /// the port-handoff count is an engine convention, not hardware timing.
+    fn run_steps(&mut self, _max_steps: u64) -> Result<CpuStepRun, CpuError> {
+        Err(CpuError::UnexpectedExit {
+            what: "step-bounded execution is unsupported by this backend or mode".to_string(),
+        })
+    }
+
+    /// Whether a maskable IRQ can be accepted at this completed boundary (§5.2).
+    ///
+    /// Requires IF, no STI or SS-load shadow, and no pending port/MMIO completion
+    /// (including an answered MMIO operation awaiting replay). This query does
+    /// not acknowledge, deliver or require a queued vector. Intel SDM Vol. 3A
+    /// §§7.8.1, 7.8.3 describe IF and interrupt inhibition after loading SS.
+    /// The default is `false` for backends without this capability.
+    fn irq_ready(&self) -> bool {
+        false
+    }
+
     /// Read a guest register (full 64-bit width).
     fn reg(&self, reg: CpuReg) -> u64;
 
@@ -189,8 +251,8 @@ pub trait Cpu {
     ///
     /// The backend queues the vector and delivers it at the next `run()`
     /// boundary once the guest's `IF` is set, no memory/port completion is
-    /// outstanding, and the one-instruction STI shadow has elapsed (that gating
-    /// lives in the CPU core). Delivery is in-guest through the real-mode IVT: it
+    /// outstanding, and the one-instruction STI or SS-load shadow has elapsed
+    /// (that gating lives in the CPU core). Delivery is through the real-mode IVT: it
     /// pushes FLAGS/CS/IP, clears `IF`, and vectors the handler. A queued vector
     /// is held (never dropped) until it can be delivered, which is what wakes a
     /// `hlt`ed guest. The default is a no-op so a backend without an interrupt
@@ -201,8 +263,8 @@ pub trait Cpu {
     ///
     /// The machine loop consults this so it only performs one PIC INTA →
     /// [`Cpu::inject_irq`] at a time: while a vector is in flight (masked by
-    /// `IF`, held by the STI shadow, or waiting on a completion) no new one is
-    /// acknowledged. The default is `false` for a backend that takes no
+    /// `IF`, held by an STI/SS-load shadow, or waiting on a completion) no new
+    /// one is acknowledged. The default is `false` for a backend that takes no
     /// interrupts.
     fn has_pending_irq(&self) -> bool {
         false
