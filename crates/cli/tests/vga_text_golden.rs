@@ -8,8 +8,8 @@
 //! as trapped MMIO; the guest writes two glyph+attribute cells ("Hi", bright
 //! white on black) into cells 0 and 1, then `hlt`s.
 //!
-//! After the run the VGA card's memory is reconstructed through the tracing seam
-//! (never a downcast), rendered into a [`video::TextGrid`], and presented to a
+//! After the run the observation facade borrows the VGA card's scanout state,
+//! renders it into a [`video::TextGrid`], and presents the same frame to a
 //! capture sink. The golden asserts the first two cells hold the written glyphs
 //! and attributes, the rest of the screen is blank, and the grid is the full
 //! 80×25 mode-3 size. Fully deterministic: nothing in the path reads a wall clock.
@@ -21,7 +21,7 @@
 //! the rev in `Cargo.lock`. Re-baseline when that rev moves.
 
 use cli::{run_vga_text, VGA_TEXT_PROGRAM};
-use video::TextCell;
+use video::{Cursor, TextCell};
 
 #[test]
 fn vga_text_writes_render_into_the_grid() {
@@ -30,27 +30,59 @@ fn vga_text_writes_render_into_the_grid() {
     // Full mode-3 dimensions.
     assert_eq!(grid.cols(), 80);
     assert_eq!(grid.rows(), 25);
-
-    // The two written cells: 'H' and 'i', both bright white on black (0x1F).
+    for row in 0..25 {
+        for col in 0..80 {
+            let expected = match (col, row) {
+                (0, 0) => TextCell {
+                    glyph: b'H',
+                    attr: 0x1F,
+                },
+                (1, 0) => TextCell {
+                    glyph: b'i',
+                    attr: 0x1F,
+                },
+                _ => TextCell { glyph: 0, attr: 0 },
+            };
+            assert_eq!(grid.cell(col, row), Some(&expected), "cell ({col}, {row})");
+        }
+    }
     assert_eq!(
-        grid.cell(0, 0),
-        Some(&TextCell {
-            glyph: b'H',
-            attr: 0x1F,
-        })
+        grid.cursor(),
+        Cursor {
+            col: 0,
+            row: 0,
+            visible: true
+        }
     );
-    assert_eq!(
-        grid.cell(1, 0),
-        Some(&TextCell {
-            glyph: b'i',
-            attr: 0x1F,
-        })
-    );
-    // Untouched cells stay blank (the card powers on cleared).
-    assert_eq!(grid.cell(2, 0), Some(&TextCell { glyph: 0, attr: 0 }));
 
     // The human-readable dump of the first row is exactly "Hi".
     assert_eq!(grid.rows_as_strings()[0], "Hi");
+}
+
+#[test]
+fn vga_snapshot_uses_the_cards_register_index_aliases() {
+    // Exercise register-index aliases so a frontend register mirror cannot
+    // silently ignore the display start and cursor selected by the guest.
+    let program = [
+        0xB8, b'A', 0x4E, 0xA3, 2, 0, 0xBA, 0xD4, 0x03, 0xB8, 0x26, 1, 0xEF, 0xB8, 0x28, 3, 0xEF,
+        0xB8, 0x23, 0x20, 0xEF, 0xF4,
+    ];
+    let grid = run_vga_text(&program).unwrap();
+    assert_eq!(
+        grid.cell(0, 0),
+        Some(&TextCell {
+            glyph: b'A',
+            attr: 0x4E
+        })
+    );
+    assert_eq!(
+        grid.cursor(),
+        Cursor {
+            col: 2,
+            row: 0,
+            visible: false
+        }
+    );
 }
 
 /// Guard the hand-encoded program bytes so an accidental edit is caught

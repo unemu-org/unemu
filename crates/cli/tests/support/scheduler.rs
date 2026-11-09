@@ -330,6 +330,12 @@ impl ObservedDevice {
 }
 
 impl Device for ObservedDevice {
+    fn text_scanout(&self) -> Option<device::TextModeState<'_>> {
+        self.inner.text_scanout()
+    }
+    fn byte_output(&mut self) -> Option<&mut dyn device::ByteOutput> {
+        self.inner.byte_output()
+    }
     fn name(&self) -> &'static str {
         self.inner.name()
     }
@@ -409,6 +415,41 @@ impl Device for ObservedDevice {
     fn as_any_mut(&mut self) -> Option<&mut dyn core::any::Any> {
         self.inner.as_any_mut()
     }
+}
+
+#[test]
+fn observed_device_preserves_scanout_after_draining_traces() {
+    let mut display = testkit::MockBus::new(Box::new(ObservedDevice {
+        inner: Box::new(devices::VgaText::new()),
+        id: DeviceId::Vga,
+        stream: SharedStream::default(),
+        pic: Vec::new(),
+    }));
+    display.mmio_write(0xB8000, 2, 0x4E41).unwrap();
+    assert!(display.device_mut().take_trace().is_empty());
+    assert_eq!(
+        &display.device().text_scanout().unwrap().vram[..2],
+        &[b'A', 0x4E]
+    );
+}
+
+#[test]
+fn observed_device_preserves_byte_output_after_draining_traces() {
+    let mut serial = testkit::MockBus::new(Box::new(ObservedDevice {
+        inner: Box::new(Uart16550::new(0x3F8)),
+        id: DeviceId::Uart,
+        stream: SharedStream::default(),
+        pic: Vec::new(),
+    }));
+    let capture = device::ByteCapture::new(4);
+    serial
+        .device_mut()
+        .byte_output()
+        .unwrap()
+        .bind_sink(Box::new(capture.clone()));
+    serial.port_write(0x3F8, 1, u32::from(b'A')).unwrap();
+    assert!(serial.device_mut().take_trace().is_empty());
+    assert_eq!(capture.drain().unwrap(), b"A");
 }
 
 /// Engine selection stays at the call site; the default calls the legacy driver.

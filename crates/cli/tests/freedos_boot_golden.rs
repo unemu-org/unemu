@@ -82,6 +82,22 @@ fn freedos_reaches_shell_prompt() {
     assert_eq!(img.len(), 1_474_560, "FreeDOS floppy is a 1.44 MB image");
 
     let run = run_freedos(&rom, img);
+    // Monochrome CRTC aliases update the card's cursor even though the colour
+    // page is blank. A host snapshot must preserve that register state.
+    assert_eq!(
+        run.screen.cursor(),
+        video::Cursor {
+            col: 31,
+            row: 24,
+            visible: true
+        }
+    );
+    let stamp = run
+        .screen_stamp
+        .expect("assembled display has a capture boundary");
+    assert!(stamp.retired > 0);
+    assert!(stamp.virtual_time >= stamp.retired);
+
     // The MDA console at 0xB0000 holds only the final 25-row window: by the time
     // FreeCOM prompts, the whole boot has scrolled the buffer (the BIOS scrolls by
     // copying lines up in video RAM, and the renderer reads from cell 0), so the

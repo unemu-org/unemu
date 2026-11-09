@@ -13,12 +13,13 @@
 //!
 //! Runners return their observables (COM1 bytes, POST stream, text screens)
 //! through the UART's transmitted-output sink for COM1 and the first-class
-//! tracing seam (§3.2) for POST and text screens.
+//! tracing seam (§3.2) for POST. Text screens use the card-state observation facade.
 
 use anyhow::{Context, Result};
 use assembly::{
-    assemble, AssembledMachine, ConsoleProbe, DeviceId, InjectionSchedule, KeyboardStimulus,
-    MachineConfig, RunPolicy, StopCondition,
+    assemble, assemble_with_observation, AssembledMachine, ConsoleProbe, DeviceId,
+    InjectionSchedule, KeyboardStimulus, MachineConfig, ObservationPolicy, ObservationRequest,
+    OutputKind, RunPolicy, StopCondition,
 };
 use bus::{Bus, DecodeMap, PortRange};
 use chipset::{NoInterruptController, COM1_BASE, COM1_TOP};
@@ -26,11 +27,7 @@ use cpu::{Cpu, CpuError, CpuReg, X86JitCpu};
 use device::{AccessDir, Device, TraceEvent};
 use devices::post_port::POST_PORT;
 use devices::upd765::FLOPPY_IMAGE_BYTES;
-use devices::vga_text::{
-    COLS, CRTC_CURSOR_HIGH_INDEX, CRTC_CURSOR_LOW_INDEX, CRTC_CURSOR_START_INDEX, CRTC_DATA_PORT,
-    CRTC_INDEX_PORT, CRTC_START_HIGH_INDEX, CRTC_START_LOW_INDEX, ROWS, TEXT_BUFFER_BASE,
-    TEXT_BUFFER_LEN,
-};
+use devices::vga_text::{COLS, ROWS, TEXT_BUFFER_LEN};
 use devices::{Uart16550, I8042};
 use machine::{Machine, MachineError, RunOutcome};
 use std::collections::HashMap;
@@ -600,6 +597,15 @@ pub const BIOS_IDLE_LIMIT: u64 = 1_000_000;
 /// back from guest memory after the run.
 pub const MDA_BUFFER_BASE: u64 = 0x0B_0000;
 
+/// The deterministic execution boundary of a captured screen.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct ScreenStamp {
+    /// Virtual time in instruction equivalents, including halted PIT clocks.
+    pub virtual_time: u64,
+    /// Instructions retired by the CPU at capture.
+    pub retired: u64,
+}
+
 /// The result of a full BIOS boot run (§3.1): the POST checkpoint stream, both
 /// text windows, the serial stream, final floppy media, and why execution stopped.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -611,6 +617,9 @@ pub struct BiosRun {
     pub post: Vec<u8>,
     /// The colour (CGA/VGA) text page at `0xB8000`, rendered from the card.
     pub screen: TextGrid,
+    /// Execution boundary of the colour-card capture; absent if assembly or
+    /// observation failed. The MDA RAM probe retains its separate legacy policy.
+    pub screen_stamp: Option<ScreenStamp>,
     /// The monochrome (MDA) text window at `0xB0000`, read back from guest RAM.
     /// This is where the Kiselev BIOS's INT 10h console actually writes after its
     /// no-video-BIOS MDA fallback, so a booted guest's console text lands here.
@@ -715,17 +724,14 @@ fn run_bios_config(
     config: MachineConfig,
     build_policy: impl FnOnce(&HashMap<DeviceId, usize>) -> RunPolicy,
 ) -> BiosRun {
-    let AssembledMachine {
-        mut machine,
-        device_index,
-        ..
-    } = match assemble(&config) {
+    let mut assembled = match assemble_with_observation(&config, &display_policy()) {
         Ok(assembled) => assembled,
         Err(e) => {
             return BiosRun {
                 floppy_image: None,
                 post: Vec::new(),
                 screen: blank_screen(),
+                screen_stamp: None,
                 mda: blank_screen(),
                 com1: Vec::new(),
                 stop: StopReason::Unmapped {
@@ -735,14 +741,32 @@ fn run_bios_config(
         }
     };
 
-    let policy = build_policy(&device_index);
-    let result = assembly::run(&mut machine, &policy);
+    let device_index = &assembled.device_index;
+    let policy = build_policy(device_index);
+    let machine = &mut assembled.machine;
+    let result = assembly::run(machine, &policy);
 
-    let stop = classify_bios_stop(&machine, result);
-    let post = drain_post_at(&mut machine, device_index[&DeviceId::Post], 0x80);
-    let screen = render_vga(&mut machine, device_index[&DeviceId::Vga]);
-    let mda = render_mda(&machine);
-    let com1 = drain_serial(&mut machine, device_index[&DeviceId::Uart]);
+    let mut stop = classify_bios_stop(machine, result);
+    let post = drain_post_at(machine, device_index[&DeviceId::Post], 0x80);
+    let (screen, screen_stamp) = match assembled.capture_text(DeviceId::Vga) {
+        Ok(capture) => {
+            let stamp = ScreenStamp {
+                virtual_time: capture.virtual_time,
+                retired: capture.retired,
+            };
+            let Frame::Text(grid) = capture.frame;
+            (grid, Some(stamp))
+        }
+        Err(error) => {
+            stop = StopReason::Unmapped {
+                detail: format!("capturing display: {error}"),
+            };
+            (blank_screen(), None)
+        }
+    };
+    let machine = &mut assembled.machine;
+    let mda = render_mda(machine);
+    let com1 = drain_serial(machine, device_index[&DeviceId::Uart]);
     let floppy_image = device_index
         .get(&DeviceId::Fdc)
         .and_then(|&index| machine.bus_mut().device_mut(index))
@@ -751,6 +775,7 @@ fn run_bios_config(
         floppy_image,
         post,
         screen,
+        screen_stamp,
         mda,
         com1,
         stop,
@@ -1076,11 +1101,11 @@ pub fn dos_write_file_script() -> Vec<u8> {
 /// Read back the monochrome (MDA) text window at [`MDA_BUFFER_BASE`] from guest
 /// RAM and render it into a [`TextGrid`] (§9.2).
 ///
-/// Unlike the colour page at `0xB8000` — trapped MMIO reconstructed from the
-/// card's trace — the MDA window is plain conventional RAM in this machine, so
+/// The colour page at `0xB8000` is trapped MMIO observed through the card's
+/// scanout capability; the MDA window is plain RAM in this machine, so
 /// its 80×25 two-bytes-per-cell contents are read directly through the CPU's
-/// `read_mem` seam after the run. The MDA CRTC ports (`0x3B4`/`0x3B5`) are not
-/// decoded here, so the display-start and cursor registers are unknown; the grid
+/// `read_mem` seam after the run. This probe does not interpret the shared MDA
+/// CRTC ports (`0x3B4`/`0x3B5`) as a separate adapter's state; the grid
 /// is rendered from cell 0 with the cursor hidden, which is faithful for a
 /// console that scrolls its buffer rather than panning the CRTC start address.
 fn render_mda(machine: &Machine<X86JitCpu>) -> TextGrid {
@@ -1424,90 +1449,30 @@ pub fn run_fdc_write(program: &[u8]) -> Result<Vec<u8>> {
 /// the produced grid is deterministic.
 pub fn run_vga_text(blob: &[u8]) -> Result<TextGrid> {
     let config = assembly::at_vga_text(blob.to_vec());
-    let AssembledMachine {
-        mut machine,
-        device_index,
-        ..
-    } = assemble(&config).context("assembling vga-text machine")?;
+    let mut assembled = assemble_with_observation(&config, &display_policy())
+        .context("assembling vga-text machine")?;
 
-    machine.run().context("running machine")?;
-
-    let grid = render_vga(&mut machine, device_index[&DeviceId::Vga]);
-    // Exercise the presentation seam: hand the frame to a capture sink and read it
-    // back, exactly as a terminal or windowed presenter would receive it.
+    let result = assembled.machine.run();
+    let capture = assembled.capture_text(DeviceId::Vga);
+    result.context("running machine")?;
+    let capture = capture.context("capturing vga-text display")?;
+    // Present the same owned frame that was stamped at the machine boundary.
     let mut sink = CaptureFrameSink::new();
-    sink.present(&Frame::Text(grid));
+    sink.present(&capture.frame);
     Ok(sink
         .last_text()
         .cloned()
         .expect("capture sink holds the presented text frame"))
 }
 
-/// Reconstruct a [`TextGrid`] from the VGA card's trace (§3.2 tracing seam, §9.2).
-///
-/// The machine core sees only `&dyn Device`, so the card's memory and CRTC state
-/// are read back through the tracing seam rather than a concrete-device downcast.
-/// Every MMIO write into the text window is replayed
-/// into a fresh buffer (the card powers on cleared, so unwritten cells stay
-/// blank), and every CRTC port write is replayed to recover the display start
-/// address and cursor, which [`render_text_mode`] then resolves into the grid.
-fn render_vga(machine: &mut Machine<X86JitCpu>, vga_index: usize) -> TextGrid {
-    let mut vram = vec![0u8; TEXT_BUFFER_LEN];
-    // Mirror the card's CRTC register file. Indexed by the guest-written index
-    // byte (0..=0xFF); only the display-start and cursor registers are read back.
-    let mut crtc = [0u8; 0x100];
-    let mut crtc_index: u8 = 0;
-
-    if let Some(dev) = machine.bus_mut().device_mut(vga_index) {
-        for event in dev.take_trace() {
-            match event {
-                TraceEvent::Mmio {
-                    addr,
-                    size,
-                    dir: AccessDir::Write,
-                    value,
-                    ..
-                } => {
-                    let offset = (addr - TEXT_BUFFER_BASE) as usize;
-                    for i in 0..usize::from(size) {
-                        if let Some(slot) = vram.get_mut(offset + i) {
-                            *slot = (value >> (8 * i)) as u8;
-                        }
-                    }
-                }
-                TraceEvent::Port {
-                    port,
-                    dir: AccessDir::Write,
-                    value,
-                    ..
-                } => {
-                    if port == CRTC_INDEX_PORT {
-                        crtc_index = value as u8;
-                    } else if port == CRTC_DATA_PORT {
-                        crtc[usize::from(crtc_index)] = value as u8;
-                    }
-                }
-                _ => {}
-            }
-        }
+fn display_policy() -> ObservationPolicy {
+    ObservationPolicy {
+        routes: vec![ObservationRequest {
+            device: DeviceId::Vga,
+            output: OutputKind::TextScanout,
+            byte_limit: 0,
+        }],
     }
-
-    let reg = |index: u8| crtc[usize::from(index)];
-    let start_cell =
-        u16::from(reg(CRTC_START_HIGH_INDEX)) << 8 | u16::from(reg(CRTC_START_LOW_INDEX));
-    let cursor_cell =
-        u16::from(reg(CRTC_CURSOR_HIGH_INDEX)) << 8 | u16::from(reg(CRTC_CURSOR_LOW_INDEX));
-    // Cursor-start bit 5 disables the cursor; clear means visible.
-    let cursor_visible = reg(CRTC_CURSOR_START_INDEX) & 0x20 == 0;
-
-    render_text_mode(&TextModeState {
-        vram: &vram,
-        cols: COLS,
-        rows: ROWS,
-        start_cell,
-        cursor_cell,
-        cursor_visible,
-    })
 }
 
 /// Drain the COM1 byte stream from the UART's transmitted-output sink (§7.2).
@@ -1527,6 +1492,79 @@ fn drain_serial(machine: &mut Machine<X86JitCpu>, uart_index: usize) -> Vec<u8> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn vga_snapshot_repeated_capture_preserves_the_grid() {
+        let mut assembled = assemble_with_observation(
+            &assembly::at_vga_text(VGA_TEXT_PROGRAM.to_vec()),
+            &display_policy(),
+        )
+        .unwrap();
+        assembled.machine.run().unwrap();
+        let index = assembled.device_index[&DeviceId::Vga];
+        let before = assembled.machine.bus().device(index).unwrap().save();
+        let first = assembled.capture_text(DeviceId::Vga).unwrap();
+        let second = assembled.capture_text(DeviceId::Vga).unwrap();
+        let Frame::Text(grid) = &first.frame;
+        assert_eq!(grid.cell(0, 0).unwrap().glyph, b'H');
+        assert_eq!(second, first);
+        assert_eq!(
+            assembled.machine.bus().device(index).unwrap().save(),
+            before
+        );
+        assert_eq!(first.virtual_time, assembled.machine.virtual_time());
+        assert_eq!(first.retired, assembled.machine.cpu().retired());
+        let trace = assembled
+            .machine
+            .bus_mut()
+            .device_mut(index)
+            .unwrap()
+            .take_trace();
+        assert!(!trace.is_empty(), "capture preserves existing accesses");
+        assert_eq!(assembled.capture_text(DeviceId::Vga).unwrap(), first);
+        assert!(assembled
+            .machine
+            .bus_mut()
+            .device_mut(index)
+            .unwrap()
+            .take_trace()
+            .is_empty());
+    }
+
+    #[test]
+    fn bios_snapshot_survives_a_cpu_error_stop() {
+        let mut rom = vec![0; 32768];
+        let program = [
+            0xB8, 0, 0xB8, 0x8E, 0xD8, 0xB8, b'X', 0x4E, 0xA3, 0, 0, 0x0F, 0x05,
+        ];
+        rom[..program.len()].copy_from_slice(&program);
+        rom[0x7FF0..0x7FF5].copy_from_slice(&[0xEA, 0, 0, 0, 0xF8]);
+        let run = run_bios_with_cap(&rom, 100);
+        assert!(
+            matches!(run.stop, StopReason::Unsupported { .. }),
+            "{:?}",
+            run.stop
+        );
+        assert_eq!(
+            run.screen.cell(0, 0),
+            Some(&video::TextCell {
+                glyph: b'X',
+                attr: 0x4E
+            })
+        );
+        let stamp = run.screen_stamp.unwrap();
+        assert!(stamp.retired > 0);
+        assert_eq!(stamp.virtual_time, stamp.retired);
+    }
+
+    #[test]
+    fn bios_assembly_failure_has_no_screen_stamp() {
+        let mut config = assembly::bios(vec![0xF4; 32768], None, BIOS_QUANTUM);
+        config.devices.retain(|device| device.id != DeviceId::Vga);
+        let run = run_bios_config(config, |_| RunPolicy::natural(Some(100), None));
+        assert!(matches!(run.stop, StopReason::Unmapped { .. }));
+        assert_eq!(run.screen_stamp, None);
+    }
 
     #[test]
     fn drain_serial_excludes_divisor_writes() {

@@ -80,6 +80,21 @@ fn bios_boot_stop_point_matches_golden() {
     assert_eq!(rom.len(), 32768, "Xi8088 BIOS is a 32 KiB image");
 
     let run = run_bios_with_cap(&rom, BIOS_GOLDEN_MAX_RETIRED);
+    // Monochrome CRTC aliases update the card's cursor even though the colour
+    // page is blank. A host snapshot must preserve that register state.
+    assert_eq!(
+        run.screen.cursor(),
+        video::Cursor {
+            col: 0,
+            row: 18,
+            visible: true
+        }
+    );
+    let stamp = run
+        .screen_stamp
+        .expect("assembled display has a capture boundary");
+    assert!(stamp.retired > 0);
+    assert!(stamp.virtual_time >= stamp.retired);
 
     // End-to-end proof of the plumbing: reset → far jump → real-mode exec out of
     // masked ROM → POST capture. The stream must reach at least the first POST

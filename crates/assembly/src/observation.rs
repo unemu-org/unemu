@@ -10,10 +10,52 @@
 use std::collections::HashMap;
 
 use bus::Bus;
+use cpu::Cpu;
 use device::{ByteCapture, ByteOverflow, ByteStreamKind, Device};
 use video::{render_text_mode, Frame};
 
-use crate::{ConfigError, DeviceId};
+use crate::{AssembledMachine, ConfigError, DeviceId};
+
+/// An owned display at a completed machine service boundary.
+///
+/// Both counters come from the same machine as the card. Virtual time includes
+/// halted PIT clocks; retired counts only executed instructions. See
+/// `backlog/docs/design/observation.md`, §Deterministic boundaries and assertions.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DisplayCapture {
+    /// Virtual time in instruction equivalents, including halted time.
+    pub virtual_time: u64,
+    /// Instructions retired by the CPU at this boundary.
+    pub retired: u64,
+    /// One rendered frame, shared by capture and presentation consumers.
+    pub frame: Frame,
+}
+
+impl AssembledMachine {
+    /// Capture a selected card with this machine's execution counters.
+    /// Call after a completed service boundary, including an error stop; this
+    /// passive query neither advances devices nor executes the CPU.
+    pub fn capture_text(&self, device: DeviceId) -> Result<DisplayCapture, ObservationError> {
+        Ok(DisplayCapture {
+            virtual_time: self.machine.virtual_time(),
+            retired: self.machine.cpu().retired(),
+            frame: self.observation.capture_text(self.machine.bus(), device)?,
+        })
+    }
+
+    /// Capture all selected displays from this machine at the same boundary.
+    pub fn capture_displays(&self) -> Result<Vec<(DeviceId, DisplayCapture)>, ObservationError> {
+        self.observation
+            .routes()
+            .iter()
+            .filter(|route| route.output == OutputKind::TextScanout)
+            .map(|route| {
+                self.capture_text(route.device)
+                    .map(|capture| (route.device, capture))
+            })
+            .collect()
+    }
+}
 
 /// The requested capability, independent of the device's role or port address.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
@@ -150,7 +192,7 @@ impl Observation {
 
     /// Capture one selected display into an owned frame before releasing the
     /// card borrow. Calling this does not execute or synchronize hardware.
-    pub fn capture_text(&self, bus: &Bus, device: DeviceId) -> Result<Frame, ObservationError> {
+    fn capture_text(&self, bus: &Bus, device: DeviceId) -> Result<Frame, ObservationError> {
         let output = OutputKind::TextScanout;
         let route = self
             .routes
@@ -162,19 +204,6 @@ impl Observation {
             .and_then(Device::text_scanout)
             .ok_or(ObservationError::ScanoutUnavailable(device))?;
         Ok(Frame::Text(render_text_mode(&state)))
-    }
-
-    /// Render each selected display once. The caller can fan these owned frames
-    /// out to capture and presentation sinks without querying devices again.
-    pub fn capture_displays(&self, bus: &Bus) -> Result<Vec<(DeviceId, Frame)>, ObservationError> {
-        self.routes
-            .iter()
-            .filter(|route| route.output == OutputKind::TextScanout)
-            .map(|route| {
-                self.capture_text(bus, route.device)
-                    .map(|frame| (route.device, frame))
-            })
-            .collect()
     }
 
     /// Drain one route's complete byte batch for distribution by the host.
@@ -213,7 +242,6 @@ mod tests {
         assemble, assemble_with_observation, AssemblyError, DeviceConfig, DeviceKind, PortWindow,
         PostPortCfg,
     };
-    use cpu::Cpu;
     use video::{CaptureFrameSink, FrameSink};
 
     fn request(device: DeviceId, output: OutputKind, byte_limit: usize) -> ObservationRequest {
@@ -260,10 +288,11 @@ mod tests {
         assembled.machine.run().unwrap();
         let retired = assembled.machine.cpu().retired();
         let time = assembled.machine.virtual_time();
-        let frame = assembled
-            .observation
-            .capture_text(assembled.machine.bus(), DeviceId::Vga)
-            .unwrap();
+        let capture = assembled.capture_text(DeviceId::Vga).unwrap();
+        assert_eq!(capture.virtual_time, time);
+        assert_eq!(capture.retired, retired);
+        assert_eq!(assembled.capture_text(DeviceId::Vga).unwrap(), capture);
+        let frame = capture.frame;
         let Frame::Text(grid) = &frame;
         assert_eq!(
             grid.cell(0, 0).unwrap(),
@@ -277,11 +306,15 @@ mod tests {
         sink.present(&frame);
         assert_eq!(sink.last(), Some(&frame));
         assert_eq!(
-            assembled
-                .observation
-                .capture_displays(assembled.machine.bus())
-                .unwrap(),
-            vec![(DeviceId::Vga, frame)]
+            assembled.capture_displays().unwrap(),
+            vec![(
+                DeviceId::Vga,
+                DisplayCapture {
+                    virtual_time: time,
+                    retired,
+                    frame
+                }
+            )]
         );
         assert_eq!(assembled.machine.cpu().retired(), retired);
         assert_eq!(assembled.machine.virtual_time(), time);
@@ -307,6 +340,29 @@ mod tests {
     }
 
     #[test]
+    fn display_capture_stamps_halted_virtual_time_separately_from_retired() {
+        let config = crate::at_vga_text(vec![0xFB, 0xF4]);
+        let policy = ObservationPolicy {
+            routes: vec![request(DeviceId::Vga, OutputKind::TextScanout, 0)],
+        };
+        let mut assembled = assemble_with_observation(&config, &policy).unwrap();
+        crate::run(
+            &mut assembled.machine,
+            &crate::RunPolicy::natural(Some(10), Some(20)),
+        )
+        .unwrap();
+        let capture = assembled.capture_text(DeviceId::Vga).unwrap();
+        assert_eq!(capture.retired, assembled.machine.cpu().retired());
+        assert_eq!(capture.virtual_time, assembled.machine.virtual_time());
+        assert!(capture.virtual_time > capture.retired);
+        assert_eq!(assembled.capture_text(DeviceId::Vga).unwrap(), capture);
+        assert_eq!(
+            assembled.capture_displays().unwrap(),
+            vec![(DeviceId::Vga, capture)]
+        );
+    }
+
+    #[test]
     fn observation_duplicate_route_is_a_configuration_error() {
         let config = crate::at_boot(vec![0xF4]);
         let route = request(
@@ -328,9 +384,7 @@ mod tests {
         assert!(assembled.observation.routes().is_empty());
         assert!(assembled.observation.streams.is_empty());
         assert!(matches!(
-            assembled
-                .observation
-                .capture_text(assembled.machine.bus(), DeviceId::Vga),
+            assembled.capture_text(DeviceId::Vga),
             Err(ObservationError::RouteNotBound { .. })
         ));
         assert!(matches!(

@@ -89,6 +89,22 @@ fn freedos_runs_dir_from_the_keyboard() {
     assert_eq!(img.len(), 1_474_560, "FreeDOS floppy is a 1.44 MB image");
 
     let run = run_freedos_interactive(&rom, img, &dos_dir_script());
+    // Monochrome CRTC aliases update the card's cursor even though the colour
+    // page is blank. A host snapshot must preserve that register state.
+    assert_eq!(
+        run.screen.cursor(),
+        video::Cursor {
+            col: 4,
+            row: 24,
+            visible: true
+        }
+    );
+    let stamp = run
+        .screen_stamp
+        .expect("assembled display has a capture boundary");
+    assert!(stamp.retired > 0);
+    assert!(stamp.virtual_time >= stamp.retired);
+
     let console = run.mda.rows_as_strings().join("\n");
     // Print the whole captured console so `--nocapture` shows the session; the run
     // is deterministic, so this is a stable record of what the keyboard drove.

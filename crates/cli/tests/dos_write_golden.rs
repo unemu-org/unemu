@@ -76,6 +76,22 @@ fn freedos_writes_a_file_from_the_keyboard() {
 
     assert!(fat12_file(&img, b"ZZ         ").is_none(), "ZZ must be new");
     let run = run_freedos_interactive(&rom, img, &dos_write_file_script());
+    // Monochrome CRTC aliases update the card's cursor even though the colour
+    // page is blank. A host snapshot must preserve that register state.
+    assert_eq!(
+        run.screen.cursor(),
+        video::Cursor {
+            col: 4,
+            row: 24,
+            visible: true
+        }
+    );
+    let stamp = run
+        .screen_stamp
+        .expect("assembled display has a capture boundary");
+    assert!(stamp.retired > 0);
+    assert!(stamp.virtual_time >= stamp.retired);
+
     let console = run.mda.rows_as_strings().join("\n");
     // Print the whole captured console so `--nocapture` shows the session; the run
     // is deterministic, so this is a stable record of what the keyboard drove.
