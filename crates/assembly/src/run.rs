@@ -26,7 +26,6 @@
 //! CPU revision. This is not a free tuning knob.
 
 use cpu::x86jit_backend::X86JitCpu;
-use cpu::Cpu;
 use devices::I8042;
 use machine::{Machine, MachineError, RunOutcome};
 use video::{render_text_mode, TextModeState};
@@ -87,8 +86,8 @@ pub enum StopCondition {
     /// the demos — stop this way.
     Natural,
     /// Boot to a shell prompt, then optionally act. Step the machine in
-    /// `poll_step` retired-instruction chunks, growing a cumulative cap, until
-    /// `needle` appears on the `console` (or an error, or the retired cap). This
+    /// `poll_step` virtual-time chunks, growing a cumulative cap, until
+    /// `needle` appears on the `console` (or a halt, error, or the overall cap). This
     /// is the FreeCOM date-prompt shape: a headless shell busy-polls the keyboard
     /// forever, so running to the cap would spin billions of idle instructions
     /// producing no new output — polling to the prompt captures the same screen in
@@ -96,16 +95,16 @@ pub enum StopCondition {
     ///
     /// If the policy carries [`InjectionSchedule::AfterPrompt`] stimuli, they are
     /// queued once the prompt is reached and the machine then runs `then_budget`
-    /// more retired instructions so the shell processes them; with no stimuli the
-    /// run stops at the prompt and `then_budget` is unused.
+    /// more instruction-equivalent units so the shell processes them; with no
+    /// stimuli the run stops at the prompt and `then_budget` is unused.
     PromptThen {
         /// Where to read the console text back from guest memory.
         console: ConsoleProbe,
         /// The substring that marks the shell has reached its prompt.
         needle: String,
-        /// Retired-instruction step between prompt-detection polls.
+        /// Virtual-time step between prompt-detection polls (instruction equivalents).
         poll_step: u64,
-        /// Retired-instruction budget granted after stimuli fire (unused when no
+        /// Virtual-time budget granted after stimuli fire (unused when no
         /// stimuli are scheduled).
         then_budget: u64,
     },
@@ -114,16 +113,17 @@ pub enum StopCondition {
 /// How to run a machine, apart from what the machine is (§3.1).
 ///
 /// Every field is a "how we run" concern relocated out of the machine
-/// description. `retired_cap` is the total-retired safety net; `idle_limit` is the
-/// halted-boundary quiescence bound (stamped onto the machine by [`run`], not
-/// baked in at construction); `stop` chooses the stop shape; `stimuli` feeds the
-/// guest on a schedule.
+/// description. `retired_cap` is the total virtual-time safety net; `idle_limit`
+/// is the halted PIT-clock quiescence bound (stamped onto the machine by [`run`],
+/// not baked in at construction); `stop` chooses the stop shape; `stimuli` feeds
+/// the guest on a schedule.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RunPolicy {
-    /// Total retired-instruction safety cap (`None` = no cap).
+    /// Total virtual-time safety cap in instruction equivalents (`None` = no cap).
     pub retired_cap: Option<u64>,
-    /// Consecutive halted boundaries with no injection before the machine declares
-    /// the source quiescent and stops (`None` = never give up on idle).
+    /// Consecutive halted PIT clocks with no injection before stopping; resets
+    /// on each wake-up. `None` waits no clocks and resumes HLT only for an
+    /// immediately deliverable interrupt. IF clear always stops immediately.
     pub idle_limit: Option<u64>,
     /// When the run stops.
     pub stop: StopCondition,
@@ -150,7 +150,7 @@ impl RunPolicy {
 ///
 /// The single run-loop driver above [`Machine::run_bounded`]. It stamps the
 /// policy's `idle_limit` onto the machine (relocating it out of construction),
-/// then either runs straight to the retired cap ([`StopCondition::Natural`]) or
+/// then either runs straight to the virtual-time cap ([`StopCondition::Natural`]) or
 /// polls to a prompt and optionally feeds the guest ([`StopCondition::PromptThen`]).
 /// Returns the [`RunOutcome`] of the final [`Machine::run_bounded`] so the caller
 /// classifies the stop exactly as before.
@@ -186,9 +186,9 @@ pub fn run(
                     inject_scancodes(machine, stim.keyboard_index, &stim.scancodes);
                 }
                 // Grant the post-prompt budget from where the boot left the machine
-                // (the retired count is cumulative across run_bounded calls),
+                // (virtual time is cumulative across run_bounded calls),
                 // clamped to the overall cap.
-                let target = machine.cpu().retired().saturating_add(*then_budget);
+                let target = machine.virtual_time().saturating_add(*then_budget);
                 let cap = policy.retired_cap.map_or(target, |c| target.min(c));
                 return machine.run_bounded(Some(cap));
             }
@@ -197,8 +197,8 @@ pub fn run(
     }
 }
 
-/// Step the machine in `poll_step` chunks, growing a cumulative retired cap, until
-/// `needle` appears on the console, an error occurs, or the retired cap is reached.
+/// Step the machine in `poll_step` virtual-time chunks until `needle` appears on
+/// the console, the guest halts, an error occurs, or the overall cap is reached.
 ///
 /// This is the "boot to the shell prompt" loop: a headless FreeCOM busy-polls the
 /// keyboard at its date prompt forever, so rather than run to the cap the driver
@@ -212,15 +212,15 @@ fn poll_to_prompt(
     poll_step: u64,
     retired_cap: Option<u64>,
 ) -> Result<RunOutcome, MachineError> {
-    let mut cap: u64 = 0;
     loop {
-        cap = match retired_cap {
-            Some(hard) => cap.saturating_add(poll_step).min(hard),
-            None => cap.saturating_add(poll_step),
-        };
+        let target = machine.virtual_time().saturating_add(poll_step);
+        let cap = retired_cap.map_or(target, |hard| target.min(hard));
         let r = machine.run_bounded(Some(cap));
         let hit_cap = retired_cap.is_some_and(|hard| cap >= hard);
-        if r.is_err() || console_contains(machine, console, needle) || hit_cap {
+        if matches!(r, Err(_) | Ok(RunOutcome::Halted))
+            || console_contains(machine, console, needle)
+            || hit_cap
+        {
             break r;
         }
     }
@@ -258,5 +258,102 @@ fn inject_scancodes(machine: &mut Machine<X86JitCpu>, kbc_index: usize, scancode
                 kbc.push_scancode(scancode);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bus::{Bus, DecodeMap};
+    use cpu::x86jit_backend::RealSegments;
+    use cpu::Cpu;
+
+    #[test]
+    fn prompt_poll_stops_on_if_clear_halt_with_or_without_cap() {
+        for retired_cap in [Some(1000), None] {
+            let mut cpu =
+                X86JitCpu::new_real16_bare(0x10000, 0, 0x7C00, RealSegments::flat(0)).expect("cpu");
+            cpu.map_ram(0, 0x10000).expect("ram");
+            cpu.write_mem(0x7C00, &[0xFA, 0xF4]).expect("CLI; HLT");
+            let mut machine = Machine::new(
+                cpu,
+                Bus::new(Vec::new(), DecodeMap::default()),
+                Box::new(chipset::NoInterruptController),
+                Some(16),
+                Vec::new(),
+                None,
+            );
+            let policy = RunPolicy {
+                retired_cap,
+                idle_limit: Some(100),
+                stop: StopCondition::PromptThen {
+                    console: ConsoleProbe {
+                        base: 0,
+                        cols: 1,
+                        rows: 1,
+                    },
+                    needle: "prompt".into(),
+                    poll_step: 10,
+                    then_budget: 0,
+                },
+                stimuli: Vec::new(),
+            };
+            assert_eq!(run(&mut machine, &policy).expect("run"), RunOutcome::Halted);
+            assert_eq!(machine.cpu().retired(), 2);
+        }
+    }
+
+    #[test]
+    fn prompt_and_stimulus_budgets_start_from_current_virtual_time() {
+        let mut cpu =
+            X86JitCpu::new_real16_bare(0x10000, 0, 0x7C00, RealSegments::flat(0)).expect("cpu");
+        cpu.map_ram(0, 0x10000).expect("ram");
+        cpu.write_mem(0x7C00, &[0xFB, 0xF4]).expect("STI; HLT");
+        cpu.write_mem(0x1000, b">\x07").expect("console prompt");
+        let mut machine = Machine::new(
+            cpu,
+            Bus::new(vec![Box::new(I8042::new())], DecodeMap::default()),
+            Box::new(chipset::NoInterruptController),
+            Some(16),
+            Vec::new(),
+            Some(100),
+        );
+        assert_eq!(
+            machine.run_bounded(Some(5)).expect("initial chunk"),
+            RunOutcome::RetiredCapReached
+        );
+        assert_eq!(machine.cpu().retired(), 2);
+        assert_eq!(machine.virtual_time(), 5);
+        let console = ConsoleProbe {
+            base: 0x1000,
+            cols: 1,
+            rows: 1,
+        };
+        assert_eq!(
+            poll_to_prompt(&mut machine, &console, ">", 10, None).expect("poll"),
+            RunOutcome::RetiredCapReached
+        );
+        assert_eq!(machine.virtual_time(), 15);
+        let policy = RunPolicy {
+            retired_cap: Some(32),
+            idle_limit: Some(100),
+            stop: StopCondition::PromptThen {
+                console,
+                needle: ">".into(),
+                poll_step: 10,
+                then_budget: 10,
+            },
+            stimuli: vec![KeyboardStimulus {
+                keyboard_index: 0,
+                scancodes: vec![0x1C],
+                schedule: InjectionSchedule::AfterPrompt,
+            }],
+        };
+        assert_eq!(
+            run(&mut machine, &policy).expect("prompt and stimulus"),
+            RunOutcome::RetiredCapReached
+        );
+        assert_eq!(machine.virtual_time(), 32);
+        assert_eq!(machine.cpu().retired(), 2);
     }
 }

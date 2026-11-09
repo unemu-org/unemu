@@ -101,9 +101,11 @@ pub struct MockCpu {
     retired: u64,
     /// Vectors the machine injected via [`Cpu::inject_irq`], in order.
     pub injected: Vec<u8>,
-    /// Whether an injected vector is still "pending" (models the CPU gate). A
-    /// test clears it via [`MockCpu::clear_pending_irq`] to model delivery.
+    /// Whether an injected vector is queued until a run boundary with IF set.
     pending_irq: bool,
+    interrupts_enabled: bool,
+    /// Vectors consumed at a run boundary while IF is enabled.
+    pub delivered: Vec<u8>,
 }
 
 impl MockCpu {
@@ -118,6 +120,8 @@ impl MockCpu {
             retired: 0,
             injected: Vec::new(),
             pending_irq: false,
+            interrupts_enabled: false,
+            delivered: Vec::new(),
         }
     }
 
@@ -125,6 +129,12 @@ impl MockCpu {
     /// converts into virtual-clock ticks.
     pub fn with_retired_per_run(mut self, stride: u64) -> Self {
         self.retired_per_run = stride;
+        self
+    }
+
+    /// Set guest IF for interrupt and HLT tests (disabled at reset).
+    pub fn with_interrupts_enabled(mut self, enabled: bool) -> Self {
+        self.interrupts_enabled = enabled;
         self
     }
 
@@ -146,9 +156,13 @@ impl MockCpu {
 impl Cpu for MockCpu {
     fn run(&mut self, _budget: Option<u64>) -> Result<CpuStop, CpuError> {
         // Model the CPU delivering any queued interrupt at the run() boundary:
-        // an injected vector is consumed by the time the next stop is reached, so
-        // the machine may acknowledge the next request.
-        self.pending_irq = false;
+        // IF must permit delivery before the machine can acknowledge another
+        // request; CLI holds the injected vector in flight.
+        if self.pending_irq && self.interrupts_enabled {
+            self.delivered
+                .push(*self.injected.last().expect("pending vector"));
+            self.pending_irq = false;
+        }
         self.retired += self.retired_per_run;
         Ok(self.program.pop_front().unwrap_or(CpuStop::Halt))
     }
@@ -176,6 +190,10 @@ impl Cpu for MockCpu {
     fn inject_irq(&mut self, vector: u8) {
         self.injected.push(vector);
         self.pending_irq = true;
+    }
+
+    fn interrupts_enabled(&self) -> bool {
+        self.interrupts_enabled
     }
 
     fn has_pending_irq(&self) -> bool {

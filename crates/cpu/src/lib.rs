@@ -165,6 +165,11 @@ pub trait Cpu {
     /// guest that writes MMIO spins on the same store forever.
     fn complete_mmio_write(&mut self);
 
+    /// Whether guest FLAGS.IF permits maskable interrupts (Intel 80286
+    /// Programmer's Reference Manual, HLT and CLI/STI instruction descriptions;
+    /// §5.2). The machine uses this to decide whether HLT can wake.
+    fn interrupts_enabled(&self) -> bool;
+
     /// Inject a hardware interrupt request for `vector` (§5.2).
     ///
     /// The backend queues the vector and delivers it at the next `run()`

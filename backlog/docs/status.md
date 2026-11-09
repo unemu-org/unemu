@@ -25,16 +25,15 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
 
 ## In flight
 
-The P1 defects from the whole-code review (epic `upc-kk2`).
+The P2 findings from the whole-code review (epics `upc-kk2`, `upc-sk3`, `upc-x83`).
 
 ## Broken / known defects
 
-- **Whole-code review 2026-11-09** found defects that today's goldens do not catch — HLT resumes the
-  guest without an interrupt, a cascaded INTA can wedge the PIC, PIT mode 3 stops on an odd
-  divisor, COM1 capture includes baud-divisor bytes. One bead each under `upc-kk2`, `upc-sk3`,
-  `upc-x83`.
+- **Whole-code review 2026-11-09:** its four P1 defects are fixed (HLT now halts, a cascaded
+  INTA can no longer wedge the PIC pair, PIT mode 3 runs with odd divisors, COM1 capture excludes
+  baud-divisor bytes). The remaining findings are beads under `upc-kk2`, `upc-sk3`, `upc-x83`.
 - Floppy writes are volatile (in-memory only; `upc-sk3.1`).
-- No CI and no git remote (`upc-x83.3`, `upc-d86`).
+- No CI yet (`upc-x83.3`).
 
 ## Recently landed
 

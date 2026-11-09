@@ -112,6 +112,9 @@ Implemented for the first hardware-interrupt milestone (real-mode timer boot):
   each `run()` by a fixed documented ratio (one PIT input clock per retired
   instruction — a modelling approximation, not a cycle-accurate 1.193 MHz
   timebase), then ticks devices one PIT clock at a time.
+- While the CPU is halted (HLT), the machine keeps ticking devices one PIT clock
+  at a time without retiring instructions; virtual time is retired instructions
+  plus halted clocks, and run caps are measured in it (decision-14).
 - PIT/RTC tick off the virtual clock → reproducible goldens. Each golden pins the
   x86jit revision; the re-baseline procedure is documented in the clock decision.
 

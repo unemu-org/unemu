@@ -21,7 +21,11 @@
 //! [`RETIRED_PER_PIT_CLOCK`]. This is a *modelling approximation* (one PIT clock
 //! per retired instruction by default), not a cycle-accurate 1.193 MHz timebase:
 //! it only has to be deterministic and let the timer fire in a bounded number of
-//! instructions.
+//! instructions. While HLT suspends execution, each loop iteration advances one
+//! PIT input clock without retiring instructions; the retired count and its
+//! fractional clock remainder are preserved across the halt. [`Machine::virtual_time`]
+//! includes both retired instructions and the instruction-equivalent halted clocks,
+//! so a safety cap bounds a halted guest just as it bounds a busy-polling one.
 //!
 //! ## Interrupt wiring (§5)
 //!
@@ -40,11 +44,14 @@
 //!   at the next boundary once the guest's `IF` is set — that gating lives in the
 //!   CPU. The guest's `EOI` (an `out` to `0x20`) reaches the PIC through the
 //!   `Bus`, clearing the ISR the machine's INTA set (the PIC is shared).
-//! - **HLT wakeup.** On [`CpuStop::Halt`] the machine keeps advancing the clock
-//!   and ticking devices so the timer can fire and inject → the CPU resumes past
-//!   the `hlt`. If the interrupt source falls quiescent (the guest masked it, so
-//!   no serviceable vector appears for [`Machine::idle_limit`] consecutive halted
-//!   boundaries), the machine terminates rather than spinning forever.
+//! - **HLT wakeup.** On [`CpuStop::Halt`] the machine suspends CPU execution
+//!   until an injected vector is pending and guest IF is set. The next CPU run
+//!   delivers the interrupt; IRET returns to the instruction after HLT (Intel
+//!   80286 Programmer's Reference Manual, HLT instruction description). With IF
+//!   clear it stops immediately, since NMI is not modelled. With IF set it ticks
+//!   devices one PIT clock at a time, stopping after [`Machine::idle_limit`]
+//!   consecutive idle clocks. `None` waits no clocks: only an immediately
+//!   deliverable interrupt resumes execution. The idle count resets on wake-up.
 
 use bus::{Bus, BusError};
 use cpu::{Cpu, CpuError, CpuStop};
@@ -129,15 +136,15 @@ pub enum MachineError {
 ///
 /// The natural stop is [`RunOutcome::Halted`] — the guest halted and the
 /// interrupt source fell quiescent, or there is nothing left to make progress.
-/// [`RunOutcome::RetiredCapReached`] means a total retired-instruction cap was
-/// hit first: a safety net so a guest that spins (a never-halting loop that keeps
-/// retiring instructions) cannot run forever. Reaching the cap is a clean stop,
+/// [`RunOutcome::RetiredCapReached`] means a total virtual-time cap was
+/// hit first: a safety net so a guest that spins or repeatedly wakes from HLT
+/// cannot run forever. Reaching the cap is a clean stop,
 /// not an error, so any output captured up to that point is preserved.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum RunOutcome {
     /// The guest halted with no more interrupts to service (the natural end).
     Halted,
-    /// The total retired-instruction cap was reached before a natural stop.
+    /// The total virtual-time cap was reached before a natural stop.
     RetiredCapReached,
 }
 
@@ -148,6 +155,12 @@ pub struct Machine<C: Cpu> {
     pic: Box<dyn InterruptController>,
     clock: VClock,
     quantum: Option<u64>,
+    /// HLT remains suspended across runner calls until an IRQ can wake the CPU.
+    halted: bool,
+    /// Total PIT clocks spent halted, charged to the virtual-time safety cap.
+    halted_clocks: u64,
+    /// Consecutive halted PIT clocks since the CPU last ran or woke.
+    idle_clocks: u64,
     /// Device IRQ lines wired to PIC inputs, edge-detected each boundary.
     irq_lines: Vec<IrqLine>,
     /// Last observed level of each wired line (parallel to `irq_lines`), for
@@ -159,9 +172,8 @@ pub struct Machine<C: Cpu> {
     last_retired: u64,
     /// Fractional PIT clocks not yet emitted (when the ratio is > 1).
     clock_remainder: u64,
-    /// Consecutive halted boundaries with no interrupt injected before the
-    /// machine declares the interrupt source quiescent and stops. `None` never
-    /// gives up (only safe when an interrupt is guaranteed to keep firing).
+    /// Consecutive halted PIT clocks with no interrupt injected before stopping.
+    /// `None` waits no clocks; only an immediately deliverable IRQ wakes HLT.
     idle_limit: Option<u64>,
     /// Bus-master → DMA-controller couplings drained each boundary (§7.7). Empty
     /// for a machine with no DMA (the serial and timer demos).
@@ -178,7 +190,7 @@ impl<C: Cpu> Machine<C> {
     /// `irq_lines` declares which device lines feed which PIC inputs (§5.1);
     /// empty for a machine with no interrupts. `idle_limit` bounds how long the
     /// machine keeps a halted guest alive waiting for an interrupt before
-    /// declaring quiescence (`None` = never terminate on idle).
+    /// declaring quiescence, in PIT clocks (`None` = no idle wait).
     pub fn new(
         cpu: C,
         bus: Bus,
@@ -194,6 +206,9 @@ impl<C: Cpu> Machine<C> {
             pic,
             clock: VClock::ZERO,
             quantum,
+            halted: false,
+            halted_clocks: 0,
+            idle_clocks: 0,
             irq_lines,
             last_levels,
             last_retired: 0,
@@ -227,19 +242,30 @@ impl<C: Cpu> Machine<C> {
         &mut self.bus
     }
 
-    /// The current virtual time (§6).
+    /// The current device clock, in PIT input clocks (§6).
     pub fn clock(&self) -> VClock {
         self.clock
     }
 
-    /// The configured idle limit (halted boundaries before quiescence).
+    /// Total virtual time in instruction-equivalent units (§6).
+    ///
+    /// Retired instructions plus halted PIT clocks converted by
+    /// [`RETIRED_PER_PIT_CLOCK`]. Unlike [`Cpu::retired`], this advances during
+    /// HLT too, so run caps and scheduled targets bound both busy and idle time.
+    pub fn virtual_time(&self) -> u64 {
+        self.cpu
+            .retired()
+            .saturating_add(self.halted_clocks.saturating_mul(RETIRED_PER_PIT_CLOCK))
+    }
+
+    /// The configured idle limit (halted PIT clocks before quiescence).
     pub fn idle_limit(&self) -> Option<u64> {
         self.idle_limit
     }
 
     /// Set the idle limit after construction — the "how we run" bound on how many
-    /// consecutive halted boundaries pass with no injected interrupt before the
-    /// machine declares the source quiescent and stops (`None` never gives up).
+    /// consecutive halted PIT clocks pass with no injected interrupt before the
+    /// machine stops (`None` = no idle wait). The count resets on each wake-up.
     ///
     /// The idle limit is a run concern, not part of what the machine *is*, so the
     /// run-policy layer above owns it and stamps it here before driving the loop.
@@ -259,8 +285,8 @@ impl<C: Cpu> Machine<C> {
         self.run_bounded(None).map(|_| ())
     }
 
-    /// Run until the guest halts, or until `max_retired` guest instructions have
-    /// retired — whichever comes first (§3.1, §6).
+    /// Run until the guest halts, or until the absolute `max_retired` virtual-time
+    /// cap is reached — whichever comes first (§3.1, §6).
     ///
     /// Each iteration runs the CPU for one quantum, services the resulting stop
     /// against the bus, drives the deterministic clock from the retired delta,
@@ -270,23 +296,56 @@ impl<C: Cpu> Machine<C> {
     /// quiescent (see the module docs), then the machine stops with
     /// [`RunOutcome::Halted`].
     ///
-    /// `max_retired` is a safety net measured in retired instructions (the same
-    /// deterministic virtual-time base as the clock, never wall time): a guest
-    /// that never halts — an unsupported instruction is not reached, and it keeps
-    /// retiring in a loop — would otherwise run forever. When the cap is reached
-    /// the machine stops cleanly with [`RunOutcome::RetiredCapReached`], leaving
-    /// captured device output intact for the caller to drain. `None` imposes no
-    /// cap.
+    /// `max_retired` bounds [`Machine::virtual_time`]: retired instructions plus
+    /// the instruction-equivalent of every halted PIT clock, never wall time.
+    /// The cap is checked after each CPU quantum and each halted clock; a CPU
+    /// quantum may overshoot it. Reaching it returns
+    /// [`RunOutcome::RetiredCapReached`], preserving captured device output.
+    /// `None` imposes no cap.
     pub fn run_bounded(&mut self, max_retired: Option<u64>) -> Result<RunOutcome, MachineError> {
-        let mut idle_halts: u64 = 0;
         loop {
+            if max_retired.is_some_and(|cap| self.virtual_time() >= cap) {
+                return Ok(RunOutcome::RetiredCapReached);
+            }
+            if self.halted {
+                // NMI is not modelled, so nothing can wake HLT with IF clear.
+                if !self.cpu.interrupts_enabled() {
+                    return Ok(RunOutcome::Halted);
+                }
+                self.service_interrupts();
+                if self.cpu.has_pending_irq() {
+                    self.halted = false;
+                    self.idle_clocks = 0;
+                } else {
+                    match self.idle_limit {
+                        None => return Ok(RunOutcome::Halted),
+                        Some(limit) if self.idle_clocks >= limit => return Ok(RunOutcome::Halted),
+                        _ => {}
+                    }
+                    // Halted time is independent of retired instructions. Leave
+                    // last_retired and the fractional instruction clock untouched
+                    // so the next CPU run accounts only for its own instructions.
+                    self.tick_clock();
+                    self.halted_clocks += 1;
+                    self.service_interrupts();
+                    self.service_dma();
+                    if !self.cpu.has_pending_irq() {
+                        self.idle_clocks += 1;
+                    }
+                    if max_retired.is_some_and(|cap| self.virtual_time() >= cap) {
+                        return Ok(RunOutcome::RetiredCapReached);
+                    }
+                    continue;
+                }
+            }
+            self.idle_clocks = 0;
             let stop = self.cpu.run(self.quantum)?;
 
             // Drive the clock and interrupt path on every boundary: tick the
             // devices one PIT clock at a time (edge-detecting the wired lines
             // after each), then acknowledge/inject a serviceable vector.
             self.advance_clock();
-            let injected = self.service_interrupts();
+            self.service_interrupts();
 
             match stop {
                 CpuStop::PortOut { port, size, value } => {
@@ -312,21 +371,12 @@ impl<C: Cpu> Machine<C> {
                     return Err(MachineError::Exception { vector });
                 }
                 CpuStop::Halt => {
-                    // A halted guest resumes only when an interrupt is delivered.
-                    // Keep looping so the timer can fire; give up once the source
-                    // is quiescent (no injection for `idle_limit` halted
-                    // boundaries), which is how a masked-timer boot terminates.
-                    if injected || self.cpu.has_pending_irq() {
-                        idle_halts = 0;
-                    } else {
-                        idle_halts += 1;
-                        match self.idle_limit {
-                            Some(limit) if idle_halts >= limit => return Ok(RunOutcome::Halted),
-                            // No idle limit: a halt with nothing pending and no
-                            // way to make progress would spin forever, so stop.
-                            None => return Ok(RunOutcome::Halted),
-                            _ => {}
-                        }
+                    self.halted = true;
+                    if !self.cpu.interrupts_enabled()
+                        || (!self.cpu.has_pending_irq()
+                            && matches!(self.idle_limit, None | Some(0)))
+                    {
+                        return Ok(RunOutcome::Halted);
                     }
                 }
             }
@@ -335,14 +385,6 @@ impl<C: Cpu> Machine<C> {
             // (a floppy READ programs its transfer, then the 8237 moves the bytes
             // into guest RAM before the guest runs again).
             self.service_dma();
-
-            // Safety net: a spinning guest never reaches a halt or an error, so
-            // cap total retired instructions and stop cleanly, preserving output.
-            if let Some(cap) = max_retired {
-                if self.cpu.retired() >= cap {
-                    return Ok(RunOutcome::RetiredCapReached);
-                }
-            }
         }
     }
 
@@ -373,10 +415,14 @@ impl<C: Cpu> Machine<C> {
         }
 
         for _ in 0..pit_clocks {
-            self.clock = self.clock.advance(1);
-            self.bus.tick_all(self.clock);
-            self.edge_detect();
+            self.tick_clock();
         }
+    }
+
+    fn tick_clock(&mut self) {
+        self.clock = self.clock.advance(1);
+        self.bus.tick_all(self.clock);
+        self.edge_detect();
     }
 
     /// Edge-detect the wired device IRQ lines onto the PIC (§5.1).
@@ -661,6 +707,8 @@ mod tests {
     #[derive(Default)]
     struct LineDevice {
         level: bool,
+        stop_after: Option<u64>,
+        period: Option<u64>,
     }
     impl Device for LineDevice {
         fn name(&self) -> &'static str {
@@ -679,9 +727,10 @@ mod tests {
             Ok(())
         }
         fn tick(&mut self, now: VClock) {
-            // Drive the line low for one clock every 4 ticks, else high — a
+            // Drive the line low for one clock every period, else high — a
             // mode-2-like OUT so the rising edge recurs once per period.
-            self.level = !now.0.is_multiple_of(4);
+            self.level = !now.0.is_multiple_of(self.period.unwrap_or(4))
+                && self.stop_after.is_none_or(|end| now.0 <= end);
         }
         fn irq_pending(&self) -> bool {
             self.level
@@ -704,6 +753,7 @@ mod tests {
     struct CountingIc {
         pulses: u32,
         pending: u32,
+        acknowledgements: std::rc::Rc<std::cell::Cell<u64>>,
     }
     impl InterruptController for CountingIc {
         fn set_irq_line(&mut self, _irq: u8, level: bool) {
@@ -716,6 +766,7 @@ mod tests {
             (self.pending > 0).then_some(0x08)
         }
         fn acknowledge(&mut self) -> Option<u8> {
+            self.acknowledgements.set(self.acknowledgements.get() + 1);
             if self.pending > 0 {
                 self.pending -= 1;
                 Some(0x08)
@@ -742,7 +793,7 @@ mod tests {
         };
         let bus = Bus::new(devices, map);
         let mut machine = Machine::new(
-            MockCpu::new(program),
+            MockCpu::new(program).with_interrupts_enabled(true),
             bus,
             Box::<CountingIc>::default(),
             None,
@@ -757,6 +808,339 @@ mod tests {
         // private counter, so assert the CPU received the matching injections.
         assert_eq!(machine.cpu().injected.len(), 5);
         assert!(machine.cpu().injected.iter().all(|&v| v == 0x08));
+    }
+
+    fn halted_machine(program: Vec<CpuStop>, limit: Option<u64>) -> Machine<MockCpu> {
+        let bus = Bus::new(
+            vec![
+                Box::new(LineDevice {
+                    level: false,
+                    stop_after: Some(9),
+                    period: None,
+                }),
+                Box::<CaptureDevice>::default(),
+            ],
+            DecodeMap {
+                ports: vec![PortRange {
+                    ports: 0x3F8..=0x3FF,
+                    device: 1,
+                }],
+                mmio: Vec::new(),
+            },
+        );
+        Machine::new(
+            MockCpu::new(program).with_interrupts_enabled(true),
+            bus,
+            Box::<CountingIc>::default(),
+            None,
+            vec![IrqLine { device: 0, irq: 0 }],
+            limit,
+        )
+    }
+
+    #[test]
+    fn halt_waits_without_running_cpu_until_irq_delivery() {
+        let mut machine = halted_machine(
+            vec![
+                CpuStop::Halt,
+                CpuStop::PortOut {
+                    port: 0x3F8,
+                    size: 1,
+                    value: b'P' as u64,
+                },
+            ],
+            Some(4),
+        );
+        assert_eq!(
+            machine.run_bounded(Some(6)).expect("run"),
+            RunOutcome::RetiredCapReached
+        );
+        assert_eq!(machine.cpu().retired(), 2);
+        assert_eq!(machine.clock(), VClock(6));
+        assert_eq!(machine.cpu().delivered, vec![0x08]);
+        assert_eq!(machine.bus().device(1).expect("capture").save(), b"P");
+    }
+
+    #[test]
+    fn halt_with_if_clear_stops_without_retiring_post_halt_code() {
+        let mut machine = machine_with(vec![CpuStop::Halt, CpuStop::BudgetExhausted]);
+        machine.set_idle_limit(Some(100));
+        assert_eq!(
+            machine.run_bounded(Some(2)).expect("run"),
+            RunOutcome::Halted
+        );
+        assert_eq!(machine.cpu().retired(), 1);
+        assert_eq!(machine.clock(), VClock(1));
+        // Re-entering the runner must preserve HLT too.
+        assert_eq!(
+            machine.run_bounded(Some(2)).expect("rerun"),
+            RunOutcome::Halted
+        );
+        assert_eq!(machine.cpu().retired(), 1);
+    }
+
+    #[test]
+    fn halt_with_pending_irq_and_if_clear_stops_immediately() {
+        let mut machine = machine_with(vec![CpuStop::Halt, CpuStop::BudgetExhausted]);
+        machine.cpu.inject_irq(0x08);
+        machine.set_idle_limit(Some(100));
+        assert_eq!(
+            machine.run_bounded(Some(2)).expect("run"),
+            RunOutcome::Halted
+        );
+        assert_eq!(machine.cpu().retired(), 1);
+        assert!(machine.cpu().has_pending_irq());
+        assert!(machine.cpu().delivered.is_empty());
+    }
+
+    #[test]
+    fn halt_idle_limit_counts_exactly_idle_pit_clocks() {
+        for limit in [0, 1, 3] {
+            let mut machine = halted_machine(vec![CpuStop::Halt], Some(limit));
+            assert_eq!(
+                machine.run_bounded(Some(20)).expect("run"),
+                RunOutcome::Halted
+            );
+            assert_eq!(machine.cpu().retired(), 1);
+            assert_eq!(machine.clock(), VClock(1 + limit));
+            assert!(machine.cpu().injected.is_empty());
+        }
+    }
+
+    #[test]
+    fn halt_idle_counter_resets_after_each_wake() {
+        let mut machine = halted_machine(
+            vec![
+                CpuStop::Halt,
+                CpuStop::BudgetExhausted,
+                CpuStop::Halt,
+                CpuStop::PortOut {
+                    port: 0x3F8,
+                    size: 1,
+                    value: b'P' as u64,
+                },
+                CpuStop::Halt,
+            ],
+            Some(4),
+        );
+        assert_eq!(
+            machine.run_bounded(Some(20)).expect("run"),
+            RunOutcome::Halted
+        );
+        assert_eq!(machine.cpu().retired(), 5);
+        assert_eq!(machine.clock(), VClock(15));
+        assert_eq!(machine.cpu().delivered, vec![0x08, 0x08]);
+    }
+
+    #[test]
+    fn halt_without_idle_wait_only_resumes_for_an_immediate_irq() {
+        let mut machine = halted_machine(vec![CpuStop::Halt, CpuStop::BudgetExhausted], None);
+        assert_eq!(
+            machine.run_bounded(Some(20)).expect("run"),
+            RunOutcome::Halted
+        );
+        assert_eq!(machine.clock(), VClock(1));
+        assert_eq!(
+            machine.run_bounded(Some(2)).expect("still halted"),
+            RunOutcome::Halted
+        );
+        assert_eq!(machine.cpu().retired(), 1);
+        machine.cpu.inject_irq(0x08);
+        assert_eq!(
+            machine.run_bounded(Some(2)).expect("wake"),
+            RunOutcome::RetiredCapReached
+        );
+        assert_eq!(machine.cpu().delivered, vec![0x08]);
+    }
+
+    #[test]
+    fn virtual_time_cap_bounds_a_periodic_halt_loop() {
+        let bus = Bus::new(
+            vec![Box::new(LineDevice {
+                period: Some(65_536),
+                ..LineDevice::default()
+            })],
+            DecodeMap::default(),
+        );
+        let mut machine = Machine::new(
+            MockCpu::new(vec![CpuStop::Halt; 1000]).with_interrupts_enabled(true),
+            bus,
+            Box::<CountingIc>::default(),
+            None,
+            vec![IrqLine { device: 0, irq: 0 }],
+            Some(100_000),
+        );
+        let cap = 1000;
+        assert_eq!(
+            machine.run_bounded(Some(cap)).expect("run"),
+            RunOutcome::RetiredCapReached
+        );
+        assert_eq!(machine.clock(), VClock(cap));
+        assert_eq!(machine.virtual_time(), cap);
+        assert_eq!(machine.cpu().retired(), 1);
+        assert!(machine.cpu().delivered.is_empty());
+    }
+
+    #[test]
+    fn halt_idle_counter_persists_across_runner_calls() {
+        let mut machine = halted_machine(vec![CpuStop::Halt], Some(3));
+        for _ in 0..2 {
+            assert_eq!(machine.run_bounded(None).expect("run"), RunOutcome::Halted);
+            assert_eq!(machine.clock(), VClock(4));
+            assert_eq!(machine.cpu().retired(), 1);
+        }
+    }
+
+    #[test]
+    fn halted_cap_preserves_idle_count_across_runner_calls() {
+        let mut machine = halted_machine(vec![CpuStop::Halt], Some(3));
+        assert_eq!(
+            machine.run_bounded(Some(3)).expect("first chunk"),
+            RunOutcome::RetiredCapReached
+        );
+        assert_eq!(machine.virtual_time(), 3);
+        assert_eq!(machine.cpu().retired(), 1);
+        assert_eq!(
+            machine.run_bounded(Some(3)).expect("same cap"),
+            RunOutcome::RetiredCapReached
+        );
+        assert_eq!(machine.virtual_time(), 3);
+        assert_eq!(
+            machine.run_bounded(Some(20)).expect("rest"),
+            RunOutcome::Halted
+        );
+        assert_eq!(machine.virtual_time(), 4);
+        assert_eq!(machine.cpu().retired(), 1);
+    }
+
+    #[test]
+    fn halt_delivers_vector_pending_at_halt_without_idle_wait() {
+        for limit in [None, Some(0)] {
+            let mut machine = halted_machine(vec![CpuStop::Halt, CpuStop::BudgetExhausted], limit);
+            // The first run reaches the line's rising edge while returning HLT,
+            // so the CPU has not yet had a chance to consume the injected vector.
+            machine.cpu = machine.cpu.with_retired_per_run(5);
+            assert_eq!(
+                machine.run_bounded(Some(10)).expect("run"),
+                RunOutcome::RetiredCapReached
+            );
+            assert_eq!(machine.cpu().delivered, vec![0x08]);
+            assert_eq!(machine.cpu().retired(), 10);
+        }
+    }
+
+    #[test]
+    fn halted_reentry_with_if_clear_neither_ticks_nor_acknowledges() {
+        for pending in [false, true] {
+            let controller = CountingIc::default();
+            let acknowledgements = controller.acknowledgements.clone();
+            let mut machine =
+                halted_machine(vec![CpuStop::Halt, CpuStop::BudgetExhausted], Some(100));
+            machine.pic = Box::new(controller);
+            machine.cpu = machine.cpu.with_interrupts_enabled(false);
+            assert_eq!(
+                machine.run_bounded(Some(20)).expect("run"),
+                RunOutcome::Halted
+            );
+            if pending {
+                machine.pic.set_irq_line(0, true);
+            }
+            let before = acknowledgements.get();
+            assert_eq!(
+                machine.run_bounded(Some(20)).expect("rerun"),
+                RunOutcome::Halted
+            );
+            assert_eq!(machine.clock(), VClock(1));
+            assert_eq!(machine.cpu().retired(), 1);
+            assert_eq!(acknowledgements.get(), before);
+            assert!(machine.cpu().injected.is_empty());
+        }
+    }
+
+    /// Intel 80286 Programmer's Reference Manual, STI and HLT instruction
+    /// descriptions: STI defers the pending interrupt until after HLT (§5.2).
+    #[test]
+    fn real_mode_sti_halt_delivers_preinjected_vector_without_idle_wait() {
+        use cpu::x86jit_backend::{RealSegments, X86JitCpu};
+        let mut cpu =
+            X86JitCpu::new_real16_bare(0x10000, 0, 0x7C00, RealSegments::flat(0)).expect("cpu");
+        cpu.map_ram(0, 0x10000).expect("ram");
+        // Use DX for the capture port, since an immediate port is only 8 bits.
+        cpu.write_mem(0x7C00, &[0xFB, 0xF4, 0xB0, b'P', 0xEE, 0xFA, 0xF4])
+            .expect("program");
+        cpu.set_reg(cpu::CpuReg::Rdx, 0x3F8);
+        cpu.write_mem(0x8000, &[0xB0, b'I', 0xEE, 0xCF])
+            .expect("handler");
+        cpu.write_mem(0x20, &[0, 0x80, 0, 0]).expect("IVT vector 8");
+        cpu.inject_irq(0x08);
+        assert!(!cpu.interrupts_enabled());
+        let mut machine = Machine::new(
+            cpu,
+            bus_with_capture(),
+            Box::new(NoIc),
+            Some(16),
+            Vec::new(),
+            None,
+        );
+        assert_eq!(
+            machine.run_bounded(Some(100)).expect("run"),
+            RunOutcome::Halted
+        );
+        assert_eq!(machine.bus().device(0).expect("capture").save(), b"IP");
+        assert!(!machine.cpu().has_pending_irq());
+    }
+
+    /// Intel 80286 Programmer's Reference Manual, HLT: the interrupt handler
+    /// must execute before the instruction following HLT. Intel 8254 datasheet,
+    /// Mode 2: counter 0 produces the rising edge that wakes the processor (§5).
+    #[test]
+    fn real_mode_halt_takes_pit_irq_before_post_halt_out() {
+        use cpu::x86jit_backend::{RealSegments, X86JitCpu};
+        let mut cpu =
+            X86JitCpu::new_real16_bare(0x10000, 0, 0x7C00, RealSegments::flat(0)).expect("cpu");
+        cpu.map_ram(0, 0x10000).expect("ram");
+        // CLI; program PIT mode 2, divisor 64; STI; HLT; OUT marker P; CLI; HLT.
+        cpu.write_mem(
+            0x7C00,
+            &[
+                0xFA, 0xB0, 0x34, 0xE6, 0x43, 0xB0, 64, 0xE6, 0x40, 0xB0, 0, 0xE6, 0x40, 0xFB,
+                0xF4, 0xB0, b'P', 0xE6, 0xE9, 0xFA, 0xF4,
+            ],
+        )
+        .expect("program");
+        cpu.write_mem(0x8000, &[0xB0, b'I', 0xE6, 0xE9, 0xCF])
+            .expect("handler");
+        cpu.write_mem(0x20, &[0, 0x80, 0, 0]).expect("IVT vector 8");
+        let bus = Bus::new(
+            vec![
+                Box::new(devices::Pit8253::new()),
+                Box::<CaptureDevice>::default(),
+            ],
+            DecodeMap {
+                ports: vec![
+                    PortRange {
+                        ports: 0x40..=0x43,
+                        device: 0,
+                    },
+                    PortRange {
+                        ports: 0xE9..=0xE9,
+                        device: 1,
+                    },
+                ],
+                mmio: Vec::new(),
+            },
+        );
+        let mut machine = Machine::new(
+            cpu,
+            bus,
+            Box::<CountingIc>::default(),
+            Some(16),
+            vec![IrqLine { device: 0, irq: 0 }],
+            Some(128),
+        );
+        let outcome = machine.run_bounded(Some(1000)).expect("run");
+        assert_eq!(machine.bus().device(1).expect("capture").save(), b"IP");
+        assert_eq!(outcome, RunOutcome::Halted);
     }
 
     /// A minimal CPU backend with a flat guest-memory buffer, so the DMA seam can
@@ -780,6 +1164,9 @@ mod tests {
     impl Cpu for MemCpu {
         fn run(&mut self, _budget: Option<u64>) -> Result<CpuStop, CpuError> {
             Ok(CpuStop::Halt)
+        }
+        fn interrupts_enabled(&self) -> bool {
+            false
         }
         fn reg(&self, _reg: cpu::CpuReg) -> u64 {
             0

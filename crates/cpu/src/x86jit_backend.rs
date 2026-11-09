@@ -270,6 +270,10 @@ impl Cpu for X86JitCpu {
         self.cpu.inject_irq(vector);
     }
 
+    fn interrupts_enabled(&self) -> bool {
+        self.cpu.flags().if_
+    }
+
     fn has_pending_irq(&self) -> bool {
         self.cpu.has_pending_irq()
     }

@@ -84,11 +84,11 @@ pub const BOOT_CS: u16 = 0x0000;
 /// Real-mode boot IP (linear load address, since CS = 0).
 pub const BOOT_IP: u16 = 0x7C00;
 
-/// Consecutive halted boundaries with no interrupt before the boot machine
+/// Consecutive halted PIT clocks with no interrupt before the boot machine
 /// declares the timer quiescent and stops (§5). The boot guest masks IRQ0 after
 /// the fifth marker; from then on no serviceable interrupt appears, so the
-/// machine gives up after this many idle halts. Comfortably longer than one PIT
-/// period (divisor 20 → ~10 halted `jmp;hlt` iterations per period) so a live
+/// machine gives up after this many idle PIT clocks. Comfortably longer than one PIT
+/// period (divisor 20 → 20 PIT clocks per period) so a live
 /// timer is never mistaken for a dead one.
 pub const BOOT_IDLE_LIMIT: u64 = 200;
 
@@ -189,10 +189,10 @@ pub const KBD_PROGRAM: &[u8] = &[
 /// serial output is exactly this byte, emitted by the IRQ1 handler.
 pub const KBD_SCANCODE: u8 = 0x1E;
 
-/// Consecutive halted boundaries with no interrupt before the keyboard machine
+/// Consecutive halted PIT clocks with no interrupt before the keyboard machine
 /// declares the source quiescent and stops (§5). After the single keystroke the
 /// handler masks all IRQs, so no further interrupt appears and the machine gives
-/// up after this many idle halts.
+/// up after this many idle PIT clocks.
 pub const KBD_IDLE_LIMIT: u64 = 200;
 
 /// Linear address of the IRQ8 (RTC) handler in [`RTC_PROGRAM`]. It is poked into
@@ -207,17 +207,18 @@ pub const RTC_MARKER: u8 = b'R';
 /// Virtual clocks per RTC second for the demo. The real ratio is over a million
 /// clocks; a bounded headless run never advances that far, so the RTC is built
 /// with this small ratio (the `at_rtc` preset's fast-tick timing) and the
-/// update-ended interrupt fires a few dozen boundaries into the `hlt` loop. It is
-/// still virtual time (retired-instruction-derived), so the run is deterministic.
+/// update-ended interrupt fires a few dozen PIT clocks into the `hlt` loop. It is
+/// still virtual time (including PIT clocks while halted), so the run is
+/// deterministic.
 pub const RTC_SECOND_TICKS: u64 = 64;
 /// Update-in-progress window for the demo RTC, in virtual clocks.
 pub const RTC_UIP_TICKS: u64 = 8;
 
-/// Consecutive halted boundaries with no interrupt before the RTC machine
+/// Consecutive halted PIT clocks with no interrupt before the RTC machine
 /// declares the source quiescent and stops (§5). After the single update-ended
 /// interrupt the handler masks the master PIC (the cascade line included), so no
 /// further vector is serviceable and the machine gives up after this many idle
-/// halts. Comfortably longer than one RTC second so a live clock is never
+/// PIT clocks. Comfortably longer than one RTC second so a live clock is never
 /// mistaken for a dead one before it first fires.
 pub const RTC_IDLE_LIMIT: u64 = 200;
 
@@ -574,13 +575,15 @@ pub const BIOS_RESET_IP: u16 = 0xFFF0;
 /// port I/O or halt still returns to the machine loop, where the retired cap and
 /// the clock/interrupt path run. It only bounds how often the cap is checked.
 pub const BIOS_QUANTUM: Option<u64> = Some(65_536);
-/// Retired-instruction safety cap for the BIOS run (§6). POST plus a 640 KiB
-/// memory test is hundreds of millions of instructions; this is a generous bound
-/// so a spin cannot hang the run. Reaching it is a clean stop, not a failure.
+/// Virtual-time safety cap for the BIOS run, in instruction equivalents (§6).
+/// POST plus a 640 KiB memory test is hundreds of millions of instructions; this
+/// is a generous bound so a spin cannot hang the run. Reaching it is a clean stop,
+/// not a failure.
 pub const BIOS_MAX_RETIRED: u64 = 2_000_000_000;
-/// Consecutive halted boundaries with no serviceable interrupt before the machine
+/// Consecutive halted PIT clocks with no serviceable interrupt before the machine
 /// declares the interrupt source quiescent and stops. Large so a BIOS that halts
-/// waiting for a slow timer tick is not cut off mid-POST.
+/// waiting for a timer tick is not cut off mid-POST: this exceeds the standard
+/// 18.2 Hz tick period (65536 PIT clocks, Intel 8254 datasheet, Mode 3).
 pub const BIOS_IDLE_LIMIT: u64 = 1_000_000;
 
 /// Base of the monochrome (MDA) text window. When the option-ROM scan finds no
@@ -644,9 +647,9 @@ pub fn run_bios(rom: &[u8]) -> BiosRun {
 }
 
 /// The natural-stop policy the plain BIOS/POST boots run under: cap the total
-/// retired instructions at [`BIOS_MAX_RETIRED`], declare the interrupt source
-/// quiescent after [`BIOS_IDLE_LIMIT`] idle boundaries, and stop when the guest
-/// halts (relocated out of machine construction into the policy).
+/// virtual time at [`BIOS_MAX_RETIRED`] instruction equivalents, declare the
+/// interrupt source quiescent after [`BIOS_IDLE_LIMIT`] idle PIT clocks, and stop
+/// when the guest halts (relocated out of machine construction into the policy).
 fn bios_natural_policy() -> RunPolicy {
     RunPolicy::natural(Some(BIOS_MAX_RETIRED), Some(BIOS_IDLE_LIMIT))
 }

@@ -274,8 +274,8 @@ are split (implemented in task-32, in the `assembly` crate next to the assembler
 
 ```
 RunPolicy {
-    retired_cap: Option<u64>,          // safety bound on total retired instructions
-    idle_limit:  Option<u64>,          // halted boundaries before the source is quiescent
+    retired_cap: Option<u64>,          // safety bound on virtual time (retired + halted clocks)
+    idle_limit:  Option<u64>,          // halted PIT clocks with no wake-up before stopping
     stop:        StopCondition,        // Natural | PromptThen { console, needle, poll_step, then_budget }
     stimuli:     Vec<KeyboardStimulus>,// scancodes + WHEN to inject (InjectionSchedule)
 }

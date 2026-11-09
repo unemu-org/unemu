@@ -62,7 +62,8 @@ virtual clock, and memory-write (SMC) decisions.
    `backlog/docs/` (`§` style). Datasheet coverage (what is / isn't modelled) is tracked.
 4. **Determinism.** No wall-clock in the execution path. Virtual time is measured
    in **retired instructions** (never in JIT blocks — block boundaries are a
-   lifter implementation detail). Devices tick off the virtual clock.
+   lifter implementation detail), plus PIT clocks that pass while the CPU is
+   halted (decision-14). Devices tick off the virtual clock.
 
 ## Where things live
 

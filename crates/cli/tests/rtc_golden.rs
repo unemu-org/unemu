@@ -14,7 +14,7 @@
 //! 5. `sti`, then loops on `hlt`.
 //!
 //! The RTC is built with a small per-second tick ratio, so one RTC second ticks
-//! a few dozen boundaries into the `hlt` loop. The RTC raises IRQ8; the machine
+//! a few dozen PIT clocks into the `hlt` loop. The RTC raises IRQ8; the machine
 //! edge-detects it onto the slave PIC, which cascades into the master at IRQ2,
 //! and injects vector `0x70`. The handler writes a marker byte `R` to the UART
 //! (COM1 THR, `0x3F8`), ends the cascaded interrupt with an EOI to **both** the
