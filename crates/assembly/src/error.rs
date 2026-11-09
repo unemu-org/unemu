@@ -16,6 +16,17 @@ pub enum ConfigError {
     #[error("clock quantum must be a positive finite block budget (got {0:?})")]
     InvalidQuantum(Option<u64>),
 
+    /// A rational CPU rate must have a positive numerator and denominator.
+    #[error(
+        "cpu rate must have a positive numerator and denominator (got {numerator}/{denominator})"
+    )]
+    InvalidCpuRate {
+        /// Retired steps in the modelling ratio.
+        numerator: u64,
+        /// PIT input clocks in the modelling ratio.
+        denominator: u64,
+    },
+
     /// The same [`DeviceId`] appears on more than one device.
     #[error("duplicate device id {0:?}")]
     DuplicateDeviceId(DeviceId),

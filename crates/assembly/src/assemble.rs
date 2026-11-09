@@ -180,6 +180,7 @@ pub fn assemble(config: &MachineConfig) -> Result<AssembledMachine, AssemblyErro
 
     // The machine is built with no idle limit; the run policy stamps it on before
     // the loop runs (idle_limit is a "how we run" concern, not machine identity).
+    let (rate_numerator, rate_denominator) = config.clock.cpu_rate()?;
     let machine = Machine::new(
         cpu,
         Bus::new(devices, map),
@@ -188,6 +189,7 @@ pub fn assemble(config: &MachineConfig) -> Result<AssembledMachine, AssemblyErro
         irq_lines,
         None,
     )
+    .with_cpu_rate(rate_numerator, rate_denominator)
     .with_dma_wirings(dma_wirings);
 
     Ok(AssembledMachine {
@@ -497,6 +499,7 @@ mod tests {
     use crate::image::LoadImage;
     use crate::memory::{MemoryConfig, MmioWindow, RamRegion};
     use crate::output::OutputConfig;
+    use cpu::Cpu;
     use device::{DmaOp, DmaOutcome};
 
     const SPACE: u64 = 0x10_0000;
@@ -639,6 +642,40 @@ mod tests {
     #[test]
     fn reference_config_assembles() {
         assert!(assemble(&reference_config()).is_ok());
+    }
+
+    #[test]
+    fn configured_cpu_rate_drives_assembled_clock() {
+        for (numerator, denominator, clocks) in [(1, 1, 4), (2, 1, 2), (1, 3, 12), (3, 2, 2)] {
+            let mut config = reference_config();
+            config.clock.retired_per_pit_clock = numerator;
+            config.clock.retired_per_pit_clock_denominator = denominator;
+            // Two MOVs and CLI; HLT retire four instructions without device access.
+            config.images[0].source = ImageSource::Inline({
+                let mut rom = vec![0; ROM_LEN as usize];
+                rom[..6].copy_from_slice(&[0xB0, 0, 0xB0, 0, 0xFA, 0xF4]);
+                rom
+            });
+            config.cpu.reset = ResetSpec::Entry { cs: 0xF800, ip: 0 };
+            config.cpu.segments = SegmentSeed::flat(0xF800);
+            let mut assembled = assemble(&config).expect("assembles");
+            assembled.machine.run().expect("run");
+            assert_eq!(assembled.machine.cpu().retired(), 4);
+            assert_eq!(assembled.machine.clock(), device::VClock(clocks));
+        }
+    }
+
+    #[test]
+    fn invalid_cpu_rates_are_rejected_before_assembly() {
+        for (numerator, denominator) in [(0, 1), (1, 0), (0, 0)] {
+            let mut config = reference_config();
+            config.clock.retired_per_pit_clock = numerator;
+            config.clock.retired_per_pit_clock_denominator = denominator;
+            assert!(matches!(
+                assemble(&config),
+                Err(AssemblyError::Config(ConfigError::InvalidCpuRate { .. }))
+            ));
+        }
     }
 
     #[test]

@@ -21,7 +21,7 @@ impl MachineConfig {
     ///
     /// The checks run in a fixed order (device identity, port decode, MMIO
     /// decode, address-space bounds, interrupt wiring, DMA wiring, drive
-    /// binding, image geometry, clock quantum) so a given malformed config always
+    /// binding, image geometry, clock quantum, CPU rate) so a malformed config always
     /// yields the same [`ConfigError`].
     pub fn validate(&self) -> Result<(), ConfigError> {
         self.check_unique_device_ids()?;
@@ -35,6 +35,7 @@ impl MachineConfig {
         self.check_drive_controllers()?;
         self.check_image_geometry()?;
         self.check_quantum()?;
+        self.clock.cpu_rate()?;
         Ok(())
     }
 
@@ -390,6 +391,36 @@ mod tests {
     #[test]
     fn valid_config_passes() {
         assert_eq!(valid_config().validate(), Ok(()));
+    }
+
+    #[test]
+    fn zero_cpu_rate_is_rejected() {
+        for (numerator, denominator) in [(0, 1), (1, 0), (0, 0)] {
+            let mut config = valid_config();
+            config.clock.retired_per_pit_clock = numerator;
+            config.clock.retired_per_pit_clock_denominator = denominator;
+            assert_eq!(
+                config.validate(),
+                Err(ConfigError::InvalidCpuRate {
+                    numerator,
+                    denominator,
+                })
+            );
+            assert_eq!(
+                config.validate().expect_err("invalid CPU rate").to_string(),
+                format!("cpu rate must have a positive numerator and denominator (got {numerator}/{denominator})")
+            );
+        }
+    }
+
+    #[test]
+    fn positive_cpu_rates_are_valid() {
+        for (numerator, denominator) in [(1, 1), (2, 1), (1, 3), (3, 2), (u64::MAX, u64::MAX)] {
+            let mut config = valid_config();
+            config.clock.retired_per_pit_clock = numerator;
+            config.clock.retired_per_pit_clock_denominator = denominator;
+            assert_eq!(config.validate(), Ok(()));
+        }
     }
 
     #[test]

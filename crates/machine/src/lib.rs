@@ -17,8 +17,8 @@
 //!
 //! The clock advances from the **retired-instruction delta** across each
 //! `run()` — never wall time — so every golden is reproducible. Retired
-//! instructions convert to PIT input clocks by a fixed, documented ratio,
-//! [`RETIRED_PER_PIT_CLOCK`]. This is a *modelling approximation* (one PIT clock
+//! instructions convert to PIT input clocks by a configured rational rate
+//! ([`Machine::with_cpu_rate`]). This is a *modelling approximation* (one PIT clock
 //! per retired instruction by default), not a cycle-accurate 1.193 MHz timebase:
 //! it only has to be deterministic and let the timer fire in a bounded number of
 //! instructions. While HLT suspends execution, each loop iteration advances one
@@ -53,18 +53,18 @@
 //!   consecutive idle clocks. `None` waits no clocks: only an immediately
 //!   deliverable interrupt resumes execution. The idle count resets on wake-up.
 
+use std::num::NonZeroU64;
+
 use bus::{Bus, BusError};
 use cpu::{Cpu, CpuError, CpuStop};
 use device::{DmaMemory, DmaOp, DmaOutcome, InterruptController, VClock};
 use thiserror::Error;
 
-/// Retired guest instructions per PIT input clock (§6).
+/// Default retired guest instructions per PIT input clock (§6).
 ///
-/// The virtual-clock model advances the PIT by `retired_delta /
-/// RETIRED_PER_PIT_CLOCK` input clocks. `1` means one PIT clock per retired
-/// instruction — the simplest deterministic mapping. It is a modelling
-/// approximation, not the real ~1.193182 MHz OSC/12 timebase; goldens depend on
-/// this constant, so changing it re-baselines them.
+/// The default CPU rate is `1/1`: one PIT clock per retired instruction.
+/// This is a modelling approximation, not the real ~1.193182 MHz OSC/12
+/// timebase. Non-default rates are set with [`Machine::with_cpu_rate`].
 pub const RETIRED_PER_PIT_CLOCK: u64 = 1;
 
 /// One wired connection from a device IRQ line to a PIC input (§5.1).
@@ -170,7 +170,10 @@ pub struct Machine<C: Cpu> {
     /// Retired-instruction count at the previous boundary; the delta drives the
     /// clock.
     last_retired: u64,
-    /// Fractional PIT clocks not yet emitted (when the ratio is > 1).
+    /// CPU rate A/B in retired instructions per PIT input clock.
+    cpu_rate_numerator: NonZeroU64,
+    cpu_rate_denominator: NonZeroU64,
+    /// Fractional PIT clocks not yet emitted, in units of 1/A.
     clock_remainder: u64,
     /// Consecutive halted PIT clocks with no interrupt injected before stopping.
     /// `None` waits no clocks; only an immediately deliverable IRQ wakes HLT.
@@ -212,10 +215,25 @@ impl<C: Cpu> Machine<C> {
             irq_lines,
             last_levels,
             last_retired: 0,
+            cpu_rate_numerator: NonZeroU64::MIN,
+            cpu_rate_denominator: NonZeroU64::MIN,
             clock_remainder: 0,
             idle_limit,
             dma_wirings: Vec::new(),
         }
+    }
+
+    /// Configure the construction-time CPU rate A/B (§6).
+    ///
+    /// `numerator` is A and `denominator` is B, in retired instructions per PIT
+    /// input clock. Both must be positive; the default is `1/1`. This is a
+    /// modelling ratio, not a measured CPU frequency. Configure it before the
+    /// first run; changing rate after time has elapsed has no defined meaning.
+    #[must_use]
+    pub fn with_cpu_rate(mut self, numerator: NonZeroU64, denominator: NonZeroU64) -> Self {
+        self.cpu_rate_numerator = numerator;
+        self.cpu_rate_denominator = denominator;
+        self
     }
 
     /// Declare the bus-master → DMA-controller couplings this machine services
@@ -249,13 +267,16 @@ impl<C: Cpu> Machine<C> {
 
     /// Total virtual time in instruction-equivalent units (§6).
     ///
-    /// Retired instructions plus halted PIT clocks converted by
-    /// [`RETIRED_PER_PIT_CLOCK`]. Unlike [`Cpu::retired`], this advances during
-    /// HLT too, so run caps and scheduled targets bound both busy and idle time.
+    /// For CPU rate A/B, this is the retired count plus
+    /// `floor(halted_clocks * A / B)`, saturating at `u64::MAX`. The floor applies
+    /// to accumulated halted clocks, so fractional instruction equivalents survive
+    /// separate halts and runner calls. Halted clocks do not consume the running
+    /// CPU's fractional PIT-clock remainder. Unlike [`Cpu::retired`], this advances
+    /// during HLT too, so run caps and scheduled targets bound busy and idle time.
     pub fn virtual_time(&self) -> u64 {
-        self.cpu
-            .retired()
-            .saturating_add(self.halted_clocks.saturating_mul(RETIRED_PER_PIT_CLOCK))
+        let halted = u128::from(self.halted_clocks) * u128::from(self.cpu_rate_numerator.get())
+            / u128::from(self.cpu_rate_denominator.get());
+        (u128::from(self.cpu.retired()) + halted).min(u128::from(u64::MAX)) as u64
     }
 
     /// The configured idle limit (halted PIT clocks before quiescence).
@@ -402,17 +423,13 @@ impl<C: Cpu> Machine<C> {
         let delta = retired.saturating_sub(self.last_retired);
         self.last_retired = retired;
 
-        // Convert retired instructions → PIT input clocks by the fixed ratio,
-        // carrying the remainder so no fractional clock is lost across calls. The
-        // division/remainder is written for the general ratio even though the
-        // default is 1 (one clock per instruction), so changing the constant
-        // needs no code change — hence the `modulo_one` allow.
-        let total = self.clock_remainder + delta;
-        let pit_clocks = total / RETIRED_PER_PIT_CLOCK;
-        #[allow(clippy::modulo_one)]
-        {
-            self.clock_remainder = total % RETIRED_PER_PIT_CLOCK;
-        }
+        // Keep the exact phase across CPU exits. Widen before multiplication:
+        // two u64 factors plus a remainder below A fit in u128.
+        let total = u128::from(self.clock_remainder)
+            + u128::from(delta) * u128::from(self.cpu_rate_denominator.get());
+        let numerator = u128::from(self.cpu_rate_numerator.get());
+        let pit_clocks = total / numerator;
+        self.clock_remainder = (total % numerator) as u64;
 
         for _ in 0..pit_clocks {
             self.tick_clock();
@@ -622,6 +639,141 @@ mod tests {
             Vec::new(),
             Some(1),
         )
+    }
+
+    #[test]
+    fn cpu_rate_conversion_is_independent_of_cpu_batching() {
+        const TOTAL: u64 = 4095;
+        for (numerator, denominator) in [(1, 1), (2, 1), (1, 3), (3, 2), (7, 3), (6, 4)] {
+            for stride in [1, 3, 7, 15, 63, TOTAL] {
+                let mut machine =
+                    machine_with(vec![CpuStop::BudgetExhausted; (TOTAL / stride) as usize])
+                        .with_cpu_rate(
+                            NonZeroU64::new(numerator).unwrap(),
+                            NonZeroU64::new(denominator).unwrap(),
+                        );
+                machine.cpu = machine.cpu.with_retired_per_run(stride);
+                for retired in (stride..=TOTAL).step_by(stride as usize) {
+                    assert_eq!(
+                        machine.run_bounded(Some(retired)).expect("run"),
+                        RunOutcome::RetiredCapReached
+                    );
+                    assert_eq!(machine.clock(), VClock(retired * denominator / numerator));
+                    assert_eq!(machine.clock_remainder, retired * denominator % numerator);
+                    assert_eq!(machine.virtual_time(), retired);
+                    let before = machine.clock();
+                    machine.advance_clock();
+                    assert_eq!(
+                        machine.clock(),
+                        before,
+                        "zero retirement must not age devices"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn cpu_rate_remainder_survives_halts_and_wakeups() {
+        const CYCLES: usize = 64;
+        for (numerator, denominator) in [(1, 1), (2, 1), (1, 3), (3, 2), (7, 3)] {
+            let program = [CpuStop::Halt, CpuStop::BudgetExhausted].repeat(CYCLES);
+            let mut machine = machine_with(program).with_cpu_rate(
+                NonZeroU64::new(numerator).unwrap(),
+                NonZeroU64::new(denominator).unwrap(),
+            );
+            machine.cpu = machine.cpu.with_interrupts_enabled(true);
+            machine.set_idle_limit(Some(1));
+
+            for cycle in 0..CYCLES as u64 {
+                assert_eq!(machine.run_bounded(None).expect("halt"), RunOutcome::Halted);
+                let retired = 2 * cycle + 1;
+                let halted = cycle + 1;
+                assert_eq!(machine.cpu().retired(), retired);
+                assert_eq!(
+                    machine.clock(),
+                    VClock(retired * denominator / numerator + halted)
+                );
+                assert_eq!(machine.clock_remainder, retired * denominator % numerator);
+                assert_eq!(
+                    machine.virtual_time(),
+                    retired + halted * numerator / denominator
+                );
+
+                machine.cpu.inject_irq(0x08);
+                let cap = machine.virtual_time() + 1;
+                assert_eq!(
+                    machine.run_bounded(Some(cap)).expect("wake"),
+                    RunOutcome::RetiredCapReached
+                );
+                assert_eq!(machine.cpu().retired(), retired + 1);
+                assert_eq!(
+                    machine.clock(),
+                    VClock((retired + 1) * denominator / numerator + halted)
+                );
+                assert_eq!(machine.virtual_time(), cap);
+            }
+        }
+    }
+
+    #[test]
+    fn halted_cpu_rate_caps_preserve_fraction_across_runner_calls() {
+        for (numerator, denominator) in [(2, 1), (1, 3), (3, 2)] {
+            let mut machine = machine_with(vec![CpuStop::Halt]).with_cpu_rate(
+                NonZeroU64::new(numerator).unwrap(),
+                NonZeroU64::new(denominator).unwrap(),
+            );
+            machine.cpu = machine.cpu.with_interrupts_enabled(true);
+            machine.set_idle_limit(Some(1000));
+            for cap in [2, 3, 7, 19] {
+                assert_eq!(
+                    machine.run_bounded(Some(cap)).expect("cap"),
+                    RunOutcome::RetiredCapReached
+                );
+                let halted = ((cap - 1) * denominator).div_ceil(numerator);
+                assert_eq!(machine.cpu().retired(), 1);
+                assert_eq!(machine.halted_clocks, halted);
+                assert_eq!(machine.clock(), VClock(denominator / numerator + halted));
+                assert_eq!(machine.clock_remainder, denominator % numerator);
+                assert_eq!(machine.virtual_time(), 1 + halted * numerator / denominator);
+                let before = machine.clock();
+                machine.run_bounded(Some(cap)).expect("same cap");
+                assert_eq!(machine.clock(), before);
+            }
+        }
+    }
+
+    #[test]
+    fn cpu_rate_large_factors_do_not_overflow() {
+        let mut machine = machine_with(vec![CpuStop::BudgetExhausted; 10]).with_cpu_rate(
+            NonZeroU64::new(u64::MAX).unwrap(),
+            NonZeroU64::new(u64::MAX - 1).unwrap(),
+        );
+        machine.cpu = machine.cpu.with_retired_per_run(2);
+        for retired in (2..=20).step_by(2) {
+            machine.run_bounded(Some(retired)).expect("run");
+            assert_eq!(machine.clock(), VClock(retired - 1));
+            assert_eq!(machine.clock_remainder, u64::MAX - retired);
+        }
+
+        let mut machine = machine_with(Vec::new()).with_cpu_rate(
+            NonZeroU64::new(u64::MAX).unwrap(),
+            NonZeroU64::new(u64::MAX / 2 + 1).unwrap(),
+        );
+        machine.halted_clocks = 2;
+        assert_eq!(machine.virtual_time(), 3, "divide before saturating");
+        machine.cpu_rate_denominator = NonZeroU64::MIN;
+        assert_eq!(machine.virtual_time(), u64::MAX);
+    }
+
+    #[test]
+    fn legacy_device_next_event_defaults_to_every_pit_clock() {
+        let machine = machine_with(Vec::new());
+        let device = machine.bus().device(0).expect("capture device");
+        for now in [VClock::ZERO, VClock(17), VClock(u64::MAX)] {
+            assert_eq!(device.next_event(now), device::NextEvent::EveryPitClock);
+            assert!(device.save().is_empty());
+        }
     }
 
     #[test]

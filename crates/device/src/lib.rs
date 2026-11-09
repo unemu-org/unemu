@@ -17,7 +17,7 @@ use thiserror::Error;
 ///
 /// A monotonic counter shared by every device's [`Device::tick`], measured in
 /// PIT input clocks. The machine advances it from the CPU's retired-instruction
-/// delta by a fixed documented ratio (§6, virtual-clock model), never from wall
+/// delta by a configured rational rate (§6, virtual-clock model), never from wall
 /// time — so device timing and every golden are reproducible.
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct VClock(pub u64);
@@ -31,6 +31,25 @@ impl VClock {
     pub fn advance(self, ticks: u64) -> VClock {
         VClock(self.0.wrapping_add(ticks))
     }
+}
+
+/// A device's next observable autonomous transition in whole PIT clocks.
+///
+/// Follows the accepted "Deterministic device scheduler with instruction-exact
+/// interrupt boundaries" decision; see `backlog/docs/design/scheduler.md`,
+/// §Device and bus contracts and §Review outcome. Reporting deadlines is
+/// additive: devices keep the per-clock contract until they opt in.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum NextEvent {
+    /// Tick at the next absolute PIT-clock boundary, preserving legacy calls.
+    EveryPitClock,
+    /// The earliest transition the machine must observe, or a conservative
+    /// earlier deadline. After due work is settled this must be later than the
+    /// query's `now`; querying must not consume or mutate the event.
+    At(VClock),
+    /// No autonomous observable transition until access, reset, restore, or
+    /// external/coupled input changes state. Counters may still advance lazily.
+    Dormant,
 }
 
 /// Direction of a data transfer, shared by port and MMIO access paths.
@@ -195,6 +214,15 @@ pub enum DmaOutcome {
 /// - [`Device::reset`]: return to power-on register state.
 /// - [`Device::save`] / [`Device::restore`]: snapshot/replay (§7).
 /// - [`Device::take_trace`]: drain observed events for golden tests.
+///
+/// Scheduled devices will need an access timestamp for lazy synchronization
+/// (see `backlog/docs/design/scheduler.md`, §Access synchronization and
+/// invalidation, as amended by §Review outcome). The intended additive shape is
+/// `port_read_at(&mut self, now: VClock, port: u16, size: u8)`, delegating to
+/// `port_read` by default, with matching port-write and MMIO wrappers. Existing
+/// signatures remain the compatibility seam. These wrappers are deferred until
+/// a caller needs them; ticking a legacy device just to stamp an access could
+/// change its state.
 pub trait Device {
     /// Stable, human-readable chip name (e.g. `"16550-uart"`). Used in traces
     /// and errors.
@@ -214,6 +242,17 @@ pub trait Device {
 
     /// Advance internal state to virtual time `now` (§6).
     fn tick(&mut self, now: VClock);
+
+    /// Report the next observable autonomous transition without changing state.
+    ///
+    /// The accepted scheduler contract (`backlog/docs/design/scheduler.md`,
+    /// §Review outcome) keeps unmigrated devices on every PIT clock. A scheduled
+    /// device may return a future deadline or declare itself dormant; the
+    /// machine's current per-clock loop does not consult this hint yet.
+    fn next_event(&self, now: VClock) -> NextEvent {
+        let _ = now;
+        NextEvent::EveryPitClock
+    }
 
     /// Whether the device is currently asserting its IRQ line (§5.1).
     fn irq_pending(&self) -> bool;

@@ -458,6 +458,7 @@ pub fn test386(image: Vec<u8>) -> MachineConfig {
         },
         clock: ClockConfig {
             retired_per_pit_clock: machine::RETIRED_PER_PIT_CLOCK,
+            retired_per_pit_clock_denominator: 1,
             quantum: Some(65_536),
         },
         memory: MemoryConfig {
@@ -584,6 +585,7 @@ pub fn bios(rom: Vec<u8>, floppy: Option<Vec<u8>>, quantum: Option<u64>) -> Mach
         },
         clock: ClockConfig {
             retired_per_pit_clock: machine::RETIRED_PER_PIT_CLOCK,
+            retired_per_pit_clock_denominator: 1,
             quantum,
         },
         memory: MemoryConfig {
