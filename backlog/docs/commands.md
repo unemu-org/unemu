@@ -126,6 +126,17 @@ timestamps (1980-01-01 UTC). A hash mismatch requires checking the sources and
 toolchain and deliberately rebuilding the goldens' expectations before changing
 the expected hash. See each `vendor/*/README.md` for cache paths and hashes.
 
+The hard-disk data fixture builds without downloads or cached inputs:
+
+```sh
+vendor/hdd/build.sh                          # partitioned FAT16 data disk; pinned SHA-256
+mdir -i vendor/hdd/fat16.img@@8704 ::          # UNEMUHDD, MARKER.TXT (29 bytes, 1980-01-01)
+```
+
+It uses mtools 4.0.49 with a fixed serial, label and FAT-epoch timestamps.
+See `vendor/hdd/README.md` for the IBM AT type-2 geometry, partition/BPB layout,
+hash and licence. This fixture is built separately from the CI `fixtures` gate.
+
 Each gate uses `nix develop --no-update-lock-file --command` (except `guard`, which
 runs directly), preserves its exit status, and tees combined output to the gitignored
 `ci-logs/<step>.log`. Set `CI_LOG_DIR` to choose another log directory. Cargo builds/tests

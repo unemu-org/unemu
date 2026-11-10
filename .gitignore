@@ -46,6 +46,9 @@ target/
 # checked in (FreeDOS is GPL; used unmodified as a read-only fixture).
 /vendor/freedos/build/
 /vendor/freedos/freedos.img
+# FAT16 hard-disk data fixture: rebuilt offline by vendor/hdd/build.sh.
+/vendor/hdd/build/
+/vendor/hdd/fat16.img
 
 # repoctx local index (generated)
 .repoctx/

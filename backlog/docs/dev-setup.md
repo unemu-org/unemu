@@ -95,7 +95,10 @@ Retain their gitignored source clones and FreeDOS `build/*.zip` archives for
 offline rebuilds. FreeDOS fixes its serial, label and timestamps using mtools'
 `SOURCE_DATE_EPOCH` support; see `vendor/freedos/README.md`. Portable size checks
 and `sha256sum`/`shasum -a 256` also allow running the scripts outside the devShell
-with equivalent tools. Each gate still runs after
+with equivalent tools. The separate `vendor/hdd/build.sh` builds a partitioned
+FAT16 data disk entirely offline with mtools 4.0.49, fixed timestamps/serial/label,
+and a pinned SHA-256; see `vendor/hdd/README.md`. It is not part of the CI
+`fixtures` gate. Each gate still runs after
 earlier failures. The final commit status, `ci / x86_64`, names failed steps.
 
 Run a gate from the repository root with `bash scripts/ci-gate.sh <step>`;
