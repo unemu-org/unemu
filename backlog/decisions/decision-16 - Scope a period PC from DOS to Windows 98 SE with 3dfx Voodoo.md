@@ -39,7 +39,10 @@ determinism.
    Instruction cycle costs and bus timing are not modelled. Software that needs
    cycle-exact 8088/CGA timing (demoscene effects, CGA snow, PWM speaker audio)
    is out of scope: it needs a different clock contract and an interpreter-only
-   CPU core.
+   CPU core. *Amended 2026-11-10:* if it is ever done, it is a separate
+   cycle-exact CPU-core project behind the `Cpu` trait with its own machine
+   profile and clock contract, not an extension of x86jit; instruction-level
+   8086/8088/NEC V20 models are tracked in x86jit at the lowest priority.
 4. **One emulator, several machine profiles.** Each hardware generation is a
    `MachineConfig` profile in the `assembly` crate — 286 AT, 386 protected
    mode, Pentium PCI, Pentium II with Voodoo — never a fork. New hardware goes
