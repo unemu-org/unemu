@@ -1,7 +1,9 @@
 # Recoverable persistent floppy media
 
-Status: proposed design; this spike changes documentation only. The format and
-defaults below are choices for review, not implemented features.
+Status: accepted design (the maintainer approved the defaults on 2026-11-10).
+The version-1 codec and recovery scanner are implemented in `crates/media`;
+the device media contract, the file sink, the write modes and the offline
+tools are still to come.
 
 ## Context
 

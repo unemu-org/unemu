@@ -13,6 +13,7 @@ members = [
     "crates/testkit",
     "crates/cli",
     "crates/window",
+    "crates/media",
 ]
 
 [workspace.package]
@@ -27,6 +28,8 @@ repository = "https://github.com/mikolajmikolajczyk/unemupc98"
 thiserror = "1"
 # Frontend/test-only error plumbing.
 anyhow = "1"
+# SHA-256 for media image identity.
+sha2 = "0.10"
 winit = "0.30"
 softbuffer = { version = "0.4", default-features = false, features = ["x11", "x11-dlopen", "wayland", "wayland-dlopen"] }
 # CPU core: pinned to an exact revision of x86jit main, so every build (and every

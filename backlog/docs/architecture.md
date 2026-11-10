@@ -16,6 +16,7 @@ crate: image loading belongs to `assembly`, and guest assets live under `vendor/
 
 | Crate | Responsibility | Runtime dependencies | Test-only dependencies |
 | --- | --- | --- | --- |
+| `media` | Host-independent floppy journal encoding, base binding, command-atomic replay, retention-anchor validation and read-only recovery reports ([format](design/persistent-media.md#chosen-format-byte-layout)) | `sha2` | None |
 | `device` | Hardware-neutral contracts: `Device`, `InterruptController`, `DmaMemory`, `VClock`, `NextEvent`, access traces, DMA messages, and the observation capabilities (text scanout, byte output, `ByteCapture`) | `thiserror` | None |
 | `cpu` | `Cpu`/`CpuStop` seam and `X86JitCpu`, which owns the core's `Vm` and `Vcpu` | `x86jit-core`, `thiserror` | None |
 | `bus` | Owns boxed devices and executes a port/MMIO `DecodeMap`; open-bus policy and ticking | `device`, `thiserror` | None |
