@@ -186,9 +186,8 @@ pub struct PostPortCfg {
 /// uPD765 floppy-controller parameters (§7.7).
 ///
 /// Drives are not listed here — they live once in the top-level
-/// [`crate::MachineConfig::drives`] and bind to this controller by
-/// `controller_slot`. This declares only how many drive slots the controller
-/// offers.
+/// [`crate::MachineConfig::drives`] and bind by the controller's role and a local
+/// `unit`. This declares only how many drive slots the controller offers.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct FdcCfg {
     /// Number of drive slots this controller offers (a standard FDC drives two,

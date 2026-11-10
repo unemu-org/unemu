@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Drive configuration (§7.7).
 
+use crate::device::DeviceId;
 use crate::image::ImageSource;
 
 /// The cylinders/heads/sectors geometry of a floppy disk (§7.7).
@@ -88,14 +89,8 @@ pub enum DriveKind {
     },
     /// A fixed (hard) disk.
     ///
-    /// This variant is the **attachment seam for a future XT-IDE/ATA device**. A
-    /// `HardDisk` drive is first-class config today — it is validated, it derives
-    /// its CMOS `hard_disk_types` nibble, and it binds to a controller by
-    /// `controller_slot` — but the assembler skips it during device construction
-    /// because no fixed-disk controller is modelled yet. When one lands it plugs
-    /// into the same routing the floppy uses (see `build_fdc_drives` in the
-    /// assembler): filter `drives` for `HardDisk` and route by `controller_slot`,
-    /// no new config shape required.
+    /// The attachment seam for a future fixed-disk controller. Validation rejects
+    /// this kind until a compatible controller is modelled; an FDC cannot serve it.
     HardDisk {
         /// The disk's geometry.
         geometry: HardDiskGeometry,
@@ -115,7 +110,7 @@ impl DriveKind {
 /// One drive attached to a disk controller (§7.7).
 ///
 /// Drives live once, at the top level of a [`crate::MachineConfig`], and bind to
-/// a controller by `controller_slot` — there is no second drive list inside the
+/// a named `controller` and its `unit` — there is no second drive list inside the
 /// controller's own config. The backing `image` must match the geometry's size
 /// when that size is known ([`ImageSource::known_len`]).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -124,11 +119,22 @@ pub struct DriveConfig {
     pub kind: DriveKind,
     /// Where the drive's contents come from.
     pub image: ImageSource,
-    /// The controller drive slot this drive occupies.
-    pub controller_slot: u8,
-    /// Whether the mounted disk is write-protected. Set means a guest WRITE to
-    /// the disk faults (not-writable) and never mutates the image; the default
-    /// (`false`) is a writable disk. The flag lives on the drive because it is a
-    /// property of the mounted medium, not of the controller.
-    pub write_protect: bool,
+    /// The stable role of the controller serving this medium.
+    pub controller: DeviceId,
+    /// The drive-select unit on that controller (0 or 1 on the standard FDC).
+    pub unit: u8,
+    /// Whether guest writes update volatile media or fail as not-writable.
+    pub write: WriteMode,
+}
+
+/// Guest write policy for mounted media (see `backlog/docs/design/machine-config.md`
+/// §Drive binding and write mode). Neither mode writes back to the host image.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+pub enum WriteMode {
+    /// Guest writes update only the in-memory image, the existing default.
+    #[default]
+    Volatile,
+    /// Guest writes report the controller's existing not-writable status and
+    /// leave the mounted image unchanged.
+    ReadOnly,
 }

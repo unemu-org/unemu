@@ -520,6 +520,7 @@ mod tests {
                 rom[..4].copy_from_slice(&[0x90, 0x90, 0xFB, 0xF4]);
                 rom
             });
+            config.board = crate::BoardModel::Bare;
             config.devices.reverse();
             let policy = ObservationPolicy {
                 routes: vec![

@@ -36,6 +36,7 @@
 //! validators are unit-tested here without assembling a machine.
 
 mod assemble;
+mod board;
 mod clock;
 mod cpu;
 mod device;
@@ -53,13 +54,14 @@ mod validate;
 pub use assemble::{
     assemble, assemble_with_observation, derive_cmos_config, AssembledMachine, AssemblyError,
 };
+pub use board::{BoardModel, MachineClass};
 pub use clock::ClockConfig;
 pub use cpu::{CpuChip, CpuConfig, ResetSpec, SegmentSeed};
 pub use device::{
     CmosCfg, DeviceConfig, DeviceId, DeviceKind, DmaCfg, DmaSpec, FdcCfg, I8042Cfg, MdaTextCfg,
     PicCfg, PitCfg, PortWindow, PostPortCfg, SysControlCfg, UartCfg, VgaTextCfg,
 };
-pub use drive::{DriveConfig, DriveKind, FloppyGeometry, HardDiskGeometry};
+pub use drive::{DriveConfig, DriveKind, FloppyGeometry, HardDiskGeometry, WriteMode};
 pub use error::ConfigError;
 pub use image::{ImageKind, ImageSource, LoadImage};
 pub use machine::MachineConfig;

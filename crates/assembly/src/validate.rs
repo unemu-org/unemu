@@ -6,7 +6,8 @@
 //! a small pure function over the config; none assembles a machine, so the whole
 //! module is unit-testable in isolation.
 
-use crate::device::DeviceKind;
+use crate::board::BoardModel;
+use crate::device::{DeviceConfig, DeviceId, DeviceKind, PortWindow};
 use crate::error::ConfigError;
 use crate::image::ImageKind;
 use crate::machine::MachineConfig;
@@ -17,16 +18,68 @@ fn ranges_overlap(a_base: u64, a_end: u64, b_base: u64, b_end: u64) -> bool {
     a_base < b_end && b_base < a_end
 }
 
+fn format_board_ports(ports: &[PortWindow]) -> String {
+    let windows: Vec<_> = ports
+        .iter()
+        .map(|window| {
+            let ports = if window.start == window.end {
+                format!("{:#x}", window.start)
+            } else {
+                format!("{:#x}-{:#x}", window.start, window.end)
+            };
+            if window.allow_overlap {
+                format!("{ports} (overlap allowed)")
+            } else {
+                ports
+            }
+        })
+        .collect();
+    format!("[{}]", windows.join(", "))
+}
+
+fn format_board_kind(kind: DeviceKind) -> String {
+    match kind {
+        DeviceKind::Uart(cfg) => format!("Uart(UartCfg {{ base: {:#x} }})", cfg.base),
+        DeviceKind::Post(cfg) => format!("Post(PostPortCfg {{ port: {:#x} }})", cfg.port),
+        DeviceKind::Fdc(cfg) => format!("Fdc(FdcCfg {{ drive_slots: {:#x} }})", cfg.drive_slots),
+        DeviceKind::Rtc(cfg) => {
+            let timing = cfg.timing.map_or_else(
+                || "None".into(),
+                |(second, uip)| format!("Some(({second:#x}, {uip:#x}))"),
+            );
+            format!("Rtc(CmosCfg {{ seed: {}, timing: {timing} }})", cfg.seed)
+        }
+        kind => format!("{kind:?}"),
+    }
+}
+
+fn format_board_irq(irq: Option<u8>) -> String {
+    irq.map_or_else(|| "None".into(), |line| format!("Some({line:#x})"))
+}
+
+fn format_board_dma(dma: Option<crate::DmaSpec>) -> String {
+    dma.map_or_else(
+        || "None".into(),
+        |dma| {
+            format!(
+                "Some(DmaSpec {{ controller: {:?}, channel: {:#x} }})",
+                dma.controller, dma.channel
+            )
+        },
+    )
+}
+
 impl MachineConfig {
     /// Validate this configuration, returning the first inconsistency found.
     ///
-    /// The checks run in a fixed order (identity, access coupling, ports, MMIO,
+    /// The checks run in a fixed order (identity, board constraints, access coupling, ports, MMIO,
     /// image placement, interrupt and DMA wiring, drive binding and geometry,
     /// clock) so malformed configs always yield the same [`ConfigError`]. File
     /// lengths are checked when [`crate::assemble`] reads the sources and validates
     /// their bytes.
     pub fn validate(&self) -> Result<(), ConfigError> {
         self.check_unique_device_ids()?;
+        self.check_board()?;
         self.check_access_couplings()?;
         self.check_uart_bases()?;
         self.check_port_overlaps()?;
@@ -43,6 +96,142 @@ impl MachineConfig {
         self.check_image_geometry()?;
         self.clock.cpu_rate()?;
         Ok(())
+    }
+
+    fn check_board(&self) -> Result<(), ConfigError> {
+        if self.board == BoardModel::Bare {
+            return Ok(());
+        }
+        let mut expected = self.board.motherboard_devices();
+        let post = self.devices.iter().find(|d| d.id == DeviceId::Post);
+        let mut post_port = None;
+        if let Some(actual) = post {
+            for standard in expected.iter_mut().filter(|d| d.id == DeviceId::Post) {
+                if let DeviceKind::Post(cfg) = actual.kind {
+                    post_port = Some(cfg.port);
+                    standard.kind = actual.kind;
+                    standard.ports = vec![PortWindow::single(cfg.port)];
+                }
+                // POST determines which DMA page ports are free. Diagnose its
+                // own configuration before using it to derive another device.
+                self.check_board_wiring(actual, standard)?;
+            }
+        }
+        expected.retain(|d| d.id != DeviceId::Post || post.is_some());
+        for (index, standard) in expected.iter_mut().enumerate() {
+            if standard.id == DeviceId::Dma && post_port != Some(0x80) {
+                standard.ports[1] = PortWindow::new(0x80, 0x8F);
+            }
+            let actual = self.devices.iter().find(|d| d.id == standard.id).ok_or(
+                ConfigError::BoardDeviceMissing {
+                    board: self.board,
+                    device: standard.id,
+                },
+            )?;
+            if self.devices[index].id != standard.id {
+                return Err(ConfigError::BoardDeviceOrder {
+                    board: self.board,
+                    device: standard.id,
+                    index,
+                });
+            }
+            self.check_board_wiring(actual, standard)?;
+        }
+        for card in &self.devices[expected.len()..] {
+            if let Some(line) = card.irq {
+                if !matches!(line, 3..=7 | 9..=12 | 14..=15) {
+                    return Err(ConfigError::BoardCardIrq {
+                        board: self.board,
+                        device: card.id,
+                        line,
+                    });
+                }
+            }
+            if let Some(dma) = card.dma {
+                if dma.controller != DeviceId::Dma {
+                    return Err(ConfigError::BoardCardDmaController {
+                        board: self.board,
+                        device: card.id,
+                        controller: dma.controller,
+                    });
+                }
+                if dma.channel > 3 {
+                    return Err(ConfigError::BoardCardDma {
+                        board: self.board,
+                        device: card.id,
+                        channel: dma.channel,
+                    });
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn check_board_wiring(
+        &self,
+        actual: &DeviceConfig,
+        standard: &DeviceConfig,
+    ) -> Result<(), ConfigError> {
+        let mut expected = standard.clone();
+        // RTC seed and virtual timing are configurable, unlike its wiring.
+        if matches!(
+            (actual.kind, expected.kind),
+            (DeviceKind::Rtc(_), DeviceKind::Rtc(_))
+        ) {
+            expected.kind = actual.kind;
+        }
+        if actual == &expected {
+            return Ok(());
+        }
+        let differences = [
+            (
+                "kind",
+                format_board_kind(expected.kind),
+                format_board_kind(actual.kind),
+            ),
+            (
+                "ports",
+                format_board_ports(&expected.ports),
+                format_board_ports(&actual.ports),
+            ),
+            (
+                "irq",
+                format_board_irq(expected.irq),
+                format_board_irq(actual.irq),
+            ),
+            (
+                "dma",
+                format_board_dma(expected.dma),
+                format_board_dma(actual.dma),
+            ),
+            (
+                "access_dependents",
+                format!("{:?}", expected.access_dependents),
+                format!("{:?}", actual.access_dependents),
+            ),
+            (
+                "allow_port_overlap",
+                format!("{:?}", expected.allow_port_overlap),
+                format!("{:?}", actual.allow_port_overlap),
+            ),
+        ];
+        let (field, expected, actual_value) = differences
+            .into_iter()
+            .find(|(_, expected, actual)| expected != actual)
+            .unwrap_or_else(|| {
+                (
+                    "configuration",
+                    format!("{expected:#x?}"),
+                    format!("{actual:#x?}"),
+                )
+            });
+        Err(ConfigError::BoardDeviceWiring {
+            board: self.board,
+            device: actual.id,
+            field,
+            expected,
+            actual: actual_value,
+        })
     }
 
     /// No [`DeviceId`] appears twice.
@@ -307,22 +496,44 @@ impl MachineConfig {
         Ok(())
     }
 
-    /// Every drive binds to a controller slot that a controller offers.
+    /// Resolve each binding independently; counting all controller slots can
+    /// silently attach media to a different device or overwrite another medium.
     fn check_drive_controllers(&self) -> Result<(), ConfigError> {
-        let available: u16 = self
-            .devices
-            .iter()
-            .filter_map(|d| match &d.kind {
-                DeviceKind::Fdc(fdc) => Some(u16::from(fdc.drive_slots)),
-                _ => None,
-            })
-            .sum();
         for (drive_index, drive) in self.drives.iter().enumerate() {
-            if u16::from(drive.controller_slot) >= available {
-                return Err(ConfigError::MissingController {
+            let controller = self
+                .devices
+                .iter()
+                .find(|d| d.id == drive.controller)
+                .ok_or(ConfigError::DriveControllerMissing {
                     drive_index,
-                    slot: drive.controller_slot,
-                    available: available.min(u16::from(u8::MAX)) as u8,
+                    controller: drive.controller,
+                })?;
+            let available = match (drive.kind, controller.kind) {
+                (crate::DriveKind::Floppy { .. }, DeviceKind::Fdc(fdc)) => fdc.drive_slots.min(4),
+                _ => {
+                    return Err(ConfigError::DriveControllerKind {
+                        drive_index,
+                        controller: drive.controller,
+                    })
+                }
+            };
+            if drive.unit >= available {
+                return Err(ConfigError::DriveUnitUnavailable {
+                    drive_index,
+                    controller: drive.controller,
+                    unit: drive.unit,
+                    available,
+                });
+            }
+            if let Some(a) = self.drives[..drive_index]
+                .iter()
+                .position(|other| other.controller == drive.controller && other.unit == drive.unit)
+            {
+                return Err(ConfigError::DuplicateDriveUnit {
+                    a,
+                    b: drive_index,
+                    controller: drive.controller,
+                    unit: drive.unit,
                 });
             }
         }
@@ -372,16 +583,538 @@ fn find_device(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::board::BoardModel;
     use crate::clock::ClockConfig;
     use crate::cpu::{CpuChip, CpuConfig, ResetSpec, SegmentSeed};
     use crate::device::{
         CmosCfg, DeviceConfig, DeviceId, DmaCfg, DmaSpec, FdcCfg, I8042Cfg, PicCfg, PitCfg,
         PortWindow, PostPortCfg, SysControlCfg, UartCfg, VgaTextCfg,
     };
-    use crate::drive::{DriveConfig, DriveKind, FloppyGeometry};
+    use crate::drive::{DriveConfig, DriveKind, FloppyGeometry, WriteMode};
     use crate::image::{ImageKind, ImageSource, LoadImage};
     use crate::memory::{MemoryConfig, MmioWindow, RamRegion};
     use crate::output::OutputConfig;
+
+    fn board_config() -> MachineConfig {
+        crate::bios(
+            vec![0; 0x8000],
+            Some(vec![0; FloppyGeometry::HD_1_44.image_bytes() as usize]),
+        )
+    }
+
+    fn board_error(config: &MachineConfig, expected: ConfigError, message: &str) {
+        let error = config.validate().expect_err("invalid board or binding");
+        assert_eq!(error, expected);
+        assert_eq!(error.to_string(), message);
+    }
+
+    #[test]
+    fn board_missing_role_has_exact_message() {
+        let mut config = board_config();
+        config.devices.retain(|d| d.id != DeviceId::Keyboard);
+        board_error(
+            &config,
+            ConfigError::BoardDeviceMissing {
+                board: BoardModel::Ibm5170,
+                device: DeviceId::Keyboard,
+            },
+            "board Ibm5170 requires device Keyboard",
+        );
+        config.board = BoardModel::Bare;
+        assert_eq!(config.validate(), Ok(()));
+    }
+
+    #[test]
+    fn board_requires_dma_for_decoded_fdc() {
+        let mut config = board_config();
+        config.devices.retain(|d| d.id != DeviceId::Dma);
+        board_error(
+            &config,
+            ConfigError::BoardDeviceMissing {
+                board: BoardModel::Ibm5170,
+                device: DeviceId::Dma,
+            },
+            "board Ibm5170 requires device Dma",
+        );
+    }
+
+    #[test]
+    fn board_order_has_exact_message() {
+        let mut config = board_config();
+        config.devices.swap(0, 1);
+        board_error(
+            &config,
+            ConfigError::BoardDeviceOrder {
+                board: BoardModel::Ibm5170,
+                device: DeviceId::MasterPic,
+                index: 0,
+            },
+            "board Ibm5170 requires device MasterPic at index 0",
+        );
+        config.board = BoardModel::Bare;
+        assert_eq!(config.validate(), Ok(()));
+        let mut config = board_config();
+        config.devices.swap(7, 8);
+        board_error(
+            &config,
+            ConfigError::BoardDeviceOrder {
+                board: BoardModel::Ibm5170,
+                device: DeviceId::Post,
+                index: 7,
+            },
+            "board Ibm5170 requires device Post at index 7",
+        );
+    }
+
+    fn wiring_error(
+        device: DeviceId,
+        field: &'static str,
+        expected: &str,
+        actual: &str,
+    ) -> ConfigError {
+        ConfigError::BoardDeviceWiring {
+            board: BoardModel::Ibm5170,
+            device,
+            field,
+            expected: expected.into(),
+            actual: actual.into(),
+        }
+    }
+
+    #[test]
+    fn board_wiring_has_exact_message_for_kind_ports_irq_and_dma() {
+        for (change, field, expected, actual) in [
+            (0, "kind", "Pit(PitCfg)", "SysControl(SysControlCfg)"),
+            (1, "ports", "[0x40-0x43]", "[0x44-0x47]"),
+            (2, "irq", "Some(0x0)", "Some(0x3)"),
+            (
+                3,
+                "dma",
+                "None",
+                "Some(DmaSpec { controller: Dma, channel: 0x1 })",
+            ),
+        ] {
+            let mut config = board_config();
+            let pit = config
+                .devices
+                .iter_mut()
+                .find(|d| d.id == DeviceId::Pit)
+                .unwrap();
+            match change {
+                0 => pit.kind = DeviceKind::SysControl(SysControlCfg {}),
+                1 => pit.ports = vec![PortWindow::new(0x44, 0x47)],
+                2 => pit.irq = Some(3),
+                _ => {
+                    pit.dma = Some(DmaSpec {
+                        controller: DeviceId::Dma,
+                        channel: 1,
+                    })
+                }
+            }
+            board_error(
+                &config,
+                wiring_error(DeviceId::Pit, field, expected, actual),
+                &format!(
+                    "board Ibm5170 device Pit field {field}: expected {expected}, got {actual}"
+                ),
+            );
+            config.board = BoardModel::Bare;
+            assert_eq!(config.validate(), Ok(()));
+        }
+        let mut config = board_config();
+        config.devices[0].kind = DeviceKind::Pic(PicCfg { cascade: false });
+        board_error(&config, wiring_error(DeviceId::MasterPic, "kind",
+            "Pic(PicCfg { cascade: true })", "Pic(PicCfg { cascade: false })"),
+            "board Ibm5170 device MasterPic field kind: expected Pic(PicCfg { cascade: true }), got Pic(PicCfg { cascade: false })");
+    }
+
+    #[test]
+    fn board_wiring_numeric_kind_parameters_are_hexadecimal() {
+        for (kind, actual) in [
+            (
+                DeviceKind::Uart(UartCfg { base: 0x3F8 }),
+                "Uart(UartCfg { base: 0x3f8 })",
+            ),
+            (
+                DeviceKind::Post(PostPortCfg { port: 0x190 }),
+                "Post(PostPortCfg { port: 0x190 })",
+            ),
+            (
+                DeviceKind::Fdc(FdcCfg { drive_slots: 2 }),
+                "Fdc(FdcCfg { drive_slots: 0x2 })",
+            ),
+            (
+                DeviceKind::Rtc(CmosCfg {
+                    seed: false,
+                    timing: Some((0x1234, 0x56)),
+                }),
+                "Rtc(CmosCfg { seed: false, timing: Some((0x1234, 0x56)) })",
+            ),
+        ] {
+            let mut config = board_config();
+            config
+                .devices
+                .iter_mut()
+                .find(|d| d.id == DeviceId::Pit)
+                .unwrap()
+                .kind = kind;
+            board_error(
+                &config,
+                wiring_error(DeviceId::Pit, "kind", "Pit(PitCfg)", actual),
+                &format!("board Ibm5170 device Pit field kind: expected Pit(PitCfg), got {actual}"),
+            );
+        }
+    }
+
+    #[test]
+    fn board_wiring_dma_port_windows_are_hexadecimal() {
+        let mut config = board_config();
+        config
+            .devices
+            .iter_mut()
+            .find(|d| d.id == DeviceId::Dma)
+            .unwrap()
+            .ports[1]
+            .start = 0x82;
+        board_error(&config, wiring_error(DeviceId::Dma, "ports", "[0x0-0xf, 0x81-0x8f]", "[0x0-0xf, 0x82-0x8f]"),
+            "board Ibm5170 device Dma field ports: expected [0x0-0xf, 0x81-0x8f], got [0x0-0xf, 0x82-0x8f]");
+    }
+
+    #[test]
+    fn board_wiring_port_diagnostics_preserve_overlap_allowances() {
+        let mut config = board_config();
+        config
+            .devices
+            .iter_mut()
+            .find(|d| d.id == DeviceId::Pit)
+            .unwrap()
+            .ports[0]
+            .allow_overlap = true;
+        board_error(&config, wiring_error(DeviceId::Pit, "ports", "[0x40-0x43]", "[0x40-0x43 (overlap allowed)]"),
+            "board Ibm5170 device Pit field ports: expected [0x40-0x43], got [0x40-0x43 (overlap allowed)]");
+    }
+
+    #[test]
+    fn board_requires_dma_even_with_inert_fdc() {
+        let mut config = board_config();
+        let fdc = config
+            .devices
+            .iter_mut()
+            .find(|d| d.id == DeviceId::Fdc)
+            .unwrap();
+        fdc.ports.clear();
+        fdc.irq = None;
+        fdc.dma = None;
+        config.devices.retain(|d| d.id != DeviceId::Dma);
+        board_error(
+            &config,
+            ConfigError::BoardDeviceMissing {
+                board: BoardModel::Ibm5170,
+                device: DeviceId::Dma,
+            },
+            "board Ibm5170 requires device Dma",
+        );
+    }
+
+    #[test]
+    fn board_overlap_allowance_cannot_hide_a_card_on_pic_ports() {
+        let mut config = board_config();
+        config.devices[0].allow_port_overlap = true;
+        let uart = config
+            .devices
+            .iter_mut()
+            .find(|d| d.id == DeviceId::Uart)
+            .unwrap();
+        uart.kind = DeviceKind::Uart(UartCfg { base: 0x20 });
+        uart.ports = vec![PortWindow::new(0x20, 0x27)];
+        board_error(
+            &config,
+            wiring_error(DeviceId::MasterPic, "allow_port_overlap", "false", "true"),
+            "board Ibm5170 device MasterPic field allow_port_overlap: expected false, got true",
+        );
+    }
+
+    #[test]
+    fn board_access_dependents_must_match_the_board_data() {
+        let mut config = board_config();
+        config.devices[0].access_dependents = vec![DeviceId::Pit];
+        board_error(
+            &config,
+            wiring_error(DeviceId::MasterPic, "access_dependents", "[]", "[Pit]"),
+            "board Ibm5170 device MasterPic field access_dependents: expected [], got [Pit]",
+        );
+    }
+
+    #[test]
+    fn board_post_is_validated_before_deriving_dma_pages() {
+        let mut config = board_config();
+        let post = config
+            .devices
+            .iter_mut()
+            .find(|d| d.id == DeviceId::Post)
+            .unwrap();
+        post.kind = DeviceKind::Pit(PitCfg {});
+        board_error(&config, wiring_error(DeviceId::Post, "kind", "Post(PostPortCfg { port: 0x80 })", "Pit(PitCfg)"),
+            "board Ibm5170 device Post field kind: expected Post(PostPortCfg { port: 0x80 }), got Pit(PitCfg)");
+    }
+
+    #[test]
+    fn board_post_decode_error_names_expected_and_actual_ports() {
+        let mut config = board_config();
+        let post = config
+            .devices
+            .iter_mut()
+            .find(|d| d.id == DeviceId::Post)
+            .unwrap();
+        post.ports = vec![PortWindow::single(0x190)];
+        board_error(
+            &config,
+            wiring_error(DeviceId::Post, "ports", "[0x80]", "[0x190]"),
+            "board Ibm5170 device Post field ports: expected [0x80], got [0x190]",
+        );
+    }
+
+    #[test]
+    fn board_card_dma_must_name_the_board_8237() {
+        let mut config = board_config();
+        config
+            .devices
+            .iter_mut()
+            .find(|d| d.id == DeviceId::Fdc)
+            .unwrap()
+            .dma
+            .as_mut()
+            .unwrap()
+            .controller = DeviceId::Uart;
+        board_error(
+            &config,
+            ConfigError::BoardCardDmaController {
+                board: BoardModel::Ibm5170,
+                device: DeviceId::Fdc,
+                controller: DeviceId::Uart,
+            },
+            "board Ibm5170 requires dma controller Dma for card Fdc, got Uart",
+        );
+    }
+
+    #[test]
+    fn board_card_irq_has_exact_message() {
+        for line in [0, 1, 2, 8, 13, 16] {
+            let mut config = board_config();
+            config
+                .devices
+                .iter_mut()
+                .find(|d| d.id == DeviceId::Uart)
+                .unwrap()
+                .irq = Some(line);
+            board_error(
+                &config,
+                ConfigError::BoardCardIrq {
+                    board: BoardModel::Ibm5170,
+                    device: DeviceId::Uart,
+                    line,
+                },
+                &format!("board Ibm5170 does not offer irq line {line} to card Uart"),
+            );
+        }
+        for line in [3, 4, 5, 7, 9, 10, 11, 12, 14, 15] {
+            let mut config = board_config();
+            config
+                .devices
+                .iter_mut()
+                .find(|d| d.id == DeviceId::Uart)
+                .unwrap()
+                .irq = Some(line);
+            assert_eq!(config.validate(), Ok(()));
+        }
+        let mut config = valid_config();
+        config
+            .devices
+            .iter_mut()
+            .find(|d| d.id == DeviceId::Uart)
+            .unwrap()
+            .irq = Some(13);
+        assert_eq!(config.validate(), Ok(()));
+    }
+
+    #[test]
+    fn board_card_dma_has_exact_message() {
+        for channel in [4, 7, 255] {
+            let mut config = board_config();
+            config
+                .devices
+                .iter_mut()
+                .find(|d| d.id == DeviceId::Fdc)
+                .unwrap()
+                .dma
+                .as_mut()
+                .unwrap()
+                .channel = channel;
+            board_error(
+                &config,
+                ConfigError::BoardCardDma {
+                    board: BoardModel::Ibm5170,
+                    device: DeviceId::Fdc,
+                    channel,
+                },
+                &format!("board Ibm5170 does not offer dma channel {channel} to card Fdc"),
+            );
+            config.board = BoardModel::Bare;
+            assert_eq!(config.validate(), Ok(()));
+        }
+        for channel in 0..=3 {
+            let mut config = board_config();
+            config
+                .devices
+                .iter_mut()
+                .find(|d| d.id == DeviceId::Fdc)
+                .unwrap()
+                .dma
+                .as_mut()
+                .unwrap()
+                .channel = channel;
+            assert_eq!(config.validate(), Ok(()));
+        }
+    }
+
+    #[test]
+    fn board_post_and_rtc_options_preserve_standard_wiring() {
+        for post_port in [None, Some(0x190)] {
+            let mut config = board_config();
+            if let Some(port) = post_port {
+                let post = config
+                    .devices
+                    .iter_mut()
+                    .find(|d| d.id == DeviceId::Post)
+                    .unwrap();
+                post.kind = DeviceKind::Post(PostPortCfg { port });
+                post.ports = vec![PortWindow::single(port)];
+            } else {
+                config.devices.retain(|d| d.id != DeviceId::Post);
+            }
+            config
+                .devices
+                .iter_mut()
+                .find(|d| d.id == DeviceId::Dma)
+                .unwrap()
+                .ports[1] = PortWindow::new(0x80, 0x8F);
+            config
+                .devices
+                .iter_mut()
+                .find(|d| d.id == DeviceId::Rtc)
+                .unwrap()
+                .kind = DeviceKind::Rtc(CmosCfg {
+                seed: false,
+                timing: Some((20, 2)),
+            });
+            assert_eq!(config.validate(), Ok(()));
+        }
+        assert_eq!(BoardModel::Ibm5170.class(), Some(crate::MachineClass::At));
+        assert_eq!(BoardModel::Bare.class(), None);
+        assert!(BoardModel::Bare.motherboard_devices().is_empty());
+        for floppy in [
+            None,
+            Some(vec![0; FloppyGeometry::HD_1_44.image_bytes() as usize]),
+        ] {
+            assert_eq!(crate::bios(vec![0; 0x8000], floppy).validate(), Ok(()));
+        }
+    }
+
+    #[test]
+    fn drive_binding_missing_controller_has_exact_message() {
+        let mut config = valid_config();
+        config.drives[0].controller = DeviceId::Mda;
+        board_error(
+            &config,
+            ConfigError::DriveControllerMissing {
+                drive_index: 0,
+                controller: DeviceId::Mda,
+            },
+            "drive 0 binds to absent controller Mda",
+        );
+    }
+
+    #[test]
+    fn drive_binding_wrong_controller_kind_has_exact_message() {
+        let mut config = valid_config();
+        config.drives[0].controller = DeviceId::Uart;
+        board_error(
+            &config,
+            ConfigError::DriveControllerKind {
+                drive_index: 0,
+                controller: DeviceId::Uart,
+            },
+            "drive 0 kind is incompatible with controller Uart",
+        );
+        config.drives[0].controller = DeviceId::Fdc;
+        config.drives[0].kind = crate::DriveKind::HardDisk {
+            geometry: crate::HardDiskGeometry {
+                cylinders: 80,
+                heads: 2,
+                sectors_per_track: 18,
+                bytes_per_sector: 512,
+            },
+        };
+        board_error(
+            &config,
+            ConfigError::DriveControllerKind {
+                drive_index: 0,
+                controller: DeviceId::Fdc,
+            },
+            "drive 0 kind is incompatible with controller Fdc",
+        );
+    }
+
+    #[test]
+    fn drive_binding_unit_has_exact_message_and_hardware_bound() {
+        let mut config = valid_config();
+        config.drives[0].unit = 2;
+        board_error(
+            &config,
+            ConfigError::DriveUnitUnavailable {
+                drive_index: 0,
+                controller: DeviceId::Fdc,
+                unit: 2,
+                available: 2,
+            },
+            "drive 0 binds to controller Fdc unit 2 but only 2 unit(s) exist",
+        );
+        config
+            .devices
+            .iter_mut()
+            .find(|d| d.id == DeviceId::Fdc)
+            .unwrap()
+            .kind = DeviceKind::Fdc(FdcCfg { drive_slots: 8 });
+        config.drives[0].unit = 4;
+        board_error(
+            &config,
+            ConfigError::DriveUnitUnavailable {
+                drive_index: 0,
+                controller: DeviceId::Fdc,
+                unit: 4,
+                available: 4,
+            },
+            "drive 0 binds to controller Fdc unit 4 but only 4 unit(s) exist",
+        );
+    }
+
+    #[test]
+    fn drive_binding_duplicate_unit_has_exact_message() {
+        let mut config = valid_config();
+        config.drives.push(config.drives[0].clone());
+        board_error(
+            &config,
+            ConfigError::DuplicateDriveUnit {
+                a: 0,
+                b: 1,
+                controller: DeviceId::Fdc,
+                unit: 0,
+            },
+            "drives 0 and 1 bind to controller Fdc unit 0",
+        );
+        config.drives[1].unit = 1;
+        assert_eq!(config.validate(), Ok(()));
+    }
 
     #[test]
     fn access_couplings_require_present_distinct_devices() {
@@ -524,11 +1257,13 @@ mod tests {
             image: ImageSource::Blank {
                 size: FloppyGeometry::HD_1_44.image_bytes(),
             },
-            controller_slot: 0,
-            write_protect: false,
+            controller: DeviceId::Fdc,
+            unit: 0,
+            write: WriteMode::Volatile,
         }];
 
         MachineConfig {
+            board: BoardModel::Bare,
             cpu: CpuConfig {
                 chip: CpuChip::I80286,
                 reset: ResetSpec::reset_vector(),
@@ -819,14 +1554,15 @@ mod tests {
     }
 
     #[test]
-    fn a_drive_on_a_nonexistent_controller_slot_is_rejected() {
+    fn a_drive_on_a_nonexistent_unit_is_rejected() {
         let mut config = valid_config();
-        config.drives[0].controller_slot = 5; // the FDC offers only slots 0 and 1
+        config.drives[0].unit = 5; // the FDC offers only slots 0 and 1
         assert_eq!(
             config.validate(),
-            Err(ConfigError::MissingController {
+            Err(ConfigError::DriveUnitUnavailable {
                 drive_index: 0,
-                slot: 5,
+                controller: DeviceId::Fdc,
+                unit: 5,
                 available: 2,
             })
         );
@@ -842,10 +1578,9 @@ mod tests {
             .retain(|d| d.id != DeviceId::Fdc && d.id != DeviceId::Dma);
         assert_eq!(
             config.validate(),
-            Err(ConfigError::MissingController {
+            Err(ConfigError::DriveControllerMissing {
                 drive_index: 0,
-                slot: 0,
-                available: 0,
+                controller: DeviceId::Fdc,
             })
         );
     }

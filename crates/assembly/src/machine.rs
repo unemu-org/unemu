@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! The root machine configuration (§3.1).
 
+use crate::board::BoardModel;
 use crate::clock::ClockConfig;
 use crate::cpu::CpuConfig;
 use crate::device::DeviceConfig;
@@ -18,6 +19,8 @@ use crate::output::OutputConfig;
 /// before assembly to catch an internally inconsistent description.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MachineConfig {
+    /// Motherboard identity and its wiring constraints.
+    pub board: BoardModel,
     /// The CPU: modelled chip, reset entry, seeded segments.
     pub cpu: CpuConfig,
     /// The virtual clock: the deterministic step-to-PIT ratio.

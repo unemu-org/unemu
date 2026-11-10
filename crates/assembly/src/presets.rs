@@ -13,13 +13,14 @@
 //! a preset returns the pure-data config the assembler realises into the same
 //! parts. All presets construct step-bounded Real16 machines.
 
+use crate::board::BoardModel;
 use crate::clock::ClockConfig;
 use crate::cpu::{CpuChip, CpuConfig, ResetSpec, SegmentSeed};
 use crate::device::{
     CmosCfg, DeviceConfig, DeviceId, DeviceKind, DmaCfg, DmaSpec, FdcCfg, I8042Cfg, MdaTextCfg,
-    PicCfg, PitCfg, PortWindow, PostPortCfg, SysControlCfg, UartCfg, VgaTextCfg,
+    PicCfg, PitCfg, PortWindow, PostPortCfg, UartCfg, VgaTextCfg,
 };
-use crate::drive::{DriveConfig, DriveKind, FloppyGeometry};
+use crate::drive::{DriveConfig, DriveKind, FloppyGeometry, WriteMode};
 use crate::image::{ImageKind, ImageSource, LoadImage};
 use crate::machine::MachineConfig;
 use crate::memory::{MemoryConfig, MmioWindow, RamRegion};
@@ -60,10 +61,6 @@ const KBD_CMD: u16 = 0x64;
 const CMOS_INDEX_PORT: u16 = 0x70;
 /// MC146818 CMOS/RTC data port (`0x71`).
 const CMOS_DATA_PORT: u16 = 0x71;
-/// System-control latch port (`0x61`: speaker gate, refresh, NMI status).
-const SYS_CONTROL_PORT: u16 = 0x61;
-/// The stock-BIOS POST checkpoint port (`0x80`).
-const BIOS_POST_PORT: u16 = 0x80;
 /// First port of the µPD765 floppy controller (`0x3F0`).
 const FDC_BASE: u16 = 0x3F0;
 /// Last port of the µPD765 floppy controller (`0x3F7`).
@@ -182,15 +179,6 @@ fn mda() -> DeviceConfig {
     )
 }
 
-/// The port-`0x61` system-control latch.
-fn sys_control() -> DeviceConfig {
-    DeviceConfig::new(
-        DeviceId::SysControl,
-        DeviceKind::SysControl(SysControlCfg {}),
-        vec![PortWindow::single(SYS_CONTROL_PORT)],
-    )
-}
-
 /// A POST checkpoint port decoding `port`.
 fn post(port: u16) -> DeviceConfig {
     DeviceConfig::new(
@@ -238,8 +226,9 @@ fn floppy_drive_geo(image: ImageSource, geometry: FloppyGeometry, slot: u8) -> D
     DriveConfig {
         kind: DriveKind::Floppy { geometry },
         image,
-        controller_slot: slot,
-        write_protect: false,
+        controller: DeviceId::Fdc,
+        unit: slot,
+        write: WriteMode::Volatile,
     }
 }
 
@@ -280,6 +269,7 @@ fn at_device_set(
 /// keyboard, and RTC demos, which differ only in wiring and segment seed.
 fn at_demo(blob: Vec<u8>, devices: Vec<DeviceConfig>) -> MachineConfig {
     MachineConfig {
+        board: BoardModel::Bare,
         cpu: CpuConfig {
             chip: CpuChip::I80286,
             reset: ResetSpec::Entry {
@@ -352,6 +342,7 @@ pub fn at_fdc_write(program: Vec<u8>, pattern: Vec<u8>, pattern_base: u64) -> Ma
         size: FloppyGeometry::DD_360K.image_bytes(),
     };
     MachineConfig {
+        board: BoardModel::Bare,
         cpu: CpuConfig {
             chip: CpuChip::I80286,
             reset: ResetSpec::Entry {
@@ -389,6 +380,7 @@ pub fn at_fdc_write(program: Vec<u8>, pattern: Vec<u8>, pattern_base: u64) -> Ma
 pub fn at_vga_text(blob: Vec<u8>) -> MachineConfig {
     let space = TEXT_BUFFER_BASE + TEXT_BUFFER_LEN as u64;
     MachineConfig {
+        board: BoardModel::Bare,
         cpu: CpuConfig {
             chip: CpuChip::I80286,
             reset: ResetSpec::Entry {
@@ -431,6 +423,7 @@ pub fn at_vga_text(blob: Vec<u8>) -> MachineConfig {
 /// be delivered and would keep the run from terminating.
 pub fn test386(image: Vec<u8>) -> MachineConfig {
     MachineConfig {
+        board: BoardModel::Bare,
         cpu: CpuConfig {
             chip: CpuChip::I80286,
             reset: ResetSpec::Entry {
@@ -475,6 +468,7 @@ pub fn floppy_boot(loader: Vec<u8>, floppy: Vec<u8>) -> MachineConfig {
         fdc(vec![PortWindow::new(FDC_BASE, FDC_TOP)], None, Some(2)),
     ];
     MachineConfig {
+        board: BoardModel::Bare,
         cpu: CpuConfig {
             chip: CpuChip::I80286,
             reset: ResetSpec::Entry {
@@ -516,23 +510,18 @@ pub fn floppy_boot(loader: Vec<u8>, floppy: Vec<u8>) -> MachineConfig {
 ///   machine still declares a 1.44 MB drive in CMOS (a real AT always does, and the
 ///   original spike seeded the same CMOS), so a floppy drive is present for the
 ///   CMOS derivation but the controller decodes no ports and takes no interrupt.
+///   This partial motherboard is a Bare rig, not a complete Ibm5170 board.
 pub fn bios(rom: Vec<u8>, floppy: Option<Vec<u8>>) -> MachineConfig {
-    let mut devices = vec![master_pic(), slave_pic(), pit(Some(0))];
-    if floppy.is_some() {
-        devices.push(dma(vec![
-            PortWindow::new(0x00, 0x0F),
-            PortWindow::new(0x81, 0x8F),
-        ]));
+    let board = if floppy.is_some() {
+        BoardModel::Ibm5170
+    } else {
+        BoardModel::Bare
+    };
+    let mut devices = BoardModel::Ibm5170.motherboard_devices();
+    if floppy.is_none() {
+        devices.retain(|d| d.id != DeviceId::Dma);
     }
-    devices.extend([
-        keyboard(Some(1)),
-        rtc(true, None, Some(8)),
-        sys_control(),
-        post(BIOS_POST_PORT),
-        mda(),
-        vga(),
-        uart(),
-    ]);
+    devices.extend([mda(), vga(), uart()]);
 
     let drives = match &floppy {
         Some(_) => {
@@ -557,6 +546,7 @@ pub fn bios(rom: Vec<u8>, floppy: Option<Vec<u8>>) -> MachineConfig {
     };
 
     MachineConfig {
+        board,
         cpu: CpuConfig {
             chip: CpuChip::I80286,
             reset: ResetSpec::ResetVector {
@@ -601,6 +591,19 @@ pub fn bios(rom: Vec<u8>, floppy: Option<Vec<u8>>) -> MachineConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bios_board_identity_distinguishes_the_no_media_rig() {
+        assert_eq!(bios(vec![0; 0x8000], None).board, BoardModel::Bare);
+        assert_eq!(
+            bios(
+                vec![0; 0x8000],
+                Some(vec![0; FloppyGeometry::HD_1_44.image_bytes() as usize])
+            )
+            .board,
+            BoardModel::Ibm5170
+        );
+    }
 
     #[test]
     fn bios_devices_follow_board_then_card_order() {
@@ -709,7 +712,7 @@ mod tests {
                 geometry: FloppyGeometry::HD_1_44
             }
         );
-        assert_eq!(drive.controller_slot, 0);
+        assert_eq!(drive.unit, 0);
     }
 
     #[test]
@@ -729,7 +732,7 @@ mod tests {
                 geometry: FloppyGeometry::DD_720K
             }
         );
-        assert_eq!(drive.controller_slot, 1);
+        assert_eq!(drive.unit, 1);
     }
     #[test]
     fn every_preset_accepts_valid_images() {

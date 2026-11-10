@@ -59,6 +59,7 @@ concrete Rust device type (that stays behind the assembler, decision-7).
 
 ```
 MachineConfig {
+    board:   BoardModel,         // motherboard constraints; class is derived
     cpu:     CpuConfig,
     clock:   ClockConfig,
     memory:  MemoryConfig,
@@ -74,6 +75,101 @@ MachineConfig {
 is what lets a golden test pin the machine it ran against, and it is the
 precondition for a future snapshot/save-restore feature (deferred — see
 [`deferred.md`](../deferred.md)).
+
+### Board model
+
+`MachineConfig.board` is `BoardModel::Ibm5170` or `BoardModel::Bare`. The BIOS
+preset selects `Ibm5170` when floppy media is attached. Its no-media variant
+is a partial motherboard rig on `Bare`; all demos and hand-wired Rust test
+presets also select `Bare`. `BoardModel::class()` derives `Some(MachineClass::At)` for the AT and
+`None` for a bare rig. Board identity is part of config equality, never an
+execution option. The assembler still constructs only the flat device list;
+selecting a board validates its wiring rather than inserting hidden devices.
+
+`Ibm5170.motherboard_devices()` supplies the default motherboard data in bus
+order. Cards follow in their declared order. The wiring reference is the **IBM
+Personal Computer AT Technical Reference**, Section 1 **System Board**, under
+**System Interrupts**, **System Timers**, **Direct Memory Access**, **I/O Address
+Map**, **Keyboard Controller**, and **Real-Time Clock/CMOS RAM Information**.
+
+| Order / part | Modelled wiring and coverage | Missing / deviation |
+|---|---|---|
+| 1. `MasterPic` | 8259 at 20h–21h, cascaded master | — |
+| 2. `SlavePic` | 8259 at A0h–A1h, slave on master IRQ2 | — |
+| 3. `Pit` | 40h–43h, IRQ0 | Existing 8253 model stands in for the AT's 8254 |
+| 4. `Dma` | One 8237 at 00h–0Fh, channels 0–3, page latches 81h–8Fh | Second 8237 at C0h–DFh and channels 4–7 absent; no refresh DMA requester |
+| 5. `Keyboard` | 8042 at 60h/64h, IRQ1 | A20 remains always on; output-port reset / FEh reset pulse absent |
+| 6. `Rtc` | MC146818 at 70h–71h, IRQ8, NMI-mask state | Seed and virtual timing remain configurable |
+| 7. `SysControl` | 61h latch | Existing refresh approximation and speaker state |
+| 8. `Post` | Diagnostic latch at 80h by default | Optional, relocatable diagnostic decode |
+| 80287 | None | F0h–FFh and IRQ13 absent |
+
+Every `Ibm5170` requires the 8237 in its canonical position, even if an FDC
+entry is undecoded or unwired. The no-media BIOS preset keeps that historical
+partial machine on `Bare`: an undecoded, unwired FDC derives CMOS drive A: while
+no 8237 is assembled. Changing that preset's board identity affects validation
+only, preserving its device list and execution.
+
+Omitting or moving `Post` away from 80h changes the expected page-latch range
+to 80h–8Fh. POST is validated before deriving this range, so a wrong kind or
+decode is diagnosed against `Post` itself. Removing the optional POST role
+closes up the order.
+
+Board validation follows unique-ID validation and precedes general wiring
+checks. Each rule returns a stable, exact-message-tested `ConfigError`:
+
+| Rule | Error |
+|---|---|
+| Required motherboard role is present | `BoardDeviceMissing` |
+| Motherboard devices precede cards, in the table's order | `BoardDeviceOrder` |
+| Entire `DeviceConfig` matches board data, except the contents of `CmosCfg` | `BoardDeviceWiring` |
+| Card IRQ is 3–7, 9–12, 14 or 15; 0/1/2/8/13 stay reserved | `BoardCardIrq` |
+| Card DMA channel is 0–3, the modelled 8237's range | `BoardCardDma` |
+| Card DMA controller is the board's `DeviceId::Dma` | `BoardCardDmaController` |
+
+`BoardDeviceWiring` names the device, differing field, expected value and actual
+value. The full comparison includes port-overlap allowances and scheduling
+`access_dependents`; neither can silently override board wiring. RTC seed and
+virtual timing remain configurable. A literal-table unit test pins the board
+ports, IRQs and DMA requests independently of both preset and validator.
+
+There are no resource override rules in this implementation. Port-overlap
+allowances do not authorize IRQ or DMA overrides. Existing IRQ conflicts and
+DMA-controller-presence checks still apply. `Bare` skips only board rules;
+general decode, resource and drive-binding validation still runs.
+
+### Drive binding and write mode
+
+```rust
+DriveConfig {
+    kind: DriveKind,             // Floppy or HardDisk, with geometry
+    image: ImageSource,
+    controller: DeviceId,        // named device, never a global slot number
+    unit: u8,                   // unit local to that controller
+    write: WriteMode,           // Volatile (default) or ReadOnly
+}
+```
+
+A binding must name an existing device (`DriveControllerMissing`) of the right
+kind (`DriveControllerKind`). Today only `Floppy` on `DeviceKind::Fdc` is
+supported; a `HardDisk` cannot bind to the FDC, and no fixed-disk controller is
+implemented. The unit must be below the controller's declared slot count and
+the hardware model's four-unit limit (`DriveUnitUnavailable`). Two drives
+cannot bind to the same `(controller, unit)` (`DuplicateDriveUnit`). Each error
+has an exact-message unit test. These rules apply on both boards.
+
+AT CMOS describes only diskette drives bound to the primary `DeviceId::Fdc`.
+Floppies on another named controller do not contribute type nibbles or the
+equipment-byte drive count, even when their local unit is 0 or 1. This rule also
+applies to `Bare` rigs using the same CMOS derivation. A primary 1.2 MB unit 0
+and a secondary 720 KB unit 0 therefore derive `floppy_types = 0x20` and
+`equipment = 0x01`.
+
+`WriteMode::Volatile` replaces `write_protect = false`: guest writes modify only
+the mounted in-memory image. `WriteMode::ReadOnly` replaces `write_protect = true`
+and uses the same `Drive::new_read_only` constructor: WRITE DATA reports the
+existing not-writable status before requesting DMA or modifying media. Neither
+mode writes the host image. There is no journal variant yet.
 
 ### `CpuConfig` and `ClockConfig` — minimal but the right home
 
@@ -195,37 +291,30 @@ living in three places:
   list of `LoadImage { base, bytes, kind: Rom | RamLoad }`. `kind` says whether
   the bytes land in a ROM region or are loaded into RAM (SMC-visible per
   decision-6). One list, one meaning.
-- **`drives`: one top-level list, routed by slot.** Attached media were split
+- **`drives`: one top-level list, routed by controller and unit.** Attached media were split
   between an ad-hoc floppy argument and a controller's own drive list. They
   collapse to one top-level `Vec<DriveConfig>`, each routed to its controller by
-  a `controller_slot` field. The floppy controller does not own a private drive
+  `controller: DeviceId` and `unit: u8` fields. The floppy controller does not own a private drive
   list; drives are attached to the machine and routed to controllers.
 
 `DriveConfig` and floppy geometry are fleshed out in task-34; the top-level
-placement and slot routing are fixed here.
+placement and controller-local unit routing are fixed here.
 
 ### The fixed-disk (IDE/HDD) attachment seam
 
 `DriveKind` is `Floppy { geometry } | HardDisk { geometry }`. The floppy side is
 wired end-to-end: the assembler routes each `Floppy` drive into the µPD765's
-drive slots by `controller_slot`, and the CMOS `floppy_types` nibbles and
+drive slots by `controller` and `unit`, and the CMOS `floppy_types` nibbles and
 equipment byte are *derived* from the attached floppies, so attaching a second
 drive of a different geometry needs no manual CMOS edit — the whole point of the
 "attach different drive types" story.
 
-The `HardDisk` variant is deliberately the **seam a future XT-IDE/ATA device
-plugs into with no new assembler architecture**. A `HardDisk` drive is already
-first-class config: it is validated, it binds to a controller by
-`controller_slot`, and the CMOS `hard_disk_types` nibble is already derived from
-it. What is missing is only the *device*: the assembler skips `HardDisk` during
-device construction because no fixed-disk controller is modelled yet. When one is
-added, it reuses the exact floppy pattern — a `build_ide_drives(config)` that
-filters `drives` for `HardDisk` and routes them into the new device by
-`controller_slot`, called from the `DeviceKind` match arm just as the µPD765's
-`build_fdc_drives` is called today. The drive list, the slot routing, and the
-CMOS derivation are all in place; adding fixed-disk support is a new `Device`, not
-a new config shape. The IDE/ATA device itself is deferred (see
-[`deferred.md`](../deferred.md)).
+The `HardDisk` variant reserves the data shape for a future fixed-disk
+controller. It is rejected by validation until a compatible controller exists;
+it no longer passes by borrowing an FDC's global slot count. The future assembler
+can filter by the named controller and route its units just as the FDC does.
+CMOS derivation retains the fixed-disk nibble seam, but assembly cannot silently
+accept a hard disk that no device serves.
 
 ## The assembler
 
@@ -271,7 +360,7 @@ function of the config, and an accidental collision fails loudly at assembly tim
 instead of misrouting a port at run time.
 
 **Validation before assembly.** A `ConfigError` pass runs *before* any device is
-built: unknown `controller_slot`, an IRQ line with no controller, a `LoadImage`
+built: an absent or incompatible drive controller, an unavailable unit, an IRQ line with no controller, a `LoadImage`
 outside the memory map, a decode overlap. Assembly of a validated config does not
 fail for configuration reasons.
 

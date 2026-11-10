@@ -55,7 +55,7 @@ use devices::{
 use machine::{DmaWiring, IrqLine, Machine};
 
 use crate::device::{DeviceId, DeviceKind};
-use crate::drive::{DriveKind, FloppyGeometry};
+use crate::drive::{DriveKind, FloppyGeometry, WriteMode};
 use crate::error::ConfigError;
 use crate::image::{ImageKind, ImageSource};
 use crate::machine::MachineConfig;
@@ -191,7 +191,7 @@ fn assemble_with_cpu(
             DeviceKind::Mda(_) => Box::new(MdaText::new()),
             DeviceKind::SysControl(_) => Box::new(SysControl::new()),
             DeviceKind::Post(c) => Box::new(PostPort::with_port(c.port)),
-            DeviceKind::Fdc(_) => Box::new(Upd765::with_drives(build_fdc_drives(config)?)),
+            DeviceKind::Fdc(_) => Box::new(Upd765::with_drives(build_fdc_drives(config, dc.id)?)),
             DeviceKind::Dma(_) => Box::new(Dma8237::new()),
         };
         let index = devices.len();
@@ -390,33 +390,39 @@ fn build_dma_wirings(
 }
 
 /// Route the config's floppy drives into the controller's four drive positions by
-/// their `controller_slot` (§7.7).
+/// their `controller` and `unit` (§7.7).
 ///
 /// Only floppy drives are mounted here; a slot past the fourth position is
-/// ignored (validation bounds slots to the controller's declared count). The
+/// ignored (validation bounds units to both declared count and hardware). The
 /// config geometry maps directly to the controller's own geometry type.
 ///
 /// This is the pattern a future fixed-disk controller reuses. A
-/// [`DriveKind::HardDisk`] drive is *skipped* here — there is no IDE/ATA device
-/// yet — but when one is added it plugs into exactly this seam: a
+/// [`DriveKind::HardDisk`] drive is rejected by validation until a compatible
+/// controller exists. When one is added it plugs into the same seam: a
 /// `build_ide_drives(config)` that filters `config.drives` for `HardDisk` and
-/// routes them into the new device by their `controller_slot`, called from the
+/// routes them into the new device by their `controller` and `unit`, called from the
 /// device-construction match arm just as [`DeviceKind::Fdc`] calls this. No new
 /// assembler architecture is needed — the drive list, the slot routing, and the
 /// CMOS derivation are already in place; only the target device is missing.
-fn build_fdc_drives(config: &MachineConfig) -> Result<[Option<Drive>; 4], ConfigError> {
+fn build_fdc_drives(
+    config: &MachineConfig,
+    controller: DeviceId,
+) -> Result<[Option<Drive>; 4], ConfigError> {
     let mut slots: [Option<Drive>; 4] = [None, None, None, None];
     for drive in &config.drives {
+        if drive.controller != controller {
+            continue;
+        }
         let DriveKind::Floppy { geometry } = &drive.kind else {
             continue;
         };
-        let slot = drive.controller_slot as usize;
+        let slot = drive.unit as usize;
         if slot >= slots.len() {
             continue;
         }
         let image = load_image_bytes(&drive.image)?;
         let geometry = to_device_geometry(geometry);
-        slots[slot] = Some(if drive.write_protect {
+        slots[slot] = Some(if drive.write == WriteMode::ReadOnly {
             Drive::new_read_only(geometry, image)
         } else {
             Drive::new(geometry, image)
@@ -442,7 +448,8 @@ fn to_device_geometry(geometry: &FloppyGeometry) -> devices::FloppyGeometry {
 /// memory sizes against the real machine, so these are computed here rather than
 /// supplied by the caller: base memory is the RAM below 640 KiB, extended memory
 /// is the RAM at or above 1 MiB, and the floppy nibbles and equipment byte come
-/// from the attached floppy drives. For a plain AT — 640 KiB base, one 1.44 MB
+/// from the floppy drives on the primary controller (DeviceId::Fdc). Secondary
+/// controllers have no entries in the AT CMOS diskette inventory. For a plain AT — 640 KiB base, one 1.44 MB
 /// floppy, no hard disk or coprocessor — this reproduces [`CmosConfig::default`]
 /// byte-for-byte.
 pub fn derive_cmos_config(config: &MachineConfig) -> CmosConfig {
@@ -456,9 +463,12 @@ pub fn derive_cmos_config(config: &MachineConfig) -> CmosConfig {
     for drive in &config.drives {
         match &drive.kind {
             DriveKind::Floppy { geometry } => {
+                if drive.controller != DeviceId::Fdc {
+                    continue;
+                }
                 floppy_count += 1;
                 let code = floppy_cmos_type(geometry);
-                match drive.controller_slot {
+                match drive.unit {
                     0 => floppy_types |= code << 4,
                     1 => floppy_types |= code,
                     _ => {}
@@ -471,7 +481,7 @@ pub fn derive_cmos_config(config: &MachineConfig) -> CmosConfig {
                 // reports itself to the BIOS with no change to this function. Mark
                 // the nibble "type stored in the extended table" (0xF), the
                 // encoding a BIOS uses for drives beyond the built-in type list.
-                match drive.controller_slot {
+                match drive.unit {
                     0 => hard_disk_types |= 0xF0,
                     1 => hard_disk_types |= 0x0F,
                     _ => {}
@@ -576,6 +586,7 @@ mod tests {
             ));
         }
     }
+    use crate::board::BoardModel;
     use crate::clock::ClockConfig;
     use crate::cpu::{CpuConfig, ResetSpec, SegmentSeed};
     use crate::device::{
@@ -693,11 +704,13 @@ mod tests {
             image: ImageSource::Blank {
                 size: FloppyGeometry::HD_1_44.image_bytes(),
             },
-            controller_slot: 0,
-            write_protect: false,
+            controller: DeviceId::Fdc,
+            unit: 0,
+            write: WriteMode::Volatile,
         }];
 
         MachineConfig {
+            board: BoardModel::Bare,
             cpu: CpuConfig {
                 chip: crate::cpu::CpuChip::I80286,
                 reset: ResetSpec::reset_vector(),
@@ -1051,6 +1064,7 @@ mod tests {
         // A minimal machine with a single UART and no interrupt hardware still
         // assembles: the loop is handed a controller that acknowledges nothing.
         let config = MachineConfig {
+            board: BoardModel::Bare,
             cpu: CpuConfig {
                 chip: crate::cpu::CpuChip::I80286,
                 reset: ResetSpec::Entry { cs: 0, ip: 0 },
@@ -1095,8 +1109,9 @@ mod tests {
                 image: ImageSource::Blank {
                     size: FloppyGeometry::HD_1_2.image_bytes(),
                 },
-                controller_slot: 0,
-                write_protect: false,
+                controller: DeviceId::Fdc,
+                unit: 0,
+                write: WriteMode::Volatile,
             },
             DriveConfig {
                 kind: DriveKind::Floppy {
@@ -1105,8 +1120,9 @@ mod tests {
                 image: ImageSource::Blank {
                     size: FloppyGeometry::DD_720K.image_bytes(),
                 },
-                controller_slot: 1,
-                write_protect: false,
+                controller: DeviceId::Fdc,
+                unit: 1,
+                write: WriteMode::Volatile,
             },
         ];
         config
@@ -1118,7 +1134,7 @@ mod tests {
 
         // (a) Both drives land in the controller's slots, each carrying the exact
         // geometry the config named — slot 0 is the 1.2 MB drive, slot 1 the 720 KB.
-        let slots = build_fdc_drives(&config).expect("drives mounted");
+        let slots = build_fdc_drives(&config, DeviceId::Fdc).expect("drives mounted");
         assert_eq!(
             slots[0].as_ref().expect("slot 0 mounted").geometry,
             to_device_geometry(&FloppyGeometry::HD_1_2)
@@ -1143,9 +1159,9 @@ mod tests {
     }
 
     #[test]
-    fn write_protect_flag_routes_to_the_mounted_drive() {
+    fn write_modes_route_to_the_mounted_drive() {
         // Two drives on one controller: slot 0 writable (the default), slot 1
-        // write-protected. The flag must reach the device drive it belongs to.
+        // write-protected. The mode must reach the device drive it belongs to.
         let mut config = reference_config();
         config.drives = vec![
             DriveConfig {
@@ -1155,8 +1171,9 @@ mod tests {
                 image: ImageSource::Blank {
                     size: FloppyGeometry::HD_1_44.image_bytes(),
                 },
-                controller_slot: 0,
-                write_protect: false,
+                controller: DeviceId::Fdc,
+                unit: 0,
+                write: WriteMode::Volatile,
             },
             DriveConfig {
                 kind: DriveKind::Floppy {
@@ -1165,12 +1182,13 @@ mod tests {
                 image: ImageSource::Blank {
                     size: FloppyGeometry::HD_1_44.image_bytes(),
                 },
-                controller_slot: 1,
-                write_protect: true,
+                controller: DeviceId::Fdc,
+                unit: 1,
+                write: WriteMode::ReadOnly,
             },
         ];
 
-        let slots = build_fdc_drives(&config).expect("drives mounted");
+        let slots = build_fdc_drives(&config, DeviceId::Fdc).expect("drives mounted");
         assert!(
             !slots[0].as_ref().expect("slot 0 mounted").write_protected,
             "the default drive is writable"
@@ -1181,6 +1199,95 @@ mod tests {
         );
     }
 
+    #[test]
+    fn cmos_floppy_inventory_uses_only_the_primary_controller() {
+        let mut config = two_floppy_config();
+        let secondary = config
+            .devices
+            .iter_mut()
+            .find(|d| d.id == DeviceId::Uart)
+            .unwrap();
+        secondary.kind = DeviceKind::Fdc(FdcCfg { drive_slots: 2 });
+        secondary.ports.clear();
+        config.drives[1].controller = DeviceId::Uart;
+        config.drives[1].unit = 0;
+        assert_eq!(config.validate(), Ok(()));
+        let cmos = derive_cmos_config(&config);
+        assert_eq!(cmos.floppy_types, 0x20);
+        assert_eq!(cmos.equipment, 0x01);
+        config.drives.remove(0);
+        let cmos = derive_cmos_config(&config);
+        assert_eq!(cmos.floppy_types, 0);
+        assert_eq!(cmos.equipment, 0);
+    }
+
+    #[test]
+    fn named_controllers_keep_their_media_separate() {
+        let mut config = two_floppy_config();
+        let uart = config
+            .devices
+            .iter_mut()
+            .find(|d| d.id == DeviceId::Uart)
+            .unwrap();
+        uart.kind = DeviceKind::Fdc(FdcCfg { drive_slots: 2 });
+        uart.ports.clear();
+        config.drives[1].controller = DeviceId::Uart;
+        config.drives[1].unit = 0;
+        for (drive, byte) in config.drives.iter_mut().zip([0x12, 0x72]) {
+            drive.image = ImageSource::Inline(vec![byte; drive.kind.image_bytes() as usize]);
+        }
+        assert_eq!(config.validate(), Ok(()));
+        let mut assembled = assemble(&config).unwrap();
+        for (controller, geometry, byte) in [
+            (DeviceId::Fdc, FloppyGeometry::HD_1_2, 0x12),
+            (DeviceId::Uart, FloppyGeometry::DD_720K, 0x72),
+        ] {
+            let slots = build_fdc_drives(&config, controller).unwrap();
+            assert_eq!(
+                slots[0].as_ref().unwrap().geometry,
+                to_device_geometry(&geometry)
+            );
+            assert!(slots[1..].iter().all(Option::is_none));
+            let index = assembled.device_index[&controller];
+            let fdc = assembled.machine.bus_mut().device_mut(index).unwrap();
+            // Direct accesses let the bare rig exercise two controller roles
+            // without asking the fixed-port FDC model to relocate its registers.
+            fdc.port_write(0x3F2, 1, 0x1C).unwrap();
+            for value in [0x06, 0, 0, 0, 1, 2, 1, 0x1B, 0xFF] {
+                fdc.port_write(0x3F5, 1, value).unwrap();
+            }
+            let DmaOp::ToMemory(data) = fdc.take_dma_request().unwrap().op else {
+                panic!("read must queue data");
+            };
+            assert_eq!(data, vec![byte; 512]);
+        }
+    }
+
+    #[test]
+    fn readonly_guest_write_reports_not_writable_without_mutating_media() {
+        assert_eq!(WriteMode::default(), WriteMode::Volatile);
+        let mut config = reference_config();
+        config.drives[0].write = WriteMode::ReadOnly;
+        let original = vec![0; FloppyGeometry::HD_1_44.image_bytes() as usize];
+        let mut assembled = assemble(&config).unwrap();
+        let index = assembled.device_index[&DeviceId::Fdc];
+        let fdc = assembled.machine.bus_mut().device_mut(index).unwrap();
+        fdc.port_write(0x3F2, 1, 0x1C).unwrap();
+        for byte in [0x05, 0, 0, 0, 1, 2, 1, 0x1B, 0xFF] {
+            fdc.port_write(0x3F5, 1, byte).unwrap();
+        }
+        assert!(fdc.take_dma_request().is_none());
+        let result: Vec<_> = (0..7).map(|_| fdc.port_read(0x3F5, 1).unwrap()).collect();
+        assert_eq!(result, [0x40, 0x02, 0, 0, 0, 1, 2]);
+        for byte in [0x06, 0, 0, 0, 1, 2, 1, 0x1B, 0xFF] {
+            fdc.port_write(0x3F5, 1, byte).unwrap();
+        }
+        let DmaOp::ToMemory(data) = fdc.take_dma_request().unwrap().op else {
+            panic!("read must queue data");
+        };
+        assert_eq!(data, original[..512]);
+    }
+
     /// The reference machine carrying a single floppy of `geometry` backed by
     /// `image` in slot 0.
     fn single_floppy_config(geometry: FloppyGeometry, image: ImageSource) -> MachineConfig {
@@ -1188,8 +1295,9 @@ mod tests {
         config.drives = vec![DriveConfig {
             kind: DriveKind::Floppy { geometry },
             image,
-            controller_slot: 0,
-            write_protect: false,
+            controller: DeviceId::Fdc,
+            unit: 0,
+            write: WriteMode::Volatile,
         }];
         config
     }

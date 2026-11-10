@@ -1417,6 +1417,7 @@ mod tests {
                 let mut config = assembly::bios(rom, None);
                 config.cpu.reset = assembly::ResetSpec::Entry { cs: 0xF800, ip: 0 };
                 config.output.frame_sink = kind;
+                config.board = assembly::BoardModel::Bare;
                 config.devices.reverse();
                 let mut assembled =
                     assemble_with_observation(&config, &bios_observation_policy()).unwrap();

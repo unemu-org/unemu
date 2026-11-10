@@ -23,9 +23,12 @@ Evidence from the current implementation:
 - **READ:** `crates/assembly/src/image.rs:13–22` defines inline, file and blank
   sources. `assemble.rs:147–153,284–318` reads file sources once, resolves them
   to inline bytes, and validates the bytes actually mounted.
-- **READ:** `crates/assembly/src/assemble.rs:407–431` routes drives by controller
-  slot and maps `DriveConfig.write_protect` to `Drive::new_read_only`.
-  `crates/assembly/src/drive.rs:129–133` contains that existing boolean.
+- **READ:** `crates/assembly/src/assemble.rs`, `build_fdc_drives`, routes drives
+  by named `controller: DeviceId` and controller-local `unit`. In
+  `crates/assembly/src/drive.rs`, `DriveConfig.write` is `WriteMode::Volatile`
+  (default) or `WriteMode::ReadOnly`; the latter uses `Drive::new_read_only`
+  and preserves the existing not-writable status. Neither mode persists to the
+  host image.
 - **READ:** [Deferred, Host-file write-back for a floppy WRITE](../deferred.md#host-file-write-back-for-a-floppy-write)
   records the absence of host persistence. The brief identifies its follow-up
   as `upc-sk3.1`; the tracker was not queried during this worker spike.
@@ -322,10 +325,10 @@ concern; persistence adds no new timing input.
 ### Config contract
 
 Keep the agreed per-drive `write` modes: `volatile` (default), `readonly`,
-`journal`. Represent them as an `Eq`/`Debug` Rust enum with a journal variant
-carrying a path and retention count, rather than an independent boolean and
-potentially conflicting options. Migrate existing `write_protect = false` to
-volatile and `true` to readonly, preserving the current not-writable status.
+`journal`. The current `Eq`/`Debug` Rust enum, `WriteMode`, implements `Volatile`
+and `ReadOnly`, with the existing not-writable status preserved. Extend it with
+a journal variant carrying a path and retention count, rather than adding an
+independent boolean and potentially conflicting options.
 The following is field notation only; it does not introduce TOML parsing:
 
 ```toml

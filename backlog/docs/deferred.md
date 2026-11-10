@@ -79,9 +79,11 @@ Things **deliberately not implemented**. If something seems missing and is liste
 ### Fixed-disk (XT-IDE / ATA) controller device
 
 - **Why deferred:** The config side of fixed disks is done — `DriveKind::HardDisk`
-  is first-class `MachineConfig` data, it binds to a controller by
-  `controller_slot`, and the CMOS `hard_disk_types` nibble already derives from an
-  attached hard disk. What is missing is only the *device* that serves it. The
+  is first-class `MachineConfig` data with a named `controller: DeviceId`, a
+  controller-local `unit`, and `write: WriteMode`. Validation rejects a hard
+  disk until a compatible controller is implemented; an FDC cannot serve it.
+  CMOS `hard_disk_types` derivation retains the fixed-disk attachment seam.
+  What is missing is the *device* that serves it. The
   first end-to-end target is headless serial and floppy boot; a fixed-disk
   controller has no current consumer, and modelling ATA register semantics is a
   standalone device task, not part of the config layer. The seam is built so
