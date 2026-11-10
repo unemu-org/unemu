@@ -51,10 +51,11 @@ pub enum DeviceId {
 ///
 /// The config counterpart of [`bus::PortRange`], without the bus index the
 /// assembler fills in. A device may decode several windows (a VGA card decodes
-/// its CRTC and CGA registers); [`PortWindow::allow_overlap`] marks a window
-/// that is *intended* to overlap an earlier device's — the bus resolves such an
-/// overlap by first-match order, and validation treats an unmarked overlap as an
-/// error.
+/// its CRTC and CGA registers). [`PortWindow::allow_overlap`] permits overlap
+/// only when one window strictly contains the other and both start at the same
+/// port. Sorting by `(start, end)` then gives every shared port to the narrower
+/// window through first-match decoding. Other overlaps require splitting the
+/// wider window; unmarked overlaps are always errors.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct PortWindow {
     /// First port in the range (inclusive).
@@ -63,9 +64,10 @@ pub struct PortWindow {
     pub end: u16,
     /// Maximum ISA cycle width; byte cycles unless explicitly selected.
     pub width: bus::PortWidth,
-    /// Whether this window may overlap an earlier device's decode. Deliberate
-    /// overlaps (e.g. a page latch sharing a byte with a checkpoint port) are
-    /// resolved by first-match order and must be flagged here.
+    /// Permit strict containment with another device's window at the same
+    /// starting port, so `(start, end)` order gives the narrower window priority.
+    /// This may be set on either window; it never permits partial overlap,
+    /// identical windows or containment with different starts.
     pub allow_overlap: bool,
 }
 
@@ -85,7 +87,7 @@ impl PortWindow {
         Self::new(port, port)
     }
 
-    /// A window that may intentionally overlap an earlier device's decode.
+    /// A window permitting the same-start containment described by [`Self::allow_overlap`].
     pub const fn overlapping(start: u16, end: u16) -> Self {
         Self {
             start,
@@ -303,6 +305,29 @@ pub struct FdcCfg {
     pub drive_slots: u8,
 }
 
+impl FdcCfg {
+    /// AT diskette-controller decode, excluding 3F6h when primary ATA uses it.
+    ///
+    /// IBM Personal Computer AT Technical Reference, System Board, I/O Address
+    /// Map lists 3F0h–3F7h for diskette and 1F0h–1F8h for fixed disk. Its Fixed
+    /// Disk and Diskette Drive Adapter section identifies the fixed-disk register
+    /// at 3F6h and diskette registers at 3F2h, 3F4h, 3F5h and 3F7h.
+    /// The split decode (3F0h–3F5h plus 3F7h) is this model's choice: unused
+    /// 3F0h, 3F1h and 3F3h stay with the FDC, as in the unsplit window.
+    /// Without a primary ATA control port, retain the legacy 3F0h–3F7h window.
+    /// In this model 3F7h belongs entirely to the FDC (digital input register on
+    /// read, configuration control register on write). The real adapter shares
+    /// its read bits with the fixed disk; that bit-level sharing is not modelled.
+    /// See `backlog/docs/design/machine-config.md` §Explicit decode-conflict policy.
+    pub fn port_windows(primary_ata_control: bool) -> Vec<PortWindow> {
+        if primary_ata_control {
+            vec![PortWindow::new(0x3F0, 0x3F5), PortWindow::single(0x3F7)]
+        } else {
+            vec![PortWindow::new(0x3F0, 0x3F7)]
+        }
+    }
+}
+
 /// 8237 DMA-controller selection (§7.7); ports live in [`DeviceConfig::ports`].
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct DmaCfg {}
@@ -348,8 +373,8 @@ pub enum DeviceKind {
 /// carries its chip parameters; `ports` are the windows the bus decodes to it;
 /// `irq` is the PIC input line it drives (if any); `dma` is its DMA wiring (if
 /// it masters the bus). Marking `allow_port_overlap` permits this device's
-/// windows to overlap an earlier device's — the deliberate, first-match-resolved
-/// kind of overlap.
+/// windows to overlap another device's under the same-start strict containment
+/// rule of [`PortWindow::allow_overlap`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DeviceConfig {
     /// The device's stable role.
@@ -366,7 +391,7 @@ pub struct DeviceConfig {
     /// synchronizes them before the access, after this device, in config order.
     /// Directed edges; list indirect dependents explicitly. Empty by default.
     pub access_dependents: Vec<DeviceId>,
-    /// Whether this device's port windows may overlap an earlier device's.
+    /// Permit overlaps under the same-start containment rule of [`PortWindow::allow_overlap`].
     pub allow_port_overlap: bool,
 }
 
@@ -399,7 +424,7 @@ impl DeviceConfig {
         self
     }
 
-    /// Allow this device's port windows to overlap an earlier device's.
+    /// Permit overlaps under the same-start containment rule of [`PortWindow::allow_overlap`].
     #[must_use]
     pub fn allowing_port_overlap(mut self) -> Self {
         self.allow_port_overlap = true;

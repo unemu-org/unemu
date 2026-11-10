@@ -398,8 +398,8 @@ impl MachineConfig {
         Ok(())
     }
 
-    /// No two devices decode an overlapping port range unless the overlap is
-    /// explicitly allowed (first-match order then resolves it).
+    /// A flagged overlap must be strict containment with the same start, so
+    /// `(start, end)` order gives every shared port to the narrower window.
     fn check_port_overlaps(&self) -> Result<(), ConfigError> {
         for (i, a) in self.devices.iter().enumerate() {
             for b in &self.devices[i + 1..] {
@@ -414,6 +414,15 @@ impl MachineConfig {
                                 return Err(ConfigError::PortOverlap {
                                     a: a.id,
                                     b: b.id,
+                                    port: wa.start.max(wb.start),
+                                });
+                            }
+                            if wa.start != wb.start || wa.end == wb.end {
+                                return Err(ConfigError::PortOverlapDecodeOrder {
+                                    a: a.id,
+                                    b: b.id,
+                                    a_window: *wa,
+                                    b_window: *wb,
                                     port: wa.start.max(wb.start),
                                 });
                             }
@@ -1918,6 +1927,111 @@ mod tests {
             uart.allow_port_overlap = true;
         }
         assert_eq!(config.validate(), Ok(()));
+    }
+
+    #[test]
+    fn flagged_primary_control_inside_unsplit_fdc_is_rejected() {
+        for flag_on_fdc in [false, true] {
+            for device_flag in [false, true] {
+                let mut config = valid_config();
+                let post = find_device(&mut config, DeviceId::Post);
+                post.kind = DeviceKind::Post(PostPortCfg { port: 0x3F6 });
+                post.ports = vec![PortWindow::single(0x3F6)];
+                let flagged = find_device(
+                    &mut config,
+                    if flag_on_fdc {
+                        DeviceId::Fdc
+                    } else {
+                        DeviceId::Post
+                    },
+                );
+                if device_flag {
+                    flagged.allow_port_overlap = true;
+                } else {
+                    flagged.ports[0].allow_overlap = true;
+                }
+                let error = config.validate().unwrap_err();
+                assert_eq!(
+                    error,
+                    ConfigError::PortOverlapDecodeOrder {
+                        a: DeviceId::Post,
+                        b: DeviceId::Fdc,
+                        a_window: find_device(&mut config, DeviceId::Post).ports[0],
+                        b_window: find_device(&mut config, DeviceId::Fdc).ports[0],
+                        port: 0x3F6,
+                    }
+                );
+                assert_eq!(error.to_string(), "port overlap at 0x03f6 between Post [0x03f6..=0x03f6] and Fdc [0x03f0..=0x03f7]: overlapping windows must share a start port and differ in width; split the wider window or move one");
+            }
+        }
+    }
+
+    #[test]
+    fn flagged_partial_port_overlap_is_rejected() {
+        for reverse_devices in [false, true] {
+            let mut config = valid_config();
+            let post = find_device(&mut config, DeviceId::Post);
+            post.kind = DeviceKind::Post(PostPortCfg { port: 0x3EE });
+            post.ports = vec![PortWindow::overlapping(0x3EE, 0x3F1)];
+            if reverse_devices {
+                config.devices.reverse();
+            }
+            let (a, b, a_window, b_window) = if reverse_devices {
+                (
+                    DeviceId::Fdc,
+                    DeviceId::Post,
+                    PortWindow::new(0x3F0, 0x3F7),
+                    PortWindow::overlapping(0x3EE, 0x3F1),
+                )
+            } else {
+                (
+                    DeviceId::Post,
+                    DeviceId::Fdc,
+                    PortWindow::overlapping(0x3EE, 0x3F1),
+                    PortWindow::new(0x3F0, 0x3F7),
+                )
+            };
+            assert_eq!(
+                config.validate(),
+                Err(ConfigError::PortOverlapDecodeOrder {
+                    a,
+                    b,
+                    a_window,
+                    b_window,
+                    port: 0x3F0,
+                })
+            );
+        }
+    }
+
+    #[test]
+    fn flagged_identical_port_windows_are_rejected() {
+        let mut config = valid_config();
+        find_device(&mut config, DeviceId::Post).ports =
+            vec![PortWindow::overlapping(0x3F0, 0x3F7)];
+        let error = config.validate().unwrap_err();
+        assert_eq!(
+            error,
+            ConfigError::PortOverlapDecodeOrder {
+                a: DeviceId::Post,
+                b: DeviceId::Fdc,
+                a_window: PortWindow::overlapping(0x3F0, 0x3F7),
+                b_window: PortWindow::new(0x3F0, 0x3F7),
+                port: 0x3F0,
+            }
+        );
+        assert_eq!(error.to_string(), "port overlap at 0x03f0 between Post [0x03f0..=0x03f7] and Fdc [0x03f0..=0x03f7]: overlapping windows must share a start port and differ in width; split the wider window or move one");
+    }
+
+    #[test]
+    fn flagged_equal_width_partial_overlap_message_offers_relocation() {
+        let mut config = valid_config();
+        let post = find_device(&mut config, DeviceId::Post);
+        post.kind = DeviceKind::Post(PostPortCfg { port: 0x3EE });
+        post.ports = vec![PortWindow::overlapping(0x3EE, 0x3F5)];
+        let error = config.validate().unwrap_err();
+        assert!(matches!(error, ConfigError::PortOverlapDecodeOrder { .. }));
+        assert_eq!(error.to_string(), "port overlap at 0x03f0 between Post [0x03ee..=0x03f5] and Fdc [0x03f0..=0x03f7]: overlapping windows must share a start port and differ in width; split the wider window or move one");
     }
 
     #[test]

@@ -344,11 +344,11 @@ fn resolve_file_sources(config: &MachineConfig) -> Result<Cow<'_, MachineConfig>
 /// Build the port + MMIO decode map from the device windows, sorted so the map is
 /// a pure function of the config, not of device build order (§4.1).
 ///
-/// Non-overlapping ranges are unaffected by the sort; a deliberately overlapping
-/// pair (flagged in the config and already accepted by validation) is ordered
-/// narrower-first, so first-match hands the shared byte to the more specific
-/// device — the `0x80` POST latch winning over a wider DMA page-register range,
-/// for example.
+/// Ports sort by `(start, end)`, not by width. Validation accepts a flagged
+/// overlap only for strict containment with the same start, so the narrower
+/// window sorts first and owns every shared port. A POST latch at `0x80` can
+/// therefore win over a DMA page range starting at `0x80`. A window starting
+/// later inside a wider range would lose; callers must split the wider window.
 fn build_decode_map(config: &MachineConfig, device_index: &HashMap<DeviceId, usize>) -> DecodeMap {
     let mut ports: Vec<PortRange> = Vec::new();
     for dc in &config.devices {
@@ -1274,6 +1274,167 @@ mod tests {
         assert_eq!(map[&DeviceId::Fdc], 9);
         assert_eq!(map[&DeviceId::Dma], 10);
         assert_eq!(map.len(), 11);
+    }
+
+    fn assert_bus_port_read_owner(
+        assembled: &mut AssembledMachine,
+        port: u16,
+        expected: Option<DeviceId>,
+    ) {
+        let bus = assembled.machine.bus_mut();
+        bus.set_trace_policy(device::TracePolicy::Ring { capacity: 16 });
+        bus.port_read(port, 1).expect("port read succeeds");
+        // An open-bus value alone cannot distinguish an unused FDC port from
+        // the POST latch or an undecoded port; the recipient's trace can.
+        let mut owners = Vec::new();
+        for (&id, &index) in &assembled.device_index {
+            for event in bus.device_mut(index).unwrap().take_trace() {
+                if matches!(event, device::TraceEvent::Port {
+                    port: actual, size: 1, dir: device::AccessDir::Read, ..
+                } if actual == port)
+                {
+                    owners.push(id);
+                }
+            }
+        }
+        assert_eq!(
+            owners,
+            expected.into_iter().collect::<Vec<_>>(),
+            "port {port:#x}"
+        );
+        let open_reads = bus
+            .take_open_bus_trace()
+            .into_iter()
+            .filter(|event| {
+                matches!(event, device::TraceEvent::Port {
+                port: actual, size: 1, dir: device::AccessDir::Read, ..
+            } if *actual == port)
+            })
+            .count();
+        assert_eq!(
+            open_reads,
+            usize::from(expected.is_none()),
+            "port {port:#x}"
+        );
+    }
+
+    #[test]
+    fn split_fdc_leaves_primary_control_with_its_owner() {
+        let mut config = reference_config();
+        let post = config
+            .devices
+            .iter_mut()
+            .find(|d| d.id == DeviceId::Post)
+            .unwrap();
+        post.kind = DeviceKind::Post(PostPortCfg { port: 0x3F6 });
+        post.ports = vec![PortWindow::single(0x3F6)];
+        let fdc = config
+            .devices
+            .iter_mut()
+            .find(|d| d.id == DeviceId::Fdc)
+            .unwrap();
+        fdc.ports = FdcCfg::port_windows(true);
+        assert_eq!(
+            fdc.ports,
+            vec![PortWindow::new(0x3F0, 0x3F5), PortWindow::single(0x3F7)]
+        );
+        assert!(config
+            .devices
+            .iter()
+            .all(|d| !d.allow_port_overlap && d.ports.iter().all(|w| !w.allow_overlap)));
+        let mut assembled =
+            assemble(&config).expect("split FDC assembles alongside primary control");
+        for (port, owner) in [
+            (0x3F5, DeviceId::Fdc),
+            (0x3F6, DeviceId::Post),
+            (0x3F7, DeviceId::Fdc),
+        ] {
+            assert_bus_port_read_owner(&mut assembled, port, Some(owner));
+        }
+    }
+
+    #[test]
+    fn same_start_post_dma_overlap_gives_post_priority() {
+        for reverse_devices in [false, true] {
+            for flag_on_dma in [false, true] {
+                let mut config = reference_config();
+                let dma = config
+                    .devices
+                    .iter_mut()
+                    .find(|d| d.id == DeviceId::Dma)
+                    .unwrap();
+                dma.ports[1] = PortWindow::new(0x80, 0x8F);
+                let flagged_id = if flag_on_dma {
+                    DeviceId::Dma
+                } else {
+                    DeviceId::Post
+                };
+                let flagged = config
+                    .devices
+                    .iter_mut()
+                    .find(|d| d.id == flagged_id)
+                    .unwrap();
+                let window = if flag_on_dma { 1 } else { 0 };
+                flagged.ports[window].allow_overlap = true;
+                if reverse_devices {
+                    config.devices.reverse();
+                }
+                assert_eq!(config.validate(), Ok(()));
+                let mut assembled = assemble(&config).expect("same-start overlap assembles");
+                for (port, owner) in [(0x80, DeviceId::Post), (0x81, DeviceId::Dma)] {
+                    assert_bus_port_read_owner(&mut assembled, port, Some(owner));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn preset_configs_and_fdc_decode_keep_legacy_windows() {
+        let configs = [
+            ("at_boot", crate::at_boot(vec![0xF4])),
+            ("at_keyboard", crate::at_keyboard(vec![0xF4])),
+            ("at_rtc", crate::at_rtc(vec![0xF4], 64, 8)),
+            (
+                "at_fdc_write",
+                crate::at_fdc_write(vec![0xF4], vec![0; 512], 0x600),
+            ),
+            ("at_vga_text", crate::at_vga_text(vec![0xF4])),
+            ("test386", crate::test386(vec![0; 65536])),
+            (
+                "floppy_boot",
+                crate::floppy_boot(vec![0xF4], vec![0; 1_474_560]),
+            ),
+            ("bios_without_floppy", crate::bios(vec![0; 32768], None)),
+            (
+                "bios_with_floppy",
+                crate::bios(vec![0; 32768], Some(vec![0; 1_474_560])),
+            ),
+        ];
+        for (name, config) in configs {
+            let mut legacy = config.clone();
+            for fdc in legacy
+                .devices
+                .iter_mut()
+                .filter(|d| matches!(d.kind, DeviceKind::Fdc(_)))
+            {
+                // Literal legacy wiring is independent of the shared window builder.
+                fdc.ports = if name == "bios_without_floppy" {
+                    Vec::new()
+                } else {
+                    vec![PortWindow::new(0x3F0, 0x3F7)]
+                };
+            }
+            assert_eq!(config, legacy, "{name}");
+            assert_eq!(config.validate(), Ok(()));
+            let mut assembled = assemble(&config).expect("preset assembles");
+            let expected_owner = match name {
+                "at_fdc_write" | "floppy_boot" | "bios_with_floppy" => Some(DeviceId::Fdc),
+                _ => None,
+            };
+            for port in 0x3F0..=0x3F7 {
+                assert_bus_port_read_owner(&mut assembled, port, expected_owner);
+            }
+        }
     }
 
     #[test]

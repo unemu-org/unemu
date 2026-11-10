@@ -61,10 +61,6 @@ const KBD_CMD: u16 = 0x64;
 const CMOS_INDEX_PORT: u16 = 0x70;
 /// MC146818 CMOS/RTC data port (`0x71`).
 const CMOS_DATA_PORT: u16 = 0x71;
-/// First port of the µPD765 floppy controller (`0x3F0`).
-const FDC_BASE: u16 = 0x3F0;
-/// Last port of the µPD765 floppy controller (`0x3F7`).
-const FDC_TOP: u16 = 0x3F7;
 
 /// Full 1 MiB guest space for the test386 and BIOS machines.
 const MIB: u64 = 0x10_0000;
@@ -345,7 +341,7 @@ pub fn at_fdc_write(program: Vec<u8>, pattern: Vec<u8>, pattern_base: u64) -> Ma
         PortWindow::new(0x00, 0x0F),
         PortWindow::new(0x80, 0x8F),
     ]));
-    devices.push(fdc(vec![PortWindow::new(FDC_BASE, FDC_TOP)], None, Some(2)));
+    devices.push(fdc(FdcCfg::port_windows(false), None, Some(2)));
 
     let blank = ImageSource::Blank {
         size: FloppyGeometry::DD_360K.image_bytes(),
@@ -478,7 +474,7 @@ pub fn floppy_boot(loader: Vec<u8>, floppy: Vec<u8>) -> MachineConfig {
             PortWindow::new(0x00, 0x0F),
             PortWindow::new(0x80, 0x8F),
         ]),
-        fdc(vec![PortWindow::new(FDC_BASE, FDC_TOP)], None, Some(2)),
+        fdc(FdcCfg::port_windows(false), None, Some(2)),
     ];
     MachineConfig {
         board: BoardModel::Bare,
@@ -545,11 +541,7 @@ pub fn bios(rom: Vec<u8>, floppy: Option<Vec<u8>>) -> MachineConfig {
     let drives = match &floppy {
         Some(_) => {
             // A decoded floppy controller uses the board's 8237 for the boot path.
-            devices.push(fdc(
-                vec![PortWindow::new(FDC_BASE, FDC_TOP)],
-                Some(6),
-                Some(2),
-            ));
+            devices.push(fdc(FdcCfg::port_windows(false), Some(6), Some(2)));
             vec![floppy_drive(ImageSource::Inline(floppy.unwrap()))]
         }
         None => {

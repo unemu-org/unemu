@@ -82,7 +82,7 @@ numbered **M1–M8** and listed after the table.
 | `DeviceConfig.irq` | `[[card]] irq` (`0..15` or `"none"`) | type default, user override | — |
 | `DeviceConfig.dma` (`DmaSpec`) | `[[card]] dma` (`0..3` or `"none"`) | type default, user override | — |
 | `DeviceConfig.access_dependents` | none | board (empty today) | — |
-| `DeviceConfig.allow_port_overlap`, `PortWindow.allow_overlap` | none | type default (the IDE `0x3F6` window) | — |
+| `DeviceConfig.allow_port_overlap`, `PortWindow.allow_overlap` | none | none | — |
 | `UartCfg.base` | `[[card]] port` | type default `0x3F8` | — |
 | `PicCfg.cascade`, `PitCfg`, `I8042Cfg`, `SysControlCfg`, `DmaCfg` | none | board | — |
 | `PostPortCfg.port` | `[board] post_port` | board default | — |
@@ -312,14 +312,32 @@ honours it. The MDA, VGA and µPD765 models decode fixed absolute ports (READ,
 | `mda` | `Mda` | `0x3B0–0x3BB`, `0x3BF` | no | — | — | `0xB0000`, 32 KiB | — |
 | `vga-text` | `Vga` | `0x3D4–0x3D5`, `0x3D8–0x3DA` | no | — | — | `0xB8000`, 32 KiB | — |
 | `uart-16550` | `Uart` | `base…base+7`, base `0x3F8` | yes, any base ≤ `0xFFF8` | 4 for `0x3F8` and `0x3E8`, 3 for `0x2F8` and `0x2E8`, otherwise required | — | — | — |
-| `fdc-765` | `Fdc` | `0x3F0–0x3F7` | no (`0x370` is reserved) | 6 | 2 | — | `unit` 0–1 |
-| `ide` | `Ide` (M5) | `0x1F0–0x1F7`, plus `0x3F6` marked as an intended overlap with the FDC window | `0x1F0` or `0x170`; the control port is base + `0x206` | 14 (15 for `0x170`) | — (PIO) | — | `channel` master, slave |
+| `fdc-765` | `Fdc` | `0x3F0–0x3F7`; with primary IDE: `0x3F0–0x3F5`, `0x3F7` | no (`0x370` is reserved) | 6 | 2 | — | `unit` 0–1 |
+| `ide` | `Ide` (M5) | `0x1F0–0x1F7`, plus a plain `0x3F6` window | `0x1F0` or `0x170`; the control port is base + `0x206` | 14 (15 for `0x170`) | — (PIO) | — | `channel` master, slave |
 
-The IDE `0x3F6` window is a single port marked as an intended overlap. The
-decode map orders narrower windows first, so it wins over the FDC's
-`0x3F0–0x3F7`. This is the same mechanism that gives `0x80` to the POST latch
-and `0x81` to the 8237 (READ, `build_decode_map`). Machines without IDE keep
-their decode unchanged.
+When an IDE card uses the primary channel, lowering gives the FDC card
+`0x3F0–0x3F5` and `0x3F7`, using `FdcCfg::port_windows(true)`. The IDE control
+register at `0x3F6` is a plain window; neither card needs an overlap flag.
+Machines without primary IDE keep the unsplit `0x3F0–0x3F7` window through
+`FdcCfg::port_windows(false)` (READ, `presets.rs`).
+
+The IBM Personal Computer AT Technical Reference, System Board, **I/O Address
+Map** lists `0x3F0–0x3F7` for the diskette controller and `0x1F0–0x1F8` for fixed
+disk. Its **Fixed Disk and Diskette Drive Adapter** section identifies the
+fixed-disk register at `0x3F6` and the diskette registers at `0x3F2`, `0x3F4`,
+`0x3F5` and `0x3F7`. Decoding `0x3F0–0x3F5` plus `0x3F7` is this model's choice:
+unused `0x3F0`, `0x3F1` and `0x3F3` stay with the FDC, as in the unsplit window.
+This model leaves all of `0x3F7` with the FDC: digital
+input register on read and configuration control register on write. The real
+adapter shares `0x3F7` read bits with the fixed disk; that bit-level sharing is
+not modelled.
+
+The decode map sorts by `(start, end)` and uses the first match. A flagged
+overlap is accepted only for strict containment with the same starting port,
+so the narrower window wins every shared port, as with a POST latch at `0x80`
+over a DMA page range starting at `0x80`. A contained window starting later,
+a partial overlap, or identical windows is rejected; split the wider window
+or move one (READ, `build_decode_map`, `check_port_overlaps`).
 
 Schema 1 rejects a second card of the same kind with `DuplicateDeviceId`,
 because `DeviceId` is one per role. Supporting COM2 later needs instance ids in
@@ -1010,7 +1028,7 @@ Ordered; each bead is narrow and lands green.
    *Depends on:* the persistent-media implementation beads, and 5.
 10. **IDE card kind and device (M5).** `DeviceKind::Ide`, the ATA PIO
     register device with isolation tests on a mock bus, channel binding, the
-    `0x3F6` overlap window, `machines/at-ide.toml`.
+    `0x3F6` control window and split FDC windows, `machines/at-ide.toml`.
     *Accept:* device unit tests pass. `validate()` rejects an IDE card without
     a `fixed-disk` provider. A golden boots from a hard-disk image once the
     firmware spike names the option ROM.

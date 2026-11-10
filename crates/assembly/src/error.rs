@@ -206,6 +206,21 @@ pub enum ConfigError {
         port: u16,
     },
 
+    /// A flagged overlap cannot give every shared port to a narrower window.
+    #[error("port overlap at {port:#06x} between {a:?} [{a_start:#06x}..={a_end:#06x}] and {b:?} [{b_start:#06x}..={b_end:#06x}]: overlapping windows must share a start port and differ in width; split the wider window or move one", a_start = .a_window.start, a_end = .a_window.end, b_start = .b_window.start, b_end = .b_window.end)]
+    PortOverlapDecodeOrder {
+        /// One of the contending devices.
+        a: DeviceId,
+        /// The other contending device.
+        b: DeviceId,
+        /// The first device's overlapping window.
+        a_window: crate::PortWindow,
+        /// The second device's overlapping window.
+        b_window: crate::PortWindow,
+        /// The first port both windows decode.
+        port: u16,
+    },
+
     /// Two MMIO windows cover an overlapping address range.
     #[error("mmio overlap at {addr:#x} between {a:?} and {b:?}")]
     MmioOverlap {

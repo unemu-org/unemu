@@ -507,14 +507,34 @@ POST diagnostic latch while `0x81` is a DMA page register — adjacent ports own
 by different devices, where a sloppy range would swallow the wrong one. The
 assembler therefore:
 
-1. Sorts the decode entries **deterministically** (so build order cannot change
-   which device wins a lookup), and
-2. **Errors on any overlap** between two devices' ranges (a genuine conflict is a
-   config bug, not something to resolve silently by first-match).
+1. Sorts port entries by `(start, end)` and MMIO entries by `(base, end)`
+   **deterministically**.
+2. Rejects every unflagged port overlap with `PortOverlap`, and every MMIO overlap.
+   A port overlap flagged by `PortWindow.allow_overlap` or
+   `DeviceConfig.allow_port_overlap` is accepted only when one window is strictly
+   contained in the other and both start at the same port. Sorting then places
+   the narrower window first, giving it every shared port. Identical windows,
+   partial overlaps and containment with different starts fail with
+   `PortOverlapDecodeOrder`, which names both devices, both windows and the first
+   shared port and asks the caller to split the wider window or move one.
 
-Deterministic sort + hard error on overlap means the decode map is a pure
-function of the config, and an accidental collision fails loudly at assembly time
-instead of misrouting a port at run time.
+Deterministic sorting and validation make the decode map a pure function of the
+config, and an accidental collision fails loudly at assembly time instead of
+misrouting a port at run time.
+
+`FdcCfg::port_windows(primary_ata_control)` supplies the FDC's AT decode. Existing
+presets pass `false`, preserving `0x3F0–0x3F7`. With a primary ATA control register
+at `0x3F6`, callers pass `true`: the FDC gets `0x3F0–0x3F5` and `0x3F7`, with no
+overlap flags. The IBM Personal Computer AT Technical Reference, System Board,
+**I/O Address Map** lists `0x3F0–0x3F7` for the diskette controller and
+`0x1F0–0x1F8` for fixed disk. Its **Fixed Disk and Diskette Drive Adapter** section
+identifies the fixed-disk register at `0x3F6` and the diskette registers at
+`0x3F2`, `0x3F4`, `0x3F5` and `0x3F7`. The split decode is this model's choice:
+it keeps unused `0x3F0`, `0x3F1` and `0x3F3` with the FDC, as the unsplit window
+does. This model keeps `0x3F7` entirely with the FDC
+(digital input register on read, configuration control register on write).
+The real adapter shares read bits there with the fixed disk; that bit-level
+sharing is not modelled.
 
 **Validation before assembly.** A `ConfigError` pass runs *before* any device is
 built: an absent or incompatible drive controller, an unavailable unit, an IRQ line with no controller, a `LoadImage`
