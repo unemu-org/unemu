@@ -24,6 +24,7 @@ crate: image loading belongs to `assembly`, and guest assets live under `vendor/
 | `machine` | Generic `Machine<C: Cpu>` and execution/clock/IRQ/DMA loop | `cpu`, `bus`, `device`, `thiserror` | `testkit`, `devices` |
 | `video` | `FrameSink`, text frames/grids, text-mode renderer and capture sink | `device` | None |
 | `assembly` | `MachineConfig`, validation, presets, image/device construction, wiring, and `RunPolicy` driver | `machine`, `cpu`, `bus`, `device`, `devices`, `video`, `chipset`, `thiserror` | None |
+| `window` | Optional CP437 rasteriser, shared `FrameSink`, and winit/softbuffer FreeDOS binary | `video`, `assembly`, `machine`, `winit`, `softbuffer` | None |
 | `testkit` | Single-device `MockBus`, scripted `MockCpu`, golden assertions | `device`, `cpu` | None |
 | `cli` | Binary and runner library: guest programs, assembly/policy selection, output capture and stop diagnostics | `assembly`, `device`, `bus`, `cpu`, `chipset`, `machine`, `devices`, `video`, `anyhow` | `testkit` |
 
@@ -154,6 +155,33 @@ the global clock and its fractional remainder, halted state and idle counters
 also belong to that machine-level snapshot.
 
 ### Observation and presentation
+
+The optional `window` crate is a leaf frontend: no other workspace crate depends
+on it. Headless capture remains the default. Its binary uses the same
+`assembly::bios` preset as the FreeDOS golden, advances fixed 100,000-unit
+virtual-time chunks with `Machine::run_bounded`, then calls
+`AssembledMachine::capture_text(DeviceId::Mda)`. The observation facade delivers
+the frame to a boxed `WindowSink`; a shared, single-threaded handle exposes the
+last rasterised pixels to winit/softbuffer. Neither sink nor window ticks devices.
+The frontend sets an effectively unlimited idle wait so a HLT with interrupts
+enabled can wait for timer IRQs, bounded by each chunk's absolute cap.
+Progress follows redraw delivery: minimising or occluding the window can pause
+execution, and a resize-triggered redraw advances a chunk until pacing is added.
+
+```text
+MDA scanout -> observation capture -> WindowSink -> CP437 rasteriser
+  -> last 0x00RRGGBB pixel buffer -> softbuffer -> winit window
+```
+
+The original VileR v2.2 fonts (CC BY-SA 4.0, attribution and hashes in
+`crates/window/assets/fonts/NOTICE.md`) are embedded and parsed from NE/FNT
+resources at load time. MDA uses 9×14 cells and colour uses 8×16 cells, with
+integer pixel replication. The binary uses scale 2, centres the frame on resize
+and clips it if the window becomes smaller; no interpolation or aspect correction
+is applied. Blink is steady; no host clock, pacing or keyboard input is present.
+A halt, CPU failure or the FreeCOM date prompt stops advancement while the last
+frame stays visible. Window creation is confined to the binary; workspace tests,
+including the observation-to-pixels smoke test, do not open a window.
 
 `assemble_with_observation` binds requested routes by `DeviceId` and validates
 capabilities before execution. `AssembledMachine::capture_text` captures display

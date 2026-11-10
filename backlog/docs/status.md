@@ -40,6 +40,16 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   bytes through byte sinks; access traces are off in production and opt-in as a
   bounded ring with drop counts. Snapshots carry each device's time base and
   reject malformed input.
+- **Optional window presenter:** the `window` leaf crate embeds the original
+  VileR v2.2 CP437 MDA/VGA fonts (CC BY-SA 4.0), parses NE/FNT resources and
+  rasterises decoded text styles to softbuffer pixels. `unemupc98-window` boots
+  the FreeDOS preset with fixed chunks and observation subscribers; it retains
+  the date prompt or final stopped frame. Presenter and subscriber smoke tests
+  run headlessly. The maintainer confirmed the FreeDOS prompt, font and colours
+  in a window. MDA underline uses row 12; cursors use BIOS default shapes rather
+  than programmed CRTC start/end registers. HLT waits for IRQs within chunk caps.
+  Pacing, blinking and host keyboard input are not implemented; advancement
+  currently follows redraw delivery.
 - **Tests:** MEASURED 2026-11-10 at `479f8ed`: `cargo test --workspace` 610
   passed, 0 failed; `cargo test --release -p devices` 358 passed; the 13 slow
   goldens and engine comparisons pass (BIOS POST, floppy boot, FreeDOS prompt,

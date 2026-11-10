@@ -19,7 +19,29 @@ UNEMUPC98_REQUIRE_FIXTURES=1 UNEMUPC98_SCHEDULER_WALL_TIMES=1 cargo test --offli
 UNEMUPC98_REQUIRE_FIXTURES=1 cargo test --offline -p cli --test dos_interactive_golden -- --ignored --nocapture
 UNEMUPC98_REQUIRE_FIXTURES=1 cargo test --offline -p cli --test dos_write_golden -- --ignored --nocapture
 cargo test -p devices                        # one crate's tests
+cargo build --offline -p window --bin unemupc98-window
+cargo run --offline -p window --bin unemupc98-window # default vendor BIOS + FreeDOS image
+cargo run --offline -p window --bin unemupc98-window -- vendor/kiselev-bios/bios-xi8088.bin vendor/freedos/freedos.img
+cargo tree --offline -i window               # window is a leaf frontend
 ```
+
+The window binary requires a graphical desktop and fetched BIOS/FreeDOS fixtures.
+It uses a fixed 2× pixel scale and stops advancing at the FreeCOM date prompt,
+a natural halt or a CPU failure, keeping the last screen visible until closed.
+There is no host keyboard input or pacing yet. Blink stays visible. Workspace
+and presenter tests remain headless. Manual desktop acceptance confirmed the
+FreeDOS date prompt, font and colours. Progress follows redraw delivery:
+minimising or occluding the window can pause execution, and a resize-triggered
+redraw advances a chunk until pacing is added.
+
+Default fixture paths are resolved against the workspace location recorded at
+build time, independently of the current directory; explicit paths remain
+relative to the current directory. From outside the workspace, Cargo also needs
+`--manifest-path /path/to/workspace/Cargo.toml`. Missing-file diagnostics name the
+path and the relevant `vendor/kiselev-bios/fetch.sh` or `vendor/freedos/fetch.sh`.
+`--help`, `--version` and `--about` include the embedded fonts' attribution.
+On Linux the window requires the host's X11 or Wayland client libraries at run
+time; a bare Nix devShell may not put them on the dynamic loader's search path.
 
 The ignored set includes firmware/DOS goldens and corrected PerClock-vs-Deadline
 comparisons, including final RAM/register/device state. The per-clock engine is
@@ -44,7 +66,10 @@ cargo deny --all-features check licenses bans sources
 ```
 
 The `deny.toml` allowlist covers the all-features graph: AGPL-3.0-or-later for
-workspace crates, MIT, Apache-2.0, and Unicode-3.0 for dependencies. New licences
+workspace crates, MIT, Apache-2.0, Unicode-3.0, BSD-2-Clause, BSD-3-Clause
+and ISC for dependencies. CC-BY-SA-4.0 is allowed only for the `window` crate
+(a crate-scoped exception), whose embedded font assets carry it; see
+`crates/window/assets/fonts/NOTICE.md`. New licences
 require review before extending it. Unknown registries and git sources are denied;
 only the pinned x86jit repository is explicitly allowed. Wildcard dependencies
 are denied and duplicate versions warn. These checks do not need the advisory database.

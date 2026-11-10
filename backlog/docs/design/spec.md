@@ -78,6 +78,35 @@ Glyph rasterisation and blink timing remain presenter concerns. The BIOS/FreeDOS
 profiles route B0000–B7FFF, display ports 3B0–3BB and port 3BF to the MDA card.
 The printer ports 3BC–3BE are not routed.
 
+§9.4 Optional host presenter (`window` crate). It subscribes a boxed `FrameSink`
+to the assembly observation facade; no test-path crate depends on it. The pure
+rasteriser embeds the unmodified Ultimate Oldschool PC Font Pack v2.2 by VileR
+(CC BY-SA 4.0), parsing MZ/NE RT_FONT resources and fixed-width FNT v2/v3
+column-major glyphs into 256-entry CP437 atlases. MDA cells use the 9×14 font;
+colour cells use 8×16 and the standard 16-colour CGA/VGA text palette. Output is
+row-major `0x00RRGGBB`, replicated by a nonzero integer scale. Buffers larger
+than 16,777,216 pixels are rejected. MDA normal foreground is `AAAAAA`, intense
+foreground `FFFFFF`, background black; background intensity is `555555`, or
+`FFFFFF` behind reverse video. Reverse foreground intensity leaves black ink
+black and normal grey paper unchanged (attribute 78h); only background intensity
+brightens reverse paper. Non-display remains black. Underline is scanline 12
+(zero-based). The visible cursor uses the cell foreground on BIOS default rows
+11–12 for MDA and 13–14 for VGA. The programmed CRTC cursor start/end registers
+are not yet exposed by `TextModeState`. Blink is steady pending timed
+presentation. No programmable fonts, cursor shape, phosphor simulation,
+aspect correction, graphics or host input.
+
+The winit/softbuffer binary assembles the FreeDOS BIOS preset, runs fixed
+100,000-unit virtual instruction-equivalent chunks (including halted virtual
+time) and captures MDA after each chunk before painting. An effectively unlimited
+idle wait (`set_idle_limit(Some(u64::MAX))`) lets HLT wait for IRQs; each chunk's
+absolute virtual-time cap still bounds execution. It reads no host clock,
+spawns no threads and never ticks devices itself. The FreeCOM date prompt, a
+natural halt or a CPU failure stops advancement; the last screen remains visible.
+Headless capture is still the default. Font provenance is recorded in
+`crates/window/assets/fonts/NOTICE.md` and in the binary's `--help`, `--version`
+and `--about` output; build/run commands are in `commands.md`.
+
 ## §10 Testing
 
 Mirrors [`../testing.md`](../testing.md): unit, fuzz/property, coverage matrix,

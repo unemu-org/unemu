@@ -8,8 +8,19 @@ allow = [
     "MIT",
     "Apache-2.0",
     "Unicode-3.0",
+    # Permissive licenses of the windowed presenter's platform dependencies
+    # (dynamic loading of the display libraries, Wayland window decorations).
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
 ]
 confidence-threshold = 0.9
+
+# The window presenter embeds unmodified CC BY-SA 4.0 font data; the license is
+# allowed for that crate only, so no dependency can bring it in unnoticed.
+[[licenses.exceptions]]
+crate = "window"
+allow = ["CC-BY-SA-4.0"]
 
 [bans]
 multiple-versions = "warn"

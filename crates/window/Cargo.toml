@@ -1,0 +1,21 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+[package]
+name = "window"
+version.workspace = true
+edition.workspace = true
+# The binary embeds CC BY-SA font data alongside the AGPL source code.
+license = "AGPL-3.0-or-later AND CC-BY-SA-4.0"
+rust-version.workspace = true
+repository.workspace = true
+description = "Windowed presenter: draws text frames in a host window (§9)."
+
+[dependencies]
+video.workspace = true
+assembly.workspace = true
+machine.workspace = true
+winit.workspace = true
+softbuffer.workspace = true
+
+[[bin]]
+name = "unemupc98-window"
+path = "src/main.rs"
