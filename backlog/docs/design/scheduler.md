@@ -24,6 +24,33 @@ completed-transaction-before-INTA ordering, IF/STI/SS readiness, exact active
 caps, and halted event/bound jumps. Their ordered streams must match without
 normalization, including `FinalState` (RAM hashes, registers, saved device state).
 
+Access coupling is declared by `DeviceConfig.access_dependents`: an access to
+one device can change the listed devices' next events. Assembly resolves roles
+to bus indices and calls `Bus::add_access_coupling`. Before each port byte,
+MMIO fragment, or mutable device borrow, the bus synchronizes the target first,
+then its declared dependents in ascending bus-index (configuration) order, all
+at the access-start clock and before the register side effect. The ordering is
+independent of declaration order; duplicate edges are idempotent. Edges are
+directed, with no recursive traversal: indirect affected timers must also be
+listed. Cycles therefore do not recurse or duplicate synchronization.
+
+This brings a dependent timer's last-synced time current before a changed input
+can shorten its period. Invalidating its deadline alone could instead return
+`At(stale_time + period) <= now` and stop the machine with "device deadline did
+not advance". Synchronization clears the target and dependent cache slots; the
+machine retains its existing global invalidation after the access and before
+charging the stopping instruction. Unrelated devices receive no access sync.
+`EveryPitClock` devices are already current and receive no extra sync, even
+when declared as dependents. The later `Bus::settle` still visits each device
+exactly once in bus order, without expanding coupling edges.
+
+No preset currently declares a coupling. The cascaded PIC faces share state,
+but both are `Dormant` with no elapsed timer or autonomous deadline, so they
+need only the existing invalidation and pin sampling. Port 61h still does not
+drive PIT channel 2; its speaker wiring belongs to a later hardware change.
+Coupling declarations prepare time before an access; they do not connect pins
+or implement register effects. See also §Access synchronization and invalidation.
+
 During adoption the CPU core (then pinned at
 `70be0087b583f1e38bf3479d92e90e89ef998cf1`) decoded a Real16 block past the
 16-bit IP wrap and did not observe stores into not-yet-executed bytes of the
@@ -394,6 +421,9 @@ clock internally; that reduces visits to other devices but is not yet a fast
 PIT implementation.
 
 ### Access synchronization and invalidation
+
+The adopted whole-PIT-clock implementation and declared access coupling order
+are described in §Adoption. The access-context sketch below is proposal history.
 
 Separate **access timestamps** from timer advancement. Add an explicit
 `DeviceAccessContext { now: VInstant, pit_clock: VClock }` to bus-dispatched

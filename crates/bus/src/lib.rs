@@ -26,6 +26,13 @@
 //!
 //! [`Bus::tick_due`] dispatches due transitions; [`Bus::tick_all`] supports the
 //! per-clock test oracle. IRQ levels reach the machine through [`Bus::device_irq_line`].
+//! Before a port/MMIO access or mutable borrow, the bus synchronizes the target,
+//! then its declared access dependents in ascending bus-index order, before any
+//! register side effect. This keeps a dependent timer's next deadline based on
+//! current time. Couplings are directed and do not expand transitively. Unrelated
+//! devices receive no access synchronization; [`Bus::settle`] visits every
+//! device once in bus order. `EveryPitClock` devices need no extra sync in either
+//! path. See `backlog/docs/design/scheduler.md`, §Adoption.
 
 use std::ops::RangeInclusive;
 
@@ -104,11 +111,24 @@ pub enum BusError {
     Device(#[from] DeviceError),
 }
 
+/// Invalid directed access coupling: both indices must exist and be distinct.
+#[derive(Clone, Debug, PartialEq, Eq, Error)]
+#[error(
+    "invalid access coupling from device {device} to {dependent}: indices must exist and differ"
+)]
+pub struct AccessCouplingError {
+    /// Index of the accessed device.
+    pub device: usize,
+    /// Index of the device whose timer can change.
+    pub dependent: usize,
+}
+
 /// The bus: owns devices + the decode map and dispatches accesses (§3.3).
 pub struct Bus {
     devices: Vec<Box<dyn Device>>,
     map: DecodeMap,
     deadlines: Vec<Option<NextEvent>>,
+    access_dependents: Vec<Vec<usize>>,
     /// Accesses may change a pin even when no autonomous timer is due. Sample
     /// those changes at the next clock, preserving the reference loop's order.
     pins_dirty: bool,
@@ -136,6 +156,7 @@ impl Bus {
     pub fn new(devices: Vec<Box<dyn Device>>, map: DecodeMap) -> Self {
         Self {
             deadlines: vec![None; devices.len()],
+            access_dependents: vec![Vec::new(); devices.len()],
             pins_dirty: true,
             devices,
             map,
@@ -143,6 +164,33 @@ impl Bus {
             now: std::rc::Rc::new(std::cell::Cell::new(VClock::ZERO)),
             open_bus_trace: device::TraceBuffer::default(),
         }
+    }
+
+    /// Declare that an access to `device` can change `dependent`'s next event.
+    ///
+    /// Before access, synchronize the target first, then its dependents in
+    /// ascending bus-index order. Repeated declarations are idempotent. Edges
+    /// are directed: declare every affected timer explicitly, including indirect
+    /// dependents. Legacy every-clock devices receive no additional sync calls.
+    /// Invalid indices and self-coupling are rejected without changing the bus.
+    ///
+    /// The machine probes each DMA requester through a mutable borrow on every
+    /// settle pass, even when no transfer is pending. Declaring dependents on a
+    /// requester therefore re-synchronizes them on each probe. This only costs
+    /// host time: synchronization must be idempotent at the same virtual clock.
+    pub fn add_access_coupling(
+        &mut self,
+        device: usize,
+        dependent: usize,
+    ) -> Result<(), AccessCouplingError> {
+        if device >= self.devices.len() || dependent >= self.devices.len() || device == dependent {
+            return Err(AccessCouplingError { device, dependent });
+        }
+        let dependents = &mut self.access_dependents[device];
+        if let Err(position) = dependents.binary_search(&dependent) {
+            dependents.insert(position, dependent);
+        }
+        Ok(())
     }
 
     /// Set how the bus handles a port access no device decodes, returning the
@@ -405,6 +453,13 @@ impl Bus {
     }
 
     fn sync_access(&mut self, index: usize) {
+        self.sync_device(index);
+        for offset in 0..self.access_dependents[index].len() {
+            self.sync_device(self.access_dependents[index][offset]);
+        }
+    }
+
+    fn sync_device(&mut self, index: usize) {
         let dev = &mut self.devices[index];
         let event = self.deadlines[index]
             .take()
@@ -423,7 +478,7 @@ impl Bus {
     /// sampling at the next clock, just like a device access.
     pub fn settle(&mut self) {
         for index in 0..self.devices.len() {
-            self.sync_access(index);
+            self.sync_device(index);
         }
     }
 
@@ -850,14 +905,275 @@ mod tests {
 
     type CallLog = std::rc::Rc<std::cell::RefCell<Vec<(&'static str, VClock)>>>;
 
+    type CoupledCalls = std::rc::Rc<std::cell::RefCell<Vec<(usize, &'static str, VClock, u64)>>>;
+
+    struct CoupledTimer {
+        index: usize,
+        now: VClock,
+        period: std::rc::Rc<std::cell::Cell<u64>>,
+        calls: CoupledCalls,
+    }
+
+    impl Device for CoupledTimer {
+        fn name(&self) -> &'static str {
+            "coupled-timer"
+        }
+        fn port_read(&mut self, _: u16, _: u8) -> Result<u32, DeviceError> {
+            self.port_write(0, 1, 3)?;
+            Ok(3)
+        }
+        fn port_write(&mut self, _: u16, _: u8, value: u32) -> Result<(), DeviceError> {
+            self.calls
+                .borrow_mut()
+                .push((self.index, "access", self.now, self.period.get()));
+            self.period.set(u64::from(value));
+            Ok(())
+        }
+        fn mmio_read(&mut self, _: u64, _: u8) -> Result<u64, DeviceError> {
+            self.port_read(0, 1).map(u64::from)
+        }
+        fn mmio_write(&mut self, _: u64, _: u8, value: u64) -> Result<(), DeviceError> {
+            self.port_write(0, 1, value as u32)
+        }
+        fn tick(&mut self, now: VClock) {
+            self.now = now;
+            self.calls
+                .borrow_mut()
+                .push((self.index, "sync", now, self.period.get()));
+        }
+        fn next_event(&self, _: VClock) -> NextEvent {
+            if self.index == 0 {
+                NextEvent::Dormant
+            } else {
+                NextEvent::At(VClock(self.now.0 + self.period.get()))
+            }
+        }
+        fn irq_pending(&self) -> bool {
+            false
+        }
+        fn reset(&mut self) {
+            self.now = VClock::ZERO;
+        }
+        fn save(&self) -> Vec<u8> {
+            self.now.0.to_le_bytes().to_vec()
+        }
+        fn restore(&mut self, _: &[u8]) -> Result<(), DeviceError> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn coupled_deadline_starts_at_access_time() {
+        for access in 0..5 {
+            for cached in [false, true] {
+                let period = std::rc::Rc::new(std::cell::Cell::new(1000));
+                let calls = CoupledCalls::default();
+                let devices = (0..2)
+                    .map(|index| {
+                        Box::new(CoupledTimer {
+                            index,
+                            now: VClock::ZERO,
+                            period: period.clone(),
+                            calls: calls.clone(),
+                        }) as Box<dyn Device>
+                    })
+                    .collect();
+                let mut bus = Bus::new(
+                    devices,
+                    DecodeMap {
+                        ports: vec![PortRange {
+                            ports: 0x100..=0x100,
+                            device: 0,
+                        }],
+                        mmio: vec![MmioRange {
+                            addrs: 0x1000..=0x1000,
+                            device: 0,
+                        }],
+                    },
+                );
+                bus.add_access_coupling(0, 1).unwrap();
+                bus.tick_due(VClock(100));
+                assert_eq!(bus.next_event(), NextEvent::At(VClock(1000)));
+                if !cached {
+                    bus.invalidate_deadlines();
+                }
+                match access {
+                    0 => {
+                        bus.port_read(0x100, 1).unwrap();
+                    }
+                    1 => bus.port_write(0x100, 1, 3).unwrap(),
+                    2 => {
+                        bus.mmio_read(0x1000, 1).unwrap();
+                    }
+                    3 => bus.mmio_write(0x1000, 1, 3).unwrap(),
+                    _ => bus.device_mut(0).unwrap().port_write(0x100, 1, 3).unwrap(),
+                }
+                assert_eq!(bus.next_event(), NextEvent::At(VClock(103)));
+                bus.invalidate_deadlines();
+                assert_eq!(bus.next_event(), NextEvent::At(VClock(103)));
+                assert_eq!(
+                    calls.borrow().as_slice(),
+                    [
+                        (0, "sync", VClock(100), 1000),
+                        (1, "sync", VClock(100), 1000),
+                        (0, "access", VClock(100), 1000),
+                    ]
+                );
+            }
+        }
+    }
+
     struct TimedDevice {
         now: VClock,
         event: NextEvent,
         calls: CallLog,
+        before_access: Option<CallLog>,
+    }
+
+    #[test]
+    fn access_couplings_are_directed_sorted_and_deduplicated() {
+        let calls = CoupledCalls::default();
+        let period = std::rc::Rc::new(std::cell::Cell::new(1000));
+        let devices = (0..4)
+            .map(|index| {
+                Box::new(CoupledTimer {
+                    index,
+                    now: VClock::ZERO,
+                    period: period.clone(),
+                    calls: calls.clone(),
+                }) as Box<dyn Device>
+            })
+            .collect();
+        let mut bus = Bus::new(devices, DecodeMap::default());
+        for (source, dependent) in [(0, 3), (0, 1), (0, 3), (3, 2), (1, 0)] {
+            bus.add_access_coupling(source, dependent).unwrap();
+        }
+        bus.tick_due(VClock(100));
+        bus.device_mut(0).unwrap().port_write(0, 1, 1000).unwrap();
+        assert_eq!(
+            calls.borrow().as_slice(),
+            [
+                (0, "sync", VClock(100), 1000),
+                (1, "sync", VClock(100), 1000),
+                (3, "sync", VClock(100), 1000),
+                (0, "access", VClock(100), 1000),
+            ]
+        );
+        calls.borrow_mut().clear();
+        bus.device_mut(1).unwrap();
+        assert_eq!(
+            calls.borrow().as_slice(),
+            [
+                (1, "sync", VClock(100), 1000),
+                (0, "sync", VClock(100), 1000),
+            ]
+        );
+        calls.borrow_mut().clear();
+        bus.device_mut(2).unwrap();
+        assert_eq!(calls.borrow().as_slice(), [(2, "sync", VClock(100), 1000)]);
+        calls.borrow_mut().clear();
+        bus.settle();
+        assert_eq!(
+            calls.borrow().as_slice(),
+            [
+                (0, "sync", VClock(100), 1000),
+                (1, "sync", VClock(100), 1000),
+                (2, "sync", VClock(100), 1000),
+                (3, "sync", VClock(100), 1000),
+            ]
+        );
+    }
+
+    #[test]
+    fn access_skips_uncoupled_and_every_clock_devices() {
+        for coupled in [false, true] {
+            let calls = [CallLog::default(), CallLog::default(), CallLog::default()];
+            let devices = [
+                NextEvent::Dormant,
+                NextEvent::EveryPitClock,
+                NextEvent::At(VClock(1000)),
+            ]
+            .into_iter()
+            .zip(&calls)
+            .enumerate()
+            .map(|(index, (event, device_calls))| {
+                Box::new(TimedDevice {
+                    now: VClock::ZERO,
+                    event,
+                    calls: device_calls.clone(),
+                    before_access: (coupled && index == 0).then(|| calls[1].clone()),
+                }) as Box<dyn Device>
+            })
+            .collect();
+            let mut bus = Bus::new(
+                devices,
+                DecodeMap {
+                    ports: vec![PortRange {
+                        ports: 0x100..=0x100,
+                        device: 0,
+                    }],
+                    mmio: vec![MmioRange {
+                        addrs: 0x1000..=0x1000,
+                        device: 0,
+                    }],
+                },
+            );
+            if coupled {
+                bus.add_access_coupling(0, 1).unwrap();
+            }
+            bus.tick_due(VClock(1));
+            for calls in &calls {
+                calls.borrow_mut().clear();
+            }
+            bus.invalidate_deadlines();
+            bus.port_read(0x100, 1).unwrap();
+            bus.port_write(0x100, 1, 500).unwrap();
+            bus.mmio_read(0x1000, 1).unwrap();
+            bus.mmio_write(0x1000, 1, 0).unwrap();
+            bus.device_mut(0).unwrap();
+            assert_eq!(
+                calls[0]
+                    .borrow()
+                    .iter()
+                    .filter(|(call, _)| *call == "sync")
+                    .count(),
+                5
+            );
+            assert!(calls[1].borrow().iter().all(|(call, _)| *call == "query"));
+            if coupled {
+                assert!(!calls[1].borrow().is_empty());
+            } else {
+                assert!(calls[1].borrow().is_empty());
+            }
+            assert!(calls[2].borrow().is_empty());
+        }
+    }
+
+    #[test]
+    fn access_coupling_rejects_self_and_invalid_indices() {
+        let (mut bus, _) = timed_bus(NextEvent::Dormant);
+        for (device, dependent) in [(0, 0), (0, 1), (1, 0), (usize::MAX, 0), (0, usize::MAX)] {
+            assert_eq!(
+                bus.add_access_coupling(device, dependent),
+                Err(AccessCouplingError { device, dependent })
+            );
+        }
+        assert!(bus.access_dependents.iter().all(Vec::is_empty));
     }
 
     impl TimedDevice {
         fn record(&self, call: &'static str) {
+            if matches!(
+                call,
+                "port_read" | "port_write" | "mmio_read" | "mmio_write"
+            ) {
+                if let Some(calls) = &self.before_access {
+                    assert!(
+                        !calls.borrow().is_empty(),
+                        "dependent must be visited before access"
+                    );
+                }
+            }
             self.calls.borrow_mut().push((call, self.now));
         }
     }
@@ -921,6 +1237,7 @@ mod tests {
                 now: VClock::ZERO,
                 event,
                 calls: calls.clone(),
+                before_access: None,
             })],
             DecodeMap {
                 ports: vec![PortRange {
@@ -955,6 +1272,7 @@ mod tests {
                     now: VClock::ZERO,
                     event: NextEvent::Dormant,
                     calls: calls.clone(),
+                    before_access: None,
                 }) as Box<dyn Device>
             })
             .collect();
@@ -1120,6 +1438,7 @@ mod tests {
                 now: VClock::ZERO,
                 event,
                 calls: calls.clone(),
+                before_access: None,
             }) as Box<dyn Device>
         })
         .collect();
@@ -1184,6 +1503,7 @@ mod tests {
                 now: VClock::ZERO,
                 event,
                 calls: calls.clone(),
+                before_access: None,
             }) as Box<dyn Device>
         })
         .collect();

@@ -12,6 +12,22 @@ use crate::device::DeviceId;
 /// test can assert the exact failure a malformed config produces.
 #[derive(Clone, Debug, PartialEq, Eq, Error)]
 pub enum ConfigError {
+    /// A device cannot depend on itself for access synchronization.
+    #[error("device {device:?} cannot declare itself as an access dependent")]
+    SelfAccessCoupling {
+        /// The device naming itself.
+        device: DeviceId,
+    },
+
+    /// An access dependent must be present in the device set.
+    #[error("device {device:?} declares absent access dependent {dependent:?}")]
+    AccessDependentMissing {
+        /// The accessed device.
+        device: DeviceId,
+        /// The absent dependent.
+        dependent: DeviceId,
+    },
+
     /// All eight UART registers must fit in the 16-bit I/O space.
     #[error("uart {device:?} base {base:#x} leaves no room for eight ports")]
     UartPortWindowOutOfSpace {

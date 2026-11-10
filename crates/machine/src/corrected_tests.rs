@@ -286,6 +286,120 @@ fn stopping_access_refreshes_coupled_deadlines_before_charging_its_step() {
     }
 }
 
+#[test]
+fn access_coupling_refreshes_a_relative_deadline_before_step_completion() {
+    struct PeriodDevice {
+        register: bool,
+        now: VClock,
+        period: std::rc::Rc<std::cell::Cell<u64>>,
+    }
+
+    impl Device for PeriodDevice {
+        fn name(&self) -> &'static str {
+            "relative-deadline"
+        }
+        fn port_read(&mut self, _: u16, _: u8) -> Result<u32, device::DeviceError> {
+            Ok(self.period.get() as u32)
+        }
+        fn port_write(&mut self, port: u16, _: u8, value: u32) -> Result<(), device::DeviceError> {
+            assert!(self.register);
+            assert_eq!(port, 0x61);
+            assert_eq!(self.now, VClock(1));
+            assert_eq!(value, 1);
+            self.period.set(u64::from(value));
+            Ok(())
+        }
+        fn mmio_read(&mut self, _: u64, _: u8) -> Result<u64, device::DeviceError> {
+            unreachable!("fixture only accesses ports")
+        }
+        fn mmio_write(&mut self, _: u64, _: u8, _: u64) -> Result<(), device::DeviceError> {
+            unreachable!("fixture only accesses ports")
+        }
+        fn tick(&mut self, now: VClock) {
+            self.now = now;
+        }
+        fn next_event(&self, _: VClock) -> NextEvent {
+            if self.register {
+                NextEvent::Dormant
+            } else {
+                NextEvent::At(VClock(self.now.0 + self.period.get()))
+            }
+        }
+        fn irq_pending(&self) -> bool {
+            false
+        }
+        fn reset(&mut self) {
+            self.now = VClock::ZERO;
+        }
+        fn save(&self) -> Vec<u8> {
+            self.now.0.to_le_bytes().to_vec()
+        }
+        fn restore(&mut self, _: &[u8]) -> Result<(), device::DeviceError> {
+            unreachable!("fixture does not restore snapshots")
+        }
+    }
+
+    for coupled in [false, true] {
+        let period = std::rc::Rc::new(std::cell::Cell::new(100));
+        let devices = [true, false]
+            .into_iter()
+            .map(|register| {
+                Box::new(PeriodDevice {
+                    register,
+                    now: VClock::ZERO,
+                    period: period.clone(),
+                }) as Box<dyn Device>
+            })
+            .collect();
+        let mut bus = Bus::new(
+            devices,
+            DecodeMap {
+                ports: vec![PortRange {
+                    ports: 0x61..=0x61,
+                    device: 0,
+                }],
+                mmio: Vec::new(),
+            },
+        );
+        if coupled {
+            bus.add_access_coupling(0, 1).unwrap();
+        }
+        let cpu = MockCpu::new(Vec::new()).with_step_program(vec![
+            step(
+                4,
+                2,
+                CpuStop::PortOut {
+                    port: 0x61,
+                    size: 1,
+                    value: 1,
+                },
+                false,
+            ),
+            step(1, 1, CpuStop::BudgetExhausted, false),
+            step(1, 1, CpuStop::BudgetExhausted, false),
+        ]);
+        let mut machine = Machine::new(
+            cpu,
+            bus,
+            Box::new(chipset::NoInterruptController),
+            Vec::new(),
+            None,
+        )
+        .with_scheduler_engine(SchedulerEngine::Deadline);
+        let outcome = machine.run_bounded(Some(4));
+        if coupled {
+            assert_eq!(outcome.unwrap(), RunOutcome::RetiredCapReached);
+            assert_eq!(machine.clock(), VClock(4));
+        } else {
+            assert!(
+                matches!(outcome, Err(MachineError::Cpu(CpuError::UnexpectedExit { ref what }))
+                if what == "scheduler: device deadline did not advance"),
+                "{outcome:?}"
+            );
+        }
+    }
+}
+
 /// Intel 8259A datasheet, Interrupt Sequence and OCW2: diagnostics observe
 /// controller operations without requiring an autonomous PIC clock visit.
 #[test]

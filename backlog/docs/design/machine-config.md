@@ -153,6 +153,7 @@ DeviceConfig {
     mmio:  Vec<MmioRange>,       // MMIO range(s) it decodes (e.g. text buffer)
     irq:   Option<IrqLine>,      // the PIC input it drives, if any
     dma:   Option<DmaWiring>,    // requester/controller wiring, if any
+    access_dependents: Vec<DeviceId>, // timers an access can affect; empty by default
 }
 ```
 
@@ -165,6 +166,24 @@ column of literals.
 declare by hand. This is the concrete fix for the partial decode-ownership
 violation noted under decision-7: the IRQ/DMA relationships that were scattered
 across `run_*` bodies now live in the device data the preset produces.
+
+`access_dependents` declares a directed scheduling dependency: an access to
+this device can change another device's next event. Validation requires every
+dependent to be present and distinct from the source. Assembly resolves each
+role to a valid bus index and registers the edge with `Bus::add_access_coupling`,
+which also rejects invalid indices and self-coupling. Repeated edges are
+idempotent; directed cycles are allowed because synchronization does not recurse.
+Every indirectly affected timer must be listed explicitly.
+
+Before a port byte, MMIO fragment, or mutable borrow, the bus synchronizes the
+target first, then its dependents in configuration order, regardless of edge
+declaration order. Unrelated devices receive no access synchronization, and
+legacy every-clock devices receive no extra sync. This makes dependent deadlines
+start at the current access clock rather than their earlier lazy-sync time. The
+field does not implement hardware signal wiring. No preset needs it today:
+the shared PIC faces are dormant and have no autonomous timer, and system
+control does not yet drive the PIT's speaker gate. See
+[scheduler.md §Adoption](scheduler.md#adoption) for cache and settle ordering.
 
 ### Single homes (no triplication)
 

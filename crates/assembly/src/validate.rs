@@ -20,12 +20,14 @@ fn ranges_overlap(a_base: u64, a_end: u64, b_base: u64, b_end: u64) -> bool {
 impl MachineConfig {
     /// Validate this configuration, returning the first inconsistency found.
     ///
-    /// The checks run in a fixed order (identity, ports, MMIO, image placement,
-    /// interrupt and DMA wiring, drive binding and geometry, clock) so malformed
-    /// configs always yield the same [`ConfigError`]. File lengths are checked
-    /// when [`crate::assemble`] reads the sources and validates their bytes.
+    /// The checks run in a fixed order (identity, access coupling, ports, MMIO,
+    /// image placement, interrupt and DMA wiring, drive binding and geometry,
+    /// clock) so malformed configs always yield the same [`ConfigError`]. File
+    /// lengths are checked when [`crate::assemble`] reads the sources and validates
+    /// their bytes.
     pub fn validate(&self) -> Result<(), ConfigError> {
         self.check_unique_device_ids()?;
+        self.check_access_couplings()?;
         self.check_uart_bases()?;
         self.check_port_overlaps()?;
         self.check_mmio_devices_present()?;
@@ -48,6 +50,23 @@ impl MachineConfig {
         for (i, dev) in self.devices.iter().enumerate() {
             if self.devices[..i].iter().any(|d| d.id == dev.id) {
                 return Err(ConfigError::DuplicateDeviceId(dev.id));
+            }
+        }
+        Ok(())
+    }
+
+    fn check_access_couplings(&self) -> Result<(), ConfigError> {
+        for device in &self.devices {
+            for &dependent in &device.access_dependents {
+                if dependent == device.id {
+                    return Err(ConfigError::SelfAccessCoupling { device: device.id });
+                }
+                if !self.devices.iter().any(|d| d.id == dependent) {
+                    return Err(ConfigError::AccessDependentMissing {
+                        device: device.id,
+                        dependent,
+                    });
+                }
             }
         }
         Ok(())
@@ -363,6 +382,43 @@ mod tests {
     use crate::image::{ImageKind, ImageSource, LoadImage};
     use crate::memory::{MemoryConfig, MmioWindow, RamRegion};
     use crate::output::OutputConfig;
+
+    #[test]
+    fn access_couplings_require_present_distinct_devices() {
+        for (dependent, expected, message) in [
+            (
+                DeviceId::Uart,
+                ConfigError::SelfAccessCoupling {
+                    device: DeviceId::Uart,
+                },
+                "device Uart cannot declare itself as an access dependent",
+            ),
+            (
+                DeviceId::Mda,
+                ConfigError::AccessDependentMissing {
+                    device: DeviceId::Uart,
+                    dependent: DeviceId::Mda,
+                },
+                "device Uart declares absent access dependent Mda",
+            ),
+        ] {
+            let mut config = valid_config();
+            find_device(&mut config, DeviceId::Uart)
+                .access_dependents
+                .push(dependent);
+            assert_eq!(config.validate(), Err(expected));
+            assert_eq!(config.validate().unwrap_err().to_string(), message);
+        }
+    }
+
+    #[test]
+    fn access_couplings_allow_duplicates_and_directed_cycles() {
+        let mut config = valid_config();
+        find_device(&mut config, DeviceId::Uart).access_dependents =
+            vec![DeviceId::Pit, DeviceId::Pit];
+        find_device(&mut config, DeviceId::Pit).access_dependents = vec![DeviceId::Uart];
+        assert_eq!(config.validate(), Ok(()));
+    }
 
     const SPACE: u64 = 0x10_0000;
     const TEXT_BASE: u64 = 0xB_8000;

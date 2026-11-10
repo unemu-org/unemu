@@ -88,12 +88,17 @@ pub struct AssembledMachine {
 ///
 /// Configuration inconsistencies and unreadable backing files surface as
 /// [`AssemblyError::Config`] before hardware is built. The remaining failures
-/// come from the CPU core rejecting a memory operation.
+/// come from the CPU core rejecting a memory operation or the bus rejecting
+/// resolved access-coupling indices.
 #[derive(Debug, thiserror::Error)]
 pub enum AssemblyError {
     /// The configuration is internally inconsistent (validation ran first).
     #[error("invalid configuration: {0}")]
     Config(#[from] ConfigError),
+
+    /// Resolved access-coupling indices were rejected by the bus.
+    #[error("bus access coupling: {0}")]
+    AccessCoupling(#[from] bus::AccessCouplingError),
 
     /// The CPU core rejected a memory-map operation (a region that does not fit,
     /// a `Trap` window overlapping RAM the config did not catch).
@@ -212,6 +217,11 @@ fn assemble_with_cpu(
     // the loop runs (idle_limit is a "how we run" concern, not machine identity).
     let (rate_numerator, rate_denominator) = config.clock.cpu_rate()?;
     let mut bus = Bus::new(devices, map);
+    for device in &config.devices {
+        for dependent in &device.access_dependents {
+            bus.add_access_coupling(device_index[&device.id], device_index[dependent])?;
+        }
+    }
     bus.set_trace_policy(observation_policy.trace);
     let machine = Machine::new(cpu, bus, controller, irq_lines, None)
         .with_cpu_rate(rate_numerator, rate_denominator)
@@ -705,6 +715,36 @@ mod tests {
     #[test]
     fn reference_config_assembles() {
         assert!(assemble(&reference_config()).is_ok());
+    }
+
+    #[test]
+    fn access_couplings_resolve_roles_after_device_reordering() {
+        for reverse in [false, true] {
+            let mut config = reference_config();
+            config
+                .devices
+                .iter_mut()
+                .find(|d| d.id == DeviceId::Uart)
+                .unwrap()
+                .access_dependents = vec![DeviceId::Pit];
+            if reverse {
+                config.devices.reverse();
+            }
+            let mut assembled = assemble(&config).unwrap();
+            let pit_index = assembled.device_index[&DeviceId::Pit];
+            let rtc_index = assembled.device_index[&DeviceId::Rtc];
+            let bus = assembled.machine.bus_mut();
+            let pit_before = bus.device(pit_index).unwrap().save();
+            let rtc_before = bus.device(rtc_index).unwrap().save();
+            bus.tick_due(device::VClock(100));
+            assert_eq!(bus.device(pit_index).unwrap().save(), pit_before);
+            bus.port_write(0x3F8, 1, b'A' as u32).unwrap();
+            let mut expected = Pit8253::new();
+            expected.sync(device::VClock(100));
+            assert_ne!(expected.save(), pit_before);
+            assert_eq!(bus.device(pit_index).unwrap().save(), expected.save());
+            assert_eq!(bus.device(rtc_index).unwrap().save(), rtc_before);
+        }
     }
 
     #[test]

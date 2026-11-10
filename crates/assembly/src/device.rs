@@ -251,6 +251,10 @@ pub struct DeviceConfig {
     pub irq: Option<u8>,
     /// This device's DMA wiring, if it masters the bus.
     pub dma: Option<DmaSpec>,
+    /// Devices whose next event an access to this device can change. The bus
+    /// synchronizes them before the access, after this device, in config order.
+    /// Directed edges; list indirect dependents explicitly. Empty by default.
+    pub access_dependents: Vec<DeviceId>,
     /// Whether this device's port windows may overlap an earlier device's.
     pub allow_port_overlap: bool,
 }
@@ -265,6 +269,7 @@ impl DeviceConfig {
             ports,
             irq: None,
             dma: None,
+            access_dependents: Vec::new(),
             allow_port_overlap: false,
         }
     }
