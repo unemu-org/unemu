@@ -55,6 +55,7 @@ pub use assemble::{
     assemble, assemble_with_observation, derive_cmos_config, AssembledMachine, AssemblyError,
 };
 pub use board::{BoardModel, MachineClass};
+pub use bus::PortWidth;
 pub use clock::ClockConfig;
 pub use cpu::{CpuChip, CpuConfig, ResetSpec, SegmentSeed};
 pub use device::{

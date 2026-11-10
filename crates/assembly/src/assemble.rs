@@ -345,6 +345,7 @@ fn build_decode_map(config: &MachineConfig, device_index: &HashMap<DeviceId, usi
         let index = device_index[&dc.id];
         for window in &dc.ports {
             ports.push(PortRange {
+                width: window.width,
                 ports: window.start..=window.end,
                 device: index,
             });
@@ -1104,6 +1105,41 @@ mod tests {
         assert_eq!(map[&DeviceId::Fdc], 9);
         assert_eq!(map[&DeviceId::Dma], 10);
         assert_eq!(map.len(), 11);
+    }
+
+    #[test]
+    fn isa_decode_map_preserves_each_windows_width() {
+        let mut config = reference_config();
+        let index = config
+            .devices
+            .iter()
+            .enumerate()
+            .map(|(index, device)| (device.id, index))
+            .collect();
+        let byte_map = build_decode_map(&config, &index);
+        assert!(byte_map
+            .ports
+            .iter()
+            .all(|range| range.width == bus::PortWidth::Byte));
+        let post = config
+            .devices
+            .iter_mut()
+            .find(|device| device.id == DeviceId::Post)
+            .unwrap();
+        post.ports = vec![
+            PortWindow::single(0x190).with_width(bus::PortWidth::Word),
+            PortWindow::single(0x191),
+        ];
+        let map = build_decode_map(&config, &index);
+        for (port, width) in [(0x190, bus::PortWidth::Word), (0x191, bus::PortWidth::Byte)] {
+            let range = map
+                .ports
+                .iter()
+                .find(|range| range.ports.contains(&port))
+                .unwrap();
+            assert_eq!(range.width, width);
+            assert_eq!(range.device, index[&DeviceId::Post]);
+        }
     }
 
     #[test]

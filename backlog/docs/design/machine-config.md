@@ -236,6 +236,42 @@ cross-window accesses into little-endian sub-accesses. This lets accesses across
 adjacent devices reach the bus despite the pinned CPU's single-region containment
 requirement. RAM/MMIO crossings remain a [known CPU limitation](../status.md#broken--known-defects).
 
+### Port window width
+
+`PortWindow.width` and the corresponding `bus::PortRange.width` in `DecodeMap`
+use `PortWidth::{Byte, Word}`. The enum excludes unsupported widths.
+`PortWidth::default()`, `PortWindow::new`, `single`, and `overlapping` all select
+`Byte`; `.with_width(PortWidth::Word)` opts in. Every existing preset retains
+byte cycles. Assembly carries each window's width unchanged through decode-map
+sorting. Validation rejects a word window starting at an odd port with
+`UnalignedWordPortWindow`. A kind-based table declares the permitted word
+register addresses; every even cycle address covered by a word window must be
+listed for that kind, otherwise validation returns `UnsupportedWordPort`.
+The production table is empty because no assembled device kind currently
+implements word registers. Synthetic declarations exercise the accepting path
+only in validation tests; POST remains byte-only. The ATA card will declare its
+data register when it is wired. Board validation also checks width as part of
+the fixed motherboard wiring and reports a changed word width explicitly.
+
+The width describes a cycle starting at a decoded port, rather than ownership
+of individual data lanes. An aligned word in a word window reaches the device
+once with size 2, even when the window covers only that even port and the next
+port belongs to a byte window or is undecoded. This permits a word data register
+beside a separately decoded byte register without reading both registers.
+A word beginning at an odd port uses two independently decoded byte cycles.
+An aligned 32-bit access to word windows uses word cycles at port and port+2. Each cycle
+selects width from the first matching window at its own starting port, so mixed
+windows can produce word/byte/byte or byte/byte/word sequences. Values are
+composed/sliced little-endian; port numbers wrap at 16 bits. A fault stops after
+completed cycles. Traces describe actual device/open-bus cycles, including size.
+
+The hardware reference is the **IBM Personal Computer AT Technical Reference**,
+Section 1, **System Board**, **I/O Channel**, **I/O Channel Signal Description**,
+**-I/O CS16** (IOCS16#): the card selects a 16-bit I/O transfer. The odd-alignment
+and mixed-window rules above define the emulator's dispatch contract; physical
+byte-lane signalling and wait states are not modelled. No ATA card or device
+configuration is added here; its data window can opt in when the card is wired.
+
 ### `DeviceConfig` — one device, fully described
 
 The device list is **flat**. Each entry fully describes one hardware unit and
@@ -271,7 +307,7 @@ which also rejects invalid indices and self-coupling. Repeated edges are
 idempotent; directed cycles are allowed because synchronization does not recurse.
 Every indirectly affected timer must be listed explicitly.
 
-Before a port byte, MMIO fragment, or mutable borrow, the bus synchronizes the
+Before a port cycle, MMIO fragment, or mutable borrow, the bus synchronizes the
 target first, then its dependents in configuration order, regardless of edge
 declaration order. Unrelated devices receive no access synchronization, and
 legacy every-clock devices receive no extra sync. This makes dependent deadlines

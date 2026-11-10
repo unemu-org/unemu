@@ -762,6 +762,7 @@ mod tests {
         let devices: Vec<Box<dyn Device>> = vec![Box::new(CaptureDevice::default())];
         let map = DecodeMap {
             ports: vec![PortRange {
+                width: bus::PortWidth::default(),
                 ports: 0x3F8..=0x3FF,
                 device: 0,
             }],
@@ -1128,6 +1129,7 @@ mod tests {
                 vec![Box::new(Pit8253::new())],
                 DecodeMap {
                     ports: vec![PortRange {
+                        width: bus::PortWidth::default(),
                         ports: 0x40..=0x43,
                         device: 0,
                     }],
@@ -1195,6 +1197,7 @@ mod tests {
             ],
             DecodeMap {
                 ports: vec![PortRange {
+                    width: bus::PortWidth::default(),
                     ports: 0x3F8..=0x3FF,
                     device: 1,
                 }],
@@ -1469,10 +1472,12 @@ mod tests {
             DecodeMap {
                 ports: vec![
                     PortRange {
+                        width: bus::PortWidth::default(),
                         ports: 0x40..=0x43,
                         device: 0,
                     },
                     PortRange {
+                        width: bus::PortWidth::default(),
                         ports: 0xE9..=0xE9,
                         device: 1,
                     },

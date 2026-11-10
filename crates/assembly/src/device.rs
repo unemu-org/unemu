@@ -57,6 +57,8 @@ pub struct PortWindow {
     pub start: u16,
     /// Last port in the range (inclusive).
     pub end: u16,
+    /// Maximum ISA cycle width; byte cycles unless explicitly selected.
+    pub width: bus::PortWidth,
     /// Whether this window may overlap an earlier device's decode. Deliberate
     /// overlaps (e.g. a page latch sharing a byte with a checkpoint port) are
     /// resolved by first-match order and must be flagged here.
@@ -69,6 +71,7 @@ impl PortWindow {
         Self {
             start,
             end,
+            width: bus::PortWidth::Byte,
             allow_overlap: false,
         }
     }
@@ -83,8 +86,19 @@ impl PortWindow {
         Self {
             start,
             end,
+            width: bus::PortWidth::Byte,
             allow_overlap: true,
         }
+    }
+
+    /// Select the ISA cycle width. Word windows must start at an even port
+    /// and cover word registers declared by the device kind.
+    /// A single even port may receive a complete word; see
+    /// `backlog/docs/design/machine-config.md` §Port window width.
+    #[must_use]
+    pub const fn with_width(mut self, width: bus::PortWidth) -> Self {
+        self.width = width;
+        self
     }
 
     /// Whether this window and `other` share any port.
@@ -388,6 +402,22 @@ impl DeviceConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn isa_port_window_constructors_default_to_byte_cycles() {
+        assert_eq!(bus::PortWidth::default(), bus::PortWidth::Byte);
+        for window in [
+            PortWindow::new(0x100, 0x103),
+            PortWindow::single(0x100),
+            PortWindow::overlapping(0x100, 0x103),
+        ] {
+            assert_eq!(window.width, bus::PortWidth::Byte);
+            assert_eq!(
+                window.with_width(bus::PortWidth::Word).width,
+                bus::PortWidth::Word
+            );
+        }
+    }
 
     #[test]
     fn initialization_weekdays_match_gregorian_reference_for_every_supported_date() {

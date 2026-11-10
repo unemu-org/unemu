@@ -159,6 +159,7 @@ fn settling_before_snapshot_clears_expired_dormant_keyboard_deadline() {
         vec![Box::new(keyboard)],
         bus::DecodeMap {
             ports: vec![bus::PortRange {
+                width: bus::PortWidth::default(),
                 ports: 0x60..=0x64,
                 device: 0,
             }],
@@ -212,6 +213,7 @@ fn pit_restore_at_clock_50_matches_both_engines() {
             vec![Box::new(devices::Pit8253::new())],
             bus::DecodeMap {
                 ports: vec![bus::PortRange {
+                    width: bus::PortWidth::default(),
                     ports: 0x40..=0x43,
                     device: 0,
                 }],

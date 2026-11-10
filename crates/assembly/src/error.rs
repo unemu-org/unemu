@@ -12,6 +12,24 @@ use crate::device::DeviceId;
 /// test can assert the exact failure a malformed config produces.
 #[derive(Clone, Debug, PartialEq, Eq, Error)]
 pub enum ConfigError {
+    /// The configured kind does not declare a word register at this port.
+    #[error("device {device:?} has no 16-bit register at port {port:#x}")]
+    UnsupportedWordPort {
+        /// The device whose register contract rejects the word cycle.
+        device: DeviceId,
+        /// The unsupported cycle address.
+        port: u16,
+    },
+
+    /// A word-capable ISA decode must begin at an even cycle address.
+    #[error("16-bit port window for {device:?} starts at odd port {start:#x}")]
+    UnalignedWordPortWindow {
+        /// The device owning the window.
+        device: DeviceId,
+        /// The unaligned starting port.
+        start: u16,
+    },
+
     /// A present device requires a service no configured ROM provides.
     #[error("device {device:?} needs firmware service {service}; no ROM provides it")]
     NoProvider {

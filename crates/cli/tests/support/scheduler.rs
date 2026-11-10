@@ -286,6 +286,7 @@ pub fn prepare(workload: Workload) -> Result<Option<Prepared>> {
                 vec![Box::new(Uart16550::new(chipset::COM1_BASE))],
                 DecodeMap {
                     ports: vec![PortRange {
+                        width: bus::PortWidth::default(),
                         ports: chipset::COM1_BASE..=chipset::COM1_TOP,
                         device: 0,
                     }],

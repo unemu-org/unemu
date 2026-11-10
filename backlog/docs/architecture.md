@@ -88,8 +88,24 @@ The non-default `reference-scheduler` feature exposes per-clock dispatch to
 integration tests as an oracle with the same CPU/IRQ rules. No production
 `MachineConfig` selects it, and no legacy outer loop remains.
 
-[`Bus`](../../crates/bus/src/lib.rs) splits wider port accesses into consecutive,
-independently decoded byte cycles, low byte first. Undecoded ports default to
+[`Bus`](../../crates/bus/src/lib.rs) dispatches port cycles according to each
+window's `PortWidth`: `Byte` by default, or `Word` for IOCS16# devices. An even
+port in a word window receives one size-2 call for a word access. Width is
+selected by the cycle's starting port, so a single-port word window consumes
+both data bytes even if the next port decodes to a byte device. Odd word accesses
+use two byte cycles. An aligned 32-bit access to word windows uses two size-2 cycles at
+port and port+2; each new cycle independently selects its window and width.
+Mixed windows therefore use byte or word cycles as selected, low bytes first,
+with port arithmetic wrapping at 16 bits. A fault preserves completed cycles.
+Device traces record those actual cycle sizes. This models the IBM Personal
+Computer AT Technical Reference, Section 1, System Board, I/O Channel,
+I/O Channel Signal Description, -I/O CS16 (IOCS16#); wait states and physical
+byte-lane signalling remain outside the model. Existing presets retain byte
+windows. Assembly checks word windows against a kind-based register support
+table, currently empty; ATA card wiring will declare its word data register.
+Port dispatch resolves the device and cycle width in one first-match lookup.
+See [Port window width](design/machine-config.md#port-window-width).
+Undecoded ports default to
 all-ones reads/dropped writes; optional bounded tracing and strict faulting are
 selectable. Assembly coalesces touching MMIO windows into one CPU trap region
 while retaining per-device bus decoding. MMIO accesses contained in one decode

@@ -8,15 +8,22 @@
 //! holds **no** decode *policy*: which ports/addresses map where is the
 //! assembler's business.
 //!
-//! All current port devices are 8-bit. Wider accesses use consecutive byte
-//! cycles, low byte first, each decoded independently (IBM Personal Computer AT
-//! Technical Reference, "System Board", "I/O Channel"; see
-//! `backlog/docs/design/spec.md` §4.1). Device and open-bus traces therefore
-//! record byte cycles when explicitly enabled. Recording defaults to Off; both
+//! Port windows default to 8-bit cycles. A 16-bit window models IOCS16#
+//! (IBM Personal Computer AT Technical Reference, Section 1, "System Board",
+//! "I/O Channel", "I/O Channel Signal Description", "-I/O CS16"). An aligned
+//! word reaches that device once with size 2. The starting port selects the
+//! cycle width: a single even-port window can serve a word register without
+//! accessing a different register decoded at the next port. An odd-aligned
+//! word uses two independently decoded byte cycles. An aligned 32-bit access uses two
+//! word cycles at port and port+2 when both select 16-bit windows; mixed
+//! windows are decoded anew after each cycle, low bytes first. Port arithmetic
+//! wraps at 16 bits. Wait states and physical byte-lane signals are not modelled.
+//! See `backlog/docs/design/spec.md` §4.1 and
+//! `backlog/docs/design/machine-config.md` §Port window width.
+//! Device and open-bus traces record actual cycle sizes when enabled.
+//! Recording defaults to Off; both
 //! use [`device::TraceBuffer`] and the same bounded-ring/drop-count contract.
-//! See `backlog/docs/design/observation.md`, §Traces and later audio. A future
-//! 16-bit device, such as an IDE data port, will
-//! need an explicit opt-in to receive whole words; no such opt-in exists yet.
+//! See `backlog/docs/design/observation.md`, §Traces and later audio.
 //!
 //! MMIO accesses within one decode window retain their original size. Accesses
 //! crossing windows use contiguous sub-accesses in ascending address order,
@@ -39,12 +46,28 @@ use std::ops::RangeInclusive;
 use device::{AccessDir, Device, DeviceError, NextEvent, TraceEvent, VClock};
 use thiserror::Error;
 
+/// ISA port cycle width; IOCS16# opts a window into word cycles.
+///
+/// IBM Personal Computer AT Technical Reference, Section 1, System Board,
+/// I/O Channel, I/O Channel Signal Description, -I/O CS16. See
+/// `backlog/docs/design/machine-config.md` §Port window width.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+pub enum PortWidth {
+    /// No IOCS16# assertion: wider accesses use byte cycles.
+    #[default]
+    Byte,
+    /// IOCS16# asserted: even ports accept word cycles.
+    Word,
+}
+
 /// A contiguous port range routed to one device (§4.1).
 pub struct PortRange {
     /// Inclusive 16-bit port range this device decodes.
     pub ports: RangeInclusive<u16>,
     /// Index into the [`Bus`]'s device vector.
     pub device: usize,
+    /// Maximum cycle width selected by the starting port.
+    pub width: PortWidth,
 }
 
 /// A contiguous MMIO address range routed to one device (§4.1).
@@ -236,13 +259,19 @@ impl Bus {
         self.open_bus_trace.take()
     }
 
-    /// Resolve a port to its device index, or `None` if undecoded.
-    fn port_device(&self, port: u16) -> Option<usize> {
-        self.map
+    fn port_chunk(&self, port: u16, size: u8) -> (Option<usize>, u8) {
+        let range = self
+            .map
             .ports
             .iter()
-            .find(|r| r.ports.contains(&port))
-            .map(|r| r.device)
+            .find(|range| range.ports.contains(&port));
+        let word = range.is_some_and(|range| range.width == PortWidth::Word);
+        let chunk = if size >= 2 && port.is_multiple_of(2) && word {
+            2
+        } else {
+            size.min(1)
+        };
+        (range.map(|range| range.device), chunk)
     }
 
     /// Resolve the leading sub-access without changing widths inside a window.
@@ -271,70 +300,75 @@ impl Bus {
 
     /// Dispatch a guest `in` at `port`, `size` bytes wide.
     ///
-    /// Wider reads decode each byte separately and combine them little-endian.
-    /// Port numbers wrap in the 16-bit port space. A fault stops the access;
-    /// earlier byte cycles have already completed.
+    /// Cycles use the starting window's width and combine little-endian, as
+    /// described in the module documentation. Port numbers wrap in the 16-bit
+    /// port space. A fault stops the access; earlier cycles remain completed.
     ///
     /// An undecoded port under [`UndecodedPortAccess::OpenBus`] returns all-ones
     /// (0xFF per byte), matching a real ISA bus that no device drives, and is
     /// recorded on the open-bus trace when its trace policy records; under [`UndecodedPortAccess::Fault`] it
     /// raises [`BusError::UnmappedPort`].
     pub fn port_read(&mut self, port: u16, size: u8) -> Result<u32, BusError> {
-        if size > 1 {
-            let mut value = 0;
-            for offset in 0..size {
-                let byte = self.port_read(port.wrapping_add(u16::from(offset)), 1)?;
-                value |= (byte & 0xFF) << (8 * offset);
-            }
-            return Ok(value);
-        }
-        match self.port_device(port) {
+        let (device, chunk) = self.port_chunk(port, size);
+        let value = match device {
             Some(idx) => {
                 self.sync_access(idx);
-                Ok(self.devices[idx].port_read(port, size)?)
+                Ok(self.devices[idx].port_read(port, chunk)?)
             }
             None => match self.undecoded_ports {
                 UndecodedPortAccess::OpenBus => {
-                    let value = open_bus_value(size);
-                    self.trace_open_bus(port, size, AccessDir::Read, value);
+                    let value = open_bus_value(chunk);
+                    self.trace_open_bus(port, chunk, AccessDir::Read, value);
                     Ok(value)
                 }
                 UndecodedPortAccess::Fault => Err(BusError::UnmappedPort { port }),
             },
+        }?;
+        if size == chunk {
+            return Ok(value);
         }
+        let rest = self.port_read(port.wrapping_add(u16::from(chunk)), size - chunk)?;
+        let rest_mask = u32::MAX >> (8 * (4 - (size - chunk)));
+        Ok((value & open_bus_value(chunk)) | ((rest & rest_mask) << (8 * chunk)))
     }
 
     /// Dispatch a guest `out` of `value` at `port`, `size` bytes wide.
     ///
-    /// Wider writes decode each byte separately, low byte first. Port numbers
-    /// wrap in the 16-bit port space. A fault stops the access; earlier byte
-    /// cycles have already completed.
+    /// Uses the same cycle widths, ordering, wrapping and fault rules as
+    /// [`Bus::port_read`], slicing the value little-endian for each cycle.
     ///
     /// An undecoded port under [`UndecodedPortAccess::OpenBus`] drops the write
     /// (no listener drives the bus) and optionally records it on the bounded
     /// trace; under
     /// [`UndecodedPortAccess::Fault`] it raises [`BusError::UnmappedPort`].
     pub fn port_write(&mut self, port: u16, size: u8, value: u32) -> Result<(), BusError> {
-        if size > 1 {
-            for offset in 0..size {
-                let byte = (value >> (8 * offset)) & 0xFF;
-                self.port_write(port.wrapping_add(u16::from(offset)), 1, byte)?;
-            }
-            return Ok(());
-        }
-        match self.port_device(port) {
+        let (device, chunk) = self.port_chunk(port, size);
+        let cycle_value = if size > chunk {
+            value & open_bus_value(chunk)
+        } else {
+            value
+        };
+        match device {
             Some(idx) => {
                 self.sync_access(idx);
-                Ok(self.devices[idx].port_write(port, size, value)?)
+                Ok(self.devices[idx].port_write(port, chunk, cycle_value)?)
             }
             None => match self.undecoded_ports {
                 UndecodedPortAccess::OpenBus => {
-                    self.trace_open_bus(port, size, AccessDir::Write, value);
+                    self.trace_open_bus(port, chunk, AccessDir::Write, cycle_value);
                     Ok(())
                 }
                 UndecodedPortAccess::Fault => Err(BusError::UnmappedPort { port }),
             },
+        }?;
+        if size == chunk {
+            return Ok(());
         }
+        self.port_write(
+            port.wrapping_add(u16::from(chunk)),
+            size - chunk,
+            (value >> (8 * chunk)) & (u32::MAX >> (8 * (4 - (size - chunk)))),
+        )
     }
 
     /// Record an open-bus port access on the bus's own trace, stamped with the
@@ -833,10 +867,15 @@ mod tests {
         assert!(calls.borrow().is_empty());
     }
 
+    type PortCalls = std::rc::Rc<std::cell::RefCell<Vec<TraceEvent>>>;
+
     struct ByteRegisters {
         base: u16,
         values: Vec<u8>,
         trace: device::TraceBuffer,
+        calls: PortCalls,
+        now: VClock,
+        read_junk: u32,
     }
 
     impl Device for ByteRegisters {
@@ -844,25 +883,35 @@ mod tests {
             "byte-registers"
         }
         fn port_read(&mut self, port: u16, size: u8) -> Result<u32, DeviceError> {
-            let value = u32::from(self.values[usize::from(port - self.base)]);
-            self.trace.push(TraceEvent::Port {
-                at: VClock::ZERO,
+            let offset = usize::from(port - self.base);
+            let mut bytes = [0; 4];
+            bytes[..usize::from(size)]
+                .copy_from_slice(&self.values[offset..offset + usize::from(size)]);
+            let value = u32::from_le_bytes(bytes) | self.read_junk;
+            let event = TraceEvent::Port {
+                at: self.now,
                 port,
                 size,
                 dir: AccessDir::Read,
                 value,
-            });
+            };
+            self.calls.borrow_mut().push(event.clone());
+            self.trace.push(event);
             Ok(value)
         }
         fn port_write(&mut self, port: u16, size: u8, value: u32) -> Result<(), DeviceError> {
-            self.values[usize::from(port - self.base)] = value as u8;
-            self.trace.push(TraceEvent::Port {
-                at: VClock::ZERO,
+            let offset = usize::from(port - self.base);
+            self.values[offset..offset + usize::from(size)]
+                .copy_from_slice(&value.to_le_bytes()[..usize::from(size)]);
+            let event = TraceEvent::Port {
+                at: self.now,
                 port,
                 size,
                 dir: AccessDir::Write,
                 value,
-            });
+            };
+            self.calls.borrow_mut().push(event.clone());
+            self.trace.push(event);
             Ok(())
         }
         fn mmio_read(&mut self, addr: u64, _size: u8) -> Result<u64, DeviceError> {
@@ -877,7 +926,9 @@ mod tests {
                 offset: addr,
             })
         }
-        fn tick(&mut self, _now: VClock) {}
+        fn tick(&mut self, now: VClock) {
+            self.now = now;
+        }
         fn irq_pending(&self) -> bool {
             false
         }
@@ -982,6 +1033,7 @@ mod tests {
                     devices,
                     DecodeMap {
                         ports: vec![PortRange {
+                            width: PortWidth::default(),
                             ports: 0x100..=0x100,
                             device: 0,
                         }],
@@ -1109,6 +1161,7 @@ mod tests {
                 devices,
                 DecodeMap {
                     ports: vec![PortRange {
+                        width: PortWidth::default(),
                         ports: 0x100..=0x100,
                         device: 0,
                     }],
@@ -1241,6 +1294,7 @@ mod tests {
             })],
             DecodeMap {
                 ports: vec![PortRange {
+                    width: PortWidth::default(),
                     ports: 0x100..=0x101,
                     device: 0,
                 }],
@@ -1542,6 +1596,7 @@ mod tests {
         let mut map = DecodeMap::default();
         for &(base, values) in registers {
             map.ports.push(PortRange {
+                width: PortWidth::default(),
                 ports: base..=base + (values.len() - 1) as u16,
                 device: devices.len(),
             });
@@ -1549,11 +1604,316 @@ mod tests {
                 base,
                 values: values.to_vec(),
                 trace: device::TraceBuffer::default(),
+                calls: PortCalls::default(),
+                now: VClock::ZERO,
+                read_junk: 0,
             }));
         }
         let mut bus = Bus::new(devices, map);
         bus.set_trace_policy(device::TracePolicy::Ring { capacity: 100 });
         bus
+    }
+
+    fn isa_bus(windows: &[(u16, u16, PortWidth, &[u8])]) -> (Bus, PortCalls) {
+        let calls = PortCalls::default();
+        let mut devices: Vec<Box<dyn Device>> = Vec::new();
+        let mut map = DecodeMap::default();
+        for &(start, end, width, values) in windows {
+            map.ports.push(PortRange {
+                ports: start..=end,
+                device: devices.len(),
+                width,
+            });
+            devices.push(Box::new(ByteRegisters {
+                base: start,
+                values: values.to_vec(),
+                trace: device::TraceBuffer::default(),
+                calls: calls.clone(),
+                now: VClock::ZERO,
+                read_junk: 0,
+            }));
+        }
+        (Bus::new(devices, map), calls)
+    }
+
+    fn isa_exchange(
+        bus: &mut Bus,
+        calls: &PortCalls,
+        port: u16,
+        size: u8,
+        value: u32,
+        expected: &[(u16, u8, u32)],
+    ) {
+        bus.port_write(port, size, value).unwrap();
+        assert_eq!(bus.port_read(port, size).unwrap(), value);
+        let expected: Vec<_> = [AccessDir::Write, AccessDir::Read]
+            .into_iter()
+            .flat_map(|dir| {
+                expected
+                    .iter()
+                    .map(move |&(port, size, value)| TraceEvent::Port {
+                        at: VClock::ZERO,
+                        port,
+                        size,
+                        dir,
+                        value,
+                    })
+            })
+            .collect();
+        assert_eq!(*calls.borrow(), expected);
+    }
+
+    #[test]
+    fn isa_word_window_receives_one_word_cycle() {
+        let (mut bus, calls) = isa_bus(&[
+            (0x1F0, 0x1F0, PortWidth::Word, &[0, 0]),
+            (0x1F1, 0x1F1, PortWidth::Byte, &[0xEE]),
+        ]);
+        isa_exchange(&mut bus, &calls, 0x1F0, 2, 0x3412, &[(0x1F0, 2, 0x3412)]);
+        assert_eq!(bus.device(1).unwrap().save(), [0xEE]);
+    }
+
+    #[test]
+    fn isa_byte_window_receives_two_byte_cycles() {
+        let (mut bus, calls) = isa_bus(&[(0x100, 0x101, PortWidth::Byte, &[0, 0])]);
+        isa_exchange(
+            &mut bus,
+            &calls,
+            0x100,
+            2,
+            0x3412,
+            &[(0x100, 1, 0x12), (0x101, 1, 0x34)],
+        );
+    }
+
+    #[test]
+    fn isa_split_read_masks_unused_bits_in_every_byte() {
+        let calls = PortCalls::default();
+        let mut bus = Bus::new(
+            vec![Box::new(ByteRegisters {
+                base: 0x100,
+                values: vec![0x12, 0x12],
+                trace: device::TraceBuffer::default(),
+                calls: calls.clone(),
+                now: VClock::ZERO,
+                read_junk: 0xDEAD_0000,
+            })],
+            DecodeMap {
+                ports: vec![PortRange {
+                    ports: 0x100..=0x101,
+                    device: 0,
+                    width: PortWidth::Byte,
+                }],
+                mmio: Vec::new(),
+            },
+        );
+        assert_eq!(bus.port_read(0x100, 2).unwrap(), 0x1212);
+        assert_eq!(
+            *calls.borrow(),
+            [
+                port_event(0x100, AccessDir::Read, 0xDEAD_0012),
+                port_event(0x101, AccessDir::Read, 0xDEAD_0012),
+            ]
+        );
+    }
+
+    #[test]
+    fn isa_split_word_write_masks_each_byte_cycle_value() {
+        let (mut bus, calls) = isa_bus(&[(0x100, 0x101, PortWidth::Byte, &[0, 0])]);
+        bus.port_write(0x100, 2, 0xDEAD_1234).unwrap();
+        assert_eq!(
+            *calls.borrow(),
+            [
+                port_event(0x100, AccessDir::Write, 0x34),
+                port_event(0x101, AccessDir::Write, 0x12),
+            ]
+        );
+        assert_eq!(bus.device(0).unwrap().save(), [0x34, 0x12]);
+    }
+
+    #[test]
+    fn isa_odd_word_uses_two_byte_cycles() {
+        let (mut bus, calls) = isa_bus(&[(0x100, 0x103, PortWidth::Word, &[0; 4])]);
+        isa_exchange(
+            &mut bus,
+            &calls,
+            0x101,
+            2,
+            0x3412,
+            &[(0x101, 1, 0x12), (0x102, 1, 0x34)],
+        );
+    }
+
+    #[test]
+    fn isa_dword_uses_two_word_cycles() {
+        let (mut bus, calls) = isa_bus(&[(0x100, 0x103, PortWidth::Word, &[0; 4])]);
+        isa_exchange(
+            &mut bus,
+            &calls,
+            0x100,
+            4,
+            0x7856_3412,
+            &[(0x100, 2, 0x3412), (0x102, 2, 0x7856)],
+        );
+    }
+
+    #[test]
+    fn isa_mixed_windows_redecode_after_each_cycle() {
+        let (mut bus, calls) = isa_bus(&[
+            (0x100, 0x100, PortWidth::Word, &[0, 0]),
+            (0x102, 0x103, PortWidth::Byte, &[0, 0]),
+        ]);
+        isa_exchange(
+            &mut bus,
+            &calls,
+            0x100,
+            4,
+            0x7856_3412,
+            &[(0x100, 2, 0x3412), (0x102, 1, 0x56), (0x103, 1, 0x78)],
+        );
+        let (mut bus, calls) = isa_bus(&[
+            (0x100, 0x101, PortWidth::Byte, &[0, 0]),
+            (0x102, 0x102, PortWidth::Word, &[0, 0]),
+        ]);
+        isa_exchange(
+            &mut bus,
+            &calls,
+            0x100,
+            4,
+            0x7856_3412,
+            &[(0x100, 1, 0x12), (0x101, 1, 0x34), (0x102, 2, 0x7856)],
+        );
+    }
+
+    #[test]
+    fn isa_overlap_uses_first_matching_windows_width() {
+        let (mut bus, calls) = isa_bus(&[
+            (0x100, 0x100, PortWidth::Byte, &[0]),
+            (0x100, 0x103, PortWidth::Word, &[0; 4]),
+        ]);
+        isa_exchange(
+            &mut bus,
+            &calls,
+            0x100,
+            4,
+            0x7856_3412,
+            &[(0x100, 1, 0x12), (0x101, 1, 0x34), (0x102, 2, 0x7856)],
+        );
+        assert_eq!(bus.device(1).unwrap().save(), [0, 0x34, 0x56, 0x78]);
+    }
+
+    #[test]
+    fn isa_dword_wraps_between_word_cycles() {
+        let (mut bus, calls) = isa_bus(&[
+            (0xFFFE, 0xFFFE, PortWidth::Word, &[0, 0]),
+            (0, 0, PortWidth::Word, &[0, 0]),
+        ]);
+        isa_exchange(
+            &mut bus,
+            &calls,
+            0xFFFE,
+            4,
+            0x7856_3412,
+            &[(0xFFFE, 2, 0x3412), (0, 2, 0x7856)],
+        );
+    }
+
+    #[test]
+    fn isa_fault_keeps_completed_word_cycle() {
+        let (bus, calls) = isa_bus(&[(0x100, 0x100, PortWidth::Word, &[0x12, 0x34])]);
+        let mut bus = bus.with_undecoded_ports(UndecodedPortAccess::Fault);
+        assert!(matches!(
+            bus.port_read(0x100, 4),
+            Err(BusError::UnmappedPort { port: 0x102 })
+        ));
+        assert!(matches!(
+            bus.port_write(0x100, 4, 0x7856_3412),
+            Err(BusError::UnmappedPort { port: 0x102 })
+        ));
+        assert_eq!(
+            *calls.borrow(),
+            [
+                TraceEvent::Port {
+                    at: VClock::ZERO,
+                    port: 0x100,
+                    size: 2,
+                    dir: AccessDir::Read,
+                    value: 0x3412
+                },
+                TraceEvent::Port {
+                    at: VClock::ZERO,
+                    port: 0x100,
+                    size: 2,
+                    dir: AccessDir::Write,
+                    value: 0x3412
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn isa_trace_records_cycle_width_value_and_virtual_time() {
+        let (mut bus, calls) = isa_bus(&[(0x100, 0x100, PortWidth::Word, &[0, 0])]);
+        bus.port_write(0x100, 2, 0x3412).unwrap();
+        assert!(bus.device_mut(0).unwrap().take_trace().is_empty());
+        bus.set_trace_policy(device::TracePolicy::Ring { capacity: 4 });
+        bus.tick_all(VClock(7));
+        assert_eq!(bus.port_read(0x100, 4).unwrap(), 0xFFFF_3412);
+        bus.port_write(0x100, 4, 0x7856_ABCD).unwrap();
+        assert_eq!(
+            bus.device_mut(0).unwrap().take_trace(),
+            [
+                TraceEvent::Port {
+                    at: VClock(7),
+                    port: 0x100,
+                    size: 2,
+                    dir: AccessDir::Read,
+                    value: 0x3412
+                },
+                TraceEvent::Port {
+                    at: VClock(7),
+                    port: 0x100,
+                    size: 2,
+                    dir: AccessDir::Write,
+                    value: 0xABCD
+                },
+            ]
+        );
+        assert_eq!(
+            bus.take_open_bus_trace(),
+            [
+                TraceEvent::Port {
+                    at: VClock(7),
+                    port: 0x102,
+                    size: 1,
+                    dir: AccessDir::Read,
+                    value: 0xFF,
+                },
+                TraceEvent::Port {
+                    at: VClock(7),
+                    port: 0x103,
+                    size: 1,
+                    dir: AccessDir::Read,
+                    value: 0xFF,
+                },
+                TraceEvent::Port {
+                    at: VClock(7),
+                    port: 0x102,
+                    size: 1,
+                    dir: AccessDir::Write,
+                    value: 0x56
+                },
+                TraceEvent::Port {
+                    at: VClock(7),
+                    port: 0x103,
+                    size: 1,
+                    dir: AccessDir::Write,
+                    value: 0x78
+                },
+            ]
+        );
+        assert_eq!(bus.open_bus_trace_dropped(), 0);
+        assert_eq!(calls.borrow().len(), 3);
     }
 
     fn port_event(port: u16, dir: AccessDir, value: u32) -> TraceEvent {
@@ -1719,6 +2079,7 @@ mod tests {
         let devices: Vec<Box<dyn Device>> = vec![Box::new(OnePortDevice)];
         let map = DecodeMap {
             ports: vec![PortRange {
+                width: PortWidth::default(),
                 ports: port..=port,
                 device: 0,
             }],

@@ -27,6 +27,11 @@ fn format_board_ports(ports: &[PortWindow]) -> String {
             } else {
                 format!("{:#x}-{:#x}", window.start, window.end)
             };
+            let ports = if window.width == bus::PortWidth::Word {
+                format!("{ports} (16-bit)")
+            } else {
+                ports
+            };
             if window.allow_overlap {
                 format!("{ports} (overlap allowed)")
             } else {
@@ -86,6 +91,15 @@ const FIRMWARE_REQUIREMENTS: &[FirmwareRequirement] = &[FirmwareRequirement {
     needs_bound_drive: true,
 }];
 
+struct WordPortSupport {
+    matches: fn(DeviceKind) -> bool,
+    registers: &'static [u16],
+}
+
+// Cycle width must match the device's register contract. No assembled kind
+// exposes a word register yet; config annotations alone cannot grant support.
+const WORD_PORT_SUPPORT: &[WordPortSupport] = &[];
+
 impl MachineConfig {
     /// Validate this configuration, returning the first inconsistency found.
     ///
@@ -101,6 +115,7 @@ impl MachineConfig {
         self.check_rtc_starts()?;
         self.check_access_couplings()?;
         self.check_uart_bases()?;
+        self.check_port_widths()?;
         self.check_port_overlaps()?;
         self.check_mmio_devices_present()?;
         self.check_mmio_sizes()?;
@@ -342,6 +357,41 @@ impl MachineConfig {
                         device: dev.id,
                         base: uart.base,
                     });
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn check_port_widths(&self) -> Result<(), ConfigError> {
+        self.check_port_width_support(WORD_PORT_SUPPORT)
+    }
+
+    fn check_port_width_support(&self, support: &[WordPortSupport]) -> Result<(), ConfigError> {
+        for device in &self.devices {
+            for window in &device.ports {
+                if window.width == bus::PortWidth::Word && !window.start.is_multiple_of(2) {
+                    return Err(ConfigError::UnalignedWordPortWindow {
+                        device: device.id,
+                        start: window.start,
+                    });
+                }
+                if window.width == bus::PortWidth::Word {
+                    let rule = support
+                        .iter()
+                        .find(|rule| (rule.matches)(device.kind))
+                        .ok_or(ConfigError::UnsupportedWordPort {
+                            device: device.id,
+                            port: window.start,
+                        })?;
+                    for port in (window.start..=window.end).step_by(2) {
+                        if !rule.registers.contains(&port) {
+                            return Err(ConfigError::UnsupportedWordPort {
+                                device: device.id,
+                                port,
+                            });
+                        }
+                    }
                 }
             }
         }
@@ -1457,6 +1507,105 @@ mod tests {
             assert_eq!(config.validate(), Err(expected));
             assert_eq!(config.validate().unwrap_err().to_string(), message);
         }
+    }
+
+    #[test]
+    fn isa_word_window_validation_rejects_odd_start() {
+        let mut config = valid_config();
+        find_device(&mut config, DeviceId::Post).ports =
+            vec![PortWindow::single(0x191).with_width(bus::PortWidth::Word)];
+        assert_eq!(
+            config.validate(),
+            Err(ConfigError::UnalignedWordPortWindow {
+                device: DeviceId::Post,
+                start: 0x191,
+            })
+        );
+        assert_eq!(
+            config.validate().unwrap_err().to_string(),
+            "16-bit port window for Post starts at odd port 0x191"
+        );
+        find_device(&mut config, DeviceId::Post).ports[0].width = bus::PortWidth::Byte;
+        assert_eq!(config.validate(), Ok(()));
+    }
+
+    const SYNTHETIC_WORD_PORT_SUPPORT: &[WordPortSupport] = &[WordPortSupport {
+        matches: |kind| matches!(kind, DeviceKind::Post(_)),
+        registers: &[0x190, 0x192],
+    }];
+
+    #[test]
+    fn isa_synthetic_word_window_accepts_single_even_port_and_odd_end() {
+        let mut config = valid_config();
+        for window in [PortWindow::single(0x190), PortWindow::new(0x190, 0x193)] {
+            find_device(&mut config, DeviceId::Post).ports =
+                vec![window.with_width(bus::PortWidth::Word)];
+            assert_eq!(
+                config.check_port_width_support(SYNTHETIC_WORD_PORT_SUPPORT),
+                Ok(())
+            );
+        }
+    }
+
+    #[test]
+    fn isa_byte_only_kinds_reject_word_windows() {
+        let mut baseline = valid_config();
+        baseline.devices.push(DeviceConfig::new(
+            DeviceId::Mda,
+            DeviceKind::Mda(crate::MdaTextCfg {}),
+            Vec::new(),
+        ));
+        for device in &baseline.devices {
+            let mut config = baseline.clone();
+            find_device(&mut config, device.id).ports =
+                vec![PortWindow::single(0x190).with_width(bus::PortWidth::Word)];
+            assert_eq!(
+                config.validate(),
+                Err(ConfigError::UnsupportedWordPort {
+                    device: device.id,
+                    port: 0x190,
+                })
+            );
+        }
+    }
+
+    #[test]
+    fn isa_synthetic_word_support_is_scoped_to_kind_and_register() {
+        for (id, port) in [(DeviceId::Post, 0x194), (DeviceId::Pit, 0x190)] {
+            let mut config = valid_config();
+            find_device(&mut config, id).ports =
+                vec![PortWindow::single(port).with_width(bus::PortWidth::Word)];
+            assert_eq!(
+                config.check_port_width_support(SYNTHETIC_WORD_PORT_SUPPORT),
+                Err(ConfigError::UnsupportedWordPort { device: id, port })
+            );
+        }
+        let mut config = valid_config();
+        find_device(&mut config, DeviceId::Post).ports =
+            vec![PortWindow::new(0x190, 0x195).with_width(bus::PortWidth::Word)];
+        assert_eq!(
+            config.check_port_width_support(SYNTHETIC_WORD_PORT_SUPPORT),
+            Err(ConfigError::UnsupportedWordPort {
+                device: DeviceId::Post,
+                port: 0x194
+            })
+        );
+    }
+
+    #[test]
+    fn isa_board_validation_rejects_word_width_on_byte_hardware() {
+        let mut config = board_config();
+        find_device(&mut config, DeviceId::Pit).ports[0].width = bus::PortWidth::Word;
+        board_error(
+            &config,
+            wiring_error(
+                DeviceId::Pit,
+                "ports",
+                "[0x40-0x43]",
+                "[0x40-0x43 (16-bit)]",
+            ),
+            "board Ibm5170 device Pit field ports: expected [0x40-0x43], got [0x40-0x43 (16-bit)]",
+        );
     }
 
     #[test]

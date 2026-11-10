@@ -77,6 +77,7 @@ fn compute_boundaries_do_not_synchronize_dormant_devices() {
             })],
             DecodeMap {
                 ports: vec![PortRange {
+                    width: bus::PortWidth::default(),
                     ports: 0x123..=0x123,
                     device: 0,
                 }],
@@ -269,6 +270,7 @@ fn stopping_access_refreshes_coupled_deadlines_before_charging_its_step() {
                 devices,
                 DecodeMap {
                     ports: vec![PortRange {
+                        width: bus::PortWidth::default(),
                         ports: 0x123..=0x123,
                         device: 0,
                     }],
@@ -355,6 +357,7 @@ fn access_coupling_refreshes_a_relative_deadline_before_step_completion() {
             devices,
             DecodeMap {
                 ports: vec![PortRange {
+                    width: bus::PortWidth::default(),
                     ports: 0x61..=0x61,
                     device: 0,
                 }],
@@ -458,6 +461,7 @@ fn pending_machine(script: Vec<MockCpuStep>) -> (Machine<MockCpu>, chipset::PicO
         vec![Box::new(pic.clone())],
         DecodeMap {
             ports: vec![PortRange {
+                width: bus::PortWidth::default(),
                 ports: 0x20..=0x21,
                 device: 0,
             }],
@@ -880,6 +884,7 @@ fn mmio_replays_finish_before_inta_and_are_charged_once() {
         vec![Box::new(shared.clone()), Box::new(devices::VgaText::new())],
         DecodeMap {
             ports: vec![PortRange {
+                width: bus::PortWidth::default(),
                 ports: 0x20..=0x21,
                 device: 0,
             }],
@@ -1162,6 +1167,7 @@ fn real_mode_sti_nop_accepts_before_the_next_device_deadline() {
                 vec![Box::new(uart)],
                 DecodeMap {
                     ports: vec![PortRange {
+                        width: bus::PortWidth::default(),
                         ports: 0x3F8..=0x3FF,
                         device: 0,
                     }],
@@ -1289,6 +1295,7 @@ fn out_drains_dma_and_follow_on_completion_before_inta() {
         ],
         DecodeMap {
             ports: vec![PortRange {
+                width: bus::PortWidth::default(),
                 ports: 0x123..=0x123,
                 device: 1,
             }],
@@ -1589,6 +1596,7 @@ fn access_error_survives_follow_on_settle_failure() {
             vec![Box::<FaultingAccess>::default()],
             DecodeMap {
                 ports: vec![PortRange {
+                    width: bus::PortWidth::default(),
                     ports: 0x123..=0x123,
                     device: 0,
                 }],

@@ -593,6 +593,7 @@ mod tests {
                 vec![Box::new(I8042::new()), prompt_card()],
                 DecodeMap {
                     ports: vec![bus::PortRange {
+                        width: bus::PortWidth::default(),
                         ports: 0x60..=0x60,
                         device: 0,
                     }],
