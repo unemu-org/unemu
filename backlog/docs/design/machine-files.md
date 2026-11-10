@@ -1,7 +1,10 @@
 # Machine description files
 
-Status: **accepted** (decision-17). The schema 1 TOML parser is implemented
-in `crates/machine-file`; lowering, YAML and `extends` are still to come.
+Status: **accepted** (decision-17). Schema 1 TOML parsing and lowering to an
+assembly-validated `MachineConfig` are implemented in `crates/machine-file`.
+YAML, `extends`, IDE and journal attachment are still to come. NVRAM images
+currently support volatile writes only; readonly is rejected until assembly
+can represent it.
 The design answers one question: how is a `MachineConfig` written as a file,
 so that users compose machines without recompiling?
 
@@ -77,7 +80,7 @@ numbered **M1–M8** and listed after the table.
 | `devices[]` for PIC ×2, PIT, 8237, 8042, RTC, port 61h | none | board (`ibm-5170` table below) | — |
 | `devices[]` for POST port | `[board] post_port` | board default `0x80`, user may set `"none"` | — |
 | `devices[]` for UART, VGA, MDA, FDC | `[[card]] kind = …` | user | — |
-| `DeviceConfig.id` (`DeviceId`) | none | derived from the role or card kind; the file-level card `id` is a merge key only | — |
+| `DeviceConfig.id` (`DeviceId`) | none | derived from the role or card kind; the file-level card `id` is a unique merge key and diagnostic name, not a `DeviceId` | — |
 | `DeviceConfig.ports` | `[[card]] port` (base) | type default, user override where relocatable | — |
 | `DeviceConfig.irq` | `[[card]] irq` (`0..15` or `"none"`) | type default, user override | — |
 | `DeviceConfig.dma` (`DmaSpec`) | `[[card]] dma` (`0..3` or `"none"`) | type default, user override | — |
@@ -151,7 +154,9 @@ the owning `DeviceId`; lowering derives the windows from the card kinds.
 ### Document rules
 
 - **Syntax by extension:** `.toml` is TOML, `.yaml` and `.yml` are YAML.
-  Any other extension is an error. A file contains exactly one document.
+  The name supplied by the caller selects the syntax, including a symlink's
+  name rather than its target's extension. Any other extension is an error.
+  A file contains exactly one document.
 - **Keys** are `snake_case`. **Enumerated values** are `kebab-case` strings.
   **Integers** may be decimal or hexadecimal (`0x3F8`); both syntaxes accept
   hex (MEASURED, all three crates in [Crates](#crates)).
@@ -167,8 +172,11 @@ the owning `DeviceId`; lowering derives the windows from the card kinds.
   table) use a hand-written `Visitor`. It keeps the value's location in TOML
   and in both YAML crates (MEASURED).
 - **Paths** are strings with `/` separators, resolved against the directory of
-  the file that contains them. Absolute paths are accepted. Repository files
-  must use relative paths (bead 7 tests this).
+  the file that contains them. The loader canonicalizes the machine file path
+  only to find the image directory: when it is a symlink, relative images use
+  the target file's directory. Diagnostics preserve the path supplied by the
+  caller, including relative components and symlink spellings. Absolute image
+  paths are accepted. Repository files must use relative paths (bead 7 tests this).
 - **Lowering principle:** lowering rejects only what `MachineConfig` cannot
   represent: unsupported values and fields a card kind does not accept.
   Reserved names are recognised and rejected during parsing. Every rule about
@@ -204,16 +212,19 @@ canonical order, M2). The values are today's presets, unchanged.
 | 1 | master 8259 | `MasterPic` | `0x20–0x21` | — | `cascade = true` |
 | 2 | slave 8259 | `SlavePic` | `0xA0–0xA1` | — | cascaded on master IRQ2 |
 | 3 | 8254 PIT | `Pit` | `0x40–0x43` | 0 | |
-| 4 | 8237 DMA | `Dma` | `0x00–0x0F`, page `0x81–0x8F` (`0x80–0x8F` when `post_port` is not `0x80`) | — | the second 8237 (`0xC0–0xDF`, channels 4–7) is not modelled |
-| 5 | 8042 KBC | `Keyboard` | `0x60`, `0x64` | 1 | |
-| 6 | MC146818 RTC | `Rtc` | `0x70–0x71` | 8 | |
-| 7 | system control | `SysControl` | `0x61` | — | |
-| 8 | POST latch | `Post` | `post_port` | — | omitted when `"none"` |
+| 4 | byte 8237 DMA | `Dma` | `0x00–0x0F`, page `0x81–0x88` (`0x80–0x88` when `post_port` is not `0x80`) | — | channels 0–3 |
+| 5 | word 8237 DMA | `DmaWord` | `0xC0–0xDF`, page `0x89–0x8F` | — | channel 4 is cascade |
+| 6 | 8042 KBC | `Keyboard` | `0x60`, `0x64` | 1 | |
+| 7 | MC146818 RTC | `Rtc` | `0x70–0x71` | 8 | |
+| 8 | empty 80287 socket | `Coprocessor` | `0xF0–0xF1`, `0xF8–0xFF` | 13 | |
+| 9 | system control | `SysControl` | `0x61` | — | |
+| 10 | POST latch | `Post` | `post_port` | — | omitted when `"none"` |
 
 Board-dependent validation rules (new checks in `validate()`, M1). On
 `ibm-5170`, a card IRQ must be one of 3–7, 9–12, 14 or 15: IRQ2 is the cascade,
-and 0, 1, 8 and 13 are not on the bus. A card DMA channel must be 0–3, because
-only one 8237 is modelled. The `Bare` board skips these rules.
+and 0, 1, 8 and 13 are not on the bus. Card DMA wiring currently names the byte
+controller and a channel in 0–3; schema 1 does not expose word-DMA card wiring.
+The `Bare` board skips these rules.
 
 `model = "ibm-5160"` (generic XT) is reserved. The list of board models and the
 firmware each one accepts belong to the firmware spike.
@@ -294,13 +305,17 @@ Common fields:
 
 | Field | Type | Notes |
 |---|---|---|
-| `id` | string | The merge key for `extends` and the name in messages. Defaults to the kind (`"fdc-765"`). |
+| `id` | string | Unique key for `extends` and messages. Defaults to the kind (`"fdc-765"`); repeated ids are refused. |
 | `kind` | string | Required, unless `extends` already defined a card with this `id`. |
 | `port` | u16 | The base port, where the kind is relocatable. |
 | `irq` | `0..15` or `"none"` | An IRQ on a kind with no interrupt source is an error. |
 | `dma` | `0..3` or `"none"` | Only for kinds that master DMA. |
 | `drives` | array of tables | Only for disk controllers. |
 | `remove` | bool | Only in a file that `extends`. It deletes the inherited card. |
+
+Lowering refuses a repeated card id and names both defining origins. This
+includes repeated defaulted kinds and collisions between an explicit id and a
+kind-derived id. A missing kind does not synthesize an id from the array index.
 
 Kinds in schema 1. Each card lowers to one `DeviceConfig`, plus any MMIO
 windows and drives. A port override is accepted only where the device model
@@ -557,7 +572,8 @@ Every error starts with the file path. There are three classes:
 2. **Lowering errors** (fields a kind does not accept,
    completeness, `sha256` mismatches, unreadable images) name the file and a
    field path such as `card[fdc-765].drives[unit=0].image`. A `sha256`
-   mismatch prints both hashes.
+   mismatch prints both hashes. When an image's spelled path differs from the
+   path read, image errors show `spelled/path (resolved to actual/path)`.
 3. **`validate()` errors** carry `DeviceId`, drive index and image index. The
    loader keeps an origin table (`DeviceId` → card id and defining file,
    drive index → card and unit, image index → firmware entry) and prints them
@@ -568,10 +584,18 @@ Every error starts with the file path. There are three classes:
    no firmware provides "fixed-disk"; add an option ROM that provides it
    ```
 
-Schema 1 gives no line numbers for errors in classes 2 and 3. Both formats
-have span types (`toml`'s `Spanned`, `serde-saphyr`'s `Spanned`), but they are
-not interchangeable, and one data model matters more. Positions for these
-errors can come later from a format-specific lookup of the field path.
+The TOML loader keeps table-level source spans in a separate, format-neutral
+origin table. Lowering and validation diagnostics name the defining file and
+table line, with card ids and drive units where applicable. The table can also
+retain per-field origins from different files for a future inheritance merger.
+Programmatically constructed documents may omit positions. A diagnostic such
+as `card #1.kind` uses a zero-based table index when neither an explicit id nor
+a kind names the card: `card #1` is the second `[[card]]` table. In contrast,
+`card[1]` names a card whose explicit id is `"1"`.
+
+Validation messages retain assembly's wording, replacing drive/image index
+prefixes with file labels. A duplicate-drive message includes each defining
+file and line beside its unit label, so repeated units remain distinguishable.
 
 ## Validation and presets
 
@@ -592,8 +616,9 @@ read file → peek schema → typed parse (per layer) → upgrade → merge
 Images are read exactly once, hashed, and stored as `ImageSource::Inline`.
 Assembly therefore never re-reads a file that could have changed after the
 hash check. Image reading goes through a small trait
-(`ImageReader::read(path, sha256)`), so tests can supply bytes without
-fixtures.
+(`ImageReader::read(path)`), so tests can supply bytes without fixtures.
+Lowering computes SHA-256 from the returned buffer and checks any declared pin;
+the reader cannot disable integrity checks.
 
 ### Canonical order
 
@@ -630,9 +655,11 @@ What stays Rust:
 ### Round-trip and golden tests
 
 - **Round trip without fixtures** (runs in plain `cargo test`):
-  `load("machines/at-freedos.toml")`, with an `ImageReader` that returns a
-  32 KiB and a 1,474,560-byte dummy image and skips the hash check, must equal
-  `assembly::bios(rom, Some(floppy))` for the same bytes.
+  parse `machines/at-freedos.toml`, remove its real-fixture pins from the typed
+  test document, and lower it with an `ImageReader` that returns a 32 KiB dummy
+  ROM and a 1,474,560-byte zero-filled floppy. The entire result must equal
+  `assembly::bios(rom, Some(floppy))` for the same bytes. Lowering always hashes
+  the returned bytes; pins, when present, are always checked.
 - **Syntax equivalence:** for every `machines/**/*.toml` with a `.yaml` twin,
   both lower to equal configs.
 - **Pinned hashes, fixture-gated** (the existing `fixture()` policy): the real
@@ -677,7 +704,7 @@ sha256 = "1ad458acb1f22dee6b3d9b6bd95e83218a7ddc5389fa2b2c67a4001e689c81a8"
 provides = ["floppy"]
 
 [[card]]
-kind = "mda"          # the Xi8088 BIOS console; first display card = window default
+kind = "mda"          # the Xi8088 BIOS console; planned window default: first display card
 
 [[card]]
 kind = "vga-text"
@@ -701,7 +728,8 @@ write = "volatile"
 It lowers to the canonical-order `assembly::bios(rom, Some(floppy))`:
 
 - **devices:** `MasterPic`, `SlavePic`, `Pit` (IRQ 0), `Dma` (`0x00–0x0F`,
-  `0x81–0x8F`), `Keyboard` (IRQ 1), `Rtc` (IRQ 8, NVRAM derived), `SysControl`,
+  `0x81–0x88`), `DmaWord` (`0xC0–0xDF`, `0x89–0x8F`), `Keyboard` (IRQ 1),
+  `Rtc` (IRQ 8, NVRAM derived), `Coprocessor` (IRQ 13), `SysControl`,
   `Post` (`0x80`), `Mda`, `Vga`, `Uart` (`0x3F8`, no IRQ), `Fdc` (IRQ 6,
   DMA channel 2).
 - **memory:** 1 MiB address space; RAM `[0, 0xB0000)` and `[0xC0000, 0xF8000)`;
@@ -741,7 +769,7 @@ firmware:
     provides: [floppy]
 
 card:
-  - kind: mda         # the Xi8088 BIOS console; first display card = window default
+  - kind: mda         # the Xi8088 BIOS console; planned window default: first display card
   - kind: vga-text
   - kind: uart-16550
     port: 0x3F8
@@ -926,9 +954,10 @@ spike owns the board-model and firmware entries.
 4. **Journal path base.** In machine files every path, including `journal`,
    is relative to the file. The `persistent-media.md` draft says relative to
    the process working directory. One rule should win.
-5. **Card identity.** Is a card `id` that defaults to its kind acceptable,
-   with a second card of the same kind rejected until `DeviceId` gains
-   instance ids?
+5. **Card identity — resolved.** `id` defaults to the kind. Lowering rejects
+   every repeated effective id and reports both origins. Different ids for a
+   second card of the same kind still reach `DuplicateDeviceId` in assembly;
+   supporting those instances requires instance ids in `DeviceId`.
 6. **Window display.** Show the first display card in file order by default,
    or require `--display`?
 7. **For the firmware spike:** the `provides` vocabulary; whether known ROMs
@@ -996,7 +1025,8 @@ Ordered; each bead is narrow and lands green.
    and `validate()`. Add `machines/at-freedos.toml`.
    *Accept:* the fixture-free round trip equals `assembly::bios(…)`.
    Fixture-gated: the real file loads with the pinned hashes. A `sha256`
-   mismatch prints both hashes. A `validate()` failure prints the card id and
+   mismatch prints both hashes. When an image's spelled path differs from the
+   path read, image errors show `spelled/path (resolved to actual/path)`. A `validate()` failure prints the card id and
    the file.
    *Depends on:* 1, 3, 4.
 6. **YAML syntax.** `serde-saphyr` (strict booleans, duplicate-key error,

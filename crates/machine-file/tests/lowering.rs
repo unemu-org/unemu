@@ -1,0 +1,932 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+//! Machine-file lowering integration tests, see the design § Validation and presets.
+
+use std::{
+    collections::BTreeMap,
+    io,
+    path::{Path, PathBuf},
+    sync::atomic::{AtomicUsize, Ordering},
+};
+
+use assembly::{ConfigError, DeviceId, DeviceKind, ImageSource, NvramSource, RamRegion, WriteMode};
+use machine_file::{lower, parse_toml, ImageReader, MachineFile, Origin, Origins};
+
+#[path = "../../cli/tests/support/fixtures.rs"]
+mod fixtures;
+
+const MACHINE: &str = include_str!("../../../machines/at-freedos.toml");
+const MINIMAL: &str =
+    "schema = 1\n[board]\nmodel = 'ibm-5170'\n[firmware.bios]\nimage = 'bios.bin'\n";
+
+#[derive(Default)]
+struct Images {
+    files: BTreeMap<PathBuf, Vec<u8>>,
+    reads: Vec<PathBuf>,
+}
+
+impl Images {
+    fn rom(file: &Path) -> Self {
+        let mut images = Self::default();
+        images
+            .files
+            .insert(file.with_file_name("bios.bin"), vec![0xF4; 0x8000]);
+        images
+    }
+}
+
+impl ImageReader for Images {
+    fn read(&mut self, path: &Path) -> io::Result<Vec<u8>> {
+        self.reads.push(path.into());
+        self.files.remove(path).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                "missing synthetic image or duplicate read",
+            )
+        })
+    }
+}
+
+fn run(input: &str) -> Result<assembly::MachineConfig, machine_file::LowerError> {
+    let file = Path::new("test-machines/custom.toml");
+    lower(
+        &parse_toml(file, input).unwrap(),
+        &Origins::from_toml(file, input).unwrap(),
+        &mut Images::rom(file),
+    )
+}
+
+fn synthetic_machine() -> (MachineFile, Origins, Images, Vec<u8>, Vec<u8>) {
+    let file = Path::new("machines/at-freedos.toml");
+    let mut document = parse_toml(file, MACHINE).unwrap();
+    document
+        .firmware
+        .as_mut()
+        .unwrap()
+        .bios
+        .as_mut()
+        .unwrap()
+        .sha256 = None;
+    document
+        .card
+        .as_mut()
+        .unwrap()
+        .last_mut()
+        .unwrap()
+        .drives
+        .as_mut()
+        .unwrap()[0]
+        .sha256 = None;
+    let rom = vec![0xF4; 0x8000];
+    let floppy = vec![0; 1_474_560];
+    let mut images = Images::default();
+    images.files.insert(
+        "machines/../vendor/kiselev-bios/bios-xi8088.bin".into(),
+        rom.clone(),
+    );
+    images.files.insert(
+        "machines/../vendor/freedos/freedos.img".into(),
+        floppy.clone(),
+    );
+    (
+        document,
+        Origins::from_toml(file, MACHINE).unwrap(),
+        images,
+        rom,
+        floppy,
+    )
+}
+
+#[test]
+fn synthetic_round_trip_equals_the_whole_rust_preset() {
+    let (document, origins, mut images, rom, floppy) = synthetic_machine();
+    let config = lower(&document, &origins, &mut images).unwrap();
+    assert_eq!(config, assembly::bios(rom, Some(floppy)));
+    assert_eq!(images.reads.len(), 2);
+    assert!(images.files.is_empty());
+    assert!(config
+        .images
+        .iter()
+        .all(|image| matches!(image.source, ImageSource::Inline(_))));
+    assert!(config
+        .drives
+        .iter()
+        .all(|drive| matches!(drive.image, ImageSource::Inline(_))));
+}
+
+#[test]
+fn repository_fixture_round_trip_checks_pinned_hashes() {
+    let Some(rom) = fixtures::fixture("kiselev-bios/bios-xi8088.bin") else {
+        return;
+    };
+    let Some(floppy) = fixtures::fixture("freedos/freedos.img") else {
+        return;
+    };
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../machines/at-freedos.toml");
+    assert_eq!(
+        machine_file::load(path).unwrap(),
+        assembly::bios(rom, Some(floppy))
+    );
+}
+
+#[test]
+fn sha256_mismatch_reports_both_hashes() {
+    use sha2::{Digest, Sha256};
+    let expected = "0".repeat(64);
+    let actual = format!("{:x}", Sha256::digest(vec![0xF4; 0x8000]));
+    let error = run(&format!("{MINIMAL}sha256 = '{expected}'\n")).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains(&format!("expected {expected}, actual {actual}")),
+        "{error}"
+    );
+    assert!(error.to_string().contains("firmware.bios.image"));
+}
+
+#[test]
+fn validation_errors_name_the_card_file_and_position() {
+    let input = format!("{MINIMAL}\n[[card]]\nid = 'console'\nkind = 'uart-16550'\nirq = 8\n");
+    let error = run(&input).unwrap_err();
+    assert!(matches!(
+        error.validation.as_deref(),
+        Some(ConfigError::BoardCardIrq {
+            device: DeviceId::Uart,
+            line: 8,
+            ..
+        })
+    ));
+    assert_eq!(error.field, "card[console]");
+    assert_eq!(error.origin.file, Path::new("test-machines/custom.toml"));
+    assert_eq!(error.origin.line, Some(7), "{error}");
+    let rendered = error.to_string();
+    assert!(rendered.contains("custom.toml:"));
+    assert!(rendered.contains("card[console]"));
+}
+
+struct TempTree(PathBuf);
+impl TempTree {
+    fn new() -> Self {
+        static NEXT: AtomicUsize = AtomicUsize::new(0);
+        let path = std::env::temp_dir().join(format!(
+            "machine-file-lowering-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir(&path).unwrap();
+        Self(path)
+    }
+}
+impl Drop for TempTree {
+    fn drop(&mut self) {
+        std::fs::remove_dir_all(&self.0).unwrap();
+    }
+}
+
+#[test]
+fn relative_image_paths_use_the_machine_file_directory() {
+    let tree = TempTree::new();
+    let directory = tree.0.join("machines");
+    std::fs::create_dir(&directory).unwrap();
+    let path = directory.join("custom.toml");
+    let rom = vec![0xF4; 0x8000];
+    std::fs::write(&path, MINIMAL).unwrap();
+    std::fs::write(directory.join("bios.bin"), &rom).unwrap();
+    assert_ne!(std::env::current_dir().unwrap(), directory);
+    let config = machine_file::load(path).unwrap();
+    assert_eq!(config.images[0].source, ImageSource::Inline(rom));
+}
+
+#[test]
+fn individual_field_origins_resolve_images_before_any_future_merge() {
+    let file = Path::new("child/custom.toml");
+    let mut origins = Origins::new(file);
+    origins.insert(
+        "firmware.bios.image",
+        Origin {
+            file: "parent/base.toml".into(),
+            line: Some(9),
+        },
+    );
+    let mut images = Images::rom(Path::new("parent/base.toml"));
+    let config = lower(&parse_toml(file, MINIMAL).unwrap(), &origins, &mut images).unwrap();
+    assert_eq!(images.reads, [Path::new("parent/bios.bin")]);
+    assert!(matches!(config.images[0].source, ImageSource::Inline(_)));
+}
+
+#[test]
+fn journal_and_ide_are_explicitly_deferred() {
+    let ide = run(&format!("{MINIMAL}[[card]]\nid='disk'\nkind='ide'\n")).unwrap_err();
+    assert!(ide.to_string().contains("card[disk].kind"));
+    assert!(ide.message.contains("ide is not implemented yet"));
+    assert!(ide.message.contains("ATA/IDE controller"));
+    let (mut document, origins, mut images, _, _) = synthetic_machine();
+    let drive = &mut document
+        .card
+        .as_mut()
+        .unwrap()
+        .last_mut()
+        .unwrap()
+        .drives
+        .as_mut()
+        .unwrap()[0];
+    drive.write = Some(machine_file::schema::v1::WriteMode::Journal);
+    let error = lower(&document, &origins, &mut images).unwrap_err();
+    assert!(
+        error.message.contains("journal\" is not implemented yet"),
+        "{error}"
+    );
+    assert!(error.message.contains("persistent-media integration"));
+    let nvram = run(&format!(
+        "{MINIMAL}[board.rtc]\nnvram={{image='cmos.bin',write='journal'}}\n"
+    ))
+    .unwrap_err();
+    assert!(nvram.message.contains("not implemented yet"));
+}
+
+#[test]
+fn card_defaults_overrides_and_file_order_are_preserved() {
+    for (port, irq) in [(0x3F8, 4), (0x3E8, 4), (0x2F8, 3), (0x2E8, 3)] {
+        let config = run(&format!(
+            "{MINIMAL}[[card]]\nkind='uart-16550'\nport={port}\n"
+        ))
+        .unwrap();
+        let uart = config
+            .devices
+            .iter()
+            .find(|device| device.id == DeviceId::Uart)
+            .unwrap();
+        assert_eq!(uart.irq, Some(irq));
+        assert_eq!(
+            uart.kind,
+            DeviceKind::Uart(assembly::UartCfg { base: port })
+        );
+        assert_eq!(uart.ports, [assembly::PortWindow::new(port, port + 7)]);
+    }
+    let config = run(&format!("{MINIMAL}[[card]]\nkind='fdc-765'\nirq='none'\ndma='none'\n[[card]]\nkind='uart-16550'\nport=0x300\nirq=5\n[[card]]\nkind='vga-text'\n[[card]]\nkind='mda'\n")).unwrap();
+    assert_eq!(
+        config
+            .devices
+            .iter()
+            .filter(
+                |device| [DeviceId::Fdc, DeviceId::Uart, DeviceId::Vga, DeviceId::Mda]
+                    .contains(&device.id)
+            )
+            .map(|device| device.id)
+            .collect::<Vec<_>>(),
+        [DeviceId::Fdc, DeviceId::Uart, DeviceId::Vga, DeviceId::Mda]
+    );
+    let fdc = config
+        .devices
+        .iter()
+        .find(|device| device.id == DeviceId::Fdc)
+        .unwrap();
+    let uart = config
+        .devices
+        .iter()
+        .find(|device| device.id == DeviceId::Uart)
+        .unwrap();
+    assert_eq!(fdc.irq, None);
+    assert_eq!(fdc.dma, None);
+    assert_eq!(fdc.ports, assembly::FdcCfg::port_windows(false));
+    assert_eq!(uart.irq, Some(5));
+    assert_eq!(
+        config
+            .memory
+            .mmio
+            .iter()
+            .map(|window| window.device)
+            .collect::<Vec<_>>(),
+        [DeviceId::Mda, DeviceId::Vga]
+    );
+}
+
+#[test]
+fn invalid_card_fields_and_duplicate_roles_are_rejected() {
+    for fields in [
+        "kind='mda'\nport=0x3B0",
+        "kind='vga-text'\nirq='none'",
+        "kind='uart-16550'\ndma='none'",
+        "kind='mda'\ndrives=[]",
+        "kind='fdc-765'\nport=0x370",
+        "kind='uart-16550'\nport=0x300",
+        "kind='mda'\nremove=false",
+    ] {
+        assert!(
+            run(&format!("{MINIMAL}[[card]]\n{fields}\n")).is_err(),
+            "{fields}"
+        );
+    }
+    let error = run(&format!("{MINIMAL}[[card]]\nid='first'\nkind='uart-16550'\n[[card]]\nid='second'\nkind='uart-16550'\nport=0x2F8\n")).unwrap_err();
+    assert_eq!(
+        error.validation.as_deref(),
+        Some(&ConfigError::DuplicateDeviceId(DeviceId::Uart))
+    );
+    assert!(error.to_string().contains("card[first]"));
+    assert!(error.to_string().contains("card[second]"));
+}
+
+#[test]
+fn ram_rule_subtracts_option_roms_and_keeps_the_conventional_gap() {
+    let file = Path::new("test-machines/custom.toml");
+    let input = format!("{MINIMAL}[[firmware.option_roms]]\nimage='option.bin'\nbase=0xC8000\nprovides=['fixed-disk']\n[memory]\nconventional_kib=512\nextended_kib=128\n[cpu]\nmodel='80286'\nrate='3/2'\n[[card]]\nkind='mda'\n");
+    let mut images = Images::rom(file);
+    images
+        .files
+        .insert(file.with_file_name("option.bin"), vec![0; 0x2000]);
+    let config = lower(
+        &parse_toml(file, &input).unwrap(),
+        &Origins::from_toml(file, &input).unwrap(),
+        &mut images,
+    )
+    .unwrap();
+    assert_eq!(config.memory.address_space_bytes, 0x120000);
+    assert_eq!(
+        config.memory.ram,
+        [
+            RamRegion::new(0, 0x80000),
+            RamRegion::new(0xA0000, 0x10000),
+            RamRegion::new(0xB8000, 0x10000),
+            RamRegion::new(0xCA000, 0x2E000),
+            RamRegion::new(0x100000, 0x20000)
+        ]
+    );
+    assert_eq!(
+        config.images[1].provides,
+        [assembly::FirmwareService::FixedDisk]
+    );
+    assert_eq!(config.clock.retired_per_pit_clock, 3);
+    assert_eq!(config.clock.retired_per_pit_clock_denominator, 2);
+    for memory in [
+        "conventional_kib=641",
+        "conventional_kib=15",
+        "extended_kib=15424",
+        "extended_kib=63",
+    ] {
+        assert!(
+            run(&format!("{MINIMAL}[memory]\n{memory}\n")).is_err(),
+            "{memory}"
+        );
+    }
+}
+
+#[test]
+fn post_port_overrides_update_the_board_dma_decode() {
+    for port in ["'none'", "0x190"] {
+        let input = MINIMAL.replace(
+            "model = 'ibm-5170'",
+            &format!("model = 'ibm-5170'\npost_port={port}"),
+        );
+        let config = run(&input).unwrap();
+        for mut expected in assembly::BoardModel::Ibm5170
+            .motherboard_devices()
+            .into_iter()
+            .filter(|device| matches!(device.id, DeviceId::Dma | DeviceId::DmaWord))
+        {
+            if expected.id == DeviceId::Dma {
+                expected.ports[1].start = 0x80;
+            }
+            let actual = config
+                .devices
+                .iter()
+                .find(|device| device.id == expected.id)
+                .unwrap();
+            assert_eq!(actual, &expected);
+        }
+        let post = config.devices.iter().find(|d| d.id == DeviceId::Post);
+        if port == "'none'" {
+            assert!(post.is_none());
+        } else {
+            let post = post.unwrap();
+            assert_eq!(post.ports, [assembly::PortWindow::single(0x190)]);
+            assert_eq!(
+                post.kind,
+                DeviceKind::Post(assembly::PostPortCfg { port: 0x190 })
+            );
+        }
+    }
+}
+
+#[test]
+fn rtc_and_nvram_are_lowered_without_repairing_image_bytes() {
+    let file = Path::new("test-machines/custom.toml");
+    let input =
+        format!("{MINIMAL}[board.rtc]\nstart='2024-02-29T12:34:56'\nnvram={{image='cmos.bin'}}\n");
+    let mut images = Images::rom(file);
+    images
+        .files
+        .insert(file.with_file_name("cmos.bin"), (0..64).collect());
+    let config = lower(
+        &parse_toml(file, &input).unwrap(),
+        &Origins::from_toml(file, &input).unwrap(),
+        &mut images,
+    )
+    .unwrap();
+    let DeviceKind::Rtc(rtc) = config
+        .devices
+        .iter()
+        .find(|d| d.id == DeviceId::Rtc)
+        .unwrap()
+        .kind
+    else {
+        panic!("RTC kind")
+    };
+    assert_eq!(rtc.start.to_string(), "2024-02-29T12:34:56");
+    assert_eq!(
+        rtc.nvram,
+        NvramSource::Image(std::array::from_fn(|i| i as u8))
+    );
+    let config = run(&format!("{MINIMAL}[board.rtc]\nnvram='blank'\n")).unwrap();
+    assert!(config.devices.iter().any(|d| matches!(
+        d.kind,
+        DeviceKind::Rtc(assembly::CmosCfg {
+            nvram: NvramSource::Blank,
+            ..
+        })
+    )));
+    for start in [
+        "2023-02-29T00:00:00",
+        "2000-01-01T24:00:00",
+        "1979-01-01T00:00:00",
+    ] {
+        let error = run(&format!("{MINIMAL}[board.rtc]\nstart='{start}'\n")).unwrap_err();
+        assert!(
+            matches!(
+                error.validation.as_deref(),
+                Some(ConfigError::InvalidRtcStart { .. })
+            ),
+            "{error}"
+        );
+        assert_eq!(error.field, "board.rtc");
+    }
+    assert!(run(&format!("{MINIMAL}[board.rtc]\nstart='2024-2-29'\n"))
+        .unwrap_err()
+        .message
+        .contains("YYYY-MM-DD"));
+    assert!(run(&format!(
+        "{MINIMAL}[board.rtc]\nnvram={{image='cmos.bin',write='readonly'}}\n"
+    ))
+    .unwrap_err()
+    .message
+    .contains("readonly NVRAM is not implemented yet"));
+    let mut images = Images::rom(file);
+    images
+        .files
+        .insert(file.with_file_name("cmos.bin"), vec![0; 63]);
+    let error = lower(
+        &parse_toml(file, &input).unwrap(),
+        &Origins::new(file),
+        &mut images,
+    )
+    .unwrap_err();
+    assert!(error.message.contains("64 bytes, got 63"));
+}
+
+#[test]
+fn drives_sort_by_unit_and_retain_controller_geometry_and_write_mode() {
+    let file = Path::new("test-machines/custom.toml");
+    let input = format!("{MINIMAL}provides=['floppy']\n[[card]]\nid='diskette'\nkind='fdc-765'\ndma=1\nirq=5\n[[card.drives]]\nunit=1\ntype='360K'\nimage='small.img'\nwrite='readonly'\n[[card.drives]]\nunit=0\ntype='720K'\nimage='medium.img'\n");
+    let mut images = Images::rom(file);
+    images
+        .files
+        .insert(file.with_file_name("small.img"), vec![0; 368_640]);
+    images
+        .files
+        .insert(file.with_file_name("medium.img"), vec![0; 737_280]);
+    let config = lower(
+        &parse_toml(file, &input).unwrap(),
+        &Origins::from_toml(file, &input).unwrap(),
+        &mut images,
+    )
+    .unwrap();
+    assert_eq!(
+        config
+            .drives
+            .iter()
+            .map(|drive| (
+                drive.controller,
+                drive.unit,
+                drive.kind.image_bytes(),
+                drive.write
+            ))
+            .collect::<Vec<_>>(),
+        [
+            (DeviceId::Fdc, 0, 737_280, WriteMode::Volatile),
+            (DeviceId::Fdc, 1, 368_640, WriteMode::ReadOnly)
+        ]
+    );
+    let fdc = config.devices.last().unwrap();
+    assert_eq!(fdc.irq, Some(5));
+    assert_eq!(fdc.dma.unwrap().channel, 1);
+}
+
+#[test]
+fn drive_and_image_validation_keep_the_defining_origin() {
+    let (mut document, origins, mut images, _, _) = synthetic_machine();
+    images
+        .files
+        .insert("machines/../vendor/freedos/freedos.img".into(), vec![0; 7]);
+    let error = lower(&document, &origins, &mut images).unwrap_err();
+    assert!(matches!(
+        error.validation.as_deref(),
+        Some(ConfigError::ImageGeometryMismatch { drive_index: 0, .. })
+    ));
+    assert_eq!(error.field, "card[fdc-765].drives[unit=0]");
+    assert_eq!(error.origin.file, Path::new("machines/at-freedos.toml"));
+    let drive_line = MACHINE[..MACHINE.find("[[card.drives]]").unwrap()]
+        .bytes()
+        .filter(|&byte| byte == b'\n')
+        .count()
+        + 1;
+    assert_eq!(error.origin.line, Some(drive_line));
+    let mut images = synthetic_machine().2;
+    document
+        .firmware
+        .as_mut()
+        .unwrap()
+        .bios
+        .as_mut()
+        .unwrap()
+        .provides = None;
+    let error = lower(&document, &origins, &mut images).unwrap_err();
+    assert!(matches!(
+        error.validation.as_deref(),
+        Some(ConfigError::NoProvider {
+            device: DeviceId::Fdc,
+            ..
+        })
+    ));
+    assert_eq!(error.field, "card[fdc-765]");
+    let error = run(&format!(
+        "{MINIMAL}[[firmware.option_roms]]\nimage='bios.bin'\nbase=0xF0000\n"
+    ))
+    .unwrap_err();
+    assert_eq!(error.field, "firmware.option_roms[0].base");
+}
+
+#[test]
+fn incomplete_or_unmerged_documents_and_image_io_fail_clearly() {
+    assert_eq!(run("schema=1\n").unwrap_err().field, "board.model");
+    assert_eq!(
+        run("schema=1\n[board]\nmodel='ibm-5170'\n")
+            .unwrap_err()
+            .field,
+        "firmware.bios"
+    );
+    let error = run(&format!("extends='parent.toml'\n{MINIMAL}")).unwrap_err();
+    assert_eq!(error.field, "extends");
+    let error = run(&MINIMAL.replace("bios.bin", "missing.bin")).unwrap_err();
+    assert!(error
+        .message
+        .contains("cannot read image test-machines/missing.bin"));
+    assert!(error.message.contains("missing synthetic image"));
+    let error = run(&format!(
+        "{MINIMAL}[[card]]\nkind='uart-16550'\nport=65535\nirq='none'\n"
+    ))
+    .unwrap_err();
+    assert!(matches!(
+        error.validation.as_deref(),
+        Some(ConfigError::UartPortWindowOutOfSpace { .. })
+    ));
+}
+
+#[test]
+fn duplicate_card_ids_report_both_origins() {
+    for cards in [
+        "[[card]]\nid='x'\nkind='mda'\n[[card]]\nid='x'\nkind='vga-text'\n",
+        "[[card]]\nid='mda'\nkind='vga-text'\n[[card]]\nkind='mda'\n",
+        "[[card]]\nkind='mda'\n[[card]]\nkind='mda'\n",
+    ] {
+        let input = format!("{MINIMAL}{cards}");
+        let file = Path::new("child/custom.toml");
+        let document = parse_toml(file, &input).unwrap();
+        let mut origins = Origins::from_toml(file, &input).unwrap();
+        origins.insert(
+            "card[0]",
+            Origin {
+                file: "parent/base.toml".into(),
+                line: Some(12),
+            },
+        );
+        origins.insert(
+            "card[1]",
+            Origin {
+                file: file.into(),
+                line: Some(25),
+            },
+        );
+        let error = lower(&document, &origins, &mut Images::rom(file)).unwrap_err();
+        assert!(error.validation.is_none());
+        assert!(error.message.contains("duplicate card id"), "{error}");
+        assert!(error.to_string().contains("parent/base.toml:12"), "{error}");
+        assert!(
+            error.to_string().contains("child/custom.toml:25"),
+            "{error}"
+        );
+    }
+}
+
+#[test]
+fn validation_diagnostics_start_with_the_card_or_image() {
+    let error = run(&format!(
+        "{MINIMAL}[[card]]\nid='com'\nkind='uart-16550'\nport=0x40\nirq='none'\n"
+    ))
+    .unwrap_err();
+    assert!(matches!(
+        error.validation.as_deref(),
+        Some(ConfigError::PortOverlap { .. })
+    ));
+    assert_eq!(error.field, "card[com]");
+    assert!(
+        error
+            .message
+            .contains("; test-machines/custom.toml:2: board"),
+        "{error}"
+    );
+    let error = run(&format!("{MINIMAL}base=0xB0000\n[[card]]\nkind='mda'\n")).unwrap_err();
+    assert!(matches!(
+        error.validation.as_deref(),
+        Some(ConfigError::ImageOverlapsMmio { image_index: 0, .. })
+    ));
+    assert_eq!(error.field, "firmware.bios");
+    assert!(error.message.contains("card[mda]"), "{error}");
+}
+
+#[cfg(unix)]
+#[test]
+fn symlinked_machine_paths_use_the_target_directory() {
+    let tree = TempTree::new();
+    let target = tree.0.join("target");
+    let aliases = tree.0.join("aliases");
+    std::fs::create_dir(&target).unwrap();
+    std::fs::create_dir(&aliases).unwrap();
+    let file = target.join("custom.yaml");
+    let alias = aliases.join("custom.toml");
+    let rom = vec![0xF4; 0x8000];
+    std::fs::write(&file, MINIMAL).unwrap();
+    std::fs::write(target.join("bios.bin"), &rom).unwrap();
+    std::fs::write(aliases.join("bios.bin"), vec![0; 0x8000]).unwrap();
+    std::os::unix::fs::symlink("../target/custom.yaml", &alias).unwrap();
+    assert_eq!(
+        machine_file::load(&alias).unwrap().images[0].source,
+        ImageSource::Inline(rom)
+    );
+    std::fs::write(
+        &file,
+        format!("{MINIMAL}[[card]]\nkind='uart-16550'\nirq=8\n"),
+    )
+    .unwrap();
+    let machine_file::LoadError::Lower(error) = machine_file::load(&alias).unwrap_err() else {
+        panic!("expected validation error")
+    };
+    assert_eq!(error.origin.file, alias);
+}
+
+#[test]
+fn drive_lowering_errors_name_the_unit_and_defining_origin() {
+    let file = Path::new("test-machines/custom.toml");
+    let input = format!("{MINIMAL}provides=['floppy']\n[[card]]\nid='diskette'\nkind='fdc-765'\n[[card.drives]]\nunit=1\ntype='360K'\nimage='one.img'\n[[card.drives]]\nunit=0\ntype='720K'\n");
+    let origins = Origins::from_toml(file, &input).unwrap();
+    let error = lower(
+        &parse_toml(file, &input).unwrap(),
+        &origins,
+        &mut Images::rom(file),
+    )
+    .unwrap_err();
+    assert_eq!(error.field, "card[diskette].drives[unit=0].image");
+    assert_eq!(&error.origin, origins.get("card[0].drives[1]"));
+    assert_ne!(error.origin.line, origins.get("card[0].drives[0]").line);
+}
+
+#[test]
+fn non_journal_writes_reject_journal_options() {
+    let file = Path::new("test-machines/custom.toml");
+    for option in ["journal='disk.journal'", "keep_generations=2"] {
+        let input = format!("{MINIMAL}provides=['floppy']\n[[card]]\nkind='fdc-765'\n[[card.drives]]\nunit=0\ntype='1.44M'\nimage='disk.img'\nwrite='volatile'\n{option}\n");
+        let mut images = Images::rom(file);
+        images
+            .files
+            .insert(file.with_file_name("disk.img"), vec![0; 1_474_560]);
+        let error = lower(
+            &parse_toml(file, &input).unwrap(),
+            &Origins::from_toml(file, &input).unwrap(),
+            &mut images,
+        )
+        .unwrap_err();
+        assert!(
+            error
+                .message
+                .contains("only accepted with write = \"journal\""),
+            "{error}"
+        );
+        assert_eq!(error.field, "card[fdc-765].drives[unit=0].write");
+    }
+}
+
+#[test]
+fn option_rom_bases_require_two_kib_alignment() {
+    let file = Path::new("test-machines/custom.toml");
+    let input = format!("{MINIMAL}[[firmware.option_roms]]\nimage='option.bin'\nbase=0xC8001\n");
+    let mut images = Images::rom(file);
+    images
+        .files
+        .insert(file.with_file_name("option.bin"), vec![0; 0x2000]);
+    let error = lower(
+        &parse_toml(file, &input).unwrap(),
+        &Origins::from_toml(file, &input).unwrap(),
+        &mut images,
+    )
+    .unwrap_err();
+    assert_eq!(error.field, "firmware.option_roms[0].base");
+    assert!(error.message.contains("2 KiB aligned"));
+}
+
+#[test]
+fn option_rom_validation_retains_each_image_origin() {
+    let file = Path::new("test-machines/custom.toml");
+    let input = format!("{MINIMAL}[[firmware.option_roms]]\nimage='first.bin'\nbase=0xC8000\n[[firmware.option_roms]]\nimage='second.bin'\nbase=0xC8000\n");
+    let mut origins = Origins::from_toml(file, &input).unwrap();
+    origins.insert(
+        "firmware.option_roms[0]",
+        Origin {
+            file: "roms/first.toml".into(),
+            line: Some(11),
+        },
+    );
+    origins.insert(
+        "firmware.option_roms[1]",
+        Origin {
+            file: "roms/second.toml".into(),
+            line: Some(22),
+        },
+    );
+    let mut images = Images::rom(file);
+    images.files.insert("roms/first.bin".into(), vec![0; 2048]);
+    images.files.insert("roms/second.bin".into(), vec![0; 2048]);
+    let error = lower(&parse_toml(file, &input).unwrap(), &origins, &mut images).unwrap_err();
+    assert_eq!(
+        error.validation.as_deref(),
+        Some(&ConfigError::ImageOverlap {
+            a: 1,
+            b: 2,
+            addr: 0xC8000
+        })
+    );
+    assert_eq!(error.field, "firmware.option_roms[0]");
+    assert!(
+        error
+            .message
+            .starts_with("firmware.option_roms[0] and firmware.option_roms[1] overlap at 0xc8000"),
+        "{error}"
+    );
+    assert_eq!(&error.origin, origins.get("firmware.option_roms[0]"));
+    assert!(
+        error
+            .to_string()
+            .contains("roms/second.toml:22: firmware.option_roms[1]"),
+        "{error}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn relative_machine_paths_stay_relative_in_diagnostics() {
+    let tree = TempTree::new();
+    let target = tree.0.join("real-source");
+    let aliases = tree.0.join("spelled-source");
+    std::fs::create_dir(&target).unwrap();
+    std::os::unix::fs::symlink("real-source", &aliases).unwrap();
+    let file = aliases.join("custom.toml");
+    let current = std::env::current_dir().unwrap();
+    let mut relative = PathBuf::new();
+    for _ in current.ancestors().skip(1) {
+        relative.push("..");
+    }
+    relative.push(file.strip_prefix("/").unwrap());
+    assert!(relative.is_relative());
+    for input in [
+        "schema=1\nunknown=true\n".to_owned(),
+        "schema=1\n".to_owned(),
+        MINIMAL.to_owned(),
+    ] {
+        std::fs::write(&file, input).unwrap();
+        let diagnostic = machine_file::load(&relative).unwrap_err();
+        let reported_file = match &diagnostic {
+            machine_file::LoadError::Parse(error) => error.path(),
+            machine_file::LoadError::Lower(error) => &error.origin.file,
+        };
+        let error = diagnostic.to_string();
+        assert!(
+            error.starts_with(&format!("{}:", relative.display())),
+            "{error}"
+        );
+        assert_eq!(reported_file, &relative);
+        assert!(
+            reported_file.ends_with("spelled-source/custom.toml"),
+            "{error}"
+        );
+    }
+}
+
+#[test]
+fn missing_card_kind_does_not_synthesize_a_duplicate_id() {
+    let error = run(&format!(
+        "{MINIMAL}[[card]]\nid='1'\nkind='mda'\n[[card]]\n"
+    ))
+    .unwrap_err();
+    assert_eq!(error.field, "card #1.kind");
+    assert_eq!(error.message, "required field is missing");
+    assert!(error.validation.is_none());
+}
+
+#[test]
+fn duplicate_drive_messages_use_unit_labels_after_sorting() {
+    let file = Path::new("test-machines/custom.toml");
+    let input = format!("{MINIMAL}provides=['floppy']\n[[card]]\nid='diskette'\nkind='fdc-765'\n[[card.drives]]\nunit=1\ntype='360K'\nimage='one-a.img'\n[[card.drives]]\nunit=0\ntype='360K'\nimage='zero.img'\n[[card.drives]]\nunit=1\ntype='360K'\nimage='one-b.img'\n");
+    let origins = Origins::from_toml(file, &input).unwrap();
+    let mut images = Images::rom(file);
+    for name in ["one-a.img", "zero.img", "one-b.img"] {
+        images
+            .files
+            .insert(file.with_file_name(name), vec![0; 368_640]);
+    }
+    let error = lower(&parse_toml(file, &input).unwrap(), &origins, &mut images).unwrap_err();
+    assert!(matches!(
+        error.validation.as_deref(),
+        Some(ConfigError::DuplicateDriveUnit {
+            a: 1,
+            b: 2,
+            unit: 1,
+            ..
+        })
+    ));
+    assert_eq!(&error.origin, origins.get("card[0].drives[0]"));
+    let first = format!(
+        "card[diskette].drives[unit=1] ({})",
+        origins.get("card[0].drives[0]")
+    );
+    let second = format!(
+        "card[diskette].drives[unit=1] ({})",
+        origins.get("card[0].drives[2]")
+    );
+    assert_ne!(first, second);
+    assert!(
+        error.message.starts_with(&format!(
+            "{first} and {second} bind to controller Fdc unit 1"
+        )),
+        "{error}"
+    );
+    assert!(!error.message.contains("drives 1 and 2"), "{error}");
+    assert!(
+        error.message.contains(&format!(
+            "{}: card[diskette].drives[unit=1]",
+            origins.get("card[0].drives[2]")
+        )),
+        "{error}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn symlink_image_errors_show_the_spelled_and_resolved_paths() {
+    use sha2::{Digest, Sha256};
+    let tree = TempTree::new();
+    let target = tree.0.join("target");
+    let aliases = tree.0.join("aliases");
+    std::fs::create_dir(&target).unwrap();
+    std::fs::create_dir(&aliases).unwrap();
+    let file = target.join("custom.toml");
+    let alias = aliases.join("custom.toml");
+    std::fs::write(&file, MINIMAL).unwrap();
+    let spelled = aliases.join("bios.bin");
+    std::fs::write(&spelled, vec![0; 0x8000]).unwrap();
+    std::os::unix::fs::symlink("../target/custom.toml", &alias).unwrap();
+    let resolved = target.canonicalize().unwrap().join("bios.bin");
+    assert!(spelled.is_file());
+    assert!(!resolved.exists());
+    let description = format!("{} (resolved to {})", spelled.display(), resolved.display());
+    let machine_file::LoadError::Lower(error) = machine_file::load(&alias).unwrap_err() else {
+        panic!("expected image read error")
+    };
+    assert_eq!(error.origin.file, alias);
+    assert!(
+        error
+            .message
+            .starts_with(&format!("cannot read image {description}:")),
+        "{error}"
+    );
+
+    let rom = vec![0xF4; 0x8000];
+    std::fs::write(&resolved, &rom).unwrap();
+    let pin = "0".repeat(64);
+    std::fs::write(&file, format!("{MINIMAL}sha256='{pin}'\n")).unwrap();
+    let machine_file::LoadError::Lower(error) = machine_file::load(&alias).unwrap_err() else {
+        panic!("expected image integrity error")
+    };
+    assert_eq!(
+        error.message,
+        format!(
+            "sha256 mismatch for {description}: expected {pin}, actual {:x}",
+            Sha256::digest(&rom)
+        )
+    );
+}

@@ -9,6 +9,8 @@ repository.workspace = true
 description = "Machine description files (TOML, later YAML) over one versioned schema."
 
 [dependencies]
+assembly.workspace = true
+sha2.workspace = true
 serde.workspace = true
 toml.workspace = true
 thiserror.workspace = true

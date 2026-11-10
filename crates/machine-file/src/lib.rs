@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Syntax-only machine descriptions for the IBM PC/AT emulator.
+//! Parsed and validated machine descriptions for the IBM PC/AT emulator.
 //!
 //! TOML is decoded into schema-versioned layers described in
 //! `backlog/docs/design/machine-files.md` § Schema and § Versioning, extends
@@ -7,15 +7,21 @@
 //! inheritance from explicit overrides. Recognised reserved names and
 //! cycle-exact timing requests receive positioned diagnostics.
 //!
-//! This crate does not model hardware registers. It does not read images,
-//! resolve paths or `extends`, parse YAML, apply board defaults, lower to
-//! `MachineConfig`, or validate a composed machine.
+//! Complete TOML documents lower to `assembly::MachineConfig` with board/card
+//! defaults and images read once, checked with SHA-256 and retained inline.
+//! Assembly owns hardware validation. YAML and `extends` remain unsupported.
+//! This crate does not model hardware registers.
 
 use std::{fmt, ops::Range, path::Path, path::PathBuf};
 
 use serde::Deserialize;
 
+mod lower;
+mod origin;
 pub mod schema;
+
+pub use lower::{lower, FileImageReader, ImageReader, LowerError};
+pub use origin::{Origin, Origins};
 
 pub use schema::v1::MachineFile;
 
@@ -147,4 +153,60 @@ pub fn parse_toml(path: impl AsRef<Path>, input: &str) -> Result<MachineFile, Pa
         toml::from_str(input)
     };
     parse().map_err(|source| ParseError::from_toml(path.as_ref(), input, source))
+}
+
+/// Failure while loading a machine document or lowering its images.
+#[derive(Debug, thiserror::Error)]
+pub enum LoadError {
+    #[error(transparent)]
+    Parse(#[from] ParseError),
+    #[error(transparent)]
+    Lower(#[from] LowerError),
+}
+
+/// Read a TOML machine file and return an assembly-validated configuration.
+/// The given name selects the format and is retained in diagnostics. Image
+/// paths use the target file's directory when the machine path is a symlink.
+pub fn load(path: impl AsRef<Path>) -> Result<assembly::MachineConfig, LoadError> {
+    load_with_reader(path, &mut FileImageReader)
+}
+
+/// Load a machine file with a caller-provided image reader.
+///
+/// The hook changes image I/O only: SHA-256 checks and hardware validation
+/// remain mandatory, including when the reader supplies synthetic bytes.
+pub fn load_with_reader<R: ImageReader>(
+    path: impl AsRef<Path>,
+    reader: &mut R,
+) -> Result<assembly::MachineConfig, LoadError> {
+    let path = path.as_ref();
+    if path.extension().and_then(|extension| extension.to_str()) != Some("toml") {
+        return Err(ParseError::new(
+            path,
+            None,
+            "only .toml machine files are implemented; YAML support is later work",
+            None,
+        )
+        .into());
+    }
+    let image_file = std::fs::canonicalize(path).map_err(|error| {
+        ParseError::new(
+            path,
+            None,
+            format!("cannot resolve machine file: {error}"),
+            None,
+        )
+    })?;
+    let input = std::fs::read_to_string(path).map_err(|error| {
+        ParseError::new(
+            path,
+            None,
+            format!("cannot read machine file: {error}"),
+            None,
+        )
+    })?;
+    let document = parse_toml(path, &input)?;
+    let mut origins = Origins::from_toml(path, &input)?;
+    origins.set_image_file(image_file);
+    Ok(lower(&document, &origins, reader)?)
 }

@@ -12,7 +12,8 @@ The hardware specification is [`design/spec.md`](design/spec.md).
 These are the direct dependencies from each crate's `Cargo.toml`; test-only
 dependencies are separate. Workspace membership and the exact `x86jit-core` git
 revision are in the root [`Cargo.toml`](../../Cargo.toml). There is no firmware
-crate: image loading belongs to `assembly`, and guest assets live under `vendor/`.
+crate: `machine-file` reads and hashes declared images into inline buffers,
+`assembly` also supports direct Rust image sources, and guest assets live under `vendor/`.
 
 | Crate | Responsibility | Runtime dependencies | Test-only dependencies |
 | --- | --- | --- | --- |
@@ -25,7 +26,7 @@ crate: image loading belongs to `assembly`, and guest assets live under `vendor/
 | `machine` | Generic `Machine<C: Cpu>` and execution/clock/IRQ/DMA loop | `cpu`, `bus`, `device`, `thiserror` | `testkit`, `devices` |
 | `video` | `FrameSink`, text frames/grids, text-mode renderer and capture sink | `device` | None |
 | `assembly` | `MachineConfig`, validation, presets, image/device construction, wiring, and `RunPolicy` driver | `machine`, `cpu`, `bus`, `device`, `devices`, `video`, `chipset`, `thiserror` | None |
-| `machine-file` | Schema 1 syntax layers and strict TOML parsing with positioned diagnostics; no merging, image I/O or lowering yet ([schema](design/machine-files.md#schema-field-by-field)) | `serde`, `toml`, `thiserror` | None |
+| `machine-file` | Schema 1 TOML parsing, source origins, image hashing and lowering through assembly validation; YAML and merging remain deferred ([schema](design/machine-files.md#schema-field-by-field)) | `assembly`, `serde`, `sha2`, `toml`, `thiserror` | None |
 | `window` | Optional CP437 rasteriser, shared `FrameSink`, and winit/softbuffer FreeDOS binary | `video`, `assembly`, `machine`, `winit`, `softbuffer` | None |
 | `testkit` | Single-device `MockBus`, scripted `MockCpu`, golden assertions | `device`, `cpu` | None |
 | `cli` | Binary and runner library: guest programs, assembly/policy selection, output capture and stop diagnostics | `assembly`, `device`, `bus`, `cpu`, `chipset`, `machine`, `devices`, `video`, `anyhow` | `testkit` |
@@ -36,6 +37,12 @@ concrete router over `dyn Device`, not a trait; the config-derived decode map is
 its routing authority. Concrete devices do not depend on the runtime bus.
 
 ## From configuration to a run
+
+`machine_file::load` reads a complete TOML machine description, expands the
+assembly-owned board data and card defaults, resolves images against their
+defining files, checks optional SHA-256 pins, and retains the bytes inline.
+It derives the RAM mosaic and calls `MachineConfig::validate()` before returning.
+The reference file is `machines/at-freedos.toml`; frontends still use Rust presets.
 
 The normal real-mode path is:
 
