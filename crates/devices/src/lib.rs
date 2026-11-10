@@ -11,6 +11,7 @@
 //! opt into a bounded newest-event ring independently of output, and stay out
 //! of snapshots. See `backlog/docs/design/observation.md`, §Traces and later audio.
 
+pub mod ata;
 pub mod cmos_rtc;
 pub mod dma8237;
 pub mod i8042;
@@ -23,6 +24,7 @@ pub mod uart16550;
 pub mod upd765;
 pub mod vga_text;
 
+pub use ata::{Ata, AtaConfigError, AtaDrive, AtaGeometry};
 pub use cmos_rtc::{CmosConfig, CmosRtc};
 pub use device::{DmaMemory, DmaOp, DmaOutcome, DmaRequest};
 pub use dma8237::{Dma8237, TransferType};
@@ -141,6 +143,8 @@ pub(crate) mod trace_policy_tests {
     off_test!(uart_trace_off, Uart16550::new(0x3F8), 0x3FD);
     ring_test!(post_trace_ring, PostPort::with_port(0x80), 0x80);
     off_test!(post_trace_off, PostPort::with_port(0x80), 0x80);
+    ring_test!(ata_trace_ring, Ata::new(), 0x1F7);
+    off_test!(ata_trace_off, Ata::new(), 0x1F7);
     ring_test!(mda_trace_ring, MdaText::new(), 0x3BA);
     off_test!(mda_trace_off, MdaText::new(), 0x3BA);
     ring_test!(vga_trace_ring, VgaText::new(), 0x3DA);

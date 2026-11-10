@@ -57,3 +57,5 @@ clock_checks!(post, PostPort::new());
 clock_checks!(system, SysControl::new());
 clock_checks!(vga, VgaText::new());
 clock_checks!(mda, MdaText::new());
+
+clock_checks!(ata, Ata::new());

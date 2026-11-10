@@ -648,3 +648,87 @@ fn crafted_timer_snapshots_survive_large_time_jumps() {
         assert_ne!(final_state, blob);
     }
 }
+
+checks!(
+    ata_continuation,
+    ata_sweep,
+    mounted_ata,
+    &[0x1F1, 0x1F2, 0x1F3, 0x1F4, 0x1F5, 0x1F6, 0x1F7, 0x3F6]
+);
+
+fn mounted_ata() -> Box<dyn Device> {
+    let geometry = AtaGeometry::new(8, 2, 4).unwrap();
+    let drive = AtaDrive::new(geometry, vec![0xA5; 64 * 512]).unwrap();
+    Box::new(Ata::with_drives([Some(drive), None]).unwrap())
+}
+
+#[test]
+fn ata_translated_mid_transfer_snapshots_continue_and_reject_malformed_state() {
+    for (opcode, prefix, fault) in [
+        (0xC4, 1, false),
+        (0xC4, 256, false),
+        (0xC4, 1025, false),
+        (0xC5, 1, false),
+        (0xC5, 256, false),
+        (0xC5, 1025, false),
+        (0xC4, 1, true),
+        (0xC4, 257, true),
+        (0xC5, 257, true),
+    ] {
+        let prepare = || {
+            let mut bus = MockBus::new(mounted_ata());
+            for (port, value) in [(0x1F6, 0xA3), (0x1F2, 2), (0x1F7, 0x91)] {
+                bus.port_write(port, 1, value).unwrap();
+            }
+            assert_eq!(bus.port_read(0x1F7, 1).unwrap(), 0x50);
+            bus.port_write(0x1F7, 1, 0xEC).unwrap();
+            let words: Vec<_> = (0..256).map(|_| bus.port_read(0x1F0, 2).unwrap()).collect();
+            assert_eq!(&words[54..59], &[8, 4, 2, 64, 0]);
+            for (port, value) in [
+                (0x1F2, 4),
+                (0x1F7, 0xC6),
+                (0x1F6, if fault { 0xE0 } else { 0xA1 }),
+                (0x1F2, if fault { 4 } else { 6 }),
+                (0x1F3, if fault { 63 } else { 1 }),
+                (0x1F4, 0),
+                (0x1F5, 0),
+                (0x1F7, opcode),
+            ] {
+                bus.port_write(port, 1, value).unwrap();
+            }
+            for word in 0..prefix {
+                if opcode == 0xC5 {
+                    bus.port_write(0x1F0, 2, word).unwrap();
+                } else {
+                    bus.port_read(0x1F0, 2).unwrap();
+                }
+            }
+            bus
+        };
+        let mut source = prepare();
+        source.device_mut().sync(VClock(137));
+        let saved = source.device().save();
+        sweep_blob(mounted_ata, &[0x1F7, 0x3F6], &saved);
+        let mut restored = prepare();
+        restored.device_mut().restore(&saved).unwrap();
+        assert_eq!(restored.device().save(), saved);
+        let total = if fault { 4 } else { 6 } * 256;
+        for word in prefix..total {
+            if opcode == 0xC5 {
+                source.port_write(0x1F0, 2, word).unwrap();
+                restored.port_write(0x1F0, 2, word).unwrap();
+            } else {
+                assert_eq!(source.port_read(0x1F0, 2), restored.port_read(0x1F0, 2));
+            }
+            assert_eq!(source.device().save(), restored.device().save());
+            assert_eq!(
+                source.device().irq_pending(),
+                restored.device().irq_pending()
+            );
+        }
+        assert_eq!(
+            source.port_read(0x1F7, 1).unwrap(),
+            if fault { 0x51 } else { 0x50 }
+        );
+    }
+}
