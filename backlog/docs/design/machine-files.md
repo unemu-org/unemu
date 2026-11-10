@@ -1,8 +1,8 @@
 # Machine description files
 
-Status: **accepted** (decision-17). Schema 1 TOML parsing and lowering to an
-assembly-validated `MachineConfig` are implemented in `crates/machine-file`.
-YAML, `extends`, IDE and journal attachment are still to come. NVRAM images
+Status: **accepted** (decision-17). Schema 1 TOML and YAML parsing and lowering
+to an assembly-validated `MachineConfig` are implemented in `crates/machine-file`.
+`extends`, IDE and journal attachment are still to come. NVRAM images
 currently support volatile writes only; readonly is rejected until assembly
 can represent it.
 Drive-indexed assembly diagnostics, including journal configuration errors, map
@@ -463,14 +463,16 @@ Further evidence:
 - **`serde-saphyr` hardening (READ, docs.rs):** `unsafe` is denied in the
   crate itself (not in its dependencies). The parser is fuzzed and documented
   not to panic on malformed input. Budgets limit parser events and alias
-  replay. A `strict_booleans` option limits booleans to `true` and `false`. It
-  has its own `Spanned<T>`.
+  replay. A `strict_booleans` option rejects legacy `yes`/`no`/`on`/`off`, but
+  accepts case variants of `true` and `false`; the adapter further requires
+  lowercase literals. The crate has its own `Spanned<T>`.
 - **`serde-saphyr` risks (READ):**
   - **MSRV.** Releases from 1.2.0 (2026-08-30) on declare rust-version 1.89.
-    The workspace now declares 1.99 and pins x86jit `73ed5d6`
-    (rust-version 1.95), so this dependency's 1.89 minimum is satisfied.
-    The original investigation used x86jit `96a49a9` (rust-version 1.88)
-    and measured a Nix toolchain of 1.95.0; those are historical values.
+    The workspace declares Rust 1.99, pins x86jit `73ed5d6` (rust-version
+    1.95), and the Nix devShell provides rustc 1.99.1 (MEASURED), so the YAML
+    dependency's 1.89 minimum is satisfied. The original investigation used
+    x86jit `96a49a9` (rust-version 1.88) and measured a Nix toolchain of 1.95.0;
+    those are historical values.
   - **Churn.** Two major versions within three months (1.0.0 on 2026-07-31,
     2.0.0 on 2026-10-13).
   - **Single maintainer.** One author maintains both the serde layer and the
@@ -483,11 +485,43 @@ Further evidence:
 tightened budgets, and single-document input. It is the only candidate that
 is actively released, pure Rust, free of advisories, and gives positioned,
 snippet-style errors equal to `toml`'s. The churn risk is contained, because
-the schema uses only plain serde derive, so the YAML crate sits behind one
-small function. **Fallback: `serde_norway`**, which passed the same probes
+the schema uses only plain serde derive, so the YAML crate sits behind a
+syntax adapter. **Fallback: `serde_norway`**, which passed the same probes
 (MEASURED). It is unsafe C-derived code with a slow release cadence, but its
 errors include the field path. `serde_yml` and `serde_yaml_ng` are excluded on
 advisory and maintenance grounds.
+
+The implemented adapter allows bounded anchors: at most 32 anchors and 64
+aliases, with at most 16 expansions per anchor, 2,000 replayed events and an
+8-level replay stack. Per parse, it permits one document, depth 32, 20,000
+events, 10,000 nodes, 1 MiB of scalar text, 2,000 retained anchor events,
+64 KiB of retained anchor text and 32 merge keys. Default duplicate-key errors
+and strict booleans apply to every parse, including the schema peek and origin
+pass. YAML 1.2 leaves timestamps as strings, so the origin pass explicitly
+checks that an RTC start's definition is quoted, including through an alias.
+
+YAML is a second syntax for the same serde model, so its extra scalar forms
+cannot add values that TOML cannot express. Null is rejected everywhere: mapping
+values, sequence items and keys, including `~`, `null`, empty values and
+comment-only values. The diagnostic is "null is not allowed; omit the field
+instead". Omission remains distinct from explicit empty strings or lists.
+All explicit tags, including `!!str` and `!!binary`, are rejected. Integer
+fields require integer scalars; quoted numeric text remains a string. Integer
+fields reject leading-zero decimal spellings and report overflowing integer
+literals as out of range. Radix prefixes are lowercase (`0x`, `0o`, `0b`).
+Unquoted decimal-looking string fields retain their original spelling. Boolean
+fields require unquoted lowercase `true` or `false`; uppercase plain boolean
+spellings are rejected (quote them when a string is intended). The recursive
+serde adapter applies the integer and boolean contracts at every table depth,
+while typed string fields still accept unquoted text such as `model: 80286`.
+The raw syntax pass shares the event, nesting, scalar-byte and document limits
+above; serde-saphyr also bounds parsed nodes, anchors and alias replay. Alias-limit
+diagnostics name the written anchor or alias when available and state the limit.
+
+Repository syntax equivalence starts from every `machines/**/*.yaml` and
+`*.yml`: each must have a `.toml` twin with the same stem and lower to the same
+configuration. Having both YAML extensions for one stem is an error. TOML-only
+files are permitted.
 
 Other new dependencies: `serde` (derive; already in the lock file
 transitively) and `sha2` 0.11.1 (MIT OR Apache-2.0, MSRV 1.88, READ) for
@@ -588,8 +622,8 @@ Every error starts with the file path. There are three classes:
    no firmware provides "fixed-disk"; add an option ROM that provides it
    ```
 
-The TOML loader keeps table-level source spans in a separate, format-neutral
-origin table. Lowering and validation diagnostics name the defining file and
+The TOML and YAML loaders keep table-level source positions in a separate,
+format-neutral origin table. Lowering and validation diagnostics name the defining file and
 table line, with card ids and drive units where applicable. The table can also
 retain per-field origins from different files for a future inheritance merger.
 Programmatically constructed documents may omit positions. A diagnostic such
@@ -964,8 +998,9 @@ spike owns the board-model and firmware entries.
 
 ## Open questions for the maintainer
 
-1. **MSRV (resolved).** `serde-saphyr` needs rustc 1.89; the workspace
-   declares 1.99 and the current x86jit pin `73ed5d6` requires 1.95.
+1. **MSRV — resolved.** `serde-saphyr` 2.1.1 needs rustc 1.89; the workspace
+   declares 1.99, the Nix devShell provides 1.99.1, and the current x86jit pin
+   `73ed5d6` requires 1.95.
 2. **Device order.** Accept rewriting the `bios` preset into canonical order
    (bead 1, guarded by the slow goldens)? The alternative is a board model that
    encodes today's interleaved order, which is harder to explain.

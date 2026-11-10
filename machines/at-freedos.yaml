@@ -1,0 +1,39 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+schema: 1
+name: at-freedos
+description: "PC/AT-class machine booting FreeDOS from drive A: with the Xi8088 open BIOS"
+
+board:
+  model: ibm-5170
+  post_port: 0x80
+  rtc:
+    start: "2000-01-01T00:00:00"
+    nvram: derived
+
+cpu:
+  model: "80286"
+  rate: "1/1"
+
+memory:
+  conventional_kib: 640
+  extended_kib: 0
+
+firmware:
+  bios:
+    image: ../vendor/kiselev-bios/bios-xi8088.bin
+    sha256: "1ad458acb1f22dee6b3d9b6bd95e83218a7ddc5389fa2b2c67a4001e689c81a8"
+    provides: [floppy]
+
+card:
+  - kind: mda         # the Xi8088 BIOS console; planned window default: first display card
+  - kind: vga-text
+  - kind: uart-16550
+    port: 0x3F8
+    irq: none         # the reference machine leaves COM1 unwired
+  - kind: fdc-765
+    drives:
+      - unit: 0
+        type: "1.44M"
+        image: ../vendor/freedos/freedos.img
+        sha256: "b7b088333f7f30584d768941fecea8288b63f2d61e13ec6c9472439eda66e51f"
+        write: volatile

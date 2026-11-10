@@ -25,8 +25,8 @@ crate: `machine-file` reads and hashes declared images into inline buffers,
 | `chipset` | Shared/cascaded PIC composition, null interrupt controller, AT port constants; no `Chipset` trait | `device`, `devices` | `testkit` |
 | `machine` | Generic `Machine<C: Cpu>` and execution/clock/IRQ/DMA loop | `cpu`, `bus`, `device`, `thiserror` | `testkit`, `devices` |
 | `video` | `FrameSink`, text frames/grids, text-mode renderer and capture sink | `device` | None |
-| `assembly` | `MachineConfig`, validation, presets, image/device construction, wiring, and `RunPolicy` driver | `machine`, `cpu`, `bus`, `device`, `devices`, `video`, `chipset`, `media`, `thiserror` | `media/test-support` |
-| `machine-file` | Schema 1 TOML parsing, source origins, image hashing and lowering through assembly validation; YAML and merging remain deferred ([schema](design/machine-files.md#schema-field-by-field)) | `assembly`, `serde`, `sha2`, `toml`, `thiserror` | None |
+| `assembly` | `MachineConfig`, validation, presets, image/device construction, wiring, and `RunPolicy` driver | `machine`, `cpu`, `bus`, `device`, `devices`, `video`, `chipset`, `media`, `sha2`, `thiserror` | `media/test-support` |
+| `machine-file` | Schema 1 TOML/YAML parsing, source origins, image hashing and lowering through assembly validation; merging remains deferred ([schema](design/machine-files.md#schema-field-by-field)) | `assembly`, `serde`, `sha2`, `toml`, `serde-saphyr`, `thiserror` | None |
 | `window` | Optional CP437 rasteriser, shared `FrameSink`, and winit/softbuffer FreeDOS binary | `video`, `assembly`, `machine`, `winit`, `softbuffer` | `cpu`, `assembly/test-support` |
 | `testkit` | Single-device `MockBus`, scripted `MockCpu`, golden assertions | `device`, `cpu` | None |
 | `cli` | Binary and runner library: guest programs, assembly/policy selection, output capture and stop diagnostics | `assembly`, `device`, `bus`, `cpu`, `chipset`, `machine`, `devices`, `video`, `anyhow` | `testkit`, `machine/reference-scheduler`, `assembly/reference-scheduler`, `assembly/test-support` |
@@ -38,7 +38,7 @@ its routing authority. Concrete devices do not depend on the runtime bus.
 
 ## From configuration to a run
 
-`machine_file::load` reads a complete TOML machine description, expands the
+`machine_file::load` reads a complete TOML or YAML machine description, expands the
 assembly-owned board data and card defaults, resolves images against their
 defining files, checks optional SHA-256 pins, and retains the bytes inline.
 It derives the RAM mosaic and calls `MachineConfig::validate()` before returning.

@@ -28,6 +28,7 @@ repository = "https://github.com/mikolajmikolajczyk/unemupc98"
 libc = "0.2"
 serde = { version = "1", features = ["derive"] }
 toml = "1"
+serde-saphyr = { version = "=2.1.1", default-features = false, features = ["deserialize"] }
 # Library error enums (§conventions: thiserror for stable library errors).
 thiserror = "1"
 # Frontend/test-only error plumbing.

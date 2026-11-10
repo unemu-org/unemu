@@ -1,15 +1,15 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Parsed and validated machine descriptions for the IBM PC/AT emulator.
 //!
-//! TOML is decoded into schema-versioned layers described in
+//! TOML and YAML are decoded into schema-versioned layers described in
 //! `backlog/docs/design/machine-files.md` § Schema and § Versioning, extends
 //! and errors. Omitted fields remain omitted so a later merger can distinguish
 //! inheritance from explicit overrides. Recognised reserved names and
 //! cycle-exact timing requests receive positioned diagnostics.
 //!
-//! Complete TOML documents lower to `assembly::MachineConfig` with board/card
+//! Complete documents lower to `assembly::MachineConfig` with board/card
 //! defaults and images read once, checked with SHA-256 and retained inline.
-//! Assembly owns hardware validation. YAML and `extends` remain unsupported.
+//! Assembly owns hardware validation. `extends` remains unsupported.
 //! This crate does not model hardware registers.
 
 use std::{fmt, ops::Range, path::Path, path::PathBuf};
@@ -19,6 +19,7 @@ use serde::Deserialize;
 mod lower;
 mod origin;
 pub mod schema;
+mod yaml;
 
 pub use lower::{lower, FileImageReader, ImageReader, LowerError};
 pub use origin::{Origin, Origins};
@@ -155,6 +156,11 @@ pub fn parse_toml(path: impl AsRef<Path>, input: &str) -> Result<MachineFile, Pa
     parse().map_err(|source| ParseError::from_toml(path.as_ref(), input, source))
 }
 
+/// Parse one hardened YAML layer into the same schema used by TOML.
+pub fn parse_yaml(path: impl AsRef<Path>, input: &str) -> Result<MachineFile, ParseError> {
+    yaml::parse(path.as_ref(), input).map(|(document, _)| document)
+}
+
 /// Failure while loading a machine document or lowering its images.
 #[derive(Debug, thiserror::Error)]
 pub enum LoadError {
@@ -164,7 +170,7 @@ pub enum LoadError {
     Lower(#[from] LowerError),
 }
 
-/// Read a TOML machine file and return an assembly-validated configuration.
+/// Read a TOML or YAML machine file and return an assembly-validated configuration.
 /// The given name selects the format and is retained in diagnostics. Image
 /// paths use the target file's directory when the machine path is a symlink.
 pub fn load(path: impl AsRef<Path>) -> Result<assembly::MachineConfig, LoadError> {
@@ -180,15 +186,19 @@ pub fn load_with_reader<R: ImageReader>(
     reader: &mut R,
 ) -> Result<assembly::MachineConfig, LoadError> {
     let path = path.as_ref();
-    if path.extension().and_then(|extension| extension.to_str()) != Some("toml") {
-        return Err(ParseError::new(
-            path,
-            None,
-            "only .toml machine files are implemented; YAML support is later work",
-            None,
-        )
-        .into());
-    }
+    let yaml = match path.extension().and_then(|extension| extension.to_str()) {
+        Some("toml") => false,
+        Some("yaml" | "yml") => true,
+        _ => {
+            return Err(ParseError::new(
+                path,
+                None,
+                "expected a machine file with extension .toml, .yaml or .yml",
+                None,
+            )
+            .into())
+        }
+    };
     let image_file = std::fs::canonicalize(path).map_err(|error| {
         ParseError::new(
             path,
@@ -205,8 +215,11 @@ pub fn load_with_reader<R: ImageReader>(
             None,
         )
     })?;
-    let document = parse_toml(path, &input)?;
-    let mut origins = Origins::from_toml(path, &input)?;
+    let (document, mut origins) = if yaml {
+        yaml::parse(path, &input)?
+    } else {
+        (parse_toml(path, &input)?, Origins::from_toml(path, &input)?)
+    };
     origins.set_image_file(image_file);
     Ok(lower(&document, &origins, reader)?)
 }

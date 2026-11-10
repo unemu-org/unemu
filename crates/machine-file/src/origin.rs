@@ -155,4 +155,102 @@ impl Origins {
         }
         Ok(origins)
     }
+
+    /// Retain YAML table locations without adding syntax wrappers to the schema.
+    pub fn from_yaml(file: impl Into<PathBuf>, input: &str) -> Result<Self, ParseError> {
+        use serde_saphyr::{Location, Spanned};
+        #[derive(Deserialize)]
+        struct Tables {
+            board: Option<Spanned<Board>>,
+            cpu: Option<Spanned<IgnoredAny>>,
+            memory: Option<Spanned<IgnoredAny>>,
+            firmware: Option<Spanned<Firmware>>,
+            #[serde(default)]
+            card: Vec<Spanned<Card>>,
+        }
+        #[derive(Deserialize)]
+        struct Board {
+            rtc: Option<Spanned<Rtc>>,
+        }
+        #[derive(Deserialize)]
+        struct Rtc {
+            start: Option<Spanned<IgnoredAny>>,
+        }
+        #[derive(Deserialize)]
+        struct Firmware {
+            bios: Option<Spanned<IgnoredAny>>,
+            #[serde(default)]
+            option_roms: Vec<Spanned<IgnoredAny>>,
+        }
+        #[derive(Deserialize)]
+        struct Card {
+            #[serde(default)]
+            drives: Vec<Spanned<IgnoredAny>>,
+        }
+        let mut origins = Self::new(file);
+        let tables: Tables = crate::yaml::decode(&origins.document.file, input)?;
+        let mut record = |field: String, location: Location| {
+            origins.insert(
+                field,
+                Origin {
+                    file: origins.document.file.clone(),
+                    line: usize::try_from(location.line())
+                        .ok()
+                        .filter(|line| *line > 0),
+                },
+            );
+        };
+        if let Some(board) = tables.board {
+            record("board".into(), board.referenced);
+            if let Some(rtc) = board.value.rtc {
+                record("board.rtc".into(), rtc.referenced);
+                if let Some(start) = rtc.value.start {
+                    // YAML 1.2 leaves dates as strings, unlike TOML. Inspect
+                    // the definition's spelling to enforce the shared quoted-date rule.
+                    let location = start.defined;
+                    let first = input
+                        .trim_start_matches('\u{feff}')
+                        .split('\n')
+                        .nth(location.line().saturating_sub(1) as usize)
+                        .and_then(|line| {
+                            line.chars()
+                                .nth(location.column().saturating_sub(1) as usize)
+                        });
+                    if !matches!(first, Some('"' | '\'')) {
+                        return Err(crate::yaml::diagnostic(
+                            &origins.document.file,
+                            input,
+                            Some(start.referenced),
+                            "RTC start must be a quoted string".into(),
+                        ));
+                    }
+                }
+            }
+        }
+        if let Some(cpu) = tables.cpu {
+            record("cpu".into(), cpu.referenced);
+        }
+        if let Some(memory) = tables.memory {
+            record("memory".into(), memory.referenced);
+        }
+        if let Some(firmware) = tables.firmware {
+            record("firmware".into(), firmware.referenced);
+            if let Some(bios) = firmware.value.bios {
+                record("firmware.bios".into(), bios.referenced);
+            }
+            for (index, rom) in firmware.value.option_roms.into_iter().enumerate() {
+                record(format!("firmware.option_roms[{index}]"), rom.referenced);
+            }
+        }
+        for (index, card) in tables.card.into_iter().enumerate() {
+            record(format!("card[{index}]"), card.referenced);
+            for (drive_index, drive) in card.value.drives.into_iter().enumerate() {
+                record(
+                    format!("card[{index}].drives[{drive_index}]"),
+                    drive.referenced,
+                );
+            }
+        }
+        Ok(origins)
+    }
 }
