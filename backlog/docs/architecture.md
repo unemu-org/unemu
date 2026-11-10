@@ -140,6 +140,14 @@ survive bounded runner calls.
   defaults to `EveryPitClock` for unmigrated devices. Timestamped access wrappers
   synchronize the target device at instruction start; deadline dispatch settles
   due transitions without ticking dormant devices at each CPU boundary.
+- **[`SectorMedia`](../../crates/device/src/media.rs)** is owned by each uPD765
+  drive and covers its configured geometry. It serves 512-byte sectors, accepts
+  one ordered batch of replacements per nonempty completed WRITE DATA, and
+  reports write protection that remains constant while mounted. Partial sectors
+  are zero-filled by the controller; abnormal completions include sectors already
+  committed. The contract exposes no clock or host error result. Default drives
+  use `InMemoryMedia`; reset retains the medium and device snapshots exclude it.
+  See [persistent media](design/persistent-media.md#integration-layers-flush-points-determinism-argument).
 - **`InterruptController`**, defined in `device`, supplies `set_irq_line`,
   non-mutating `poll`, `acknowledge`, and `end_of_interrupt`. Machine wiring
   samples device levels and pulses a PIC input on a sampled low-to-high edge.

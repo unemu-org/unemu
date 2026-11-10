@@ -2,8 +2,9 @@
 
 Status: accepted design (the maintainer approved the defaults on 2026-11-10).
 The version-1 codec and recovery scanner are implemented in `crates/media`;
-the device media contract, the file sink, the write modes and the offline
-tools are still to come.
+the host-independent device media contract and its in-memory implementation
+are implemented in `crates/device`. The file sink, journal write mode and
+offline tools are still to come.
 
 ## Context
 
@@ -16,10 +17,12 @@ is healthy: the user decides which version works.
 
 Evidence from the current implementation:
 
-- **READ:** `crates/devices/src/upd765.rs:882–909`: WRITE DATA commits DMA bytes
-  into `Drive.image`. A partial final sector is zero-filled to 512 bytes; a short
-  isolation-test image grows. `:918–935` computes status and raises IRQ6 after
-  mutation. An abnormal result can therefore accompany committed sectors.
+- **READ (before the media contract landed; historical line numbers):**
+  `crates/devices/src/upd765.rs:882–909`: WRITE DATA committed DMA bytes
+  into the former `Drive.image` field. A partial final sector was zero-filled to
+  512 bytes; a short isolation-test image grew. `:918–935` computed status and
+  raised IRQ6 after mutation. An abnormal result could therefore accompany
+  committed sectors.
 - **READ:** `crates/assembly/src/image.rs:13–22` defines inline, file and blank
   sources. `assemble.rs:147–153,284–318` reads file sources once, resolves them
   to inline bytes, and validates the bytes actually mounted.

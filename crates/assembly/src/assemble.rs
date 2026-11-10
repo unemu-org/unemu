@@ -1446,11 +1446,11 @@ mod tests {
 
         let slots = build_fdc_drives(&config, DeviceId::Fdc).expect("drives mounted");
         assert!(
-            !slots[0].as_ref().expect("slot 0 mounted").write_protected,
+            !slots[0].as_ref().expect("slot 0 mounted").write_protected(),
             "the default drive is writable"
         );
         assert!(
-            slots[1].as_ref().expect("slot 1 mounted").write_protected,
+            slots[1].as_ref().expect("slot 1 mounted").write_protected(),
             "the flagged drive is mounted write-protected"
         );
     }

@@ -14,7 +14,7 @@
 //! A real FDC does not touch memory; it hands each byte to the DMA controller
 //! over the DREQ/DACK handshake, and the 8237 writes it to the address the guest
 //! programmed. This model keeps that separation: on a READ, the controller pulls
-//! the sector bytes from its backing image and **queues** them as a
+//! the sector bytes through its mounted media and **queues** them as a
 //! [`device::DmaRequest`] on channel 2. The machine drains the request, streams
 //! the bytes through the 8237's channel (which writes guest RAM through the
 //! SMC-safe `note_write` path, §4.3), and reports the byte count and TC through
@@ -24,7 +24,7 @@
 //!
 //! READ/WRITE DATA honour MT: after EOT on head 0, a multi-track command
 //! continues at sector 1 on head 1 of the same cylinder. Each sector is checked
-//! against the physical geometry before mapping it into the backing image.
+//! against the physical geometry before mapping it to a media LBA.
 //! See NEC µPD765 datasheet, Functional Description of Commands, READ DATA /
 //! WRITE DATA and Table 2; Intel 8272A datasheet, Command Descriptions, READ DATA
 //! / WRITE DATA and Table 8.
@@ -34,7 +34,7 @@
 //! Geometry is per-drive data, not a hardcoded constant. Each of the four
 //! drive-select positions the DOR can address may carry its own
 //! [`Drive`]: a [`FloppyGeometry`] (cylinders × heads × sectors, 512-byte
-//! sectors) plus a raw backing image. The four standard PC floppy formats are
+//! sectors) plus owned [`SectorMedia`]. The four standard PC floppy formats are
 //! provided as [`FloppyGeometry`] constants — 1.44 MB (80×2×18), 1.2 MB
 //! (80×2×15), 720 KB (80×2×9), and 360 KB (40×2×9) — so drive 0 and drive 1 can
 //! differ. A CHS address maps to an image offset with the addressed drive's own
@@ -43,10 +43,15 @@
 //! READ/WRITE DATA wait in execution until reset. An address outside mounted
 //! media's geometry terminates abnormally with a no-data status.
 //!
-//! A WRITE mutates the mounted image **in memory only**: it changes the drive's
-//! backing `Vec`, but nothing writes those bytes back to a host image file — a
-//! fresh run starts again from the on-disk image. Persisting a write to a
-//! file-backed image is deliberately out of scope here.
+//! Media serves sector reads and accepts one ordered batch of complete sector
+//! replacements at WRITE DATA completion, before result/IRQ6. Partial sectors
+//! are zero-filled, and sectors preceding an abnormal result are included. Empty
+//! completions and rejected writes submit no batch. Write protection belongs to
+//! the medium. The default [`InMemoryMedia`] changes only its volatile bytes.
+//! The contract exposes no host I/O, clock or host-error result to the controller;
+//! future adapters must latch host failures outside the guest's view. Reset keeps
+//! the same media; snapshots exclude it. See
+//! `backlog/docs/design/persistent-media.md`, §Integration.
 //!
 //! ## Coverage matrix (datasheet vs modelled)
 //!
@@ -123,7 +128,8 @@
 //! results and DMA before accepting that execution phase.
 
 use device::{
-    AccessDir, Device, DeviceError, DmaOp, DmaOutcome, DmaRequest, NextEvent, TraceEvent, VClock,
+    AccessDir, Device, DeviceError, DmaOp, DmaOutcome, DmaRequest, InMemoryMedia, NextEvent,
+    SectorMedia, SectorWrite, TraceEvent, VClock,
 };
 
 /// Stable device name reported by [`Device::name`].
@@ -158,7 +164,7 @@ const MSR_BUSY: u8 = 1 << 4;
 const FLOPPY_DMA_CHANNEL: u8 = 2;
 
 /// Bytes per sector. Every standard PC floppy format uses 512-byte sectors.
-const SECTOR_SIZE: usize = 512;
+const SECTOR_SIZE: usize = device::media::SECTOR_SIZE;
 
 /// Total size of a 1.44 MB image in bytes, kept as a public constant for the
 /// callers that seed a default high-density disk.
@@ -204,6 +210,14 @@ impl FloppyGeometry {
         sectors_per_track: 9,
     };
 
+    /// Total sectors described by the geometry, saturating if it exceeds `u64`.
+    #[must_use]
+    pub const fn sector_count(&self) -> u64 {
+        (self.cylinders as u64)
+            .saturating_mul(self.heads as u64)
+            .saturating_mul(self.sectors_per_track as u64)
+    }
+
     /// Total size in bytes of a raw image with this geometry.
     #[must_use]
     pub const fn image_bytes(&self) -> usize {
@@ -229,40 +243,42 @@ impl FloppyGeometry {
 }
 
 /// A floppy mounted in one of the controller's four drive positions: its
-/// [`FloppyGeometry`] plus the raw backing image, and whether the disk carries a
-/// write-protect tab.
-#[derive(Clone, Debug)]
+/// [`FloppyGeometry`] and owned sector media.
 pub struct Drive {
     /// Physical format of the mounted disk.
     pub geometry: FloppyGeometry,
-    /// Raw image bytes; typically [`FloppyGeometry::image_bytes`] long. Reads
-    /// past the end of a short image return zero; a write past the end grows it.
-    pub image: Vec<u8>,
-    /// Whether the disk is write-protected. A WRITE DATA to a protected disk
-    /// terminates abnormally (ST1 not-writable) and never mutates the image.
-    pub write_protected: bool,
+    media: Box<dyn SectorMedia>,
 }
 
 impl Drive {
-    /// Mount a writable `image` with the given `geometry`.
+    /// Mount a writable in-memory `image` with the given `geometry`.
     #[must_use]
     pub fn new(geometry: FloppyGeometry, image: Vec<u8>) -> Self {
-        Self {
+        Self::with_media(
             geometry,
-            image,
-            write_protected: false,
-        }
+            Box::new(InMemoryMedia::new(image, geometry.sector_count(), false)),
+        )
     }
 
-    /// Mount a write-protected `image` with the given `geometry`: reads behave as
-    /// normal, but a WRITE DATA is rejected with the not-writable status.
+    /// Mount a write-protected in-memory image; WRITE DATA returns not-writable.
     #[must_use]
     pub fn new_read_only(geometry: FloppyGeometry, image: Vec<u8>) -> Self {
-        Self {
+        Self::with_media(
             geometry,
-            image,
-            write_protected: true,
-        }
+            Box::new(InMemoryMedia::new(image, geometry.sector_count(), true)),
+        )
+    }
+
+    /// Mount sector media without exposing its host-side state to the controller.
+    #[must_use]
+    pub fn with_media(geometry: FloppyGeometry, media: Box<dyn SectorMedia>) -> Self {
+        Self { geometry, media }
+    }
+
+    /// The medium's controller-visible write-protection property.
+    #[must_use]
+    pub fn write_protected(&self) -> bool {
+        self.media.write_protected()
     }
 }
 
@@ -615,7 +631,7 @@ impl Upd765 {
     }
 
     /// READ DATA: queue sectors through EOT, continuing onto head 1 when MT is
-    /// set. Only sector IDs within the physical geometry can reach the image;
+    /// set. Only sector IDs within the physical geometry can reach the media;
     /// an invalid starting CHS returns ND (NEC µPD765 datasheet, READ DATA;
     /// Intel 8272A datasheet, READ DATA and Status Register 1, ND).
     /// Result and IRQ6 follow DMA completion.
@@ -656,9 +672,7 @@ impl Upd765 {
             .take_while(|&(h, s)| geometry.contains(cylinder, h, s))
         {
             let offset = geometry.chs_to_offset(cylinder, h, s);
-            for j in 0..SECTOR_SIZE {
-                data.push(media.image.get(offset + j).copied().unwrap_or(0));
-            }
+            data.extend_from_slice(&media.media.read_sector((offset / SECTOR_SIZE) as u64));
         }
 
         let requested = data.len();
@@ -801,7 +815,7 @@ impl Upd765 {
     }
 
     /// WRITE DATA: request sectors through EOT and, with MT, head 1, to be
-    /// pulled out of memory over DMA and committed to the backing image. The
+    /// pulled out of memory over DMA and submitted to the mounted media. The
     /// result phase and IRQ6 follow once the machine reports the transfer
     /// complete. Mirrors [`Upd765::cmd_read_data`] with the DMA direction
     /// reversed.
@@ -823,7 +837,7 @@ impl Upd765 {
         let geometry = media.geometry;
 
         // A write-protected disk rejects the command before any media is touched.
-        if media.write_protected {
+        if media.write_protected() {
             self.command_fault(
                 drive,
                 head,
@@ -880,15 +894,15 @@ impl Upd765 {
     }
 
     /// Commit a WRITE transfer once the machine has pulled `bytes` out of memory:
-    /// write them into the addressed drive's image, advance the sector, build the
-    /// seven-byte result, and raise IRQ6. Mirrors [`Upd765::complete_read`].
+    /// submit replacements to the addressed drive's media, advance the sector,
+    /// build the seven-byte result, and raise IRQ6. Mirrors [`Upd765::complete_read`].
     ///
     /// A floppy write is atomic per sector. If terminal count cut the DMA short
     /// mid-sector, the last partially-supplied sector is still committed whole
     /// with its tail zero-filled — so the number of sectors written rounds *up*
     /// (the read path, which reports how many whole sectors reached memory, rounds
-    /// down). A write that runs past a short backing image grows the image,
-    /// mirroring the read path treating past-the-end bytes as zero.
+    /// down). Media owns storage allocation; the controller supplies complete
+    /// replacement sectors without depending on the media's representation.
     fn complete_write(&mut self, bytes: Vec<u8>, terminal_count: bool) {
         let Some(write) = self.pending_write.take() else {
             return;
@@ -896,16 +910,20 @@ impl Upd765 {
         let sectors_written = bytes.len().div_ceil(SECTOR_SIZE);
         let sectors = self.data_sectors(write.param_head, write.sector);
         if let Some(media) = self.drives[usize::from(write.drive)].as_mut() {
-            for ((head, sector), chunk) in sectors.zip(bytes.chunks(SECTOR_SIZE)) {
-                let offset = media.geometry.chs_to_offset(write.cylinder, head, sector);
-                let end = offset + SECTOR_SIZE;
-                if media.image.len() < end {
-                    media.image.resize(end, 0);
-                }
-                // Clear the whole sector-aligned region first so a short final
-                // sector's tail is zero, then overlay the supplied bytes.
-                media.image[offset..end].fill(0);
-                media.image[offset..offset + chunk.len()].copy_from_slice(chunk);
+            let batch: Vec<_> = sectors
+                .zip(bytes.chunks(SECTOR_SIZE))
+                .map(|((head, sector), chunk)| {
+                    let offset = media.geometry.chs_to_offset(write.cylinder, head, sector);
+                    let mut bytes = [0; SECTOR_SIZE];
+                    bytes[..chunk.len()].copy_from_slice(chunk);
+                    SectorWrite {
+                        lba: (offset / SECTOR_SIZE) as u64,
+                        bytes,
+                    }
+                })
+                .collect();
+            if !batch.is_empty() {
+                media.media.write_batch(&batch);
             }
         }
         let (cylinder, head, next_sector) =
@@ -1096,7 +1114,7 @@ impl Device for Upd765 {
     }
 
     fn save(&self) -> Vec<u8> {
-        // The backing image is media, not controller state; it is not snapshotted.
+        // Mounted media is not controller state; it is not snapshotted.
         let phase_tag = match self.phase {
             Phase::Idle => 0,
             Phase::Command => 1,
@@ -1259,7 +1277,7 @@ impl Device for Upd765 {
                 return Err(bad("transfer requires mounted media"));
             };
             if !media.geometry.contains(cylinder, param_head, sector)
-                || (pending_tag == 2 && media.write_protected)
+                || (pending_tag == 2 && media.write_protected())
             {
                 return Err(bad("transfer incompatible with media"));
             }
@@ -2354,6 +2372,264 @@ mod tests {
         );
     }
 
+    type RecordedBatches = std::rc::Rc<std::cell::RefCell<Vec<Vec<SectorWrite>>>>;
+
+    struct RecordingMedia {
+        memory: InMemoryMedia,
+        batches: RecordedBatches,
+    }
+
+    impl SectorMedia for RecordingMedia {
+        fn read_sector(&self, lba: u64) -> [u8; SECTOR_SIZE] {
+            self.memory.read_sector(lba)
+        }
+
+        fn write_batch(&mut self, sectors: &[SectorWrite]) {
+            self.batches.borrow_mut().push(sectors.to_vec());
+            self.memory.write_batch(sectors);
+        }
+
+        fn write_protected(&self) -> bool {
+            self.memory.write_protected()
+        }
+    }
+
+    fn recording_media_bus(protected: bool) -> (MockBus, RecordedBatches) {
+        let batches = RecordedBatches::default();
+        let drive = Drive::with_media(
+            FloppyGeometry::DD360,
+            Box::new(RecordingMedia {
+                memory: InMemoryMedia::new(
+                    vec![0xAA; FloppyGeometry::DD360.image_bytes()],
+                    FloppyGeometry::DD360.sector_count(),
+                    protected,
+                ),
+                batches: batches.clone(),
+            }),
+        );
+        let bus = MockBus::new(Box::new(ready_drives([Some(drive), None, None, None])));
+        (bus, batches)
+    }
+
+    fn complete_media_write(bus: &mut MockBus, bytes: Vec<u8>, terminal_count: bool) -> Vec<u8> {
+        let request = bus
+            .device_mut()
+            .take_dma_request()
+            .expect("write DMA queued");
+        assert_eq!(request.channel, FLOPPY_DMA_CHANNEL);
+        let DmaOp::FromMemory { len } = request.op else {
+            panic!("WRITE DMA direction");
+        };
+        assert!(bytes.len() <= len);
+        bus.device_mut().dma_complete(DmaOutcome::FromMemory {
+            bytes,
+            terminal_count,
+        });
+        assert!(bus.device().irq_pending());
+        let result = bus_results(bus, 7);
+        assert!(!bus.device().irq_pending());
+        result
+    }
+
+    fn media_read(bus: &mut MockBus, c: u8, h: u8, r: u8) -> Vec<u8> {
+        bus_command(bus, &[0x06, h << 2, c, h, r, 2, r, 0x1B, 0xFF]);
+        let DmaOp::ToMemory(bytes) = bus.device_mut().take_dma_request().unwrap().op else {
+            panic!("READ DMA direction");
+        };
+        bus.device_mut().dma_complete(DmaOutcome::ToMemory {
+            transferred: bytes.len(),
+            terminal_count: true,
+        });
+        assert_eq!(bus_results(bus, 7)[1], 0);
+        bytes
+    }
+
+    #[test]
+    fn media_contract_drive_uses_extended_geometry_capacity() {
+        let geometry = FloppyGeometry {
+            cylinders: 80,
+            heads: 2,
+            sectors_per_track: 36,
+        };
+        let mut bus = MockBus::new(Box::new(ready_drives([
+            Some(Drive::new(geometry, Vec::new())),
+            None,
+            None,
+            None,
+        ])));
+        bus_command(&mut bus, &[0x05, 4, 79, 1, 36, 2, 36, 0x1B, 0xFF]);
+        let result = complete_media_write(&mut bus, vec![0xBB; SECTOR_SIZE], true);
+        assert_eq!(result[1], 0);
+        assert_eq!(media_read(&mut bus, 79, 1, 36), [0xBB; SECTOR_SIZE]);
+    }
+
+    #[test]
+    fn media_contract_batches_commands_in_transfer_order() {
+        let (mut bus, batches) = recording_media_bus(false);
+        bus_command(&mut bus, &[0x85, 0, 2, 0, 2, 2, 3, 0x1B, 0xFF]);
+        assert!(
+            batches.borrow().is_empty(),
+            "no batch before DMA completion"
+        );
+        assert!(!bus.device().irq_pending());
+        assert_eq!(bus.port_read(MSR, 1).unwrap() as u8, MSR_BUSY);
+        let expected: Vec<_> = [37, 38, 45, 46, 47]
+            .into_iter()
+            .enumerate()
+            .map(|(index, lba)| SectorWrite {
+                lba,
+                bytes: [0x30 + index as u8; SECTOR_SIZE],
+            })
+            .collect();
+        let bytes = expected.iter().flat_map(|sector| sector.bytes).collect();
+        assert_eq!(
+            complete_media_write(&mut bus, bytes, true),
+            [4, 0, 0, 3, 0, 1, 2]
+        );
+        assert_eq!(*batches.borrow(), vec![expected.clone()]);
+        for (index, (head, sector)) in [(0, 2), (0, 3), (1, 1), (1, 2), (1, 3)]
+            .into_iter()
+            .enumerate()
+        {
+            assert_eq!(media_read(&mut bus, 2, head, sector), expected[index].bytes);
+        }
+        bus_command(&mut bus, &[0x05, 4, 1, 1, 4, 2, 4, 0x1B, 0xFF]);
+        assert_eq!(batches.borrow().len(), 1);
+        complete_media_write(&mut bus, vec![0xEF; SECTOR_SIZE], true);
+        assert_eq!(
+            *batches.borrow(),
+            vec![
+                expected,
+                vec![SectorWrite {
+                    lba: 30,
+                    bytes: [0xEF; SECTOR_SIZE]
+                }]
+            ]
+        );
+    }
+
+    #[test]
+    fn media_contract_partial_sector_is_padded_in_one_batch() {
+        let (mut bus, batches) = recording_media_bus(false);
+        assert_eq!(media_read(&mut bus, 0, 0, 2), [0xAA; SECTOR_SIZE]);
+        bus_command(&mut bus, &[0x05, 0, 0, 0, 1, 2, 3, 0x1B, 0xFF]);
+        let bytes: Vec<_> = (0..SECTOR_SIZE + 100).map(|i| (i ^ 0xC3) as u8).collect();
+        let first: [u8; SECTOR_SIZE] = bytes[..SECTOR_SIZE].try_into().unwrap();
+        let mut partial = [0; SECTOR_SIZE];
+        partial[..100].copy_from_slice(&bytes[SECTOR_SIZE..]);
+        assert_eq!(
+            complete_media_write(&mut bus, bytes, true),
+            [0, 0, 0, 0, 0, 3, 2]
+        );
+        assert_eq!(
+            *batches.borrow(),
+            vec![vec![
+                SectorWrite {
+                    lba: 0,
+                    bytes: first
+                },
+                SectorWrite {
+                    lba: 1,
+                    bytes: partial
+                },
+            ]]
+        );
+        let read_back = media_read(&mut bus, 0, 0, 2);
+        assert_eq!(read_back, partial);
+        assert!(read_back[100..].iter().all(|&byte| byte == 0));
+    }
+
+    #[test]
+    fn media_contract_abnormal_completion_keeps_committed_sectors() {
+        for (sector, eot, supplied, status, lbas) in [
+            (2, 3, SECTOR_SIZE + 5, ST1_OVERRUN, vec![1, 2]),
+            (9, 10, SECTOR_SIZE, ST1_NO_DATA, vec![8]),
+            (2, 3, 2 * SECTOR_SIZE, ST1_END_OF_CYLINDER, vec![1, 2]),
+        ] {
+            let (mut bus, batches) = recording_media_bus(false);
+            assert_eq!(media_read(&mut bus, 0, 0, sector), [0xAA; SECTOR_SIZE]);
+            bus_command(&mut bus, &[0x05, 0, 0, 0, sector, 2, eot, 0x1B, 0xFF]);
+            let result = complete_media_write(&mut bus, vec![0x5A; supplied], false);
+            assert_eq!(result[0] & 0xC0, ST0_ABNORMAL);
+            assert_eq!(result[1], status);
+            let expected: Vec<_> = lbas
+                .into_iter()
+                .enumerate()
+                .map(|(index, lba)| {
+                    let mut bytes = [0; SECTOR_SIZE];
+                    bytes[..(supplied - index * SECTOR_SIZE).min(SECTOR_SIZE)].fill(0x5A);
+                    SectorWrite { lba, bytes }
+                })
+                .collect();
+            assert_eq!(*batches.borrow(), vec![expected.clone()]);
+            for replacement in expected {
+                let read_back = media_read(&mut bus, 0, 0, replacement.lba as u8 + 1);
+                assert_eq!(read_back, replacement.bytes);
+                if status == ST1_OVERRUN && replacement.lba == 2 {
+                    assert!(read_back[5..].iter().all(|&byte| byte == 0));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn media_contract_read_only_rejects_without_a_batch() {
+        let (mut bus, batches) = recording_media_bus(true);
+        bus_command(&mut bus, &[0x05, 0, 0, 0, 1, 2, 1, 0x1B, 0xFF]);
+        assert!(bus.device_mut().take_dma_request().is_none());
+        assert!(bus.device().irq_pending());
+        assert_eq!(
+            bus_results(&mut bus, 7),
+            [ST0_ABNORMAL, ST1_NOT_WRITABLE, 0, 0, 0, 1, 2]
+        );
+        assert!(batches.borrow().is_empty());
+        assert_eq!(media_read(&mut bus, 0, 0, 1), [0xAA; SECTOR_SIZE]);
+    }
+
+    #[test]
+    fn media_contract_empty_and_invalid_writes_emit_no_batch() {
+        let (mut bus, batches) = recording_media_bus(false);
+        for tc in [false, true] {
+            bus_command(&mut bus, &[0x05, 0, 0, 0, 1, 2, 1, 0x1B, 0xFF]);
+            let result = complete_media_write(&mut bus, Vec::new(), tc);
+            assert_eq!(result[1], if tc { 0 } else { ST1_OVERRUN });
+            assert!(batches.borrow().is_empty());
+        }
+        bus_command(&mut bus, &[0x05, 0, 40, 0, 1, 2, 1, 0x1B, 0xFF]);
+        assert!(bus.device_mut().take_dma_request().is_none());
+        assert_eq!(bus_results(&mut bus, 7)[1], ST1_NO_DATA);
+        assert!(batches.borrow().is_empty());
+        assert_eq!(media_read(&mut bus, 0, 0, 1), [0xAA; SECTOR_SIZE]);
+    }
+
+    #[test]
+    fn media_contract_reset_preserves_media_and_discards_uncompleted_write() {
+        let (mut bus, batches) = recording_media_bus(false);
+        bus_command(&mut bus, &[0x05, 0, 0, 0, 1, 2, 1, 0x1B, 0xFF]);
+        complete_media_write(&mut bus, vec![0x55; SECTOR_SIZE], true);
+        let snapshot = bus.device().save();
+        bus_command(&mut bus, &[0x05, 0, 0, 0, 1, 2, 1, 0x1B, 0xFF]);
+        complete_media_write(&mut bus, vec![0x66; SECTOR_SIZE], true);
+        bus.device_mut().restore(&snapshot).unwrap();
+        assert_eq!(media_read(&mut bus, 0, 0, 1), [0x66; SECTOR_SIZE]);
+        bus_command(&mut bus, &[0x05, 0, 0, 0, 1, 2, 1, 0x1B, 0xFF]);
+        bus.device_mut().reset();
+        assert!(bus.device_mut().take_dma_request().is_none());
+        assert!(!bus.device().irq_pending());
+        bus.device_mut().dma_complete(DmaOutcome::FromMemory {
+            bytes: vec![0x77; SECTOR_SIZE],
+            terminal_count: true,
+        });
+        assert_eq!(batches.borrow().len(), 2);
+        bus.port_write(DOR, 1, 0x1C).unwrap();
+        for _ in 0..4 {
+            bus_command(&mut bus, &[0x08]);
+            bus_results(&mut bus, 2);
+        }
+        assert_eq!(media_read(&mut bus, 0, 0, 1), [0x66; SECTOR_SIZE]);
+        assert_eq!(batches.borrow().len(), 2);
+    }
+
     #[test]
     fn write_out_of_geometry_faults_no_data() {
         // 360 KB disk has 40 cylinders; cylinder 40 is one past the last.
@@ -2404,17 +2680,18 @@ mod tests {
         assert_eq!(res[0] & 0x40, 0x40, "ST0 abnormal termination");
         assert_eq!(res[1] & 0x02, 0x02, "ST1 NW: not writable");
         assert_eq!(
-            fdc.drives[0].as_ref().map(|d| &d.image),
-            Some(&original),
+            fdc.drives[0]
+                .as_ref()
+                .map(|d| d.media.read_sector(0).to_vec()),
+            Some(original),
             "the image is not mutated"
         );
     }
 
     #[test]
     fn writeterminal_count_zero_fills_partial_sector() {
-        // Drive 0 starts empty; a short write must grow the image and commit a
-        // whole sector even though only part of it was supplied.
-        let mut fdc = ready_fdc(Vec::new());
+        // Non-zero old bytes make retaining the partial sector's tail observable.
+        let mut fdc = ready_fdc(vec![0xAA; SECTOR_SIZE]);
         let mut dma = Dma8237::new();
         let mut mem = MockMem::default();
 
@@ -2450,12 +2727,7 @@ mod tests {
 
         let res = results(&mut fdc, 7);
         assert_eq!(&res[3..], &[1, 0, 1, 2], "the completed sector reaches EOT");
-        let image = &fdc.drives[0].as_ref().unwrap().image;
-        assert_eq!(
-            image.len(),
-            SECTOR_SIZE,
-            "the short image grew to hold the sector"
-        );
+        let image = fdc.drives[0].as_ref().unwrap().media.read_sector(0);
         assert_eq!(&image[..SUPPLIED], &pattern[..], "supplied bytes committed");
         assert!(
             image[SUPPLIED..SECTOR_SIZE].iter().all(|&b| b == 0),
@@ -2481,8 +2753,10 @@ mod tests {
         assert_eq!(fdc.dor, 0);
         assert!(!fdc.irq_pending());
         assert_eq!(
-            fdc.drives[0].as_ref().map(|d| &d.image),
-            Some(&image),
+            fdc.drives[0]
+                .as_ref()
+                .map(|d| d.media.read_sector(0).to_vec()),
+            Some(image),
             "the disk stays attached across reset"
         );
     }

@@ -12,6 +12,9 @@
 //! [`TracePolicy::Off`] independently of display or byte-output observation;
 //! snapshots contain hardware state, never trace histories or counters.
 
+pub mod media;
+pub use media::{InMemoryMedia, SectorMedia, SectorWrite};
+
 pub mod trace;
 pub use trace::{TraceBuffer, TracePolicy};
 
