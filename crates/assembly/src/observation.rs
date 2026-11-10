@@ -309,7 +309,12 @@ mod tests {
             grid.cell(0, 0).unwrap(),
             &video::TextCell {
                 glyph: b'B',
-                attr: 0x1F
+                attr: 0x1F,
+                style: video::TextStyle::Colour {
+                    foreground: 15,
+                    background: 1,
+                    blink: false
+                },
             }
         );
         assert_eq!((grid.cols(), grid.rows()), (80, 25));

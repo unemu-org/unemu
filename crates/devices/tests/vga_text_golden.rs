@@ -59,6 +59,9 @@ fn hello_renders_to_captured_grid() {
         start_cell: vga.start_cell(),
         cursor_cell: vga.cursor_cell(),
         cursor_visible: vga.cursor_visible(),
+        attributes: video::TextAttributeSet::Colour {
+            blink_enabled: true,
+        },
     });
     let mut sink = CaptureFrameSink::new();
     sink.present(&Frame::Text(grid));

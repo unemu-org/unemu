@@ -36,12 +36,30 @@ fn vga_text_writes_render_into_the_grid() {
                 (0, 0) => TextCell {
                     glyph: b'H',
                     attr: 0x1F,
+                    style: video::TextStyle::Colour {
+                        foreground: 15,
+                        background: 1,
+                        blink: false,
+                    },
                 },
                 (1, 0) => TextCell {
                     glyph: b'i',
                     attr: 0x1F,
+                    style: video::TextStyle::Colour {
+                        foreground: 15,
+                        background: 1,
+                        blink: false,
+                    },
                 },
-                _ => TextCell { glyph: 0, attr: 0 },
+                _ => TextCell {
+                    glyph: 0,
+                    attr: 0,
+                    style: video::TextStyle::Colour {
+                        foreground: 0,
+                        background: 0,
+                        blink: false,
+                    },
+                },
             };
             assert_eq!(grid.cell(col, row), Some(&expected), "cell ({col}, {row})");
         }
@@ -69,12 +87,28 @@ fn vga_snapshot_decodes_five_bit_indices_for_start_and_cursor() {
         0xB8, 0x2A, 0x20, 0xEF, 0xF4,
     ];
     let grid = run_vga_text(&program).unwrap();
-    assert_eq!(grid.cell(1, 0), Some(&TextCell { glyph: 0, attr: 0 }));
+    assert_eq!(
+        grid.cell(1, 0),
+        Some(&TextCell {
+            glyph: 0,
+            attr: 0,
+            style: video::TextStyle::Colour {
+                foreground: 0,
+                background: 0,
+                blink: false
+            }
+        })
+    );
     assert_eq!(
         grid.cell(0, 0),
         Some(&TextCell {
             glyph: b'A',
-            attr: 0x4E
+            attr: 0x4E,
+            style: video::TextStyle::Colour {
+                foreground: 14,
+                background: 4,
+                blink: false
+            },
         })
     );
     assert_eq!(

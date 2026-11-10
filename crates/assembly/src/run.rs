@@ -264,6 +264,9 @@ fn console_contains(machine: &Machine<X86JitCpu>, probe: &ConsoleProbe, needle: 
         start_cell: 0,
         cursor_cell: 0,
         cursor_visible: false,
+        attributes: video::TextAttributeSet::Colour {
+            blink_enabled: true,
+        },
     });
     grid.rows_as_strings().join("\n").contains(needle)
 }

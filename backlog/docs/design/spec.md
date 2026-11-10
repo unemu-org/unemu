@@ -70,8 +70,12 @@ IVT-vectored `INT`/exceptions — added under `CpuMode::Real16`.
 §9.2 VGA text 80×25 (first graphics mode, later).
 §9.3 MDA text 80×25. The MDA display device exposes fixed 80×25 text scanout, 4 KiB of RAM mirrored
 through B0000–B7FFF, the MC6845 register file through the 3B0–3B7 port mirrors,
-and mode/status ports 3B8/3BA. Status uses a deterministic read-count phase;
-mono attribute rendering and machine-profile wiring remain separate work.
+and mode/status ports 3B8/3BA. Status uses a deterministic read-count phase.
+The shared text renderer decodes monochrome attributes into non-display,
+underline, normal and reverse-video effects with character intensity. Mode-control
+bit 5 at 3B8 selects blink versus background intensity; non-display stays black.
+Glyph rasterisation and blink timing remain presenter concerns; machine-profile
+wiring remains separate work.
 The printer ports 3BC–3BE are outside this display device's routes.
 
 ## §10 Testing

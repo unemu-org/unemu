@@ -346,6 +346,29 @@ pub enum DmaOutcome {
     },
 }
 
+/// Attribute decoding selected by a text card (§9.2, §9.3).
+///
+/// IBM PC Technical Reference, Options and Adapters, IBM Monochrome Display
+/// and Printer Adapter, Programming Considerations (attribute byte and 3B8);
+/// IBM Color/Graphics Monitor Adapter, Programming Considerations, Mode Control
+/// Register (bit 5, the colour card's blink enable); IBM VGA Technical
+/// Reference, Alphanumeric Modes (the colour attribute byte).
+/// See `backlog/docs/design/observation.md`, §Typed capabilities and route ownership.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum TextAttributeSet {
+    /// RGB palette attributes, with bit 3 selecting foreground intensity.
+    Colour {
+        /// Whether attribute bit 7 requests blink instead of background intensity.
+        blink_enabled: bool,
+    },
+    /// MDA display effects, with bit 3 selecting character intensity.
+    Monochrome {
+        /// Mode-control register 3B8 bit 5: selects whether attribute bit 7
+        /// requests blink instead of background intensity.
+        blink_enabled: bool,
+    },
+}
+
 /// Borrowed text scanout from a card, without guest I/O (§9.2).
 ///
 /// IBM VGA Technical Reference, Alphanumeric Modes and CRT Controller
@@ -372,6 +395,8 @@ pub struct TextModeState<'a> {
     pub cursor_cell: u16,
     /// Whether the card is displaying the cursor at all.
     pub cursor_visible: bool,
+    /// Meaning of the raw attribute bytes, including the blink selection.
+    pub attributes: TextAttributeSet,
 }
 
 /// The device swap seam (§3.2 seam 4, §7.1).

@@ -22,10 +22,10 @@
 //! | MC6845 Table 2: write-only and unassigned data-register reads undefined | Assumption: return 00, ignore unassigned writes | No hardware-defined read value |
 //! | MC6845 Start Address, Cursor Location | 14-bit cell addresses, exposed without wrapping to VRAM | Raster address generator; 14-bit cursor wrap (the shared renderer compares the cursor with 16-bit wrap; scanout wraps at the 2048-cell buffer) |
 //! | MC6845 Cursor Control, Table 4 | R10 bits 6:5 = 01 disables cursor | Shape and blink timing; both blink modes stay visible |
-//! | IBM Programming Considerations: 3B8 | Stored mode byte; high-resolution, video-enable and blink getters | No access stall when high-resolution is clear; no video blanking or attribute rendering |
+//! | IBM Programming Considerations: 3B8 | Stored mode byte; high-resolution, video-enable and blink getters; bit 5 feeds the scanout blink flag | No access stall when high-resolution is clear; no video blanking or blink timing |
 //! | IBM Programming Considerations: 3BA | Horizontal drive (bit 0), black/white video (bit 3) | Per-read phase, not electrical video or raster timing |
 //! | MC6845 timing registers | R0–R11 stored as bytes | Timing, interlace, unused-bit masks and autonomous events; geometry from R1/R6/R9 is not honoured (fixed 80×25) |
-//! | IBM Description: character generator; Programming Considerations p. 6: attributes | Raw 80×25 text scanout | Font, underline, intensity, reverse video and character blink rendering |
+//! | IBM Description: character generator; Programming Considerations p. 6: attributes | 80×25 monochrome scanout; shared renderer decodes non-display, underline, intensity, reverse video and blink/background intensity | Font rasterisation and character blink timing |
 //! | IBM Printer Adapter Function | None | Ports 3BC–3BE and printer IRQ; machine profiles must not route these ports to this display device |
 //!
 //! Undriven port reads follow the project's open-bus convention (FF). Reads
@@ -213,6 +213,9 @@ impl Device for MdaText {
             start_cell: self.start_cell(),
             cursor_cell: self.cursor_cell(),
             cursor_visible: self.cursor_visible(),
+            attributes: device::TextAttributeSet::Monochrome {
+                blink_enabled: self.blink_enabled(),
+            },
         })
     }
 
@@ -388,6 +391,20 @@ mod tests {
         bus.port_write(CRTC_INDEX_PORT, 1, u32::from(index))
             .unwrap();
         bus.port_write(CRTC_DATA_PORT, 1, u32::from(value)).unwrap();
+    }
+
+    #[test]
+    fn scanout_reports_monochrome_attributes_and_mode_control_blink_selection() {
+        let mut bus = bus();
+        for value in [0x00, 0x29, 0x09, 0xFF] {
+            bus.port_write(MODE_CONTROL_PORT, 1, value).unwrap();
+            assert_eq!(
+                bus.device().text_scanout().unwrap().attributes,
+                device::TextAttributeSet::Monochrome {
+                    blink_enabled: value & 0x20 != 0
+                }
+            );
+        }
     }
 
     #[test]

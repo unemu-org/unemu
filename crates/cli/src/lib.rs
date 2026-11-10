@@ -974,6 +974,9 @@ fn render_mda(machine: &Machine<X86JitCpu>) -> TextGrid {
         start_cell: 0,
         cursor_cell: 0,
         cursor_visible: false,
+        attributes: video::TextAttributeSet::Monochrome {
+            blink_enabled: true,
+        },
     })
 }
 
@@ -1041,6 +1044,9 @@ fn blank_screen() -> TextGrid {
         start_cell: 0,
         cursor_cell: 0,
         cursor_visible: false,
+        attributes: video::TextAttributeSet::Colour {
+            blink_enabled: true,
+        },
     })
 }
 
@@ -1413,7 +1419,12 @@ mod tests {
             run.screen.cell(0, 0),
             Some(&video::TextCell {
                 glyph: b'X',
-                attr: 0x4E
+                attr: 0x4E,
+                style: video::TextStyle::Colour {
+                    foreground: 14,
+                    background: 4,
+                    blink: false
+                },
             })
         );
         assert_eq!(run.com1, b"Z");

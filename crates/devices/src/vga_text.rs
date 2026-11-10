@@ -40,9 +40,12 @@
 //! - The registers a text renderer interprets: cursor location high/low
 //!   (`0x0E`/`0x0F`), display start address high/low (`0x0C`/`0x0D`), and the
 //!   cursor-disable bit of cursor-start (`0x0A`, bit 5).
-//! - The CGA mode-control (`0x3D8`) and colour-select (`0x3D9`) registers, as
-//!   storage: a BIOS write is recorded and reads back, but no graphics mode is
-//!   entered — the card always renders text mode 3.
+//! - The CGA mode-control (`0x3D8`) and colour-select (`0x3D9`) registers:
+//!   writes are stored and read back. Mode-control bit 5 selects attribute bit 7
+//!   as blink when set or background intensity when clear, including at reset.
+//!   Source: IBM PC Technical Reference, Options and Adapters, IBM Color/Graphics
+//!   Monitor Adapter, Programming Considerations, Mode Control Register.
+//!   No graphics mode is entered — the card always renders text mode 3.
 //! - The CGA input status register (`0x3DA`): its display-enable (bit 0) and
 //!   vertical-retrace (bit 3) bits, cycled deterministically so a BIOS
 //!   both-edges retrace wait terminates (see `VgaText::status_register`).
@@ -56,7 +59,9 @@
 //! - No attribute controller, sequencer, graphics controller, or DAC — only the
 //!   CRTC, the CGA register surface above, and the text buffer. The card never
 //!   leaves text mode: the graphics-mode bits of the CGA mode-control register
-//!   are stored but not acted on.
+//!   are stored but not acted on, and its video-enable bit (bit 3) does not
+//!   blank the screen, so cells written before a mode set are shown (with
+//!   attribute bit 7 as background intensity, since reset clears bit 5).
 //! - No planar/graphics memory: the buffer is a plain byte array, correct for
 //!   text mode but not for the 0xA0000 graphics window.
 //! - No real display timing: the status register's retrace/display bits are a
@@ -294,6 +299,9 @@ impl Device for VgaText {
             start_cell: self.start_cell(),
             cursor_cell: self.cursor_cell(),
             cursor_visible: self.cursor_visible(),
+            attributes: device::TextAttributeSet::Colour {
+                blink_enabled: self.mode_control & 0x20 != 0,
+            },
         })
     }
 
@@ -463,6 +471,20 @@ impl Device for VgaText {
 mod tests {
     use super::*;
     use testkit::MockBus;
+
+    #[test]
+    fn scanout_reports_colour_attributes_and_mode_control_blink_selection() {
+        let mut bus = MockBus::new(Box::new(VgaText::new()));
+        for value in [0x00, 0x29, 0x09, 0xFF] {
+            bus.port_write(CGA_MODE_CONTROL_PORT, 1, value).unwrap();
+            assert_eq!(
+                bus.device().text_scanout().unwrap().attributes,
+                device::TextAttributeSet::Colour {
+                    blink_enabled: value & 0x20 != 0
+                }
+            );
+        }
+    }
 
     #[test]
     fn fidelity_reserved_crtc_indices_do_not_alias_registers() {

@@ -18,7 +18,7 @@
 //! - The [`FrameSink`] trait and the [`Frame`] it carries.
 //! - [`TextGrid`] — the character-cell frame for text modes: a grid of
 //!   (glyph, attribute) cells plus a [`Cursor`].
-//! - [`render_text_mode`] — turns a slice of VGA text video memory into a
+//! - [`render_text_mode`] — turns MDA or colour text video memory into a
 //!   [`TextGrid`] (§9.2, VGA text mode 3, 80×25).
 //! - [`CaptureFrameSink`] — a trivial sink that keeps the last frame, for tests.
 //!
@@ -26,9 +26,9 @@
 //! - No pixel/graphics frame: [`Frame`] has only a text variant so far. The enum
 //!   exists precisely so a future framebuffer variant is an additive change, not
 //!   a reshape of the seam.
-//! - No glyph rasterisation: a text frame carries code-page bytes and attribute
-//!   bytes, not pixels. Mapping a glyph byte + font to pixels is a presenter's
-//!   concern, deliberately left out of the seam.
+//! - No glyph rasterisation: a text frame carries code-page bytes, raw attributes
+//!   and decoded styles, not pixels. Mapping a glyph byte + font to pixels is a
+//!   presenter's concern, deliberately left out of the seam.
 
 /// A finished frame handed across the [`FrameSink`] seam (§9.1).
 ///
@@ -54,16 +54,88 @@ pub trait FrameSink {
 
 /// One character cell in a [`TextGrid`].
 ///
-/// Mirrors the two bytes a VGA text cell occupies in video memory: a code-page
-/// glyph index and an attribute byte (foreground/background/blink). The glyph is
-/// kept as a raw byte, not a `char`, because interpreting it needs a code page
+/// Preserves the two bytes a text cell occupies in video memory alongside a
+/// decoded style, so presenters need no knowledge of the producing card. The
+/// glyph is kept as a raw byte, not a `char`, because interpreting it needs a code page
 /// and font that live in the presenter, not the seam.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct TextCell {
     /// Code-page glyph index (e.g. CP437 on the IBM PC).
     pub glyph: u8,
-    /// Attribute byte: typically `bg<<4 | fg`, with the top bit blink/intensity.
+    /// Raw attribute byte, preserved independently of its card-specific meaning.
     pub attr: u8,
+    /// Decoded drawing instructions; glyph rasterisation stays with the presenter.
+    pub style: TextStyle,
+}
+
+/// MDA's base display effect, independent of intensity and blink (§9.3).
+///
+/// IBM PC Technical Reference, Options and Adapters, IBM Monochrome Display
+/// and Printer Adapter, Programming Considerations, attribute byte table.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum MonochromeEffect {
+    /// Black space, including attributes 00h, 08h, 80h and 88h.
+    NonDisplay,
+    /// Light character on a dark background.
+    Normal,
+    /// Underlined character: foreground bits 0–2 are 001, with any background.
+    Underline,
+    /// Dark character on a light background (base attribute 70h).
+    Reverse,
+}
+
+/// Decoded text attributes that require no device registers to interpret (§9.2, §9.3).
+///
+/// IBM PC Technical Reference, Options and Adapters, IBM Monochrome Display
+/// and Printer Adapter, Programming Considerations, attribute byte table and
+/// mode-control register 3B8; IBM VGA Technical Reference, Alphanumeric Modes
+/// and Attribute Mode Control. See `backlog/docs/design/spec.md`, §9.2 and §9.3.
+/// Blink is a request, not a timed phase; this renderer never reads a host clock.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum TextStyle {
+    /// Colour attributes using the standard IBM text palette indices.
+    /// Programmable VGA palettes and font selection are not modelled.
+    Colour {
+        /// Foreground index 0–15; bit 3 is foreground intensity.
+        foreground: u8,
+        /// Background index 0–15; bit 3 is background intensity.
+        background: u8,
+        /// Alternate the glyph with its background during the blink phase.
+        blink: bool,
+    },
+    /// Monochrome display effects; the presenter chooses the phosphor colour.
+    Monochrome {
+        /// Base effect; non-display stays black regardless of intensity.
+        effect: MonochromeEffect,
+        /// Character intensity (attribute bit 3).
+        intense: bool,
+        /// Alternate the glyph with its background during the blink phase.
+        blink: bool,
+        /// Background intensity (attribute bit 7 with blink disabled).
+        /// Always false for non-display cells, which stay black.
+        background_intense: bool,
+    },
+}
+
+fn decode_text_style(attr: u8, attributes: TextAttributeSet) -> TextStyle {
+    match attributes {
+        TextAttributeSet::Colour { blink_enabled } => TextStyle::Colour {
+            foreground: attr & 0x0F,
+            background: (attr >> 4) & if blink_enabled { 0x07 } else { 0x0F },
+            blink: blink_enabled && attr & 0x80 != 0,
+        },
+        TextAttributeSet::Monochrome { blink_enabled } => TextStyle::Monochrome {
+            effect: match attr & 0x77 {
+                0x00 => MonochromeEffect::NonDisplay,
+                0x70 => MonochromeEffect::Reverse,
+                _ if attr & 0x07 == 0x01 => MonochromeEffect::Underline,
+                _ => MonochromeEffect::Normal,
+            },
+            intense: attr & 0x08 != 0,
+            blink: blink_enabled && attr & 0x80 != 0,
+            background_intense: !blink_enabled && attr & 0x80 != 0 && attr & 0x77 != 0,
+        },
+    }
 }
 
 /// The text-mode cursor position within a [`TextGrid`] (§9.2).
@@ -153,9 +225,9 @@ impl TextGrid {
 }
 
 /// Hardware-neutral scanout consumed by the text renderer (§9.2).
-pub use device::TextModeState;
+pub use device::{TextAttributeSet, TextModeState};
 
-/// Render VGA text video memory into a [`TextGrid`] (§9.2).
+/// Render MDA or colour text video memory into a [`TextGrid`] (§9.2).
 ///
 /// IBM VGA Technical Reference, CRT Controller Registers, Start Address and
 /// Cursor Location: scanout and cursor comparison use video-memory addresses.
@@ -172,12 +244,17 @@ pub fn render_text_mode(state: &TextModeState) -> TextGrid {
     let mut cells = Vec::with_capacity(count);
     for i in 0..count {
         let cell = if memory_cells == 0 {
-            TextCell { glyph: 0, attr: 0 }
+            TextCell {
+                glyph: 0,
+                attr: 0,
+                style: decode_text_style(0, state.attributes),
+            }
         } else {
             let byte = (((usize::from(state.start_cell) + i) & 0xFFFF) % memory_cells) * 2;
             TextCell {
                 glyph: state.vram[byte],
                 attr: state.vram[byte + 1],
+                style: decode_text_style(state.vram[byte + 1], state.attributes),
             }
         };
         cells.push(cell);
@@ -250,6 +327,135 @@ mod tests {
     use super::*;
 
     #[test]
+    fn mda_attribute_classes_decode_without_changing_raw_cells_or_dumps() {
+        use MonochromeEffect::{NonDisplay, Normal, Reverse, Underline};
+        let cases = [
+            (0x00, NonDisplay, false, false),
+            (0x08, NonDisplay, true, false),
+            (0x80, NonDisplay, false, true),
+            (0x88, NonDisplay, true, true),
+            (0x01, Underline, false, false),
+            (0x09, Underline, true, false),
+            (0x81, Underline, false, true),
+            (0x89, Underline, true, true),
+            (0x07, Normal, false, false),
+            (0x0F, Normal, true, false),
+            (0x87, Normal, false, true),
+            (0x8F, Normal, true, true),
+            (0x70, Reverse, false, false),
+            (0x78, Reverse, true, false),
+            (0xF0, Reverse, false, true),
+            (0xF8, Reverse, true, true),
+            (0x02, Normal, false, false),
+            (0x71, Underline, false, false),
+            (0x11, Underline, false, false),
+        ];
+        let vram: Vec<u8> = cases.iter().flat_map(|&(attr, ..)| [b'X', attr]).collect();
+        let grid = render_text_mode(&TextModeState {
+            vram: &vram,
+            cols: cases.len() as u16,
+            rows: 1,
+            start_cell: 0,
+            cursor_cell: 0,
+            cursor_visible: false,
+            attributes: TextAttributeSet::Monochrome {
+                blink_enabled: true,
+            },
+        });
+        for (col, &(attr, effect, intense, blink)) in cases.iter().enumerate() {
+            let cell = grid.cell(col as u16, 0).unwrap();
+            assert_eq!((cell.glyph, cell.attr), (b'X', attr));
+            assert_eq!(
+                cell.style,
+                TextStyle::Monochrome {
+                    effect,
+                    intense,
+                    blink,
+                    background_intense: false,
+                },
+                "attr={attr:#04x}"
+            );
+        }
+        assert_eq!(grid.rows_as_strings(), vec!["X".repeat(cases.len())]);
+        assert_eq!(grid.to_dump(), "X".repeat(cases.len()));
+    }
+
+    #[test]
+    fn mda_bit_seven_selects_background_intensity_when_blink_is_disabled() {
+        let grid = render_text_mode(&TextModeState {
+            vram: &[
+                b'A', 0x07, b'B', 0x87, b'C', 0x89, b'D', 0xF8, b'E', 0x80, b'F', 0x88,
+            ],
+            cols: 6,
+            rows: 1,
+            start_cell: 0,
+            cursor_cell: 0,
+            cursor_visible: false,
+            attributes: TextAttributeSet::Monochrome {
+                blink_enabled: false,
+            },
+        });
+        for (col, effect, intense, background_intense) in [
+            (0, MonochromeEffect::Normal, false, false),
+            (1, MonochromeEffect::Normal, false, true),
+            (2, MonochromeEffect::Underline, true, true),
+            (3, MonochromeEffect::Reverse, true, true),
+            (4, MonochromeEffect::NonDisplay, false, false),
+            (5, MonochromeEffect::NonDisplay, true, false),
+        ] {
+            assert_eq!(
+                grid.cell(col, 0).unwrap().style,
+                TextStyle::Monochrome {
+                    effect,
+                    intense,
+                    blink: false,
+                    background_intense,
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn colour_attributes_decode_palette_indices_intensity_and_blink() {
+        let cases = [
+            (0x00, 0, 0, false),
+            (0x01, 1, 0, false),
+            (0x07, 7, 0, false),
+            (0x1F, 15, 1, false),
+            (0x70, 0, 7, false),
+            (0x87, 7, 0, true),
+            (0x8F, 15, 0, true),
+            (0xFE, 14, 7, true),
+        ];
+        let vram: Vec<u8> = cases.iter().flat_map(|&(attr, ..)| [b'X', attr]).collect();
+        for blink_enabled in [true, false] {
+            let grid = render_text_mode(&TextModeState {
+                vram: &vram,
+                cols: cases.len() as u16,
+                rows: 1,
+                start_cell: 0,
+                cursor_cell: 0,
+                cursor_visible: false,
+                attributes: TextAttributeSet::Colour { blink_enabled },
+            });
+            for (col, &(attr, foreground, background, blink)) in cases.iter().enumerate() {
+                let cell = grid.cell(col as u16, 0).unwrap();
+                assert_eq!((cell.glyph, cell.attr), (b'X', attr));
+                assert_eq!(
+                    cell.style,
+                    TextStyle::Colour {
+                        foreground,
+                        background: background | if !blink_enabled && blink { 8 } else { 0 },
+                        blink: blink_enabled && blink,
+                    },
+                    "attr={attr:#04x}, blink_enabled={blink_enabled}"
+                );
+            }
+            assert_eq!(grid.to_dump(), "X".repeat(cases.len()));
+        }
+    }
+
+    #[test]
     fn cursor_compares_full_sixteen_bit_address() {
         let vram = vec![0; 0x8000];
         for cursor_cell in [0x4000, 0x8000, 0xC000, 0xFFFF] {
@@ -260,6 +466,9 @@ mod tests {
                 start_cell: 0,
                 cursor_cell,
                 cursor_visible: true,
+                attributes: TextAttributeSet::Colour {
+                    blink_enabled: true,
+                },
             });
             assert!(!grid.cursor().visible, "cursor={cursor_cell:#x}");
         }
@@ -270,6 +479,9 @@ mod tests {
             start_cell: 0xFFFF,
             cursor_cell: 0,
             cursor_visible: true,
+            attributes: TextAttributeSet::Colour {
+                blink_enabled: true,
+            },
         });
         assert_eq!(
             grid.cursor(),
@@ -290,6 +502,9 @@ mod tests {
             start_cell: 3,
             cursor_cell: 0,
             cursor_visible: true,
+            attributes: TextAttributeSet::Colour {
+                blink_enabled: true,
+            },
         });
         assert_eq!(grid.to_dump(), "DAB");
         assert_eq!(
@@ -311,6 +526,9 @@ mod tests {
             start_cell: 0,
             cursor_cell: 0,
             cursor_visible: true,
+            attributes: TextAttributeSet::Colour {
+                blink_enabled: true,
+            },
         });
         assert!(grid.cells.is_empty());
         assert!(!grid.cursor().visible);
@@ -332,19 +550,32 @@ mod tests {
             start_cell: 0,
             cursor_cell: 1,
             cursor_visible: true,
+            attributes: TextAttributeSet::Colour {
+                blink_enabled: true,
+            },
         });
         assert_eq!(
             grid.cell(0, 0),
             Some(&TextCell {
                 glyph: b'A',
-                attr: 0x07
+                attr: 0x07,
+                style: TextStyle::Colour {
+                    foreground: 7,
+                    background: 0,
+                    blink: false
+                },
             })
         );
         assert_eq!(
             grid.cell(1, 0),
             Some(&TextCell {
                 glyph: b'B',
-                attr: 0x70
+                attr: 0x70,
+                style: TextStyle::Colour {
+                    foreground: 0,
+                    background: 7,
+                    blink: false
+                },
             })
         );
         assert_eq!(grid.cell(2, 0), None);
@@ -360,6 +591,9 @@ mod tests {
             start_cell: 1,
             cursor_cell: 3, // one past start -> rel 2 -> (col 0, row 1)
             cursor_visible: true,
+            attributes: TextAttributeSet::Colour {
+                blink_enabled: true,
+            },
         });
         assert_eq!(
             grid.cursor(),
@@ -381,6 +615,9 @@ mod tests {
             start_cell: 2,
             cursor_cell: 0,
             cursor_visible: true,
+            attributes: TextAttributeSet::Colour {
+                blink_enabled: true,
+            },
         });
         assert!(!grid.cursor().visible);
     }
@@ -395,8 +632,22 @@ mod tests {
             start_cell: 0,
             cursor_cell: 0,
             cursor_visible: false,
+            attributes: TextAttributeSet::Colour {
+                blink_enabled: true,
+            },
         });
-        assert_eq!(grid.cell(0, 0), Some(&TextCell { glyph: 0, attr: 0 }));
+        assert_eq!(
+            grid.cell(0, 0),
+            Some(&TextCell {
+                glyph: 0,
+                attr: 0,
+                style: TextStyle::Colour {
+                    foreground: 0,
+                    background: 0,
+                    blink: false
+                }
+            })
+        );
     }
 
     #[test]
@@ -412,6 +663,9 @@ mod tests {
             start_cell: 0,
             cursor_cell: 0,
             cursor_visible: false,
+            attributes: TextAttributeSet::Colour {
+                blink_enabled: true,
+            },
         });
         assert_eq!(grid.rows_as_strings(), vec!["Hi".to_string()]);
     }
@@ -427,6 +681,9 @@ mod tests {
             start_cell: 0,
             cursor_cell: 0,
             cursor_visible: false,
+            attributes: TextAttributeSet::Colour {
+                blink_enabled: true,
+            },
         });
         sink.present(&Frame::Text(grid.clone()));
         assert_eq!(sink.last_text(), Some(&grid));
