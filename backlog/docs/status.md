@@ -43,14 +43,20 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
 - **Optional window presenter:** the `window` leaf crate embeds the original
   VileR v2.2 CP437 MDA/VGA fonts (CC BY-SA 4.0), parses NE/FNT resources and
   rasterises decoded text styles to softbuffer pixels. `unemupc98-window` boots
-  the FreeDOS preset with fixed chunks and observation subscribers; it retains
+  the FreeDOS preset with paced runs and observation subscribers; it retains
   the last delivered frame while continuing past date/time prompts. Physical
   host keys map to set-1 make/break bytes, including E0 navigation and right
-  modifiers, queued only at chunk boundaries with backpressure. Presenter,
+  modifiers, queued only at run boundaries with backpressure. Presenter,
   keyboard and FreeDOS input tests run headlessly. The maintainer confirmed the
   FreeDOS prompt, font and colours in a window. MDA underline uses row 12; cursors use BIOS default shapes rather
-  than programmed CRTC start/end registers. HLT waits for IRQs within chunk caps.
-  Pacing and blinking are not implemented; advancement follows redraw delivery.
+  than programmed CRTC start/end registers. HLT waits for IRQs within run caps.
+  The event loop alone reads a host clock: integer-rational PIT targets use the
+  configured CPU rate, 60 Hz paints and a 50 ms guest-work bound per paint.
+  Excess backlog is discarded; `WaitUntil` idles between paints. Occlusion uses
+  `Wait` and pauses the guest; resuming discards the hidden interval. Fake-clock
+  synthetic and fixture-gated FreeDOS tests replay accepted input at recorded
+  virtual times with different headless chunking and compare MDA/time/device
+  state, CPU registers/retirement and conventional RAM hashes. Blink remains steady; its phase can later derive from virtual time.
   Pause/Break and PrintScreen are unmapped. Typematic uses host repeated presses.
   Manual desktop acceptance passed for date/time input, `c:` and `dir`.
   E0 navigation/Divide use IBM artificial Shift wrappers on first make/final

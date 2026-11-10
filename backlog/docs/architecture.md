@@ -158,15 +158,22 @@ also belong to that machine-level snapshot.
 
 The optional `window` crate is a leaf frontend: no other workspace crate depends
 on it. Headless capture remains the default. Its binary uses the same
-`assembly::bios` preset as the FreeDOS golden, advances fixed 100,000-unit
-virtual-time chunks with `Machine::run_bounded`, then calls
+`assembly::bios` preset as the FreeDOS golden, advances toward paced PIT-clock
+targets with `Machine::run_bounded`, then calls
 `AssembledMachine::capture_text(DeviceId::Mda)`. The observation facade delivers
 the frame to a boxed `WindowSink`; a shared, single-threaded handle exposes the
 last rasterised pixels to winit/softbuffer. Neither sink nor window ticks devices.
 The frontend sets an effectively unlimited idle wait so a HLT with interrupts
-enabled can wait for timer IRQs, bounded by each chunk's absolute cap.
-Progress follows redraw delivery: minimising or occluding the window can pause
-execution, and a resize-triggered redraw advances a chunk until pacing is added.
+enabled can wait for timer IRQs, bounded by each run's absolute cap.
+Only the event loop reads `Instant`: pure integer-rational math maps elapsed
+host time to PIT targets through the configured CPU rate. Paints follow a 60 Hz
+grid with `ControlFlow::WaitUntil`; each advances at most 50 ms of guest time,
+plus instruction-boundary rounding. Excess backlog is discarded permanently,
+with hidden/suspended intervals discarded completely. Occlusion pauses the guest,
+ignores queued redraws and uses `Wait`; unocclusion resumes without catch-up.
+Resize redraws grant no extra time.
+Headless execution is unaffected. See `design/observation.md` § Window pacing
+for the constants, rounding and replay tests.
 
 ```text
 MDA scanout -> observation capture -> WindowSink -> CP437 rasteriser
@@ -178,9 +185,10 @@ The original VileR v2.2 fonts (CC BY-SA 4.0, attribution and hashes in
 resources at load time. MDA uses 9×14 cells and colour uses 8×16 cells, with
 integer pixel replication. The binary uses scale 2, centres the frame on resize
 and clips it if the window becomes smaller; no interpolation or aspect correction
-is applied. Blink is steady; there is no host clock or pacing. Physical winit
-key events enter a host FIFO as set-1 make/break bytes (E0 for extended keys).
-Repeated presses emit make again. Before each chunk the FIFO uses assembly's
+is applied. Blink is steady; a later blink phase can derive from virtual time.
+Physical winit key events enter a host FIFO as set-1 make/break bytes (E0 for
+extended keys).
+Repeated presses emit make again. Before each run the FIFO uses assembly's
 `try_inject_scancode` controller seam and side-effect-free readiness accessor,
 retaining bytes while the 8042 is busy or inhibited; the scripted golden
 injection path remains unchanged. The host tracks held keys and captures physical

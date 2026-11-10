@@ -1778,6 +1778,7 @@ name = "window"
 version = "0.1.0"
 dependencies = [
  "assembly",
+ "cpu",
  "machine",
  "softbuffer",
  "video",

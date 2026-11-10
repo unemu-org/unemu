@@ -7,12 +7,93 @@ BIOS/FreeDOS monochrome output now comes from an independent MDA card, as
 specified in §The MDA card console below. Prompt polling, final captures and
 presentation now share the assembly-owned observation facade (migration step 5).
 
+## Window pacing
+
+Only the window event loop reads `std::time::Instant`. The machine scheduler,
+headless runner, devices, frame sinks and keyboard encoder never read host time.
+The event loop passes an elapsed `Duration` into the same `Presenter::advance`
+path used by fake-clock tests. It neither ticks devices nor injects input during
+a scheduler call. The pure policy lives in `crates/window/src/pacing.rs`.
+
+The PIT input uses the exact nominal rational **14,318,180 / 12 Hz** from the
+14.31818 MHz oscillator: [IBM Personal Computer AT Technical Reference
+(March 1984), System Board, System Timers and Oscillator](https://www.minuszerodegrees.net/manuals/IBM_5170_Technical_Reference_1502243_MAR84.pdf).
+This models the quoted decimal oscillator frequency, without crystal tolerance;
+it is not an independently rounded 1,193,182 Hz constant. For elapsed nanoseconds
+`t`, the absolute target is `floor(t * 14,318,180 / 12,000,000,000)` PIT clocks.
+The calculation uses `u128`, including at `Duration::MAX`, and rounds only the
+absolute target, so sub-clock remainders never drift with frame partitioning.
+The guest RTC currently counts 1,193,182 PIT clocks per second
+(`crates/devices/src/cmos_rtc.rs`, `DEFAULT_SECOND_TICKS`), so its seconds run
+about 0.28 ppm slow against this host timebase (about 24 ms/day). Correcting
+that separate device approximation is outside the window pacing policy.
+
+Paint deadlines follow a **60 Hz** epoch grid, `ceil(frame * 1e9 / 60)` ns,
+rather than repeatedly adding a rounded period. This balances input latency
+and presentation work. After painting, the loop chooses the first future grid
+point, skips missed paints, and uses winit `ControlFlow::WaitUntil`. Host key
+events queue for that cadence instead of forcing immediate redraws. Resize
+redraws may paint sooner; an ahead guest does no work and delivers no bytes.
+A stopped machine uses `ControlFlow::Wait` and keeps the last screen.
+`Occluded(true)` also switches to `Wait`: the guest pauses and queued redraws
+are ignored, including on macOS where winit can still deliver them. On
+`Occluded(false)`, presentation resumes and the entire hidden interval is added
+to discarded debt, granting no catch-up work. Suspension uses the same pause
+policy. winit 0.30 reports occlusion only on macOS, X11, iOS and the web; on
+Windows and Wayland a hidden window pauses the guest only as far as the
+platform withholds redraws. The pure wake-up decision advances a due deadline before requesting
+redraw; repeated loop wakeups before that deadline request no more redraws.
+
+Each paint advances at most **50 ms** of guest PIT time (59,659 whole clocks),
+allowing moderate jitter without unbounded work after a stall. Given the raw
+wall target `W`, accumulated discarded clocks `D`, and machine clock `C`, choose
+`T = min(W - D, C + 59,659)` (subtraction saturates). Add `W - D - T` to `D`.
+Discarding this debt permanently prevents a slow host from catching up on later
+frames. The guest therefore runs slower under overload; hidden/suspended
+intervals are discarded completely on resume as described above. The machine
+clock is never rewound or fast-forwarded. A zero-time frame cannot advance it.
+
+For configured CPU rate `A/B` steps per PIT clock, current virtual time `V`,
+and a target ahead of `C`, the pure run-cap function returns
+`V + ceil((T - C) * A / B)`, saturating at `u64::MAX`. The scheduler retains
+active and halted fractional phases, so the presenter rechecks `machine.clock()`
+and computes another cap if required. A final indivisible instruction or HLT
+clock can pass the target slightly; there is no tick outside the scheduler.
+This discrete rounding is the only allowance beyond the per-frame bound.
+At exhausted virtual time the presenter stops. The limit bounds guest work,
+not host milliseconds spent executing it.
+
+The keyboard delivery seam returns only bytes the 8042 actually accepted.
+Tests record `(virtual_time_before_run, accepted_bytes)` at every nonempty
+delivery; this is a test-owned log, without an unbounded production history or
+new CLI flag. Replay runs to each recorded virtual time before delivering those
+bytes, splitting work at the input boundary regardless of its normal chunk size.
+Live keyboard arrival times vary with the host, but the resulting guest state
+depends on the delivered bytes and virtual injection times, not the wall clock.
+
+The CI synthetic guest polls the 8042 and writes each scan byte plus its polling
+counter to MDA. Fake elapsed times include repeated timestamps, jitter and a
+long stall. Replay with two different headless chunk sizes compares the complete
+MDA frame (attributes/cursor included), PIT clock, virtual time, retirement count,
+all eight GPRs, IP, CS, exposed FLAGS.IF, a hash of RAM `0..0xA0000` read through
+CPU `read_mem`, and every device snapshot at rates 1/1, 5/2 and 2/3. The CPU seam
+and adapter do not expose the remaining FLAGS bits. An HLT/IRQ0 fake-clock
+regression at rates 5/2, 2/3 and 1/10 checks every frame reaches its target with
+at most `ceil(B/A)` clocks of rounding, including frames requiring multiple runs. Shifting logged input by 17 virtual units must
+change the frame; this guards against a byte-only oracle insensitive to timing.
+The fixture-gated FreeDOS window DIR test also replays its delivery log through
+a differently chunked headless run and compares the same state. Fixture handling
+matches `crates/cli/tests/support/fixtures.rs`.
+
+Blink remains steady. A later deterministic blink phase can derive from virtual
+time; wall-clock blink and further hardware timing changes are outside this policy.
+
 ## Host input
 
 The window frontend queues physical winit key transitions independently of
 observation subscribers. It encodes a transition into IBM PC scan code set 1
 only when its first byte can be accepted at a run boundary. At each completed
-run boundary, immediately before the next fixed 100,000-unit virtual-time chunk,
+run boundary, immediately before the next paced virtual-time run,
 `HostKeyboard` attempts delivery through assembly's `try_inject_scancode` seam
 and the existing `I8042::push_scancode` path. The side-effect-free
 `I8042::host_input_ready` accessor requires an empty output buffer and staging
@@ -21,8 +102,8 @@ or unfinished LED parameter exchange. No guest-visible port read is used. Backpr
 the host FIFO for the next boundary, in order.
 The controller's script staging queue itself is unbounded; this additional
 conservative frontend backpressure never changes interactive golden scripts.
-There is no injection inside a chunk and no host clock, timer or thread in
-execution. Host arrival times are therefore quantised to chunk boundaries;
+There is no injection inside a run and no host clock, timer or thread in
+guest execution. Host arrival times are therefore quantised to run boundaries;
 recorded bytes plus their injection boundaries determine a reproducible run.
 
 [IBM Personal System/2 Hardware Interface Technical Reference — Common

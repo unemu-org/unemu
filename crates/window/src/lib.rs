@@ -18,8 +18,9 @@
 //! TextModeState has no cursor start/end registers, so the programmed shape is
 //! unavailable. Phosphor response and aspect correction are absent.
 //! Colour uses the standard 16-entry CGA/VGA text palette. Blink is drawn steady:
-//! there is no host clock, pacing, graphics mode or custom font.
-//! Physical keyboard events enter a host FIFO. Immediately before each fixed
+//! its phase can later derive from virtual time. There is no graphics mode or
+//! custom font. Only the binary event loop reads the host clock for pacing.
+//! Physical keyboard events enter a host FIFO. Immediately before each bounded
 //! run chunk it transfers bytes to the 8042, retaining bytes under backpressure.
 //! Events are quantised to chunk boundaries, never injected inside a chunk.
 //! Repeated host presses emit make codes again (typematic); releases emit breaks.

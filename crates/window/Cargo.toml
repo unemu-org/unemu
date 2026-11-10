@@ -16,6 +16,9 @@ machine.workspace = true
 winit.workspace = true
 softbuffer.workspace = true
 
+[dev-dependencies]
+cpu.workspace = true
+
 [[bin]]
 name = "unemupc98-window"
 path = "src/main.rs"

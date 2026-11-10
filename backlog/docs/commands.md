@@ -39,15 +39,23 @@ Focus loss releases all held keys, including modifiers. Keys are ignored after
 the machine stops. NumLock wrappers follow the guest's keyboard LED state,
 including guest reboots and Ctrl+NumLock (Pause), never the host OS lock state.
 
-Input is queued until the next fixed 100,000-unit virtual-time chunk; a full
-8042, a disabled interface or a pending serial byte defers input without drops.
-No wall clock or pacing is used. A natural halt, CPU failure or exhausted virtual-time range
-stops advancement and retains the last screen until closed. Blink stays visible.
-Workspace and presenter tests remain headless. Manual desktop acceptance
-confirmed the FreeDOS date prompt, font and colours, and command typing through
-the date/time prompts (`c:` and `dir`). Progress follows redraw delivery:
-minimising or occluding the window can pause execution, and a resize-triggered
-redraw advances a chunk until pacing is added.
+Input is queued until the next paced run boundary; a full 8042, a disabled
+interface or a pending serial byte defers input without drops. The window uses
+`Instant` only in its event loop, targets PIT time from elapsed real time and
+paints at 60 Hz with `ControlFlow::WaitUntil` between frames. Each paint advances
+at most 50 ms of guest time (plus scheduler instruction-boundary rounding).
+Excess backlog is discarded permanently, so a slow host runs the guest slower
+than real time without accumulating catch-up work. A resize can request an
+extra paint but does not grant extra guest time. An occlusion notification pauses
+the guest and switches to `Wait`, ignoring queued redraws. Resuming discards the
+entire hidden interval, with no catch-up; suspension follows the same policy. Headless execution
+and goldens keep their virtual-time budgets and never use this pacing.
+See [`design/observation.md`](design/observation.md#window-pacing) for the exact
+frequency, rounding, input replay contract and tests. No pacing flags are needed.
+A natural halt, CPU failure or exhausted virtual-time range stops advancement
+and retains the last screen until closed. Blink stays visible; its deterministic
+phase can derive from virtual time later. Workspace and presenter tests remain
+headless. The input log is test-owned, with no user-facing log flag.
 
 Default fixture paths are resolved against the workspace location recorded at
 build time, independently of the current directory; explicit paths remain

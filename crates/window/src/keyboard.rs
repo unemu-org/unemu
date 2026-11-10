@@ -255,9 +255,11 @@ impl HostKeyboard {
     /// Transfer in order immediately before a run chunk, retaining bytes when
     /// the 8042 cannot accept input yet. The machine cannot run concurrently:
     /// the frontend and guest share one thread and this exclusive borrow.
-    pub fn inject_at_boundary(&mut self, assembled: &mut AssembledMachine) {
+    /// Returns only accepted bytes, for replay at the current virtual time.
+    pub fn inject_at_boundary(&mut self, assembled: &mut AssembledMachine) -> Vec<u8> {
+        let mut delivered = Vec::new();
         let Some(&index) = assembled.device_index.get(&DeviceId::Keyboard) else {
-            return;
+            return delivered;
         };
         loop {
             if self.pending.is_empty() {
@@ -278,7 +280,9 @@ impl HostKeyboard {
                 break;
             }
             self.pending.pop_front();
+            delivered.push(byte);
         }
+        delivered
     }
 }
 
