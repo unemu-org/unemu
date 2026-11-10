@@ -447,10 +447,18 @@ batches. The host reaches ATA through the device's `as_any_mut` seam.
 `SectorMedia::sector_count()` bounds the advertised ATA capacity at construction. ATA-2 §§6.2.8 and 8.4 define abort reporting and
 PIO data-out.
 
-IDE drives do not populate CMOS fixed-disk types: registers 12h, 19h and 1Ah
-stay zero, so the system BIOS does not try its own fixed-disk driver when an
-option ROM serves the disk. The later provider-rules work owns system-BIOS-
-provided drive types and the XTIDE boot profile.
+CMOS fixed-disk types follow the firmware provider. Registers 12h, 19h and
+1Ah stay zero when an option ROM provides `fixed-disk`, including XUB. They
+are derived from the primary IDE `HardDisk` units only when the hash-matched
+system BIOS catalogue entry both provides `fixed-disk` and declares the
+`cmos-drive-types` capability. Kiselev does not declare that capability.
+The IBM AT September 1985 fixed-disk tables supply standard types 1–14 and
+extended types 16–22 (nibble F plus 19h/1Ah). CHS duplicates choose the lowest
+number. Other geometries return `UnsupportedCmosDiskGeometry`: IBM reserves
+type 47, so no vendor-specific user-defined layout is invented. See
+[firmware and machine classes](firmware-and-machine-classes.md), Derived
+configuration, for the reference and firmware-source evidence. The XTIDE
+boot profile remains separate work.
 
 A byte cycle on the ATA data register (`in al, 1F0h`) stops the run with
 `UnmappedRegister`: this AT model accepts only a word cycle at the data
@@ -627,9 +635,11 @@ known — not inside the core. Built in task-30.
 this map, by id, so the hand-counted `*_INDEX` constants disappear entirely.
 
 **CMOS defaults to a derived configuration.** The assembler derives floppy
-types, equipment and memory sizes from the attached drives and memory map,
-then writes the AT checksum. An explicit NVRAM image bypasses derivation; the
-caller is then responsible for its contents. Calendar initialization is separate
+types, equipment and memory sizes from the attached drives and memory map.
+Fixed-disk types additionally require the capable system BIOS provider described
+above. `derive_cmos_config` returns a fallible, complete 64-byte seed, including
+12h/19h/1Ah and the AT checksum at 2Eh/2Fh (sum of 10h–2Dh). An explicit NVRAM
+image bypasses derivation; the caller is then responsible for its contents. Calendar initialization is separate
 from the NVRAM source, as described below.
 
 **Explicit decode-conflict policy.** Port/MMIO decode is **first-match order**,

@@ -259,6 +259,14 @@ pub enum ConfigError {
         /// Missing service.
         service: crate::FirmwareService,
     },
+    /// The IBM AT table has no type for this geometry; type 47 is reserved.
+    #[error("drive {drive_index} geometry {c}/{h}/{s} ({b}-byte sectors) has no IBM AT CMOS fixed-disk type; user-defined type 47 is not supported; use a fixed-disk option ROM", c = .geometry.cylinders, h = .geometry.heads, s = .geometry.sectors_per_track, b = .geometry.bytes_per_sector)]
+    UnsupportedCmosDiskGeometry {
+        /// Index in the drive list.
+        drive_index: usize,
+        /// Geometry that cannot be represented by the documented table.
+        geometry: crate::HardDiskGeometry,
+    },
     /// A RAM-loaded blob cannot declare firmware services.
     #[error("RAM load image {image} cannot provide firmware services")]
     ServicesOnRamLoad {

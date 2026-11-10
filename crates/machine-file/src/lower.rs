@@ -572,6 +572,7 @@ impl<R: ImageReader> Context<'_, R> {
             DmaControllerMissing { requester, .. } => device_fields(&[*requester]),
             Journal { drive_index, .. }
             | DriveInput { drive_index, .. }
+            | UnsupportedCmosDiskGeometry { drive_index, .. }
             | InvalidAtaGeometry { drive_index }
             | AtaMissingMaster { drive_index, .. }
             | UnsupportedFloppySectorSize { drive_index, .. }

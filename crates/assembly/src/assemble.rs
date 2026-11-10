@@ -50,8 +50,8 @@ use bus::{Bus, DecodeMap, MmioRange, PortRange};
 use cpu::x86jit_backend::X86JitCpu;
 use device::{Device, InterruptController};
 use devices::{
-    Absent80287, Ata, AtaDrive, AtaGeometry, CmosConfig, CmosRtc, Dma8237, Drive, MdaText, Pit8253,
-    PostPort, SysControl, Uart16550, Upd765, VgaText, I8042,
+    Absent80287, Ata, AtaDrive, AtaGeometry, CmosRtc, Dma8237, Drive, MdaText, Pit8253, PostPort,
+    SysControl, Uart16550, Upd765, VgaText, I8042,
 };
 use machine::{DmaWiring, IrqLine, Machine};
 use sha2::{Digest, Sha256};
@@ -222,7 +222,19 @@ fn assemble_with_cpu(
 
     let mut cpu = build(config)?;
     validate_step_cpu(&mut cpu)?;
-    let cmos = derive_cmos_config(config);
+    let cmos = if config.devices.iter().any(|device| {
+        matches!(
+            device.kind,
+            DeviceKind::Rtc(crate::CmosCfg {
+                nvram: crate::NvramSource::Derived,
+                ..
+            })
+        )
+    }) {
+        derive_cmos_config(config)?
+    } else {
+        [0; 64]
+    };
 
     // Instantiate devices in config order, recording each role's bus index. The
     // one shared PIC is created lazily on the first PIC entry and reused for the
@@ -257,7 +269,7 @@ fn assemble_with_cpu(
                     rtc = rtc.with_timing(second_ticks, uip_ticks);
                 }
                 rtc = match c.nvram {
-                    crate::NvramSource::Derived => rtc.with_config(cmos),
+                    crate::NvramSource::Derived => rtc.with_nvram(cmos),
                     crate::NvramSource::Blank => rtc,
                     crate::NvramSource::Image(bytes) => rtc.with_nvram(bytes),
                 };
@@ -711,9 +723,25 @@ fn to_device_geometry(geometry: &FloppyGeometry) -> devices::FloppyGeometry {
 /// is the RAM at or above 1 MiB, and the floppy nibbles and equipment byte come
 /// from the floppy drives on the primary controller (DeviceId::Fdc). Secondary
 /// controllers have no entries in the AT CMOS diskette inventory. For a plain AT — 640 KiB base, one 1.44 MB
-/// floppy, no hard disk or coprocessor — this reproduces [`CmosConfig::default`]
-/// byte-for-byte.
-pub fn derive_cmos_config(config: &MachineConfig) -> CmosConfig {
+/// floppy, no hard disk or coprocessor — this reproduces [`devices::CmosConfig::default`]
+/// byte-for-byte. The returned 64-byte seed includes extended disk types and
+/// the checksum; explicit NVRAM images bypass it during assembly.
+///
+/// IBM Personal Computer AT Technical Reference (September 1985), System Board,
+/// Real-Time Clock/CMOS RAM Information: Fixed Disk Type Byte (Hex 12), Drive C/D
+/// Extended Bytes (Hex 19/1A), BIOS Fixed Disk Parameters, and Checksum (Hex 2E/2F).
+/// Only a hash-matched system BIOS with `cmos-drive-types` and `fixed-disk`
+/// enables these types. Any fixed-disk option ROM keeps them zero. Geometries
+/// outside the documented table are refused: this reference reserves type 47,
+/// and does not define a user-geometry layout.
+pub fn derive_cmos_config(config: &MachineConfig) -> Result<[u8; 64], ConfigError> {
+    derive_cmos_config_with_catalogue(config, config.board.firmware_catalogue())
+}
+
+fn derive_cmos_config_with_catalogue(
+    config: &MachineConfig,
+    catalogue: &[crate::FirmwareEntry],
+) -> Result<[u8; 64], ConfigError> {
     let base_memory_kb = clamp_kb(ram_bytes_in(config, 0, CONVENTIONAL_TOP));
     let extended_memory_kb = clamp_kb(ram_bytes_in(config, EXTENDED_BASE, u64::MAX));
 
@@ -734,8 +762,6 @@ pub fn derive_cmos_config(config: &MachineConfig) -> CmosConfig {
                     _ => {}
                 }
             }
-            // IDE option ROMs must not trigger the system BIOS disk driver.
-            // System-BIOS-provided disk types need a later firmware policy.
             DriveKind::HardDisk { .. } => {}
         }
     }
@@ -749,13 +775,91 @@ pub fn derive_cmos_config(config: &MachineConfig) -> CmosConfig {
         equipment |= (floppy_count - 1).min(0x03) << 6;
     }
 
-    CmosConfig {
-        floppy_types,
-        hard_disk_types: 0,
-        equipment,
-        base_memory_kb,
-        extended_memory_kb,
+    let mut seed = [0; 64];
+    seed[0x0B] = 0x02;
+    seed[0x0D] = 0x80;
+    seed[0x10] = floppy_types;
+    seed[0x14] = equipment;
+    seed[0x15..=0x16].copy_from_slice(&base_memory_kb.to_le_bytes());
+    seed[0x17..=0x18].copy_from_slice(&extended_memory_kb.to_le_bytes());
+
+    let bios = crate::firmware::system_bios(config).ok();
+    let entry = bios.and_then(|image| crate::firmware::matched_entry(image, catalogue));
+    let system_disk_types = entry.is_some_and(|entry| {
+        entry
+            .capabilities
+            .contains(&crate::firmware::FirmwareCapability::CmosDriveTypes)
+            && entry.provides.contains(&crate::FirmwareService::FixedDisk)
+    });
+    let mut option_disk_provider = false;
+    for image in &config.images {
+        if image.kind != ImageKind::Rom || bios.is_some_and(|bios| std::ptr::eq(image, bios)) {
+            continue;
+        }
+        let services = crate::firmware::matched_entry(image, catalogue)
+            .map_or(image.provides.as_slice(), |entry| entry.provides);
+        option_disk_provider |= services.contains(&crate::FirmwareService::FixedDisk);
     }
+    if system_disk_types && !option_disk_provider {
+        for (drive_index, drive) in config.drives.iter().enumerate() {
+            if let DriveKind::HardDisk { geometry } = drive.kind {
+                if drive.controller != DeviceId::Ide || drive.unit > 1 {
+                    continue;
+                }
+                let disk_type = fixed_disk_cmos_type(&geometry).ok_or(
+                    ConfigError::UnsupportedCmosDiskGeometry {
+                        drive_index,
+                        geometry,
+                    },
+                )?;
+                let nibble = disk_type.min(15);
+                seed[0x12] |= nibble << if drive.unit == 0 { 4 } else { 0 };
+                if disk_type > 15 {
+                    seed[0x19 + usize::from(drive.unit)] = disk_type;
+                }
+            }
+        }
+    }
+    let checksum: u16 = seed[0x10..=0x2D].iter().map(|&byte| u16::from(byte)).sum();
+    seed[0x2E..=0x2F].copy_from_slice(&checksum.to_be_bytes());
+    Ok(seed)
+}
+
+/// IBM Personal Computer AT Technical Reference (September 1985), Real-Time
+/// Clock/CMOS RAM Information, BIOS Fixed Disk Parameters (pp. 1-63 and 1-66),
+/// and System BIOS listing, FD_TBL: 512-byte sectors, 17 sectors per track.
+/// CHS cannot distinguish write-precompensation/landing-zone variants, so the
+/// lowest matching type wins. Types 23–255 are reserved, including type 47.
+fn fixed_disk_cmos_type(geometry: &crate::HardDiskGeometry) -> Option<u8> {
+    const TYPES: &[(u8, u32, u32)] = &[
+        (1, 306, 4),
+        (2, 615, 4),
+        (3, 615, 6),
+        (4, 940, 8),
+        (5, 940, 6),
+        (6, 615, 4),
+        (7, 462, 8),
+        (8, 733, 5),
+        (9, 900, 15),
+        (10, 820, 3),
+        (11, 855, 5),
+        (12, 855, 7),
+        (13, 306, 8),
+        (14, 733, 7),
+        (16, 612, 4),
+        (17, 977, 5),
+        (18, 977, 7),
+        (19, 1024, 7),
+        (20, 733, 5),
+        (21, 733, 7),
+        (22, 733, 7),
+    ];
+    if geometry.bytes_per_sector != 512 || geometry.sectors_per_track != 17 {
+        return None;
+    }
+    TYPES.iter().find_map(|&(kind, cylinders, heads)| {
+        (geometry.cylinders == cylinders && geometry.heads == heads).then_some(kind)
+    })
 }
 
 /// Total bytes of RAM lying within `[low, high)`, clamping each region to the
@@ -1092,7 +1196,7 @@ mod tests {
             }
             assert_eq!(rtc_cfg.nvram, expected_nvram);
             if expected_nvram == crate::NvramSource::Derived {
-                legacy = legacy.with_config(derive_cmos_config(&config));
+                legacy = legacy.with_config(devices::CmosConfig::default());
             }
             let mut assembled = assemble_synthetic(&config).unwrap();
             let index = assembled.device_index[&DeviceId::Rtc];
@@ -1852,8 +1956,13 @@ mod tests {
         // no hard disk or coprocessor. Its derived CMOS must match the device's
         // own default byte-for-byte, or a stock BIOS's equipment probe would see
         // a self-inconsistent machine.
-        let derived = derive_cmos_config(&reference_config());
-        assert_eq!(derived, CmosConfig::default());
+        let derived = derive_cmos_config(&reference_config()).unwrap();
+        let mut legacy = CmosRtc::new().with_config(devices::CmosConfig::default());
+        let expected: [u8; 64] = std::array::from_fn(|index| {
+            legacy.port_write(0x70, 1, index as u32).unwrap();
+            legacy.port_read(0x71, 1).unwrap() as u8
+        });
+        assert_eq!(derived[0x0A..], expected[0x0A..]);
     }
 
     #[test]
@@ -2051,10 +2160,10 @@ mod tests {
         // drives alone — no caller ever edits CMOS. High nibble = slot 0 (1.2 MB →
         // code 2), low nibble = slot 1 (720 KB → code 3); equipment bit 0 set (a
         // floppy is present) and bits 6-7 = 01 (two drives installed).
-        let cmos = derive_cmos_config(&config);
-        assert_eq!(cmos.floppy_types, 0x23);
-        assert_eq!(cmos.equipment & 0x01, 0x01);
-        assert_eq!(cmos.equipment >> 6, 0b01);
+        let cmos = derive_cmos_config(&config).unwrap();
+        assert_eq!(cmos[0x10], 0x23);
+        assert_eq!(cmos[0x14] & 0x01, 0x01);
+        assert_eq!(cmos[0x14] >> 6, 0b01);
 
         // And the whole machine assembles from that config unchanged.
         assert!(assemble_synthetic(&config).is_ok());
@@ -2116,13 +2225,13 @@ mod tests {
         config.drives[1].controller = DeviceId::Uart;
         config.drives[1].unit = 0;
         assert_eq!(config.validate(), Ok(()));
-        let cmos = derive_cmos_config(&config);
-        assert_eq!(cmos.floppy_types, 0x20);
-        assert_eq!(cmos.equipment, 0x01);
+        let cmos = derive_cmos_config(&config).unwrap();
+        assert_eq!(cmos[0x10], 0x20);
+        assert_eq!(cmos[0x14], 0x01);
         config.drives.remove(0);
-        let cmos = derive_cmos_config(&config);
-        assert_eq!(cmos.floppy_types, 0);
-        assert_eq!(cmos.equipment, 0);
+        let cmos = derive_cmos_config(&config).unwrap();
+        assert_eq!(cmos[0x10], 0);
+        assert_eq!(cmos[0x14], 0);
     }
 
     #[test]
@@ -2646,6 +2755,196 @@ mod tests {
                     device: DeviceId::Ide
                 }))
             ));
+        }
+    }
+
+    fn cmos_disk_catalogue() -> [crate::FirmwareEntry; 1] {
+        [crate::FirmwareEntry {
+            sha256: "c35020473aed1b4642cd726cad727b63fff2824ad68cedd7ffb73c7cbd890479",
+            provides: &[
+                crate::FirmwareService::Floppy,
+                crate::FirmwareService::FixedDisk,
+            ],
+            capabilities: &[crate::firmware::FirmwareCapability::CmosDriveTypes],
+            ..crate::KISELEV_XI8088
+        }]
+    }
+
+    fn cmos_disk_config(cylinders: u32, heads: u32, unit: u8) -> MachineConfig {
+        let mut config = crate::bios(vec![0; 32768], Some(vec![0; 1_474_560]));
+        config.drives.push(DriveConfig {
+            kind: DriveKind::HardDisk {
+                geometry: crate::HardDiskGeometry {
+                    cylinders,
+                    heads,
+                    sectors_per_track: 17,
+                    bytes_per_sector: 512,
+                },
+            },
+            image: ImageSource::Blank {
+                size: u64::from(cylinders) * u64::from(heads) * 17 * 512,
+            },
+            expected_sha256: None,
+            controller: DeviceId::Ide,
+            unit,
+            write: WriteMode::Volatile,
+        });
+        config
+    }
+
+    fn assert_cmos_checksum(seed: &[u8; 64]) {
+        let expected: u16 = seed[0x10..=0x2D].iter().map(|&byte| u16::from(byte)).sum();
+        assert_eq!(u16::from_be_bytes([seed[0x2E], seed[0x2F]]), expected);
+    }
+
+    #[test]
+    fn provider_cmos_standard_type_uses_drive_units_and_repairs_checksum() {
+        let mut config = cmos_disk_config(615, 4, 0);
+        for (unit, expected) in [(0, 0x20), (1, 0x02)] {
+            config.drives[1].unit = unit;
+            let seed = derive_cmos_config_with_catalogue(&config, &cmos_disk_catalogue()).unwrap();
+            assert_eq!([seed[0x12], seed[0x19], seed[0x1A]], [expected, 0, 0]);
+            assert_cmos_checksum(&seed);
+        }
+        let mut second = config.drives[1].clone();
+        second.unit = 0;
+        if let DriveKind::HardDisk { ref mut geometry } = second.kind {
+            geometry.heads = 6;
+        }
+        config.drives.push(second);
+        config.drives.reverse();
+        let seed = derive_cmos_config_with_catalogue(&config, &cmos_disk_catalogue()).unwrap();
+        assert_eq!(seed[0x12], 0x32);
+        assert_cmos_checksum(&seed);
+    }
+
+    #[test]
+    fn provider_cmos_extended_types_use_the_correct_extension_byte() {
+        for (unit, nibble, extensions) in [(0, 0xF0, [16, 0]), (1, 0x0F, [0, 16])] {
+            let config = cmos_disk_config(612, 4, unit);
+            let seed = derive_cmos_config_with_catalogue(&config, &cmos_disk_catalogue()).unwrap();
+            assert_eq!(seed[0x12], nibble);
+            assert_eq!(&seed[0x19..=0x1A], &extensions);
+            assert_cmos_checksum(&seed);
+            let mut rtc = CmosRtc::new().with_nvram(seed);
+            for index in [0x12, 0x19, 0x1A, 0x2E, 0x2F] {
+                rtc.port_write(0x70, 1, index as u32).unwrap();
+                assert_eq!(rtc.port_read(0x71, 1).unwrap() as u8, seed[index]);
+            }
+        }
+    }
+
+    #[test]
+    fn provider_cmos_requires_a_matched_capable_system_disk_provider() {
+        let config = cmos_disk_config(615, 4, 0);
+        let baseline = cmos_disk_catalogue()[0];
+        for entry in [
+            crate::FirmwareEntry {
+                capabilities: &[],
+                ..baseline
+            },
+            crate::FirmwareEntry {
+                provides: &[crate::FirmwareService::Floppy],
+                ..baseline
+            },
+            crate::FirmwareEntry {
+                sha256: crate::KISELEV_XI8088.sha256,
+                ..baseline
+            },
+            crate::FirmwareEntry {
+                kind: crate::FirmwareKind::OptionRom,
+                ..baseline
+            },
+        ] {
+            let seed = derive_cmos_config_with_catalogue(&config, &[entry]).unwrap();
+            assert_eq!([seed[0x12], seed[0x19], seed[0x1A]], [0; 3]);
+            assert_cmos_checksum(&seed);
+        }
+    }
+
+    #[test]
+    fn provider_cmos_option_rom_overrides_even_a_capable_system_bios() {
+        let mut config = cmos_disk_config(615, 4, 0);
+        config.images.push(crate::LoadImage {
+            base: 0xC8000,
+            source: ImageSource::Inline(vec![0; 2048]),
+            kind: ImageKind::Rom,
+            provides: vec![crate::FirmwareService::FixedDisk],
+        });
+        config.images.reverse();
+        let seed = derive_cmos_config_with_catalogue(&config, &cmos_disk_catalogue()).unwrap();
+        assert_eq!([seed[0x12], seed[0x19], seed[0x1A]], [0; 3]);
+        config.images[0].provides.clear();
+        let option_entry = crate::FirmwareEntry {
+            kind: crate::FirmwareKind::OptionRom,
+            sha256: "e5a00aa9991ac8a5ee3109844d84a55583bd20572ad3ffcd42792f3c36b183ad",
+            size: 2048,
+            provides: &[crate::FirmwareService::FixedDisk],
+            capabilities: &[],
+            ..cmos_disk_catalogue()[0]
+        };
+        let catalogue = [cmos_disk_catalogue()[0], option_entry];
+        let seed = derive_cmos_config_with_catalogue(&config, &catalogue).unwrap();
+        assert_eq!([seed[0x12], seed[0x19], seed[0x1A]], [0; 3]);
+        config.images[0].kind = ImageKind::RamLoad;
+        assert_eq!(
+            derive_cmos_config_with_catalogue(&config, &catalogue).unwrap()[0x12],
+            0x20
+        );
+    }
+
+    #[test]
+    fn provider_cmos_rejects_undocumented_geometry_instead_of_inventing_type_47() {
+        for (cylinders, heads, sectors, bytes) in
+            [(616, 4, 17, 512), (615, 4, 18, 512), (615, 4, 17, 1024)]
+        {
+            let mut config = cmos_disk_config(cylinders, heads, 0);
+            let DriveKind::HardDisk { ref mut geometry } = config.drives[1].kind else {
+                unreachable!()
+            };
+            geometry.sectors_per_track = sectors;
+            geometry.bytes_per_sector = bytes;
+            let expected = ConfigError::UnsupportedCmosDiskGeometry {
+                drive_index: 1,
+                geometry: *geometry,
+            };
+            assert_eq!(
+                derive_cmos_config_with_catalogue(&config, &cmos_disk_catalogue()),
+                Err(expected.clone())
+            );
+            assert_eq!(expected.to_string(), format!("drive 1 geometry {cylinders}/{heads}/{sectors} ({bytes}-byte sectors) has no IBM AT CMOS fixed-disk type; user-defined type 47 is not supported; use a fixed-disk option ROM"));
+            assert!(
+                derive_cmos_config(&config).is_ok(),
+                "unlisted firmware does not opt into CMOS types"
+            );
+        }
+    }
+
+    #[test]
+    fn provider_cmos_table_covers_documented_chs_and_chooses_lowest_duplicate() {
+        for (cylinders, heads, expected) in [
+            (306, 4, 1),
+            (615, 4, 2),
+            (615, 6, 3),
+            (940, 8, 4),
+            (940, 6, 5),
+            (462, 8, 7),
+            (733, 5, 8),
+            (900, 15, 9),
+            (820, 3, 10),
+            (855, 5, 11),
+            (855, 7, 12),
+            (306, 8, 13),
+            (733, 7, 14),
+            (612, 4, 16),
+            (977, 5, 17),
+            (977, 7, 18),
+            (1024, 7, 19),
+        ] {
+            let config = cmos_disk_config(cylinders, heads, 0);
+            let seed = derive_cmos_config_with_catalogue(&config, &cmos_disk_catalogue()).unwrap();
+            assert_eq!(seed[0x12] >> 4, expected.min(15));
+            assert_eq!(seed[0x19], if expected > 15 { expected } else { 0 });
         }
     }
 

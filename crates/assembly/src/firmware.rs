@@ -113,6 +113,24 @@ impl FirmwarePart {
     }
 }
 
+/// Configuration conventions explicitly supported by a reviewed firmware build.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FirmwareCapability {
+    /// IBM AT CMOS fixed-disk types select the system BIOS disk parameters.
+    /// IBM Personal Computer AT Technical Reference (September 1985),
+    /// Real-Time Clock/CMOS RAM Information, Fixed Disk Type Byte (Hex 12)
+    /// and Drive C/D Extended Bytes (Hex 19/1A).
+    CmosDriveTypes,
+}
+
+impl std::fmt::Display for FirmwareCapability {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::CmosDriveTypes => "cmos-drive-types",
+        })
+    }
+}
+
 /// How a known image can be obtained, with licence and source provenance.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FirmwareDistribution {
@@ -166,6 +184,8 @@ pub struct FirmwareEntry {
     pub scan_window: Option<(u64, u64)>,
     /// Services documented for this build.
     pub provides: &'static [FirmwareService],
+    /// Configuration conventions supported by this build.
+    pub capabilities: &'static [FirmwareCapability],
     /// Required modelled board parts.
     pub requires: &'static [FirmwarePart],
     /// Minimum CPU generation.
@@ -193,6 +213,7 @@ impl FirmwareEntry {
         base: FirmwareBase::Suggested(0xC8000),
         scan_window: None,
         provides: &[FirmwareService::FixedDisk],
+        capabilities: &[],
         requires: &[FirmwarePart::AtaPrimary],
         cpu_min: FirmwareCpu::I80286,
         boards: &["ibm-5170"],
@@ -217,6 +238,9 @@ pub const KISELEV_XI8088: FirmwareEntry = FirmwareEntry {
     // Kiselev 8088_bios bios.asm, detect_rom_ext: DX=C800h, BX=F800h.
     scan_window: Some((0xC8000, 0xF8000)),
     provides: &[FirmwareService::Floppy],
+    // Kiselev 8088_bios rtc.inc, rtc_init/nvram_save: fixed-disk bytes are
+    // checksummed but never interpreted as a system BIOS disk configuration.
+    capabilities: &[],
     requires: &[
         FirmwarePart::Kbc8042,
         FirmwarePart::RtcCmos,

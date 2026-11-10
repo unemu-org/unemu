@@ -514,8 +514,22 @@ Rules:
   - The CMOS fixed-disk type bytes (12h, 19h, 1Ah) stay **0** when an option
     ROM provides `fixed-disk`. They are derived from `HardDisk` drives only when
     the system BIOS's entry declares `cmos-drive-types`.
-  - This refines machine-config.md, which derives the nibble whenever a hard
-    disk is attached.
+  - The entry must also provide `fixed-disk`, and no option ROM may provide
+    that service. Unlisted BIOS declarations cannot opt into this convention.
+    The derived seed includes the extended bytes and AT checksum.
+  - READ: [IBM Personal Computer AT Technical Reference, September 1985](https://www.minuszerodegrees.net/manuals/IBM_5170_Technical_Reference_6280070_SEP85.pdf),
+    Real-Time Clock/CMOS RAM Information, pp. 1-62–1-66: 12h contains drive C/D
+    nibbles; nibble F selects 19h/1Ah. The fixed-disk parameter tables define
+    types 1–14 and 16–22; 23–255 (including 47) are reserved. Assembly matches
+    512-byte, 17-sector CHS and chooses the lowest type for duplicate CHS
+    (precompensation and landing zones are not modelled). A geometry outside
+    these tables returns `UnsupportedCmosDiskGeometry`; no vendor-specific
+    user-defined type-47 layout is assumed.
+  - READ: Kiselev `8088_bios` at the catalogue-pinned revision,
+    `src/rtc.inc`, `rtc_init` / `nvram_save`, and `src/bios.asm`, `ipl` / `.try_hdd`:
+    the BIOS checksums 10h–20h but interprets floppy/equipment settings only;
+    hard-disk boot calls INT 13h supplied by an extension. Kiselev and XUB
+    therefore declare no `cmos-drive-types` capability.
 
 Rust sketch (lowering target unchanged):
 
@@ -566,8 +580,9 @@ unlisted-firmware escape enabled. Unlisted firmware retains declared services.
 Listed option ROMs use the same comparison and SHA-256 allowlist. Their
 board, CPU minimum and required parts are mandatory, including under the escape.
 An ATA resource mismatch reports `OptionRomCardMismatch`; other missing parts
-report `FirmwareRequiresDevice`. System-BIOS-provided CMOS drive types remain
-separate work. IDE currently leaves CMOS fixed-disk types zero.
+report `FirmwareRequiresDevice`. CMOS fixed-disk types follow the provider
+and the system BIOS's explicit `cmos-drive-types` capability, as described
+under Derived configuration above.
 
 A system BIOS entry with no scan window rejects every option ROM with
 `FirmwareDoesNotScanOptionRoms`: `firmware X does not scan for option ROMs`.
@@ -803,6 +818,12 @@ The generic AT comes first.
 9. **Fixed-disk provider rules.** Rules 10–11, and the CMOS fixed-disk type
    follows the provider (0 when it is an option ROM).
    - *Acceptance:* tests; the existing CMOS seed is byte-identical.
+   - *Status:* implemented. Rules 10–11 retain their existing validation;
+     catalogue-owned `cmos-drive-types` gates IBM AT standard/extended types.
+     Unsupported geometry is refused, option-ROM providers leave types zero,
+     and preset seed equality plus the existing machine-file/preset equivalence
+     cover the unchanged FreeDOS seed. Provider and checksum tests cover the
+     synthetic system-BIOS path; XUB is tested with an IDE disk.
    - *Depends on:* 2, 6, 8.
 10. **Hard-disk image fixture.** A script builds a partitioned FAT16 image (MBR,
     one partition, a marker file) with open tools; the hash is pinned and the

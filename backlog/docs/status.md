@@ -49,8 +49,13 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   256 IDENTIFY words with `rep insw`; firmware boards require a ROM declaring
   fixed-disk services, even for an empty IDE card. The XTIDE fixture and its
   `xub-r638-at` entry exist; option-ROM validation enforces its primary ATA
-  resources and catalogue services. The IDE boot profile remains deferred. IDE leaves CMOS fixed-disk types
-  zero; system-BIOS-provided types remain deferred. Catalogued BIOS service
+  resources and catalogue services. The IDE boot profile remains deferred. CMOS
+  fixed-disk types follow the provider: option ROMs (including XUB)
+  leave 12h/19h/1Ah zero; a hash-matched system BIOS that provides fixed-disk
+  and declares `cmos-drive-types` derives IBM AT types 1–14/16–22 and the
+  checksum. Unsupported geometries are refused rather than inventing a type-47
+  convention. Kiselev declares no such capability; existing seeds are unchanged.
+  Catalogued BIOS service
   declarations must match the catalogue, and omitted declarations inherit it. ATA write batches preserve complete sectors on interruption and
   reject readonly writes with ERR/ABRT. The host-only pending-write flush is
   available for future persistent sessions, and media capacity is checked at
