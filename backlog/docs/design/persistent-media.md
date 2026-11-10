@@ -462,8 +462,9 @@ keep_generations = 10
 - A journal path is explicit and required; suggest an adjacent `<base>.upfj`
   path in help, but never create one merely because an image is file-backed.
   Relative paths follow the existing explicit-image convention: process cwd;
-  a machine description file resolves its own relative paths against the
-  file before it builds the `MachineConfig`.
+  every path in a machine description file, including `journal`, resolves
+  against the canonical directory of the layer that wrote it before building
+  the `MachineConfig` (diagnostics retain the spelled file path).
 - `keep_generations` defaults to 10 and must be positive. It counts closed
   positive generations, including recovered and empty ones; the active
   generation does not consume a slot. No age-based pruning or wall clock.

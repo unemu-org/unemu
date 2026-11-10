@@ -481,6 +481,18 @@ impl Merge for Drive {
         m.scalar(&mut self.unit, child.unit, "unit");
         m.scalar(&mut self.channel, child.channel, "channel");
         m.scalar(&mut self.drive_type, child.drive_type, "type");
+        if child.image.is_some() || child.write.is_some_and(|mode| mode != WriteMode::Journal) {
+            // A journal belongs to its base and is irrelevant when writes stop using it.
+            self.journal = None;
+            self.keep_generations = None;
+            for name in ["journal", "keep_generations"] {
+                m.out.remove_subtree(&join(&m.to, name));
+            }
+        }
+        if child.image.is_some() && self.write == Some(WriteMode::Journal) {
+            self.write = None;
+            m.out.remove_subtree(&join(&m.to, "write"));
+        }
         m.image(&mut self.image, &mut self.sha256, child.image, child.sha256);
         m.scalar(&mut self.write, child.write, "write");
         m.scalar(&mut self.journal, child.journal, "journal");
@@ -930,6 +942,17 @@ mod tests {
         assert_eq!(error.field, "firmware.bios.image");
         assert_eq!(error.origin.file, Path::new("preset:unsafe"));
         assert_eq!(error.origin.line, Some(5));
+    }
+
+    #[test]
+    fn embedded_presets_reject_journal_paths_without_images() {
+        let input = "schema=1\n[[card]]\nkind='fdc-765'\n[[card.drives]]\nunit=0\njournal='forbidden.upfj'\n";
+        let (document, origins) = parse(Path::new("preset:unsafe"), input, false).unwrap();
+        let error = check_preset(&document, &origins).unwrap_err();
+        assert_eq!(error.message, "embedded presets must not contain paths");
+        assert_eq!(error.field, "card[0].drives[0].journal");
+        assert_eq!(error.origin.file, Path::new("preset:unsafe"));
+        assert_eq!(error.origin.line, Some(6));
     }
 
     #[test]

@@ -6,7 +6,11 @@
 //! IBM Personal Computer AT Technical Reference, Section 1, I/O Address Map.
 //! Hardware consistency is checked only by `MachineConfig::validate`.
 
-use std::{collections::BTreeMap, io, path::Path};
+use std::{
+    collections::BTreeMap,
+    io,
+    path::{Path, PathBuf},
+};
 
 use assembly::{
     BoardModel, ClockConfig, ConfigError, CpuChip, CpuConfig, DeviceConfig, DeviceId, DeviceKind,
@@ -20,10 +24,13 @@ use crate::{schema::v1, MachineFile, Origin, Origins};
 
 const MIB: u64 = 0x100000;
 
-/// Image I/O seam. Lowering hashes every returned buffer before retaining it.
+/// Image I/O seam. Lowering hashes the bytes returned by each read.
 ///
-/// Tests may return synthetic bytes; production reads each referenced image
-/// once. Paths have already been resolved against the defining field's file.
+/// Lowering reads and hashes each referenced image through this seam, including
+/// synthetic bytes supplied by tests. Volatile/readonly bytes are retained inline;
+/// journal bases retain paths and assembly rereads them without rechecking pins.
+/// Verifying the mounted journal base against its pin requires a later assembly
+/// change. Paths resolve against the defining layer's directory.
 pub trait ImageReader {
     fn read(&mut self, path: &Path) -> io::Result<Vec<u8>>;
 }
@@ -61,6 +68,7 @@ struct Context<'a, R> {
     devices: Vec<(DeviceId, String)>,
     drives: Vec<DriveOrigin>,
     images: Vec<String>,
+    image_paths: Vec<PathBuf>,
 }
 
 impl<R: ImageReader> Context<'_, R> {
@@ -119,6 +127,12 @@ impl<R: ImageReader> Context<'_, R> {
                 path.display()
             )
         };
+        if crate::paths::is_retention_input(&path) {
+            return Err(self.error(
+                field,
+                format!("image {description} uses a reserved retention-temporary name"),
+            ));
+        }
         let bytes = self.reader.read(&path).map_err(|error| {
             self.error(field, format!("cannot read image {description}: {error}"))
         })?;
@@ -134,6 +148,7 @@ impl<R: ImageReader> Context<'_, R> {
                 ));
             }
         }
+        self.image_paths.push(path);
         Ok(bytes)
     }
 
@@ -399,22 +414,55 @@ impl<R: ImageReader> Context<'_, R> {
                 field: drive_field.clone(),
                 label,
             });
-            let write = self.write(
-                &format!("{drive_field}.write"),
-                drive.write,
-                drive.journal.is_some(),
-                drive.keep_generations.is_some(),
-            )?;
+            let write = if drive.write == Some(v1::WriteMode::Journal) {
+                let field = format!("{drive_field}.journal");
+                let journal = self.required(&field, drive.journal.as_deref())?;
+                if journal.is_empty() {
+                    return Err(self.error(&field, "an explicit journal path is required"));
+                }
+                let path = self.origins.image_path(&field, journal);
+                match drive.keep_generations {
+                    Some(count) => assembly::WriteMode::Journal {
+                        path,
+                        keep_generations: count.get(),
+                    },
+                    None => assembly::WriteMode::journal(path),
+                }
+            } else {
+                self.write(
+                    &format!("{drive_field}.write"),
+                    drive.write,
+                    drive.journal.is_some(),
+                    drive.keep_generations.is_some(),
+                )?
+            };
             let bytes = self.image(
                 &format!("{drive_field}.image"),
                 drive.image.as_deref(),
                 drive.sha256.as_ref(),
             )?;
+            let image = if matches!(write, assembly::WriteMode::Journal { .. }) {
+                // Assembly needs the base path to reject aliases and mount the journal.
+                if bytes.len() as u64 != drive_kind.image_bytes() {
+                    return Err(self.validation_error(ConfigError::ImageGeometryMismatch {
+                        drive_index: drives.len(),
+                        expected: drive_kind.image_bytes(),
+                        actual: bytes.len() as u64,
+                    }));
+                }
+                let field = format!("{drive_field}.image");
+                ImageSource::File(
+                    self.origins
+                        .image_path(&field, self.required(&field, drive.image.as_deref())?),
+                )
+            } else {
+                ImageSource::Inline(bytes)
+            };
             drives.push(DriveConfig {
                 controller: device.id,
                 unit,
                 kind: drive_kind,
-                image: ImageSource::Inline(bytes),
+                image,
                 write,
             });
         }
@@ -475,8 +523,6 @@ impl<R: ImageReader> Context<'_, R> {
             | MmioOverlap { a, b, .. }
             | IrqConflict { a, b, .. } => device_fields(&[*a, *b]),
             DmaControllerMissing { requester, .. } => device_fields(&[*requester]),
-            // Journal mode is not lowered yet, but every drive-indexed error
-            // keeps the same origin and label contract as assembly validation.
             Journal { drive_index, .. }
             | DriveInput { drive_index, .. }
             | InvalidAtaGeometry { drive_index }
@@ -712,6 +758,7 @@ pub fn lower<R: ImageReader>(
         devices: Vec::new(),
         drives: Vec::new(),
         images: Vec::new(),
+        image_paths: Vec::new(),
     };
     if document.extends.is_some() {
         return Err(context.error(
@@ -867,6 +914,8 @@ pub fn lower<R: ImageReader>(
     config
         .validate()
         .map_err(|error| context.validation_error(error))?;
+    crate::paths::validate_journals(&config, origins, &context.image_paths)
+        .map_err(|error| context.validation_error(error))?;
     Ok(config)
 }
 
@@ -893,6 +942,7 @@ mod tests {
                 })
                 .collect(),
             images: Vec::new(),
+            image_paths: Vec::new(),
         }
     }
 
@@ -1062,6 +1112,52 @@ mod tests {
             let diagnostic = context.validation_error(error);
             assert!(diagnostic.message.starts_with(&format!("{label}{suffix}")), "{diagnostic}");
         }
+    }
+
+    #[test]
+    fn input_errors_retain_the_owning_source_and_assembly_message() {
+        let mut origins = Origins::new("machine.toml");
+        for (field, file, line) in [
+            ("card[1].drives[2]", "drives.toml", 18),
+            ("firmware.option_roms[0]", "firmware.toml", 9),
+        ] {
+            origins.insert(
+                field,
+                Origin {
+                    file: file.into(),
+                    line: Some(line),
+                },
+            );
+        }
+        let mut reader = FileImageReader;
+        let mut context = context(&origins, &mut reader);
+        context.images = vec!["firmware.bios".into(), "firmware.option_roms[0]".into()];
+        let drive = ConfigError::DriveInput {
+            drive_index: 2,
+            path: "disk.retain-1.tmp".into(),
+            message: "uses a reserved retention-temporary name".into(),
+        };
+        let diagnostic = context.validation_error(drive.clone());
+        assert_eq!(diagnostic.origin, *origins.get("card[1].drives[2]"));
+        assert_eq!(diagnostic.field, "card[diskette].drives[unit=1]");
+        assert_eq!(
+            diagnostic.message,
+            drive
+                .to_string()
+                .replacen("drive 2 ", "card[diskette].drives[unit=1] ", 1)
+        );
+        assert_eq!(diagnostic.validation.as_deref(), Some(&drive));
+        let image = ConfigError::ImageInput {
+            image_index: 1,
+            role: "firmware",
+            path: "rom.retain-1.tmp".into(),
+            message: "uses a reserved retention-temporary name".into(),
+        };
+        let diagnostic = context.validation_error(image.clone());
+        assert_eq!(diagnostic.origin, *origins.get("firmware.option_roms[0]"));
+        assert_eq!(diagnostic.field, "firmware.option_roms[0]");
+        assert_eq!(diagnostic.message, image.to_string());
+        assert_eq!(diagnostic.validation.as_deref(), Some(&image));
     }
 
     #[test]

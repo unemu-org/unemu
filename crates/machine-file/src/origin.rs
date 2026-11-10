@@ -58,6 +58,12 @@ impl Origins {
         self.image_file = file;
     }
 
+    pub(crate) fn layer_files(&self) -> impl Iterator<Item = &Path> {
+        std::iter::once(self.image_file.as_path())
+            .chain(self.image_files.values().map(PathBuf::as_path))
+            .filter(|file| !file.to_string_lossy().starts_with("preset:"))
+    }
+
     pub(crate) fn image_path(&self, field: &str, image: &str) -> PathBuf {
         let origin = self.get(field);
         let file = if let Some(file) = self.image_files.get(&origin.file) {

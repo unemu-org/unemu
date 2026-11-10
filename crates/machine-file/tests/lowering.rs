@@ -271,24 +271,7 @@ fn individual_field_origins_resolve_images_before_any_future_merge() {
 }
 
 #[test]
-fn journal_is_explicitly_deferred() {
-    let (mut document, origins, mut images, _, _) = synthetic_machine();
-    let drive = &mut document
-        .card
-        .as_mut()
-        .unwrap()
-        .last_mut()
-        .unwrap()
-        .drives
-        .as_mut()
-        .unwrap()[0];
-    drive.write = Some(machine_file::schema::v1::WriteMode::Journal);
-    let error = lower(&document, &origins, &mut images).unwrap_err();
-    assert!(
-        error.message.contains("journal\" is not implemented yet"),
-        "{error}"
-    );
-    assert!(error.message.contains("persistent-media integration"));
+fn nvram_journal_is_explicitly_deferred() {
     let nvram = run(&format!(
         "{MINIMAL}[board.rtc]\nnvram={{image='cmos.bin',write='journal'}}\n"
     ))

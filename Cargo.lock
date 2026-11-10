@@ -781,6 +781,8 @@ name = "machine-file"
 version = "0.1.0"
 dependencies = [
  "assembly",
+ "machine",
+ "media",
  "serde",
  "serde-saphyr",
  "sha2",

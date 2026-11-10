@@ -52,7 +52,14 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
 - **Floppy write modes:** volatile is the default (in memory only), readonly
   rejects writes, and explicit journal mode persists command-complete writes
   beside an immutable file-backed base and replays them on the next mount.
-  Journal selection currently uses Rust `MachineConfig` data. Offline CLI
+  Journal selection is available in Rust `MachineConfig` data and TOML/YAML
+  floppy drive tables, with explicit per-layer journal paths and positive
+  retention counts (default 10). Changing a drive image drops inherited journal
+  settings while preserving readonly/volatile modes; a child can turn journaling
+  off without repeating the image. Journal outputs cannot alias loaded images or
+  machine-file layers, with source-positioned refusals before assembly.
+  Fixture machines and goldens remain volatile. IDE journals and
+  NVRAM readonly/journal remain unsupported. Offline CLI
   `media generations` and `verify` inspect under shared locks, with an explicit
   no-lock report when read-only storage has no lock entry;
   `verify --repair-tail` and `rollback --to N` require synchronized full backups and
@@ -141,7 +148,8 @@ was reported to the CPU core project.
   transfer is performed. Assembly coalesces adjacent MMIO device windows so
   those crossings reach the bus, but mixed RAM/MMIO accesses need the upstream
   CPU fix tracked by `xj-ir6.12 (x86jit)`.
-- Journal selection is not exposed by frontend flags or machine-file fields yet.
+- Journal selection is available in machine-file floppy tables, but frontend
+  machine-file selection remains deferred.
   Immutable-image export (`media commit`/`compact`) and atomic retention pruning
   are implemented. Retention runs only after a durable closed generation, keeps
   a verified anchor bound to the original base, and reports maintenance failures

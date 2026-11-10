@@ -4,13 +4,12 @@ Status: **accepted** (decision-17). Schema 1 TOML and YAML parsing and lowering
 to an assembly-validated `MachineConfig` are implemented in `crates/machine-file`.
 `extends` and embedded presets are implemented, including per-value origins,
 per-layer image directories and completeness checks. IDE PIO channels and
-volatile/readonly hard disks are implemented. Journal attachment is still to
-come. NVRAM images currently support volatile writes only; readonly is rejected
-until assembly can represent it.
+volatile/readonly hard disks and explicit floppy journal attachment are implemented.
+NVRAM images currently support volatile writes only; readonly/journal support
+is deferred.
 Drive-indexed assembly diagnostics, including journal configuration errors, map
 to the drive's source origin and unit label while preserving the message suffix.
-Journal errors are mapped exhaustively even though lowering currently rejects
-journal selection before constructing an assembly configuration.
+Journal errors are mapped exhaustively from assembly validation.
 The design answers one question: how is a `MachineConfig` written as a file,
 so that users compose machines without recompiling?
 
@@ -187,10 +186,10 @@ the owning `DeviceId`; lowering derives the windows from the card kinds.
   and in both YAML crates (MEASURED).
 - **Paths** are strings with `/` separators, resolved against the directory of
   the file that contains them. The loader canonicalizes the machine file path
-  to find the layer directory: when it is a symlink, relative images and
-  relative `extends` paths use the target file's directory. Diagnostics preserve
-  the path supplied by the caller, including relative components and symlink spellings. Absolute image
-  paths are accepted. Repository files must use relative paths.
+  to find the layer directory: when it is a symlink, relative image, journal
+  and `extends` paths use the target file's directory. Diagnostics preserve
+  the path supplied by the caller, including relative components and symlink
+  spellings. Absolute image and journal paths are accepted. Repository files must use relative paths.
 - **Lowering principle:** lowering rejects only what `MachineConfig` cannot
   represent: unsupported values and fields a card kind does not accept.
   Reserved names are recognised and rejected during parsing. Every rule about
@@ -380,10 +379,10 @@ Under an `fdc-765` card:
 |---|---|---|---|
 | `unit` | 0 or 1 | required | The drive-select line (µPD765 US0/US1). Lowers to `controller = Fdc, unit`. |
 | `type` | `"1.44M"`, `"1.2M"`, `"720K"`, `"360K"` | required | `FloppyGeometry::{HD_1_44, HD_1_2, DD_720K, DD_360K}` |
-| `image` | path | required | read once, stored `Inline`; its size must match `type` |
+| `image` | path | required | read and hashed during lowering; stored `Inline` for volatile/readonly, `File` for journal; its size must match `type` |
 | `sha256` | hex | none | pins the base image |
 | `write` | `"volatile"`, `"readonly"`, `"journal"` | `"volatile"` | M3 |
-| `journal` | path | required if and only if `write = "journal"` | never created implicitly (`persistent-media.md`) |
+| `journal` | path | required if and only if `write = "journal"` | relative to the canonical directory of its defining layer, like every machine-file path; never created implicitly (`persistent-media.md`) |
 | `keep_generations` | positive integer | 10 | journal only (`persistent-media.md`) |
 | `remove` | bool | | only in a file that `extends` |
 
@@ -393,11 +392,31 @@ Under an `ide` card, the fields are the same, with two replacements:
 `type`. In schema 1 the geometry is required: cylinders 1–16383, heads 1–16,
 sectors 1–63, with 512-byte sectors and an image of exactly the implied size.
 A slave requires a master. IDE accepts `volatile` and `readonly`; journal mode
-remains floppy-only in assembly and is not lowered from machine files yet.
+remains floppy-only and is rejected by assembly validation for IDE drives.
 
 No write mode modifies the base image: `volatile` keeps guest writes in
 memory, `readonly` faults them, and `journal` appends them to a separate file.
 So a `sha256` pin stays valid in every mode.
+
+Journal bases retain `ImageSource::File` because assembly requires a file path
+for alias checks and mounting. Lowering reads and checks the image's hash and
+size; assembly reads it again at mount time. The current assembly API cannot
+carry both verified bytes and their file identity. Callers must keep the base
+unchanged between loading and assembly; the hash pin is checked during loading,
+not again at mounting. Volatile/readonly images still carry their verified bytes
+inline. Repository fixture machines and goldens remain volatile and create no
+journal sidecars.
+
+Before assembly, the loader rejects journal paths that name directories or
+alias any image it read or any machine-file layer, including layers whose
+values were replaced. Canonical paths catch symlinks; Unix device/inode identity
+also catches hard links. These errors carry the drive's defining file and line.
+Empty journal paths are rejected as missing explicit paths. Assembly retains
+its own output/input and output/output alias checks.
+The loader uses the shared media predicates for reserved temporary names.
+Image filenames containing `.retain-` are refused in every write mode, including
+through symlinks. Journal inputs and layers also cannot occupy the journal's
+creation-temporary namespace or use reserved retention names.
 
 ### Outside the file: run options, presentation, host streams
 
@@ -639,6 +658,18 @@ Implementation choices where the original merge table left details open:
   child's `sha256`, or clears it if omitted. Setting only `sha256` re-pins the
   inherited image. This applies to BIOS, option ROM, NVRAM and drive images;
   option ROM arrays still replace whole, so their entries restate image/base.
+  For drives, `image`, `sha256` and `journal` form one unit: overriding `image`
+  drops the inherited journal and retention count. It clears the inherited write
+  mode only if that mode was journal, falling back to volatile unless the child
+  sets it again; inherited readonly and volatile modes keep their values and
+  origins. A child that restates `write = "journal"` must supply a new journal
+  path; otherwise lowering reports `required field is missing` at
+  `card[<id>].drives[unit=<n>].journal`. This prevents an old journal from being
+  bound to a new base. A journal-only override retains the image and resolves
+  the journal against the child's directory.
+  A child that explicitly sets `write = "volatile"` or `write = "readonly"`
+  drops inherited `journal` and `keep_generations` without restating the image.
+  Journal-only fields explicitly supplied by that child remain errors.
   A mismatch names the pin's defining file and line, even when the image path
   comes from a different layer.
 - Merged scalar origins identify the value's line; table-level diagnostics
@@ -1109,9 +1140,10 @@ spike owns the board-model and firmware entries.
 3. **Default write mode.** This document uses `volatile`, as
    `persistent-media.md` does. Should `write` be required instead, so every
    drive states its persistence?
-4. **Journal path base.** In machine files every path, including `journal`,
-   is relative to the file. The `persistent-media.md` draft says relative to
-   the process working directory. One rule should win.
+4. **Journal path base — resolved.** Every machine-file path, including
+   `journal`, is relative to the canonical directory of the layer that wrote
+   it, just like images. Diagnostics retain that layer's spelled file path.
+   Programmatic Rust configurations may still use paths relative to process cwd.
 5. **Card identity — resolved.** `id` defaults to the kind. Lowering rejects
    every repeated effective id and reports both origins. Different ids for a
    second card of the same kind still reach `DuplicateDeviceId` in assembly;
@@ -1209,8 +1241,10 @@ Ordered; each bead is narrow and lands green.
    has an absolute path.
    *Depends on:* 6, 7.
 9. **Journal write mode in files.** Add `write = "journal"`, `journal` and
-   `keep_generations` on floppy drives and NVRAM, mapped to
-   `WriteMode::Journal`.
+   `keep_generations` on floppy drives, mapped to `WriteMode::Journal`.
+   *Implemented:* TOML/YAML lowering, per-layer journal paths, journal/image
+   override units and two-run guest WRITE/READ acceptance with immutable bases.
+   NVRAM readonly/journal support is a separate implementation item.
    *Accept:* a file-loaded machine journals guest writes and a reload replays
    them. A fixture image is never journaled implicitly. Goldens stay volatile.
    *Depends on:* the persistent-media implementation beads, and 5.

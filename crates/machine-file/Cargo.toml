@@ -10,8 +10,12 @@ description = "Machine description files (TOML and YAML) over one versioned sche
 
 [dependencies]
 assembly.workspace = true
+media.workspace = true
 sha2.workspace = true
 serde.workspace = true
 toml.workspace = true
 serde-saphyr.workspace = true
 thiserror.workspace = true
+
+[dev-dependencies]
+machine.workspace = true

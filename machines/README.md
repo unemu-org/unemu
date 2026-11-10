@@ -6,16 +6,19 @@ Xi8088 open BIOS, MDA and VGA text cards, an unwired COM1, and a 1.44 MB
 floppy on the µPD765 controller. Its pinned images are fetched with
 `vendor/kiselev-bios/fetch.sh` and `vendor/freedos/fetch.sh`.
 
-Image paths resolve relative to the file that declares them. For example,
+Every path, including `journal`, resolves relative to the layer that declares
+it. For example,
 `../vendor/freedos/freedos.img` starts in this directory, independently of the
 process working directory. The loader canonicalizes the machine file path
-for layer resolution: a symlink uses its target file's directory for both
-images and relative parent files.
+for layer resolution: a symlink uses its target file's directory for
+images, journals and relative parent files.
 Diagnostics keep the path supplied by the caller. The supplied name also
 selects the format, even when the symlink target has another extension.
 Image errors show both spelled and resolved paths when they differ.
 The loader reads each image once, checks its SHA-256 pin
-and carries the bytes inline into an assembly-validated config.
+and carries the bytes inline for volatile/readonly images. Journal bases retain
+a file path for assembly's alias checks and are read again at mounting; keep the
+base unchanged between loading and assembly.
 
 Complete TOML (`.toml`) and YAML (`.yaml` or `.yml`) files load through
 `machine_file::load`. YAML requires one document, unique keys and strict
@@ -45,6 +48,31 @@ inherited pin, or supply a new pin. A `sha256`-only override re-pins an inherite
 image. Mismatches identify the file and line that set the pin. Each machine
 file is limited to 1 MiB, including parent files.
 
-IDE PIO channels and volatile/readonly hard disks are implemented. Journal
-attachment is deferred; frontends do not select these files yet. The schema and defaults are in
+For drives, overriding `image` discards the inherited journal and retention
+count. An inherited journal write mode falls back to volatile unless the child
+restates it; readonly and volatile modes keep their values. A child selecting
+journal mode again must provide a new journal path. A child can also turn
+journaling off by setting `write = "volatile"` or `write = "readonly"` without
+repeating the image: inherited journal options are discarded. Explicit journal
+options with either of those modes remain errors.
+
+Floppy journals are explicit. For example, in a local machine file's
+`[[card.drives]]` table, alongside a generated or copied floppy base:
+
+```toml
+write = "journal"
+journal = "media/work.upfj"
+keep_generations = 10 # optional, positive; defaults to 10
+```
+
+The journal is relative to the canonical directory of the file that sets it,
+including through `extends`. Guest writes never modify the base image. Reloading
+and assembling the file replays the journal before the first instruction.
+`journal` and `keep_generations` are errors with volatile/readonly modes.
+Journal paths must be nonempty and must not name a directory or alias any
+image or machine-file layer; failures identify the drive's file and line.
+The repository examples and goldens stay volatile and create no sidecars next
+to fixtures. IDE hard disks support volatile/readonly only; NVRAM write modes
+remain volatile only. Frontends do not select these files yet. The schema and
+defaults are in
 [`machine-files.md`](../backlog/docs/design/machine-files.md).

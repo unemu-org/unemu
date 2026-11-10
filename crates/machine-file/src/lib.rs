@@ -8,7 +8,8 @@
 //! cycle-exact timing requests receive positioned diagnostics.
 //!
 //! Complete documents lower to `assembly::MachineConfig` with board/card
-//! defaults and images read once, checked with SHA-256 and retained inline.
+//! defaults and images checked with SHA-256 during lowering. Volatile/readonly
+//! images remain inline; journal bases retain paths and are reread at mounting.
 //! Assembly owns hardware validation. Inheritance resolves before lowering.
 //! This crate does not model hardware registers.
 
@@ -19,6 +20,7 @@ use serde::Deserialize;
 mod integrity;
 mod lower;
 mod origin;
+mod paths;
 mod resolve;
 pub mod schema;
 mod source;
@@ -199,8 +201,12 @@ pub fn load(path: impl AsRef<Path>) -> Result<assembly::MachineConfig, LoadError
 
 /// Load a machine file with a caller-provided image reader.
 ///
-/// The hook changes image I/O only: SHA-256 checks and hardware validation
-/// remain mandatory, including when the reader supplies synthetic bytes.
+/// SHA-256 pins are checked against the reader's bytes during lowering, and
+/// hardware validation remains mandatory. Volatile/readonly images retain those
+/// bytes inline. Journal bases retain file paths: assembly rereads them at mount
+/// time without rechecking the pin, even if the reader supplied synthetic bytes.
+/// Checking the bytes actually mounted against their pin needs a later assembly
+/// change; callers must keep journal bases unchanged between loading and assembly.
 pub fn load_with_reader<R: ImageReader>(
     path: impl AsRef<Path>,
     reader: &mut R,
