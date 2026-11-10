@@ -70,6 +70,18 @@ determinism.
    | C | `win9x-base` | PCI, VBE linear framebuffer, Sound Blaster 16, Pentium CPU features, IDE disk, mouse, a Pentium-class profile | Windows 98 SE boots to the 2D desktop |
    | D | `voodoo` | Pentium II/III top-up, the 3dfx Voodoo card, rasteriser performance | Windows 98 SE runs a Voodoo game in the window — **the target** |
 
+   *Amended 2026-11-10:* a consolidation phase **A′** (epic key
+   `consolidation`) sits between A and B. Phase B is mostly CPU-core work in
+   x86jit, so the machine side uses that time to make machines description
+   files (one versioned schema, TOML and YAML syntaxes), to make firmware and
+   machine class (XT-class or AT-class BIOS plus its device set) a validated
+   configuration choice, and to persist floppy writes incrementally with
+   rollback; a hard disk follows once the firmware question is settled. Its
+   exit milestone: the window and the CLI run machines from description files,
+   firmware is configurable, floppy writes persist recoverably, every headless
+   golden unchanged. The phase B gap analysis runs in parallel so the CPU-core
+   requests reach x86jit early.
+
 8. **Choices settled with this decision.**
    - The windowed presenter is its own crate (winit + softbuffer). Headless
      capture stays the default; the test and CI paths never need a window.

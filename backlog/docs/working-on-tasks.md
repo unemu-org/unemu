@@ -50,6 +50,7 @@ was created under; after a reparent `bd show` is authoritative.
 | `scheduler` | event-driven device scheduling, clock domains, CPU speed |
 | `observation` | observable output from device state, not replayed traces |
 | `skeleton` | phase A of decision-16: the display through a real card to a window, host keyboard |
+| `consolidation` | phase A′: machine description files (TOML/YAML), firmware and machine class as configuration, recoverable floppy persistence |
 | `protected-mode` | phase B: 386 protected mode, paging, A20, a 386 profile — DOS-extended programs |
 | `win9x-base` | phase C: PCI, VBE, audio, IDE, mouse, Pentium features — Windows 98 SE to the desktop |
 | `voodoo` | phase D, the target: Windows 98 SE with a 3dfx Voodoo card |
