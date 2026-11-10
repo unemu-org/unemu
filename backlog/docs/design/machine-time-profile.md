@@ -6,6 +6,30 @@ using the project Nix devShell. Cargo's default **release** profile was used
 `b0c9ae52820dffc1e2cb75c4928a670788a916d0` (`b0c9ae5`). This is a measurement
 spike; no guest behaviour or scheduler change is proposed.
 
+## String instruction accounting
+
+The current CPU pin is `73ed5d6ef4fc68f91cdad10b1e7c1c370363d030`.
+The profiling tables below retain the revisions on which they were measured;
+they are historical measurements, not new measurements of this pin.
+
+Real16 machine time uses completed `run_steps` units: one per ordinary
+instruction, one per nonempty REP element, and one for an empty REP. REP
+MOVS/STOS and REP INS/OUTS follow the same per-element convention. Each
+INS/OUTS element produces one port exit and charges one step at handoff;
+supplying an input value and finishing its deferred ES store add no step.
+The core retains an answered INS across a faulting store and blocks IRQ
+acceptance until that store completes. An active cap can retain that answered
+handoff; the next positive run finishes its store before executing another
+unit. This is deterministic engine accounting, not hardware cycle timing
+(Intel 80286 Programmer's Reference Manual, REP, INS and OUTS descriptions).
+Whole-instruction retirement is a separate diagnostic: a nonempty REP
+retires once, at its final handoff for port strings. IRQ entry costs no step;
+handler instructions and IRET count normally.
+
+The machine tests in `crates/machine/tests/port_strings.rs` check per-element
+caps and port timestamps, pending input at a cap, empty REP, MMIO access
+ordering, final memory/registers, and IRQ/IRET resumption.
+
 ## Scope and method
 
 The temporary `machine/phase-profile` feature selects an instrumented **copy** of

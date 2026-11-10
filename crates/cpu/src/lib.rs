@@ -13,7 +13,14 @@
 //! In real mode it additionally forwards hardware IRQ injection to the core
 //! ([`Cpu::inject_irq`]), which delivers the vector in-guest through the IVT, and
 //! exposes completed steps (including REP iterations) for virtual time (§6),
-//! alongside whole-instruction retirement counts for diagnostics.
+//! alongside whole-instruction retirement counts for diagnostics. REP MOVS/STOS
+//! and REP INS/OUTS all charge one step per element, or one for an empty REP.
+//! Each string port element exits once; input is charged at handoff, and its
+//! deferred ES store adds no step. A nonempty REP port instruction retires once,
+//! at its final handoff.
+//! This is an engine time convention, not CPU-cycle timing (Intel 80286
+//! Programmer's Reference Manual, REP, INS and OUTS instruction descriptions).
+//! See `backlog/docs/design/machine-time-profile.md` §String instruction accounting.
 
 pub mod x86jit_backend;
 
@@ -54,7 +61,7 @@ pub enum CpuReg {
 /// core's own exit type.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum CpuStop {
-    /// Guest executed `in` — the machine must supply the port value via
+    /// Guest executed `in` or one `ins` element — supply the port value via
     /// [`Cpu::complete_port_in`] before the next [`Cpu::run`].
     PortIn {
         /// 16-bit port number.
@@ -62,7 +69,8 @@ pub enum CpuStop {
         /// Access width in bytes (1/2/4).
         size: u8,
     },
-    /// Guest executed `out` — `value` holds the low `size` bytes written.
+    /// Guest executed `out` or one `outs` element — `value` holds the low
+    /// `size` bytes written.
     PortOut {
         /// 16-bit port number.
         port: u16,
@@ -204,9 +212,13 @@ pub trait Cpu {
     ///
     /// The stopping instruction's share of [`CpuStepRun::steps`] is:
     ///
-    /// - Port IN/OUT and HLT: the last counted unit; its start is `steps - 1`.
+    /// - Port IN/OUT, each INS/OUTS element, and HLT: the last counted unit;
+    ///   its start is `steps - 1`.
     ///   IN counts at handoff even though its value is still pending; supplying
-    ///   that value adds no step. Complete it before another positive-budget run.
+    ///   that value adds no step. For INS the core retains the answer until its
+    ///   faultable ES store completes on the next positive run; that store adds
+    ///   no step and blocks IRQ acceptance until complete. Complete the input
+    ///   handshake before another positive-budget run.
     /// - MMIO, faults, fetch failures and unsupported instructions: zero; all
     ///   counted units precede the incomplete unit, whose start is `steps`.
     ///   A REP exiting mid-iteration counts only its completed iterations.

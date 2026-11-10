@@ -5,8 +5,8 @@
 //! [`Exit`] variants onto the backend-neutral [`CpuStop`]. It runs in **Long64**
 //! mode (adapter unit tests, [`X86JitCpu::new`]) or in **Real16** mode (a PC/AT
 //! boot that takes hardware interrupts, [`X86JitCpu::new_real16_bare`]). It uses the
-//! `x86jit` integration surface: `Exit::PortIo` (`in`/`out`), `RegionKind::Trap`
-//! MMIO, and — in real mode — IVT-vectored hardware IRQ injection.
+//! `x86jit` integration surface: `Exit::PortIo` (`in`/`out` and each `ins`/`outs`
+//! element), `RegionKind::Trap` MMIO, and — in real mode — IVT-vectored IRQ injection.
 //!
 //! `x86jit-core` is depended on through a git dependency pinned to an exact
 //! revision rather than a plain path, so a clean checkout or CI resolves the same
@@ -402,6 +402,58 @@ mod tests {
     use super::*;
 
     #[test]
+    fn answered_ins_store_fault_retries_without_another_port_read() {
+        let mut cpu = X86JitCpu::new_real16_bare(
+            0x30000,
+            0,
+            0x7C00,
+            RealSegments {
+                es: 0x2000,
+                ..RealSegments::flat(0)
+            },
+        )
+        .unwrap();
+        cpu.map_ram(0, 0x10000).unwrap();
+        // INSW; HLT. ES points to an unmapped destination until the retry.
+        cpu.write_mem(0x7C00, &[0x6D, 0xF4]).unwrap();
+        cpu.set_reg(CpuReg::Rdx, 0x300);
+        let options = StepRunOptions::default();
+        assert_eq!(
+            cpu.run_steps(1, options).unwrap(),
+            CpuStepRun {
+                steps: 1,
+                stop: CpuStepStop::Exit(CpuStop::PortIn {
+                    port: 0x300,
+                    size: 2
+                }),
+            }
+        );
+        cpu.complete_port_in(0xABCD);
+        assert_eq!(cpu.reg(CpuReg::Rip), 0x7C00);
+        assert_eq!(cpu.reg(CpuReg::Rdi), 0);
+        assert!(matches!(
+            cpu.run_steps(1, options),
+            Err(CpuError::Unmapped { addr: 0x20000 })
+        ));
+        assert_eq!(cpu.completed_steps(), 1);
+        cpu.map_ram(0x20000, 0x10000).unwrap();
+        assert_eq!(
+            cpu.run_steps(1, options).unwrap(),
+            CpuStepRun {
+                steps: 1,
+                stop: CpuStepStop::Exit(CpuStop::Halt),
+            }
+        );
+        let mut word = [0; 2];
+        cpu.read_mem(0x20000, &mut word).unwrap();
+        assert_eq!(word, [0xCD, 0xAB]);
+        assert_eq!(cpu.reg(CpuReg::Rdi), 2);
+        assert_eq!(cpu.reg(CpuReg::Rip), 0x7C02);
+        assert_eq!(cpu.completed_steps(), 2);
+        assert_eq!(cpu.retired(), 2);
+    }
+
+    #[test]
     fn readiness_option_stops_after_sti_protected_rep_iteration() {
         let mut cpu =
             X86JitCpu::new_real16_bare(0x10000, 0, 0x7C00, RealSegments::flat(0)).unwrap();
@@ -505,7 +557,11 @@ mod tests {
             // MOV CX, 3; REP STOSB; NOP, then a faulting unit with no charge.
             let mut code = vec![0xB9, 3, 0, 0xF3, 0xAA, 0x90];
             code.extend_from_slice(if unsupported {
-                &[0x6C]
+                // MOV EAX, CR0 does not exist on an 80286 and this pin does not
+                // lift it in Real16. If a future core lifts control-register
+                // moves, the assertion below must fail loudly; choose another
+                // unsupported encoding then.
+                &[0x0F, 0x20, 0xC0]
             } else {
                 &[0xA0, 0, 0x90]
             });

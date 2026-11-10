@@ -467,10 +467,10 @@ Further evidence:
   has its own `Spanned<T>`.
 - **`serde-saphyr` risks (READ):**
   - **MSRV.** Releases from 1.2.0 (2026-08-30) on declare rust-version 1.89.
-    This workspace declares 1.88 and tracks the pinned x86jit revision
-    (96a49a9, rust-version 1.88). x86jit `main` raised its rust-version to 1.95
-    on 2026-11-10 (commit c161085), so the next re-pin moves this workspace
-    past 1.89 anyway. The Nix toolchain is 1.95.0 (MEASURED).
+    The workspace now declares 1.99 and pins x86jit `73ed5d6`
+    (rust-version 1.95), so this dependency's 1.89 minimum is satisfied.
+    The original investigation used x86jit `96a49a9` (rust-version 1.88)
+    and measured a Nix toolchain of 1.95.0; those are historical values.
   - **Churn.** Two major versions within three months (1.0.0 on 2026-07-31,
     2.0.0 on 2026-10-13).
   - **Single maintainer.** One author maintains both the serde layer and the
@@ -946,9 +946,8 @@ spike owns the board-model and firmware entries.
 
 ## Open questions for the maintainer
 
-1. **MSRV.** `serde-saphyr` needs rustc 1.89; the workspace declares 1.88.
-   Land YAML after the x86jit re-pin (x86jit `main` is at 1.95), or let
-   `crates/machine-file` declare 1.89?
+1. **MSRV (resolved).** `serde-saphyr` needs rustc 1.89; the workspace
+   declares 1.99 and the current x86jit pin `73ed5d6` requires 1.95.
 2. **Device order.** Accept rewriting the `bios` preset into canonical order
    (bead 1, guarded by the slow goldens)? The alternative is a board model that
    encodes today's interleaved order, which is harder to explain.

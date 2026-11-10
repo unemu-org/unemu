@@ -40,7 +40,7 @@ softbuffer = { version = "0.4", default-features = false, features = ["x11", "x1
 # golden trace) runs against a known CPU. Not a bare path dependency — that breaks
 # nix build and CI. To develop against a local x86jit checkout, add a gitignored
 # [patch] override instead of editing this line.
-x86jit-core = { version = "0.3", git = "https://git.lab.mikolajczyk.org/unemu-org/x86jit", rev = "96a49a9063cdf0a2bdb2d916f01b381fbad0176e" }
+x86jit-core = { version = "0.3", git = "https://git.lab.mikolajczyk.org/unemu-org/x86jit", rev = "73ed5d6ef4fc68f91cdad10b1e7c1c370363d030" }
 
 # Internal crates share the workspace version.
 assembly = { path = "crates/assembly", version = "0.1.0" }

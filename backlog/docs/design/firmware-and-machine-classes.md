@@ -386,9 +386,9 @@ device bead.
   - 80287 ports F0h–FFh;
   - the 8042 `FEh` reset pulse and a CPU-reset seam (CMOS 0Fh shutdown);
   - an **ATA device**;
-  - **string port I/O** (`INS`/`OUTS`, `REP` forms) in x86jit. **MEASURED:**
-    pinned x86jit `96a49a9` does not lift opcodes 6C–6F; `lift/mod.rs` says so
-    explicitly.
+  - String port I/O is now available at x86jit `73ed5d6`: Real16 INS/OUTS,
+    including REP, segment overrides on OUTS and per-element IRQ boundaries.
+    The historical `96a49a9` probe did not lift opcodes 6C–6F.
 - **`ibm-5160`:**
   - the 8255 PPI with DIP-switch derivation;
   - the XT keyboard serial interface (PB7/PB6 handshake, 83-key set 1, no E0
@@ -554,11 +554,12 @@ at 1F0h–1F7h and 3F6h on IRQ14. This works for four reasons:
 - the AT build's defaults are exactly the standard primary channel (READ);
 - upstream itself ships combined Xi 8088 + XUB ROMs.
 
-Two prerequisites gate it:
+The original investigation identified two prerequisites:
 
-1. **x86jit string port I/O** (`INS`/`OUTS` with `REP`) in Real16, filed and
-   landed in x86jit, then re-pinned. MEASURED: it is missing at `96a49a9`. It
-   is not wasted work: Bochs, SeaBIOS and guest disk drivers all need it.
+1. **x86jit string port I/O** (`INS`/`OUTS` with `REP`) in Real16 is now
+   available at the current pin `73ed5d6`, with machine integration tests.
+   The historical measurement at `96a49a9` found it missing; an XUB boot
+   remains a separate qualification.
 2. **Port split at 3F6h.** The FDC's decode shrinks from 3F0h–3F7h to
    3F0h–3F5h plus 3F7h, so the IDE owns 3F6h.
 
@@ -606,9 +607,9 @@ keyboard and the DIP-switch device work can land before the CPU model.
 
 Risks:
 
-- **The CPU seam gates (a).** `INS`/`OUTS` must land in x86jit first (MEASURED
-  gap). The XUB AT build may also use another unlifted opcode, which only a boot
-  will show.
+- **CPU qualification for (a).** The INS/OUTS prerequisite is satisfied at
+  `73ed5d6`. The XUB AT build may use another unlifted opcode, which only a
+  boot will show.
 - **XUB OS hooks.** XUB calls INT 15h 90h/91h with AL=00h. The Kiselev BIOS
   answers AH=86h with CF set for those (READ). ASSUMED: XUB ignores the result.
 - **Conventional memory.** XUB full mode takes 1 KiB and the Kiselev BIOS
@@ -682,7 +683,9 @@ The generic AT comes first.
    - *Depends on:* 2.
 5. **x86jit request: Real16 string port I/O.** `INS`/`OUTS` bytes and words
    with `REP`, restartable per element, filed and landed in x86jit, then
-   re-pinned here.
+   re-pinned here. The CPU core supports this at `73ed5d6`; machine tests
+   cover short transfers. The 256-word sector transfer remains this later
+   bead's acceptance test.
    - *Acceptance (here):* a machine test where `rep insw` reads 256 words from
      a mock port device; all goldens re-run green at the new pin.
    - *Depends on:* the x86jit bead.

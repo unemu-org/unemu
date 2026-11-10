@@ -32,9 +32,11 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   Journal selection currently uses Rust `MachineConfig` data.
 - **Machines are declarative.** A `MachineConfig` (the `assembly` crate) is built by one
   `assemble()` and run under a `RunPolicy`; presets replace the old hand-written runners.
-- **CPU pin:** `96a49a9063cdf0a2bdb2d916f01b381fbad0176e` (x86jit `main`).
+- **CPU pin:** `73ed5d6ef4fc68f91cdad10b1e7c1c370363d030` (x86jit `main`).
 - **CPU:** pinned x86jit `CpuMode::Real16` interpreter with exact step bounds,
   per-iteration REP time, STI/SS-load inhibition and interrupt-readiness stops.
+  Real16 INS/OUTS support byte/word elements, REP, OUTS segment overrides,
+  and IRQ delivery between elements; answered INS stores retain their value on retry.
 - **Scheduler:** deadline dispatch is the sole production engine. INTA follows
   completed instruction bus/DMA effects and only occurs when the CPU can accept
   it. Active caps are exact; HLT jumps to the next event or bound. The per-clock
@@ -105,10 +107,10 @@ was reported to the CPU core project.
 
 - Multi-byte scalar accesses crossing a RAM/MMIO boundary in either direction
   end the run with `Exit::UnmappedMemory` in pinned x86jit
-  `96a49a9063cdf0a2bdb2d916f01b381fbad0176e`. Its
-  [`Memory::region_at`](https://github.com/unemu-org/x86jit/blob/96a49a9063cdf0a2bdb2d916f01b381fbad0176e/x86jit-core/src/memory.rs#L1967-L1989)
+  `73ed5d6ef4fc68f91cdad10b1e7c1c370363d030` (READ). Its
+  [`Memory::region_at`](https://github.com/unemu-org/x86jit/blob/73ed5d6ef4fc68f91cdad10b1e7c1c370363d030/x86jit-core/src/memory.rs#L1980-L2001)
   requires the whole transfer inside one region before read/write paths check
-  for MMIO (`memory.rs:2157`, `memory.rs:2291`). Neither part of the scalar
+  for MMIO (`memory.rs:2170`, `memory.rs:2304`). Neither part of the scalar
   transfer is performed. Assembly coalesces adjacent MMIO device windows so
   those crossings reach the bus, but mixed RAM/MMIO accesses need the upstream
   CPU fix tracked by `xj-ir6.12 (x86jit)`.

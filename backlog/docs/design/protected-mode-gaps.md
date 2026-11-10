@@ -2,7 +2,7 @@
 
 ## Context
 
-**Verdict: the pinned core cannot execute a DOS extender's protected-mode
+**Verdict: the investigated core cannot execute a DOS extender's protected-mode
 entry or a guest-paged 32-bit program.** The decode groundwork is useful,
 but `Compat32` is a flat application execution context, not an emulated
 80386 system. Legacy protected mode needs changes to the CPU-state, mode,
@@ -23,7 +23,13 @@ Evidence vocabulary throughout:
 - **ASSUMED:** a proposed scope choice or inference requiring later acceptance
   tests. In particular, no complete DOS extender was run.
 
-READ: root `Cargo.toml:36` pins `x86jit-core` to
+The current CPU pin is `73ed5d6ef4fc68f91cdad10b1e7c1c370363d030`.
+INS/OUTS are now implemented, including Real16 REP port handshakes and
+per-element accounting. This resolves the opcode/handshake portion of the
+historical string-I/O gap below; protected-mode privilege checks and the
+broader system-mode work remain separate requirements.
+
+Historical READ: at investigation time root `Cargo.toml:36` pinned `x86jit-core` to
 `96a49a9063cdf0a2bdb2d916f01b381fbad0176e`. All CPU paths below are relative
 to that revision's `x86jit-core/src/`; line numbers refer to that checkout,
 whose HEAD was also verified. Machine paths are relative to this repository.
