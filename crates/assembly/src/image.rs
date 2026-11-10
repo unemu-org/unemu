@@ -44,6 +44,28 @@ pub enum ImageKind {
     RamLoad,
 }
 
+/// Guest firmware services declared by ROM images.
+///
+/// The initial vocabulary is `floppy` and `fixed-disk`, both INT 13h services.
+/// These are declarations, not firmware identification; see
+/// `backlog/docs/design/machine-config.md` § Firmware services.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum FirmwareService {
+    /// INT 13h diskette services.
+    Floppy,
+    /// INT 13h fixed-disk services.
+    FixedDisk,
+}
+
+impl std::fmt::Display for FirmwareService {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Floppy => "floppy",
+            Self::FixedDisk => "fixed-disk",
+        })
+    }
+}
+
 /// One blob placed into the address space (§4).
 ///
 /// The **single home** for anything loaded at a fixed address — a masked BIOS
@@ -58,4 +80,6 @@ pub struct LoadImage {
     pub source: ImageSource,
     /// Whether the image is a masked ROM or a RAM load.
     pub kind: ImageKind,
+    /// Guest services supplied by this ROM; RAM loads cannot provide services.
+    pub provides: Vec<FirmwareService>,
 }

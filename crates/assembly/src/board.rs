@@ -86,7 +86,8 @@ impl BoardModel {
             DeviceConfig::new(
                 Rtc,
                 DeviceKind::Rtc(CmosCfg {
-                    seed: true,
+                    nvram: crate::NvramSource::Derived,
+                    start: crate::RtcStart::default(),
                     timing: None,
                 }),
                 vec![PortWindow::new(0x70, 0x71)],
@@ -162,7 +163,8 @@ mod tests {
                 (
                     Rtc,
                     DeviceKind::Rtc(CmosCfg {
-                        seed: true,
+                        nvram: crate::NvramSource::Derived,
+                        start: crate::RtcStart::default(),
                         timing: None
                     }),
                     vec![PortWindow::new(0x70, 0x71)],

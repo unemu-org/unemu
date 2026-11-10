@@ -129,13 +129,13 @@ checks. Each rule returns a stable, exact-message-tested `ConfigError`:
 
 `BoardDeviceWiring` names the device, differing field, expected value and actual
 value. The full comparison includes port-overlap allowances and scheduling
-`access_dependents`; neither can silently override board wiring. RTC seed and
-virtual timing remain configurable. A literal-table unit test pins the board
+`access_dependents`; neither can silently override board wiring. RTC
+initialization and virtual timing remain configurable. A literal-table unit test pins the board
 ports, IRQs and DMA requests independently of both preset and validator.
 
 There are no resource override rules in this implementation. Port-overlap
 allowances do not authorize IRQ or DMA overrides. Existing IRQ conflicts and
-DMA-controller-presence checks still apply. `Bare` skips only board rules;
+DMA-controller-presence checks still apply. `Bare` skips board rules and firmware service requirements;
 general decode, resource and drive-binding validation still runs.
 
 ### Drive binding and write mode
@@ -316,6 +316,77 @@ can filter by the named controller and route its units just as the FDC does.
 CMOS derivation retains the fixed-disk nibble seam, but assembly cannot silently
 accept a hard disk that no device serves.
 
+## Firmware services
+
+`LoadImage.provides: Vec<FirmwareService>` declares guest services supplied by
+a ROM. The initial vocabulary is deliberately small:
+
+| Variant | File vocabulary | Guest interface |
+|---|---|---|
+| `Floppy` | `floppy` | INT 13h diskette services |
+| `FixedDisk` | `fixed-disk` | INT 13h fixed-disk services |
+
+System BIOS and option ROM images use the same field. The BIOS preset declares
+`Floppy`, matching the machine-file examples; this validation metadata does not
+change guest execution. Firmware identification, the SHA-256 catalogue and
+catalogue-derived claims belong to a separate implementation.
+
+On firmware boards (every board other than `Bare`), requirements follow from a
+table of device kinds. An FDC with at least one drive bound to its device id
+needs `Floppy`. The table records the matching kind, required service and whether
+a bound drive is necessary. Adding an IDE kind will add one entry for `FixedDisk`
+without the drive condition; the device itself is not implemented here.
+
+Validation checks required services against the union of ROM declarations and
+returns `NoProvider { device, service }` in device/table order. `Bare` rigs skip
+these requirements, and an FDC without bound drives needs no provider. A ROM
+service does not require a consumer. RAM loads with nonempty `provides` fail with
+`ServicesOnRamLoad`; a RAM program cannot satisfy a firmware requirement.
+
+## RTC start and NVRAM source
+
+`CmosCfg { start: RtcStart, nvram: NvramSource, timing }` separates the fixed
+calendar seed from the initial store. `RtcStart` holds binary `year`, `month`,
+`day`, `hour`, `minute`, and `second`; the weekday is derived, with Sunday = 1.
+Its default is exactly **2000-01-01 00:00:00, Saturday (7)**. This implementation
+accepts valid dates in 1980–2099, matching the existing two-digit year and
+four-year leap cycle; invalid dates, hours, minutes and seconds fail with
+`InvalidRtcStart` before assembly, naming the first invalid field and showing
+the supplied time as `YYYY-MM-DDTHH:MM:SS`. Host time has no config variant or
+runtime clock read. The existing virtual timing override remains available to test rigs.
+
+`NvramSource` has three variants:
+
+| Variant | Initialization |
+|---|---|
+| `Derived` (default) | Existing machine-derived AT seed and checksum |
+| `Blank` | Existing unseeded chip, retaining its control defaults |
+| `Image([u8; 64])` | Writable bytes copied without checksum repair; read-only status initialized to power-on values |
+
+The fixed array enforces image length at the Rust boundary. A future machine-file
+loader must reject any file whose length is not 64 before creating this value;
+assembly does no NVRAM file I/O. All guest writes are volatile; file writeback
+and journal policy are deferred.
+
+The image's time-register backing bytes are preserved, but reads use `start`,
+encoded according to the image's register B. Loading clears A's read-only UIP
+bit and all of C, recomputes IRQF, and sets D to the device's valid-RAM value
+(80h, reserved bits clear). This prevents stale image status from raising IRQ8
+at power-on or producing an unrestorable snapshot. Subsequent control reads
+retain normal semantics: A overlays live UIP, C clears flags after reading,
+and D reports valid RAM/time. These register meanings follow the Motorola
+MC146818 datasheet, **RAM**, **Time, Calendar, and Alarm Locations (Table 3)**,
+and **Registers A–D**. General RAM and alarm bytes are not normalized, and no
+AT checksum is repaired for an image. `Derived` with the default start retains
+every register and backing byte of the prior construction; tests compare the
+entire device snapshot and all 64 port-visible registers, alongside unchanged
+machine goldens.
+
+The century of `RtcStart` does **not** populate the BIOS century byte at 32h.
+`Derived` leaves that byte at 00h, as before; `Image` retains the supplied byte.
+Use an NVRAM image to set 32h when firmware needs an explicit century. The live
+year register remains the two-digit year, including the 99-to-00 rollover.
+
 ## The assembler
 
 `fn assemble(config: &MachineConfig) -> Result<Assembled, ConfigError>` is the
@@ -333,16 +404,11 @@ known — not inside the core. Built in task-30.
 `DeviceId -> bus-index` map**. Drain and inject helpers address devices through
 this map, by id, so the hand-counted `*_INDEX` constants disappear entirely.
 
-**CMOS is derived, never free-configured.** The BIOS reads floppy types, the
-equipment byte, and base/extended memory size from CMOS NVRAM and expects them to
-be *consistent with the actual machine* (§7.6). If CMOS is configured
-independently of the memory map and drives, the BIOS sees a self-inconsistent
-machine and drops to F1 setup. So the assembler **derives** the CMOS seed
-(`floppy_types`, `equipment`, `base_memory_kb`, `extended_memory_kb`) from
-`MemoryConfig` and the attached `drives`. CMOS is an output of assembly, not an
-input. (The device already supports this seed via `CmosConfig`; what changes is
-*who computes it* — the assembler, from the machine description, not the caller
-by hand.) Wired up in task-37.
+**CMOS defaults to a derived configuration.** The assembler derives floppy
+types, equipment and memory sizes from the attached drives and memory map,
+then writes the AT checksum. An explicit NVRAM image bypasses derivation; the
+caller is then responsible for its contents. Calendar initialization is separate
+from the NVRAM source, as described below.
 
 **Explicit decode-conflict policy.** Port/MMIO decode is **first-match order**,
 and that order is *semantics*, not luck. The canonical example: `0x80` is the

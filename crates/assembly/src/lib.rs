@@ -59,11 +59,12 @@ pub use clock::ClockConfig;
 pub use cpu::{CpuChip, CpuConfig, ResetSpec, SegmentSeed};
 pub use device::{
     CmosCfg, DeviceConfig, DeviceId, DeviceKind, DmaCfg, DmaSpec, FdcCfg, I8042Cfg, MdaTextCfg,
-    PicCfg, PitCfg, PortWindow, PostPortCfg, SysControlCfg, UartCfg, VgaTextCfg,
+    NvramSource, PicCfg, PitCfg, PortWindow, PostPortCfg, RtcStart, SysControlCfg, UartCfg,
+    VgaTextCfg,
 };
 pub use drive::{DriveConfig, DriveKind, FloppyGeometry, HardDiskGeometry, WriteMode};
 pub use error::ConfigError;
-pub use image::{ImageKind, ImageSource, LoadImage};
+pub use image::{FirmwareService, ImageKind, ImageSource, LoadImage};
 pub use machine::MachineConfig;
 pub use memory::{MemoryConfig, MmioWindow, RamRegion};
 pub use observation::{

@@ -130,29 +130,119 @@ pub struct PicCfg {
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct I8042Cfg {}
 
+/// Fixed calendar time for the MC146818, in binary, with a derived weekday.
+///
+/// Years 1980–2099 match the device's two-digit calendar and leap-year model.
+/// Motorola MC146818 datasheet, Time, Calendar, and Alarm Locations, Table 3,
+/// defines the time/date fields. See `backlog/docs/design/machine-config.md`
+/// § RTC start and NVRAM source.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct RtcStart {
+    /// Full calendar year, 1980 through 2099.
+    pub year: u16,
+    /// Month, 1 through 12.
+    pub month: u8,
+    /// Day of the month, starting at 1.
+    pub day: u8,
+    /// Hour in 24-hour notation, 0 through 23.
+    pub hour: u8,
+    /// Minute, 0 through 59.
+    pub minute: u8,
+    /// Second, 0 through 59.
+    pub second: u8,
+}
+
+impl Default for RtcStart {
+    fn default() -> Self {
+        Self {
+            year: 2000,
+            month: 1,
+            day: 1,
+            hour: 0,
+            minute: 0,
+            second: 0,
+        }
+    }
+}
+
+impl RtcStart {
+    pub(crate) fn days_in_month(self) -> u8 {
+        match self.month {
+            1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+            4 | 6 | 9 | 11 => 30,
+            2 if self.year.is_multiple_of(4) => 29,
+            2 => 28,
+            _ => 0,
+        }
+    }
+
+    pub(crate) fn invalid_field(self) -> Option<&'static str> {
+        if !(1980..=2099).contains(&self.year) {
+            Some("year")
+        } else if !(1..=12).contains(&self.month) {
+            Some("month")
+        } else if !(1..=self.days_in_month()).contains(&self.day) {
+            Some("day")
+        } else if self.hour >= 24 {
+            Some("hour")
+        } else if self.minute >= 60 {
+            Some("minute")
+        } else if self.second >= 60 {
+            Some("second")
+        } else {
+            None
+        }
+    }
+
+    pub(crate) fn weekday(self) -> u8 {
+        let years = self.year - 1980;
+        let leap_days = years.div_ceil(4);
+        let month_days: u16 = (1..self.month)
+            .map(|month| u16::from(Self { month, ..self }.days_in_month()))
+            .sum();
+        ((2 + years * 365 + leap_days + month_days + u16::from(self.day - 1)) % 7 + 1) as u8
+    }
+}
+
+impl std::fmt::Display for RtcStart {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}",
+            self.year, self.month, self.day, self.hour, self.minute, self.second
+        )
+    }
+}
+
+/// Initial MC146818 storage; guest writes remain volatile.
+///
+/// Motorola MC146818 datasheet, RAM and Time, Calendar, and Alarm Locations:
+/// the 64-byte address space contains clock/control registers and general RAM.
+/// See `backlog/docs/design/machine-config.md` § RTC start and NVRAM source.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+pub enum NvramSource {
+    /// Derive AT configuration bytes and their checksum from the machine.
+    #[default]
+    Derived,
+    /// Leave configuration RAM blank, retaining the chip's control defaults.
+    Blank,
+    /// Copy writable backing bytes without checksum repair; clear live status.
+    Image([u8; 64]),
+}
+
 /// MC146818 CMOS/RTC parameters (§7.6).
 ///
-/// The NVRAM configuration bytes a stock BIOS checksums (floppy types, base and
-/// extended memory size, the equipment byte) are **derived** from the rest of
-/// the [`crate::MachineConfig`] — memory size from [`crate::MemoryConfig`],
-/// floppy types from the [`crate::DriveConfig`] list — rather than duplicated
-/// here, so the two can never disagree. This carries only the choice of whether
-/// to seed that area at all; a blank NVRAM (the power-on state of a
-/// battery-dead chip) drops a stock BIOS into its SETUP prompt. See
-/// [`devices::CmosConfig`], the seed the assembler builds.
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+/// Motorola MC146818 datasheet, Time, Calendar, and Alarm Locations and
+/// Registers A–D. See `backlog/docs/design/machine-config.md`
+/// § RTC start and NVRAM source for initialization precedence.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
 pub struct CmosCfg {
-    /// Whether to seed the AT configuration NVRAM (and its checksum) so a stock
-    /// BIOS's POST passes unattended.
-    pub seed: bool,
-    /// Override the RTC's virtual-clock timing as `(second_ticks, uip_ticks)`, or
-    /// `None` for the real ~1.193 MHz-derived default.
-    ///
-    /// The real per-second ratio is over a million virtual clocks — far more than
-    /// a bounded headless run advances — so a machine that must observe an
-    /// update-ended interrupt (IRQ8) within a short run sets a small ratio here.
-    /// The timing is still measured in virtual clocks, never wall time, so the run
-    /// stays deterministic.
+    /// Deterministic calendar seed; never read from the host clock.
+    pub start: RtcStart,
+    /// Configuration RAM seed or a 64-byte image with live status cleared.
+    pub nvram: NvramSource,
+    /// Virtual-clock timing `(second_ticks, uip_ticks)`; `None` uses the
+    /// device's default. Short ratios let bounded test rigs observe updates.
     pub timing: Option<(u64, u64)>,
 }
 
@@ -292,5 +382,63 @@ impl DeviceConfig {
     pub fn allowing_port_overlap(mut self) -> Self {
         self.allow_port_overlap = true;
         self
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn initialization_weekdays_match_gregorian_reference_for_every_supported_date() {
+        // Zeller's congruence uses a March-based year, independently of the
+        // production January anchor and cumulative month-day calculation.
+        for year in 1980..=2099 {
+            for month in 1..=12 {
+                let max_day = match month {
+                    4 | 6 | 9 | 11 => 30,
+                    2 if year % 4 == 0 => 29,
+                    2 => 28,
+                    _ => 31,
+                };
+                for day in 1..=max_day {
+                    let start = RtcStart {
+                        year,
+                        month,
+                        day,
+                        ..RtcStart::default()
+                    };
+                    assert_eq!(start.invalid_field(), None, "{start}");
+                    let (y, m) = if month <= 2 {
+                        (u32::from(year) - 1, u32::from(month) + 12)
+                    } else {
+                        (u32::from(year), u32::from(month))
+                    };
+                    let h = (u32::from(day) + 13 * (m + 1) / 5 + y + y / 4 - y / 100 + y / 400) % 7;
+                    let weekday = ((h + 6) % 7 + 1) as u8;
+                    assert_eq!(start.weekday(), weekday, "{start}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn initialization_weekdays_include_dos_epoch_and_current_year_leap_day() {
+        for (year, month, day, expected) in [
+            (1980, 1, 1, 3),
+            (1984, 3, 1, 5),
+            (1999, 12, 31, 6),
+            (2000, 1, 1, 7),
+            (2024, 2, 29, 5),
+            (2024, 3, 1, 6),
+        ] {
+            let start = RtcStart {
+                year,
+                month,
+                day,
+                ..RtcStart::default()
+            };
+            assert_eq!(start.weekday(), expected, "{start}");
+        }
     }
 }

@@ -409,6 +409,25 @@ impl CmosRtc {
         self
     }
 
+    /// Initialize battery-backed bytes without AT checksum repair.
+    ///
+    /// Motorola MC146818 datasheet, RAM, Time, Calendar, and Alarm Locations,
+    /// and Registers A, C and D: UIP and interrupt status are read-only live
+    /// state, and D reports valid RAM/time with reserved bits clear. Loading an
+    /// image clears these status bits so stale flags cannot inject an IRQ or
+    /// produce a snapshot the device cannot restore. Time reads use the
+    /// separately seeded live calendar. Register B selects its encoding. See
+    /// `backlog/docs/design/machine-config.md` § RTC start and NVRAM source.
+    #[must_use]
+    pub fn with_nvram(mut self, bytes: [u8; NVRAM_LEN]) -> Self {
+        self.nvram = bytes;
+        self.nvram[REG_A] &= !A_UIP;
+        self.nvram[REG_C] = 0;
+        self.refresh_irqf();
+        self.nvram[REG_D] = D_VRT;
+        self
+    }
+
     /// Write the standard configuration bytes and recompute the checksum. The
     /// diagnostic (0x0E) and shutdown (0x0F) status bytes are cleared so the
     /// BIOS sees no prior fault.
@@ -984,6 +1003,67 @@ impl Device for CmosRtc {
 mod tests {
     use super::*;
     use testkit::MockBus;
+
+    #[test]
+    fn initialization_nvram_image_preserves_writable_bytes_and_clears_status() {
+        let image = std::array::from_fn(|index| (index as u8).wrapping_mul(37));
+        let rtc = CmosRtc::new().with_nvram(image);
+        for (index, byte) in image.into_iter().enumerate() {
+            let expected = match index {
+                REG_A => byte & !A_UIP,
+                REG_C => 0,
+                REG_D => D_VRT,
+                _ => byte,
+            };
+            assert_eq!(rtc.nvram[index], expected, "backing byte {index:#x}");
+        }
+        let mut bus = MockBus::new(Box::new(rtc));
+        for index in (0x0E..64).chain([1, 3, 5, REG_B]) {
+            assert_eq!(
+                bus_read_reg(&mut bus, index),
+                image[index],
+                "register {index:#x}"
+            );
+        }
+        assert_eq!(bus_read_reg(&mut bus, REG_C), 0);
+        assert_eq!(bus_read_reg(&mut bus, REG_A), image[REG_A] & !A_UIP);
+        assert_eq!(bus_read_reg(&mut bus, REG_D), D_VRT);
+        bus_write_reg(&mut bus, 0x20, 0xAB);
+        assert_eq!(bus_read_reg(&mut bus, 0x20), 0xAB);
+    }
+
+    #[test]
+    fn initialization_hostile_nvram_image_round_trips_snapshot() {
+        for (a, c, d) in [(0xA6, 0, 0x80), (0x26, 0x0F, 0x80), (0xFF, 0xFF, 0x7F)] {
+            let mut image = [0xFF; 64];
+            image[REG_A] = a;
+            image[REG_B] = B_24HOUR;
+            image[REG_C] = c;
+            image[REG_D] = d;
+            let bus = MockBus::new(Box::new(CmosRtc::new().with_nvram(image)));
+            let snapshot = bus.device().save();
+            let mut restored = MockBus::new(Box::new(CmosRtc::new()));
+            restored.device_mut().restore(&snapshot).unwrap();
+            assert_eq!(restored.device().save(), snapshot);
+            assert_eq!(bus_read_reg(&mut restored, REG_A), a & !A_UIP);
+            assert_eq!(bus_read_reg(&mut restored, REG_C), 0);
+            assert_eq!(bus_read_reg(&mut restored, REG_D), D_VRT);
+        }
+    }
+
+    #[test]
+    fn initialization_nvram_image_has_no_power_on_irq() {
+        for enables in [0, B_UIE | B_AIE | B_PIE] {
+            let mut image = [0; 64];
+            image[REG_B] = B_24HOUR | enables;
+            image[REG_C] = C_IRQF | C_PF | C_AF | C_UF;
+            let mut bus = MockBus::new(Box::new(CmosRtc::new().with_nvram(image)));
+            assert!(!bus.device().irq_pending());
+            assert_eq!(bus_read_reg(&mut bus, REG_C), 0);
+            bus.tick(0);
+            assert!(!bus.device().irq_pending());
+        }
+    }
 
     #[test]
     fn fidelity_periodic_deadlines_round_up_without_drift() {

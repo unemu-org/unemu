@@ -699,6 +699,7 @@ mod tests {
             base: 0x7C00,
             source: crate::ImageSource::Inline(vec![0xFA, 0xB8, b'A', 7, 0xA3, 0, 0, 0xF4]),
             kind: crate::ImageKind::RamLoad,
+            provides: Vec::new(),
         });
         let policy = ObservationPolicy {
             trace: device::TracePolicy::Ring { capacity: 16 },

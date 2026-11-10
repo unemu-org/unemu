@@ -12,6 +12,30 @@ use crate::device::DeviceId;
 /// test can assert the exact failure a malformed config produces.
 #[derive(Clone, Debug, PartialEq, Eq, Error)]
 pub enum ConfigError {
+    /// A present device requires a service no configured ROM provides.
+    #[error("device {device:?} needs firmware service {service}; no ROM provides it")]
+    NoProvider {
+        /// Device that needs the service.
+        device: DeviceId,
+        /// Missing service.
+        service: crate::FirmwareService,
+    },
+    /// A RAM-loaded blob cannot declare firmware services.
+    #[error("RAM load image {image} cannot provide firmware services")]
+    ServicesOnRamLoad {
+        /// Index in the machine image list.
+        image: usize,
+    },
+    /// A calendar seed is outside the modelled calendar range.
+    #[error("device {device:?} has invalid RTC start {start}: invalid {field}; expected {range}", range = rtc_start_range(.start, .field))]
+    InvalidRtcStart {
+        /// RTC device with an invalid start.
+        device: DeviceId,
+        /// Rejected calendar value.
+        start: crate::RtcStart,
+        /// First invalid calendar or time field.
+        field: &'static str,
+    },
     /// A device cannot depend on itself for access synchronization.
     #[error("device {device:?} cannot declare itself as an access dependent")]
     SelfAccessCoupling {
@@ -343,4 +367,18 @@ pub enum ConfigError {
         /// The size the backing image actually has.
         actual: u64,
     },
+}
+
+fn rtc_start_range(start: &crate::RtcStart, field: &str) -> String {
+    match field {
+        "year" => "1980-2099".into(),
+        "month" => "1-12".into(),
+        "day" => format!(
+            "1-{} for the selected month and year",
+            start.days_in_month()
+        ),
+        "hour" => "0-23".into(),
+        "minute" | "second" => "0-59".into(),
+        _ => "a valid calendar date and time".into(),
+    }
 }

@@ -145,7 +145,15 @@ fn keyboard(irq: Option<u8>) -> DeviceConfig {
 fn rtc(seed: bool, timing: Option<(u64, u64)>, irq: Option<u8>) -> DeviceConfig {
     let dc = DeviceConfig::new(
         DeviceId::Rtc,
-        DeviceKind::Rtc(CmosCfg { seed, timing }),
+        DeviceKind::Rtc(CmosCfg {
+            nvram: if seed {
+                crate::NvramSource::Derived
+            } else {
+                crate::NvramSource::Blank
+            },
+            timing,
+            ..CmosCfg::default()
+        }),
         vec![PortWindow::new(CMOS_INDEX_PORT, CMOS_DATA_PORT)],
     );
     match irq {
@@ -290,6 +298,7 @@ fn at_demo(blob: Vec<u8>, devices: Vec<DeviceConfig>) -> MachineConfig {
             base: (u64::from(DEMO_CS) << 4) + u64::from(DEMO_IP),
             source: ImageSource::Inline(blob),
             kind: ImageKind::RamLoad,
+            provides: Vec::new(),
         }],
         output: OutputConfig::default(),
     }
@@ -364,11 +373,13 @@ pub fn at_fdc_write(program: Vec<u8>, pattern: Vec<u8>, pattern_base: u64) -> Ma
                 base: (u64::from(DEMO_CS) << 4) + u64::from(DEMO_IP),
                 source: ImageSource::Inline(program),
                 kind: ImageKind::RamLoad,
+                provides: Vec::new(),
             },
             LoadImage {
                 base: pattern_base,
                 source: ImageSource::Inline(pattern),
                 kind: ImageKind::RamLoad,
+                provides: Vec::new(),
             },
         ],
         output: OutputConfig::default(),
@@ -410,6 +421,7 @@ pub fn at_vga_text(blob: Vec<u8>) -> MachineConfig {
             base: (u64::from(DEMO_CS) << 4) + u64::from(DEMO_IP),
             source: ImageSource::Inline(blob),
             kind: ImageKind::RamLoad,
+            provides: Vec::new(),
         }],
         output: OutputConfig::default(),
     }
@@ -447,6 +459,7 @@ pub fn test386(image: Vec<u8>) -> MachineConfig {
             base: u64::from(TEST386_LOAD_SEG) << 4,
             source: ImageSource::Inline(image),
             kind: ImageKind::RamLoad,
+            provides: Vec::new(),
         }],
         output: OutputConfig::default(),
     }
@@ -489,6 +502,7 @@ pub fn floppy_boot(loader: Vec<u8>, floppy: Vec<u8>) -> MachineConfig {
             base: (u64::from(DEMO_CS) << 4) + u64::from(FLOPPY_LOADER_IP),
             source: ImageSource::Inline(loader),
             kind: ImageKind::RamLoad,
+            provides: Vec::new(),
         }],
         output: OutputConfig::default(),
     }
@@ -583,6 +597,7 @@ pub fn bios(rom: Vec<u8>, floppy: Option<Vec<u8>>) -> MachineConfig {
             base: BIOS_ROM_BASE,
             source: ImageSource::Inline(rom),
             kind: ImageKind::Rom,
+            provides: vec![crate::FirmwareService::Floppy],
         }],
         output: OutputConfig::default(),
     }

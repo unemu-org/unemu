@@ -34,13 +34,14 @@
 //! slave face, and its controller face out of that single chip, so a guest EOI
 //! through either bus face reaches the state the machine's INTA set.
 //!
-//! ## CMOS is derived, never free-configured
+//! ## CMOS initialization
 //!
 //! A stock BIOS reads its floppy types, equipment byte, and memory sizes from
 //! CMOS and checksums them against the actual machine; a mismatch drops POST into
 //! an interactive SETUP prompt a headless run cannot answer. So the seed is a
 //! *product* of assembly ([`derive_cmos_config`]), computed from the memory map
-//! and the attached drives, not a value the caller supplies.
+//! and the attached drives. An explicit NVRAM image bypasses this derivation;
+//! the fixed RTC start supplies the live calendar in either case.
 
 use std::borrow::Cow;
 use std::collections::HashMap;
@@ -182,9 +183,21 @@ fn assemble_with_cpu(
                 if let Some((second_ticks, uip_ticks)) = c.timing {
                     rtc = rtc.with_timing(second_ticks, uip_ticks);
                 }
-                if c.seed {
-                    rtc = rtc.with_config(cmos);
-                }
+                rtc = match c.nvram {
+                    crate::NvramSource::Derived => rtc.with_config(cmos),
+                    crate::NvramSource::Blank => rtc,
+                    crate::NvramSource::Image(bytes) => rtc.with_nvram(bytes),
+                };
+                let start = c.start;
+                rtc.set_time(
+                    start.second,
+                    start.minute,
+                    start.hour,
+                    start.weekday(),
+                    start.day,
+                    start.month,
+                    (start.year % 100) as u8,
+                );
                 Box::new(rtc)
             }
             DeviceKind::Vga(_) => Box::new(VgaText::new()),
@@ -551,6 +564,210 @@ fn floppy_cmos_type(geometry: &FloppyGeometry) -> u8 {
 mod tests {
     use super::*;
 
+    fn rtc_config(config: &mut MachineConfig) -> &mut CmosCfg {
+        let device = config
+            .devices
+            .iter_mut()
+            .find(|d| d.id == DeviceId::Rtc)
+            .unwrap();
+        let DeviceKind::Rtc(ref mut cfg) = device.kind else {
+            panic!("RTC kind")
+        };
+        cfg
+    }
+
+    fn rtc_registers(config: &MachineConfig) -> [u8; 64] {
+        let mut assembled = assemble(config).unwrap();
+        let bus = assembled.machine.bus_mut();
+        std::array::from_fn(|index| {
+            bus.port_write(0x70, 1, index as u32).unwrap();
+            bus.port_read(0x71, 1).unwrap() as u8
+        })
+    }
+
+    #[test]
+    fn initialization_default_rtc_matches_legacy_state_and_every_register() {
+        for (config, expected_nvram) in [
+            (
+                crate::bios(vec![0; 32768], None),
+                crate::NvramSource::Derived,
+            ),
+            (
+                crate::bios(vec![0; 32768], Some(vec![0; 1_474_560])),
+                crate::NvramSource::Derived,
+            ),
+            (
+                crate::at_rtc(vec![0xF4], 100, 10),
+                crate::NvramSource::Blank,
+            ),
+        ] {
+            let rtc_cfg = config
+                .devices
+                .iter()
+                .find_map(|device| match device.kind {
+                    DeviceKind::Rtc(cfg) => Some(cfg),
+                    _ => None,
+                })
+                .unwrap();
+            assert_eq!(rtc_cfg.start, crate::RtcStart::default());
+            let mut legacy = CmosRtc::new();
+            if let Some((second, uip)) = rtc_cfg.timing {
+                legacy = legacy.with_timing(second, uip);
+            }
+            assert_eq!(rtc_cfg.nvram, expected_nvram);
+            if expected_nvram == crate::NvramSource::Derived {
+                legacy = legacy.with_config(derive_cmos_config(&config));
+            }
+            let mut assembled = assemble(&config).unwrap();
+            let index = assembled.device_index[&DeviceId::Rtc];
+            let actual = assembled
+                .machine
+                .bus_mut()
+                .device_mut(index)
+                .unwrap()
+                .save();
+            assert_eq!(
+                actual,
+                legacy.save(),
+                "includes every backing byte and calendar field"
+            );
+            let registers = rtc_registers(&config);
+            for (index, value) in registers.into_iter().enumerate() {
+                legacy.port_write(0x70, 1, index as u32).unwrap();
+                assert_eq!(
+                    value,
+                    legacy.port_read(0x71, 1).unwrap() as u8,
+                    "register {index:#x}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn initialization_non_default_rtc_start_reads_back_through_ports() {
+        let mut config = crate::at_rtc(vec![0xF4], 100, 10);
+        rtc_config(&mut config).start = crate::RtcStart {
+            year: 2024,
+            month: 2,
+            day: 29,
+            hour: 23,
+            minute: 45,
+            second: 56,
+        };
+        let bytes = rtc_registers(&config);
+        for (index, expected) in [
+            (0, 0x56),
+            (2, 0x45),
+            (4, 0x23),
+            (6, 5),
+            (7, 0x29),
+            (8, 0x02),
+            (9, 0x24),
+        ] {
+            assert_eq!(bytes[index], expected, "register {index:#x}");
+        }
+    }
+
+    #[test]
+    fn initialization_period_dates_read_back_and_roll_over_the_century() {
+        for (start, next_date) in [
+            (
+                crate::RtcStart {
+                    year: 1980,
+                    month: 1,
+                    day: 1,
+                    hour: 23,
+                    minute: 59,
+                    second: 59,
+                },
+                [4, 0x02, 0x01, 0x80],
+            ),
+            (
+                crate::RtcStart {
+                    year: 1999,
+                    month: 12,
+                    day: 31,
+                    hour: 23,
+                    minute: 59,
+                    second: 59,
+                },
+                [7, 0x01, 0x01, 0x00],
+            ),
+            (
+                crate::RtcStart {
+                    year: 1984,
+                    month: 2,
+                    day: 28,
+                    hour: 23,
+                    minute: 59,
+                    second: 59,
+                },
+                [4, 0x29, 0x02, 0x84],
+            ),
+            (
+                crate::RtcStart {
+                    year: 2024,
+                    month: 2,
+                    day: 29,
+                    hour: 23,
+                    minute: 59,
+                    second: 59,
+                },
+                [6, 0x01, 0x03, 0x24],
+            ),
+        ] {
+            let mut config = crate::at_rtc(vec![0xF4], 100, 10);
+            rtc_config(&mut config).start = start;
+            let mut assembled = assemble(&config).unwrap();
+            let bus = assembled.machine.bus_mut();
+            bus.port_write(0x70, 1, 9).unwrap();
+            let year = (start.year % 100) as u8;
+            assert_eq!(
+                bus.port_read(0x71, 1).unwrap() as u8,
+                ((year / 10) << 4) | (year % 10)
+            );
+            bus.tick_due(device::VClock(100));
+            for (index, expected) in [6, 7, 8, 9].into_iter().zip(next_date) {
+                bus.port_write(0x70, 1, index).unwrap();
+                assert_eq!(
+                    bus.port_read(0x71, 1).unwrap() as u8,
+                    expected,
+                    "{start}, register {index}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn initialization_nvram_image_bypasses_derivation_and_uses_fixed_start() {
+        let mut config = crate::bios(vec![0; 32768], None);
+        let mut image = std::array::from_fn(|index| (index as u8).wrapping_mul(37));
+        // Motorola MC146818 datasheet, Register B: binary, 12-hour encoding.
+        image[0x0B] = 0x04;
+        let cfg = rtc_config(&mut config);
+        cfg.nvram = crate::NvramSource::Image(image);
+        cfg.start = crate::RtcStart {
+            year: 2031,
+            month: 12,
+            day: 25,
+            hour: 13,
+            minute: 47,
+            second: 59,
+        };
+        let bytes = rtc_registers(&config);
+        for index in (0..64).filter(|index| ![0, 2, 4, 6, 7, 8, 9, 10, 12, 13].contains(index)) {
+            assert_eq!(bytes[index], image[index], "register {index:#x}");
+        }
+        assert_eq!(
+            [bytes[0], bytes[2], bytes[4], bytes[6], bytes[7], bytes[8], bytes[9]],
+            [59, 47, 0x81, 5, 25, 12, 31]
+        );
+        // Motorola MC146818 datasheet, Registers A and D: live UIP and VRT.
+        assert_eq!(bytes[10], image[10] & 0x7F);
+        assert_eq!(bytes[12], 0);
+        assert_eq!(bytes[13], 0x80);
+    }
+
     #[test]
     fn observation_rejects_missing_or_mismatched_capabilities() {
         use crate::{ObservationPolicy, ObservationRequest, OutputKind};
@@ -642,7 +859,8 @@ mod tests {
             DeviceConfig::new(
                 DeviceId::Rtc,
                 DeviceKind::Rtc(CmosCfg {
-                    seed: true,
+                    nvram: crate::NvramSource::Derived,
+                    start: crate::RtcStart::default(),
                     timing: None,
                 }),
                 vec![PortWindow::new(0x70, 0x71)],
@@ -695,6 +913,7 @@ mod tests {
             base: ROM_BASE,
             source: ImageSource::Inline(vec![0u8; ROM_LEN as usize]),
             kind: ImageKind::Rom,
+            provides: Vec::new(),
         }];
 
         let drives = vec![DriveConfig {
@@ -991,6 +1210,7 @@ mod tests {
                     0xFA, 0xC7, 0x06, 0xFF, 0x7F, 0x34, 0x12, 0xA1, 0xFF, 0x7F, 0xF4,
                 ]),
                 kind: ImageKind::RamLoad,
+                provides: Vec::new(),
             });
             let mut assembled = assemble(&config).unwrap();
             assert_eq!(
@@ -1402,6 +1622,7 @@ mod tests {
             base: SPACE - 1,
             source: ImageSource::File(concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml").into()),
             kind: ImageKind::RamLoad,
+            provides: Vec::new(),
         };
         assert!(
             matches!(assemble(&config), Err(AssemblyError::Config(ConfigError::RegionOutOfSpace { base, end, space })) if base == SPACE - 1 && end == base + include_bytes!("../Cargo.toml").len() as u64 && space == SPACE),
@@ -1420,6 +1641,7 @@ mod tests {
             base: TEXT_BASE,
             source: file_source(),
             kind: ImageKind::Rom,
+            provides: Vec::new(),
         };
         assert!(matches!(
             assemble(&config),
@@ -1438,6 +1660,7 @@ mod tests {
             base: ROM_BASE + 1,
             source: file_source(),
             kind: ImageKind::Rom,
+            provides: Vec::new(),
         });
         assert!(
             matches!(assemble(&config), Err(AssemblyError::Config(ConfigError::ImageOverlap { a: 0, b: 1, addr })) if addr == ROM_BASE + 1)
@@ -1451,6 +1674,7 @@ mod tests {
             base: ROM_BASE,
             source: file_source(),
             kind: ImageKind::RamLoad,
+            provides: Vec::new(),
         };
         assert!(matches!(
             assemble(&config),
@@ -1468,6 +1692,7 @@ mod tests {
             base: 0,
             source: file_source(),
             kind: ImageKind::RamLoad,
+            provides: Vec::new(),
         };
         let assembled = assemble(&config).expect("readable RAM load assembles");
         let expected = include_bytes!("../Cargo.toml");

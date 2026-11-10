@@ -47,7 +47,10 @@ fn format_board_kind(kind: DeviceKind) -> String {
                 || "None".into(),
                 |(second, uip)| format!("Some(({second:#x}, {uip:#x}))"),
             );
-            format!("Rtc(CmosCfg {{ seed: {}, timing: {timing} }})", cfg.seed)
+            format!(
+                "Rtc(CmosCfg {{ start: {:?}, nvram: {:?}, timing: {timing} }})",
+                cfg.start, cfg.nvram
+            )
         }
         kind => format!("{kind:?}"),
     }
@@ -69,10 +72,24 @@ fn format_board_dma(dma: Option<crate::DmaSpec>) -> String {
     )
 }
 
+struct FirmwareRequirement {
+    matches: fn(DeviceKind) -> bool,
+    service: crate::FirmwareService,
+    needs_bound_drive: bool,
+}
+
+// A controller's firmware contract belongs to its kind, not to an optional
+// annotation. Controllers that serve firmware without media use false here.
+const FIRMWARE_REQUIREMENTS: &[FirmwareRequirement] = &[FirmwareRequirement {
+    matches: |kind| matches!(kind, DeviceKind::Fdc(_)),
+    service: crate::FirmwareService::Floppy,
+    needs_bound_drive: true,
+}];
+
 impl MachineConfig {
     /// Validate this configuration, returning the first inconsistency found.
     ///
-    /// The checks run in a fixed order (identity, board constraints, access coupling, ports, MMIO,
+    /// The checks run in a fixed order (identity, board constraints, firmware services, RTC start, access coupling, ports, MMIO,
     /// image placement, interrupt and DMA wiring, drive binding and geometry,
     /// clock) so malformed configs always yield the same [`ConfigError`]. File
     /// lengths are checked when [`crate::assemble`] reads the sources and validates
@@ -80,6 +97,8 @@ impl MachineConfig {
     pub fn validate(&self) -> Result<(), ConfigError> {
         self.check_unique_device_ids()?;
         self.check_board()?;
+        self.check_firmware_services()?;
+        self.check_rtc_starts()?;
         self.check_access_couplings()?;
         self.check_uart_bases()?;
         self.check_port_overlaps()?;
@@ -95,6 +114,59 @@ impl MachineConfig {
         self.check_drive_controllers()?;
         self.check_image_geometry()?;
         self.clock.cpu_rate()?;
+        Ok(())
+    }
+
+    fn check_firmware_services(&self) -> Result<(), ConfigError> {
+        for (index, image) in self.images.iter().enumerate() {
+            if image.kind != ImageKind::Rom && !image.provides.is_empty() {
+                return Err(ConfigError::ServicesOnRamLoad { image: index });
+            }
+        }
+        self.check_firmware_requirements(FIRMWARE_REQUIREMENTS)
+    }
+
+    fn check_firmware_requirements(
+        &self,
+        requirements: &[FirmwareRequirement],
+    ) -> Result<(), ConfigError> {
+        if self.board == BoardModel::Bare {
+            return Ok(());
+        }
+        for device in &self.devices {
+            for rule in requirements {
+                if (rule.matches)(device.kind)
+                    && (!rule.needs_bound_drive
+                        || self
+                            .drives
+                            .iter()
+                            .any(|drive| drive.controller == device.id))
+                    && !self.images.iter().any(|image| {
+                        image.kind == ImageKind::Rom && image.provides.contains(&rule.service)
+                    })
+                {
+                    return Err(ConfigError::NoProvider {
+                        device: device.id,
+                        service: rule.service,
+                    });
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn check_rtc_starts(&self) -> Result<(), ConfigError> {
+        for device in &self.devices {
+            if let DeviceKind::Rtc(cfg) = device.kind {
+                if let Some(field) = cfg.start.invalid_field() {
+                    return Err(ConfigError::InvalidRtcStart {
+                        device: device.id,
+                        start: cfg.start,
+                        field,
+                    });
+                }
+            }
+        }
         Ok(())
     }
 
@@ -173,7 +245,7 @@ impl MachineConfig {
         standard: &DeviceConfig,
     ) -> Result<(), ConfigError> {
         let mut expected = standard.clone();
-        // RTC seed and virtual timing are configurable, unlike its wiring.
+        // RTC initialization and virtual timing are configurable, unlike its wiring.
         if matches!(
             (actual.kind, expected.kind),
             (DeviceKind::Rtc(_), DeviceKind::Rtc(_))
@@ -595,6 +667,247 @@ mod tests {
     use crate::memory::{MemoryConfig, MmioWindow, RamRegion};
     use crate::output::OutputConfig;
 
+    #[test]
+    fn initialization_fdc_with_bound_drive_requires_floppy_provider() {
+        let mut config = board_config();
+        config.images[0].provides.clear();
+        let error = ConfigError::NoProvider {
+            device: DeviceId::Fdc,
+            service: crate::FirmwareService::Floppy,
+        };
+        assert_eq!(config.validate(), Err(error.clone()));
+        assert_eq!(
+            error.to_string(),
+            "device Fdc needs firmware service floppy; no ROM provides it"
+        );
+        config.images[0]
+            .provides
+            .push(crate::FirmwareService::FixedDisk);
+        assert_eq!(config.validate(), Err(error));
+        config.images.push(LoadImage {
+            base: 0xC8000,
+            source: ImageSource::Inline(vec![0; 8192]),
+            kind: ImageKind::Rom,
+            provides: vec![crate::FirmwareService::Floppy],
+        });
+        assert_eq!(config.validate(), Ok(()));
+    }
+
+    #[test]
+    fn initialization_bios_preset_declares_floppy_and_validates() {
+        let config = board_config();
+        assert_eq!(
+            config.images[0].provides,
+            vec![crate::FirmwareService::Floppy]
+        );
+        assert_eq!(config.validate(), Ok(()));
+    }
+
+    #[test]
+    fn initialization_fdc_without_bound_drive_needs_no_provider() {
+        let mut config = board_config();
+        config.images[0].provides.clear();
+        config.drives.clear();
+        assert_eq!(config.validate(), Ok(()));
+    }
+
+    #[test]
+    fn initialization_fdc_ignores_drives_bound_to_other_controllers() {
+        let mut config = board_config();
+        config.images[0].provides.clear();
+        config.drives[0].controller = DeviceId::Uart;
+        assert_eq!(config.check_firmware_services(), Ok(()));
+    }
+
+    #[test]
+    fn initialization_bare_rig_skips_firmware_requirements() {
+        let mut config = board_config();
+        config.images[0].provides.clear();
+        config.board = BoardModel::Bare;
+        assert_eq!(config.validate(), Ok(()));
+    }
+
+    #[test]
+    fn initialization_requirement_table_supports_a_service_without_media() {
+        let mut config = board_config();
+        let rules = [FirmwareRequirement {
+            matches: |kind| matches!(kind, DeviceKind::Uart(_)),
+            service: crate::FirmwareService::FixedDisk,
+            needs_bound_drive: false,
+        }];
+        assert_eq!(
+            config.check_firmware_requirements(&rules),
+            Err(ConfigError::NoProvider {
+                device: DeviceId::Uart,
+                service: crate::FirmwareService::FixedDisk,
+            })
+        );
+        config.images[0]
+            .provides
+            .push(crate::FirmwareService::FixedDisk);
+        assert_eq!(config.check_firmware_requirements(&rules), Ok(()));
+    }
+
+    #[test]
+    fn initialization_ram_load_cannot_provide_firmware_services() {
+        let mut config = crate::at_boot(vec![0xF4]);
+        config.images[0]
+            .provides
+            .push(crate::FirmwareService::FixedDisk);
+        let error = ConfigError::ServicesOnRamLoad { image: 0 };
+        assert_eq!(config.validate(), Err(error.clone()));
+        assert_eq!(
+            error.to_string(),
+            "RAM load image 0 cannot provide firmware services"
+        );
+    }
+
+    #[test]
+    fn initialization_invalid_rtc_calendar_is_rejected_before_assembly() {
+        let valid = crate::RtcStart {
+            year: 2024,
+            month: 2,
+            day: 29,
+            hour: 23,
+            minute: 59,
+            second: 59,
+        };
+        for (start, field, formatted, range) in [
+            (
+                crate::RtcStart {
+                    year: 1979,
+                    ..valid
+                },
+                "year",
+                "1979-02-29T23:59:59",
+                "1980-2099",
+            ),
+            (
+                crate::RtcStart {
+                    year: 2100,
+                    ..valid
+                },
+                "year",
+                "2100-02-29T23:59:59",
+                "1980-2099",
+            ),
+            (
+                crate::RtcStart {
+                    year: 2023,
+                    ..valid
+                },
+                "day",
+                "2023-02-29T23:59:59",
+                "1-28 for the selected month and year",
+            ),
+            (
+                crate::RtcStart { month: 0, ..valid },
+                "month",
+                "2024-00-29T23:59:59",
+                "1-12",
+            ),
+            (
+                crate::RtcStart { month: 13, ..valid },
+                "month",
+                "2024-13-29T23:59:59",
+                "1-12",
+            ),
+            (
+                crate::RtcStart { day: 0, ..valid },
+                "day",
+                "2024-02-00T23:59:59",
+                "1-29 for the selected month and year",
+            ),
+            (
+                crate::RtcStart { day: 30, ..valid },
+                "day",
+                "2024-02-30T23:59:59",
+                "1-29 for the selected month and year",
+            ),
+            (
+                crate::RtcStart {
+                    month: 4,
+                    day: 31,
+                    ..valid
+                },
+                "day",
+                "2024-04-31T23:59:59",
+                "1-30 for the selected month and year",
+            ),
+            (
+                crate::RtcStart {
+                    month: 1,
+                    day: 32,
+                    ..valid
+                },
+                "day",
+                "2024-01-32T23:59:59",
+                "1-31 for the selected month and year",
+            ),
+            (
+                crate::RtcStart { hour: 24, ..valid },
+                "hour",
+                "2024-02-29T24:59:59",
+                "0-23",
+            ),
+            (
+                crate::RtcStart {
+                    minute: 60,
+                    ..valid
+                },
+                "minute",
+                "2024-02-29T23:60:59",
+                "0-59",
+            ),
+            (
+                crate::RtcStart {
+                    second: 60,
+                    ..valid
+                },
+                "second",
+                "2024-02-29T23:59:60",
+                "0-59",
+            ),
+        ] {
+            let mut config = crate::at_rtc(vec![0xF4], 100, 10);
+            let rtc = config
+                .devices
+                .iter_mut()
+                .find(|d| d.id == DeviceId::Rtc)
+                .unwrap();
+            let DeviceKind::Rtc(ref mut cfg) = rtc.kind else {
+                panic!("RTC kind")
+            };
+            cfg.start = start;
+            let error = ConfigError::InvalidRtcStart {
+                device: DeviceId::Rtc,
+                start,
+                field,
+            };
+            assert_eq!(config.validate(), Err(error.clone()));
+            assert!(
+                matches!(crate::assemble(&config), Err(crate::AssemblyError::Config(actual))
+                if actual == error)
+            );
+            assert_eq!(
+                error.to_string(),
+                format!("device Rtc has invalid RTC start {formatted}: invalid {field}; expected {range}")
+            );
+        }
+        assert_eq!(valid.invalid_field(), None);
+        assert_eq!(valid.weekday(), 5);
+        assert_eq!(
+            crate::RtcStart {
+                year: 2099,
+                month: 12,
+                day: 31,
+                ..valid
+            }
+            .weekday(),
+            5
+        );
+    }
+
     fn board_config() -> MachineConfig {
         crate::bios(
             vec![0; 0x8000],
@@ -745,10 +1058,11 @@ mod tests {
             ),
             (
                 DeviceKind::Rtc(CmosCfg {
-                    seed: false,
+                    nvram: crate::NvramSource::Blank,
+                    start: crate::RtcStart::default(),
                     timing: Some((0x1234, 0x56)),
                 }),
-                "Rtc(CmosCfg { seed: false, timing: Some((0x1234, 0x56)) })",
+                "Rtc(CmosCfg { start: RtcStart { year: 2000, month: 1, day: 1, hour: 0, minute: 0, second: 0 }, nvram: Blank, timing: Some((0x1234, 0x56)) })",
             ),
         ] {
             let mut config = board_config();
@@ -1004,7 +1318,8 @@ mod tests {
                 .find(|d| d.id == DeviceId::Rtc)
                 .unwrap()
                 .kind = DeviceKind::Rtc(CmosCfg {
-                seed: false,
+                nvram: crate::NvramSource::Blank,
+                start: crate::RtcStart::default(),
                 timing: Some((20, 2)),
             });
             assert_eq!(config.validate(), Ok(()));
@@ -1197,7 +1512,8 @@ mod tests {
             dev(
                 DeviceId::Rtc,
                 DeviceKind::Rtc(CmosCfg {
-                    seed: true,
+                    nvram: crate::NvramSource::Derived,
+                    start: crate::RtcStart::default(),
                     timing: None,
                 }),
                 vec![PortWindow::new(0x70, 0x71)],
@@ -1248,6 +1564,7 @@ mod tests {
             base: ROM_BASE,
             source: ImageSource::Inline(vec![0u8; ROM_LEN as usize]),
             kind: ImageKind::Rom,
+            provides: Vec::new(),
         }];
 
         let drives = vec![DriveConfig {
@@ -1697,6 +2014,7 @@ mod tests {
                 base: TEXT_BASE,
                 source: ImageSource::Blank { size: 1 },
                 kind,
+                provides: Vec::new(),
             };
             assert_eq!(
                 config.validate(),
@@ -1716,6 +2034,7 @@ mod tests {
             base: ROM_BASE + 1,
             source: ImageSource::Blank { size: 1 },
             kind: ImageKind::Rom,
+            provides: Vec::new(),
         });
         assert_eq!(
             config.validate(),
@@ -1748,6 +2067,7 @@ mod tests {
             base: 8,
             source: ImageSource::Blank { size: 32 },
             kind: ImageKind::RamLoad,
+            provides: Vec::new(),
         };
         assert_eq!(
             config.validate(),
@@ -1766,6 +2086,7 @@ mod tests {
             base: 8,
             source: ImageSource::Blank { size: 24 },
             kind: ImageKind::RamLoad,
+            provides: Vec::new(),
         };
         assert_eq!(config.validate(), Ok(()));
     }
@@ -1778,16 +2099,19 @@ mod tests {
                 base: 0,
                 source: ImageSource::Blank { size: 16 },
                 kind: ImageKind::RamLoad,
+                provides: Vec::new(),
             },
             LoadImage {
                 base: 16,
                 source: ImageSource::Blank { size: 16 },
                 kind: ImageKind::RamLoad,
+                provides: Vec::new(),
             },
             LoadImage {
                 base: 8,
                 source: ImageSource::Blank { size: 0 },
                 kind: ImageKind::RamLoad,
+                provides: Vec::new(),
             },
         ];
         assert_eq!(config.validate(), Ok(()));
