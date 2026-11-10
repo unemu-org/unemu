@@ -76,6 +76,7 @@ const EXTENDED_BASE: u64 = 0x10_0000;
 /// The `machine` is ready to run; `device_index` resolves each configured
 /// [`DeviceId`] to the bus slot the assembler placed it in, so a drain or inject
 /// path never hardcodes an integer index.
+#[must_use = "assembled journal sessions require explicit finalization"]
 pub struct AssembledMachine {
     /// The running machine, fully wired.
     pub machine: Machine<X86JitCpu>,
@@ -83,6 +84,8 @@ pub struct AssembledMachine {
     pub device_index: HashMap<DeviceId, usize>,
     /// Validated observation routes and their bounded, run-scoped collectors.
     pub observation: Observation,
+    /// Per-journal drive status and explicit session finalization.
+    pub persistence: Vec<crate::PersistenceHandle>,
 }
 
 /// A way assembling a validated [`MachineConfig`] can fail (§3.1).
@@ -96,6 +99,14 @@ pub enum AssemblyError {
     /// The configuration is internally inconsistent (validation ran first).
     #[error("invalid configuration: {0}")]
     Config(#[from] ConfigError),
+
+    /// A drive could not lock, validate, repair or replay its journal.
+    #[error("drive {drive_index} journal mount: {source}")]
+    Journal {
+        drive_index: usize,
+        #[source]
+        source: media::OpenError,
+    },
 
     /// Resolved access-coupling indices were rejected by the bus.
     #[error("bus access coupling: {0}")]
@@ -146,12 +157,13 @@ fn assemble_with_cpu(
     // A validated config does not fail assembly for configuration reasons; run
     // the checks first so any inconsistency surfaces as a precise ConfigError.
     config.validate()?;
+    validate_observation_policy(config, observation_policy)?;
 
     // Validate the bytes that will actually be mounted, without a second file
     // read that could observe a different length or contents.
     let resolved = resolve_file_sources(config)?;
     let config = resolved.as_ref();
-    config.validate()?;
+    config.validate_resolved()?;
 
     let mut cpu = build(config)?;
     validate_step_cpu(&mut cpu)?;
@@ -164,6 +176,7 @@ fn assemble_with_cpu(
     let mut device_index: HashMap<DeviceId, usize> = HashMap::with_capacity(config.devices.len());
     let mut pic: Option<chipset::CascadedPic> = None;
     let mut reset_signal = None;
+    let mut persistence = Vec::new();
 
     for dc in &config.devices {
         let boxed: Box<dyn Device> = match &dc.kind {
@@ -209,7 +222,11 @@ fn assemble_with_cpu(
             DeviceKind::Mda(_) => Box::new(MdaText::new()),
             DeviceKind::SysControl(_) => Box::new(SysControl::new()),
             DeviceKind::Post(c) => Box::new(PostPort::with_port(c.port)),
-            DeviceKind::Fdc(_) => Box::new(Upd765::with_drives(build_fdc_drives(config, dc.id)?)),
+            DeviceKind::Fdc(_) => Box::new(Upd765::with_drives(mount_fdc_drives(
+                config,
+                dc.id,
+                &mut persistence,
+            )?)),
             DeviceKind::Dma(_) => Box::new(Dma8237::new()),
             DeviceKind::DmaWord(_) => Box::new(Dma8237::new_at_word()),
             DeviceKind::AbsentCoprocessor => Box::new(Absent80287::new()),
@@ -254,7 +271,51 @@ fn assemble_with_cpu(
         machine,
         device_index,
         observation,
+        persistence,
     })
+}
+
+// Reject policy errors before any mount can create files or recover a tip.
+fn validate_observation_policy(
+    config: &MachineConfig,
+    policy: &ObservationPolicy,
+) -> Result<(), ConfigError> {
+    use crate::OutputKind;
+    use device::ByteStreamKind;
+
+    for (index, request) in policy.routes.iter().enumerate() {
+        let device = request.device;
+        let output = request.output;
+        if policy.routes[..index]
+            .iter()
+            .any(|r| r.device == device && r.output == output)
+        {
+            return Err(ConfigError::DuplicateObservationRoute { device, output });
+        }
+        let supported = config
+            .devices
+            .iter()
+            .find(|dc| dc.id == device)
+            .is_some_and(|dc| {
+                matches!(
+                    (&dc.kind, output),
+                    (
+                        DeviceKind::Vga(_) | DeviceKind::Mda(_),
+                        OutputKind::TextScanout
+                    ) | (
+                        DeviceKind::Uart(_),
+                        OutputKind::Bytes(ByteStreamKind::SerialTx)
+                    ) | (
+                        DeviceKind::Post(_),
+                        OutputKind::Bytes(ByteStreamKind::PostCheckpoints)
+                    )
+                )
+            });
+        if !supported {
+            return Err(ConfigError::UnsupportedObservationOutput { device, output });
+        }
+    }
+    Ok(())
 }
 
 /// A zero-step probe rejects unsupported backends without executing guest code.
@@ -413,6 +474,15 @@ fn build_dma_wirings(
         .collect()
 }
 
+/// Test wrapper for drive construction without retaining session handles.
+#[cfg(test)]
+fn build_fdc_drives(
+    config: &MachineConfig,
+    controller: DeviceId,
+) -> Result<[Option<Drive>; 4], AssemblyError> {
+    mount_fdc_drives(config, controller, &mut Vec::new())
+}
+
 /// Route the config's floppy drives into the controller's four drive positions by
 /// their `controller` and `unit` (§7.7).
 ///
@@ -428,12 +498,13 @@ fn build_dma_wirings(
 /// device-construction match arm just as [`DeviceKind::Fdc`] calls this. No new
 /// assembler architecture is needed — the drive list, the slot routing, and the
 /// CMOS derivation are already in place; only the target device is missing.
-fn build_fdc_drives(
+fn mount_fdc_drives(
     config: &MachineConfig,
     controller: DeviceId,
-) -> Result<[Option<Drive>; 4], ConfigError> {
+    persistence: &mut Vec<crate::PersistenceHandle>,
+) -> Result<[Option<Drive>; 4], AssemblyError> {
     let mut slots: [Option<Drive>; 4] = [None, None, None, None];
-    for drive in &config.drives {
+    for (drive_index, drive) in config.drives.iter().enumerate() {
         if drive.controller != controller {
             continue;
         }
@@ -446,10 +517,23 @@ fn build_fdc_drives(
         }
         let image = load_image_bytes(&drive.image)?;
         let geometry = to_device_geometry(geometry);
-        slots[slot] = Some(if drive.write == WriteMode::ReadOnly {
-            Drive::new_read_only(geometry, image)
-        } else {
-            Drive::new(geometry, image)
+        slots[slot] = Some(match &drive.write {
+            WriteMode::ReadOnly => Drive::new_read_only(geometry, image),
+            WriteMode::Volatile => Drive::new(geometry, image),
+            WriteMode::Journal {
+                path,
+                keep_generations,
+            } => {
+                let (handle, media) = crate::PersistenceHandle::mount(
+                    drive_index,
+                    path,
+                    &image,
+                    drive.kind.image_bytes(),
+                    *keep_generations,
+                )?;
+                persistence.push(handle);
+                Drive::with_media(geometry, media)
+            }
         });
     }
     Ok(slots)
@@ -574,6 +658,60 @@ fn floppy_cmos_type(geometry: &FloppyGeometry) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn observation_precheck_matches_bind_for_every_device_and_output() {
+        let config = crate::bios(vec![0; 0x8000], Some(vec![0; 1_474_560]));
+        let mut assembled = assemble(&config).unwrap();
+        for dc in &config.devices {
+            let slot = assembled
+                .machine
+                .bus_mut()
+                .device_mut(assembled.device_index[&dc.id])
+                .unwrap();
+            let producer = std::mem::replace(slot, Box::new(I8042::new()));
+            let mut devices = vec![producer];
+            let device_index = HashMap::from([(dc.id, 0)]);
+            let mut single = config.clone();
+            single.devices = vec![dc.clone()];
+            for output in [
+                crate::OutputKind::TextScanout,
+                crate::OutputKind::Bytes(device::ByteStreamKind::SerialTx),
+                crate::OutputKind::Bytes(device::ByteStreamKind::PostCheckpoints),
+            ] {
+                let request = crate::ObservationRequest {
+                    device: dc.id,
+                    output,
+                    byte_limit: 1,
+                };
+                let absent = if dc.id == DeviceId::Keyboard {
+                    DeviceId::Uart
+                } else {
+                    DeviceId::Keyboard
+                };
+                for routes in [
+                    vec![request],
+                    vec![request, request],
+                    vec![crate::ObservationRequest {
+                        device: absent,
+                        ..request
+                    }],
+                ] {
+                    let policy = ObservationPolicy {
+                        routes,
+                        ..Default::default()
+                    };
+                    assert_eq!(
+                        validate_observation_policy(&single, &policy),
+                        Observation::bind(&policy, &device_index, &mut devices).map(|_| ()),
+                        "{:?} {:?}",
+                        dc.kind,
+                        policy.routes
+                    );
+                }
+            }
+        }
+    }
 
     fn rtc_config(config: &mut MachineConfig) -> &mut CmosCfg {
         let device = config

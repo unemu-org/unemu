@@ -26,6 +26,10 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   reset without an interrupt. Per-device module matrices record the remaining
   unsupported cases and assumptions; changed expectations are listed in
   [scheduler adoption](design/scheduler.md#adoption).
+- **Floppy write modes:** volatile is the default (in memory only), readonly
+  rejects writes, and explicit journal mode persists command-complete writes
+  beside an immutable file-backed base and replays them on the next mount.
+  Journal selection currently uses Rust `MachineConfig` data.
 - **Machines are declarative.** A `MachineConfig` (the `assembly` crate) is built by one
   `assemble()` and run under a `RunPolicy`; presets replace the old hand-written runners.
 - **CPU pin:** `96a49a9063cdf0a2bdb2d916f01b381fbad0176e` (x86jit `main`).
@@ -108,7 +112,8 @@ was reported to the CPU core project.
   transfer is performed. Assembly coalesces adjacent MMIO device windows so
   those crossings reach the bus, but mixed RAM/MMIO accesses need the upstream
   CPU fix tracked by `xj-ir6.12 (x86jit)`.
-- Floppy writes are volatile (in-memory only; `upc-sk3.1`, required by phase C).
+- Journal selection is not exposed by frontend flags or machine-file fields yet.
+  Retention pruning and offline history/export tools remain unimplemented.
 
 ## Recently landed
 

@@ -201,7 +201,7 @@ DriveConfig {
     image: ImageSource,
     controller: DeviceId,        // named device, never a global slot number
     unit: u8,                   // unit local to that controller
-    write: WriteMode,           // Volatile (default) or ReadOnly
+    write: WriteMode,           // Volatile (default), ReadOnly, or Journal
 }
 ```
 
@@ -224,7 +224,26 @@ and a secondary 720 KB unit 0 therefore derive `floppy_types = 0x20` and
 the mounted in-memory image. `WriteMode::ReadOnly` replaces `write_protect = true`
 and uses the same `Drive::new_read_only` constructor: WRITE DATA reports the
 existing not-writable status before requesting DMA or modifying media. Neither
-mode writes the host image. There is no journal variant yet.
+mode writes the host image or creates host output.
+
+`WriteMode::Journal { path, keep_generations }` requires an explicit journal
+path and positive retention count. `WriteMode::journal(path)` supplies the
+default count of ten. The enum makes journal-only fields on other modes
+unrepresentable. Journal mode requires `ImageSource::File`, a floppy and
+512-byte sectors. Assembly rejects normalized-path and existing-file-identity
+aliases (including hard links) between journal/lock outputs, any mounted drive
+or load image, and other journal/lock outputs before creating files. It reads
+the base read-only once, then opens, recovers and replays the journal before the
+first guest instruction. A mount refusal names the drive and its cause.
+
+The assembled session owns per-drive persistence handles. Embedders use
+`run_session` (or check handles at their own completed service boundaries),
+`checkpoint` for explicit recovery points, and `finish_persistence` only after
+successful execution or a normal policy-limited end. Dropping a failed run
+leaves its commands unsealed for recovery; host failures never enter controller
+status or virtual time. The retention count is retained for the separate
+retention service; automatic pruning and offline tools are not wired yet.
+See [Persistent media](persistent-media.md#assembly-session-api).
 
 ### `CpuConfig` and `ClockConfig` — minimal but the right home
 

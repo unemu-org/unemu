@@ -26,4 +26,4 @@ video.workspace = true
 [dev-dependencies]
 testkit.workspace = true
 machine = { workspace = true, features = ["reference-scheduler"] }
-assembly = { workspace = true, features = ["reference-scheduler"] }
+assembly = { workspace = true, features = ["reference-scheduler", "test-support"] }

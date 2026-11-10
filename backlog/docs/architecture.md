@@ -17,7 +17,7 @@ crate: `machine-file` reads and hashes declared images into inline buffers,
 
 | Crate | Responsibility | Runtime dependencies | Test-only dependencies |
 | --- | --- | --- | --- |
-| `media` | Floppy journal encoding, streaming recovery/replay, retention-anchor validation, durable host sink and stable single-writer locks ([format](design/persistent-media.md#chosen-format-byte-layout)) | `sha2`, `thiserror` | None |
+| `media` | Floppy journal encoding, streaming recovery/replay, retention-anchor validation, durable host sink and stable single-writer locks ([format](design/persistent-media.md#chosen-format-byte-layout)) | `sha2`, `thiserror`, `libc` (Unix) | None |
 | `device` | Hardware-neutral contracts: `Device`, `InterruptController`, `DmaMemory`, `VClock`, `NextEvent`, access traces, DMA messages, and the observation capabilities (text scanout, byte output, `ByteCapture`) | `thiserror` | None |
 | `cpu` | `Cpu`/`CpuStop` seam and `X86JitCpu`, which owns the core's `Vm` and `Vcpu` | `x86jit-core`, `thiserror` | None |
 | `bus` | Owns boxed devices and executes a port/MMIO `DecodeMap`; open-bus policy and ticking | `device`, `thiserror` | None |
@@ -25,11 +25,11 @@ crate: `machine-file` reads and hashes declared images into inline buffers,
 | `chipset` | Shared/cascaded PIC composition, null interrupt controller, AT port constants; no `Chipset` trait | `device`, `devices` | `testkit` |
 | `machine` | Generic `Machine<C: Cpu>` and execution/clock/IRQ/DMA loop | `cpu`, `bus`, `device`, `thiserror` | `testkit`, `devices` |
 | `video` | `FrameSink`, text frames/grids, text-mode renderer and capture sink | `device` | None |
-| `assembly` | `MachineConfig`, validation, presets, image/device construction, wiring, and `RunPolicy` driver | `machine`, `cpu`, `bus`, `device`, `devices`, `video`, `chipset`, `thiserror` | None |
+| `assembly` | `MachineConfig`, validation, presets, image/device construction, wiring, and `RunPolicy` driver | `machine`, `cpu`, `bus`, `device`, `devices`, `video`, `chipset`, `media`, `thiserror` | `media/test-support` |
 | `machine-file` | Schema 1 TOML parsing, source origins, image hashing and lowering through assembly validation; YAML and merging remain deferred ([schema](design/machine-files.md#schema-field-by-field)) | `assembly`, `serde`, `sha2`, `toml`, `thiserror` | None |
-| `window` | Optional CP437 rasteriser, shared `FrameSink`, and winit/softbuffer FreeDOS binary | `video`, `assembly`, `machine`, `winit`, `softbuffer` | None |
+| `window` | Optional CP437 rasteriser, shared `FrameSink`, and winit/softbuffer FreeDOS binary | `video`, `assembly`, `machine`, `winit`, `softbuffer` | `cpu`, `assembly/test-support` |
 | `testkit` | Single-device `MockBus`, scripted `MockCpu`, golden assertions | `device`, `cpu` | None |
-| `cli` | Binary and runner library: guest programs, assembly/policy selection, output capture and stop diagnostics | `assembly`, `device`, `bus`, `cpu`, `chipset`, `machine`, `devices`, `video`, `anyhow` | `testkit` |
+| `cli` | Binary and runner library: guest programs, assembly/policy selection, output capture and stop diagnostics | `assembly`, `device`, `bus`, `cpu`, `chipset`, `machine`, `devices`, `video`, `anyhow` | `testkit`, `machine/reference-scheduler`, `assembly/reference-scheduler`, `assembly/test-support` |
 
 Concrete hardware selection lives in `assembly` and the frontend. `machine`
 does not depend on `chipset`, `devices`, `video`, or x86jit directly. `Bus` is a
@@ -157,8 +157,10 @@ survive bounded runner calls.
   The host-side `media::JournalMedia` owns reconstructed bytes, synchronous
   per-command output, recovery and checkpoint/finish under a stable sidecar lock.
   Its shared `SinkStatus` latches the first failure outside guest-visible state;
-  reads and later memory writes continue after output stops. Assembly adaptation
-  to `SectorMedia` and frontend status polling remain separate integration work.
+  reads and later memory writes continue after output stops. Assembly adapts
+  journals to `SectorMedia` and exposes per-drive persistence handles. CLI and
+  window frontends poll status at run boundaries and explicitly finish normal
+  sessions; execution errors leave the tip unsealed.
   See [persistent media](design/persistent-media.md#integration-layers-flush-points-determinism-argument).
 - **`InterruptController`**, defined in `device`, supplies `set_irq_line`,
   non-mutating `poll`, `acknowledge`, and `end_of_interrupt`. Machine wiring

@@ -121,6 +121,7 @@ impl Presenter {
         if !self.running || self.occluded_since.is_some() {
             return Ok(());
         }
+        self.assembled.check_persistence()?;
         let (target, dropped) = frame_target(
             elapsed,
             self.assembled.machine.clock().0,
@@ -134,6 +135,7 @@ impl Presenter {
                 self.running = false;
                 break;
             }
+            self.assembled.check_persistence()?;
             let delivered = self.keyboard.inject_at_boundary(&mut self.assembled);
             #[cfg(test)]
             if !delivered.is_empty() {
@@ -142,11 +144,13 @@ impl Presenter {
             #[cfg(not(test))]
             drop(delivered);
             let outcome = self.assembled.machine.run_bounded(Some(cap));
+            if matches!(outcome, Ok(RunOutcome::ResetRequested)) {
+                self.record_reset_request(&mut io::stderr());
+            }
+            self.assembled.check_persistence()?;
             match outcome {
                 Ok(RunOutcome::RetiredCapReached) => self.running = cap < u64::MAX,
-                Ok(RunOutcome::ResetRequested) => {
-                    self.record_reset_request(&mut io::stderr());
-                }
+                Ok(RunOutcome::ResetRequested) => {}
                 Ok(RunOutcome::Halted) => {
                     self.running = false;
                     eprintln!("machine halted");
@@ -154,8 +158,12 @@ impl Presenter {
                 Err(error) => {
                     self.running = false;
                     eprintln!("machine stopped: {error}");
+                    self.error = Some(error.into());
                 }
             }
+        }
+        if !self.running && self.error.is_none() {
+            self.assembled.finish_persistence()?;
         }
         // Even a CPU error must leave the screen at its last completed boundary.
         self.assembled.capture_text(DeviceId::Mda)?;
@@ -237,6 +245,7 @@ impl Presenter {
     }
 
     fn fail(&mut self, events: &ActiveEventLoop, error: Box<dyn Error>) {
+        self.running = false;
         self.error = Some(error);
         events.exit();
     }
@@ -387,6 +396,11 @@ fn main() -> Result<(), Box<dyn Error>> {
     let result = events.run_app(&mut presenter);
     presenter.write_reset_summary(&mut io::stderr());
     result?;
+    // A halt already finished its session in advance; closing a running window
+    // is the other normal end of a session.
+    if presenter.running && presenter.error.is_none() {
+        presenter.assembled.finish_persistence()?;
+    }
     if let Some(error) = presenter.error {
         return Err(error);
     }
@@ -396,6 +410,99 @@ fn main() -> Result<(), Box<dyn Error>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn journal_host_failure_stops_at_the_first_window_boundary() {
+        let temp = assembly::test_support::TempDir::new("window-host-failure");
+        let base = temp.path().join("base.img");
+        let journal = temp.path().join("disk.upfj");
+        std::fs::write(&base, vec![0; 1_474_560]).unwrap();
+        let out = |program: &mut Vec<u8>, port: u16, value: u8| {
+            program.extend([0xBA, port as u8, (port >> 8) as u8, 0xB0, value, 0xEE]);
+        };
+        let mut program = vec![0xFA, 0xFC];
+        out(&mut program, 0x3F2, 0x1C);
+        for (port, value) in [
+            (0x0A, 6),
+            (0x0C, 0),
+            (0x0B, 0x4A),
+            (4, 0),
+            (4, 6),
+            (0x81, 0),
+            (5, 0xFF),
+            (5, 1),
+            (0x0A, 2),
+        ] {
+            out(&mut program, port, value);
+        }
+        for value in [5, 0, 0, 0, 1, 2, 1, 0x1B, 0xFF] {
+            out(&mut program, 0x3F5, value);
+        }
+        program.extend([0xBF, 0, 0x10]);
+        for _ in 0..7 {
+            program.extend([0xEC, 0xAA]);
+        }
+        program.extend([0xB0, 0xFE, 0xE6, 0x64, 0xB0, 0x55, 0xF4]);
+        let demo = assembly::at_fdc_write(program, vec![0xA7; 512], 0x600);
+        let mut config = assembly::bios(vec![0xF4; 32768], Some(vec![0; 1_474_560]));
+        config.board = assembly::BoardModel::Bare;
+        config.cpu = demo.cpu;
+        config.images = demo.images;
+        config.drives[0].image = assembly::ImageSource::File(base);
+        let mut reference = Presenter::new(&config).unwrap();
+        assert_eq!(
+            reference
+                .assembled
+                .machine
+                .run_bounded(Some(10_000))
+                .unwrap(),
+            RunOutcome::ResetRequested
+        );
+        let boundary = reference.assembled.machine.virtual_time();
+        config.drives[0].write = assembly::WriteMode::journal(&journal);
+        let mut presenter = Presenter::new(&config).unwrap();
+        presenter.assembled.persistence[0].fail_output();
+        let error = presenter.advance(Duration::from_millis(20)).unwrap_err();
+        assert!(error.to_string().contains("drive 0 persistence"), "{error}");
+        assert_eq!(presenter.assembled.machine.virtual_time(), boundary);
+        assert_eq!(presenter.reset_requests, 1);
+        assert!(presenter.advance(Duration::from_millis(40)).is_err());
+        assert_eq!(presenter.assembled.machine.virtual_time(), boundary);
+        assert_eq!(std::fs::read(journal).unwrap().len(), 128);
+        assert!(presenter.window.is_none());
+    }
+
+    #[test]
+    fn journal_presenter_finishes_halts_and_preserves_unsealed_execution_errors() {
+        for fail in [false, true] {
+            let temp = assembly::test_support::TempDir::new("journal-test");
+            let path = temp.path();
+            let base = path.join("base.img");
+            let journal = path.join("disk.upfj");
+            std::fs::write(&base, vec![0; 1_474_560]).unwrap();
+            let mut config = assembly::bios(vec![0xF4; 32768], Some(vec![0; 1_474_560]));
+            config.board = assembly::BoardModel::Bare;
+            config.cpu = assembly::at_boot(Vec::new()).cpu;
+            config.images = assembly::at_boot(if fail {
+                vec![0x0F, 0x05]
+            } else {
+                vec![0xFA, 0xF4]
+            })
+            .images;
+            config.drives[0].image = assembly::ImageSource::File(base);
+            config.drives[0].write = assembly::WriteMode::journal(&journal);
+            let mut presenter = Presenter::new(&config).unwrap();
+            presenter.advance(Duration::from_millis(20)).unwrap();
+            assert!(!presenter.running);
+            assert_eq!(presenter.error.is_some(), fail);
+            let bytes = std::fs::read(journal).unwrap();
+            assert_eq!(bytes.len(), if fail { 128 } else { 128 + 640 });
+            if !fail {
+                assert_eq!(bytes[128 + 8], 3);
+            }
+            drop(presenter);
+        }
+    }
 
     const TEST_FRAME_CLOCKS: u64 = 14_318;
 

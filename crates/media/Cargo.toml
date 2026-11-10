@@ -11,3 +11,10 @@ description = "Host-independent disk media formats: the recoverable floppy journ
 [dependencies]
 sha2.workspace = true
 thiserror.workspace = true
+
+[features]
+# Fault injection for consumers' frontend-boundary acceptance tests.
+test-support = []
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true

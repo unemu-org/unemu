@@ -103,12 +103,21 @@ const WORD_PORT_SUPPORT: &[WordPortSupport] = &[];
 impl MachineConfig {
     /// Validate this configuration, returning the first inconsistency found.
     ///
-    /// The checks run in a fixed order (identity, board constraints, firmware services, RTC start, access coupling, ports, MMIO,
+    /// The checks run in a fixed order (journal mode, identity, board constraints, firmware services, RTC start, access coupling, ports, MMIO,
     /// image placement, interrupt and DMA wiring, drive binding and geometry,
     /// clock) so malformed configs always yield the same [`ConfigError`]. File
     /// lengths are checked when [`crate::assemble`] reads the sources and validates
-    /// their bytes.
+    /// their bytes. Journal outputs additionally check canonical paths and
+    /// existing file identities against mounted inputs and other outputs.
     pub fn validate(&self) -> Result<(), ConfigError> {
+        self.check_journal_modes()?;
+        self.validate_resolved()?;
+        crate::persistence::validate_paths(self)
+    }
+
+    // Journal source checks run before file resolution; repeat the remaining
+    // checks on the exact loaded bytes without requiring those bytes to be files.
+    pub(crate) fn validate_resolved(&self) -> Result<(), ConfigError> {
         self.check_unique_device_ids()?;
         self.check_board()?;
         self.check_firmware_services()?;
@@ -629,6 +638,36 @@ impl MachineConfig {
 
     /// Resolve each binding independently; counting all controller slots can
     /// silently attach media to a different device or overwrite another medium.
+    fn check_journal_modes(&self) -> Result<(), ConfigError> {
+        for (drive_index, drive) in self.drives.iter().enumerate() {
+            if let crate::WriteMode::Journal {
+                path,
+                keep_generations,
+            } = &drive.write
+            {
+                let message = if path.as_os_str().is_empty() {
+                    Some("an explicit journal path is required")
+                } else if *keep_generations == 0 {
+                    Some("keep_generations must be positive")
+                } else if !matches!(drive.image, crate::ImageSource::File(_)) {
+                    Some("journal mode requires a file-backed image")
+                } else if !matches!(drive.kind, crate::DriveKind::Floppy { geometry } if geometry.bytes_per_sector == 512)
+                {
+                    Some("journal mode requires a floppy with 512-byte sectors")
+                } else {
+                    None
+                };
+                if let Some(message) = message {
+                    return Err(ConfigError::Journal {
+                        drive_index,
+                        message: message.into(),
+                    });
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn check_drive_controllers(&self) -> Result<(), ConfigError> {
         for (drive_index, drive) in self.drives.iter().enumerate() {
             let controller = self

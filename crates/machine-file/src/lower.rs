@@ -408,7 +408,10 @@ impl<R: ImageReader> Context<'_, R> {
             | MmioOverlap { a, b, .. }
             | IrqConflict { a, b, .. } => device_fields(&[*a, *b]),
             DmaControllerMissing { requester, .. } => device_fields(&[*requester]),
-            UnsupportedFloppySectorSize { drive_index, .. }
+            // Journal mode is not lowered yet, but every drive-indexed error
+            // keeps the same origin and label contract as assembly validation.
+            Journal { drive_index, .. }
+            | UnsupportedFloppySectorSize { drive_index, .. }
             | DriveControllerMissing { drive_index, .. }
             | DriveControllerKind { drive_index, .. }
             | DriveUnitUnavailable { drive_index, .. }
@@ -871,6 +874,7 @@ mod tests {
         let mut reader = FileImageReader;
         let context = context(&origins, &mut reader);
         for (error, prefix, label) in [
+            (ConfigError::Journal { drive_index: 2, message: "invalid journal path".into() }, "drive 2 ", "card[diskette].drives[unit=1] "),
             (ConfigError::UnsupportedFloppySectorSize { drive_index: 2, bytes_per_sector: 256 }, "drive 2 ", "card[diskette].drives[unit=1] "),
             (ConfigError::DriveControllerMissing { drive_index: 2, controller: DeviceId::Fdc }, "drive 2 ", "card[diskette].drives[unit=1] "),
             (ConfigError::DriveControllerKind { drive_index: 2, controller: DeviceId::Uart }, "drive 2 ", "card[diskette].drives[unit=1] "),

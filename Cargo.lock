@@ -90,6 +90,7 @@ dependencies = [
  "device",
  "devices",
  "machine",
+ "media",
  "thiserror 1.0.69",
  "video",
 ]
@@ -720,6 +721,7 @@ dependencies = [
 name = "media"
 version = "0.1.0"
 dependencies = [
+ "libc",
  "sha2",
  "thiserror 1.0.69",
 ]

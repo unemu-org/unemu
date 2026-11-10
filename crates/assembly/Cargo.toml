@@ -10,6 +10,7 @@ description = "Declarative machine-configuration data model, validation, and the
 
 [dependencies]
 thiserror.workspace = true
+media = { path = "../media", version = "0.1.0" }
 # The seams whose types the configuration names. The config is declarative data
 # about these crates' hardware; the assembler (a later task) turns it into the
 # concrete Bus/DecodeMap/IrqLine/Machine those crates define.
@@ -25,4 +26,8 @@ chipset.workspace = true
 
 [features]
 default = []
+test-support = ["media/test-support"]
 reference-scheduler = ["machine/reference-scheduler"]
+
+[dev-dependencies]
+media = { path = "../media", version = "0.1.0", features = ["test-support"] }

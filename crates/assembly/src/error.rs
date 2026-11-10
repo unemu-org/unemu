@@ -12,6 +12,10 @@ use crate::device::DeviceId;
 /// test can assert the exact failure a malformed config produces.
 #[derive(Clone, Debug, PartialEq, Eq, Error)]
 pub enum ConfigError {
+    /// A journal mode violates the persistent-media config contract.
+    #[error("drive {drive_index} journal configuration: {message}")]
+    Journal { drive_index: usize, message: String },
+
     /// The configured kind does not declare a word register at this port.
     #[error("device {device:?} has no 16-bit register at port {port:#x}")]
     UnsupportedWordPort {

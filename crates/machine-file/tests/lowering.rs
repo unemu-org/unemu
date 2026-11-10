@@ -506,7 +506,7 @@ fn drives_sort_by_unit_and_retain_controller_geometry_and_write_mode() {
                 drive.controller,
                 drive.unit,
                 drive.kind.image_bytes(),
-                drive.write
+                drive.write.clone()
             ))
             .collect::<Vec<_>>(),
         [

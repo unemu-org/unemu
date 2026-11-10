@@ -85,6 +85,35 @@ pub struct JournalMedia {
 }
 
 impl JournalMedia {
+    /// Whether a candidate has this journal's generated decimal temporary name.
+    /// Validation and cleanup share this boundary to avoid nested namespaces.
+    pub fn is_creation_temp(journal: &Path, candidate: &Path) -> bool {
+        if journal.parent() != candidate.parent() {
+            return false;
+        }
+        let (Some(journal_name), Some(name)) = (journal.file_name(), candidate.file_name()) else {
+            return false;
+        };
+        let mut prefix = journal_name.to_os_string();
+        prefix.push(".create-");
+        let prefix = prefix.as_encoded_bytes();
+        let name = name.as_encoded_bytes();
+        name.strip_prefix(prefix)
+            .and_then(|suffix| suffix.strip_suffix(b".tmp"))
+            .is_some_and(|counter| !counter.is_empty() && counter.iter().all(u8::is_ascii_digit))
+    }
+
+    /// Whether a filename contains the reserved creation marker. Rejecting it
+    /// prevents nested journals from owning overlapping temporary namespaces.
+    pub fn is_creation_temp_name(path: &Path) -> bool {
+        let Some(name) = path.file_name() else {
+            return false;
+        };
+        let name = name.as_encoded_bytes();
+        let marker = b".create-";
+        name.windows(marker.len()).any(|part| part == marker)
+    }
+
     /// Resolve symlinks and acquire a stable `<journal>.lock` before touching
     /// journal contents, then verify the canonical path again after opening.
     /// A missing journal's resolved parent forms the expected canonical path for
@@ -96,7 +125,13 @@ impl JournalMedia {
         geometry_length: u64,
         status: SinkStatus,
     ) -> Result<Self, OpenError> {
-        let path = canonical_journal_path(path).map_err(|error| {
+        let path = (|| {
+            refuse_creation_temp_name(path)?;
+            let canonical = canonical_journal_path(path)?;
+            refuse_creation_temp_name(&canonical)?;
+            Ok::<_, io::Error>(canonical)
+        })()
+        .map_err(|error| {
             OpenError::Host(status.latch(SinkFailure {
                 operation: "resolve journal path",
                 message: error.to_string(),
@@ -104,6 +139,15 @@ impl JournalMedia {
             }))
         })?;
         Self::open_with(&mut HostFilesystem, &path, base, geometry_length, status)
+    }
+
+    /// Inject a failing write sink after a successful real mount. This optional
+    /// test seam lets consumers verify their boundary policy without process-wide
+    /// resource limits or filesystem-specific quotas. Memory updates stay real.
+    #[cfg(feature = "test-support")]
+    pub fn with_failing_output(mut self) -> Self {
+        self.output = Box::new(FailingOutput(self.output));
+        self
     }
 
     fn open_with(
@@ -157,7 +201,7 @@ impl JournalMedia {
         };
         fs.verify_path(path)
             .map_err(|e| host("verify journal path", e))?;
-        fs.cleanup_creation_temps(path)
+        fs.cleanup_creation_temps(path, &header.encode()?)
             .map_err(|e| host("remove creation temporaries", e))?;
         // Cover both a prior publication and removal of its leftover hard link.
         fs.sync_directory(path)
@@ -381,13 +425,50 @@ fn barrier(output: &mut dyn JournalIo) -> io::Result<()> {
     output.sync()
 }
 
+#[cfg(feature = "test-support")]
+struct FailingOutput(Box<dyn JournalIo>);
+
+#[cfg(feature = "test-support")]
+impl Read for FailingOutput {
+    fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
+        self.0.read(bytes)
+    }
+}
+
+#[cfg(feature = "test-support")]
+impl Seek for FailingOutput {
+    fn seek(&mut self, position: SeekFrom) -> io::Result<u64> {
+        self.0.seek(position)
+    }
+}
+
+#[cfg(feature = "test-support")]
+impl Write for FailingOutput {
+    fn write(&mut self, _bytes: &[u8]) -> io::Result<usize> {
+        Err(io::Error::other("injected journal output failure"))
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        self.0.flush()
+    }
+}
+
+#[cfg(feature = "test-support")]
+impl JournalIo for FailingOutput {
+    fn sync(&mut self) -> io::Result<()> {
+        self.0.sync()
+    }
+    fn truncate(&mut self, length: u64) -> io::Result<()> {
+        self.0.truncate(length)
+    }
+}
+
 /// Namespace and lock operations are separate from the journal inode so the
 /// lock remains stable across later atomic retention replacements.
 trait Filesystem {
     fn lock(&mut self, path: &Path) -> io::Result<Box<dyn Any>>;
     fn open(&mut self, path: &Path) -> io::Result<Option<Box<dyn JournalIo>>>;
     fn verify_path(&mut self, path: &Path) -> io::Result<()>;
-    fn cleanup_creation_temps(&mut self, path: &Path) -> io::Result<()>;
+    fn cleanup_creation_temps(&mut self, path: &Path, header: &[u8]) -> io::Result<()>;
     fn create_temp(&mut self, path: &Path) -> io::Result<(Box<dyn JournalIo>, PathBuf)>;
     fn publish(&mut self, temporary: &Path, path: &Path) -> io::Result<()>;
     fn remove_temp(&mut self, temporary: &Path) -> io::Result<()>;
@@ -433,29 +514,15 @@ impl Filesystem for HostFilesystem {
         Ok(())
     }
 
-    fn cleanup_creation_temps(&mut self, path: &Path) -> io::Result<()> {
+    fn cleanup_creation_temps(&mut self, path: &Path, header: &[u8]) -> io::Result<()> {
         let parent = path.parent().unwrap_or(Path::new("."));
-        let mut prefix = path
-            .file_name()
-            .ok_or_else(|| {
-                io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "journal path must have a filename",
-                )
-            })?
-            .to_os_string();
-        prefix.push(".create-");
-        let prefix = prefix.as_encoded_bytes();
         for entry in std::fs::read_dir(parent)? {
             let entry = entry?;
-            let name = entry.file_name();
-            let name = name.as_encoded_bytes();
-            if name.len() >= prefix.len() + 4 && name.starts_with(prefix) && name.ends_with(b".tmp")
-            {
-                // The stable lock excludes creation in this namespace. Unlinking
-                // a published temporary must leave the authoritative journal.
-                std::fs::remove_file(entry.path())?;
+            let candidate = entry.path();
+            if !JournalMedia::is_creation_temp(path, &candidate) {
+                continue;
             }
+            cleanup_creation_temp(&mut HostCreationTempIo, &candidate, header)?;
         }
         Ok(())
     }
@@ -503,6 +570,107 @@ impl JournalIo for File {
     fn truncate(&mut self, length: u64) -> io::Result<()> {
         self.set_len(length)
     }
+}
+
+trait CreationTempIo {
+    fn metadata(&mut self, path: &Path) -> io::Result<std::fs::Metadata>;
+    fn open(&mut self, path: &Path) -> io::Result<File>;
+    fn remove(&mut self, path: &Path) -> io::Result<()>;
+}
+
+struct HostCreationTempIo;
+
+impl CreationTempIo for HostCreationTempIo {
+    fn metadata(&mut self, path: &Path) -> io::Result<std::fs::Metadata> {
+        std::fs::symlink_metadata(path)
+    }
+
+    fn open(&mut self, path: &Path) -> io::Result<File> {
+        let mut options = OpenOptions::new();
+        options.read(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+        }
+        options.open(path)
+    }
+
+    fn remove(&mut self, path: &Path) -> io::Result<()> {
+        std::fs::remove_file(path)
+    }
+}
+
+#[cfg(unix)]
+fn same_creation_file(before: &std::fs::Metadata, after: &std::fs::Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    after.file_type().is_file() && before.dev() == after.dev() && before.ino() == after.ino()
+}
+
+fn cleanup_creation_temp(
+    io: &mut impl CreationTempIo,
+    candidate: &Path,
+    header: &[u8],
+) -> io::Result<()> {
+    let metadata = match io.metadata(candidate) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error),
+    };
+    if !metadata.file_type().is_file() || metadata.len() > header.len() as u64 {
+        return Ok(());
+    }
+    let Ok(mut file) = io.open(candidate) else {
+        return Ok(());
+    };
+    #[cfg(unix)]
+    if !same_creation_file(&metadata, &file.metadata()?) {
+        return Ok(());
+    }
+    let mut bytes = Vec::new();
+    if Read::by_ref(&mut file)
+        .take(header.len() as u64 + 1)
+        .read_to_end(&mut bytes)
+        .is_err()
+    {
+        return Ok(());
+    }
+    // Creation writes only this header: interruption can leave an empty file,
+    // any byte prefix, or the complete header. Foreign entries stay untouched.
+    if !header.starts_with(&bytes) {
+        return Ok(());
+    }
+    #[cfg(unix)]
+    {
+        let current = match io.metadata(candidate) {
+            Ok(current) => current,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => return Err(error),
+        };
+        if !same_creation_file(&metadata, &current) {
+            return Ok(());
+        }
+        // A path replacement between this final identity check and unlink is
+        // still possible; callers must keep the journal directory trusted.
+    }
+    match io.remove(candidate) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+    }
+}
+
+fn refuse_creation_temp_name(path: &Path) -> io::Result<()> {
+    if JournalMedia::is_creation_temp_name(path) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "journal path {} uses a reserved creation-temporary name",
+                path.display()
+            ),
+        ));
+    }
+    Ok(())
 }
 
 fn canonical_journal_path(path: &Path) -> io::Result<PathBuf> {

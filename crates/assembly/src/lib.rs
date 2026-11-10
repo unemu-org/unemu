@@ -47,6 +47,7 @@ mod machine;
 mod memory;
 mod observation;
 mod output;
+mod persistence;
 mod presets;
 mod run;
 mod validate;
@@ -73,10 +74,51 @@ pub use observation::{
     OutputKind,
 };
 pub use output::{FrameSinkKind, OutputConfig};
+pub use persistence::{PersistenceError, PersistenceHandle};
 pub use presets::{
     at_boot, at_fdc_write, at_keyboard, at_rtc, at_vga_text, bios, floppy_boot, test386,
 };
 pub use run::{
-    inject_scancodes, keyboard_leds_if_ready, run, try_inject_scancode, ConsoleProbe,
-    InjectionSchedule, KeyboardStimulus, RunError, RunPolicy, StopCondition,
+    inject_scancodes, keyboard_leds_if_ready, run, run_with_persistence, try_inject_scancode,
+    ConsoleProbe, InjectionSchedule, KeyboardStimulus, RunError, RunPolicy, StopCondition,
 };
+
+/// Shared host-side fixtures for persistence fault tests; never used by execution.
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_support {
+    use std::path::{Path, PathBuf};
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    /// A unique test directory removed on success and during panic unwinding.
+    pub struct TempDir(PathBuf);
+
+    impl TempDir {
+        /// Create an empty directory with a process-local unique name.
+        pub fn new(label: &str) -> Self {
+            static NEXT: AtomicU64 = AtomicU64::new(0);
+            loop {
+                let path = std::env::temp_dir().join(format!(
+                    "{label}-{}-{}",
+                    std::process::id(),
+                    NEXT.fetch_add(1, Ordering::Relaxed)
+                ));
+                match std::fs::create_dir(&path) {
+                    Ok(()) => return Self(path),
+                    Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                    Err(error) => panic!("test directory: {error}"),
+                }
+            }
+        }
+
+        /// Borrow the directory for test inputs and output paths.
+        pub fn path(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+}

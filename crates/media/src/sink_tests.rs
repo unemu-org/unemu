@@ -136,7 +136,7 @@ impl Filesystem for ModelFs {
         assert!(self.locked.get());
         self.io.0.borrow_mut().step(Event::VerifyPath)
     }
-    fn cleanup_creation_temps(&mut self, _: &Path) -> io::Result<()> {
+    fn cleanup_creation_temps(&mut self, _: &Path, _: &[u8]) -> io::Result<()> {
         assert!(self.locked.get());
         let mut model = self.io.0.borrow_mut();
         model.step(Event::CleanupTemps)?;
@@ -894,8 +894,8 @@ impl Filesystem for HeaderFailureFs {
     fn verify_path(&mut self, path: &Path) -> io::Result<()> {
         HostFilesystem.verify_path(path)
     }
-    fn cleanup_creation_temps(&mut self, path: &Path) -> io::Result<()> {
-        HostFilesystem.cleanup_creation_temps(path)
+    fn cleanup_creation_temps(&mut self, path: &Path, header: &[u8]) -> io::Result<()> {
+        HostFilesystem.cleanup_creation_temps(path, header)
     }
     fn create_temp(&mut self, path: &Path) -> io::Result<(Box<dyn JournalIo>, PathBuf)> {
         let (output, path) = HostFilesystem.create_temp(path)?;
@@ -1042,8 +1042,8 @@ impl Filesystem for AliasRaceFs {
     fn verify_path(&mut self, path: &Path) -> io::Result<()> {
         HostFilesystem.verify_path(path)
     }
-    fn cleanup_creation_temps(&mut self, path: &Path) -> io::Result<()> {
-        HostFilesystem.cleanup_creation_temps(path)
+    fn cleanup_creation_temps(&mut self, path: &Path, header: &[u8]) -> io::Result<()> {
+        HostFilesystem.cleanup_creation_temps(path, header)
     }
     fn create_temp(&mut self, path: &Path) -> io::Result<(Box<dyn JournalIo>, PathBuf)> {
         HostFilesystem.create_temp(path)
@@ -1152,11 +1152,15 @@ fn unpublished_creation_temporaries_are_removed_without_replaying_them() {
     let dir = TempDir::new();
     let path = dir.journal();
     let (mut output, temporary) = HostFilesystem.create_temp(&path).unwrap();
-    output.write_all(b"incomplete header").unwrap();
+    let header = Header::new(&[0; 2 * SECTOR_LEN], 0)
+        .unwrap()
+        .encode()
+        .unwrap();
+    output.write_all(&header[..17]).unwrap();
     barrier(output.as_mut()).unwrap();
     drop(output);
-    let second = path.with_file_name("disk.upfj.create-orphan.tmp");
-    std::fs::write(&second, b"unpublished bytes").unwrap();
+    let second = path.with_file_name("disk.upfj.create-900.tmp");
+    std::fs::write(&second, header).unwrap();
     let unrelated = path.with_file_name("other.upfj.create-0.tmp");
     let backup = path.with_file_name("disk.upfj.create-0.tmp.backup");
     std::fs::write(&unrelated, b"other journal").unwrap();
@@ -1173,7 +1177,7 @@ fn unpublished_creation_temporaries_are_removed_without_replaying_them() {
 
 #[cfg(unix)]
 #[test]
-fn published_creation_temporary_hard_link_is_removed_without_changing_history() {
+fn creation_temp_hard_link_with_commands_is_preserved_without_changing_history() {
     use std::os::unix::fs::MetadataExt;
     let dir = TempDir::new();
     let path = dir.journal();
@@ -1187,10 +1191,401 @@ fn published_creation_temporary_hard_link_is_removed_without_changing_history() 
     let mut media = real_mount(&path).unwrap();
     assert_image(&media, 7);
     assert_eq!(std::fs::read(&path).unwrap(), before);
-    assert!(!temporary.exists());
-    assert_eq!(std::fs::metadata(&path).unwrap().nlink(), 1);
+    assert_eq!(std::fs::read(&temporary).unwrap(), before);
+    assert_eq!(std::fs::metadata(&path).unwrap().nlink(), 2);
     media.write_batch(&batch(9));
     media.finish().unwrap();
     let media = real_mount(&path).unwrap();
     assert_image(&media, 9);
+}
+
+#[cfg(unix)]
+#[test]
+fn cleanup_preserves_creation_temp_symlinks_to_journals() {
+    let dir = TempDir::new();
+    let path = dir.journal();
+    let target = dir.0.join("other.upfj");
+    drop(real_mount(&target).unwrap());
+    let before = std::fs::read(&target).unwrap();
+    let temporary = dir.0.join("disk.upfj.create-7.tmp");
+    std::os::unix::fs::symlink("other.upfj", &temporary).unwrap();
+    let _media = real_mount(&path).unwrap();
+    assert!(std::fs::symlink_metadata(&temporary)
+        .unwrap()
+        .file_type()
+        .is_symlink());
+    assert_eq!(std::fs::read(&target).unwrap(), before);
+}
+
+#[test]
+fn cleanup_preserves_creation_temp_files_with_journal_commands() {
+    let dir = TempDir::new();
+    let path = dir.journal();
+    let other_path = dir.0.join("other.upfj");
+    let mut other = real_mount(&other_path).unwrap();
+    other.write_batch(&batch(9));
+    other.finish().unwrap();
+    let temporary = dir.0.join("disk.upfj.create-7.tmp");
+    std::fs::rename(&other_path, &temporary).unwrap();
+    let before = std::fs::read(&temporary).unwrap();
+    let _media = real_mount(&path).unwrap();
+    assert_eq!(std::fs::read(&temporary).unwrap(), before);
+}
+
+#[test]
+fn cleanup_preserves_foreign_creation_temp_entries() {
+    let dir = TempDir::new();
+    let path = dir.journal();
+    let temporary = dir.0.join("disk.upfj.create-7.tmp");
+    std::fs::write(&temporary, b"foreign file").unwrap();
+    let directory = dir.0.join("disk.upfj.create-8.tmp");
+    std::fs::create_dir(&directory).unwrap();
+    let _media = real_mount(&path).unwrap();
+    assert_eq!(std::fs::read(&temporary).unwrap(), b"foreign file");
+    assert!(directory.is_dir());
+}
+
+#[test]
+fn cleanup_preserves_foreign_entries_while_removing_creation_header_prefixes() {
+    let dir = TempDir::new();
+    let path = dir.journal();
+    let header = Header::new(&[0; 2 * SECTOR_LEN], 0)
+        .unwrap()
+        .encode()
+        .unwrap();
+    let foreign = dir.0.join("disk.upfj.create-900.tmp");
+    std::fs::write(&foreign, b"foreign file").unwrap();
+    for length in 0..=header.len() {
+        let temporary = dir.0.join(format!("disk.upfj.create-{length}.tmp"));
+        std::fs::write(temporary, &header[..length]).unwrap();
+    }
+    let _media = real_mount(&path).unwrap();
+    for length in 0..=header.len() {
+        assert!(!dir
+            .0
+            .join(format!("disk.upfj.create-{length}.tmp"))
+            .exists());
+    }
+    assert_eq!(std::fs::read(foreign).unwrap(), b"foreign file");
+}
+
+#[test]
+fn journal_open_refuses_creation_temp_names_before_locking() {
+    let dir = TempDir::new();
+    for name in [
+        "j.upfj.create-7.tmp",
+        "j.upfj.create-.tmp",
+        "j.upfj.create-text.tmp",
+    ] {
+        let path = dir.0.join(name);
+        let error = match real_mount(&path) {
+            Ok(_) => panic!("reserved journal name mounted"),
+            Err(error) => error.to_string(),
+        };
+        assert!(error.contains("creation-temporary"), "{error}");
+        assert!(error.contains(name), "{error}");
+        assert!(!path.exists());
+        assert!(!dir.0.join(format!("{name}.lock")).exists());
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn journal_open_refuses_creation_temp_names_through_symlinks() {
+    for reserved_link in [false, true] {
+        let dir = TempDir::new();
+        let normal = dir.0.join("other.upfj");
+        real_mount(&normal).unwrap().finish().unwrap();
+        let reserved = dir.0.join("disk.upfj.create-7.tmp");
+        let path = if reserved_link {
+            std::os::unix::fs::symlink(&normal, &reserved).unwrap();
+            &reserved
+        } else {
+            std::fs::rename(&normal, &reserved).unwrap();
+            std::os::unix::fs::symlink(&reserved, &normal).unwrap();
+            &normal
+        };
+        let before = std::fs::read(path).unwrap();
+        let error = match real_mount(path) {
+            Ok(_) => panic!("reserved journal alias mounted"),
+            Err(error) => error.to_string(),
+        };
+        assert!(error.contains("creation-temporary"), "{error}");
+        assert_eq!(std::fs::read(path).unwrap(), before);
+    }
+}
+
+#[test]
+fn cleanup_only_removes_decimal_creation_names() {
+    let dir = TempDir::new();
+    let path = dir.journal();
+    let header = Header::new(&[0; 2 * SECTOR_LEN], 0)
+        .unwrap()
+        .encode()
+        .unwrap();
+    let preserved = [
+        "disk.upfj.create-.tmp",
+        "disk.upfj.create-word.tmp",
+        "disk.upfj.create-x.upfj.create-0.tmp",
+        "disk.upfj.create-1.tmp.bak",
+        "disk.upfj.create-+1.tmp",
+        "disk.upfj.create-١.tmp",
+    ];
+    for name in preserved {
+        std::fs::write(dir.0.join(name), header).unwrap();
+    }
+    std::fs::write(dir.0.join("disk.upfj.create-7.tmp"), header).unwrap();
+    let _media = real_mount(&path).unwrap();
+    for name in preserved {
+        assert_eq!(std::fs::read(dir.0.join(name)).unwrap(), header, "{name}");
+    }
+    assert!(!dir.0.join("disk.upfj.create-7.tmp").exists());
+}
+
+#[test]
+fn nested_creation_names_are_refused_before_locking() {
+    let dir = TempDir::new();
+    for name in ["disk.upfj.create-x.upfj", "disk.create-", ".create-hidden"] {
+        let path = dir.0.join(name);
+        let error = match real_mount(&path) {
+            Ok(_) => panic!("nested creation name mounted"),
+            Err(error) => error.to_string(),
+        };
+        assert!(
+            error.contains(name) && error.contains("creation-temporary"),
+            "{error}"
+        );
+        assert!(!path.exists());
+        assert!(!dir.0.join(format!("{name}.lock")).exists());
+    }
+}
+
+struct VanishingCreationIo {
+    stage: &'static str,
+}
+
+impl CreationTempIo for VanishingCreationIo {
+    fn metadata(&mut self, path: &Path) -> io::Result<std::fs::Metadata> {
+        if self.stage == "metadata" {
+            std::fs::remove_file(path)?;
+        }
+        HostCreationTempIo.metadata(path)
+    }
+    fn open(&mut self, path: &Path) -> io::Result<File> {
+        if self.stage == "open" {
+            std::fs::remove_file(path)?;
+        }
+        let file = HostCreationTempIo.open(path)?;
+        if self.stage == "final-metadata" {
+            std::fs::remove_file(path)?;
+        }
+        Ok(file)
+    }
+    fn remove(&mut self, path: &Path) -> io::Result<()> {
+        if self.stage == "remove" {
+            std::fs::remove_file(path)?;
+        }
+        HostCreationTempIo.remove(path)
+    }
+}
+
+#[test]
+fn cleanup_disappearing_entries_are_already_gone() {
+    for stage in ["metadata", "open", "final-metadata", "remove"] {
+        let dir = TempDir::new();
+        let path = dir.0.join("disk.upfj.create-7.tmp");
+        let header = Header::new(&[0; 2 * SECTOR_LEN], 0)
+            .unwrap()
+            .encode()
+            .unwrap();
+        std::fs::write(&path, header).unwrap();
+        cleanup_creation_temp(&mut VanishingCreationIo { stage }, &path, &header).unwrap();
+        assert!(!path.exists(), "{stage}");
+    }
+}
+
+#[cfg(unix)]
+struct ReplacedCreationIo {
+    foreign: PathBuf,
+    restore_before_return: bool,
+}
+
+#[cfg(unix)]
+impl CreationTempIo for ReplacedCreationIo {
+    fn metadata(&mut self, path: &Path) -> io::Result<std::fs::Metadata> {
+        HostCreationTempIo.metadata(path)
+    }
+    fn open(&mut self, path: &Path) -> io::Result<File> {
+        let saved = path.with_extension("saved");
+        if self.restore_before_return {
+            std::fs::rename(path, &saved)?;
+            std::fs::hard_link(&self.foreign, path)?;
+            let file = HostCreationTempIo.open(path)?;
+            std::fs::remove_file(path)?;
+            std::fs::rename(saved, path)?;
+            Ok(file)
+        } else {
+            let file = HostCreationTempIo.open(path)?;
+            std::fs::rename(path, saved)?;
+            std::fs::hard_link(&self.foreign, path)?;
+            Ok(file)
+        }
+    }
+    fn remove(&mut self, path: &Path) -> io::Result<()> {
+        HostCreationTempIo.remove(path)
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn cleanup_checks_the_opened_file_identity() {
+    let dir = TempDir::new();
+    let path = dir.0.join("disk.upfj.create-7.tmp");
+    let foreign = dir.0.join("foreign");
+    let header = Header::new(&[0; 2 * SECTOR_LEN], 0)
+        .unwrap()
+        .encode()
+        .unwrap();
+    std::fs::write(&path, header).unwrap();
+    std::fs::write(&foreign, header).unwrap();
+    cleanup_creation_temp(
+        &mut ReplacedCreationIo {
+            foreign,
+            restore_before_return: true,
+        },
+        &path,
+        &header,
+    )
+    .unwrap();
+    assert!(
+        path.exists(),
+        "a different open handle must not authorize unlinking"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn cleanup_checks_identity_again_before_unlinking() {
+    use std::os::unix::fs::MetadataExt;
+    let dir = TempDir::new();
+    let path = dir.0.join("disk.upfj.create-7.tmp");
+    let foreign = dir.0.join("foreign");
+    let header = Header::new(&[0; 2 * SECTOR_LEN], 0)
+        .unwrap()
+        .encode()
+        .unwrap();
+    std::fs::write(&path, header).unwrap();
+    std::fs::write(&foreign, header).unwrap();
+    cleanup_creation_temp(
+        &mut ReplacedCreationIo {
+            foreign: foreign.clone(),
+            restore_before_return: false,
+        },
+        &path,
+        &header,
+    )
+    .unwrap();
+    assert_eq!(
+        std::fs::metadata(&path).unwrap().ino(),
+        std::fs::metadata(foreign).unwrap().ino()
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn creation_temp_open_refuses_symlinks() {
+    let dir = TempDir::new();
+    let target = dir.0.join("foreign");
+    std::fs::write(&target, b"header prefix").unwrap();
+    let link = dir.0.join("disk.upfj.create-7.tmp");
+    std::os::unix::fs::symlink(&target, &link).unwrap();
+    assert!(HostCreationTempIo.open(&link).is_err());
+}
+
+#[cfg(unix)]
+fn assert_fifo_child_completes(test: &str, exercise: impl FnOnce(&Path)) {
+    use std::process::{Command, Stdio};
+    if let Some(path) = std::env::var_os("MEDIA_TEST_CREATION_FIFO") {
+        exercise(Path::new(&path));
+        return;
+    }
+    let dir = TempDir::new();
+    let path = dir.0.join("fifo");
+    assert!(Command::new("mkfifo")
+        .arg(&path)
+        .status()
+        .unwrap()
+        .success());
+    let mut child = Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", test])
+        .env("MEDIA_TEST_CREATION_FIFO", &path)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let started = std::time::Instant::now();
+    loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            assert!(status.success());
+            break;
+        }
+        if started.elapsed() > std::time::Duration::from_secs(3) {
+            child.kill().unwrap();
+            child.wait().unwrap();
+            panic!("opening a creation entry blocked on a FIFO");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn creation_temp_fifo_open_does_not_block() {
+    assert_fifo_child_completes(
+        "sink::tests::creation_temp_fifo_open_does_not_block",
+        |path| {
+            let file = HostCreationTempIo.open(path).unwrap();
+            assert!(!file.metadata().unwrap().file_type().is_file());
+        },
+    );
+}
+
+#[cfg(unix)]
+struct SymlinkSwapCreationIo(PathBuf);
+
+#[cfg(unix)]
+impl CreationTempIo for SymlinkSwapCreationIo {
+    fn metadata(&mut self, path: &Path) -> io::Result<std::fs::Metadata> {
+        HostCreationTempIo.metadata(path)
+    }
+    fn open(&mut self, path: &Path) -> io::Result<File> {
+        std::fs::remove_file(path)?;
+        std::os::unix::fs::symlink(&self.0, path)?;
+        HostCreationTempIo.open(path)
+    }
+    fn remove(&mut self, path: &Path) -> io::Result<()> {
+        HostCreationTempIo.remove(path)
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn cleanup_symlink_swap_to_fifo_does_not_block() {
+    assert_fifo_child_completes(
+        "sink::tests::cleanup_symlink_swap_to_fifo_does_not_block",
+        |fifo| {
+            let candidate = fifo.with_extension("create-7.tmp");
+            let header = Header::new(&[0; 2 * SECTOR_LEN], 0)
+                .unwrap()
+                .encode()
+                .unwrap();
+            std::fs::write(&candidate, header).unwrap();
+            cleanup_creation_temp(&mut SymlinkSwapCreationIo(fifo.into()), &candidate, &header)
+                .unwrap();
+            assert!(std::fs::symlink_metadata(candidate)
+                .unwrap()
+                .file_type()
+                .is_symlink());
+        },
+    );
 }

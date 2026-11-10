@@ -29,9 +29,12 @@ use video::Frame;
 
 use crate::{DeviceId, Observation, ObservationError};
 
-/// Policy validation failures and hardware execution errors while driving a run.
+/// Policy, execution and host persistence failures while driving a run.
 #[derive(Debug, thiserror::Error)]
 pub enum RunError {
+    /// Host persistence failed at a completed service boundary.
+    #[error(transparent)]
+    Persistence(#[from] crate::PersistenceError),
     /// Hardware execution failed.
     #[error(transparent)]
     Machine(#[from] MachineError),
@@ -182,23 +185,36 @@ pub fn run(
     observation: &Observation,
     policy: &RunPolicy,
 ) -> Result<RunOutcome, RunError> {
+    run_with_persistence(machine, observation, policy, &[])
+}
+
+/// Drive a session while checking journal errors before and after every existing
+/// run boundary. This does not close a generation; callers explicitly finish.
+pub fn run_with_persistence(
+    machine: &mut Machine<X86JitCpu>,
+    observation: &Observation,
+    policy: &RunPolicy,
+    persistence: &[crate::PersistenceHandle],
+) -> Result<RunOutcome, RunError> {
+    check_persistence(persistence)?;
     machine.set_idle_limit(policy.idle_limit);
 
     match &policy.stop {
-        StopCondition::Natural => run_past_reset_requests(machine, policy.retired_cap),
+        StopCondition::Natural => run_past_reset_requests(machine, policy.retired_cap, persistence),
         StopCondition::PromptThen {
             console,
             needle,
             poll_step,
             then_budget,
         } => {
-            let (outcome, prompt_reached) = poll_to_prompt(
+            let (outcome, prompt_reached) = poll_to_prompt_with_persistence(
                 machine,
                 observation,
                 console,
                 needle,
                 *poll_step,
                 policy.retired_cap,
+                persistence,
             )?;
 
             // Act on the prompt only if we actually reached it (not an error, not a
@@ -223,7 +239,7 @@ pub fn run(
                 for stim in after_prompt {
                     inject_scancodes(machine, stim.keyboard_index, &stim.scancodes);
                 }
-                return run_past_reset_requests(machine, Some(now + *then_budget));
+                return run_past_reset_requests(machine, Some(now + *then_budget), persistence);
             }
             Ok(outcome)
         }
@@ -235,9 +251,10 @@ pub fn run(
 fn run_past_reset_requests(
     machine: &mut Machine<X86JitCpu>,
     cap: Option<u64>,
+    persistence: &[crate::PersistenceHandle],
 ) -> Result<RunOutcome, RunError> {
     loop {
-        let outcome = machine.run_bounded(cap)?;
+        let outcome = run_boundary(machine, cap, persistence)?;
         if outcome != RunOutcome::ResetRequested {
             return Ok(outcome);
         }
@@ -253,6 +270,7 @@ fn run_past_reset_requests(
 /// returned outcome is that of the last [`Machine::run_bounded`], paired with
 /// whether that boundary's captured frame contains the prompt. Reusing the
 /// result avoids presenting the same boundary again before injecting input.
+#[cfg(test)]
 fn poll_to_prompt(
     machine: &mut Machine<X86JitCpu>,
     observation: &Observation,
@@ -260,6 +278,26 @@ fn poll_to_prompt(
     needle: &str,
     poll_step: u64,
     retired_cap: Option<u64>,
+) -> Result<(RunOutcome, bool), RunError> {
+    poll_to_prompt_with_persistence(
+        machine,
+        observation,
+        console,
+        needle,
+        poll_step,
+        retired_cap,
+        &[],
+    )
+}
+
+fn poll_to_prompt_with_persistence(
+    machine: &mut Machine<X86JitCpu>,
+    observation: &Observation,
+    console: &ConsoleProbe,
+    needle: &str,
+    poll_step: u64,
+    retired_cap: Option<u64>,
+    persistence: &[crate::PersistenceHandle],
 ) -> Result<(RunOutcome, bool), RunError> {
     observation
         .text_route(console.device)
@@ -270,12 +308,59 @@ fn poll_to_prompt(
     loop {
         let target = machine.virtual_time().saturating_add(poll_step);
         let cap = retired_cap.map_or(target, |hard| target.min(hard));
-        let outcome = run_past_reset_requests(machine, Some(cap))?;
+        let outcome = run_past_reset_requests(machine, Some(cap), persistence)?;
         let found = console_contains(machine, observation, console, needle)?;
         let hit_cap = retired_cap.is_some_and(|hard| cap >= hard);
         if outcome == RunOutcome::Halted || found || hit_cap {
             return Ok((outcome, found));
         }
+    }
+}
+
+fn check_persistence(handles: &[crate::PersistenceHandle]) -> Result<(), crate::PersistenceError> {
+    for handle in handles {
+        handle.check_running()?;
+    }
+    Ok(())
+}
+
+fn run_boundary(
+    machine: &mut Machine<X86JitCpu>,
+    cap: Option<u64>,
+    handles: &[crate::PersistenceHandle],
+) -> Result<RunOutcome, RunError> {
+    check_persistence(handles)?;
+    let outcome = machine.run_bounded(cap);
+    check_persistence(handles)?;
+    outcome.map_err(Into::into)
+}
+
+impl crate::AssembledMachine {
+    /// Run to the selected boundary without ending the media session.
+    pub fn run_session(&mut self, policy: &RunPolicy) -> Result<RunOutcome, RunError> {
+        run_with_persistence(
+            &mut self.machine,
+            &self.observation,
+            policy,
+            &self.persistence,
+        )
+    }
+
+    /// Poll all drive latches before advancing or accepting more host input.
+    pub fn check_persistence(&self) -> Result<(), crate::PersistenceError> {
+        check_persistence(&self.persistence)
+    }
+
+    /// End a successful session, including policy-limited runs. Never call this
+    /// after an execution error. There is no atomic multi-drive close promise.
+    pub fn finish_persistence(&mut self) -> Result<(), crate::PersistenceError> {
+        for handle in &self.persistence {
+            handle.check()?;
+        }
+        for handle in &mut self.persistence {
+            handle.finish()?;
+        }
+        Ok(())
     }
 }
 
@@ -352,6 +437,126 @@ mod tests {
     use bus::{Bus, DecodeMap};
     use cpu::x86jit_backend::RealSegments;
     use cpu::Cpu;
+
+    #[test]
+    fn reset_boundaries_check_journals_before_continuing_and_seal_once() {
+        for stop in ["natural", "prompt", "post-prompt"] {
+            for fail in [false, true] {
+                let temp = crate::test_support::TempDir::new("run-reset-journal");
+                let path = temp.path();
+                let base = path.join("base.img");
+                let journal = path.join("disk.upfj");
+                std::fs::write(&base, vec![0; 1_474_560]).unwrap();
+                let mut program = vec![0x90, 0xFA, 0xFC];
+                let out = |program: &mut Vec<u8>, port: u16, value: u8| {
+                    program.extend([0xBA, port as u8, (port >> 8) as u8, 0xB0, value, 0xEE]);
+                };
+                out(&mut program, 0x3F2, 0x1C);
+                for (port, value) in [
+                    (0x0A, 6),
+                    (0x0C, 0),
+                    (0x0B, 0x4A),
+                    (4, 0),
+                    (4, 6),
+                    (0x81, 0),
+                    (5, 0xFF),
+                    (5, 1),
+                    (0x0A, 2),
+                ] {
+                    out(&mut program, port, value);
+                }
+                for value in [5, 0, 0, 0, 1, 2, 1, 0x1B, 0xFF] {
+                    out(&mut program, 0x3F5, value);
+                }
+                program.extend([0xBF, 0, 0x10]);
+                for _ in 0..7 {
+                    program.extend([0xEC, 0xAA]);
+                }
+                program.extend([
+                    0xB0, 0xFE, 0xE6, 0x64, // Request reset after the completed disk write.
+                    0xB0, 0x55, 0xF4,
+                ]);
+                let demo = crate::at_fdc_write(program, vec![0xA7; 512], 0x600);
+                let mut config = crate::bios(vec![0xF4; 32768], Some(vec![0; 1_474_560]));
+                config.board = crate::BoardModel::Bare;
+                config.cpu = demo.cpu;
+                config.images = demo.images;
+                config.drives[0].image = crate::ImageSource::File(base.clone());
+                let mut reference = crate::assemble(&config).unwrap();
+                assert_eq!(
+                    reference.machine.run_bounded(Some(10_000)).unwrap(),
+                    RunOutcome::ResetRequested
+                );
+                let reset_time = reference.machine.virtual_time();
+                config.drives[0].write = crate::WriteMode::journal(&journal);
+                let mut assembled = crate::assemble_with_observation(
+                    &config,
+                    &crate::ObservationPolicy {
+                        routes: vec![crate::ObservationRequest {
+                            device: DeviceId::Vga,
+                            output: crate::OutputKind::TextScanout,
+                            byte_limit: 0,
+                        }],
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+                if fail {
+                    assembled.persistence[0].fail_output();
+                }
+                let mut policy = RunPolicy::natural(Some(10_000), None);
+                if stop != "natural" {
+                    policy.stop = StopCondition::PromptThen {
+                        console: ConsoleProbe {
+                            device: DeviceId::Vga,
+                        },
+                        needle: String::new(),
+                        poll_step: if stop == "post-prompt" { 1 } else { 10_000 },
+                        then_budget: 9_999,
+                    };
+                    if stop == "post-prompt" {
+                        policy.stimuli.push(KeyboardStimulus {
+                            keyboard_index: assembled.device_index[&DeviceId::Keyboard],
+                            scancodes: Vec::new(),
+                            schedule: InjectionSchedule::AfterPrompt,
+                        });
+                    }
+                }
+                let result = assembled.run_session(&policy);
+                if fail {
+                    assert!(matches!(result, Err(RunError::Persistence(_))));
+                    assert_eq!(assembled.machine.virtual_time(), reset_time);
+                    assert_eq!(assembled.machine.cpu().reg(cpu::CpuReg::Rax) & 0xFF, 0xFE);
+                    assert!(assembled.run_session(&policy).is_err());
+                    assert_eq!(assembled.machine.virtual_time(), reset_time);
+                } else {
+                    assert_eq!(result.unwrap(), RunOutcome::Halted);
+                    assert_eq!(assembled.machine.virtual_time(), reset_time + 2);
+                    assert_eq!(assembled.machine.cpu().reg(cpu::CpuReg::Rax) & 0xFF, 0x55);
+                }
+                let bytes = std::fs::read(&journal).unwrap();
+                let image = std::fs::read(&base).unwrap();
+                let report = media::scan(&bytes, &image, image.len() as u64).report;
+                assert!(
+                    report.generations.is_empty(),
+                    "reset must not seal the session"
+                );
+                if !fail {
+                    assembled.finish_persistence().unwrap();
+                }
+                drop(assembled);
+                let bytes = std::fs::read(&journal).unwrap();
+                let report = media::scan(&bytes, &image, image.len() as u64).report;
+                assert_eq!(report.generations.len(), usize::from(!fail));
+                if !fail {
+                    assert_eq!(
+                        report.generations[0].reason,
+                        media::ClosingReason::SessionEnd
+                    );
+                }
+            }
+        }
+    }
 
     #[test]
     fn host_injection_defers_full_buffer_and_rejects_missing_controller() {

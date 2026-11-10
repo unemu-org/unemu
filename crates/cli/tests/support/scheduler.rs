@@ -298,6 +298,7 @@ pub fn prepare(workload: Workload) -> Result<Option<Prepared>> {
                 machine: Machine::new(cpu, bus, Box::new(NoInterruptController), Vec::new(), None),
                 device_index: HashMap::from([(DeviceId::Uart, 0)]),
                 observation: assembly::Observation::default(),
+                persistence: Vec::new(),
             }
         }
         Workload::Boot => {

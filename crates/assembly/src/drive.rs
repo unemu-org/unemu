@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Drive configuration (§7.7).
 
+use std::path::PathBuf;
+
 use crate::device::DeviceId;
 use crate::image::ImageSource;
 
@@ -123,13 +125,13 @@ pub struct DriveConfig {
     pub controller: DeviceId,
     /// The drive-select unit on that controller (0 or 1 on the standard FDC).
     pub unit: u8,
-    /// Whether guest writes update volatile media or fail as not-writable.
+    /// Whether guest writes are volatile, protected or journaled.
     pub write: WriteMode,
 }
 
 /// Guest write policy for mounted media (see `backlog/docs/design/machine-config.md`
-/// §Drive binding and write mode). Neither mode writes back to the host image.
-#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+/// §Drive binding and write mode). The original host image is always immutable.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub enum WriteMode {
     /// Guest writes update only the in-memory image, the existing default.
     #[default]
@@ -137,4 +139,21 @@ pub enum WriteMode {
     /// Guest writes report the controller's existing not-writable status and
     /// leave the mounted image unchanged.
     ReadOnly,
+    /// Persist complete commands in an explicitly selected journal.
+    Journal {
+        /// Journal output, relative to the process working directory.
+        path: PathBuf,
+        /// Positive closed-generation retention count, reserved for retention.
+        keep_generations: u32,
+    },
+}
+
+impl WriteMode {
+    /// Select a journal with the default ten closed generations.
+    pub fn journal(path: impl Into<PathBuf>) -> Self {
+        Self::Journal {
+            path: path.into(),
+            keep_generations: 10,
+        }
+    }
 }

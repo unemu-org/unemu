@@ -4,8 +4,12 @@ Status: accepted design (the maintainer approved the defaults on 2026-11-10).
 The version-1 codec and recovery scanner are implemented in `crates/media`;
 the host-independent device media contract and its in-memory implementation
 are implemented in `crates/device`. The durable host sink and single-writer
-lifecycle are implemented in `crates/media`; assembly journal write mode,
-retention and offline tools are still to come.
+lifecycle are implemented in `crates/media`. Assembly now wires all three write
+modes, validates journal/sidecar path aliases, replays before execution, and exposes
+per-drive status/checkpoint/finish handles. CLI and window run boundaries check
+host failures and explicitly finish successful sessions. Retention rewrites and
+offline tools are still to come; the positive retention count is validated and
+retained on each handle but does not prune history yet.
 
 ## Context
 
@@ -27,15 +31,16 @@ Evidence from the current implementation:
 - **READ:** `crates/assembly/src/image.rs:13–22` defines inline, file and blank
   sources. `assemble.rs:147–153,284–318` reads file sources once, resolves them
   to inline bytes, and validates the bytes actually mounted.
-- **READ:** `crates/assembly/src/assemble.rs`, `build_fdc_drives`, routes drives
+- **READ:** `crates/assembly/src/assemble.rs`, `mount_fdc_drives`, routes drives
   by named `controller: DeviceId` and controller-local `unit`. In
   `crates/assembly/src/drive.rs`, `DriveConfig.write` is `WriteMode::Volatile`
-  (default) or `WriteMode::ReadOnly`; the latter uses `Drive::new_read_only`
-  and preserves the existing not-writable status. Neither mode persists to the
-  host image.
-- **READ:** [Deferred, Host-file write-back for a floppy WRITE](../deferred.md#host-file-write-back-for-a-floppy-write)
-  records the absence of host persistence. The brief identifies its follow-up
-  as `upc-sk3.1`; the tracker was not queried during this worker spike.
+  (default), `WriteMode::ReadOnly`, or explicit `WriteMode::Journal`. Readonly
+  uses `Drive::new_read_only` and preserves the existing not-writable status;
+  journal mounts replay into a sector-media adapter. Volatile and readonly
+  create no host output.
+- **READ:** [Deferred journal tools and retention](../deferred.md#offline-floppy-journal-tools-and-retention)
+  lists the remaining offline tools and pruning work; append/replay persistence
+  is implemented through the assembly session API below.
 - **READ:** [Machine configuration](machine-config.md#single-homes-no-triplication)
   assigns media to top-level drives and composition to assembly. It deliberately
   defines Rust data, without a serialized config format.
@@ -311,7 +316,7 @@ consistency, even when the guest is at a prompt.
 ### Implemented host sink boundary
 
 `media::JournalMedia` owns the reconstructed image and host journal. Assembly
-will wrap its `(LBA, complete sector)` command batches in `device::SectorMedia`;
+wraps its `(LBA, complete sector)` command batches in `device::SectorMedia`;
 this keeps host I/O out of device crates without adding a dependency between the
 format crate and device contracts. `JournalMedia::open` takes the exact loaded
 base bytes, geometry length and a frontend-owned `SinkStatus`. Each media session
@@ -335,8 +340,28 @@ creation/mount or poisons an active sink, with no fallback. New headers are
 synchronized before hard-link publication; existing destinations are preserved.
 After locking and opening (or publishing a new header), mount re-resolves the
 canonical journal path and refuses a mismatch before cleanup, scan or recovery.
-It then removes creation-temporary leftovers and synchronizes the directory,
-even when no tail needs repair. Cleanup or directory-sync errors abort mount.
+Cleanup considers only `<journal-file-name>.create-<decimal digits>.tmp`, with
+at least one ASCII digit. Journal filenames containing `.create-` anywhere are
+refused before locking in both assembly and the sink, including through aliases;
+nested journal names cannot own overlapping temporary namespaces.
+
+A candidate must be a regular file whose bytes are empty, a prefix of the exact
+base-bound creation header, or that header alone. On Unix it is opened with
+`O_NOFOLLOW | O_NONBLOCK`: a symlink swap cannot be followed and a FIFO swap
+cannot block. Metadata from the open handle must still describe a regular file
+with the same device/inode as the initial `symlink_metadata`. Cleanup reads that
+handle, then rechecks the entry's device/inode immediately before unlinking.
+There remains a small path-replacement window between the final check and the
+unlink, so the journal directory must be trusted. Off Unix cleanup retains the
+initial type/content checks without the Unix open flags or identity checks;
+durable mounts remain unsupported there.
+
+Creation writes no other bytes to its temporary, so commands, foreign data,
+symlinks and directories remain untouched. Unknown entries are ignored: mount
+never replays them, and `create_new` skips occupied names. An entry disappearing
+during metadata lookup, open or unlink is already gone and does not fail mount.
+The directory is synchronized even when no tail needs repair. Other cleanup or
+directory-sync errors abort mount.
 Existing validated history is synchronized on mount before confirming its last
 command sequence. The status records the last confirmed COMMAND_END sequence;
 generation markers do not advance that command receipt. A writable recovery
@@ -379,8 +404,8 @@ at every truncation of a generated journal and reject oversized read requests
 and injected read errors. Targeted mutations check the changed behaviors; this
 is not a claim that every assertion or every platform syscall is mutation-tested.
 These process/software fault tests establish neither a physical power-cut result
-nor status/IRQ equivalence through an assembled journal drive; that integration
-belongs to the assembly and final-validation work.
+nor, by themselves, status/IRQ equivalence through an assembled journal drive.
+Assembly integration is measured separately below.
 
 **ASSUMED:** the filesystem/device honors successful synchronization and retains
 previously synchronized bytes under the tail-only crash model stated above.
@@ -416,10 +441,10 @@ concern; persistence adds no new timing input.
 ### Config contract
 
 Keep the agreed per-drive `write` modes: `volatile` (default), `readonly`,
-`journal`. The current `Eq`/`Debug` Rust enum, `WriteMode`, implements `Volatile`
-and `ReadOnly`, with the existing not-writable status preserved. Extend it with
-a journal variant carrying a path and retention count, rather than adding an
-independent boolean and potentially conflicting options.
+`journal`. The `Eq`/`Debug` Rust enum, `WriteMode`, implements `Volatile`, `ReadOnly` and
+`Journal { path, keep_generations }`, with the existing not-writable status
+preserved. The journal variant carries its own path and retention count rather
+than independent, potentially conflicting options.
 The following is field notation only; it does not introduce TOML parsing:
 
 ```toml
@@ -444,6 +469,52 @@ keep_generations = 10
   as well as normalized paths, including hard links. Open the base read-only.
 - Volatile/readonly must not create a journal, lock, backup or temporary output.
   Presets, tests and goldens select volatile unless explicitly testing readonly.
+
+### Assembly session API
+
+`WriteMode::journal(path)` constructs `Journal { path, keep_generations: 10 }`;
+the explicit variant can select a different positive count. Journal-only fields
+cannot be represented on `Volatile` or `ReadOnly`. Assembly rejects non-file
+sources, non-floppies and non-512-byte geometry for journal mode. Before any
+journal or lock is opened, it compares canonical paths and existing file
+identity (including hard links) against every drive/load image and other journal
+or lock output. It also reserves each journal's same-directory
+`<journal-file-name>.create-<decimal digits>.tmp` namespace against mounted
+inputs, checking the canonical parent plus unresolved filename as well as the
+fully canonical path. Other journal filenames containing `.create-` are refused
+independently. These checks reserve names more broadly than cleanup, which also
+checks file type and contents. Dangling journal symlinks are refused
+before mounting any drive. Journal normalization errors identify the drive and
+path; every failed input normalization is ignored for alias comparison so its
+own image read reports the real error, without attribution to another journal. On case-insensitive filesystems,
+not-yet-existing journal names differing only in case can pass validation; the
+second mount fails safely at lock acquisition and names its drive, without case
+folding in validation. Observation policy errors (missing roles, unsupported
+outputs and duplicate routes) are checked before device construction and journal
+mounts, so these failures neither create outputs nor recover an existing tip.
+Mounting multiple drives is not transactional: if a later mount fails (including
+a case-only lock collision), earlier journals and lock sidecars may already
+exist, and earlier recovery may already have repaired or sealed a tip. Failure
+drops their handles without a session-end seal; durable command history remains
+recoverable, and stable lock sidecars are retained.
+Base files are read once, read-only; replay uses those exact
+loaded bytes. Volatile and readonly sessions create no host output.
+
+`AssembledMachine::persistence` contains one `PersistenceHandle` per journal
+with its drive index, configured retention count, mount recovery report, first
+latched host error, `checkpoint()` and `finish()`. The assembly-owned sector
+adapter shares the session with this handle. `run_session(policy)` checks errors
+before and after every existing natural/prompt/stimulus run boundary;
+`check_persistence()` supports an embedding frontend's own boundaries. A failed
+run must be dropped without `finish_persistence()`. A successful cap, halt or
+explicit normal window close calls `finish_persistence()`; repeated finish calls
+are harmless, and the session run API refuses further advancement after finish.
+Drop never writes a clean marker. Final display/disk capture can still read the
+finished media bytes. There is no atomic close across multiple drives.
+
+There is no new frontend flag or serialized journal configuration in this step.
+The existing presets and goldens remain volatile; journal selection is explicit
+Rust data. Automatic retention remains the separate retention implementation.
 
 ### Offline commands
 
@@ -497,7 +568,8 @@ for the post-open comparison; locking itself already follows parent aliases.
 After acquiring the lock and opening the journal, re-resolve its canonical path
 and refuse any mismatch with the name from which the lock was derived. This
 also catches a symlink introduced after initial resolution. Under that lock,
-remove `<journal>.create-*.tmp` leftovers and synchronize the directory before
+remove only decimal-named creation leftovers passing the type, identity and
+header-prefix checks described above, then synchronize the directory before
 scan/recovery. Never mount a leftover temporary as a journal.
 Mounts and mutating tools take it exclusively; inspections take it shared.
 Creation of lock metadata is permitted for inspections, but image/journal
@@ -632,6 +704,52 @@ the cross-run test; bypassing the sink latch must fail fault tests; skipping
 the anchor snapshot must fail retention tests. Existing goldens are regression
 evidence, not red tests for a feature that defaults off. Do not claim the
 proposed tests already prove the Rust integration.
+
+### Session wiring evidence
+
+**MEASURED:** eighteen assembly integration tests cover two fully independent guest
+WRITE/READ DMA sessions, 17-byte terminal-count padding, explicit finish and
+interrupted-tip recovery, immutable bases, volatile/readonly output absence,
+config defaults/refusals, canonical and hard-link aliases (including locks and
+load images), reserved temporary names (including unresolved symlink inputs),
+dangling journal refusal, missing-input error attribution, observation-policy
+preflight without output or recovery, damaged-header refusal, checkpoint/finish
+and error boundaries.
+A journal/volatile comparison checks all RAM, exposed CPU registers, interrupt
+readiness, device snapshots, IRQ levels, traces and virtual time at successive
+run boundaries, for full and partial-sector commands.
+
+**MEASURED:** an assembly unit test wraps a real mounted journal in the optional
+`media/test-support` failing-output adapter. Actual WRITE DATA updates memory,
+then its output fails. A second WRITE DATA in the same bounded run still replaces
+memory; read-back DMA and guest status match the volatile run without write
+protection. The frontend boundary reports the latched error, refuses further advancement and cannot seal the session. A
+separate exhausted-generation test covers a latched checkpoint error. CLI and
+headless presenter tests check successful cap/halt finalization, persistence-error
+classification, stopping at the first failed window boundary, and preservation
+of unsealed execution errors, without opening a window. A matrix compares the
+observation pre-check with actual `Observation::bind` for every configured device
+kind and all output kinds, including missing and duplicate routes. Real-file
+sink tests retain symlinks, commands and foreign matching entries while cleaning
+all creation-header prefixes, including empty and full-header files.
+
+**MEASURED:** forty-five recorded mutation variants establish command mirroring,
+output-free volatile mode, config/alias validation, guest-state preservation,
+checkpoint/error latching and frontend finalization. They also reject both
+post-error write regressions, omitted window checks, dangling journal symlinks,
+wrong CLI persistence classifiers, unconditional temporary deletion, symlink
+following, omitted content checks, disabled genuine-header cleanup, reserved
+journal names, canonical-only input checks and observation pre-check drift.
+Thirteen variants specifically cover decimal-only temporary names, nested
+journal refusal in both layers, disappearance at each I/O boundary, both Unix
+open flags, blocking FIFO swaps, opened/final entry identity and input error
+attribution for not-a-directory paths and symlink loops. They produce fourteen
+expected targeted test failures. Positive integration runs cover independent
+sessions, immutable bases, byte replay and host failure boundaries. Deterministic
+I/O hooks stage the disappearance and identity races; FIFO tests run in isolated
+child processes with a timeout so a blocking regression fails safely.
+These are software checks, not a physical power-loss measurement. Retention and
+offline-command acceptance tests remain with their respective implementations.
 
 ## Implementation beads
 

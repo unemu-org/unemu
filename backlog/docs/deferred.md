@@ -101,15 +101,17 @@ Things **deliberately not implemented**. If something seems missing and is liste
 - **Revisit when:** A real BIOS blob is a goal.
 - **Tracked in:** decision-10.
 
-### Host-file write-back for a floppy WRITE
+### Offline floppy journal tools and retention
 
-- **Why deferred:** The µPD765 WRITE DATA path commits sectors to the mounted
-  drive's image **in memory only**. A file-backed image (`ImageSource::File`) is
-  read once at assembly; nothing writes the mutated bytes back to the host file, so
-  a fresh run always starts from the original on-disk image. Persisting writes needs
-  a write-back policy (flush-on-exit vs. copy-on-write vs. in-place) and touches the
-  image-loading seam, which no current goal exercises — every golden and boot flow
-  reads media or writes it only within a single run.
-- **Revisit when:** A guest must persist across runs — e.g. installing to a floppy
-  image, or a DOS session that must survive a restart.
-- **Tracked in:** none yet.
+- **Implemented:** Explicit journal mode persists floppy writes as command-complete
+  sector batches beside an immutable file-backed base; new sessions replay the
+  journal. Volatile remains the default, and readonly rejects guest writes.
+- **Still deferred:** Offline verification, generation listing, rollback with
+  backups, immutable raw-image export/commit, and atomic retention pruning with
+  anchors. The positive retention count is validated but does not prune yet.
+  Serialized journal configuration and frontend selection flags are also later
+  work; current selection uses Rust `MachineConfig` data.
+- **Revisit when:** A guest session needs offline history management or automatic
+  retention rather than append/replay/checkpoint/finish alone.
+- **Tracked in:** [`design/persistent-media.md`](design/persistent-media.md),
+  §Offline commands and §Retention anchor.

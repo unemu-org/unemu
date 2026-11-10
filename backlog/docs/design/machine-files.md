@@ -5,6 +5,10 @@ assembly-validated `MachineConfig` are implemented in `crates/machine-file`.
 YAML, `extends`, IDE and journal attachment are still to come. NVRAM images
 currently support volatile writes only; readonly is rejected until assembly
 can represent it.
+Drive-indexed assembly diagnostics, including journal configuration errors, map
+to the drive's source origin and unit label while preserving the message suffix.
+Journal errors are mapped exhaustively even though lowering currently rejects
+journal selection before constructing an assembly configuration.
 The design answers one question: how is a `MachineConfig` written as a file,
 so that users compose machines without recompiling?
 

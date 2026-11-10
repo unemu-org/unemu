@@ -364,6 +364,9 @@ pub const TEST386_MAX_RETIRED: u64 = 1_024;
 /// the toolchain, so any address lives in `detail` for humans only).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum StopReason {
+    /// Host output failed; the journal session was left unsealed.
+    PersistenceFailed { detail: String },
+
     /// The guest executed `hlt` and the machine terminated.
     Halt,
     /// The motherboard requested CPU reset; the runner returns control.
@@ -431,11 +434,7 @@ pub struct Test386Run {
 /// captured checkpoints are drained regardless of how the run ended.
 pub fn run_test386(blob: &[u8]) -> Test386Run {
     let config = assembly::test386(blob.to_vec());
-    let AssembledMachine {
-        mut machine,
-        observation,
-        ..
-    } = match assemble_with_observation(&config, &post_policy()) {
+    let mut assembled = match assemble_with_observation(&config, &post_policy()) {
         Ok(assembled) => assembled,
         Err(e) => {
             return Test386Run {
@@ -447,13 +446,18 @@ pub fn run_test386(blob: &[u8]) -> Test386Run {
         }
     };
 
-    let result = run_past_reset_requests(&mut machine, Some(TEST386_MAX_RETIRED));
-    let rip = machine.cpu().reg(CpuReg::Rip);
-    let mut stop = classify_test386_stop(rip, result.map_err(Into::into));
-    let post = stream_or_fail(capture_post(&observation), &mut stop);
+    let result = assembled.run_session(&RunPolicy::natural(Some(TEST386_MAX_RETIRED), None));
+    let result = result.and_then(|outcome| {
+        assembled.finish_persistence()?;
+        Ok(outcome)
+    });
+    let rip = assembled.machine.cpu().reg(CpuReg::Rip);
+    let mut stop = classify_test386_stop(rip, result);
+    let post = stream_or_fail(capture_post(&assembled.observation), &mut stop);
     Test386Run { post, stop }
 }
 
+#[cfg(test)]
 fn run_past_reset_requests<C: Cpu>(
     machine: &mut Machine<C>,
     cap: Option<u64>,
@@ -494,6 +498,9 @@ fn classify_test386_stop(rip: u64, result: Result<RunOutcome, RunError>) -> Stop
         }
         Err(RunError::Machine(MachineError::Bus(e))) => StopReason::Unmapped {
             detail: format!("{e} (rip {rip:#x})"),
+        },
+        Err(error @ RunError::Persistence(_)) => StopReason::PersistenceFailed {
+            detail: error.to_string(),
         },
         Err(error @ RunError::ConsoleUnavailable { .. }) => StopReason::ObservationFailed {
             detail: error.to_string(),
@@ -671,12 +678,13 @@ fn run_bios_assembled(
     assembled: &mut AssembledMachine,
     build_policy: impl FnOnce(&HashMap<DeviceId, usize>) -> RunPolicy,
 ) -> BiosRun {
-    let device_index = &assembled.device_index;
-    let policy = build_policy(device_index);
-    let machine = &mut assembled.machine;
-    let result = assembly::run(machine, &assembled.observation, &policy);
-
-    let mut stop = classify_bios_stop(machine, result);
+    let policy = build_policy(&assembled.device_index);
+    let result = assembled.run_session(&policy);
+    let result = result.and_then(|outcome| {
+        assembled.finish_persistence()?;
+        Ok(outcome)
+    });
+    let mut stop = classify_bios_stop(&assembled.machine, result);
     let post = stream_or_fail(capture_post(&assembled.observation), &mut stop);
     let (screen, screen_stamp) = match assembled.capture_text(DeviceId::Vga) {
         Ok(capture) => {
@@ -688,7 +696,10 @@ fn run_bios_assembled(
             (grid, Some(stamp))
         }
         Err(error) => {
-            if !matches!(stop, StopReason::ObservationFailed { .. }) {
+            if !matches!(
+                stop,
+                StopReason::ObservationFailed { .. } | StopReason::PersistenceFailed { .. }
+            ) {
                 stop = StopReason::ObservationFailed {
                     detail: format!("capturing display: {error}"),
                 };
@@ -702,7 +713,10 @@ fn run_bios_assembled(
             grid
         }
         Err(error) => {
-            if !matches!(stop, StopReason::ObservationFailed { .. }) {
+            if !matches!(
+                stop,
+                StopReason::ObservationFailed { .. } | StopReason::PersistenceFailed { .. }
+            ) {
                 stop = StopReason::ObservationFailed {
                     detail: format!("capturing display (MDA): {error}"),
                 };
@@ -712,7 +726,8 @@ fn run_bios_assembled(
     };
     let machine = &mut assembled.machine;
     let com1 = stream_or_fail(capture_serial(&assembled.observation), &mut stop);
-    let floppy_image = device_index
+    let floppy_image = assembled
+        .device_index
         .get(&DeviceId::Fdc)
         .and_then(|&index| machine.bus_mut().device_mut(index))
         .and_then(|fdc| read_bios_floppy_image(fdc.as_mut()));
@@ -1021,6 +1036,9 @@ fn classify_bios_stop(
         Err(RunError::Machine(MachineError::Bus(e))) => StopReason::Unmapped {
             detail: format!("{e}; {site}"),
         },
+        Err(error @ RunError::Persistence(_)) => StopReason::PersistenceFailed {
+            detail: error.to_string(),
+        },
         Err(error @ RunError::ConsoleUnavailable { .. }) => StopReason::ObservationFailed {
             detail: error.to_string(),
         },
@@ -1131,16 +1149,15 @@ pub fn bootable_floppy_image() -> Vec<u8> {
 /// deterministically and fast.
 pub fn run_floppy_boot() -> Result<Vec<u8>> {
     let config = assembly::floppy_boot(FLOPPY_LOADER.to_vec(), bootable_floppy_image());
-    let AssembledMachine {
-        mut machine,
-        observation,
-        ..
-    } = assemble_with_observation(&config, &serial_policy())
+    let mut assembled = assemble_with_observation(&config, &serial_policy())
         .context("assembling floppy-boot machine")?;
 
-    run_past_reset_requests(&mut machine, None).context("running machine")?;
+    assembled
+        .run_session(&RunPolicy::natural(None, None))
+        .context("running machine")?;
 
-    capture_serial(&observation)
+    assembled.finish_persistence()?;
+    capture_serial(&assembled.observation)
 }
 
 /// Assemble the PC/AT machine, run `blob` in real mode, and return the bytes the
@@ -1150,22 +1167,17 @@ pub fn run_floppy_boot() -> Result<Vec<u8>> {
 /// the machine edge-detects it and acknowledges/injects the timer vector.
 pub fn run_boot(blob: &[u8]) -> Result<Vec<u8>> {
     let config = assembly::at_boot(blob.to_vec());
-    let AssembledMachine {
-        mut machine,
-        observation,
-        ..
-    } = assemble_with_observation(&config, &serial_policy()).context("assembling boot machine")?;
+    let mut assembled =
+        assemble_with_observation(&config, &serial_policy()).context("assembling boot machine")?;
 
     // No retired cap: the demo masks its timer and halts on its own. The idle
     // limit bounds the wait for an interrupt after that halt.
-    assembly::run(
-        &mut machine,
-        &observation,
-        &RunPolicy::natural(None, Some(BOOT_IDLE_LIMIT)),
-    )
-    .context("running machine")?;
+    assembled
+        .run_session(&RunPolicy::natural(None, Some(BOOT_IDLE_LIMIT)))
+        .context("running machine")?;
 
-    capture_serial(&observation)
+    assembled.finish_persistence()?;
+    capture_serial(&assembled.observation)
 }
 
 /// Assemble the PC/AT machine with `scancodes` queued in the keyboard, run `blob`
@@ -1176,27 +1188,25 @@ pub fn run_boot(blob: &[u8]) -> Result<Vec<u8>> {
 /// the keyboard vector once the guest enables keyboard interrupts and sets `IF`.
 pub fn run_keyboard(blob: &[u8], scancodes: &[u8]) -> Result<Vec<u8>> {
     let config = assembly::at_keyboard(blob.to_vec());
-    let AssembledMachine {
-        mut machine,
-        observation,
-        device_index,
-    } = assemble_with_observation(&config, &serial_policy())
+    let mut assembled = assemble_with_observation(&config, &serial_policy())
         .context("assembling keyboard machine")?;
 
     // Queue the scancodes into the 8042 before the run, exactly as the legacy
     // chipset seeded them at construction — the guest raises IRQ1 for each once it
     // enables keyboard interrupts.
-    assembly::inject_scancodes(&mut machine, device_index[&DeviceId::Keyboard], scancodes);
+    assembly::inject_scancodes(
+        &mut assembled.machine,
+        assembled.device_index[&DeviceId::Keyboard],
+        scancodes,
+    );
 
     // The idle limit lets the demo stop once no interrupt can wake the CPU.
-    assembly::run(
-        &mut machine,
-        &observation,
-        &RunPolicy::natural(None, Some(KBD_IDLE_LIMIT)),
-    )
-    .context("running machine")?;
+    assembled
+        .run_session(&RunPolicy::natural(None, Some(KBD_IDLE_LIMIT)))
+        .context("running machine")?;
 
-    capture_serial(&observation)
+    assembled.finish_persistence()?;
+    capture_serial(&assembled.observation)
 }
 
 /// Assemble the PC/AT machine with a fast-ticking RTC, run `blob` in real mode,
@@ -1211,21 +1221,16 @@ pub fn run_keyboard(blob: &[u8], scancodes: &[u8]) -> Result<Vec<u8>> {
 /// so the output stays deterministic.
 pub fn run_rtc(blob: &[u8]) -> Result<Vec<u8>> {
     let config = assembly::at_rtc(blob.to_vec(), RTC_SECOND_TICKS, RTC_UIP_TICKS);
-    let AssembledMachine {
-        mut machine,
-        observation,
-        ..
-    } = assemble_with_observation(&config, &serial_policy()).context("assembling rtc machine")?;
+    let mut assembled =
+        assemble_with_observation(&config, &serial_policy()).context("assembling rtc machine")?;
 
     // The idle limit lets the demo stop once no interrupt can wake the CPU.
-    assembly::run(
-        &mut machine,
-        &observation,
-        &RunPolicy::natural(None, Some(RTC_IDLE_LIMIT)),
-    )
-    .context("running machine")?;
+    assembled
+        .run_session(&RunPolicy::natural(None, Some(RTC_IDLE_LIMIT)))
+        .context("running machine")?;
 
-    capture_serial(&observation)
+    assembled.finish_persistence()?;
+    capture_serial(&assembled.observation)
 }
 
 /// Assemble the floppy-WRITE machine, run `program` in real mode, and return the
@@ -1237,21 +1242,15 @@ pub fn run_rtc(blob: &[u8]) -> Result<Vec<u8>> {
 /// deterministic: a successful write→read cycle yields exactly `b"W"`.
 pub fn run_fdc_write(program: &[u8]) -> Result<Vec<u8>> {
     let config = assembly::at_fdc_write(program.to_vec(), fdc_write_pattern(), FDC_WRITE_SRC);
-    let AssembledMachine {
-        mut machine,
-        observation,
-        ..
-    } = assemble_with_observation(&config, &serial_policy())
+    let mut assembled = assemble_with_observation(&config, &serial_policy())
         .context("assembling fdc-write machine")?;
 
-    assembly::run(
-        &mut machine,
-        &observation,
-        &RunPolicy::natural(Some(FDC_WRITE_RETIRED_CAP), None),
-    )
-    .context("running machine")?;
+    assembled
+        .run_session(&RunPolicy::natural(Some(FDC_WRITE_RETIRED_CAP), None))
+        .context("running machine")?;
 
-    capture_serial(&observation)
+    assembled.finish_persistence()?;
+    capture_serial(&assembled.observation)
 }
 
 /// Assemble the PC/AT machine, run `blob` in real mode, then render the VGA text
@@ -1268,9 +1267,10 @@ pub fn run_vga_text(blob: &[u8]) -> Result<TextGrid> {
     let mut assembled = assemble_with_observation(&config, &display_policy())
         .context("assembling vga-text machine")?;
 
-    let result = run_past_reset_requests(&mut assembled.machine, None);
+    let result = assembled.run_session(&RunPolicy::natural(None, None));
     let capture = assembled.capture_text(DeviceId::Vga);
     result.context("running machine")?;
+    assembled.finish_persistence()?;
     capture.context("capturing vga-text display")?;
     let Frame::Text(grid) = assembled
         .observation
@@ -1330,7 +1330,10 @@ fn stream_or_fail(result: Result<Vec<u8>>, stop: &mut StopReason) -> Vec<u8> {
     match result {
         Ok(bytes) => bytes,
         Err(error) => {
-            if !matches!(stop, StopReason::ObservationFailed { .. }) {
+            if !matches!(
+                stop,
+                StopReason::ObservationFailed { .. } | StopReason::PersistenceFailed { .. }
+            ) {
                 *stop = StopReason::ObservationFailed {
                     detail: format!("{error:#}"),
                 };
@@ -1377,6 +1380,85 @@ mod tests {
     }
 
     #[test]
+    fn journal_host_failures_are_reported_as_persistence_failures() {
+        let temp = assembly::test_support::TempDir::new("cli-host-failure");
+        let base = temp.path().join("base.img");
+        let journal = temp.path().join("disk.upfj");
+        std::fs::write(&base, vec![0; 1_474_560]).unwrap();
+        let demo = assembly::at_fdc_write(
+            FDC_WRITE_PROGRAM.to_vec(),
+            fdc_write_pattern(),
+            FDC_WRITE_SRC,
+        );
+        let mut config = assembly::bios(vec![0xF4; 32768], Some(vec![0; 1_474_560]));
+        config.board = assembly::BoardModel::Bare;
+        config.cpu = demo.cpu;
+        config.images = demo.images;
+        config.drives[0].image = assembly::ImageSource::File(base);
+        config.drives[0].write = assembly::WriteMode::journal(&journal);
+        let mut assembled = assemble_with_observation(&config, &bios_observation_policy()).unwrap();
+        assembled.persistence[0].fail_output();
+        let result = run_bios_assembled(&mut assembled, |_| RunPolicy::natural(Some(10_000), None));
+        assert!(
+            matches!(result.stop, StopReason::PersistenceFailed { ref detail } if detail.contains("drive 0 persistence")),
+            "{:?}",
+            result.stop
+        );
+        let result = assembled.run_session(&RunPolicy::natural(Some(20_000), None));
+        let rip = assembled.machine.cpu().reg(CpuReg::Rip);
+        assert!(matches!(
+            classify_test386_stop(rip, result),
+            StopReason::PersistenceFailed { .. }
+        ));
+        let bytes = std::fs::read(journal).unwrap();
+        assert_eq!(bytes.len(), 128, "failed output must not seal the session");
+    }
+
+    #[test]
+    fn journal_frontend_finishes_successful_caps_but_leaves_execution_errors_unsealed() {
+        for fail in [false, true] {
+            let temp = assembly::test_support::TempDir::new("journal-test");
+            let path = temp.path();
+            let base = path.join("base.img");
+            let journal = path.join("disk.upfj");
+            let mut program = FDC_WRITE_PROGRAM.to_vec();
+            if fail {
+                program.truncate(program.len() - 3);
+                program.extend([0x0F, 0x05]);
+            }
+            let demo = assembly::at_fdc_write(program, fdc_write_pattern(), FDC_WRITE_SRC);
+            let mut config = assembly::bios(vec![0xF4; 32768], Some(vec![0; 1_474_560]));
+            config.board = assembly::BoardModel::Bare;
+            config.cpu = demo.cpu;
+            config.images = demo.images;
+            std::fs::write(&base, vec![0; 1_474_560]).unwrap();
+            config.drives[0].image = assembly::ImageSource::File(base.clone());
+            config.drives[0].write = assembly::WriteMode::journal(&journal);
+            let run = run_bios_config(config, |_| RunPolicy::natural(Some(10_000), None));
+            if fail {
+                assert!(
+                    matches!(run.stop, StopReason::Unsupported { .. }),
+                    "{:?}",
+                    run.stop
+                );
+            } else {
+                assert_eq!(run.stop, StopReason::BudgetExhausted);
+            }
+            let bytes = std::fs::read(&journal).unwrap();
+            assert!(bytes.len() > 128);
+            let kinds: Vec<_> = bytes[128..]
+                .as_chunks::<640>()
+                .0
+                .iter()
+                .map(|frame| frame[8])
+                .collect();
+            assert!(kinds.contains(&2), "guest command must be durable");
+            assert_eq!(kinds.last() == Some(&3), !fail);
+            assert_eq!(std::fs::read(base).unwrap(), vec![0; 1_474_560]);
+        }
+    }
+
+    #[test]
     fn inline_host_can_select_capture_output() {
         let mut devices: Vec<Box<dyn Device>> = vec![Box::new(devices::VgaText::new())];
         devices[0].mmio_write(0xB8000, 2, 0x7049).unwrap();
@@ -1399,6 +1481,7 @@ mod tests {
             ),
             observation,
             device_index,
+            persistence: Vec::new(),
         };
         assert_eq!(assembled.observation.subscriber_count(DeviceId::Vga), 1);
         let frame = assembled.capture_text(DeviceId::Vga).unwrap().frame;

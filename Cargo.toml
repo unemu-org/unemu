@@ -25,6 +25,7 @@ rust-version = "1.99"
 repository = "https://github.com/mikolajmikolajczyk/unemupc98"
 
 [workspace.dependencies]
+libc = "0.2"
 serde = { version = "1", features = ["derive"] }
 toml = "1"
 # Library error enums (§conventions: thiserror for stable library errors).
