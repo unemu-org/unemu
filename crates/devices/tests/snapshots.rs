@@ -17,6 +17,10 @@ fn exercise(bus: &mut MockBus, ports: &[u16], at: u64) {
         bus.mmio_read(0xBFFFF, 4).unwrap();
         bus.mmio_write(0xBFFFF, 4, 0x1234).unwrap();
     }
+    if ports.contains(&0x3B4) {
+        bus.mmio_read(0xB0000, 4).unwrap();
+        bus.mmio_write(0xB0000, 4, 0x1234).unwrap();
+    }
     if ports.contains(&0x3F5) {
         let request = bus.device_mut().take_dma_request();
         if let Some(request) = request {
@@ -190,6 +194,12 @@ checks!(
     uart_sweep,
     || Box::new(Uart16550::new(0x3F8)),
     &[0x3F8, 0x3F9, 0x3FA, 0x3FB, 0x3FC, 0x3FF]
+);
+checks!(
+    mda_continuation,
+    mda_sweep,
+    || Box::new(MdaText::new()),
+    &[0x3B4, 0x3B5, 0x3B8, 0x3BA]
 );
 checks!(
     vga_continuation,
@@ -589,6 +599,7 @@ fn restored_devices_ignore_backwards_clock_without_replaying_time() {
         Box::new(Upd765::new()),
         Box::new(Uart16550::new(0x3F8)),
         Box::new(VgaText::new()),
+        Box::new(MdaText::new()),
         Box::new(PostPort::new()),
         Box::new(SysControl::new()),
     ];

@@ -14,6 +14,7 @@
 pub mod cmos_rtc;
 pub mod dma8237;
 pub mod i8042;
+pub mod mda;
 pub mod pic8259;
 pub mod pit8253;
 pub mod post_port;
@@ -26,6 +27,7 @@ pub use cmos_rtc::{CmosConfig, CmosRtc};
 pub use device::{DmaMemory, DmaOp, DmaOutcome, DmaRequest};
 pub use dma8237::{Dma8237, TransferType};
 pub use i8042::I8042;
+pub use mda::MdaText;
 pub use pic8259::Pic8259;
 pub use pit8253::Pit8253;
 pub use post_port::PostPort;
@@ -139,6 +141,8 @@ pub(crate) mod trace_policy_tests {
     off_test!(uart_trace_off, Uart16550::new(0x3F8), 0x3FD);
     ring_test!(post_trace_ring, PostPort::with_port(0x80), 0x80);
     off_test!(post_trace_off, PostPort::with_port(0x80), 0x80);
+    ring_test!(mda_trace_ring, MdaText::new(), 0x3BA);
+    off_test!(mda_trace_off, MdaText::new(), 0x3BA);
     ring_test!(vga_trace_ring, VgaText::new(), 0x3DA);
     off_test!(vga_trace_off, VgaText::new(), 0x3DA);
     ring_test!(pic_trace_ring, Pic8259::new(), 0x21);

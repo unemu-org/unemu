@@ -68,6 +68,11 @@ IVT-vectored `INT`/exceptions — added under `CpuMode::Real16`.
 
 §9.1 `FrameSink` seam; cards are Devices.
 §9.2 VGA text 80×25 (first graphics mode, later).
+§9.3 MDA text 80×25. The MDA display device exposes fixed 80×25 text scanout, 4 KiB of RAM mirrored
+through B0000–B7FFF, the MC6845 register file through the 3B0–3B7 port mirrors,
+and mode/status ports 3B8/3BA. Status uses a deterministic read-count phase;
+mono attribute rendering and machine-profile wiring remain separate work.
+The printer ports 3BC–3BE are outside this display device's routes.
 
 ## §10 Testing
 

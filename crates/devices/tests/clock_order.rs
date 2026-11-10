@@ -56,3 +56,4 @@ clock_checks!(uart, Uart16550::new(0x3F8));
 clock_checks!(post, PostPort::new());
 clock_checks!(system, SysControl::new());
 clock_checks!(vga, VgaText::new());
+clock_checks!(mda, MdaText::new());
