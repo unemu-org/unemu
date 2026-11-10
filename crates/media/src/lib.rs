@@ -12,13 +12,14 @@
 //! `scan_reader` streams payload history with `Read` + `Seek`; `scan` also accepts
 //! an in-memory slice. `JournalMedia` owns memory, a stable exclusive sidecar lock
 //! and synchronous append/recovery. Assembly supplies the device-trait adapter;
-//! devices, frontend policy, retention rewrites and offline tools remain outside
+//! devices, frontend policy and retention rewrites remain outside
 //! this crate. This models a disk format, not controller hardware; complete
 //! 512-byte replacement sectors include controller-supplied zero padding.
 //! A valid checksum does not establish guest filesystem health or prove a host
 //! sync was acknowledged.
 
 mod codec;
+pub mod offline;
 mod scan;
 mod sink;
 

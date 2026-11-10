@@ -106,12 +106,14 @@ Things **deliberately not implemented**. If something seems missing and is liste
 - **Implemented:** Explicit journal mode persists floppy writes as command-complete
   sector batches beside an immutable file-backed base; new sessions replay the
   journal. Volatile remains the default, and readonly rejects guest writes.
-- **Still deferred:** Offline verification, generation listing, rollback with
-  backups, immutable raw-image export/commit, and atomic retention pruning with
-  anchors. The positive retention count is validated but does not prune yet.
+  Offline `media generations`, `verify`, explicit backed-up tail repair and
+  rollback are available with shared/exclusive stable locking.
+- **Still deferred:** Immutable raw-image export (`media commit`/`compact`)
+  and atomic retention pruning with anchors. The positive retention count is
+  validated but does not prune yet.
   Serialized journal configuration and frontend selection flags are also later
   work; current selection uses Rust `MachineConfig` data.
-- **Revisit when:** A guest session needs offline history management or automatic
-  retention rather than append/replay/checkpoint/finish alone.
+- **Revisit when:** A guest session needs image export or automatic retention rather
+  than append/replay/checkpoint/finish and offline inspection/rollback.
 - **Tracked in:** [`design/persistent-media.md`](design/persistent-media.md),
   §Offline commands and §Retention anchor.

@@ -98,6 +98,55 @@ stderr with status 2. The informative
 `scheduler_engine_wall_times` test skips with one line unless
 `UNEMUPC98_SCHEDULER_WALL_TIMES=1` is set, including in ordinary slow/CI runs.
 
+## Offline floppy media
+
+```sh
+cargo run -p cli -- media generations --base disk.img --journal disk.img.upfj
+cargo run -p cli -- media verify --base disk.img --journal disk.img.upfj
+cargo run -p cli -- media verify --base disk.img --journal disk.img.upfj --repair-tail --backup before-repair.upfj
+cargo run -p cli -- media rollback --base disk.img --journal disk.img.upfj --to 1 --backup before-rollback.upfj
+```
+
+Inspections replay read-only under a shared stable journal lock. An existing
+lock is opened read-only, so a 0444 lock file is supported. If the lock is absent
+and its directory forbids creation (EACCES, EPERM or EROFS), inspection proceeds
+without a lock and prints one line saying so. A writing session must already
+have created that lock; an existing lock is never bypassed. Mutating tools still
+require an exclusive lock with write access. A live journal session excludes all
+tools. Never delete `<journal>.lock`: it is not a stale-PID file; deletion during
+a session defeats the single-writer guarantee for both sessions and tools.
+`generations` includes the base SHA-256, retained
+anchor, closed ids/reasons/end offsets/counts and any unsealed tip. A closed
+marker does not certify filesystem consistency or bootability.
+
+`verify` reports binding/frame/grammar failures, recoverable-tail bytes and the
+latest reconstructible state. Exit codes: **0** fully valid/closed, **1**
+corruption, wrong base or I/O failure (including a missing journal and lock
+conflicts, a reserved `.create-` journal name, a dangling journal symlink or a
+post-lock canonical-path change), **2** usage/config error, **3** recoverable tail
+or unsealed commands. Missing base/journal inputs are checked before locking,
+leave no new files and report the input's role and path. Non-regular inputs,
+including FIFOs, are refused without blocking. `--repair-tail` takes an exclusive
+lock, synchronizes a full backup at an unused path, then performs normal mount
+recovery/sealing. Interior damage and incomplete anchors are refused.
+
+Rollback requires a retained closed generation; generation 0 is available only
+before retention introduces a positive anchor. An unavailable id is exit 2.
+After synchronizing the full backup and its directory, rollback truncates after
+the chosen marker (128 bytes for 0) and synchronizes the journal. Later history
+and any open tip are removed; their ids can be reused on subsequent mounts.
+Keep the immutable base alongside backups. Existing backup paths (including
+aliases of inputs) and reserved `.create-` filenames are refused; tools never
+delete backups. On Unix a backup inherits the journal's exact permission bits
+before any bytes are copied. A copy or backup-sync failure reports the retained
+partial, invalid backup's path; do not use it as a valid recovery source. All I/O
+errors identify the affected base, journal, lock or backup path. Tail diagnostics name
+the safe truncation offset and discarded byte count separately from the failure
+offset. Journal and image bytes stay unchanged on inspection.
+
+`media commit`/`compact` export and automatic retention pruning remain deferred;
+`keep_generations` is validated but does not yet prune history.
+
 ## Typecheck / lint / format
 
 ```sh

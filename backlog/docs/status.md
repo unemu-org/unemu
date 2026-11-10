@@ -38,7 +38,11 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
 - **Floppy write modes:** volatile is the default (in memory only), readonly
   rejects writes, and explicit journal mode persists command-complete writes
   beside an immutable file-backed base and replays them on the next mount.
-  Journal selection currently uses Rust `MachineConfig` data.
+  Journal selection currently uses Rust `MachineConfig` data. Offline CLI
+  `media generations` and `verify` inspect under shared locks, with an explicit
+  no-lock report when read-only storage has no lock entry;
+  `verify --repair-tail` and `rollback --to N` require synchronized full backups and
+  exclusive locks. Closed/recovered markers do not imply a healthy filesystem.
 - **Machines are declarative.** A `MachineConfig` (the `assembly` crate) is built by one
   `assemble()` and run under a `RunPolicy`; presets replace the old hand-written runners.
 - **CPU pin:** `73ed5d6ef4fc68f91cdad10b1e7c1c370363d030` (x86jit `main`).
@@ -124,7 +128,8 @@ was reported to the CPU core project.
   those crossings reach the bus, but mixed RAM/MMIO accesses need the upstream
   CPU fix tracked by `xj-ir6.12 (x86jit)`.
 - Journal selection is not exposed by frontend flags or machine-file fields yet.
-  Retention pruning and offline history/export tools remain unimplemented.
+  Retention pruning and immutable-image export (`media commit`/`compact`) remain
+  unimplemented; the configured retention count does not yet prune history.
 
 ## Recently landed
 

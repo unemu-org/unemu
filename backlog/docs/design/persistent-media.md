@@ -1,15 +1,19 @@
 # Recoverable persistent floppy media
 
-Status: accepted design (the maintainer approved the defaults on 2026-11-10).
+Status: accepted design; offline inspection, tail repair and rollback implemented.
+The maintainer approved the defaults on 2026-11-10.
 The version-1 codec and recovery scanner are implemented in `crates/media`;
 the host-independent device media contract and its in-memory implementation
 are implemented in `crates/device`. The durable host sink and single-writer
 lifecycle are implemented in `crates/media`. Assembly now wires all three write
 modes, validates journal/sidecar path aliases, replays before execution, and exposes
 per-drive status/checkpoint/finish handles. CLI and window run boundaries check
-host failures and explicitly finish successful sessions. Retention rewrites and
-offline tools are still to come; the positive retention count is validated and
-retained on each handle but does not prune history yet.
+host failures and explicitly finish successful sessions. Offline generation
+listing, verification, explicit tail repair and backed-up rollback are implemented
+in the CLI and `crates/media`. Immutable-image export
+(`commit`/`compact`) and retention pruning are still to come; the positive
+retention count is validated and retained on each handle but does not prune
+history yet.
 
 ## Context
 
@@ -518,15 +522,15 @@ Rust data. Automatic retention remains the separate retention implementation.
 
 ### Offline commands
 
-Add a `media` command group to the existing binary, preserving `--boot`.
-Names and options below are proposed CLI contracts, not commands available now:
+The existing binary provides the following `media` commands, preserving `--boot`.
+Parsing is dependency-free; the command layer and journal operations are library
+APIs tested without spawning the binary:
 
 ```text
 unemupc98 media generations --base disk.img --journal disk.img.upfj
 unemupc98 media verify --base disk.img --journal disk.img.upfj
 unemupc98 media verify --base disk.img --journal disk.img.upfj --repair-tail --backup before-repair.upfj
 unemupc98 media rollback --base disk.img --journal disk.img.upfj --to 7 --backup before-rollback.upfj
-unemupc98 media commit --base disk.img --journal disk.img.upfj --to 7 --output restored.img
 ```
 
 `generations` lists ids, closing reasons, end offsets, command/sector counts,
@@ -548,6 +552,29 @@ its directory, then truncates just after N's GENERATION_END (128 bytes for 0)
 and synchronizes. It removes later generations and any open tip. No guest runs
 concurrently. A successful return means the truncated prefix is durable;
 interruption may leave the old or truncated file, with the backup available.
+An unavailable, pruned, nonexistent or unsealed target is a configuration error
+(exit 2); a missing journal is an I/O failure (exit 1), and is never created by
+a tool. Existing backup destinations, including symlink/hard-link aliases of
+the base or journal, are refused (exit 2). Backup filenames containing the
+reserved `.create-` marker are also refused so mount cleanup cannot delete a
+header-only backup. Backups are never deleted by these tools. On Unix they are
+created with the journal's permission bits, then those bits are set exactly
+before copying, so the umask cannot expose data or silently narrow permissions.
+A failed copy or backup barrier leaves a retained file and reports it as a
+partial, invalid backup with its path. Every I/O diagnostic names the role and
+path of the affected base, journal, lock or backup. Tools preflight both inputs before
+creating lock metadata, and open them without blocking on Unix; non-regular
+inputs such as FIFOs are refused. Missing inputs leave no new files. Reserved
+`.create-` journal names, dangling journal symlinks and canonical-path changes
+after locking are I/O failures (exit 1). Tail diagnostics give the safe truncation
+point and discarded bytes, separately from the failure/EOF offset. Rollback
+validates its target before printing the removal warning.
+
+Still to come (not accepted by the current CLI):
+
+```text
+unemupc98 media commit --base disk.img --journal disk.img.upfj --to 7 --output restored.img
+```
 
 `commit` (alias `compact`) reconstructs a selected closed generation into a
 **new raw image** at an unused output path. Write a same-directory temporary,
@@ -572,9 +599,16 @@ remove only decimal-named creation leftovers passing the type, identity and
 header-prefix checks described above, then synchronize the directory before
 scan/recovery. Never mount a leftover temporary as a journal.
 Mounts and mutating tools take it exclusively; inspections take it shared.
+Inspections open an existing lock read-only. If it is absent and creation fails
+with EACCES, EPERM or EROFS, they may inspect without a lock and print one line
+saying no lock was taken. A writing session must have created a lock in that
+directory; an existing entry is never bypassed, even when unreadable. Mutating
+tools still require an exclusive lock with write access.
 Creation of lock metadata is permitted for inspections, but image/journal
 contents remain read-only. The lock file is never replaced/unlinked by normal
 tools; locks release on process exit, without stale-PID or time heuristics.
+Never delete `<journal>.lock`: it is not a stale-PID file; deletion during a
+session defeats the single-writer guarantee for sessions and tools alike.
 Two drives/sessions cannot share a writable journal. The same lock protects
 rename-based pruning; locking only the journal inode would not. External tools
 that ignore this protocol are outside the contract.
@@ -748,8 +782,47 @@ expected targeted test failures. Positive integration runs cover independent
 sessions, immutable bases, byte replay and host failure boundaries. Deterministic
 I/O hooks stage the disappearance and identity races; FIFO tests run in isolated
 child processes with a timeout so a blocking regression fails safely.
-These are software checks, not a physical power-loss measurement. Retention and
-offline-command acceptance tests remain with their respective implementations.
+These are software checks, not a physical power-loss measurement. Retention
+acceptance tests remain with its implementation; offline command
+acceptance is covered by the CLI media-tool integration suite and the backup
+barrier fault model.
+
+### Offline command evidence
+
+The initial sixteen CLI integration tests cover rollback/remount/reappend,
+generation 0, retained-anchor and unavailable/open targets, read-only scans,
+all four exit codes, wrong bases, torn tails, interior damage, incomplete anchors,
+required backups and their aliases, shared/exclusive locks (including journal
+symlinks), deterministic listing output, usage errors and the existing boot demo.
+The initial twenty-nine targeted mutations produced failing tests. Their backup
+barrier checks omitted calls in the abstract backup model; they did not establish
+that HostBackup invoked either production barrier or that rollback synchronized
+the truncated journal. They also did not test the post-lock canonical recheck.
+
+Recording tests now drive the production HostBackup and rollback paths against
+real files. They record backup creation, copy, backup-file sync, backup-directory
+sync, journal truncate and journal sync in that order. Each operation also
+records its target kind; sync/copy/truncate classify the actual descriptor using
+metadata. File and directory barrier targets are asserted separately. Repair
+records the same backup prefix before transferring the held lock to normal sink
+recovery; the sink's existing fault model separately tests recovery truncation/seal
+barriers.
+Failure injection at copy and both backup barriers checks that no journal
+mutation follows and that the retained invalid backup is identified. A path-swap
+hook exercises the actual post-lock canonical comparison. Permission and FIFO
+checks cover read-only locks/storage, private backups and nonblocking refusal.
+The FIFO test has its own one-test binary so process creation cannot transiently
+inherit locks held by sibling tests. Permission checks use a file-access probe
+without spawning, and skip when the host bypasses permission bits (such as root).
+Tests require an unreadable existing lock to fail with its lock path, rather than
+falling back to lockless inspection; dangling lock symlinks name the lock too.
+**MEASURED:** each of `media_tools` and `media_fifo` passed sixty consecutive
+runs with the default parallel harness, with zero failed runs in either series.
+Twenty-four targeted mutations fail their tests, including removal of the
+existing-lock guard, incorrect lock error paths/roles and swapping file/directory
+sync descriptors while preserving their operation labels.
+These checks do not establish physical power-loss durability or implement
+retention/export acceptance.
 
 ## Implementation beads
 

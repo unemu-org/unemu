@@ -11,6 +11,8 @@
 //! through semantic byte routes for COM1 and POST. Text screens use the
 //! card-state observation facade. All captures share assembly-owned routing.
 
+pub mod command;
+
 use anyhow::{Context, Result};
 use assembly::{
     assemble_with_observation, AssembledMachine, ConsoleProbe, DeviceId, InjectionSchedule,

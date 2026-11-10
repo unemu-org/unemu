@@ -258,6 +258,7 @@ dependencies = [
  "device",
  "devices",
  "machine",
+ "media",
  "testkit",
  "video",
 ]

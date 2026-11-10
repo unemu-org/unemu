@@ -157,6 +157,28 @@ impl JournalMedia {
         geometry_length: u64,
         status: SinkStatus,
     ) -> Result<Self, OpenError> {
+        Self::open_with_lock(fs, path, base, geometry_length, status, None)
+    }
+
+    pub(crate) fn recover_locked(path: &Path, base: &[u8], lock: File) -> Result<Self, OpenError> {
+        Self::open_with_lock(
+            &mut HostFilesystem,
+            path,
+            base,
+            base.len() as u64,
+            SinkStatus::default(),
+            Some(Box::new(lock)),
+        )
+    }
+
+    fn open_with_lock(
+        fs: &mut impl Filesystem,
+        path: &Path,
+        base: &[u8],
+        geometry_length: u64,
+        status: SinkStatus,
+        lock: Option<Box<dyn Any>>,
+    ) -> Result<Self, OpenError> {
         if let Some(failure) = status.failure() {
             return Err(failure.into());
         }
@@ -172,7 +194,10 @@ impl JournalMedia {
                 last_confirmed_sequence: confirmed.get(),
             }))
         };
-        let lock = fs.lock(path).map_err(|e| host("lock", e))?;
+        let lock = match lock {
+            Some(lock) => lock,
+            None => fs.lock(path).map_err(|e| host("lock", e))?,
+        };
         let (mut output, created) = match fs.open(path).map_err(|e| host("open", e))? {
             Some(output) => (output, false),
             None => {
@@ -479,21 +504,7 @@ struct HostFilesystem;
 
 impl Filesystem for HostFilesystem {
     fn lock(&mut self, path: &Path) -> io::Result<Box<dyn Any>> {
-        let mut name = path.as_os_str().to_os_string();
-        name.push(".lock");
-        let file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .open(name)?;
-        file.try_lock().map_err(|e| match e {
-            std::fs::TryLockError::WouldBlock => {
-                io::Error::new(io::ErrorKind::WouldBlock, "journal is locked")
-            }
-            std::fs::TryLockError::Error(error) => error,
-        })?;
-        Ok(Box::new(file))
+        Ok(Box::new(lock_journal(path, false)?))
     }
 
     fn open(&mut self, path: &Path) -> io::Result<Option<Box<dyn JournalIo>>> {
@@ -660,7 +671,7 @@ fn cleanup_creation_temp(
     }
 }
 
-fn refuse_creation_temp_name(path: &Path) -> io::Result<()> {
+pub(crate) fn refuse_creation_temp_name(path: &Path) -> io::Result<()> {
     if JournalMedia::is_creation_temp_name(path) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -673,7 +684,7 @@ fn refuse_creation_temp_name(path: &Path) -> io::Result<()> {
     Ok(())
 }
 
-fn canonical_journal_path(path: &Path) -> io::Result<PathBuf> {
+pub(crate) fn canonical_journal_path(path: &Path) -> io::Result<PathBuf> {
     match path.canonicalize() {
         Ok(path) => Ok(path),
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
@@ -707,18 +718,87 @@ fn canonical_journal_path(path: &Path) -> io::Result<PathBuf> {
 }
 
 #[cfg(unix)]
-fn platform_sync(file: &File) -> io::Result<()> {
+pub(crate) fn platform_sync(file: &File) -> io::Result<()> {
     // std uses F_FULLFSYNC on Apple targets with an Interrupted retry. Calling
     // fcntl again would duplicate the device-cache flush for every command.
     file.sync_all()
 }
 
 #[cfg(not(unix))]
-fn platform_sync(_file: &File) -> io::Result<()> {
+pub(crate) fn platform_sync(_file: &File) -> io::Result<()> {
     Err(io::Error::new(
         io::ErrorKind::Unsupported,
         "journal durability is supported only on Unix",
     ))
+}
+
+pub(crate) fn journal_lock_path(path: &Path) -> PathBuf {
+    let mut name = path.as_os_str().to_os_string();
+    name.push(".lock");
+    PathBuf::from(name)
+}
+
+pub(crate) fn inspection_lock(path: &Path) -> io::Result<Option<File>> {
+    match lock_journal(path, true) {
+        Ok(file) => Ok(Some(file)),
+        Err(error) => {
+            #[cfg(unix)]
+            if matches!(
+                error.raw_os_error(),
+                Some(libc::EACCES) | Some(libc::EPERM) | Some(libc::EROFS)
+            ) && matches!(std::fs::symlink_metadata(journal_lock_path(path)), Err(e) if e.kind() == io::ErrorKind::NotFound)
+            {
+                // A writing session must have created this entry. Never bypass
+                // an existing lock, even if it is unreadable or a dangling link.
+                return Ok(None);
+            }
+            Err(error)
+        }
+    }
+}
+
+pub(crate) fn lock_journal(path: &Path, shared: bool) -> io::Result<File> {
+    let name = journal_lock_path(path);
+    let file = if shared {
+        match File::open(&name) {
+            Ok(file) => file,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                match OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .create_new(true)
+                    .open(&name)
+                {
+                    Ok(file) => file,
+                    Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+                        File::open(&name)?
+                    }
+                    Err(error) => return Err(error),
+                }
+            }
+            Err(error) => return Err(error),
+        }
+    } else {
+        OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(name)?
+    };
+    let result = if shared {
+        file.try_lock_shared()
+    } else {
+        file.try_lock()
+    };
+    result.map_err(|e| match e {
+        std::fs::TryLockError::WouldBlock => io::Error::new(
+            io::ErrorKind::WouldBlock,
+            "journal is locked by another session or tool",
+        ),
+        std::fs::TryLockError::Error(error) => error,
+    })?;
+    Ok(file)
 }
 
 #[cfg(test)]

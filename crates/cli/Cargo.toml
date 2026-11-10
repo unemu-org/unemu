@@ -20,6 +20,7 @@ bus.workspace = true
 cpu.workspace = true
 chipset.workspace = true
 machine.workspace = true
+media.workspace = true
 devices.workspace = true
 video.workspace = true
 
