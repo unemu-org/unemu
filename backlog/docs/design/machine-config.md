@@ -206,10 +206,9 @@ DriveConfig {
 ```
 
 A binding must name an existing device (`DriveControllerMissing`) of the right
-kind (`DriveControllerKind`). Today only `Floppy` on `DeviceKind::Fdc` is
-supported; a `HardDisk` cannot bind to the FDC, and no fixed-disk controller is
-implemented. The unit must be below the controller's declared slot count and
-the hardware model's four-unit limit (`DriveUnitUnavailable`). Two drives
+kind (`DriveControllerKind`): `Floppy` on `DeviceKind::Fdc`, or `HardDisk` on
+`DeviceKind::Ide`. The unit must be below the controller's declared slot count
+and hardware limit (four for FDC, two for IDE; `DriveUnitUnavailable`). Two drives
 cannot bind to the same `(controller, unit)` (`DuplicateDriveUnit`). Each error
 has an exact-message unit test. These rules apply on both boards.
 
@@ -419,12 +418,39 @@ equipment byte are *derived* from the attached floppies, so attaching a second
 drive of a different geometry needs no manual CMOS edit — the whole point of the
 "attach different drive types" story.
 
-The `HardDisk` variant reserves the data shape for a future fixed-disk
-controller. It is rejected by validation until a compatible controller exists;
-it no longer passes by borrowing an FDC's global slot count. The future assembler
-can filter by the named controller and route its units just as the FDC does.
-CMOS derivation retains the fixed-disk nibble seam, but assembly cannot silently
-accept a hard disk that no device serves.
+`HardDisk` binds to `DeviceKind::Ide(IdeCfg { base, control })` by controller
+and unit: master 0, slave 1 (a slave requires a master). One channel is supported,
+with base `0x1F0` or `0x170`, control at base + `0x206`, IRQ14 or IRQ15,
+and no DMA. Only the data register at base supports word cycles; all other
+task-file and control registers use byte cycles. Lowering splits primary FDC
+windows with `FdcCfg::port_windows(true)`; Rust callers supply the same split.
+The secondary channel leaves the FDC's legacy decode intact.
+
+Assembly mounts `InMemoryMedia` through `SectorMedia`, selecting volatile or
+readonly writes. Geometry must have 1–16383 cylinders, 1–16 heads, 1–63 sectors
+per track and 512-byte sectors; the image must exactly match it. Journal mode
+remains floppy-only. ATA submits one batch per completed write command, including
+complete sectors before an address failure, command replacement, diagnostics,
+reset or successful snapshot restore. A partial sector is discarded. Protected
+writes finish with ERR/ABRT and submit no batch. Mounted media and the completed
+prefix of an active command remain outside snapshots; restore does not roll back
+committed sectors. The host-only `Ata::flush_pending()` submits any complete
+prefix without changing guest-visible state. A future persistent IDE backend
+must call it only at session end, when the guest will no longer finish or abort
+the pending command; calling it mid-command splits one command into multiple
+batches. The host reaches ATA through the device's `as_any_mut` seam.
+`SectorMedia::sector_count()` bounds the advertised ATA capacity at construction. ATA-2 §§6.2.8 and 8.4 define abort reporting and
+PIO data-out.
+
+IDE drives do not populate CMOS fixed-disk types: registers 12h, 19h and 1Ah
+stay zero, so the system BIOS does not try its own fixed-disk driver when an
+option ROM serves the disk. The later provider-rules work owns system-BIOS-
+provided drive types and the XTIDE boot profile.
+
+A byte cycle on the ATA data register (`in al, 1F0h`) stops the run with
+`UnmappedRegister`: this AT model accepts only a word cycle at the data
+register, matching its IOCS16# word transfer contract. XTIDE AT builds use
+word port I/O. The other task-file registers remain byte-wide.
 
 ## Firmware services
 
@@ -439,14 +465,16 @@ a ROM. The initial vocabulary is deliberately small:
 System BIOS and option ROM images use the same field. The BIOS preset declares
 `Floppy`, matching the machine-file examples; this validation metadata does not
 change guest execution. Firmware identification uses the separate catalogue
-below; cross-checking service declarations against catalogue metadata remains
-deferred.
+below. A recognized system BIOS supplies its catalogue services when the
+declaration is omitted or empty; a nonempty restatement must match the catalogue
+set. A conflict returns `FirmwareProvidesMismatch` with both sets. Unlisted
+firmware under the escape option uses its declared services. Option-ROM
+catalogue validation remains deferred.
 
 On firmware boards (every board other than `Bare`), requirements follow from a
 table of device kinds. An FDC with at least one drive bound to its device id
 needs `Floppy`. The table records the matching kind, required service and whether
-a bound drive is necessary. Adding an IDE kind will add one entry for `FixedDisk`
-without the drive condition; the device itself is not implemented here.
+a bound drive is necessary. IDE requires `FixedDisk` even without a bound drive.
 
 Validation checks required services against the union of ROM declarations and
 returns `NoProvider { device, service }` in device/table order. `Bare` rigs skip

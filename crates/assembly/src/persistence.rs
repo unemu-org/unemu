@@ -165,6 +165,13 @@ impl PersistenceHandle {
 struct JournalAdapter(Rc<RefCell<Session>>);
 
 impl SectorMedia for JournalAdapter {
+    fn sector_count(&self) -> u64 {
+        match &*self.0.borrow() {
+            Session::Active(journal) => journal.image().len() as u64 / 512,
+            Session::Finished(image) => image.sector_count(),
+        }
+    }
+
     fn read_sector(&self, lba: u64) -> [u8; 512] {
         match &*self.0.borrow() {
             Session::Active(journal) => journal.read_sector(lba),

@@ -29,6 +29,10 @@ pub struct SectorWrite {
 /// never expose host failures through reads, write protection or completion.
 /// See `backlog/docs/design/persistent-media.md`, §Integration.
 pub trait SectorMedia {
+    /// Number of addressable 512-byte sectors; fixed while the medium is mounted.
+    /// Controllers must not advertise a capacity beyond this range.
+    fn sector_count(&self) -> u64;
+
     /// Read a complete sector at an LBA within the mounted drive geometry.
     fn read_sector(&self, lba: u64) -> [u8; SECTOR_SIZE];
 
@@ -78,6 +82,10 @@ impl InMemoryMedia {
 }
 
 impl SectorMedia for InMemoryMedia {
+    fn sector_count(&self) -> u64 {
+        self.sector_count
+    }
+
     fn read_sector(&self, lba: u64) -> [u8; SECTOR_SIZE] {
         let Some(range) = self.sector_range(lba) else {
             return [0; SECTOR_SIZE];
@@ -196,6 +204,7 @@ mod tests {
     #[test]
     fn short_image_reads_zero_and_grows_with_complete_replacements() {
         let mut media = InMemoryMedia::new(vec![0xAA; 100], 3, false);
+        assert_eq!(media.sector_count(), 3);
         let mut expected = [0; SECTOR_SIZE];
         expected[..100].fill(0xAA);
         assert_eq!(media.read_sector(0), expected);
@@ -211,6 +220,7 @@ mod tests {
             },
         ]);
         assert_eq!(media.image.len(), 3 * SECTOR_SIZE);
+        assert_eq!(media.sector_count(), 3);
         assert_eq!(media.read_sector(0), [0xCC; SECTOR_SIZE]);
         assert_eq!(media.read_sector(1), [0; SECTOR_SIZE]);
         assert_eq!(media.read_sector(2), [0xBB; SECTOR_SIZE]);

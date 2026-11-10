@@ -39,6 +39,8 @@ pub enum DeviceId {
     Post,
     /// uPD765 floppy-disk controller.
     Fdc,
+    /// ATA PIO channel.
+    Ide,
     /// 8237 DMA controller.
     Dma,
     /// AT word DMA controller, system channels 4–7 (local 0–3).
@@ -328,6 +330,40 @@ impl FdcCfg {
     }
 }
 
+/// ATA-2 PIO channel resources, with two drive positions.
+///
+/// ATA-2 §§6.1–6.2 defines the task file and word data register; IBM PC AT
+/// Technical Reference, Fixed Disk and Diskette Drive Adapter, Programming
+/// Interface defines the primary ports. See
+/// `backlog/docs/design/machine-config.md` §The fixed-disk (IDE/HDD) attachment seam.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct IdeCfg {
+    /// Task-file base: 1F0h (primary) or 170h (secondary).
+    pub base: u16,
+    /// Alternate status / device control, task-file base plus 206h.
+    pub control: u16,
+}
+
+impl IdeCfg {
+    /// Task-file decode with IOCS16# asserted only for the data register.
+    pub fn port_windows(self) -> Vec<PortWindow> {
+        vec![
+            PortWindow::single(self.base).with_width(bus::PortWidth::Word),
+            PortWindow::new(self.base.saturating_add(1), self.base.saturating_add(7)),
+            PortWindow::single(self.control),
+        ]
+    }
+
+    /// Primary IRQ14 or secondary IRQ15.
+    pub fn irq(self) -> u8 {
+        if self.base == 0x170 {
+            15
+        } else {
+            14
+        }
+    }
+}
+
 /// 8237 DMA-controller selection (§7.7); ports live in [`DeviceConfig::ports`].
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct DmaCfg {}
@@ -359,6 +395,8 @@ pub enum DeviceKind {
     Post(PostPortCfg),
     /// uPD765 floppy controller.
     Fdc(FdcCfg),
+    /// ATA PIO channel.
+    Ide(IdeCfg),
     /// 8237 DMA controller.
     Dma(DmaCfg),
     /// AT word/cascade configuration of the 8237A.

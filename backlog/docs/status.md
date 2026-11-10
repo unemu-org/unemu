@@ -35,6 +35,20 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   reset without an interrupt. Per-device module matrices record the remaining
   unsupported cases and assumptions; changed expectations are listed in
   [scheduler adoption](design/scheduler.md#adoption).
+- **IDE PIO:** one primary (1F0h/3F6h, IRQ14) or secondary (170h/376h,
+  IRQ15) channel assembles from Rust configs and TOML `ide` cards. Master/slave
+  fixed disks use explicit CHS geometry and volatile/readonly `SectorMedia`.
+  Primary IDE splits the FDC decode at 3F6h. An assembled Bare rig transfers all
+  256 IDENTIFY words with `rep insw`; firmware boards require a ROM declaring
+  fixed-disk services, even for an empty IDE card. The XTIDE fixture and its
+  `xub-r638-at` entry exist; option-ROM validation and the IDE boot profile remain
+  deferred. IDE leaves CMOS fixed-disk types
+  zero; system-BIOS-provided types remain deferred. Catalogued BIOS service
+  declarations must match the catalogue, and omitted declarations inherit it. ATA write batches preserve complete sectors on interruption and
+  reject readonly writes with ERR/ABRT. The host-only pending-write flush is
+  available for future persistent sessions, and media capacity is checked at
+  construction. Primary/secondary IDENTIFY interrupts reach the cascaded PIC.
+  Existing ATA behavior tests are unchanged.
 - **Floppy write modes:** volatile is the default (in memory only), readonly
   rejects writes, and explicit journal mode persists command-complete writes
   beside an immutable file-backed base and replays them on the next mount.

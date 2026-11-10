@@ -250,10 +250,7 @@ impl<R: ImageReader> Context<'_, R> {
             ));
         }
         let kind = self.required(&format!("{field}.kind"), card.kind)?;
-        if kind == v1::CardKind::Ide {
-            return Err(self.error(&format!("{field}.kind"), "ide is not implemented yet; the ATA/IDE controller and fixed-disk attachment are later work"));
-        }
-        if kind != v1::CardKind::Uart16550 && card.port.is_some() {
+        if !matches!(kind, v1::CardKind::Uart16550 | v1::CardKind::Ide) && card.port.is_some() {
             return Err(self.error(
                 &format!("{field}.port"),
                 "port override is not supported by this fixed-port card kind",
@@ -305,7 +302,15 @@ impl<R: ImageReader> Context<'_, R> {
                 controller: DeviceId::Dma,
                 channel: 2,
             }),
-            v1::CardKind::Ide => return Err(self.error(&field, "ide is not implemented yet")),
+            v1::CardKind::Ide => {
+                let base = card.port.unwrap_or(0x1F0);
+                let cfg = assembly::IdeCfg {
+                    base,
+                    control: base.saturating_add(0x206),
+                };
+                DeviceConfig::new(DeviceId::Ide, DeviceKind::Ide(cfg), cfg.port_windows())
+                    .with_irq(cfg.irq())
+            }
         };
         if matches!(kind, v1::CardKind::Mda | v1::CardKind::VgaText) && card.irq.is_some() {
             return Err(self.error(&format!("{field}.irq"), "this card has no interrupt source"));
@@ -322,30 +327,78 @@ impl<R: ImageReader> Context<'_, R> {
                 channel,
             });
         }
-        if kind != v1::CardKind::Fdc765 && card.drives.is_some() {
+        if !matches!(kind, v1::CardKind::Fdc765 | v1::CardKind::Ide) && card.drives.is_some() {
             return Err(self.error(
                 &format!("{field}.drives"),
                 "drives are only accepted on a disk controller",
             ));
         }
         let mut ordered: Vec<_> = card.drives.iter().flatten().enumerate().collect();
-        ordered.sort_by_key(|(_, drive)| drive.unit);
+        ordered.sort_by_key(|(_, drive)| {
+            if kind == v1::CardKind::Ide {
+                drive
+                    .channel
+                    .map(|channel| u8::from(channel == v1::Channel::Slave))
+            } else {
+                drive.unit
+            }
+        });
         for (drive_index, drive) in ordered {
             let drive_field = format!("{field}.drives[{drive_index}]");
-            let unit = self.required(&format!("{drive_field}.unit"), drive.unit)?;
+            let (unit, drive_kind, label) = if kind == v1::CardKind::Ide {
+                if drive.remove.is_some() || drive.unit.is_some() || drive.drive_type.is_some() {
+                    return Err(self.error(&drive_field, "IDE drives accept channel and geometry; unit/type are floppy-only, remove is extends-only"));
+                }
+                let channel = self.required(&format!("{drive_field}.channel"), drive.channel)?;
+                let unit = u8::from(channel == v1::Channel::Slave);
+                let v1::Geometry::Chs(geometry) =
+                    self.required(&format!("{drive_field}.geometry"), drive.geometry.as_ref())?;
+                (
+                    unit,
+                    DriveKind::HardDisk {
+                        geometry: assembly::HardDiskGeometry {
+                            cylinders: self.required(
+                                &format!("{drive_field}.geometry.cylinders"),
+                                geometry.cylinders,
+                            )?,
+                            heads: self.required(
+                                &format!("{drive_field}.geometry.heads"),
+                                geometry.heads,
+                            )?,
+                            sectors_per_track: self.required(
+                                &format!("{drive_field}.geometry.sectors"),
+                                geometry.sectors,
+                            )?,
+                            bytes_per_sector: 512,
+                        },
+                    },
+                    format!(
+                        "{field}.drives[channel={}]",
+                        if unit == 0 { "master" } else { "slave" }
+                    ),
+                )
+            } else {
+                let unit = self.required(&format!("{drive_field}.unit"), drive.unit)?;
+                if drive.remove.is_some() || drive.channel.is_some() || drive.geometry.is_some() {
+                    return Err(self.error(&drive_field, "floppy drives accept unit and type; channel/geometry are IDE-only, remove is extends-only"));
+                }
+                let geometry =
+                    match self.required(&format!("{drive_field}.type"), drive.drive_type)? {
+                        v1::DriveType::Hd144 => FloppyGeometry::HD_1_44,
+                        v1::DriveType::Hd12 => FloppyGeometry::HD_1_2,
+                        v1::DriveType::Dd720 => FloppyGeometry::DD_720K,
+                        v1::DriveType::Dd360 => FloppyGeometry::DD_360K,
+                    };
+                (
+                    unit,
+                    DriveKind::Floppy { geometry },
+                    format!("{field}.drives[unit={unit}]"),
+                )
+            };
             self.drives.push(DriveOrigin {
                 field: drive_field.clone(),
-                label: format!("{field}.drives[unit={unit}]"),
+                label,
             });
-            if drive.remove.is_some() || drive.channel.is_some() || drive.geometry.is_some() {
-                return Err(self.error(&drive_field, "floppy drives accept unit and type; channel/geometry are IDE-only, remove is extends-only"));
-            }
-            let geometry = match self.required(&format!("{drive_field}.type"), drive.drive_type)? {
-                v1::DriveType::Hd144 => FloppyGeometry::HD_1_44,
-                v1::DriveType::Hd12 => FloppyGeometry::HD_1_2,
-                v1::DriveType::Dd720 => FloppyGeometry::DD_720K,
-                v1::DriveType::Dd360 => FloppyGeometry::DD_360K,
-            };
             let write = self.write(
                 &format!("{drive_field}.write"),
                 drive.write,
@@ -360,7 +413,7 @@ impl<R: ImageReader> Context<'_, R> {
             drives.push(DriveConfig {
                 controller: device.id,
                 unit,
-                kind: DriveKind::Floppy { geometry },
+                kind: drive_kind,
                 image: ImageSource::Inline(bytes),
                 write,
             });
@@ -389,10 +442,16 @@ impl<R: ImageReader> Context<'_, R> {
             | FirmwareNeedsCpu { .. }
             | FirmwareRequiresDevice { .. }
             | BiosPlacement { .. } => vec!["firmware.bios.image".into()],
+            FirmwareProvidesMismatch { image_index, .. } => {
+                vec![format!("{}.provides", self.image_label(*image_index))]
+            }
+            MultipleIdeChannels => device_fields(&[DeviceId::Ide]),
             FirmwareReset { .. } => vec!["cpu".into()],
             SystemBiosOverlapsRam { .. } => vec!["memory".into(), "firmware.bios.image".into()],
             DuplicateDeviceId(id) | MmioDeviceMissing(id) => device_fields(&[*id]),
-            NoProvider { device, .. }
+            InvalidIdeResources { device }
+            | InvalidIdePortWindows { device }
+            | NoProvider { device, .. }
             | InvalidRtcStart { device, .. }
             | SelfAccessCoupling { device }
             | AccessDependentMissing { device, .. }
@@ -419,6 +478,8 @@ impl<R: ImageReader> Context<'_, R> {
             // Journal mode is not lowered yet, but every drive-indexed error
             // keeps the same origin and label contract as assembly validation.
             Journal { drive_index, .. }
+            | InvalidAtaGeometry { drive_index }
+            | AtaMissingMaster { drive_index, .. }
             | UnsupportedFloppySectorSize { drive_index, .. }
             | DriveControllerMissing { drive_index, .. }
             | DriveControllerKind { drive_index, .. }
@@ -732,6 +793,14 @@ pub fn lower<R: ImageReader>(
     for (index, card) in document.card.iter().flatten().enumerate() {
         devices.push(context.card(index, card, &mut mmio, &mut drives)?);
     }
+    let primary_ata = devices
+        .iter()
+        .any(|device| matches!(device.kind, DeviceKind::Ide(cfg) if cfg.base == 0x1F0));
+    for device in &mut devices {
+        if matches!(device.kind, DeviceKind::Fdc(_)) {
+            device.ports = assembly::FdcCfg::port_windows(primary_ata);
+        }
+    }
     mmio.sort_by_key(|window| window.base);
     let conventional = document
         .memory
@@ -921,6 +990,12 @@ mod tests {
         let mut reader = FileImageReader;
         let context = context(&origins, &mut reader);
         for error in [
+            ConfigError::InvalidIdeResources {
+                device: DeviceId::Uart,
+            },
+            ConfigError::InvalidIdePortWindows {
+                device: DeviceId::Uart,
+            },
             ConfigError::UnsupportedWordPort {
                 device: DeviceId::Uart,
                 port: 0x3F8,
@@ -967,6 +1042,8 @@ mod tests {
         let mut reader = FileImageReader;
         let context = context(&origins, &mut reader);
         for (error, prefix, label) in [
+            (ConfigError::InvalidAtaGeometry { drive_index: 2 }, "drive 2 ", "card[diskette].drives[unit=1] "),
+            (ConfigError::AtaMissingMaster { drive_index: 2, controller: DeviceId::Ide }, "drive 2 ", "card[diskette].drives[unit=1] "),
             (ConfigError::Journal { drive_index: 2, message: "invalid journal path".into() }, "drive 2 ", "card[diskette].drives[unit=1] "),
             (ConfigError::UnsupportedFloppySectorSize { drive_index: 2, bytes_per_sector: 256 }, "drive 2 ", "card[diskette].drives[unit=1] "),
             (ConfigError::DriveControllerMissing { drive_index: 2, controller: DeviceId::Fdc }, "drive 2 ", "card[diskette].drives[unit=1] "),
@@ -1038,5 +1115,30 @@ mod tests {
                 "{diagnostic}"
             );
         }
+    }
+    #[test]
+    fn firmware_service_mismatch_keeps_the_matched_image_origin() {
+        let mut origins = Origins::new("machine.toml");
+        origins.insert(
+            "firmware.option_roms[0]",
+            Origin {
+                file: "roms.toml".into(),
+                line: Some(12),
+            },
+        );
+        let mut reader = FileImageReader;
+        let mut context = context(&origins, &mut reader);
+        context.images = vec!["firmware.bios".into(), "firmware.option_roms[0]".into()];
+        let error = ConfigError::FirmwareProvidesMismatch {
+            image_index: 1,
+            firmware: "test-rom",
+            declared: "[\"floppy\"]".into(),
+            expected: "[\"fixed-disk\"]".into(),
+        };
+        let diagnostic = context.validation_error(error.clone());
+        assert_eq!(diagnostic.field, "firmware.option_roms[0].provides");
+        assert_eq!(diagnostic.origin.file, Path::new("roms.toml"));
+        assert_eq!(diagnostic.origin.line, Some(12));
+        assert_eq!(diagnostic.message, error.to_string());
     }
 }

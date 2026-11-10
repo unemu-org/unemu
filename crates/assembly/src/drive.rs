@@ -91,8 +91,8 @@ pub enum DriveKind {
     },
     /// A fixed (hard) disk.
     ///
-    /// The attachment seam for a future fixed-disk controller. Validation rejects
-    /// this kind until a compatible controller is modelled; an FDC cannot serve it.
+    /// Binds to an ATA channel's master (unit 0) or slave (unit 1).
+    /// An FDC cannot serve this kind.
     HardDisk {
         /// The disk's geometry.
         geometry: HardDiskGeometry,

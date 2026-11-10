@@ -102,9 +102,13 @@ impl FirmwarePart {
                 .images
                 .iter()
                 .any(|image| image.kind == ImageKind::Rom && image.base == 0xC0000),
-            // No current device kind models ATA; a matching port window alone
-            // cannot establish that the required controller exists.
-            Self::AtaPrimary => false,
+            Self::AtaPrimary => config.devices.iter().any(|device| {
+                matches!(device.kind, DeviceKind::Ide(cfg)
+                    if cfg.base == 0x1F0 && cfg.control == 0x3F6
+                        && device.ports == cfg.port_windows())
+                    && device.irq == Some(14)
+                    && device.dma.is_none()
+            }),
         }
     }
 }
@@ -143,8 +147,8 @@ pub enum FirmwareStatus {
     Listed,
 }
 
-/// One reviewed firmware build. Service declarations remain independent of this
-/// metadata; see `backlog/docs/design/machine-config.md` §Firmware catalogue.
+/// One reviewed firmware build. Its services override an omitted declaration;
+/// a nonempty restatement must name the same set; see `backlog/docs/design/machine-config.md` §Firmware catalogue.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct FirmwareEntry {
     /// Stable versioned identifier.
@@ -252,6 +256,64 @@ pub(crate) fn system_bios(config: &MachineConfig) -> Result<&LoadImage, ConfigEr
         })
 }
 
+fn service_set(services: &[FirmwareService]) -> String {
+    let mut names: Vec<_> = services.iter().map(ToString::to_string).collect();
+    names.sort_unstable();
+    names.dedup();
+    format!("{names:?}")
+}
+
+fn entry_services<'a>(
+    image_index: usize,
+    image: &'a LoadImage,
+    entry: &FirmwareEntry,
+) -> Result<&'a [FirmwareService], ConfigError> {
+    let declared = service_set(&image.provides);
+    let expected = service_set(entry.provides);
+    if !image.provides.is_empty() && declared != expected {
+        return Err(ConfigError::FirmwareProvidesMismatch {
+            image_index,
+            firmware: entry.id,
+            declared,
+            expected,
+        });
+    }
+    Ok(entry.provides)
+}
+
+/// Resolve services without I/O; an unread BIOS file is checked after resolution.
+/// Listed option-ROM identities will use the same entry/declaration check when
+/// their catalogue loading is implemented.
+pub(crate) fn image_services(
+    config: &MachineConfig,
+    index: usize,
+) -> Result<Option<&[FirmwareService]>, ConfigError> {
+    let image = &config.images[index];
+    let catalogue = config.board.firmware_catalogue();
+    let bios = config
+        .images
+        .iter()
+        .position(|image| image.kind == ImageKind::Rom);
+    if catalogue.is_empty() || bios != Some(index) {
+        return Ok(Some(&image.provides));
+    }
+    match &image.source {
+        crate::ImageSource::Inline(bytes) => {
+            let hash = format!("{:x}", Sha256::digest(bytes));
+            if let Some(entry) = catalogue.iter().find(|entry| {
+                entry.kind == FirmwareKind::SystemBios
+                    && entry.sha256 == hash
+                    && entry.size == bytes.len() as u64
+            }) {
+                return entry_services(index, image, entry).map(Some);
+            }
+        }
+        crate::ImageSource::File(_) if image.provides.is_empty() => return Ok(None),
+        _ => {}
+    }
+    Ok(Some(&image.provides))
+}
+
 pub(crate) fn check_bios_placement(base: u64, size: u64) -> Result<(), ConfigError> {
     if size == 0 || !size.is_multiple_of(8192) || base.checked_add(size) != Some(0x100000) {
         return Err(ConfigError::BiosPlacement { base, size });
@@ -312,6 +374,13 @@ pub fn check_system_bios(
                 .join(", "),
         });
     };
+    if let Some(index) = config
+        .images
+        .iter()
+        .position(|image| image.kind == ImageKind::Rom)
+    {
+        entry_services(index, &config.images[index], entry)?;
+    }
     if !entry.boards.contains(&board.id()) {
         return Err(ConfigError::FirmwareBoardMismatch {
             firmware: entry.id,
@@ -420,7 +489,7 @@ mod tests {
     }
 
     #[test]
-    fn primary_ata_requirement_is_unmet_by_current_device_kinds() {
+    fn primary_ata_requirement_is_unmet_without_an_ide_channel() {
         let entry = FirmwareEntry {
             requires: &[FirmwarePart::AtaPrimary],
             ..synthetic()
@@ -942,5 +1011,119 @@ mod tests {
             }
         );
         assert_eq!(error.to_string(), format!("bios image (sha256 {hash}) is not a known image for board \"ibm-5170\"; known: {KNOWN}"));
+    }
+    #[test]
+    fn catalogue_services_reject_forged_fixed_disk_claims() {
+        let Some(bytes) = fixture() else {
+            return;
+        };
+        let mut config = config();
+        config.images[0].source = ImageSource::Inline(bytes);
+        config.images[0].provides.push(FirmwareService::FixedDisk);
+        let cfg = crate::IdeCfg {
+            base: 0x1F0,
+            control: 0x3F6,
+        };
+        config.devices.push(
+            crate::DeviceConfig::new(
+                crate::DeviceId::Ide,
+                DeviceKind::Ide(cfg),
+                cfg.port_windows(),
+            )
+            .with_irq(14),
+        );
+        config
+            .devices
+            .iter_mut()
+            .find(|device| device.id == crate::DeviceId::Fdc)
+            .unwrap()
+            .ports = crate::FdcCfg::port_windows(true);
+        let error = match assemble(&config) {
+            Err(AssemblyError::Config(error)) => error,
+            _ => panic!("forged services must fail"),
+        };
+        assert_eq!(error.to_string(), "firmware \"kiselev-xi8088-1.0.2\" declares provides [\"fixed-disk\", \"floppy\"]; catalogue provides [\"floppy\"]");
+        assert!(matches!(
+            error,
+            ConfigError::FirmwareProvidesMismatch { image_index: 0, .. }
+        ));
+        assert!(matches!(
+            assemble_with_options(
+                &config,
+                AssemblyOptions {
+                    allow_unlisted_firmware: true
+                }
+            ),
+            Err(AssemblyError::Config(
+                ConfigError::FirmwareProvidesMismatch { .. }
+            ))
+        ));
+    }
+
+    #[test]
+    fn catalogue_services_supply_omitted_or_equal_declarations() {
+        let Some(bytes) = fixture() else {
+            return;
+        };
+        let mut config = config();
+        for source in [
+            ImageSource::Inline(bytes),
+            ImageSource::File(
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../vendor/kiselev-bios/bios-xi8088.bin"),
+            ),
+        ] {
+            config.images[0].source = source;
+            for declared in [Vec::new(), vec![FirmwareService::Floppy]] {
+                config.images[0].provides = declared;
+                assert_eq!(config.validate(), Ok(()));
+                assert!(assemble(&config).unwrap().unlisted_firmware.is_empty());
+            }
+        }
+    }
+    #[test]
+    fn primary_ata_requirement_matches_the_assembled_channel_contract() {
+        let cfg = crate::IdeCfg {
+            base: 0x1F0,
+            control: 0x3F6,
+        };
+        let device = crate::DeviceConfig::new(
+            crate::DeviceId::Ide,
+            DeviceKind::Ide(cfg),
+            cfg.port_windows(),
+        )
+        .with_irq(14);
+        let mut config = config();
+        config.devices.push(device.clone());
+        assert!(FirmwarePart::AtaPrimary.present(&config));
+        for malformed in 0..5 {
+            let mut other = config.clone();
+            let ide = other.devices.last_mut().unwrap();
+            match malformed {
+                0 => ide.irq = Some(15),
+                1 => ide.ports.clear(),
+                2 => {
+                    let secondary = crate::IdeCfg {
+                        base: 0x170,
+                        control: 0x376,
+                    };
+                    ide.kind = DeviceKind::Ide(secondary);
+                    ide.ports = secondary.port_windows();
+                    ide.irq = Some(15);
+                }
+                3 => {
+                    // Hold control and IRQ fixed to check the base independently.
+                    let mixed = crate::IdeCfg {
+                        base: 0x170,
+                        control: 0x3F6,
+                    };
+                    ide.kind = DeviceKind::Ide(mixed);
+                    ide.ports = mixed.port_windows();
+                    ide.irq = Some(14);
+                }
+                _ => ide.kind = DeviceKind::Post(crate::PostPortCfg { port: 0x1F0 }),
+            }
+            assert!(!FirmwarePart::AtaPrimary.present(&other));
+        }
     }
 }

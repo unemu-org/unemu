@@ -270,11 +270,7 @@ fn individual_field_origins_resolve_images_before_any_future_merge() {
 }
 
 #[test]
-fn journal_and_ide_are_explicitly_deferred() {
-    let ide = run(&format!("{MINIMAL}[[card]]\nid='disk'\nkind='ide'\n")).unwrap_err();
-    assert!(ide.to_string().contains("card[disk].kind"));
-    assert!(ide.message.contains("ide is not implemented yet"));
-    assert!(ide.message.contains("ATA/IDE controller"));
+fn journal_is_explicitly_deferred() {
     let (mut document, origins, mut images, _, _) = synthetic_machine();
     let drive = &mut document
         .card
@@ -1012,4 +1008,189 @@ fn symlink_image_errors_show_the_spelled_and_resolved_paths() {
             Sha256::digest(&rom)
         )
     );
+}
+
+const IDE: &str = "[[card]]\nid='disk'\nkind='ide'\n[[card.drives]]\nchannel='master'\nimage='disk.img'\ngeometry={cylinders=8,heads=2,sectors=4}\nwrite='readonly'\n";
+
+fn ide_lower(input: &str) -> Result<assembly::MachineConfig, machine_file::LowerError> {
+    let file = Path::new("machines/ide-test.toml");
+    let mut images = Images::rom(file);
+    images
+        .files
+        .insert("machines/disk.img".into(), vec![0xAA; 32768]);
+    images
+        .files
+        .insert("machines/slave.img".into(), vec![0x55; 16384]);
+    lower(
+        &parse_toml(file, input).unwrap(),
+        &Origins::from_toml(file, input).unwrap(),
+        &mut images,
+    )
+}
+
+#[test]
+fn ide_lowering_binds_geometry_media_and_splits_fdc_for_primary_only() {
+    for (port, control, irq) in [(0x1F0, 0x3F6, 14), (0x170, 0x376, 15)] {
+        let input = format!(
+            "{MINIMAL}provides=['fixed-disk']\n{}[[card]]\nkind='fdc-765'\n",
+            IDE.replace("kind='ide'", &format!("kind='ide'\nport={port}"))
+        );
+        let config = ide_lower(&input).unwrap();
+        let ide = config
+            .devices
+            .iter()
+            .find(|device| device.id == DeviceId::Ide)
+            .unwrap();
+        assert_eq!(
+            ide.kind,
+            DeviceKind::Ide(assembly::IdeCfg {
+                base: port,
+                control
+            })
+        );
+        assert_eq!(ide.irq, Some(irq));
+        assert_eq!(ide.dma, None);
+        assert_eq!(config.drives[0].controller, DeviceId::Ide);
+        assert_eq!(config.drives[0].unit, 0);
+        assert_eq!(
+            config.drives[0].kind,
+            assembly::DriveKind::HardDisk {
+                geometry: assembly::HardDiskGeometry {
+                    cylinders: 8,
+                    heads: 2,
+                    sectors_per_track: 4,
+                    bytes_per_sector: 512
+                }
+            }
+        );
+        assert_eq!(
+            config.drives[0].image,
+            ImageSource::Inline(vec![0xAA; 32768])
+        );
+        assert_eq!(config.drives[0].write, WriteMode::ReadOnly);
+        assert_eq!(
+            config.devices.last().unwrap().ports,
+            assembly::FdcCfg::port_windows(port == 0x1F0)
+        );
+    }
+}
+
+#[test]
+fn ide_no_provider_reports_the_card_file_and_line() {
+    let error = ide_lower(&format!("{MINIMAL}[[card]]\nkind='ide'\n")).unwrap_err();
+    assert_eq!(error.to_string(), "machines/ide-test.toml:6: card[ide]: device Ide needs firmware service fixed-disk; no ROM provides it");
+    assert_eq!(
+        error.validation.as_deref(),
+        Some(&ConfigError::NoProvider {
+            device: DeviceId::Ide,
+            service: assembly::FirmwareService::FixedDisk
+        })
+    );
+}
+
+#[test]
+fn ide_geometry_and_sha256_errors_keep_drive_origins() {
+    let input = format!("{MINIMAL}provides=['fixed-disk']\n{IDE}");
+    let error = ide_lower(&input.replace("cylinders=8", "cylinders=0")).unwrap_err();
+    assert_eq!(error.to_string(), "machines/ide-test.toml:10: card[disk].drives[channel=master]: card[disk].drives[channel=master] has invalid ATA geometry: expected cylinders 1..=16383, heads 1..=16, sectors 1..=63 and 512-byte sectors");
+    let error = ide_lower(&input.replace("cylinders=8", "cylinders=7")).unwrap_err();
+    assert!(matches!(
+        error.validation.as_deref(),
+        Some(ConfigError::ImageGeometryMismatch { .. })
+    ));
+    assert_eq!(error.origin.line, Some(10));
+    let error = ide_lower(&input.replace(
+        "image='disk.img'",
+        &format!("image='disk.img'\nsha256='{}'", "0".repeat(64)),
+    ))
+    .unwrap_err();
+    assert_eq!(error.origin.line, Some(10));
+    assert_eq!(error.field, "card[disk].drives[channel=master].image");
+    assert!(error
+        .message
+        .contains(&format!("expected {}, actual", "0".repeat(64))));
+}
+
+#[test]
+fn ide_lowering_orders_channels_and_reports_duplicate_positions() {
+    let input = format!("{MINIMAL}provides=['fixed-disk']\n[[card]]\nid='disk'\nkind='ide'\n[[card.drives]]\nchannel='slave'\nimage='slave.img'\ngeometry={{cylinders=4,heads=2,sectors=4}}\n[[card.drives]]\nchannel='master'\nimage='disk.img'\ngeometry={{cylinders=8,heads=2,sectors=4}}\nwrite='readonly'\n");
+    let config = ide_lower(&input).unwrap();
+    assert_eq!(
+        config
+            .drives
+            .iter()
+            .map(|drive| drive.unit)
+            .collect::<Vec<_>>(),
+        [0, 1]
+    );
+    assert_eq!(config.drives[0].write, WriteMode::ReadOnly);
+    assert_eq!(config.drives[1].write, WriteMode::Volatile);
+    assert_eq!(
+        config.drives[1].image,
+        ImageSource::Inline(vec![0x55; 16384])
+    );
+    let error = ide_lower(&input.replace("channel='slave'", "channel='master'")).unwrap_err();
+    assert!(matches!(
+        error.validation.as_deref(),
+        Some(ConfigError::DuplicateDriveUnit { unit: 0, .. })
+    ));
+    assert!(error
+        .message
+        .contains("channel=master] (machines/ide-test.toml:10)"));
+    assert!(error
+        .message
+        .contains("channel=master] (machines/ide-test.toml:14)"));
+}
+
+#[test]
+fn catalogued_bios_cannot_claim_fixed_disk_services_in_a_file() {
+    let Some(bytes) = fixtures::fixture("kiselev-bios/bios-xi8088.bin") else {
+        return;
+    };
+    let input = format!(
+        "{MINIMAL}sha256='{}'\nprovides=['floppy','fixed-disk']\n[[card]]\nkind='ide'\n",
+        assembly::KISELEV_XI8088.sha256
+    );
+    let file = Path::new("machines/catalogue-test.toml");
+    let mut images = Images::default();
+    images.files.insert("machines/bios.bin".into(), bytes);
+    let error = lower(
+        &parse_toml(file, &input).unwrap(),
+        &Origins::from_toml(file, &input).unwrap(),
+        &mut images,
+    )
+    .unwrap_err();
+    assert_eq!(error.to_string(), "machines/catalogue-test.toml:4: firmware.bios.provides: firmware \"kiselev-xi8088-1.0.2\" declares provides [\"fixed-disk\", \"floppy\"]; catalogue provides [\"floppy\"]");
+    assert!(matches!(
+        error.validation.as_deref(),
+        Some(ConfigError::FirmwareProvidesMismatch { image_index: 0, .. })
+    ));
+}
+
+#[test]
+fn catalogued_bios_file_uses_omitted_empty_or_equal_services() {
+    let Some(bytes) = fixtures::fixture("kiselev-bios/bios-xi8088.bin") else {
+        return;
+    };
+    for provides in ["", "provides=[]\n", "provides=['floppy']\n"] {
+        let input = format!("{MINIMAL}sha256='{}'\n{provides}[[card]]\nkind='fdc-765'\n[[card.drives]]\nunit=0\ntype='360K'\nimage='floppy.img'\n", assembly::KISELEV_XI8088.sha256);
+        let file = Path::new("machines/catalogue-test.toml");
+        let mut images = Images::default();
+        images
+            .files
+            .insert("machines/bios.bin".into(), bytes.clone());
+        images
+            .files
+            .insert("machines/floppy.img".into(), vec![0; 368640]);
+        let config = lower(
+            &parse_toml(file, &input).unwrap(),
+            &Origins::from_toml(file, &input).unwrap(),
+            &mut images,
+        )
+        .unwrap();
+        assert!(assembly::assemble(&config)
+            .unwrap()
+            .unlisted_firmware
+            .is_empty());
+    }
 }

@@ -47,7 +47,8 @@ pub enum ImageKind {
 /// Guest firmware services declared by ROM images.
 ///
 /// The initial vocabulary is `floppy` and `fixed-disk`, both INT 13h services.
-/// These are declarations, not firmware identification; see
+/// Recognized firmware uses its catalogue set; nonempty restatements must match.
+/// Unknown firmware under the escape option uses the declared set. See
 /// `backlog/docs/design/machine-config.md` § Firmware services.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum FirmwareService {

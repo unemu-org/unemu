@@ -2380,6 +2380,9 @@ mod tests {
     }
 
     impl SectorMedia for RecordingMedia {
+        fn sector_count(&self) -> u64 {
+            self.memory.sector_count()
+        }
         fn read_sector(&self, lba: u64) -> [u8; SECTOR_SIZE] {
             self.memory.read_sector(lba)
         }

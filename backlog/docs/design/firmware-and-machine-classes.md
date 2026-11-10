@@ -377,7 +377,7 @@ device bead.
 | ROM | F0000h–FFFFFh; an 8 KiB BIOS at FE000h | 64 KiB at F0000h (even/odd) | same, aliased at 4 GiB − size | `ImageKind::Rom` ✓ |
 | Card bus | 8-bit, IRQ2–7, DMA1–3 | 16-bit, IRQ3–7, 9–12, 14, 15 | as AT | no slot abstraction (decision-16 §8) |
 | Floppy | adapter with DOR 3F2h and MSR/data 3F4h/3F5h; ASSUMED no CCR at 3F7h | 3F0h–3F7h, IRQ6, DMA2 | as AT | µPD765 ✓ |
-| Fixed disk | Xebec MFM adapter at 320h with its own ROM; open alternative is an 8-bit XT-IDE card + XUB `ide_xt` | WD1003-style task file at 1F0h–1F7h plus 3F6h, IRQ14. The IBM BIOS reads a CMOS drive type | as AT | ✗ (`DriveKind::HardDisk` is config only) |
+| Fixed disk | Xebec MFM adapter at 320h with its own ROM; open alternative is an 8-bit XT-IDE card + XUB `ide_xt` | WD1003-style task file at 1F0h–1F7h plus 3F6h, IRQ14. The IBM BIOS reads a CMOS drive type | as AT | ATA-2 PIO channel assembled with volatile/readonly media; firmware boot profile deferred |
 | Video | MDA/CGA, chosen by SW1 5–6 | MDA/CGA through CMOS; EGA/VGA by ROM | VGA ROM + register-level VGA | MDA ✓; VGA text (CRTC + CGA registers) ✓ |
 
 ### 4.2 What is missing, per board
@@ -531,7 +531,7 @@ are read (assembly already validates file lengths after reading). The lowered
 | 7 | The catalogue entry fits this board | `FirmwareBoardMismatch` | `firmware "glabios-0.4.3-5160" is built for ibm-5160, not ibm-5170` |
 | 8 | The CPU meets the firmware minimum | `FirmwareNeedsCpu` | `firmware "seabios-1.17.0-isapc" needs an 80386 or later; cpu is 80286` |
 | 9 | The firmware's required parts are present | `FirmwareRequiresDevice` | `firmware "bochs-rombios-legacy" requires a video-bios option ROM at 0xC0000; none is configured` |
-| 10 | Each card that needs a service has a provider | `NoProvider` | `card "ide" at 0x1F0 needs a fixed-disk INT 13h provider; neither "kiselev-xi8088-1.0.2" nor any option ROM provides it (add "xub-r638-at")` |
+| 10 | Each card that needs a service has a provider | `NoProvider` | `device Ide needs firmware service fixed-disk; no ROM provides it` |
 | 11 | An option ROM's baked resources match a card | `OptionRomCardMismatch` | `option ROM "xub-r638-at" drives ATA at 0x1F0/IRQ14, but no ide card decodes 0x1F0` |
 | 12 | An option ROM is aligned and inside the firmware's scan window | `OptionRomMisaligned`, `OptionRomOutsideScanWindow` | `option ROM at 0xF8000 is outside the scan window 0xC8000..0xF8000 of "kiselev-xi8088-1.0.2"` |
 | 13 | An option ROM's header, length and checksum are valid | `OptionRomBadHeader`, `OptionRomBadChecksum` | `option ROM xub-r638-at: byte sum is 0xB0, must be 0 (pad and checksum the image)` |
@@ -539,6 +539,18 @@ are read (assembly already validates file lengths after reading). The lowered
 | 15 | Each card fits the board bus | `CardNeedsSlot` | `card "ide" is a 16-bit ISA card; board "ibm-5160" has 8-bit slots only` |
 | 16 | The IRQ line exists on the board | `InvalidIrqLine` (bounded per board) | `device Fdc uses irq line 9; board "ibm-5160" has irq lines 0 through 7` |
 | 17 | A system BIOS is top-aligned with a valid size | `BiosPlacement` | `system BIOS of 24 KiB at 0xf8000 must have a positive size that is a multiple of 8 KiB and end at 0x100000` |
+
+Rule 10 is implemented through `LoadImage.provides` and kind-owned requirements:
+IDE requires `FixedDisk` even without drives; FDC requires `Floppy` when a drive
+is bound. `Bare` rigs skip these rules. The stable assembly diagnostic is
+`device Ide needs firmware service fixed-disk; no ROM provides it`; machine-file
+lowering adds the card id and defining file/line. A recognized system BIOS takes its services from the catalogue; an omitted or
+empty declaration uses that set, and a nonempty restatement must match it.
+A mismatch reports both sets as `FirmwareProvidesMismatch`, even with the
+unlisted-firmware escape enabled. Unlisted firmware retains declared services.
+Listed option ROMs will use the same comparison once their identities are
+checked. XTIDE placement and system-BIOS-provided CMOS drive types remain
+separate work. IDE currently leaves CMOS fixed-disk types zero.
 
 Rule 13 rejects the raw r638 `ide_at.bin` (MEASURED byte sum B0h), which is the
 intended behaviour: the fixture must pad and checksum it.
@@ -726,8 +738,9 @@ The generic AT comes first.
      `FirmwareEntry::XUB_R638_AT` records the `Listed` option-ROM identity,
      minimum CPU, fixed-disk service and primary ATA requirement. It remains
      separate from the board's enforced system-BIOS catalogue until option-ROM
-     validation lands; the ATA requirement cannot be satisfied before the ATA
-     assembly exists. Catalogue/recipe and fixture-gated hash tests cover the entry.
+     validation lands. Primary IDE assembly now satisfies the ATA requirement
+     with the 1F0h task file, 3F6h control and IRQ14 wiring. Catalogue/recipe and
+     fixture-gated hash tests cover the entry.
    - *Depends on:* 2.
 9. **Fixed-disk provider rules.** Rules 10–11, and the CMOS fixed-disk type
    follows the provider (0 when it is an option ROM).

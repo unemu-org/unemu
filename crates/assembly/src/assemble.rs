@@ -50,8 +50,8 @@ use bus::{Bus, DecodeMap, MmioRange, PortRange};
 use cpu::x86jit_backend::X86JitCpu;
 use device::{Device, InterruptController};
 use devices::{
-    Absent80287, CmosConfig, CmosRtc, Dma8237, Drive, MdaText, Pit8253, PostPort, SysControl,
-    Uart16550, Upd765, VgaText, I8042,
+    Absent80287, Ata, AtaDrive, AtaGeometry, CmosConfig, CmosRtc, Dma8237, Drive, MdaText, Pit8253,
+    PostPort, SysControl, Uart16550, Upd765, VgaText, I8042,
 };
 use machine::{DmaWiring, IrqLine, Machine};
 
@@ -262,6 +262,11 @@ fn assemble_with_cpu(
                 dc.id,
                 &mut persistence,
             )?)),
+            DeviceKind::Ide(cfg) => Box::new(
+                Ata::with_drives(build_ide_drives(config, dc.id)?)
+                    .and_then(|ata| ata.with_resources(cfg.base, cfg.control, cfg.irq()))
+                    .map_err(|_| ConfigError::InvalidIdeResources { device: dc.id })?,
+            ),
             DeviceKind::Dma(_) => Box::new(Dma8237::new()),
             DeviceKind::DmaWord(_) => Box::new(Dma8237::new_at_word()),
             DeviceKind::AbsentCoprocessor => Box::new(Absent80287::new()),
@@ -510,6 +515,40 @@ fn build_dma_wirings(
         .collect()
 }
 
+fn build_ide_drives(
+    config: &MachineConfig,
+    controller: DeviceId,
+) -> Result<[Option<AtaDrive>; 2], AssemblyError> {
+    let mut slots = [None, None];
+    for (drive_index, drive) in config
+        .drives
+        .iter()
+        .enumerate()
+        .filter(|(_, drive)| drive.controller == controller)
+    {
+        let DriveKind::HardDisk { geometry } = drive.kind else {
+            continue;
+        };
+        let bytes = load_image_bytes(&drive.image)?;
+        let capacity = (bytes.len() / 512) as u32;
+        let media = device::media::InMemoryMedia::new(
+            bytes,
+            u64::from(capacity),
+            drive.write == WriteMode::ReadOnly,
+        );
+        let geometry = AtaGeometry {
+            cylinders: geometry.cylinders as u16,
+            heads: geometry.heads as u8,
+            sectors_per_track: geometry.sectors_per_track as u8,
+        };
+        slots[usize::from(drive.unit)] = Some(
+            AtaDrive::with_media(geometry, capacity, Box::new(media))
+                .map_err(|_| ConfigError::InvalidAtaGeometry { drive_index })?,
+        );
+    }
+    Ok(slots)
+}
+
 /// Test wrapper for drive construction without retaining session handles.
 #[cfg(test)]
 fn build_fdc_drives(
@@ -526,14 +565,6 @@ fn build_fdc_drives(
 /// ignored (validation bounds units to both declared count and hardware). The
 /// config geometry maps directly to the controller's own geometry type.
 ///
-/// This is the pattern a future fixed-disk controller reuses. A
-/// [`DriveKind::HardDisk`] drive is rejected by validation until a compatible
-/// controller exists. When one is added it plugs into the same seam: a
-/// `build_ide_drives(config)` that filters `config.drives` for `HardDisk` and
-/// routes them into the new device by their `controller` and `unit`, called from the
-/// device-construction match arm just as [`DeviceKind::Fdc`] calls this. No new
-/// assembler architecture is needed — the drive list, the slot routing, and the
-/// CMOS derivation are already in place; only the target device is missing.
 fn mount_fdc_drives(
     config: &MachineConfig,
     controller: DeviceId,
@@ -603,7 +634,6 @@ pub fn derive_cmos_config(config: &MachineConfig) -> CmosConfig {
     // Floppy nibbles: high = drive 0 (slot 0), low = drive 1 (slot 1).
     let mut floppy_types = 0u8;
     let mut floppy_count = 0u8;
-    let mut hard_disk_types = 0u8;
     for drive in &config.drives {
         match &drive.kind {
             DriveKind::Floppy { geometry } => {
@@ -618,19 +648,9 @@ pub fn derive_cmos_config(config: &MachineConfig) -> CmosConfig {
                     _ => {}
                 }
             }
-            DriveKind::HardDisk { .. } => {
-                // A hard disk present but with no controller device to serve it
-                // yet: the CMOS still derives its nibble here, so the day a future
-                // IDE/ATA device is added, an attached HardDisk drive already
-                // reports itself to the BIOS with no change to this function. Mark
-                // the nibble "type stored in the extended table" (0xF), the
-                // encoding a BIOS uses for drives beyond the built-in type list.
-                match drive.unit {
-                    0 => hard_disk_types |= 0xF0,
-                    1 => hard_disk_types |= 0x0F,
-                    _ => {}
-                }
-            }
+            // IDE option ROMs must not trigger the system BIOS disk driver.
+            // System-BIOS-provided disk types need a later firmware policy.
+            DriveKind::HardDisk { .. } => {}
         }
     }
 
@@ -645,7 +665,7 @@ pub fn derive_cmos_config(config: &MachineConfig) -> CmosConfig {
 
     CmosConfig {
         floppy_types,
-        hard_disk_types,
+        hard_disk_types: 0,
         equipment,
         base_memory_kb,
         extended_memory_kb,
@@ -2271,5 +2291,292 @@ mod tests {
         assembled.machine.cpu().read_mem(0, &mut actual).unwrap();
         assert_eq!(actual, expected);
         assert_eq!(config.images[0].source, file_source());
+    }
+    fn ide_config(base: u16) -> MachineConfig {
+        let mut config = reference_config();
+        let cfg = crate::IdeCfg {
+            base,
+            control: base + 0x206,
+        };
+        config.devices.push(
+            DeviceConfig::new(DeviceId::Ide, DeviceKind::Ide(cfg), cfg.port_windows())
+                .with_irq(cfg.irq()),
+        );
+        config
+            .devices
+            .iter_mut()
+            .find(|device| device.id == DeviceId::Fdc)
+            .unwrap()
+            .ports = FdcCfg::port_windows(base == 0x1F0);
+        let geometry = crate::HardDiskGeometry {
+            cylinders: 8,
+            heads: 2,
+            sectors_per_track: 4,
+            bytes_per_sector: 512,
+        };
+        config.drives.push(DriveConfig {
+            controller: DeviceId::Ide,
+            unit: 0,
+            kind: DriveKind::HardDisk { geometry },
+            image: ImageSource::Blank {
+                size: geometry.image_bytes(),
+            },
+            write: WriteMode::Volatile,
+        });
+        config
+    }
+
+    #[test]
+    fn ide_primary_and_secondary_decode_word_data_byte_registers_and_irq() {
+        for (base, irq) in [(0x1F0, 14), (0x170, 15)] {
+            let config = ide_config(base);
+            assert_eq!(config.validate(), Ok(()));
+            let mut assembled = assemble(&config).unwrap();
+            let map = build_decode_map(&config, &assembled.device_index);
+            for offset in 0..8 {
+                let window = map
+                    .ports
+                    .iter()
+                    .find(|window| window.ports.contains(&(base + offset)))
+                    .unwrap();
+                assert_eq!(window.device, assembled.device_index[&DeviceId::Ide]);
+                assert_eq!(
+                    window.width,
+                    if offset == 0 {
+                        bus::PortWidth::Word
+                    } else {
+                        bus::PortWidth::Byte
+                    }
+                );
+            }
+            assert!(build_irq_lines(&config, &assembled.device_index)
+                .iter()
+                .any(
+                    |line| line.device == assembled.device_index[&DeviceId::Ide] && line.irq == irq
+                ));
+            for (port, owner) in [(base + 0x206, DeviceId::Ide), (0x3F7, DeviceId::Fdc)] {
+                assert_bus_port_read_owner(&mut assembled, port, Some(owner));
+            }
+            if base == 0x170 {
+                assert_bus_port_read_owner(&mut assembled, 0x3F6, Some(DeviceId::Fdc));
+            }
+            let bus = assembled.machine.bus_mut();
+            bus.port_write(base + 7, 1, 0xEC).unwrap();
+            assert_eq!(bus.port_read(base, 2).unwrap(), 0x40);
+        }
+    }
+
+    #[test]
+    fn ide_firmware_board_requires_fixed_disk_even_without_drives() {
+        let mut config = crate::bios(vec![0xF4; 0x8000], Some(vec![0; 1_474_560]));
+        let cfg = crate::IdeCfg {
+            base: 0x1F0,
+            control: 0x3F6,
+        };
+        config.devices.push(
+            DeviceConfig::new(DeviceId::Ide, DeviceKind::Ide(cfg), cfg.port_windows()).with_irq(14),
+        );
+        config
+            .devices
+            .iter_mut()
+            .find(|device| device.id == DeviceId::Fdc)
+            .unwrap()
+            .ports = FdcCfg::port_windows(true);
+        let error = config.validate().unwrap_err();
+        assert_eq!(
+            error,
+            ConfigError::NoProvider {
+                device: DeviceId::Ide,
+                service: crate::FirmwareService::FixedDisk
+            }
+        );
+        assert_eq!(
+            error.to_string(),
+            "device Ide needs firmware service fixed-disk; no ROM provides it"
+        );
+        config.images[0]
+            .provides
+            .push(crate::FirmwareService::FixedDisk);
+        let assembled = assemble_synthetic(&config).unwrap();
+        assert_eq!(assembled.unlisted_firmware.len(), 1);
+        assert!(assembled.device_index.contains_key(&DeviceId::Ide));
+    }
+
+    #[test]
+    fn ide_resource_validation_has_an_exact_diagnostic() {
+        for change in 0..5 {
+            let mut config = ide_config(0x1F0);
+            let device = config
+                .devices
+                .iter_mut()
+                .find(|device| device.id == DeviceId::Ide)
+                .unwrap();
+            match change {
+                0 => {
+                    device.kind = DeviceKind::Ide(crate::IdeCfg {
+                        base: 0x1E0,
+                        control: 0x3E6,
+                    })
+                }
+                1 => {
+                    device.kind = DeviceKind::Ide(crate::IdeCfg {
+                        base: 0x1F0,
+                        control: 0x376,
+                    })
+                }
+                2 => device.irq = Some(15),
+                3 => device.irq = None,
+                _ => {
+                    device.dma = Some(DmaSpec {
+                        controller: DeviceId::Dma,
+                        channel: 2,
+                    })
+                }
+            }
+            assert_eq!(config.validate().unwrap_err().to_string(), "device Ide has invalid IDE resources: base must be 0x1f0 or 0x170, control must be base + 0x206, IRQ must be 14 or 15 respectively, and DMA must be absent");
+        }
+    }
+
+    #[test]
+    fn ide_drive_validation_has_exact_diagnostics() {
+        for geometry in [
+            crate::HardDiskGeometry {
+                cylinders: 0,
+                heads: 2,
+                sectors_per_track: 4,
+                bytes_per_sector: 512,
+            },
+            crate::HardDiskGeometry {
+                cylinders: 16384,
+                heads: 2,
+                sectors_per_track: 4,
+                bytes_per_sector: 512,
+            },
+            crate::HardDiskGeometry {
+                cylinders: 8,
+                heads: 0,
+                sectors_per_track: 4,
+                bytes_per_sector: 512,
+            },
+            crate::HardDiskGeometry {
+                cylinders: 8,
+                heads: 17,
+                sectors_per_track: 4,
+                bytes_per_sector: 512,
+            },
+            crate::HardDiskGeometry {
+                cylinders: 8,
+                heads: 2,
+                sectors_per_track: 0,
+                bytes_per_sector: 512,
+            },
+            crate::HardDiskGeometry {
+                cylinders: 8,
+                heads: 2,
+                sectors_per_track: 64,
+                bytes_per_sector: 512,
+            },
+            crate::HardDiskGeometry {
+                cylinders: 8,
+                heads: 2,
+                sectors_per_track: 4,
+                bytes_per_sector: 256,
+            },
+        ] {
+            let mut config = ide_config(0x1F0);
+            config.drives[1].kind = DriveKind::HardDisk { geometry };
+            assert_eq!(config.validate().unwrap_err().to_string(), "drive 1 has invalid ATA geometry: expected cylinders 1..=16383, heads 1..=16, sectors 1..=63 and 512-byte sectors");
+        }
+        let mut journal = ide_config(0x1F0);
+        journal.drives[1].image = ImageSource::File("disk.img".into());
+        journal.drives[1].write = WriteMode::Journal {
+            path: "disk.upfj".into(),
+            keep_generations: 1,
+        };
+        assert_eq!(
+            journal.validate().unwrap_err().to_string(),
+            "drive 1 journal configuration: journal mode requires a floppy with 512-byte sectors"
+        );
+        let mut config = ide_config(0x1F0);
+        config.drives[1].image = ImageSource::Blank { size: 512 };
+        assert_eq!(
+            config.validate().unwrap_err().to_string(),
+            "drive 1 image is 512 bytes but its geometry needs 32768"
+        );
+        let mut config = ide_config(0x1F0);
+        config.drives.push(config.drives[1].clone());
+        assert_eq!(
+            config.validate().unwrap_err().to_string(),
+            "drives 1 and 2 bind to controller Ide unit 0"
+        );
+        config.drives.pop();
+        config.drives[1].unit = 2;
+        assert_eq!(
+            config.validate().unwrap_err().to_string(),
+            "drive 1 binds to controller Ide unit 2 but only 2 unit(s) exist"
+        );
+        config.drives[1].unit = 1;
+        assert_eq!(
+            config.validate().unwrap_err().to_string(),
+            "drive 1 on Ide slave requires a master drive"
+        );
+    }
+    #[test]
+    fn ide_decode_must_equal_the_configured_windows() {
+        for malformed in 0..3 {
+            let mut config = ide_config(0x1F0);
+            let device = config
+                .devices
+                .iter_mut()
+                .find(|device| device.id == DeviceId::Ide)
+                .unwrap();
+            match malformed {
+                0 => device.ports[0].width = bus::PortWidth::Byte,
+                1 => {
+                    device.ports.pop();
+                }
+                _ => {
+                    device.ports = crate::IdeCfg {
+                        base: 0x170,
+                        control: 0x376,
+                    }
+                    .port_windows()
+                }
+            }
+            let error = config.validate().unwrap_err();
+            assert_eq!(error.to_string(), "device Ide IDE port windows must match IdeCfg::port_windows(): word data at base, byte task registers at base + 1..=7, and byte control at base + 0x206");
+            assert!(matches!(
+                assemble(&config),
+                Err(AssemblyError::Config(ConfigError::InvalidIdePortWindows {
+                    device: DeviceId::Ide
+                }))
+            ));
+        }
+    }
+
+    #[test]
+    fn ide_cmos_seed_retains_zero_fixed_disk_types() {
+        let baseline = reference_config();
+        let config = ide_config(0x1F0);
+        assert_eq!(derive_cmos_config(&config), derive_cmos_config(&baseline));
+        let mut assembled = assemble(&config).unwrap();
+        for (register, expected) in [(0x12, 0), (0x19, 0), (0x1A, 0)] {
+            let bus = assembled.machine.bus_mut();
+            bus.port_write(0x70, 1, register).unwrap();
+            assert_eq!(bus.port_read(0x71, 1).unwrap(), expected);
+        }
+    }
+
+    #[test]
+    fn ide_duplicate_channel_has_an_exact_explanation() {
+        let mut config = ide_config(0x1F0);
+        let cfg = crate::IdeCfg {
+            base: 0x170,
+            control: 0x376,
+        };
+        config.devices.push(
+            DeviceConfig::new(DeviceId::Ide, DeviceKind::Ide(cfg), cfg.port_windows()).with_irq(15),
+        );
+        assert_eq!(config.validate().unwrap_err().to_string(), "only one IDE channel is supported: DeviceId::Ide identifies one role, not separate primary and secondary instances");
     }
 }

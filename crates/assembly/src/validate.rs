@@ -85,20 +85,27 @@ struct FirmwareRequirement {
 
 // A controller's firmware contract belongs to its kind, not to an optional
 // annotation. Controllers that serve firmware without media use false here.
-const FIRMWARE_REQUIREMENTS: &[FirmwareRequirement] = &[FirmwareRequirement {
-    matches: |kind| matches!(kind, DeviceKind::Fdc(_)),
-    service: crate::FirmwareService::Floppy,
-    needs_bound_drive: true,
-}];
+const FIRMWARE_REQUIREMENTS: &[FirmwareRequirement] = &[
+    FirmwareRequirement {
+        matches: |kind| matches!(kind, DeviceKind::Ide(_)),
+        service: crate::FirmwareService::FixedDisk,
+        needs_bound_drive: false,
+    },
+    FirmwareRequirement {
+        matches: |kind| matches!(kind, DeviceKind::Fdc(_)),
+        service: crate::FirmwareService::Floppy,
+        needs_bound_drive: true,
+    },
+];
 
 struct WordPortSupport {
-    matches: fn(DeviceKind) -> bool,
-    registers: &'static [u16],
+    supports: fn(DeviceKind, u16) -> bool,
 }
 
-// Cycle width must match the device's register contract. No assembled kind
-// exposes a word register yet; config annotations alone cannot grant support.
-const WORD_PORT_SUPPORT: &[WordPortSupport] = &[];
+// IOCS16# follows the configured task-file base, including secondary channels.
+const WORD_PORT_SUPPORT: &[WordPortSupport] = &[WordPortSupport {
+    supports: |kind, port| matches!(kind, DeviceKind::Ide(cfg) if port == cfg.base),
+}];
 
 impl MachineConfig {
     /// Validate this configuration, returning the first inconsistency found.
@@ -107,7 +114,11 @@ impl MachineConfig {
     /// image placement, interrupt and DMA wiring, drive binding and geometry,
     /// clock) so malformed configs always yield the same [`ConfigError`]. File
     /// lengths are checked when [`crate::assemble`] reads the sources and validates
-    /// their bytes. Journal outputs additionally check canonical paths and
+    /// their bytes. For a BIOS file not yet read, service validation uses the
+    /// declaration or defers missing services when it is empty. Catalogue checks
+    /// requiring image bytes run at assembly time.
+    ///
+    /// Journal outputs additionally check canonical paths and
     /// existing file identities against mounted inputs and other outputs.
     pub fn validate(&self) -> Result<(), ConfigError> {
         self.check_journal_modes()?;
@@ -125,6 +136,7 @@ impl MachineConfig {
         self.check_rtc_starts()?;
         self.check_access_couplings()?;
         self.check_uart_bases()?;
+        self.check_ide_resources()?;
         self.check_port_widths()?;
         self.check_port_overlaps()?;
         self.check_mmio_devices_present()?;
@@ -188,6 +200,13 @@ impl MachineConfig {
         if self.board == BoardModel::Bare {
             return Ok(());
         }
+        let services = self
+            .images
+            .iter()
+            .enumerate()
+            .filter(|(_, image)| image.kind == ImageKind::Rom)
+            .map(|(index, _)| crate::firmware::image_services(self, index))
+            .collect::<Result<Vec<_>, _>>()?;
         for device in &self.devices {
             for rule in requirements {
                 if (rule.matches)(device.kind)
@@ -196,9 +215,9 @@ impl MachineConfig {
                             .drives
                             .iter()
                             .any(|drive| drive.controller == device.id))
-                    && !self.images.iter().any(|image| {
-                        image.kind == ImageKind::Rom && image.provides.contains(&rule.service)
-                    })
+                    && !services
+                        .iter()
+                        .any(|services| services.is_none_or(|set| set.contains(&rule.service)))
                 {
                     return Err(ConfigError::NoProvider {
                         device: device.id,
@@ -365,6 +384,9 @@ impl MachineConfig {
     fn check_unique_device_ids(&self) -> Result<(), ConfigError> {
         for (i, dev) in self.devices.iter().enumerate() {
             if self.devices[..i].iter().any(|d| d.id == dev.id) {
+                if dev.id == DeviceId::Ide {
+                    return Err(ConfigError::MultipleIdeChannels);
+                }
                 return Err(ConfigError::DuplicateDeviceId(dev.id));
             }
         }
@@ -403,6 +425,24 @@ impl MachineConfig {
         Ok(())
     }
 
+    fn check_ide_resources(&self) -> Result<(), ConfigError> {
+        for device in &self.devices {
+            if let DeviceKind::Ide(cfg) = device.kind {
+                if !matches!(cfg.base, 0x1F0 | 0x170)
+                    || cfg.control != cfg.base + 0x206
+                    || device.irq != Some(cfg.irq())
+                    || device.dma.is_some()
+                {
+                    return Err(ConfigError::InvalidIdeResources { device: device.id });
+                }
+                if device.ports != cfg.port_windows() {
+                    return Err(ConfigError::InvalidIdePortWindows { device: device.id });
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn check_port_widths(&self) -> Result<(), ConfigError> {
         self.check_port_width_support(WORD_PORT_SUPPORT)
     }
@@ -417,15 +457,11 @@ impl MachineConfig {
                     });
                 }
                 if window.width == bus::PortWidth::Word {
-                    let rule = support
-                        .iter()
-                        .find(|rule| (rule.matches)(device.kind))
-                        .ok_or(ConfigError::UnsupportedWordPort {
-                            device: device.id,
-                            port: window.start,
-                        })?;
                     for port in (window.start..=window.end).step_by(2) {
-                        if !rule.registers.contains(&port) {
+                        if !support
+                            .iter()
+                            .any(|rule| (rule.supports)(device.kind, port))
+                        {
                             return Err(ConfigError::UnsupportedWordPort {
                                 device: device.id,
                                 port,
@@ -711,6 +747,7 @@ impl MachineConfig {
                 })?;
             let available = match (drive.kind, controller.kind) {
                 (crate::DriveKind::Floppy { .. }, DeviceKind::Fdc(fdc)) => fdc.drive_slots.min(4),
+                (crate::DriveKind::HardDisk { .. }, DeviceKind::Ide(_)) => 2,
                 _ => {
                     return Err(ConfigError::DriveControllerKind {
                         drive_index,
@@ -724,6 +761,18 @@ impl MachineConfig {
                     controller: drive.controller,
                     unit: drive.unit,
                     available,
+                });
+            }
+            if matches!(controller.kind, DeviceKind::Ide(_))
+                && drive.unit == 1
+                && !self
+                    .drives
+                    .iter()
+                    .any(|other| other.controller == drive.controller && other.unit == 0)
+            {
+                return Err(ConfigError::AtaMissingMaster {
+                    drive_index,
+                    controller: drive.controller,
                 });
             }
             if let Some(a) = self.drives[..drive_index]
@@ -751,6 +800,15 @@ impl MachineConfig {
                         drive_index,
                         bytes_per_sector: geometry.bytes_per_sector,
                     });
+                }
+            }
+            if let crate::DriveKind::HardDisk { geometry } = drive.kind {
+                if !(1..=16383).contains(&geometry.cylinders)
+                    || !(1..=16).contains(&geometry.heads)
+                    || !(1..=63).contains(&geometry.sectors_per_track)
+                    || geometry.bytes_per_sector != 512
+                {
+                    return Err(ConfigError::InvalidAtaGeometry { drive_index });
                 }
             }
             if let Some(actual) = drive.image.known_len() {
@@ -1609,8 +1667,9 @@ mod tests {
     }
 
     const SYNTHETIC_WORD_PORT_SUPPORT: &[WordPortSupport] = &[WordPortSupport {
-        matches: |kind| matches!(kind, DeviceKind::Post(_)),
-        registers: &[0x190, 0x192],
+        supports: |kind, port| {
+            matches!(kind, DeviceKind::Post(_)) && [0x190, 0x192].contains(&port)
+        },
     }];
 
     #[test]

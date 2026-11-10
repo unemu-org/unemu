@@ -26,7 +26,17 @@
 //! | §§8.2, 7.2 reset | Signature and default translation; software reset disables multiple mode | No electrical DASP/PDIAG handshake |
 //! | IBM adapter mapping | Configurable task/control ports and IRQ (1F0h/3F6h/14 defaults) | Floppy port sharing and machine wiring |
 //!
-//! Disk writes are volatile. Like the floppy controller, snapshots exclude
+//! Media receives one ordered batch per completed write command. A sector is
+//! committed after its 256th data word; partial sectors are discarded. Normal
+//! completion, address failure, replacement by a new command, diagnostics, SRST,
+//! hardware reset and successful snapshot restore end the interrupted command
+//! and submit its committed prefix. Reads see that prefix while a command is
+//! active. A future persistent IDE backend must call [`Ata::flush_pending`]
+//! at session end to submit completed sectors of an abandoned command; guest
+//! drive selection alone does not finish it. Media has no host error channel. ATA-2 §6.2.8 (Error register, ABRT)
+//! defines aborted commands; this model aborts writes on protected media.
+//!
+//! Disk writes are volatile by default. Like the floppy controller, snapshots exclude
 //! backing media: restore requires the same mounted geometry/capacity and does
 //! not roll back completed disk writes. Partial PIO sector buffers, translated
 //! geometry, IRQ state and trace clock are saved. Media identity/content must
@@ -38,6 +48,8 @@
 //! ignored (data reads return FFFFh). The data register accepts only complete
 //! 16-bit cycles; 8-bit and 32-bit accesses are rejected. Host-bus IOCS16#
 //! cycle splitting belongs to the bus, not this device.
+
+use device::media::{InMemoryMedia, SectorMedia, SectorWrite};
 
 use device::{
     AccessDir, Device, DeviceError, NextEvent, TraceBuffer, TraceEvent, TracePolicy, VClock,
@@ -103,16 +115,25 @@ pub enum AtaConfigError {
     /// Images contain 1–2^28 complete 512-byte sectors.
     #[error("invalid ATA image length")]
     Image,
+    /// Advertised capacity exceeds the mounted media's addressable sectors.
+    #[error("ATA capacity {capacity} sectors exceeds media capacity {sector_count} sectors")]
+    MediaCapacity {
+        /// Capacity advertised by the ATA disk.
+        capacity: u32,
+        /// Addressable sectors supplied by the medium.
+        sector_count: u64,
+    },
     /// The eight task ports must not wrap/overlap control; IRQ must fit ISA.
     #[error("invalid ATA ports or IRQ")]
     Resources,
 }
 
-/// In-memory ATA disk; LBA capacity comes from the image, independently of CHS.
-#[derive(Clone, Debug)]
+/// ATA sector media with an explicit LBA28 capacity, independently of CHS.
 pub struct AtaDrive {
     geometry: AtaGeometry,
-    image: Vec<u8>,
+    capacity: u32,
+    media: Box<dyn SectorMedia>,
+    committed: Vec<SectorWrite>,
 }
 
 impl AtaDrive {
@@ -130,17 +151,73 @@ impl AtaDrive {
         if geometry.capacity() as usize > image.len() / SECTOR {
             return Err(AtaConfigError::Geometry);
         }
-        Ok(Self { geometry, image })
+        let capacity = (image.len() / SECTOR) as u32;
+        Self::with_media(
+            geometry,
+            capacity,
+            Box::new(InMemoryMedia::new(image, u64::from(capacity), false)),
+        )
     }
 
-    /// Current volatile media bytes; excluded from controller snapshots.
-    pub fn image(&self) -> &[u8] {
-        &self.image
+    /// Mount host-independent media with an explicit LBA28 capacity.
+    pub fn with_media(
+        geometry: AtaGeometry,
+        capacity: u32,
+        media: Box<dyn SectorMedia>,
+    ) -> Result<Self, AtaConfigError> {
+        AtaGeometry::new(
+            geometry.cylinders,
+            geometry.heads,
+            geometry.sectors_per_track,
+        )?;
+        if capacity == 0 || capacity > 1 << 28 {
+            return Err(AtaConfigError::Image);
+        }
+        if u64::from(capacity) > media.sector_count() {
+            return Err(AtaConfigError::MediaCapacity {
+                capacity,
+                sector_count: media.sector_count(),
+            });
+        }
+        if geometry.capacity() > capacity {
+            return Err(AtaConfigError::Geometry);
+        }
+        Ok(Self {
+            geometry,
+            capacity,
+            media,
+            committed: Vec::new(),
+        })
+    }
+
+    /// Current readable bytes, including sectors completed by an active command.
+    pub fn image(&self) -> Vec<u8> {
+        (0..self.capacity)
+            .flat_map(|lba| self.read_sector(lba))
+            .collect()
     }
 
     /// Number of addressable LBA sectors (ATA-2 IDENTIFY words 60–61).
     pub fn capacity(&self) -> u32 {
-        (self.image.len() / SECTOR) as u32
+        self.capacity
+    }
+
+    fn read_sector(&self, lba: u32) -> [u8; SECTOR] {
+        self.committed
+            .iter()
+            .rev()
+            .find(|sector| sector.lba == u64::from(lba))
+            .map_or_else(
+                || self.media.read_sector(u64::from(lba)),
+                |sector| sector.bytes,
+            )
+    }
+
+    fn finish_write(&mut self) {
+        if !self.committed.is_empty() {
+            self.media.write_batch(&self.committed);
+            self.committed.clear();
+        }
     }
 }
 
@@ -284,9 +361,7 @@ impl Task {
     fn load_sector(&mut self, drive: &AtaDrive) {
         self.buffer.fill(0);
         if self.phase == 1 && self.lba < self.media_limit(drive) {
-            let offset = self.lba as usize * SECTOR;
-            self.buffer
-                .copy_from_slice(&drive.image[offset..offset + SECTOR]);
+            self.buffer = drive.read_sector(self.lba);
         }
     }
 
@@ -392,13 +467,24 @@ impl Ata {
         self.drives.get(index)?.as_ref()
     }
 
+    /// Submit complete sectors at session end only, leaving guest state intact.
+    /// A future persistent IDE backend must call this when no further guest
+    /// activity will end the pending command. Calling it mid-command splits that
+    /// command into multiple batches. Partial sectors remain controller state
+    /// and are never included in the batch.
+    pub fn flush_pending(&mut self) {
+        self.finish_writes();
+    }
+
     fn signature(&mut self) {
+        self.finish_writes();
         self.tasks = std::array::from_fn(|i| Task::new(self.drives[i].as_ref(), i));
         self.selected = 0;
     }
 
     /// ATA-2 §7.13 resets registers, not the programmed translation or multiple mode.
     fn diagnostic_signature(&mut self) {
+        self.finish_writes();
         for (task, drive) in self.tasks.iter_mut().zip(&self.drives) {
             task.stop();
             task.error = 1;
@@ -421,6 +507,12 @@ impl Ata {
         }
     }
 
+    fn finish_writes(&mut self) {
+        for drive in self.drives.iter_mut().flatten() {
+            drive.finish_write();
+        }
+    }
+
     fn command(&mut self, command: u8) {
         if self.control & 4 != 0 {
             return;
@@ -431,6 +523,9 @@ impl Ata {
             return;
         }
         let index = self.selected;
+        if let Some(drive) = &mut self.drives[index] {
+            drive.finish_write();
+        }
         let Some(drive) = &self.drives[index] else {
             return;
         };
@@ -453,6 +548,12 @@ impl Ata {
                 task.irq = true;
             }
             0x20 | 0x21 | 0x30 | 0x31 | 0xC4 | 0xC5 => {
+                // ATA-2 defines no fixed-disk write-protect condition. This
+                // model reports protected writes with its abort error.
+                if matches!(command, 0x30 | 0x31 | 0xC5) && drive.media.write_protected() {
+                    task.fail(ABRT);
+                    return;
+                }
                 let multiple = matches!(command, 0xC4 | 0xC5);
                 if multiple && task.multiple == 0 {
                     task.fail(ABRT);
@@ -649,8 +750,10 @@ impl Ata {
             return result;
         };
         if task.phase == 2 && task.lba < task.media_limit(drive) {
-            let start = task.lba as usize * SECTOR;
-            drive.image[start..start + SECTOR].copy_from_slice(&task.buffer);
+            drive.committed.push(SectorWrite {
+                lba: u64::from(task.lba),
+                bytes: task.buffer,
+            });
         }
         task.remaining -= 1;
         task.block_left -= 1;
@@ -661,17 +764,20 @@ impl Ata {
             if task.phase == 2 {
                 task.irq = true;
             }
+            drive.finish_write();
             task.stop();
             task.status = READY;
             return result;
         }
         task.post_address();
         if !task.multiple_transfer && task.lba >= task.media_limit(drive) {
+            drive.finish_write();
             task.fail(IDNF);
             return result;
         }
         if task.block_left == 0 {
             if !task.prepare_block(drive) {
+                drive.finish_write();
                 return result;
             }
             task.irq = true;
@@ -751,6 +857,7 @@ impl Device for Ata {
                 let previous = self.control;
                 self.control = byte & 6;
                 if self.control & 4 != 0 {
+                    self.finish_writes();
                     for (task, drive) in self.tasks.iter_mut().zip(&self.drives) {
                         task.stop();
                         task.irq = false;
@@ -974,6 +1081,10 @@ impl Device for Ata {
                 && !task.multiple_transfer
                 && task.transfer_head == 0;
             let active = (1..=3).contains(&task.phase)
+                && (task.phase != 2
+                    || drive
+                        .as_ref()
+                        .is_some_and(|drive| !drive.media.write_protected()))
                 && drive.is_some()
                 && control & 4 == 0
                 && task.status == READY | DRQ
@@ -1011,6 +1122,7 @@ impl Device for Ata {
                 return Err(bad("inconsistent PIO phase"));
             }
         }
+        self.finish_writes();
         self.tasks = tasks;
         self.selected = usize::from(selected);
         self.control = control;
@@ -1025,6 +1137,10 @@ impl Device for Ata {
     }
     fn take_trace(&mut self) -> Vec<TraceEvent> {
         self.trace.take()
+    }
+
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
     }
 }
 
@@ -2436,5 +2552,295 @@ mod tests {
             assert_eq!(status(device), READY);
         }
         assert_eq!(source.device().save(), target.device().save());
+    }
+    type Batches = std::rc::Rc<std::cell::RefCell<Vec<Vec<SectorWrite>>>>;
+
+    struct RecordingMedia {
+        memory: InMemoryMedia,
+        batches: Batches,
+    }
+    impl SectorMedia for RecordingMedia {
+        fn sector_count(&self) -> u64 {
+            self.memory.sector_count()
+        }
+        fn read_sector(&self, lba: u64) -> [u8; SECTOR] {
+            self.memory.read_sector(lba)
+        }
+        fn write_batch(&mut self, sectors: &[SectorWrite]) {
+            self.batches.borrow_mut().push(sectors.to_vec());
+            self.memory.write_batch(sectors);
+        }
+        fn write_protected(&self) -> bool {
+            self.memory.write_protected()
+        }
+    }
+    fn recording_bus(protected: bool) -> (MockBus, Batches) {
+        let batches = Batches::default();
+        let drive = AtaDrive::with_media(
+            GEOMETRY,
+            64,
+            Box::new(RecordingMedia {
+                memory: InMemoryMedia::new(vec![0xA5; 64 * SECTOR], 64, protected),
+                batches: batches.clone(),
+            }),
+        )
+        .unwrap();
+        (
+            MockBus::new(Box::new(Ata::with_drives([Some(drive), None]).unwrap())),
+            batches,
+        )
+    }
+
+    #[test]
+    fn media_contract_batches_each_write_command_in_transfer_order() {
+        for opcode in [0x30, 0x31, 0xC5] {
+            let (mut bus, batches) = recording_bus(false);
+            put(&mut bus, 2, 2);
+            command(&mut bus, 0xC6);
+            for count in [1, 3] {
+                lba(&mut bus, 5, count, false);
+                command(&mut bus, opcode);
+                let before = batches.borrow().len();
+                for sector in 0..count {
+                    write_sector(&mut bus, &[0x40 + sector; SECTOR]);
+                    if sector + 1 < count {
+                        assert_eq!(batches.borrow().len(), before);
+                    }
+                }
+                assert_eq!(status(&mut bus), READY);
+                assert!(!bus.device().irq_pending());
+                let expected: Vec<_> = (0..count)
+                    .map(|sector| SectorWrite {
+                        lba: 5 + u64::from(sector),
+                        bytes: [0x40 + sector; SECTOR],
+                    })
+                    .collect();
+                assert_eq!(batches.borrow()[before], expected);
+                assert_eq!(batches.borrow().len(), before + 1);
+                lba(&mut bus, 5, count, false);
+                command(&mut bus, 0x20);
+                for sector in 0..count {
+                    assert_eq!(read_sector(&mut bus), [0x40 + sector; SECTOR]);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn media_contract_interruptions_submit_only_complete_sectors() {
+        for end in [0, 1, 2, 3, 4] {
+            let (mut bus, batches) = recording_bus(false);
+            lba(&mut bus, 2, 3, false);
+            command(&mut bus, 0x30);
+            write_sector(&mut bus, &[0x55; SECTOR]);
+            bus.port_write(0x1F0, 2, 0xEEEE).unwrap();
+            assert!(batches.borrow().is_empty());
+            match end {
+                0 => command(&mut bus, 0xFF),
+                1 => command(&mut bus, 0x90),
+                2 => control(&mut bus, 4),
+                3 => bus.device_mut().reset(),
+                _ => {
+                    let snapshot = bus.device().save();
+                    bus.device_mut().restore(&snapshot).unwrap();
+                }
+            }
+            assert_eq!(
+                *batches.borrow(),
+                vec![vec![SectorWrite {
+                    lba: 2,
+                    bytes: [0x55; SECTOR]
+                }]]
+            );
+            if end == 2 {
+                control(&mut bus, 0);
+            }
+            lba(&mut bus, 2, 2, false);
+            command(&mut bus, 0x20);
+            assert_eq!(read_sector(&mut bus), [0x55; SECTOR]);
+            assert_eq!(read_sector(&mut bus), [0xA5; SECTOR]);
+            assert_eq!(batches.borrow().len(), 1);
+        }
+    }
+
+    #[test]
+    fn media_contract_address_failure_submits_committed_prefix() {
+        for opcode in [0x30, 0xC5] {
+            let (mut bus, batches) = recording_bus(false);
+            put(&mut bus, 2, 2);
+            command(&mut bus, 0xC6);
+            lba(&mut bus, 62, 3, false);
+            command(&mut bus, opcode);
+            write_sector(&mut bus, &[0x62; SECTOR]);
+            assert!(batches.borrow().is_empty());
+            write_sector(&mut bus, &[0x63; SECTOR]);
+            assert_eq!(status(&mut bus), READY | ERR);
+            assert_eq!(get(&mut bus, 1), IDNF);
+            assert_eq!(
+                *batches.borrow(),
+                vec![vec![
+                    SectorWrite {
+                        lba: 62,
+                        bytes: [0x62; SECTOR]
+                    },
+                    SectorWrite {
+                        lba: 63,
+                        bytes: [0x63; SECTOR]
+                    },
+                ]]
+            );
+        }
+    }
+
+    #[test]
+    fn media_contract_readonly_aborts_every_write_without_batch() {
+        for opcode in [0x30, 0x31, 0xC5] {
+            let (mut bus, batches) = recording_bus(true);
+            put(&mut bus, 2, 2);
+            command(&mut bus, 0xC6);
+            lba(&mut bus, 2, 3, false);
+            command(&mut bus, opcode);
+            assert!(bus.device().irq_pending());
+            assert_eq!(status(&mut bus), READY | ERR);
+            assert_eq!(get(&mut bus, 1), ABRT);
+            write_sector(&mut bus, &[0x55; SECTOR]);
+            assert!(batches.borrow().is_empty());
+            lba(&mut bus, 2, 1, false);
+            command(&mut bus, 0x20);
+            assert_eq!(read_sector(&mut bus), [0xA5; SECTOR]);
+            assert!(batches.borrow().is_empty());
+        }
+    }
+    #[test]
+    fn media_contract_incomplete_sector_aborts_without_batch() {
+        let (mut bus, batches) = recording_bus(false);
+        lba(&mut bus, 2, 1, false);
+        command(&mut bus, 0x30);
+        for _ in 0..255 {
+            bus.port_write(0x1F0, 2, 0x1234).unwrap();
+        }
+        command(&mut bus, 0xFF);
+        assert_eq!(status(&mut bus), READY | ERR);
+        assert!(batches.borrow().is_empty());
+        lba(&mut bus, 2, 1, false);
+        command(&mut bus, 0x20);
+        assert_eq!(read_sector(&mut bus), [0xA5; SECTOR]);
+    }
+    #[test]
+    fn media_contract_restore_rejects_active_write_on_readonly_media() {
+        let (mut writable, _) = recording_bus(false);
+        lba(&mut writable, 2, 1, false);
+        command(&mut writable, 0x30);
+        let snapshot = writable.device().save();
+        let (mut protected, batches) = recording_bus(true);
+        let before = protected.device().save();
+        assert!(matches!(
+            protected.device_mut().restore(&snapshot),
+            Err(DeviceError::InvalidSnapshot { .. })
+        ));
+        assert_eq!(protected.device().save(), before);
+        assert!(batches.borrow().is_empty());
+    }
+    #[test]
+    fn media_contract_host_flush_submits_complete_prefix_once() {
+        let batches = Batches::default();
+        let drive = AtaDrive::with_media(
+            GEOMETRY,
+            64,
+            Box::new(RecordingMedia {
+                memory: InMemoryMedia::new(vec![0xA5; 64 * SECTOR], 64, false),
+                batches: batches.clone(),
+            }),
+        )
+        .unwrap();
+        let mut ata = Ata::with_drives([Some(drive), None]).unwrap();
+        for (offset, value) in [(6, 0xE0), (2, 3), (3, 2), (4, 0), (5, 0), (7, 0x30)] {
+            ata.port_write(0x1F0 + offset, 1, value).unwrap();
+        }
+        for _ in 0..256 {
+            ata.port_write(0x1F0, 2, 0x5555).unwrap();
+        }
+        ata.port_write(0x1F0, 2, 0x1234).unwrap();
+        ata.port_write(0x1F6, 1, 0xF0).unwrap();
+        assert!(batches.borrow().is_empty());
+        let before = ata.save();
+        ata.flush_pending();
+        assert_eq!(
+            *batches.borrow(),
+            vec![vec![SectorWrite {
+                lba: 2,
+                bytes: [0x55; SECTOR]
+            }]]
+        );
+        assert_eq!(ata.save(), before);
+        ata.flush_pending();
+        assert_eq!(batches.borrow().len(), 1);
+        assert_eq!(
+            ata.drives[0].as_ref().unwrap().read_sector(3),
+            [0xA5; SECTOR]
+        );
+    }
+
+    #[test]
+    fn media_contract_active_write_overlay_is_readable_before_submission() {
+        let batches = Batches::default();
+        let drive = AtaDrive::with_media(
+            GEOMETRY,
+            64,
+            Box::new(RecordingMedia {
+                memory: InMemoryMedia::new(vec![0xA5; 64 * SECTOR], 64, false),
+                batches: batches.clone(),
+            }),
+        )
+        .unwrap();
+        let mut ata = Ata::with_drives([Some(drive), None]).unwrap();
+        for (offset, value) in [(6, 0xE0), (2, 3), (3, 2), (4, 0), (5, 0), (7, 0x30)] {
+            ata.port_write(0x1F0 + offset, 1, value).unwrap();
+        }
+        for _ in 0..256 {
+            ata.port_write(0x1F0, 2, 0x5555).unwrap();
+        }
+        ata.port_write(0x1F0, 2, 0x1234).unwrap();
+        let before = ata.save();
+        let drive = ata.drive(0).unwrap();
+        assert_eq!(drive.media.read_sector(2), [0xA5; SECTOR]);
+        assert_eq!(drive.read_sector(2), [0x55; SECTOR]);
+        assert_eq!(&drive.image()[2 * SECTOR..3 * SECTOR], &[0x55; SECTOR]);
+        assert_eq!(drive.read_sector(3), [0xA5; SECTOR]);
+        assert_eq!(ata.save(), before);
+        assert!(batches.borrow().is_empty());
+    }
+
+    #[test]
+    fn media_contract_capacity_cannot_exceed_mounted_sectors() {
+        let media = InMemoryMedia::new(Vec::new(), 63, false);
+        assert_eq!(media.sector_count(), 63);
+        let error = match AtaDrive::with_media(GEOMETRY, 64, Box::new(media)) {
+            Err(error) => error,
+            Ok(_) => panic!("short media must be refused"),
+        };
+        assert_eq!(
+            error,
+            AtaConfigError::MediaCapacity {
+                capacity: 64,
+                sector_count: 63
+            }
+        );
+        assert_eq!(
+            error.to_string(),
+            "ATA capacity 64 sectors exceeds media capacity 63 sectors"
+        );
+        assert!(AtaDrive::with_media(
+            GEOMETRY,
+            64,
+            Box::new(InMemoryMedia::new(Vec::new(), 64, false))
+        )
+        .is_ok());
+        assert!(AtaDrive::with_media(
+            GEOMETRY,
+            64,
+            Box::new(InMemoryMedia::new(Vec::new(), 65, false))
+        )
+        .is_ok());
     }
 }

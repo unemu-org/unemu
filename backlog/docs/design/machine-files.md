@@ -2,7 +2,8 @@
 
 Status: **accepted** (decision-17). Schema 1 TOML and YAML parsing and lowering
 to an assembly-validated `MachineConfig` are implemented in `crates/machine-file`.
-`extends`, IDE and journal attachment are still to come. NVRAM images
+`extends` and journal attachment are still to come. IDE PIO channels and
+volatile/readonly hard disks are implemented. NVRAM images
 currently support volatile writes only; readonly is rejected until assembly
 can represent it.
 Drive-indexed assembly diagnostics, including journal configuration errors, map
@@ -134,8 +135,10 @@ Model changes the implementation must make:
   passes whenever an FDC exists. With an IDE controller present, the binding
   must name the controller.
 - **M5. IDE.** Add `DeviceId::Ide`, `DeviceKind::Ide(IdeCfg { base, control })`
-  and the device itself. The assembler routes `HardDisk` drives the same way it
-  routes floppies (`build_fdc_drives`). This is the seam that
+  and the device itself. **Implemented:** one primary or secondary PIO channel,
+  word data and byte task/control registers, IRQ14/15, and master/slave media
+  through `SectorMedia`. The assembler routes `HardDisk` drives by controller
+  and unit, with geometry and exact image-size validation. This is the seam that
   [machine-config.md](machine-config.md#the-fixed-disk-idehdd-attachment-seam)
   already reserves.
 - **M6. Firmware `provides`.** Add `LoadImage.provides: Vec<FirmwareService>`
@@ -332,7 +335,7 @@ honours it. The MDA, VGA and µPD765 models decode fixed absolute ports (READ,
 | `vga-text` | `Vga` | `0x3D4–0x3D5`, `0x3D8–0x3DA` | no | — | — | `0xB8000`, 32 KiB | — |
 | `uart-16550` | `Uart` | `base…base+7`, base `0x3F8` | yes, any base ≤ `0xFFF8` | 4 for `0x3F8` and `0x3E8`, 3 for `0x2F8` and `0x2E8`, otherwise required | — | — | — |
 | `fdc-765` | `Fdc` | `0x3F0–0x3F7`; with primary IDE: `0x3F0–0x3F5`, `0x3F7` | no (`0x370` is reserved) | 6 | 2 | — | `unit` 0–1 |
-| `ide` | `Ide` (M5) | `0x1F0–0x1F7`, plus a plain `0x3F6` window | `0x1F0` or `0x170`; the control port is base + `0x206` | 14 (15 for `0x170`) | — (PIO) | — | `channel` master, slave |
+| `ide` | `Ide` | `0x1F0` word data, `0x1F1–0x1F7` byte registers, `0x3F6` byte control | `0x1F0` or `0x170`; the control port is base + `0x206` | 14 (15 for `0x170`) | — (PIO) | — | `channel` master, slave |
 
 When an IDE card uses the primary channel, lowering gives the FDC card
 `0x3F0–0x3F5` and `0x3F7`, using `FdcCfg::port_windows(true)`. The IDE control
@@ -380,7 +383,10 @@ Under an `fdc-765` card:
 Under an `ide` card, the fields are the same, with two replacements:
 `channel = "master" | "slave"` instead of `unit`, and
 `geometry = { cylinders, heads, sectors }` (512-byte sectors) instead of
-`type`. In schema 1 the geometry is required.
+`type`. In schema 1 the geometry is required: cylinders 1–16383, heads 1–16,
+sectors 1–63, with 512-byte sectors and an image of exactly the implied size.
+A slave requires a master. IDE accepts `volatile` and `readonly`; journal mode
+remains floppy-only in assembly and is not lowered from machine files yet.
 
 No write mode modifies the base image: `volatile` keeps guest writes in
 memory, `readonly` faults them, and `journal` appends them to a separate file.
@@ -618,8 +624,7 @@ Every error starts with the file path. There are three classes:
    in file terms:
 
    ```text
-   machines/at-ide.toml: card `ide` (kind ide, from machines/at-ide.toml):
-   no firmware provides "fixed-disk"; add an option ROM that provides it
+   machines/at-ide.toml:6: card[ide]: device Ide needs firmware service fixed-disk; no ROM provides it
    ```
 
 The TOML and YAML loaders keep table-level source positions in a separate,
@@ -634,6 +639,11 @@ a kind names the card: `card #1` is the second `[[card]]` table. In contrast,
 Validation messages retain assembly's wording, replacing drive/image index
 prefixes with file labels. A duplicate-drive message includes each defining
 file and line beside its unit label, so repeated units remain distinguishable.
+
+`FirmwareProvidesMismatch` names the matched image's `provides` origin and
+prints both declared and catalogue service sets. A recognized system BIOS uses
+the catalogue set when `provides` is omitted or empty. This also applies under
+the unlisted-firmware escape option; only unknown images use their declarations.
 
 System BIOS catalogue diagnostics (`FirmwareNotListed`, `FirmwareBoardMismatch`,
 `FirmwareNeedsCpu`, `FirmwareRequiresDevice`), `MissingSystemBios` and
@@ -848,7 +858,7 @@ All six example files in this section parse: the TOML ones with `toml` 1.2.1,
 the YAML one with `serde-saphyr` 2.1.1. The TOML and YAML FreeDOS files
 produce identical value trees (MEASURED).
 
-### 3. An AT machine with an IDE card (`machines/at-ide.toml`)
+### 3. An AT machine with an IDE card (future profile)
 
 ```toml
 schema = 1
@@ -856,10 +866,10 @@ name = "at-ide"
 extends = "at-freedos.toml"
 
 [firmware]
-# Hard-disk INT 13h comes from an option ROM. Which XTIDE Universal BIOS
-# build, and its configuration, is decided by the firmware spike.
+# Hard-disk INT 13h comes from the listed XTIDE Universal BIOS AT build.
+# Option-ROM identity checks and the boot profile remain later work.
 option_roms = [
-  { image = "../vendor/xtide/ide_at.bin", base = 0xC8000, provides = ["fixed-disk"] },
+  { image = "../vendor/xtide-universal-bios/ide_at-r638-8k.bin", base = 0xC8000, provides = ["fixed-disk"] },
 ]
 
 [[card]]
@@ -875,17 +885,21 @@ kind = "ide"                   # 0x1F0-0x1F7 + 0x3F6, IRQ 14 (type defaults)
 channel = "master"
 image = "disks/dos-hd.img"
 geometry = { cylinders = 615, heads = 4, sectors = 17 }
-write = "journal"
-journal = "disks/dos-hd.img.upfj"
+write = "volatile"
 ```
 
 Lowering adds `Ide` after `Fdc`, a ROM image at `0xC8000`, and a `HardDisk`
 drive bound to `Ide`, master. The RAM rule then gives `[0, 0xB0000)`,
 `[0xC0000, 0xC8000)` and `[0xCA000, 0xF8000)`, assuming an 8 KiB ROM.
-Without the option ROM, `validate()` fails: "card `ide`: no firmware provides
-"fixed-disk"". ASSUMED: an XTIDE Universal BIOS build drives a 16-bit ATA
-interface at `0x1F0`. The `8088_bios` clone vendored today contains only XT
-builds (`ide_xt*.bin`, `ide_xtp*.bin`, READ). The firmware spike settles this.
+Without a fixed-disk provider, `validate()` returns `NoProvider` with the exact
+message `device Ide needs firmware service fixed-disk; no ROM provides it`.
+Lowering adds the card's file and table line. No `machines/at-ide.toml` is shipped:
+the Kiselev catalogue entry provides only floppy services. The XTIDE fixture
+and its `xub-r638-at` entry now exist and declare `fixed-disk`, consistently
+with the IDE requirement. Option-ROM bytes are not yet matched against the
+catalogue; their declared services remain in use until those identity checks
+land. The checked system BIOS already uses catalogue services. The boot profile
+and option-ROM validation remain later work.
 
 ### 4. An XT-class file (rejected in schema 1)
 
@@ -1114,7 +1128,14 @@ Ordered; each bead is narrow and lands green.
    *Depends on:* the persistent-media implementation beads, and 5.
 10. **IDE card kind and device (M5).** `DeviceKind::Ide`, the ATA PIO
     register device with isolation tests on a mock bus, channel binding, the
-    `0x3F6` control window and split FDC windows, `machines/at-ide.toml`.
+    `0x3F6` control window and split FDC windows.
+    *Implemented:* assembly and TOML lowering, readonly/volatile sector media,
+    exact validation diagnostics, secondary channel, and assembled IDENTIFY
+    with a 256-word `rep insw` transfer. Provider tests use a synthetic BIOS
+    through the run-only escape option; CPU integration uses a Bare rig.
+    The XTIDE fixture and catalogue entry are available; `machines/at-ide.toml`
+    still waits for option-ROM validation and the boot profile. The missing
+    provider diagnostic is covered by an inline TOML test.
     *Accept:* device unit tests pass. `validate()` rejects an IDE card without
     a `fixed-disk` provider. A golden boots from a hard-disk image once the
     firmware spike names the option ROM.

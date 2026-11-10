@@ -49,6 +49,27 @@ pub enum ConfigError {
         /// Known entries and their distribution instructions.
         known: String,
     },
+    /// A declaration cannot grant services absent from a recognized firmware.
+    #[error("firmware \"{firmware}\" declares provides {declared}; catalogue provides {expected}")]
+    FirmwareProvidesMismatch {
+        /// Firmware image index.
+        image_index: usize,
+        /// Matched catalogue entry.
+        firmware: &'static str,
+        /// Canonically ordered declared set.
+        declared: String,
+        /// Canonically ordered catalogue set.
+        expected: String,
+    },
+    /// The single IDE role cannot identify two independent channels.
+    #[error("only one IDE channel is supported: DeviceId::Ide identifies one role, not separate primary and secondary instances")]
+    MultipleIdeChannels,
+    /// ATA decode must match the configured task/control resources exactly.
+    #[error("device {device:?} IDE port windows must match IdeCfg::port_windows(): word data at base, byte task registers at base + 1..=7, and byte control at base + 0x206")]
+    InvalidIdePortWindows {
+        /// Controller with inconsistent decode.
+        device: DeviceId,
+    },
     /// The image was built for another motherboard.
     #[error("firmware \"{firmware}\" is built for {boards}, not {board}")]
     FirmwareBoardMismatch {
@@ -86,6 +107,26 @@ pub enum ConfigError {
         size: u64,
     },
 
+    /// ATA resources must match one standard PIO channel.
+    #[error("device {device:?} has invalid IDE resources: base must be 0x1f0 or 0x170, control must be base + 0x206, IRQ must be 14 or 15 respectively, and DMA must be absent")]
+    InvalidIdeResources {
+        /// Controller with invalid resources.
+        device: DeviceId,
+    },
+    /// Geometry must fit the ATA device's supported CHS range.
+    #[error("drive {drive_index} has invalid ATA geometry: expected cylinders 1..=16383, heads 1..=16, sectors 1..=63 and 512-byte sectors")]
+    InvalidAtaGeometry {
+        /// Drive index in the configuration.
+        drive_index: usize,
+    },
+    /// ATA device 1 cannot be mounted alone.
+    #[error("drive {drive_index} on {controller:?} slave requires a master drive")]
+    AtaMissingMaster {
+        /// Slave drive index.
+        drive_index: usize,
+        /// Named ATA controller.
+        controller: DeviceId,
+    },
     /// The configured kind does not declare a word register at this port.
     #[error("device {device:?} has no 16-bit register at port {port:#x}")]
     UnsupportedWordPort {
