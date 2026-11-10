@@ -107,13 +107,13 @@ Things **deliberately not implemented**. If something seems missing and is liste
   sector batches beside an immutable file-backed base; new sessions replay the
   journal. Volatile remains the default, and readonly rejects guest writes.
   Offline `media generations`, `verify`, explicit backed-up tail repair and
-  rollback are available with shared/exclusive stable locking.
-- **Still deferred:** Immutable raw-image export (`media commit`/`compact`)
-  and atomic retention pruning with anchors. The positive retention count is
-  validated but does not prune yet.
-  Serialized journal configuration and frontend selection flags are also later
-  work; current selection uses Rust `MachineConfig` data.
-- **Revisit when:** A guest session needs image export or automatic retention rather
-  than append/replay/checkpoint/finish and offline inspection/rollback.
+  rollback and immutable raw-image export (`media commit`/`compact`) are available
+  with shared/exclusive stable locking. Retention atomically replaces a verified
+  anchor plus retained history at closed boundaries; the positive count includes
+  the anchor.
+- **Still deferred:** Serialized journal configuration and frontend selection flags;
+  current selection uses Rust `MachineConfig` data. Physical power-cut validation
+  and support beyond the Unix storage contract remain unmeasured.
+- **Revisit when:** Frontend selection or another host platform is needed.
 - **Tracked in:** [`design/persistent-media.md`](design/persistent-media.md),
   §Offline commands and §Retention anchor.

@@ -105,6 +105,7 @@ cargo run -p cli -- media generations --base disk.img --journal disk.img.upfj
 cargo run -p cli -- media verify --base disk.img --journal disk.img.upfj
 cargo run -p cli -- media verify --base disk.img --journal disk.img.upfj --repair-tail --backup before-repair.upfj
 cargo run -p cli -- media rollback --base disk.img --journal disk.img.upfj --to 1 --backup before-rollback.upfj
+cargo run -p cli -- media commit --base disk.img --journal disk.img.upfj --to 1 --output restored.img
 ```
 
 Inspections replay read-only under a shared stable journal lock. An existing
@@ -122,9 +123,11 @@ marker does not certify filesystem consistency or bootability.
 `verify` reports binding/frame/grammar failures, recoverable-tail bytes and the
 latest reconstructible state. Exit codes: **0** fully valid/closed, **1**
 corruption, wrong base or I/O failure (including a missing journal and lock
-conflicts, a reserved `.create-` journal name, a dangling journal symlink or a
+conflicts, a dangling journal symlink or a
 post-lock canonical-path change), **2** usage/config error, **3** recoverable tail
-or unsealed commands. Missing base/journal inputs are checked before locking,
+or unsealed commands. Reserved journal temporary names in any input/output,
+including the base and resolved symlink targets, are configuration errors (exit 2).
+Missing base/journal inputs are checked before locking,
 leave no new files and report the input's role and path. Non-regular inputs,
 including FIFOs, are refused without blocking. `--repair-tail` takes an exclusive
 lock, synchronizes a full backup at an unused path, then performs normal mount
@@ -144,8 +147,29 @@ errors identify the affected base, journal, lock or backup path. Tail diagnostic
 the safe truncation offset and discarded byte count separately from the failure
 offset. Journal and image bytes stay unchanged on inspection.
 
-`media commit`/`compact` export and automatic retention pruning remain deferred;
-`keep_generations` is validated but does not yet prune history.
+`media commit` (alias `compact`) exports a retained closed generation, including
+available generation 0, to a new raw image. It requires a shared lock and a valid
+sealed tip; repair/seal interrupted history first. An occupied output, including
+an input alias, is exit 2. The same-directory temporary is read back for size and
+SHA-256 verification, synchronized, published by a no-clobber hard link, then its
+directory is synchronized. Neither input changes. Select the new base and a fresh
+journal path explicitly when continuing from an export; config is never edited.
+
+Journal mode applies `keep_generations` after each successful checkpoint/session
+close. The count includes the oldest retained point encoded as an anchor; keep=2
+over ids 1–5 retains anchor 4 and id 5. Later ids/reasons survive; sequences restart
+at 1. Retention verifies all retained states before file sync, atomic journal
+rename under the stable lock, and directory sync. Maintenance failures
+produce one warning per affected drive after every drive has been finished; they
+do not turn a durable session close into a run failure. Pre-publication failures preserve the old
+journal and permit retry at a later close; publication/sync uncertainty requires
+reopening and verifying before further persistent work. Retention keeps exact
+journal mode bits, but the replacement is owned by its creator. The next exclusive
+mount removes this journal's regular decimal-named retention leftovers after safe
+identity checks; it never follows a symlink or mounts a leftover. Reserved
+`.retain-` and `.export-` names, like `.create-`,
+cannot be mounted as journals or used for backups. Temporaries are never imported,
+and backups are never pruned.
 
 ## Typecheck / lint / format
 

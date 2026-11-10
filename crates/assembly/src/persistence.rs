@@ -33,7 +33,7 @@ pub struct PersistenceError {
 pub struct PersistenceHandle {
     /// Index in the machine configuration's drive list.
     pub drive_index: usize,
-    /// Validated retention setting; rewriting is a separate maintenance service.
+    /// Validated closed-generation retention setting (including the anchor).
     pub keep_generations: u32,
     session: Rc<RefCell<Session>>,
     status: SinkStatus,
@@ -47,15 +47,24 @@ impl PersistenceHandle {
         base: &[u8],
         geometry_length: u64,
         keep_generations: u32,
+        base_metadata: Option<&std::fs::Metadata>,
     ) -> Result<(Self, Box<dyn SectorMedia>), crate::AssemblyError> {
         let status = SinkStatus::default();
-        let journal =
-            JournalMedia::open(path, base, geometry_length, status.clone()).map_err(|source| {
-                crate::AssemblyError::Journal {
-                    drive_index,
-                    source,
-                }
-            })?;
+        let journal = match base_metadata {
+            Some(metadata) => JournalMedia::open_with_base_metadata(
+                path,
+                base,
+                geometry_length,
+                status.clone(),
+                metadata,
+            ),
+            None => JournalMedia::open(path, base, geometry_length, status.clone()),
+        }
+        .map_err(|source| crate::AssemblyError::Journal {
+            drive_index,
+            source,
+        })?
+        .with_retention(keep_generations);
         let report = journal.mount_report().clone();
         let session = Rc::new(RefCell::new(Session::Active(Box::new(journal))));
         let adapter = Box::new(JournalAdapter(session.clone()));
@@ -84,9 +93,27 @@ impl PersistenceHandle {
         *session = Session::Active(Box::new((*journal).with_failing_output()));
     }
 
+    /// Inject retention publication failures without altering guest commands.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn fail_retention(&mut self, operation: &'static str) {
+        let mut session = self.session.borrow_mut();
+        let Session::Active(journal) = std::mem::replace(
+            &mut *session,
+            Session::Finished(InMemoryMedia::new(Vec::new(), 0, false)),
+        ) else {
+            panic!("active session required")
+        };
+        *session = Session::Active(Box::new((*journal).with_failing_retention(operation)));
+    }
+
     /// First latched host error; the guest never observes this channel.
     pub fn status(&self) -> Option<SinkFailure> {
         self.status.failure()
+    }
+
+    /// Maintenance diagnostics are separate from the guest-command error latch.
+    pub fn maintenance_failure(&self) -> Option<media::MaintenanceFailure> {
+        self.status.maintenance_failure()
     }
 
     /// Recovery evidence from before mount repaired or sealed the tip.
@@ -210,6 +237,39 @@ pub(crate) fn validate_paths(config: &MachineConfig) -> Result<(), ConfigError> 
             }
         })
         .collect();
+    let reserved = |path: &Path| {
+        JournalMedia::is_retention_temp_name(path)
+            || normalized(path)
+                .ok()
+                .is_some_and(|p| JournalMedia::is_retention_temp_name(&p))
+    };
+    for (drive_index, drive) in config.drives.iter().enumerate() {
+        if let ImageSource::File(path) = &drive.image {
+            if reserved(path) {
+                return Err(ConfigError::DriveInput {
+                    drive_index,
+                    path: path.clone(),
+                    message: "uses a reserved retention-temporary name".into(),
+                });
+            }
+        }
+    }
+    for (image_index, image) in config.images.iter().enumerate() {
+        if let ImageSource::File(path) = &image.source {
+            if reserved(path) {
+                return Err(ConfigError::ImageInput {
+                    image_index,
+                    role: if image.kind == crate::ImageKind::Rom {
+                        "firmware"
+                    } else {
+                        "RAM-load"
+                    },
+                    path: path.clone(),
+                    message: "uses a reserved retention-temporary name".into(),
+                });
+            }
+        }
+    }
     let normalize = |drive_index, path: &Path, role| {
         normalized(path).map_err(|error| ConfigError::Journal {
             drive_index,
@@ -260,7 +320,12 @@ pub(crate) fn validate_paths(config: &MachineConfig) -> Result<(), ConfigError> 
             if [unresolved.as_ref(), resolved.as_ref()]
                 .into_iter()
                 .flatten()
-                .any(|candidate| JournalMedia::is_creation_temp(journal, candidate))
+                .any(|candidate| {
+                    JournalMedia::is_creation_temp(journal, candidate)
+                        || candidate.file_name().is_some_and(|n| {
+                            n.as_encoded_bytes().windows(8).any(|s| s == b".retain-")
+                        })
+                })
             {
                 return Err(error(format!(
                     "journal {} reserves creation-temporary input path {}",
@@ -448,5 +513,99 @@ mod tests {
             std::fs::metadata(journal_path).unwrap().len(),
             media::HEADER_LEN as u64
         );
+    }
+    #[test]
+    fn retention_failures_preserve_controller_status_dma_irq_and_virtual_time() {
+        for operation in [
+            "temporary write",
+            "temporary sync",
+            "replace",
+            "publication directory sync",
+        ] {
+            let temp = crate::test_support::TempDir::new("retention-test");
+            let mut program = vec![0xFA, 0xFC];
+            let out = |p: &mut Vec<u8>, port: u16, value: u8| {
+                p.extend([0xBA, port as u8, (port >> 8) as u8, 0xB0, value, 0xEE]);
+            };
+            out(&mut program, 0x3F2, 0x1C);
+            for (port, value) in [
+                (0x0A, 6),
+                (0x0C, 0),
+                (0x0B, 0x4A),
+                (4, 0),
+                (4, 6),
+                (0x81, 0),
+                (5, 0xFF),
+                (5, 1),
+                (0x0A, 2),
+            ] {
+                out(&mut program, port, value);
+            }
+            for value in [5, 0, 0, 0, 1, 2, 1, 0x1B, 0xFF] {
+                out(&mut program, 0x3F5, value);
+            }
+            program.extend([0xBF, 0, 0x10]);
+            for _ in 0..7 {
+                program.extend([0xEC, 0xAA]);
+            }
+            program.push(0xF4);
+            let mut config = crate::at_fdc_write(program, vec![0xA7; 512], 0x600);
+            let base = temp.path().join("base.img");
+            let bytes = vec![0; config.drives[0].kind.image_bytes() as usize];
+            std::fs::write(&base, &bytes).unwrap();
+            config.drives[0].image = ImageSource::File(base.clone());
+            let path = temp.path().join("disk.upfj");
+            config.drives[0].write = WriteMode::Journal {
+                path: path.clone(),
+                keep_generations: 1,
+            };
+            let mut machine = crate::assemble(&config).unwrap();
+            machine.persistence[0].checkpoint().unwrap();
+            machine.persistence[0].fail_retention(operation);
+            machine
+                .run_session(&crate::RunPolicy::natural(Some(10_000), None))
+                .unwrap();
+            let mut before = vec![0; 0x10000];
+            machine.machine.cpu().read_mem(0, &mut before).unwrap();
+            let time = machine.machine.virtual_time();
+            let retired = machine.machine.cpu().retired();
+            let devices: Vec<_> = machine
+                .device_index
+                .values()
+                .map(|&index| {
+                    (
+                        index,
+                        machine.machine.bus().device(index).unwrap().save(),
+                        machine.machine.bus().device_irq_line(index),
+                    )
+                })
+                .collect();
+            machine.persistence[0].checkpoint().unwrap();
+            let failure = machine.persistence[0].maintenance_failure().unwrap();
+            assert_eq!(machine.persistence[0].status().is_some(), failure.uncertain);
+            assert_eq!(machine.check_persistence().is_err(), failure.uncertain);
+            assert_eq!(
+                failure.uncertain,
+                matches!(operation, "replace" | "publication directory sync")
+            );
+            let mut after = before.clone();
+            machine.machine.cpu().read_mem(0, &mut after).unwrap();
+            assert_eq!(after, before);
+            assert_eq!(after[0x1001] & 2, 0);
+            assert_eq!(machine.machine.virtual_time(), time);
+            assert_eq!(machine.machine.cpu().retired(), retired);
+            for (index, snapshot, irq) in devices {
+                assert_eq!(
+                    machine.machine.bus().device(index).unwrap().save(),
+                    snapshot
+                );
+                assert_eq!(machine.machine.bus().device_irq_line(index), irq);
+            }
+            assert_eq!(std::fs::read(&base).unwrap(), bytes);
+            let scan = media::scan(&std::fs::read(&path).unwrap(), &bytes, bytes.len() as u64);
+            assert_eq!(scan.report.status, media::Status::Valid);
+            assert!(!scan.report.needs_recovery());
+            assert_eq!(&scan.image.unwrap()[..512], &[0xA7; 512]);
+        }
     }
 }

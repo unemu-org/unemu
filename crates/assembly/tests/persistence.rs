@@ -766,3 +766,222 @@ fn nested_creation_names_are_refused_by_assembly() {
         assert_eq!(temp.entries(), before);
     }
 }
+
+#[test]
+fn assembly_passes_retention_and_reserves_retention_temporary_names() {
+    let temp = Temp::new();
+    let mut candidate = config(&temp, false, 512);
+    let path = temp.path("disk.upfj");
+    candidate.drives[0].write = WriteMode::Journal {
+        path: path.clone(),
+        keep_generations: 2,
+    };
+    let base = std::fs::read(temp.path("base.img")).unwrap();
+    let mut machine = assemble(&candidate).unwrap();
+    for _ in 0..4 {
+        machine.persistence[0].checkpoint().unwrap();
+    }
+    machine.finish_persistence().unwrap();
+    drop(machine);
+    let result = media::scan(&std::fs::read(&path).unwrap(), &base, base.len() as u64);
+    assert_eq!(result.report.status, media::Status::Valid);
+    assert_eq!(result.report.header.unwrap().anchor_generation, 4);
+    assert_eq!(
+        result
+            .report
+            .generations
+            .iter()
+            .map(|g| g.id)
+            .collect::<Vec<_>>(),
+        [4, 5]
+    );
+    assert_eq!(result.image.unwrap(), base);
+    assert_eq!(std::fs::read(temp.path("base.img")).unwrap(), base);
+    for marker in ["retain", "export"] {
+        candidate.drives[0].write =
+            WriteMode::journal(temp.path(&format!("disk.upfj.{marker}-1.tmp")));
+        assert!(candidate.validate().is_err());
+        assert!(assemble(&candidate).is_err());
+    }
+    candidate.drives[0].write = WriteMode::journal(&path);
+    let reserved = temp.path("disk.upfj.retain-1.tmp");
+    std::fs::write(&reserved, &base).unwrap();
+    candidate.drives[0].image = ImageSource::File(reserved);
+    assert!(candidate.validate().is_err());
+}
+
+#[cfg(feature = "test-support")]
+#[test]
+fn finish_attempts_every_drive_and_returns_the_first_real_error() {
+    for latched in [false, true] {
+        for both_fail in [false, true] {
+            let temp = Temp::new();
+            let mut config = config(&temp, false, 512);
+            let mut second = config.drives[0].clone();
+            second.unit = 1;
+            second.write = WriteMode::journal(temp.path("second.upfj"));
+            config.drives.push(second);
+            let mut machine = assemble(&config).unwrap();
+            machine.persistence[0].fail_output();
+            if latched {
+                assert!(machine.persistence[0].checkpoint().is_err());
+            }
+            if both_fail {
+                machine.persistence[1].fail_output();
+            }
+            assert_eq!(machine.finish_persistence().unwrap_err().drive_index, 0);
+            if both_fail {
+                assert!(machine.persistence[1].status().is_some());
+            } else {
+                let report = report(&temp.path("second.upfj"), &temp.path("base.img"));
+                assert_eq!(report.generations.len(), 1);
+                assert_eq!(report.generations[0].reason, ClosingReason::SessionEnd);
+            }
+        }
+    }
+}
+
+#[test]
+fn retention_reserved_inputs_are_refused_even_for_other_or_volatile_journals() {
+    for mode in [
+        WriteMode::Volatile,
+        WriteMode::ReadOnly,
+        WriteMode::journal("unused.upfj"),
+    ] {
+        let temp = Temp::new();
+        let mut config = config(&temp, false, 512);
+        let reserved = temp.path("other.upfj.retain-7.tmp");
+        std::fs::rename(temp.path("base.img"), &reserved).unwrap();
+        config.drives[0].image = ImageSource::File(reserved.clone());
+        config.drives[0].write = mode;
+        assert!(config
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains("retention-temporary"));
+        assert!(assemble(&config).is_err());
+        assert!(reserved.exists());
+    }
+}
+
+#[test]
+fn reserved_input_errors_name_the_owning_drive_and_firmware_image() {
+    let temp = Temp::new();
+    let mut drives = config(&temp, false, 512);
+    drives.drives[0].write = WriteMode::Volatile;
+    let mut second = drives.drives[0].clone();
+    second.unit = 1;
+    let reserved = temp.path("other.upfj.retain-7.tmp");
+    std::fs::copy(temp.path("base.img"), &reserved).unwrap();
+    second.image = ImageSource::File(reserved.clone());
+    drives.drives.push(second);
+    let error = drives.validate().unwrap_err();
+    assert!(
+        matches!(&error,assembly::ConfigError::DriveInput {drive_index:1,path,..} if path==&reserved)
+    );
+    assert_eq!(
+        error.to_string(),
+        format!(
+            "drive 1 input {}: uses a reserved retention-temporary name",
+            reserved.display()
+        )
+    );
+    assert!(
+        !error.to_string().contains("drive 0")
+            && !error.to_string().contains("journal configuration")
+    );
+    for (kind, role) in [
+        (assembly::ImageKind::Rom, "firmware"),
+        (assembly::ImageKind::RamLoad, "RAM-load"),
+    ] {
+        let mut images = config(&temp, false, 512);
+        images.drives[0].write = WriteMode::Volatile;
+        let index = images.images.len();
+        images.images.push(assembly::LoadImage {
+            base: 0x2000,
+            source: ImageSource::File(reserved.clone()),
+            kind,
+            provides: vec![],
+        });
+        let error = images.validate().unwrap_err();
+        assert!(
+            matches!(&error,assembly::ConfigError::ImageInput {image_index,role:r,path,..} if *image_index==index && *r==role && path==&reserved)
+        );
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "{role} image {}: uses a reserved retention-temporary name",
+                reserved.display()
+            )
+        );
+        assert!(
+            !error.to_string().contains("drive 0")
+                && !error.to_string().contains("journal configuration")
+        );
+    }
+}
+
+#[cfg(feature = "test-support")]
+#[test]
+fn uncertain_checkpoint_latches_disabled_appends_and_stops_the_next_boundary() {
+    let temp = Temp::new();
+    let mut cfg = config(&temp, true, 512);
+    let path = temp.path("disk.upfj");
+    cfg.drives[0].write = WriteMode::Journal {
+        path: path.clone(),
+        keep_generations: 1,
+    };
+    let mut machine = assemble(&cfg).unwrap();
+    machine.persistence[0].checkpoint().unwrap();
+    machine.persistence[0].fail_retention("publication directory sync");
+    machine.persistence[0].checkpoint().unwrap();
+    assert!(
+        machine.persistence[0]
+            .maintenance_failure()
+            .unwrap()
+            .uncertain
+    );
+    assert!(
+        machine.persistence[0].check().is_err(),
+        "disabled appends must be latched immediately"
+    );
+    let journal = std::fs::read(&path).unwrap();
+    // Exercise an already-running chunk directly; the checked frontend refuses
+    // to begin another chunk once the host persistence latch is set.
+    assert_eq!(
+        machine.machine.run_bounded(Some(10_000)).unwrap(),
+        machine::RunOutcome::Halted
+    );
+    assert_eq!(readback(&machine), pattern());
+    let mut result = [0; 7];
+    machine.machine.cpu().read_mem(0x1000, &mut result).unwrap();
+    assert_eq!(result[1] & 2, 0);
+    assert_eq!(std::fs::read(&path).unwrap(), journal);
+    assert!(machine.check_persistence().is_err());
+    let retired = machine.machine.cpu().retired();
+    let time = machine.machine.virtual_time();
+    assert!(matches!(
+        machine.run_session(&RunPolicy::natural(Some(20_000), None)),
+        Err(assembly::RunError::Persistence(_))
+    ));
+    assert_eq!(machine.machine.cpu().retired(), retired);
+    assert_eq!(machine.machine.virtual_time(), time);
+}
+
+#[cfg(unix)]
+#[test]
+fn assembly_protects_the_inode_of_the_single_loaded_base_read() {
+    let temp = Temp::new();
+    let config = config(&temp, false, 512);
+    let base = temp.path("base.img");
+    let alias = temp.path("disk.upfj.retain-0.tmp");
+    let orphan = temp.path("disk.upfj.retain-1.tmp");
+    let bytes = std::fs::read(&base).unwrap();
+    std::fs::hard_link(&base, &alias).unwrap();
+    std::fs::write(&orphan, &bytes).unwrap();
+    let machine = assemble(&config).unwrap();
+    assert_eq!(std::fs::read(&base).unwrap(), bytes);
+    assert_eq!(std::fs::read(&alias).unwrap(), bytes);
+    assert!(!orphan.exists());
+    drop(machine);
+}

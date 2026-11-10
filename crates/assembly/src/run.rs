@@ -354,13 +354,15 @@ impl crate::AssembledMachine {
     /// End a successful session, including policy-limited runs. Never call this
     /// after an execution error. There is no atomic multi-drive close promise.
     pub fn finish_persistence(&mut self) -> Result<(), crate::PersistenceError> {
-        for handle in &self.persistence {
-            handle.check()?;
-        }
+        let mut first = None;
         for handle in &mut self.persistence {
-            handle.finish()?;
+            if let Err(error) = handle.finish() {
+                if first.is_none() {
+                    first = Some(error);
+                }
+            }
         }
-        Ok(())
+        first.map_or(Ok(()), Err)
     }
 }
 

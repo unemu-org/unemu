@@ -84,6 +84,21 @@ impl RecordingIo {
     }
 }
 impl ToolIo for RecordingIo {
+    fn write_temporary(&mut self, file: &mut File, bytes: &[u8]) -> io::Result<()> {
+        self.step("temporary write", target_kind(file)?)?;
+        HostIo.write_temporary(file, bytes)
+    }
+    fn publish_temporary(&mut self, temp: &Path, path: &Path, replace: bool) -> io::Result<()> {
+        self.step(
+            if replace {
+                "replace"
+            } else {
+                "no-clobber publish"
+            },
+            TargetKind::File,
+        )?;
+        HostIo.publish_temporary(temp, path, replace)
+    }
     fn create_backup(&mut self, path: &Path, permissions: &Permissions) -> io::Result<File> {
         self.step("backup create", TargetKind::File)?;
         HostIo.create_backup(path, permissions)
@@ -100,9 +115,15 @@ impl ToolIo for RecordingIo {
         self.step("journal truncate", target_kind(file)?)?;
         HostIo.truncate(file, end)
     }
-    fn recover(&mut self, path: &Path, base: &[u8], lock: File) -> Result<JournalMedia, OpenError> {
+    fn recover(
+        &mut self,
+        path: &Path,
+        base: &[u8],
+        lock: File,
+        base_metadata: &std::fs::Metadata,
+    ) -> Result<JournalMedia, OpenError> {
         self.calls.push(("journal recovery", TargetKind::File));
-        HostIo.recover(path, base, lock)
+        HostIo.recover(path, base, lock, base_metadata)
     }
 }
 
@@ -290,4 +311,273 @@ fn backup_is_created_with_private_mode_before_copy_and_keeps_exact_permissions()
         std::fs::metadata(f.backup()).unwrap().permissions().mode() & 0o777,
         0o600
     );
+}
+
+impl RecordingIo {
+    fn publication_calls(&self) -> Vec<Event> {
+        self.calls
+            .iter()
+            .copied()
+            .filter(|(role, _)| {
+                matches!(
+                    *role,
+                    "temporary write"
+                        | "temporary sync"
+                        | "no-clobber publish"
+                        | "publication directory sync"
+                )
+            })
+            .collect()
+    }
+}
+
+#[test]
+fn commit_records_real_write_verification_and_publication_barriers() {
+    let f = Fixture::new();
+    let original = std::fs::read(&f.journal).unwrap();
+    let mut tool = JournalTool::open(&f.base, &f.journal, Access::Inspect).unwrap();
+    let mut io = RecordingIo::default();
+    let output = f.dir.join("export.img");
+    tool.commit_with(&mut io, 1, &output).unwrap();
+    let mut expected = f.bytes.clone();
+    expected[..512].fill(0x11);
+    assert_eq!(std::fs::read(&output).unwrap(), expected);
+    assert_eq!(std::fs::read(&f.base).unwrap(), f.bytes);
+    assert_eq!(std::fs::read(&f.journal).unwrap(), original);
+    assert_eq!(
+        io.publication_calls(),
+        [
+            ("temporary write", TargetKind::File),
+            ("temporary sync", TargetKind::File),
+            ("no-clobber publish", TargetKind::File),
+            ("publication directory sync", TargetKind::Directory),
+        ]
+    );
+}
+
+#[test]
+fn export_publication_failures_preserve_inputs_and_only_publish_verified_bytes() {
+    for fail in [
+        "temporary write",
+        "temporary sync",
+        "no-clobber publish",
+        "publication directory sync",
+    ] {
+        let f = Fixture::new();
+        let original = std::fs::read(&f.journal).unwrap();
+        let output = f.dir.join("export.img");
+        let mut io = RecordingIo {
+            fail: Some(fail),
+            ..RecordingIo::default()
+        };
+        assert!(f.tool().commit_with(&mut io, 2, &output).is_err());
+        if output.exists() {
+            let mut expected = f.bytes.clone();
+            expected[..512].fill(0x22);
+            assert_eq!(std::fs::read(&output).unwrap(), expected);
+            assert_eq!(fail, "publication directory sync");
+        } else {
+            assert_ne!(fail, "publication directory sync");
+        }
+        assert_eq!(std::fs::read(&f.journal).unwrap(), original);
+        assert_eq!(std::fs::read(&f.base).unwrap(), f.bytes);
+    }
+}
+
+#[test]
+fn export_checks_temporary_size_and_digest_before_any_barrier_or_publication() {
+    struct CorruptingIo {
+        truncate: bool,
+    }
+    impl ToolIo for CorruptingIo {
+        fn write_temporary(&mut self, file: &mut File, bytes: &[u8]) -> io::Result<()> {
+            HostIo.write_temporary(file, bytes)?;
+            if self.truncate {
+                file.set_len(bytes.len() as u64 - 1)
+            } else {
+                file.seek(SeekFrom::Start(0))?;
+                file.write_all(&[bytes[0] ^ 1])
+            }
+        }
+        fn sync(&mut self, _: &File, _: &'static str) -> io::Result<()> {
+            panic!("unverified export synchronized")
+        }
+        fn publish_temporary(&mut self, _: &Path, _: &Path, _: bool) -> io::Result<()> {
+            panic!("unverified export published")
+        }
+    }
+    for truncate in [false, true] {
+        let f = Fixture::new();
+        let output = f.dir.join("export.img");
+        assert!(f
+            .tool()
+            .commit_with(&mut CorruptingIo { truncate }, 1, &output)
+            .unwrap_err()
+            .to_string()
+            .contains("size/digest"));
+        assert!(!output.exists());
+    }
+}
+
+#[test]
+fn export_no_clobber_handles_destination_created_at_publication() {
+    struct RacingIo;
+    impl ToolIo for RacingIo {
+        fn publish_temporary(
+            &mut self,
+            temporary: &Path,
+            path: &Path,
+            replace: bool,
+        ) -> io::Result<()> {
+            assert!(!replace);
+            std::fs::write(path, b"existing destination")?;
+            HostIo.publish_temporary(temporary, path, replace)
+        }
+    }
+    let f = Fixture::new();
+    let output = f.dir.join("export.img");
+    assert!(matches!(
+        f.tool().commit_with(&mut RacingIo, 1, &output),
+        Err(ToolError::Config(_))
+    ));
+    assert_eq!(std::fs::read(output).unwrap(), b"existing destination");
+}
+
+#[test]
+fn export_skips_occupied_temporary_aliases_without_truncating_inputs() {
+    let f = Fixture::new();
+    let original = std::fs::read(&f.journal).unwrap();
+    let output = f.dir.join("export.img");
+    let occupied = f.dir.join("export.img.export-0.tmp");
+    std::fs::hard_link(&f.base, &occupied).unwrap();
+    f.tool().commit(1, &output).unwrap();
+    assert_eq!(std::fs::read(&f.base).unwrap(), f.bytes);
+    assert_eq!(std::fs::read(occupied).unwrap(), f.bytes);
+    assert_eq!(std::fs::read(&f.journal).unwrap(), original);
+    assert_eq!(&std::fs::read(output).unwrap()[..512], &[0x11; 512]);
+}
+
+#[test]
+fn export_errors_distinguish_unpublished_and_uncertain_with_exact_messages() {
+    struct Fault {
+        phase: &'static str,
+        code: Option<i32>,
+    }
+    impl Fault {
+        fn error(&self) -> io::Error {
+            self.code.map_or_else(
+                || io::Error::other("injected export failure"),
+                io::Error::from_raw_os_error,
+            )
+        }
+    }
+    impl ToolIo for Fault {
+        fn write_temporary(&mut self, file: &mut File, bytes: &[u8]) -> io::Result<()> {
+            if self.phase == "temporary write" {
+                return Err(self.error());
+            }
+            file.write_all(bytes)?;
+            if self.phase == "digest" {
+                file.seek(SeekFrom::Start(0))?;
+                file.write_all(&[bytes[0] ^ 1])?;
+            }
+            Ok(())
+        }
+        fn sync(&mut self, file: &File, role: &'static str) -> io::Result<()> {
+            if self.phase == role {
+                return Err(self.error());
+            }
+            HostIo.sync(file, role)
+        }
+        fn publish_temporary(&mut self, temp: &Path, path: &Path, replace: bool) -> io::Result<()> {
+            if self.phase == "publish" {
+                return Err(self.error());
+            }
+            HostIo.publish_temporary(temp, path, replace)
+        }
+    }
+    let cases = [
+        (
+            "temporary write",
+            None,
+            "export failed; nothing was published; output",
+        ),
+        (
+            "digest",
+            None,
+            "export failed; nothing was published; output",
+        ),
+        (
+            "temporary sync",
+            None,
+            "export failed; nothing was published; output",
+        ),
+        ("publish", None, "export publication uncertain; output"),
+        (
+            "publication directory sync",
+            None,
+            "export publication uncertain; output",
+        ),
+    ];
+    for (phase, code, role) in cases {
+        let f = Fixture::new();
+        let output = f.dir.join("export.img");
+        let error = f
+            .tool()
+            .commit_with(&mut Fault { phase, code }, 1, &output)
+            .unwrap_err();
+        let detail = if phase == "digest" {
+            "export size/digest verification failed"
+        } else {
+            "injected export failure"
+        };
+        assert_eq!(
+            error.to_string(),
+            format!("{role} {}: {detail}", output.display())
+        );
+        assert_eq!(output.exists(), phase == "publication directory sync");
+    }
+    #[cfg(unix)]
+    for code in [libc::EPERM, libc::ENOTSUP, libc::EXDEV] {
+        let f = Fixture::new();
+        let output = f.dir.join("export.img");
+        let error = f
+            .tool()
+            .commit_with(
+                &mut Fault {
+                    phase: "publish",
+                    code: Some(code),
+                },
+                1,
+                &output,
+            )
+            .unwrap_err();
+        assert_eq!(error.to_string(),format!("export needs hard-link support on the output filesystem; nothing was published; output {}: {}",output.display(),io::Error::from_raw_os_error(code)));
+        assert!(!output.exists());
+    }
+    #[cfg(unix)]
+    {
+        let f = Fixture::new();
+        let output = f.dir.join("export.img");
+        let error = f
+            .tool()
+            .commit_with(
+                &mut Fault {
+                    phase: "publication directory sync",
+                    code: Some(libc::EPERM),
+                },
+                1,
+                &output,
+            )
+            .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "export publication uncertain; output {}: {}",
+                output.display(),
+                io::Error::from_raw_os_error(libc::EPERM)
+            )
+        );
+        assert!(output.exists());
+    }
 }

@@ -15,6 +15,21 @@ pub enum ConfigError {
     /// A journal mode violates the persistent-media config contract.
     #[error("drive {drive_index} journal configuration: {message}")]
     Journal { drive_index: usize, message: String },
+    /// A file-backed drive input violates the persistent-media namespace contract.
+    #[error("drive {drive_index} input {path}: {message}", path = path.display())]
+    DriveInput {
+        drive_index: usize,
+        path: std::path::PathBuf,
+        message: String,
+    },
+    /// A loadable image input violates the persistent-media namespace contract.
+    #[error("{role} image {path}: {message}", path = path.display())]
+    ImageInput {
+        image_index: usize,
+        role: &'static str,
+        path: std::path::PathBuf,
+        message: String,
+    },
     /// A catalogue board cannot boot without a system ROM.
     #[error("board \"{board}\" requires a system BIOS ROM")]
     MissingSystemBios {

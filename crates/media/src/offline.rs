@@ -9,7 +9,7 @@ use crate::sink::{
 };
 use crate::{scan_reader, JournalMedia, OpenError, Refusal, Scan, Status, HEADER_LEN};
 use std::fs::{File, OpenOptions, Permissions};
-use std::io::{self, Read, Seek, SeekFrom};
+use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, thiserror::Error)]
@@ -40,6 +40,21 @@ fn path_error(role: &'static str, path: &Path, source: io::Error) -> ToolError {
     }
 }
 
+fn refuse_reserved_path(role: &str, path: &Path) -> Result<(), ToolError> {
+    let resolved = canonical_journal_path(path).ok();
+    if JournalMedia::is_creation_temp_name(path)
+        || resolved
+            .as_ref()
+            .is_some_and(|p| JournalMedia::is_creation_temp_name(p))
+    {
+        return Err(ToolError::Config(format!(
+            "{role} {} uses or resolves to a reserved journal temporary name",
+            path.display()
+        )));
+    }
+    Ok(())
+}
+
 /// Inspection opens journal data read-only; mutation requires an exclusive lock.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Access {
@@ -52,6 +67,7 @@ pub enum Access {
 pub struct JournalTool {
     path: PathBuf,
     base: Vec<u8>,
+    base_metadata: std::fs::Metadata,
     journal: File,
     lock: Option<File>,
     access: Access,
@@ -68,6 +84,8 @@ impl JournalTool {
         journal: &Path,
         access: Access,
     ) -> Result<Self, ToolError> {
+        refuse_reserved_path("base", base)?;
+        refuse_reserved_path("journal", journal)?;
         let journal_error = |error| path_error("journal", journal, error);
         refuse_creation_temp_name(journal).map_err(journal_error)?;
         let mut base_file = io
@@ -79,6 +97,7 @@ impl JournalTool {
         let path = canonical_journal_path(journal).map_err(journal_error)?;
         refuse_creation_temp_name(&path).map_err(journal_error)?;
         let lock_path = journal_lock_path(&path);
+        refuse_reserved_path("lock", &lock_path)?;
         let lock_error = |error| path_error("lock", &lock_path, error);
         let lock = if access == Access::Inspect {
             inspection_lock(&path).map_err(lock_error)?
@@ -93,6 +112,9 @@ impl JournalTool {
                 "journal canonical path changed after locking",
             )));
         }
+        let base_metadata = base_file
+            .metadata()
+            .map_err(|e| path_error("base", base, e))?;
         let mut bytes = Vec::new();
         base_file
             .read_to_end(&mut bytes)
@@ -100,6 +122,7 @@ impl JournalTool {
         Ok(Self {
             path,
             base: bytes,
+            base_metadata,
             journal: file,
             lock,
             access,
@@ -116,6 +139,109 @@ impl JournalTool {
             .map_err(|e| path_error("journal", &self.path, e))
     }
 
+    /// Export one closed recovery point without changing either input. The shared
+    /// lock stays held through verification and no-clobber publication.
+    pub fn commit(&mut self, generation: u64, output: &Path) -> Result<(), ToolError> {
+        self.commit_with(&mut HostIo, generation, output)
+    }
+
+    fn commit_with(
+        &mut self,
+        io: &mut impl ToolIo,
+        generation: u64,
+        output: &Path,
+    ) -> Result<(), ToolError> {
+        if self.lock.is_none() {
+            return Err(ToolError::Config(
+                "export requires a shared journal lock".into(),
+            ));
+        }
+        let scan = self.validated()?;
+        if scan.report.needs_recovery() {
+            return Err(ToolError::Config(
+                "export requires a sealed, valid journal tip".into(),
+            ));
+        }
+        refuse_reserved_path("output", output)?;
+        match std::fs::symlink_metadata(output) {
+            Ok(_) => {
+                return Err(ToolError::Config(
+                    "output path must be unused (including input aliases)".into(),
+                ))
+            }
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+            Err(e) => {
+                return Err(path_error(
+                    "export failed; nothing was published; output",
+                    output,
+                    e,
+                ))
+            }
+        }
+        let end = if generation == 0
+            && scan
+                .report
+                .header
+                .as_ref()
+                .is_some_and(|h| h.anchor_generation == 0)
+        {
+            HEADER_LEN
+        } else {
+            scan.report
+                .generations
+                .iter()
+                .find(|g| g.id == generation)
+                .map(|g| g.end_offset)
+                .ok_or_else(|| {
+                    ToolError::Config(format!(
+                        "generation {generation} is not a retained closed generation"
+                    ))
+                })?
+        };
+        let image = crate::history::prefix(&mut self.journal, end, &self.base)
+            .map_err(|e| path_error("journal", &self.path, e))?
+            .image
+            .ok_or_else(|| ToolError::Config("generation reconstruction refused".into()))?;
+        let (mut temp, name) = io
+            .create_temporary(output, "export", None)
+            .map_err(|e| path_error("export failed; nothing was published; output", output, e))?;
+        let mut publishing = false;
+        let mut published = false;
+        let result = (|| {
+            io.write_temporary(&mut temp, &image)?;
+            temp.seek(SeekFrom::Start(0))?;
+            let mut check = Vec::new();
+            temp.read_to_end(&mut check)?;
+            if check.len() != image.len()
+                || crate::codec::digest(&check) != crate::codec::digest(&image)
+            {
+                return Err(io::Error::other("export size/digest verification failed"));
+            }
+            io.sync(&temp, "temporary sync")?;
+            publishing = true;
+            io.publish_temporary(&name, output, false)?;
+            published = true;
+            io.sync(&File::open(parent(output))?, "publication directory sync")
+        })();
+        // Only this operation's create_new file is ours to unlink. Orphans from
+        // interrupted exports are never mounted or cleaned by journal recovery.
+        let _ = std::fs::remove_file(&name);
+        result.map_err(|e| {
+            if e.kind() == io::ErrorKind::AlreadyExists {
+                ToolError::Config("output path must be unused (including input aliases)".into())
+            } else {
+                let role = if publishing && !published && hard_link_unsupported(&e) {
+                    "export needs hard-link support on the output filesystem; nothing was published; output"
+                } else if publishing {
+                    "export publication uncertain; output"
+                } else {
+                    "export failed; nothing was published; output"
+                };
+                path_error(role, output, e)
+            }
+        })
+    }
+
     /// Back up before applying precisely the writable mount's recovery. Dropping
     /// the recovered session avoids adding an unrelated empty session end.
     pub fn repair_tail(self, backup: &Path) -> Result<Scan, ToolError> {
@@ -130,12 +256,12 @@ impl JournalTool {
             .lock
             .take()
             .ok_or_else(|| ToolError::Config("mutation requires an exclusive lock".into()))?;
-        let mounted =
-            io.recover(&self.path, &self.base, lock)
-                .map_err(|source| ToolError::Recovery {
-                    path: self.path.clone(),
-                    source,
-                })?;
+        let mounted = io
+            .recover(&self.path, &self.base, lock, &self.base_metadata)
+            .map_err(|source| ToolError::Recovery {
+                path: self.path.clone(),
+                source,
+            })?;
         // A concurrent writer must not change the recovered state during this scan.
         let scan = self.verify()?;
         drop(mounted);
@@ -210,11 +336,7 @@ impl JournalTool {
 
     fn backup(&mut self, io: &mut impl ToolIo, path: &Path) -> Result<(), ToolError> {
         // Mount cleanup must never mistake a header-only backup for an orphan.
-        if JournalMedia::is_creation_temp_name(path) {
-            return Err(ToolError::Config(
-                "backup uses a reserved creation-temporary name".into(),
-            ));
-        }
+        refuse_reserved_path("backup", path)?;
         let permissions = self
             .journal
             .metadata()
@@ -259,7 +381,52 @@ impl JournalTool {
 /// Actual offline filesystem operations, including barriers. Recording tests
 /// delegate to HostIo so production HostBackup calls cannot bypass their trace.
 /// See persistent-media.md § Offline commands and § Locking and retention.
-trait ToolIo {
+pub(crate) trait ToolIo {
+    fn create_temporary(
+        &mut self,
+        path: &Path,
+        marker: &str,
+        permissions: Option<&Permissions>,
+    ) -> io::Result<(File, PathBuf)> {
+        for counter in 0..u64::MAX {
+            let mut name = path.as_os_str().to_os_string();
+            name.push(format!(".{marker}-{counter}.tmp"));
+            let name = PathBuf::from(name);
+            let mut options = OpenOptions::new();
+            options.read(true).write(true).create_new(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+                options.mode(permissions.map_or(0o600, |p| p.mode() & 0o7777));
+            }
+            #[cfg(not(unix))]
+            let _ = permissions;
+            match options.open(&name) {
+                Ok(file) => return Ok((file, name)),
+                Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
+                Err(e) => return Err(e),
+            }
+        }
+        Err(io::Error::other("temporary names exhausted"))
+    }
+    fn set_permissions(&mut self, file: &File, permissions: Permissions) -> io::Result<()> {
+        file.set_permissions(permissions)
+    }
+    fn write_temporary(&mut self, file: &mut File, bytes: &[u8]) -> io::Result<()> {
+        file.write_all(bytes)
+    }
+    fn publish_temporary(
+        &mut self,
+        temporary: &Path,
+        path: &Path,
+        replace: bool,
+    ) -> io::Result<()> {
+        if replace {
+            std::fs::rename(temporary, path)
+        } else {
+            std::fs::hard_link(temporary, path)
+        }
+    }
     fn open_input(&mut self, path: &Path, write: bool) -> io::Result<File> {
         let mut options = OpenOptions::new();
         options.read(true).write(write);
@@ -300,12 +467,37 @@ trait ToolIo {
     fn truncate(&mut self, file: &File, end: u64) -> io::Result<()> {
         file.set_len(end)
     }
-    fn recover(&mut self, path: &Path, base: &[u8], lock: File) -> Result<JournalMedia, OpenError> {
-        JournalMedia::recover_locked(path, base, lock)
+    fn recover(
+        &mut self,
+        path: &Path,
+        base: &[u8],
+        lock: File,
+        base_metadata: &std::fs::Metadata,
+    ) -> Result<JournalMedia, OpenError> {
+        JournalMedia::recover_locked(path, base, lock, base_metadata)
     }
 }
-struct HostIo;
+pub(crate) struct HostIo;
 impl ToolIo for HostIo {}
+
+fn hard_link_unsupported(error: &io::Error) -> bool {
+    #[cfg(unix)]
+    return matches!(
+        error.raw_os_error(),
+        Some(libc::EPERM) | Some(libc::ENOTSUP) | Some(libc::EXDEV)
+    );
+    #[cfg(not(unix))]
+    {
+        let _ = error;
+        false
+    }
+}
+
+pub(crate) fn parent(path: &Path) -> &Path {
+    path.parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(Path::new("."))
+}
 
 struct HostBackup<'a, I> {
     journal: &'a mut File,

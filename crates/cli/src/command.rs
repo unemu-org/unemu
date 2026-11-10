@@ -15,6 +15,7 @@ const USAGE: &str = "usage: unemupc98 --boot (Real16 timer demo)
        unemupc98 media generations --base IMG --journal J
        unemupc98 media verify --base IMG --journal J [--repair-tail --backup PATH]
        unemupc98 media rollback --base IMG --journal J --to N --backup PATH
+       unemupc98 media commit (alias compact) --base IMG --journal J --to N --output OUT
 DOS boot and interactive sessions: see crates/cli/tests/*dos*golden.rs\n";
 
 #[derive(Debug, PartialEq, Eq)]
@@ -41,6 +42,7 @@ pub enum Action {
     Verify,
     Repair { backup: PathBuf },
     Rollback { generation: u64, backup: PathBuf },
+    Commit { generation: u64, output: PathBuf },
 }
 
 pub fn parse(args: &[OsString]) -> Result<Command, &'static str> {
@@ -72,10 +74,14 @@ pub fn parse(args: &[OsString]) -> Result<Command, &'static str> {
         return Err("unknown or extra arguments");
     }
     let operation = args[1].to_str().ok_or("invalid media command")?;
-    if !matches!(operation, "generations" | "verify" | "rollback") {
+    if !matches!(
+        operation,
+        "generations" | "verify" | "rollback" | "commit" | "compact"
+    ) {
         return Err("unknown media command");
     }
     let (mut base, mut journal, mut backup, mut generation) = (None, None, None, None);
+    let mut output = None;
     let mut repair = false;
     let mut index = 2;
     while index < args.len() {
@@ -88,7 +94,10 @@ pub fn parse(args: &[OsString]) -> Result<Command, &'static str> {
             repair = true;
             continue;
         }
-        if !matches!(option, "--base" | "--journal" | "--backup" | "--to") {
+        if !matches!(
+            option,
+            "--base" | "--journal" | "--backup" | "--to" | "--output"
+        ) {
             return Err("unknown option");
         }
         let value = args
@@ -101,11 +110,15 @@ pub fn parse(args: &[OsString]) -> Result<Command, &'static str> {
             "--journal" => &mut journal,
             "--backup" => &mut backup,
             "--to" => &mut generation,
+            "--output" => &mut output,
             _ => unreachable!(),
         };
         if slot.replace(value.clone()).is_some() {
             return Err("duplicate option");
         }
+    }
+    if output.is_some() && !matches!(operation, "commit" | "compact") {
+        return Err("--output is only accepted by commit/compact");
     }
     let action = match operation {
         "generations" if backup.is_none() && generation.is_none() => Action::Generations,
@@ -116,16 +129,26 @@ pub fn parse(args: &[OsString]) -> Result<Command, &'static str> {
             },
             _ => return Err("--repair-tail and --backup must be used together"),
         },
-        "rollback" => {
-            let value = generation.ok_or("rollback requires --to N")?;
+        "rollback" | "commit" | "compact" => {
+            if operation != "rollback" && backup.is_some() {
+                return Err("commit does not accept --backup");
+            }
+            let value = generation.ok_or("this command requires --to N")?;
             let value = value
                 .to_str()
                 .filter(|s| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit()))
                 .ok_or("generation must be an unsigned decimal integer")?;
             let generation = value.parse().map_err(|_| "generation is out of range")?;
-            Action::Rollback {
-                generation,
-                backup: backup.ok_or("rollback requires --backup")?.into(),
+            if operation == "rollback" {
+                Action::Rollback {
+                    generation,
+                    backup: backup.ok_or("rollback requires --backup")?.into(),
+                }
+            } else {
+                Action::Commit {
+                    generation,
+                    output: output.ok_or("commit requires --output")?.into(),
+                }
             }
         }
         _ => return Err("options are not valid for this command"),
@@ -253,6 +276,18 @@ fn execute(command: MediaCommand, output: &mut impl Write) -> Result<u8, ToolErr
         )?;
     }
     let scan = match command.action {
+        Action::Commit {
+            generation,
+            output: destination,
+        } => {
+            tool.commit(generation, &destination)?;
+            writeln!(
+                output,
+                "exported generation {generation} to {}",
+                destination.display()
+            )?;
+            return Ok(0);
+        }
         Action::Generations | Action::Verify => tool.verify()?,
         Action::Repair { backup } => tool.repair_tail(&backup)?,
         Action::Rollback { generation, backup } => {

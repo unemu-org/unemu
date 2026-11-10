@@ -3,6 +3,7 @@
 //! barriers measure ordering and valid-prefix recovery, not physical power cuts.
 
 use super::*;
+use crate::temporary::CreationTempIo;
 use crate::{scan, FRAME_LEN, HEADER_LEN};
 use std::cell::Cell;
 use std::io::Cursor;
@@ -136,7 +137,12 @@ impl Filesystem for ModelFs {
         assert!(self.locked.get());
         self.io.0.borrow_mut().step(Event::VerifyPath)
     }
-    fn cleanup_creation_temps(&mut self, _: &Path, _: &[u8]) -> io::Result<()> {
+    fn cleanup_creation_temps(
+        &mut self,
+        _: &Path,
+        _: &[u8],
+        _: Option<&std::fs::Metadata>,
+    ) -> io::Result<()> {
         assert!(self.locked.get());
         let mut model = self.io.0.borrow_mut();
         model.step(Event::CleanupTemps)?;
@@ -894,8 +900,13 @@ impl Filesystem for HeaderFailureFs {
     fn verify_path(&mut self, path: &Path) -> io::Result<()> {
         HostFilesystem.verify_path(path)
     }
-    fn cleanup_creation_temps(&mut self, path: &Path, header: &[u8]) -> io::Result<()> {
-        HostFilesystem.cleanup_creation_temps(path, header)
+    fn cleanup_creation_temps(
+        &mut self,
+        path: &Path,
+        header: &[u8],
+        base_metadata: Option<&std::fs::Metadata>,
+    ) -> io::Result<()> {
+        HostFilesystem.cleanup_creation_temps(path, header, base_metadata)
     }
     fn create_temp(&mut self, path: &Path) -> io::Result<(Box<dyn JournalIo>, PathBuf)> {
         let (output, path) = HostFilesystem.create_temp(path)?;
@@ -1042,8 +1053,13 @@ impl Filesystem for AliasRaceFs {
     fn verify_path(&mut self, path: &Path) -> io::Result<()> {
         HostFilesystem.verify_path(path)
     }
-    fn cleanup_creation_temps(&mut self, path: &Path, header: &[u8]) -> io::Result<()> {
-        HostFilesystem.cleanup_creation_temps(path, header)
+    fn cleanup_creation_temps(
+        &mut self,
+        path: &Path,
+        header: &[u8],
+        base_metadata: Option<&std::fs::Metadata>,
+    ) -> io::Result<()> {
+        HostFilesystem.cleanup_creation_temps(path, header, base_metadata)
     }
     fn create_temp(&mut self, path: &Path) -> io::Result<(Box<dyn JournalIo>, PathBuf)> {
         HostFilesystem.create_temp(path)
@@ -1502,90 +1518,754 @@ fn creation_temp_open_refuses_symlinks() {
     assert!(HostCreationTempIo.open(&link).is_err());
 }
 
-#[cfg(unix)]
-fn assert_fifo_child_completes(test: &str, exercise: impl FnOnce(&Path)) {
-    use std::process::{Command, Stdio};
-    if let Some(path) = std::env::var_os("MEDIA_TEST_CREATION_FIFO") {
-        exercise(Path::new(&path));
-        return;
+#[derive(Default)]
+struct RetentionIo {
+    calls: Vec<&'static str>,
+    fail: Option<&'static str>,
+    publish_then_fail: bool,
+}
+impl RetentionIo {
+    fn step(&mut self, role: &'static str) -> io::Result<()> {
+        self.calls.push(role);
+        if self.fail == Some(role) {
+            return Err(io::Error::other("injected retention failure"));
+        }
+        Ok(())
+    }
+}
+impl crate::offline::ToolIo for RetentionIo {
+    fn write_temporary(&mut self, file: &mut File, bytes: &[u8]) -> io::Result<()> {
+        if self.fail == Some("temporary write") {
+            file.write_all(&bytes[..bytes.len() / 2])?;
+        }
+        self.step("temporary write")?;
+        crate::offline::HostIo.write_temporary(file, bytes)
+    }
+    fn sync(&mut self, file: &File, role: &'static str) -> io::Result<()> {
+        assert_eq!(
+            file.metadata()?.is_dir(),
+            role == "publication directory sync"
+        );
+        self.step(role)?;
+        crate::offline::HostIo.sync(file, role)
+    }
+    fn publish_temporary(&mut self, temp: &Path, path: &Path, replace: bool) -> io::Result<()> {
+        assert!(replace);
+        if self.publish_then_fail {
+            crate::offline::HostIo.publish_temporary(temp, path, replace)?;
+        }
+        self.step("replace")?;
+        crate::offline::HostIo.publish_temporary(temp, path, replace)
+    }
+}
+
+fn five_generations(path: &Path) {
+    let mut disk = real_mount(path).unwrap();
+    for id in 1..=5 {
+        // Sector one is changed only in history that retention must fold away.
+        disk.write_batch(&[(0, [id; 512])]);
+        if id == 1 {
+            disk.write_batch(&[(1, [0xA7; 512])]);
+        }
+        if id < 5 {
+            disk.checkpoint().unwrap();
+        }
+    }
+    disk.finish().unwrap();
+}
+
+#[test]
+fn retention_keeps_two_closed_states_with_anchor_ids_reasons_and_new_sequences() {
+    let dir = TempDir::new();
+    let path = dir.journal();
+    five_generations(&path);
+    let base = [0; 1024];
+    let original = std::fs::read(&path).unwrap();
+    let old = scan(&original, &base, 1024);
+    let mut disk = real_mount(&path).unwrap().with_retention(2);
+    // Drop adds no generation: pruning itself is tested at the existing boundary.
+    disk.prune_with(&mut RetentionIo::default()).unwrap();
+    let bytes = std::fs::read(&path).unwrap();
+    let after = scan(&bytes, &base, 1024);
+    assert_eq!(after.report.status, Status::Valid);
+    assert!(!after.report.needs_recovery());
+    assert_eq!(after.image, old.image);
+    assert_eq!(after.report.header.as_ref().unwrap().anchor_generation, 4);
+    assert_eq!(
+        after.report.header.as_ref().unwrap().base_digest,
+        Header::new(&base, 0).unwrap().base_digest
+    );
+    assert_eq!(
+        after
+            .report
+            .generations
+            .iter()
+            .map(|g| (g.id, g.reason))
+            .collect::<Vec<_>>(),
+        [
+            (4, ClosingReason::RetentionAnchor),
+            (5, ClosingReason::SessionEnd)
+        ]
+    );
+    assert_eq!(bytes.len(), HEADER_LEN + 7 * FRAME_LEN);
+    for (index, bytes) in bytes[HEADER_LEN..]
+        .as_chunks::<FRAME_LEN>()
+        .0
+        .iter()
+        .enumerate()
+    {
+        assert_eq!(Frame::decode(bytes).unwrap().sequence, index as u64 + 1);
+    }
+    for generation in &after.report.generations {
+        let old_generation = old
+            .report
+            .generations
+            .iter()
+            .find(|g| g.id == generation.id)
+            .unwrap();
+        assert_eq!(
+            scan(&original[..old_generation.end_offset], &base, 1024).image,
+            scan(&bytes[..generation.end_offset], &base, 1024).image
+        );
+    }
+    drop(disk);
+    assert_eq!(real_mount(&path).unwrap().image(), old.image.unwrap());
+}
+
+#[test]
+fn retention_runs_after_checkpoint_and_finish_and_continues_on_replaced_inode() {
+    let dir = TempDir::new();
+    let path = dir.journal();
+    let mut disk = real_mount(&path).unwrap().with_retention(2);
+    for id in 1..=5 {
+        disk.write_batch(&[(0, [id; 512])]);
+        if id < 5 {
+            disk.checkpoint().unwrap();
+        }
+    }
+    disk.finish().unwrap();
+    let bytes = std::fs::read(&path).unwrap();
+    let result = scan(&bytes, &[0; 1024], 1024);
+    assert_eq!(result.report.status, Status::Valid);
+    assert_eq!(
+        result
+            .report
+            .generations
+            .iter()
+            .map(|g| g.id)
+            .collect::<Vec<_>>(),
+        [4, 5]
+    );
+    assert_eq!(
+        result.report.generations[1].reason,
+        ClosingReason::SessionEnd
+    );
+    let mounted = real_mount(&path).unwrap();
+    assert_eq!(mounted.read_sector(0), [5; 512]);
+}
+
+#[test]
+fn retention_failures_report_maintenance_separately_and_keep_old_or_new_valid_files() {
+    for fail in [
+        "temporary write",
+        "temporary sync",
+        "replace",
+        "publication directory sync",
+    ] {
+        for publish_then_fail in [false, true] {
+            if publish_then_fail && fail != "replace" {
+                continue;
+            }
+            let dir = TempDir::new();
+            let path = dir.journal();
+            five_generations(&path);
+            let mut disk = real_mount(&path).unwrap().with_retention(2);
+            let status = disk.status();
+            let mut expected_old = std::fs::read(&path).unwrap();
+            expected_old.extend(
+                Frame {
+                    sequence: disk.sequence + 1,
+                    generation: 6,
+                    record: Record::GenerationEnd {
+                        reason: ClosingReason::Checkpoint,
+                    },
+                }
+                .encode()
+                .unwrap(),
+            );
+            let mut io = RetentionIo {
+                fail: Some(fail),
+                publish_then_fail,
+                ..RetentionIo::default()
+            };
+            disk.close_with(ClosingReason::Checkpoint, &mut io).unwrap();
+            let error = status.maintenance_failure().unwrap();
+            let visible = std::fs::read(&path).unwrap();
+            let result = scan(&visible, &[0; 1024], 1024);
+            assert_eq!(result.report.status, Status::Valid);
+            assert!(!result.report.needs_recovery());
+            assert_eq!(result.image.as_deref(), Some(disk.image()));
+            let uncertain = matches!(fail, "replace" | "publication directory sync");
+            assert_eq!(status.maintenance_failure().unwrap().uncertain, uncertain);
+            assert!(error.to_string().contains(if uncertain {
+                "uncertain"
+            } else {
+                "before publication"
+            }));
+            assert_eq!(status.failure().is_some(), uncertain);
+            assert!(!disk.write_protected());
+            let new = fail == "publication directory sync" || publish_then_fail;
+            assert_eq!(result.report.generations.len(), if new { 2 } else { 6 });
+            assert_eq!(result.report.generations.last().unwrap().id, 6);
+            if !new {
+                assert_eq!(visible, expected_old);
+            } else {
+                let before = scan(&expected_old, &[0; 1024], 1024);
+                assert_eq!(result.image, before.image);
+                assert_eq!(result.report.header.as_ref().unwrap().anchor_generation, 5);
+            }
+            if !uncertain {
+                io.fail = None;
+                disk.write_batch(&[(0, [0xB5; 512])]);
+                disk.close_with(ClosingReason::SessionEnd, &mut io).unwrap();
+                assert!(status.maintenance_failure().is_none());
+                assert_eq!(
+                    scan(&std::fs::read(&path).unwrap(), &[0; 1024], 1024)
+                        .image
+                        .as_deref(),
+                    Some(disk.image())
+                );
+            } else {
+                let before = std::fs::read(&path).unwrap();
+                disk.write_batch(&[(0, [0xB5; 512])]);
+                assert_eq!(disk.read_sector(0), [0xB5; 512]);
+                assert!(disk.checkpoint().is_err());
+                assert_eq!(std::fs::read(&path).unwrap(), before);
+            }
+            drop(disk);
+            assert!(real_mount(&path).is_ok());
+        }
+    }
+}
+
+#[test]
+fn retention_barriers_follow_complete_verified_temporary_and_namespace_is_isolated() {
+    let dir = TempDir::new();
+    let path = dir.journal();
+    five_generations(&path);
+    let creation = path.with_file_name("disk.upfj.create-999.tmp");
+    let retention = path.with_file_name("disk.upfj.retain-999.tmp");
+    let mut disk = real_mount(&path).unwrap().with_retention(2);
+    std::fs::write(
+        &creation,
+        Header::new(&[0; 1024], 0).unwrap().encode().unwrap(),
+    )
+    .unwrap();
+    let retention_bytes = Header::new(&[0; 1024], 0).unwrap().encode().unwrap();
+    std::fs::write(&retention, retention_bytes).unwrap();
+    let mut io = RetentionIo::default();
+    disk.close_with(ClosingReason::Checkpoint, &mut io).unwrap();
+    assert_eq!(
+        &io.calls[io.calls.len() - 3..],
+        ["temporary sync", "replace", "publication directory sync"]
+    );
+    assert!(io.calls[..io.calls.len() - 3]
+        .iter()
+        .all(|s| *s == "temporary write"));
+    assert!(creation.exists());
+    assert!(retention.exists());
+    drop(disk);
+    let disk = real_mount(&path).unwrap();
+    assert!(!creation.exists());
+    assert!(!retention.exists());
+    drop(disk);
+    assert!(JournalMedia::open(&retention, &[0; 1024], 1024, SinkStatus::default()).is_err());
+}
+
+#[test]
+fn retention_never_runs_for_open_or_poisoned_generation() {
+    let dir = TempDir::new();
+    let path = dir.journal();
+    five_generations(&path);
+    let mut disk = real_mount(&path).unwrap().with_retention(2);
+    disk.write_batch(&[(0, [0xB5; 512])]);
+    let before = std::fs::read(&path).unwrap();
+    let mut io = RetentionIo::default();
+    assert!(disk.prune_with(&mut io).is_err());
+    assert!(io.calls.is_empty());
+    assert_eq!(std::fs::read(&path).unwrap(), before);
+    disk.status
+        .latch(disk.failure("injected", "failed command"));
+    assert!(disk.close_with(ClosingReason::Checkpoint, &mut io).is_err());
+    disk.prune_with(&mut io).unwrap();
+    assert!(io.calls.is_empty());
+    assert_eq!(std::fs::read(&path).unwrap(), before);
+}
+
+#[test]
+fn retention_encodes_empty_anchor_and_preserves_later_recovered_reason() {
+    let dir = TempDir::new();
+    let path = dir.journal();
+    let mut disk = real_mount(&path).unwrap();
+    disk.write_batch(&[(0, [1; 512])]);
+    disk.checkpoint().unwrap();
+    disk.write_batch(&[(0, [0; 512])]);
+    disk.checkpoint().unwrap();
+    disk.checkpoint().unwrap();
+    disk.write_batch(&[(1, [0xA7; 512])]);
+    drop(disk);
+    let disk = real_mount(&path).unwrap().with_retention(3);
+    disk.finish().unwrap();
+    let bytes = std::fs::read(&path).unwrap();
+    let scan = scan(&bytes, &[0; 1024], 1024);
+    assert_eq!(scan.report.status, Status::Valid);
+    assert_eq!(scan.report.header.unwrap().anchor_generation, 3);
+    assert_eq!(
+        Frame::decode(&bytes[HEADER_LEN..HEADER_LEN + FRAME_LEN])
+            .unwrap()
+            .record,
+        Record::CommandEnd { sectors: 0 }
+    );
+    assert_eq!(
+        scan.report
+            .generations
+            .iter()
+            .map(|g| (g.id, g.reason))
+            .collect::<Vec<_>>(),
+        [
+            (3, ClosingReason::RetentionAnchor),
+            (4, ClosingReason::Recovered),
+            (5, ClosingReason::SessionEnd)
+        ]
+    );
+    assert_eq!(real_mount(&path).unwrap().read_sector(1), [0xA7; 512]);
+}
+
+#[test]
+fn retention_verifies_each_state_before_sync_even_when_final_image_matches() {
+    struct AlterAnchor;
+    impl crate::offline::ToolIo for AlterAnchor {
+        fn write_temporary(&mut self, file: &mut File, bytes: &[u8]) -> io::Result<()> {
+            let mut bytes = bytes.to_vec();
+            if bytes.len() == FRAME_LEN {
+                let mut frame = Frame::decode(&bytes).unwrap();
+                // This sector is overwritten in the next retained generation.
+                if frame.generation == 4 {
+                    if let Record::Sector {
+                        lba: 0,
+                        bytes: sector,
+                    } = &mut frame.record
+                    {
+                        sector.fill(0xEE);
+                        bytes = frame.encode().unwrap().to_vec();
+                    }
+                }
+            }
+            crate::offline::HostIo.write_temporary(file, &bytes)
+        }
+        fn sync(&mut self, _: &File, _: &'static str) -> io::Result<()> {
+            panic!("unverified retention synchronized")
+        }
+        fn publish_temporary(&mut self, _: &Path, _: &Path, _: bool) -> io::Result<()> {
+            panic!("unverified retention published")
+        }
     }
     let dir = TempDir::new();
-    let path = dir.0.join("fifo");
-    assert!(Command::new("mkfifo")
-        .arg(&path)
-        .status()
-        .unwrap()
-        .success());
-    let mut child = Command::new(std::env::current_exe().unwrap())
-        .args(["--exact", test])
-        .env("MEDIA_TEST_CREATION_FIFO", &path)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .unwrap();
-    let started = std::time::Instant::now();
-    loop {
-        if let Some(status) = child.try_wait().unwrap() {
-            assert!(status.success());
-            break;
-        }
-        if started.elapsed() > std::time::Duration::from_secs(3) {
-            child.kill().unwrap();
-            child.wait().unwrap();
-            panic!("opening a creation entry blocked on a FIFO");
-        }
-        std::thread::sleep(std::time::Duration::from_millis(5));
+    let path = dir.journal();
+    five_generations(&path);
+    let original = std::fs::read(&path).unwrap();
+    let mut disk = real_mount(&path).unwrap().with_retention(2);
+    assert!(disk
+        .prune_with(&mut AlterAnchor)
+        .unwrap_err()
+        .to_string()
+        .contains("state verification"));
+    assert_eq!(std::fs::read(&path).unwrap(), original);
+    assert!(disk.status().failure().is_none());
+}
+
+#[test]
+fn retention_fails_every_temporary_write_without_changing_durable_closed_journal() {
+    struct FailWrite {
+        position: usize,
+        count: usize,
     }
+    impl crate::offline::ToolIo for FailWrite {
+        fn write_temporary(&mut self, file: &mut File, bytes: &[u8]) -> io::Result<()> {
+            let fail = self.position == self.count;
+            self.count += 1;
+            if fail {
+                file.write_all(&bytes[..bytes.len() / 2])?;
+                return Err(io::Error::other("injected partial rewrite"));
+            }
+            crate::offline::HostIo.write_temporary(file, bytes)
+        }
+        fn sync(&mut self, _: &File, _: &'static str) -> io::Result<()> {
+            panic!("failed rewrite synchronized")
+        }
+    }
+    // Header, two anchor sectors, two anchor markers, and three later frames.
+    for position in 0..8 {
+        let dir = TempDir::new();
+        let path = dir.journal();
+        five_generations(&path);
+        let original = std::fs::read(&path).unwrap();
+        let mut disk = real_mount(&path).unwrap().with_retention(2);
+        assert!(disk
+            .prune_with(&mut FailWrite { position, count: 0 })
+            .is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+        assert!(!disk.status().maintenance_failure().unwrap().uncertain);
+        assert!(disk.status().failure().is_none());
+    }
+}
+
+#[test]
+fn retention_skips_occupied_temporary_aliases_and_preserves_offline_backups() {
+    let dir = TempDir::new();
+    let path = dir.journal();
+    five_generations(&path);
+    let base = dir.0.join("base.img");
+    std::fs::write(&base, [0; 1024]).unwrap();
+    let original = std::fs::read(&path).unwrap();
+    let journal_alias = dir.0.join("disk.upfj.retain-0.tmp");
+    let base_alias = dir.0.join("disk.upfj.retain-1.tmp");
+    let backup = dir.0.join("offline-backup.upfj");
+    let mut disk = real_mount(&path).unwrap().with_retention(2);
+    std::fs::hard_link(&path, &journal_alias).unwrap();
+    std::fs::hard_link(&base, &base_alias).unwrap();
+    std::fs::write(&backup, &original).unwrap();
+    disk.prune_with(&mut RetentionIo::default()).unwrap();
+    assert_eq!(std::fs::read(journal_alias).unwrap(), original);
+    assert_eq!(std::fs::read(base_alias).unwrap(), [0; 1024]);
+    assert_eq!(std::fs::read(base).unwrap(), [0; 1024]);
+    assert_eq!(std::fs::read(backup).unwrap(), original);
+    assert_ne!(std::fs::read(path).unwrap(), original);
+}
+
+#[test]
+fn retention_does_not_rewrite_at_exact_limit() {
+    let dir = TempDir::new();
+    let path = dir.journal();
+    let mut disk = real_mount(&path).unwrap().with_retention(2);
+    disk.write_batch(&[(0, [1; 512])]);
+    disk.checkpoint().unwrap();
+    disk.write_batch(&[(0, [2; 512])]);
+    let mut expected = std::fs::read(&path).unwrap();
+    expected.extend(
+        Frame {
+            sequence: disk.sequence + 1,
+            generation: 2,
+            record: Record::GenerationEnd {
+                reason: ClosingReason::Checkpoint,
+            },
+        }
+        .encode()
+        .unwrap(),
+    );
+    let mut io = RetentionIo::default();
+    disk.close_with(ClosingReason::Checkpoint, &mut io).unwrap();
+    assert!(io.calls.is_empty());
+    assert_eq!(std::fs::read(path).unwrap(), expected);
+}
+
+#[test]
+fn retention_counts_the_generation_sealed_on_mount() {
+    let dir = TempDir::new();
+    let path = dir.journal();
+    let mut disk = real_mount(&path).unwrap();
+    disk.checkpoint().unwrap();
+    disk.write_batch(&[(0, [2; 512])]);
+    drop(disk);
+    let mut disk = real_mount(&path).unwrap().with_retention(2);
+    assert!(disk.mount_report().unsealed_tip.is_some());
+    disk.checkpoint().unwrap();
+    let scan = scan(&std::fs::read(&path).unwrap(), &[0; 1024], 1024);
+    assert_eq!(scan.report.header.unwrap().anchor_generation, 2);
+    assert_eq!(scan.report.generations.len(), 2);
+}
+
+#[test]
+fn retention_checks_whole_history_metadata_before_sync() {
+    struct ChangeReason;
+    impl crate::offline::ToolIo for ChangeReason {
+        fn write_temporary(&mut self, file: &mut File, bytes: &[u8]) -> io::Result<()> {
+            if bytes.len() == FRAME_LEN {
+                let mut frame = Frame::decode(bytes).unwrap();
+                if frame.generation == 5 && matches!(frame.record, Record::GenerationEnd { .. }) {
+                    frame.record = Record::GenerationEnd {
+                        reason: ClosingReason::Checkpoint,
+                    };
+                    return file.write_all(&frame.encode().unwrap());
+                }
+            }
+            file.write_all(bytes)
+        }
+        fn sync(&mut self, _: &File, _: &'static str) -> io::Result<()> {
+            panic!("changed history reached sync")
+        }
+    }
+    let dir = TempDir::new();
+    let path = dir.journal();
+    five_generations(&path);
+    let original = std::fs::read(&path).unwrap();
+    let mut disk = real_mount(&path).unwrap().with_retention(2);
+    assert!(disk
+        .prune_with(&mut ChangeReason)
+        .unwrap_err()
+        .to_string()
+        .contains("history verification failed"));
+    assert_eq!(std::fs::read(path).unwrap(), original);
+}
+
+#[test]
+fn failed_retention_removes_its_temporary_and_preserves_other_entries() {
+    for fail in [
+        "temporary write",
+        "temporary sync",
+        "replace",
+        "publication directory sync",
+    ] {
+        let dir = TempDir::new();
+        let path = dir.journal();
+        five_generations(&path);
+        let mut disk = real_mount(&path).unwrap().with_retention(2);
+        let other = dir.0.join("other.upfj.retain-0.tmp");
+        std::fs::write(&other, b"other journal").unwrap();
+        assert!(disk
+            .prune_with(&mut RetentionIo {
+                fail: Some(fail),
+                ..Default::default()
+            })
+            .is_err());
+        assert!(std::fs::read_dir(&dir.0)
+            .unwrap()
+            .all(|entry| !JournalMedia::is_retention_temp(&path, &entry.unwrap().path())));
+        assert_eq!(std::fs::read(other).unwrap(), b"other journal");
+    }
+}
+
+#[test]
+fn acknowledged_command_after_retention_survives_drop_without_close() {
+    let dir = TempDir::new();
+    let path = dir.journal();
+    five_generations(&path);
+    let mut disk = real_mount(&path).unwrap().with_retention(2);
+    disk.prune_with(&mut RetentionIo::default()).unwrap();
+    disk.write_batch(&[(0, [0xCE; 512])]);
+    assert!(disk.status().failure().is_none());
+    let confirmed = disk.confirmed;
+    drop(disk);
+    let disk = real_mount(&path).unwrap();
+    assert_eq!(disk.read_sector(0), [0xCE; 512]);
+    assert_eq!(
+        disk.mount_report()
+            .unsealed_tip
+            .as_ref()
+            .unwrap()
+            .generation,
+        6
+    );
+    assert_eq!(disk.mount_report().last_durable_sequence, confirmed);
 }
 
 #[cfg(unix)]
 #[test]
-fn creation_temp_fifo_open_does_not_block() {
-    assert_fifo_child_completes(
-        "sink::tests::creation_temp_fifo_open_does_not_block",
-        |path| {
-            let file = HostCreationTempIo.open(path).unwrap();
-            assert!(!file.metadata().unwrap().file_type().is_file());
-        },
+fn retention_preserves_exact_mode_before_writing_and_publication() {
+    use std::os::unix::fs::PermissionsExt;
+    struct ModeIo {
+        created: bool,
+        written: bool,
+    }
+    impl crate::offline::ToolIo for ModeIo {
+        fn create_temporary(
+            &mut self,
+            path: &Path,
+            marker: &str,
+            permissions: Option<&std::fs::Permissions>,
+        ) -> io::Result<(File, PathBuf)> {
+            assert_eq!(permissions.unwrap().mode() & 0o7777, 0o664);
+            let result = crate::offline::HostIo.create_temporary(path, marker, permissions)?;
+            // Emulate a restrictive umask without changing process-global state.
+            result
+                .0
+                .set_permissions(std::fs::Permissions::from_mode(0o600))?;
+            self.created = true;
+            Ok(result)
+        }
+        fn write_temporary(&mut self, file: &mut File, bytes: &[u8]) -> io::Result<()> {
+            assert_eq!(file.metadata()?.permissions().mode() & 0o7777, 0o664);
+            self.written = true;
+            file.write_all(bytes)
+        }
+        fn sync(&mut self, file: &File, role: &'static str) -> io::Result<()> {
+            if role == "temporary sync" {
+                assert_eq!(file.metadata()?.permissions().mode() & 0o7777, 0o664);
+            }
+            platform_sync(file)
+        }
+    }
+    let dir = TempDir::new();
+    let path = dir.journal();
+    five_generations(&path);
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o664)).unwrap();
+    let mut disk = real_mount(&path).unwrap().with_retention(2);
+    let mut io = ModeIo {
+        created: false,
+        written: false,
+    };
+    disk.prune_with(&mut io).unwrap();
+    assert!(io.created && io.written);
+    assert_eq!(
+        std::fs::metadata(path).unwrap().permissions().mode() & 0o7777,
+        0o664
     );
 }
 
 #[cfg(unix)]
-struct SymlinkSwapCreationIo(PathBuf);
-
-#[cfg(unix)]
-impl CreationTempIo for SymlinkSwapCreationIo {
-    fn metadata(&mut self, path: &Path) -> io::Result<std::fs::Metadata> {
-        HostCreationTempIo.metadata(path)
+#[test]
+fn mount_removes_only_own_decimal_regular_retention_leftovers() {
+    let dir = TempDir::new();
+    let path = dir.journal();
+    five_generations(&path);
+    let old = std::fs::read(&path).unwrap();
+    for (name, bytes) in [
+        ("disk.upfj.retain-0.tmp", old.as_slice()),
+        ("disk.upfj.retain-1.tmp", b"partial replacement"),
+        ("disk.upfj.retain-2.tmp", b""),
+    ] {
+        std::fs::write(dir.0.join(name), bytes).unwrap();
     }
-    fn open(&mut self, path: &Path) -> io::Result<File> {
-        std::fs::remove_file(path)?;
-        std::os::unix::fs::symlink(&self.0, path)?;
-        HostCreationTempIo.open(path)
+    let link = dir.0.join("disk.upfj.retain-3.tmp");
+    std::os::unix::fs::symlink(&path, &link).unwrap();
+    for name in [
+        "disk.upfj.retain-.tmp",
+        "disk.upfj.retain-word.tmp",
+        "disk.upfj.retain-4.tmp.bak",
+        "other.upfj.retain-0.tmp",
+    ] {
+        std::fs::write(dir.0.join(name), b"foreign").unwrap();
     }
-    fn remove(&mut self, path: &Path) -> io::Result<()> {
-        HostCreationTempIo.remove(path)
+    let directory = dir.0.join("disk.upfj.retain-5.tmp");
+    std::fs::create_dir(&directory).unwrap();
+    let mounted = real_mount(&path).unwrap();
+    assert_eq!(std::fs::read(&path).unwrap(), old);
+    assert_eq!(mounted.read_sector(0), [5; 512]);
+    for id in 0..3 {
+        assert!(!dir.0.join(format!("disk.upfj.retain-{id}.tmp")).exists());
+    }
+    assert!(std::fs::symlink_metadata(link)
+        .unwrap()
+        .file_type()
+        .is_symlink());
+    assert!(directory.is_dir());
+    for name in [
+        "disk.upfj.retain-.tmp",
+        "disk.upfj.retain-word.tmp",
+        "disk.upfj.retain-4.tmp.bak",
+        "other.upfj.retain-0.tmp",
+    ] {
+        assert_eq!(std::fs::read(dir.0.join(name)).unwrap(), b"foreign");
     }
 }
 
 #[cfg(unix)]
 #[test]
-fn cleanup_symlink_swap_to_fifo_does_not_block() {
-    assert_fifo_child_completes(
-        "sink::tests::cleanup_symlink_swap_to_fifo_does_not_block",
-        |fifo| {
-            let candidate = fifo.with_extension("create-7.tmp");
-            let header = Header::new(&[0; 2 * SECTOR_LEN], 0)
+fn retention_cleanup_checks_both_identities_and_disappearing_entries() {
+    for restore in [false, true] {
+        let dir = TempDir::new();
+        let candidate = dir.0.join("disk.upfj.retain-0.tmp");
+        let foreign = dir.0.join("foreign");
+        std::fs::write(&candidate, b"replacement").unwrap();
+        std::fs::write(&foreign, b"foreign").unwrap();
+        cleanup_retention_temp(
+            &mut ReplacedCreationIo {
+                foreign: foreign.clone(),
+                restore_before_return: restore,
+            },
+            &candidate,
+        )
+        .unwrap();
+        assert!(candidate.exists());
+        assert_eq!(std::fs::read(foreign).unwrap(), b"foreign");
+    }
+    for stage in ["metadata", "open", "final-metadata", "remove"] {
+        let dir = TempDir::new();
+        let candidate = dir.0.join("disk.upfj.retain-0.tmp");
+        std::fs::write(&candidate, b"replacement").unwrap();
+        cleanup_retention_temp(&mut VanishingCreationIo { stage }, &candidate).unwrap();
+        assert!(!candidate.exists());
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn cleanup_skips_base_identity_in_both_temporary_namespaces() {
+    for marker in ["create", "retain"] {
+        let dir = TempDir::new();
+        let path = dir.journal();
+        let base = dir.0.join("base.img");
+        let bytes = if marker == "create" {
+            Header::new(&[0; 1024], 0)
                 .unwrap()
                 .encode()
-                .unwrap();
-            std::fs::write(&candidate, header).unwrap();
-            cleanup_creation_temp(&mut SymlinkSwapCreationIo(fifo.into()), &candidate, &header)
-                .unwrap();
-            assert!(std::fs::symlink_metadata(candidate)
                 .unwrap()
-                .file_type()
-                .is_symlink());
-        },
-    );
+                .to_vec()
+        } else {
+            vec![0; 1024]
+        };
+        std::fs::write(&base, &bytes).unwrap();
+        let candidate = dir.0.join(format!("disk.upfj.{marker}-0.tmp"));
+        let other = dir.0.join(format!("disk.upfj.{marker}-1.tmp"));
+        std::fs::hard_link(&base, &candidate).unwrap();
+        std::fs::write(&other, &bytes).unwrap();
+        let metadata = File::open(&base).unwrap().metadata().unwrap();
+        HostFilesystem
+            .cleanup_creation_temps(
+                &path,
+                &Header::new(&[0; 1024], 0).unwrap().encode().unwrap(),
+                Some(&metadata),
+            )
+            .unwrap();
+        assert_eq!(std::fs::read(&candidate).unwrap(), bytes, "{marker}");
+        assert_eq!(std::fs::read(&base).unwrap(), bytes);
+        assert!(
+            !other.exists(),
+            "protection is identity-based, not content-based"
+        );
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn sink_mount_protects_the_actual_base_file_even_under_a_reserved_name() {
+    let dir = TempDir::new();
+    let path = dir.journal();
+    let base = dir.0.join("disk.upfj.retain-0.tmp");
+    let orphan = dir.0.join("disk.upfj.retain-1.tmp");
+    std::fs::write(&base, [0; 1024]).unwrap();
+    std::fs::write(&orphan, b"interrupted rewrite").unwrap();
+    let file = File::open(&base).unwrap();
+    let metadata = file.metadata().unwrap();
+    let disk = JournalMedia::open_with_base_metadata(
+        &path,
+        &[0; 1024],
+        1024,
+        SinkStatus::default(),
+        &metadata,
+    )
+    .unwrap();
+    assert_eq!(disk.image(), &[0; 1024]);
+    assert_eq!(std::fs::read(&base).unwrap(), [0; 1024]);
+    assert!(!orphan.exists());
+    drop(disk);
+    assert!(JournalMedia::open_with_base_metadata(
+        &path,
+        &[0; 1024],
+        1024,
+        SinkStatus::default(),
+        &metadata
+    )
+    .is_ok());
+    assert!(base.exists());
 }

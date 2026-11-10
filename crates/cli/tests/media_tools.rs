@@ -823,27 +823,42 @@ fn private_journal_backups_keep_mode_0600() {
     }
 }
 
+#[cfg(unix)]
 #[test]
-fn reserved_journal_name_is_an_io_failure() {
-    let f = Fixture::new();
-    f.two_generations();
-    let name = f.dir.join("disk.upfj.create-0.tmp");
-    fs::rename(&f.journal, &name).unwrap();
-    let args = vec![
-        "media".into(),
-        "verify".into(),
-        "--base".into(),
-        f.base.clone().into(),
-        "--journal".into(),
-        name.clone().into(),
-    ];
-    let (mut out, mut err) = (Vec::new(), Vec::new());
-    assert_eq!(run(&args, &mut out, &mut err), 1);
-    let error = String::from_utf8(err).unwrap();
-    assert!(error.contains("journal"));
-    assert!(error.contains(name.to_str().unwrap()));
-    assert!(error.contains("reserved"));
-    assert!(!f.dir.join("disk.upfj.create-0.tmp.lock").exists());
+fn reserved_journal_name_is_a_configuration_failure() {
+    for marker in ["create", "retain"] {
+        for alias in ["direct", "given", "resolved"] {
+            let mut f = Fixture::new();
+            f.two_generations();
+            let reserved = f.dir.join(format!("disk.upfj.{marker}-0.tmp"));
+            match alias {
+                "direct" => {
+                    fs::rename(&f.journal, &reserved).unwrap();
+                    f.journal = reserved.clone();
+                }
+                "given" => {
+                    std::os::unix::fs::symlink(&f.journal, &reserved).unwrap();
+                    f.journal = reserved.clone();
+                }
+                _ => {
+                    fs::rename(&f.journal, &reserved).unwrap();
+                    std::os::unix::fs::symlink(&reserved, &f.journal).unwrap();
+                }
+            }
+            let original = fs::read(&f.journal).unwrap();
+            let (code, _, error) = f.invoke("verify", &[]);
+            assert_eq!(code, 2, "{error}");
+            assert!(
+                error.contains("journal") && error.contains("reserved journal temporary name"),
+                "{error}"
+            );
+            assert_eq!(fs::read(&f.journal).unwrap(), original);
+            assert!(!f
+                .dir
+                .join(format!("disk.upfj.{marker}-0.tmp.lock"))
+                .exists());
+        }
+    }
 }
 
 #[cfg(unix)]
@@ -898,4 +913,336 @@ fn dangling_lock_symlink_error_names_the_lock() {
     }
     assert!(f.journal.exists());
     assert!(!missing.exists());
+}
+
+#[test]
+fn commit_and_compact_export_each_closed_generation_without_changing_inputs() {
+    let f = Fixture::new();
+    f.two_generations();
+    let original = fs::read(&f.journal).unwrap();
+    for (operation, generation) in [("commit", 0), ("commit", 1), ("compact", 2)] {
+        let output = f.dir.join(format!("export-{generation}.img"));
+        let (code, out, error) = f.invoke(
+            operation,
+            &[
+                "--to",
+                &generation.to_string(),
+                "--output",
+                output.to_str().unwrap(),
+            ],
+        );
+        assert_eq!(code, 0, "{error}");
+        assert!(out.contains(&format!("exported generation {generation}")));
+        let mut expected = f.bytes.clone();
+        if generation >= 1 {
+            expected[..512].fill(if generation == 1 { 0x11 } else { 0x22 });
+        }
+        if generation == 2 {
+            expected[512..].fill(0x33);
+        }
+        assert_eq!(fs::read(&output).unwrap(), expected);
+        assert_eq!(fs::read(&f.base).unwrap(), f.bytes);
+        assert_eq!(fs::read(&f.journal).unwrap(), original);
+        assert_eq!(
+            f.invoke(
+                operation,
+                &[
+                    "--to",
+                    &generation.to_string(),
+                    "--output",
+                    output.to_str().unwrap()
+                ]
+            )
+            .0,
+            2
+        );
+        assert_eq!(fs::read(&output).unwrap(), expected);
+    }
+}
+
+#[test]
+fn commit_refuses_input_aliases_open_tips_and_unavailable_targets() {
+    let f = Fixture::new();
+    f.two_generations();
+    let mut destinations = vec![f.base.clone(), f.journal.clone()];
+    let alias = f.dir.join("hardlink.img");
+    fs::hard_link(&f.base, &alias).unwrap();
+    destinations.push(alias);
+    #[cfg(unix)]
+    {
+        let alias = f.dir.join("symlink.img");
+        std::os::unix::fs::symlink(&f.journal, &alias).unwrap();
+        destinations.push(alias);
+    }
+    let original = fs::read(&f.journal).unwrap();
+    for output in destinations {
+        assert_eq!(
+            f.invoke(
+                "commit",
+                &["--to", "1", "--output", output.to_str().unwrap()]
+            )
+            .0,
+            2
+        );
+    }
+    let output = f.dir.join("export.img");
+    assert_eq!(
+        f.invoke(
+            "commit",
+            &["--to", "99", "--output", output.to_str().unwrap()]
+        )
+        .0,
+        2
+    );
+    assert!(!output.exists());
+    assert_eq!(fs::read(&f.journal).unwrap(), original);
+    let mut disk = f.mount();
+    disk.write_batch(&[(0, [0xA5; 512])]);
+    drop(disk);
+    let unsealed = fs::read(&f.journal).unwrap();
+    let (code, _, error) = f.invoke(
+        "commit",
+        &["--to", "1", "--output", output.to_str().unwrap()],
+    );
+    assert_eq!(code, 2);
+    assert!(error.contains("sealed"));
+    assert!(!output.exists());
+    assert_eq!(fs::read(&f.base).unwrap(), f.bytes);
+    assert_eq!(fs::read(&f.journal).unwrap(), unsealed);
+}
+
+#[test]
+fn retained_journal_verifies_and_exports_all_surviving_states() {
+    let f = Fixture::new();
+    let mut disk = f.mount().with_retention(2);
+    for id in 1..=5 {
+        disk.write_batch(&[(0, [id; 512])]);
+        if id < 5 {
+            disk.checkpoint().unwrap();
+        }
+    }
+    disk.finish().unwrap();
+    assert_eq!(f.invoke("verify", &[]).0, 0);
+    let (code, listing, _) = f.invoke("generations", &[]);
+    assert_eq!(code, 0);
+    assert!(listing.contains("retained anchor: 4"));
+    for id in 4..=5 {
+        let output = f.dir.join(format!("retained-{id}.img"));
+        assert_eq!(
+            f.invoke(
+                "commit",
+                &[
+                    "--to",
+                    &id.to_string(),
+                    "--output",
+                    output.to_str().unwrap()
+                ]
+            )
+            .0,
+            0
+        );
+        assert_eq!(&fs::read(output).unwrap()[..512], &[id; 512]);
+    }
+    let output = f.dir.join("pruned.img");
+    for id in [0, 1, 2, 3] {
+        assert_eq!(
+            f.invoke(
+                "commit",
+                &[
+                    "--to",
+                    &id.to_string(),
+                    "--output",
+                    output.to_str().unwrap()
+                ]
+            )
+            .0,
+            2
+        );
+    }
+    assert!(!output.exists());
+    assert_eq!(fs::read(&f.base).unwrap(), f.bytes);
+}
+
+#[test]
+fn commit_parser_requires_exact_export_options() {
+    let f = Fixture::new();
+    for extra in [
+        vec![],
+        vec!["--to", "1"],
+        vec!["--output", "out.img"],
+        vec![
+            "--to",
+            "1",
+            "--output",
+            "out.img",
+            "--backup",
+            "backup.upfj",
+        ],
+        vec!["--to", "-1", "--output", "out.img"],
+    ] {
+        assert_eq!(f.invoke("commit", &extra).0, 2);
+    }
+    assert_eq!(f.invoke("verify", &["--output", "out.img"]).0, 2);
+}
+
+#[test]
+fn commit_uses_shared_lock_and_refuses_live_writer_corruption_and_wrong_base() {
+    let f = Fixture::new();
+    f.two_generations();
+    let output = f.dir.join("export.img");
+    let args = ["--to", "1", "--output", output.to_str().unwrap()];
+    let inspector = JournalTool::open(&f.base, &f.journal, Access::Inspect).unwrap();
+    assert_eq!(f.invoke("commit", &args).0, 0);
+    drop(inspector);
+    fs::remove_file(&output).unwrap();
+    let disk = f.mount();
+    assert_eq!(f.invoke("commit", &args).0, 1);
+    assert!(!output.exists());
+    drop(disk);
+    fs::write(&f.base, vec![0xFF; 1024]).unwrap();
+    assert_eq!(f.invoke("commit", &args).0, 1);
+    assert!(!output.exists());
+    fs::write(&f.base, &f.bytes).unwrap();
+    let mut corrupt = fs::read(&f.journal).unwrap();
+    corrupt[HEADER_LEN + 64] ^= 1;
+    fs::write(&f.journal, corrupt).unwrap();
+    assert_eq!(f.invoke("commit", &args).0, 1);
+    assert!(!output.exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn offline_tools_refuse_reserved_base_names_before_repair_or_rollback() {
+    for marker in ["create", "retain"] {
+        for alias in ["direct", "given", "resolved"] {
+            let mut f = Fixture::new();
+            f.two_generations();
+            f.append_torn();
+            let reserved = f.dir.join(format!("disk.upfj.{marker}-1.tmp"));
+            match alias {
+                "direct" => {
+                    fs::rename(&f.base, &reserved).unwrap();
+                    f.base = reserved.clone();
+                }
+                "given" => {
+                    std::os::unix::fs::symlink(&f.base, &reserved).unwrap();
+                    f.base = reserved.clone();
+                }
+                _ => {
+                    fs::rename(&f.base, &reserved).unwrap();
+                    std::os::unix::fs::symlink(&reserved, &f.base).unwrap();
+                }
+            }
+            let journal = fs::read(&f.journal).unwrap();
+            let before: Vec<_> = fs::read_dir(&f.dir)
+                .unwrap()
+                .map(|e| e.unwrap().path())
+                .collect();
+            let backup = f.backup();
+            let output = f.dir.join("export.img");
+            for (operation, extra) in [
+                (
+                    "verify",
+                    vec!["--repair-tail", "--backup", backup.to_str().unwrap()],
+                ),
+                (
+                    "rollback",
+                    vec!["--to", "1", "--backup", backup.to_str().unwrap()],
+                ),
+                ("verify", vec![]),
+                ("generations", vec![]),
+                (
+                    "commit",
+                    vec!["--to", "1", "--output", output.to_str().unwrap()],
+                ),
+                (
+                    "compact",
+                    vec!["--to", "1", "--output", output.to_str().unwrap()],
+                ),
+            ] {
+                let (code, _, error) = f.invoke(operation, &extra);
+                assert_eq!(code, 2, "{marker} {alias} {operation}: {error}");
+                assert!(
+                    error.contains("base") && error.contains("reserved journal temporary name"),
+                    "{error}"
+                );
+                assert_eq!(fs::read(&f.base).unwrap(), f.bytes);
+                assert_eq!(fs::read(&f.journal).unwrap(), journal);
+                assert!(!backup.exists() && !output.exists());
+                let mut after: Vec<_> = fs::read_dir(&f.dir)
+                    .unwrap()
+                    .map(|e| e.unwrap().path())
+                    .collect();
+                let mut before = before.clone();
+                before.sort();
+                after.sort();
+                assert_eq!(after, before);
+            }
+        }
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn offline_outputs_and_lock_aliases_refuse_reserved_names_as_given_or_resolved() {
+    for marker in ["create", "retain"] {
+        for alias in ["direct", "given", "resolved"] {
+            let f = Fixture::new();
+            f.two_generations();
+            let reserved = f.dir.join(format!("disk.upfj.{marker}-9.tmp"));
+            let plain = f.dir.join("destination");
+            let output = match alias {
+                "direct" => reserved.clone(),
+                "given" => {
+                    fs::write(&plain, b"preserve").unwrap();
+                    std::os::unix::fs::symlink(&plain, &reserved).unwrap();
+                    reserved.clone()
+                }
+                _ => {
+                    fs::write(&reserved, b"preserve").unwrap();
+                    std::os::unix::fs::symlink(&reserved, &plain).unwrap();
+                    plain.clone()
+                }
+            };
+            let original = fs::read(&f.journal).unwrap();
+            for (operation, extra) in [
+                (
+                    "commit",
+                    vec!["--to", "1", "--output", output.to_str().unwrap()],
+                ),
+                (
+                    "rollback",
+                    vec!["--to", "1", "--backup", output.to_str().unwrap()],
+                ),
+                (
+                    "verify",
+                    vec!["--repair-tail", "--backup", output.to_str().unwrap()],
+                ),
+            ] {
+                let (code, _, error) = f.invoke(operation, &extra);
+                assert_eq!(code, 2, "{error}");
+                assert!(error.contains("reserved journal temporary name"), "{error}");
+                assert_eq!(fs::read(&f.journal).unwrap(), original);
+                assert_eq!(fs::read(&f.base).unwrap(), f.bytes);
+                if alias == "direct" {
+                    assert!(!output.exists());
+                } else {
+                    assert_eq!(fs::read(&output).unwrap(), b"preserve");
+                }
+            }
+        }
+        let f = Fixture::new();
+        f.two_generations();
+        let lock = f.dir.join("disk.upfj.lock");
+        let reserved = f.dir.join(format!("disk.upfj.{marker}-9.tmp"));
+        fs::rename(&lock, &reserved).unwrap();
+        std::os::unix::fs::symlink(&reserved, &lock).unwrap();
+        let (code, _, error) = f.invoke("verify", &[]);
+        assert_eq!(code, 2, "{error}");
+        assert!(
+            error.contains("lock") && error.contains("reserved journal temporary name"),
+            "{error}"
+        );
+        assert!(reserved.exists());
+    }
 }

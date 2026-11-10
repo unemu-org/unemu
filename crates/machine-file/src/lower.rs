@@ -478,6 +478,7 @@ impl<R: ImageReader> Context<'_, R> {
             // Journal mode is not lowered yet, but every drive-indexed error
             // keeps the same origin and label contract as assembly validation.
             Journal { drive_index, .. }
+            | DriveInput { drive_index, .. }
             | InvalidAtaGeometry { drive_index }
             | AtaMissingMaster { drive_index, .. }
             | UnsupportedFloppySectorSize { drive_index, .. }
@@ -510,6 +511,9 @@ impl<R: ImageReader> Context<'_, R> {
                     .iter()
                     .filter_map(|i| self.drives.get(*i).map(|drive| drive.field.clone()))
                     .collect()
+            }
+            ImageInput { image_index, .. } => {
+                self.images.get(*image_index).cloned().into_iter().collect()
             }
             ServicesOnRamLoad { image } => {
                 message = replace_index_prefix(

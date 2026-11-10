@@ -408,6 +408,21 @@ pub enum StopReason {
     },
 }
 
+/// Finish every drive and report maintenance separately from session errors.
+/// See persistent-media.md § Locking and retention.
+pub fn finish_persistence(
+    assembled: &mut AssembledMachine,
+    warnings: &mut impl std::io::Write,
+) -> std::result::Result<(), assembly::PersistenceError> {
+    let result = assembled.finish_persistence();
+    for handle in &assembled.persistence {
+        if let Some(outcome) = handle.maintenance_failure() {
+            let _ = writeln!(warnings, "warning: drive {}: {outcome}", handle.drive_index);
+        }
+    }
+    result
+}
+
 /// The result of the test386 smoke run (§3.1): the captured POST progress bytes
 /// and why execution stopped.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -450,7 +465,7 @@ pub fn run_test386(blob: &[u8]) -> Test386Run {
 
     let result = assembled.run_session(&RunPolicy::natural(Some(TEST386_MAX_RETIRED), None));
     let result = result.and_then(|outcome| {
-        assembled.finish_persistence()?;
+        finish_persistence(&mut assembled, &mut std::io::stderr())?;
         Ok(outcome)
     });
     let rip = assembled.machine.cpu().reg(CpuReg::Rip);
@@ -710,19 +725,29 @@ pub fn run_bios_file(
     for unlisted in &assembled.unlisted_firmware {
         writeln!(warnings, "{unlisted}")?;
     }
-    Ok(run_bios_assembled(&mut assembled, |_| {
-        bios_natural_policy()
-    }))
+    Ok(run_bios_assembled_with_warnings(
+        &mut assembled,
+        |_| bios_natural_policy(),
+        warnings,
+    ))
 }
 
 fn run_bios_assembled(
     assembled: &mut AssembledMachine,
     build_policy: impl FnOnce(&HashMap<DeviceId, usize>) -> RunPolicy,
 ) -> BiosRun {
+    run_bios_assembled_with_warnings(assembled, build_policy, &mut std::io::stderr())
+}
+
+fn run_bios_assembled_with_warnings(
+    assembled: &mut AssembledMachine,
+    build_policy: impl FnOnce(&HashMap<DeviceId, usize>) -> RunPolicy,
+    warnings: &mut impl std::io::Write,
+) -> BiosRun {
     let policy = build_policy(&assembled.device_index);
     let result = assembled.run_session(&policy);
     let result = result.and_then(|outcome| {
-        assembled.finish_persistence()?;
+        finish_persistence(assembled, warnings)?;
         Ok(outcome)
     });
     let mut stop = classify_bios_stop(&assembled.machine, result);
@@ -1197,7 +1222,7 @@ pub fn run_floppy_boot() -> Result<Vec<u8>> {
         .run_session(&RunPolicy::natural(None, None))
         .context("running machine")?;
 
-    assembled.finish_persistence()?;
+    finish_persistence(&mut assembled, &mut std::io::stderr())?;
     capture_serial(&assembled.observation)
 }
 
@@ -1217,7 +1242,7 @@ pub fn run_boot(blob: &[u8]) -> Result<Vec<u8>> {
         .run_session(&RunPolicy::natural(None, Some(BOOT_IDLE_LIMIT)))
         .context("running machine")?;
 
-    assembled.finish_persistence()?;
+    finish_persistence(&mut assembled, &mut std::io::stderr())?;
     capture_serial(&assembled.observation)
 }
 
@@ -1246,7 +1271,7 @@ pub fn run_keyboard(blob: &[u8], scancodes: &[u8]) -> Result<Vec<u8>> {
         .run_session(&RunPolicy::natural(None, Some(KBD_IDLE_LIMIT)))
         .context("running machine")?;
 
-    assembled.finish_persistence()?;
+    finish_persistence(&mut assembled, &mut std::io::stderr())?;
     capture_serial(&assembled.observation)
 }
 
@@ -1270,7 +1295,7 @@ pub fn run_rtc(blob: &[u8]) -> Result<Vec<u8>> {
         .run_session(&RunPolicy::natural(None, Some(RTC_IDLE_LIMIT)))
         .context("running machine")?;
 
-    assembled.finish_persistence()?;
+    finish_persistence(&mut assembled, &mut std::io::stderr())?;
     capture_serial(&assembled.observation)
 }
 
@@ -1290,7 +1315,7 @@ pub fn run_fdc_write(program: &[u8]) -> Result<Vec<u8>> {
         .run_session(&RunPolicy::natural(Some(FDC_WRITE_RETIRED_CAP), None))
         .context("running machine")?;
 
-    assembled.finish_persistence()?;
+    finish_persistence(&mut assembled, &mut std::io::stderr())?;
     capture_serial(&assembled.observation)
 }
 
@@ -1311,7 +1336,7 @@ pub fn run_vga_text(blob: &[u8]) -> Result<TextGrid> {
     let result = assembled.run_session(&RunPolicy::natural(None, None));
     let capture = assembled.capture_text(DeviceId::Vga);
     result.context("running machine")?;
-    assembled.finish_persistence()?;
+    finish_persistence(&mut assembled, &mut std::io::stderr())?;
     capture.context("capturing vga-text display")?;
     let Frame::Text(grid) = assembled
         .observation
@@ -1417,6 +1442,73 @@ mod tests {
                 RunOutcome::Halted
             );
             assert_eq!(capture_serial(&assembled.observation).unwrap(), b"Z");
+        }
+    }
+
+    #[test]
+    fn cli_finishes_every_drive_and_warns_without_failing_the_run() {
+        for operation in ["temporary write", "publication directory sync"] {
+            for both_fail in [false, true] {
+                let temp = assembly::test_support::TempDir::new("cli-maintenance");
+                let base = temp.path().join("base.img");
+                std::fs::write(&base, vec![0; 1_474_560]).unwrap();
+                let mut config = assembly::bios(vec![0xF4; 32768], Some(vec![0; 1_474_560]));
+                config.board = assembly::BoardModel::Bare;
+                let demo = assembly::at_boot(vec![0xFA, 0xF4]);
+                config.cpu = demo.cpu;
+                config.images = demo.images;
+                config.drives[0].image = assembly::ImageSource::File(base);
+                config.drives[0].write = assembly::WriteMode::Journal {
+                    path: temp.path().join("first.upfj"),
+                    keep_generations: 1,
+                };
+                let mut second = config.drives[0].clone();
+                second.unit = 1;
+                second.write = assembly::WriteMode::Journal {
+                    path: temp.path().join("second.upfj"),
+                    keep_generations: if both_fail { 1 } else { 10 },
+                };
+                config.drives.push(second);
+                let mut assembled =
+                    assemble_with_observation(&config, &bios_observation_policy()).unwrap();
+                for handle in &mut assembled.persistence {
+                    handle.checkpoint().unwrap();
+                }
+                assembled.persistence[0].fail_retention(operation);
+                if both_fail {
+                    assembled.persistence[1].fail_retention("temporary write");
+                }
+                let mut warnings = Vec::new();
+                let run = run_bios_assembled_with_warnings(
+                    &mut assembled,
+                    |_| RunPolicy::natural(Some(100), None),
+                    &mut warnings,
+                );
+                assert_eq!(run.stop, StopReason::Halt);
+                let expected = if operation == "temporary write" {
+                    "warning: drive 0: retention maintenance failed before publication: injected retention write failure\n"
+                } else {
+                    "warning: drive 0: retention maintenance completion uncertain; reopen required: injected retention barrier failure\n"
+                };
+                let expected = if both_fail {
+                    format!("{expected}warning: drive 1: retention maintenance failed before publication: injected retention write failure\n")
+                } else {
+                    expected.to_owned()
+                };
+                assert_eq!(String::from_utf8(warnings).unwrap(), expected);
+                let base = std::fs::read(temp.path().join("base.img")).unwrap();
+                let scan = media::scan(
+                    &std::fs::read(temp.path().join("second.upfj")).unwrap(),
+                    &base,
+                    base.len() as u64,
+                );
+                assert_eq!(scan.report.status, media::Status::Valid);
+                assert_eq!(
+                    scan.report.generations.last().unwrap().reason,
+                    media::ClosingReason::SessionEnd
+                );
+                assert_eq!(scan.report.generations.last().unwrap().id, 2);
+            }
         }
     }
 

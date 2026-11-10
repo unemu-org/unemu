@@ -45,6 +45,7 @@ struct Presenter {
     window: Option<Rc<Window>>,
     running: bool,
     reset_requests: u64,
+    maintenance_reported: bool,
     keyboard: HostKeyboard,
     error: Option<Box<dyn Error>>,
     rate: CpuRate,
@@ -91,6 +92,7 @@ impl Presenter {
             window: None,
             running: true,
             reset_requests: 0,
+            maintenance_reported: false,
             keyboard: HostKeyboard::default(),
             error: None,
             rate: CpuRate {
@@ -123,6 +125,14 @@ impl Presenter {
     }
 
     fn advance(&mut self, elapsed: Duration) -> Result<(), Box<dyn Error>> {
+        self.advance_with_warnings(elapsed, &mut io::stderr())
+    }
+
+    fn advance_with_warnings(
+        &mut self,
+        elapsed: Duration,
+        warnings: &mut impl io::Write,
+    ) -> Result<(), Box<dyn Error>> {
         if !self.running || self.occluded_since.is_some() {
             return Ok(());
         }
@@ -168,7 +178,7 @@ impl Presenter {
             }
         }
         if !self.running && self.error.is_none() {
-            self.assembled.finish_persistence()?;
+            self.finish_persistence(warnings)?;
         }
         // Even a CPU error must leave the screen at its last completed boundary.
         self.assembled.capture_text(DeviceId::Mda)?;
@@ -176,6 +186,22 @@ impl Presenter {
             return Err(error.into());
         }
         Ok(())
+    }
+
+    fn finish_persistence(
+        &mut self,
+        warnings: &mut impl io::Write,
+    ) -> Result<(), assembly::PersistenceError> {
+        let result = self.assembled.finish_persistence();
+        if !self.maintenance_reported {
+            for handle in &self.assembled.persistence {
+                if let Some(outcome) = handle.maintenance_failure() {
+                    let _ = writeln!(warnings, "warning: drive {}: {outcome}", handle.drive_index);
+                }
+            }
+            self.maintenance_reported = true;
+        }
+        result
     }
 
     fn record_reset_request(&mut self, diagnostics: &mut impl io::Write) {
@@ -424,7 +450,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     // A halt already finished its session in advance; closing a running window
     // is the other normal end of a session.
     if presenter.running && presenter.error.is_none() {
-        presenter.assembled.finish_persistence()?;
+        presenter.finish_persistence(&mut io::stderr())?;
     }
     if let Some(error) = presenter.error {
         return Err(error);
@@ -557,6 +583,65 @@ mod tests {
                 assert_eq!(bytes[128 + 8], 3);
             }
             drop(presenter);
+        }
+    }
+
+    #[test]
+    fn window_finishes_every_drive_and_warns_once_for_maintenance() {
+        for operation in ["temporary write", "publication directory sync"] {
+            for both_fail in [false, true] {
+                let temp = assembly::test_support::TempDir::new("window-maintenance");
+                let base = temp.path().join("base.img");
+                std::fs::write(&base, vec![0; 1_474_560]).unwrap();
+                let mut config = assembly::bios(vec![0xF4; 32768], Some(vec![0; 1_474_560]));
+                config.board = assembly::BoardModel::Bare;
+                let demo = assembly::at_boot(vec![0xFA, 0xF4]);
+                config.cpu = demo.cpu;
+                config.images = demo.images;
+                config.drives[0].image = assembly::ImageSource::File(base);
+                config.drives[0].write = assembly::WriteMode::Journal {
+                    path: temp.path().join("first.upfj"),
+                    keep_generations: 1,
+                };
+                let mut second = config.drives[0].clone();
+                second.unit = 1;
+                second.write = assembly::WriteMode::Journal {
+                    path: temp.path().join("second.upfj"),
+                    keep_generations: if both_fail { 1 } else { 10 },
+                };
+                config.drives.push(second);
+                let mut presenter = test_presenter(&config).unwrap();
+                for handle in &mut presenter.assembled.persistence {
+                    handle.checkpoint().unwrap();
+                }
+                presenter.assembled.persistence[0].fail_retention(operation);
+                if both_fail {
+                    presenter.assembled.persistence[1].fail_retention("temporary write");
+                }
+                let mut warnings = Vec::new();
+                presenter
+                    .advance_with_warnings(Duration::from_millis(20), &mut warnings)
+                    .unwrap();
+                assert!(!presenter.running);
+                assert!(presenter.error.is_none());
+                let expected = if operation == "temporary write" {
+                    "warning: drive 0: retention maintenance failed before publication: injected retention write failure\n"
+                } else {
+                    "warning: drive 0: retention maintenance completion uncertain; reopen required: injected retention barrier failure\n"
+                };
+                let expected = if both_fail {
+                    format!("{expected}warning: drive 1: retention maintenance failed before publication: injected retention write failure\n")
+                } else {
+                    expected.to_owned()
+                };
+                assert_eq!(String::from_utf8(warnings.clone()).unwrap(), expected);
+                presenter.finish_persistence(&mut warnings).unwrap();
+                assert_eq!(String::from_utf8(warnings).unwrap(), expected);
+                let bytes = std::fs::read(temp.path().join("second.upfj")).unwrap();
+                assert_eq!(bytes.len(), 128 + 2 * 640);
+                assert_eq!(bytes[bytes.len() - 640 + 32], 1);
+                assert!(presenter.window.is_none());
+            }
         }
     }
 

@@ -12,20 +12,21 @@
 //! `scan_reader` streams payload history with `Read` + `Seek`; `scan` also accepts
 //! an in-memory slice. `JournalMedia` owns memory, a stable exclusive sidecar lock
 //! and synchronous append/recovery. Assembly supplies the device-trait adapter;
-//! devices, frontend policy and retention rewrites remain outside
-//! this crate. This models a disk format, not controller hardware; complete
+//! devices and frontend policy remain outside this crate. This models a disk format, not controller hardware; complete
 //! 512-byte replacement sectors include controller-supplied zero padding.
 //! A valid checksum does not establish guest filesystem health or prove a host
 //! sync was acknowledged.
 
 mod codec;
+mod history;
 pub mod offline;
 mod scan;
 mod sink;
+mod temporary;
 
 pub use codec::{ClosingReason, Error, Frame, Header, Record, FRAME_LEN, HEADER_LEN, SECTOR_LEN};
 pub use scan::{
     scan, scan_reader, Generation, Refusal, Scan, Status, Tail, Tip, VerificationReport,
 };
 
-pub use sink::{JournalMedia, OpenError, SinkFailure, SinkStatus};
+pub use sink::{JournalMedia, MaintenanceFailure, OpenError, SinkFailure, SinkStatus};

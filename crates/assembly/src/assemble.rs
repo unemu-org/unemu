@@ -185,7 +185,7 @@ fn assemble_with_cpu(
 
     // Validate the bytes that will actually be mounted, without a second file
     // read that could observe a different length or contents.
-    let resolved = resolve_file_sources(config)?;
+    let (resolved, base_metadata) = resolve_file_sources(config)?;
     let config = resolved.as_ref();
     config.validate_resolved()?;
 
@@ -261,6 +261,7 @@ fn assemble_with_cpu(
                 config,
                 dc.id,
                 &mut persistence,
+                &base_metadata,
             )?)),
             DeviceKind::Ide(cfg) => Box::new(
                 Ata::with_drives(build_ide_drives(config, dc.id)?)
@@ -419,7 +420,9 @@ fn load_image_bytes(source: &ImageSource) -> Result<Vec<u8>, ConfigError> {
 
 /// Resolve file lengths before validating placement and disk geometry. Inline
 /// presets borrow their config so the common path needs no additional copy.
-fn resolve_file_sources(config: &MachineConfig) -> Result<Cow<'_, MachineConfig>, ConfigError> {
+fn resolve_file_sources(
+    config: &MachineConfig,
+) -> Result<(Cow<'_, MachineConfig>, Vec<Option<std::fs::Metadata>>), ConfigError> {
     if !config
         .images
         .iter()
@@ -427,20 +430,34 @@ fn resolve_file_sources(config: &MachineConfig) -> Result<Cow<'_, MachineConfig>
         .chain(config.drives.iter().map(|drive| &drive.image))
         .any(|source| matches!(source, ImageSource::File(_)))
     {
-        return Ok(Cow::Borrowed(config));
+        return Ok((Cow::Borrowed(config), Vec::new()));
     }
     let mut resolved = config.clone();
-    for source in resolved
-        .images
-        .iter_mut()
-        .map(|image| &mut image.source)
-        .chain(resolved.drives.iter_mut().map(|drive| &mut drive.image))
-    {
-        if matches!(source, ImageSource::File(_)) {
-            *source = ImageSource::Inline(load_image_bytes(source)?);
+    for image in &mut resolved.images {
+        if matches!(image.source, ImageSource::File(_)) {
+            image.source = ImageSource::Inline(load_image_bytes(&image.source)?);
         }
     }
-    Ok(Cow::Owned(resolved))
+    let mut base_metadata = vec![None; resolved.drives.len()];
+    for (index, drive) in resolved.drives.iter_mut().enumerate() {
+        if let ImageSource::File(path) = &drive.image {
+            use std::io::Read;
+            let (bytes, metadata) = (|| {
+                let mut file = std::fs::File::open(path)?;
+                let metadata = file.metadata()?;
+                let mut bytes = Vec::new();
+                file.read_to_end(&mut bytes)?;
+                Ok::<_, std::io::Error>((bytes, metadata))
+            })()
+            .map_err(|error| ConfigError::ImageRead {
+                path: path.clone(),
+                message: error.to_string(),
+            })?;
+            base_metadata[index] = Some(metadata);
+            drive.image = ImageSource::Inline(bytes);
+        }
+    }
+    Ok((Cow::Owned(resolved), base_metadata))
 }
 
 /// Build the port + MMIO decode map from the device windows, sorted so the map is
@@ -555,7 +572,7 @@ fn build_fdc_drives(
     config: &MachineConfig,
     controller: DeviceId,
 ) -> Result<[Option<Drive>; 4], AssemblyError> {
-    mount_fdc_drives(config, controller, &mut Vec::new())
+    mount_fdc_drives(config, controller, &mut Vec::new(), &[])
 }
 
 /// Route the config's floppy drives into the controller's four drive positions by
@@ -569,6 +586,7 @@ fn mount_fdc_drives(
     config: &MachineConfig,
     controller: DeviceId,
     persistence: &mut Vec<crate::PersistenceHandle>,
+    base_metadata: &[Option<std::fs::Metadata>],
 ) -> Result<[Option<Drive>; 4], AssemblyError> {
     let mut slots: [Option<Drive>; 4] = [None, None, None, None];
     for (drive_index, drive) in config.drives.iter().enumerate() {
@@ -597,6 +615,7 @@ fn mount_fdc_drives(
                     &image,
                     drive.kind.image_bytes(),
                     *keep_generations,
+                    base_metadata.get(drive_index).and_then(Option::as_ref),
                 )?;
                 persistence.push(handle);
                 Drive::with_media(geometry, media)

@@ -142,8 +142,11 @@ was reported to the CPU core project.
   those crossings reach the bus, but mixed RAM/MMIO accesses need the upstream
   CPU fix tracked by `xj-ir6.12 (x86jit)`.
 - Journal selection is not exposed by frontend flags or machine-file fields yet.
-  Retention pruning and immutable-image export (`media commit`/`compact`) remain
-  unimplemented; the configured retention count does not yet prune history.
+  Immutable-image export (`media commit`/`compact`) and atomic retention pruning
+  are implemented. Retention runs only after a durable closed generation, keeps
+  a verified anchor bound to the original base, and reports maintenance failures
+  separately from command persistence. Physical power-cut durability is assumed
+  under the documented storage contract, not measured.
 
 ## Recently landed
 

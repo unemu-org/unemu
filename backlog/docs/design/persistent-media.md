@@ -1,6 +1,6 @@
 # Recoverable persistent floppy media
 
-Status: accepted design; offline inspection, tail repair and rollback implemented.
+Status: accepted design; offline tools, immutable export and retention implemented.
 The maintainer approved the defaults on 2026-11-10.
 The version-1 codec and recovery scanner are implemented in `crates/media`;
 the host-independent device media contract and its in-memory implementation
@@ -10,10 +10,9 @@ modes, validates journal/sidecar path aliases, replays before execution, and exp
 per-drive status/checkpoint/finish handles. CLI and window run boundaries check
 host failures and explicitly finish successful sessions. Offline generation
 listing, verification, explicit tail repair and backed-up rollback are implemented
-in the CLI and `crates/media`. Immutable-image export
-(`commit`/`compact`) and retention pruning are still to come; the positive
-retention count is validated and retained on each handle but does not prune
-history yet.
+in the CLI and `crates/media`, including immutable-image export (`commit`/`compact`).
+The sink applies the configured positive retention count after durable checkpoints
+and session closes, replacing old history with a verified anchor and retained frames.
 
 ## Context
 
@@ -43,8 +42,8 @@ Evidence from the current implementation:
   journal mounts replay into a sector-media adapter. Volatile and readonly
   create no host output.
 - **READ:** [Deferred journal tools and retention](../deferred.md#offline-floppy-journal-tools-and-retention)
-  lists the remaining offline tools and pruning work; append/replay persistence
-  is implemented through the assembly session API below.
+  records implemented tools and the remaining frontend/configuration work.
+  Append/replay persistence uses the assembly session API below.
 - **READ:** [Machine configuration](machine-config.md#single-homes-no-triplication)
   assigns media to top-level drives and composition to assembly. It deliberately
   defines Rust data, without a serialized config format.
@@ -329,7 +328,8 @@ ordered by their last occurrence, before encoding unique SECTOR frames; memory
 applies the original batch in order, matching volatile last-wins behavior.
 `checkpoint` closes a generation and continues;
 `finish` consumes the session. Dropping without finish releases the journal and
-stable sidecar lock without writing a marker. Retention is not run by this sink.
+stable sidecar lock without writing a marker. The sink prunes only after a
+successfully synchronized checkpoint or session-end marker.
 
 Both scanner entry points share validation and classification. `scan_reader`
 uses `Read + Seek`, retaining the base, reconstructed image, one bounded command,
@@ -345,7 +345,7 @@ synchronized before hard-link publication; existing destinations are preserved.
 After locking and opening (or publishing a new header), mount re-resolves the
 canonical journal path and refuses a mismatch before cleanup, scan or recovery.
 Cleanup considers only `<journal-file-name>.create-<decimal digits>.tmp`, with
-at least one ASCII digit. Journal filenames containing `.create-` anywhere are
+at least one ASCII digit. Journal filenames containing `.create-`, `.retain-` or `.export-` anywhere are
 refused before locking in both assembly and the sink, including through aliases;
 nested journal names cannot own overlapping temporary namespaces.
 
@@ -432,7 +432,9 @@ For fixed mounted bytes and fixed guest input, memory mutations, status bytes,
 DMA results, IRQ edges and virtual-time advancement are identical across
 volatile and journal adapters. Sink latency contributes no virtual time;
 hashing, sequencing and generation ids use only deterministic bytes/counters.
-There are no reads of the journal or base during execution. Opening/replaying
+There are no reads of the journal or base during guest execution; explicit
+closed-boundary retention reads the journal and uses the original base bytes
+retained in memory. Opening/replaying
 media is an explicit initial-state input, just like today's base-image load.
 Host failure can stop a run at a frontend boundary; its completed guest prefix
 must equal the corresponding volatile prefix. This is the precise limit of
@@ -510,7 +512,9 @@ latched host error, `checkpoint()` and `finish()`. The assembly-owned sector
 adapter shares the session with this handle. `run_session(policy)` checks errors
 before and after every existing natural/prompt/stimulus run boundary;
 `check_persistence()` supports an embedding frontend's own boundaries. A failed
-run must be dropped without `finish_persistence()`. A successful cap, halt or
+run must be dropped without `finish_persistence()`. A latched error during a run
+skips every drive's finish; the other drives' unsealed sessions are recovered
+on their next mount. A successful cap, halt or
 explicit normal window close calls `finish_persistence()`; repeated finish calls
 are harmless, and the session run API refuses further advancement after finish.
 Drop never writes a clean marker. Final display/disk capture can still read the
@@ -518,7 +522,8 @@ finished media bytes. There is no atomic close across multiple drives.
 
 There is no new frontend flag or serialized journal configuration in this step.
 The existing presets and goldens remain volatile; journal selection is explicit
-Rust data. Automatic retention remains the separate retention implementation.
+Rust data. Assembly passes `keep_generations` into the sink. The anchor counts
+as one retained closed generation: keep=2 over ids 1–5 retains anchor 4 and id 5.
 
 ### Offline commands
 
@@ -556,7 +561,7 @@ An unavailable, pruned, nonexistent or unsealed target is a configuration error
 (exit 2); a missing journal is an I/O failure (exit 1), and is never created by
 a tool. Existing backup destinations, including symlink/hard-link aliases of
 the base or journal, are refused (exit 2). Backup filenames containing the
-reserved `.create-` marker are also refused so mount cleanup cannot delete a
+reserved `.create-`, `.retain-` or `.export-` markers are also refused so mount cleanup cannot delete a
 header-only backup. Backups are never deleted by these tools. On Unix they are
 created with the journal's permission bits, then those bits are set exactly
 before copying, so the umask cannot expose data or silently narrow permissions.
@@ -564,13 +569,13 @@ A failed copy or backup barrier leaves a retained file and reports it as a
 partial, invalid backup with its path. Every I/O diagnostic names the role and
 path of the affected base, journal, lock or backup. Tools preflight both inputs before
 creating lock metadata, and open them without blocking on Unix; non-regular
-inputs such as FIFOs are refused. Missing inputs leave no new files. Reserved
-`.create-` journal names, dangling journal symlinks and canonical-path changes
+inputs such as FIFOs are refused. Missing inputs leave no new files. Dangling
+journal symlinks and canonical-path changes
 after locking are I/O failures (exit 1). Tail diagnostics give the safe truncation
 point and discarded bytes, separately from the failure/EOF offset. Rollback
 validates its target before printing the removal warning.
 
-Still to come (not accepted by the current CLI):
+Immutable export:
 
 ```text
 unemupc98 media commit --base disk.img --journal disk.img.upfj --to 7 --output restored.img
@@ -584,6 +589,22 @@ The old base and journal remain untouched; never update them as a two-file
 transaction. To continue from this new base, point config at it and an unused
 journal path; its new lineage starts at generation 0. No automatic config edit,
 in-place commit, or export of an unsealed tip. A user repairs/seals the tip first.
+Export requires the shared stable lock (it refuses inspection's lockless fallback).
+A recoverable tail or unsealed tip is exit 2; format/binding or I/O failures are
+exit 1, and an unavailable generation or occupied output is exit 2.
+On supported Unix hosts, publication uses `hard_link(temporary, output)`, which
+refuses an existing destination, including symlinks/hard links to inputs. This
+also protects against a destination appearing after the unused-path preflight.
+The temporary is `<output>.export-<decimal>.tmp`, created exclusively with mode
+0600. Read back and compare its length and SHA-256 before `sync_all`, hard-link
+publication and directory `sync_all`. Cleanup unlinks only this export's temporary;
+an interrupted orphan is never mounted or automatically imported. Errors before the hard-link attempt say "nothing was published"; errors at or
+after that attempt report uncertain publication. EPERM, ENOTSUP and EXDEV from the
+hard-link operation instead name the output-filesystem hard-link requirement and
+say "nothing was published". An error from the directory barrier remains uncertain
+even with those codes. Existing-destination errors keep their configuration exit.
+A publication or directory-sync failure may leave a complete output; inputs remain authoritative.
+Other platforms are refused by the durability barrier before publication.
 
 ### Locking and retention
 
@@ -628,6 +649,56 @@ next open. The visible journal must be either the old valid version or the new
 valid version under the storage contract. Temporary files are never mounted
 automatically. No automatic deletion of offline backups.
 
+The implementation uses `create_new` for `<journal>.retain-<decimal>.tmp`,
+requests the journal's mode bits at creation, then applies those bits exactly with
+`fchmod` before writing, to restore permissions filtered by the umask. Ownership
+is not preserved: the replacement is owned by its creator; preserving another
+owner would require privileges that this tool does not request. It streams later
+frames from the old descriptor, re-encodes their sequence numbers, and compares
+full images from each retained old/new closed prefix. A separate whole-replacement
+scan checks status, generation count, ids and later closing reasons before sync.
+The oldest point becomes reason 4;
+subsequent reasons, including recovered reason 3, are preserved. Unix `rename`
+replaces only the journal path under the unchanged sidecar lock, followed by
+directory `sync_all`. The live sink then appends through the replacement descriptor.
+The base and offline backups are never rewritten or removed. Creation cleanup
+considers only `.create-` decimal names and requires the creation-header prefix.
+Under the exclusive mount lock, cleanup also removes this journal's exact
+`.retain-<decimal>.tmp` names, accepting any content/length because a crash can
+leave any prefix of a full replacement. Both paths require a regular entry,
+`O_NOFOLLOW | O_NONBLOCK` open, matching device/inode after open and just before
+unlink; a disappearing entry is already gone. Symlinks, directories, nondecimal
+names and other journals' leftovers survive. The subsequent directory barrier
+covers removal. No leftover is mounted. Retention/export operations unlink only
+their own temporary and never sweep another operation's active files.
+Validation rejects input and journal filenames containing `.retain-`, including
+through resolved aliases. This applies to volatile/read-only inputs too; errors
+name the owning drive or the loadable image's role and path. Offline tools also
+refuse reserved `.create-` and `.retain-` names, as given or resolved, for every
+input/output including the base, journal, lock, backup and export destination
+(exit 2), before any destructive operation. Independently, cleanup skips any
+opened entry with the base file's device/inode. The identity comes from the same
+file read that supplied the mounted bytes; offline repair carries it into sink
+recovery. Thus even a reserved-name or hard-link alias cannot make cleanup own
+the mounted base.
+
+`SinkStatus::maintenance_failure()` and the corresponding assembly handle method
+report maintenance separately from `failure()`/`status()`'s command-error latch.
+Checkpoint/finish return success once the generation marker is durable, even when
+retention fails. Assembly attempts every drive's finish, then returns the first
+real command/close error. CLI and window frontends print one warning per drive
+with a maintenance outcome; maintenance alone does not make the run fail.
+A pre-publication failure leaves the old journal intact and permits retry at a
+later close. A publication attempt or directory-barrier failure is uncertain:
+verify on the next open before further persistent work. The old session preserves in-memory guest behavior but appends no more host
+records. At a checkpoint this disabled output latches a host persistence failure,
+so `check()` and the next frontend boundary stop further advancement; it cannot
+durably close another generation without reopening. A session already ending
+still reports its maintenance outcome without failing the durable close.
+No controller-visible error/protection/IRQ is synthesized; Drop adds no marker.
+
+Retention cost scales with journal size because retained states are reconstructed
+by scanning history; this is acceptable for floppy images.
 The anchor costs at most one frame per base sector plus two markers. Retained
 write history and the current session can still grow without bound if a guest
 rewrites sectors indefinitely before closing a generation. A generation count
@@ -783,7 +854,7 @@ sessions, immutable bases, byte replay and host failure boundaries. Deterministi
 I/O hooks stage the disappearance and identity races; FIFO tests run in isolated
 child processes with a timeout so a blocking regression fails safely.
 These are software checks, not a physical power-loss measurement. Retention
-acceptance tests remain with its implementation; offline command
+acceptance is recorded below; offline command
 acceptance is covered by the CLI media-tool integration suite and the backup
 barrier fault model.
 
@@ -822,7 +893,112 @@ Twenty-four targeted mutations fail their tests, including removal of the
 existing-lock guard, incorrect lock error paths/roles and swapping file/directory
 sync descriptors while preserving their operation labels.
 These checks do not establish physical power-loss durability or implement
-retention/export acceptance.
+retention/export acceptance by themselves.
+
+### Export and retention evidence
+
+**MEASURED:** real-file tests export base generation 0 and every retained closed
+generation, compare complete output bytes, and compare both input files byte for
+byte. They reject occupied paths, input hard-link/symlink aliases, unavailable or
+pruned ids, torn/unsealed tips, bad bases and corruption. Shared inspections can
+coexist with export, while a live writer excludes it. The recording I/O seam drives
+production writes and syncs, asserting temporary write → file sync → no-clobber
+publication → directory sync and the descriptor kinds. Corrupted or shortened
+export temporaries never reach a barrier or publication; a destination created
+at publication is preserved.
+
+**MEASURED:** retention tests compare each retained image, ids, original-base
+binding and frame sequences. They cover keep=2 over five generations, remount,
+continued writes after pruning, empty anchors, sectors last changed in
+pruned history, recovered closing reasons, unavailable/pruned export targets and
+`media verify` exit 0. An altered anchor whose sector is overwritten later is
+rejected before sync, proving verification checks intermediate states too.
+Failures at every replacement write (including partial writes), file sync, rename
+and directory sync leave the old valid journal or the complete valid replacement.
+A rename-then-error hook exercises an uncertain successful publication. Reports
+distinguish pre-publication failure from uncertainty. Write-protection status
+stays unchanged; pre-publication maintenance leaves the command-error latch clear,
+while uncertainty at a live checkpoint latches disabled appends for the next
+frontend boundary. A real assembled controller test checks
+RAM/result bytes, device snapshots/IRQ levels and virtual time across all four
+failure boundaries. Open and poisoned generations never prune. Namespace tests
+keep creation and retention operations from sweeping each other's active files;
+the next exclusive mount removes its own regular retention orphans, including a
+header-only orphan. Symlink orphans survive.
+
+**MEASURED (initial export/retention implementation):** the 21 new behavioral tests have matching targeted mutation
+failures. Across 34 mutation variants and 40 targeted executions, 39 executions
+fail their tests. Removing only the explicit export length comparison survives
+because SHA-256 still rejects a shortened file; bypassing the complete
+size/digest guard fails. Other detected variants remove export writes/barriers,
+change no-clobber publication to replacement, permit unsealed export, use an
+exclusive export lock, disable pruning or assembly wiring, omit anchor sectors,
+reuse old sequences, change later reasons, skip retained-state verification,
+latch maintenance as a command error, suppress uncertainty, prune open/poisoned
+history, mix cleanup namespaces, or truncate occupied temporary aliases.
+All mutation source changes and runs used a disposable copy outside the repository.
+
+**MEASURED (initial export/retention implementation):** gates passed: workspace build, Clippy with warnings denied,
+format check, the fast workspace suite (zero failed, slow tests ignored), and the
+required fixture-backed ignored run (14 passed, zero failed). Counts use top-level test
+harnesses and exclude duplicate watchdog child executions. Before/after checks
+find identical SHA-256 values for all 14 vendor files and identical directory
+entries, including the four resolved fixture target directories; no sidecars
+appear beside fixtures. No new test spawns a process.
+
+### Export and retention review evidence
+
+**MEASURED:** thirteen additional tests cover maintenance-only close success and
+warnings for either or both of two drives, uncertain reporting, finishing later
+drives after a real error (including a previously latched error), exact 0664 mode
+before writes/sync/publication under an emulated restrictive umask, and the orphan
+and export-diagnostic rules above. An otherwise valid later closing reason is
+changed without changing any retained image: the whole-history check refuses it
+before sync. A close reaching exactly `keep_generations` preserves the expected
+closed journal byte for byte and records no replacement operation. A generation
+sealed during mount consumes a retention slot. Failed rewrites remove their own
+temporary while preserving unrelated entries. A command written and synchronized
+after pruning survives Drop without close and is recovered on remount; changing
+rename to copy fails this test directly.
+
+**MEASURED:** twenty-five valid targeted mutation variants fail their tests,
+including all four previously surviving mutations, copy-instead-of-rename,
+maintenance-as-error, warning suppression/duplication, lost mode restoration,
+unsafe orphan selection/identity checks and incorrect publication diagnostics.
+Two initial mutation invocations omitted the optional assembly test-support
+feature and are excluded as compilation failures, not counted as detection.
+Mutation checks leave the tested source tree unchanged.
+
+**MEASURED:** the two pre-existing spawning tests now have their own
+`media/tests/temporary_fifo.rs` binary; the library test binary spawns no process.
+Both use the same production temporary-entry implementation. Each binary passes
+thirty consecutive default-parallel runs (zero failures in either binary).
+Removing nonblocking open still fails the isolated watchdog test rather than
+blocking the test runner indefinitely.
+
+**MEASURED:** review gates pass: build, warning-free Clippy and format check;
+the fast workspace suite passes with slow tests ignored, then the required
+fixture-backed slow set passes once (14 passed, zero failed). All 14 vendor-file hashes and directory
+entries, including four resolved fixture directories, are unchanged. These
+checks remain software fault/reopen tests, not physical power-cut evidence.
+
+**MEASURED:** reserved-base repair and rollback probes, along with the read-only
+and export tools, refuse both reserved name families as given and through
+symlinks without changing base/journal bytes or creating backups. Output and lock
+aliases receive the same configuration refusal. Direct cleanup tests protect the
+base inode in both namespaces while deleting a different inode with identical
+bytes; a sink mount and assembly mount independently check identity propagation.
+An uncertain checkpoint followed by an actual guest WRITE DATA retains guest
+memory/status behavior, reports disabled appends through the persistence latch,
+and prevents the next checked run boundary from advancing. Subject tests pin the
+second drive and the firmware/RAM-load image roles. Fourteen targeted mutations
+cover the path guards, inode protection and propagation, disabled-output latch,
+and input error subjects; every mutation fails its targeted test.
+
+**ASSUMED:** successful platform synchronization and atomic namespace operations
+obey the storage contract above. These checks measure software ordering, real-file
+reopen behavior and injected failures on the test host, not physical power cuts,
+other operating systems/filesystems, storage latency or guest filesystem health.
 
 ## Implementation beads
 
