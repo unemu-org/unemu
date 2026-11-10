@@ -101,6 +101,15 @@ and a pinned SHA-256; see `vendor/hdd/README.md`. It is not part of the CI
 `fixtures` gate. Each gate still runs after
 earlier failures. The final commit status, `ci / x86_64`, names failed steps.
 
+The separate `vendor/xtide-universal-bios/fetch.sh` prepares the pinned r638 AT
+option ROM with standard shell tools (`curl` only when the download is missing),
+checks both hashes, pads with 00h to 8 KiB and fixes the last-byte checksum.
+Retain `vendor/xtide-universal-bios/build/ide_at.bin` for offline rebuilds;
+the generated image is `vendor/xtide-universal-bios/ide_at-r638-8k.bin`.
+Both paths are gitignored. This fixture is not part of the CI `fixtures` gate;
+see its README for the exact upstream GPL version 2 statement and
+[`commands.md`](commands.md#ci) for building it and checking the catalogue hash.
+
 Run a gate from the repository root with `bash scripts/ci-gate.sh <step>`;
 see [`commands.md`](commands.md#ci) for the full sequence. The script enters
 `nix develop --no-update-lock-file` for every gate except the publication guard,

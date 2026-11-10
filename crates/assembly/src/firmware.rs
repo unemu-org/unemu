@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Board-owned system BIOS identities and load requirements.
+//! Firmware identities and board-owned system BIOS load requirements.
 //!
 //! IBM Personal Computer AT Technical Reference, Section 1 "System Board",
 //! Memory Map: system ROM occupies the top of the first MiB. The catalogue
@@ -69,6 +69,10 @@ pub enum FirmwarePart {
     PicCascade,
     /// A video ROM at the conventional expansion address.
     VideoRom,
+    /// Primary ATA channel using the AT fixed-disk wiring: 1F0h and IRQ 14.
+    /// IBM Personal Computer AT Technical Reference, Section 1 "System Board",
+    /// I/O Address Map and System Interrupts; see the firmware design §2.2.
+    AtaPrimary,
 }
 
 impl std::fmt::Display for FirmwarePart {
@@ -78,6 +82,7 @@ impl std::fmt::Display for FirmwarePart {
             Self::RtcCmos => "rtc-cmos",
             Self::PicCascade => "pic-cascade",
             Self::VideoRom => "a video-bios option ROM at 0xC0000",
+            Self::AtaPrimary => "ata@1F0/14",
         })
     }
 }
@@ -97,6 +102,9 @@ impl FirmwarePart {
                 .images
                 .iter()
                 .any(|image| image.kind == ImageKind::Rom && image.base == 0xC0000),
+            // No current device kind models ATA; a matching port window alone
+            // cannot establish that the required controller exists.
+            Self::AtaPrimary => false,
         }
     }
 }
@@ -163,6 +171,32 @@ pub struct FirmwareEntry {
     pub distribution: FirmwareDistribution,
     /// Execution evidence.
     pub status: FirmwareStatus,
+}
+
+impl FirmwareEntry {
+    /// Padded and checksummed XTIDE Universal BIOS AT build.
+    ///
+    /// XTIDE Universal BIOS, Main.asm, USE_AT build: primary ATA task file at
+    /// 1F0h and IRQ 14. See `backlog/docs/design/firmware-and-machine-classes.md`
+    /// §2.2 and `vendor/xtide-universal-bios/README.md` for the binary provenance.
+    /// This is listed data; option-ROM validation and execution are separate.
+    pub const XUB_R638_AT: Self = Self {
+        id: "xub-r638-at",
+        kind: FirmwareKind::OptionRom,
+        sha256: "6409de912eab620ea144b79e723bed478814047dc2766fc19fd6e2e3690662d0",
+        size: 8192,
+        base: FirmwareBase::Suggested(0xC8000),
+        provides: &[FirmwareService::FixedDisk],
+        requires: &[FirmwarePart::AtaPrimary],
+        cpu_min: FirmwareCpu::I80286,
+        boards: &["ibm-5170"],
+        distribution: FirmwareDistribution::Open {
+            fetch: "vendor/xtide-universal-bios/fetch.sh",
+            license: "GPL-2.0-only",
+            provenance: "XTIDE Universal BIOS r638 ide_at.bin (AT build)",
+        },
+        status: FirmwareStatus::Listed,
+    };
 }
 
 /// Unmodified Xi 8088 build pinned by `vendor/kiselev-bios/fetch.sh`.
@@ -324,6 +358,87 @@ mod tests {
         }
     }
 
+    #[test]
+    fn xub_catalogue_entry_matches_the_pinned_fixture_recipe() {
+        let entry = FirmwareEntry::XUB_R638_AT;
+        assert_eq!(entry.id, "xub-r638-at");
+        assert_eq!(entry.kind, FirmwareKind::OptionRom);
+        assert_eq!(entry.size, 8192);
+        assert_eq!(entry.base, FirmwareBase::Suggested(0xC8000));
+        assert_eq!(entry.provides, &[FirmwareService::FixedDisk]);
+        assert_eq!(entry.requires, &[FirmwarePart::AtaPrimary]);
+        assert_eq!(entry.cpu_min, FirmwareCpu::I80286);
+        assert_eq!(entry.boards, &["ibm-5170"]);
+        assert_eq!(entry.status, FirmwareStatus::Listed);
+        assert_eq!(
+            entry.distribution,
+            FirmwareDistribution::Open {
+                fetch: "vendor/xtide-universal-bios/fetch.sh",
+                license: "GPL-2.0-only",
+                provenance: "XTIDE Universal BIOS r638 ide_at.bin (AT build)",
+            }
+        );
+        let script = include_str!("../../../vendor/xtide-universal-bios/fetch.sh");
+        let hash = script
+            .lines()
+            .find_map(|line| line.strip_prefix("OUTPUT_SHA256=\"")?.strip_suffix('"'))
+            .expect("fixture script must pin its output hash");
+        assert_eq!(entry.sha256, hash);
+    }
+
+    #[test]
+    fn built_xub_fixture_matches_the_catalogue() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../vendor/xtide-universal-bios/ide_at-r638-8k.bin");
+        let bytes = match std::fs::read(&path) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                let message = format!(
+                    "missing fixture {}; run vendor/xtide-universal-bios/fetch.sh",
+                    path.display()
+                );
+                assert!(
+                    std::env::var_os("UNEMUPC98_REQUIRE_FIXTURES").as_deref()
+                        != Some(std::ffi::OsStr::new("1")),
+                    "{message}"
+                );
+                eprintln!("skipping: {message}");
+                return;
+            }
+            Err(error) => panic!("cannot read {}: {error}", path.display()),
+        };
+        let entry = FirmwareEntry::XUB_R638_AT;
+        assert_eq!(bytes.len() as u64, entry.size);
+        assert_eq!(format!("{:x}", Sha256::digest(&bytes)), entry.sha256);
+        assert_eq!(&bytes[..3], &[0x55, 0xAA, 16]);
+        assert!(bytes[6646..8191].iter().all(|&byte| byte == 0));
+        assert_eq!(bytes[8191], 0x50);
+        assert_eq!(
+            bytes.iter().fold(0u8, |sum, byte| sum.wrapping_add(*byte)),
+            0
+        );
+    }
+
+    #[test]
+    fn primary_ata_requirement_is_unmet_by_current_device_kinds() {
+        let entry = FirmwareEntry {
+            requires: &[FirmwarePart::AtaPrimary],
+            ..synthetic()
+        };
+        let error = check(entry, AssemblyOptions::default()).unwrap_err();
+        assert_eq!(
+            error,
+            ConfigError::FirmwareRequiresDevice {
+                firmware: entry.id,
+                part: FirmwarePart::AtaPrimary,
+            }
+        );
+        assert_eq!(
+            error.to_string(),
+            "firmware \"kiselev-xi8088-1.0.2\" requires ata@1F0/14; none is configured"
+        );
+    }
+
     fn check(
         entry: FirmwareEntry,
         options: AssemblyOptions,
@@ -450,7 +565,7 @@ mod tests {
                 FirmwarePart::PicCascade => {
                     !matches!(device.kind, DeviceKind::Pic(p) if !p.cascade)
                 }
-                FirmwarePart::VideoRom => unreachable!(),
+                FirmwarePart::VideoRom | FirmwarePart::AtaPrimary => unreachable!(),
             });
             let entry = synthetic();
             let result = check_system_bios(

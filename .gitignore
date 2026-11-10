@@ -46,6 +46,10 @@ target/
 # checked in (FreeDOS is GPL; used unmodified as a read-only fixture).
 /vendor/freedos/build/
 /vendor/freedos/freedos.img
+# XTIDE Universal BIOS AT option ROM: pinned download and padded/checksummed
+# image are rebuilt by vendor/xtide-universal-bios/fetch.sh, not checked in.
+/vendor/xtide-universal-bios/build/
+/vendor/xtide-universal-bios/ide_at-r638-8k.bin
 # FAT16 hard-disk data fixture: rebuilt offline by vendor/hdd/build.sh.
 /vendor/hdd/build/
 /vendor/hdd/fat16.img

@@ -714,10 +714,20 @@ The generic AT comes first.
    - *Depends on:* 6.
 8. **XUB fixture.** Add `vendor/xtide-universal-bios/fetch.sh`, which builds or
    fetches a pinned AT build, pads it to 8 KiB, fixes the checksum and checks
-   both hashes. Its README records GPL-2.0-or-later provenance. Add the catalogue
+   both hashes. Its README records the binary download centre's exact GPL
+   version 2 statement (without an "or later" grant), separately from the
+   source-header survey above. Add the catalogue
    entry `xub-r638-at` (provides `fixed-disk`; requires a CPU ≥ 80286 and
-   `ata@1F0/14`). Nothing is committed but the script.
+   `ata@1F0/14`). Only the script and README are committed in the vendor directory.
    - *Acceptance:* deterministic output and an offline rebuild when cached.
+   - *Implemented:* r638 `ide_at.bin` is hash-checked, padded with 00h to
+     8 KiB and checksummed at the last byte (50h). The output SHA-256 is
+     `6409de912eab620ea144b79e723bed478814047dc2766fc19fd6e2e3690662d0`.
+     `FirmwareEntry::XUB_R638_AT` records the `Listed` option-ROM identity,
+     minimum CPU, fixed-disk service and primary ATA requirement. It remains
+     separate from the board's enforced system-BIOS catalogue until option-ROM
+     validation lands; the ATA requirement cannot be satisfied before the ATA
+     assembly exists. Catalogue/recipe and fixture-gated hash tests cover the entry.
    - *Depends on:* 2.
 9. **Fixed-disk provider rules.** Rules 10–11, and the CMOS fixed-disk type
    follows the provider (0 when it is an option ROM).

@@ -140,12 +140,26 @@ fetch script instead. The `goldens` gate always sets this variable, so a failed 
 incomplete fixture fetch cannot silently pass CI. The µPD765 FAT12 test follows
 the same policy when `mformat` is missing and points to `nix develop`.
 
-All three fixture scripts check pinned output SHA-256 hashes and rebuild offline
+All three CI fixture scripts check pinned output SHA-256 hashes and rebuild offline
 when their pinned source commits and release archives are cached. FreeDOS also
 fixes the volume serial (`2895-9853`), label (`FREEDOS`) and all filesystem
 timestamps (1980-01-01 UTC). A hash mismatch requires checking the sources and
 toolchain and deliberately rebuilding the goldens' expectations before changing
 the expected hash. See each `vendor/*/README.md` for cache paths and hashes.
+
+The XTIDE Universal BIOS AT option-ROM fixture is built separately from the CI
+`fixtures` gate:
+
+```sh
+vendor/xtide-universal-bios/fetch.sh           # r638 AT binary, padded/checksummed to 8 KiB
+UNEMUPC98_REQUIRE_FIXTURES=1 cargo test --offline -p assembly --lib xub
+```
+
+It checks both the download and output SHA-256, reusing
+`vendor/xtide-universal-bios/build/ide_at.bin` for offline rebuilds. The output is
+`vendor/xtide-universal-bios/ide_at-r638-8k.bin`. Its catalogue entry is `Listed`;
+building it does not add an ATA device or hard-disk boot profile. See
+`vendor/xtide-universal-bios/README.md` for provenance, padding and checksum rules.
 
 The hard-disk data fixture builds without downloads or cached inputs:
 
