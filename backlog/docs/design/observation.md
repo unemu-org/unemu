@@ -23,10 +23,10 @@ it is not an independently rounded 1,193,182 Hz constant. For elapsed nanosecond
 `t`, the absolute target is `floor(t * 14,318,180 / 12,000,000,000)` PIT clocks.
 The calculation uses `u128`, including at `Duration::MAX`, and rounds only the
 absolute target, so sub-clock remainders never drift with frame partitioning.
-The guest RTC currently counts 1,193,182 PIT clocks per second
-(`crates/devices/src/cmos_rtc.rs`, `DEFAULT_SECOND_TICKS`), so its seconds run
-about 0.28 ppm slow against this host timebase (about 24 ms/day). Correcting
-that separate device approximation is outside the window pacing policy.
+The default guest RTC uses the same exact nominal ratio: 3,579,545 / 3 PIT
+clocks per second, carrying phase in thirds of a PIT clock. This avoids drift
+against the window timebase. Explicit integer RTC timing overrides keep their
+configured PIT-clock periods; see [machine-config.md](machine-config.md#rtc-start-and-nvram-source).
 
 Paint deadlines follow a **60 Hz** epoch grid, `ceil(frame * 1e9 / 60)` ns,
 rather than repeatedly adding a rounded period. This balances input latency

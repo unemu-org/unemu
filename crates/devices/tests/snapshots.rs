@@ -320,7 +320,66 @@ fn rtc_rejects_invalid_timing() {
             rtc.restore(&blob),
             Err(DeviceError::InvalidSnapshot { .. })
         ));
+        assert_eq!(rtc.save(), valid);
     }
+    for scale in [0, 2, 4, 255] {
+        let mut blob = valid.clone();
+        blob[108] = scale;
+        assert!(matches!(
+            rtc.restore(&blob),
+            Err(DeviceError::InvalidSnapshot { .. })
+        ));
+        assert_eq!(rtc.save(), valid);
+    }
+}
+
+#[test]
+fn rtc_rejects_second_shorter_than_one_pit_clock() {
+    let mut bus = MockBus::new(Box::new(CmosRtc::new()));
+    let valid = bus.device().save();
+    let mut blob = valid.clone();
+    blob[82..90].copy_from_slice(&1u64.to_le_bytes());
+    blob[90..98].copy_from_slice(&0u64.to_le_bytes());
+    blob[108] = 3;
+    assert_eq!(
+        bus.device_mut().restore(&blob),
+        Err(DeviceError::InvalidSnapshot {
+            device: "mc146818-rtc",
+            reason: "invalid clock state",
+        })
+    );
+    assert_eq!(bus.device().save(), valid);
+    blob[108] = 1;
+    bus.device_mut().restore(&blob).unwrap();
+    assert_eq!(bus.device().save(), blob);
+}
+
+#[test]
+fn rtc_reports_snapshot_version_before_length() {
+    let mut bus = MockBus::new(Box::new(CmosRtc::new()));
+    let valid = bus.device().save();
+    let mut version_three = valid.clone();
+    version_three.remove(108);
+    version_three[0] = 3;
+    assert_eq!(version_three.len(), 116);
+    for blob in [&version_three[..], &[3][..]] {
+        assert_eq!(
+            bus.device_mut().restore(blob),
+            Err(DeviceError::InvalidSnapshot {
+                device: "mc146818-rtc",
+                reason: "unsupported snapshot version",
+            })
+        );
+        assert_eq!(bus.device().save(), valid);
+    }
+    assert_eq!(
+        bus.device_mut().restore(&[]),
+        Err(DeviceError::InvalidSnapshot {
+            device: "mc146818-rtc",
+            reason: "unexpected snapshot length",
+        })
+    );
+    assert_eq!(bus.device().save(), valid);
 }
 
 #[test]
@@ -416,6 +475,47 @@ fn running_rtc_continues_through_uip_alarm_and_update() {
             source.device_mut().take_trace(),
             restored.device_mut().take_trace()
         );
+    }
+}
+
+#[test]
+fn default_rtc_snapshot_preserves_thirds_and_timing_in_an_integer_device() {
+    for saved_at in [1_193_182, 2_386_364, 3_578_352] {
+        let mut source = MockBus::new(Box::new(CmosRtc::new()));
+        source.port_write(0x70, 1, 0x0A).unwrap();
+        source.port_write(0x71, 1, 0x26).unwrap();
+        source.device_mut().sync(VClock(saved_at));
+        let blob = source.device().save();
+        let mut restored = MockBus::new(Box::new(CmosRtc::new().with_timing(64, 8)));
+        restored.device_mut().restore(&blob).unwrap();
+        source.device_mut().take_trace();
+        for clock in [
+            saved_at,
+            saved_at + 1,
+            3_579_544,
+            3_579_545,
+            4_771_534,
+            4_772_727,
+        ] {
+            for bus in [&mut source, &mut restored] {
+                bus.device_mut().sync(VClock(clock));
+            }
+            assert_eq!(
+                source.device().next_event(VClock(clock)),
+                restored.device().next_event(VClock(clock))
+            );
+            for index in [0, 0x0A, 0x0C] {
+                for bus in [&mut source, &mut restored] {
+                    bus.port_write(0x70, 1, index).unwrap();
+                }
+                assert_eq!(source.port_read(0x71, 1), restored.port_read(0x71, 1));
+            }
+            assert_eq!(source.device().save(), restored.device().save());
+            assert_eq!(
+                source.device_mut().take_trace(),
+                restored.device_mut().take_trace()
+            );
+        }
     }
 }
 
@@ -549,8 +649,8 @@ fn rtc_rejects_invalid_periodic_phase_without_mutation() {
     let mut bus = MockBus::new(Box::new(CmosRtc::new()));
     let valid = bus.device().save();
     for (offset, bytes) in [
-        (valid.len() - 18, u64::MAX.to_le_bytes().to_vec()),
-        (valid.len() - 10, 32768u16.to_le_bytes().to_vec()),
+        (98, u64::MAX.to_le_bytes().to_vec()),
+        (106, 32768u16.to_le_bytes().to_vec()),
     ] {
         let mut blob = valid.clone();
         blob[offset..offset + bytes.len()].copy_from_slice(&bytes);

@@ -11,11 +11,21 @@
 //!
 //! Wall-clock time is banned from the execution path, so the RTC does **not**
 //! read the host clock. It is seeded with an initial time and advances purely off
-//! [`Device::tick`]: a configurable number of virtual-clock ticks make one RTC
-//! second. Each second increments the time and raises the update-ended flag; the
+//! [`Device::tick`]. IBM PC AT Technical Reference, System Board, "System
+//! Timers" and "Oscillator": the timer input is the 14.31818 MHz oscillator
+//! divided by twelve. Using its exact nominal ratio, 14,318,180 / 12,
+//! one RTC second is 3,579,545 / 3 PIT clocks. The default phase counts thirds
+//! of a PIT clock and carries the remainder across updates; events round up
+//! to the first whole PIT clock at or after their boundary. Explicit
+//! [`CmosRtc::with_timing`] overrides still count whole PIT clocks.
+//! Each second increments the time and raises the update-ended flag; the
 //! **update-in-progress (UIP)** flag in register A is asserted during the short
 //! window before each update. Setting the SET bit (register B bit 7) freezes the
 //! calendar updates while the periodic divider keeps running.
+//! The default UIP width retains the model's approximately 1 ms polling window:
+//! floor(3,579,545 / 1000) = 3579 thirds, or 1193 PIT clocks. This is an
+//! approximation of the Motorola MC146818 datasheet, "Update Cycle" (244 µs
+//! from UIP assertion to update start), not a model of the update bus cycle.
 //!
 //! Motorola MC146818 datasheet, "Update Cycle" and "Registers A–C", describes
 //! the UIP/update and interrupt flags. Deadlines preserve the configured PIT
@@ -98,7 +108,7 @@ const PORT_DATA: u16 = 0x71;
 const NVRAM_LEN: usize = 64;
 
 /// Snapshot layout version tag.
-const SNAPSHOT_VERSION: u8 = 3;
+const SNAPSHOT_VERSION: u8 = 4;
 
 // CMOS register indices.
 const REG_SECONDS: usize = 0x00;
@@ -186,14 +196,12 @@ const HOUR_PM: u8 = 0x80;
 /// any time (per the datasheet).
 const ALARM_DONT_CARE: u8 = 0xC0;
 
-/// Default virtual-clock ticks per RTC second. The virtual clock counts PIT input
-/// clocks (~1.193182 MHz); one RTC second is that many ticks.
-const DEFAULT_SECOND_TICKS: u64 = 1_193_182;
+/// Exact nominal PIT clocks per second, expressed in thirds of a PIT clock.
+const DEFAULT_SECOND_TICKS: u64 = 3_579_545;
+const DEFAULT_CLOCK_UNITS: u8 = 3;
 
-/// Default UIP window: the fraction of a second before the update during which
-/// the update-in-progress flag reads set. ~1 ms models the real ~244 µs closely
-/// enough for firmware that polls UIP.
-const DEFAULT_UIP_TICKS: u64 = 1_193;
+/// Retain the approximately 1 ms polling window in the same phase units.
+const DEFAULT_UIP_TICKS: u64 = DEFAULT_SECOND_TICKS / 1000;
 
 /// Broken-down binary time held by the RTC. Encoded to the guest format on read.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -346,15 +354,17 @@ pub struct CmosRtc {
     index: usize,
     /// NMI-disable state from `0x70` bit 7 (`true` = NMI masked).
     nmi_disabled: bool,
-    /// Virtual-clock ticks accumulated toward the next second.
+    /// Phase units accumulated toward the next second.
     accum: u64,
-    /// Virtual-clock ticks that make one RTC second.
+    /// Phase units that make one RTC second (the PIT-clock ratio numerator).
     second_ticks: u64,
+    /// Phase units per PIT clock (the PIT-clock ratio denominator).
+    clock_units: u8,
     /// Fractional oscillator clocks, in units of 1 / second_ticks.
     oscillator_phase: u64,
     /// Whole oscillator clocks within the current 32,768-clock divider cycle.
     divider_phase: u16,
-    /// Width of the UIP window before each update.
+    /// Width of the UIP window in phase units before each update.
     uip_ticks: u64,
     /// Whether the update-in-progress window is currently open.
     uip: bool,
@@ -382,6 +392,7 @@ impl CmosRtc {
             nmi_disabled: false,
             accum: 0,
             second_ticks: DEFAULT_SECOND_TICKS,
+            clock_units: DEFAULT_CLOCK_UNITS,
             oscillator_phase: 0,
             divider_phase: 0,
             uip_ticks: DEFAULT_UIP_TICKS,
@@ -397,6 +408,7 @@ impl CmosRtc {
     pub fn with_timing(mut self, second_ticks: u64, uip_ticks: u64) -> Self {
         self.second_ticks = second_ticks.max(1);
         self.uip_ticks = uip_ticks.min(self.second_ticks);
+        self.clock_units = 1;
         self
     }
 
@@ -714,7 +726,8 @@ impl CmosRtc {
             return;
         }
         // u128 holds a full u64 clock jump multiplied by the oscillator rate.
-        let phase = u128::from(self.oscillator_phase) + u128::from(elapsed) * 32768;
+        let phase = u128::from(self.oscillator_phase)
+            + u128::from(elapsed) * u128::from(self.clock_units) * 32768;
         let ticks = phase / u128::from(self.second_ticks);
         self.oscillator_phase = (phase % u128::from(self.second_ticks)) as u64;
         if let Some(divisor) = self.periodic_divisor() {
@@ -824,14 +837,15 @@ impl Device for CmosRtc {
             return;
         }
         let remaining = self.second_ticks - self.accum;
-        if elapsed < remaining {
-            self.accum += elapsed;
+        let elapsed_units = u128::from(elapsed) * u128::from(self.clock_units);
+        if elapsed_units < u128::from(remaining) {
+            self.accum += elapsed_units as u64;
         } else {
             // Only second boundaries need division or calendar work. Subtract
             // the partial second first so even a u64-sized jump cannot overflow.
-            let after = elapsed - remaining;
-            self.accum = after % self.second_ticks;
-            self.advance_seconds(1 + after / self.second_ticks);
+            let after = elapsed_units - u128::from(remaining);
+            self.accum = (after % u128::from(self.second_ticks)) as u64;
+            self.advance_seconds(1 + (after / u128::from(self.second_ticks)) as u64);
         }
         self.uip = self.accum >= self.second_ticks - self.uip_ticks;
     }
@@ -850,9 +864,9 @@ impl Device for CmosRtc {
             if self.uip != (self.accum >= uip_start) {
                 1
             } else if !self.uip && self.uip_ticks != 0 {
-                uip_start - self.accum
+                (uip_start - self.accum).div_ceil(u64::from(self.clock_units))
             } else {
-                self.second_ticks - self.accum
+                (self.second_ticks - self.accum).div_ceil(u64::from(self.clock_units))
             }
         };
         // Once PF is latched, further edges cannot change any observable flag
@@ -864,7 +878,8 @@ impl Device for CmosRtc {
                 let ticks = divisor - u64::from(self.divider_phase) % divisor;
                 let numerator = u128::from(ticks) * u128::from(self.second_ticks)
                     - u128::from(self.oscillator_phase);
-                u64::try_from(numerator.div_ceil(32768)).unwrap_or(u64::MAX)
+                u64::try_from(numerator.div_ceil(32768 * u128::from(self.clock_units)))
+                    .unwrap_or(u64::MAX)
             })
             .unwrap_or(u64::MAX);
         let clocks = calendar_clocks.min(periodic_clocks);
@@ -894,7 +909,7 @@ impl Device for CmosRtc {
     }
 
     fn save(&self) -> Vec<u8> {
-        let mut blob = Vec::with_capacity(1 + NVRAM_LEN + 7 + 1 + 1 + 8 * 4 + 10);
+        let mut blob = Vec::with_capacity(1 + NVRAM_LEN + 7 + 1 + 1 + 8 * 4 + 11);
         blob.push(SNAPSHOT_VERSION);
         blob.extend_from_slice(&self.nvram);
         blob.push(self.time.second);
@@ -911,22 +926,26 @@ impl Device for CmosRtc {
         blob.extend_from_slice(&self.uip_ticks.to_le_bytes());
         blob.extend_from_slice(&self.oscillator_phase.to_le_bytes());
         blob.extend_from_slice(&self.divider_phase.to_le_bytes());
+        blob.push(self.clock_units);
         blob.extend_from_slice(&self.now.0.to_le_bytes());
         blob
     }
 
     fn restore(&mut self, snapshot: &[u8]) -> Result<(), DeviceError> {
-        const LEN: usize = 1 + NVRAM_LEN + 7 + 1 + 1 + 32 + 10;
+        const LEN: usize = 1 + NVRAM_LEN + 7 + 1 + 1 + 32 + 11;
+        if snapshot
+            .first()
+            .is_some_and(|&version| version != SNAPSHOT_VERSION)
+        {
+            return Err(DeviceError::InvalidSnapshot {
+                device: NAME,
+                reason: "unsupported snapshot version",
+            });
+        }
         if snapshot.len() != LEN {
             return Err(DeviceError::InvalidSnapshot {
                 device: NAME,
                 reason: "unexpected snapshot length",
-            });
-        }
-        if snapshot[0] != SNAPSHOT_VERSION {
-            return Err(DeviceError::InvalidSnapshot {
-                device: NAME,
-                reason: "unsupported snapshot version",
             });
         }
         let read_timing = |off| u64::from_le_bytes(std::array::from_fn(|i| snapshot[off + i]));
@@ -936,7 +955,10 @@ impl Device for CmosRtc {
         let uip_ticks = read_timing(timing + 16);
         let oscillator_phase = read_timing(timing + 24);
         let divider_phase = u16::from_le_bytes([snapshot[timing + 32], snapshot[timing + 33]]);
+        let clock_units = snapshot[timing + 34];
         if second_ticks == 0
+            || !matches!(clock_units, 1 | 3)
+            || second_ticks < u64::from(clock_units)
             || oscillator_phase >= second_ticks
             || divider_phase >= 32768
             || accum >= second_ticks
@@ -978,11 +1000,10 @@ impl Device for CmosRtc {
         self.accum = read_u64(off);
         self.second_ticks = read_u64(off + 8);
         self.uip_ticks = read_u64(off + 16);
+        self.clock_units = clock_units;
         self.oscillator_phase = oscillator_phase;
         self.divider_phase = divider_phase;
-        self.now = VClock(u64::from_le_bytes(std::array::from_fn(|i| {
-            snapshot[snapshot.len() - 8 + i]
-        })));
+        self.now = VClock(read_u64(off + 35));
         Ok(())
     }
 
@@ -1003,6 +1024,127 @@ impl Device for CmosRtc {
 mod tests {
     use super::*;
     use testkit::MockBus;
+
+    #[test]
+    fn exact_default_rate_has_no_long_term_drift_in_uneven_chunks() {
+        let mut bus = MockBus::new(Box::new(CmosRtc::new()));
+        bus_write_reg(&mut bus, REG_B, B_24HOUR | B_BINARY);
+        let total = 3_579_545 * 1_000_000;
+        let chunks = [1, 100_000_000_003, 3_579_544, 234_567_891_011, 17];
+        let mut step = 0;
+        while bus.clock().0 < total {
+            bus.tick(chunks[step % chunks.len()].min(total - bus.clock().0));
+            step += 1;
+            let seconds = bus.clock().0 * 3 / 3_579_545;
+            let days = seconds / 86400;
+            let (month, day) = if days < 31 {
+                (1, days + 1)
+            } else {
+                (2, days - 30)
+            };
+            for (register, expected) in [
+                (REG_SECONDS, seconds % 60),
+                (REG_MINUTES, seconds / 60 % 60),
+                (REG_HOURS, seconds / 3600 % 24),
+                (REG_WEEKDAY, (6 + days) % 7 + 1),
+                (REG_DAY, day),
+                (REG_MONTH, month),
+                (REG_YEAR, 0),
+            ] {
+                assert_eq!(
+                    u64::from(bus_read_reg(&mut bus, register)),
+                    expected,
+                    "register {register:#x} at PIT clock {}",
+                    bus.clock().0
+                );
+            }
+        }
+        assert_eq!(bus.clock(), VClock(3_579_545_000_000));
+    }
+
+    #[test]
+    fn exact_default_rate_first_three_updates_keep_fractional_phase() {
+        let mut bus = MockBus::new(Box::new(CmosRtc::new()));
+        for (second, deadline) in [(1, 1_193_182), (2, 2_386_364), (3, 3_579_545)] {
+            bus.tick(deadline - 1 - bus.clock().0);
+            assert_eq!(bus_read_reg(&mut bus, REG_SECONDS), second - 1);
+            assert_eq!(
+                bus.device().next_event(bus.clock()),
+                NextEvent::At(VClock(deadline))
+            );
+            bus_read_reg(&mut bus, REG_C);
+            bus.tick(1);
+            assert_eq!(bus_read_reg(&mut bus, REG_SECONDS), second);
+            assert_ne!(bus_read_reg(&mut bus, REG_C) & C_UF, 0);
+        }
+    }
+
+    #[test]
+    fn exact_default_rate_uip_window_rounds_up_with_carried_phase() {
+        let mut bus = MockBus::new(Box::new(CmosRtc::new()));
+        for (start, update) in [
+            (1_191_989, 1_193_182),
+            (2_385_171, 2_386_364),
+            (3_578_352, 3_579_545),
+        ] {
+            assert_eq!(
+                bus.device().next_event(bus.clock()),
+                NextEvent::At(VClock(start))
+            );
+            bus.tick(start - 1 - bus.clock().0);
+            assert_eq!(bus_read_reg(&mut bus, REG_A) & A_UIP, 0);
+            bus.tick(1);
+            assert_eq!(bus_read_reg(&mut bus, REG_A) & A_UIP, A_UIP);
+            assert_eq!(
+                bus.device().next_event(bus.clock()),
+                NextEvent::At(VClock(update))
+            );
+            bus.tick(update - 1 - bus.clock().0);
+            assert_eq!(bus_read_reg(&mut bus, REG_A) & A_UIP, A_UIP);
+            bus.tick(1);
+            assert_eq!(bus_read_reg(&mut bus, REG_A) & A_UIP, 0);
+        }
+    }
+
+    #[test]
+    fn explicit_integer_timing_matches_per_clock_reference() {
+        let mut per_clock = crate::trace_policy_tests::traced(CmosRtc::new()).with_timing(64, 8);
+        let mut bus = MockBus::new(Box::new(
+            crate::trace_policy_tests::traced(CmosRtc::new()).with_timing(64, 8),
+        ));
+        for (register, value) in [(REG_A, 0x26), (REG_B, B_24HOUR | B_UIE | B_PIE)] {
+            write_reg(&mut per_clock, register as u8, value);
+            bus_write_reg(&mut bus, register, value);
+        }
+        for clock in 1..=512 {
+            reference_clock(&mut per_clock, clock);
+            bus.tick(1);
+            for register in 0..NVRAM_LEN {
+                let actual = bus_read_reg(&mut bus, register);
+                assert_eq!(
+                    actual,
+                    read_reg(&mut per_clock, register as u8),
+                    "register {register:#x} at PIT clock {clock}"
+                );
+                match register {
+                    REG_SECONDS => assert_eq!(actual, to_bcd((clock / 64) as u8)),
+                    REG_A => assert_eq!(actual, 0x26 | if clock % 64 >= 56 { A_UIP } else { 0 }),
+                    REG_C => assert_eq!(
+                        actual,
+                        C_PF | C_IRQF | if clock % 64 == 0 { C_UF } else { 0 }
+                    ),
+                    _ => {}
+                }
+            }
+            // Reading C above clears PF; at 1024 Hz every next clock has an edge.
+            assert_eq!(
+                bus.device().next_event(bus.clock()),
+                NextEvent::At(VClock(clock + 1))
+            );
+            assert_eq!(bus.device().save(), per_clock.save());
+            assert_eq!(bus.device_mut().take_trace(), per_clock.take_trace());
+        }
+    }
 
     #[test]
     fn initialization_nvram_image_preserves_writable_bytes_and_clears_status() {
@@ -1071,7 +1213,8 @@ mod tests {
         bus_write_reg(&mut bus, REG_A, 0x26);
         bus_write_reg(&mut bus, REG_B, B_24HOUR | B_PIE);
         for period in 1u64..=1024 {
-            let expected = (period * DEFAULT_SECOND_TICKS).div_ceil(1024);
+            let expected =
+                (period * DEFAULT_SECOND_TICKS).div_ceil(1024 * u64::from(DEFAULT_CLOCK_UNITS));
             assert_eq!(
                 bus.device().next_event(bus.clock()),
                 NextEvent::At(VClock(expected))
@@ -1085,7 +1228,11 @@ mod tests {
             assert!(!bus.device().irq_pending());
             // UIP is an independent earlier deadline near the second boundary.
             if period == 1022 {
-                bus.tick(DEFAULT_SECOND_TICKS - DEFAULT_UIP_TICKS - bus.clock().0);
+                bus.tick(
+                    (DEFAULT_SECOND_TICKS - DEFAULT_UIP_TICKS)
+                        .div_ceil(u64::from(DEFAULT_CLOCK_UNITS))
+                        - bus.clock().0,
+                );
             }
         }
     }
@@ -1095,7 +1242,7 @@ mod tests {
         let mut bus = MockBus::new(Box::new(CmosRtc::new()));
         bus_write_reg(&mut bus, REG_A, 0x26);
         bus_write_reg(&mut bus, REG_B, B_24HOUR | B_SET);
-        bus.tick(DEFAULT_SECOND_TICKS.div_ceil(1024));
+        bus.tick(DEFAULT_SECOND_TICKS.div_ceil(1024 * u64::from(DEFAULT_CLOCK_UNITS)));
         assert!(!bus.device().irq_pending());
         bus_write_reg(&mut bus, REG_B, B_24HOUR | B_SET | B_PIE);
         assert!(bus.device().irq_pending());
@@ -1138,7 +1285,7 @@ mod tests {
             let mut bus = MockBus::new(Box::new(CmosRtc::new()));
             bus_write_reg(&mut bus, REG_A, 0x20 | rs);
             bus_write_reg(&mut bus, REG_B, B_24HOUR | B_PIE);
-            let deadline = DEFAULT_SECOND_TICKS.div_ceil(hz);
+            let deadline = DEFAULT_SECOND_TICKS.div_ceil(hz * u64::from(DEFAULT_CLOCK_UNITS));
             bus.tick(deadline - 1);
             assert_eq!(bus_read_reg(&mut bus, REG_C) & C_PF, 0);
             let mut copy = CmosRtc::new();

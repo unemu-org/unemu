@@ -444,7 +444,22 @@ accepts valid dates in 1980–2099, matching the existing two-digit year and
 four-year leap cycle; invalid dates, hours, minutes and seconds fail with
 `InvalidRtcStart` before assembly, naming the first invalid field and showing
 the supplied time as `YYYY-MM-DDTHH:MM:SS`. Host time has no config variant or
-runtime clock read. The existing virtual timing override remains available to test rigs.
+runtime clock read. The default RTC second is exactly **3,579,545 / 3 PIT
+input clocks**, derived from the nominal **14,318,180 / 12 Hz** timer input
+(IBM PC AT Technical Reference, System Board, **System Timers** and
+**Oscillator**). The calendar phase counts thirds of a PIT clock. For the
+32,768 Hz periodic divider, `oscillator_phase` carries a remainder in units of
+1/3,579,545 of an oscillator clock: each PIT clock adds `3 * 32768`, and division
+by 3,579,545 yields whole oscillator clocks for `divider_phase`. Both counters
+retain their remainders; deadlines round up to whole PIT clocks, so batching
+cannot accumulate drift. The UIP window keeps the existing approximate
+1 ms policy: floor(3,579,545 / 1000) thirds = **1193 PIT clocks** before each
+update. Motorola MC146818 datasheet, **Update Cycle**, specifies the once-per-second
+update and 244 µs from UIP assertion to update start; the model retains its
+longer polling window. Explicit `CmosCfg.timing: Some((second_ticks, uip_ticks))`
+and `with_timing(second_ticks, uip_ticks)` retain integer PIT-clock units,
+including the CLI RTC demonstration's small timing ratio. Snapshots include the
+phase-unit scale as well as the calendar and periodic remainders.
 
 `NvramSource` has three variants:
 
