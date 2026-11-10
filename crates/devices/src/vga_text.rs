@@ -32,7 +32,10 @@
 //! for a renderer to read it without depending on this type.
 //!
 //! ## What is modelled
-//! - The text buffer as flat MMIO storage (byte and word access).
+//! - The text buffer as flat MMIO storage, with 1–8 byte little-endian accesses.
+//!   Width 0 or above 8 is rejected before memory or traces change. Direct
+//!   accesses past the window return zero for trailing read bytes and discard
+//!   trailing write bytes; the bus splits accesses at decode-window boundaries.
 //! - The full CRTC index/data access mechanism (all 25 registers store).
 //! - The registers a text renderer interprets: cursor location high/low
 //!   (`0x0E`/`0x0F`), display start address high/low (`0x0C`/`0x0D`), and the
@@ -240,9 +243,12 @@ impl VgaText {
     }
 
     /// Byte offset of `addr` within the text buffer window, or an unmapped-MMIO
-    /// error if `addr` is outside `TEXT_BUFFER_BASE..+TEXT_BUFFER_LEN`.
-    fn mmio_offset(&self, addr: u64) -> Result<usize, DeviceError> {
-        if addr < TEXT_BUFFER_BASE || addr >= TEXT_BUFFER_BASE + TEXT_BUFFER_LEN as u64 {
+    /// error if `addr` is outside `TEXT_BUFFER_BASE..+TEXT_BUFFER_LEN` or the
+    /// width cannot fit in the MMIO value type.
+    fn mmio_offset(&self, addr: u64, size: u8) -> Result<usize, DeviceError> {
+        if !(1..=8).contains(&size)
+            || !(TEXT_BUFFER_BASE..TEXT_BUFFER_BASE + TEXT_BUFFER_LEN as u64).contains(&addr)
+        {
             return Err(DeviceError::UnmappedRegister {
                 kind: "mmio",
                 offset: addr,
@@ -349,7 +355,7 @@ impl Device for VgaText {
     }
 
     fn mmio_read(&mut self, addr: u64, size: u8) -> Result<u64, DeviceError> {
-        let offset = self.mmio_offset(addr)?;
+        let offset = self.mmio_offset(addr, size)?;
         // Registers are byte storage; read `size` little-endian bytes, blank past
         // the end of the window.
         let mut value: u64 = 0;
@@ -362,7 +368,7 @@ impl Device for VgaText {
     }
 
     fn mmio_write(&mut self, addr: u64, size: u8, value: u64) -> Result<(), DeviceError> {
-        let offset = self.mmio_offset(addr)?;
+        let offset = self.mmio_offset(addr, size)?;
         for i in 0..usize::from(size) {
             if let Some(slot) = self.vram.get_mut(offset + i) {
                 *slot = (value >> (8 * i)) as u8;
@@ -459,6 +465,40 @@ impl Device for VgaText {
 mod tests {
     use super::*;
     use testkit::MockBus;
+
+    #[test]
+    fn zero_mmio_width_is_rejected_without_state_changes_or_trace() {
+        assert_invalid_mmio_width(0);
+    }
+
+    #[test]
+    fn oversized_mmio_widths_are_rejected_without_state_changes_or_trace() {
+        for size in [9, 16, u8::MAX] {
+            assert_invalid_mmio_width(size);
+        }
+    }
+
+    fn assert_invalid_mmio_width(size: u8) {
+        let mut bus = MockBus::new(Box::new(crate::trace_policy_tests::traced(VgaText::new())));
+        bus.tick(4);
+        bus.mmio_write(TEXT_BUFFER_BASE, 8, 0x0123_4567_89AB_CDEF)
+            .unwrap();
+        bus.device_mut().take_trace();
+        let saved = bus.device().save();
+        let error = || DeviceError::UnmappedRegister {
+            kind: "mmio",
+            offset: TEXT_BUFFER_BASE,
+        };
+        assert_eq!(bus.mmio_read(TEXT_BUFFER_BASE, size), Err(error()));
+        assert_eq!(bus.device().save(), saved);
+        assert!(bus.device_mut().take_trace().is_empty());
+        assert_eq!(
+            bus.mmio_write(TEXT_BUFFER_BASE, size, u64::MAX),
+            Err(error())
+        );
+        assert_eq!(bus.device().save(), saved);
+        assert!(bus.device_mut().take_trace().is_empty());
+    }
 
     #[test]
     fn monochrome_ports_are_unmapped_without_changing_card_state() {

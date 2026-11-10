@@ -62,6 +62,15 @@ was reported to the CPU core project.
 
 ## Broken / known defects
 
+- Multi-byte scalar accesses crossing a RAM/MMIO boundary in either direction
+  end the run with `Exit::UnmappedMemory` in pinned x86jit
+  `96a49a9063cdf0a2bdb2d916f01b381fbad0176e`. Its
+  [`Memory::region_at`](https://github.com/unemu-org/x86jit/blob/96a49a9063cdf0a2bdb2d916f01b381fbad0176e/x86jit-core/src/memory.rs#L1967-L1989)
+  requires the whole transfer inside one region before read/write paths check
+  for MMIO (`memory.rs:2157`, `memory.rs:2291`). Neither part of the scalar
+  transfer is performed. Assembly coalesces adjacent MMIO device windows so
+  those crossings reach the bus, but mixed RAM/MMIO accesses need the upstream
+  CPU fix tracked by `xj-ir6.12 (x86jit)`.
 - Floppy writes are volatile (in-memory only; `upc-sk3.1`, required by phase C).
 
 ## Recently landed

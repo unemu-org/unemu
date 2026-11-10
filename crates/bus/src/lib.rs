@@ -18,6 +18,12 @@
 //! 16-bit device, such as an IDE data port, will
 //! need an explicit opt-in to receive whole words; no such opt-in exists yet.
 //!
+//! MMIO accesses within one decode window retain their original size. Accesses
+//! crossing windows use contiguous sub-accesses in ascending address order,
+//! composed little-endian. An undecoded address faults with
+//! [`BusError::UnmappedMmio`]; earlier sub-accesses remain completed and later
+//! ones are not attempted. MMIO never uses the port open-bus policy.
+//!
 //! [`Bus::tick_due`] dispatches due transitions; [`Bus::tick_all`] supports the
 //! per-clock test oracle. IRQ levels reach the machine through [`Bus::device_irq_line`].
 
@@ -191,13 +197,28 @@ impl Bus {
             .map(|r| r.device)
     }
 
-    /// Resolve an MMIO address to its device index, or `None` if undecoded.
-    fn mmio_device(&self, addr: u64) -> Option<usize> {
-        self.map
+    /// Resolve the leading sub-access without changing widths inside a window.
+    fn mmio_chunk(&self, addr: u64, size: u8) -> Result<(usize, u8), BusError> {
+        let range = self
+            .map
             .mmio
             .iter()
             .find(|r| r.addrs.contains(&addr))
-            .map(|r| r.device)
+            .ok_or(BusError::UnmappedMmio { addr })?;
+        // Invalid widths belong to the device's validation, never to a set of
+        // smaller, apparently valid accesses with partial side effects.
+        if !(1..=8).contains(&size) {
+            return Ok((range.device, size));
+        }
+        addr.checked_add(u64::from(size) - 1)
+            .ok_or(BusError::UnmappedMmio { addr })?;
+        let last_offset = *range.addrs.end() - addr;
+        let chunk = if u64::from(size) - 1 <= last_offset {
+            size
+        } else {
+            (last_offset + 1) as u8
+        };
+        Ok((range.device, chunk))
     }
 
     /// Dispatch a guest `in` at `port`, `size` bytes wide.
@@ -287,21 +308,39 @@ impl Bus {
     /// machine covers its physical space with mapped RAM and ROM regions so
     /// there is no undecoded memory to float, and a stray MMIO trap that reaches
     /// the bus with no device is a real wiring error worth surfacing.
+    ///
+    /// Cross-window accesses run in ascending address order and combine results
+    /// little-endian. A fault stops the access without undoing earlier chunks.
+    /// An address span overflowing `u64` faults before reaching a device.
+    /// Widths outside 1–8 bytes are passed unchanged to the first device for
+    /// validation.
     pub fn mmio_read(&mut self, addr: u64, size: u8) -> Result<u64, BusError> {
-        let idx = self
-            .mmio_device(addr)
-            .ok_or(BusError::UnmappedMmio { addr })?;
+        let (idx, chunk) = self.mmio_chunk(addr, size)?;
         self.sync_access(idx);
-        Ok(self.devices[idx].mmio_read(addr, size)?)
+        let value = self.devices[idx].mmio_read(addr, chunk)?;
+        if chunk == size {
+            return Ok(value);
+        }
+        let shift = 8 * chunk;
+        let rest = self.mmio_read(addr + u64::from(chunk), size - chunk)?;
+        Ok((value & ((1u64 << shift) - 1)) | (rest << shift))
     }
 
     /// Dispatch a guest MMIO write of `value` at `addr`, `size` bytes wide.
+    ///
+    /// Uses the same ordering, fault and width rules as [`Bus::mmio_read`],
+    /// slicing the value little-endian at each decode-window boundary.
     pub fn mmio_write(&mut self, addr: u64, size: u8, value: u64) -> Result<(), BusError> {
-        let idx = self
-            .mmio_device(addr)
-            .ok_or(BusError::UnmappedMmio { addr })?;
+        let (idx, chunk) = self.mmio_chunk(addr, size)?;
         self.sync_access(idx);
-        Ok(self.devices[idx].mmio_write(addr, size, value)?)
+        if chunk == size {
+            return Ok(self.devices[idx].mmio_write(addr, size, value)?);
+        }
+        let shift = 8 * chunk;
+        self.devices[idx].mmio_write(addr, chunk, value & ((1u64 << shift) - 1))?;
+        let remaining = size - chunk;
+        let rest = (value >> shift) & ((1u64 << (8 * remaining)) - 1);
+        self.mmio_write(addr + u64::from(chunk), remaining, rest)
     }
 
     /// Advance every device to virtual time `now` (§6).
@@ -431,6 +470,313 @@ fn open_bus_value(size: u8) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    type MmioCalls = std::rc::Rc<std::cell::RefCell<Vec<TraceEvent>>>;
+
+    struct MmioRegisters {
+        base: u64,
+        bytes: Vec<u8>,
+        calls: MmioCalls,
+        read_junk: u64,
+    }
+
+    impl Device for MmioRegisters {
+        fn name(&self) -> &'static str {
+            "mmio-registers"
+        }
+        fn port_read(&mut self, port: u16, _: u8) -> Result<u32, DeviceError> {
+            Err(DeviceError::UnmappedRegister {
+                kind: "port",
+                offset: u64::from(port),
+            })
+        }
+        fn port_write(&mut self, port: u16, _: u8, _: u32) -> Result<(), DeviceError> {
+            Err(DeviceError::UnmappedRegister {
+                kind: "port",
+                offset: u64::from(port),
+            })
+        }
+        fn mmio_read(&mut self, addr: u64, size: u8) -> Result<u64, DeviceError> {
+            if !(1..=8).contains(&size) {
+                return Err(DeviceError::UnmappedRegister {
+                    kind: "mmio",
+                    offset: addr,
+                });
+            }
+            let mut bytes = [0; 8];
+            for (i, byte) in bytes.iter_mut().take(usize::from(size)).enumerate() {
+                *byte = self
+                    .bytes
+                    .get((addr - self.base) as usize + i)
+                    .copied()
+                    .unwrap_or(0);
+            }
+            let value = u64::from_le_bytes(bytes) | self.read_junk;
+            self.calls
+                .borrow_mut()
+                .push(mmio_event(addr, size, AccessDir::Read, value));
+            Ok(value)
+        }
+        fn mmio_write(&mut self, addr: u64, size: u8, value: u64) -> Result<(), DeviceError> {
+            if !(1..=8).contains(&size) {
+                return Err(DeviceError::UnmappedRegister {
+                    kind: "mmio",
+                    offset: addr,
+                });
+            }
+            for (i, byte) in value
+                .to_le_bytes()
+                .iter()
+                .take(usize::from(size))
+                .enumerate()
+            {
+                if let Some(slot) = self.bytes.get_mut((addr - self.base) as usize + i) {
+                    *slot = *byte;
+                }
+            }
+            self.calls
+                .borrow_mut()
+                .push(mmio_event(addr, size, AccessDir::Write, value));
+            Ok(())
+        }
+        fn tick(&mut self, _: VClock) {}
+        fn irq_pending(&self) -> bool {
+            false
+        }
+        fn reset(&mut self) {
+            self.bytes.fill(0);
+        }
+        fn save(&self) -> Vec<u8> {
+            self.bytes.clone()
+        }
+        fn restore(&mut self, snapshot: &[u8]) -> Result<(), DeviceError> {
+            self.bytes.copy_from_slice(snapshot);
+            Ok(())
+        }
+    }
+
+    fn mmio_event(addr: u64, size: u8, dir: AccessDir, value: u64) -> TraceEvent {
+        TraceEvent::Mmio {
+            at: VClock::ZERO,
+            addr,
+            size,
+            dir,
+            value,
+        }
+    }
+
+    fn mmio_bus(windows: &[(u64, &[u8])]) -> (Bus, MmioCalls) {
+        mmio_bus_with_read_junk(windows, &[])
+    }
+
+    fn mmio_bus_with_read_junk(windows: &[(u64, &[u8])], read_junk: &[u64]) -> (Bus, MmioCalls) {
+        let calls = MmioCalls::default();
+        let mut devices: Vec<Box<dyn Device>> = Vec::new();
+        let mut map = DecodeMap::default();
+        for (base, bytes) in windows {
+            map.mmio.push(MmioRange {
+                addrs: *base..=(*base + (bytes.len() as u64 - 1)),
+                device: devices.len(),
+            });
+            devices.push(Box::new(MmioRegisters {
+                base: *base,
+                bytes: bytes.to_vec(),
+                calls: calls.clone(),
+                read_junk: read_junk.get(devices.len()).copied().unwrap_or(0),
+            }));
+        }
+        (Bus::new(devices, map), calls)
+    }
+
+    #[test]
+    fn mmio_straddling_word_write_reaches_both_devices() {
+        let (mut bus, calls) = mmio_bus(&[(0xB7FFE, &[0, 0]), (0xB8000, &[0, 0])]);
+        bus.mmio_write(0xB7FFF, 2, 0x1234).unwrap();
+        assert_eq!(
+            *calls.borrow(),
+            [
+                mmio_event(0xB7FFF, 1, AccessDir::Write, 0x34),
+                mmio_event(0xB8000, 1, AccessDir::Write, 0x12)
+            ]
+        );
+        assert_eq!(bus.device(0).unwrap().save(), [0, 0x34]);
+        assert_eq!(bus.device(1).unwrap().save(), [0x12, 0]);
+    }
+
+    #[test]
+    fn mmio_straddling_word_read_composes_both_devices() {
+        let (mut bus, calls) = mmio_bus(&[(0xB7FFE, &[0, 0x34]), (0xB8000, &[0x12, 0])]);
+        assert_eq!(bus.mmio_read(0xB7FFF, 2).unwrap(), 0x1234);
+        assert_eq!(
+            *calls.borrow(),
+            [
+                mmio_event(0xB7FFF, 1, AccessDir::Read, 0x34),
+                mmio_event(0xB8000, 1, AccessDir::Read, 0x12)
+            ]
+        );
+    }
+
+    #[test]
+    fn mmio_eight_byte_access_spans_three_windows() {
+        let (mut bus, calls) = mmio_bus(&[(0x100, &[0; 2]), (0x102, &[0; 3]), (0x105, &[0; 3])]);
+        let value = 0x8877_6655_4433_2211;
+        bus.mmio_write(0x100, 8, value).unwrap();
+        assert_eq!(
+            *calls.borrow(),
+            [
+                mmio_event(0x100, 2, AccessDir::Write, 0x2211),
+                mmio_event(0x102, 3, AccessDir::Write, 0x554433),
+                mmio_event(0x105, 3, AccessDir::Write, 0x887766)
+            ]
+        );
+        calls.borrow_mut().clear();
+        assert_eq!(bus.mmio_read(0x100, 8).unwrap(), value);
+        assert_eq!(
+            *calls.borrow(),
+            [
+                mmio_event(0x100, 2, AccessDir::Read, 0x2211),
+                mmio_event(0x102, 3, AccessDir::Read, 0x554433),
+                mmio_event(0x105, 3, AccessDir::Read, 0x887766)
+            ]
+        );
+    }
+
+    #[test]
+    fn mmio_read_masks_junk_bits_from_nonfinal_fragments() {
+        let (mut bus, calls) = mmio_bus_with_read_junk(
+            &[(0x100, &[0x12]), (0x101, &[0x34]), (0x102, &[0x56])],
+            &[!0xFF, !0xFF],
+        );
+        assert_eq!(bus.mmio_read(0x100, 3).unwrap(), 0x563412);
+        assert_eq!(
+            *calls.borrow(),
+            [
+                mmio_event(0x100, 1, AccessDir::Read, !0xFF | 0x12),
+                mmio_event(0x101, 1, AccessDir::Read, !0xFF | 0x34),
+                mmio_event(0x102, 1, AccessDir::Read, 0x56),
+            ]
+        );
+    }
+
+    #[test]
+    fn mmio_write_masks_every_fragment_including_the_last() {
+        let (mut bus, calls) = mmio_bus(&[(0x100, &[0; 2]), (0x102, &[0]), (0x103, &[0])]);
+        bus.mmio_write(0x100, 4, 0xFFFF_FFFF_4433_2211).unwrap();
+        assert_eq!(
+            *calls.borrow(),
+            [
+                mmio_event(0x100, 2, AccessDir::Write, 0x2211),
+                mmio_event(0x102, 1, AccessDir::Write, 0x33),
+                mmio_event(0x103, 1, AccessDir::Write, 0x44),
+            ]
+        );
+        assert_eq!(bus.mmio_read(0x100, 4).unwrap(), 0x4433_2211);
+    }
+
+    #[test]
+    fn mmio_invalid_zero_width_reaches_device_validation_without_side_effects() {
+        assert_invalid_mmio_width(0);
+    }
+
+    #[test]
+    fn mmio_invalid_oversized_widths_are_not_split_into_valid_fragments() {
+        for size in [9, 16, u8::MAX] {
+            assert_invalid_mmio_width(size);
+        }
+    }
+
+    fn assert_invalid_mmio_width(size: u8) {
+        let (mut bus, calls) = mmio_bus(&[(0x100, &[0x12]), (0x101, &[0x34; 8])]);
+        assert!(matches!(
+            bus.mmio_read(0x100, size),
+            Err(BusError::Device(DeviceError::UnmappedRegister {
+                kind: "mmio",
+                offset: 0x100
+            }))
+        ));
+        assert!(matches!(
+            bus.mmio_write(0x100, size, u64::MAX),
+            Err(BusError::Device(DeviceError::UnmappedRegister {
+                kind: "mmio",
+                offset: 0x100
+            }))
+        ));
+        assert!(calls.borrow().is_empty());
+        assert_eq!(bus.device(0).unwrap().save(), [0x12]);
+        assert_eq!(bus.device(1).unwrap().save(), [0x34; 8]);
+    }
+
+    #[test]
+    fn mmio_overflow_faults_at_original_address_before_any_fragment() {
+        let addr = u64::MAX - 1;
+        let (mut bus, calls) = mmio_bus(&[(addr, &[0x12, 0x34]), (0, &[0x56, 0x78])]);
+        assert!(matches!(
+            bus.mmio_read(addr, 4),
+            Err(BusError::UnmappedMmio { addr: fault }) if fault == addr
+        ));
+        assert!(matches!(
+            bus.mmio_write(addr, 4, u64::MAX),
+            Err(BusError::UnmappedMmio { addr: fault }) if fault == addr
+        ));
+        assert!(calls.borrow().is_empty());
+        assert_eq!(bus.device(0).unwrap().save(), [0x12, 0x34]);
+        assert_eq!(bus.device(1).unwrap().save(), [0x56, 0x78]);
+    }
+
+    #[test]
+    fn mmio_within_one_window_keeps_original_size_and_value() {
+        for size in [1, 2, 4, 8] {
+            let (mut bus, calls) = mmio_bus(&[(0x100, &[0; 9])]);
+            let value = 0x8877_6655_4433_2211;
+            bus.mmio_write(0x101, size, value).unwrap();
+            let read = bus.mmio_read(0x101, size).unwrap();
+            let mut expected = [0; 8];
+            expected[..usize::from(size)]
+                .copy_from_slice(&value.to_le_bytes()[..usize::from(size)]);
+            assert_eq!(read, u64::from_le_bytes(expected));
+            assert_eq!(
+                *calls.borrow(),
+                [
+                    mmio_event(0x101, size, AccessDir::Write, value),
+                    mmio_event(0x101, size, AccessDir::Read, read)
+                ]
+            );
+        }
+    }
+
+    #[test]
+    fn mmio_partially_unmapped_stops_after_completed_prefix() {
+        let (mut bus, calls) = mmio_bus(&[(0x100, &[0x11]), (0x102, &[0x33, 0x44])]);
+        assert!(matches!(
+            bus.mmio_write(0x100, 4, 0x8877_6655),
+            Err(BusError::UnmappedMmio { addr: 0x101 })
+        ));
+        assert_eq!(
+            *calls.borrow(),
+            [mmio_event(0x100, 1, AccessDir::Write, 0x55)]
+        );
+        assert_eq!(bus.device(0).unwrap().save(), [0x55]);
+        assert_eq!(bus.device(1).unwrap().save(), [0x33, 0x44]);
+        calls.borrow_mut().clear();
+        assert!(matches!(
+            bus.mmio_read(0x100, 4),
+            Err(BusError::UnmappedMmio { addr: 0x101 })
+        ));
+        assert_eq!(
+            *calls.borrow(),
+            [mmio_event(0x100, 1, AccessDir::Read, 0x55)]
+        );
+        calls.borrow_mut().clear();
+        assert!(matches!(
+            bus.mmio_read(0x101, 2),
+            Err(BusError::UnmappedMmio { addr: 0x101 })
+        ));
+        assert!(matches!(
+            bus.mmio_write(0x101, 2, 0xFFFF),
+            Err(BusError::UnmappedMmio { addr: 0x101 })
+        ));
+        assert!(calls.borrow().is_empty());
+    }
 
     struct ByteRegisters {
         base: u16,
@@ -588,6 +934,71 @@ mod tests {
             },
         );
         (bus, calls)
+    }
+
+    #[test]
+    fn mmio_read_syncs_each_straddling_fragment_before_access() {
+        assert_straddling_mmio_sync(AccessDir::Read);
+    }
+
+    #[test]
+    fn mmio_write_syncs_each_straddling_fragment_before_access() {
+        assert_straddling_mmio_sync(AccessDir::Write);
+    }
+
+    fn assert_straddling_mmio_sync(dir: AccessDir) {
+        let calls = [CallLog::default(), CallLog::default()];
+        let devices = calls
+            .iter()
+            .map(|calls| {
+                Box::new(TimedDevice {
+                    now: VClock::ZERO,
+                    event: NextEvent::Dormant,
+                    calls: calls.clone(),
+                }) as Box<dyn Device>
+            })
+            .collect();
+        let mut bus = Bus::new(
+            devices,
+            DecodeMap {
+                ports: vec![],
+                mmio: vec![
+                    MmioRange {
+                        addrs: 0x1000..=0x1000,
+                        device: 0,
+                    },
+                    MmioRange {
+                        addrs: 0x1001..=0x1001,
+                        device: 1,
+                    },
+                ],
+            },
+        );
+        bus.tick_due(VClock(12));
+        bus.invalidate_deadlines();
+        for calls in &calls {
+            calls.borrow_mut().clear();
+        }
+        let access = match dir {
+            AccessDir::Read => {
+                assert_eq!(bus.mmio_read(0x1000, 2).unwrap(), 0x0C0C);
+                "mmio_read"
+            }
+            AccessDir::Write => {
+                bus.mmio_write(0x1000, 2, 0x1234).unwrap();
+                "mmio_write"
+            }
+        };
+        for calls in &calls {
+            assert_eq!(
+                calls.borrow().as_slice(),
+                [
+                    ("query", VClock::ZERO),
+                    ("sync", VClock(12)),
+                    (access, VClock(12)),
+                ]
+            );
+        }
     }
 
     #[test]

@@ -132,6 +132,14 @@ byte count. Two things it must express that a naive "N kB of RAM" cannot:
   `Ram` / `Rom` / MMIO-trap regions so this is stated in data; a byte-count
   model would silently get the region's write-protection wrong.
 
+The MMIO list retains per-device windows. For CPU mapping, assembly sorts them
+by address and coalesces each run of touching windows into one `RegionKind::Trap`
+region. Non-adjacent windows stay separate; gaps and RAM are never included in
+the merged trap regions. The bus retains the per-device decode map and splits
+cross-window accesses into little-endian sub-accesses. This lets accesses across
+adjacent devices reach the bus despite the pinned CPU's single-region containment
+requirement. RAM/MMIO crossings remain a [known CPU limitation](../status.md#broken--known-defects).
+
 ### `DeviceConfig` — one device, fully described
 
 The device list is **flat**. Each entry fully describes one hardware unit and

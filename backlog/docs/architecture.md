@@ -88,8 +88,13 @@ integration tests as an oracle with the same CPU/IRQ rules. No production
 [`Bus`](../../crates/bus/src/lib.rs) splits wider port accesses into consecutive,
 independently decoded byte cycles, low byte first. Undecoded ports default to
 all-ones reads/dropped writes; optional bounded tracing and strict faulting are
-selectable.
-Undecoded MMIO faults. Read results use `complete_port_in` or
+selectable. Assembly coalesces touching MMIO windows into one CPU trap region
+while retaining per-device bus decoding. MMIO accesses contained in one decode
+window reach the device once with their original size. Accesses crossing windows
+are split into contiguous sub-accesses in ascending address order, with
+little-endian read composition and write slicing. An undecoded MMIO address
+faults immediately: earlier sub-accesses remain completed and later ones are not
+attempted. Read results use `complete_port_in` or
 `complete_mmio_read`; trapped writes require `complete_mmio_write` so retrying
 the instruction does not repeat the device side effect.
 

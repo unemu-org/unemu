@@ -10,6 +10,12 @@
 //! naming them is exactly this layer's job, which is why it sits above the
 //! `machine` crate.
 //!
+//! Adjacent MMIO windows share one CPU trap region so cross-device accesses
+//! reach the bus instead of failing the CPU's single-region containment check.
+//! The bus keeps each device's decode window and splits accesses at their
+//! boundaries; gaps between windows stay outside the merged trap regions. See
+//! `backlog/docs/design/machine-config.md`, §MemoryConfig.
+//!
 //! ## Devices are named, not numbered
 //!
 //! The old hand-written assembly addressed every device by a literal bus index
@@ -244,8 +250,14 @@ fn build_cpu(config: &MachineConfig) -> Result<X86JitCpu, AssemblyError> {
     for region in &config.memory.ram {
         cpu.map_ram(region.base, region.size)?;
     }
-    for window in &config.memory.mmio {
-        cpu.map_mmio(window.base, window.size)?;
+    let mut mmio: Vec<_> = config.memory.mmio.iter().collect();
+    mmio.sort_unstable_by_key(|window| window.base);
+    // The CPU requires each access to fit one region, while device ownership
+    // remains a bus concern. Only touching windows can share a trap region.
+    for run in mmio.chunk_by(|left, right| left.end() == right.base) {
+        let base = run[0].base;
+        let end = run[run.len() - 1].end();
+        cpu.map_mmio(base, end - base)?;
     }
     for image in &config.images {
         let bytes = load_image_bytes(&image.source)?;
@@ -908,6 +920,74 @@ mod tests {
         // The bus holds the full device set the config named.
         assert!(bus.device_mut(0).is_some());
         assert!(bus.device_mut(10).is_some());
+    }
+
+    #[test]
+    fn guest_word_access_straddles_mda_and_colour_scanout() {
+        for reverse_windows in [false, true] {
+            let mut config = crate::bios(vec![0; 0x8000], None);
+            if reverse_windows {
+                config.memory.mmio.reverse();
+            }
+            config.cpu.reset = ResetSpec::Entry { cs: 0, ip: 0x7C00 };
+            config.cpu.segments = SegmentSeed::flat(0);
+            config.cpu.segments.ds = 0xB000;
+            config.images.push(LoadImage {
+                base: 0x7C00,
+                source: ImageSource::Inline(vec![
+                    0xFA, 0xC7, 0x06, 0xFF, 0x7F, 0x34, 0x12, 0xA1, 0xFF, 0x7F, 0xF4,
+                ]),
+                kind: ImageKind::RamLoad,
+            });
+            let mut assembled = assemble(&config).unwrap();
+            assert_eq!(
+                assembled.machine.run_bounded(Some(100)).unwrap(),
+                machine::RunOutcome::Halted
+            );
+            assert_eq!(assembled.machine.cpu().reg(cpu::CpuReg::Rax), 0x1234);
+            assembled.machine.bus_mut().settle();
+            let scanout = |card| {
+                assembled
+                    .machine
+                    .bus()
+                    .device(assembled.device_index[&card])
+                    .unwrap()
+                    .text_scanout()
+                    .unwrap()
+            };
+            let mda = scanout(DeviceId::Mda);
+            let colour = scanout(DeviceId::Vga);
+            assert_eq!(mda.vram.last(), Some(&0x34));
+            assert_eq!(mda.vram[0], 0);
+            assert_eq!(&colour.vram[..2], &[0x12, 0]);
+        }
+    }
+
+    #[test]
+    fn cpu_trap_regions_merge_chains_but_preserve_ram_gaps() {
+        let mut config = crate::bios(vec![0; 0x8000], None);
+        config.memory.mmio = vec![
+            MmioWindow::new(0xB0005, 3, DeviceId::Mda),
+            MmioWindow::new(0xB8000, 0x8000, DeviceId::Vga),
+            MmioWindow::new(0xB0000, 2, DeviceId::Mda),
+            MmioWindow::new(0xB0002, 3, DeviceId::Mda),
+        ];
+        config.memory.ram = vec![
+            RamRegion::new(0, 0xB0000),
+            RamRegion::new(0xB0008, 0xB8000 - 0xB0008),
+            RamRegion::new(0xC0000, 0xF8000 - 0xC0000),
+        ];
+        config.validate().unwrap();
+        let mut cpu = build_cpu(&config).unwrap();
+        let mut bytes = [0xFF; 8];
+        cpu.read_mem(0xB0000, &mut bytes).unwrap();
+        assert_eq!(bytes, [0; 8]);
+        cpu.write_mem(0xB0008, &[0x5A]).unwrap();
+        cpu.read_mem(0xB0008, &mut bytes[..1]).unwrap();
+        assert_eq!(bytes[0], 0x5A);
+        assert!(cpu.read_mem(0xB0007, &mut bytes[..2]).is_err());
+        cpu.read_mem(0xB8000, &mut bytes).unwrap();
+        assert_eq!(bytes, [0; 8]);
     }
 
     #[test]
