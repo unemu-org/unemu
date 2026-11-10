@@ -18,7 +18,19 @@
 //! TextModeState has no cursor start/end registers, so the programmed shape is
 //! unavailable. Phosphor response and aspect correction are absent.
 //! Colour uses the standard 16-entry CGA/VGA text palette. Blink is drawn steady:
-//! there is no host clock, pacing, keyboard input, graphics mode or custom font.
+//! there is no host clock, pacing, graphics mode or custom font.
+//! Physical keyboard events enter a host FIFO. Immediately before each fixed
+//! run chunk it transfers bytes to the 8042, retaining bytes under backpressure.
+//! Events are quantised to chunk boundaries, never injected inside a chunk.
+//! Repeated host presses emit make codes again (typematic); releases emit breaks.
+//! Captured physical Shift and guest LED NumLock select IBM artificial Shift
+//! wrappers for E0 navigation/Divide (IBM PS/2 Technical Reference, Set 1 Scan-Code
+//! Tables and Set/Reset Status Indicators). Events are encoded only when the
+//! 8042 can accept their first byte at a boundary, using its current LED state.
+//! Repeats use plain base makes; wrappers surround first make and final break.
+//! Focus loss releases all held keys; unheld releases and stopped-machine input
+//! are ignored. macOS winit 0.30 does not deliver CapsLock key events.
+//! See `backlog/docs/design/observation.md` § Host input for timing and coverage.
 //! Only the binary owns a window; library tests and frame sinks stay headless.
 
 /// Attribution carried by binaries that embed the original font files.
@@ -31,9 +43,11 @@ pub const FONT_NOTICE: &str = concat!(
 );
 
 mod font;
+mod keyboard;
 mod raster;
 
 pub use font::{FontAtlas, FontError, MDA_FONT, VGA_FONT};
+pub use keyboard::{set1_scancodes, HostKeyboard};
 pub use raster::{PixelFrame, RasterError, Rasterizer};
 
 use std::{

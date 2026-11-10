@@ -99,9 +99,16 @@
 //! ## Keyboard reset / BAT
 //!
 //! A plain host-to-keyboard byte (`0x60` data write) is acknowledged with a single
-//! `0xFA` (ACK). The one keyboard command interpreted is **reset** (`0xFF`): it is
+//! `0xFA` (ACK). **Reset** (`0xFF`) is
 //! ACKed with `0xFA` and then, modelling the keyboard's power-on self-test passing,
 //! yields `0xAA` (**BAT OK**) so the BIOS's post-reset wait for `0xAA` completes.
+//! Set/Reset Status Indicators (`0xED`) records the following parameter byte;
+//! bit 1 is NumLock. Keyboard/device reset clears the LEDs. IBM Personal
+//! System/2 Hardware Interface Technical Reference — Common Interfaces (October
+//! 1990), Keyboards (101- and 102-Key), "Set/Reset Status Indicators (Hex ED)",
+//! "Reset (Hex FF)" and "Basic Assurance Test", specifies this state and LEDs
+//! turning off at the end of BAT. See `backlog/docs/design/observation.md` § Host
+//! input: frontend navigation wrappers follow these guest-controlled LEDs.
 //!
 //! Deliberately **not** modelled (decoded as no-ops where a byte is consumed):
 //! - **The PS/2 auxiliary (mouse) device** itself and the aux output buffer / IRQ12
@@ -109,13 +116,14 @@
 //! - **Password / security commands** (`0xA4`–`0xA6`).
 //! - **`0xFE` pulse-reset** (system reset via the output port) and `0xF0`–`0xFF`
 //!   output-line pulses: the CPU-reset seam is out of scope here.
-//! - **Keyboard-side command semantics** beyond reset/ACK: the keyboard's own
-//!   command set (LED set, typematic, scancode set select) is not interpreted.
+//! - **Keyboard-side command semantics** beyond reset/ACK and LED state:
+//!   typematic-rate and scancode-set commands are not interpreted.
 //! - **Test inputs** read (`0xE0`).
 //!
 //! Snapshots contain controller registers, tagged keyboard queues, pending
 //! replies, IRQ refill holds, the absolute PIT time base and the pending serial
-//! frame deadline (Intel 8042 datasheet, Data Bus Buffer and Interrupts).
+//! frame deadline (Intel 8042 datasheet, Data Bus Buffer and Interrupts), plus
+//! guest keyboard LEDs and the pending LED parameter exchange.
 
 use std::collections::VecDeque;
 
@@ -131,7 +139,7 @@ const PORT_DATA: u16 = 0x60;
 const PORT_CMD: u16 = 0x64;
 
 /// Snapshot layout version tag, first byte of [`Device::save`] output.
-const SNAPSHOT_VERSION: u8 = 3;
+const SNAPSHOT_VERSION: u8 = 4;
 
 /// Keyboard frame time in PIT input clocks (1,193,182 Hz), rounded up.
 ///
@@ -298,6 +306,8 @@ pub struct I8042 {
     output_port: u8,
     /// What the next `0x60` write means.
     expect: Expect,
+    keyboard_leds: u8,
+    awaiting_leds: bool,
     /// Scancodes and keyboard replies waiting to enter the output buffer.
     input_queue: VecDeque<KeyboardByte>,
     /// Only command replies count toward the keyboard-side capacity limit.
@@ -329,6 +339,8 @@ impl I8042 {
             command_byte: CMD_BYTE_RESET,
             output_port: OUTPUT_PORT_RESET,
             expect: Expect::KeyboardData,
+            keyboard_leds: 0,
+            awaiting_leds: false,
             input_queue: VecDeque::new(),
             queued_replies: 0,
             controller_reply: None,
@@ -350,6 +362,32 @@ impl I8042 {
             is_reply: false,
         });
         self.refill_output();
+    }
+
+    /// Last guest Set/Reset Status Indicators parameter; bit 1 is NumLock.
+    /// IBM PS/2 Hardware Interface Technical Reference — Common Interfaces,
+    /// Keyboards, "Set/Reset Status Indicators (Hex ED)". Reading this host-only
+    /// state neither accesses a port nor changes the controller.
+    #[must_use]
+    pub fn keyboard_leds(&self) -> u8 {
+        self.keyboard_leds
+    }
+
+    /// Whether a frontend can hand over one byte without staging it internally.
+    /// Intel 8042 datasheet, "Data Bus Buffer", and Intel UPI-41A/41AH/42/42AH
+    /// User's Manual, "General Handshaking Protocol": an unread output byte
+    /// must be consumed first. This host-only readiness check also respects the
+    /// model's serial deadline, IRQ hold and interface inhibit (§7.5); it never
+    /// performs a guest port transaction or changes device state.
+    #[must_use]
+    pub fn host_input_ready(&self) -> bool {
+        !self.output_full
+            && self.input_queue.is_empty()
+            && self.command_byte & CB_KBD_DISABLE == 0
+            && !self.refill_hold
+            && self.keyboard_ready_at.is_none_or(|at| self.now >= at)
+            && self.controller_reply.is_none()
+            && !self.awaiting_leds
     }
 
     /// Whether the A20 gate bit is currently set in the output port.
@@ -480,9 +518,17 @@ impl I8042 {
         self.last_was_command = false;
         match self.expect {
             Expect::KeyboardData => {
-                // Host-to-keyboard byte: acknowledge. The keyboard command set is
-                // not interpreted, except reset, which additionally reports its
-                // power-on self-test (BAT) as passing so the BIOS's wait completes.
+                // A command overrides an unfinished LED parameter exchange.
+                // Replies retain the existing ACK/BAT ordering and capacity policy.
+                if self.awaiting_leds && byte < 0x80 {
+                    self.keyboard_leds = byte;
+                    self.awaiting_leds = false;
+                } else {
+                    self.awaiting_leds = byte == 0xED;
+                    if byte == KBD_CMD_RESET {
+                        self.keyboard_leds = 0;
+                    }
+                }
                 let reply_len = if byte == KBD_CMD_RESET { 2 } else { 1 };
                 // Keep reset's ACK/BAT together: a lone ACK promises a BAT that
                 // would never arrive, and a lone BAT has no matching command ACK.
@@ -648,10 +694,10 @@ impl Device for I8042 {
     fn save(&self) -> Vec<u8> {
         // Layout: version, command byte, output port, output buffer, flags,
         // expect, source, queue length (8), pending controller reply,
-        // clock (8), keyboard deadline (8), queue pairs
+        // clock (8), keyboard deadline (8), LEDs, awaiting LED parameter, queue pairs
         // (value, is_reply). Host scripts can exceed a u16 byte count.
-        // Version 3 preserves virtual time and the pending serial frame (flag 5).
-        let mut blob = Vec::with_capacity(32 + 2 * self.input_queue.len());
+        // Version 4 adds guest LEDs and the pending LED parameter exchange.
+        let mut blob = Vec::with_capacity(34 + 2 * self.input_queue.len());
         blob.push(SNAPSHOT_VERSION);
         blob.push(self.command_byte);
         blob.push(self.output_port);
@@ -689,6 +735,7 @@ impl Device for I8042 {
                 .0
                 .to_le_bytes(),
         );
+        blob.extend([self.keyboard_leds, u8::from(self.awaiting_leds)]);
         for byte in &self.input_queue {
             blob.extend([byte.value, u8::from(byte.is_reply)]);
         }
@@ -696,17 +743,20 @@ impl Device for I8042 {
     }
 
     fn restore(&mut self, snapshot: &[u8]) -> Result<(), DeviceError> {
-        const HEADER: usize = 1 + 1 + 1 + 1 + 1 + 1 + 1 + 8 + 1 + 8 + 8;
+        const HEADER: usize = 1 + 1 + 1 + 1 + 1 + 1 + 1 + 8 + 1 + 8 + 8 + 1 + 1;
+        if snapshot
+            .first()
+            .is_some_and(|&version| version != SNAPSHOT_VERSION)
+        {
+            return Err(DeviceError::InvalidSnapshot {
+                device: NAME,
+                reason: "unsupported snapshot version",
+            });
+        }
         if snapshot.len() < HEADER {
             return Err(DeviceError::InvalidSnapshot {
                 device: NAME,
                 reason: "snapshot shorter than header",
-            });
-        }
-        if snapshot[0] != SNAPSHOT_VERSION {
-            return Err(DeviceError::InvalidSnapshot {
-                device: NAME,
-                reason: "unsupported snapshot version",
             });
         }
         let command_byte = snapshot[1];
@@ -714,6 +764,8 @@ impl Device for I8042 {
         let output_buffer = snapshot[3];
         let flags = snapshot[4];
         if flags & !0x3D != 0
+            || snapshot[32] >= 0x80
+            || snapshot[33] > 1
             || snapshot[5] > 3
             || snapshot[6] > 2
             || (flags & 1 != 0) != (snapshot[6] != 0)
@@ -765,6 +817,8 @@ impl Device for I8042 {
                 reason: "keyboard replies exceed capacity",
             });
         }
+        self.keyboard_leds = snapshot[32];
+        self.awaiting_leds = snapshot[33] != 0;
         self.command_byte = command_byte;
         self.output_port = output_port;
         self.output_buffer = output_buffer;
@@ -828,6 +882,203 @@ mod tests {
             .unwrap()
             .downcast_mut::<I8042>()
             .unwrap()
+    }
+
+    fn set_leds(bus: &mut MockBus, leds: u8) {
+        bus.port_write(PORT_DATA, 1, 0xED).unwrap();
+        assert_eq!(bus.port_read(PORT_DATA, 1).unwrap(), u32::from(KBD_ACK));
+        bus.tick(KEYBOARD_BYTE_CLOCKS);
+        bus.port_write(PORT_DATA, 1, u32::from(leds)).unwrap();
+        assert_eq!(bus.port_read(PORT_DATA, 1).unwrap(), u32::from(KBD_ACK));
+        bus.tick(KEYBOARD_BYTE_CLOCKS);
+    }
+
+    #[test]
+    fn keyboard_led_parameter_is_guest_controlled_and_accessor_has_no_side_effects() {
+        let mut bus = MockBus::new(Box::new(I8042::new()));
+        bus.device_mut()
+            .set_trace_policy(device::TracePolicy::Ring { capacity: 64 });
+        assert_eq!(bus_keyboard(&mut bus).keyboard_leds(), 0);
+        for leds in 0..8 {
+            set_leds(&mut bus, leds);
+            bus.device_mut().take_trace();
+            let before = bus.device().save();
+            assert_eq!(bus_keyboard(&mut bus).keyboard_leds(), leds);
+            assert_eq!(bus_keyboard(&mut bus).keyboard_leds(), leds);
+            assert_eq!(bus.device().save(), before);
+            assert!(bus.device_mut().take_trace().is_empty());
+        }
+        bus.port_write(PORT_DATA, 1, 0).unwrap();
+        assert_eq!(
+            bus_keyboard(&mut bus).keyboard_leds(),
+            7,
+            "data without ED cannot change LEDs"
+        );
+    }
+
+    #[test]
+    fn keyboard_and_device_reset_clear_leds_and_cancel_a_pending_led_parameter() {
+        let mut bus = MockBus::new(Box::new(I8042::new()));
+        set_leds(&mut bus, 7);
+        bus.port_write(PORT_DATA, 1, 0xED).unwrap();
+        bus.port_read(PORT_DATA, 1).unwrap();
+        bus.tick(KEYBOARD_BYTE_CLOCKS);
+        assert_eq!(
+            bus_keyboard(&mut bus).keyboard_leds(),
+            7,
+            "ED alone does not change LEDs"
+        );
+        bus.port_write(PORT_DATA, 1, u32::from(KBD_CMD_RESET))
+            .unwrap();
+        assert_eq!(bus_keyboard(&mut bus).keyboard_leds(), 0);
+        assert_eq!(bus.port_read(PORT_DATA, 1).unwrap(), u32::from(KBD_ACK));
+        bus.tick(KEYBOARD_BYTE_CLOCKS);
+        assert_eq!(bus.port_read(PORT_DATA, 1).unwrap(), u32::from(KBD_BAT_OK));
+        bus.tick(KEYBOARD_BYTE_CLOCKS);
+        bus.port_write(PORT_DATA, 1, 3).unwrap();
+        assert_eq!(
+            bus_keyboard(&mut bus).keyboard_leds(),
+            0,
+            "reset cancels ED"
+        );
+        bus.port_read(PORT_DATA, 1).unwrap();
+        bus.tick(KEYBOARD_BYTE_CLOCKS);
+        set_leds(&mut bus, 2);
+        bus.port_write(PORT_DATA, 1, 0xED).unwrap();
+        bus.device_mut().reset();
+        assert_eq!(bus_keyboard(&mut bus).keyboard_leds(), 0);
+        bus.port_write(PORT_DATA, 1, 3).unwrap();
+        assert_eq!(bus_keyboard(&mut bus).keyboard_leds(), 0);
+    }
+
+    #[test]
+    fn keyboard_snapshot_preserves_leds_and_the_pending_parameter_exchange() {
+        let mut source = MockBus::new(Box::new(I8042::new()));
+        set_leds(&mut source, 5);
+        let mut restored = MockBus::new(Box::new(I8042::new()));
+        let blob = source.device().save();
+        assert_eq!(blob[0], 4);
+        restored.device_mut().restore(&blob).unwrap();
+        assert_eq!(bus_keyboard(&mut restored).keyboard_leds(), 5);
+        assert_eq!(restored.device().save(), blob);
+        for bus in [&mut source, &mut restored] {
+            bus.port_write(PORT_DATA, 1, 0xED).unwrap();
+        }
+        let pending = source.device().save();
+        restored.device_mut().reset();
+        restored.device_mut().restore(&pending).unwrap();
+        for bus in [&mut source, &mut restored] {
+            bus.port_write(PORT_DATA, 1, 2).unwrap();
+            assert_eq!(bus_keyboard(bus).keyboard_leds(), 2);
+        }
+        assert_eq!(source.device().save(), restored.device().save());
+    }
+
+    #[test]
+    fn keyboard_led_snapshot_rejects_legacy_and_invalid_blobs_before_mutation() {
+        let mut bus = MockBus::new(Box::new(I8042::new()));
+        set_leds(&mut bus, 5);
+        bus.port_write(PORT_DATA, 1, 0xED).unwrap();
+        let before = bus.device().save();
+        assert_eq!(before[0], 4);
+        let mut legacy = before.clone();
+        legacy.drain(32..34);
+        legacy[0] = 3;
+        assert!(matches!(
+            bus.device_mut().restore(&legacy),
+            Err(DeviceError::InvalidSnapshot {
+                reason: "unsupported snapshot version",
+                ..
+            })
+        ));
+        assert_eq!(bus.device().save(), before);
+        let mut invalid = before.clone();
+        invalid[32] = 7;
+        invalid[33] = 2;
+        assert!(matches!(
+            bus.device_mut().restore(&invalid),
+            Err(DeviceError::InvalidSnapshot { .. })
+        ));
+        assert_eq!(bus.device().save(), before);
+        let mut trailing = before.clone();
+        trailing.extend([0x1E, 0]);
+        assert!(matches!(
+            bus.device_mut().restore(&trailing),
+            Err(DeviceError::InvalidSnapshot { .. })
+        ));
+        assert_eq!(bus.device().save(), before);
+        for length in 0..before.len() {
+            assert!(matches!(
+                bus.device_mut().restore(&before[..length]),
+                Err(DeviceError::InvalidSnapshot { .. })
+            ));
+            assert_eq!(bus.device().save(), before);
+        }
+    }
+
+    #[test]
+    fn keyboard_snapshot_rejects_unreachable_led_bytes_without_mutation() {
+        let mut bus = MockBus::new(Box::new(I8042::new()));
+        set_leds(&mut bus, 0x7F);
+        let before = bus.device().save();
+        bus.device_mut().restore(&before).unwrap();
+        assert_eq!(bus.device().save(), before);
+        for leds in 0x80..=0xFF {
+            let mut invalid = before.clone();
+            invalid[32] = leds;
+            assert!(
+                matches!(
+                    bus.device_mut().restore(&invalid),
+                    Err(DeviceError::InvalidSnapshot { .. })
+                ),
+                "accepted unreachable LED byte {leds:#04x}"
+            );
+            assert_eq!(bus.device().save(), before, "LED byte {leds:#04x}");
+        }
+    }
+
+    #[test]
+    fn host_readiness_is_side_effect_free_and_checks_every_delivery_blocker() {
+        for blocker in 0..8 {
+            let mut bus = MockBus::new(Box::new(I8042::new()));
+            bus.device_mut()
+                .set_trace_policy(device::TracePolicy::Ring { capacity: 8 });
+            let kbc = bus_keyboard(&mut bus);
+            match blocker {
+                0 => {}
+                1 => kbc.output_full = true,
+                2 => kbc.input_queue.push_back(KeyboardByte {
+                    value: 0x1E,
+                    is_reply: false,
+                }),
+                3 => kbc.command_byte |= CB_KBD_DISABLE,
+                4 => kbc.refill_hold = true,
+                5 => kbc.keyboard_ready_at = Some(VClock(10)),
+                6 => kbc.controller_reply = Some(0x55),
+                7 => kbc.awaiting_leds = true,
+                _ => unreachable!(),
+            }
+            let before = bus.device().save();
+            for _ in 0..2 {
+                assert_eq!(
+                    bus_keyboard(&mut bus).host_input_ready(),
+                    blocker == 0,
+                    "blocker {blocker}"
+                );
+            }
+            assert_eq!(bus.device().save(), before);
+            assert!(bus.device_mut().take_trace().is_empty());
+        }
+        let mut bus = MockBus::new(Box::new(I8042::new()));
+        bus_keyboard(&mut bus).push_scancode(0x1E);
+        bus.port_read(PORT_DATA, 1).unwrap();
+        assert!(!bus_keyboard(&mut bus).host_input_ready());
+        bus.tick(KEYBOARD_BYTE_CLOCKS);
+        assert!(bus_keyboard(&mut bus).host_input_ready());
+        bus.port_write(PORT_CMD, 1, 0xAD).unwrap();
+        assert!(!bus_keyboard(&mut bus).host_input_ready());
+        bus.port_write(PORT_CMD, 1, 0xAE).unwrap();
+        assert!(bus_keyboard(&mut bus).host_input_ready());
     }
 
     #[test]

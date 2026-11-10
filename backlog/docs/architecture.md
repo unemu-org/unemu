@@ -178,10 +178,21 @@ The original VileR v2.2 fonts (CC BY-SA 4.0, attribution and hashes in
 resources at load time. MDA uses 9×14 cells and colour uses 8×16 cells, with
 integer pixel replication. The binary uses scale 2, centres the frame on resize
 and clips it if the window becomes smaller; no interpolation or aspect correction
-is applied. Blink is steady; no host clock, pacing or keyboard input is present.
-A halt, CPU failure or the FreeCOM date prompt stops advancement while the last
-frame stays visible. Window creation is confined to the binary; workspace tests,
-including the observation-to-pixels smoke test, do not open a window.
+is applied. Blink is steady; there is no host clock or pacing. Physical winit
+key events enter a host FIFO as set-1 make/break bytes (E0 for extended keys).
+Repeated presses emit make again. Before each chunk the FIFO uses assembly's
+`try_inject_scancode` controller seam and side-effect-free readiness accessor,
+retaining bytes while the 8042 is busy or inhibited; the scripted golden
+injection path remains unchanged. The host tracks held keys and captures physical
+Shift state with each queued event. It encodes the next transition only at a
+boundary where the 8042 can accept input, reading the guest's current LED NumLock
+bit. IBM artificial Shift wrappers cover the first make and final break of E0
+navigation/Divide; repeat makes are plain. Focus loss releases held keys.
+The 8042 snapshot v4 includes guest LEDs and the pending LED parameter exchange;
+keyboard/device reset clears both. Input never enters during a
+chunk. DOS prompts keep advancing; a halt, CPU failure or exhausted virtual-time
+range stops advancement while the last frame stays visible. Window creation
+is confined to the binary; workspace tests, including the observation-to-pixels smoke test, do not open a window.
 
 `assemble_with_observation` binds requested routes by `DeviceId` and validates
 capabilities before execution. `AssembledMachine::capture_text` captures display

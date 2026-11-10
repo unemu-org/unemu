@@ -73,6 +73,6 @@ pub use presets::{
     at_boot, at_fdc_write, at_keyboard, at_rtc, at_vga_text, bios, floppy_boot, test386,
 };
 pub use run::{
-    inject_scancodes, run, ConsoleProbe, InjectionSchedule, KeyboardStimulus, RunError, RunPolicy,
-    StopCondition,
+    inject_scancodes, keyboard_leds_if_ready, run, try_inject_scancode, ConsoleProbe,
+    InjectionSchedule, KeyboardStimulus, RunError, RunPolicy, StopCondition,
 };

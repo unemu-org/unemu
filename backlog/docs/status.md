@@ -44,12 +44,20 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   VileR v2.2 CP437 MDA/VGA fonts (CC BY-SA 4.0), parses NE/FNT resources and
   rasterises decoded text styles to softbuffer pixels. `unemupc98-window` boots
   the FreeDOS preset with fixed chunks and observation subscribers; it retains
-  the date prompt or final stopped frame. Presenter and subscriber smoke tests
-  run headlessly. The maintainer confirmed the FreeDOS prompt, font and colours
-  in a window. MDA underline uses row 12; cursors use BIOS default shapes rather
+  the last delivered frame while continuing past date/time prompts. Physical
+  host keys map to set-1 make/break bytes, including E0 navigation and right
+  modifiers, queued only at chunk boundaries with backpressure. Presenter,
+  keyboard and FreeDOS input tests run headlessly. The maintainer confirmed the
+  FreeDOS prompt, font and colours in a window. MDA underline uses row 12; cursors use BIOS default shapes rather
   than programmed CRTC start/end registers. HLT waits for IRQs within chunk caps.
-  Pacing, blinking and host keyboard input are not implemented; advancement
-  currently follows redraw delivery.
+  Pacing and blinking are not implemented; advancement follows redraw delivery.
+  Pause/Break and PrintScreen are unmapped. Typematic uses host repeated presses.
+  Manual desktop acceptance passed for date/time input, `c:` and `dir`.
+  E0 navigation/Divide use IBM artificial Shift wrappers on first make/final
+  break; repeat makes are plain. Encoding at boundaries follows guest LED NumLock
+  state, preserving navigation through Ctrl+NumLock and reboots. The 8042
+  snapshot v4 stores LEDs and pending LED parameters; reset clears both.
+  Focus loss releases held keys. macOS winit 0.30 does not deliver CapsLock.
 - **Tests:** MEASURED 2026-11-10 at `479f8ed`: `cargo test --workspace` 610
   passed, 0 failed; `cargo test --release -p devices` 358 passed; the 13 slow
   goldens and engine comparisons pass (BIOS POST, floppy boot, FreeDOS prompt,

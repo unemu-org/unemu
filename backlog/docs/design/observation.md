@@ -7,6 +7,70 @@ BIOS/FreeDOS monochrome output now comes from an independent MDA card, as
 specified in §The MDA card console below. Prompt polling, final captures and
 presentation now share the assembly-owned observation facade (migration step 5).
 
+## Host input
+
+The window frontend queues physical winit key transitions independently of
+observation subscribers. It encodes a transition into IBM PC scan code set 1
+only when its first byte can be accepted at a run boundary. At each completed
+run boundary, immediately before the next fixed 100,000-unit virtual-time chunk,
+`HostKeyboard` attempts delivery through assembly's `try_inject_scancode` seam
+and the existing `I8042::push_scancode` path. The side-effect-free
+`I8042::host_input_ready` accessor requires an empty output buffer and staging
+queue, an enabled interface, and no serial/IRQ hold, pending controller reply
+or unfinished LED parameter exchange. No guest-visible port read is used. Backpressure leaves the remaining bytes in
+the host FIFO for the next boundary, in order.
+The controller's script staging queue itself is unbounded; this additional
+conservative frontend backpressure never changes interactive golden scripts.
+There is no injection inside a chunk and no host clock, timer or thread in
+execution. Host arrival times are therefore quantised to chunk boundaries;
+recorded bytes plus their injection boundaries determine a reproducible run.
+
+[IBM Personal System/2 Hardware Interface Technical Reference — Common
+Interfaces (October 1990), Keyboards (101- and 102-Key), Set 1 Scan-Code Tables,
+pp. 27–30](https://www.ardent-tool.com/docs/pdf/ibm_hitrc11.pdf) specifies the
+make/break codes and E0 extensions. Mapping uses US physical positions; the
+guest handles Shift, Ctrl, Alt and locks. Both directions of an extended key
+carry E0; breaks set bit 7. Figures 8–9 specify artificial Shift wrappers for
+navigation and keypad Divide. Navigation with NumLock alone uses E0 2A before
+make and E0 AA after break; with Shift alone it temporarily releases each held
+Shift (E0 AA or E0 B6) and restores it after break (E0 2A or E0 36). Shift plus
+NumLock uses the base sequence. Divide temporarily releases held Shift keys
+regardless of NumLock. The BIOS consumes those wrappers as real Shift state,
+keeping grey navigation keys independent of keypad lock translation.
+
+NumLock follows the guest's keyboard LEDs, not host NumLock presses or OS lock
+state. The frontend reads bit 1 of the latest Set/Reset Status Indicators
+(Hex ED) parameter when it encodes each queued transition at a boundary; it
+waits for an unfinished LED exchange to complete. Consequently Ctrl+NumLock
+(Pause in the BIOS) does not spuriously toggle a host copy, and guest reboots
+and LED updates keep navigation wrappers aligned with guest lock state.
+The IBM reference's "Set/Reset Status Indicators (Hex ED)", "Reset (Hex FF)"
+and "Basic Assurance Test" sections specify the parameter and LEDs switching
+off at the end of BAT. The 8042 records LEDs and an outstanding parameter in
+snapshot v4, rejects earlier snapshots without mutation, and clears both on
+keyboard/device reset. Physical Shift state remains captured with each event.
+On focus loss, all held keys receive breaks; non-Shift keys are released first so their wrappers
+restore Shift before its final physical break. Unheld releases are ignored,
+absorbing later synthetic releases from X11/Windows. Stopped or errored machines
+ignore key events. On macOS, winit 0.30 does not deliver CapsLock key events, so
+Caps Lock cannot reach the guest.
+
+Letters, digits, punctuation, modifiers, locks, F1–F12, keypad and navigation
+are supported. Pause/Break and PrintScreen are intentionally
+unmapped because their special modifier-dependent sequences need a separate
+protocol; other unsupported keys are ignored. A repeated winit pressed event
+emits the plain base make again without a break. Artificial Shift wrappers
+appear only on the first make and the final break, avoiding four or six queued
+bytes on every repeat of a wrapped key. This follows the IBM set-1 typematic
+base-code rule. Guest rate commands do not control the host repeat cadence.
+
+The frontend keeps running beyond the DOS date and time prompts. Natural CPU
+stop, errors and exhaustion of the virtual-time range retain the final frame.
+Existing HLT idle policy and per-chunk caps remain unchanged. The event loop
+uses `ControlFlow::Wait`, but requests another redraw while running; an active
+DOS polling loop still consumes host CPU. Detecting idle from prompt text would
+freeze a running guest, so further pacing remains separate work.
+
 ## Implemented access trace policy
 
 `device::TracePolicy` has two modes: `Off` (the default) and

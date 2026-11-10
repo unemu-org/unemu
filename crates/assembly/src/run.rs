@@ -296,12 +296,150 @@ pub fn inject_scancodes(machine: &mut Machine<X86JitCpu>, kbc_index: usize, scan
     }
 }
 
+/// Guest keyboard LEDs at a boundary where the controller can accept input.
+/// Waiting for readiness also lets an in-flight LED command finish before the
+/// frontend encodes the next key. No port transaction or device mutation occurs.
+pub fn keyboard_leds_if_ready(machine: &mut Machine<X86JitCpu>, kbc_index: usize) -> Option<u8> {
+    let kbc = machine
+        .bus_mut()
+        .device_mut(kbc_index)?
+        .as_any_mut()?
+        .downcast_mut::<I8042>()?;
+    kbc.host_input_ready().then(|| kbc.keyboard_leds())
+}
+
+/// Try one host byte at a completed run boundary, leaving ownership with the
+/// caller when the controller cannot deliver it yet or the route is absent.
+/// [`I8042::host_input_ready`] observes readiness without a guest port access.
+/// This conservative frontend policy keeps
+/// backpressure outside the device's unbounded script queue; scripted golden
+/// injection through [`inject_scancodes`] retains its existing behaviour.
+pub fn try_inject_scancode(
+    machine: &mut Machine<X86JitCpu>,
+    kbc_index: usize,
+    scancode: u8,
+) -> bool {
+    let Some(kbc) = machine
+        .bus_mut()
+        .device_mut(kbc_index)
+        .and_then(|dev| dev.as_any_mut())
+        .and_then(|dev| dev.downcast_mut::<I8042>())
+    else {
+        return false;
+    };
+    if !kbc.host_input_ready() {
+        return false;
+    }
+    kbc.push_scancode(scancode);
+    true
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use bus::{Bus, DecodeMap};
     use cpu::x86jit_backend::RealSegments;
     use cpu::Cpu;
+
+    #[test]
+    fn host_injection_defers_full_buffer_and_rejects_missing_controller() {
+        let mut assembled = crate::assemble(&crate::at_keyboard(vec![0xEB, 0xFE])).unwrap();
+        let index = assembled.device_index[&DeviceId::Keyboard];
+        assert!(try_inject_scancode(&mut assembled.machine, index, 0x1E));
+        assert!(!try_inject_scancode(&mut assembled.machine, index, 0x9E));
+        assert_eq!(
+            assembled.machine.bus_mut().port_read(0x60, 1).unwrap(),
+            0x1E
+        );
+        assert!(!try_inject_scancode(&mut assembled.machine, index, 0x9E));
+        assembled.machine.run_bounded(Some(100_000)).unwrap();
+        assert!(try_inject_scancode(&mut assembled.machine, index, 0x9E));
+        assert!(!try_inject_scancode(
+            &mut assembled.machine,
+            usize::MAX,
+            0x30
+        ));
+        assert!(!try_inject_scancode(
+            &mut assembled.machine,
+            assembled.device_index[&DeviceId::Pit],
+            0x30
+        ));
+        assert_eq!(assembled.machine.virtual_time(), 100_000);
+    }
+
+    #[test]
+    fn keyboard_led_boundary_read_is_side_effect_free_and_waits_for_readiness() {
+        let mut assembled = crate::assemble(&crate::at_keyboard(vec![0xEB, 0xFE])).unwrap();
+        let index = assembled.device_index[&DeviceId::Keyboard];
+        let dev = assembled.machine.bus_mut().device_mut(index).unwrap();
+        dev.set_trace_policy(device::TracePolicy::Ring { capacity: 16 });
+        let before = dev.save();
+        assert_eq!(
+            keyboard_leds_if_ready(&mut assembled.machine, index),
+            Some(0)
+        );
+        assert_eq!(
+            assembled.machine.bus().device(index).unwrap().save(),
+            before
+        );
+        assert!(assembled
+            .machine
+            .bus_mut()
+            .device_mut(index)
+            .unwrap()
+            .take_trace()
+            .is_empty());
+        assembled
+            .machine
+            .bus_mut()
+            .port_write(0x60, 1, 0xED)
+            .unwrap();
+        assembled.machine.bus_mut().port_read(0x60, 1).unwrap();
+        assembled.machine.run_bounded(Some(100_000)).unwrap();
+        assert_eq!(keyboard_leds_if_ready(&mut assembled.machine, index), None);
+        assembled.machine.bus_mut().port_write(0x60, 1, 2).unwrap();
+        assembled.machine.run_bounded(Some(200_000)).unwrap();
+        assembled.machine.bus_mut().port_read(0x60, 1).unwrap();
+        assembled.machine.run_bounded(Some(300_000)).unwrap();
+        assert_eq!(
+            keyboard_leds_if_ready(&mut assembled.machine, index),
+            Some(2)
+        );
+    }
+
+    #[test]
+    fn host_injection_never_reads_a_port_or_stages_behind_inhibited_input() {
+        let mut assembled = crate::assemble(&crate::at_keyboard(vec![0xEB, 0xFE])).unwrap();
+        let index = assembled.device_index[&DeviceId::Keyboard];
+        assembled
+            .machine
+            .bus_mut()
+            .device_mut(index)
+            .unwrap()
+            .set_trace_policy(device::TracePolicy::Ring { capacity: 16 });
+        assert!(try_inject_scancode(&mut assembled.machine, index, 0x1E));
+        assert!(!try_inject_scancode(&mut assembled.machine, index, 0x9E));
+        assert!(assembled
+            .machine
+            .bus_mut()
+            .device_mut(index)
+            .unwrap()
+            .take_trace()
+            .is_empty());
+        assembled.machine.bus_mut().port_read(0x60, 1).unwrap();
+        assembled.machine.run_bounded(Some(100_000)).unwrap();
+        assembled
+            .machine
+            .bus_mut()
+            .port_write(0x64, 1, 0xAD)
+            .unwrap();
+        let before = assembled.machine.bus().device(index).unwrap().save();
+        assert!(!try_inject_scancode(&mut assembled.machine, index, 0x9E));
+        assert_eq!(
+            assembled.machine.bus().device(index).unwrap().save(),
+            before
+        );
+    }
 
     fn prompt_observation() -> Observation {
         Observation::bind(

@@ -26,11 +26,26 @@ cargo tree --offline -i window               # window is a leaf frontend
 ```
 
 The window binary requires a graphical desktop and fetched BIOS/FreeDOS fixtures.
-It uses a fixed 2× pixel scale and stops advancing at the FreeCOM date prompt,
-a natural halt or a CPU failure, keeping the last screen visible until closed.
-There is no host keyboard input or pacing yet. Blink stays visible. Workspace
-and presenter tests remain headless. Manual desktop acceptance confirmed the
-FreeDOS date prompt, font and colours. Progress follows redraw delivery:
+It uses a fixed 2× pixel scale and keeps advancing through the FreeCOM date/time
+prompts. Press Enter twice to accept them, then type a DOS command such as `dir`
+and Enter. Physical key positions use the US layout: letters, digits,
+punctuation, Enter/Backspace/Tab/Escape/Space, both Shift/Ctrl/Alt keys, locks,
+F1–F12, the numeric keypad, arrows and navigation keys are supported. Pause/Break,
+PrintScreen, system and media keys are ignored. Host repeat sends plain make
+codes; fake-Shift wrappers are sent only on the first make and final break.
+Guest typematic settings do not change the host repeat rate. On macOS, winit 0.30
+does not deliver CapsLock key events, so Caps Lock does not reach the guest.
+Focus loss releases all held keys, including modifiers. Keys are ignored after
+the machine stops. NumLock wrappers follow the guest's keyboard LED state,
+including guest reboots and Ctrl+NumLock (Pause), never the host OS lock state.
+
+Input is queued until the next fixed 100,000-unit virtual-time chunk; a full
+8042, a disabled interface or a pending serial byte defers input without drops.
+No wall clock or pacing is used. A natural halt, CPU failure or exhausted virtual-time range
+stops advancement and retains the last screen until closed. Blink stays visible.
+Workspace and presenter tests remain headless. Manual desktop acceptance
+confirmed the FreeDOS date prompt, font and colours, and command typing through
+the date/time prompts (`c:` and `dir`). Progress follows redraw delivery:
 minimising or occluding the window can pause execution, and a resize-triggered
 redraw advances a chunk until pacing is added.
 
