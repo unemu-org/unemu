@@ -1,0 +1,176 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+//! Schema 1 layers for PC/AT machine files, not hardware configurations.
+//!
+//! See `backlog/docs/design/machine-files.md` § Schema. Flat card and drive
+//! tables preserve TOML error positions; kind-specific checks belong to lowering.
+//! Optional fields preserve override intent for a future `extends` merger.
+
+mod values;
+pub use values::*;
+
+use serde::Deserialize;
+
+// Timing requests must fail at their value, rather than as unexplained unknown
+// keys. Expanding identical fields keeps serde's direct, positioned table parser.
+macro_rules! timed_table {
+    ($(#[$meta:meta])* pub struct $name:ident { $($fields:tt)* }) => {
+        $(#[$meta])*
+        #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+        #[serde(deny_unknown_fields)]
+        pub struct $name {
+            $($fields)*
+            #[serde(default, deserialize_with = "values::reject_present")] mhz: Option<CycleExact>,
+            #[serde(default, deserialize_with = "values::reject_present")] frequency: Option<CycleExact>,
+            #[serde(default, deserialize_with = "values::reject_present")] clock_hz: Option<CycleExact>,
+            #[serde(default, deserialize_with = "values::reject_present")] cycles: Option<CycleExact>,
+            #[serde(default, deserialize_with = "values::reject_present")] cycle_exact: Option<CycleExact>,
+            #[serde(default, deserialize_with = "values::reject_present")] wait_states: Option<CycleExact>,
+            #[serde(default, deserialize_with = "values::reject_present")] bus_mhz: Option<CycleExact>,
+            #[serde(default, deserialize_with = "values::reject_present")] memory_wait_states: Option<CycleExact>,
+            #[serde(default, deserialize_with = "values::reject_present")] timing: Option<CycleExact>,
+        }
+    };
+}
+
+timed_table! {
+    /// A syntax-checked layer. Completeness is checked only after inheritance.
+    pub struct MachineFile {
+        pub schema: SchemaVersion,
+        pub name: Option<String>,
+        pub description: Option<String>,
+        pub extends: Option<String>,
+        pub board: Option<Board>,
+        pub cpu: Option<Cpu>,
+        pub memory: Option<Memory>,
+        pub firmware: Option<Firmware>,
+        pub card: Option<Vec<Card>>,
+        #[serde(default, deserialize_with = "values::reject_present")] run: Option<OutsideMachine>,
+        #[serde(default, deserialize_with = "values::reject_present")] presentation: Option<OutsideMachine>,
+        #[serde(default, deserialize_with = "values::reject_present")] streams: Option<OutsideMachine>,
+    }
+}
+
+timed_table! {
+    /// Board selection and overrides; motherboard expansion belongs to lowering.
+    pub struct Board {
+        pub model: Option<BoardModel>,
+        pub post_port: Option<NumberOrNone<65535>>,
+        pub rtc: Option<Rtc>,
+        #[serde(default, deserialize_with = "values::reject_a20")] a20: Option<Reserved>,
+        #[serde(default, deserialize_with = "values::reject_kbc")] kbc: Option<Reserved>,
+        #[serde(default, deserialize_with = "values::reject_keyboard")] keyboard: Option<Reserved>,
+        #[serde(default, deserialize_with = "values::reject_keyboard_layout")] keyboard_layout: Option<Reserved>,
+        #[serde(default, deserialize_with = "values::reject_dip_switches")] dip_switches: Option<Reserved>,
+        #[serde(default, deserialize_with = "values::reject_chipset")] chipset: Option<Reserved>,
+        #[serde(default, deserialize_with = "values::reject_speaker")] speaker: Option<Reserved>,
+    }
+}
+
+/// RTC overrides. Calendar validity and NVRAM size are checked when lowering.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Rtc {
+    #[serde(default, deserialize_with = "values::rtc_start")]
+    pub start: Option<String>,
+    pub nvram: Option<Nvram>,
+}
+
+timed_table! {
+    /// CPU selection and instruction-to-PIT ratio, never a cycle frequency.
+    pub struct Cpu {
+        pub model: Option<CpuModel>,
+        pub rate: Option<CpuRate>,
+        #[serde(default, deserialize_with = "values::reject_fpu")] fpu: Option<Reserved>,
+        #[serde(default, deserialize_with = "values::reject_turbo")] turbo: Option<Reserved>,
+    }
+}
+
+/// RAM size overrides; alignment and board limits belong to config validation.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Memory {
+    pub conventional_kib: Option<u32>,
+    pub extended_kib: Option<u32>,
+    #[serde(default, deserialize_with = "values::reject_shadow")]
+    shadow: Option<Reserved>,
+    #[serde(default, deserialize_with = "values::reject_umb")]
+    umb: Option<Reserved>,
+    #[serde(default, deserialize_with = "values::reject_upper")]
+    upper: Option<Reserved>,
+}
+
+/// Firmware declarations, with no image reads or catalogue lookup during parsing.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Firmware {
+    pub bios: Option<Rom>,
+    pub option_roms: Option<Vec<Rom>>,
+    #[serde(default, deserialize_with = "values::reject_basic")]
+    basic: Option<Reserved>,
+}
+
+/// A BIOS or option ROM layer; the latter requires a base after merging.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Rom {
+    pub image: Option<String>,
+    pub sha256: Option<Sha256>,
+    pub base: Option<u32>,
+    pub provides: Option<Vec<FirmwareService>>,
+}
+
+timed_table! {
+    /// Flat union of card fields; unsupported combinations are lowering errors.
+    pub struct Card {
+        pub id: Option<String>,
+        pub kind: Option<CardKind>,
+        pub port: Option<u16>,
+        pub irq: Option<NumberOrNone<15>>,
+        pub dma: Option<NumberOrNone<3>>,
+        pub drives: Option<Vec<Drive>>,
+        pub remove: Option<bool>,
+        #[serde(default, deserialize_with = "values::reject_monitor")] monitor: Option<Reserved>,
+        #[serde(default, deserialize_with = "values::reject_rom")] rom: Option<Reserved>,
+        #[serde(default, deserialize_with = "values::reject_mmio")] mmio: Option<Reserved>,
+    }
+}
+
+/// Flat floppy/IDE drive layer, preserving missing fields for keyed merging.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Drive {
+    pub unit: Option<u8>,
+    pub channel: Option<Channel>,
+    #[serde(rename = "type")]
+    pub drive_type: Option<DriveType>,
+    #[serde(default, deserialize_with = "values::drive_image")]
+    pub image: Option<String>,
+    pub sha256: Option<Sha256>,
+    pub geometry: Option<Geometry>,
+    pub write: Option<WriteMode>,
+    pub journal: Option<String>,
+    pub keep_generations: Option<std::num::NonZeroU32>,
+    pub remove: Option<bool>,
+    #[serde(default, deserialize_with = "values::reject_media")]
+    media: Option<Reserved>,
+}
+
+/// Explicit 512-byte-sector CHS geometry; its hardware limits are checked later.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Chs {
+    pub cylinders: Option<u32>,
+    pub heads: Option<u32>,
+    pub sectors: Option<u32>,
+}
+
+/// NVRAM image declaration. The default write mode is applied after merging.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NvramImage {
+    pub image: Option<String>,
+    pub sha256: Option<Sha256>,
+    pub write: Option<WriteMode>,
+    pub journal: Option<String>,
+    pub keep_generations: Option<std::num::NonZeroU32>,
+}

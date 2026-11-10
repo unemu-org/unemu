@@ -1,7 +1,8 @@
 # Machine description files
 
-Status: **spike, proposal, unimplemented** (bead upc-6le.1, phase A′ epic
-upc-6le). It answers one question: how is a `MachineConfig` written as a file,
+Status: **accepted** (decision-17). The schema 1 TOML parser is implemented
+in `crates/machine-file`; lowering, YAML and `extends` are still to come.
+The design answers one question: how is a `MachineConfig` written as a file,
 so that users compose machines without recompiling?
 
 Related: [machine-config.md](machine-config.md) (the Rust data model a file
@@ -169,9 +170,9 @@ the owning `DeviceId`; lowering derives the windows from the card kinds.
   the file that contains them. Absolute paths are accepted. Repository files
   must use relative paths (bead 7 tests this).
 - **Lowering principle:** lowering rejects only what `MachineConfig` cannot
-  represent: reserved names, unsupported values, and fields a card kind does
-  not accept. Every rule about a representable machine lives in
-  `MachineConfig::validate()`. There is no second validation path.
+  represent: unsupported values and fields a card kind does not accept.
+  Reserved names are recognised and rejected during parsing. Every rule about
+  a representable machine lives in `MachineConfig::validate()`. There is no second validation path.
 
 ### Top level
 
@@ -489,9 +490,10 @@ transitively) and `sha2` 0.11.1 (MIT OR Apache-2.0, MSRV 1.88, READ) for
   explains: "cycle-exact timing is not modelled; `[cpu] rate` is a ratio of
   completed steps per PIT input clock". A plain unknown-field error would not
   explain this.
-- **Reserved names** ([Reserved names](#reserved-names)) parse, so the error
-  is not "unknown". Lowering then rejects them with "reserved in schema 1, not
-  implemented".
+- **Reserved names** ([Reserved names](#reserved-names)) are recognised and
+  rejected during parsing with "reserved, not implemented (schema 1)" and an
+  explanation. They never enter the typed document or lowering. Rejection
+  fields reject their mere presence, including a null value in YAML.
 
 ### `extends`
 
@@ -528,12 +530,13 @@ transitively) and `sha2` 0.11.1 (MIT OR Apache-2.0, MSRV 1.88, READ) for
 
 Every error starts with the file path. There are three classes:
 
-1. **Syntax, type and unknown-field errors** come from the format crate, with
-   line, column and snippet (MEASURED, both syntaxes). The loader adds the
-   file path. `serde-saphyr` labels its input `<input>`, and the loader
-   replaces that label with the path (ASSUMED that this is possible without
-   re-rendering).
-2. **Lowering errors** (reserved names, fields a kind does not accept,
+1. **Parse errors** include syntax, type, unknown-field, reserved-name and
+   rejected-field errors. The parser converts them into a format-neutral
+   diagnostic: file path, message, optional line and character column, and an
+   optional snippet. It retains no format-specific error source, so displaying
+   an error chain does not repeat the diagnostic. TOML also retains its byte
+   span.
+2. **Lowering errors** (fields a kind does not accept,
    completeness, `sha256` mismatches, unreadable images) name the file and a
    field path such as `card[fdc-765].drives[unit=0].image`. A `sha256`
    mismatch prints both hashes.
@@ -867,8 +870,9 @@ image = "dos.img"
 
 ## Reserved names
 
-These names parse in schema 1 and are then rejected as "reserved, not
-implemented". The firmware spike owns the board-model and firmware entries.
+These names are recognised and rejected during parsing as "reserved, not
+implemented", with an explanation of the missing model or feature. The firmware
+spike owns the board-model and firmware entries.
 
 | Where | Reserved |
 |---|---|
