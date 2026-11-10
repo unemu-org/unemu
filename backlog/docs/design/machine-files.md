@@ -601,6 +601,15 @@ Validation messages retain assembly's wording, replacing drive/image index
 prefixes with file labels. A duplicate-drive message includes each defining
 file and line beside its unit label, so repeated units remain distinguishable.
 
+System BIOS catalogue diagnostics (`FirmwareNotListed`, `FirmwareBoardMismatch`,
+`FirmwareNeedsCpu`, `FirmwareRequiresDevice`), `MissingSystemBios` and
+`BiosPlacement` map to
+`firmware.bios.image`, using a specific field origin when present and otherwise
+the containing firmware table's file and line. Their messages retain assembly's
+wording unchanged; none of these variants carries an image index.
+`FirmwareReset` names the CPU origin; `SystemBiosOverlapsRam` names memory and
+relates it to the BIOS image origin.
+
 ## Validation and presets
 
 ### One validation path
@@ -623,6 +632,15 @@ hash check. Image reading goes through a small trait
 (`ImageReader::read(path)`), so tests can supply bytes without fixtures.
 Lowering computes SHA-256 from the returned buffer and checks any declared pin;
 the reader cannot disable integrity checks.
+
+`load()` returns after `MachineConfig::validate()`; it does not assemble hardware
+or run the board's firmware catalogue check. BIOS placement is therefore a
+source-located loader error, while catalogue membership and compatibility are
+checked by assembly afterwards. A one-byte-changed Kiselev image with a declared
+pin fails loading with a SHA-256 mismatch at the BIOS entry's file and line.
+Without a pin it loads as inline bytes, then strict assembly returns
+`FirmwareNotListed`. That assembly error does not itself retain machine-file
+origins; this loader change does not add an assembly wrapper.
 
 ### Canonical order
 

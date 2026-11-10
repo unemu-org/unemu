@@ -183,6 +183,62 @@ impl Drop for TempTree {
 }
 
 #[test]
+fn changed_kiselev_bios_reports_pin_origin_and_defers_catalogue_rejection_to_assembly() {
+    use sha2::{Digest, Sha256};
+
+    let Some(mut rom) = fixtures::fixture("kiselev-bios/bios-xi8088.bin") else {
+        return;
+    };
+    let pin = format!("{:x}", Sha256::digest(&rom));
+    rom[0] ^= 1;
+    let actual = format!("{:x}", Sha256::digest(&rom));
+    let tree = TempTree::new();
+    let path = std::fs::canonicalize(&tree.0).unwrap().join("machine.toml");
+    let image = path.with_file_name("bios.bin");
+    std::fs::write(&image, &rom).unwrap();
+    std::fs::write(&path, format!("{MINIMAL}sha256 = '{pin}'\n")).unwrap();
+    let machine_file::LoadError::Lower(error) = machine_file::load(&path).unwrap_err() else {
+        panic!("image pin must fail during lowering");
+    };
+    assert_eq!(error.origin.file, path);
+    assert_eq!(error.origin.line, Some(4));
+    assert_eq!(error.field, "firmware.bios.image");
+    assert!(error.validation.is_none());
+    assert_eq!(
+        error.message,
+        format!(
+            "sha256 mismatch for {}: expected {pin}, actual {actual}",
+            image.display()
+        )
+    );
+    assert_eq!(
+        error.to_string(),
+        format!(
+            "{}:4: firmware.bios.image: {}",
+            path.display(),
+            error.message
+        )
+    );
+
+    std::fs::write(&path, MINIMAL).unwrap();
+    let config = machine_file::load(&path).unwrap();
+    assert_eq!(config.images[0].source, ImageSource::Inline(rom));
+    let error = match assembly::assemble(&config) {
+        Err(assembly::AssemblyError::Config(error)) => error,
+        _ => panic!("assembly must reject the unlisted image"),
+    };
+    assert_eq!(
+        error,
+        ConfigError::FirmwareNotListed {
+            sha256: actual.clone(),
+            board: "ibm-5170",
+            known: "kiselev-xi8088-1.0.2 (open, vendor/kiselev-bios/fetch.sh)".into(),
+        }
+    );
+    assert_eq!(error.to_string(), format!("bios image (sha256 {actual}) is not a known image for board \"ibm-5170\"; known: kiselev-xi8088-1.0.2 (open, vendor/kiselev-bios/fetch.sh)"));
+}
+
+#[test]
 fn relative_image_paths_use_the_machine_file_directory() {
     let tree = TempTree::new();
     let directory = tree.0.join("machines");
@@ -642,13 +698,40 @@ fn validation_diagnostics_start_with_the_card_or_image() {
             .contains("; test-machines/custom.toml:2: board"),
         "{error}"
     );
-    let error = run(&format!("{MINIMAL}base=0xB0000\n[[card]]\nkind='mda'\n")).unwrap_err();
+    let file = Path::new("test-machines/custom.toml");
+    let input = format!("{MINIMAL}base=0xB0000\n[[card]]\nkind='mda'\n");
+    let mut images = Images::rom(file);
+    images
+        .files
+        .insert(file.with_file_name("bios.bin"), vec![0xF4; 0x50000]);
+    let error = lower(
+        &parse_toml(file, &input).unwrap(),
+        &Origins::from_toml(file, &input).unwrap(),
+        &mut images,
+    )
+    .unwrap_err();
     assert!(matches!(
         error.validation.as_deref(),
         Some(ConfigError::ImageOverlapsMmio { image_index: 0, .. })
     ));
     assert_eq!(error.field, "firmware.bios");
     assert!(error.message.contains("card[mda]"), "{error}");
+
+    let error = run(&format!("{MINIMAL}base=0xF0000\n")).unwrap_err();
+    assert_eq!(
+        error.validation.as_deref(),
+        Some(&ConfigError::BiosPlacement {
+            base: 0xF0000,
+            size: 32768
+        })
+    );
+    assert_eq!(error.field, "firmware.bios.image");
+    assert_eq!(error.origin.file, file);
+    assert_eq!(error.origin.line, Some(4));
+    assert_eq!(
+        error.message,
+        "system BIOS of 32 KiB at 0xf0000 must have a positive size that is a multiple of 8 KiB and end at 0x100000"
+    );
 }
 
 #[cfg(unix)]

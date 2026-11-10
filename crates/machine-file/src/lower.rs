@@ -383,6 +383,14 @@ impl<R: ImageReader> Context<'_, R> {
         };
         let mut message = error.to_string();
         let fields = match &error {
+            MissingSystemBios { .. }
+            | FirmwareNotListed { .. }
+            | FirmwareBoardMismatch { .. }
+            | FirmwareNeedsCpu { .. }
+            | FirmwareRequiresDevice { .. }
+            | BiosPlacement { .. } => vec!["firmware.bios.image".into()],
+            FirmwareReset { .. } => vec!["cpu".into()],
+            SystemBiosOverlapsRam { .. } => vec!["memory".into(), "firmware.bios.image".into()],
             DuplicateDeviceId(id) | MmioDeviceMissing(id) => device_fields(&[*id]),
             NoProvider { device, .. }
             | InvalidRtcStart { device, .. }
@@ -813,6 +821,91 @@ mod tests {
                 .collect(),
             images: Vec::new(),
         }
+    }
+
+    #[test]
+    fn firmware_errors_retain_the_bios_image_origin_and_assembly_wording() {
+        let mut origins = Origins::new("machine.toml");
+        origins.insert(
+            "firmware.bios",
+            Origin {
+                file: "machine.toml".into(),
+                line: Some(4),
+            },
+        );
+        let image_origin = Origin {
+            file: "firmware.toml".into(),
+            line: Some(9),
+        };
+        origins.insert("firmware.bios.image", image_origin.clone());
+        let mut reader = FileImageReader;
+        let context = context(&origins, &mut reader);
+        for error in [
+            ConfigError::MissingSystemBios { board: "ibm-5170" },
+            ConfigError::FirmwareNotListed {
+                sha256: "0".repeat(64),
+                board: "ibm-5170",
+                known: "kiselev-xi8088-1.0.2 (open, vendor/kiselev-bios/fetch.sh)".into(),
+            },
+            ConfigError::FirmwareBoardMismatch {
+                firmware: "glabios-0.4.3-5160",
+                boards: "ibm-5160".into(),
+                board: "ibm-5170",
+            },
+            ConfigError::FirmwareNeedsCpu {
+                firmware: "seabios-1.17.0-isapc",
+                minimum: assembly::FirmwareCpu::I80386,
+                cpu: assembly::FirmwareCpu::I80286,
+            },
+            ConfigError::FirmwareRequiresDevice {
+                firmware: "bochs-rombios-legacy",
+                part: assembly::FirmwarePart::VideoRom,
+            },
+            ConfigError::BiosPlacement {
+                base: 0xF8000,
+                size: 24 * 1024,
+            },
+        ] {
+            let diagnostic = context.validation_error(error.clone());
+            assert_eq!(diagnostic.origin, image_origin);
+            assert_eq!(diagnostic.field, "firmware.bios.image");
+            assert_eq!(diagnostic.message, error.to_string());
+            assert_eq!(diagnostic.validation.as_deref(), Some(&error));
+            assert_eq!(
+                diagnostic.to_string(),
+                format!("firmware.toml:9: firmware.bios.image: {error}")
+            );
+        }
+    }
+
+    #[test]
+    fn firmware_layout_errors_name_cpu_or_memory_and_the_related_bios() {
+        let input = "schema=1\n[cpu]\nmodel='80286'\n[memory]\nconventional_kib=640\n[firmware.bios]\nimage='bios.bin'\n";
+        let origins = Origins::from_toml("machine.toml", input).unwrap();
+        let mut reader = FileImageReader;
+        let context = context(&origins, &mut reader);
+        let reset = ConfigError::FirmwareReset {
+            board: "ibm-5170",
+            reset: ResetSpec::Entry { cs: 0, ip: 0x500 },
+        };
+        let diagnostic = context.validation_error(reset.clone());
+        assert_eq!(diagnostic.field, "cpu");
+        assert_eq!(&diagnostic.origin, origins.get("cpu"));
+        assert_eq!(diagnostic.message, reset.to_string());
+        let ram = ConfigError::SystemBiosOverlapsRam {
+            board: "ibm-5170",
+            addr: 0xF8000,
+        };
+        let diagnostic = context.validation_error(ram.clone());
+        assert_eq!(diagnostic.field, "memory");
+        assert_eq!(&diagnostic.origin, origins.get("memory"));
+        assert_eq!(
+            diagnostic.message,
+            format!(
+                "{ram}; {}: firmware.bios.image",
+                origins.get("firmware.bios.image")
+            )
+        );
     }
 
     #[test]

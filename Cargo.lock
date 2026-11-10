@@ -91,6 +91,7 @@ dependencies = [
  "devices",
  "machine",
  "media",
+ "sha2",
  "thiserror 1.0.69",
  "video",
 ]

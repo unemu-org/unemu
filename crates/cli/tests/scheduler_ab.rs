@@ -693,3 +693,30 @@ fn access_normalisation_moves_ocw2_observations_but_never_inta() {
     )
     .unwrap();
 }
+
+#[test]
+fn scheduler_post_rig_rejects_one_byte_changed_bios() {
+    let Some(mut rom) = scheduler::fixtures::fixture("kiselev-bios/bios-xi8088.bin") else {
+        return;
+    };
+    assert!(
+        scheduler::prepare_with_bios(Workload::BiosPost, Some(rom.clone()))
+            .unwrap()
+            .is_some()
+    );
+    rom[0] ^= 1;
+    let error = match scheduler::prepare_with_bios(Workload::BiosPost, Some(rom)) {
+        Err(error) => error,
+        Ok(_) => panic!("scheduler POST rig must reject the changed BIOS"),
+    };
+    let expected = assembly::ConfigError::FirmwareNotListed {
+        sha256: "95e2791c710fdce0ebfc116efe2a187a178f6e33a072e7b75b05861ffdc4f402".into(),
+        board: "ibm-5170",
+        known: "kiselev-xi8088-1.0.2 (open, vendor/kiselev-bios/fetch.sh)".into(),
+    };
+    assert_eq!(
+        error.downcast_ref::<assembly::ConfigError>(),
+        Some(&expected)
+    );
+    assert_eq!(error.to_string(), expected.to_string());
+}

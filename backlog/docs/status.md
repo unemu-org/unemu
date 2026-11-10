@@ -11,6 +11,15 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   Xi8088 BIOS completes POST and its INT 19h loads a FreeDOS 8086 floppy over the µPD765 floppy
   controller + 8237 DMA; FreeCOM reaches its prompt, and a scancode script drives it to `A:\>`,
   runs `DIR`, and creates a file (`echo x>zz`) that the controller commits to the in-memory image.
+- **Firmware catalogue:** IBM 5170 BIOS bytes are checked against the pinned
+  Kiselev Xi 8088 1.0.2 SHA-256 before mapping. Unknown images list known builds
+  and fetch instructions; listed firmware checks board, CPU and required parts.
+  System BIOS presence, placement, power-on reset and isolation from writable
+  RAM/other images are checked independently of allowlist membership. Option
+  ROM hashing remains deferred. CLI and window
+  accept the run-only `--allow-unlisted-firmware` flag and report the unknown hash
+  to stderr. Bare assembly remains unrestricted; the historical POST runner
+  explicitly checks the real BIOS against the intended board catalogue.
 - **Devices:** 16550 UART, 8259 PIC pair (master + slave cascade), 8253 PIT, 8042 keyboard
   controller, MC146818 CMOS/RTC (seeded NVRAM), 8237 DMA, µPD765 floppy (read + write), port 0x61,
   POST port 0x80, independent VGA/CGA and MDA text cards, all behind the `Device` trait with mock-bus

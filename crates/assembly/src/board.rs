@@ -34,6 +34,22 @@ pub enum BoardModel {
 }
 
 impl BoardModel {
+    /// Stable identifier used by firmware compatibility data and diagnostics.
+    pub const fn id(self) -> &'static str {
+        match self {
+            Self::Ibm5170 => "ibm-5170",
+            Self::Bare => "bare",
+        }
+    }
+
+    /// Reviewed firmware builds owned by this motherboard.
+    pub const fn firmware_catalogue(self) -> &'static [crate::FirmwareEntry] {
+        match self {
+            Self::Ibm5170 => &[crate::KISELEV_XI8088],
+            Self::Bare => &[],
+        }
+    }
+
     /// The hardware class implied by this model; a bare rig has no class.
     pub const fn class(self) -> Option<MachineClass> {
         match self {

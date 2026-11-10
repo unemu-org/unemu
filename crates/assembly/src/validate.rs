@@ -120,6 +120,7 @@ impl MachineConfig {
     pub(crate) fn validate_resolved(&self) -> Result<(), ConfigError> {
         self.check_unique_device_ids()?;
         self.check_board()?;
+        self.check_firmware_layout()?;
         self.check_firmware_services()?;
         self.check_rtc_starts()?;
         self.check_access_couplings()?;
@@ -138,6 +139,36 @@ impl MachineConfig {
         self.check_drive_controllers()?;
         self.check_image_geometry()?;
         self.clock.cpu_rate()?;
+        Ok(())
+    }
+
+    fn check_firmware_layout(&self) -> Result<(), ConfigError> {
+        if self.board.firmware_catalogue().is_empty() {
+            return Ok(());
+        }
+        let bios = crate::firmware::system_bios(self)?;
+        if self.cpu.reset != crate::ResetSpec::reset_vector() {
+            return Err(ConfigError::FirmwareReset {
+                board: self.board.id(),
+                reset: self.cpu.reset,
+            });
+        }
+        let size = bios.source.known_len();
+        if let Some(size) = size {
+            crate::firmware::check_bios_placement(bios.base, size)?;
+        }
+        // A file's full range is checked after its single read. Its reset byte
+        // is already reserved before I/O, so RAM cannot replace the BIOS entry.
+        let protected_base = if size.is_some() { bios.base } else { 0xFFFF0 };
+        let protected_end = size.map_or(0xFFFF1, |size| bios.base.saturating_add(size));
+        for ram in &self.memory.ram {
+            if ram.size > 0 && ranges_overlap(protected_base, protected_end, ram.base, ram.end()) {
+                return Err(ConfigError::SystemBiosOverlapsRam {
+                    board: self.board.id(),
+                    addr: protected_base.max(ram.base),
+                });
+            }
+        }
         Ok(())
     }
 

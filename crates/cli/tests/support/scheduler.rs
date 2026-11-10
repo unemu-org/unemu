@@ -247,11 +247,17 @@ pub struct Prepared {
 }
 
 #[path = "fixtures.rs"]
-mod fixtures;
+pub(super) mod fixtures;
 
 /// Uses the same presets, programs, inputs and policies as CLI goldens.
 /// Missing optional firmware/media returns `None`; other assembly/I/O errors fail.
 pub fn prepare(workload: Workload) -> Result<Option<Prepared>> {
+    prepare_with_bios(workload, None)
+}
+
+/// Exercise the same scheduler preparation path with supplied BIOS bytes, so
+/// rejection tests can change an image without modifying a shared fixture.
+pub fn prepare_with_bios(workload: Workload, bios: Option<Vec<u8>>) -> Result<Option<Prepared>> {
     let mut policy = RunPolicy::natural(None, None);
     let mut ram_regions = vec![assembly::RamRegion::new(0, 0x10000)];
     let mut assemble = |config: &assembly::MachineConfig| {
@@ -299,6 +305,7 @@ pub fn prepare(workload: Workload) -> Result<Option<Prepared>> {
                 device_index: HashMap::from([(DeviceId::Uart, 0)]),
                 observation: assembly::Observation::default(),
                 persistence: Vec::new(),
+                unlisted_firmware: Vec::new(),
             }
         }
         Workload::Boot => {
@@ -352,7 +359,8 @@ pub fn prepare(workload: Workload) -> Result<Option<Prepared>> {
         | Workload::FreeDosPrompt
         | Workload::DosDir
         | Workload::DosWrite => {
-            let Some(rom) = fixtures::fixture("kiselev-bios/bios-xi8088.bin") else {
+            let Some(rom) = bios.or_else(|| fixtures::fixture("kiselev-bios/bios-xi8088.bin"))
+            else {
                 return Ok(None);
             };
             anyhow::ensure!(rom.len() == 32768, "Xi8088 BIOS must be 32 KiB");
@@ -372,7 +380,17 @@ pub fn prepare(workload: Workload) -> Result<Option<Prepared>> {
                 Some(cli::BIOS_IDLE_LIMIT),
             );
             let has_floppy = floppy.is_some();
-            let assembled = assemble(&assembly::bios(rom, floppy))?;
+            let config = assembly::bios(rom.clone(), floppy);
+            if !has_floppy {
+                assembly::check_board_system_bios(
+                    &config,
+                    assembly::BoardModel::Ibm5170,
+                    config.images[0].base,
+                    &rom,
+                    assembly::AssemblyOptions::default(),
+                )?;
+            }
+            let assembled = assemble(&config)?;
             if has_floppy && !matches!(workload, Workload::BiosFloppy) {
                 policy.retired_cap = Some(cli::BIOS_MAX_RETIRED);
                 policy.stop = StopCondition::PromptThen {

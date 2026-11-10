@@ -42,6 +42,7 @@ mod cpu;
 mod device;
 mod drive;
 mod error;
+mod firmware;
 mod image;
 mod machine;
 mod memory;
@@ -53,7 +54,8 @@ mod run;
 mod validate;
 
 pub use assemble::{
-    assemble, assemble_with_observation, derive_cmos_config, AssembledMachine, AssemblyError,
+    assemble, assemble_with_observation, assemble_with_observation_and_options,
+    assemble_with_options, derive_cmos_config, AssembledMachine, AssemblyError,
 };
 pub use board::{BoardModel, MachineClass};
 pub use bus::PortWidth;
@@ -122,3 +124,8 @@ pub mod test_support {
         }
     }
 }
+pub use firmware::{
+    check_board_system_bios, check_system_bios, AssemblyOptions, FirmwareBase, FirmwareCpu,
+    FirmwareDistribution, FirmwareEntry, FirmwareKind, FirmwarePart, FirmwareStatus,
+    UnlistedFirmware, KISELEV_XI8088,
+};

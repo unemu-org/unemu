@@ -769,7 +769,13 @@ mod tests {
             bios(vec![0; 0x8000], Some(floppy)),
         ] {
             assert_eq!(config.validate(), Ok(()));
-            assert!(crate::assemble(&config).is_ok());
+            assert!(crate::assemble_with_options(
+                &config,
+                crate::AssemblyOptions {
+                    allow_unlisted_firmware: true
+                }
+            )
+            .is_ok());
         }
     }
 }

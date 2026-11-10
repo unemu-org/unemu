@@ -603,7 +603,19 @@ pub fn run_bios(rom: &[u8]) -> BiosRun {
 /// The POST golden uses [`BIOS_GOLDEN_MAX_RETIRED`] to capture the complete POST
 /// stream without spending the full safety budget in the no-floppy boot loop.
 pub fn run_bios_with_cap(rom: &[u8], cap: u64) -> BiosRun {
-    run_bios_config(assembly::bios(rom.to_vec(), None), |_| {
+    let config = assembly::bios(rom.to_vec(), None);
+    // The historical POST rig omits DMA hardware. Check its intended BIOS
+    // without changing the hardware or cadence pinned by that golden.
+    if let Err(error) = assembly::check_board_system_bios(
+        &config,
+        assembly::BoardModel::Ibm5170,
+        config.images[0].base,
+        rom,
+        assembly::AssemblyOptions::default(),
+    ) {
+        return bios_config_failure(assembly::AssemblyError::Config(error));
+    }
+    run_bios_config(config, |_| {
         RunPolicy::natural(Some(cap), Some(BIOS_IDLE_LIMIT))
     })
 }
@@ -657,21 +669,48 @@ fn run_bios_config(
     let mut assembled = match assemble_with_observation(&config, &bios_observation_policy()) {
         Ok(assembled) => assembled,
         Err(e) => {
-            return BiosRun {
-                floppy_image: None,
-                post: Vec::new(),
-                screen: blank_screen(),
-                screen_stamp: None,
-                mda: blank_screen(),
-                com1: Vec::new(),
-                stop: StopReason::ConfigFailed {
-                    detail: e.to_string(),
-                },
-            }
+            return bios_config_failure(e);
         }
     };
 
     run_bios_assembled(&mut assembled, build_policy)
+}
+
+fn bios_config_failure(error: assembly::AssemblyError) -> BiosRun {
+    BiosRun {
+        floppy_image: None,
+        post: Vec::new(),
+        screen: blank_screen(),
+        screen_stamp: None,
+        mda: blank_screen(),
+        com1: Vec::new(),
+        stop: StopReason::ConfigFailed {
+            detail: error.to_string(),
+        },
+    }
+}
+
+/// Load a BIOS file through the IBM 5170 catalogue, emitting run-only warnings.
+/// The attached blank disk keeps this on the complete board profile; guest
+/// disk writes remain volatile. See `backlog/docs/commands.md` for the flags.
+pub fn run_bios_file(
+    path: &std::path::Path,
+    options: assembly::AssemblyOptions,
+    warnings: &mut impl std::io::Write,
+) -> Result<BiosRun> {
+    let mut config = assembly::bios(Vec::new(), Some(vec![0; FLOPPY_IMAGE_BYTES]));
+    config.images[0].source = assembly::ImageSource::File(path.into());
+    let mut assembled = assembly::assemble_with_observation_and_options(
+        &config,
+        &bios_observation_policy(),
+        options,
+    )?;
+    for unlisted in &assembled.unlisted_firmware {
+        writeln!(warnings, "{unlisted}")?;
+    }
+    Ok(run_bios_assembled(&mut assembled, |_| {
+        bios_natural_policy()
+    }))
 }
 
 fn run_bios_assembled(
@@ -1482,6 +1521,7 @@ mod tests {
             observation,
             device_index,
             persistence: Vec::new(),
+            unlisted_firmware: Vec::new(),
         };
         assert_eq!(assembled.observation.subscriber_count(DeviceId::Vga), 1);
         let frame = assembled.capture_text(DeviceId::Vga).unwrap().frame;
@@ -1669,7 +1709,9 @@ mod tests {
         ];
         rom[..program.len()].copy_from_slice(&program);
         rom[0x7FF0..0x7FF5].copy_from_slice(&[0xEA, 0, 0, 0, 0xF8]);
-        let run = run_bios_with_cap(&rom, 100);
+        let run = run_bios_config(assembly::bios(rom, None), |_| {
+            RunPolicy::natural(Some(100), Some(BIOS_IDLE_LIMIT))
+        });
         assert!(
             matches!(run.stop, StopReason::Unsupported { .. }),
             "{:?}",

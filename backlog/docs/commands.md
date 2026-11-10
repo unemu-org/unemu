@@ -7,6 +7,9 @@ Everyday commands for this project. Keep this file **flat and copy-pasteable** â
 ```sh
 cargo build                                  # build the workspace
 cargo run -p cli -- --boot                   # Real16 timer demo; no args print usage
+cargo run --offline -p cli -- --bios vendor/kiselev-bios/bios-xi8088.bin
+cargo run --offline -p cli -- --bios /path/to/bios.bin --allow-unlisted-firmware
+cargo run --offline -p window --bin unemupc98-window -- --allow-unlisted-firmware /path/to/bios.bin /path/to/floppy.img
 cargo test --workspace                       # unit + golden + integration
 cargo test --release -p devices              # release-only device behaviour (CI runs it too)
 cargo test --workspace -- --ignored          # slow goldens: BIOS POST, FreeDOS boot, DOS sessions (~2 min)
@@ -24,6 +27,24 @@ cargo run --offline -p window --bin unemupc98-window # default vendor BIOS + Fre
 cargo run --offline -p window --bin unemupc98-window -- vendor/kiselev-bios/bios-xi8088.bin vendor/freedos/freedos.img
 cargo tree --offline -i window               # window is a leaf frontend
 ```
+
+System BIOS loads on IBM 5170 use a SHA-256 catalogue. Option ROMs are not
+hashed or allowlisted yet; their checks belong to the option-ROM implementation. An unknown image is rejected
+with its full hash and the known entries' fetch instructions. For development,
+`--allow-unlisted-firmware` accepts unknown bytes and prints exactly one
+`warning: running unlisted firmware (sha256 HASH)` line to stderr. Placement
+(positive size divisible by 8 KiB, ending at `0x100000`) is still checked; listed
+images still meet board, CPU and required-part constraints. This run-only flag
+is never saved in machine files or used by goldens. The CLI `--bios PATH`
+boots the complete board with a volatile blank 1.44 MB floppy and writes COM1
+bytes to stdout. It prints one `stopped: ...` line to stderr and exits with
+status 1 for unsupported instructions, execution/exception failures, or
+configuration/policy/observation/persistence errors. Halt, reset-request and
+budget-exhausted outcomes succeed: reaching the budget is a normal bounded
+run's end. The window retains its existing BIOS/floppy arguments.
+Catalogue boards must have a system BIOS ROM, start at their power-on reset
+vector and keep all RAM and other images outside that ROM's range. The escape
+flag does not relax these requirements; custom-entry Rust rigs use `Bare`.
 
 The window binary requires a graphical desktop and fetched BIOS/FreeDOS fixtures.
 It uses a fixed 2Ã— pixel scale and keeps advancing through the FreeCOM date/time

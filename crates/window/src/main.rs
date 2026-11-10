@@ -6,10 +6,7 @@
 //! Input enters only at run boundaries; observation captures the completed
 //! boundary. See `backlog/docs/design/observation.md` § Window pacing.
 
-use assembly::{
-    assemble_with_observation, AssembledMachine, DeviceId, ObservationPolicy, ObservationRequest,
-    OutputKind,
-};
+use assembly::{AssembledMachine, DeviceId, ObservationPolicy, ObservationRequest, OutputKind};
 use machine::RunOutcome;
 use softbuffer::{Context, Surface};
 use std::{
@@ -60,8 +57,12 @@ struct Presenter {
 }
 
 impl Presenter {
-    fn new(config: &assembly::MachineConfig) -> Result<Self, Box<dyn Error>> {
-        let mut assembled = assemble_with_observation(
+    fn new(
+        config: &assembly::MachineConfig,
+        options: assembly::AssemblyOptions,
+        warnings: &mut impl io::Write,
+    ) -> Result<Self, Box<dyn Error>> {
+        let mut assembled = assembly::assemble_with_observation_and_options(
             config,
             &ObservationPolicy {
                 routes: vec![ObservationRequest {
@@ -71,7 +72,11 @@ impl Presenter {
                 }],
                 ..ObservationPolicy::default()
             },
+            options,
         )?;
+        for unlisted in &assembled.unlisted_firmware {
+            writeln!(warnings, "{unlisted}")?;
+        }
         let clock = &config.clock;
         // HLT must wait for an IRQ; the pacing cap already bounds idle time.
         assembled.machine.set_idle_limit(Some(u64::MAX));
@@ -339,7 +344,7 @@ impl ApplicationHandler for Presenter {
 fn informational_output(arg: &OsStr) -> Option<String> {
     if arg == "--help" {
         Some(format!(
-            "usage: unemupc98-window [bios-path [floppy-path]]\n\n{FONT_NOTICE}"
+            "usage: unemupc98-window [--allow-unlisted-firmware] [bios-path [floppy-path]]\n\n{FONT_NOTICE}"
         ))
     } else if arg == "--version" || arg == "--about" {
         Some(format!(
@@ -369,8 +374,26 @@ fn read_fixture(path: &Path, fetch: &str) -> io::Result<Vec<u8>> {
     })
 }
 
+fn firmware_args(
+    args: impl Iterator<Item = std::ffi::OsString>,
+) -> (assembly::AssemblyOptions, Vec<std::ffi::OsString>) {
+    let mut options = assembly::AssemblyOptions::default();
+    let paths = args
+        .filter(|arg| {
+            if arg == "--allow-unlisted-firmware" {
+                options.allow_unlisted_firmware = true;
+                false
+            } else {
+                true
+            }
+        })
+        .collect();
+    (options, paths)
+}
+
 fn main() -> Result<(), Box<dyn Error>> {
-    let mut args = std::env::args_os().skip(1);
+    let (options, paths) = firmware_args(std::env::args_os().skip(1));
+    let mut args = paths.into_iter();
     let first = args.next();
     if let Some(output) = first.as_deref().and_then(informational_output) {
         println!("{output}");
@@ -384,13 +407,15 @@ fn main() -> Result<(), Box<dyn Error>> {
         .map(PathBuf::from)
         .unwrap_or_else(|| default_fixture(FLOPPY_FIXTURE));
     if args.next().is_some() {
-        return Err("usage: unemupc98-window [bios-path [floppy-path]]".into());
+        return Err(
+            "usage: unemupc98-window [--allow-unlisted-firmware] [bios-path [floppy-path]]".into(),
+        );
     }
     let config = assembly::bios(
         read_fixture(&bios, BIOS_FETCH)?,
         Some(read_fixture(&floppy, FLOPPY_FETCH)?),
     );
-    let mut presenter = Presenter::new(&config)?;
+    let mut presenter = Presenter::new(&config, options, &mut io::stderr())?;
     let events = EventLoop::new()?;
     events.set_control_flow(ControlFlow::Wait);
     let result = events.run_app(&mut presenter);
@@ -410,6 +435,37 @@ fn main() -> Result<(), Box<dyn Error>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use assembly::assemble_with_observation;
+
+    fn test_presenter(config: &assembly::MachineConfig) -> Result<Presenter, Box<dyn Error>> {
+        Presenter::new(
+            config,
+            assembly::AssemblyOptions::default(),
+            &mut io::sink(),
+        )
+    }
+
+    #[test]
+    fn firmware_flag_reaches_headless_presenter() {
+        let (options, paths) = firmware_args(
+            ["bios.bin", "--allow-unlisted-firmware", "disk.img"]
+                .into_iter()
+                .map(Into::into),
+        );
+        assert!(options.allow_unlisted_firmware);
+        assert_eq!(paths, ["bios.bin", "disk.img"]);
+        let config = assembly::bios(vec![0; 32768], Some(vec![0; 1_474_560]));
+        assert!(Presenter::new(
+            &config,
+            assembly::AssemblyOptions::default(),
+            &mut io::sink()
+        )
+        .is_err());
+        let mut warnings = Vec::new();
+        let presenter = Presenter::new(&config, options, &mut warnings).unwrap();
+        assert_eq!(presenter.assembled.unlisted_firmware.len(), 1);
+        assert_eq!(String::from_utf8(warnings).unwrap(), "warning: running unlisted firmware (sha256 c35020473aed1b4642cd726cad727b63fff2824ad68cedd7ffb73c7cbd890479)\n");
+    }
 
     #[test]
     fn journal_host_failure_stops_at_the_first_window_boundary() {
@@ -449,7 +505,7 @@ mod tests {
         config.cpu = demo.cpu;
         config.images = demo.images;
         config.drives[0].image = assembly::ImageSource::File(base);
-        let mut reference = Presenter::new(&config).unwrap();
+        let mut reference = test_presenter(&config).unwrap();
         assert_eq!(
             reference
                 .assembled
@@ -460,7 +516,7 @@ mod tests {
         );
         let boundary = reference.assembled.machine.virtual_time();
         config.drives[0].write = assembly::WriteMode::journal(&journal);
-        let mut presenter = Presenter::new(&config).unwrap();
+        let mut presenter = test_presenter(&config).unwrap();
         presenter.assembled.persistence[0].fail_output();
         let error = presenter.advance(Duration::from_millis(20)).unwrap_err();
         assert!(error.to_string().contains("drive 0 persistence"), "{error}");
@@ -491,7 +547,7 @@ mod tests {
             .images;
             config.drives[0].image = assembly::ImageSource::File(base);
             config.drives[0].write = assembly::WriteMode::journal(&journal);
-            let mut presenter = Presenter::new(&config).unwrap();
+            let mut presenter = test_presenter(&config).unwrap();
             presenter.advance(Duration::from_millis(20)).unwrap();
             assert!(!presenter.running);
             assert_eq!(presenter.error.is_some(), fail);
@@ -617,7 +673,7 @@ mod tests {
 
     #[test]
     fn stopped_or_errored_presenter_ignores_keys_and_focus_loss_releases_held_keys() {
-        let mut presenter = Presenter::new(&assembly::bios(vec![0; 0x8000], None)).unwrap();
+        let mut presenter = test_presenter(&assembly::bios(vec![0; 0x8000], None)).unwrap();
         presenter.running = false;
         presenter.key_event(KeyCode::ShiftLeft, ElementState::Pressed);
         assert_eq!(presenter.keyboard.pending_events(), 0);
@@ -663,7 +719,7 @@ mod tests {
         let mut config = assembly::bios(rom, None);
         config.cpu.reset = assembly::ResetSpec::Entry { cs: 0xF800, ip: 0 };
         config.cpu.segments = assembly::SegmentSeed::flat(0);
-        let mut presenter = Presenter::new(&config).unwrap();
+        let mut presenter = test_presenter(&config).unwrap();
         for _ in 0..2 {
             advance_frame(&mut presenter);
             assert!(presenter.running, "a prompt is not a machine stop");
@@ -696,7 +752,7 @@ mod tests {
     #[test]
     fn reset_diagnostics_log_only_the_first_request_and_the_session_total() {
         let config = assembly::bios(vec![0; 0x8000], None);
-        let mut presenter = Presenter::new(&config).unwrap();
+        let mut presenter = test_presenter(&config).unwrap();
         let mut diagnostics = Vec::new();
         presenter.write_reset_summary(&mut diagnostics);
         assert!(diagnostics.is_empty());
@@ -719,7 +775,7 @@ mod tests {
         rom[..6].copy_from_slice(&[0xB0, 0xFE, 0xE6, 0x64, 0xEB, 0xFC]);
         let mut config = assembly::bios(rom, None);
         config.cpu.reset = assembly::ResetSpec::Entry { cs: 0xF800, ip: 0 };
-        let mut presenter = Presenter::new(&config).unwrap();
+        let mut presenter = test_presenter(&config).unwrap();
         advance_frame(&mut presenter);
         assert!(presenter.reset_requests > 1_000);
         assert!(presenter.running);
@@ -751,7 +807,7 @@ mod tests {
         rom[0x7FF0..0x7FF4].copy_from_slice(&[0xB0, 0x55, 0xFA, 0xF4]);
         let mut config = assembly::bios(rom, None);
         config.cpu.reset = assembly::ResetSpec::Entry { cs: 0xF800, ip: 0 };
-        let mut presenter = Presenter::new(&config).unwrap();
+        let mut presenter = test_presenter(&config).unwrap();
         advance_frame(&mut presenter);
         assert_eq!(
             presenter.assembled.machine.cpu().reg(CpuReg::Rax) & 0xFF,
@@ -778,7 +834,7 @@ mod tests {
         let mut config = assembly::bios(rom, None);
         config.cpu.reset = assembly::ResetSpec::Entry { cs: 0xF800, ip: 0 };
         config.cpu.segments = assembly::SegmentSeed::flat(0);
-        let mut presenter = Presenter::new(&config).unwrap();
+        let mut presenter = test_presenter(&config).unwrap();
         presenter.keyboard.key_event(KeyCode::KeyF, Pressed);
         presenter.keyboard.key_event(KeyCode::KeyG, Pressed);
         assert_eq!(presenter.keyboard.pending_events(), 2);
@@ -940,7 +996,7 @@ mod tests {
             config.cpu.segments = assembly::SegmentSeed::flat(0);
             config.clock.retired_per_pit_clock = a;
             config.clock.retired_per_pit_clock_denominator = b;
-            let mut paced = Presenter::new(&config).unwrap();
+            let mut paced = test_presenter(&config).unwrap();
             // This is the injected time source used by the real advance path;
             // repeated timestamps, jitter and a long stall need no real sleeps.
             for (index, millis) in [0, 8, 8, 16, 32, 500, 501, 520, 540, 560, 580, 600]
@@ -998,7 +1054,7 @@ mod tests {
             let mut config = timer_guest_config();
             config.clock.retired_per_pit_clock = a;
             config.clock.retired_per_pit_clock_denominator = b;
-            let mut presenter = Presenter::new(&config).unwrap();
+            let mut presenter = test_presenter(&config).unwrap();
             for frame in 1..=180 {
                 let elapsed = Duration::from_nanos(frame * 16_666_667);
                 let (target, _) = frame_target(
@@ -1019,7 +1075,7 @@ mod tests {
 
     #[test]
     fn hidden_presenter_pauses_and_discards_all_hidden_time() {
-        let mut presenter = Presenter::new(&timer_guest_config()).unwrap();
+        let mut presenter = test_presenter(&timer_guest_config()).unwrap();
         let visible = Duration::from_millis(10);
         presenter.advance(visible).unwrap();
         let before = guest_state(&mut presenter.assembled);
@@ -1059,7 +1115,7 @@ mod tests {
     fn identical_host_time_does_not_advance_or_deliver_queued_input() {
         let mut config = assembly::bios(vec![0x90; 0x8000], None);
         config.cpu.reset = assembly::ResetSpec::Entry { cs: 0xF800, ip: 0 };
-        let mut presenter = Presenter::new(&config).unwrap();
+        let mut presenter = test_presenter(&config).unwrap();
         presenter.key_event(KeyCode::KeyF, ElementState::Pressed);
         presenter.advance(Duration::ZERO).unwrap();
         assert_eq!(presenter.assembled.machine.clock().0, 0);
@@ -1100,7 +1156,7 @@ mod tests {
             return;
         };
         let config = assembly::bios(rom, Some(floppy));
-        let mut presenter = Presenter::new(&config).unwrap();
+        let mut presenter = test_presenter(&config).unwrap();
         let assembled = &mut presenter.assembled;
         let delivered = Rc::new(RefCell::new(String::new()));
         assembled
@@ -1206,7 +1262,7 @@ mod tests {
     #[test]
     fn timer_waiting_guest_advances_across_presenter_chunks_without_a_window() {
         let config = timer_guest_config();
-        let mut presenter = Presenter::new(&config).unwrap();
+        let mut presenter = test_presenter(&config).unwrap();
         let mut previous_retired = 0;
         for chunk in 1..=3 {
             advance_frame(&mut presenter);

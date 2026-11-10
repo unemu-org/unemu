@@ -1,7 +1,7 @@
 # Firmware, board models and machine classes
 
 Spike for bead `upc-6le.2` (epic `upc-6le`, phase A′ of decision-16), written
-2026-11-10 at `main` 99a669e. **Design proposal, unimplemented.** It answers:
+2026-11-10 at `main` 99a669e. **Design proposal; implementation notes in §9.** It answers:
 which machines a description can select, which open firmware runs each, and
 which devices each needs.
 
@@ -333,9 +333,10 @@ and its firmware is proprietary.
   lane = "odd" }]`. The catalogue pins each part's hash and the interleaved
   image's hash.
 - **Unknown hash.** The image is rejected with `FirmwareNotListed` (§6), which
-  lists the board's known entries and where each comes from. Whether a
-  developer escape hatch (`unlisted = true`, explicit `provides`, marked in the
-  machine identity) exists is an open question (§8).
+  lists the board's known entries and where each comes from. **Resolved by
+  decision-18:** `--allow-unlisted-firmware` is a run-only developer escape
+  hatch that warns with the full hash. It is never a machine-file field or part
+  of golden identity, and it relaxes only allowlist membership.
 - **CMOS.** Vendor BIOSes keep extra CMOS bytes and checksums beyond 2Dh. The
   derived standard bytes may trigger a "CMOS checksum" F1 prompt, so these
   boards need the NVRAM-file feature sketched in `upc-6le.1` (§8).
@@ -537,7 +538,7 @@ are read (assembly already validates file lengths after reading). The lowered
 | 14 | No two ROMs share a base | (existing `ImageOverlap`) | — |
 | 15 | Each card fits the board bus | `CardNeedsSlot` | `card "ide" is a 16-bit ISA card; board "ibm-5160" has 8-bit slots only` |
 | 16 | The IRQ line exists on the board | `InvalidIrqLine` (bounded per board) | `device Fdc uses irq line 9; board "ibm-5160" has irq lines 0 through 7` |
-| 17 | A system BIOS is top-aligned with a valid size | `BiosPlacement` | `system BIOS of 24 KiB must be a multiple of 8 KiB and end at 0x100000` |
+| 17 | A system BIOS is top-aligned with a valid size | `BiosPlacement` | `system BIOS of 24 KiB at 0xf8000 must have a positive size that is a multiple of 8 KiB and end at 0x100000` |
 
 Rule 13 rejects the raw r638 `ide_at.bin` (MEASURED byte sum B0h), which is the
 intended behaviour: the fixture must pad and checksum it.
@@ -635,9 +636,10 @@ Open questions for the maintainer:
 1. **Naming.** Is it acceptable to call today's machine `ibm-5170` while it
    lacks DMA2, 80287 ports and the reset line (listed deviations), or should it
    carry an interim name until those land?
-2. **Unlisted firmware.** Is it a strict hash allowlist only, or a developer
-   escape hatch (`unlisted = true` with explicit `provides`, flagged in the
-   machine identity)?
+2. **Unlisted firmware — resolved (decision-18).** A strict allowlist by
+   default, with the run-only `--allow-unlisted-firmware` developer flag and
+   a full-hash warning. The flag is absent from machine files and goldens;
+   it does not bypass BIOS presence, placement, reset or memory isolation.
 3. **XUB fixture.** Should the fixture build from a pinned SVN revision with
    NASM, or download r638 and pad and checksum it deterministically? Both pin
    two hashes.
@@ -667,6 +669,12 @@ The generic AT comes first.
    - *Acceptance:* each error has an exact-message test; a one-byte-changed ROM
      is rejected with the list of known entries; the goldens load through the
      catalogue.
+   - *Implemented:* board-owned system BIOS catalogue in `assembly`, checked
+     after image resolution and before ROM mapping; rules 6–9 and 17 have exact
+     diagnostic tests. The CLI and window support the run-only
+     `--allow-unlisted-firmware` escape hatch with a full-hash warning. Bare rigs
+     skip assembly checks; the historical POST runner checks its intended BIOS
+     explicitly. Option ROMs and catalogue-derived service claims remain deferred.
    - *Depends on:* 1.
 3. **Description `[board]` and `[firmware]` sections.** `model` drives
    everything; `class` is rejected with a hint. Reserved CPU models (`8088`,

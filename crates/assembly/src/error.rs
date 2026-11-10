@@ -15,6 +15,76 @@ pub enum ConfigError {
     /// A journal mode violates the persistent-media config contract.
     #[error("drive {drive_index} journal configuration: {message}")]
     Journal { drive_index: usize, message: String },
+    /// A catalogue board cannot boot without a system ROM.
+    #[error("board \"{board}\" requires a system BIOS ROM")]
+    MissingSystemBios {
+        /// Selected motherboard identifier.
+        board: &'static str,
+    },
+    /// Firmware boards always enter through their hardware reset vector.
+    #[error("board \"{board}\" requires power-on ResetVector F000:FFF0; got {actual}", actual = format_reset(.reset))]
+    FirmwareReset {
+        /// Selected motherboard identifier.
+        board: &'static str,
+        /// Rejected reset entry.
+        reset: crate::ResetSpec,
+    },
+    /// Writable RAM cannot shadow the checked system ROM.
+    #[error("system BIOS for board \"{board}\" overlaps RAM at {addr:#x}")]
+    SystemBiosOverlapsRam {
+        /// Selected motherboard identifier.
+        board: &'static str,
+        /// First overlapping address.
+        addr: u64,
+    },
+    /// No reviewed build has these image bytes.
+    #[error(
+        "bios image (sha256 {sha256}) is not a known image for board \"{board}\"; known: {known}"
+    )]
+    FirmwareNotListed {
+        /// Full SHA-256 of the loaded image.
+        sha256: String,
+        /// Selected board identifier.
+        board: &'static str,
+        /// Known entries and their distribution instructions.
+        known: String,
+    },
+    /// The image was built for another motherboard.
+    #[error("firmware \"{firmware}\" is built for {boards}, not {board}")]
+    FirmwareBoardMismatch {
+        /// Catalogue identifier.
+        firmware: &'static str,
+        /// Compatible boards.
+        boards: String,
+        /// Selected board.
+        board: &'static str,
+    },
+    /// The current CPU predates the firmware minimum.
+    #[error("firmware \"{firmware}\" needs an {minimum} or later; cpu is {cpu}")]
+    FirmwareNeedsCpu {
+        /// Catalogue identifier.
+        firmware: &'static str,
+        /// Required generation.
+        minimum: crate::FirmwareCpu,
+        /// Configured generation.
+        cpu: crate::FirmwareCpu,
+    },
+    /// A required board part is absent.
+    #[error("firmware \"{firmware}\" requires {part}; none is configured")]
+    FirmwareRequiresDevice {
+        /// Catalogue identifier.
+        firmware: &'static str,
+        /// Missing board part.
+        part: crate::FirmwarePart,
+    },
+    /// System ROM must have a valid size and end at the top of the first MiB.
+    #[error("system BIOS of {size_text} at {base:#x} must have a positive size that is a multiple of 8 KiB and end at 0x100000", size_text = format_bios_size(.size))]
+    BiosPlacement {
+        /// Guest-physical image base.
+        base: u64,
+        /// Raw image length in bytes.
+        size: u64,
+    },
 
     /// The configured kind does not declare a word register at this port.
     #[error("device {device:?} has no 16-bit register at port {port:#x}")]
@@ -418,4 +488,20 @@ fn rtc_start_range(start: &crate::RtcStart, field: &str) -> String {
         "minute" | "second" => "0-59".into(),
         _ => "a valid calendar date and time".into(),
     }
+}
+
+fn format_bios_size(size: &u64) -> String {
+    if size.is_multiple_of(1024) {
+        format!("{} KiB", size / 1024)
+    } else {
+        format!("{size} bytes")
+    }
+}
+
+fn format_reset(reset: &crate::ResetSpec) -> String {
+    let name = match reset {
+        crate::ResetSpec::Entry { .. } => "Entry",
+        crate::ResetSpec::ResetVector { .. } => "ResetVector",
+    };
+    format!("{name} {:04X}:{:04X}", reset.cs(), reset.ip())
 }

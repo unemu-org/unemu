@@ -438,8 +438,9 @@ a ROM. The initial vocabulary is deliberately small:
 
 System BIOS and option ROM images use the same field. The BIOS preset declares
 `Floppy`, matching the machine-file examples; this validation metadata does not
-change guest execution. Firmware identification, the SHA-256 catalogue and
-catalogue-derived claims belong to a separate implementation.
+change guest execution. Firmware identification uses the separate catalogue
+below; cross-checking service declarations against catalogue metadata remains
+deferred.
 
 On firmware boards (every board other than `Bare`), requirements follow from a
 table of device kinds. An FDC with at least one drive bound to its device id
@@ -452,6 +453,55 @@ returns `NoProvider { device, service }` in device/table order. `Bare` rigs skip
 these requirements, and an FDC without bound drives needs no provider. A ROM
 service does not require a consumer. RAM loads with nonempty `provides` fail with
 `ServicesOnRamLoad`; a RAM program cannot satisfy a firmware requirement.
+
+## Firmware catalogue
+
+`BoardModel::firmware_catalogue()` owns the reviewed `FirmwareEntry` values.
+The IBM 5170 catalogue contains `kiselev-xi8088-1.0.2`, the unmodified 32 KiB
+Xi 8088 build pinned by `vendor/kiselev-bios/fetch.sh`. Its GPL-3.0-or-later
+licence, upstream revision, SHA-256, load rule, service metadata, required
+8042/RTC/cascaded PIC parts, 80286 minimum and tested status are data in
+`crates/assembly/src/firmware.rs`. `Bare` owns no catalogue and assembly skips
+both catalogue and BIOS-placement checks for these hand-wired rigs.
+
+Assembly resolves file sources once, then hashes the actual bytes before any
+ROM mapping; inline and generated system BIOS images follow the same check.
+Option ROMs are not hashed or allowlisted here; their validation belongs to the
+option-ROM implementation. The first ROM in a firmware board's image list is
+the required system BIOS. Its size must be positive and divisible by 8 KiB,
+and its end must be `0x100000`. This check precedes the existing general region bounds
+check, so an overlong system BIOS reports `BiosPlacement`, including its base
+and an exact size (bytes when not divisible by 1024). Catalogue boards reject a
+missing BIOS (`MissingSystemBios`), a reset other than power-on
+`ResetVector F000:FFF0` (`FirmwareReset`), RAM shadowing the BIOS or its reset
+byte (`SystemBiosOverlapsRam`), and other overlapping images (`ImageOverlap`).
+Since every valid system BIOS ends at 1 MiB, at most one can satisfy placement
+without an overlap. File-backed ranges are checked again after resolution.
+Other image/region errors retain their existing variants. The catalogue's
+`base` field is informational for system BIOS entries: all use the common top
+alignment rule, which must also be enforced before looking up unknown bytes.
+Suggested option-ROM bases await the separate option-ROM loader.
+Unknown bytes report `FirmwareNotListed` with the full SHA-256 and
+every known entry's distribution and fetch script. Listed entries must also
+match the board, CPU minimum and required parts (rules 7–9 in the firmware design).
+
+`AssemblyOptions { allow_unlisted_firmware: true }` is a run-only escape hatch,
+passed to `assemble_with_options` or `assemble_with_observation_and_options`.
+It never enters `MachineConfig`, machine files or goldens. Accepted unknown
+hashes are returned in `AssembledMachine.unlisted_firmware`; frontends print
+one warning per hash. The option only relaxes catalogue membership: listed
+entries still satisfy compatibility checks, and every checked BIOS still
+satisfies placement. Required BIOS presence, memory isolation and power-on
+reset are also mandatory with the escape option. Synthetic IBM 5170 assembly
+tests may opt in for unknown hashes; rigs needing custom entry points select
+`Bare` explicitly without changing their device set.
+
+The historical no-floppy POST preset remains a `Bare` rig to preserve its
+hardware and golden. The CLI POST runner and scheduler comparison explicitly
+check its BIOS against the IBM 5170 catalogue through the shared assembly
+helper `check_board_system_bios` before assembling that partial rig. Complete
+BIOS/floppy and FreeDOS machines use normal strict assembly; all existing
+golden expectations remain unchanged.
 
 ## RTC start and NVRAM source
 

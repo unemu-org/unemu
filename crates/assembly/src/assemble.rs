@@ -86,6 +86,8 @@ pub struct AssembledMachine {
     pub observation: Observation,
     /// Per-journal drive status and explicit session finalization.
     pub persistence: Vec<crate::PersistenceHandle>,
+    /// Unknown BIOS hashes accepted through a run-only escape option.
+    pub unlisted_firmware: Vec<crate::UnlistedFirmware>,
 }
 
 /// A way assembling a validated [`MachineConfig`] can fail (§3.1).
@@ -146,12 +148,34 @@ pub fn assemble_with_observation(
     config: &MachineConfig,
     observation_policy: &ObservationPolicy,
 ) -> Result<AssembledMachine, AssemblyError> {
-    assemble_with_cpu(config, observation_policy, build_cpu)
+    assemble_with_observation_and_options(
+        config,
+        observation_policy,
+        crate::AssemblyOptions::default(),
+    )
+}
+
+/// Assemble with run-only firmware permissions and default observation.
+pub fn assemble_with_options(
+    config: &MachineConfig,
+    options: crate::AssemblyOptions,
+) -> Result<AssembledMachine, AssemblyError> {
+    assemble_with_observation_and_options(config, &ObservationPolicy::default(), options)
+}
+
+/// Assemble with explicit capture routes and run-only firmware permissions.
+pub fn assemble_with_observation_and_options(
+    config: &MachineConfig,
+    observation_policy: &ObservationPolicy,
+    options: crate::AssemblyOptions,
+) -> Result<AssembledMachine, AssemblyError> {
+    assemble_with_cpu(config, observation_policy, options, build_cpu)
 }
 
 fn assemble_with_cpu(
     config: &MachineConfig,
     observation_policy: &ObservationPolicy,
+    options: crate::AssemblyOptions,
     build: impl FnOnce(&MachineConfig) -> Result<X86JitCpu, AssemblyError>,
 ) -> Result<AssembledMachine, AssemblyError> {
     // A validated config does not fail assembly for configuration reasons; run
@@ -164,6 +188,17 @@ fn assemble_with_cpu(
     let resolved = resolve_file_sources(config)?;
     let config = resolved.as_ref();
     config.validate_resolved()?;
+
+    let mut unlisted_firmware = Vec::new();
+    if !config.board.firmware_catalogue().is_empty() {
+        let image = crate::firmware::system_bios(config)?;
+        let bytes = load_image_bytes(&image.source)?;
+        if let Some(unlisted) =
+            crate::check_board_system_bios(config, config.board, image.base, &bytes, options)?
+        {
+            unlisted_firmware.push(unlisted);
+        }
+    }
 
     let mut cpu = build(config)?;
     validate_step_cpu(&mut cpu)?;
@@ -272,6 +307,7 @@ fn assemble_with_cpu(
         device_index,
         observation,
         persistence,
+        unlisted_firmware,
     })
 }
 
@@ -662,7 +698,7 @@ mod tests {
     #[test]
     fn observation_precheck_matches_bind_for_every_device_and_output() {
         let config = crate::bios(vec![0; 0x8000], Some(vec![0; 1_474_560]));
-        let mut assembled = assemble(&config).unwrap();
+        let mut assembled = assemble_synthetic(&config).unwrap();
         for dc in &config.devices {
             let slot = assembled
                 .machine
@@ -713,6 +749,28 @@ mod tests {
         }
     }
 
+    fn assemble_synthetic(config: &MachineConfig) -> Result<AssembledMachine, AssemblyError> {
+        assemble_with_options(
+            config,
+            crate::AssemblyOptions {
+                allow_unlisted_firmware: true,
+            },
+        )
+    }
+
+    fn observe_synthetic(
+        config: &MachineConfig,
+        policy: &ObservationPolicy,
+    ) -> Result<AssembledMachine, AssemblyError> {
+        assemble_with_observation_and_options(
+            config,
+            policy,
+            crate::AssemblyOptions {
+                allow_unlisted_firmware: true,
+            },
+        )
+    }
+
     fn rtc_config(config: &mut MachineConfig) -> &mut CmosCfg {
         let device = config
             .devices
@@ -726,7 +784,7 @@ mod tests {
     }
 
     fn rtc_registers(config: &MachineConfig) -> [u8; 64] {
-        let mut assembled = assemble(config).unwrap();
+        let mut assembled = assemble_synthetic(config).unwrap();
         let bus = assembled.machine.bus_mut();
         std::array::from_fn(|index| {
             bus.port_write(0x70, 1, index as u32).unwrap();
@@ -738,7 +796,7 @@ mod tests {
     fn bios_preset_assembles_both_dma_banks_and_empty_coprocessor() {
         let config = crate::bios(vec![0; 0x8000], Some(vec![0; 1_474_560]));
         config.validate().unwrap();
-        let mut assembled = assemble(&config).unwrap();
+        let mut assembled = assemble_synthetic(&config).unwrap();
         let ids = &assembled.device_index;
         assert_eq!(ids[&DeviceId::Dma], 3);
         assert_eq!(ids[&DeviceId::DmaWord], 4);
@@ -782,9 +840,10 @@ mod tests {
         let mut rom = vec![0; 0x8000];
         rom[..program.len()].copy_from_slice(&program);
         let mut config = crate::bios(rom, Some(vec![0; 1_474_560]));
+        config.board = crate::BoardModel::Bare;
         config.cpu.reset = crate::ResetSpec::Entry { cs: 0xF800, ip: 0 };
         config.cpu.segments = crate::SegmentSeed::flat(0);
-        let mut assembled = assemble(&config).unwrap();
+        let mut assembled = assemble_synthetic(&config).unwrap();
         assert_eq!(
             assembled.machine.run_bounded(Some(100)).unwrap(),
             machine::RunOutcome::Halted
@@ -812,8 +871,9 @@ mod tests {
             let mut rom = vec![0; 0x8000];
             rom[..program.len()].copy_from_slice(&program);
             let mut config = crate::bios(rom, Some(vec![0; 1_474_560]));
+            config.board = crate::BoardModel::Bare;
             config.cpu.reset = crate::ResetSpec::Entry { cs: 0xF800, ip: 0 };
-            let mut assembled = assemble(&config).unwrap();
+            let mut assembled = assemble_synthetic(&config).unwrap();
             assert_eq!(
                 assembled.machine.run_bounded(Some(100)).unwrap(),
                 machine::RunOutcome::ResetRequested
@@ -836,9 +896,10 @@ mod tests {
         let mut rom = vec![0; 0x8000];
         rom[..program.len()].copy_from_slice(&program);
         let mut config = crate::bios(rom, Some(vec![0; 1_474_560]));
+        config.board = crate::BoardModel::Bare;
         config.cpu.reset = crate::ResetSpec::Entry { cs: 0xF800, ip: 0 };
         for prompt in [false, true] {
-            let mut assembled = assemble_with_observation(
+            let mut assembled = observe_synthetic(
                 &config,
                 &ObservationPolicy {
                     routes: vec![crate::ObservationRequest {
@@ -880,8 +941,9 @@ mod tests {
         let mut rom = vec![0; 0x8000];
         rom[..7].copy_from_slice(&[0xB8, 0x12, 0x34, 0xE7, 0xC0, 0xFA, 0xF4]);
         let mut config = crate::bios(rom, Some(vec![0; 1_474_560]));
+        config.board = crate::BoardModel::Bare;
         config.cpu.reset = crate::ResetSpec::Entry { cs: 0xF800, ip: 0 };
-        let mut assembled = assemble(&config).unwrap();
+        let mut assembled = assemble_synthetic(&config).unwrap();
         assert_eq!(
             assembled.machine.run_bounded(Some(100)).unwrap(),
             machine::RunOutcome::Halted
@@ -926,7 +988,7 @@ mod tests {
             if expected_nvram == crate::NvramSource::Derived {
                 legacy = legacy.with_config(derive_cmos_config(&config));
             }
-            let mut assembled = assemble(&config).unwrap();
+            let mut assembled = assemble_synthetic(&config).unwrap();
             let index = assembled.device_index[&DeviceId::Rtc];
             let actual = assembled
                 .machine
@@ -1026,7 +1088,7 @@ mod tests {
         ] {
             let mut config = crate::at_rtc(vec![0xF4], 100, 10);
             rtc_config(&mut config).start = start;
-            let mut assembled = assemble(&config).unwrap();
+            let mut assembled = assemble_synthetic(&config).unwrap();
             let bus = assembled.machine.bus_mut();
             bus.port_write(0x70, 1, 9).unwrap();
             let year = (start.year % 100) as u8;
@@ -1104,7 +1166,7 @@ mod tests {
                 }],
             };
             assert!(matches!(
-                crate::assemble_with_observation(&config, &policy),
+                observe_synthetic(&config, &policy),
                 Err(AssemblyError::Config(ConfigError::UnsupportedObservationOutput {
                     device: actual_device, output: actual_output,
                 })) if actual_device == device && actual_output == output
@@ -1254,7 +1316,7 @@ mod tests {
 
     #[test]
     fn reference_config_assembles() {
-        assert!(assemble(&reference_config()).is_ok());
+        assert!(assemble_synthetic(&reference_config()).is_ok());
     }
 
     #[test]
@@ -1270,7 +1332,7 @@ mod tests {
             if reverse {
                 config.devices.reverse();
             }
-            let mut assembled = assemble(&config).unwrap();
+            let mut assembled = assemble_synthetic(&config).unwrap();
             let pit_index = assembled.device_index[&DeviceId::Pit];
             let rtc_index = assembled.device_index[&DeviceId::Rtc];
             let bus = assembled.machine.bus_mut();
@@ -1300,9 +1362,12 @@ mod tests {
 
     #[test]
     fn assembly_rejects_cpu_without_step_bounds_before_execution() {
-        let error = assemble_with_cpu(&reference_config(), &ObservationPolicy::default(), |_| {
-            Ok(X86JitCpu::new(0x10000, 0x1000, &[0xF4])?)
-        });
+        let error = assemble_with_cpu(
+            &reference_config(),
+            &ObservationPolicy::default(),
+            crate::AssemblyOptions::default(),
+            |_| Ok(X86JitCpu::new(0x10000, 0x1000, &[0xF4])?),
+        );
         assert!(matches!(
             error,
             Err(AssemblyError::Config(ConfigError::StepBoundedCpuRequired(
@@ -1329,7 +1394,7 @@ mod tests {
             ..ObservationPolicy::default()
         };
         for config in configs {
-            let mut assembled = assemble_with_observation(&config, &policy).unwrap();
+            let mut assembled = observe_synthetic(&config, &policy).unwrap();
             for dc in &config.devices {
                 let port = if dc.id == DeviceId::Fdc {
                     0x3F4
@@ -1372,9 +1437,10 @@ mod tests {
                 rom[..6].copy_from_slice(&[0xB0, 0, 0xB0, 0, 0xFA, 0xF4]);
                 rom
             });
+            config.board = crate::BoardModel::Bare;
             config.cpu.reset = ResetSpec::Entry { cs: 0xF800, ip: 0 };
             config.cpu.segments = SegmentSeed::flat(0xF800);
-            let mut assembled = assemble(&config).expect("assembles");
+            let mut assembled = assemble_synthetic(&config).expect("assembles");
             assembled.machine.run().expect("run");
             assert_eq!(assembled.machine.cpu().retired(), 4);
             assert_eq!(assembled.machine.clock(), device::VClock(clocks));
@@ -1388,7 +1454,7 @@ mod tests {
             config.clock.retired_per_pit_clock = numerator;
             config.clock.retired_per_pit_clock_denominator = denominator;
             assert!(matches!(
-                assemble(&config),
+                assemble_synthetic(&config),
                 Err(AssemblyError::Config(ConfigError::InvalidCpuRate { .. }))
             ));
         }
@@ -1396,7 +1462,7 @@ mod tests {
 
     #[test]
     fn device_index_map_follows_config_order() {
-        let assembled = assemble(&reference_config()).expect("assembles");
+        let assembled = assemble_synthetic(&reference_config()).expect("assembles");
         let map = &assembled.device_index;
         // The devices land in config order, each role at its own bus slot; the
         // master and slave PIC faces are two distinct slots of the one live chip.
@@ -1481,7 +1547,7 @@ mod tests {
             .iter()
             .all(|d| !d.allow_port_overlap && d.ports.iter().all(|w| !w.allow_overlap)));
         let mut assembled =
-            assemble(&config).expect("split FDC assembles alongside primary control");
+            assemble_synthetic(&config).expect("split FDC assembles alongside primary control");
         for (port, owner) in [
             (0x3F5, DeviceId::Fdc),
             (0x3F6, DeviceId::Post),
@@ -1518,7 +1584,8 @@ mod tests {
                     config.devices.reverse();
                 }
                 assert_eq!(config.validate(), Ok(()));
-                let mut assembled = assemble(&config).expect("same-start overlap assembles");
+                let mut assembled =
+                    assemble_synthetic(&config).expect("same-start overlap assembles");
                 for (port, owner) in [(0x80, DeviceId::Post), (0x81, DeviceId::Dma)] {
                     assert_bus_port_read_owner(&mut assembled, port, Some(owner));
                 }
@@ -1564,7 +1631,7 @@ mod tests {
             }
             assert_eq!(config, legacy, "{name}");
             assert_eq!(config.validate(), Ok(()));
-            let mut assembled = assemble(&config).expect("preset assembles");
+            let mut assembled = assemble_synthetic(&config).expect("preset assembles");
             let expected_owner = match name {
                 "at_fdc_write" | "floppy_boot" | "bios_with_floppy" => Some(DeviceId::Fdc),
                 _ => None,
@@ -1615,7 +1682,7 @@ mod tests {
         let config = reference_config();
         let index = {
             // Rebuild the index the same way assemble does, to assert the map.
-            let assembled = assemble(&config).expect("assembles");
+            let assembled = assemble_synthetic(&config).expect("assembles");
             assembled.device_index
         };
         let map = build_decode_map(&config, &index);
@@ -1650,7 +1717,7 @@ mod tests {
     #[test]
     fn wiring_tables_resolve_ids_to_indices() {
         let config = reference_config();
-        let assembled = assemble(&config).expect("assembles");
+        let assembled = assemble_synthetic(&config).expect("assembles");
         let index = &assembled.device_index;
 
         let irqs = build_irq_lines(&config, index);
@@ -1686,7 +1753,7 @@ mod tests {
         // The ROM is loaded at its base and reads back through the CPU seam; low
         // RAM is writable. This proves the memory mosaic was laid out, without a
         // full boot.
-        let mut assembled = assemble(&reference_config()).expect("assembles");
+        let mut assembled = assemble_synthetic(&reference_config()).expect("assembles");
         let cpu = assembled.machine.cpu();
         let mut rom = [0xFFu8; 4];
         cpu.read_mem(ROM_BASE, &mut rom).expect("rom readable");
@@ -1716,7 +1783,7 @@ mod tests {
                 kind: ImageKind::RamLoad,
                 provides: Vec::new(),
             });
-            let mut assembled = assemble(&config).unwrap();
+            let mut assembled = assemble_synthetic(&config).unwrap();
             assert_eq!(
                 assembled.machine.run_bounded(Some(100)).unwrap(),
                 machine::RunOutcome::Halted
@@ -1772,7 +1839,7 @@ mod tests {
         let mut config = reference_config();
         // A stray UART window over the PIT's 0x40 base is an unallowed overlap.
         config.devices[0].ports.push(PortWindow::single(0x40));
-        let result = assemble(&config);
+        let result = assemble_synthetic(&config);
         assert!(matches!(
             result,
             Err(AssemblyError::Config(ConfigError::PortOverlap {
@@ -1809,7 +1876,7 @@ mod tests {
             images: Vec::new(),
             output: OutputConfig::default(),
         };
-        let assembled = assemble(&config).expect("assembles");
+        let assembled = assemble_synthetic(&config).expect("assembles");
         assert_eq!(assembled.device_index[&DeviceId::Uart], 0);
     }
 
@@ -1879,7 +1946,7 @@ mod tests {
         assert_eq!(cmos.equipment >> 6, 0b01);
 
         // And the whole machine assembles from that config unchanged.
-        assert!(assemble(&config).is_ok());
+        assert!(assemble_synthetic(&config).is_ok());
     }
 
     #[test]
@@ -1961,7 +2028,7 @@ mod tests {
             drive.image = ImageSource::Inline(vec![byte; drive.kind.image_bytes() as usize]);
         }
         assert_eq!(config.validate(), Ok(()));
-        let mut assembled = assemble(&config).unwrap();
+        let mut assembled = assemble_synthetic(&config).unwrap();
         for (controller, geometry, byte) in [
             (DeviceId::Fdc, FloppyGeometry::HD_1_2, 0x12),
             (DeviceId::Uart, FloppyGeometry::DD_720K, 0x72),
@@ -1993,7 +2060,7 @@ mod tests {
         let mut config = reference_config();
         config.drives[0].write = WriteMode::ReadOnly;
         let original = vec![0; FloppyGeometry::HD_1_44.image_bytes() as usize];
-        let mut assembled = assemble(&config).unwrap();
+        let mut assembled = assemble_synthetic(&config).unwrap();
         let index = assembled.device_index[&DeviceId::Fdc];
         let fdc = assembled.machine.bus_mut().device_mut(index).unwrap();
         fdc.port_write(0x3F2, 1, 0x1C).unwrap();
@@ -2041,7 +2108,7 @@ mod tests {
         }
         let config =
             single_floppy_config(FloppyGeometry::DD_360K, ImageSource::Inline(image.clone()));
-        let mut assembled = assemble(&config).expect("assembles");
+        let mut assembled = assemble_synthetic(&config).expect("assembles");
         let idx = assembled.device_index[&DeviceId::Fdc];
         let bus = assembled.machine.bus_mut();
         let fdc = bus.device_mut(idx).expect("fdc is on the bus");
@@ -2105,7 +2172,7 @@ mod tests {
         let mut config = reference_config();
         config.drives[0].image = ImageSource::File(std::path::PathBuf::new());
         assert!(
-            matches!(assemble(&config), Err(AssemblyError::Config(ConfigError::ImageRead { path, message })) if path.as_os_str().is_empty() && !message.is_empty())
+            matches!(assemble_synthetic(&config), Err(AssemblyError::Config(ConfigError::ImageRead { path, message })) if path.as_os_str().is_empty() && !message.is_empty())
         );
     }
 
@@ -2115,7 +2182,7 @@ mod tests {
         config.drives[0].image =
             ImageSource::File(concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml").into());
         assert!(
-            matches!(assemble(&config), Err(AssemblyError::Config(ConfigError::ImageGeometryMismatch { drive_index: 0, expected: 1_474_560, actual })) if actual == include_bytes!("../Cargo.toml").len() as u64)
+            matches!(assemble_synthetic(&config), Err(AssemblyError::Config(ConfigError::ImageGeometryMismatch { drive_index: 0, expected: 1_474_560, actual })) if actual == include_bytes!("../Cargo.toml").len() as u64)
         );
     }
 
@@ -2129,7 +2196,7 @@ mod tests {
             provides: Vec::new(),
         };
         assert!(
-            matches!(assemble(&config), Err(AssemblyError::Config(ConfigError::RegionOutOfSpace { base, end, space })) if base == SPACE - 1 && end == base + include_bytes!("../Cargo.toml").len() as u64 && space == SPACE),
+            matches!(assemble_synthetic(&config), Err(AssemblyError::Config(ConfigError::RegionOutOfSpace { base, end, space })) if base == SPACE - 1 && end == base + include_bytes!("../Cargo.toml").len() as u64 && space == SPACE),
             "file bounds must produce a config error"
         );
     }
@@ -2148,7 +2215,7 @@ mod tests {
             provides: Vec::new(),
         };
         assert!(matches!(
-            assemble(&config),
+            assemble_synthetic(&config),
             Err(AssemblyError::Config(ConfigError::ImageOverlapsMmio {
                 image_index: 0,
                 device: DeviceId::Vga,
@@ -2167,7 +2234,7 @@ mod tests {
             provides: Vec::new(),
         });
         assert!(
-            matches!(assemble(&config), Err(AssemblyError::Config(ConfigError::ImageOverlap { a: 0, b: 1, addr })) if addr == ROM_BASE + 1)
+            matches!(assemble_synthetic(&config), Err(AssemblyError::Config(ConfigError::ImageOverlap { a: 0, b: 1, addr })) if addr == ROM_BASE + 1)
         );
     }
 
@@ -2181,7 +2248,7 @@ mod tests {
             provides: Vec::new(),
         };
         assert!(matches!(
-            assemble(&config),
+            assemble_synthetic(&config),
             Err(AssemblyError::Config(ConfigError::ImageOutsideRam {
                 image_index: 0,
                 addr: ROM_BASE
@@ -2198,7 +2265,7 @@ mod tests {
             kind: ImageKind::RamLoad,
             provides: Vec::new(),
         };
-        let assembled = assemble(&config).expect("readable RAM load assembles");
+        let assembled = assemble_synthetic(&config).expect("readable RAM load assembles");
         let expected = include_bytes!("../Cargo.toml");
         let mut actual = vec![0; expected.len()];
         assembled.machine.cpu().read_mem(0, &mut actual).unwrap();
