@@ -1,13 +1,20 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Intel 8237A programmable DMA controller (§7.7).
 //!
-//! Models the first of the PC/AT's two 8237s — the byte-wide channels 0–3 at
+//! Models either of the PC/AT's two 8237s. The default is byte channels 0–3 at
 //! ports `0x00..=0x0F`, plus the external page-register latches at `0x80..=0x8F`
 //! that supply address bits 16–23. Each channel owns a 16-bit current/base
 //! address and a 16-bit current/base word count; the chip owns a command,
 //! status, request and mask register, a per-channel mode register, and the
 //! first/last **flip-flop** that sequences the low/high byte of the 16-bit
 //! channel registers.
+//!
+//! [`Dma8237::new_at_word`] selects the second bank's word channels 5–7
+//! and reserved cascade channel 4. IBM Personal Computer AT Technical Reference,
+//! System Board, Direct Memory Access (pp. 1-9–1-11), defines its wiring;
+//! Intel 8237A datasheet, Register Description and Cascade Mode, defines the
+//! shared controller semantics. See `backlog/docs/design/machine-config.md`
+//! §Board model for the register and transfer coverage.
 //!
 //! ## SMC-safe memory access
 //!
@@ -35,10 +42,10 @@
 //! | Terminal count → TC status + autoinit/mask | yes      |                             |
 //!
 //! Deliberately **not** modelled:
-//! - **The second 8237 (channels 4–7) and the cascade** (channel 4 cascades the
-//!   slave controller into the master). This device is a single 8237; a machine
-//!   that needs 16-bit DMA instantiates a second one. The cascade *mode* value is
-//!   accepted and stored but performs no transfer.
+//! - **Bus arbitration between the two AT controllers** is not timed. The AT
+//!   word bank uses local channels 0–3 for system channels 4–7; local channel 0
+//!   is reserved for cascade and never transfers payload. Cascade mode on any
+//!   channel passes arbitration without advancing its address or count.
 //! - **Memory-to-memory transfers** (command bit 0, using channels 0/1): the bit
 //!   is stored, but the block-copy path is not implemented.
 //! - **Timing**: demand, single, and block transfer *modes* all move bytes
@@ -132,9 +139,11 @@ struct Channel {
 
 /// The 8237A DMA controller (§7.7).
 ///
-/// Decodes `0x00..=0x0F` and `0x80..=0x8F`. Has no interrupt output — DMA does
+/// The default bank decodes `0x00..=0x0F` and `0x80..=0x8F`;
+/// [`Dma8237::new_at_word`] selects the AT word bank. Has no interrupt output — DMA does
 /// not drive an IRQ line — so [`Device::irq_pending`] is always `false`.
 pub struct Dma8237 {
+    word_bank: bool,
     channels: [Channel; CHANNELS],
     /// External page latches at `0x80..=0x8F`.
     pages: [u8; PAGE_LATCHES],
@@ -161,6 +170,7 @@ impl Dma8237 {
     #[must_use]
     pub fn new() -> Self {
         Self {
+            word_bank: false,
             channels: [Channel::default(); CHANNELS],
             pages: [0; PAGE_LATCHES],
             command: 0,
@@ -175,11 +185,62 @@ impl Dma8237 {
         }
     }
 
+    /// AT controller 2: C0h–DFh register ports, page latches 89h–8Fh.
+    ///
+    /// IBM Personal Computer AT Technical Reference, System Board, Direct
+    /// Memory Access (pp. 1-9–1-11): local channels 1–3 (system 5–7) address
+    /// words within a 128 KiB page; page bit 0 is not driven onto A16.
+    /// System Board, I/O Address Map (p. 1-37), and DMA wiring connect SA1–SA4
+    /// to the controller register selects; odd ports alias the preceding even
+    /// register, so a CPU word OUT supplies both flip-flop bytes.
+    /// Intel 8237A datasheet, Cascade Mode: local channel 0 (system 4)
+    /// forwards arbitration, without address/count stepping. Arbitration timing
+    /// is not modelled. The bank selection is wiring, retained across reset and
+    /// restore, rather than guest snapshot state.
+    #[must_use]
+    pub fn new_at_word() -> Self {
+        Self {
+            word_bank: true,
+            ..Self::new()
+        }
+    }
+
+    fn register_offset(&self, port: u16) -> Option<u16> {
+        if self.word_bank {
+            (0xC0..=0xDF)
+                .contains(&port)
+                .then_some(port)
+                .map(|port| (port - 0xC0) / 2)
+        } else {
+            (REG_BASE..=REG_END)
+                .contains(&port)
+                .then_some(port - REG_BASE)
+        }
+    }
+
+    fn is_page(&self, port: u16) -> bool {
+        if self.word_bank {
+            (0x89..=PAGE_END).contains(&port)
+        } else {
+            (PAGE_BASE..=PAGE_END).contains(&port)
+        }
+    }
+
     /// The 24-bit physical address a channel currently points at.
     #[must_use]
     pub fn physical_address(&self, channel: usize) -> u32 {
-        let page = u32::from(self.pages[CHANNEL_PAGE_OFFSET[channel]]);
-        (page << 16) | u32::from(self.channels[channel].current_address)
+        let offset = if self.word_bank {
+            [15, 11, 9, 10][channel]
+        } else {
+            CHANNEL_PAGE_OFFSET[channel]
+        };
+        let page = u32::from(self.pages[offset]);
+        let address = u32::from(self.channels[channel].current_address);
+        if self.word_bank {
+            ((page & 0xFE) << 16) | (address << 1)
+        } else {
+            (page << 16) | address
+        }
     }
 
     /// The transfer type programmed for `channel`.
@@ -197,7 +258,11 @@ impl Dma8237 {
     /// Whether `channel` can currently be serviced (unmasked and controller on).
     #[must_use]
     pub fn channel_ready(&self, channel: usize) -> bool {
-        self.command & CMD_DISABLE == 0 && self.mask & (1 << channel) == 0
+        channel < CHANNELS
+            && !(self.word_bank && channel == 0)
+            && self.channels[channel].mode & 0xC0 != 0xC0
+            && self.command & CMD_DISABLE == 0
+            && self.mask & (1 << channel) == 0
     }
 
     /// Perform a device→memory ("write") transfer of `data` on `channel`,
@@ -214,17 +279,23 @@ impl Dma8237 {
         mem: &mut dyn DmaMemory,
         data: &[u8],
     ) -> DmaTransfer {
+        if !self.channel_ready(channel) {
+            return DmaTransfer::default();
+        }
         let verify = self.transfer_type(channel) == TransferType::Verify;
         let mut result = DmaTransfer::default();
-        for &byte in data {
+        let width = if self.word_bank { 2 } else { 1 };
+        for word in data.chunks_exact(width) {
             if !self.channel_ready(channel) {
                 break;
             }
             if !verify {
                 let addr = self.physical_address(channel);
-                mem.dma_write(addr, byte);
+                for (offset, &byte) in word.iter().enumerate() {
+                    mem.dma_write(addr + offset as u32, byte);
+                }
             }
-            result.transferred += 1;
+            result.transferred += width;
             if self.advance_channel(channel) {
                 result.terminal_count = true;
                 break;
@@ -244,13 +315,16 @@ impl Dma8237 {
         out: &mut [u8],
     ) -> DmaTransfer {
         let mut result = DmaTransfer::default();
-        for slot in out.iter_mut() {
+        let width = if self.word_bank { 2 } else { 1 };
+        for word in out.chunks_exact_mut(width) {
             if !self.channel_ready(channel) {
                 break;
             }
             let addr = self.physical_address(channel);
-            *slot = mem.dma_read(addr);
-            result.transferred += 1;
+            for (offset, slot) in word.iter_mut().enumerate() {
+                *slot = mem.dma_read(addr + offset as u32);
+            }
+            result.transferred += width;
             if self.advance_channel(channel) {
                 result.terminal_count = true;
                 break;
@@ -259,7 +333,7 @@ impl Dma8237 {
         result
     }
 
-    /// Step a channel's address and count after one byte. Returns `true` when
+    /// Step a channel's address and count after one transfer unit. Returns `true` when
     /// terminal count is reached (TC flagged; autoinit reload or self-mask).
     /// Intel 8237A datasheet, Current Word Count Register: TC is the count's
     /// underflow to 0xFFFF, which remains readable unless autoinitialize reloads it.
@@ -408,8 +482,8 @@ impl Device for Dma8237 {
 
     fn port_read(&mut self, port: u16, size: u8) -> Result<u32, DeviceError> {
         let value = match port {
-            REG_BASE..=REG_END => {
-                let off = port - REG_BASE;
+            _ if self.register_offset(port).is_some() => {
+                let off = self.register_offset(port).unwrap_or(0);
                 match off {
                     0x0 | 0x2 | 0x4 | 0x6 => u32::from(self.read_address(usize::from(off / 2))),
                     0x1 | 0x3 | 0x5 | 0x7 => u32::from(self.read_count(usize::from(off / 2))),
@@ -419,7 +493,7 @@ impl Device for Dma8237 {
                     _ => 0,
                 }
             }
-            PAGE_BASE..=PAGE_END => u32::from(self.pages[Self::page_offset(port)]),
+            _ if self.is_page(port) => u32::from(self.pages[Self::page_offset(port)]),
             _ => {
                 return Err(DeviceError::UnmappedRegister {
                     kind: "port",
@@ -434,8 +508,8 @@ impl Device for Dma8237 {
     fn port_write(&mut self, port: u16, size: u8, value: u32) -> Result<(), DeviceError> {
         let byte = value as u8;
         match port {
-            REG_BASE..=REG_END => {
-                let off = port - REG_BASE;
+            _ if self.register_offset(port).is_some() => {
+                let off = self.register_offset(port).unwrap_or(0);
                 match off {
                     0x0 | 0x2 | 0x4 | 0x6 => self.write_address(usize::from(off / 2), byte),
                     0x1 | 0x3 | 0x5 | 0x7 => self.write_count(usize::from(off / 2), byte),
@@ -453,7 +527,7 @@ impl Device for Dma8237 {
                     _ => unreachable!("offset bounded to 0..=0xF"),
                 }
             }
-            PAGE_BASE..=PAGE_END => self.pages[Self::page_offset(port)] = byte,
+            _ if self.is_page(port) => self.pages[Self::page_offset(port)] = byte,
             _ => {
                 return Err(DeviceError::UnmappedRegister {
                     kind: "port",
@@ -503,7 +577,11 @@ impl Device for Dma8237 {
 
     fn reset(&mut self) {
         let trace_policy = self.trace.policy();
-        *self = Dma8237::new();
+        *self = if self.word_bank {
+            Self::new_at_word()
+        } else {
+            Self::new()
+        };
         self.trace.set_policy(trace_policy);
     }
 
@@ -618,6 +696,175 @@ mod tests {
     use super::*;
     use std::collections::HashMap;
     use testkit::MockBus;
+
+    fn word_program(bus: &mut MockBus, channel: u8, mode: u8, page: u8, address: u16, count: u16) {
+        bus.port_write(0xD8, 1, 0).unwrap();
+        bus.port_write(0xD6, 1, u32::from(mode | channel)).unwrap();
+        if channel != 0 {
+            bus.port_write(
+                [0x8F, 0x8B, 0x89, 0x8A][channel as usize],
+                1,
+                u32::from(page),
+            )
+            .unwrap();
+        }
+        for value in address.to_le_bytes() {
+            bus.port_write(0xC0 + u16::from(channel) * 4, 1, u32::from(value))
+                .unwrap();
+        }
+        for value in count.to_le_bytes() {
+            bus.port_write(0xC2 + u16::from(channel) * 4, 1, u32::from(value))
+                .unwrap();
+        }
+        bus.port_write(0xD4, 1, u32::from(channel)).unwrap();
+    }
+
+    #[test]
+    fn at_word_bank_decodes_aliased_registers_and_its_own_pages() {
+        let mut bus = MockBus::new(Box::new(Dma8237::new_at_word()));
+        for channel in 0..4 {
+            word_program(&mut bus, channel, 0x04, 0x35, 0xFEDC, 0x1234);
+            bus.port_write(0xD8, 1, 0).unwrap();
+            assert_eq!(
+                bus.port_read(0xC0 + u16::from(channel) * 4, 1).unwrap(),
+                0xDC
+            );
+            assert_eq!(
+                bus.port_read(0xC1 + u16::from(channel) * 4, 1).unwrap(),
+                0xFE
+            );
+            assert_eq!(
+                bus.port_read(0xC2 + u16::from(channel) * 4, 1).unwrap(),
+                0x34
+            );
+            assert_eq!(
+                bus.port_read(0xC3 + u16::from(channel) * 4, 1).unwrap(),
+                0x12
+            );
+        }
+        for port in 0x89..=0x8F {
+            bus.port_write(port, 1, u32::from(port)).unwrap();
+            assert_eq!(bus.port_read(port, 1).unwrap(), u32::from(port));
+        }
+        for port in [0, 0x0F, 0x81, 0x88, 0xE0] {
+            assert!(bus.port_read(port, 1).is_err());
+            assert!(bus.port_write(port, 1, 0).is_err());
+        }
+        bus.port_write(0xD9, 1, 0).unwrap();
+        bus.port_write(0xC5, 1, 0x78).unwrap();
+        bus.port_write(0xC4, 1, 0x56).unwrap();
+        bus.port_write(0xD9, 1, 0).unwrap();
+        assert_eq!(bus.port_read(0xC4, 1).unwrap(), 0x78);
+        assert_eq!(bus.port_read(0xC5, 1).unwrap(), 0x56);
+        bus.port_write(0xDF, 1, 0xF).unwrap();
+        assert_eq!(bus.port_read(0xDF, 1).unwrap(), 0);
+        bus.device_mut().reset();
+        assert_eq!(bus.port_read(0xC4, 1).unwrap(), 0);
+        assert!(bus.port_read(0, 1).is_err());
+    }
+
+    #[test]
+    fn at_word_transfers_step_words_wrap_at_128k_and_report_terminal_count() {
+        for channel in 1..=3 {
+            let mut bus = MockBus::new(Box::new(Dma8237::new_at_word()));
+            word_program(&mut bus, channel, 0x04, 0x35, 0xFFFF, 1);
+            let mut mem = MockMem::default();
+            let result = bus
+                .device_mut()
+                .dma_service_write(channel, &mut mem, &[1, 2, 3, 4, 5, 6]);
+            assert_eq!(
+                result,
+                DmaTransfer {
+                    transferred: 4,
+                    terminal_count: true
+                }
+            );
+            assert_eq!(
+                mem.writes,
+                [(0x35FFFE, 1), (0x35FFFF, 2), (0x340000, 3), (0x340001, 4)]
+            );
+            assert_eq!(bus.port_read(0xD0, 1).unwrap(), 1 << channel);
+            assert_eq!(bus.port_read(0xD0, 1).unwrap(), 0);
+            assert_eq!(
+                bus.device_mut()
+                    .dma_service_write(channel, &mut mem, &[9, 9])
+                    .transferred,
+                0
+            );
+            word_program(&mut bus, channel, 0x08, 0x35, 0xFFFF, 1);
+            let mut out = [0xCC; 5];
+            assert_eq!(
+                bus.device_mut()
+                    .dma_service_read(channel, &mut mem, &mut out),
+                result
+            );
+            assert_eq!(out, [1, 2, 3, 4, 0xCC]);
+        }
+    }
+
+    #[test]
+    fn at_word_transfers_leave_an_unmatched_trailing_byte_untouched() {
+        for length in [1, 3, 5] {
+            let mut bus = MockBus::new(Box::new(Dma8237::new_at_word()));
+            let mut mem = MockMem::default();
+            let bytes = [1, 2, 3, 4, 5];
+            word_program(&mut bus, 1, 0x04, 0, 0x100, 10);
+            let expected = DmaTransfer {
+                transferred: length - 1,
+                terminal_count: false,
+            };
+            assert_eq!(
+                bus.device_mut()
+                    .dma_service_write(1, &mut mem, &bytes[..length]),
+                expected
+            );
+            assert_eq!(mem.writes.len(), length - 1);
+            for (offset, &byte) in bytes[..length - 1].iter().enumerate() {
+                assert_eq!(mem.cells.get(&(0x200 + offset as u32)), Some(&byte));
+            }
+            bus.port_write(0xD8, 1, 0).unwrap();
+            assert_eq!(
+                bus.port_read(0xC6, 1).unwrap(),
+                10 - (length - 1) as u32 / 2
+            );
+            word_program(&mut bus, 1, 0x08, 0, 0x100, 10);
+            let mut out = [0xCC; 5];
+            assert_eq!(
+                bus.device_mut()
+                    .dma_service_read(1, &mut mem, &mut out[..length]),
+                expected
+            );
+            assert_eq!(&out[..length - 1], &bytes[..length - 1]);
+            assert_eq!(out[length - 1], 0xCC);
+            bus.port_write(0xD8, 1, 0).unwrap();
+            assert_eq!(
+                bus.port_read(0xC6, 1).unwrap(),
+                10 - (length - 1) as u32 / 2
+            );
+        }
+    }
+
+    #[test]
+    fn at_cascade_channel_never_advances_or_transfers_payload() {
+        for (channel, mode) in [(0, 0x04), (0, 0xC0), (1, 0xC0)] {
+            let mut bus = MockBus::new(Box::new(Dma8237::new_at_word()));
+            word_program(&mut bus, channel, mode, 0, 0x1234, 1);
+            let snapshot = bus.device().save();
+            let mut mem = MockMem::default();
+            assert_eq!(
+                bus.device_mut()
+                    .dma_service_write(channel, &mut mem, &[1, 2]),
+                DmaTransfer::default()
+            );
+            assert_eq!(
+                bus.device_mut()
+                    .dma_service_read(channel, &mut mem, &mut [0; 2]),
+                DmaTransfer::default()
+            );
+            assert!(mem.writes.is_empty());
+            assert_eq!(bus.device().save(), snapshot);
+        }
+    }
 
     /// Intel 8237A datasheet, Single Transfer Mode and Autoinitialization:
     /// channel registers advance on service, not on elapsed PIT clocks.

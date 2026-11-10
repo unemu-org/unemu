@@ -67,6 +67,13 @@
 //! accesses is a CPU/bus concern handled elsewhere and is deliberately **out of
 //! scope here** (see the A20 note in `backlog/docs/architecture.md`).
 //!
+//! ## CPU reset
+//!
+//! D1h with output bit 0 low, or any even F0h–FEh pulse command, latches a
+//! CPU-reset request. Assembly connects it to the machine's reset-request stop;
+//! the run layer owns restarting the CPU. The keyboard controller and RAM are
+//! not power-cycled. Pulse duration and temporary output levels are not timed.
+//!
 //! ## Coverage matrix (datasheet vs modelled)
 //!
 //! Controller commands written to `0x64`:
@@ -85,6 +92,7 @@
 //! | `0xC0` | Read input port             | yes      | → benign strap value         |
 //! | `0xD0` | Read output port            | yes      | → output buffer              |
 //! | `0xD1` | Write output port           | yes      | next `0x60` write; bit 1 = A20 |
+//! | `0xF0–0xFF` | Pulse output port | partial | reset event; no pulse timing |
 //! | `0xD4` | Write byte to aux (mouse)   | yes      | next `0x60` write routed to aux |
 //!
 //! ## PS/2 auxiliary (mouse) channel: interface present, no device
@@ -114,8 +122,6 @@
 //! - **The PS/2 auxiliary (mouse) device** itself and the aux output buffer / IRQ12
 //!   (see the aux-channel note above — the interface answers, no device does).
 //! - **Password / security commands** (`0xA4`–`0xA6`).
-//! - **`0xFE` pulse-reset** (system reset via the output port) and `0xF0`–`0xFF`
-//!   output-line pulses: the CPU-reset seam is out of scope here.
 //! - **Keyboard-side command semantics** beyond reset/ACK and LED state:
 //!   typematic-rate and scancode-set commands are not interpreted.
 //! - **Test inputs** read (`0xE0`).
@@ -126,6 +132,8 @@
 //! guest keyboard LEDs and the pending LED parameter exchange.
 
 use std::collections::VecDeque;
+
+use std::{cell::Cell, rc::Rc};
 
 use device::{AccessDir, Device, DeviceError, NextEvent, TraceEvent, VClock};
 
@@ -139,7 +147,7 @@ const PORT_DATA: u16 = 0x60;
 const PORT_CMD: u16 = 0x64;
 
 /// Snapshot layout version tag, first byte of [`Device::save`] output.
-const SNAPSHOT_VERSION: u8 = 4;
+const SNAPSHOT_VERSION: u8 = 5;
 
 /// Keyboard frame time in PIT input clocks (1,193,182 Hz), rounded up.
 ///
@@ -178,7 +186,7 @@ const CB_KBD_DISABLE: u8 = 1 << 4;
 /// Command-byte bit 5: aux interface disabled.
 const CB_AUX_DISABLE: u8 = 1 << 5;
 
-/// Output-port bit 0: CPU reset line (active low). Stored; reset seam is elsewhere.
+/// Output-port bit 0: CPU reset line (active low).
 const OP_CPU_RESET: u8 = 1 << 0;
 /// Output-port bit 1: the A20 gate. Set = A20 enabled.
 const OP_A20: u8 = 1 << 1;
@@ -304,6 +312,7 @@ pub struct I8042 {
     command_byte: u8,
     /// The output port; bit 1 is the A20 gate.
     output_port: u8,
+    reset_request: Rc<Cell<bool>>,
     /// What the next `0x60` write means.
     expect: Expect,
     keyboard_leds: u8,
@@ -338,6 +347,7 @@ impl I8042 {
             last_was_command: false,
             command_byte: CMD_BYTE_RESET,
             output_port: OUTPUT_PORT_RESET,
+            reset_request: Rc::new(Cell::new(false)),
             expect: Expect::KeyboardData,
             keyboard_leds: 0,
             awaiting_leds: false,
@@ -349,6 +359,18 @@ impl I8042 {
             trace: device::TraceBuffer::default(),
             now: VClock::ZERO,
         }
+    }
+
+    /// Latched CPU-reset request, wired by assembly to the machine stop seam.
+    ///
+    /// IBM Personal Computer AT Technical Reference, System Board, Keyboard
+    /// Controller, Commands (pp. 1-53–1-55): D1h output bit 0 is active low;
+    /// F0h–FFh pulse each selected low-nibble output for about 6 microseconds.
+    /// The pulse's reset event is latched here without modelling its duration
+    /// or temporary levels on bits 1–3. D0h retains the output-port latch.
+    /// See `backlog/docs/design/machine-config.md` §Board model.
+    pub fn reset_signal(&self) -> Rc<Cell<bool>> {
+        Rc::clone(&self.reset_request)
     }
 
     /// Push a scancode from the keyboard into the input queue. If the output
@@ -508,7 +530,8 @@ impl I8042 {
             }
             0xD1 => self.expect = Expect::OutputPort,
             0xD4 => self.expect = Expect::AuxData,
-            // Unmodelled commands (password, output-line pulses, resets, …) are ignored.
+            0xF0..=0xFF if cmd & OP_CPU_RESET == 0 => self.reset_request.set(true),
+            // Unmodelled commands (password, diagnostic dump, …) are ignored.
             _ => {}
         }
     }
@@ -554,6 +577,9 @@ impl I8042 {
                 self.refill_output();
             }
             Expect::OutputPort => {
+                if self.output_port & OP_CPU_RESET != 0 && byte & OP_CPU_RESET == 0 {
+                    self.reset_request.set(true);
+                }
                 self.output_port = byte;
                 self.expect = Expect::KeyboardData;
             }
@@ -687,7 +713,10 @@ impl Device for I8042 {
 
     fn reset(&mut self) {
         let trace_policy = self.trace.policy();
+        let signal = Rc::clone(&self.reset_request);
+        signal.set(false);
         *self = I8042::new();
+        self.reset_request = signal;
         self.trace.set_policy(trace_policy);
     }
 
@@ -696,7 +725,7 @@ impl Device for I8042 {
         // expect, source, queue length (8), pending controller reply,
         // clock (8), keyboard deadline (8), LEDs, awaiting LED parameter, queue pairs
         // (value, is_reply). Host scripts can exceed a u16 byte count.
-        // Version 4 adds guest LEDs and the pending LED parameter exchange.
+        // Version 5 adds the latched CPU-reset request in flags bit 6.
         let mut blob = Vec::with_capacity(34 + 2 * self.input_queue.len());
         blob.push(SNAPSHOT_VERSION);
         blob.push(self.command_byte);
@@ -720,6 +749,9 @@ impl Device for I8042 {
         }
         if self.keyboard_ready_at.is_some() {
             flags |= 1 << 5;
+        }
+        if self.reset_request.get() {
+            flags |= 1 << 6;
         }
         blob.push(flags);
         blob.push(self.expect.to_bits());
@@ -763,7 +795,7 @@ impl Device for I8042 {
         let output_port = snapshot[2];
         let output_buffer = snapshot[3];
         let flags = snapshot[4];
-        if flags & !0x3D != 0
+        if flags & !0x7D != 0
             || snapshot[32] >= 0x80
             || snapshot[33] > 1
             || snapshot[5] > 3
@@ -822,6 +854,7 @@ impl Device for I8042 {
         self.awaiting_leds = snapshot[33] != 0;
         self.command_byte = command_byte;
         self.output_port = output_port;
+        self.reset_request.set(flags & 0x40 != 0);
         self.output_buffer = output_buffer;
         self.output_full = flags & (1 << 0) != 0;
         self.input_full = flags & (1 << 1) != 0;
@@ -895,6 +928,43 @@ mod tests {
     }
 
     #[test]
+    fn output_pulses_request_reset_only_when_bit_zero_is_selected() {
+        for command in 0xF0..=0xFF {
+            let keyboard = I8042::new();
+            let signal = keyboard.reset_signal();
+            let mut bus = MockBus::new(Box::new(keyboard));
+            bus.port_write(PORT_CMD, 1, command).unwrap();
+            assert_eq!(signal.get(), command & 1 == 0);
+            bus.port_write(PORT_CMD, 1, 0xD0).unwrap();
+            assert_eq!(
+                bus.port_read(PORT_DATA, 1).unwrap(),
+                u32::from(OUTPUT_PORT_RESET)
+            );
+            let snapshot = bus.device().save();
+            bus.device_mut().reset();
+            assert!(!signal.get());
+            bus.device_mut().restore(&snapshot).unwrap();
+            assert_eq!(signal.get(), command & 1 == 0);
+        }
+    }
+
+    #[test]
+    fn output_port_low_latches_reset_and_high_does_not_cancel_it() {
+        let keyboard = I8042::new();
+        let signal = keyboard.reset_signal();
+        let mut bus = MockBus::new(Box::new(keyboard));
+        bus.port_write(PORT_CMD, 1, 0xD1).unwrap();
+        bus.port_write(PORT_DATA, 1, 3).unwrap();
+        assert!(!signal.get());
+        bus.port_write(PORT_CMD, 1, 0xD1).unwrap();
+        bus.port_write(PORT_DATA, 1, 2).unwrap();
+        assert!(signal.get());
+        bus.port_write(PORT_CMD, 1, 0xD1).unwrap();
+        bus.port_write(PORT_DATA, 1, 3).unwrap();
+        assert!(signal.get());
+    }
+
+    #[test]
     fn keyboard_led_parameter_is_guest_controlled_and_accessor_has_no_side_effects() {
         let mut bus = MockBus::new(Box::new(I8042::new()));
         bus.device_mut()
@@ -958,7 +1028,7 @@ mod tests {
         set_leds(&mut source, 5);
         let mut restored = MockBus::new(Box::new(I8042::new()));
         let blob = source.device().save();
-        assert_eq!(blob[0], 4);
+        assert_eq!(blob[0], 5);
         restored.device_mut().restore(&blob).unwrap();
         assert_eq!(bus_keyboard(&mut restored).keyboard_leds(), 5);
         assert_eq!(restored.device().save(), blob);
@@ -981,7 +1051,7 @@ mod tests {
         set_leds(&mut bus, 5);
         bus.port_write(PORT_DATA, 1, 0xED).unwrap();
         let before = bus.device().save();
-        assert_eq!(before[0], 4);
+        assert_eq!(before[0], 5);
         let mut legacy = before.clone();
         legacy.drain(32..34);
         legacy[0] = 3;

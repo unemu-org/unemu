@@ -50,8 +50,8 @@ use bus::{Bus, DecodeMap, MmioRange, PortRange};
 use cpu::x86jit_backend::X86JitCpu;
 use device::{Device, InterruptController};
 use devices::{
-    CmosConfig, CmosRtc, Dma8237, Drive, MdaText, Pit8253, PostPort, SysControl, Uart16550, Upd765,
-    VgaText, I8042,
+    Absent80287, CmosConfig, CmosRtc, Dma8237, Drive, MdaText, Pit8253, PostPort, SysControl,
+    Uart16550, Upd765, VgaText, I8042,
 };
 use machine::{DmaWiring, IrqLine, Machine};
 
@@ -163,6 +163,7 @@ fn assemble_with_cpu(
     let mut devices: Vec<Box<dyn Device>> = Vec::with_capacity(config.devices.len());
     let mut device_index: HashMap<DeviceId, usize> = HashMap::with_capacity(config.devices.len());
     let mut pic: Option<chipset::CascadedPic> = None;
+    let mut reset_signal = None;
 
     for dc in &config.devices {
         let boxed: Box<dyn Device> = match &dc.kind {
@@ -177,7 +178,11 @@ fn assemble_with_cpu(
                     Box::new(shared.slave_device())
                 }
             }
-            DeviceKind::Keyboard(_) => Box::new(I8042::new()),
+            DeviceKind::Keyboard(_) => {
+                let keyboard = I8042::new();
+                reset_signal = Some(keyboard.reset_signal());
+                Box::new(keyboard)
+            }
             DeviceKind::Rtc(c) => {
                 let mut rtc = CmosRtc::new();
                 if let Some((second_ticks, uip_ticks)) = c.timing {
@@ -206,6 +211,8 @@ fn assemble_with_cpu(
             DeviceKind::Post(c) => Box::new(PostPort::with_port(c.port)),
             DeviceKind::Fdc(_) => Box::new(Upd765::with_drives(build_fdc_drives(config, dc.id)?)),
             DeviceKind::Dma(_) => Box::new(Dma8237::new()),
+            DeviceKind::DmaWord(_) => Box::new(Dma8237::new_at_word()),
+            DeviceKind::AbsentCoprocessor => Box::new(Absent80287::new()),
         };
         let index = devices.len();
         devices.push(boxed);
@@ -236,9 +243,12 @@ fn assemble_with_cpu(
         }
     }
     bus.set_trace_policy(observation_policy.trace);
-    let machine = Machine::new(cpu, bus, controller, irq_lines, None)
+    let mut machine = Machine::new(cpu, bus, controller, irq_lines, None)
         .with_cpu_rate(rate_numerator, rate_denominator)
         .with_dma_wirings(dma_wirings);
+    if let Some(signal) = reset_signal {
+        machine = machine.with_reset_signal(signal);
+    }
 
     Ok(AssembledMachine {
         machine,
@@ -584,6 +594,165 @@ mod tests {
             bus.port_write(0x70, 1, index as u32).unwrap();
             bus.port_read(0x71, 1).unwrap() as u8
         })
+    }
+
+    #[test]
+    fn bios_preset_assembles_both_dma_banks_and_empty_coprocessor() {
+        let config = crate::bios(vec![0; 0x8000], Some(vec![0; 1_474_560]));
+        config.validate().unwrap();
+        let mut assembled = assemble(&config).unwrap();
+        let ids = &assembled.device_index;
+        assert_eq!(ids[&DeviceId::Dma], 3);
+        assert_eq!(ids[&DeviceId::DmaWord], 4);
+        assert_eq!(ids[&DeviceId::Coprocessor], 7);
+        let bus = assembled.machine.bus_mut();
+        bus.port_write(0x0C, 1, 0).unwrap();
+        bus.port_write(0x00, 1, 0x56).unwrap();
+        bus.port_write(0x00, 1, 0x78).unwrap();
+        bus.port_write(0xC0, 1, 0x12).unwrap();
+        bus.port_write(0xC0, 1, 0x34).unwrap();
+        bus.port_write(0xD8, 1, 0).unwrap();
+        assert_eq!(bus.port_read(0xC0, 1).unwrap(), 0x12);
+        assert_eq!(bus.port_read(0xC0, 1).unwrap(), 0x34);
+        bus.port_write(0x0C, 1, 0).unwrap();
+        assert_eq!(bus.port_read(0x00, 1).unwrap(), 0x56);
+        assert_eq!(bus.port_read(0x00, 1).unwrap(), 0x78);
+        for (port, value) in [(0x81, 0x12), (0x8B, 0x34), (0x89, 0x56), (0x8A, 0x78)] {
+            bus.port_write(port, 1, value).unwrap();
+            assert_eq!(bus.port_read(port, 1).unwrap(), value);
+        }
+        for port in [0xF0, 0xF1, 0xF8, 0xFF] {
+            bus.port_write(port, 1, 0).unwrap();
+            assert_eq!(bus.port_read(port, 1).unwrap(), 0xFF);
+        }
+        let irq = build_irq_lines(&config, ids);
+        assert!(irq
+            .iter()
+            .any(|line| line.irq == 13 && line.device == ids[&DeviceId::Coprocessor]));
+    }
+
+    #[test]
+    fn cpu_executes_x87_despite_the_boards_empty_coprocessor_socket() {
+        // Keep DS flat so the guest's control-word store and host readback
+        // address the same scratch word, independently of the BIOS segment seed.
+        let program = [
+            0xDB, 0xE3, // FNINIT
+            0xC7, 0x06, 0xFE, 0x03, 0, 0, // MOV word [03FEh], 0
+            0xD9, 0x3E, 0xFE, 0x03, // FNSTCW [03FEh]
+            0xFA, 0xF4, // CLI; HLT
+        ];
+        let mut rom = vec![0; 0x8000];
+        rom[..program.len()].copy_from_slice(&program);
+        let mut config = crate::bios(rom, Some(vec![0; 1_474_560]));
+        config.cpu.reset = crate::ResetSpec::Entry { cs: 0xF800, ip: 0 };
+        config.cpu.segments = crate::SegmentSeed::flat(0);
+        let mut assembled = assemble(&config).unwrap();
+        assert_eq!(
+            assembled.machine.run_bounded(Some(100)).unwrap(),
+            machine::RunOutcome::Halted
+        );
+        let mut control_word = [0xFF; 2];
+        assembled
+            .machine
+            .cpu()
+            .read_mem(0x3FE, &mut control_word)
+            .unwrap();
+        assert_eq!(u16::from_le_bytes(control_word), 0x037F);
+    }
+
+    #[test]
+    fn guest_keyboard_reset_stops_before_the_following_instruction() {
+        for (program, reset_time) in [
+            (vec![0xB0, 0xFE, 0xE6, 0x64, 0xB0, 0x55, 0xFA, 0xF4], 2),
+            (
+                vec![
+                    0xB0, 0xD1, 0xE6, 0x64, 0xB0, 2, 0xE6, 0x60, 0xB0, 0x55, 0xFA, 0xF4,
+                ],
+                4,
+            ),
+        ] {
+            let mut rom = vec![0; 0x8000];
+            rom[..program.len()].copy_from_slice(&program);
+            let mut config = crate::bios(rom, Some(vec![0; 1_474_560]));
+            config.cpu.reset = crate::ResetSpec::Entry { cs: 0xF800, ip: 0 };
+            let mut assembled = assemble(&config).unwrap();
+            assert_eq!(
+                assembled.machine.run_bounded(Some(100)).unwrap(),
+                machine::RunOutcome::ResetRequested
+            );
+            assert_eq!(assembled.machine.virtual_time(), reset_time);
+            assert_ne!(assembled.machine.cpu().reg(cpu::CpuReg::Rax) & 0xFF, 0x55);
+            assert_eq!(
+                assembled.machine.run_bounded(Some(100)).unwrap(),
+                machine::RunOutcome::Halted
+            );
+            assert_eq!(assembled.machine.cpu().reg(cpu::CpuReg::Rax) & 0xFF, 0x55);
+        }
+    }
+
+    #[test]
+    fn run_policies_continue_after_reset_requests() {
+        // Cover a reset before prompt detection and another after the policy
+        // injects input, without letting either one terminate the session.
+        let program = [0xB0, 0xFE, 0xE6, 0x64, 0xE6, 0x64, 0xB0, 0x55, 0xFA, 0xF4];
+        let mut rom = vec![0; 0x8000];
+        rom[..program.len()].copy_from_slice(&program);
+        let mut config = crate::bios(rom, Some(vec![0; 1_474_560]));
+        config.cpu.reset = crate::ResetSpec::Entry { cs: 0xF800, ip: 0 };
+        for prompt in [false, true] {
+            let mut assembled = assemble_with_observation(
+                &config,
+                &ObservationPolicy {
+                    routes: vec![crate::ObservationRequest {
+                        device: DeviceId::Vga,
+                        output: crate::OutputKind::TextScanout,
+                        byte_limit: 0,
+                    }],
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            let mut policy = crate::RunPolicy::natural(Some(100), None);
+            if prompt {
+                policy.stop = crate::StopCondition::PromptThen {
+                    console: crate::ConsoleProbe {
+                        device: DeviceId::Vga,
+                    },
+                    needle: String::new(),
+                    poll_step: 2,
+                    then_budget: 10,
+                };
+                policy.stimuli.push(crate::KeyboardStimulus {
+                    keyboard_index: assembled.device_index[&DeviceId::Keyboard],
+                    scancodes: vec![0x1E],
+                    schedule: crate::InjectionSchedule::AfterPrompt,
+                });
+            }
+            assert_eq!(
+                crate::run(&mut assembled.machine, &assembled.observation, &policy).unwrap(),
+                machine::RunOutcome::Halted
+            );
+            assert_eq!(assembled.machine.virtual_time(), 6);
+            assert_eq!(assembled.machine.cpu().reg(cpu::CpuReg::Rax) & 0xFF, 0x55);
+        }
+    }
+
+    #[test]
+    fn bios_dma_word_out_uses_both_aliased_register_ports() {
+        let mut rom = vec![0; 0x8000];
+        rom[..7].copy_from_slice(&[0xB8, 0x12, 0x34, 0xE7, 0xC0, 0xFA, 0xF4]);
+        let mut config = crate::bios(rom, Some(vec![0; 1_474_560]));
+        config.cpu.reset = crate::ResetSpec::Entry { cs: 0xF800, ip: 0 };
+        let mut assembled = assemble(&config).unwrap();
+        assert_eq!(
+            assembled.machine.run_bounded(Some(100)).unwrap(),
+            machine::RunOutcome::Halted
+        );
+        let bus = assembled.machine.bus_mut();
+        assert_eq!(bus.port_read(0xC0, 2).unwrap(), 0x3412);
+        bus.port_write(0xC1, 1, 0x56).unwrap();
+        bus.port_write(0xC0, 1, 0x78).unwrap();
+        assert_eq!(bus.port_read(0xC0, 2).unwrap(), 0x7856);
     }
 
     #[test]

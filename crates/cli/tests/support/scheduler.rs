@@ -24,6 +24,7 @@ use machine::{Machine, RunOutcome};
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Stop {
     Halted,
+    ResetRequested,
     CapReached,
     Error(String),
 }
@@ -713,6 +714,7 @@ pub fn observe_with(
     drain_pic(&pic, &stream);
     let reason = match result {
         Ok(RunOutcome::Halted) => Stop::Halted,
+        Ok(RunOutcome::ResetRequested) => Stop::ResetRequested,
         Ok(RunOutcome::RetiredCapReached) => Stop::CapReached,
         Err(error) => Stop::Error(error.to_string()),
     };

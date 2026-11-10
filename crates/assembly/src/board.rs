@@ -23,11 +23,11 @@ pub enum MachineClass {
 ///
 /// IBM Personal Computer AT Technical Reference, Section 1 "System Board"
 /// defines the AT wiring. The generic AT uses the existing 8253 timer model
-/// and one 8237; DMA2, 80287 ports and CPU reset remain unmodelled. See
+/// and both 8237 banks, an empty 80287 socket and the keyboard CPU-reset line. See
 /// `backlog/docs/design/machine-config.md` §Board model.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum BoardModel {
-    /// Generic AT with the documented partial IBM 5170 device coverage.
+    /// AT with the documented IBM 5170 device coverage.
     Ibm5170,
     /// Hand-wired Rust test rigs, without motherboard constraints or a class.
     Bare,
@@ -46,8 +46,8 @@ impl BoardModel {
     ///
     /// IBM Personal Computer AT Technical Reference, Section 1 "System Board",
     /// I/O Address Map and System Interrupts: slave PIC cascades on IRQ2, PIT
-    /// drives IRQ0, keyboard IRQ1 and RTC IRQ8. Only DMA channels 0–3 exist in
-    /// the current model; motherboard devices do not request DMA transfers.
+    /// drives IRQ0, keyboard IRQ1, RTC IRQ8 and coprocessor IRQ13. DMA channel 4
+    /// is reserved for cascade; motherboard devices do not request transfers.
     /// POST defaults to 80h, so DMA page decoding starts at 81h. Validation also
     /// accepts a relocated/omitted POST latch and the corresponding 80h page.
     pub fn motherboard_devices(self) -> Vec<DeviceConfig> {
@@ -75,7 +75,12 @@ impl BoardModel {
             DeviceConfig::new(
                 Dma,
                 DeviceKind::Dma(DmaCfg {}),
-                vec![PortWindow::new(0x00, 0x0F), PortWindow::new(0x81, 0x8F)],
+                vec![PortWindow::new(0x00, 0x0F), PortWindow::new(0x81, 0x88)],
+            ),
+            DeviceConfig::new(
+                DmaWord,
+                DeviceKind::DmaWord(DmaCfg {}),
+                vec![PortWindow::new(0xC0, 0xDF), PortWindow::new(0x89, 0x8F)],
             ),
             DeviceConfig::new(
                 Keyboard,
@@ -93,6 +98,12 @@ impl BoardModel {
                 vec![PortWindow::new(0x70, 0x71)],
             )
             .with_irq(8),
+            DeviceConfig::new(
+                Coprocessor,
+                DeviceKind::AbsentCoprocessor,
+                vec![PortWindow::new(0xF0, 0xF1), PortWindow::new(0xF8, 0xFF)],
+            )
+            .with_irq(13),
             DeviceConfig::new(
                 SysControl,
                 DeviceKind::SysControl(SysControlCfg {}),
@@ -149,7 +160,14 @@ mod tests {
                 (
                     Dma,
                     DeviceKind::Dma(DmaCfg {}),
-                    vec![PortWindow::new(0x00, 0x0F), PortWindow::new(0x81, 0x8F)],
+                    vec![PortWindow::new(0x00, 0x0F), PortWindow::new(0x81, 0x88)],
+                    None,
+                    None
+                ),
+                (
+                    DmaWord,
+                    DeviceKind::DmaWord(DmaCfg {}),
+                    vec![PortWindow::new(0xC0, 0xDF), PortWindow::new(0x89, 0x8F)],
                     None,
                     None
                 ),
@@ -169,6 +187,13 @@ mod tests {
                     }),
                     vec![PortWindow::new(0x70, 0x71)],
                     Some(8),
+                    None
+                ),
+                (
+                    Coprocessor,
+                    DeviceKind::AbsentCoprocessor,
+                    vec![PortWindow::new(0xF0, 0xF1), PortWindow::new(0xF8, 0xFF)],
+                    Some(13),
                     None
                 ),
                 (

@@ -185,7 +185,7 @@ pub fn run(
     machine.set_idle_limit(policy.idle_limit);
 
     match &policy.stop {
-        StopCondition::Natural => machine.run_bounded(policy.retired_cap).map_err(Into::into),
+        StopCondition::Natural => run_past_reset_requests(machine, policy.retired_cap),
         StopCondition::PromptThen {
             console,
             needle,
@@ -223,11 +223,23 @@ pub fn run(
                 for stim in after_prompt {
                     inject_scancodes(machine, stim.keyboard_index, &stim.scancodes);
                 }
-                return machine
-                    .run_bounded(Some(now + *then_budget))
-                    .map_err(Into::into);
+                return run_past_reset_requests(machine, Some(now + *then_budget));
             }
             Ok(outcome)
+        }
+    }
+}
+
+// A reported reset must not consume policy budgets or repeat prompt stimuli.
+// Until the CPU backend can restart, allow the guest's fallback BIOS jump.
+fn run_past_reset_requests(
+    machine: &mut Machine<X86JitCpu>,
+    cap: Option<u64>,
+) -> Result<RunOutcome, RunError> {
+    loop {
+        let outcome = machine.run_bounded(cap)?;
+        if outcome != RunOutcome::ResetRequested {
+            return Ok(outcome);
         }
     }
 }
@@ -258,7 +270,7 @@ fn poll_to_prompt(
     loop {
         let target = machine.virtual_time().saturating_add(poll_step);
         let cap = retired_cap.map_or(target, |hard| target.min(hard));
-        let outcome = machine.run_bounded(Some(cap)).map_err(RunError::from)?;
+        let outcome = run_past_reset_requests(machine, Some(cap))?;
         let found = console_contains(machine, observation, console, needle)?;
         let hit_cap = retired_cap.is_some_and(|hard| cap >= hard);
         if outcome == RunOutcome::Halted || found || hit_cap {

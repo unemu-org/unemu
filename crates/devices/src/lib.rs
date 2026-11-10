@@ -13,6 +13,7 @@
 
 pub mod ata;
 pub mod cmos_rtc;
+pub mod coprocessor;
 pub mod dma8237;
 pub mod i8042;
 pub mod mda;
@@ -26,6 +27,7 @@ pub mod vga_text;
 
 pub use ata::{Ata, AtaConfigError, AtaDrive, AtaGeometry};
 pub use cmos_rtc::{CmosConfig, CmosRtc};
+pub use coprocessor::Absent80287;
 pub use device::{DmaMemory, DmaOp, DmaOutcome, DmaRequest};
 pub use dma8237::{Dma8237, TransferType};
 pub use i8042::I8042;
@@ -157,6 +159,10 @@ pub(crate) mod trace_policy_tests {
     off_test!(keyboard_trace_off, I8042::new(), 0x64);
     ring_test!(rtc_trace_ring, CmosRtc::new(), 0x71);
     off_test!(rtc_trace_off, CmosRtc::new(), 0x71);
+    ring_test!(coprocessor_trace_ring, Absent80287::new(), 0xF0);
+    off_test!(coprocessor_trace_off, Absent80287::new(), 0xF0);
+    ring_test!(word_dma_trace_ring, Dma8237::new_at_word(), 0xD0);
+    off_test!(word_dma_trace_off, Dma8237::new_at_word(), 0xD0);
     ring_test!(dma_trace_ring, Dma8237::new(), 0x08);
     off_test!(dma_trace_off, Dma8237::new(), 0x08);
     ring_test!(fdc_trace_ring, Upd765::new(), 0x3F4);

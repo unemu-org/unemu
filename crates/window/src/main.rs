@@ -47,6 +47,7 @@ struct Presenter {
     surface: Option<HostSurface>,
     window: Option<Rc<Window>>,
     running: bool,
+    reset_requests: u64,
     keyboard: HostKeyboard,
     error: Option<Box<dyn Error>>,
     rate: CpuRate,
@@ -84,6 +85,7 @@ impl Presenter {
             surface: None,
             window: None,
             running: true,
+            reset_requests: 0,
             keyboard: HostKeyboard::default(),
             error: None,
             rate: CpuRate {
@@ -142,6 +144,9 @@ impl Presenter {
             let outcome = self.assembled.machine.run_bounded(Some(cap));
             match outcome {
                 Ok(RunOutcome::RetiredCapReached) => self.running = cap < u64::MAX,
+                Ok(RunOutcome::ResetRequested) => {
+                    self.record_reset_request(&mut io::stderr());
+                }
                 Ok(RunOutcome::Halted) => {
                     self.running = false;
                     eprintln!("machine halted");
@@ -158,6 +163,26 @@ impl Presenter {
             return Err(error.into());
         }
         Ok(())
+    }
+
+    fn record_reset_request(&mut self, diagnostics: &mut impl io::Write) {
+        self.reset_requests = self.reset_requests.saturating_add(1);
+        if self.reset_requests == 1 {
+            let _ = writeln!(
+                diagnostics,
+                "cpu reset requested; continuing to guest fallback"
+            );
+        }
+    }
+
+    fn write_reset_summary(&self, diagnostics: &mut impl io::Write) {
+        if self.reset_requests != 0 {
+            let _ = writeln!(
+                diagnostics,
+                "cpu reset requests in session: {}",
+                self.reset_requests
+            );
+        }
     }
 
     fn occlusion_changed(&mut self, occluded: bool, elapsed: Duration) {
@@ -359,7 +384,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut presenter = Presenter::new(&config)?;
     let events = EventLoop::new()?;
     events.set_control_flow(ControlFlow::Wait);
-    events.run_app(&mut presenter)?;
+    let result = events.run_app(&mut presenter);
+    presenter.write_reset_summary(&mut io::stderr());
+    result?;
     if let Some(error) = presenter.error {
         return Err(error);
     }
@@ -556,6 +583,75 @@ mod tests {
             .frame;
         assert!(frame.to_dump().contains("Enter new date (mm-dd-[cc]yy):!"));
         assert!(presenter.sink.frame().is_some());
+        assert!(presenter.window.is_none());
+    }
+
+    #[test]
+    fn reset_diagnostics_log_only_the_first_request_and_the_session_total() {
+        let config = assembly::bios(vec![0; 0x8000], None);
+        let mut presenter = Presenter::new(&config).unwrap();
+        let mut diagnostics = Vec::new();
+        presenter.write_reset_summary(&mut diagnostics);
+        assert!(diagnostics.is_empty());
+        for _ in 0..10_000 {
+            presenter.record_reset_request(&mut diagnostics);
+        }
+        assert_eq!(
+            diagnostics,
+            b"cpu reset requested; continuing to guest fallback\n"
+        );
+        assert_eq!(presenter.reset_requests, 10_000);
+        presenter.write_reset_summary(&mut diagnostics);
+        assert_eq!(diagnostics, b"cpu reset requested; continuing to guest fallback\ncpu reset requests in session: 10000\n");
+        assert!(presenter.window.is_none());
+    }
+
+    #[test]
+    fn a_guest_reset_loop_counts_requests_and_keeps_running() {
+        let mut rom = vec![0; 0x8000];
+        rom[..6].copy_from_slice(&[0xB0, 0xFE, 0xE6, 0x64, 0xEB, 0xFC]);
+        let mut config = assembly::bios(rom, None);
+        config.cpu.reset = assembly::ResetSpec::Entry { cs: 0xF800, ip: 0 };
+        let mut presenter = Presenter::new(&config).unwrap();
+        advance_frame(&mut presenter);
+        assert!(presenter.reset_requests > 1_000);
+        assert!(presenter.running);
+        assert_eq!(
+            presenter.assembled.machine.virtual_time(),
+            TEST_FRAME_CLOCKS
+        );
+        let count = presenter.reset_requests;
+        advance_frame(&mut presenter);
+        assert!(presenter.reset_requests > count);
+        let mut summary = Vec::new();
+        presenter.write_reset_summary(&mut summary);
+        assert_eq!(
+            summary,
+            format!(
+                "cpu reset requests in session: {}\n",
+                presenter.reset_requests
+            )
+            .as_bytes()
+        );
+        assert!(presenter.window.is_none());
+    }
+
+    #[test]
+    fn window_continues_to_the_fallback_boot_jump_after_a_reset_request() {
+        use cpu::{Cpu, CpuReg};
+        let mut rom = vec![0; 0x8000];
+        rom[..9].copy_from_slice(&[0xB0, 0xFE, 0xE6, 0x64, 0xEA, 0, 0, 0xFF, 0xFF]);
+        rom[0x7FF0..0x7FF4].copy_from_slice(&[0xB0, 0x55, 0xFA, 0xF4]);
+        let mut config = assembly::bios(rom, None);
+        config.cpu.reset = assembly::ResetSpec::Entry { cs: 0xF800, ip: 0 };
+        let mut presenter = Presenter::new(&config).unwrap();
+        advance_frame(&mut presenter);
+        assert_eq!(
+            presenter.assembled.machine.cpu().reg(CpuReg::Rax) & 0xFF,
+            0x55
+        );
+        assert_eq!(presenter.assembled.machine.virtual_time(), 6);
+        assert!(!presenter.running);
         assert!(presenter.window.is_none());
     }
 

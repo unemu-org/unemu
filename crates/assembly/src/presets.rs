@@ -533,7 +533,12 @@ pub fn bios(rom: Vec<u8>, floppy: Option<Vec<u8>>) -> MachineConfig {
     };
     let mut devices = BoardModel::Ibm5170.motherboard_devices();
     if floppy.is_none() {
-        devices.retain(|d| d.id != DeviceId::Dma);
+        devices.retain(|d| {
+            !matches!(
+                d.id,
+                DeviceId::Dma | DeviceId::DmaWord | DeviceId::Coprocessor
+            )
+        });
     }
     devices.extend([mda(), vga(), uart()]);
 
@@ -631,8 +636,10 @@ mod tests {
                 DeviceId::SlavePic,
                 DeviceId::Pit,
                 DeviceId::Dma,
+                DeviceId::DmaWord,
                 DeviceId::Keyboard,
                 DeviceId::Rtc,
+                DeviceId::Coprocessor,
                 DeviceId::SysControl,
                 DeviceId::Post,
                 DeviceId::Mda,
@@ -641,7 +648,13 @@ mod tests {
                 DeviceId::Fdc,
             ]
             .into_iter()
-            .filter(|id| has_floppy || *id != DeviceId::Dma)
+            .filter(|id| {
+                has_floppy
+                    || !matches!(
+                        id,
+                        DeviceId::Dma | DeviceId::DmaWord | DeviceId::Coprocessor
+                    )
+            })
             .collect();
             assert_eq!(
                 config.devices.iter().map(|d| d.id).collect::<Vec<_>>(),

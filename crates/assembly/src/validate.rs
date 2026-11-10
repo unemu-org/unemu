@@ -207,7 +207,7 @@ impl MachineConfig {
         expected.retain(|d| d.id != DeviceId::Post || post.is_some());
         for (index, standard) in expected.iter_mut().enumerate() {
             if standard.id == DeviceId::Dma && post_port != Some(0x80) {
-                standard.ports[1] = PortWindow::new(0x80, 0x8F);
+                standard.ports[1] = PortWindow::new(0x80, 0x88);
             }
             let actual = self.devices.iter().find(|d| d.id == standard.id).ok_or(
                 ConfigError::BoardDeviceMissing {
@@ -1017,15 +1017,15 @@ mod tests {
         config.board = BoardModel::Bare;
         assert_eq!(config.validate(), Ok(()));
         let mut config = board_config();
-        config.devices.swap(7, 8);
+        config.devices.swap(9, 10);
         board_error(
             &config,
             ConfigError::BoardDeviceOrder {
                 board: BoardModel::Ibm5170,
                 device: DeviceId::Post,
-                index: 7,
+                index: 9,
             },
-            "board Ibm5170 requires device Post at index 7",
+            "board Ibm5170 requires device Post at index 9",
         );
     }
 
@@ -1140,8 +1140,8 @@ mod tests {
             .unwrap()
             .ports[1]
             .start = 0x82;
-        board_error(&config, wiring_error(DeviceId::Dma, "ports", "[0x0-0xf, 0x81-0x8f]", "[0x0-0xf, 0x82-0x8f]"),
-            "board Ibm5170 device Dma field ports: expected [0x0-0xf, 0x81-0x8f], got [0x0-0xf, 0x82-0x8f]");
+        board_error(&config, wiring_error(DeviceId::Dma, "ports", "[0x0-0xf, 0x81-0x88]", "[0x0-0xf, 0x82-0x88]"),
+            "board Ibm5170 device Dma field ports: expected [0x0-0xf, 0x81-0x88], got [0x0-0xf, 0x82-0x88]");
     }
 
     #[test]
@@ -1361,7 +1361,7 @@ mod tests {
                 .iter_mut()
                 .find(|d| d.id == DeviceId::Dma)
                 .unwrap()
-                .ports[1] = PortWindow::new(0x80, 0x8F);
+                .ports[1] = PortWindow::new(0x80, 0x88);
             config
                 .devices
                 .iter_mut()

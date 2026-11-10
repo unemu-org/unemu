@@ -41,6 +41,10 @@ pub enum DeviceId {
     Fdc,
     /// 8237 DMA controller.
     Dma,
+    /// AT word DMA controller, system channels 4–7 (local 0–3).
+    DmaWord,
+    /// Empty 80287 socket and motherboard coprocessor controls.
+    Coprocessor,
 }
 
 /// A contiguous, inclusive port range decoded to a device (§4.1).
@@ -332,6 +336,10 @@ pub enum DeviceKind {
     Fdc(FdcCfg),
     /// 8237 DMA controller.
     Dma(DmaCfg),
+    /// AT word/cascade configuration of the 8237A.
+    DmaWord(DmaCfg),
+    /// IBM AT coprocessor controls with no 80287 fitted.
+    AbsentCoprocessor,
 }
 
 /// One device in a [`crate::MachineConfig`] (§7).

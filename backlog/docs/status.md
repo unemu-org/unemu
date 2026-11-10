@@ -86,6 +86,19 @@ was reported to the CPU core project.
 
 ## Broken / known defects
 
+- **CPU reset is currently notification-only.** The 8042 output-port and pulse
+  commands record a request; `Machine::run_bounded()` and `Machine::run()`
+  report `ResetRequested` once and consume the pending event. No CPU state is
+  reset yet. CLI and window run loops continue so guest reboot code can reach
+  its fallback far jump through FFFF:0000, preserving the previous warm-boot
+  path. Actual CPU restart is separate work. RAM, devices and virtual time are
+  retained; an 8042 device reset still clears its pending request.
+- **An empty 80287 socket is modelled on the I/O bus only.** Its assigned ports
+  read FFh and ignore writes, with IRQ13 inactive. The pinned CPU core executes
+  ungated x87 in Real16: FNINIT/FNSTCW writes 037Fh even on this board. An
+  absent-FPU mode is requested from the CPU core project; the machine does not
+  block x87 instructions locally.
+
 - Multi-byte scalar accesses crossing a RAM/MMIO boundary in either direction
   end the run with `Exit::UnmappedMemory` in pinned x86jit
   `96a49a9063cdf0a2bdb2d916f01b381fbad0176e`. Its

@@ -68,6 +68,7 @@ fn continuation(make: fn() -> Box<dyn Device>, ports: &[u16]) {
     }
     original_output.start_epoch();
     restored.device_mut().restore(&blob).unwrap();
+    assert_eq!(restored.device().save(), blob);
     assert!(restored_output.drain().unwrap().is_empty());
     original.device_mut().take_trace();
     // Access before another tick also checks the restored trace timestamp.
@@ -732,3 +733,16 @@ fn ata_translated_mid_transfer_snapshots_continue_and_reject_malformed_state() {
         );
     }
 }
+
+checks!(
+    coprocessor_continuation,
+    coprocessor_sweep,
+    || Box::new(Absent80287::new()),
+    &[0xF0, 0xF1, 0xF8, 0xFF]
+);
+checks!(
+    word_dma_continuation,
+    word_dma_sweep,
+    || Box::new(Dma8237::new_at_word()),
+    &[0xC4, 0xC6, 0xD0, 0xD6, 0xD8, 0xDA, 0xDC, 0xDE, 0x8B]
+);

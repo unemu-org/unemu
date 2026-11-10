@@ -59,3 +59,6 @@ clock_checks!(vga, VgaText::new());
 clock_checks!(mda, MdaText::new());
 
 clock_checks!(ata, Ata::new());
+
+clock_checks!(coprocessor, Absent80287::new());
+clock_checks!(word_dma, Dma8237::new_at_word());

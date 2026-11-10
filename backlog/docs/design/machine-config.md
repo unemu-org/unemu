@@ -97,12 +97,67 @@ Map**, **Keyboard Controller**, and **Real-Time Clock/CMOS RAM Information**.
 | 1. `MasterPic` | 8259 at 20h–21h, cascaded master | — |
 | 2. `SlavePic` | 8259 at A0h–A1h, slave on master IRQ2 | — |
 | 3. `Pit` | 40h–43h, IRQ0 | Existing 8253 model stands in for the AT's 8254 |
-| 4. `Dma` | One 8237 at 00h–0Fh, channels 0–3, page latches 81h–8Fh | Second 8237 at C0h–DFh and channels 4–7 absent; no refresh DMA requester |
-| 5. `Keyboard` | 8042 at 60h/64h, IRQ1 | A20 remains always on; output-port reset / FEh reset pulse absent |
-| 6. `Rtc` | MC146818 at 70h–71h, IRQ8, NMI-mask state | Seed and virtual timing remain configurable |
-| 7. `SysControl` | 61h latch | Existing refresh approximation and speaker state |
-| 8. `Post` | Diagnostic latch at 80h by default | Optional, relocatable diagnostic decode |
-| 80287 | None | F0h–FFh and IRQ13 absent |
+| 4. `Dma` | 8237 at 00h–0Fh, channels 0–3, page latches 81h–88h | No refresh DMA requester |
+| 5. `DmaWord` | Second 8237 at C0h–DFh (odd ports alias the preceding even register), pages 89h–8Fh, channels 4–7; channel 4 is cascade | No cycle-level arbitration between banks |
+| 6. `Keyboard` | 8042 at 60h/64h, IRQ1; D1h output bit 0 and F0h–FFh pulses request CPU reset | A20 remains always on; pulse duration and temporary output levels are not timed |
+| 7. `Rtc` | MC146818 at 70h–71h, IRQ8, NMI-mask state | Seed and virtual timing remain configurable |
+| 8. `Coprocessor` | Empty 80287 socket: F0h, F1h, F8h–FFh; IRQ13 wired inactive | Empty bus socket only; CPU x87 is currently ungated |
+| 9. `SysControl` | 61h latch | Existing refresh approximation and speaker state |
+| 10. `Post` | Diagnostic latch at 80h by default | Optional, relocatable diagnostic decode |
+
+The **IBM Personal Computer AT Technical Reference** (September 1985),
+System Board, **Direct Memory Access**, pp. 1-9–1-11, supplies the two-bank
+address/page wiring. The word bank uses local channel numbers 0–3 for system
+channels 4–7. Channel 4 never transfers payload. Channels 5–7 step one word
+per count, with physical address `(page & FEh) << 16 | address << 1`; wrapping
+stays within the same 128 KiB page. Pages 8Bh/89h/8Ah serve channels 5/6/7;
+8Fh is the refresh latch, not a channel-4 address extension. Register access
+is still byte-wide. The System Board **I/O Address Map** (p. 1-37) and
+DMA wiring decode all of C0h–DFh: SA1–SA4 select controller registers, so
+`(port - C0h) >> 1` maps odd ports to the preceding even register. A CPU word
+OUT is split into two byte cycles that access the same flip-flop register.
+The Intel 8237A datasheet's **First/Last Flip-Flop**,
+**Master Clear**, **Current Address/Word Count**, **Autoinitialization**, and
+**Cascade Mode** semantics. Both DMA directions support complete words;
+an unmatched trailing byte is left untouched. No assembled card requests
+channels 5–7 yet. The two banks retain the existing explicit-service model:
+no HRQ/HLDA arbitration latency or gating of DMA1 by DMA2 is simulated.
+
+The same IBM reference, **I/O Address Map** (p. 1-37), **NMI and Coprocessor
+Controls** (p. 1-38), **System Interrupts**, and Section 2 **Coprocessor**, assigns
+F0h to clearing latched BUSY, F1h to coprocessor reset (both write-only;
+software should write zero), and F8h–FFh to the 80287. F2h–F7h remain
+unmapped. An empty socket does not drive read data or IRQ13: reads on every
+assigned port return the emulator's open-bus byte FFh, and writes of any
+value are discarded. FFh is the emulator's bus convention, not an IBM-defined
+absent-coprocessor status value. This describes only the I/O bus socket.
+The pinned CPU core currently executes x87 in Real16 without an FPU-presence
+gate: FNINIT/FNSTCW writes 037Fh to a flat scratch word, despite the empty
+board socket. An absent-FPU model is requested from the CPU core project;
+this repository does not intercept or block x87 instructions.
+
+**Keyboard Controller**, **Commands** and **Output Port** (pp. 1-53–1-55)
+connect output bit 0 to active-low System Reset. D1h lowering that bit latches
+a request; F0h–FFh pulse commands latch one whenever command bit 0 is zero,
+including FEh. Odd pulse commands do not request reset. The approximately
+6 microsecond pulse is represented as an event rather than a timed pin level;
+D0h reads the retained output latch. The pending request survives device
+snapshot/restore and is cleared by device reset. Assembly shares a signal
+with the machine without teaching the machine core about an 8042. At the
+completed instruction boundary the machine returns `RunOutcome::ResetRequested`,
+even at a coincident cap, and consumes the pending event. `Machine::run()`
+also returns that outcome explicitly. Another call can continue executing;
+the CPU has not been reset. CLI natural, prompt and post-prompt runs keep the
+same absolute cap while continuing past reported requests; the window loop
+counts every request and continues. It logs only the first request in a
+session, then logs the total when the event loop exits, including error exits.
+Sessions with no requests produce neither message. The counter saturates at
+`u64::MAX`; counting and log selection use no host clock. This interim
+behaviour preserves guest reboot code that falls back to a far jump through
+FFFF:0000. CPU restart is
+not available in the current backend and belongs to separate work. RAM,
+peripheral state and virtual time are retained. See `status.md`, **Broken /
+known defects**.
 
 Every `Ibm5170` requires the 8237 in its canonical position, even if an FDC
 entry is undecoded or unwired. The no-media BIOS preset keeps that historical
@@ -111,7 +166,7 @@ no 8237 is assembled. Changing that preset's board identity affects validation
 only, preserving its device list and execution.
 
 Omitting or moving `Post` away from 80h changes the expected page-latch range
-to 80h–8Fh. POST is validated before deriving this range, so a wrong kind or
+to 80h–88h. POST is validated before deriving this range, so a wrong kind or
 decode is diagnosed against `Post` itself. Removing the optional POST role
 closes up the order.
 
@@ -490,10 +545,11 @@ due at the same boundary therefore run in that order. Decode-map sorting does
 not change this scheduling order.
 
 The BIOS preset follows the board model's fixed motherboard order first:
-`MasterPic`, `SlavePic`, `Pit`, `Dma`, `Keyboard`, `Rtc`, `SysControl`, `Post`.
+`MasterPic`, `SlavePic`, `Pit`, `Dma`, `DmaWord`, `Keyboard`, `Rtc`,
+`Coprocessor`, `SysControl`, `Post`.
 Cards follow in file order; the BIOS preset's card order is `Mda`, `Vga`, `Uart`,
 `Fdc`, matching [machine-files.md §Canonical order](machine-files.md#canonical-order). The no-floppy
-BIOS rig omits `Dma` and keeps its undecoded, unwired FDC. Other Rust test-rig
+BIOS rig omits both DMA banks and the empty coprocessor socket, and keeps its undecoded, unwired FDC. Other Rust test-rig
 presets retain their existing order. The BIOS MMIO windows are sorted by base:
 `Mda` at `0xB0000`, then `Vga` at `0xB8000`.
 

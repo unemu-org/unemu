@@ -366,6 +366,8 @@ pub const TEST386_MAX_RETIRED: u64 = 1_024;
 pub enum StopReason {
     /// The guest executed `hlt` and the machine terminated.
     Halt,
+    /// The motherboard requested CPU reset; the runner returns control.
+    ResetRequested,
     /// The core hit a decodable instruction it does not implement. `detail` records the
     /// faulting address for the report.
     Unsupported {
@@ -445,11 +447,23 @@ pub fn run_test386(blob: &[u8]) -> Test386Run {
         }
     };
 
-    let result = machine.run_bounded(Some(TEST386_MAX_RETIRED));
+    let result = run_past_reset_requests(&mut machine, Some(TEST386_MAX_RETIRED));
     let rip = machine.cpu().reg(CpuReg::Rip);
     let mut stop = classify_test386_stop(rip, result.map_err(Into::into));
     let post = stream_or_fail(capture_post(&observation), &mut stop);
     Test386Run { post, stop }
+}
+
+fn run_past_reset_requests<C: Cpu>(
+    machine: &mut Machine<C>,
+    cap: Option<u64>,
+) -> Result<RunOutcome, MachineError> {
+    loop {
+        let outcome = machine.run_bounded(cap)?;
+        if outcome != RunOutcome::ResetRequested {
+            return Ok(outcome);
+        }
+    }
 }
 
 /// Classify how a POST-only (no video) run stopped, reading the RIP for the
@@ -458,6 +472,7 @@ pub fn run_test386(blob: &[u8]) -> Test386Run {
 fn classify_test386_stop(rip: u64, result: Result<RunOutcome, RunError>) -> StopReason {
     match result {
         Ok(RunOutcome::Halted) => StopReason::Halt,
+        Ok(RunOutcome::ResetRequested) => StopReason::ResetRequested,
         Ok(RunOutcome::RetiredCapReached) => StopReason::BudgetExhausted,
         Err(RunError::Machine(MachineError::Cpu(CpuError::UnsupportedInstruction { addr }))) => {
             StopReason::Unsupported {
@@ -983,6 +998,7 @@ fn classify_bios_stop(
     let site = format!("cs:ip {cs:#06x}:{ip:#06x} (linear {linear:#07x}) bytes [{hex}]");
     match result {
         Ok(RunOutcome::Halted) => StopReason::Halt,
+        Ok(RunOutcome::ResetRequested) => StopReason::ResetRequested,
         Ok(RunOutcome::RetiredCapReached) => StopReason::BudgetExhausted,
         Err(RunError::Machine(MachineError::Cpu(CpuError::UnsupportedInstruction { addr }))) => {
             StopReason::Unsupported {
@@ -1122,7 +1138,7 @@ pub fn run_floppy_boot() -> Result<Vec<u8>> {
     } = assemble_with_observation(&config, &serial_policy())
         .context("assembling floppy-boot machine")?;
 
-    machine.run().context("running machine")?;
+    run_past_reset_requests(&mut machine, None).context("running machine")?;
 
     capture_serial(&observation)
 }
@@ -1252,7 +1268,7 @@ pub fn run_vga_text(blob: &[u8]) -> Result<TextGrid> {
     let mut assembled = assemble_with_observation(&config, &display_policy())
         .context("assembling vga-text machine")?;
 
-    let result = assembled.machine.run();
+    let result = run_past_reset_requests(&mut assembled.machine, None);
     let capture = assembled.capture_text(DeviceId::Vga);
     result.context("running machine")?;
     capture.context("capturing vga-text display")?;
@@ -1339,6 +1355,26 @@ fn capture_post(observation: &Observation) -> Result<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cli_continues_to_the_fallback_boot_jump_after_a_reset_request() {
+        let mut rom = vec![0; 0x8000];
+        rom[..9].copy_from_slice(&[0xB0, 0xFE, 0xE6, 0x64, 0xEA, 0, 0, 0xFF, 0xFF]);
+        rom[0x7FF0..0x7FF8].copy_from_slice(&[0xBA, 0xF8, 3, 0xB0, b'Z', 0xEE, 0xFA, 0xF4]);
+        let mut config = assembly::bios(rom, None);
+        config.cpu.reset = assembly::ResetSpec::Entry { cs: 0xF800, ip: 0 };
+        let result = run_bios_config(config.clone(), |_| RunPolicy::natural(Some(100), None));
+        assert_eq!(result.stop, StopReason::Halt);
+        assert_eq!(result.com1, b"Z");
+        for cap in [None, Some(100)] {
+            let mut assembled = assemble_with_observation(&config, &serial_policy()).unwrap();
+            assert_eq!(
+                run_past_reset_requests(&mut assembled.machine, cap).unwrap(),
+                RunOutcome::Halted
+            );
+            assert_eq!(capture_serial(&assembled.observation).unwrap(), b"Z");
+        }
+    }
 
     #[test]
     fn inline_host_can_select_capture_output() {

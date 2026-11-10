@@ -161,6 +161,9 @@ pub enum RunOutcome {
     Halted,
     /// The total virtual-time cap was reached before a natural stop.
     RetiredCapReached,
+    /// A wired board signal requested a CPU reset. The pending event is consumed;
+    /// callers can continue until CPU restart is available in the backend.
+    ResetRequested,
 }
 
 /// A running machine: a CPU seam, a bus seam, and an interrupt controller (§3.1).
@@ -195,6 +198,7 @@ pub struct Machine<C: Cpu> {
     /// Bus-master → DMA-controller couplings drained each boundary (§7.7). Empty
     /// for a machine with no DMA (the serial and timer demos).
     dma_wirings: Vec<DmaWiring>,
+    reset_signal: Option<std::rc::Rc<std::cell::Cell<bool>>>,
 }
 
 impl<C: Cpu> Machine<C> {
@@ -230,7 +234,21 @@ impl<C: Cpu> Machine<C> {
             clock_remainder: 0,
             idle_limit,
             dma_wirings: Vec::new(),
+            reset_signal: None,
         }
+    }
+
+    /// Wire a latched board reset signal without naming its source device.
+    /// IBM Personal Computer AT Technical Reference, System Board, Keyboard
+    /// Controller: System Reset resets the microprocessor, not peripheral state.
+    /// See `backlog/docs/design/machine-config.md` §Board model. A pending
+    /// signal reports a stop at a settled instruction boundary and is consumed.
+    /// Until CPU restart is available, run layers continue from that boundary
+    /// so guest software can execute its fallback BIOS jump.
+    #[must_use]
+    pub fn with_reset_signal(mut self, signal: std::rc::Rc<std::cell::Cell<bool>>) -> Self {
+        self.reset_signal = Some(signal);
+        self
     }
 
     /// Configure the construction-time CPU rate A/B (§6).
@@ -331,12 +349,10 @@ impl<C: Cpu> Machine<C> {
 
     /// Run until the guest halts with no more interrupts to service (§3.1).
     ///
-    /// Unbounded: equivalent to [`Machine::run_bounded`] with no cap, discarding
-    /// the [`RunOutcome`] (an uncapped run can only end on [`RunOutcome::Halted`]).
-    /// Every existing frontend uses this; the bounded form is for a guest that may
-    /// spin without halting.
-    pub fn run(&mut self) -> Result<(), MachineError> {
-        self.run_bounded(None).map(|_| ())
+    /// Unbounded: equivalent to [`Machine::run_bounded`] with no cap. A reset
+    /// request is returned explicitly so callers can choose to continue.
+    pub fn run(&mut self) -> Result<RunOutcome, MachineError> {
+        self.run_bounded(None)
     }
 
     fn next_deadline(&mut self) -> Result<Option<VClock>, MachineError> {
@@ -432,6 +448,14 @@ impl<C: Cpu> Machine<C> {
         let mut no_progress = 0;
         self.settle(true)?;
         loop {
+            if !completing
+                && self
+                    .reset_signal
+                    .as_ref()
+                    .is_some_and(|signal| signal.replace(false))
+            {
+                return Ok(RunOutcome::ResetRequested);
+            }
             if !completing {
                 // Policy observations and hard caps win over a new INTA.
                 if cap.is_some_and(|cap| self.virtual_time() >= cap) {
@@ -711,6 +735,7 @@ mod tests {
     struct CaptureDevice {
         written: Vec<u8>,
         ticks: u64,
+        reset_signal: Option<std::rc::Rc<std::cell::Cell<bool>>>,
     }
 
     impl Device for CaptureDevice {
@@ -722,6 +747,11 @@ mod tests {
         }
         fn port_write(&mut self, _port: u16, _size: u8, value: u32) -> Result<(), DeviceError> {
             self.written.push(value as u8);
+            if let Some(signal) = &self.reset_signal {
+                if value == 0xFE {
+                    signal.set(true);
+                }
+            }
             Ok(())
         }
         fn mmio_read(&mut self, addr: u64, _size: u8) -> Result<u64, DeviceError> {
@@ -816,6 +846,88 @@ mod tests {
             Some(1),
         )
         .with_step_limit(NonZeroU64::MIN)
+    }
+
+    #[test]
+    fn reset_signal_is_reported_once_and_the_next_run_continues() {
+        for bounded in [false, true] {
+            let signal = std::rc::Rc::new(std::cell::Cell::new(false));
+            let capture = CaptureDevice {
+                reset_signal: Some(signal.clone()),
+                ..Default::default()
+            };
+            let bus = Bus::new(
+                vec![Box::new(capture)],
+                DecodeMap {
+                    ports: vec![PortRange {
+                        width: bus::PortWidth::Byte,
+                        ports: 0x64..=0x64,
+                        device: 0,
+                    }],
+                    mmio: Vec::new(),
+                },
+            );
+            let cpu = instruction_cpu(
+                vec![
+                    CpuStop::PortOut {
+                        port: 0x64,
+                        size: 1,
+                        value: 0xFE,
+                    },
+                    CpuStop::PortOut {
+                        port: 0x64,
+                        size: 1,
+                        value: 0x55,
+                    },
+                    CpuStop::Halt,
+                ],
+                false,
+            );
+            let mut machine = Machine::new(cpu, bus, Box::new(NoIc), Vec::new(), None)
+                .with_reset_signal(signal.clone());
+            let outcome = if bounded {
+                machine.run_bounded(Some(100))
+            } else {
+                machine.run()
+            };
+            assert_eq!(outcome.unwrap(), RunOutcome::ResetRequested);
+            assert_eq!(machine.virtual_time(), 1);
+            assert!(!signal.get());
+            assert_eq!(machine.bus().device(0).unwrap().save(), [0xFE]);
+            assert_eq!(machine.run().unwrap(), RunOutcome::Halted);
+            assert_eq!(machine.virtual_time(), 3);
+            assert_eq!(machine.bus().device(0).unwrap().save(), [0xFE, 0x55]);
+        }
+    }
+
+    #[test]
+    fn reset_request_wins_over_a_coincident_instruction_cap() {
+        let signal = std::rc::Rc::new(std::cell::Cell::new(false));
+        let mut machine = machine_with(vec![
+            CpuStop::PortOut {
+                port: 0x3F8,
+                size: 1,
+                value: 0xFE,
+            },
+            CpuStop::Halt,
+        ])
+        .with_reset_signal(signal.clone());
+        *machine.bus_mut().device_mut(0).unwrap() = Box::new(CaptureDevice {
+            reset_signal: Some(signal.clone()),
+            ..Default::default()
+        });
+        assert_eq!(
+            machine.run_bounded(Some(1)).unwrap(),
+            RunOutcome::ResetRequested
+        );
+        assert_eq!(machine.virtual_time(), 1);
+        assert_eq!(machine.bus().device(0).unwrap().save(), [0xFE]);
+        assert!(!signal.get());
+        assert_eq!(
+            machine.run_bounded(Some(1)).unwrap(),
+            RunOutcome::RetiredCapReached
+        );
+        assert_eq!(machine.virtual_time(), 1);
     }
 
     #[test]
