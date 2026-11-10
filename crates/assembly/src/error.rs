@@ -12,6 +12,16 @@ use crate::device::DeviceId;
 /// test can assert the exact failure a malformed config produces.
 #[derive(Clone, Debug, PartialEq, Eq, Error)]
 pub enum ConfigError {
+    /// The file changed after its bytes were verified by the configuration loader.
+    #[error("drive {drive_index} image sha256 mismatch: expected {expected}, actual {actual}")]
+    DriveImageSha256 {
+        /// Index of the drive whose base image changed.
+        drive_index: usize,
+        /// Verified SHA-256, in lowercase hexadecimal.
+        expected: String,
+        /// SHA-256 of the bytes assembly would mount, in lowercase hexadecimal.
+        actual: String,
+    },
     /// A journal mode violates the persistent-media config contract.
     #[error("drive {drive_index} journal configuration: {message}")]
     Journal { drive_index: usize, message: String },

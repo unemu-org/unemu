@@ -32,6 +32,7 @@ fn machine(base: u16, code: Vec<u8>) -> MachineConfig {
             unit,
             kind: DriveKind::HardDisk { geometry },
             image: ImageSource::Inline(vec![fill; geometry.image_bytes() as usize]),
+            expected_sha256: None,
             write,
         });
     }

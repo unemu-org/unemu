@@ -1896,6 +1896,7 @@ mod tests {
             controller: DeviceId::Fdc,
             unit: 0,
             write: WriteMode::Volatile,
+            expected_sha256: None,
         }];
 
         MachineConfig {

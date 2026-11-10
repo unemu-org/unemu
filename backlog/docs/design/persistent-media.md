@@ -262,6 +262,17 @@ the journal into those bytes, then construct the drive. Do not reread the base
 between hashing and mounting. All host paths, journal ownership and finalization
 belong to assembly/frontend code, never the generic machine core.
 
+Machine-file lowering retains the verified base digest in
+`DriveConfig.expected_sha256` alongside its file source, even when no explicit
+`sha256` pin is present. Assembly compares that digest after its single file read
+and before opening journals or creating locks. A mismatch names the drive and
+both hashes; it takes precedence over an existing journal's base-binding error.
+The same checked buffer then supplies journal binding, replay and guest reads.
+Machine-file synthetic readers refuse journal reads by default through
+`ImageReader::read_journal_base`; only file-backed implementations may opt in.
+This preserves the immutable file base needed to reopen a journal and to use
+offline tools. Volatile/readonly readers retain their verified bytes inline.
+
 ### Persist at command completion
 
 Choose synchronous mirroring at each WRITE DATA completion, rather than at a

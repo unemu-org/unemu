@@ -4,6 +4,7 @@
 
 use assembly::{assemble_with_options, AssemblyOptions, ConfigError, WriteMode};
 use machine_file::{load, LoadError};
+use sha2::{Digest, Sha256};
 use std::{
     path::{Path, PathBuf},
     sync::atomic::{AtomicUsize, Ordering},
@@ -82,6 +83,8 @@ fn bios(write: bool) -> Vec<u8> {
         program.extend([0xBF, 0, 6, 0xB9, 0, 2, 0xB0, 0xC7, 0xF3, 0xAA]);
         transfer(&mut program, true, 0x1000);
     }
+    program.extend([0xBF, 0, 10, 0xB9, 0, 2, 0xB0, 0xFF, 0xF3, 0xAA]);
+    program.extend([0xBF, 0x10, 0x10, 0xB9, 7, 0, 0xB0, 0xFF, 0xF3, 0xAA]);
     transfer(&mut program, false, 0x1010);
     program.push(0xF4);
     let mut rom = vec![0xF4; 0x8000];
@@ -382,6 +385,141 @@ fn journal_bases_still_check_hash_pins_and_geometry_before_mounting() {
         }
     ));
     assert!(!temp.0.join("disk.upfj").exists());
+}
+
+fn changed_base_is_refused(existing_journal: bool, explicit_pin: bool) {
+    let temp = Temp::new();
+    let original = vec![0; 368_640];
+    let expected = format!("{:x}", Sha256::digest(&original));
+    let pin = if explicit_pin {
+        format!("sha256='{expected}'\n")
+    } else {
+        String::new()
+    };
+    let path = temp.write(
+        "machine.toml",
+        format!("{BASE}write='journal'\njournal='disk.upfj'\n{pin}"),
+    );
+    let config = load(&path).unwrap();
+    let journal = temp.0.join("disk.upfj");
+    let before = if existing_journal {
+        let mut assembled = assemble_with_options(
+            &config,
+            AssemblyOptions {
+                allow_unlisted_firmware: true,
+            },
+        )
+        .unwrap();
+        assembled.finish_persistence().unwrap();
+        drop(assembled);
+        Some(std::fs::read(&journal).unwrap())
+    } else {
+        None
+    };
+    let changed = vec![0x55; 368_640];
+    temp.write("base.img", &changed);
+    let actual = format!("{:x}", Sha256::digest(&changed));
+    let failure = match assemble_with_options(
+        &config,
+        AssemblyOptions {
+            allow_unlisted_firmware: true,
+        },
+    ) {
+        Ok(_) => panic!("changed base was mounted"),
+        Err(error) => error,
+    };
+    let message = format!(
+        "invalid configuration: drive 0 image sha256 mismatch: expected {expected}, actual {actual}"
+    );
+    assert_eq!(failure.to_string(), message);
+    match before {
+        Some(bytes) => assert_eq!(std::fs::read(&journal).unwrap(), bytes),
+        None => {
+            assert!(!journal.exists());
+            assert!(!temp.0.join("disk.upfj.lock").exists());
+        }
+    }
+}
+
+#[test]
+fn pinned_base_rewritten_after_load_is_refused_before_journal_creation() {
+    changed_base_is_refused(false, true);
+}
+
+#[test]
+fn existing_journal_with_changed_base_reports_pin_mismatch_before_binding() {
+    changed_base_is_refused(true, true);
+}
+
+#[test]
+fn unpinned_base_rewritten_after_load_is_also_refused() {
+    changed_base_is_refused(false, false);
+}
+
+#[test]
+fn synthetic_reader_journal_is_refused_and_volatile_guest_reads_verified_bytes() {
+    struct Synthetic;
+    impl machine_file::ImageReader for Synthetic {
+        fn read(&mut self, path: &Path) -> std::io::Result<Vec<u8>> {
+            if path.file_name().unwrap() == "base.img" {
+                Ok(vec![0; 368_640])
+            } else {
+                Ok(bios(false))
+            }
+        }
+    }
+    let temp = Temp::new();
+    temp.write("base.img", vec![0x55; 368_640]);
+    let pin = format!("{:x}", Sha256::digest(vec![0; 368_640]));
+    let path = temp.write("machine.toml", format!("{BASE}sha256='{pin}'\n"));
+    let config = machine_file::load_with_reader(&path, &mut Synthetic).unwrap();
+    let mut assembled = assemble_with_options(
+        &config,
+        AssemblyOptions {
+            allow_unlisted_firmware: true,
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        assembled
+            .run_session(&assembly::RunPolicy::natural(Some(10_000), None))
+            .unwrap(),
+        machine::RunOutcome::Halted
+    );
+    let mut sector = [0xFF; 512];
+    assembled
+        .machine
+        .cpu()
+        .read_mem(0xA00, &mut sector)
+        .unwrap();
+    assert_eq!(sector, [0; 512]);
+    let mut status = [0xFF; 7];
+    assembled
+        .machine
+        .cpu()
+        .read_mem(0x1010, &mut status)
+        .unwrap();
+    assert_eq!(&status[..3], &[0, 0, 0]);
+    temp.write(
+        "machine.toml",
+        format!("{BASE}sha256='{pin}'\nwrite='journal'\njournal='disk.upfj'\n"),
+    );
+    let failure = match machine_file::load_with_reader(&path, &mut Synthetic) {
+        Err(LoadError::Lower(error)) => error,
+        _ => panic!("synthetic journal base was accepted"),
+    };
+    assert_eq!(failure.field, "card[fdc-765].drives[unit=0].image");
+    assert_eq!(failure.origin.file, path);
+    assert_eq!(failure.origin.line, Some(12));
+    assert_eq!(
+        failure.message,
+        format!(
+            "cannot read image {}: journal mode requires a file-backed image reader",
+            temp.0.join("base.img").display()
+        )
+    );
+    assert!(!temp.0.join("disk.upfj").exists());
+    assert!(!temp.0.join("disk.upfj.lock").exists());
 }
 
 #[test]

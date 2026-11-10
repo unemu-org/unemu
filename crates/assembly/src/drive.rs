@@ -121,6 +121,9 @@ pub struct DriveConfig {
     pub kind: DriveKind,
     /// Where the drive's contents come from.
     pub image: ImageSource,
+    /// Expected SHA-256 of a file source, checked on the bytes mounted by assembly.
+    /// Inline and blank sources do not require a second integrity check.
+    pub expected_sha256: Option<[u8; 32]>,
     /// The stable role of the controller serving this medium.
     pub controller: DeviceId,
     /// The drive-select unit on that controller (0 or 1 on the standard FDC).

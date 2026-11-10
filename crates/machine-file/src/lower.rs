@@ -28,11 +28,20 @@ const MIB: u64 = 0x100000;
 ///
 /// Lowering reads and hashes each referenced image through this seam, including
 /// synthetic bytes supplied by tests. Volatile/readonly bytes are retained inline;
-/// journal bases retain paths and assembly rereads them without rechecking pins.
-/// Verifying the mounted journal base against its pin requires a later assembly
-/// change. Paths resolve against the defining layer's directory.
+/// journal bases retain paths and the verified digest for assembly's mount check.
+/// Journal reads require a file-backed reader so the journal remains bound to a
+/// reproducible immutable base. Paths resolve against the defining layer's directory.
 pub trait ImageReader {
     fn read(&mut self, path: &Path) -> io::Result<Vec<u8>>;
+
+    /// Read an immutable file base that can also be used to reopen the journal.
+    /// Synthetic readers refuse journals because their bytes need not exist on disk.
+    fn read_journal_base(&mut self, _path: &Path) -> io::Result<Vec<u8>> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "journal mode requires a file-backed image reader",
+        ))
+    }
 }
 
 /// Read images from the filesystem without retaining open handles.
@@ -41,6 +50,10 @@ pub struct FileImageReader;
 impl ImageReader for FileImageReader {
     fn read(&mut self, path: &Path) -> io::Result<Vec<u8>> {
         std::fs::read(path)
+    }
+
+    fn read_journal_base(&mut self, path: &Path) -> io::Result<Vec<u8>> {
+        self.read(path)
     }
 }
 
@@ -113,7 +126,8 @@ impl<R: ImageReader> Context<'_, R> {
         field: &str,
         image: Option<&str>,
         pin: Option<&v1::Sha256>,
-    ) -> Result<Vec<u8>, LowerError> {
+        journal: bool,
+    ) -> Result<(Vec<u8>, [u8; 32]), LowerError> {
         let image = self.required(field, image)?;
         let origin = self.origins.get(field);
         let display_path = origin.file.parent().unwrap_or(Path::new(".")).join(image);
@@ -133,10 +147,14 @@ impl<R: ImageReader> Context<'_, R> {
                 format!("image {description} uses a reserved retention-temporary name"),
             ));
         }
-        let bytes = self.reader.read(&path).map_err(|error| {
-            self.error(field, format!("cannot read image {description}: {error}"))
-        })?;
-        let actual = format!("{:x}", Sha256::digest(&bytes));
+        let bytes = if journal {
+            self.reader.read_journal_base(&path)
+        } else {
+            self.reader.read(&path)
+        }
+        .map_err(|error| self.error(field, format!("cannot read image {description}: {error}")))?;
+        let digest = Sha256::digest(&bytes);
+        let actual = format!("{digest:x}");
         if let Some(pin) = pin {
             if actual != pin.as_str() {
                 return Err(self.error(
@@ -149,7 +167,7 @@ impl<R: ImageReader> Context<'_, R> {
             }
         }
         self.image_paths.push(path);
-        Ok(bytes)
+        Ok((bytes, digest.into()))
     }
 
     fn write(
@@ -170,10 +188,11 @@ impl<R: ImageReader> Context<'_, R> {
     }
 
     fn rom(&mut self, field: &str, rom: &v1::Rom, bios: bool) -> Result<LoadImage, LowerError> {
-        let bytes = self.image(
+        let (bytes, _) = self.image(
             &format!("{field}.image"),
             rom.image.as_deref(),
             rom.sha256.as_ref(),
+            false,
         )?;
         let base = match rom.base {
             Some(base) => u64::from(base),
@@ -225,10 +244,11 @@ impl<R: ImageReader> Context<'_, R> {
                 if write == assembly::WriteMode::ReadOnly {
                     return Err(self.error("board.rtc.nvram.write", "readonly NVRAM is not implemented yet; assembly currently supports volatile NVRAM only"));
                 }
-                let bytes = self.image(
+                let (bytes, _) = self.image(
                     "board.rtc.nvram.image",
                     image.image.as_deref(),
                     image.sha256.as_ref(),
+                    false,
                 )?;
                 let actual = bytes.len();
                 let bytes = bytes.try_into().map_err(|_| {
@@ -433,12 +453,14 @@ impl<R: ImageReader> Context<'_, R> {
                     drive.keep_generations.is_some(),
                 )?
             };
-            let bytes = self.image(
+            let journal = matches!(write, assembly::WriteMode::Journal { .. });
+            let (bytes, digest) = self.image(
                 &format!("{drive_field}.image"),
                 drive.image.as_deref(),
                 drive.sha256.as_ref(),
+                journal,
             )?;
-            let image = if matches!(write, assembly::WriteMode::Journal { .. }) {
+            let image = if journal {
                 // Assembly needs the base path to reject aliases and mount the journal.
                 if bytes.len() as u64 != drive_kind.image_bytes() {
                     return Err(self.validation_error(ConfigError::ImageGeometryMismatch {
@@ -460,6 +482,7 @@ impl<R: ImageReader> Context<'_, R> {
                 unit,
                 kind: drive_kind,
                 image,
+                expected_sha256: journal.then_some(digest),
                 write,
             });
         }
@@ -481,6 +504,18 @@ impl<R: ImageReader> Context<'_, R> {
         };
         let mut message = error.to_string();
         let fields = match &error {
+            DriveImageSha256 { drive_index, .. } => {
+                message = replace_index_prefix(
+                    &message,
+                    &format!("drive {drive_index} "),
+                    &format!("{} ", self.drive_label(*drive_index, false)),
+                );
+                self.drives
+                    .get(*drive_index)
+                    .map(|drive| format!("{}.image", drive.field))
+                    .into_iter()
+                    .collect()
+            }
             MissingSystemBios { .. }
             | FirmwareNotListed { .. }
             | FirmwareBoardMismatch { .. }
@@ -1128,6 +1163,34 @@ mod tests {
             let diagnostic = context.validation_error(error);
             assert!(diagnostic.message.starts_with(&format!("{label}{suffix}")), "{diagnostic}");
         }
+    }
+
+    #[test]
+    fn mount_digest_error_names_the_drive_image_origin() {
+        let mut origins = Origins::new("machine.toml");
+        origins.insert(
+            "card[1].drives[2].image",
+            Origin {
+                file: "media.toml".into(),
+                line: Some(23),
+            },
+        );
+        let mut reader = FileImageReader;
+        let context = context(&origins, &mut reader);
+        let expected = "ab".repeat(32);
+        let actual = "cd".repeat(32);
+        let error = ConfigError::DriveImageSha256 {
+            drive_index: 2,
+            expected: expected.clone(),
+            actual: actual.clone(),
+        };
+        let diagnostic = context.validation_error(error.clone());
+        assert_eq!(diagnostic.origin.file, Path::new("media.toml"));
+        assert_eq!(diagnostic.origin.line, Some(23));
+        assert_eq!(diagnostic.field, "card[diskette].drives[unit=1].image");
+        assert_eq!(diagnostic.message, format!("card[diskette].drives[unit=1] image sha256 mismatch: expected {expected}, actual {actual}"));
+        assert_eq!(diagnostic.validation.as_deref(), Some(&error));
+        assert_eq!(diagnostic.to_string(), format!("media.toml:23: card[diskette].drives[unit=1].image: card[diskette].drives[unit=1] image sha256 mismatch: expected {expected}, actual {actual}"));
     }
 
     #[test]

@@ -211,10 +211,10 @@ pub fn load_with_options(
 ///
 /// SHA-256 pins are checked against the reader's bytes during lowering, and
 /// hardware validation remains mandatory. Volatile/readonly images retain those
-/// bytes inline. Journal bases retain file paths: assembly rereads them at mount
-/// time without rechecking the pin, even if the reader supplied synthetic bytes.
-/// Checking the bytes actually mounted against their pin needs a later assembly
-/// change; callers must keep journal bases unchanged between loading and assembly.
+/// bytes inline. Journal bases require `ImageReader::read_journal_base`, which
+/// synthetic readers refuse by default: persistent replay requires a reproducible
+/// immutable file base. File-backed readers retain the verified digest alongside
+/// the path, and assembly checks its single read against that digest before mounting.
 pub fn load_with_reader<R: ImageReader>(
     path: impl AsRef<Path>,
     reader: &mut R,

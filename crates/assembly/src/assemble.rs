@@ -54,6 +54,7 @@ use devices::{
     PostPort, SysControl, Uart16550, Upd765, VgaText, I8042,
 };
 use machine::{DmaWiring, IrqLine, Machine};
+use sha2::{Digest, Sha256};
 
 use crate::device::{DeviceId, DeviceKind};
 use crate::drive::{DriveKind, FloppyGeometry, WriteMode};
@@ -509,6 +510,16 @@ fn resolve_file_sources(
                 path: path.clone(),
                 message: error.to_string(),
             })?;
+            if let Some(expected) = drive.expected_sha256 {
+                let actual: [u8; 32] = Sha256::digest(&bytes).into();
+                if actual != expected {
+                    return Err(ConfigError::DriveImageSha256 {
+                        drive_index: index,
+                        expected: format!("{:x}", sha2::digest::Output::<Sha256>::from(expected)),
+                        actual: format!("{:x}", sha2::digest::Output::<Sha256>::from(actual)),
+                    });
+                }
+            }
             base_metadata[index] = Some(metadata);
             drive.image = ImageSource::Inline(bytes);
         }
@@ -1391,6 +1402,7 @@ mod tests {
             controller: DeviceId::Fdc,
             unit: 0,
             write: WriteMode::Volatile,
+            expected_sha256: None,
         }];
 
         MachineConfig {
@@ -2000,6 +2012,7 @@ mod tests {
                 controller: DeviceId::Fdc,
                 unit: 0,
                 write: WriteMode::Volatile,
+                expected_sha256: None,
             },
             DriveConfig {
                 kind: DriveKind::Floppy {
@@ -2011,6 +2024,7 @@ mod tests {
                 controller: DeviceId::Fdc,
                 unit: 1,
                 write: WriteMode::Volatile,
+                expected_sha256: None,
             },
         ];
         config
@@ -2062,6 +2076,7 @@ mod tests {
                 controller: DeviceId::Fdc,
                 unit: 0,
                 write: WriteMode::Volatile,
+                expected_sha256: None,
             },
             DriveConfig {
                 kind: DriveKind::Floppy {
@@ -2073,6 +2088,7 @@ mod tests {
                 controller: DeviceId::Fdc,
                 unit: 1,
                 write: WriteMode::ReadOnly,
+                expected_sha256: None,
             },
         ];
 
@@ -2186,6 +2202,7 @@ mod tests {
             controller: DeviceId::Fdc,
             unit: 0,
             write: WriteMode::Volatile,
+            expected_sha256: None,
         }];
         config
     }
@@ -2399,6 +2416,7 @@ mod tests {
                 size: geometry.image_bytes(),
             },
             write: WriteMode::Volatile,
+            expected_sha256: None,
         });
         config
     }

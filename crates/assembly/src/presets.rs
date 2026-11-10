@@ -231,6 +231,7 @@ fn floppy_drive_geo(image: ImageSource, geometry: FloppyGeometry, slot: u8) -> D
         controller: DeviceId::Fdc,
         unit: slot,
         write: WriteMode::Volatile,
+        expected_sha256: None,
     }
 }
 

@@ -100,7 +100,7 @@ numbered **M1–M8** and listed after the table.
 | `FdcCfg.drive_slots` | none | type: 2 units | — |
 | `drives[].kind` (`Floppy { geometry }`) | `[[card.drives]] type = "1.44M"` | user | — |
 | `drives[].kind` (`HardDisk { geometry }`) | `[[card.drives]] geometry = { … }` on an `ide` card | user | **M5** |
-| `drives[].image` (`ImageSource`) | `image` + optional `sha256` | user; the loader reads the bytes once and stores `Inline` | — |
+| `drives[].image` (`ImageSource`) | `image` + optional `sha256` | user; volatile/readonly retain verified `Inline` bytes; journals retain `File` plus `DriveConfig.expected_sha256` | — |
 | `drives[].controller_slot` | nesting under the card + `unit` / `channel` | derived | **M4** |
 | `drives[].write_protect` | `write = "volatile" \| "readonly" \| "journal"` | user, default `"volatile"` | **M3** |
 | `images[]` with `ImageKind::Rom` | `[firmware] bios`, `option_roms` | user | **M6** (`provides`) |
@@ -415,12 +415,23 @@ So a `sha256` pin stays valid in every mode.
 
 Journal bases retain `ImageSource::File` because assembly requires a file path
 for alias checks and mounting. Lowering reads and checks the image's hash and
-size; assembly reads it again at mount time. The current assembly API cannot
-carry both verified bytes and their file identity. Callers must keep the base
-unchanged between loading and assembly; the hash pin is checked during loading,
-not again at mounting. Volatile/readonly images still carry their verified bytes
-inline. Repository fixture machines and goldens remain volatile and create no
-journal sidecars.
+size, and stores the verified digest in `DriveConfig.expected_sha256`, even
+without an explicit pin. Assembly checks its single mount-time read against that
+digest before opening any journal or creating a lock. A changed base produces
+`drive N image sha256 mismatch: expected HASH, actual HASH`, including when an
+existing journal would also reject its base binding. The checked buffer supplies
+both the journal binding and the mounted bytes; no later base read intervenes.
+Volatile/readonly images still carry their verified bytes inline, with no digest
+field set. Repository fixture machines and goldens remain volatile and create
+no journal sidecars.
+
+`ImageReader::read_journal_base` refuses journal mode by default. Synthetic
+readers can still supply volatile/readonly bytes, with mandatory pin checks;
+they cannot silently substitute on-disk bytes when journaling. `FileImageReader`
+implements journal reads from the immutable file. A custom file-backed reader
+may implement that method under the same reproducible-base contract. This keeps
+the journal usable after restart and by offline tools, which verify the original
+base's digest as specified in [Persistent media](persistent-media.md).
 
 Before assembly, the loader rejects journal paths that name directories or
 alias any image it read or any machine-file layer, including layers whose
@@ -790,16 +801,16 @@ command-line argument itself. The pipeline:
 ```text
 read file → peek schema → typed parse (per layer) → upgrade → merge
   → completeness → lower (board expansion, type defaults, overrides,
-    RAM rule, images read once + sha256) → MachineConfig::validate()
-  → assemble()  (validates again, unchanged)
+    RAM rule, image reads + sha256) → MachineConfig::validate()
+  → assemble()  (checks file-source digests on its single read, validates bytes)
 ```
 
-Images are read exactly once, hashed, and stored as `ImageSource::Inline`.
-Assembly therefore never re-reads a file that could have changed after the
-hash check. Image reading goes through a small trait
-(`ImageReader::read(path)`), so tests can supply bytes without fixtures.
-Lowering computes SHA-256 from the returned buffer and checks any declared pin;
-the reader cannot disable integrity checks.
+Volatile/readonly images are read exactly once, hashed, and stored as
+`ImageSource::Inline`. Journal bases retain their file paths and verified digests
+for the mount-time check described above. Image reading goes through
+`ImageReader`, so tests can supply bytes without fixtures; its default journal
+method refuses synthetic bases. Lowering computes SHA-256 from the returned
+buffer and checks any declared pin; the reader cannot disable integrity checks.
 
 `load()` returns after `MachineConfig::validate()`; it does not assemble hardware
 or run the system BIOS catalogue check. Option-ROM membership and compatibility
