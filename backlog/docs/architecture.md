@@ -224,11 +224,12 @@ not copied into this workspace
   timing and deadline dispatch are adopted. Per-clock dispatch survives only as
   a feature-gated test oracle; the harness compares ordered accesses, INTA/EOI,
   RAM, registers, saved device state and stop endpoints without normalization
-  between the two engines. Phase profiling after adoption is separate work.
+  between the two engines. The post-adoption profile is in
+  [`design/machine-time-profile.md`](design/machine-time-profile.md).
 - **Observation:** [`design/observation.md`](design/observation.md) describes
   typed device capabilities and assembly-owned observation routes. Access traces
-  are now opt-in, bounded and independent of semantic output; the document retains
-  the historical inventory and describes the remaining observation work.
+  are opt-in, bounded and independent of semantic output; the document retains
+  the historical inventory. The remaining console unification is phase A work.
 
 [`design/machine-config.md`](design/machine-config.md) explains composition;
 [`design/spec.md`](design/spec.md) specifies hardware coverage and seams;

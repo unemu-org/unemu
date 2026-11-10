@@ -5,7 +5,7 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
-## Works (as of 2026-11-09, timing adoption)
+## Works (as of 2026-11-10, main @ 479f8ed — the 286 foundation is finished)
 
 - **An unmodified open BIOS boots FreeDOS from a floppy, headless and deterministic.** The Kiselev
   Xi8088 BIOS completes POST and its INT 19h loads a FreeDOS 8086 floppy over the µPD765 floppy
@@ -36,23 +36,35 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   it. Active caps are exact; HLT jumps to the next event or bound. The per-clock
   reference is test-only (`reference-scheduler`); config has no timing or block
   quantum selection. The Long64 machine demo/blob path is intentionally retired.
-- **Tests:** ordered scheduler comparisons include final CPU/RAM/device state;
-  device isolation and firmware/DOS goldens cover the adopted timing model.
-  See `commands.md` for the required fast/slow gates and release wall-time test.
+- **Observation:** screens come from the text card's scanout state, COM1 and POST
+  bytes through byte sinks; access traces are off in production and opt-in as a
+  bounded ring with drop counts. Snapshots carry each device's time base and
+  reject malformed input.
+- **Tests:** MEASURED 2026-11-10 at `479f8ed`: `cargo test --workspace` 610
+  passed, 0 failed; `cargo test --release -p devices` 358 passed; the 13 slow
+  goldens and engine comparisons pass (BIOS POST, floppy boot, FreeDOS prompt,
+  `DIR`, file write, per-clock versus deadline on every workload with final
+  state); clippy for the full and the production feature sets, fmt, publication
+  guard and cargo deny are clean; `cargo doc` has no warnings. Forgejo CI runs
+  the same gate. See `commands.md`.
+- **Speed:** a release BIOS POST, FreeDOS boot and `DIR` session takes about
+  0.86 s for roughly 11 million instructions; the CPU core takes 97–99 % of it
+  and the machine side under 2 % (profile in
+  [`design/machine-time-profile.md`](design/machine-time-profile.md)).
 
 ## In flight
 
-Post-adoption phase profiling remains separate from scheduler correctness.
-
-The P2 findings from the whole-code review (epics `upc-kk2`, `upc-sk3`, `upc-x83`).
+The 286 foundation milestone is closed. Next is phase A of decision-16 (the
+display through a real MDA card to a window, host keyboard input): epic
+`skeleton` in beads. The CPU core project is reducing translation-cache
+invalidation cost (about half of the DOS session's time); the profile is to be
+re-measured when that lands.
 
 ## Broken / known defects
 
-- **Whole-code review 2026-11-09:** its four P1 defects are fixed (HLT now halts, a cascaded
-  INTA can no longer wedge the PIC pair, PIT mode 3 runs with odd divisors, COM1 capture excludes
-  baud-divisor bytes). The remaining findings are beads under `upc-kk2`, `upc-sk3`, `upc-x83`.
-- Floppy writes are volatile (in-memory only; `upc-sk3.1`).
-- CI gates compile both the production and reference-scheduler feature sets.
+- Floppy writes are volatile (in-memory only; `upc-sk3.1`, required by phase C).
+- The BIOS console in MDA mode writes to plain RAM at `0xB0000`, not to a display
+  card; the MDA card is the first bead of phase A.
 
 ## Recently landed
 

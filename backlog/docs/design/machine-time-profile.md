@@ -198,3 +198,24 @@ Findings:
 - The remaining large speed-ups are in the CPU core, not in this repository;
   they were reported to the CPU core project together with the interpreter
   measurements.
+
+## At the close of the 286 foundation (2026-11-10)
+
+Same method, `main` at `479f8ed`, x86jit pinned at `54fad17` (the fixes for
+the step-budget dependence). The session takes 0.85–0.86 s wall time in three
+plain runs.
+
+| Inclusive share of the session | Run 1 | Run 2 | Run 3 |
+|---|---|---|---|
+| CPU core, `Vcpu::run_steps` | 97.7 % | 96.8 % | 97.6 % |
+| — translation-cache invalidation | 51.2 % | 44.7 % | 46.5 % |
+| — dispatch and block resolution | 29.1 % | 30.6 % | 29.2 % |
+| — interpreting IR | 15.4 % | 19.2 % | 19.3 % |
+| — decoding and lifting to IR | 23.0 % | 21.9 % | 23.9 % |
+| bus: port and MMIO access, settle, deadlines | 0.6 % | 1.4 % | 1.3 % |
+| devices | 0.2 % | 0.5 % | 0.4 % |
+
+The shape is unchanged from the previous section: the machine side stays
+under 2 %, and translation-cache invalidation is still about half of the
+session. The CPU core project is replacing its whole-cache invalidation scan
+with a page-indexed span map; re-measure here when that is pinned.
