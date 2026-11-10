@@ -1,0 +1,1018 @@
+# Machine description files
+
+Status: **spike, proposal, unimplemented** (bead upc-6le.1, phase A′ epic
+upc-6le). It answers one question: how is a `MachineConfig` written as a file,
+so that users compose machines without recompiling?
+
+Related: [machine-config.md](machine-config.md) (the Rust data model a file
+lowers to), `firmware-and-machine-classes.md` (board models and firmware
+compatibility, a parallel spike), `persistent-media.md` (the journal write
+mode, a parallel spike), decision-7 (swap seams, the data-plus-assembler
+annex), decision-16 (scope; the phase A′ amendment asks for description files).
+
+Evidence labels:
+
+- **MEASURED**: run during this spike on 2026-11-10 with rustc 1.95.0, in a
+  scratch crate outside the repository.
+- **READ**: source, documentation or registry metadata read on 2026-11-10.
+- **ASSUMED**: not verified; each one is listed where it is used.
+
+## Context
+
+Today a machine is a Rust preset function (`assembly::bios`, `assembly::at_boot`,
+…). The window frontend hard-codes `assembly::bios(bios, Some(floppy))` and takes
+two positional paths. The CLI only runs `--boot`. Any other machine means
+editing Rust and recompiling. [machine-config.md](machine-config.md) lists "no
+config file format" as a non-goal. The phase A′ amendment of decision-16
+reverses that non-goal: machines become description files, with one versioned
+schema and two syntaxes.
+
+The target shape was agreed with the maintainer on 2026-11-10 (bead notes). On
+the same day a scope change replaced the top-level `class` with a **board
+model** (`[board].model`, named the way 86Box and PCem name boards). This
+document uses that shape:
+
+1. **One serde data model, two syntaxes.** TOML and YAML deserialize into the
+   same Rust types. Every key and value is spelled the same in both syntaxes.
+2. **`schema = 1`** is required in every file.
+3. **The board model supplies the motherboard.** `[board].model` (for example
+   `"ibm-5170"`, the generic AT) supplies the motherboard devices, their
+   standard wiring and any chipset registers. The machine class (xt or at)
+   is derived from the board model. Card defaults and validation depend on the
+   board model. The list of board models and firmware compatibility belong to
+   the firmware spike.
+4. **Everything in an ISA slot is a `[[card]]`.** Each card kind has default
+   ports, IRQ, DMA and MMIO. A file can override them where the modelled chip
+   allows it.
+5. **The file describes the machine only.** RunPolicy (limits, stop
+   conditions, input scripts) and presentation (window, scale, display choice)
+   stay outside the file. Host-connected endpoints are explicit streams that
+   the run side binds.
+6. **Paths are relative to the file that names them.** Images may pin a
+   `sha256`.
+7. **`extends`** inherits from another file or from a built-in preset.
+8. **Schema 1 implements what exists, plus IDE, the floppy journal, NVRAM and
+   the RTC start.** Everything else is reserved names and shapes, so new
+   hardware arrives as a new card kind, not as a new format version.
+9. **Cycle-exact timing fields are rejected** with an explanation
+   (decision-16 §3).
+
+## Inventory
+
+How every current `MachineConfig` field and every `DeviceKind` parameter is
+written in a file. "Board" means the board model supplies the value, "type"
+means a card-kind default, "user" means the file states it. Model changes are
+numbered **M1–M8** and listed after the table.
+
+| Rust field (`crates/assembly`) | File form | Source | Model change |
+|---|---|---|---|
+| `cpu.chip` (`CpuChip::I80286`) | `[cpu] model = "80286"` | board default, user may restate | — |
+| `cpu.reset` (`ResetSpec`) | none | board: `ResetVector F000:FFF0` for every firmware board | — (`Entry` stays for Rust test rigs) |
+| `cpu.segments` (`SegmentSeed`) | none | board: `SegmentSeed::flat(0xF000)` | — |
+| `clock.retired_per_pit_clock`, `…_denominator` | `[cpu] rate = "A/B"` | user, default `"1/1"` | — |
+| `memory.address_space_bytes` | none | derived: 1 MiB + `extended_kib` | — |
+| `memory.ram` (`RamRegion` list) | `[memory] conventional_kib`, `extended_kib` | derived by the RAM rule (see [`[memory]`](#memory)) | — |
+| `memory.mmio` (`MmioWindow` list) | none | type: each display card owns its window | — (expressible today) |
+| `devices[]` for PIC ×2, PIT, 8237, 8042, RTC, port 61h | none | board (`ibm-5170` table below) | — |
+| `devices[]` for POST port | `[board] post_port` | board default `0x80`, user may set `"none"` | — |
+| `devices[]` for UART, VGA, MDA, FDC | `[[card]] kind = …` | user | — |
+| `DeviceConfig.id` (`DeviceId`) | none | derived from the role or card kind; the file-level card `id` is a merge key only | — |
+| `DeviceConfig.ports` | `[[card]] port` (base) | type default, user override where relocatable | — |
+| `DeviceConfig.irq` | `[[card]] irq` (`0..15` or `"none"`) | type default, user override | — |
+| `DeviceConfig.dma` (`DmaSpec`) | `[[card]] dma` (`0..3` or `"none"`) | type default, user override | — |
+| `DeviceConfig.access_dependents` | none | board (empty today) | — |
+| `DeviceConfig.allow_port_overlap`, `PortWindow.allow_overlap` | none | type default (the IDE `0x3F6` window) | — |
+| `UartCfg.base` | `[[card]] port` | type default `0x3F8` | — |
+| `PicCfg.cascade`, `PitCfg`, `I8042Cfg`, `SysControlCfg`, `DmaCfg` | none | board | — |
+| `PostPortCfg.port` | `[board] post_port` | board default | — |
+| `CmosCfg.seed` | `[board.rtc] nvram = "derived"` or `"blank"` | user, default `"derived"` | **M7** |
+| `CmosCfg.timing` | none | not writable: a test-rig knob (the RTC demo) | — |
+| `VgaTextCfg`, `MdaTextCfg` | `kind = "vga-text"`, `"mda"` | user | — |
+| `FdcCfg.drive_slots` | none | type: 2 units | — |
+| `drives[].kind` (`Floppy { geometry }`) | `[[card.drives]] type = "1.44M"` | user | — |
+| `drives[].kind` (`HardDisk { geometry }`) | `[[card.drives]] geometry = { … }` on an `ide` card | user | **M5** |
+| `drives[].image` (`ImageSource`) | `image` + optional `sha256` | user; the loader reads the bytes once and stores `Inline` | — |
+| `drives[].controller_slot` | nesting under the card + `unit` / `channel` | derived | **M4** |
+| `drives[].write_protect` | `write = "volatile" \| "readonly" \| "journal"` | user, default `"volatile"` | **M3** |
+| `images[]` with `ImageKind::Rom` | `[firmware] bios`, `option_roms` | user | **M6** (`provides`) |
+| `images[]` with `ImageKind::RamLoad` | none | not writable: test rigs only | — |
+| `output` (`OutputConfig`) | none | presentation, outside the file | **M8** |
+| (new) board model | `[board] model` | user, required | **M1** |
+| (new) RTC start | `[board.rtc] start` | user, default `"2000-01-01T00:00:00"` | **M7** |
+| (new) NVRAM image | `[board.rtc] nvram = { image, … }` | user | **M7** |
+| (new) canonical device order | none | derived: board devices, then cards in file order | **M2** (data only) |
+
+Model changes the implementation must make:
+
+- **M1. Board model in the config.** Add `MachineConfig.board: BoardModel`,
+  with variants `Ibm5170` and `Bare`. `Bare` is for the Rust test rigs
+  (`at_boot`, `test386`, `floppy_boot`, …), which skip board-dependent rules.
+  Validation depends on the board model, so the model must be in the data that
+  `validate()` sees. It also becomes part of golden identity.
+- **M2. Canonical device order.** Bus order is semantic: the bus ticks due
+  devices "in bus order at one whole PIT boundary" (READ, `crates/bus/src/lib.rs`).
+  The `bios` preset interleaves cards and board devices
+  (`uart, master_pic, pit, keyboard, vga, slave_pic, rtc, sys_control, post,
+  mda, fdc, dma`). Lowering emits board devices in the board's fixed order, then
+  cards in file order. The preset is rewritten to that order first, and the slow
+  goldens prove the change neutral (bead 1). ASSUMED: no golden depends on the
+  current tie order. If one does, bead 1 stops and reports it.
+- **M3. Write modes.** Replace `DriveConfig.write_protect: bool` with
+  `write: WriteMode { Volatile, ReadOnly, Journal { path, keep_generations } }`.
+  `false` maps to `Volatile` and `true` to `ReadOnly`. The journal variant
+  follows `persistent-media.md`.
+- **M4. Drive binding by controller.** Replace the global `controller_slot`
+  with `controller: DeviceId` plus `unit: u8`. Today
+  `check_drive_controllers` sums FDC slots only, so a `HardDisk` on slot 0
+  passes whenever an FDC exists. With an IDE controller present, the binding
+  must name the controller.
+- **M5. IDE.** Add `DeviceId::Ide`, `DeviceKind::Ide(IdeCfg { base, control })`
+  and the device itself. The assembler routes `HardDisk` drives the same way it
+  routes floppies (`build_fdc_drives`). This is the seam that
+  [machine-config.md](machine-config.md#the-fixed-disk-idehdd-attachment-seam)
+  already reserves.
+- **M6. Firmware `provides`.** Add `LoadImage.provides: Vec<FirmwareService>`
+  (v1 values `Floppy`, `FixedDisk`), so `validate()` can reject an IDE card that
+  no ROM serves.
+- **M7. RTC start and NVRAM source.** Replace `CmosCfg.seed: bool` with
+  `nvram: NvramSource { Derived, Blank, Image { bytes, write } }`. Add
+  `start: RtcStart`, whose default equals today's epoch, 2000-01-01 00:00:00
+  (READ, `RtcTime::default_epoch`). Keep `timing`.
+- **M8. Presentation out of the machine.** `MachineConfig.output` selects
+  frame sinks, which is presentation. Move it to the observation setup. If this
+  is deferred, the loader writes `OutputConfig::default()` and nothing
+  observable changes.
+
+Not a model change: card-owned MMIO windows. `MemoryConfig.mmio` already names
+the owning `DeviceId`; lowering derives the windows from the card kinds.
+
+## Schema (field by field)
+
+### Document rules
+
+- **Syntax by extension:** `.toml` is TOML, `.yaml` and `.yml` are YAML.
+  Any other extension is an error. A file contains exactly one document.
+- **Keys** are `snake_case`. **Enumerated values** are `kebab-case` strings.
+  **Integers** may be decimal or hexadecimal (`0x3F8`); both syntaxes accept
+  hex (MEASURED, all three crates in [Crates](#crates)).
+- **Strictness:** every table rejects unknown fields (`deny_unknown_fields`).
+- **No location-losing serde shapes:** no `#[serde(flatten)]`, no internally
+  tagged enums, no untagged enums in the document types. With an internally
+  tagged `[[card]]` enum, the TOML error for the second card pointed at line 1,
+  the first card (MEASURED). With a flat struct, every crate reported the exact
+  line and column (MEASURED). So a card is one flat struct with a `kind` field.
+  The fields that a given kind does not accept are rejected during lowering,
+  with the card id in the message.
+- **Two-form values** (`irq = 4` or `irq = "none"`; `nvram = "derived"` or a
+  table) use a hand-written `Visitor`. It keeps the value's location in TOML
+  and in both YAML crates (MEASURED).
+- **Paths** are strings with `/` separators, resolved against the directory of
+  the file that contains them. Absolute paths are accepted. Repository files
+  must use relative paths (bead 7 tests this).
+- **Lowering principle:** lowering rejects only what `MachineConfig` cannot
+  represent: reserved names, unsupported values, and fields a card kind does
+  not accept. Every rule about a representable machine lives in
+  `MachineConfig::validate()`. There is no second validation path.
+
+### Top level
+
+| Field | Type | Default | Notes |
+|---|---|---|---|
+| `schema` | integer | required | `1`. By convention the first key. |
+| `name` | string | file stem | Metadata for the window title and messages. Not part of `MachineConfig`. Not inherited. |
+| `description` | string | none | Metadata. Not inherited. |
+| `extends` | string | none | A relative path or `preset:<name>`. See [extends](#extends). |
+| `board` | table | required | |
+| `cpu` | table | from the board | |
+| `memory` | table | from the board | |
+| `firmware` | table | required after merge | |
+| `card` | array of tables | empty | |
+
+### `[board]`
+
+| Field | Type | Default | v1 | Lowers to |
+|---|---|---|---|---|
+| `model` | string | required | `"ibm-5170"` | `MachineConfig.board`, plus the board device set |
+| `post_port` | u16 or `"none"` | `0x80` on `ibm-5170` | yes | the `Post` device; also the DMA page-register decode |
+| `rtc` | table | see below | yes | the `Rtc` device |
+
+The `ibm-5170` board model supplies the devices below, in this order (the
+canonical order, M2). The values are today's presets, unchanged.
+
+| # | Role | `DeviceId` | Ports | IRQ | Notes |
+|---|---|---|---|---|---|
+| 1 | master 8259 | `MasterPic` | `0x20–0x21` | — | `cascade = true` |
+| 2 | slave 8259 | `SlavePic` | `0xA0–0xA1` | — | cascaded on master IRQ2 |
+| 3 | 8254 PIT | `Pit` | `0x40–0x43` | 0 | |
+| 4 | 8237 DMA | `Dma` | `0x00–0x0F`, page `0x81–0x8F` (`0x80–0x8F` when `post_port` is not `0x80`) | — | the second 8237 (`0xC0–0xDF`, channels 4–7) is not modelled |
+| 5 | 8042 KBC | `Keyboard` | `0x60`, `0x64` | 1 | |
+| 6 | MC146818 RTC | `Rtc` | `0x70–0x71` | 8 | |
+| 7 | system control | `SysControl` | `0x61` | — | |
+| 8 | POST latch | `Post` | `post_port` | — | omitted when `"none"` |
+
+Board-dependent validation rules (new checks in `validate()`, M1). On
+`ibm-5170`, a card IRQ must be one of 3–7, 9–12, 14 or 15: IRQ2 is the cascade,
+and 0, 1, 8 and 13 are not on the bus. A card DMA channel must be 0–3, because
+only one 8237 is modelled. The `Bare` board skips these rules.
+
+`model = "ibm-5160"` (generic XT) is reserved. The list of board models and the
+firmware each one accepts belong to the firmware spike.
+
+### `[board.rtc]`
+
+| Field | Type | Default | v1 | Lowers to |
+|---|---|---|---|---|
+| `start` | string `"YYYY-MM-DDTHH:MM:SS"` | `"2000-01-01T00:00:00"` | yes | `CmosCfg.start` (M7). The weekday is derived from the date. |
+| `nvram` | `"derived"`, `"blank"` or a table | `"derived"` | yes | `CmosCfg.nvram` (M7) |
+
+`start` must be a quoted string in both syntaxes. Unquoted, TOML parses a
+local date-time and YAML 1.1 a timestamp. The default start keeps every RTC
+register as it is today, so the goldens do not change. A start taken from host
+time is not a machine property. It is a run option (see [Outside the
+file](#outside-the-file-run-options-presentation-host-streams)).
+
+`nvram` forms:
+
+- `"derived"`: today's `seed = true`. Floppy types, the equipment byte and the
+  base and extended memory sizes are derived from the machine, and the
+  checksum is written.
+- `"blank"`: today's `seed = false`, a battery-dead chip. A stock BIOS enters
+  SETUP.
+- `{ image = "cmos.bin", sha256 = "…", write = "volatile" | "readonly" | "journal" }`:
+  64 bytes (the modelled MC146818 store, READ `NVRAM_LEN = 64`) loaded
+  verbatim. The time registers in the image are ignored, because the time
+  comes from `start`. A wrong size is an error. `journal` persists guest CMOS
+  writes, for example a saved BIOS setup. Its file format follows
+  `persistent-media.md`.
+
+### `[cpu]`
+
+| Field | Type | Default | v1 | Lowers to |
+|---|---|---|---|---|
+| `model` | string | from the board (`"80286"` on `ibm-5170`) | `"80286"` | `CpuConfig.chip` |
+| `rate` | `"A/B"` string or a positive integer `A` | `"1/1"` | yes | `ClockConfig` A/B. Both parts must be positive. It is a ratio of completed steps per PIT input clock, not a frequency. |
+
+`model = "8088"` is rejected: "cpu model 8088 needs an 8088 instruction model,
+which the CPU core does not have". A model that does not match the board is
+rejected. `fpu` and `turbo` are reserved.
+
+### `[memory]`
+
+| Field | Type | Default | v1 | Lowers to |
+|---|---|---|---|---|
+| `conventional_kib` | integer, multiple of 16, at most 640 | 640 | yes | RAM `[0, conventional)` |
+| `extended_kib` | integer, multiple of 64, at most 15360 on a 286 | 0 | yes | RAM `[1 MiB, 1 MiB + extended)`. Also sets `address_space_bytes`. Guests need protected mode (phase B) to use it. A20 stays always-on (decision-8). |
+
+**The RAM rule (`ibm-5170`).** It reproduces today's mosaic. The upper memory
+area `[0xA0000, 0x100000)` is RAM, minus every card MMIO window and minus every
+ROM image (BIOS and option ROMs). Adjacent regions are then joined. This is the
+model constant that [machine-config.md](machine-config.md#memoryconfig--a-semantic-memory-map)
+states: the option-ROM scan area is writable RAM. For the FreeDOS machine the
+rule gives `[0, 0xB0000)` and `[0xC0000, 0xF8000)`, exactly the `bios`
+preset's regions.
+
+### `[firmware]`
+
+| Field | Type | Default | v1 | Lowers to |
+|---|---|---|---|---|
+| `bios.image` | path | required | yes | `LoadImage { kind: Rom, source: Inline(bytes) }` |
+| `bios.sha256` | 64 hex characters | none | yes | checked against the bytes read |
+| `bios.base` | integer | `0x100000 − size` (the image ends at 1 MiB) | yes | `LoadImage.base`. A 32 KiB Xi8088 image gives `0xF8000`. |
+| `bios.provides` | list of strings | `[]` | `"floppy"`, `"fixed-disk"` | `LoadImage.provides` (M6) |
+| `option_roms` | array of tables | `[]` | yes | one `LoadImage` (`Rom`) each |
+| `option_roms[].image`, `.sha256`, `.provides` | as for `bios` | | yes | |
+| `option_roms[].base` | integer, 2 KiB aligned, in `0xC0000–0xEFFFF` | required | yes | `LoadImage.base` |
+
+Rules in `validate()` (M6). On a firmware board, an `ide` card needs a ROM
+that provides `"fixed-disk"`. An `fdc-765` card with drives needs a ROM that
+provides `"floppy"`. The `provides` vocabulary, and whether known ROMs are
+recognised by `sha256` instead of declared, belong to the firmware spike.
+
+### `[[card]]`
+
+Common fields:
+
+| Field | Type | Notes |
+|---|---|---|
+| `id` | string | The merge key for `extends` and the name in messages. Defaults to the kind (`"fdc-765"`). |
+| `kind` | string | Required, unless `extends` already defined a card with this `id`. |
+| `port` | u16 | The base port, where the kind is relocatable. |
+| `irq` | `0..15` or `"none"` | An IRQ on a kind with no interrupt source is an error. |
+| `dma` | `0..3` or `"none"` | Only for kinds that master DMA. |
+| `drives` | array of tables | Only for disk controllers. |
+| `remove` | bool | Only in a file that `extends`. It deletes the inherited card. |
+
+Kinds in schema 1. Each card lowers to one `DeviceConfig`, plus any MMIO
+windows and drives. A port override is accepted only where the device model
+honours it. The MDA, VGA and µPD765 models decode fixed absolute ports (READ,
+`devices/src/{mda,vga_text,upd765}.rs`).
+
+| `kind` | `DeviceId` | Default ports | Port override | Default IRQ | Default DMA | MMIO (fixed) | Drives |
+|---|---|---|---|---|---|---|---|
+| `mda` | `Mda` | `0x3B0–0x3BB`, `0x3BF` | no | — | — | `0xB0000`, 32 KiB | — |
+| `vga-text` | `Vga` | `0x3D4–0x3D5`, `0x3D8–0x3DA` | no | — | — | `0xB8000`, 32 KiB | — |
+| `uart-16550` | `Uart` | `base…base+7`, base `0x3F8` | yes, any base ≤ `0xFFF8` | 4 for `0x3F8` and `0x3E8`, 3 for `0x2F8` and `0x2E8`, otherwise required | — | — | — |
+| `fdc-765` | `Fdc` | `0x3F0–0x3F7` | no (`0x370` is reserved) | 6 | 2 | — | `unit` 0–1 |
+| `ide` | `Ide` (M5) | `0x1F0–0x1F7`, plus `0x3F6` marked as an intended overlap with the FDC window | `0x1F0` or `0x170`; the control port is base + `0x206` | 14 (15 for `0x170`) | — (PIO) | — | `channel` master, slave |
+
+The IDE `0x3F6` window is a single port marked as an intended overlap. The
+decode map orders narrower windows first, so it wins over the FDC's
+`0x3F0–0x3F7`. This is the same mechanism that gives `0x80` to the POST latch
+and `0x81` to the 8237 (READ, `build_decode_map`). Machines without IDE keep
+their decode unchanged.
+
+Schema 1 rejects a second card of the same kind with `DuplicateDeviceId`,
+because `DeviceId` is one per role. Supporting COM2 later needs instance ids in
+`DeviceId`, an additive change.
+
+### Drives
+
+Under an `fdc-765` card:
+
+| Field | Type | Default | Notes |
+|---|---|---|---|
+| `unit` | 0 or 1 | required | The drive-select line (µPD765 US0/US1). Lowers to `controller = Fdc, unit`. |
+| `type` | `"1.44M"`, `"1.2M"`, `"720K"`, `"360K"` | required | `FloppyGeometry::{HD_1_44, HD_1_2, DD_720K, DD_360K}` |
+| `image` | path | required | read once, stored `Inline`; its size must match `type` |
+| `sha256` | hex | none | pins the base image |
+| `write` | `"volatile"`, `"readonly"`, `"journal"` | `"volatile"` | M3 |
+| `journal` | path | required if and only if `write = "journal"` | never created implicitly (`persistent-media.md`) |
+| `keep_generations` | positive integer | 10 | journal only (`persistent-media.md`) |
+| `remove` | bool | | only in a file that `extends` |
+
+Under an `ide` card, the fields are the same, with two replacements:
+`channel = "master" | "slave"` instead of `unit`, and
+`geometry = { cylinders, heads, sectors }` (512-byte sectors) instead of
+`type`. In schema 1 the geometry is required.
+
+No write mode modifies the base image: `volatile` keeps guest writes in
+memory, `readonly` faults them, and `journal` appends them to a separate file.
+So a `sha256` pin stays valid in every mode.
+
+### Outside the file: run options, presentation, host streams
+
+The machine file never carries these. A top-level `run`, `presentation` or
+`streams` table is rejected with a message that names where the option belongs.
+
+- **RunPolicy** (virtual-time cap, idle limit, stop condition, keyboard
+  stimuli) comes from CLI flags, and later from a separate run file (reserved,
+  [Reserved names](#reserved-names)).
+- **Presentation** (scale, scanlines, fullscreen, which display to show) comes
+  from window flags.
+- **Host streams.** A host-connected endpoint is addressed by card id: `com1`,
+  or `<card>.<endpoint>` for cards with several endpoints. The run side binds
+  it, for example `--stream com1=file:serial.log`. An unbound endpoint behaves
+  as today: TX is observable through observation, RX is empty. RTC from host
+  time is the run option `--rtc-start host`. It samples host time once, before
+  the first instruction, and records the value in the run log so a replay can
+  reuse it. Schema 1 implements no stream bindings. The addressing rule is
+  fixed now so that cards never need a field for it.
+
+Frontends:
+
+- **Window:** `unemupc98-window [--machine FILE] [--display CARD]`.
+  `--machine` defaults to `machines/at-freedos.toml` in the workspace. The
+  default display is the first display card in file order, which in the FreeDOS
+  file is the MDA the Xi8088 BIOS writes to. The positional
+  `[bios-path [floppy-path]]` arguments are removed. A different BIOS or floppy
+  is a three-line file that `extends` the FreeDOS file.
+- **CLI:** `unemupc98 machine check FILE` parses, merges, lowers and validates,
+  then prints errors with file and position. It exits 0 for a valid file,
+  1 for an invalid one, 2 for usage errors. `unemupc98 run --machine FILE
+  [--max-steps N] [--idle-limit N] [--print CARD]` maps its flags onto
+  `RunPolicy::natural` and prints a display card's text screen or a UART's
+  stream. `--boot` stays.
+
+## Crates
+
+### TOML: `toml`
+
+`toml` 1.2.1+spec-1.1.0, published 2026-11-06 by toml-rs: MIT OR Apache-2.0,
+MSRV 1.85, 124 releases, repository active on 2026-11-06 (READ, crates.io and
+GitHub APIs). It implements TOML 1.1. With it, `toml` pulls 7 crates including
+itself (MEASURED, `cargo tree -e normal`). Errors carry line, column and a
+caret snippet (MEASURED):
+
+```text
+TOML parse error at line 6, column 1
+  |
+6 | mhz = 8
+  | ^^^
+unknown field `mhz`, expected one of `id`, `kind`, `port`, `irq`
+```
+
+There is no real alternative. `toml` is the ecosystem standard.
+
+### YAML: comparison
+
+`serde_yaml` was deprecated and archived on 2024-03-25 (READ). The candidates:
+
+| Crate | Latest release | Maintenance (READ) | License | Engine | Normal deps incl. itself (MEASURED) | Error form (MEASURED) |
+|---|---|---|---|---|---|---|
+| `serde_yml` | 0.0.13, 2026-05-27 | Repository archived (last push 2026-05-28). RUSTSEC-2025-0068: "unsound and unmaintained", no patched version. Its `libyml` dependency has RUSTSEC-2025-0067. 0.0.13 replaced the engine with a shim over another crate (READ, search results; not inspected). | MIT OR Apache-2.0 | changed between releases | not measured | not measured |
+| `serde_norway` | 0.9.42, 2024-12-21 | A maintained fork of `serde_yaml`; repository last pushed 2025-08-04; no release for 23 months | MIT OR Apache-2.0, engine MIT | `unsafe-libyaml-norway` (libyaml transpiled by c2rust, `unsafe`) | 14 | `card[0].irq: invalid type: string "four", expected u8 at line 7 column 10`: field path and position, no snippet |
+| `serde_yaml_ng` | 0.10.0, 2024-05-26 | Last push 2025-09-14, 21 open issues. Uses `unsafe-libyaml`, which the RustSec advisory text describes as unmaintained. | MIT (0.10) | `unsafe-libyaml` | not measured | not measured |
+| `serde_yaml2` | 0.1.3, 2025-05-12 | 11 stars; RustSec lists it as an "incomplete" pure-Rust alternative | MIT OR Apache-2.0 | `yaml-rust2` | not measured | not measured |
+| `serde-saphyr` | 2.1.1, 2026-11-05 | 40 releases since 2025-09-27; repository pushed 2026-11-09; 244 stars; 2 open issues | MIT OR Apache-2.0 | `granit-parser`, pure Rust, a fork of `saphyr-parser` by the same author, targeting YAML 1.2 | 15 (`default-features = false, features = ["deserialize"]`) | `error: line 6 column 5: unknown field` plus a caret snippet; duplicate keys are an error by default |
+
+Further evidence:
+
+- **License policy:** `cargo deny check licenses` and `cargo deny check
+  advisories` pass for `toml`, `serde-saphyr` and `serde_norway` under this
+  repository's `deny.toml` (MEASURED).
+- **Untyped scalars:** both YAML crates deserialize `model: 80286` into a
+  `String`, and `0x3F8` into an integer (MEASURED). The "Norway problem" does
+  not reach string fields: `model: no` stays `"no"` (MEASURED).
+- **`serde-saphyr` hardening (READ, docs.rs):** `unsafe` is denied in the
+  crate itself (not in its dependencies). The parser is fuzzed and documented
+  not to panic on malformed input. Budgets limit parser events and alias
+  replay. A `strict_booleans` option limits booleans to `true` and `false`. It
+  has its own `Spanned<T>`.
+- **`serde-saphyr` risks (READ):**
+  - **MSRV.** Releases from 1.2.0 (2026-08-30) on declare rust-version 1.89.
+    This workspace declares 1.88 and tracks the pinned x86jit revision
+    (96a49a9, rust-version 1.88). x86jit `main` raised its rust-version to 1.95
+    on 2026-11-10 (commit c161085), so the next re-pin moves this workspace
+    past 1.89 anyway. The Nix toolchain is 1.95.0 (MEASURED).
+  - **Churn.** Two major versions within three months (1.0.0 on 2026-07-31,
+    2.0.0 on 2026-10-13).
+  - **Single maintainer.** One author maintains both the serde layer and the
+    parser.
+
+### Recommendation
+
+**YAML: `serde-saphyr` 2.x** (`default-features = false, features =
+["deserialize"]`), with `strict_booleans`, the default duplicate-key error,
+tightened budgets, and single-document input. It is the only candidate that
+is actively released, pure Rust, free of advisories, and gives positioned,
+snippet-style errors equal to `toml`'s. The churn risk is contained, because
+the schema uses only plain serde derive, so the YAML crate sits behind one
+small function. **Fallback: `serde_norway`**, which passed the same probes
+(MEASURED). It is unsafe C-derived code with a slow release cadence, but its
+errors include the field path. `serde_yml` and `serde_yaml_ng` are excluded on
+advisory and maintenance grounds.
+
+Other new dependencies: `serde` (derive; already in the lock file
+transitively) and `sha2` 0.11.1 (MIT OR Apache-2.0, MSRV 1.88, READ) for
+`sha256` pins. All of them live in a new crate, `crates/machine-file`, above
+`assembly`. The `assembly` crate stays free of serde and of format crates.
+
+## Versioning, extends and errors
+
+### `schema`
+
+- The loader first reads only `schema` from the file (a small serde struct
+  without `deny_unknown_fields`), then parses the whole file with that
+  version's document types.
+- A missing `schema` is an error. A value above the newest supported version
+  is an error: "file uses schema 2; this build reads schema 1".
+- **Additive changes stay at schema 1:** a new card kind, a new optional
+  field, a new enumerated value. Because unknown fields are rejected, an older
+  build rejects a newer file with a positioned "unknown field" or "unknown
+  variant". It never misreads the file.
+- **Breaking changes** (a rename, a move, a changed meaning) bump the schema.
+  Version 1's types are frozen in `schema::v1`, and a pure function
+  `v1::Layer → v2::Layer` upgrades them. Every layer of an `extends` chain is
+  upgraded to the newest version before merging, so a schema 2 file may extend
+  a schema 1 preset. A golden test asserts that every repository file of an
+  older schema still lowers to the same `MachineConfig`. Dropping support for
+  an old schema needs a decision. A `machine migrate` command, which needs a
+  serializer for the document types, is reserved.
+
+### Strictness
+
+- `deny_unknown_fields` everywhere (MEASURED working with `toml`,
+  `serde-saphyr` and `serde_norway`).
+- **Cycle-exact timing fields** (`mhz`, `frequency`, `clock_hz`, `cycles`,
+  `cycle_exact`, `wait_states`, `bus_mhz`, `memory_wait_states`, `timing`, in
+  `[cpu]`, `[board]`, `[[card]]` or at the top level) are declared fields
+  whose deserializer always fails. The error therefore points at the value and
+  explains: "cycle-exact timing is not modelled; `[cpu] rate` is a ratio of
+  completed steps per PIT input clock". A plain unknown-field error would not
+  explain this.
+- **Reserved names** ([Reserved names](#reserved-names)) parse, so the error
+  is not "unknown". Lowering then rejects them with "reserved in schema 1, not
+  implemented".
+
+### `extends`
+
+- **Forms:** `extends = "../machines/at-freedos.toml"` (relative to this file)
+  or `extends = "preset:ibm-5170"`. Built-in presets are the files under
+  `machines/presets/`, embedded with `include_str!`. Presets carry hardware
+  shape only: a path in a preset is a build-time test failure, because an
+  embedded file has no directory to resolve against.
+- **Syntax is per file:** a YAML file may extend a TOML file.
+- **Path resolution happens per layer, before merging.** Every path is made
+  absolute against the directory of the file that wrote it. A child that
+  overrides `image` resolves it against the child's directory.
+- **Chain limits:** depth at most 8. Cycles are detected on canonical paths and
+  preset names, and the error prints the chain
+  (`a.toml → b.yaml → a.toml`).
+- **Merge rules** (the child is applied over the parent):
+
+  | Item | Rule |
+  |---|---|
+  | scalars | the child replaces the parent |
+  | tables (`board`, `board.rtc`, `cpu`, `memory`, `firmware.bios`) | merged field by field, recursively |
+  | a two-form value whose form changes (`nvram = "derived"` over a table) | replaced whole |
+  | `provides`, `firmware.option_roms` | replaced whole when the child sets them |
+  | `[[card]]` | keyed by `id`. A matching card merges field by field, and its `kind`, if stated, must equal the parent's. `remove = true` deletes the card. A new `id` is appended. Parent order is kept; new cards follow in child order. |
+  | `drives` inside a card | keyed by `unit` or `channel`. A match merges field by field; `remove = true` deletes; a new key is added. Lowering sorts drives by key. |
+  | `name`, `description` | not inherited |
+  | `schema` | every file declares its own |
+
+- **Completeness is checked after the merge.** A preset may lack
+  `[firmware]` or drive images. The final machine must have every required
+  field, and the error names the field path and the files of the chain.
+
+### Errors
+
+Every error starts with the file path. There are three classes:
+
+1. **Syntax, type and unknown-field errors** come from the format crate, with
+   line, column and snippet (MEASURED, both syntaxes). The loader adds the
+   file path. `serde-saphyr` labels its input `<input>`, and the loader
+   replaces that label with the path (ASSUMED that this is possible without
+   re-rendering).
+2. **Lowering errors** (reserved names, fields a kind does not accept,
+   completeness, `sha256` mismatches, unreadable images) name the file and a
+   field path such as `card[fdc-765].drives[unit=0].image`. A `sha256`
+   mismatch prints both hashes.
+3. **`validate()` errors** carry `DeviceId`, drive index and image index. The
+   loader keeps an origin table (`DeviceId` → card id and defining file,
+   drive index → card and unit, image index → firmware entry) and prints them
+   in file terms:
+
+   ```text
+   machines/at-ide.toml: card `ide` (kind ide, from machines/at-ide.toml):
+   no firmware provides "fixed-disk"; add an option ROM that provides it
+   ```
+
+Schema 1 gives no line numbers for errors in classes 2 and 3. Both formats
+have span types (`toml`'s `Spanned`, `serde-saphyr`'s `Spanned`), but they are
+not interchangeable, and one data model matters more. Positions for these
+errors can come later from a format-specific lookup of the field path.
+
+## Validation and presets
+
+### One validation path
+
+The loader's output is a function of the bytes of the machine file, its
+`extends` chain and the images. It reads no environment variables and no
+clock, and resolves no paths against the working directory, except for the
+command-line argument itself. The pipeline:
+
+```text
+read file → peek schema → typed parse (per layer) → upgrade → merge
+  → completeness → lower (board expansion, type defaults, overrides,
+    RAM rule, images read once + sha256) → MachineConfig::validate()
+  → assemble()  (validates again, unchanged)
+```
+
+Images are read exactly once, hashed, and stored as `ImageSource::Inline`.
+Assembly therefore never re-reads a file that could have changed after the
+hash check. Image reading goes through a small trait
+(`ImageReader::read(path, sha256)`), so tests can supply bytes without
+fixtures.
+
+### Canonical order
+
+Lowering order is fixed. Devices: board devices in board order, then cards in
+merged file order. MMIO windows: sorted by base. Images: the BIOS, then option
+ROMs in file order. Drives: card order, then unit or channel. The Rust `bios`
+preset is rewritten to the same order (M2, bead 1), so the round trip below
+compares equal with `==`.
+
+### Presets as files
+
+Repository layout:
+
+```text
+machines/
+  at-freedos.toml        the FreeDOS machine (TOML)
+  at-freedos.yaml        the same machine in YAML
+  presets/
+    ibm-5170.toml        embedded as preset:ibm-5170
+```
+
+What stays Rust:
+
+- **The test rigs** (`at_boot`, `at_keyboard`, `at_rtc`, `at_vga_text`,
+  `at_fdc_write`, `test386`, `floppy_boot`). They load inline blobs into RAM,
+  start at `Entry` CS:IP with seeded segments, and leave IRQs unwired on
+  purpose. They are harnesses, not machines a user composes. They use
+  `BoardModel::Bare`. A `bare` board model is reserved in case a file ever
+  needs them.
+- **`bios(rom, None)`**, the no-floppy POST machine. Its FDC decodes nothing
+  and it has no 8237, a state that real hardware never has. It stays a rig,
+  so its POST golden is untouched.
+
+### Round-trip and golden tests
+
+- **Round trip without fixtures** (runs in plain `cargo test`):
+  `load("machines/at-freedos.toml")`, with an `ImageReader` that returns a
+  32 KiB and a 1,474,560-byte dummy image and skips the hash check, must equal
+  `assembly::bios(rom, Some(floppy))` for the same bytes.
+- **Syntax equivalence:** for every `machines/**/*.toml` with a `.yaml` twin,
+  both lower to equal configs.
+- **Pinned hashes, fixture-gated** (the existing `fixture()` policy): the real
+  file loads with the pinned hashes (BIOS `1ad458ac…`, FreeDOS image
+  `b7b08833…`, both READ from `vendor/*/README.md`).
+- **Goldens load the files:** the FreeDOS goldens (`freedos_boot`,
+  `dos_interactive`, `dos_write`) obtain their machine from
+  `machines/at-freedos.toml`, and their expectations do not change.
+  `bios_floppy_boot` boots a generated floppy, so it keeps the Rust preset.
+- **Diagnostics:** one test per error class, asserting the file, the position
+  or field path, and the message.
+- **Repository hygiene:** no repository machine file uses an absolute path.
+
+## Examples
+
+### 1. The FreeDOS machine, TOML (`machines/at-freedos.toml`)
+
+```toml
+schema = 1
+name = "at-freedos"
+description = "PC/AT-class machine booting FreeDOS from drive A: with the Xi8088 open BIOS"
+
+[board]
+model = "ibm-5170"
+post_port = 0x80
+
+[board.rtc]
+start = "2000-01-01T00:00:00"
+nvram = "derived"
+
+[cpu]
+model = "80286"
+rate = "1/1"
+
+[memory]
+conventional_kib = 640
+extended_kib = 0
+
+[firmware.bios]
+image = "../vendor/kiselev-bios/bios-xi8088.bin"
+sha256 = "1ad458acb1f22dee6b3d9b6bd95e83218a7ddc5389fa2b2c67a4001e689c81a8"
+provides = ["floppy"]
+
+[[card]]
+kind = "mda"          # the Xi8088 BIOS console; first display card = window default
+
+[[card]]
+kind = "vga-text"
+
+[[card]]
+kind = "uart-16550"
+port = 0x3F8
+irq = "none"          # the reference machine leaves COM1 unwired
+
+[[card]]
+kind = "fdc-765"
+
+[[card.drives]]
+unit = 0
+type = "1.44M"
+image = "../vendor/freedos/freedos.img"
+sha256 = "b7b088333f7f30584d768941fecea8288b63f2d61e13ec6c9472439eda66e51f"
+write = "volatile"
+```
+
+It lowers to the canonical-order `assembly::bios(rom, Some(floppy))`:
+
+- **devices:** `MasterPic`, `SlavePic`, `Pit` (IRQ 0), `Dma` (`0x00–0x0F`,
+  `0x81–0x8F`), `Keyboard` (IRQ 1), `Rtc` (IRQ 8, NVRAM derived), `SysControl`,
+  `Post` (`0x80`), `Mda`, `Vga`, `Uart` (`0x3F8`, no IRQ), `Fdc` (IRQ 6,
+  DMA channel 2).
+- **memory:** 1 MiB address space; RAM `[0, 0xB0000)` and `[0xC0000, 0xF8000)`;
+  MMIO `Mda@0xB0000` and `Vga@0xB8000`, each 32 KiB.
+- **images:** ROM at `0xF8000`, 32 KiB.
+- **drives:** 1.44 MB, `Fdc` unit 0, `Volatile`.
+- **CPU and clock:** 80286, reset `F000:FFF0`, segments `flat(0xF000)`,
+  rate 1/1.
+- **board:** `Ibm5170`.
+
+### 2. The same machine, YAML (`machines/at-freedos.yaml`)
+
+```yaml
+schema: 1
+name: at-freedos
+description: "PC/AT-class machine booting FreeDOS from drive A: with the Xi8088 open BIOS"
+
+board:
+  model: ibm-5170
+  post_port: 0x80
+  rtc:
+    start: "2000-01-01T00:00:00"
+    nvram: derived
+
+cpu:
+  model: "80286"
+  rate: "1/1"
+
+memory:
+  conventional_kib: 640
+  extended_kib: 0
+
+firmware:
+  bios:
+    image: ../vendor/kiselev-bios/bios-xi8088.bin
+    sha256: "1ad458acb1f22dee6b3d9b6bd95e83218a7ddc5389fa2b2c67a4001e689c81a8"
+    provides: [floppy]
+
+card:
+  - kind: mda         # the Xi8088 BIOS console; first display card = window default
+  - kind: vga-text
+  - kind: uart-16550
+    port: 0x3F8
+    irq: none         # the reference machine leaves COM1 unwired
+  - kind: fdc-765
+    drives:
+      - unit: 0
+        type: "1.44M"
+        image: ../vendor/freedos/freedos.img
+        sha256: "b7b088333f7f30584d768941fecea8288b63f2d61e13ec6c9472439eda66e51f"
+        write: volatile
+```
+
+YAML style rules for repository files: quote `description` when it contains
+`": "`, as this one does. Unquoted, both YAML crates fail with "mapping values
+are not allowed in this context" (MEASURED). Quote hashes, the CPU model, drive
+types and dates. TOML's `[[card]]` array of tables is YAML's `card:` list.
+
+All six example files in this section parse: the TOML ones with `toml` 1.2.1,
+the YAML one with `serde-saphyr` 2.1.1. The TOML and YAML FreeDOS files
+produce identical value trees (MEASURED).
+
+### 3. An AT machine with an IDE card (`machines/at-ide.toml`)
+
+```toml
+schema = 1
+name = "at-ide"
+extends = "at-freedos.toml"
+
+[firmware]
+# Hard-disk INT 13h comes from an option ROM. Which XTIDE Universal BIOS
+# build, and its configuration, is decided by the firmware spike.
+option_roms = [
+  { image = "../vendor/xtide/ide_at.bin", base = 0xC8000, provides = ["fixed-disk"] },
+]
+
+[[card]]
+id = "fdc-765"                 # inherited card: only its drive changes
+[[card.drives]]
+unit = 0
+write = "readonly"             # keep the boot floppy pristine
+
+[[card]]
+kind = "ide"                   # 0x1F0-0x1F7 + 0x3F6, IRQ 14 (type defaults)
+
+[[card.drives]]
+channel = "master"
+image = "disks/dos-hd.img"
+geometry = { cylinders = 615, heads = 4, sectors = 17 }
+write = "journal"
+journal = "disks/dos-hd.img.upfj"
+```
+
+Lowering adds `Ide` after `Fdc`, a ROM image at `0xC8000`, and a `HardDisk`
+drive bound to `Ide`, master. The RAM rule then gives `[0, 0xB0000)`,
+`[0xC0000, 0xC8000)` and `[0xCA000, 0xF8000)`, assuming an 8 KiB ROM.
+Without the option ROM, `validate()` fails: "card `ide`: no firmware provides
+"fixed-disk"". ASSUMED: an XTIDE Universal BIOS build drives a 16-bit ATA
+interface at `0x1F0`. The `8088_bios` clone vendored today contains only XT
+builds (`ide_xt*.bin`, `ide_xtp*.bin`, READ). The firmware spike settles this.
+
+### 4. An XT-class file (rejected in schema 1)
+
+```toml
+schema = 1
+name = "xt-5160"
+
+[board]
+model = "ibm-5160"             # one 8259, one 8237, 8255 PPI keyboard, no RTC
+post_port = "none"
+
+[cpu]
+model = "8088"
+
+[memory]
+conventional_kib = 640
+
+[firmware.bios]
+image = "../vendor/xt-bios/bios.rom"   # an open XT BIOS; chosen by the firmware spike
+provides = ["floppy"]
+
+[[card]]
+kind = "mda"
+
+[[card]]
+kind = "fdc-765"
+[[card.drives]]
+unit = 0
+type = "360K"
+image = "disks/dos-360k.img"
+```
+
+Expected result in schema 1 (the board is checked first, then the CPU):
+
+```text
+machines/xt-5160.toml: board model "ibm-5160" is reserved in schema 1: it needs
+the 8255 PPI keyboard interface and an 8088 CPU model, neither of which is
+modelled yet
+```
+
+`[board.rtc]` on this board would be rejected, because an XT board has no RTC.
+A card IRQ of 8–15 would be rejected, because there is no slave PIC.
+
+### 5. A preset (`machines/presets/ibm-5170.toml`, embedded)
+
+```toml
+schema = 1
+name = "ibm-5170"
+description = "Generic PC/AT: board, 80286, 640 KiB, MDA, floppy controller. No firmware or media."
+
+[board]
+model = "ibm-5170"
+
+[cpu]
+model = "80286"
+
+[memory]
+conventional_kib = 640
+
+[[card]]
+kind = "mda"
+
+[[card]]
+kind = "fdc-765"
+```
+
+A user file then needs only its firmware and a drive:
+
+```toml
+schema = 1
+extends = "preset:ibm-5170"
+
+[firmware.bios]
+image = "my-bios.bin"
+provides = ["floppy"]
+
+[[card]]
+id = "fdc-765"
+[[card.drives]]
+unit = 0
+type = "1.44M"
+image = "dos.img"
+```
+
+## Reserved names
+
+These names parse in schema 1 and are then rejected as "reserved, not
+implemented". The firmware spike owns the board-model and firmware entries.
+
+| Where | Reserved |
+|---|---|
+| top level | `run`, `presentation`, `streams` (rejected with "belongs outside the machine file") |
+| `[board] model` | `ibm-5160`, `ibm-5150`, `bare`, `compaq-deskpro`, `tandy-1000`, `i440fx-piix3`, `i440bx-piix4` |
+| `[board]` | `a20 = "kbc" \| "port-92" \| "both"`, `kbc = "at" \| "ps2"`, `keyboard = "xt-83" \| "at-84" \| "mf2-101"`, `keyboard_layout`, `dip_switches` (XT), `chipset` (a table of chipset registers), `speaker` |
+| `[board.rtc]` | `start = "host"` (rejected: this is the run option `--rtc-start host`) |
+| `[cpu] model` | `8086`, `8088`, `v20`, `80386sx`, `80386dx`, `80486`, `pentium`, `pentium-ii`, `pentium-iii` |
+| `[cpu]` | `fpu = "none" \| "8087" \| "80287" \| "80387"`, `turbo = { rate, initial = "on" \| "off" }` |
+| `[memory]` | `shadow`, `umb`, `upper = "ram" \| "open-bus"` |
+| `[firmware]` | `basic = { image, base }` (ROM BASIC); `provides` values `video`, `serial`, `network-boot` |
+| `[[card]] kind`, video | `hercules`, `cga`, `ega`, `vga`, `svga-et4000`, `svga-s3-trio64`, `voodoo`, `voodoo2`, `banshee` |
+| `[[card]] kind`, sound | `adlib`, `sb1`, `sb2`, `sbpro`, `sb16`, `gus`, `mpu-401`, `covox` |
+| `[[card]] kind`, disks | `xt-mfm`, `xt-rll`, `xt-ide`, `xt-cf-lite` |
+| `[[card]] kind`, ports and others | `lpt`, `game-port`, `bus-mouse`, `ems`, `ne2000` |
+| `[[card]]` fields | `monitor = "green" \| "amber" \| "white" \| "color"` (display cards), `rom = { image, base }` (a card-owned ROM), `mmio` (relocation) |
+| drives | `type = "2.88M"`, `media = "none"` (an empty drive), `image = "blank"`, `geometry = "auto"`, `type = "atapi-cdrom"` on `ide` |
+| `fdc-765` | `port = 0x370` (secondary controller) |
+| separate file | a run file (`*.run.toml`, `[run]`) for RunPolicy, and a presentation file |
+| rejected forever | `mhz`, `frequency`, `clock_hz`, `cycles`, `cycle_exact`, `wait_states`, `bus_mhz`, `memory_wait_states`, `timing` |
+
+## Open questions for the maintainer
+
+1. **MSRV.** `serde-saphyr` needs rustc 1.89; the workspace declares 1.88.
+   Land YAML after the x86jit re-pin (x86jit `main` is at 1.95), or let
+   `crates/machine-file` declare 1.89?
+2. **Device order.** Accept rewriting the `bios` preset into canonical order
+   (bead 1, guarded by the slow goldens)? The alternative is a board model that
+   encodes today's interleaved order, which is harder to explain.
+3. **Default write mode.** This document uses `volatile`, as
+   `persistent-media.md` does. Should `write` be required instead, so every
+   drive states its persistence?
+4. **Journal path base.** In machine files every path, including `journal`,
+   is relative to the file. The `persistent-media.md` draft says relative to
+   the process working directory. One rule should win.
+5. **Card identity.** Is a card `id` that defaults to its kind acceptable,
+   with a second card of the same kind rejected until `DeviceId` gains
+   instance ids?
+6. **Window display.** Show the first display card in file order by default,
+   or require `--display`?
+7. **For the firmware spike:** the `provides` vocabulary; whether known ROMs
+   are recognised by `sha256`; the XTIDE build for `ide`; the list of board
+   models.
+
+## Decision proposal
+
+> **decision-17: machine description files.** A machine is described by a
+> versioned file (`schema = 1`) in TOML or YAML. Both syntaxes deserialize
+> into one serde data model, using `toml` and `serde-saphyr`, in a
+> `machine-file` crate above `assembly`. The file describes hardware only:
+> `[board].model` supplies the motherboard devices and wiring, and every ISA
+> device is a `[[card]]` with default resources that the file can override.
+> `[cpu]`, `[memory]` and `[firmware]` (with `provides`) complete the machine,
+> and drives nest under their controller card with a `write` mode of
+> `volatile`, `readonly` or `journal`. RunPolicy, presentation and host-stream
+> bindings stay outside the file. Paths are relative to the file that names
+> them, and images may pin `sha256`. `extends` inherits from a file or from an
+> embedded preset, merging tables field by field and cards by `id`. Unknown
+> fields are errors, and cycle-exact timing fields are rejected with an
+> explanation. A file lowers to a `MachineConfig` that passes through the
+> existing `validate()`, with no second validation path. Images are read once,
+> hashed and inlined. Additive hardware stays schema 1, and only a breaking
+> change bumps the schema, with a migration function per version. Schema 1
+> implements today's machine plus IDE, the floppy journal, NVRAM and the RTC
+> start; every other name in the reserved list is fixed now and rejected until
+> implemented. Rust test rigs remain Rust presets on a `Bare` board.
+
+## Implementation beads
+
+Ordered; each bead is narrow and lands green.
+
+1. **Canonical device order in the `bios` preset.** Reorder `assembly::bios`
+   devices to board order then cards (`mda, vga, uart, fdc`), and sort its
+   MMIO by base.
+   *Accept:* `cargo test --workspace` and `-- --ignored` (slow goldens) pass
+   unchanged. machine-config.md states the order rule. If any golden changes,
+   stop and report the dependency instead of re-blessing.
+   *Depends on:* none.
+2. **Board model and drive binding in the model (M1, M3 without journal,
+   M4).** Add `MachineConfig.board` (`Ibm5170`, `Bare`),
+   `DriveConfig { controller, unit, write: Volatile | ReadOnly }`, and
+   board-dependent IRQ and DMA checks in `validate()`, all presets updated.
+   *Accept:* every golden is unchanged, and each new `ConfigError` variant has
+   a unit test.
+   *Depends on:* 1.
+3. **Firmware `provides`, RTC start and NVRAM source (M6, M7 without
+   journal).**
+   *Accept:* the default start and `Derived` NVRAM leave every RTC register
+   and NVRAM byte unchanged (goldens unchanged). A unit test reads back a
+   non-default start through ports `0x70`/`0x71`. A 64-byte NVRAM image is
+   loaded verbatim. The provides rules are unit-tested.
+   *Depends on:* 2.
+4. **`machine-file` crate: schema 1 types and TOML parsing.** Peek `schema`,
+   use flat card and drive structs, two-form visitors, cycle-exact rejection
+   fields, reserved names, `toml` 1.x, and errors prefixed with the file path.
+   *Accept:* one positioned-error test each for: unknown field, wrong type,
+   unknown kind, reserved kind, a cycle-exact field, `schema = 2`, missing
+   `schema`, and a `run` table. `cargo deny check` passes.
+   *Depends on:* 2.
+5. **Lowering to `MachineConfig`.** `ibm-5170` expansion, card type defaults
+   and overrides (with the per-kind table), the RAM rule, per-file path
+   resolution, `ImageReader` with `sha2`, `Inline` images, the origin table,
+   and `validate()`. Add `machines/at-freedos.toml`.
+   *Accept:* the fixture-free round trip equals `assembly::bios(…)`.
+   Fixture-gated: the real file loads with the pinned hashes. A `sha256`
+   mismatch prints both hashes. A `validate()` failure prints the card id and
+   the file.
+   *Depends on:* 1, 3, 4.
+6. **YAML syntax.** `serde-saphyr` (strict booleans, duplicate-key error,
+   budget, one document), `machines/at-freedos.yaml`.
+   *Accept:* the TOML/YAML twin equality test passes. The YAML error tests
+   mirror bead 4's. `cargo deny check` passes. The MSRV question (open
+   question 1) is resolved in the same change.
+   *Depends on:* 5.
+7. **`extends` and presets.** Layering, merge rules, cycle and depth errors,
+   `preset:` names embedded from `machines/presets/`, the completeness check,
+   and `machines/presets/ibm-5170.toml`.
+   *Accept:* a unit test per merge-table row. A cycle error prints the chain.
+   YAML extends TOML. A preset containing a path fails. A file extending the
+   preset lowers equal to `at-freedos.toml`.
+   *Depends on:* 5 (6 for the cross-syntax test).
+8. **Frontends and goldens load files.** The window's `--machine` and
+   `--display`; the CLI's `machine check` and `run --machine`; the FreeDOS
+   goldens obtain their machine from `machines/at-freedos.toml`. Update
+   machine-config.md (non-goal removed), commands.md and status.md.
+   *Accept:* the slow goldens are unchanged, the window boots FreeDOS from the
+   file, `machine check` exit codes are tested, and no repository machine file
+   has an absolute path.
+   *Depends on:* 6, 7.
+9. **Journal write mode in files.** Add `write = "journal"`, `journal` and
+   `keep_generations` on floppy drives and NVRAM, mapped to
+   `WriteMode::Journal`.
+   *Accept:* a file-loaded machine journals guest writes and a reload replays
+   them. A fixture image is never journaled implicitly. Goldens stay volatile.
+   *Depends on:* the persistent-media implementation beads, and 5.
+10. **IDE card kind and device (M5).** `DeviceKind::Ide`, the ATA PIO
+    register device with isolation tests on a mock bus, channel binding, the
+    `0x3F6` overlap window, `machines/at-ide.toml`.
+    *Accept:* device unit tests pass. `validate()` rejects an IDE card without
+    a `fixed-disk` provider. A golden boots from a hard-disk image once the
+    firmware spike names the option ROM.
+    *Depends on:* 2, 3, 5, and the firmware decision.
+11. **M8 (optional): `OutputConfig` out of `MachineConfig`.**
+    *Accept:* sink selection moves to the observation setup, and goldens are
+    unchanged.
+    *Depends on:* 8.
