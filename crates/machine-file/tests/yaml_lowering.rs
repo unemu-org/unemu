@@ -397,8 +397,9 @@ fn symlink_image_errors_show_spelled_and_resolved_paths() {
     assert_eq!(
         error.message,
         format!(
-            "sha256 mismatch for {description}: expected {pin}, actual {:x}",
-            Sha256::digest(&rom)
+            "sha256 mismatch for {description}: expected {pin}, actual {:x}; pin set at {}:6",
+            Sha256::digest(&rom),
+            alias.display()
         )
     );
 }

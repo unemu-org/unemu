@@ -712,7 +712,7 @@ pub fn lower<R: ImageReader>(
     if document.extends.is_some() {
         return Err(context.error(
             "extends",
-            "extends resolution is not implemented yet; lower a complete document",
+            "unresolved extends; call resolve before lowering",
         ));
     }
     let mut card_ids = BTreeMap::new();

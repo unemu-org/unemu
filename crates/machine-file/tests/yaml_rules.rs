@@ -5,6 +5,7 @@ use machine_file::{
     parse_yaml,
     schema::v1::{CpuModel, NumberOrNone},
 };
+use std::path::Path;
 
 fn rejected(input: &str, message: &str) {
     let error = parse_yaml("machine.yaml", input).unwrap_err();
@@ -71,15 +72,21 @@ fn anchor_count_is_bounded() {
 }
 
 #[test]
-fn parser_event_depth_and_scalar_budgets_are_enforced() {
+fn parser_event_depth_and_file_budgets_are_enforced() {
     let cards = "  - {kind: mda}\n".repeat(4000);
     rejected(&format!("schema: 1\ncard:\n{cards}"), "budget");
     let nested = format!("{}0{}", "[".repeat(40), "]".repeat(40));
     rejected(&format!("schema: 1\nfuture: {nested}\n"), "depth");
-    rejected(
+    let error = parse_yaml(
+        "machine.yaml",
         &format!("schema: 1\nname: {}\n", "x".repeat(1_048_577)),
-        "scalar",
+    )
+    .unwrap_err();
+    assert_eq!(
+        error.message(),
+        "machine file exceeds size limit of 1048576 bytes"
     );
+    assert_eq!(error.path(), Path::new("machine.yaml"));
 }
 
 #[test]

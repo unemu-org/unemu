@@ -2,7 +2,7 @@
 //! Format-neutral field origins for machine-file diagnostics.
 //!
 //! See `backlog/docs/design/machine-files.md` § Errors. Table positions are
-//! sufficient to identify a card or image without coupling lowering to TOML.
+//! supplemented by per-value origins when resolving inheritance.
 
 use std::{
     collections::BTreeMap,
@@ -31,12 +31,13 @@ impl fmt::Display for Origin {
     }
 }
 
-/// A small field-to-source table, also usable by a future layer merger.
+/// Field sources and canonical image bases retained across layer merges.
 #[derive(Clone, Debug)]
 pub struct Origins {
     document: Origin,
     image_file: PathBuf,
     fields: BTreeMap<String, Origin>,
+    image_files: BTreeMap<PathBuf, PathBuf>,
 }
 
 impl Origins {
@@ -47,21 +48,88 @@ impl Origins {
             image_file: file.clone(),
             document: Origin { file, line: None },
             fields: BTreeMap::new(),
+            image_files: BTreeMap::new(),
         }
     }
 
     pub(crate) fn set_image_file(&mut self, file: PathBuf) {
+        self.image_files
+            .insert(self.document.file.clone(), file.clone());
         self.image_file = file;
     }
 
     pub(crate) fn image_path(&self, field: &str, image: &str) -> PathBuf {
         let origin = self.get(field);
-        let file = if origin.file == self.document.file {
+        let file = if let Some(file) = self.image_files.get(&origin.file) {
+            file
+        } else if origin.file == self.document.file {
             &self.image_file
         } else {
             &origin.file
         };
         file.parent().unwrap_or(Path::new(".")).join(image)
+    }
+
+    pub(crate) fn use_document(&mut self, child: &Self) {
+        self.document = child.document.clone();
+        self.image_file = child.image_file.clone();
+        self.image_files.extend(child.image_files.clone());
+    }
+
+    pub(crate) fn has_field(&self, field: &str) -> bool {
+        self.fields.contains_key(field)
+    }
+
+    pub(crate) fn remove_subtree(&mut self, prefix: &str) {
+        let keys = self
+            .fields
+            .range(prefix.to_owned()..)
+            .take_while(|(key, _)| within(key, prefix))
+            .map(|(key, _)| key.clone())
+            .collect::<Vec<_>>();
+        for key in keys {
+            self.fields.remove(&key);
+        }
+    }
+
+    pub(crate) fn copy_subtree(&mut self, source: &Self, from: &str, to: &str) {
+        self.remove_subtree(to);
+        self.insert(to, source.get(from).clone());
+        for (key, origin) in source
+            .fields
+            .range(from.to_owned()..)
+            .take_while(|(key, _)| within(key, from))
+        {
+            self.insert(format!("{to}{}", &key[from.len()..]), origin.clone());
+        }
+    }
+
+    pub(crate) fn remap_entries(&mut self, prefix: &str, indices: &[Option<usize>]) {
+        let prefix = format!("{prefix}[");
+        let entries = self
+            .fields
+            .range(prefix.clone()..)
+            .take_while(|(key, _)| key.starts_with(&prefix))
+            .map(|(key, origin)| (key.clone(), origin.clone()))
+            .collect::<Vec<_>>();
+        for (key, _) in &entries {
+            self.fields.remove(key);
+        }
+        for (key, origin) in entries {
+            let tail = &key[prefix.len()..];
+            let Some((index, suffix)) = tail.split_once(']') else {
+                continue;
+            };
+            if let Some(new_index) = index
+                .parse::<usize>()
+                .ok()
+                .and_then(|index| indices.get(index))
+                .copied()
+                .flatten()
+            {
+                self.insert(format!("{prefix}{new_index}]{suffix}"), origin);
+            }
+        }
     }
 
     /// Record a defining source, including a different file for inherited fields.
@@ -71,16 +139,27 @@ impl Origins {
 
     /// Look up the closest containing field, falling back to the document.
     pub fn get(&self, field: &str) -> &Origin {
-        self.fields
-            .iter()
-            .filter(|(key, _)| {
-                field == key.as_str()
-                    || field
-                        .strip_prefix(key.as_str())
-                        .is_some_and(|tail| tail.starts_with('.') || tail.starts_with('['))
-            })
-            .max_by_key(|(key, _)| key.len())
-            .map_or(&self.document, |(_, origin)| origin)
+        let mut end = field.len();
+        loop {
+            if let Some(origin) = self.fields.get(&field[..end]) {
+                return origin;
+            }
+            let Some(parent) = field[..end].rfind(['.', '[']) else {
+                return &self.document;
+            };
+            end = parent;
+        }
+    }
+
+    fn record_pins(&mut self, input: &str, yaml: bool) -> Result<(), ParseError> {
+        let mut values = Self::new(self.document.file.clone());
+        crate::source::record(&self.document.file, input, yaml, &mut values)?;
+        for (field, origin) in values.fields {
+            if field.ends_with(".sha256") {
+                self.insert(field, origin);
+            }
+        }
+        Ok(())
     }
 
     /// Retain TOML table spans separately from the format-independent schema.
@@ -112,13 +191,14 @@ impl Origins {
         let mut origins = Self::new(file);
         let tables: Tables = toml::from_str(input)
             .map_err(|error| ParseError::from_toml(&origins.document.file, input, error))?;
+        let lines = crate::source::LineIndex::new(input);
         let mut record = |field: String, start: usize| {
             let start = start + input[start..].len() - input[start..].trim_start().len();
             origins.insert(
                 field,
                 Origin {
                     file: origins.document.file.clone(),
-                    line: Some(input[..start].bytes().filter(|&b| b == b'\n').count() + 1),
+                    line: Some(lines.line(start)),
                 },
             );
         };
@@ -153,6 +233,7 @@ impl Origins {
                 );
             }
         }
+        origins.record_pins(input, false)?;
         Ok(origins)
     }
 
@@ -251,6 +332,14 @@ impl Origins {
                 );
             }
         }
+        origins.record_pins(input, true)?;
         Ok(origins)
     }
+}
+
+fn within(key: &str, prefix: &str) -> bool {
+    key == prefix
+        || key
+            .strip_prefix(prefix)
+            .is_some_and(|tail| tail.starts_with('.') || tail.starts_with('['))
 }

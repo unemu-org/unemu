@@ -201,20 +201,21 @@ fn changed_kiselev_bios_reports_pin_origin_and_defers_catalogue_rejection_to_ass
         panic!("image pin must fail during lowering");
     };
     assert_eq!(error.origin.file, path);
-    assert_eq!(error.origin.line, Some(4));
+    assert_eq!(error.origin.line, Some(5));
     assert_eq!(error.field, "firmware.bios.image");
     assert!(error.validation.is_none());
     assert_eq!(
         error.message,
         format!(
-            "sha256 mismatch for {}: expected {pin}, actual {actual}",
-            image.display()
+            "sha256 mismatch for {}: expected {pin}, actual {actual}; pin set at {}:6",
+            image.display(),
+            path.display()
         )
     );
     assert_eq!(
         error.to_string(),
         format!(
-            "{}:4: firmware.bios.image: {}",
+            "{}:5: firmware.bios.image: {}",
             path.display(),
             error.message
         )
@@ -1004,8 +1005,9 @@ fn symlink_image_errors_show_the_spelled_and_resolved_paths() {
     assert_eq!(
         error.message,
         format!(
-            "sha256 mismatch for {description}: expected {pin}, actual {:x}",
-            Sha256::digest(&rom)
+            "sha256 mismatch for {description}: expected {pin}, actual {:x}; pin set at {}:6",
+            Sha256::digest(&rom),
+            alias.display()
         )
     );
 }

@@ -3,28 +3,47 @@
 //!
 //! TOML and YAML are decoded into schema-versioned layers described in
 //! `backlog/docs/design/machine-files.md` § Schema and § Versioning, extends
-//! and errors. Omitted fields remain omitted so a later merger can distinguish
+//! and errors. Omitted fields remain omitted so the merger can distinguish
 //! inheritance from explicit overrides. Recognised reserved names and
 //! cycle-exact timing requests receive positioned diagnostics.
 //!
 //! Complete documents lower to `assembly::MachineConfig` with board/card
 //! defaults and images read once, checked with SHA-256 and retained inline.
-//! Assembly owns hardware validation. `extends` remains unsupported.
+//! Assembly owns hardware validation. Inheritance resolves before lowering.
 //! This crate does not model hardware registers.
 
 use std::{fmt, ops::Range, path::Path, path::PathBuf};
 
 use serde::Deserialize;
 
+mod integrity;
 mod lower;
 mod origin;
+mod resolve;
 pub mod schema;
+mod source;
 mod yaml;
 
-pub use lower::{lower, FileImageReader, ImageReader, LowerError};
+pub use integrity::lower;
+pub use lower::{FileImageReader, ImageReader, LowerError};
 pub use origin::{Origin, Origins};
+pub use resolve::resolve;
 
 pub use schema::v1::MachineFile;
+
+pub(crate) const MAX_MACHINE_FILE_BYTES: usize = 1_048_576;
+
+pub(crate) fn check_size(path: &Path, length: usize) -> Result<(), ParseError> {
+    if length > MAX_MACHINE_FILE_BYTES {
+        return Err(ParseError::new(
+            path,
+            None,
+            "machine file exceeds size limit of 1048576 bytes",
+            None,
+        ));
+    }
+    Ok(())
+}
 
 /// A format-neutral diagnostic with optional source position and snippet.
 #[derive(Debug, thiserror::Error)]
@@ -143,6 +162,7 @@ impl fmt::Display for ParseError {
 /// The version peek intentionally ignores other fields, so a newer schema is
 /// diagnosed before its fields are interpreted using the current schema.
 pub fn parse_toml(path: impl AsRef<Path>, input: &str) -> Result<MachineFile, ParseError> {
+    check_size(path.as_ref(), input.len())?;
     #[derive(Deserialize)]
     struct SchemaPeek {
         schema: schema::v1::SchemaVersion,
@@ -185,41 +205,6 @@ pub fn load_with_reader<R: ImageReader>(
     path: impl AsRef<Path>,
     reader: &mut R,
 ) -> Result<assembly::MachineConfig, LoadError> {
-    let path = path.as_ref();
-    let yaml = match path.extension().and_then(|extension| extension.to_str()) {
-        Some("toml") => false,
-        Some("yaml" | "yml") => true,
-        _ => {
-            return Err(ParseError::new(
-                path,
-                None,
-                "expected a machine file with extension .toml, .yaml or .yml",
-                None,
-            )
-            .into())
-        }
-    };
-    let image_file = std::fs::canonicalize(path).map_err(|error| {
-        ParseError::new(
-            path,
-            None,
-            format!("cannot resolve machine file: {error}"),
-            None,
-        )
-    })?;
-    let input = std::fs::read_to_string(path).map_err(|error| {
-        ParseError::new(
-            path,
-            None,
-            format!("cannot read machine file: {error}"),
-            None,
-        )
-    })?;
-    let (document, mut origins) = if yaml {
-        yaml::parse(path, &input)?
-    } else {
-        (parse_toml(path, &input)?, Origins::from_toml(path, &input)?)
-    };
-    origins.set_image_file(image_file);
+    let (document, origins) = resolve(path)?;
     Ok(lower(&document, &origins, reader)?)
 }

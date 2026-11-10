@@ -1,0 +1,29 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+schema = 1
+name = "ibm-5170"
+description = "Generic PC/AT: 80286, 640 KiB, MDA, VGA text, COM1 and floppy controller. No images."
+
+[board]
+model = "ibm-5170"
+
+[cpu]
+model = "80286"
+
+[memory]
+conventional_kib = 640
+
+[firmware.bios]
+provides = ["floppy"]
+
+[[card]]
+kind = "mda"
+
+[[card]]
+kind = "vga-text"
+
+[[card]]
+kind = "uart-16550"
+irq = "none"
+
+[[card]]
+kind = "fdc-765"

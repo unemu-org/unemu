@@ -401,6 +401,7 @@ fn diagnostic_at(
 }
 
 pub(crate) fn parse(file: &Path, input: &str) -> Result<(MachineFile, Origins), ParseError> {
+    crate::check_size(file, input.len())?;
     #[derive(Deserialize)]
     struct SchemaPeek {
         schema: SchemaVersion,

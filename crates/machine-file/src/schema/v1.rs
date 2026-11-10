@@ -3,7 +3,7 @@
 //!
 //! See `backlog/docs/design/machine-files.md` § Schema. Flat card and drive
 //! tables preserve TOML error positions; kind-specific checks belong to lowering.
-//! Optional fields preserve override intent for a future `extends` merger.
+//! Optional fields preserve override intent until the `extends` merge.
 
 mod values;
 pub use values::*;

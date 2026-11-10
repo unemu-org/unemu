@@ -2,10 +2,11 @@
 
 Status: **accepted** (decision-17). Schema 1 TOML and YAML parsing and lowering
 to an assembly-validated `MachineConfig` are implemented in `crates/machine-file`.
-`extends` and journal attachment are still to come. IDE PIO channels and
-volatile/readonly hard disks are implemented. NVRAM images
-currently support volatile writes only; readonly is rejected until assembly
-can represent it.
+`extends` and embedded presets are implemented, including per-value origins,
+per-layer image directories and completeness checks. IDE PIO channels and
+volatile/readonly hard disks are implemented. Journal attachment is still to
+come. NVRAM images currently support volatile writes only; readonly is rejected
+until assembly can represent it.
 Drive-indexed assembly diagnostics, including journal configuration errors, map
 to the drive's source origin and unit label while preserving the message suffix.
 Journal errors are mapped exhaustively even though lowering currently rejects
@@ -167,6 +168,12 @@ the owning `DeviceId`; lowering derives the windows from the card kinds.
 - **Keys** are `snake_case`. **Enumerated values** are `kebab-case` strings.
   **Integers** may be decimal or hexadecimal (`0x3F8`); both syntaxes accept
   hex (MEASURED, all three crates in [Crates](#crates)).
+- **Size limit:** each file, including parents and embedded preset sources,
+  is at most 1 MiB (1,048,576 bytes), inclusive. File reads are bounded to
+  limit + 1 bytes; in-memory TOML/YAML parsing enforces the same limit before
+  decoding. Larger inputs fail with the path and exact message
+  "machine file exceeds size limit of 1048576 bytes". YAML's event, alias and
+  nesting budgets remain additional limits.
 - **Strictness:** every table rejects unknown fields (`deny_unknown_fields`).
 - **No location-losing serde shapes:** no `#[serde(flatten)]`, no internally
   tagged enums, no untagged enums in the document types. With an internally
@@ -180,10 +187,10 @@ the owning `DeviceId`; lowering derives the windows from the card kinds.
   and in both YAML crates (MEASURED).
 - **Paths** are strings with `/` separators, resolved against the directory of
   the file that contains them. The loader canonicalizes the machine file path
-  only to find the image directory: when it is a symlink, relative images use
-  the target file's directory. Diagnostics preserve the path supplied by the
-  caller, including relative components and symlink spellings. Absolute image
-  paths are accepted. Repository files must use relative paths (bead 7 tests this).
+  to find the layer directory: when it is a symlink, relative images and
+  relative `extends` paths use the target file's directory. Diagnostics preserve
+  the path supplied by the caller, including relative components and symlink spellings. Absolute image
+  paths are accepted. Repository files must use relative paths.
 - **Lowering principle:** lowering rejects only what `MachineConfig` cannot
   represent: unsupported values and fields a card kind does not accept.
   Reserved names are recognised and rejected during parsing. Every rule about
@@ -579,13 +586,17 @@ transitively) and `sha2` 0.11.1 (MIT OR Apache-2.0, MSRV 1.88, READ) for
   `machines/presets/`, embedded with `include_str!`. Presets carry hardware
   shape only: a path in a preset is a build-time test failure, because an
   embedded file has no directory to resolve against.
-- **Syntax is per file:** a YAML file may extend a TOML file.
+- **Syntax is per file:** a YAML file may extend a TOML file and vice versa.
 - **Path resolution happens per layer, before merging.** Every path is made
   absolute against the directory of the file that wrote it. A child that
   overrides `image` resolves it against the child's directory.
-- **Chain limits:** depth at most 8. Cycles are detected on canonical paths and
+- **Chain limits:** depth at most 8 layers, including the entry file and any
+  preset. Cycles are detected on canonical paths and
   preset names, and the error prints the chain
-  (`a.toml → b.yaml → a.toml`).
+  (`a.toml → b.yaml → a.toml`). Cycle and completeness chains use the
+  caller's spelling for the entry and exactly the string in each declaring
+  `extends` line for every parent.
+  Filesystem identities and diagnostic spellings are tracked separately.
 - **Merge rules** (the child is applied over the parent):
 
   | Item | Rule |
@@ -602,6 +613,68 @@ transitively) and `sha2` 0.11.1 (MIT OR Apache-2.0, MSRV 1.88, READ) for
 - **Completeness is checked after the merge.** A preset may lack
   `[firmware]` or drive images. The final machine must have every required
   field, and the error names the field path and the files of the chain.
+
+Implementation choices where the original merge table left details open:
+
+- Parent file names must be relative; absolute `extends` paths are rejected.
+  The canonical directory of the declaring layer is the base, including when
+  that layer is a symlink. The joined parent spelling (including `..`) is
+  retained in per-value origins; these use the layer's I/O path and may
+  include absolute joined prefixes and `..`. The entry's origins preserve
+  the caller's path. Cycle and completeness chains instead keep the written
+  names. Canonical paths are used only for identity and image bases. Each
+  layer still selects syntax by its spelled extension.
+- `remove` is a directive, consumed before lowering. Its presence, including
+  `remove = false`, requires `extends`; false performs a normal merge.
+  A true card tombstone accepts only `id` and `remove`; a drive tombstone
+  accepts only its key and `remove`. Deleting an unknown inherited key fails.
+- Repeated effective card ids or drive keys within one layer are errors,
+  with the first definition's origin. A drive cannot state both `unit` and
+  `channel`. Empty keyed card/drive arrays perform no edits; clearing inherited
+  entries requires tombstones. New entries require their own identity and a
+  new card requires `kind` in its defining layer.
+- NVRAM image tables of the same form and drive CHS geometry tables merge
+  recursively. Changing NVRAM form replaces the entire value. `image` and
+  `sha256` form one override unit: setting `image` replaces the pin with the
+  child's `sha256`, or clears it if omitted. Setting only `sha256` re-pins the
+  inherited image. This applies to BIOS, option ROM, NVRAM and drive images;
+  option ROM arrays still replace whole, so their entries restate image/base.
+  A mismatch names the pin's defining file and line, even when the image path
+  comes from a different layer.
+- Merged scalar origins identify the value's line; table-level diagnostics
+  identify the latest layer that edited that table. Inherited values keep
+  their original file and line even when cards or drives move after removal.
+  Image-directory provenance is separate from diagnostic spelling, so an
+  inherited symlinked file still resolves images in its canonical directory.
+- Completeness runs once, after the entire chain, before any image reads. It
+  lists all missing required field paths with their closest source origins,
+  followed by the root-first inheritance chain. Board defaults make `cpu`
+  and `memory` optional. The check covers BIOS, option ROM and NVRAM images,
+  option ROM bases, floppy keys/types/images, IDE channels/CHS/images and a
+  UART IRQ when no port default exists. Hardware consistency remains solely
+  assembly's responsibility.
+
+The embedded `ibm-5170` preset supplies the four reference cards in canonical
+order (MDA, VGA text, unwired UART, FDC), and BIOS `provides = ["floppy"]`
+without an image. This preserves the exact FreeDOS device order when only
+images are added. Preset files may inherit other presets but may contain no
+file paths, including `extends` file references and journal paths. Registration
+and the absence of paths are checked by unit tests; loading checks paths too.
+
+`machine_file::resolve` returns the complete typed document and its origins
+without reading images. `load` uses it before lowering; `parse_toml` and
+`parse_yaml` continue to parse single, potentially incomplete layers. The
+caller's argument to `resolve`/`load` is always a filesystem path, even if its
+name begins with `preset:`. That prefix is interpreted only in `extends`;
+there is no implicit direct-preset entry point. A future frontend that needs
+one must use a separate explicit API.
+
+An existing parent that cannot be opened or read, uses an unsupported file
+extension, or exceeds the size limit is reported at the child's `extends`
+file and line, followed by the parent path and cause. Source
+positions use a precomputed line-start index and ancestor-key lookups. Card
+and drive edits keep stable slots and compact/reindex their origins once per
+layer, rather than shifting every later entry after each removal.
 
 ### Errors
 
@@ -627,10 +700,10 @@ Every error starts with the file path. There are three classes:
    machines/at-ide.toml:6: card[ide]: device Ide needs firmware service fixed-disk; no ROM provides it
    ```
 
-The TOML and YAML loaders keep table-level source positions in a separate,
-format-neutral origin table. Lowering and validation diagnostics name the defining file and
-table line, with card ids and drive units where applicable. The table can also
-retain per-field origins from different files for a future inheritance merger.
+The TOML and YAML loaders keep table and per-value source positions in a
+separate, format-neutral origin table. Lowering and validation diagnostics name
+the defining file and source line, with card ids and drive units where applicable.
+The merger retains per-field origins from each defining layer.
 Programmatically constructed documents may omit positions. A diagnostic such
 as `card #1.kind` uses a zero-based table index when neither an explicit id nor
 a kind names the card: `card #1` is the second `[[card]]` table. In contrast,
@@ -702,6 +775,7 @@ Repository layout:
 machines/
   at-freedos.toml        the FreeDOS machine (TOML)
   at-freedos.yaml        the same machine in YAML
+  at-freedos-from-preset.toml  the same configuration via an embedded preset
   presets/
     ibm-5170.toml        embedded as preset:ibm-5170
 ```
@@ -948,7 +1022,7 @@ A card IRQ of 8–15 would be rejected, because there is no slave PIC.
 ```toml
 schema = 1
 name = "ibm-5170"
-description = "Generic PC/AT: board, 80286, 640 KiB, MDA, floppy controller. No firmware or media."
+description = "Generic PC/AT: 80286, 640 KiB, MDA, VGA text, COM1 and floppy controller. No images."
 
 [board]
 model = "ibm-5170"
@@ -959,8 +1033,18 @@ model = "80286"
 [memory]
 conventional_kib = 640
 
+[firmware.bios]
+provides = ["floppy"]
+
 [[card]]
 kind = "mda"
+
+[[card]]
+kind = "vga-text"
+
+[[card]]
+kind = "uart-16550"
+irq = "none"
 
 [[card]]
 kind = "fdc-765"
@@ -983,6 +1067,10 @@ unit = 0
 type = "1.44M"
 image = "dos.img"
 ```
+
+`machines/at-freedos-from-preset.toml` follows this form with the same pinned
+BIOS and floppy paths as `at-freedos.toml`. Both fixture-free and fixture-required
+tests compare their complete lowered configurations, including device order.
 
 ## Reserved names
 
