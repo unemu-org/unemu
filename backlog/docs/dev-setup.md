@@ -44,7 +44,9 @@ git config user.signingkey <key-id>
 ## Stack-specific toolchain (Rust)
 
 The `flake.nix` devShell provides the Rust toolchain (`rustc`, `cargo`, `clippy`,
-`rustfmt`, `rust-analyzer`), plus `nasm` + `binutils` (guest test-ROM builds),
+`rustfmt`, `rust-analyzer`, `rust-src`) as the latest stable release from the
+`rust-overlay` input — upstream binaries, so a Rust update never rebuilds the
+rest of nixpkgs — plus `nasm` + `binutils` (guest test-ROM builds),
 `qemu` (optional differential oracle), and `jq` (fetching the SingleStepTests
 corpus). Enter with `nix develop` or let direnv auto-load it.
 
@@ -122,5 +124,8 @@ backup.
 
 ### MSRV
 
-Track x86jit's MSRV (the `rust-version` in its workspace `Cargo.toml`). The Nix `rustc` should satisfy it; if you
-pin a channel later, add a `rust-toolchain.toml` and record the decision.
+The workspace follows the latest stable Rust (decision-17): `rust-version` in
+`[workspace.package]` equals the devShell's `rustc`. To move to a newer release,
+run `nix flake update rust-overlay`, set `rust-version` to the new `rustc
+--version`, fix any new clippy lints, and run the full gate including the slow
+goldens. The toolchain must also satisfy x86jit's own `rust-version`.

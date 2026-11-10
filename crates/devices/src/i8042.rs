@@ -804,13 +804,14 @@ impl Device for I8042 {
                 reason: "queue length mismatch",
             });
         }
-        if body.chunks_exact(2).any(|pair| pair[1] > 1) {
+        let (pairs, _) = body.as_chunks::<2>();
+        if pairs.iter().any(|&[_, tag]| tag > 1) {
             return Err(DeviceError::InvalidSnapshot {
                 device: NAME,
                 reason: "invalid keyboard byte tag",
             });
         }
-        let queued_replies = body.chunks_exact(2).filter(|pair| pair[1] != 0).count();
+        let queued_replies = pairs.iter().filter(|&&[_, tag]| tag != 0).count();
         if queued_replies > KEYBOARD_REPLY_CAPACITY {
             return Err(DeviceError::InvalidSnapshot {
                 device: NAME,
@@ -827,11 +828,11 @@ impl Device for I8042 {
         self.last_was_command = flags & (1 << 2) != 0;
         self.expect = expect;
         self.source = source;
-        self.input_queue = body
-            .chunks_exact(2)
-            .map(|pair| KeyboardByte {
-                value: pair[0],
-                is_reply: pair[1] != 0,
+        self.input_queue = pairs
+            .iter()
+            .map(|&[value, tag]| KeyboardByte {
+                value,
+                is_reply: tag != 0,
             })
             .collect();
         self.queued_replies = queued_replies;

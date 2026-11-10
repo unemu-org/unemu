@@ -46,8 +46,8 @@ Generic conventions that apply regardless of stack. Stack-specific rules (langua
 
 ## Stack-specific (Rust)
 
-- **Edition**: 2021. **MSRV**: track x86jit's (currently 1.88); bump only with a
-  decision. **Workspace**: one Cargo workspace, one crate per swap-layer
+- **Edition**: 2021. **MSRV**: the latest stable Rust the devShell provides
+  (currently 1.99; decision-17), never below x86jit's. **Workspace**: one Cargo workspace, one crate per swap-layer
   (`cpu`, `bus`, `chipset`, `device`, `devices/*`, `video`, `machine`, `cli`,
   `testkit`).
 - **Clippy**: `cargo clippy --all-targets --all-features -- -D warnings` is the

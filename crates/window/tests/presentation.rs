@@ -82,7 +82,7 @@ fn monochrome_effects_intensity_underline_and_non_display() {
     let reverse = raster
         .rasterize(&grid(&[b' ', 0x70, b' ', 0xF8], true, false, false))
         .unwrap();
-    for row in reverse.pixels.chunks_exact(18) {
+    for row in reverse.pixels.as_chunks::<18>().0 {
         assert_eq!(&row[..9], &[0xAAAAAA; 9]);
         assert_eq!(&row[9..], &[0xFFFFFF; 9]);
     }
@@ -257,7 +257,7 @@ fn reverse_intensity_keeps_black_ink_and_normal_grey_paper() {
     let image = raster
         .rasterize(&grid(&[b' ', 0x78, 0xDB, 0x78], true, true, false))
         .unwrap();
-    for row in image.pixels.chunks_exact(18) {
+    for row in image.pixels.as_chunks::<18>().0 {
         assert_eq!(&row[..9], &[0xAAAAAA; 9]);
         assert_eq!(&row[9..], &[0; 9]);
     }
@@ -273,8 +273,8 @@ fn colour_foregrounds_cover_the_full_palette_including_brown() {
     let raster = Rasterizer::bundled(NonZeroU16::new(1).unwrap()).unwrap();
     let image = raster.rasterize(&grid(&cells, false, true, false)).unwrap();
     assert_eq!(expected[6], 0xAA5500, "CGA brown");
-    for row in image.pixels.chunks_exact(128) {
-        for (glyph, &colour) in row.chunks_exact(8).zip(&expected) {
+    for row in image.pixels.as_chunks::<128>().0 {
+        for (glyph, &colour) in row.as_chunks::<8>().0.iter().zip(&expected) {
             assert_eq!(glyph, &[colour; 8]);
         }
     }

@@ -85,7 +85,8 @@ impl FontAtlas {
             }
             let count = usize::from(word(table, cursor + 2)?);
             let records = bytes(table, cursor + 8, count * 12)?;
-            for record in records.chunks_exact(12) {
+            let (entries, _) = records.as_chunks::<12>();
+            for record in entries {
                 let offset = usize::from(word(record, 0)?) << shift;
                 let len = usize::from(word(record, 2)?) << shift;
                 let resource = bytes(data, offset, len)?;

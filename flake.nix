@@ -7,6 +7,12 @@
     # Local-first task tracker. Provides the `backlog` CLI.
     # Do NOT add `.inputs.nixpkgs.follows` here — the bun2nix build wants its pinned nixpkgs.
     backlog-md.url = "github:MrLesk/Backlog.md";
+    # The Rust toolchain: the latest stable release as upstream binaries, so
+    # moving to a new Rust never rebuilds the rest of nixpkgs.
+    rust-overlay = {
+      url = "github:oxalica/rust-overlay";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 
   outputs =
@@ -14,12 +20,25 @@
       nixpkgs,
       flake-utils,
       backlog-md,
+      rust-overlay,
       ...
     }:
     flake-utils.lib.eachDefaultSystem (
       system:
       let
-        pkgs = import nixpkgs { inherit system; };
+        pkgs = import nixpkgs {
+          inherit system;
+          overlays = [ (import rust-overlay) ];
+        };
+        # Keep [workspace.package] rust-version in Cargo.toml equal to this.
+        rustToolchain = pkgs.rust-bin.stable.latest.default.override {
+          extensions = [
+            "rust-src"
+            "rust-analyzer"
+            "clippy"
+            "rustfmt"
+          ];
+        };
       in
       {
         devShells.default = pkgs.mkShell {
@@ -29,11 +48,7 @@
             pkgs.git
 
             # --- Rust toolchain (CPU core = x86jit, all crates are Rust) ---
-            pkgs.rustc
-            pkgs.cargo
-            pkgs.clippy
-            pkgs.rustfmt
-            pkgs.rust-analyzer
+            rustToolchain
             pkgs.cargo-deny
 
             # --- guest test-ROM build (hand-assembled real-mode / long-mode programs) ---

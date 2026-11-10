@@ -157,7 +157,9 @@ fn fat12_file(image: &[u8], name: &[u8; 11]) -> Option<Vec<u8>> {
     let root_bytes = word(17) * 32;
     let data_start = root_start + root_bytes.div_ceil(sector_bytes) * sector_bytes;
     let entry = image[root_start..root_start + root_bytes]
-        .chunks_exact(32)
+        .as_chunks::<32>()
+        .0
+        .iter()
         .take_while(|entry| entry[0] != 0)
         .find(|entry| entry[0] != 0xE5 && entry[11] & 0x18 == 0 && &entry[..11] == name)?;
     let size = u32::from_le_bytes(entry[28..32].try_into().unwrap()) as usize;
