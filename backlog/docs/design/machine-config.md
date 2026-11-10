@@ -291,6 +291,21 @@ presets: the knowledge they encode (which devices, at which ports, with which
 wiring) moves into the `DeviceConfig` list a preset produces. A caller wanting a
 one-off variation clones a preset's config and edits fields. Added in task-31.
 
+### Canonical BIOS device order
+
+Device order is part of the machine: the assembler preserves `devices` order,
+and the bus serves due devices in bus order at each whole PIT boundary. Devices
+due at the same boundary therefore run in that order. Decode-map sorting does
+not change this scheduling order.
+
+The BIOS preset follows the board model's fixed motherboard order first:
+`MasterPic`, `SlavePic`, `Pit`, `Dma`, `Keyboard`, `Rtc`, `SysControl`, `Post`.
+Cards follow in file order; the BIOS preset's card order is `Mda`, `Vga`, `Uart`,
+`Fdc`, matching [machine-files.md §Canonical order](machine-files.md#canonical-order). The no-floppy
+BIOS rig omits `Dma` and keeps its undecoded, unwired FDC. Other Rust test-rig
+presets retain their existing order. The BIOS MMIO windows are sorted by base:
+`Mda` at `0xB0000`, then `Vga` at `0xB8000`.
+
 ### BIOS monochrome display routing
 
 The `bios` preset, shared by BIOS and FreeDOS runners, includes independent VGA

@@ -517,31 +517,31 @@ pub fn floppy_boot(loader: Vec<u8>, floppy: Vec<u8>) -> MachineConfig {
 ///   original spike seeded the same CMOS), so a floppy drive is present for the
 ///   CMOS derivation but the controller decodes no ports and takes no interrupt.
 pub fn bios(rom: Vec<u8>, floppy: Option<Vec<u8>>) -> MachineConfig {
-    let mut devices = vec![
-        uart(),
-        master_pic(),
-        pit(Some(0)),
+    let mut devices = vec![master_pic(), slave_pic(), pit(Some(0))];
+    if floppy.is_some() {
+        devices.push(dma(vec![
+            PortWindow::new(0x00, 0x0F),
+            PortWindow::new(0x81, 0x8F),
+        ]));
+    }
+    devices.extend([
         keyboard(Some(1)),
-        vga(),
-        slave_pic(),
         rtc(true, None, Some(8)),
         sys_control(),
         post(BIOS_POST_PORT),
         mda(),
-    ];
+        vga(),
+        uart(),
+    ]);
 
     let drives = match &floppy {
         Some(_) => {
-            // A real, decoded floppy controller and its 8237: the boot path.
+            // A decoded floppy controller uses the board's 8237 for the boot path.
             devices.push(fdc(
                 vec![PortWindow::new(FDC_BASE, FDC_TOP)],
                 Some(6),
                 Some(2),
             ));
-            devices.push(dma(vec![
-                PortWindow::new(0x00, 0x0F),
-                PortWindow::new(0x81, 0x8F),
-            ]));
             vec![floppy_drive(ImageSource::Inline(floppy.unwrap()))]
         }
         None => {
@@ -579,12 +579,12 @@ pub fn bios(rom: Vec<u8>, floppy: Option<Vec<u8>>) -> MachineConfig {
                 RamRegion::new(BIOS_OPTION_ROM_BASE, BIOS_ROM_BASE - BIOS_OPTION_ROM_BASE),
             ],
             mmio: vec![
-                MmioWindow::new(TEXT_BUFFER_BASE, TEXT_BUFFER_LEN as u64, DeviceId::Vga),
                 MmioWindow::new(
                     mda::TEXT_BUFFER_BASE,
                     mda::TEXT_BUFFER_LEN as u64,
                     DeviceId::Mda,
                 ),
+                MmioWindow::new(TEXT_BUFFER_BASE, TEXT_BUFFER_LEN as u64, DeviceId::Vga),
             ],
         },
         devices,
@@ -601,6 +601,54 @@ pub fn bios(rom: Vec<u8>, floppy: Option<Vec<u8>>) -> MachineConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bios_devices_follow_board_then_card_order() {
+        for has_floppy in [false, true] {
+            let floppy =
+                has_floppy.then(|| vec![0; FloppyGeometry::HD_1_44.image_bytes() as usize]);
+            let config = bios(vec![0; 0x8000], floppy);
+            let expected: Vec<_> = [
+                DeviceId::MasterPic,
+                DeviceId::SlavePic,
+                DeviceId::Pit,
+                DeviceId::Dma,
+                DeviceId::Keyboard,
+                DeviceId::Rtc,
+                DeviceId::SysControl,
+                DeviceId::Post,
+                DeviceId::Mda,
+                DeviceId::Vga,
+                DeviceId::Uart,
+                DeviceId::Fdc,
+            ]
+            .into_iter()
+            .filter(|id| has_floppy || *id != DeviceId::Dma)
+            .collect();
+            assert_eq!(
+                config.devices.iter().map(|d| d.id).collect::<Vec<_>>(),
+                expected,
+                "floppy attached: {has_floppy}"
+            );
+        }
+    }
+
+    #[test]
+    fn bios_mmio_windows_follow_base_order() {
+        for floppy in [
+            None,
+            Some(vec![0; FloppyGeometry::HD_1_44.image_bytes() as usize]),
+        ] {
+            let config = bios(vec![0; 0x8000], floppy);
+            assert_eq!(
+                config.memory.mmio,
+                vec![
+                    MmioWindow::new(0xB0000, 0x8000, DeviceId::Mda),
+                    MmioWindow::new(0xB8000, 0x8000, DeviceId::Vga),
+                ]
+            );
+        }
+    }
 
     #[test]
     fn bios_mda_decode_excludes_ram_vga_and_printer_ports() {

@@ -111,11 +111,10 @@ Model changes the implementation must make:
   `validate()` sees. It also becomes part of golden identity.
 - **M2. Canonical device order.** Bus order is semantic: the bus ticks due
   devices "in bus order at one whole PIT boundary" (READ, `crates/bus/src/lib.rs`).
-  The `bios` preset interleaves cards and board devices
-  (`uart, master_pic, pit, keyboard, vga, slave_pic, rtc, sys_control, post,
-  mda, fdc, dma`). Lowering emits board devices in the board's fixed order, then
-  cards in file order. The preset is rewritten to that order first, and the slow
-  goldens prove the change neutral (bead 1). ASSUMED: no golden depends on the
+  The `bios` preset used to interleave cards and board devices; it now
+  lists the board devices in the board's fixed order, then the cards, and
+  lowering emits the same order. Rewriting the preset was proven neutral by
+  the slow goldens and a byte-identical A/B (bead 1). ASSUMED: no golden depends on the
   current tie order. If one does, bead 1 stops and reports it.
 - **M3. Write modes.** Replace `DriveConfig.write_protect: bool` with
   `write: WriteMode { Volatile, ReadOnly, Journal { path, keep_generations } }`.

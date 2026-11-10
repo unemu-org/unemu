@@ -545,7 +545,25 @@ mod tests {
 
     #[test]
     fn mda_decode_conflicts_and_missing_card_are_rejected() {
-        let config = crate::bios(vec![0; 0x8000], None);
+        let mut config = crate::bios(vec![0; 0x8000], None);
+        // Overlap diagnostics name owners in configuration order. Keep this
+        // invalid fixture VGA-first independently of the preset's device order.
+        let [vga, mda] = [DeviceId::Vga, DeviceId::Mda]
+            .map(|id| config.devices.iter().position(|d| d.id == id).unwrap());
+        if vga > mda {
+            config.devices.swap(vga, mda);
+        }
+        let [vga, mda] = [DeviceId::Vga, DeviceId::Mda].map(|id| {
+            config
+                .memory
+                .mmio
+                .iter()
+                .position(|w| w.device == id)
+                .unwrap()
+        });
+        if vga > mda {
+            config.memory.mmio.swap(vga, mda);
+        }
         let mut ports = config.clone();
         find_device(&mut ports, DeviceId::Vga)
             .ports
