@@ -1,10 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! 8259 PIC composition + the null interrupt controller (§5.1, §3.3).
 //!
-//! What a machine *is* — its device set, decode map, and wiring — is now plain
-//! data assembled by the `assembly` crate (§3.3); this crate no longer declares
-//! any machine. What remains here is the interrupt-controller building block that
-//! composition needs and the machine core reaches only through the
+//! A machine's device set, decode map, and wiring are plain data assembled by
+//! the `assembly` crate (§3.3). This crate supplies interrupt-controller building
+//! blocks that composition needs and the machine core reaches only through the
 //! [`InterruptController`] trait object:
 //!
 //! - [`SharedPic`] / [`CascadedPic`] — one 8259, and the cascaded master/slave
@@ -15,7 +14,10 @@
 //!   PIC (for example, the Real16 diagnostic), so no interrupt is ever taken.
 //!
 //! The port-address constants for the parts an AT machine decodes live here too,
-//! shared by the assembler's presets.
+//! shared by the assembler's presets. Keeping this composition here lets the
+//! device crate model one PIC while assembly reuses the shared pair without
+//! owning its register-sharing implementation. Intel 8259A datasheet,
+//! Cascading; see `backlog/docs/architecture.md`, §Contracts and ownership.
 
 mod shared_pic;
 

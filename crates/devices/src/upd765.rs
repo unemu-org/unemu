@@ -107,10 +107,11 @@
 //!   bays never synthesize index pulses.
 //! - **The skip (SK) modifier and MFM/FM selection**: SK and MFM do not change
 //!   the transfer; READ and WRITE treat the raw image as normal MFM sectors.
-//! - **TC-dependent error termination**: DMA completion reports a byte count,
-//!   without the terminal-count signal. Exhausting the valid sector IDs retains
-//!   normal completion: TC at that boundary cannot be distinguished from a
-//!   search for the next, missing sector (NEC µPD765 datasheet, READ DATA).
+//!
+//! DMA completion carries TC separately from the byte count. TC ends normally;
+//! without TC a short transfer reports overrun, a missing sector reports no data,
+//! and exhausting EOT reports end of cylinder (NEC µPD765 datasheet, READ DATA,
+//! WRITE DATA and Status Register 1).
 //!
 //! Snapshots contain registers, command/result phases, pending DMA context
 //! and request data, and the absolute trace time base. Mounted media and wiring
@@ -336,8 +337,8 @@ struct PendingWrite {
 /// The NEC µPD765 / Intel 8272A floppy disk controller (§7.8).
 ///
 /// Decodes `0x3F0..=0x3F7`; the modelled registers are the DOR, MSR, data, and
-/// DIR/CCR ports. Drives IRQ6 through [`Device::irq_pending`]; like every other
-/// device the 8259 PIC owns vectoring, so [`Device::irq_vector`] is `None`.
+/// DIR/CCR ports. Drives IRQ6 through [`Device::irq_pending`]; the 8259 PIC
+/// owns interrupt vectoring.
 pub struct Upd765 {
     /// Digital output register: motor-on bits, drive select, reset, DMA-enable.
     dor: u8,
@@ -401,9 +402,8 @@ impl Upd765 {
     }
 
     /// Create a controller with a single 1.44 MB disk mounted in drive 0, backed
-    /// by `image` (typically [`FLOPPY_IMAGE_BYTES`] bytes). This is the legacy
-    /// single-drive entry point; it is exactly `with_drives` carrying one
-    /// high-density drive.
+    /// by `image` (typically [`FLOPPY_IMAGE_BYTES`] bytes). Equivalent to `with_drives` carrying
+    /// one high-density drive.
     #[must_use]
     pub fn with_image(image: Vec<u8>) -> Self {
         Self::with_drives([
@@ -1046,6 +1046,10 @@ impl Device for Upd765 {
     }
 
     fn tick(&mut self, now: VClock) {
+        debug_assert!(now >= self.now, "device clock moved backwards");
+        if now < self.now {
+            return;
+        }
         // Empty-bay searches cannot advance without external index pulses;
         // mounted transfers finish through DMA. This clock only stamps traces.
         self.now = now;
@@ -1060,12 +1064,6 @@ impl Device for Upd765 {
 
     fn irq_pending(&self) -> bool {
         self.irq_line()
-    }
-
-    fn irq_vector(&self) -> Option<u8> {
-        // The controller drives the IRQ6 line; the 8259 PIC resolves it to a
-        // vector on INTA.
-        None
     }
 
     fn take_dma_request(&mut self) -> Option<DmaRequest> {
@@ -1675,7 +1673,7 @@ mod tests {
         fdc
     }
 
-    /// A ready controller with a single 1.44 MB disk in drive 0 (legacy shape).
+    /// A ready controller with a single 1.44 MB disk in drive 0 (single-drive setup).
     fn ready_fdc(image: Vec<u8>) -> Upd765 {
         ready_drives([
             Some(Drive::new(FloppyGeometry::HD1440, image)),
@@ -2074,7 +2072,6 @@ mod tests {
             "idle controller reports RQM ready, DIO host"
         );
         assert!(!fdc.irq_pending());
-        assert_eq!(fdc.irq_vector(), None);
     }
 
     #[test]

@@ -43,9 +43,13 @@ pub const POST_PORT: u16 = 0x190;
 /// Value returned for a read: an unimplemented/open-bus read.
 const OPEN_BUS: u32 = 0xFF;
 
+const SNAPSHOT_VERSION: u8 = 1;
+const SNAPSHOT_CLOCK: usize = 1;
+const SNAPSHOT_LEN: usize = SNAPSHOT_CLOCK + 8;
+
 /// The POST checkpoint port device (§7.1).
 ///
-/// Decodes a single, configurable port ([`PostPort::port`]). Writes surface on
+/// Decodes a single, configurable port ([`PostPort::with_port`]). Writes surface on
 /// the tracing seam as [`TraceEvent::Port`] writes to that port; a consumer
 /// can instead bind [`Device::byte_output`] to receive accepted low bytes
 /// directly. Port `0x80` lies in the AT's DMA page-register range but is not
@@ -162,6 +166,10 @@ impl Device for PostPort {
     }
 
     fn tick(&mut self, now: VClock) {
+        debug_assert!(now >= self.now, "device clock moved backwards");
+        if now < self.now {
+            return;
+        }
         self.now = now;
     }
 
@@ -173,29 +181,27 @@ impl Device for PostPort {
         false
     }
 
-    fn irq_vector(&self) -> Option<u8> {
-        None
-    }
-
     fn reset(&mut self) {
         self.trace.clear();
         self.now = VClock::ZERO;
     }
 
     fn save(&self) -> Vec<u8> {
-        let mut blob = vec![1];
+        let mut blob = vec![SNAPSHOT_VERSION];
         blob.extend_from_slice(&self.now.0.to_le_bytes());
         blob
     }
 
     fn restore(&mut self, snapshot: &[u8]) -> Result<(), DeviceError> {
-        if snapshot.len() != 9 || snapshot[0] != 1 {
+        if snapshot.len() != SNAPSHOT_LEN || snapshot[0] != SNAPSHOT_VERSION {
             return Err(DeviceError::InvalidSnapshot {
                 device: NAME,
                 reason: "unsupported snapshot format",
             });
         }
-        self.now = VClock(u64::from_le_bytes(std::array::from_fn(|i| snapshot[1 + i])));
+        self.now = VClock(u64::from_le_bytes(std::array::from_fn(|i| {
+            snapshot[SNAPSHOT_CLOCK + i]
+        })));
         Ok(())
     }
 

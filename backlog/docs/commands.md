@@ -8,12 +8,16 @@ Everyday commands for this project. Keep this file **flat and copy-pasteable** â
 cargo build                                  # build the workspace
 cargo run -p cli -- --boot                   # Real16 timer demo; no args print usage
 cargo test --workspace                       # unit + golden + integration
+cargo test --release -p devices              # release-only device behaviour (CI runs it too)
 cargo test --workspace -- --ignored          # slow goldens: BIOS POST, FreeDOS boot, DOS sessions (~2 min)
 UNEMUPC98_REQUIRE_FIXTURES=1 cargo test --workspace -- --ignored # fail if a fixture is missing
 # Corrected per-clock oracle versus production deadlines (no environment gate):
 UNEMUPC98_REQUIRE_FIXTURES=1 cargo test --offline -p cli --test scheduler_ab -- --include-ignored --nocapture
 # Opt-in host timing only, BIOS POST and FreeDOS prompt, median of three per engine:
 UNEMUPC98_REQUIRE_FIXTURES=1 UNEMUPC98_SCHEDULER_WALL_TIMES=1 cargo test --offline --release -p cli --test scheduler_ab scheduler_engine_wall_times -- --ignored --nocapture
+# DOS sessions and their final console screens (requires fetched fixtures):
+UNEMUPC98_REQUIRE_FIXTURES=1 cargo test --offline -p cli --test dos_interactive_golden -- --ignored --nocapture
+UNEMUPC98_REQUIRE_FIXTURES=1 cargo test --offline -p cli --test dos_write_golden -- --ignored --nocapture
 cargo test -p devices                        # one crate's tests
 ```
 

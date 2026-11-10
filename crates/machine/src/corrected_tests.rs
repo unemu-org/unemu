@@ -42,9 +42,6 @@ impl Device for SyncProbe {
     fn irq_pending(&self) -> bool {
         false
     }
-    fn irq_vector(&self) -> Option<u8> {
-        None
-    }
     fn reset(&mut self) {}
     fn save(&self) -> Vec<u8> {
         Vec::new()
@@ -231,9 +228,6 @@ impl Device for CoupledDeadline {
     }
     fn irq_pending(&self) -> bool {
         false
-    }
-    fn irq_vector(&self) -> Option<u8> {
-        None
     }
     fn reset(&mut self) {}
     fn save(&self) -> Vec<u8> {
@@ -877,9 +871,6 @@ impl Device for ScheduledLine {
     fn irq_pending(&self) -> bool {
         self.high
     }
-    fn irq_vector(&self) -> Option<u8> {
-        None
-    }
     fn reset(&mut self) {
         self.high = false;
     }
@@ -1117,9 +1108,6 @@ impl Device for DmaTrigger {
     }
     fn irq_pending(&self) -> bool {
         self.completions.get() == 2
-    }
-    fn irq_vector(&self) -> Option<u8> {
-        None
     }
     fn reset(&mut self) {
         self.queued = false;
@@ -1396,4 +1384,162 @@ fn real_mode_store_into_current_block_is_independent_of_step_partitions() {
         results[0], results[1],
         "store into the current block: AL depends on the step budget"
     );
+}
+
+/// A rejected access can leave DMA work that cannot settle. The access error
+/// remains the useful diagnostic even when follow-on work also fails.
+#[derive(Default)]
+struct FaultingAccess {
+    active: bool,
+}
+
+impl Device for FaultingAccess {
+    fn name(&self) -> &'static str {
+        "faulting-access"
+    }
+    fn port_read(&mut self, port: u16, _: u8) -> Result<u32, device::DeviceError> {
+        self.active = true;
+        Err(device::DeviceError::UnmappedRegister {
+            kind: "port",
+            offset: u64::from(port),
+        })
+    }
+    fn port_write(&mut self, port: u16, size: u8, _: u32) -> Result<(), device::DeviceError> {
+        self.port_read(port, size).map(|_| ())
+    }
+    fn mmio_read(&mut self, addr: u64, _: u8) -> Result<u64, device::DeviceError> {
+        self.active = true;
+        Err(device::DeviceError::UnmappedRegister {
+            kind: "mmio",
+            offset: addr,
+        })
+    }
+    fn mmio_write(&mut self, addr: u64, size: u8, _: u64) -> Result<(), device::DeviceError> {
+        self.mmio_read(addr, size).map(|_| ())
+    }
+    fn tick(&mut self, _: VClock) {}
+    fn next_event(&self, _: VClock) -> NextEvent {
+        NextEvent::Dormant
+    }
+    fn irq_pending(&self) -> bool {
+        false
+    }
+    fn reset(&mut self) {
+        self.active = false;
+    }
+    fn save(&self) -> Vec<u8> {
+        vec![u8::from(self.active)]
+    }
+    fn restore(&mut self, snapshot: &[u8]) -> Result<(), device::DeviceError> {
+        self.active = snapshot[0] != 0;
+        Ok(())
+    }
+    fn take_dma_request(&mut self) -> Option<device::DmaRequest> {
+        self.active.then(|| device::DmaRequest {
+            channel: 2,
+            op: DmaOp::ToMemory(vec![]),
+        })
+    }
+}
+
+#[test]
+fn access_error_survives_follow_on_settle_failure() {
+    for stop in [
+        CpuStop::PortIn {
+            port: 0x123,
+            size: 1,
+        },
+        CpuStop::PortOut {
+            port: 0x123,
+            size: 1,
+            value: 0,
+        },
+        CpuStop::MmioRead {
+            addr: 0x123,
+            size: 1,
+        },
+        CpuStop::MmioWrite {
+            addr: 0x123,
+            size: 1,
+            value: 0,
+        },
+    ] {
+        let counted = matches!(stop, CpuStop::PortIn { .. } | CpuStop::PortOut { .. });
+        let cpu = MockCpu::new(Vec::new()).with_step_program(vec![step(
+            1,
+            u64::from(counted),
+            stop,
+            false,
+        )]);
+        let bus = Bus::new(
+            vec![Box::<FaultingAccess>::default()],
+            DecodeMap {
+                ports: vec![PortRange {
+                    ports: 0x123..=0x123,
+                    device: 0,
+                }],
+                mmio: vec![bus::MmioRange {
+                    addrs: 0x123..=0x123,
+                    device: 0,
+                }],
+            },
+        );
+        let mut machine = Machine::new(
+            cpu,
+            bus,
+            Box::new(chipset::NoInterruptController),
+            vec![],
+            None,
+        )
+        .with_step_limit(NonZeroU64::new(1).unwrap())
+        .with_dma_wirings(vec![DmaWiring {
+            requester: 0,
+            controller: 0,
+        }]);
+        assert!(matches!(
+            machine.run_bounded(Some(2)),
+            Err(MachineError::Bus(BusError::Device(
+                device::DeviceError::UnmappedRegister { offset: 0x123, .. }
+            )))
+        ));
+    }
+}
+
+#[test]
+fn access_error_survives_follow_on_clock_exhaustion() {
+    for engine in [SchedulerEngine::PerClock, SchedulerEngine::Deadline] {
+        for stop in [
+            CpuStop::PortIn {
+                port: 0x123,
+                size: 1,
+            },
+            CpuStop::PortOut {
+                port: 0x123,
+                size: 1,
+                value: 0,
+            },
+        ] {
+            let cpu = MockCpu::new(Vec::new()).with_step_program(vec![step(1, 1, stop, false)]);
+            let bus = Bus::new(vec![], DecodeMap::default())
+                .with_undecoded_ports(bus::UndecodedPortAccess::Fault);
+            let mut machine = Machine::new(
+                cpu,
+                bus,
+                Box::new(chipset::NoInterruptController),
+                vec![],
+                None,
+            )
+            .with_step_limit(NonZeroU64::new(1).unwrap())
+            .with_scheduler_engine(engine);
+            machine.clock = VClock(u64::MAX);
+            let result = machine.run_bounded(None);
+            assert!(
+                matches!(
+                    result,
+                    Err(MachineError::Bus(BusError::UnmappedPort { port: 0x123 }))
+                ),
+                "{engine:?}: {result:?}"
+            );
+        }
+    }
 }

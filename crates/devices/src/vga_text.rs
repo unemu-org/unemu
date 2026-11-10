@@ -45,7 +45,7 @@
 //!   entered — the card always renders text mode 3.
 //! - The CGA input status register (`0x3DA`): its display-enable (bit 0) and
 //!   vertical-retrace (bit 3) bits, cycled deterministically so a BIOS
-//!   both-edges retrace wait terminates (see [`VgaText::status_register`]).
+//!   both-edges retrace wait terminates (see `VgaText::status_register`).
 //!
 //! IBM VGA Technical Reference, CRT Controller Registers, Address Register:
 //! only index bits 4–0 select a register; indices 19h–1Fh are reserved.
@@ -137,9 +137,14 @@ const CURSOR_DISABLE: u8 = 0x20;
 /// Snapshot layout version tag, first byte of [`Device::save`] output.
 const SNAPSHOT_VERSION: u8 = 3;
 
-/// Fixed-size snapshot header: version + CRTC index + the CRTC register file +
-/// the CGA mode/colour bytes, status-read phase and absolute trace clock.
-const SNAPSHOT_HEADER_LEN: usize = 1 + 1 + CRTC_REG_COUNT + 2 + 16;
+const SNAPSHOT_CRTC_INDEX: usize = 1;
+const SNAPSHOT_CRTC_REGS: usize = SNAPSHOT_CRTC_INDEX + 1;
+const SNAPSHOT_MODE_CONTROL: usize = SNAPSHOT_CRTC_REGS + CRTC_REG_COUNT;
+const SNAPSHOT_COLOR_SELECT: usize = SNAPSHOT_MODE_CONTROL + 1;
+const SNAPSHOT_STATUS_READS: usize = SNAPSHOT_COLOR_SELECT + 1;
+const SNAPSHOT_CLOCK: usize = SNAPSHOT_STATUS_READS + 8;
+/// Header preceding VRAM: registers, status-read phase and absolute trace clock.
+const SNAPSHOT_HEADER_LEN: usize = SNAPSHOT_CLOCK + 8;
 
 /// The VGA text-mode device (§9.2).
 ///
@@ -160,7 +165,7 @@ pub struct VgaText {
     color_select: u8,
     /// Free-running counter bumped on every read of the input status register
     /// (`0x3DA`, or its mono alias `0x3BA`), driving its retrace/display bits
-    /// through their phases. See [`VgaText::status_register`] for why the phase
+    /// through their phases. See `VgaText::status_register` for why the phase
     /// advances per read, not per tick.
     status_reads: u64,
     /// Trace events observed since the last [`Device::take_trace`].
@@ -372,6 +377,10 @@ impl Device for VgaText {
     }
 
     fn tick(&mut self, now: VClock) {
+        debug_assert!(now >= self.now, "device clock moved backwards");
+        if now < self.now {
+            return;
+        }
         self.now = now;
     }
 
@@ -383,10 +392,6 @@ impl Device for VgaText {
         // A text-mode VGA drives no IRQ line in this model (no vertical-retrace
         // interrupt wired).
         false
-    }
-
-    fn irq_vector(&self) -> Option<u8> {
-        None
     }
 
     fn reset(&mut self) {
@@ -421,20 +426,22 @@ impl Device for VgaText {
                 reason: "unsupported snapshot version",
             });
         }
-        if snapshot[1] > 0x1F {
+        if snapshot[SNAPSHOT_CRTC_INDEX] > 0x1F {
             return Err(DeviceError::InvalidSnapshot {
                 device: NAME,
                 reason: "invalid CRTC index",
             });
         }
-        self.status_reads = u64::from_le_bytes(std::array::from_fn(|i| snapshot[29 + i]));
-        self.crtc_index = snapshot[1];
-        self.crtc.copy_from_slice(&snapshot[2..2 + CRTC_REG_COUNT]);
-        self.mode_control = snapshot[2 + CRTC_REG_COUNT];
-        self.color_select = snapshot[2 + CRTC_REG_COUNT + 1];
+        self.status_reads =
+            u64::from_le_bytes(std::array::from_fn(|i| snapshot[SNAPSHOT_STATUS_READS + i]));
+        self.crtc_index = snapshot[SNAPSHOT_CRTC_INDEX];
+        self.crtc
+            .copy_from_slice(&snapshot[SNAPSHOT_CRTC_REGS..SNAPSHOT_MODE_CONTROL]);
+        self.mode_control = snapshot[SNAPSHOT_MODE_CONTROL];
+        self.color_select = snapshot[SNAPSHOT_COLOR_SELECT];
         self.vram.copy_from_slice(&snapshot[SNAPSHOT_HEADER_LEN..]);
         self.now = VClock(u64::from_le_bytes(std::array::from_fn(|i| {
-            snapshot[SNAPSHOT_HEADER_LEN - 8 + i]
+            snapshot[SNAPSHOT_CLOCK + i]
         })));
         Ok(())
     }
@@ -804,7 +811,6 @@ mod tests {
     fn no_irq_is_asserted() {
         let vga = VgaText::new();
         assert!(!vga.irq_pending());
-        assert_eq!(vga.irq_vector(), None);
     }
 
     #[test]

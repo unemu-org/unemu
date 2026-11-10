@@ -6,7 +6,7 @@
 //! description and builds the concrete parts the machine core is deliberately
 //! blind to: an [`X86JitCpu`] with its memory mosaic laid out, a [`Bus`] with a
 //! [`bus::DecodeMap`], the one shared interrupt controller, and the IRQ / DMA
-//! wiring tables. The core never names any of these concrete types (decision-7);
+//! wiring tables. The core never names any of these concrete types;
 //! naming them is exactly this layer's job, which is why it sits above the
 //! `machine` crate.
 //!
@@ -123,6 +123,14 @@ pub fn assemble_with_observation(
     config: &MachineConfig,
     observation_policy: &ObservationPolicy,
 ) -> Result<AssembledMachine, AssemblyError> {
+    assemble_with_cpu(config, observation_policy, build_cpu)
+}
+
+fn assemble_with_cpu(
+    config: &MachineConfig,
+    observation_policy: &ObservationPolicy,
+    build: impl FnOnce(&MachineConfig) -> Result<X86JitCpu, AssemblyError>,
+) -> Result<AssembledMachine, AssemblyError> {
     // A validated config does not fail assembly for configuration reasons; run
     // the checks first so any inconsistency surfaces as a precise ConfigError.
     config.validate()?;
@@ -133,7 +141,7 @@ pub fn assemble_with_observation(
     let config = resolved.as_ref();
     config.validate()?;
 
-    let mut cpu = build_cpu(config)?;
+    let mut cpu = build(config)?;
     validate_step_cpu(&mut cpu)?;
     let cmos = derive_cmos_config(config);
 
@@ -185,7 +193,7 @@ pub fn assemble_with_observation(
     // interrupt-free machine), a null controller keeps the loop total.
     let controller: Box<dyn InterruptController> = match pic {
         Some(p) => Box::new(p),
-        None => Box::new(NullInterruptController),
+        None => Box::new(chipset::NoInterruptController),
     };
 
     let map = build_decode_map(config, &device_index);
@@ -505,24 +513,6 @@ fn floppy_cmos_type(geometry: &FloppyGeometry) -> u8 {
     }
 }
 
-/// A do-nothing interrupt controller for a machine the config gives no PIC (§5.1).
-///
-/// The machine loop always holds a controller; a machine with no interrupt
-/// hardware (a bare serial or timer demo) uses this so nothing is ever
-/// acknowledged or injected.
-struct NullInterruptController;
-
-impl InterruptController for NullInterruptController {
-    fn set_irq_line(&mut self, _irq: u8, _level: bool) {}
-    fn poll(&self) -> Option<u8> {
-        None
-    }
-    fn acknowledge(&mut self) -> Option<u8> {
-        None
-    }
-    fn end_of_interrupt(&mut self) {}
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -582,7 +572,7 @@ mod tests {
     const ROM_LEN: u64 = 0x8000;
 
     /// A reference AT-class machine: a small stand-in for the real presets
-    /// (task-31). Everything the assembler must build — the memory mosaic, the
+    /// covering the memory map and device wiring. Everything the assembler must build — the memory mosaic, the
     /// full device set with the cascaded PIC, the trapped text buffer, the floppy
     /// controller with its DMA, and a seeded CMOS — is present.
     fn reference_config() -> MachineConfig {
@@ -712,6 +702,68 @@ mod tests {
             .to_string()
             .contains("Real16 CPU with step-bounded execution"));
         assert_eq!(cpu.retired(), 0);
+    }
+
+    #[test]
+    fn assembly_rejects_cpu_without_step_bounds_before_execution() {
+        let error = assemble_with_cpu(&reference_config(), &ObservationPolicy::default(), |_| {
+            Ok(X86JitCpu::new(0x10000, 0x1000, &[0xF4])?)
+        });
+        assert!(matches!(
+            error,
+            Err(AssemblyError::Config(ConfigError::StepBoundedCpuRequired(
+                _
+            )))
+        ));
+    }
+
+    #[test]
+    fn every_preset_applies_trace_policy_to_every_device() {
+        let configs = [
+            crate::at_boot(vec![0xF4]),
+            crate::at_keyboard(vec![0xF4]),
+            crate::at_rtc(vec![0xF4], 64, 8),
+            crate::at_fdc_write(vec![0xF4], vec![0; 512], 0x600),
+            crate::at_vga_text(vec![0xF4]),
+            crate::test386(vec![0; 65536]),
+            crate::floppy_boot(vec![0xF4], vec![0; 1_474_560]),
+            crate::bios(vec![0; 32768], None),
+            crate::bios(vec![0; 32768], Some(vec![0; 1_474_560])),
+        ];
+        let policy = ObservationPolicy {
+            trace: device::TracePolicy::Ring { capacity: 0 },
+            ..ObservationPolicy::default()
+        };
+        for config in configs {
+            let mut assembled = assemble_with_observation(&config, &policy).unwrap();
+            for dc in &config.devices {
+                let port = if dc.id == DeviceId::Fdc {
+                    0x3F4
+                } else {
+                    dc.ports[0].start
+                };
+                let index = assembled.device_index[&dc.id];
+                if dc.ports.is_empty() {
+                    // The no-media BIOS keeps an undecoded FDC only for CMOS derivation.
+                    assembled
+                        .machine
+                        .bus_mut()
+                        .device_mut(index)
+                        .unwrap()
+                        .port_read(port, 1)
+                        .unwrap();
+                } else {
+                    assembled.machine.bus_mut().port_read(port, 1).unwrap();
+                }
+                let device = assembled.machine.bus_mut().device_mut(index).unwrap();
+                assert!(
+                    device.trace_dropped() > 0,
+                    "{:?} ignored zero-capacity recording",
+                    dc.id
+                );
+                assert!(device.take_trace().is_empty());
+            }
+        }
     }
 
     #[test]

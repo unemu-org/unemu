@@ -470,8 +470,7 @@ impl Counter {
 ///
 /// Decodes ports `0x40..=0x43`. Counter 0's OUT drives the machine timer
 /// interrupt (IRQ0) and is exposed through [`Device::irq_pending`];
-/// [`Device::irq_vector`] returns `None` because vectoring is owned by the 8259
-/// PIC, not the PIT — the PIT only drives a line. Counters 1 and 2 are modelled
+/// the 8259 PIC owns vectoring while the PIT only drives a line. Counters 1 and 2 are modelled
 /// but their OUT pins are not routed.
 pub struct Pit8253 {
     counters: [Counter; COUNTERS],
@@ -595,6 +594,10 @@ impl Device for Pit8253 {
     }
 
     fn tick(&mut self, now: VClock) {
+        debug_assert!(now >= self.now, "device clock moved backwards");
+        if now < self.now {
+            return;
+        }
         // Each virtual-clock tick beyond the last one is one PIT input clock.
         let elapsed = now.0.saturating_sub(self.now.0);
         self.now = now;
@@ -645,12 +648,6 @@ impl Device for Pit8253 {
         // Counter 0's OUT pin is the IRQ0 source. The 8259 PIC owns vectoring,
         // so only the line level is exposed here.
         self.counters[0].out
-    }
-
-    fn irq_vector(&self) -> Option<u8> {
-        // The PIT drives a line, not a vector: the 8259 PIC resolves IRQ0 to a
-        // vector on INTA. See spec §5.4.
-        None
     }
 
     fn reset(&mut self) {
@@ -1068,7 +1065,6 @@ mod tests {
         assert!(pit.out(0));
         assert_eq!(pit.count(0), 0);
         assert!(pit.irq_pending()); // OUT high == line asserted per our mapping.
-        assert_eq!(pit.irq_vector(), None);
     }
 
     #[test]
@@ -1356,7 +1352,6 @@ mod tests {
             }
         }
         assert!(saw_low, "counter 0 must pulse its OUT/IRQ0 line low");
-        assert_eq!(pit.irq_vector(), None);
     }
 
     #[test]

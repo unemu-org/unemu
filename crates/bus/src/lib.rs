@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Bus swap seam (§3.2 seam 3, §3.3, §4.1).
 //!
-//! The [`Bus`] **executes** a decode map the `chipset` **declares** — the
-//! "Chipset declares, Bus executes" rule (§3.3). It owns the set of
+//! The [`Bus`] **executes** a decode map assembly **derives from configuration** — the
+//! routing contract (§3.3). It owns the set of
 //! [`Device`]s, a table of port ranges → device index, and a table of MMIO
 //! ranges → device index, and dispatches guest accesses to the right device. It
 //! holds **no** decode *policy*: which ports/addresses map where is the
-//! chipset's business.
+//! assembler's business.
 //!
 //! All current port devices are 8-bit. Wider accesses use consecutive byte
 //! cycles, low byte first, each decoded independently (IBM Personal Computer AT
@@ -18,8 +18,8 @@
 //! 16-bit device, such as an IDE data port, will
 //! need an explicit opt-in to receive whole words; no such opt-in exists yet.
 //!
-//! It also drives [`Bus::tick_all`] (advance every device on the virtual clock,
-//! §6) and [`Bus::poll_irqs`] (aggregate pending IRQ lines, §5.1).
+//! [`Bus::tick_due`] dispatches due transitions; [`Bus::tick_all`] supports the
+//! per-clock test oracle. IRQ levels reach the machine through [`Bus::device_irq_line`].
 
 use std::ops::RangeInclusive;
 
@@ -42,9 +42,9 @@ pub struct MmioRange {
     pub device: usize,
 }
 
-/// The decode map a chipset hands the bus (§3.3).
+/// The decode map an assembler hands the bus (§3.3).
 ///
-/// This is pure data: the chipset declares it, the [`Bus`] executes it. There is
+/// This is pure data: assembly derives it, the [`Bus`] executes it. There is
 /// no decode logic here — only the ranges and the device indices they resolve
 /// to.
 #[derive(Default)]
@@ -121,9 +121,9 @@ pub struct Bus {
 }
 
 impl Bus {
-    /// Build a bus from a device set and the chipset-declared decode map.
+    /// Build a bus from a device set and the configuration-derived decode map.
     ///
-    /// The `map`'s device indices must reference `devices`; the chipset is
+    /// The `map`'s device indices must reference `devices`; the assembler is
     /// responsible for keeping them consistent (§3.3). Undecoded port accesses
     /// default to open-bus ([`UndecodedPortAccess::OpenBus`]); use
     /// [`Bus::with_undecoded_ports`] to select strict faulting instead.
@@ -388,24 +388,13 @@ impl Bus {
         }
     }
 
-    /// Aggregate pending IRQ lines into the vector each device would drive on
-    /// INTA (§5.1). No interrupt controller is wired up yet, so the machine loop
-    /// does not act on this; the method exists so the seam is present.
-    pub fn poll_irqs(&self) -> Vec<u8> {
-        self.devices
-            .iter()
-            .filter(|d| d.irq_pending())
-            .filter_map(|d| d.irq_vector())
-            .collect()
-    }
-
     /// The current IRQ-line level of the device at `index`, or `None` if the
     /// index is out of range (§5.1).
     ///
     /// This is the raw line level (`irq_pending`), not an edge: the integration
     /// layer edge-detects it before pulsing the interrupt controller, since a
     /// device (the PIT) drives a *level* while the PIC is edge-triggered. The
-    /// machine names a device only by the wiring index the chipset declared, not
+    /// machine names a device only by the wiring index the configuration declared, not
     /// by a concrete type.
     pub fn device_irq_line(&self, index: usize) -> Option<bool> {
         self.devices.get(index).map(|d| d.irq_pending())
@@ -491,9 +480,6 @@ mod tests {
         fn irq_pending(&self) -> bool {
             false
         }
-        fn irq_vector(&self) -> Option<u8> {
-            None
-        }
         fn reset(&mut self) {
             self.values.fill(0);
             self.trace.clear();
@@ -569,9 +555,6 @@ mod tests {
         }
         fn irq_pending(&self) -> bool {
             false
-        }
-        fn irq_vector(&self) -> Option<u8> {
-            None
         }
         fn reset(&mut self) {
             self.event = NextEvent::At(VClock(self.now.0 + 1));
@@ -991,9 +974,6 @@ mod tests {
         fn tick(&mut self, _now: VClock) {}
         fn irq_pending(&self) -> bool {
             false
-        }
-        fn irq_vector(&self) -> Option<u8> {
-            None
         }
         fn reset(&mut self) {}
         fn save(&self) -> Vec<u8> {

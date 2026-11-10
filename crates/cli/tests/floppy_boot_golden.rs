@@ -11,10 +11,10 @@
 //! loader far-jumps to `0x7C00`. The minimal boot sector there transmits `'B'` to
 //! COM1 and halts, so a working path yields exactly that byte and a natural halt.
 //!
-//! This proves, deterministically and fast (no multi-minute POST): the FDC
+//! This checks without BIOS POST: the FDC
 //! command state machine, the FDC → 8237 → guest-memory transfer, and the boot
 //! jump. The real BIOS INT 19h path over the same devices lives in
-//! `bios_boot_golden` (slow, ignored).
+//! `bios_floppy_boot_golden` (slow, ignored).
 
 use cli::{run_floppy_boot, FLOPPY_BOOT_MARKER};
 

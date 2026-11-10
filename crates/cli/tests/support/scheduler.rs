@@ -19,7 +19,7 @@ use device::{
     Device, DeviceError, DmaMemory, DmaOutcome, DmaRequest, NextEvent, TraceEvent, VClock,
 };
 use devices::{Uart16550, I8042};
-use machine::{Machine, MachineError, RunOutcome};
+use machine::{Machine, RunOutcome};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Stop {
@@ -476,9 +476,6 @@ impl Device for ObservedDevice {
     fn irq_pending(&self) -> bool {
         self.inner.irq_pending()
     }
-    fn irq_vector(&self) -> Option<u8> {
-        self.inner.irq_vector()
-    }
     fn reset(&mut self) {
         self.inner.reset();
     }
@@ -643,7 +640,7 @@ fn final_state_detects_untraced_ram_register_and_device_changes() {
 /// The observer wraps existing bus devices without changing CPU/IRQ semantics.
 pub fn observe_with(
     mut prepared: Prepared,
-    engine: impl FnOnce(&mut Machine<X86JitCpu>, &RunPolicy) -> Result<RunOutcome, MachineError>,
+    engine: impl FnOnce(&mut Machine<X86JitCpu>, &RunPolicy) -> Result<RunOutcome, assembly::RunError>,
 ) -> Stream {
     let stream = SharedStream::default();
     let clock = prepared.machine.bus().observation_clock();

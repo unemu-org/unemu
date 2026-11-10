@@ -5,7 +5,7 @@
 //! the fetch/dispatch/tick/interrupt loop. It is the composition root: **nothing
 //! here names a concrete device, chipset, or CPU backend** — it sees only the
 //! [`Cpu`], [`Bus`], and [`InterruptController`] seams (§3.2). A frontend (`cli`)
-//! builds the concrete parts and hands them in.
+//! selects an assembly preset; assembly builds the concrete parts and hands them in.
 //!
 //! ## The loop (§3.1, scheduler design §Interrupt acceptance)
 //!
@@ -63,7 +63,7 @@ pub enum SchedulerEngine {
 
 /// One wired connection from a device IRQ line to a PIC input (§5.1).
 ///
-/// Declares *which* device (by its index in the chipset-declared device set)
+/// Declares *which* device (by its index in the configured device set)
 /// drives *which* PIC input line. The machine edge-detects the device's line and
 /// pulses that PIC input; it never names the concrete device type.
 #[derive(Copy, Clone, Debug)]
@@ -130,14 +130,6 @@ pub enum MachineError {
     /// The bus seam raised an error (undecoded access or device fault).
     #[error("bus: {0}")]
     Bus(#[from] BusError),
-    /// A prompt was reached too late to grant the entire scripted command run.
-    #[error("insufficient command budget: need {required} steps, only {remaining} remain")]
-    InsufficientCommandBudget {
-        /// Requested post-prompt steps.
-        required: u64,
-        /// Steps remaining before the overall cap.
-        remaining: u64,
-    },
     /// The guest raised a CPU exception the machine does not handle. In real
     /// mode most vectors deliver in-guest through the IVT; this surfaces only an
     /// exception the CPU core chose to escape.
@@ -579,14 +571,19 @@ impl<C: Cpu> Machine<C> {
                 // deadline before advancing through the stopping instruction.
                 self.bus.invalidate_deadlines();
             }
-            if counted_stop {
-                self.charge_steps(1)?;
-            }
-            // Even a rejected access can have device side effects. Settle the
-            // completed prefix and refresh coupled state before reporting it;
-            // an unsuccessful deferred MMIO operation earns no extra step.
-            self.settle(accessed)?;
+            let charge_result = if counted_stop {
+                self.charge_steps(1)
+            } else {
+                Ok(())
+            };
+            // Even a rejected access can have device side effects. Charge and
+            // settle its completed prefix, but preserve the access error if
+            // clock accounting or coupled-device work also fails. An unsuccessful
+            // deferred MMIO operation earns no extra step.
+            let settle_result = self.settle(accessed);
             access_result?;
+            charge_result?;
+            settle_result?;
         }
     }
 
@@ -744,9 +741,6 @@ mod tests {
         }
         fn irq_pending(&self) -> bool {
             false
-        }
-        fn irq_vector(&self) -> Option<u8> {
-            None
         }
         fn reset(&mut self) {
             self.written.clear();
@@ -1052,9 +1046,6 @@ mod tests {
         }
         fn irq_pending(&self) -> bool {
             self.level
-        }
-        fn irq_vector(&self) -> Option<u8> {
-            None
         }
         fn reset(&mut self) {}
         fn save(&self) -> Vec<u8> {
@@ -1580,9 +1571,6 @@ mod tests {
         fn irq_pending(&self) -> bool {
             false
         }
-        fn irq_vector(&self) -> Option<u8> {
-            None
-        }
         fn reset(&mut self) {}
         fn save(&self) -> Vec<u8> {
             Vec::new()
@@ -1685,9 +1673,6 @@ mod tests {
         fn tick(&mut self, _: VClock) {}
         fn irq_pending(&self) -> bool {
             false
-        }
-        fn irq_vector(&self) -> Option<u8> {
-            None
         }
         fn reset(&mut self) {}
         fn save(&self) -> Vec<u8> {

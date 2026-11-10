@@ -5,8 +5,8 @@
 //! its CPU, virtual clock, memory map, device set, drives, loadable images, and
 //! output. It names *what* the machine is made of, never *how* to wire it up.
 //! Turning this description into a running machine (a [`bus::Bus`] with a
-//! [`bus::DecodeMap`], the [`machine::IrqLine`] / [`machine::DmaWiring`] tables,
-//! and a [`machine::Machine`]) is the job of [`assemble`], the single data-driven
+//! [`bus::DecodeMap`], the [`::machine::IrqLine`] / [`::machine::DmaWiring`] tables,
+//! and a [`::machine::Machine`]) is the job of [`assemble`], the single data-driven
 //! realiser in this crate. Keeping the description separate from the assembly step
 //! is what makes a machine reproducible and snapshot-comparable: the whole config
 //! derives [`PartialEq`]/[`Eq`], so two configs — or a config and a golden — can
@@ -15,7 +15,7 @@
 //! ## What is modelled
 //!
 //! - [`CpuConfig`] — the modelled chip, the reset entry point, and the seeded
-//!   real-mode segment registers ([`cpu::x86jit_backend::RealSegments`]).
+//!   real-mode segment registers ([`::cpu::x86jit_backend::RealSegments`]).
 //! - [`ClockConfig`] — the deterministic virtual-clock ratio.
 //! - [`MemoryConfig`] — the RAM regions and MMIO windows of the address space.
 //! - [`DeviceConfig`] — one entry per modelled chip ([`devices`]), carrying its
@@ -72,4 +72,7 @@ pub use output::OutputConfig;
 pub use presets::{
     at_boot, at_fdc_write, at_keyboard, at_rtc, at_vga_text, bios, floppy_boot, test386,
 };
-pub use run::{run, ConsoleProbe, InjectionSchedule, KeyboardStimulus, RunPolicy, StopCondition};
+pub use run::{
+    inject_scancodes, run, ConsoleProbe, InjectionSchedule, KeyboardStimulus, RunError, RunPolicy,
+    StopCondition,
+};

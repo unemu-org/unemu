@@ -67,6 +67,7 @@ pub(crate) mod trace_policy_tests {
                 }
                 assert_eq!(bus.device().trace_dropped(), 3);
                 let snapshot = bus.device().save();
+                bus.device_mut().restore(&snapshot).unwrap();
                 assert_eq!(bus.device_mut().take_trace(), expected[3..]);
                 assert_eq!(bus.device().trace_dropped(), 3);
                 assert!(bus.device_mut().take_trace().is_empty());

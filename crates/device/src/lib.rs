@@ -256,7 +256,7 @@ pub enum DeviceError {
 /// device may hold a reference into that RAM: writes must run through the path
 /// that fires the JIT's `note_write` hook, or self-modifying-code tracking stops
 /// invalidating translated blocks the transfer overwrites (see the memory model
-/// in `backlog/docs/architecture.md`, §4.3). The machine implements this trait
+/// in `backlog/docs/architecture.md`, §Contracts and ownership). The machine implements this trait
 /// over the CPU's `Vm` API and hands it to the controller per transfer; unit
 /// tests implement it over a plain buffer. Addresses are full 24-bit physical
 /// addresses (a channel's page latch combined with its 16-bit offset).
@@ -383,9 +383,8 @@ pub struct TextModeState<'a> {
 /// - [`Device::mmio_read`] / [`Device::mmio_write`]: memory-mapped access at a
 ///   guest physical `addr`, `size` bytes. Backs `RegionKind::Trap` loads/stores.
 /// - [`Device::tick`]: advance internal timers/state to virtual time `now`
-///   (§6). Called on `run()` boundaries; no wall-clock.
-/// - [`Device::irq_pending`] / [`Device::irq_vector`]: the device's IRQ line and
-///   the vector it would drive on INTA (§5). The machine edge-detects a device's
+///   (§6). Deadline dispatch visits due transitions; accesses synchronize lazy state.
+/// - [`Device::irq_pending`]: the device's IRQ line (§5). The machine edge-detects its
 ///   line onto the interrupt controller and injects the acknowledged vector into
 ///   the CPU (see the `machine` crate).
 /// - [`Device::reset`]: return to power-on register state.
@@ -435,6 +434,10 @@ pub trait Device {
     fn mmio_write(&mut self, addr: u64, size: u8, value: u64) -> Result<(), DeviceError>;
 
     /// Advance internal state to virtual time `now` (§6).
+    ///
+    /// Times earlier than the device's current time violate the caller contract:
+    /// debug builds assert, release builds ignore them. Restore the bus clock
+    /// alongside device snapshots so counters cannot rewind or replay intervals.
     fn tick(&mut self, now: VClock);
 
     /// Synchronize a scheduled device before access at `now` (§6).
@@ -460,10 +463,6 @@ pub trait Device {
     /// Whether the device is currently asserting its IRQ line (§5.1).
     fn irq_pending(&self) -> bool;
 
-    /// The interrupt vector this device drives on INTA when its line is pending
-    /// (§5.4). `None` if no line is asserted.
-    fn irq_vector(&self) -> Option<u8>;
-
     /// Return to power-on register state.
     fn reset(&mut self);
 
@@ -481,6 +480,10 @@ pub trait Device {
     /// Reject malformed or inconsistent input with [`DeviceError::InvalidSnapshot`]
     /// without changing the device. The blob must never cause a panic or an
     /// unbounded transition when the restored device resumes execution.
+    /// The caller must restore a bus clock at least as late as the snapshot's
+    /// absolute time before resuming accesses. Earlier sync/tick calls are ignored.
+    /// Keep the current trace history, drop count and recording policy: these
+    /// run-scoped diagnostics are excluded from hardware snapshots.
     fn restore(&mut self, snapshot: &[u8]) -> Result<(), DeviceError>;
 
     /// A queued DMA transfer, if this device (a bus master such as the floppy

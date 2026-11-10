@@ -1,15 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! BIOS boot spike: load the real Kiselev Xi8088 ROM and see how far POST gets
+//! BIOS POST golden: boot the Kiselev Xi8088 ROM without decoded floppy ports
 //! (§3.1, §5, §9).
 //!
 //! Assembles the full PC/AT machine ([`run_bios_with_cap`]) — cascaded 8259 pair, 8253
 //! PIT, 8042, seeded MC146818 CMOS/RTC, VGA text card, port-`0x61` system
 //! control, POST port at `0x80` — over a full 1 MiB address space with the 32 KiB
 //! BIOS mapped as masked ROM at `0xF8000`, and boots it from the reset vector
-//! `F000:FFF0`. This is an exploratory plumbing spike (like the test386 smoke
-//! test but with real firmware), **not** CPU validation: a real-mode-only core is
-//! expected to stop early, and the value is the honest stop point captured on
-//! every exit path.
+//! `F000:FFF0`. The golden captures complete POST and bounds the subsequent
+//! no-controller boot retry loop.
 //!
 //! ## Observed result (this CPU revision)
 //!
@@ -30,7 +28,7 @@
 //! **POST stream: `[01 02 … 22 24 25 30 31 40 43 00]`.** `0x11` (video-BIOS
 //! *init*) is correctly skipped — the option-ROM area is zeroed RAM, no `0x55AA`
 //! signature, so the BIOS falls back to `0x12` (MDA/CGA). Seeded CMOS lets RTC
-//! init (`0x20`) pass; lifting x87 `FNINIT` let it clear FPU detect (`0x22`).
+//! init (`0x20`) pass; FPU detect (`0x22`) executes x87 `FNINIT`.
 //!
 //! After `e_boot` (`0x00`) the BIOS calls **INT 19h** (`int_19`, "load and execute
 //! the boot sector") and enters its floppy-read retry loop. This configuration
@@ -38,8 +36,8 @@
 //! the retired-instruction cap (`StopReason::BudgetExhausted`).
 //!
 //! The text screen is blank: the BIOS's MDA fallback targets the `0xB0000` window,
-//! which this spike maps as plain RAM rather than routing to the CGA card at
-//! `0xB8000` — a caveat to revisit, not a fault.
+//! which this machine maps as plain RAM rather than routing to the CGA card at
+//! `0xB8000`. The runner captures that MDA RAM console separately.
 //!
 //! The assertions pin the observed byte stream and the stop *kind*
 //! (`BudgetExhausted`), never an address.
@@ -49,14 +47,13 @@
 //! - BIOS ROM: Sergey Kiselev `8088_bios`, Xi8088 config, built by
 //!   `vendor/kiselev-bios/fetch.sh` (32 KiB, gitignored).
 //! - CPU: `x86jit-core`, the rev pinned in `Cargo.lock`.
-//!   The stop point is only meaningful against a known CPU revision; re-baseline
-//!   the golden if `FNINIT` (or a nearer instruction) gains real-mode support.
+//!   Re-pinning requires re-running this golden against the same ROM and policy.
 
 use cli::{run_bios_with_cap, StopReason, BIOS_GOLDEN_MAX_RETIRED};
 #[path = "support/fixtures.rs"]
 mod fixtures;
 
-/// The observed POST checkpoint stream. The BIOS now completes the whole
+/// The observed POST checkpoint stream. The BIOS completes the whole
 /// power-on self-test — CPU/chipset/DMA/RAM/IVT/PIT/PIC/KBC/interrupts, video
 /// scan and MDA/CGA fallback (`0x10`/`0x12`), RTC (`0x20`), CPU-type and FPU
 /// detect (`0x21`/`0x22`), serial and parallel scan (`0x24`/`0x25`), the RAM test

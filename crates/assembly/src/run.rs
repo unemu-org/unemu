@@ -27,6 +27,22 @@ use devices::I8042;
 use machine::{Machine, MachineError, RunOutcome};
 use video::{render_text_mode, TextModeState};
 
+/// Policy validation failures and hardware execution errors while driving a run.
+#[derive(Debug, thiserror::Error)]
+pub enum RunError {
+    /// Hardware execution failed.
+    #[error(transparent)]
+    Machine(#[from] MachineError),
+    /// The prompt left too little room for the complete scripted command.
+    #[error("insufficient command budget: need {required} steps, only {remaining} remain")]
+    InsufficientCommandBudget {
+        /// Requested post-prompt steps.
+        required: u64,
+        /// Steps remaining before the overall cap.
+        remaining: u64,
+    },
+}
+
 /// How to read a text console back out of guest memory to detect a prompt (§9.2).
 ///
 /// The prompt-detection path reads a `cols × rows` two-bytes-per-cell text buffer
@@ -62,9 +78,8 @@ pub enum InjectionSchedule {
 /// of set-1 (XT) make/break scancodes queued into the 8042 at `keyboard_index`
 /// (the caller resolves the controller's [`DeviceId`](crate::DeviceId) to its bus
 /// index through the assembler's device-index map). The 8042 delivers them
-/// serially, one clean IRQ1 edge per byte. **Defined here; the caller that uses it
-/// arrives with the interactive port** — a plain-data, comparable stimulus so the
-/// policy stays part of the golden identity.
+/// serially, one clean IRQ1 edge per byte. Plain-data stimuli keep the policy
+/// comparable as part of the golden identity.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct KeyboardStimulus {
     /// Bus index of the 8042 keyboard controller (resolved from its `DeviceId`).
@@ -111,9 +126,9 @@ pub enum StopCondition {
 
 /// How to run a machine, apart from what the machine is (§3.1).
 ///
-/// Every field is a "how we run" concern relocated out of the machine
-/// description. `retired_cap` is the total virtual-time safety net; `idle_limit`
-/// is the halted PIT-clock quiescence bound (stamped onto the machine by [`run`],
+/// Every field describes how to drive the machine. `retired_cap` is the total
+/// virtual-time safety net; `idle_limit` is the halted PIT-clock quiescence bound
+/// (stamped onto the machine by [`run`],
 /// not baked in at construction); `stop` chooses the stop shape; `stimuli` feeds
 /// the guest on a schedule.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -148,21 +163,20 @@ impl RunPolicy {
 /// stop condition, injecting any scheduled stimuli (§3.1).
 ///
 /// The single run-loop driver above [`Machine::run_bounded`]. It stamps the
-/// policy's `idle_limit` onto the machine (relocating it out of construction),
-/// then either runs straight to the virtual-time cap ([`StopCondition::Natural`]) or
+/// policy's `idle_limit` onto the machine, then either runs straight to the
+/// virtual-time cap ([`StopCondition::Natural`]) or
 /// polls to a prompt and optionally feeds the guest ([`StopCondition::PromptThen`]).
 /// Returns the [`RunOutcome`] of the final [`Machine::run_bounded`] so the caller
-/// classifies the stop exactly as before.
-pub fn run(
-    machine: &mut Machine<X86JitCpu>,
-    policy: &RunPolicy,
-) -> Result<RunOutcome, MachineError> {
-    // Relocated idle limit: the machine is built without one; the policy stamps it
-    // here, before the loop runs.
+/// classifies the stop.
+///
+/// This driver uses the assembler's concrete CPU because its console probe reads
+/// guest memory through `X86JitCpu::read_mem`. That backend is also the only
+/// production implementation of the step-bounded CPU contract.
+pub fn run(machine: &mut Machine<X86JitCpu>, policy: &RunPolicy) -> Result<RunOutcome, RunError> {
     machine.set_idle_limit(policy.idle_limit);
 
     match &policy.stop {
-        StopCondition::Natural => machine.run_bounded(policy.retired_cap),
+        StopCondition::Natural => machine.run_bounded(policy.retired_cap).map_err(Into::into),
         StopCondition::PromptThen {
             console,
             needle,
@@ -186,7 +200,7 @@ pub fn run(
                     .retired_cap
                     .map_or(u64::MAX - now, |cap| cap.saturating_sub(now));
                 if remaining < *then_budget {
-                    return Err(MachineError::InsufficientCommandBudget {
+                    return Err(RunError::InsufficientCommandBudget {
                         required: *then_budget,
                         remaining,
                     });
@@ -194,9 +208,11 @@ pub fn run(
                 for stim in after_prompt {
                     inject_scancodes(machine, stim.keyboard_index, &stim.scancodes);
                 }
-                return machine.run_bounded(Some(now + *then_budget));
+                return machine
+                    .run_bounded(Some(now + *then_budget))
+                    .map_err(Into::into);
             }
-            result
+            result.map_err(Into::into)
         }
     }
 }
@@ -255,7 +271,7 @@ fn console_contains(machine: &Machine<X86JitCpu>, probe: &ConsoleProbe, needle: 
 /// Queue a keyboard `scancodes` script into the 8042 at bus index `kbc_index`,
 /// reaching the concrete controller through the `Device::as_any_mut` downcast
 /// seam — the machine core still sees only `&mut dyn Device`.
-fn inject_scancodes(machine: &mut Machine<X86JitCpu>, kbc_index: usize, scancodes: &[u8]) {
+pub fn inject_scancodes(machine: &mut Machine<X86JitCpu>, kbc_index: usize, scancodes: &[u8]) {
     if let Some(dev) = machine.bus_mut().device_mut(kbc_index) {
         if let Some(kbc) = dev.as_any_mut().and_then(|a| a.downcast_mut::<I8042>()) {
             for &scancode in scancodes {

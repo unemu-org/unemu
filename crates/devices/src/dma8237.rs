@@ -42,13 +42,13 @@
 //! - **Memory-to-memory transfers** (command bit 0, using channels 0/1): the bit
 //!   is stored, but the block-copy path is not implemented.
 //! - **Timing**: demand, single, and block transfer *modes* all move bytes
-//!   through the same [`Dma8237::service_write`]/[`service_read`] primitives; the
+//!   through the same [`Dma8237::service_write`]/[`Dma8237::service_read`] primitives; the
 //!   controller models the register effects, not per-cycle bus arbitration or the
 //!   DREQ/DACK handshake latency.
 //! - **Compressed timing / rotating priority / the temporary register readback**
 //!   beyond returning the last byte.
 //! - **Mode/direction mismatch**: the requested transfer direction
-//!   ([`service_write`] for device→memory, [`service_read`] for memory→device) is
+//!   ([`Dma8237::service_write`] for device→memory, [`Dma8237::service_read`] for memory→device) is
 //!   trusted to match the channel's programmed [`TransferType`]. A guest that
 //!   programs a write-transfer mode but drives a read-direction request (or vice
 //!   versa) is not detected — parity with the other simplifications above, which
@@ -133,8 +133,7 @@ struct Channel {
 /// The 8237A DMA controller (§7.7).
 ///
 /// Decodes `0x00..=0x0F` and `0x80..=0x8F`. Has no interrupt output — DMA does
-/// not drive an IRQ line — so [`Device::irq_pending`] is always `false` and
-/// [`Device::irq_vector`] is `None`.
+/// not drive an IRQ line — so [`Device::irq_pending`] is always `false`.
 pub struct Dma8237 {
     channels: [Channel; CHANNELS],
     /// External page latches at `0x80..=0x8F`.
@@ -481,6 +480,10 @@ impl Device for Dma8237 {
     }
 
     fn tick(&mut self, now: VClock) {
+        debug_assert!(now >= self.now, "device clock moved backwards");
+        if now < self.now {
+            return;
+        }
         // The controller has no autonomous timed behaviour; transfers are driven
         // explicitly through service_write / service_read.
         self.now = now;
@@ -496,10 +499,6 @@ impl Device for Dma8237 {
         // The 8237 has no interrupt output; devices that use DMA raise their own
         // IRQ (e.g. the floppy controller).
         false
-    }
-
-    fn irq_vector(&self) -> Option<u8> {
-        None
     }
 
     fn reset(&mut self) {
@@ -725,7 +724,6 @@ mod tests {
             assert!(!dma.channel_ready(ch));
         }
         assert!(!dma.irq_pending());
-        assert_eq!(dma.irq_vector(), None);
     }
 
     #[test]

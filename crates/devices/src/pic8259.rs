@@ -507,6 +507,10 @@ impl Device for Pic8259 {
     }
 
     fn tick(&mut self, now: VClock) {
+        debug_assert!(now >= self.now, "device clock moved backwards");
+        if now < self.now {
+            return;
+        }
         // The PIC is edge/level driven, not clocked; only stamp trace time.
         self.now = now;
     }
@@ -514,10 +518,6 @@ impl Device for Pic8259 {
     fn irq_pending(&self) -> bool {
         // The aggregated INTR output: a serviceable request is pending.
         self.highest_pending().is_some()
-    }
-
-    fn irq_vector(&self) -> Option<u8> {
-        self.poll()
     }
 
     fn reset(&mut self) {

@@ -23,7 +23,14 @@ case "$step" in
         ')
         ;;
     deny) gate_command+=(cargo deny --all-features check licenses bans sources) ;;
-    tests) gate_command+=(cargo test --locked --workspace) ;;
+    tests)
+        # Release builds keep a few behaviours that debug builds assert against
+        # (devices ignore an earlier clock); run the device tests in both.
+        gate_command+=(bash -euc '
+            cargo test --locked --workspace
+            cargo test --locked --release -p devices
+        ')
+        ;;
     fixtures)
         gate_command+=(bash -euc '
             bash vendor/kiselev-bios/fetch.sh

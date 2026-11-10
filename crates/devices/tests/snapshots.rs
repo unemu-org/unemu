@@ -9,7 +9,6 @@ fn exercise(bus: &mut MockBus, ports: &[u16], at: u64) {
     bus.device_mut().sync(VClock(at));
     bus.device().next_event(VClock(at));
     bus.device().irq_pending();
-    bus.device().irq_vector();
     for &port in ports {
         bus.port_read(port, 1).unwrap();
         bus.port_write(port, 1, 0).unwrap();
@@ -123,7 +122,8 @@ fn sweep_blob(make: fn() -> Box<dyn Device>, ports: &[u16], valid: &[u8]) {
             match bus.device_mut().restore(&blob) {
                 Ok(()) => {
                     assert!(index != 0 || value == valid[0], "accepted wrong version");
-                    exercise(&mut bus, ports, 149);
+                    // Mutated snapshots may carry any absolute clock value.
+                    exercise(&mut bus, ports, u64::MAX);
                 }
                 Err(DeviceError::InvalidSnapshot { .. }) => assert_eq!(
                     bus.device().save(),
@@ -575,4 +575,65 @@ fn vga_rejects_out_of_range_index_without_mutation() {
         Err(DeviceError::InvalidSnapshot { .. })
     ));
     assert_eq!(bus.device().save(), valid);
+}
+
+#[test]
+#[cfg(not(debug_assertions))]
+fn restored_devices_ignore_backwards_clock_without_replaying_time() {
+    let devices: Vec<Box<dyn Device>> = vec![
+        Box::new(Pit8253::new()),
+        Box::new(CmosRtc::new().with_timing(100, 3)),
+        Box::new(Pic8259::new()),
+        Box::new(I8042::new()),
+        Box::new(Dma8237::new()),
+        Box::new(Upd765::new()),
+        Box::new(Uart16550::new(0x3F8)),
+        Box::new(VgaText::new()),
+        Box::new(PostPort::new()),
+        Box::new(SysControl::new()),
+    ];
+    for device in devices {
+        let mut bus = MockBus::new(device);
+        bus.device_mut().sync(VClock(149));
+        let snapshot = bus.device().save();
+        bus.device_mut().restore(&snapshot).unwrap();
+        bus.device_mut().sync(VClock(100));
+        assert_eq!(
+            bus.device().save(),
+            snapshot,
+            "{} rewound on sync",
+            bus.device().name()
+        );
+        bus.device_mut().tick(VClock(101));
+        bus.device_mut().sync(VClock(149));
+        assert_eq!(
+            bus.device().save(),
+            snapshot,
+            "{} replayed time",
+            bus.device().name()
+        );
+    }
+}
+
+#[test]
+fn crafted_timer_snapshots_survive_large_time_jumps() {
+    let mut pit = MockBus::new(Box::new(Pit8253::new()));
+    pit.port_write(0x43, 1, 0x36).unwrap();
+    pit.port_write(0x40, 1, 3).unwrap();
+    pit.port_write(0x40, 1, 0).unwrap();
+    let mut rtc = MockBus::new(Box::new(CmosRtc::new().with_timing(1, 0)));
+    for bus in [&mut pit, &mut rtc] {
+        let mut blob = bus.device().save();
+        // Absolute time is the final field in both timer formats. A restored
+        // early epoch must tolerate a jump spanning almost the whole clock.
+        let clock = blob.len() - 8;
+        blob[clock..].copy_from_slice(&1u64.to_le_bytes());
+        bus.device_mut().restore(&blob).unwrap();
+        bus.device_mut().sync(VClock(u64::MAX - 1));
+        let final_state = bus.device().save();
+        bus.device_mut().restore(&final_state).unwrap();
+        bus.device_mut().sync(VClock(u64::MAX - 1));
+        assert_eq!(bus.device().save(), final_state);
+        assert_ne!(final_state, blob);
+    }
 }

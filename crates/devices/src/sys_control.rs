@@ -11,7 +11,7 @@
 //!    error latched (this model reports none).
 //! 3. **A short-delay reference** — the BIOS `AT_DELAY` routine busy-waits on the
 //!    *refresh* status bit (bit 4), which on real hardware toggles at the DRAM
-//!    refresh rate, to measure sub-tick delays. See [`SysControl::status_byte`]
+//!    refresh rate, to measure sub-tick delays. See `SysControl::status_byte`
 //!    for why that bit must cycle per read here.
 //!
 //! ## Coverage matrix
@@ -20,7 +20,7 @@
 //! - **Parity-check enable** (bit 2) and **I/O-channel-check enable** (bit 3):
 //!   stored, read back.
 //! - **Refresh detect** (bit 4): a deterministic per-read toggle so the BIOS
-//!   delay loop terminates (see [`SysControl::status_byte`]).
+//!   delay loop terminates (see `SysControl::status_byte`).
 //! - **Timer-2 output** (bit 5): a benign deterministic per-read toggle.
 //! - **I/O-channel-check status** (bit 6) and **parity-check status** (bit 7):
 //!   read back as *no error*.
@@ -58,7 +58,7 @@ const IOCHK_ENABLE: u8 = 0x08;
 /// Mask of the guest-writable control bits kept in the low nibble.
 const CONTROL_MASK: u8 = GATE | SPEAKER_DATA | PARITY_CHECK_ENABLE | IOCHK_ENABLE;
 
-/// Bit 4: refresh-detect status. Toggled per read; see [`SysControl::status_byte`].
+/// Bit 4: refresh-detect status. Toggled per read; see `SysControl::status_byte`.
 const REFRESH_DETECT: u8 = 0x10;
 /// Bit 5: timer-2 output status. A benign per-read toggle.
 const TIMER2_OUT: u8 = 0x20;
@@ -82,7 +82,7 @@ pub struct SysControl {
     /// The guest-written control nibble (bits 0..=3); high bits are always clear.
     control: u8,
     /// Free-running counter bumped on every read of the port, driving the refresh
-    /// and timer-2 status bits through their phases. See [`SysControl::status_byte`]
+    /// and timer-2 status bits through their phases. See `SysControl::status_byte`
     /// for why the phase advances per read, not per [`Device::tick`].
     reads: u64,
     /// Trace events observed since the last [`Device::take_trace`].
@@ -197,6 +197,10 @@ impl Device for SysControl {
     }
 
     fn tick(&mut self, now: VClock) {
+        debug_assert!(now >= self.now, "device clock moved backwards");
+        if now < self.now {
+            return;
+        }
         self.now = now;
     }
 
@@ -208,10 +212,6 @@ impl Device for SysControl {
         // The system-control port drives no IRQ line in this model (parity /
         // I/O-channel-check NMIs are not generated).
         false
-    }
-
-    fn irq_vector(&self) -> Option<u8> {
-        None
     }
 
     fn reset(&mut self) {
@@ -482,7 +482,6 @@ mod tests {
     fn no_irq_is_asserted() {
         let dev = SysControl::new();
         assert!(!dev.irq_pending());
-        assert_eq!(dev.irq_vector(), None);
     }
 
     #[test]

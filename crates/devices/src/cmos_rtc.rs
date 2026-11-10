@@ -32,8 +32,7 @@
 //! The RTC's interrupt output is **IRQ8**, exposed through
 //! [`Device::irq_pending`]. On the AT, IRQ8 is a line on the *slave* 8259 PIC;
 //! the machine edge-detects this output onto that slave input, which cascades
-//! into the master at IRQ2. [`Device::irq_vector`] returns `None` because the
-//! PIC owns vectoring (§5.4). Reading register C clears the flags and deasserts
+//! into the master at IRQ2. The PIC owns interrupt vectoring (§5.4). Reading register C clears the flags and deasserts
 //! the line, as on hardware.
 //!
 //! ## Coverage matrix (datasheet vs modelled)
@@ -336,8 +335,7 @@ impl Default for CmosConfig {
 /// The MC146818 CMOS/RTC device (§7.6).
 ///
 /// Decodes ports `0x70`/`0x71`. Drives **IRQ8** through [`Device::irq_pending`]
-/// (unconsumed until the slave PIC is modelled); [`Device::irq_vector`] is
-/// `None`.
+/// on the slave PIC, cascaded through master IRQ2.
 pub struct CmosRtc {
     /// 64-byte CMOS store. Time registers are shadowed by `time` on access; their
     /// slots here back general reads only for non-time indices.
@@ -791,6 +789,10 @@ impl Device for CmosRtc {
     }
 
     fn tick(&mut self, now: VClock) {
+        debug_assert!(now >= self.now, "device clock moved backwards");
+        if now < self.now {
+            return;
+        }
         let elapsed = now.0.saturating_sub(self.now.0);
         self.now = now;
         if elapsed == 0 {
@@ -860,10 +862,6 @@ impl Device for CmosRtc {
         // IRQ8 is asserted whenever register C's IRQF is set; the machine wires
         // this output onto the slave PIC's IRQ8 input.
         self.nvram[REG_C] & C_IRQF != 0
-    }
-
-    fn irq_vector(&self) -> Option<u8> {
-        None
     }
 
     /// Motorola MC146818 datasheet, "RESET — RESET, INPUT": RESET leaves
@@ -1587,7 +1585,6 @@ mod tests {
         assert!(!rtc.irq_pending());
         rtc.tick(VClock(10)); // one second elapses -> UF, IRQF
         assert!(rtc.irq_pending());
-        assert_eq!(rtc.irq_vector(), None);
         // Reading register C clears the flags and deasserts the line.
         let c = read_reg(&mut rtc, REG_C as u8);
         assert_ne!(c & C_UF, 0);

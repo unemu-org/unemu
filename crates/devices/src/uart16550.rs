@@ -232,6 +232,10 @@ impl Device for Uart16550 {
     }
 
     fn tick(&mut self, now: VClock) {
+        debug_assert!(now >= self.now, "device clock moved backwards");
+        if now < self.now {
+            return;
+        }
         self.now = now;
     }
 
@@ -242,10 +246,6 @@ impl Device for Uart16550 {
     fn irq_pending(&self) -> bool {
         // No THRE/RX interrupts are modelled yet; COM1's IRQ4 line comes later.
         false
-    }
-
-    fn irq_vector(&self) -> Option<u8> {
-        None
     }
 
     fn reset(&mut self) {
@@ -629,7 +629,6 @@ mod tests {
     fn no_irq_is_asserted() {
         let uart = Uart16550::new(COM1);
         assert!(!uart.irq_pending());
-        assert_eq!(uart.irq_vector(), None);
     }
 
     #[test]
@@ -674,35 +673,16 @@ mod tests {
 
     #[test]
     fn mock_bus_isolation_harness() {
-        // Prove the device runs under the isolation harness and the trace seam
-        // survives a round trip through `&mut dyn Device`.
-        let mut bus = MockBus::new(Box::new(crate::trace_policy_tests::traced(Uart16550::new(
-            COM1,
-        ))));
-        bus.tick(3); // stamp a non-zero virtual time onto subsequent traces.
+        let mut uart = Uart16550::new(COM1);
+        let capture = capture_output(&mut uart);
+        let mut bus = MockBus::new(Box::new(uart));
+        bus.tick(3);
         for &byte in b"hello" {
             bus.port_write(COM1, 1, u32::from(byte)).unwrap();
         }
         assert_eq!(bus.port_read(COM1 + 5, 1).unwrap(), 0x60);
 
-        let reconstructed: Vec<u8> = bus
-            .device_mut()
-            .take_trace()
-            .into_iter()
-            .filter_map(|ev| match ev {
-                TraceEvent::Port {
-                    port,
-                    dir: AccessDir::Write,
-                    value,
-                    at,
-                    ..
-                } if port == COM1 => {
-                    assert_eq!(at, VClock(3));
-                    Some(value as u8)
-                }
-                _ => None,
-            })
-            .collect();
-        assert_eq!(reconstructed, b"hello");
+        assert_eq!(capture.drain().unwrap(), b"hello");
+        assert!(bus.device_mut().take_trace().is_empty());
     }
 }

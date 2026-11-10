@@ -11,8 +11,8 @@ use crate::output::OutputConfig;
 
 /// A complete, declarative description of one emulated machine (§3.1).
 ///
-/// Pure data: it says what the machine is, and the assembler (a later task)
-/// turns it into a running [`machine::Machine`]. The whole tree derives
+/// Pure data: it says what the machine is, and [`crate::assemble`]
+/// turns it into a running [`::machine::Machine`]. The whole tree derives
 /// [`PartialEq`]/[`Eq`], so a config is identifiable — comparable against a
 /// golden or another config byte-for-byte. Call [`MachineConfig::validate`]
 /// before assembly to catch an internally inconsistent description.

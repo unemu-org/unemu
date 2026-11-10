@@ -2,7 +2,7 @@
 //! Machine runners for the frontend (§3.1).
 //!
 //! The `cli` crate is split lib + bin so the golden integration tests can call
-//! the same paths the binary uses. Every PC-family runner here now builds a
+//! the same paths the binary uses. Every PC-family runner here builds a
 //! declarative [`assembly::MachineConfig`] from a preset, realises it with
 //! [`assembly::assemble`], and drives the resulting machine — addressing devices
 //! by role through the assembler's device-index map, never a hardcoded bus index.
@@ -15,25 +15,15 @@ use anyhow::{Context, Result};
 use assembly::{
     assemble_with_observation, AssembledMachine, ConsoleProbe, DeviceId, InjectionSchedule,
     KeyboardStimulus, MachineConfig, Observation, ObservationPolicy, ObservationRequest,
-    OutputKind, RunPolicy, StopCondition,
+    OutputKind, RunError, RunPolicy, StopCondition,
 };
 use cpu::{Cpu, CpuError, CpuReg, X86JitCpu};
 use device::{ByteStreamKind, Device};
 use devices::upd765::FLOPPY_IMAGE_BYTES;
 use devices::vga_text::{COLS, ROWS, TEXT_BUFFER_LEN};
-use devices::I8042;
 use machine::{Machine, MachineError, RunOutcome};
 use std::collections::HashMap;
 use video::{render_text_mode, CaptureFrameSink, Frame, FrameSink, TextGrid, TextModeState};
-
-/// Load segment/IP for the real-mode boot blob (classic boot address, CS = 0).
-///
-/// The blob runs from segment `0x0000`, IP `0x7C00`, so its linear load address
-/// is `0x7C00`. All four segment registers start at `0x0000` (flat low memory);
-/// the handler and the IVT it programs therefore live in the same segment.
-pub const BOOT_CS: u16 = 0x0000;
-/// Real-mode boot IP (linear load address, since CS = 0).
-pub const BOOT_IP: u16 = 0x7C00;
 
 /// Consecutive halted PIT clocks with no interrupt before the boot machine
 /// declares the timer quiescent and stops (§5). The boot guest masks IRQ0 after
@@ -51,7 +41,7 @@ pub const BOOT_HANDLER_OFFSET: u16 = 0x7C30;
 /// The built-in real-mode boot demo (§5, §7).
 ///
 /// A hand-encoded 16-bit program (no assembler). The embedder seeds the segment
-/// registers and the stack (the `x86jit` core does not lift `mov Sreg, r16`), so
+/// registers and the stack so
 /// the program starts straight at device setup: it writes an IRQ0 handler address
 /// into IVT entry 8, programs the 8259 PIC (ICW1–ICW4, vector base `0x08`, IRQ0
 /// unmasked), programs PIT counter 0 (mode 2, divisor 20), `sti`, then loops on
@@ -98,7 +88,7 @@ pub const KBD_HANDLER_OFFSET: u16 = 0x7C00 + 44;
 /// The built-in real-mode keyboard-interrupt demo (§5, §7).
 ///
 /// A hand-encoded 16-bit program (no assembler). The embedder seeds the segment
-/// registers and stack (the `x86jit` core does not lift `mov Sreg, r16`), so the
+/// registers and stack so the
 /// program starts straight at device setup: it writes an IRQ1 handler address
 /// into IVT entry 9, programs the 8259 PIC (ICW1–ICW4, vector base `0x08`, IRQ1
 /// unmasked), enables keyboard interrupts in the 8042 (command byte bit 0),
@@ -176,7 +166,7 @@ pub const RTC_IDLE_LIMIT: u64 = 200;
 /// The built-in real-mode RTC update-ended interrupt demo (§5, §7).
 ///
 /// A hand-encoded 16-bit program (no assembler). The embedder seeds the segment
-/// registers and stack (the `x86jit` core does not lift `mov Sreg, r16`), so the
+/// registers and stack so the
 /// program starts straight at device setup: it writes an IRQ8 handler address
 /// into IVT entry `0x70` (`0x0000:0x01C0`), programs the master 8259 (ICW1–ICW4,
 /// vector base `0x08`, IRQ2 unmasked for the cascade) and the slave 8259 (ICW1–
@@ -260,7 +250,7 @@ pub fn fdc_write_pattern() -> Vec<u8> {
 /// The built-in real-mode floppy WRITE demo (§7, §7.7, §7.8).
 ///
 /// A hand-encoded 16-bit program (no assembler). The embedder seeds the segment
-/// registers and stack (the `x86jit` core does not lift `mov Sreg, r16`), so the
+/// registers and stack so the
 /// program starts straight at device setup. With a blank writable floppy in drive
 /// 0 it: brings the µPD765 out of reset (DOR: not-reset + DMA-enable + motor), then
 /// programs the 8237 channel 2 for a memory→device transfer of one 512-byte sector
@@ -345,10 +335,6 @@ pub const FDC_WRITE_PROGRAM: &[u8] = &[
     0xEB, 0xFD,                         // jmp $-3 (back to the in)
 ];
 
-/// Segment the VGA text demo points DS/ES at so a near store reaches the text
-/// buffer: `0xB800 << 4 == 0xB8000`, the base of the colour text page.
-pub const VGA_TEXT_SEGMENT: u16 = 0xB800;
-
 /// The built-in real-mode VGA text demo (§9.2).
 ///
 /// A hand-encoded 16-bit program (no assembler). The embedder seeds DS/ES to
@@ -380,8 +366,7 @@ pub const TEST386_MAX_RETIRED: u64 = 1_024;
 pub enum StopReason {
     /// The guest executed `hlt` and the machine terminated.
     Halt,
-    /// The core hit a decodable instruction it does not lift (e.g. a segment-
-    /// register load the real-mode backend does not model). `detail` records the
+    /// The core hit a decodable instruction it does not implement. `detail` records the
     /// faulting address for the report.
     Unsupported {
         /// Human-readable location of the unlifted instruction.
@@ -396,6 +381,11 @@ pub enum StopReason {
     Exception {
         /// x86 exception vector.
         vector: u8,
+    },
+    /// Machine configuration or assembly failed before execution.
+    ConfigFailed {
+        /// Human-readable assembly error.
+        detail: String,
     },
     /// The run policy could not grant its complete command budget.
     PolicyFailed {
@@ -448,8 +438,8 @@ pub fn run_test386(blob: &[u8]) -> Test386Run {
         Err(e) => {
             return Test386Run {
                 post: Vec::new(),
-                stop: StopReason::Unmapped {
-                    detail: format!("building machine: {e}"),
+                stop: StopReason::ConfigFailed {
+                    detail: e.to_string(),
                 },
             }
         }
@@ -457,7 +447,7 @@ pub fn run_test386(blob: &[u8]) -> Test386Run {
 
     let result = machine.run_bounded(Some(TEST386_MAX_RETIRED));
     let rip = machine.cpu().reg(CpuReg::Rip);
-    let mut stop = classify_test386_stop(rip, result);
+    let mut stop = classify_test386_stop(rip, result.map_err(Into::into));
     let post = stream_or_fail(capture_post(&observation), &mut stop);
     Test386Run { post, stop }
 }
@@ -465,52 +455,43 @@ pub fn run_test386(blob: &[u8]) -> Test386Run {
 /// Classify how a POST-only (no video) run stopped, reading the RIP for the
 /// human-readable `detail` (never an assertion target — stop addresses shift with
 /// the assembler toolchain).
-fn classify_test386_stop(rip: u64, result: Result<RunOutcome, MachineError>) -> StopReason {
+fn classify_test386_stop(rip: u64, result: Result<RunOutcome, RunError>) -> StopReason {
     match result {
         Ok(RunOutcome::Halted) => StopReason::Halt,
         Ok(RunOutcome::RetiredCapReached) => StopReason::BudgetExhausted,
-        Err(MachineError::Cpu(CpuError::UnsupportedInstruction { addr })) => {
+        Err(RunError::Machine(MachineError::Cpu(CpuError::UnsupportedInstruction { addr }))) => {
             StopReason::Unsupported {
                 detail: format!("unsupported instruction at {addr:#x} (rip {rip:#x})"),
             }
         }
-        Err(MachineError::Cpu(CpuError::Unmapped { addr })) => StopReason::Unmapped {
-            detail: format!("unmapped guest access at {addr:#x} (rip {rip:#x})"),
-        },
-        Err(MachineError::Cpu(CpuError::Memory(msg))) => StopReason::Unmapped {
+        Err(RunError::Machine(MachineError::Cpu(CpuError::Unmapped { addr }))) => {
+            StopReason::Unmapped {
+                detail: format!("unmapped guest access at {addr:#x} (rip {rip:#x})"),
+            }
+        }
+        Err(RunError::Machine(MachineError::Cpu(CpuError::Memory(msg)))) => StopReason::Unmapped {
             detail: format!("guest memory error: {msg} (rip {rip:#x})"),
         },
-        Err(MachineError::Cpu(e @ CpuError::UnexpectedExit { .. })) => StopReason::Unmapped {
+        Err(RunError::Machine(MachineError::Cpu(e @ CpuError::UnexpectedExit { .. }))) => {
+            StopReason::Unmapped {
+                detail: format!("{e} (rip {rip:#x})"),
+            }
+        }
+        Err(RunError::Machine(MachineError::Bus(e))) => StopReason::Unmapped {
             detail: format!("{e} (rip {rip:#x})"),
         },
-        Err(MachineError::Bus(e)) => StopReason::Unmapped {
-            detail: format!("{e} (rip {rip:#x})"),
-        },
-        Err(error @ MachineError::InsufficientCommandBudget { .. }) => StopReason::PolicyFailed {
+        Err(error @ RunError::InsufficientCommandBudget { .. }) => StopReason::PolicyFailed {
             detail: error.to_string(),
         },
-        Err(MachineError::Exception { vector }) => StopReason::Exception { vector },
+        Err(RunError::Machine(MachineError::Exception { vector })) => {
+            StopReason::Exception { vector }
+        }
     }
 }
 
 // ---------------------------------------------------------------------------
 // Full BIOS machine: load a real 32 KiB PC BIOS ROM and boot it (§3.1, §5, §9).
 // ---------------------------------------------------------------------------
-
-/// The full 1 MiB guest address space of the BIOS machine.
-pub const BIOS_SPACE: u64 = 0x10_0000;
-/// Top of conventional (640 KiB) RAM — RAM covers `[0, 0xA0000)`.
-pub const BIOS_CONVENTIONAL_TOP: u64 = 0x0A_0000;
-/// Base of the option-ROM scan area `[0xC0000, 0xF8000)`, mapped as zeroed RAM so
-/// the BIOS's `0x55AA` signature scan finds nothing and skips it cleanly.
-pub const BIOS_OPTION_ROM_BASE: u64 = 0x0C_0000;
-/// Base of the 32 KiB masked BIOS ROM: `[0xF8000, 0x100000)`.
-pub const BIOS_ROM_BASE: u64 = 0x0F_8000;
-/// Reset code segment: `CS = 0xF000`.
-pub const BIOS_RESET_CS: u16 = 0xF000;
-/// Reset instruction pointer: `IP = 0xFFF0` → linear `0xFFFF0`, inside the ROM,
-/// where the reset far jump enters POST.
-pub const BIOS_RESET_IP: u16 = 0xFFF0;
 
 /// Step-equivalent safety cap for BIOS/DOS runs (§6). The pinned date prompt
 /// first appears at step 8,108,258 (single-step sampling after 8,108,000).
@@ -530,7 +511,7 @@ pub const BIOS_IDLE_LIMIT: u64 = 1_000_000;
 /// Base of the monochrome (MDA) text window. When the option-ROM scan finds no
 /// video BIOS, the Kiselev POST falls back to an MDA/CGA console whose INT 10h
 /// teletype writes glyphs here rather than to the colour page at `0xB8000`. This
-/// spike maps `0xB0000` as plain conventional RAM, so the console text is read
+/// machine maps `0xB0000` as plain conventional RAM, so the console text is read
 /// back from guest memory after the run.
 pub const MDA_BUFFER_BASE: u64 = 0x0B_0000;
 
@@ -568,8 +549,8 @@ pub struct BiosRun {
 }
 
 /// Assemble the full PC/AT BIOS machine, map the 32 KiB `rom` at `0xF8000`, and
-/// boot it from the reset vector — an exploratory spike of how far a real BIOS's
-/// POST gets on a real-mode-only core (§3.1, §5, §9).
+/// boot it from the reset vector through POST and the no-media boot retry loop
+/// (§3.1, §5, §9).
 ///
 /// The address space is a full 1 MiB mosaic with no unmapped holes, so a POST
 /// probe never aborts on unmapped memory:
@@ -579,8 +560,7 @@ pub struct BiosRun {
 /// - `[0xB8000, 0xC0000)` — the VGA colour text buffer, trapped MMIO routed to the
 ///   text card.
 /// - `[0xC0000, 0xF8000)` — zeroed RAM standing in for the option-ROM scan area:
-///   the BIOS's `0x55AA` signature scan finds nothing and skips it (no option ROM
-///   this spike).
+///   the BIOS's `0x55AA` signature scan finds nothing and skips it.
 /// - `[0xF8000, 0x100000)` — the masked 32 KiB BIOS ROM, loaded with `rom`.
 ///
 /// The cascaded 8259 pair, 8253 PIT, 8042, seeded MC146818 CMOS/RTC, VGA text
@@ -589,13 +569,11 @@ pub struct BiosRun {
 /// update-ended line to IRQ8; the BIOS programs the PICs itself.
 ///
 /// **Port `0x80` decode.** On a real AT the DMA page registers overlap `0x80`;
-/// this spike wires no 8237 (floppy DMA is later work), so `0x80` is decoded to
-/// the POST port and any stray DMA-page write elsewhere is absorbed by the bus's
-/// open-bus default.
+/// the POST port owns `0x80`. With media attached the 8237 page registers decode
+/// `0x81..=0x8F`; without media those ports use the bus's open-bus default.
 ///
-/// The POST stream and the text screen are captured on **every** exit path — the
-/// whole point is to see how far POST got even when the run ends on an
-/// instruction the real-mode core does not lift.
+/// The POST stream and the text screen are captured on **every** exit path so
+/// callers can inspect the firmware's progress even after an execution error.
 pub fn run_bios(rom: &[u8]) -> BiosRun {
     run_bios_with_cap(rom, BIOS_MAX_RETIRED)
 }
@@ -614,7 +592,7 @@ pub fn run_bios_with_cap(rom: &[u8], cap: u64) -> BiosRun {
 /// The natural-stop policy the plain BIOS/POST boots run under: cap the total
 /// virtual time at [`BIOS_MAX_RETIRED`] instruction equivalents, declare the
 /// interrupt source quiescent after [`BIOS_IDLE_LIMIT`] idle PIT clocks, and stop
-/// when the guest halts (relocated out of machine construction into the policy).
+/// when the guest halts without a serviceable interrupt.
 fn bios_natural_policy() -> RunPolicy {
     RunPolicy::natural(Some(BIOS_MAX_RETIRED), Some(BIOS_IDLE_LIMIT))
 }
@@ -671,8 +649,8 @@ fn run_bios_config(
                 screen_stamp: None,
                 mda: blank_screen(),
                 com1: Vec::new(),
-                stop: StopReason::Unmapped {
-                    detail: format!("building machine: {e}"),
+                stop: StopReason::ConfigFailed {
+                    detail: e.to_string(),
                 },
             }
         }
@@ -702,7 +680,7 @@ fn run_bios_assembled(
             (grid, Some(stamp))
         }
         Err(error) => {
-            stop = StopReason::Unmapped {
+            stop = StopReason::ObservationFailed {
                 detail: format!("capturing display: {error}"),
             };
             (blank_screen(), None)
@@ -846,19 +824,6 @@ pub fn run_freedos_interactive(rom: &[u8], floppy: Vec<u8>, scancodes: &[u8]) ->
         };
         freedos_prompt_policy(vec![stimulus], DOS_INTERACTIVE_COMMAND_BUDGET)
     })
-}
-
-/// Queue a keyboard `scancodes` script into the 8042 at bus index `kbc_index`,
-/// reaching the concrete controller through the [`Device::as_any_mut`] downcast
-/// seam — the machine core still sees only `&mut dyn Device`.
-fn inject_scancodes(machine: &mut Machine<X86JitCpu>, kbc_index: usize, scancodes: &[u8]) {
-    if let Some(dev) = machine.bus_mut().device_mut(kbc_index) {
-        if let Some(kbc) = dev.as_any_mut().and_then(|a| a.downcast_mut::<I8042>()) {
-            for &scancode in scancodes {
-                kbc.push_scancode(scancode);
-            }
-        }
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1017,7 +982,7 @@ fn render_mda(machine: &Machine<X86JitCpu>) -> TextGrid {
 /// for the report (§3.1). Addresses live in `detail` for humans only.
 fn classify_bios_stop(
     machine: &Machine<X86JitCpu>,
-    result: Result<RunOutcome, MachineError>,
+    result: Result<RunOutcome, RunError>,
 ) -> StopReason {
     let ip = machine.cpu().reg(CpuReg::Rip);
     let cs = machine.cpu().code_segment();
@@ -1036,27 +1001,33 @@ fn classify_bios_stop(
     match result {
         Ok(RunOutcome::Halted) => StopReason::Halt,
         Ok(RunOutcome::RetiredCapReached) => StopReason::BudgetExhausted,
-        Err(MachineError::Cpu(CpuError::UnsupportedInstruction { addr })) => {
+        Err(RunError::Machine(MachineError::Cpu(CpuError::UnsupportedInstruction { addr }))) => {
             StopReason::Unsupported {
                 detail: format!("unsupported instruction at {addr:#x}; {site}"),
             }
         }
-        Err(MachineError::Cpu(CpuError::Unmapped { addr })) => StopReason::Unmapped {
-            detail: format!("unmapped guest access at {addr:#x}; {site}"),
-        },
-        Err(MachineError::Cpu(CpuError::Memory(msg))) => StopReason::Unmapped {
+        Err(RunError::Machine(MachineError::Cpu(CpuError::Unmapped { addr }))) => {
+            StopReason::Unmapped {
+                detail: format!("unmapped guest access at {addr:#x}; {site}"),
+            }
+        }
+        Err(RunError::Machine(MachineError::Cpu(CpuError::Memory(msg)))) => StopReason::Unmapped {
             detail: format!("guest memory error: {msg}; {site}"),
         },
-        Err(MachineError::Cpu(e @ CpuError::UnexpectedExit { .. })) => StopReason::Unmapped {
+        Err(RunError::Machine(MachineError::Cpu(e @ CpuError::UnexpectedExit { .. }))) => {
+            StopReason::Unmapped {
+                detail: format!("{e}; {site}"),
+            }
+        }
+        Err(RunError::Machine(MachineError::Bus(e))) => StopReason::Unmapped {
             detail: format!("{e}; {site}"),
         },
-        Err(MachineError::Bus(e)) => StopReason::Unmapped {
-            detail: format!("{e}; {site}"),
-        },
-        Err(error @ MachineError::InsufficientCommandBudget { .. }) => StopReason::PolicyFailed {
+        Err(error @ RunError::InsufficientCommandBudget { .. }) => StopReason::PolicyFailed {
             detail: error.to_string(),
         },
-        Err(MachineError::Exception { vector }) => StopReason::Exception { vector },
+        Err(RunError::Machine(MachineError::Exception { vector })) => {
+            StopReason::Exception { vector }
+        }
     }
 }
 
@@ -1077,17 +1048,13 @@ fn blank_screen() -> TextGrid {
 // Fast floppy-boot demo: drive the FDC + 8237 to load a boot sector, no BIOS.
 // ---------------------------------------------------------------------------
 
-/// Load offset of the hand-encoded floppy-boot loader (CS = 0, so linear too).
-pub const FLOPPY_LOADER_IP: u16 = 0x7E00;
-/// Where the loader deposits and jumps to the boot sector (classic boot address).
-pub const FLOPPY_BOOT_TARGET: u16 = 0x7C00;
 /// The byte the minimal boot sector transmits to COM1 to prove it executed.
 pub const FLOPPY_BOOT_MARKER: u8 = b'B';
 
 /// A hand-encoded real-mode loader (no assembler) that reads sector 0 of the
 /// floppy into `0x7C00` and far-jumps to it — a self-contained stand-in for the
 /// BIOS INT 13h/INT 19h boot path, so the FDC → 8237 → memory → IRQ6 plumbing is
-/// exercised deterministically without a multi-minute BIOS POST. Every byte is
+/// exercised deterministically without BIOS POST. Every byte is
 /// documented in the `floppy_boot_golden` integration test.
 ///
 /// It programs 8237 channel 2 for a device→memory transfer to physical `0x07C00`
@@ -1137,7 +1104,7 @@ const FLOPPY_BOOT_SECTOR: &[u8] = &[
 
 /// Build a minimal bootable 1.44 MB floppy image: the boot sector at offset 0
 /// (writing `'B'` to COM1, then `hlt`) with the `0x55 0xAA` signature at offset
-/// 510, and the rest zeroed. A real FreeDOS image is separate later work; this
+/// 510, and the rest zeroed. The FreeDOS runners use a separately built image; this
 /// keeps the boot test self-contained.
 #[must_use]
 pub fn bootable_floppy_image() -> Vec<u8> {
@@ -1184,9 +1151,8 @@ pub fn run_boot(blob: &[u8]) -> Result<Vec<u8>> {
         ..
     } = assemble_with_observation(&config, &serial_policy()).context("assembling boot machine")?;
 
-    // Natural run to quiescence under the demo's idle limit — relocated from the
-    // machine's construction into the run policy. No retired cap: the demo masks
-    // its timer and halts on its own.
+    // No retired cap: the demo masks its timer and halts on its own. The idle
+    // limit bounds the wait for an interrupt after that halt.
     assembly::run(
         &mut machine,
         &RunPolicy::natural(None, Some(BOOT_IDLE_LIMIT)),
@@ -1199,7 +1165,7 @@ pub fn run_boot(blob: &[u8]) -> Result<Vec<u8>> {
 /// Assemble the PC/AT machine with `scancodes` queued in the keyboard, run `blob`
 /// in real mode, and return the bytes the guest sent to COM1 (§5, §7).
 ///
-/// The 8042's keyboard-byte-ready line (bus device index [`AT_I8042_INDEX`]) is
+/// The 8042's keyboard-byte-ready line (resolved as `DeviceId::Keyboard`) is
 /// wired to PIC input IRQ1; the machine edge-detects it and acknowledges/injects
 /// the keyboard vector once the guest enables keyboard interrupts and sets `IF`.
 pub fn run_keyboard(blob: &[u8], scancodes: &[u8]) -> Result<Vec<u8>> {
@@ -1214,9 +1180,9 @@ pub fn run_keyboard(blob: &[u8], scancodes: &[u8]) -> Result<Vec<u8>> {
     // Queue the scancodes into the 8042 before the run, exactly as the legacy
     // chipset seeded them at construction — the guest raises IRQ1 for each once it
     // enables keyboard interrupts.
-    inject_scancodes(&mut machine, device_index[&DeviceId::Keyboard], scancodes);
+    assembly::inject_scancodes(&mut machine, device_index[&DeviceId::Keyboard], scancodes);
 
-    // Natural run under the demo's idle limit (relocated into the run policy).
+    // The idle limit lets the demo stop once no interrupt can wake the CPU.
     assembly::run(
         &mut machine,
         &RunPolicy::natural(None, Some(KBD_IDLE_LIMIT)),
@@ -1229,7 +1195,7 @@ pub fn run_keyboard(blob: &[u8], scancodes: &[u8]) -> Result<Vec<u8>> {
 /// Assemble the PC/AT machine with a fast-ticking RTC, run `blob` in real mode,
 /// and return the bytes the guest sent to COM1 (§5, §7).
 ///
-/// The RTC's update-ended output ([`AT_CMOS_RTC_INDEX`]) is wired to PIC input
+/// The RTC's update-ended output (`DeviceId::Rtc`) is wired to PIC input
 /// IRQ8, which lives on the *slave* 8259; the machine edge-detects it onto the
 /// cascaded pair, where it surfaces to the CPU through the master's IRQ2 cascade.
 /// This is the first path where an interrupt reaches the CPU across the cascade.
@@ -1244,7 +1210,7 @@ pub fn run_rtc(blob: &[u8]) -> Result<Vec<u8>> {
         ..
     } = assemble_with_observation(&config, &serial_policy()).context("assembling rtc machine")?;
 
-    // Natural run under the demo's idle limit (relocated into the run policy).
+    // The idle limit lets the demo stop once no interrupt can wake the CPU.
     assembly::run(
         &mut machine,
         &RunPolicy::natural(None, Some(RTC_IDLE_LIMIT)),
@@ -1282,7 +1248,7 @@ pub fn run_fdc_write(program: &[u8]) -> Result<Vec<u8>> {
 /// Assemble the PC/AT machine, run `blob` in real mode, then render the VGA text
 /// card into a [`TextGrid`] and present it to a [`CaptureFrameSink`] (§9.2).
 ///
-/// DS/ES are seeded to [`VGA_TEXT_SEGMENT`] so the guest's near stores reach the
+/// DS/ES are seeded to `0xB800` so the guest's near stores reach the
 /// text buffer, and the `0xB8000` window is mapped as trapped MMIO so those
 /// stores surface on the bus and reach the card. Nothing runs a wall clock, so
 /// the produced grid is deterministic.
@@ -1462,8 +1428,27 @@ mod tests {
         let mut config = assembly::bios(vec![0xF4; 32768], None);
         config.devices.retain(|device| device.id != DeviceId::Vga);
         let run = run_bios_config(config, |_| RunPolicy::natural(Some(100), None));
-        assert!(matches!(run.stop, StopReason::Unmapped { .. }));
+        assert!(matches!(run.stop, StopReason::ConfigFailed { .. }));
         assert_eq!(run.screen_stamp, None);
+    }
+
+    #[test]
+    fn bios_display_capture_failure_is_an_observation_failure() {
+        let mut observation = bios_observation_policy();
+        observation
+            .routes
+            .retain(|route| route.output != OutputKind::TextScanout);
+        let mut assembled =
+            assemble_with_observation(&assembly::bios(vec![0xF4; 32768], None), &observation)
+                .unwrap();
+        let run = run_bios_assembled(&mut assembled, |_| RunPolicy::natural(Some(0), None));
+        assert!(matches!(
+            run.stop,
+            StopReason::ObservationFailed { detail }
+                if detail.contains("capturing display") && detail.contains("route is not bound")
+        ));
+        assert_eq!(run.screen_stamp, None);
+        assert_eq!(run.screen, blank_screen());
     }
 
     #[test]
@@ -1515,7 +1500,15 @@ mod bounded_trace_tests {
             let dropped = device.trace_dropped();
             let events = device.take_trace();
             assert!(events.len() <= capacity, "{id:?}: {}", events.len());
-            eprintln!("{id:?}: retained={}, dropped={dropped}", events.len());
+            let scope = if id == DeviceId::Fdc {
+                " (includes end-of-run floppy readback)"
+            } else {
+                ""
+            };
+            eprintln!(
+                "{id:?}: retained={}, dropped={dropped}{scope}",
+                events.len()
+            );
             drops += dropped;
         }
         drops
@@ -1592,5 +1585,20 @@ mod bounded_trace_tests {
                 "{workload}: all outputs and stop must agree"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod configuration_error_tests {
+    use super::*;
+
+    #[test]
+    fn invalid_runner_images_report_configuration_failure() {
+        let diagnostic = run_test386(&vec![0; 0x10_0001]);
+        assert!(matches!(diagnostic.stop, StopReason::ConfigFailed { .. }));
+        assert!(diagnostic.post.is_empty());
+        let bios = run_bios_with_cap(&vec![0; 0x8001], 0);
+        assert!(matches!(bios.stop, StopReason::ConfigFailed { .. }));
+        assert!(bios.post.is_empty());
     }
 }

@@ -33,7 +33,7 @@
 //!
 //! Intel 8042 datasheet, "Data Bus Buffer" and "Interrupts", describes the
 //! host buffer interface. The two PIT boundaries above are the compatibility
-//! model's IRQ visibility policy, separate from [`KEYBOARD_BYTE_CLOCKS`]. See
+//! model's IRQ visibility policy, separate from `KEYBOARD_BYTE_CLOCKS`. See
 //! `backlog/docs/design/scheduler.md` § Device migration inventory.
 //!
 //! ## Bounded buffering and response ordering
@@ -278,7 +278,7 @@ struct KeyboardByte {
 ///
 /// Decodes ports `0x60` and `0x64`. Drives the **IRQ1** line through
 /// [`Device::irq_pending`] when a keyboard byte is ready and keyboard interrupts
-/// are enabled in the command byte; [`Device::irq_vector`] is `None` because the
+/// are enabled in the command byte; the
 /// 8259 PIC owns vectoring — the controller only drives a line (§5.4).
 pub struct I8042 {
     /// The byte the CPU reads at `0x60`.
@@ -589,6 +589,10 @@ impl Device for I8042 {
     }
 
     fn tick(&mut self, now: VClock) {
+        debug_assert!(now >= self.now, "device clock moved backwards");
+        if now < self.now {
+            return;
+        }
         let elapsed = now.0.saturating_sub(self.now.0);
         self.now = now;
         if elapsed == 0 {
@@ -633,12 +637,6 @@ impl Device for I8042 {
         // IRQ1 asserts when a keyboard byte is ready and keyboard interrupts are
         // enabled. Controller command responses do not drive the line.
         self.output_full && self.source == Source::Keyboard && self.command_byte & CB_KBD_INT != 0
-    }
-
-    fn irq_vector(&self) -> Option<u8> {
-        // The controller drives IRQ1 as a line; the 8259 PIC resolves it to a
-        // vector on INTA (§5.4).
-        None
     }
 
     fn reset(&mut self) {
@@ -1365,7 +1363,6 @@ mod tests {
     fn power_on_state() {
         let kbc = I8042::new();
         assert!(!kbc.irq_pending());
-        assert_eq!(kbc.irq_vector(), None);
         // A20 defaults enabled per the "A20 always-on for now" decision.
         assert!(kbc.a20_enabled());
     }

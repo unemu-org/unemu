@@ -108,7 +108,7 @@ survive bounded runner calls.
   bus-binding API or `irq_ack()` method. Segment seeds and `code_segment()` are
   concrete `X86JitCpu` setup/inspection APIs.
 - **[`Device`](../../crates/device/src/lib.rs)** supplies port/MMIO access,
-  `tick(VClock)`, IRQ level/vector queries, reset, per-device save/restore, trace
+  `tick(VClock)`, IRQ level queries, reset, per-device save/restore, trace
   drains and optional DMA request/service/completion hooks. Host-side
   `as_any_mut` is an optional downcast for input/output glue, not execution-loop
   hardware selection. `NextEvent::{EveryPitClock, At(VClock), Dormant}` is an
@@ -134,6 +134,19 @@ references. DMA requesters supply a channel and payload/length, the configured
 controller supplies addresses/counts, and the machine lends a temporary
 `DmaMemory` adapter over the CPU seam. `DmaOutcome` returns a transfer count or
 the bytes read, truncated to the controller's actual transfer length.
+
+### Snapshot clock and interrupt state
+
+Device restore keeps the current trace history, drop counts and recording policy.
+A restored bus clock must be at least as late as each device snapshot's absolute
+clock; devices ignore earlier sync/tick times to avoid rewinding or replaying an
+interval. Restoring an earlier epoch requires restoring its global clock too.
+
+A future machine-level snapshot must also save `Machine::last_levels`, the IRQ
+edge detector's last sampled levels. No device snapshot contains these samples;
+losing them can suppress or invent an interrupt edge after restore. CPU state,
+the global clock and its fractional remainder, halted state and idle counters
+also belong to that machine-level snapshot.
 
 ### Observation and presentation
 

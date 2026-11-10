@@ -3,7 +3,7 @@
 //!
 //! [`X86JitCpu`] wraps an `x86jit-core` [`Vm`] + [`Vcpu`] and maps the core's
 //! [`Exit`] variants onto the backend-neutral [`CpuStop`]. It runs in **Long64**
-//! mode (the serial skeleton, [`X86JitCpu::new`]) or in **Real16** mode (a PC/AT
+//! mode (adapter unit tests, [`X86JitCpu::new`]) or in **Real16** mode (a PC/AT
 //! boot that takes hardware interrupts, [`X86JitCpu::new_real16_bare`]). It uses the
 //! `x86jit` integration surface: `Exit::PortIo` (`in`/`out`), `RegionKind::Trap`
 //! MMIO, and — in real mode — IVT-vectored hardware IRQ injection.
@@ -66,9 +66,9 @@ impl X86JitCpu {
     /// [`X86JitCpu::map_rom`]); this only seeds the segment and stack registers and
     /// points CS:IP at the reset entry.
     ///
-    /// The segment registers are seeded here because the `x86jit` core models
-    /// segment *bases* for addressing (it does not lift `mov Sreg, r16`); a
-    /// real-mode guest starts from these rather than setting them up from nothing.
+    /// The segment registers are seeded here so that a guest entered at an
+    /// arbitrary CS:IP (a test program or a reset vector) has defined DS, ES, SS
+    /// and SP before its first instruction; the guest may reload them itself.
     pub fn new_real16_bare(
         space_bytes: u64,
         cs: u16,
@@ -358,10 +358,8 @@ impl Cpu for X86JitCpu {
     }
 
     fn inject_irq(&mut self, vector: u8) {
-        // Real mode only: the core queues the vector and delivers it in-guest
-        // through the IVT at the next `run()` boundary once IF is set, no
-        // completion is outstanding, and the STI/SS-load shadow has elapsed. In Long64
-        // this is inert (the core never sets `pending_irq` outside real mode).
+        // The core queues vectors in every mode, but only Real16 delivers them
+        // through the IVT once IF, completion and STI/SS-shadow gates allow it.
         self.cpu.inject_irq(vector);
     }
 

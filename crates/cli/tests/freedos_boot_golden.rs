@@ -1,15 +1,28 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! FreeDOS boot spike: boot a real FreeDOS floppy image on the full machine
-//! (§3.1, §5, §9) — the north-star target.
+//! FreeDOS boot golden: boot a real FreeDOS floppy image on the full machine
+//! (§3.1, §5, §9).
 //!
 //! Assembles the PC/AT machine ([`run_freedos`]) with the real Kiselev Xi8088
 //! BIOS in masked ROM and a real, bootable **FreeDOS** 1.44 MB floppy image (8086
 //! kernel + FreeCOM, built by `vendor/freedos/fetch.sh`) in the µPD765 floppy
-//! drive, and boots from the reset vector. Exploratory, like the BIOS and floppy
-//! spikes before it: the value is the honest boot progress captured on every exit
-//! path.
+//! drive, and boots from the reset vector. The golden captures the final shell
+//! console and the complete POST checkpoint stream.
 //!
 //! ## Observed result (this CPU revision)
+//!
+//! The complete media-attached POST stream is:
+//! `[01 02 03 04 05 06 07 08 09 10 12 20 21 22 24 25 30 31 40 43 00]`.
+//! The BIOS's `src/errno.inc` names these checkpoints:
+//!
+//! ```text
+//! 01 e_cpu_test       02 e_init_cfg        03 e_init_dmac
+//! 04 e_low_ram_test   05 e_int_table       06 e_pit_init
+//! 07 e_pic_init       08 e_kbd_init        09 e_int_ena
+//! 10 e_vid_bios_scan  12 e_vid_no_bios     20 e_rtc_init
+//! 21 e_cpu_detect    22 e_fpu_detect      24 e_serial_scan
+//! 25 e_parallel_scan 30 e_ram_start       31 e_ram_complete
+//! 40 e_ext_start     43 e_ext_complete    00 e_boot
+//! ```
 //!
 //! The BIOS completes its full POST, prints its hardware-detection screen through
 //! INT 10h, and boots from the floppy. **The console output lands in the MDA text
@@ -46,20 +59,18 @@
 //! FreeCOM asks for the date/time before giving the `A:\>` prompt; the run stops
 //! there **waiting for keyboard input that never arrives in a headless run**.
 //! `run_freedos` polls the console and stops as soon as that date prompt appears
-//! rather than spinning the ~2 billion idle INT 16h busy-poll instructions to the
-//! full cap — the boot itself is only ~25M instructions, so the whole run is a few
-//! seconds. The stop is still `StopReason::BudgetExhausted` (a poll-chunk cap
+//! within the configured instruction-equivalent safety cap. Host duration depends
+//! on the build and host. The stop is `StopReason::BudgetExhausted` (a poll-chunk cap
 //! reached at a terminal wait-for-input state, not a spin or an unlifted op).
 //!
-//! Reaching the shell required modelling the monochrome (MDA) input status
-//! register at port `0x3BA`: the BIOS's INT 10h read/write-character routines
-//! busy-wait on its retrace bits, and with the port undecoded (reading a constant
-//! `0xFF`) that wait spun forever the moment the kernel called INT 10h AH=08h.
+//! The monochrome (MDA) input status register at port `0x3BA` supplies the retrace
+//! bits polled by the BIOS's INT 10h read/write-character routines. Their waits
+//! must complete for the kernel's INT 10h AH=08h call to return.
 //!
 //! The golden pins the stable milestone reached: the FreeDOS kernel banner and
 //! the FreeCOM shell prompt on the MDA console, with the run reaching the cap at
-//! the keyboard wait. Marked `#[ignore]` because it runs the full multi-minute
-//! BIOS POST and then the FreeDOS boot chain.
+//! the keyboard wait. Marked `#[ignore]` because it runs BIOS POST and the full
+//! FreeDOS boot chain.
 //!
 //! ## Pinned inputs
 //! - BIOS: Sergey Kiselev `8088_bios`, Xi8088 config (`vendor/kiselev-bios`).
@@ -70,7 +81,12 @@ use cli::{run_freedos, StopReason};
 #[path = "support/fixtures.rs"]
 mod fixtures;
 
-#[ignore = "slow: runs the full multi-minute BIOS POST then the FreeDOS boot chain"]
+const GOLDEN_POST: &[u8] = &[
+    0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x10, 0x12, 0x20, 0x21, 0x22, 0x24, 0x25,
+    0x30, 0x31, 0x40, 0x43, 0x00,
+];
+
+#[ignore = "slow: runs BIOS POST and the full FreeDOS boot chain"]
 #[test]
 fn freedos_reaches_shell_prompt() {
     let (Some(rom), Some(img)) = (
@@ -82,6 +98,10 @@ fn freedos_reaches_shell_prompt() {
     assert_eq!(img.len(), 1_474_560, "FreeDOS floppy is a 1.44 MB image");
 
     let run = run_freedos(&rom, img);
+    assert_eq!(
+        run.post, GOLDEN_POST,
+        "media-attached POST checkpoint stream"
+    );
     // Monochrome CRTC aliases update the card's cursor even though the colour
     // page is blank. A host snapshot must preserve that register state.
     assert_eq!(

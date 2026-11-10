@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! BIOS floppy-boot spike: the real Kiselev Xi8088 ROM boots a disk over the
+//! BIOS floppy-boot golden: the real Kiselev Xi8088 ROM boots a disk over the
 //! µPD765 + 8237 (§3.1, §5, §7.7).
 //!
 //! Assembles the full PC/AT machine as `bios_boot_golden` does but with a µPD765

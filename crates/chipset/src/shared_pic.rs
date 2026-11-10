@@ -221,10 +221,6 @@ impl Device for SharedPic {
         self.inner.borrow().irq_pending()
     }
 
-    fn irq_vector(&self) -> Option<u8> {
-        self.inner.borrow().irq_vector()
-    }
-
     fn reset(&mut self) {
         self.inner.borrow_mut().reset();
     }
@@ -284,7 +280,7 @@ const CASCADE_IRQ: u8 = 2;
 /// Owns a master and a slave [`SharedPic`]. The 16 logical lines map as
 /// IRQ0–IRQ7 → master lines 0–7 and IRQ8–IRQ15 → slave lines 0–7. Whenever the
 /// slave has a serviceable request, its INT output asserts the master's IRQ2
-/// input ([`CASCADE_IRQ`]); the master then resolves priority across all
+/// input (`IRQ2`); the master then resolves priority across all
 /// sixteen lines, with IRQ8–IRQ15 slotting in at IRQ2's priority.
 ///
 /// Hand [`CascadedPic::master_device`] and [`CascadedPic::slave_device`] to the
@@ -492,9 +488,8 @@ mod tests {
                     bus.device_mut().restore(&valid).unwrap();
                     match bus.device_mut().restore(&blob) {
                         Ok(()) => {
-                            bus.device_mut().sync(VClock(252));
-                            bus.device().next_event(VClock(252));
-                            bus.device().irq_vector();
+                            bus.device_mut().sync(VClock(u64::MAX));
+                            bus.device().next_event(VClock(u64::MAX));
                             bus.port_read(command, 1).unwrap();
                             bus.port_write(command, 1, 0x20).unwrap();
                         }
