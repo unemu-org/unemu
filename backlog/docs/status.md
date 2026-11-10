@@ -28,7 +28,7 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   [scheduler adoption](design/scheduler.md#adoption).
 - **Machines are declarative.** A `MachineConfig` (the `assembly` crate) is built by one
   `assemble()` and run under a `RunPolicy`; presets replace the old hand-written runners.
-- **CPU pin:** `54fad1766a458df7cedb6c0b4b5d50742628ef75` (x86jit `main`).
+- **CPU pin:** `96a49a9063cdf0a2bdb2d916f01b381fbad0176e` (x86jit `main`).
 - **CPU:** pinned x86jit `CpuMode::Real16` interpreter with exact step bounds,
   per-iteration REP time, STI/SS-load inhibition and interrupt-readiness stops.
 - **Scheduler:** deadline dispatch is the sole production engine. INTA follows
@@ -48,17 +48,17 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   guard and cargo deny are clean; `cargo doc` has no warnings. Forgejo CI runs
   the same gate. See `commands.md`.
 - **Speed:** a release BIOS POST, FreeDOS boot and `DIR` session takes about
-  0.86 s for roughly 11 million instructions; the CPU core takes 97–99 % of it
-  and the machine side under 2 % (profile in
+  0.50 s for roughly 11 million instructions; the CPU core takes 96–99 % of it
+  and the machine side about 2 % (profile in
   [`design/machine-time-profile.md`](design/machine-time-profile.md)).
 
 ## In flight
 
 The 286 foundation milestone is closed. Next is phase A of decision-16 (the
 display through a real MDA card to a window, host keyboard input): epic
-`skeleton` in beads. The CPU core project is reducing translation-cache
-invalidation cost (about half of the DOS session's time); the profile is to be
-re-measured when that lands.
+`skeleton` in beads. Translation-cache invalidation is still about half of the
+DOS session's time after the CPU core's page-indexed rework; the remaining cost
+was reported to the CPU core project.
 
 ## Broken / known defects
 

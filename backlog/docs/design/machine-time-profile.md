@@ -219,3 +219,51 @@ The shape is unchanged from the previous section: the machine side stays
 under 2 %, and translation-cache invalidation is still about half of the
 session. The CPU core project is replacing its whole-cache invalidation scan
 with a page-indexed span map; re-measure here when that is pinned.
+
+## After the page-indexed invalidation in the CPU core (2026-11-10)
+
+Same method, `main` at `0a2d285`, x86jit pinned at `96a49a9` (page-indexed
+translation-cache invalidation that drops only the blocks whose bytes were
+written). Behaviour is unchanged: the fast tests, the release device tests and
+the 13 slow goldens (including the per-clock/deadline engine comparisons)
+pass with the same expectations, with the fixtures required.
+
+Wall time of the release `dos_interactive_golden` binary, built from both pins
+in the same session and run alternately three times each:
+
+| Pin | Run 1 | Run 2 | Run 3 |
+|---|---|---|---|
+| `54fad17` | 0.84 s | 0.83 s | 0.84 s |
+| `96a49a9` | 0.50 s | 0.50 s | 0.49 s |
+
+Share of the test thread's samples per category, pooled over three sampled
+runs (category samples summed over the runs, divided by the summed totals), and the estimated time (share times the mean wall time). The sampler
+does not take the same number of samples per second in both runs, so the
+estimate is rough. Categories overlap: lifting is reached from dispatch, and
+invalidation from guest stores, so the CPU-core rows do not add up; the rows
+left out are the machine loop itself and the test harness.
+
+| Category | `54fad17` share | time | `96a49a9` share | time |
+|---|---|---|---|---|
+| CPU core, `Vcpu::run_steps` | 97.3 % | 0.81 s | 97.4 % | 0.48 s |
+| — translation-cache invalidation | 47.3 % | 0.40 s | 49.3 % | 0.25 s |
+| — dispatch and block resolution | 29.7 % | 0.25 s | 4.7 % | 0.02 s |
+| — interpreting IR | 18.1 % | 0.15 s | 39.7 % | 0.20 s |
+| — decoding and lifting to IR | 22.9 % | 0.19 s | 1.3 % | 0.01 s |
+| bus: port and MMIO access, settle, deadlines | 1.1 % | 0.01 s | 1.3 % | 0.01 s |
+| devices | 0.4 % | < 0.01 s | 0.3 % | < 0.01 s |
+
+Findings:
+
+- The session takes **40 % less wall time** (0.84 s to 0.50 s). Lifting and
+  dispatch almost disappear: a store next to code no longer drops blocks
+  whose bytes it did not write, so those blocks are not lifted again.
+- Interpreting IR did not get cheaper; it is now the second largest part.
+- Invalidation costs less in absolute time but is still about half of the
+  session. The time is in the per-store candidate search (x86jit
+  `x86jit-core/src/cache.rs`, `SpanIndex::candidates` and
+  `TranslationCache::invalidate_range`): each guest store to a code page
+  copies the key of every block on that page into a new hash set (the standard
+  library's default hasher), looks each key up again to test the overlap, and
+  collects the overlapping ones into a new vector, also when no block covers
+  the written bytes. This was sent to the CPU core project with the profile.

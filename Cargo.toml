@@ -30,7 +30,7 @@ anyhow = "1"
 # golden trace) runs against a known CPU. Not a bare path dependency — that breaks
 # nix build and CI. To develop against a local x86jit checkout, add a gitignored
 # [patch] override instead of editing this line.
-x86jit-core = { version = "0.3", git = "https://git.lab.mikolajczyk.org/unemu-org/x86jit", rev = "54fad1766a458df7cedb6c0b4b5d50742628ef75" }
+x86jit-core = { version = "0.3", git = "https://git.lab.mikolajczyk.org/unemu-org/x86jit", rev = "96a49a9063cdf0a2bdb2d916f01b381fbad0176e" }
 
 # Internal crates share the workspace version.
 assembly = { path = "crates/assembly", version = "0.1.0" }
