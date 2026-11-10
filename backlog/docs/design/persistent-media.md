@@ -3,8 +3,9 @@
 Status: accepted design (the maintainer approved the defaults on 2026-11-10).
 The version-1 codec and recovery scanner are implemented in `crates/media`;
 the host-independent device media contract and its in-memory implementation
-are implemented in `crates/device`. The file sink, journal write mode and
-offline tools are still to come.
+are implemented in `crates/device`. The durable host sink and single-writer
+lifecycle are implemented in `crates/media`; assembly journal write mode,
+retention and offline tools are still to come.
 
 ## Context
 
@@ -274,16 +275,26 @@ For every nonempty completed command, in order:
 Version 1 has a single, fixed durability policy: **every completed write
 command**, plus each generation end and each recovery truncation. `flush()`
 alone is insufficient. On Unix use a file-data-and-metadata sync (`fsync`, via
-`File::sync_all`) and, on macOS, a full device-cache flush through `F_FULLFSYNC`
-where required by the platform implementation; do not assume Rust's wrapper
-already supplies the stronger guarantee. An unsupported durability primitive
-is a host error, not a silent downgrade. Apple documents the distinction in
+`File::sync_all`). On Apple targets, std's `File::sync_all` already issues
+`fcntl(F_FULLFSYNC)` and retries interrupted calls; rely on that implementation
+rather than issuing a second device-cache flush. Any remaining direct platform
+syscalls must retry `Interrupted`. An unsupported durability primitive is a host
+error, not a silent downgrade. Apple documents the distinction in
 [fsync(2), Description](https://developer.apple.com/library/archive/documentation/System/Conceptual/ManPages_iPhoneOS/man2/fsync.2.html).
 
-Before the first guest instruction, creation must synchronize the header and
-the containing directory entry. Each replacement file is written to an unused
-temporary name in the same directory, fully verified and synchronized before
-atomic publication; synchronize the containing directory after publication.
+Before the first guest instruction, creation writes the header into an unused
+same-directory temporary file and synchronizes it. Publish with a hard link to
+the final path (which refuses an existing destination), unlink the temporary,
+then synchronize the directory. A failure before publication leaves no journal
+at the final path; an unpublished temporary is never mounted automatically.
+A failure after publication can leave a complete header whose directory entry
+is synchronized again on reopen. Under the stable lock, mounts remove the
+journal's `<journal>.create-*.tmp` leftovers before synchronizing the directory.
+This handles both unpublished orphans and the extra hard link left by a crash
+between publication and unlink; journal contents remain authoritative.
+Each replacement file is written to an unused temporary name in the same
+directory, fully verified and synchronized before atomic publication;
+synchronize the containing directory after publication.
 Use the corresponding tested namespace/durability operations per supported
 platform. Unsupported filesystems/platforms are refused for journal mode.
 
@@ -296,6 +307,83 @@ fallible and mandatory before reporting persistence success; `Drop` only
 releases handles. On execution errors do not label the session clean: leave
 its completed commands for recovery. A clean label does not certify filesystem
 consistency, even when the guest is at a prompt.
+
+### Implemented host sink boundary
+
+`media::JournalMedia` owns the reconstructed image and host journal. Assembly
+will wrap its `(LBA, complete sector)` command batches in `device::SectorMedia`;
+this keeps host I/O out of device crates without adding a dependency between the
+format crate and device contracts. `JournalMedia::open` takes the exact loaded
+base bytes, geometry length and a frontend-owned `SinkStatus`. Each media session
+uses its own status handle. Duplicate LBAs are collapsed to their final bytes,
+ordered by their last occurrence, before encoding unique SECTOR frames; memory
+applies the original batch in order, matching volatile last-wins behavior.
+`checkpoint` closes a generation and continues;
+`finish` consumes the session. Dropping without finish releases the journal and
+stable sidecar lock without writing a marker. Retention is not run by this sink.
+
+Both scanner entry points share validation and classification. `scan_reader`
+uses `Read + Seek`, retaining the base, reconstructed image, one bounded command,
+one frame and generation summaries; it does not retain journal payload history.
+Memory is O(image bytes + number of closed generations), not O(journal bytes).
+Offsets must fit the host's `usize`; larger files are refused before replay.
+Read/seek errors abort mount rather than authorizing tail truncation.
+
+The supported implementation is Unix: `sync_all` for file and directory, with
+std supplying `F_FULLFSYNC` on Apple targets for both. A rejected barrier aborts
+creation/mount or poisons an active sink, with no fallback. New headers are
+synchronized before hard-link publication; existing destinations are preserved.
+After locking and opening (or publishing a new header), mount re-resolves the
+canonical journal path and refuses a mismatch before cleanup, scan or recovery.
+It then removes creation-temporary leftovers and synchronizes the directory,
+even when no tail needs repair. Cleanup or directory-sync errors abort mount.
+Existing validated history is synchronized on mount before confirming its last
+command sequence. The status records the last confirmed COMMAND_END sequence;
+generation markers do not advance that command receipt. A writable recovery
+failure aborts before a media session can be returned.
+
+**MEASURED on macOS:** Rust tests exercise real-file creation, reopen/replay,
+lock exclusion through normal paths and cross-directory symlinks, torn-frame
+repair/sealing, checkpoints, finish and Drop. Real header I/O tests fail after
+each of the 128 incomplete write prefixes and on header sync, then verify no
+journal was published and a fresh mount can succeed. Another real-file test
+checks that hard-link publication refuses an existing destination. Each real
+file test uses a unique subdirectory of `std::env::temp_dir()` and removes it.
+A dangling-symlink test checks refusal before lock creation. A filesystem hook
+stages alias creation and a competing target mount between initial resolution
+and open, without threads or timing; post-open verification refuses the stale
+alias path without changing the active target's bytes or sink status. Real-file
+tests reconstruct both temporary-file crash shapes, check orphan removal and
+hard-link count reduction, preserve unrelated names, and replay the journal.
+
+The injected model checks header publication ordering, torn-tail repair/seal
+ordering, and exact successful traces for clean-history and command-complete
+unsealed reopens. For each of those four fixtures it injects one error at every
+operation in the successful trace, checking abort, lock release and the
+first-error status; creation also checks publication state and allows
+best-effort temporary cleanup. This
+covers the model boundary (lock/open, post-open path verification, temporary
+creation/publication/unlink and leftover cleanup, read/seek, write/flush/sync,
+directory sync and recovery truncation), rather than every syscall, filesystem
+failure combination or per-entry cleanup failure. A separate model check
+requires leftover cleanup under the lock followed by directory sync, and aborts
+on either boundary's injected failure. Both reopen fixtures explicitly require
+directory sync and the existing-history barrier,
+with recovery sealing only after that barrier for an unsealed tip.
+
+Command-output tests cover all 1,920 incomplete prefixes of a two-sector batch,
+short/interrupted/zero writes and flush/sync errors. Duplicate-sector tests
+check last-wins memory and replay, unique frame counts and last-occurrence order,
+including memory writes after poisoning. Streaming tests compare both scanners
+at every truncation of a generated journal and reject oversized read requests
+and injected read errors. Targeted mutations check the changed behaviors; this
+is not a claim that every assertion or every platform syscall is mutation-tested.
+These process/software fault tests establish neither a physical power-cut result
+nor status/IRQ equivalence through an assembled journal drive; that integration
+belongs to the assembly and final-validation work.
+
+**ASSUMED:** the filesystem/device honors successful synchronization and retains
+previously synchronized bytes under the tail-only crash model stated above.
 
 ### Host errors and determinism
 
@@ -401,7 +489,16 @@ in-place commit, or export of an unsealed tip. A user repairs/seals the tip firs
 
 ### Locking and retention
 
-Use a stable `<journal>.lock` sidecar with a nonblocking OS advisory lock.
+Resolve an existing journal's canonical path before deriving the stable
+`<journal>.lock` sidecar, so symlink aliases share the same nonblocking OS
+advisory lock. Refuse a dangling journal symlink before creating a lock. For a
+missing journal, canonicalize its parent only to establish the expected name
+for the post-open comparison; locking itself already follows parent aliases.
+After acquiring the lock and opening the journal, re-resolve its canonical path
+and refuse any mismatch with the name from which the lock was derived. This
+also catches a symlink introduced after initial resolution. Under that lock,
+remove `<journal>.create-*.tmp` leftovers and synchronize the directory before
+scan/recovery. Never mount a leftover temporary as a journal.
 Mounts and mutating tools take it exclusively; inspections take it shared.
 Creation of lock metadata is permitted for inspections, but image/journal
 contents remain read-only. The lock file is never replaced/unlinked by normal

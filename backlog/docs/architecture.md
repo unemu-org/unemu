@@ -16,7 +16,7 @@ crate: image loading belongs to `assembly`, and guest assets live under `vendor/
 
 | Crate | Responsibility | Runtime dependencies | Test-only dependencies |
 | --- | --- | --- | --- |
-| `media` | Host-independent floppy journal encoding, base binding, command-atomic replay, retention-anchor validation and read-only recovery reports ([format](design/persistent-media.md#chosen-format-byte-layout)) | `sha2` | None |
+| `media` | Floppy journal encoding, streaming recovery/replay, retention-anchor validation, durable host sink and stable single-writer locks ([format](design/persistent-media.md#chosen-format-byte-layout)) | `sha2`, `thiserror` | None |
 | `device` | Hardware-neutral contracts: `Device`, `InterruptController`, `DmaMemory`, `VClock`, `NextEvent`, access traces, DMA messages, and the observation capabilities (text scanout, byte output, `ByteCapture`) | `thiserror` | None |
 | `cpu` | `Cpu`/`CpuStop` seam and `X86JitCpu`, which owns the core's `Vm` and `Vcpu` | `x86jit-core`, `thiserror` | None |
 | `bus` | Owns boxed devices and executes a port/MMIO `DecodeMap`; open-bus policy and ticking | `device`, `thiserror` | None |
@@ -147,6 +147,11 @@ survive bounded runner calls.
   are zero-filled by the controller; abnormal completions include sectors already
   committed. The contract exposes no clock or host error result. Default drives
   use `InMemoryMedia`; reset retains the medium and device snapshots exclude it.
+  The host-side `media::JournalMedia` owns reconstructed bytes, synchronous
+  per-command output, recovery and checkpoint/finish under a stable sidecar lock.
+  Its shared `SinkStatus` latches the first failure outside guest-visible state;
+  reads and later memory writes continue after output stops. Assembly adaptation
+  to `SectorMedia` and frontend status polling remain separate integration work.
   See [persistent media](design/persistent-media.md#integration-layers-flush-points-determinism-argument).
 - **`InterruptController`**, defined in `device`, supplies `set_irq_line`,
   non-mutating `poll`, `acknowledge`, and `end_of_interrupt`. Machine wiring

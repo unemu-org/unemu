@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Command-atomic replay and fixed-stride recovery; persistent-media.md § Open and
-//! tail recovery. This scanner never changes its inputs or performs host I/O.
-//! Its byte-slice input requires the entire journal to be resident in memory,
-//! including history that can grow until retention. A streaming `Read` + `Seek`
-//! variant is deferred to the host-file sink.
+//! tail recovery. Both entry points share grammar and recovery classification.
+//! Streaming retains the image, one bounded command and generation summaries,
+//! rather than retaining journal payload history.
 
 use crate::codec::intact_generation_end;
 use crate::{ClosingReason, Error, Frame, Header, Record, FRAME_LEN, HEADER_LEN, SECTOR_LEN};
 use std::collections::BTreeMap;
+use std::io::{self, Read, Seek, SeekFrom};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Generation {
@@ -107,6 +107,39 @@ pub struct Scan {
 /// Valid unsealed commands are replayed; pending commands and torn suffixes are
 /// excluded. No bytes are repaired or sealed by this function.
 pub fn scan(journal: &[u8], base: &[u8], geometry_length: u64) -> Scan {
+    let result = scan_source(journal.len(), base, geometry_length, |offset, bytes| {
+        bytes.copy_from_slice(&journal[offset..offset + bytes.len()]);
+        Ok::<_, std::convert::Infallible>(())
+    });
+    match result {
+        Ok(scan) => scan,
+        Err(never) => match never {},
+    }
+}
+
+/// Scan from offset zero without loading journal history into memory. I/O errors
+/// abort inspection, never masquerade as a discardable tail. Offsets must fit
+/// `usize`; larger files are refused before replay. The cursor position on return
+/// is unspecified. The caller must exclude concurrent writers.
+pub fn scan_reader<R: Read + Seek>(
+    journal: &mut R,
+    base: &[u8],
+    geometry_length: u64,
+) -> io::Result<Scan> {
+    let length = usize::try_from(journal.seek(SeekFrom::End(0))?)
+        .map_err(|_| io::Error::other("journal offsets exceed address space"))?;
+    scan_source(length, base, geometry_length, |offset, bytes| {
+        journal.seek(SeekFrom::Start(offset as u64))?;
+        journal.read_exact(bytes)
+    })
+}
+
+fn scan_source<E>(
+    length: usize,
+    base: &[u8],
+    geometry_length: u64,
+    mut read: impl FnMut(usize, &mut [u8]) -> Result<(), E>,
+) -> Result<Scan, E> {
     let mut report = VerificationReport {
         header: None,
         status: Status::Valid,
@@ -117,7 +150,9 @@ pub fn scan(journal: &[u8], base: &[u8], geometry_length: u64) -> Scan {
         last_durable_sequence: 0,
         last_closed_generation: None,
     };
-    let header_bytes = &journal[..journal.len().min(HEADER_LEN)];
+    let mut header_bytes = [0; HEADER_LEN];
+    let header_bytes = &mut header_bytes[..length.min(HEADER_LEN)];
+    read(0, header_bytes)?;
     let header = match Header::decode(header_bytes, base, geometry_length) {
         Ok(header) => header,
         Err(reason) => {
@@ -127,10 +162,10 @@ pub fn scan(journal: &[u8], base: &[u8], geometry_length: u64) -> Scan {
                 later_generation_end: None,
                 incomplete_anchor: false,
             });
-            return Scan {
+            return Ok(Scan {
                 report,
                 image: None,
-            };
+            });
         }
     };
     let mut state = State::new(&header, base);
@@ -140,7 +175,10 @@ pub fn scan(journal: &[u8], base: &[u8], geometry_length: u64) -> Scan {
     }
     report.header = Some(header);
     let mut offset = HEADER_LEN;
-    for bytes in journal[HEADER_LEN..].chunks(FRAME_LEN) {
+    let mut buffer = [0; FRAME_LEN];
+    while offset < length {
+        let bytes = &mut buffer[..(length - offset).min(FRAME_LEN)];
+        read(offset, bytes)?;
         let outcome = if bytes.len() != FRAME_LEN {
             Err(Error::PartialFrame)
         } else {
@@ -148,38 +186,52 @@ pub fn scan(journal: &[u8], base: &[u8], geometry_length: u64) -> Scan {
                 .and_then(|frame| state.accept(frame, offset + FRAME_LEN, &mut report))
         };
         if let Err(reason) = outcome {
-            classify_failure(journal, offset, reason, &state, &mut report);
-            return finish(state, report);
+            classify_failure(length, &mut read, offset, reason, &state, &mut report)?;
+            return Ok(finish(state, report));
         }
         offset += FRAME_LEN;
     }
     if state.anchor_pending {
         classify_failure(
-            journal,
+            length,
+            &mut read,
             offset,
             Error::Anchor("incomplete anchor"),
             &state,
             &mut report,
-        );
+        )?;
     } else if !state.pending.is_empty() {
-        classify_failure(journal, offset, Error::PendingCommand, &state, &mut report);
+        classify_failure(
+            length,
+            &mut read,
+            offset,
+            Error::PendingCommand,
+            &state,
+            &mut report,
+        )?;
     }
-    finish(state, report)
+    Ok(finish(state, report))
 }
 
-fn classify_failure(
-    journal: &[u8],
+fn classify_failure<E>(
+    length: usize,
+    read: &mut impl FnMut(usize, &mut [u8]) -> Result<(), E>,
     offset: usize,
     reason: Error,
     state: &State,
     report: &mut VerificationReport,
-) {
-    let later_generation_end = journal[offset..]
-        .chunks(FRAME_LEN)
-        .enumerate()
-        .skip(1)
-        .find(|(_, bytes)| intact_generation_end(bytes))
-        .map(|(index, _)| offset + index * FRAME_LEN);
+) -> Result<(), E> {
+    let mut later_generation_end = None;
+    let mut buffer = [0; FRAME_LEN];
+    let mut later = offset.checked_add(FRAME_LEN);
+    while let Some(position) = later.filter(|&p| p <= length.saturating_sub(FRAME_LEN)) {
+        read(position, &mut buffer)?;
+        if intact_generation_end(&buffer) {
+            later_generation_end = Some(position);
+            break;
+        }
+        later = position.checked_add(FRAME_LEN);
+    }
     if state.anchor_pending || later_generation_end.is_some() {
         report.status = Status::Refused(Refusal {
             failure_offset: offset,
@@ -193,8 +245,9 @@ fn classify_failure(
             failure_offset: offset,
             reason,
         });
-        report.discarded_bytes = journal.len() - report.safe_offset;
+        report.discarded_bytes = length - report.safe_offset;
     }
+    Ok(())
 }
 
 fn finish(state: State, mut report: VerificationReport) -> Scan {

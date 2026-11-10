@@ -1,0 +1,1196 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+//! Filesystem model and real-file checks; persistent-media.md § Tests. Software
+//! barriers measure ordering and valid-prefix recovery, not physical power cuts.
+
+use super::*;
+use crate::{scan, FRAME_LEN, HEADER_LEN};
+use std::cell::Cell;
+use std::io::Cursor;
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Event {
+    Lock,
+    Open,
+    VerifyPath,
+    CleanupTemps,
+    CreateTemp,
+    Publish,
+    RemoveTemp,
+    DirectorySync,
+    Read(usize),
+    Seek,
+    Write(usize),
+    Flush,
+    Sync,
+    Truncate(u64),
+}
+
+#[derive(Default)]
+struct Model {
+    bytes: Cursor<Vec<u8>>,
+    durable: Vec<u8>,
+    events: Vec<Event>,
+    fail_on: Option<usize>,
+    write_budget: Option<usize>,
+    short_limit: Option<usize>,
+    interrupted: bool,
+    zero_write: bool,
+    published: bool,
+    temporary_exists: bool,
+    leftovers: usize,
+}
+
+impl Model {
+    fn step(&mut self, event: Event) -> io::Result<()> {
+        self.events.push(event);
+        if self.fail_on == Some(self.events.len() - 1) {
+            return Err(io::Error::other("injected operation failure"));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone)]
+struct ModelIo(Rc<RefCell<Model>>);
+impl Read for ModelIo {
+    fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
+        let mut model = self.0.borrow_mut();
+        model.step(Event::Read(bytes.len()))?;
+        model.bytes.read(bytes)
+    }
+}
+impl Seek for ModelIo {
+    fn seek(&mut self, position: SeekFrom) -> io::Result<u64> {
+        let mut model = self.0.borrow_mut();
+        model.step(Event::Seek)?;
+        model.bytes.seek(position)
+    }
+}
+impl Write for ModelIo {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        let mut model = self.0.borrow_mut();
+        model.step(Event::Write(bytes.len()))?;
+        if std::mem::take(&mut model.interrupted) {
+            return Err(io::Error::new(io::ErrorKind::Interrupted, "interrupted"));
+        }
+        if model.zero_write {
+            return Ok(0);
+        }
+        let mut length = bytes.len().min(model.short_limit.unwrap_or(usize::MAX));
+        if let Some(budget) = model.write_budget.as_mut() {
+            if *budget == 0 {
+                return Err(io::Error::other("injected short-write failure"));
+            }
+            length = length.min(*budget);
+            *budget -= length;
+        }
+        model.bytes.write(&bytes[..length])
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        self.0.borrow_mut().step(Event::Flush)
+    }
+}
+impl JournalIo for ModelIo {
+    fn sync(&mut self) -> io::Result<()> {
+        let mut model = self.0.borrow_mut();
+        model.step(Event::Sync)?;
+        model.durable = model.bytes.get_ref().clone();
+        Ok(())
+    }
+    fn truncate(&mut self, length: u64) -> io::Result<()> {
+        let mut model = self.0.borrow_mut();
+        model.step(Event::Truncate(length))?;
+        model.bytes.get_mut().truncate(length as usize);
+        Ok(())
+    }
+}
+
+struct Guard(Rc<Cell<bool>>);
+impl Drop for Guard {
+    fn drop(&mut self) {
+        self.0.set(false);
+    }
+}
+struct ModelFs {
+    io: ModelIo,
+    locked: Rc<Cell<bool>>,
+}
+impl Filesystem for ModelFs {
+    fn lock(&mut self, _: &Path) -> io::Result<Box<dyn Any>> {
+        self.io.0.borrow_mut().step(Event::Lock)?;
+        if self.locked.replace(true) {
+            return Err(io::Error::new(io::ErrorKind::WouldBlock, "locked"));
+        }
+        Ok(Box::new(Guard(self.locked.clone())))
+    }
+    fn open(&mut self, _: &Path) -> io::Result<Option<Box<dyn JournalIo>>> {
+        let mut model = self.io.0.borrow_mut();
+        model.step(Event::Open)?;
+        Ok(model
+            .published
+            .then(|| Box::new(self.io.clone()) as Box<dyn JournalIo>))
+    }
+    fn verify_path(&mut self, _: &Path) -> io::Result<()> {
+        assert!(self.locked.get());
+        self.io.0.borrow_mut().step(Event::VerifyPath)
+    }
+    fn cleanup_creation_temps(&mut self, _: &Path) -> io::Result<()> {
+        assert!(self.locked.get());
+        let mut model = self.io.0.borrow_mut();
+        model.step(Event::CleanupTemps)?;
+        model.leftovers = 0;
+        Ok(())
+    }
+    fn create_temp(&mut self, _: &Path) -> io::Result<(Box<dyn JournalIo>, PathBuf)> {
+        let mut model = self.io.0.borrow_mut();
+        model.step(Event::CreateTemp)?;
+        model.temporary_exists = true;
+        model.bytes = Cursor::new(Vec::new());
+        model.durable.clear();
+        Ok((Box::new(self.io.clone()), PathBuf::from("header.tmp")))
+    }
+    fn publish(&mut self, _: &Path, _: &Path) -> io::Result<()> {
+        let mut model = self.io.0.borrow_mut();
+        model.step(Event::Publish)?;
+        assert!(model.temporary_exists);
+        assert!(!model.published);
+        assert_eq!(model.durable.len(), HEADER_LEN);
+        model.published = true;
+        Ok(())
+    }
+    fn remove_temp(&mut self, _: &Path) -> io::Result<()> {
+        let mut model = self.io.0.borrow_mut();
+        model.step(Event::RemoveTemp)?;
+        model.temporary_exists = false;
+        Ok(())
+    }
+    fn sync_directory(&mut self, _: &Path) -> io::Result<()> {
+        self.io.0.borrow_mut().step(Event::DirectorySync)
+    }
+}
+
+fn model_fs(bytes: Option<Vec<u8>>) -> ModelFs {
+    let published = bytes.is_some();
+    ModelFs {
+        io: ModelIo(Rc::new(RefCell::new(Model {
+            bytes: Cursor::new(bytes.unwrap_or_default()),
+            published,
+            ..Model::default()
+        }))),
+        locked: Rc::default(),
+    }
+}
+fn mount(fs: &mut ModelFs, status: SinkStatus) -> Result<JournalMedia, OpenError> {
+    JournalMedia::open_with(
+        fs,
+        Path::new("disk.upfj"),
+        &[0; 2 * SECTOR_LEN],
+        (2 * SECTOR_LEN) as u64,
+        status,
+    )
+}
+fn batch(value: u8) -> [(u64, [u8; SECTOR_LEN]); 2] {
+    [
+        (1, [value; SECTOR_LEN]),
+        (0, [value.wrapping_add(1); SECTOR_LEN]),
+    ]
+}
+fn assert_image(media: &JournalMedia, value: u8) {
+    assert_eq!(media.read_sector(1), [value; SECTOR_LEN]);
+    assert_eq!(media.read_sector(0), [value.wrapping_add(1); SECTOR_LEN]);
+    assert!(!media.write_protected());
+}
+
+#[test]
+fn creation_and_each_command_have_ordered_barriers() {
+    let mut fs = model_fs(None);
+    let mut media = mount(&mut fs, SinkStatus::default()).unwrap();
+    assert_eq!(
+        &fs.io.0.borrow().events[..11],
+        &[
+            Event::Lock,
+            Event::Open,
+            Event::CreateTemp,
+            Event::Write(HEADER_LEN),
+            Event::Flush,
+            Event::Sync,
+            Event::Publish,
+            Event::RemoveTemp,
+            Event::VerifyPath,
+            Event::CleanupTemps,
+            Event::DirectorySync,
+        ]
+    );
+    fs.io.0.borrow_mut().events.clear();
+    media.write_batch(&batch(7));
+    assert_eq!(
+        fs.io.0.borrow().events,
+        [
+            Event::Write(FRAME_LEN),
+            Event::Write(FRAME_LEN),
+            Event::Write(FRAME_LEN),
+            Event::Flush,
+            Event::Sync,
+        ]
+    );
+    assert_eq!(fs.io.0.borrow().durable, *fs.io.0.borrow().bytes.get_ref());
+    let durable = fs.io.0.borrow().durable.clone();
+    for (index, expected_lba) in [1, 0].into_iter().enumerate() {
+        let start = HEADER_LEN + index * FRAME_LEN;
+        assert!(
+            matches!(Frame::decode(&durable[start..start + FRAME_LEN]).unwrap().record,
+            Record::Sector { lba, .. } if lba == expected_lba)
+        );
+    }
+    let report = scan(
+        &fs.io.0.borrow().durable,
+        &[0; 2 * SECTOR_LEN],
+        (2 * SECTOR_LEN) as u64,
+    );
+    assert_eq!(report.image.as_deref(), Some(media.image()));
+    assert_eq!(report.report.last_durable_sequence, 3);
+    fs.io.0.borrow_mut().events.clear();
+    media.checkpoint().unwrap();
+    assert_eq!(
+        fs.io.0.borrow().events,
+        [Event::Write(FRAME_LEN), Event::Flush, Event::Sync]
+    );
+    fs.io.0.borrow_mut().events.clear();
+    media.finish().unwrap();
+    assert_eq!(
+        fs.io.0.borrow().events,
+        [Event::Write(FRAME_LEN), Event::Flush, Event::Sync]
+    );
+    assert!(!fs.locked.get());
+}
+
+#[test]
+fn short_and_interrupted_writes_never_duplicate_bytes() {
+    let mut expected_fs = model_fs(None);
+    let mut expected = mount(&mut expected_fs, SinkStatus::default()).unwrap();
+    expected.write_batch(&batch(9));
+    expected.finish().unwrap();
+    for limit in [1, 7, 127, 639] {
+        let mut fs = model_fs(None);
+        fs.io.0.borrow_mut().short_limit = Some(limit);
+        fs.io.0.borrow_mut().interrupted = true;
+        let mut media = mount(&mut fs, SinkStatus::default()).unwrap();
+        fs.io.0.borrow_mut().interrupted = true;
+        media.write_batch(&batch(9));
+        media.finish().unwrap();
+        assert_eq!(fs.io.0.borrow().durable, expected_fs.io.0.borrow().durable);
+    }
+}
+
+#[test]
+fn every_partial_command_failure_preserves_memory_and_latches_first_error() {
+    for budget in 0..3 * FRAME_LEN {
+        let mut fs = model_fs(None);
+        let status = SinkStatus::default();
+        let mut media = mount(&mut fs, status.clone()).unwrap();
+        media.write_batch(&batch(3));
+        media.checkpoint().unwrap();
+        fs.io.0.borrow_mut().write_budget = Some(budget);
+        media.write_batch(&batch(7));
+        assert_image(&media, 7);
+        let failure = status.failure().expect("partial write must be latched");
+        assert_eq!(failure.operation, "write");
+        assert_eq!(failure.last_confirmed_sequence, 3);
+        let calls = fs.io.0.borrow().events.len();
+        media.write_batch(&batch(11));
+        assert_image(&media, 11);
+        assert_eq!(media.checkpoint(), Err(failure.clone()));
+        assert_eq!(media.finish(), Err(failure.clone()));
+        assert_eq!(status.failure(), Some(failure));
+        assert_eq!(fs.io.0.borrow().events.len(), calls);
+        assert!(!fs.locked.get());
+        let bytes = fs.io.0.borrow().bytes.get_ref().clone();
+        let scan = scan(&bytes, &[0; 2 * SECTOR_LEN], (2 * SECTOR_LEN) as u64);
+        assert_eq!(
+            scan.image.unwrap(),
+            [vec![4; SECTOR_LEN], vec![3; SECTOR_LEN]].concat()
+        );
+        assert_eq!(scan.report.safe_offset, HEADER_LEN + 4 * FRAME_LEN);
+    }
+}
+
+#[test]
+fn failed_flush_sync_and_zero_write_preserve_guest_data_and_poison_output() {
+    for (fail_on, zero_write) in [(Some(3), false), (Some(4), false), (None, true)] {
+        let mut fs = model_fs(None);
+        let status = SinkStatus::default();
+        let mut media = mount(&mut fs, status.clone()).unwrap();
+        {
+            let mut model = fs.io.0.borrow_mut();
+            model.events.clear();
+            model.fail_on = fail_on;
+            model.zero_write = zero_write;
+        }
+        media.write_batch(&batch(5));
+        assert_image(&media, 5);
+        let failure = status.failure().unwrap();
+        assert_eq!(failure.last_confirmed_sequence, 0);
+        let operations = fs.io.0.borrow().events.len();
+        media.write_batch(&batch(8));
+        assert_image(&media, 8);
+        assert_eq!(media.finish(), Err(failure));
+        assert_eq!(fs.io.0.borrow().events.len(), operations);
+        assert_eq!(fs.io.0.borrow().durable.len(), HEADER_LEN);
+    }
+}
+
+#[test]
+fn every_creation_operation_failure_aborts_mount_and_releases_lock() {
+    let mut fs = model_fs(None);
+    drop(mount(&mut fs, SinkStatus::default()).unwrap());
+    let events = fs.io.0.borrow().events.clone();
+    let publish = events.iter().position(|e| *e == Event::Publish).unwrap();
+    for fail_on in 0..events.len() {
+        let mut fs = model_fs(None);
+        let status = SinkStatus::default();
+        fs.io.0.borrow_mut().fail_on = Some(fail_on);
+        assert!(
+            matches!(mount(&mut fs, status.clone()), Err(OpenError::Host(_))),
+            "operation {fail_on}"
+        );
+        assert!(status.failure().is_some());
+        assert!(!fs.locked.get());
+        let model = fs.io.0.borrow();
+        assert_eq!(&model.events[..=fail_on], &events[..=fail_on]);
+        assert!(model.events[fail_on + 1..]
+            .iter()
+            .all(|e| *e == Event::RemoveTemp));
+        assert!(!model.temporary_exists);
+        assert_eq!(model.published, fail_on > publish);
+        if model.published {
+            assert_eq!(model.durable.len(), HEADER_LEN);
+        }
+    }
+}
+
+fn interrupted_journal() -> Vec<u8> {
+    let mut fs = model_fs(None);
+    let mut media = mount(&mut fs, SinkStatus::default()).unwrap();
+    media.write_batch(&batch(6));
+    drop(media);
+    let mut bytes = fs.io.0.borrow().durable.clone();
+    bytes.extend_from_slice(&[0xff; 73]);
+    bytes
+}
+
+#[test]
+fn repair_truncates_and_syncs_before_sealing_and_refuses_every_io_failure() {
+    let bytes = interrupted_journal();
+    let mut fs = model_fs(Some(bytes.clone()));
+    let media = mount(&mut fs, SinkStatus::default()).unwrap();
+    assert_image(&media, 6);
+    assert_eq!(media.mount_report().discarded_bytes, 73);
+    let events = fs.io.0.borrow().events.clone();
+    let truncate = events
+        .iter()
+        .position(|e| matches!(e, Event::Truncate(_)))
+        .unwrap();
+    assert_eq!(
+        &events[truncate..],
+        &[
+            Event::Truncate((HEADER_LEN + 3 * FRAME_LEN) as u64),
+            Event::Flush,
+            Event::Sync,
+            Event::Seek,
+            Event::Write(FRAME_LEN),
+            Event::Flush,
+            Event::Sync,
+        ]
+    );
+    let scan = scan(
+        &fs.io.0.borrow().durable,
+        &[0; 2 * SECTOR_LEN],
+        (2 * SECTOR_LEN) as u64,
+    );
+    assert_eq!(scan.report.generations[0].reason, ClosingReason::Recovered);
+    assert_eq!(scan.report.status, Status::Valid);
+    assert_eq!(scan.report.discarded_bytes, 0);
+    drop(media);
+    for fail_on in 0..events.len() {
+        let mut fs = model_fs(Some(bytes.clone()));
+        let status = SinkStatus::default();
+        fs.io.0.borrow_mut().fail_on = Some(fail_on);
+        assert!(
+            matches!(mount(&mut fs, status.clone()), Err(OpenError::Host(_))),
+            "operation {fail_on}"
+        );
+        assert_eq!(
+            status.failure().unwrap().last_confirmed_sequence,
+            if fail_on > truncate + 2 { 3 } else { 0 }
+        );
+        assert!(!fs.locked.get());
+        assert_eq!(fs.io.0.borrow().events.len(), fail_on + 1);
+    }
+}
+
+#[test]
+fn failed_checkpoint_or_finish_never_seals_again() {
+    for finish in [false, true] {
+        for operation in 0..3 {
+            let mut fs = model_fs(None);
+            let status = SinkStatus::default();
+            let mut media = mount(&mut fs, status.clone()).unwrap();
+            media.write_batch(&batch(1));
+            {
+                let mut model = fs.io.0.borrow_mut();
+                model.events.clear();
+                model.fail_on = Some(operation);
+            }
+            if finish {
+                assert!(media.finish().is_err());
+            } else {
+                let error = media.checkpoint().unwrap_err();
+                let events = fs.io.0.borrow().events.len();
+                assert_eq!(media.finish(), Err(error));
+                assert_eq!(fs.io.0.borrow().events.len(), events);
+            }
+            assert_eq!(status.failure().unwrap().last_confirmed_sequence, 3);
+        }
+    }
+}
+
+#[test]
+fn model_lock_contention_is_latched_before_journal_access() {
+    let mut fs = model_fs(None);
+    let media = mount(&mut fs, SinkStatus::default()).unwrap();
+    let before = fs.io.0.borrow().bytes.get_ref().clone();
+    fs.io.0.borrow_mut().events.clear();
+    let status = SinkStatus::default();
+    assert!(matches!(
+        mount(&mut fs, status.clone()),
+        Err(OpenError::Host(_))
+    ));
+    assert_eq!(status.failure().unwrap().operation, "lock");
+    assert_eq!(fs.io.0.borrow().events, [Event::Lock]);
+    assert_eq!(*fs.io.0.borrow().bytes.get_ref(), before);
+    assert!(fs.locked.get());
+    drop(media);
+    assert!(!fs.locked.get());
+}
+
+struct TempDir(PathBuf);
+impl TempDir {
+    fn new() -> Self {
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let parent = std::env::temp_dir();
+        loop {
+            let path = parent.join(format!(
+                "media-sink-test-{}-{}",
+                std::process::id(),
+                NEXT.fetch_add(1, Ordering::Relaxed)
+            ));
+            match std::fs::create_dir(&path) {
+                Ok(()) => return Self(path),
+                Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
+                Err(e) => panic!("test directory: {e}"),
+            }
+        }
+    }
+    fn journal(&self) -> PathBuf {
+        self.0.join("disk.upfj")
+    }
+}
+impl Drop for TempDir {
+    fn drop(&mut self) {
+        std::fs::remove_dir_all(&self.0).unwrap();
+    }
+}
+fn real_mount(path: &Path) -> Result<JournalMedia, OpenError> {
+    JournalMedia::open(
+        path,
+        &[0; 2 * SECTOR_LEN],
+        (2 * SECTOR_LEN) as u64,
+        SinkStatus::default(),
+    )
+}
+
+#[test]
+fn real_file_round_trip_checkpoints_finish_and_empty_generations() {
+    let dir = TempDir::new();
+    let path = dir.journal();
+    let mut media = real_mount(&path).unwrap();
+    media.write_batch(&batch(9));
+    media.checkpoint().unwrap();
+    media.checkpoint().unwrap();
+    media.write_batch(&batch(17));
+    let image = media.image().to_vec();
+    media.finish().unwrap();
+    let media = real_mount(&path).unwrap();
+    assert_eq!(media.image(), image);
+    let generations = &media.mount_report().generations;
+    assert_eq!(
+        generations
+            .iter()
+            .map(|g| (g.id, g.reason, g.commands, g.last_sequence))
+            .collect::<Vec<_>>(),
+        [
+            (1, ClosingReason::Checkpoint, 1, 4),
+            (2, ClosingReason::Checkpoint, 0, 5),
+            (3, ClosingReason::SessionEnd, 1, 9),
+        ]
+    );
+    media.finish().unwrap();
+    let media = real_mount(&path).unwrap();
+    assert_eq!(media.mount_report().generations[3].id, 4);
+    assert_eq!(media.mount_report().generations[3].commands, 0);
+}
+
+#[test]
+fn real_lock_excludes_second_open_and_drop_only_releases_handles() {
+    let dir = TempDir::new();
+    let path = dir.journal();
+    let mut media = real_mount(&path).unwrap();
+    media.write_batch(&batch(4));
+    let before = std::fs::read(&path).unwrap();
+    let status = SinkStatus::default();
+    let error = JournalMedia::open(
+        &path,
+        &[0; 2 * SECTOR_LEN],
+        (2 * SECTOR_LEN) as u64,
+        status.clone(),
+    );
+    assert!(matches!(error, Err(OpenError::Host(_))));
+    assert_eq!(status.failure().unwrap().operation, "lock");
+    assert_eq!(std::fs::read(&path).unwrap(), before);
+    assert_image(&media, 4);
+    assert!(media.status().failure().is_none());
+    drop(media);
+    assert_eq!(std::fs::read(&path).unwrap(), before);
+    assert!(path.with_extension("upfj.lock").exists());
+    let media = real_mount(&path).unwrap();
+    assert_image(&media, 4);
+    assert_eq!(
+        media
+            .mount_report()
+            .unsealed_tip
+            .as_ref()
+            .unwrap()
+            .generation,
+        1
+    );
+    media.finish().unwrap();
+    let media = real_mount(&path).unwrap();
+    assert_eq!(
+        media.mount_report().generations[0].reason,
+        ClosingReason::Recovered
+    );
+    assert_eq!(media.mount_report().generations[1].id, 2);
+}
+
+#[test]
+fn real_truncated_frame_is_discarded_then_interrupted_tip_is_sealed() {
+    let dir = TempDir::new();
+    let path = dir.journal();
+    let mut media = real_mount(&path).unwrap();
+    media.write_batch(&batch(1));
+    media.checkpoint().unwrap();
+    media.write_batch(&batch(7));
+    media.write_batch(&batch(12));
+    drop(media);
+    let file = OpenOptions::new().write(true).open(&path).unwrap();
+    // Cut the second sector of the final command; its first sector must not replay.
+    file.set_len((HEADER_LEN + 8 * FRAME_LEN + 73) as u64)
+        .unwrap();
+    drop(file);
+    let mut media = real_mount(&path).unwrap();
+    assert_image(&media, 7);
+    assert_eq!(media.mount_report().discarded_bytes, FRAME_LEN + 73);
+    assert_eq!(
+        std::fs::metadata(&path).unwrap().len(),
+        (HEADER_LEN + 8 * FRAME_LEN) as u64
+    );
+    media.write_batch(&batch(19));
+    media.finish().unwrap();
+    let media = real_mount(&path).unwrap();
+    assert_image(&media, 19);
+    assert_eq!(
+        media
+            .mount_report()
+            .generations
+            .iter()
+            .map(|g| (g.id, g.reason))
+            .collect::<Vec<_>>(),
+        [
+            (1, ClosingReason::Checkpoint),
+            (2, ClosingReason::Recovered),
+            (3, ClosingReason::SessionEnd),
+        ]
+    );
+    assert_eq!(media.mount_report().status, Status::Valid);
+}
+
+#[test]
+fn real_refusals_preserve_invalid_header_base_anchor_and_interior_damage() {
+    let base = [0; 2 * SECTOR_LEN];
+    let dir = TempDir::new();
+    let path = dir.journal();
+    let mut fs = model_fs(None);
+    let mut media = mount(&mut fs, SinkStatus::default()).unwrap();
+    media.write_batch(&batch(1));
+    media.finish().unwrap();
+    let closed = fs.io.0.borrow().durable.clone();
+    let mut interior = closed.clone();
+    interior[HEADER_LEN + 80] ^= 1;
+    let anchor = Header::new(&base, 9).unwrap().encode().unwrap().to_vec();
+    let mut wrong_base = base;
+    wrong_base[0] = 1;
+    let wrong = Header::new(&wrong_base, 0)
+        .unwrap()
+        .encode()
+        .unwrap()
+        .to_vec();
+    for bytes in [vec![], vec![0; 17], wrong, anchor, interior] {
+        std::fs::write(&path, &bytes).unwrap();
+        assert!(matches!(real_mount(&path), Err(OpenError::Refused(_))));
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
+    }
+}
+
+#[test]
+fn pending_only_tail_reuses_generation_and_invalid_batches_do_not_append() {
+    let mut fs = model_fs(None);
+    let mut media = mount(&mut fs, SinkStatus::default()).unwrap();
+    media.write_batch(&batch(1));
+    drop(media);
+    let mut bytes = fs.io.0.borrow().durable.clone();
+    bytes.truncate(HEADER_LEN + FRAME_LEN);
+    let mut fs = model_fs(Some(bytes));
+    let mut media = mount(&mut fs, SinkStatus::default()).unwrap();
+    assert_eq!(media.image(), [0; 2 * SECTOR_LEN]);
+    assert_eq!(fs.io.0.borrow().durable.len(), HEADER_LEN);
+    let operations = fs.io.0.borrow().events.len();
+    for batch in [
+        vec![],
+        vec![(2, [1; SECTOR_LEN])],
+        vec![(u64::MAX, [1; SECTOR_LEN])],
+        vec![(0, [1; SECTOR_LEN]), (2, [2; SECTOR_LEN])],
+    ] {
+        media.write_batch(&batch);
+    }
+    assert_eq!(media.image(), [0; 2 * SECTOR_LEN]);
+    assert_eq!(media.read_sector(u64::MAX), [0; SECTOR_LEN]);
+    assert_eq!(fs.io.0.borrow().events.len(), operations);
+    media.finish().unwrap();
+    let scan = scan(
+        &fs.io.0.borrow().durable,
+        &[0; 2 * SECTOR_LEN],
+        (2 * SECTOR_LEN) as u64,
+    );
+    assert_eq!(scan.report.generations[0].id, 1);
+    assert_eq!(scan.report.generations[0].commands, 0);
+}
+
+#[test]
+fn reopen_clean_and_unsealed_histories_sync_directory_and_mount_before_append() {
+    for closed in [true, false] {
+        let mut fs = model_fs(None);
+        let mut media = mount(&mut fs, SinkStatus::default()).unwrap();
+        media.write_batch(&batch(6));
+        if closed {
+            media.finish().unwrap();
+        } else {
+            drop(media);
+        }
+        let bytes = fs.io.0.borrow().durable.clone();
+        let mut expected = vec![
+            Event::Lock,
+            Event::Open,
+            Event::VerifyPath,
+            Event::CleanupTemps,
+            Event::DirectorySync,
+            Event::Seek,
+            Event::Seek,
+            Event::Read(HEADER_LEN),
+        ];
+        for _ in 0..if closed { 4 } else { 3 } {
+            expected.extend([Event::Seek, Event::Read(FRAME_LEN)]);
+        }
+        let mount_sync = expected.len() + 1;
+        expected.extend([Event::Flush, Event::Sync, Event::Seek]);
+        if !closed {
+            expected.extend([Event::Write(FRAME_LEN), Event::Flush, Event::Sync]);
+        }
+        let mut fs = model_fs(Some(bytes.clone()));
+        let media = mount(&mut fs, SinkStatus::default()).unwrap();
+        assert_image(&media, 6);
+        assert_eq!(fs.io.0.borrow().events, expected);
+        assert_eq!(media.confirmed, 3);
+        let replay = scan(
+            &fs.io.0.borrow().durable,
+            &[0; 2 * SECTOR_LEN],
+            (2 * SECTOR_LEN) as u64,
+        );
+        assert_eq!(replay.report.status, Status::Valid);
+        assert!(replay.report.unsealed_tip.is_none());
+        assert_eq!(
+            replay.report.generations[0].reason,
+            if closed {
+                ClosingReason::SessionEnd
+            } else {
+                ClosingReason::Recovered
+            }
+        );
+        drop(media);
+        for fail_on in 0..expected.len() {
+            let mut fs = model_fs(Some(bytes.clone()));
+            let status = SinkStatus::default();
+            fs.io.0.borrow_mut().fail_on = Some(fail_on);
+            assert!(
+                matches!(mount(&mut fs, status.clone()), Err(OpenError::Host(_))),
+                "closed={closed}, operation={fail_on}"
+            );
+            assert_eq!(
+                status.failure().unwrap().last_confirmed_sequence,
+                if fail_on > mount_sync { 3 } else { 0 }
+            );
+            assert!(!fs.locked.get());
+            assert_eq!(fs.io.0.borrow().events, expected[..=fail_on]);
+            assert!(fs.io.0.borrow().published);
+        }
+    }
+}
+
+#[test]
+fn duplicate_lbas_keep_last_bytes_and_last_occurrence_order() {
+    let mut fs = model_fs(None);
+    let mut media = mount(&mut fs, SinkStatus::default()).unwrap();
+    media.write_batch(&[
+        (1, [1; SECTOR_LEN]),
+        (0, [2; SECTOR_LEN]),
+        (1, [3; SECTOR_LEN]),
+        (0, [4; SECTOR_LEN]),
+        (1, [5; SECTOR_LEN]),
+    ]);
+    assert_eq!(media.read_sector(0), [4; SECTOR_LEN]);
+    assert_eq!(media.read_sector(1), [5; SECTOR_LEN]);
+    assert!(media.status().failure().is_none());
+    let durable = fs.io.0.borrow().durable.clone();
+    assert_eq!(durable.len(), HEADER_LEN + 3 * FRAME_LEN);
+    for (index, (lba, value)) in [(0, 4), (1, 5)].into_iter().enumerate() {
+        let start = HEADER_LEN + index * FRAME_LEN;
+        assert_eq!(
+            Frame::decode(&durable[start..start + FRAME_LEN])
+                .unwrap()
+                .record,
+            Record::Sector {
+                lba,
+                bytes: Box::new([value; SECTOR_LEN])
+            }
+        );
+    }
+    assert_eq!(
+        Frame::decode(&durable[HEADER_LEN + 2 * FRAME_LEN..])
+            .unwrap()
+            .record,
+        Record::CommandEnd { sectors: 2 }
+    );
+    let expected = media.image().to_vec();
+    drop(media);
+    let mut media = mount(&mut fs, SinkStatus::default()).unwrap();
+    assert_eq!(media.image(), expected);
+    // The same last-wins rule applies after output has been poisoned.
+    fs.io.0.borrow_mut().write_budget = Some(0);
+    media.write_batch(&[(0, [7; SECTOR_LEN]), (0, [8; SECTOR_LEN])]);
+    assert!(media.status().failure().is_some());
+    media.write_batch(&[(1, [9; SECTOR_LEN]), (1, [10; SECTOR_LEN])]);
+    assert_eq!(media.read_sector(0), [8; SECTOR_LEN]);
+    assert_eq!(media.read_sector(1), [10; SECTOR_LEN]);
+}
+
+#[cfg(unix)]
+#[test]
+fn symlink_in_another_directory_uses_the_same_writer_lock() {
+    let dir = TempDir::new();
+    let path = dir.journal();
+    let alias_dir = TempDir::new();
+    let alias = alias_dir.journal();
+    let mut media = real_mount(&path).unwrap();
+    media.write_batch(&batch(7));
+    std::os::unix::fs::symlink(&path, &alias).unwrap();
+    assert!(matches!(real_mount(&alias), Err(OpenError::Host(_))));
+    assert!(!alias.with_extension("upfj.lock").exists());
+    drop(media);
+    let mut media = real_mount(&alias).unwrap();
+    assert_image(&media, 7);
+    assert!(matches!(real_mount(&path), Err(OpenError::Host(_))));
+    media.write_batch(&batch(9));
+    media.finish().unwrap();
+    let media = real_mount(&path).unwrap();
+    assert_image(&media, 9);
+    // The post-open path comparison also needs a canonical parent for new files.
+    let parent_alias = alias_dir.0.join("parent");
+    std::os::unix::fs::symlink(&dir.0, &parent_alias).unwrap();
+    let fresh = parent_alias.join("fresh.upfj");
+    let _media = real_mount(&fresh).unwrap();
+    assert!(matches!(
+        real_mount(&dir.0.join("fresh.upfj")),
+        Err(OpenError::Host(_))
+    ));
+}
+
+struct HeaderFailureIo {
+    output: Box<dyn JournalIo>,
+    write_budget: Option<usize>,
+    fail_sync: bool,
+}
+impl Read for HeaderFailureIo {
+    fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
+        self.output.read(bytes)
+    }
+}
+impl Seek for HeaderFailureIo {
+    fn seek(&mut self, position: SeekFrom) -> io::Result<u64> {
+        self.output.seek(position)
+    }
+}
+impl Write for HeaderFailureIo {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        let mut length = bytes.len();
+        if let Some(remaining) = self.write_budget {
+            if remaining == 0 {
+                return Err(io::Error::other("injected header write failure"));
+            }
+            length = length.min(remaining);
+        }
+        let written = self.output.write(&bytes[..length])?;
+        if let Some(remaining) = self.write_budget.as_mut() {
+            *remaining -= written;
+        }
+        Ok(written)
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        self.output.flush()
+    }
+}
+impl JournalIo for HeaderFailureIo {
+    fn sync(&mut self) -> io::Result<()> {
+        if self.fail_sync {
+            return Err(io::Error::other("injected header sync failure"));
+        }
+        self.output.sync()
+    }
+    fn truncate(&mut self, length: u64) -> io::Result<()> {
+        self.output.truncate(length)
+    }
+}
+struct HeaderFailureFs {
+    write_budget: Option<usize>,
+    fail_sync: bool,
+}
+impl Filesystem for HeaderFailureFs {
+    fn lock(&mut self, path: &Path) -> io::Result<Box<dyn Any>> {
+        HostFilesystem.lock(path)
+    }
+    fn open(&mut self, path: &Path) -> io::Result<Option<Box<dyn JournalIo>>> {
+        HostFilesystem.open(path)
+    }
+    fn verify_path(&mut self, path: &Path) -> io::Result<()> {
+        HostFilesystem.verify_path(path)
+    }
+    fn cleanup_creation_temps(&mut self, path: &Path) -> io::Result<()> {
+        HostFilesystem.cleanup_creation_temps(path)
+    }
+    fn create_temp(&mut self, path: &Path) -> io::Result<(Box<dyn JournalIo>, PathBuf)> {
+        let (output, path) = HostFilesystem.create_temp(path)?;
+        Ok((
+            Box::new(HeaderFailureIo {
+                output,
+                write_budget: self.write_budget,
+                fail_sync: self.fail_sync,
+            }),
+            path,
+        ))
+    }
+    fn publish(&mut self, temporary: &Path, path: &Path) -> io::Result<()> {
+        HostFilesystem.publish(temporary, path)
+    }
+    fn remove_temp(&mut self, temporary: &Path) -> io::Result<()> {
+        HostFilesystem.remove_temp(temporary)
+    }
+    fn sync_directory(&mut self, path: &Path) -> io::Result<()> {
+        HostFilesystem.sync_directory(path)
+    }
+}
+
+#[test]
+fn header_failures_leave_no_published_journal_and_allow_retry() {
+    for write_budget in (0..HEADER_LEN).map(Some).chain([None]) {
+        let dir = TempDir::new();
+        let path = dir.journal();
+        let mut fs = HeaderFailureFs {
+            write_budget,
+            fail_sync: write_budget.is_none(),
+        };
+        let status = SinkStatus::default();
+        assert!(matches!(
+            JournalMedia::open_with(
+                &mut fs,
+                &path,
+                &[0; 2 * SECTOR_LEN],
+                (2 * SECTOR_LEN) as u64,
+                status.clone()
+            ),
+            Err(OpenError::Host(_))
+        ));
+        assert!(status.failure().is_some());
+        assert!(!path.exists());
+        assert_eq!(
+            std::fs::read_dir(&dir.0).unwrap().count(),
+            1,
+            "only the stable lock remains"
+        );
+        real_mount(&path).unwrap().finish().unwrap();
+    }
+}
+
+#[test]
+fn header_publication_never_replaces_an_existing_destination() {
+    let dir = TempDir::new();
+    let path = dir.journal();
+    let (mut output, temporary) = HostFilesystem.create_temp(&path).unwrap();
+    output
+        .write_all(&Header::new(&[0; SECTOR_LEN], 0).unwrap().encode().unwrap())
+        .unwrap();
+    barrier(output.as_mut()).unwrap();
+    std::fs::write(&path, b"existing destination").unwrap();
+    assert_eq!(
+        HostFilesystem
+            .publish(&temporary, &path)
+            .unwrap_err()
+            .kind(),
+        io::ErrorKind::AlreadyExists
+    );
+    assert_eq!(std::fs::read(&path).unwrap(), b"existing destination");
+    HostFilesystem.remove_temp(&temporary).unwrap();
+}
+
+#[test]
+fn real_file_test_directories_are_unique_temporary_and_removed() {
+    let first = TempDir::new();
+    let second = TempDir::new();
+    assert_ne!(first.0, second.0);
+    assert_eq!(first.0.parent().unwrap(), std::env::temp_dir());
+    assert_eq!(second.0.parent().unwrap(), std::env::temp_dir());
+    let path = first.0.clone();
+    drop(first);
+    assert!(!path.exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn dangling_journal_symlink_is_refused_before_locking() {
+    let target_dir = TempDir::new();
+    let target = target_dir.journal();
+    let alias_dir = TempDir::new();
+    let alias = alias_dir.journal();
+    std::os::unix::fs::symlink(&target, &alias).unwrap();
+    let status = SinkStatus::default();
+    let result = JournalMedia::open(
+        &alias,
+        &[0; 2 * SECTOR_LEN],
+        (2 * SECTOR_LEN) as u64,
+        status.clone(),
+    );
+    assert!(matches!(result, Err(OpenError::Host(_))));
+    let failure = status.failure().unwrap();
+    assert_eq!(failure.operation, "resolve journal path");
+    assert!(failure.message.contains("dangling symlink"));
+    assert!(!alias.with_extension("upfj.lock").exists());
+    assert!(!target.exists());
+    assert!(std::fs::symlink_metadata(&alias)
+        .unwrap()
+        .file_type()
+        .is_symlink());
+    let mut writer = real_mount(&target).unwrap();
+    writer.write_batch(&batch(7));
+    assert!(matches!(real_mount(&alias), Err(OpenError::Host(_))));
+    drop(writer);
+    let media = real_mount(&alias).unwrap();
+    assert_image(&media, 7);
+}
+
+#[cfg(unix)]
+struct AliasRaceFs {
+    target: PathBuf,
+    alias: PathBuf,
+    writer: Option<JournalMedia>,
+    before: Vec<u8>,
+}
+#[cfg(unix)]
+impl Filesystem for AliasRaceFs {
+    fn lock(&mut self, path: &Path) -> io::Result<Box<dyn Any>> {
+        HostFilesystem.lock(path)
+    }
+    fn open(&mut self, path: &Path) -> io::Result<Option<Box<dyn JournalIo>>> {
+        assert_eq!(path, self.alias);
+        // Introduce the alias after resolution and complete another mount
+        // before open follows it. No scheduler timing is needed for this race.
+        std::os::unix::fs::symlink(&self.target, path)?;
+        let mut writer = real_mount(&self.target).unwrap();
+        writer.write_batch(&batch(7));
+        self.before = std::fs::read(&self.target)?;
+        self.writer = Some(writer);
+        HostFilesystem.open(path)
+    }
+    fn verify_path(&mut self, path: &Path) -> io::Result<()> {
+        HostFilesystem.verify_path(path)
+    }
+    fn cleanup_creation_temps(&mut self, path: &Path) -> io::Result<()> {
+        HostFilesystem.cleanup_creation_temps(path)
+    }
+    fn create_temp(&mut self, path: &Path) -> io::Result<(Box<dyn JournalIo>, PathBuf)> {
+        HostFilesystem.create_temp(path)
+    }
+    fn publish(&mut self, temporary: &Path, path: &Path) -> io::Result<()> {
+        HostFilesystem.publish(temporary, path)
+    }
+    fn remove_temp(&mut self, temporary: &Path) -> io::Result<()> {
+        HostFilesystem.remove_temp(temporary)
+    }
+    fn sync_directory(&mut self, path: &Path) -> io::Result<()> {
+        HostFilesystem.sync_directory(path)
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn post_open_path_check_refuses_the_stale_alias_resolution_race() {
+    let target_dir = TempDir::new();
+    let alias_dir = TempDir::new();
+    let target = target_dir.journal();
+    let expected = canonical_journal_path(&alias_dir.journal()).unwrap();
+    assert!(!expected.exists());
+    let mut fs = AliasRaceFs {
+        target: target.clone(),
+        alias: expected.clone(),
+        writer: None,
+        before: Vec::new(),
+    };
+    let status = SinkStatus::default();
+    let result = JournalMedia::open_with(
+        &mut fs,
+        &expected,
+        &[0; 2 * SECTOR_LEN],
+        (2 * SECTOR_LEN) as u64,
+        status.clone(),
+    );
+    assert!(matches!(result, Err(OpenError::Host(_))));
+    let failure = status.failure().unwrap();
+    assert_eq!(failure.operation, "verify journal path");
+    assert!(failure
+        .message
+        .contains("canonical path changed after locking"));
+    assert_eq!(std::fs::read(&target).unwrap(), fs.before);
+    let writer = fs.writer.as_mut().unwrap();
+    assert_image(writer, 7);
+    assert!(writer.status().failure().is_none());
+    // The rejected mount released its alias lock but cannot bypass the target's.
+    drop(HostFilesystem.lock(&expected).unwrap());
+    assert!(matches!(real_mount(&expected), Err(OpenError::Host(_))));
+    writer.write_batch(&batch(9));
+    drop(fs.writer.take());
+    let media = real_mount(&expected).unwrap();
+    assert_image(&media, 9);
+}
+
+#[test]
+fn creation_temporary_cleanup_is_locked_and_synced_and_errors_abort() {
+    let mut fs = model_fs(None);
+    mount(&mut fs, SinkStatus::default())
+        .unwrap()
+        .finish()
+        .unwrap();
+    let bytes = fs.io.0.borrow().durable.clone();
+    let mut fs = model_fs(Some(bytes.clone()));
+    fs.io.0.borrow_mut().leftovers = 2;
+    let media = mount(&mut fs, SinkStatus::default()).unwrap();
+    assert_eq!(
+        &fs.io.0.borrow().events[..5],
+        &[
+            Event::Lock,
+            Event::Open,
+            Event::VerifyPath,
+            Event::CleanupTemps,
+            Event::DirectorySync,
+        ]
+    );
+    assert_eq!(fs.io.0.borrow().leftovers, 0);
+    assert_eq!(*fs.io.0.borrow().bytes.get_ref(), bytes);
+    drop(media);
+    for (fail_on, operation, remaining) in [
+        (3, "remove creation temporaries", 2),
+        (4, "directory sync", 0),
+    ] {
+        let mut fs = model_fs(Some(bytes.clone()));
+        {
+            let mut model = fs.io.0.borrow_mut();
+            model.leftovers = 2;
+            model.fail_on = Some(fail_on);
+        }
+        let status = SinkStatus::default();
+        assert!(matches!(
+            mount(&mut fs, status.clone()),
+            Err(OpenError::Host(_))
+        ));
+        assert_eq!(status.failure().unwrap().operation, operation);
+        assert_eq!(fs.io.0.borrow().leftovers, remaining);
+        assert_eq!(fs.io.0.borrow().events.len(), fail_on + 1);
+        assert_eq!(*fs.io.0.borrow().bytes.get_ref(), bytes);
+        assert!(!fs.locked.get());
+    }
+}
+
+#[test]
+fn unpublished_creation_temporaries_are_removed_without_replaying_them() {
+    let dir = TempDir::new();
+    let path = dir.journal();
+    let (mut output, temporary) = HostFilesystem.create_temp(&path).unwrap();
+    output.write_all(b"incomplete header").unwrap();
+    barrier(output.as_mut()).unwrap();
+    drop(output);
+    let second = path.with_file_name("disk.upfj.create-orphan.tmp");
+    std::fs::write(&second, b"unpublished bytes").unwrap();
+    let unrelated = path.with_file_name("other.upfj.create-0.tmp");
+    let backup = path.with_file_name("disk.upfj.create-0.tmp.backup");
+    std::fs::write(&unrelated, b"other journal").unwrap();
+    std::fs::write(&backup, b"backup").unwrap();
+    assert!(!path.exists());
+    let media = real_mount(&path).unwrap();
+    assert_eq!(media.image(), [0; 2 * SECTOR_LEN]);
+    assert_eq!(std::fs::metadata(&path).unwrap().len(), HEADER_LEN as u64);
+    assert!(!temporary.exists());
+    assert!(!second.exists());
+    assert_eq!(std::fs::read(&unrelated).unwrap(), b"other journal");
+    assert_eq!(std::fs::read(&backup).unwrap(), b"backup");
+}
+
+#[cfg(unix)]
+#[test]
+fn published_creation_temporary_hard_link_is_removed_without_changing_history() {
+    use std::os::unix::fs::MetadataExt;
+    let dir = TempDir::new();
+    let path = dir.journal();
+    let mut media = real_mount(&path).unwrap();
+    media.write_batch(&batch(7));
+    media.finish().unwrap();
+    let before = std::fs::read(&path).unwrap();
+    let temporary = path.with_file_name("disk.upfj.create-27.tmp");
+    std::fs::hard_link(&path, &temporary).unwrap();
+    assert_eq!(std::fs::metadata(&path).unwrap().nlink(), 2);
+    let mut media = real_mount(&path).unwrap();
+    assert_image(&media, 7);
+    assert_eq!(std::fs::read(&path).unwrap(), before);
+    assert!(!temporary.exists());
+    assert_eq!(std::fs::metadata(&path).unwrap().nlink(), 1);
+    media.write_batch(&batch(9));
+    media.finish().unwrap();
+    let media = real_mount(&path).unwrap();
+    assert_image(&media, 9);
+}

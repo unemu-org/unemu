@@ -846,3 +846,84 @@ fn anchor_grammar_rejects_noncanonical_snapshots() {
         })
     ));
 }
+
+struct BoundedReader {
+    cursor: std::io::Cursor<Vec<u8>>,
+    fail_at: Option<u64>,
+    max_read: usize,
+}
+impl std::io::Read for BoundedReader {
+    fn read(&mut self, bytes: &mut [u8]) -> std::io::Result<usize> {
+        assert!(
+            bytes.len() <= FRAME_LEN,
+            "scan must stream one frame at a time"
+        );
+        self.max_read = self.max_read.max(bytes.len());
+        if self
+            .fail_at
+            .is_some_and(|offset| self.cursor.position() >= offset)
+        {
+            return Err(std::io::Error::other("injected read failure"));
+        }
+        std::io::Read::read(&mut self.cursor, bytes)
+    }
+}
+impl std::io::Seek for BoundedReader {
+    fn seek(&mut self, position: std::io::SeekFrom) -> std::io::Result<u64> {
+        std::io::Seek::seek(&mut self.cursor, position)
+    }
+}
+
+#[test]
+fn streaming_matches_slice_at_every_cut_and_bounds_read_requests() {
+    let (base, journal) = fixture();
+    for cut in 0..=journal.len() {
+        let mut input = BoundedReader {
+            cursor: std::io::Cursor::new(journal[..cut].to_vec()),
+            fail_at: None,
+            max_read: 0,
+        };
+        assert_eq!(
+            media::scan_reader(&mut input, &base, base.len() as u64).unwrap(),
+            scan(&journal[..cut], &base, base.len() as u64),
+            "cut {cut}"
+        );
+    }
+    for index in [HEADER_LEN, HEADER_LEN + 3 * FRAME_LEN, journal.len() - 1] {
+        let mut damaged = journal.clone();
+        damaged[index] ^= 1;
+        let mut cursor = std::io::Cursor::new(damaged.clone());
+        assert_eq!(
+            media::scan_reader(&mut cursor, &base, base.len() as u64).unwrap(),
+            scan(&damaged, &base, base.len() as u64)
+        );
+    }
+}
+
+#[test]
+fn streaming_io_errors_abort_instead_of_classifying_tail() {
+    let (base, journal) = fixture();
+    for offset in [
+        0,
+        HEADER_LEN,
+        HEADER_LEN + FRAME_LEN,
+        journal.len() - FRAME_LEN,
+    ] {
+        let mut input = BoundedReader {
+            cursor: std::io::Cursor::new(journal.clone()),
+            fail_at: Some(offset as u64),
+            max_read: 0,
+        };
+        assert!(media::scan_reader(&mut input, &base, base.len() as u64).is_err());
+    }
+    // Failure while checking for later markers also aborts; otherwise an I/O
+    // error could hide closed history and incorrectly authorize truncation.
+    let mut damaged = journal;
+    damaged[HEADER_LEN] ^= 1;
+    let mut input = BoundedReader {
+        cursor: std::io::Cursor::new(damaged),
+        fail_at: Some((HEADER_LEN + FRAME_LEN) as u64),
+        max_read: 0,
+    };
+    assert!(media::scan_reader(&mut input, &base, base.len() as u64).is_err());
+}
