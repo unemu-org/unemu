@@ -19,7 +19,7 @@ crate: image loading belongs to `assembly`, and guest assets live under `vendor/
 | `device` | Hardware-neutral contracts: `Device`, `InterruptController`, `DmaMemory`, `VClock`, `NextEvent`, access traces, DMA messages, and the observation capabilities (text scanout, byte output, `ByteCapture`) | `thiserror` | None |
 | `cpu` | `Cpu`/`CpuStop` seam and `X86JitCpu`, which owns the core's `Vm` and `Vcpu` | `x86jit-core`, `thiserror` | None |
 | `bus` | Owns boxed devices and executes a port/MMIO `DecodeMap`; open-bus policy and ticking | `device`, `thiserror` | None |
-| `devices` | UART 16550, PIC 8259, PIT 8253, 8042, CMOS/RTC, DMA 8237, uPD765 floppy controller, VGA text, system control and POST port | `device`, `thiserror` | `testkit`, `video` |
+| `devices` | UART 16550, PIC 8259, PIT 8253, 8042, CMOS/RTC, DMA 8237, uPD765 floppy controller, VGA and MDA text cards, system control and POST port | `device`, `thiserror` | `testkit`, `video` |
 | `chipset` | Shared/cascaded PIC composition, null interrupt controller, AT port constants; no `Chipset` trait | `device`, `devices` | `testkit` |
 | `machine` | Generic `Machine<C: Cpu>` and execution/clock/IRQ/DMA loop | `cpu`, `bus`, `device`, `thiserror` | `testkit`, `devices` |
 | `video` | `FrameSink`, text frames/grids, text-mode renderer and capture sink | `device` | None |
@@ -158,9 +158,12 @@ POST independently of access tracing. `ObservationPolicy.trace` selects Off
 share overwrite-oldest behavior and cumulative drop counters; draining retains
 the count. Diagnostics and their policy are excluded from hardware snapshots.
 Capture preserves saved device state and
-does not consume traces. BIOS runners return the colour grid, MDA RAM-probe
-grid, COM1/POST streams, final floppy media and classified stop. Prompt detection
-uses the same RAM text renderer as the MDA console. `run_vga_text` presents its
+does not consume traces. BIOS runners return the colour and MDA card grids,
+COM1/POST streams, final floppy media and classified stop. The BIOS preset routes
+`0xB0000..=0xB7FFF` and display ports `0x3B0..=0x3BB` / `0x3BF` to MDA;
+printer ports `0x3BC..=0x3BE` remain undecoded. VGA retains only its colour ports,
+so the cards have independent CRTC state. Prompt detection selects the MDA bus
+slot and renders its scanout through the same text renderer as final capture. `run_vga_text` presents its
 captured grid through a `FrameSink`; presentation remains outside the machine loop.
 
 See [`design/observation.md`](design/observation.md) for the route contracts and

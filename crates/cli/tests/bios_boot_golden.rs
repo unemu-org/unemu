@@ -35,12 +35,15 @@
 //! attaches no floppy, so the read never succeeds and the BIOS spins there until
 //! the retired-instruction cap (`StopReason::BudgetExhausted`).
 //!
-//! The text screen is blank: the BIOS's MDA fallback targets the `0xB0000` window,
-//! which this machine maps as plain RAM rather than routing to the CGA card at
-//! `0xB8000`. The runner captures that MDA RAM console separately.
+//! The colour text screen is blank: the BIOS's MDA fallback targets the separate
+//! MDA card at `0xB0000`. The runner captures that card's console and cursor.
 //!
 //! The assertions pin the observed byte stream and the stop *kind*
 //! (`BudgetExhausted`), never an address.
+//!
+//! The BIOS never programs the colour card, so its cursor stays at `(0, 0)`
+//! and visible. MDA card capture exposes the BIOS cursor at `(0, 18)`, visible;
+//! the earlier RAM probe hid it. These are the intended independent-card states.
 //!
 //! ## Pinned inputs
 //!
@@ -77,10 +80,17 @@ fn bios_boot_stop_point_matches_golden() {
     assert_eq!(rom.len(), 32768, "Xi8088 BIOS is a 32 KiB image");
 
     let run = run_bios_with_cap(&rom, BIOS_GOLDEN_MAX_RETIRED);
-    // Monochrome CRTC aliases update the card's cursor even though the colour
-    // page is blank. A host snapshot must preserve that register state.
+    // The BIOS never programs the colour card, so it keeps its power-on cursor.
     assert_eq!(
         run.screen.cursor(),
+        video::Cursor {
+            col: 0,
+            row: 0,
+            visible: true
+        }
+    );
+    assert_eq!(
+        run.mda.cursor(),
         video::Cursor {
             col: 0,
             row: 18,

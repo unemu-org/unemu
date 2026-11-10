@@ -488,6 +488,53 @@ mod tests {
     }
 
     #[test]
+    fn mda_decode_conflicts_and_missing_card_are_rejected() {
+        let config = crate::bios(vec![0; 0x8000], None);
+        let mut ports = config.clone();
+        find_device(&mut ports, DeviceId::Vga)
+            .ports
+            .push(PortWindow::single(0x3B4));
+        assert_eq!(
+            ports.validate(),
+            Err(ConfigError::PortOverlap {
+                a: DeviceId::Vga,
+                b: DeviceId::Mda,
+                port: 0x3B4,
+            })
+        );
+        let mut mmio = config.clone();
+        mmio.memory
+            .mmio
+            .iter_mut()
+            .find(|w| w.device == DeviceId::Vga)
+            .unwrap()
+            .base = 0xB7000;
+        assert_eq!(
+            mmio.validate(),
+            Err(ConfigError::MmioOverlap {
+                a: DeviceId::Vga,
+                b: DeviceId::Mda,
+                addr: 0xB7000,
+            })
+        );
+        let mut ram = config.clone();
+        ram.memory.ram.push(RamRegion::new(0xB0000, 0x8000));
+        assert_eq!(
+            ram.validate(),
+            Err(ConfigError::MmioOverlapsRam {
+                device: DeviceId::Mda,
+                addr: 0xB0000,
+            })
+        );
+        let mut missing = config;
+        missing.devices.retain(|d| d.id != DeviceId::Mda);
+        assert_eq!(
+            missing.validate(),
+            Err(ConfigError::MmioDeviceMissing(DeviceId::Mda))
+        );
+    }
+
+    #[test]
     fn uart_window_must_fit_port_space() {
         let mut config = valid_config();
         for base in 0xFFF9..=0xFFFF {

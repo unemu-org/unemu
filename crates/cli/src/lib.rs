@@ -480,6 +480,9 @@ fn classify_test386_stop(rip: u64, result: Result<RunOutcome, RunError>) -> Stop
         Err(RunError::Machine(MachineError::Bus(e))) => StopReason::Unmapped {
             detail: format!("{e} (rip {rip:#x})"),
         },
+        Err(error @ RunError::ConsoleUnavailable(_)) => StopReason::ObservationFailed {
+            detail: error.to_string(),
+        },
         Err(error @ RunError::InsufficientCommandBudget { .. }) => StopReason::PolicyFailed {
             detail: error.to_string(),
         },
@@ -508,13 +511,6 @@ pub const BIOS_GOLDEN_MAX_RETIRED: u64 = 10_000_000;
 /// of margin, so timer waits survive POST instead of ending at a short HLT.
 pub const BIOS_IDLE_LIMIT: u64 = 1_000_000;
 
-/// Base of the monochrome (MDA) text window. When the option-ROM scan finds no
-/// video BIOS, the Kiselev POST falls back to an MDA/CGA console whose INT 10h
-/// teletype writes glyphs here rather than to the colour page at `0xB8000`. This
-/// machine maps `0xB0000` as plain conventional RAM, so the console text is read
-/// back from guest memory after the run.
-pub const MDA_BUFFER_BASE: u64 = 0x0B_0000;
-
 /// The deterministic execution boundary of a captured screen.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct ScreenStamp {
@@ -536,9 +532,9 @@ pub struct BiosRun {
     /// The colour (CGA/VGA) text page at `0xB8000`, rendered from the card.
     pub screen: TextGrid,
     /// Execution boundary of the colour-card capture; absent if assembly or
-    /// observation failed. The MDA RAM probe retains its separate legacy policy.
+    /// observation failed. The MDA card is captured at the same boundary.
     pub screen_stamp: Option<ScreenStamp>,
-    /// The monochrome (MDA) text window at `0xB0000`, read back from guest RAM.
+    /// The monochrome text window at `0xB0000`, rendered from the MDA card.
     /// This is where the Kiselev BIOS's INT 10h console actually writes after its
     /// no-video-BIOS MDA fallback, so a booted guest's console text lands here.
     pub mda: TextGrid,
@@ -556,15 +552,16 @@ pub struct BiosRun {
 /// probe never aborts on unmapped memory:
 ///
 /// - `[0x00000, 0xA0000)` — 640 KiB conventional RAM (RWX).
-/// - `[0xA0000, 0xB8000)` — RAM (the BIOS may probe this graphics-adapter window).
+/// - `[0xA0000, 0xB0000)` — RAM (the BIOS may probe this graphics-adapter window).
+/// - `[0xB0000, 0xB8000)` — the MDA text buffer and mirrors, trapped MMIO.
 /// - `[0xB8000, 0xC0000)` — the VGA colour text buffer, trapped MMIO routed to the
 ///   text card.
 /// - `[0xC0000, 0xF8000)` — zeroed RAM standing in for the option-ROM scan area:
 ///   the BIOS's `0x55AA` signature scan finds nothing and skips it.
 /// - `[0xF8000, 0x100000)` — the masked 32 KiB BIOS ROM, loaded with `rom`.
 ///
-/// The cascaded 8259 pair, 8253 PIT, 8042, seeded MC146818 CMOS/RTC, VGA text
-/// card, port-`0x61` system-control latch, and a POST port at `0x80` are all
+/// The cascaded 8259 pair, 8253 PIT, 8042, seeded MC146818 CMOS/RTC, VGA and MDA text
+/// cards, port-`0x61` system-control latch, and a POST port at `0x80` are all
 /// decoded. The PIT counter-0 OUT is wired to IRQ0, the 8042 to IRQ1, and the RTC
 /// update-ended line to IRQ8; the BIOS programs the PICs itself.
 ///
@@ -597,14 +594,12 @@ fn bios_natural_policy() -> RunPolicy {
     RunPolicy::natural(Some(BIOS_MAX_RETIRED), Some(BIOS_IDLE_LIMIT))
 }
 
-/// The MDA console probe the FreeDOS runs read back to detect FreeCOM's prompt:
-/// the monochrome text window at [`MDA_BUFFER_BASE`], rendered exactly as the
-/// frontend renders that console so a needle match here is what the caller sees.
-fn mda_console_probe() -> ConsoleProbe {
+/// Select the MDA card's bus slot for FreeCOM prompt detection.
+/// Its window at [`devices::mda::TEXT_BUFFER_BASE`] is rendered through scanout,
+/// using the same text renderer as final capture.
+fn mda_console_probe(device_index: &HashMap<DeviceId, usize>) -> ConsoleProbe {
     ConsoleProbe {
-        base: MDA_BUFFER_BASE,
-        cols: COLS,
-        rows: ROWS,
+        device_index: device_index[&DeviceId::Mda],
     }
 }
 
@@ -613,12 +608,16 @@ fn mda_console_probe() -> ConsoleProbe {
 /// run `then_budget` more so the shell processes them. The plain FreeDOS boot passes
 /// no stimuli and a zero budget (it stops at the prompt); the interactive run passes
 /// the keyboard script and [`DOS_INTERACTIVE_COMMAND_BUDGET`].
-fn freedos_prompt_policy(stimuli: Vec<KeyboardStimulus>, then_budget: u64) -> RunPolicy {
+fn freedos_prompt_policy(
+    device_index: &HashMap<DeviceId, usize>,
+    stimuli: Vec<KeyboardStimulus>,
+    then_budget: u64,
+) -> RunPolicy {
     RunPolicy {
         retired_cap: Some(BIOS_MAX_RETIRED),
         idle_limit: Some(BIOS_IDLE_LIMIT),
         stop: StopCondition::PromptThen {
-            console: mda_console_probe(),
+            console: mda_console_probe(device_index),
             needle: DOS_DATE_PROMPT.to_string(),
             poll_step: DOS_INTERACTIVE_POLL_STEP,
             then_budget,
@@ -680,14 +679,29 @@ fn run_bios_assembled(
             (grid, Some(stamp))
         }
         Err(error) => {
-            stop = StopReason::ObservationFailed {
-                detail: format!("capturing display: {error}"),
-            };
+            if !matches!(stop, StopReason::ObservationFailed { .. }) {
+                stop = StopReason::ObservationFailed {
+                    detail: format!("capturing display: {error}"),
+                };
+            }
             (blank_screen(), None)
         }
     };
+    let mda = match assembled.capture_text(DeviceId::Mda) {
+        Ok(capture) => {
+            let Frame::Text(grid) = capture.frame;
+            grid
+        }
+        Err(error) => {
+            if !matches!(stop, StopReason::ObservationFailed { .. }) {
+                stop = StopReason::ObservationFailed {
+                    detail: format!("capturing display (MDA): {error}"),
+                };
+            }
+            blank_screen()
+        }
+    };
     let machine = &mut assembled.machine;
-    let mda = render_mda(machine);
     let com1 = stream_or_fail(capture_serial(&assembled.observation), &mut stop);
     let floppy_image = device_index
         .get(&DeviceId::Fdc)
@@ -766,8 +780,8 @@ pub fn run_bios_boot(rom: &[u8], floppy: Vec<u8>) -> BiosRun {
 /// the MDA console the BIOS actually writes to ([`BiosRun::mda`]), COM1, and the
 /// classified [`BiosRun::stop`].
 pub fn run_freedos(rom: &[u8], floppy: Vec<u8>) -> BiosRun {
-    run_bios_config(assembly::bios(rom.to_vec(), Some(floppy)), |_| {
-        freedos_prompt_policy(Vec::new(), 0)
+    run_bios_config(assembly::bios(rom.to_vec(), Some(floppy)), |device_index| {
+        freedos_prompt_policy(device_index, Vec::new(), 0)
     })
 }
 
@@ -822,7 +836,7 @@ pub fn run_freedos_interactive(rom: &[u8], floppy: Vec<u8>, scancodes: &[u8]) ->
             scancodes: script,
             schedule: InjectionSchedule::AfterPrompt,
         };
-        freedos_prompt_policy(vec![stimulus], DOS_INTERACTIVE_COMMAND_BUDGET)
+        freedos_prompt_policy(device_index, vec![stimulus], DOS_INTERACTIVE_COMMAND_BUDGET)
     })
 }
 
@@ -952,34 +966,6 @@ pub fn dos_write_file_script() -> Vec<u8> {
     script
 }
 
-/// Read back the monochrome (MDA) text window at [`MDA_BUFFER_BASE`] from guest
-/// RAM and render it into a [`TextGrid`] (§9.2).
-///
-/// The colour page at `0xB8000` is trapped MMIO observed through the card's
-/// scanout capability; the MDA window is plain RAM in this machine, so
-/// its 80×25 two-bytes-per-cell contents are read directly through the CPU's
-/// `read_mem` seam after the run. This probe does not interpret the shared MDA
-/// CRTC ports (`0x3B4`/`0x3B5`) as a separate adapter's state; the grid
-/// is rendered from cell 0 with the cursor hidden, which is faithful for a
-/// console that scrolls its buffer rather than panning the CRTC start address.
-fn render_mda(machine: &Machine<X86JitCpu>) -> TextGrid {
-    let mut vram = vec![0u8; TEXT_BUFFER_LEN];
-    let cells = (usize::from(COLS) * usize::from(ROWS) * 2).min(vram.len());
-    // A short read leaves the tail blank rather than failing the whole render.
-    let _ = machine.cpu().read_mem(MDA_BUFFER_BASE, &mut vram[..cells]);
-    render_text_mode(&TextModeState {
-        vram: &vram,
-        cols: COLS,
-        rows: ROWS,
-        start_cell: 0,
-        cursor_cell: 0,
-        cursor_visible: false,
-        attributes: video::TextAttributeSet::Monochrome {
-            blink_enabled: true,
-        },
-    })
-}
-
 /// Classify how the BIOS run stopped into a [`StopReason`], reading back the bytes
 /// at the stopping CS:IP so an unlifted/faulting instruction can be disassembled
 /// for the report (§3.1). Addresses live in `detail` for humans only.
@@ -1024,6 +1010,9 @@ fn classify_bios_stop(
         }
         Err(RunError::Machine(MachineError::Bus(e))) => StopReason::Unmapped {
             detail: format!("{e}; {site}"),
+        },
+        Err(error @ RunError::ConsoleUnavailable(_)) => StopReason::ObservationFailed {
+            detail: error.to_string(),
         },
         Err(error @ RunError::InsufficientCommandBudget { .. }) => StopReason::PolicyFailed {
             detail: error.to_string(),
@@ -1313,6 +1302,11 @@ fn post_policy() -> ObservationPolicy {
 
 fn bios_observation_policy() -> ObservationPolicy {
     let mut policy = display_policy();
+    policy.routes.push(ObservationRequest {
+        device: DeviceId::Mda,
+        output: OutputKind::TextScanout,
+        byte_limit: 0,
+    });
     policy.routes.extend(serial_policy().routes);
     policy.routes.extend(post_policy().routes);
     policy
@@ -1322,9 +1316,11 @@ fn stream_or_fail(result: Result<Vec<u8>>, stop: &mut StopReason) -> Vec<u8> {
     match result {
         Ok(bytes) => bytes,
         Err(error) => {
-            *stop = StopReason::ObservationFailed {
-                detail: format!("{error:#}"),
-            };
+            if !matches!(stop, StopReason::ObservationFailed { .. }) {
+                *stop = StopReason::ObservationFailed {
+                    detail: format!("{error:#}"),
+                };
+            }
             Vec::new()
         }
     }
@@ -1443,23 +1439,63 @@ mod tests {
         assert_eq!(run.screen_stamp, None);
     }
 
-    #[test]
-    fn bios_display_capture_failure_is_an_observation_failure() {
+    fn run_bios_without_display_routes(removed: &[DeviceId]) -> BiosRun {
         let mut observation = bios_observation_policy();
-        observation
-            .routes
-            .retain(|route| route.output != OutputKind::TextScanout);
+        observation.routes.retain(|route| {
+            route.output != OutputKind::TextScanout || !removed.contains(&route.device)
+        });
         let mut assembled =
             assemble_with_observation(&assembly::bios(vec![0xF4; 32768], None), &observation)
                 .unwrap();
-        let run = run_bios_assembled(&mut assembled, |_| RunPolicy::natural(Some(0), None));
-        assert!(matches!(
-            run.stop,
-            StopReason::ObservationFailed { detail }
-                if detail.contains("capturing display") && detail.contains("route is not bound")
-        ));
+        run_bios_assembled(&mut assembled, |_| RunPolicy::natural(Some(0), None))
+    }
+
+    #[test]
+    fn bios_vga_capture_failure_is_an_observation_failure() {
+        let run = run_bios_without_display_routes(&[DeviceId::Vga]);
+        assert!(matches!(run.stop, StopReason::ObservationFailed { detail }
+            if detail.contains("capturing display") && detail.contains("route is not bound")
+                && !detail.contains("(MDA)")));
         assert_eq!(run.screen_stamp, None);
         assert_eq!(run.screen, blank_screen());
+    }
+
+    #[test]
+    fn bios_mda_capture_failure_preserves_the_colour_stamp() {
+        let run = run_bios_without_display_routes(&[DeviceId::Mda]);
+        assert!(matches!(run.stop, StopReason::ObservationFailed { detail }
+            if detail.contains("capturing display (MDA)") && detail.contains("route is not bound")));
+        assert!(run.screen_stamp.is_some());
+        assert_eq!(run.mda, blank_screen());
+    }
+
+    #[test]
+    fn bios_display_capture_preserves_the_first_observation_failure() {
+        let run = run_bios_without_display_routes(&[DeviceId::Vga, DeviceId::Mda]);
+        assert!(matches!(run.stop, StopReason::ObservationFailed { detail }
+            if detail.contains("Vga") && !detail.contains("(MDA)")));
+        assert_eq!(run.screen_stamp, None);
+    }
+
+    #[test]
+    fn bios_later_capture_failures_preserve_the_post_failure() {
+        let mut assembled = assembly::assemble(&assembly::bios(vec![0xF4; 32768], None)).unwrap();
+        let run = run_bios_assembled(&mut assembled, |_| RunPolicy::natural(Some(0), None));
+        assert!(matches!(run.stop, StopReason::ObservationFailed { detail }
+            if detail.contains("capturing POST checkpoints")));
+    }
+
+    #[test]
+    fn console_unavailable_is_classified_as_an_observation_failure() {
+        let assembled = assembly::assemble(&assembly::at_boot(vec![0xF4])).unwrap();
+        let index = assembled.device_index[&DeviceId::Keyboard];
+        for stop in [
+            classify_bios_stop(&assembled.machine, Err(RunError::ConsoleUnavailable(index))),
+            classify_test386_stop(0, Err(RunError::ConsoleUnavailable(index))),
+        ] {
+            assert!(matches!(stop, StopReason::ObservationFailed { detail }
+                if detail.contains("console text scanout is unavailable")));
+        }
     }
 
     #[test]
@@ -1568,6 +1604,7 @@ mod bounded_trace_tests {
                             Vec::new()
                         };
                         freedos_prompt_policy(
+                            indices,
                             stimuli,
                             if interactive {
                                 DOS_INTERACTIVE_COMMAND_BUDGET

@@ -264,6 +264,27 @@ presets: the knowledge they encode (which devices, at which ports, with which
 wiring) moves into the `DeviceConfig` list a preset produces. A caller wanting a
 one-off variation clones a preset's config and edits fields. Added in task-31.
 
+### BIOS monochrome display routing
+
+The `bios` preset, shared by BIOS and FreeDOS runners, includes independent VGA
+and MDA text cards. `DeviceKind::Mda(MdaTextCfg {})` constructs `MdaText` at role
+`DeviceId::Mda`. Its decoded MMIO aperture is `0xB0000..=0xB7FFF`, removed from
+RAM; the card mirrors 4 KiB of physical text RAM across that aperture. Its ports
+are `0x3B0..=0x3BB` and `0x3BF`, excluding the unmodelled printer function at
+`0x3BC..=0x3BE`. VGA retains its colour ports and `0xB8000..=0xBFFFF` aperture;
+monochrome CRTC writes no longer update VGA registers. Other presets retain
+their existing device and memory maps.
+
+These ranges follow the IBM PC Technical Reference, Options and Adapters,
+Monochrome Display and Printer Adapter, Programming Considerations. The device
+module documents the status/open-bus assumptions. Validation applies the same
+missing-device, port/MMIO conflict and RAM-exclusion checks as for VGA.
+
+Prompt polling's `ConsoleProbe` names the card by its resolved bus index,
+without a guest-memory address or geometry override. Polling and final capture
+render `Device::text_scanout` through `video::render_text_mode`, including the
+CRTC start address and cursor. Poll cadence and keyboard injection stay fixed.
+
 ## RunPolicy — "how we run" is not "what the machine is"
 
 `MachineConfig` describes the machine. It does **not** describe the run. Those

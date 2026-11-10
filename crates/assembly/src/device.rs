@@ -29,8 +29,10 @@ pub enum DeviceId {
     Keyboard,
     /// MC146818 CMOS RAM / real-time clock.
     Rtc,
-    /// VGA/MDA text-mode card.
+    /// VGA text-mode card.
     Vga,
+    /// IBM Monochrome Display Adapter (display portion only).
+    Mda,
     /// System control port (0x61: speaker gate, refresh, NMI status).
     SysControl,
     /// POST checkpoint port.
@@ -45,7 +47,7 @@ pub enum DeviceId {
 ///
 /// The config counterpart of [`bus::PortRange`], without the bus index the
 /// assembler fills in. A device may decode several windows (a VGA card decodes
-/// its CRTC, CGA, and MDA aliases); [`PortWindow::allow_overlap`] marks a window
+/// its CRTC and CGA registers); [`PortWindow::allow_overlap`] marks a window
 /// that is *intended* to overlap an earlier device's — the bus resolves such an
 /// overlap by first-match order, and validation treats an unmarked overlap as an
 /// error.
@@ -154,12 +156,21 @@ pub struct CmosCfg {
     pub timing: Option<(u64, u64)>,
 }
 
-/// VGA/MDA text-card parameters (§9.2).
+/// VGA text-card parameters (§9.2).
 ///
 /// Port decoding lives in [`DeviceConfig::ports`]; the text buffer is an MMIO
 /// window in [`crate::MemoryConfig`].
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct VgaTextCfg {}
+
+/// IBM Monochrome Display Adapter selection (display portion only).
+///
+/// IBM PC Technical Reference, Options and Adapters, Monochrome Display and
+/// Printer Adapter, Programming Considerations: display ports are 3B0–3BB and
+/// 3BF; printer ports 3BC–3BE belong to a separate function. See
+/// `backlog/docs/design/machine-config.md` §Presets.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct MdaTextCfg {}
 
 /// System-control selection (§7); port decoding lives in [`DeviceConfig::ports`].
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -206,8 +217,10 @@ pub enum DeviceKind {
     Keyboard(I8042Cfg),
     /// MC146818 CMOS/RTC.
     Rtc(CmosCfg),
-    /// VGA/MDA text card.
+    /// VGA text card.
     Vga(VgaTextCfg),
+    /// IBM Monochrome Display Adapter (display portion only).
+    Mda(MdaTextCfg),
     /// System control port.
     SysControl(SysControlCfg),
     /// POST checkpoint port.

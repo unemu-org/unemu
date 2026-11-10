@@ -2,12 +2,11 @@
 //! Machine-shape presets (§3.1).
 //!
 //! A preset is a plain function that emits a [`MachineConfig`] for one machine
-//! shape — the ergonomic layer over the flat [`DeviceConfig`] list. Each preset
-//! builds exactly the topology the corresponding hand-assembled runner used to
-//! build by hand (same devices, ports, IRQ/DMA wiring, memory mosaic, reset
-//! entry, and clock), so a machine assembled from the preset is observably
-//! identical to the legacy one. The frontend picks a preset, assembles it, and
-//! runs it; nothing here runs a machine.
+//! shape — the ergonomic layer over the flat [`DeviceConfig`] list. Presets own
+//! the devices, ports, IRQ/DMA wiring, memory mosaic, reset entry and clock.
+//! The BIOS preset uses independent MDA and VGA cards, correcting the shared
+//! cursor state of its legacy runner. The frontend picks a preset, assembles it,
+//! and runs it; nothing here runs a machine.
 //!
 //! The old `AtChipset` / `SerialChipset` chipsets are exactly these presets in a
 //! different guise: where the chipset trait returned a device set + decode map,
@@ -17,8 +16,8 @@
 use crate::clock::ClockConfig;
 use crate::cpu::{CpuChip, CpuConfig, ResetSpec, SegmentSeed};
 use crate::device::{
-    CmosCfg, DeviceConfig, DeviceId, DeviceKind, DmaCfg, DmaSpec, FdcCfg, I8042Cfg, PicCfg, PitCfg,
-    PortWindow, PostPortCfg, SysControlCfg, UartCfg, VgaTextCfg,
+    CmosCfg, DeviceConfig, DeviceId, DeviceKind, DmaCfg, DmaSpec, FdcCfg, I8042Cfg, MdaTextCfg,
+    PicCfg, PitCfg, PortWindow, PostPortCfg, SysControlCfg, UartCfg, VgaTextCfg,
 };
 use crate::drive::{DriveConfig, DriveKind, FloppyGeometry};
 use crate::image::{ImageKind, ImageSource, LoadImage};
@@ -30,10 +29,11 @@ use chipset::{
     COM1_BASE, COM1_TOP, PIC_COMMAND, PIC_DATA, PIT_BASE, PIT_TOP, SLAVE_PIC_COMMAND,
     SLAVE_PIC_DATA,
 };
+use devices::mda;
 use devices::post_port::POST_PORT;
 use devices::vga_text::{
-    CGA_MODE_CONTROL_PORT, CGA_STATUS_PORT, CRTC_DATA_PORT, CRTC_INDEX_PORT, MDA_CRTC_DATA_PORT,
-    MDA_CRTC_INDEX_PORT, MDA_STATUS_PORT, TEXT_BUFFER_BASE, TEXT_BUFFER_LEN,
+    CGA_MODE_CONTROL_PORT, CGA_STATUS_PORT, CRTC_DATA_PORT, CRTC_INDEX_PORT, TEXT_BUFFER_BASE,
+    TEXT_BUFFER_LEN,
 };
 
 // ---------------------------------------------------------------------------
@@ -157,19 +157,29 @@ fn rtc(seed: bool, timing: Option<(u64, u64)>, irq: Option<u8>) -> DeviceConfig 
     }
 }
 
-/// The VGA/MDA text card. `bios_aliases` adds the monochrome CRTC and input-status
-/// ports the Kiselev BIOS drives in its MDA console path, on top of the CGA-page
-/// CRTC and mode/colour/status registers every machine decodes.
-fn vga(bios_aliases: bool) -> DeviceConfig {
-    let mut ports = vec![
-        PortWindow::new(CRTC_INDEX_PORT, CRTC_DATA_PORT),
-        PortWindow::new(CGA_MODE_CONTROL_PORT, CGA_STATUS_PORT),
-    ];
-    if bios_aliases {
-        ports.push(PortWindow::new(MDA_CRTC_INDEX_PORT, MDA_CRTC_DATA_PORT));
-        ports.push(PortWindow::single(MDA_STATUS_PORT));
-    }
-    DeviceConfig::new(DeviceId::Vga, DeviceKind::Vga(VgaTextCfg {}), ports)
+/// The VGA text card's colour CRTC and CGA compatibility registers.
+fn vga() -> DeviceConfig {
+    DeviceConfig::new(
+        DeviceId::Vga,
+        DeviceKind::Vga(VgaTextCfg {}),
+        vec![
+            PortWindow::new(CRTC_INDEX_PORT, CRTC_DATA_PORT),
+            PortWindow::new(CGA_MODE_CONTROL_PORT, CGA_STATUS_PORT),
+        ],
+    )
+}
+
+/// IBM PC Technical Reference, Monochrome Display and Printer Adapter,
+/// Programming Considerations: the display decode excludes the printer ports.
+fn mda() -> DeviceConfig {
+    DeviceConfig::new(
+        DeviceId::Mda,
+        DeviceKind::Mda(MdaTextCfg {}),
+        vec![
+            PortWindow::new(mda::DISPLAY_PORT_BASE, mda::DISPLAY_PORT_TOP),
+            PortWindow::single(mda::UNASSIGNED_PORT),
+        ],
+    )
 }
 
 /// The port-`0x61` system-control latch.
@@ -259,7 +269,7 @@ fn at_device_set(
         master_pic(),
         pit(pit_irq),
         keyboard(kbd_irq),
-        vga(false),
+        vga(),
         slave_pic(),
         rtc(false, rtc_timing, rtc_irq),
     ]
@@ -491,7 +501,7 @@ pub fn floppy_boot(loader: Vec<u8>, floppy: Vec<u8>) -> MachineConfig {
 }
 
 /// The full PC/AT BIOS machine: the 1 MiB memory mosaic with the 32 KiB `rom`
-/// masked at `0xF8000`, the cascaded 8259 pair, PIT, 8042, VGA text card,
+/// masked at `0xF8000`, the cascaded 8259 pair, PIT, 8042, VGA and MDA text cards,
 /// CMOS/RTC (seeded), the port-`0x61` latch, and a POST port at `0x80`, booting
 /// from the reset vector. CPU work uses exact steps and interrupts are accepted
 /// only at completed instruction boundaries.
@@ -512,11 +522,12 @@ pub fn bios(rom: Vec<u8>, floppy: Option<Vec<u8>>) -> MachineConfig {
         master_pic(),
         pit(Some(0)),
         keyboard(Some(1)),
-        vga(true),
+        vga(),
         slave_pic(),
         rtc(true, None, Some(8)),
         sys_control(),
         post(BIOS_POST_PORT),
+        mda(),
     ];
 
     let drives = match &floppy {
@@ -563,15 +574,18 @@ pub fn bios(rom: Vec<u8>, floppy: Option<Vec<u8>>) -> MachineConfig {
             ram: vec![
                 // 640 KiB conventional RAM + the graphics-adapter probe window up to
                 // the trapped text page.
-                RamRegion::new(0, TEXT_BUFFER_BASE),
+                RamRegion::new(0, mda::TEXT_BUFFER_BASE),
                 // Zeroed option-ROM scan area between the text page and the ROM.
                 RamRegion::new(BIOS_OPTION_ROM_BASE, BIOS_ROM_BASE - BIOS_OPTION_ROM_BASE),
             ],
-            mmio: vec![MmioWindow::new(
-                TEXT_BUFFER_BASE,
-                TEXT_BUFFER_LEN as u64,
-                DeviceId::Vga,
-            )],
+            mmio: vec![
+                MmioWindow::new(TEXT_BUFFER_BASE, TEXT_BUFFER_LEN as u64, DeviceId::Vga),
+                MmioWindow::new(
+                    mda::TEXT_BUFFER_BASE,
+                    mda::TEXT_BUFFER_LEN as u64,
+                    DeviceId::Mda,
+                ),
+            ],
         },
         devices,
         drives,
@@ -587,6 +601,52 @@ pub fn bios(rom: Vec<u8>, floppy: Option<Vec<u8>>) -> MachineConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bios_mda_decode_excludes_ram_vga_and_printer_ports() {
+        for floppy in [
+            None,
+            Some(vec![0; FloppyGeometry::HD_1_44.image_bytes() as usize]),
+        ] {
+            let config = bios(vec![0; 0x8000], floppy);
+            let window = config
+                .memory
+                .mmio
+                .iter()
+                .find(|w| w.base == 0xB0000)
+                .expect("the monochrome aperture must be card-owned MMIO");
+            assert_eq!(window.size, 0x8000);
+            assert_eq!(window.device, DeviceId::Mda);
+            let card = config
+                .devices
+                .iter()
+                .find(|d| d.id == window.device)
+                .unwrap();
+            assert_eq!(card.kind, DeviceKind::Mda(MdaTextCfg {}));
+            assert_eq!(
+                card.ports,
+                vec![PortWindow::new(0x3B0, 0x3BB), PortWindow::single(0x3BF)]
+            );
+            for port in 0x3B0..=0x3BF {
+                let owners: Vec<_> = config
+                    .devices
+                    .iter()
+                    .filter(|d| d.ports.iter().any(|w| (w.start..=w.end).contains(&port)))
+                    .collect();
+                if (0x3BC..=0x3BE).contains(&port) {
+                    assert!(owners.is_empty(), "printer port {port:#x}");
+                } else {
+                    assert_eq!(owners, vec![card], "display port {port:#x}");
+                }
+            }
+            assert!(config
+                .memory
+                .ram
+                .iter()
+                .all(|r| r.end() <= 0xB0000 || r.base >= 0xB8000));
+            assert_eq!(config.validate(), Ok(()));
+        }
+    }
 
     #[test]
     fn floppy_drive_default_is_high_density_slot_zero() {

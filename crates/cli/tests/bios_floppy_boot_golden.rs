@@ -31,6 +31,10 @@
 //! (CS:IP F000:FF2F at the end) until the step cap. Observed at x86jit
 //! `54fad1766a458df7cedb6c0b4b5d50742628ef75` with the pinned Kiselev BIOS. The
 //! value is the COM1 marker, not the stop kind.
+//!
+//! The BIOS never programs the colour card, so its cursor stays at `(0, 0)`
+//! and visible. MDA card capture exposes the BIOS cursor at `(0, 17)`, visible;
+//! the earlier RAM probe hid it. These are the intended independent-card states.
 
 use cli::{bootable_floppy_image, run_bios_boot, FLOPPY_BOOT_MARKER};
 #[path = "support/fixtures.rs"]
@@ -45,10 +49,17 @@ fn bios_int19_reads_boot_sector_over_the_floppy() {
     assert_eq!(rom.len(), 32768, "Xi8088 BIOS is a 32 KiB image");
 
     let run = run_bios_boot(&rom, bootable_floppy_image());
-    // Monochrome CRTC aliases update the card's cursor even though the colour
-    // page is blank. A host snapshot must preserve that register state.
+    // The BIOS never programs the colour card, so it keeps its power-on cursor.
     assert_eq!(
         run.screen.cursor(),
+        video::Cursor {
+            col: 0,
+            row: 0,
+            visible: true
+        }
+    );
+    assert_eq!(
+        run.mda.cursor(),
         video::Cursor {
             col: 0,
             row: 17,

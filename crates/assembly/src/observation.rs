@@ -263,6 +263,145 @@ mod tests {
     }
 
     #[test]
+    fn bios_mda_and_vga_have_independent_crtc_and_status_state() {
+        let config = crate::bios(vec![0; 0x8000], None);
+        let policy = ObservationPolicy {
+            trace: device::TracePolicy::Off,
+            routes: vec![
+                request(DeviceId::Mda, OutputKind::TextScanout, 0),
+                request(DeviceId::Vga, OutputKind::TextScanout, 0),
+            ],
+        };
+        let mut assembled = assemble_with_observation(&config, &policy).unwrap();
+        let bus = assembled.machine.bus_mut();
+        bus.mmio_write(0xB0000, 4, 0x70420741).unwrap();
+        for (index, value) in [(13, 1), (15, 3), (10, 0x20)] {
+            bus.port_write(0x3B4, 1, index).unwrap();
+            bus.port_write(0x3B5, 1, value).unwrap();
+        }
+        let Frame::Text(mda) = assembled.capture_text(DeviceId::Mda).unwrap().frame;
+        let Frame::Text(vga) = assembled.capture_text(DeviceId::Vga).unwrap().frame;
+        assert_eq!(
+            mda.cell(0, 0),
+            Some(&video::TextCell {
+                glyph: b'B',
+                attr: 0x70,
+                style: video::TextStyle::Monochrome {
+                    effect: video::MonochromeEffect::Reverse,
+                    intense: false,
+                    blink: false,
+                    background_intense: false
+                }
+            })
+        );
+        assert_eq!(
+            mda.cursor(),
+            video::Cursor {
+                col: 2,
+                row: 0,
+                visible: false
+            }
+        );
+        assert_eq!(
+            vga.cell(0, 0),
+            Some(&video::TextCell {
+                glyph: 0,
+                attr: 0,
+                style: video::TextStyle::Colour {
+                    foreground: 0,
+                    background: 0,
+                    blink: false
+                }
+            })
+        );
+        assert_eq!(
+            vga.cursor(),
+            video::Cursor {
+                col: 0,
+                row: 0,
+                visible: true
+            }
+        );
+        let bus = assembled.machine.bus_mut();
+        for status in [0xF6, 0xF7, 0xFE, 0xFF] {
+            assert_eq!(bus.port_read(0x3BA, 1).unwrap(), status);
+        }
+        assert_eq!(bus.port_read(0x3DA, 1).unwrap(), 0);
+        for port in [0x3BC, 0x3BD, 0x3BE] {
+            assert_eq!(bus.port_read(port, 1).unwrap(), 0xFF);
+        }
+    }
+
+    #[test]
+    fn bios_mda_guest_store_reaches_scanout_instead_of_ram() {
+        let mut config = crate::bios(vec![0; 0x8000], None);
+        let card = config
+            .memory
+            .mmio
+            .iter()
+            .find(|w| w.base == 0xB0000)
+            .expect("the monochrome aperture must be card-owned MMIO")
+            .device;
+        assert_eq!(card, DeviceId::Mda);
+        config.cpu.reset = crate::ResetSpec::Entry { cs: 0, ip: 0x7C00 };
+        config.cpu.segments = crate::SegmentSeed::flat(0);
+        config.cpu.segments.ds = 0xB000;
+        config.images.push(crate::LoadImage {
+            base: 0x7C00,
+            source: crate::ImageSource::Inline(vec![0xFA, 0xB8, b'A', 7, 0xA3, 0, 0, 0xF4]),
+            kind: crate::ImageKind::RamLoad,
+        });
+        let policy = ObservationPolicy {
+            trace: device::TracePolicy::Ring { capacity: 16 },
+            routes: vec![request(card, OutputKind::TextScanout, 0)],
+        };
+        let mut assembled = assemble_with_observation(&config, &policy).unwrap();
+        assert_eq!(
+            assembled.machine.run_bounded(Some(100)).unwrap(),
+            machine::RunOutcome::Halted
+        );
+        let capture = assembled.capture_text(card).unwrap();
+        let Frame::Text(grid) = capture.frame;
+        assert_eq!(
+            grid.cell(0, 0),
+            Some(&video::TextCell {
+                glyph: b'A',
+                attr: 7,
+                style: video::TextStyle::Monochrome {
+                    effect: video::MonochromeEffect::Normal,
+                    intense: false,
+                    blink: false,
+                    background_intense: false
+                }
+            })
+        );
+        let mut bytes = [0; 2];
+        assembled
+            .machine
+            .cpu()
+            .read_mem(0xB0000, &mut bytes)
+            .unwrap();
+        assert_eq!(bytes, [0, 0], "guest MMIO must not mutate CPU backing RAM");
+        let index = assembled.device_index[&card];
+        assert!(assembled
+            .machine
+            .bus_mut()
+            .device_mut(index)
+            .unwrap()
+            .take_trace()
+            .iter()
+            .any(|event| matches!(
+                event,
+                device::TraceEvent::Mmio {
+                    addr: 0xB0000,
+                    dir: device::AccessDir::Write,
+                    value: 0x0741,
+                    ..
+                }
+            )));
+    }
+
+    #[test]
     fn observation_routes_follow_device_ids_and_capture_one_running_machine() {
         let program = vec![
             0xBA, 0xF8, 0x03, 0xB0, b'A', 0xEE, 0xBA, 0x90, 0x01, 0xB0, 0xFF, 0xEE, 0xB8, b'B',

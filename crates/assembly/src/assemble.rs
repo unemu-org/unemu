@@ -43,8 +43,8 @@ use bus::{Bus, DecodeMap, MmioRange, PortRange};
 use cpu::x86jit_backend::X86JitCpu;
 use device::{Device, InterruptController};
 use devices::{
-    CmosConfig, CmosRtc, Dma8237, Drive, Pit8253, PostPort, SysControl, Uart16550, Upd765, VgaText,
-    I8042,
+    CmosConfig, CmosRtc, Dma8237, Drive, MdaText, Pit8253, PostPort, SysControl, Uart16550, Upd765,
+    VgaText, I8042,
 };
 use machine::{DmaWiring, IrqLine, Machine};
 
@@ -177,6 +177,7 @@ fn assemble_with_cpu(
                 Box::new(rtc)
             }
             DeviceKind::Vga(_) => Box::new(VgaText::new()),
+            DeviceKind::Mda(_) => Box::new(MdaText::new()),
             DeviceKind::SysControl(_) => Box::new(SysControl::new()),
             DeviceKind::Post(c) => Box::new(PostPort::with_port(c.port)),
             DeviceKind::Fdc(_) => Box::new(Upd765::with_drives(build_fdc_drives(config)?)),

@@ -74,9 +74,9 @@ and mode/status ports 3B8/3BA. Status uses a deterministic read-count phase.
 The shared text renderer decodes monochrome attributes into non-display,
 underline, normal and reverse-video effects with character intensity. Mode-control
 bit 5 at 3B8 selects blink versus background intensity; non-display stays black.
-Glyph rasterisation and blink timing remain presenter concerns; machine-profile
-wiring remains separate work.
-The printer ports 3BC–3BE are outside this display device's routes.
+Glyph rasterisation and blink timing remain presenter concerns. The BIOS/FreeDOS
+profiles route B0000–B7FFF, display ports 3B0–3BB and port 3BF to the MDA card.
+The printer ports 3BC–3BE are not routed.
 
 ## §10 Testing
 

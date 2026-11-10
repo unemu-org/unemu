@@ -56,8 +56,8 @@ pub use assemble::{
 pub use clock::ClockConfig;
 pub use cpu::{CpuChip, CpuConfig, ResetSpec, SegmentSeed};
 pub use device::{
-    CmosCfg, DeviceConfig, DeviceId, DeviceKind, DmaCfg, DmaSpec, FdcCfg, I8042Cfg, PicCfg, PitCfg,
-    PortWindow, PostPortCfg, SysControlCfg, UartCfg, VgaTextCfg,
+    CmosCfg, DeviceConfig, DeviceId, DeviceKind, DmaCfg, DmaSpec, FdcCfg, I8042Cfg, MdaTextCfg,
+    PicCfg, PitCfg, PortWindow, PostPortCfg, SysControlCfg, UartCfg, VgaTextCfg,
 };
 pub use drive::{DriveConfig, DriveKind, FloppyGeometry, HardDiskGeometry};
 pub use error::ConfigError;

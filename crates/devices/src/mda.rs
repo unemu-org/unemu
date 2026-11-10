@@ -37,8 +37,8 @@
 //! while bytes crossing a 4 KiB mirror wrap. Widths outside 1–8 bytes are rejected
 //! with `DeviceError::UnmappedRegister`, the existing access-error variant.
 //!
-//! Status uses [`crate::VgaText`]'s mono-alias approximation: bit 0 toggles every
-//! read and bit 3 every second read, independent of clocks or mode. BIOS polling
+//! Status uses the same per-read phase as [`crate::VgaText`]'s colour status
+//! register (`0x3DA`): bit 0 toggles every read and bit 3 every second read, independent of clocks or mode. BIOS polling
 //! sees both edges within two/four reads, even without ticking. Scanout is passive
 //! and does not advance that phase. Snapshots preserve the phase as well as RAM
 //! and registers, including the absolute trace clock. Run-scoped trace policy,
@@ -60,6 +60,14 @@ pub const TEXT_BUFFER_BASE: u64 = 0xB_0000;
 pub const TEXT_BUFFER_LEN: usize = 0x8000;
 /// Physical display RAM length, shared by all eight mirrors.
 pub const VRAM_LEN: usize = 0x1000;
+/// First display port, including the MC6845 register mirrors.
+/// IBM PC Technical Reference, Monochrome Display and Printer Adapter,
+/// Programming Considerations, I/O address map.
+pub const DISPLAY_PORT_BASE: u16 = 0x3B0;
+/// Last display port before the printer function's ports.
+pub const DISPLAY_PORT_TOP: u16 = 0x3BB;
+/// Additional unassigned display port after the printer function's ports.
+pub const UNASSIGNED_PORT: u16 = 0x3BF;
 /// MC6845 write-only register selector.
 pub const CRTC_INDEX_PORT: u16 = 0x3B4;
 /// MC6845 selected-register data port.

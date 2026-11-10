@@ -13,7 +13,7 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   runs `DIR`, and creates a file (`echo x>zz`) that the controller commits to the in-memory image.
 - **Devices:** 16550 UART, 8259 PIC pair (master + slave cascade), 8253 PIT, 8042 keyboard
   controller, MC146818 CMOS/RTC (seeded NVRAM), 8237 DMA, µPD765 floppy (read + write), port 0x61,
-  POST port 0x80, VGA/CGA text with MDA port aliases, all behind the `Device` trait with mock-bus
+  POST port 0x80, independent VGA/CGA and MDA text cards, all behind the `Device` trait with mock-bus
   tests; text output reaches a `FrameSink`.
 - **Device fidelity:** PIT Modes 2/3 adopt complete reloads at period/half-period
   boundaries and isolate incomplete LSB writes. RTC periodic PF/PIE uses a
@@ -63,10 +63,13 @@ was reported to the CPU core project.
 ## Broken / known defects
 
 - Floppy writes are volatile (in-memory only; `upc-sk3.1`, required by phase C).
-- The BIOS console in MDA mode writes to plain RAM at `0xB0000`, not to a display
-  card; the MDA card is the first bead of phase A.
 
 ## Recently landed
+
+- **BIOS/FreeDOS console through MDA:** the profiles route `0xB0000..=0xB7FFF`
+  and display ports `0x3B0..=0x3BB` / `0x3BF` to the MDA card, excluding printer
+  ports. Console capture and prompt detection use its scanout. VGA has independent
+  CRTC state; golden cursor expectations now reflect the two cards.
 
 - **Interactive FreeDOS — keyboard to a running command** (`task-26`): a scancode
   script fed through the 8042 drives FreeCOM past its date/time prompts to the
@@ -109,9 +112,9 @@ was reported to the CPU core project.
   memory mosaic (RAM / trapped VGA MMIO / zeroed option-ROM area / masked BIOS ROM)
   composes every M5a device with IRQ0/1/8 wired; `run_bios` captures the port-0x80
   POST stream + VGA screen on every path. Emulator-only; x86jit untouched.
-  Workspace: **208 tests**. (Screen is blank because the MDA fallback writes
-  `0xB0000`, currently plain RAM rather than routed to the CGA card at `0xB8000` —
-  a minor caveat, not a fault.)
+  Workspace at that point: **208 tests**. The colour screen was blank because
+  the BIOS fallback console then lived in plain RAM at `0xB0000`; it is now
+  the independent MDA card, captured in `BiosRun.mda`.
 - **DOS-boot groundwork — M4.5 + M5a machine hardening** (tasks 13–19, 23): the
   push toward booting FreeDOS on the AT via the Kiselev Xi8088 open BIOS
   (decision-12). **Real-mode CPU driven to 99.63% decided on the SST/80286 corpus**

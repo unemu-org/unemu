@@ -72,6 +72,10 @@
 //! the keyboard wait. Marked `#[ignore]` because it runs BIOS POST and the full
 //! FreeDOS boot chain.
 //!
+//! The BIOS never programs the colour card, so its cursor stays at `(0, 0)`
+//! and visible. MDA card capture exposes the BIOS cursor at `(31, 24)`, visible;
+//! the earlier RAM probe hid it. These are the intended independent-card states.
+//!
 //! ## Pinned inputs
 //! - BIOS: Sergey Kiselev `8088_bios`, Xi8088 config (`vendor/kiselev-bios`).
 //! - FreeDOS: 8086 kernel + FreeCOM, FAT12 1.44 MB image (`vendor/freedos`).
@@ -102,10 +106,17 @@ fn freedos_reaches_shell_prompt() {
         run.post, GOLDEN_POST,
         "media-attached POST checkpoint stream"
     );
-    // Monochrome CRTC aliases update the card's cursor even though the colour
-    // page is blank. A host snapshot must preserve that register state.
+    // The BIOS never programs the colour card, so it keeps its power-on cursor.
     assert_eq!(
         run.screen.cursor(),
+        video::Cursor {
+            col: 0,
+            row: 0,
+            visible: true
+        }
+    );
+    assert_eq!(
+        run.mda.cursor(),
         video::Cursor {
             col: 31,
             row: 24,
@@ -120,7 +131,7 @@ fn freedos_reaches_shell_prompt() {
 
     // The MDA console at 0xB0000 holds only the final 25-row window: by the time
     // FreeCOM prompts, the whole boot has scrolled the buffer (the BIOS scrolls by
-    // copying lines up in video RAM, and the renderer reads from cell 0), so the
+    // copying lines up in video RAM, and capture starts at the CRTC start address), so the
     // early "Xi 8088 BIOS" banner and the detection lines have scrolled off the
     // top. Assert on the tail that is still on screen — the kernel banner and the
     // shell prompt — which proves the whole chain ran.

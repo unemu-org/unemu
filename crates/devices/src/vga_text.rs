@@ -6,7 +6,7 @@
 //! described in `backlog/docs/design/observation.md`, §Typed capabilities and
 //! route ownership.
 //!
-//! Models the two hardware surfaces a text-mode VGA presents to the guest:
+//! Models the hardware surfaces a text-mode VGA presents to the guest:
 //!
 //! - The **text buffer**: 32 KiB of video memory mapped at MMIO `0xB8000`. Each
 //!   character cell is two bytes — glyph then attribute — so cell `n` lives at
@@ -21,11 +21,8 @@
 //!   Modelling these is what lets an off-the-shelf BIOS's INT 10h run: it writes
 //!   mode/colour and, before touching video memory, busy-waits on the status
 //!   register's vertical-retrace bit.
-//! - The **monochrome (MDA) port aliases** the same BIOS drives when it detects an
-//!   MDA/Hercules adapter instead of CGA: the CRTC at `0x3B4`/`0x3B5` and the
-//!   input status register at `0x3BA`. They map onto the same CRTC register file
-//!   and retrace-phase logic as the colour ports, so the mono INT 10h read/write-
-//!   character routines — which busy-wait on `0x3BA`'s retrace bits — terminate.
+//!
+//! The BIOS profile's monochrome console is the separate MDA card.
 //!
 //! The card is an ordinary [`Device`]: it owns registers and memory and nothing
 //! else. It does **not** implement the presentation seam — turning its memory
@@ -71,6 +68,11 @@
 //!   blink on its own.
 //! - Cursor scanline shape (`0x0A`/`0x0B` low bits) is stored but only the
 //!   cursor-disable bit is interpreted.
+//! - The I/O address select of the Miscellaneous Output register (bit 0) is
+//!   not modelled: the CRTC and status registers always decode at the colour
+//!   addresses, and the monochrome addresses `0x3B4`/`0x3B5`/`0x3BA` are
+//!   unmapped on this card. A machine with a monochrome console uses the MDA
+//!   card for them.
 //!
 //! Snapshots contain CRTC/CGA registers, VRAM, the per-read retrace phase
 //! and the absolute trace time base. There are no pixel-clock deadlines in this
@@ -105,17 +107,6 @@ pub const CGA_COLOR_SELECT_PORT: u16 = 0x3D9;
 /// CGA input status register (`0x3DA`, read-only). A BIOS polls its
 /// vertical-retrace bit before writing video memory.
 pub const CGA_STATUS_PORT: u16 = 0x3DA;
-
-/// CRTC index port (monochrome alias, `0x3B4`). A BIOS that treats the card as an
-/// MDA drives the CRTC here instead of at [`CRTC_INDEX_PORT`]; both select the
-/// same register file.
-pub const MDA_CRTC_INDEX_PORT: u16 = 0x3B4;
-/// CRTC data port (monochrome alias, `0x3B5`).
-pub const MDA_CRTC_DATA_PORT: u16 = 0x3B5;
-/// Input status register (monochrome alias, `0x3BA`, read-only). The mono INT 10h
-/// read/write-character routines busy-wait on its retrace bits (bit 0, and bit 3)
-/// before touching video memory, exactly as the CGA path polls [`CGA_STATUS_PORT`].
-pub const MDA_STATUS_PORT: u16 = 0x3BA;
 
 /// Display / horizontal-drive bit of the status register (bit 0).
 const STATUS_DISPLAY_ENABLE: u8 = 0x01;
@@ -169,7 +160,7 @@ pub struct VgaText {
     /// it selects is not rendered yet.
     color_select: u8,
     /// Free-running counter bumped on every read of the input status register
-    /// (`0x3DA`, or its mono alias `0x3BA`), driving its retrace/display bits
+    /// (`0x3DA`), driving its retrace/display bits
     /// through their phases. See `VgaText::status_register` for why the phase
     /// advances per read, not per tick.
     status_reads: u64,
@@ -221,9 +212,7 @@ impl VgaText {
         self.crtc[usize::from(CRTC_CURSOR_START_INDEX)] & CURSOR_DISABLE == 0
     }
 
-    /// Current input-status byte, advancing the free-running retrace phase. Serves
-    /// both the colour status register (`0x3DA`) and its monochrome alias
-    /// (`0x3BA`) — the BIOS polls whichever matches the active adapter.
+    /// Current colour input-status byte (`0x3DA`), advancing the retrace phase.
     ///
     /// A stock BIOS busy-waits on this register before touching video memory: it
     /// spins until the retrace bit goes high, then spins until it goes low again
@@ -235,8 +224,7 @@ impl VgaText {
     ///
     /// Phase, in the low bits of the read count: bit 0 toggles every read (both
     /// edges seen within 2 reads); bit 3 toggles every second read (both edges
-    /// seen within 4 reads). The mono read-character routine polls bit 0, the
-    /// write path bit 3 then bit 0, so toggling both unblocks either.
+    /// seen within 4 reads), so polling either bit observes both edges.
     ///
     fn status_register(&mut self) -> u8 {
         let count = self.status_reads;
@@ -311,8 +299,8 @@ impl Device for VgaText {
 
     fn port_read(&mut self, port: u16, size: u8) -> Result<u32, DeviceError> {
         let value = match port {
-            CRTC_INDEX_PORT | MDA_CRTC_INDEX_PORT => u32::from(self.crtc_index),
-            CRTC_DATA_PORT | MDA_CRTC_DATA_PORT => u32::from(
+            CRTC_INDEX_PORT => u32::from(self.crtc_index),
+            CRTC_DATA_PORT => u32::from(
                 self.crtc
                     .get(usize::from(self.crtc_index))
                     .copied()
@@ -323,7 +311,7 @@ impl Device for VgaText {
             // is harmless — a BIOS writes these, it does not read them back.
             CGA_MODE_CONTROL_PORT => u32::from(self.mode_control),
             CGA_COLOR_SELECT_PORT => u32::from(self.color_select),
-            CGA_STATUS_PORT | MDA_STATUS_PORT => u32::from(self.status_register()),
+            CGA_STATUS_PORT => u32::from(self.status_register()),
             _ => {
                 return Err(DeviceError::UnmappedRegister {
                     kind: "port",
@@ -338,8 +326,8 @@ impl Device for VgaText {
     fn port_write(&mut self, port: u16, size: u8, value: u32) -> Result<(), DeviceError> {
         let byte = value as u8;
         match port {
-            CRTC_INDEX_PORT | MDA_CRTC_INDEX_PORT => self.crtc_index = byte & 0x1F,
-            CRTC_DATA_PORT | MDA_CRTC_DATA_PORT => {
+            CRTC_INDEX_PORT => self.crtc_index = byte & 0x1F,
+            CRTC_DATA_PORT => {
                 if let Some(register) = self.crtc.get_mut(usize::from(self.crtc_index)) {
                     *register = byte;
                 }
@@ -348,7 +336,7 @@ impl Device for VgaText {
             CGA_COLOR_SELECT_PORT => self.color_select = byte,
             // The status register is read-only; ignore a write rather than fault
             // the machine on a stray one.
-            CGA_STATUS_PORT | MDA_STATUS_PORT => {}
+            CGA_STATUS_PORT => {}
             _ => {
                 return Err(DeviceError::UnmappedRegister {
                     kind: "port",
@@ -473,6 +461,22 @@ mod tests {
     use testkit::MockBus;
 
     #[test]
+    fn monochrome_ports_are_unmapped_without_changing_card_state() {
+        let mut bus = MockBus::new(Box::new(crate::trace_policy_tests::traced(VgaText::new())));
+        let saved = bus.device().save();
+        for port in [0x3B4, 0x3B5, 0x3BA] {
+            let error = || DeviceError::UnmappedRegister {
+                kind: "port",
+                offset: u64::from(port),
+            };
+            assert_eq!(bus.port_read(port, 1), Err(error()));
+            assert_eq!(bus.port_write(port, 1, 0xFF), Err(error()));
+        }
+        assert_eq!(bus.device().save(), saved);
+        assert!(bus.device_mut().take_trace().is_empty());
+    }
+
+    #[test]
     fn scanout_reports_colour_attributes_and_mode_control_blink_selection() {
         let mut bus = MockBus::new(Box::new(VgaText::new()));
         for value in [0x00, 0x29, 0x09, 0xFF] {
@@ -489,29 +493,27 @@ mod tests {
     #[test]
     fn fidelity_reserved_crtc_indices_do_not_alias_registers() {
         let mut bus = MockBus::new(Box::new(VgaText::new()));
-        for (index_port, data_port) in [(0x3D4, 0x3D5), (0x3B4, 0x3B5)] {
-            for index in 25..32 {
-                bus.port_write(index_port, 1, index - 25).unwrap();
-                bus.port_write(data_port, 1, 0x5A).unwrap();
-                bus.port_write(index_port, 1, index).unwrap();
-                bus.port_write(data_port, 1, 0xEE).unwrap();
-                assert_eq!(bus.port_read(data_port, 1).unwrap(), 0);
-                bus.port_write(index_port, 1, index - 25).unwrap();
-                assert_eq!(bus.port_read(data_port, 1).unwrap(), 0x5A);
-            }
-            bus.port_write(index_port, 1, 0xEC).unwrap();
-            assert_eq!(bus.port_read(index_port, 1).unwrap(), 0x0C);
+        for index in 25..32 {
+            bus.port_write(CRTC_INDEX_PORT, 1, index - 25).unwrap();
+            bus.port_write(CRTC_DATA_PORT, 1, 0x5A).unwrap();
+            bus.port_write(CRTC_INDEX_PORT, 1, index).unwrap();
+            bus.port_write(CRTC_DATA_PORT, 1, 0xEE).unwrap();
+            assert_eq!(bus.port_read(CRTC_DATA_PORT, 1).unwrap(), 0);
+            bus.port_write(CRTC_INDEX_PORT, 1, index - 25).unwrap();
+            assert_eq!(bus.port_read(CRTC_DATA_PORT, 1).unwrap(), 0x5A);
         }
+        bus.port_write(CRTC_INDEX_PORT, 1, 0xEC).unwrap();
+        assert_eq!(bus.port_read(CRTC_INDEX_PORT, 1).unwrap(), 0x0C);
     }
 
     #[test]
-    fn observation_scanout_is_passive_repeatable_and_tracks_aliases() {
+    fn observation_scanout_is_passive_repeatable_and_tracks_crtc_state() {
         let mut bus = MockBus::new(Box::new(crate::trace_policy_tests::traced(VgaText::new())));
         bus.tick(37);
         bus.mmio_write(TEXT_BUFFER_BASE + 0x240, 2, 0x1F41).unwrap();
         for (index, value) in [(0x0C, 1), (0x0D, 0x20), (0x0E, 1), (0x0F, 0x22)] {
-            bus.port_write(MDA_CRTC_INDEX_PORT, 1, index).unwrap();
-            bus.port_write(MDA_CRTC_DATA_PORT, 1, value).unwrap();
+            bus.port_write(CRTC_INDEX_PORT, 1, index).unwrap();
+            bus.port_write(CRTC_DATA_PORT, 1, value).unwrap();
         }
         let saved = bus.device().save();
         let clock = bus.clock();
@@ -528,8 +530,8 @@ mod tests {
         assert!(bus.device_mut().take_trace().is_empty());
         assert_eq!(expected_trace.len(), 9);
         // A scanout must not advance the per-read status phase.
-        assert_eq!(bus.port_read(MDA_STATUS_PORT, 1).unwrap(), 0);
-        bus.port_write(MDA_CRTC_INDEX_PORT, 1, 0x0A | 0xE0).unwrap();
+        assert_eq!(bus.port_read(CGA_STATUS_PORT, 1).unwrap(), 0);
+        bus.port_write(CRTC_INDEX_PORT, 1, 0x0A | 0xE0).unwrap();
         bus.port_write(CRTC_DATA_PORT, 1, 0x20).unwrap();
         assert!(!bus.device().text_scanout().unwrap().cursor_visible);
         bus.device_mut().restore(&saved).unwrap();
@@ -595,12 +597,7 @@ mod tests {
                     }
                 }
                 _ => {
-                    for port in [
-                        CGA_STATUS_PORT,
-                        MDA_STATUS_PORT,
-                        CGA_STATUS_PORT,
-                        MDA_STATUS_PORT,
-                    ] {
+                    for port in [CGA_STATUS_PORT; 4] {
                         assert_eq!(
                             reference.port_read(port, 1).unwrap(),
                             scheduled.port_read(port, 1).unwrap()
@@ -770,51 +767,6 @@ mod tests {
         let r0 = vga.port_read(CGA_STATUS_PORT, 1).unwrap() & 0x01;
         let r1 = vga.port_read(CGA_STATUS_PORT, 1).unwrap() & 0x01;
         assert_ne!(r0, r1, "display-enable bit must change between reads");
-    }
-
-    #[test]
-    fn mono_status_alias_sees_both_edges_of_bit0() {
-        // The MDA read-character routine polls bit 0 of 0x3BA (`test al,1`): spin
-        // until it is set, then until it is clear. Undecoded, 0x3BA read a constant
-        // and this hung FreeDOS; the alias must cycle the bit like the colour path.
-        let mut vga = VgaText::new();
-        const BIT0: u32 = 0x01;
-        let mut reads = 0u32;
-        loop {
-            reads += 1;
-            assert!(reads < 100, "mono status bit 0 never went high");
-            if vga.port_read(MDA_STATUS_PORT, 1).unwrap() & BIT0 != 0 {
-                break;
-            }
-        }
-        loop {
-            reads += 1;
-            assert!(reads < 100, "mono status bit 0 never went low");
-            if vga.port_read(MDA_STATUS_PORT, 1).unwrap() & BIT0 == 0 {
-                break;
-            }
-        }
-    }
-
-    #[test]
-    fn mono_crtc_alias_shares_the_colour_register_file() {
-        // A BIOS in MDA mode drives the CRTC at 0x3B4/0x3B5; it must reach the same
-        // register file as 0x3D4/0x3D5, so cursor/start-address round-trip either
-        // way and the renderer (which reads the colour ports) stays consistent.
-        let mut vga = VgaText::new();
-        vga.port_write(MDA_CRTC_INDEX_PORT, 1, u32::from(CRTC_CURSOR_LOW_INDEX))
-            .unwrap();
-        vga.port_write(MDA_CRTC_DATA_PORT, 1, 0x42).unwrap();
-        // Read back through the colour data port at the same index.
-        vga.port_write(CRTC_INDEX_PORT, 1, u32::from(CRTC_CURSOR_LOW_INDEX))
-            .unwrap();
-        assert_eq!(vga.port_read(CRTC_DATA_PORT, 1).unwrap(), 0x42);
-    }
-
-    #[test]
-    fn writing_mono_status_register_is_ignored_not_faulted() {
-        let mut vga = VgaText::new();
-        vga.port_write(MDA_STATUS_PORT, 1, 0xFF).unwrap();
     }
 
     #[test]

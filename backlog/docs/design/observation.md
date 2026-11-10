@@ -3,6 +3,8 @@
 Design and migration record, 2026-11-09. Typed scanout and semantic byte sinks
 are implemented. The inventory and prototype evidence below describe the earlier
 implementation; the trace policy and its migration gate are now implemented.
+BIOS/FreeDOS monochrome output now comes from an independent MDA card, as
+specified in §The MDA card console below.
 
 ## Implemented access trace policy
 
@@ -101,10 +103,10 @@ there is no trace capacity or enable policy.
 
 | Output | Producer | How it is read today / consumers | Problems |
 | --- | --- | --- | --- |
-| Colour text screen, glyphs, attributes, start address, cursor | `crates/devices/src/vga_text.rs`, `VgaText`: 32 KiB VRAM and CRTC; the existing `vram`, `start_cell`, `cursor_cell`, `cursor_visible` getters already expose state | `crates/cli/src/lib.rs`, `render_vga`, drains `take_trace`, reconstructs VRAM and a second CRTC register file, calls `render_text_mode`; used by `run_vga_text` and every successful `run_bios_config` assembly | Replay ignores `0x3B4/0x3B5`, unlike the preset and card; uses 256 independent index slots, unlike the card's modulo-25 indexing. A second capture loses prior writes. Restored state cannot be reconstructed from subsequent traces. |
+| Colour text screen, glyphs, attributes, start address, cursor | `crates/devices/src/vga_text.rs`, `VgaText`: 32 KiB VRAM and CRTC; the existing `vram`, `start_cell`, `cursor_cell`, `cursor_visible` getters already expose state | `crates/cli/src/lib.rs`, `render_vga`, drains `take_trace`, reconstructs VRAM and a second CRTC register file, calls `render_text_mode`; used by `run_vga_text` and every successful `run_bios_config` assembly | Replay ignores `0x3B4/0x3B5`, unlike the preset and card of that time (the colour card's monochrome aliases were later removed; the MDA card owns `0x3Bx`); uses 256 independent index slots, unlike the card's modulo-25 indexing. A second capture loses prior writes. Restored state cannot be reconstructed from subsequent traces. |
 | Card-level text golden | Same `VgaText` state | `crates/devices/tests/vga_text_golden.rs`, `hello_renders_to_captured_grid`, already uses getters → `TextModeState` → `CaptureFrameSink`; checks committed `golden/vga_text_hello.txt`, attribute and cursor | This is the desired path, but CLI duplicates it with replay. |
-| MDA console text | Guest RAM at `0xB0000` in `assembly::bios`; monochrome CRTC accesses still reach `VgaText` | CLI `render_mda` reads the first 4,000 bytes into a zeroed 32 KiB buffer, fixed 80×25, start 0, hidden cursor. FreeDOS/DOS goldens read `BiosRun.mda` | A RAM probe, not a complete MDA adapter. Ignores CRTC start/cursor. Read errors are ignored, leaving a blank/partial view. Must not be confused with the card's colour VRAM. |
-| Prompt detection | Same MDA-in-RAM console | `crates/assembly/src/run.rs`, `console_contains`, reads `ConsoleProbe`'s base/dimensions and renders fixed-start/hidden-cursor text; `poll_to_prompt` and `run` use it to stop and inject keys | Separate RAM-reading glue duplicates the CLI path. Poll cadence affects the run and must remain fixed during migration. |
+| MDA console text (current routing) | `MdaText` owns the MMIO aperture at `0xB0000` and its independent CRTC | CLI captures `DeviceId::Mda` through `capture_text`; FreeDOS/DOS goldens read `BiosRun.mda` | Card scanout supplies memory, start address and cursor; capture no longer reads CPU backing memory. |
+| Prompt detection (current routing) | Same MDA card scanout | `crates/assembly/src/run.rs`, `console_contains`, renders the `ConsoleProbe` device's scanout; `poll_to_prompt` and `run` use it to stop and inject keys | Separate capture call remains; shared observation scheduling is deferred. Poll cadence and injection schedule stay fixed. |
 | COM1 transmitted byte stream | `crates/devices/src/uart16550.rs`, THR branch in `port_write`; `output: Vec<u8>` | CLI `drain_serial`: `Device::as_any_mut` → `Uart16550` → `take_output`. Six serial-returning runners, `BiosRun.com1`, CLI stdout; device tests also inspect `output()` / `take_output()` | Semantic source is correct and excludes DLAB divisor writes. Concrete downcast and silent empty fallback do not validate route/type mismatches. Output and access traces are both unbounded; `save` currently includes pending output. |
 | POST checkpoints | `crates/devices/src/post_port.rs`, `PostPort` at configured port (`0x80` or `0x190`) | CLI `drain_post_at` filters `take_trace` for writes to the selected port, casts each value to `u8`; `BiosRun.post`, `Test386Run.post` | No semantic stream or last-code latch independent of trace. Trace policy cannot change until this consumer moves. Reads must never become checkpoints. |
 | Port/MMIO diagnostics | UART, VGA, POST, `Pic8259`, `Pit8253`, `I8042`, `CmosRtc`, `Dma8237`, `Upd765`, `SysControl` in `crates/devices/src/` | `Device::take_trace`; all callers enumerated below. `SharedPic` forwards the drain to the same live PIC (`crates/chipset/src/shared_pic.rs`) | Every serviced access allocates retained history. Most machine runs never drain PIC/PIT/keyboard/RTC/DMA/FDC/system-control traces; UART output draining does not drain its trace. Access traffic is not a display/audio model. |
@@ -232,8 +234,8 @@ screen or empty serial stream. The former Long64 `run_serial` demo and
 The facade can call a hardware-neutral machine/device visitor to borrow display
 capabilities. The machine core only enumerates configured slots and stamps
 observation boundaries; it never switches on `DeviceId::Vga` or downcasts to
-concrete chips. The assembly/frontend adapter renders the state into `Frame` and
-knows which routes are RAM probes. The exact Rust method names are left to the
+concrete chips. The assembly/frontend adapter renders card state into `Frame`
+and resolves display routes by device role. The exact Rust method names are left to the
 implementation; required operations are:
 
 | Operation | Owner / contract |
@@ -317,22 +319,54 @@ semantics. Unit tests explicitly enable debugging traces only when asserting
 access behavior. An optional trace overflow fails a trace-specific assertion,
 never changes screen or serial output.
 
-### The MDA-in-RAM console
+### The MDA card console
 
-Keep it as an explicitly named **RAM text probe**, configured by base, dimensions
-and fixed-start/hidden-cursor policy. The observer reads it through the CPU
-memory-read seam, renders through the same text renderer, and publishes it as a
-separate display route. `BiosRun.mda` stays the compatibility field for this
-route; `BiosRun.screen` stays the colour card. Do not alias `0xB0000` into VGA
-VRAM or change the BIOS memory map to simplify observation.
+The BIOS/FreeDOS preset now routes `0xB0000..=0xB7FFF` to `MdaText`, rather than
+the CPU's RAM. The MDA card owns its CRTC ports (`0x3B0..=0x3B7`), mode/status
+ports and unassigned display ports through `0x3BB` plus `0x3BF`. The printer
+ports `0x3BC..=0x3BE` stay undecoded. VGA no longer receives monochrome aliases,
+so writes to the two cards cannot share a CRTC register file. See IBM PC
+Technical Reference, Monochrome Display and Printer Adapter, Programming
+Considerations, and the device module's coverage matrix for assumptions.
 
-Move the common RAM-probe snapshot helper into assembly so both prompt polling
-and final capture use it. Preserve base `0xB0000`, 80×25, start 0, hidden cursor,
-blank-tail behavior and the exact `poll_step` / injection schedule. Initially
-report read errors as observation diagnostics while retaining the legacy grid;
-strict probe failures can be enabled separately. Reinterpreting MDA start/cursor
-from shared CRTC registers would change existing probe semantics and belongs to
-a real MDA-device task, not this migration.
+`BiosRun.mda` captures the MDA route through `capture_text`; `BiosRun.screen`
+remains the colour card. Prompt polling's `ConsoleProbe` selects the resolved
+MDA bus slot and renders its `Device::text_scanout` with
+`video::render_text_mode`. Both paths honour the card's start address and
+cursor. They retain separate capture calls; unifying observation scheduling
+and presentation belongs to later work. Missing scanout is an explicit run
+observation error. The exact `poll_step` and injection schedule stay fixed.
+
+The old RAM probe used cell zero and hid the cursor. Card capture exposes the
+hardware cursor and the independent VGA CRTC keeps its own reset state. These
+cursor changes are the intended correction to the shared-register artefact. MDA
+status preserves the old per-read bit-0/bit-3 phases while its other bits read
+high according to the card's documented open-bus assumption. BIOS writes now
+trap as MMIO; the slow goldens' screen stamps, stop points, POST and COM1
+streams are unchanged, so the execution boundaries did not move.
+
+#### Changed expectations when the MDA card was wired
+
+Cursor tuples below are `(column, row, visible)`. In every scenario the colour
+card keeps its power-on cursor because the BIOS only programs MDA; MDA capture
+now exposes the BIOS cursor that the RAM probe hid. Only cursor expectations
+change; console text, attributes, POST, COM1, media, execution counters and stop
+points retain their existing checks.
+
+- BIOS POST: colour `(0, 18, true)` → `(0, 0, true)`;
+  MDA `(0, 0, false)` → `(0, 18, true)`.
+- BIOS floppy boot: colour `(0, 17, true)` → `(0, 0, true)`;
+  MDA `(0, 0, false)` → `(0, 17, true)`.
+- FreeDOS prompt: colour `(31, 24, true)` → `(0, 0, true)`;
+  MDA `(0, 0, false)` → `(31, 24, true)`.
+- DIR: colour `(4, 24, true)` → `(0, 0, true)`;
+  MDA `(0, 0, false)` → `(4, 24, true)`.
+- File write: colour `(4, 24, true)` → `(0, 0, true)`;
+  MDA `(0, 0, false)` → `(4, 24, true)`.
+
+The text-attribute decoding rebase required explicit decoded styles in assembly
+unit-test cells, but no further golden expectation changes. The cursor changes
+listed above remain the only changed golden expectations for this wiring.
 
 ### Traces and later audio
 
@@ -380,8 +414,8 @@ format is implemented by this spike.
    existing UART `take_output` and POST trace filtering. Exercise DLAB writes,
    repeated bytes, zero/`0xFF`, POST reads, resets, early drains and error stops.
    Do not switch bounded tracing off while POST still depends on it.
-5. Share RAM probe capture with prompt polling. Compare old/new probe frames at
-   the same existing polls, with no extra `run_bounded` calls. Re-run BIOS,
+5. Use MDA card scanout for prompt polling, as described in §The MDA card console.
+   Compare frames at the same existing polls, with no extra `run_bounded` calls. Re-run BIOS,
    FreeDOS boot, interactive DIR and DOS write-session goldens, checking unchanged
    text, markers, POST and stop kinds. Route `FrameSinkKind` through the facade;
    ensure headless and capture modes yield identical machine results.
@@ -393,7 +427,8 @@ format is implemented by this spike.
    observation implementation change.
 
 This is a gate on **existing asserted bytes**, not a claim that the old and new
-observer are equivalent for arbitrary histories. Monochrome/index aliases,
+observer are equivalent for arbitrary histories. Monochrome/index aliases (the
+monochrome ones since removed from the colour card),
 repeated capture and restore deliberately expose errors the old path cannot
 represent. Correct-state tests supplement the unchanged golden corpus.
 
@@ -427,7 +462,10 @@ run against the original implementation:
 | CLI `vga_snapshot_uses_card_crtc_aliases` | Fails: glyph 0 instead of `A` | Passes: mono ports plus the card's index alias set start=1, cursor=3 and disabled cursor; the rendered glyph is `A`, cursor `(2, 0, hidden)` |
 | Device `host_snapshot_reads_live_state_without_guest_accesses` | Fails: VGA host observation capability absent | Passes on `testkit::MockBus`: writes through mono ports and an aliased index are visible via getters after trace drain; observing generates no guest-access trace |
 
-The alias fixture combines monochrome port and register-index aliasing; it does
+This table records the tests as they were added; the colour card's monochrome
+aliases were later removed when the MDA card was wired, and the fixtures were
+renamed or reduced to colour ports and index aliasing. The alias fixture combined
+monochrome port and register-index aliasing; it did
 not independently isolate each alias rule. Existing device tests cover register
 and port behavior, while this fixture checks that the frontend uses their result.
 
@@ -467,7 +505,7 @@ here come from the spike brief; the tracker was not opened by this worker.
 | 1 | Define typed output capabilities and observation routes | Add read-only text state and byte-sink capabilities, resolve/validate routes by role, and test unsupported routes and passive observation. |
 | 2 | Capture VGA goldens from the card's scanout state | Absorb `upc-x83.1`: remove CLI CRTC/VRAM replay, A/B existing VGA and BIOS outputs, add full-grid/cursor and repeat-capture regressions. Depends on 1. |
 | 3 | Capture UART and POST through semantic byte sinks | Preserve exact COM1/POST streams, DLAB and byte-cycle rules; bound explicit captures, define reset/overflow ownership and retain UART snapshot compatibility. Depends on 1. |
-| 4 | Share console observation across run policies and presenters | Unify the MDA RAM probe with prompt polling and final capture, wire `OutputConfig`/`FrameSinkKind`, fan out the same frames to capture and presentation. Depends on 2 and 3. |
+| 4 | Share console observation across run policies and presenters | Unify MDA card observation across prompt polling and final capture, wire `OutputConfig`/`FrameSinkKind`, fan out the same frames to capture and presentation. Depends on 2 and 3. |
 | 5 | Bound and disable access traces independently of output | Expand `upc-kk2.7` to all devices plus open-bus recording, add off/ring policies and drop counts, opt trace tests in, prove identical output with tracing off/overflowing. Depends on 2 and 3; final end-to-end gate also uses 4. |
 
 Audio hardware and a window implementation remain follow-up consumers, not

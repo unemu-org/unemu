@@ -66,6 +66,10 @@
 //! injected at retired-instruction boundaries rather than timed (§6). Marked
 //! `#[ignore]` because it runs the full BIOS POST and the FreeDOS boot chain.
 //!
+//! The BIOS never programs the colour card, so its cursor stays at `(0, 0)`
+//! and visible. MDA card capture exposes the BIOS cursor at `(4, 24)`, visible;
+//! the earlier RAM probe hid it. These are the intended independent-card states.
+//!
 //! ## Pinned inputs
 //! - BIOS: Sergey Kiselev `8088_bios`, Xi8088 config (`vendor/kiselev-bios`).
 //! - FreeDOS: 8086 kernel + FreeCOM, FAT12 1.44 MB image (`vendor/freedos`).
@@ -87,10 +91,17 @@ fn freedos_runs_dir_from_the_keyboard() {
     assert_eq!(img.len(), 1_474_560, "FreeDOS floppy is a 1.44 MB image");
 
     let run = run_freedos_interactive(&rom, img, &dos_dir_script());
-    // Monochrome CRTC aliases update the card's cursor even though the colour
-    // page is blank. A host snapshot must preserve that register state.
+    // The BIOS never programs the colour card, so it keeps its power-on cursor.
     assert_eq!(
         run.screen.cursor(),
+        video::Cursor {
+            col: 0,
+            row: 0,
+            visible: true
+        }
+    );
+    assert_eq!(
+        run.mda.cursor(),
         video::Cursor {
             col: 4,
             row: 24,

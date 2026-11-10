@@ -25,7 +25,7 @@
 use cpu::x86jit_backend::X86JitCpu;
 use devices::I8042;
 use machine::{Machine, MachineError, RunOutcome};
-use video::{render_text_mode, TextModeState};
+use video::render_text_mode;
 
 /// Policy validation failures and hardware execution errors while driving a run.
 #[derive(Debug, thiserror::Error)]
@@ -33,6 +33,9 @@ pub enum RunError {
     /// Hardware execution failed.
     #[error(transparent)]
     Machine(#[from] MachineError),
+    /// The selected console device has no text scanout capability.
+    #[error("console text scanout is unavailable at device index {0}")]
+    ConsoleUnavailable(usize),
     /// The prompt left too little room for the complete scripted command.
     #[error("insufficient command budget: need {required} steps, only {remaining} remain")]
     InsufficientCommandBudget {
@@ -43,20 +46,15 @@ pub enum RunError {
     },
 }
 
-/// How to read a text console back out of guest memory to detect a prompt (§9.2).
+/// The text-scanout source used to detect a prompt (§9.3).
 ///
-/// The prompt-detection path reads a `cols × rows` two-bytes-per-cell text buffer
-/// starting at guest linear address `base` and renders it exactly as the frontend
-/// renders that console, so a needle match here is identical to one the caller
-/// would see. Plain data (no device handle), so a [`RunPolicy`] stays comparable.
+/// The caller resolves the card's role through the assembler's device-index map.
+/// Prompt polling renders the card's memory, start address and cursor through
+/// the same renderer as final capture. Plain data keeps [`RunPolicy`] comparable.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ConsoleProbe {
-    /// Guest linear address of the text buffer (e.g. the MDA window at `0xB0000`).
-    pub base: u64,
-    /// Visible columns of the console (80 for the BIOS MDA console).
-    pub cols: u16,
-    /// Visible rows of the console (25 for the BIOS MDA console).
-    pub rows: u16,
+    /// Bus index of the card whose text scanout is searched.
+    pub device_index: usize,
 }
 
 /// When a [`KeyboardStimulus`] is delivered relative to the run (§7.5).
@@ -112,7 +110,7 @@ pub enum StopCondition {
     /// overall cap cannot accommodate the full budget, return an error before
     /// injecting any keys.
     PromptThen {
-        /// Where to read the console text back from guest memory.
+        /// Which card supplies the console text.
         console: ConsoleProbe,
         /// The substring that marks the shell has reached its prompt.
         needle: String,
@@ -169,9 +167,8 @@ impl RunPolicy {
 /// Returns the [`RunOutcome`] of the final [`Machine::run_bounded`] so the caller
 /// classifies the stop.
 ///
-/// This driver uses the assembler's concrete CPU because its console probe reads
-/// guest memory through `X86JitCpu::read_mem`. That backend is also the only
-/// production implementation of the step-bounded CPU contract.
+/// This driver uses the assembler's concrete CPU, the production implementation
+/// of the step-bounded CPU contract.
 pub fn run(machine: &mut Machine<X86JitCpu>, policy: &RunPolicy) -> Result<RunOutcome, RunError> {
     machine.set_idle_limit(policy.idle_limit);
 
@@ -188,7 +185,7 @@ pub fn run(machine: &mut Machine<X86JitCpu>, policy: &RunPolicy) -> Result<RunOu
             // Act on the prompt only if we actually reached it (not an error, not a
             // spin to the cap) and something is scheduled to fire there. With no
             // stimuli the run stops at the prompt — the plain FreeDOS boot.
-            let prompt_reached = result.is_ok() && console_contains(machine, console, needle);
+            let prompt_reached = result.is_ok() && console_contains(machine, console, needle)?;
             let after_prompt: Vec<&KeyboardStimulus> = policy
                 .stimuli
                 .iter()
@@ -212,7 +209,7 @@ pub fn run(machine: &mut Machine<X86JitCpu>, policy: &RunPolicy) -> Result<RunOu
                     .run_bounded(Some(now + *then_budget))
                     .map_err(Into::into);
             }
-            result.map_err(Into::into)
+            result
         }
     }
 }
@@ -231,14 +228,14 @@ fn poll_to_prompt(
     needle: &str,
     poll_step: u64,
     retired_cap: Option<u64>,
-) -> Result<RunOutcome, MachineError> {
+) -> Result<RunOutcome, RunError> {
     loop {
         let target = machine.virtual_time().saturating_add(poll_step);
         let cap = retired_cap.map_or(target, |hard| target.min(hard));
-        let r = machine.run_bounded(Some(cap));
+        let r = machine.run_bounded(Some(cap)).map_err(RunError::from);
         let hit_cap = retired_cap.is_some_and(|hard| cap >= hard);
         if matches!(r, Err(_) | Ok(RunOutcome::Halted))
-            || console_contains(machine, console, needle)
+            || console_contains(machine, console, needle)?
             || hit_cap
         {
             break r;
@@ -246,29 +243,21 @@ fn poll_to_prompt(
     }
 }
 
-/// Whether the text console described by `probe` currently holds `needle`.
-///
-/// Reads the `cols × rows` two-bytes-per-cell buffer at `probe.base` out of guest
-/// memory and renders it through the same [`render_text_mode`] path the frontend
-/// uses, then searches the newline-joined rows — so a match here is identical to
-/// one the frontend's console render would report. A short read leaves the tail
-/// blank rather than failing.
-fn console_contains(machine: &Machine<X86JitCpu>, probe: &ConsoleProbe, needle: &str) -> bool {
-    let bytes = usize::from(probe.cols) * usize::from(probe.rows) * 2;
-    let mut vram = vec![0u8; bytes];
-    let _ = machine.cpu().read_mem(probe.base, &mut vram);
-    let grid = render_text_mode(&TextModeState {
-        vram: &vram,
-        cols: probe.cols,
-        rows: probe.rows,
-        start_cell: 0,
-        cursor_cell: 0,
-        cursor_visible: false,
-        attributes: video::TextAttributeSet::Colour {
-            blink_enabled: true,
-        },
-    });
-    grid.rows_as_strings().join("\n").contains(needle)
+/// Search the rendered card state at a completed machine service boundary.
+fn console_contains(
+    machine: &Machine<X86JitCpu>,
+    probe: &ConsoleProbe,
+    needle: &str,
+) -> Result<bool, RunError> {
+    let state = machine
+        .bus()
+        .device(probe.device_index)
+        .and_then(device::Device::text_scanout)
+        .ok_or(RunError::ConsoleUnavailable(probe.device_index))?;
+    Ok(render_text_mode(&state)
+        .rows_as_strings()
+        .join("\n")
+        .contains(needle))
 }
 
 /// Queue a keyboard `scancodes` script into the 8042 at bus index `kbc_index`,
@@ -291,6 +280,83 @@ mod tests {
     use cpu::x86jit_backend::RealSegments;
     use cpu::Cpu;
 
+    fn prompt_card() -> Box<dyn device::Device> {
+        let mut card = devices::MdaText::new();
+        device::Device::mmio_write(&mut card, 0xB0000, 2, 0x073E).unwrap();
+        Box::new(card)
+    }
+
+    #[test]
+    fn prompt_poll_reports_existing_device_without_scanout_after_first_poll() {
+        let config = crate::at_boot(vec![0xEB, 0xFE]);
+        let mut assembled = crate::assemble(&config).unwrap();
+        let index = assembled.device_index[&crate::DeviceId::Keyboard];
+        let console = ConsoleProbe {
+            device_index: index,
+        };
+        let policy = RunPolicy {
+            retired_cap: Some(20),
+            idle_limit: None,
+            stop: StopCondition::PromptThen {
+                console,
+                needle: "prompt".into(),
+                poll_step: 5,
+                then_budget: 0,
+            },
+            stimuli: Vec::new(),
+        };
+        assert!(matches!(run(&mut assembled.machine, &policy),
+            Err(RunError::ConsoleUnavailable(actual)) if actual == index));
+        assert_eq!(assembled.machine.virtual_time(), 5);
+        assert_eq!(assembled.machine.cpu().retired(), 5);
+    }
+
+    #[test]
+    fn run_reports_unavailable_console_after_a_natural_halt() {
+        let config = crate::at_boot(vec![0xFA, 0xF4]);
+        let mut assembled = crate::assemble(&config).unwrap();
+        let index = assembled.device_index[&crate::DeviceId::Keyboard];
+        let policy = RunPolicy {
+            retired_cap: Some(20),
+            idle_limit: None,
+            stop: StopCondition::PromptThen {
+                console: ConsoleProbe {
+                    device_index: index,
+                },
+                needle: "prompt".into(),
+                poll_step: 5,
+                then_budget: 0,
+            },
+            stimuli: Vec::new(),
+        };
+        assert!(matches!(run(&mut assembled.machine, &policy),
+            Err(RunError::ConsoleUnavailable(actual)) if actual == index));
+        assert_eq!(assembled.machine.cpu().retired(), 2);
+    }
+
+    #[test]
+    fn console_probe_searches_card_scanout_with_its_start_address() {
+        let mut assembled = crate::assemble(&crate::bios(vec![0; 0x8000], None)).unwrap();
+        let probe = ConsoleProbe {
+            device_index: assembled.device_index[&crate::DeviceId::Mda],
+        };
+        let bus = assembled.machine.bus_mut();
+        bus.mmio_write(0xB0000, 4, 0x07420741).unwrap();
+        assert!(console_contains(&assembled.machine, &probe, "AB").unwrap());
+        let bus = assembled.machine.bus_mut();
+        bus.port_write(0x3B4, 1, 13).unwrap();
+        bus.port_write(0x3B5, 1, 1).unwrap();
+        assert!(!console_contains(&assembled.machine, &probe, "AB").unwrap());
+        assert!(console_contains(&assembled.machine, &probe, "B").unwrap());
+        let missing = ConsoleProbe {
+            device_index: usize::MAX,
+        };
+        assert!(matches!(
+            console_contains(&assembled.machine, &missing, ""),
+            Err(RunError::ConsoleUnavailable(usize::MAX))
+        ));
+    }
+
     #[test]
     fn late_prompt_rejects_partial_command_budget_before_injecting_keys() {
         for cap in [10, 15, 19] {
@@ -298,9 +364,8 @@ mod tests {
                 X86JitCpu::new_real16_bare(0x10000, 0, 0x7C00, RealSegments::flat(0)).unwrap();
             cpu.map_ram(0, 0x10000).unwrap();
             cpu.write_mem(0x7C00, &[0xEB, 0xFE]).unwrap();
-            cpu.write_mem(0x1000, b">\x07").unwrap();
             let bus = Bus::new(
-                vec![Box::new(I8042::new())],
+                vec![Box::new(I8042::new()), prompt_card()],
                 DecodeMap {
                     ports: vec![bus::PortRange {
                         ports: 0x60..=0x60,
@@ -320,11 +385,7 @@ mod tests {
                 retired_cap: Some(cap),
                 idle_limit: None,
                 stop: StopCondition::PromptThen {
-                    console: ConsoleProbe {
-                        base: 0x1000,
-                        cols: 1,
-                        rows: 1,
-                    },
+                    console: ConsoleProbe { device_index: 1 },
                     needle: ">".into(),
                     poll_step: 10,
                     then_budget: 10,
@@ -351,7 +412,10 @@ mod tests {
             cpu.write_mem(0x7C00, &[0xFA, 0xF4]).expect("CLI; HLT");
             let mut machine = Machine::new(
                 cpu,
-                Bus::new(Vec::new(), DecodeMap::default()),
+                Bus::new(
+                    vec![Box::new(I8042::new()), prompt_card()],
+                    DecodeMap::default(),
+                ),
                 Box::new(chipset::NoInterruptController),
                 Vec::new(),
                 None,
@@ -360,11 +424,7 @@ mod tests {
                 retired_cap,
                 idle_limit: Some(100),
                 stop: StopCondition::PromptThen {
-                    console: ConsoleProbe {
-                        base: 0,
-                        cols: 1,
-                        rows: 1,
-                    },
+                    console: ConsoleProbe { device_index: 1 },
                     needle: "prompt".into(),
                     poll_step: 10,
                     then_budget: 0,
@@ -382,10 +442,12 @@ mod tests {
             X86JitCpu::new_real16_bare(0x10000, 0, 0x7C00, RealSegments::flat(0)).expect("cpu");
         cpu.map_ram(0, 0x10000).expect("ram");
         cpu.write_mem(0x7C00, &[0xFB, 0xF4]).expect("STI; HLT");
-        cpu.write_mem(0x1000, b">\x07").expect("console prompt");
         let mut machine = Machine::new(
             cpu,
-            Bus::new(vec![Box::new(I8042::new())], DecodeMap::default()),
+            Bus::new(
+                vec![Box::new(I8042::new()), prompt_card()],
+                DecodeMap::default(),
+            ),
             Box::new(chipset::NoInterruptController),
             Vec::new(),
             Some(100),
@@ -396,11 +458,7 @@ mod tests {
         );
         assert_eq!(machine.cpu().retired(), 2);
         assert_eq!(machine.virtual_time(), 5);
-        let console = ConsoleProbe {
-            base: 0x1000,
-            cols: 1,
-            rows: 1,
-        };
+        let console = ConsoleProbe { device_index: 1 };
         assert_eq!(
             poll_to_prompt(&mut machine, &console, ">", 10, None).expect("poll"),
             RunOutcome::RetiredCapReached

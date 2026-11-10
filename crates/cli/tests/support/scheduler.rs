@@ -352,13 +352,13 @@ pub fn prepare(workload: Workload) -> Result<Option<Prepared>> {
                 Some(cli::BIOS_GOLDEN_MAX_RETIRED),
                 Some(cli::BIOS_IDLE_LIMIT),
             );
-            if floppy.is_some() && !matches!(workload, Workload::BiosFloppy) {
+            let has_floppy = floppy.is_some();
+            let assembled = assemble(&assembly::bios(rom, floppy))?;
+            if has_floppy && !matches!(workload, Workload::BiosFloppy) {
                 policy.retired_cap = Some(cli::BIOS_MAX_RETIRED);
                 policy.stop = StopCondition::PromptThen {
                     console: ConsoleProbe {
-                        base: cli::MDA_BUFFER_BASE,
-                        cols: 80,
-                        rows: 25,
+                        device_index: assembled.device_index[&DeviceId::Mda],
                     },
                     needle: cli::DOS_DATE_PROMPT.to_string(),
                     poll_step: cli::DOS_INTERACTIVE_POLL_STEP,
@@ -366,7 +366,6 @@ pub fn prepare(workload: Workload) -> Result<Option<Prepared>> {
                 };
             }
             let interactive = matches!(workload, Workload::DosDir | Workload::DosWrite);
-            let assembled = assemble(&assembly::bios(rom, floppy))?;
             if interactive {
                 policy.stimuli.push(assembly::KeyboardStimulus {
                     keyboard_index: assembled.device_index[&DeviceId::Keyboard],
