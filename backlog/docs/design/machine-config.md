@@ -65,7 +65,7 @@ MachineConfig {
     devices: Vec<DeviceConfig>,   // a flat list, produced by preset functions
     drives:  Vec<DriveConfig>,    // the ONE home for attached media
     images:  Vec<LoadImage>,      // the ONE home for pre-loaded bytes
-    output:  OutputConfig,        // which observable sinks the caller wants drained
+    output:  OutputConfig,        // initial presentation subscribers
 }
 ```
 
@@ -280,10 +280,33 @@ Monochrome Display and Printer Adapter, Programming Considerations. The device
 module documents the status/open-bus assumptions. Validation applies the same
 missing-device, port/MMIO conflict and RAM-exclusion checks as for VGA.
 
-Prompt polling's `ConsoleProbe` names the card by its resolved bus index,
+Prompt polling's `ConsoleProbe.device` names a bound display by `DeviceId`,
 without a guest-memory address or geometry override. Polling and final capture
-render `Device::text_scanout` through `video::render_text_mode`, including the
-CRTC start address and cursor. Poll cadence and keyboard injection stay fixed.
+both call `Observation::capture_text`, which renders `Device::text_scanout` once
+through `video::render_text_mode`, including the CRTC start address and cursor,
+then delivers that frame to the route's subscribers. Poll cadence and keyboard
+injection stay fixed.
+
+### Output configuration
+
+`OutputConfig { frame_sink: FrameSinkKind }` selects initial presentation wiring
+for every text route requested by `ObservationPolicy`. The default `Headless`
+installs no subscriber and keeps capture and prompt detection available.
+`Capture` installs one `video::CaptureFrameSink` per route; the facade retains
+only its last frame, available through `Observation::captured_frame(DeviceId)`.
+Selecting Capture without any requested display does not add observation routes.
+Inline hosts call public `Observation::configure_output(OutputConfig)` after
+`Observation::bind`; reconfiguration clears configured last frames and preserves
+external subscribers.
+
+A host presenter attaches with `Observation::subscribe(DeviceId, Box<dyn FrameSink>)`.
+The route must already be bound. Subscribers receive the exact owned frame
+returned by capture, at existing prompt polls and final captures. They receive
+no machine reference and must not block, introduce host timing or call back into
+the machine. Assembly depends on the video trait, with no window dependency.
+Observation policy owns route selection and byte limits; RunPolicy owns poll
+cadence. Presentation never changes execution step bounds. See
+[observation.md §Sinks, bounds and lifecycle](observation.md#sinks-bounds-and-lifecycle).
 
 ## RunPolicy — "how we run" is not "what the machine is"
 
@@ -308,7 +331,7 @@ chunks until `needle` shows, then, if stimuli are scheduled, inject them and run
 FreeDOS port (task-36) drives — task-32 provides it, task-36 is the caller.
 
 `idle_limit` is a run-policy concern: assembly starts without an idle wait and
-`run(machine, policy)` applies it before executing. The active cap counts steps,
+`run(machine, observation, policy)` applies it before executing. The active cap counts steps,
 including REP iterations, plus accumulated halted instruction equivalents. The
 cap is exact during execution; halted caps round up to a whole PIT clock.
 

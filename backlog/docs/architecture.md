@@ -39,8 +39,8 @@ The normal real-mode path is:
 ```text
 MachineConfig (preset or caller data)
   -> assemble(&config)
-  -> AssembledMachine { Machine<X86JitCpu>, device_index }
-  -> RunPolicy + assembly::run(&mut machine, &policy)
+  -> AssembledMachine { Machine<X86JitCpu>, device_index, observation }
+  -> RunPolicy + assembly::run(&mut machine, &observation, &policy)
   -> Machine::run_bounded(...) -> output capture / stop classification
 ```
 
@@ -56,8 +56,8 @@ a configuration without a PIC receives a null controller.
 [`RunPolicy`](../../crates/assembly/src/run.rs) describes how to drive that machine:
 virtual-time cap, halted idle limit, natural stop or console-prompt polling, and
 keyboard stimuli after the prompt. `run()` applies the idle limit and drives
-`run_bounded`; prompt polling reads a configured RAM console through
-`ConsoleProbe`. Policy cadence affects guest execution and golden identity.
+`run_bounded`; prompt polling captures a bound `DeviceId` display route through
+`ConsoleProbe` and the observation facade. Policy cadence affects guest execution and golden identity.
 The assembled machine starts without an idle wait. Some simple runners call
 `Machine::run()` directly. The assembler constructs Real16 machines and rejects a CPU without step-bounded
 execution. The Long64 machine demo has been intentionally removed.
@@ -126,8 +126,8 @@ survive bounded runner calls.
 - **[`FrameSink`](../../crates/video/src/lib.rs)** consumes `&Frame` via
   `present`; the current frame is `Frame::Text(TextGrid)`. Rendering turns VRAM
   and display-start/cursor state into cells with glyph bytes and attributes.
-  `CaptureFrameSink` retains the last frame. Presentation is driven by callers,
-  not by the machine loop.
+  `CaptureFrameSink` retains the last frame. Presentation is driven by the assembly observation facade at capture
+  boundaries, outside the machine loop.
 
 The bus owns devices; `X86JitCpu` owns guest memory. Devices do not retain RAM
 references. DMA requesters supply a channel and payload/length, the configured
@@ -162,9 +162,13 @@ does not consume traces. BIOS runners return the colour and MDA card grids,
 COM1/POST streams, final floppy media and classified stop. The BIOS preset routes
 `0xB0000..=0xB7FFF` and display ports `0x3B0..=0x3BB` / `0x3BF` to MDA;
 printer ports `0x3BC..=0x3BE` remain undecoded. VGA retains only its colour ports,
-so the cards have independent CRTC state. Prompt detection selects the MDA bus
-slot and renders its scanout through the same text renderer as final capture. `run_vga_text` presents its
-captured grid through a `FrameSink`; presentation remains outside the machine loop.
+so the cards have independent CRTC state. Prompt detection selects the MDA route
+by `DeviceId` and uses the same facade capture as final capture. The facade
+renders once and fans out that frame to subscribers. `OutputConfig.frame_sink`
+selects Headless (none) or Capture (one last-frame sink per requested display).
+`Observation::subscribe` accepts a boxed `FrameSink` for a bound route, providing
+the window presenter seam without a window dependency. `run_vga_text` selects
+Capture; presentation stays outside the machine loop and adds no execution steps.
 
 See [`design/observation.md`](design/observation.md) for the route contracts and
 historical design inventory.
@@ -232,7 +236,7 @@ not copied into this workspace
 - **Observation:** [`design/observation.md`](design/observation.md) describes
   typed device capabilities and assembly-owned observation routes. Access traces
   are opt-in, bounded and independent of semantic output; the document retains
-  the historical inventory. The remaining console unification is phase A work.
+  the historical inventory. Prompt polling, final capture and presentation now share one route-based facade.
 
 [`design/machine-config.md`](design/machine-config.md) explains composition;
 [`design/spec.md`](design/spec.md) specifies hardware coverage and seams;

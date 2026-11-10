@@ -188,7 +188,8 @@ fn assemble_with_cpu(
         device_index.insert(dc.id, index);
     }
 
-    let observation = Observation::bind(observation_policy, &device_index, &mut devices)?;
+    let mut observation = Observation::bind(observation_policy, &device_index, &mut devices)?;
+    observation.configure_output(config.output);
 
     // The machine needs exactly one controller. If the config has no PIC (an
     // interrupt-free machine), a null controller keeps the loop total.

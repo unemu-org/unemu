@@ -70,6 +70,9 @@ was reported to the CPU core project.
   and display ports `0x3B0..=0x3BB` / `0x3BF` to the MDA card, excluding printer
   ports. Console capture and prompt detection use its scanout. VGA has independent
   CRTC state; golden cursor expectations now reflect the two cards.
+  Prompt polling and final capture share the observation facade by `DeviceId`.
+  `OutputConfig` selects Headless or per-display Capture sinks; boxed `FrameSink`
+  subscribers receive the same frames at the existing capture boundaries.
 
 - **Interactive FreeDOS — keyboard to a running command** (`task-26`): a scancode
   script fed through the 8042 drives FreeCOM past its date/time prompts to the

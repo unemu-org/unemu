@@ -4,7 +4,8 @@ Design and migration record, 2026-11-09. Typed scanout and semantic byte sinks
 are implemented. The inventory and prototype evidence below describe the earlier
 implementation; the trace policy and its migration gate are now implemented.
 BIOS/FreeDOS monochrome output now comes from an independent MDA card, as
-specified in §The MDA card console below.
+specified in §The MDA card console below. Prompt polling, final captures and
+presentation now share the assembly-owned observation facade (migration step 5).
 
 ## Implemented access trace policy
 
@@ -105,14 +106,14 @@ there is no trace capacity or enable policy.
 | --- | --- | --- | --- |
 | Colour text screen, glyphs, attributes, start address, cursor | `crates/devices/src/vga_text.rs`, `VgaText`: 32 KiB VRAM and CRTC; the existing `vram`, `start_cell`, `cursor_cell`, `cursor_visible` getters already expose state | `crates/cli/src/lib.rs`, `render_vga`, drains `take_trace`, reconstructs VRAM and a second CRTC register file, calls `render_text_mode`; used by `run_vga_text` and every successful `run_bios_config` assembly | Replay ignores `0x3B4/0x3B5`, unlike the preset and card of that time (the colour card's monochrome aliases were later removed; the MDA card owns `0x3Bx`); uses 256 independent index slots, unlike the card's modulo-25 indexing. A second capture loses prior writes. Restored state cannot be reconstructed from subsequent traces. |
 | Card-level text golden | Same `VgaText` state | `crates/devices/tests/vga_text_golden.rs`, `hello_renders_to_captured_grid`, already uses getters → `TextModeState` → `CaptureFrameSink`; checks committed `golden/vga_text_hello.txt`, attribute and cursor | This is the desired path, but CLI duplicates it with replay. |
-| MDA console text (current routing) | `MdaText` owns the MMIO aperture at `0xB0000` and its independent CRTC | CLI captures `DeviceId::Mda` through `capture_text`; FreeDOS/DOS goldens read `BiosRun.mda` | Card scanout supplies memory, start address and cursor; capture no longer reads CPU backing memory. |
-| Prompt detection (current routing) | Same MDA card scanout | `crates/assembly/src/run.rs`, `console_contains`, renders the `ConsoleProbe` device's scanout; `poll_to_prompt` and `run` use it to stop and inject keys | Separate capture call remains; shared observation scheduling is deferred. Poll cadence and injection schedule stay fixed. |
+| MDA console text (done) | `MdaText` owns the MMIO aperture at `0xB0000` and its independent CRTC | CLI captures `DeviceId::Mda` through `capture_text`; FreeDOS/DOS goldens read `BiosRun.mda` | Card scanout supplies memory, start address and cursor; capture no longer reads CPU backing memory. |
+| Prompt detection (done) | Same MDA card scanout | `ConsoleProbe.device` selects a bound `DeviceId` route; `console_contains` calls the observation facade used by final capture | One render per capture is distributed to subscribers before prompt detection. Poll cadence and injection schedule stay fixed. |
 | COM1 transmitted byte stream | `crates/devices/src/uart16550.rs`, THR branch in `port_write`; `output: Vec<u8>` | CLI `drain_serial`: `Device::as_any_mut` → `Uart16550` → `take_output`. Six serial-returning runners, `BiosRun.com1`, CLI stdout; device tests also inspect `output()` / `take_output()` | Semantic source is correct and excludes DLAB divisor writes. Concrete downcast and silent empty fallback do not validate route/type mismatches. Output and access traces are both unbounded; `save` currently includes pending output. |
 | POST checkpoints | `crates/devices/src/post_port.rs`, `PostPort` at configured port (`0x80` or `0x190`) | CLI `drain_post_at` filters `take_trace` for writes to the selected port, casts each value to `u8`; `BiosRun.post`, `Test386Run.post` | No semantic stream or last-code latch independent of trace. Trace policy cannot change until this consumer moves. Reads must never become checkpoints. |
 | Port/MMIO diagnostics | UART, VGA, POST, `Pic8259`, `Pit8253`, `I8042`, `CmosRtc`, `Dma8237`, `Upd765`, `SysControl` in `crates/devices/src/` | `Device::take_trace`; all callers enumerated below. `SharedPic` forwards the drain to the same live PIC (`crates/chipset/src/shared_pic.rs`) | Every serviced access allocates retained history. Most machine runs never drain PIC/PIT/keyboard/RTC/DMA/FDC/system-control traces; UART output draining does not drain its trace. Access traffic is not a display/audio model. |
 | Undecoded-port diagnostics | `crates/bus/src/lib.rs`, `open_bus_trace` | `Bus::take_open_bus_trace`, only bus unit tests currently consume it | Unbounded recording also occurs outside devices; fixing device buffers alone leaves this path. No current BIOS runner returns these diagnostics despite its source comment mentioning goldens. |
 | Run termination / diagnostic site | CPU, bus and machine run results | CLI `StopReason` classification, returned in `Test386Run.stop` / `BiosRun.stop`; errors in other runners remain `anyhow::Result` | Orthogonal to device output. Preserve capture on halt, cap and fault. `Unsupported`/`Unmapped` detail strings include addresses/bytes for diagnosis, not stable golden text; `Exception` carries a vector. |
-| Presentation | `crates/video/src/lib.rs`: `Frame::Text`, `TextGrid`, `FrameSink`, `CaptureFrameSink` | `run_vga_text` manually presents one final frame. Card golden and video unit test also present. `CaptureFrameSink` retains only the last frame | BIOS runner returns grids without presenting. `crates/assembly/src/output.rs` declares `OutputConfig.frame_sink` and `FrameSinkKind::{Headless,Capture}`, but `assemble` does not inspect it; all presets choose the default. Selecting `Capture` currently wires no sink. |
+| Presentation (done) | `Observation::capture_text`: one owned `Frame::Text` per capture | Facade fans out each prompt/final frame to its route subscribers. `OutputConfig.frame_sink` selects Headless or one `CaptureFrameSink` per requested display; the VGA runner selects Capture | `Observation::subscribe(DeviceId, Box<dyn FrameSink>)` is the presenter seam. Each configured capture sink retains only its last frame; ordered history is test-owned. |
 | Speaker/audio (future) | Potentially PIT channel 2 plus `SysControl` gate/data-enable | No audio frame, sample sink or runner field exists. `SysControl` stores the control bits but does not wire the gate to PIT; its timer-2 status is a per-read toggle (`crates/devices/src/sys_control.rs`, coverage matrix). PIT exposes `out(n)` (`crates/devices/src/pit8253.rs`) | There is no valid sound output to capture yet. Replaying port writes would implement another timer. Audio needs actual emulated signal production before an observer can consume it. |
 | Floppy writes and machine-test capture bytes | `Upd765` / `Drive` mutate mounted image bytes; machine unit tests use mock capture devices | FDC tests inspect transfer/read-back results, CLI WRITE golden observes a serial marker; `crates/machine/src/lib.rs` tests inspect mock devices through `save()` | These are storage effects / test doubles, not additional frontend output fields. Host-file write-back and whole-machine snapshots remain deferred (`backlog/docs/deferred.md`). Do not turn `Device::save` blobs into a display API. |
 
@@ -279,12 +280,29 @@ observable immediately from restored state, without replay. Do not retroactively
 emit already captured stream bytes on restore. Machine-wide replay remains
 deferred; an eventual replay design must specify stream epochs/cursors.
 
-`OutputConfig` should actually select the initial facade/presenter wiring.
-`Headless` means no visible presentation; it must not disable state observation
-or explicitly requested stream capture. `Capture` connects `CaptureFrameSink`
-to the same rendered frames a window would receive. Store collection limits,
-display-selection requests and capture cadence in an observation/run policy
-beside `RunPolicy`, not as guest hardware identity. Do not change the guest's step bounds to service a window's repaint requests.
+`OutputConfig.frame_sink` selects the initial facade/presenter wiring at assembly.
+An inline host calls public `Observation::configure_output(OutputConfig)` after
+`Observation::bind`. Reconfiguration replaces the configured last-frame sinks,
+clears their frames and preserves external subscriptions without adding routes.
+`Headless` installs no presentation subscriber; it must not disable state observation
+or explicitly requested stream capture. `Capture` connects one `CaptureFrameSink`
+per requested text route to the same rendered frames a window would receive.
+`Observation::captured_frame(DeviceId)` returns its last frame, and
+`subscriber_count` exposes the wiring. A new capture epoch clears these last frames.
+`Observation::subscribe(DeviceId, Box<dyn FrameSink>)` validates a bound text route
+and adds a subscriber owned by the facade. External subscribers own their epoch
+lifecycle. No window dependency is needed: a future presenter supplies the box.
+Each capture renders once, then synchronously presents that owned frame to the
+configured capture sink first, then external subscribers in registration order.
+A failed capture feeds no subscriber and leaves the last captured frame intact.
+The VGA runner returns the configured sink's frame and explicitly fails if the
+sink received nothing, so its golden exercises delivery as well as rendering.
+Subscribers receive only `&Frame`, never a machine reference. Headless routes
+allocate no frame history. The facade keeps mutable subscriber state separate
+from the passive card query; observing still changes no hardware state. Store
+collection limits, display-selection requests and capture cadence in an
+observation/run policy beside `RunPolicy`, not as guest hardware identity.
+Do not change the guest's step bounds to service a window's repaint requests.
 
 ### Deterministic boundaries and assertions
 
@@ -330,12 +348,25 @@ Technical Reference, Monochrome Display and Printer Adapter, Programming
 Considerations, and the device module's coverage matrix for assumptions.
 
 `BiosRun.mda` captures the MDA route through `capture_text`; `BiosRun.screen`
-remains the colour card. Prompt polling's `ConsoleProbe` selects the resolved
-MDA bus slot and renders its `Device::text_scanout` with
-`video::render_text_mode`. Both paths honour the card's start address and
-cursor. They retain separate capture calls; unifying observation scheduling
-and presentation belongs to later work. Missing scanout is an explicit run
-observation error. The exact `poll_step` and injection schedule stay fixed.
+remains the colour card. Prompt polling's plain-data, comparable `ConsoleProbe`
+selects `DeviceId::Mda`. `run(machine, observation, policy)` calls the same
+`Observation::capture_text` as `AssembledMachine::capture_text` and
+`capture_displays`; only the latter wrapper adds execution stamps. Both paths
+honour the card's start address and cursor and present exactly their captured
+frame. Missing routes and lost scanout produce
+`ConsoleUnavailable { device, source: ObservationError }` during polling and
+`ObservationError` during final capture; CLI classifies either as an observation
+failure. The source preserves `RouteNotBound` versus `ScanoutUnavailable` and is
+included in the diagnostic. A missing text route fails validation before the
+first poll executes any guest instruction. A bound route that later loses its
+scanout fails at capture, including after a natural halt.
+
+`poll_to_prompt` returns the last outcome and whether that poll found the needle;
+`run` reuses that result without capturing again before injecting input. The
+ordered synthetic workload now emits three frames (two polls and final capture),
+rather than four. This removes the redundant post-poll presentation without
+adding or removing a `run_bounded` call. Poll steps, execution bounds and input
+injection stay fixed; final capture still runs after halt, cap and CPU errors.
 
 The old RAM probe used cell zero and hid the cursor. Card capture exposes the
 hardware cursor and the independent VGA CRTC keeps its own reset state. These
@@ -414,11 +445,17 @@ format is implemented by this spike.
    existing UART `take_output` and POST trace filtering. Exercise DLAB writes,
    repeated bytes, zero/`0xFF`, POST reads, resets, early drains and error stops.
    Do not switch bounded tracing off while POST still depends on it.
-5. Use MDA card scanout for prompt polling, as described in §The MDA card console.
+5. **Done:** prompt polling and final capture use one facade by `DeviceId`, as
+   described in §The MDA card console.
    Compare frames at the same existing polls, with no extra `run_bounded` calls. Re-run BIOS,
    FreeDOS boot, interactive DIR and DOS write-session goldens, checking unchanged
    text, markers, POST and stop kinds. Route `FrameSinkKind` through the facade;
-   ensure headless and capture modes yield identical machine results.
+   ensure headless and capture modes yield identical machine results. Unit tests
+   compare complete `BiosRun` results for halt, CPU error and cap stops, verify
+   ordered poll/final frames, route selection, CRTC start address and capture epochs.
+   Additional tests cover Headless with zero subscribers, inline output selection,
+   two external sinks after the capture sink, Bytes-only subscription rejection,
+   failed captures without delivery and preservation of the polling error source.
 6. **Trace migration done:** production output no longer uses replay/downcasts;
    access traces are opt-in and bounded. The slow regression compares tracing
    Off against tiny overflowing rings across all five BIOS/DOS golden workloads.

@@ -23,7 +23,7 @@ use devices::upd765::FLOPPY_IMAGE_BYTES;
 use devices::vga_text::{COLS, ROWS, TEXT_BUFFER_LEN};
 use machine::{Machine, MachineError, RunOutcome};
 use std::collections::HashMap;
-use video::{render_text_mode, CaptureFrameSink, Frame, FrameSink, TextGrid, TextModeState};
+use video::{render_text_mode, Frame, TextGrid, TextModeState};
 
 /// Consecutive halted PIT clocks with no interrupt before the boot machine
 /// declares the timer quiescent and stops (§5). The boot guest masks IRQ0 after
@@ -480,7 +480,7 @@ fn classify_test386_stop(rip: u64, result: Result<RunOutcome, RunError>) -> Stop
         Err(RunError::Machine(MachineError::Bus(e))) => StopReason::Unmapped {
             detail: format!("{e} (rip {rip:#x})"),
         },
-        Err(error @ RunError::ConsoleUnavailable(_)) => StopReason::ObservationFailed {
+        Err(error @ RunError::ConsoleUnavailable { .. }) => StopReason::ObservationFailed {
             detail: error.to_string(),
         },
         Err(error @ RunError::InsufficientCommandBudget { .. }) => StopReason::PolicyFailed {
@@ -594,12 +594,10 @@ fn bios_natural_policy() -> RunPolicy {
     RunPolicy::natural(Some(BIOS_MAX_RETIRED), Some(BIOS_IDLE_LIMIT))
 }
 
-/// Select the MDA card's bus slot for FreeCOM prompt detection.
-/// Its window at [`devices::mda::TEXT_BUFFER_BASE`] is rendered through scanout,
-/// using the same text renderer as final capture.
-fn mda_console_probe(device_index: &HashMap<DeviceId, usize>) -> ConsoleProbe {
+/// Select the MDA observation route for FreeCOM prompt detection.
+fn mda_console_probe() -> ConsoleProbe {
     ConsoleProbe {
-        device_index: device_index[&DeviceId::Mda],
+        device: DeviceId::Mda,
     }
 }
 
@@ -608,16 +606,12 @@ fn mda_console_probe(device_index: &HashMap<DeviceId, usize>) -> ConsoleProbe {
 /// run `then_budget` more so the shell processes them. The plain FreeDOS boot passes
 /// no stimuli and a zero budget (it stops at the prompt); the interactive run passes
 /// the keyboard script and [`DOS_INTERACTIVE_COMMAND_BUDGET`].
-fn freedos_prompt_policy(
-    device_index: &HashMap<DeviceId, usize>,
-    stimuli: Vec<KeyboardStimulus>,
-    then_budget: u64,
-) -> RunPolicy {
+fn freedos_prompt_policy(stimuli: Vec<KeyboardStimulus>, then_budget: u64) -> RunPolicy {
     RunPolicy {
         retired_cap: Some(BIOS_MAX_RETIRED),
         idle_limit: Some(BIOS_IDLE_LIMIT),
         stop: StopCondition::PromptThen {
-            console: mda_console_probe(device_index),
+            console: mda_console_probe(),
             needle: DOS_DATE_PROMPT.to_string(),
             poll_step: DOS_INTERACTIVE_POLL_STEP,
             then_budget,
@@ -665,7 +659,7 @@ fn run_bios_assembled(
     let device_index = &assembled.device_index;
     let policy = build_policy(device_index);
     let machine = &mut assembled.machine;
-    let result = assembly::run(machine, &policy);
+    let result = assembly::run(machine, &assembled.observation, &policy);
 
     let mut stop = classify_bios_stop(machine, result);
     let post = stream_or_fail(capture_post(&assembled.observation), &mut stop);
@@ -780,8 +774,8 @@ pub fn run_bios_boot(rom: &[u8], floppy: Vec<u8>) -> BiosRun {
 /// the MDA console the BIOS actually writes to ([`BiosRun::mda`]), COM1, and the
 /// classified [`BiosRun::stop`].
 pub fn run_freedos(rom: &[u8], floppy: Vec<u8>) -> BiosRun {
-    run_bios_config(assembly::bios(rom.to_vec(), Some(floppy)), |device_index| {
-        freedos_prompt_policy(device_index, Vec::new(), 0)
+    run_bios_config(assembly::bios(rom.to_vec(), Some(floppy)), |_| {
+        freedos_prompt_policy(Vec::new(), 0)
     })
 }
 
@@ -836,7 +830,7 @@ pub fn run_freedos_interactive(rom: &[u8], floppy: Vec<u8>, scancodes: &[u8]) ->
             scancodes: script,
             schedule: InjectionSchedule::AfterPrompt,
         };
-        freedos_prompt_policy(device_index, vec![stimulus], DOS_INTERACTIVE_COMMAND_BUDGET)
+        freedos_prompt_policy(vec![stimulus], DOS_INTERACTIVE_COMMAND_BUDGET)
     })
 }
 
@@ -1011,7 +1005,7 @@ fn classify_bios_stop(
         Err(RunError::Machine(MachineError::Bus(e))) => StopReason::Unmapped {
             detail: format!("{e}; {site}"),
         },
-        Err(error @ RunError::ConsoleUnavailable(_)) => StopReason::ObservationFailed {
+        Err(error @ RunError::ConsoleUnavailable { .. }) => StopReason::ObservationFailed {
             detail: error.to_string(),
         },
         Err(error @ RunError::InsufficientCommandBudget { .. }) => StopReason::PolicyFailed {
@@ -1150,6 +1144,7 @@ pub fn run_boot(blob: &[u8]) -> Result<Vec<u8>> {
     // limit bounds the wait for an interrupt after that halt.
     assembly::run(
         &mut machine,
+        &observation,
         &RunPolicy::natural(None, Some(BOOT_IDLE_LIMIT)),
     )
     .context("running machine")?;
@@ -1180,6 +1175,7 @@ pub fn run_keyboard(blob: &[u8], scancodes: &[u8]) -> Result<Vec<u8>> {
     // The idle limit lets the demo stop once no interrupt can wake the CPU.
     assembly::run(
         &mut machine,
+        &observation,
         &RunPolicy::natural(None, Some(KBD_IDLE_LIMIT)),
     )
     .context("running machine")?;
@@ -1208,6 +1204,7 @@ pub fn run_rtc(blob: &[u8]) -> Result<Vec<u8>> {
     // The idle limit lets the demo stop once no interrupt can wake the CPU.
     assembly::run(
         &mut machine,
+        &observation,
         &RunPolicy::natural(None, Some(RTC_IDLE_LIMIT)),
     )
     .context("running machine")?;
@@ -1233,6 +1230,7 @@ pub fn run_fdc_write(program: &[u8]) -> Result<Vec<u8>> {
 
     assembly::run(
         &mut machine,
+        &observation,
         &RunPolicy::natural(Some(FDC_WRITE_RETIRED_CAP), None),
     )
     .context("running machine")?;
@@ -1241,28 +1239,28 @@ pub fn run_fdc_write(program: &[u8]) -> Result<Vec<u8>> {
 }
 
 /// Assemble the PC/AT machine, run `blob` in real mode, then render the VGA text
-/// card into a [`TextGrid`] and present it to a [`CaptureFrameSink`] (§9.2).
+/// card and return the [`TextGrid`] received by its configured
+/// [`video::CaptureFrameSink`] (§9.2). Missing sink delivery is an explicit error.
 ///
 /// DS/ES are seeded to `0xB800` so the guest's near stores reach the
 /// text buffer, and the `0xB8000` window is mapped as trapped MMIO so those
 /// stores surface on the bus and reach the card. Nothing runs a wall clock, so
 /// the produced grid is deterministic.
 pub fn run_vga_text(blob: &[u8]) -> Result<TextGrid> {
-    let config = assembly::at_vga_text(blob.to_vec());
+    let mut config = assembly::at_vga_text(blob.to_vec());
+    config.output.frame_sink = assembly::FrameSinkKind::Capture;
     let mut assembled = assemble_with_observation(&config, &display_policy())
         .context("assembling vga-text machine")?;
 
     let result = assembled.machine.run();
     let capture = assembled.capture_text(DeviceId::Vga);
     result.context("running machine")?;
-    let capture = capture.context("capturing vga-text display")?;
-    // Present the same owned frame that was stamped at the machine boundary.
-    let mut sink = CaptureFrameSink::new();
-    sink.present(&capture.frame);
-    Ok(sink
-        .last_text()
-        .cloned()
-        .expect("capture sink holds the presented text frame"))
+    capture.context("capturing vga-text display")?;
+    let Frame::Text(grid) = assembled
+        .observation
+        .captured_frame(DeviceId::Vga)
+        .context("VGA capture sink received no frame")?;
+    Ok(grid)
 }
 
 fn display_policy() -> ObservationPolicy {
@@ -1341,6 +1339,152 @@ fn capture_post(observation: &Observation) -> Result<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn inline_host_can_select_capture_output() {
+        let mut devices: Vec<Box<dyn Device>> = vec![Box::new(devices::VgaText::new())];
+        devices[0].mmio_write(0xB8000, 2, 0x7049).unwrap();
+        let device_index = HashMap::from([(DeviceId::Vga, 0)]);
+        let mut observation =
+            Observation::bind(&display_policy(), &device_index, &mut devices).unwrap();
+        observation.configure_output(assembly::OutputConfig {
+            frame_sink: assembly::FrameSinkKind::Capture,
+        });
+        let cpu =
+            X86JitCpu::new_real16_bare(0x10000, 0, 0, cpu::x86jit_backend::RealSegments::flat(0))
+                .unwrap();
+        let mut assembled = AssembledMachine {
+            machine: Machine::new(
+                cpu,
+                bus::Bus::new(devices, bus::DecodeMap::default()),
+                Box::new(chipset::NoInterruptController),
+                Vec::new(),
+                None,
+            ),
+            observation,
+            device_index,
+        };
+        assert_eq!(assembled.observation.subscriber_count(DeviceId::Vga), 1);
+        let frame = assembled.capture_text(DeviceId::Vga).unwrap().frame;
+        let Frame::Text(grid) = &frame;
+        assert_eq!(grid.cell(0, 0).unwrap().glyph, b'I');
+        assert_eq!(
+            assembled.observation.captured_frame(DeviceId::Vga),
+            Some(frame.clone())
+        );
+        assembled
+            .observation
+            .configure_output(assembly::OutputConfig {
+                frame_sink: assembly::FrameSinkKind::Headless,
+            });
+        assert_eq!(assembled.observation.subscriber_count(DeviceId::Vga), 0);
+        assert_eq!(assembled.observation.captured_frame(DeviceId::Vga), None);
+        assert_eq!(
+            assembled.capture_text(DeviceId::Vga).unwrap().frame,
+            Frame::Text(grid.clone())
+        );
+        assert_eq!(assembled.observation.captured_frame(DeviceId::Vga), None);
+    }
+
+    #[test]
+    fn bios_headless_and_capture_share_ordered_prompt_and_final_frames() {
+        use std::{cell::RefCell, rc::Rc};
+        use video::FrameSink;
+
+        struct Recorder(Rc<RefCell<Vec<Frame>>>);
+        impl FrameSink for Recorder {
+            fn present(&mut self, frame: &Frame) {
+                self.0.borrow_mut().push(frame.clone());
+            }
+        }
+
+        for tail in [&[0xFA, 0xF4][..], &[0x0F, 0x05], &[0xEB, 0xFE]] {
+            let mut baseline = None;
+            for (kind, record) in [
+                (assembly::FrameSinkKind::Headless, true),
+                (assembly::FrameSinkKind::Capture, true),
+                (assembly::FrameSinkKind::Headless, false),
+            ] {
+                let mut rom = vec![0; 32768];
+                let mut program = vec![
+                    0xB8, 0, 0xB0, 0x8E, 0xD8, // MDA data segment
+                    0xB8, b'A', 7, 0xA3, 0, 0, 0xB8, b'B', 0x70, 0xA3, 2, 0, 0xBA, 0xF8, 3, 0xB0,
+                    b'Z', 0xEE, 0xB0, 0xFF, 0xE6, 0x80, 0xB8, b'C', 0x0F, 0xA3, 0, 0,
+                ];
+                program.extend_from_slice(tail);
+                rom[..program.len()].copy_from_slice(&program);
+                // Start at the ROM body without spending a poll on a reset jump.
+                let mut config = assembly::bios(rom, None);
+                config.cpu.reset = assembly::ResetSpec::Entry { cs: 0xF800, ip: 0 };
+                config.output.frame_sink = kind;
+                config.devices.reverse();
+                let mut assembled =
+                    assemble_with_observation(&config, &bios_observation_policy()).unwrap();
+                let frames = Rc::new(RefCell::new(Vec::new()));
+                if record {
+                    assembled
+                        .observation
+                        .subscribe(DeviceId::Mda, Box::new(Recorder(frames.clone())))
+                        .unwrap();
+                } else {
+                    assert_eq!(assembled.observation.subscriber_count(DeviceId::Mda), 0);
+                    assert_eq!(assembled.observation.subscriber_count(DeviceId::Vga), 0);
+                }
+                let run = run_bios_assembled(&mut assembled, |indices| RunPolicy {
+                    retired_cap: Some(100),
+                    idle_limit: None,
+                    stop: StopCondition::PromptThen {
+                        console: ConsoleProbe {
+                            device: DeviceId::Mda,
+                        },
+                        needle: "AB".into(),
+                        poll_step: 4,
+                        then_budget: 20,
+                    },
+                    stimuli: vec![KeyboardStimulus {
+                        keyboard_index: indices[&DeviceId::Keyboard],
+                        scancodes: vec![0x1C],
+                        schedule: InjectionSchedule::AfterPrompt,
+                    }],
+                });
+                assert_eq!(run.com1, b"Z");
+                assert_eq!(run.post, [0xFF]);
+                match tail {
+                    [0xFA, 0xF4] => assert_eq!(run.stop, StopReason::Halt),
+                    [0x0F, 0x05] => assert!(matches!(run.stop, StopReason::Unsupported { .. })),
+                    _ => assert!(matches!(run.stop, StopReason::BudgetExhausted)),
+                }
+                let frames = frames.borrow();
+                if record {
+                    // Two prompt polls, then final capture after the command budget.
+                    assert_eq!(frames.len(), 3);
+                    let grids: Vec<_> = frames.iter().map(|Frame::Text(grid)| grid).collect();
+                    assert_eq!(
+                        grids
+                            .iter()
+                            .map(|grid| grid.cell(0, 0).unwrap().glyph)
+                            .collect::<Vec<_>>(),
+                        b"AAC"
+                    );
+                    assert_eq!(grids[0].cell(1, 0).unwrap().glyph, 0);
+                    assert_eq!(grids[1].cell(1, 0).unwrap().glyph, b'B');
+                    assert_eq!(frames.last(), Some(&Frame::Text(run.mda.clone())));
+                } else {
+                    assert!(frames.is_empty());
+                }
+                for (device, grid) in [(DeviceId::Vga, &run.screen), (DeviceId::Mda, &run.mda)] {
+                    let expected = (kind == assembly::FrameSinkKind::Capture)
+                        .then(|| Frame::Text(grid.clone()));
+                    assert_eq!(assembled.observation.captured_frame(device), expected);
+                }
+                if let Some(expected) = &baseline {
+                    assert_eq!(&run, expected);
+                } else {
+                    baseline = Some(run);
+                }
+            }
+        }
+    }
 
     #[test]
     fn divisor_programming_keeps_exact_serial_stream() {
@@ -1488,10 +1632,28 @@ mod tests {
     #[test]
     fn console_unavailable_is_classified_as_an_observation_failure() {
         let assembled = assembly::assemble(&assembly::at_boot(vec![0xF4])).unwrap();
-        let index = assembled.device_index[&DeviceId::Keyboard];
+        let device = DeviceId::Keyboard;
         for stop in [
-            classify_bios_stop(&assembled.machine, Err(RunError::ConsoleUnavailable(index))),
-            classify_test386_stop(0, Err(RunError::ConsoleUnavailable(index))),
+            classify_bios_stop(
+                &assembled.machine,
+                Err(RunError::ConsoleUnavailable {
+                    device,
+                    source: assembly::ObservationError::RouteNotBound {
+                        device,
+                        output: OutputKind::TextScanout,
+                    },
+                }),
+            ),
+            classify_test386_stop(
+                0,
+                Err(RunError::ConsoleUnavailable {
+                    device,
+                    source: assembly::ObservationError::RouteNotBound {
+                        device,
+                        output: OutputKind::TextScanout,
+                    },
+                }),
+            ),
         ] {
             assert!(matches!(stop, StopReason::ObservationFailed { detail }
                 if detail.contains("console text scanout is unavailable")));
@@ -1604,7 +1766,6 @@ mod bounded_trace_tests {
                             Vec::new()
                         };
                         freedos_prompt_policy(
-                            indices,
                             stimuli,
                             if interactive {
                                 DOS_INTERACTIVE_COMMAND_BUDGET

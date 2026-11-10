@@ -23,7 +23,7 @@
 //! - [`LoadImage`] — the single home for any blob loaded into the address space
 //!   (a masked BIOS ROM, a RAM-loaded boot blob).
 //! - [`DriveConfig`] — the removable/fixed media attached to a disk controller.
-//! - [`OutputConfig`] — the output section (currently without assembly options).
+//! - [`OutputConfig`] — initial presentation subscriber selection.
 //!
 //! ## Validation
 //!
@@ -68,7 +68,7 @@ pub use observation::{
     Observation, ObservationError, ObservationPolicy, ObservationRequest, ObservationRoute,
     OutputKind,
 };
-pub use output::OutputConfig;
+pub use output::{FrameSinkKind, OutputConfig};
 pub use presets::{
     at_boot, at_fdc_write, at_keyboard, at_rtc, at_vga_text, bios, floppy_boot, test386,
 };

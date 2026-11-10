@@ -241,6 +241,7 @@ pub struct Prepared {
     pub machine: Machine<X86JitCpu>,
     pub device_index: HashMap<DeviceId, usize>,
     pub policy: RunPolicy,
+    pub observation: assembly::Observation,
     ram_regions: Vec<assembly::RamRegion>,
 }
 
@@ -254,7 +255,22 @@ pub fn prepare(workload: Workload) -> Result<Option<Prepared>> {
     let mut ram_regions = vec![assembly::RamRegion::new(0, 0x10000)];
     let mut assemble = |config: &assembly::MachineConfig| {
         ram_regions = config.memory.ram.clone();
-        assembly::assemble(config)
+        assembly::assemble_with_observation(
+            config,
+            &assembly::ObservationPolicy {
+                routes: config
+                    .devices
+                    .iter()
+                    .filter(|device| matches!(device.id, DeviceId::Mda | DeviceId::Vga))
+                    .map(|device| assembly::ObservationRequest {
+                        device: device.id,
+                        output: assembly::OutputKind::TextScanout,
+                        byte_limit: 0,
+                    })
+                    .collect(),
+                ..Default::default()
+            },
+        )
     };
     let assembled = match workload {
         Workload::SerialReal16 => {
@@ -358,7 +374,7 @@ pub fn prepare(workload: Workload) -> Result<Option<Prepared>> {
                 policy.retired_cap = Some(cli::BIOS_MAX_RETIRED);
                 policy.stop = StopCondition::PromptThen {
                     console: ConsoleProbe {
-                        device_index: assembled.device_index[&DeviceId::Mda],
+                        device: DeviceId::Mda,
                     },
                     needle: cli::DOS_DATE_PROMPT.to_string(),
                     poll_step: cli::DOS_INTERACTIVE_POLL_STEP,
@@ -387,6 +403,7 @@ pub fn prepare(workload: Workload) -> Result<Option<Prepared>> {
         machine: assembled.machine,
         device_index: assembled.device_index,
         policy,
+        observation: assembled.observation,
         ram_regions,
     }))
 }
@@ -598,9 +615,10 @@ fn final_state_detects_untraced_ram_register_and_device_changes() {
                 ),
                 device_index: HashMap::from([(DeviceId::Uart, 0)]),
                 policy: RunPolicy::natural(None, None),
+                observation: assembly::Observation::default(),
                 ram_regions: vec![assembly::RamRegion::new(0, 0x10000)],
             },
-            |_, _| Ok(RunOutcome::Halted),
+            |_, _, _| Ok(RunOutcome::Halted),
         )
     };
     let baseline = observe(0);
@@ -639,7 +657,11 @@ fn final_state_detects_untraced_ram_register_and_device_changes() {
 /// The observer wraps existing bus devices without changing CPU/IRQ semantics.
 pub fn observe_with(
     mut prepared: Prepared,
-    engine: impl FnOnce(&mut Machine<X86JitCpu>, &RunPolicy) -> Result<RunOutcome, assembly::RunError>,
+    engine: impl FnOnce(
+        &mut Machine<X86JitCpu>,
+        &assembly::Observation,
+        &RunPolicy,
+    ) -> Result<RunOutcome, assembly::RunError>,
 ) -> Stream {
     let stream = SharedStream::default();
     let clock = prepared.machine.bus().observation_clock();
@@ -681,7 +703,11 @@ pub fn observe_with(
             pic: pic.clone(),
         });
     }
-    let result = engine(&mut prepared.machine, &prepared.policy);
+    let result = engine(
+        &mut prepared.machine,
+        &prepared.observation,
+        &prepared.policy,
+    );
     prepared.machine.bus_mut().settle();
     drain_pic(&pic, &stream);
     let reason = match result {

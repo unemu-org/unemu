@@ -7,14 +7,14 @@
 //! VGA Technical Reference, Alphanumeric Modes, and PC16550D datasheet,
 //! Transmitter Holding Register, define the two producer contracts.
 
-use std::collections::HashMap;
+use std::{cell::RefCell, collections::HashMap};
 
 use bus::Bus;
 use cpu::Cpu;
 use device::{ByteCapture, ByteOverflow, ByteStreamKind, Device};
-use video::{render_text_mode, Frame};
+use video::{render_text_mode, CaptureFrameSink, Frame, FrameSink};
 
-use crate::{AssembledMachine, ConfigError, DeviceId};
+use crate::{AssembledMachine, ConfigError, DeviceId, FrameSinkKind, OutputConfig};
 
 /// An owned display at a completed machine service boundary.
 ///
@@ -33,8 +33,9 @@ pub struct DisplayCapture {
 
 impl AssembledMachine {
     /// Capture a selected card with this machine's execution counters.
-    /// Call after a completed service boundary, including an error stop; this
-    /// passive query neither advances devices nor executes the CPU.
+    /// Call after a completed service boundary, including an error stop.
+    /// This presents the frame to subscribers and replaces the configured sink's
+    /// last frame, without advancing devices or executing the CPU.
     pub fn capture_text(&self, device: DeviceId) -> Result<DisplayCapture, ObservationError> {
         Ok(DisplayCapture {
             virtual_time: self.machine.virtual_time(),
@@ -129,7 +130,10 @@ pub enum ObservationError {
     },
 }
 
-/// Assembly-owned routes and one bounded collector per requested stream.
+/// Assembly-owned routes, bounded byte collectors and per-display subscribers.
+///
+/// Each display has an optional last-frame capture sink and external boxed
+/// `FrameSink` subscribers, delivered in that order and then subscription order.
 ///
 /// Render once at a completed service boundary, then distribute the owned
 /// frames/batches to consumers. There is no device drain or output downcast.
@@ -140,11 +144,19 @@ pub enum ObservationError {
 pub struct Observation {
     routes: Vec<ObservationRoute>,
     streams: HashMap<(DeviceId, ByteStreamKind), ByteCapture>,
+    displays: HashMap<DeviceId, DisplaySubscribers>,
+}
+
+#[derive(Default)]
+struct DisplaySubscribers {
+    capture: RefCell<Option<CaptureFrameSink>>,
+    sinks: RefCell<Vec<Box<dyn FrameSink>>>,
 }
 
 impl Observation {
     /// Resolve routes against a manually assembled device set before execution.
     /// This supports inline machines using the same collectors as config presets.
+    /// Presentation starts Headless; call [`Self::configure_output`] to select sinks.
     /// Missing roles, invalid slots and unsupported capabilities are config errors.
     pub fn bind(
         policy: &ObservationPolicy,
@@ -194,26 +206,104 @@ impl Observation {
         Ok(observation)
     }
 
+    /// Select presentation for all bound text routes, including inline hosts
+    /// that use [`Self::bind`]. Reconfiguration clears configured last frames
+    /// and preserves external subscribers; it does not add observation routes.
+    pub fn configure_output(&mut self, output: OutputConfig) {
+        for route in &self.routes {
+            if route.output == OutputKind::TextScanout {
+                let subscribers = self.displays.entry(route.device).or_default();
+                *subscribers.capture.get_mut() = match output.frame_sink {
+                    FrameSinkKind::Headless => None,
+                    FrameSinkKind::Capture => Some(CaptureFrameSink::new()),
+                };
+            }
+        }
+    }
+
+    /// Subscribe a host presenter to a bound display, without lending it the
+    /// machine. Sinks must return promptly, use no host timing in execution and
+    /// never call back into the machine. They receive only the captured frame,
+    /// after the configured capture sink, in subscription order.
+    pub fn subscribe(
+        &mut self,
+        device: DeviceId,
+        sink: Box<dyn FrameSink>,
+    ) -> Result<(), ObservationError> {
+        self.text_route(device)?;
+        self.displays
+            .entry(device)
+            .or_default()
+            .sinks
+            .get_mut()
+            .push(sink);
+        Ok(())
+    }
+
+    /// Number of presentation subscribers, including the configured capture sink.
+    ///
+    /// Do not call this from inside a sink's `present`: the subscriber list is
+    /// borrowed while frames are delivered.
+    #[must_use]
+    pub fn subscriber_count(&self, device: DeviceId) -> usize {
+        self.displays.get(&device).map_or(0, |subscribers| {
+            subscribers.sinks.borrow().len() + usize::from(subscribers.capture.borrow().is_some())
+        })
+    }
+
+    /// Last frame delivered to the configured capture sink; absent in headless
+    /// mode or before the first capture. Each display retains at most one frame.
+    #[must_use]
+    pub fn captured_frame(&self, device: DeviceId) -> Option<Frame> {
+        self.displays
+            .get(&device)?
+            .capture
+            .borrow()
+            .as_ref()?
+            .last()
+            .cloned()
+    }
+
+    pub(crate) fn text_route(
+        &self,
+        device: DeviceId,
+    ) -> Result<&ObservationRoute, ObservationError> {
+        let output = OutputKind::TextScanout;
+        self.routes
+            .iter()
+            .find(|route| route.device == device && route.output == output)
+            .ok_or(ObservationError::RouteNotBound { device, output })
+    }
+
     /// The stable role/output table resolved during assembly, in request order.
     #[must_use]
     pub fn routes(&self) -> &[ObservationRoute] {
         &self.routes
     }
 
-    /// Capture one selected display into an owned frame before releasing the
-    /// card borrow. Calling this does not execute or synchronize hardware.
-    fn capture_text(&self, bus: &Bus, device: DeviceId) -> Result<Frame, ObservationError> {
-        let output = OutputKind::TextScanout;
-        let route = self
-            .routes
-            .iter()
-            .find(|route| route.device == device && route.output == output)
-            .ok_or(ObservationError::RouteNotBound { device, output })?;
+    /// Render one selected display and fan out the owned frame to its capture
+    /// sink, then external subscribers in subscription order. Failed captures
+    /// feed no sink. This does not execute or synchronize hardware.
+    pub(crate) fn capture_text(
+        &self,
+        bus: &Bus,
+        device: DeviceId,
+    ) -> Result<Frame, ObservationError> {
+        let route = self.text_route(device)?;
         let state = bus
             .device(route.device_index)
             .and_then(Device::text_scanout)
             .ok_or(ObservationError::ScanoutUnavailable(device))?;
-        Ok(Frame::Text(render_text_mode(&state)))
+        let frame = Frame::Text(render_text_mode(&state));
+        if let Some(subscribers) = self.displays.get(&device) {
+            if let Some(capture) = &mut *subscribers.capture.borrow_mut() {
+                capture.present(&frame);
+            }
+            for sink in &mut *subscribers.sinks.borrow_mut() {
+                sink.present(&frame);
+            }
+        }
+        Ok(frame)
     }
 
     /// Drain one route's complete byte batch for distribution by the host.
@@ -237,8 +327,15 @@ impl Observation {
             })
     }
 
-    /// Start a fresh run's stream capture without resetting guest hardware.
+    /// Start a fresh capture epoch without resetting guest hardware.
+    /// Configured last-frame sinks are cleared; external subscribers own their lifecycle.
     pub fn start_epoch(&self) {
+        for subscribers in self.displays.values() {
+            let mut capture = subscribers.capture.borrow_mut();
+            if capture.is_some() {
+                *capture = Some(CaptureFrameSink::new());
+            }
+        }
         for capture in self.streams.values() {
             capture.start_epoch();
         }
@@ -252,13 +349,264 @@ mod tests {
         assemble, assemble_with_observation, AssemblyError, DeviceConfig, DeviceKind, PortWindow,
         PostPortCfg,
     };
-    use video::{CaptureFrameSink, FrameSink};
 
     fn request(device: DeviceId, output: OutputKind, byte_limit: usize) -> ObservationRequest {
         ObservationRequest {
             device,
             output,
             byte_limit,
+        }
+    }
+
+    #[test]
+    fn display_fanout_updates_capture_before_external_subscription_order() {
+        use std::rc::{Rc, Weak};
+
+        struct OrderedSink {
+            observation: Weak<Observation>,
+            log: Rc<RefCell<Vec<(u8, Frame)>>>,
+            id: u8,
+        }
+        impl FrameSink for OrderedSink {
+            fn present(&mut self, frame: &Frame) {
+                let observation = self.observation.upgrade().unwrap();
+                assert_eq!(
+                    observation.captured_frame(DeviceId::Vga).as_ref(),
+                    Some(frame)
+                );
+                self.log.borrow_mut().push((self.id, frame.clone()));
+            }
+        }
+
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let mut devices: Vec<Box<dyn Device>> = vec![Box::new(devices::VgaText::new())];
+        let observation = Rc::new_cyclic(|weak| {
+            let mut observation = Observation::bind(
+                &ObservationPolicy {
+                    routes: vec![request(DeviceId::Vga, OutputKind::TextScanout, 0)],
+                    ..Default::default()
+                },
+                &HashMap::from([(DeviceId::Vga, 0)]),
+                &mut devices,
+            )
+            .unwrap();
+            observation.configure_output(OutputConfig {
+                frame_sink: FrameSinkKind::Capture,
+            });
+            for id in [1, 2] {
+                observation
+                    .subscribe(
+                        DeviceId::Vga,
+                        Box::new(OrderedSink {
+                            observation: weak.clone(),
+                            log: log.clone(),
+                            id,
+                        }),
+                    )
+                    .unwrap();
+            }
+            observation
+        });
+        let mut bus = Bus::new(devices, bus::DecodeMap::default());
+        let mut expected = Vec::new();
+        for word in [0x0741, 0x7042] {
+            bus.device_mut(0)
+                .unwrap()
+                .mmio_write(0xB8000, 2, word)
+                .unwrap();
+            let frame = observation.capture_text(&bus, DeviceId::Vga).unwrap();
+            expected.extend([(1, frame.clone()), (2, frame)]);
+        }
+        assert_eq!(*log.borrow(), expected);
+        assert_eq!(observation.subscriber_count(DeviceId::Vga), 3);
+    }
+
+    #[test]
+    fn display_subscription_rejects_bytes_only_route() {
+        struct NoFrames;
+        impl FrameSink for NoFrames {
+            fn present(&mut self, _: &Frame) {
+                panic!("byte routes cannot emit frames");
+            }
+        }
+        let config = crate::at_boot(vec![0xF4]);
+        let mut assembled = assemble_with_observation(
+            &config,
+            &ObservationPolicy {
+                routes: vec![request(
+                    DeviceId::Uart,
+                    OutputKind::Bytes(ByteStreamKind::SerialTx),
+                    8,
+                )],
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            assembled
+                .observation
+                .subscribe(DeviceId::Uart, Box::new(NoFrames)),
+            Err(ObservationError::RouteNotBound {
+                device: DeviceId::Uart,
+                output: OutputKind::TextScanout
+            })
+        );
+        assert_eq!(assembled.observation.subscriber_count(DeviceId::Uart), 0);
+    }
+
+    #[test]
+    fn failed_display_captures_preserve_sinks_without_delivery() {
+        use std::rc::Rc;
+
+        struct Recorder(Rc<RefCell<Vec<Frame>>>);
+        impl FrameSink for Recorder {
+            fn present(&mut self, frame: &Frame) {
+                self.0.borrow_mut().push(frame.clone());
+            }
+        }
+        let mut config = crate::at_vga_text(vec![0xF4]);
+        config.output.frame_sink = FrameSinkKind::Capture;
+        let mut assembled = assemble_with_observation(
+            &config,
+            &ObservationPolicy {
+                routes: vec![request(DeviceId::Vga, OutputKind::TextScanout, 0)],
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let frames = Rc::new(RefCell::new(Vec::new()));
+        assembled
+            .observation
+            .subscribe(DeviceId::Vga, Box::new(Recorder(frames.clone())))
+            .unwrap();
+        let frame = assembled.capture_text(DeviceId::Vga).unwrap().frame;
+        let index = assembled.device_index[&DeviceId::Vga];
+        *assembled.machine.bus_mut().device_mut(index).unwrap() = Box::new(devices::I8042::new());
+        assert_eq!(
+            assembled.capture_text(DeviceId::Vga),
+            Err(ObservationError::ScanoutUnavailable(DeviceId::Vga))
+        );
+        assert_eq!(
+            assembled.capture_text(DeviceId::Mda),
+            Err(ObservationError::RouteNotBound {
+                device: DeviceId::Mda,
+                output: OutputKind::TextScanout,
+            })
+        );
+        assert_eq!(
+            assembled.observation.captured_frame(DeviceId::Vga),
+            Some(frame.clone())
+        );
+        assert_eq!(*frames.borrow(), vec![frame]);
+    }
+
+    #[test]
+    fn output_selection_routes_subscribers_and_resets_capture_epochs() {
+        use std::rc::Rc;
+
+        struct Recorder(Rc<RefCell<Vec<Frame>>>);
+        impl FrameSink for Recorder {
+            fn present(&mut self, frame: &Frame) {
+                self.0.borrow_mut().push(frame.clone());
+            }
+        }
+
+        for kind in [FrameSinkKind::Headless, FrameSinkKind::Capture] {
+            let mut config = crate::bios(vec![0; 0x8000], None);
+            config.output.frame_sink = kind;
+            config.cpu.reset = crate::ResetSpec::Entry { cs: 0xF800, ip: 0 };
+            config.images[0].source = crate::ImageSource::Inline({
+                let mut rom = vec![0; 0x8000];
+                rom[..4].copy_from_slice(&[0x90, 0x90, 0xFB, 0xF4]);
+                rom
+            });
+            config.devices.reverse();
+            let policy = ObservationPolicy {
+                routes: vec![
+                    request(DeviceId::Mda, OutputKind::TextScanout, 0),
+                    request(DeviceId::Vga, OutputKind::TextScanout, 0),
+                ],
+                ..Default::default()
+            };
+            let mut assembled = assemble_with_observation(&config, &policy).unwrap();
+            let count = usize::from(kind == FrameSinkKind::Capture);
+            for device in [DeviceId::Mda, DeviceId::Vga] {
+                assert_eq!(assembled.observation.subscriber_count(device), count);
+                assert_eq!(assembled.observation.captured_frame(device), None);
+            }
+            let frames = Rc::new(RefCell::new(Vec::new()));
+            assert!(matches!(
+                assembled
+                    .observation
+                    .subscribe(DeviceId::Keyboard, Box::new(Recorder(frames.clone()))),
+                Err(ObservationError::RouteNotBound { .. })
+            ));
+            assembled
+                .observation
+                .subscribe(DeviceId::Mda, Box::new(Recorder(frames.clone())))
+                .unwrap();
+            assert_eq!(
+                assembled.observation.subscriber_count(DeviceId::Mda),
+                count + 1
+            );
+            assembled.machine.set_idle_limit(Some(20));
+            assert_eq!(
+                assembled.machine.run_bounded(Some(7)).unwrap(),
+                machine::RunOutcome::RetiredCapReached
+            );
+            assert_eq!(assembled.machine.cpu().retired(), 4);
+            assert_eq!(assembled.machine.virtual_time(), 7);
+            let index = assembled.device_index[&DeviceId::Mda];
+            assembled
+                .machine
+                .bus_mut()
+                .mmio_write(0xB0000, 2, 0x7041)
+                .unwrap();
+            let saved = assembled.machine.bus().device(index).unwrap().save();
+            let first = assembled.capture_text(DeviceId::Mda).unwrap();
+            assert_eq!((first.virtual_time, first.retired), (7, 4));
+            assembled.machine.run_bounded(Some(9)).unwrap();
+            assembled
+                .machine
+                .bus_mut()
+                .mmio_write(0xB0000, 2, 0x0742)
+                .unwrap();
+            let final_captures = assembled.capture_displays().unwrap();
+            assert_eq!(final_captures[0].0, DeviceId::Mda);
+            assert_eq!(final_captures[1].0, DeviceId::Vga);
+            assert_ne!(first.frame, final_captures[0].1.frame);
+            assert_eq!(
+                *frames.borrow(),
+                vec![first.frame, final_captures[0].1.frame.clone()]
+            );
+            for (device, capture) in final_captures {
+                assert_eq!(capture.virtual_time, 9);
+                assert_eq!(capture.retired, 4);
+                assert_eq!(
+                    assembled.observation.captured_frame(device),
+                    (kind == FrameSinkKind::Capture).then_some(capture.frame)
+                );
+            }
+            assembled
+                .machine
+                .bus_mut()
+                .device_mut(index)
+                .unwrap()
+                .restore(&saved)
+                .unwrap();
+            assert_eq!(
+                assembled.capture_text(DeviceId::Mda).unwrap().frame,
+                frames.borrow()[0]
+            );
+            assembled.observation.start_epoch();
+            for device in [DeviceId::Mda, DeviceId::Vga] {
+                assert_eq!(assembled.observation.captured_frame(device), None);
+            }
+            assert_eq!(
+                assembled.observation.subscriber_count(DeviceId::Mda),
+                count + 1
+            );
+            assert_eq!(frames.borrow().len(), 3);
         }
     }
 
@@ -596,6 +944,7 @@ mod tests {
         let mut assembled = assemble_with_observation(&config, &policy).unwrap();
         crate::run(
             &mut assembled.machine,
+            &assembled.observation,
             &crate::RunPolicy::natural(Some(10), Some(20)),
         )
         .unwrap();

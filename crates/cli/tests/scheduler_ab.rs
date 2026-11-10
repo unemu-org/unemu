@@ -247,12 +247,12 @@ fn injected_write_reports_the_first_real_difference_with_context() {
         .unwrap();
     let right = scheduler::observe_with(
         scheduler::prepare(Workload::SerialReal16).unwrap().unwrap(),
-        |machine, policy| {
+        |machine, observation, policy| {
             machine
                 .bus_mut()
                 .port_write(0x3F8, 1, u32::from(b'!'))
                 .unwrap();
-            assembly::run(machine, policy)
+            assembly::run(machine, observation, policy)
         },
     );
     let difference = compare(&left, &right, Normalisations::default()).unwrap_err();
@@ -466,7 +466,7 @@ fn equal_time_events_keep_cross_device_and_inta_out_eoi_order() {
     let prepared = scheduler::prepare(Workload::Boot).unwrap().unwrap();
     let uart = prepared.device_index[&assembly::DeviceId::Uart];
     let master = prepared.device_index[&assembly::DeviceId::MasterPic];
-    let stream = scheduler::observe_with(prepared, |machine, _| {
+    let stream = scheduler::observe_with(prepared, |machine, _, _| {
         for (port, value) in [(0x20, 0x11), (0x21, 8), (0x21, 4), (0x21, 1)] {
             machine.bus_mut().port_write(port, 1, value).unwrap();
         }
@@ -563,7 +563,12 @@ fn scheduler_engine_wall_times() {
                 };
                 prepared.machine = prepared.machine.with_scheduler_engine(engine);
                 let start = std::time::Instant::now();
-                let outcome = assembly::run(&mut prepared.machine, &prepared.policy).unwrap();
+                let outcome = assembly::run(
+                    &mut prepared.machine,
+                    &prepared.observation,
+                    &prepared.policy,
+                )
+                .unwrap();
                 let elapsed = start.elapsed();
                 assert_eq!(outcome, machine::RunOutcome::RetiredCapReached);
                 let counts = (prepared.machine.clock().0, prepared.machine.cpu().retired());
