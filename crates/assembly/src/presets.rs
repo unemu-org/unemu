@@ -70,8 +70,6 @@ const TEST386_LOAD_SEG: u16 = 0xF000;
 const RESET_IP: u16 = 0xFFF0;
 /// Reset CS the BIOS/test386 machines start at (`0xF000`).
 const RESET_CS: u16 = 0xF000;
-/// Base of the zeroed option-ROM scan area (`0xC0000`).
-const BIOS_OPTION_ROM_BASE: u64 = 0x0C_0000;
 /// Base of the masked 32 KiB BIOS ROM (`0xF8000`).
 const BIOS_ROM_BASE: u64 = 0x0F_8000;
 
@@ -273,6 +271,7 @@ fn at_device_set(
 /// keyboard, and RTC demos, which differ only in wiring and segment seed.
 fn at_demo(blob: Vec<u8>, devices: Vec<DeviceConfig>) -> MachineConfig {
     MachineConfig {
+        system_bios_image: None,
         board: BoardModel::Bare,
         cpu: CpuConfig {
             chip: CpuChip::I80286,
@@ -347,6 +346,7 @@ pub fn at_fdc_write(program: Vec<u8>, pattern: Vec<u8>, pattern_base: u64) -> Ma
         size: FloppyGeometry::DD_360K.image_bytes(),
     };
     MachineConfig {
+        system_bios_image: None,
         board: BoardModel::Bare,
         cpu: CpuConfig {
             chip: CpuChip::I80286,
@@ -387,6 +387,7 @@ pub fn at_fdc_write(program: Vec<u8>, pattern: Vec<u8>, pattern_base: u64) -> Ma
 pub fn at_vga_text(blob: Vec<u8>) -> MachineConfig {
     let space = TEXT_BUFFER_BASE + TEXT_BUFFER_LEN as u64;
     MachineConfig {
+        system_bios_image: None,
         board: BoardModel::Bare,
         cpu: CpuConfig {
             chip: CpuChip::I80286,
@@ -431,6 +432,7 @@ pub fn at_vga_text(blob: Vec<u8>) -> MachineConfig {
 /// be delivered and would keep the run from terminating.
 pub fn test386(image: Vec<u8>) -> MachineConfig {
     MachineConfig {
+        system_bios_image: None,
         board: BoardModel::Bare,
         cpu: CpuConfig {
             chip: CpuChip::I80286,
@@ -477,6 +479,7 @@ pub fn floppy_boot(loader: Vec<u8>, floppy: Vec<u8>) -> MachineConfig {
         fdc(FdcCfg::port_windows(false), None, Some(2)),
     ];
     MachineConfig {
+        system_bios_image: None,
         board: BoardModel::Bare,
         cpu: CpuConfig {
             chip: CpuChip::I80286,
@@ -557,6 +560,7 @@ pub fn bios(rom: Vec<u8>, floppy: Option<Vec<u8>>) -> MachineConfig {
     };
 
     MachineConfig {
+        system_bios_image: Some(0),
         board,
         cpu: CpuConfig {
             chip: CpuChip::I80286,
@@ -572,13 +576,14 @@ pub fn bios(rom: Vec<u8>, floppy: Option<Vec<u8>>) -> MachineConfig {
         },
         memory: MemoryConfig {
             address_space_bytes: MIB,
-            ram: vec![
-                // 640 KiB conventional RAM + the graphics-adapter probe window up to
-                // the trapped text page.
-                RamRegion::new(0, mda::TEXT_BUFFER_BASE),
-                // Zeroed option-ROM scan area between the text page and the ROM.
-                RamRegion::new(BIOS_OPTION_ROM_BASE, BIOS_ROM_BASE - BIOS_OPTION_ROM_BASE),
-            ],
+            ram: {
+                let mut ram = vec![RamRegion::new(0, mda::TEXT_BUFFER_BASE)];
+                if board == BoardModel::Bare {
+                    // The historical partial POST rig retains its original map.
+                    ram.push(RamRegion::new(0xC0000, BIOS_ROM_BASE - 0xC0000));
+                }
+                ram
+            },
             mmio: vec![
                 MmioWindow::new(
                     mda::TEXT_BUFFER_BASE,
@@ -606,6 +611,9 @@ mod tests {
 
     #[test]
     fn bios_board_identity_distinguishes_the_no_media_rig() {
+        for floppy in [None, Some(vec![0; 1_474_560])] {
+            assert_eq!(bios(vec![0; 32768], floppy).system_bios_image, Some(0));
+        }
         assert_eq!(bios(vec![0; 0x8000], None).board, BoardModel::Bare);
         assert_eq!(
             bios(

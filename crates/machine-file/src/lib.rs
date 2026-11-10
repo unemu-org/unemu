@@ -26,7 +26,7 @@ pub mod schema;
 mod source;
 mod yaml;
 
-pub use integrity::lower;
+pub use integrity::{lower, lower_with_options};
 pub use lower::{FileImageReader, ImageReader, LowerError};
 pub use origin::{Origin, Origins};
 pub use resolve::resolve;
@@ -196,7 +196,15 @@ pub enum LoadError {
 /// The given name selects the format and is retained in diagnostics. Image
 /// paths use the target file's directory when the machine path is a symlink.
 pub fn load(path: impl AsRef<Path>) -> Result<assembly::MachineConfig, LoadError> {
-    load_with_reader(path, &mut FileImageReader)
+    load_with_options(path, assembly::AssemblyOptions::default())
+}
+
+/// Load a machine file with run-only firmware permissions and source diagnostics.
+pub fn load_with_options(
+    path: impl AsRef<Path>,
+    options: assembly::AssemblyOptions,
+) -> Result<assembly::MachineConfig, LoadError> {
+    load_with_reader_and_options(path, &mut FileImageReader, options)
 }
 
 /// Load a machine file with a caller-provided image reader.
@@ -211,6 +219,15 @@ pub fn load_with_reader<R: ImageReader>(
     path: impl AsRef<Path>,
     reader: &mut R,
 ) -> Result<assembly::MachineConfig, LoadError> {
+    load_with_reader_and_options(path, reader, assembly::AssemblyOptions::default())
+}
+
+/// Load with explicit image I/O and run-only firmware permissions.
+pub fn load_with_reader_and_options<R: ImageReader>(
+    path: impl AsRef<Path>,
+    reader: &mut R,
+    options: assembly::AssemblyOptions,
+) -> Result<assembly::MachineConfig, LoadError> {
     let (document, origins) = resolve(path)?;
-    Ok(lower(&document, &origins, reader)?)
+    Ok(lower_with_options(&document, &origins, reader, options)?)
 }

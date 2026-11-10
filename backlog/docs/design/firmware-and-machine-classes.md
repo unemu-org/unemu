@@ -471,6 +471,11 @@ Rules:
   then equal the catalogue's. It is mandatory only for an unlisted image, if the
   maintainer allows those (§8).
 - **System BIOS placement.**
+  - A ROM ending at 1 MiB identifies the BIOS before any declaration. If none
+    does, the config's declared BIOS index is used; without a declaration, a
+    sole ROM is the candidate. These candidates report `BiosPlacement` when
+    mis-sized or misplaced. Only zero ROMs or several undeclared candidates
+    report `MissingSystemBios`; the highest address is never a fallback.
   - `base = 1 MiB − size`, which puts the reset vector F000:FFF0 at offset
     `size − 16`. The size must be a multiple of 8 KiB.
   - On 386 and PCI boards the image is also aliased at `4 GiB − size`, because
@@ -479,10 +484,19 @@ Rules:
   - Boards that need a writable shadow map it as RAM preloaded with the image,
     or emulate PAM.
 - **Option ROMs.**
-  - `base` is explicit, defaulting to the catalogue's suggestion. The size is
+  - `base` is required in machine files; catalogue suggestions are informational.
+    The size is
     the header's `size byte × 512`, and the image must be exactly that long.
-  - Lowering maps each ROM as `ImageKind::Rom` and punches a hole in the
-    upper-memory RAM region that today covers C0000h–F7FFFh.
+  - Lowering maps each ROM as `ImageKind::Rom`. The IBM PC AT Technical
+    Reference, Section 1, **System Memory Map**, labels C0000h–DFFFFh as
+    I/O expansion ROM, E0000h–EFFFFh as reserved on the system board, and
+    F0000h–FFFFFh as system board ROM. The model protects C0000h–F7FFFh
+    from system RAM because Kiselev scans through F7FFFh; this wider protected
+    range is not all AT adapter space. Card MMIO is legitimate here: assembly
+    carves zero-fill around MMIO and ROM windows. Image/MMIO overlap is refused.
+    Empty gaps deliberately read 00h to preserve goldens; real empty sockets
+    float, often reading FFh. These model gaps are read-only, so guest writes
+    and `RamLoad` images cannot introduce uncatalogued extension code.
   - A video ROM (`kind = video-bios`) sits in C0000h–C7FFFh.
 - **Scan order** is ascending address, because every surveyed BIOS scans upward
   in 2 KiB steps:
@@ -491,8 +505,9 @@ Rules:
   - GLaBIOS with `ROM_SCAN_ALIGN = 1` (READ);
   - the IBM 5170 (ASSUMED).
 
-  The file's list order carries no meaning. Lowering sorts by base and records
-  the effective order in `Assembled`, for golden identity and diagnostics.
+  The file's list order carries no meaning. Assembly records resolved ROMs,
+  including their effective catalogue services, in ascending address order in
+  `AssembledMachine.option_roms` for diagnostics and tests.
 - **Derived configuration.**
   - CMOS (AT) and DIP switches (XT) are derived from the memory, drives,
     cards and the fixed-disk provider.
@@ -548,9 +563,48 @@ lowering adds the card id and defining file/line. A recognized system BIOS takes
 empty declaration uses that set, and a nonempty restatement must match it.
 A mismatch reports both sets as `FirmwareProvidesMismatch`, even with the
 unlisted-firmware escape enabled. Unlisted firmware retains declared services.
-Listed option ROMs will use the same comparison once their identities are
-checked. XTIDE placement and system-BIOS-provided CMOS drive types remain
+Listed option ROMs use the same comparison and SHA-256 allowlist. Their
+board, CPU minimum and required parts are mandatory, including under the escape.
+An ATA resource mismatch reports `OptionRomCardMismatch`; other missing parts
+report `FirmwareRequiresDevice`. System-BIOS-provided CMOS drive types remain
 separate work. IDE currently leaves CMOS fixed-disk types zero.
+
+A system BIOS entry with no scan window rejects every option ROM with
+`FirmwareDoesNotScanOptionRoms`: `firmware X does not scan for option ROMs`.
+Machine-file loaders accept run-only `AssemblyOptions` through their
+`*_with_options` / `load_with_reader_and_options` APIs. Defaults stay strict;
+allowing unlisted option ROMs retains the defining file/line and does not
+bypass format, placement or compatibility checks.
+
+Implementation diagnostics additionally pin these exact examples:
+
+- `option ROM at 0xC8001 must be 2 KiB aligned` (`OptionRomMisaligned`).
+- `option ROM at 0xC8000: expected 55AAh signature and a length byte`
+  (`OptionRomBadHeader`).
+- `option ROM at 0xC8000: length byte declares 1536 bytes, image has 2048 (must match and be nonzero)`
+  (`OptionRomBadHeader`). Exact length prevents trailing bytes from hiding
+  additional executable images outside the declared, checksummed module.
+- `board "ibm-5170" adapter ROM space overlaps ram at 0xc8000`
+  (`AdapterSpaceOverlapsRam`); a RAM load without RAM backing retains
+  `ImageOutsideRam`.
+- `option ROM image (sha256 …) is not a known image for board "ibm-5170"; known: xub-r638-at (open, vendor/xtide-universal-bios/fetch.sh)`
+  (`OptionRomNotListed`).
+
+**READ hardware reference:** *IBM Personal Computer AT Technical Reference*
+(March 1984), System BIOS, **Adapters with System-Accessible ROM Modules**,
+p. 5-11, specifies the 55h/AAh signature, length in 512-byte blocks,
+modulo-256 byte sum of zero, 2 KiB scan steps and FAR CALL at offset 3.
+It documents **C8000h through E0000h**, not the XT's F4000h limit.
+[Original IBM scan](https://ftp3.us.freebsd.org/pub/misc/bitsavers/pdf/ibm/pc/at/1502494_PC_AT_Technical_Reference_Mar84.pdf).
+**READ firmware:** pinned Kiselev `8088_bios/src/bios.asm`, `detect_rom_ext`
+(lines 1390–1435), scans **[C8000h, F8000h)** with default CMOS; a setup bit
+can shorten it to F0000h. `extension_scan` (lines 1532–1571) verifies the
+signature, nonzero length and checksum, advances past the declared module,
+rounds upward to 2 KiB, and returns offset 3 for FAR CALL. The earlier video
+scan covers [C0000h, C8000h); that whole interval is isolated from RAM too.
+Catalogue placement uses the default extension window. Custom NVRAM that
+shortens the scan can make an otherwise valid F0000h–F7FFFh ROM undiscoverable;
+`option_roms` records the default scan order, not execution under altered NVRAM.
 
 Rule 13 rejects the raw r638 `ide_at.bin` (MEASURED byte sum B0h), which is the
 intended behaviour: the fixture must pad and checksum it.
@@ -686,7 +740,7 @@ The generic AT comes first.
      diagnostic tests. The CLI and window support the run-only
      `--allow-unlisted-firmware` escape hatch with a full-hash warning. Bare rigs
      skip assembly checks; the historical POST runner checks its intended BIOS
-     explicitly. Option ROMs and catalogue-derived service claims remain deferred.
+     explicitly. System BIOS and option ROM service claims now come from catalogue entries.
    - *Depends on:* 1.
 3. **Description `[board]` and `[firmware]` sections.** `model` drives
    everything; `class` is rejected with a hint. Reserved CPU models (`8088`,
@@ -700,6 +754,11 @@ The generic AT comes first.
    - *Acceptance:* a synthetic 2 KiB test ROM (inline bytes) is called by the
      Kiselev BIOS (the extension-init POST code is seen) in a slow test; old
      goldens unchanged.
+   - *Implemented:* rules 11–14, catalogue-owned services and strict option-ROM
+     membership, system-BIOS identification by its end at 1 MiB, read-only
+     adapter space, and `AssembledMachine.option_roms`. A fixture-gated slow test
+     checks a synthetic C8000h ROM's RAM marker and POST code between extension
+     detection and completion. Existing golden expectations are unchanged.
    - *Depends on:* 2.
 5. **x86jit request: Real16 string port I/O.** `INS`/`OUTS` bytes and words
    with `REP`, restartable per element, filed and landed in x86jit, then
@@ -737,8 +796,7 @@ The generic AT comes first.
      `6409de912eab620ea144b79e723bed478814047dc2766fc19fd6e2e3690662d0`.
      `FirmwareEntry::XUB_R638_AT` records the `Listed` option-ROM identity,
      minimum CPU, fixed-disk service and primary ATA requirement. It remains
-     separate from the board's enforced system-BIOS catalogue until option-ROM
-     validation lands. Primary IDE assembly now satisfies the ATA requirement
+     part of the board's enforced firmware catalogue for option-ROM validation. Primary IDE assembly now satisfies the ATA requirement
      with the 1F0h task file, 3F6h control and IRQ14 wiring. Catalogue/recipe and
      fixture-gated hash tests cover the entry.
    - *Depends on:* 2.

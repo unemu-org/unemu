@@ -125,7 +125,7 @@ pub mod test_support {
     }
 }
 pub use firmware::{
-    check_board_system_bios, check_system_bios, AssemblyOptions, FirmwareBase, FirmwareCpu,
-    FirmwareDistribution, FirmwareEntry, FirmwareKind, FirmwarePart, FirmwareStatus,
-    UnlistedFirmware, KISELEV_XI8088,
+    check_board_system_bios, check_option_rom_catalogue, check_system_bios, AssemblyOptions,
+    FirmwareBase, FirmwareCpu, FirmwareDistribution, FirmwareEntry, FirmwareKind, FirmwarePart,
+    FirmwareStatus, UnlistedFirmware, KISELEV_XI8088,
 };

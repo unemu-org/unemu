@@ -362,13 +362,10 @@ fn invalid_card_fields_and_duplicate_roles_are_rejected() {
 }
 
 #[test]
-fn ram_rule_subtracts_option_roms_and_keeps_the_conventional_gap() {
+fn ram_rule_reserves_adapter_space_and_keeps_the_conventional_gap() {
     let file = Path::new("test-machines/custom.toml");
-    let input = format!("{MINIMAL}[[firmware.option_roms]]\nimage='option.bin'\nbase=0xC8000\nprovides=['fixed-disk']\n[memory]\nconventional_kib=512\nextended_kib=128\n[cpu]\nmodel='80286'\nrate='3/2'\n[[card]]\nkind='mda'\n");
+    let input = format!("{MINIMAL}[memory]\nconventional_kib=512\nextended_kib=128\n[cpu]\nmodel='80286'\nrate='3/2'\n[[card]]\nkind='mda'\n");
     let mut images = Images::rom(file);
-    images
-        .files
-        .insert(file.with_file_name("option.bin"), vec![0; 0x2000]);
     let config = lower(
         &parse_toml(file, &input).unwrap(),
         &Origins::from_toml(file, &input).unwrap(),
@@ -381,14 +378,9 @@ fn ram_rule_subtracts_option_roms_and_keeps_the_conventional_gap() {
         [
             RamRegion::new(0, 0x80000),
             RamRegion::new(0xA0000, 0x10000),
-            RamRegion::new(0xB8000, 0x10000),
-            RamRegion::new(0xCA000, 0x2E000),
+            RamRegion::new(0xB8000, 0x8000),
             RamRegion::new(0x100000, 0x20000)
         ]
-    );
-    assert_eq!(
-        config.images[1].provides,
-        [assembly::FirmwareService::FixedDisk]
     );
     assert_eq!(config.clock.retired_per_pit_clock, 3);
     assert_eq!(config.clock.retired_per_pit_clock_denominator, 2);
@@ -592,11 +584,6 @@ fn drive_and_image_validation_keep_the_defining_origin() {
         })
     ));
     assert_eq!(error.field, "card[fdc-765]");
-    let error = run(&format!(
-        "{MINIMAL}[[firmware.option_roms]]\nimage='bios.bin'\nbase=0xF0000\n"
-    ))
-    .unwrap_err();
-    assert_eq!(error.field, "firmware.option_roms[0].base");
 }
 
 #[test]

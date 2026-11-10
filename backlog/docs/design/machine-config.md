@@ -66,6 +66,7 @@ MachineConfig {
     devices: Vec<DeviceConfig>,   // a flat list, produced by preset functions
     drives:  Vec<DriveConfig>,    // the ONE home for attached media
     images:  Vec<LoadImage>,      // the ONE home for pre-loaded bytes
+    system_bios_image: Option<usize>, // declared BIOS index, if known
     output:  OutputConfig,        // initial presentation subscribers
 }
 ```
@@ -295,11 +296,15 @@ byte count. Two things it must express that a naive "N kB of RAM" cannot:
   map is a flat 1 MB+ linear space with no wrap; A20 is not a configurable knob.
   The config records this as a fixed property of the modelled machine, so nobody
   reintroduces it as a per-machine option.
-- **The option-ROM scan area is writable RAM, not ROM.** The region the BIOS
-  scans for option ROMs is *zeroed, writable RAM* in this model, not a
-  write-protected ROM region. A semantic `MemoryConfig` distinguishes
-  `Ram` / `Rom` / MMIO-trap regions so this is stated in data; a byte-count
-  model would silently get the region's write-protection wrong.
+- **Firmware scan space is not system RAM.** IBM PC AT Technical Reference,
+  Section 1 "System Board", **System Memory Map** assigns C0000h–DFFFFh to
+  I/O expansion ROM, E0000h–EFFFFh to reserved system-board space, and
+  F0000h–FFFFFh to system-board ROM. The model protects the wider C0000h–F7FFFh
+  interval from RAM because Kiselev scans through F7FFFh. Card MMIO windows
+  remain valid; assembly fills only gaps between ROMs and MMIO with read-only
+  zeroes. Real empty sockets float, often to FFh; 00h is a deliberate model
+  choice to preserve the goldens. Guest writes and `RamLoad` cannot create
+  hidden firmware headers. The historical no-floppy `Bare` rig retains its map.
 
 The MMIO list retains per-device windows. For CPU mapping, assembly sorts them
 by address and coalesces each run of touching windows into one `RegionKind::Trap`
@@ -465,11 +470,10 @@ a ROM. The initial vocabulary is deliberately small:
 System BIOS and option ROM images use the same field. The BIOS preset declares
 `Floppy`, matching the machine-file examples; this validation metadata does not
 change guest execution. Firmware identification uses the separate catalogue
-below. A recognized system BIOS supplies its catalogue services when the
+below. A recognized BIOS or option ROM supplies its catalogue services when the
 declaration is omitted or empty; a nonempty restatement must match the catalogue
 set. A conflict returns `FirmwareProvidesMismatch` with both sets. Unlisted
-firmware under the escape option uses its declared services. Option-ROM
-catalogue validation remains deferred.
+firmware under the escape option uses its declared services.
 
 On firmware boards (every board other than `Bare`), requirements follow from a
 table of device kinds. An FDC with at least one drive bound to its device id
@@ -485,7 +489,8 @@ service does not require a consumer. RAM loads with nonempty `provides` fail wit
 ## Firmware catalogue
 
 `BoardModel::firmware_catalogue()` owns the reviewed `FirmwareEntry` values.
-The IBM 5170 catalogue contains `kiselev-xi8088-1.0.2`, the unmodified 32 KiB
+The IBM 5170 catalogue contains `xub-r638-at` (8 KiB, fixed-disk service,
+primary ATA requirement) and `kiselev-xi8088-1.0.2`, the unmodified 32 KiB
 Xi 8088 build pinned by `vendor/kiselev-bios/fetch.sh`. Its GPL-3.0-or-later
 licence, upstream revision, SHA-256, load rule, service metadata, required
 8042/RTC/cascaded PIC parts, 80286 minimum and tested status are data in
@@ -494,9 +499,9 @@ both catalogue and BIOS-placement checks for these hand-wired rigs.
 
 Assembly resolves file sources once, then hashes the actual bytes before any
 ROM mapping; inline and generated system BIOS images follow the same check.
-Option ROMs are not hashed or allowlisted here; their validation belongs to the
-option-ROM implementation. The first ROM in a firmware board's image list is
-the required system BIOS. Its size must be positive and divisible by 8 KiB,
+Option ROMs are also hashed and allowlisted; `OptionRomNotListed` lists the
+known adapter builds. The ROM ending at `0x100000` is the system BIOS,
+regardless of image-list order. Its size must be positive and divisible by 8 KiB,
 and its end must be `0x100000`. This check precedes the existing general region bounds
 check, so an overlong system BIOS reports `BiosPlacement`, including its base
 and an exact size (bytes when not divisible by 1024). Catalogue boards reject a
@@ -504,11 +509,25 @@ missing BIOS (`MissingSystemBios`), a reset other than power-on
 `ResetVector F000:FFF0` (`FirmwareReset`), RAM shadowing the BIOS or its reset
 byte (`SystemBiosOverlapsRam`), and other overlapping images (`ImageOverlap`).
 Since every valid system BIOS ends at 1 MiB, at most one can satisfy placement
-without an overlap. File-backed ranges are checked again after resolution.
+without an overlap. If none ends at 1 MiB, `system_bios_image` identifies the
+explicitly declared BIOS; its invalid size or end reports `BiosPlacement`.
+The BIOS preset (including the CLI `--bios` path) and machine-file lowering set
+this index. When the index is unset, a sole ROM is also a BIOS candidate and
+reports `BiosPlacement`. Zero ROMs, or multiple undeclared ROMs with no top-aligned
+candidate, report `MissingSystemBios`; address order never resolves ambiguity.
+Callers reordering images must update the declared index. File-backed ranges
+and identity are checked after resolution; machine files validate their explicit
+BIOS placement at its defining image origin.
 Other image/region errors retain their existing variants. The catalogue's
 `base` field is informational for system BIOS entries: all use the common top
 alignment rule, which must also be enforced before looking up unknown bytes.
-Suggested option-ROM bases await the separate option-ROM loader.
+Option ROMs require explicit 2 KiB-aligned bases and must fit the BIOS entry's
+`scan_window` (Kiselev: [C8000h, F8000h)). The 55AAh signature, nonzero length
+byte × 512 equal to the image size, zero byte-sum checksum, and absence of image
+overlap are checked before mapping. Firmware without a scan window refuses
+option ROMs with `FirmwareDoesNotScanOptionRoms`. `AssembledMachine.option_roms` contains the
+resolved images with effective services in ascending address order. Suggested
+catalogue bases remain informational; machine files specify the base.
 Unknown bytes report `FirmwareNotListed` with the full SHA-256 and
 every known entry's distribution and fetch script. Listed entries must also
 match the board, CPU minimum and required parts (rules 7–9 in the firmware design).

@@ -88,6 +88,9 @@ pub struct AssembledMachine {
     pub persistence: Vec<crate::PersistenceHandle>,
     /// Unknown BIOS hashes accepted through a run-only escape option.
     pub unlisted_firmware: Vec<crate::UnlistedFirmware>,
+    /// Option ROM images in ascending physical address, the BIOS scan order.
+    /// Includes their resolved bytes and service declarations for diagnostics.
+    pub option_roms: Vec<crate::LoadImage>,
 }
 
 /// A way assembling a validated [`MachineConfig`] can fail (§3.1).
@@ -198,6 +201,22 @@ fn assemble_with_cpu(
         {
             unlisted_firmware.push(unlisted);
         }
+    }
+
+    unlisted_firmware.extend(crate::check_option_rom_catalogue(config, options)?);
+    let mut option_roms = Vec::new();
+    if !config.board.firmware_catalogue().is_empty() {
+        let bios = crate::firmware::system_bios(config)?;
+        for (index, image) in config.images.iter().enumerate() {
+            if image.kind == ImageKind::Rom && !std::ptr::eq(image, bios) {
+                let mut image = image.clone();
+                image.provides = crate::firmware::image_services(config, index)?
+                    .unwrap_or_default()
+                    .to_vec();
+                option_roms.push(image);
+            }
+        }
+        option_roms.sort_by_key(|image| image.base);
     }
 
     let mut cpu = build(config)?;
@@ -314,6 +333,7 @@ fn assemble_with_cpu(
         observation,
         persistence,
         unlisted_firmware,
+        option_roms,
     })
 }
 
@@ -394,6 +414,42 @@ fn build_cpu(config: &MachineConfig) -> Result<X86JitCpu, AssemblyError> {
         let base = run[0].base;
         let end = run[run.len() - 1].end();
         cpu.map_mmio(base, end - base)?;
+    }
+    if !config.board.firmware_catalogue().is_empty() {
+        if let Some((_, end)) = crate::firmware::scan_firmware(config)?.scan_window {
+            let mut cursor = 0xC0000;
+            let mut occupied: Vec<_> = config
+                .images
+                .iter()
+                .filter(|image| image.kind == ImageKind::Rom)
+                .map(|image| {
+                    (
+                        image.base,
+                        image.base + image.source.known_len().unwrap_or(0),
+                    )
+                })
+                .chain(
+                    config
+                        .memory
+                        .mmio
+                        .iter()
+                        .map(|window| (window.base, window.end())),
+                )
+                .filter(|(base, stop)| *base < end && *stop > cursor)
+                .collect();
+            occupied.sort_unstable();
+            for (base, stop) in occupied {
+                if base > cursor {
+                    cpu.map_rom(cursor, &vec![0; (base - cursor) as usize])?;
+                }
+                cursor = cursor.max(stop);
+            }
+            if cursor < end {
+                // Preserve the historical zero-filled scan result while keeping
+                // adapter space isolated from guest RAM and RAM-loaded code.
+                cpu.map_rom(cursor, &vec![0; (end - cursor) as usize])?;
+            }
+        }
     }
     for image in &config.images {
         let bytes = load_image_bytes(&image.source)?;
@@ -1338,6 +1394,7 @@ mod tests {
         }];
 
         MachineConfig {
+            system_bios_image: None,
             board: BoardModel::Bare,
             cpu: CpuConfig {
                 chip: crate::cpu::CpuChip::I80286,
@@ -1894,6 +1951,7 @@ mod tests {
         // A minimal machine with a single UART and no interrupt hardware still
         // assembles: the loop is handed a controller that acknowledges nothing.
         let config = MachineConfig {
+            system_bios_image: None,
             board: BoardModel::Bare,
             cpu: CpuConfig {
                 chip: crate::cpu::CpuChip::I80286,

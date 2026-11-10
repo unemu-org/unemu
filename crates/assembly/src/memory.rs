@@ -5,11 +5,12 @@ use crate::device::DeviceId;
 
 /// A contiguous region of guest RAM (§4).
 ///
-/// Plain read/write/execute memory. The conventional low memory, the
-/// upper-memory probe area, and the zeroed option-ROM scan area are all RAM
-/// regions — the option-ROM area is expressed as **writable RAM**, not ROM, so a
-/// guest that probes it sees zeroes and moves on. Loaded blobs (a BIOS ROM) are
-/// not here; they live once in [`crate::LoadImage`].
+/// Plain read/write/execute system memory. Firmware scan space is excluded on
+/// catalogue boards. IBM Personal Computer AT Technical Reference, Section 1
+/// "System Board", System Memory Map assigns C0000h–DFFFFh to I/O expansion
+/// ROM, E0000h–EFFFFh to reserved space, and F0000h–FFFFFh to system ROM. See
+/// `backlog/docs/design/machine-config.md` §MemoryConfig. Loaded ROMs live in
+/// [`crate::LoadImage`]; empty scan gaps around ROMs and MMIO map read-only in assembly.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct RamRegion {
     /// Guest-physical base address.

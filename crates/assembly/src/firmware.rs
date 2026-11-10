@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Firmware identities and board-owned system BIOS load requirements.
+//! Firmware identities and board-owned BIOS and adapter ROM requirements.
 //!
 //! IBM Personal Computer AT Technical Reference, Section 1 "System Board",
 //! Memory Map: system ROM occupies the top of the first MiB. The catalogue
@@ -20,7 +20,7 @@ pub struct AssemblyOptions {
     pub allow_unlisted_firmware: bool,
 }
 
-/// The purpose of a catalogue image; option-ROM loading is not implemented here.
+/// The purpose of a catalogue image.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FirmwareKind {
     /// Reset and motherboard initialization firmware.
@@ -159,10 +159,11 @@ pub struct FirmwareEntry {
     pub sha256: &'static str,
     /// Exact raw image length in bytes.
     pub size: u64,
-    /// Informational for system BIOS entries: the shared top-of-first-MiB
-    /// constraint is checked before lookup, even for unlisted images. Suggested
-    /// option-ROM addresses await the option-ROM loader.
+    /// System BIOS images end at the top of the first MiB. Adapter addresses
+    /// are suggestions; explicit placements must fit the system BIOS scan.
     pub base: FirmwareBase,
+    /// Exclusive adapter-ROM scan bounds of a system BIOS, if any.
+    pub scan_window: Option<(u64, u64)>,
     /// Services documented for this build.
     pub provides: &'static [FirmwareService],
     /// Required modelled board parts.
@@ -183,13 +184,14 @@ impl FirmwareEntry {
     /// XTIDE Universal BIOS, Main.asm, USE_AT build: primary ATA task file at
     /// 1F0h and IRQ 14. See `backlog/docs/design/firmware-and-machine-classes.md`
     /// §2.2 and `vendor/xtide-universal-bios/README.md` for the binary provenance.
-    /// This is listed data; option-ROM validation and execution are separate.
+    /// The fixed-disk boot profile is qualified separately from ROM validation.
     pub const XUB_R638_AT: Self = Self {
         id: "xub-r638-at",
         kind: FirmwareKind::OptionRom,
         sha256: "6409de912eab620ea144b79e723bed478814047dc2766fc19fd6e2e3690662d0",
         size: 8192,
         base: FirmwareBase::Suggested(0xC8000),
+        scan_window: None,
         provides: &[FirmwareService::FixedDisk],
         requires: &[FirmwarePart::AtaPrimary],
         cpu_min: FirmwareCpu::I80286,
@@ -212,6 +214,8 @@ pub const KISELEV_XI8088: FirmwareEntry = FirmwareEntry {
     sha256: "1ad458acb1f22dee6b3d9b6bd95e83218a7ddc5389fa2b2c67a4001e689c81a8",
     size: 32768,
     base: FirmwareBase::TopOfFirstMib,
+    // Kiselev 8088_bios bios.asm, detect_rom_ext: DX=C800h, BX=F800h.
+    scan_window: Some((0xC8000, 0xF8000)),
     provides: &[FirmwareService::Floppy],
     requires: &[
         FirmwarePart::Kbc8042,
@@ -246,11 +250,79 @@ impl std::fmt::Display for UnlistedFirmware {
 }
 
 pub(crate) fn system_bios(config: &MachineConfig) -> Result<&LoadImage, ConfigError> {
-    // Until option-ROM configuration lands, the first ROM is the system BIOS.
-    config
+    if let Some(image) = config.images.iter().find(|image| is_system_bios(image)) {
+        return Ok(image);
+    }
+    if let Some(image) = config
+        .system_bios_image
+        .and_then(|index| config.images.get(index))
+        .filter(|image| image.kind == ImageKind::Rom)
+    {
+        return Ok(image);
+    }
+    let mut roms = config
         .images
         .iter()
-        .find(|image| image.kind == ImageKind::Rom)
+        .filter(|image| image.kind == ImageKind::Rom);
+    if let Some(image) = roms.next() {
+        if roms.next().is_none() {
+            return Ok(image);
+        }
+    }
+    Err(ConfigError::MissingSystemBios {
+        board: config.board.id(),
+    })
+}
+
+pub(crate) fn unresolved_roms(config: &MachineConfig) -> bool {
+    config.images.iter().any(|image| {
+        image.kind == ImageKind::Rom && matches!(image.source, crate::ImageSource::File(_))
+    })
+}
+
+pub(crate) fn is_system_bios(image: &LoadImage) -> bool {
+    image.kind == ImageKind::Rom
+        && image
+            .source
+            .known_len()
+            .and_then(|size| image.base.checked_add(size))
+            == Some(0x100000)
+}
+
+pub(crate) fn matched_entry<'a>(
+    image: &LoadImage,
+    catalogue: &'a [FirmwareEntry],
+) -> Option<&'a FirmwareEntry> {
+    let crate::ImageSource::Inline(bytes) = &image.source else {
+        return None;
+    };
+    let hash = format!("{:x}", Sha256::digest(bytes));
+    let kind = if is_system_bios(image) {
+        FirmwareKind::SystemBios
+    } else {
+        FirmwareKind::OptionRom
+    };
+    catalogue.iter().find(|entry| {
+        entry.kind == kind && entry.sha256 == hash && entry.size == bytes.len() as u64
+    })
+}
+
+pub(crate) fn scan_firmware(config: &MachineConfig) -> Result<&FirmwareEntry, ConfigError> {
+    scan_firmware_from(config, config.board.firmware_catalogue())
+}
+
+fn scan_firmware_from<'a>(
+    config: &MachineConfig,
+    catalogue: &'a [FirmwareEntry],
+) -> Result<&'a FirmwareEntry, ConfigError> {
+    let bios = system_bios(config)?;
+    // An unlisted experimental BIOS inherits the board's memory isolation.
+    matched_entry(bios, catalogue)
+        .or_else(|| {
+            catalogue
+                .iter()
+                .find(|entry| entry.kind == FirmwareKind::SystemBios)
+        })
         .ok_or(ConfigError::MissingSystemBios {
             board: config.board.id(),
         })
@@ -281,37 +353,163 @@ fn entry_services<'a>(
     Ok(entry.provides)
 }
 
-/// Resolve services without I/O; an unread BIOS file is checked after resolution.
-/// Listed option-ROM identities will use the same entry/declaration check when
-/// their catalogue loading is implemented.
+/// Resolve catalogue-owned services; defer unread files until resolution.
 pub(crate) fn image_services(
     config: &MachineConfig,
     index: usize,
 ) -> Result<Option<&[FirmwareService]>, ConfigError> {
     let image = &config.images[index];
-    let catalogue = config.board.firmware_catalogue();
-    let bios = config
-        .images
-        .iter()
-        .position(|image| image.kind == ImageKind::Rom);
-    if catalogue.is_empty() || bios != Some(index) {
-        return Ok(Some(&image.provides));
+    if let Some(entry) = matched_entry(image, config.board.firmware_catalogue()) {
+        return entry_services(index, image, entry).map(Some);
     }
-    match &image.source {
-        crate::ImageSource::Inline(bytes) => {
-            let hash = format!("{:x}", Sha256::digest(bytes));
-            if let Some(entry) = catalogue.iter().find(|entry| {
-                entry.kind == FirmwareKind::SystemBios
-                    && entry.sha256 == hash
-                    && entry.size == bytes.len() as u64
-            }) {
-                return entry_services(index, image, entry).map(Some);
-            }
-        }
-        crate::ImageSource::File(_) if image.provides.is_empty() => return Ok(None),
-        _ => {}
+    if matches!(image.source, crate::ImageSource::File(_)) && image.provides.is_empty() {
+        return Ok(None);
     }
     Ok(Some(&image.provides))
+}
+
+/// Validate adapter ROM format and compatibility before mapping.
+///
+/// IBM Personal Computer AT Technical Reference (March 1984), System BIOS,
+/// "Adapters with System-Accessible ROM Modules", p. 5-11: 55AAh signature,
+/// 512-byte length units, modulo-256 checksum, 2 KiB scan steps. Its documented
+/// C8000h–E0000h range differs from Kiselev 8088_bios bios.asm,
+/// detect_rom_ext / extension_scan (C8000h–F8000h, exclusive end).
+/// See `backlog/docs/design/firmware-and-machine-classes.md` §6.
+pub(crate) fn validate_option_roms(config: &MachineConfig) -> Result<(), ConfigError> {
+    validate_option_roms_with_catalogue(config, config.board.firmware_catalogue())
+}
+
+fn validate_option_roms_with_catalogue(
+    config: &MachineConfig,
+    catalogue: &[FirmwareEntry],
+) -> Result<(), ConfigError> {
+    if catalogue.is_empty() {
+        return Ok(());
+    }
+    if system_bios(config).is_err() && unresolved_roms(config) {
+        return Ok(());
+    }
+    let firmware = scan_firmware_from(config, catalogue)?;
+    let bios = system_bios(config)?;
+    for (image_index, image) in config.images.iter().enumerate() {
+        if image.kind != ImageKind::Rom || std::ptr::eq(image, bios) {
+            continue;
+        }
+        let Some((start, end)) = firmware.scan_window else {
+            return Err(ConfigError::FirmwareDoesNotScanOptionRoms {
+                firmware: firmware.id,
+                image_index,
+            });
+        };
+        if !image.base.is_multiple_of(2048) {
+            return Err(ConfigError::OptionRomMisaligned {
+                image_index,
+                base: image.base,
+            });
+        }
+        if image.base < start
+            || image.base >= end
+            || image
+                .source
+                .known_len()
+                .is_some_and(|size| image.base.saturating_add(size) > end)
+        {
+            return Err(ConfigError::OptionRomOutsideScanWindow {
+                image_index,
+                base: image.base,
+                start,
+                end,
+                firmware: firmware.id,
+            });
+        }
+        let bytes = match &image.source {
+            crate::ImageSource::Inline(bytes) => bytes,
+            crate::ImageSource::File(_) => continue,
+            crate::ImageSource::Blank { .. } => {
+                return Err(ConfigError::OptionRomBadHeader {
+                    image_index,
+                    name: format!("at {:#X}", image.base),
+                    reason: "expected 55AAh signature and a length byte".into(),
+                })
+            }
+        };
+        let entry = matched_entry(image, catalogue);
+        let name = entry.map_or_else(|| format!("at {:#X}", image.base), |entry| entry.id.into());
+        let reason = if bytes.len() < 3 || bytes[..2] != [0x55, 0xAA] {
+            Some("expected 55AAh signature and a length byte".to_string())
+        } else if bytes[2] == 0 || usize::from(bytes[2]) * 512 != bytes.len() {
+            Some(format!(
+                "length byte declares {} bytes, image has {} (must match and be nonzero)",
+                usize::from(bytes[2]) * 512,
+                bytes.len()
+            ))
+        } else {
+            None
+        };
+        if let Some(reason) = reason {
+            return Err(ConfigError::OptionRomBadHeader {
+                image_index,
+                name,
+                reason,
+            });
+        }
+        let sum = bytes.iter().fold(0u8, |sum, byte| sum.wrapping_add(*byte));
+        if sum != 0 {
+            return Err(ConfigError::OptionRomBadChecksum {
+                image_index,
+                name,
+                sum,
+            });
+        }
+        if let Some(entry) = entry {
+            entry_services(image_index, image, entry)?;
+            check_entry_requirements(config, config.board, entry, Some(image_index))?;
+        }
+    }
+    Ok(())
+}
+
+/// Check resolved adapter identities against the board catalogue. The run-only
+/// escape relaxes membership alone; format and compatibility stay mandatory.
+pub fn check_option_rom_catalogue(
+    config: &MachineConfig,
+    options: AssemblyOptions,
+) -> Result<Vec<UnlistedFirmware>, ConfigError> {
+    let catalogue = config.board.firmware_catalogue();
+    if catalogue.is_empty() {
+        return Ok(Vec::new());
+    }
+    validate_option_roms(config)?;
+    let bios = system_bios(config)?;
+    let mut unlisted = Vec::new();
+    for (image_index, image) in config.images.iter().enumerate() {
+        if image.kind != ImageKind::Rom || std::ptr::eq(image, bios) {
+            continue;
+        }
+        let crate::ImageSource::Inline(bytes) = &image.source else {
+            continue;
+        };
+        if matched_entry(image, catalogue).is_some() {
+            continue;
+        }
+        let sha256 = format!("{:x}", Sha256::digest(bytes));
+        if !options.allow_unlisted_firmware {
+            return Err(ConfigError::OptionRomNotListed {
+                image_index,
+                sha256,
+                board: config.board.id(),
+                known: catalogue
+                    .iter()
+                    .filter(|entry| entry.kind == FirmwareKind::OptionRom)
+                    .map(|entry| format!("{} ({})", entry.id, entry.distribution))
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            });
+        }
+        unlisted.push(UnlistedFirmware { sha256 });
+    }
+    Ok(unlisted)
 }
 
 pub(crate) fn check_bios_placement(base: u64, size: u64) -> Result<(), ConfigError> {
@@ -369,18 +567,25 @@ pub fn check_system_bios(
             board: board.id(),
             known: catalogue
                 .iter()
+                .filter(|entry| entry.kind == FirmwareKind::SystemBios)
                 .map(|entry| format!("{} ({})", entry.id, entry.distribution))
                 .collect::<Vec<_>>()
                 .join(", "),
         });
     };
-    if let Some(index) = config
-        .images
-        .iter()
-        .position(|image| image.kind == ImageKind::Rom)
-    {
+    if let Some(index) = config.images.iter().position(is_system_bios) {
         entry_services(index, &config.images[index], entry)?;
     }
+    check_entry_requirements(config, board, entry, None)?;
+    Ok(None)
+}
+
+fn check_entry_requirements(
+    config: &MachineConfig,
+    board: BoardModel,
+    entry: &FirmwareEntry,
+    option_index: Option<usize>,
+) -> Result<(), ConfigError> {
     if !entry.boards.contains(&board.id()) {
         return Err(ConfigError::FirmwareBoardMismatch {
             firmware: entry.id,
@@ -400,13 +605,19 @@ pub fn check_system_bios(
     }
     for part in entry.requires {
         if !part.present(config) {
+            if let (FirmwarePart::AtaPrimary, Some(image_index)) = (part, option_index) {
+                return Err(ConfigError::OptionRomCardMismatch {
+                    image_index,
+                    firmware: entry.id,
+                });
+            }
             return Err(ConfigError::FirmwareRequiresDevice {
                 firmware: entry.id,
                 part: *part,
             });
         }
     }
-    Ok(None)
+    Ok(())
 }
 
 #[cfg(test)]
@@ -424,6 +635,155 @@ mod tests {
         FirmwareEntry {
             sha256: "c35020473aed1b4642cd726cad727b63fff2824ad68cedd7ffb73c7cbd890479",
             ..KISELEV_XI8088
+        }
+    }
+
+    fn with_misplaced_bios_and_option_rom() -> MachineConfig {
+        let mut config = config();
+        config.images[0].base = 0xC0000;
+        config.images.push(LoadImage {
+            base: 0xD0000,
+            source: ImageSource::Inline(vec![0; 2048]),
+            kind: ImageKind::Rom,
+            provides: Vec::new(),
+        });
+        config
+    }
+
+    #[test]
+    fn bios_selection_prefers_top_placement_over_a_declaration() {
+        let mut config = with_misplaced_bios_and_option_rom();
+        config.images[1].base = 0xF8000;
+        config.images[1].source = ImageSource::Inline(vec![0; 32768]);
+        config.system_bios_image = Some(0);
+        assert!(std::ptr::eq(
+            system_bios(&config).unwrap(),
+            &config.images[1]
+        ));
+        config.images.reverse();
+        config.system_bios_image = Some(1);
+        assert!(std::ptr::eq(
+            system_bios(&config).unwrap(),
+            &config.images[0]
+        ));
+    }
+
+    #[test]
+    fn bios_selection_uses_a_declared_misplaced_image_without_guessing_by_address() {
+        for reverse in [false, true] {
+            let mut config = with_misplaced_bios_and_option_rom();
+            if reverse {
+                config.images.reverse();
+            }
+            config.system_bios_image = Some(usize::from(reverse));
+            for allow in [false, true] {
+                let error = assembly_error(&config, allow);
+                assert_eq!(
+                    error,
+                    ConfigError::BiosPlacement {
+                        base: 0xC0000,
+                        size: 32768
+                    }
+                );
+                assert_eq!(error.to_string(), "system BIOS of 32 KiB at 0xc0000 must have a positive size that is a multiple of 8 KiB and end at 0x100000");
+            }
+        }
+    }
+
+    #[test]
+    fn bios_selection_reports_placement_for_a_sole_undeclared_rom() {
+        let mut config = config();
+        config.system_bios_image = None;
+        config.images[0].source = ImageSource::Inline(vec![0; 32767]);
+        config.images.insert(
+            0,
+            LoadImage {
+                base: 0x500,
+                source: ImageSource::Inline(vec![0]),
+                kind: ImageKind::RamLoad,
+                provides: Vec::new(),
+            },
+        );
+        for allow in [false, true] {
+            assert_eq!(
+                assembly_error(&config, allow),
+                ConfigError::BiosPlacement {
+                    base: 0xF8000,
+                    size: 32767
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn bios_selection_reports_missing_when_there_are_no_roms() {
+        let mut config = config();
+        config.images[0].kind = ImageKind::RamLoad;
+        for marker in [None, Some(0), Some(99)] {
+            config.system_bios_image = marker;
+            for allow in [false, true] {
+                assert_eq!(
+                    assembly_error(&config, allow),
+                    ConfigError::MissingSystemBios { board: "ibm-5170" }
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn bios_selection_reports_missing_for_multiple_undeclared_misplaced_roms() {
+        let mut config = with_misplaced_bios_and_option_rom();
+        for marker in [None, Some(99)] {
+            config.system_bios_image = marker;
+            for allow in [false, true] {
+                assert_eq!(
+                    assembly_error(&config, allow),
+                    ConfigError::MissingSystemBios { board: "ibm-5170" }
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn firmware_without_a_scan_window_refuses_any_option_rom() {
+        let mut config = config();
+        let entry = FirmwareEntry {
+            scan_window: None,
+            ..synthetic()
+        };
+        assert_eq!(
+            validate_option_roms_with_catalogue(&config, &[entry]),
+            Ok(())
+        );
+        config.images.push(LoadImage {
+            base: 0xC8000,
+            source: ImageSource::Inline(vec![0; 2048]),
+            kind: ImageKind::Rom,
+            provides: Vec::new(),
+        });
+        let error = validate_option_roms_with_catalogue(&config, &[entry]).unwrap_err();
+        assert_eq!(
+            error,
+            ConfigError::FirmwareDoesNotScanOptionRoms {
+                firmware: entry.id,
+                image_index: 1
+            }
+        );
+        assert_eq!(
+            error.to_string(),
+            "firmware kiselev-xi8088-1.0.2 does not scan for option ROMs"
+        );
+    }
+
+    #[test]
+    fn option_rom_catalogue_board_cpu_and_non_ata_requirements_are_mandatory() {
+        let baseline = FirmwareEntry::XUB_R638_AT;
+        for (entry, message) in [
+            (FirmwareEntry { boards: &["ibm-5160"], ..baseline }, "firmware \"xub-r638-at\" is built for ibm-5160, not ibm-5170"),
+            (FirmwareEntry { cpu_min: FirmwareCpu::I80386, ..baseline }, "firmware \"xub-r638-at\" needs an 80386 or later; cpu is 80286"),
+            (FirmwareEntry { requires: &[FirmwarePart::VideoRom], ..baseline }, "firmware \"xub-r638-at\" requires a video-bios option ROM at 0xC0000; none is configured"),
+        ] {
+            assert_eq!(check_entry_requirements(&config(), BoardModel::Ibm5170, &entry, Some(1)).unwrap_err().to_string(), message);
         }
     }
 

@@ -33,6 +33,11 @@ pub struct MachineConfig {
     pub drives: Vec<DriveConfig>,
     /// The blobs loaded into the address space (BIOS ROM, boot blobs).
     pub images: Vec<LoadImage>,
+    /// Explicit system-BIOS image index, used when no ROM ends at 1 MiB.
+    /// A sole undeclared ROM is also a BIOS candidate; ambiguous rigs leave
+    /// this unset. Presets and machine files retain their declared BIOS here.
+    /// Update this index when reordering the image list.
+    pub system_bios_image: Option<usize>,
     /// How the machine is presented.
     pub output: OutputConfig,
 }

@@ -703,3 +703,68 @@ fn journal_temporary_names_are_reserved_for_inline_inputs_and_layers() {
     }
     assert!(!temp.0.join("disk.upfj.lock").exists());
 }
+
+#[test]
+fn journal_cannot_alias_an_option_rom_input() {
+    for yaml in [false, true] {
+        for alias in ["direct", "hardlink"] {
+            let temp = Temp::new();
+            let mut rom = vec![0; 2048];
+            rom[..4].copy_from_slice(&[0x55, 0xAA, 4, 0xCB]);
+            rom[2047] = 0x32;
+            let option = temp.write("option.bin", &rom);
+            let journal = if alias == "direct" {
+                "option.bin"
+            } else {
+                std::fs::hard_link(&option, temp.0.join("alias.upfj")).unwrap();
+                "alias.upfj"
+            };
+            let (name, input) = if yaml {
+                ("machine.yaml", format!("schema: 1\nboard: {{model: ibm-5170}}\nfirmware:\n  bios: {{image: bios.bin, provides: [floppy]}}\n  option_roms: [{{image: option.bin, base: 0xC8000}}]\ncard:\n  - kind: fdc-765\n    drives:\n      - unit: 0\n        type: 360K\n        image: base.img\n        write: journal\n        journal: {journal}\n"))
+            } else {
+                let base = BASE.replace(
+                    "[firmware.bios]",
+                    "[firmware]\noption_roms=[{image='option.bin',base=0xC8000}]\n[firmware.bios]",
+                );
+                (
+                    "machine.toml",
+                    format!("{base}write='journal'\njournal='{journal}'\n"),
+                )
+            };
+            let drive_line = input
+                .lines()
+                .position(|line| {
+                    if yaml {
+                        line.contains("- unit:")
+                    } else {
+                        line == "[[card.drives]]"
+                    }
+                })
+                .unwrap()
+                + 1;
+            let path = temp.write(name, input);
+            let listing = entries(&temp.0);
+            for allow_unlisted_firmware in [false, true] {
+                let LoadError::Lower(error) = machine_file::load_with_options(
+                    &path,
+                    AssemblyOptions {
+                        allow_unlisted_firmware,
+                    },
+                )
+                .unwrap_err() else {
+                    panic!("expected a source-located journal alias error");
+                };
+                assert_eq!(error.origin.file, path);
+                assert_eq!(error.origin.line, Some(drive_line));
+                assert_eq!(error.field, "card[fdc-765].drives[unit=0]");
+                assert!(matches!(
+                    error.validation.as_deref(),
+                    Some(ConfigError::Journal { drive_index: 0, .. })
+                ));
+                assert_eq!(error.message, format!("card[fdc-765].drives[unit=0] journal configuration: journal {} aliases source input {}", temp.0.join(journal).display(), option.display()));
+                assert_eq!(std::fs::read(&option).unwrap(), rom);
+                assert_eq!(entries(&temp.0), listing);
+            }
+        }
+    }
+}

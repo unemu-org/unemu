@@ -170,15 +170,6 @@ impl<R: ImageReader> Context<'_, R> {
     }
 
     fn rom(&mut self, field: &str, rom: &v1::Rom, bios: bool) -> Result<LoadImage, LowerError> {
-        if !bios {
-            let base = self.required(&format!("{field}.base"), rom.base)?;
-            if !(0xC0000..0xF0000).contains(&base) || !base.is_multiple_of(2048) {
-                return Err(self.error(
-                    &format!("{field}.base"),
-                    "option ROM base must be 2 KiB aligned in 0xC0000..=0xEFFFF",
-                ));
-            }
-        }
         let bytes = self.image(
             &format!("{field}.image"),
             rom.image.as_deref(),
@@ -191,6 +182,12 @@ impl<R: ImageReader> Context<'_, R> {
                 .ok_or_else(|| self.error(field, "BIOS exceeds the 1 MiB reset address space"))?,
             None => return Err(self.error(&format!("{field}.base"), "required field is missing")),
         };
+        if bios && base.checked_add(bytes.len() as u64) != Some(MIB) {
+            return Err(self.validation_error(ConfigError::BiosPlacement {
+                base,
+                size: bytes.len() as u64,
+            }));
+        }
         self.images.push(field.into());
         Ok(LoadImage {
             base,
@@ -490,6 +487,21 @@ impl<R: ImageReader> Context<'_, R> {
             | FirmwareNeedsCpu { .. }
             | FirmwareRequiresDevice { .. }
             | BiosPlacement { .. } => vec!["firmware.bios.image".into()],
+            FirmwareDoesNotScanOptionRoms { image_index, .. }
+            | OptionRomNotListed { image_index, .. }
+            | OptionRomCardMismatch { image_index, .. }
+            | OptionRomBadHeader { image_index, .. }
+            | OptionRomBadChecksum { image_index, .. } => {
+                self.images.get(*image_index).cloned().into_iter().collect()
+            }
+            OptionRomMisaligned { image_index, .. }
+            | OptionRomOutsideScanWindow { image_index, .. } => self
+                .images
+                .get(*image_index)
+                .map(|field| format!("{field}.base"))
+                .into_iter()
+                .collect(),
+            AdapterSpaceOverlapsRam { .. } => vec!["memory".into()],
             FirmwareProvidesMismatch { image_index, .. } => {
                 vec![format!("{}.provides", self.image_label(*image_index))]
             }
@@ -697,7 +709,7 @@ fn ram(
     mmio: &[MmioWindow],
     images: &[LoadImage],
 ) -> Vec<RamRegion> {
-    let mut regions = vec![(0xA0000, MIB)];
+    let mut regions = vec![(0xA0000, 0xC0000)];
     for (base, end) in mmio
         .iter()
         .map(|w| (w.base, w.end()))
@@ -741,6 +753,7 @@ pub fn lower<R: ImageReader>(
     document: &MachineFile,
     origins: &Origins,
     reader: &mut R,
+    options: assembly::AssemblyOptions,
 ) -> Result<MachineConfig, LowerError> {
     let mut context = Context {
         origins,
@@ -889,6 +902,7 @@ pub fn lower<R: ImageReader>(
         v1::CpuModel::I80286 => CpuChip::I80286,
     };
     let config = MachineConfig {
+        system_bios_image: Some(0),
         board,
         cpu: CpuConfig {
             chip,
@@ -915,6 +929,8 @@ pub fn lower<R: ImageReader>(
         .validate()
         .map_err(|error| context.validation_error(error))?;
     crate::paths::validate_journals(&config, origins, &context.image_paths)
+        .map_err(|error| context.validation_error(error))?;
+    assembly::check_option_rom_catalogue(&config, options)
         .map_err(|error| context.validation_error(error))?;
     Ok(config)
 }

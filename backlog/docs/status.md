@@ -14,9 +14,16 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
 - **Firmware catalogue:** IBM 5170 BIOS bytes are checked against the pinned
   Kiselev Xi 8088 1.0.2 SHA-256 before mapping. Unknown images list known builds
   and fetch instructions; listed firmware checks board, CPU and required parts.
-  System BIOS presence, placement, power-on reset and isolation from writable
+  Declared or sole mis-sized ROMs receive a precise BIOS-placement diagnostic;
+  ambiguous undeclared ROM sets report a missing BIOS. System BIOS presence,
+  placement, power-on reset and isolation from writable
   RAM/other images are checked independently of allowlist membership. Option
-  ROM hashing remains deferred. CLI and window
+  ROMs are also SHA-256 checked, aligned, bounded by the BIOS scan window,
+  header/length/checksum validated and mapped read-only. Adapter space has no
+  writable system RAM; MMIO is carved out of the zero-filled gaps. Assembly
+  reports effective ROM scan order. Machine-file loader APIs accept the run-only
+  unlisted escape while preserving source diagnostics. A synthetic 2 KiB
+  extension has a fixture-gated BIOS POST acceptance test. CLI and window
   accept the run-only `--allow-unlisted-firmware` flag and report the unknown hash
   to stderr. Bare assembly remains unrestricted; the historical POST runner
   explicitly checks the real BIOS against the intended board catalogue.
@@ -41,8 +48,8 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   Primary IDE splits the FDC decode at 3F6h. An assembled Bare rig transfers all
   256 IDENTIFY words with `rep insw`; firmware boards require a ROM declaring
   fixed-disk services, even for an empty IDE card. The XTIDE fixture and its
-  `xub-r638-at` entry exist; option-ROM validation and the IDE boot profile remain
-  deferred. IDE leaves CMOS fixed-disk types
+  `xub-r638-at` entry exist; option-ROM validation enforces its primary ATA
+  resources and catalogue services. The IDE boot profile remains deferred. IDE leaves CMOS fixed-disk types
   zero; system-BIOS-provided types remain deferred. Catalogued BIOS service
   declarations must match the catalogue, and omitted declarations inherit it. ATA write batches preserve complete sectors on interruption and
   reject readonly writes with ERR/ABRT. The host-only pending-write flush is

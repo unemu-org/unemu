@@ -95,8 +95,9 @@ impl X86JitCpu {
     /// Map a conventional RAM window `[base, base + size)` as `RWX` `Ram`.
     ///
     /// For an embedder building a mosaic address space with
-    /// [`X86JitCpu::new_real16_bare`]: the low 640 KiB, the upper-memory probe
-    /// area, and the zeroed option-ROM scan region are all plain RAM.
+    /// [`X86JitCpu::new_real16_bare`]: low conventional memory and upper-memory
+    /// probe areas can be RAM. Firmware scan space on catalogue boards uses
+    /// read-only ROM mappings, including deliberately zero-filled gaps.
     pub fn map_ram(&mut self, base: u64, size: u64) -> Result<(), CpuError> {
         self.map_region(base, size as usize, Prot::RWX, RegionKind::Ram)
     }

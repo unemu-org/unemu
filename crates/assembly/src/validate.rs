@@ -145,6 +145,7 @@ impl MachineConfig {
         self.check_mmio_vs_ram()?;
         self.check_regions_in_space()?;
         self.check_image_placement()?;
+        crate::firmware::validate_option_roms(self)?;
         self.check_irq_conflicts()?;
         self.check_pic_faces()?;
         self.check_dma_controllers_present()?;
@@ -158,27 +159,53 @@ impl MachineConfig {
         if self.board.firmware_catalogue().is_empty() {
             return Ok(());
         }
-        let bios = crate::firmware::system_bios(self)?;
+        let bios = match crate::firmware::system_bios(self) {
+            Ok(bios) => Some(bios),
+            Err(_) if crate::firmware::unresolved_roms(self) => None,
+            Err(error) => return Err(error),
+        };
         if self.cpu.reset != crate::ResetSpec::reset_vector() {
             return Err(ConfigError::FirmwareReset {
                 board: self.board.id(),
                 reset: self.cpu.reset,
             });
         }
-        let size = bios.source.known_len();
-        if let Some(size) = size {
+        let size = bios.and_then(|bios| bios.source.known_len());
+        if let (Some(bios), Some(size)) = (bios, size) {
             crate::firmware::check_bios_placement(bios.base, size)?;
         }
         // A file's full range is checked after its single read. Its reset byte
         // is already reserved before I/O, so RAM cannot replace the BIOS entry.
-        let protected_base = if size.is_some() { bios.base } else { 0xFFFF0 };
-        let protected_end = size.map_or(0xFFFF1, |size| bios.base.saturating_add(size));
+        let protected_base = if size.is_some() {
+            bios.map_or(0xFFFF0, |bios| bios.base)
+        } else {
+            0xFFFF0
+        };
+        let protected_end = size.map_or(0xFFFF1, |size| protected_base.saturating_add(size));
         for ram in &self.memory.ram {
             if ram.size > 0 && ranges_overlap(protected_base, protected_end, ram.base, ram.end()) {
                 return Err(ConfigError::SystemBiosOverlapsRam {
                     board: self.board.id(),
                     addr: protected_base.max(ram.base),
                 });
+            }
+        }
+        let firmware = if bios.is_some() {
+            Some(crate::firmware::scan_firmware(self)?)
+        } else {
+            self.board
+                .firmware_catalogue()
+                .iter()
+                .find(|entry| entry.kind == crate::FirmwareKind::SystemBios)
+        };
+        if let Some((_, end)) = firmware.and_then(|entry| entry.scan_window) {
+            for ram in &self.memory.ram {
+                if ram.size > 0 && ranges_overlap(0xC0000, end, ram.base, ram.end()) {
+                    return Err(ConfigError::AdapterSpaceOverlapsRam {
+                        board: self.board.id(),
+                        addr: 0xC0000.max(ram.base),
+                    });
+                }
             }
         }
         Ok(())
@@ -873,7 +900,12 @@ mod tests {
         assert_eq!(config.validate(), Err(error));
         config.images.push(LoadImage {
             base: 0xC8000,
-            source: ImageSource::Inline(vec![0; 8192]),
+            source: ImageSource::Inline({
+                let mut bytes = vec![0; 8192];
+                bytes[..3].copy_from_slice(&[0x55, 0xAA, 16]);
+                bytes[8191] = 0xF1;
+                bytes
+            }),
             kind: ImageKind::Rom,
             provides: vec![crate::FirmwareService::Floppy],
         });
@@ -1867,6 +1899,7 @@ mod tests {
         }];
 
         MachineConfig {
+            system_bios_image: None,
             board: BoardModel::Bare,
             cpu: CpuConfig {
                 chip: CpuChip::I80286,

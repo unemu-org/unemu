@@ -45,7 +45,7 @@ impl BoardModel {
     /// Reviewed firmware builds owned by this motherboard.
     pub const fn firmware_catalogue(self) -> &'static [crate::FirmwareEntry] {
         match self {
-            Self::Ibm5170 => &[crate::KISELEV_XI8088],
+            Self::Ibm5170 => &[crate::KISELEV_XI8088, crate::FirmwareEntry::XUB_R638_AT],
             Self::Bare => &[],
         }
     }

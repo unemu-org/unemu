@@ -287,13 +287,15 @@ rejected. `fpu` and `turbo` are reserved.
 | `conventional_kib` | integer, multiple of 16, at most 640 | 640 | yes | RAM `[0, conventional)` |
 | `extended_kib` | integer, multiple of 64, at most 15360 on a 286 | 0 | yes | RAM `[1 MiB, 1 MiB + extended)`. Also sets `address_space_bytes`. Guests need protected mode (phase B) to use it. A20 stays always-on (decision-8). |
 
-**The RAM rule (`ibm-5170`).** It reproduces today's mosaic. The upper memory
-area `[0xA0000, 0x100000)` is RAM, minus every card MMIO window and minus every
-ROM image (BIOS and option ROMs). Adjacent regions are then joined. This is the
-model constant that [machine-config.md](machine-config.md#memoryconfig--a-semantic-memory-map)
-states: the option-ROM scan area is writable RAM. For the FreeDOS machine the
-rule gives `[0, 0xB0000)` and `[0xC0000, 0xF8000)`, exactly the `bios`
-preset's regions.
+**The RAM rule (`ibm-5170`).** Upper probe RAM is [A0000h, C0000h), minus
+card MMIO and loaded images, joined to adjacent conventional RAM. The model
+protects [C0000h, F8000h) from writable system RAM because Kiselev scans it.
+The AT System Memory Map distinguishes I/O expansion ROM at C0000h–DFFFFh,
+reserved system-board space at E0000h–EFFFFh, and system-board ROM at
+F0000h–FFFFFh. MMIO remains valid in the protected interval. Assembly fills
+only gaps around MMIO and ROMs with read-only zeroes, deliberately preserving
+historical goldens; real empty sockets float, often to FFh. The FreeDOS preset
+has RAM [0, B0000h), MDA/VGA at B0000h–BFFFFh, and BIOS at F8000h–FFFFFh.
 
 ### `[firmware]`
 
@@ -305,12 +307,25 @@ preset's regions.
 | `bios.provides` | list of strings | `[]` | `"floppy"`, `"fixed-disk"` | `LoadImage.provides` (M6) |
 | `option_roms` | array of tables | `[]` | yes | one `LoadImage` (`Rom`) each |
 | `option_roms[].image`, `.sha256`, `.provides` | as for `bios` | | yes | |
-| `option_roms[].base` | integer, 2 KiB aligned, in `0xC0000–0xEFFFF` | required | yes | `LoadImage.base` |
+| `option_roms[].base` | integer, 2 KiB aligned, complete image in `[0xC8000, 0xF8000)` for Kiselev | required | yes | `LoadImage.base` |
+
+Lowering records the `[firmware.bios]` image index in
+`MachineConfig.system_bios_image`. The shared BIOS preset also records this
+index for CLI `--bios` loads. A malformed declared BIOS therefore reports
+`BiosPlacement` for that image rather than a missing-BIOS diagnostic.
 
 Rules in `validate()` (M6). On a firmware board, an `ide` card needs a ROM
 that provides `"fixed-disk"`. An `fdc-765` card with drives needs a ROM that
-provides `"floppy"`. The `provides` vocabulary, and whether known ROMs are
-recognised by `sha256` instead of declared, belong to the firmware spike.
+provides `"floppy"`. Known images inherit their catalogue services; a nonempty
+restatement must equal the catalogue. Unknown option ROMs are rejected during
+lowering by default. Run-only options can be passed to `lower_with_options`,
+`load_with_options` or `load_with_reader_and_options`; `allow_unlisted_firmware`
+then permits unknown hashes while retaining source-located errors. The option
+is never a machine-file field and does not bypass format or compatibility.
+Option ROMs need 55AAh, a nonzero length byte × 512 exactly equal to image
+size, and a zero modulo-256 byte sum. The whole image must fit the BIOS scan
+window; it cannot overlap another image. Assembly records effective scan order
+by ascending address, independent of file order.
 
 ### `[[card]]`
 
@@ -745,7 +760,7 @@ prefixes with file labels. A duplicate-drive message includes each defining
 file and line beside its unit label, so repeated units remain distinguishable.
 
 `FirmwareProvidesMismatch` names the matched image's `provides` origin and
-prints both declared and catalogue service sets. A recognized system BIOS uses
+prints both declared and catalogue service sets. A recognized BIOS or option ROM uses
 the catalogue set when `provides` is omitted or empty. This also applies under
 the unlisted-firmware escape option; only unknown images use their declarations.
 
@@ -757,6 +772,11 @@ the containing firmware table's file and line. Their messages retain assembly's
 wording unchanged; none of these variants carries an image index.
 `FirmwareReset` names the CPU origin; `SystemBiosOverlapsRam` names memory and
 relates it to the BIOS image origin.
+
+Option-ROM format, checksum, catalogue and card mismatch diagnostics name
+`firmware.option_roms[index]` with its defining file and line; placement errors
+name `.base`, and service mismatches name `.provides`. Overlaps include both
+image origins. The underlying `ConfigError` remains available unchanged.
 
 ## Validation and presets
 
@@ -782,8 +802,10 @@ Lowering computes SHA-256 from the returned buffer and checks any declared pin;
 the reader cannot disable integrity checks.
 
 `load()` returns after `MachineConfig::validate()`; it does not assemble hardware
-or run the board's firmware catalogue check. BIOS placement is therefore a
-source-located loader error, while catalogue membership and compatibility are
+or run the system BIOS catalogue check. Option-ROM membership and compatibility
+are checked during lowering with source positions and caller-supplied
+`AssemblyOptions` (strict by default). The loader caller passes the same options
+to assembly. BIOS membership is
 checked by assembly afterwards. A one-byte-changed Kiselev image with a declared
 pin fails loading with a SHA-256 mismatch at the BIOS entry's file and line.
 Without a pin it loads as inline bytes, then strict assembly returns
@@ -903,7 +925,7 @@ It lowers to the canonical-order `assembly::bios(rom, Some(floppy))`:
   `Rtc` (IRQ 8, NVRAM derived), `Coprocessor` (IRQ 13), `SysControl`,
   `Post` (`0x80`), `Mda`, `Vga`, `Uart` (`0x3F8`, no IRQ), `Fdc` (IRQ 6,
   DMA channel 2).
-- **memory:** 1 MiB address space; RAM `[0, 0xB0000)` and `[0xC0000, 0xF8000)`;
+- **memory:** 1 MiB address space; RAM `[0, 0xB0000)`; read-only adapter space `[0xC0000, 0xF8000)`;
   MMIO `Mda@0xB0000` and `Vga@0xB8000`, each 32 KiB.
 - **images:** ROM at `0xF8000`, 32 KiB.
 - **drives:** 1.44 MB, `Fdc` unit 0, `Volatile`.
@@ -972,7 +994,7 @@ extends = "at-freedos.toml"
 
 [firmware]
 # Hard-disk INT 13h comes from the listed XTIDE Universal BIOS AT build.
-# Option-ROM identity checks and the boot profile remain later work.
+# Option-ROM identity is checked; the fixed-disk boot profile remains later work.
 option_roms = [
   { image = "../vendor/xtide-universal-bios/ide_at-r638-8k.bin", base = 0xC8000, provides = ["fixed-disk"] },
 ]
@@ -994,17 +1016,17 @@ write = "volatile"
 ```
 
 Lowering adds `Ide` after `Fdc`, a ROM image at `0xC8000`, and a `HardDisk`
-drive bound to `Ide`, master. The RAM rule then gives `[0, 0xB0000)`,
-`[0xC0000, 0xC8000)` and `[0xCA000, 0xF8000)`, assuming an 8 KiB ROM.
+drive bound to `Ide`, master. RAM stays `[0, 0xB0000)`. Assembly creates
+read-only zero-filled holes `[0xC0000, 0xC8000)` and `[0xCA000, 0xF8000)`,
+assuming an 8 KiB ROM. No RAM backs either hole.
 Without a fixed-disk provider, `validate()` returns `NoProvider` with the exact
 message `device Ide needs firmware service fixed-disk; no ROM provides it`.
 Lowering adds the card's file and table line. No `machines/at-ide.toml` is shipped:
 the Kiselev catalogue entry provides only floppy services. The XTIDE fixture
 and its `xub-r638-at` entry now exist and declare `fixed-disk`, consistently
-with the IDE requirement. Option-ROM bytes are not yet matched against the
-catalogue; their declared services remain in use until those identity checks
-land. The checked system BIOS already uses catalogue services. The boot profile
-and option-ROM validation remain later work.
+with the IDE requirement. Option-ROM bytes now match the catalogue by SHA-256;
+XUB inherits fixed-disk services and requires primary ATA at 1F0h/IRQ14.
+The fixed-disk boot profile remains later work.
 
 ### 4. An XT-class file (rejected in schema 1)
 
@@ -1256,7 +1278,7 @@ Ordered; each bead is narrow and lands green.
     with a 256-word `rep insw` transfer. Provider tests use a synthetic BIOS
     through the run-only escape option; CPU integration uses a Bare rig.
     The XTIDE fixture and catalogue entry are available; `machines/at-ide.toml`
-    still waits for option-ROM validation and the boot profile. The missing
+    still waits for the fixed-disk boot profile. The missing
     provider diagnostic is covered by an inline TOML test.
     *Accept:* device unit tests pass. `validate()` rejects an IDE card without
     a `fixed-disk` provider. A golden boots from a hard-disk image once the

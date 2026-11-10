@@ -49,7 +49,14 @@ fn bytes(path: &Path) -> Vec<u8> {
     } else {
         0x8000
     };
-    vec![if name.contains("new") { 0xFC } else { 0xF4 }; length]
+    let mut bytes = vec![if name.contains("new") { 0xFC } else { 0xF4 }; length];
+    if name.contains("option") {
+        bytes[..3].copy_from_slice(&[0x55, 0xAA, 4]);
+        bytes[length - 1] = 0;
+        bytes[length - 1] =
+            0u8.wrapping_sub(bytes.iter().fold(0u8, |sum, byte| sum.wrapping_add(*byte)));
+    }
+    bytes
 }
 impl ImageReader for Images {
     fn read(&mut self, path: &Path) -> io::Result<Vec<u8>> {
@@ -220,7 +227,14 @@ fn image_override_without_pin_loads_for_each_image_family() {
             ),
         );
         let mut images = Images::default();
-        load_with_reader(child, &mut images).unwrap();
+        machine_file::load_with_reader_and_options(
+            child,
+            &mut images,
+            assembly::AssemblyOptions {
+                allow_unlisted_firmware: kind == "option",
+            },
+        )
+        .unwrap();
         assert!(
             images
                 .paths
@@ -244,7 +258,14 @@ fn image_override_uses_its_own_pin_and_reports_the_pin_line() {
                 image_layer(kind, Some(&name), Some(&valid))
             ),
         );
-        load_with_reader(&child, &mut Images::default()).unwrap();
+        machine_file::load_with_reader_and_options(
+            &child,
+            &mut Images::default(),
+            assembly::AssemblyOptions {
+                allow_unlisted_firmware: kind == "option",
+            },
+        )
+        .unwrap();
         let input = format!(
             "schema=1\nextends='parent.toml'\n{}",
             image_layer(kind, Some(&name), Some(&"0".repeat(64)))

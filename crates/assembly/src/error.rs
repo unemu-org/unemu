@@ -113,6 +113,87 @@ pub enum ConfigError {
         /// Missing board part.
         part: crate::FirmwarePart,
     },
+    /// This system firmware has no adapter ROM initialization scan.
+    #[error("firmware {firmware} does not scan for option ROMs")]
+    FirmwareDoesNotScanOptionRoms {
+        /// System firmware identifier.
+        firmware: &'static str,
+        /// Index of the refused option ROM.
+        image_index: usize,
+    },
+    /// Adapter firmware is not a reviewed build for this board.
+    #[error("option ROM image (sha256 {sha256}) is not a known image for board \"{board}\"; known: {known}")]
+    OptionRomNotListed {
+        /// Index in the image list.
+        image_index: usize,
+        /// Full image digest.
+        sha256: String,
+        /// Selected board.
+        board: &'static str,
+        /// Known adapter firmware builds.
+        known: String,
+    },
+    /// Baked-in ATA resources need matching hardware.
+    #[error("option ROM \"{firmware}\" drives ATA at 0x1F0/IRQ14, but no ide card decodes 0x1F0")]
+    OptionRomCardMismatch {
+        /// Index in the image list.
+        image_index: usize,
+        /// Matched firmware identifier.
+        firmware: &'static str,
+    },
+    /// The extension scanner visits only 2 KiB boundaries.
+    #[error("option ROM at {base:#X} must be 2 KiB aligned")]
+    OptionRomMisaligned {
+        /// Index in the image list.
+        image_index: usize,
+        /// Physical address.
+        base: u64,
+    },
+    /// The complete image must fit the selected firmware's scan window.
+    #[error(
+        "option ROM at {base:#X} is outside the scan window {start:#X}..{end:#X} of \"{firmware}\""
+    )]
+    OptionRomOutsideScanWindow {
+        /// Index in the image list.
+        image_index: usize,
+        /// Image address.
+        base: u64,
+        /// First scanned byte.
+        start: u64,
+        /// Exclusive scan end.
+        end: u64,
+        /// System firmware identifier.
+        firmware: &'static str,
+    },
+    /// The signature or declared length cannot describe this image.
+    #[error("option ROM {name}: {reason}")]
+    OptionRomBadHeader {
+        /// Index in the image list.
+        image_index: usize,
+        /// Catalogue identifier or physical address.
+        name: String,
+        /// Failed format invariant.
+        reason: String,
+    },
+    /// A byte sum over the declared image must be zero.
+    #[error("option ROM {name}: byte sum is {sum:#04X}, must be 0 (pad and checksum the image)")]
+    OptionRomBadChecksum {
+        /// Index in the image list.
+        image_index: usize,
+        /// Catalogue identifier or physical address.
+        name: String,
+        /// Modulo-256 byte sum.
+        sum: u8,
+    },
+    /// Adapter address space cannot be writable system RAM.
+    #[error("board \"{board}\" adapter ROM space overlaps ram at {addr:#x}")]
+    AdapterSpaceOverlapsRam {
+        /// Selected motherboard.
+        board: &'static str,
+        /// First overlapping address.
+        addr: u64,
+    },
+
     /// System ROM must have a valid size and end at the top of the first MiB.
     #[error("system BIOS of {size_text} at {base:#x} must have a positive size that is a multiple of 8 KiB and end at 0x100000", size_text = format_bios_size(.size))]
     BiosPlacement {

@@ -12,7 +12,23 @@ pub fn lower<R: ImageReader>(
     origins: &Origins,
     reader: &mut R,
 ) -> Result<assembly::MachineConfig, LowerError> {
-    crate::lower::lower(document, origins, reader).map_err(|mut error| {
+    lower_with_options(
+        document,
+        origins,
+        reader,
+        assembly::AssemblyOptions::default(),
+    )
+}
+
+/// Lower with run-only firmware permissions while retaining source diagnostics.
+/// The option relaxes catalogue membership alone, never format or compatibility.
+pub fn lower_with_options<R: ImageReader>(
+    document: &MachineFile,
+    origins: &Origins,
+    reader: &mut R,
+    options: assembly::AssemblyOptions,
+) -> Result<assembly::MachineConfig, LowerError> {
+    crate::lower::lower(document, origins, reader, options).map_err(|mut error| {
         // The lowering error identifies the image; a pin can come from another
         // layer, so its provenance must be retained separately in the message.
         if error.message.starts_with("sha256 mismatch for ") {
