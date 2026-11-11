@@ -191,6 +191,74 @@ configuration. Trace policy defaults to Off, supports the shared bounded ring,
 and is excluded from snapshots. Reset rewinds to signature without discarding
 files. The device is dormant and never requests an IRQ.
 
+### A20 line and System Control Port A
+
+`DeviceKind::SysCtrlPortA` at role `DeviceId::SysCtrlPortA` decodes exactly one
+byte-wide port, 92h, with no IRQ or DMA. It is opt-in on `BoardModel::Bare`;
+`generic-386-isa` can admit it when that board lands. IBM 5170 has no port 92h.
+Validation checks the device kind even if assigned a different role, and rejects
+it on that board with the exact diagnostic:
+
+```text
+sys-ctrl-port-a at 0x92 is absent on ibm-5170; it is allowed only on bare rigs and future generic-386-isa
+```
+
+Assembly owns one shared `devices::A20Line`. The 8042 output-port bit 1 and
+92h bit 1 drive separate sources. **ASSUMED board policy:** effective A20 is
+the logical OR of these sources. IBM PC AT Technical Reference, Keyboard
+Controller, Output Port, describes the 8042 source; IBM Personal System/2
+Hardware Interface Technical Reference, "System Control Port A (Hex 0092)",
+describes the alternate source. The 8042 retains its existing enabled power-on
+source and reset output high; 92h bits 0 and 1 power on clear. Existing presets
+do not add port 92h.
+
+With this OR policy and the enabled 8042 source, firmware using only 92h cannot
+turn effective A20 off. SeaBIOS uses only that port (`x86.h:268–277`,
+`system.c:18–35`). QEMU instead implements last-writer-wins in `pc.c`,
+`handle_a20_line_change`, whose comment says "XXX: add logic to handle multiple
+A20 line sources". The `generic-386-isa` board bead (`upc-o0j.6`) must choose OR
+versus last-writer-wins and test SeaBIOS INT 15h AX=2400h (disable) and AX=2402h
+(query). Today's ASSUMED OR default does not establish that firmware contract.
+
+`AssembledMachine::a20_line.enabled()` exposes the effective state;
+`change_count()` counts effective transitions, including attachment and device
+reset/restore, wrapping at `u64::MAX`. Attaching the enabled 8042 to a fresh
+line counts one transition: assembled 8042 machines start at 1. An absent
+device contributes false; a machine with no A20 source reports disabled even
+though CPU addressing remains flat. Final source defaults and the counter
+baseline belong to the CPU-mask bead (`upc-o0j.5`). The counter is diagnostic
+history, excluded from snapshots. Device snapshots retain their own source
+latches; restoring one updates only that source. No clock, scheduled event or
+guest read is needed to observe a change. **Not yet applied to CPU addressing;
+the CPU-side mask lands with the CPU core's A20 support.**
+
+Port 92h bit 0 requests reset through the **same** `Rc<Cell<bool>>` that the
+8042 and machine use. IBM ThinkPad 560 Technical Reference, "System Control
+Port A (Hex 0092)", reproduces the PS/2 wording: bit 0 is cleared by a system
+reset or writing zero; a 0→1 write pulses reset, and the latch remains set
+during reset so POST can read it. Bit 1 is zero after a system reset. Intel386
+EX User's Manual, PORT92, CPURST, confirms that bit 0 remains one after
+CPU-RESET and must be cleared before another reset. Repeated writes of 1 do
+not retrigger; writing 0 does not cancel an already pending event. A CPU-only
+warm restart preserves both A20 sources and the 92h latch; device reset models
+system-reset clearing of these controls. **ASSUMED pulse timing:** duration is
+not modelled, only the request event. The existing `ResetRequested` boundary
+and reset-vector resumption require no second reset path or machine-core change.
+
+The model uses read/write mask CBh. Bit 3 is security lock; the IBM ThinkPad
+560 reference permits writing it only while it is zero. That write-once
+restriction and password protection are not modelled. **ASSUMED behavior for
+bits 3 and 6–7:** ordinary read/write latches initially zero; bits 6–7 retain
+fixed-disk activity-light readback without a physical light. Reserved bits 2
+and 5 read zero and ignore writes. Bit 4 is read-only watchdog-timeout status
+(Bochs PORTS.LST, port 0092); it reads zero (no timeout) and ignores writes.
+Snapshot v1 validates version, exact size, latch mask and reset flag before
+mutation, and retains the absolute trace clock and pending shared reset request
+without generating a new edge. As with the 8042, restore is a board-state
+operation: both device snapshots must come from the same boundary because they
+contain the same pending reset line. Device reset clears that shared pending
+event; CPU warm reset consumes it without resetting devices.
+
 ### Board model
 
 `MachineConfig.board` is `BoardModel::Ibm5170` or `BoardModel::Bare`. The BIOS
@@ -214,7 +282,7 @@ Map**, **Keyboard Controller**, and **Real-Time Clock/CMOS RAM Information**.
 | 3. `Pit` | 40h–43h, IRQ0 | Existing 8253 model stands in for the AT's 8254 |
 | 4. `Dma` | 8237 at 00h–0Fh, channels 0–3, page latches 81h–88h | No refresh DMA requester |
 | 5. `DmaWord` | Second 8237 at C0h–DFh (odd ports alias the preceding even register), pages 89h–8Fh, channels 4–7; channel 4 is cascade | No cycle-level arbitration between banks |
-| 6. `Keyboard` | 8042 at 60h/64h, IRQ1; D1h output bit 0 and F0h–FFh pulses restart only the CPU | A20 latch is retained; address line A20 remains enabled; pulse duration and temporary output levels are not timed |
+| 6. `Keyboard` | 8042 at 60h/64h, IRQ1; D1h output bit 0 and F0h–FFh pulses restart only the CPU | A20 source latch is retained; CPU address masking is pending; pulse duration and temporary output levels are not timed |
 | 7. `Rtc` | MC146818 at 70h–71h, IRQ8, NMI-mask state | Seed and virtual timing remain configurable |
 | 8. `Coprocessor` | Empty 80287 socket: F0h, F1h, F8h–FFh; IRQ13 wired inactive | Empty bus socket only; CPU x87 is currently ungated |
 | 9. `SysControl` | 61h latch | Existing refresh approximation and speaker state |
@@ -430,10 +498,9 @@ fields here rather than a redesign of everything above.
 `MemoryConfig` describes the address space as regions with *kinds*, not a flat
 byte count. Two things it must express that a naive "N kB of RAM" cannot:
 
-- **A20 as a model constant.** A20 is always-on (decision-8, §4.4). The memory
-  map is a flat 1 MB+ linear space with no wrap; A20 is not a configurable knob.
-  The config records this as a fixed property of the modelled machine, so nobody
-  reintroduces it as a per-machine option.
+- **CPU A20 masking.** CPU addressing remains a flat 1 MB+ linear space with
+  no A20 wrap (decision-8, §4.4). The board line and its 8042/92h source latches
+  are observable, but applying the effective state awaits CPU-core support.
 - **Firmware scan space is not system RAM.** IBM PC AT Technical Reference,
   Section 1 "System Board", **System Memory Map** assigns C0000h–DFFFFh to
   I/O expansion ROM, E0000h–EFFFFh to reserved system-board space, and

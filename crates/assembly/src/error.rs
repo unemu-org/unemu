@@ -18,6 +18,17 @@ pub enum ConfigError {
     /// Persistent images retain the original 64-byte format.
     #[error("128-byte NVRAM images are not supported yet")]
     UnsupportedExtendedNvram,
+    /// IBM 5170 has no alternate A20/reset control port.
+    #[error("sys-ctrl-port-a at 0x92 is absent on ibm-5170; it is allowed only on bare rigs and future generic-386-isa")]
+    SysCtrlPortABoard,
+    /// Alternate board controls require their fixed byte port and no interrupt/DMA.
+    #[error(
+        "device {device:?} sys-ctrl-port-a requires one byte-wide port at 0x92 and no IRQ or DMA"
+    )]
+    InvalidSysCtrlPortAResources {
+        /// Role with inconsistent board control resources.
+        device: DeviceId,
+    },
     /// Emulator firmware configuration cannot be attached to a period motherboard.
     #[error("fw-cfg port is emulator-only; it is allowed only on board generic-386-isa")]
     FwCfgBoard,

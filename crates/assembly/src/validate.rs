@@ -139,6 +139,7 @@ impl MachineConfig {
         self.check_rtc_ram()?;
         self.check_part_sources()?;
         self.check_unique_device_ids()?;
+        self.check_sys_ctrl_port_a()?;
         self.check_debug_console()?;
         self.check_fw_cfg()?;
         self.check_board()?;
@@ -511,6 +512,23 @@ impl MachineConfig {
                     return Err(ConfigError::InvalidFwCfgResources { device: device.id });
                 }
                 crate::fw_cfg::files(self, device.id, cfg)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn check_sys_ctrl_port_a(&self) -> Result<(), ConfigError> {
+        for device in &self.devices {
+            if matches!(device.kind, DeviceKind::SysCtrlPortA) {
+                if self.board != BoardModel::Bare {
+                    return Err(ConfigError::SysCtrlPortABoard);
+                }
+                if device.ports != [PortWindow::single(0x92)]
+                    || device.irq.is_some()
+                    || device.dma.is_some()
+                {
+                    return Err(ConfigError::InvalidSysCtrlPortAResources { device: device.id });
+                }
             }
         }
         Ok(())
@@ -975,6 +993,55 @@ mod tests {
     use crate::drive::{DriveConfig, DriveKind, FloppyGeometry, WriteMode};
     use crate::image::{ImageKind, ImageSource, LoadImage};
     use crate::memory::{MemoryConfig, MmioWindow, RamRegion};
+
+    #[test]
+    fn port_a_is_confined_by_kind_and_rejects_invalid_resources() {
+        for id in [DeviceId::SysCtrlPortA, DeviceId::Uart] {
+            let mut config = board_config();
+            config.devices.retain(|device| device.id != id);
+            config.devices.push(DeviceConfig::new(
+                id,
+                DeviceKind::SysCtrlPortA,
+                vec![PortWindow::single(0x92)],
+            ));
+            let error = config.validate().unwrap_err();
+            assert_eq!(error, ConfigError::SysCtrlPortABoard);
+            assert_eq!(error.to_string(), "sys-ctrl-port-a at 0x92 is absent on ibm-5170; it is allowed only on bare rigs and future generic-386-isa");
+        }
+        let mut config = crate::at_boot(vec![0xF4]);
+        config.devices.push(DeviceConfig::new(
+            DeviceId::SysCtrlPortA,
+            DeviceKind::SysCtrlPortA,
+            vec![PortWindow::single(0x92)],
+        ));
+        assert_eq!(config.validate(), Ok(()));
+        let valid = config.devices.last().unwrap().clone();
+        let mut invalid = Vec::new();
+        let mut wrong = valid.clone();
+        wrong.ports = vec![PortWindow::single(0x93)];
+        invalid.push(wrong);
+        let mut word = valid.clone();
+        word.ports[0].width = bus::PortWidth::Word;
+        invalid.push(word);
+        let mut irq = valid.clone();
+        irq.irq = Some(1);
+        invalid.push(irq);
+        let mut dma = valid;
+        dma.dma = Some(DmaSpec {
+            controller: DeviceId::Dma,
+            channel: 2,
+        });
+        invalid.push(dma);
+        for device in invalid {
+            *config.devices.last_mut().unwrap() = device;
+            assert_eq!(
+                config.validate(),
+                Err(ConfigError::InvalidSysCtrlPortAResources {
+                    device: DeviceId::SysCtrlPortA
+                })
+            );
+        }
+    }
 
     #[test]
     fn debug_console_is_confined_by_device_kind_to_bare_rigs() {

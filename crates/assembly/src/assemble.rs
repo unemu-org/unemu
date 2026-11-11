@@ -46,13 +46,14 @@
 
 use std::borrow::Cow;
 use std::collections::HashMap;
+use std::{cell::Cell, rc::Rc};
 
 use bus::{Bus, DecodeMap, MmioRange, PortRange};
 use cpu::x86jit_backend::X86JitCpu;
 use device::{Device, InterruptController};
 use devices::{
-    Absent80287, Ata, AtaDrive, AtaGeometry, CmosRtc, DebugConsole, Dma8237, Drive, FwCfg, MdaText,
-    Pit8253, PostPort, SysControl, Uart16550, Upd765, VgaText, I8042,
+    A20Line, Absent80287, Ata, AtaDrive, AtaGeometry, CmosRtc, DebugConsole, Dma8237, Drive, FwCfg,
+    MdaText, Pit8253, PostPort, SysControl, SysCtrlPortA, Uart16550, Upd765, VgaText, I8042,
 };
 use machine::{DmaWiring, IrqLine, Machine};
 use sha2::{Digest, Sha256};
@@ -82,6 +83,10 @@ const EXTENDED_BASE: u64 = 0x10_0000;
 pub struct AssembledMachine {
     /// The running machine, fully wired.
     pub machine: Machine<X86JitCpu>,
+    /// Effective board A20 state and transition counter; not yet applied to CPU
+    /// addressing. The CPU-side mask lands with the CPU core's A20 support.
+    /// See `backlog/docs/design/machine-config.md` §A20 line and System Control Port A.
+    pub a20_line: A20Line,
     /// Stable device role → its index in the bus device set.
     pub device_index: HashMap<DeviceId, usize>,
     /// Validated observation routes and their bounded, run-scoped collectors.
@@ -267,7 +272,8 @@ fn assemble_with_cpu_and_catalogue(
     let mut devices: Vec<Box<dyn Device>> = Vec::with_capacity(config.devices.len());
     let mut device_index: HashMap<DeviceId, usize> = HashMap::with_capacity(config.devices.len());
     let mut pic: Option<chipset::CascadedPic> = None;
-    let mut reset_signal = None;
+    let reset_signal = Rc::new(Cell::new(false));
+    let a20_line = A20Line::default();
     let mut persistence = Vec::new();
 
     for dc in &config.devices {
@@ -284,8 +290,8 @@ fn assemble_with_cpu_and_catalogue(
                 }
             }
             DeviceKind::Keyboard(_) => {
-                let keyboard = I8042::new();
-                reset_signal = Some(keyboard.reset_signal());
+                let keyboard =
+                    I8042::new().with_board_lines(Rc::clone(&reset_signal), a20_line.clone());
                 Box::new(keyboard)
             }
             DeviceKind::Rtc(c) => {
@@ -338,6 +344,10 @@ fn assemble_with_cpu_and_catalogue(
             DeviceKind::Mda(_) => Box::new(MdaText::new()),
             DeviceKind::SysControl(_) => Box::new(SysControl::new()),
             DeviceKind::Post(c) => Box::new(PostPort::with_port(c.port)),
+            DeviceKind::SysCtrlPortA => Box::new(SysCtrlPortA::with_board_lines(
+                Rc::clone(&reset_signal),
+                a20_line.clone(),
+            )),
             DeviceKind::DebugConsole(c) => Box::new(DebugConsole::with_port(c.port)),
             DeviceKind::FwCfg(c) => Box::new(
                 FwCfg::with_files(crate::fw_cfg::files(config, dc.id, c)?).map_err(|source| {
@@ -393,12 +403,18 @@ fn assemble_with_cpu_and_catalogue(
     let mut machine = Machine::new(cpu, bus, controller, irq_lines, None)
         .with_cpu_rate(rate_numerator, rate_denominator)
         .with_dma_wirings(dma_wirings);
-    if let Some(signal) = reset_signal {
-        machine = machine.with_reset_signal(signal);
+    if config.devices.iter().any(|device| {
+        matches!(
+            device.kind,
+            DeviceKind::Keyboard(_) | DeviceKind::SysCtrlPortA
+        )
+    }) {
+        machine = machine.with_reset_signal(reset_signal);
     }
 
     Ok(AssembledMachine {
         machine,
+        a20_line,
         device_index,
         observation,
         persistence,
@@ -1382,6 +1398,83 @@ mod tests {
                 machine::RunOutcome::Halted
             );
             assert_eq!(assembled.machine.cpu().reg(cpu::CpuReg::Rax) & 0xFF, 0x66);
+        }
+    }
+
+    #[test]
+    fn guest_port_a_reset_uses_the_shared_line_and_resumes_at_reset_vector() {
+        for keyboard_first in [false, true] {
+            for keep_keyboard in [false, true] {
+                for port_a_reset in [false, true] {
+                    if !keep_keyboard && !port_a_reset {
+                        continue;
+                    }
+                    let program = [
+                        0xB0,
+                        if port_a_reset { 3 } else { 0xFE },
+                        0xE6,
+                        if port_a_reset { 0x92 } else { 0x64 },
+                        0xB0,
+                        0x55,
+                        0xFA,
+                        0xF4,
+                    ];
+                    let mut rom = vec![0; 0x8000];
+                    rom[..program.len()].copy_from_slice(&program);
+                    rom[0x7FF0..0x7FF4].copy_from_slice(&[0xB0, 0x66, 0xFA, 0xF4]);
+                    let mut config = crate::bios(rom, Some(vec![0; 1_474_560]));
+                    config.board = crate::BoardModel::Bare;
+                    config.cpu.reset = crate::ResetSpec::Entry { cs: 0xF800, ip: 0 };
+                    if !keep_keyboard {
+                        config
+                            .devices
+                            .retain(|d| !matches!(d.kind, DeviceKind::Keyboard(_)));
+                    }
+                    let port = crate::DeviceConfig::new(
+                        DeviceId::SysCtrlPortA,
+                        DeviceKind::SysCtrlPortA,
+                        vec![crate::PortWindow::single(0x92)],
+                    );
+                    if keyboard_first {
+                        config.devices.push(port);
+                    } else {
+                        config.devices.insert(0, port);
+                    }
+                    let mut assembled = assemble_synthetic(&config).unwrap();
+                    assert_eq!(assembled.a20_line.enabled(), keep_keyboard);
+                    if keep_keyboard {
+                        assembled
+                            .machine
+                            .bus_mut()
+                            .port_write(0x64, 1, 0xD1)
+                            .unwrap();
+                        assembled.machine.bus_mut().port_write(0x60, 1, 1).unwrap();
+                        assert!(!assembled.a20_line.enabled());
+                    }
+                    let before = assembled.a20_line.change_count();
+                    assert_eq!(
+                        assembled.machine.run_bounded(Some(100)).unwrap(),
+                        machine::RunOutcome::ResetRequested
+                    );
+                    assert_eq!(assembled.machine.virtual_time(), 2);
+                    assert_ne!(assembled.machine.cpu().reg(cpu::CpuReg::Rax) & 0xFF, 0x55);
+                    assert_eq!(assembled.a20_line.enabled(), port_a_reset);
+                    assert_eq!(
+                        assembled.a20_line.change_count(),
+                        before + u64::from(port_a_reset)
+                    );
+                    assert_eq!(
+                        assembled.machine.run_bounded(Some(100)).unwrap(),
+                        machine::RunOutcome::Halted
+                    );
+                    assert_eq!(assembled.machine.cpu().reg(cpu::CpuReg::Rax) & 0xFF, 0x66);
+                    assert_eq!(assembled.a20_line.enabled(), port_a_reset);
+                    assert_eq!(
+                        assembled.machine.bus_mut().port_read(0x92, 1).unwrap(),
+                        if port_a_reset { 3 } else { 0 }
+                    );
+                }
+            }
         }
     }
 

@@ -303,6 +303,7 @@ pub fn prepare_with_bios(workload: Workload, bios: Option<Vec<u8>>) -> Result<Op
             );
             AssembledMachine {
                 machine: Machine::new(cpu, bus, Box::new(NoInterruptController), Vec::new(), None),
+                a20_line: Default::default(),
                 device_index: HashMap::from([(DeviceId::Uart, 0)]),
                 observation: assembly::Observation::default(),
                 persistence: Vec::new(),

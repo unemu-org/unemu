@@ -236,7 +236,7 @@ this as real-mode-only caller usage. The machine's readiness check normally
 prevents this misuse. It is neither IDT support nor a reason to enable
 Compat32 IRQ readiness before protected-mode delivery exists.
 
-### P5 — memory above 1 MiB exists as a mapping capability; A20 is unwired
+### P5 — memory above 1 MiB exists as a mapping capability; CPU A20 is unwired
 
 MEASURED: a scratch test using the repository's `X86JitCpu` mapped 2 MiB
 with `new_real16_bare`/`map_ram`, wrote `11h` at `20h` and `77h` at
@@ -246,10 +246,11 @@ It halted after four steps with AL=`77h`. Separately, the repository's
 `a20_enabled()=false`; this did not change the CPU result.
 
 This is an adapter/device seam test, not a full assembled chipset test.
-READ: `crates/devices/src/i8042.rs:64` explicitly models only the latch;
-`crates/cpu/src/x86jit_backend.rs:78` constructs a flat VM without an
-A20 input. Thus the missing work is physical-address gating and its
-wiring, not a new implementation of the existing D0h/D1h latch. Likewise,
+The device-side follow-up now connects that latch and port 92h to a shared
+board A20 line with observable effective state and a change counter (READ:
+`crates/devices/src/a20.rs`, `crates/assembly/src/assemble.rs`). The CPU adapter
+still constructs a flat VM without an A20 input. Physical-address gating and
+its CPU wiring remain pending. Likewise,
 1 MiB is the BIOS preset's size (`crates/assembly/src/presets.rs:72`),
 not an adapter-wide address-space limit.
 
@@ -482,12 +483,26 @@ cited here are existing follow-up work filed by the supervisor.
    physical extent, with 15 MiB contiguous extended RAM.
 
 2. **A20 physical-address effect and board wiring.** READ:
-   `crates/devices/src/i8042.rs:393`, `:505`, `:557`, `:703` already expose,
-   change and snapshot the D0h/D1h output-port latch. No CPU-side gate input
-   or port-92h device/configuration exists in the inspected assembly/device
-   path (`crates/assembly/src/device.rs:224`, `assemble.rs:166`). Add port
-   92h bit 1 (`upc-o0j.5`), preserve its distinct bit-0 reset semantics
-   (`upc-o0j.14`), and settle changes before the next guest instruction.
+   Device side complete: `crates/devices/src/a20.rs` exposes a shared line;
+   `sys_ctrl_port_a.rs` implements port 92h, snapshot v1 and the alternate
+   reset event. Assembly connects 8042 bit 1 and 92h bit 1 with an ASSUMED
+   OR policy, preserving the existing 8042-enabled power-on default. Source
+   changes are visible synchronously. Bare rigs admit the device; ibm-5170
+   rejects it because the AT has no port 92h. Both reset sources share the
+   existing machine reset line. IBM ThinkPad 560 Technical Reference, "System
+   Control Port A (Hex 0092)", reproduces the PS/2 reset contract: a bit-0 0→1
+   write pulses reset; system reset or writing zero clears the bit, and the
+   latch stays set during reset for POST. Bit 1 is zero after system reset.
+   Intel386 EX User's Manual, PORT92, CPURST, confirms that bit 0 remains one
+   after CPU-RESET and must be cleared before another reset. Pulse timing and
+   the model's ordinary security/light latches (bits 3, 6–7) remain ASSUMED.
+   The real bit-3 write restriction (writable only while zero) is unmodelled.
+   Bit 4 is read-only watchdog-timeout status, modelled as no timeout (Bochs
+   PORTS.LST, port 0092); only bits 2 and 5 are reserved. See machine-config.md
+   §A20 line and System Control Port A. CPU masking and its input remain pending;
+   the CPU-mask bead (`upc-o0j.5`) also owns final source defaults and counter
+   baseline. Today attachment of the enabled 8042 counts one transition
+   (initial count 1); no A20 source reports disabled while CPU addressing is flat.
    A disabled gate clears **physical address bit 20**, not every high
    address bit and not the linear address before paging. Cover instruction
    fetch, CPU data and implicit page-table accesses, crossing transfers,
@@ -496,10 +511,18 @@ cited here are existing follow-up work filed by the supervisor.
    bus master and must not accidentally go through CPU segmentation/paging.
    SeaBIOS uses **only port 92h** for A20, never 8042 D1h
    (`x86.h:17–19,268–277`, `system.c:18–35`); an open-bus FFh read looks
-   enabled without opening the gate (READ). ASSUMED profile policy: OR the
-   8042 and fast-A20 enable sources; choose and test reset latch values in
-   that profile while preserving the existing profile's behavior. This
-   wiring is board policy, not an Intel PRM CPU feature. Reference: **Ralf
+   enabled without opening the gate (READ). With today's OR rule and the 8042
+   source enabled at power-on, SeaBIOS cannot disable effective A20 through 92h
+   alone. QEMU uses last-writer-wins in `pc.c`, `handle_a20_line_change`, with
+   the comment "XXX: add logic to handle multiple A20 line sources". The
+   `generic-386-isa` board bead (`upc-o0j.6`) must choose OR versus
+   last-writer-wins and test SeaBIOS INT 15h AX=2400h/2402h, including effective
+   disable and query behavior. Keep today's OR default ASSUMED; isolated tests
+   of all four source combinations do not establish SeaBIOS compatibility.
+   References: IBM PC AT Technical Reference, Keyboard Controller,
+   Output Port; IBM Personal System/2 Hardware Interface Technical Reference,
+   "System Control Port A (Hex 0092)". This wiring is board policy, not an
+   Intel PRM CPU feature. Additional reference: **Ralf
    Brown's Interrupt List, Release 61**, PORT 0064h output-port commands
    and PORT 0092h, table P0415 ([port
    reference](https://github.com/cirosantilli/ralf-brown-interrupt-list/blob/master/inter61d/PORTS.A)).
@@ -797,7 +820,7 @@ existing follow-up beads are in firmware-and-machine-classes.md §3.6.
    guest writes/reads extended RAM and a paging alias; host loader and DMA
    retain physical semantics. Before evidence: P5 proves mapping already
    works, while the current BIOS preset still provides no extended region.
-3. **Add port 92h and a profile-owned A20 source policy.** Dependencies:
+3. **Device side complete: port 92h and board-owned A20 source policy.** Dependencies:
    none for isolated latch/device work; existing 8042 remains reused.
    Acceptance: MockBus tests cover bit-1 enable/readback, bit-0 reset request
    semantics, reset values and snapshots. Test all combinations of 8042 and

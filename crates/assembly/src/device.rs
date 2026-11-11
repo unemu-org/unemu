@@ -35,6 +35,8 @@ pub enum DeviceId {
     Mda,
     /// System control port (0x61: speaker gate, refresh, NMI status).
     SysControl,
+    /// System Control Port A (92h), absent on IBM 5170.
+    SysCtrlPortA,
     /// POST checkpoint port.
     Post,
     /// Emulator-only firmware diagnostic console.
@@ -454,6 +456,8 @@ pub enum DeviceKind {
     Mda(MdaTextCfg),
     /// System control port.
     SysControl(SysControlCfg),
+    /// PS/2-style alternate A20 and reset controls at 92h, confined to bare rigs.
+    SysCtrlPortA,
     /// POST checkpoint port.
     Post(PostPortCfg),
     /// Emulator-only firmware diagnostic console, confined to bare test rigs.

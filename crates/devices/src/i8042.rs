@@ -62,10 +62,10 @@
 //! ## A20 gate
 //!
 //! Command `0xD1` (write output port) latches a new output port; bit 1 is the
-//! A20 gate, exposed through [`I8042::a20_enabled`]. This device only models the
-//! *gate bit as state*. The actual masking of address line 20 on guest memory
-//! accesses is a CPU/bus concern handled elsewhere and is deliberately **out of
-//! scope here** (see the A20 note in `backlog/docs/architecture.md`).
+//! A20 gate, exposed through [`I8042::a20_enabled`] and driven onto the shared
+//! [`crate::A20Line`]. IBM PC AT Technical Reference, Keyboard Controller,
+//! Output Port, defines bit 1. CPU address masking is pending CPU-core support;
+//! see `backlog/docs/design/machine-config.md` §A20 line and System Control Port A.
 //!
 //! ## CPU reset
 //!
@@ -313,6 +313,7 @@ pub struct I8042 {
     /// The output port; bit 1 is the A20 gate.
     output_port: u8,
     reset_request: Rc<Cell<bool>>,
+    a20_line: crate::A20Line,
     /// What the next `0x60` write means.
     expect: Expect,
     keyboard_leds: u8,
@@ -348,6 +349,11 @@ impl I8042 {
             command_byte: CMD_BYTE_RESET,
             output_port: OUTPUT_PORT_RESET,
             reset_request: Rc::new(Cell::new(false)),
+            a20_line: {
+                let line = crate::A20Line::default();
+                line.set_keyboard(true);
+                line
+            },
             expect: Expect::KeyboardData,
             keyboard_leds: 0,
             awaiting_leds: false,
@@ -359,6 +365,21 @@ impl I8042 {
             trace: device::TraceBuffer::default(),
             now: VClock::ZERO,
         }
+    }
+
+    /// Connect to board-owned reset and A20 lines, retaining controller latches.
+    /// Attaching the enabled power-on A20 source to a fresh line counts one
+    /// transition, so an assembled 8042 machine starts at change_count=1.
+    /// Without any A20 source the board reports disabled while CPU addressing
+    /// remains flat. Final defaults and counter baseline await CPU-side A20
+    /// application; see `backlog/docs/design/machine-config.md`
+    /// §A20 line and System Control Port A.
+    #[must_use]
+    pub fn with_board_lines(mut self, reset: Rc<Cell<bool>>, a20: crate::A20Line) -> Self {
+        self.reset_request = reset;
+        a20.set_keyboard(self.a20_enabled());
+        self.a20_line = a20;
+        self
     }
 
     /// Latched CPU-reset request, wired by assembly to the machine stop seam.
@@ -581,6 +602,7 @@ impl I8042 {
                     self.reset_request.set(true);
                 }
                 self.output_port = byte;
+                self.a20_line.set_keyboard(self.a20_enabled());
                 self.expect = Expect::KeyboardData;
             }
             Expect::AuxData => {
@@ -715,8 +737,8 @@ impl Device for I8042 {
         let trace_policy = self.trace.policy();
         let signal = Rc::clone(&self.reset_request);
         signal.set(false);
-        *self = I8042::new();
-        self.reset_request = signal;
+        let a20 = self.a20_line.clone();
+        *self = I8042::new().with_board_lines(signal, a20);
         self.trace.set_policy(trace_policy);
     }
 
@@ -854,6 +876,7 @@ impl Device for I8042 {
         self.awaiting_leds = snapshot[33] != 0;
         self.command_byte = command_byte;
         self.output_port = output_port;
+        self.a20_line.set_keyboard(self.a20_enabled());
         self.reset_request.set(flags & 0x40 != 0);
         self.output_buffer = output_buffer;
         self.output_full = flags & (1 << 0) != 0;

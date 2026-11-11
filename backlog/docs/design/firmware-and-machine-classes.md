@@ -574,13 +574,13 @@ records existing components, not demonstrated SeaBIOS compatibility.
 | gcc `-m16` 386 real-mode ISA | `Makefile:64,83` | Missing: Real16 has 286 policies (`lift/mod.rs:285,374` at the spike CPU pin) | R1: `xj-srh.16 (x86jit)` |
 | Big real mode after `transition16big` | `romlayout.S:87–117`; `stacks.c:291` | Missing: fixed real-mode limit (`lift/mod.rs:4962`) | R2: `xj-srh.4 (x86jit)` acceptance |
 | Fixed EFLAGS.ID, CPUID #UD | `x86.c:10–23` | Missing: CPUID lifted in every mode (`lift/mod.rs:2371`) | R3: `xj-srh.17 (x86jit)` |
-| Triple-fault CPU reset, port 92h bit 0 | `misc.c:134–145`; `resume.c:141` | Missing | `upc-o0j.14`; `xj-srh.6 (x86jit)` |
+| Triple-fault CPU reset, port 92h bit 0 | `misc.c:134–145`; `resume.c:141` | 92h device reset on Bare uses existing warm-restart path (documented edge/readback; pulse timing ASSUMED); triple-fault reset pending | `upc-o0j.14`; `xj-srh.6 (x86jit)` |
 | Writable C0000h–FFFFFh, preloaded images | `post.c:290–299`; `shadow.c:117–147`; `optionroms.c:467` | Missing: adapter-space RAM rejected | `upc-o0j.12` |
 | BIOS copy at FFFE0000h–FFFFFFFFh | `shadow.c:22,169–196` | Missing; high reset fetch alone is insufficient | `upc-o0j.12`; `xj-srh.12 (x86jit)` |
 | At least ~1.25 MiB contiguous RAM | `malloc.c:413–456` | Partial | `upc-o0j.6` |
 | CMOS 30h/31h, 34h/35h, 5Bh–5Dh | `paravirt.c:240–254,588` | Partial: `cmos-qemu-layout` capability exists; enabled by the SeaBIOS entry with the board. Full derivation and a Rust-configured 128-byte DS12887-compatible RTC exist on Bare rigs; validation requires `rtc-cmos-128`, preventing high RAM fields from aliasing type-47 geometry | `upc-o0j.11`; `upc-o0j.6` |
 | CMOS 32h, 38h/3Dh, 39h, 5Fh | `clock.c:48`; `boot.c:471–489`; `block.c:84–90`; `paravirt.c:535` | Partial: `cmos-qemu-layout` capability exists; enabled by the SeaBIOS entry with the board. A Rust-configured 128-byte RTC satisfies `rtc-cmos-128` on Bare rigs, preventing a false CPU count from 5Fh aliasing 1Fh; images/journals remain 64-byte only, without machine-file size syntax | `upc-o0j.11` |
-| A20 through port 92h bit 1 | `x86.h:268–277` | Missing: open bus | `upc-o0j.5` (amended) |
+| A20 through port 92h bit 1 | `x86.h:268–277` | Device side complete on Bare: shared 8042/92h OR line (ASSUMED policy), latch/readback and snapshots; CPU masking pending; enabled 8042 prevents 92h-only disable under OR | `upc-o0j.21`; `upc-o0j.6` chooses arbitration and tests SeaBIOS AX=2400h/2402h; CPU gate wiring remains pending |
 | fw_cfg at 510h/511h | `paravirt.c:664–727`; `sercon.c:519` | Partial: device exists; board wiring pending | `upc-o0j.13` |
 | 8254 read-back command | `timer.c:171–183` | Have: count/status latches, OUT and NULL COUNT | `upc-o0j.10` |
 | 8042 command set and keyboard | `ps2port.c:450–524` | Have, without aux | `upc-18x.6` |
@@ -644,8 +644,8 @@ remain ASSUMED until checked in the corresponding device work.
 | Keyboard | **83-key**, scan set 1, serial into PPI port A, IRQ1 | 84-key (101 later), set 2 translated to set 1 | as AT | host → set 1 encoder with E0 codes ✓ (an XT has no E0 keys) |
 | Config store | **DIP SW1** read through PC0–3, PB3 selects half | MC146818 CMOS at 70h/71h, IRQ8; NMI mask is 70h bit 7 | as AT, plus extended memory bytes | CMOS ✓, derived |
 | NMI mask | **A0h–AFh** aliases, bit 7 enables | 70h bit 7 | as AT | AT form ✓ |
-| A20 | none (20-bit bus) | 8042 output port | 8042 + **port 92h** bit 1 | always on (decision-8) |
-| CPU reset | — | 8042 `FEh`, CMOS 0Fh shutdown code | + port 92h bit 0 | 8042 CPU-only warm restart ✓; RAM, CMOS and devices retained; sustained low reset level not modelled |
+| A20 | none (20-bit bus) | 8042 output port | 8042 + **port 92h** bit 1 | shared board line ✓ (OR policy ASSUMED); CPU masking pending, addressing remains enabled |
+| CPU reset | — | 8042 `FEh`, CMOS 0Fh shutdown code | + port 92h bit 0 | 8042 and Bare 92h CPU-only warm restart ✓ (pulse timing ASSUMED); RAM, CMOS and devices retained; sustained low reset level not modelled |
 | ROM | F0000h–FFFFFh; an 8 KiB BIOS at FE000h | 64 KiB at F0000h (even/odd) | SeaBIOS: 128 KiB preloaded at E0000h in writable C0000h–FFFFFh, pristine read-only copy at FFFE0000h (§3.6) | `ImageKind::Rom` ✓ |
 | Card bus | 8-bit, IRQ2–7, DMA1–3 | 16-bit, IRQ3–7, 9–12, 14, 15 | as AT | no slot abstraction (decision-16 §8) |
 | Floppy | adapter with DOR 3F2h and MSR/data 3F4h/3F5h; ASSUMED no CCR at 3F7h | 3F0h–3F7h, IRQ6, DMA2 | as AT | µPD765 ✓ |

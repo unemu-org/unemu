@@ -233,6 +233,23 @@ checks identity and diagnostics without execution; see `vendor/user-roms/README.
 
 ## In flight
 
+- **2026-11-11 — A20 / System Control Port A device side:** Bare rigs can
+  opt into port 92h with versioned snapshots, latch readback and CPU reset on
+  bit-0 0→1; readback remains set after CPU reset until cleared by a write or
+  system reset (IBM ThinkPad 560 Technical Reference, "System Control Port A
+  (Hex 0092)"; Intel386 EX User's Manual, PORT92, CPURST). Bit 1 is zero after
+  system reset. Pulse timing and ordinary security/light latches remain ASSUMED;
+  real bit-3 writes are permitted only while zero, an unmodelled restriction.
+  Bit 4 is read-only watchdog-timeout status, modelled as zero (Bochs PORTS.LST,
+  port 0092). The 8042 and 92h share one reset line and one observable A20 line;
+  effective A20 is their logical OR (ASSUMED board policy). The enabled 8042
+  prevents SeaBIOS from disabling A20 through 92h alone; `upc-o0j.6` must choose
+  arbitration and test INT 15h AX=2400h/2402h. Attaching the 8042 starts the
+  change counter at 1; no source reports disabled despite flat CPU addressing.
+  Final defaults/counter baseline belong to `upc-o0j.5`, alongside CPU masking.
+  IBM 5170 rejects port 92h. See
+  [machine-config.md §A20 line and System Control Port A](design/machine-config.md#a20-line-and-system-control-port-a).
+
 - **2026-11-11 — Firmware-owned QEMU CMOS layout:** opt-in catalogue capability
   and byte-exact synthetic tests derive RAM, century, boot order, type-47 IDE
   geometry, translation and single-CPU fields. No production entry enables it;

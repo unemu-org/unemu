@@ -1680,6 +1680,7 @@ mod tests {
             X86JitCpu::new_real16_bare(0x10000, 0, 0, cpu::x86jit_backend::RealSegments::flat(0))
                 .unwrap();
         let mut assembled = AssembledMachine {
+            a20_line: Default::default(),
             machine: Machine::new(
                 cpu,
                 bus::Bus::new(devices, bus::DecodeMap::default()),

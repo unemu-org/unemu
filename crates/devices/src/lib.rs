@@ -11,6 +11,7 @@
 //! opt into a bounded newest-event ring independently of output, and stay out
 //! of snapshots. See `backlog/docs/design/observation.md`, §Traces and later audio.
 
+pub mod a20;
 pub mod ata;
 pub mod cmos_rtc;
 pub mod coprocessor;
@@ -24,6 +25,7 @@ pub mod pit8253;
 pub mod post_port;
 pub mod ppi8255;
 pub mod sys_control;
+pub mod sys_ctrl_port_a;
 pub mod uart16550;
 pub mod upd765;
 pub mod vga;
@@ -32,6 +34,7 @@ pub mod xt_dma;
 pub mod xt_nmi;
 pub mod xt_system_ppi;
 
+pub use a20::A20Line;
 pub use ata::{Ata, AtaConfigError, AtaDrive, AtaGeometry};
 pub use cmos_rtc::{CmosConfig, CmosRtc};
 pub use coprocessor::Absent80287;
@@ -46,6 +49,7 @@ pub use pit8253::Pit8253;
 pub use post_port::PostPort;
 pub use ppi8255::Ppi8255;
 pub use sys_control::SysControl;
+pub use sys_ctrl_port_a::SysCtrlPortA;
 pub use uart16550::Uart16550;
 pub use upd765::{Drive, FloppyGeometry, Upd765};
 pub use vga::Vga;
@@ -155,6 +159,8 @@ pub(crate) mod trace_policy_tests {
         };
     }
 
+    ring_test!(port_a_trace_ring, SysCtrlPortA::new(), 0x92);
+    off_test!(port_a_trace_off, SysCtrlPortA::new(), 0x92);
     ring_test!(fw_cfg_trace_ring, FwCfg::new(), 0x511);
     off_test!(fw_cfg_trace_off, FwCfg::new(), 0x511);
     ring_test!(ppi_trace_ring, Ppi8255::new(0x60), 0x60);
