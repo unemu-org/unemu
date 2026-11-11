@@ -439,6 +439,21 @@ It checks both the download and output SHA-256, reusing
 building it does not add an ATA device or hard-disk boot profile. See
 `vendor/xtide-universal-bios/README.md` for provenance, padding and checksum rules.
 
+The SeaBIOS ISA fixture uses its own firmware devShell, separately from the CI
+`fixtures` gate:
+
+```sh
+nix develop .#firmware --command bash vendor/seabios/fetch.sh
+```
+
+It exports pinned rel-1.17.0 from `vendor/seabios/src/` (offline when cached),
+checks input hashes and builds `vendor/seabios/bios-1.17.0-isa.bin` with fixed
+version metadata. The output SHA-256 is pinned after two matching independent
+builds on 2026-11-11. No image is installed before verification. No board or
+catalogue entry is added; that entry waits for `generic-386-isa` and the x86jit
+386 CPU model.
+See `vendor/seabios/README.md` for tools, configuration and provenance.
+
 The hard-disk data fixture builds without downloads or cached inputs:
 
 ```sh

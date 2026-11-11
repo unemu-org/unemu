@@ -41,6 +41,25 @@
         };
       in
       {
+        devShells.firmware = pkgs.mkShell {
+          # SeaBIOS owns its freestanding flags and has no host hardening runtime.
+          # Legacy host Kconfig also needs translated printf formats without fatal warnings.
+          hardeningDisable = [ "all" ];
+          packages = [
+            pkgs.pkgsCross.i686-embedded.buildPackages.gcc
+            pkgs.pkgsCross.i686-embedded.buildPackages.binutils
+            pkgs.python3
+            pkgs.gnumake
+            pkgs.git
+            pkgs.coreutils
+            pkgs.gnutar
+            pkgs.gnugrep
+            pkgs.gawk
+          ];
+          CROSS_PREFIX = pkgs.pkgsCross.i686-embedded.stdenv.cc.targetPrefix;
+          # Kconfig runs on the host; firmware compilation uses the cross GCC.
+          HOSTCC = "${pkgs.stdenv.cc}/bin/cc";
+        };
         devShells.default = pkgs.mkShell {
           packages = [
             backlog-md.packages.${system}.default # `backlog` — local-first task tracker

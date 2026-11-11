@@ -75,8 +75,8 @@ The forces on the design:
 | 8086tiny BIOS | ASSUMED MIT | 8086 | Emulator-specific | None | Emulator traps | — | — | — | Rejected in decision-12: it needs emulator-only opcodes |
 | **XTIDE Universal BIOS (XUB)** r638 (builds dated 2026-06-09) | GPL-2.0-or-later (source headers; READ) | `ide_xt` 8088, `ide_xtp` 186/V20, `ide_at`/`ide_atl` **286**, `ide_386` 386 | Option ROM, any board | — | **Provides fixed-disk INT 13h** (see §2.2) | Prints through INT 10h | ASSUMED yes | NASM + make (open) | [xtideuniversalbios.org](https://www.xtideuniversalbios.org/), [binaries r638](https://www.xtideuniversalbios.org/binaries/r638/) |
 | Bochs `rombios` (`BIOS-bochs-legacy`) (master, © 2001–2026) | LGPL-2.1-or-later | **386** (`#error Only 386+ cpu supported`) | AT / Bochs PCI (i430FX, i440FX, i440BX host IDs) | **Yes**: INT 15h 24h, 87h, 88h, 89h; A20 through **port 92h** | Built-in ATA/ATAPI driver, El Torito | **None.** Needs a VGA ROM at C000h; PCI-BIOS builds halt without one | ASSUMED yes | bcc/as86 (dev86) | [bochs/bios/rombios.c](https://github.com/bochs-emu/Bochs/blob/master/bochs/bios/rombios.c) |
-| SeaBIOS 1.17.0 (2025-06-10), QEMU `isapc` config (128 KiB, `PCIBIOS=n`, `USB=n`, `ACPI=n`) | LGPL-3.0-or-later | **386** (32-bit flat POST) | ISA-only 486-class PC (QEMU `isapc`) | Yes (READ: §3.6), including E801h/E820h; RAM size from CMOS without fw_cfg | Built-in ATA PIO, floppy | SeaVGABIOS through fw_cfg, or SERCON configured by fw_cfg (§3.6) | ASSUMED yes | gcc + binutils | [seabios.org](https://www.seabios.org/), QEMU `roms/config.seabios-128k` |
-| SeaBIOS 1.17.0, QEMU `pc` config | LGPL-3.0-or-later | 386 | i440FX + PIIX3/PIIX4, Q35 | Yes, including E801h/E820h; also PCI BIOS and ACPI | ATA, AHCI, USB, … | SeaVGABIOS: std VGA, Cirrus, Bochs VBE | ASSUMED yes | gcc | as above |
+| SeaBIOS 1.17.0 (2025-06-10), QEMU `isapc` config (128 KiB, `PCIBIOS=n`, `USB=n`, `ACPI=n`) | LGPL-3.0-only | **386** (32-bit flat POST) | ISA-only 486-class PC (QEMU `isapc`) | Yes (READ: §3.6), including E801h/E820h; RAM size from CMOS without fw_cfg | Built-in ATA PIO, floppy | SeaVGABIOS through fw_cfg, or SERCON configured by fw_cfg (§3.6) | ASSUMED yes | gcc + binutils | [seabios.org](https://www.seabios.org/), QEMU `roms/config.seabios-128k` |
+| SeaBIOS 1.17.0, QEMU `pc` config | LGPL-3.0-only | 386 | i440FX + PIIX3/PIIX4, Q35 | Yes, including E801h/E820h; also PCI BIOS and ACPI | ATA, AHCI, USB, … | SeaVGABIOS: std VGA, Cirrus, Bochs VBE | ASSUMED yes | gcc | as above |
 | SeaVGABIOS / LGPL VGABIOS (video option ROMs) | LGPL-3.0 / LGPL-2.1 | ASSUMED 386 | Video option ROM | — | — | VGA; VBE with Bochs VBE | — | gcc / bcc | SeaBIOS `vgasrc/`, Bochs |
 | fysnet i440fx BIOS 1.0 (2025-02-10) | **Freeware, not open source** | — | i440FX / 440BX | — | — | — | — | NBASM | [fysnet.github.io/i440fx](https://fysnet.github.io/i440fx); excluded on license grounds |
 | IBM 5150/5160/5170 ROMs; AMI/Award/Phoenix board BIOSes | Proprietary | per board | per board | per board | per board | per board | per board | — | **User-supplied only.** Hashes are listed, the images are never shipped |
@@ -441,16 +441,33 @@ QEMU `isapc` works because it supplies fw_cfg (`pc.c:892`) and sends
 `vgaroms/vgabios.bin` through it (`vga-isa.c:88`, `loader.c:1232–1240`),
 not because SeaBIOS scans a plain ISA ROM window (READ).
 
-The planned reproducible fixture/catalogue entry `seabios-1.17.0-isa`
-(`upc-o0j.9`) will supply a 128 KiB build with its own `.config`:
+The fixture recipe in [`vendor/seabios/`](../../../vendor/seabios/README.md)
+(`upc-o0j.9`, build half) supplies a 128 KiB build with its own `.config`:
 `CONFIG_QEMU`, `SERCON` and `DEBUG_IO` on; `BOOTMENU`, `MPTABLE`,
 `PIRTABLE`, `SMBIOS`, `ACPI`, `FW_ROMFILE_LOAD`, `USB`, `PCIBIOS`,
 `USE_SMM`, `TCGBIOS` and `S3_RESUME`
 off. MP-table generation reads FEE00030h (`mptable.c:57`), which currently
 ends core execution on unmapped memory; PIR tables assume PIIX (READ).
 The alternative QEMU prebuilt needs an open-bus page at FEE00000h. Building
-needs i386 gcc with `-m16`, binutils, Python 3, make and a clean pinned git
-tag; deterministic rebuilding and a pinned output hash belong to the fixture.
+uses the separate `nix develop .#firmware` shell: i686-elf GCC with `-m16`,
+binutils, a native C compiler for Kconfig, Python 3, GNU make, git, tar and
+SHA-256 tools. ACPI is off, so IASL is not needed. PCI storage drivers,
+ACPI parsing/PM timer, Xen, MTRRs and TSC timing are also disabled.
+The script verifies the source tree object, archive and config hashes,
+exports the cached commit without changing its checkout, and fixes `.version` plus
+`EXTRAVERSION` using upstream's release-tarball mechanism. It rejects a
+wrong image size, then a non-fixed build version, then an upstream dirty-build
+hostname suffix, before checking output SHA-256.
+
+| Fixture | Build state (2026-11-11) | Catalogue / board |
+|---|---|---|
+| `vendor/seabios/bios-1.17.0-isa.bin` | Built; two independent builds matched (MEASURED by the supervisor); output SHA-256 pinned in the fixture | No catalogue entry yet; waits for `generic-386-isa` and the x86jit 386 CPU model |
+
+This adds no board or catalogue entry and qualifies no boot. QEMU's prebuilt
+`bios.bin` is not used; its MPTABLE and other platform settings deliberately
+differ. Input and output hashes are recorded in the fixture README, together
+with the 2026-11-11 two-build measurement on macOS arm64 using i686-elf GCC
+15.2.0 and binutils 2.46 from the flake-pinned nixpkgs.
 
 **Memory and reset (READ).** C0000h–FFFFFh must be writable RAM at POST,
 with the 128 KiB BIOS preloaded at E0000h–FFFFFh. SeaBIOS writes F-segment
@@ -575,13 +592,14 @@ records existing components, not demonstrated SeaBIOS compatibility.
 | COM1 UART | `sercon.c` | Have | — |
 | VGA ROM and register-level VGA | `optionroms.c:451`; `stdvga.c` | Missing: text-only card; VBE work alone is insufficient | `upc-o0j.15` (`upc-18x.2` is VBE only) |
 | FPU always reported | `misc.c:62–68` | Partial: empty socket | `upc-18x.9` (risk) |
-| Avoid unmapped FEE00030h MP-table read | `mptable.c:57` | Missing build configuration | `upc-o0j.9` (disable MPTABLE) |
+| Avoid unmapped FEE00030h MP-table read | `mptable.c:57` | Built fixture disables MPTABLE; Kconfig setting verified | `upc-o0j.9` (build half; catalogue waits for board) |
 | Debug console at 402h | `serialio.c:105–129` | Missing, optional | `upc-o0j.16` |
 
 **Risks and fallback.** ASSUMED: thousands of interpreter PE transitions,
 relocation and ROM-copy SMC churn may make POST slow; no timing was measured.
 READ: non-clean builds embed build time and hostname
-(`scripts/buildversion.py:127–130`), so reproducibility needs a clean build;
+(`scripts/buildversion.py:127–130`), so the fixture uses fixed release metadata
+and checks the generated version and image for hostname leakage;
 the FPU is always claimed (`misc.c:62–68`) despite the empty socket.
 INT 15h AH=88h reports the end of the highest E820 RAM entry, not CMOS
 (`malloc.c:476–491`); `upc-o0j.6` acceptance therefore compares against E820.

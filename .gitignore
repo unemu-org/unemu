@@ -43,6 +43,10 @@ target/
 /vendor/kiselev-bios/bios-xi8088.bin
 /vendor/kiselev-bios/bios-xi8088-atreset.bin
 /vendor/kiselev-bios/build/
+# SeaBIOS ISA configuration: pinned source cache, exports and built firmware.
+/vendor/seabios/src/
+/vendor/seabios/build/
+/vendor/seabios/bios-1.17.0-isa.bin
 # FreeDOS boot floppy: the fetched release archives, the boot-sector source clone,
 # and the assembled 1.44 MB image are rebuilt by vendor/freedos/fetch.sh, not
 # checked in (FreeDOS is GPL; used unmodified as a read-only fixture).

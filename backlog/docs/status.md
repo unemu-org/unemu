@@ -200,6 +200,12 @@ checks identity and diagnostics without execution; see `vendor/user-roms/README.
 
 ## In flight
 
+- **2026-11-11, SeaBIOS fixture:** pinned rel-1.17.0 ISA build recipe and
+  configuration added under `vendor/seabios/`, with a separate firmware
+  devShell. Two independent builds matched on macOS arm64 with the flake-pinned
+  i686-elf GCC 15.2.0 and binutils 2.46 (MEASURED by the supervisor); the
+  output SHA-256 is pinned. No board or catalogue entry is added;
+  the entry waits for `generic-386-isa` and the x86jit 386 CPU model.
 - **2026-11-11, phase B:** firmware decided (decision-19): unmodified SeaBIOS
   with emulator-only fw_cfg; requirements in
   [firmware-and-machine-classes.md §3.6](design/firmware-and-machine-classes.md#36-phase-b-firmware-requirements-seabios-on-generic-386-isa).

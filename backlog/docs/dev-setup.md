@@ -50,6 +50,36 @@ rest of nixpkgs — plus `nasm` + `binutils` (guest test-ROM builds),
 `qemu` (optional differential oracle), and `jq` (fetching the SingleStepTests
 corpus). Enter with `nix develop` or let direnv auto-load it.
 
+### Firmware toolchain (SeaBIOS)
+
+The separate `firmware` devShell keeps the cross toolchain out of the default
+Rust shell:
+
+```sh
+nix develop .#firmware --command bash vendor/seabios/fetch.sh
+```
+
+It provides `pkgsCross.i686-embedded.buildPackages.gcc` and `binutils`,
+Python 3, GNU make, git, tar, coreutils (including `sha256sum`), grep and awk.
+`CROSS_PREFIX` selects the cross tools; `HOSTCC` names the native stdenv C
+compiler used to build Kconfig. The script passes those variables explicitly
+to SeaBIOS make, selects cross `cpp` and uses `python3`. No IASL is required
+because this ISA configuration disables ACPI.
+
+Updating nixpkgs with `nix flake update` can change GCC/binutils and the
+ROM's embedded `BUILD_TOOLS` string. `OUTPUT_SHA256` then fails until the
+new toolchain's output is reviewed and deliberately re-pinned. Firmware uses
+the same nixpkgs input as the default shell.
+
+Retain `vendor/seabios/src/` for offline rebuilds from the pinned commit.
+The clone, temporary `build/` exports and 128 KiB output are gitignored;
+the source archive and config SHA-256 pins are checked on every run. The
+output SHA-256 is pinned after two matching independent builds measured by
+the supervisor on 2026-11-11 with i686-elf GCC 15.2.0 and binutils 2.46 from
+the flake-pinned nixpkgs on macOS arm64. This fixture
+does not add the board or catalogue entry; see
+[`vendor/seabios/README.md`](../../vendor/seabios/README.md).
+
 ### CPU core: x86jit
 
 The CPU is an external **git** dependency pinned to an exact revision of x86jit `main` (not
