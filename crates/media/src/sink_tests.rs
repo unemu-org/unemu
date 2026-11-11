@@ -2387,3 +2387,28 @@ fn sink_mount_protects_the_actual_base_file_even_under_a_reserved_name() {
     .is_ok());
     assert!(base.exists());
 }
+
+#[test]
+fn nvram_write_batch_rejects_immutable_bytes_before_any_output() {
+    for index in [0, 13, 15, 64, 511] {
+        let base = [0x22; 64];
+        let mut fs = model_fs(None);
+        let status = SinkStatus::default();
+        let mut journal =
+            JournalMedia::open_with(&mut fs, Path::new("cmos.upfj"), &base, 64, status.clone())
+                .unwrap();
+        let before = fs.io.0.borrow().durable.clone();
+        fs.io.0.borrow_mut().events.clear();
+        let mut block = journal.read_sector(0);
+        block[16] = 9;
+        block[index] ^= 1;
+        journal.write_batch(&[(0, block)]);
+        assert_eq!(
+            status.failure().unwrap().message,
+            "NVRAM immutable bytes or padding"
+        );
+        assert_eq!(journal.image(), base);
+        assert_eq!(fs.io.0.borrow().durable, before);
+        assert!(fs.io.0.borrow().events.is_empty(), "invalid byte {index}");
+    }
+}

@@ -42,7 +42,7 @@ fn format_board_ports(ports: &[PortWindow]) -> String {
     format!("[{}]", windows.join(", "))
 }
 
-fn format_board_kind(kind: DeviceKind) -> String {
+fn format_board_kind(kind: &DeviceKind) -> String {
     match kind {
         DeviceKind::Uart(cfg) => format!("Uart(UartCfg {{ base: {:#x} }})", cfg.base),
         DeviceKind::Post(cfg) => format!("Post(PostPortCfg {{ port: {:#x} }})", cfg.port),
@@ -78,7 +78,7 @@ fn format_board_dma(dma: Option<crate::DmaSpec>) -> String {
 }
 
 struct FirmwareRequirement {
-    matches: fn(DeviceKind) -> bool,
+    matches: fn(&DeviceKind) -> bool,
     service: crate::FirmwareService,
     needs_bound_drive: bool,
 }
@@ -99,7 +99,7 @@ const FIRMWARE_REQUIREMENTS: &[FirmwareRequirement] = &[
 ];
 
 struct WordPortSupport {
-    supports: fn(DeviceKind, u16) -> bool,
+    supports: fn(&DeviceKind, u16) -> bool,
 }
 
 // IOCS16# follows the configured task-file base, including secondary channels.
@@ -268,7 +268,7 @@ impl MachineConfig {
             .collect::<Result<Vec<_>, _>>()?;
         for device in &self.devices {
             for rule in requirements {
-                if (rule.matches)(device.kind)
+                if (rule.matches)(&device.kind)
                     && (!rule.needs_bound_drive
                         || self
                             .drives
@@ -290,7 +290,7 @@ impl MachineConfig {
 
     fn check_rtc_starts(&self) -> Result<(), ConfigError> {
         for device in &self.devices {
-            if let DeviceKind::Rtc(cfg) = device.kind {
+            if let DeviceKind::Rtc(cfg) = &device.kind {
                 if let Some(field) = cfg.start.invalid_field() {
                     return Err(ConfigError::InvalidRtcStart {
                         device: device.id,
@@ -314,7 +314,7 @@ impl MachineConfig {
             for standard in expected.iter_mut().filter(|d| d.id == DeviceId::Post) {
                 if let DeviceKind::Post(cfg) = actual.kind {
                     post_port = Some(cfg.port);
-                    standard.kind = actual.kind;
+                    standard.kind = actual.kind.clone();
                     standard.ports = vec![PortWindow::single(cfg.port)];
                 }
                 // POST determines which DMA page ports are free. Diagnose its
@@ -380,10 +380,10 @@ impl MachineConfig {
         let mut expected = standard.clone();
         // RTC initialization and virtual timing are configurable, unlike its wiring.
         if matches!(
-            (actual.kind, expected.kind),
+            (&actual.kind, &expected.kind),
             (DeviceKind::Rtc(_), DeviceKind::Rtc(_))
         ) {
-            expected.kind = actual.kind;
+            expected.kind = actual.kind.clone();
         }
         if actual == &expected {
             return Ok(());
@@ -391,8 +391,8 @@ impl MachineConfig {
         let differences = [
             (
                 "kind",
-                format_board_kind(expected.kind),
-                format_board_kind(actual.kind),
+                format_board_kind(&expected.kind),
+                format_board_kind(&actual.kind),
             ),
             (
                 "ports",
@@ -519,7 +519,7 @@ impl MachineConfig {
                     for port in (window.start..=window.end).step_by(2) {
                         if !support
                             .iter()
-                            .any(|rule| (rule.supports)(device.kind, port))
+                            .any(|rule| (rule.supports)(&device.kind, port))
                         {
                             return Err(ConfigError::UnsupportedWordPort {
                                 device: device.id,
@@ -804,7 +804,7 @@ impl MachineConfig {
                     drive_index,
                     controller: drive.controller,
                 })?;
-            let available = match (drive.kind, controller.kind) {
+            let available = match (drive.kind, &controller.kind) {
                 (crate::DriveKind::Floppy { .. }, DeviceKind::Fdc(fdc)) => fdc.drive_slots.min(4),
                 (crate::DriveKind::HardDisk { .. }, DeviceKind::Ide(_)) => 2,
                 _ => {

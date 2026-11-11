@@ -271,12 +271,13 @@ fn individual_field_origins_resolve_images_before_any_future_merge() {
 }
 
 #[test]
-fn nvram_journal_is_explicitly_deferred() {
+fn nvram_journal_requires_an_explicit_path() {
     let nvram = run(&format!(
         "{MINIMAL}[board.rtc]\nnvram={{image='cmos.bin',write='journal'}}\n"
     ))
     .unwrap_err();
-    assert!(nvram.message.contains("not implemented yet"));
+    assert_eq!(nvram.field, "board.rtc.nvram.journal");
+    assert_eq!(nvram.message, "required field is missing");
 }
 
 #[test]
@@ -449,7 +450,7 @@ fn rtc_and_nvram_are_lowered_without_repairing_image_bytes() {
         &mut images,
     )
     .unwrap();
-    let DeviceKind::Rtc(rtc) = config
+    let DeviceKind::Rtc(ref rtc) = config
         .devices
         .iter()
         .find(|d| d.id == DeviceId::Rtc)
@@ -495,7 +496,7 @@ fn rtc_and_nvram_are_lowered_without_repairing_image_bytes() {
     ))
     .unwrap_err()
     .message
-    .contains("readonly NVRAM is not implemented yet"));
+    .contains("readonly NVRAM is unsupported: the MC146818 has no write-protect input; use write = \"volatile\""));
     let mut images = Images::rom(file);
     images
         .files

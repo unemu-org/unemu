@@ -155,7 +155,7 @@ mod tests {
         let devices = BoardModel::Ibm5170.motherboard_devices();
         let actual: Vec<_> = devices
             .iter()
-            .map(|d| (d.id, d.kind, d.ports.clone(), d.irq, d.dma))
+            .map(|d| (d.id, d.kind.clone(), d.ports.clone(), d.irq, d.dma))
             .collect();
         assert_eq!(
             actual,

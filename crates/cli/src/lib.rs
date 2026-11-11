@@ -417,7 +417,7 @@ pub fn finish_persistence(
     let result = assembled.finish_persistence();
     for handle in &assembled.persistence {
         if let Some(outcome) = handle.maintenance_failure() {
-            let _ = writeln!(warnings, "warning: drive {}: {outcome}", handle.drive_index);
+            let _ = writeln!(warnings, "warning: {}: {outcome}", handle.owner());
         }
     }
     result

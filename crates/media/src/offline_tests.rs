@@ -581,3 +581,60 @@ fn export_errors_distinguish_unpublished_and_uncertain_with_exact_messages() {
         assert!(output.exists());
     }
 }
+
+#[test]
+fn nvram_offline_retention_export_rollback_and_tail_repair() {
+    let fixture = Fixture::new();
+    let base: [u8; 64] = std::array::from_fn(|i| i as u8);
+    let base_path = fixture.dir.join("cmos.bin");
+    let journal_path = fixture.dir.join("cmos.upfj");
+    std::fs::write(&base_path, base).unwrap();
+    let mut journal = JournalMedia::open(&journal_path, &base, 64, SinkStatus::default())
+        .unwrap()
+        .with_retention(2);
+    for value in 1..=4 {
+        let mut block = journal.read_sector(0);
+        assert_eq!(&block[..14], &base[..14]);
+        assert!(block[64..].iter().all(|&b| b == 0));
+        block[63] = value;
+        journal.write_batch(&[(0, block)]);
+        journal.checkpoint().unwrap();
+    }
+    drop(journal);
+    let mut tool = JournalTool::open(&base_path, &journal_path, Access::Mutate).unwrap();
+    let scan = tool.verify().unwrap();
+    assert_eq!(
+        scan.report
+            .generations
+            .iter()
+            .map(|g| g.id)
+            .collect::<Vec<_>>(),
+        [3, 4]
+    );
+    assert_eq!(scan.image.as_ref().unwrap().len(), 64);
+    assert_eq!(scan.image.as_ref().unwrap()[63], 4);
+    assert_eq!(scan.report.header.unwrap().anchor_generation, 3);
+    let exported = fixture.dir.join("exported.bin");
+    tool.commit(3, &exported).unwrap();
+    let bytes = std::fs::read(exported).unwrap();
+    assert_eq!(bytes.len(), 64);
+    assert_eq!(&bytes[..63], &base[..63]);
+    assert_eq!(bytes[63], 3);
+    let rollback = tool
+        .rollback(3, &fixture.dir.join("rollback.upfj"))
+        .unwrap();
+    assert_eq!(rollback.image.as_ref().unwrap()[63], 3);
+    drop(tool);
+    std::fs::OpenOptions::new()
+        .append(true)
+        .open(&journal_path)
+        .unwrap()
+        .write_all(&[0xAA; 9])
+        .unwrap();
+    let mut tool = JournalTool::open(&base_path, &journal_path, Access::Mutate).unwrap();
+    assert_eq!(tool.verify().unwrap().report.discarded_bytes, 9);
+    let repaired = tool.repair_tail(&fixture.dir.join("repair.upfj")).unwrap();
+    assert_eq!(repaired.image.as_ref().unwrap()[63], 3);
+    assert!(!repaired.report.needs_recovery());
+    assert_eq!(std::fs::read(base_path).unwrap(), base);
+}

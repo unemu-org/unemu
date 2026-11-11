@@ -152,11 +152,14 @@ pub enum WriteMode {
 }
 
 impl WriteMode {
+    /// Shared default number of closed generations retained by media journals.
+    pub const DEFAULT_KEEP_GENERATIONS: u32 = 10;
+
     /// Select a journal with the default ten closed generations.
     pub fn journal(path: impl Into<PathBuf>) -> Self {
         Self::Journal {
             path: path.into(),
-            keep_generations: 10,
+            keep_generations: Self::DEFAULT_KEEP_GENERATIONS,
         }
     }
 }

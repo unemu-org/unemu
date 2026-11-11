@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Version-1 floppy journal codec, recovery scanner and host-side durable sink.
+//! Version-1 floppy/CMOS journal codec, recovery scanner and host-side durable sink.
 //!
 //! An immutable, SHA-256-bound base image plus checksummed sector replacements
 //! preserves command-complete recovery points without copying a floppy per write.
@@ -14,6 +14,8 @@
 //! and synchronous append/recovery. Assembly supplies the device-trait adapter;
 //! devices and frontend policy remain outside this crate. This models a disk format, not controller hardware; complete
 //! 512-byte replacement sectors include controller-supplied zero padding.
+//! CMOS bases are exactly 64 bytes; the single block is zero padded to 512,
+//! with an immutable clock/control prefix. See § CMOS NVRAM journals.
 //! A valid checksum does not establish guest filesystem health or prove a host
 //! sync was acknowledged.
 

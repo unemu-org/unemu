@@ -423,7 +423,7 @@ impl JournalMedia {
     pub fn read_sector(&self, lba: u64) -> [u8; SECTOR_LEN] {
         let mut bytes = [0; SECTOR_LEN];
         if let Some(range) = self.range(lba) {
-            bytes.copy_from_slice(&self.image[range]);
+            bytes[..range.len()].copy_from_slice(&self.image[range]);
         }
         bytes
     }
@@ -434,20 +434,31 @@ impl JournalMedia {
 
     fn range(&self, lba: u64) -> Option<std::ops::Range<usize>> {
         let start = usize::try_from(lba).ok()?.checked_mul(SECTOR_LEN)?;
-        let end = start.checked_add(SECTOR_LEN)?;
-        (end <= self.image.len()).then_some(start..end)
+        let end = start.checked_add(SECTOR_LEN)?.min(self.image.len());
+        (start < end).then_some(start..end)
     }
 
     /// Apply a completed nonempty command before attempting host output. The
     /// assembly adapter maps its sector records to these `(LBA, bytes)` pairs.
     /// Host failures have no result channel here and never undo memory writes.
+    /// Malformed CMOS batches latch an error before touching memory or output.
     pub fn write_batch(&mut self, sectors: &[(u64, [u8; SECTOR_LEN])]) {
         if sectors.is_empty() || sectors.iter().any(|(lba, _)| self.range(*lba).is_none()) {
             return;
         }
+        if self.base.len() == 64
+            && sectors
+                .iter()
+                .any(|(_, bytes)| !crate::codec::valid_nvram_block(&self.base, bytes))
+        {
+            self.status
+                .latch(self.failure("write", "NVRAM immutable bytes or padding"));
+            return;
+        }
         for (lba, bytes) in sectors {
             let start = *lba as usize * SECTOR_LEN;
-            self.image[start..start + SECTOR_LEN].copy_from_slice(bytes);
+            let end = (start + SECTOR_LEN).min(self.image.len());
+            self.image[start..end].copy_from_slice(&bytes[..end - start]);
         }
         if self.status.failure().is_some() {
             return;
@@ -587,15 +598,13 @@ impl JournalMedia {
                 )
             };
             for (lba, (bytes, base)) in state
-                .as_chunks::<SECTOR_LEN>()
-                .0
-                .iter()
-                .zip(self.base.as_chunks::<SECTOR_LEN>().0.iter())
+                .chunks(SECTOR_LEN)
+                .zip(self.base.chunks(SECTOR_LEN))
                 .enumerate()
             {
                 if bytes != base {
                     let mut sector = [0; SECTOR_LEN];
-                    sector.copy_from_slice(bytes);
+                    sector[..bytes.len()].copy_from_slice(bytes);
                     emit(
                         Record::Sector {
                             lba: lba as u64,

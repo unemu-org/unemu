@@ -1,4 +1,4 @@
-# Recoverable persistent floppy media
+# Recoverable persistent media
 
 Status: implemented and validated; offline tools, immutable export and retention available.
 The maintainer approved the defaults on 2026-11-10.
@@ -7,7 +7,7 @@ the host-independent device media contract and its in-memory implementation
 are implemented in `crates/device`. The durable host sink and single-writer
 lifecycle are implemented in `crates/media`. Assembly now wires all three write
 modes, validates journal/sidecar path aliases, replays before execution, and exposes
-per-drive status/checkpoint/finish handles. CLI and window run boundaries check
+drive and NVRAM status/checkpoint/finish handles. CLI and window run boundaries check
 host failures and explicitly finish successful sessions. Offline generation
 listing, verification, explicit tail repair and backed-up rollback are implemented
 in the CLI and `crates/media`, including immutable-image export (`commit`/`compact`).
@@ -51,7 +51,7 @@ Evidence from the current implementation:
   behavior. `dos_write_golden.rs:132–136` inspects final in-memory FAT12 bytes;
   it does not establish persistence across assemblies.
 
-Scope: the existing 512-byte-sector floppy formats, a single writer per journal,
+Scope: the existing 512-byte-sector floppy formats and 64-byte CMOS images, a single writer per journal,
 offline recovery tools, and deterministic headless execution. No CPU change,
 fixed-disk controller, whole-machine snapshot, guest-filesystem transaction,
 live recovery service, compression, encryption or qcow2 compatibility is needed.
@@ -108,7 +108,7 @@ or random identifier. SHA-256 fields contain the raw 32-byte digest.
 | 8–9 | 2 | Version: `1` |
 | 10–11 | 2 | Header length: `128` |
 | 12–15 | 4 | Sector length: `512` |
-| 16–23 | 8 | Exact base-image length in bytes; positive and divisible by 512 |
+| 16–23 | 8 | Exact base-image length in bytes; positive and divisible by 512, or 64 for CMOS |
 | 24–55 | 32 | SHA-256 of every original base-image byte, in file order |
 | 56–63 | 8 | Anchor generation: `0` initially; positive after retention rewrite |
 | 64–67 | 4 | Flags: `0` |
@@ -143,7 +143,7 @@ parser; this is not a claim that a 640-byte host write is atomic.
 | 576–607 | 32 | Reserved: all zero |
 | 608–639 | 32 | SHA-256 of frame bytes 0–607 |
 
-SECTOR's target is a zero-based LBA, strictly below `base_length / 512`.
+SECTOR's target is a zero-based LBA, strictly below `ceil(base_length / 512)`.
 Its bytes replace that whole sector. COMMAND_END's target is the exact number
 of immediately preceding SECTOR frames in that command batch. GENERATION_END's
 target is a closing reason: `1` session end, `2` explicit checkpoint, `3`
@@ -170,9 +170,10 @@ an interrupted generation, not an invalid journal.
 For a new journal the immutable base is logical generation `0`, the first run
 uses `1`, and sequences start at `1`. A checkpoint or session end closes the
 current generation. Each independently mounted media session has its own ids;
-a call to `run_bounded`, a cap, a device reset, or a prompt poll does not close
-one. Multiple drives have independent journals; there is no atomic multi-drive
-checkpoint promise.
+a call to `run_bounded`, a cap, a CPU/device reset, or a prompt poll does not
+close one. CMOS records append only at CPU reset and finish, never at host-paced
+run stops (see § CMOS NVRAM journals). Multiple media have independent journals;
+there is no atomic multi-medium checkpoint promise.
 
 After rollback, discarded generation ids and sequence numbers may be reused.
 They are addresses within the current journal lineage, not permanent global
@@ -229,6 +230,69 @@ that entire command. Recovery promises a valid prefix, not knowledge of which
 sync calls returned before the crash. Checksums provide accidental-damage
 detection, not authentication. A checksum-valid marker after corrupted data
 does not make that generation usable.
+
+## CMOS NVRAM journals
+
+The AT's battery keeps the Motorola MC146818's 64 bytes and clock running
+(Motorola MC146818 datasheet, "RAM" and "Time, Calendar, and Alarm Locations").
+This emulator's journal persists only general
+RAM 0Eh–3Fh **except 0Fh** (49 bytes). The IBM PC AT Technical Reference,
+CMOS shutdown status byte, assigns 0Fh to the transient reset protocol; DOS
+extenders and INT 15h AH=87h may change it on every protected-mode exit. It
+neither triggers nor appears in replacements and takes the base image's value
+at mount. Guest reset still preserves its live value within the session.
+
+Time/date, alarms and registers A–D (00h–0Dh) come from `start` and RTC defaults
+every session: a guest DATE/TIME change is not kept. The century byte 32h stays
+persisted; `start` does not populate it. If a guest changes the century, 32h may
+conflict with `start`'s year; set `start` accordingly. Volatile images retain
+the existing initialization behavior.
+
+Reuse version 1, its sink and all offline tools: additionally accept an exact
+64-byte base image, pinned by SHA-256 over all 64 original bytes. It has one
+logical block at LBA 0. Its SECTOR payload remains 512 bytes: the first 64
+bytes hold the store and the remaining 448 must be zero. Bytes 00h–0Dh and 0Fh
+stay identical to the base in emitted records and exports. The scanner and sink
+both reject changes to these immutable bytes or nonzero padding before replay
+or durable output. Retention anchors use the same padded block. Other short
+base sizes remain invalid. `media generations`, `verify` (including
+`--repair-tail`), `rollback` and `commit`/`compact` use the original 64-byte
+base without conversion; exports are 64 bytes.
+
+Append a replacement and COMMAND_END only before a CPU reset and at session
+finish, when the persisted bytes differ from the last appended state. Run
+stops, prompt polls, instruction caps and window frame slices perform no NVRAM
+I/O. Multiple reset records remain in one open generation; finish closes it
+once with the session-end reason, including an empty session, just like drives.
+NVRAM checkpoints only check that the session is active; they do not append,
+close a generation or run retention. Retention runs once at session finish.
+After an execution error there is no finish: the next mount seals any complete
+open commands with the recovered-session reason (3), as for drives.
+
+A crash between reset/finish boundaries can lose changes since the last such
+boundary. Record contents and cadence depend only on guest state at reset and
+finish, identically for CLI and window; host pacing cannot add records. No wall
+clock, worker thread or timer enters this path.
+
+Finish at a CLI instruction cap or normal window close persists whatever general
+RAM holds at that point. If the guest stops partway through a multi-byte setup
+update, its checksum bytes 2Eh/2Fh can be stale; the next POST reports a CMOS
+checksum error, like power loss on real hardware. Persistence does not repair
+the guest's checksum or make a setup update atomic.
+
+Assembly reads and checks the pinned base once before opening any journal,
+then replays it before exposing RTC ports. Base mismatch, damaged-tail reports,
+reserved `.create-`/`.retain-` names, locking, retention and host-error handling
+follow drive journals. NVRAM shares the frontend persistence handles so a host
+failure is reported before another run or CPU reset.
+
+Machine files accept `nvram = { image = "cmos.bin", sha256 = "…", write =
+"journal", journal = "cmos.upfj", keep_generations = 10 }` (TOML), or the
+same mapping in YAML. Journal path is required, retention defaults to 10 and
+must be positive. Image/pin/journal override units follow drive images.
+`write = "readonly"` is rejected with the exact message
+`readonly NVRAM is unsupported: the MC146818 has no write-protect input; use write = "volatile"`
+because suppressing POST writes to diagnostic/shutdown RAM breaks the AT.
 
 ## Integration (layers, flush points, determinism argument)
 
@@ -523,7 +587,11 @@ with its drive index, configured retention count, mount recovery report, first
 latched host error, `checkpoint()` and `finish()`. The assembly-owned sector
 adapter shares the session with this handle. `run_session(policy)` checks errors
 before and after every existing natural/prompt/stimulus run boundary;
-`check_persistence()` supports an embedding frontend's own boundaries. A failed
+`check_persistence()` supports an embedding frontend's own boundaries. A frontend
+handling `ResetRequested` itself must call `AssembledMachine::before_cpu_reset()`
+before `reset_cpu()`. Calling `run_bounded()` again instead performs the pending
+reset automatically without capturing pre-reset CMOS state. The journal can then
+differ from the CLI's, and a later execution error can lose that state. A failed
 run must be dropped without `finish_persistence()`. A latched error during a run
 skips every drive's finish; the other drives' unsealed sessions are recovered
 on their next mount. A successful cap, halt or

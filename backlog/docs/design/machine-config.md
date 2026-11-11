@@ -617,29 +617,44 @@ and `with_timing(second_ticks, uip_ticks)` retain integer PIT-clock units,
 including the CLI RTC demonstration's small timing ratio. Snapshots include the
 phase-unit scale as well as the calendar and periodic remainders.
 
-`NvramSource` has three variants:
+`NvramSource` has four variants:
 
 | Variant | Initialization |
 |---|---|
 | `Derived` (default) | Existing machine-derived AT seed and checksum |
 | `Blank` | Existing unseeded chip, retaining its control defaults |
-| `Image([u8; 64])` | Writable bytes copied without checksum repair; read-only status initialized to power-on values |
+| `Image([u8; 64])` | Volatile writable bytes copied without checksum repair; read-only status initialized to power-on values |
+| `Journal { image, expected_sha256, journal, keep_generations }` | Assembly reads and verifies the immutable 64-byte file, replays general RAM 0Eh–3Fh except 0Fh and retains RTC defaults for 00h–0Dh |
 
-The fixed array enforces image length at the Rust boundary. A future machine-file
-loader must reject any file whose length is not 64 before creating this value;
-assembly does no NVRAM file I/O. All guest writes are volatile; file writeback
-and journal policy are deferred.
+The fixed array enforces volatile image length at the Rust boundary. The
+machine-file loader rejects other lengths; journal assembly checks the bytes
+actually mounted against the digest before opening outputs. Journal paths and
+retention follow drive images. `CmosCfg`, `NvramSource` and `DeviceKind` are
+cloneable data because journal paths are owned. Readonly NVRAM is rejected:
+the MC146818 has no write-protect input and AT POST writes 0Eh/0Fh.
 
-The image's time-register backing bytes are preserved, but reads use `start`,
-encoded according to the image's register B. Loading clears A's read-only UIP
+Journal sessions share `PersistenceHandle` with drives. Changed general RAM,
+excluding shutdown byte 0Fh, appends only before CPU reset and at finish. Run
+stops, polls and frame slices only check error latches. Reset records keep the
+session generation open; finish closes it once with the session-end reason and
+runs retention. An execution error leaves complete commands for recovery on the
+next mount. Clock/control and 0Fh writes never trigger persistence. At mount,
+0Fh takes the base image's value; live CPU resets preserve it within the session.
+See `persistent-media.md` § CMOS NVRAM journals for clock/century consequences,
+crash limits and offline tools.
+
+For volatile images, time-register backing bytes are preserved, but reads use
+`start`, encoded according to the image's register B. Journal mode instead uses
+RTC defaults: B=02h (24-hour BCD), A=00h, zero alarm registers, C=00h and D=80h.
+For volatile images, loading clears A's read-only UIP
 bit and all of C, recomputes IRQF, and sets D to the device's valid-RAM value
 (80h, reserved bits clear). This prevents stale image status from raising IRQ8
 at power-on or producing an unrestorable snapshot. Subsequent control reads
 retain normal semantics: A overlays live UIP, C clears flags after reading,
 and D reports valid RAM/time. These register meanings follow the Motorola
 MC146818 datasheet, **RAM**, **Time, Calendar, and Alarm Locations (Table 3)**,
-and **Registers A–D**. General RAM and alarm bytes are not normalized, and no
-AT checksum is repaired for an image. `Derived` with the default start retains
+and **Registers A–D**. Volatile general RAM and alarm bytes are not normalized; neither image mode
+repairs the AT checksum. `Derived` with the default start retains
 every register and backing byte of the prior construction; tests compare the
 entire device snapshot and all 64 port-visible registers, alongside unchanged
 machine goldens.

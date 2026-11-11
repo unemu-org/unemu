@@ -323,30 +323,54 @@ impl<R: ImageReader> Context<'_, R> {
             v1::Nvram::Derived => NvramSource::Derived,
             v1::Nvram::Blank => NvramSource::Blank,
             v1::Nvram::Image(image) => {
-                let write = self.write(
-                    "board.rtc.nvram.write",
-                    image.write,
-                    image.journal.is_some(),
-                    image.keep_generations.is_some(),
-                )?;
-                if write == assembly::WriteMode::ReadOnly {
-                    return Err(self.error("board.rtc.nvram.write", "readonly NVRAM is not implemented yet; assembly currently supports volatile NVRAM only"));
+                if image.write == Some(v1::WriteMode::ReadOnly) {
+                    return Err(self.error("board.rtc.nvram.write", "readonly NVRAM is unsupported: the MC146818 has no write-protect input; use write = \"volatile\""));
                 }
-                let (bytes, _) = self.image(
+                let journal = image.write == Some(v1::WriteMode::Journal);
+                let journal_path = if journal {
+                    let field = "board.rtc.nvram.journal";
+                    let path = self.required(field, image.journal.as_deref())?;
+                    if path.is_empty() {
+                        return Err(self.error(field, "an explicit journal path is required"));
+                    }
+                    Some(self.origins.image_path(field, path))
+                } else {
+                    self.write(
+                        "board.rtc.nvram.write",
+                        image.write,
+                        image.journal.is_some(),
+                        image.keep_generations.is_some(),
+                    )?;
+                    None
+                };
+                let (bytes, expected_sha256) = self.image(
                     "board.rtc.nvram.image",
                     image.image.as_deref(),
                     image.sha256.as_ref(),
                     "board.rtc.nvram.sha256",
-                    false,
+                    journal,
                 )?;
                 let actual = bytes.len();
-                let bytes = bytes.try_into().map_err(|_| {
+                let bytes: [u8; 64] = bytes.try_into().map_err(|_| {
                     self.error(
                         "board.rtc.nvram.image",
                         format!("NVRAM image must contain 64 bytes, got {actual}"),
                     )
                 })?;
-                NvramSource::Image(bytes)
+                match journal_path {
+                    Some(journal) => NvramSource::Journal {
+                        image: self.origins.image_path(
+                            "board.rtc.nvram.image",
+                            image.image.as_deref().unwrap_or_default(),
+                        ),
+                        expected_sha256,
+                        journal,
+                        keep_generations: image
+                            .keep_generations
+                            .map_or(assembly::WriteMode::DEFAULT_KEEP_GENERATIONS, |n| n.get()),
+                    },
+                    None => NvramSource::Image(bytes),
+                }
             }
         };
         Ok(assembly::CmosCfg {
@@ -671,6 +695,7 @@ impl<R: ImageReader> Context<'_, R> {
             | MmioOverlap { a, b, .. }
             | IrqConflict { a, b, .. } => device_fields(&[*a, *b]),
             DmaControllerMissing { requester, .. } => device_fields(&[*requester]),
+            Nvram { .. } => vec!["board.rtc.nvram".into()],
             Journal { drive_index, .. }
             | DriveInput { drive_index, .. }
             | UnsupportedCmosDiskGeometry { drive_index, .. }
@@ -1697,11 +1722,20 @@ impl AssemblyDiagnostics {
         }
     }
 
+    pub(crate) fn nvram_error(&self, field: &str, message: impl Into<String>) -> LowerError {
+        let mut reader = crate::FileImageReader;
+        self.context(&mut reader).error(field, message)
+    }
+
     pub(crate) fn map(&self, error: assembly::AssemblyError) -> LowerError {
         let mut reader = crate::FileImageReader;
         let context = self.context(&mut reader);
         match error {
             assembly::AssemblyError::Config(error) => context.validation_error(error),
+            assembly::AssemblyError::NvramJournal { source } => context.error(
+                "board.rtc.nvram.journal",
+                format!("journal mount: {source}"),
+            ),
             assembly::AssemblyError::Journal {
                 drive_index,
                 source,

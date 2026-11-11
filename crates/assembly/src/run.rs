@@ -333,6 +333,9 @@ fn run_boundary(
     let outcome = machine.run_bounded(cap);
     check_persistence(handles)?;
     if matches!(outcome, Ok(RunOutcome::ResetRequested)) {
+        for handle in handles {
+            handle.before_cpu_reset()?;
+        }
         machine.reset_cpu()?;
     }
     outcome.map_err(Into::into)
@@ -349,9 +352,20 @@ impl crate::AssembledMachine {
         )
     }
 
-    /// Poll all drive latches before advancing or accepting more host input.
+    /// Poll media latches without performing NVRAM I/O at host-paced stops.
     pub fn check_persistence(&self) -> Result<(), crate::PersistenceError> {
         check_persistence(&self.persistence)
+    }
+
+    /// Persist changed CMOS RAM before resetting the CPU, keeping the session open.
+    /// Embedding frontends handling `ResetRequested` must call this before
+    /// `reset_cpu()`. Otherwise the next `run_bounded()` resets automatically
+    /// without capturing pre-reset CMOS state; a later error can lose it.
+    pub fn before_cpu_reset(&self) -> Result<(), crate::PersistenceError> {
+        for handle in &self.persistence {
+            handle.before_cpu_reset()?;
+        }
+        Ok(())
     }
 
     /// End a successful session, including policy-limited runs. Never call this

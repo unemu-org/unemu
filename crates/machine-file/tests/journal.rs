@@ -947,3 +947,236 @@ fn frontend_assembly_keeps_inherited_bios_and_journal_mount_origins() {
     assert_eq!(error.field, "card[fdc-765].drives[unit=0]");
     assert!(error.message.starts_with("journal mount:"), "{error}");
 }
+
+fn nvram_source(config: &assembly::MachineConfig) -> &assembly::NvramSource {
+    config
+        .devices
+        .iter()
+        .find_map(|device| match &device.kind {
+            assembly::DeviceKind::Rtc(rtc) => Some(&rtc.nvram),
+            _ => None,
+        })
+        .unwrap()
+}
+
+#[test]
+fn nvram_journal_toml_yaml_lowering_and_readonly_message() {
+    let temp = Temp::new();
+    let base = [0x22; 64];
+    temp.write("cmos.bin", base);
+    let pin = format!("{:x}", Sha256::digest(base));
+    for yaml in [false, true] {
+        let text = if yaml {
+            format!("schema: 1\nboard:\n  model: ibm-5170\n  rtc:\n    nvram: {{image: cmos.bin, sha256: '{pin}', write: journal, journal: cmos.upfj, keep_generations: 3}}\nfirmware:\n  bios: {{image: bios.bin}}\n")
+        } else {
+            format!("schema=1\n[board]\nmodel='ibm-5170'\n[board.rtc]\nnvram={{image='cmos.bin',sha256='{pin}',write='journal',journal='cmos.upfj',keep_generations=3}}\n[firmware.bios]\nimage='bios.bin'\n")
+        };
+        let name = if yaml { "nvram.yaml" } else { "nvram.toml" };
+        let path = temp.write(name, &text);
+        let config = load(&path).unwrap();
+        assert_eq!(
+            nvram_source(&config),
+            &assembly::NvramSource::Journal {
+                image: temp.0.join("cmos.bin"),
+                expected_sha256: Sha256::digest(base).into(),
+                journal: temp.0.join("cmos.upfj"),
+                keep_generations: 3,
+            }
+        );
+        assert!(
+            !temp.0.join("cmos.upfj").exists(),
+            "lowering must not create output"
+        );
+        let readonly = text
+            .replace("write: journal", "write: readonly")
+            .replace("write='journal'", "write='readonly'");
+        let path = temp.write(name, readonly);
+        let error = error(&path);
+        assert_eq!(error.field, "board.rtc.nvram.write");
+        assert_eq!(error.message, "readonly NVRAM is unsupported: the MC146818 has no write-protect input; use write = \"volatile\"");
+    }
+}
+
+#[test]
+fn nvram_extends_image_and_write_override_units_match_drives() {
+    let temp = Temp::new();
+    temp.write("cmos.bin", [0x22; 64]);
+    temp.write("new.bin", [0x33; 64]);
+    let parent = format!("schema=1\n[board]\nmodel='ibm-5170'\n[board.rtc]\nnvram={{image='cmos.bin',sha256='{:x}',write='journal',journal='old.upfj',keep_generations=4}}\n[firmware.bios]\nimage='bios.bin'\n", Sha256::digest([0x22; 64]));
+    temp.write("base.toml", &parent);
+    for (fields, journal, retention) in [
+        ("image='new.bin'", None, 0),
+        ("write='volatile'", None, 0),
+        ("journal='child.upfj'", Some("child/child.upfj"), 4),
+        (
+            "image='../new.bin',write='journal',journal='new.upfj'",
+            Some("child/new.upfj"),
+            10,
+        ),
+    ] {
+        let fields = if fields == "image='new.bin'" {
+            "image='../new.bin'"
+        } else {
+            fields
+        };
+        let path = temp.write(
+            "child/entry.toml",
+            format!("schema=1\nextends='../base.toml'\n[board.rtc]\nnvram={{{fields}}}\n"),
+        );
+        let config = load(&path).unwrap();
+        match (nvram_source(&config), journal) {
+            (assembly::NvramSource::Image(bytes), None) => assert_eq!(
+                bytes[0],
+                if fields.starts_with("image") {
+                    0x33
+                } else {
+                    0x22
+                }
+            ),
+            (
+                assembly::NvramSource::Journal {
+                    journal,
+                    keep_generations,
+                    ..
+                },
+                Some(expected),
+            ) => {
+                assert_eq!(journal, &temp.0.join(expected));
+                assert_eq!(*keep_generations, retention);
+            }
+            other => panic!("unexpected override result {other:?}"),
+        }
+    }
+    let path = temp.write("child/entry.toml", "schema=1\nextends='../base.toml'\n[board.rtc]\nnvram={image='../new.bin',write='journal'}\n");
+    assert_eq!(error(&path).field, "board.rtc.nvram.journal");
+    let path = temp.write(
+        "child/entry.yaml",
+        "schema: 1\nextends: ../base.toml\nboard:\n  rtc:\n    nvram: {image: ../new.bin}\n",
+    );
+    assert_eq!(
+        nvram_source(&load(path).unwrap()),
+        &assembly::NvramSource::Image([0x33; 64])
+    );
+    temp.write("cmos.bin", [0x44; 64]);
+    let pin = format!("{:x}", Sha256::digest([0x44; 64]));
+    let path = temp.write(
+        "child/entry.toml",
+        format!("schema=1\nextends='../base.toml'\n[board.rtc]\nnvram={{sha256='{pin}'}}\n"),
+    );
+    assert_eq!(
+        nvram_source(&load(&path).unwrap()),
+        &assembly::NvramSource::Journal {
+            image: temp.0.join("cmos.bin"),
+            expected_sha256: Sha256::digest([0x44; 64]).into(),
+            journal: temp.0.join("old.upfj"),
+            keep_generations: 4,
+        }
+    );
+    let path = temp.write(
+        "child/entry.toml",
+        "schema=1\nextends='../base.toml'\n[board.rtc]\nnvram={write='readonly'}\n",
+    );
+    let error = error(&path);
+    assert_eq!(error.field, "board.rtc.nvram.write");
+    assert_eq!(error.message, "readonly NVRAM is unsupported: the MC146818 has no write-protect input; use write = \"volatile\"");
+}
+
+#[test]
+fn nvram_journal_namespace_rejects_aliases_and_reserved_names() {
+    let temp = Temp::new();
+    temp.write("cmos.bin", [0; 64]);
+    for path in [
+        "cmos.bin",
+        "bios.bin",
+        "machine.toml",
+        "cmos.upfj.create-1",
+        "cmos.upfj.retain-1",
+    ] {
+        let config = temp.write("machine.toml", format!("schema=1\n[board]\nmodel='ibm-5170'\n[board.rtc]\nnvram={{image='cmos.bin',write='journal',journal='{path}'}}\n[firmware.bios]\nimage='bios.bin'\n"));
+        let error = error(&config);
+        assert_eq!(error.field, "board.rtc.nvram");
+        let journal = temp.0.join(path);
+        let expected = match path {
+            "cmos.bin" => format!(
+                "NVRAM: output {} aliases mounted input {}",
+                journal.display(),
+                journal.display()
+            ),
+            "bios.bin" | "machine.toml" => format!(
+                "NVRAM: journal {} aliases source input {}",
+                journal.display(),
+                journal.display()
+            ),
+            _ => format!(
+                "NVRAM: journal path {} uses a reserved creation-temporary name",
+                journal.display()
+            ),
+        };
+        assert_eq!(error.message, expected);
+    }
+    let path = temp.write("machine.toml", format!("{BASE}write='journal'\njournal='shared.upfj'\n[board.rtc]\nnvram={{image='cmos.bin',write='journal',journal='shared.upfj'}}\n"));
+    let error = error(&path);
+    assert_eq!(error.field, "board.rtc.nvram");
+    let output = temp.0.join("shared.upfj");
+    assert_eq!(
+        error.message,
+        format!(
+            "NVRAM: output {} aliases another output {}",
+            output.display(),
+            output.display()
+        )
+    );
+    assert!(!temp.0.join("shared.upfj").exists());
+    assert!(!temp.0.join("shared.upfj.lock").exists());
+}
+
+#[test]
+fn nvram_machine_check_never_creates_or_repairs_journals() {
+    use std::io::Write;
+    let temp = Temp::new();
+    let base = [0x22; 64];
+    temp.write("cmos.bin", base);
+    let path = temp.write("machine.toml", "schema=1\n[board]\nmodel='ibm-5170'\n[board.rtc]\nnvram={image='cmos.bin',write='journal',journal='cmos.upfj'}\n[firmware.bios]\nimage='bios.bin'\n");
+    let loaded = machine_file::load_for_assembly(
+        &path,
+        AssemblyOptions {
+            allow_unlisted_firmware: true,
+        },
+    )
+    .unwrap();
+    assert!(loaded
+        .check()
+        .unwrap()
+        .iter()
+        .any(|note| note.contains("journal will be created")));
+    let journal = temp.0.join("cmos.upfj");
+    let lock = temp.0.join("cmos.upfj.lock");
+    assert!(!journal.exists());
+    assert!(!lock.exists());
+    let mut sink =
+        media::JournalMedia::open(&journal, &base, 64, media::SinkStatus::default()).unwrap();
+    let mut block = sink.read_sector(0);
+    block[63] = 0x67;
+    sink.write_batch(&[(0, block)]);
+    sink.finish().unwrap();
+    std::fs::OpenOptions::new()
+        .append(true)
+        .open(&journal)
+        .unwrap()
+        .write_all(&[0x99; 19])
+        .unwrap();
+    let before = std::fs::read(&journal).unwrap();
+    let notes = loaded.check().unwrap();
+    assert!(notes
+        .iter()
+        .any(|note| note.contains("recovery will run on the next mount")));
+    assert_eq!(std::fs::read(&journal).unwrap(), before);
+    std::fs::remove_file(&lock).unwrap();
+    assert!(loaded
+        .check()
+        .unwrap()
+        .iter()
+        .any(|note| note.contains("without a lock")));
+    assert!(!lock.exists());
+    assert_eq!(std::fs::read(&journal).unwrap(), before);
+}

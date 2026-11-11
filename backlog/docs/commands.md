@@ -158,7 +158,7 @@ stderr with status 2. The informative
 `scheduler_engine_wall_times` test skips with one line unless
 `UNEMUPC98_SCHEDULER_WALL_TIMES=1` is set, including in ordinary slow/CI runs.
 
-## Offline floppy media
+## Offline persistent media
 
 ```sh
 cargo run -p cli -- media generations --base disk.img --journal disk.img.upfj
@@ -167,6 +167,14 @@ cargo run -p cli -- media verify --base disk.img --journal disk.img.upfj --repai
 cargo run -p cli -- media rollback --base disk.img --journal disk.img.upfj --to 1 --backup before-rollback.upfj
 cargo run -p cli -- media commit --base disk.img --journal disk.img.upfj --to 1 --output restored.img
 ```
+
+The same `media generations`, `verify`, `verify --repair-tail`, `rollback`,
+`commit` and `compact` commands accept CMOS NVRAM journals. Pass the original
+64-byte `cmos.bin` with `--base` and its separate journal with `--journal`.
+Exports remain 64 bytes, preserving the original clock/control prefix and the
+selected generation's general RAM (0Eh–3Fh except the base-supplied shutdown
+byte 0Fh). See `design/persistent-media.md`
+§ CMOS NVRAM journals.
 
 Inspections replay read-only under a shared stable journal lock. An existing
 lock is opened read-only, so a 0444 lock file is supported. If the lock is absent

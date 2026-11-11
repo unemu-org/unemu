@@ -5,8 +5,7 @@ to an assembly-validated `MachineConfig` are implemented in `crates/machine-file
 `extends` and embedded presets are implemented, including per-value origins,
 per-layer image directories and completeness checks. IDE PIO channels and
 volatile/readonly hard disks and explicit floppy journal attachment are implemented.
-NVRAM images currently support volatile writes only; readonly/journal support
-is deferred.
+NVRAM images support volatile writes and reset/session journals; readonly is rejected.
 Drive-indexed assembly diagnostics, including journal configuration errors, map
 to the drive's source origin and unit label while preserving the message suffix.
 Journal errors are mapped exhaustively from assembly validation.
@@ -146,7 +145,7 @@ Model changes the implementation must make:
   (v1 values `Floppy`, `FixedDisk`), so `validate()` can reject an IDE card that
   no ROM serves.
 - **M7. RTC start and NVRAM source.** Replace `CmosCfg.seed: bool` with
-  `nvram: NvramSource { Derived, Blank, Image { bytes, write } }`. Add
+  `nvram: NvramSource { Derived, Blank, Image, Journal }`. Add
   `start: RtcStart`, whose default equals today's epoch, 2000-01-01 00:00:00
   (READ, `RtcTime::default_epoch`). Keep `timing`.
 - **M8. Presentation out of the machine (implemented).**
@@ -265,12 +264,32 @@ file](#outside-the-file-run-options-presentation-host-streams)).
   checksum is written.
 - `"blank"`: today's `seed = false`, a battery-dead chip. A stock BIOS enters
   SETUP.
-- `{ image = "cmos.bin", sha256 = "…", write = "volatile" | "readonly" | "journal" }`:
-  64 bytes (the modelled MC146818 store, READ `NVRAM_LEN = 64`) loaded
-  verbatim. The time registers in the image are ignored, because the time
-  comes from `start`. A wrong size is an error. `journal` persists guest CMOS
-  writes, for example a saved BIOS setup. Its file format follows
-  `persistent-media.md`.
+- `{ image = "cmos.bin", sha256 = "…", write = "volatile" }`: exactly
+  64 bytes. Calendar reads use `start`; volatile initialization retains image
+  control bytes and clears live status, as described in `machine-config.md`.
+- `{ image = "cmos.bin", sha256 = "…", write = "journal", journal = "cmos.upfj",
+  keep_generations = 10 }`: immutable 64-byte base plus journal replay of general
+  RAM (0Eh–3Fh except the transient shutdown byte 0Fh). All clock, alarm and
+  status registers 00h–0Dh come from `start`
+  and the RTC model. Changed RAM appends only before CPU reset and at session
+  finish; reset leaves the generation open and finish closes it once. Run stops,
+  prompt polls and window frame slices perform no NVRAM I/O. The journal path
+  is required; retention is
+  positive and defaults to 10. Paths resolve against their defining layer.
+  YAML accepts the same mapping, for example:
+
+  ```yaml
+  board:
+    rtc:
+      nvram: {image: cmos.bin, sha256: "…", write: journal, journal: cmos.upfj, keep_generations: 10}
+  ```
+
+Wrong image sizes, pin mismatches, missing journal paths, zero retention and
+journal-only fields with volatile writes are errors. `write = "readonly"` is
+rejected with `readonly NVRAM is unsupported: the MC146818 has no write-protect
+input; use write = "volatile"`. POST must be able to write 0Eh/0Fh. The journal
+format, recovery diagnostics, host failures and offline tools follow
+`persistent-media.md` § CMOS NVRAM journals.
 
 ### `[cpu]`
 
@@ -768,13 +787,14 @@ Implementation choices where the original merge table left details open:
   source, and a provides-only override restates its services.
   For NVRAM and drive images, `image` and `sha256` keep their existing override
   unit: a new image clears an omitted pin, and a pin alone re-pins the image.
-  For drives, `image`, `sha256` and `journal` form one unit: overriding `image`
+  For drives and NVRAM, `image`, `sha256` and `journal` form one unit: overriding `image`
   drops the inherited journal and retention count. It clears the inherited write
   mode only if that mode was journal, falling back to volatile unless the child
   sets it again; inherited readonly and volatile modes keep their values and
   origins. A child that restates `write = "journal"` must supply a new journal
   path; otherwise lowering reports `required field is missing` at
-  `card[<id>].drives[unit=<n>].journal`. This prevents an old journal from being
+  `card[<id>].drives[unit=<n>].journal` for drives or
+  `board.rtc.nvram.journal` for NVRAM. This prevents an old journal from being
   bound to a new base. A journal-only override retains the image and resolves
   the journal against the child's directory.
   A child that explicitly sets `write = "volatile"` or `write = "readonly"`
@@ -1362,7 +1382,7 @@ Ordered; each bead is narrow and lands green.
    `keep_generations` on floppy drives, mapped to `WriteMode::Journal`.
    *Implemented:* TOML/YAML lowering, per-layer journal paths, journal/image
    override units and two-run guest WRITE/READ acceptance with immutable bases.
-   NVRAM readonly/journal support is a separate implementation item.
+   NVRAM journals use the same override units and offline tools; readonly is rejected.
    *Accept:* a file-loaded machine journals guest writes and a reload replays
    them. A fixture image is never journaled implicitly. Goldens stay volatile.
    *Depends on:* the persistent-media implementation beads, and 5.

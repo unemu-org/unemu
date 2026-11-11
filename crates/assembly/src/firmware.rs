@@ -93,7 +93,7 @@ impl std::fmt::Display for FirmwarePart {
 impl FirmwarePart {
     fn present(self, config: &MachineConfig) -> bool {
         let has =
-            |predicate: fn(DeviceKind) -> bool| config.devices.iter().any(|d| predicate(d.kind));
+            |predicate: fn(&DeviceKind) -> bool| config.devices.iter().any(|d| predicate(&d.kind));
         match self {
             Self::Kbc8042 => has(|kind| matches!(kind, DeviceKind::Keyboard(_))),
             Self::RtcCmos => has(|kind| matches!(kind, DeviceKind::Rtc(_))),

@@ -491,8 +491,22 @@ impl Merge for Rom {
         m.scalar(&mut self.provides, child.provides, "provides");
     }
 }
+
+// Keep journal override units in sync with the Drive merge below.
 impl Merge for NvramImage {
     fn merge(&mut self, child: Self, m: &mut Merger<'_>) {
+        if child.image.is_some() || child.write.is_some_and(|mode| mode != WriteMode::Journal) {
+            // A journal belongs to its base and is irrelevant when writes stop using it.
+            self.journal = None;
+            self.keep_generations = None;
+            for name in ["journal", "keep_generations"] {
+                m.out.remove_subtree(&join(&m.to, name));
+            }
+        }
+        if child.image.is_some() && self.write == Some(WriteMode::Journal) {
+            self.write = None;
+            m.out.remove_subtree(&join(&m.to, "write"));
+        }
         m.image(&mut self.image, &mut self.sha256, child.image, child.sha256);
         m.scalar(&mut self.write, child.write, "write");
         m.scalar(&mut self.journal, child.journal, "journal");

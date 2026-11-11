@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Host journal ownership and the NEC µPD765 sector-media adapter (WRITE DATA,
-//! N=2). See `backlog/docs/design/persistent-media.md`, §Integration and
+//! Host journal ownership for NEC µPD765 media (WRITE DATA, N=2) and
+//! Motorola MC146818 general RAM (0Eh–3Fh, excluding the transient AT shutdown
+//! byte 0Fh). See `backlog/docs/design/persistent-media.md`, §Integration and
 //! §Host errors and determinism. Only frontend boundaries observe host errors.
 
 use std::cell::RefCell;
@@ -17,12 +18,14 @@ enum Session {
     Finished(InMemoryMedia),
 }
 
-/// One drive's persistence failure, including its configuration index.
+/// One medium's persistence failure, identifying a drive or CMOS RAM.
 #[derive(Debug, thiserror::Error)]
-#[error("drive {drive_index} persistence: {source}")]
+#[error("{} persistence: {source}", if *.nvram { "NVRAM".into() } else { format!("drive {}", .drive_index) })]
 pub struct PersistenceError {
-    /// Index in the machine configuration's drive list.
+    /// Drive configuration index, or RTC device configuration index for NVRAM.
     pub drive_index: usize,
+    /// This failure belongs to CMOS rather than a drive.
+    pub nvram: bool,
     #[source]
     pub source: SinkFailure,
 }
@@ -31,13 +34,14 @@ pub struct PersistenceError {
 /// execution; dropping this handle never writes a clean generation marker.
 #[must_use = "journal sessions must be checked and explicitly finished"]
 pub struct PersistenceHandle {
-    /// Index in the machine configuration's drive list.
+    /// Drive configuration index, or RTC device configuration index for NVRAM.
     pub drive_index: usize,
     /// Validated closed-generation retention setting (including the anchor).
     pub keep_generations: u32,
     session: Rc<RefCell<Session>>,
     status: SinkStatus,
     report: VerificationReport,
+    nvram: Option<devices::cmos_rtc::NvramStore>,
 }
 
 impl PersistenceHandle {
@@ -75,9 +79,70 @@ impl PersistenceHandle {
                 session,
                 status,
                 report,
+                nvram: None,
             },
             adapter,
         ))
+    }
+
+    pub(crate) fn mount_nvram(
+        device_index: usize,
+        path: &Path,
+        base: &[u8; 64],
+        keep_generations: u32,
+        metadata: &std::fs::Metadata,
+        rtc: &mut devices::CmosRtc,
+    ) -> Result<Self, crate::AssemblyError> {
+        let (mut handle, _) = Self::mount(
+            device_index,
+            path,
+            base,
+            64,
+            keep_generations,
+            Some(metadata),
+        )
+        .map_err(|error| match error {
+            crate::AssemblyError::Journal { source, .. } => {
+                crate::AssemblyError::NvramJournal { source }
+            }
+            other => other,
+        })?;
+        let mut bytes = [0; 64];
+        if let Session::Active(journal) = &*handle.session.borrow() {
+            bytes[14..].copy_from_slice(&journal.image()[14..]);
+        }
+        // Clock, alarm and control registers belong to the RTC model on each run.
+        *rtc = std::mem::take(rtc).with_general_nvram(std::array::from_fn(|i| bytes[14 + i]));
+        handle.nvram = Some(rtc.nvram_store());
+        Ok(handle)
+    }
+
+    /// Human-readable owner used by frontend diagnostics.
+    pub fn owner(&self) -> String {
+        if self.nvram.is_some() {
+            "NVRAM".into()
+        } else {
+            format!("drive {}", self.drive_index)
+        }
+    }
+
+    /// The IBM PC AT Technical Reference, CMOS shutdown status byte, assigns
+    /// 0Fh to the live reset protocol; it must not become persistent setup data.
+    fn persist_nvram(&self) -> Result<(), PersistenceError> {
+        let Some(store) = &self.nvram else {
+            return Ok(());
+        };
+        let bytes = store.snapshot();
+        if let Session::Active(journal) = &mut *self.session.borrow_mut() {
+            if journal.image()[14] != bytes[0] || journal.image()[16..] != bytes[2..] {
+                let mut block = journal.read_sector(0);
+                block[14] = bytes[0];
+                block[16..64].copy_from_slice(&bytes[2..]);
+                journal.write_batch(&[(0, block)]);
+                self.check()?;
+            }
+        }
+        self.check()
     }
 
     /// Inject host write failures while retaining real in-memory media updates.
@@ -126,6 +191,7 @@ impl PersistenceHandle {
         self.status().map_or(Ok(()), |source| {
             Err(PersistenceError {
                 drive_index: self.drive_index,
+                nvram: self.nvram.is_some(),
                 source,
             })
         })
@@ -136,6 +202,7 @@ impl PersistenceHandle {
         if matches!(*self.session.borrow(), Session::Finished(_)) {
             return Err(PersistenceError {
                 drive_index: self.drive_index,
+                nvram: self.nvram.is_some(),
                 source: SinkFailure {
                     operation: "run",
                     message: "session already finished".into(),
@@ -146,16 +213,29 @@ impl PersistenceHandle {
         Ok(())
     }
 
-    /// Close a generation at a completed machine service boundary and continue.
+    /// Append changed CMOS RAM before the guest CPU reset, without closing its
+    /// session generation. Host-paced run boundaries only check error latches.
+    pub fn before_cpu_reset(&self) -> Result<(), PersistenceError> {
+        self.check_running()?;
+        self.persist_nvram()
+    }
+
+    /// Close a drive generation at an explicit checkpoint. For CMOS, only
+    /// validate the active session: its generation closes at session finish.
     pub fn checkpoint(&mut self) -> Result<(), PersistenceError> {
         self.check()?;
+        if self.nvram.is_some() && matches!(*self.session.borrow(), Session::Active(_)) {
+            return Ok(());
+        }
         match &mut *self.session.borrow_mut() {
             Session::Active(journal) => journal.checkpoint().map_err(|source| PersistenceError {
                 drive_index: self.drive_index,
+                nvram: self.nvram.is_some(),
                 source,
             }),
             Session::Finished(_) => Err(PersistenceError {
                 drive_index: self.drive_index,
+                nvram: self.nvram.is_some(),
                 source: SinkFailure {
                     operation: "checkpoint",
                     message: "session already finished".into(),
@@ -169,6 +249,7 @@ impl PersistenceHandle {
     /// the consuming sink API releases the lock only after attempting its marker.
     pub fn finish(&mut self) -> Result<(), PersistenceError> {
         self.check()?;
+        self.persist_nvram()?;
         let mut session = self.session.borrow_mut();
         let Session::Active(journal) = &*session else {
             return Ok(());
@@ -182,6 +263,7 @@ impl PersistenceHandle {
         if let Session::Active(journal) = old {
             (*journal).finish().map_err(|source| PersistenceError {
                 drive_index: self.drive_index,
+                nvram: self.nvram.is_some(),
                 source,
             })?;
         }
@@ -224,7 +306,67 @@ impl SectorMedia for JournalAdapter {
 /// Canonical names cover symlinks and parent aliases; existing inode identity
 /// also catches hard links, including the stable lock sidecars.
 pub(crate) fn validate_paths(config: &MachineConfig) -> Result<(), ConfigError> {
-    let inputs: Vec<_> = config
+    validate_media_paths(config).map_err(|error| match error {
+        ConfigError::Journal {
+            drive_index,
+            message,
+        } if drive_index >= config.drives.len() => ConfigError::Nvram { message },
+        other => other,
+    })
+}
+
+fn path_error(config: &MachineConfig, index: usize, message: String) -> ConfigError {
+    if index >= config.drives.len() {
+        ConfigError::Nvram { message }
+    } else {
+        ConfigError::Journal {
+            drive_index: index,
+            message,
+        }
+    }
+}
+
+fn validate_media_paths(config: &MachineConfig) -> Result<(), ConfigError> {
+    let nvram: Vec<_> = config
+        .devices
+        .iter()
+        .enumerate()
+        .filter_map(|(index, d)| match &d.kind {
+            crate::DeviceKind::Rtc(crate::CmosCfg {
+                nvram:
+                    crate::NvramSource::Journal {
+                        image,
+                        journal,
+                        keep_generations,
+                        ..
+                    },
+                ..
+            }) => Some((
+                config.drives.len() + index,
+                image.as_path(),
+                journal.as_path(),
+                *keep_generations,
+            )),
+            _ => None,
+        })
+        .collect();
+    for (_, image, _, keep) in &nvram {
+        if *keep == 0 {
+            return Err(ConfigError::Nvram {
+                message: "keep_generations must be positive".into(),
+            });
+        }
+        if JournalMedia::is_retention_temp_name(image)
+            || normalized(image)
+                .ok()
+                .is_some_and(|p| JournalMedia::is_retention_temp_name(&p))
+        {
+            return Err(ConfigError::Nvram {
+                message: "image uses a reserved retention-temporary name".into(),
+            });
+        }
+    }
+    let mut inputs: Vec<_> = config
         .drives
         .iter()
         .map(|d| &d.image)
@@ -235,6 +377,7 @@ pub(crate) fn validate_paths(config: &MachineConfig) -> Result<(), ConfigError> 
             _ => Vec::new(),
         })
         .collect();
+    inputs.extend(nvram.iter().map(|(_, image, _, _)| *image));
     let reserved = |path: &Path| {
         JournalMedia::is_retention_temp_name(path)
             || normalized(path)
@@ -274,16 +417,28 @@ pub(crate) fn validate_paths(config: &MachineConfig) -> Result<(), ConfigError> 
         }
     }
     let normalize = |drive_index, path: &Path, role| {
-        normalized(path).map_err(|error| ConfigError::Journal {
-            drive_index,
-            message: format!("{role} path {}: {error}", path.display()),
+        normalized(path).map_err(|error| {
+            path_error(
+                config,
+                drive_index,
+                format!("{role} path {}: {error}", path.display()),
+            )
         })
     };
     let mut journals = Vec::new();
-    for (drive_index, drive) in config.drives.iter().enumerate() {
-        let WriteMode::Journal { path, .. } = &drive.write else {
-            continue;
-        };
+    for (drive_index, path) in config
+        .drives
+        .iter()
+        .enumerate()
+        .filter_map(|(i, drive)| {
+            if let WriteMode::Journal { path, .. } = &drive.write {
+                Some((i, path.as_path()))
+            } else {
+                None
+            }
+        })
+        .chain(nvram.iter().map(|(i, _, path, _)| (*i, *path)))
+    {
         if JournalMedia::is_creation_temp_name(path) {
             return Err(ConfigError::Journal {
                 drive_index,
@@ -412,6 +567,387 @@ fn aliases(left: &Path, right: &Path) -> bool {
 mod tests {
     use super::*;
     use cpu::Cpu;
+
+    fn nvram_config(dir: &Path, program: Vec<u8>) -> (MachineConfig, [u8; 64], PathBuf) {
+        use sha2::{Digest, Sha256};
+        let base = std::array::from_fn(|i| i as u8);
+        let image = dir.join("cmos.bin");
+        let journal = dir.join("cmos.upfj");
+        std::fs::write(&image, base).unwrap();
+        let mut config = crate::at_rtc(program, 100, 10);
+        let rtc = config
+            .devices
+            .iter_mut()
+            .find(|d| matches!(d.kind, crate::DeviceKind::Rtc(_)))
+            .unwrap();
+        let crate::DeviceKind::Rtc(c) = &mut rtc.kind else {
+            unreachable!()
+        };
+        c.nvram = crate::NvramSource::Journal {
+            image,
+            expected_sha256: Sha256::digest(base).into(),
+            journal: journal.clone(),
+            keep_generations: 2,
+        };
+        (config, base, journal)
+    }
+
+    fn write_cmos(machine: &mut crate::AssembledMachine, index: u8, value: u8) {
+        machine
+            .machine
+            .bus_mut()
+            .port_write(0x70, 1, u32::from(index))
+            .unwrap();
+        machine
+            .machine
+            .bus_mut()
+            .port_write(0x71, 1, u32::from(value))
+            .unwrap();
+    }
+
+    fn read_cmos(machine: &mut crate::AssembledMachine, index: u8) -> u8 {
+        machine
+            .machine
+            .bus_mut()
+            .port_write(0x70, 1, u32::from(index))
+            .unwrap();
+        machine.machine.bus_mut().port_read(0x71, 1).unwrap() as u8
+    }
+
+    #[test]
+    fn nvram_run_stops_and_prompt_polls_do_not_append() {
+        let temp = crate::test_support::TempDir::new("nvram-polls");
+        let (config, base, path) = nvram_config(temp.path(), vec![0x90, 0xEB, 0xFD]);
+        let mut machine = crate::assemble_with_observation(
+            &config,
+            &crate::ObservationPolicy {
+                routes: vec![crate::ObservationRequest {
+                    device: crate::DeviceId::Vga,
+                    output: crate::OutputKind::TextScanout,
+                    byte_limit: 0,
+                }],
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        write_cmos(&mut machine, 0x10, 0xA5);
+        machine
+            .run_session(&crate::RunPolicy::natural(Some(5), None))
+            .unwrap();
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().len(),
+            media::HEADER_LEN as u64
+        );
+        let mut policy = crate::RunPolicy::natural(Some(20), None);
+        policy.stop = crate::StopCondition::PromptThen {
+            console: crate::ConsoleProbe {
+                device: crate::DeviceId::Vga,
+            },
+            needle: "never present".into(),
+            poll_step: 2,
+            then_budget: 0,
+        };
+        machine.run_session(&policy).unwrap();
+        machine.check_persistence().unwrap();
+        machine.persistence[0].checkpoint().unwrap();
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().len(),
+            media::HEADER_LEN as u64
+        );
+        machine.finish_persistence().unwrap();
+        let scan = media::scan(&std::fs::read(&path).unwrap(), &base, 64);
+        assert_eq!(scan.report.generations.len(), 1);
+        assert_eq!(
+            scan.report.generations[0].reason,
+            media::ClosingReason::SessionEnd
+        );
+        assert_eq!(scan.report.generations[0].commands, 1);
+    }
+
+    #[test]
+    fn nvram_finish_coalesces_replays_and_closes_one_session_generation() {
+        let temp = crate::test_support::TempDir::new("nvram-session");
+        let (config, base, path) = nvram_config(
+            temp.path(),
+            vec![0xFA, 0xB0, 0x0E, 0xE6, 0x70, 0xB0, 0xA5, 0xE6, 0x71, 0xF4],
+        );
+        let mut first = crate::assemble(&config).unwrap();
+        assert_eq!(read_cmos(&mut first, 0x0B), 2);
+        first
+            .run_session(&crate::RunPolicy::natural(Some(100), None))
+            .unwrap();
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().len(),
+            media::HEADER_LEN as u64
+        );
+        first.finish_persistence().unwrap();
+        let length = std::fs::metadata(&path).unwrap().len();
+        first.finish_persistence().unwrap();
+        assert_eq!(std::fs::metadata(&path).unwrap().len(), length);
+        assert_eq!(
+            first.persistence[0]
+                .checkpoint()
+                .unwrap_err()
+                .source
+                .message,
+            "session already finished"
+        );
+        drop(first);
+        let mut second = crate::assemble(&config).unwrap();
+        assert_eq!(read_cmos(&mut second, 14), 0xA5);
+        assert_eq!(read_cmos(&mut second, 63), base[63]);
+        assert_eq!(read_cmos(&mut second, 0x0B), 2);
+        for index in 0..14 {
+            write_cmos(&mut second, index, 0x12);
+        }
+        write_cmos(&mut second, 63, 0x55);
+        write_cmos(&mut second, 63, base[63]);
+        write_cmos(&mut second, 15, 9);
+        write_cmos(&mut second, 16, 0x67);
+        write_cmos(&mut second, 50, 0x21);
+        second.finish_persistence().unwrap();
+        drop(second);
+        let scan = media::scan(&std::fs::read(&path).unwrap(), &base, 64);
+        assert_eq!(scan.report.generations.len(), 2);
+        assert!(scan
+            .report
+            .generations
+            .iter()
+            .all(|g| g.reason == media::ClosingReason::SessionEnd && g.commands == 1));
+        let image = scan.image.unwrap();
+        assert_eq!(&image[..14], &base[..14]);
+        assert_eq!(image[15], base[15]);
+        assert_eq!(image[16], 0x67);
+        assert_eq!(image[50], 0x21);
+        let mut third = crate::assemble(&config).unwrap();
+        assert_eq!(read_cmos(&mut third, 15), base[15]);
+        assert_eq!(read_cmos(&mut third, 50), 0x21);
+        assert_eq!(read_cmos(&mut third, 0), 0);
+        third.finish_persistence().unwrap();
+        let scan = media::scan(&std::fs::read(&path).unwrap(), &base, 64);
+        let last = scan.report.generations.last().unwrap();
+        assert_eq!(last.reason, media::ClosingReason::SessionEnd);
+        assert_eq!(
+            last.commands, 0,
+            "unchanged session has only its end marker"
+        );
+    }
+
+    fn reset_config(config: &mut MachineConfig, reset_program: Vec<u8>) {
+        config.memory.address_space_bytes = 0x100000;
+        config.images.push(crate::LoadImage {
+            base: 0xFFFF0,
+            source: ImageSource::Inline(reset_program),
+            kind: crate::ImageKind::Rom,
+            provides: vec![],
+        });
+    }
+
+    #[test]
+    fn nvram_shutdown_only_reset_never_appends_ram() {
+        for index in [0x0F, 0x10] {
+            let temp = crate::test_support::TempDir::new("nvram-shutdown");
+            let (mut config, base, path) = nvram_config(
+                temp.path(),
+                vec![
+                    0xFA, 0xB0, index, 0xE6, 0x70, 0xB0, 9, 0xE6, 0x71, 0xB0, 0xFE, 0xE6, 0x64,
+                ],
+            );
+            reset_config(&mut config, vec![0xF4]);
+            let mut machine = crate::assemble(&config).unwrap();
+            machine
+                .run_session(&crate::RunPolicy::natural(Some(100), None))
+                .unwrap();
+            assert_eq!(
+                read_cmos(&mut machine, index),
+                9,
+                "CPU reset preserves live CMOS"
+            );
+            let scan = media::scan(&std::fs::read(&path).unwrap(), &base, 64);
+            assert!(scan.report.generations.is_empty());
+            if index == 15 {
+                assert!(scan.report.unsealed_tip.is_none());
+                assert_eq!(
+                    std::fs::metadata(&path).unwrap().len(),
+                    media::HEADER_LEN as u64
+                );
+            } else {
+                assert_eq!(scan.report.unsealed_tip.as_ref().unwrap().commands, 1);
+                assert_eq!(scan.image.as_ref().unwrap()[16], 9);
+                assert_eq!(scan.image.as_ref().unwrap()[15], base[15]);
+            }
+            machine.finish_persistence().unwrap();
+            let scan = media::scan(&std::fs::read(&path).unwrap(), &base, 64);
+            assert_eq!(scan.report.generations.len(), 1);
+            assert_eq!(
+                scan.report.generations[0].reason,
+                media::ClosingReason::SessionEnd
+            );
+            assert_eq!(scan.report.generations[0].commands, u64::from(index == 16));
+        }
+    }
+
+    #[test]
+    fn nvram_execution_error_leaves_reset_records_open_for_recovery() {
+        let temp = crate::test_support::TempDir::new("nvram-error");
+        let (mut config, base, path) = nvram_config(
+            temp.path(),
+            vec![
+                0xFA, 0xB0, 0x10, 0xE6, 0x70, 0xB0, 9, 0xE6, 0x71, 0xB0, 0xFE, 0xE6, 0x64,
+            ],
+        );
+        reset_config(&mut config, vec![0x0F, 0x05]);
+        let mut machine = crate::assemble(&config).unwrap();
+        assert!(machine
+            .run_session(&crate::RunPolicy::natural(Some(100), None))
+            .is_err());
+        drop(machine);
+        let scan = media::scan(&std::fs::read(&path).unwrap(), &base, 64);
+        assert!(scan.report.generations.is_empty());
+        assert_eq!(scan.report.unsealed_tip.as_ref().unwrap().commands, 1);
+        let mut next = crate::assemble(&config).unwrap();
+        assert!(next.persistence[0].mount_report().unsealed_tip.is_some());
+        assert_eq!(read_cmos(&mut next, 16), 9);
+        let scan = media::scan(&std::fs::read(&path).unwrap(), &base, 64);
+        assert_eq!(scan.report.generations.len(), 1);
+        assert_eq!(
+            scan.report.generations[0].reason,
+            media::ClosingReason::Recovered
+        );
+        next.finish_persistence().unwrap();
+        let scan = media::scan(&std::fs::read(&path).unwrap(), &base, 64);
+        assert_eq!(scan.report.generations.len(), 2);
+        assert_eq!(
+            scan.report.generations[1].reason,
+            media::ClosingReason::SessionEnd
+        );
+    }
+
+    #[test]
+    fn nvram_resets_share_a_generation_and_retention_waits_for_finish() {
+        let temp = crate::test_support::TempDir::new("nvram-retention");
+        let (mut config, base, path) = nvram_config(temp.path(), vec![0xF4]);
+        for device in &mut config.devices {
+            if let crate::DeviceKind::Rtc(crate::CmosCfg {
+                nvram:
+                    crate::NvramSource::Journal {
+                        keep_generations, ..
+                    },
+                ..
+            }) = &mut device.kind
+            {
+                *keep_generations = 1;
+            }
+        }
+        let mut first = crate::assemble(&config).unwrap();
+        write_cmos(&mut first, 16, 0x55);
+        first.finish_persistence().unwrap();
+        drop(first);
+        let mut second = crate::assemble(&config).unwrap();
+        for value in [0x66, 0x77] {
+            write_cmos(&mut second, 16, value);
+            second.before_cpu_reset().unwrap();
+            let before = std::fs::read(&path).unwrap();
+            second.before_cpu_reset().unwrap();
+            assert_eq!(
+                std::fs::read(&path).unwrap(),
+                before,
+                "unchanged reset adds no record"
+            );
+            let scan = media::scan(&before, &base, 64);
+            assert_eq!(scan.report.header.unwrap().anchor_generation, 0);
+            assert_eq!(scan.report.generations.len(), 1);
+            assert_eq!(scan.report.unsealed_tip.unwrap().generation, 2);
+        }
+        second.finish_persistence().unwrap();
+        let scan = media::scan(&std::fs::read(&path).unwrap(), &base, 64);
+        assert_eq!(scan.report.generations.len(), 1);
+        assert_eq!(scan.report.header.unwrap().anchor_generation, 2);
+        assert_eq!(scan.image.unwrap()[16], 0x77);
+        let error = second.persistence[0].checkpoint().unwrap_err();
+        assert_eq!(error.source.operation, "checkpoint");
+        assert_eq!(error.source.message, "session already finished");
+    }
+
+    #[test]
+    fn nvram_tail_damage_is_reported_and_base_pin_precedes_outputs() {
+        use std::io::Write;
+        let temp = crate::test_support::TempDir::new("nvram-tail");
+        let (config, base, path) = nvram_config(temp.path(), vec![0xF4]);
+        let mut machine = crate::assemble(&config).unwrap();
+        write_cmos(&mut machine, 63, 0x99);
+        machine.finish_persistence().unwrap();
+        drop(machine);
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap()
+            .write_all(&[0x55; 27])
+            .unwrap();
+        let mut machine = crate::assemble(&config).unwrap();
+        assert_eq!(machine.persistence[0].mount_report().discarded_bytes, 27);
+        assert_eq!(read_cmos(&mut machine, 63), 0x99);
+        machine.finish_persistence().unwrap();
+        drop(machine);
+        let mut changed = base;
+        changed[0] ^= 1;
+        std::fs::write(temp.path().join("cmos.bin"), changed).unwrap();
+        let before = std::fs::read(&path).unwrap();
+        let error = crate::assemble(&config).err().unwrap().to_string();
+        assert!(error.contains("NVRAM: image sha256 mismatch"), "{error}");
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        std::fs::remove_file(&path).unwrap();
+        let lock = path.with_file_name("cmos.upfj.lock");
+        std::fs::remove_file(&lock).unwrap();
+        let error = crate::assemble(&config).err().unwrap().to_string();
+        assert!(error.contains("NVRAM: image sha256 mismatch"), "{error}");
+        assert!(!path.exists());
+        assert!(!lock.exists());
+    }
+
+    #[test]
+    fn nvram_output_failure_stops_before_cpu_reset() {
+        let temp = crate::test_support::TempDir::new("nvram-reset");
+        let program = vec![
+            0xFA, 0xB0, 0x3F, 0xE6, 0x70, 0xB0, 0xA5, 0xE6, 0x71, 0xB0, 0xFE, 0xE6, 0x64, 0xF4,
+        ];
+        let (mut config, base, path) = nvram_config(temp.path(), program);
+        config.memory.address_space_bytes = 0x100000;
+        config.images.push(crate::LoadImage {
+            base: 0xFFFF0,
+            source: ImageSource::Inline(vec![0xF4]),
+            kind: crate::ImageKind::Rom,
+            provides: vec![],
+        });
+        for fail in [true, false] {
+            let mut machine = crate::assemble(&config).unwrap();
+            if fail {
+                machine.persistence[0].fail_output();
+            }
+            let result = machine.run_session(&crate::RunPolicy::natural(Some(100), None));
+            if fail {
+                assert!(matches!(result, Err(crate::RunError::Persistence(_))));
+                assert_eq!(machine.machine.cpu().code_segment(), 0);
+                assert!(machine
+                    .check_persistence()
+                    .unwrap_err()
+                    .to_string()
+                    .starts_with("NVRAM persistence:"));
+            } else {
+                assert_eq!(result.unwrap(), machine::RunOutcome::Halted);
+                assert_eq!(machine.machine.cpu().code_segment(), 0xF000);
+                let scan = media::scan(&std::fs::read(&path).unwrap(), &base, 64);
+                assert_eq!(
+                    scan.report.generations.len(),
+                    0,
+                    "reset boundary must keep the session open"
+                );
+                assert_eq!(scan.report.unsealed_tip.as_ref().unwrap().commands, 1);
+                assert_eq!(scan.image.as_ref().unwrap()[63], 0xA5);
+                machine.finish_persistence().unwrap();
+            }
+        }
+    }
 
     #[test]
     fn failing_sink_preserves_guest_prefix_and_stops_at_frontend_boundary() {

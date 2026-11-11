@@ -12,6 +12,9 @@ use crate::device::DeviceId;
 /// test can assert the exact failure a malformed config produces.
 #[derive(Clone, Debug, PartialEq, Eq, Error)]
 pub enum ConfigError {
+    /// Invalid CMOS base, digest, retention or output path.
+    #[error("NVRAM: {message}")]
+    Nvram { message: String },
     /// Invalid interleaved system ROM layout or source role.
     #[error("firmware parts: {message}")]
     FirmwareParts { message: String },

@@ -324,8 +324,11 @@ impl<'a> State<'a> {
                 if self.anchor_pending && self.anchor_command_ended {
                     return Err(Error::Anchor("more than one synthetic command"));
                 }
-                if lba >= (self.base.len() / SECTOR_LEN) as u64 {
+                if lba >= self.base.len().div_ceil(SECTOR_LEN) as u64 {
                     return Err(Error::SectorBounds(lba));
+                }
+                if self.base.len() == 64 && !crate::codec::valid_nvram_block(self.base, &bytes) {
+                    return Err(Error::Encoding("NVRAM immutable bytes or padding"));
                 }
                 if self.pending.contains_key(&lba) {
                     return Err(Error::DuplicateSector(lba));
@@ -339,7 +342,9 @@ impl<'a> State<'a> {
                         return Err(Error::Anchor("sectors must be in increasing LBA order"));
                     }
                     let start = lba as usize * SECTOR_LEN;
-                    if self.base[start..start + SECTOR_LEN] == *bytes {
+                    if self.base[start..(start + SECTOR_LEN).min(self.base.len())]
+                        == bytes[..self.base.len().min(SECTOR_LEN)]
+                    {
                         return Err(Error::Anchor("unchanged base sector"));
                     }
                 }
@@ -369,7 +374,8 @@ impl<'a> State<'a> {
                     .ok_or(Error::IntegerExhausted)?;
                 for (lba, bytes) in &self.pending {
                     let start = *lba as usize * SECTOR_LEN;
-                    self.image[start..start + SECTOR_LEN].copy_from_slice(bytes.as_ref());
+                    let end = (start + SECTOR_LEN).min(self.image.len());
+                    self.image[start..end].copy_from_slice(&bytes[..end - start]);
                 }
                 self.pending.clear();
                 self.commands = commands;

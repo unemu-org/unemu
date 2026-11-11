@@ -252,13 +252,60 @@ impl LoadedMachine {
         let mut notes = Vec::new();
         for (index, drive) in config.drives.iter_mut().enumerate() {
             if let assembly::WriteMode::Journal { path, .. } = &drive.write {
-                let message = inspect_journal(drive, path)
+                let assembly::ImageSource::File(base) = &drive.image else {
+                    return Err(self
+                        .diagnostics
+                        .drive_error(index, "internal error: journal base is not a file"));
+                };
+                let message = inspect_journal(base, path, drive.kind.image_bytes())
                     .map_err(|message| self.diagnostics.drive_error(index, message))?;
                 if let Some(message) = message {
                     notes.push(self.diagnostics.drive_error(index, message).to_string());
                 }
                 drive.write = assembly::WriteMode::Volatile;
             }
+        }
+        for device in &mut config.devices {
+            let assembly::DeviceKind::Rtc(rtc) = &mut device.kind else {
+                continue;
+            };
+            let assembly::NvramSource::Journal {
+                image,
+                expected_sha256,
+                journal,
+                ..
+            } = &rtc.nvram
+            else {
+                continue;
+            };
+            use sha2::{Digest, Sha256};
+            let error = |message| {
+                self.diagnostics
+                    .nvram_error("board.rtc.nvram.image", message)
+            };
+            let bytes = std::fs::read(image)
+                .map_err(|e| error(format!("image {}: {e}", image.display())))?;
+            let actual: [u8; 32] = Sha256::digest(&bytes).into();
+            if &actual != expected_sha256 {
+                return Err(error(format!(
+                    "image sha256 mismatch: expected {:x}, actual {:x}",
+                    sha2::digest::Output::<Sha256>::from(*expected_sha256),
+                    sha2::digest::Output::<Sha256>::from(actual)
+                )));
+            }
+            let message = inspect_journal(image, journal, 64).map_err(|message| {
+                self.diagnostics
+                    .nvram_error("board.rtc.nvram.journal", message)
+            })?;
+            if let Some(message) = message {
+                notes.push(
+                    self.diagnostics
+                        .nvram_error("board.rtc.nvram.journal", message)
+                        .to_string(),
+                );
+            }
+            // Hardware validation executes no guest code and must never open a writer.
+            rtc.nvram = assembly::NvramSource::Blank;
         }
         let assembled = assembly::assemble_with_observation_and_options(
             &config,
@@ -313,11 +360,12 @@ pub fn load_for_assembly(
     })
 }
 
-fn inspect_journal(drive: &assembly::DriveConfig, path: &Path) -> Result<Option<String>, String> {
+fn inspect_journal(
+    base: &Path,
+    path: &Path,
+    geometry_length: u64,
+) -> Result<Option<String>, String> {
     use media::offline::{Access, JournalTool, ToolError};
-    let assembly::ImageSource::File(base) = &drive.image else {
-        return Err("internal error: journal base is not a file".into());
-    };
     match std::fs::symlink_metadata(path) {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             return Ok(Some("note: journal will be created".into()))
@@ -341,7 +389,7 @@ fn inspect_journal(drive: &assembly::DriveConfig, path: &Path) -> Result<Option<
             std::fs::read(base).map_err(|error| format!("base {}: {error}", base.display()))?;
         let mut file = std::fs::File::open(&canonical)
             .map_err(|error| format!("journal {}: {error}", path.display()))?;
-        media::scan_reader(&mut file, &base_bytes, drive.kind.image_bytes())
+        media::scan_reader(&mut file, &base_bytes, geometry_length)
             .map_err(|error| format!("journal {}: {error}", path.display()))?
             .report
     } else {

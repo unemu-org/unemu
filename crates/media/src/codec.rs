@@ -20,7 +20,7 @@ pub enum Error {
     Version(u16),
     #[error("journal header checksum mismatch")]
     HeaderChecksum,
-    #[error("base length must be positive, sector aligned and match the header")]
+    #[error("base length must be 64 bytes or positive and sector aligned, and match the header")]
     BaseLength,
     #[error("configured geometry length does not match the base")]
     GeometryLength,
@@ -137,8 +137,14 @@ impl Header {
     }
 }
 
+/// The CMOS clock/control prefix and AT shutdown byte are not journal state.
+/// See persistent-media.md § CMOS NVRAM journals.
+pub(crate) fn valid_nvram_block(base: &[u8], bytes: &[u8; SECTOR_LEN]) -> bool {
+    bytes[..14] == base[..14] && bytes[15] == base[15] && bytes[64..].iter().all(|&b| b == 0)
+}
+
 fn check_base_length(length: u64) -> Result<(), Error> {
-    if length == 0 || !length.is_multiple_of(SECTOR_LEN as u64) {
+    if length != 64 && (length == 0 || !length.is_multiple_of(SECTOR_LEN as u64)) {
         return Err(Error::BaseLength);
     }
     Ok(())

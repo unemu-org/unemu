@@ -16,13 +16,31 @@ pub(crate) fn validate_journals(
     origins: &Origins,
     images: &[PathBuf],
 ) -> Result<(), ConfigError> {
-    for (drive_index, drive) in config.drives.iter().enumerate() {
-        let WriteMode::Journal { path, .. } = &drive.write else {
-            continue;
-        };
-        let error = |message| ConfigError::Journal {
-            drive_index,
-            message,
+    let drives = config.drives.iter().enumerate().filter_map(|(i, drive)| {
+        if let WriteMode::Journal { path, .. } = &drive.write {
+            Some((Some(i), path))
+        } else {
+            None
+        }
+    });
+    let nvram = config.devices.iter().filter_map(|device| {
+        if let assembly::DeviceKind::Rtc(assembly::CmosCfg {
+            nvram: assembly::NvramSource::Journal { journal, .. },
+            ..
+        }) = &device.kind
+        {
+            Some((None, journal))
+        } else {
+            None
+        }
+    });
+    for (drive_index, path) in drives.chain(nvram) {
+        let error = |message| match drive_index {
+            Some(drive_index) => ConfigError::Journal {
+                drive_index,
+                message,
+            },
+            None => ConfigError::Nvram { message },
         };
         if std::fs::metadata(path).is_ok_and(|metadata| metadata.is_dir()) {
             return Err(error(format!(

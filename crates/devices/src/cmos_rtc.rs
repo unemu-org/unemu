@@ -94,6 +94,8 @@
 //! are derived from that phase (MC146818 datasheet, Update Cycle). Guest-written
 //! calendar bytes remain unrestricted, just as on the register interface.
 
+use std::{cell::RefCell, rc::Rc};
+
 use device::{AccessDir, Device, DeviceError, NextEvent, TraceEvent, VClock};
 
 /// Stable device name reported by [`Device::name`].
@@ -348,6 +350,8 @@ pub struct CmosRtc {
     /// 64-byte CMOS store. Time registers are shadowed by `time` on access; their
     /// slots here back general reads only for non-time indices.
     nvram: [u8; NVRAM_LEN],
+    /// Optional host observer; excluded from hardware snapshots and restored from RAM.
+    nvram_store: Option<NvramStore>,
     /// The live broken-down time.
     time: RtcTime,
     /// Currently selected CMOS index (low 6 bits meaningful).
@@ -374,6 +378,19 @@ pub struct CmosRtc {
     now: VClock,
 }
 
+/// Read-only observation of MC146818 general RAM (datasheet, RAM locations
+/// 0Eh–3Fh). See persistent-media.md § CMOS NVRAM journals. Comparing snapshots
+/// coalesces byte writes without putting host persistence in the device.
+#[derive(Clone)]
+pub struct NvramStore(Rc<RefCell<[u8; 50]>>);
+
+impl NvramStore {
+    /// Current general RAM, excluding every clock, alarm and status register.
+    pub fn snapshot(&self) -> [u8; 50] {
+        *self.0.borrow()
+    }
+}
+
 impl CmosRtc {
     /// Create an RTC seeded with the default epoch and the real per-second tick
     /// ratio, decoding ports `0x70`/`0x71`.
@@ -387,6 +404,7 @@ impl CmosRtc {
         nvram[REG_D] = D_VRT;
         Self {
             nvram,
+            nvram_store: None,
             time: RtcTime::default_epoch(),
             index: 0,
             nmi_disabled: false,
@@ -399,6 +417,33 @@ impl CmosRtc {
             uip: false,
             trace: device::TraceBuffer::default(),
             now: VClock::ZERO,
+        }
+    }
+
+    /// Initialize only general RAM, preserving live clock/control defaults
+    /// (MC146818 datasheet, RAM and Registers A–D).
+    #[must_use]
+    pub fn with_general_nvram(mut self, bytes: [u8; 50]) -> Self {
+        self.nvram[14..].copy_from_slice(&bytes);
+        self.publish_nvram();
+        self
+    }
+
+    /// Observe general RAM at host persistence boundaries (MC146818, RAM).
+    pub fn nvram_store(&mut self) -> NvramStore {
+        if let Some(store) = &self.nvram_store {
+            return store.clone();
+        }
+        let store = NvramStore(Rc::new(RefCell::new(std::array::from_fn(|i| {
+            self.nvram[14 + i]
+        }))));
+        self.nvram_store = Some(store.clone());
+        store
+    }
+
+    fn publish_nvram(&self) {
+        if let Some(store) = &self.nvram_store {
+            store.0.borrow_mut().copy_from_slice(&self.nvram[14..]);
         }
     }
 
@@ -437,6 +482,7 @@ impl CmosRtc {
         self.nvram[REG_C] = 0;
         self.refresh_irqf();
         self.nvram[REG_D] = D_VRT;
+        self.publish_nvram();
         self
     }
 
@@ -456,6 +502,7 @@ impl CmosRtc {
         self.nvram[REG_EXT_MEM_LO] = ext[0];
         self.nvram[REG_EXT_MEM_HI] = ext[1];
         self.write_config_checksum();
+        self.publish_nvram();
     }
 
     /// 16-bit sum of the config bytes the BIOS protects ([`CHECKSUM_RANGE`]).
@@ -614,6 +661,9 @@ impl CmosRtc {
             // Register D VRT is read-only; store the remaining bits.
             REG_D => self.nvram[REG_D] = (value & !D_VRT) | (self.nvram[REG_D] & D_VRT),
             other => self.nvram[other] = value,
+        }
+        if self.index >= 14 {
+            self.publish_nvram();
         }
     }
 
@@ -1004,6 +1054,7 @@ impl Device for CmosRtc {
         self.oscillator_phase = oscillator_phase;
         self.divider_phase = divider_phase;
         self.now = VClock(read_u64(off + 35));
+        self.publish_nvram();
         Ok(())
     }
 
@@ -1024,6 +1075,51 @@ impl Device for CmosRtc {
 mod tests {
     use super::*;
     use testkit::MockBus;
+
+    #[test]
+    fn nvram_observer_initialization_and_restore_publish_on_mock_bus() {
+        for source in 0..4 {
+            let mut rtc = CmosRtc::new();
+            let store = rtc.nvram_store();
+            match source {
+                0 => rtc = rtc.with_nvram([0xA5; 64]),
+                1 => rtc.seed_config(&CmosConfig::default()),
+                2 => rtc = rtc.with_general_nvram([0x5A; 50]),
+                _ => {}
+            }
+            let mut bus = MockBus::new(Box::new(rtc));
+            if source == 3 {
+                let snapshot = CmosRtc::new().with_general_nvram([0x67; 50]).save();
+                bus.device_mut().restore(&snapshot).unwrap();
+            }
+            let expected: [u8; 50] = std::array::from_fn(|i| bus_read_reg(&mut bus, i + 14));
+            assert_ne!(expected, [0; 50]);
+            assert_eq!(store.snapshot(), expected, "publish path {source}");
+        }
+    }
+
+    #[test]
+    fn nvram_observer_tracks_only_general_ram_on_mock_bus() {
+        let mut rtc = CmosRtc::new().with_general_nvram([0xAA; 50]);
+        let store = rtc.nvram_store();
+        let mut bus = MockBus::new(Box::new(rtc));
+        assert_eq!(store.snapshot(), [0xAA; 50]);
+        for index in 0..14 {
+            bus_write_reg(&mut bus, index, 0x12);
+            assert_eq!(store.snapshot(), [0xAA; 50], "clock/control {index:#x}");
+        }
+        for index in 14..64 {
+            let before = store.snapshot();
+            bus_write_reg(&mut bus, index, index as u8);
+            assert_ne!(store.snapshot(), before, "general RAM {index:#x}");
+            assert_eq!(store.snapshot()[index - 14], index as u8);
+            assert_eq!(bus_read_reg(&mut bus, index), index as u8);
+        }
+        bus.tick(10_000);
+        assert_eq!(store.snapshot(), std::array::from_fn(|i| (i + 14) as u8));
+        bus.device_mut().reset();
+        assert_eq!(store.snapshot(), std::array::from_fn(|i| (i + 14) as u8));
+    }
 
     #[test]
     fn exact_default_rate_has_no_long_term_drift_in_uneven_chunks() {

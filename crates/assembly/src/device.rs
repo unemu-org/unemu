@@ -236,12 +236,12 @@ impl std::fmt::Display for RtcStart {
     }
 }
 
-/// Initial MC146818 storage; guest writes remain volatile.
+/// Initial MC146818 storage and optional reset/finish persistence.
 ///
 /// Motorola MC146818 datasheet, RAM and Time, Calendar, and Alarm Locations:
 /// the 64-byte address space contains clock/control registers and general RAM.
 /// See `backlog/docs/design/machine-config.md` § RTC start and NVRAM source.
-#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub enum NvramSource {
     /// Derive AT configuration bytes and their checksum from the machine.
     #[default]
@@ -250,6 +250,17 @@ pub enum NvramSource {
     Blank,
     /// Copy writable backing bytes without checksum repair; clear live status.
     Image([u8; 64]),
+    /// Immutable file base and journal; only general RAM is persisted.
+    Journal {
+        /// Original 64-byte image, read and hashed once at assembly.
+        image: std::path::PathBuf,
+        /// Mandatory binding to the bytes verified during lowering.
+        expected_sha256: [u8; 32],
+        /// Separate append-only journal output.
+        journal: std::path::PathBuf,
+        /// Positive closed-generation retention limit.
+        keep_generations: u32,
+    },
 }
 
 /// MC146818 CMOS/RTC parameters (§7.6).
@@ -257,7 +268,7 @@ pub enum NvramSource {
 /// Motorola MC146818 datasheet, Time, Calendar, and Alarm Locations and
 /// Registers A–D. See `backlog/docs/design/machine-config.md`
 /// § RTC start and NVRAM source for initialization precedence.
-#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct CmosCfg {
     /// Deterministic calendar seed; never read from the host clock.
     pub start: RtcStart,
@@ -373,7 +384,7 @@ pub struct DmaCfg {}
 /// One variant per modelled chip. The variant fixes *which* chip a device is;
 /// the surrounding [`DeviceConfig`] carries the wiring (ports, IRQ, DMA) common
 /// to all of them.
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DeviceKind {
     /// 16550 UART.
     Uart(UartCfg),

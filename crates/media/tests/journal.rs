@@ -927,3 +927,44 @@ fn streaming_io_errors_abort_instead_of_classifying_tail() {
     };
     assert!(media::scan_reader(&mut input, &base, base.len() as u64).is_err());
 }
+
+#[test]
+fn nvram_block_rejects_clock_changes_padding_and_other_short_bases() {
+    let base = [0x22; 64];
+    for length in [0, 14, 50, 63, 65, 511, 513] {
+        assert_eq!(Header::new(&vec![0; length], 0), Err(Error::BaseLength));
+    }
+    let mut block = [0; 512];
+    block[..64].copy_from_slice(&base);
+    block[14] = 0x99;
+    let frames = |block| {
+        [
+            Frame {
+                sequence: 1,
+                generation: 1,
+                record: Record::Sector {
+                    lba: 0,
+                    bytes: Box::new(block),
+                },
+            },
+            command(2, 1, 1),
+            end(3, 1, ClosingReason::Checkpoint),
+        ]
+    };
+    let valid = journal(&base, 0, &frames(block));
+    let scan = scan(&valid, &base, 64);
+    assert_eq!(scan.report.status, Status::Valid);
+    assert_eq!(scan.image.as_ref().unwrap()[14], 0x99);
+    for index in [0, 13, 15, 64, 511] {
+        let mut bad = block;
+        bad[index] ^= 1;
+        let bytes = journal(&base, 0, &frames(bad));
+        assert!(
+            matches!(
+                media::scan(&bytes, &base, 64).report.status,
+                Status::Refused(_)
+            ),
+            "index {index}"
+        );
+    }
+}

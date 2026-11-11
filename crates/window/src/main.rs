@@ -204,6 +204,7 @@ impl Presenter {
             match outcome {
                 Ok(RunOutcome::RetiredCapReached) => self.running = cap < u64::MAX,
                 Ok(RunOutcome::ResetRequested) => {
+                    self.assembled.before_cpu_reset()?;
                     self.assembled.machine.reset_cpu()?;
                     self.record_cpu_reset(warnings);
                 }
@@ -237,7 +238,7 @@ impl Presenter {
         if !self.maintenance_reported {
             for handle in &self.assembled.persistence {
                 if let Some(outcome) = handle.maintenance_failure() {
-                    let _ = writeln!(warnings, "warning: drive {}: {outcome}", handle.drive_index);
+                    let _ = writeln!(warnings, "warning: {}: {outcome}", handle.owner());
                 }
             }
             self.maintenance_reported = true;
@@ -673,6 +674,91 @@ mod tests {
         let presenter = Presenter::new(&config, options, &mut warnings).unwrap();
         assert_eq!(presenter.assembled.unlisted_firmware.len(), 1);
         assert_eq!(String::from_utf8(warnings).unwrap(), "warning: running unlisted firmware (sha256 c35020473aed1b4642cd726cad727b63fff2824ad68cedd7ffb73c7cbd890479)\n");
+    }
+
+    #[test]
+    fn nvram_journal_matches_cli_across_window_frame_slices() {
+        let temp = assembly::test_support::TempDir::new("window-nvram");
+        let base = temp.path().join("cmos.bin");
+        std::fs::write(&base, [0; 64]).unwrap();
+        let mut reference = None;
+        for lane in ["cli", "window-single", "window-sliced"] {
+            let mut program = vec![0xFA, 0xB0, 0x10, 0xE6, 0x70, 0xB0, 1, 0xE6, 0x71];
+            // Keep the first value live across frame slices so premature persistence adds a record.
+            program.extend([0x90; 64]);
+            program.extend([0xB0, 9, 0xE6, 0x71, 0xB0, 0xFE, 0xE6, 0x64]);
+            let mut config = assembly::at_rtc(program, 100, 10);
+            config.memory.address_space_bytes = 0x100000;
+            config.images.push(assembly::LoadImage {
+                base: 0xFFFF0,
+                source: assembly::ImageSource::Inline(vec![
+                    0xB0, 0x10, 0xE6, 0x70, 0xB0, 0x55, 0xE6, 0x71, 0xF4,
+                ]),
+                kind: assembly::ImageKind::Rom,
+                provides: vec![],
+            });
+            let journal = temp.path().join(format!("{lane}.upfj"));
+            for device in &mut config.devices {
+                if let assembly::DeviceKind::Rtc(rtc) = &mut device.kind {
+                    rtc.nvram = assembly::NvramSource::Journal {
+                        image: base.clone(),
+                        expected_sha256: [
+                            245, 165, 253, 66, 209, 106, 32, 48, 39, 152, 239, 110, 211, 9, 151,
+                            155, 67, 0, 61, 35, 32, 217, 240, 232, 234, 152, 49, 169, 39, 89, 251,
+                            75,
+                        ],
+                        journal: journal.clone(),
+                        keep_generations: 10,
+                    };
+                }
+            }
+            if lane == "cli" {
+                let mut assembled = assembly::assemble(&config).unwrap();
+                assembled
+                    .run_session(&assembly::RunPolicy::natural(Some(200), None))
+                    .unwrap();
+                assembled.finish_persistence().unwrap();
+            } else {
+                let assembled = assembly::assemble_with_observation(
+                    &config,
+                    &ObservationPolicy {
+                        routes: vec![ObservationRequest {
+                            device: DeviceId::Vga,
+                            output: OutputKind::TextScanout,
+                            byte_limit: 0,
+                        }],
+                        ..ObservationPolicy::default()
+                    },
+                )
+                .unwrap();
+                let mut presenter =
+                    Presenter::from_assembled(&config, assembled, DeviceId::Vga, &mut io::sink())
+                        .unwrap();
+                let step = if lane == "window-single" { 100 } else { 1 };
+                for elapsed in (step..=200).step_by(step) {
+                    presenter
+                        .advance(Duration::from_micros(elapsed as u64))
+                        .unwrap();
+                    if !presenter.running {
+                        break;
+                    }
+                }
+                assert!(!presenter.running);
+                assert!(presenter.error.is_none());
+                assert_eq!(presenter.cpu_resets, 1);
+            }
+            let bytes = std::fs::read(journal).unwrap();
+            assert_eq!(
+                bytes.len(),
+                128 + 5 * 640,
+                "two replacements and one session end"
+            );
+            if let Some(expected) = &reference {
+                assert_eq!(&bytes, expected, "{lane}");
+            } else {
+                reference = Some(bytes);
+            }
+        }
     }
 
     #[test]

@@ -83,8 +83,14 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   settings while preserving readonly/volatile modes; a child can turn journaling
   off without repeating the image. Journal outputs cannot alias loaded images or
   machine-file layers, with source-positioned refusals before assembly.
-  Fixture machines and goldens remain volatile. IDE journals and
-  NVRAM readonly/journal remain unsupported. Offline CLI
+  Fixture machines and goldens remain volatile.
+  NVRAM journals persist changed CMOS RAM (0Eh–3Fh except 0Fh) only before CPU
+  reset and at finish. Reset records keep one session generation open; finish
+  closes it and runs retention. Run stops and host frame slices perform no NVRAM
+  I/O. The journal codec, recovery and offline tools are shared with drives.
+  TOML/YAML accept explicit journal paths and retention with drive-style image
+  override units. Readonly NVRAM is rejected with a volatile-mode hint because
+  the MC146818 has no write-protect input. IDE journals remain unsupported. Offline CLI
   `media generations` and `verify` inspect under shared locks, with an explicit
   no-lock report when read-only storage has no lock entry;
   `verify --repair-tail` and `rollback --to N` require synchronized full backups and

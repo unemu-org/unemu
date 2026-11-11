@@ -85,7 +85,7 @@ pub struct AssembledMachine {
     pub device_index: HashMap<DeviceId, usize>,
     /// Validated observation routes and their bounded, run-scoped collectors.
     pub observation: Observation,
-    /// Per-journal drive status and explicit session finalization.
+    /// Drive and CMOS journal status, boundary persistence and finalization.
     pub persistence: Vec<crate::PersistenceHandle>,
     /// Unknown BIOS hashes accepted through a run-only escape option.
     pub unlisted_firmware: Vec<crate::UnlistedFirmware>,
@@ -102,6 +102,12 @@ pub struct AssembledMachine {
 /// resolved access-coupling indices.
 #[derive(Debug, thiserror::Error)]
 pub enum AssemblyError {
+    /// CMOS journal could not be locked, validated or replayed.
+    #[error("NVRAM journal mount: {source}")]
+    NvramJournal {
+        #[source]
+        source: media::OpenError,
+    },
     /// The configuration is internally inconsistent (validation ran first).
     #[error("invalid configuration: {0}")]
     Config(#[from] ConfigError),
@@ -189,6 +195,7 @@ fn assemble_with_cpu(
 
     // Validate the bytes that will actually be mounted, without a second file
     // read that could observe a different length or contents.
+    let nvram_bases = load_nvram_bases(config)?;
     let (resolved, base_metadata) = resolve_file_sources(config, options)?;
     let config = resolved.as_ref();
     config.validate_resolved()?;
@@ -268,10 +275,27 @@ fn assemble_with_cpu(
                 if let Some((second_ticks, uip_ticks)) = c.timing {
                     rtc = rtc.with_timing(second_ticks, uip_ticks);
                 }
-                rtc = match c.nvram {
+                rtc = match &c.nvram {
                     crate::NvramSource::Derived => rtc.with_nvram(cmos),
                     crate::NvramSource::Blank => rtc,
-                    crate::NvramSource::Image(bytes) => rtc.with_nvram(bytes),
+                    crate::NvramSource::Image(bytes) => rtc.with_nvram(*bytes),
+                    crate::NvramSource::Journal {
+                        journal,
+                        keep_generations,
+                        ..
+                    } => {
+                        let (base, metadata) = &nvram_bases[&devices.len()];
+                        let handle = crate::PersistenceHandle::mount_nvram(
+                            devices.len(),
+                            journal,
+                            base,
+                            *keep_generations,
+                            metadata,
+                            &mut rtc,
+                        )?;
+                        persistence.push(handle);
+                        rtc
+                    }
                 };
                 let start = c.start;
                 rtc.set_time(
@@ -501,6 +525,49 @@ fn read_parts(parts: &[crate::ImagePart]) -> Result<Vec<(crate::Lane, u64, Vec<u
             ))
         })
         .collect()
+}
+
+fn load_nvram_bases(
+    config: &MachineConfig,
+) -> Result<HashMap<usize, ([u8; 64], std::fs::Metadata)>, ConfigError> {
+    use std::io::Read;
+    let mut bases = HashMap::new();
+    for (index, device) in config.devices.iter().enumerate() {
+        let DeviceKind::Rtc(crate::CmosCfg {
+            nvram:
+                crate::NvramSource::Journal {
+                    image,
+                    expected_sha256,
+                    ..
+                },
+            ..
+        }) = &device.kind
+        else {
+            continue;
+        };
+        let error = |e: std::io::Error| ConfigError::Nvram {
+            message: format!("image {}: {e}", image.display()),
+        };
+        let mut file = std::fs::File::open(image).map_err(error)?;
+        let metadata = file.metadata().map_err(error)?;
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes).map_err(error)?;
+        let actual: [u8; 32] = Sha256::digest(&bytes).into();
+        if &actual != expected_sha256 {
+            return Err(ConfigError::Nvram {
+                message: format!(
+                    "image sha256 mismatch: expected {:x}, actual {:x}",
+                    sha2::digest::Output::<Sha256>::from(*expected_sha256),
+                    sha2::digest::Output::<Sha256>::from(actual)
+                ),
+            });
+        }
+        let base = bytes.try_into().map_err(|b: Vec<u8>| ConfigError::Nvram {
+            message: format!("image must contain 64 bytes, got {}", b.len()),
+        })?;
+        bases.insert(index, (base, metadata));
+    }
+    Ok(bases)
 }
 
 /// Resolve file lengths before validating placement and disk geometry. Inline
@@ -1247,7 +1314,7 @@ mod tests {
             let rtc_cfg = config
                 .devices
                 .iter()
-                .find_map(|device| match device.kind {
+                .find_map(|device| match &device.kind {
                     DeviceKind::Rtc(cfg) => Some(cfg),
                     _ => None,
                 })
