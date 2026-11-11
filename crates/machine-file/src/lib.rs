@@ -288,12 +288,7 @@ pub fn load_for_assembly(
 ) -> Result<LoadedMachine, LoadError> {
     let (document, origins) = resolve(path)?;
     let (config, diagnostics) =
-        lower::lower_tracked(&document, &origins, &mut FileImageReader, options).map_err(
-            |mut error| {
-                integrity::annotate_pin(&document, &origins, &mut error);
-                error
-            },
-        )?;
+        lower::lower_tracked(&document, &origins, &mut FileImageReader, options)?;
     let cards = document
         .card
         .iter()

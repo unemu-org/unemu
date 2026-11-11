@@ -64,6 +64,9 @@ pub struct LowerError {
     pub origin: Origin,
     pub field: String,
     pub message: String,
+    /// The defining source of the checked pin, when its digest mismatched.
+    // Boxing keeps LowerError below Clippy's large-error limit.
+    pub pin_origin: Option<Box<Origin>>,
     /// The original assembly error, when hardware validation failed.
     #[source]
     pub validation: Option<Box<ConfigError>>,
@@ -116,8 +119,20 @@ impl<R: ImageReader> Context<'_, R> {
             origin: self.origins.get(field).clone(),
             field: self.label(field),
             message: message.into(),
+            pin_origin: None,
             validation: None,
         }
+    }
+
+    fn pin_error(&self, field: &str, pin_field: &str, message: impl Into<String>) -> LowerError {
+        // An inherited pin can come from a different layer than its image path.
+        let pin_origin = self.origins.get(pin_field).clone();
+        let mut error = self.error(field, message);
+        error
+            .message
+            .push_str(&format!("; pin set at {pin_origin}"));
+        error.pin_origin = Some(Box::new(pin_origin));
+        error
     }
 
     fn required<T>(&self, field: &str, value: Option<T>) -> Result<T, LowerError> {
@@ -129,6 +144,7 @@ impl<R: ImageReader> Context<'_, R> {
         field: &str,
         image: Option<&str>,
         pin: Option<&v1::Sha256>,
+        pin_field: &str,
         journal: bool,
     ) -> Result<(Vec<u8>, [u8; 32]), LowerError> {
         let image = self.required(field, image)?;
@@ -160,8 +176,9 @@ impl<R: ImageReader> Context<'_, R> {
         let actual = format!("{digest:x}");
         if let Some(pin) = pin {
             if actual != pin.as_str() {
-                return Err(self.error(
+                return Err(self.pin_error(
                     field,
+                    pin_field,
                     format!(
                         "sha256 mismatch for {description}: expected {}, actual {actual}",
                         pin.as_str()
@@ -216,6 +233,7 @@ impl<R: ImageReader> Context<'_, R> {
                     &format!("{field}.parts[{i}].image"),
                     Some(&part.image),
                     part.sha256.as_ref(),
+                    &format!("{field}.parts[{i}].sha256"),
                     false,
                 )?;
                 loaded.push((
@@ -234,8 +252,9 @@ impl<R: ImageReader> Context<'_, R> {
             if let Some(pin) = &rom.sha256 {
                 let actual = format!("{:x}", Sha256::digest(&bytes));
                 if actual != pin.as_str() {
-                    return Err(self.error(
+                    return Err(self.pin_error(
                         &format!("{field}.parts"),
+                        &format!("{field}.sha256"),
                         format!(
                             "sha256 mismatch for assembled BIOS: expected {}, actual {actual}",
                             pin.as_str()
@@ -249,6 +268,7 @@ impl<R: ImageReader> Context<'_, R> {
                 &format!("{field}.image"),
                 rom.image.as_deref(),
                 rom.sha256.as_ref(),
+                &format!("{field}.sha256"),
                 false,
             )?
             .0
@@ -316,6 +336,7 @@ impl<R: ImageReader> Context<'_, R> {
                     "board.rtc.nvram.image",
                     image.image.as_deref(),
                     image.sha256.as_ref(),
+                    "board.rtc.nvram.sha256",
                     false,
                 )?;
                 let actual = bytes.len();
@@ -526,6 +547,7 @@ impl<R: ImageReader> Context<'_, R> {
                 &format!("{drive_field}.image"),
                 drive.image.as_deref(),
                 drive.sha256.as_ref(),
+                &format!("{drive_field}.sha256"),
                 journal,
             )?;
             let image = if journal {
@@ -1102,6 +1124,39 @@ mod tests {
             options: assembly::AssemblyOptions::default(),
             bios_parts: false,
         }
+    }
+
+    #[test]
+    fn pin_diagnostic_retains_its_origin_independently_of_message_wording() {
+        let mut origins = Origins::new("machine.toml");
+        let pin_origin = Origin {
+            file: "pins.toml".into(),
+            line: Some(17),
+        };
+        origins.insert("card[1].drives[2].sha256", pin_origin.clone());
+        let mut reader = FileImageReader;
+        let context = context(&origins, &mut reader);
+        let error = context.pin_error(
+            "card[1].drives[2].image",
+            "card[1].drives[2].sha256",
+            "image digest differs",
+        );
+        assert_eq!(
+            error.origin,
+            Origin {
+                file: "machine.toml".into(),
+                line: None
+            }
+        );
+        assert_eq!(error.field, "card[diskette].drives[unit=1].image");
+        assert_eq!(error.pin_origin.as_deref(), Some(&pin_origin));
+        assert_eq!(
+            error.message,
+            "image digest differs; pin set at pins.toml:17"
+        );
+        let ordinary = context.error("card[1].drives[2].image", "sha256 mismatch for anything");
+        assert_eq!(ordinary.pin_origin, None);
+        assert_eq!(ordinary.message, "sha256 mismatch for anything");
     }
 
     #[test]

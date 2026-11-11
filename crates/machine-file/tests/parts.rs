@@ -141,6 +141,10 @@ fn parts_pins_check_each_chip_and_assembled_bytes_with_origins() {
             actual = actual
         );
         assert_eq!(error.message, expected);
+        assert_eq!(
+            error.pin_origin.as_deref(),
+            Some(origins.get("firmware.bios.parts[1].sha256"))
+        );
         let rom = document.firmware.as_mut().unwrap().bios.as_mut().unwrap();
         rom.parts.as_mut().unwrap()[1].sha256 =
             Some(pin(&format!("{:x}", Sha256::digest(vec![0x34; 4096]))));
@@ -163,6 +167,10 @@ fn parts_pins_check_each_chip_and_assembled_bytes_with_origins() {
             actual = actual
         );
         assert_eq!(error.message, expected);
+        assert_eq!(
+            error.pin_origin.as_deref(),
+            Some(origins.get("firmware.bios.sha256"))
+        );
         document
             .firmware
             .as_mut()
@@ -740,4 +748,59 @@ fn repository_machines_and_preset_keep_effective_firmware_services() {
         config.images[0].provides,
         vec![assembly::FirmwareService::Floppy]
     );
+}
+
+#[test]
+fn inherited_parts_repin_reports_the_child_pin_in_both_syntaxes() {
+    let layers = Layers::new();
+    let pin = "0".repeat(64);
+    for (ext, parent, child, pin_line) in [
+        (
+            "toml",
+            TOML,
+            format!("schema=1\nextends='../parent.toml'\n[firmware.bios]\nsha256='{pin}'\n"),
+            4,
+        ),
+        (
+            "yaml",
+            YAML,
+            format!(
+                "schema: 1\nextends: ../parent.yaml\nfirmware:\n  bios:\n    sha256: '{pin}'\n"
+            ),
+            5,
+        ),
+    ] {
+        let parent_file = layers.0.join(format!("parent.{ext}"));
+        let child_file = layers.0.join(format!("child/layer.{ext}"));
+        std::fs::write(&parent_file, parent).unwrap();
+        std::fs::write(&child_file, child).unwrap();
+        let (document, origins) = machine_file::resolve(&child_file).unwrap();
+        let mut images = Images {
+            files: [
+                (layers.0.join("roms/even"), vec![0x12; 4096]),
+                (layers.0.join("roms/odd"), vec![0x34; 4096]),
+            ]
+            .into(),
+            reads: vec![],
+        };
+        let error = lower(&document, &origins, &mut images).unwrap_err();
+        let pin_origin = machine_file::Origin {
+            file: child_file,
+            line: Some(pin_line),
+        };
+        assert_eq!(error.field, "firmware.bios.parts");
+        assert_eq!(
+            error.origin.file,
+            layers.0.join(format!("child/../parent.{ext}"))
+        );
+        assert_eq!(error.pin_origin.as_deref(), Some(&pin_origin));
+        assert_eq!(error.message, format!(
+            "sha256 mismatch for assembled BIOS: expected {pin}, actual {:x}; pin set at {pin_origin}",
+            Sha256::digest([0x12, 0x34].repeat(4096)),
+        ));
+        assert_eq!(
+            images.reads,
+            vec![layers.0.join("roms/even"), layers.0.join("roms/odd")]
+        );
+    }
 }

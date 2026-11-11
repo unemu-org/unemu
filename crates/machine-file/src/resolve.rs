@@ -16,6 +16,7 @@ const PRESETS: &[(&str, &str)] = &[(
 
 fn error(origins: &Origins, field: &str, message: impl Into<String>) -> LowerError {
     LowerError {
+        pin_origin: None,
         origin: origins.get(field).clone(),
         field: field.into(),
         message: message.into(),
