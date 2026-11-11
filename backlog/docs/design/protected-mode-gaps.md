@@ -23,7 +23,7 @@ Evidence vocabulary throughout:
 - **ASSUMED:** a proposed scope choice or inference requiring later acceptance
   tests. In particular, no complete DOS extender was run.
 
-The current CPU pin is `73ed5d6ef4fc68f91cdad10b1e7c1c370363d030`.
+The current CPU pin is `8979fc95cd81d73763d50d1d627b40ded3f8f284`.
 INS/OUTS are now implemented, including Real16 REP port handshakes and
 per-element accounting. This resolves the opcode/handshake portion of the
 historical string-I/O gap below; protected-mode privilege checks and the

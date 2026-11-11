@@ -100,7 +100,7 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   synthetic fast tests keep their presets.
 - **Machines are declarative.** A `MachineConfig` (the `assembly` crate) is built by one
   `assemble()` and run under a `RunPolicy`; presets replace the old hand-written runners.
-- **CPU pin:** `73ed5d6ef4fc68f91cdad10b1e7c1c370363d030` (x86jit `main`).
+- **CPU pin:** `8979fc95cd81d73763d50d1d627b40ded3f8f284` (x86jit `main`).
 - **CPU:** pinned x86jit `CpuMode::Real16` interpreter with exact step bounds,
   per-iteration REP time, STI/SS-load inhibition and interrupt-readiness stops.
   Real16 INS/OUTS support byte/word elements, REP, OUTS segment overrides,
@@ -175,10 +175,10 @@ was reported to the CPU core project.
 
 - Multi-byte scalar accesses crossing a RAM/MMIO boundary in either direction
   end the run with `Exit::UnmappedMemory` in pinned x86jit
-  `73ed5d6ef4fc68f91cdad10b1e7c1c370363d030` (READ). Its
-  [`Memory::region_at`](https://github.com/unemu-org/x86jit/blob/73ed5d6ef4fc68f91cdad10b1e7c1c370363d030/x86jit-core/src/memory.rs#L1980-L2001)
+  `8979fc95cd81d73763d50d1d627b40ded3f8f284` (READ). Its
+  [`Memory::region_at`](https://github.com/unemu-org/x86jit/blob/8979fc95cd81d73763d50d1d627b40ded3f8f284/x86jit-core/src/memory.rs#L2001-L2022)
   requires the whole transfer inside one region before read/write paths check
-  for MMIO (`memory.rs:2170`, `memory.rs:2304`). Neither part of the scalar
+  for MMIO (`memory.rs:2191`, `memory.rs:2325`). Neither part of the scalar
   transfer is performed. Assembly coalesces adjacent MMIO device windows so
   those crossings reach the bus, but mixed RAM/MMIO accesses need the upstream
   CPU fix tracked by `xj-ir6.12 (x86jit)`.

@@ -8,7 +8,7 @@ spike; no guest behaviour or scheduler change is proposed.
 
 ## String instruction accounting
 
-The current CPU pin is `73ed5d6ef4fc68f91cdad10b1e7c1c370363d030`.
+The current CPU pin is `8979fc95cd81d73763d50d1d627b40ded3f8f284`.
 The profiling tables below retain the revisions on which they were measured;
 they are historical measurements, not new measurements of this pin.
 
@@ -291,3 +291,98 @@ Findings:
   library's default hasher), looks each key up again to test the overlap, and
   collects the overlapping ones into a new vector, also when no block covers
   the written bytes. This was sent to the CPU core project with the profile.
+
+## After byte-coverage SMC rejection (2026-11-11, MEASURED)
+
+Both pins were built offline in the same session, in separate target
+directories, using Cargo's default release profile and the project Nix
+devShell: old `73ed5d6ef4fc68f91cdad10b1e7c1c370363d030`, new
+`8979fc95cd81d73763d50d1d627b40ded3f8f284`. Host: macOS 27.0.1,
+arm64 (`aarch64-apple-darwin`), rustc 1.99.1
+(`58cf8f9c3`, 2026-10-13), LLVM 23.1.1.
+
+The workload is the preceding section's release `dos_interactive_golden`:
+BIOS POST, INT 19h floppy boot, FreeDOS date/time prompts, keyboard `DIR`,
+then the bounded wait at the shell. Each binary was warmed once, then run
+back to back in the order old/new, old/new, old/new. Wall time was observed
+with Python `time.perf_counter()` around process start/wait, including the
+test harness, fixture loading and assertions; no Cargo build time is included.
+Warmups and an unsuccessful sampler pilot are excluded from the table.
+
+Reproduction, with separate `OLD_TARGET` and `NEW_TARGET` directories and the
+devShell loaded before each Cargo invocation:
+
+```sh
+# Build at each corresponding pin, before any timed runs.
+cargo test --offline --release -p cli --test dos_interactive_golden --no-run --target-dir "$OLD_TARGET"
+cargo test --offline --release -p cli --test dos_interactive_golden --no-run --target-dir "$NEW_TARGET"
+# Run the emitted test binaries directly, alternately, with these arguments.
+UNEMUPC98_REQUIRE_FIXTURES=1 "$BINARY" --ignored --exact freedos_runs_dir_from_the_keyboard --nocapture
+```
+
+| Pin | Run 1 (s) | Run 2 (s) | Run 3 (s) | Median (s) | Mean (s) |
+|---|---:|---:|---:|---:|---:|
+| `73ed5d6` | 1.057979 | 1.124007 | 1.157828 | 1.124007 | 1.113271 |
+| `8979fc9` | 0.821589 | 0.982200 | 0.772619 | 0.821589 | 0.858803 |
+
+MEASURED: the median fell **26.9%**, or **1.37×** throughput for this fixed
+session. These are observations under concurrent test load, not an
+exclusive-host estimate. Our builds and test gates had finished before timing;
+another worker was stress-testing the fast suite on the same host. `uptime`
+reported these 1/5/15-minute load averages immediately before each pair:
+
+| Pair | Load averages |
+|---|---|
+| 1 | 20.31 / 32.27 / 40.26 |
+| 2 | 20.68 / 32.15 / 40.17 |
+| 3 | 20.68 / 32.15 / 40.17 |
+
+**Sampling results (MEASURED):** a separate batch outside the worker sandbox
+used `/usr/bin/sample PID 30 1 -mayDie`, attaching immediately after each test
+process was spawned, at a nominal 1 ms interval for up to 30 s. It used the
+same release test binaries and exact `freedos_runs_dir_from_the_keyboard`
+test, with `--test-threads 1` and fixtures required. Three runs per pin
+alternated old/new. Host load averages before this batch were
+**5.79 / 19.89 / 33.33**.
+
+Attribution includes only the `freedos_runs_dir_from_the_keyboard` test
+thread. Each category counts inclusive samples at the outermost matching
+frame on each stack branch: `invalidate_range` or `dispatch_smc` for
+invalidation, x86jit's `interp` module for interpreting IR, and its `lift`
+module for lifting. Invalidation is reached from guest stores inside the
+interpreter, so the rows overlap and do not add up. Pooled shares divide
+summed category samples by summed test-thread samples, rather than averaging
+the per-run percentages. Parentheses below give pooled counts or shares.
+
+| Test-thread samples / category | `73ed5d6`: runs 1 / 2 / 3 (pooled) | `8979fc9`: runs 1 / 2 / 3 (pooled) |
+|---|---|---|
+| Samples | 383 / 414 / 506 (1,303) | 253 / 269 / 231 (753) |
+| Translation-cache invalidation | 36.0 / 34.5 / 38.9% (36.7%) | 3.2 / 2.2 / 5.6% (3.6%) |
+| Interpreting IR | 41.5 / 39.6 / 40.1% (40.4%) | 60.1 / 62.1 / 63.6% (61.9%) |
+| Lifting | 0.8 / 0.2 / 0.6% (0.5%) | 1.2 / 1.1 / 2.2% (1.5%) |
+
+Invalidation fell from about **37% to 4%** of the test thread. Using the
+pooled shares and mean per-run sample counts at the nominal 1 ms interval,
+its estimated cost per session fell from roughly **160 ms to 9 ms**:
+`(478 / 1303) × ((383 + 414 + 506) / 3) × 1 ms = 159.3 ms` before, and
+`(27 / 753) × ((253 + 269 + 231) / 3) × 1 ms = 9.0 ms` after. These are
+approximate durations of the sampled work; attachment gaps and host
+scheduling limit their accuracy. **Interpreting IR is now the dominant
+cost**, at 61.9% of the pooled new-pin test-thread samples.
+
+MEASURED inputs (SHA-256), shared by both pins:
+
+```text
+vendor/kiselev-bios/bios-xi8088.bin  1ad458acb1f22dee6b3d9b6bd95e83218a7ddc5389fa2b2c67a4001e689c81a8
+vendor/freedos/freedos.img         b7b088333f7f30584d768941fecea8288b63f2d61e13ec6c9472439eda66e51f
+```
+
+The FreeDOS image hash differs from the original instrumentation spike's
+historical input above. This comparison uses the current machine file and
+current fixtures for both pins. All six timed runs passed, stopped with
+`BudgetExhausted`, and emitted byte-identical MDA consoles: 899 bytes,
+SHA-256 `e580192e19d8b2bbf463a14593ff9395752a580fc65f86df95b2a70b5081f80f`.
+The new pin also passed the full fast suite (1,431 passed, 16 ignored),
+release device suite (490 passed), and required-fixture slow set (16 passed),
+with no changed golden expectations or re-baselining. The opt-in scheduler
+wall-time test returned without timing because its environment gate was unset.
