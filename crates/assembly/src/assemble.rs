@@ -189,7 +189,7 @@ fn assemble_with_cpu(
 
     // Validate the bytes that will actually be mounted, without a second file
     // read that could observe a different length or contents.
-    let (resolved, base_metadata) = resolve_file_sources(config)?;
+    let (resolved, base_metadata) = resolve_file_sources(config, options)?;
     let config = resolved.as_ref();
     config.validate_resolved()?;
 
@@ -480,6 +480,10 @@ fn load_image_bytes(source: &ImageSource) -> Result<Vec<u8>, ConfigError> {
     match source {
         ImageSource::Inline(bytes) => Ok(bytes.clone()),
         ImageSource::Blank { size } => Ok(vec![0u8; *size as usize]),
+        ImageSource::Interleaved(parts) => {
+            let loaded = read_parts(parts)?;
+            crate::interleave_parts(&loaded)
+        }
         ImageSource::File(path) => std::fs::read(path).map_err(|source| ConfigError::ImageRead {
             path: path.clone(),
             message: source.to_string(),
@@ -487,17 +491,51 @@ fn load_image_bytes(source: &ImageSource) -> Result<Vec<u8>, ConfigError> {
     }
 }
 
+fn read_parts(parts: &[crate::ImagePart]) -> Result<Vec<(crate::Lane, u64, Vec<u8>)>, ConfigError> {
+    parts
+        .iter()
+        .map(|part| {
+            Ok((
+                part.lane,
+                part.offset,
+                load_image_bytes(&ImageSource::File(part.path.clone()))?,
+            ))
+        })
+        .collect()
+}
+
 /// Resolve file lengths before validating placement and disk geometry. Inline
 /// presets borrow their config so the common path needs no additional copy.
-fn resolve_file_sources(
+pub(crate) fn resolve_file_sources(
     config: &MachineConfig,
+    options: crate::AssemblyOptions,
 ) -> Result<(Cow<'_, MachineConfig>, Vec<Option<std::fs::Metadata>>), ConfigError> {
+    resolve_file_sources_with_catalogue(config, options, config.board.firmware_catalogue())
+}
+
+fn resolve_file_sources_with_catalogue<'a>(
+    config: &'a MachineConfig,
+    options: crate::AssemblyOptions,
+    catalogue: &[crate::FirmwareEntry],
+) -> Result<(Cow<'a, MachineConfig>, Vec<Option<std::fs::Metadata>>), ConfigError> {
+    config.check_part_sources()?;
+    if config
+        .images
+        .iter()
+        .filter(|image| matches!(image.source, ImageSource::Interleaved(_)))
+        .count()
+        > 1
+    {
+        return Err(ConfigError::FirmwareParts {
+            message: "option ROMs cannot use parts; only firmware.bios supports parts".into(),
+        });
+    }
     if !config
         .images
         .iter()
         .map(|image| &image.source)
         .chain(config.drives.iter().map(|drive| &drive.image))
-        .any(|source| matches!(source, ImageSource::File(_)))
+        .any(|source| matches!(source, ImageSource::File(_) | ImageSource::Interleaved(_)))
     {
         return Ok((Cow::Borrowed(config), Vec::new()));
     }
@@ -505,6 +543,27 @@ fn resolve_file_sources(
     for image in &mut resolved.images {
         if matches!(image.source, ImageSource::File(_)) {
             image.source = ImageSource::Inline(load_image_bytes(&image.source)?);
+        }
+    }
+    resolved.check_part_sources()?;
+    for image in &mut resolved.images {
+        if let ImageSource::Interleaved(parts) = &image.source {
+            let loaded = read_parts(parts)?;
+            let bytes = crate::interleave_parts(&loaded)?;
+            crate::check_firmware_parts(&loaded, &bytes, catalogue, options)?;
+            image.source = ImageSource::Inline(bytes);
+        }
+    }
+    if let Ok(bios) = crate::firmware::system_bios(&resolved) {
+        for (index, image) in config.images.iter().enumerate() {
+            if matches!(image.source, ImageSource::Interleaved(_))
+                && !std::ptr::eq(&resolved.images[index], bios)
+            {
+                return Err(ConfigError::FirmwareParts {
+                    message: "option ROMs cannot use parts; only firmware.bios supports parts"
+                        .into(),
+                });
+            }
         }
     }
     let mut base_metadata = vec![None; resolved.drives.len()];
@@ -2803,6 +2862,73 @@ mod tests {
     }
 
     #[test]
+    fn ibm_bios_without_fixed_disk_and_with_xtide_obeys_provider_rules() {
+        let bytes = vec![0; 65536];
+        let ibm = crate::FirmwareEntry {
+            sha256: "de2f256064a0af797747c2b97505dc0b9f3df0de4f489eac731c23ae9ca9cc31",
+            ..crate::firmware::IBM_5170_1985_06_10
+        };
+        assert_eq!(format!("{:x}", Sha256::digest(&bytes)), ibm.sha256);
+        let mut config = crate::bios(bytes.clone(), Some(vec![0; 1_474_560]));
+        config.images[0].base = 0xF0000;
+        config.images[0].provides.clear();
+        crate::check_system_bios(
+            &config,
+            BoardModel::Ibm5170,
+            &[ibm],
+            0xF0000,
+            &bytes,
+            crate::AssemblyOptions::default(),
+        )
+        .unwrap();
+        assert!(!config.devices.iter().any(|d| d.id == DeviceId::Ide));
+        let seed = derive_cmos_config_with_catalogue(&config, &[ibm]).unwrap();
+        assert_eq!([seed[0x12], seed[0x19], seed[0x1A]], [0; 3]);
+        let mut disk = cmos_disk_config(615, 4, 0).drives.remove(1);
+        disk.image = ImageSource::Blank {
+            size: disk.kind.image_bytes(),
+        };
+        config.drives.push(disk);
+        let ide = crate::IdeCfg {
+            base: 0x1F0,
+            control: 0x3F6,
+        };
+        config.devices.push(
+            DeviceConfig::new(DeviceId::Ide, DeviceKind::Ide(ide), ide.port_windows()).with_irq(14),
+        );
+        let seed = derive_cmos_config_with_catalogue(&config, &[ibm]).unwrap();
+        assert_eq!(seed[0x12], 0x20);
+        let mut option = vec![0; 8192];
+        option[..3].copy_from_slice(&[0x55, 0xAA, 16]);
+        option[8191] = 0xF1;
+        let xtide = crate::FirmwareEntry {
+            sha256: Box::leak(format!("{:x}", Sha256::digest(&option)).into_boxed_str()),
+            ..crate::FirmwareEntry::XUB_R638_AT
+        };
+        config.images.push(crate::LoadImage {
+            base: 0xC8000,
+            source: ImageSource::Inline(option),
+            kind: ImageKind::Rom,
+            provides: vec![],
+        });
+        let catalogue = [ibm, xtide];
+        let seed = derive_cmos_config_with_catalogue(&config, &catalogue).unwrap();
+        assert_eq!([seed[0x12], seed[0x19], seed[0x1A]], [0; 3]);
+        assert_cmos_checksum(&seed);
+        crate::firmware::validate_option_roms_with_catalogue(&config, &catalogue).unwrap();
+        config.devices.retain(|d| d.id != DeviceId::Ide);
+        assert!(matches!(
+            crate::firmware::check_entry_requirements(
+                &config,
+                BoardModel::Ibm5170,
+                &xtide,
+                Some(1)
+            ),
+            Err(ConfigError::OptionRomCardMismatch { .. })
+        ));
+    }
+
+    #[test]
     fn provider_cmos_standard_type_uses_drive_units_and_repairs_checksum() {
         let mut config = cmos_disk_config(615, 4, 0);
         for (unit, expected) in [(0, 0x20), (1, 0x02)] {
@@ -2979,3 +3105,7 @@ mod tests {
         assert_eq!(config.validate().unwrap_err().to_string(), "only one IDE channel is supported: DeviceId::Ide identifies one role, not separate primary and secondary instances");
     }
 }
+
+#[cfg(test)]
+#[path = "image_source_tests.rs"]
+mod image_source_tests;

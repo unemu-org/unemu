@@ -18,4 +18,5 @@ serde-saphyr.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
+assembly = { workspace = true, features = ["test-support"] }
 machine.workspace = true

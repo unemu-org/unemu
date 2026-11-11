@@ -13,7 +13,6 @@ model = "80286"
 conventional_kib = 640
 
 [firmware.bios]
-provides = ["floppy"]
 
 [[card]]
 kind = "mda"

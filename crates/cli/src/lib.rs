@@ -708,6 +708,33 @@ fn bios_config_failure(error: assembly::AssemblyError) -> BiosRun {
     }
 }
 
+fn bios_file_config(
+    path: &std::path::Path,
+    catalogue: &[assembly::FirmwareEntry],
+) -> Result<MachineConfig> {
+    let mut config = assembly::bios(Vec::new(), Some(vec![0; FLOPPY_IMAGE_BYTES]));
+    config.images[0].source = assembly::ImageSource::File(path.into());
+    config.validate().map_err(assembly::AssemblyError::Config)?;
+    let bytes = std::fs::read(path).map_err(|error| {
+        assembly::AssemblyError::Config(assembly::ConfigError::ImageRead {
+            path: path.into(),
+            message: error.to_string(),
+        })
+    })?;
+    let entry = catalogue
+        .iter()
+        .find(|entry| entry.kind == assembly::FirmwareKind::SystemBios && entry.identifies(&bytes));
+    let size = bytes.len() as u64;
+    config.images[0].source = assembly::ImageSource::Inline(bytes);
+    if size > 0 && size.is_multiple_of(8192) && size <= 0x100000 {
+        config.images[0].base = 0x100000 - size;
+    }
+    if entry.is_some() {
+        config.images[0].provides.clear();
+    }
+    Ok(config)
+}
+
 /// Load a BIOS file through the IBM 5170 catalogue, emitting run-only warnings.
 /// The attached blank disk keeps this on the complete board profile; guest
 /// disk writes remain volatile. See `backlog/docs/commands.md` for the flags.
@@ -716,8 +743,7 @@ pub fn run_bios_file(
     options: assembly::AssemblyOptions,
     warnings: &mut impl std::io::Write,
 ) -> Result<BiosRun> {
-    let mut config = assembly::bios(Vec::new(), Some(vec![0; FLOPPY_IMAGE_BYTES]));
-    config.images[0].source = assembly::ImageSource::File(path.into());
+    let config = bios_file_config(path, assembly::BoardModel::Ibm5170.firmware_catalogue())?;
     let mut assembled = assembly::assemble_with_observation_and_options(
         &config,
         &bios_observation_policy(),
@@ -2085,5 +2111,87 @@ mod configuration_error_tests {
         let bios = run_bios_with_cap(&vec![0; 0x8001], 0);
         assert!(matches!(bios.stop, StopReason::ConfigFailed { .. }));
         assert!(bios.post.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod user_bios_tests {
+    use super::*;
+
+    #[test]
+    fn preinterleaved_bios_file_uses_catalogue_placement_and_services() {
+        let directory = assembly::test_support::TempDir::new("cli-user-bios");
+        let path = directory.path().join("assembled.bin");
+        let bytes = vec![0; 65536];
+        std::fs::write(&path, &bytes).unwrap();
+        let entry = assembly::FirmwareEntry {
+            id: "synthetic-user-bios",
+            size: 65536,
+            sha256: "de2f256064a0af797747c2b97505dc0b9f3df0de4f489eac731c23ae9ca9cc31",
+            distribution: assembly::FirmwareDistribution::UserSupplied,
+            provides: &[
+                assembly::FirmwareService::Floppy,
+                assembly::FirmwareService::FixedDisk,
+            ],
+            ..assembly::KISELEV_XI8088
+        };
+        assert!(entry.identifies(&bytes));
+        assert!(!assembly::FirmwareEntry {
+            size: 32768,
+            ..entry
+        }
+        .identifies(&bytes));
+        let config = bios_file_config(&path, &[entry]).unwrap();
+        assert_eq!(config.images[0].base, 0xF0000);
+        assert_eq!(
+            config.images[0].source,
+            assembly::ImageSource::Inline(bytes.clone())
+        );
+        assert!(config.images[0].provides.is_empty());
+        assert!(assembly::check_system_bios(
+            &config,
+            assembly::BoardModel::Ibm5170,
+            &[entry],
+            config.images[0].base,
+            &bytes,
+            assembly::AssemblyOptions::default()
+        )
+        .unwrap()
+        .is_none());
+        let unknown = bios_file_config(&path, &[]).unwrap();
+        assert_eq!(
+            unknown.images[0].provides,
+            vec![assembly::FirmwareService::Floppy]
+        );
+    }
+}
+
+#[cfg(test)]
+mod small_bios_tests {
+    use super::*;
+
+    #[test]
+    fn unlisted_16k_bios_file_is_top_aligned_under_escape() {
+        let directory = assembly::test_support::TempDir::new("cli-16k-bios");
+        let path = directory.path().join("bios.bin");
+        std::fs::write(&path, vec![0xF4; 16384]).unwrap();
+        let config =
+            bios_file_config(&path, assembly::BoardModel::Ibm5170.firmware_catalogue()).unwrap();
+        assert_eq!(config.images[0].base, 0xFC000);
+        let error = assembly::assemble_with_options(&config, assembly::AssemblyOptions::default())
+            .map(|_| ())
+            .expect_err("unlisted firmware requires the escape");
+        assert!(matches!(
+            error,
+            assembly::AssemblyError::Config(assembly::ConfigError::FirmwareNotListed { .. })
+        ));
+        let assembled = assembly::assemble_with_options(
+            &config,
+            assembly::AssemblyOptions {
+                allow_unlisted_firmware: true,
+            },
+        )
+        .unwrap();
+        assert_eq!(assembled.unlisted_firmware.len(), 1);
     }
 }

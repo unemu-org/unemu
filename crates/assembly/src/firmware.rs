@@ -197,6 +197,8 @@ pub struct FirmwareEntry {
     pub boards: &'static [&'static str],
     /// Fetch, licence and provenance information.
     pub distribution: FirmwareDistribution,
+    /// Known alternative chip layouts; open firmware has none.
+    pub parts: &'static [&'static [KnownPart]],
     /// Execution evidence.
     pub status: FirmwareStatus,
 }
@@ -243,6 +245,7 @@ impl FirmwareEntry {
             license: "GPL-2.0-only",
             provenance: "XTIDE Universal BIOS r638 ide_at.bin (AT build)",
         },
+        parts: &[],
         status: FirmwareStatus::Listed,
     };
 }
@@ -274,6 +277,7 @@ pub const KISELEV_XI8088: FirmwareEntry = FirmwareEntry {
         license: "GPL-3.0-or-later",
         provenance: "skiselev/8088_bios a4af458a72bc33c4be066b33bd76e8af2b24111c (MACHINE_XI8088)",
     },
+    parts: &[],
     status: FirmwareStatus::Tested,
 };
 
@@ -336,7 +340,11 @@ pub(crate) fn system_bios(config: &MachineConfig) -> Result<&LoadImage, ConfigEr
 
 pub(crate) fn unresolved_roms(config: &MachineConfig) -> bool {
     config.images.iter().any(|image| {
-        image.kind == ImageKind::Rom && matches!(image.source, crate::ImageSource::File(_))
+        image.kind == ImageKind::Rom
+            && matches!(
+                image.source,
+                crate::ImageSource::File(_) | crate::ImageSource::Interleaved(_)
+            )
     })
 }
 
@@ -422,7 +430,11 @@ pub(crate) fn image_services(
     if let Some(entry) = matched_entry(image, config.board.firmware_catalogue()) {
         return entry_services(index, image, entry).map(Some);
     }
-    if matches!(image.source, crate::ImageSource::File(_)) && image.provides.is_empty() {
+    if matches!(
+        image.source,
+        crate::ImageSource::File(_) | crate::ImageSource::Interleaved(_)
+    ) && image.provides.is_empty()
+    {
         return Ok(None);
     }
     Ok(Some(&image.provides))
@@ -440,7 +452,7 @@ pub(crate) fn validate_option_roms(config: &MachineConfig) -> Result<(), ConfigE
     validate_option_roms_with_catalogue(config, config.board.firmware_catalogue())
 }
 
-fn validate_option_roms_with_catalogue(
+pub(crate) fn validate_option_roms_with_catalogue(
     config: &MachineConfig,
     catalogue: &[FirmwareEntry],
 ) -> Result<(), ConfigError> {
@@ -485,7 +497,7 @@ fn validate_option_roms_with_catalogue(
         }
         let bytes = match &image.source {
             crate::ImageSource::Inline(bytes) => bytes,
-            crate::ImageSource::File(_) => continue,
+            crate::ImageSource::File(_) | crate::ImageSource::Interleaved(_) => continue,
             crate::ImageSource::Blank { .. } => {
                 return Err(ConfigError::OptionRomBadHeader {
                     image_index,
@@ -562,7 +574,7 @@ pub fn check_option_rom_catalogue(
                 known: catalogue
                     .iter()
                     .filter(|entry| entry.kind == FirmwareKind::OptionRom)
-                    .map(|entry| format!("{} ({})", entry.id, entry.distribution))
+                    .map(FirmwareEntry::listing)
                     .collect::<Vec<_>>()
                     .join(", "),
             });
@@ -628,7 +640,7 @@ pub fn check_system_bios(
             known: catalogue
                 .iter()
                 .filter(|entry| entry.kind == FirmwareKind::SystemBios)
-                .map(|entry| format!("{} ({})", entry.id, entry.distribution))
+                .map(FirmwareEntry::listing)
                 .collect::<Vec<_>>()
                 .join(", "),
         });
@@ -640,7 +652,7 @@ pub fn check_system_bios(
     Ok(None)
 }
 
-fn check_entry_requirements(
+pub(crate) fn check_entry_requirements(
     config: &MachineConfig,
     board: BoardModel,
     entry: &FirmwareEntry,
@@ -680,12 +692,370 @@ fn check_entry_requirements(
     Ok(())
 }
 
+/// Expected chip identity in one alternative layout of a user-supplied BIOS.
+/// MAME src/mame/pc/at.cpp, ibm5170/ibm5170a: U27 even and U47 odd.
+/// The four 27128 dumps in U17/U37-low, U27/U47-high order reproduce the
+/// MAME-listed 27256 pair's image (measured); see firmware design §3.5.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct KnownPart {
+    /// Board socket label.
+    pub label: &'static str,
+    /// IBM chip part number.
+    pub part_number: &'static str,
+    /// Byte lane in the assembled ROM.
+    pub lane: crate::Lane,
+    /// Offset in assembled bytes.
+    pub offset: u64,
+    /// Chip dump size.
+    pub size: u64,
+    /// SHA-256 of the chip dump.
+    pub sha256: &'static str,
+}
+impl FirmwareEntry {
+    /// Compare an assembled image with this entry's size and SHA-256 identity.
+    pub fn identifies(&self, bytes: &[u8]) -> bool {
+        self.size == bytes.len() as u64 && self.sha256 == format!("{:x}", Sha256::digest(bytes))
+    }
+
+    /// Human-readable catalogue membership diagnostic.
+    pub fn listing(&self) -> String {
+        if self.distribution != FirmwareDistribution::UserSupplied || self.parts.is_empty() {
+            return format!("{} ({})", self.id, self.distribution);
+        }
+        let layouts = self
+            .parts
+            .iter()
+            .map(|layout| {
+                layout
+                    .iter()
+                    .map(|p| {
+                        let offset = if layout.len() > 2 {
+                            format!("@{}", p.offset)
+                        } else {
+                            String::new()
+                        };
+                        format!("{} {} {}{offset}", p.label, p.part_number, p.lane)
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            })
+            .collect::<Vec<_>>()
+            .join(" or ");
+        format!(
+            "{} (user-supplied: {}; see vendor/user-roms/README.md)",
+            self.id, layouts
+        )
+    }
+}
+
+/// Diagnose chip assignments only after the assembled identity is unlisted.
+/// Returns `Ok(())` for a listed assembled hash and under the unlisted-firmware
+/// option. Otherwise per-chip hashes explain wrong dumps and assignments without
+/// making filenames authoritative.
+pub fn check_firmware_parts(
+    parts: &[(crate::Lane, u64, Vec<u8>)],
+    bytes: &[u8],
+    catalogue: &[FirmwareEntry],
+    options: AssemblyOptions,
+) -> Result<(), ConfigError> {
+    let hash = format!("{:x}", Sha256::digest(bytes));
+    if options.allow_unlisted_firmware
+        || catalogue.iter().any(|e| {
+            e.kind == FirmwareKind::SystemBios && e.sha256 == hash && e.size == bytes.len() as u64
+        })
+    {
+        return Ok(());
+    }
+    let hashes: Vec<_> = parts
+        .iter()
+        .map(|(lane, offset, bytes)| {
+            (
+                *lane,
+                *offset,
+                bytes.len() as u64,
+                format!("{:x}", Sha256::digest(bytes)),
+            )
+        })
+        .collect();
+    let mut best = None;
+    for entry in catalogue
+        .iter()
+        .filter(|e| e.kind == FirmwareKind::SystemBios)
+    {
+        for layout in entry
+            .parts
+            .iter()
+            .filter(|layout| layout.len() == parts.len())
+        {
+            let count = hashes
+                .iter()
+                .filter(|(_, _, size, hash)| {
+                    layout
+                        .iter()
+                        .any(|known| known.size == *size && known.sha256 == hash)
+                })
+                .count();
+            if count > 0 && best.as_ref().is_none_or(|(n, _, _)| count > *n) {
+                best = Some((count, entry, *layout));
+            }
+        }
+    }
+    if let Some((_, entry, layout)) = best {
+        let uses: Vec<_> = layout
+            .iter()
+            .map(|known| {
+                hashes
+                    .iter()
+                    .filter(|(_, _, size, hash)| known.size == *size && known.sha256 == hash)
+                    .count()
+            })
+            .collect();
+        let has_duplicates = uses.iter().any(|count| *count > 1);
+        let mut mismatches = Vec::new();
+        if has_duplicates {
+            for (known, count) in layout.iter().zip(&uses) {
+                if *count > 1 {
+                    mismatches.push(format!(
+                        "{} {} appears {count} times",
+                        known.label, known.part_number
+                    ));
+                } else if *count == 0 {
+                    mismatches.push(format!(
+                        "{} {} ({} lane offset {}) is missing",
+                        known.label, known.part_number, known.lane, known.offset
+                    ));
+                }
+            }
+        }
+        let mut lanes_swapped = uses.iter().all(|count| *count == 1);
+        for (lane, offset, size, hash) in &hashes {
+            let expected = layout
+                .iter()
+                .find(|known| known.lane == *lane && known.offset == *offset);
+            if expected.is_none() {
+                lanes_swapped = false;
+                mismatches.push(format!(
+                    "{lane} lane offset {offset} is not part of {} layout",
+                    entry.id
+                ));
+            }
+            if let Some(known) = layout
+                .iter()
+                .find(|known| known.size == *size && known.sha256 == hash)
+            {
+                let repeated = hashes
+                    .iter()
+                    .filter(|(_, _, size, hash)| known.size == *size && known.sha256 == hash)
+                    .count()
+                    > 1;
+                if repeated || (known.lane == *lane && known.offset == *offset) {
+                    continue;
+                }
+                lanes_swapped &= known.offset == *offset && known.lane != *lane;
+                mismatches.push(format!(
+                    "{lane} lane offset {offset} holds {} {}, which belongs in the {} lane at offset {}",
+                    known.label, known.part_number, known.lane, known.offset
+                ));
+            } else {
+                lanes_swapped = false;
+                if let Some(expected) = expected {
+                    mismatches.push(format!(
+                        "{lane} lane offset {offset}: expected {} {} sha256 {}, actual {hash} (bad dump or wrong chip)",
+                        expected.label, expected.part_number, expected.sha256
+                    ));
+                }
+            }
+        }
+        if !mismatches.is_empty() {
+            if lanes_swapped {
+                return Err(ConfigError::FirmwarePartsSwapped {
+                    firmware: entry.id,
+                    chips: mismatches.join("; "),
+                });
+            }
+            return Err(ConfigError::FirmwarePartsMismatch {
+                firmware: entry.id,
+                mismatches: mismatches.join("; "),
+            });
+        }
+    }
+    Ok(())
+}
+
+/// IBM PC AT system BIOS, identified without distributing ROM bytes.
+/// IBM PC AT Technical Reference BIOS listing, TEST2.ASM, "CHECK FOR OPTIONAL
+/// ROM FROM C800->E000 IN 2K BLOCKS" (MOV DX,0C800H ... CMP DX,0E000H);
+/// DSKETTE and DISK supply floppy and AT fixed-disk services.
+/// MAME src/mame/pc/at.cpp, commit cabb909b38, ibm5170/ibm5170a:
+/// U27 loads even bytes and U47 odd bytes (ROM_SKIP(1)). The four-chip 1984
+/// alternative was measured to assemble to the same image. See firmware design §3.5.
+pub const IBM_5170_1984_01_10: FirmwareEntry = FirmwareEntry {
+    id: "ibm-5170-bios-1984-01-10",
+    sha256: "74e7b36b4ec0adc5ac3277a887579996c1d2aa755b9892ef3afe7485c10ce04f",
+    size: 65536,
+    kind: FirmwareKind::SystemBios,
+    base: FirmwareBase::TopOfFirstMib,
+    scan_window: Some((0xC8000, 0xE0000)),
+    provides: &[FirmwareService::Floppy, FirmwareService::FixedDisk],
+    capabilities: &[FirmwareCapability::CmosDriveTypes],
+    requires: &[
+        FirmwarePart::Kbc8042,
+        FirmwarePart::RtcCmos,
+        FirmwarePart::PicCascade,
+    ],
+    cpu_min: FirmwareCpu::I80286,
+    boards: &["ibm-5170"],
+    distribution: FirmwareDistribution::UserSupplied,
+    status: FirmwareStatus::Listed,
+    parts: &[
+        &[
+            KnownPart {
+                label: "U27",
+                part_number: "6181028",
+                lane: crate::Lane::Even,
+                offset: 0,
+                size: 32768,
+                sha256: "a7d0f995c25a29f2556fce563939cbd101f9225f71103debe441e3b6458cf933",
+            },
+            KnownPart {
+                label: "U47",
+                part_number: "6181029",
+                lane: crate::Lane::Odd,
+                offset: 0,
+                size: 32768,
+                sha256: "fadb3a5c949b0096b2f753c76bac2edf73040066c1959eeee8f7d092c836b6c5",
+            },
+        ],
+        &[
+            KnownPart {
+                label: "U17",
+                part_number: "6181024",
+                lane: crate::Lane::Even,
+                offset: 0,
+                size: 16384,
+                sha256: "b9a9aa7a32c4d50ac16034a489962cbd06455ab14cbb78a6d2bbf519b22c8a73",
+            },
+            KnownPart {
+                label: "U37",
+                part_number: "6181026",
+                lane: crate::Lane::Odd,
+                offset: 0,
+                size: 16384,
+                sha256: "a54d9546361464489a118e6d7a7f9f959e6678013ab4f4e8a98993ac7bdc916d",
+            },
+            KnownPart {
+                label: "U27",
+                part_number: "6181025",
+                lane: crate::Lane::Even,
+                offset: 32768,
+                size: 16384,
+                sha256: "87340797ab2f2eb86185f5289bd0a2bc2e9f14e0633770a87bf4cb0624208a5c",
+            },
+            KnownPart {
+                label: "U47",
+                part_number: "6181027",
+                lane: crate::Lane::Odd,
+                offset: 32768,
+                size: 16384,
+                sha256: "a1106cc91a86251c524db72934f7eaa5abb39c2a986a5ac3477a017da7aac6e3",
+            },
+        ],
+    ],
+};
+
+/// IBM PC AT system BIOS, identified without distributing ROM bytes.
+/// IBM PC AT Technical Reference BIOS listing, TEST2.ASM, "CHECK FOR OPTIONAL
+/// ROM FROM C800->E000 IN 2K BLOCKS" (MOV DX,0C800H ... CMP DX,0E000H);
+/// DSKETTE and DISK supply floppy and AT fixed-disk services.
+/// MAME src/mame/pc/at.cpp, commit cabb909b38, ibm5170/ibm5170a:
+/// U27 loads even bytes and U47 odd bytes (ROM_SKIP(1)). See firmware design §3.5.
+pub const IBM_5170_1985_06_10: FirmwareEntry = FirmwareEntry {
+    id: "ibm-5170-bios-1985-06-10",
+    sha256: "6fb653b58e678cb69b0f943a105c6c803b18a6db23d13c0abccec5b66c6ee652",
+    size: 65536,
+    kind: FirmwareKind::SystemBios,
+    base: FirmwareBase::TopOfFirstMib,
+    scan_window: Some((0xC8000, 0xE0000)),
+    provides: &[FirmwareService::Floppy, FirmwareService::FixedDisk],
+    capabilities: &[FirmwareCapability::CmosDriveTypes],
+    requires: &[
+        FirmwarePart::Kbc8042,
+        FirmwarePart::RtcCmos,
+        FirmwarePart::PicCascade,
+    ],
+    cpu_min: FirmwareCpu::I80286,
+    boards: &["ibm-5170"],
+    distribution: FirmwareDistribution::UserSupplied,
+    status: FirmwareStatus::Listed,
+    parts: &[&[
+        KnownPart {
+            label: "U27",
+            part_number: "6480090",
+            lane: crate::Lane::Even,
+            offset: 0,
+            size: 32768,
+            sha256: "c8654ed7a922644db2b2cce54c540fcfa7cbbae8c514d7eb3dbfbb8187471bfd",
+        },
+        KnownPart {
+            label: "U47",
+            part_number: "6480091",
+            lane: crate::Lane::Odd,
+            offset: 0,
+            size: 32768,
+            sha256: "470ab30f9eb7d56c24f5ce10c7d307c539b9f923ea97dd536d2d5ba7e36d471b",
+        },
+    ]],
+};
+
+/// IBM PC AT system BIOS, identified without distributing ROM bytes.
+/// IBM PC AT Technical Reference BIOS listing, TEST2.ASM, "CHECK FOR OPTIONAL
+/// ROM FROM C800->E000 IN 2K BLOCKS" (MOV DX,0C800H ... CMP DX,0E000H);
+/// DSKETTE and DISK supply floppy and AT fixed-disk services.
+/// MAME src/mame/pc/at.cpp, commit cabb909b38, ibm5170/ibm5170a:
+/// U27 loads even bytes and U47 odd bytes (ROM_SKIP(1)). See firmware design §3.5.
+pub const IBM_5170_1985_11_15: FirmwareEntry = FirmwareEntry {
+    id: "ibm-5170-bios-1985-11-15",
+    sha256: "872febf7d7034bfadf72ed1936e06600eca72456b9ded41d15b7a284de20337d",
+    size: 65536,
+    kind: FirmwareKind::SystemBios,
+    base: FirmwareBase::TopOfFirstMib,
+    scan_window: Some((0xC8000, 0xE0000)),
+    provides: &[FirmwareService::Floppy, FirmwareService::FixedDisk],
+    capabilities: &[FirmwareCapability::CmosDriveTypes],
+    requires: &[
+        FirmwarePart::Kbc8042,
+        FirmwarePart::RtcCmos,
+        FirmwarePart::PicCascade,
+    ],
+    cpu_min: FirmwareCpu::I80286,
+    boards: &["ibm-5170"],
+    distribution: FirmwareDistribution::UserSupplied,
+    status: FirmwareStatus::Listed,
+    parts: &[&[
+        KnownPart {
+            label: "U27",
+            part_number: "61X9266",
+            lane: crate::Lane::Even,
+            offset: 0,
+            size: 32768,
+            sha256: "3b921a451d78efcd91232a01cd6936d6ba12dad4374466655aff8ef3a5dc764e",
+        },
+        KnownPart {
+            label: "U47",
+            part_number: "61X9265",
+            lane: crate::Lane::Odd,
+            offset: 0,
+            size: 32768,
+            sha256: "aec1759a8245d50be93c9b081ab1ac7de58dd8141f603c7745ae66d2d4c29e4d",
+        },
+    ]],
+};
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::{assemble, assemble_with_options, AssemblyError, ImageSource};
 
-    const KNOWN: &str = "kiselev-xi8088-1.0.2 (open, vendor/kiselev-bios/fetch.sh), kiselev-xi8088-1.0.2-atreset (open, vendor/kiselev-bios/fetch.sh)";
+    const KNOWN: &str = "kiselev-xi8088-1.0.2 (open, vendor/kiselev-bios/fetch.sh), kiselev-xi8088-1.0.2-atreset (open, vendor/kiselev-bios/fetch.sh), ibm-5170-bios-1984-01-10 (user-supplied: U27 6181028 even, U47 6181029 odd or U17 6181024 even@0, U37 6181026 odd@0, U27 6181025 even@32768, U47 6181027 odd@32768; see vendor/user-roms/README.md), ibm-5170-bios-1985-06-10 (user-supplied: U27 6480090 even, U47 6480091 odd; see vendor/user-roms/README.md), ibm-5170-bios-1985-11-15 (user-supplied: U27 61X9266 even, U47 61X9265 odd; see vendor/user-roms/README.md)";
 
     fn config() -> MachineConfig {
         crate::bios(vec![0; 32768], Some(vec![0; 1_474_560]))

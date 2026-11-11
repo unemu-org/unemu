@@ -50,6 +50,7 @@ fn pin_field(document: &MachineFile, origins: &Origins, error: &LowerError) -> O
     if !label.starts_with("card[") {
         return label
             .strip_suffix(".image")
+            .or_else(|| label.strip_suffix(".parts"))
             .map(|field| format!("{field}.sha256"));
     }
     for (i, card) in document.card.iter().flatten().enumerate() {

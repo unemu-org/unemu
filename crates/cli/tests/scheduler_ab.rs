@@ -712,7 +712,7 @@ fn scheduler_post_rig_rejects_one_byte_changed_bios() {
     let expected = assembly::ConfigError::FirmwareNotListed {
         sha256: "95e2791c710fdce0ebfc116efe2a187a178f6e33a072e7b75b05861ffdc4f402".into(),
         board: "ibm-5170",
-        known: "kiselev-xi8088-1.0.2 (open, vendor/kiselev-bios/fetch.sh), kiselev-xi8088-1.0.2-atreset (open, vendor/kiselev-bios/fetch.sh)".into(),
+        known: "kiselev-xi8088-1.0.2 (open, vendor/kiselev-bios/fetch.sh), kiselev-xi8088-1.0.2-atreset (open, vendor/kiselev-bios/fetch.sh), ibm-5170-bios-1984-01-10 (user-supplied: U27 6181028 even, U47 6181029 odd or U17 6181024 even@0, U37 6181026 odd@0, U27 6181025 even@32768, U47 6181027 odd@32768; see vendor/user-roms/README.md), ibm-5170-bios-1985-06-10 (user-supplied: U27 6480090 even, U47 6480091 odd; see vendor/user-roms/README.md), ibm-5170-bios-1985-11-15 (user-supplied: U27 61X9266 even, U47 61X9265 odd; see vendor/user-roms/README.md)".into(),
     };
     assert_eq!(
         error.downcast_ref::<assembly::ConfigError>(),

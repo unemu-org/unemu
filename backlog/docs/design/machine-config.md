@@ -529,6 +529,15 @@ licence, upstream revision, SHA-256, load rule, service metadata, required
 `crates/assembly/src/firmware.rs`. `Bare` owns no catalogue and assembly skips
 both catalogue and BIOS-placement checks for these hand-wired rigs.
 
+The catalogue also lists user-supplied IBM 5170 system BIOS versions
+1984-01-10, 1985-06-10 and 1985-11-15: 64 KiB, top of first MiB,
+C8000h..E0000h scan window, floppy/fixed-disk services, CMOS drive types,
+and 8042/RTC/cascaded PIC requirements. Their hashes and alternative chip
+layouts are metadata only; status remains Listed and no preset selects them.
+See `vendor/user-roms/README.md` and firmware-and-machine-classes §3.5.
+`ImageSource::Interleaved` is restricted to system ROMs and resolves to the
+same bytes and identity as a pre-interleaved file.
+
 Assembly resolves file sources once, then hashes the actual bytes before any
 ROM mapping; inline and generated system BIOS images follow the same check.
 Option ROMs are also hashed and allowlisted; `OptionRomNotListed` lists the

@@ -83,6 +83,8 @@ struct Context<'a, R> {
     drives: Vec<DriveOrigin>,
     images: Vec<String>,
     image_paths: Vec<PathBuf>,
+    options: assembly::AssemblyOptions,
+    bios_parts: bool,
 }
 
 impl<R: ImageReader> Context<'_, R> {
@@ -188,13 +190,69 @@ impl<R: ImageReader> Context<'_, R> {
         }
     }
 
-    fn rom(&mut self, field: &str, rom: &v1::Rom, bios: bool) -> Result<LoadImage, LowerError> {
-        let (bytes, _) = self.image(
-            &format!("{field}.image"),
-            rom.image.as_deref(),
-            rom.sha256.as_ref(),
-            false,
-        )?;
+    fn rom(
+        &mut self,
+        field: &str,
+        rom: &v1::Rom,
+        bios: bool,
+        catalogue: &[assembly::FirmwareEntry],
+    ) -> Result<LoadImage, LowerError> {
+        if bios {
+            self.bios_parts = rom.parts.is_some();
+        }
+        if rom.image.is_some() && rom.parts.is_some() {
+            return Err(self.error(field, "image and parts are mutually exclusive"));
+        }
+        let bytes = if let Some(parts) = &rom.parts {
+            if !bios {
+                return Err(self.error(
+                    &format!("{field}.parts"),
+                    "option ROMs cannot use parts; only firmware.bios supports parts",
+                ));
+            }
+            let mut loaded = Vec::new();
+            for (i, part) in parts.iter().enumerate() {
+                let (bytes, _) = self.image(
+                    &format!("{field}.parts[{i}].image"),
+                    Some(&part.image),
+                    part.sha256.as_ref(),
+                    false,
+                )?;
+                loaded.push((
+                    match part.lane {
+                        v1::Lane::Even => assembly::Lane::Even,
+                        v1::Lane::Odd => assembly::Lane::Odd,
+                    },
+                    part.offset,
+                    bytes,
+                ));
+            }
+            let bytes = assembly::interleave_parts(&loaded)
+                .map_err(|e| self.error(&format!("{field}.parts"), e.to_string()))?;
+            assembly::check_firmware_parts(&loaded, &bytes, catalogue, self.options)
+                .map_err(|e| self.error(&format!("{field}.parts"), e.to_string()))?;
+            if let Some(pin) = &rom.sha256 {
+                let actual = format!("{:x}", Sha256::digest(&bytes));
+                if actual != pin.as_str() {
+                    return Err(self.error(
+                        &format!("{field}.parts"),
+                        format!(
+                            "sha256 mismatch for assembled BIOS: expected {}, actual {actual}",
+                            pin.as_str()
+                        ),
+                    ));
+                }
+            }
+            bytes
+        } else {
+            self.image(
+                &format!("{field}.image"),
+                rom.image.as_deref(),
+                rom.sha256.as_ref(),
+                false,
+            )?
+            .0
+        };
         let base = match rom.base {
             Some(base) => u64::from(base),
             None if bios => MIB
@@ -209,19 +267,28 @@ impl<R: ImageReader> Context<'_, R> {
             }));
         }
         self.images.push(field.into());
+        let mut provides: Vec<_> = rom
+            .provides
+            .iter()
+            .flatten()
+            .map(|service| match service {
+                v1::FirmwareService::Floppy => assembly::FirmwareService::Floppy,
+                v1::FirmwareService::FixedDisk => assembly::FirmwareService::FixedDisk,
+            })
+            .collect();
+        if provides.is_empty() {
+            if let Some(entry) = catalogue.iter().find(|entry| {
+                entry.identifies(&bytes)
+                    && (entry.kind == assembly::FirmwareKind::SystemBios) == bios
+            }) {
+                provides = entry.provides.to_vec();
+            }
+        }
         Ok(LoadImage {
             base,
             source: ImageSource::Inline(bytes),
             kind: ImageKind::Rom,
-            provides: rom
-                .provides
-                .iter()
-                .flatten()
-                .map(|service| match service {
-                    v1::FirmwareService::Floppy => assembly::FirmwareService::Floppy,
-                    v1::FirmwareService::FixedDisk => assembly::FirmwareService::FixedDisk,
-                })
-                .collect(),
+            provides,
         })
     }
 
@@ -491,6 +558,14 @@ impl<R: ImageReader> Context<'_, R> {
         Ok(device)
     }
 
+    fn bios_source_field(&self) -> &'static str {
+        if self.bios_parts {
+            "firmware.bios.parts"
+        } else {
+            "firmware.bios.image"
+        }
+    }
+
     fn validation_error(&self, error: ConfigError) -> LowerError {
         use ConfigError::*;
         let device_fields = |ids: &[DeviceId]| -> Vec<String> {
@@ -517,12 +592,15 @@ impl<R: ImageReader> Context<'_, R> {
                     .into_iter()
                     .collect()
             }
+            FirmwareParts { .. } | FirmwarePartsSwapped { .. } | FirmwarePartsMismatch { .. } => {
+                vec!["firmware.bios.parts".into()]
+            }
             MissingSystemBios { .. }
             | FirmwareNotListed { .. }
             | FirmwareBoardMismatch { .. }
             | FirmwareNeedsCpu { .. }
             | FirmwareRequiresDevice { .. }
-            | BiosPlacement { .. } => vec!["firmware.bios.image".into()],
+            | BiosPlacement { .. } => vec![self.bios_source_field().into()],
             FirmwareDoesNotScanOptionRoms { image_index, .. }
             | OptionRomNotListed { image_index, .. }
             | OptionRomCardMismatch { image_index, .. }
@@ -543,7 +621,7 @@ impl<R: ImageReader> Context<'_, R> {
             }
             MultipleIdeChannels => device_fields(&[DeviceId::Ide]),
             FirmwareReset { .. } => vec!["cpu".into()],
-            SystemBiosOverlapsRam { .. } => vec!["memory".into(), "firmware.bios.image".into()],
+            SystemBiosOverlapsRam { .. } => vec!["memory".into(), self.bios_source_field().into()],
             DuplicateDeviceId(id) | MmioDeviceMissing(id) => device_fields(&[*id]),
             InvalidIdeResources { device }
             | InvalidIdePortWindows { device }
@@ -818,6 +896,8 @@ pub(crate) fn lower_tracked<R: ImageReader>(
         drives: Vec::new(),
         images: Vec::new(),
         image_paths: Vec::new(),
+        options,
+        bios_parts: false,
     };
     if document.extends.is_some() {
         return Err(context.error(
@@ -894,9 +974,14 @@ pub(crate) fn lower_tracked<R: ImageReader>(
     }));
     let firmware = context.required("firmware.bios", document.firmware.as_ref())?;
     let bios = context.required("firmware.bios", firmware.bios.as_ref())?;
-    let mut images = vec![context.rom("firmware.bios", bios, true)?];
+    let mut images = vec![context.rom("firmware.bios", bios, true, board.firmware_catalogue())?];
     for (index, rom) in firmware.option_roms.iter().flatten().enumerate() {
-        images.push(context.rom(&format!("firmware.option_roms[{index}]"), rom, false)?);
+        images.push(context.rom(
+            &format!("firmware.option_roms[{index}]"),
+            rom,
+            false,
+            board.firmware_catalogue(),
+        )?);
     }
     let mut mmio = Vec::new();
     let mut drives = Vec::new();
@@ -979,6 +1064,7 @@ pub(crate) fn lower_tracked<R: ImageReader>(
     assembly::check_option_rom_catalogue(&config, options)
         .map_err(|error| context.validation_error(error))?;
     let diagnostics = AssemblyDiagnostics {
+        bios_parts: context.bios_parts,
         origins: origins.clone(),
         labels: context.labels,
         devices: context.devices,
@@ -1013,12 +1099,15 @@ mod tests {
                 .collect(),
             images: Vec::new(),
             image_paths: Vec::new(),
+            options: assembly::AssemblyOptions::default(),
+            bios_parts: false,
         }
     }
 
     #[test]
     fn invalid_assembly_drive_index_is_an_internal_error() {
         let diagnostics = AssemblyDiagnostics {
+            bios_parts: false,
             origins: Origins::new("machine.toml"),
             labels: Vec::new(),
             devices: Vec::new(),
@@ -1054,51 +1143,60 @@ mod tests {
             line: Some(9),
         };
         origins.insert("firmware.bios.image", image_origin.clone());
-        let mut reader = FileImageReader;
-        let context = context(&origins, &mut reader);
-        for error in [
-            ConfigError::MissingSystemBios { board: "ibm-5170" },
-            ConfigError::FirmwareNotListed {
-                sha256: "0".repeat(64),
-                board: "ibm-5170",
-                known: "kiselev-xi8088-1.0.2 (open, vendor/kiselev-bios/fetch.sh)".into(),
-            },
-            ConfigError::FirmwareBoardMismatch {
-                firmware: "glabios-0.4.3-5160",
-                boards: "ibm-5160".into(),
-                board: "ibm-5170",
-            },
-            ConfigError::FirmwareNeedsCpu {
-                firmware: "seabios-1.17.0-isapc",
-                minimum: assembly::FirmwareCpu::I80386,
-                cpu: assembly::FirmwareCpu::I80286,
-            },
-            ConfigError::FirmwareRequiresDevice {
-                firmware: "bochs-rombios-legacy",
-                part: assembly::FirmwarePart::VideoRom,
-            },
-            ConfigError::BiosPlacement {
-                base: 0xF8000,
-                size: 24 * 1024,
-            },
-        ] {
-            let diagnostics = AssemblyDiagnostics {
-                origins: origins.clone(),
-                labels: context.labels.clone(),
-                devices: context.devices.clone(),
-                drives: context.drives.clone(),
-                images: context.images.clone(),
-                image_paths: context.image_paths.clone(),
+        origins.insert("firmware.bios.parts", image_origin.clone());
+        for bios_parts in [false, true] {
+            let source = if bios_parts {
+                "firmware.bios.parts"
+            } else {
+                "firmware.bios.image"
             };
-            let diagnostic = diagnostics.map(assembly::AssemblyError::Config(error.clone()));
-            assert_eq!(diagnostic.origin, image_origin);
-            assert_eq!(diagnostic.field, "firmware.bios.image");
-            assert_eq!(diagnostic.message, error.to_string());
-            assert_eq!(diagnostic.validation.as_deref(), Some(&error));
-            assert_eq!(
-                diagnostic.to_string(),
-                format!("firmware.toml:9: firmware.bios.image: {error}")
-            );
+            let mut reader = FileImageReader;
+            let context = context(&origins, &mut reader);
+            for error in [
+                ConfigError::MissingSystemBios { board: "ibm-5170" },
+                ConfigError::FirmwareNotListed {
+                    sha256: "0".repeat(64),
+                    board: "ibm-5170",
+                    known: "kiselev-xi8088-1.0.2 (open, vendor/kiselev-bios/fetch.sh)".into(),
+                },
+                ConfigError::FirmwareBoardMismatch {
+                    firmware: "glabios-0.4.3-5160",
+                    boards: "ibm-5160".into(),
+                    board: "ibm-5170",
+                },
+                ConfigError::FirmwareNeedsCpu {
+                    firmware: "seabios-1.17.0-isapc",
+                    minimum: assembly::FirmwareCpu::I80386,
+                    cpu: assembly::FirmwareCpu::I80286,
+                },
+                ConfigError::FirmwareRequiresDevice {
+                    firmware: "bochs-rombios-legacy",
+                    part: assembly::FirmwarePart::VideoRom,
+                },
+                ConfigError::BiosPlacement {
+                    base: 0xF8000,
+                    size: 24 * 1024,
+                },
+            ] {
+                let diagnostics = AssemblyDiagnostics {
+                    bios_parts,
+                    origins: origins.clone(),
+                    labels: context.labels.clone(),
+                    devices: context.devices.clone(),
+                    drives: context.drives.clone(),
+                    images: context.images.clone(),
+                    image_paths: context.image_paths.clone(),
+                };
+                let diagnostic = diagnostics.map(assembly::AssemblyError::Config(error.clone()));
+                assert_eq!(diagnostic.origin, image_origin);
+                assert_eq!(diagnostic.field, source);
+                assert_eq!(diagnostic.message, error.to_string());
+                assert_eq!(diagnostic.validation.as_deref(), Some(&error));
+                assert_eq!(
+                    diagnostic.to_string(),
+                    format!("firmware.toml:9: {source}: {error}")
+                );
+            }
         }
     }
 
@@ -1370,10 +1468,145 @@ mod tests {
         assert_eq!(diagnostic.origin.line, Some(12));
         assert_eq!(diagnostic.message, error.to_string());
     }
+    #[test]
+    fn parts_diagnosis_precedes_pin_and_call_site_preserves_escape_and_catalogue_services() {
+        struct Chips;
+        impl ImageReader for Chips {
+            fn read(&mut self, path: &Path) -> io::Result<Vec<u8>> {
+                Ok(vec![if path.ends_with("even") { 0x12 } else { 0x34 }; 4096])
+            }
+        }
+        let bytes = [0x12, 0x34].repeat(4096);
+        let chip = |label, number, lane, byte| assembly::KnownPart {
+            label,
+            part_number: number,
+            lane,
+            offset: 0,
+            size: 4096,
+            sha256: Box::leak(format!("{:x}", Sha256::digest(vec![byte; 4096])).into_boxed_str()),
+        };
+        let entry = assembly::FirmwareEntry {
+            id: "synthetic-pinned-bios",
+            size: 8192,
+            sha256: Box::leak(format!("{:x}", Sha256::digest(&bytes)).into_boxed_str()),
+            parts: Box::leak(
+                vec![Box::leak(
+                    vec![
+                        chip("U27", "even-chip", assembly::Lane::Even, 0x12),
+                        chip("U47", "odd-chip", assembly::Lane::Odd, 0x34),
+                    ]
+                    .into_boxed_slice(),
+                ) as &'static [assembly::KnownPart]]
+                .into_boxed_slice(),
+            ),
+            provides: &[
+                assembly::FirmwareService::Floppy,
+                assembly::FirmwareService::FixedDisk,
+            ],
+            ..assembly::KISELEV_XI8088
+        };
+        let input = format!(
+            concat!(
+                "schema=1\n[firmware.bios]\nparts=[",
+                "{{image='even',lane='odd'}},{{image='odd',lane='even'}}]\n",
+                "sha256='{}'\n"
+            ),
+            entry.sha256
+        );
+        let doc = crate::parse_toml("machines/test.toml", &input).unwrap();
+        let origins = Origins::from_toml("machines/test.toml", &input).unwrap();
+        let mut chips = Chips;
+        let mut context = Context {
+            origins: &origins,
+            reader: &mut chips,
+            labels: vec![],
+            devices: vec![],
+            drives: vec![],
+            images: vec![],
+            image_paths: vec![],
+            options: assembly::AssemblyOptions::default(),
+            bios_parts: false,
+        };
+        let mut rom = doc.firmware.unwrap().bios.unwrap();
+        let error = context
+            .rom("firmware.bios", &rom, true, &[entry])
+            .unwrap_err();
+        const SWAPPED_MESSAGE: &str = concat!(
+            "firmware parts are swapped for synthetic-pinned-bios: ",
+            "odd lane offset 0 holds U27 even-chip, ",
+            "which belongs in the even lane at offset 0; ",
+            "even lane offset 0 holds U47 odd-chip, ",
+            "which belongs in the odd lane at offset 0"
+        );
+        assert_eq!(error.message, SWAPPED_MESSAGE);
+        context.options.allow_unlisted_firmware = true;
+        assert!(context
+            .rom("firmware.bios", &rom, true, &[entry])
+            .unwrap_err()
+            .message
+            .starts_with("sha256 mismatch for assembled BIOS:"));
+        context.options.allow_unlisted_firmware = false;
+        let parts = rom.parts.as_mut().unwrap();
+        parts[0].lane = v1::Lane::Even;
+        parts[1].lane = v1::Lane::Odd;
+        let image = context.rom("firmware.bios", &rom, true, &[entry]).unwrap();
+        assert_eq!(image.provides, entry.provides);
+        rom.sha256 = Some(
+            crate::parse_toml(
+                "pin.toml",
+                &format!("schema=1\n[firmware.bios]\nsha256='{}'\n", "00".repeat(32)),
+            )
+            .unwrap()
+            .firmware
+            .unwrap()
+            .bios
+            .unwrap()
+            .sha256
+            .unwrap(),
+        );
+        assert!(context
+            .rom("firmware.bios", &rom, true, &[entry])
+            .unwrap_err()
+            .message
+            .starts_with("sha256 mismatch for assembled BIOS:"));
+        rom.sha256 = None;
+        rom.provides = Some(vec![v1::FirmwareService::Floppy]);
+        let image = context.rom("firmware.bios", &rom, true, &[entry]).unwrap();
+        let mut config = assembly::bios(bytes.clone(), Some(vec![0; 1_474_560]));
+        config.images[0] = image;
+        let error = assembly::check_system_bios(
+            &config,
+            BoardModel::Ibm5170,
+            &[entry],
+            0xFE000,
+            &bytes,
+            assembly::AssemblyOptions::default(),
+        )
+        .unwrap_err();
+        assert!(matches!(
+            error,
+            ConfigError::FirmwareProvidesMismatch { .. }
+        ));
+        rom.provides = Some(vec![
+            v1::FirmwareService::Floppy,
+            v1::FirmwareService::FixedDisk,
+        ]);
+        config.images[0] = context.rom("firmware.bios", &rom, true, &[entry]).unwrap();
+        assembly::check_system_bios(
+            &config,
+            BoardModel::Ibm5170,
+            &[entry],
+            0xFE000,
+            &bytes,
+            assembly::AssemblyOptions::default(),
+        )
+        .unwrap();
+    }
 }
 
 #[derive(Clone)]
 pub(crate) struct AssemblyDiagnostics {
+    bios_parts: bool,
     origins: Origins,
     labels: Vec<Option<String>>,
     devices: Vec<(DeviceId, String)>,
@@ -1405,6 +1638,8 @@ impl AssemblyDiagnostics {
             drives: self.drives.clone(),
             images: self.images.clone(),
             image_paths: self.image_paths.clone(),
+            options: assembly::AssemblyOptions::default(),
+            bios_parts: self.bios_parts,
         }
     }
 

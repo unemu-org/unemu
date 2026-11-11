@@ -229,12 +229,10 @@ pub(crate) fn validate_paths(config: &MachineConfig) -> Result<(), ConfigError> 
         .iter()
         .map(|d| &d.image)
         .chain(config.images.iter().map(|i| &i.source))
-        .filter_map(|source| {
-            if let ImageSource::File(path) = source {
-                Some(path.as_path())
-            } else {
-                None
-            }
+        .flat_map(|source| match source {
+            ImageSource::File(path) => vec![path.as_path()],
+            ImageSource::Interleaved(parts) => parts.iter().map(|p| p.path.as_path()).collect(),
+            _ => Vec::new(),
         })
         .collect();
     let reserved = |path: &Path| {
@@ -255,7 +253,12 @@ pub(crate) fn validate_paths(config: &MachineConfig) -> Result<(), ConfigError> 
         }
     }
     for (image_index, image) in config.images.iter().enumerate() {
-        if let ImageSource::File(path) = &image.source {
+        let paths = match &image.source {
+            ImageSource::File(path) => vec![path],
+            ImageSource::Interleaved(parts) => parts.iter().map(|p| &p.path).collect(),
+            _ => Vec::new(),
+        };
+        for path in paths {
             if reserved(path) {
                 return Err(ConfigError::ImageInput {
                     image_index,

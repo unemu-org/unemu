@@ -113,10 +113,29 @@ pub struct Firmware {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Rom {
+    pub parts: Option<Vec<RomPart>>,
     pub image: Option<String>,
     pub sha256: Option<Sha256>,
     pub base: Option<u32>,
     pub provides: Option<Vec<FirmwareService>>,
+}
+
+/// One even/odd chip dump; paths and pins retain their own defining origins.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RomPart {
+    pub image: String,
+    pub lane: Lane,
+    #[serde(default)]
+    pub offset: u64,
+    pub sha256: Option<Sha256>,
+}
+/// EPROM byte lane in the assembled system ROM.
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Lane {
+    Even,
+    Odd,
 }
 
 timed_table! {

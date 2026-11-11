@@ -68,7 +68,9 @@ pub use device::{
 };
 pub use drive::{DriveConfig, DriveKind, FloppyGeometry, HardDiskGeometry, WriteMode};
 pub use error::ConfigError;
-pub use image::{FirmwareService, ImageKind, ImageSource, LoadImage};
+pub use image::{
+    interleave_parts, FirmwareService, ImageKind, ImagePart, ImageSource, Lane, LoadImage,
+};
 pub use machine::MachineConfig;
 pub use memory::{MemoryConfig, MmioWindow, RamRegion};
 pub use observation::{
@@ -85,9 +87,18 @@ pub use run::{
     ConsoleProbe, InjectionSchedule, KeyboardStimulus, RunError, RunPolicy, StopCondition,
 };
 
-/// Shared host-side fixtures for persistence fault tests; never used by execution.
+/// Shared host-side fixtures for image and persistence tests; never used by execution.
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support {
+    /// Exercise production image resolution without building a CPU or executing firmware.
+    pub fn resolve_file_sources(
+        config: &crate::MachineConfig,
+        options: crate::AssemblyOptions,
+    ) -> Result<crate::MachineConfig, crate::ConfigError> {
+        crate::assemble::resolve_file_sources(config, options)
+            .map(|(resolved, _)| resolved.into_owned())
+    }
+
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -125,7 +136,8 @@ pub mod test_support {
     }
 }
 pub use firmware::{
-    check_board_system_bios, check_option_rom_catalogue, check_system_bios, AssemblyOptions,
-    FirmwareBase, FirmwareCapability, FirmwareCpu, FirmwareDistribution, FirmwareEntry,
-    FirmwareKind, FirmwarePart, FirmwareStatus, UnlistedFirmware, KISELEV_XI8088,
+    check_board_system_bios, check_firmware_parts, check_option_rom_catalogue, check_system_bios,
+    AssemblyOptions, FirmwareBase, FirmwareCapability, FirmwareCpu, FirmwareDistribution,
+    FirmwareEntry, FirmwareKind, FirmwarePart, FirmwareStatus, KnownPart, UnlistedFirmware,
+    KISELEV_XI8088,
 };

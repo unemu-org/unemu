@@ -161,7 +161,7 @@ impl Origins {
         let mut values = Self::new(self.document.file.clone());
         crate::source::record(&self.document.file, input, yaml, &mut values)?;
         for (field, origin) in values.fields {
-            if field.ends_with(".sha256") {
+            if field.ends_with(".sha256") || field.starts_with("firmware.bios.parts") {
                 self.insert(field, origin);
             }
         }

@@ -218,7 +218,8 @@ contract (machine-config.md). A board model has these parts:
    |---|---|
    | `id` | Stable name, for example `kiselev-xi8088-1.0.2` |
    | `kind` | `system-bios`, `option-rom` or `video-bios` |
-   | `sha256` | Image identity, checked when the bytes are read |
+   | `sha256` | Assembled image identity, checked after interleaving any split parts |
+   | `parts` | Alternative known chip layouts: label, part number, lane, offset, size and SHA-256; empty for open entries |
    | `size`, `base` | Load rule: a system BIOS is top-aligned under 1 MiB, an option ROM has a suggested base |
    | `provides` | Services the image supplies to the guest (`floppy`, `fixed-disk`, `video`, `at-services`, `pci-bios`, `vbe`) |
    | `requires` | Parts the image needs (`kbc-8042`, `ppi-8255`, `rtc-cmos`, `pic-cascade`, `video-rom`, `port-92h`, `ata@1F0/14`) |
@@ -350,12 +351,32 @@ and its firmware is proprietary.
   and optionally `sha256` and `id`. **Identity is the hash, not the file
   name.**
 - **Allowlist.** Each user-supplied entry in a board's catalogue carries only
-  `sha256`, `size`, `base`, `provides`, `requires` and `cpu_min`. The repository
+  `sha256`, `size`, `base`, `provides`, `capabilities`, `requires`, `cpu_min`
+  and known part layouts. The repository
   holds hashes of known-good dumps, never the bytes.
-- **Split ROMs.** AT-era boards often ship even/odd EPROM pairs (ASSUMED for the
-  5170). The description gives `parts = [{ image, lane = "even" }, { image,
-  lane = "odd" }]`. The catalogue pins each part's hash and the interleaved
-  image's hash.
+- **Split ROMs (implemented).** `ImageSource::Interleaved` assembles complete
+  even/odd pairs before identity checks. Even byte i lands at offset + 2*i;
+  odd byte i at offset + 2*i + 1. Offsets default to zero; pairs must have equal
+  nonzero sizes and tile the full image without gaps or overlaps. Only
+  `firmware.bios.parts` supports this source; drives, RAM loads and option ROMs reject it.
+  The catalogue pins alternative chip layouts and the assembled SHA-256.
+- **IBM 5170 provenance (READ).** MAME
+  `src/mame/pc/at.cpp`, commit `cabb909b38` (2026-11-03), sets `ibm5170`
+  (01/10/84 and 06/10/85) and `ibm5170a` (11/15/85), loads U27 into even
+  bytes and U47 into odd bytes with `ROM_SKIP(1)`. CRC32/SHA-1 of all listed
+  27256 parts agree with MAME. The four-27128 1984 layout places U17/U37
+  at offset 0 and U27/U47 at 32768; assembling these four 27128 dumps
+  reproduces the image of the MAME-listed 27256 pair (MEASURED). All three images contain their date at FFFF5h
+  and model FCh at FFFFEh (MEASURED).
+  IBM PC AT Technical Reference BIOS listing, TEST2.ASM, "CHECK FOR OPTIONAL
+  ROM FROM C800->E000 IN 2K BLOCKS" (`MOV DX,0C800H ... CMP DX,0E000H`),
+  establishes the exclusive C8000h..E0000h scan window for all three versions.
+  DSKETTE and DISK provide floppy and AT fixed-disk services; the entries
+  support CMOS drive types and require 8042, RTC/CMOS and cascaded PICs,
+  without requiring an ATA channel when no disk is configured.
+  The IBM 3270 PC/AT (5281) 11/15/85 set, 62X0820/62X0821, is a different
+  machine and is deliberately not listed. See `vendor/user-roms/README.md`
+  for every assembled and chip hash.
 - **Unknown hash.** The image is rejected with `FirmwareNotListed` (§6), which
   lists the board's known entries and where each comes from. **Resolved by
   decision-18:** `--allow-unlisted-firmware` is a run-only developer escape
@@ -527,7 +548,7 @@ Rules:
   - Kiselev C800h–F800h, Bochs C800h–E000h, Super PC/Turbo XT C000h–FE00h
     (READ);
   - GLaBIOS with `ROM_SCAN_ALIGN = 1` (READ);
-  - the IBM 5170 (ASSUMED).
+  - IBM 5170 C800h–E000h (READ, TEST2.ASM above).
 
   The file's list order carries no meaning. Assembly records resolved ROMs,
   including their effective catalogue services, in ascending address order in
@@ -555,15 +576,18 @@ Rules:
     hard-disk boot calls INT 13h supplied by an extension. Kiselev and XUB
     therefore declare no `cmos-drive-types` capability.
 
-Rust sketch (lowering target unchanged):
+The description lowers to the existing `LoadImage` seam. Split chips are one
+image source, not separately mapped ROMs:
 
 ```rust
-pub struct BoardConfig { pub model: BoardModelId }          // class derived
-pub struct FirmwareConfig { pub bios: FirmwareImage, pub option_roms: Vec<OptionRom> }
-pub struct FirmwareImage { pub source: FirmwareSource, pub sha256: Option<[u8; 32]>, pub id: Option<FirmwareId> }
-pub enum FirmwareSource { Single(ImageSource), Split { even: ImageSource, odd: ImageSource } }
-pub struct OptionRom { pub image: FirmwareImage, pub base: Option<u64> }
-// board::lower(&Description) -> Result<MachineConfig, ConfigError>
+pub enum ImageSource {
+    Inline(Vec<u8>),
+    File(PathBuf),
+    Blank { size: u64 },
+    Interleaved(Vec<ImagePart>),
+}
+pub struct ImagePart { pub path: PathBuf, pub lane: Lane, pub offset: u64 }
+pub enum Lane { Even, Odd }
 ```
 
 ## 6. Validation rules
@@ -580,7 +604,7 @@ are read (assembly already validates file lengths after reading). The lowered
 | 3 | The CPU model is a socket option of the board | `CpuNotOnBoard` | `board "ibm-5160" takes cpu 8088 or v20, not "80286"` |
 | 4 | The CPU model is implemented by the core | `CpuModelUnavailable` | `cpu model "8088" is reserved: the CPU core does not model it yet (x86jit xj-50w.2)` |
 | 5 | The board model is not reserved | `BoardUnavailable` | `board "ibm-5160" is reserved until an XT-class CPU model exists` |
-| 6 | The firmware hash is in the board's catalogue | `FirmwareNotListed` | `bios image (sha256 6d50…) is not a known image for board "ibm-5170"; known: kiselev-xi8088-1.0.2 (open, vendor/kiselev-bios/fetch.sh), ibm-5170-bios-1986 (user-supplied)` |
+| 6 | The firmware hash is in the board's catalogue | `FirmwareNotListed` | `bios image (sha256 6d50…) is not a known image for board "ibm-5170"; known: kiselev-xi8088-1.0.2 (open, vendor/kiselev-bios/fetch.sh), ibm-5170-bios-1985-06-10 (user-supplied: U27 6480090 even, U47 6480091 odd; see vendor/user-roms/README.md)` |
 | 7 | The catalogue entry fits this board | `FirmwareBoardMismatch` | `firmware "glabios-0.4.3-5160" is built for ibm-5160, not ibm-5170` |
 | 8 | The CPU meets the firmware minimum | `FirmwareNeedsCpu` | `firmware "seabios-1.17.0-isapc" needs an 80386 or later; cpu is 80286` |
 | 9 | The firmware's required parts are present | `FirmwareRequiresDevice` | `firmware "bochs-rombios-legacy" requires a video-bios option ROM at 0xC0000; none is configured` |
@@ -592,6 +616,44 @@ are read (assembly already validates file lengths after reading). The lowered
 | 15 | Each card fits the board bus | `CardNeedsSlot` | `card "ide" is a 16-bit ISA card; board "ibm-5160" has 8-bit slots only` |
 | 16 | The IRQ line exists on the board | `InvalidIrqLine` (bounded per board) | `device Fdc uses irq line 9; board "ibm-5160" has irq lines 0 through 7` |
 | 17 | A system BIOS is top-aligned with a valid size | `BiosPlacement` | `system BIOS of 24 KiB at 0xf8000 must have a positive size that is a multiple of 8 KiB and end at 0x100000` |
+
+
+Split-source diagnostics additionally use these exact messages (SHA-256 values
+in `EXPECTED`/`ACTUAL` stand for full lowercase hashes):
+
+| Rule | Error | Exact message |
+|---|---|---|
+| Both lanes exist | `FirmwareParts` | `firmware parts: parts require at least one even and one odd part` |
+| One part per lane/offset | `FirmwareParts` | `firmware parts: duplicate even part at offset 0` (or `odd`) |
+| Complete pairs | `FirmwareParts` | `firmware parts: offset 0 requires exactly one even and one odd part` |
+| Equal chip sizes | `FirmwareParts` | `firmware parts: parts at offset 0 have unequal sizes: even 1, odd 2` |
+| Nonempty chips | `FirmwareParts` | `firmware parts: parts at offset 0 must be nonempty` |
+| Contiguous pairs | `FirmwareParts` | `firmware parts: parts leave a gap at offset 4; expected offset 2` |
+| Disjoint pairs | `FirmwareParts` | `firmware parts: parts overlap at offset 2; expected offset 4` |
+| Representable size | `FirmwareParts` | `firmware parts: assembled size overflows` |
+| Available allocation | `FirmwareParts` | `firmware parts: assembled image is too large` |
+| System ROM source only | `FirmwareParts` | `firmware parts: drives cannot use parts` |
+| ROM rather than RAM load | `FirmwareParts` | `firmware parts: RAM load images cannot use parts` |
+| No split option ROMs | `FirmwareParts` | `firmware parts: option ROMs cannot use parts; only firmware.bios supports parts` |
+| Swapped lanes (including one pair of a larger layout) | `FirmwarePartsSwapped` | `firmware parts are swapped for synthetic-two-layout-bios: even lane offset 0 holds U37 low-odd, which belongs in the odd lane at offset 0; odd lane offset 0 holds U17 low-even, which belongs in the even lane at offset 0` |
+| Misplaced halves | `FirmwarePartsMismatch` | `firmware parts do not match synthetic-two-layout-bios: even lane offset 0 holds U27 high-even, which belongs in the even lane at offset 4; odd lane offset 0 holds U47 high-odd, which belongs in the odd lane at offset 4; even lane offset 4 holds U17 low-even, which belongs in the even lane at offset 0; odd lane offset 4 holds U37 low-odd, which belongs in the odd lane at offset 0` |
+| Duplicate and missing chips | `FirmwarePartsMismatch` | `firmware parts do not match synthetic-user-bios: U27 synthetic-even appears 2 times; U47 synthetic-odd (odd lane offset 0) is missing` |
+| Unexpected position | `FirmwarePartsMismatch` | `even lane offset 49152 is not part of synthetic-two-layout-bios layout` (after the error prefix) |
+| Bad dump or wrong chip | `FirmwarePartsMismatch` | `firmware parts do not match synthetic-two-layout-bios: odd lane offset 0: expected U37 low-odd sha256 EXPECTED, actual ACTUAL (bad dump or wrong chip)` |
+
+The same-part-count layout with the most supplied chip hashes in any position
+wins; catalogue order breaks ties. Duplicate and missing known chips are named
+first in layout order, followed by part-position errors in input order, separated
+by `; `. The word `swapped` is used only for a permutation in which each known
+chip appears exactly once and every misplaced chip changed lane within its pair.
+Unexpected lane/offset positions are reported even when no expected chip occupies
+that slot. Layout validation and per-part pins run first, chip
+identity diagnostics next, then the assembled pin. A recognized assembled image
+bypasses chip diagnoses, so a pin for a different listed version still fails.
+The membership escape also bypasses chip identity diagnoses, but retains layout
+and pin checks. Source-labelled errors name `firmware.bios.parts` when parts
+define the BIOS. Multi-pair layouts in `FirmwareNotListed` include `lane@offset`;
+alternative layouts are separated with ` or `.
 
 Rule 10 is implemented through `LoadImage.provides` and kind-owned requirements:
 IDE requires `FixedDisk` even without drives; FDC requires `Floppy` when a drive
@@ -900,8 +962,11 @@ The generic AT comes first.
     - *Depends on:* 14, `xj-50w.2 (x86jit)` and its re-pin.
 16. **User-supplied ROM entries.** Hash-only catalogue entries, even/odd parts
     and the `FirmwareNotListed` listing. No chipset models are implied.
-    - *Acceptance:* tests with synthetic bytes only.
-    - *Depends on:* 2. Lowest priority.
+    - *Implemented:* three IBM 5170 entries (1984-01-10, 1985-06-10,
+      1985-11-15), alternative 1984 layouts, TOML/YAML parts with origins,
+      assembled identity and swapped/wrong-chip diagnostics. All stay Listed;
+      defaults and golden execution are unchanged. Synthetic tests cover the
+      implementation; a separately gated ignored test checks user-supplied identity only.
 
 ## Sources
 

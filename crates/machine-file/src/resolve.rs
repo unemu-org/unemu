@@ -261,6 +261,35 @@ pub(crate) fn drive_label(drive: &Drive) -> String {
 }
 
 fn validate_layer(document: &MachineFile, origins: &Origins) -> Result<(), LowerError> {
+    if let Some(f) = &document.firmware {
+        for (field, rom) in f
+            .bios
+            .iter()
+            .map(|r| ("firmware.bios".to_owned(), r))
+            .chain(
+                f.option_roms
+                    .iter()
+                    .flatten()
+                    .enumerate()
+                    .map(|(i, r)| (format!("firmware.option_roms[{i}]"), r)),
+            )
+        {
+            if rom.image.is_some() && rom.parts.is_some() {
+                return Err(error(
+                    origins,
+                    &field,
+                    "image and parts are mutually exclusive",
+                ));
+            }
+            if field != "firmware.bios" && rom.parts.is_some() {
+                return Err(error(
+                    origins,
+                    &format!("{field}.parts"),
+                    "option ROMs cannot use parts; only firmware.bios supports parts",
+                ));
+            }
+        }
+    }
     let mut ids = BTreeMap::new();
     for (i, card) in document.card.iter().flatten().enumerate() {
         let field = format!("card[{i}]");
@@ -442,6 +471,20 @@ table!(Memory, [conventional_kib, extended_kib], []);
 table!(Firmware, [option_roms], [bios]);
 impl Merge for Rom {
     fn merge(&mut self, child: Self, m: &mut Merger<'_>) {
+        if child.image.is_some() || child.parts.is_some() {
+            self.provides = None;
+            m.out.remove_subtree(&join(&m.to, "provides"));
+        }
+        if child.parts.is_some() {
+            self.image = None;
+            self.sha256 = None;
+            m.out.remove_subtree(&join(&m.to, "image"));
+            m.out.remove_subtree(&join(&m.to, "sha256"));
+        } else if child.image.is_some() {
+            self.parts = None;
+            m.out.remove_subtree(&join(&m.to, "parts"));
+        }
+        m.scalar(&mut self.parts, child.parts, "parts");
         m.image(&mut self.image, &mut self.sha256, child.image, child.sha256);
         m.scalar(&mut self.base, child.base, "base");
         m.scalar(&mut self.provides, child.provides, "provides");
@@ -738,6 +781,11 @@ fn check_preset(document: &MachineFile, origins: &Origins) -> Result<(), LowerEr
         {
             paths.push("firmware.bios.image".into());
         }
+        if let Some(rom) = &firmware.bios {
+            for (i, _) in rom.parts.iter().flatten().enumerate() {
+                paths.push(format!("firmware.bios.parts[{i}].image"));
+            }
+        }
         for (i, rom) in firmware.option_roms.iter().flatten().enumerate() {
             if rom.image.is_some() {
                 paths.push(format!("firmware.option_roms[{i}].image"));
@@ -794,7 +842,7 @@ fn complete(resolved: &Resolved) -> Result<(), LowerError> {
         d.firmware
             .as_ref()
             .and_then(|f| f.bios.as_ref())
-            .is_some_and(|r| r.image.is_some()),
+            .is_some_and(|r| r.image.is_some() || r.parts.is_some()),
     );
     if let Some(f) = &d.firmware {
         for (i, rom) in f.option_roms.iter().flatten().enumerate() {
@@ -1363,6 +1411,20 @@ mod tests {
             assert!(e.origin.line.is_some());
         }
     }
+    #[test]
+    fn embedded_preset_has_no_image_specific_bios_fields() {
+        let (_, text) = PRESETS
+            .iter()
+            .find(|(name, _)| *name == "ibm-5170")
+            .unwrap();
+        let (document, _) = parse(Path::new("preset:ibm-5170"), text, false).unwrap();
+        let bios = document.firmware.unwrap().bios.unwrap();
+        assert!(bios.image.is_none());
+        assert!(bios.parts.is_none());
+        assert!(bios.sha256.is_none());
+        assert!(bios.provides.is_none());
+    }
+
     #[test]
     fn preset_registry_matches_files_and_contains_no_paths() {
         let directory = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../machines/presets");

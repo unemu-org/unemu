@@ -129,6 +129,7 @@ impl MachineConfig {
     // Journal source checks run before file resolution; repeat the remaining
     // checks on the exact loaded bytes without requiring those bytes to be files.
     pub(crate) fn validate_resolved(&self) -> Result<(), ConfigError> {
+        self.check_part_sources()?;
         self.check_unique_device_ids()?;
         self.check_board()?;
         self.check_firmware_layout()?;
@@ -152,6 +153,37 @@ impl MachineConfig {
         self.check_drive_controllers()?;
         self.check_image_geometry()?;
         self.clock.cpu_rate()?;
+        Ok(())
+    }
+
+    pub(crate) fn check_part_sources(&self) -> Result<(), ConfigError> {
+        for drive in &self.drives {
+            if matches!(drive.image, crate::ImageSource::Interleaved(_)) {
+                return Err(ConfigError::FirmwareParts {
+                    message: "drives cannot use parts".into(),
+                });
+            }
+        }
+        for image in &self.images {
+            if matches!(image.source, crate::ImageSource::Interleaved(_)) {
+                if image.kind == ImageKind::RamLoad {
+                    return Err(ConfigError::FirmwareParts {
+                        message: "RAM load images cannot use parts".into(),
+                    });
+                }
+                let bios = match crate::firmware::system_bios(self) {
+                    Ok(bios) => Some(bios),
+                    Err(_) if crate::firmware::unresolved_roms(self) => None,
+                    Err(error) => return Err(error),
+                };
+                if bios.is_some_and(|bios| !std::ptr::eq(image, bios)) {
+                    return Err(ConfigError::FirmwareParts {
+                        message: "option ROMs cannot use parts; only firmware.bios supports parts"
+                            .into(),
+                    });
+                }
+            }
+        }
         Ok(())
     }
 

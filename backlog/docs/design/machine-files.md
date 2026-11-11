@@ -302,8 +302,12 @@ has RAM [0, B0000h), MDA/VGA at B0000h–BFFFFh, and BIOS at F8000h–FFFFFh.
 
 | Field | Type | Default | v1 | Lowers to |
 |---|---|---|---|---|
-| `bios.image` | path | required | yes | `LoadImage { kind: Rom, source: Inline(bytes) }` |
-| `bios.sha256` | 64 hex characters | none | yes | checked against the bytes read |
+| `bios.image` OR `bios.parts` | path OR array of chip tables | required: exactly one | yes | `LoadImage { kind: Rom, source: Inline(assembled_bytes) }` |
+| `bios.parts[].image` | path relative to defining layer | required | yes | chip bytes |
+| `bios.parts[].lane` | `"even"` or `"odd"` | required | yes | byte lane |
+| `bios.parts[].offset` | unsigned integer in assembled bytes | `0` | yes | pair start |
+| `bios.parts[].sha256` | 64 hex characters | none | yes | checked against this chip's bytes; retains its pin origin |
+| `bios.sha256` | 64 hex characters | none | yes | checked against assembled bytes after chip diagnostics |
 | `bios.base` | integer | `0x100000 − size` (the image ends at 1 MiB) | yes | `LoadImage.base`. A 32 KiB Xi8088 image gives `0xF8000`. |
 | `bios.provides` | list of strings | `[]` | `"floppy"`, `"fixed-disk"` | `LoadImage.provides` (M6) |
 | `option_roms` | array of tables | `[]` | yes | one `LoadImage` (`Rom`) each |
@@ -327,6 +331,56 @@ Option ROMs need 55AAh, a nonzero length byte × 512 exactly equal to image
 size, and a zero modulo-256 byte sum. The whole image must fit the BIOS scan
 window; it cannot overlap another image. Assembly records effective scan order
 by ascending address, independent of file order.
+
+### User-supplied split system BIOS
+
+Only `firmware.bios` accepts `parts`; TOML example (paths relative to the defining file):
+
+```toml
+[firmware.bios]
+parts = [
+  { image = "../vendor/user-roms/ibm-5170-bios-1985-06-10/6480090.u27", lane = "even" },
+  { image = "../vendor/user-roms/ibm-5170-bios-1985-06-10/6480091.u47", lane = "odd" },
+]
+sha256 = "6fb653b58e678cb69b0f943a105c6c803b18a6db23d13c0abccec5b66c6ee652"
+```
+
+```yaml
+firmware:
+  bios:
+    parts:
+      - {image: ../vendor/user-roms/ibm-5170-bios-1985-06-10/6480090.u27, lane: even}
+      - {image: ../vendor/user-roms/ibm-5170-bios-1985-06-10/6480091.u47, lane: odd}
+    sha256: 6fb653b58e678cb69b0f943a105c6c803b18a6db23d13c0abccec5b66c6ee652
+```
+
+Each part requires `image` and `lane` (`even` or `odd`), accepts `offset`
+(default 0, in assembled bytes) and optional `sha256`. Part pins check each
+chip's bytes; the BIOS-level pin checks the assembled bytes. Pin mismatches
+retain the image and pin origins. A plain pre-interleaved `image` has the same
+catalogue identity. `machine check` reports the matched entry as usual.
+
+`image and parts are mutually exclusive`. A child `parts` list replaces the
+parent's `image` or entire `parts` list; a child `image` replaces `parts`.
+Either source replacement drops inherited `sha256` and `provides` unless
+the child restates them. Known images receive their catalogue services;
+unlisted images must restate services needed by their cards. Other BIOS
+fields continue to merge independently. Inherited part paths retain their
+defining layer's directory and per-field origins.
+
+Layout errors start with `firmware parts:` and require at least one even and
+one odd part, exactly one of each per offset, equal nonzero chip sizes and
+contiguous pairs from offset zero, without gaps or overlap. Option ROMs report
+`option ROMs cannot use parts; only firmware.bios supports parts`.
+The layout with the most matching chip hashes at any positions (same part
+count) reports every misplaced chip and its correct lane/offset. Exchanged
+lanes within pairs use the word `swapped`; exchanged halves name the expected
+offsets. Unknown chips name the expected label/part number and expected/actual
+SHA-256. Chip diagnoses precede the assembled pin check, so a pinned image
+still receives the useful chip diagnosis. Part pins are checked first.
+Otherwise `FirmwareNotListed` includes known chip layouts and
+`vendor/user-roms/README.md`. `--allow-unlisted-firmware` relaxes membership
+only; malformed layouts still fail. No new CLI flag or machine-file escape is added.
 
 ### `[[card]]`
 
@@ -701,11 +755,17 @@ Implementation choices where the original merge table left details open:
   entries requires tombstones. New entries require their own identity and a
   new card requires `kind` in its defining layer.
 - NVRAM image tables of the same form and drive CHS geometry tables merge
-  recursively. Changing NVRAM form replaces the entire value. `image` and
-  `sha256` form one override unit: setting `image` replaces the pin with the
-  child's `sha256`, or clears it if omitted. Setting only `sha256` re-pins the
-  inherited image. This applies to BIOS, option ROM, NVRAM and drive images;
-  option ROM arrays still replace whole, so their entries restate image/base.
+  recursively. Changing NVRAM form replaces the entire value. For firmware,
+  `image` OR `parts`, `sha256` and `provides` form one override unit: setting a
+  source replaces the inherited source and drops both the inherited pin and
+  services unless the child restates them. Known images then use catalogue
+  services; an unlisted image under the run-only escape must restate required
+  services (otherwise the existing `NoProvider` error names the affected card).
+  This applies to BIOS and option ROMs; option ROM arrays still replace whole,
+  so their entries restate image/base. A pin-only override re-pins the inherited
+  source, and a provides-only override restates its services.
+  For NVRAM and drive images, `image` and `sha256` keep their existing override
+  unit: a new image clears an omitted pin, and a pin alone re-pins the image.
   For drives, `image`, `sha256` and `journal` form one unit: overriding `image`
   drops the inherited journal and retention count. It clears the inherited write
   mode only if that mode was journal, falling back to volatile unless the child
@@ -734,9 +794,10 @@ Implementation choices where the original merge table left details open:
   assembly's responsibility.
 
 The embedded `ibm-5170` preset supplies the four reference cards in canonical
-order (MDA, VGA text, unwired UART, FDC), and BIOS `provides = ["floppy"]`
-without an image. This preserves the exact FreeDOS device order when only
-images are added. Preset files may inherit other presets but may contain no
+order (MDA, VGA text, unwired UART, FDC), without a BIOS source or service
+declaration. Each child supplies an image or parts; known firmware obtains its
+services from the catalogue and unlisted firmware must declare required services.
+This preserves the exact FreeDOS device order when images are added. Preset files may inherit other presets but may contain no
 file paths, including `extends` file references and journal paths. Registration
 and the absence of paths are checked by unit tests; loading checks paths too.
 
@@ -1120,7 +1181,6 @@ model = "80286"
 conventional_kib = 640
 
 [firmware.bios]
-provides = ["floppy"]
 
 [[card]]
 kind = "mda"

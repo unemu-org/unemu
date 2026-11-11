@@ -60,7 +60,11 @@ with its full hash and the known entries' fetch instructions. For development,
 `--allow-unlisted-firmware` accepts unknown bytes and prints exactly one
 `warning: running unlisted firmware (sha256 HASH)` line to stderr. Placement
 (positive size divisible by 8 KiB, ending at `0x100000`) is still checked; listed
-images still meet board, CPU and required-part constraints. This run-only flag
+images still meet board, CPU and required-part constraints. The CLI `--bios`
+automatically top-aligns any positive image whose size is a multiple of 8 KiB
+and at most 1 MiB: base = `0x100000 - size` (16 KiB gives `0xFC000`). Other
+sizes are rejected. An explicit machine-file base is checked as supplied.
+This run-only flag
 is never saved in machine files or used by goldens. The CLI `--bios PATH`
 boots the complete board with a volatile blank 1.44 MB floppy and writes COM1
 bytes to stdout. It prints one `stopped: ...` line to stderr and exits with
@@ -377,6 +381,20 @@ Set `UNEMUPC98_REQUIRE_FIXTURES=1` to make a missing fixture fail with its path 
 fetch script instead. The `goldens` gate always sets this variable, so a failed or
 incomplete fixture fetch cannot silently pass CI. The µPD765 FAT12 test follows
 the same policy when `mformat` is missing and points to `nix develop`.
+
+### User-supplied ROM identity fixture
+
+The ignored `user_supplied_ibm_1985_identity` test checks assembled identity,
+per-chip hashes and misplaced/bad-chip diagnostics through assembly and
+machine-file lowering, without executing the BIOS. Missing files skip, even when
+`UNEMUPC98_REQUIRE_FIXTURES=1` is set for the open fixture suite.
+To require the separately supplied 1985-06-10 chips:
+
+```sh
+UNEMUPC98_REQUIRE_USER_ROMS=1 cargo test --offline -p machine-file --test parts user_supplied_ibm_1985_identity -- --ignored
+```
+
+See `vendor/user-roms/README.md` for repository-relative paths and hashes.
 
 All three CI fixture scripts check pinned output SHA-256 hashes and rebuild offline
 when their pinned source commits and release archives are cached. FreeDOS also

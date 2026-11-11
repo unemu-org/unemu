@@ -175,6 +175,18 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   hidden reset CS base, MSW, IDTR or A20 address masking; see
   [machine-config.md, Board model](design/machine-config.md#board-model).
 
+### User-supplied system ROM catalogue
+
+IBM 5170 BIOS versions 1984-01-10, 1985-06-10 and 1985-11-15 are Listed by
+assembled SHA-256. Single interleaved images and even/odd parts (including
+both 1984 chip layouts) support identity checks, TOML/YAML inheritance,
+per-part pins and chip diagnostics (including partial pair swaps and exchanged
+halves). Child source overrides drop stale service declarations; known images
+use catalogue services. No proprietary bytes are distributed.
+No default firmware changes. These images have not run in a golden; POST,
+boot and guest compatibility remain unqualified. The ignored user-ROM test
+checks identity and diagnostics without execution; see `vendor/user-roms/README.md`.
+
 ## In flight
 
 The 286 foundation milestone is closed. Next is phase A of decision-16 (the

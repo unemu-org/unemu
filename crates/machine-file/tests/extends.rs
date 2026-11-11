@@ -330,6 +330,15 @@ fn preset_example_equals_freedos_without_fixtures() {
     let (mut b, ob) = resolve(machines().join("at-freedos-from-preset.toml")).unwrap();
     unpin(&mut a);
     unpin(&mut b);
+    b.firmware.as_mut().unwrap().bios.as_mut().unwrap().provides = a
+        .firmware
+        .as_ref()
+        .unwrap()
+        .bios
+        .as_ref()
+        .unwrap()
+        .provides
+        .clone();
     let mut reader = Reader(|path: &Path| {
         Ok(if path.extension().unwrap() == "img" {
             vec![0; 1_474_560]

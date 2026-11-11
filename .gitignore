@@ -69,3 +69,7 @@ target/
 
 # Local x86jit override for development (see backlog/docs/dev-setup.md § CPU core)
 .cargo/config.toml
+
+# Proprietary firmware remains user-supplied; only its instructions are tracked.
+/vendor/user-roms/*
+!/vendor/user-roms/README.md

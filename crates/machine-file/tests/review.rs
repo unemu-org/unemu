@@ -104,7 +104,8 @@ fn uart_irq_override_over_preset_example_lowers_and_takes_effect() {
     let tree = Tree::new();
     tree.write(
         "at-freedos-from-preset.toml",
-        &machine("at-freedos-from-preset.toml"),
+        &machine("at-freedos-from-preset.toml")
+            .replace("[firmware.bios]", "[firmware.bios]\nprovides=['floppy']"),
     );
     let child = tree.write(
         "child.toml",

@@ -107,9 +107,9 @@ fn listed_xub_errors_and_catalogue_services_survive_lowering() {
             "[[card]]\nkind='ide'\n"
         };
         let config = load(bytes.clone(), 0xC8000, yaml, tail).unwrap();
-        assert!(
-            config.images[1].provides.is_empty(),
-            "omitted services are supplied by the catalogue"
+        assert_eq!(
+            config.images[1].provides,
+            vec![assembly::FirmwareService::FixedDisk]
         );
         assert!(config
             .memory

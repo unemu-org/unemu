@@ -12,6 +12,21 @@ use crate::device::DeviceId;
 /// test can assert the exact failure a malformed config produces.
 #[derive(Clone, Debug, PartialEq, Eq, Error)]
 pub enum ConfigError {
+    /// Invalid interleaved system ROM layout or source role.
+    #[error("firmware parts: {message}")]
+    FirmwareParts { message: String },
+    /// Known chips have been assigned to opposite lanes.
+    #[error("firmware parts are swapped for {firmware}: {chips}")]
+    FirmwarePartsSwapped {
+        firmware: &'static str,
+        chips: String,
+    },
+    /// A recognized layout contains misplaced chips or incorrect dumps.
+    #[error("firmware parts do not match {firmware}: {mismatches}")]
+    FirmwarePartsMismatch {
+        firmware: &'static str,
+        mismatches: String,
+    },
     /// The file changed after its bytes were verified by the configuration loader.
     #[error("drive {drive_index} image sha256 mismatch: expected {expected}, actual {actual}")]
     DriveImageSha256 {
