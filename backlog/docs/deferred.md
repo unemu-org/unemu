@@ -124,3 +124,33 @@ Things **deliberately not implemented**. If something seems missing and is liste
 - **Revisit when:** Frontend selection or another host platform is needed.
 - **Tracked in:** [`design/persistent-media.md`](design/persistent-media.md),
   §Offline commands and §Retention anchor.
+
+### Layered disk images (base image plus content-addressed layers)
+
+Block-level copy-on-write layers would store only changed sectors and identify
+their parent by content hash. A base image, such as a user-supplied Windows 98 SE
+installation, plus layers of installed programs would form a linear chain.
+Layers cannot be freely combined: two layers built separately on one base both
+change the FAT and the Windows registry, so combining them means building one
+on top of the other. A discardable per-session top layer would make every run
+start from the same disk state; committing it would create a new layer.
+
+Optional recipe layers would replay a deterministic input script (keys, mouse
+and media changes at virtual times) on the parent to reproduce the layer byte
+for byte. Results could be cached by `(parent hash, recipe hash, CPU core revision)`.
+Proprietary bases and layers would be user-supplied and identified by hash only,
+never committed, like user firmware. A saved machine state could also be a layer,
+but would be tied to the emulator version; disk layers would remain plain data.
+
+- **Why deferred:** No workload needs layered images before Windows 98 SE runs
+  in phase C. The floppy journal and the coming hard-disk write-back cover
+  persistence needs in the meantime.
+- **Revisit when:** The hard-disk write-back is designed, and again when phase C
+  needs a reproducible Windows 98 SE disk state for golden tests.
+- **Requirement for now:** The write-back format must not preclude layers: keep
+  the base read-only and identified by hash, and keep written sectors separate
+  from the base. The floppy design already preserves this separation; see
+  [`design/persistent-media.md`](design/persistent-media.md), §Context and
+  §Header: exactly 128 bytes, and
+  [`design/machine-files.md`](design/machine-files.md), §Drives.
+- **Tracked in:** upc-18x.5.
