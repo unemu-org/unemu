@@ -2,7 +2,7 @@
 //! FreeDOS boot golden: boot a real FreeDOS floppy image on the full machine
 //! (§3.1, §5, §9).
 //!
-//! Assembles the PC/AT machine ([`run_freedos`]) with the real Kiselev Xi8088
+//! Assembles the PC/AT machine ([`run_freedos_config`]) with the real Kiselev Xi8088
 //! BIOS in masked ROM and a real, bootable **FreeDOS** 1.44 MB floppy image (8086
 //! kernel + FreeCOM, built by `vendor/freedos/fetch.sh`) in the µPD765 floppy
 //! drive, and boots from the reset vector. The golden captures the final shell
@@ -58,7 +58,7 @@
 //! (FreeCOM), which starts and prompts for the date. With no `AUTOEXEC.BAT`,
 //! FreeCOM asks for the date/time before giving the `A:\>` prompt; the run stops
 //! there **waiting for keyboard input that never arrives in a headless run**.
-//! `run_freedos` polls the console and stops as soon as that date prompt appears
+//! `run_freedos_config` polls the console and stops as soon as that date prompt appears
 //! within the configured instruction-equivalent safety cap. Host duration depends
 //! on the build and host. The stop is `StopReason::BudgetExhausted` (a poll-chunk cap
 //! reached at a terminal wait-for-input state, not a spin or an unlifted op).
@@ -81,7 +81,7 @@
 //! - FreeDOS: 8086 kernel + FreeCOM, FAT12 1.44 MB image (`vendor/freedos`).
 //! - CPU: `x86jit-core`, the rev pinned in `Cargo.lock`.
 
-use cli::{run_freedos, StopReason};
+use cli::{run_freedos_config, StopReason};
 #[path = "support/fixtures.rs"]
 mod fixtures;
 
@@ -93,7 +93,7 @@ const GOLDEN_POST: &[u8] = &[
 #[ignore = "slow: runs BIOS POST and the full FreeDOS boot chain"]
 #[test]
 fn freedos_reaches_shell_prompt() {
-    let (Some(rom), Some(img)) = (
+    let (Some(_rom), Some(img)) = (
         fixtures::fixture("kiselev-bios/bios-xi8088.bin"),
         fixtures::fixture("freedos/freedos.img"),
     ) else {
@@ -101,7 +101,12 @@ fn freedos_reaches_shell_prompt() {
     };
     assert_eq!(img.len(), 1_474_560, "FreeDOS floppy is a 1.44 MB image");
 
-    let run = run_freedos(&rom, img);
+    let run = run_freedos_config(
+        machine_file::load(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../machines/at-freedos.toml"),
+        )
+        .unwrap(),
+    );
     assert_eq!(
         run.post, GOLDEN_POST,
         "media-attached POST checkpoint stream"

@@ -86,6 +86,18 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   storage contract. See [persistence evidence](design/persistent-media.md#acceptance-evidence-appendix)
   and the [runnable walkthrough](commands.md#journal-session-walkthrough).
   Closed/recovered markers do not imply a healthy filesystem.
+- **Machine files in frontends:** TOML/YAML, inheritance and embedded presets
+  feed the window and CLI through `machine-file`, with source-positioned
+  assembly catalogue diagnostics. `machine check FILE` validates and assembles
+  without guest execution or journal writes (exit 0/1/2). Missing, recoverable
+  and busy journals produce notes/warnings; corruption or a wrong base is invalid.
+  `run --machine FILE` accepts retired/idle caps and a display/UART card id for
+  final output. Normal halt/budget exhaustion finishes persistence; failed runs
+  leave unsealed commands for the next mount.
+  The window defaults to the build workspace's `machines/at-freedos.toml`,
+  chooses the first display or `--display CARD`, and no longer accepts positional
+  BIOS/floppy paths. FreeDOS goldens load that same file; BIOS goldens and
+  synthetic fast tests keep their presets.
 - **Machines are declarative.** A `MachineConfig` (the `assembly` crate) is built by one
   `assemble()` and run under a `RunPolicy`; presets replace the old hand-written runners.
 - **CPU pin:** `73ed5d6ef4fc68f91cdad10b1e7c1c370363d030` (x86jit `main`).
@@ -105,7 +117,7 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
 - **Optional window presenter:** the `window` leaf crate embeds the original
   VileR v2.2 CP437 MDA/VGA fonts (CC BY-SA 4.0), parses NE/FNT resources and
   rasterises decoded text styles to softbuffer pixels. `unemupc98-window` boots
-  the FreeDOS preset with paced runs and observation subscribers; it retains
+  `machines/at-freedos.toml` with paced runs and observation subscribers; it retains
   the last delivered frame while continuing past date/time prompts. Physical
   host keys map to set-1 make/break bytes, including E0 navigation and right
   modifiers, queued only at run boundaries with backpressure. Presenter,

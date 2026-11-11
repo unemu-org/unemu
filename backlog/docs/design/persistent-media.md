@@ -532,6 +532,16 @@ are harmless, and the session run API refuses further advancement after finish.
 Drop never writes a clean marker. Final display/disk capture can still read the
 finished media bytes. There is no atomic close across multiple drives.
 
+`machine check` performs no writes. Existing journals are inspected through the
+offline shared-lock path, with read-only data opens, no temporary cleanup and no
+recovery. With no stable lock entry, the same scanner inspects without a lock
+and reports it; no lock is created. A missing journal is valid with a creation
+note. Recoverable tails and unsealed tips are valid with a warning that the next
+mount will recover them. Interior damage or a wrong base binding is invalid,
+with the drive's machine-file origin. A journal in use is valid with a warning
+that inspection was skipped. Hardware/catalogue validation then assembles the
+journal drives as volatile, without replaying or mounting journal sessions.
+
 There is no new frontend flag or serialized journal configuration in this step.
 The existing presets and goldens remain volatile; journal selection is explicit
 Rust data. Assembly passes `keep_generations` into the sink. The anchor counts

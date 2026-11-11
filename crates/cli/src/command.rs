@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Dependency-free frontend parsing and offline floppy output/exit policy;
+//! Frontend argument parsing, machine-file runs and offline floppy exit policy;
+//! `backlog/docs/design/machine-files.md` § Frontends,
 //! `backlog/docs/design/persistent-media.md` § Offline commands and
 //! `backlog/docs/design/firmware-and-machine-classes.md` §6.
 
@@ -12,6 +13,8 @@ use std::path::PathBuf;
 
 const USAGE: &str = "usage: unemupc98 --boot (Real16 timer demo)
        unemupc98 --bios PATH [--allow-unlisted-firmware]
+       unemupc98 machine check FILE [--allow-unlisted-firmware]
+       unemupc98 run --machine FILE [--max-steps N] [--idle-limit N] [--print CARD] [--allow-unlisted-firmware]
        unemupc98 media generations --base IMG --journal J
        unemupc98 media verify --base IMG --journal J [--repair-tail --backup PATH]
        unemupc98 media rollback --base IMG --journal J --to N --backup PATH
@@ -24,6 +27,17 @@ pub enum Command {
     Boot,
     Bios {
         path: PathBuf,
+        options: assembly::AssemblyOptions,
+    },
+    Check {
+        path: PathBuf,
+        options: assembly::AssemblyOptions,
+    },
+    Run {
+        path: PathBuf,
+        max_steps: u64,
+        idle_limit: u64,
+        print: Option<String>,
         options: assembly::AssemblyOptions,
     },
     Media(MediaCommand),
@@ -67,6 +81,46 @@ pub fn parse(args: &[OsString]) -> Result<Command, &'static str> {
     if frontend.len() == 2 && frontend[0] == "--bios" {
         return Ok(Command::Bios {
             path: frontend[1].into(),
+            options,
+        });
+    }
+    if frontend.first().is_some_and(|arg| *arg == "machine") {
+        return if frontend.len() == 3
+            && frontend[1] == "check"
+            && !frontend[2].is_empty()
+            && !frontend[2].as_encoded_bytes().starts_with(b"--")
+        {
+            Ok(Command::Check {
+                path: frontend[2].into(),
+                options,
+            })
+        } else {
+            Err("expected machine check FILE")
+        };
+    }
+    if frontend.first().is_some_and(|arg| *arg == "run") {
+        let (mut path, mut max_steps, mut idle_limit, mut print) = (None, None, None, None);
+        let mut args = frontend[1..].iter();
+        while let Some(arg) = args.next() {
+            let value = args
+                .next()
+                .filter(|value| !value.is_empty() && !value.as_encoded_bytes().starts_with(b"--"))
+                .ok_or("missing option value")?;
+            match arg.to_str() {
+                Some("--machine") if path.is_none() => path = Some(PathBuf::from(value)),
+                Some("--max-steps") if max_steps.is_none() => max_steps = Some(decimal(value)?),
+                Some("--idle-limit") if idle_limit.is_none() => idle_limit = Some(decimal(value)?),
+                Some("--print") if print.is_none() => {
+                    print = Some(value.to_str().ok_or("invalid card id")?.to_owned())
+                }
+                _ => return Err("unknown or duplicate run option"),
+            }
+        }
+        return Ok(Command::Run {
+            path: path.ok_or("run requires --machine FILE")?,
+            max_steps: max_steps.unwrap_or(crate::BIOS_MAX_RETIRED),
+            idle_limit: idle_limit.unwrap_or(crate::BIOS_IDLE_LIMIT),
+            print,
             options,
         });
     }
@@ -158,6 +212,15 @@ pub fn parse(args: &[OsString]) -> Result<Command, &'static str> {
         journal: journal.ok_or("--journal is required")?.into(),
         action,
     }))
+}
+
+fn decimal(value: &std::ffi::OsStr) -> Result<u64, &'static str> {
+    value
+        .to_str()
+        .filter(|text| !text.is_empty() && text.bytes().all(|byte| byte.is_ascii_digit()))
+        .ok_or("expected an unsigned decimal integer")?
+        .parse()
+        .map_err(|_| "integer is out of range")
 }
 
 /// 0: valid/closed; 1: corruption, binding or I/O; 2: usage/config; 3: recovery.
@@ -325,6 +388,25 @@ pub fn run(args: &[OsString], output: &mut impl Write, errors: &mut impl Write) 
             }),
         Command::Bios { path, options } => run_bios(&path, options, output, errors)
             .map_err(|error| ToolError::Io(io::Error::other(format!("Error: {error:?}")))),
+        Command::Check { path, options } => {
+            check_machine(&path, options, errors).map_err(frontend_error)
+        }
+        Command::Run {
+            path,
+            max_steps,
+            idle_limit,
+            print,
+            options,
+        } => run_machine(
+            &path,
+            options,
+            max_steps,
+            idle_limit,
+            print.as_deref(),
+            output,
+            errors,
+        )
+        .map_err(frontend_error),
         Command::Media(command) => execute(command, output),
     };
     match result {
@@ -335,6 +417,111 @@ pub fn run(args: &[OsString], output: &mut impl Write, errors: &mut impl Write) 
             code
         }
     }
+}
+
+fn frontend_error(error: anyhow::Error) -> ToolError {
+    ToolError::Io(io::Error::other(error.to_string()))
+}
+
+fn check_machine(
+    path: &std::path::Path,
+    options: assembly::AssemblyOptions,
+    errors: &mut impl Write,
+) -> anyhow::Result<u8> {
+    let loaded = machine_file::load_for_assembly(path, options)?;
+    for note in loaded.check()? {
+        writeln!(errors, "{note}")?;
+    }
+    Ok(0)
+}
+
+fn run_machine(
+    path: &std::path::Path,
+    options: assembly::AssemblyOptions,
+    max_steps: u64,
+    idle_limit: u64,
+    print: Option<&str>,
+    output: &mut impl Write,
+    errors: &mut impl Write,
+) -> anyhow::Result<u8> {
+    use assembly::{DeviceId, ObservationPolicy, ObservationRequest, OutputKind, RunPolicy};
+    let loaded = machine_file::load_for_assembly(path, options)?;
+    let printable =
+        |device: DeviceId| matches!(device, DeviceId::Mda | DeviceId::Vga | DeviceId::Uart);
+    let selected = if let Some(name) = print {
+        let (_, device) = loaded
+            .cards
+            .iter()
+            .find(|(id, _)| id == name)
+            .ok_or_else(|| anyhow::anyhow!("output card {name:?} is not configured"))?;
+        if !printable(*device) {
+            writeln!(errors, "card {name:?} has no printable output")?;
+            return Ok(2);
+        }
+        Some(*device)
+    } else {
+        loaded
+            .cards
+            .iter()
+            .find(|(_, device)| matches!(device, DeviceId::Mda | DeviceId::Vga))
+            .or_else(|| {
+                loaded
+                    .cards
+                    .iter()
+                    .find(|(_, device)| *device == DeviceId::Uart)
+            })
+            .map(|(_, device)| *device)
+    };
+    let mut observation = ObservationPolicy::default();
+    if let Some(device) = selected {
+        observation.routes.push(ObservationRequest {
+            device,
+            output: if device == DeviceId::Uart {
+                OutputKind::Bytes(device::ByteStreamKind::SerialTx)
+            } else {
+                OutputKind::TextScanout
+            },
+            byte_limit: 1_048_576,
+        });
+    }
+    let mut assembled = loaded.assemble(&observation)?;
+    for warning in &assembled.unlisted_firmware {
+        writeln!(errors, "{warning}")?;
+    }
+    let result = assembled.run_session(&RunPolicy::natural(Some(max_steps), Some(idle_limit)));
+    let result = result.and_then(|outcome| {
+        if matches!(
+            outcome,
+            machine::RunOutcome::Halted | machine::RunOutcome::RetiredCapReached
+        ) {
+            crate::finish_persistence(&mut assembled, errors)?;
+        }
+        Ok(outcome)
+    });
+    let mut stop = crate::classify_bios_stop(&assembled.machine, result);
+    let captured = match selected {
+        Some(DeviceId::Uart) => assembled
+            .observation
+            .drain_bytes(DeviceId::Uart, device::ByteStreamKind::SerialTx),
+        Some(device) => assembled.capture_text(device).map(|capture| {
+            let video::Frame::Text(grid) = capture.frame;
+            format!("{}\n", grid.to_dump()).into_bytes()
+        }),
+        None => Ok(Vec::new()),
+    };
+    let bytes = match captured {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            stop = crate::StopReason::ObservationFailed {
+                detail: error.to_string(),
+            };
+            Vec::new()
+        }
+    };
+    let (message, failed) = bios_stop(&stop);
+    writeln!(errors, "{}", message.replace(['\r', '\n'], " "))?;
+    output.write_all(&bytes)?;
+    Ok(u8::from(failed))
 }
 
 fn run_bios(
@@ -380,6 +567,45 @@ fn error_exit_code(error: &ToolError) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn file_run_parser_preserves_policy_defaults_and_explicit_limits() {
+        let args = |values: &[&str]| values.iter().map(OsString::from).collect::<Vec<_>>();
+        assert_eq!(
+            parse(&args(&["run", "--machine", "at.toml"])).unwrap(),
+            Command::Run {
+                path: "at.toml".into(),
+                max_steps: 12_000_000,
+                idle_limit: 1_000_000,
+                print: None,
+                options: assembly::AssemblyOptions::default(),
+            }
+        );
+        assert_eq!(
+            parse(&args(&[
+                "run",
+                "--machine",
+                "at.toml",
+                "--max-steps",
+                "42",
+                "--idle-limit",
+                "0",
+                "--print",
+                "screen",
+                "--allow-unlisted-firmware"
+            ]))
+            .unwrap(),
+            Command::Run {
+                path: "at.toml".into(),
+                max_steps: 42,
+                idle_limit: 0,
+                print: Some("screen".into()),
+                options: assembly::AssemblyOptions {
+                    allow_unlisted_firmware: true
+                },
+            }
+        );
+    }
 
     #[test]
     fn canonical_path_race_is_exit_one() {

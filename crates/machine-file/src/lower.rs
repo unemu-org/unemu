@@ -69,6 +69,7 @@ pub struct LowerError {
     pub validation: Option<Box<ConfigError>>,
 }
 
+#[derive(Clone)]
 struct DriveOrigin {
     field: String,
     label: String,
@@ -791,6 +792,15 @@ pub fn lower<R: ImageReader>(
     reader: &mut R,
     options: assembly::AssemblyOptions,
 ) -> Result<MachineConfig, LowerError> {
+    lower_tracked(document, origins, reader, options).map(|(config, _)| config)
+}
+
+pub(crate) fn lower_tracked<R: ImageReader>(
+    document: &MachineFile,
+    origins: &Origins,
+    reader: &mut R,
+    options: assembly::AssemblyOptions,
+) -> Result<(MachineConfig, AssemblyDiagnostics), LowerError> {
     let mut context = Context {
         origins,
         reader,
@@ -968,7 +978,15 @@ pub fn lower<R: ImageReader>(
         .map_err(|error| context.validation_error(error))?;
     assembly::check_option_rom_catalogue(&config, options)
         .map_err(|error| context.validation_error(error))?;
-    Ok(config)
+    let diagnostics = AssemblyDiagnostics {
+        origins: origins.clone(),
+        labels: context.labels,
+        devices: context.devices,
+        drives: context.drives,
+        images: context.images,
+        image_paths: context.image_paths,
+    };
+    Ok((config, diagnostics))
 }
 
 #[cfg(test)]
@@ -996,6 +1014,29 @@ mod tests {
             images: Vec::new(),
             image_paths: Vec::new(),
         }
+    }
+
+    #[test]
+    fn invalid_assembly_drive_index_is_an_internal_error() {
+        let diagnostics = AssemblyDiagnostics {
+            origins: Origins::new("machine.toml"),
+            labels: Vec::new(),
+            devices: Vec::new(),
+            drives: Vec::new(),
+            images: Vec::new(),
+            image_paths: Vec::new(),
+        };
+        let error = diagnostics.map(assembly::AssemblyError::Journal {
+            drive_index: 9,
+            source: media::OpenError::Format(media::Error::HeaderMagic),
+        });
+        assert_eq!(error.field, "internal error");
+        assert!(
+            error
+                .message
+                .contains("drive index 9, but only 0 drive origins exist"),
+            "{error}"
+        );
     }
 
     #[test]
@@ -1041,7 +1082,15 @@ mod tests {
                 size: 24 * 1024,
             },
         ] {
-            let diagnostic = context.validation_error(error.clone());
+            let diagnostics = AssemblyDiagnostics {
+                origins: origins.clone(),
+                labels: context.labels.clone(),
+                devices: context.devices.clone(),
+                drives: context.drives.clone(),
+                images: context.images.clone(),
+                image_paths: context.image_paths.clone(),
+            };
+            let diagnostic = diagnostics.map(assembly::AssemblyError::Config(error.clone()));
             assert_eq!(diagnostic.origin, image_origin);
             assert_eq!(diagnostic.field, "firmware.bios.image");
             assert_eq!(diagnostic.message, error.to_string());
@@ -1320,5 +1369,60 @@ mod tests {
         assert_eq!(diagnostic.origin.file, Path::new("roms.toml"));
         assert_eq!(diagnostic.origin.line, Some(12));
         assert_eq!(diagnostic.message, error.to_string());
+    }
+}
+
+#[derive(Clone)]
+pub(crate) struct AssemblyDiagnostics {
+    origins: Origins,
+    labels: Vec<Option<String>>,
+    devices: Vec<(DeviceId, String)>,
+    drives: Vec<DriveOrigin>,
+    images: Vec<String>,
+    image_paths: Vec<PathBuf>,
+}
+
+impl AssemblyDiagnostics {
+    pub(crate) fn drive_error(&self, index: usize, message: impl Into<String>) -> LowerError {
+        let mut reader = crate::FileImageReader;
+        let context = self.context(&mut reader);
+        match self.drives.get(index) {
+            Some(drive) => context.error(&drive.field, message),
+            None => {
+                let mut error = context.error("", format!("assembly reported drive index {index}, but only {} drive origins exist: {}", self.drives.len(), message.into()));
+                error.field = "internal error".into();
+                error
+            }
+        }
+    }
+
+    fn context<'a>(&'a self, reader: &'a mut FileImageReader) -> Context<'a, FileImageReader> {
+        Context {
+            origins: &self.origins,
+            reader,
+            labels: self.labels.clone(),
+            devices: self.devices.clone(),
+            drives: self.drives.clone(),
+            images: self.images.clone(),
+            image_paths: self.image_paths.clone(),
+        }
+    }
+
+    pub(crate) fn map(&self, error: assembly::AssemblyError) -> LowerError {
+        let mut reader = crate::FileImageReader;
+        let context = self.context(&mut reader);
+        match error {
+            assembly::AssemblyError::Config(error) => context.validation_error(error),
+            assembly::AssemblyError::Journal {
+                drive_index,
+                source,
+            } => self.drive_error(drive_index, format!("journal mount: {source}")),
+            assembly::AssemblyError::AccessCoupling(error) => {
+                context.error("board", format!("bus access coupling: {error}"))
+            }
+            assembly::AssemblyError::Cpu(error) => {
+                context.error("memory", format!("cpu memory map: {error}"))
+            }
+        }
     }
 }

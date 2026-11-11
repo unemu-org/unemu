@@ -231,3 +231,152 @@ pub fn load_with_reader_and_options<R: ImageReader>(
     let (document, origins) = resolve(path)?;
     Ok(lower_with_options(&document, &origins, reader, options)?)
 }
+
+/// A validated configuration retaining card identities and assembly diagnostics.
+/// See machine-files § Frontends: catalogue checks need the resolved ROM bytes.
+pub struct LoadedMachine {
+    pub config: assembly::MachineConfig,
+    /// Card ids in file order, paired with their assembly roles.
+    pub cards: Vec<(String, assembly::DeviceId)>,
+    diagnostics: lower::AssemblyDiagnostics,
+    options: assembly::AssemblyOptions,
+}
+
+impl LoadedMachine {
+    /// Check hardware and inspect journals without creating, recovering or closing them.
+    /// Existing stable locks use the offline inspector's shared-lock path. With
+    /// no lock entry, the same scanner runs without a lock and reports that fact.
+    /// Guest drives assemble as volatile; no guest instruction is executed.
+    pub fn check(&self) -> Result<Vec<String>, LowerError> {
+        let mut config = self.config.clone();
+        let mut notes = Vec::new();
+        for (index, drive) in config.drives.iter_mut().enumerate() {
+            if let assembly::WriteMode::Journal { path, .. } = &drive.write {
+                let message = inspect_journal(drive, path)
+                    .map_err(|message| self.diagnostics.drive_error(index, message))?;
+                if let Some(message) = message {
+                    notes.push(self.diagnostics.drive_error(index, message).to_string());
+                }
+                drive.write = assembly::WriteMode::Volatile;
+            }
+        }
+        let assembled = assembly::assemble_with_observation_and_options(
+            &config,
+            &assembly::ObservationPolicy::default(),
+            self.options,
+        )
+        .map_err(|error| self.diagnostics.map(error))?;
+        notes.extend(assembled.unlisted_firmware.iter().map(ToString::to_string));
+        Ok(notes)
+    }
+
+    /// Assemble without running the guest, preserving defining-layer positions.
+    pub fn assemble(
+        &self,
+        observation: &assembly::ObservationPolicy,
+    ) -> Result<assembly::AssembledMachine, LowerError> {
+        assembly::assemble_with_observation_and_options(&self.config, observation, self.options)
+            .map_err(|error| self.diagnostics.map(error))
+    }
+}
+
+/// Load for a frontend that needs card identities and positioned assembly errors.
+/// Loading alone validates; `LoadedMachine::assemble` also checks ROM identity.
+pub fn load_for_assembly(
+    path: impl AsRef<Path>,
+    options: assembly::AssemblyOptions,
+) -> Result<LoadedMachine, LoadError> {
+    let (document, origins) = resolve(path)?;
+    let (config, diagnostics) =
+        lower::lower_tracked(&document, &origins, &mut FileImageReader, options).map_err(
+            |mut error| {
+                integrity::annotate_pin(&document, &origins, &mut error);
+                error
+            },
+        )?;
+    let cards = document
+        .card
+        .iter()
+        .flatten()
+        .filter_map(|card| {
+            use schema::v1::CardKind::*;
+            let device = match card.kind? {
+                Mda => assembly::DeviceId::Mda,
+                VgaText => assembly::DeviceId::Vga,
+                Uart16550 => assembly::DeviceId::Uart,
+                Fdc765 => assembly::DeviceId::Fdc,
+                Ide => assembly::DeviceId::Ide,
+            };
+            Some((resolve::card_id(card)?.to_owned(), device))
+        })
+        .collect();
+    Ok(LoadedMachine {
+        config,
+        cards,
+        diagnostics,
+        options,
+    })
+}
+
+fn inspect_journal(drive: &assembly::DriveConfig, path: &Path) -> Result<Option<String>, String> {
+    use media::offline::{Access, JournalTool, ToolError};
+    let assembly::ImageSource::File(base) = &drive.image else {
+        return Err("internal error: journal base is not a file".into());
+    };
+    match std::fs::symlink_metadata(path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(Some("note: journal will be created".into()))
+        }
+        Err(error) => return Err(format!("journal {}: {error}", path.display())),
+        Ok(_) => {}
+    }
+    let canonical = std::fs::canonicalize(path)
+        .map_err(|error| format!("journal {}: {error}", path.display()))?;
+    let mut lock_path = canonical.as_os_str().to_os_string();
+    lock_path.push(".lock");
+    let no_lock = match std::fs::symlink_metadata(Path::new(&lock_path)) {
+        Ok(_) => false,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => true,
+        Err(error) => return Err(format!("journal lock: {error}")),
+    };
+    let report = if no_lock {
+        // The offline tool may create a missing stable lock. A check cannot do
+        // that, so inspect this snapshot with its scanner and disclose no lock.
+        let base_bytes =
+            std::fs::read(base).map_err(|error| format!("base {}: {error}", base.display()))?;
+        let mut file = std::fs::File::open(&canonical)
+            .map_err(|error| format!("journal {}: {error}", path.display()))?;
+        media::scan_reader(&mut file, &base_bytes, drive.kind.image_bytes())
+            .map_err(|error| format!("journal {}: {error}", path.display()))?
+            .report
+    } else {
+        let mut tool = match JournalTool::open(base, path, Access::Inspect) {
+            Ok(tool) => tool,
+            Err(ToolError::PathIo { source, .. })
+                if source.kind() == std::io::ErrorKind::WouldBlock =>
+            {
+                return Ok(Some(
+                    "warning: journal is in use and was not inspected".into(),
+                ));
+            }
+            Err(error) => return Err(error.to_string()),
+        };
+        tool.verify().map_err(|error| error.to_string())?.report
+    };
+    if let media::Status::Refused(refusal) = &report.status {
+        return Err(format!(
+            "journal {}: verification refused at {}: {}",
+            path.display(),
+            refusal.failure_offset,
+            refusal.reason
+        ));
+    }
+    let mut notes = Vec::new();
+    if no_lock {
+        notes.push("note: journal lock is absent; inspected without a lock");
+    }
+    if report.needs_recovery() {
+        notes.push("warning: journal recovery will run on the next mount");
+    }
+    Ok((!notes.is_empty()).then(|| notes.join("; ")))
+}

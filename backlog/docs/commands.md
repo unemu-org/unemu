@@ -9,7 +9,9 @@ cargo build                                  # build the workspace
 cargo run -p cli -- --boot                   # Real16 timer demo; no args print usage
 cargo run --offline -p cli -- --bios vendor/kiselev-bios/bios-xi8088.bin
 cargo run --offline -p cli -- --bios /path/to/bios.bin --allow-unlisted-firmware
-cargo run --offline -p window --bin unemupc98-window -- --allow-unlisted-firmware /path/to/bios.bin /path/to/floppy.img
+cargo run --offline -p cli -- machine check machines/at-freedos.toml
+cargo run --offline -p cli -- run --machine machines/at-freedos.toml --max-steps 12000000 --idle-limit 1000000 --print mda
+cargo run --offline -p window --bin unemupc98-window -- --machine machines/at-freedos.toml --display mda
 cargo test --workspace                       # unit + golden + integration
 cargo test --release -p devices              # release-only device behaviour (CI runs it too)
 cargo test --workspace -- --ignored          # slow goldens: BIOS POST, FreeDOS boot, DOS sessions (~2 min)
@@ -23,13 +25,12 @@ UNEMUPC98_REQUIRE_FIXTURES=1 cargo test --offline -p cli --test dos_interactive_
 UNEMUPC98_REQUIRE_FIXTURES=1 cargo test --offline -p cli --test dos_write_golden -- --ignored --nocapture
 cargo test -p devices                        # one crate's tests
 cargo build --offline -p window --bin unemupc98-window
-cargo run --offline -p window --bin unemupc98-window # default vendor BIOS + FreeDOS image
-cargo run --offline -p window --bin unemupc98-window -- vendor/kiselev-bios/bios-xi8088.bin vendor/freedos/freedos.img
+cargo run --offline -p window --bin unemupc98-window # default machines/at-freedos.toml
+cargo run --offline -p window --bin unemupc98-window -- --machine machines/local.toml --allow-unlisted-firmware
 cargo tree --offline -i window               # window is a leaf frontend
 ```
 
-System BIOS loads on IBM 5170 use a SHA-256 catalogue. Option ROMs are not
-hashed or allowlisted yet; their checks belong to the option-ROM implementation. An unknown image is rejected
+System BIOS loads on IBM 5170 use a SHA-256 catalogue. Option ROMs also use catalogue hashes and format checks. An unknown image is rejected
 with its full hash and the known entries' fetch instructions. For development,
 `--allow-unlisted-firmware` accepts unknown bytes and prints exactly one
 `warning: running unlisted firmware (sha256 HASH)` line to stderr. Placement
@@ -41,10 +42,36 @@ bytes to stdout. It prints one `stopped: ...` line to stderr and exits with
 status 1 for unsupported instructions, execution/exception failures, or
 configuration/policy/observation/persistence errors. Halt, reset-request and
 budget-exhausted outcomes succeed: reaching the budget is a normal bounded
-run's end. The window retains its existing BIOS/floppy arguments.
+run's end.
 Catalogue boards must have a system BIOS ROM, start at their power-on reset
 vector and keep all RAM and other images outside that ROM's range. The escape
 flag does not relax these requirements; custom-entry Rust rigs use `Bare`.
+
+`machine check FILE` parses, merges, lowers, validates and assembles to run
+image-byte catalogue checks, without executing guest instructions. It exits
+0 for valid input, 1 for load/validation/assembly errors and 2 for usage errors;
+diagnostics retain the defining file and line, including inherited firmware.
+Checks never create or repair journals or locks. Missing journals are valid with
+"journal will be created"; recoverable tails/unsealed tips are valid with a
+warning that recovery runs on the next mount. Interior damage and wrong base
+bindings are invalid at the drive's file:line. A busy journal is valid with a
+warning that it was not inspected. Existing locks use offline shared inspection;
+a missing lock uses the same read-only scanner without a lock and reports it.
+Journal drives assemble as volatile for the remaining catalogue checks.
+`run --machine FILE` uses `RunPolicy::natural`: `--max-steps` defaults to
+12,000,000 retired instructions and `--idle-limit` to 1,000,000 halted PIT clocks.
+Both accept unsigned decimal integers (zero is allowed). It uses the same stop
+messages and exit codes as `--bios`, with usage errors exiting 2. `--print CARD`
+selects a display text dump or UART TX bytes on stdout. Without it, the first
+display is chosen, then the first UART, or no output if neither is configured.
+UART capture is bounded to 1 MiB; overflow is an error. Normal halt and budget
+exhaustion finish journal persistence and print maintenance warnings on stderr.
+Execution errors leave unsealed commands for recovery on the next mount.
+A configured card without printable output is an argument error (exit 2). Both file commands accept
+`--allow-unlisted-firmware` for development. Existing `--boot`, `--bios` and
+`media` commands retain their contracts. The FreeDOS prompt, DIR and file-write
+goldens load `machines/at-freedos.toml`; BIOS goldens and synthetic rigs retain
+Rust presets.
 
 The window binary requires a graphical desktop and fetched BIOS/FreeDOS fixtures.
 It uses a fixed 2× pixel scale and keeps advancing through the FreeCOM date/time
@@ -78,11 +105,15 @@ and retains the last screen until closed. Blink stays visible; its deterministic
 phase can derive from virtual time later. Workspace and presenter tests remain
 headless. The input log is test-owned, with no user-facing log flag.
 
-Default fixture paths are resolved against the workspace location recorded at
-build time, independently of the current directory; explicit paths remain
-relative to the current directory. From outside the workspace, Cargo also needs
-`--manifest-path /path/to/workspace/Cargo.toml`. Missing-file diagnostics name the
-path and the relevant `vendor/kiselev-bios/fetch.sh` or `vendor/freedos/fetch.sh`.
+The window loads `machines/at-freedos.toml` from the workspace recorded by
+`CARGO_MANIFEST_DIR` at build time, independently of the current directory.
+`--machine FILE` is relative to the current directory; image and inheritance
+paths inside it are relative to their defining file. A missing default file is
+an error naming that path. Running without the build workspace needs an explicit `--machine`.
+`--display CARD` chooses a display by id; the default is the first display in
+file order (MDA in the shipped machine). Positional BIOS/floppy paths are removed;
+use an extending file as shown in `machines/README.md`. From outside the
+workspace, Cargo also needs `--manifest-path /path/to/workspace/Cargo.toml`.
 `--help`, `--version` and `--about` include the embedded fonts' attribution.
 On Linux the window requires the host's X11 or Wayland client libraries at run
 time; a bare Nix devShell may not put them on the dynamic loader's search path.

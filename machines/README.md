@@ -73,6 +73,34 @@ Journal paths must be nonempty and must not name a directory or alias any
 image or machine-file layer; failures identify the drive's file and line.
 The repository examples and goldens stay volatile and create no sidecars next
 to fixtures. IDE hard disks support volatile/readonly only; NVRAM write modes
-remain volatile only. Frontends do not select these files yet. The schema and
+remain volatile only. The window and CLI select these files with `--machine`.
+The schema and
 defaults are in
 [`machine-files.md`](../backlog/docs/design/machine-files.md).
+
+The window defaults to this workspace's `at-freedos.toml` (located at build time),
+independent of its working directory. `--display` selects an effective card id;
+otherwise the first display in file order is used. Positional BIOS/floppy
+arguments have been removed. For different images, save a local file beside
+`at-freedos.toml`, for example:
+
+```toml
+schema = 1
+extends = "at-freedos.toml"
+
+[firmware.bios]
+image = "images/custom-bios.bin" # replaces the inherited BIOS and its pin
+# sha256 = "..."               # optionally pin the replacement
+
+[[card]]
+id = "fdc-765"                 # merge with the inherited controller
+[[card.drives]]
+unit = 0
+image = "images/work.img"      # replaces drive A and removes its inherited pin
+```
+
+Run `unemupc98 machine check machines/local.toml` before booting with
+`unemupc98-window --machine machines/local.toml`. Unknown development firmware
+requires `--allow-unlisted-firmware` on either command. For a headless run, use
+`unemupc98 run --machine machines/local.toml --print mda`. Run limits and host
+output selection stay outside the hardware description.

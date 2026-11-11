@@ -906,3 +906,44 @@ fn journal_cannot_alias_an_option_rom_input() {
         }
     }
 }
+
+#[test]
+fn frontend_assembly_keeps_inherited_bios_and_journal_mount_origins() {
+    let temp = Temp::new();
+    let parent = temp.write("parent.toml", BASE);
+    let child = temp.write("child.toml", "schema=1\nextends='parent.toml'\n");
+    let loaded = machine_file::load_for_assembly(&child, AssemblyOptions::default()).unwrap();
+    let error = loaded
+        .assemble(&assembly::ObservationPolicy::default())
+        .err()
+        .unwrap();
+    assert_eq!(error.origin.file, parent);
+    assert_eq!(error.origin.line, Some(5));
+    assert_eq!(error.field, "firmware.bios.image");
+    assert!(matches!(
+        error.validation.as_deref(),
+        Some(ConfigError::FirmwareNotListed { .. })
+    ));
+
+    temp.write(
+        "parent.toml",
+        format!("{BASE}write='journal'\njournal='disk.upfj'\n"),
+    );
+    temp.write("disk.upfj", b"invalid journal");
+    let options = AssemblyOptions {
+        allow_unlisted_firmware: true,
+    };
+    let loaded = machine_file::load_for_assembly(&child, options).unwrap();
+    assert_eq!(
+        loaded.config,
+        machine_file::load_with_options(&child, options).unwrap()
+    );
+    let error = loaded
+        .assemble(&assembly::ObservationPolicy::default())
+        .err()
+        .unwrap();
+    let (_, origins) = machine_file::resolve(&child).unwrap();
+    assert_eq!(&error.origin, origins.get("card[0].drives[0]"));
+    assert_eq!(error.field, "card[fdc-765].drives[unit=0]");
+    assert!(error.message.starts_with("journal mount:"), "{error}");
+}

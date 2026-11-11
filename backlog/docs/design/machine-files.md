@@ -10,6 +10,9 @@ is deferred.
 Drive-indexed assembly diagnostics, including journal configuration errors, map
 to the drive's source origin and unit label while preserving the message suffix.
 Journal errors are mapped exhaustively from assembly validation.
+The window, CLI and FreeDOS goldens load machine files. Frontend assembly
+retains file/line origins for byte-dependent firmware catalogue and journal
+mount errors through `machine_file::load_for_assembly`.
 The design answers one question: how is a `MachineConfig` written as a file,
 so that users compose machines without recompiling?
 
@@ -28,13 +31,11 @@ Evidence labels:
 
 ## Context
 
-Today a machine is a Rust preset function (`assembly::bios`, `assembly::at_boot`,
-…). The window frontend hard-codes `assembly::bios(bios, Some(floppy))` and takes
-two positional paths. The CLI only runs `--boot`. Any other machine means
-editing Rust and recompiling. [machine-config.md](machine-config.md) lists "no
-config file format" as a non-goal. The phase A′ amendment of decision-16
-reverses that non-goal: machines become description files, with one versioned
-schema and two syntaxes.
+The original machine definitions were Rust presets (`assembly::bios`,
+`assembly::at_boot`, …). Machine files now supply the window, CLI file commands
+and FreeDOS goldens; small synthetic test rigs retain Rust presets.
+The phase A′ amendment of decision-16 adds recompile-free hardware composition
+through one versioned schema and two syntaxes.
 
 The target shape was agreed with the maintainer on 2026-11-10 (bead notes). On
 the same day a scope change replaced the top-level `class` with a **board
@@ -465,18 +466,39 @@ The machine file never carries these. A top-level `run`, `presentation` or
 
 Frontends:
 
-- **Window:** `unemupc98-window [--machine FILE] [--display CARD]`.
+- **Window:** `unemupc98-window [--machine FILE] [--display CARD] [--allow-unlisted-firmware]`.
   `--machine` defaults to `machines/at-freedos.toml` in the workspace. The
   default display is the first display card in file order, which in the FreeDOS
   file is the MDA the Xi8088 BIOS writes to. The positional
   `[bios-path [floppy-path]]` arguments are removed. A different BIOS or floppy
-  is a three-line file that `extends` the FreeDOS file.
-- **CLI:** `unemupc98 machine check FILE` parses, merges, lowers and validates,
-  then prints errors with file and position. It exits 0 for a valid file,
+  is a small file that `extends` the FreeDOS file (see `machines/README.md`).
+  The workspace path comes from `CARGO_MANIFEST_DIR` at build time, independent
+  of the current directory. Running without the build workspace requires an
+  explicit `--machine`. A missing default file is an error.
+- **CLI:** `unemupc98 machine check FILE [--allow-unlisted-firmware]` parses,
+  merges, lowers, validates and assembles without executing the guest, including
+  catalogue checks against image bytes, then prints errors with file and position.
+  Journal inspection never writes: missing journals are valid with a creation
+  note; recoverable tails/unsealed tips are valid with a next-mount recovery
+  warning; interior damage or wrong base binding is invalid at the drive origin.
+  Busy journals are valid with a not-inspected warning. Existing locks use offline
+  shared inspection; a missing lock uses the same read-only scanner without
+  creating a lock and reports that fact. Journal drives assemble as volatile.
+  It exits 0 for a valid file,
   1 for an invalid one, 2 for usage errors. `unemupc98 run --machine FILE
   [--max-steps N] [--idle-limit N] [--print CARD]` maps its flags onto
   `RunPolicy::natural` and prints a display card's text screen or a UART's
-  stream. `--boot` stays.
+  stream. The default caps are 12,000,000 retired instructions and 1,000,000
+  idle PIT clocks; both flags accept unsigned decimal values, including zero.
+  Without `--print`, the first display in file order is printed, falling back to
+  the first UART, or no output if neither exists. UART capture is bounded to
+  1 MiB; exceeding it is an observation error. Runs report their stop to stderr:
+  halt, reset and budget exhaustion exit 0, execution/configuration/observation/
+  persistence errors exit 1, and argument errors exit 2 (including `--print`
+  selecting a configured card without printable output). Journals finish after
+  normal halt or budget exhaustion; failed runs drop without a clean close.
+  Maintenance warnings go to stderr. Both file commands accept
+  `--allow-unlisted-firmware`; `--boot`, `--bios` and `media` remain available.
 
 ## Crates
 
@@ -908,7 +930,7 @@ sha256 = "1ad458acb1f22dee6b3d9b6bd95e83218a7ddc5389fa2b2c67a4001e689c81a8"
 provides = ["floppy"]
 
 [[card]]
-kind = "mda"          # the Xi8088 BIOS console; planned window default: first display card
+kind = "mda"          # the Xi8088 BIOS console; window default: first display card
 
 [[card]]
 kind = "vga-text"
@@ -973,7 +995,7 @@ firmware:
     provides: [floppy]
 
 card:
-  - kind: mda         # the Xi8088 BIOS console; planned window default: first display card
+  - kind: mda         # the Xi8088 BIOS console; window default: first display card
   - kind: vga-text
   - kind: uart-16550
     port: 0x3F8
@@ -1181,8 +1203,9 @@ spike owns the board-model and firmware entries.
    every repeated effective id and reports both origins. Different ids for a
    second card of the same kind still reach `DuplicateDeviceId` in assembly;
    supporting those instances requires instance ids in `DeviceId`.
-6. **Window display.** Show the first display card in file order by default,
-   or require `--display`?
+6. **Window display — resolved.** Show the first display card in file order
+   by default; `--display CARD` selects a display by its effective card id.
+   Unknown ids and non-display cards are errors before the event loop opens.
 7. **For the firmware spike:** the `provides` vocabulary; whether known ROMs
    are recognised by `sha256`; the XTIDE build for `ide`; the list of board
    models.
@@ -1265,7 +1288,7 @@ Ordered; each bead is narrow and lands green.
    YAML extends TOML. A preset containing a path fails. A file extending the
    preset lowers equal to `at-freedos.toml`.
    *Depends on:* 5 (6 for the cross-syntax test).
-8. **Frontends and goldens load files.** The window's `--machine` and
+8. **Frontends and goldens load files — implemented.** The window's `--machine` and
    `--display`; the CLI's `machine check` and `run --machine`; the FreeDOS
    goldens obtain their machine from `machines/at-freedos.toml`. Update
    machine-config.md (non-goal removed), commands.md and status.md.

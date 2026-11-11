@@ -4,7 +4,7 @@
 //!
 //! Builds on the interactive DIR golden ([`dos_interactive_golden`]): the same
 //! Kiselev Xi8088 BIOS in masked ROM and the same bootable FreeDOS 1.44 MB floppy,
-//! driven by [`run_freedos_interactive`], but the keyboard script
+//! driven by [`run_freedos_interactive_config`], but the keyboard script
 //! ([`dos_write_file_script`]) makes the shell **write to the disk**:
 //!
 //! ```text
@@ -63,14 +63,14 @@
 //! - FreeDOS: 8086 kernel + FreeCOM, FAT12 1.44 MB image (`vendor/freedos`).
 //! - CPU: `x86jit-core`, the rev pinned in `Cargo.lock`.
 
-use cli::{dos_write_file_script, run_freedos_interactive, StopReason};
+use cli::{dos_write_file_script, run_freedos_interactive_config, StopReason};
 #[path = "support/fixtures.rs"]
 mod fixtures;
 
 #[ignore = "slow: runs the BIOS POST then the interactive FreeDOS boot"]
 #[test]
 fn freedos_writes_a_file_from_the_keyboard() {
-    let (Some(rom), Some(img)) = (
+    let (Some(_rom), Some(img)) = (
         fixtures::fixture("kiselev-bios/bios-xi8088.bin"),
         fixtures::fixture("freedos/freedos.img"),
     ) else {
@@ -79,7 +79,13 @@ fn freedos_writes_a_file_from_the_keyboard() {
     assert_eq!(img.len(), 1_474_560, "FreeDOS floppy is a 1.44 MB image");
 
     assert!(fat12_file(&img, b"ZZ         ").is_none(), "ZZ must be new");
-    let run = run_freedos_interactive(&rom, img, &dos_write_file_script());
+    let run = run_freedos_interactive_config(
+        machine_file::load(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../machines/at-freedos.toml"),
+        )
+        .unwrap(),
+        &dos_write_file_script(),
+    );
     // The BIOS never programs the colour card, so it keeps its power-on cursor.
     assert_eq!(
         run.screen.cursor(),

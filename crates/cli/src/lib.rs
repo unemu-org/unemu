@@ -3,7 +3,7 @@
 //!
 //! The `cli` crate is split lib + bin so the golden integration tests can call
 //! the same paths the binary uses. Every PC-family runner here builds a
-//! declarative [`assembly::MachineConfig`] from a preset, realises it with
+//! declarative [`assembly::MachineConfig`] from a Rust preset or machine file, realises it with
 //! [`assembly::assemble`], and drives the resulting machine — addressing devices
 //! by role through the assembler's device-index map, never a hardcoded bus index.
 //!
@@ -870,9 +870,13 @@ pub fn run_bios_boot(rom: &[u8], floppy: Vec<u8>) -> BiosRun {
 /// the MDA console the BIOS actually writes to ([`BiosRun::mda`]), COM1, and the
 /// classified [`BiosRun::stop`].
 pub fn run_freedos(rom: &[u8], floppy: Vec<u8>) -> BiosRun {
-    run_bios_config(assembly::bios(rom.to_vec(), Some(floppy)), |_| {
-        freedos_prompt_policy(Vec::new(), 0)
-    })
+    run_freedos_config(assembly::bios(rom.to_vec(), Some(floppy)))
+}
+
+/// Run a file-loaded FreeDOS machine with the same prompt policy and captures.
+/// See machine-files § Frontends; hardware and run policy remain separate.
+pub fn run_freedos_config(config: MachineConfig) -> BiosRun {
+    run_bios_config(config, |_| freedos_prompt_policy(Vec::new(), 0))
 }
 
 /// A substring of the FreeCOM startup date prompt, used to detect that the shell
@@ -919,8 +923,14 @@ pub const DOS_INTERACTIVE_COMMAND_BUDGET: u64 = 2_000_000;
 /// [`BiosRun`] carries every observable output path, so the resulting `A:\>`
 /// prompt and command output land in the MDA console ([`BiosRun::mda`]).
 pub fn run_freedos_interactive(rom: &[u8], floppy: Vec<u8>, scancodes: &[u8]) -> BiosRun {
+    run_freedos_interactive_config(assembly::bios(rom.to_vec(), Some(floppy)), scancodes)
+}
+
+/// Run keyboard input on a file-loaded FreeDOS machine using the golden policy.
+/// See machine-files § Frontends and observation § Deterministic boundaries.
+pub fn run_freedos_interactive_config(config: MachineConfig, scancodes: &[u8]) -> BiosRun {
     let script = scancodes.to_vec();
-    run_bios_config(assembly::bios(rom.to_vec(), Some(floppy)), |device_index| {
+    run_bios_config(config, |device_index| {
         let stimulus = KeyboardStimulus {
             keyboard_index: device_index[&DeviceId::Keyboard],
             scancodes: script,
@@ -1995,7 +2005,15 @@ mod bounded_trace_tests {
                 "floppy" => Some(bootable_floppy_image()),
                 _ => Some(image.clone()),
             };
-            let config = assembly::bios(rom.clone(), floppy);
+            let config = if matches!(workload, "post" | "floppy") {
+                assembly::bios(rom.clone(), floppy)
+            } else {
+                machine_file::load(
+                    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                        .join("../../machines/at-freedos.toml"),
+                )
+                .unwrap()
+            };
             let mut results = Vec::new();
             for trace in [TracePolicy::Off, TracePolicy::Ring { capacity: 2 }] {
                 let mut observation = bios_observation_policy();

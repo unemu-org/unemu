@@ -31,15 +31,40 @@ use winit::{
 mod pacing;
 
 use pacing::{frame_target, next_frame, pit_clocks, run_cap, wake, CpuRate};
+#[cfg(test)]
 const BIOS_FIXTURE: &str = "vendor/kiselev-bios/bios-xi8088.bin";
+#[cfg(test)]
 const FLOPPY_FIXTURE: &str = "vendor/freedos/freedos.img";
+#[cfg(test)]
 const BIOS_FETCH: &str = "bash vendor/kiselev-bios/fetch.sh";
+#[cfg(test)]
 const FLOPPY_FETCH: &str = "bash vendor/freedos/fetch.sh";
+
+#[cfg(test)]
+fn default_fixture(relative: &str) -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .join(relative)
+}
+
+#[cfg(test)]
+fn read_fixture(path: &Path, fetch: &str) -> io::Result<Vec<u8>> {
+    std::fs::read(path).map_err(|error| {
+        io::Error::new(
+            error.kind(),
+            format!(
+                "cannot read {}: {error}; fetch fixtures with `{fetch}` from the workspace root",
+                path.display()
+            ),
+        )
+    })
+}
 
 type HostSurface = Surface<Rc<Window>, Rc<Window>>;
 
 struct Presenter {
     assembled: AssembledMachine,
+    display: DeviceId,
     sink: WindowSink,
     surface: Option<HostSurface>,
     window: Option<Rc<Window>>,
@@ -58,12 +83,13 @@ struct Presenter {
 }
 
 impl Presenter {
+    #[cfg(test)]
     fn new(
         config: &assembly::MachineConfig,
         options: assembly::AssemblyOptions,
         warnings: &mut impl io::Write,
     ) -> Result<Self, Box<dyn Error>> {
-        let mut assembled = assembly::assemble_with_observation_and_options(
+        let assembled = assembly::assemble_with_observation_and_options(
             config,
             &ObservationPolicy {
                 routes: vec![ObservationRequest {
@@ -75,6 +101,15 @@ impl Presenter {
             },
             options,
         )?;
+        Self::from_assembled(config, assembled, DeviceId::Mda, warnings)
+    }
+
+    fn from_assembled(
+        config: &assembly::MachineConfig,
+        mut assembled: AssembledMachine,
+        display: DeviceId,
+        warnings: &mut impl io::Write,
+    ) -> Result<Self, Box<dyn Error>> {
         for unlisted in &assembled.unlisted_firmware {
             writeln!(warnings, "{unlisted}")?;
         }
@@ -84,9 +119,10 @@ impl Presenter {
         let sink = WindowSink::new(NonZeroU16::new(2).ok_or("invalid scale")?)?;
         assembled
             .observation
-            .subscribe(DeviceId::Mda, Box::new(sink.clone()))?;
+            .subscribe(display, Box::new(sink.clone()))?;
         Ok(Self {
             assembled,
+            display,
             sink,
             surface: None,
             window: None,
@@ -181,7 +217,7 @@ impl Presenter {
             self.finish_persistence(warnings)?;
         }
         // Even a CPU error must leave the screen at its last completed boundary.
-        self.assembled.capture_text(DeviceId::Mda)?;
+        self.assembled.capture_text(self.display)?;
         if let Some(error) = self.sink.error() {
             return Err(error.into());
         }
@@ -370,7 +406,7 @@ impl ApplicationHandler for Presenter {
 fn informational_output(arg: &OsStr) -> Option<String> {
     if arg == "--help" {
         Some(format!(
-            "usage: unemupc98-window [--allow-unlisted-firmware] [bios-path [floppy-path]]\n\n{FONT_NOTICE}"
+            "usage: unemupc98-window [--machine FILE] [--display CARD] [--allow-unlisted-firmware]\n\ndefault machine: {}\n\n{FONT_NOTICE}", default_machine().display()
         ))
     } else if arg == "--version" || arg == "--about" {
         Some(format!(
@@ -382,66 +418,106 @@ fn informational_output(arg: &OsStr) -> Option<String> {
     }
 }
 
-fn default_fixture(relative: &str) -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../..")
-        .join(relative)
+fn default_machine() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../machines/at-freedos.toml")
 }
 
-fn read_fixture(path: &Path, fetch: &str) -> io::Result<Vec<u8>> {
-    std::fs::read(path).map_err(|error| {
-        io::Error::new(
-            error.kind(),
-            format!(
-                "cannot read {}: {error}; fetch fixtures with `{fetch}` from the workspace root",
-                path.display()
-            ),
-        )
+#[derive(Debug)]
+struct Args {
+    machine: PathBuf,
+    display: Option<String>,
+    options: assembly::AssemblyOptions,
+}
+
+fn parse_args(args: impl IntoIterator<Item = std::ffi::OsString>) -> Result<Args, &'static str> {
+    let mut result = Args {
+        machine: default_machine(),
+        display: None,
+        options: assembly::AssemblyOptions::default(),
+    };
+    let mut machine_seen = false;
+    let mut args = args.into_iter();
+    while let Some(arg) = args.next() {
+        match arg.to_str() {
+            Some("--allow-unlisted-firmware") => result.options.allow_unlisted_firmware = true,
+            Some("--machine" | "--display") => {
+                let value = args.next().filter(|value| !value.is_empty() && !value.as_encoded_bytes().starts_with(b"--"))
+                    .ok_or("missing option value")?;
+                if arg == "--machine" && !machine_seen {
+                    result.machine = value.into();
+                    machine_seen = true;
+                } else if arg == "--display" && result.display.is_none() {
+                    result.display = Some(value.into_string().map_err(|_| "invalid card id")?);
+                } else {
+                    return Err("duplicate option");
+                }
+            }
+            _ => return Err("expected --machine FILE, --display CARD or --allow-unlisted-firmware; positional paths are no longer supported"),
+        }
+    }
+    Ok(result)
+}
+
+fn selected_display(
+    loaded: &machine_file::LoadedMachine,
+    requested: Option<&str>,
+) -> Result<DeviceId, Box<dyn Error>> {
+    loaded
+        .cards
+        .iter()
+        .find(|(id, device)| {
+            requested.is_none_or(|requested| requested == id)
+                && matches!(device, DeviceId::Mda | DeviceId::Vga)
+        })
+        .map(|(_, device)| *device)
+        .ok_or_else(|| {
+            match requested {
+                Some(id) => format!("display card {id:?} is not configured"),
+                None => "machine has no display card".into(),
+            }
+            .into()
+        })
+}
+
+fn load_machine(
+    path: &Path,
+    default: &Path,
+    options: assembly::AssemblyOptions,
+) -> Result<machine_file::LoadedMachine, Box<dyn Error>> {
+    machine_file::load_for_assembly(path, options).map_err(|error| {
+        if path == default && !path.exists() {
+            format!("{error}; use --machine FILE to select a machine description")
+        } else {
+            error.to_string()
+        }
+        .into()
     })
 }
 
-fn firmware_args(
-    args: impl Iterator<Item = std::ffi::OsString>,
-) -> (assembly::AssemblyOptions, Vec<std::ffi::OsString>) {
-    let mut options = assembly::AssemblyOptions::default();
-    let paths = args
-        .filter(|arg| {
-            if arg == "--allow-unlisted-firmware" {
-                options.allow_unlisted_firmware = true;
-                false
-            } else {
-                true
-            }
-        })
-        .collect();
-    (options, paths)
+fn setup(args: &Args, warnings: &mut impl io::Write) -> Result<Presenter, Box<dyn Error>> {
+    let loaded = load_machine(&args.machine, &default_machine(), args.options)?;
+    let display = selected_display(&loaded, args.display.as_deref())?;
+    let assembled = loaded.assemble(&ObservationPolicy {
+        routes: vec![ObservationRequest {
+            device: display,
+            output: OutputKind::TextScanout,
+            byte_limit: 0,
+        }],
+        ..ObservationPolicy::default()
+    })?;
+    Presenter::from_assembled(&loaded.config, assembled, display, warnings)
 }
 
-fn main() -> Result<(), Box<dyn Error>> {
-    let (options, paths) = firmware_args(std::env::args_os().skip(1));
-    let mut args = paths.into_iter();
-    let first = args.next();
-    if let Some(output) = first.as_deref().and_then(informational_output) {
-        println!("{output}");
-        return Ok(());
+fn run() -> Result<(), Box<dyn Error>> {
+    let args: Vec<_> = std::env::args_os().skip(1).collect();
+    if let [arg] = args.as_slice() {
+        if let Some(output) = informational_output(arg) {
+            println!("{output}");
+            return Ok(());
+        }
     }
-    let bios = first
-        .map(PathBuf::from)
-        .unwrap_or_else(|| default_fixture(BIOS_FIXTURE));
-    let floppy = args
-        .next()
-        .map(PathBuf::from)
-        .unwrap_or_else(|| default_fixture(FLOPPY_FIXTURE));
-    if args.next().is_some() {
-        return Err(
-            "usage: unemupc98-window [--allow-unlisted-firmware] [bios-path [floppy-path]]".into(),
-        );
-    }
-    let config = assembly::bios(
-        read_fixture(&bios, BIOS_FETCH)?,
-        Some(read_fixture(&floppy, FLOPPY_FETCH)?),
-    );
-    let mut presenter = Presenter::new(&config, options, &mut io::stderr())?;
+    let args = parse_args(args)?;
+    let mut presenter = setup(&args, &mut io::stderr())?;
     let events = EventLoop::new()?;
     events.set_control_flow(ControlFlow::Wait);
     let result = events.run_app(&mut presenter);
@@ -458,6 +534,16 @@ fn main() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+fn main() -> std::process::ExitCode {
+    match run() {
+        Ok(()) => std::process::ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("{error}");
+            std::process::ExitCode::FAILURE
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -472,14 +558,112 @@ mod tests {
     }
 
     #[test]
+    fn machine_file_setup_equals_the_preset_without_opening_a_window() {
+        let required = std::env::var_os("UNEMUPC98_REQUIRE_FIXTURES");
+        let fixtures = [(BIOS_FIXTURE, BIOS_FETCH), (FLOPPY_FIXTURE, FLOPPY_FETCH)].map(
+            |(relative, fetch)| {
+                let path = default_fixture(relative);
+                fixture_result(
+                    read_fixture(&path, fetch),
+                    &path,
+                    fetch,
+                    required.as_deref(),
+                )
+            },
+        );
+        let [Some(rom), Some(floppy)] = fixtures else {
+            return;
+        };
+        let loaded = machine_file::load_for_assembly(
+            default_machine(),
+            assembly::AssemblyOptions::default(),
+        )
+        .unwrap();
+        assert_eq!(loaded.config, assembly::bios(rom, Some(floppy)));
+        let args = parse_args([]).unwrap();
+        assert!(args.machine.is_absolute());
+        assert_eq!(
+            args.machine,
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../machines/at-freedos.toml")
+        );
+        let presenter = setup(&args, &mut io::sink()).unwrap();
+        assert_eq!(presenter.display, DeviceId::Mda);
+        assert!(presenter.window.is_none());
+        assert_eq!(presenter.assembled.machine.virtual_time(), 0);
+    }
+
+    #[test]
+    fn display_flag_selects_card_identity_and_default_follows_file_order() {
+        let temp = assembly::test_support::TempDir::new("window-machine-display");
+        std::fs::write(temp.path().join("bios.bin"), vec![0xF4; 32768]).unwrap();
+        let file = temp.path().join("machine.toml");
+        std::fs::write(&file, "schema=1\n[board]\nmodel='ibm-5170'\n[firmware.bios]\nimage='bios.bin'\n[[card]]\nkind='vga-text'\nid='colour'\n[[card]]\nkind='mda'\nid='mono'\n").unwrap();
+        let args_for = |display: Option<&str>| {
+            let mut args = vec![
+                "--machine".into(),
+                file.clone().into_os_string(),
+                "--allow-unlisted-firmware".into(),
+            ];
+            if let Some(display) = display {
+                args.extend(["--display".into(), display.into()]);
+            }
+            parse_args(args).unwrap()
+        };
+        for (name, expected) in [
+            (None, DeviceId::Vga),
+            (Some("mono"), DeviceId::Mda),
+            (Some("colour"), DeviceId::Vga),
+        ] {
+            let presenter = setup(&args_for(name), &mut io::sink()).unwrap();
+            assert_eq!(presenter.display, expected);
+            assert_eq!(presenter.assembled.observation.routes()[0].device, expected);
+            assert!(presenter.assembled.capture_text(expected).is_ok());
+            assert!(presenter.window.is_none());
+        }
+        assert!(setup(&args_for(Some("missing")), &mut io::sink()).is_err());
+        let missing = Args {
+            machine: temp.path().join("missing.toml"),
+            display: None,
+            options: assembly::AssemblyOptions::default(),
+        };
+        let error = setup(&missing, &mut io::sink()).err().unwrap().to_string();
+        assert!(error.contains("missing.toml"), "{error}");
+        for args in [
+            vec!["--display"],
+            vec!["bios.bin", "disk.img"],
+            vec!["--machine", "--display"],
+            vec!["--display", "mono", "--display", "mono"],
+        ] {
+            assert!(parse_args(args.into_iter().map(Into::into)).is_err());
+        }
+    }
+
+    #[test]
+    fn missing_default_suggests_machine_and_help_names_the_default_path() {
+        let temp = assembly::test_support::TempDir::new("window-missing-default");
+        let missing = temp.path().join("missing.toml");
+        let error = load_machine(&missing, &missing, assembly::AssemblyOptions::default())
+            .err()
+            .unwrap()
+            .to_string();
+        assert!(error.contains("use --machine FILE"), "{error}");
+        assert!(error.contains("missing.toml"));
+        let help = informational_output(OsStr::new("--help")).unwrap();
+        assert!(help.contains(&format!("default machine: {}", default_machine().display())));
+    }
+
+    #[test]
     fn firmware_flag_reaches_headless_presenter() {
-        let (options, paths) = firmware_args(
-            ["bios.bin", "--allow-unlisted-firmware", "disk.img"]
+        let args = parse_args(
+            ["--machine", "machine.toml", "--allow-unlisted-firmware"]
                 .into_iter()
                 .map(Into::into),
-        );
+        )
+        .unwrap();
+        let options = args.options;
         assert!(options.allow_unlisted_firmware);
-        assert_eq!(paths, ["bios.bin", "disk.img"]);
+        assert_eq!(args.machine, PathBuf::from("machine.toml"));
+        assert!(parse_args(["bios.bin".into()]).is_err());
         let config = assembly::bios(vec![0; 32768], Some(vec![0; 1_474_560]));
         assert!(Presenter::new(
             &config,
@@ -1240,8 +1424,15 @@ mod tests {
         let [Some(rom), Some(floppy)] = fixtures else {
             return;
         };
-        let config = assembly::bios(rom, Some(floppy));
-        let mut presenter = test_presenter(&config).unwrap();
+        let loaded = machine_file::load_for_assembly(
+            default_machine(),
+            assembly::AssemblyOptions::default(),
+        )
+        .unwrap();
+        assert_eq!(loaded.config, assembly::bios(rom, Some(floppy)));
+        let config = loaded.config;
+        let args = parse_args([]).unwrap();
+        let mut presenter = setup(&args, &mut io::sink()).unwrap();
         let assembled = &mut presenter.assembled;
         let delivered = Rc::new(RefCell::new(String::new()));
         assembled

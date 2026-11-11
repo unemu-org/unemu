@@ -6,8 +6,8 @@ Design for the **declarative machine-composition layer**: a plain-data
 ([spec.md §3](spec.md), decision-7) and the ~13 hand-written `run_*` functions in
 `crates/cli`.
 
-Status: **design accepted, unimplemented.** This document is the contract that
-tasks task-28 through task-37 build against. Section-number cross-references
+Status: **implemented.** `assembly` owns the Rust data model and validation;
+`machine-file` lowers TOML/YAML descriptions to it (see [machine-files.md](machine-files.md)). Section-number cross-references
 (`§N`) point at [`spec.md`](spec.md).
 
 Related: [`spec.md §3`](spec.md) (machine assembly), decision-7 (swap seams and
@@ -856,9 +856,6 @@ Deliberately out of scope. Do not implement these unprompted.
 - **Any deleted demo.** `run_serial` (and its golden) was deleted;
   that removal is intentional and recorded — not a regression to
   restore.
-- **No config file format / serialization.** `MachineConfig` is Rust data. A
-  textual/serialized machine description is a later concern; the `Eq`/`Debug`
-  derives are for goldens and future snapshots, not a file format.
 - **No protected mode / 386, no cycle-accurate timing.** Unchanged from the
   project's standing scope (§1.3, [`deferred.md`](../deferred.md)).
 - **Snapshot / save-restore is deferred, not designed here.** The config is made

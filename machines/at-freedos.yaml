@@ -25,7 +25,7 @@ firmware:
     provides: [floppy]
 
 card:
-  - kind: mda         # the Xi8088 BIOS console; planned window default: first display card
+  - kind: mda         # the Xi8088 BIOS console; window default: first display card
   - kind: vga-text
   - kind: uart-16550
     port: 0x3F8

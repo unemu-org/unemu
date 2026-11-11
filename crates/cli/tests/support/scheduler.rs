@@ -258,6 +258,7 @@ pub fn prepare(workload: Workload) -> Result<Option<Prepared>> {
 /// Exercise the same scheduler preparation path with supplied BIOS bytes, so
 /// rejection tests can change an image without modifying a shared fixture.
 pub fn prepare_with_bios(workload: Workload, bios: Option<Vec<u8>>) -> Result<Option<Prepared>> {
+    let bios_override = bios.is_some();
     let mut policy = RunPolicy::natural(None, None);
     let mut ram_regions = vec![assembly::RamRegion::new(0, 0x10000)];
     let mut assemble = |config: &assembly::MachineConfig| {
@@ -381,7 +382,17 @@ pub fn prepare_with_bios(workload: Workload, bios: Option<Vec<u8>>) -> Result<Op
                 Some(cli::BIOS_IDLE_LIMIT),
             );
             let has_floppy = floppy.is_some();
-            let config = assembly::bios(rom.clone(), floppy);
+            let mut config = if matches!(workload, Workload::BiosPost | Workload::BiosFloppy) {
+                assembly::bios(rom.clone(), floppy)
+            } else {
+                machine_file::load(
+                    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                        .join("../../machines/at-freedos.toml"),
+                )?
+            };
+            if bios_override && !matches!(workload, Workload::BiosPost | Workload::BiosFloppy) {
+                config.images[0].source = assembly::ImageSource::Inline(rom.clone());
+            }
             if !has_floppy {
                 assembly::check_board_system_bios(
                     &config,

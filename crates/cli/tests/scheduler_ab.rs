@@ -720,3 +720,18 @@ fn scheduler_post_rig_rejects_one_byte_changed_bios() {
     );
     assert_eq!(error.to_string(), expected.to_string());
 }
+
+#[test]
+fn scheduler_freedos_rig_rejects_an_overridden_unlisted_bios() {
+    let Some(mut rom) = scheduler::fixtures::fixture("kiselev-bios/bios-xi8088.bin") else {
+        return;
+    };
+    rom[0] ^= 1;
+    let error = scheduler::prepare_with_bios(Workload::FreeDosPrompt, Some(rom))
+        .err()
+        .expect("FreeDOS preparation must honour the BIOS override");
+    assert!(
+        error.to_string().contains("is not a known image"),
+        "{error}"
+    );
+}

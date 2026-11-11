@@ -29,17 +29,20 @@ pub fn lower_with_options<R: ImageReader>(
     options: assembly::AssemblyOptions,
 ) -> Result<assembly::MachineConfig, LowerError> {
     crate::lower::lower(document, origins, reader, options).map_err(|mut error| {
-        // The lowering error identifies the image; a pin can come from another
-        // layer, so its provenance must be retained separately in the message.
-        if error.message.starts_with("sha256 mismatch for ") {
-            if let Some(field) = pin_field(document, origins, &error) {
-                error
-                    .message
-                    .push_str(&format!("; pin set at {}", origins.get(&field)));
-            }
-        }
+        annotate_pin(document, origins, &mut error);
         error
     })
+}
+
+pub(crate) fn annotate_pin(document: &MachineFile, origins: &Origins, error: &mut LowerError) {
+    // An inherited pin can come from a different layer than its image path.
+    if error.message.starts_with("sha256 mismatch for ") {
+        if let Some(field) = pin_field(document, origins, error) {
+            error
+                .message
+                .push_str(&format!("; pin set at {}", origins.get(&field)));
+        }
+    }
 }
 
 fn pin_field(document: &MachineFile, origins: &Origins, error: &LowerError) -> Option<String> {
