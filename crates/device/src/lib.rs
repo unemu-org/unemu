@@ -30,6 +30,8 @@ pub enum ByteStreamKind {
     SerialTx,
     /// Accepted POST writes, including repeated checkpoint codes.
     PostCheckpoints,
+    /// Accepted emulator-only firmware diagnostic console bytes.
+    DebugConsole,
 }
 
 /// A host receiver for semantic bytes, never a guest-access decoder.

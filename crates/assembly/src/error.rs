@@ -12,6 +12,15 @@ use crate::device::DeviceId;
 /// test can assert the exact failure a malformed config produces.
 #[derive(Clone, Debug, PartialEq, Eq, Error)]
 pub enum ConfigError {
+    /// Emulator diagnostics cannot be attached to a period motherboard.
+    #[error("debug-console port is emulator-only; it is allowed only on board generic-386-isa")]
+    DebugConsoleBoard,
+    /// Diagnostic decode must describe exactly one byte-wide port, without IRQ/DMA.
+    #[error("device {device:?} debug-console requires one byte-wide port matching DebugConsoleCfg.port and no IRQ or DMA")]
+    InvalidDebugConsoleResources {
+        /// Role with inconsistent diagnostic resources.
+        device: DeviceId,
+    },
     /// Invalid CMOS base, digest, retention or output path.
     #[error("NVRAM: {message}")]
     Nvram { message: String },

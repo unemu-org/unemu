@@ -64,9 +64,9 @@ pub use bus::PortWidth;
 pub use clock::ClockConfig;
 pub use cpu::{CpuChip, CpuConfig, ResetSpec, SegmentSeed};
 pub use device::{
-    CmosCfg, DeviceConfig, DeviceId, DeviceKind, DmaCfg, DmaSpec, FdcCfg, I8042Cfg, IdeCfg,
-    MdaTextCfg, NvramSource, PicCfg, PitCfg, PortWindow, PostPortCfg, RtcStart, SysControlCfg,
-    UartCfg, VgaTextCfg,
+    CmosCfg, DebugConsoleCfg, DeviceConfig, DeviceId, DeviceKind, DmaCfg, DmaSpec, FdcCfg,
+    I8042Cfg, IdeCfg, MdaTextCfg, NvramSource, PicCfg, PitCfg, PortWindow, PostPortCfg, RtcStart,
+    SysControlCfg, UartCfg, VgaTextCfg,
 };
 pub use drive::{DriveConfig, DriveKind, FloppyGeometry, HardDiskGeometry, WriteMode};
 pub use error::ConfigError;

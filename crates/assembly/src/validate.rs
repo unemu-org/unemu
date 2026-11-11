@@ -131,6 +131,7 @@ impl MachineConfig {
     pub(crate) fn validate_resolved(&self) -> Result<(), ConfigError> {
         self.check_part_sources()?;
         self.check_unique_device_ids()?;
+        self.check_debug_console()?;
         self.check_board()?;
         self.check_firmware_layout()?;
         self.check_firmware_services()?;
@@ -463,6 +464,23 @@ impl MachineConfig {
                         device: device.id,
                         dependent,
                     });
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn check_debug_console(&self) -> Result<(), ConfigError> {
+        for device in &self.devices {
+            if let DeviceKind::DebugConsole(cfg) = device.kind {
+                if self.board != BoardModel::Bare {
+                    return Err(ConfigError::DebugConsoleBoard);
+                }
+                if device.ports != [PortWindow::single(cfg.port)]
+                    || device.irq.is_some()
+                    || device.dma.is_some()
+                {
+                    return Err(ConfigError::InvalidDebugConsoleResources { device: device.id });
                 }
             }
         }
@@ -911,6 +929,60 @@ mod tests {
     use crate::drive::{DriveConfig, DriveKind, FloppyGeometry, WriteMode};
     use crate::image::{ImageKind, ImageSource, LoadImage};
     use crate::memory::{MemoryConfig, MmioWindow, RamRegion};
+
+    #[test]
+    fn debug_console_is_confined_by_device_kind_to_bare_rigs() {
+        for id in [DeviceId::DebugConsole, DeviceId::Uart] {
+            let mut config = board_config();
+            config.devices.retain(|device| device.id != id);
+            config.devices.push(DeviceConfig::new(
+                id,
+                DeviceKind::DebugConsole(crate::DebugConsoleCfg::default()),
+                vec![PortWindow::single(0x402)],
+            ));
+            let error = config.validate().unwrap_err();
+            assert_eq!(error, ConfigError::DebugConsoleBoard);
+            assert_eq!(
+                error.to_string(),
+                "debug-console port is emulator-only; it is allowed only on board generic-386-isa"
+            );
+        }
+        let mut config = crate::at_boot(vec![0xF4]);
+        config.devices.push(DeviceConfig::new(
+            DeviceId::DebugConsole,
+            DeviceKind::DebugConsole(crate::DebugConsoleCfg { port: 0xE9 }),
+            vec![PortWindow::single(0xE9)],
+        ));
+        assert_eq!(config.validate(), Ok(()));
+    }
+
+    #[test]
+    fn debug_console_requires_a_matching_byte_port_without_irq_or_dma() {
+        let device = DeviceConfig::new(
+            DeviceId::DebugConsole,
+            DeviceKind::DebugConsole(crate::DebugConsoleCfg::default()),
+            vec![PortWindow::single(0x402)],
+        );
+        let mut mismatched = device.clone();
+        mismatched.ports = vec![PortWindow::single(0x403)];
+        let mut wide = device.clone();
+        wide.ports[0].width = bus::PortWidth::Word;
+        let irq = device.clone().with_irq(5);
+        let dma = device.with_dma(DmaSpec {
+            controller: DeviceId::Dma,
+            channel: 1,
+        });
+        for device in [mismatched, wide, irq, dma] {
+            let mut config = crate::at_boot(vec![0xF4]);
+            config.devices.push(device);
+            assert_eq!(
+                config.validate(),
+                Err(ConfigError::InvalidDebugConsoleResources {
+                    device: DeviceId::DebugConsole
+                })
+            );
+        }
+    }
 
     #[test]
     fn initialization_fdc_with_bound_drive_requires_floppy_provider() {

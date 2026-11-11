@@ -366,6 +366,120 @@ mod tests {
     }
 
     #[test]
+    fn debug_console_captures_guest_bytes_on_a_bare_rig() {
+        // mov dx,0402h; in al,dx; cmp al,E9h; jne halt;
+        // mov al,'H'; out dx,al; mov al,'i'; out dx,al; mov al,10; out dx,al; hlt
+        let program = vec![
+            0xBA, 0x02, 0x04, 0xEC, 0x3C, 0xE9, 0x75, 0x09, 0xB0, b'H', 0xEE, 0xB0, b'i', 0xEE,
+            0xB0, b'\n', 0xEE, 0xF4,
+        ];
+        let mut config = crate::at_boot(program);
+        assert_eq!(config.board, crate::BoardModel::Bare);
+        config.devices.push(DeviceConfig::new(
+            DeviceId::DebugConsole,
+            DeviceKind::DebugConsole(crate::DebugConsoleCfg::default()),
+            vec![PortWindow::single(0x402)],
+        ));
+        config.devices.reverse();
+        let policy = ObservationPolicy {
+            routes: vec![request(
+                DeviceId::DebugConsole,
+                OutputKind::Bytes(ByteStreamKind::DebugConsole),
+                3,
+            )],
+            ..Default::default()
+        };
+        let mut assembled = assemble_with_observation(&config, &policy).unwrap();
+        assert_eq!(
+            assembled.machine.run_bounded(Some(32)).unwrap(),
+            machine::RunOutcome::Halted
+        );
+        assert_eq!(
+            assembled
+                .observation
+                .drain_bytes(DeviceId::DebugConsole, ByteStreamKind::DebugConsole)
+                .unwrap(),
+            b"Hi\n"
+        );
+        assert!(assembled
+            .observation
+            .drain_bytes(DeviceId::DebugConsole, ByteStreamKind::DebugConsole)
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn debug_console_route_requires_its_device_and_stream_kind() {
+        let mut config = crate::at_boot(vec![0xF4]);
+        let mut policy = ObservationPolicy {
+            routes: vec![request(
+                DeviceId::DebugConsole,
+                OutputKind::Bytes(ByteStreamKind::DebugConsole),
+                8,
+            )],
+            ..Default::default()
+        };
+        assert!(matches!(
+            assemble_with_observation(&config, &policy),
+            Err(AssemblyError::Config(
+                ConfigError::UnsupportedObservationOutput {
+                    device: DeviceId::DebugConsole,
+                    output: OutputKind::Bytes(ByteStreamKind::DebugConsole),
+                }
+            ))
+        ));
+        config.devices.push(DeviceConfig::new(
+            DeviceId::DebugConsole,
+            DeviceKind::DebugConsole(crate::DebugConsoleCfg::default()),
+            vec![PortWindow::single(0x402)],
+        ));
+        policy.routes[0].output = OutputKind::Bytes(ByteStreamKind::SerialTx);
+        assert!(matches!(
+            assemble_with_observation(&config, &policy),
+            Err(AssemblyError::Config(
+                ConfigError::UnsupportedObservationOutput {
+                    device: DeviceId::DebugConsole,
+                    output: OutputKind::Bytes(ByteStreamKind::SerialTx),
+                }
+            ))
+        ));
+    }
+
+    #[test]
+    fn debug_console_wide_bus_accesses_use_consecutive_byte_cycles() {
+        let mut config = crate::at_boot(vec![0xF4]);
+        config.devices.push(DeviceConfig::new(
+            DeviceId::DebugConsole,
+            DeviceKind::DebugConsole(crate::DebugConsoleCfg::default()),
+            vec![PortWindow::single(0x402)],
+        ));
+        let mut assembled = assemble_with_observation(
+            &config,
+            &ObservationPolicy {
+                routes: vec![request(
+                    DeviceId::DebugConsole,
+                    OutputKind::Bytes(ByteStreamKind::DebugConsole),
+                    8,
+                )],
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let bus = assembled.machine.bus_mut();
+        assert_eq!(bus.port_read(0x402, 2).unwrap(), 0xFFE9);
+        assert_eq!(bus.port_read(0x402, 4).unwrap(), 0xFFFFFFE9);
+        bus.port_write(0x402, 2, 0x4241).unwrap();
+        bus.port_write(0x402, 4, 0x46454443).unwrap();
+        assert_eq!(
+            assembled
+                .observation
+                .drain_bytes(DeviceId::DebugConsole, ByteStreamKind::DebugConsole)
+                .unwrap(),
+            b"AC"
+        );
+    }
+
+    #[test]
     fn bind_applies_policy_capture_without_reconfiguration() {
         let mut devices: Vec<Box<dyn Device>> = vec![Box::new(devices::VgaText::new())];
         devices[0].mmio_write(0xB8000, 2, 0x7049).unwrap();

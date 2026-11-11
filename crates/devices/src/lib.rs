@@ -14,6 +14,7 @@
 pub mod ata;
 pub mod cmos_rtc;
 pub mod coprocessor;
+pub mod debug_console;
 pub mod dma8237;
 pub mod i8042;
 pub mod mda;
@@ -28,6 +29,7 @@ pub mod vga_text;
 pub use ata::{Ata, AtaConfigError, AtaDrive, AtaGeometry};
 pub use cmos_rtc::{CmosConfig, CmosRtc};
 pub use coprocessor::Absent80287;
+pub use debug_console::DebugConsole;
 pub use device::{DmaMemory, DmaOp, DmaOutcome, DmaRequest};
 pub use dma8237::{Dma8237, TransferType};
 pub use i8042::I8042;

@@ -37,6 +37,8 @@ pub enum DeviceId {
     SysControl,
     /// POST checkpoint port.
     Post,
+    /// Emulator-only firmware diagnostic console.
+    DebugConsole,
     /// uPD765 floppy-disk controller.
     Fdc,
     /// ATA PIO channel.
@@ -306,6 +308,24 @@ pub struct PostPortCfg {
     pub port: u16,
 }
 
+/// Emulator-only QEMU debugcon protocol parameters.
+///
+/// SeaBIOS uses 402h; a bare test rig may relocate it. See
+/// `backlog/docs/design/machine-config.md` §Emulator-only debug console.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct DebugConsoleCfg {
+    /// The single byte-wide diagnostic port.
+    pub port: u16,
+}
+
+impl Default for DebugConsoleCfg {
+    fn default() -> Self {
+        Self {
+            port: devices::debug_console::DEBUG_CONSOLE_PORT,
+        }
+    }
+}
+
 /// uPD765 floppy-controller parameters (§7.7).
 ///
 /// Drives are not listed here — they live once in the top-level
@@ -404,6 +424,8 @@ pub enum DeviceKind {
     SysControl(SysControlCfg),
     /// POST checkpoint port.
     Post(PostPortCfg),
+    /// Emulator-only firmware diagnostic console, confined to bare test rigs.
+    DebugConsole(DebugConsoleCfg),
     /// uPD765 floppy controller.
     Fdc(FdcCfg),
     /// ATA PIO channel.

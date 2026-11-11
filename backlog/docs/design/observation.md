@@ -365,7 +365,7 @@ output route. The UART emits only from its accepted THR path with DLAB clear;
 POST emits the low byte of each accepted write, in order, including repetitions,
 zero and `0xFF`. Reads emit nothing. The sink receives bytes directly; it never
 decodes ports. A byte-output capability describes its stream kind (serial TX or
-POST checkpoints) and allows attaching a sink; devices without it return no
+POST checkpoints or emulator debug-console bytes) and allows attaching a sink; devices without it return no
 capability. Later audio uses a separate signal/sample contract, not a byte-stream
 kind with ambiguous units.
 
@@ -398,6 +398,37 @@ capabilities once two producers are wired. Requiring every presenter to know
 `VgaText`, `Uart16550` and `PostPort` would spread concrete-device coupling;
 putting those downcasts into `Machine` would violate its swap seam. A save-state
 blob is also unsuitable: it is versioned restoration data, not a scanout format.
+
+### Debug console stream
+
+`devices::DebugConsole` is an emulator-only diagnostic aid, not period hardware.
+The protocol reference is QEMU System Emulator's `-debugcon` option and
+`isa-debugcon` device (`hw/char/debugcon.c`: byte-only valid accesses, one-port
+region, E9h default readback). SeaBIOS rel-1.17.0's
+`src/hw/serialio.c:104–129` probes 402h for E9h before sending debug bytes
+with `outb`; `src/fw/paravirt.h:67` defines the probe value.
+
+Rust hosts request `ObservationRequest { device: DeviceId::DebugConsole,
+output: OutputKind::Bytes(ByteStreamKind::DebugConsole), byte_limit: ... }`.
+The assembly facade binds the device's semantic sink and
+`drain_bytes(DeviceId::DebugConsole, ByteStreamKind::DebugConsole)` returns
+the accepted bytes in order, including repetitions, zero and FFh. Reads emit
+nothing. This uses the same bounded capture/overflow/epoch contract as UART TX
+and POST; unobserved output allocates no history. Reset preserves the sink;
+restore never replays history. The device does no host I/O and uses no host clock.
+
+Only byte cycles are accepted directly by the device; word/dword calls return
+`UnmappedRegister` with kind `port width`. **ASSUMED integration policy:** the
+existing ISA bus splits wider guest accesses into consecutive byte cycles. Only
+the cycle at the configured port emits a byte or returns E9h; other cycles use
+their own decode/open-bus policy. With undecoded neighbours and open-bus mode,
+word/dword reads return FFE9h/FFFFFFE9h and writes emit only the low byte.
+This policy is tested; no claim is made about QEMU's wider-access dispatch.
+
+The device is currently available only to `BoardModel::Bare` test rigs.
+`ibm-5170` rejects it; decision-19 confines emulator extensions to the future
+`generic-386-isa` board. No machine-file syntax or CLI selection is introduced
+until that board exists; its wiring belongs to `upc-o0j.6`.
 
 ### Sinks, bounds and lifecycle
 

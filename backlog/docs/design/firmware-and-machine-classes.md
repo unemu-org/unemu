@@ -593,7 +593,7 @@ records existing components, not demonstrated SeaBIOS compatibility.
 | VGA ROM and register-level VGA | `optionroms.c:451`; `stdvga.c` | Missing: text-only card; VBE work alone is insufficient | `upc-o0j.15` (`upc-18x.2` is VBE only) |
 | FPU always reported | `misc.c:62–68` | Partial: empty socket | `upc-18x.9` (risk) |
 | Avoid unmapped FEE00030h MP-table read | `mptable.c:57` | Built fixture disables MPTABLE; Kconfig setting verified | `upc-o0j.9` (build half; catalogue waits for board) |
-| Debug console at 402h | `serialio.c:105–129` | Missing, optional | `upc-o0j.16` |
+| Debug console at 402h | `serialio.c:104–129`; `fw/paravirt.h:67` | Device and `DebugConsole` byte observation exist (E9h readback); Bare rigs only, board wiring pending | `upc-o0j.16`; `upc-o0j.6` (board) |
 
 **Risks and fallback.** ASSUMED: thousands of interpreter PE transitions,
 relocation and ROM-copy SMC churn may make POST slow; no timing was measured.

@@ -76,6 +76,24 @@ is what lets a golden test pin the machine it ran against, and it is the
 precondition for a future snapshot/save-restore feature (deferred — see
 [`deferred.md`](../deferred.md)).
 
+### Emulator-only debug console
+
+`DeviceKind::DebugConsole(DebugConsoleCfg { port })` constructs the diagnostic
+device at `DeviceId::DebugConsole`. `DebugConsoleCfg::default()` selects 402h;
+the decode must be exactly `[PortWindow::single(port)]` (byte width), with no
+IRQ or DMA. An IN byte returns E9h, the SeaBIOS debug-output presence check;
+each OUT byte emits to `ByteStreamKind::DebugConsole`. See
+[observation.md §Debug console stream](observation.md#debug-console-stream)
+for the protocol reference, capture lifecycle and wider-access policy.
+
+This is an emulator-only QEMU debugcon protocol, not period hardware.
+Validation permits `BoardModel::Bare` for isolated tests and rejects every
+currently available firmware board by device **kind**, regardless of role:
+`debug-console port is emulator-only; it is allowed only on board generic-386-isa`.
+Decision-19 confines emulator extensions to `generic-386-isa`, which does not
+exist yet. Its board bead (`upc-o0j.6`) will wire this device. There is deliberately
+no machine-file syntax or preset wiring in this change.
+
 ### Board model
 
 `MachineConfig.board` is `BoardModel::Ibm5170` or `BoardModel::Bare`. The BIOS

@@ -5,6 +5,11 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-11 — Debug console:** emulator-only QEMU-style byte port (default
+  402h, E9h readback) and bounded `DebugConsole` observation are available to
+  bare Rust test rigs. IBM 5170 validation rejects the device; future
+  `generic-386-isa` wiring and machine-file exposure remain pending.
+
 ## Works (as of 2026-11-10, main @ 479f8ed — the 286 foundation is finished)
 
 - **An unmodified open BIOS boots FreeDOS from a floppy, headless and deterministic.** The Kiselev

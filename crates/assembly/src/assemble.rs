@@ -50,8 +50,8 @@ use bus::{Bus, DecodeMap, MmioRange, PortRange};
 use cpu::x86jit_backend::X86JitCpu;
 use device::{Device, InterruptController};
 use devices::{
-    Absent80287, Ata, AtaDrive, AtaGeometry, CmosRtc, Dma8237, Drive, MdaText, Pit8253, PostPort,
-    SysControl, Uart16550, Upd765, VgaText, I8042,
+    Absent80287, Ata, AtaDrive, AtaGeometry, CmosRtc, DebugConsole, Dma8237, Drive, MdaText,
+    Pit8253, PostPort, SysControl, Uart16550, Upd765, VgaText, I8042,
 };
 use machine::{DmaWiring, IrqLine, Machine};
 use sha2::{Digest, Sha256};
@@ -313,6 +313,7 @@ fn assemble_with_cpu(
             DeviceKind::Mda(_) => Box::new(MdaText::new()),
             DeviceKind::SysControl(_) => Box::new(SysControl::new()),
             DeviceKind::Post(c) => Box::new(PostPort::with_port(c.port)),
+            DeviceKind::DebugConsole(c) => Box::new(DebugConsole::with_port(c.port)),
             DeviceKind::Fdc(_) => Box::new(Upd765::with_drives(mount_fdc_drives(
                 config,
                 dc.id,
@@ -406,6 +407,9 @@ fn validate_observation_policy(
                     ) | (
                         DeviceKind::Post(_),
                         OutputKind::Bytes(ByteStreamKind::PostCheckpoints)
+                    ) | (
+                        DeviceKind::DebugConsole(_),
+                        OutputKind::Bytes(ByteStreamKind::DebugConsole)
                     )
                 )
             });
