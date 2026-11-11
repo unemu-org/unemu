@@ -13,8 +13,8 @@
 //! CPU without any local x86jit checkout present.
 
 use x86jit_core::{
-    CpuMode, Exit, PortDir, Prot, Reg, RegionKind, StepOptions, StepRunError, StepStop, Vcpu, Vm,
-    VmConfig,
+    CpuMode, Exit, PortDir, Prot, Reg, RegionKind, ResetOptions, StepOptions, StepRunError,
+    StepStop, Vcpu, Vm, VmConfig,
 };
 
 use crate::{Cpu, CpuError, CpuReg, CpuStepRun, CpuStepStop, CpuStop, DmaAccess, StepRunOptions};
@@ -286,6 +286,20 @@ impl X86JitCpu {
 }
 
 impl Cpu for X86JitCpu {
+    fn reset(&mut self) -> Result<(), CpuError> {
+        self.cpu
+            .reset_execution_state(ResetOptions::default().with_x87_init(true));
+        let state = &mut self.cpu.cpu;
+        state.cs = 0xF000;
+        state.rip = 0xFFF0;
+        state.ds = 0;
+        state.es = 0;
+        state.ss = 0;
+        state.flags.set_flags16(0x0002);
+        state.rflags_system = 0;
+        Ok(())
+    }
+
     fn run(&mut self, budget: Option<u64>) -> Result<CpuStop, CpuError> {
         let exit = self.cpu.run(&self.vm, budget);
         self.map_exit(exit)
@@ -401,6 +415,56 @@ impl Cpu for X86JitCpu {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reset_discards_pending_ins_and_mid_rep_without_rewinding_accounting() {
+        for answered in [true, false] {
+            let mut cpu =
+                X86JitCpu::new_real16_bare(0x10_0000, 0, 0x7000, RealSegments::flat(0)).unwrap();
+            cpu.map_ram(0, 0x10_0000).unwrap();
+            cpu.write_mem(0x7000, &[0xF3, 0x6C, 0xF4]).unwrap();
+            cpu.write_mem(0xFFFF0, &[0xF4]).unwrap();
+            cpu.set_reg(CpuReg::Rcx, 3);
+            cpu.set_reg(CpuReg::Rdi, 0x500);
+            cpu.set_reg(CpuReg::Rdx, 0x60);
+            let run = cpu.run_steps(1, StepRunOptions::default()).unwrap();
+            assert_eq!(
+                run.stop,
+                CpuStepStop::Exit(CpuStop::PortIn {
+                    port: 0x60,
+                    size: 1
+                })
+            );
+            if answered {
+                cpu.complete_port_in(0xA7);
+            }
+            cpu.inject_irq(0x20);
+            cpu.cpu.cpu.fpu_cw = 0;
+            cpu.cpu.cpu.fpu_empty = 0;
+            let retired = cpu.retired();
+            let steps = cpu.completed_steps();
+            let gpr = cpu.cpu.cpu.gpr;
+            cpu.reset().unwrap();
+            assert_eq!(cpu.cpu.cpu.gpr, gpr);
+            assert_eq!(cpu.cpu.cpu.flags.to_flags16(), 2);
+            assert_eq!((cpu.cpu.cpu.cs, cpu.cpu.cpu.rip), (0xF000, 0xFFF0));
+            assert_eq!((cpu.cpu.cpu.ds, cpu.cpu.cpu.es, cpu.cpu.cpu.ss), (0, 0, 0));
+            assert_eq!(cpu.retired(), retired);
+            assert_eq!(cpu.completed_steps(), steps);
+            let run = cpu.run_steps(1, StepRunOptions::default()).unwrap();
+            let mut marker = [0xFF; 3];
+            cpu.read_mem(0x500, &mut marker).unwrap();
+            assert_eq!(marker, [0; 3], "no deferred INS store may survive reset");
+            assert_eq!(run.stop, CpuStepStop::Exit(CpuStop::Halt));
+            assert_eq!(cpu.reg(CpuReg::Rcx), gpr[1]);
+            assert_eq!(cpu.reg(CpuReg::Rdi), gpr[7]);
+            assert_eq!(cpu.retired(), retired + 1);
+            assert_eq!(cpu.completed_steps(), steps + 1);
+            assert!(!cpu.has_pending_irq());
+            assert_eq!(cpu.cpu.cpu.fpu_cw, 0x037F);
+            assert_eq!(cpu.cpu.cpu.fpu_empty, 0xFF);
+        }
+    }
 
     #[test]
     fn answered_ins_store_fault_retries_without_another_port_read() {

@@ -70,6 +70,7 @@ struct Presenter {
     window: Option<Rc<Window>>,
     running: bool,
     reset_requests: u64,
+    cpu_resets: u64,
     maintenance_reported: bool,
     keyboard: HostKeyboard,
     error: Option<Box<dyn Error>>,
@@ -128,6 +129,7 @@ impl Presenter {
             window: None,
             running: true,
             reset_requests: 0,
+            cpu_resets: 0,
             maintenance_reported: false,
             keyboard: HostKeyboard::default(),
             error: None,
@@ -196,12 +198,15 @@ impl Presenter {
             drop(delivered);
             let outcome = self.assembled.machine.run_bounded(Some(cap));
             if matches!(outcome, Ok(RunOutcome::ResetRequested)) {
-                self.record_reset_request(&mut io::stderr());
+                self.reset_requests = self.reset_requests.saturating_add(1);
             }
             self.assembled.check_persistence()?;
             match outcome {
                 Ok(RunOutcome::RetiredCapReached) => self.running = cap < u64::MAX,
-                Ok(RunOutcome::ResetRequested) => {}
+                Ok(RunOutcome::ResetRequested) => {
+                    self.assembled.machine.reset_cpu()?;
+                    self.record_cpu_reset(warnings);
+                }
                 Ok(RunOutcome::Halted) => {
                     self.running = false;
                     eprintln!("machine halted");
@@ -240,23 +245,16 @@ impl Presenter {
         result
     }
 
-    fn record_reset_request(&mut self, diagnostics: &mut impl io::Write) {
-        self.reset_requests = self.reset_requests.saturating_add(1);
-        if self.reset_requests == 1 {
-            let _ = writeln!(
-                diagnostics,
-                "cpu reset requested; continuing to guest fallback"
-            );
+    fn record_cpu_reset(&mut self, diagnostics: &mut impl io::Write) {
+        self.cpu_resets = self.cpu_resets.saturating_add(1);
+        if self.cpu_resets == 1 {
+            let _ = writeln!(diagnostics, "cpu reset");
         }
     }
 
     fn write_reset_summary(&self, diagnostics: &mut impl io::Write) {
-        if self.reset_requests != 0 {
-            let _ = writeln!(
-                diagnostics,
-                "cpu reset requests in session: {}",
-                self.reset_requests
-            );
+        if self.cpu_resets != 0 {
+            let _ = writeln!(diagnostics, "cpu resets in session: {}", self.cpu_resets);
         }
     }
 
@@ -679,63 +677,95 @@ mod tests {
 
     #[test]
     fn journal_host_failure_stops_at_the_first_window_boundary() {
-        let temp = assembly::test_support::TempDir::new("window-host-failure");
-        let base = temp.path().join("base.img");
-        let journal = temp.path().join("disk.upfj");
-        std::fs::write(&base, vec![0; 1_474_560]).unwrap();
-        let out = |program: &mut Vec<u8>, port: u16, value: u8| {
-            program.extend([0xBA, port as u8, (port >> 8) as u8, 0xB0, value, 0xEE]);
-        };
-        let mut program = vec![0xFA, 0xFC];
-        out(&mut program, 0x3F2, 0x1C);
-        for (port, value) in [
-            (0x0A, 6),
-            (0x0C, 0),
-            (0x0B, 0x4A),
-            (4, 0),
-            (4, 6),
-            (0x81, 0),
-            (5, 0xFF),
-            (5, 1),
-            (0x0A, 2),
-        ] {
-            out(&mut program, port, value);
+        for fail in [false, true] {
+            let temp = assembly::test_support::TempDir::new("window-host-failure");
+            let base = temp.path().join("base.img");
+            let journal = temp.path().join("disk.upfj");
+            std::fs::write(&base, vec![0; 1_474_560]).unwrap();
+            let out = |program: &mut Vec<u8>, port: u16, value: u8| {
+                program.extend([0xBA, port as u8, (port >> 8) as u8, 0xB0, value, 0xEE]);
+            };
+            let mut program = vec![0xFA, 0xFC];
+            out(&mut program, 0x3F2, 0x1C);
+            for (port, value) in [
+                (0x0A, 6),
+                (0x0C, 0),
+                (0x0B, 0x4A),
+                (4, 0),
+                (4, 6),
+                (0x81, 0),
+                (5, 0xFF),
+                (5, 1),
+                (0x0A, 2),
+            ] {
+                out(&mut program, port, value);
+            }
+            for value in [5, 0, 0, 0, 1, 2, 1, 0x1B, 0xFF] {
+                out(&mut program, 0x3F5, value);
+            }
+            program.extend([0xBF, 0, 0x10]);
+            for _ in 0..7 {
+                program.extend([0xEC, 0xAA]);
+            }
+            program.extend([0xB0, 0xFE, 0xE6, 0x64, 0xB0, 0x55, 0xF4]);
+            let demo = assembly::at_fdc_write(program, vec![0xA7; 512], 0x600);
+            let mut config = assembly::bios(vec![0xF4; 32768], Some(vec![0; 1_474_560]));
+            config.board = assembly::BoardModel::Bare;
+            config.cpu = demo.cpu;
+            config.images = demo.images;
+            config.images.push(assembly::LoadImage {
+                base: 0xFFFF0,
+                source: assembly::ImageSource::Inline(vec![0xB0, 0x66, 0xF4]),
+                kind: assembly::ImageKind::Rom,
+                provides: Vec::new(),
+            });
+            config.drives[0].image = assembly::ImageSource::File(base);
+            let mut reference = test_presenter(&config).unwrap();
+            assert_eq!(
+                reference
+                    .assembled
+                    .machine
+                    .run_bounded(Some(10_000))
+                    .unwrap(),
+                RunOutcome::ResetRequested
+            );
+            let boundary = reference.assembled.machine.virtual_time();
+            config.drives[0].write = assembly::WriteMode::journal(&journal);
+            let mut presenter = test_presenter(&config).unwrap();
+            let mut diagnostics = Vec::new();
+            if fail {
+                presenter.assembled.persistence[0].fail_output();
+                let error = presenter
+                    .advance_with_warnings(Duration::from_millis(20), &mut diagnostics)
+                    .unwrap_err();
+                assert!(error.to_string().contains("drive 0 persistence"), "{error}");
+                assert_eq!(presenter.assembled.machine.virtual_time(), boundary);
+                assert_eq!(presenter.assembled.machine.cpu().code_segment(), 0);
+                assert!(presenter.advance(Duration::from_millis(40)).is_err());
+                assert_eq!(presenter.assembled.machine.virtual_time(), boundary);
+                assert_eq!(std::fs::read(journal).unwrap().len(), 128);
+            } else {
+                presenter
+                    .advance_with_warnings(Duration::from_millis(20), &mut diagnostics)
+                    .unwrap();
+                assert_eq!(presenter.assembled.machine.virtual_time(), boundary + 2);
+                assert_eq!(presenter.assembled.machine.cpu().code_segment(), 0xF000);
+                assert_eq!(
+                    cpu::Cpu::reg(presenter.assembled.machine.cpu(), cpu::CpuReg::Rax) & 0xFF,
+                    0x66
+                );
+                assert!(!presenter.running);
+            }
+            assert_eq!(presenter.reset_requests, 1);
+            assert_eq!(presenter.cpu_resets, u64::from(!fail));
+            if fail {
+                presenter.write_reset_summary(&mut diagnostics);
+                assert!(diagnostics.is_empty());
+            } else {
+                assert_eq!(diagnostics, b"cpu reset\n");
+            }
+            assert!(presenter.window.is_none());
         }
-        for value in [5, 0, 0, 0, 1, 2, 1, 0x1B, 0xFF] {
-            out(&mut program, 0x3F5, value);
-        }
-        program.extend([0xBF, 0, 0x10]);
-        for _ in 0..7 {
-            program.extend([0xEC, 0xAA]);
-        }
-        program.extend([0xB0, 0xFE, 0xE6, 0x64, 0xB0, 0x55, 0xF4]);
-        let demo = assembly::at_fdc_write(program, vec![0xA7; 512], 0x600);
-        let mut config = assembly::bios(vec![0xF4; 32768], Some(vec![0; 1_474_560]));
-        config.board = assembly::BoardModel::Bare;
-        config.cpu = demo.cpu;
-        config.images = demo.images;
-        config.drives[0].image = assembly::ImageSource::File(base);
-        let mut reference = test_presenter(&config).unwrap();
-        assert_eq!(
-            reference
-                .assembled
-                .machine
-                .run_bounded(Some(10_000))
-                .unwrap(),
-            RunOutcome::ResetRequested
-        );
-        let boundary = reference.assembled.machine.virtual_time();
-        config.drives[0].write = assembly::WriteMode::journal(&journal);
-        let mut presenter = test_presenter(&config).unwrap();
-        presenter.assembled.persistence[0].fail_output();
-        let error = presenter.advance(Duration::from_millis(20)).unwrap_err();
-        assert!(error.to_string().contains("drive 0 persistence"), "{error}");
-        assert_eq!(presenter.assembled.machine.virtual_time(), boundary);
-        assert_eq!(presenter.reset_requests, 1);
-        assert!(presenter.advance(Duration::from_millis(40)).is_err());
-        assert_eq!(presenter.assembled.machine.virtual_time(), boundary);
-        assert_eq!(std::fs::read(journal).unwrap().len(), 128);
-        assert!(presenter.window.is_none());
     }
 
     #[test]
@@ -1019,22 +1049,19 @@ mod tests {
     }
 
     #[test]
-    fn reset_diagnostics_log_only_the_first_request_and_the_session_total() {
+    fn reset_diagnostics_log_only_the_first_performed_reset_and_the_session_total() {
         let config = assembly::bios(vec![0; 0x8000], None);
         let mut presenter = test_presenter(&config).unwrap();
         let mut diagnostics = Vec::new();
         presenter.write_reset_summary(&mut diagnostics);
         assert!(diagnostics.is_empty());
         for _ in 0..10_000 {
-            presenter.record_reset_request(&mut diagnostics);
+            presenter.record_cpu_reset(&mut diagnostics);
         }
-        assert_eq!(
-            diagnostics,
-            b"cpu reset requested; continuing to guest fallback\n"
-        );
-        assert_eq!(presenter.reset_requests, 10_000);
+        assert_eq!(diagnostics, b"cpu reset\n");
+        assert_eq!(presenter.cpu_resets, 10_000);
         presenter.write_reset_summary(&mut diagnostics);
-        assert_eq!(diagnostics, b"cpu reset requested; continuing to guest fallback\ncpu reset requests in session: 10000\n");
+        assert_eq!(diagnostics, b"cpu reset\ncpu resets in session: 10000\n");
         assert!(presenter.window.is_none());
     }
 
@@ -1042,6 +1069,7 @@ mod tests {
     fn a_guest_reset_loop_counts_requests_and_keeps_running() {
         let mut rom = vec![0; 0x8000];
         rom[..6].copy_from_slice(&[0xB0, 0xFE, 0xE6, 0x64, 0xEB, 0xFC]);
+        rom[0x7FF0..0x7FF5].copy_from_slice(&[0xEA, 0, 0, 0, 0xF8]);
         let mut config = assembly::bios(rom, None);
         config.cpu.reset = assembly::ResetSpec::Entry { cs: 0xF800, ip: 0 };
         let mut presenter = test_presenter(&config).unwrap();
@@ -1059,20 +1087,16 @@ mod tests {
         presenter.write_reset_summary(&mut summary);
         assert_eq!(
             summary,
-            format!(
-                "cpu reset requests in session: {}\n",
-                presenter.reset_requests
-            )
-            .as_bytes()
+            format!("cpu resets in session: {}\n", presenter.cpu_resets).as_bytes()
         );
         assert!(presenter.window.is_none());
     }
 
     #[test]
-    fn window_continues_to_the_fallback_boot_jump_after_a_reset_request() {
+    fn window_restarts_at_the_cpu_reset_vector() {
         use cpu::{Cpu, CpuReg};
         let mut rom = vec![0; 0x8000];
-        rom[..9].copy_from_slice(&[0xB0, 0xFE, 0xE6, 0x64, 0xEA, 0, 0, 0xFF, 0xFF]);
+        rom[..5].copy_from_slice(&[0xB0, 0xFE, 0xE6, 0x64, 0xF4]);
         rom[0x7FF0..0x7FF4].copy_from_slice(&[0xB0, 0x55, 0xFA, 0xF4]);
         let mut config = assembly::bios(rom, None);
         config.cpu.reset = assembly::ResetSpec::Entry { cs: 0xF800, ip: 0 };
@@ -1082,7 +1106,7 @@ mod tests {
             presenter.assembled.machine.cpu().reg(CpuReg::Rax) & 0xFF,
             0x55
         );
-        assert_eq!(presenter.assembled.machine.virtual_time(), 6);
+        assert_eq!(presenter.assembled.machine.virtual_time(), 5);
         assert!(!presenter.running);
         assert!(presenter.window.is_none());
     }

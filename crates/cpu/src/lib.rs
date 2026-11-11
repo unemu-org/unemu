@@ -21,6 +21,19 @@
 //! This is an engine time convention, not CPU-cycle timing (Intel 80286
 //! Programmer's Reference Manual, REP, INS and OUTS instruction descriptions).
 //! See `backlog/docs/design/machine-time-profile.md` §String instruction accounting.
+//!
+//! Warm restart follows Intel 80286 Programmer's Reference Manual, §5.3 System
+//! Initialization, Table 5-3 (Processor State after RESET): CS=F000h, IP=FFF0h,
+//! FLAGS=0002h and DS=ES=SS=0. General registers are unspecified by that table;
+//! this model preserves them. The hardware's hidden CS base FF0000h lasts until
+//! a far transfer; this 1 MiB Real16 model instead fetches at FFFF0h. MSW=FFF0h
+//! and IDTR base=0, limit=03FFh (§10.4 Initialization) are not modelled by the
+//! Real16 core. Reset first abandons engine-private execution (including pending
+//! INS/MMIO and IRQs), then
+//! installs these registers, with FNINIT for the core's emulated x87 environment.
+//! RAM, mappings, retirement and completed-step accounting survive. The AT's
+//! CPU-only reset wiring and retained 8042 A20 latch are described in
+//! `backlog/docs/design/machine-config.md` §Board model.
 
 pub mod x86jit_backend;
 
@@ -188,6 +201,16 @@ pub enum DmaAccess<T> {
 /// access, port/MMIO completion handshakes, the IRQ-injection contract (§5.2),
 /// and completed-step accounting for virtual time (§6).
 pub trait Cpu {
+    /// Reset the processor without changing memory or monotone accounting.
+    ///
+    /// Intel 80286 Programmer's Reference Manual, §5.3, Table 5-3 (Processor
+    /// State after RESET). Backends without a reset model return an error.
+    fn reset(&mut self) -> Result<(), CpuError> {
+        Err(CpuError::UnexpectedExit {
+            what: "CPU reset is unsupported by this backend".to_string(),
+        })
+    }
+
     /// Run guest code until an [`CpuStop`] is hit or `budget` blocks execute.
     ///
     /// `budget` counts `x86jit` blocks; `None` runs until a non-budget stop.
@@ -331,7 +354,7 @@ pub trait Cpu {
         DmaAccess::Complete(())
     }
 
-    /// Whole-instruction retirement count since reset (§6).
+    /// Whole-instruction retirement count since construction (§6).
     ///
     /// A monotone diagnostic counter. Machine time uses [`Cpu::completed_steps`]
     /// instead so individual REP iterations consume time before the whole

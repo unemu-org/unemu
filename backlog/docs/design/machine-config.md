@@ -100,7 +100,7 @@ Map**, **Keyboard Controller**, and **Real-Time Clock/CMOS RAM Information**.
 | 3. `Pit` | 40h–43h, IRQ0 | Existing 8253 model stands in for the AT's 8254 |
 | 4. `Dma` | 8237 at 00h–0Fh, channels 0–3, page latches 81h–88h | No refresh DMA requester |
 | 5. `DmaWord` | Second 8237 at C0h–DFh (odd ports alias the preceding even register), pages 89h–8Fh, channels 4–7; channel 4 is cascade | No cycle-level arbitration between banks |
-| 6. `Keyboard` | 8042 at 60h/64h, IRQ1; D1h output bit 0 and F0h–FFh pulses request CPU reset | A20 remains always on; pulse duration and temporary output levels are not timed |
+| 6. `Keyboard` | 8042 at 60h/64h, IRQ1; D1h output bit 0 and F0h–FFh pulses restart only the CPU | A20 latch is retained; address line A20 remains enabled; pulse duration and temporary output levels are not timed |
 | 7. `Rtc` | MC146818 at 70h–71h, IRQ8, NMI-mask state | Seed and virtual timing remain configurable |
 | 8. `Coprocessor` | Empty 80287 socket: F0h, F1h, F8h–FFh; IRQ13 wired inactive | Empty bus socket only; CPU x87 is currently ungated |
 | 9. `SysControl` | 61h latch | Existing refresh approximation and speaker state |
@@ -140,25 +140,49 @@ this repository does not intercept or block x87 instructions.
 **Keyboard Controller**, **Commands** and **Output Port** (pp. 1-53–1-55)
 connect output bit 0 to active-low System Reset. D1h lowering that bit latches
 a request; F0h–FFh pulse commands latch one whenever command bit 0 is zero,
-including FEh. Odd pulse commands do not request reset. The approximately
+including FEh. Odd pulse commands do not request reset. D1h uses only the
+falling edge of output bit 0: the model restarts immediately even if the latch
+stays low, and further low writes do not request another restart. On a real
+AT, the low level holds the CPU in reset until released; that sustained reset
+level is not modelled. The approximately
 6 microsecond pulse is represented as an event rather than a timed pin level;
 D0h reads the retained output latch. The pending request survives device
 snapshot/restore and is cleared by device reset. Assembly shares a signal
 with the machine without teaching the machine core about an 8042. At the
 completed instruction boundary the machine returns `RunOutcome::ResetRequested`,
 even at a coincident cap, and consumes the pending event. `Machine::run()`
-also returns that outcome explicitly. Another call can continue executing;
-the CPU has not been reset. CLI natural, prompt and post-prompt runs keep the
-same absolute cap while continuing past reported requests; the window loop
-counts every request and continues. It logs only the first request in a
-session, then logs the total when the event loop exits, including error exits.
-Sessions with no requests produce neither message. The counter saturates at
-`u64::MAX`; counting and log selection use no host clock. This interim
-behaviour preserves guest reboot code that falls back to a far jump through
-FFFF:0000. CPU restart is
-not available in the current backend and belongs to separate work. RAM,
-peripheral state and virtual time are retained. See `status.md`, **Broken /
-known defects**.
+also returns that outcome explicitly. The machine retains a reset-pending flag:
+the next `run_bounded()` or `run()` resets the CPU before execution or a cap
+check. An explicit `Machine::reset_cpu()` clears that flag only after reset
+succeeds. A persistence error after the reported boundary leaves reset pending;
+resuming cannot continue the old instruction stream. The run layer checks persistence at
+that boundary, resets the CPU, and continues from F000:FFF0 with the same
+absolute cap. CLI natural, prompt, post-prompt and machine-file runs all use
+this path; prompt stimuli are not repeated. The window performs the same
+reset after its persistence check. It counts requests separately from performed
+resets, logs `cpu reset` after the first performed reset, and logs the performed
+reset total on event-loop exit, including error exits. A persistence failure
+before reset produces no reset diagnostic. Saturating counters and message
+selection use no host clock.
+A reset neither seals a journal generation nor ends a media session.
+
+Intel **80286 and 80287 Programmer's Reference Manual**, §5.3 **System
+Initialization**, Table 5-3 **Processor State after RESET**, specifies
+CS=F000h, IP=FFF0h, FLAGS=0002h and DS=ES=SS=0. The physical processor uses
+hidden CS base FF0000h until the first far transfer; the 1 MiB Real16 model
+fetches at FFFF0h. General registers are unspecified by the table and are
+preserved. MSW=FFF0h and IDTR base=0, limit=03FFh (§10.4 Initialization) are
+not modelled by the Real16 core. The backend abandons pending execution,
+IRQ/completion latches and interrupt shadows before installing these registers,
+and initializes its emulated x87 environment with FNINIT.
+
+The IBM reference's **Keyboard Controller Output Port** resets only the CPU:
+RAM, CMOS (including shutdown byte 0Fh), peripheral state, retired-instruction
+and completed-step counters, and virtual time survive. The 8042 output-port
+latch survives too: D1h bit 1 sets its retained A20 state, and pulse commands
+do not change that latch. Actual address-line masking is not implemented;
+reset does not change that limitation. An explicit device reset still clears
+its pending request.
 
 Every `Ibm5170` requires the 8237 in its canonical position, even if an FDC
 entry is undecoded or unwired. The no-media BIOS preset keeps that historical

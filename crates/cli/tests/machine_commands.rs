@@ -346,3 +346,29 @@ fn print_rejects_a_configured_card_without_output_as_a_usage_error() {
         "{run:?}"
     );
 }
+
+#[test]
+fn run_machine_reboots_at_reset_vector_with_ram_retained() {
+    let files = Files::new(&[0xEA, 0, 0, 0, 0xF8]);
+    let mut rom = std::fs::read(files.0.join("bios.bin")).unwrap();
+    let program = [
+        0x31, 0xC0, 0x8E, 0xD8, 0x80, 0x3E, 0, 5, 1, 0x74, 10, 0xC6, 0x06, 0, 5, 1, 0xB0, 0xFE,
+        0xE6, 0x64, 0xF4, 0xBA, 0xF8, 3, 0xB0, b'Z', 0xEE, 0xFA, 0xF4,
+    ];
+    rom[..program.len()].copy_from_slice(&program);
+    files.write("bios.bin", rom);
+    let output = command(
+        &["run", "--machine"],
+        &files.machine(),
+        &[
+            "--allow-unlisted-firmware",
+            "--max-steps",
+            "100",
+            "--print",
+            "console",
+        ],
+    );
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    assert_eq!(output.stdout, b"Z");
+    assert!(stderr(&output).ends_with("stopped: halt\n"));
+}

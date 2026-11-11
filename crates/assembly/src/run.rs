@@ -247,7 +247,7 @@ pub fn run_with_persistence(
 }
 
 // A reported reset must not consume policy budgets or repeat prompt stimuli.
-// Until the CPU backend can restart, allow the guest's fallback BIOS jump.
+// Reset is a CPU boundary, not a new media session.
 fn run_past_reset_requests(
     machine: &mut Machine<X86JitCpu>,
     cap: Option<u64>,
@@ -332,6 +332,9 @@ fn run_boundary(
     check_persistence(handles)?;
     let outcome = machine.run_bounded(cap);
     check_persistence(handles)?;
+    if matches!(outcome, Ok(RunOutcome::ResetRequested)) {
+        machine.reset_cpu()?;
+    }
     outcome.map_err(Into::into)
 }
 
@@ -483,6 +486,12 @@ mod tests {
                 config.board = crate::BoardModel::Bare;
                 config.cpu = demo.cpu;
                 config.images = demo.images;
+                config.images.push(crate::LoadImage {
+                    base: 0xFFFF0,
+                    source: crate::ImageSource::Inline(vec![0xB0, 0x66, 0xF4]),
+                    kind: crate::ImageKind::Rom,
+                    provides: Vec::new(),
+                });
                 config.drives[0].image = crate::ImageSource::File(base.clone());
                 let mut reference = crate::assemble(&config).unwrap();
                 assert_eq!(
@@ -528,13 +537,23 @@ mod tests {
                 if fail {
                     assert!(matches!(result, Err(RunError::Persistence(_))));
                     assert_eq!(assembled.machine.virtual_time(), reset_time);
+                    assert_eq!(assembled.machine.cpu().code_segment(), 0);
                     assert_eq!(assembled.machine.cpu().reg(cpu::CpuReg::Rax) & 0xFF, 0xFE);
                     assert!(assembled.run_session(&policy).is_err());
+                    assert_eq!(assembled.machine.virtual_time(), reset_time);
+                    // Bypass the failed host handle only to inspect the retained
+                    // machine obligation, without executing another instruction.
+                    assert_eq!(
+                        assembled.machine.run_bounded(Some(reset_time)).unwrap(),
+                        RunOutcome::RetiredCapReached
+                    );
+                    assert_eq!(assembled.machine.cpu().code_segment(), 0xF000);
+                    assert_eq!(assembled.machine.cpu().reg(cpu::CpuReg::Rip), 0xFFF0);
                     assert_eq!(assembled.machine.virtual_time(), reset_time);
                 } else {
                     assert_eq!(result.unwrap(), RunOutcome::Halted);
                     assert_eq!(assembled.machine.virtual_time(), reset_time + 2);
-                    assert_eq!(assembled.machine.cpu().reg(cpu::CpuReg::Rax) & 0xFF, 0x55);
+                    assert_eq!(assembled.machine.cpu().reg(cpu::CpuReg::Rax) & 0xFF, 0x66);
                 }
                 let bytes = std::fs::read(&journal).unwrap();
                 let image = std::fs::read(&base).unwrap();

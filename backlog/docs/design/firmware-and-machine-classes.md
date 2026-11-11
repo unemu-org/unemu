@@ -368,12 +368,12 @@ device bead.
 | Interrupts | **one** 8259A, 20h–21h, IRQ0–7, single mode | 8259A pair, 20h/A0h, slave on IRQ2 | as AT | cascaded pair ✓ |
 | Timer | 8253, 40h–43h. ch0 → IRQ0, ch1 → DRAM refresh (DMA ch0), ch2 → speaker through PPI PB0/PB1 | 8254. ch1 refresh shows in 61h bit 4, ch2 → speaker through 61h | as AT | 8253 ✓; refresh bit is a per-read toggle |
 | DMA | **one** 8237A at 00h–0Fh, ch0 refresh. Page latches at 81h–83h (ch2, ch3, ch1) | **two** 8237A: 00h–1Fh (ch0–3) and C0h–DFh (ch4–7, ch4 cascade). Pages at 80h–8Fh | as AT | one 8237 with pages 81h–8Fh ✓; **DMA2 ✗** |
-| Keyboard interface | **8255A PPI at 60h–63h**: PA scan code, PB control (PB7 clear, PB6 clock, PB3 switch select), PC switches and status | **8042** at 60h/64h; output port bit 1 = A20, bit 0 = reset | 8042 + port 92h | 8042 ✓ (A20 bit is state only, `FEh` pulse ✗); **8255 ✗** |
+| Keyboard interface | **8255A PPI at 60h–63h**: PA scan code, PB control (PB7 clear, PB6 clock, PB3 switch select), PC switches and status | **8042** at 60h/64h; output port bit 1 = A20, bit 0 = reset | 8042 + port 92h | 8042 ✓ (A20 bit is state only, `FEh` CPU reset pulse ✓); **8255 ✗** |
 | Keyboard | **83-key**, scan set 1, serial into PPI port A, IRQ1 | 84-key (101 later), set 2 translated to set 1 | as AT | host → set 1 encoder with E0 codes ✓ (an XT has no E0 keys) |
 | Config store | **DIP SW1** read through the PPI | MC146818 CMOS at 70h/71h, IRQ8; NMI mask is 70h bit 7 | as AT, plus extended memory bytes | CMOS ✓, derived |
 | NMI mask | port **A0h** bit 7 | 70h bit 7 | as AT | AT form ✓ |
 | A20 | none (20-bit bus) | 8042 output port | 8042 + **port 92h** bit 1 | always on (decision-8) |
-| CPU reset | — | 8042 `FEh`, CMOS 0Fh shutdown code | + port 92h bit 0 | ✗ |
+| CPU reset | — | 8042 `FEh`, CMOS 0Fh shutdown code | + port 92h bit 0 | 8042 CPU-only warm restart ✓; RAM, CMOS and devices retained; sustained low reset level not modelled |
 | ROM | F0000h–FFFFFh; an 8 KiB BIOS at FE000h | 64 KiB at F0000h (even/odd) | same, aliased at 4 GiB − size | `ImageKind::Rom` ✓ |
 | Card bus | 8-bit, IRQ2–7, DMA1–3 | 16-bit, IRQ3–7, 9–12, 14, 15 | as AT | no slot abstraction (decision-16 §8) |
 | Floppy | adapter with DOR 3F2h and MSR/data 3F4h/3F5h; ASSUMED no CCR at 3F7h | 3F0h–3F7h, IRQ6, DMA2 | as AT | µPD765 ✓ |

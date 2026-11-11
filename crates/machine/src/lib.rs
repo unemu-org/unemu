@@ -162,7 +162,7 @@ pub enum RunOutcome {
     /// The total virtual-time cap was reached before a natural stop.
     RetiredCapReached,
     /// A wired board signal requested a CPU reset. The pending event is consumed;
-    /// callers can continue until CPU restart is available in the backend.
+    /// the next run resets the CPU unless [`Machine::reset_cpu`] already did so.
     ResetRequested,
 }
 
@@ -199,6 +199,7 @@ pub struct Machine<C: Cpu> {
     /// for a machine with no DMA (the serial and timer demos).
     dma_wirings: Vec<DmaWiring>,
     reset_signal: Option<std::rc::Rc<std::cell::Cell<bool>>>,
+    reset_pending: bool,
 }
 
 impl<C: Cpu> Machine<C> {
@@ -235,6 +236,7 @@ impl<C: Cpu> Machine<C> {
             idle_limit,
             dma_wirings: Vec::new(),
             reset_signal: None,
+            reset_pending: false,
         }
     }
 
@@ -242,9 +244,9 @@ impl<C: Cpu> Machine<C> {
     /// IBM Personal Computer AT Technical Reference, System Board, Keyboard
     /// Controller: System Reset resets the microprocessor, not peripheral state.
     /// See `backlog/docs/design/machine-config.md` §Board model. A pending
-    /// signal reports a stop at a settled instruction boundary and is consumed.
-    /// Until CPU restart is available, run layers continue from that boundary
-    /// so guest software can execute its fallback BIOS jump.
+    /// signal reports one stop at a settled instruction boundary. CPU reset
+    /// remains pending until [`Self::reset_cpu`] succeeds, explicitly or at the
+    /// start of the next run. A host-side failure cannot lose the request.
     #[must_use]
     pub fn with_reset_signal(mut self, signal: std::rc::Rc<std::cell::Cell<bool>>) -> Self {
         self.reset_signal = Some(signal);
@@ -300,6 +302,19 @@ impl<C: Cpu> Machine<C> {
         &self.cpu
     }
 
+    /// Restart only the CPU, retaining RAM, devices and virtual time.
+    ///
+    /// IBM Personal Computer AT Technical Reference, System Board, Keyboard
+    /// Controller Output Port: bit 0 drives the CPU reset line. Media sessions
+    /// survive (backlog/docs/design/machine-config.md §Board model).
+    pub fn reset_cpu(&mut self) -> Result<(), MachineError> {
+        self.cpu.reset()?;
+        self.reset_pending = false;
+        self.halted = false;
+        self.idle_clocks = 0;
+        Ok(())
+    }
+
     /// The bus (to drain device output / traces after a run).
     pub fn bus(&self) -> &Bus {
         &self.bus
@@ -350,7 +365,8 @@ impl<C: Cpu> Machine<C> {
     /// Run until the guest halts with no more interrupts to service (§3.1).
     ///
     /// Unbounded: equivalent to [`Machine::run_bounded`] with no cap. A reset
-    /// request is returned explicitly so callers can choose to continue.
+    /// request is reported once; the next run performs its pending CPU reset
+    /// before executing from the reset vector.
     pub fn run(&mut self) -> Result<RunOutcome, MachineError> {
         self.run_bounded(None)
     }
@@ -443,7 +459,12 @@ impl<C: Cpu> Machine<C> {
     /// interrupt is acknowledged. Active caps count exact completed steps;
     /// halted caps round up to a whole PIT clock at fractional CPU rates.
     /// `None` imposes no cap. Captured output survives either stopping outcome.
+    /// A previously reported reset is performed before any execution or cap
+    /// check, unless [`Self::reset_cpu`] already completed it.
     pub fn run_bounded(&mut self, cap: Option<u64>) -> Result<RunOutcome, MachineError> {
+        if self.reset_pending {
+            self.reset_cpu()?;
+        }
         let mut completing = false;
         let mut no_progress = 0;
         self.settle(true)?;
@@ -454,6 +475,7 @@ impl<C: Cpu> Machine<C> {
                     .as_ref()
                     .is_some_and(|signal| signal.replace(false))
             {
+                self.reset_pending = true;
                 return Ok(RunOutcome::ResetRequested);
             }
             if !completing {
@@ -849,7 +871,7 @@ mod tests {
     }
 
     #[test]
-    fn reset_signal_is_reported_once_and_the_next_run_continues() {
+    fn unsupported_reset_blocks_resumption_and_remains_pending() {
         for bounded in [false, true] {
             let signal = std::rc::Rc::new(std::cell::Cell::new(false));
             let capture = CaptureDevice {
@@ -894,9 +916,15 @@ mod tests {
             assert_eq!(machine.virtual_time(), 1);
             assert!(!signal.get());
             assert_eq!(machine.bus().device(0).unwrap().save(), [0xFE]);
-            assert_eq!(machine.run().unwrap(), RunOutcome::Halted);
-            assert_eq!(machine.virtual_time(), 3);
-            assert_eq!(machine.bus().device(0).unwrap().save(), [0xFE, 0x55]);
+            for _ in 0..2 {
+                assert!(matches!(
+                    machine.run(),
+                    Err(MachineError::Cpu(CpuError::UnexpectedExit { .. }))
+                ));
+                assert!(machine.reset_pending);
+                assert_eq!(machine.virtual_time(), 1);
+                assert_eq!(machine.bus().device(0).unwrap().save(), [0xFE]);
+            }
         }
     }
 
@@ -923,11 +951,40 @@ mod tests {
         assert_eq!(machine.virtual_time(), 1);
         assert_eq!(machine.bus().device(0).unwrap().save(), [0xFE]);
         assert!(!signal.get());
+        assert!(matches!(
+            machine.run_bounded(Some(1)),
+            Err(MachineError::Cpu(CpuError::UnexpectedExit { .. }))
+        ));
+        assert!(machine.reset_pending);
+        assert_eq!(machine.virtual_time(), 1);
+    }
+
+    #[test]
+    fn explicit_reset_clears_the_obligation_before_the_next_run() {
+        let cpu = cpu::X86JitCpu::new_real16_bare(
+            0x10_0000,
+            0,
+            0,
+            cpu::x86jit_backend::RealSegments::flat(0),
+        )
+        .unwrap();
+        let signal = std::rc::Rc::new(std::cell::Cell::new(true));
+        let mut machine = Machine::new(cpu, bus_with_capture(), Box::new(NoIc), Vec::new(), None)
+            .with_reset_signal(signal);
         assert_eq!(
-            machine.run_bounded(Some(1)).unwrap(),
+            machine.run_bounded(Some(0)).unwrap(),
+            RunOutcome::ResetRequested
+        );
+        machine.reset_cpu().unwrap();
+        machine.cpu.inject_irq(0x20);
+        assert_eq!(
+            machine.run_bounded(Some(0)).unwrap(),
             RunOutcome::RetiredCapReached
         );
-        assert_eq!(machine.virtual_time(), 1);
+        assert!(
+            machine.cpu.has_pending_irq(),
+            "a completed reset must not repeat on resumption"
+        );
     }
 
     #[test]

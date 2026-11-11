@@ -150,6 +150,18 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   and the machine side about 2 % (profile in
   [`design/machine-time-profile.md`](design/machine-time-profile.md)).
 
+- **CPU warm restart:** 8042 reset requests restart the CPU at F000:FFF0 after
+  the persistence boundary check. CLI natural, prompt, post-prompt and
+  machine-file runs, and the window, resume with 80286 reset registers and
+  cleared execution latches. A reported reset remains pending until performed;
+  direct machine resumption resets before execution, including after a host
+  persistence failure. Window reset diagnostics count only performed resets.
+  RAM, CMOS shutdown byte 0Fh, devices, the 8042
+  output-port/A20 latch, retirement counters and virtual time survive. Reset
+  does not end a journal session. The 1 MiB Real16 core does not model the
+  hidden reset CS base, MSW, IDTR or A20 address masking; see
+  [machine-config.md, Board model](design/machine-config.md#board-model).
+
 ## In flight
 
 The 286 foundation milestone is closed. Next is phase A of decision-16 (the
@@ -160,13 +172,6 @@ was reported to the CPU core project.
 
 ## Broken / known defects
 
-- **CPU reset is currently notification-only.** The 8042 output-port and pulse
-  commands record a request; `Machine::run_bounded()` and `Machine::run()`
-  report `ResetRequested` once and consume the pending event. No CPU state is
-  reset yet. CLI and window run loops continue so guest reboot code can reach
-  its fallback far jump through FFFF:0000, preserving the previous warm-boot
-  path. Actual CPU restart is separate work. RAM, devices and virtual time are
-  retained; an 8042 device reset still clears its pending request.
 - **An empty 80287 socket is modelled on the I/O bus only.** Its assigned ports
   read FFh and ignore writes, with IRQ13 inactive. The pinned CPU core executes
   ungated x87 in Real16: FNINIT/FNSTCW writes 037Fh even on this board. An

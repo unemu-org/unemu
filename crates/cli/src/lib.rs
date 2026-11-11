@@ -484,6 +484,7 @@ fn run_past_reset_requests<C: Cpu>(
         if outcome != RunOutcome::ResetRequested {
             return Ok(outcome);
         }
+        machine.reset_cpu()?;
     }
 }
 
@@ -1436,9 +1437,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn cli_continues_to_the_fallback_boot_jump_after_a_reset_request() {
+    fn cli_restarts_at_the_cpu_reset_vector() {
         let mut rom = vec![0; 0x8000];
-        rom[..9].copy_from_slice(&[0xB0, 0xFE, 0xE6, 0x64, 0xEA, 0, 0, 0xFF, 0xFF]);
+        rom[..5].copy_from_slice(&[0xB0, 0xFE, 0xE6, 0x64, 0xF4]);
         rom[0x7FF0..0x7FF8].copy_from_slice(&[0xBA, 0xF8, 3, 0xB0, b'Z', 0xEE, 0xFA, 0xF4]);
         let mut config = assembly::bios(rom, None);
         config.cpu.reset = assembly::ResetSpec::Entry { cs: 0xF800, ip: 0 };

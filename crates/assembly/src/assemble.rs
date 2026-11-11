@@ -1080,6 +1080,7 @@ mod tests {
         ] {
             let mut rom = vec![0; 0x8000];
             rom[..program.len()].copy_from_slice(&program);
+            rom[0x7FF0..0x7FF4].copy_from_slice(&[0xB0, 0x66, 0xFA, 0xF4]);
             let mut config = crate::bios(rom, Some(vec![0; 1_474_560]));
             config.board = crate::BoardModel::Bare;
             config.cpu.reset = crate::ResetSpec::Entry { cs: 0xF800, ip: 0 };
@@ -1094,17 +1095,21 @@ mod tests {
                 assembled.machine.run_bounded(Some(100)).unwrap(),
                 machine::RunOutcome::Halted
             );
-            assert_eq!(assembled.machine.cpu().reg(cpu::CpuReg::Rax) & 0xFF, 0x55);
+            assert_eq!(assembled.machine.cpu().reg(cpu::CpuReg::Rax) & 0xFF, 0x66);
         }
     }
 
     #[test]
-    fn run_policies_continue_after_reset_requests() {
-        // Cover a reset before prompt detection and another after the policy
-        // injects input, without letting either one terminate the session.
-        let program = [0xB0, 0xFE, 0xE6, 0x64, 0xE6, 0x64, 0xB0, 0x55, 0xFA, 0xF4];
+    fn run_policies_restart_cpu_before_and_after_prompt() {
+        // A RAM counter lets the reset vector request one more reset after input.
         let mut rom = vec![0; 0x8000];
-        rom[..program.len()].copy_from_slice(&program);
+        rom[..5].copy_from_slice(&[0xB0, 0xFE, 0xE6, 0x64, 0xF4]);
+        rom[0x7FF0..0x7FF5].copy_from_slice(&[0xEA, 0, 1, 0, 0xF8]);
+        let stub = [
+            0xFE, 0x06, 0, 5, 0x80, 0x3E, 0, 5, 2, 0x74, 4, 0xB0, 0xFE, 0xE6, 0x64, 0xB0, 0x55,
+            0xFA, 0xF4,
+        ];
+        rom[0x100..0x100 + stub.len()].copy_from_slice(&stub);
         let mut config = crate::bios(rom, Some(vec![0; 1_474_560]));
         config.board = crate::BoardModel::Bare;
         config.cpu.reset = crate::ResetSpec::Entry { cs: 0xF800, ip: 0 };
@@ -1129,7 +1134,7 @@ mod tests {
                     },
                     needle: String::new(),
                     poll_step: 2,
-                    then_budget: 10,
+                    then_budget: 98,
                 };
                 policy.stimuli.push(crate::KeyboardStimulus {
                     keyboard_index: assembled.device_index[&DeviceId::Keyboard],
@@ -1141,7 +1146,7 @@ mod tests {
                 crate::run(&mut assembled.machine, &assembled.observation, &policy).unwrap(),
                 machine::RunOutcome::Halted
             );
-            assert_eq!(assembled.machine.virtual_time(), 6);
+            assert_eq!(assembled.machine.virtual_time(), 15);
             assert_eq!(assembled.machine.cpu().reg(cpu::CpuReg::Rax) & 0xFF, 0x55);
         }
     }
