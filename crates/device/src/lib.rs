@@ -492,6 +492,9 @@ pub struct GraphicsScanout<'a> {
 /// - [`Device::irq_pending`]: the device's IRQ line (§5). The machine edge-detects its
 ///   line onto the interrupt controller and injects the acknowledged vector into
 ///   the CPU (see the `machine` crate).
+/// - [`Device::irq_output`]: query a device-local interrupt pin (§5.1). Pin 0
+///   defaults to `irq_pending`; additional pins default low. Board wiring maps
+///   pins to interrupt-controller input lines.
 /// - [`Device::reset`]: return to power-on register state.
 /// - [`Device::save`] / [`Device::restore`]: snapshot/replay (§7).
 /// - [`Device::take_trace`]: drain observed events for golden tests.
@@ -580,6 +583,16 @@ pub trait Device {
 
     /// Whether the device is currently asserting its IRQ line (§5.1).
     fn irq_pending(&self) -> bool;
+
+    /// Query an interrupt output by its device-local pin index (§5.1).
+    /// Output 0 is the existing primary line; other outputs default low.
+    /// IBM PS/2 Hardware Interface Technical Reference, Common Interfaces,
+    /// "Keyboard and Auxiliary Device Controller", Output Port, defines the
+    /// 8042's separate keyboard and auxiliary outputs. The board maps pins to
+    /// IRQ numbers; this query neither wires nor samples the PIC.
+    fn irq_output(&self, output: usize) -> bool {
+        output == 0 && self.irq_pending()
+    }
 
     /// Return to power-on register state.
     fn reset(&mut self);

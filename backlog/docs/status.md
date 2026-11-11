@@ -346,6 +346,18 @@ unqualified. See [scheduler calibration](design/scheduler.md#device-migration-in
 
 ## In flight
 
+- **2026-11-11 — PS/2 auxiliary channel and mouse (device level):** the 8042
+  can attach an `AuxDevice` at construction, routes D4h to it, tags aux output
+  with status bits 0/5 and exposes IRQ12 as interrupt output 1 (command-byte
+  bit 1). D3h injects an aux byte even without a peripheral. Clock inhibit
+  retains peripheral output; ready keyboard/aux bytes alternate after controller
+  replies. `Ps2Mouse` implements standard ID-00 commands, stream/remote/wrap,
+  signed motion, three buttons, overflow and stream-only 2:1 scaling. Snapshots
+  include partial exchanges and all peripheral state. Packets are emitted at
+  input injection boundaries and coalesced while busy; sample-rate pacing in
+  virtual time is not modelled. Machine configuration, slave-PIC IRQ12 wiring
+  and frontend input routing remain pending. Existing profiles attach no mouse.
+
 - **2026-11-11 — A20 / System Control Port A device side:** Bare rigs can
   opt into port 92h with versioned snapshots, latch readback and CPU reset on
   bit-0 0→1; readback remains set after CPU reset until cleared by a write or

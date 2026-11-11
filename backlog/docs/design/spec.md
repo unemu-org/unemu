@@ -57,6 +57,19 @@ IVT-vectored `INT`/exceptions — added under `CpuMode::Real16`.
 §7.1 `Device` contract (mmio/port, `tick`, IRQ, `reset`, `save`/`restore`, trace).
 §7.2 16550 UART (serial) — first device.
 §7.3 8259 PIC. §7.4 8253 PIT. §7.5 8042 keyboard controller.
+The 8042 optionally owns a byte-level `AuxDevice`; `Ps2Mouse` implements the
+standard ID-00 pointing-device protocol (IBM Personal System/2 Hardware Interface
+Technical Reference, Common Interfaces, "Keyboard and Auxiliary Device Controller"
+and "Pointing Device"). The shared output buffer distinguishes keyboard and aux
+provenance; device interrupt outputs 0/1 expose IRQ1/IRQ12 without board wiring.
+Clock inhibit retains queued aux bytes, controller replies precede serial traffic,
+and simultaneously ready keyboard/aux bytes alternate. Mouse host motion uses
+counts with positive Y up; stream-only 2:1 scaling and remote/wrap modes are
+supported. Sample rate is stored/reported, with stream packets generated at
+injection boundaries rather than paced in virtual time. Controller snapshot v6
+includes the attached peripheral identity and complete protocol state. Machine
+configuration and frontend/PIC routing are separate work.
+
 §7.6 CMOS/RTC. §7.7 8237 DMA. §7.8 µPD765 floppy controller (reads via §7.7 DMA).
 
 ## §8 Firmware

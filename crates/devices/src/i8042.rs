@@ -93,16 +93,34 @@
 //! | `0xD0` | Read output port            | yes      | → output buffer              |
 //! | `0xD1` | Write output port           | yes      | next `0x60` write; bit 1 = A20 |
 //! | `0xF0–0xFF` | Pulse output port | partial | reset event; no pulse timing |
+//! | `0xD2` | Write keyboard output buffer | no    | ignored; does not arm injection |
+//! | `0xD3` | Write aux output buffer    | yes      | next `0x60` write; aux status/IRQ12 |
 //! | `0xD4` | Write byte to aux (mouse)   | yes      | next `0x60` write routed to aux |
 //!
-//! ## PS/2 auxiliary (mouse) channel: interface present, no device
+//! ## PS/2 auxiliary channel
 //!
-//! The stock BIOS probes the aux channel (aux-interface test `0xA9`, aux
-//! enable/disable, `0xD4` write-to-aux). We model the **interface as present and
-//! healthy** — `0xA9` returns "no error" — but **no mouse is attached**. A byte
-//! routed to the aux device via `0xD4` is accepted and **dropped**: no aux output
-//! byte, no aux ACK, no aux OBF. The BIOS's mouse-detection reads then time out
-//! cleanly (`jc .timeout`) rather than blocking on a byte that never arrives.
+//! IBM Personal System/2 Hardware Interface Technical Reference, Common
+//! Interfaces, "Keyboard and Auxiliary Device Controller", Controller Status
+//! Register, Controller Command Byte and Controller Commands, defines aux OBF
+//! (status bit 5 together with bit 0), command-byte interrupt bit 1, and D3/D4.
+//! [`AuxDevice`] attaches a peripheral at construction; the default remains an
+//! empty channel: D4 consumes exactly one byte without an ACK or IRQ12. A9 still
+//! reports a healthy interface independently of attachment.
+//!
+//! Keyboard and aux share one output buffer and independent serial deadlines
+//! using the same 11-bit frame duration. Controller replies take priority, then
+//! D3-injected output (one pending byte, keep oldest). These controller writes
+//! bypass clock inhibit and serial timing. Ready keyboard/aux bytes alternate
+//! when both are pending, initially preferring keyboard; a blocked link never
+//! stalls the other. This deterministic arbitration is a compatibility policy,
+//! not a model of controller firmware execution. A7 and command-byte bit 5 stop
+//! pulling device bytes; queued output stays in the peripheral until A8 or a
+//! command-byte write enables the clock. An already buffered byte remains readable.
+//! D4 accepts host commands while inhibited; their replies wait in the device.
+//! Reading an aux byte lowers IRQ12 and holds the serial refill just as for IRQ1.
+//! [`Device::irq_output`] exposes pin 0 as IRQ1 and pin 1 as IRQ12; primary
+//! [`Device::irq_pending`] remains IRQ1. Board/PIC wiring is external.
+//! [`crate::Ps2Mouse`] documents the pointing-device protocol and timing gaps.
 //!
 //! ## Keyboard reset / BAT
 //!
@@ -119,8 +137,6 @@
 //! input: frontend navigation wrappers follow these guest-controlled LEDs.
 //!
 //! Deliberately **not** modelled (decoded as no-ops where a byte is consumed):
-//! - **The PS/2 auxiliary (mouse) device** itself and the aux output buffer / IRQ12
-//!   (see the aux-channel note above — the interface answers, no device does).
 //! - **Password / security commands** (`0xA4`–`0xA6`).
 //! - **Keyboard-side command semantics** beyond reset/ACK and LED state:
 //!   typematic-rate and scancode-set commands are not interpreted.
@@ -129,7 +145,10 @@
 //! Snapshots contain controller registers, tagged keyboard queues, pending
 //! replies, IRQ refill holds, the absolute PIT time base and the pending serial
 //! frame deadline (Intel 8042 datasheet, Data Bus Buffer and Interrupts), plus
-//! guest keyboard LEDs and the pending LED parameter exchange.
+//! guest keyboard LEDs and the pending LED parameter exchange. Version 6 adds
+//! aux provenance, D3/D4 expectations, injected output, arbitration preference,
+//! the aux serial deadline and the attached peripheral identity/state. Restore
+//! requires the same peripheral type and rejects older snapshot versions.
 
 use std::collections::VecDeque;
 
@@ -147,7 +166,7 @@ const PORT_DATA: u16 = 0x60;
 const PORT_CMD: u16 = 0x64;
 
 /// Snapshot layout version tag, first byte of [`Device::save`] output.
-const SNAPSHOT_VERSION: u8 = 5;
+const SNAPSHOT_VERSION: u8 = 6;
 
 /// Keyboard frame time in PIT input clocks (1,193,182 Hz), rounded up.
 ///
@@ -176,6 +195,10 @@ const ST_SYS: u8 = 1 << 2;
 const ST_CMD: u8 = 1 << 3;
 /// Status register bit 4: keyboard not inhibited (unlocked). Always reported set.
 const ST_UNLOCKED: u8 = 1 << 4;
+/// Status bit 5 marks auxiliary data in the shared output buffer.
+const ST_AUX: u8 = 1 << 5;
+/// Command-byte bit 1 enables the auxiliary interrupt output (IRQ12).
+const CB_AUX_INT: u8 = 1 << 1;
 
 /// Command-byte bit 0: keyboard-interrupt (IRQ1) enable.
 const CB_KBD_INT: u8 = 1 << 0;
@@ -232,6 +255,8 @@ enum Expect {
     /// A byte to route to the auxiliary (mouse) device (after command `0xD4`).
     /// With no mouse attached the byte is dropped.
     AuxData,
+    /// A controller-injected auxiliary byte after D3h.
+    AuxOutput,
 }
 
 impl Expect {
@@ -241,6 +266,7 @@ impl Expect {
             Expect::CommandByte => 1,
             Expect::OutputPort => 2,
             Expect::AuxData => 3,
+            Expect::AuxOutput => 4,
         }
     }
 
@@ -249,13 +275,13 @@ impl Expect {
             1 => Expect::CommandByte,
             2 => Expect::OutputPort,
             3 => Expect::AuxData,
+            4 => Expect::AuxOutput,
             _ => Expect::KeyboardData,
         }
     }
 }
 
-/// Where the byte currently in the output buffer came from. Only keyboard-sourced
-/// bytes drive the IRQ1 line.
+/// Output provenance selects IRQ1 or IRQ12 and the auxiliary status bit.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 enum Source {
     /// The buffer is empty.
@@ -264,6 +290,8 @@ enum Source {
     Keyboard,
     /// A controller command response (self-test result, command byte, …).
     Controller,
+    /// A device or D3h-injected auxiliary byte.
+    Auxiliary,
 }
 
 impl Source {
@@ -272,6 +300,7 @@ impl Source {
             Source::Empty => 0,
             Source::Keyboard => 1,
             Source::Controller => 2,
+            Source::Auxiliary => 3,
         }
     }
 
@@ -279,9 +308,37 @@ impl Source {
         match bits {
             1 => Source::Keyboard,
             2 => Source::Controller,
+            3 => Source::Auxiliary,
             _ => Source::Empty,
         }
     }
+}
+
+/// Byte-level PS/2 auxiliary link, independent of the attached device type.
+///
+/// IBM Personal System/2 Hardware Interface Technical Reference, Common
+/// Interfaces, "Keyboard and Auxiliary Device Controller", Input and Output
+/// Buffers and Auxiliary Device and System Timings. See
+/// `backlog/docs/design/spec.md` §7.5. The controller pulls bytes only while
+/// the auxiliary clock is enabled. Implementations retain queued output while
+/// inhibited; they own protocol state, the controller owns serial deadlines.
+pub trait AuxDevice {
+    /// Stable snapshot identity; restore requires the same attached device type.
+    fn name(&self) -> &'static str;
+    /// Accept one host-to-device byte routed by D4h.
+    fn receive(&mut self, byte: u8);
+    /// Passive readiness query for the controller's deadline scheduler.
+    fn has_output(&self) -> bool;
+    /// Transmit one byte, or return None if no output is pending.
+    fn read_byte(&mut self) -> Option<u8>;
+    /// Return to power-on protocol state, preserving attachment.
+    fn reset(&mut self);
+    /// Save all protocol state, including pending output.
+    fn save(&self) -> Vec<u8>;
+    /// Reject malformed input without mutation; restore never transmits bytes.
+    fn restore(&mut self, snapshot: &[u8]) -> Result<(), DeviceError>;
+    /// Host access to the concrete peripheral, without an ISA port transaction.
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any;
 }
 
 /// A staged keyboard byte, tagged so frontend scripts do not consume reply slots.
@@ -301,7 +358,7 @@ pub struct I8042 {
     output_buffer: u8,
     /// Output-buffer-full: a byte is waiting to be read.
     output_full: bool,
-    /// Provenance of the buffered byte (gates IRQ1).
+    /// Provenance selects IRQ1 or IRQ12 and auxiliary status bit 5.
     source: Source,
     /// Input-buffer-full. Writes are consumed synchronously, so this reads clear;
     /// it exists to model the status bit faithfully.
@@ -324,6 +381,14 @@ pub struct I8042 {
     queued_replies: usize,
     /// A controller reply waiting for the host to empty DBBOUT.
     controller_reply: Option<u8>,
+    /// Optional binding; absence preserves the original keyboard-only behavior.
+    aux_device: Option<Box<dyn AuxDevice>>,
+    /// One D3 byte waiting for OBF, independent of the peripheral clock inhibit.
+    injected_aux: Option<u8>,
+    /// Earliest next aux frame after a read releases the peripheral serial link.
+    aux_ready_at: Option<VClock>,
+    /// Next tie goes to aux after a keyboard byte, preventing serial starvation.
+    prefer_aux: bool,
     /// Set when a read empties the output buffer, to hold the next serial refill
     /// for one tick so the IRQ1 line is observed low (its falling edge) before the
     /// next queued byte re-raises it. Preserved in snapshots.
@@ -360,11 +425,39 @@ impl I8042 {
             input_queue: VecDeque::new(),
             queued_replies: 0,
             controller_reply: None,
+            aux_device: None,
+            injected_aux: None,
+            aux_ready_at: None,
+            prefer_aux: false,
             refill_hold: false,
             keyboard_ready_at: None,
             trace: device::TraceBuffer::default(),
             now: VClock::ZERO,
         }
+    }
+
+    /// Attach an auxiliary peripheral at construction; the default is no device.
+    #[must_use]
+    pub fn with_aux_device(mut self, device: Box<dyn AuxDevice>) -> Self {
+        self.aux_device = Some(device);
+        self
+    }
+
+    /// Access the attached peripheral for device-level host input.
+    /// The next tick services newly queued output; machine routing is external.
+    pub fn aux_device_mut(&mut self) -> Option<&mut (dyn AuxDevice + '_)> {
+        match self.aux_device.as_mut() {
+            Some(device) => Some(device.as_mut()),
+            None => None,
+        }
+    }
+
+    /// Auxiliary interrupt output, enabled by command-byte bit 1.
+    /// IBM PS/2 Hardware Interface Technical Reference, Common Interfaces,
+    /// "Keyboard and Auxiliary Device Controller", Controller Command Byte.
+    #[must_use]
+    pub fn aux_irq_pending(&self) -> bool {
+        self.output_full && self.source == Source::Auxiliary && self.command_byte & CB_AUX_INT != 0
     }
 
     /// Connect to board-owned reset and A20 lines, retaining controller latches.
@@ -420,8 +513,11 @@ impl I8042 {
     /// Intel 8042 datasheet, "Data Bus Buffer", and Intel UPI-41A/41AH/42/42AH
     /// User's Manual, "General Handshaking Protocol": an unread output byte
     /// must be consumed first. This host-only readiness check also respects the
-    /// model's serial deadline, IRQ hold and interface inhibit (§7.5); it never
-    /// performs a guest port transaction or changes device state.
+    /// model's serial deadline, IRQ hold and interface inhibit (§7.5). Pending
+    /// D3 output always takes priority. Device aux output blocks keyboard input
+    /// only when its clock/deadline permits delivery and arbitration prefers aux;
+    /// otherwise a newly injected keyboard byte wins the free buffer. The query
+    /// never performs a guest port transaction or changes device state.
     #[must_use]
     pub fn host_input_ready(&self) -> bool {
         !self.output_full
@@ -430,6 +526,8 @@ impl I8042 {
             && !self.refill_hold
             && self.keyboard_ready_at.is_none_or(|at| self.now >= at)
             && self.controller_reply.is_none()
+            && self.injected_aux.is_none()
+            && !(self.prefer_aux && self.aux_output_ready())
             && !self.awaiting_leds
     }
 
@@ -460,6 +558,9 @@ impl I8042 {
         if self.output_full {
             st |= ST_OBF;
         }
+        if self.output_full && self.source == Source::Auxiliary {
+            st |= ST_AUX;
+        }
         if self.input_full {
             st |= ST_IBF;
         }
@@ -470,6 +571,15 @@ impl I8042 {
             st |= ST_CMD;
         }
         st
+    }
+
+    fn aux_output_ready(&self) -> bool {
+        self.command_byte & CB_AUX_DISABLE == 0
+            && self.aux_ready_at.is_none_or(|at| self.now >= at)
+            && self
+                .aux_device
+                .as_ref()
+                .is_some_and(|device| device.has_output())
     }
 
     /// A waiting controller reply precedes keyboard traffic once DBBOUT is free.
@@ -483,19 +593,40 @@ impl I8042 {
             self.source = Source::Controller;
             return;
         }
-        if self.refill_hold
-            || self.keyboard_ready_at.is_some_and(|at| self.now < at)
-            || self.command_byte & CB_KBD_DISABLE != 0
-        {
+        if let Some(byte) = self.injected_aux.take() {
+            self.output_buffer = byte;
+            self.output_full = true;
+            self.source = Source::Auxiliary;
             return;
         }
-        if let Some(byte) = self.input_queue.pop_front() {
-            if byte.is_reply {
-                self.queued_replies -= 1;
+        if self.refill_hold {
+            return;
+        }
+        let keyboard_ready = self.command_byte & CB_KBD_DISABLE == 0
+            && self.keyboard_ready_at.is_none_or(|at| self.now >= at)
+            && !self.input_queue.is_empty();
+        let aux_ready = self.aux_output_ready();
+        if aux_ready && (self.prefer_aux || !keyboard_ready) {
+            if let Some(byte) = self
+                .aux_device
+                .as_mut()
+                .and_then(|device| device.read_byte())
+            {
+                self.output_buffer = byte;
+                self.output_full = true;
+                self.source = Source::Auxiliary;
+                self.prefer_aux = false;
             }
-            self.output_buffer = byte.value;
-            self.output_full = true;
-            self.source = Source::Keyboard;
+        } else if keyboard_ready {
+            if let Some(byte) = self.input_queue.pop_front() {
+                if byte.is_reply {
+                    self.queued_replies -= 1;
+                }
+                self.output_buffer = byte.value;
+                self.output_full = true;
+                self.source = Source::Keyboard;
+                self.prefer_aux = true;
+            }
         }
     }
 
@@ -512,6 +643,9 @@ impl I8042 {
             // Only a consumed keyboard byte releases the link for the next
             // frame. Empty reads and controller replies cannot restart it.
             self.keyboard_ready_at = Some(VClock(self.now.0.saturating_add(KEYBOARD_BYTE_CLOCKS)));
+        }
+        if self.output_full && self.source == Source::Auxiliary {
+            self.aux_ready_at = Some(VClock(self.now.0.saturating_add(KEYBOARD_BYTE_CLOCKS)));
         }
         self.output_full = false;
         self.source = Source::Empty;
@@ -543,13 +677,19 @@ impl I8042 {
                 self.refill_output();
             }
             0xA7 => self.command_byte |= CB_AUX_DISABLE,
-            0xA8 => self.command_byte &= !CB_AUX_DISABLE,
+            0xA8 => {
+                self.command_byte &= !CB_AUX_DISABLE;
+                if self.aux_device.is_some() {
+                    self.refill_output();
+                }
+            }
             0xC0 => self.respond(INPUT_PORT_VALUE),
             0xD0 => {
                 let op = self.output_port;
                 self.respond(op);
             }
             0xD1 => self.expect = Expect::OutputPort,
+            0xD3 => self.expect = Expect::AuxOutput,
             0xD4 => self.expect = Expect::AuxData,
             0xF0..=0xFF if cmd & OP_CPU_RESET == 0 => self.reset_request.set(true),
             // Unmodelled commands (password, diagnostic dump, …) are ignored.
@@ -606,10 +746,16 @@ impl I8042 {
                 self.expect = Expect::KeyboardData;
             }
             Expect::AuxData => {
-                // Routed to the (absent) mouse: accept and drop it. No aux device
-                // answers, so no byte reaches the output buffer and the BIOS's
-                // mouse-detect read times out cleanly instead of hanging.
                 self.expect = Expect::KeyboardData;
+                if let Some(device) = self.aux_device.as_mut() {
+                    device.receive(byte);
+                    self.refill_output();
+                }
+            }
+            Expect::AuxOutput => {
+                self.expect = Expect::KeyboardData;
+                self.injected_aux.get_or_insert(byte);
+                self.refill_output();
             }
         }
     }
@@ -695,6 +841,9 @@ impl Device for I8042 {
         if self.keyboard_ready_at.is_some_and(|at| now >= at) {
             self.keyboard_ready_at = None;
         }
+        if self.aux_ready_at.is_some_and(|at| now >= at) {
+            self.aux_ready_at = None;
+        }
         // A read holds the line low through the first clock; only the second
         // clock may refill. Access synchronization must not consume that hold.
         if self.refill_hold {
@@ -707,7 +856,10 @@ impl Device for I8042 {
     }
 
     fn next_event(&self, _now: VClock) -> NextEvent {
-        if self.refill_hold || (!self.output_full && self.controller_reply.is_some()) {
+        let keyboard_event = if self.refill_hold
+            || (!self.output_full
+                && (self.controller_reply.is_some() || self.injected_aux.is_some()))
+        {
             self.now
                 .0
                 .checked_add(1)
@@ -724,6 +876,31 @@ impl Device for I8042 {
                 .map_or(NextEvent::Dormant, |at| NextEvent::At(VClock(at)))
         } else {
             NextEvent::Dormant
+        };
+        let aux_event = if !self.output_full
+            && !self.refill_hold
+            && self.command_byte & CB_AUX_DISABLE == 0
+            && self
+                .aux_device
+                .as_ref()
+                .is_some_and(|device| device.has_output())
+        {
+            self.now
+                .0
+                .checked_add(1)
+                .map(|next| {
+                    NextEvent::At(VClock(next.max(self.aux_ready_at.map_or(next, |at| at.0))))
+                })
+                .unwrap_or(NextEvent::Dormant)
+        } else if let Some(at) = self.aux_ready_at.filter(|at| *at > self.now) {
+            NextEvent::At(at)
+        } else {
+            NextEvent::Dormant
+        };
+        match (keyboard_event, aux_event) {
+            (NextEvent::At(a), NextEvent::At(b)) => NextEvent::At(a.min(b)),
+            (NextEvent::Dormant, aux) => aux,
+            (keyboard, _) => keyboard,
         }
     }
 
@@ -733,12 +910,25 @@ impl Device for I8042 {
         self.output_full && self.source == Source::Keyboard && self.command_byte & CB_KBD_INT != 0
     }
 
+    fn irq_output(&self, output: usize) -> bool {
+        match output {
+            0 => self.irq_pending(),
+            1 => self.aux_irq_pending(),
+            _ => false,
+        }
+    }
+
     fn reset(&mut self) {
+        let mut aux_device = self.aux_device.take();
+        if let Some(device) = aux_device.as_mut() {
+            device.reset();
+        }
         let trace_policy = self.trace.policy();
         let signal = Rc::clone(&self.reset_request);
         signal.set(false);
         let a20 = self.a20_line.clone();
         *self = I8042::new().with_board_lines(signal, a20);
+        self.aux_device = aux_device;
         self.trace.set_policy(trace_policy);
     }
 
@@ -747,7 +937,8 @@ impl Device for I8042 {
         // expect, source, queue length (8), pending controller reply,
         // clock (8), keyboard deadline (8), LEDs, awaiting LED parameter, queue pairs
         // (value, is_reply). Host scripts can exceed a u16 byte count.
-        // Version 5 adds the latched CPU-reset request in flags bit 6.
+        // The auxiliary extension follows the queue: flags, injected byte, deadline,
+        // identity length (8), identity, state length (8), peripheral state.
         let mut blob = Vec::with_capacity(34 + 2 * self.input_queue.len());
         blob.push(SNAPSHOT_VERSION);
         blob.push(self.command_byte);
@@ -793,6 +984,20 @@ impl Device for I8042 {
         for byte in &self.input_queue {
             blob.extend([byte.value, u8::from(byte.is_reply)]);
         }
+        let aux_flags = u8::from(self.aux_ready_at.is_some())
+            | (u8::from(self.prefer_aux) << 1)
+            | (u8::from(self.injected_aux.is_some()) << 2);
+        blob.extend([aux_flags, self.injected_aux.unwrap_or(0)]);
+        blob.extend(self.aux_ready_at.unwrap_or(VClock::ZERO).0.to_le_bytes());
+        let name = self.aux_device.as_ref().map_or("", |device| device.name());
+        blob.extend((name.len() as u64).to_le_bytes());
+        blob.extend(name.as_bytes());
+        let state = self
+            .aux_device
+            .as_ref()
+            .map_or_else(Vec::new, |device| device.save());
+        blob.extend((state.len() as u64).to_le_bytes());
+        blob.extend(state);
         blob
     }
 
@@ -820,8 +1025,8 @@ impl Device for I8042 {
         if flags & !0x7D != 0
             || snapshot[32] >= 0x80
             || snapshot[33] > 1
-            || snapshot[5] > 3
-            || snapshot[6] > 2
+            || snapshot[5] > 4
+            || snapshot[6] > 3
             || (flags & 1 != 0) != (snapshot[6] != 0)
             || (flags & 0x10 == 0 && snapshot[15] != 0)
             || (flags & 0x20 == 0 && snapshot[24..32] != [0; 8])
@@ -851,13 +1056,17 @@ impl Device for I8042 {
             snapshot[13],
             snapshot[14],
         ]);
-        let body = &snapshot[HEADER..];
-        if !body.len().is_multiple_of(2) || (body.len() / 2) as u64 != len {
-            return Err(DeviceError::InvalidSnapshot {
-                device: NAME,
-                reason: "queue length mismatch",
-            });
-        }
+        let invalid = |reason| DeviceError::InvalidSnapshot {
+            device: NAME,
+            reason,
+        };
+        let queue_end = usize::try_from(len)
+            .ok()
+            .and_then(|len| len.checked_mul(2))
+            .and_then(|len| HEADER.checked_add(len))
+            .filter(|&end| end <= snapshot.len())
+            .ok_or_else(|| invalid("queue length mismatch"))?;
+        let body = &snapshot[HEADER..queue_end];
         let (pairs, _) = body.as_chunks::<2>();
         if pairs.iter().any(|&[_, tag]| tag > 1) {
             return Err(DeviceError::InvalidSnapshot {
@@ -872,6 +1081,42 @@ impl Device for I8042 {
                 reason: "keyboard replies exceed capacity",
             });
         }
+        let extension = &snapshot[queue_end..];
+        if extension.len() < 26
+            || extension[0] & !7 != 0
+            || (extension[0] & 4 == 0 && extension[1] != 0)
+        {
+            return Err(invalid("invalid auxiliary state"));
+        }
+        let aux_deadline = u64::from_le_bytes(std::array::from_fn(|i| extension[2 + i]));
+        if (extension[0] & 1 == 0 && aux_deadline != 0)
+            || (extension[0] & 1 != 0
+                && (aux_deadline < now || aux_deadline - now > KEYBOARD_BYTE_CLOCKS))
+        {
+            return Err(invalid("invalid auxiliary deadline"));
+        }
+        let name_len = u64::from_le_bytes(std::array::from_fn(|i| extension[10 + i]));
+        let name_end = usize::try_from(name_len)
+            .ok()
+            .and_then(|n| 18usize.checked_add(n))
+            .filter(|&end| end <= extension.len().saturating_sub(8))
+            .ok_or_else(|| invalid("invalid auxiliary identity"))?;
+        let state_len = u64::from_le_bytes(std::array::from_fn(|i| extension[name_end + i]));
+        if state_len != (extension.len() - name_end - 8) as u64 {
+            return Err(invalid("auxiliary length mismatch"));
+        }
+        let name = self.aux_device.as_ref().map_or("", |device| device.name());
+        if extension[18..name_end] != *name.as_bytes()
+            || (self.aux_device.is_none() && state_len != 0)
+        {
+            return Err(invalid("auxiliary attachment mismatch"));
+        }
+        if let Some(device) = self.aux_device.as_mut() {
+            device.restore(&extension[name_end + 8..])?;
+        }
+        self.aux_ready_at = (extension[0] & 1 != 0).then_some(VClock(aux_deadline));
+        self.prefer_aux = extension[0] & 2 != 0;
+        self.injected_aux = (extension[0] & 4 != 0).then_some(extension[1]);
         self.keyboard_leds = snapshot[32];
         self.awaiting_leds = snapshot[33] != 0;
         self.command_byte = command_byte;
@@ -929,9 +1174,400 @@ mod tests {
     use super::*;
     use testkit::MockBus;
 
-    /// Command-byte bit 1: aux-interrupt (IRQ12) enable. Stored only; no mouse is
-    /// modelled, so it exists only to exercise the command-byte round trip.
-    const CB_AUX_INT: u8 = 1 << 1;
+    #[test]
+    fn enabling_absent_aux_does_not_advance_keyboard_refill_after_the_hold_clock() {
+        let mut bus = MockBus::new(Box::new(I8042::new()));
+        bus.port_write(PORT_CMD, 1, 0xD0).unwrap();
+        bus.port_read(PORT_DATA, 1).unwrap();
+        bus_keyboard(&mut bus).push_scancode(0x1E);
+        bus.tick(1);
+        bus.port_write(PORT_CMD, 1, 0xA8).unwrap();
+        assert_eq!(bus.port_read(PORT_CMD, 1).unwrap() & 1, 0);
+        bus.tick(1);
+        assert_eq!(bus.port_read(PORT_CMD, 1).unwrap() & 1, 1);
+        assert_eq!(bus.port_read(PORT_DATA, 1).unwrap(), 0x1E);
+    }
+
+    #[test]
+    fn keyboard_host_readiness_matches_aux_arbitration_without_side_effects() {
+        for pending in [false, true] {
+            for preferred in [false, true] {
+                for enabled in [false, true] {
+                    for due in [false, true] {
+                        for injected in [false, true] {
+                            let mut bus = mouse_bus();
+                            let kbc = bus_keyboard(&mut bus);
+                            if pending {
+                                kbc.aux_device_mut().unwrap().receive(0xF2);
+                            }
+                            kbc.prefer_aux = preferred;
+                            if !enabled {
+                                kbc.command_byte |= CB_AUX_DISABLE;
+                            }
+                            if !due {
+                                kbc.aux_ready_at = Some(VClock(10));
+                            }
+                            if injected {
+                                kbc.injected_aux = Some(0x42);
+                            }
+                            let ready = !injected && !(pending && preferred && enabled && due);
+                            let snapshot = kbc.save();
+                            assert_eq!(kbc.host_input_ready(), ready);
+                            assert_eq!(kbc.save(), snapshot);
+                            assert!(kbc.take_trace().is_empty());
+                            kbc.push_scancode(0x1E);
+                            assert_eq!(kbc.output_full && kbc.source == Source::Keyboard, ready);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn default_interrupt_output_tracks_primary_and_keeps_other_pins_low() {
+        let mut bus = MockBus::new(Box::new(crate::Pit8253::new()));
+        bus.port_write(0x43, 1, 0x30).unwrap();
+        bus.port_write(0x40, 1, 2).unwrap();
+        bus.port_write(0x40, 1, 0).unwrap();
+        for (elapsed, level) in [(1, false), (2, true)] {
+            bus.tick(elapsed);
+            let snapshot = bus.device().save();
+            assert_eq!(bus.device().irq_pending(), level);
+            assert_eq!(bus.device().irq_output(0), level);
+            for output in [1, 2, usize::MAX] {
+                assert!(!bus.device().irq_output(output));
+            }
+            assert_eq!(bus.device().save(), snapshot);
+        }
+    }
+
+    #[test]
+    fn aux_injected_output_sets_status_and_preserves_unread_keyboard() {
+        let mut bus = MockBus::new(Box::new(I8042::new()));
+        bus_keyboard(&mut bus).push_scancode(0x1E);
+        bus.port_write(PORT_CMD, 1, 0xD3).unwrap();
+        bus.port_write(PORT_DATA, 1, 0x42).unwrap();
+        assert_eq!(bus.port_read(PORT_DATA, 1).unwrap(), 0x1E);
+        bus.tick(KEYBOARD_BYTE_CLOCKS);
+        assert_eq!(bus.port_read(PORT_CMD, 1).unwrap() & 0x21, 0x21);
+        assert_eq!(bus.port_read(PORT_DATA, 1).unwrap(), 0x42);
+    }
+
+    #[derive(Default)]
+    struct EchoAux(VecDeque<u8>);
+
+    impl AuxDevice for EchoAux {
+        fn name(&self) -> &'static str {
+            "echo-aux"
+        }
+        fn receive(&mut self, byte: u8) {
+            self.0.push_back(!byte);
+        }
+        fn has_output(&self) -> bool {
+            !self.0.is_empty()
+        }
+        fn read_byte(&mut self) -> Option<u8> {
+            self.0.pop_front()
+        }
+        fn reset(&mut self) {
+            self.0.clear();
+        }
+        fn save(&self) -> Vec<u8> {
+            self.0.iter().copied().collect()
+        }
+        fn restore(&mut self, snapshot: &[u8]) -> Result<(), DeviceError> {
+            self.0 = snapshot.iter().copied().collect();
+            Ok(())
+        }
+        fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+            self
+        }
+    }
+
+    #[test]
+    fn auxiliary_seam_routes_one_byte_to_a_replaceable_peripheral() {
+        let mut bus = MockBus::new(Box::new(
+            I8042::new().with_aux_device(Box::<EchoAux>::default()),
+        ));
+        aux_send(&mut bus, 0x12);
+        assert_eq!(bus.port_read(PORT_CMD, 1).unwrap() & 0x21, 0x21);
+        assert_eq!(bus.port_read(PORT_DATA, 1).unwrap(), 0xED);
+        bus.tick(KEYBOARD_BYTE_CLOCKS);
+        bus.port_write(PORT_DATA, 1, 0x12).unwrap();
+        assert_eq!(bus.port_read(PORT_DATA, 1).unwrap(), 0xFA);
+        let saved = bus.device().save();
+        let mut wrong = I8042::new().with_aux_device(Box::new(crate::Ps2Mouse::new()));
+        let before = wrong.save();
+        assert!(wrong.restore(&saved).is_err());
+        assert_eq!(wrong.save(), before);
+        assert!(bus_keyboard(&mut bus)
+            .aux_device_mut()
+            .unwrap()
+            .as_any_mut()
+            .is::<EchoAux>());
+    }
+
+    #[test]
+    fn aux_deadline_catch_up_matches_single_clock_delivery_with_both_links() {
+        for jump in [
+            1,
+            2,
+            100,
+            KEYBOARD_BYTE_CLOCKS - 1,
+            KEYBOARD_BYTE_CLOCKS,
+            100_003,
+        ] {
+            for inhibit in [false, true] {
+                let mut reference = mouse_bus();
+                let mut jumped = mouse_bus();
+                for bus in [&mut reference, &mut jumped] {
+                    enable_interrupts(bus, CB_KBD_INT | CB_AUX_INT);
+                    aux_send(bus, 0xFF);
+                    assert_eq!(bus.port_read(PORT_DATA, 1).unwrap(), 0xFA);
+                    bus_keyboard(bus).push_scancode(0x1E);
+                    bus_keyboard(bus).push_scancode(0x9E);
+                    if inhibit {
+                        bus.port_write(PORT_CMD, 1, 0xA7).unwrap();
+                    }
+                }
+                for _ in 0..jump {
+                    reference.tick(1);
+                }
+                jumped.tick(jump);
+                assert_eq!(reference.device().save(), jumped.device().save());
+                assert_eq!(
+                    reference.device().irq_output(0),
+                    jumped.device().irq_output(0)
+                );
+                assert_eq!(
+                    reference.device().irq_output(1),
+                    jumped.device().irq_output(1)
+                );
+            }
+        }
+    }
+
+    fn mouse_bus() -> MockBus {
+        MockBus::new(Box::new(
+            I8042::new().with_aux_device(Box::new(crate::Ps2Mouse::new())),
+        ))
+    }
+
+    fn aux_send(bus: &mut MockBus, byte: u8) {
+        bus.port_write(PORT_CMD, 1, 0xD4).unwrap();
+        bus.port_write(PORT_DATA, 1, u32::from(byte)).unwrap();
+    }
+
+    fn enable_interrupts(bus: &mut MockBus, bits: u8) {
+        bus.port_write(PORT_CMD, 1, 0x60).unwrap();
+        bus.port_write(PORT_DATA, 1, u32::from(bits)).unwrap();
+    }
+
+    #[test]
+    fn aux_irq_is_a_separate_output_gated_only_by_interrupt_enable_and_provenance() {
+        for bits in 0..4 {
+            let mut bus = mouse_bus();
+            enable_interrupts(&mut bus, bits);
+            aux_send(&mut bus, 0xFF);
+            assert_eq!(bus.port_read(PORT_CMD, 1).unwrap() & 0x21, 0x21);
+            assert!(!bus.device().irq_pending());
+            assert!(!bus.device().irq_output(0));
+            assert!(!bus.device().irq_output(2));
+            assert_eq!(bus.device().irq_output(1), bits & CB_AUX_INT != 0);
+            bus.port_write(PORT_CMD, 1, 0xA7).unwrap();
+            assert_eq!(bus.device().irq_output(1), bits & CB_AUX_INT != 0);
+            enable_interrupts(&mut bus, CB_AUX_DISABLE | CB_AUX_INT);
+            assert!(bus.device().irq_output(1));
+            enable_interrupts(&mut bus, CB_AUX_DISABLE);
+            assert!(!bus.device().irq_output(1));
+            assert_eq!(bus.port_read(PORT_DATA, 1).unwrap(), 0xFA);
+            assert!(!bus.device().irq_output(1));
+            assert_eq!(bus.port_read(PORT_CMD, 1).unwrap() & 0x21, 0);
+        }
+    }
+
+    #[test]
+    fn aux_clock_inhibit_retains_device_output_and_command_byte_releases_it() {
+        for release_with_command_byte in [false, true] {
+            let mut bus = mouse_bus();
+            bus.port_write(PORT_CMD, 1, 0xA7).unwrap();
+            aux_send(&mut bus, 0xFF);
+            assert_ne!(bus_keyboard(&mut bus).command_byte() & CB_AUX_DISABLE, 0);
+            assert_eq!(bus.device().next_event(bus.clock()), NextEvent::Dormant);
+            bus.tick(100_000);
+            assert_eq!(bus.port_read(PORT_CMD, 1).unwrap() & 0x21, 0);
+            let saved = bus.device().save();
+            bus.device_mut().reset();
+            bus.device_mut().restore(&saved).unwrap();
+            if release_with_command_byte {
+                enable_interrupts(&mut bus, CB_AUX_INT);
+            } else {
+                bus.port_write(PORT_CMD, 1, 0xA8).unwrap();
+            }
+            for byte in [0xFA, 0xAA, 0] {
+                assert_eq!(bus.port_read(PORT_CMD, 1).unwrap() & 0x21, 0x21);
+                assert_eq!(bus.port_read(PORT_DATA, 1).unwrap(), byte);
+                bus.tick(KEYBOARD_BYTE_CLOCKS);
+            }
+        }
+    }
+
+    #[test]
+    fn aux_reads_keep_the_irq_fall_visible_and_schedule_serial_deadlines() {
+        let mut bus = mouse_bus();
+        enable_interrupts(&mut bus, CB_AUX_INT);
+        aux_send(&mut bus, 0xFF);
+        for (index, byte) in [0xFA, 0xAA, 0].into_iter().enumerate() {
+            assert!(bus.device().irq_output(1));
+            assert_eq!(bus.port_read(PORT_DATA, 1).unwrap(), byte);
+            assert!(!bus.device().irq_output(1));
+            bus.port_write(PORT_CMD, 1, 0xA8).unwrap();
+            let now = bus.clock();
+            bus.device_mut().sync(now);
+            assert!(!bus.device().irq_output(1));
+            assert_eq!(
+                bus.device().next_event(bus.clock()),
+                NextEvent::At(VClock(bus.clock().0 + 1))
+            );
+            bus.tick(1);
+            assert!(!bus.device().irq_output(1));
+            assert_eq!(
+                bus.device().next_event(bus.clock()),
+                NextEvent::At(VClock((index as u64 + 1) * KEYBOARD_BYTE_CLOCKS))
+            );
+            bus.tick(KEYBOARD_BYTE_CLOCKS - 2);
+            assert!(!bus.device().irq_output(1));
+            bus.tick(1);
+        }
+        assert_eq!(bus.device().next_event(bus.clock()), NextEvent::Dormant);
+    }
+
+    #[test]
+    fn ready_keyboard_and_aux_alternate_with_controller_replies_first() {
+        let mut bus = mouse_bus();
+        enable_interrupts(
+            &mut bus,
+            CB_KBD_INT | CB_AUX_INT | CB_KBD_DISABLE | CB_AUX_DISABLE,
+        );
+        bus_keyboard(&mut bus).push_scancode(0x1E);
+        bus_keyboard(&mut bus).push_scancode(0x9E);
+        aux_send(&mut bus, 0xFF);
+        enable_interrupts(&mut bus, CB_KBD_INT | CB_AUX_INT);
+        bus.port_write(PORT_CMD, 1, 0xD0).unwrap();
+        for (byte, aux, keyboard) in [
+            (0x1E, false, true),
+            (3, false, false),
+            (0xFA, true, false),
+            (0x9E, false, true),
+            (0xAA, true, false),
+            (0, true, false),
+        ] {
+            assert_eq!(
+                bus.port_read(PORT_CMD, 1).unwrap() & ST_AUX as u32 != 0,
+                aux
+            );
+            assert_eq!(bus.device().irq_output(1), aux);
+            assert_eq!(bus.device().irq_pending(), keyboard);
+            assert_eq!(bus.port_read(PORT_DATA, 1).unwrap(), byte);
+            bus.tick(KEYBOARD_BYTE_CLOCKS);
+        }
+    }
+
+    #[test]
+    fn d3_injection_bypasses_clock_inhibit_and_preserves_the_oldest_pending_byte() {
+        let mut bus = MockBus::new(Box::new(I8042::new()));
+        enable_interrupts(&mut bus, CB_AUX_INT | CB_AUX_DISABLE);
+        bus_keyboard(&mut bus).push_scancode(0x1E);
+        for value in [0x42, 0x43] {
+            bus.port_write(PORT_CMD, 1, 0xD3).unwrap();
+            bus.port_write(PORT_DATA, 1, value).unwrap();
+        }
+        assert_eq!(bus.port_read(PORT_DATA, 1).unwrap(), 0x1E);
+        bus.tick(2);
+        assert!(bus.device().irq_output(1));
+        assert_eq!(bus.port_read(PORT_CMD, 1).unwrap() & 0x21, 0x21);
+        assert_eq!(bus.port_read(PORT_DATA, 1).unwrap(), 0x42);
+        bus.tick(KEYBOARD_BYTE_CLOCKS);
+        assert_eq!(bus.port_read(PORT_CMD, 1).unwrap() & 0x21, 0);
+        bus.port_write(PORT_CMD, 1, 0xD3).unwrap();
+        bus.port_write(PORT_DATA, 1, 0x44).unwrap();
+        assert_eq!(bus.port_read(PORT_DATA, 1).unwrap(), 0x44);
+    }
+
+    #[test]
+    fn aux_interface_test_and_absent_device_keep_polling_behaviour() {
+        for attached in [false, true] {
+            let mut bus = if attached {
+                mouse_bus()
+            } else {
+                MockBus::new(Box::new(I8042::new()))
+            };
+            enable_interrupts(&mut bus, CB_KBD_INT | CB_AUX_INT);
+            bus.port_write(PORT_CMD, 1, 0xA9).unwrap();
+            assert_eq!(bus.port_read(PORT_CMD, 1).unwrap() & 0x21, 1);
+            assert!(!bus.device().irq_pending());
+            assert!(!bus.device().irq_output(1));
+            assert_eq!(bus.port_read(PORT_DATA, 1).unwrap(), 0);
+            bus.tick(KEYBOARD_BYTE_CLOCKS);
+            aux_send(&mut bus, 0xF2);
+            if attached {
+                assert_eq!(bus.port_read(PORT_DATA, 1).unwrap(), 0xFA);
+                bus.tick(KEYBOARD_BYTE_CLOCKS);
+                assert_eq!(bus.port_read(PORT_DATA, 1).unwrap(), 0);
+            } else {
+                assert_eq!(bus.port_read(PORT_CMD, 1).unwrap() & 0x21, 0);
+                assert!(!bus.device().irq_output(1));
+            }
+            bus.tick(KEYBOARD_BYTE_CLOCKS);
+            bus.port_write(PORT_DATA, 1, 0xED).unwrap();
+            assert_eq!(bus.port_read(PORT_CMD, 1).unwrap() & ST_AUX as u32, 0);
+            assert_eq!(bus.port_read(PORT_DATA, 1).unwrap(), 0xFA);
+        }
+    }
+
+    #[test]
+    fn aux_snapshot_preserves_d3_expect_pending_injection_and_arbitration() {
+        for phase in 0..3 {
+            let mut bus = mouse_bus();
+            enable_interrupts(&mut bus, CB_KBD_INT | CB_AUX_INT);
+            if phase == 0 {
+                bus.port_write(PORT_CMD, 1, 0xD3).unwrap();
+            } else {
+                bus_keyboard(&mut bus).push_scancode(0x1E);
+                bus.port_write(PORT_CMD, 1, 0xD3).unwrap();
+                bus.port_write(PORT_DATA, 1, 0x42).unwrap();
+                aux_send(&mut bus, 0xFF);
+                bus_keyboard(&mut bus).push_scancode(0x9E);
+                if phase == 2 {
+                    bus.port_read(PORT_DATA, 1).unwrap();
+                    bus.tick(2);
+                    assert_eq!(bus.port_read(PORT_DATA, 1).unwrap(), 0x42);
+                    bus.tick(31);
+                }
+            }
+            let saved = bus.device().save();
+            bus.device_mut().reset();
+            bus.device_mut().restore(&saved).unwrap();
+            assert_eq!(bus.device().save(), saved);
+            if phase == 0 {
+                bus.port_write(PORT_DATA, 1, 0x42).unwrap();
+                assert_eq!(bus.port_read(PORT_DATA, 1).unwrap(), 0x42);
+            } else {
+                let expected: &[u32] = if phase == 1 {
+                    &[0x1E, 0x42, 0xFA, 0x9E, 0xAA, 0]
+                } else {
+                    &[0xFA, 0x9E, 0xAA, 0]
+                };
+                for (index, &byte) in expected.iter().enumerate() {
+                    if phase == 2 || index != 0 {
+                        bus.tick(KEYBOARD_BYTE_CLOCKS);
+                    }
+                    assert_eq!(bus.port_read(PORT_DATA, 1).unwrap(), byte);
+                }
+            }
+        }
+    }
 
     fn bus_keyboard(bus: &mut MockBus) -> &mut I8042 {
         bus.device_mut()
@@ -1051,7 +1687,7 @@ mod tests {
         set_leds(&mut source, 5);
         let mut restored = MockBus::new(Box::new(I8042::new()));
         let blob = source.device().save();
-        assert_eq!(blob[0], 5);
+        assert_eq!(blob[0], SNAPSHOT_VERSION);
         restored.device_mut().restore(&blob).unwrap();
         assert_eq!(bus_keyboard(&mut restored).keyboard_leds(), 5);
         assert_eq!(restored.device().save(), blob);
@@ -1074,7 +1710,7 @@ mod tests {
         set_leds(&mut bus, 5);
         bus.port_write(PORT_DATA, 1, 0xED).unwrap();
         let before = bus.device().save();
-        assert_eq!(before[0], 5);
+        assert_eq!(before[0], SNAPSHOT_VERSION);
         let mut legacy = before.clone();
         legacy.drain(32..34);
         legacy[0] = 3;
@@ -1959,7 +2595,7 @@ mod tests {
         let mut oversized = original.clone();
         oversized[7..15].copy_from_slice(&17u64.to_le_bytes());
         for _ in 0..17 {
-            oversized.extend([KBD_ACK, 1]);
+            oversized.splice(34..34, [KBD_ACK, 1]);
         }
         assert_eq!(
             bus.device_mut().restore(&oversized).unwrap_err(),
