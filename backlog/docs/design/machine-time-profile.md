@@ -8,7 +8,7 @@ spike; no guest behaviour or scheduler change is proposed.
 
 ## String instruction accounting
 
-The current CPU pin is `8979fc95cd81d73763d50d1d627b40ded3f8f284`.
+The current CPU pin is `a92b676e081ce862dcb48c82645b3d3a8aa2364f`.
 The profiling tables below retain the revisions on which they were measured;
 they are historical measurements, not new measurements of this pin.
 
@@ -386,3 +386,104 @@ The new pin also passed the full fast suite (1,431 passed, 16 ignored),
 release device suite (490 passed), and required-fixture slow set (16 passed),
 with no changed golden expectations or re-baselining. The opt-in scheduler
 wall-time test returned without timing because its environment gate was unset.
+
+## After the Real16 interpreter update (2026-11-11, MEASURED)
+
+Both pins were built offline in this worktree in the same session, in separate
+target directories, using Cargo's default release profile (`opt-level=3`, no
+LTO, debug assertions off) and the project Nix devShell:
+
+- Old: `8979fc95cd81d73763d50d1d627b40ded3f8f284`.
+- New: `a92b676e081ce862dcb48c82645b3d3a8aa2364f`.
+
+Host: macOS 27.0.1 (26A434), arm64 (`aarch64-apple-darwin`), rustc 1.99.1
+(`58cf8f9c3`, 2026-10-13), LLVM 23.1.1. READ: the machine still selects the
+original `CpuMode::Real16` application profile; this re-pin does not opt into
+the new I286/I386 `LegacySystem` execution or select an absent FPU.
+No adapter source changes were required by the compiler. The new
+`Exit::UnsupportedSystemContext` is already reported as
+`CpuError::UnexpectedExit` by the adapter's fallback (`crates/cpu/src/x86jit_backend.rs`,
+`X86JitCpu::map_exit`), rather than treated as a resumable machine stop.
+
+The workload, build commands and process timing follow the preceding section:
+release `dos_interactive_golden`, exact test
+`freedos_runs_dir_from_the_keyboard`, fixtures required, `--ignored --nocapture`.
+It performs BIOS POST, floppy boot, FreeDOS date/time input, keyboard `DIR`
+and a bounded wait at the shell. Each binary was warmed once, then run
+old/new, old/new, old/new. Python `time.perf_counter()` surrounds process
+start/wait with combined output captured, including the harness, fixture
+loading and assertions. Warmups and Cargo builds are excluded from the table.
+All local build and test gates had completed before the timing batch.
+
+| Pin | Run 1 (s) | Run 2 (s) | Run 3 (s) | Median (s) | Mean (s) |
+|---|---:|---:|---:|---:|---:|
+| `8979fc9` | 0.454241 | 0.442651 | 0.449007 | 0.449007 | 0.448633 |
+| `a92b676` | 0.436097 | 0.440058 | 0.436899 | 0.436899 | 0.437685 |
+
+MEASURED: the observed median fell **2.7%**, or **1.028×** throughput for this
+fixed session. These three alternating pairs are observations under shared
+host load, not an exclusive-host estimate. `uptime` immediately before each
+pair reported:
+
+| Pair | Load averages (1 / 5 / 15 minutes) |
+|---|---|
+| 1 | 31.66 / 26.46 / 21.01 |
+| 2 | 31.66 / 26.46 / 21.01 |
+| 3 | 29.77 / 26.15 / 20.94 |
+
+MEASURED inputs (SHA-256), identical for both pins and to the preceding section:
+
+```text
+vendor/kiselev-bios/bios-xi8088.bin  1ad458acb1f22dee6b3d9b6bd95e83218a7ddc5389fa2b2c67a4001e689c81a8
+vendor/freedos/freedos.img         b7b088333f7f30584d768941fecea8288b63f2d61e13ec6c9472439eda66e51f
+```
+
+All six timed runs and both warmups passed, stopped with `BudgetExhausted`,
+and emitted byte-identical MDA consoles. Including the final newline, each
+console transcript is 899 bytes, SHA-256
+`e580192e19d8b2bbf463a14593ff9395752a580fc65f86df95b2a70b5081f80f`,
+matching the previous profile. Raw console text without that newline is 898
+bytes, SHA-256 `c192c44707799aac3db38f3a52b3324422900c17140ce8cacc7dca3d76a2dd37`.
+
+MEASURED validation: the fast suite passed (1,666 passed, 18 ignored), as did
+the release device suite (611 passed). The required-fixture slow set initially
+reported 17 passed and one failure: the IDE golden asserted the old Cargo.lock
+pin before executing the guest. Only that revision assertion and its matching
+doc-comment were updated; its targeted rerun passed with the existing retired
+counts, screen hashes and POST expectations. All 18 slow test entries therefore
+passed across the original run and targeted retry, without re-baselining.
+The scheduler wall-time entry remained environment-gated, and the optional
+user-ROM identity entry does not qualify proprietary firmware execution.
+Build-all-targets, clippy, fmt, publication guard, offline dependency
+license/ban/source checks and rustdoc with warnings denied passed.
+
+**Sampling results (MEASURED by the supervisor):** outside the worker sandbox,
+macOS `/usr/bin/sample PID 30 1 -mayDie` attached immediately after process
+spawn. Both pins' release `dos_interactive_golden` test binaries were built
+with separate target directories. The exact
+`freedos_runs_dir_from_the_keyboard` test ran with `--test-threads 1` and
+fixtures required, alternating old/new for three accepted runs per pin.
+The first old-pin run was repeated because the sampler attached after its
+test thread had ended; that unsuccessful attachment is excluded below.
+
+Attribution follows the preceding section: only the test thread is included,
+with inclusive samples counted at the outermost matching frame on each stack
+branch. Pooled shares divide summed category counts by summed test-thread
+counts, rather than averaging per-run percentages. Categories overlap.
+
+| Test-thread samples / category | `8979fc9`: runs 1 / 2 / 3 (pooled) | `a92b676`: runs 1 / 2 / 3 (pooled) |
+|---|---|---|
+| Samples | 265 / 370 / 369 (1,004) | 342 / 724 / 1,119 (2,185) |
+| Translation-cache invalidation | 3.8 / 2.2 / 0.3% (1.9%) | 1.5 / 1.4 / 5.1% (3.3%) |
+| Interpreting IR | 61.5 / 64.6 / 87.5% (72.2%) | 49.7 / 63.0 / 56.0% (57.3%) |
+| Lifting | 0.8 / 1.4 / 0.0% (0.7%) | 0.6 / 2.8 / 1.7% (1.9%) |
+
+Host load was high while other workers were building: `uptime` reported
+**50.26 / 25.23 / 20.85** before the batch and **17.59 / 21.35 / 19.99**
+before the repeated run (1 / 5 / 15-minute load averages). The per-run spread
+is large, so this comparison is indicative only.
+
+The new pin inlines interpreter helpers, moving some work out of frames
+matched as the `interp` module. These shares are therefore not directly
+comparable to wall time. Wall time remains the primary measure: the observed
+median fell from **0.449007 s to 0.436899 s (2.7%)**, also under host load.

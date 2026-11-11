@@ -24,7 +24,10 @@ Evidence vocabulary throughout:
 - **ASSUMED:** a proposed scope choice or inference requiring later acceptance
   tests. In particular, no complete DOS extender was run.
 
-The current CPU pin is `8979fc95cd81d73763d50d1d627b40ded3f8f284`.
+The current CPU pin is `a92b676e081ce862dcb48c82645b3d3a8aa2364f`.
+The core now offers opt-in I286/I386 `LegacySystem` execution; this machine
+continues to select the original `CpuMode::Real16` application profile.
+The investigation below retains its original revision and conclusions.
 INS/OUTS are now implemented, including Real16 REP port handshakes and
 per-element accounting. This resolves the opcode/handshake portion of the
 historical string-I/O gap below; protected-mode privilege checks and the

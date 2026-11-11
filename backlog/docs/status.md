@@ -80,7 +80,7 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   checks label `UNEMUHDD`, `MARKER.TXT` (29 bytes), the completed prompt,
   screen hashes and POST. Three runs before pinning matched: 14,777,577 retired
   at the first shell prompt, 17,748,107 after DIR, final screen FNV-1a
-  `ef5a10891b9ef196` (rechecked unchanged at CPU pin `8979fc9`, including the
+  `ef5a10891b9ef196` (rechecked unchanged at CPU pin `a92b676`, including the
   corrected FDC INT acknowledgements). XT+ detects `UNEMU ATA-2 PIO DISK`.
   No emulator device or CPU fix is included. The golden rejects missing XUB,
   a byte data window, a renamed marker
@@ -142,7 +142,11 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   synthetic fast tests keep their presets.
 - **Machines are declarative.** A `MachineConfig` (the `assembly` crate) is built by one
   `assemble()` and run under a `RunPolicy`; presets replace the old hand-written runners.
-- **CPU pin:** `8979fc95cd81d73763d50d1d627b40ded3f8f284` (x86jit `main`).
+- **CPU pin:** `a92b676e081ce862dcb48c82645b3d3a8aa2364f` (x86jit `main`).
+  Rechecked on 2026-11-11: 1,666 fast tests, 611 release device tests and all
+  existing slow golden expectations pass. The IDE golden's pin assertion now
+  names this revision; no guest expectations changed. The optional I286/I386
+  `LegacySystem` profile is not selected by this re-pin.
 - **CPU:** pinned x86jit `CpuMode::Real16` interpreter with exact step bounds,
   per-iteration REP time, STI/SS-load inhibition and interrupt-readiness stops.
   Real16 INS/OUTS support byte/word elements, REP, OUTS segment overrides,
@@ -192,10 +196,11 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   require a dated, justified ignore with a review date. RUSTSEC-2026-0192
   (`ttf-parser` 0.25.1, unmaintained, not a known vulnerability) is accepted to
   retain winit's Wayland client-side decorations; review on 2027-05-11.
-- **Speed:** a release BIOS POST, FreeDOS boot and `DIR` session takes about
-  0.50 s for roughly 11 million instructions; the CPU core takes 96–99 % of it
-  and the machine side about 2 % (profile in
-  [`design/machine-time-profile.md`](design/machine-time-profile.md)).
+- **Speed (MEASURED 2026-11-11):** the release BIOS POST, FreeDOS boot and
+  `DIR` test has a median wall time of 0.436899 s at `a92b676`, versus
+  0.449007 s at `8979fc9` (three alternating pairs, 2.7% less time under shared
+  host load). Current-pin sample shares await the supervisor; see
+  [`design/machine-time-profile.md`](design/machine-time-profile.md).
 
 - **CPU warm restart:** 8042 reset requests restart the CPU at F000:FFF0 after
   the persistence boundary check. CLI natural, prompt, post-prompt and
@@ -306,24 +311,23 @@ checks identity and diagnostics without execution; see `vendor/user-roms/README.
 
 The 286 foundation milestone is closed. Next is phase A of decision-16 (the
 display through a real MDA card to a window, host keyboard input): epic
-`skeleton` in beads. Translation-cache invalidation is still about half of the
-DOS session's time after the CPU core's page-indexed rework; the remaining cost
-was reported to the CPU core project.
+`skeleton` in beads. The DOS-session profile records the current paired-pin
+wall-time comparison and historical CPU sample shares.
 
 ## Broken / known defects
 
 - **An empty 80287 socket is modelled on the I/O bus only.** Its assigned ports
-  read FFh and ignore writes, with IRQ13 inactive. The pinned CPU core executes
-  ungated x87 in Real16: FNINIT/FNSTCW writes 037Fh even on this board. An
-  absent-FPU mode is requested from the CPU core project; the machine does not
-  block x87 instructions locally.
+  read FFh and ignore writes, with IRQ13 inactive. The pinned CPU core still
+  defaults to a present FPU in Real16: FNINIT/FNSTCW writes 037Fh even on this
+  board. The pinned core now provides `Vcpu::set_fpu_model(FpuModel::None)`; machine
+  selection remains pending, and this re-pin retains the present-FPU default.
 
 - Multi-byte scalar accesses crossing a RAM/MMIO boundary in either direction
   end the run with `Exit::UnmappedMemory` in pinned x86jit
-  `8979fc95cd81d73763d50d1d627b40ded3f8f284` (READ). Its
-  [`Memory::region_at`](https://github.com/unemu-org/x86jit/blob/8979fc95cd81d73763d50d1d627b40ded3f8f284/x86jit-core/src/memory.rs#L2001-L2022)
+  `a92b676e081ce862dcb48c82645b3d3a8aa2364f` (READ). Its
+  [`Memory::region_at`](https://github.com/unemu-org/x86jit/blob/a92b676e081ce862dcb48c82645b3d3a8aa2364f/x86jit-core/src/memory.rs#L2512-L2534)
   requires the whole transfer inside one region before read/write paths check
-  for MMIO (`memory.rs:2191`, `memory.rs:2325`). Neither part of the scalar
+  for MMIO (`memory.rs:2730`, `memory.rs:2864`). Neither part of the scalar
   transfer is performed. Assembly coalesces adjacent MMIO device windows so
   those crossings reach the bus, but mixed RAM/MMIO accesses need the upstream
   CPU fix tracked by `xj-ir6.12 (x86jit)`.
