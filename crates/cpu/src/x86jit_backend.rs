@@ -117,6 +117,20 @@ impl X86JitCpu {
             .map_err(|e| CpuError::Memory(format!("{e:?}")))
     }
 
+    /// Map one immutable region filled with a repeated byte, using at most
+    /// 4 KiB of temporary storage. One region preserves accesses spanning fill
+    /// chunks; mapping each chunk separately would introduce artificial faults.
+    /// See `backlog/docs/design/machine-config.md` §MemoryConfig.
+    pub fn map_rom_filled(&mut self, base: u64, size: u64, value: u8) -> Result<(), CpuError> {
+        self.map_region(base, size as usize, Prot::RX, RegionKind::Rom)?;
+        let fill = [value; 4096];
+        for offset in (0..size).step_by(fill.len()) {
+            let count = (size - offset).min(fill.len() as u64) as usize;
+            self.write_mem(base + offset, &fill[..count])?;
+        }
+        Ok(())
+    }
+
     /// Write `bytes` into guest RAM at linear address `addr` through the `Vm`
     /// API (so SMC tracking sees it). For an embedder that seeds the IVT or a
     /// device table into low memory before execution.
@@ -415,6 +429,25 @@ impl Cpu for X86JitCpu {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn filled_rom_keeps_chunk_boundaries_inside_one_immutable_region() {
+        let mut cpu =
+            X86JitCpu::new_real16_bare(0x10000, 0, 0x1000, RealSegments::flat(0)).unwrap();
+        cpu.map_ram(0, 0x2000).unwrap();
+        cpu.map_rom_filled(0x2000, 0x2003, 0xBA).unwrap();
+        cpu.write_mem(
+            0x1000,
+            &[0xC7, 0x06, 0xFF, 0x2F, 0x34, 0x12, 0xA1, 0xFF, 0x2F, 0xF4],
+        )
+        .unwrap();
+        assert_eq!(cpu.run(Some(100)).unwrap(), CpuStop::Halt);
+        assert_eq!(cpu.reg(CpuReg::Rax) & 0xFFFF, 0xBABA);
+        assert_eq!(cpu.guest_dma_write(0x4002, 0), DmaAccess::Complete(()));
+        let mut value = [0];
+        cpu.read_mem(0x4002, &mut value).unwrap();
+        assert_eq!(value, [0xBA]);
+    }
 
     #[test]
     fn reset_discards_pending_ins_and_mid_rep_without_rewinding_accounting() {

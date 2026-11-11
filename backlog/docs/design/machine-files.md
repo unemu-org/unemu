@@ -313,7 +313,7 @@ rejected. `fpu` and `turbo` are reserved.
 | Field | Type | Default | v1 | Lowers to |
 |---|---|---|---|---|
 | `conventional_kib` | integer, multiple of 16, at most 640 | 640 | yes | RAM `[0, conventional)` |
-| `extended_kib` | integer, multiple of 64, at most 15360 on a 286 | 0 | yes | RAM `[1 MiB, 1 MiB + extended)`. Also sets `address_space_bytes`. Guests need protected mode (phase B) to use it. A20 stays always-on (decision-8). |
+| `extended_kib` | integer, multiple of 64, at most 15232 on ibm-5170 | 0 | yes | RAM `[1 MiB, 1 MiB + extended)`. Also sets `address_space_bytes`; assembly uses a fixed 16 MiB AT VM. READ: the AT System Memory Map ends expansion RAM at FE0000h, directly below the high alias. CPU A20 gating remains unwired. |
 
 **The RAM rule (`ibm-5170`).** Upper probe RAM is [A0000h, C0000h), minus
 card MMIO and loaded images, joined to adjacent conventional RAM. The model
@@ -321,8 +321,15 @@ protects [C0000h, F8000h) from writable system RAM because Kiselev scans it.
 The AT System Memory Map distinguishes I/O expansion ROM at C0000h–DFFFFh,
 reserved system-board space at E0000h–EFFFFh, and system-board ROM at
 F0000h–FFFFFh. MMIO remains valid in the protected interval. Assembly fills
-only gaps around MMIO and ROMs with read-only zeroes, deliberately preserving
-historical goldens; real empty sockets float, often to FFh. The FreeDOS preset
+adapter gaps from C0000h to the BIOS base with read-only zeroes, preserving
+historical goldens. Other holes in the AT's 24-bit decode read FFh and
+discard guest writes (**ASSUMED** floating value). **READ:** IBM Personal
+Computer AT Technical Reference, September 1985, Section 1 "System Board",
+System Memory Map (p. 1-8), assigns FE0000h–FFFFFFh as an alias of
+E0000h–FFFFFh; assembly copies the resolved low ROM/gap bytes read-only there.
+Both lowering and assembly enforce the **READ** 15,232 KiB extended-RAM limit
+from the same System Memory Map: 100000h–FDFFFFh, directly below the alias.
+The FreeDOS preset
 has RAM [0, B0000h), MDA/VGA at B0000h–BFFFFh, and BIOS at F8000h–FFFFFh.
 
 ### `[firmware]`
@@ -1056,8 +1063,12 @@ It lowers to the canonical-order `assembly::bios(rom, Some(floppy))`:
   `Rtc` (IRQ 8, NVRAM derived), `Coprocessor` (IRQ 13), `SysControl`,
   `Post` (`0x80`), `Mda`, `Vga`, `Uart` (`0x3F8`, no IRQ), `Fdc` (IRQ 6,
   DMA channel 2).
-- **memory:** 1 MiB address space; RAM `[0, 0xB0000)`; read-only adapter space `[0xC0000, 0xF8000)`;
-  MMIO `Mda@0xB0000` and `Vga@0xB8000`, each 32 KiB.
+- **memory:** 16 MiB CPU address space (24 physical address bits), while the
+  lowered installed-memory extent is 1 MiB; RAM `[0, 0xB0000)`; read-only
+  zero-filled adapter space `[0xC0000, 0xF8000)`; MMIO `Mda@0xB0000` and
+  `Vga@0xB8000`, each 32 KiB; FFh empty bus `[0x100000, 0xFE0000)` with
+  discarded guest writes; read-only `[0xFE0000, 0x1000000)` copying the resolved
+  low E0000h–FFFFFh bytes, including the BIOS and gap zeroes.
 - **images:** ROM at `0xF8000`, 32 KiB.
 - **drives:** 1.44 MB, `Fdc` unit 0, `Volatile`.
 - **CPU and clock:** 80286, reset `F000:FFF0`, segments `flat(0xF000)`,

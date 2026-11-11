@@ -533,7 +533,11 @@ fn run_bios(
     output
         .write_all(&run.com1)
         .context("writing serial output")?;
-    let (message, failed) = bios_stop(&run.stop);
+    write_bios_stop(&run.stop, errors)
+}
+
+fn write_bios_stop(stop: &crate::StopReason, errors: &mut impl Write) -> anyhow::Result<u8> {
+    let (message, failed) = bios_stop(stop);
     writeln!(errors, "{}", message.replace(['\r', '\n'], " "))?;
     Ok(u8::from(failed))
 }
@@ -658,6 +662,25 @@ mod tests {
             source: io::Error::other("journal canonical path changed after locking"),
         };
         assert_eq!(error_exit_code(&error), 1);
+    }
+
+    #[test]
+    fn synthetic_unmapped_cpu_stop_has_failure_diagnostic() {
+        // Inject the stop so reporting does not depend on core memory accesses.
+        let assembled = assembly::assemble(&assembly::at_boot(vec![0xF4])).unwrap();
+        let stop = crate::classify_bios_stop(
+            &assembled.machine,
+            Err(assembly::RunError::Machine(machine::MachineError::Cpu(
+                cpu::CpuError::Unmapped { addr: 0x100000 },
+            ))),
+        );
+        let mut errors = Vec::new();
+        assert_eq!(write_bios_stop(&stop, &mut errors).unwrap(), 1);
+        let message = String::from_utf8(errors).unwrap();
+        assert!(message
+            .starts_with("stopped: execution error: unmapped guest access at 0x100000; cs:ip "));
+        assert_eq!(message.lines().count(), 1);
+        assert!(message.ends_with('\n'));
     }
 
     #[test]

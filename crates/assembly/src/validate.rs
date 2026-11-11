@@ -171,6 +171,7 @@ impl MachineConfig {
         self.check_mmio_vs_ram()?;
         self.check_regions_in_space()?;
         self.check_image_placement()?;
+        self.check_board_memory()?;
         crate::firmware::validate_option_roms(self)?;
         self.check_irq_conflicts()?;
         self.check_pic_faces()?;
@@ -714,6 +715,82 @@ impl MachineConfig {
                         addr: w.base.max(r.base),
                     });
                 }
+            }
+        }
+        Ok(())
+    }
+
+    /// Reserve the board's fixed high decode and enforce the same expansion-RAM
+    /// range as machine files. IBM Personal Computer AT Technical Reference,
+    /// Section 1 "System Board", System Memory Map (READ).
+    fn check_board_memory(&self) -> Result<(), ConfigError> {
+        if self.board != BoardModel::Ibm5170 {
+            return Ok(());
+        }
+        let bits = self.cpu.chip.physical_address_bits();
+        if bits != 24 {
+            return Err(ConfigError::BoardPhysicalWidth {
+                board: self.board.id(),
+                bits,
+            });
+        }
+        let alias = crate::memory::AT_HIGH_ALIAS_BASE;
+        for (base, end) in self
+            .memory
+            .ram
+            .iter()
+            .map(|r| (r.base, r.end()))
+            .chain(self.memory.mmio.iter().map(|w| (w.base, w.end())))
+            .chain(self.images.iter().map(|i| {
+                (
+                    i.base,
+                    i.base.saturating_add(i.source.known_len().unwrap_or(0)),
+                )
+            }))
+        {
+            if base < end && end > crate::memory::AT_PHYSICAL_END {
+                return Err(ConfigError::BoardPhysicalAddressOutOfRange {
+                    board: self.board.id(),
+                    addr: base.max(crate::memory::AT_PHYSICAL_END),
+                });
+            }
+        }
+        let limit = 0x100000 + u64::from(crate::IBM5170_MAX_EXTENDED_KIB) * 1024;
+        for ram in &self.memory.ram {
+            if ram.size > 0 && ram.base < alias && ram.end() > limit {
+                return Err(ConfigError::ExtendedRamLimit {
+                    board: self.board.id(),
+                    max_kib: crate::IBM5170_MAX_EXTENDED_KIB,
+                    addr: ram.base.max(limit),
+                });
+            }
+        }
+        for (base, end) in self
+            .memory
+            .ram
+            .iter()
+            .map(|r| (r.base, r.end()))
+            .chain(self.memory.mmio.iter().map(|w| (w.base, w.end())))
+            .chain(self.images.iter().map(|i| {
+                (
+                    i.base,
+                    i.base.saturating_add(i.source.known_len().unwrap_or(0)),
+                )
+            }))
+        {
+            if base < end && ranges_overlap(base, end, alias, crate::memory::AT_PHYSICAL_END) {
+                return Err(ConfigError::HighRomAliasOverlap {
+                    board: self.board.id(),
+                    addr: base.max(alias),
+                });
+            }
+        }
+        for window in &self.memory.mmio {
+            if ranges_overlap(window.base, window.end(), 0xE0000, 0x100000) {
+                return Err(ConfigError::HighRomAliasSourceMmio {
+                    board: self.board.id(),
+                    addr: window.base.max(0xE0000),
+                });
             }
         }
         Ok(())

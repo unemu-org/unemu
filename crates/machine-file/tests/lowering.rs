@@ -363,6 +363,100 @@ fn invalid_card_fields_and_duplicate_roles_are_rejected() {
 }
 
 #[test]
+fn firmware_open_bus_starts_after_configured_extended_ram() {
+    use assembly::test_support::{Cpu, CpuStop, DmaAccess};
+    let mut config = run(&format!("{MINIMAL}[memory]\nextended_kib=1024\n")).unwrap();
+    assert_eq!(config.memory.ram.last().unwrap().end(), 0x200000);
+    let ImageSource::Inline(rom) = &mut config.images[0].source else {
+        panic!("inline BIOS required")
+    };
+    // FFFF:0010 reaches installed RAM without address-size overrides.
+    let program = [
+        0xFA, 0xB8, 0xFF, 0xFF, 0x8E, 0xD8, 0xC6, 0x06, 0x10, 0, 0x5A, 0xA0, 0x10, 0, 0x31, 0xDB,
+        0x8E, 0xDB, 0xA2, 0, 5, 0xF4,
+    ];
+    rom[..program.len()].copy_from_slice(&program);
+    rom[0x7FF0..0x7FF5].copy_from_slice(&[0xEA, 0, 0, 0, 0xF8]);
+    let mut cpu = assembly::test_support::mapped_cpu(
+        &config,
+        assembly::AssemblyOptions {
+            allow_unlisted_firmware: true,
+        },
+    )
+    .unwrap();
+    assert_eq!(cpu.run(Some(100)).unwrap(), CpuStop::Halt);
+    let mut value = [0];
+    cpu.read_mem(0x500, &mut value).unwrap();
+    assert_eq!(value, [0x5A]);
+    // Host writes populate ROM too, so use the guest DMA seam for high stores.
+    for (address, expected) in [(0x1FFFFFu32, 0x5A), (0x200000, 0xFF), (0xFDFFFF, 0xFF)] {
+        assert_eq!(cpu.guest_dma_write(address, 0x5A), DmaAccess::Complete(()));
+        cpu.read_mem(u64::from(address), &mut value).unwrap();
+        assert_eq!(value, [expected]);
+    }
+}
+
+#[test]
+fn extended_memory_limit_reserves_the_board_alias() {
+    for value in [14208, 14272, 15232] {
+        let config = run(&format!("{MINIMAL}[memory]\nextended_kib={value}\n")).unwrap();
+        assert_eq!(
+            config.memory.ram.last().unwrap().end(),
+            0x100000 + value * 1024
+        );
+    }
+}
+
+#[test]
+fn extended_memory_above_board_limit_has_exact_diagnostic() {
+    for value in [15296, 15360] {
+        let result = run(&format!("{MINIMAL}[memory]\nextended_kib={value}\n"));
+        assert!(result.is_err(), "extended_kib={value} must be rejected");
+        let error = result.unwrap_err();
+        assert_eq!(error.field, "memory.extended_kib");
+        assert_eq!(
+            error.message,
+            "must be a multiple of 64 KiB, at most 15232 KiB on ibm-5170"
+        );
+    }
+}
+
+#[test]
+fn full_extended_memory_map_touches_the_high_rom_alias() {
+    use assembly::test_support::{Cpu, DmaAccess};
+    let config = run(&format!("{MINIMAL}[memory]\nextended_kib=15232\n")).unwrap();
+    assert_eq!(config.memory.ram.last().unwrap().end(), 0xFE0000);
+    let options = assembly::AssemblyOptions {
+        allow_unlisted_firmware: true,
+    };
+    let mut regions = assembly::test_support::cpu_mapping_regions(&config, options).unwrap();
+    regions.sort_unstable();
+    assert_eq!(
+        regions,
+        vec![
+            (0, 0xC0000, "ram"),
+            (0xC0000, 0xF8000, "rom"),
+            (0xF8000, 0x100000, "rom"),
+            (0x100000, 0xFE0000, "ram"),
+            (0xFE0000, 0x1000000, "rom"),
+        ]
+    );
+    assert!(regions.windows(2).all(|pair| pair[0].1 == pair[1].0));
+    let mut cpu = assembly::test_support::mapped_cpu(&config, options).unwrap();
+    // High physical stores use byte DMA; the host loader would overwrite ROM.
+    assert_eq!(cpu.guest_dma_write(0xFDFFFF, 0x5A), DmaAccess::Complete(()));
+    assert_eq!(cpu.guest_dma_write(0xFE0000, 0x5A), DmaAccess::Complete(()));
+    let mut last_ram = [0];
+    cpu.read_mem(0xFDFFFF, &mut last_ram).unwrap();
+    assert_eq!(last_ram, [0x5A]);
+    let mut low = [0xFF];
+    let mut high = [0xFF];
+    cpu.read_mem(0xE0000, &mut low).unwrap();
+    cpu.read_mem(0xFE0000, &mut high).unwrap();
+    assert_eq!(high, low);
+}
+
+#[test]
 fn ram_rule_reserves_adapter_space_and_keeps_the_conventional_gap() {
     let file = Path::new("test-machines/custom.toml");
     let input = format!("{MINIMAL}[memory]\nconventional_kib=512\nextended_kib=128\n[cpu]\nmodel='80286'\nrate='3/2'\n[[card]]\nkind='mda'\n");

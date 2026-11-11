@@ -351,8 +351,9 @@ A reset neither seals a journal generation nor ends a media session.
 Intel **80286 and 80287 Programmer's Reference Manual**, §5.3 **System
 Initialization**, Table 5-3 **Processor State after RESET**, specifies
 CS=F000h, IP=FFF0h, FLAGS=0002h and DS=ES=SS=0. The physical processor uses
-hidden CS base FF0000h until the first far transfer; the 1 MiB Real16 model
-fetches at FFFF0h. General registers are unspecified by the table and are
+hidden CS base FF0000h until the first far transfer; the current Real16 reset
+model fetches at FFFF0h. The board's high alias is mapped independently of that
+reset limitation. General registers are unspecified by the table and are
 preserved. MSW=FFF0h and IDTR base=0, limit=03FFh (§10.4 Initialization) are
 not modelled by the Real16 core. The backend abandons pending execution,
 IRQ/completion latches and interrupt shadows before installing these registers,
@@ -537,6 +538,61 @@ byte count. Two things it must express that a naive "N kB of RAM" cannot:
   empty sockets should read FFh is an open hardware-fidelity question requiring
   authoritative electrical evidence. The historical no-floppy `Bare` rig
   retains its map.
+- **Absent memory is an empty bus on the AT.** Assembly uses the IBM 5170's
+  fixed 24-bit board decode and a 16 MiB VM, even when
+  `MemoryConfig.address_space_bytes` describes a smaller installed-memory
+  extent. Validation requires a matching 24-bit CPU and rejects RAM, ROM or
+  MMIO outside `[0, 1000000h)`, including ranges crossing its end. Currently
+  `CpuChip` has only `I80286`, so no wider chip can be selected.
+  Machine files and presets declare at most 16 MiB, so `RegionOutOfSpace` is
+  reported first; `BoardPhysicalAddressOutOfRange` diagnoses Rust configurations
+  that declare a larger address space.
+  Width metadata does not request a flat VM of that width: a wider processor
+  needs its own sparse-mapping design. After mapping configured RAM, ROM images, MMIO and
+  the zero-filled adapter gaps, it fills every remaining hole in
+  `[0, 1000000h)` with FFh reads and discarded guest writes. **ASSUMED:** FFh is
+  the floating value; the IBM Personal Computer AT Technical Reference,
+  September 1985, Section 1 "System Board", **System Memory Map** (p. 1-8)
+  describes address assignments, without establishing that electrical value.
+  The implementation uses the backend's immutable `RegionKind::Rom` contract;
+  it adds no device or MMIO trace. Host `write_mem` remains a loader API that
+  can populate ROM and must not be used to simulate guest stores.
+  `memory.extended_kib = 1024` lowers to RAM at `[100000h, 200000h)`;
+  empty-bus coverage then starts at 200000h. With zero extended RAM it starts
+  at 100000h. Reduced conventional RAM also leaves an FFh hole below A0000h;
+  any unconfigured video aperture holes are covered likewise. The Rust BIOS
+  preset already covers all addresses below 1 MiB, so gains no low hole.
+  **READ: board-owned high alias.** The manual's System Memory Map (p. 1-8)
+  assigns FE0000h–FFFFFFh as a copy of E0000h–FFFFFh. Assembly reserves that
+  high range, fills low holes, then `map_at_high_alias` copies the resolved low
+  bytes into one read-only 128 KiB region, including ROM and adapter-gap fill.
+  FFFFF0h therefore has the same bytes as FFFF0h. This is board decoding,
+  independent of reset: a reset-origin fetch at FFFFF0h would read the alias,
+  while the current core starts at FFFF0h.
+  Explicit RAM, MMIO and images overlapping the high alias are rejected.
+  MMIO in E0000h–FFFFFh is also rejected: an assembly-time copy cannot mirror
+  a device. Excess extended RAM is diagnosed before high-alias overlap;
+  ROM/MMIO and RAM windows within the alias retain the alias-overlap error.
+  **READ: extended-memory limit.** Both lowering and assembly permit at most
+  15,232 KiB of extended RAM: the manual's System Memory Map assigns
+  100000h–FDFFFFh to expansion memory. A full configuration ends RAM at
+  FE0000h, directly against the high alias, with no intervening empty-bus hole.
+  The frontend diagnostic is "must be a multiple of 64 KiB, at most 15232 KiB
+  on ibm-5170".
+  **Memory use:** empty-bus fill uses 4 KiB chunks within a single ROM region,
+  rather than a temporary vector as large as the hole. High-alias copying also
+  uses a 4 KiB buffer. **DERIVED:** the default `ibm-5170` machine grows from
+  a 1 MiB VM to a 16 MiB VM with this map. FFh filling touches almost all of
+  the added space, giving about 16 MiB of resident guest-memory backing per
+  machine, plus at most 8 KiB of nested fill/copy scratch. Firmware/media
+  buffers and CPU tracking metadata are additional; this is not a measured
+  whole-process RSS.
+  The current Real16 CPU still ignores the A20 line: a would-be
+  wrap at 100000h now reads empty bus or installed extended RAM instead of
+  stopping on Unmapped, so code relying on a 1 MiB wrap silently reads FFh in
+  the no-extended-RAM case until the CPU A20 gate is wired.
+  `Bare` rigs get neither
+  the larger VM nor automatic empty-bus mappings; explicit mappings still work.
 
 The MMIO list retains per-device windows. For CPU mapping, assembly sorts them
 by address and coalesces each run of touching windows into one `RegionKind::Trap`
@@ -545,6 +601,19 @@ the merged trap regions. The bus retains the per-device decode map and splits
 cross-window accesses into little-endian sub-accesses. This lets accesses across
 adjacent devices reach the bus despite the pinned CPU's single-region containment
 requirement. RAM/MMIO crossings remain a [known CPU limitation](../status.md#broken--known-defects).
+
+**READ: region-boundary exception.** At CPU pin `44403dd`, the core's
+`x86jit-core/src/memory.rs`, function `region_at`, requires a scalar access to
+fit one region; `read_mode` uses that check. The host path's `region_for` and
+`read_bytes` also require one containing region. Assembly supplies distinct
+RAM/ROM/MMIO regions; the core reports `Unmapped` for a word crossing their
+boundary even when both bytes are mapped. Tests pin today's core behavior
+for prefix-free word reads at FFFF:000F
+(FFFFFh, ROM/empty bus), at FFFF:002F with 32 bytes of extended RAM (10001Fh,
+RAM/empty bus), and a host word read at FDFFFFh in the full RAM configuration
+(RAM/high alias). Byte reads and byte DMA still work at each boundary. No core
+change is made here. Host `write_mem` bypasses ROM immutability for loading;
+high-address immutability tests use guest DMA writes and host reads.
 
 ### Port window width
 

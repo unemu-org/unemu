@@ -5,6 +5,20 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-11 — Absent physical memory on firmware boards:** assembly covers
+  the AT's fixed 24-bit extent (16 MiB) around configured RAM, ROM,
+  MMIO and existing zero-filled adapter gaps. Remaining holes read FFh
+  (**ASSUMED** floating value) and discard guest writes, so memory sizing can
+  probe above installed RAM without an unmapped CPU error. Configured extended
+  RAM remains writable up to the shared 15,232 KiB board-map limit (**READ**,
+  IBM PC AT Technical Reference, Section 1, System Memory Map); Bare
+  rigs retain their maps. FE0000h–FFFFFFh mirrors the resolved low 128 KiB
+  read-only as a board decode. Fill/copy scratch is bounded to 8 KiB; VM extent
+  is fixed by AT decoding; CPU width and mapping bounds are validated. Real16
+  still ignores CPU A20 gating,
+  so a would-be 1 MiB wrap now reads FFh or extended RAM instead of Unmapped. See
+  [memory-map policy](design/machine-config.md#memoryconfig--a-semantic-memory-map).
+
 - **2026-11-11 — Register-level VGA graphics:** opt-in `vga` cards capture
   planar 16-colour 0Dh/0Eh/10h/12h and chain-4 13h through owned indexed
   pixel frames with a captured DAC palette and presentation repeat factors.

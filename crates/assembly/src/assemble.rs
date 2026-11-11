@@ -490,7 +490,12 @@ fn validate_step_cpu(cpu: &mut impl cpu::Cpu) -> Result<(), ConfigError> {
 /// The bare real-mode constructor maps nothing; the assembler lays out every RAM
 /// region, MMIO window, and loaded image from the config. On a firmware board,
 /// empty adapter addresses below the system BIOS remain read-only zeroes.
-/// IBM PC AT Technical Reference, Section 1, System Memory Map; see
+/// Other holes in the 24-bit physical space read FFh (ASSUMED floating value)
+/// and drop guest stores, using the backend's immutable ROM contract.
+/// IBM Personal Computer AT Technical Reference, September 1985, Section 1
+/// "System Board", System Memory Map (p. 1-8) assigns memory ranges but does
+/// not establish the floating value. Outside reserved board aliases, configured
+/// regions take priority. See
 /// `backlog/docs/design/machine-config.md` §MemoryConfig for this model choice.
 fn build_cpu(config: &MachineConfig) -> Result<X86JitCpu, AssemblyError> {
     build_cpu_with_mapping_trace(config, |_, _, _| {})
@@ -500,18 +505,29 @@ fn build_cpu_with_mapping_trace(
     config: &MachineConfig,
     mut record: impl FnMut(u64, u64, &'static str),
 ) -> Result<X86JitCpu, AssemblyError> {
+    let firmware_board = !config.board.firmware_catalogue().is_empty();
+    let board_memory = config.board == crate::BoardModel::Ibm5170;
+    let physical_end = match config.board {
+        crate::BoardModel::Ibm5170 => crate::memory::AT_PHYSICAL_END,
+        crate::BoardModel::Bare => config.memory.address_space_bytes,
+    };
     let mut cpu = X86JitCpu::new_real16_bare(
-        config.memory.address_space_bytes,
+        physical_end,
         config.cpu.reset.cs(),
         config.cpu.reset.ip(),
         config.cpu.segments.into(),
     )?;
+    let mut mapped = Vec::new();
+    let mut record_mapping = |base, end, kind| {
+        mapped.push((base, end));
+        record(base, end, kind);
+    };
 
     // RAM and MMIO first so a RAM-loaded image writes into an already-mapped
     // region; a ROM image maps and populates its own region.
     for region in &config.memory.ram {
         cpu.map_ram(region.base, region.size)?;
-        record(region.base, region.end(), "ram");
+        record_mapping(region.base, region.end(), "ram");
     }
     let mut mmio: Vec<_> = config.memory.mmio.iter().collect();
     mmio.sort_unstable_by_key(|window| window.base);
@@ -521,9 +537,9 @@ fn build_cpu_with_mapping_trace(
         let base = run[0].base;
         let end = run[run.len() - 1].end();
         cpu.map_mmio(base, end - base)?;
-        record(base, end, "mmio");
+        record_mapping(base, end, "mmio");
     }
-    if !config.board.firmware_catalogue().is_empty() {
+    if firmware_board {
         // Physical adapter decoding belongs to the board, independently of
         // whether this firmware searches for option ROMs.
         let end = crate::firmware::system_bios(config)?.base;
@@ -550,16 +566,16 @@ fn build_cpu_with_mapping_trace(
         occupied.sort_unstable();
         for (base, stop) in occupied {
             if base > cursor {
-                cpu.map_rom(cursor, &vec![0; (base - cursor) as usize])?;
-                record(cursor, base, "rom");
+                cpu.map_rom_filled(cursor, base - cursor, 0)?;
+                record_mapping(cursor, base, "rom");
             }
             cursor = cursor.max(stop);
         }
         if cursor < end {
             // Preserve historical zero-filled reads while keeping
             // adapter space isolated from guest RAM and RAM-loaded code.
-            cpu.map_rom(cursor, &vec![0; (end - cursor) as usize])?;
-            record(cursor, end, "rom");
+            cpu.map_rom_filled(cursor, end - cursor, 0)?;
+            record_mapping(cursor, end, "rom");
         }
     }
     for image in &config.images {
@@ -567,12 +583,66 @@ fn build_cpu_with_mapping_trace(
         match image.kind {
             ImageKind::Rom => {
                 cpu.map_rom(image.base, &bytes)?;
-                record(image.base, image.base + bytes.len() as u64, "rom");
+                record_mapping(image.base, image.base + bytes.len() as u64, "rom");
             }
             ImageKind::RamLoad => cpu.write_mem(image.base, &bytes)?,
         }
     }
+    if board_memory {
+        // Reserve the board decode before filling holes. Its source may itself
+        // contain holes, which must be filled before the alias is copied.
+        if config.board == crate::BoardModel::Ibm5170 {
+            mapped.push((crate::memory::AT_HIGH_ALIAS_BASE, physical_end));
+        }
+        mapped.sort_unstable();
+        let mut cursor = 0;
+        let mut gaps = Vec::new();
+        for &(base, end) in &mapped {
+            let base = base.min(physical_end);
+            if cursor < base {
+                cpu.map_rom_filled(cursor, base - cursor, 0xFF)?;
+                record(cursor, base, "empty-bus");
+                gaps.push((cursor, base));
+            }
+            cursor = cursor.max(end).min(physical_end);
+        }
+        if cursor < physical_end {
+            cpu.map_rom_filled(cursor, physical_end - cursor, 0xFF)?;
+            record(cursor, physical_end, "empty-bus");
+            gaps.push((cursor, physical_end));
+        }
+        if config.board == crate::BoardModel::Ibm5170 {
+            mapped.extend(gaps);
+            map_at_high_alias(&mut cpu, &mapped)?;
+            record(crate::memory::AT_HIGH_ALIAS_BASE, physical_end, "rom");
+        }
+    }
     Ok(cpu)
+}
+
+/// Map the IBM AT board's complete high ROM decode, independently of CPU reset.
+/// IBM Personal Computer AT Technical Reference, September 1985, Section 1
+/// "System Board", System Memory Map (p. 1-8): FE0000h–FFFFFFh duplicates
+/// E0000h–FFFFFh. Copy the resolved low map, including gap fill, in bounded
+/// chunks that never cross source-region boundaries. This is the single owner
+/// of the high alias; a reset-origin fetch at FFFFF0h would read its copied bytes.
+/// The current core starts at FFFF0h.
+/// See machine-config.md §MemoryConfig.
+fn map_at_high_alias(cpu: &mut X86JitCpu, mapped: &[(u64, u64)]) -> Result<(), AssemblyError> {
+    let high = crate::memory::AT_HIGH_ALIAS_BASE;
+    cpu.map_rom_filled(high, 0x20000, 0)?;
+    let mut bytes = [0; 4096];
+    for &(base, end) in mapped {
+        let mut cursor = base.max(0xE0000);
+        let end = end.min(0x100000);
+        while cursor < end {
+            let size = (end - cursor).min(bytes.len() as u64) as usize;
+            cpu.read_mem(cursor, &mut bytes[..size])?;
+            cpu.write_mem(cursor + 0xF00000, &bytes[..size])?;
+            cursor += size as u64;
+        }
+    }
+    Ok(())
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -588,6 +658,16 @@ pub(crate) fn cpu_mapping_regions(
         regions.push((base, end, kind));
     })?;
     Ok(regions)
+}
+
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) fn mapped_cpu(
+    config: &MachineConfig,
+    options: crate::AssemblyOptions,
+) -> Result<X86JitCpu, AssemblyError> {
+    let (resolved, _) = resolve_file_sources(config, options)?;
+    resolved.validate_resolved()?;
+    build_cpu(&resolved)
 }
 
 /// Materialise an image's bytes: inline bytes verbatim, a blank run of zeroes, or
@@ -2521,6 +2601,297 @@ mod tests {
     }
 
     #[test]
+    fn firmware_high_alias_matches_low_memory_and_drops_dma_writes() {
+        use cpu::Cpu;
+        let mut config = crate::bios(vec![0xA5; 0x10000], Some(Vec::new()));
+        config.images[0].base = 0xF0000;
+        config.images.push(LoadImage {
+            base: 0xE2000,
+            source: ImageSource::Inline(vec![0x5A; 0x2000]),
+            kind: ImageKind::Rom,
+            provides: Vec::new(),
+        });
+        config.cpu.reset = ResetSpec::Entry { cs: 0, ip: 0x7C00 };
+        config.cpu.segments = SegmentSeed::flat(0);
+        let mut cpu = build_cpu(&config).unwrap();
+        for low in [
+            0xE0000, 0xE1FFF, 0xE2000, 0xE3FFF, 0xE4000, 0xEFFFF, 0xF0000, 0xFFFF0, 0xFFFFF,
+        ] {
+            let mut expected = [0];
+            let mut alias = [0];
+            cpu.read_mem(low, &mut expected).unwrap();
+            cpu.read_mem(low + 0xF00000, &mut alias).unwrap();
+            assert_eq!(alias, expected, "low address {low:#x}");
+        }
+        let mut boundary = [0; 2];
+        cpu.read_mem(0xFE3FFF, &mut boundary).unwrap();
+        assert_eq!(boundary, [0x5A, 0]);
+        assert_eq!(
+            cpu.guest_dma_write(0xFFFFF0, 0),
+            cpu::DmaAccess::Complete(())
+        );
+        let mut value = [0; 2];
+        cpu.read_mem(0xFFFFF0, &mut value).unwrap();
+        assert_eq!(value, [0xA5; 2]);
+    }
+
+    #[test]
+    fn firmware_region_boundary_words_keep_current_core_failure() {
+        use cpu::{Cpu, CpuError};
+        for (extended, offset, address) in [(0, 0x000Fu16, 0xFFFFF), (0x20, 0x002F, 0x10001F)] {
+            let mut config = crate::bios(vec![0; 0x8000], Some(Vec::new()));
+            config.cpu.reset = ResetSpec::Entry { cs: 0, ip: 0x7C00 };
+            config.cpu.segments = SegmentSeed::flat(0);
+            if extended > 0 {
+                config.memory.ram.push(RamRegion::new(0x100000, extended));
+            }
+            let mut cpu = build_cpu(&config).unwrap();
+            let mut program = vec![0xB8, 0xFF, 0xFF, 0x8E, 0xD8, 0xA1];
+            program.extend(offset.to_le_bytes());
+            program.push(0xF4);
+            cpu.write_mem(0x7C00, &program).unwrap();
+            for byte in [address, address + 1] {
+                cpu.read_mem(byte, &mut [0]).unwrap();
+            }
+            let result = cpu.run(Some(100));
+            assert!(
+                matches!(result, Err(CpuError::Unmapped { addr }) if addr == address),
+                "{result:?}"
+            );
+        }
+        let mut config = crate::bios(vec![0; 0x8000], Some(Vec::new()));
+        config
+            .memory
+            .ram
+            .push(RamRegion::new(0x100000, 15232 * 1024));
+        let cpu = build_cpu(&config).unwrap();
+        cpu.read_mem(0xFDFFFF, &mut [0]).unwrap();
+        cpu.read_mem(0xFE0000, &mut [0]).unwrap();
+        assert!(
+            matches!(cpu.read_mem(0xFDFFFF, &mut [0; 2]), Err(CpuError::Memory(message)) if message == "Unmapped")
+        );
+    }
+
+    #[test]
+    fn firmware_memory_reports_extended_limit_before_alias_overlap() {
+        let mut config = crate::bios(vec![0; 0x8000], Some(Vec::new()));
+        config.drives.clear();
+        config.memory.address_space_bytes = 0x1000000;
+        config.memory.ram.push(RamRegion::new(0x100000, 0));
+        for size_kib in [15296, 15360] {
+            config.memory.ram.last_mut().unwrap().size = size_kib * 1024;
+            let error = config.validate().unwrap_err();
+            assert!(matches!(
+                error,
+                ConfigError::ExtendedRamLimit {
+                    max_kib: 15232,
+                    addr: 0xFE0000,
+                    ..
+                }
+            ));
+            assert_eq!(
+                error.to_string(),
+                "board \"ibm-5170\" extended RAM exceeds 15232 KiB at 0xfe0000"
+            );
+        }
+    }
+
+    #[test]
+    fn firmware_memory_rejects_mappings_outside_the_at_bus() {
+        for (base, size) in [(0x1000000, 1), (0xFFFFFF, 2)] {
+            for kind in ["ram", "rom", "mmio"] {
+                let mut config = crate::bios(vec![0; 0x8000], Some(Vec::new()));
+                config.drives.clear();
+                config.memory.address_space_bytes = 0x1000010;
+                match kind {
+                    "ram" => config.memory.ram.push(RamRegion::new(base, size)),
+                    "rom" => config.images.push(LoadImage {
+                        base,
+                        source: ImageSource::Inline(vec![0; size as usize]),
+                        kind: ImageKind::Rom,
+                        provides: Vec::new(),
+                    }),
+                    "mmio" => config
+                        .memory
+                        .mmio
+                        .push(MmioWindow::new(base, size, DeviceId::Vga)),
+                    _ => unreachable!(),
+                }
+                assert_eq!(config.validate().err().map(|error| error.to_string()), Some("board \"ibm-5170\" configured memory at 0x1000000 exceeds the 24-bit physical address space".into()), "{kind}");
+            }
+        }
+    }
+
+    #[test]
+    fn firmware_memory_rejects_mmio_in_the_alias_source() {
+        for (base, size, address) in [
+            (0xE0000, 1, 0xE0000),
+            (0xDFFFF, 2, 0xE0000),
+            (0xF0000, 1, 0xF0000),
+            (0xF7FFF, 1, 0xF7FFF),
+        ] {
+            let mut config = crate::bios(vec![0; 0x8000], Some(Vec::new()));
+            config.drives.clear();
+            config
+                .memory
+                .mmio
+                .push(MmioWindow::new(base, size, DeviceId::Vga));
+            assert_eq!(config.validate().err().map(|error| error.to_string()), Some(format!("board \"ibm-5170\" MMIO at {address:#x} overlaps the high ROM alias source 0xe0000..0x100000")));
+        }
+    }
+
+    #[test]
+    fn firmware_memory_respects_board_extended_ram_limit() {
+        let mut config = crate::bios(vec![0; 0x8000], Some(Vec::new()));
+        config.drives.clear();
+        config.memory.address_space_bytes = 0x1000000;
+        config
+            .memory
+            .ram
+            .push(RamRegion::new(0x100000, 14208 * 1024));
+        for size_kib in [14208, 14272, 15232] {
+            config.memory.ram.last_mut().unwrap().size = size_kib * 1024;
+            config.validate().unwrap();
+        }
+        assert_eq!(crate::IBM5170_MAX_EXTENDED_KIB, 15232);
+        assert_eq!(config.memory.ram.last().unwrap().end(), 0xFE0000);
+        for size_kib in [15296, 15360] {
+            config.memory.ram.last_mut().unwrap().size = size_kib * 1024;
+            assert!(matches!(
+                config.validate(),
+                Err(ConfigError::ExtendedRamLimit { max_kib: 15232, .. })
+            ));
+        }
+        config.memory.ram.pop();
+        for (base, size) in [(0xFE0000, 1), (0xFDFFFF, 2), (0xFFFFFF, 1)] {
+            config.memory.ram.push(RamRegion::new(base, size));
+            let error = config.validate().unwrap_err();
+            if base < 0xFE0000 {
+                assert!(matches!(error, ConfigError::ExtendedRamLimit { .. }));
+            } else {
+                assert!(matches!(error, ConfigError::HighRomAliasOverlap { .. }));
+            }
+            config.memory.ram.pop();
+        }
+        config
+            .memory
+            .mmio
+            .push(MmioWindow::new(0xFE0000, 1, DeviceId::Vga));
+        assert!(matches!(
+            config.validate(),
+            Err(ConfigError::HighRomAliasOverlap { .. })
+        ));
+        config.memory.mmio.pop();
+        config.images.push(LoadImage {
+            base: 0xFF0000,
+            source: ImageSource::Inline(vec![0; 0x10000]),
+            kind: ImageKind::Rom,
+            provides: Vec::new(),
+        });
+        assert!(matches!(
+            config.validate(),
+            Err(ConfigError::HighRomAliasOverlap { .. })
+        ));
+    }
+
+    #[test]
+    fn firmware_open_bus_reads_ff_and_drops_guest_writes() {
+        use cpu::{Cpu, CpuReg, CpuStop};
+        let mut config = crate::bios(vec![0; 0x8000], Some(Vec::new()));
+        config.cpu.reset = ResetSpec::Entry { cs: 0, ip: 0x7C00 };
+        config.cpu.segments = SegmentSeed::flat(0);
+        for address in [0x100000u32, 0x7FFFFE, 0xFDFFFE] {
+            let mut cpu = build_cpu(&config).unwrap();
+            if address == 0x100000 {
+                // FFFF:0010 reaches the first absent byte using 286 addressing.
+                let program = [
+                    0xB8, 0xFF, 0xFF, 0x8E, 0xD8, 0xC7, 0x06, 0x10, 0, 0x34, 0x12, 0xA1, 0x10, 0,
+                    0xF4,
+                ];
+                cpu.write_mem(0x7C00, &program).unwrap();
+                assert_eq!(cpu.run(Some(100)).unwrap(), CpuStop::Halt);
+                assert_eq!(cpu.reg(CpuReg::Rax) & 0xFFFF, 0xFFFF);
+            } else {
+                assert_eq!(
+                    cpu.guest_dma_write(address, 0x34),
+                    cpu::DmaAccess::Complete(())
+                );
+                assert_eq!(
+                    cpu.guest_dma_write(address + 1, 0x12),
+                    cpu::DmaAccess::Complete(())
+                );
+            }
+            let mut value = [0; 2];
+            cpu.read_mem(u64::from(address), &mut value).unwrap();
+            assert_eq!(value, [0xFF; 2]);
+        }
+    }
+
+    #[test]
+    fn firmware_open_bus_completes_map_without_overwriting_regions() {
+        let mut config = crate::bios(vec![0xA5; 0x8000], Some(Vec::new()));
+        config.memory.address_space_bytes = 0x1000000;
+        config.memory.ram = vec![
+            RamRegion::new(0, 0x80000),
+            RamRegion::new(0x100000, 0x100000),
+        ];
+        config
+            .memory
+            .mmio
+            .push(MmioWindow::new(0x300000, 0x1000, DeviceId::Vga));
+        let mut regions = Vec::new();
+        let cpu = build_cpu_with_mapping_trace(&config, |base, end, kind| {
+            regions.push((base, end, kind));
+        })
+        .unwrap();
+        regions.sort_unstable();
+        assert_eq!(
+            regions,
+            vec![
+                (0, 0x80000, "ram"),
+                (0x80000, 0xB0000, "empty-bus"),
+                (0xB0000, 0xC0000, "mmio"),
+                (0xC0000, 0xF8000, "rom"),
+                (0xF8000, 0x100000, "rom"),
+                (0x100000, 0x200000, "ram"),
+                (0x200000, 0x300000, "empty-bus"),
+                (0x300000, 0x301000, "mmio"),
+                (0x301000, 0xFE0000, "empty-bus"),
+                (0xFE0000, 0x1000000, "rom"),
+            ]
+        );
+        assert_eq!(regions.first().unwrap().0, 0);
+        assert_eq!(regions.last().unwrap().1, 0x1000000);
+        assert!(regions.windows(2).all(|pair| pair[0].1 == pair[1].0));
+        for (address, expected) in [
+            (0x80000, 0xFF),
+            (0xC0000, 0),
+            (0xFFFF0, 0xA5),
+            (0xFFFFF0, 0xA5),
+        ] {
+            let mut value = [0];
+            cpu.read_mem(address, &mut value).unwrap();
+            assert_eq!(value, [expected]);
+        }
+    }
+
+    #[test]
+    fn bare_rigs_do_not_gain_firmware_open_bus() {
+        let mut config = crate::bios(vec![0; 0x8000], None);
+        for space in [0x100000, 0x1000000] {
+            config.memory.address_space_bytes = space;
+            let mut regions = Vec::new();
+            let cpu = build_cpu_with_mapping_trace(&config, |base, end, kind| {
+                regions.push((base, end, kind));
+            })
+            .unwrap();
+            assert!(!regions.iter().any(|region| region.2 == "empty-bus"));
+            assert_eq!(regions.iter().map(|region| region.1).max(), Some(0x100000));
+            assert!(cpu.read_mem(0x100000, &mut [0]).is_err());
+        }
+    }
+
+    #[test]
     fn listed_bios_without_scan_window_has_readonly_zero_adapter_gaps() {
         use cpu::{Cpu, CpuReg, CpuStop};
         use sha2::{Digest, Sha256};
@@ -2565,6 +2936,8 @@ mod tests {
                 (0xB0000, 0xC0000, "mmio"),
                 (0xC0000, 0xF0000, "rom"),
                 (0xF0000, 0x100000, "rom"),
+                (0x100000, 0xFE0000, "empty-bus"),
+                (0xFE0000, 0x1000000, "rom"),
             ]
         );
         assert_eq!(cpu.run(None).unwrap(), CpuStop::Halt);

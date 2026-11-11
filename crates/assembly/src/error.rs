@@ -267,6 +267,58 @@ pub enum ConfigError {
         addr: u64,
     },
 
+    /// Configured memory must leave the board's fixed ROM alias to assembly.
+    #[error("board \"{board}\" high ROM alias overlaps configured memory at {addr:#x}")]
+    HighRomAliasOverlap {
+        /// Selected motherboard.
+        board: &'static str,
+        /// First overlapping address.
+        addr: u64,
+    },
+
+    /// Extended RAM exceeds the board's expansion-memory range.
+    #[error("board \"{board}\" extended RAM exceeds {max_kib} KiB at {addr:#x}")]
+    ExtendedRamLimit {
+        /// Selected motherboard.
+        board: &'static str,
+        /// Maximum supported extended memory, in KiB.
+        max_kib: u32,
+        /// First unsupported address.
+        addr: u64,
+    },
+
+    /// The board's fixed decode requires a matching CPU address bus.
+    #[error("board \"{board}\" requires a 24-bit physical address bus, CPU declares {bits} bits")]
+    BoardPhysicalWidth {
+        /// Selected motherboard.
+        board: &'static str,
+        /// Address width declared by the CPU model.
+        bits: u8,
+    },
+
+    /// A configured mapping is outside the AT's physical bus.
+    /// Machine files and presets declare at most 16 MiB, so their bounds check
+    /// reports `RegionOutOfSpace` first. This error diagnoses Rust configurations
+    /// that declare a larger address space but still select the AT board.
+    #[error("board \"{board}\" configured memory at {addr:#x} exceeds the 24-bit physical address space")]
+    BoardPhysicalAddressOutOfRange {
+        /// Selected motherboard.
+        board: &'static str,
+        /// First address outside the physical bus.
+        addr: u64,
+    },
+
+    /// An assembly-time ROM copy cannot reproduce device MMIO reads.
+    #[error(
+        "board \"{board}\" MMIO at {addr:#x} overlaps the high ROM alias source 0xe0000..0x100000"
+    )]
+    HighRomAliasSourceMmio {
+        /// Selected motherboard.
+        board: &'static str,
+        /// First overlapping source address.
+        addr: u64,
+    },
+
     /// System ROM must have a valid size and end at the top of the first MiB.
     #[error("system BIOS of {size_text} at {base:#x} must have a positive size that is a multiple of 8 KiB and end at 0x100000", size_text = format_bios_size(.size))]
     BiosPlacement {

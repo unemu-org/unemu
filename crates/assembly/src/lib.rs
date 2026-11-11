@@ -76,7 +76,7 @@ pub use image::{
     interleave_parts, FirmwareService, ImageKind, ImagePart, ImageSource, Lane, LoadImage,
 };
 pub use machine::MachineConfig;
-pub use memory::{MemoryConfig, MmioWindow, RamRegion};
+pub use memory::{MemoryConfig, MmioWindow, RamRegion, IBM5170_MAX_EXTENDED_KIB};
 pub use observation::{
     Observation, ObservationError, ObservationPolicy, ObservationRequest, ObservationRoute,
     OutputKind,
@@ -94,19 +94,31 @@ pub use run::{
 /// Shared host-side fixtures for image, diagnostic and persistence tests.
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support {
+    pub use ::cpu::{Cpu, CpuStop, DmaAccess};
     mod user_firmware;
     pub use user_firmware::{
         find_user_firmware, required_user_firmware, FoundUserFirmware, UserFirmwareError,
         UserFirmwareLayout,
     };
 
-    /// Record successful CPU mappings as (base, exclusive end, ram/mmio/rom).
+    /// Record successful CPU mappings as (base, exclusive end, kind), where
+    /// kind is ram/mmio/rom/empty-bus.
     /// Builds the CPU through the production mapper without running guest code.
     pub fn cpu_mapping_regions(
         config: &crate::MachineConfig,
         options: crate::AssemblyOptions,
     ) -> Result<Vec<(u64, u64, &'static str)>, crate::AssemblyError> {
         crate::assemble::cpu_mapping_regions(config, options)
+    }
+
+    /// Build a validated physical map for host inspection and byte DMA tests.
+    /// Host `write_mem` is a loader and can overwrite ROM; use the `Cpu` DMA
+    /// seam when checking guest immutability at addresses outside real mode.
+    pub fn mapped_cpu(
+        config: &crate::MachineConfig,
+        options: crate::AssemblyOptions,
+    ) -> Result<::cpu::X86JitCpu, crate::AssemblyError> {
+        crate::assemble::mapped_cpu(config, options)
     }
 
     /// SHA-256 of visible row-major glyph/attribute pairs, excluding cursor and style.

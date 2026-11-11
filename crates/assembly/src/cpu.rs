@@ -5,8 +5,8 @@ use cpu::x86jit_backend::RealSegments;
 
 /// The modelled CPU chip.
 ///
-/// A **marker** only: it identifies which processor the machine models for
-/// documentation and golden identity. It carries no behavioural toggle and no
+/// Identifies the processor for documentation, physical address width and
+/// golden identity. It carries no execution-mode toggle and no
 /// clock rate — timing is the virtual clock's concern
 /// ([`crate::ClockConfig`]), and there is exactly one modelled real-mode core.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
@@ -14,6 +14,19 @@ pub enum CpuChip {
     /// Intel 80286.
     #[default]
     I80286,
+}
+
+impl CpuChip {
+    /// Physical address bus width. IBM Personal Computer AT Technical Reference,
+    /// Section 1 "System Board", I/O Channel: the 80286 AT has 24 address lines.
+    /// Width is metadata, not a flat-VM allocation policy. The AT decode is
+    /// fixed at 24 bits. A wider processor such as a 386 needs a separate sparse
+    /// mapping design and is outside the current board model.
+    pub const fn physical_address_bits(self) -> u8 {
+        match self {
+            Self::I80286 => 24,
+        }
+    }
 }
 
 /// Where the CPU starts executing after reset (§2.1).

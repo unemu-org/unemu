@@ -675,7 +675,12 @@ impl<R: ImageReader> Context<'_, R> {
                 .map(|field| format!("{field}.base"))
                 .into_iter()
                 .collect(),
-            AdapterSpaceOverlapsRam { .. } => vec!["memory".into()],
+            AdapterSpaceOverlapsRam { .. }
+            | HighRomAliasOverlap { .. }
+            | BoardPhysicalAddressOutOfRange { .. }
+            | HighRomAliasSourceMmio { .. } => vec!["memory".into()],
+            BoardPhysicalWidth { .. } => vec!["cpu.model".into()],
+            ExtendedRamLimit { .. } => vec!["memory.extended_kib".into()],
             FirmwareProvidesMismatch { image_index, .. } => {
                 vec![format!("{}.provides", self.image_label(*image_index))]
             }
@@ -1084,10 +1089,13 @@ pub(crate) fn lower_tracked<R: ImageReader>(
             "must be a multiple of 16 KiB, at most 640 KiB",
         ));
     }
-    if extended > 15360 || !extended.is_multiple_of(64) {
+    if extended > assembly::IBM5170_MAX_EXTENDED_KIB || !extended.is_multiple_of(64) {
         return Err(context.error(
             "memory.extended_kib",
-            "must be a multiple of 64 KiB, at most 15360 KiB on an 80286",
+            format!(
+                "must be a multiple of 64 KiB, at most {} KiB on ibm-5170",
+                assembly::IBM5170_MAX_EXTENDED_KIB
+            ),
         ));
     }
     let mut clock = board.default_clock();

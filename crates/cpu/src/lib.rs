@@ -26,7 +26,8 @@
 //! Initialization, Table 5-3 (Processor State after RESET): CS=F000h, IP=FFF0h,
 //! FLAGS=0002h and DS=ES=SS=0. General registers are unspecified by that table;
 //! this model preserves them. The hardware's hidden CS base FF0000h lasts until
-//! a far transfer; this 1 MiB Real16 model instead fetches at FFFF0h. MSW=FFF0h
+//! a far transfer; this Real16 reset model instead fetches at FFFF0h.
+//! The board independently maps its high ROM alias. MSW=FFF0h
 //! and IDTR base=0, limit=03FFh (§10.4 Initialization) are not modelled by the
 //! Real16 core. Reset first abandons engine-private execution (including pending
 //! INS/MMIO and IRQs), then

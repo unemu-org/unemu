@@ -553,7 +553,7 @@ fn parts_bios_placement_names_parts_field() {
 }
 
 #[test]
-fn repository_machine_cpu_regions_match_before_adapter_gap_fix() {
+fn repository_machine_cpu_regions_cover_the_full_firmware_board_space() {
     for relative in [
         "kiselev-bios/bios-xi8088.bin",
         "kiselev-bios/bios-xi8088-atreset.bin",
@@ -590,13 +590,16 @@ fn repository_machine_cpu_regions_match_before_adapter_gap_fix() {
         ]
         .map(PathBuf::from)
     );
-    // Captured from successful production map calls before adapter gaps became
-    // independent of the selected firmware's scan window. Order is retained too.
+    // This snapshot guards the repository machines' lower-memory maps while
+    // board-owned adapter gaps, empty bus and ROM aliases evolve. Keep the
+    // production mapping order as well as ownership of every range.
     let ordinary = vec![
         (0, 0xB0000, "ram"),
         (0xB0000, 0xC0000, "mmio"),
         (0xC0000, 0xF8000, "rom"),
         (0xF8000, 0x100000, "rom"),
+        (0x100000, 0xFE0000, "empty-bus"),
+        (0xFE0000, 0x1000000, "rom"),
     ];
     let ide = vec![
         (0, 0xB0000, "ram"),
@@ -605,6 +608,8 @@ fn repository_machine_cpu_regions_match_before_adapter_gap_fix() {
         (0xCA000, 0xF8000, "rom"),
         (0xF8000, 0x100000, "rom"),
         (0xC8000, 0xCA000, "rom"),
+        (0x100000, 0xFE0000, "empty-bus"),
+        (0xFE0000, 0x1000000, "rom"),
     ];
     let options = AssemblyOptions::default();
     let mut checked = 0;

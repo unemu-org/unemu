@@ -86,36 +86,26 @@ fn legacy_post_runner_checks_the_catalogue_without_changing_the_bare_rig() {
 }
 
 #[test]
-fn bios_runtime_errors_print_the_stop_and_exit_nonzero() {
-    for (label, program, expected) in [
-        (
-            "unsupported",
-            &[0x0F, 0x05][..],
-            "stopped: unsupported instruction: ",
-        ),
-        (
-            "unmapped",
-            &[0xEA, 0x10, 0x00, 0xFF, 0xFF][..],
-            "stopped: execution error: ",
-        ),
-    ] {
-        let rom = RomFile::program(label, program);
-        let output = Command::new(env!("CARGO_BIN_EXE_unemupc98"))
-            .arg("--bios")
-            .arg(&rom.0)
-            .arg("--allow-unlisted-firmware")
-            .output()
-            .unwrap();
-        assert_eq!(output.status.code(), Some(1), "{output:?}");
-        let stderr = String::from_utf8(output.stderr).unwrap();
-        let lines: Vec<_> = stderr.lines().collect();
-        assert_eq!(lines.len(), 2, "{stderr}");
-        assert!(
-            lines[0].starts_with("warning: running unlisted firmware (sha256 "),
-            "{stderr}"
-        );
-        assert!(lines[1].starts_with(expected), "{stderr}");
-    }
+fn bios_unsupported_instruction_prints_stop_and_exits_nonzero() {
+    let rom = RomFile::program("unsupported", &[0x0F, 0x05]);
+    let output = Command::new(env!("CARGO_BIN_EXE_unemupc98"))
+        .arg("--bios")
+        .arg(&rom.0)
+        .arg("--allow-unlisted-firmware")
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    let lines: Vec<_> = stderr.lines().collect();
+    assert_eq!(lines.len(), 2, "{stderr}");
+    assert!(
+        lines[0].starts_with("warning: running unlisted firmware (sha256 "),
+        "{stderr}"
+    );
+    assert!(
+        lines[1].starts_with("stopped: unsupported instruction: "),
+        "{stderr}"
+    );
 }
 
 #[test]

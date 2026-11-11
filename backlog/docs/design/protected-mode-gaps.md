@@ -254,8 +254,28 @@ board A20 line with observable effective state and a change counter (READ:
 `crates/devices/src/a20.rs`, `crates/assembly/src/assemble.rs`). The CPU adapter
 still constructs a flat VM without an A20 input. Physical-address gating and
 its CPU wiring remain pending. Likewise,
-1 MiB is the BIOS preset's size (`crates/assembly/src/presets.rs:72`),
-not an adapter-wide address-space limit.
+1 MiB was the BIOS preset's VM size, not an adapter-wide address-space limit.
+Assembly now uses the AT's fixed 24-bit decode and 16 MiB VM, requires a
+matching CPU width, and fills holes after RAM, ROM, MMIO and existing
+adapter-gap mappings. Wider CPUs require a separate sparse-mapping design.
+Empty-bus reads return FFh and guest writes are discarded using immutable
+backend ROM mappings. **ASSUMED:** FFh as the floating value. **READ:** IBM
+Personal Computer AT Technical Reference, September 1985, Section 1 "System
+Board", System Memory Map (p. 1-8), assigns the high expansion-memory range
+and ROM aliases; it does not establish the absent-memory electrical value.
+The board's FE0000h–FFFFFFh alias is a read-only copy of the resolved low
+E0000h–FFFFFh map, including ROM and zero-filled gaps; `map_at_high_alias` is
+its single owner. A reset-origin fetch at FFFFF0h would read that alias; the
+current core starts at FFFF0h. MMIO in
+the low alias source is rejected because a static copy cannot mirror a device.
+Bare rigs retain their prior VM/map.
+Configured extended memory remains RAM, with empty bus above its end;
+reduced conventional memory also leaves empty-bus holes below 1 MiB.
+See [MemoryConfig](machine-config.md#memoryconfig--a-semantic-memory-map).
+This changes physical-map coverage only, without adding PE entry or A20 gating.
+The current Real16 core still ignores A20: a would-be 1 MiB wrap at 100000h no longer
+stops on Unmapped, but reads empty bus (silently FFh without extended RAM) or
+installed extended RAM until CPU A20 gating is wired.
 
 ### P6 — open extender inspection and deliberate runtime scope cut
 
@@ -472,7 +492,9 @@ cited here are existing follow-up work filed by the supervisor.
 1. **Extended RAM and its discovery.** READ:
    `crates/assembly/src/memory.rs:68` already has arbitrary address-space
    size and RAM regions; `assemble.rs:250` maps those regions; P5 measures
-   a larger adapter map. The current BIOS preset is 1 MiB. Add an extended
+   a larger adapter map. Firmware-board assembly now covers the full 16 MiB
+   286 physical extent with empty bus outside installed regions; the BIOS
+   preset still installs no extended RAM. Add an extended
    RAM region starting at `100000h`, preserve the conventional-memory/MMIO/
    ROM holes (`upc-o0j.6`). `assemble.rs:448` already derives extended KB,
    so avoid inventing a second memory-size authority. Firmware-owned CMOS

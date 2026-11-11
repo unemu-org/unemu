@@ -31,6 +31,18 @@ following parts:
 - Sergey Kiselev's `8088_bios`, built for the Xi 8088 board, as a 32 KiB ROM at
   F8000h.
 
+Current memory-map policy: `ibm-5170` gets a 16 MiB VM for its fixed 24-bit
+decode, with validation of CPU width and mapping bounds. Configured RAM,
+ROM and MMIO retain their ranges; adapter gaps keep their historical zeroes.
+All remaining holes read FFh and discard guest writes (**ASSUMED** floating
+value), including above configured extended RAM and between the end of
+conventional RAM and A0000h when less than 640 KiB is installed. **READ:** IBM Personal Computer AT
+Technical Reference, September 1985, Section 1 "System Board", System Memory
+Map (p. 1-8). The board's FE0000h–FFFFFFh decode is a read-only copy of the
+resolved E0000h–FFFFFh bytes, including adapter-gap zeroes. One assembly
+function owns this alias independently of CPU reset. Bare rigs retain their old
+map and VM size. See [MemoryConfig](machine-config.md#memoryconfig--a-semantic-memory-map).
+
 FreeDOS boots from floppy and runs `DIR` (MEASURED: status.md, slow goldens).
 Firmware is hard-wired into the preset. The BIOS has no fixed-disk INT 13h, and
 FreeDOS reports no hard disks.

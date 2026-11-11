@@ -3,6 +3,21 @@
 
 use crate::device::DeviceId;
 
+/// Maximum IBM 5170 extended RAM, in KiB (READ).
+/// IBM Personal Computer AT Technical Reference, Section 1 "System Board",
+/// System Memory Map: 100000h–FDFFFFh is expansion memory, ending directly
+/// below the high ROM alias at FE0000h.
+/// See `backlog/docs/design/machine-config.md` §MemoryConfig.
+pub const IBM5170_MAX_EXTENDED_KIB: u32 = 15232;
+
+/// IBM Personal Computer AT Technical Reference, Section 1 "System Board",
+/// System Memory Map: FE0000h–FFFFFFh duplicates E0000h–FFFFFh.
+pub(crate) const AT_HIGH_ALIAS_BASE: u64 = 0xFE0000;
+
+/// IBM Personal Computer AT Technical Reference, Section 1 "System Board",
+/// I/O Channel: 24 physical address lines decode exactly 16 MiB on this board.
+pub(crate) const AT_PHYSICAL_END: u64 = 0x1000000;
+
 /// A contiguous region of guest RAM (§4).
 ///
 /// Plain read/write/execute system memory. Firmware scan space is excluded on
@@ -69,6 +84,12 @@ impl MmioWindow {
 pub struct MemoryConfig {
     /// Total size of the flat guest address space in bytes. Every RAM region,
     /// MMIO window, and loaded image must fit inside `[0, address_space_bytes)`.
+    /// IBM 5170 assembly uses exactly 16 MiB for its fixed 24-bit board decode
+    /// and rejects mappings outside it. Bare rigs retain this configured size.
+    /// Wider CPUs need a separate sparse-mapping design, not an automatic larger
+    /// flat allocation. Assembly adds empty bus and the AT's board alias.
+    /// IBM Personal Computer AT Technical Reference, Section 1 "System Board",
+    /// System Memory Map; see `backlog/docs/design/machine-config.md` §MemoryConfig.
     pub address_space_bytes: u64,
     /// The RAM regions of the address space.
     pub ram: Vec<RamRegion>,
