@@ -582,7 +582,7 @@ records existing components, not demonstrated SeaBIOS compatibility.
 | CMOS 32h, 38h/3Dh, 39h, 5Fh | `clock.c:48`; `boot.c:471–489`; `block.c:84–90`; `paravirt.c:535` | Missing | `upc-o0j.11` |
 | A20 through port 92h bit 1 | `x86.h:268–277` | Missing: open bus | `upc-o0j.5` (amended) |
 | fw_cfg at 510h/511h | `paravirt.c:664–727`; `sercon.c:519` | Missing | `upc-o0j.13` |
-| 8254 count/status read-back | `timer.c:171–183` | Missing: decoded as no-op (`pit8253.rs:65–66`) | `upc-o0j.10` |
+| 8254 read-back command | `timer.c:171–183` | Have: count/status latches, OUT and NULL COUNT | `upc-o0j.10` |
 | 8042 command set and keyboard | `ps2port.c:450–524` | Have, without aux | `upc-18x.6` |
 | CMOS 0Fh resume 05h/0Ah/0Bh/0Ch | `resume.c:23–84` | Have for 286; 386 reset missing | `upc-6le.25`; `upc-o0j.6`; `upc-o0j.14` |
 | Both 8237 controllers | `dma.c:58–67` | Have | `upc-6le.21` |

@@ -29,6 +29,18 @@
 //! Only a complete two-byte count is eligible for loading; the current Mode 3
 //! half keeps its original odd/even duration.
 //!
+//! Intel 8254 Programmable Interval Timer datasheet, Read-Back Command,
+//! Status Byte and Counter Latch Command: count and status latch independently
+//! for any selected counters. Unread latches ignore further latch requests;
+//! status is read first, then count in the programmed RW format (Read Operations).
+//! Latching and reading leave the counting element running.
+//!
+//! NULL COUNT is set by programming or a complete count write (the second byte
+//! for LSB/MSB). It clears when CR transfers to CE: the existing one-clock initial
+//! load, or the running Mode 2/3 period/half-period boundary. A separate flag is
+//! needed because the next-clock load flag does not track those running reloads.
+//! See Intel 8254 datasheet, Read-Back Command, Null Count Operation.
+//!
 //! ## Coverage matrix (datasheet vs modelled)
 //!
 //! Access modes (command bits 5-4):
@@ -39,6 +51,18 @@
 //! | `01`  | Read/load LSB only         | yes      |
 //! | `10`  | Read/load MSB only         | yes      |
 //! | `11`  | Read/load LSB then MSB     | yes      |
+//!
+//! 8254 read-back (command bits 7-6 = `11`; not present on the 8253):
+//!
+//! | Feature | Modelled |
+//! |---------|----------|
+//! | Active-low COUNT/STATUS requests; counter selection bits 3-1 | yes |
+//! | Single/multiple counter count and status latches; status-first reads | yes |
+//! | Unread count/status latches held independently until consumed | yes |
+//! | Reprogramming releases the count latch | yes |
+//! | Reprogramming discards a pending status latch | ASSUMED; datasheet only specifies count latch release |
+//! | OUT, NULL COUNT, RW, original mode bits (including 6/7), BCD flag | yes |
+//! | Reserved read-back bit 0 (must be 0 per Intel 8254 datasheet, Read-Back Command) | ignored; D3h acts as D2h |
 //!
 //! Operating modes (command bits 3-1):
 //!
@@ -62,13 +86,10 @@
 //! - **BCD counting** (command bit 0): the bit is stored and echoed in the
 //!   read-back path but counting is always binary. The PC BIOS programs binary
 //!   mode, so this does not affect boot fidelity.
-//! - **The 8254 read-back command** (`0x43` with bits 7-6 == `11`): it is decoded
-//!   only far enough to be a no-op; status/count read-back is not implemented.
 //! - **The GATE input**: all counters are treated as permanently gated on
 //!   (GATE = 1), which is the PC/AT wiring for counters 0 and 1. Counter 2's
 //!   GATE is software-controllable via port `0x61` on the real machine; that port
 //!   belongs to a different chip and is out of scope here.
-//! - **The status-latch command** and the null-count flag.
 //! - **Divisor 1 in Modes 2/3**: unsupported waveform. Intel 8254 datasheet,
 //!   Mode 2 explicitly forbids 1; Mode 3's (N-1)/2 low half would be zero.
 //!   Assumption retained for deterministic compatibility, without a silicon
@@ -94,7 +115,11 @@ const COMMAND: u16 = 0x43;
 const COUNTERS: usize = 3;
 
 /// Snapshot layout version tag, first byte of [`Device::save`] output.
-const SNAPSHOT_VERSION: u8 = 3;
+const SNAPSHOT_VERSION: u8 = 4;
+
+/// Bytes per counter in the snapshot: mode, access, flags, reload, count,
+/// count latch, active reload, write LSB, programmed mode/flags, status latch.
+const PER_COUNTER: usize = 1 + 1 + 1 + 2 + 2 + 2 + 2 + 1 + 1 + 1;
 
 /// The access mode selected by command bits 5-4, controlling how the LSB/MSB of
 /// a counter are written and read.
@@ -152,6 +177,8 @@ enum BytePhase {
 struct Counter {
     /// Operating mode 0..=5 as programmed (6/7 are folded to 2/3).
     mode: u8,
+    /// Original M2-M0 bits, since status must echo aliases exactly as written.
+    programmed_mode: u8,
     /// Access mode for LSB/MSB sequencing.
     access: Access,
     /// BCD flag (command bit 0). Stored only; counting is always binary.
@@ -173,6 +200,10 @@ struct Counter {
     read_phase: BytePhase,
     /// Latched value for a counter-latch readback, if one is pending.
     latch: Option<u16>,
+    /// Independent status latch; reading it must not consume a count byte.
+    status_latch: Option<u8>,
+    /// The latest complete count has not yet transferred from CR to CE.
+    null_count: bool,
     /// Initial/software load pending on the next clock. Running Modes 2/3
     /// instead adopt a complete reload at their period/half-period boundary.
     reload_pending: bool,
@@ -185,6 +216,7 @@ impl Counter {
     fn new() -> Counter {
         Counter {
             mode: 0,
+            programmed_mode: 0,
             access: Access::LoHi,
             bcd: false,
             reload: 0,
@@ -195,6 +227,8 @@ impl Counter {
             write_phase: BytePhase::Low,
             read_phase: BytePhase::Low,
             latch: None,
+            status_latch: None,
+            null_count: true,
             reload_pending: false,
             armed: false,
         }
@@ -212,6 +246,7 @@ impl Counter {
     /// Apply a mode/command byte that selected this counter (not a latch).
     fn program(&mut self, cmd: u8) {
         let mode = (cmd >> 1) & 0b111;
+        self.programmed_mode = mode;
         // Modes 6 and 7 alias to 2 and 3 on real silicon.
         self.mode = match mode {
             6 => 2,
@@ -224,6 +259,8 @@ impl Counter {
         self.write_low = 0;
         self.read_phase = BytePhase::Low;
         self.latch = None;
+        self.status_latch = None;
+        self.null_count = true;
         self.reload_pending = false;
         self.armed = false;
         // Writing the control word sets OUT to its mode-defined idle level.
@@ -236,6 +273,20 @@ impl Counter {
         if self.latch.is_none() {
             self.latch = Some(self.count);
             self.read_phase = BytePhase::Low;
+        }
+    }
+
+    /// Intel 8254 datasheet, Read-Back Command, Status Byte: the first unread
+    /// status wins independently of the count latch and its byte phase.
+    fn latch_status(&mut self) {
+        if self.status_latch.is_none() {
+            self.status_latch = Some(
+                (u8::from(self.out) << 7)
+                    | (u8::from(self.null_count) << 6)
+                    | (self.access.to_bits() << 4)
+                    | (self.programmed_mode << 1)
+                    | u8::from(self.bcd),
+            );
         }
     }
 
@@ -268,6 +319,7 @@ impl Counter {
     /// Mark that a complete reload value has been written; the counting element
     /// loads at the mode's next legal boundary.
     fn arm_reload(&mut self) {
+        self.null_count = true;
         self.reload_pending = self.reload_pending || !self.armed || !matches!(self.mode, 2 | 3);
         self.armed = true;
         // Modes 0 drop OUT low immediately when a new count is written.
@@ -278,6 +330,9 @@ impl Counter {
 
     /// Handle a read from this counter's data port, returning the byte value.
     fn read_data(&mut self) -> u8 {
+        if let Some(status) = self.status_latch.take() {
+            return status;
+        }
         let value = self.latch.unwrap_or(self.count);
         match self.access {
             Access::LoOnly => {
@@ -325,6 +380,7 @@ impl Counter {
         }
         if self.reload_pending {
             self.reload_pending = false;
+            self.null_count = false;
             self.active_reload = self.reload;
             self.count = self.initial() as u16;
             if self.mode == 3 {
@@ -357,6 +413,7 @@ impl Counter {
                     self.count = self.count.wrapping_sub(clocks as u16);
                 } else {
                     self.active_reload = self.reload;
+                    self.null_count = false;
                     let phase = (clocks - reloading) % u64::from(self.initial());
                     self.count = (self.initial() as u16).wrapping_sub(phase as u16);
                 }
@@ -378,6 +435,7 @@ impl Counter {
                     clocks -= edge;
                     self.out = !self.out;
                     self.active_reload = self.reload;
+                    self.null_count = false;
                     self.count = self.reload & !1;
                     clocks %= high + low;
                 }
@@ -392,6 +450,7 @@ impl Counter {
         // The reload written last tick loads now (one-clock 8254 load delay).
         if self.reload_pending {
             self.reload_pending = false;
+            self.null_count = false;
             self.active_reload = self.reload;
             self.count = self.initial() as u16;
             if self.mode == 3 {
@@ -437,6 +496,7 @@ impl Counter {
     fn tick_mode2(&mut self) {
         if self.count == 1 {
             self.active_reload = self.reload;
+            self.null_count = false;
             self.count = self.initial() as u16;
         } else {
             self.count = self.count.wrapping_sub(1);
@@ -454,6 +514,7 @@ impl Counter {
         if odd_high && self.count == 0 {
             self.out = false;
             self.active_reload = self.reload;
+            self.null_count = false;
             self.count = self.reload & !1;
             return;
         }
@@ -461,6 +522,7 @@ impl Counter {
         if self.count == 0 && !odd_high {
             self.out = !self.out;
             self.active_reload = self.reload;
+            self.null_count = false;
             self.count = self.reload & !1;
         }
     }
@@ -515,11 +577,23 @@ impl Pit8253 {
         Ok(port - BASE)
     }
 
-    /// Apply a write to the mode/command register (`0x43`).
+    /// Apply a write to the mode/command register (`0x43`). Intel 8254 datasheet,
+    /// Read-Back Command: D5/D4 request count/status when low, D3-D1 select
+    /// counters when high. Like a classic latch, this observes the clock caught
+    /// up by the bus through Device::sync before the port access (§6).
     fn write_command(&mut self, cmd: u8) {
         let select = (cmd >> 6) & 0b11;
         if select == 0b11 {
-            // The 8254 read-back command; decoded to a no-op (not modelled).
+            for (index, counter) in self.counters.iter_mut().enumerate() {
+                if cmd & (2 << index) != 0 {
+                    if cmd & 0x20 == 0 {
+                        counter.latch_count();
+                    }
+                    if cmd & 0x10 == 0 {
+                        counter.latch_status();
+                    }
+                }
+            }
             return;
         }
         let idx = select as usize;
@@ -658,8 +732,9 @@ impl Device for Pit8253 {
 
     fn save(&self) -> Vec<u8> {
         // Layout: version, then per counter: mode, access, flags, reload(2),
-        // count(2), latch(2), active reload(2), write LSB; then PIT clock(8).
-        let mut blob = Vec::with_capacity(1 + COUNTERS * 12 + 8);
+        // count(2), latch(2), active reload(2), write LSB, programmed mode with
+        // status-latch presence in bit 3, status latch; then PIT clock(8).
+        let mut blob = Vec::with_capacity(1 + COUNTERS * PER_COUNTER + 8);
         blob.push(SNAPSHOT_VERSION);
         for c in &self.counters {
             blob.push(c.mode);
@@ -686,19 +761,23 @@ impl Device for Pit8253 {
             if c.latch.is_some() {
                 flags |= 1 << 6;
             }
+            if c.null_count {
+                flags |= 1 << 7;
+            }
             blob.push(flags);
             blob.extend_from_slice(&c.reload.to_le_bytes());
             blob.extend_from_slice(&c.count.to_le_bytes());
             blob.extend_from_slice(&c.latch.unwrap_or(0).to_le_bytes());
             blob.extend_from_slice(&c.active_reload.to_le_bytes());
             blob.push(c.write_low);
+            blob.push(c.programmed_mode | (u8::from(c.status_latch.is_some()) << 3));
+            blob.push(c.status_latch.unwrap_or(0));
         }
         blob.extend_from_slice(&self.now.0.to_le_bytes());
         blob
     }
 
     fn restore(&mut self, snapshot: &[u8]) -> Result<(), DeviceError> {
-        const PER_COUNTER: usize = 1 + 1 + 1 + 2 + 2 + 2 + 2 + 1;
         let expected = 1 + COUNTERS * PER_COUNTER + 8;
         if snapshot.len() != expected {
             return Err(DeviceError::InvalidSnapshot {
@@ -717,11 +796,24 @@ impl Device for Pit8253 {
             let off = 1 + i * PER_COUNTER;
             let flags = snapshot[off + 2];
             let count = u16::from_le_bytes([snapshot[off + 5], snapshot[off + 6]]);
+            let programmed_mode = snapshot[off + 12] & 7;
+            let effective_mode = match programmed_mode {
+                6 | 7 => programmed_mode - 4,
+                other => other,
+            };
+            let status_latched = snapshot[off + 12] & 8 != 0;
+            let status = snapshot[off + 13];
             if snapshot[off] > 5
                 || !(1..=3).contains(&snapshot[off + 1])
-                || flags & 0x80 != 0
+                || snapshot[off + 12] & 0xF0 != 0
+                || effective_mode != snapshot[off]
+                || (!status_latched && status != 0)
+                || (status_latched
+                    && status & 0x3F
+                        != (snapshot[off + 1] << 4) | (programmed_mode << 1) | (flags & 1))
                 || (flags & 0x04 == 0 && snapshot[off + 11] != 0)
                 || (flags & 0x10 != 0 && flags & 0x20 == 0)
+                || (flags & 0x80 == 0 && (flags & 0x10 != 0 || flags & 0x20 == 0))
                 || (snapshot[off + 1] != 3 && flags & 0x0C != 0)
                 || (snapshot[off] == 3 && flags & 0x20 != 0 && flags & 0x10 == 0 && count & 1 != 0)
                 || (flags & 0x40 == 0 && snapshot[off + 7..off + 9] != [0, 0])
@@ -732,6 +824,9 @@ impl Device for Pit8253 {
                 });
             }
             c.mode = snapshot[off];
+            c.programmed_mode = programmed_mode;
+            c.status_latch = status_latched.then_some(status);
+            c.null_count = flags & 0x80 != 0;
             c.access = Access::from_bits(snapshot[off + 1]);
             let flags = snapshot[off + 2];
             c.bcd = flags & (1 << 0) != 0;
@@ -1361,14 +1456,404 @@ mod tests {
     }
 
     #[test]
-    fn readback_command_is_a_noop() {
-        let mut pit = Pit8253::new();
-        program_c0(&mut pit, 2, 10);
-        tick(&mut pit, 1);
-        let before = pit.count(0);
-        // Read-back command (bits 7-6 == 11): decoded but not modelled.
-        pit.port_write(CMD, 1, cmd(0b11, 0b11, 0b111, 0)).unwrap();
-        assert_eq!(pit.count(0), before, "read-back must not disturb counters");
+    fn readback_with_neither_latch_requested_is_a_noop() {
+        let mut bus = MockBus::new(Box::new(Pit8253::new()));
+        readback_program(&mut bus, 0, 3, 2, 0x1234);
+        bus.tick(1);
+        // Neither active-low latch request is asserted.
+        bus.port_write(CMD, 1, cmd(0b11, 0b11, 0b111, 0)).unwrap();
+        bus.tick(3);
+        assert_eq!(bus.port_read(C0, 1).unwrap(), 0x31);
+        assert_eq!(bus.port_read(C0, 1).unwrap(), 0x12);
+    }
+
+    fn readback_program(bus: &mut MockBus, channel: u8, access: u8, mode: u8, count: u16) {
+        let port = C0 + u16::from(channel);
+        bus.port_write(CMD, 1, cmd(channel, access, mode, 0))
+            .unwrap();
+        if access != 2 {
+            bus.port_write(port, 1, u32::from(count & 255)).unwrap();
+        }
+        if access != 1 {
+            bus.port_write(port, 1, u32::from(count >> 8)).unwrap();
+        }
+    }
+
+    fn readback_count(bus: &mut MockBus, channel: u8, access: u8) -> u16 {
+        let port = C0 + u16::from(channel);
+        let first = bus.port_read(port, 1).unwrap() as u16;
+        match access {
+            1 => first,
+            2 => first << 8,
+            _ => first | ((bus.port_read(port, 1).unwrap() as u16) << 8),
+        }
+    }
+
+    fn readback_status(bus: &mut MockBus, channel: u8) -> u32 {
+        bus.port_write(CMD, 1, 0xE0 | (2 << channel)).unwrap();
+        bus.port_read(C0 + u16::from(channel), 1).unwrap()
+    }
+
+    #[test]
+    fn readback_count_only_selects_one_or_several_counters_in_every_format() {
+        for access in [1, 2, 3] {
+            for selection in 0..8 {
+                let mut bus = MockBus::new(Box::new(Pit8253::new()));
+                for channel in 0..3 {
+                    readback_program(&mut bus, channel, access, 0, 0xABCD);
+                }
+                bus.tick(1);
+                bus.port_write(CMD, 1, 0xD0 | (selection << 1)).unwrap();
+                bus.tick(7);
+                let initial = match access {
+                    1 => 0x00CD,
+                    2 => 0xAB00,
+                    _ => 0xABCD,
+                };
+                for channel in 0..3 {
+                    let expected = if selection & (1 << channel) != 0 {
+                        initial
+                    } else {
+                        initial - 7
+                    };
+                    let mask = match access {
+                        1 => 0x00FF,
+                        2 => 0xFF00,
+                        _ => 0xFFFF,
+                    };
+                    assert_eq!(readback_count(&mut bus, channel, access), expected & mask);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn readback_status_only_preserves_programmed_fields_including_mode_aliases() {
+        for channel in 0..3 {
+            for access in 1..=3 {
+                for mode in 0..=7 {
+                    for bcd in 0..=1 {
+                        let mut bus = MockBus::new(Box::new(Pit8253::new()));
+                        bus.port_write(CMD, 1, cmd(channel, access, mode, bcd))
+                            .unwrap();
+                        let output = if mode == 0 { 0 } else { 0x80 };
+                        assert_eq!(
+                            readback_status(&mut bus, channel),
+                            output | 0x40 | cmd(0, access, mode, bcd)
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn readback_status_only_selects_multiple_counters_without_latching_counts() {
+        for selection in 0..8 {
+            let mut bus = MockBus::new(Box::new(Pit8253::new()));
+            for channel in 0..3 {
+                readback_program(&mut bus, channel, 3, 0, 0x1234);
+            }
+            bus.tick(1);
+            bus.port_write(CMD, 1, 0xE0 | (selection << 1)).unwrap();
+            bus.tick(4);
+            for channel in 0..3 {
+                if selection & (1 << channel) != 0 {
+                    assert_eq!(bus.port_read(C0 + u16::from(channel), 1).unwrap(), 0x30);
+                }
+                assert_eq!(readback_count(&mut bus, channel, 3), 0x1230);
+            }
+        }
+    }
+
+    #[test]
+    fn readback_both_returns_status_before_count_in_every_format_and_selection() {
+        for selection in 0..8 {
+            let mut bus = MockBus::new(Box::new(Pit8253::new()));
+            for channel in 0..3 {
+                readback_program(&mut bus, channel, channel + 1, 0, 0xABCD);
+            }
+            bus.tick(1);
+            bus.port_write(CMD, 1, 0xC0 | (selection << 1)).unwrap();
+            bus.tick(7);
+            for channel in 0..3 {
+                let access = channel + 1;
+                let selected = selection & (1 << channel) != 0;
+                if selected {
+                    assert_eq!(
+                        bus.port_read(C0 + u16::from(channel), 1).unwrap(),
+                        u32::from(access << 4)
+                    );
+                }
+                let expected = match (access, selected) {
+                    (1, true) => 0xCD,
+                    (1, false) => 0xC6,
+                    (2, true) => 0xAB00,
+                    (2, false) => 0xAA00,
+                    (_, true) => 0xABCD,
+                    (_, false) => 0xABC6,
+                };
+                assert_eq!(readback_count(&mut bus, channel, access), expected);
+            }
+        }
+    }
+
+    #[test]
+    fn readback_latches_ignore_repeated_commands_while_counting_continues() {
+        let mut bus = fidelity_pit_bus(2, 8);
+        bus.port_write(CMD, 1, 0xC2).unwrap();
+        bus.tick(7);
+        bus.port_write(CMD, 1, 0xC2).unwrap();
+        bus.port_write(CMD, 1, 0).unwrap();
+        assert_eq!(bus.port_read(C0, 1).unwrap(), 0xB4);
+        assert_eq!(bus.port_read(C0, 1).unwrap(), 8);
+        // A partially read count is still latched; status is independent.
+        bus.port_write(CMD, 1, 0xC2).unwrap();
+        bus.port_write(CMD, 1, 0).unwrap();
+        assert_eq!(bus.port_read(C0, 1).unwrap(), 0x34);
+        bus.tick(1);
+        assert_eq!(bus.port_read(C0, 1).unwrap(), 0);
+        assert_eq!(readback_count(&mut bus, 0, 3), 8);
+        bus.tick(2);
+        bus.port_write(CMD, 1, 0xD2).unwrap();
+        assert_eq!(readback_count(&mut bus, 0, 3), 6);
+    }
+
+    #[test]
+    fn readback_and_classic_count_latches_share_the_first_unread_value() {
+        for first in [0, 0xD2] {
+            let mut bus = fidelity_pit_bus(2, 0xFE);
+            bus.port_write(CMD, 1, first).unwrap();
+            bus.tick(5);
+            bus.port_write(CMD, 1, if first == 0 { 0xD2 } else { 0 })
+                .unwrap();
+            bus.tick(3);
+            assert_eq!(readback_count(&mut bus, 0, 3), 0xFE);
+            assert_eq!(readback_count(&mut bus, 0, 3), 0xF6);
+
+            let mut bus = MockBus::new(Box::new(Pit8253::new()));
+            readback_program(&mut bus, 0, 3, 0, 0x1234);
+            bus.tick(1);
+            bus.port_write(CMD, 1, first).unwrap();
+            assert_eq!(bus.port_read(C0, 1).unwrap(), 0x34);
+            bus.tick(0x101);
+            bus.port_write(CMD, 1, if first == 0 { 0xD2 } else { 0 })
+                .unwrap();
+            assert_eq!(bus.port_read(C0, 1).unwrap(), 0x12);
+            assert_eq!(readback_count(&mut bus, 0, 3), 0x1133);
+        }
+    }
+
+    #[test]
+    fn readback_status_has_priority_regardless_of_latch_order() {
+        for count_first in [false, true] {
+            let mut bus = fidelity_pit_bus(2, 8);
+            let commands = if count_first { [0, 0xE2] } else { [0xE2, 0] };
+            for command in commands {
+                bus.port_write(CMD, 1, command).unwrap();
+            }
+            bus.tick(3);
+            assert_eq!(bus.port_read(C0, 1).unwrap(), 0xB4);
+            assert_eq!(readback_count(&mut bus, 0, 3), 8);
+        }
+    }
+
+    #[test]
+    fn readback_status_does_not_advance_a_live_two_byte_read() {
+        let mut bus = MockBus::new(Box::new(Pit8253::new()));
+        readback_program(&mut bus, 0, 3, 0, 0x1234);
+        bus.tick(1);
+        assert_eq!(bus.port_read(C0, 1).unwrap(), 0x34);
+        assert_eq!(readback_status(&mut bus, 0), 0x30);
+        assert_eq!(bus.port_read(C0, 1).unwrap(), 0x12);
+    }
+
+    #[test]
+    fn readback_status_reports_out_across_mode2_and_mode3_periods() {
+        for (mode, levels) in [
+            (2, [true, true, true, true, false, true]),
+            (3, [true, true, true, false, false, true]),
+        ] {
+            let mut bus = fidelity_pit_bus(mode, 5);
+            for high in levels {
+                assert_eq!(
+                    readback_status(&mut bus, 0),
+                    if high { 0xB0 } else { 0x30 } | u32::from(mode << 1)
+                );
+                bus.tick(1);
+            }
+        }
+    }
+
+    #[test]
+    fn readback_null_count_tracks_control_complete_write_and_initial_load() {
+        for channel in 0..3 {
+            for access in 1..=3 {
+                let mut bus = MockBus::new(Box::new(Pit8253::new()));
+                let port = C0 + u16::from(channel);
+                bus.port_write(CMD, 1, cmd(channel, access, 0, 0)).unwrap();
+                let fields = u32::from(access << 4);
+                assert_eq!(readback_status(&mut bus, channel), 0x40 | fields);
+                bus.port_write(port, 1, 8).unwrap();
+                bus.tick(1);
+                assert_eq!(
+                    readback_status(&mut bus, channel),
+                    fields | if access == 3 { 0x40 } else { 0 }
+                );
+                if access == 3 {
+                    bus.port_write(port, 1, 0).unwrap();
+                    assert_eq!(readback_status(&mut bus, channel), 0x40 | fields);
+                    bus.tick(1);
+                    assert_eq!(readback_status(&mut bus, channel), fields);
+                }
+                bus.port_write(port, 1, 4).unwrap();
+                if access == 3 {
+                    assert_eq!(readback_status(&mut bus, channel), fields);
+                    bus.port_write(port, 1, 0).unwrap();
+                }
+                assert_eq!(readback_status(&mut bus, channel), 0x40 | fields);
+                bus.tick(1);
+                assert_eq!(readback_status(&mut bus, channel), fields);
+            }
+        }
+    }
+
+    #[test]
+    fn readback_reprogramming_sets_only_the_selected_counters_null_count() {
+        for selected in 0..3 {
+            let mut bus = MockBus::new(Box::new(Pit8253::new()));
+            for channel in 0..3 {
+                readback_program(&mut bus, channel, 3, 2, 8);
+            }
+            bus.tick(1);
+            for channel in 0..3 {
+                assert_eq!(readback_status(&mut bus, channel) & 0x40, 0);
+            }
+            let waiting = (selected + 1) % 3;
+            let port = C0 + u16::from(waiting);
+            bus.port_write(port, 1, 4).unwrap();
+            bus.port_write(port, 1, 0).unwrap();
+            let before: Vec<_> = (0..3)
+                .map(|channel| readback_status(&mut bus, channel) & 0x40)
+                .collect();
+            assert_eq!(before[usize::from(waiting)], 0x40);
+
+            bus.port_write(CMD, 1, cmd(selected, 3, 3, 0)).unwrap();
+            for channel in 0..3 {
+                assert_eq!(
+                    readback_status(&mut bus, channel) & 0x40,
+                    if channel == selected {
+                        0x40
+                    } else {
+                        before[usize::from(channel)]
+                    }
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn readback_null_count_waits_for_running_mode2_or_mode3_reload_boundary() {
+        for (mode, remaining) in [(2, 7), (3, 3)] {
+            let mut bus = fidelity_pit_bus(mode, 8);
+            bus.tick(1);
+            bus.port_write(C0, 1, 4).unwrap();
+            assert_eq!(readback_status(&mut bus, 0) & 0x40, 0);
+            bus.port_write(C0, 1, 0).unwrap();
+            assert_eq!(readback_status(&mut bus, 0) & 0x40, 0x40);
+            bus.tick(remaining - 1);
+            assert_eq!(readback_status(&mut bus, 0) & 0x40, 0x40);
+            bus.tick(1);
+            assert_eq!(readback_status(&mut bus, 0) & 0x40, 0);
+            assert_eq!(readback_count(&mut bus, 0, 3), 4);
+        }
+    }
+
+    #[test]
+    fn readback_d2_and_d3_match_classic_latch_at_the_same_sync_clock() {
+        for mode in [0, 2, 3] {
+            for clock in [1, 17, 65536, 100003] {
+                for command in [0xD2, 0xD3] {
+                    let mut classic = MockBus::new(Box::new(Pit8253::new()));
+                    let mut readback = MockBus::new(Box::new(Pit8253::new()));
+                    for (bus, command) in [(&mut classic, 0), (&mut readback, command)] {
+                        readback_program(bus, 0, 3, mode, 1193);
+                        bus.device_mut().sync(VClock(clock));
+                        bus.port_write(CMD, 1, command).unwrap();
+                        bus.device_mut().sync(VClock(clock + 11));
+                    }
+                    assert_eq!(
+                        readback_count(&mut readback, 0, 3),
+                        readback_count(&mut classic, 0, 3)
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn readback_snapshot_preserves_pending_status_count_null_and_raw_mode() {
+        let mut bus = MockBus::new(Box::new(Pit8253::new()));
+        readback_program(&mut bus, 0, 3, 6, 8);
+        bus.port_write(CMD, 1, 0xC2).unwrap();
+        let snapshot = bus.device().save();
+        let mut restored = MockBus::new(Box::new(Pit8253::new()));
+        restored.device_mut().restore(&snapshot).unwrap();
+        for b in [&mut bus, &mut restored] {
+            b.tick(1);
+            b.port_write(CMD, 1, 0xE2).unwrap();
+            assert_eq!(b.port_read(C0, 1).unwrap(), 0xFC);
+            assert_eq!(readback_count(b, 0, 3), 0);
+            assert_eq!(readback_status(b, 0), 0xBC);
+        }
+    }
+
+    #[test]
+    fn readback_snapshot_preserves_null_count_while_mode2_reload_waits() {
+        let mut bus = MockBus::new(Box::new(Pit8253::new()));
+        for channel in 0..3 {
+            readback_program(&mut bus, channel, 3, 2, 8);
+        }
+        bus.tick(3);
+        bus.port_write(C0, 1, 4).unwrap();
+        bus.port_write(C0, 1, 0).unwrap();
+        assert_eq!(readback_status(&mut bus, 0) & 0x40, 0x40);
+        let snapshot = bus.device().save();
+        let mut restored = MockBus::new(Box::new(Pit8253::new()));
+        restored.device_mut().restore(&snapshot).unwrap();
+        assert_eq!(readback_status(&mut restored, 0) & 0x40, 0x40);
+        assert_eq!(readback_count(&mut restored, 0, 3), 6);
+        restored.device_mut().sync(VClock(8));
+        assert_eq!(readback_status(&mut restored, 0) & 0x40, 0x40);
+        restored.device_mut().sync(VClock(9));
+        assert_eq!(readback_status(&mut restored, 0) & 0x40, 0);
+        assert_eq!(readback_count(&mut restored, 0, 3), 4);
+    }
+
+    #[test]
+    fn restore_rejects_clear_null_count_before_the_initial_load() {
+        for channel in 0..3 {
+            for state in 0..3 {
+                let mut bus = MockBus::new(Box::new(Pit8253::new()));
+                match state {
+                    1 => bus.port_write(CMD, 1, cmd(channel, 3, 2, 0)).unwrap(),
+                    2 => readback_program(&mut bus, channel, 3, 2, 8),
+                    _ => {}
+                }
+                let valid = bus.device().save();
+                bus.device_mut().restore(&valid).unwrap();
+                let mut invalid = valid.clone();
+                invalid[1 + usize::from(channel) * PER_COUNTER + 2] &= !0x80;
+                assert_eq!(
+                    bus.device_mut().restore(&invalid),
+                    Err(DeviceError::InvalidSnapshot {
+                        device: NAME,
+                        reason: "invalid counter state",
+                    })
+                );
+                assert_eq!(bus.device().save(), valid);
+            }
+        }
     }
 
     #[test]

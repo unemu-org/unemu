@@ -602,10 +602,11 @@ cited here are existing follow-up work filed by the supervisor.
    global/fractional clock, halted/idle state and config/firmware/core identity.
    This spike does not introduce a general disk-persistence framework.
 
-8. **8254 timing read-back (`upc-o0j.10`).** READ: SeaBIOS's PIT fallback
-   uses read-back command D2h (`timer.c:171–183`), currently a no-op in
-   `pit8253.rs:65–66`. Add count/status latches with isolated datasheet tests
-   and unchanged 286 goldens. Channel 0 is programmed to mode 2, count 0
+8. **8254 timing read-back (`upc-o0j.10`) — implemented.**
+   READ: SeaBIOS's PIT fallback uses read-back command D2h (`timer.c:171–183`).
+   `pit8253.rs` now implements count/status latches, status-first reads,
+   programmed mode bits, OUT and NULL COUNT, with isolated mock-bus tests.
+   Channel 0 is programmed to mode 2, count 0
    (`timer.c:274–283`). CPUID-free 386 timing relies on this path
    (`timer.c:101–116`), not just on the existing 8253 count interface.
 

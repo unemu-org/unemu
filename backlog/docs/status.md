@@ -31,6 +31,10 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   controller, MC146818 CMOS/RTC (seeded NVRAM), 8237 DMA, µPD765 floppy (read + write), port 0x61,
   POST port 0x80, independent VGA/CGA and MDA text cards, all behind the `Device` trait with mock-bus
   tests; text output reaches a `FrameSink`.
+- **2026-11-11 — 8254 read-back:** PIT count/status latches support single and
+  multiple counters, status-first reads in all RW formats, programmed mode bits
+  (including aliases), OUT and NULL COUNT. NULL COUNT follows the initial load
+  clock and running Mode 2/3 reload boundaries; BCD counting remains unsupported.
 - **Device fidelity:** PIT Modes 2/3 adopt complete reloads at period/half-period
   boundaries and isolate incomplete LSB writes. RTC periodic PF/PIE uses a
   rational 32,768 Hz divider and rounded-up PIT deadlines, including IRQ8 wake
