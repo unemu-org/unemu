@@ -22,7 +22,7 @@ use std::{
 };
 
 const ENTRY_ID: &str = "landmark-rom-post-at-1.2.0";
-const CPU_REV: &str = "8979fc95cd81d73763d50d1d627b40ded3f8f284";
+const CPU_REV: &str = "a92b676e081ce862dcb48c82645b3d3a8aa2364f";
 const STEP_BUDGET: u64 = 30_000_000;
 const GOLDEN_RETIRED: u64 = 15_822_937;
 const GOLDEN_TEXT_SHA256: &str = "373ae9a68d11ea20d8da2232d39a90cdbb1b6f573b9fb28ea04e3ab79d3b31d1";

@@ -121,7 +121,7 @@ READ: manual p. 16 gives the order; pp. 17–36 describe the tests. Hardware
 and mode requirements below come from that reading unless marked ASSUMED.
 **Every entry in “Expected today” is ASSUMED, not a measured pass.** “Today”
 means the real-mode `ibm-5170` at x86jit pin
-`8979fc95cd81d73763d50d1d627b40ded3f8f284`. Rows after test 13 are individual
+`a92b676e081ce862dcb48c82645b3d3a8aa2364f`. Rows after test 13 are individual
 expectations if reached, not a claim that the current run reaches them.
 
 | # | Test (descriptive identifier) | Hardware | PM / >1 MiB | Expected today (ASSUMED) |
@@ -182,7 +182,7 @@ NVRAM. It follows `run --machine`: `machine_file::load_for_assembly`,
 no unlisted escape is used for the user ROM. This selects the preset hardware
 (640 KiB base RAM, MDA and VGA text, UART, wired FDC without a drive),
 volatile derived NVRAM, RTC start `2000-01-01T00:00:00`, and CPU revision
-`8979fc95cd81d73763d50d1d627b40ded3f8f284`. It checks the unsupported-instruction
+`a92b676e081ce862dcb48c82645b3d3a8aa2364f`. It checks the unsupported-instruction
 exit, address, opcode, our twelve Passed verdicts and the empty thirteenth status.
 Synthetic tests cover absolute paths (including escaped filenames), lane order,
 preset devices, RAM backing, clock and RTC/NVRAM settings through this loader.
@@ -221,7 +221,10 @@ row-major order, excluding cursor and decoded style. Only the status cell on
 each line is classified; no row labels or screen dumps are retained.
 MEASURED by the supervisor on 2026-11-11: two consecutive runs on
 `preset:ibm-5170`, using the Real16 core at x86jit `8979fc9`
-(`8979fc95cd81d73763d50d1d627b40ded3f8f284`), produced identical results:
+(`8979fc95cd81d73763d50d1d627b40ded3f8f284`), produced identical results.
+The supervisor re-confirmed the golden identical at x86jit `a92b676`
+(`a92b676e081ce862dcb48c82645b3d3a8aa2364f`) on 2026-11-11, including
+the retired-instruction count and text-plane hash:
 
 - rows 1–12: Passed; row 13 status: empty;
 - unsupported SIDT at F000:A3CE;
