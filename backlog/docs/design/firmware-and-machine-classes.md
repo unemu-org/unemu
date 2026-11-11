@@ -965,7 +965,7 @@ at 1F0h–1F7h and 3F6h on IRQ14. This works for four reasons:
 The original investigation identified two prerequisites:
 
 1. **x86jit string port I/O** (`INS`/`OUTS` with `REP`) in Real16 is now
-   available at the current pin `a92b676`, with machine integration tests.
+   available at the current pin `44403dd`, with machine integration tests.
    The historical measurement at `96a49a9` found it missing; an XUB boot
    remains a separate qualification.
 2. **Port split at 3F6h.** The FDC's decode shrinks from 3F0h–3F7h to

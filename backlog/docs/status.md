@@ -153,11 +153,16 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   synthetic fast tests keep their presets.
 - **Machines are declarative.** A `MachineConfig` (the `assembly` crate) is built by one
   `assemble()` and run under a `RunPolicy`; presets replace the old hand-written runners.
-- **CPU pin:** `a92b676e081ce862dcb48c82645b3d3a8aa2364f` (x86jit `main`).
-  Rechecked on 2026-11-11: 1,666 fast tests, 611 release device tests and all
-  existing slow golden expectations pass. The IDE golden's pin assertion now
-  names this revision; no guest expectations changed. The optional I286/I386
-  `LegacySystem` profile is not selected by this re-pin.
+- **CPU pin:** `44403dd85077c0db29ad09780003ebd3b193ecdd` (x86jit `main`).
+  Rechecked by the supervisor on 2026-11-11: the fast suite, slow set and
+  user-ROM lane pass with unchanged golden values. The IDE and Landmark
+  golden pin assertions name this revision.
+  Historical validation at `a92b676` on 2026-11-11: 1,666 fast tests,
+  611 release device tests and all existing slow golden expectations passed.
+  READ 2026-11-11: `44403dd` adds `xj-srh.11 (x86jit)` A20 gating, which
+  applies only in `LegacySystem` profiles. This re-pin retains
+  `Application(Real16)`; board A20 integration (`upc-o0j.5`) waits for the
+  I286 profile switch (`upc-6le.29`).
 - **CPU:** pinned x86jit `CpuMode::Real16` interpreter with exact step bounds,
   per-iteration REP time, STI/SS-load inhibition and interrupt-readiness stops.
   Real16 INS/OUTS support byte/word elements, REP, OUTS segment overrides,

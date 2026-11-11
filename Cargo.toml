@@ -37,11 +37,11 @@ anyhow = "1"
 sha2 = "0.10"
 winit = "0.30"
 softbuffer = { version = "0.4", default-features = false, features = ["x11", "x11-dlopen", "wayland", "wayland-dlopen"] }
-# CPU core: pinned to an exact revision of x86jit main, so every build (and every
+# CPU core: legacy A20 gate and barrier counters, pinned to x86jit main. Every build (and every
 # golden trace) runs against a known CPU. Not a bare path dependency — that breaks
 # nix build and CI. To develop against a local x86jit checkout, add a gitignored
 # [patch] override instead of editing this line.
-x86jit-core = { version = "0.3", git = "https://git.lab.mikolajczyk.org/unemu-org/x86jit", rev = "a92b676e081ce862dcb48c82645b3d3a8aa2364f" }
+x86jit-core = { version = "0.3", git = "https://git.lab.mikolajczyk.org/unemu-org/x86jit", rev = "44403dd85077c0db29ad09780003ebd3b193ecdd" }
 
 # Internal crates share the workspace version.
 assembly = { path = "crates/assembly", version = "0.1.0" }

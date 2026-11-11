@@ -121,7 +121,7 @@ READ: manual p. 16 gives the order; pp. 17–36 describe the tests. Hardware
 and mode requirements below come from that reading unless marked ASSUMED.
 **Every entry in “Expected today” is ASSUMED, not a measured pass.** “Today”
 means the real-mode `ibm-5170` at x86jit pin
-`a92b676e081ce862dcb48c82645b3d3a8aa2364f`. Rows after test 13 are individual
+`44403dd85077c0db29ad09780003ebd3b193ecdd`. Rows after test 13 are individual
 expectations if reached, not a claim that the current run reaches them.
 
 | # | Test (descriptive identifier) | Hardware | PM / >1 MiB | Expected today (ASSUMED) |
@@ -182,7 +182,7 @@ NVRAM. It follows `run --machine`: `machine_file::load_for_assembly`,
 no unlisted escape is used for the user ROM. This selects the preset hardware
 (640 KiB base RAM, MDA and VGA text, UART, wired FDC without a drive),
 volatile derived NVRAM, RTC start `2000-01-01T00:00:00`, and CPU revision
-`a92b676e081ce862dcb48c82645b3d3a8aa2364f`. It checks the unsupported-instruction
+`44403dd85077c0db29ad09780003ebd3b193ecdd`. It checks the unsupported-instruction
 exit, address, opcode, our twelve Passed verdicts and the empty thirteenth status.
 Synthetic tests cover absolute paths (including escaped filenames), lane order,
 preset devices, RAM backing, clock and RTC/NVRAM settings through this loader.
@@ -231,6 +231,10 @@ the retired-instruction count and text-plane hash:
 - retired instructions: 15,822,937;
 - MDA text-plane SHA-256:
   `373ae9a68d11ea20d8da2232d39a90cdbb1b6f573b9fb28ea04e3ab79d3b31d1`.
+
+MEASURED by the supervisor on 2026-11-11: the user-ROM lane re-confirmed
+these golden values unchanged at x86jit `44403dd`
+(`44403dd85077c0db29ad09780003ebd3b193ecdd`).
 
 READ (measured by the supervisor): the left box border is at zero-based column
 0, the test name starts at column 2, and the right border is at column 47.
