@@ -677,10 +677,12 @@ every register and backing byte of the prior construction; tests compare the
 entire device snapshot and all 64 port-visible registers, alongside unchanged
 machine goldens.
 
-The century of `RtcStart` does **not** populate the BIOS century byte at 32h.
-`Derived` leaves that byte at 00h, as before; `Image` retains the supplied byte.
-Use an NVRAM image to set 32h when firmware needs an explicit century. The live
-year register remains the two-digit year, including the 99-to-00 rollover.
+The default AT layout does **not** populate the BIOS century byte at 32h:
+`Derived` leaves it at 00h and `Image` retains the supplied byte. The optional
+`cmos-qemu-layout` firmware capability instead derives 32h in BCD from
+`RtcStart.year / 100`. An NVRAM image can supply 32h for other firmware.
+The live year register remains the two-digit year, including the 99-to-00 rollover;
+the derived century is an initial seed, not an automatic rollover update.
 
 ## The assembler
 
@@ -701,11 +703,68 @@ this map, by id, so the hand-counted `*_INDEX` constants disappear entirely.
 
 **CMOS defaults to a derived configuration.** The assembler derives floppy
 types, equipment and memory sizes from the attached drives and memory map.
-Fixed-disk types additionally require the capable system BIOS provider described
-above. `derive_cmos_config` returns a fallible, complete 64-byte seed, including
+IBM fixed-disk types additionally require the capable system BIOS provider
+described above. `derive_cmos_config` returns a fallible, complete 64-byte seed, including
 12h/19h/1Ah and the AT checksum at 2Eh/2Fh (sum of 10h–2Dh). An explicit NVRAM
 image bypasses derivation; the caller is then responsible for its contents. Calendar initialization is separate
 from the NVRAM source, as described below.
+
+A hash-matched system BIOS may opt into `cmos-qemu-layout`; no production
+catalogue entry enables it yet. It adds QEMU/Bochs conventions without changing
+the existing equipment and floppy bytes or checksum range:
+
+- 30h/31h duplicate 17h/18h: RAM above 1 MiB and below 4 GiB, in whole KiB,
+  saturated at 65535. 34h/35h count RAM from 16 MiB to 4 GiB in whole 64 KiB
+  units, saturated at 65535. 5Bh–5Dh hold the low 24 bits of the count of
+  whole 64 KiB units above 4 GiB, as QEMU writes them. RAM is counted in its
+  physical windows, so high RAM does not inflate low-memory fields.
+- 32h holds the RTC start century in BCD. 3Dh=21h selects floppy, then hard
+  disk; 38h=00h enables floppy boot-signature checks. This corresponds to
+  QEMU `-boot order=ac` with its default `fd_bootchk=true`. QEMU 29760ef's
+  default PC order is `cad`: 3Dh=12h and 38h=30h. There is no new boot-order
+  machine-file syntax. 5Fh=00h means one CPU.
+- Primary IDE drives use nibble F at 12h, type 47 at 19h/1Ah and nine-byte
+  geometry records at 1Bh/24h: cylinders, heads, FFFFh write precompensation,
+  C0h control (plus bit 3 for more than eight heads), cylinder landing zone,
+  sectors per track. These describe hardware even with a fixed-disk option ROM.
+  39h assigns two translation bits to each drive, primary master first, then
+  primary slave, secondary master and secondary slave. READ: QEMU
+  `hw/block/block.c`, `blkconf_geometry`, maps explicit CHS with AUTO
+  translation through `hw/block/hd-geometry.c`, `hd_bios_chs_auto_trans`:
+  none within 1024/16/63, LBA otherwise. Validation caps geometry at
+  16383/16/63, so in valid configs this reduces to cylinders > 1024.
+  The current config permits one IDE channel at a time; either primary or
+  secondary maps to its conventional slots.
+
+`cmos-qemu-layout` owns its disk convention independently of
+`cmos-drive-types`; combining them is rejected during firmware validation with
+`firmware <id> cannot combine cmos-drive-types and cmos-qemu-layout`.
+READ: QEMU `hw/i386/pc.c` (29760ef), `pc_cmos_init_late`, `cmos_init_hd`,
+`set_boot_dev`, `pc_machine_initfn` (`fd_bootchk=true`) and
+`pc_machine_class_init` (default order `cad`);
+`hw/rtc/mc146818rtc.c`, `rtc_set_cmos`. SeaBIOS `src/fw/paravirt.c`,
+`qemu_preinit`, `qemu_cfg_e820`, `qemu_get_present_cpus_count`;
+`src/boot.c`, `boot_init`; `src/block.c`, `get_translation`;
+`src/clock.c`, `clock_setup`; `src/hw/floppy.c`, `floppy_setup`.
+
+`derive_cmos_layout` returns all 128 bytes without allocating guest RAM, so
+large-memory arithmetic can be tested on synthetic maps. The existing
+`derive_cmos_config` API and assembly still use the low 64 bytes, preserving
+current RTC devices, NVRAM files, snapshots and goldens. Firmware validation
+implicitly requires `rtc-cmos-128` whenever `cmos-qemu-layout` is enabled,
+even if the entry omits it from `requires`. No current device satisfies this
+part, so no current board can enable the capability. A future DS12887-class
+part must decode 5Bh–5Fh independently before the SeaBIOS entry enables it.
+The current MC146818 masks addresses with 3Fh: 5Bh–5Dh alias 1Bh–1Dh, and
+5Fh aliases 1Fh. A type-47 geometry record there would make SeaBIOS report
+phantom RAM above 4 GiB and up to 256 CPUs. Pure derivation remains available
+for synthetic tests without device validation.
+
+Two deliberate divergences preserve the AT seed. QEMU 29760ef writes no
+2Eh/2Fh checksum; we retain the AT sum over 10h–2Dh. QEMU
+`pc_cmos_init_late` overwrites 14h with 06h (FPU and PS/2 mouse), whereas we
+retain the AT equipment byte derived from the modelled machine. SeaBIOS reads
+neither that equipment byte nor the checksum.
 
 **Explicit decode-conflict policy.** Port/MMIO decode is **first-match order**,
 and that order is *semantics*, not luck. The canonical example: `0x80` is the

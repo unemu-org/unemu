@@ -643,6 +643,7 @@ impl<R: ImageReader> Context<'_, R> {
             }
             MissingSystemBios { .. }
             | FirmwareNotListed { .. }
+            | ConflictingCmosCapabilities { .. }
             | FirmwareBoardMismatch { .. }
             | FirmwareNeedsCpu { .. }
             | FirmwareRequiresDevice { .. }

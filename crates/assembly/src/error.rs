@@ -286,6 +286,12 @@ pub enum ConfigError {
         /// Missing service.
         service: crate::FirmwareService,
     },
+    /// IBM table types and QEMU user-defined types interpret the same bytes differently.
+    #[error("firmware {firmware} cannot combine cmos-drive-types and cmos-qemu-layout")]
+    ConflictingCmosCapabilities {
+        /// Catalogue identity with incompatible conventions.
+        firmware: &'static str,
+    },
     /// The IBM AT table has no type for this geometry; type 47 is reserved.
     #[error("drive {drive_index} geometry {c}/{h}/{s} ({b}-byte sectors) has no IBM AT CMOS fixed-disk type; user-defined type 47 is not supported; use a fixed-disk option ROM", c = .geometry.cylinders, h = .geometry.heads, s = .geometry.sectors_per_track, b = .geometry.bytes_per_sector)]
     UnsupportedCmosDiskGeometry {

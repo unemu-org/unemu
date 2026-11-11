@@ -862,7 +862,8 @@ fn to_device_geometry(geometry: &FloppyGeometry) -> devices::FloppyGeometry {
 /// Only a hash-matched system BIOS with `cmos-drive-types` and `fixed-disk`
 /// enables these types. Any fixed-disk option ROM keeps them zero. Geometries
 /// outside the documented table are refused: this reference reserves type 47,
-/// and does not define a user-geometry layout.
+/// and does not define a user-geometry layout. The separate `cmos-qemu-layout`
+/// convention uses type 47 instead; see [`derive_cmos_layout`].
 pub fn derive_cmos_config(config: &MachineConfig) -> Result<[u8; 64], ConfigError> {
     derive_cmos_config_with_catalogue(config, config.board.firmware_catalogue())
 }
@@ -871,6 +872,41 @@ fn derive_cmos_config_with_catalogue(
     config: &MachineConfig,
     catalogue: &[crate::FirmwareEntry],
 ) -> Result<[u8; 64], ConfigError> {
+    let layout = derive_cmos_layout_with_catalogue(config, catalogue)?;
+    let mut seed = [0; 64];
+    seed.copy_from_slice(&layout[..64]);
+    Ok(seed)
+}
+
+/// Derive a complete QEMU-compatible CMOS address space when the hash-matched
+/// system BIOS opts into `cmos-qemu-layout`; otherwise extend the AT seed with zeros.
+///
+/// READ: QEMU hw/i386/pc.c (29760ef), pc_cmos_init_late, cmos_init_hd and
+/// set_boot_dev; hw/i386/x86-common.c, x86_rtc_set_cpus_count;
+/// hw/rtc/mc146818rtc.c, rtc_set_cmos. SeaBIOS src/fw/paravirt.c,
+/// qemu_preinit, qemu_cfg_e820 and qemu_get_present_cpus_count;
+/// src/boot.c, boot_init; src/block.c, get_translation; src/clock.c, clock_setup;
+/// src/hw/floppy.c, floppy_setup. See the firmware design §3.6.
+/// The existing equipment/floppy bytes and AT checksum (10h–2Dh) are retained.
+/// The fixed boot policy is floppy, then hard disk, with floppy signature checks
+/// enabled (QEMU's fd_bootchk default with boot order ac, rather than its default
+/// cad). One CPU is modelled. Type 47 describes
+/// primary IDE drives even if an option ROM supplies fixed-disk services: these
+/// bytes describe hardware, independently of the IBM BIOS provider convention.
+///
+/// The present MC146818 device and NVRAM image API hold only 64 bytes; assembly
+/// uses [`derive_cmos_config`] for those boards. Firmware validation requires a
+/// 128-byte RTC for this capability: otherwise 5Bh–5Dh and 5Fh alias type-47
+/// geometry and falsely report high RAM and extra CPUs. Pure derivation remains
+/// available for synthetic maps without validating device requirements.
+pub fn derive_cmos_layout(config: &MachineConfig) -> Result<[u8; 128], ConfigError> {
+    derive_cmos_layout_with_catalogue(config, config.board.firmware_catalogue())
+}
+
+fn derive_cmos_layout_with_catalogue(
+    config: &MachineConfig,
+    catalogue: &[crate::FirmwareEntry],
+) -> Result<[u8; 128], ConfigError> {
     let base_memory_kb = clamp_kb(ram_bytes_in(config, 0, CONVENTIONAL_TOP));
     let extended_memory_kb = clamp_kb(ram_bytes_in(config, EXTENDED_BASE, u64::MAX));
 
@@ -904,7 +940,7 @@ fn derive_cmos_config_with_catalogue(
         equipment |= (floppy_count - 1).min(0x03) << 6;
     }
 
-    let mut seed = [0; 64];
+    let mut seed = [0; 128];
     seed[0x0B] = 0x02;
     seed[0x0D] = 0x80;
     seed[0x10] = floppy_types;
@@ -914,6 +950,15 @@ fn derive_cmos_config_with_catalogue(
 
     let bios = crate::firmware::system_bios(config).ok();
     let entry = bios.and_then(|image| crate::firmware::matched_entry(image, catalogue));
+    if let Some(entry) = entry {
+        crate::firmware::check_cmos_capabilities(entry)?;
+        if entry
+            .capabilities
+            .contains(&crate::FirmwareCapability::CmosQemuLayout)
+        {
+            seed_qemu_cmos(config, &mut seed);
+        }
+    }
     let system_disk_types = entry.is_some_and(|entry| {
         entry
             .capabilities
@@ -952,6 +997,84 @@ fn derive_cmos_config_with_catalogue(
     let checksum: u16 = seed[0x10..=0x2D].iter().map(|&byte| u16::from(byte)).sum();
     seed[0x2E..=0x2F].copy_from_slice(&checksum.to_be_bytes());
     Ok(seed)
+}
+
+/// READ: QEMU hw/i386/pc.c, pc_cmos_init_late, cmos_init_hd and set_boot_dev;
+/// hw/rtc/mc146818rtc.c, rtc_set_cmos. RAM is counted separately below and above
+/// 4 GiB so remapped high RAM cannot inflate the low-memory fields.
+fn seed_qemu_cmos(config: &MachineConfig, seed: &mut [u8; 128]) {
+    const FOUR_GIB: u64 = 1 << 32;
+    let extended = clamp_kb(ram_bytes_in(config, EXTENDED_BASE, FOUR_GIB));
+    seed[0x17..=0x18].copy_from_slice(&extended.to_le_bytes());
+    seed[0x30..=0x31].copy_from_slice(&extended.to_le_bytes());
+    let above_16m =
+        (ram_bytes_in(config, 16 << 20, FOUR_GIB) / 65536).min(u64::from(u16::MAX)) as u16;
+    seed[0x34..=0x35].copy_from_slice(&above_16m.to_le_bytes());
+    let above_4g = ram_bytes_in(config, FOUR_GIB, u64::MAX) / 65536;
+    seed[0x5B..=0x5D].copy_from_slice(&above_4g.to_le_bytes()[..3]);
+    let start = config
+        .devices
+        .iter()
+        .find_map(|device| match &device.kind {
+            DeviceKind::Rtc(rtc) => Some(rtc.start),
+            _ => None,
+        })
+        .unwrap_or_default();
+    let century = (start.year / 100) as u8;
+    seed[0x32] = ((century / 10) << 4) | (century % 10);
+    seed[0x3D] = 0x21;
+    seed[0x38] = 0;
+    seed[0x5F] = 0;
+
+    for drive in &config.drives {
+        let DriveKind::HardDisk { geometry } = drive.kind else {
+            continue;
+        };
+        let Some(channel) = config.devices.iter().find_map(|device| {
+            if device.id != drive.controller {
+                return None;
+            }
+            match device.kind {
+                DeviceKind::Ide(ide) if ide.base == 0x1F0 => Some(0),
+                DeviceKind::Ide(ide) if ide.base == 0x170 => Some(1),
+                _ => None,
+            }
+        }) else {
+            continue;
+        };
+        if drive.unit > 1 {
+            continue;
+        }
+        let slot = channel * 2 + usize::from(drive.unit);
+        seed[0x39] |= qemu_ata_translation(&geometry) << (slot * 2);
+        if channel != 0 {
+            continue;
+        }
+        let unit = usize::from(drive.unit);
+        seed[0x12] |= 0x0F << if unit == 0 { 4 } else { 0 };
+        seed[0x19 + unit] = 47;
+        let offset = 0x1B + unit * 9;
+        let cylinders = (geometry.cylinders as u16).to_le_bytes();
+        seed[offset..offset + 9].copy_from_slice(&[
+            cylinders[0],
+            cylinders[1],
+            geometry.heads as u8,
+            0xFF,
+            0xFF,
+            0xC0 | if geometry.heads > 8 { 8 } else { 0 },
+            cylinders[0],
+            cylinders[1],
+            geometry.sectors_per_track as u8,
+        ]);
+    }
+}
+
+/// READ: QEMU hw/block/block.c, blkconf_geometry, selects automatic translation
+/// for explicit CHS through hw/block/hd-geometry.c, hd_bios_chs_auto_trans:
+/// none within 1024/16/63, LBA otherwise. Validation limits geometry to
+/// 16383/16/63, so only cylinders above 1024 select LBA for valid configs.
+fn qemu_ata_translation(geometry: &crate::HardDiskGeometry) -> u8 {
+    u8::from(geometry.cylinders > 1024 || geometry.heads > 16 || geometry.sectors_per_track > 63)
 }
 
 /// IBM Personal Computer AT Technical Reference (September 1985), Real-Time
@@ -2927,6 +3050,429 @@ mod tests {
     fn assert_cmos_checksum(seed: &[u8; 64]) {
         let expected: u16 = seed[0x10..=0x2D].iter().map(|&byte| u16::from(byte)).sum();
         assert_eq!(u16::from_be_bytes([seed[0x2E], seed[0x2F]]), expected);
+    }
+
+    fn qemu_cmos_catalogue() -> [crate::FirmwareEntry; 1] {
+        [crate::FirmwareEntry {
+            id: "synthetic-qemu-cmos",
+            capabilities: &[crate::FirmwareCapability::CmosQemuLayout],
+            ..cmos_disk_catalogue()[0]
+        }]
+    }
+
+    fn qemu_cmos_config() -> MachineConfig {
+        let mut config = cmos_disk_config(615, 4, 0);
+        config.drives.truncate(1);
+        config.images[0].provides.clear();
+        config
+    }
+
+    fn expected_at_seed() -> [u8; 128] {
+        let mut seed = [0; 128];
+        seed[0x0B] = 0x02;
+        seed[0x0D] = 0x80;
+        seed[0x10] = 0x40;
+        seed[0x14] = 0x01;
+        seed[0x15..=0x16].copy_from_slice(&[0x80, 0x02]);
+        seed[0x2E..=0x2F].copy_from_slice(&[0x00, 0xC3]);
+        seed
+    }
+
+    #[test]
+    fn qemu_cmos_memory_seeds_are_byte_exact_through_four_gib_and_field_limits() {
+        for (top, ext, above_16m, high_bytes, high, checksum) in [
+            (1 << 20, [0, 0], [0, 0], 0, [0, 0, 0], [0, 0xC3]),
+            (15 << 20, [0, 0x38], [0, 0], 0, [0, 0, 0], [0, 0xFB]),
+            (16 << 20, [0, 0x3C], [0, 0], 0, [0, 0, 0], [0, 0xFF]),
+            (64 << 20, [0, 0xFC], [0, 3], 0, [0, 0, 0], [1, 0xBF]),
+            (65 << 20, [0xFF, 0xFF], [0x10, 3], 0, [0, 0, 0], [2, 0xC1]),
+            (
+                1 << 32,
+                [0xFF, 0xFF],
+                [0, 0xFF],
+                65536,
+                [1, 0, 0],
+                [2, 0xC1],
+            ),
+            (
+                1 << 32,
+                [0xFF, 0xFF],
+                [0, 0xFF],
+                0xFF_FFFFu64 << 16,
+                [0xFF, 0xFF, 0xFF],
+                [2, 0xC1],
+            ),
+            (
+                1 << 32,
+                [0xFF, 0xFF],
+                [0, 0xFF],
+                0x100_0000u64 << 16,
+                [0, 0, 0],
+                [2, 0xC1],
+            ),
+        ] {
+            let mut config = qemu_cmos_config();
+            config
+                .memory
+                .ram
+                .retain(|region| region.base < EXTENDED_BASE);
+            if top > EXTENDED_BASE {
+                config
+                    .memory
+                    .ram
+                    .push(RamRegion::new(EXTENDED_BASE, top - EXTENDED_BASE));
+            }
+            if high_bytes > 0 {
+                config.memory.ram.push(RamRegion::new(1 << 32, high_bytes));
+            }
+            config.memory.address_space_bytes = top.max((1 << 32) + high_bytes);
+            let mut expected = expected_at_seed();
+            expected[0x17..=0x18].copy_from_slice(&ext);
+            expected[0x30..=0x31].copy_from_slice(&ext);
+            expected[0x34..=0x35].copy_from_slice(&above_16m);
+            expected[0x5B..=0x5D].copy_from_slice(&high);
+            expected[0x2E..=0x2F].copy_from_slice(&checksum);
+            expected[0x32] = 0x20;
+            expected[0x3D] = 0x21;
+            let actual =
+                derive_cmos_layout_with_catalogue(&config, &qemu_cmos_catalogue()).unwrap();
+            assert_eq!(actual, expected, "top={top}, high={high_bytes}");
+            assert_eq!(
+                derive_cmos_config_with_catalogue(&config, &qemu_cmos_catalogue()).unwrap(),
+                expected[..64]
+            );
+        }
+    }
+
+    #[test]
+    fn qemu_cmos_memory_counts_windows_and_whole_units_only() {
+        let mut config = qemu_cmos_config();
+        config.memory.ram = vec![
+            RamRegion::new(0, 640 << 10),
+            RamRegion::new(EXTENDED_BASE, 1023),
+            RamRegion::new((16 << 20) - 1024, 65536 + 1024 + 7),
+            RamRegion::new((1 << 32) - 65536, 2 * 65536 + 9),
+        ];
+        let seed = derive_cmos_layout_with_catalogue(&config, &qemu_cmos_catalogue()).unwrap();
+        assert_eq!(&seed[0x30..=0x31], &[130, 0]);
+        assert_eq!(&seed[0x34..=0x35], &[2, 0]);
+        assert_eq!(&seed[0x5B..=0x5D], &[1, 0, 0]);
+    }
+
+    #[test]
+    fn qemu_cmos_century_uses_rtc_start_and_default_when_rtc_is_absent() {
+        for (year, expected) in [(1980, 0x19), (1999, 0x19), (2000, 0x20), (2099, 0x20)] {
+            let mut config = qemu_cmos_config();
+            for device in &mut config.devices {
+                if let DeviceKind::Rtc(ref mut rtc) = device.kind {
+                    rtc.start.year = year;
+                }
+            }
+            let seed = derive_cmos_config_with_catalogue(&config, &qemu_cmos_catalogue()).unwrap();
+            assert_eq!(seed[0x32], expected);
+            let mut rtc = CmosRtc::new().with_nvram(seed);
+            rtc.port_write(0x70, 1, 0x32).unwrap();
+            assert_eq!(rtc.port_read(0x71, 1).unwrap(), u32::from(expected));
+        }
+        let mut config = qemu_cmos_config();
+        config
+            .devices
+            .retain(|device| !matches!(device.kind, DeviceKind::Rtc(_)));
+        assert_eq!(
+            derive_cmos_layout_with_catalogue(&config, &qemu_cmos_catalogue()).unwrap()[0x32],
+            0x20
+        );
+    }
+
+    #[test]
+    fn qemu_cmos_boot_signature_check_and_single_cpu_are_explicit() {
+        let mut seed = [0xA5; 128];
+        seed_qemu_cmos(&qemu_cmos_config(), &mut seed);
+        assert_eq!([seed[0x38], seed[0x3D], seed[0x5F]], [0, 0x21, 0]);
+    }
+
+    #[test]
+    fn qemu_cmos_type_47_geometry_and_translation_follow_all_four_positions() {
+        for (base, unit, large, translation, disk_type) in [
+            (0x1F0, 0, false, 0, 0xF0),
+            (0x1F0, 1, false, 0, 0x0F),
+            (0x170, 0, false, 0, 0),
+            (0x170, 1, false, 0, 0),
+            (0x1F0, 0, true, 1, 0xF0),
+            (0x1F0, 1, true, 4, 0x0F),
+            (0x170, 0, true, 16, 0),
+            (0x170, 1, true, 64, 0),
+        ] {
+            let mut config = qemu_cmos_config();
+            let ide = crate::IdeCfg {
+                base,
+                control: base + 0x206,
+            };
+            config.devices.push(
+                DeviceConfig::new(DeviceId::Ide, DeviceKind::Ide(ide), ide.port_windows())
+                    .with_irq(ide.irq()),
+            );
+            let geometry = crate::HardDiskGeometry {
+                cylinders: if large { 1025 } else { 1024 },
+                heads: if large { 16 } else { 8 },
+                sectors_per_track: 63,
+                bytes_per_sector: 512,
+            };
+            config.drives.push(DriveConfig {
+                controller: DeviceId::Ide,
+                unit,
+                kind: DriveKind::HardDisk { geometry },
+                image: ImageSource::Blank {
+                    size: geometry.image_bytes(),
+                },
+                write: WriteMode::Volatile,
+                expected_sha256: None,
+            });
+            let seed = derive_cmos_layout_with_catalogue(&config, &qemu_cmos_catalogue()).unwrap();
+            let mut expected = expected_at_seed();
+            expected[0x32] = 0x20;
+            expected[0x3D] = 0x21;
+            expected[0x39] = translation;
+            expected[0x12] = disk_type;
+            if base == 0x1F0 {
+                expected[0x19 + usize::from(unit)] = 47;
+                let offset = 0x1B + usize::from(unit) * 9;
+                expected[offset..offset + 9].copy_from_slice(if large {
+                    &[1, 4, 16, 0xFF, 0xFF, 0xC8, 1, 4, 63]
+                } else {
+                    &[0, 4, 8, 0xFF, 0xFF, 0xC0, 0, 4, 63]
+                });
+                let checksum: u16 = if large { 0x0411 } else { 0x03FF };
+                let checksum = checksum + u16::from(disk_type);
+                expected[0x2E..=0x2F].copy_from_slice(&checksum.to_be_bytes());
+            }
+            assert_eq!(seed, expected, "base={base:x}, unit={unit}, large={large}");
+        }
+    }
+
+    #[test]
+    fn qemu_cmos_translation_combines_mixed_primary_drives_in_any_order() {
+        for (master_cylinders, slave_cylinders, expected) in
+            [(1024, 1025, 0x04), (1025, 1024, 0x01)]
+        {
+            let mut config = qemu_cmos_config();
+            let ide = crate::IdeCfg {
+                base: 0x1F0,
+                control: 0x3F6,
+            };
+            config.devices.push(
+                DeviceConfig::new(DeviceId::Ide, DeviceKind::Ide(ide), ide.port_windows())
+                    .with_irq(14),
+            );
+            for (unit, cylinders) in [(0, master_cylinders), (1, slave_cylinders)] {
+                let geometry = crate::HardDiskGeometry {
+                    cylinders,
+                    heads: 16,
+                    sectors_per_track: 63,
+                    bytes_per_sector: 512,
+                };
+                config.drives.push(DriveConfig {
+                    controller: DeviceId::Ide,
+                    unit,
+                    kind: DriveKind::HardDisk { geometry },
+                    image: ImageSource::Blank {
+                        size: geometry.image_bytes(),
+                    },
+                    write: WriteMode::Volatile,
+                    expected_sha256: None,
+                });
+            }
+            for _ in 0..2 {
+                let seed =
+                    derive_cmos_layout_with_catalogue(&config, &qemu_cmos_catalogue()).unwrap();
+                assert_eq!(seed[0x39], expected);
+                config.drives.reverse();
+            }
+        }
+    }
+
+    #[test]
+    fn qemu_cmos_capability_requires_distinct_extended_cmos_addresses() {
+        let mut config = qemu_cmos_config();
+        let ide = crate::IdeCfg {
+            base: 0x1F0,
+            control: 0x3F6,
+        };
+        config.devices.push(
+            DeviceConfig::new(DeviceId::Ide, DeviceKind::Ide(ide), ide.port_windows()).with_irq(14),
+        );
+        let mut disk = cmos_disk_config(1024, 16, 0).drives.remove(1);
+        let DriveKind::HardDisk { ref mut geometry } = disk.kind else {
+            unreachable!()
+        };
+        geometry.sectors_per_track = 63;
+        disk.image = ImageSource::Blank {
+            size: disk.kind.image_bytes(),
+        };
+        config.drives.push(disk);
+        let message = "firmware \"synthetic-qemu-cmos\" requires rtc-cmos-128; none is configured";
+        for declared in [false, true] {
+            let entry = crate::FirmwareEntry {
+                requires: if declared {
+                    &[crate::FirmwarePart::RtcCmos128]
+                } else {
+                    &[]
+                },
+                ..qemu_cmos_catalogue()[0]
+            };
+            assert_eq!(
+                crate::firmware::check_entry_requirements(&config, config.board, &entry, None)
+                    .unwrap_err()
+                    .to_string(),
+                message
+            );
+            assert_eq!(
+                crate::check_system_bios(
+                    &config,
+                    config.board,
+                    &[entry],
+                    config.images[0].base,
+                    &vec![0; 32768],
+                    crate::AssemblyOptions {
+                        allow_unlisted_firmware: true
+                    }
+                )
+                .unwrap_err()
+                .to_string(),
+                message
+            );
+            let seed = derive_cmos_layout_with_catalogue(&config, &[entry]).unwrap();
+            assert_eq!(&seed[0x1B..=0x1D], &[0, 4, 16]);
+            assert_eq!(seed[0x1F], 0xFF);
+            assert_eq!(&seed[0x5B..=0x5D], &[0, 0, 0]);
+            assert_eq!(seed[0x5F], 0);
+        }
+        config.devices.retain(|device| device.id != DeviceId::Rtc);
+        assert_eq!(
+            crate::firmware::check_entry_requirements(
+                &config,
+                config.board,
+                &crate::FirmwareEntry {
+                    requires: &[],
+                    ..qemu_cmos_catalogue()[0]
+                },
+                None
+            )
+            .unwrap_err()
+            .to_string(),
+            message
+        );
+    }
+
+    #[test]
+    fn qemu_cmos_type_47_is_independent_of_option_rom_disk_services() {
+        let mut config = qemu_cmos_config();
+        let ide = crate::IdeCfg {
+            base: 0x1F0,
+            control: 0x3F6,
+        };
+        config.devices.push(DeviceConfig::new(
+            DeviceId::Ide,
+            DeviceKind::Ide(ide),
+            ide.port_windows(),
+        ));
+        config
+            .drives
+            .extend(cmos_disk_config(615, 4, 0).drives.into_iter().skip(1));
+        let mut slave = config.drives[1].clone();
+        slave.unit = 1;
+        config.drives.push(slave);
+        let expected = derive_cmos_layout_with_catalogue(&config, &qemu_cmos_catalogue()).unwrap();
+        assert_eq!(
+            [expected[0x12], expected[0x19], expected[0x1A]],
+            [0xFF, 47, 47]
+        );
+        config.images.push(crate::LoadImage {
+            base: 0xC8000,
+            kind: ImageKind::Rom,
+            source: ImageSource::Inline(vec![0; 2048]),
+            provides: vec![crate::FirmwareService::FixedDisk],
+        });
+        assert_eq!(
+            derive_cmos_layout_with_catalogue(&config, &qemu_cmos_catalogue()).unwrap(),
+            expected
+        );
+    }
+
+    #[test]
+    fn qemu_cmos_layout_requires_a_hash_matched_system_capability() {
+        let config = qemu_cmos_config();
+        for entry in [
+            crate::FirmwareEntry {
+                capabilities: &[],
+                ..qemu_cmos_catalogue()[0]
+            },
+            crate::FirmwareEntry {
+                sha256: crate::KISELEV_XI8088.sha256,
+                ..qemu_cmos_catalogue()[0]
+            },
+            crate::FirmwareEntry {
+                kind: crate::FirmwareKind::OptionRom,
+                ..qemu_cmos_catalogue()[0]
+            },
+        ] {
+            assert_eq!(
+                derive_cmos_layout_with_catalogue(&config, &[entry]).unwrap(),
+                expected_at_seed()
+            );
+        }
+        assert_eq!(derive_cmos_layout(&config).unwrap(), expected_at_seed());
+        assert_eq!(
+            derive_cmos_config(&config).unwrap(),
+            expected_at_seed()[..64]
+        );
+        assert_eq!(
+            crate::FirmwareCapability::CmosQemuLayout.to_string(),
+            "cmos-qemu-layout"
+        );
+        assert!(config.board.firmware_catalogue().iter().all(|entry| !entry
+            .capabilities
+            .contains(&crate::FirmwareCapability::CmosQemuLayout)));
+    }
+
+    #[test]
+    fn qemu_cmos_layout_rejects_ibm_type_capability_in_validation_and_derivation() {
+        let config = qemu_cmos_config();
+        let entry = crate::FirmwareEntry {
+            capabilities: &[
+                crate::FirmwareCapability::CmosDriveTypes,
+                crate::FirmwareCapability::CmosQemuLayout,
+            ],
+            ..qemu_cmos_catalogue()[0]
+        };
+        let message =
+            "firmware synthetic-qemu-cmos cannot combine cmos-drive-types and cmos-qemu-layout";
+        assert_eq!(
+            crate::firmware::check_entry_requirements(&config, config.board, &entry, None)
+                .unwrap_err()
+                .to_string(),
+            message
+        );
+        assert_eq!(
+            crate::check_system_bios(
+                &config,
+                config.board,
+                &[entry],
+                config.images[0].base,
+                &vec![0; 32768],
+                crate::AssemblyOptions::default(),
+            )
+            .unwrap_err()
+            .to_string(),
+            message
+        );
+        assert_eq!(
+            derive_cmos_layout_with_catalogue(&config, &[entry])
+                .unwrap_err()
+                .to_string(),
+            message
+        );
+        crate::firmware::check_cmos_capabilities(&qemu_cmos_catalogue()[0]).unwrap();
     }
 
     #[test]

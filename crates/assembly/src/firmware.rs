@@ -68,6 +68,11 @@ pub enum FirmwarePart {
     Kbc8042,
     /// AT RTC and CMOS RAM.
     RtcCmos,
+    /// A 128-byte CMOS RTC with distinct addresses above 3Fh.
+    /// Dallas Semiconductor DS12887 datasheet, Address Map. The AT MC146818's
+    /// six-bit decoder aliases firmware RAM-size and CPU-count fields to disk
+    /// geometry, so it cannot satisfy this requirement. No current device does.
+    RtcCmos128,
     /// Master and slave interrupt controllers.
     PicCascade,
     /// A video ROM at the conventional expansion address.
@@ -83,6 +88,7 @@ impl std::fmt::Display for FirmwarePart {
         f.write_str(match self {
             Self::Kbc8042 => "kbc-8042",
             Self::RtcCmos => "rtc-cmos",
+            Self::RtcCmos128 => "rtc-cmos-128",
             Self::PicCascade => "pic-cascade",
             Self::VideoRom => "a video-bios option ROM at 0xC0000",
             Self::AtaPrimary => "ata@1F0/14",
@@ -97,6 +103,7 @@ impl FirmwarePart {
         match self {
             Self::Kbc8042 => has(|kind| matches!(kind, DeviceKind::Keyboard(_))),
             Self::RtcCmos => has(|kind| matches!(kind, DeviceKind::Rtc(_))),
+            Self::RtcCmos128 => false,
             Self::PicCascade => {
                 has(|kind| matches!(kind, DeviceKind::Pic(p) if p.cascade))
                     && has(|kind| matches!(kind, DeviceKind::Pic(p) if !p.cascade))
@@ -124,12 +131,19 @@ pub enum FirmwareCapability {
     /// Real-Time Clock/CMOS RAM Information, Fixed Disk Type Byte (Hex 12)
     /// and Drive C/D Extended Bytes (Hex 19/1A).
     CmosDriveTypes,
+    /// QEMU/Bochs CMOS RAM, boot order and type-47 IDE geometry conventions.
+    /// READ: QEMU hw/i386/pc.c, pc_cmos_init_late and cmos_init_hd;
+    /// SeaBIOS src/fw/paravirt.c, qemu_preinit and qemu_cfg_e820.
+    /// Requires a 128-byte CMOS RTC to prevent extended-address aliasing;
+    /// mutually exclusive with the IBM AT fixed-disk table convention.
+    CmosQemuLayout,
 }
 
 impl std::fmt::Display for FirmwareCapability {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
             Self::CmosDriveTypes => "cmos-drive-types",
+            Self::CmosQemuLayout => "cmos-qemu-layout",
         })
     }
 }
@@ -658,6 +672,7 @@ pub(crate) fn check_entry_requirements(
     entry: &FirmwareEntry,
     option_index: Option<usize>,
 ) -> Result<(), ConfigError> {
+    check_cmos_capabilities(entry)?;
     if !entry.boards.contains(&board.id()) {
         return Err(ConfigError::FirmwareBoardMismatch {
             firmware: entry.id,
@@ -675,7 +690,11 @@ pub(crate) fn check_entry_requirements(
             cpu,
         });
     }
-    for part in entry.requires {
+    let required_cmos = entry
+        .capabilities
+        .contains(&FirmwareCapability::CmosQemuLayout)
+        .then_some(FirmwarePart::RtcCmos128);
+    for part in required_cmos.iter().chain(entry.requires) {
         if !part.present(config) {
             if let (FirmwarePart::AtaPrimary, Some(image_index)) = (part, option_index) {
                 return Err(ConfigError::OptionRomCardMismatch {
@@ -688,6 +707,20 @@ pub(crate) fn check_entry_requirements(
                 part: *part,
             });
         }
+    }
+    Ok(())
+}
+
+/// Reject conflicting interpretations of the same fixed-disk CMOS bytes.
+pub(crate) fn check_cmos_capabilities(entry: &FirmwareEntry) -> Result<(), ConfigError> {
+    if entry
+        .capabilities
+        .contains(&FirmwareCapability::CmosDriveTypes)
+        && entry
+            .capabilities
+            .contains(&FirmwareCapability::CmosQemuLayout)
+    {
+        return Err(ConfigError::ConflictingCmosCapabilities { firmware: entry.id });
     }
     Ok(())
 }
@@ -1078,6 +1111,17 @@ mod tests {
             provides: Vec::new(),
         });
         config
+    }
+
+    #[test]
+    fn production_catalogues_have_no_conflicting_cmos_capabilities() {
+        for board in [BoardModel::Ibm5170, BoardModel::Bare] {
+            for entry in board.firmware_catalogue() {
+                check_cmos_capabilities(entry).unwrap_or_else(|error| {
+                    panic!("{} catalogue: {error}", board.id());
+                });
+            }
+        }
     }
 
     #[test]
@@ -1518,7 +1562,9 @@ mod tests {
                 FirmwarePart::PicCascade => {
                     !matches!(device.kind, DeviceKind::Pic(p) if !p.cascade)
                 }
-                FirmwarePart::VideoRom | FirmwarePart::AtaPrimary => unreachable!(),
+                FirmwarePart::VideoRom | FirmwarePart::AtaPrimary | FirmwarePart::RtcCmos128 => {
+                    unreachable!()
+                }
             });
             let entry = synthetic();
             let result = check_system_bios(

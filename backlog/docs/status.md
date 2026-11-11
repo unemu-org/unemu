@@ -209,6 +209,12 @@ checks identity and diagnostics without execution; see `vendor/user-roms/README.
 
 ## In flight
 
+- **2026-11-11 — Firmware-owned QEMU CMOS layout:** opt-in catalogue capability
+  and byte-exact synthetic tests derive RAM, century, boot order, type-47 IDE
+  geometry, translation and single-CPU fields. No production entry enables it;
+  the SeaBIOS entry will do so with `generic-386-isa`. The complete 128-byte
+  derivation is available; exposing bytes above 3Fh awaits that board's RTC.
+
 - **2026-11-11, SeaBIOS fixture:** pinned rel-1.17.0 ISA build recipe and
   configuration added under `vendor/seabios/`, with a separate firmware
   devShell. Two independent builds matched on macOS arm64 with the flake-pinned
