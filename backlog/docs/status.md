@@ -5,6 +5,20 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-11 — XT devices (device level):** Mode 0 8255, XT SW1/PPI and
+  83-key set-1 receiver, NMI enable latch at A0h, and single 8237 with XT page
+  decode are available as isolated devices, with snapshots and trace policy
+  tests. Review against the March 1986 XT Technical Reference corrected SW1
+  POST/FPU bits (default 7Dh), removed the PC-only PA/SW1 path, added the reset
+  hold threshold, bounded the keyboard queue to 16, and covered DMA/NMI aliases.
+  The queue emits FFh on overrun. The reset hold uses a documented 1,193-clock
+  compatibility threshold and preserves an unread board byte until PB7 clears
+  it; tests cover the BIOS's 10,582-iteration hold at rate 1/1 and PPI/controller
+  register aliases. The PIC test uses BIOS ICWs 13h/08h/09h. Module matrices
+  distinguish READ facts from remaining wiring/timing assumptions; keyboard
+  transmission is byte-level.
+  No board is wired: `ibm-5160` and `8088` remain reserved and rejected.
+
 - **2026-11-11 — Debug console:** emulator-only QEMU-style byte port (default
   402h, E9h readback) and bounded `DebugConsole` observation are available to
   bare Rust test rigs. IBM 5170 validation rejects the device; future

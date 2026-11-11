@@ -704,6 +704,38 @@ mod tests {
         assert_eq!(pic.vector_base(), BASE);
     }
 
+    /// Intel 8259A datasheet, Initialization Command Words: SNGL omits ICW3.
+    /// IBM Personal Computer XT Technical Reference (March 1986), §5 BIOS
+    /// listing: ICW1 13h, ICW2 08h, ICW4 09h (buffered 8086 mode).
+    #[test]
+    fn xt_single_pic_initialization_and_irq1_on_mock_bus() {
+        let mut bus = MockBus::new(Box::new(Pic8259::new()));
+        for (port, value) in [(0x20, 0x13), (0x21, 8), (0x21, 9), (0x21, 0xFD)] {
+            bus.port_write(port, 1, value).unwrap();
+        }
+        assert_eq!(bus.port_read(0x21, 1).unwrap(), 0xFD);
+        assert!(bus.port_read(0xA0, 1).is_err());
+        let saved = bus.device().save();
+        bus.device_mut().restore(&saved).unwrap();
+        assert_eq!(saved[6], 9);
+        let mut pic = Pic8259::new();
+        pic.restore(&saved).unwrap();
+        pic.set_irq_line(1, true);
+        assert_eq!(pic.acknowledge(), Some(9));
+        assert_eq!(pic.isr(), 2);
+        pic.port_write(0x20, 1, 0x20).unwrap();
+        assert_eq!(pic.isr(), 0);
+        pic.set_irq_line(7, true);
+        assert_eq!(pic.poll(), None);
+        pic.set_irq_line(1, false);
+        pic.set_irq_line(1, true);
+        assert_eq!(pic.acknowledge(), Some(9));
+        for (port, value) in [(0x20, 0x12), (0x21, 8), (0x21, 0xA5)] {
+            bus.port_write(port, 1, value).unwrap();
+        }
+        assert_eq!(bus.port_read(0x21, 1).unwrap(), 0xA5);
+    }
+
     #[test]
     fn raising_line_sets_irr() {
         let mut pic = Pic8259::new();

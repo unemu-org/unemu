@@ -617,10 +617,11 @@ therefore needs register-level VGA from its first run.
 
 Sources:
 
-- *IBM Personal Computer XT Technical Reference* (1983; 5155/5160 edition
-  6139821, 1986), Section 1 "System Board". It covers System Timers, System
-  Interrupts, DMA, "8255A I/O Bit Map" (p. 1-27) and Appendix G "Switch
-  Settings".
+- *IBM Personal Computer XT Technical Reference* (5155/5160, 6280089,
+  March 1986), §1 "System Board": "DMA" (p. 1-14), "I/O Address Map"
+  (p. 1-24), "8255A I/O Bit Map" (pp. 1-27/28); §2 "Coprocessor";
+  §4 "83-Key Keyboard" (p. 4-4) and "Block Diagram" (p. 4-5);
+  §5 BIOS listing dated 01/10/86.
 - *IBM Personal Computer AT Technical Reference* (1502494, March 1984; 6183355,
   March 1986), Section 1 "System Board". It covers System Interrupts, System
   Timers, Direct Memory Access, the I/O Address Map, "Keyboard Controller"
@@ -628,20 +629,21 @@ Sources:
 - The fixed-disk interface is in the AT's *Fixed Disk and Diskette Drive
   Adapter* (Options and Adapters).
 
-The section titles are READ from tables of contents. The register values below
-are ASSUMED from these standard references and must be re-checked in each
-device bead.
+XT device assignments are READ from the March 1986 reference and BIOS
+listing for §9 item 14. Its module matrices distinguish remaining page-wiring,
+readback and timing assumptions. Other register values in this comparison
+remain ASSUMED until checked in the corresponding device work.
 
 | Part | xt (`ibm-5160`) | at (`ibm-5170`) | at386 (`generic-386-isa`) | In the repo today |
 |---|---|---|---|---|
 | CPU | 8088 (+8087) | 80286 (+80287 at F0h–FFh, IRQ13) | 80386 (+387) | 80286 Real16 only |
-| Interrupts | **one** 8259A, 20h–21h, IRQ0–7, single mode | 8259A pair, 20h/A0h, slave on IRQ2 | as AT | cascaded pair ✓ |
+| Interrupts | **one** 8259A, 20h–21h, IRQ0–7, single mode | 8259A pair, 20h/A0h, slave on IRQ2 | as AT | cascaded pair ✓; single-mode mock-bus check ✓ |
 | Timer | 8253, 40h–43h. ch0 → IRQ0, ch1 → DRAM refresh (DMA ch0), ch2 → speaker through PPI PB0/PB1 | 8254. ch1 refresh shows in 61h bit 4, ch2 → speaker through 61h | as AT | 8253 ✓; refresh bit is a per-read toggle |
-| DMA | **one** 8237A at 00h–0Fh, ch0 refresh. Page latches at 81h–83h (ch2, ch3, ch1) | **two** 8237A: 00h–1Fh (ch0–3) and C0h–DFh (ch4–7, ch4 cascade). Pages at 80h–8Fh | as AT | both 8237 banks ✓; byte pages 81h–88h, word pages 89h–8Fh (READ `board.rs:99–108`) |
-| Keyboard interface | **8255A PPI at 60h–63h**: PA scan code, PB control (PB7 clear, PB6 clock, PB3 switch select), PC switches and status | **8042** at 60h/64h; output port bit 1 = A20, bit 0 = reset | 8042 + port 92h | 8042 ✓ (A20 bit is state only, `FEh` CPU reset pulse ✓); **8255 ✗** |
+| DMA | **one** 8237A at 00h–1Fh (upper half aliases lower), ch0 refresh. Page decode 80h–9Fh; 81h–83h (ch2, ch3, ch1), 87h ch0 ASSUMED | **two** 8237A: 00h–1Fh (ch0–3) and C0h–DFh (ch4–7, ch4 cascade). Pages at 80h–8Fh | as AT | both 8237 banks ✓; byte pages 81h–88h, word pages 89h–8Fh (READ `board.rs:99–108`) |
+| Keyboard interface | **8255A PPI at 60h–6Fh** (four-register aliases): PA scan code, PB control (PB7 clear, PB6 clock, PB3 switch select), PC switches and status | **8042** at 60h/64h; output port bit 1 = A20, bit 0 = reset | 8042 + port 92h | 8042 ✓ (A20 bit is state only, `FEh` CPU reset pulse ✓); **8255 device model ✓** (not assembled) |
 | Keyboard | **83-key**, scan set 1, serial into PPI port A, IRQ1 | 84-key (101 later), set 2 translated to set 1 | as AT | host → set 1 encoder with E0 codes ✓ (an XT has no E0 keys) |
-| Config store | **DIP SW1** read through the PPI | MC146818 CMOS at 70h/71h, IRQ8; NMI mask is 70h bit 7 | as AT, plus extended memory bytes | CMOS ✓, derived |
-| NMI mask | port **A0h** bit 7 | 70h bit 7 | as AT | AT form ✓ |
+| Config store | **DIP SW1** read through PC0–3, PB3 selects half | MC146818 CMOS at 70h/71h, IRQ8; NMI mask is 70h bit 7 | as AT, plus extended memory bytes | CMOS ✓, derived |
+| NMI mask | **A0h–AFh** aliases, bit 7 enables | 70h bit 7 | as AT | AT form ✓ |
 | A20 | none (20-bit bus) | 8042 output port | 8042 + **port 92h** bit 1 | always on (decision-8) |
 | CPU reset | — | 8042 `FEh`, CMOS 0Fh shutdown code | + port 92h bit 0 | 8042 CPU-only warm restart ✓; RAM, CMOS and devices retained; sustained low reset level not modelled |
 | ROM | F0000h–FFFFFh; an 8 KiB BIOS at FE000h | 64 KiB at F0000h (even/odd) | SeaBIOS: 128 KiB preloaded at E0000h in writable C0000h–FFFFFh, pristine read-only copy at FFFE0000h (§3.6) | `ImageKind::Rom` ✓ |
@@ -665,13 +667,12 @@ device bead.
     including REP, segment overrides on OUTS and per-element IRQ boundaries.
     The historical `96a49a9` probe did not lift opcodes 6C–6F.
 - **`ibm-5160`:**
-  - the 8255 PPI with DIP-switch derivation;
-  - the XT keyboard serial interface (PB7/PB6 handshake, 83-key set 1, no E0
-    codes);
-  - a single-mode 8259 (ASSUMED: the PIC model must honour ICW1 SNGL);
-  - the XT page-register map;
-  - the NMI mask at A0h, which clashes with an AT slave PIC, so it belongs to
-    the board, not a global decode;
+  - device models for the 8255/SW1, XT keyboard (PB7/PB6, 83-key set 1),
+    XT DMA pages and A0h NMI mask are available in isolation (§9 item 14),
+    pending board wiring, with remaining assumptions recorded in module matrices;
+  - the existing single-mode 8259 honours ICW1 SNGL (mock-bus test);
+  - the NMI mask at A0h clashes with an AT slave PIC, so future composition
+    must keep it board-specific;
   - an FDC without CCR;
   - an 8-bit card limit and IRQ ≤ 7;
   - the 8088 CPU model (`xj-50w.2 (x86jit)`).
@@ -1191,6 +1192,68 @@ The generic AT comes first.
     the XT keyboard interface (83-key, set 1, PB6/PB7), a single-mode 8259
     check, the XT page-register map and the NMI mask at A0h, citing XT Technical
     Reference §1. The `ibm-5160` board stays reserved.
+    - **Implemented at device level (2026-11-11; reviewed against manuals):**
+      `Ppi8255` models Mode 0, directions, mode-set latch reset and C bit
+      set/reset; Modes 1/2 are ignored atomically. `XtSystemPpi` composes it
+      with SW1 derivation, 83 physical set-1 positions, a receive latch and IRQ1,
+      PB6 reset/AAh and PB7 receiver acknowledgement/clear. PA has no SW1 path:
+      it reads the keyboard shift register, or output latch in diagnostic mode.
+      SW1 is accessible only through PC0–3, with PB3 selecting the nibble.
+      SW1 bit 1 means an installed 8087; bit 0 means normal POST, with an explicit
+      `loop_on_post` flag clearing it. Drive counts must be one through four;
+      zero is rejected with `XT floppy drive count must be between one and four
+      (SW1 cannot encode zero drives)`. Default SW1 is 7Dh. `XtNmiMask` stores
+      bit 7 at all A0h–AFh aliases (high enables); no NMI source or CPU delivery
+      is modelled. `XtDma` wraps the existing byte 8237, masks pages to 20
+      address bits and decodes 80h–9Fh. XT controller ports 10h–1Fh alias
+      00h–0Fh, and XT PPI ports 64h–6Fh alias 60h–63h. The shared AT controller
+      and generic four-port PPI retain their existing decode. Keyboard reset
+      keeps an unread LS322 byte until PB7 clears it, with AAh queued behind
+      that byte. The existing single PIC is tested with
+      BIOS ICW1/2/4 values 13h/08h/09h, and with ICW4 omitted.
+    - **READ coverage:** *IBM Personal Computer XT Technical Reference*
+      (6280089, March 1986), §1 “System Board”: “DMA” (1-14), “I/O Address
+      Map” (1-24), “8255A I/O Bit Map” (1-27/28); §2 “Coprocessor”; §4
+      “83-Key Keyboard” (4-4) and “Block Diagram” (4-5); §5 BIOS listing
+      (01/10/86), POST and `KBD_RESET`. These confirm the single SW1 pack
+      (no SW2), PC0–3 switch mux, PB0/PB1 speaker/timer controls, PB2 spare,
+      PB4/PB5 active-low check enables, PB6 clock hold, PB7 clear, PC4 spare,
+      PC5 OUT2 and PC6/PC7 check status. The switch table defines motherboard
+      banks, display and drive-count-plus-one encodings. The BIOS confirms
+      08h / ~20 ms / C8h / 48h reset and AAh/IRQ1, NMI enable/power-on mask,
+      channel-2 page at 81h and a POST write to 83h. The Intel 8255A datasheet,
+      Mode Selection/Mode 0/Bit Set-Reset/Basic Operation, confirms input reset,
+      mode-set output clearing, output-latch reads and illegal control reads.
+    - **Coverage limits (ASSUMED):** exact cleared PA and spare PC4 read
+      values are 00h/zero; illegal control and NMI reads return FFh. The 74LS670
+      details are absent from the extracted text: conventional page registers
+      81h/82h/83h/87h serve channels 2/3/1/0; 90h–9Fh mirror 80h–8Fh and unused
+      page latches retain nibbles. Hardware uses a 4×4 74LS670 register file
+      decoded on A0–A1, so board wiring may replace this 16-latch compatibility
+      model. The 83-key buffer holds 16 queued codes, excluding the system
+      receive latch. The FFh overrun code is READ in both BIOS INT 9 listings
+      (11/08/82 and 01/10/86), which branch to the buffer-full beep. The exact
+      position is ASSUMED: overflow replaces the last queued byte with FFh,
+      retaining the oldest 15, and repeated overflow coalesces that marker.
+      Clock low must last 1,193 virtual PIT clocks (~1 ms) before release queues
+      AAh. This is an ASSUMED compatibility threshold: the 83-key text gives
+      no minimum, and 12.5 ms in §4 “Reset (Hex FF)” (4-26) applies to 101/102
+      keys. CPU steps are not cycles: at rate 1/1 the BIOS's 10,582-iteration
+      LOOP yields 10,582 clocks, below the former 14,915-clock threshold.
+      The chosen threshold rejects immediate mode-set/release and permits that
+      loop. Qualification must ensure the BIOS hold exceeds it at every
+      supported XT CPU rate. No serial bit timing or physical BAT delay is
+      modelled.
+      Queued bytes wait one PIT clock after PB7 release so IRQ1 has a low
+      interval. PIT/status pins and control getters are unwired; refresh,
+      audio and NMI generation remain outside this device-only scope.
+    - **Isolation:** mock-bus tests cover literal SW1 values and POST/FPU bits,
+      direction and BSR effects, all 83 make/break pairs, threshold boundaries,
+      the BIOS reset/clear sequence, queue overflow and snapshot bounds,
+      literal BIOS hold at rate 1/1, unread receive-latch preservation,
+      PPI/controller register aliases, control/status pins, page aliases and
+      transfer wrap, NMI aliases, single PIC initialization, snapshots and trace Off/Ring membership. No assembly,
+      board catalogue, parser, CPU or frontend implementation is changed.
     - *Acceptance:* mock-bus tests; validation keeps rejecting the board and
       the 8088 model with tested messages.
     - *Depends on:* 1, 3.

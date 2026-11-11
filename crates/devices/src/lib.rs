@@ -22,11 +22,15 @@ pub mod mda;
 pub mod pic8259;
 pub mod pit8253;
 pub mod post_port;
+pub mod ppi8255;
 pub mod sys_control;
 pub mod uart16550;
 pub mod upd765;
 pub mod vga;
 pub mod vga_text;
+pub mod xt_dma;
+pub mod xt_nmi;
+pub mod xt_system_ppi;
 
 pub use ata::{Ata, AtaConfigError, AtaDrive, AtaGeometry};
 pub use cmos_rtc::{CmosConfig, CmosRtc};
@@ -40,11 +44,15 @@ pub use mda::MdaText;
 pub use pic8259::Pic8259;
 pub use pit8253::Pit8253;
 pub use post_port::PostPort;
+pub use ppi8255::Ppi8255;
 pub use sys_control::SysControl;
 pub use uart16550::Uart16550;
 pub use upd765::{Drive, FloppyGeometry, Upd765};
 pub use vga::Vga;
 pub use vga_text::VgaText;
+pub use xt_dma::XtDma;
+pub use xt_nmi::XtNmiMask;
+pub use xt_system_ppi::{XtDisplay, XtKey, XtSwitchConfig, XtSwitchError, XtSystemPpi};
 
 #[cfg(test)]
 pub(crate) mod trace_policy_tests {
@@ -149,6 +157,22 @@ pub(crate) mod trace_policy_tests {
 
     ring_test!(fw_cfg_trace_ring, FwCfg::new(), 0x511);
     off_test!(fw_cfg_trace_off, FwCfg::new(), 0x511);
+    ring_test!(ppi_trace_ring, Ppi8255::new(0x60), 0x60);
+    off_test!(ppi_trace_off, Ppi8255::new(0x60), 0x60);
+    ring_test!(
+        xt_ppi_trace_ring,
+        XtSystemPpi::new(XtSwitchConfig::default()).unwrap(),
+        0x60
+    );
+    off_test!(
+        xt_ppi_trace_off,
+        XtSystemPpi::new(XtSwitchConfig::default()).unwrap(),
+        0x60
+    );
+    ring_test!(xt_nmi_trace_ring, XtNmiMask::new(), 0xA0);
+    off_test!(xt_nmi_trace_off, XtNmiMask::new(), 0xA0);
+    ring_test!(xt_dma_trace_ring, XtDma::new(), 0x81);
+    off_test!(xt_dma_trace_off, XtDma::new(), 0x81);
     ring_test!(uart_trace_ring, Uart16550::new(0x3F8), 0x3FD);
     off_test!(uart_trace_off, Uart16550::new(0x3F8), 0x3FD);
     ring_test!(post_trace_ring, PostPort::with_port(0x80), 0x80);
