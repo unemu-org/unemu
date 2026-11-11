@@ -197,6 +197,16 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
 
 ### User-supplied system ROM catalogue
 
+- **2026-11-11 — User-ROM test lane:** shared test-only SHA-256 discovery accepts
+  arbitrary filenames in `vendor/user-roms/` and optional `UNEMUPC98_USER_ROMS_DIR`,
+  including nested chip layouts or assembled images. `ci-gate.sh user-roms` is a
+  local opt-in lane; absent identities skip visibly unless
+  `UNEMUPC98_REQUIRE_USER_ROMS=1`. CI never calls it. Synthetic tests cover
+  discovery and policy, including symlinks and loops, external-root configuration
+  failures, partial-layout counts and downstream path redaction. External roots
+  must be absolute folders of unpacked dumps. Proprietary firmware execution
+  remains unqualified.
+
 IBM 5170 BIOS versions 1984-01-10, 1985-06-10 and 1985-11-15 are Listed by
 assembled SHA-256. Single interleaved images and even/odd parts (including
 both 1984 chip layouts) support identity checks, TOML/YAML inheritance,

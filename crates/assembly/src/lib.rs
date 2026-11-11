@@ -94,6 +94,12 @@ pub use run::{
 /// Shared host-side fixtures for image and persistence tests; never used by execution.
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support {
+    mod user_firmware;
+    pub use user_firmware::{
+        find_user_firmware, required_user_firmware, FoundUserFirmware, UserFirmwareError,
+        UserFirmwareLayout,
+    };
+
     /// Exercise production image resolution without building a CPU or executing firmware.
     pub fn resolve_file_sources(
         config: &crate::MachineConfig,

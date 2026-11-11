@@ -404,19 +404,56 @@ fetch script instead. The `goldens` gate always sets this variable, so a failed 
 incomplete fixture fetch cannot silently pass CI. The µPD765 FAT12 test follows
 the same policy when `mformat` is missing and points to `nix develop`.
 
-### User-supplied ROM identity fixture
+### User-supplied ROM tests
 
-The ignored `user_supplied_ibm_1985_identity` test checks assembled identity,
-per-chip hashes and misplaced/bad-chip diagnostics through assembly and
-machine-file lowering, without executing the BIOS. Missing files skip, even when
-`UNEMUPC98_REQUIRE_FIXTURES=1` is set for the open fixture suite.
-To require the separately supplied 1985-06-10 chips:
+This local opt-in lane is never called by CI; CI never has proprietary firmware:
 
 ```sh
-UNEMUPC98_REQUIRE_USER_ROMS=1 cargo test --offline -p machine-file --test parts user_supplied_ibm_1985_identity -- --ignored
+bash scripts/ci-gate.sh user-roms
+# Equivalent command inside the devShell:
+cargo test --locked --workspace --no-fail-fast -- --ignored user_rom_
 ```
 
-See `vendor/user-roms/README.md` for repository-relative paths and hashes.
+These tests are `#[ignore]` with names starting with `user_rom_`. The shared
+`assembly::require_user_firmware!(entry_id, board.firmware_catalogue())` helper
+is available through assembly's `test-support` feature. It searches recursively
+in `vendor/user-roms/` first, then the optional directory
+`UNEMUPC98_USER_ROMS_DIR`. Set it to an absolute path to a folder of unpacked,
+plain dump files, rather than a volume root or home directory. Archives such as
+MAME `.zip` sets are not unpacked. Names and subdirectories do not matter;
+catalogue SHA-256 identities select assembled
+images or complete chip layouts. Only regular files of matching sizes are hashed,
+once per canonical path per test process; keep dumps unchanged during a run.
+Root, file and directory symlinks are followed; visited canonical directories
+prevent loops. Earlier roots win, and parts can span both roots.
+A set-but-missing, relative or non-directory external root fails configuration,
+even if vendor firmware matches. Unreadable subdirectories fail scanning.
+Private root names are redacted in discovery errors and display names. Use the
+returned firmware's `redact`, `expect_redacted` and `expect_err_redacted` helpers
+for downstream diagnostics that may embed paths.
+
+Missing, incomplete or wrong layouts print exactly one visible line:
+
+```text
+SKIPPED: user-supplied firmware <entry id> not found (set UNEMUPC98_USER_ROMS_DIR or see vendor/user-roms/README.md)
+```
+
+If some parts match, the same line appends counts for each partial layout, such
+as `; layout 0: 1 of 2 parts found`, without hashes or paths.
+
+`UNEMUPC98_REQUIRE_USER_ROMS=1` makes absence panic with that same text;
+other values leave skipping enabled. `UNEMUPC98_REQUIRE_FIXTURES` does not change
+this policy. Discovery I/O errors fail with redacted diagnostics instead of skipping.
+Require/skip panics point at the calling test.
+The ignored `user_rom_ibm_1985_identity` checks assembled identity, per-chip hashes
+and misplaced/bad-chip diagnostics through assembly and machine-file lowering,
+without executing the BIOS. It accepts either the chip pair or an assembled image.
+
+```sh
+UNEMUPC98_REQUIRE_USER_ROMS=1 bash scripts/ci-gate.sh user-roms
+```
+
+See `vendor/user-roms/README.md` for catalogue hashes and the proprietary golden rule.
 
 All three CI fixture scripts check pinned output SHA-256 hashes and rebuild offline
 when their pinned source commits and release archives are cached. FreeDOS also

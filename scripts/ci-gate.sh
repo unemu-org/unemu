@@ -4,7 +4,7 @@
 set -euo pipefail
 
 usage() {
-    echo 'Usage: bash scripts/ci-gate.sh {devshell|fmt|guard|clippy|deny|tests|fixtures|goldens}' >&2
+    echo 'Usage: bash scripts/ci-gate.sh {devshell|fmt|guard|clippy|deny|tests|fixtures|goldens|user-roms}' >&2
     exit 2
 }
 
@@ -39,6 +39,8 @@ case "$step" in
         ')
         ;;
     goldens) gate_command+=(env UNEMUPC98_REQUIRE_FIXTURES=1 cargo test --locked --workspace -- --ignored) ;;
+    # Local opt-in lane: CI never calls it and never has user-supplied firmware.
+    user-roms) gate_command+=(cargo test --locked --workspace --no-fail-fast -- --ignored user_rom_) ;;
     *) usage ;;
 esac
 

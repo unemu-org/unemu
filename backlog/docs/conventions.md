@@ -79,6 +79,14 @@ property-based, golden/trace tests (deterministic, pin the x86jit rev),
 boot/integration ROMs, SingleStepTests differential for real mode, snapshot/replay.
 No device or machine feature merges without its tests.
 
+Proprietary-firmware goldens store hashes and our own interpretation (POST codes,
+which tests passed, retired-instruction counts), never firmware bytes or copies
+of the firmware's screen text beyond short identifiers. Do not commit screenshots
+or full console transcripts from that firmware. User-ROM tests are ignored,
+start with `user_rom_`, and use the shared `assembly::require_user_firmware!`
+helper; see `commands.md` §User-supplied ROM tests. Discovery tests use synthetic
+bytes only.
+
 Keep process-spawning tests in separate test binaries from tests holding journal
 locks or pipe/FIFO descriptors whose lifetime affects another test. On Unix,
 fork duplicates every thread's open descriptors: `O_CLOEXEC` closes them only at

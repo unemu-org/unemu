@@ -5,11 +5,28 @@ commits or distributes them. The catalogue stores identities and chip metadata
 only. No default preset or machine file selects these images, and their status
 is Listed: identity checks work, execution has not been qualified by goldens.
 
-Store each part at the repository-relative path
+You may store parts at the repository-relative path
 `vendor/user-roms/<entry id>/<part number lowercase>.<chip label lowercase>`.
 These are MAME-style names, for example
 `vendor/user-roms/ibm-5170-bios-1985-06-10/6480090.u27`.
-Filenames are convenient labels; SHA-256 of the assembled image determines identity.
+These filenames are optional labels. Tests search recursively in
+`vendor/user-roms/`, then in `UNEMUPC98_USER_ROMS_DIR` if set. Set that variable
+to an absolute path to a folder of unpacked dumps, rather than a volume root or
+home directory. Dumps must be plain files: MAME `.zip` sets and other archives
+are not unpacked by discovery. Arbitrary names and nested directories work. Identity is
+the catalogue SHA-256, either of a complete pre-interleaved image or of every
+part in one known layout. Earlier roots take priority; parts can span both roots.
+Only regular files of known sizes are hashed, once per canonical path per test
+process; keep files unchanged during a test run. Root, file and directory symlinks
+are followed; canonical directory tracking stops loops. A set-but-missing,
+relative or non-directory external root is a configuration error, even if vendor
+firmware matches. An unreadable subdirectory aborts scanning with a redacted
+error instead of silently skipping.
+Discovery never prints contents or hashes of user files. Display names and
+discovery errors use `<UNEMUPC98_USER_ROMS_DIR>/relative/name` instead of the
+private root path. Incomplete or wrong layouts are absent, without per-file hash
+diagnostics from discovery. Partial layouts append only counts to the skip line,
+for example `; layout 0: 1 of 2 parts found`, with no paths or hashes.
 A pre-interleaved 65536-byte file works with `firmware.bios.image` or `--bios` too.
 
 Verify each dump with `shasum -a 256 <file>` or `sha256sum <file>`.
@@ -71,7 +88,21 @@ reports the assembled pin mismatch.
 Unknown assembled identities report the board catalogue. The run-only
 `--allow-unlisted-firmware` option relaxes membership and chip-identity diagnoses, retaining layout and pin checks.
 
-The ignored identity/diagnostic test checks the 1985-06-10 pair when present, without executing it. It skips
-absent dumps, including with `UNEMUPC98_REQUIRE_FIXTURES=1`; set
-`UNEMUPC98_REQUIRE_USER_ROMS=1` to require these separately supplied parts.
-See `backlog/docs/commands.md` for the command.
+The ignored `user_rom_ibm_1985_identity` checks the 1985-06-10 identity and chip
+diagnostics when present, without executing it. It accepts parts or a complete
+image. Run all such tests with `bash scripts/ci-gate.sh user-roms`; CI never calls
+this lane and never has proprietary firmware. Missing dumps print:
+
+```text
+SKIPPED: user-supplied firmware <entry id> not found (set UNEMUPC98_USER_ROMS_DIR or see vendor/user-roms/README.md)
+```
+
+This also skips with `UNEMUPC98_REQUIRE_FIXTURES=1`. Set
+`UNEMUPC98_REQUIRE_USER_ROMS=1` to panic with the same text on absence.
+See `backlog/docs/commands.md` for the commands and shared test helper.
+
+Goldens for proprietary firmware may store hashes and our own interpretation:
+POST codes, which tests passed, retired-instruction counts and similar measured
+outcomes. Never store proprietary firmware bytes or copies of its screen text
+beyond short identifiers. Screenshots and full console transcripts do not belong
+in these goldens. All committed discovery tests use synthetic bytes.

@@ -550,27 +550,40 @@ fn parts_bios_placement_names_parts_field() {
 }
 
 #[test]
-#[ignore = "requires separately supplied proprietary ROM parts; identity and diagnostics only"]
-fn user_supplied_ibm_1985_identity() {
+#[ignore = "requires separately supplied proprietary firmware; identity and diagnostics only"]
+fn user_rom_ibm_1985_identity() {
     use assembly::{ImagePart, Lane};
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../vendor/user-roms/ibm-5170-bios-1985-06-10");
-    let paths = [root.join("6480090.u27"), root.join("6480091.u47")];
-    if !paths.iter().all(|p| p.is_file()) {
-        assert_ne!(
-            std::env::var("UNEMUPC98_REQUIRE_USER_ROMS").as_deref(),
-            Ok("1"),
-            "required user-supplied IBM 1985-06-10 ROM parts are absent"
-        );
-        eprintln!("skipping absent user-supplied IBM 1985-06-10 ROM parts");
-        return;
-    }
     let catalogue = assembly::BoardModel::Ibm5170.firmware_catalogue();
-    let entry = catalogue
-        .iter()
-        .find(|e| e.id == "ibm-5170-bios-1985-06-10")
-        .unwrap();
-    let chips: Vec<_> = paths.iter().map(|p| std::fs::read(p).unwrap()).collect();
+    let found = assembly::require_user_firmware!("ibm-5170-bios-1985-06-10", catalogue);
+    let entry = found.expect_redacted(
+        catalogue
+            .iter()
+            .find(|e| e.id == "ibm-5170-bios-1985-06-10")
+            .ok_or("missing catalogue entry"),
+        "selecting firmware",
+    );
+    let split = Layers::new();
+    let chips: Vec<_> = match &found.source {
+        ImageSource::Interleaved(parts) => parts
+            .iter()
+            .map(|part| found.expect_redacted(std::fs::read(&part.path), "reading firmware part"))
+            .collect(),
+        ImageSource::File(path) => {
+            let bytes = found.expect_redacted(std::fs::read(path), "reading assembled firmware");
+            (0..2)
+                .map(|lane| bytes.iter().skip(lane).step_by(2).copied().collect())
+                .collect()
+        }
+        _ => panic!("discovery must return file-backed firmware"),
+    };
+    // Stable temporary names keep arbitrary dump filenames out of machine-file diagnostics.
+    let paths = [split.0.join("even"), split.0.join("odd")];
+    for (path, chip) in paths.iter().zip(&chips) {
+        found.expect_redacted(
+            std::fs::write(path, chip),
+            "writing temporary firmware part",
+        );
+    }
     for (chip, known) in chips.iter().zip(entry.parts[0]) {
         assert_eq!(format!("{:x}", Sha256::digest(chip)), known.sha256);
     }
@@ -594,29 +607,62 @@ fn user_supplied_ibm_1985_identity() {
     let document_for = |paths: &[PathBuf; 2]| {
         let input = format!(
             "schema=1\n[board]\nmodel='ibm-5170'\n[firmware.bios]\nparts=[\
-             {{image='{}',lane='even'}},{{image='{}',lane='odd'}}]\nsha256='{}'\n",
-            paths[0].display(),
-            paths[1].display(),
+             {{image='even',lane='even'}},{{image='odd',lane='odd'}}]\nsha256='{}'\n",
             entry.sha256
         );
-        parse(&input, false)
+        let mut document = found.expect_redacted(
+            parse_toml("machines/test.toml", &input),
+            "parsing firmware document",
+        );
+        let origins = found.expect_redacted(
+            Origins::from_toml("machines/test.toml", &input),
+            "locating firmware fields",
+        );
+        let parts = found.expect_redacted(
+            document
+                .firmware
+                .as_mut()
+                .and_then(|firmware| firmware.bios.as_mut())
+                .and_then(|bios| bios.parts.as_mut())
+                .ok_or("missing firmware parts"),
+            "selecting document parts",
+        );
+        for (part, path) in parts.iter_mut().zip(paths) {
+            part.image = found
+                .expect_redacted(
+                    path.to_str().ok_or("non-UTF-8 temporary path"),
+                    "setting document path",
+                )
+                .into();
+        }
+        (document, origins)
     };
     let default = AssemblyOptions::default();
     let escaped = AssemblyOptions {
         allow_unlisted_firmware: true,
     };
-    let config = config_for(&paths);
+    let mut config = config_for(&paths);
+    config.images[0].source = found.source.clone();
     assert_eq!(config.board, assembly::BoardModel::Ibm5170);
-    config.validate().unwrap();
-    let resolved = assembly::test_support::resolve_file_sources(&config, default).unwrap();
-    resolved.validate().unwrap();
+    found.expect_redacted(config.validate(), "validating firmware config");
+    let resolved = found.expect_redacted(
+        assembly::test_support::resolve_file_sources(&config, default),
+        "resolving firmware",
+    );
+    found.expect_redacted(resolved.validate(), "validating resolved firmware");
     let ImageSource::Inline(bytes) = &resolved.images[0].source else {
         panic!("unresolved BIOS")
     };
     assert!(entry.identifies(bytes));
-    assembly::check_board_system_bios(&resolved, resolved.board, 0xF0000, bytes, default).unwrap();
+    found.expect_redacted(
+        assembly::check_board_system_bios(&resolved, resolved.board, 0xF0000, bytes, default),
+        "checking firmware identity",
+    );
     let (doc, origins) = document_for(&paths);
-    let lowered = machine_file::lower(&doc, &origins, &mut machine_file::FileImageReader).unwrap();
+    let lowered = found.expect_redacted(
+        machine_file::lower(&doc, &origins, &mut machine_file::FileImageReader),
+        "lowering firmware document",
+    );
     assert_eq!(lowered.images[0].base, 0xF0000);
     assert!(
         lowered.images[0].source == resolved.images[0].source,
@@ -630,27 +676,36 @@ fn user_supplied_ibm_1985_identity() {
         "odd lane offset 0 holds U27 6480090, which belongs in the even lane at offset 0"
     );
     assert_eq!(
-        assembly::test_support::resolve_file_sources(&config_for(&swapped), default)
-            .map(|_| ())
-            .expect_err("expected firmware diagnostic")
-            .to_string(),
+        found.redact(
+            &found
+                .expect_err_redacted(
+                    assembly::test_support::resolve_file_sources(&config_for(&swapped), default),
+                    "checking swapped firmware",
+                )
+                .to_string()
+        ),
         message
     );
-    assembly::test_support::resolve_file_sources(&config_for(&swapped), escaped).unwrap();
+    found.expect_redacted(
+        assembly::test_support::resolve_file_sources(&config_for(&swapped), escaped),
+        "resolving swapped firmware with permission",
+    );
     let (doc, origins) = document_for(&swapped);
-    let error = machine_file::lower(&doc, &origins, &mut machine_file::FileImageReader)
-        .map(|_| ())
-        .expect_err("expected firmware diagnostic");
+    let error = found.expect_err_redacted(
+        machine_file::lower(&doc, &origins, &mut machine_file::FileImageReader),
+        "checking swapped firmware document",
+    );
     assert_eq!(error.field, "firmware.bios.parts");
-    assert_eq!(error.message, message);
-    let error = machine_file::lower_with_options(
-        &doc,
-        &origins,
-        &mut machine_file::FileImageReader,
-        escaped,
-    )
-    .map(|_| ())
-    .expect_err("expected firmware diagnostic");
+    assert_eq!(found.redact(&error.message), message);
+    let error = found.expect_err_redacted(
+        machine_file::lower_with_options(
+            &doc,
+            &origins,
+            &mut machine_file::FileImageReader,
+            escaped,
+        ),
+        "checking assembled pin after swapped firmware",
+    );
     assert!(error
         .message
         .starts_with("sha256 mismatch for assembled BIOS:"));
@@ -658,7 +713,10 @@ fn user_supplied_ibm_1985_identity() {
     let mut corrupted = chips[1].clone();
     corrupted[0] ^= 1;
     let wrong = temp.0.join("corrupt-odd");
-    std::fs::write(&wrong, &corrupted).unwrap();
+    found.expect_redacted(
+        std::fs::write(&wrong, &corrupted),
+        "writing temporary corrupt firmware",
+    );
     let wrong = [paths[0].clone(), wrong];
     let message = format!(
         "firmware parts do not match ibm-5170-bios-1985-06-10: odd lane offset 0: \
@@ -667,18 +725,26 @@ fn user_supplied_ibm_1985_identity() {
         Sha256::digest(&corrupted)
     );
     assert_eq!(
-        assembly::test_support::resolve_file_sources(&config_for(&wrong), default)
-            .map(|_| ())
-            .expect_err("expected firmware diagnostic")
-            .to_string(),
+        found.redact(
+            &found
+                .expect_err_redacted(
+                    assembly::test_support::resolve_file_sources(&config_for(&wrong), default),
+                    "checking corrupt firmware",
+                )
+                .to_string()
+        ),
         message
     );
     let (doc, origins) = document_for(&wrong);
     assert_eq!(
-        machine_file::lower(&doc, &origins, &mut machine_file::FileImageReader)
-            .map(|_| ())
-            .expect_err("expected firmware diagnostic")
-            .message,
+        found.redact(
+            &found
+                .expect_err_redacted(
+                    machine_file::lower(&doc, &origins, &mut machine_file::FileImageReader),
+                    "checking corrupt firmware document",
+                )
+                .message
+        ),
         message
     );
 }
