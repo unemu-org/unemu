@@ -65,7 +65,7 @@ pub use bus::PortWidth;
 pub use clock::ClockConfig;
 pub use cpu::{CpuChip, CpuConfig, ResetSpec, SegmentSeed};
 pub use device::{
-    CmosCfg, DebugConsoleCfg, DeviceConfig, DeviceId, DeviceKind, DmaCfg, DmaSpec, FdcCfg,
+    CmosCfg, CmosRam, DebugConsoleCfg, DeviceConfig, DeviceId, DeviceKind, DmaCfg, DmaSpec, FdcCfg,
     FwCfgCfg, I8042Cfg, IdeCfg, MdaTextCfg, NvramSource, PicCfg, PitCfg, PortWindow, PostPortCfg,
     RtcStart, SysControlCfg, UartCfg, VgaTextCfg,
 };

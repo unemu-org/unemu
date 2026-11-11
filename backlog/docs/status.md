@@ -237,7 +237,12 @@ checks identity and diagnostics without execution; see `vendor/user-roms/README.
   and byte-exact synthetic tests derive RAM, century, boot order, type-47 IDE
   geometry, translation and single-CPU fields. No production entry enables it;
   the SeaBIOS entry will do so with `generic-386-isa`. The complete 128-byte
-  derivation is available; exposing bytes above 3Fh awaits that board's RTC.
+  derivation is available and Bare Rust rigs can expose it through a
+  DS12887-compatible 128-byte RTC. The IBM AT retains its 64-byte MC146818 and version-4 snapshots;
+  the extended part uses version 5. Restore rejects snapshots whose capacity
+  differs from the configured part. NVRAM images/journals
+  stay 64-byte only; machine files have no size selector. Board selection
+  remains pending.
 
 - **2026-11-11, diagnostic-ROM validation:** [spike recorded](design/compatibility-diagnostics.md); user-supplied Landmark AT 1.2.0 prefix/full goldens remain pending (`upc-fro.3`–`upc-fro.5`), and Ruud XT v5.7 is a future `ibm-5160` fixture (`upc-fro.6`); no AT diagnostic run is qualified.
 

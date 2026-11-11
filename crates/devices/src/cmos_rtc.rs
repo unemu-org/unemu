@@ -1,11 +1,18 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Motorola MC146818 CMOS RAM / real-time clock (§7.6).
+//! Motorola MC146818 / Dallas DS12887 CMOS RAM / real-time clock (§7.6).
 //!
 //! Models the PC/AT's battery-backed clock chip. Two ports are decoded: `0x70`
 //! is the index register (its top bit is the **NMI disable** control), and `0x71`
-//! is the data window into the selected index. The chip holds **64 bytes** of
+//! is the data window into the selected index. The chip holds **64 or 128 bytes** of
 //! CMOS NVRAM; the first 14 indices are the RTC time registers and control
 //! registers A–D, and the rest is general-purpose CMOS storage the BIOS uses.
+//!
+//! Dallas Semiconductor DS12887 datasheet, "Address Map": 128 bytes comprise
+//! 14 clock/control bytes and 114 general RAM bytes; 00h–0Dh share the
+//! MC146818 layout. Only the RAM capacity varies here; clock behaviour retains
+//! the model below. ASSUMED: the PC/AT port 70h NMI latch stays outside the RTC
+//! address decode; bit 7 never selects RAM. See
+//! `backlog/docs/design/machine-config.md` § RTC start and NVRAM source.
 //!
 //! ## Time model
 //!
@@ -49,7 +56,7 @@
 //!
 //! | Feature                              | Modelled | Notes                          |
 //! |--------------------------------------|----------|--------------------------------|
-//! | 64-byte CMOS NVRAM                    | yes      | full read/write                |
+//! | 64/128-byte CMOS NVRAM                | yes      | full read/write                |
 //! | Time/date registers, BCD & binary    | yes      | per register B DM bit          |
 //! | 12/24-hour mode                       | yes      | per register B bit 1, PM = `0x80` |
 //! | Per-second update + UIP flag          | yes      | driven by `tick`               |
@@ -58,8 +65,15 @@
 //! | Alarm interrupt (AF/AIE)              | yes      | with `0xC0` "don't care" match |
 //! | NMI-disable bit (`0x70` bit 7)        | yes      | stored + exposed               |
 //! | Register D VRT (valid RAM & time)     | yes      | reads back set                 |
+//! | DS12887-specific read-only markings   | not modelled / ASSUMED | seconds MSB, C/D and A bit 7; existing MC146818 C/A handling retained |
 //! | Config NVRAM seed + AT checksum       | yes      | opt-in via [`CmosConfig`]      |
 //! | RESET input                          | yes      | clears interrupt enables/flags and SQWE; preserves clock/calendar/RAM |
+//!
+//! ASSUMED from secondhand Dallas Semiconductor DS12887 datasheet, "Address
+//! Map" text: the seconds MSB, registers C/D and register A bit 7 are marked
+//! read-only. No separate DS12887 write mask is implemented. The shared model
+//! retains MC146818 handling for C and A bit 7, and permits writes to D's
+//! reserved bits; the seconds MSB is not separately protected.
 //!
 //! Motorola MC146818 datasheet, "Time, Calendar, and Alarm Locations", Table 3,
 //! specifies the valid register ranges. Out-of-range values have undefined
@@ -106,11 +120,36 @@ const PORT_INDEX: u16 = 0x70;
 /// Data port into the selected CMOS index.
 const PORT_DATA: u16 = 0x71;
 
-/// Number of CMOS NVRAM bytes.
+/// Legacy CMOS image length; extended storage is selected by `CmosRam`.
 const NVRAM_LEN: usize = 64;
 
-/// Snapshot layout version tag.
+/// CMOS address-space size, including the fourteen clock/control registers.
+///
+/// Motorola MC146818 datasheet, RAM; Dallas Semiconductor DS12887 datasheet,
+/// Address Map. See `backlog/docs/design/machine-config.md` § RTC start and
+/// NVRAM source. The DS12887 extension adds general RAM at 40h–7Fh.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+pub enum CmosRam {
+    /// Original MC146818 address space, with six decoded index bits.
+    #[default]
+    Bytes64,
+    /// DS12887 address space, with seven decoded index bits.
+    Bytes128,
+}
+
+impl CmosRam {
+    fn len(self) -> usize {
+        match self {
+            Self::Bytes64 => 64,
+            Self::Bytes128 => 128,
+        }
+    }
+}
+
+/// Snapshot layout version tag for the original 64-byte part.
 const SNAPSHOT_VERSION: u8 = 4;
+/// Extended RAM uses the same fields with a 128-byte store.
+const EXTENDED_SNAPSHOT_VERSION: u8 = 5;
 
 // CMOS register indices.
 const REG_SECONDS: usize = 0x00;
@@ -342,19 +381,20 @@ impl Default for CmosConfig {
     }
 }
 
-/// The MC146818 CMOS/RTC device (§7.6).
+/// The MC146818 / DS12887-compatible CMOS/RTC device (§7.6).
 ///
 /// Decodes ports `0x70`/`0x71`. Drives **IRQ8** through [`Device::irq_pending`]
 /// on the slave PIC, cascaded through master IRQ2.
 pub struct CmosRtc {
-    /// 64-byte CMOS store. Time registers are shadowed by `time` on access; their
+    /// CMOS backing store. Time registers are shadowed by `time` on access; their
     /// slots here back general reads only for non-time indices.
-    nvram: [u8; NVRAM_LEN],
+    nvram: [u8; 128],
+    ram: CmosRam,
     /// Optional host observer; excluded from hardware snapshots and restored from RAM.
     nvram_store: Option<NvramStore>,
     /// The live broken-down time.
     time: RtcTime,
-    /// Currently selected CMOS index (low 6 bits meaningful).
+    /// Currently selected CMOS index (six or seven decoded bits).
     index: usize,
     /// NMI-disable state from `0x70` bit 7 (`true` = NMI masked).
     nmi_disabled: bool,
@@ -396,7 +436,7 @@ impl CmosRtc {
     /// ratio, decoding ports `0x70`/`0x71`.
     #[must_use]
     pub fn new() -> Self {
-        let mut nvram = [0u8; NVRAM_LEN];
+        let mut nvram = [0u8; 128];
         // Register B defaults to 24-hour BCD with no interrupts enabled, matching
         // the common BIOS configuration.
         nvram[REG_B] = B_24HOUR;
@@ -404,6 +444,7 @@ impl CmosRtc {
         nvram[REG_D] = D_VRT;
         Self {
             nvram,
+            ram: CmosRam::default(),
             nvram_store: None,
             time: RtcTime::default_epoch(),
             index: 0,
@@ -420,11 +461,19 @@ impl CmosRtc {
         }
     }
 
+    /// Select the address-space size (DS12887 datasheet, Address Map).
+    #[must_use]
+    pub fn with_ram(mut self, ram: CmosRam) -> Self {
+        self.ram = ram;
+        self.index &= ram.len() - 1;
+        self
+    }
+
     /// Initialize only general RAM, preserving live clock/control defaults
     /// (MC146818 datasheet, RAM and Registers A–D).
     #[must_use]
     pub fn with_general_nvram(mut self, bytes: [u8; 50]) -> Self {
-        self.nvram[14..].copy_from_slice(&bytes);
+        self.nvram[14..64].copy_from_slice(&bytes);
         self.publish_nvram();
         self
     }
@@ -443,7 +492,7 @@ impl CmosRtc {
 
     fn publish_nvram(&self) {
         if let Some(store) = &self.nvram_store {
-            store.0.borrow_mut().copy_from_slice(&self.nvram[14..]);
+            store.0.borrow_mut().copy_from_slice(&self.nvram[14..64]);
         }
     }
 
@@ -477,13 +526,26 @@ impl CmosRtc {
     /// `backlog/docs/design/machine-config.md` § RTC start and NVRAM source.
     #[must_use]
     pub fn with_nvram(mut self, bytes: [u8; NVRAM_LEN]) -> Self {
+        self.nvram[..64].copy_from_slice(&bytes);
+        self.initialize_status();
+        self
+    }
+
+    /// Load the full derived seed for a DS12887-sized address space.
+    /// Clock/control initialization matches [`Self::with_nvram`].
+    #[must_use]
+    pub fn with_extended_nvram(mut self, bytes: [u8; 128]) -> Self {
         self.nvram = bytes;
+        self.initialize_status();
+        self
+    }
+
+    fn initialize_status(&mut self) {
         self.nvram[REG_A] &= !A_UIP;
         self.nvram[REG_C] = 0;
         self.refresh_irqf();
         self.nvram[REG_D] = D_VRT;
         self.publish_nvram();
-        self
     }
 
     /// Write the standard configuration bytes and recompute the checksum. The
@@ -838,7 +900,7 @@ impl Device for CmosRtc {
         match port {
             PORT_INDEX => {
                 self.nmi_disabled = byte & 0x80 != 0;
-                self.index = usize::from(byte & 0x3F);
+                self.index = usize::from(byte) & (self.ram.len() - 1);
             }
             PORT_DATA => {
                 self.write_index(byte);
@@ -959,9 +1021,12 @@ impl Device for CmosRtc {
     }
 
     fn save(&self) -> Vec<u8> {
-        let mut blob = Vec::with_capacity(1 + NVRAM_LEN + 7 + 1 + 1 + 8 * 4 + 11);
-        blob.push(SNAPSHOT_VERSION);
-        blob.extend_from_slice(&self.nvram);
+        let mut blob = Vec::with_capacity(1 + self.ram.len() + 7 + 1 + 1 + 8 * 4 + 11);
+        blob.push(match self.ram {
+            CmosRam::Bytes64 => SNAPSHOT_VERSION,
+            CmosRam::Bytes128 => EXTENDED_SNAPSHOT_VERSION,
+        });
+        blob.extend_from_slice(&self.nvram[..self.ram.len()]);
         blob.push(self.time.second);
         blob.push(self.time.minute);
         blob.push(self.time.hour);
@@ -982,24 +1047,37 @@ impl Device for CmosRtc {
     }
 
     fn restore(&mut self, snapshot: &[u8]) -> Result<(), DeviceError> {
-        const LEN: usize = 1 + NVRAM_LEN + 7 + 1 + 1 + 32 + 11;
-        if snapshot
-            .first()
-            .is_some_and(|&version| version != SNAPSHOT_VERSION)
-        {
-            return Err(DeviceError::InvalidSnapshot {
-                device: NAME,
-                reason: "unsupported snapshot version",
-            });
-        }
-        if snapshot.len() != LEN {
+        let ram = match snapshot.first() {
+            Some(&SNAPSHOT_VERSION) => CmosRam::Bytes64,
+            Some(&EXTENDED_SNAPSHOT_VERSION) => CmosRam::Bytes128,
+            Some(_) => {
+                return Err(DeviceError::InvalidSnapshot {
+                    device: NAME,
+                    reason: "unsupported snapshot version",
+                })
+            }
+            None => {
+                return Err(DeviceError::InvalidSnapshot {
+                    device: NAME,
+                    reason: "unexpected snapshot length",
+                })
+            }
+        };
+        let nvram_len = ram.len();
+        if snapshot.len() != 1 + nvram_len + 7 + 1 + 1 + 32 + 11 {
             return Err(DeviceError::InvalidSnapshot {
                 device: NAME,
                 reason: "unexpected snapshot length",
             });
         }
+        if ram != self.ram {
+            return Err(DeviceError::InvalidSnapshot {
+                device: NAME,
+                reason: "snapshot RAM size does not match configured RTC",
+            });
+        }
         let read_timing = |off| u64::from_le_bytes(std::array::from_fn(|i| snapshot[off + i]));
-        let timing = 1 + NVRAM_LEN + 7 + 2;
+        let timing = 1 + nvram_len + 7 + 2;
         let accum = read_timing(timing);
         let second_ticks = read_timing(timing + 8);
         let uip_ticks = read_timing(timing + 16);
@@ -1013,8 +1091,8 @@ impl Device for CmosRtc {
             || divider_phase >= 32768
             || accum >= second_ticks
             || uip_ticks > second_ticks
-            || snapshot[1 + NVRAM_LEN + 7] >= NVRAM_LEN as u8
-            || snapshot[1 + NVRAM_LEN + 8] & !3 != 0
+            || snapshot[1 + nvram_len + 7] >= nvram_len as u8
+            || snapshot[1 + nvram_len + 8] & !3 != 0
             || snapshot[1 + REG_A] & A_UIP != 0
             || snapshot[1 + REG_C] & 0x0F != 0
         {
@@ -1024,8 +1102,9 @@ impl Device for CmosRtc {
             });
         }
         let mut off = 1;
-        self.nvram.copy_from_slice(&snapshot[off..off + NVRAM_LEN]);
-        off += NVRAM_LEN;
+        self.nvram = [0; 128];
+        self.nvram[..nvram_len].copy_from_slice(&snapshot[off..off + nvram_len]);
+        off += nvram_len;
         self.time = RtcTime {
             second: snapshot[off],
             minute: snapshot[off + 1],
@@ -1036,7 +1115,7 @@ impl Device for CmosRtc {
             year: snapshot[off + 6],
         };
         off += 7;
-        self.index = usize::from(snapshot[off] & 0x3F);
+        self.index = usize::from(snapshot[off]);
         off += 1;
         let flags = snapshot[off];
         self.nmi_disabled = flags & 0x01 != 0;
@@ -1075,6 +1154,236 @@ impl Device for CmosRtc {
 mod tests {
     use super::*;
     use testkit::MockBus;
+
+    #[test]
+    fn ram64_retains_extended_address_aliases_on_mock_bus() {
+        let mut bus = MockBus::new(Box::new(CmosRtc::new()));
+        bus_write_reg(&mut bus, 0x1B, 0xA5);
+        assert_eq!(bus_read_reg(&mut bus, 0x5B), 0xA5);
+        bus_write_reg(&mut bus, 0x5B, 0x67);
+        assert_eq!(bus_read_reg(&mut bus, 0x1B), 0x67);
+        assert_eq!(bus.device().save()[0], 4);
+    }
+
+    #[test]
+    fn ram128_keeps_every_extended_byte_distinct_on_mock_bus() {
+        let mut bus = MockBus::new(Box::new(CmosRtc::new().with_ram(CmosRam::Bytes128)));
+        for index in 0x0E..0x40 {
+            bus_write_reg(&mut bus, index, 0xA5);
+        }
+        for index in 0x40..0x80 {
+            bus_write_reg(&mut bus, index, index as u8);
+        }
+        for index in 0x40..0x80 {
+            assert_eq!(bus_read_reg(&mut bus, index), index as u8);
+        }
+        for index in 0x0E..0x40 {
+            assert_eq!(bus_read_reg(&mut bus, index), 0xA5);
+        }
+        assert_eq!(bus_read_reg(&mut bus, REG_SECONDS), 0);
+        assert_eq!(bus_read_reg(&mut bus, REG_B), B_24HOUR);
+        assert_eq!(bus_read_reg(&mut bus, REG_D), D_VRT);
+    }
+
+    #[test]
+    fn ram_variants_share_clock_registers_and_deadlines_on_mock_bus() {
+        for mode in [0, B_24HOUR, B_BINARY, B_BINARY | B_24HOUR] {
+            let make = |ram| {
+                let mut rtc = CmosRtc::new().with_ram(ram).with_timing(100, 2);
+                rtc.set_time(58, 59, 23, 7, 31, 12, 99);
+                MockBus::new(Box::new(rtc))
+            };
+            let mut small = make(CmosRam::Bytes64);
+            let mut large = make(CmosRam::Bytes128);
+            for bus in [&mut small, &mut large] {
+                bus_write_reg(bus, REG_A, 0x26);
+                bus_write_reg(bus, REG_B, mode | B_PIE | B_UIE | B_AIE);
+                for reg in [REG_SECONDS_ALARM, REG_MINUTES_ALARM, REG_HOURS_ALARM] {
+                    bus_write_reg(bus, reg, ALARM_DONT_CARE);
+                }
+                // Both variants decode the clock register writes identically.
+                bus_write_reg(
+                    bus,
+                    REG_SECONDS,
+                    if mode & B_BINARY != 0 { 58 } else { 0x58 },
+                );
+            }
+            for clocks in [1, 96, 1, 2, 100, 100] {
+                small.tick(clocks);
+                large.tick(clocks);
+                assert_eq!(
+                    small.device().next_event(small.clock()),
+                    large.device().next_event(large.clock())
+                );
+                assert_eq!(small.device().irq_pending(), large.device().irq_pending());
+                for reg in 0..14 {
+                    assert_eq!(
+                        bus_read_reg(&mut small, reg),
+                        bus_read_reg(&mut large, reg),
+                        "register {reg:#x}, mode {mode}"
+                    );
+                }
+            }
+            assert_eq!(bus_read_reg(&mut large, REG_YEAR), 0);
+        }
+    }
+
+    #[test]
+    fn ram_variants_keep_nmi_bit_outside_the_index_on_mock_bus() {
+        for (ram, index) in [(CmosRam::Bytes64, 0x1B), (CmosRam::Bytes128, 0x5B)] {
+            let mut bus = MockBus::new(Box::new(CmosRtc::new().with_ram(ram)));
+            bus_write_reg(&mut bus, 0xDB, 0x6A);
+            assert_eq!(bus.port_read(PORT_INDEX, 1).unwrap(), index | 0x80);
+            assert_eq!(bus_read_reg(&mut bus, index as usize), 0x6A);
+            assert_eq!(bus.port_read(PORT_INDEX, 1).unwrap(), index);
+            bus_write_reg(&mut bus, 0xFF, 0xA5);
+            assert_eq!(bus_read_reg(&mut bus, ram.len() - 1), 0xA5);
+        }
+    }
+
+    #[test]
+    fn ram_snapshots_round_trip_both_sizes_and_selected_extended_index() {
+        for (ram, version, len) in [(CmosRam::Bytes64, 4, 117), (CmosRam::Bytes128, 5, 181)] {
+            let mut bus = MockBus::new(Box::new(CmosRtc::new().with_ram(ram).with_timing(100, 2)));
+            bus_write_reg(&mut bus, REG_A, 0x26);
+            bus_write_reg(&mut bus, REG_B, B_24HOUR | B_UIE | B_PIE);
+            for index in 0x0E..ram.len() {
+                bus_write_reg(&mut bus, index, index as u8);
+            }
+            bus.tick(98);
+            bus.port_write(PORT_INDEX, 1, 0xFF).unwrap();
+            let snapshot = bus.device().save();
+            assert_eq!(snapshot[0], version);
+            assert_eq!(snapshot.len(), len);
+            let mut restored = MockBus::new(Box::new(CmosRtc::new().with_ram(ram)));
+            restored.device_mut().restore(&snapshot).unwrap();
+            assert_eq!(restored.device().save(), snapshot);
+            assert_eq!(
+                restored.port_read(PORT_INDEX, 1).unwrap(),
+                (ram.len() - 1) as u32 | 0x80
+            );
+            assert_eq!(
+                restored.port_read(PORT_DATA, 1).unwrap(),
+                (ram.len() - 1) as u32
+            );
+            // Restoring the absolute device clock also requires aligning the mock bus.
+            restored.tick(98);
+            bus.tick(2);
+            restored.tick(2);
+            for index in 0..ram.len() {
+                assert_eq!(
+                    bus_read_reg(&mut bus, index),
+                    bus_read_reg(&mut restored, index)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn ram_snapshot_restores_original_version4_bytes_on_mock_bus() {
+        // Literal power-on snapshot from the original 64-byte device format.
+        const ORIGINAL: [u8; 117] = [
+            0x04, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0x00,
+            0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x07, 0x01,
+            0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x99, 0x9E,
+            0x36, 0x00, 0x00, 0x00, 0x00, 0x00, 0xFB, 0x0D, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00,
+        ];
+        assert_eq!(CmosRtc::new().save(), ORIGINAL);
+        let mut bus = MockBus::new(Box::new(CmosRtc::new()));
+        bus_write_reg(&mut bus, 0x5B, 0xA5);
+        bus.device_mut().restore(&ORIGINAL).unwrap();
+        assert_eq!(bus.device().save(), ORIGINAL);
+        bus_write_reg(&mut bus, 0x5B, 0x67);
+        assert_eq!(bus_read_reg(&mut bus, 0x1B), 0x67);
+        bus.tick(1_193_182);
+        assert_eq!(bus_read_reg(&mut bus, REG_SECONDS), 1);
+    }
+
+    fn assert_snapshot_ram_mismatch_on_mock_bus(source_ram: CmosRam, configured_ram: CmosRam) {
+        let snapshot = CmosRtc::new()
+            .with_ram(source_ram)
+            .with_general_nvram([0x67; 50])
+            .save();
+        let mut rtc = CmosRtc::new().with_ram(configured_ram).with_timing(100, 2);
+        let store = rtc.nvram_store();
+        let mut bus = MockBus::new(Box::new(rtc));
+        bus_write_reg(&mut bus, REG_B, B_24HOUR | B_UIE);
+        bus_write_reg(&mut bus, 0x1B, 0xA5);
+        bus_write_reg(&mut bus, 0x5B, 0x6A);
+        bus.tick(100);
+        bus.port_write(PORT_INDEX, 1, 0xDB).unwrap();
+        let before = bus.device().save();
+        let observed = store.snapshot();
+        assert!(bus.device().irq_pending());
+        let error = DeviceError::InvalidSnapshot {
+            device: NAME,
+            reason: "snapshot RAM size does not match configured RTC",
+        };
+        assert_eq!(bus.device_mut().restore(&snapshot), Err(error));
+        assert_eq!(bus.device().save(), before);
+        assert_eq!(store.snapshot(), observed);
+        assert!(bus.device().irq_pending());
+        assert_eq!(bus_read_reg(&mut bus, 0x5B), 0x6A);
+        assert_eq!(
+            bus_read_reg(&mut bus, 0x1B),
+            if configured_ram == CmosRam::Bytes128 {
+                0xA5
+            } else {
+                0x6A
+            }
+        );
+    }
+
+    #[test]
+    fn snapshot_ram_mismatch_rejects_v4_on_128_byte_device_atomically() {
+        assert_snapshot_ram_mismatch_on_mock_bus(CmosRam::Bytes64, CmosRam::Bytes128);
+    }
+
+    #[test]
+    fn snapshot_ram_mismatch_rejects_v5_on_64_byte_device_atomically() {
+        assert_snapshot_ram_mismatch_on_mock_bus(CmosRam::Bytes128, CmosRam::Bytes64);
+    }
+
+    #[test]
+    fn ram128_snapshot_rejects_bad_extended_state_without_partial_restore() {
+        let mut bus = MockBus::new(Box::new(CmosRtc::new().with_ram(CmosRam::Bytes128)));
+        bus_write_reg(&mut bus, 0x7F, 0xA5);
+        let original = bus.device().save();
+        for field in [0, 1 + 128 + 7, 1 + 128 + 8] {
+            let mut bad = original.clone();
+            bad[field] = 0x80;
+            assert!(bus.device_mut().restore(&bad).is_err());
+            assert_eq!(bus.device().save(), original);
+        }
+        assert!(bus.device_mut().restore(&original[..117]).is_err());
+        assert_eq!(bus.device().save(), original);
+    }
+
+    #[test]
+    fn ram128_observer_still_covers_only_original_general_ram() {
+        let mut rtc = CmosRtc::new()
+            .with_ram(CmosRam::Bytes128)
+            .with_general_nvram([0xA5; 50]);
+        let store = rtc.nvram_store();
+        let mut bus = MockBus::new(Box::new(rtc));
+        for index in 0x40..0x80 {
+            bus_write_reg(&mut bus, index, index as u8);
+        }
+        assert_eq!(store.snapshot(), [0xA5; 50]);
+        bus_write_reg(&mut bus, 0x1B, 0x67);
+        assert_eq!(store.snapshot()[0x1B - 14], 0x67);
+        let snapshot = bus.device().save();
+        bus_write_reg(&mut bus, 0x1B, 0);
+        bus.device_mut().restore(&snapshot).unwrap();
+        assert_eq!(store.snapshot()[0x1B - 14], 0x67);
+        bus.device_mut().reset();
+        assert_eq!(bus_read_reg(&mut bus, 0x5B), 0x5B);
+    }
 
     #[test]
     fn nvram_observer_initialization_and_restore_publish_on_mock_bus() {

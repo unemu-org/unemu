@@ -115,7 +115,9 @@ const WORD_PORT_SUPPORT: &[WordPortSupport] = &[
 impl MachineConfig {
     /// Validate this configuration, returning the first inconsistency found.
     ///
-    /// The checks run in a fixed order (journal mode, identity, board constraints, firmware services, RTC start, access coupling, ports, MMIO,
+    /// The checks run in a fixed order (journal mode, RTC RAM capacity, part
+    /// sources, identity, emulator-only devices, board constraints, firmware
+    /// layout and services, RTC start, access coupling, ports, MMIO,
     /// image placement, interrupt and DMA wiring, drive binding and geometry,
     /// clock) so malformed configs always yield the same [`ConfigError`]. File
     /// lengths are checked when [`crate::assemble`] reads the sources and validates
@@ -134,6 +136,7 @@ impl MachineConfig {
     // Journal source checks run before file resolution; repeat the remaining
     // checks on the exact loaded bytes without requiring those bytes to be files.
     pub(crate) fn validate_resolved(&self) -> Result<(), ConfigError> {
+        self.check_rtc_ram()?;
         self.check_part_sources()?;
         self.check_unique_device_ids()?;
         self.check_debug_console()?;
@@ -289,6 +292,25 @@ impl MachineConfig {
                         device: device.id,
                         service: rule.service,
                     });
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn check_rtc_ram(&self) -> Result<(), ConfigError> {
+        for device in &self.devices {
+            if let DeviceKind::Rtc(cfg) = &device.kind {
+                if cfg.ram == crate::CmosRam::Bytes128 {
+                    if self.board == BoardModel::Ibm5170 {
+                        return Err(ConfigError::Ibm5170RtcRam);
+                    }
+                    if matches!(
+                        cfg.nvram,
+                        crate::NvramSource::Image(_) | crate::NvramSource::Journal { .. }
+                    ) {
+                        return Err(ConfigError::UnsupportedExtendedNvram);
+                    }
                 }
             }
         }
@@ -1404,6 +1426,7 @@ mod tests {
             ),
             (
                 DeviceKind::Rtc(CmosCfg {
+                    ram: crate::CmosRam::Bytes64,
                     nvram: crate::NvramSource::Blank,
                     start: crate::RtcStart::default(),
                     timing: Some((0x1234, 0x56)),
@@ -1664,6 +1687,7 @@ mod tests {
                 .find(|d| d.id == DeviceId::Rtc)
                 .unwrap()
                 .kind = DeviceKind::Rtc(CmosCfg {
+                ram: crate::CmosRam::Bytes64,
                 nvram: crate::NvramSource::Blank,
                 start: crate::RtcStart::default(),
                 timing: Some((20, 2)),
@@ -1958,6 +1982,7 @@ mod tests {
             dev(
                 DeviceId::Rtc,
                 DeviceKind::Rtc(CmosCfg {
+                    ram: crate::CmosRam::Bytes64,
                     nvram: crate::NvramSource::Derived,
                     start: crate::RtcStart::default(),
                     timing: None,

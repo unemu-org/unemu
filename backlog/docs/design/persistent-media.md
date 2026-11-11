@@ -249,8 +249,10 @@ conflict with `start`'s year; set `start` accordingly. Volatile images retain
 the existing initialization behavior.
 
 Reuse version 1, its sink and all offline tools: additionally accept an exact
-64-byte base image, pinned by SHA-256 over all 64 original bytes. It has one
-logical block at LBA 0. Its SECTOR payload remains 512 bytes: the first 64
+64-byte base image, pinned by SHA-256 over all 64 original bytes. This is the
+only accepted short base: images/journals with a 128-byte RTC are rejected with
+`128-byte NVRAM images are not supported yet`; the journal format is unchanged.
+It has one logical block at LBA 0. Its SECTOR payload remains 512 bytes: the first 64
 bytes hold the store and the remaining 448 must be zero. Bytes 00h–0Dh and 0Fh
 stay identical to the base in emitted records and exports. The scanner and sink
 both reject changes to these immutable bytes or nonzero padding before replay

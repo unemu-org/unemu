@@ -71,7 +71,7 @@ pub enum FirmwarePart {
     /// A 128-byte CMOS RTC with distinct addresses above 3Fh.
     /// Dallas Semiconductor DS12887 datasheet, Address Map. The AT MC146818's
     /// six-bit decoder aliases firmware RAM-size and CPU-count fields to disk
-    /// geometry, so it cannot satisfy this requirement. No current device does.
+    /// geometry, so only an RTC configured with 128 bytes satisfies this requirement.
     RtcCmos128,
     /// Master and slave interrupt controllers.
     PicCascade,
@@ -103,7 +103,9 @@ impl FirmwarePart {
         match self {
             Self::Kbc8042 => has(|kind| matches!(kind, DeviceKind::Keyboard(_))),
             Self::RtcCmos => has(|kind| matches!(kind, DeviceKind::Rtc(_))),
-            Self::RtcCmos128 => false,
+            Self::RtcCmos128 => has(
+                |kind| matches!(kind, DeviceKind::Rtc(cfg) if cfg.ram == crate::CmosRam::Bytes128),
+            ),
             Self::PicCascade => {
                 has(|kind| matches!(kind, DeviceKind::Pic(p) if p.cascade))
                     && has(|kind| matches!(kind, DeviceKind::Pic(p) if !p.cascade))

@@ -707,7 +707,7 @@ golden expectations remain unchanged.
 
 ## RTC start and NVRAM source
 
-`CmosCfg { start: RtcStart, nvram: NvramSource, timing }` separates the fixed
+`CmosCfg { ram: CmosRam, start: RtcStart, nvram: NvramSource, timing }` separates the fixed
 calendar seed from the initial store. `RtcStart` holds binary `year`, `month`,
 `day`, `hour`, `minute`, and `second`; the weekday is derived, with Sunday = 1.
 Its default is exactly **2000-01-01 00:00:00, Saturday (7)**. This implementation
@@ -732,6 +732,25 @@ and `with_timing(second_ticks, uip_ticks)` retain integer PIT-clock units,
 including the CLI RTC demonstration's small timing ratio. Snapshots include the
 phase-unit scale as well as the calendar and periodic remainders.
 
+`CmosRam::Bytes64` is the default MC146818 part, decoding six index bits.
+`CmosRam::Bytes128` selects DS12887-compatible extended RAM: 40h–7Fh are
+independent general storage, and 00h–0Dh use identical clock/control logic.
+Dallas Semiconductor DS12887 datasheet, **Address Map**, describes 14
+clock/control bytes and 114 general RAM bytes. ASSUMED: PC/AT port 70h bit 7
+remains the external NMI mask; it never selects RTC RAM in either variant.
+`ibm-5170` requires the 64-byte part and rejects a 128-byte RTC with
+`board ibm-5170 requires a 64-byte RTC: the IBM AT has an MC146818`.
+Bare Rust rigs may select either size. No machine-file size syntax is added;
+files continue to lower to the 64-byte part.
+
+64-byte snapshots retain version 4 and their exact layout. 128-byte snapshots
+use version 5 with the same fields following the longer store. Restore accepts
+version 4 only on a configured 64-byte device and version 5 only on a configured
+128-byte device. A mismatch is rejected atomically with
+`snapshot RAM size does not match configured RTC`; restore never changes the
+configured capacity. Legacy 64-byte snapshots still restore on the 64-byte part.
+The journal observer still exposes only 0Eh–3Fh, even on the extended part.
+
 `NvramSource` has four variants:
 
 | Variant | Initialization |
@@ -740,6 +759,11 @@ phase-unit scale as well as the calendar and periodic remainders.
 | `Blank` | Existing unseeded chip, retaining its control defaults |
 | `Image([u8; 64])` | Volatile writable bytes copied without checksum repair; read-only status initialized to power-on values |
 | `Journal { image, expected_sha256, journal, keep_generations }` | Assembly reads and verifies the immutable 64-byte file, replays general RAM 0Eh–3Fh except 0Fh and retains RTC defaults for 00h–0Dh |
+
+Images and journals remain 64-byte only. A 128-byte RTC combined with either
+source is rejected before file access with
+`128-byte NVRAM images are not supported yet`. `Derived` and `Blank` work
+with either capacity; no journal format changes are made.
 
 The fixed array enforces volatile image length at the Rust boundary. The
 machine-file loader rejects other lengths; journal assembly checks the bytes
@@ -845,14 +869,14 @@ READ: QEMU `hw/i386/pc.c` (29760ef), `pc_cmos_init_late`, `cmos_init_hd`,
 `src/clock.c`, `clock_setup`; `src/hw/floppy.c`, `floppy_setup`.
 
 `derive_cmos_layout` returns all 128 bytes without allocating guest RAM, so
-large-memory arithmetic can be tested on synthetic maps. The existing
-`derive_cmos_config` API and assembly still use the low 64 bytes, preserving
-current RTC devices, NVRAM files, snapshots and goldens. Firmware validation
-implicitly requires `rtc-cmos-128` whenever `cmos-qemu-layout` is enabled,
-even if the entry omits it from `requires`. No current device satisfies this
-part, so no current board can enable the capability. A future DS12887-class
-part must decode 5Bh–5Fh independently before the SeaBIOS entry enables it.
-The current MC146818 masks addresses with 3Fh: 5Bh–5Dh alias 1Bh–1Dh, and
+large-memory arithmetic can be tested on synthetic maps. Assembly loads the
+whole seed for `CmosRam::Bytes128` and only its low 64 bytes for `Bytes64`.
+The existing `derive_cmos_config` API, 64-byte RTC snapshots, NVRAM files and
+goldens retain their current format. Firmware validation implicitly requires
+`rtc-cmos-128` whenever `cmos-qemu-layout` is enabled, even if the entry omits
+it from `requires`. A configured 128-byte RTC satisfies that requirement on
+Bare rigs; the future board will select it before enabling the SeaBIOS entry.
+The MC146818 still masks addresses with 3Fh: 5Bh–5Dh alias 1Bh–1Dh, and
 5Fh aliases 1Fh. A type-47 geometry record there would make SeaBIOS report
 phantom RAM above 4 GiB and up to 256 CPUs. Pure derivation remains available
 for synthetic tests without device validation.

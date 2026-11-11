@@ -39,8 +39,9 @@
 //! A stock BIOS reads its floppy types, equipment byte, and memory sizes from
 //! CMOS and checksums them against the actual machine; a mismatch drops POST into
 //! an interactive SETUP prompt a headless run cannot answer. So the seed is a
-//! *product* of assembly ([`derive_cmos_config`]), computed from the memory map
-//! and the attached drives. An explicit NVRAM image bypasses this derivation;
+//! *product* of assembly ([`derive_cmos_layout`]), computed from the memory map
+//! and the attached drives. The configured RTC receives 64 or 128 bytes.
+//! An explicit NVRAM image bypasses this derivation;
 //! the fixed RTC start supplies the live calendar in either case.
 
 use std::borrow::Cow;
@@ -188,6 +189,22 @@ fn assemble_with_cpu(
     options: crate::AssemblyOptions,
     build: impl FnOnce(&MachineConfig) -> Result<X86JitCpu, AssemblyError>,
 ) -> Result<AssembledMachine, AssemblyError> {
+    assemble_with_cpu_and_catalogue(
+        config,
+        observation_policy,
+        options,
+        build,
+        config.board.firmware_catalogue(),
+    )
+}
+
+fn assemble_with_cpu_and_catalogue(
+    config: &MachineConfig,
+    observation_policy: &ObservationPolicy,
+    options: crate::AssemblyOptions,
+    build: impl FnOnce(&MachineConfig) -> Result<X86JitCpu, AssemblyError>,
+    catalogue: &[crate::FirmwareEntry],
+) -> Result<AssembledMachine, AssemblyError> {
     // A validated config does not fail assembly for configuration reasons; run
     // the checks first so any inconsistency surfaces as a precise ConfigError.
     config.validate()?;
@@ -196,16 +213,17 @@ fn assemble_with_cpu(
     // Validate the bytes that will actually be mounted, without a second file
     // read that could observe a different length or contents.
     let nvram_bases = load_nvram_bases(config)?;
-    let (resolved, base_metadata) = resolve_file_sources(config, options)?;
+    let (resolved, base_metadata) =
+        resolve_file_sources_with_catalogue(config, options, catalogue)?;
     let config = resolved.as_ref();
     config.validate_resolved()?;
 
     let mut unlisted_firmware = Vec::new();
-    if !config.board.firmware_catalogue().is_empty() {
+    if !catalogue.is_empty() {
         let image = crate::firmware::system_bios(config)?;
         let bytes = load_image_bytes(&image.source)?;
         if let Some(unlisted) =
-            crate::check_board_system_bios(config, config.board, image.base, &bytes, options)?
+            crate::check_system_bios(config, config.board, catalogue, image.base, &bytes, options)?
         {
             unlisted_firmware.push(unlisted);
         }
@@ -238,9 +256,9 @@ fn assemble_with_cpu(
             })
         )
     }) {
-        derive_cmos_config(config)?
+        derive_cmos_layout_with_catalogue(config, catalogue)?
     } else {
-        [0; 64]
+        [0; 128]
     };
 
     // Instantiate devices in config order, recording each role's bus index. The
@@ -271,12 +289,19 @@ fn assemble_with_cpu(
                 Box::new(keyboard)
             }
             DeviceKind::Rtc(c) => {
-                let mut rtc = CmosRtc::new();
+                let mut rtc = CmosRtc::new().with_ram(c.ram);
                 if let Some((second_ticks, uip_ticks)) = c.timing {
                     rtc = rtc.with_timing(second_ticks, uip_ticks);
                 }
                 rtc = match &c.nvram {
-                    crate::NvramSource::Derived => rtc.with_nvram(cmos),
+                    crate::NvramSource::Derived => match c.ram {
+                        crate::CmosRam::Bytes64 => {
+                            let mut seed = [0; 64];
+                            seed.copy_from_slice(&cmos[..64]);
+                            rtc.with_nvram(seed)
+                        }
+                        crate::CmosRam::Bytes128 => rtc.with_extended_nvram(cmos),
+                    },
                     crate::NvramSource::Blank => rtc,
                     crate::NvramSource::Image(bytes) => rtc.with_nvram(*bytes),
                     crate::NvramSource::Journal {
@@ -584,6 +609,7 @@ fn load_nvram_bases(
 
 /// Resolve file lengths before validating placement and disk geometry. Inline
 /// presets borrow their config so the common path needs no additional copy.
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) fn resolve_file_sources(
     config: &MachineConfig,
     options: crate::AssemblyOptions,
@@ -902,8 +928,8 @@ fn derive_cmos_config_with_catalogue(
 /// primary IDE drives even if an option ROM supplies fixed-disk services: these
 /// bytes describe hardware, independently of the IBM BIOS provider convention.
 ///
-/// The present MC146818 device and NVRAM image API hold only 64 bytes; assembly
-/// uses [`derive_cmos_config`] for those boards. Firmware validation requires a
+/// Assembly loads all bytes into a 128-byte RTC and only the low 64 bytes into
+/// an MC146818. The NVRAM image API remains 64-byte only. Firmware validation requires a
 /// 128-byte RTC for this capability: otherwise 5Bh–5Dh and 5Fh alias type-47
 /// geometry and falsely report high RAM and extra CPUs. Pure derivation remains
 /// available for synthetic maps without validating device requirements.
@@ -1704,6 +1730,7 @@ mod tests {
             DeviceConfig::new(
                 DeviceId::Rtc,
                 DeviceKind::Rtc(CmosCfg {
+                    ram: crate::CmosRam::Bytes64,
                     nvram: crate::NvramSource::Derived,
                     start: crate::RtcStart::default(),
                     timing: None,
@@ -3296,6 +3323,155 @@ mod tests {
                 assert_eq!(seed[0x39], expected);
                 config.drives.reverse();
             }
+        }
+    }
+
+    #[test]
+    fn rtc128_qemu_catalogue_validates_and_guest_reads_the_full_derived_seed() {
+        let entry = crate::FirmwareEntry {
+            boards: &["bare"],
+            ..qemu_cmos_catalogue()[0]
+        };
+        for high_units in [0, 0x03_0201u64] {
+            let mut config = qemu_cmos_config();
+            config.board = BoardModel::Bare;
+            rtc_config(&mut config).ram = crate::CmosRam::Bytes128;
+            config.cpu.reset = ResetSpec::Entry { cs: 0, ip: 0x600 };
+            config.cpu.segments = SegmentSeed::flat(0);
+            if high_units != 0 {
+                config.memory.address_space_bytes = (1 << 32) + (high_units << 16);
+                config
+                    .memory
+                    .ram
+                    .push(RamRegion::new(1 << 32, high_units << 16));
+            }
+            let mut guest = vec![0xFA];
+            for index in 0x1B..=0x1F {
+                // Poison the aliases: an extended read must never see these bytes.
+                guest.extend([0xB0, index, 0xE6, 0x70, 0xB0, 0xA5, 0xE6, 0x71]);
+            }
+            for (offset, index) in (0x5B..=0x5F)
+                .chain((0x5B..=0x5F).map(|index| index | 0x80))
+                .chain(0x1B..=0x1F)
+                .enumerate()
+            {
+                let address = (0x500 + offset as u16).to_le_bytes();
+                guest.extend([
+                    0xB0, index, 0xE6, 0x70, 0xE4, 0x71, 0xA2, address[0], address[1],
+                ]);
+            }
+            guest.push(0xF4);
+            config.images.push(LoadImage {
+                base: 0x600,
+                kind: ImageKind::RamLoad,
+                source: ImageSource::Inline(guest),
+                provides: Vec::new(),
+            });
+            config.validate().unwrap();
+            crate::check_system_bios(
+                &config,
+                BoardModel::Bare,
+                &[entry],
+                config.images[0].base,
+                &vec![0; 32768],
+                crate::AssemblyOptions::default(),
+            )
+            .unwrap();
+            let mut assembled = assemble_with_cpu_and_catalogue(
+                &config,
+                &ObservationPolicy::default(),
+                crate::AssemblyOptions::default(),
+                |config| {
+                    // The synthetic high-memory map exercises CMOS derivation only.
+                    // The 286 guest executes in low RAM; no high RAM is allocated.
+                    let mut executable = config.clone();
+                    executable.memory.address_space_bytes = SPACE;
+                    executable.memory.ram.retain(|region| region.base < SPACE);
+                    build_cpu(&executable)
+                },
+                &[entry],
+            )
+            .unwrap();
+            assert_eq!(
+                assembled.machine.run_bounded(Some(200)).unwrap(),
+                machine::RunOutcome::Halted
+            );
+            let mut actual = [0; 15];
+            assembled
+                .machine
+                .cpu()
+                .read_mem(0x500, &mut actual)
+                .unwrap();
+            let high = high_units.to_le_bytes();
+            assert_eq!(&actual[..5], &[high[0], high[1], high[2], 0, 0]);
+            assert_eq!(&actual[5..10], &[high[0], high[1], high[2], 0, 0]);
+            assert_eq!(&actual[10..], &[0xA5; 5]);
+
+            rtc_config(&mut config).ram = crate::CmosRam::Bytes64;
+            let error = assemble_with_cpu_and_catalogue(
+                &config,
+                &ObservationPolicy::default(),
+                crate::AssemblyOptions::default(),
+                |_| panic!("requirements must precede CPU construction"),
+                &[entry],
+            )
+            .err()
+            .unwrap();
+            assert_eq!(error.to_string(), "invalid configuration: firmware \"synthetic-qemu-cmos\" requires rtc-cmos-128; none is configured");
+        }
+    }
+
+    #[test]
+    fn rtc128_is_rejected_on_ibm5170_before_hardware_construction() {
+        let mut config = crate::bios(vec![0; 32768], Some(vec![0; 1_474_560]));
+        assert_eq!(rtc_config(&mut config).ram, crate::CmosRam::Bytes64);
+        rtc_config(&mut config).ram = crate::CmosRam::Bytes128;
+        assert_eq!(config.validate().unwrap_err(), ConfigError::Ibm5170RtcRam);
+        assert_eq!(
+            config.validate().unwrap_err().to_string(),
+            "board ibm-5170 requires a 64-byte RTC: the IBM AT has an MC146818"
+        );
+        assert!(matches!(
+            assemble(&config),
+            Err(AssemblyError::Config(ConfigError::Ibm5170RtcRam))
+        ));
+    }
+
+    #[test]
+    fn rtc128_rejects_nvram_images_and_journals_before_opening_files() {
+        for nvram in [
+            crate::NvramSource::Image([0; 64]),
+            crate::NvramSource::Journal {
+                image: "not-opened-cmos.bin".into(),
+                expected_sha256: [0; 32],
+                journal: "not-created-cmos.upfj".into(),
+                keep_generations: 1,
+            },
+        ] {
+            let mut config = crate::bios(vec![0; 32768], None);
+            let rtc = rtc_config(&mut config);
+            rtc.ram = crate::CmosRam::Bytes128;
+            rtc.nvram = nvram;
+            assert_eq!(
+                config.validate().unwrap_err(),
+                ConfigError::UnsupportedExtendedNvram
+            );
+            assert_eq!(
+                config.validate().unwrap_err().to_string(),
+                "128-byte NVRAM images are not supported yet"
+            );
+            assert!(matches!(
+                assemble(&config),
+                Err(AssemblyError::Config(ConfigError::UnsupportedExtendedNvram))
+            ));
+        }
+        for nvram in [crate::NvramSource::Blank, crate::NvramSource::Derived] {
+            let mut config = crate::bios(vec![0; 32768], None);
+            let rtc = rtc_config(&mut config);
+            rtc.ram = crate::CmosRam::Bytes128;
+            rtc.nvram = nvram;
+            config.validate().unwrap();
+            let _assembled = assemble(&config).unwrap();
         }
     }
 

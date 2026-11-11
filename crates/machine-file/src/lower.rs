@@ -374,6 +374,7 @@ impl<R: ImageReader> Context<'_, R> {
             }
         };
         Ok(assembly::CmosCfg {
+            ram: assembly::CmosRam::Bytes64,
             start,
             nvram,
             timing: None,
@@ -667,7 +668,7 @@ impl<R: ImageReader> Context<'_, R> {
                 vec![format!("{}.provides", self.image_label(*image_index))]
             }
             MultipleIdeChannels => device_fields(&[DeviceId::Ide]),
-            DebugConsoleBoard | FwCfgBoard => vec!["board".into()],
+            DebugConsoleBoard | FwCfgBoard | Ibm5170RtcRam => vec!["board".into()],
             FirmwareReset { .. } => vec!["cpu".into()],
             SystemBiosOverlapsRam { .. } => vec!["memory".into(), self.bios_source_field().into()],
             DuplicateDeviceId(id) | MmioDeviceMissing(id) => device_fields(&[*id]),
@@ -701,7 +702,7 @@ impl<R: ImageReader> Context<'_, R> {
             | MmioOverlap { a, b, .. }
             | IrqConflict { a, b, .. } => device_fields(&[*a, *b]),
             DmaControllerMissing { requester, .. } => device_fields(&[*requester]),
-            Nvram { .. } => vec!["board.rtc.nvram".into()],
+            Nvram { .. } | UnsupportedExtendedNvram => vec!["board.rtc.nvram".into()],
             Journal { drive_index, .. }
             | DriveInput { drive_index, .. }
             | UnsupportedCmosDiskGeometry { drive_index, .. }

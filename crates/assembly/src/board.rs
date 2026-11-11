@@ -115,6 +115,7 @@ impl BoardModel {
             DeviceConfig::new(
                 Rtc,
                 DeviceKind::Rtc(CmosCfg {
+                    ram: crate::CmosRam::Bytes64,
                     nvram: crate::NvramSource::Derived,
                     start: crate::RtcStart::default(),
                     timing: None,
@@ -205,6 +206,7 @@ mod tests {
                 (
                     Rtc,
                     DeviceKind::Rtc(CmosCfg {
+                        ram: crate::CmosRam::Bytes64,
                         nvram: crate::NvramSource::Derived,
                         start: crate::RtcStart::default(),
                         timing: None

@@ -12,6 +12,12 @@ use crate::device::DeviceId;
 /// test can assert the exact failure a malformed config produces.
 #[derive(Clone, Debug, PartialEq, Eq, Error)]
 pub enum ConfigError {
+    /// The IBM AT motherboard requires its original RTC part.
+    #[error("board ibm-5170 requires a 64-byte RTC: the IBM AT has an MC146818")]
+    Ibm5170RtcRam,
+    /// Persistent images retain the original 64-byte format.
+    #[error("128-byte NVRAM images are not supported yet")]
+    UnsupportedExtendedNvram,
     /// Emulator firmware configuration cannot be attached to a period motherboard.
     #[error("fw-cfg port is emulator-only; it is allowed only on board generic-386-isa")]
     FwCfgBoard,

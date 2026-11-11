@@ -240,14 +240,18 @@ impl std::fmt::Display for RtcStart {
     }
 }
 
-/// Initial MC146818 storage and optional reset/finish persistence.
+/// Initial MC146818 / DS12887 storage and optional reset/finish persistence.
 ///
 /// Motorola MC146818 datasheet, RAM and Time, Calendar, and Alarm Locations:
-/// the 64-byte address space contains clock/control registers and general RAM.
+/// the original 64-byte address space contains clock/control registers and RAM.
+/// Dallas Semiconductor DS12887 datasheet, Address Map, extends it to 128 bytes.
+/// Derived and Blank use the configured capacity; images and journals remain
+/// limited to the original 64-byte part.
 /// See `backlog/docs/design/machine-config.md` § RTC start and NVRAM source.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub enum NvramSource {
-    /// Derive AT configuration bytes and their checksum from the machine.
+    /// Derive firmware-owned CMOS configuration and its AT checksum. A 128-byte
+    /// RTC receives the full QEMU layout when the system firmware opts into it.
     #[default]
     Derived,
     /// Leave configuration RAM blank, retaining the chip's control defaults.
@@ -267,13 +271,18 @@ pub enum NvramSource {
     },
 }
 
-/// MC146818 CMOS/RTC parameters (§7.6).
+pub use devices::cmos_rtc::CmosRam;
+
+/// MC146818 / DS12887 CMOS/RTC parameters (§7.6).
 ///
 /// Motorola MC146818 datasheet, Time, Calendar, and Alarm Locations and
-/// Registers A–D. See `backlog/docs/design/machine-config.md`
+/// Registers A–D; Dallas Semiconductor DS12887 datasheet, Address Map.
+/// See `backlog/docs/design/machine-config.md`
 /// § RTC start and NVRAM source for initialization precedence.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct CmosCfg {
+    /// Address-space capacity; defaults to the original MC146818 64 bytes.
+    pub ram: CmosRam,
     /// Deterministic calendar seed; never read from the host clock.
     pub start: RtcStart,
     /// Configuration RAM seed or a 64-byte image with live status cleared.
