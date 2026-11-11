@@ -206,7 +206,9 @@ fn volatile_boots_preserve_pinned_fixture_hashes_and_vendor_entries() {
             assembled.run_session(&policy).unwrap(),
             machine::RunOutcome::RetiredCapReached
         );
-        let video::Frame::Text(grid) = assembled.capture_text(DeviceId::Mda).unwrap().frame;
+        let video::Frame::Text(grid) = assembled.capture_text(DeviceId::Mda).unwrap().frame else {
+            panic!("expected text frame")
+        };
         let console = grid.rows_as_strings().join("\n");
         assert!(
             console.contains(if boot == "bios" {

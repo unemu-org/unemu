@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! IBM VGA register file, four-plane video memory and passive text scanout.
+//! IBM VGA register file, four-plane video memory and passive text and graphics scanout.
 //!
 //! Source: IBM VGA/XGA Technical Reference Manual (May 1992), VGA Function,
 //! especially the figures cited below. See `backlog/docs/design/spec.md` §7.1
@@ -22,6 +22,8 @@
 //! | Figs. 2-37 and 2-65: chain-4 | DERIVED: plane = a & 3; offset = (a & FFFC) OR ((a >> 14) & 3), preserving doubleword scanout placement after unchaining | ASSUMED: both reads and writes use this mapping and the full GC latch/logic/bit-mask pipeline, with sequencer map mask applied |
 //! | Figs. 2-69–2-80: read/write modes | READ: all four write modes, rotate, set/reset, logic in modes 0/2/3, bit/map masks, read-map select and colour comparison with don't-care | Memory contention omitted |
 //! | Alphanumeric Modes, Figs. 2-31, 2-33–2-36, 2-41, 2-48, 2-50–2-56, 2-59–2-61, 2-64–2-65, 2-82–2-83, 2-84, 2-86, 2-89 and 2-94 | Passive planar text state: geometry, start, stride, cursor shape, font maps, blink, palette and DAC | Whole cells only; raster timing, panning, split screens and cursor skew omitted; glyph rasterisation belongs to the presenter |
+//! | Graphics Modes, Figs. 2-31, 2-50, 2-60–2-65, 2-75, 2-84–2-89 | Planar 16-colour and 256-colour serializers, logical geometry, start/stride, palette and screen-off | CGA-interleaved shift, mismatched GC/AC serializer settings, split screen, pixel panning, smooth scrolling and mid-frame register changes unmodelled; unsupported serializer settings blank the frame. READ: CMS0/SRC substitute row-scan bits into MA13/MA14 (Fig. 2-64), including mode 06h. Count-by-two/four variations and raster timing not claimed. Dot and scan-line repeats accompany logical pixels for presentation; Shift 4/Shift Load are ignored in Extended Graphics as specified in Fig. 2-31 |
+//! | Mode 13h internal palette, Fig. 2-89 and VGA Programming Considerations, pp. 2-96–2-97 | DERIVED/ASSUMED: each four-bit sample passes through Color Plane Enable and the internal palette low nibble; Color Select, P54S and palette high bits do not affect paired eight-bit output | IBM says "the 8-bit attribute is the digital color value to the video DAC" and "should not modify the contents of the Internal Palette registers". The nonidentity-palette behaviour is a model inference, not verified on physical hardware |
 //! | Character Map Select / colour path | Compatibility policy: attribute bit 3 selects the font and remains in the foreground index; Color Plane Enable masks it | Maintainer-selected policy, supported by Linux vgacon.c, vgacon_do_font_op (512-character mode writes CPE=07h), DOSBox Staging vga_draw.cpp, draw_text_line_from_dac_palette, and 86Box vid_svga_render.c, svga_render_text_80 (foreground keeps all four attribute bits) |
 //! | Figs. 2-51 and 2-61: cursor start / underline | ASSUMED deviation: register values are zero-based scan lines, without adding one for the manual's minus-one wording | SeaVGABIOS stdvgamodes.c crtc_07 uses CR09=4Fh and CR14=0Fh; adding one would place its underline outside the 16-line cell. Cursor start uses the same zero-based convention; no physical-card verification |
 //! | Power-on / model reset | Reset clears registers, indices, phase, latches, palette and RAM, including PEL mask | ASSUMED deterministic initialization, not an electrical reset sequence |
@@ -483,6 +485,69 @@ impl Default for Vga {
 }
 
 impl Device for Vga {
+    /// IBM VGA/XGA Technical Reference Manual, Graphics Modes, Figs. 2-31,
+    /// 2-50, 2-60–2-65, 2-75 and 2-84–2-89. Logical scanout excludes repeated
+    /// dots/lines; unsupported serializers blank as recorded in the matrix.
+    fn graphics_scanout(&self) -> Option<device::GraphicsScanout<'_>> {
+        let c = &self.crtc;
+        let a = &self.attribute;
+        if a[0x10] & 1 == 0 {
+            return None;
+        }
+        let packed = self.graphics[5] & 0x40 != 0;
+        let wide_pel = a[0x10] & 0x40 != 0;
+        let lines = u16::from(c[0x12]) | (u16::from(c[7] & 2) << 7) | (u16::from(c[7] & 0x40) << 3);
+        let row_scan_height = (c[9] & 31) + 1;
+        let row_scan_mask = (if c[0x17] & 1 == 0 { 0x2000 } else { 0 })
+            | (if c[0x17] & 2 == 0 { 0x4000 } else { 0 });
+        // CGA-compatible row scans address separate banks instead of repeating pixels.
+        let scan_repeat = if row_scan_mask == 0 {
+            row_scan_height
+        } else {
+            1
+        } * if c[9] & 0x80 != 0 { 2 } else { 1 };
+        let repeat = (
+            (if self.sequencer[1] & 8 != 0 { 2 } else { 1 }) * if wide_pel { 2 } else { 1 },
+            scan_repeat,
+        );
+        let colours = std::array::from_fn(|index| {
+            let entry = a[index & usize::from(a[0x12])];
+            let low = if a[0x10] & 0x80 != 0 {
+                (entry & 15) | ((a[0x14] & 3) << 4)
+            } else {
+                entry
+            };
+            low | ((a[0x14] & 12) << 4)
+        });
+        Some(device::GraphicsScanout {
+            planes: std::array::from_fn(|p| self.planes[p].as_slice()),
+            dimensions: (
+                (u16::from(c[1]) + 1) * 8 / if wide_pel { 2 } else { 1 },
+                (lines + 1) / u16::from(scan_repeat),
+            ),
+            repeat,
+            row_scan_height,
+            row_scan_mask,
+            start: u16::from_be_bytes([c[0x0C], c[0x0D]]),
+            row_stride: u16::from(c[0x13]) * 2,
+            address_shift: if c[0x14] & 0x40 != 0 {
+                2
+            } else {
+                u8::from(c[0x17] & 0x40 == 0)
+            },
+            word_wrap_bit: if c[0x17] & 0x20 != 0 { 15 } else { 13 },
+            packed,
+            colours,
+            palette: std::array::from_fn(|index| {
+                self.palette_entry(index as u8).map(|v| (v << 2) | (v >> 4))
+            }),
+            enabled: self.sequencer[1] & 0x20 == 0
+                && self.palette_address_source()
+                && packed == wide_pel
+                && (packed || self.graphics[5] & 0x20 == 0),
+        })
+    }
+
     /// IBM VGA/XGA Technical Reference Manual, Alphanumeric Modes:
     /// Figs. 2-31, 2-33–2-36 (clock/fonts); 2-41, 2-48, 2-50–2-56,
     /// 2-59–2-61, 2-64–2-65 (geometry/cursor/address wiring);
@@ -741,3 +806,6 @@ mod tests;
 
 #[cfg(test)]
 mod planar_tests;
+
+#[cfg(test)]
+mod graphics_tests;

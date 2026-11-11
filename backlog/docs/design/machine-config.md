@@ -1070,6 +1070,9 @@ Existing presets retain `DeviceKind::Vga(VgaTextCfg {})`, the text-only
 `vga-text` model. The register-level alternative is
 `DeviceKind::VgaRegisters(VgaCfg {})`, lowered from `kind = "vga"` in TOML/YAML.
 Both use `DeviceId::Vga` and support the `TextScanout` observation route.
+For `vga`, that display route follows AC graphics selection and delivers
+`Frame::Text` or owned indexed `Frame::Pixels` (CGA-compatible 06h,
+planar 0Dh/0Eh/10h/12h and chain-4 13h); the card needs no separate graphics configuration.
 `VgaCfg::port_windows()` declares byte ports 3B4–3B5, 3BA, 3C0–3C2,
 3C4–3CA, 3CC, 3CE–3CF, 3D4–3D5 and 3DA. Its MMIO window owns
 A0000h–BFFFFh; RAM must exclude that aperture, including unselected VGA maps.
@@ -1086,7 +1089,9 @@ load a font sees an unprogrammed display. SeaVGABIOS delivery through `fw_cfg`
 belongs to the forthcoming 386 board. Existing presets and golden identities
 continue to use the text-only card. See
 [observation.md §Register-level VGA text scanout](observation.md#register-level-vga-text-scanout)
-for the font/palette frame extension and model limits.
+for the font/palette frame extension and model limits, and
+[graphics scanout](observation.md#register-level-vga-graphics-scanout) for
+logical geometry, palette ownership and unsupported graphics operations.
 
 ### BIOS monochrome display routing
 

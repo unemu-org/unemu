@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Pure text-cell rasterisation (design/spec.md §9.4).
+//! Pure text-cell and indexed-pixel rasterisation (design/spec.md §9.4).
 //!
 //! IBM PC Technical Reference, Monochrome Display and Printer Adapter,
 //! Programming Considerations, defines MDA attribute classes; IBM VGA Technical
@@ -31,10 +31,21 @@ pub struct PixelFrame {
 pub enum RasterError {
     /// Frame exceeds 16,777,216 pixels (64 MiB) or dimensions overflow.
     TooLarge,
+    /// The indexed buffer does not contain exactly width × height pixels.
+    InvalidPixelCount,
+    /// A pixel selects an entry absent from its captured palette.
+    PaletteIndexOutOfRange,
+    /// A presentation repetition factor is zero.
+    InvalidRepeat,
 }
 impl fmt::Display for RasterError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("text frame exceeds the 64 MiB pixel buffer limit")
+        f.write_str(match self {
+            Self::TooLarge => "frame exceeds the 64 MiB pixel buffer limit",
+            Self::InvalidPixelCount => "pixel count does not match frame dimensions",
+            Self::PaletteIndexOutOfRange => "pixel index is outside the frame palette",
+            Self::InvalidRepeat => "pixel repetition factors must be nonzero",
+        })
     }
 }
 impl Error for RasterError {}
@@ -53,6 +64,56 @@ impl Rasterizer {
             mda: FontAtlas::from_fon(MDA_FONT)?,
             vga: FontAtlas::from_fon(VGA_FONT)?,
             scale,
+        })
+    }
+
+    /// Convert either frame kind into an integer-scaled host buffer.
+    /// Indexed graphics use their captured DAC palette, without host time.
+    pub fn rasterize_frame(&self, frame: &video::Frame) -> Result<PixelFrame, RasterError> {
+        let source = match frame {
+            video::Frame::Text(grid) => return self.rasterize(grid),
+            video::Frame::Pixels(source) => source,
+        };
+        if source.indices.len() != usize::from(source.width) * usize::from(source.height) {
+            return Err(RasterError::InvalidPixelCount);
+        }
+        if source
+            .indices
+            .iter()
+            .any(|&index| usize::from(index) >= source.palette.len())
+        {
+            return Err(RasterError::PaletteIndexOutOfRange);
+        }
+        if source.repeat.0 == 0 || source.repeat.1 == 0 {
+            return Err(RasterError::InvalidRepeat);
+        }
+        let scale = u32::from(self.scale.get());
+        let scale_x = scale * u32::from(source.repeat.0);
+        let scale_y = scale * u32::from(source.repeat.1);
+        let width = u32::from(source.width)
+            .checked_mul(scale_x)
+            .ok_or(RasterError::TooLarge)?;
+        let height = u32::from(source.height)
+            .checked_mul(scale_y)
+            .ok_or(RasterError::TooLarge)?;
+        let len = u64::from(width) * u64::from(height);
+        if len > 16_777_216 {
+            return Err(RasterError::TooLarge);
+        }
+        let mut pixels = vec![0; len as usize];
+        for y in 0..height {
+            for x in 0..width {
+                let index = source.indices
+                    [((y / scale_y) * u32::from(source.width) + x / scale_x) as usize];
+                let [r, g, b] = source.palette[usize::from(index)];
+                pixels[(y * width + x) as usize] =
+                    (u32::from(r) << 16) | (u32::from(g) << 8) | u32::from(b);
+            }
+        }
+        Ok(PixelFrame {
+            width,
+            height,
+            pixels,
         })
     }
 
@@ -183,6 +244,160 @@ fn colours(style: TextStyle) -> (u32, u32, bool) {
 mod planar_tests {
     use super::*;
     use video::{render_planar_text, PlanarTextState};
+
+    #[test]
+    fn pixel_frames_validate_palette_range_repeat_and_scaled_bounds() {
+        let raster = Rasterizer::bundled(NonZeroU16::new(1).unwrap()).unwrap();
+        let mut image = video::IndexedPixels {
+            width: 1,
+            height: 1,
+            repeat: (1, 1),
+            indices: vec![2],
+            palette: vec![[0; 3], [1; 3]].into_boxed_slice(),
+        };
+        assert_eq!(
+            raster.rasterize_frame(&video::Frame::Pixels(image.clone())),
+            Err(RasterError::PaletteIndexOutOfRange)
+        );
+        image.indices[0] = 1;
+        assert!(raster
+            .rasterize_frame(&video::Frame::Pixels(image.clone()))
+            .is_ok());
+        for repeat in [(0, 1), (1, 0)] {
+            image.repeat = repeat;
+            assert_eq!(
+                raster.rasterize_frame(&video::Frame::Pixels(image.clone())),
+                Err(RasterError::InvalidRepeat)
+            );
+        }
+        image.repeat = (255, 255);
+        let large_scale = Rasterizer::bundled(NonZeroU16::new(u16::MAX).unwrap()).unwrap();
+        assert_eq!(
+            large_scale.rasterize_frame(&video::Frame::Pixels(image.clone())),
+            Err(RasterError::TooLarge)
+        );
+        image.width = u16::MAX;
+        image.indices.resize(usize::from(u16::MAX), 0);
+        assert_eq!(
+            large_scale.rasterize_frame(&video::Frame::Pixels(image)),
+            Err(RasterError::TooLarge)
+        );
+        let overflow_scale = Rasterizer::bundled(NonZeroU16::new(32768).unwrap()).unwrap();
+        let overflow = video::Frame::Pixels(video::IndexedPixels {
+            width: 32768,
+            height: 1,
+            repeat: (4, 1),
+            indices: vec![0; 32768],
+            palette: vec![[0; 3]].into_boxed_slice(),
+        });
+        assert_eq!(
+            overflow_scale.rasterize_frame(&overflow),
+            Err(RasterError::TooLarge)
+        );
+    }
+
+    #[test]
+    fn graphics_repeat_factors_restore_monitor_sizes_before_integer_scaling() {
+        for scale in [1, 2] {
+            let raster = Rasterizer::bundled(NonZeroU16::new(scale).unwrap()).unwrap();
+            for (mode, width, height, repeat, displayed) in [
+                (0x0d, 320, 200, (2, 2), (640, 400)),
+                (0x0e, 640, 200, (1, 2), (640, 400)),
+                (0x12, 640, 480, (1, 1), (640, 480)),
+                (0x13, 320, 200, (2, 2), (640, 400)),
+            ] {
+                let frame = video::Frame::Pixels(video::IndexedPixels {
+                    width,
+                    height,
+                    repeat,
+                    indices: vec![0; usize::from(width) * usize::from(height)],
+                    palette: vec![[0; 3]].into_boxed_slice(),
+                });
+                let pixels = raster.rasterize_frame(&frame).unwrap();
+                assert_eq!(
+                    (pixels.width, pixels.height),
+                    (
+                        displayed.0 * u32::from(scale),
+                        displayed.1 * u32::from(scale)
+                    ),
+                    "mode {mode:02x}"
+                );
+            }
+        }
+        let grid = video::render_text_mode(&video::TextModeState {
+            vram: &[],
+            cols: 80,
+            rows: 25,
+            start_cell: 0,
+            cursor_cell: 0,
+            cursor_visible: false,
+            attributes: video::TextAttributeSet::Colour {
+                blink_enabled: true,
+            },
+        });
+        let raster = Rasterizer::bundled(NonZeroU16::new(1).unwrap()).unwrap();
+        let pixels = raster.rasterize_frame(&video::Frame::Text(grid)).unwrap();
+        assert_eq!((pixels.width, pixels.height), (640, 400));
+        let mut palette = vec![[0; 3]; 2];
+        palette[1] = [255, 0, 0];
+        let pixels = raster
+            .rasterize_frame(&video::Frame::Pixels(video::IndexedPixels {
+                width: 2,
+                height: 1,
+                repeat: (2, 3),
+                indices: vec![0, 1],
+                palette: palette.into_boxed_slice(),
+            }))
+            .unwrap();
+        assert_eq!(pixels.pixels, [0, 0, 0xff0000, 0xff0000].repeat(3));
+    }
+
+    #[test]
+    fn malformed_pixel_counts_return_an_error() {
+        let raster = Rasterizer::bundled(NonZeroU16::new(1).unwrap()).unwrap();
+        for indices in [vec![], vec![0; 3], vec![0; 5]] {
+            let frame = video::Frame::Pixels(video::IndexedPixels {
+                width: 2,
+                height: 2,
+                repeat: (1, 1),
+                indices,
+                palette: Box::new([[0; 3]; 256]),
+            });
+            assert!(raster.rasterize_frame(&frame).is_err());
+        }
+    }
+
+    #[test]
+    fn indexed_frame_palette_and_integer_scaling_reach_the_host_buffer() {
+        let mut palette = [[0; 3]; 256];
+        palette[1] = [1, 2, 3];
+        palette[200] = [255, 128, 16];
+        let frame = video::Frame::Pixels(video::IndexedPixels {
+            width: 2,
+            height: 2,
+            repeat: (1, 1),
+            indices: vec![1, 200, 0, 1],
+            palette: Box::new(palette),
+        });
+        let mut sink = crate::WindowSink::new(NonZeroU16::new(2).unwrap()).unwrap();
+        video::FrameSink::present(&mut sink, &frame);
+        assert_eq!(
+            *sink.frame(),
+            Some(PixelFrame {
+                width: 4,
+                height: 4,
+                pixels: vec![
+                    0x010203, 0x010203, 0xff8010, 0xff8010, 0x010203, 0x010203, 0xff8010, 0xff8010,
+                    0, 0, 0x010203, 0x010203, 0, 0, 0x010203, 0x010203
+                ],
+            })
+        );
+        assert_eq!(sink.error(), None);
+        let mut capture = video::CaptureFrameSink::new();
+        video::FrameSink::present(&mut capture, &frame);
+        assert_eq!(capture.last(), Some(&frame));
+        assert_eq!(capture.last_text(), None);
+    }
 
     #[test]
     fn guest_font_palette_ninth_dot_cursor_underline_and_blank_are_presented() {

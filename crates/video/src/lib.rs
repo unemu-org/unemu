@@ -23,9 +23,6 @@
 //! - [`CaptureFrameSink`] — a trivial sink that keeps the last frame, for tests.
 //!
 //! ## Not modelled yet
-//! - No pixel/graphics frame: [`Frame`] has only a text variant so far. The enum
-//!   exists precisely so a future framebuffer variant is an additive change, not
-//!   a reshape of the seam.
 //! - No glyph rasterisation: a text frame carries code-page bytes, raw attributes
 //!   and decoded styles, with optional guest fonts and palette, not pixels.
 //!   Mapping a glyph byte + font to pixels is a
@@ -33,13 +30,91 @@
 
 /// A finished frame handed across the [`FrameSink`] seam (§9.1).
 ///
-/// Presentation-mode agnostic on purpose: today the only variant is
-/// [`Frame::Text`], but a future pixel framebuffer becomes a new variant without
-/// disturbing the trait or its existing consumers.
+/// Owned text or indexed pixels, independent of host presentation.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Frame {
     /// A character-cell frame produced by a text mode (§9.2).
     Text(TextGrid),
+    /// Logical graphics pixels and their captured RGB palette.
+    Pixels(IndexedPixels),
+}
+
+/// An owned row-major indexed image. Indices address the captured DAC palette,
+/// keeping capture compact and independent of subsequent guest palette writes.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IndexedPixels {
+    /// Logical width, without dot-clock repetition.
+    pub width: u16,
+    /// Logical height, without repeated scan lines.
+    pub height: u16,
+    /// Horizontal dot and vertical scan-line repetitions for presentation.
+    pub repeat: (u8, u8),
+    /// Exactly width × height DAC indices.
+    pub indices: Vec<u8>,
+    /// Captured RGB888 DAC entries, including the PEL mask.
+    pub palette: Box<[[u8; 3]]>,
+}
+
+/// Render VGA graphics without reading ports or updating CPU latches.
+/// IBM VGA/XGA Technical Reference Manual, Graphics Modes, Figs. 2-65, 2-75
+/// and 2-84: planar bits select the attribute palette. Fig. 2-64 supplies
+/// row-scan address substitution for CGA compatibility. Mode 13h's pairing
+/// through the internal palette low nibble is DERIVED/ASSUMED, as documented
+/// with the manual's qualifications in `backlog/docs/design/observation.md`.
+#[must_use]
+pub fn render_graphics(state: &device::GraphicsScanout<'_>) -> IndexedPixels {
+    let (width, height) = state.dimensions;
+    let mut indices = vec![0; usize::from(width) * usize::from(height)];
+    if state.enabled {
+        for y in 0..height {
+            let (row, scan) = if state.row_scan_mask == 0 {
+                (y, 0)
+            } else {
+                (
+                    y / u16::from(state.row_scan_height),
+                    y % u16::from(state.row_scan_height),
+                )
+            };
+            for x in 0..width {
+                let group = if state.packed { x / 4 } else { x / 8 };
+                let address = state
+                    .start
+                    .wrapping_add(row.wrapping_mul(state.row_stride))
+                    .wrapping_add(group);
+                let byte = match state.address_shift {
+                    0 => address,
+                    1 => (address << 1) | ((address >> state.word_wrap_bit) & 1),
+                    _ => (address << 2) | ((address >> 12) & 3),
+                };
+                let byte =
+                    (byte & !state.row_scan_mask) | (((scan & 3) << 13) & state.row_scan_mask);
+                let index = if state.packed {
+                    let value = state.planes[usize::from(x & 3)][usize::from(byte)];
+                    (state.colours[usize::from(value & 15)] & 15)
+                        | ((state.colours[usize::from(value >> 4)] & 15) << 4)
+                } else {
+                    let mut colour = 0;
+                    for plane in 0..4 {
+                        colour |= ((state.planes[plane][usize::from(byte)] >> (7 - (x & 7))) & 1)
+                            << plane;
+                    }
+                    state.colours[usize::from(colour)]
+                };
+                indices[usize::from(y) * usize::from(width) + usize::from(x)] = index;
+            }
+        }
+    }
+    IndexedPixels {
+        width,
+        height,
+        indices,
+        repeat: state.repeat,
+        palette: Box::new(if state.enabled {
+            state.palette
+        } else {
+            [[0; 3]; 256]
+        }),
+    }
 }
 
 /// The presentation swap seam (§3.2 seam 5, §9.1).
@@ -447,6 +522,7 @@ impl CaptureFrameSink {
     pub fn last_text(&self) -> Option<&TextGrid> {
         match self.last.as_ref()? {
             Frame::Text(grid) => Some(grid),
+            Frame::Pixels(_) => None,
         }
     }
 }

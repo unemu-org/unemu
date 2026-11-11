@@ -395,7 +395,10 @@ fn console_contains(
         .map_err(|source| RunError::ConsoleUnavailable {
             device: probe.device,
             source,
-        })?;
+        })?
+    else {
+        return Ok(false);
+    };
     Ok(grid.rows_as_strings().join("\n").contains(needle))
 }
 
@@ -738,6 +741,60 @@ mod tests {
         );
         assert_eq!(assembled.machine.virtual_time(), 0);
         assert_eq!(assembled.machine.cpu().retired(), 0);
+    }
+
+    #[test]
+    fn prompt_poll_waits_through_pixels_until_text_returns_or_the_cap_is_reached() {
+        for returns_to_text in [false, true] {
+            let mut program = vec![0x90; 10];
+            if returns_to_text {
+                program.extend([
+                    0xBA, 0xDA, 3, 0xEC, 0xBA, 0xC0, 3, 0xB0, 0x30, 0xEE, 0xB0, 0, 0xEE,
+                ]);
+            }
+            program.extend([0xEB, 0xFE]);
+            let mut config = crate::at_vga_text(program);
+            let card = config
+                .devices
+                .iter_mut()
+                .find(|d| d.id == DeviceId::Vga)
+                .unwrap();
+            card.kind = crate::DeviceKind::VgaRegisters(crate::VgaCfg {});
+            card.ports = crate::VgaCfg::port_windows();
+            config.memory.ram = vec![crate::RamRegion::new(0, 0xA0000)];
+            config.memory.mmio = vec![crate::MmioWindow::new(0xA0000, 0x20000, DeviceId::Vga)];
+            let mut rig = crate::assemble_with_observation(
+                &config,
+                &crate::ObservationPolicy {
+                    routes: vec![crate::ObservationRequest {
+                        device: DeviceId::Vga,
+                        output: crate::OutputKind::TextScanout,
+                        byte_limit: 0,
+                    }],
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            let bus = rig.machine.bus_mut();
+            bus.port_write(0x3C2, 1, 0x63).unwrap();
+            bus.port_write(0x3C4, 2, 0x0101).unwrap();
+            bus.port_read(0x3DA, 1).unwrap();
+            bus.port_write(0x3C0, 1, 0x30).unwrap();
+            bus.port_write(0x3C0, 1, 1).unwrap();
+            let probe = ConsoleProbe {
+                device: DeviceId::Vga,
+            };
+            assert!(!console_contains(&rig.machine, &rig.observation, &probe, "").unwrap());
+            let (outcome, found) =
+                poll_to_prompt(&mut rig.machine, &rig.observation, &probe, "", 5, Some(40))
+                    .unwrap();
+            assert_eq!(outcome, RunOutcome::RetiredCapReached);
+            assert_eq!(found, returns_to_text);
+            assert!(rig.machine.virtual_time() > 10);
+            if !returns_to_text {
+                assert_eq!(rig.machine.virtual_time(), 40);
+            }
+        }
     }
 
     #[test]

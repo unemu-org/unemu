@@ -785,7 +785,10 @@ fn run_bios_assembled_with_warnings(
                 virtual_time: capture.virtual_time,
                 retired: capture.retired,
             };
-            let Frame::Text(grid) = capture.frame;
+            let grid = match capture.frame {
+                Frame::Text(grid) => grid,
+                Frame::Pixels(_) => blank_screen(),
+            };
             (grid, Some(stamp))
         }
         Err(error) => {
@@ -801,10 +804,10 @@ fn run_bios_assembled_with_warnings(
         }
     };
     let mda = match assembled.capture_text(DeviceId::Mda) {
-        Ok(capture) => {
-            let Frame::Text(grid) = capture.frame;
-            grid
-        }
+        Ok(capture) => match capture.frame {
+            Frame::Text(grid) => grid,
+            Frame::Pixels(_) => blank_screen(),
+        },
         Err(error) => {
             if !matches!(
                 stop,
@@ -1379,7 +1382,10 @@ pub fn run_vga_text(blob: &[u8]) -> Result<TextGrid> {
     let Frame::Text(grid) = assembled
         .observation
         .captured_frame(DeviceId::Vga)
-        .context("VGA capture sink received no frame")?;
+        .context("VGA capture sink received no frame")?
+    else {
+        anyhow::bail!("VGA capture sink received a graphics frame");
+    };
     Ok(grid)
 }
 
@@ -1696,7 +1702,9 @@ mod tests {
         };
         assert_eq!(assembled.observation.subscriber_count(DeviceId::Vga), 1);
         let frame = assembled.capture_text(DeviceId::Vga).unwrap().frame;
-        let Frame::Text(grid) = &frame;
+        let Frame::Text(grid) = &frame else {
+            panic!("expected text frame")
+        };
         assert_eq!(grid.cell(0, 0).unwrap().glyph, b'I');
         assert_eq!(
             assembled.observation.captured_frame(DeviceId::Vga),
@@ -1802,7 +1810,15 @@ mod tests {
                 if record {
                     // Two prompt polls, then final capture after the command budget.
                     assert_eq!(frames.len(), 3);
-                    let grids: Vec<_> = frames.iter().map(|Frame::Text(grid)| grid).collect();
+                    let grids: Vec<_> = frames
+                        .iter()
+                        .map(|frame| {
+                            let Frame::Text(grid) = frame else {
+                                panic!("expected text frame")
+                            };
+                            grid
+                        })
+                        .collect();
                     assert_eq!(
                         grids
                             .iter()
@@ -1858,7 +1874,9 @@ mod tests {
         let before = assembled.machine.bus().device(index).unwrap().save();
         let first = assembled.capture_text(DeviceId::Vga).unwrap();
         let second = assembled.capture_text(DeviceId::Vga).unwrap();
-        let Frame::Text(grid) = &first.frame;
+        let Frame::Text(grid) = &first.frame else {
+            panic!("expected text frame")
+        };
         assert_eq!(grid.cell(0, 0).unwrap().glyph, b'H');
         assert_eq!(second, first);
         assert_eq!(

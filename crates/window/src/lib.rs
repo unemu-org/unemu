@@ -18,8 +18,9 @@
 //! TextModeState has no cursor start/end registers, so the programmed shape is
 //! unavailable. Phosphor response and aspect correction are absent.
 //! Colour uses the standard 16-entry CGA/VGA text palette. Blink is drawn steady:
-//! its phase can later derive from virtual time. There is no graphics mode or
-//! custom font. Only the binary event loop reads the host clock for pacing.
+//! its phase can later derive from virtual time. VGA frames carry guest fonts
+//! or indexed graphics and a captured palette. Only the binary event loop reads
+//! the host clock for pacing.
 //! Physical keyboard events enter a host FIFO. Immediately before each bounded
 //! run chunk it transfers bytes to the 8042, retaining bytes under backpressure.
 //! Events are quantised to chunk boundaries, never injected inside a chunk.
@@ -90,8 +91,7 @@ impl WindowSink {
 
 impl FrameSink for WindowSink {
     fn present(&mut self, frame: &Frame) {
-        let Frame::Text(grid) = frame;
-        match self.rasterizer.rasterize(grid) {
+        match self.rasterizer.rasterize_frame(frame) {
             Ok(frame) => {
                 *self.latest.borrow_mut() = Some(frame);
                 self.error.set(None);

@@ -139,6 +139,139 @@ of displayed width. Panning, split screens, preset row scan, cursor skew and
 raster-timed latching are not modelled. Double scanning determines the logical
 row count; the presenter keeps the font's logical scan-line height.
 
+## Register-level VGA graphics scanout
+
+The existing `TextScanout` route is a display request, including graphics on
+`vga`. Keeping one route lets a subscribed host follow guest mode switches
+without rebinding or inspecting a concrete card. `Device::graphics_scanout`
+returns passive plane slices and decoded register state only when AC10 bit 0
+selects graphics. Assembly prefers that state over text, renders once and fans
+out `Frame::Pixels` to the same sinks. MDA and `vga-text` retain their text paths.
+Console substring polling treats pixels as a missing prompt and keeps polling
+until text returns, the guest halts or the cap is reached. CLI text dumps report
+"display is in graphics mode" for pixel frames. The legacy BIOS result's
+text-only screen fields use a blank grid for pixel captures; the observation sink still retains pixels.
+
+`IndexedPixels` owns width, height, row-major DAC indices, dot/scan-line repeat
+factors and an RGB888 palette. VGA captures use one byte per pixel plus 768
+palette bytes, keeping exact palette indices testable. Generic indexed frames
+may carry a shorter palette; every referenced index must exist. Every capture copies memory-derived pixels and palette, so
+later writes, reset or restore cannot change a retained frame. Six-bit DAC
+components expand using `(v << 2) | (v >> 4)`. The PEL mask is applied to each
+palette address when copying the palette. Screen-off and PAS blanking produce
+zero indices with a black palette, independent of programmed DAC entry zero.
+The window validates the exact pixel count, palette-index range and nonzero
+repeat factors before allocating a bounded buffer. Invalid frames return a
+`RasterError`. It converts indices to `00RRGGBB`, applies the repeat factors and
+then its integer scale. No window or host clock is needed to test presentation.
+
+READ: IBM VGA/XGA Technical Reference Manual, Graphics Modes (modes D, E, 10,
+12 and 13), Video Memory Organization, sequencer Fig. 2-31, CRTC Figs. 2-50,
+2-60–2-65, GC Fig. 2-75, AC Figs. 2-84–2-89 and DAC Fig. 2-94.
+Planar serializers combine the most-significant bit first from all four planes,
+then apply Color Plane Enable, attribute palette, P54S and Color Select.
+GC bit 6 takes precedence over its CGA shift bit 5. Both GC bit 6 and AC bit 6
+must be set for 256-colour output.
+
+DERIVED/ASSUMED: the 256-colour serializer takes successive bytes from planes
+0–3, passing each four-bit sample through Color Plane Enable and the internal
+palette's low nibble before pairing the samples. This nonidentity-palette model
+is not a READ hardware fact. IBM's Color Select description (Fig. 2-89, p. 2-96)
+says "the 8-bit attribute is the digital color value to the video DAC"; VGA
+Programming Considerations (p. 2-97) says "should not modify the contents of the
+Internal Palette registers". These establish normal mode-13h operation and the
+programming restriction, rather than specifying arbitrary palette rewrites.
+Color Select, P54S and palette high bits are ignored by the paired output.
+The low-nibble interpretation remains unverified on physical hardware.
+
+CRTC start and twice offset advance a wrapping 16-bit counter independently of
+visible width. Byte/word/doubleword wiring follows Fig. 2-65, including word
+address-wrap selection. DERIVED: its doubleword layout matches the existing
+chain-4 CPU mapping, including address bits 14–15 folded into plane offsets
+0–1. This is tested beyond the first 16 KiB, without assuming contiguous bytes
+inside a plane. Logical dimensions come from horizontal display end times eight
+(halved for paired 256-colour samples) and vertical display end with overflow
+bits. When CMS0/SRC select counter address bits, logical height removes MSL+1
+and DSC repetition. READ: when CR17 bit 0 is clear, row-scan bit 0 replaces
+MA13; when bit 1 is clear, row-scan bit 1 replaces MA14, after byte/word/doubleword
+wiring (Fig. 2-64). These scan lines address distinct banks, so logical height
+removes only DSC. The counter row address advances by twice Offset after MSL+1 such lines.
+SeaVGABIOS mode 06h (CR09=C1h, CR17=C2h) therefore has 640×200 logical pixels,
+with odd lines displaced by 2000h and a physical line repeat of two.
+
+Mode 13h uses CR09=41h (MSL=1, DSC=0) to produce 320×200 from 400 output lines;
+0Dh/0Eh use DSC instead. Frames retain the removed scan-line repetition and a
+horizontal repeat from dot clock /2 and paired 256-colour samples. At window
+scale one, 0Dh and 13h expand 320×200 to 640×400, 0Eh expands 640×200 to 640×400,
+and 12h remains 640×480. Text frames keep their existing raster geometry.
+Logical indices remain compact; repeated dots and lines are generated only by
+the presenter. No additional monitor aspect correction is applied. Fig. 2-31
+specifies that Shift 4 and Shift Load behave as zero in Extended Graphics.
+
+Unmodelled: CGA-interleaved shift (GC bit 5 without bit 6), mismatched GC/AC
+serializer settings, split screen (line compare), pixel panning, smooth scrolling
+(preset row scan), mid-frame register changes and raster timing. Unsupported
+serializer combinations blank deterministically; other deferred timing effects
+are ignored. Modes 04h/05h remain unmodelled and blank: GC shift-register mode
+(bit 5 without bit 6) is not a supported serializer. Count-by-two/four variations
+outside the listed BIOS tables and nonstandard CRTC timing are not claimed.
+
+Isolation tests program six SeaVGABIOS `stdvgamodes.c` mode tables through
+ports and draw through CPU MMIO writes. They compare complete 12h and 13h
+frames and programmed DAC palettes, covering write modes 0/2, plane masking,
+start/stride and Fig. 2-65 addressing. Assembly additionally runs a synthetic
+CPU store and checks owned capture, mode switching, sink delivery and passive
+observation. Window tests compare the complete scaled host pixel buffer.
+
+MEASURED mutation evidence: 21 independent changes in a disposable copy each
+compiled and failed the intended assertion (exit 101); the unmodified copy
+passed the six graphics tests, assembly route test and window pixel test.
+Disabling the graphics capability reproduces the previous absent-capability
+behaviour and fails all six device tests. Forcing assembly's previous text-only
+selection fails the route test; suppressing window pixel conversion fails the
+raster test. The original checkout without the new API was not tested.
+
+| Mutated rule | Detecting test (short name) |
+| --- | --- |
+| Absent graphics capability | All six graphics isolation tests |
+| Reversed planar plane order | `mode_twelve_exact` |
+| Packed plane order; doubleword high address bits; chain-4 CPU high bits | `mode_thirteen_exact` |
+| Plane enable; P54S; Color Select; PEL mask | `graphics_attribute_palette` |
+| Maximum scan line; paired PEL width; GC serializer precedence | `mode_thirteen_exact` |
+| Double scan; vertical overflow bit 9 | `planar_geometry` |
+| Start address; row stride; word address wrap | `graphics_start_offset` |
+| Screen-off; palette address source | `graphics_screen_off` |
+| Assembly text-only selection | `register_vga_display_route_switches` |
+| Window pixel conversion suppressed | `indexed_frame_palette` |
+
+The first overflow mutation survived because BIOS modes stay below 512 lines.
+The geometry test was strengthened with synthetic 992-line and 224-line
+register settings to exercise both overflow bits; the repeated mutation failed.
+The disposable build directory was removed after the mutation run.
+
+MEASURED follow-up regressions: before correcting the implementation, mode 06h
+failed its 640×200 geometry assertion (height was 100), prompt polling failed on
+a pixel frame, and a malformed pixel count panicked. The added mode-13h
+Color Select/P54S/high-palette-bit test already passed the low-nibble model;
+removing the low sample's `& 15` now fails it, including palette entry 31h
+(which distinguishes upper-bit leakage) and assertions with entry 3Fh.
+
+All 16 follow-up mutations compiled and failed their intended test. The
+unmodified disposable copy passed 9 graphics tests, 1 prompt-poll test,
+1 CLI text-dump test and 6 raster tests; the copy and build directory were deleted.
+
+| Mutated rule | Detecting test (short name) |
+| --- | --- |
+| CGA logical height; CMS0/MA13; SRC/MA14; clearing counter bits; substitution after word wiring | `mode_six_cga` |
+| Mode-13h internal palette low-nibble mask | `mode_thirteen_ignores` |
+| Pixel prompt reported as unavailable | `prompt_poll_waits_through` |
+| Generic unavailable diagnostic for a graphics dump | `text_dump_reports` |
+| Dot or scan-line repeat omitted from frame | `firmware_graphics_modes_retain` |
+| Presenter ignores horizontal repeat | `graphics_repeat_factors` |
+| Pixel-count validation omitted | `malformed_pixel_counts` |
+| Palette-index, nonzero-repeat or scaled-width overflow validation omitted | `pixel_frames_validate` |
+| Unmodelled CGA shift rendered as planar | `graphics_screen_off` |
+
 ## Host input
 
 The window frontend queues physical winit key transitions independently of

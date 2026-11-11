@@ -112,9 +112,14 @@ pub mod test_support {
     /// SHA-256 of visible row-major glyph/attribute pairs, excluding cursor and style.
     /// IBM Monochrome Display and Printer Adapter, Programming Considerations:
     /// each text cell occupies a glyph byte followed by an attribute byte.
+    ///
+    /// # Panics
+    /// Panics if the supplied frame contains pixels instead of text cells.
     pub fn text_plane_sha256(frame: &video::Frame) -> String {
         use sha2::{Digest, Sha256};
-        let video::Frame::Text(grid) = frame;
+        let video::Frame::Text(grid) = frame else {
+            panic!("text_plane_sha256 requires a text frame, received pixels");
+        };
         let mut digest = Sha256::new();
         for row in 0..grid.rows() {
             for col in 0..grid.cols() {
@@ -167,6 +172,53 @@ pub mod test_support {
     impl Drop for TempDir {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::text_plane_sha256;
+
+        #[test]
+        fn text_plane_hash_uses_row_major_glyph_and_attribute_bytes() {
+            let mut state = video::TextModeState {
+                vram: &[b'A', 7, b'B', 0x1f, b'C', 0x70, b'D', 0x87],
+                cols: 2,
+                rows: 2,
+                start_cell: 0,
+                cursor_cell: 0,
+                cursor_visible: false,
+                attributes: video::TextAttributeSet::Colour {
+                    blink_enabled: false,
+                },
+            };
+            let hash = text_plane_sha256(&video::Frame::Text(video::render_text_mode(&state)));
+            assert_eq!(
+                hash,
+                "7192f4315fc5be2195f757f77d25393c510d13863fc773c8a85043d3a2b8650e"
+            );
+            state.cursor_visible = true;
+            state.cursor_cell = 3;
+            state.attributes = video::TextAttributeSet::Colour {
+                blink_enabled: true,
+            };
+            assert_eq!(
+                text_plane_sha256(&video::Frame::Text(video::render_text_mode(&state))),
+                hash
+            );
+        }
+
+        #[test]
+        #[should_panic(expected = "text_plane_sha256 requires a text frame, received pixels")]
+        fn text_plane_hash_rejects_pixel_frames_explicitly() {
+            let frame = video::Frame::Pixels(video::IndexedPixels {
+                width: 1,
+                height: 1,
+                repeat: (1, 1),
+                indices: vec![0],
+                palette: vec![[0; 3]].into_boxed_slice(),
+            });
+            text_plane_sha256(&frame);
         }
     }
 }

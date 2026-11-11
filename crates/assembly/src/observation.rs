@@ -4,7 +4,8 @@
 //! The facade observes card-owned state and semantic emissions, never decodes
 //! registers or replays accesses. See `backlog/docs/design/observation.md`,
 //! §Typed capabilities and route ownership and §Sinks, bounds and lifecycle.
-//! VGA Technical Reference, Alphanumeric Modes, and PC16550D datasheet,
+//! IBM VGA/XGA Technical Reference Manual, Graphics and Alphanumeric Modes,
+//! and PC16550D datasheet,
 //! Transmitter Holding Register, define the two producer contracts.
 
 use std::{cell::RefCell, collections::HashMap};
@@ -12,7 +13,9 @@ use std::{cell::RefCell, collections::HashMap};
 use bus::Bus;
 use cpu::Cpu;
 use device::{ByteCapture, ByteOverflow, ByteStreamKind, Device};
-use video::{render_planar_text, render_text_mode, CaptureFrameSink, Frame, FrameSink};
+use video::{
+    render_graphics, render_planar_text, render_text_mode, CaptureFrameSink, Frame, FrameSink,
+};
 
 use crate::{AssembledMachine, ConfigError, DeviceId, FrameSinkKind, OutputConfig};
 
@@ -35,7 +38,8 @@ impl AssembledMachine {
     /// Capture a selected card with this machine's execution counters.
     /// Call after a completed service boundary, including an error stop.
     /// This presents the frame to subscribers and replaces the configured sink's
-    /// last frame, without advancing devices or executing the CPU.
+    /// last frame, without advancing devices or executing the CPU. The legacy
+    /// method name also covers pixel frames when VGA selects graphics mode.
     pub fn capture_text(&self, device: DeviceId) -> Result<DisplayCapture, ObservationError> {
         Ok(DisplayCapture {
             virtual_time: self.machine.virtual_time(),
@@ -61,7 +65,7 @@ impl AssembledMachine {
 /// The requested capability, independent of the device's role or port address.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub enum OutputKind {
-    /// Passive, borrowed text memory and scanout scalars.
+    /// Passive display scanout; VGA selects text or graphics from its AC mode.
     TextScanout,
     /// Accepted bytes with the specified stream semantics.
     Bytes(ByteStreamKind),
@@ -74,7 +78,7 @@ pub struct ObservationRequest {
     pub device: DeviceId,
     /// Capability the configured device must support.
     pub output: OutputKind,
-    /// Maximum total stream bytes per capture epoch; ignored for text scanout.
+    /// Maximum total stream bytes per capture epoch; ignored for display scanout.
     /// Drains release memory without renewing the budget.
     /// Overflow fails observation until a new epoch, without stopping hardware.
     pub byte_limit: usize,
@@ -89,7 +93,7 @@ pub struct ObservationRequest {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ObservationPolicy {
     /// Initial presentation subscribers installed by [`Observation::bind`] for
-    /// bound text routes; Headless by default. This does not add routes.
+    /// bound display routes; Headless by default. This does not add routes.
     pub output: OutputConfig,
     /// Access diagnostics for every device and the open bus, independent of routes.
     /// Defaults to Off, including when semantic output capture is requested.
@@ -123,6 +127,9 @@ pub enum ObservationError {
     /// A bus no longer exposes the capability validated during assembly.
     #[error("text scanout is unavailable for bound device {0:?}")]
     ScanoutUnavailable(DeviceId),
+    /// A text-only consumer requested a display currently producing pixels.
+    #[error("display is in graphics mode: {0:?}")]
+    GraphicsMode(DeviceId),
     /// Captured bytes exceeded the route's explicit limit.
     #[error("observation overflow for {device:?} {kind:?}: {source}")]
     ByteOverflow {
@@ -191,6 +198,7 @@ impl Observation {
                 OutputKind::TextScanout => {
                     if producer_device.text_scanout().is_none()
                         && producer_device.planar_text_scanout().is_none()
+                        && producer_device.graphics_scanout().is_none()
                     {
                         return Err(ConfigError::UnsupportedObservationOutput { device, output });
                     }
@@ -302,15 +310,16 @@ impl Observation {
         let producer = bus
             .device(route.device_index)
             .ok_or(ObservationError::ScanoutUnavailable(device))?;
-        let grid = if let Some(state) = producer.planar_text_scanout() {
-            render_planar_text(&state)
+        let frame = if let Some(state) = producer.graphics_scanout() {
+            Frame::Pixels(render_graphics(&state))
+        } else if let Some(state) = producer.planar_text_scanout() {
+            Frame::Text(render_planar_text(&state))
         } else {
             let state = producer
                 .text_scanout()
                 .ok_or(ObservationError::ScanoutUnavailable(device))?;
-            render_text_mode(&state)
+            Frame::Text(render_text_mode(&state))
         };
-        let frame = Frame::Text(grid);
         if let Some(subscribers) = self.displays.get(&device) {
             if let Some(capture) = &mut *subscribers.capture.borrow_mut() {
                 capture.present(&frame);
@@ -375,6 +384,99 @@ mod tests {
     }
 
     #[test]
+    fn register_vga_display_route_switches_to_owned_pixels_and_back() {
+        let mut config = crate::at_vga_text(vec![0xFA, 0xB0, 0x2A, 0xA2, 0, 0, 0xF4]);
+        config.cpu.segments.ds = 0xA000;
+        let card = config
+            .devices
+            .iter_mut()
+            .find(|d| d.id == DeviceId::Vga)
+            .unwrap();
+        card.kind = DeviceKind::VgaRegisters(crate::VgaCfg {});
+        card.ports = crate::VgaCfg::port_windows();
+        config.memory.ram = vec![crate::RamRegion::new(0, 0xA0000)];
+        config.memory.mmio = vec![crate::MmioWindow::new(0xA0000, 0x20000, DeviceId::Vga)];
+        let policy = ObservationPolicy {
+            output: OutputConfig {
+                frame_sink: FrameSinkKind::Capture,
+            },
+            routes: vec![request(DeviceId::Vga, OutputKind::TextScanout, 0)],
+            ..Default::default()
+        };
+        let mut rig = assemble_with_observation(&config, &policy).unwrap();
+        let text = rig.capture_text(DeviceId::Vga).unwrap();
+        let index = rig.observation.routes()[0].device_index;
+        let saved = rig.machine.bus().device(index).unwrap().save();
+        let bus = rig.machine.bus_mut();
+        bus.port_write(0x3C2, 1, 0x63).unwrap();
+        for (port, index, value) in [
+            (0x3C4, 1, 1),
+            (0x3C4, 2, 15),
+            (0x3C4, 4, 14),
+            (0x3CE, 5, 0x40),
+            (0x3CE, 6, 5),
+            (0x3CE, 8, 255),
+            (0x3D4, 1, 0x4f),
+            (0x3D4, 7, 0x1f),
+            (0x3D4, 9, 0x41),
+            (0x3D4, 0x12, 0x8f),
+            (0x3D4, 0x13, 0x28),
+            (0x3D4, 0x14, 0x40),
+            (0x3D4, 0x17, 0xa3),
+        ] {
+            bus.port_write(port, 2, index | (value << 8)).unwrap();
+        }
+        for index in 0..16 {
+            bus.port_read(0x3DA, 1).unwrap();
+            bus.port_write(0x3C0, 1, index).unwrap();
+            bus.port_write(0x3C0, 1, index).unwrap();
+        }
+        for (index, value) in [(0x10, 0x41), (0x12, 15)] {
+            bus.port_read(0x3DA, 1).unwrap();
+            bus.port_write(0x3C0, 1, index).unwrap();
+            bus.port_write(0x3C0, 1, value).unwrap();
+        }
+        bus.port_read(0x3DA, 1).unwrap();
+        bus.port_write(0x3C0, 1, 0x20).unwrap();
+        bus.port_write(0x3C6, 1, 255).unwrap();
+        bus.port_write(0x3C8, 1, 0x2a).unwrap();
+        for v in [63, 1, 2] {
+            bus.port_write(0x3C9, 1, v).unwrap();
+        }
+        assert_eq!(
+            rig.machine.run_bounded(Some(100)).unwrap(),
+            machine::RunOutcome::Halted
+        );
+        let before = rig.machine.bus().device(index).unwrap().save();
+        let capture = rig.capture_text(DeviceId::Vga).unwrap();
+        let Frame::Pixels(pixels) = &capture.frame else {
+            panic!("expected pixels")
+        };
+        assert_eq!((pixels.width, pixels.height), (320, 200));
+        let mut expected = vec![0; 64000];
+        expected[0] = 0x2a;
+        assert_eq!(pixels.indices, expected);
+        assert_eq!(pixels.palette[0x2a], [255, 4, 8]);
+        assert_eq!(rig.machine.bus().device(index).unwrap().save(), before);
+        assert_eq!(
+            rig.observation.captured_frame(DeviceId::Vga),
+            Some(capture.frame.clone())
+        );
+        assert_eq!(
+            rig.capture_displays().unwrap(),
+            vec![(DeviceId::Vga, capture.clone())]
+        );
+        rig.machine
+            .bus_mut()
+            .device_mut(index)
+            .unwrap()
+            .restore(&saved)
+            .unwrap();
+        assert_eq!(rig.capture_text(DeviceId::Vga).unwrap().frame, text.frame);
+        assert_eq!(pixels.indices[0], 0x2a);
+    }
+
+    #[test]
     fn register_vga_routes_planar_text_on_a_bare_rig() {
         let mut config = crate::at_vga_text(vec![0xF4]);
         let card = config
@@ -392,7 +494,9 @@ mod tests {
         };
         let mut rig = assemble_with_observation(&config, &policy).unwrap();
         let before = rig.capture_text(DeviceId::Vga).unwrap();
-        let Frame::Text(grid) = before.frame;
+        let Frame::Text(grid) = before.frame else {
+            panic!("expected text frame")
+        };
         assert!(!grid.appearance().unwrap().enabled);
         let bus = rig.machine.bus_mut();
         bus.port_write(0x3C2, 1, 0x67).unwrap();
@@ -414,7 +518,9 @@ mod tests {
         bus.port_write(0x3C0, 1, 0x20).unwrap();
         bus.mmio_write(0xB8000, 2, 0x0741).unwrap();
         let frame = rig.capture_text(DeviceId::Vga).unwrap();
-        let Frame::Text(grid) = &frame.frame;
+        let Frame::Text(grid) = &frame.frame else {
+            panic!("expected text frame")
+        };
         assert_eq!((grid.cols(), grid.rows()), (2, 1));
         assert_eq!(
             (
@@ -562,7 +668,9 @@ mod tests {
         assert_eq!(observation.captured_frame(DeviceId::Vga), None);
         let bus = Bus::new(devices, bus::DecodeMap::default());
         let frame = observation.capture_text(&bus, DeviceId::Vga).unwrap();
-        let Frame::Text(grid) = &frame;
+        let Frame::Text(grid) = &frame else {
+            panic!("expected text frame")
+        };
         assert_eq!(grid.cell(0, 0).unwrap().glyph, b'I');
         assert_eq!(grid.cell(0, 0).unwrap().attr, 0x70);
         assert_eq!(observation.captured_frame(DeviceId::Vga), Some(frame));
@@ -842,8 +950,12 @@ mod tests {
             bus.port_write(0x3B4, 1, index).unwrap();
             bus.port_write(0x3B5, 1, value).unwrap();
         }
-        let Frame::Text(mda) = assembled.capture_text(DeviceId::Mda).unwrap().frame;
-        let Frame::Text(vga) = assembled.capture_text(DeviceId::Vga).unwrap().frame;
+        let Frame::Text(mda) = assembled.capture_text(DeviceId::Mda).unwrap().frame else {
+            panic!("expected text frame")
+        };
+        let Frame::Text(vga) = assembled.capture_text(DeviceId::Vga).unwrap().frame else {
+            panic!("expected text frame")
+        };
         assert_eq!(
             mda.cell(0, 0),
             Some(&video::TextCell {
@@ -926,7 +1038,9 @@ mod tests {
             machine::RunOutcome::Halted
         );
         let capture = assembled.capture_text(card).unwrap();
-        let Frame::Text(grid) = capture.frame;
+        let Frame::Text(grid) = capture.frame else {
+            panic!("expected text frame")
+        };
         assert_eq!(
             grid.cell(0, 0),
             Some(&video::TextCell {
@@ -1009,7 +1123,9 @@ mod tests {
         assert_eq!(capture.retired, retired);
         assert_eq!(assembled.capture_text(DeviceId::Vga).unwrap(), capture);
         let frame = capture.frame;
-        let Frame::Text(grid) = &frame;
+        let Frame::Text(grid) = &frame else {
+            panic!("expected text frame")
+        };
         assert_eq!(
             grid.cell(0, 0).unwrap(),
             &video::TextCell {

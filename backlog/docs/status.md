@@ -5,6 +5,17 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-11 — Register-level VGA graphics:** opt-in `vga` cards capture
+  planar 16-colour 0Dh/0Eh/10h/12h and chain-4 13h through owned indexed
+  pixel frames with a captured DAC palette and presentation repeat factors.
+  CGA-compatible mode 06h uses row-scan bits to select its memory banks. The existing display route follows
+  AC text/graphics selection; the window presents pixels with integer scaling.
+  CRTC logical geometry, start/stride, double scanning and Fig. 2-65 addressing,
+  plane enable, AC colours and PEL mask are covered. CGA-interleaved shift,
+  split screens, panning, smooth scrolling and mid-frame changes are unmodelled.
+  Existing text presets and golden expectations are unchanged. See
+  [graphics scanout](design/observation.md#register-level-vga-graphics-scanout).
+
 - **2026-11-11 — XT devices (device level):** Mode 0 8255, XT SW1/PPI and
   83-key set-1 receiver, NMI enable latch at A0h, and single 8237 with XT page
   decode are available as isolated devices, with snapshots and trace policy
@@ -297,7 +308,8 @@ checks identity and diagnostics without execution; see `vendor/user-roms/README.
   Alphanumeric rendering and opt-in `kind = "vga"` wiring now use guest fonts,
   CRTC geometry/start/stride/cursor and AC/DAC colours through `Frame::Text`.
   The existing text-only defaults and goldens are unchanged. No option ROM is
-  installed; SeaVGABIOS via fw_cfg and graphics scanout remain pending.
+  installed; graphics scanout is available as described above, while
+  SeaVGABIOS delivery via fw_cfg remains pending.
 
 - **2026-11-11, SeaBIOS fixture:** pinned rel-1.17.0 ISA build recipe and
   configuration added under `vendor/seabios/`, with a separate firmware

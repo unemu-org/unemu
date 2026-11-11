@@ -446,6 +446,39 @@ pub struct PlanarTextState<'a> {
     pub enabled: bool,
 }
 
+/// Passive VGA graphics scanout, decoded from registers without guest accesses.
+/// IBM VGA/XGA Technical Reference Manual, Video Memory Organization and
+/// Figs. 2-50, 2-65, 2-75, 2-84. See `backlog/docs/design/observation.md`.
+#[derive(Clone, Debug)]
+pub struct GraphicsScanout<'a> {
+    /// Four independent 64 KiB memory planes.
+    pub planes: [&'a [u8]; 4],
+    /// Logical pixels, excluding repeated dots and scan lines.
+    pub dimensions: (u16, u16),
+    /// Dot and scan-line repetitions retained for presentation.
+    pub repeat: (u8, u8),
+    /// Scan lines per CRTC address-counter row (MSL + 1).
+    pub row_scan_height: u8,
+    /// Address bits replaced by row scan: MA13 (CMS0) and MA14 (SRC).
+    pub row_scan_mask: u16,
+    /// Start address in CRTC counter units.
+    pub start: u16,
+    /// Counter increment per address-counter row.
+    pub row_stride: u16,
+    /// Byte, word or doubleword counter wiring (0, 1 or 2).
+    pub address_shift: u8,
+    /// Counter bit routed to address bit zero in word mode.
+    pub word_wrap_bit: u8,
+    /// Graphics controller 256-colour serializer selection.
+    pub packed: bool,
+    /// Attribute-controller four-bit input to DAC address mapping.
+    pub colours: [u8; 16],
+    /// Eight-bit RGB DAC palette, already subject to the PEL mask.
+    pub palette: [[u8; 3]; 256],
+    /// False for screen-off or unsupported serializer combinations.
+    pub enabled: bool,
+}
+
 /// The device swap seam (§3.2 seam 4, §7.1).
 ///
 /// Every emulated chip implements this. Method contracts:
@@ -462,7 +495,8 @@ pub struct PlanarTextState<'a> {
 /// - [`Device::reset`]: return to power-on register state.
 /// - [`Device::save`] / [`Device::restore`]: snapshot/replay (§7).
 /// - [`Device::take_trace`]: drain observed events for golden tests.
-/// - [`Device::text_scanout`] / [`Device::byte_output`]: optional, side-effect-free
+/// - [`Device::text_scanout`] / [`Device::graphics_scanout`] /
+///   [`Device::byte_output`]: optional, side-effect-free
 ///   observation capabilities (the screen a card displays; the bytes a device
 ///   emits as output), routed by the assembly crate. Default: unsupported.
 ///
@@ -474,6 +508,12 @@ pub struct PlanarTextState<'a> {
 /// invalidate the bus's cached deadline; the next query sees the resulting state.
 /// See `backlog/docs/design/scheduler.md`, §Access synchronization and invalidation.
 pub trait Device {
+    /// Passive graphics capability, selected only while the card is in graphics
+    /// mode. Observation must not update latches, traces or virtual time.
+    fn graphics_scanout(&self) -> Option<GraphicsScanout<'_>> {
+        None
+    }
+
     /// Passive planar text capability; unsupported by default. No guest access,
     /// latch update, trace or virtual-time advance is permitted during observation.
     fn planar_text_scanout(&self) -> Option<PlanarTextState<'_>> {

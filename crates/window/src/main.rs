@@ -1113,7 +1113,10 @@ mod tests {
             .assembled
             .capture_text(DeviceId::Mda)
             .unwrap()
-            .frame;
+            .frame
+        else {
+            panic!("expected text frame")
+        };
         assert!(frame
             .to_dump()
             .starts_with(std::str::from_utf8(prompt).unwrap()));
@@ -1128,7 +1131,10 @@ mod tests {
             .assembled
             .capture_text(DeviceId::Mda)
             .unwrap()
-            .frame;
+            .frame
+        else {
+            panic!("expected text frame")
+        };
         assert!(frame.to_dump().contains("Enter new date (mm-dd-[cc]yy):!"));
         assert!(presenter.sink.frame().is_some());
         assert!(presenter.window.is_none());
@@ -1231,7 +1237,9 @@ mod tests {
         advance_frame(&mut presenter);
         assert_eq!(presenter.keyboard.pending_events(), 1);
         let first = presenter.assembled.capture_text(DeviceId::Mda).unwrap();
-        let video::Frame::Text(first) = first.frame;
+        let video::Frame::Text(first) = first.frame else {
+            panic!("expected text frame")
+        };
         assert!(first.to_dump().starts_with("1!"));
         assert!(
             !first.to_dump().starts_with("1!\""),
@@ -1240,7 +1248,9 @@ mod tests {
         advance_frame(&mut presenter);
         assert_eq!(presenter.keyboard.pending_events(), 0);
         let second = presenter.assembled.capture_text(DeviceId::Mda).unwrap();
-        let video::Frame::Text(second) = second.frame;
+        let video::Frame::Text(second) = second.frame else {
+            panic!("expected text frame")
+        };
         assert!(second.to_dump().starts_with("1!\""));
         assert_eq!(
             presenter.assembled.machine.virtual_time(),
@@ -1515,7 +1525,9 @@ mod tests {
         struct Frames(Rc<RefCell<String>>);
         impl FrameSink for Frames {
             fn present(&mut self, frame: &Frame) {
-                let Frame::Text(grid) = frame;
+                let Frame::Text(grid) = frame else {
+                    panic!("expected text frame")
+                };
                 *self.0.borrow_mut() = grid.to_dump();
             }
         }

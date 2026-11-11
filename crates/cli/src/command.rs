@@ -503,10 +503,9 @@ fn run_machine(
         Some(DeviceId::Uart) => assembled
             .observation
             .drain_bytes(DeviceId::Uart, device::ByteStreamKind::SerialTx),
-        Some(device) => assembled.capture_text(device).map(|capture| {
-            let video::Frame::Text(grid) = capture.frame;
-            format!("{}\n", grid.to_dump()).into_bytes()
-        }),
+        Some(device) => assembled
+            .capture_text(device)
+            .and_then(|capture| display_dump(capture.frame, device)),
         None => Ok(Vec::new()),
     };
     let bytes = match captured {
@@ -564,9 +563,53 @@ fn error_exit_code(error: &ToolError) -> u8 {
     }
 }
 
+fn display_dump(
+    frame: video::Frame,
+    device: assembly::DeviceId,
+) -> Result<Vec<u8>, assembly::ObservationError> {
+    let video::Frame::Text(grid) = frame else {
+        return Err(assembly::ObservationError::GraphicsMode(device));
+    };
+    Ok(format!("{}\n", grid.to_dump()).into_bytes())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use assembly::DeviceId;
+
+    #[test]
+    fn text_dump_reports_graphics_mode_explicitly_and_preserves_text_bytes() {
+        let frame = video::Frame::Pixels(video::IndexedPixels {
+            width: 1,
+            height: 1,
+            repeat: (1, 1),
+            indices: vec![0],
+            palette: vec![[0; 3]].into_boxed_slice(),
+        });
+        let error = display_dump(frame, DeviceId::Vga).unwrap_err();
+        assert_eq!(
+            error,
+            assembly::ObservationError::GraphicsMode(DeviceId::Vga)
+        );
+        assert_eq!(error.to_string(), "display is in graphics mode: Vga");
+        let grid = video::render_text_mode(&video::TextModeState {
+            vram: &[b'A', 7],
+            cols: 1,
+            rows: 1,
+            start_cell: 0,
+            cursor_cell: 0,
+            cursor_visible: false,
+            attributes: video::TextAttributeSet::Colour {
+                blink_enabled: false,
+            },
+        });
+        let expected = format!("{}\n", grid.to_dump()).into_bytes();
+        assert_eq!(
+            display_dump(video::Frame::Text(grid), DeviceId::Vga).unwrap(),
+            expected
+        );
+    }
 
     #[test]
     fn file_run_parser_preserves_policy_defaults_and_explicit_limits() {

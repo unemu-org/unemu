@@ -502,7 +502,9 @@ fn user_rom_landmark_at_real_mode_prefix() {
     );
     let retired = cpu.retired();
     let capture = found.expect_redacted(assembled.capture_text(DeviceId::Mda), "capturing MDA");
-    let Frame::Text(grid) = capture.frame;
+    let Frame::Text(grid) = capture.frame else {
+        panic!("diagnostic golden requires an MDA text frame, received pixels");
+    };
     assert_eq!((grid.cols(), grid.rows()), (80, 25));
     let text_sha256 = assembly::test_support::text_plane_sha256(&video::Frame::Text(grid.clone()));
     eprintln!("{ENTRY_ID}: retired={retired}, text_sha256={text_sha256}");

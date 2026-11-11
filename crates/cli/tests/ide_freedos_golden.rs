@@ -20,7 +20,9 @@ use video::Frame;
 mod fixtures;
 
 fn console(assembled: &assembly::AssembledMachine) -> String {
-    let Frame::Text(grid) = assembled.capture_text(DeviceId::Mda).unwrap().frame;
+    let Frame::Text(grid) = assembled.capture_text(DeviceId::Mda).unwrap().frame else {
+        panic!("expected text frame")
+    };
     grid.rows_as_strings().join("\n")
 }
 
