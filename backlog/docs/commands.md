@@ -30,6 +30,29 @@ cargo run --offline -p window --bin unemupc98-window -- --machine machines/local
 cargo tree --offline -i window               # window is a leaf frontend
 ```
 
+To investigate an intermittent fast-suite failure, run two independent targets
+in parallel from the devShell. This captures every run's complete output and
+exit code, including failures that pass on an immediate rerun. Additional host
+load can run alongside this loop; keep the same load for before/after comparisons.
+
+```sh
+scratch="$(mktemp -d)"
+for lane in a b; do
+  (
+    for iteration in $(seq 1 20); do
+      if CARGO_TARGET_DIR="$scratch/target-$lane" cargo test --offline --workspace --no-fail-fast >"$scratch/$lane-$iteration.log" 2>&1; then
+        echo 0 >"$scratch/$lane-$iteration.exit"
+      else
+        echo "$?" >"$scratch/$lane-$iteration.exit"
+      fi
+    done
+  ) &
+done
+wait
+rg -n 'FAILED|panicked' "$scratch" --glob '*.log'
+rg -n '^[1-9][0-9]*$' "$scratch" --glob '*.exit'
+```
+
 System BIOS loads on IBM 5170 use a SHA-256 catalogue. Option ROMs also use catalogue hashes and format checks. An unknown image is rejected
 with its full hash and the known entries' fetch instructions. For development,
 `--allow-unlisted-firmware` accepts unknown bytes and prints exactly one

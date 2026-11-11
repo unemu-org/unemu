@@ -78,3 +78,9 @@ See [`testing.md`](testing.md): device unit tests on a mock bus, fuzz +
 property-based, golden/trace tests (deterministic, pin the x86jit rev),
 boot/integration ROMs, SingleStepTests differential for real mode, snapshot/replay.
 No device or machine feature merges without its tests.
+
+Keep process-spawning tests in separate test binaries from tests holding journal
+locks or pipe/FIFO descriptors whose lifetime affects another test. On Unix,
+fork duplicates every thread's open descriptors: `O_CLOEXEC` closes them only at
+exec, so a child can briefly retain a sibling's released lock or postpone EOF.
+Separate binaries prevent that inheritance without serializing the fast suite.
