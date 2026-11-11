@@ -318,6 +318,13 @@ enum Phase {
     Result,
 }
 
+/// Command framing and result interrupt acknowledgement. NEC µPD765A/µPD765B
+/// datasheet, Instruction Set; Intel 8272A datasheet, Registers — CPU Interface.
+struct CommandInfo {
+    length: usize,
+    result_interrupt: bool,
+}
+
 /// Context captured when a READ DATA enters execution, used to build the result
 /// phase once the DMA transfer completes.
 #[derive(Copy, Clone, Debug)]
@@ -441,6 +448,8 @@ impl Upd765 {
     }
 
     /// The current IRQ6 line level, for tests and the machine's edge detector.
+    /// IBM PC AT Technical Reference, Fixed Disk and Diskette Drive Adapter,
+    /// Digital Output Register (3F2h): bit 3 gates the controller INT onto IRQ6.
     #[must_use]
     pub fn irq_line(&self) -> bool {
         self.irq && self.dor & DOR_DMA_ENABLE != 0
@@ -463,31 +472,46 @@ impl Upd765 {
         }
     }
 
-    /// Total command length (opcode + parameters) for `opcode`, or `None` if the
-    /// opcode is not modelled. The low five bits select the command; the high
-    /// bits (MT/MFM/SK) do not change the length.
+    /// NEC µPD765A/µPD765B datasheet, Instruction Set: the low five opcode
+    /// bits select the command; MT/MFM/SK do not change its framing.
+    /// Intel 8272A datasheet, Registers — CPU Interface and SENSE INTERRUPT
+    /// STATUS: result INT acknowledgement differs from seek/reset sensing.
+    fn command_info(opcode: u8) -> Option<CommandInfo> {
+        let (length, result_interrupt) = match opcode & 0x1F {
+            0x03 => (3, false), // SPECIFY
+            0x07 => (2, false), // RECALIBRATE
+            0x08 => (1, false), // SENSE INTERRUPT STATUS
+            0x0F => (3, false), // SEEK
+            0x0A => (2, true),  // READ ID
+            0x06 => (9, true),  // READ DATA
+            0x05 => (9, true),  // WRITE DATA
+            _ => return None,
+        };
+        Some(CommandInfo {
+            length,
+            result_interrupt,
+        })
+    }
+
+    /// Total command length, or `None` if the opcode is not modelled.
     fn command_length(opcode: u8) -> Option<usize> {
-        match opcode & 0x1F {
-            0x03 => Some(3), // SPECIFY: 2 parameters
-            0x07 => Some(2), // RECALIBRATE: 1 parameter
-            0x08 => Some(1), // SENSE INTERRUPT STATUS: no parameters
-            0x0F => Some(3), // SEEK: 2 parameters
-            0x0A => Some(2), // READ ID: 1 parameter
-            0x06 => Some(9), // READ DATA: 8 parameters
-            0x05 => Some(9), // WRITE DATA: 8 parameters
-            _ => None,
-        }
+        Self::command_info(opcode).map(|info| info.length)
     }
 
     /// IBM PC AT Technical Reference, Fixed Disk and Diskette Drive Adapter,
     /// Digital Output Register: bit 3 gates reset-completion IRQ6 too.
-    /// NEC µPD765A datasheet, RESET: reset completion is sensed with SIS.
+    /// NEC µPD765A/µPD765B datasheet, Pin Functions — RESET: RESET places the
+    /// FDC in the idle state and resets its output lines. INT and DRQ are
+    /// therefore low while RESET is asserted. Releasing it permits the
+    /// ready-change polling INT, acknowledged by SENSE INTERRUPT STATUS
+    /// (Intel 8272A datasheet, SENSE INTERRUPT STATUS).
     fn write_dor(&mut self, value: u8) {
         let leaving_reset = self.dor & DOR_NOT_RESET == 0 && value & DOR_NOT_RESET != 0;
         self.dor = value;
-        if leaving_reset {
-            // Coming out of reset raises an interrupt; the BIOS then issues four
-            // SENSE INTERRUPT STATUS commands, one reporting each drive.
+        if value & DOR_NOT_RESET == 0 {
+            self.irq = false;
+        }
+        if value & DOR_NOT_RESET == 0 || leaving_reset {
             self.phase = Phase::Idle;
             self.command.clear();
             self.result.clear();
@@ -495,19 +519,28 @@ impl Upd765 {
             self.pending_request = None;
             self.pending_read = None;
             self.pending_write = None;
+        }
+        if leaving_reset {
+            // Coming out of reset raises an interrupt; the BIOS then issues four
+            // SENSE INTERRUPT STATUS commands, one reporting each drive.
             self.reset_poll = 4;
             self.raise_irq();
         }
     }
 
-    /// Handle a write to the data register (a command / parameter byte).
+    /// NEC µPD765A/µPD765B datasheet, Pin Functions — RESET: command bytes
+    /// cannot leave the idle state while RESET is asserted.
+    /// Intel 8272A datasheet, INVALID and SENSE INTERRUPT STATUS: INVALID's
+    /// own result does not replace the status of a pending interrupt.
     fn write_data(&mut self, byte: u8) {
+        if self.dor & DOR_NOT_RESET == 0 {
+            return;
+        }
         match self.phase {
             Phase::Idle => {
                 let Some(len) = Self::command_length(byte) else {
                     // An unknown opcode leaves an invalid-command status for the
                     // host's next result read, matching the real controller.
-                    self.st0 = 0x80;
                     self.result = vec![0x80];
                     self.result_index = 0;
                     self.phase = Phase::Result;
@@ -965,11 +998,23 @@ impl Upd765 {
         self.command.clear();
     }
 
-    /// Read the next result byte, returning to idle (and lowering IRQ6) once the
-    /// last one is consumed.
+    /// Intel 8272A datasheet, Registers — CPU Interface:
+    /// the first result byte acknowledges command completion INT, but all
+    /// result bytes must be read before another command can be accepted.
+    /// Only completion commands acknowledge INT here: reset/seek/recalibrate
+    /// require SENSE INTERRUPT STATUS (same datasheet, SENSE INTERRUPT STATUS).
     fn read_result(&mut self) -> u8 {
         if self.result_index >= self.result.len() {
             return 0;
+        }
+        if self.result_index == 0
+            && self
+                .command
+                .first()
+                .and_then(|&opcode| Self::command_info(opcode))
+                .is_some_and(|info| info.result_interrupt)
+        {
+            self.irq = false;
         }
         let byte = self.result[self.result_index];
         self.result_index += 1;
@@ -978,8 +1023,6 @@ impl Upd765 {
             self.command.clear();
             self.result.clear();
             self.result_index = 0;
-            // Reading the last result byte acknowledges the read/read-id interrupt.
-            self.irq = false;
         }
         byte
     }
@@ -1421,6 +1464,208 @@ impl Device for Upd765 {
 mod tests {
     use super::*;
     use testkit::MockBus;
+
+    #[test]
+    fn dor_reset_assertion_clears_int_before_release() {
+        let mut bus = MockBus::new(Box::new(ready_fdc(Vec::new())));
+        bus_command(&mut bus, &[0x0F, 0, 7]);
+        assert!(bus.device().irq_pending());
+        bus.port_write(DOR, 1, 8).unwrap();
+        assert!(
+            !bus.device().irq_pending(),
+            "RESET clears INT with the gate open"
+        );
+        bus.port_write(DOR, 1, 12).unwrap();
+        assert!(
+            bus.device().irq_pending(),
+            "reset release raises the polling INT"
+        );
+        bus_command(&mut bus, &[8]);
+        assert!(
+            !bus.device().irq_pending(),
+            "SIS acknowledges the polling INT"
+        );
+        assert_eq!(bus_results(&mut bus, 2), vec![ST0_POLL, 0]);
+    }
+
+    #[test]
+    fn dor_reset_assertion_clears_drq_before_release() {
+        for opcode in [5, 6] {
+            let mut bus = MockBus::new(Box::new(ready_fdc(vec![0x5A; SECTOR_SIZE])));
+            bus_command(&mut bus, &[opcode, 0, 0, 0, 1, 2, 1, 0x1B, 0xFF]);
+            assert_eq!(bus.port_read(MSR, 1).unwrap(), u32::from(MSR_BUSY));
+            bus.port_write(DOR, 1, 8).unwrap();
+            assert!(
+                bus.device_mut().take_dma_request().is_none(),
+                "RESET clears DRQ"
+            );
+        }
+    }
+
+    fn check_first_result_read_clears_int(opcode: u8, gate_open: bool) {
+        let mut bus = MockBus::new(Box::new(ready_fdc(vec![0x5A; SECTOR_SIZE])));
+        let expected: Vec<u8> = if opcode == 0x4A {
+            bus_command(&mut bus, &[opcode, 0]);
+            vec![0, 0, 0, 0, 0, 1, 2]
+        } else {
+            bus_command(&mut bus, &[opcode, 0, 0, 0, 1, 2, 1, 0x1B, 0xFF]);
+            finish_test_dma(&mut bus, SECTOR_SIZE, true);
+            vec![0, 0, 0, 1, 0, 1, 2]
+        };
+        assert!(bus.device().irq_pending());
+        if !gate_open {
+            bus.port_write(DOR, 1, 4).unwrap();
+            assert!(!bus.device().irq_pending());
+        }
+        assert_eq!(bus.port_read(DATA, 1).unwrap(), u32::from(expected[0]));
+        bus.port_write(DOR, 1, 12).unwrap();
+        assert!(
+            !bus.device().irq_pending(),
+            "first result read clears INT behind the DOR gate"
+        );
+        assert_eq!(
+            bus.port_read(MSR, 1).unwrap(),
+            u32::from(MSR_RQM | MSR_DIO | MSR_BUSY)
+        );
+        bus_command(&mut bus, &[0x0F, 0, 9]);
+        for &byte in &expected[1..] {
+            assert_eq!(bus.port_read(DATA, 1).unwrap(), u32::from(byte));
+            assert!(!bus.device().irq_pending());
+        }
+        assert_eq!(bus.port_read(MSR, 1).unwrap(), u32::from(MSR_RQM));
+        bus_command(&mut bus, &[8]);
+        assert_eq!(bus_results(&mut bus, 1), vec![0x80]);
+    }
+
+    #[test]
+    fn read_id_first_result_read_clears_int() {
+        for gate_open in [true, false] {
+            check_first_result_read_clears_int(0x4A, gate_open);
+        }
+    }
+
+    #[test]
+    fn read_data_first_result_read_clears_int() {
+        for gate_open in [true, false] {
+            check_first_result_read_clears_int(6, gate_open);
+        }
+    }
+
+    #[test]
+    fn write_data_first_result_read_clears_int() {
+        for gate_open in [true, false] {
+            check_first_result_read_clears_int(5, gate_open);
+        }
+    }
+
+    #[test]
+    fn reset_int_requires_sense_across_new_command() {
+        let mut bus = MockBus::new(Box::new(Upd765::new()));
+        bus.port_write(DOR, 1, 12).unwrap();
+        assert!(bus.device().irq_pending());
+        bus_command(&mut bus, &[3, 0xDF, 2]);
+        assert!(bus.device().irq_pending());
+        bus_command(&mut bus, &[0xFF]);
+        assert!(bus.device().irq_pending());
+        assert_eq!(bus_results(&mut bus, 1), vec![0x80]);
+        assert!(
+            bus.device().irq_pending(),
+            "invalid result does not acknowledge reset INT"
+        );
+        for drive in 0..4 {
+            bus_command(&mut bus, &[8]);
+            assert!(!bus.device().irq_pending());
+            assert_eq!(bus_results(&mut bus, 2), vec![ST0_POLL | drive, 0]);
+        }
+    }
+
+    #[test]
+    fn seek_and_recalibrate_int_requires_sense_across_new_command() {
+        for drive in [0, 2] {
+            for (command, pcn) in [(vec![0x0F, drive, 7], 7), (vec![7, drive], 0)] {
+                let drives =
+                    std::array::from_fn(|_| Some(Drive::new(FloppyGeometry::HD1440, Vec::new())));
+                let mut bus = MockBus::new(Box::new(ready_drives(drives)));
+                bus_command(&mut bus, &command);
+                assert!(bus.device().irq_pending());
+                for byte in [3, 0xDF, 2] {
+                    bus_command(&mut bus, &[byte]);
+                    assert!(
+                        bus.device().irq_pending(),
+                        "command writes do not acknowledge seek INT"
+                    );
+                }
+                bus_command(&mut bus, &[0xFF]);
+                assert!(bus.device().irq_pending());
+                assert_eq!(bus_results(&mut bus, 1), vec![0x80]);
+                assert!(
+                    bus.device().irq_pending(),
+                    "invalid result does not acknowledge seek INT"
+                );
+                bus_command(&mut bus, &[8]);
+                assert!(
+                    !bus.device().irq_pending(),
+                    "only SIS acknowledges seek INT"
+                );
+                assert_eq!(bus_results(&mut bus, 2), vec![ST0_SEEK_END | drive, pcn]);
+            }
+        }
+    }
+
+    #[test]
+    fn held_reset_ignores_data_writes() {
+        let mut bus = MockBus::new(Box::new(ready_fdc(vec![0x5A; SECTOR_SIZE])));
+        bus.port_write(DOR, 1, 8).unwrap();
+        for command in [
+            vec![0x0F, 0, 7],
+            vec![7, 0],
+            vec![0x4A, 0],
+            vec![6, 0, 0, 0, 1, 2, 1, 0x1B, 0xFF],
+            vec![5, 0, 0, 0, 1, 2, 1, 0x1B, 0xFF],
+            vec![0xFF],
+            vec![8],
+        ] {
+            for byte in command {
+                bus_command(&mut bus, &[byte]);
+                assert!(!bus.device().irq_pending(), "held RESET keeps INT low");
+                assert!(bus.device_mut().take_dma_request().is_none());
+                assert_eq!(bus.port_read(MSR, 1).unwrap(), u32::from(MSR_RQM));
+                assert_eq!(bus.port_read(DATA, 1).unwrap(), 0);
+            }
+        }
+        bus.port_write(DOR, 1, 12).unwrap();
+        for drive in 0..4 {
+            bus_command(&mut bus, &[8]);
+            assert_eq!(bus_results(&mut bus, 2), vec![ST0_POLL | drive, 0]);
+        }
+        bus_command(&mut bus, &[0x4A, 0]);
+        assert_eq!(bus_results(&mut bus, 7), vec![0, 0, 0, 0, 0, 1, 2]);
+    }
+
+    #[test]
+    fn asserted_reset_reads_idle_from_each_active_phase() {
+        for command in [
+            vec![0x0F],
+            vec![6, 0, 0, 0, 1, 2, 1, 0x1B, 0xFF],
+            vec![5, 0, 0, 0, 1, 2, 1, 0x1B, 0xFF],
+            vec![0x4A, 0],
+        ] {
+            let mut bus = MockBus::new(Box::new(ready_fdc(vec![0x5A; SECTOR_SIZE])));
+            bus_command(&mut bus, &command);
+            assert_ne!(bus.port_read(MSR, 1).unwrap(), u32::from(MSR_RQM));
+            bus.port_write(DOR, 1, 8).unwrap();
+            assert_eq!(bus.port_read(MSR, 1).unwrap(), u32::from(MSR_RQM));
+            for _ in 0..8 {
+                assert_eq!(bus.port_read(DATA, 1).unwrap(), 0);
+            }
+            assert!(!bus.device().irq_pending());
+            assert!(bus.device_mut().take_dma_request().is_none());
+            bus.port_write(DOR, 1, 12).unwrap();
+            assert!(bus.device().irq_pending());
+            bus_command(&mut bus, &[8]);
+            assert_eq!(bus_results(&mut bus, 2), vec![ST0_POLL, 0]);
+        }
+    }
 
     #[test]
     fn dor_clearing_gate_removes_existing_irq() {
@@ -2742,8 +2987,10 @@ mod tests {
     fn unknown_command_reports_invalid() {
         let mut fdc = ready_fdc(Vec::new());
         command(&mut fdc, &[0x1D]); // not a modelled opcode
+        assert!(!fdc.irq_pending(), "INVALID does not generate INT");
         let res = results(&mut fdc, 1);
         assert_eq!(res[0], 0x80, "invalid-command status");
+        assert!(!fdc.irq_pending());
     }
 
     #[test]
