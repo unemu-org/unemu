@@ -481,9 +481,18 @@ fn validate_step_cpu(cpu: &mut impl cpu::Cpu) -> Result<(), ConfigError> {
 /// (§4).
 ///
 /// The bare real-mode constructor maps nothing; the assembler lays out every RAM
-/// region, MMIO window, and loaded image from the config, so the memory map is a
-/// pure function of [`MemoryConfig`] rather than a constructor's baked-in layout.
+/// region, MMIO window, and loaded image from the config. On a firmware board,
+/// empty adapter addresses below the system BIOS remain read-only zeroes.
+/// IBM PC AT Technical Reference, Section 1, System Memory Map; see
+/// `backlog/docs/design/machine-config.md` §MemoryConfig for this model choice.
 fn build_cpu(config: &MachineConfig) -> Result<X86JitCpu, AssemblyError> {
+    build_cpu_with_mapping_trace(config, |_, _, _| {})
+}
+
+fn build_cpu_with_mapping_trace(
+    config: &MachineConfig,
+    mut record: impl FnMut(u64, u64, &'static str),
+) -> Result<X86JitCpu, AssemblyError> {
     let mut cpu = X86JitCpu::new_real16_bare(
         config.memory.address_space_bytes,
         config.cpu.reset.cs(),
@@ -495,6 +504,7 @@ fn build_cpu(config: &MachineConfig) -> Result<X86JitCpu, AssemblyError> {
     // region; a ROM image maps and populates its own region.
     for region in &config.memory.ram {
         cpu.map_ram(region.base, region.size)?;
+        record(region.base, region.end(), "ram");
     }
     let mut mmio: Vec<_> = config.memory.mmio.iter().collect();
     mmio.sort_unstable_by_key(|window| window.base);
@@ -504,51 +514,73 @@ fn build_cpu(config: &MachineConfig) -> Result<X86JitCpu, AssemblyError> {
         let base = run[0].base;
         let end = run[run.len() - 1].end();
         cpu.map_mmio(base, end - base)?;
+        record(base, end, "mmio");
     }
     if !config.board.firmware_catalogue().is_empty() {
-        if let Some((_, end)) = crate::firmware::scan_firmware(config)?.scan_window {
-            let mut cursor = 0xC0000;
-            let mut occupied: Vec<_> = config
-                .images
-                .iter()
-                .filter(|image| image.kind == ImageKind::Rom)
-                .map(|image| {
-                    (
-                        image.base,
-                        image.base + image.source.known_len().unwrap_or(0),
-                    )
-                })
-                .chain(
-                    config
-                        .memory
-                        .mmio
-                        .iter()
-                        .map(|window| (window.base, window.end())),
+        // Physical adapter decoding belongs to the board, independently of
+        // whether this firmware searches for option ROMs.
+        let end = crate::firmware::system_bios(config)?.base;
+        let mut cursor = 0xC0000;
+        let mut occupied: Vec<_> = config
+            .images
+            .iter()
+            .filter(|image| image.kind == ImageKind::Rom)
+            .map(|image| {
+                (
+                    image.base,
+                    image.base + image.source.known_len().unwrap_or(0),
                 )
-                .filter(|(base, stop)| *base < end && *stop > cursor)
-                .collect();
-            occupied.sort_unstable();
-            for (base, stop) in occupied {
-                if base > cursor {
-                    cpu.map_rom(cursor, &vec![0; (base - cursor) as usize])?;
-                }
-                cursor = cursor.max(stop);
+            })
+            .chain(
+                config
+                    .memory
+                    .mmio
+                    .iter()
+                    .map(|window| (window.base, window.end())),
+            )
+            .filter(|(base, stop)| *base < end && *stop > cursor)
+            .collect();
+        occupied.sort_unstable();
+        for (base, stop) in occupied {
+            if base > cursor {
+                cpu.map_rom(cursor, &vec![0; (base - cursor) as usize])?;
+                record(cursor, base, "rom");
             }
-            if cursor < end {
-                // Preserve the historical zero-filled scan result while keeping
-                // adapter space isolated from guest RAM and RAM-loaded code.
-                cpu.map_rom(cursor, &vec![0; (end - cursor) as usize])?;
-            }
+            cursor = cursor.max(stop);
+        }
+        if cursor < end {
+            // Preserve historical zero-filled reads while keeping
+            // adapter space isolated from guest RAM and RAM-loaded code.
+            cpu.map_rom(cursor, &vec![0; (end - cursor) as usize])?;
+            record(cursor, end, "rom");
         }
     }
     for image in &config.images {
         let bytes = load_image_bytes(&image.source)?;
         match image.kind {
-            ImageKind::Rom => cpu.map_rom(image.base, &bytes)?,
+            ImageKind::Rom => {
+                cpu.map_rom(image.base, &bytes)?;
+                record(image.base, image.base + bytes.len() as u64, "rom");
+            }
             ImageKind::RamLoad => cpu.write_mem(image.base, &bytes)?,
         }
     }
     Ok(cpu)
+}
+
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) fn cpu_mapping_regions(
+    config: &MachineConfig,
+    options: crate::AssemblyOptions,
+) -> Result<Vec<(u64, u64, &'static str)>, AssemblyError> {
+    let (resolved, _) = resolve_file_sources(config, options)?;
+    let config = resolved.as_ref();
+    config.validate_resolved()?;
+    let mut regions = Vec::new();
+    build_cpu_with_mapping_trace(config, |base, end, kind| {
+        regions.push((base, end, kind));
+    })?;
+    Ok(regions)
 }
 
 /// Materialise an image's bytes: inline bytes verbatim, a blank run of zeroes, or
@@ -2406,6 +2438,63 @@ mod tests {
             assert_eq!(mda.vram.last(), Some(&0x34));
             assert_eq!(mda.vram[0], 0);
             assert_eq!(&colour.vram[..2], &[0x12, 0]);
+        }
+    }
+
+    #[test]
+    fn listed_bios_without_scan_window_has_readonly_zero_adapter_gaps() {
+        use cpu::{Cpu, CpuReg, CpuStop};
+        use sha2::{Digest, Sha256};
+        let mut rom = vec![0xF4; 65536];
+        rom[0xFFF0..0xFFF5].copy_from_slice(&[0xEA, 0, 1, 0, 0xF0]);
+        // Empty sockets must remain readable after guest writes, so exercise
+        // ordinary CPU stores as well as the initial gap value.
+        let program = [
+            0xB8, 0, 0xC0, 0x8E, 0xD8, 0xA0, 1, 0, 0xC6, 0x06, 1, 0, 0xA5, 0x8A, 0x1E, 1, 0, 0xF4,
+        ];
+        rom[0x100..0x100 + program.len()].copy_from_slice(&program);
+        let mut config = crate::bios(rom.clone(), Some(Vec::new()));
+        config.drives.clear();
+        config.images[0].base = 0xF0000;
+        config.images[0].provides.clear();
+        let catalogue = [crate::FirmwareEntry {
+            id: "synthetic-listed-diagnostic",
+            sha256: Box::leak(format!("{:x}", Sha256::digest(&rom)).into_boxed_str()),
+            parts: &[],
+            ..crate::firmware::LANDMARK_ROM_POST_AT_1_2_0
+        }];
+        assert_eq!(catalogue[0].scan_window, None);
+        assert!(crate::check_system_bios(
+            &config,
+            config.board,
+            &catalogue,
+            0xF0000,
+            &rom,
+            crate::AssemblyOptions::default(),
+        )
+        .unwrap()
+        .is_none());
+        let mut regions = Vec::new();
+        let mut cpu = build_cpu_with_mapping_trace(&config, |base, end, kind| {
+            regions.push((base, end, kind));
+        })
+        .unwrap();
+        assert_eq!(
+            regions,
+            vec![
+                (0, 0xB0000, "ram"),
+                (0xB0000, 0xC0000, "mmio"),
+                (0xC0000, 0xF0000, "rom"),
+                (0xF0000, 0x100000, "rom"),
+            ]
+        );
+        assert_eq!(cpu.run(None).unwrap(), CpuStop::Halt);
+        assert_eq!(cpu.reg(CpuReg::Rax) & 0xFF, 0);
+        assert_eq!(cpu.reg(CpuReg::Rbx) & 0xFF, 0);
+        for address in [0xC0000, 0xC0001, 0xEFFFF] {
+            let mut value = [0xFF];
+            cpu.read_mem(address, &mut value).unwrap();
+            assert_eq!(value, [0]);
         }
     }
 

@@ -10,6 +10,9 @@ use std::{
     path::{Path, PathBuf},
 };
 
+#[path = "../../cli/tests/support/fixtures.rs"]
+mod fixtures;
+
 #[derive(Default)]
 struct Images {
     files: BTreeMap<PathBuf, Vec<u8>>,
@@ -550,6 +553,161 @@ fn parts_bios_placement_names_parts_field() {
 }
 
 #[test]
+fn repository_machine_cpu_regions_match_before_adapter_gap_fix() {
+    for relative in [
+        "kiselev-bios/bios-xi8088.bin",
+        "kiselev-bios/bios-xi8088-atreset.bin",
+        "freedos/freedos.img",
+        "xtide-universal-bios/ide_xtp-r638-ata1f0-8k.bin",
+        "hdd/fat16.img",
+    ] {
+        if fixtures::fixture(relative).is_none() {
+            return;
+        }
+    }
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../machines");
+    let mut names = Vec::new();
+    for directory in [&root, &root.join("presets")] {
+        for entry in std::fs::read_dir(directory).unwrap() {
+            let path = entry.unwrap().path();
+            if matches!(
+                path.extension().and_then(|s| s.to_str()),
+                Some("toml" | "yaml" | "yml")
+            ) {
+                names.push(path.strip_prefix(&root).unwrap().to_path_buf());
+            }
+        }
+    }
+    names.sort();
+    assert_eq!(
+        names,
+        [
+            "at-freedos-from-preset.toml",
+            "at-freedos.toml",
+            "at-freedos.yaml",
+            "at-ide.toml",
+            "presets/ibm-5170.toml",
+        ]
+        .map(PathBuf::from)
+    );
+    // Captured from successful production map calls before adapter gaps became
+    // independent of the selected firmware's scan window. Order is retained too.
+    let ordinary = vec![
+        (0, 0xB0000, "ram"),
+        (0xB0000, 0xC0000, "mmio"),
+        (0xC0000, 0xF8000, "rom"),
+        (0xF8000, 0x100000, "rom"),
+    ];
+    let ide = vec![
+        (0, 0xB0000, "ram"),
+        (0xB0000, 0xC0000, "mmio"),
+        (0xC0000, 0xC8000, "rom"),
+        (0xCA000, 0xF8000, "rom"),
+        (0xF8000, 0x100000, "rom"),
+        (0xC8000, 0xCA000, "rom"),
+    ];
+    let options = AssemblyOptions::default();
+    let mut checked = 0;
+    for name in names {
+        if name.starts_with("presets") {
+            for image in ["bios-xi8088.bin", "bios-xi8088-atreset.bin"] {
+                let layers = Layers::new();
+                let path = layers.0.join("preset.toml");
+                let image = root
+                    .join("../vendor/kiselev-bios")
+                    .join(image)
+                    .canonicalize()
+                    .unwrap();
+                std::fs::write(
+                    &path,
+                    format!(
+                        "schema=1\nextends='preset:ibm-5170'\n[firmware.bios]\nimage='{}'\n",
+                        image.display(),
+                    ),
+                )
+                .unwrap();
+                let loaded = machine_file::load_for_assembly(path, options).unwrap();
+                assert_eq!(
+                    assembly::test_support::cpu_mapping_regions(&loaded.config, options).unwrap(),
+                    ordinary,
+                    "preset mapping"
+                );
+                checked += 1;
+            }
+        } else {
+            let loaded = machine_file::load_for_assembly(root.join(&name), options).unwrap();
+            let expected = if name == Path::new("at-ide.toml") {
+                &ide
+            } else {
+                &ordinary
+            };
+            assert_eq!(
+                &assembly::test_support::cpu_mapping_regions(&loaded.config, options).unwrap(),
+                expected,
+                "{}",
+                name.display()
+            );
+            checked += 1;
+        }
+    }
+    assert_eq!(
+        checked, 6,
+        "every machine file and both preset BIOS variants"
+    );
+}
+
+#[test]
+#[ignore = "requires separately supplied proprietary firmware; identity and diagnostics only"]
+fn user_rom_landmark_at_identity() {
+    let catalogue = assembly::BoardModel::Ibm5170.firmware_catalogue();
+    let found = assembly::require_user_firmware!("landmark-rom-post-at-1.2.0", catalogue);
+    let entry = catalogue
+        .iter()
+        .find(|entry| entry.id == "landmark-rom-post-at-1.2.0")
+        .expect("catalogued diagnostic");
+    let mut config = assembly::bios(Vec::new(), Some(Vec::new()));
+    config.drives.clear();
+    config.images[0].base = 0xF0000;
+    config.images[0].provides.clear();
+    config.images[0].source = found.source.clone();
+    let resolved = found.expect_redacted(
+        assembly::test_support::resolve_file_sources(&config, AssemblyOptions::default()),
+        "resolving diagnostic parts",
+    );
+    let ImageSource::Inline(bytes) = &resolved.images[0].source else {
+        panic!("expected resolved diagnostic bytes")
+    };
+    assert_eq!(bytes.len() as u64, entry.size);
+    assert_eq!(format!("{:x}", Sha256::digest(bytes)), entry.sha256);
+    assert!(
+        bytes[..32768] == bytes[32768..],
+        "mirrored diagnostic halves"
+    );
+    for (lane, part) in entry.parts[0].iter().enumerate() {
+        let chip: Vec<_> = bytes.iter().skip(lane).step_by(2).copied().collect();
+        assert_eq!(chip.len() as u64, part.size, "{} size", part.label);
+        assert_eq!(
+            format!("{:x}", Sha256::digest(&chip)),
+            part.sha256,
+            "{} hash",
+            part.label
+        );
+    }
+    found.expect_redacted(
+        assembly::check_board_system_bios(
+            &resolved,
+            resolved.board,
+            0xF0000,
+            bytes,
+            AssemblyOptions::default(),
+        ),
+        "checking diagnostic identity",
+    );
+    resolved.validate().unwrap();
+    assert!(resolved.images[0].provides.is_empty());
+}
+
+#[test]
 #[ignore = "requires separately supplied proprietary firmware; identity and diagnostics only"]
 fn user_rom_ibm_1985_identity() {
     use assembly::{ImagePart, Lane};
@@ -751,8 +909,6 @@ fn user_rom_ibm_1985_identity() {
 
 #[test]
 fn repository_machines_and_preset_keep_effective_firmware_services() {
-    #[path = "../../cli/tests/support/fixtures.rs"]
-    mod fixtures;
     for relative in [
         "kiselev-bios/bios-xi8088.bin",
         "kiselev-bios/bios-xi8088-atreset.bin",

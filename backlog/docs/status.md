@@ -261,7 +261,18 @@ checks identity and diagnostics without execution; see `vendor/user-roms/README.
   stay 64-byte only; machine files have no size selector. Board selection
   remains pending.
 
-- **2026-11-11, diagnostic-ROM validation:** [spike recorded](design/compatibility-diagnostics.md); user-supplied Landmark AT 1.2.0 prefix/full goldens remain pending (`upc-fro.3`–`upc-fro.5`), and Ruud XT v5.7 is a future `ibm-5160` fixture (`upc-fro.6`); no AT diagnostic run is qualified.
+- **2026-11-11, diagnostic-ROM validation:** user-supplied
+  `landmark-rom-post-at-1.2.0` is Listed for `ibm-5170`, with pinned assembled
+  and U27/U47 hashes. The supervisor observed the first twelve diagnostics pass,
+  including DMA page registers, before unsupported SIDT at F000:A3CE; the
+  protected-mode status is empty. An ignored user-ROM prefix golden checks
+  these verdicts through the CLI loader/session path. Adapter gaps are now
+  mapped by the board up to the system BIOS base, fixing the Listed entry's
+  C0001h fault independently of its absent scan window. Retired count, MDA hash
+  and assumed status coordinates await a new local capture/verification. No ROM bytes or screen transcript is stored.
+  The full golden remains pending (`upc-fro.5`); Ruud XT v5.7 is a future
+  `ibm-5160` fixture (`upc-fro.6`). See
+  [compatibility diagnostics](design/compatibility-diagnostics.md#3-golden-capture-rule).
 
 - **2026-11-11, fw_cfg device:** traditional read-only selector/data interface,
   inline file directory and explicit COM1 serial-console file are available

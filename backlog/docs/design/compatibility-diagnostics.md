@@ -1,14 +1,16 @@
 # Per-board compatibility diagnostics
 
-Spike `upc-fro.2`, 2026-11-11. This records the diagnostic-ROM investigation;
-it does not qualify a ROM execution or add a fixture. Sources and measurements
-below are those of the spike, accessed 2026-11-11.
+Investigation `upc-fro.2`, extended with the user-supplied Landmark AT catalogue
+entry and real-mode-prefix golden on 2026-11-11. No ROM fixture is distributed.
+Sources were accessed in the investigation on 2026-11-11; runtime observations
+below are supervisor measurements, not a full-suite qualification.
 
 Evidence labels:
 
 - **READ:** seen in a named source, including emulator source; not a runtime
   compatibility result.
-- **MEASURED:** hashed or probed in the spike; not remeasured for this document.
+- **MEASURED:** hashed or probed in the investigation or by the supervisor, as
+  identified below; not remeasured by the sandboxed worker.
 - **ASSUMED:** inferred or expected behavior requiring a later golden run.
 
 ## 1. Purpose and firmware policy
@@ -31,8 +33,8 @@ qualify execution.
 
 **Verdict:** Supersoft/Landmark AT 1.2.0 is the only ROM identified by this
 spike as usable now for an `ibm-5170` compatibility test. Its real-mode prefix
-is the first target; a full run needs protected-mode work beyond the initial
-CPU seam. Ruud's ROM is an XT candidate for a future `ibm-5160`, not an AT
+has a pinned user-supplied golden.
+A full run needs protected-mode work beyond the initial CPU seam. Ruud's ROM is an XT candidate for a future `ibm-5160`, not an AT
 substitute.
 
 ## 2. Supersoft/Landmark AT 1.2.0
@@ -56,9 +58,22 @@ or MDA. Each AT chip image is `8000h` bytes:
 | Even / U27 | `5170_even_u27_ 27256.bin` | `6790392d` | `c4a5310341f346dd072d096152060ef5e4430a7f` |
 | Odd / U47 | `5170_odd_u47_ 27256.bin` | `4c0f3db4` | `97a0cf589b93551ed1d03bd622cbc8fd5634512f` |
 
-MAME supplies no SHA-256 here. Measure part and assembled SHA-256 identities
-from a user dump whose SHA-1 matches before pinning a catalogue entry. The
-commented-out `atdiag` set has unknown origin and is excluded.
+MEASURED by the supervisor: both part SHA-1 values match MAME. Catalogue entry
+`landmark-rom-post-at-1.2.0` is user-supplied and Listed on `ibm-5170`:
+
+| Artifact | Size | SHA-256 |
+|---|---|---|
+| U27 even | 32768 | `3677eb9f1b8c39daef82a99337649f43633a46db8726bc6a3805076ba3b25916` |
+| U47 odd | 32768 | `6a74a12bc1cda8c67c0526e061c62b8d7e1b622afdf3e9442950355571580313` |
+| Interleaved at F0000h | 65536 | `a8310f83de0f3e6b71e4a3ff82a01ffe3c3b5a957677aed2fad17b96bce2e577` |
+
+It occupies the system BIOS socket (`SystemBios`, `TopOfFirstMib`), requires
+an 80286, 8042, RTC/CMOS and cascaded PICs, and provides no boot services or
+option-ROM scan window. READ: validation accepts an FDC without a bound drive
+with empty services; attaching a drive requires a floppy service provider.
+The EPROM type `27256` labels both parts; original MAME filenames are preserved
+in the user-ROM README. The commented-out `atdiag` set has unknown origin and
+is excluded.
 
 READ: MAME `src/mame/pc/ibmpc.cpp` separately lists the XT `pclandmark`:
 `5150_or_5160_2764_8kb.bin`, 8 KiB, CRC `4e89a4d8`, SHA-1
@@ -68,15 +83,14 @@ READ: MAME `src/mame/pc/ibmpc.cpp` separately lists the XT `pclandmark`:
 
 READ: two 27256 chips, U27 even and U47 odd, interleave into 64 KiB at
 F0000h; this fits `firmware.bios.parts`. The 5162 uses U34/U35 instead.
-ASSUMED: probably 32 KiB of code mirrored; do not treat that inference as a
-measured layout.
+MEASURED by the supervisor: the assembled image has two identical 32 KiB halves.
 
 READ: the manual accepts MDA, CGA, EGA or self-initializing VGA and recommends
 monochrome. The minuszerodegrees 5170 report instead found two genuine IBM
 MDA cards produced neither beeps nor display, a clone MDA and CGA cards
 worked, and none of the tested VGA cards worked. MAME recommends Hercules
-or MDA. **ASSUMED risk:** our MDA behavior is unknown; the first golden must
-establish whether the diagnostic initializes it.
+or MDA. MEASURED by the supervisor: the diagnostic initializes our MDA and
+displays the result table; this display risk did not occur in the real-mode prefix.
 
 ### Reporting, quirks and prerequisites
 
@@ -135,10 +149,17 @@ expectations if reached, not a claim that the current run reaches them.
 | 31 | System BIOS | U17/U37 checksum | No | FAIL expected; manual says to ignore it |
 | 32 | CMOS configuration | Configuration display | No | Not applicable |
 
-ASSUMED: the current machine should report at most tests 1–12, then stop at
-the first LMSW/SMSW/LGDT, possibly earlier if CPU identification uses SMSW.
+MEASURED by the supervisor at the CPU pin above: screen lines 1–12 report
+Passed, in manual order: `cpu`, `rom_a`, `rom_b`, `pit_ch0`, `pit_ch1`,
+`pit_ch2`, `dma1`, `dma2`, `dma_page`, `kbc_parity`, `mem_16k`, `mem_refresh`.
+The page-register read-back risk did not occur; no device workaround is needed.
+Line 13 has an empty status when execution stops on unsupported SIDT at
+F000:A3CE (opcode prefix `0F 01`). The protected-mode test is not a pass.
+A budget of 30,000,000 scheduling steps reaches this stop without a disk.
+These observations supersede the assumptions for rows 1–13 in the table;
+rows 14–32 remain unexecuted expectations.
 READ: x86jit `8979fc9`, `x86jit-core/src/lift/mod.rs`, has no lifter arms for
-these instructions. Test 13 needs `xj-srh.15 (x86jit)` and more: the manual
+SIDT or the protected-mode control instructions. Test 13 needs `xj-srh.15 (x86jit)` and more: the manual
 also requires exceptions and task switching, outside that bead's scope.
 
 ## 3. Golden capture rule
@@ -150,6 +171,73 @@ Run headlessly until exit or a deterministic virtual-time budget. Record:
 - our own verdict table, using our identifiers and only the status cell at
   each row's fixed position to classify pass, fail or absent;
 - a reason for every expected non-PASS row.
+
+The ignored CLI test `user_rom_landmark_at_real_mode_prefix` in
+`crates/cli/tests/landmark.rs` implements this rule in the user-ROM lane. It loads
+a temporary machine file extending `preset:ibm-5170`, using absolute part paths
+(or an assembled image), `provides = []`, explicit RTC start and volatile derived
+NVRAM. It follows `run --machine`: `machine_file::load_for_assembly`,
+`LoadedMachine::assemble`, then `run_session` with `RunPolicy::natural`, the
+30,000,000-step cap and `cli::BIOS_IDLE_LIMIT`. Catalogue membership is required;
+no unlisted escape is used for the user ROM. This selects the preset hardware
+(640 KiB base RAM, MDA and VGA text, UART, wired FDC without a drive),
+volatile derived NVRAM, RTC start `2000-01-01T00:00:00`, and CPU revision
+`8979fc95cd81d73763d50d1d627b40ded3f8f284`. It checks the unsupported-instruction
+exit, address, opcode, our twelve Passed verdicts and the empty thirteenth status.
+Synthetic tests cover absolute paths (including escaped filenames), lane order,
+preset devices, RAM backing, clock and RTC/NVRAM settings through this loader.
+The preset retains RAM at A0000h–AFFFFh alongside the two text-card apertures;
+CMOS still reports 640 KiB base RAM, no extended RAM and equipment byte 00h.
+The clock rate is 1/1 retired steps per PIT clock.
+
+**Adapter-gap defect and fix:** MEASURED by the supervisor before the fix:
+the Listed ROM stopped on `CpuError::Unmapped` at physical C0001h, with CS F000h,
+RIP 9CFEh and 3,801,531 retired instructions. Both frontend and direct assembly
+use the same assembler. Its old gap mapping depended on the selected firmware's
+scan window: Landmark's None omitted the gaps, whereas an unlisted image fell
+back to Kiselev's window and received them. `--allow-unlisted-firmware` never
+bypassed a matching listed identity.
+
+Assembly now gives boards with a firmware catalogue read-only, zero-filled
+gaps from C0000h to the system BIOS base, around ROM images and MMIO windows.
+This board property is independent of firmware scan capability. A synthetic
+Listed 64 KiB BIOS without a scan window checks the complete C0000h–EFFFFh gap,
+a guest read at C0001h and an ignored guest write. The test failed before this
+change and passes afterwards. Successful CPU map calls captured before the fix
+are compared after it for all four repository machine files and the IBM 5170
+preset with both Kiselev BIOS variants; their complete region lists are equal.
+The gap value remains 00h. Whether empty sockets should read FFh needs electrical
+evidence and is a separate fidelity question. The measured prefix below confirms
+the intended SIDT stop after this fix.
+
+`CpuError::UnsupportedInstruction.addr` is the real-mode RIP offset A3CEh,
+not linear FA3CEh. A synthetic SIDT test pins that contract. Unexpected stops
+report the error variant and typed addresses, current CS/RIP, retired count,
+completed scheduling steps and virtual time, including successful run outcomes
+such as `RetiredCapReached`. Free-form CPU diagnostic payloads are omitted to
+avoid copying guest bytes; no screen text or instruction dump is printed.
+The text-plane hash covers the visible 80×25 glyph/attribute byte pairs in
+row-major order, excluding cursor and decoded style. Only the status cell on
+each line is classified; no row labels or screen dumps are retained.
+MEASURED by the supervisor on 2026-11-11: two consecutive runs on
+`preset:ibm-5170`, using the Real16 core at x86jit `8979fc9`
+(`8979fc95cd81d73763d50d1d627b40ded3f8f284`), produced identical results:
+
+- rows 1–12: Passed; row 13 status: empty;
+- unsupported SIDT at F000:A3CE;
+- retired instructions: 15,822,937;
+- MDA text-plane SHA-256:
+  `373ae9a68d11ea20d8da2232d39a90cdbb1b6f573b9fb28ea04e3ab79d3b31d1`.
+
+READ (measured by the supervisor): the left box border is at zero-based column
+0, the test name starts at column 2, and the right border is at column 47.
+The status field is columns 35–46 on frame rows 1–13. Trim that field and
+classify `PASSED`, `FAILED` or `NOT PRESENT`; spaces denote an untested row.
+The retired count and text hash are pinned and asserted unconditionally. The catalogue
+entry remains Listed; the full protected-mode suite is not qualified.
+When `ibm-5170` switches to the I286 protected-mode core (`upc-6le.29`), the
+stop and counts will change: re-measure this golden, including its text hash,
+against the new CPU revision. Keep the test's `CPU_REV` pin check.
 
 Pin ROM hashes, CMOS start, volatile NVRAM and the exact x86jit revision.
 The ROM's status tokens may be read to classify a result, but **never copy
@@ -234,19 +322,21 @@ handoff, not a replacement task board:
 
 | Bead | Scope and dependencies |
 |---|---|
-| `upc-fro.3` | Landmark AT catalogue entry, user-supplied; establish SHA-256 from matching dumps |
-| `upc-fro.4` | Real-mode-prefix golden with the capture rule in §3 |
+| `upc-fro.3` | User-supplied Landmark AT catalogue entry implemented with supervisor-measured hashes |
+| `upc-fro.4` | Real-mode-prefix golden pinned per §3 from two identical supervisor runs |
 | `upc-fro.5` | Full-pass golden; PM beyond `xj-srh.15 (x86jit)`, RAM above 1 MiB, empty-socket FPU (`xj-562.11 (x86jit)`, `upc-18x.9`) |
 | `upc-fro.6` | Ruud XT v5.7 fixture for `ibm-5160`, P4; licence decision before fetching |
 
 Conditional only: file a 74LS612 page-register read-back bead for port 80h
 while retaining POST capture **if the golden demonstrates that failure**.
-No unconditional page-register implementation or filed bead is claimed.
+The measured prefix passed this row, so no page-register implementation or
+follow-up bead is needed from this run.
 
 ## Sources
 
-Source access date in the spike: 2026-11-11. Hashes labelled MEASURED above
-come from that spike, not from the websites' descriptions.
+Source access date in the investigation: 2026-11-11. Hashes labelled MEASURED
+above come from that investigation or the supervisor measurements identified
+above, not from the websites' descriptions.
 
 - MAME [AT ROM declarations](https://github.com/mamedev/mame/blob/cabb909b38/src/mame/pc/at.cpp#L851-L857)
   (last file commit 2026-11-03) and [PC/XT declarations](https://github.com/mamedev/mame/blob/master/src/mame/pc/ibmpc.cpp).

@@ -769,13 +769,16 @@ firmware-loaded option ROMs are the board-specific extension in §3.6):
   - Lowering maps each ROM as `ImageKind::Rom`. The IBM PC AT Technical
     Reference, Section 1, **System Memory Map**, labels C0000h–DFFFFh as
     I/O expansion ROM, E0000h–EFFFFh as reserved on the system board, and
-    F0000h–FFFFFh as system board ROM. The model protects C0000h–F7FFFh
-    from system RAM because Kiselev scans through F7FFFh; this wider protected
-    range is not all AT adapter space. Card MMIO is legitimate here: assembly
-    carves zero-fill around MMIO and ROM windows. Image/MMIO overlap is refused.
-    Empty gaps deliberately read 00h to preserve goldens; real empty sockets
-    float, often reading FFh. These model gaps are read-only, so guest writes
-    and `RamLoad` images cannot introduce uncatalogued extension code.
+    F0000h–FFFFFh as system board ROM. For boards with a firmware catalogue,
+    assembly maps gaps from C0000h up to the system BIOS image's base, carving
+    around MMIO and ROM windows. This board-owned address policy is independent
+    of firmware scan capability: a diagnostic with `scan_window = None` still
+    receives gap mappings. With Kiselev at F8000h the mapping is unchanged;
+    a 64 KiB BIOS at F0000h leaves gaps only below F0000h. Image/MMIO overlap is
+    refused. Empty gaps deliberately read 00h and remain read-only, so guest
+    writes and `RamLoad` images cannot introduce uncatalogued extension code.
+    Whether absent sockets should read FFh remains an electrical-model question;
+    confirm authoritative evidence before changing the established zero value.
   - A pre-mapped video ROM (`kind = video-bios`) sits in C0000h–C7FFFh;
     SeaBIOS instead loads its video ROM through fw_cfg (§3.6).
 - **Scan order** for pre-mapped option ROMs is ascending address; these
@@ -905,7 +908,9 @@ report `FirmwareRequiresDevice`. CMOS fixed-disk types follow the provider
 and the system BIOS's explicit `cmos-drive-types` capability, as described
 under Derived configuration above.
 
-A system BIOS entry with no scan window rejects every option ROM with
+The scan window governs firmware discovery and option-ROM placement, not the
+board's physical gap decoding below the system BIOS. A system BIOS entry with
+no scan window rejects every option ROM with
 `FirmwareDoesNotScanOptionRoms`: `firmware X does not scan for option ROMs`.
 Machine-file loaders accept run-only `AssemblyOptions` through their
 `*_with_options` / `load_with_reader_and_options` APIs. Defaults stay strict;

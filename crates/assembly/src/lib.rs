@@ -91,7 +91,7 @@ pub use run::{
     ConsoleProbe, InjectionSchedule, KeyboardStimulus, RunError, RunPolicy, StopCondition,
 };
 
-/// Shared host-side fixtures for image and persistence tests; never used by execution.
+/// Shared host-side fixtures for image, diagnostic and persistence tests.
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support {
     mod user_firmware;
@@ -99,6 +99,31 @@ pub mod test_support {
         find_user_firmware, required_user_firmware, FoundUserFirmware, UserFirmwareError,
         UserFirmwareLayout,
     };
+
+    /// Record successful CPU mappings as (base, exclusive end, ram/mmio/rom).
+    /// Builds the CPU through the production mapper without running guest code.
+    pub fn cpu_mapping_regions(
+        config: &crate::MachineConfig,
+        options: crate::AssemblyOptions,
+    ) -> Result<Vec<(u64, u64, &'static str)>, crate::AssemblyError> {
+        crate::assemble::cpu_mapping_regions(config, options)
+    }
+
+    /// SHA-256 of visible row-major glyph/attribute pairs, excluding cursor and style.
+    /// IBM Monochrome Display and Printer Adapter, Programming Considerations:
+    /// each text cell occupies a glyph byte followed by an attribute byte.
+    pub fn text_plane_sha256(frame: &video::Frame) -> String {
+        use sha2::{Digest, Sha256};
+        let video::Frame::Text(grid) = frame;
+        let mut digest = Sha256::new();
+        for row in 0..grid.rows() {
+            for col in 0..grid.cols() {
+                let cell = grid.cell(col, row).expect("cell in text grid");
+                digest.update([cell.glyph, cell.attr]);
+            }
+        }
+        format!("{:x}", digest.finalize())
+    }
 
     /// Exercise production image resolution without building a CPU or executing firmware.
     pub fn resolve_file_sources(

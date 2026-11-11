@@ -51,6 +51,7 @@ impl BoardModel {
                 crate::firmware::IBM_5170_1984_01_10,
                 crate::firmware::IBM_5170_1985_06_10,
                 crate::firmware::IBM_5170_1985_11_15,
+                crate::firmware::LANDMARK_ROM_POST_AT_1_2_0,
                 crate::FirmwareEntry::XUB_R638_AT,
                 crate::FirmwareEntry::XUB_R638_XTP_ATA1F0,
             ],

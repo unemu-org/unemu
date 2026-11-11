@@ -3,7 +3,9 @@
 These images are proprietary. Users supply them separately; this project never
 commits or distributes them. The catalogue stores identities and chip metadata
 only. No default preset or machine file selects these images, and their status
-is Listed: identity checks work, execution has not been qualified by goldens.
+is Listed: identity checks work; full execution has not been qualified by goldens.
+Landmark AT has a partial real-mode golden awaiting final local measurement pins,
+as described in `backlog/docs/design/compatibility-diagnostics.md` §3.
 
 You may store parts at the repository-relative path
 `vendor/user-roms/<entry id>/<part number lowercase>.<chip label lowercase>`.
@@ -36,6 +38,7 @@ Verify each dump with `shasum -a 256 <file>` or `sha256sum <file>`.
 | ibm-5170-bios-1984-01-10 | type 1, 6 MHz | 65536 | `74e7b36b4ec0adc5ac3277a887579996c1d2aa755b9892ef3afe7485c10ce04f` |
 | ibm-5170-bios-1985-06-10 | type 2, 6 MHz | 65536 | `6fb653b58e678cb69b0f943a105c6c803b18a6db23d13c0abccec5b66c6ee652` |
 | ibm-5170-bios-1985-11-15 | type 3, 8 MHz | 65536 | `872febf7d7034bfadf72ed1936e06600eca72456b9ded41d15b7a284de20337d` |
+| landmark-rom-post-at-1.2.0 | ibm-5170 diagnostic | 65536 | `a8310f83de0f3e6b71e4a3ff82a01ffe3c3b5a957677aed2fad17b96bce2e577` |
 
 Offsets below are in assembled bytes. Layout A and B of 1984 are alternatives.
 
@@ -51,6 +54,21 @@ Offsets below are in assembled bytes. Layout A and B of 1984 are alternatives.
 | 1985-06-10 / A | U47 | 6480091 | odd | 0 | 32768 | `470ab30f9eb7d56c24f5ce10c7d307c539b9f923ea97dd536d2d5ba7e36d471b` |
 | 1985-11-15 / A | U27 | 61X9266 | even | 0 | 32768 | `3b921a451d78efcd91232a01cd6936d6ba12dad4374466655aff8ef3a5dc764e` |
 | 1985-11-15 / A | U47 | 61X9265 | odd | 0 | 32768 | `aec1759a8245d50be93c9b081ab1ac7de58dd8141f603c7745ae66d2d4c29e4d` |
+| landmark-rom-post-at-1.2.0 / A | U27 | 27256 | even | 0 | 32768 | `3677eb9f1b8c39daef82a99337649f43633a46db8726bc6a3805076ba3b25916` |
+| landmark-rom-post-at-1.2.0 / A | U47 | 27256 | odd | 0 | 32768 | `6a74a12bc1cda8c67c0526e061c62b8d7e1b622afdf3e9442950355571580313` |
+
+Landmark uses EPROM type `27256` for the part number because no separate chip
+part numbers are established. Its MAME `ibm5170` selector is `landmark`; the
+filenames below contain a space before `27256`:
+
+| Entry | Chip | Original MAME filename | Optional repository filename |
+|---|---|---|---|
+| landmark-rom-post-at-1.2.0 | U27 even | `5170_even_u27_ 27256.bin` | `landmark-rom-post-at-1.2.0/27256.u27` |
+| landmark-rom-post-at-1.2.0 | U47 odd | `5170_odd_u47_ 27256.bin` | `landmark-rom-post-at-1.2.0/27256.u47` |
+
+The diagnostic occupies the BIOS socket but supplies no boot services. Use an
+FDC with no bound drives for the real-mode-prefix test; no disk is needed.
+The assembled 64 KiB image contains two identical 32 KiB halves.
 
 Create a child layer in `machines/` (the parent `at-freedos.toml` stays unchanged):
 
@@ -90,8 +108,15 @@ Unknown assembled identities report the board catalogue. The run-only
 
 The ignored `user_rom_ibm_1985_identity` checks the 1985-06-10 identity and chip
 diagnostics when present, without executing it. It accepts parts or a complete
-image. Run all such tests with `bash scripts/ci-gate.sh user-roms`; CI never calls
-this lane and never has proprietary firmware. Missing dumps print:
+image. `user_rom_landmark_at_identity` checks the diagnostic's assembled and
+per-part hashes, including the mirrored halves. The ignored CLI test
+`user_rom_landmark_at_real_mode_prefix` checks twelve Passed verdicts and the
+protected-mode instruction stop using a headless MDA capture. Its final retired
+count and text-plane hash are TODO-MEASURE until a new local run. Adapter gaps
+now have board-owned read-only zero mappings, fixing the previous C0001h fault
+for the Listed entry. See the diagnostic design document for details. It never
+prints the screen. Run all such tests with
+`bash scripts/ci-gate.sh user-roms`; CI never calls this lane and never has proprietary firmware. Missing dumps print:
 
 ```text
 SKIPPED: user-supplied firmware <entry id> not found (set UNEMUPC98_USER_ROMS_DIR or see vendor/user-roms/README.md)

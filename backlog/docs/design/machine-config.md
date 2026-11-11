@@ -501,15 +501,28 @@ byte count. Two things it must express that a naive "N kB of RAM" cannot:
 - **CPU A20 masking.** CPU addressing remains a flat 1 MB+ linear space with
   no A20 wrap (decision-8, §4.4). The board line and its 8042/92h source latches
   are observable, but applying the effective state awaits CPU-core support.
-- **Firmware scan space is not system RAM.** IBM PC AT Technical Reference,
+
+  **A20 as a model constant.** A20 is always-on (decision-8, §4.4). The memory
+  map is a flat 1 MB+ linear space with no wrap; A20 is not a configurable knob.
+  The config records this as a fixed property of the modelled machine, so nobody
+  reintroduces it as a per-machine option.
+  The always-on statement describes current CPU address translation; the board
+  line separately exposes its controller-source state.
+- **Adapter space belongs to the board.**
+  **Firmware scan space is not system RAM.** IBM PC AT Technical Reference,
   Section 1 "System Board", **System Memory Map** assigns C0000h–DFFFFh to
   I/O expansion ROM, E0000h–EFFFFh to reserved system-board space, and
-  F0000h–FFFFFh to system-board ROM. The model protects the wider C0000h–F7FFFh
-  interval from RAM because Kiselev scans through F7FFFh. Card MMIO windows
-  remain valid; assembly fills only gaps between ROMs and MMIO with read-only
-  zeroes. Real empty sockets float, often to FFh; 00h is a deliberate model
-  choice to preserve the goldens. Guest writes and `RamLoad` cannot create
-  hidden firmware headers. The historical no-floppy `Bare` rig retains its map.
+  F0000h–FFFFFh to system-board ROM. On a board with a firmware catalogue,
+  assembly fills gaps from C0000h up to the system BIOS image's base with
+  read-only zeroes, carving around ROM images and card MMIO windows. This
+  physical address policy is independent of the selected firmware's option-ROM
+  scan window, including a diagnostic with no scan window. With Kiselev at
+  F8000h, the gap mapping still ends at F8000h; with a 64 KiB BIOS it ends at
+  F0000h. Guest writes cannot change gap bytes, and `RamLoad` cannot create
+  hidden firmware headers. Zero is retained to preserve the goldens; whether
+  empty sockets should read FFh is an open hardware-fidelity question requiring
+  authoritative electrical evidence. The historical no-floppy `Bare` rig
+  retains its map.
 
 The MMIO list retains per-device windows. For CPU mapping, assembly sorts them
 by address and coalesces each run of touching windows into one `RegionKind::Trap`
@@ -747,7 +760,9 @@ Option ROMs require explicit 2 KiB-aligned bases and must fit the BIOS entry's
 `scan_window` (Kiselev: [C8000h, F8000h)). The 55AAh signature, nonzero length
 byte × 512 equal to the image size, zero byte-sum checksum, and absence of image
 overlap are checked before mapping. Firmware without a scan window refuses
-option ROMs with `FirmwareDoesNotScanOptionRoms`. `AssembledMachine.option_roms` contains the
+option ROMs with `FirmwareDoesNotScanOptionRoms`. The scan window controls
+firmware discovery and placement validation only; it does not decide whether
+empty adapter addresses are mapped. `AssembledMachine.option_roms` contains the
 resolved images with effective services in ascending address order. Suggested
 catalogue bases remain informational; machine files specify the base.
 Unknown bytes report `FirmwareNotListed` with the full SHA-256 and

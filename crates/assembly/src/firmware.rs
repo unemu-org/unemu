@@ -1085,12 +1085,56 @@ pub const IBM_5170_1985_11_15: FirmwareEntry = FirmwareEntry {
         },
     ]],
 };
+
+/// BIOS-socket AT diagnostic, identified without distributing firmware bytes.
+/// Landmark Research International, ROM POST User's Manual v1.2, pp. 16–36:
+/// tests AT hardware directly and supplies no boot services. MAME at.cpp,
+/// ibm5170 landmark set: U27 even and U47 odd are 27256 EPROMs interleaved
+/// at F0000h. See `backlog/docs/design/compatibility-diagnostics.md` §2–3.
+pub const LANDMARK_ROM_POST_AT_1_2_0: FirmwareEntry = FirmwareEntry {
+    id: "landmark-rom-post-at-1.2.0",
+    kind: FirmwareKind::SystemBios,
+    sha256: "a8310f83de0f3e6b71e4a3ff82a01ffe3c3b5a957677aed2fad17b96bce2e577",
+    size: 65536,
+    base: FirmwareBase::TopOfFirstMib,
+    scan_window: None,
+    provides: &[],
+    capabilities: &[],
+    requires: &[
+        FirmwarePart::Kbc8042,
+        FirmwarePart::RtcCmos,
+        FirmwarePart::PicCascade,
+    ],
+    cpu_min: FirmwareCpu::I80286,
+    boards: &["ibm-5170"],
+    distribution: FirmwareDistribution::UserSupplied,
+    parts: &[&[
+        KnownPart {
+            label: "U27",
+            part_number: "27256",
+            lane: crate::Lane::Even,
+            offset: 0,
+            size: 32768,
+            sha256: "3677eb9f1b8c39daef82a99337649f43633a46db8726bc6a3805076ba3b25916",
+        },
+        KnownPart {
+            label: "U47",
+            part_number: "27256",
+            lane: crate::Lane::Odd,
+            offset: 0,
+            size: 32768,
+            sha256: "6a74a12bc1cda8c67c0526e061c62b8d7e1b622afdf3e9442950355571580313",
+        },
+    ]],
+    status: FirmwareStatus::Listed,
+};
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::{assemble, assemble_with_options, AssemblyError, ImageSource};
 
-    const KNOWN: &str = "kiselev-xi8088-1.0.2 (open, vendor/kiselev-bios/fetch.sh), kiselev-xi8088-1.0.2-atreset (open, vendor/kiselev-bios/fetch.sh), ibm-5170-bios-1984-01-10 (user-supplied: U27 6181028 even, U47 6181029 odd or U17 6181024 even@0, U37 6181026 odd@0, U27 6181025 even@32768, U47 6181027 odd@32768; see vendor/user-roms/README.md), ibm-5170-bios-1985-06-10 (user-supplied: U27 6480090 even, U47 6480091 odd; see vendor/user-roms/README.md), ibm-5170-bios-1985-11-15 (user-supplied: U27 61X9266 even, U47 61X9265 odd; see vendor/user-roms/README.md)";
+    const KNOWN: &str = "kiselev-xi8088-1.0.2 (open, vendor/kiselev-bios/fetch.sh), kiselev-xi8088-1.0.2-atreset (open, vendor/kiselev-bios/fetch.sh), ibm-5170-bios-1984-01-10 (user-supplied: U27 6181028 even, U47 6181029 odd or U17 6181024 even@0, U37 6181026 odd@0, U27 6181025 even@32768, U47 6181027 odd@32768; see vendor/user-roms/README.md), ibm-5170-bios-1985-06-10 (user-supplied: U27 6480090 even, U47 6480091 odd; see vendor/user-roms/README.md), ibm-5170-bios-1985-11-15 (user-supplied: U27 61X9266 even, U47 61X9265 odd; see vendor/user-roms/README.md), landmark-rom-post-at-1.2.0 (user-supplied: U27 27256 even, U47 27256 odd; see vendor/user-roms/README.md)";
 
     fn config() -> MachineConfig {
         crate::bios(vec![0; 32768], Some(vec![0; 1_474_560]))
@@ -1124,6 +1168,75 @@ mod tests {
                 });
             }
         }
+    }
+
+    #[test]
+    fn landmark_catalogue_membership_preserves_its_absent_scan_window() {
+        let bytes = vec![0; 65536];
+        let mut config = config();
+        config.images[0].base = 0xF0000;
+        config.images[0].source = ImageSource::Inline(bytes.clone());
+        let diagnostic = FirmwareEntry {
+            sha256: Box::leak(format!("{:x}", Sha256::digest(bytes)).into_boxed_str()),
+            ..LANDMARK_ROM_POST_AT_1_2_0
+        };
+        let listed = [KISELEV_XI8088, diagnostic];
+        let selected = scan_firmware_from(&config, &listed).unwrap();
+        assert_eq!(selected.id, diagnostic.id);
+        assert_eq!(selected.scan_window, None);
+        let unlisted = [KISELEV_XI8088];
+        let fallback = scan_firmware_from(&config, &unlisted).unwrap();
+        assert_eq!(fallback.id, KISELEV_XI8088.id);
+        assert_eq!(fallback.scan_window, Some((0xC8000, 0xF8000)));
+    }
+
+    #[test]
+    fn landmark_at_catalogue_exact_identity_and_layout() {
+        let entry = BoardModel::Ibm5170
+            .firmware_catalogue()
+            .iter()
+            .find(|entry| entry.id == "landmark-rom-post-at-1.2.0")
+            .expect("Landmark AT diagnostic must be catalogued");
+        assert_eq!(
+            *entry,
+            FirmwareEntry {
+                id: "landmark-rom-post-at-1.2.0",
+                kind: FirmwareKind::SystemBios,
+                sha256: "a8310f83de0f3e6b71e4a3ff82a01ffe3c3b5a957677aed2fad17b96bce2e577",
+                size: 65536,
+                base: FirmwareBase::TopOfFirstMib,
+                scan_window: None,
+                provides: &[],
+                capabilities: &[],
+                requires: &[
+                    FirmwarePart::Kbc8042,
+                    FirmwarePart::RtcCmos,
+                    FirmwarePart::PicCascade,
+                ],
+                cpu_min: FirmwareCpu::I80286,
+                boards: &["ibm-5170"],
+                distribution: FirmwareDistribution::UserSupplied,
+                parts: &[&[
+                    KnownPart {
+                        label: "U27",
+                        part_number: "27256",
+                        lane: crate::Lane::Even,
+                        offset: 0,
+                        size: 32768,
+                        sha256: "3677eb9f1b8c39daef82a99337649f43633a46db8726bc6a3805076ba3b25916",
+                    },
+                    KnownPart {
+                        label: "U47",
+                        part_number: "27256",
+                        lane: crate::Lane::Odd,
+                        offset: 0,
+                        size: 32768,
+                        sha256: "6a74a12bc1cda8c67c0526e061c62b8d7e1b622afdf3e9442950355571580313",
+                    },
+                ]],
+                status: FirmwareStatus::Listed,
+            }
+        );
     }
 
     #[test]

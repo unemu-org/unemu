@@ -352,7 +352,7 @@ fn parts_production_catalogue_exact_data_and_tiling() {
             .iter()
             .filter(|e| e.distribution == FirmwareDistribution::UserSupplied)
             .count(),
-        3
+        4
     );
     let entry = catalogue
         .iter()

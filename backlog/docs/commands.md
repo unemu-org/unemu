@@ -448,6 +448,18 @@ Require/skip panics point at the calling test.
 The ignored `user_rom_ibm_1985_identity` checks assembled identity, per-chip hashes
 and misplaced/bad-chip diagnostics through assembly and machine-file lowering,
 without executing the BIOS. It accepts either the chip pair or an assembled image.
+`user_rom_landmark_at_identity` similarly checks the Landmark AT assembled hash,
+mirrored halves and per-chip hashes. The CLI test
+`user_rom_landmark_at_real_mode_prefix` runs its first twelve diagnostics headlessly
+through the same preset loader, assembler and session policy as `run --machine`,
+with no disk and the intended SIDT stop. Adapter-gap reads now use board-owned
+read-only zero mappings; its retired count and MDA plane hash retain
+TODO-MEASURE sentinels until a new local run. See
+`design/compatibility-diagnostics.md` §3. Run only the Landmark tests with:
+
+```sh
+cargo test --offline -p cli --test landmark -- --ignored user_rom_landmark_at_real_mode_prefix --nocapture
+```
 
 ```sh
 UNEMUPC98_REQUIRE_USER_ROMS=1 bash scripts/ci-gate.sh user-roms
