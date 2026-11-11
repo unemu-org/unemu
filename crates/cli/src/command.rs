@@ -618,7 +618,7 @@ mod tests {
             parse(&args(&["run", "--machine", "at.toml"])).unwrap(),
             Command::Run {
                 path: "at.toml".into(),
-                max_steps: 12_000_000,
+                max_steps: 20_000_000,
                 idle_limit: 1_000_000,
                 print: None,
                 options: assembly::AssemblyOptions::default(),

@@ -13,7 +13,8 @@
 //!
 //! Counter 0's OUT pin is wired to IRQ0 on the real machine; here it is surfaced
 //! through [`Device::irq_pending`]. Counters 1 (DRAM refresh) and 2 (PC speaker)
-//! are modelled as counters but their OUT pins are not routed anywhere yet.
+//! feed port 61h through [`SharedPit8253`]: channel 1 clocks refresh detect and
+//! channel 2 supplies OUT and accepts the software GATE.
 //!
 //! ## Clocking model
 //!
@@ -86,19 +87,25 @@
 //! - **BCD counting** (command bit 0): the bit is stored and echoed in the
 //!   read-back path but counting is always binary. The PC BIOS programs binary
 //!   mode, so this does not affect boot fidelity.
-//! - **The GATE input**: all counters are treated as permanently gated on
-//!   (GATE = 1), which is the PC/AT wiring for counters 0 and 1. Counter 2's
-//!   GATE is software-controllable via port `0x61` on the real machine; that port
-//!   belongs to a different chip and is out of scope here.
+//! - **GATE in Modes 1/4/5**: these modes remain unsupported. Counters 0/1
+//!   are tied high; the shared AT handle wires channel 2 to port 61h bit 0
+//!   for Modes 0/2/3 (Intel 8254 datasheet, GATE Pin and those modes).
 //! - **Divisor 1 in Modes 2/3**: unsupported waveform. Intel 8254 datasheet,
 //!   Mode 2 explicitly forbids 1; Mode 3's (N-1)/2 low half would be zero.
 //!   Assumption retained for deterministic compatibility, without a silicon
-//!   fidelity claim: Mode 2 stays low after its first pulse; Mode 3 alternates
-//!   one high clock and 32768 low clocks through the binary wrap.
+//!   fidelity claim: Mode 2 loads 1 with OUT high, then stays low on subsequent
+//!   clocks until a valid reload. Reprogramming before that first low clock
+//!   leaves OUT high and creates no rising edge. Mode 3 alternates one high
+//!   clock and 32768 low clocks through the binary wrap.
 //!
 //! Snapshots contain all counter registers, byte/latch phases and the absolute
 //! PIT time base. OUT deadlines are derived from those saved counter phases.
 //! See Intel 8254 datasheet, Counter Programming and Modes 0, 2 and 3.
+
+use std::{
+    cell::{Cell, RefCell},
+    rc::Rc,
+};
 
 use device::{AccessDir, Device, DeviceError, NextEvent, TraceEvent, VClock};
 
@@ -115,7 +122,7 @@ const COMMAND: u16 = 0x43;
 const COUNTERS: usize = 3;
 
 /// Snapshot layout version tag, first byte of [`Device::save`] output.
-const SNAPSHOT_VERSION: u8 = 4;
+const SNAPSHOT_VERSION: u8 = 5;
 
 /// Bytes per counter in the snapshot: mode, access, flags, reload, count,
 /// count latch, active reload, write LSB, programmed mode/flags, status latch.
@@ -372,11 +379,13 @@ impl Counter {
     }
 
     /// Arithmetic equivalent of repeated input edges, including the one-clock
-    /// load delay (Intel 8254 datasheet, Modes 0, 2 and 3). Byte/latch phases
+    /// load delay; returns the number of OUT rising edges (Intel 8254 datasheet,
+    /// Modes 0, 2 and 3). Byte/latch phases
     /// belong to accesses and must survive advancement unchanged.
-    fn advance(&mut self, mut clocks: u64) {
+    fn advance(&mut self, mut clocks: u64) -> u64 {
+        let mut rising = 0;
         if clocks == 0 {
-            return;
+            return 0;
         }
         if self.reload_pending {
             self.reload_pending = false;
@@ -389,7 +398,7 @@ impl Counter {
             clocks -= 1;
         }
         if clocks == 0 || !self.armed {
-            return;
+            return 0;
         }
         match self.mode {
             0 => {
@@ -399,6 +408,7 @@ impl Counter {
                     u64::from(self.count)
                 };
                 if clocks >= terminal {
+                    rising = u64::from(!self.out);
                     self.out = true;
                 }
                 self.count = self.count.wrapping_sub(clocks as u16);
@@ -414,6 +424,13 @@ impl Counter {
                 } else {
                     self.active_reload = self.reload;
                     self.null_count = false;
+                    // Divisor 1 has no high pulse in the retained waveform.
+                    if self.reload != 1 {
+                        // A just-loaded illegal count 1 can still have OUT high;
+                        // reloading it cannot create a low-to-high transition.
+                        rising = u64::from(reloading != 1 || !self.out)
+                            + (clocks - reloading) / u64::from(self.initial());
+                    }
                     let phase = (clocks - reloading) % u64::from(self.initial());
                     self.count = (self.initial() as u16).wrapping_sub(phase as u16);
                 }
@@ -434,14 +451,17 @@ impl Counter {
                     }
                     clocks -= edge;
                     self.out = !self.out;
+                    rising += u64::from(self.out);
                     self.active_reload = self.reload;
                     self.null_count = false;
                     self.count = self.reload & !1;
+                    rising += clocks / (high + low);
                     clocks %= high + low;
                 }
             }
             _ => self.count = self.count.wrapping_sub(clocks as u16),
         }
+        rising
     }
 
     #[cfg(test)]
@@ -532,10 +552,14 @@ impl Counter {
 ///
 /// Decodes ports `0x40..=0x43`. Counter 0's OUT drives the machine timer
 /// interrupt (IRQ0) and is exposed through [`Device::irq_pending`];
-/// the 8259 PIC owns vectoring while the PIT only drives a line. Counters 1 and 2 are modelled
-/// but their OUT pins are not routed.
+/// the 8259 PIC owns vectoring while the PIT only drives a line. Counters 1
+/// and 2 feed the AT system-control port through [`SharedPit8253`].
 pub struct Pit8253 {
     counters: [Counter; COUNTERS],
+    /// AT refresh-detect flip-flop; every channel-1 OUT rising edge toggles it.
+    refresh: bool,
+    /// Standalone PITs retain a tied-high gate; AT assembly connects port 61h.
+    gate2: bool,
     /// Trace events observed since the last [`Device::take_trace`].
     trace: device::TraceBuffer,
     /// Virtual time of the most recent [`Device::tick`], stamped onto traces.
@@ -548,6 +572,8 @@ impl Pit8253 {
     pub fn new() -> Self {
         Self {
             counters: [Counter::new(), Counter::new(), Counter::new()],
+            refresh: false,
+            gate2: true,
             trace: device::TraceBuffer::default(),
             now: VClock::ZERO,
         }
@@ -601,7 +627,11 @@ impl Pit8253 {
             // Counter-latch command: latch the current count for readback.
             self.counters[idx].latch_count();
         } else {
+            let was_high = self.counters[idx].out;
             self.counters[idx].program(cmd);
+            if idx == 1 && !was_high && self.counters[idx].out {
+                self.refresh = !self.refresh;
+            }
         }
     }
 
@@ -675,8 +705,22 @@ impl Device for Pit8253 {
         // Each virtual-clock tick beyond the last one is one PIT input clock.
         let elapsed = now.0.saturating_sub(self.now.0);
         self.now = now;
-        for counter in &mut self.counters {
-            counter.advance(elapsed);
+        for (index, counter) in self.counters.iter_mut().enumerate() {
+            if index == 2 && !self.gate2 {
+                // Intel 8254 datasheet, Mode 0: GATE inhibits counting, not
+                // loading. Modes 2/3 force OUT high while GATE is low.
+                if elapsed != 0 && counter.reload_pending {
+                    counter.advance(1);
+                }
+                if matches!(counter.mode, 2 | 3) {
+                    counter.out = true;
+                }
+            } else {
+                let rising = counter.advance(elapsed);
+                if index == 1 && rising & 1 != 0 {
+                    self.refresh = !self.refresh;
+                }
+            }
         }
     }
 
@@ -733,8 +777,8 @@ impl Device for Pit8253 {
     fn save(&self) -> Vec<u8> {
         // Layout: version, then per counter: mode, access, flags, reload(2),
         // count(2), latch(2), active reload(2), write LSB, programmed mode with
-        // status-latch presence in bit 3, status latch; then PIT clock(8).
-        let mut blob = Vec::with_capacity(1 + COUNTERS * PER_COUNTER + 8);
+        // status-latch presence in bit 3, status latch; AT line flags, PIT clock(8).
+        let mut blob = Vec::with_capacity(1 + COUNTERS * PER_COUNTER + 1 + 8);
         blob.push(SNAPSHOT_VERSION);
         for c in &self.counters {
             blob.push(c.mode);
@@ -773,12 +817,13 @@ impl Device for Pit8253 {
             blob.push(c.programmed_mode | (u8::from(c.status_latch.is_some()) << 3));
             blob.push(c.status_latch.unwrap_or(0));
         }
+        blob.push(u8::from(self.refresh) | (u8::from(self.gate2) << 1));
         blob.extend_from_slice(&self.now.0.to_le_bytes());
         blob
     }
 
     fn restore(&mut self, snapshot: &[u8]) -> Result<(), DeviceError> {
-        let expected = 1 + COUNTERS * PER_COUNTER + 8;
+        let expected = 1 + COUNTERS * PER_COUNTER + 1 + 8;
         if snapshot.len() != expected {
             return Err(DeviceError::InvalidSnapshot {
                 device: NAME,
@@ -854,6 +899,15 @@ impl Device for Pit8253 {
                 None
             };
         }
+        let lines = snapshot[1 + COUNTERS * PER_COUNTER];
+        if lines & !3 != 0 {
+            return Err(DeviceError::InvalidSnapshot {
+                device: NAME,
+                reason: "invalid AT line state",
+            });
+        }
+        self.refresh = lines & 1 != 0;
+        self.gate2 = lines & 2 != 0;
         self.counters = counters;
         self.now = VClock(u64::from_le_bytes(std::array::from_fn(|i| {
             snapshot[snapshot.len() - 8 + i]
@@ -871,6 +925,111 @@ impl Device for Pit8253 {
 
     fn take_trace(&mut self) -> Vec<TraceEvent> {
         self.trace.take()
+    }
+}
+
+/// Shared AT timer wiring (§7.4; scheduler design §Device migration inventory).
+///
+/// Like the shared PIC faces, this handle keeps one device state behind both
+/// the PIT ports and system-control status. The PIT snapshot owns the refresh
+/// flip-flop and channel-2 gate, so restore order cannot lose a refresh edge.
+/// IBM Personal Computer AT Technical Reference, System Timers and
+/// System Board I/O, Port B: channel 1 requests refresh; channel 2 drives bit 5.
+#[derive(Clone, Default)]
+pub struct SharedPit8253(
+    Rc<RefCell<Pit8253>>,
+    // A bound GATE comes from the board, rather than the standalone tied-high input.
+    Rc<Cell<bool>>,
+);
+
+impl SharedPit8253 {
+    /// Board wiring survives device reset and is not snapshot state.
+    pub(crate) fn bind_gate2(&self) {
+        self.1.set(true);
+    }
+
+    /// Re-drive a cleared board control without advancing either reset clock.
+    pub(crate) fn clear_gate2(&self) {
+        let now = self.0.borrow().now;
+        self.set_gate2(now, false);
+    }
+
+    /// Sample the AT refresh flip-flop and timer-2 OUT at the access clock.
+    pub(crate) fn status(&self, now: VClock) -> (bool, bool) {
+        let mut pit = self.0.borrow_mut();
+        pit.sync(now);
+        (pit.refresh, pit.out(2))
+    }
+
+    /// Intel 8254 datasheet, Modes 0, 2 and 3, GATE: inhibit Mode 0;
+    /// force OUT high in Modes 2/3 and reload on the next rising gate edge.
+    pub(crate) fn set_gate2(&self, now: VClock, high: bool) {
+        let mut pit = self.0.borrow_mut();
+        pit.sync(now);
+        if pit.gate2 != high {
+            let c = &mut pit.counters[2];
+            if matches!(c.mode, 2 | 3) {
+                if high {
+                    c.reload_pending = c.armed;
+                } else {
+                    c.out = true;
+                }
+            }
+            pit.gate2 = high;
+        }
+    }
+}
+
+impl Device for SharedPit8253 {
+    fn name(&self) -> &'static str {
+        NAME
+    }
+    fn port_read(&mut self, port: u16, size: u8) -> Result<u32, DeviceError> {
+        self.0.borrow_mut().port_read(port, size)
+    }
+    fn port_write(&mut self, port: u16, size: u8, value: u32) -> Result<(), DeviceError> {
+        self.0.borrow_mut().port_write(port, size, value)
+    }
+    fn mmio_read(&mut self, addr: u64, size: u8) -> Result<u64, DeviceError> {
+        self.0.borrow_mut().mmio_read(addr, size)
+    }
+    fn mmio_write(&mut self, addr: u64, size: u8, value: u64) -> Result<(), DeviceError> {
+        self.0.borrow_mut().mmio_write(addr, size, value)
+    }
+    fn tick(&mut self, now: VClock) {
+        self.0.borrow_mut().tick(now);
+    }
+    fn next_event(&self, now: VClock) -> NextEvent {
+        self.0.borrow().next_event(now)
+    }
+    fn irq_pending(&self) -> bool {
+        self.0.borrow().irq_pending()
+    }
+    fn reset(&mut self) {
+        let mut pit = self.0.borrow_mut();
+        // Intel 8254 datasheet, GATE Pin: the board drives this input independently
+        // of counter programming. Preserve a bound level across timer reset so
+        // resetting the timer cannot undo the system-control port's reset.
+        let gate2 = self.1.get().then_some(pit.gate2);
+        pit.reset();
+        if let Some(high) = gate2 {
+            pit.gate2 = high;
+        }
+    }
+    fn save(&self) -> Vec<u8> {
+        self.0.borrow().save()
+    }
+    fn restore(&mut self, snapshot: &[u8]) -> Result<(), DeviceError> {
+        self.0.borrow_mut().restore(snapshot)
+    }
+    fn set_trace_policy(&mut self, policy: device::TracePolicy) {
+        self.0.borrow_mut().set_trace_policy(policy);
+    }
+    fn trace_dropped(&self) -> u64 {
+        self.0.borrow().trace_dropped()
+    }
+    fn take_trace(&mut self) -> Vec<TraceEvent> {
+        self.0.borrow_mut().take_trace()
     }
 }
 
@@ -996,11 +1155,48 @@ mod tests {
     }
 
     fn compare_jump(reference: &mut Counter, scheduled: &mut Counter, clocks: u64) {
+        let mut rising = 0;
         for _ in 0..clocks {
+            let was_high = reference.out;
             reference.tick();
+            rising += u64::from(!was_high && reference.out);
         }
-        scheduled.advance(clocks);
+        assert_eq!(
+            scheduled.advance(clocks),
+            rising,
+            "rising edges in jump {clocks}"
+        );
         assert_eq!(reference, scheduled, "jump {clocks}");
+    }
+
+    #[test]
+    fn mode2_divisor_one_reprogramming_does_not_invent_a_rising_edge() {
+        // Intel 8254 datasheet, Mode 2 forbids count 1. The retained binary
+        // waveform must still count only actual low-to-high OUT transitions.
+        for count in [2u16, 3, 18, 0] {
+            let mut reference = Counter::new();
+            reference.program(cmd(1, 3, 2, 0) as u8);
+            reference.write_data(1);
+            reference.write_data(0);
+            let mut scheduled = reference.clone();
+            compare_jump(&mut reference, &mut scheduled, 1);
+            assert!(reference.out);
+            for counter in [&mut reference, &mut scheduled] {
+                counter.write_data(count as u8);
+                counter.write_data((count >> 8) as u8);
+            }
+            compare_jump(&mut reference, &mut scheduled, 1);
+            compare_jump(&mut reference, &mut scheduled, 131_073);
+        }
+    }
+
+    #[test]
+    fn shared_reset_restores_the_standalone_pit_power_on_gate() {
+        let mut shared = SharedPit8253::default();
+        shared.set_gate2(VClock::ZERO, false);
+        shared.tick(VClock(33));
+        shared.reset();
+        assert_eq!(shared.save(), Pit8253::new().save());
     }
 
     #[test]
@@ -1090,8 +1286,12 @@ mod tests {
                     let target = due.min(access).min(end);
                     assert!(target > now);
                     for clock in now + 1..=target {
+                        let refresh_out = reference.out(1);
                         for counter in &mut reference.counters {
                             counter.tick();
+                        }
+                        if !refresh_out && reference.out(1) {
+                            reference.refresh = !reference.refresh;
                         }
                         reference.now = VClock(clock);
                         if reference.out(0) != expected_level {

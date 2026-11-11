@@ -252,6 +252,84 @@ No default firmware changes. These images have not run in a golden; POST,
 boot and guest compatibility remain unqualified. The ignored user-ROM test
 checks identity and diagnostics without execution; see `vendor/user-roms/README.md`.
 
+## Port 61h timing re-baseline (2026-11-11)
+
+Port 61h bits follow the PIT; delay loops in the Kiselev BIOS now take real
+refresh time. Bit 4 toggles on PIT1 OUT rising edges, bit 5 samples OUT2, and
+bit 0 drives GATE2. The shared PIT snapshot owns the refresh flip-flop and gate.
+
+**MEASURED by the supervisor:** the IBM 5170 BIOS speed/refresh check passes
+at rates `4/7` through `2/3`; `11/20` stops at checkpoint `04`, and `27/40`
+stops at checkpoint `11`. The 6 MHz `ibm-5170` default is **8/13 steps per PIT
+clock**. This applies to Rust presets, machine-file board defaults and the
+shipped FreeDOS TOML/YAML files; IDE inherits the FreeDOS rate. Explicit rates
+remain authoritative. Bare rigs retain their own rates, including 1/1 for the
+historical no-controller POST rig. See
+[machine configuration](design/machine-config.md#cpuconfig-and-clockconfig--minimal-but-the-right-home).
+
+**MEASURED comparison against main:** the old baseline is main `889601b`,
+with CPU `44403dd85077c0db29ad09780003ebd3b193ecdd`, per-read refresh and rate 1/1.
+The new side uses the same CPU pin, PIT-driven status and calibrated AT rate.
+No intermediate 1/1 refresh baseline is used in the table below. Complete MDA
+and colour dumps, COM1, POST, cursors and final data were compared. Every
+logical screen matches main after replacing only displayed RTC/time fields.
+There are no unexplained category (d) changes: (a) guest stages occur at different
+steps, (b) guest clock text advances differently, and (c) safety/command windows
+must reserve enough time for completed commands rather than stop early.
+
+Goldens again use the shipped CLI BIOS/FreeDOS runners. Their production boot
+and POST caps are 20,000,000 steps, with a 3,000,000-step command window.
+At 8/13 the date prompt is first observed at the 10,000,000-step poll; DIR and
+write/DIR finish their windows at 13,000,000, leaving seven million steps before
+the safety cap (one more prompt poll plus six million of margin). Poll cadence
+remains one million steps. IDE keeps its 100,000,000 safety cap, three-million
+command windows and 40,000,000 DIR completion bound. The trace-overflow test
+also asserts completed command output, final prompts and successful stop kinds.
+The shared test helper contains passive screen assertions only, not execution
+policies, captures or a duplicate floppy reader.
+
+**MEASURED final endpoints:** R is CPU retired instructions; T is virtual
+instruction-equivalent time, including halted time. Hashes are FNV-1a over all
+25 canonical MDA rows. Exact raw hashes and counters are pinned separately from
+whole-console logical hashes, which replace only `RTC (Real Time Clock):` and
+`Current time is` fields. Both scheduler engines match complete access/state
+streams at the production-policy endpoints.
+
+| Golden / endpoint | Category | Main R -> new R | Main T -> new T | Main MDA hash -> new MDA hash |
+| --- | --- | --- | --- | --- |
+| BIOS POST; scheduler BIOS POST | a/b/c | 9,015,022 -> 19,015,022 | 10,000,000 -> 20,000,000 | `cf7334eb70c4c237` -> `809829e50bc06fbd` |
+| BIOS floppy boot | a/b | 10,996,320 -> 18,993,723 | 12,000,000 -> 20,000,000 | `ba49c0fe9e88293e` -> `0744aaf03bcc6424` |
+| Scheduler BIOS floppy | a/b | 8,996,320 -> 18,993,723 | 10,000,000 -> 20,000,000 | `ba49c0fe9e88293e` -> `0744aaf03bcc6424` |
+| FreeDOS date prompt; scheduler prompt | a/b | 7,802,475 -> 8,802,475 | 9,000,000 -> 10,000,000 | `1da6d49437180ba0` -> `526086b917baa58e` |
+| DOS DIR; both scheduler engines | a/b/c | 9,774,929 -> 11,774,928 | 11,000,000 -> 13,000,000 | `56d8215daf926acd` -> `bb926924f4d7efa1` |
+| DOS write; both scheduler engines | a/b/c | 9,768,598 -> 11,768,597 | 11,000,000 -> 13,000,000 | `616104befb7e4588` -> `153da3e002975834` |
+| IDE initial A: prompt | a/b | 14,777,577 -> 15,777,577 | 16,000,000 -> 17,000,000 | `922f327d9dd4db6b` -> `49bbec2d36c0bbf0` |
+| IDE DIR C: and final prompt | a/b | 17,748,107 -> 19,748,107 | 19,000,000 -> 21,000,000 | `ef5a10891b9ef196` -> `fb811e1f40836da7` |
+| Media fixture BIOS | a/b/c | not pinned | 10,000,000 -> 20,000,000 | `cf7334eb70c4c237` -> `809829e50bc06fbd` |
+| Media fixture FreeDOS prompt | a/b | not pinned | 9,000,000 -> 10,000,000 | `1da6d49437180ba0` -> `526086b917baa58e` |
+| Media fixture write | a/b/c | not pinned | 11,000,000 -> 13,000,000 | `616104befb7e4588` -> `153da3e002975834` |
+
+Final cursors match main: BIOS failure `(0,18)`, boot-sector console `(0,17)`,
+date prompt `(31,24)`, completed commands `(4,24)`. Colour text remains blank.
+BIOS clock text changes from `0000-01-01 00:00:01` to `0000-01-01 00:00:03`;
+floppy DOS time from `12:00:07.41 am` to `12:00:12.90 am`; IDE time from
+`12:00:11.36 am` to `12:00:18.12 am` (b). Dates, banners, directory and volume
+identities, file/free-space counts and final prompts match. DIR lists KERNEL
+and COMMAND; the write session adds ZZ with `x\r\n` (three bytes) verified
+from volatile floppy media; IDE DIR C: lists the 29-byte MARKER.TXT.
+
+POST remains `01 02 03 04 05 06 07 08 09 10 12 20 21 22 24 25 30 31 40 43 00`.
+IDE retains `41 42` between `40` and `43`. COM1 remains empty except for the
+boot sector's `B`. Fixture SHA-256 hashes and vendor namespaces remain intact.
+
+**DERIVED / MEASURED calibration:** including `DEC BL / JNZ`, iterations per
+complete refresh-bit cycle are `n = (36R - 2)/3`. Centring 256 cycles at 1710
+iterations gives `R = (3 × 1710/256 + 2)/36 ≈ 0.6122`. The synthetic guest
+counts 2903 iterations at 1/1 (CX=`F4A9h`) and 1721 at 8/13 (CX=`F947h`, inside
+the BIOS acceptance range). Actual firmware window measurements above belong
+to the supervisor; complete proprietary POST/boot compatibility remains
+unqualified. See [scheduler calibration](design/scheduler.md#device-migration-inventory).
+
 ## In flight
 
 - **2026-11-11 — A20 / System Control Port A device side:** Bare rigs can
@@ -425,7 +503,7 @@ wall-time comparison and historical CPU sample shares.
   Machine hardened for a real BIOS: open-bus default for undecoded ports
   (0xFF read, no-op write), CGA mode/colour/status ports with a per-read retrace
   bit, the full 8042 AT command set (self-test/interface-test/input-port/aux/BAT),
-  port 0x61 with a per-read refresh bit, and seeded CMOS NVRAM with a valid AT
+  port 0x61 with PIT-driven refresh detect and timer-2 OUT, and seeded CMOS NVRAM with a valid AT
   checksum. All device-level;
   the BIOS machine assembly (task-20) composes them. BIOS fact-check (task-19)
   confirmed the Xi8088 config: master+slave cascade (no 0xA0 collision), 32 KiB ROM

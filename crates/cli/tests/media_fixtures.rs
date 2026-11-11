@@ -2,6 +2,9 @@
 //! Volatile BIOS/FreeDOS media leave vendor fixtures and their namespaces intact.
 //! NEC µPD765 READ/WRITE DATA and Intel 8237A single-transfer mode are exercised
 //! through firmware and DOS; see persistent-media.md §Implementation acceptance tests.
+//!
+//! Port 61h bits follow the PIT since 2026-11-11; delay loops take real refresh time.
+//!
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -14,6 +17,8 @@ use assembly::{
 
 #[path = "support/fixtures.rs"]
 mod fixtures;
+#[path = "support/session.rs"]
+pub mod session;
 
 const PINNED_SCRIPTS: &[(&str, &str, &str)] = &[
     (
@@ -202,14 +207,25 @@ fn volatile_boots_preserve_pinned_fixture_hashes_and_vendor_entries() {
                 },
             }
         };
-        assert_eq!(
-            assembled.run_session(&policy).unwrap(),
-            machine::RunOutcome::RetiredCapReached
-        );
+        let outcome = assembled.run_session(&policy);
         let video::Frame::Text(grid) = assembled.capture_text(DeviceId::Mda).unwrap().frame else {
             panic!("expected text frame")
         };
+        eprintln!(
+            "{boot}: {outcome:?}, virtual={}\n{}",
+            assembled.machine.virtual_time(),
+            grid.to_dump()
+        );
+        assert_eq!(outcome.unwrap(), machine::RunOutcome::RetiredCapReached);
         let console = grid.rows_as_strings().join("\n");
+        let logical_hash = match boot {
+            "bios" => 0xe36ef0102a7cbc14,
+            "freedos" => 0xaf201c7e8acb071d,
+            "dos-write" => 0xa6601fff99236a61,
+            _ => unreachable!(),
+        };
+        assert_eq!(session::logical_hash(&console), logical_hash, "{boot}");
+
         assert!(
             console.contains(if boot == "bios" {
                 "Booting OS"

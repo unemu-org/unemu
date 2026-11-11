@@ -1,8 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! A/B gates for PC/AT scheduler migration; see the support module (§10).
+//!
+//! Port 61h bits follow the PIT since 2026-11-11; delay loops take real refresh time.
+//!
 
 #[path = "support/scheduler.rs"]
 mod scheduler;
+#[path = "support/session.rs"]
+pub mod session;
 
 use cpu::Cpu;
 use device::{AccessDir, TraceEvent, VClock};

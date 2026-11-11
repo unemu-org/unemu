@@ -24,7 +24,7 @@ use std::{
 const ENTRY_ID: &str = "landmark-rom-post-at-1.2.0";
 const CPU_REV: &str = "44403dd85077c0db29ad09780003ebd3b193ecdd";
 const STEP_BUDGET: u64 = 30_000_000;
-const GOLDEN_RETIRED: u64 = 15_822_937;
+const GOLDEN_RETIRED: u64 = 15_785_137;
 const GOLDEN_TEXT_SHA256: &str = "373ae9a68d11ea20d8da2232d39a90cdbb1b6f573b9fb28ea04e3ab79d3b31d1";
 
 const ROW_IDS: [&str; 12] = [
@@ -327,8 +327,8 @@ fn landmark_machine_file_preserves_absolute_parts_and_preset_settings() {
         loaded.config.memory.ram,
         vec![assembly::RamRegion::new(0, 0xB0000)]
     );
-    assert_eq!(loaded.config.clock.retired_per_pit_clock, 1);
-    assert_eq!(loaded.config.clock.retired_per_pit_clock_denominator, 1);
+    assert_eq!(loaded.config.clock.retired_per_pit_clock, 8);
+    assert_eq!(loaded.config.clock.retired_per_pit_clock_denominator, 13);
     for id in [DeviceId::Mda, DeviceId::Vga, DeviceId::Fdc] {
         assert!(loaded.config.devices.iter().any(|device| device.id == id));
     }
@@ -458,6 +458,12 @@ fn landmark_status_cells_ignore_surrounding_text() {
     assert_eq!(row_verdict(&grid, 13), Verdict::Empty);
 }
 
+/// Execute the listed firmware's real-mode diagnostic prefix.
+///
+/// The refresh bit follows PIT channel 1 (IBM Personal Computer AT Technical
+/// Reference, System Timers) and the board runs at 8/13 steps per PIT clock, so
+/// the diagnostic's timed waits retire fewer instructions. The screen hash and
+/// stop are unchanged.
 #[test]
 #[ignore = "requires separately supplied proprietary firmware; real-mode prefix only"]
 fn user_rom_landmark_at_real_mode_prefix() {

@@ -2,6 +2,8 @@
 //! BIOS floppy-boot golden: the real Kiselev Xi8088 ROM boots a disk over the
 //! µPD765 + 8237 (§3.1, §5, §7.7).
 //!
+//! Port 61h bits follow the PIT since 2026-11-11; delay loops take real refresh time.
+//!
 //! Assembles the full PC/AT machine as `bios_boot_golden` does but with a µPD765
 //! floppy controller (ports `0x3F0..=0x3F7`, IRQ6) driven by the 8237 DMA
 //! (`0x00..=0x0F` + page latches `0x81..=0x8F`), backed by a minimal bootable
@@ -39,6 +41,8 @@
 use cli::{bootable_floppy_image, run_bios_boot, FLOPPY_BOOT_MARKER};
 #[path = "support/fixtures.rs"]
 mod fixtures;
+#[path = "support/session.rs"]
+pub mod session;
 
 #[ignore = "slow-ish: runs the full BIOS POST before INT 19h"]
 #[test]
@@ -49,6 +53,14 @@ fn bios_int19_reads_boot_sector_over_the_floppy() {
     assert_eq!(rom.len(), 32768, "Xi8088 BIOS is a 32 KiB image");
 
     let run = run_bios_boot(&rom, bootable_floppy_image());
+    session::assert_golden(
+        &run,
+        18_993_723,
+        20_000_000,
+        0x0744aaf03bcc6424,
+        0x69d62210a69ffe15,
+    );
+
     // The BIOS never programs the colour card, so it keeps its power-on cursor.
     assert_eq!(
         run.screen.cursor(),
@@ -75,7 +87,7 @@ fn bios_int19_reads_boot_sector_over_the_floppy() {
     // INT 19h loaded sector 0 at 0x7C00 and jumped to it; the sector transmitted
     // its marker to COM1. After the halt, the run-off ends in the interrupt-13
     // loop described above and writes nothing more to COM1 before the step cap;
-    // the scheduler A/B harness compares both engines over the first 10 million
+    // the scheduler A/B harness compares both engines over the first 20 million
     // steps of this run.
     eprintln!("stop: {:?}", run.stop);
     eprintln!("com1: {:02x?}", run.com1);

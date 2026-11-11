@@ -565,10 +565,7 @@ pub fn bios(rom: Vec<u8>, floppy: Option<Vec<u8>>) -> MachineConfig {
             },
             segments: SegmentSeed::flat(RESET_CS),
         },
-        clock: ClockConfig {
-            retired_per_pit_clock: machine::RETIRED_PER_PIT_CLOCK,
-            retired_per_pit_clock_denominator: 1,
-        },
+        clock: board.default_clock(),
         memory: MemoryConfig {
             address_space_bytes: MIB,
             ram: {
@@ -602,6 +599,26 @@ pub fn bios(rom: Vec<u8>, floppy: Option<Vec<u8>>) -> MachineConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ibm_at_preset_uses_the_calibrated_rate_and_bare_rigs_keep_their_rate() {
+        let at = bios(vec![0; 0x8000], Some(vec![0; 1_474_560]));
+        assert_eq!(
+            (
+                at.clock.retired_per_pit_clock,
+                at.clock.retired_per_pit_clock_denominator
+            ),
+            (8, 13)
+        );
+        let bare = bios(vec![0; 0x8000], None);
+        assert_eq!(
+            (
+                bare.clock.retired_per_pit_clock,
+                bare.clock.retired_per_pit_clock_denominator
+            ),
+            (1, 1)
+        );
+    }
 
     #[test]
     fn bios_board_identity_distinguishes_the_no_media_rig() {

@@ -817,6 +817,37 @@ pub fn run_workload_engine(
 ) -> Result<Option<Stream>> {
     Ok(prepare(workload)?.map(|mut prepared| {
         prepared.machine = prepared.machine.with_scheduler_engine(engine);
-        observe_with(prepared, assembly::run)
+        let mda = prepared.device_index.get(&DeviceId::Mda).copied();
+        observe_with(prepared, |machine, observation, policy| {
+            let result = assembly::run(machine, observation, policy);
+            let expected = match workload {
+                Workload::BiosPost => Some(0xe36ef0102a7cbc14),
+                Workload::BiosFloppy => Some(0x69d62210a69ffe15),
+                Workload::FreeDosPrompt => Some(0xaf201c7e8acb071d),
+                Workload::DosDir => Some(0xd330b78c4533697e),
+                Workload::DosWrite => Some(0xa6601fff99236a61),
+                _ => None,
+            };
+            if let Some(expected) = expected {
+                let state = machine
+                    .bus()
+                    .device(mda.unwrap())
+                    .unwrap()
+                    .text_scanout()
+                    .unwrap();
+                let console = video::render_text_mode(&state).to_dump();
+                eprintln!(
+                    "{workload:?} {engine:?}: {result:?}, retired={}, virtual={}\n{console}",
+                    machine.cpu().retired(),
+                    machine.virtual_time()
+                );
+                assert_eq!(
+                    super::session::logical_hash(&console),
+                    expected,
+                    "{workload:?}"
+                );
+            }
+            result
+        })
     }))
 }

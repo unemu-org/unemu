@@ -42,6 +42,21 @@ impl BoardModel {
         }
     }
 
+    /// Instruction-throughput calibration for the board's virtual PIT clock.
+    /// The 6 MHz AT model is calibrated to 8/13 steps per PIT clock against
+    /// IBM Personal Computer AT Technical Reference, BIOS TEST1 checkpoint 11
+    /// (speed/refresh clocks); this is not a hardware instruction-cycle table.
+    /// See machine-config.md §CpuConfig and ClockConfig for the measured window.
+    pub fn default_clock(self) -> crate::ClockConfig {
+        match self {
+            Self::Ibm5170 => crate::ClockConfig {
+                retired_per_pit_clock: 8,
+                retired_per_pit_clock_denominator: 13,
+            },
+            Self::Bare => crate::ClockConfig::default(),
+        }
+    }
+
     /// Reviewed firmware builds owned by this motherboard.
     pub const fn firmware_catalogue(self) -> &'static [crate::FirmwareEntry] {
         match self {

@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 schema = 1
 extends = "at-freedos.toml"
+# The inherited IBM AT CPU rate is 8/13 steps per PIT clock.
 name = "at-ide"
 description = "PC/AT with XTIDE Universal BIOS, booting FreeDOS from A: with a readonly FAT16 C:"
 

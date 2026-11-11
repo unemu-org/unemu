@@ -13,7 +13,7 @@ nvram = "derived"
 
 [cpu]
 model = "80286"
-rate = "1/1"
+rate = "8/13"
 
 [memory]
 conventional_kib = 640

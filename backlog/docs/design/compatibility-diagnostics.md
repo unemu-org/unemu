@@ -188,7 +188,8 @@ Synthetic tests cover absolute paths (including escaped filenames), lane order,
 preset devices, RAM backing, clock and RTC/NVRAM settings through this loader.
 The preset retains RAM at A0000h–AFFFFh alongside the two text-card apertures;
 CMOS still reports 640 KiB base RAM, no extended RAM and equipment byte 00h.
-The clock rate is 1/1 retired steps per PIT clock.
+The preset clock rate is 8/13 retired steps per PIT clock, with the refresh
+detect bit driven by PIT channel 1 OUT rising edges.
 
 **Adapter-gap defect and fix:** MEASURED by the supervisor before the fix:
 the Listed ROM stopped on `CpuError::Unmapped` at physical C0001h, with CS F000h,
@@ -219,22 +220,23 @@ avoid copying guest bytes; no screen text or instruction dump is printed.
 The text-plane hash covers the visible 80×25 glyph/attribute byte pairs in
 row-major order, excluding cursor and decoded style. Only the status cell on
 each line is classified; no row labels or screen dumps are retained.
-MEASURED by the supervisor on 2026-11-11: two consecutive runs on
-`preset:ibm-5170`, using the Real16 core at x86jit `8979fc9`
-(`8979fc95cd81d73763d50d1d627b40ded3f8f284`), produced identical results.
-The supervisor re-confirmed the golden identical at x86jit `a92b676`
-(`a92b676e081ce862dcb48c82645b3d3a8aa2364f`) on 2026-11-11, including
-the retired-instruction count and text-plane hash:
+Historical supervisor measurements at x86jit `8979fc9`, `a92b676` and
+`44403dd`, with the former 1/1 rate and per-read refresh bit, retired
+15,822,937 instructions and produced the text-plane hash below.
 
-- rows 1–12: Passed; row 13 status: empty;
-- unsupported SIDT at F000:A3CE;
-- retired instructions: 15,822,937;
-- MDA text-plane SHA-256:
+**MEASURED by the supervisor on 2026-11-11:** the user-ROM lane on the
+calibrated `preset:ibm-5170` at 8/13, with PIT-driven refresh and CPU
+`44403dd85077c0db29ad09780003ebd3b193ecdd`, produces:
+
+- rows 1–12: Passed; row 13 status: empty (unchanged);
+- unsupported SIDT at F000:A3CE (unchanged);
+- retired instructions: 15,785,137;
+- MDA text-plane SHA-256 (unchanged):
   `373ae9a68d11ea20d8da2232d39a90cdbb1b6f573b9fb28ea04e3ab79d3b31d1`.
 
-MEASURED by the supervisor on 2026-11-11: the user-ROM lane re-confirmed
-these golden values unchanged at x86jit `44403dd`
-(`44403dd85077c0db29ad09780003ebd3b193ecdd`).
+PIT-driven timed waits and the calibrated throughput reduce the retired count;
+the diagnostic reaches the same logical stop and screen. Firmware remains
+user-supplied, and the test keeps its clean skip when the ROM is absent.
 
 READ (measured by the supervisor): the left box border is at zero-based column
 0, the test name starts at column 2, and the right border is at column 47.

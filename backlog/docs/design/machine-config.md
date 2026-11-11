@@ -285,7 +285,7 @@ Map**, **Keyboard Controller**, and **Real-Time Clock/CMOS RAM Information**.
 | 6. `Keyboard` | 8042 at 60h/64h, IRQ1; D1h output bit 0 and F0h–FFh pulses restart only the CPU | A20 source latch is retained; CPU address masking is pending; pulse duration and temporary output levels are not timed |
 | 7. `Rtc` | MC146818 at 70h–71h, IRQ8, NMI-mask state | Seed and virtual timing remain configurable |
 | 8. `Coprocessor` | Empty 80287 socket: F0h, F1h, F8h–FFh; IRQ13 wired inactive | Empty bus socket only; CPU x87 is currently ungated |
-| 9. `SysControl` | 61h latch | Existing refresh approximation and speaker state |
+| 9. `SysControl` | 61h control/status | Shares PIT state: refresh flip-flop from OUT1, OUT2 status, bit-0 GATE2 |
 | 10. `Post` | Diagnostic latch at 80h by default | Optional, relocatable diagnostic decode |
 
 The **IBM Personal Computer AT Technical Reference** (September 1985),
@@ -487,6 +487,20 @@ machine identity. Production always uses the deadline engine; the non-default
 `reference-scheduler` feature exposes a per-clock oracle only to tests, outside
 `MachineConfig`. Assembly probes zero-step execution and returns a clear
 `StepBoundedCpuRequired` config error for an unsupported CPU.
+
+The `ibm-5170` default is **8/13 completed steps per PIT clock**, calibrated
+for a 6 MHz AT against the IBM Personal Computer AT Technical Reference BIOS
+listing, TEST1 checkpoint 11 (speed/refresh clock rates). **MEASURED by the
+supervisor** with user-supplied firmware and the 80286 core: `4/7` through `2/3`
+passes; `11/20` stops at checkpoint `04`, and `27/40` stops at checkpoint `11`.
+The loop uses three steps per polling iteration and two (`DEC BL / JNZ`) per
+36-PIT-clock bit-4 cycle. **DERIVED**: `n = (36R - 2)/3`, and centring 256
+cycles on 1710 iterations gives `R = (3 × 1710/256 + 2)/36 ≈ 0.6122`.
+The selected `8/13 ≈ 0.6154` lies near that centre. Board defaults, the shipped
+IBM AT preset, and the FreeDOS TOML/YAML examples use this ratio; the IDE
+example inherits it from FreeDOS. Explicit machine-file rates override the
+board default. Bare rigs, including the historical no-controller POST rig,
+retain their own rates. No nominal-MHz axis or per-opcode cycle table is implied.
 
 Neither struct carries a frequency axis or a behavioural CPU-type toggle today —
 see [Non-goals](#non-goals) for why, and why keeping the structs is nonetheless

@@ -2,6 +2,8 @@
 //! BIOS POST golden: boot the Kiselev Xi8088 ROM without decoded floppy ports
 //! (§3.1, §5, §9).
 //!
+//! Port 61h bits follow the PIT since 2026-11-11; delay loops take real refresh time.
+//!
 //! Assembles the full PC/AT machine ([`run_bios_with_cap`]) — cascaded 8259 pair, 8253
 //! PIT, 8042, seeded MC146818 CMOS/RTC, VGA text card, port-`0x61` system
 //! control, POST port at `0x80` — over a full 1 MiB address space with the 32 KiB
@@ -52,9 +54,11 @@
 //! - CPU: `x86jit-core`, the rev pinned in `Cargo.lock`.
 //!   Re-pinning requires re-running this golden against the same ROM and policy.
 
-use cli::{run_bios_with_cap, StopReason, BIOS_GOLDEN_MAX_RETIRED};
+use cli::{run_bios_with_cap, StopReason};
 #[path = "support/fixtures.rs"]
 mod fixtures;
+#[path = "support/session.rs"]
+pub mod session;
 
 /// The observed POST checkpoint stream. The BIOS completes the whole
 /// power-on self-test — CPU/chipset/DMA/RAM/IVT/PIT/PIC/KBC/interrupts, video
@@ -70,7 +74,7 @@ const GOLDEN_POST: &[u8] = &[
 ];
 
 // The BIOS ROM is fetched and built separately, so this test stays opt-in.
-// With no floppy attached, INT 19h spins until the shortened golden cap.
+// With no floppy attached, INT 19h spins until the dedicated POST cap.
 #[ignore = "requires fetched BIOS ROM; no floppy attached, so INT 19h runs to the golden cap"]
 #[test]
 fn bios_boot_stop_point_matches_golden() {
@@ -79,7 +83,15 @@ fn bios_boot_stop_point_matches_golden() {
     };
     assert_eq!(rom.len(), 32768, "Xi8088 BIOS is a 32 KiB image");
 
-    let run = run_bios_with_cap(&rom, BIOS_GOLDEN_MAX_RETIRED);
+    let run = run_bios_with_cap(&rom, cli::BIOS_GOLDEN_MAX_RETIRED);
+    session::assert_golden(
+        &run,
+        19_015_022,
+        20_000_000,
+        0x809829e50bc06fbd,
+        0xe36ef0102a7cbc14,
+    );
+
     // The BIOS never programs the colour card, so it keeps its power-on cursor.
     assert_eq!(
         run.screen.cursor(),

@@ -1,42 +1,26 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! System-control port `0x61` (§7.1 device seam).
 //!
-//! On a PC/AT this port is the read/write control-and-status register historically
-//! carried by port B of the 8255 PPI. A stock BIOS touches it for three duties:
-//!
-//! 1. **Speaker / timer-2 gating** — the low control bits gate PIT channel 2 and
-//!    enable the speaker driver, so firmware can beep and time with the timer.
-//! 2. **Error-check enables** — two more control bits arm the parity-check and
-//!    I/O-channel-check machinery; the matching high status bits report whether an
-//!    error latched (this model reports none).
-//! 3. **A short-delay reference** — the BIOS `AT_DELAY` routine busy-waits on the
-//!    *refresh* status bit (bit 4), which on real hardware toggles at the DRAM
-//!    refresh rate, to measure sub-tick delays. See `SysControl::status_byte`
-//!    for why that bit must cycle per read here.
+//! IBM Personal Computer AT Technical Reference, System Timers and System Board
+//! I/O, Port B: bit 0 gates PIT channel 2; bit 4 is a flip-flop toggled by each
+//! channel-1 OUT rising edge (refresh request); bit 5 is channel-2 OUT.
+//! See `backlog/docs/design/scheduler.md` §Device migration inventory.
 //!
 //! ## Coverage matrix
 //! Modelled:
-//! - **Gate** (bit 0) and **speaker-data enable** (bit 1): stored, read back.
-//! - **Parity-check enable** (bit 2) and **I/O-channel-check enable** (bit 3):
-//!   stored, read back.
-//! - **Refresh detect** (bit 4): a deterministic per-read toggle so the BIOS
-//!   delay loop terminates (see `SysControl::status_byte`).
-//! - **Timer-2 output** (bit 5): a benign deterministic per-read toggle.
-//! - **I/O-channel-check status** (bit 6) and **parity-check status** (bit 7):
-//!   read back as *no error*.
+//! - Bits 0..3: stored gate, speaker-data and error-check controls.
+//! - Bit 0 drives the shared PIT's channel-2 GATE in Modes 0, 2 and 3.
+//! - Bits 4/5: refresh detect and OUT2 sampled at the virtual PIT access clock.
+//! - Bits 6/7: no parity or I/O-channel-check error is reported.
 //!
-//! Not modelled:
-//! - Real DRAM-refresh timing: the refresh bit is a per-read phase, not derived
-//!   from a refresh clock.
-//! - Actual speaker audio: the gate and data-enable bits are stored but drive no
-//!   sound and are not wired to the PIT channel-2 gate.
-//! - Real timer-2 output: bit 5 is a benign toggle, not the PIT channel-2 pin.
-//! - Parity / I/O-channel-check NMI generation: the enable bits latch no error
-//!   and raise no NMI; the status bits always read clean.
+//! Not modelled: speaker audio, DRAM transfers, error latching and NMIs.
+//! Without PIT wiring, refresh stays low and OUT2 stays at its idle high level.
 //!
-//! Snapshots contain the control nibble, per-read status phase and absolute
-//! trace time base. There are no timed deadlines in this compatibility model.
-//! See IBM Personal Computer AT Technical Reference, System Timers.
+//! Snapshots contain the control nibble and absolute trace clock. The shared
+//! PIT snapshot owns the refresh flip-flop, gate and counter phases; restoring
+//! either device never replays an edge or overwrites the other's saved state.
+
+use crate::pit8253::SharedPit8253;
 
 use device::{AccessDir, Device, DeviceError, NextEvent, TraceEvent, VClock};
 
@@ -58,9 +42,9 @@ const IOCHK_ENABLE: u8 = 0x08;
 /// Mask of the guest-writable control bits kept in the low nibble.
 const CONTROL_MASK: u8 = GATE | SPEAKER_DATA | PARITY_CHECK_ENABLE | IOCHK_ENABLE;
 
-/// Bit 4: refresh-detect status. Toggled per read; see `SysControl::status_byte`.
+/// Bit 4: refresh-detect flip-flop.
 const REFRESH_DETECT: u8 = 0x10;
-/// Bit 5: timer-2 output status. A benign per-read toggle.
+/// Bit 5: timer-2 OUT pin.
 const TIMER2_OUT: u8 = 0x20;
 /// Bit 6: I/O-channel-check status. Always clear here (0 = no error).
 const IOCHK_STATUS: u8 = 0x40;
@@ -68,23 +52,21 @@ const IOCHK_STATUS: u8 = 0x40;
 const PARITY_STATUS: u8 = 0x80;
 
 /// Snapshot format version for [`Device::save`] / [`Device::restore`].
-const SNAPSHOT_VERSION: u8 = 2;
-/// Snapshot length: version, control byte, read counter and absolute trace clock.
-const SNAPSHOT_LEN: usize = 1 + 1 + 8 + 8;
+const SNAPSHOT_VERSION: u8 = 3;
+/// Snapshot length: version, control byte and absolute trace clock.
+const SNAPSHOT_LEN: usize = 1 + 1 + 8;
 
 /// The PC/AT system-control port device (§7.1).
 ///
 /// Decodes the one port [`SYS_CONTROL_PORT`]. Writes store the low control
 /// nibble; reads return that nibble in the low bits plus status in the high bits,
-/// with the refresh bit cycled deterministically per read.
+/// sampled from the PIT at the virtual access clock.
 #[derive(Default)]
 pub struct SysControl {
     /// The guest-written control nibble (bits 0..=3); high bits are always clear.
     control: u8,
-    /// Free-running counter bumped on every read of the port, driving the refresh
-    /// and timer-2 status bits through their phases. See `SysControl::status_byte`
-    /// for why the phase advances per read, not per [`Device::tick`].
-    reads: u64,
+    /// Optional AT timer wiring; absent timers leave refresh low and OUT2 high.
+    pit: Option<SharedPit8253>,
     /// Trace events observed since the last [`Device::take_trace`].
     trace: device::TraceBuffer,
     /// Virtual time of the most recent [`Device::tick`], stamped onto traces.
@@ -111,40 +93,27 @@ impl SysControl {
         }
     }
 
-    /// Current value of the port: the stored control nibble plus the status bits.
-    ///
-    /// The BIOS `AT_DELAY` short-delay routine busy-waits on the **refresh** bit
-    /// (bit 4): it reads this port in a tight loop and counts how many iterations
-    /// pass before the bit flips, using that as a fine time reference. On real
-    /// hardware the bit toggles at the DRAM refresh rate (IBM Personal Computer AT
-    /// Technical Reference, "System Timers", p. 1-22). This compatibility model
-    /// instead advances the status phase on reads, independently of virtual time,
-    /// so both edges remain observable even at a single clock. Scheduling must
-    /// preserve that phase until real PIT1/PIT2 wiring is modelled; see
-    /// `backlog/docs/design/scheduler.md` § Device migration inventory.
-    ///
-    /// Phase, in the low bits of the read count taken *before* this read:
-    /// - bit 4 (refresh detect) toggles every read — both a 0→1 and a 1→0 edge are
-    ///   seen within two reads.
-    /// - bit 5 (timer-2 output) toggles every second read — a benign oscillation
-    ///   standing in for the PIT channel-2 output pin.
-    ///
-    /// The error-status bits (6 and 7) always read clean: this model latches no
-    /// parity or I/O-channel-check error.
-    ///
+    /// Connect the AT timer lines. Bit 0 starts low at power-on.
+    #[must_use]
+    pub fn with_pit(mut self, pit: SharedPit8253) -> Self {
+        pit.bind_gate2();
+        pit.set_gate2(self.now, self.control & GATE != 0);
+        self.pit = Some(pit);
+        self
+    }
+
+    /// IBM Personal Computer AT Technical Reference, System Timers and
+    /// System Board I/O, Port B: bit 4 toggles per refresh request; bit 5
+    /// samples counter 2 OUT. Sampling itself never advances either phase.
     fn status_byte(&mut self) -> u8 {
-        let count = self.reads;
-        self.reads = count.wrapping_add(1);
-        let mut value = self.control & CONTROL_MASK;
-        if count & 0b01 != 0 {
-            value |= REFRESH_DETECT;
-        }
-        if count & 0b10 != 0 {
-            value |= TIMER2_OUT;
-        }
-        // Bits 6 (IOCHK) and 7 (parity) stay clear: no error is ever latched.
-        value &= !(IOCHK_STATUS | PARITY_STATUS);
-        value
+        let (refresh, out2) = self
+            .pit
+            .as_ref()
+            .map_or((false, true), |pit| pit.status(self.now));
+        let value = (self.control & CONTROL_MASK)
+            | if refresh { REFRESH_DETECT } else { 0 }
+            | if out2 { TIMER2_OUT } else { 0 };
+        value & !(IOCHK_STATUS | PARITY_STATUS)
     }
 }
 
@@ -171,6 +140,9 @@ impl Device for SysControl {
         // Only the low control nibble is guest-writable; the status high bits are
         // read-only and any bits the guest sets there are dropped.
         self.control = (value as u8) & CONTROL_MASK;
+        if let Some(pit) = &self.pit {
+            pit.set_gate2(self.now, self.control & GATE != 0);
+        }
         self.trace.push(TraceEvent::Port {
             at: self.now,
             port,
@@ -216,7 +188,9 @@ impl Device for SysControl {
 
     fn reset(&mut self) {
         self.control = 0;
-        self.reads = 0;
+        if let Some(pit) = &self.pit {
+            pit.clear_gate2();
+        }
         self.trace.clear();
         self.now = VClock::ZERO;
     }
@@ -225,7 +199,6 @@ impl Device for SysControl {
         let mut blob = Vec::with_capacity(SNAPSHOT_LEN);
         blob.push(SNAPSHOT_VERSION);
         blob.push(self.control);
-        blob.extend_from_slice(&self.reads.to_le_bytes());
         blob.extend_from_slice(&self.now.0.to_le_bytes());
         blob
     }
@@ -250,9 +223,6 @@ impl Device for SysControl {
             });
         }
         self.control = snapshot[1];
-        let mut counter = [0u8; 8];
-        counter.copy_from_slice(&snapshot[2..10]);
-        self.reads = u64::from_le_bytes(counter);
         self.now = VClock(u64::from_le_bytes(std::array::from_fn(|i| {
             snapshot[snapshot.len() - 8 + i]
         })));
@@ -311,7 +281,7 @@ mod tests {
                 reference.port_write(0x61, 1, seed as u32).unwrap();
                 scheduled.port_write(0x61, 1, seed as u32).unwrap();
             } else {
-                // Consecutive reads at one clock retain the refresh/PIT2 phases.
+                // Consecutive reads at one clock retain the timer status.
                 for _ in 0..4 {
                     assert_eq!(
                         reference.port_read(0x61, 1).unwrap(),
@@ -328,6 +298,187 @@ mod tests {
                 reference.device_mut().take_trace(),
                 scheduled.device_mut().take_trace()
             );
+        }
+    }
+
+    fn timer_bus(channel: u8, mode: u8, count: u8) -> (MockBus, MockBus) {
+        let pit = SharedPit8253::default();
+        let sys = SysControl::new().with_pit(pit.clone());
+        let mut timer = MockBus::new(Box::new(pit));
+        timer
+            .port_write(0x43, 1, u32::from((channel << 6) | 0x30 | (mode << 1)))
+            .unwrap();
+        timer
+            .port_write(0x40 + u16::from(channel), 1, u32::from(count))
+            .unwrap();
+        timer.port_write(0x40 + u16::from(channel), 1, 0).unwrap();
+        (MockBus::new(Box::new(sys)), timer)
+    }
+
+    fn reset_pair_then_check_timer2_gate(pit_first: bool) {
+        let (mut sys, mut timer) = timer_bus(2, 0, 4);
+        sys.port_write(0x61, 1, 1).unwrap();
+        sys.tick(3);
+        sys.port_read(0x61, 1).unwrap();
+        if pit_first {
+            timer.device_mut().reset();
+            sys.device_mut().reset();
+        } else {
+            sys.device_mut().reset();
+            timer.device_mut().reset();
+        }
+        assert_eq!(sys.port_read(0x61, 1).unwrap() & 1, 0);
+        timer.port_write(0x43, 1, 0xB0).unwrap();
+        timer.port_write(0x42, 1, 4).unwrap();
+        timer.port_write(0x42, 1, 0).unwrap();
+        sys.tick(100);
+        // Intel 8254 datasheet, Mode 0: low GATE permits loading but inhibits
+        // counting. OUT must remain low until the software gate is raised.
+        assert_eq!(sys.port_read(0x61, 1).unwrap() & 0x21, 0);
+        timer.port_write(0x43, 1, 0x80).unwrap();
+        assert_eq!(timer.port_read(0x42, 1).unwrap(), 4);
+        assert_eq!(timer.port_read(0x42, 1).unwrap(), 0);
+        sys.port_write(0x61, 1, 1).unwrap();
+        sys.tick(4);
+        assert_eq!(sys.port_read(0x61, 1).unwrap() & 0x21, 0x21);
+    }
+
+    #[test]
+    fn reset_pit_then_sys_control_keeps_timer2_gate_low() {
+        reset_pair_then_check_timer2_gate(true);
+    }
+
+    #[test]
+    fn reset_sys_control_then_pit_keeps_timer2_gate_low() {
+        reset_pair_then_check_timer2_gate(false);
+    }
+
+    #[test]
+    fn refresh_tracks_channel1_rising_edges_not_reads() {
+        // Intel 8254 datasheet, Mode 2: count loads at clock 1, OUT goes
+        // low at 18 and rises at 19; following rising edges are 18 apart.
+        let (mut sys, _timer) = timer_bus(1, 2, 18);
+        for (at, high) in [
+            (0, false),
+            (1, false),
+            (17, false),
+            (18, false),
+            (19, true),
+            (36, true),
+            (37, false),
+            (55, true),
+            (109, false),
+            (1_000_009, false),
+        ] {
+            sys.device_mut().sync(VClock(at));
+            for _ in 0..4 {
+                assert_eq!(
+                    sys.port_read(0x61, 1).unwrap() & 0x10 != 0,
+                    high,
+                    "clock {at}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn timer2_output_follows_modes_and_port61_gate() {
+        for (mode, levels) in [
+            (0, [false, false, false, false, true, true]),
+            (2, [true, true, true, false, true, true]),
+            (3, [true, true, false, false, true, true]),
+        ] {
+            let (mut sys, _timer) = timer_bus(2, mode, 4);
+            sys.port_write(0x61, 1, 1).unwrap();
+            sys.tick(1); // Initial load.
+            for high in levels {
+                for _ in 0..3 {
+                    assert_eq!(
+                        sys.port_read(0x61, 1).unwrap() & 0x20 != 0,
+                        high,
+                        "mode {mode}"
+                    );
+                }
+                sys.tick(1);
+            }
+            sys.port_write(0x61, 1, 0).unwrap();
+            let frozen = sys.port_read(0x61, 1).unwrap() & 0x20;
+            sys.tick(100);
+            assert_eq!(sys.port_read(0x61, 1).unwrap() & 0x20, frozen);
+            if mode != 0 {
+                assert_eq!(frozen, 0x20);
+            }
+            sys.port_write(0x61, 1, 1).unwrap();
+            sys.tick(1); // Gate rising reloads Modes 2/3.
+            if mode != 0 {
+                assert_ne!(sys.port_read(0x61, 1).unwrap() & 0x20, 0);
+            }
+        }
+    }
+
+    #[test]
+    fn timer2_mode0_gate_pauses_and_resumes_without_reloading() {
+        let (mut sys, _timer) = timer_bus(2, 0, 4);
+        sys.tick(10); // Load while GATE is low, but do not count.
+        assert_eq!(sys.port_read(0x61, 1).unwrap() & 0x20, 0);
+        sys.port_write(0x61, 1, 1).unwrap();
+        sys.tick(2);
+        sys.port_write(0x61, 1, 0).unwrap();
+        sys.tick(100);
+        assert_eq!(sys.port_read(0x61, 1).unwrap() & 0x20, 0);
+        sys.port_write(0x61, 1, 1).unwrap();
+        sys.tick(1);
+        assert_eq!(sys.port_read(0x61, 1).unwrap() & 0x20, 0);
+        sys.tick(1);
+        assert_eq!(sys.port_read(0x61, 1).unwrap() & 0x20, 0x20);
+    }
+
+    #[test]
+    fn refresh_snapshot_preserves_unread_edges_and_restore_order() {
+        let (mut sys, timer) = timer_bus(1, 2, 18);
+        sys.tick(19);
+        assert_ne!(sys.port_read(0x61, 1).unwrap() & 0x10, 0);
+        sys.tick(54); // Three more rising edges have not been sampled yet.
+        let sys_state = sys.device().save();
+        let timer_state = timer.device().save();
+        for timer_first in [false, true] {
+            let (mut restored, mut pit) = timer_bus(1, 2, 18);
+            if timer_first {
+                pit.device_mut().restore(&timer_state).unwrap();
+            }
+            restored.device_mut().restore(&sys_state).unwrap();
+            if !timer_first {
+                pit.device_mut().restore(&timer_state).unwrap();
+            }
+            assert_eq!(restored.port_read(0x61, 1).unwrap() & 0x10, 0);
+            restored.device_mut().sync(VClock(91));
+            assert_eq!(restored.port_read(0x61, 1).unwrap() & 0x10, 0x10);
+        }
+    }
+
+    #[test]
+    fn refresh_sparse_reads_match_per_clock_edges_after_reprogramming() {
+        for mode in [0, 2, 3] {
+            let (mut sparse, mut sparse_pit) = timer_bus(1, mode, 5);
+            let (mut dense, mut dense_pit) = timer_bus(1, mode, 5);
+            for (at, count) in [(1, 9), (13, 4), (101, 18), (100_003, 7)] {
+                sparse.device_mut().sync(VClock(at));
+                for clock in dense.clock().0 + 1..=at {
+                    dense.tick(1);
+                    // Observe every intermediate edge, including skipped periods.
+                    dense.port_read(0x61, 1).unwrap();
+                    assert_eq!(dense.clock().0, clock);
+                }
+                assert_eq!(
+                    sparse.port_read(0x61, 1).unwrap(),
+                    dense.port_read(0x61, 1).unwrap()
+                );
+                for timer in [&mut sparse_pit, &mut dense_pit] {
+                    timer.device_mut().sync(VClock(at));
+                    timer.port_write(0x41, 1, count).unwrap();
+                    timer.port_write(0x41, 1, 0).unwrap();
+                }
+            }
         }
     }
 
@@ -366,39 +517,6 @@ mod tests {
     }
 
     #[test]
-    fn refresh_bit_sees_both_edges_within_bounded_reads() {
-        // Model the BIOS `AT_DELAY` busy-wait: spin until the refresh bit is high,
-        // then spin until it is low again. This isolated test deliberately omits
-        // ticks to verify the compatibility model toggles the bit per read.
-        let mut dev = SysControl::new();
-        let mut reads = 0u32;
-        // Wait for the refresh bit to go high.
-        loop {
-            reads += 1;
-            assert!(reads < 100, "refresh bit never went high");
-            if dev.port_read(SYS_CONTROL_PORT, 1).unwrap() as u8 & REFRESH_DETECT != 0 {
-                break;
-            }
-        }
-        // Wait for it to go low again (the second edge).
-        loop {
-            reads += 1;
-            assert!(reads < 100, "refresh bit never went low");
-            if dev.port_read(SYS_CONTROL_PORT, 1).unwrap() as u8 & REFRESH_DETECT == 0 {
-                break;
-            }
-        }
-    }
-
-    #[test]
-    fn refresh_bit_toggles_every_read() {
-        let mut dev = SysControl::new();
-        let r0 = dev.port_read(SYS_CONTROL_PORT, 1).unwrap() as u8 & REFRESH_DETECT;
-        let r1 = dev.port_read(SYS_CONTROL_PORT, 1).unwrap() as u8 & REFRESH_DETECT;
-        assert_ne!(r0, r1, "refresh bit must change between successive reads");
-    }
-
-    #[test]
     fn status_error_bits_read_no_error() {
         let mut dev = SysControl::new();
         // Across several reads (covering every phase), the error-status bits stay 0.
@@ -414,7 +532,7 @@ mod tests {
         let mut dev = SysControl::new();
         dev.port_write(SYS_CONTROL_PORT, 1, u32::from(GATE | SPEAKER_DATA))
             .unwrap();
-        // Advance the read counter so its restored phase is observable too.
+        // Reads at one clock must leave the hardware state unchanged.
         dev.port_read(SYS_CONTROL_PORT, 1).unwrap();
         dev.port_read(SYS_CONTROL_PORT, 1).unwrap();
         dev.port_read(SYS_CONTROL_PORT, 1).unwrap();
@@ -423,7 +541,7 @@ mod tests {
         let mut restored = SysControl::new();
         restored.restore(&blob).unwrap();
         assert_eq!(restored.control, GATE | SPEAKER_DATA);
-        assert_eq!(restored.reads, dev.reads);
+        assert_eq!(restored.save(), dev.save());
     }
 
     #[test]
@@ -450,8 +568,7 @@ mod tests {
         dev.port_read(SYS_CONTROL_PORT, 1).unwrap();
         dev.reset();
         assert_eq!(dev.control, 0);
-        assert_eq!(dev.reads, 0);
-        // First post-reset read: refresh bit low (count 0), control nibble clear.
+        // First post-reset read: refresh bit low, control nibble clear.
         assert_eq!(
             dev.port_read(SYS_CONTROL_PORT, 1).unwrap() as u8 & REFRESH_DETECT,
             0

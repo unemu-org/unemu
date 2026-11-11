@@ -53,7 +53,7 @@ use cpu::x86jit_backend::X86JitCpu;
 use device::{Device, InterruptController};
 use devices::{
     A20Line, Absent80287, Ata, AtaDrive, AtaGeometry, CmosRtc, DebugConsole, Dma8237, Drive, FwCfg,
-    MdaText, Pit8253, PostPort, SysControl, SysCtrlPortA, Uart16550, Upd765, VgaText, I8042,
+    MdaText, PostPort, SysControl, SysCtrlPortA, Uart16550, Upd765, VgaText, I8042,
 };
 use machine::{DmaWiring, IrqLine, Machine};
 use sha2::{Digest, Sha256};
@@ -274,12 +274,13 @@ fn assemble_with_cpu_and_catalogue(
     let mut pic: Option<chipset::CascadedPic> = None;
     let reset_signal = Rc::new(Cell::new(false));
     let a20_line = A20Line::default();
+    let pit = devices::pit8253::SharedPit8253::default();
     let mut persistence = Vec::new();
 
     for dc in &config.devices {
         let boxed: Box<dyn Device> = match &dc.kind {
             DeviceKind::Uart(c) => Box::new(Uart16550::new(c.base)),
-            DeviceKind::Pit(_) => Box::new(Pit8253::new()),
+            DeviceKind::Pit(_) => Box::new(pit.clone()),
             DeviceKind::Pic(c) => {
                 // One live master/slave pair backs both faces and the controller.
                 let shared = pic.get_or_insert_with(chipset::CascadedPic::new);
@@ -343,7 +344,7 @@ fn assemble_with_cpu_and_catalogue(
             DeviceKind::Vga(_) => Box::new(VgaText::new()),
             DeviceKind::VgaRegisters(_) => Box::new(devices::Vga::new()),
             DeviceKind::Mda(_) => Box::new(MdaText::new()),
-            DeviceKind::SysControl(_) => Box::new(SysControl::new()),
+            DeviceKind::SysControl(_) => Box::new(SysControl::new().with_pit(pit.clone())),
             DeviceKind::Post(c) => Box::new(PostPort::with_port(c.port)),
             DeviceKind::SysCtrlPortA => Box::new(SysCtrlPortA::with_board_lines(
                 Rc::clone(&reset_signal),
@@ -395,6 +396,12 @@ fn assemble_with_cpu_and_catalogue(
     // the loop runs (idle_limit is a "how we run" concern, not machine identity).
     let (rate_numerator, rate_denominator) = config.clock.cpu_rate()?;
     let mut bus = Bus::new(devices, map);
+    if let (Some(&sys), Some(&timer)) = (
+        device_index.get(&DeviceId::SysControl),
+        device_index.get(&DeviceId::Pit),
+    ) {
+        bus.add_access_coupling(sys, timer)?;
+    }
     for device in &config.devices {
         for dependent in &device.access_dependents {
             bus.add_access_coupling(device_index[&device.id], device_index[dependent])?;
@@ -1241,6 +1248,77 @@ mod tests {
     use super::*;
 
     #[test]
+    fn guest_refresh_loop_counts_virtual_pit_clocks_at_rate_one() {
+        // Synthetic IN/TEST/LOOPZ loop matching IBM AT BIOS TEST1, checkpoint
+        // 11. After the count write retires, MOV CX,0 loads CE at t=7.
+        // OUT1 rises at t=25 (7+18). At one step per PIT clock,
+        // seven INs at 8..26 consume 21 steps, leaving CX = -7.
+        let program = vec![
+            0xFA, // CLI
+            0xB0, 0x74, 0xE6, 0x43, // Mode 2, channel 1, LSB/MSB
+            0xB0, 18, 0xE6, 0x41, 0xB0, 0, 0xE6, 0x41, 0xB9, 0, 0, // MOV CX,0
+            0xE4, 0x61, 0xA8, 0x10, 0xE1, 0xFA, // IN; TEST; LOOPZ
+            0xF4,
+        ];
+        let mut config = crate::at_boot(program);
+        config.clock = crate::ClockConfig {
+            retired_per_pit_clock: 1,
+            retired_per_pit_clock_denominator: 1,
+        };
+        config.devices.push(crate::DeviceConfig::new(
+            DeviceId::SysControl,
+            DeviceKind::SysControl(crate::SysControlCfg {}),
+            vec![crate::PortWindow::single(0x61)],
+        ));
+        let mut assembled = assemble(&config).unwrap();
+        assert_eq!(
+            assembled.machine.run_bounded(Some(100)).unwrap(),
+            machine::RunOutcome::Halted
+        );
+        assert_eq!(
+            assembled.machine.cpu().reg(cpu::CpuReg::Rcx),
+            0u16.wrapping_sub(7) as u64
+        );
+    }
+
+    #[test]
+    fn guest_refresh_speed_check_counts_256_cycles_at_explicit_rates() {
+        // DERIVED from IBM AT BIOS TEST1, checkpoint 11: initial load at 7,
+        // first IN at 9, three steps per polling iteration, two outer steps.
+        // If n is the total LOOP count, each sampled IN is at 9 + 3*n +
+        // 2*completed_cycles. OUT1 rises every 18 clocks from 25. Evaluating
+        // that fixed waveform over 256 high/low pairs gives 2903 iterations.
+        // At 8/13, the load is at PIT clock 10; sampling floor(steps*13/8)
+        // gives 1721 iterations, within the BIOS speed-check window.
+        let program = vec![
+            0xFA, 0xB0, 0x74, 0xE6, 0x43, 0xB0, 18, 0xE6, 0x41, 0xB0, 0, 0xE6, 0x41, 0xB9, 0, 0,
+            0x30, 0xDB, // MOV CX,0; XOR BL,BL
+            0xE4, 0x61, 0xA8, 0x10, 0xE1, 0xFA, // IN; TEST; LOOPZ
+            0xE4, 0x61, 0xA8, 0x10, 0xE0, 0xFA, // IN; TEST; LOOPNZ
+            0xFE, 0xCB, 0x75, 0xF0, // DEC BL; JNZ first IN
+            0xF4,
+        ];
+        for (numerator, denominator, expected_cx) in [(1, 1, 0xF4A9), (8, 13, 0xF947)] {
+            let mut config = crate::at_boot(program.clone());
+            config.clock = crate::ClockConfig {
+                retired_per_pit_clock: numerator,
+                retired_per_pit_clock_denominator: denominator,
+            };
+            config.devices.push(crate::DeviceConfig::new(
+                DeviceId::SysControl,
+                DeviceKind::SysControl(crate::SysControlCfg {}),
+                vec![crate::PortWindow::single(0x61)],
+            ));
+            let mut assembled = assemble(&config).unwrap();
+            assert_eq!(
+                assembled.machine.run_bounded(Some(10_000)).unwrap(),
+                machine::RunOutcome::Halted
+            );
+            assert_eq!(assembled.machine.cpu().reg(cpu::CpuReg::Rcx), expected_cx);
+        }
+    }
+
+    #[test]
     fn observation_precheck_matches_bind_for_every_device_and_output() {
         let config = crate::bios(vec![0; 0x8000], Some(vec![0; 1_474_560]));
         let mut assembled = assemble_synthetic(&config).unwrap();
@@ -1970,7 +2048,8 @@ mod tests {
             bus.tick_due(device::VClock(100));
             assert_eq!(bus.device(pit_index).unwrap().save(), pit_before);
             bus.port_write(0x3F8, 1, b'A' as u32).unwrap();
-            let mut expected = Pit8253::new();
+            let mut expected = devices::pit8253::SharedPit8253::default();
+            let _sys = SysControl::new().with_pit(expected.clone());
             expected.sync(device::VClock(100));
             assert_ne!(expected.save(), pit_before);
             assert_eq!(bus.device(pit_index).unwrap().save(), expected.save());

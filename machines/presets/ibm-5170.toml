@@ -8,6 +8,7 @@ model = "ibm-5170"
 
 [cpu]
 model = "80286"
+rate = "8/13"
 
 [memory]
 conventional_kib = 640

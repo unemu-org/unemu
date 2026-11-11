@@ -88,7 +88,7 @@ warning that it was not inspected. Existing locks use offline shared inspection;
 a missing lock uses the same read-only scanner without a lock and reports it.
 Journal drives assemble as volatile for the remaining catalogue checks.
 `run --machine FILE` uses `RunPolicy::natural`: `--max-steps` defaults to
-12,000,000 retired instructions and `--idle-limit` to 1,000,000 halted PIT clocks.
+20,000,000 completed-step equivalents and `--idle-limit` to 1,000,000 halted PIT clocks.
 Both accept unsigned decimal integers (zero is allowed). It uses the same stop
 messages and exit codes as `--bios`, with usage errors exiting 2. `--print CARD`
 selects a display text dump or UART TX bytes on stdout. Without it, the first

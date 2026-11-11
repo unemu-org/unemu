@@ -78,7 +78,7 @@ numbered **M1–M8** and listed after the table.
 | `cpu.chip` (`CpuChip::I80286`) | `[cpu] model = "80286"` | board default, user may restate | — |
 | `cpu.reset` (`ResetSpec`) | none | board: `ResetVector F000:FFF0` for every firmware board | — (`Entry` stays for Rust test rigs) |
 | `cpu.segments` (`SegmentSeed`) | none | board: `SegmentSeed::flat(0xF000)` | — |
-| `clock.retired_per_pit_clock`, `…_denominator` | `[cpu] rate = "A/B"` | user, default `"1/1"` | — |
+| `clock.retired_per_pit_clock`, `…_denominator` | `[cpu] rate = "A/B"` | user, default from `BoardModel::default_clock` (`8/13` on `ibm-5170`) | — |
 | `memory.address_space_bytes` | none | derived: 1 MiB + `extended_kib` | — |
 | `memory.ram` (`RamRegion` list) | `[memory] conventional_kib`, `extended_kib` | derived by the RAM rule (see [`[memory]`](#memory)) | — |
 | `memory.mmio` (`MmioWindow` list) | none | type: each display card owns its window | — (expressible today) |
@@ -296,7 +296,13 @@ format, recovery diagnostics, host failures and offline tools follow
 | Field | Type | Default | v1 | Lowers to |
 |---|---|---|---|---|
 | `model` | string | from the board (`"80286"` on `ibm-5170`) | `"80286"` | `CpuConfig.chip` |
-| `rate` | `"A/B"` string or a positive integer `A` | `"1/1"` | yes | `ClockConfig` A/B. Both parts must be positive. It is a ratio of completed steps per PIT input clock, not a frequency. |
+| `rate` | `"A/B"` string or a positive integer `A` | board default (`"8/13"` on `ibm-5170`) | yes | `ClockConfig` A/B. Both parts must be positive. It is a ratio of completed steps per PIT input clock, not a frequency. |
+
+An omitted `rate` comes from `BoardModel::default_clock` in
+`crates/assembly/src/board.rs`: `ibm-5170` uses the 8/13 throughput calibrated
+against the IBM AT BIOS speed/refresh check. See
+[machine configuration](machine-config.md#cpuconfig-and-clockconfig--minimal-but-the-right-home).
+An explicit rate overrides that board default.
 
 `model = "8088"` is rejected: "cpu model 8088 needs an 8088 instruction model,
 which the CPU core does not have". A model that does not match the board is
@@ -571,7 +577,7 @@ Frontends:
   1 for an invalid one, 2 for usage errors. `unemupc98 run --machine FILE
   [--max-steps N] [--idle-limit N] [--print CARD]` maps its flags onto
   `RunPolicy::natural` and prints a display card's text screen or a UART's
-  stream. The default caps are 12,000,000 retired instructions and 1,000,000
+  stream. The default caps are 20,000,000 completed-step equivalents and 1,000,000
   idle PIT clocks; both flags accept unsigned decimal values, including zero.
   Without `--print`, the first display in file order is printed, falling back to
   the first UART, or no output if neither exists. UART capture is bounded to
@@ -1010,7 +1016,7 @@ nvram = "derived"
 
 [cpu]
 model = "80286"
-rate = "1/1"
+rate = "8/13"
 
 [memory]
 conventional_kib = 640
@@ -1055,7 +1061,7 @@ It lowers to the canonical-order `assembly::bios(rom, Some(floppy))`:
 - **images:** ROM at `0xF8000`, 32 KiB.
 - **drives:** 1.44 MB, `Fdc` unit 0, `Volatile`.
 - **CPU and clock:** 80286, reset `F000:FFF0`, segments `flat(0xF000)`,
-  rate 1/1.
+  rate 8/13.
 - **board:** `Ibm5170`.
 
 ### 2. The same machine, YAML (`machines/at-freedos.yaml`)
@@ -1074,7 +1080,7 @@ board:
 
 cpu:
   model: "80286"
-  rate: "1/1"
+  rate: "8/13"
 
 memory:
   conventional_kib: 640

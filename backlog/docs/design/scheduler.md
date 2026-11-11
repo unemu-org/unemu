@@ -151,25 +151,34 @@ and re-pinned, not a scheduler difference.
 Removing the Long64 `hello` demo/golden and replacing no-argument output with
 usage is an intentional interface change, not a hardware expectation change.
 
-Policy calibration with the pinned fixtures (completed steps, not host time):
+**MEASURED policy calibration** with CPU `44403dd`, the pinned fixtures and
+PIT-driven port 61h: the historical Bare POST rig uses rate 1/1; FreeDOS uses
+the calibrated AT rate 8/13. Counts below are completed-step equivalents,
+including halted time, not host duration. First visible milestones were narrowed
+to a 10,000-step interval and replayed with one-step checks; completion requires
+the full listing/free-space text and final prompt, not the end of a budget window.
 
 | Policy | Observed milestone | Bound and margin |
 |---|---|---|
-| FDC write/readback | `W` OUT starts at 3,673, completes at 3,674 | 5,000 unchanged: 1,326 steps |
-| test386 | Unsupported instruction after 159 steps | 5,000,000 → 1,024: 865 steps |
-| BIOS POST | Final POST OUT starts at 5,526,624, completes at 5,526,625 | 10,000,000 unchanged: 4,473,375 steps |
-| FreeDOS prompt | First 1,000-step poll at 8,109,000; replay to 8,108,000 then single-step polls: first appearance 8,108,258 | Poll 25,000,000 → 1,000,000; detects at 9,000,000 |
-| DIR and file-write/DIR | With injection at 9,000,000, final listing and `A:\>` by 10,000,000 (DIR) / 10,250,000 (write/DIR), sampled every 250,000 steps | Command budget 80,000,000 → 2,000,000: at least 750,000 steps of margin for both commands |
-| Overall BIOS/DOS | Prompt poll rounds up to 9,000,000 | Original 2,000,000,000 → adoption 32,000,000 → 12,000,000: one extra 1,000,000-step boot poll plus the full 2,000,000 command budget |
+| FDC write/readback | `W` OUT starts at 3,673; marker absent at 3,673 and present at 3,674 | 5,000: 1,326 steps after completion |
+| test386 | Unsupported instruction after 159 completed steps (159 retired instructions) | 1,024: 865 steps |
+| Bare BIOS POST | Final POST OUT starts at 8,024,894, completes at 8,024,895; `Boot failed` first appears at 12,750,391 | 20,000,000: 11,975,105 after POST; 7,249,609 after the visible failure milestone |
+| FreeDOS prompt | First `Enter new date` text at 9,461,624; the 1,000,000-step poll observes it at 10,000,000 | 538,376 steps of polling overshoot |
+| DIR and file-write/DIR | Injection at 10,000,000; DIR completes at 10,945,308 (945,308 steps), write/DIR at 11,167,482 (1,167,482 steps) | Command budget 3,000,000: 2,054,692 steps of DIR margin, 1,832,518 of write/DIR margin |
+| Overall BIOS/DOS | Latest measured command completion is write/DIR at 11,167,482; the fully reserved command window ends at 13,000,000 | 20,000,000: 8,832,518 after actual completion, 7,000,000 after the reserved window |
 
-The policy checks remaining room before injecting any keys. A prompt after
-10,000,000 with a nonempty script and a 2,000,000 budget produces an explicit
-`InsufficientCommandBudget` error (`PolicyFailed` in the frontend), never a
-silently shortened command run. The historical four-times-80,000,000 workaround
-is not carried forward. Screens, serial/POST bytes and media contents retain
-independent golden assertions. Changing injection cadence also changes the
-reported DOS time (12:00:20.81 am → 12:00:07.41 am); it is a run-policy
-change rather than a hardware rebaseline.
+The policy checks remaining room before injecting keys. With a 20,000,000-step
+cap and 3,000,000-step command budget, a prompt observed **after 17,000,000**
+produces `InsufficientCommandBudget` (`PolicyFailed` in the frontend), never a
+shortened command. **MEASURED boundary check:** delaying the first poll to
+17,000,000 succeeds and completes DIR; delaying it to 17,000,001 returns
+`required=3,000,000, remaining=2,999,999` before injecting keys. A separate check
+at the normal 10,000,000 prompt rejects a 12,999,999 total cap and accepts
+13,000,000. These are policy limits, not command-completion milestones.
+
+Screens, serial/POST bytes and media contents retain independent golden
+assertions. The production one-million-step cadence captures DOS time
+`12:00:12.90 am`; polling/injection changes can move that clock-derived text.
 
 The informative release wall-time test requires
 `UNEMUPC98_SCHEDULER_WALL_TIMES=1`; otherwise it prints one skip line. It measures
@@ -464,7 +473,7 @@ and wiring order, never hash-map iteration, define equal-time order.
 | Keyboard, `i8042.rs:341`, `:492` | Preserve hold at the first PIT boundary after data read and refill at the second when enabled/queued; reschedule on data read, command-byte write, enable, and host injection | Two modeled PIT steps are an edge-visibility policy, not a measured keyboard serial baud rate |
 | FDC, `upd765.rs:65`, `:882` | `Dormant` between command/access/DMA work; service request and completion at the instruction boundary; timestamp accesses directly | Seek/read/write timing remains immediate; no rotational-latency feature is added |
 | DMA, `dma8237.rs:466` | `Dormant`; channel programming invalidates affected transfers; completion can create immediate IRQ work | Whole-transfer service is retained; arbitration, per-byte clocks, and CPU stalls are deferred |
-| System control, `sys_control.rs:124`, `:203` | Initially `Dormant` for autonomous work, retain per-read bit-4/5 phases and time-stamp accesses | Real refresh/PIT2 coupling is a separate hardware correction, not achieved by a scheduler alone |
+| System control, `sys_control.rs` | `Dormant`; accesses synchronize the shared PIT, sample refresh/OUT2 and drive GATE2 | PIT snapshot owns the refresh flip-flop; assembly couples system-control accesses to PIT deadline invalidation |
 | PIC/shared PIC, UART, POST, VGA | Opt into `Dormant` only after confirming tick merely stamps time; route access/cascade effects immediately | UART serialization and VGA retrace clocks remain absent; VGA's existing per-read status phase stays unchanged |
 
 For PIT Mode 2, the one-clock low pulse and following rising edge must both be
@@ -498,15 +507,36 @@ not the shared-divider relationship shown in MC146818A, Update Cycle,
 Figure 15 (Update-Ended and Periodic Interrupt Relationship). Accurate alignment
 and divider-reset startup timing remain unmodelled.
 
-For a later accurate system-control model, route PIT1 refresh requests and PIT2
-OUT/GATE through declared signal wiring. IBM **Personal Computer AT Technical
-Reference**, “System Timers,” p. 1-22, describes channel 1 refresh and channel 2
-speaker wiring; see the [1985 reference](https://www.minuszerodegrees.net/manuals/IBM_5170_Technical_Reference_6280070_SEP85.pdf).
-Do not invent a free-running toggle frequency from how often software reads
-port `0x61`. The source comment claiming that an entire polling loop runs
-without clock advancement is inconsistent with the inspected machine path:
-each IN already causes a CPU exit. Fix that explanation when that device is
-actually changed; it does not justify changing the compatibility behavior here.
+Port `0x61` samples the shared PIT at the access clock. Bit 4 toggles on every
+channel-1 OUT rising edge, including edges crossed by an arithmetic clock jump;
+bit 5 samples channel-2 OUT. Bit 0 controls channel-2 GATE (Modes 0/2/3).
+The PIT snapshot owns the refresh flip-flop and GATE2, while the system-control
+snapshot owns its control nibble. Assembly invalidates the PIT's cached deadline
+on system-control accesses through the bus access-coupling seam. Neither refresh
+nor OUT2 requires an autonomous scheduler wakeup. IBM **Personal Computer AT
+Technical Reference**, “System Timers,” p. 1-22 and System Board I/O, Port B,
+describes the refresh and speaker wiring; see the
+[1985 reference](https://www.minuszerodegrees.net/manuals/IBM_5170_Technical_Reference_6280070_SEP85.pdf).
+
+**DERIVED — speed-check calibration:** IBM AT BIOS listing TEST1, checkpoint 11
+(“VERIFY SPEED/REFRESH CLOCK RATES”) counts `IN 61h / TEST 10h / LOOPZ` and
+`LOOPNZ` iterations across 256 complete bit-4 cycles. With channel 1 in Mode 2
+at count 18, refresh requests occur every 18 PIT clocks; a complete bit-4 cycle
+takes two requests (36 clocks). Each polling iteration retires three steps;
+`DEC BL / JNZ` adds two steps per complete cycle. With throughput R steps per
+PIT clock, **DERIVED** iterations per cycle are `n = (36R - 2) / 3`.
+Starting at CX=0, the total iterations are `(-CX) mod 65536`; the BIOS accepts
+`F8A7h ≤ CX ≤ F9FDh` (1539–1881 iterations, centred at 1710 over 256 cycles).
+The centre gives `R = (3 × 1710 / 256 + 2) / 36 ≈ 0.6122`.
+Initial phase and sampled final iterations add boundary effects, so calibration
+uses the actual listing as well as this estimate.
+
+**MEASURED by the supervisor:** with the 80286 core, PIT-driven refresh and
+user-supplied IBM 5170 BIOS, the speed check passes from `4/7` through `2/3`.
+`11/20` stops at checkpoint `04`; `27/40` stops at checkpoint `11`.
+The `ibm-5170` default is `8/13 ≈ 0.6154`, near the derived centre for the
+6 MHz AT. This is instruction throughput, not a table of 80286 cycle costs.
+Bare synthetic rigs retain their explicit/default rates.
 
 ## Interrupt acceptance and instruction transactions
 
@@ -883,7 +913,7 @@ to item 7 rather than duplicated.
    Accept individually explained golden differences, update decision/config docs,
    retain reference tests, then measure CPU entry/exit and device work again.
 
-Later hardware fidelity work (RTC divider/periodic IRQs, refresh/speaker wiring,
+Later hardware fidelity work (RTC divider/periodic IRQs, speaker audio,
 audio serialization, timed FDC/DMA) requires separate scope and oracles. It is
 not a hidden prerequisite for dispatching the **current** device models correctly.
 
@@ -1026,7 +1056,7 @@ An adversarial review accepted the direction with changes; the accepted form is
 - Time stays in whole PIT clocks (`VClock(u64)`); other domains keep rational
   phases and round events up to the next PIT clock. The 128-bit, 2^32-per-clock
   instants above are dropped.
-- Unwired PIT channels (refresh, speaker) are synchronised lazily, never
+- PIT refresh/speaker channels are synchronised lazily, never
   scheduled.
 - A REP string iteration is one step of CPU time, so device time advances inside
   long string operations and an interrupt can be taken between iterations.

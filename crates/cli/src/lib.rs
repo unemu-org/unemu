@@ -536,16 +536,17 @@ fn classify_test386_stop(rip: u64, result: Result<RunOutcome, RunError>) -> Stop
 // Full BIOS machine: load a real 32 KiB PC BIOS ROM and boot it (§3.1, §5, §9).
 // ---------------------------------------------------------------------------
 
-/// Step-equivalent safety cap for BIOS/DOS runs (§6). The pinned date prompt
-/// first appears at step 8,108,258 (single-step sampling after 8,108,000).
-/// Round up to the 9,000,000 poll, allow one extra 1,000,000-step poll of boot
-/// delay, then reserve the full 2,000,000-step command budget: 12,000,000.
-/// A later prompt with insufficient command room is an explicit policy failure.
-pub const BIOS_MAX_RETIRED: u64 = 12_000_000;
-/// Step cap for the BIOS POST golden (§3.1, §9). The final POST byte is written
-/// at step 5,526,624, completing at 5,526,625. The retained 10,000,000 cap leaves
-/// 4,473,375 steps to observe the no-media INT 19h retry loop.
-pub const BIOS_GOLDEN_MAX_RETIRED: u64 = 10_000_000;
+/// Step-equivalent safety cap for BIOS/DOS runs (§6). MEASURED with the pinned
+/// AT fixtures at 8/13: the date prompt first appears at 9,461,624 and is observed
+/// by the 10,000,000-step poll. The write/DIR command completes at 11,167,482,
+/// leaving 8,832,518 steps before this cap. The policy reserves the full
+/// three-million-step command window before injecting keys.
+pub const BIOS_MAX_RETIRED: u64 = 20_000_000;
+/// Step cap for the historical no-controller POST rig (§3.1, §9), at Bare 1/1.
+/// MEASURED: final POST OUT starts at 8,024,894 and completes at 8,024,895;
+/// "Boot failed" appears at 12,750,391. This cap leaves 7,249,609 steps after
+/// that visible failure/key-prompt milestone (11,975,105 after the final POST).
+pub const BIOS_GOLDEN_MAX_RETIRED: u64 = 20_000_000;
 /// Halted PIT-clock bound. The BIOS timer reload is 65,536 (Intel 8254 datasheet,
 /// Mode 3); retaining 1,000,000 permits that full interval plus 934,464 clocks
 /// of margin, so timer waits survive POST instead of ending at a short HLT.
@@ -618,8 +619,8 @@ pub fn run_bios(rom: &[u8]) -> BiosRun {
 /// Boot the same PC/AT BIOS machine as [`run_bios`] with a caller-supplied
 /// virtual-time cap in instruction equivalents (§3.1, §6, §9).
 ///
-/// The POST golden uses [`BIOS_GOLDEN_MAX_RETIRED`] to capture the complete POST
-/// stream without spending the full safety budget in the no-floppy boot loop.
+/// The POST golden passes [`BIOS_GOLDEN_MAX_RETIRED`] explicitly to capture
+/// complete POST and the no-controller boot-failure/key prompt.
 pub fn run_bios_with_cap(rom: &[u8], cap: u64) -> BiosRun {
     let config = assembly::bios(rom.to_vec(), None);
     // The historical POST rig omits DMA hardware. Check its intended BIOS
@@ -913,16 +914,18 @@ pub fn run_freedos_config(config: MachineConfig) -> BiosRun {
 /// has booted and is blocked on keyboard input before the script is injected.
 pub const DOS_DATE_PROMPT: &str = "Enter new date";
 
-/// Step interval for prompt polling (§6). The pinned prompt first appears at
-/// 8,108,258; 1,000,000-step polls detect it at 9,000,000, leaving room for
-/// another full poll of boot delay plus the command budget before the cap.
+/// Step interval for prompt polling (§6). MEASURED at AT rate 8/13: the first
+/// date-prompt text appears at 9,461,624; one-million-step polling observes it at
+/// 10,000,000, a 538,376-step overshoot. Cadence is independent of CPU/PIT ratio.
 pub const DOS_INTERACTIVE_POLL_STEP: u64 = 1_000_000;
 
-/// Post-injection step budget (§6). With injection at 9,000,000 and sampling
-/// every 250,000 steps, DIR returns to `A:\>` within 1,000,000 steps and
-/// echo/write/DIR within 1,250,000; 2,000,000 leaves at least 750,000 of margin.
-/// REP iterations count too.
-pub const DOS_INTERACTIVE_COMMAND_BUDGET: u64 = 2_000_000;
+/// Post-injection step budget (§6). MEASURED with injection at 10,000,000:
+/// DIR first completes at 10,945,308 (945,308 steps); write/DIR at 11,167,482
+/// (1,167,482 steps). The three-million-step budget leaves 2,054,692 and
+/// 1,832,518 steps of margin respectively. Completion includes the full listing
+/// and final prompt; the window end at 13,000,000 is only a capture boundary.
+/// REP iterations count as steps. The safety cap reserves the entire window.
+pub const DOS_INTERACTIVE_COMMAND_BUDGET: u64 = 3_000_000;
 
 /// Boot a real FreeDOS floppy image on the Kiselev BIOS machine and drive the
 /// shell interactively with a **keyboard script**, past its startup prompts and
@@ -2148,9 +2151,31 @@ mod bounded_trace_tests {
                     }
                 });
                 assert!(!result.post.is_empty(), "{workload} must execute BIOS POST");
-                assert!(!matches!(result.stop, StopReason::ObservationFailed { .. }));
-                if workload == "post" {
-                    assert_eq!(result.stop, StopReason::BudgetExhausted);
+                assert_eq!(result.stop, StopReason::BudgetExhausted, "{workload}");
+                let console = result.mda.to_dump();
+                match workload {
+                    "post" => assert!(console.contains("Boot failed"), "{console}"),
+                    "floppy" => assert_eq!(result.com1, b"B"),
+                    "prompt" => assert!(console.contains(DOS_DATE_PROMPT), "{console}"),
+                    "dir" | "write" => {
+                        assert!(console.contains("Directory of A:"), "{console}");
+                        assert!(
+                            console.lines().any(|line| line.trim() == "A:\\>"),
+                            "{console}"
+                        );
+                        if workload == "write" {
+                            assert!(
+                                console
+                                    .lines()
+                                    .any(|line| line.split_whitespace().next() == Some("ZZ")),
+                                "{console}"
+                            );
+                            assert!(console.contains("3 file(s)"), "{console}");
+                        } else {
+                            assert!(console.contains("2 file(s)"), "{console}");
+                        }
+                    }
+                    _ => unreachable!(),
                 }
                 let capacity = if trace == TracePolicy::Off { 0 } else { 2 };
                 let drops = assert_bounds(&mut assembled, capacity);

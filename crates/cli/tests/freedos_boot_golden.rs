@@ -2,10 +2,12 @@
 //! FreeDOS boot golden: boot a real FreeDOS floppy image on the full machine
 //! (§3.1, §5, §9).
 //!
-//! Assembles the PC/AT machine ([`run_freedos_config`]) with the real Kiselev Xi8088
+//! Port 61h bits follow the PIT since 2026-11-11; delay loops take real refresh time.
+//!
+//! Assembles the PC/AT machine ([`cli::run_freedos_config`]) with the real Kiselev Xi8088
 //! BIOS in masked ROM and a real, bootable **FreeDOS** 1.44 MB floppy image (8086
 //! kernel + FreeCOM, built by `vendor/freedos/fetch.sh`) in the µPD765 floppy
-//! drive, and boots from the reset vector. The golden captures the final shell
+//! drive, and boots from the reset vector. The golden captures the startup date-prompt
 //! console and the complete POST checkpoint stream.
 //!
 //! ## Observed result (this CPU revision)
@@ -58,8 +60,8 @@
 //! (FreeCOM), which starts and prompts for the date. With no `AUTOEXEC.BAT`,
 //! FreeCOM asks for the date/time before giving the `A:\>` prompt; the run stops
 //! there **waiting for keyboard input that never arrives in a headless run**.
-//! `run_freedos_config` polls the console and stops as soon as that date prompt appears
-//! within the configured instruction-equivalent safety cap. Host duration depends
+//! `run_freedos_config` polls in one-million-step chunks and stops at the first
+//! chunk containing that date prompt, within the instruction-equivalent cap. Host duration depends
 //! on the build and host. The stop is `StopReason::BudgetExhausted` (a poll-chunk cap
 //! reached at a terminal wait-for-input state, not a spin or an unlifted op).
 //!
@@ -81,9 +83,11 @@
 //! - FreeDOS: 8086 kernel + FreeCOM, FAT12 1.44 MB image (`vendor/freedos`).
 //! - CPU: `x86jit-core`, the rev pinned in `Cargo.lock`.
 
-use cli::{run_freedos_config, StopReason};
+use cli::StopReason;
 #[path = "support/fixtures.rs"]
 mod fixtures;
+#[path = "support/session.rs"]
+pub mod session;
 
 const GOLDEN_POST: &[u8] = &[
     0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x10, 0x12, 0x20, 0x21, 0x22, 0x24, 0x25,
@@ -101,12 +105,20 @@ fn freedos_reaches_shell_prompt() {
     };
     assert_eq!(img.len(), 1_474_560, "FreeDOS floppy is a 1.44 MB image");
 
-    let run = run_freedos_config(
+    let run = cli::run_freedos_config(
         machine_file::load(
             std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../machines/at-freedos.toml"),
         )
         .unwrap(),
     );
+    session::assert_golden(
+        &run,
+        8_802_475,
+        10_000_000,
+        0x526086b917baa58e,
+        0xaf201c7e8acb071d,
+    );
+
     assert_eq!(
         run.post, GOLDEN_POST,
         "media-attached POST checkpoint stream"

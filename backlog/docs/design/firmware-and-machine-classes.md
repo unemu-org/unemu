@@ -638,7 +638,7 @@ remain ASSUMED until checked in the corresponding device work.
 |---|---|---|---|---|
 | CPU | 8088 (+8087) | 80286 (+80287 at F0h–FFh, IRQ13) | 80386 (+387) | 80286 Real16 only |
 | Interrupts | **one** 8259A, 20h–21h, IRQ0–7, single mode | 8259A pair, 20h/A0h, slave on IRQ2 | as AT | cascaded pair ✓; single-mode mock-bus check ✓ |
-| Timer | 8253, 40h–43h. ch0 → IRQ0, ch1 → DRAM refresh (DMA ch0), ch2 → speaker through PPI PB0/PB1 | 8254. ch1 refresh shows in 61h bit 4, ch2 → speaker through 61h | as AT | 8253 ✓; refresh bit is a per-read toggle |
+| Timer | 8253, 40h–43h. ch0 → IRQ0, ch1 → DRAM refresh (DMA ch0), ch2 → speaker through PPI PB0/PB1 | 8254. ch1 refresh shows in 61h bit 4, ch2 → speaker through 61h | as AT | 8253/8254 ✓; port 61h bit 4 follows PIT1 refresh requests, bit 5 reads OUT2 and bit 0 drives GATE2 |
 | DMA | **one** 8237A at 00h–1Fh (upper half aliases lower), ch0 refresh. Page decode 80h–9Fh; 81h–83h (ch2, ch3, ch1), 87h ch0 ASSUMED | **two** 8237A: 00h–1Fh (ch0–3) and C0h–DFh (ch4–7, ch4 cascade). Pages at 80h–8Fh | as AT | both 8237 banks ✓; byte pages 81h–88h, word pages 89h–8Fh (READ `board.rs:99–108`) |
 | Keyboard interface | **8255A PPI at 60h–6Fh** (four-register aliases): PA scan code, PB control (PB7 clear, PB6 clock, PB3 switch select), PC switches and status | **8042** at 60h/64h; output port bit 1 = A20, bit 0 = reset | 8042 + port 92h | 8042 ✓ (A20 bit is state only, `FEh` CPU reset pulse ✓); **8255 device model ✓** (not assembled) |
 | Keyboard | **83-key**, scan set 1, serial into PPI port A, IRQ1 | 84-key (101 later), set 2 translated to set 1 | as AT | host → set 1 encoder with E0 codes ✓ (an XT has no E0 keys) |
@@ -692,7 +692,8 @@ remain ASSUMED until checked in the corresponding device work.
 The description layer (`upc-6le.1`) lowers to `MachineConfig`. The new layer
 is `[board]` and `[firmware]`; `class` is never written.
 
-**Today's FreeDOS machine (lowers to exactly `presets::bios(rom, Some(floppy))`):**
+**Illustrative FreeDOS machine (abbreviated; the complete configuration is
+`machines/at-freedos.toml`):**
 
 ```toml
 schema = 1
@@ -703,7 +704,7 @@ model = "ibm-5170"            # class "at" is derived
 
 [cpu]
 model = "80286"
-rate = "1/1"
+rate = "8/13"
 
 [memory]
 conventional_kib = 640
@@ -1160,11 +1161,10 @@ The generic AT comes first.
       the original floppy profile with the separately pinned Kiselev AT-reset
       image, configured XT+ at C8000h and a readonly 615/4/17 FAT16 master.
       The completed listing contains `UNEMUHDD` and `MARKER.TXT`, 29 bytes.
-      Three measurements before pinning matched: prompt retired 14,777,577,
-      prompt FNV-1a `922f327d9dd4db6b`; after DIR retired 17,748,107 at virtual
-      time 19,000,000, final FNV-1a `ef5a10891b9ef196`. Three further runs at
-      CPU `8979fc9`, with corrected FDC INT acknowledgements, preserve every
-      pin. The golden checks the completed listing, retired instruction counts,
+      MEASURED with PIT-driven refresh, rate 8/13 and CPU `44403dd`: prompt
+      retired 15,777,577, prompt FNV-1a `49bbec2d36c0bbf0`; after DIR retired
+      19,748,107 at virtual time 21,000,000, final FNV-1a `fb811e1f40836da7`.
+      The golden checks the completed listing, retired instruction counts,
       screen hashes and POST, with port tracing disabled.
       POST is `01 02 03 04 05 06 07 08 09 10 12 20 21 22 24 25 30 31 40 41 42 43 00`.
       XT+ detects `UNEMU ATA-2 PIO DISK`; IDENTIFY/READ MULTIPLE and floppy

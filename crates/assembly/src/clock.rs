@@ -16,7 +16,8 @@ pub struct ClockConfig {
     /// B is [`Self::retired_per_pit_clock_denominator`]. Both must be positive;
     /// validation rejects zero. Each completed REP iteration counts as a step.
     /// This is a modelling ratio, not a frequency or cycle cost.
-    /// The default `1/1` preserves the golden timebase. Fractional PIT clocks
+    /// The unbound default is `1/1`; boards select their calibrated rate through
+    /// [`crate::BoardModel::default_clock`]. Fractional PIT clocks
     /// carry across CPU calls; HLT advances whole PIT clocks independently.
     pub retired_per_pit_clock: u64,
     /// Denominator B of the retired-steps-per-PIT-clock rate A/B, default `1`.

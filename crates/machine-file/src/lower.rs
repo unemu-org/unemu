@@ -13,10 +13,10 @@ use std::{
 };
 
 use assembly::{
-    BoardModel, ClockConfig, ConfigError, CpuChip, CpuConfig, DeviceConfig, DeviceId, DeviceKind,
-    DmaSpec, DriveConfig, DriveKind, FloppyGeometry, ImageKind, ImageSource, LoadImage,
-    MachineConfig, MdaTextCfg, MemoryConfig, MmioWindow, NvramSource, PortWindow, PostPortCfg,
-    RamRegion, ResetSpec, RtcStart, SegmentSeed, UartCfg, VgaTextCfg,
+    BoardModel, ConfigError, CpuChip, CpuConfig, DeviceConfig, DeviceId, DeviceKind, DmaSpec,
+    DriveConfig, DriveKind, FloppyGeometry, ImageKind, ImageSource, LoadImage, MachineConfig,
+    MdaTextCfg, MemoryConfig, MmioWindow, NvramSource, PortWindow, PostPortCfg, RamRegion,
+    ResetSpec, RtcStart, SegmentSeed, UartCfg, VgaTextCfg,
 };
 use sha2::{Digest, Sha256};
 
@@ -1090,7 +1090,7 @@ pub(crate) fn lower_tracked<R: ImageReader>(
             "must be a multiple of 64 KiB, at most 15360 KiB on an 80286",
         ));
     }
-    let mut clock = ClockConfig::default();
+    let mut clock = board.default_clock();
     if let Some(rate) = document.cpu.as_ref().and_then(|cpu| cpu.rate) {
         clock.retired_per_pit_clock = rate.steps.get();
         clock.retired_per_pit_clock_denominator = rate.pit_clocks.get();
@@ -1171,6 +1171,35 @@ mod tests {
             image_paths: Vec::new(),
             options: assembly::AssemblyOptions::default(),
             bios_parts: false,
+        }
+    }
+
+    #[test]
+    fn omitted_cpu_rate_uses_board_calibration_and_explicit_rate_wins() {
+        struct Rom;
+        impl ImageReader for Rom {
+            fn read(&mut self, _path: &Path) -> io::Result<Vec<u8>> {
+                Ok(vec![0xF4; 0x8000])
+            }
+        }
+        for (cpu, expected) in [("", (8, 13)), ("[cpu]\nrate='3/2'\n", (3, 2))] {
+            let input = format!("schema=1\n[board]\nmodel='ibm-5170'\n[firmware.bios]\nimage='synthetic.bin'\n{cpu}");
+            let document = crate::parse_toml("machine.toml", &input).unwrap();
+            let origins = Origins::from_toml("machine.toml", &input).unwrap();
+            let config = lower(
+                &document,
+                &origins,
+                &mut Rom,
+                assembly::AssemblyOptions::default(),
+            )
+            .unwrap();
+            assert_eq!(
+                (
+                    config.clock.retired_per_pit_clock,
+                    config.clock.retired_per_pit_clock_denominator
+                ),
+                expected
+            );
         }
     }
 

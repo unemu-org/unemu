@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! FreeDOS floppy boot with XTIDE Universal BIOS and an ATA FAT16 hard disk.
 //!
+//! Port 61h bits follow the PIT since 2026-11-11; delay loops take real refresh time.
+//!
 //! ATA-2 §§6.1–6.2 defines the primary task file and word data register.
 //! See `backlog/docs/design/firmware-and-machine-classes.md` §9 and
 //! `backlog/docs/design/spec.md` §7.5 for the keyboard input path.
@@ -18,6 +20,8 @@ use video::Frame;
 
 #[path = "support/fixtures.rs"]
 mod fixtures;
+#[path = "support/session.rs"]
+pub mod session;
 
 fn console(assembled: &assembly::AssembledMachine) -> String {
     let Frame::Text(grid) = assembled.capture_text(DeviceId::Mda).unwrap().frame else {
@@ -104,6 +108,10 @@ fn freedos_lists_the_readonly_ide_marker() {
     );
     let prompt_retired = assembled.machine.cpu().retired();
     let prompt_hash = screen_hash(&console(&assembled));
+    assert_eq!(
+        session::logical_hash(&console(&assembled)),
+        0x26cb04d76a1ee3c7
+    );
     // Shift-semicolon produces a colon in the BIOS's set-1 keyboard table.
     let script = [
         0x20, 0xa0, 0x17, 0x97, 0x13, 0x93, 0x39, 0xb9, 0x2e, 0xae, 0x2a, 0x27, 0xa7, 0xaa, 0x1c,
@@ -130,11 +138,12 @@ fn freedos_lists_the_readonly_ide_marker() {
     assert!(console
         .lines()
         .any(|line| line.split_whitespace().take(3).eq(["MARKER", "TXT", "29"])));
-    assert_eq!(prompt_retired, 14_777_577);
-    assert_eq!(prompt_hash, 0x922f327d9dd4db6b);
-    assert_eq!(assembled.machine.cpu().retired(), 17_748_107);
-    assert_eq!(assembled.machine.virtual_time(), 19_000_000);
-    assert_eq!(screen_hash(&console), 0xef5a10891b9ef196);
+    assert_eq!(prompt_retired, 15_777_577);
+    assert_eq!(prompt_hash, 0x49bbec2d36c0bbf0);
+    assert_eq!(assembled.machine.cpu().retired(), 19_748_107);
+    assert_eq!(assembled.machine.virtual_time(), 21_000_000);
+    assert_eq!(screen_hash(&console), 0xfb811e1f40836da7);
+    assert_eq!(session::logical_hash(&console), 0xbf790c95b531f8e8);
     assert_eq!(
         post,
         [
