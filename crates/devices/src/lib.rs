@@ -25,6 +25,7 @@ pub mod post_port;
 pub mod sys_control;
 pub mod uart16550;
 pub mod upd765;
+pub mod vga;
 pub mod vga_text;
 
 pub use ata::{Ata, AtaConfigError, AtaDrive, AtaGeometry};
@@ -42,6 +43,7 @@ pub use post_port::PostPort;
 pub use sys_control::SysControl;
 pub use uart16550::Uart16550;
 pub use upd765::{Drive, FloppyGeometry, Upd765};
+pub use vga::Vga;
 pub use vga_text::VgaText;
 
 #[cfg(test)]
@@ -155,6 +157,8 @@ pub(crate) mod trace_policy_tests {
     off_test!(ata_trace_off, Ata::new(), 0x1F7);
     ring_test!(mda_trace_ring, MdaText::new(), 0x3BA);
     off_test!(mda_trace_off, MdaText::new(), 0x3BA);
+    ring_test!(register_vga_trace_ring, Vga::new(), 0x3BA);
+    off_test!(register_vga_trace_off, Vga::new(), 0x3BA);
     ring_test!(vga_trace_ring, VgaText::new(), 0x3DA);
     off_test!(vga_trace_off, VgaText::new(), 0x3DA);
     ring_test!(pic_trace_ring, Pic8259::new(), 0x21);

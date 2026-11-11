@@ -590,7 +590,7 @@ records existing components, not demonstrated SeaBIOS compatibility.
 | FDC with READ ID and CCR | `floppy.c:249–256` | Have | — |
 | Primary/secondary ISA ATA | `ata.c:1020–1030` | Have | — |
 | COM1 UART | `sercon.c` | Have | — |
-| VGA ROM and register-level VGA | `optionroms.c:451`; `stdvga.c` | Missing: text-only card; VBE work alone is insufficient | `upc-o0j.15` (`upc-18x.2` is VBE only) |
+| VGA ROM and register-level VGA | `optionroms.c:451`; `stdvga.c` | Partial: isolated register file and planar memory; IBM VGA/XGA TR (May 1992), only the module coverage-matrix figures checked: 2-19–2-26, 2-29–2-37, 2-58, 2-69–2-80, 2-81–2-89 and 2-94; chain-4 offset DERIVED from Figs. 2-37/2-65; ASSUMED floating ports/unselected memory FF, 128 KiB mirroring, MSR[5] polarity, DAC edge cases, odd/even gating of A0 replacement and chain-4 pipeline; rendering and board wiring pending | `upc-o0j.15` (`upc-18x.2` is VBE only) |
 | FPU always reported | `misc.c:62–68` | Partial: empty socket | `upc-18x.9` (risk) |
 | Avoid unmapped FEE00030h MP-table read | `mptable.c:57` | Built fixture disables MPTABLE; Kconfig setting verified | `upc-o0j.9` (build half; catalogue waits for board) |
 | Debug console at 402h | `serialio.c:104–129`; `fw/paravirt.h:67` | Device and `DebugConsole` byte observation exist (E9h readback); Bare rigs only, board wiring pending | `upc-o0j.16`; `upc-o0j.6` (board) |

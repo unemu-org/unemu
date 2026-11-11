@@ -234,6 +234,16 @@ checks identity and diagnostics without execution; see `vendor/user-roms/README.
   syntax or firmware-board wiring; `generic-386-isa` remains pending. See
   [machine-config.md §Emulator-only firmware configuration](design/machine-config.md#emulator-only-firmware-configuration).
 
+- **2026-11-11 — Register-level VGA:** isolated registers, DAC, planar memory,
+  CPU read/write modes and version-2 snapshots. Register protocols, mode-3 logic,
+  attribute widths and retrace status are checked against the IBM VGA/XGA
+  Technical Reference Manual (May 1992), limited to the module coverage matrix:
+  Figs. 2-19–2-26, 2-29–2-37, 2-58, 2-69–2-80, 2-81–2-89 and 2-94.
+  Chain-4 offsets are DERIVED from Figs. 2-37 and 2-65. ASSUMED: floating ports
+  and unselected memory read FF, 128 KiB mirroring, MSR[5] page polarity, DAC
+  edge cases, odd/even gating of A0 replacement and the chain-4 pipeline. Rendering and board wiring remain pending;
+  the existing text-only card is unchanged.
+
 - **2026-11-11, SeaBIOS fixture:** pinned rel-1.17.0 ISA build recipe and
   configuration added under `vendor/seabios/`, with a separate firmware
   devShell. Two independent builds matched on macOS arm64 with the flake-pinned
