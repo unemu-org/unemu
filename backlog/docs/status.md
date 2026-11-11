@@ -194,6 +194,10 @@ checks identity and diagnostics without execution; see `vendor/user-roms/README.
 
 ## In flight
 
+- **2026-11-11, phase B:** firmware decided (decision-19): unmodified SeaBIOS
+  with emulator-only fw_cfg; requirements in
+  [firmware-and-machine-classes.md §3.6](design/firmware-and-machine-classes.md#36-phase-b-firmware-requirements-seabios-on-generic-386-isa).
+
 The 286 foundation milestone is closed. Next is phase A of decision-16 (the
 display through a real MDA card to a window, host keyboard input): epic
 `skeleton` in beads. Translation-cache invalidation is still about half of the

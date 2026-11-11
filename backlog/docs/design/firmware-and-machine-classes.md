@@ -18,7 +18,8 @@ Evidence labels:
 
 ## 1. Context
 
-Today there is one firmware machine (READ `crates/assembly/src/presets.rs`,
+At the initial survey there was one firmware machine (READ
+`crates/assembly/src/presets.rs`,
 `bios()`). It is an 80286 Real16 CPU with a 1 MiB memory mosaic and the
 following parts:
 
@@ -74,8 +75,8 @@ The forces on the design:
 | 8086tiny BIOS | ASSUMED MIT | 8086 | Emulator-specific | None | Emulator traps | — | — | — | Rejected in decision-12: it needs emulator-only opcodes |
 | **XTIDE Universal BIOS (XUB)** r638 (builds dated 2026-06-09) | GPL-2.0-or-later (source headers; READ) | `ide_xt` 8088, `ide_xtp` 186/V20, `ide_at`/`ide_atl` **286**, `ide_386` 386 | Option ROM, any board | — | **Provides fixed-disk INT 13h** (see §2.2) | Prints through INT 10h | ASSUMED yes | NASM + make (open) | [xtideuniversalbios.org](https://www.xtideuniversalbios.org/), [binaries r638](https://www.xtideuniversalbios.org/binaries/r638/) |
 | Bochs `rombios` (`BIOS-bochs-legacy`) (master, © 2001–2026) | LGPL-2.1-or-later | **386** (`#error Only 386+ cpu supported`) | AT / Bochs PCI (i430FX, i440FX, i440BX host IDs) | **Yes**: INT 15h 24h, 87h, 88h, 89h; A20 through **port 92h** | Built-in ATA/ATAPI driver, El Torito | **None.** Needs a VGA ROM at C000h; PCI-BIOS builds halt without one | ASSUMED yes | bcc/as86 (dev86) | [bochs/bios/rombios.c](https://github.com/bochs-emu/Bochs/blob/master/bochs/bios/rombios.c) |
-| SeaBIOS 1.17.0 (2025-06-10), QEMU `isapc` config (128 KiB, `PCIBIOS=n`, `USB=n`, `ACPI=n`) | LGPL-3.0-or-later | **386** (32-bit flat POST) | ISA-only 486-class PC (QEMU `isapc`) | Yes (ASSUMED in detail); RAM size from CMOS when there is no fw_cfg (READ) | Built-in ATA PIO, floppy | None. SeaVGABIOS ROM, or SERCON (VGA output redirected to serial) | ASSUMED yes | gcc + binutils | [seabios.org](https://www.seabios.org/), QEMU `roms/config.seabios-128k` |
-| SeaBIOS 1.17.0, QEMU `pc` config | LGPL-3.0-or-later | 386 | i440FX + PIIX3/PIIX4, Q35 | Yes, plus E820, PCI BIOS, ACPI | ATA, AHCI, USB, … | SeaVGABIOS: std VGA, Cirrus, Bochs VBE | ASSUMED yes | gcc | as above |
+| SeaBIOS 1.17.0 (2025-06-10), QEMU `isapc` config (128 KiB, `PCIBIOS=n`, `USB=n`, `ACPI=n`) | LGPL-3.0-or-later | **386** (32-bit flat POST) | ISA-only 486-class PC (QEMU `isapc`) | Yes (READ: §3.6), including E801h/E820h; RAM size from CMOS without fw_cfg | Built-in ATA PIO, floppy | SeaVGABIOS through fw_cfg, or SERCON configured by fw_cfg (§3.6) | ASSUMED yes | gcc + binutils | [seabios.org](https://www.seabios.org/), QEMU `roms/config.seabios-128k` |
+| SeaBIOS 1.17.0, QEMU `pc` config | LGPL-3.0-or-later | 386 | i440FX + PIIX3/PIIX4, Q35 | Yes, including E801h/E820h; also PCI BIOS and ACPI | ATA, AHCI, USB, … | SeaVGABIOS: std VGA, Cirrus, Bochs VBE | ASSUMED yes | gcc | as above |
 | SeaVGABIOS / LGPL VGABIOS (video option ROMs) | LGPL-3.0 / LGPL-2.1 | ASSUMED 386 | Video option ROM | — | — | VGA; VBE with Bochs VBE | — | gcc / bcc | SeaBIOS `vgasrc/`, Bochs |
 | fysnet i440fx BIOS 1.0 (2025-02-10) | **Freeware, not open source** | — | i440FX / 440BX | — | — | — | — | NBASM | [fysnet.github.io/i440fx](https://fysnet.github.io/i440fx); excluded on license grounds |
 | IBM 5150/5160/5170 ROMs; AMI/Award/Phoenix board BIOSes | Proprietary | per board | per board | per board | per board | per board | per board | — | **User-supplied only.** Hashes are listed, the images are never shipped |
@@ -168,13 +169,13 @@ The resulting floppy boot and `DIR C:` are qualified in §9 item 11.
   - Shadowing unlocks the F-segment through **i440FX (82441) or Q35 PAM**
     registers (`src/fw/shadow.c`). Without a bridge it logs "Unable to unlock
     ram". QEMU worked around this for `isapc` with a writable BIOS region, and
-    the board model must do the same (READ, a 2013 QEMU patch summarized by
-    search).
+    the board model must do the same (READ: pinned QEMU sources, §3.6).
   - Its PCI init knows PIIX3 (82371SB) and PIIX4 (82371AB) ISA bridges, PIIX
     IDE, PIIX4 PM and ICH9 (`src/fw/pciinit.c`).
-  - QEMU detection reads PCI 00:00.0 and the fw_cfg signature at 510h. Both read
-    open bus on a plain ISA board, so it falls back to CMOS memory size
-    (`src/fw/paravirt.c`).
+  - QEMU detection reads PCI 00:00.0 and the fw_cfg signature from data
+    port 511h after selection through 510h (`src/fw/paravirt.c:671–674`).
+    Both reads return open bus on a plain ISA board, so RAM sizing falls
+    back to CMOS (`src/fw/paravirt.c`).
 
 ## 3. Board models
 
@@ -236,15 +237,19 @@ contract (machine-config.md). A board model has these parts:
 | `ibm-5170` | at | 80286 (80287 later) | none | **Kiselev Xi 8088 1.0.2** (tested; SHA-256 `1ad458ac…81a8`, MEASURED by `fetch.sh`), plus XUB AT r638 option ROM | IBM 5170 BIOS (even/odd pair) | **available now** |
 | `ibm-5160` | xt | 8088, v20 (reserved) | none | GLaBIOS `ARCH_5160`, Kiselev `MACHINE_XT`, Super PC/Turbo XT | IBM 5160 BIOS | reserved until `xj-50w.2 (x86jit)` |
 | `ibm-5150` | xt | 8088 (reserved) | none | GLaBIOS `ARCH_5150` | IBM 5150 BIOS | optional, later |
-| `generic-386-isa` | at386 | 80386 (reserved) | port 92h only | SeaBIOS (`isapc` config) + SeaVGABIOS; Bochs `rombios` legacy | — | reserved until phase B |
+| `generic-386-isa` | at386 | 80386 (reserved) | port 92h; emulator-only fw_cfg at 510h/511h | Unmodified SeaBIOS `CONFIG_QEMU`, serial console first; SeaVGABIOS later; Bochs `rombios` legacy fallback (decision-19, §3.6) | — | reserved until phase B |
 | `i440fx-piix3` | pci | Pentium Pro / Pentium II (reserved) | 82441FX PAM/SMRAM, PIIX3 PIRQ/ELCR | SeaBIOS (QEMU `pc` config); Bochs `rombios` | — | candidate for phases C/D |
 | `i440bx-piix4` | pci + AGP | Pentium II/III | 82443BX, PIIX4 | none for a real board (see §3.4) | Award/AMI/Phoenix images of named boards | enthusiast |
 | `neat-286` | at | 286 / 386SX | C&T CS8221 index/data registers (ASSUMED 22h/23h) | none | AMI/Phoenix NEAT BIOSes | enthusiast |
 | `i430tx` | pci | Pentium MMX | 82439TX, PIIX4 | none | Award/AMI | enthusiast |
 
-Today's machine is `ibm-5170` with listed deviations (§4.2). Its devices are a
-subset of the 5170: there is no second 8237, no 80287 ports, no reset line and
-no A20 masking. The name is the target, and each missing part is its own bead.
+Today's machine is `ibm-5170` with listed deviations (§4.2). Both 8237
+controllers and the empty 80287 socket's ports F0h/F1h, F8h–FFh are assembled
+(READ `crates/assembly/src/board.rs:99–130`, `assemble.rs:303–305`). The
+8042 reset signal restarts the CPU while retaining RAM and devices (READ
+`assemble.rs:261–264,338–339`, `crates/machine/src/lib.rs:305–316`). A20
+masking is still missing; empty-socket I/O does not establish CPU-side
+absent-FPU behavior (§3.6).
 
 ### 3.3 Do the Kiselev BIOS and GLaBIOS use only standard parts? (READ)
 
@@ -264,8 +269,8 @@ It deviates from a 5170 in these places:
 - **Port C0h is written as an "unused" register** for I/O delays and bus
   floating in serial and printer detection (`unused_reg equ 0C0h`). On a 5170,
   C0h is the second 8237's channel-4 address register. Those writes are
-  harmless (channel 4 is the cascade), but they will change device state once
-  DMA2 is modelled.
+  harmless (channel 4 is the cascade), but now change the word-bank state
+  (READ `crates/assembly/src/assemble.rs:1215–1228`).
 - **Only one 8237 is initialized.** The 16-bit channels stay unprogrammed.
 - **No extended memory.** The RAM scan stops at 640 KiB and INT 15h 88h is
   absent.
@@ -386,6 +391,208 @@ and its firmware is proprietary.
   derived standard bytes may trigger a "CMOS checksum" F1 prompt, so these
   boards need the NVRAM-file feature sketched in `upc-6le.1` (§8).
 
+### 3.6 Phase B firmware requirements (SeaBIOS on generic-386-isa)
+
+The `upc-o0j.8` source spike (2026-11-11) uses **SeaBIOS rel-1.17.0,
+`b52ca86e094d19b58e2304417787e96b940e39c6`**. All SeaBIOS file:line
+references in this section refer to that revision; basenames identify files
+under `src/` (including `fw/`, `hw/`), `vgasrc/` or the named build paths.
+QEMU file:line citations refer to `29760efaf96bbe5928f8111881eddbf5ac06439e`
+(`29760ef`); Bochs citations refer to
+`44104eeaff16107e478ea8bd9c55bd8601a80191` (`44104ee`), under `bochs/bios/`.
+**READ** means inspected source, **ASSUMED** means unverified; the spike
+built and ran nothing. Prebuilt-image measurements are recorded in Sources.
+Machine/core availability below is the spike's source assessment at x86jit
+pin `8979fc9`, not a SeaBIOS boot result.
+
+**Build target and decision (READ).** `CONFIG_QEMU` is the only target with
+ISA fallbacks: ATA at 1F0h/170h without PCI (`ata.c:1020–1030`), RAM size
+from CMOS (`paravirt.c:240–254`), boot order at 38h/3Dh
+(`boot.c:471–489`), floppy types at 10h (`floppy.c:158–163`), ATA
+translation at 39h (`block.c:84–90`) and century at 32h (`clock.c:47–48`).
+`CONFIG_COREBOOT` needs coreboot tables/CBFS, otherwise assumes 16 MiB
+(`coreboot.c:167–215`); it loses the ISA ATA path and takes floppy types
+from romfiles. `CONFIG_CSM` returns from `handle_post` immediately
+(`post.c:321ff`). Neither is the board's target.
+
+Without fw_cfg, a read of FFh at 511h ends the probe
+(`paravirt.c:664–689`). RAM falls back to 16 MiB + CMOS 34h/35h × 64 KiB
+when those bytes are nonzero, otherwise 1 MiB + CMOS 30h/31h KiB; bytes
+5Bh–5Dh describe RAM above 4 GiB (`paravirt.c:240–254,588–592`). This
+fallback does **not** supply a headless console: `etc/sercon-port` is the
+only serial-console port source (`sercon.c:519–521`). `vgarom_setup` clears
+C0000h (`optionroms.c:467`) and obtains video ROMs only from PCI or
+fw_cfg/CBFS romfiles (`optionroms.c:451–489`); extension ROM setup likewise
+uses those sources (`optionroms.c:364–386`). INT 10h is a bare `iretw`
+without a provider (`romlayout.S`, `entry_10` at ORG F065h). Missing fw_cfg
+also loses `bootorder`, boot-menu control (a fixed 2.5 s "Press ESC" wait,
+`boot.c:695–711`), the E820 file and SMBIOS/ACPI data; CPU count falls back
+to CMOS 5Fh. These are READ, not measured failures.
+
+[Decision-19](../../decisions/decision-19%20-%20Phase%20B%20firmware%20is%20unmodified%20SeaBIOS%20behind%20an%20emulator-only%20fw_cfg%20device.md)
+therefore selects unmodified SeaBIOS with an emulator-only, board-local
+fw_cfg-compatible selector/data port at 510h/511h, without DMA
+(`upc-o0j.13`). Its signature, ID, file directory and legacy keys include
+zero defaults and key 0Eh = 0 (no boot menu); files are `vgaroms/*`,
+`genroms/*`, `etc/sercon-port` and `bootorder`, derived from the machine
+description. ROM catalogue placement must distinguish firmware-loaded ROMs
+from pre-mapped ROMs. Serial-console goldens come first; VGA follows.
+QEMU `isapc` works because it supplies fw_cfg (`pc.c:892`) and sends
+`vgaroms/vgabios.bin` through it (`vga-isa.c:88`, `loader.c:1232–1240`),
+not because SeaBIOS scans a plain ISA ROM window (READ).
+
+The planned reproducible fixture/catalogue entry `seabios-1.17.0-isa`
+(`upc-o0j.9`) will supply a 128 KiB build with its own `.config`:
+`CONFIG_QEMU`, `SERCON` and `DEBUG_IO` on; `BOOTMENU`, `MPTABLE`,
+`PIRTABLE`, `SMBIOS`, `ACPI`, `FW_ROMFILE_LOAD`, `USB`, `PCIBIOS`,
+`USE_SMM`, `TCGBIOS` and `S3_RESUME`
+off. MP-table generation reads FEE00030h (`mptable.c:57`), which currently
+ends core execution on unmapped memory; PIR tables assume PIIX (READ).
+The alternative QEMU prebuilt needs an open-bus page at FEE00000h. Building
+needs i386 gcc with `-m16`, binutils, Python 3, make and a clean pinned git
+tag; deterministic rebuilding and a pinned output hash belong to the fixture.
+
+**Memory and reset (READ).** C0000h–FFFFFh must be writable RAM at POST,
+with the 128 KiB BIOS preloaded at E0000h–FFFFFh. SeaBIOS writes F-segment
+variables (`post.c:290–299`), patches runtime code during relocation
+(`post.c`, `reloc_preinit` / `updateRelocs`), and allocates C0000h–EFFFFh
+(`MALLOC_UPPERMEMORY`, `Kconfig:123–130`). Shadow unlock only knows i440FX
+or Q35 PAM and otherwise logs "Unable to unlock ram" (`shadow.c:117–147`).
+QEMU `isapc` uses an `isa-bios` alias of the BIOS region
+(`x86-common.c:1005–1009`), makes it writable via
+`set_readonly(!isapc_ram_fw)` (`x86-common.c:1063`,
+`pc_sysfw.c:222` passes true), and maps the same region below 4 GiB
+(`x86-common.c:1117–1120`). That high window is not a pristine copy:
+SeaBIOS takes the "no pristine copy" branch (`shadow.c:178–186`).
+
+Our board's `upc-o0j.12` will instead supply writable C0000h–DFFFFh,
+the preloaded BIOS RAM and a **separate read-only pristine copy** at
+FFFE0000h–FFFFFFFFh on the 386DX bus, as required by decision-19 rule 3.
+This is our design for the RAM-preserving CPU reset in `upc-o0j.14`;
+with an alias, a second reboot reaches the `HaveRunPost == 3` shutdown
+path (`shadow.c:169–208`). Adapter-space validation must permit writable
+shadow RAM on this board; `ibm-5170` retains read-only adapter space.
+
+With a pristine image available, reboot copies it from `0xFFF00000 + addr`,
+writes CF9h, then executes INT3 with a one-byte IDT to triple-fault
+(`shadow.c:21–22,169–208`, `misc.c:134–145`). Ctrl-Alt-Del, failed boot
+and an 8042 reset with CMOS 0Fh = 0 take this path (`resume.c:146–157`,
+`kbd.c:533`, `boot.c:982`). CPU shutdown and port 92h bit 0 must cause a
+386 CPU reset retaining RAM (`upc-o0j.14`), using typed shutdown
+`xj-srh.6 (x86jit)` and reset/high fetch `xj-srh.12 (x86jit)`.
+
+**CPU requirements (READ unless labelled).** POST uses 32-bit flat protected
+mode. `transition32` disables interrupts, masks NMI through 70h bit 7,
+enables A20 through 92h bit 1, loads IDTR/GDTR with 16-bit forms, clears
+CR0.PG/CD/NW, sets PE and makes a 16:32 far jump (`romlayout.S:24–66`).
+The GDT contains flat 32-bit code/data, 16-bit code/data with 64 KiB limits
+and 16-bit code/data with 4 GiB limits (`misc.c:148–169`). Every POST
+yield/IRQ check calls 16-bit code with `sti; nop; pause; cli`; IRQs must be
+accepted in that window (`stacks.c:607–621`). Returns use
+`transition16big`, leaving big real mode for the VGA ROM too
+(`romlayout.S:87–117`, `stacks.c:291–292`). INT 15h AH=87h uses 16-bit
+protected mode and `rep movsl` (`system.c:72–165`); AH=89h, E801h and
+E820h are supported (`system.c:185,260,290`).
+
+Real-mode firmware is built with gcc `-m16 -march=i386`
+(`Makefile:64,83–84`): it needs 66h/67h, FS/GS, `pushl`/`pushfl` and
+32-bit `calll`/`retl` in 16-bit code. ASSUMED from compiler flags: no
+BSWAP/CMPXCHG/CMOV; an opcode census remains to be checked. The CPU
+requests sent and filed on 2026-11-11 are:
+
+- **R1 — `xj-srh.16 (x86jit)`:** full 386 real-mode integer ISA under the
+  386 model, including SIB, REP with 67h, 66h near CALL/RET and stack forms,
+  the 15-byte limit, and the 386 0Fh map (MOVZX/MOVSX, SETcc, Jcc rel16,
+  BT*, BSF/BSR, SHLD/SHRD, two-operand IMUL, LSS/LFS/LGS, PUSH/POP FS/GS).
+  This extends the partial entry forms of `xj-srh.2 (x86jit)` after
+  `xj-srh.4 (x86jit)`; test386.asm (`upc-fro.1`) and a firmware opcode
+  census are the proposed oracles.
+- **R2 — acceptance added to `xj-srh.4 (x86jit)`:** after PE 1→0, real-mode
+  segment loads change only the base and limit checks use the cached limit.
+  A PE transition must not flush or relift the other mode's blocks wholesale.
+- **R3 — `xj-srh.17 (x86jit)`:** 386 identity: EFLAGS.AC/ID fixed zero;
+  CPUID, RDTSC, RDMSR/WRMSR, WBINVD/INVD/INVLPG, BSWAP, CMPXCHG and XADD
+  raise #UD under that model. SeaBIOS tests EFLAGS.ID before CPUID
+  (`x86.c:10–23`); without it, TSC/MTRR/APIC setup is skipped and timing
+  falls back to PIT (`timer.c:101–116`, `mtrr.c:41–44`, `smp.c:104–114`).
+  WBINVD/RDMSR use is behind chipset/CPUID checks. ASSUMED reset DX
+  signature: 0303h; not qualified by this spike.
+
+Upstream order is `xj-srh.4 (x86jit)`, `xj-srh.15 (x86jit)`, then
+`xj-srh.16 (x86jit)` / `xj-srh.17 (x86jit)`. SeaBIOS uses only port 92h
+for A20, never the 8042 D1h path (`x86.h:17–19,268–277`,
+`system.c:18–35`); an open-bus FFh read falsely looks enabled.
+
+**Devices at POST (READ).** PIC initialization uses ICW 11h and vectors
+08h/70h (`pic.c:41–66`). PIT channel 0 uses mode 2, count 0
+(`timer.c:274–283`); all non-TSC timing uses 8254 read-back D2h
+(`timer.c:171–183`), while 61h bit 5 is used only on the TSC path. RTC
+sets status A to 26h, 24-hour mode in B, reads C/D and polls UIP
+(`rtc.c:40–72`); INT 15h 83h/86h need periodic IRQ8 (`rtc.c:77–100`).
+The 8042 sequence includes ADh/A7h, AAh→55h, ABh→00h, 20h/60h, D4h and
+ten FEh attempts; keyboard commands include FFh (ACK then AAh), F5h,
+F0h 02h with translation, F4h and EDh (`ps2port.c:135–146,450–524`).
+Both DMA controllers are reset via DAh/D6h/D4h (`dma.c:58–67`). FDC
+uses DOR, MSR/data and DIR/CCR at 3F7h; commands include READ ID, SEEK,
+RECALIBRATE, SPECIFY, READ E6h and WRITE C5h
+(`floppy.c:24–28,249–256`). ATA probes both ISA channels, tolerates FFh
+for absent hardware and uses IDENTIFY/PACKET IDENTIFY and READ/WRITE
+SECTORS (`ata.c:826–847,1020–1030`); runtime disk services run in real
+mode (`block.c:600–615`). COM1–4 and LPT are probed; debug output goes to
+402h (`serialio.c:105–129`). FPU equipment bit 1 is always set, with an
+IRQ13 handler and writes to F0h (`misc.c:62–68`). A dword CF8h read of
+FFFFFFFFh selects non-PCI operation (`pci.c:217–225`); HPET/ACPI/PM timer
+are off in QEMU's 128 KiB config. Later VGA requires a SeaVGABIOS
+`VGA_STANDARD_VGA` or QEMU `isavga` build: floating Bochs VBE ports
+1CEh/1CFh fall back to standard VGA (`bochsvga.c:302–313`), but sequencer,
+GC, AC, DAC, planar memory and plane-2 font loading still need a register-level
+card (`stdvga.c:559–567`) and 386 real-mode execution.
+
+The requirement table is **READ** from the spike's pinned sources; "have"
+records existing components, not demonstrated SeaBIOS compatibility.
+
+| Requirement | SeaBIOS source | Have / partial / missing | Bead |
+|---|---|---|---|
+| Flat 32-bit PM POST, 16↔32 transitions | `romlayout.S:24–117` | Missing | `upc-o0j.2`; `xj-srh.1 (x86jit)` through `xj-srh.5 (x86jit)` |
+| gcc `-m16` 386 real-mode ISA | `Makefile:64,83` | Missing: Real16 has 286 policies (`lift/mod.rs:285,374` at the spike CPU pin) | R1: `xj-srh.16 (x86jit)` |
+| Big real mode after `transition16big` | `romlayout.S:87–117`; `stacks.c:291` | Missing: fixed real-mode limit (`lift/mod.rs:4962`) | R2: `xj-srh.4 (x86jit)` acceptance |
+| Fixed EFLAGS.ID, CPUID #UD | `x86.c:10–23` | Missing: CPUID lifted in every mode (`lift/mod.rs:2371`) | R3: `xj-srh.17 (x86jit)` |
+| Triple-fault CPU reset, port 92h bit 0 | `misc.c:134–145`; `resume.c:141` | Missing | `upc-o0j.14`; `xj-srh.6 (x86jit)` |
+| Writable C0000h–FFFFFh, preloaded images | `post.c:290–299`; `shadow.c:117–147`; `optionroms.c:467` | Missing: adapter-space RAM rejected | `upc-o0j.12` |
+| BIOS copy at FFFE0000h–FFFFFFFFh | `shadow.c:22,169–196` | Missing; high reset fetch alone is insufficient | `upc-o0j.12`; `xj-srh.12 (x86jit)` |
+| At least ~1.25 MiB contiguous RAM | `malloc.c:413–456` | Partial | `upc-o0j.6` |
+| CMOS 30h/31h, 34h/35h, 5Bh–5Dh | `paravirt.c:240–254,588` | Missing: seed writes only 17h/18h (`assemble.rs:842–843`) | `upc-o0j.11`; `upc-o0j.6` |
+| CMOS 32h, 38h/3Dh, 39h, 5Fh | `clock.c:48`; `boot.c:471–489`; `block.c:84–90`; `paravirt.c:535` | Missing | `upc-o0j.11` |
+| A20 through port 92h bit 1 | `x86.h:268–277` | Missing: open bus | `upc-o0j.5` (amended) |
+| fw_cfg at 510h/511h | `paravirt.c:664–727`; `sercon.c:519` | Missing | `upc-o0j.13` |
+| 8254 count/status read-back | `timer.c:171–183` | Missing: decoded as no-op (`pit8253.rs:65–66`) | `upc-o0j.10` |
+| 8042 command set and keyboard | `ps2port.c:450–524` | Have, without aux | `upc-18x.6` |
+| CMOS 0Fh resume 05h/0Ah/0Bh/0Ch | `resume.c:23–84` | Have for 286; 386 reset missing | `upc-6le.25`; `upc-o0j.6`; `upc-o0j.14` |
+| Both 8237 controllers | `dma.c:58–67` | Have | `upc-6le.21` |
+| RTC periodic IRQ8 | `rtc.c:40–100` | Have; periodic behavior partial | — |
+| FDC with READ ID and CCR | `floppy.c:249–256` | Have | — |
+| Primary/secondary ISA ATA | `ata.c:1020–1030` | Have | — |
+| COM1 UART | `sercon.c` | Have | — |
+| VGA ROM and register-level VGA | `optionroms.c:451`; `stdvga.c` | Missing: text-only card; VBE work alone is insufficient | `upc-o0j.15` (`upc-18x.2` is VBE only) |
+| FPU always reported | `misc.c:62–68` | Partial: empty socket | `upc-18x.9` (risk) |
+| Avoid unmapped FEE00030h MP-table read | `mptable.c:57` | Missing build configuration | `upc-o0j.9` (disable MPTABLE) |
+| Debug console at 402h | `serialio.c:105–129` | Missing, optional | `upc-o0j.16` |
+
+**Risks and fallback.** ASSUMED: thousands of interpreter PE transitions,
+relocation and ROM-copy SMC churn may make POST slow; no timing was measured.
+READ: non-clean builds embed build time and hostname
+(`scripts/buildversion.py:127–130`), so reproducibility needs a clean build;
+the FPU is always claimed (`misc.c:62–68`) despite the empty socket.
+INT 15h AH=88h reports the end of the highest E820 RAM entry, not CMOS
+(`malloc.c:476–491`); `upc-o0j.6` acceptance therefore compares against E820.
+Bochs legacy `rombios` remains the fallback: 16-bit, no 32-bit code
+(`rombios.h:24–27`), but 386+ (`rombios.c:122–123`), executable from ROM
+with pre-placed option-ROM scanning, a mandatory C0000h VGA ROM or halt
+(`rombios.c:11323–11337`), port-92h-only A20 (`rombios.c:2347–2353`),
+dev86 builds and no serial console. Its CMOS inputs are 10h, 12h/19h/1Ah,
+2Dh, 30h/31h, 34h/35h, 5Bh–5Dh, 38h/3Dh, 3Fh and 32h (READ); fallback
+therefore needs register-level VGA from its first run.
+
 ## 4. Classes and device sets
 
 ### 4.1 Standard wiring per class
@@ -412,14 +619,14 @@ device bead.
 | CPU | 8088 (+8087) | 80286 (+80287 at F0h–FFh, IRQ13) | 80386 (+387) | 80286 Real16 only |
 | Interrupts | **one** 8259A, 20h–21h, IRQ0–7, single mode | 8259A pair, 20h/A0h, slave on IRQ2 | as AT | cascaded pair ✓ |
 | Timer | 8253, 40h–43h. ch0 → IRQ0, ch1 → DRAM refresh (DMA ch0), ch2 → speaker through PPI PB0/PB1 | 8254. ch1 refresh shows in 61h bit 4, ch2 → speaker through 61h | as AT | 8253 ✓; refresh bit is a per-read toggle |
-| DMA | **one** 8237A at 00h–0Fh, ch0 refresh. Page latches at 81h–83h (ch2, ch3, ch1) | **two** 8237A: 00h–1Fh (ch0–3) and C0h–DFh (ch4–7, ch4 cascade). Pages at 80h–8Fh | as AT | one 8237 with pages 81h–8Fh ✓; **DMA2 ✗** |
+| DMA | **one** 8237A at 00h–0Fh, ch0 refresh. Page latches at 81h–83h (ch2, ch3, ch1) | **two** 8237A: 00h–1Fh (ch0–3) and C0h–DFh (ch4–7, ch4 cascade). Pages at 80h–8Fh | as AT | both 8237 banks ✓; byte pages 81h–88h, word pages 89h–8Fh (READ `board.rs:99–108`) |
 | Keyboard interface | **8255A PPI at 60h–63h**: PA scan code, PB control (PB7 clear, PB6 clock, PB3 switch select), PC switches and status | **8042** at 60h/64h; output port bit 1 = A20, bit 0 = reset | 8042 + port 92h | 8042 ✓ (A20 bit is state only, `FEh` CPU reset pulse ✓); **8255 ✗** |
 | Keyboard | **83-key**, scan set 1, serial into PPI port A, IRQ1 | 84-key (101 later), set 2 translated to set 1 | as AT | host → set 1 encoder with E0 codes ✓ (an XT has no E0 keys) |
 | Config store | **DIP SW1** read through the PPI | MC146818 CMOS at 70h/71h, IRQ8; NMI mask is 70h bit 7 | as AT, plus extended memory bytes | CMOS ✓, derived |
 | NMI mask | port **A0h** bit 7 | 70h bit 7 | as AT | AT form ✓ |
 | A20 | none (20-bit bus) | 8042 output port | 8042 + **port 92h** bit 1 | always on (decision-8) |
 | CPU reset | — | 8042 `FEh`, CMOS 0Fh shutdown code | + port 92h bit 0 | 8042 CPU-only warm restart ✓; RAM, CMOS and devices retained; sustained low reset level not modelled |
-| ROM | F0000h–FFFFFh; an 8 KiB BIOS at FE000h | 64 KiB at F0000h (even/odd) | same, aliased at 4 GiB − size | `ImageKind::Rom` ✓ |
+| ROM | F0000h–FFFFFh; an 8 KiB BIOS at FE000h | 64 KiB at F0000h (even/odd) | SeaBIOS: 128 KiB preloaded at E0000h in writable C0000h–FFFFFh, pristine read-only copy at FFFE0000h (§3.6) | `ImageKind::Rom` ✓ |
 | Card bus | 8-bit, IRQ2–7, DMA1–3 | 16-bit, IRQ3–7, 9–12, 14, 15 | as AT | no slot abstraction (decision-16 §8) |
 | Floppy | adapter with DOR 3F2h and MSR/data 3F4h/3F5h; ASSUMED no CCR at 3F7h | 3F0h–3F7h, IRQ6, DMA2 | as AT | µPD765 ✓ |
 | Fixed disk | Xebec MFM adapter at 320h with its own ROM; open alternative is an 8-bit XT-IDE card + XUB `ide_xt` | WD1003-style task file at 1F0h–1F7h plus 3F6h, IRQ14. The IBM BIOS reads a CMOS drive type | as AT | ATA-2 PIO channel assembled with volatile/readonly media; firmware boot profile deferred |
@@ -427,11 +634,15 @@ device bead.
 
 ### 4.2 What is missing, per board
 
-- **`ibm-5170`, to match its reference:**
-  - a second 8237 at C0h–DFh with page registers 89h–8Fh;
-  - 80287 ports F0h–FFh;
-  - the 8042 `FEh` reset pulse and a CPU-reset seam (CMOS 0Fh shutdown);
-  - an **ATA device**;
+- **`ibm-5170` completion status (READ):**
+  - second 8237 at C0h–DFh with page registers 89h–8Fh: implemented
+    (READ `crates/assembly/src/board.rs:104–108`, `assemble.rs:304`);
+  - empty 80287 socket ports F0h/F1h, F8h–FFh: implemented (READ
+    `board.rs:125–130`); CPU-side absent-FPU behavior remains unqualified;
+  - 8042 `FEh` reset pulse and CPU-reset seam: implemented; RAM and CMOS
+    0Fh survive (READ `assemble.rs:261–264,338–339`,
+    `crates/machine/src/lib.rs:305–316`);
+  - **ATA device**: implemented and qualified with the new profile (§9 item 11);
   - String port I/O landed at x86jit `73ed5d6`: Real16 INS/OUTS,
     including REP, segment overrides on OUTS and per-element IRQ boundaries.
     The historical `96a49a9` probe did not lift opcodes 6C–6F.
@@ -448,12 +659,14 @@ device bead.
   - the 8088 CPU model (`xj-50w.2 (x86jit)`).
 - **`generic-386-isa`, phase B:**
   - all of the 5170 items;
-  - port 92h;
-  - A20 **masking** in the CPU core (decision-8 revisit);
-  - extended RAM;
-  - a VGA option ROM with a register-level VGA (sequencer, graphics controller,
-    attribute controller, DAC), or SeaBIOS SERCON for headless runs;
-  - a writable BIOS shadow for SeaBIOS.
+  - port 92h A20 and CPU reset, plus A20 **masking** in the CPU core
+    (`upc-o0j.5`, `upc-o0j.14`; decision-8 revisit);
+  - extended RAM with firmware-owned CMOS (`upc-o0j.6`, `upc-o0j.11`);
+  - emulator-only fw_cfg for SeaBIOS SERCON and later VGA/option ROMs
+    (`upc-o0j.13`, decision-19);
+  - writable shadow RAM and a pristine high BIOS copy (`upc-o0j.12`);
+  - 8254 read-back (`upc-o0j.10`) and, later, a VGA ROM with a register-level
+    VGA (`upc-o0j.15`). See §3.6 for the full source-backed requirements.
 
 ## 5. Config expression
 
@@ -506,7 +719,8 @@ drives = [ { channel = "master", image = "hd.img",
              geometry = { cylinders = 615, heads = 4, sectors = 17 }, write = "volatile" } ]
 ```
 
-Rules:
+Rules (the implemented pre-mapped ROM path; SeaBIOS shadow RAM and
+firmware-loaded option ROMs are the board-specific extension in §3.6):
 
 - **Identity.** A firmware entry is identified by the SHA-256 of its bytes,
   after split parts are interleaved. `sha256` in the file is optional; when
@@ -523,9 +737,10 @@ Rules:
     report `MissingSystemBios`; the highest address is never a fallback.
   - `base = 1 MiB − size`, which puts the reset vector F000:FFF0 at offset
     `size − 16`. The size must be a multiple of 8 KiB.
-  - On 386 and PCI boards the image is also aliased at `4 GiB − size`, because
-    SeaBIOS assumes this (`shadow.c`: "the bios at 0xf0000 is also at
-    0xffff0000").
+  - `generic-386-isa` will map a separate read-only pristine copy at
+    `4 GiB − size`, not an alias of its writable shadow RAM (§3.6,
+    `upc-o0j.12`). PCI boards alias the image at `4 GiB − size`, as SeaBIOS
+    expects (`shadow.c`: "the bios at 0xf0000 is also at 0xffff0000").
   - Boards that need a writable shadow map it as RAM preloaded with the image,
     or emulate PAM.
 - **Option ROMs.**
@@ -542,9 +757,10 @@ Rules:
     Empty gaps deliberately read 00h to preserve goldens; real empty sockets
     float, often reading FFh. These model gaps are read-only, so guest writes
     and `RamLoad` images cannot introduce uncatalogued extension code.
-  - A video ROM (`kind = video-bios`) sits in C0000h–C7FFFh.
-- **Scan order** is ascending address, because every surveyed BIOS scans upward
-  in 2 KiB steps:
+  - A pre-mapped video ROM (`kind = video-bios`) sits in C0000h–C7FFFh;
+    SeaBIOS instead loads its video ROM through fw_cfg (§3.6).
+- **Scan order** for pre-mapped option ROMs is ascending address; these
+  BIOSes scan upward in 2 KiB steps:
   - Kiselev C800h–F800h, Bochs C800h–E000h, Super PC/Turbo XT C000h–FE00h
     (READ);
   - GLaBIOS with `ROM_SCAN_ALIGN = 1` (READ);
@@ -735,21 +951,16 @@ The fallback, if the CPU seam is late, is the 8088 build `ide_xt`, which uses
 `in ax,dx` loops. It defaults to an 8-bit XT-IDE at 300h, so it would need a
 source build with AT defaults. Prefer waiting for the seam.
 
-**(b) Phase B.** Add a `generic-386-isa` board with **SeaBIOS built with QEMU's
-`isapc` configuration** (LGPL-3.0, 128 KiB, no PCI) plus **SeaVGABIOS**. The
-reasons:
-
-- it is the only maintained open firmware that targets an ISA-only 386/486
-  board (READ: QEMU `config.seabios-128k`, `isapc.c`);
-- it provides AT services and A20;
-- it builds with gcc;
-- the same firmware family carries into phases C/D on `i440fx-piix3`.
-
-Bochs `rombios` legacy (LGPL-2.1, 386+, port-92h A20, built-in ATA) is the
-fallback. Both need a VGA option ROM and therefore a register-level VGA, so
-phase B pulls VGA forward, unless headless phase B goldens use SeaBIOS SERCON
-(§8). Neither runs on the 286 board, so `ibm-5170` keeps the Kiselev BIOS
-permanently as the smallest test bed.
+**(b) Phase B.** Decision-19 selects **unmodified SeaBIOS `CONFIG_QEMU`**
+on `generic-386-isa`. The board will use the pinned 128 KiB build from
+`upc-o0j.9` and emulator-only fw_cfg for serial-console goldens first.
+Register-level VGA and SeaVGABIOS follow. Writable shadow RAM, the high
+BIOS copy, firmware-owned CMOS and CPU/device prerequisites are detailed in
+§3.6. It provides AT services and builds with gcc (READ). The firmware
+family is also planned for phases C/D on `i440fx-piix3`. Bochs legacy
+`rombios` is the fallback, requiring VGA from its first run (§3.6). Neither
+runs on the 286 board, so `ibm-5170` keeps the Kiselev BIOS permanently as
+the smallest test bed.
 
 **(c) An XT-class machine later.** Use an `ibm-5160` board with **GLaBIOS
 `ARCH_5160`** as its default firmware. It explicitly targets the standard 5160
@@ -786,9 +997,10 @@ Risks:
 - **The 3F6h/3F7h split** changes the FDC's decode in the new profile only.
   On real hardware 3F7h is shared: bit 7 is the floppy disk change, bits 0–6
   belong to the fixed-disk adapter. Bits 0–6 are not modelled.
-- **SeaBIOS assumes QEMU** in places: the 0x402 debug port, fw_cfg absence,
-  PAM shadowing and its CMOS memory layout. Each needs checking on a non-QEMU
-  board (ASSUMED harmless or worked around, as QEMU `isapc` does).
+- **SeaBIOS ISA requirements — resolved by the source spike.** fw_cfg,
+  writable shadow/high copy, CMOS layout and 8254 read-back are required
+  work, while debug port 402h is optional (READ, §3.6; decision-19). Runtime
+  compatibility and interpreter performance remain unmeasured.
 - **Windows 98 SE on SeaBIOS** has PnP and ACPI quirks and QEMU-version
   regressions (READ, secondary sources).
 - **Section citations.** The Technical Reference section titles were read from
@@ -800,9 +1012,9 @@ Risks:
 
 Open questions for the maintainer:
 
-1. **Naming.** Is it acceptable to call today's machine `ibm-5170` while it
-   lacks DMA2, 80287 ports and the reset line (listed deviations), or should it
-   carry an interim name until those land?
+1. **Naming — resolved (decision-18).** The board is `ibm-5170`; both DMA
+   banks, empty-socket coprocessor I/O and the CPU-reset seam are now
+   implemented, with remaining deviations recorded in §4.2.
 2. **Unlisted firmware — resolved (decision-18).** A strict allowlist by
    default, with the run-only `--allow-unlisted-firmware` developer flag and
    a full-hash warning. The flag is absent from machine files and goldens;
@@ -810,8 +1022,8 @@ Open questions for the maintainer:
 3. **XUB fixture.** Should the fixture build from a pinned SVN revision with
    NASM, or download r638 and pad and checksum it deterministically? Both pin
    two hashes.
-4. **Phase B console.** Should phase B pull a register-level VGA forward (for
-   SeaVGABIOS), or run headless goldens on SeaBIOS SERCON (serial) first?
+4. **Phase B console — resolved (decision-19).** SeaBIOS SERCON first,
+   configured through emulator-only fw_cfg; register-level VGA later (§3.6).
 5. **XT default firmware.** GLaBIOS (tested on a 5160; MASM-built binary) or
    Kiselev `MACHINE_XT` (NASM; untested upstream)?
 6. **NVRAM file.** Should a CMOS NVRAM file (from the `upc-6le.1` notes) be in
@@ -941,13 +1153,21 @@ The generic AT comes first.
     - *Acceptance:* the new golden is green; the old goldens are byte-identical.
     - *Depends on:* 4, 5, 7, 8, 9, 10.
 12. **`ibm-5170` completion: second 8237** at C0h–DFh with pages 89h–8Fh.
+    - *Status:* implemented (READ `crates/assembly/src/board.rs:104–108`,
+      `assemble.rs:304`): the AT word bank is constructed with
+      `Dma8237::new_at_word`. Existing assembly tests check both controllers
+      and their page latches (`assemble.rs:1064–1096`); isolated word-bank
+      tests cover port decoding and pages
+      (`crates/devices/src/dma8237.rs:724–760`).
     - *Acceptance:* device tests; goldens unchanged, or re-baselined with a
       stated reason (the BIOS writes C0h for I/O delays).
     - *Depends on:* 1.
-13. **Phase B firmware spike (coarse).** SeaBIOS `isapc` build on
-    `generic-386-isa`. The output is the requirement list (VGA ROM or SERCON,
-    writable shadow, port 92h, A20 masking, 8042 reset, extended-memory CMOS)
-    and the x86jit requests it files.
+13. **Phase B firmware spike (`upc-o0j.8`).**
+    - *Status:* done (source investigation, 2026-11-11). §3.6 records the
+      requirements, evidence labels, pinned sources and decision-19. Follow-up
+      work is filed as `upc-o0j.9`–`upc-o0j.16`, with `upc-o0j.5`/`.6`
+      amended; R1/R3 are `xj-srh.16 (x86jit)` / `xj-srh.17 (x86jit)`,
+      R2 extends `xj-srh.4 (x86jit)`. No firmware build or boot was run.
     - *Depends on:* the phase B gap analysis, 1–3.
 14. **XT device set, device level.** The 8255 PPI with DIP-switch derivation,
     the XT keyboard interface (83-key, set 1, PB6/PB7), a single-mode 8259
@@ -982,15 +1202,30 @@ The generic AT comes first.
   `Src/Initialization/Interrupts.asm`, `Src/Handlers/Int13h.asm`,
   `Src/Device/IDE/IdePioBlock.asm`; binaries
   <https://www.xtideuniversalbios.org/binaries/r638/> (2026-06-09).
-- Bochs `rombios`: <https://github.com/bochs-emu/Bochs/tree/master/bochs/bios>
-  (`rombios.c`, `rombios.h`, `Makefile.in`); Windows 98 SE guide
+- Bochs `rombios`: [pinned BIOS sources](https://github.com/bochs-emu/Bochs/tree/44104eeaff16107e478ea8bd9c55bd8601a80191/bochs/bios),
+  commit `44104eeaff16107e478ea8bd9c55bd8601a80191` (2026-11-08),
+  `rombios.c`, `rombios.h`, `Makefile.in`; Windows 98 SE guide
   <https://bochs.sourceforge.io/doc/docbook/user/guest-win98.html>.
-- SeaBIOS: <https://github.com/coreboot/seabios> master (`docs/Memory_Model.md`,
-  `docs/Releases.md`, `src/fw/shadow.c`, `src/fw/pciinit.c`,
-  `src/fw/paravirt.c`, `src/Kconfig`, `vgasrc/Kconfig`).
-- QEMU: `roms/config.seabios-128k` (last change 2023-09-25, "seabios: remove
-  PCI drivers from bios.bin"), `hw/i386/isapc.c`,
-  <https://www.qemu.org/docs/master/system/i386/pc.html>.
+- SeaBIOS: [rel-1.17.0 sources](https://github.com/coreboot/seabios/tree/b52ca86e094d19b58e2304417787e96b940e39c6),
+  commit `b52ca86e094d19b58e2304417787e96b940e39c6` (2025-06-10), also
+  QEMU's `roms/seabios` pin. §3.6 cites this release, including
+  `docs/Memory_Model.md`, `src/fw/`, `src/hw/`, `src/romlayout.S`,
+  `src/Kconfig`, `vgasrc/` and `scripts/buildversion.py` (READ).
+- QEMU: [pinned sources](https://github.com/qemu/qemu/tree/29760efaf96bbe5928f8111881eddbf5ac06439e),
+  commit `29760efaf96bbe5928f8111881eddbf5ac06439e` (2026-11-10,
+  v11.2.0-rc0). `roms/config.seabios-128k`, `roms/config.vga-isavga`,
+  `hw/i386/isapc.c:30–186`, `pc.c:403–485,880–892`, `pc_sysfw.c:222`,
+  `x86-common.c:1005–1009,1063,1114–1120`, `vga-isa.c:88`, `loader.c:1232–1240`,
+  `docs/specs/fw_cfg.rst` (READ); [PC documentation](https://www.qemu.org/docs/master/system/i386/pc.html).
+  Its `isapc` supplies fw_cfg (including DMA at 514h), writable BIOS/ROM RAM,
+  port 92h and 8042 A20, 8254, ISA VGA, two IDE channels and FDC (READ).
+  ASSUMED: default 486 CPU has CPUID.
+- QEMU prebuilt images at that commit (MEASURED by the source spike,
+  fetched-file hashes; not executed): `pc-bios/bios.bin`, 131072 bytes,
+  SHA-256 `3dfd946d0c03ab0e022f84f10c3eb5f1dd507761f73e7d8067511ba35a10f776`;
+  version `rel-1.17.0-0-gb52ca86e094d-prebuilt.qemu.org`, GCC 15.1.1,
+  binutils 2.44. `pc-bios/vgabios.bin` (`isavga`), 38912 bytes,
+  SHA-256 `a7ea86bb06a58ff969fd0942e73b8eae00cb58e4c90bccbd900f6a3a01f54fbb`.
 - Windows 98 SE on QEMU: <https://bugs.launchpad.net/bugs/1819289> (2019),
   <https://mail.coreboot.org/pipermail/seabios/2012-May/003887.html>.
 - fysnet i440fx BIOS: <https://fysnet.github.io/i440fx>.

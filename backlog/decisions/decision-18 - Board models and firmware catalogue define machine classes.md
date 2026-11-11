@@ -52,7 +52,10 @@ phase B and a PCI board for phases C and D.
    fixtures. It needs string port I/O in the CPU core (requested from x86jit).
 5. **Phase B firmware:** SeaBIOS built for an ISA-only machine on
    `generic-386-isa`, with its serial console first; a register-level VGA
-   comes later. Bochs rombios is the fallback.
+   comes later. Bochs rombios is the fallback. *Amended by [[decision-19]]
+   (2026-11-11):* an unmodified SeaBIOS needs an emulator-only fw_cfg port
+   for that serial console, writable shadow RAM for its POST and a pristine
+   high BIOS copy for its reboot.
 6. **XT firmware:** GLaBIOS built for the 5160 is the default, the Kiselev
    XT build a second entry; the XT board waits for the 8088 CPU model in
    x86jit.

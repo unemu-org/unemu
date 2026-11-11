@@ -12,8 +12,9 @@ memory-translation and event-delivery seams. Adding opcodes or selecting
 This is a bounded investigation for the protected-mode scope in
 [decision-16](../../decisions/decision-16%20-%20Scope%20a%20period%20PC%20from%20DOS%20to%20Windows%2098%20SE%20with%203dfx%20Voodoo.md).
 It proposes work; it does not create or claim implementation beads. Firmware
-selection belongs to the parallel firmware investigation. No repository code,
-dependency pin, guest fixture or CPU checkout was changed.
+selection is now recorded in decision-19 and
+[firmware-and-machine-classes.md §3.6](firmware-and-machine-classes.md#36-phase-b-firmware-requirements-seabios-on-generic-386-isa).
+No repository code, dependency pin, guest fixture or CPU checkout was changed.
 
 Evidence vocabulary throughout:
 
@@ -454,40 +455,60 @@ reusing fixed user-mode privilege assumptions is not.
 
 ## Machine gap list
 
+The 2026-11-11 firmware update below is **READ** from SeaBIOS rel-1.17.0
+(`b52ca86e094d19b58e2304417787e96b940e39c6`); its file:line references and
+full requirement table are in
+[firmware-and-machine-classes.md §3.6](firmware-and-machine-classes.md#36-phase-b-firmware-requirements-seabios-on-generic-386-isa).
+QEMU file:line citations (including CMOS `pc.c:403–485`) refer to
+`29760efaf96bbe5928f8111881eddbf5ac06439e` (`29760ef`); Bochs references
+in the linked requirement list use `44104eeaff16107e478ea8bd9c55bd8601a80191`
+(`44104ee`). These source findings are not a measured SeaBIOS boot. Beads
+cited here are existing follow-up work filed by the supervisor.
+
 1. **Extended RAM and its discovery.** READ:
    `crates/assembly/src/memory.rs:68` already has arbitrary address-space
    size and RAM regions; `assemble.rs:250` maps those regions; P5 measures
    a larger adapter map. The current BIOS preset is 1 MiB. Add an extended
    RAM region starting at `100000h`, preserve the conventional-memory/MMIO/
-   ROM holes, and make CMOS and firmware reports agree. `assemble.rs:448`
-   already derives extended KB, so avoid inventing a second memory-size
-   authority. ASSUMED first profile: 16 MiB total physical extent, with
-   15 MiB contiguous extended RAM, to keep AH=88h qualification bounded.
+   ROM holes (`upc-o0j.6`). `assemble.rs:448` already derives extended KB,
+   so avoid inventing a second memory-size authority. Firmware-owned CMOS
+   layout (`upc-o0j.11`) must also seed QEMU/Bochs 30h/31h, 34h/35h and
+   5Bh–5Dh, not only current 17h/18h; include century 32h, boot order
+   38h/3Dh, ATA translation 39h and CPU count 5Fh (SeaBIOS
+   `paravirt.c:240–254,535,588–592`, `clock.c:48`, `boot.c:471–489`,
+   `block.c:84–90`). Derive bytes from the description and test against QEMU
+   `pc.c:403–485` without changing the 5170 seed. AH=88h must be compared
+   against E820, not CMOS (item 3). ASSUMED first profile: 16 MiB total
+   physical extent, with 15 MiB contiguous extended RAM.
 
 2. **A20 physical-address effect and board wiring.** READ:
    `crates/devices/src/i8042.rs:393`, `:505`, `:557`, `:703` already expose,
    change and snapshot the D0h/D1h output-port latch. No CPU-side gate input
    or port-92h device/configuration exists in the inspected assembly/device
    path (`crates/assembly/src/device.rs:224`, `assemble.rs:166`). Add port
-   92h bit 1, preserve its distinct bit-0 reset semantics, and settle changes
-   before the next guest instruction. A disabled gate clears **physical
-   address bit 20**, not every high address bit and not the linear address
-   before paging. Cover instruction fetch, CPU data and implicit page-table
-   accesses, crossing transfers, and code-cache invalidation through aliases.
-   Firmware/loader physical access and DMA need explicitly documented paths:
-   ISA DMA is a separate bus master and must not accidentally go through
-   CPU segmentation/paging. ASSUMED profile policy: OR the 8042 and fast-A20
-   enable sources; choose and test reset latch values in that profile while
-   preserving the existing profile's behavior. This wiring is board policy,
-   not an Intel PRM CPU feature. Reference: **Ralf Brown's Interrupt List,
-   Release 61**, PORT 0064h output-port commands and PORT 0092h, table
-   P0415 ([port reference](https://github.com/cirosantilli/ralf-brown-interrupt-list/blob/master/inter61d/PORTS.A)).
+   92h bit 1 (`upc-o0j.5`), preserve its distinct bit-0 reset semantics
+   (`upc-o0j.14`), and settle changes before the next guest instruction.
+   A disabled gate clears **physical address bit 20**, not every high
+   address bit and not the linear address before paging. Cover instruction
+   fetch, CPU data and implicit page-table accesses, crossing transfers,
+   and code-cache invalidation through aliases. Firmware/loader physical
+   access and DMA need explicitly documented paths: ISA DMA is a separate
+   bus master and must not accidentally go through CPU segmentation/paging.
+   SeaBIOS uses **only port 92h** for A20, never 8042 D1h
+   (`x86.h:17–19,268–277`, `system.c:18–35`); an open-bus FFh read looks
+   enabled without opening the gate (READ). ASSUMED profile policy: OR the
+   8042 and fast-A20 enable sources; choose and test reset latch values in
+   that profile while preserving the existing profile's behavior. This
+   wiring is board policy, not an Intel PRM CPU feature. Reference: **Ralf
+   Brown's Interrupt List, Release 61**, PORT 0064h output-port commands
+   and PORT 0092h, table P0415 ([port
+   reference](https://github.com/cirosantilli/ralf-brown-interrupt-list/blob/master/inter61d/PORTS.A)).
 
 3. **Firmware INT 15h contract.** READ:
    `vendor/kiselev-bios/README.md:1` identifies the current 8088/Xi8088
    firmware. Its absence of these AT services is an input from the worker
-   brief, not a new runtime firmware measurement. Select/validate an
-   AT/386-capable open BIOS through the parallel firmware work. Keep BIOS
+   brief, not a new runtime firmware measurement. Decision-19 selects
+   unmodified SeaBIOS `CONFIG_QEMU` (`upc-o0j.9`). Keep BIOS
    instructions running in the guest; do not add host INT 15h shims to the
    CPU adapter. Required service expectations, from **Ralf Brown's Interrupt
    List, Release 61**, INT 15/AH=87h/88h/89h, tables 00498–00501
@@ -495,14 +516,17 @@ reusing fixed user-mode privilege assumptions is not.
 
    | Service | Contract to qualify |
    | --- | --- |
-   | AH=88h | AX reports contiguous extended KB from physical 1 MiB; CF/status indicate support/error. The initial profile reports its actual contiguous region, excluding holes; test zero and configured extended RAM |
+   | AH=88h | Qualify CF/status and AX against SeaBIOS's highest E820 RAM-entry end (`malloc.c:476–491`), not CMOS. `upc-o0j.6` acceptance is amended accordingly; test zero/configured extended RAM and the E820-derived result |
    | AH=87h | ES:SI describes source/destination through a BIOS GDT work area; CX counts words (up to 8000h); test real copies across 1 MiB, CF/AH success/failure and A20 handling. This is a BIOS operation with protected-mode machinery, not merely a high-memory host memcpy |
    | AH=89h | ES:SI supplies the switch GDT including IDT/data/stack/code descriptors; BL/BH select PIC vector bases in multiples of eight. Success continues after the INT in protected mode with changed segments; test entry state and PIC/IDT consistency, plus A20 failure. It is not itself a DPMI implementation |
 
    ASSUMED: raw DOS/32A qualification uses its own PE switch; it does not
    require AH=89h merely because it is a DOS extender. Its inspected source
-   needs memory discovery (AH=88h fallback) and A20. E820h/E801h can remain
-   unsupported with a proper failure result if that fallback is verified.
+   needs memory discovery and A20. READ: the chosen SeaBIOS **supports
+   E801h and E820h** (`system.c:260,290`), as well as AH=87h/89h
+   (`system.c:72–165,185`); qualify those discovery paths rather than
+   assuming an unsupported-service fallback. AH=88h derives its answer
+   from E820 (`malloc.c:476–491`), so CMOS alone is not its oracle.
    Qualify AH=87h/89h separately for the advertised BIOS compatibility
    contract; do not conflate those tests with the first extender milestone.
 
@@ -513,13 +537,30 @@ reusing fixed user-mode privilege assumptions is not.
    profile with suitable RAM, firmware, cascaded PIC, PIT, keyboard/A20 and
    CMOS. [Intel 80386 PRM §10.2.3, First Instructions](https://pdos.csail.mit.edu/6.828/2018/readings/i386/s10_02.htm)
    starts reset fetch at physical `FFFFFFF0h` until the first far transfer.
-   Proper reset needs the hidden CS/reset state and board ROM alias at the
-   high address, or a clearly documented diagnostic-entry profile that
+   Proper reset needs the hidden CS/reset state and board BIOS mapping at
+   the high address, or a clearly documented diagnostic-entry profile that
    bypasses hardware reset. `MemoryModel::Flat` would otherwise reserve a
    dense 4 GiB span; SoftMmu is unfinished. The first probe uses direct
-   entry; it proves nothing about 386 reset/BIOS boot fidelity. Resolve sparse
-   physical backing/high ROM decode with the CPU project before claiming a
-   reset-accurate 386 profile.
+   entry; it proves nothing about 386 reset/BIOS boot fidelity. Resolve
+   sparse physical backing/high ROM decode with `xj-srh.12 (x86jit)` before
+   claiming a reset-accurate 386 profile. `upc-o0j.12` will also supply
+   writable C0000h–FFFFFh shadow RAM (128 KiB BIOS preloaded at E0000h) and
+   a **separate read-only pristine copy** at FFFE0000h–FFFFFFFFh. This is
+   our board design (decision-19 rule 3), unlike QEMU `isapc`'s high alias
+   of the same writable BIOS region
+   (`x86-common.c:1005–1009,1063,1117–1120`, `pc_sysfw.c:222`). SeaBIOS
+   finds no pristine copy on that alias (`shadow.c:178–186`); with
+   RAM-preserving CPU resets, a second reboot reaches `HaveRunPost == 3`
+   shutdown (`shadow.c:169–208`). POST writes F-segment state and clears
+   C0000h (`post.c:290–299`, `optionroms.c:467`); shadow unlock knows only
+   i440FX/Q35 (`shadow.c:117–147`). Restrict adapter-RAM validation's
+   exception to `generic-386-isa`; keep `ibm-5170` unchanged. `upc-o0j.14`
+   will turn typed shutdown (`xj-srh.6 (x86jit)`) and port 92h bit 0 into a
+   386 CPU reset retaining RAM. With a pristine copy available, SeaBIOS
+   restores shadow RAM from the high image, writes CF9h, then INT3 with a
+   one-byte IDT triple-faults (`shadow.c:169–208`, `misc.c:134–145`); CMOS
+   0Fh resume codes and the 8042 path must work with the 386 reset state
+   (`resume.c:23–84,146–157`).
 
 5. **Protected interrupts through existing INTA.** READ:
    `crates/machine/src/lib.rs:440` already polls readiness, acknowledges the
@@ -560,6 +601,27 @@ reusing fixed user-mode privilege assumptions is not.
    machine replay also needs RAM, devices/PIC, last sampled IRQ levels,
    global/fractional clock, halted/idle state and config/firmware/core identity.
    This spike does not introduce a general disk-persistence framework.
+
+8. **8254 timing read-back (`upc-o0j.10`).** READ: SeaBIOS's PIT fallback
+   uses read-back command D2h (`timer.c:171–183`), currently a no-op in
+   `pit8253.rs:65–66`. Add count/status latches with isolated datasheet tests
+   and unchanged 286 goldens. Channel 0 is programmed to mode 2, count 0
+   (`timer.c:274–283`). CPUID-free 386 timing relies on this path
+   (`timer.c:101–116`), not just on the existing 8253 count interface.
+
+9. **Emulator-only fw_cfg and console/ROM delivery (`upc-o0j.13`).** READ:
+   no-fw_cfg RAM sizing works, but serial-console configuration comes only
+   from `etc/sercon-port` (`sercon.c:519–521`); video/option ROMs come from
+   PCI or romfiles, not a plain ISA scan (`optionroms.c:364–386,451–489`).
+   Decision-19 adds 510h/511h without DMA only to `generic-386-isa`, serving
+   signature/ID, file directory, legacy keys (including 0Eh = 0),
+   `etc/sercon-port`, `vgaroms/*`, `genroms/*` and `bootorder` from the
+   machine description. Catalogue placement must support firmware-loaded
+   ROMs. Qualify the protocol on MockBus and serial-console goldens first;
+   register-level VGA plus a SeaVGABIOS entry is later `upc-o0j.15`, and
+   diagnostic debug port 402h is optional `upc-o0j.16`. The fixture
+   `upc-o0j.9` disables MPTABLE/PIRTABLE and other unused platform features
+   as listed in firmware-and-machine-classes.md §3.6.
 
 ## Proposed order
 
@@ -607,8 +669,10 @@ promise for implementing it.
 
 ## x86jit requests
 
-These are proposed narrow requests for the supervisor to submit, not
-changes filed by this worker. **Every request** requires isolation tests,
+The original numbered list describes the CPU extension seams; the firmware
+spike's R1–R3 were sent and filed on 2026-11-11 as noted in entries 2 and 4.
+Cross-repository ids below name existing work, not changes filed by this
+documentation worker. **Every request** requires isolation tests,
 full x86jit gates, append-only existing CpuState/jit_abi layout, unchanged
 existing-mode generated code, and a tested seam merged whole before this
 repository re-pins. Dependencies refer to this numbered list.
@@ -621,7 +685,23 @@ repository re-pins. Dependencies refer to this numbered list.
 2. **Complete 386 real-mode entry instruction forms.** Add PUSHFD/POPFD,
    PUSHAD/POPAD, FS/GS and 16:32 far forms; correct 67h limit/index behavior
    and CPU identification flags. Test the P2 forms against a 386 contract
-   while retaining the 286 personality. Dependency: 1.
+   while retaining the 286 personality. Dependency: 1. Baseline entry work
+   is `xj-srh.2 (x86jit)`; the firmware spike extends it through two filed
+   requests, gated on the 386 model (READ source need, not measured support):
+   - **R1, `xj-srh.16 (x86jit)`:** full 386 real-mode integer ISA, 66h/67h
+     including SIB and REP with 67h, 32-bit `calll`/`retl`, `pushl`/`pushfl`
+     in 16-bit code, and the 15-byte limit. Audit the 386 0Fh map:
+     MOVZX/MOVSX, SETcc, Jcc rel16, BT*, BSF/BSR, SHLD/SHRD, two-operand
+     IMUL, LSS/LFS/LGS and PUSH/POP FS/GS. SeaBIOS uses gcc
+     `-m16 -march=i386` (`Makefile:64,83–84`); the existing Real16 286
+     policies leave this incomplete. Proposed oracles: test386.asm
+     (`upc-fro.1`) and a SeaBIOS/SeaVGABIOS opcode census. R1 follows
+     `xj-srh.4 (x86jit)`, beyond the baseline entry forms needed by entry 4.
+   - **R3, `xj-srh.17 (x86jit)`:** EFLAGS.AC/ID fixed zero; CPUID, RDTSC,
+     RDMSR/WRMSR, WBINVD/INVD/INVLPG, BSWAP, CMPXCHG and XADD raise #UD
+     under the 386 model. SeaBIOS gates CPUID on ID toggling
+     (`x86.c:10–23`); without CPUID it skips TSC/MTRR/APIC setup and uses
+     PIT timing (`timer.c:101–116`, `mtrr.c:41–44`, `smp.c:104–114`).
 3. **Implement descriptor-table and control-register primitives.** Add
    LGDT/SGDT/LIDT/SIDT, SMSW/LMSW, MOV CR0/CR2/CR3 and CLTS with correct
    operand sizes and legal/illegal uses. Test state round trips and rejected
@@ -631,14 +711,21 @@ repository re-pins. Dependencies refer to this numbered list.
    descriptor-backed segment loads, limits/types/presence and accessed bits,
    USE16/USE32 far JMP/CALL/RET/IRET, entry and return to real mode. Test
    hidden-cache persistence and DOS/32A-style mixed-width entry. Dependencies:
-   1–3; fault generation included, guest IDT routing follows in 6.
+   1–3 (baseline entry forms); fault generation included, guest IDT routing
+   follows in 6. **R2 is added to `xj-srh.4 (x86jit)` acceptance:** on PE
+   1→0 the cached segment limit survives; real-mode segment loads change
+   only the base and accesses check the cached limit. SeaBIOS returns through
+   `transition16big` and runs VGA ROM code in big real mode
+   (`romlayout.S:87–117`, `stacks.c:291–292`, READ). PE transitions must
+   not flush or relift the other mode's blocks wholesale.
 5. **Extend exact step execution across legacy 16/32-bit modes.** Preserve
    counters, 32-bit REP iteration boundaries, fault prefixes, I/O completion
    and STI/SS inhibition across PE/CS changes. Test exact caps and no duplicated
    port/MMIO effects. Dependency: 4; keep the new system path interpreted.
 6. **Deliver same-CPL protected IDT events and fault escalation.** Implement
    LIDT-based 16/32-bit interrupt/trap gates, INT/INTR/IRET, architectural
-   error codes, #DF and typed shutdown. Remove the possibility of accidental
+   error codes, #DF and typed shutdown (`xj-srh.6 (x86jit)`); machine reset
+   policy is `upc-o0j.14`. Remove the possibility of accidental
    IVT delivery in a legacy protected context. Dependencies: 4–5; test P3/P4
    counterparts and faults during gate/stack delivery.
 7. **Implement 386 two-level guest paging and restartable page faults.** Add
@@ -664,13 +751,19 @@ repository re-pins. Dependencies refer to this numbered list.
     policy in the machine. Dependencies: 1, 7; test both real and paged aliases.
 12. **Support 386 reset fetch and sparse high-ROM mapping.** Represent
     reset CS hidden state through the first far transfer and offer a bounded
-    physical backing/alias strategy for `FFFFFFF0h`. Dependency: 1; test
-    high reset fetch and low-ROM continuation without allocating 4 GiB of RAM.
+    physical backing/alias strategy for `FFFFFFF0h` (`xj-srh.12 (x86jit)`).
+    The board's pristine high image/shadow RAM is `upc-o0j.12`. Dependency: 1;
+    test high reset fetch and low-ROM continuation without allocating 4 GiB of RAM.
 13. **Export and restore complete legacy CPU checkpoint state.** Include
     architectural caches and vCPU event/shadow/counter state, define completion
     boundary restrictions and flush derived caches on restore. Dependencies:
     5–11 for their final fields; test continuation equivalence across PE/PG
     boundaries. Persistent machine-file format remains the embedder's concern.
+
+The agreed upstream order for the firmware additions is
+`xj-srh.4 (x86jit)`, `xj-srh.15 (x86jit)`, then
+`xj-srh.16 (x86jit)` / `xj-srh.17 (x86jit)`; the original numbered list
+is a seam/dependency description, not a replacement for that tracker order.
 
 Conditional follow-up requests, **not initial-entry blockers**: hardware
 task switches/task gates/NT returns (PRM §7.5–§7.6), V86 transitions and
@@ -684,7 +777,8 @@ Proposed machine-side beads only; no tracker was accessed or changed.
 All implementation starts after the foundation/consolidation gates required
 by the accepted project workflow. Each CPU dependency below means **landed
 upstream, pinned here**, not a local patch under the Cargo cache. Firmware
-selection/configuration remains owned by the parallel firmware/config work.
+selection is settled by decision-19; its implementation requirements and
+existing follow-up beads are in firmware-and-machine-classes.md §3.6.
 
 1. **Add a protected-mode CPU integration fixture and re-pin the core.**
    Dependencies: x86jit requests 1–7 and their upstream gates. Acceptance:
@@ -716,17 +810,22 @@ selection/configuration remains owned by the parallel firmware/config work.
    instruction boundaries and documented DMA/reset behavior. Before evidence:
    P5 reads `77h` after clearing the 8042 latch.
 5. **Expose the 386 model and reset profile through assembly.** Dependencies:
-   1–4, x86jit request 12, firmware/config selection result. Acceptance:
-   validated CPU/model choice rather than an I80286 label, 16 MiB reference
-   map and expected device roles, reset at the correct high ROM address then
-   far transfer to low ROM. Missing/mismatched firmware is rejected clearly.
+   1–4, x86jit request 12, and the decision-19 firmware fixture
+   `upc-o0j.9`. Acceptance: validated CPU/model choice rather than an I80286
+   label, 16 MiB reference map and expected device roles, reset at the
+   correct high ROM address then far transfer to low ROM. Include the
+   shadow/high-copy and triple-fault requirements in Machine gap list item 4
+   (`upc-o0j.12`, `upc-o0j.14`).
+   Missing/mismatched firmware is rejected clearly.
    Diagnostic direct entry remains explicit. Existing 286 reset and goldens
    remain unchanged.
-6. **Qualify the selected BIOS INT 15h services.** Dependencies: 4–5,
-   parallel firmware result. Acceptance: guest integration tests for AH=88h
-   memory size/error reporting, AH=87h descriptor-based high-memory copy and
-   AH=89h entry/PIC/segment state; capture CF/AH and A20 outcomes. Unsupported
-   E801h/E820h return errors that permit the tested AH=88h fallback. These
+6. **Qualify the selected BIOS INT 15h services.** Dependencies: 4–5 and
+   the decision-19 firmware fixture `upc-o0j.9`. Acceptance: guest
+   integration tests for AH=88h memory size/error reporting, AH=87h
+   descriptor-based high-memory copy and
+   AH=89h entry/PIC/segment state; capture CF/AH and A20 outcomes. SeaBIOS
+   supports E801h/E820h; qualify their results and compare AH=88h against
+   E820, not CMOS (`upc-o0j.6`, amended; Machine gap list item 3). These
    tests execute firmware and produce pinned golden evidence; no adapter
    interrupt shim.
 7. **Qualify protected timer IRQs through PIC INTA.** Dependencies: 1,
