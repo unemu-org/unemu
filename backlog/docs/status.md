@@ -215,6 +215,7 @@ checks identity and diagnostics without execution; see `vendor/user-roms/README.
   the SeaBIOS entry will do so with `generic-386-isa`. The complete 128-byte
   derivation is available; exposing bytes above 3Fh awaits that board's RTC.
 
+- **2026-11-11, diagnostic-ROM validation:** [spike recorded](design/compatibility-diagnostics.md); user-supplied Landmark AT 1.2.0 prefix/full goldens remain pending (`upc-fro.3`–`upc-fro.5`), and Ruud XT v5.7 is a future `ibm-5160` fixture (`upc-fro.6`); no AT diagnostic run is qualified.
 - **2026-11-11, SeaBIOS fixture:** pinned rel-1.17.0 ISA build recipe and
   configuration added under `vendor/seabios/`, with a separate firmware
   devShell. Two independent builds matched on macOS arm64 with the flake-pinned

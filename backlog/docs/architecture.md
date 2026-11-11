@@ -320,6 +320,9 @@ not copied into this workspace
 
 ## In flight and further reading
 
+- **Board validation:** [`design/compatibility-diagnostics.md`](design/compatibility-diagnostics.md)
+  records the diagnostic-ROM spike, user-supplied firmware policy, expected
+  Landmark AT coverage and the golden capture rule; execution is not qualified.
 - **Scheduler:** [decision-15](../decisions/decision-15%20-%20Deterministic%20device%20scheduler%20with%20instruction-exact%20interrupt%20boundaries.md)
   amends [`design/scheduler.md`](design/scheduler.md). Instruction-boundary
   timing and deadline dispatch are adopted. Per-clock dispatch survives only as
