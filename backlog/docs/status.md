@@ -158,6 +158,11 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   state); clippy for the full and the production feature sets, fmt, publication
   guard and cargo deny are clean; `cargo doc` has no warnings. Forgejo CI runs
   the same gate. See `commands.md`.
+- **Dependency gate (2026-11-11):** the all-features `deny` lane also checks
+  RustSec advisories. Vulnerabilities and yanked crates fail; unmaintained crates
+  require a dated, justified ignore with a review date. RUSTSEC-2026-0192
+  (`ttf-parser` 0.25.1, unmaintained, not a known vulnerability) is accepted to
+  retain winit's Wayland client-side decorations; review on 2027-05-11.
 - **Speed:** a release BIOS POST, FreeDOS boot and `DIR` session takes about
   0.50 s for roughly 11 million instructions; the CPU core takes 96–99 % of it
   and the machine side about 2 % (profile in

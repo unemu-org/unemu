@@ -348,7 +348,7 @@ cargo clippy --locked -p cli --bin unemupc98 -- -D warnings # production, no ref
 cargo fmt --all
 cargo fmt --all -- --check                   # CI check
 cargo deny --all-features list               # inspect dependency licences
-cargo deny --all-features check licenses bans sources
+cargo deny --all-features check advisories licenses bans sources
 ```
 
 The `deny.toml` allowlist covers the all-features graph: AGPL-3.0-or-later for
@@ -358,7 +358,21 @@ and ISC for dependencies. CC-BY-SA-4.0 is allowed only for the `window` crate
 `crates/window/assets/fonts/NOTICE.md`. New licences
 require review before extending it. Unknown registries and git sources are denied;
 only the pinned x86jit repository is explicitly allowed. Wildcard dependencies
-are denied and duplicate versions warn. These checks do not need the advisory database.
+are denied and duplicate versions warn.
+
+The advisory check uses the RustSec database and covers the full dependency graph.
+Vulnerabilities and yanked crates fail the gate. An unmaintained crate requires
+an advisory-specific ignore entry in `deny.toml` with a dated reason and a review
+date; review each entry on that date and remove or renew it with an updated reason.
+Review dates are a maintainer policy, not an automatic cargo-deny expiry.
+The current exception is RUSTSEC-2026-0192 (`ttf-parser` 0.25.1, unmaintained,
+not a known vulnerability): winit's default Wayland client-side decorations keep
+window frames on GNOME, and no safe upgrade is available. Review it on 2027-05-11.
+CI fetches the advisory database. With a cached database and no network, run:
+
+```sh
+cargo deny --all-features check --disable-fetch advisories licenses bans sources
+```
 
 ## CI
 
@@ -370,7 +384,7 @@ bash scripts/ci-gate.sh devshell
 bash scripts/ci-gate.sh fmt
 bash scripts/ci-gate.sh guard
 bash scripts/ci-gate.sh clippy
-bash scripts/ci-gate.sh deny                     # licences, bans, sources; all features
+bash scripts/ci-gate.sh deny                     # advisories, licences, bans, sources; all features
 bash scripts/ci-gate.sh tests
 bash scripts/ci-gate.sh fixtures                 # build/hash-check BIOS, FreeDOS, test386; fetch missing inputs
 bash scripts/ci-gate.sh goldens                  # slow tests (~2 min); requires fixtures

@@ -22,7 +22,7 @@ case "$step" in
             cargo clippy --locked -p cli --bin unemupc98 -- -D warnings
         ')
         ;;
-    deny) gate_command+=(cargo deny --all-features check licenses bans sources) ;;
+    deny) gate_command+=(cargo deny --all-features check advisories licenses bans sources) ;;
     tests)
         # Release builds keep a few behaviours that debug builds assert against
         # (devices ignore an earlier clock); run the device tests in both.

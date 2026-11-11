@@ -1,5 +1,13 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 
+[advisories]
+# cargo-deny 0.19 checks unmaintained crates across the full dependency graph.
+# Keep its error defaults for vulnerabilities and yanked crates; only the
+# documented advisory below is accepted until its review date.
+ignore = [
+    { id = "RUSTSEC-2026-0192", reason = "Accepted 2026-11-11: window -> winit -> sctk-adwaita -> ab_glyph -> owned_ttf_parser -> ttf-parser 0.25.1 provides Wayland client-side decorations, required for window frames on GNOME. This is an unmaintained crate, not a known vulnerability; no safe upgrade is available. Keep winit's default wayland-csd-adwaita feature. Review 2027-05-11." },
+]
+
 [licenses]
 # Keep the allowlist limited to the all-features graph: workspace AGPL and
 # permissive dependencies that can be distributed with it.
