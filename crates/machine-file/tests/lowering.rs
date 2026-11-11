@@ -233,10 +233,10 @@ fn changed_kiselev_bios_reports_pin_origin_and_defers_catalogue_rejection_to_ass
         ConfigError::FirmwareNotListed {
             sha256: actual.clone(),
             board: "ibm-5170",
-            known: "kiselev-xi8088-1.0.2 (open, vendor/kiselev-bios/fetch.sh)".into(),
+            known: "kiselev-xi8088-1.0.2 (open, vendor/kiselev-bios/fetch.sh), kiselev-xi8088-1.0.2-atreset (open, vendor/kiselev-bios/fetch.sh)".into(),
         }
     );
-    assert_eq!(error.to_string(), format!("bios image (sha256 {actual}) is not a known image for board \"ibm-5170\"; known: kiselev-xi8088-1.0.2 (open, vendor/kiselev-bios/fetch.sh)"));
+    assert_eq!(error.to_string(), format!("bios image (sha256 {actual}) is not a known image for board \"ibm-5170\"; known: kiselev-xi8088-1.0.2 (open, vendor/kiselev-bios/fetch.sh), kiselev-xi8088-1.0.2-atreset (open, vendor/kiselev-bios/fetch.sh)"));
 }
 
 #[test]

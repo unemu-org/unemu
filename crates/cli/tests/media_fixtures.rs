@@ -19,7 +19,7 @@ const PINNED_SCRIPTS: &[(&str, &str, &str)] = &[
     (
         "kiselev-bios/bios-xi8088.bin",
         include_str!("../../../vendor/kiselev-bios/fetch.sh"),
-        "check_sha256 \"$OUT\" \"",
+        "OUTPUT_SHA256=\"",
     ),
     (
         "freedos/freedos.img",

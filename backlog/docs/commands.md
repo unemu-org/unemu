@@ -23,6 +23,8 @@ UNEMUPC98_REQUIRE_FIXTURES=1 UNEMUPC98_SCHEDULER_WALL_TIMES=1 cargo test --offli
 # DOS sessions and their final console screens (requires fetched fixtures):
 UNEMUPC98_REQUIRE_FIXTURES=1 cargo test --offline -p cli --test dos_interactive_golden -- --ignored --nocapture
 UNEMUPC98_REQUIRE_FIXTURES=1 cargo test --offline -p cli --test dos_write_golden -- --ignored --nocapture
+# FreeDOS boots A: with the AT-reset BIOS and XT+ ROM, then lists readonly C:
+UNEMUPC98_REQUIRE_FIXTURES=1 cargo test --offline -p cli --test ide_freedos_golden -- --ignored --nocapture
 cargo test -p devices                        # one crate's tests
 cargo build --offline -p window --bin unemupc98-window
 cargo run --offline -p window --bin unemupc98-window # default machines/at-freedos.toml

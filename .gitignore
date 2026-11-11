@@ -39,8 +39,10 @@ target/
 /vendor/test386/test386.bin
 # Kiselev 8088_bios (Xi8088 config): the upstream clone and the assembled BIOS
 # are rebuilt from a pinned commit by vendor/kiselev-bios/fetch.sh, not checked in.
-/vendor/kiselev-bios/8088_bios/
+/vendor/kiselev-bios/8088_bios
 /vendor/kiselev-bios/bios-xi8088.bin
+/vendor/kiselev-bios/bios-xi8088-atreset.bin
+/vendor/kiselev-bios/build/
 # FreeDOS boot floppy: the fetched release archives, the boot-sector source clone,
 # and the assembled 1.44 MB image are rebuilt by vendor/freedos/fetch.sh, not
 # checked in (FreeDOS is GPL; used unmodified as a read-only fixture).
@@ -50,6 +52,7 @@ target/
 # image are rebuilt by vendor/xtide-universal-bios/fetch.sh, not checked in.
 /vendor/xtide-universal-bios/build/
 /vendor/xtide-universal-bios/ide_at-r638-8k.bin
+/vendor/xtide-universal-bios/ide_xtp-r638-ata1f0-8k.bin
 # FAT16 hard-disk data fixture: rebuilt offline by vendor/hdd/build.sh.
 /vendor/hdd/build/
 /vendor/hdd/fat16.img

@@ -130,6 +130,30 @@ moves to a 386 board for firmware reasons as well as CPU reasons.
   padding deterministically and pin both hashes. Raw hash:
   `6d5007bca3be0bffeb210969a299b67199368b4845f554b5a00715e2718dfea8`.
 
+**Configured XT+ alternative (READ: r638 source; MEASURED: FreeDOS golden).**
+The XT+ build uses 80186 instructions without `USE_AT` or `MODULE_IRQ`.
+Its `FloppyDrive_IsInt40hInstalled` checks the vector segment without calling
+it; initialization copies the old INT 13h handler into INT 40h when absent.
+This avoids the AT build's assumption that the system BIOS already installed
+INT 40h. The configured fixture selects `DEVICE_16BIT_ATA`, command base
+1F0h, control-block base 3F0h (register 6 at 3F6h), and keeps polling.
+It also selects boot drive 00h because the HDD fixture is not bootable.
+All other ROMVARS defaults remain unchanged. The recipe retains the AT output
+for AT system BIOSes. Exact source references, offsets, bytes and hashes are
+in [`vendor/xtide-universal-bios/README.md`](../../../vendor/xtide-universal-bios/README.md).
+The new profile uses a separate Kiselev compatibility image: its minimal
+`src/floppy2.inc` patch dispatches AH=00h before DL validation; AH=01h already
+bypasses it. This mirrors the IBM PC AT Technical Reference BIOS listing,
+`DSKETTE.ASM` (`OK_FUNC` / `OK_DRV`, lines 236–237): reset/status accept any
+drive number. IBM `DISK.ASM:501–508` and XUB
+`Src/Handlers/Int13h/AH0h_HReset.asm:39–44` forward DL=80h reset requests to
+the floppy handler. Upstream Kiselev rejects that request before resetting
+and sensing the FDC. The patch is GPL-3.0-or-later and changes no CMOS disk
+handling. Both BIOS outputs, built from the same pinned commit, have separate
+catalogue hashes; existing machines retain the original. See
+[`vendor/kiselev-bios/README.md`](../../../vendor/kiselev-bios/README.md).
+The resulting floppy boot and `DIR C:` are qualified in §9 item 11.
+
 ### 2.3 Bochs `rombios` and SeaBIOS: requirements (READ)
 
 - **Bochs `rombios`.**
@@ -387,7 +411,7 @@ device bead.
   - 80287 ports F0h–FFh;
   - the 8042 `FEh` reset pulse and a CPU-reset seam (CMOS 0Fh shutdown);
   - an **ATA device**;
-  - String port I/O is now available at x86jit `73ed5d6`: Real16 INS/OUTS,
+  - String port I/O landed at x86jit `73ed5d6`: Real16 INS/OUTS,
     including REP, segment overrides on OUTS and per-element IRQ boundaries.
     The historical `96a49a9` probe did not lift opcodes 6C–6F.
 - **`ibm-5160`:**
@@ -689,7 +713,7 @@ keyboard and the DIP-switch device work can land before the CPU model.
 
 Risks:
 
-- **CPU qualification for (a).** The INS/OUTS prerequisite is satisfied at
+- **CPU qualification for (a).** The INS/OUTS prerequisite landed at
   `73ed5d6`. The XUB AT build may use another unlifted opcode, which only a
   boot will show.
 - **XUB OS hooks.** XUB calls INT 15h 90h/91h with AL=00h. The Kiselev BIOS
@@ -777,7 +801,7 @@ The generic AT comes first.
    - *Depends on:* 2.
 5. **x86jit request: Real16 string port I/O.** `INS`/`OUTS` bytes and words
    with `REP`, restartable per element, filed and landed in x86jit, then
-   re-pinned here. The CPU core supports this at `73ed5d6`; machine tests
+   re-pinned here. Support landed at `73ed5d6`; machine tests
    cover short transfers. The 256-word sector transfer remains this later
    bead's acceptance test.
    - *Acceptance (here):* a machine test where `rep insw` reads 256 words from
@@ -833,6 +857,25 @@ The generic AT comes first.
 11. **Profile `ibm-5170` + XUB + IDE: FreeDOS sees `C:`.** A new description or
     preset next to the old one, with a new slow golden (floppy boot, `DIR C:`
     lists the marker).
+    - *Status:* the new ignored `ide_freedos_golden` boots FreeDOS from A:
+      and types `DIR C:` through the keyboard. `machines/at-ide.toml` extends
+      the original floppy profile with the separately pinned Kiselev AT-reset
+      image, configured XT+ at C8000h and a readonly 615/4/17 FAT16 master.
+      The completed listing contains `UNEMUHDD` and `MARKER.TXT`, 29 bytes.
+      Three measurements before pinning matched: prompt retired 14,777,577,
+      prompt FNV-1a `922f327d9dd4db6b`; after DIR retired 17,748,107 at virtual
+      time 19,000,000, final FNV-1a `ef5a10891b9ef196`. Three further runs at
+      CPU `8979fc9`, with corrected FDC INT acknowledgements, preserve every
+      pin. The golden checks the completed listing, retired instruction counts,
+      screen hashes and POST, with port tracing disabled.
+      POST is `01 02 03 04 05 06 07 08 09 10 12 20 21 22 24 25 30 31 40 41 42 43 00`.
+      XT+ detects `UNEMU ATA-2 PIO DISK`; IDENTIFY/READ MULTIPLE and floppy
+      sector reads complete without unsupported instructions.
+      No CPU or device implementation changes are included.
+      Mutations fail with XUB removed (no C:), a byte data window (XUB's
+      `REP INSW` fails at 1F0h), a renamed marker in a separately pinned image,
+      and the original unpatched BIOS (no DOS prompt). Removing IRQ14 routing
+      preserves all pins: this XT+ build polls and has no `MODULE_IRQ`.
     - *Acceptance:* the new golden is green; the old goldens are byte-identical.
     - *Depends on:* 4, 5, 7, 8, 9, 10.
 12. **`ibm-5170` completion: second 8237** at C0h–DFh with pages 89h–8Fh.

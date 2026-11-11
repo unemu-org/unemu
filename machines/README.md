@@ -6,6 +6,28 @@ Xi8088 open BIOS, MDA and VGA text cards, an unwired COM1, and a 1.44 MB
 floppy on the µPD765 controller. Its pinned images are fetched with
 `vendor/kiselev-bios/fetch.sh` and `vendor/freedos/fetch.sh`.
 
+`at-ide.toml` extends `at-freedos.toml`, selecting the separately built
+`bios-xi8088-atreset.bin` and the pinned XTIDE Universal BIOS r638 XT+ option
+ROM configured for 16-bit ATA polling at C8000h. A primary IDE channel uses
+1F0h/3F6h and IRQ14.
+Its master is `vendor/hdd/fat16.img`, geometry 615/4/17, containing the
+UNEMUHDD FAT16 volume and 29-byte `MARKER.TXT`. The disk is readonly so
+the directory-listing test cannot depend on accepted writes.
+The compatibility BIOS accepts XUB's AH=00h, DL=80h reset request using IBM
+AT semantics; the original BIOS and floppy profile keep their existing bytes.
+The ignored `ide_freedos_golden` boots A:, types `DIR C:` through the keyboard
+and checks the completed listing, prompt instruction count, screen hashes
+and POST sequence. Run it with:
+
+```sh
+UNEMUPC98_REQUIRE_FIXTURES=1 cargo test --offline -p cli --test ide_freedos_golden -- --ignored --nocapture
+```
+
+Fetch both BIOS images with `vendor/kiselev-bios/fetch.sh`, the option ROMs with
+`vendor/xtide-universal-bios/fetch.sh`, and build the HDD with
+`vendor/hdd/build.sh`. See
+[`firmware-and-machine-classes.md` §9 item 11](../backlog/docs/design/firmware-and-machine-classes.md).
+
 Every path, including `journal`, resolves relative to the layer that declares
 it. For example,
 `../vendor/freedos/freedos.img` starts in this directory, independently of the

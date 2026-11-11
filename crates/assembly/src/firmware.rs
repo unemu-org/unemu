@@ -43,6 +43,8 @@ pub enum FirmwareBase {
 /// Minimum processor generation; this does not enable another CPU backend.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum FirmwareCpu {
+    /// Intel 80186 instruction set used by XT+ firmware.
+    I80186,
     /// The currently configured Intel 80286 core.
     I80286,
     /// A catalogue requirement that the current core cannot satisfy.
@@ -52,6 +54,7 @@ pub enum FirmwareCpu {
 impl std::fmt::Display for FirmwareCpu {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
+            Self::I80186 => "80186",
             Self::I80286 => "80286",
             Self::I80386 => "80386",
         })
@@ -199,6 +202,24 @@ pub struct FirmwareEntry {
 }
 
 impl FirmwareEntry {
+    /// XTIDE Universal BIOS XT+ build configured for primary 16-bit ATA.
+    ///
+    /// XTIDE Universal BIOS, RomVars.inc, IDEVARS and DEVICE_16BIT_ATA;
+    /// FloppyDrive.asm, XT build: installs the original floppy vector safely.
+    /// See `backlog/docs/design/firmware-and-machine-classes.md` §2.2.
+    pub const XUB_R638_XTP_ATA1F0: Self = Self {
+        id: "xub-r638-xtp-ata1f0",
+        cpu_min: FirmwareCpu::I80186,
+        sha256: "54975501e6887c836b8d57e7aad78421e745a9b71e250f94d5d1f9631eab1513",
+        status: FirmwareStatus::Tested,
+        distribution: FirmwareDistribution::Open {
+            fetch: "vendor/xtide-universal-bios/fetch.sh",
+            license: "GPL-2.0-only",
+            provenance: "XTIDE Universal BIOS r638 ide_xtp.bin (16-bit ATA, polling, boot A:)",
+        },
+        ..Self::XUB_R638_AT
+    };
+
     /// Padded and checksummed XTIDE Universal BIOS AT build.
     ///
     /// XTIDE Universal BIOS, Main.asm, USE_AT build: primary ATA task file at
@@ -254,6 +275,21 @@ pub const KISELEV_XI8088: FirmwareEntry = FirmwareEntry {
         provenance: "skiselev/8088_bios a4af458a72bc33c4be066b33bd76e8af2b24111c (MACHINE_XI8088)",
     },
     status: FirmwareStatus::Tested,
+};
+
+/// Xi 8088 with AT diskette reset semantics, built by the same pinned recipe.
+/// IBM PC AT Technical Reference, BIOS listing, DSKETTE (OK_FUNC/OK_DRV)
+/// permits reset/status calls regardless of DL. See `vendor/kiselev-bios/README.md`.
+pub const KISELEV_XI8088_ATRESET: FirmwareEntry = FirmwareEntry {
+    id: "kiselev-xi8088-1.0.2-atreset",
+    sha256: "61589573c9809273198b137d9419c87242b0a5f63c2ad834a9565950c3d6becc",
+    distribution: FirmwareDistribution::Open {
+        fetch: "vendor/kiselev-bios/fetch.sh",
+        license: "GPL-3.0-or-later",
+        provenance: "skiselev/8088_bios a4af458a72bc33c4be066b33bd76e8af2b24111c (MACHINE_XI8088), at-reset.patch",
+    },
+    status: FirmwareStatus::Tested,
+    ..KISELEV_XI8088
 };
 
 /// A hash accepted only through the explicit run option.
@@ -649,7 +685,7 @@ mod tests {
     use super::*;
     use crate::{assemble, assemble_with_options, AssemblyError, ImageSource};
 
-    const KNOWN: &str = "kiselev-xi8088-1.0.2 (open, vendor/kiselev-bios/fetch.sh)";
+    const KNOWN: &str = "kiselev-xi8088-1.0.2 (open, vendor/kiselev-bios/fetch.sh), kiselev-xi8088-1.0.2-atreset (open, vendor/kiselev-bios/fetch.sh)";
 
     fn config() -> MachineConfig {
         crate::bios(vec![0; 32768], Some(vec![0; 1_474_560]))
@@ -837,6 +873,100 @@ mod tests {
             .find_map(|line| line.strip_prefix("OUTPUT_SHA256=\"")?.strip_suffix('"'))
             .expect("fixture script must pin its output hash");
         assert_eq!(entry.sha256, hash);
+    }
+
+    #[test]
+    fn configured_xtp_catalogue_entry_matches_recipe_and_fixture() {
+        let entry = FirmwareEntry::XUB_R638_XTP_ATA1F0;
+        assert_eq!(entry.id, "xub-r638-xtp-ata1f0");
+        assert_eq!(entry.kind, FirmwareKind::OptionRom);
+        assert_eq!(entry.size, 8192);
+        assert_eq!(entry.base, FirmwareBase::Suggested(0xC8000));
+        assert_eq!(entry.cpu_min, FirmwareCpu::I80186);
+        assert_eq!(entry.provides, &[FirmwareService::FixedDisk]);
+        assert_eq!(entry.requires, &[FirmwarePart::AtaPrimary]);
+        assert_eq!(entry.boards, &["ibm-5170"]);
+        assert_eq!(entry.status, FirmwareStatus::Tested);
+        assert!(BoardModel::Ibm5170.firmware_catalogue().contains(&entry));
+        let script = include_str!("../../../vendor/xtide-universal-bios/fetch.sh");
+        let hash = script
+            .lines()
+            .find_map(|line| line.strip_prefix("XTP_OUTPUT_SHA256=\"")?.strip_suffix('"'))
+            .expect("fixture recipe pins its configured XT+ output");
+        assert_eq!(entry.sha256, hash);
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../vendor/xtide-universal-bios/ide_xtp-r638-ata1f0-8k.bin");
+        let bytes = match std::fs::read(&path) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                assert!(
+                    std::env::var_os("UNEMUPC98_REQUIRE_FIXTURES").as_deref()
+                        != Some(std::ffi::OsStr::new("1")),
+                    "missing fixture {}; run vendor/xtide-universal-bios/fetch.sh",
+                    path.display()
+                );
+                eprintln!("skipping: missing fixture {}", path.display());
+                return;
+            }
+            Err(error) => panic!("cannot read {}: {error}", path.display()),
+        };
+        assert_eq!(bytes.len() as u64, entry.size);
+        assert_eq!(format!("{:x}", Sha256::digest(&bytes)), entry.sha256);
+        assert_eq!(&bytes[..3], &[0x55, 0xAA, 16]);
+        assert_eq!(bytes[0x49], 0, "boot from floppy, not the data-only HDD");
+        assert_eq!(&bytes[0x4E..0x54], &[0xF0, 1, 0xF0, 3, 0, 0]);
+        assert_eq!(bytes[0x40] & 1, 0, "preserve upstream lite mode");
+        assert_eq!(bytes[0x41] & 0x10, 0, "XT+ has no IRQ module");
+        assert!(bytes[6629..8191].iter().all(|&byte| byte == 0));
+        assert_eq!(bytes[8191], 0x77);
+        assert_eq!(
+            bytes.iter().fold(0u8, |sum, byte| sum.wrapping_add(*byte)),
+            0
+        );
+    }
+
+    #[test]
+    fn atreset_catalogue_entry_matches_recipe_and_fixture() {
+        let entry = KISELEV_XI8088_ATRESET;
+        assert_eq!(entry.id, "kiselev-xi8088-1.0.2-atreset");
+        assert!(BoardModel::Ibm5170.firmware_catalogue().contains(&entry));
+        assert_eq!(entry.kind, KISELEV_XI8088.kind);
+        assert_eq!(entry.size, KISELEV_XI8088.size);
+        assert_eq!(entry.base, KISELEV_XI8088.base);
+        assert_eq!(entry.scan_window, KISELEV_XI8088.scan_window);
+        assert_eq!(entry.provides, KISELEV_XI8088.provides);
+        assert_eq!(entry.capabilities, KISELEV_XI8088.capabilities);
+        assert_eq!(entry.requires, KISELEV_XI8088.requires);
+        assert_eq!(entry.cpu_min, KISELEV_XI8088.cpu_min);
+        assert_eq!(entry.boards, KISELEV_XI8088.boards);
+        let script = include_str!("../../../vendor/kiselev-bios/fetch.sh");
+        let hash = script
+            .lines()
+            .find_map(|line| {
+                line.strip_prefix("ATRESET_OUTPUT_SHA256=\"")?
+                    .strip_suffix('"')
+            })
+            .expect("fixture recipe pins its patched BIOS output");
+        assert_eq!(entry.sha256, hash);
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../vendor/kiselev-bios/bios-xi8088-atreset.bin");
+        let bytes = match std::fs::read(&path) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                assert!(
+                    std::env::var_os("UNEMUPC98_REQUIRE_FIXTURES").as_deref()
+                        != Some(std::ffi::OsStr::new("1")),
+                    "missing fixture {}; run vendor/kiselev-bios/fetch.sh",
+                    path.display()
+                );
+                eprintln!("skipping: missing fixture {}", path.display());
+                return;
+            }
+            Err(error) => panic!("cannot read {}: {error}", path.display()),
+        };
+        assert_eq!(bytes.len() as u64, entry.size);
+        assert_eq!(format!("{:x}", Sha256::digest(&bytes)), entry.sha256);
+        check_entry_requirements(&config(), BoardModel::Ibm5170, &entry, None).unwrap();
     }
 
     #[test]

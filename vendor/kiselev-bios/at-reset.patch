@@ -1,0 +1,16 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+--- a/src/floppy2.inc
++++ b/src/floppy2.inc
+@@ -89,6 +89,12 @@
+ 	mov	bx,biosdseg
+ 	mov	ds,bx
+ 
++; IBM PC AT Technical Reference, BIOS listing, DSKETTE (OK_FUNC/OK_DRV):
++; reset and status accept any DL, including fixed-disk reset requests.
++; Status already bypasses drive validation below.
++	cmp	ah,00h
++	je	int_13_fn00		; Reset disk system regardless of DL
++
+ ; fn01 doesn't need drive type
+ 
+ 	cmp	ah,01h

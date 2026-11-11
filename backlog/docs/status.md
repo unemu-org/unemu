@@ -47,9 +47,22 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   fixed disks use explicit CHS geometry and volatile/readonly `SectorMedia`.
   Primary IDE splits the FDC decode at 3F6h. An assembled Bare rig transfers all
   256 IDENTIFY words with `rep insw`; firmware boards require a ROM declaring
-  fixed-disk services, even for an empty IDE card. The XTIDE fixture and its
-  `xub-r638-at` entry exist; option-ROM validation enforces its primary ATA
-  resources and catalogue services. The IDE boot profile remains deferred. CMOS
+  fixed-disk services, even for an empty IDE card. The fixture recipe retains
+  the AT build and adds configured XT+ (`xub-r638-xtp-ata1f0`), using 16-bit
+  ATA polling. `machines/at-ide.toml` loads XT+ at C8000h with a readonly
+  615/4/17 FAT16 master. **FreeDOS now boots from A: and lists C:** the separate
+  Kiselev `bios-xi8088-atreset.bin` accepts XUB's DL=80h reset request using
+  IBM AT semantics. The upstream BIOS remains unchanged for existing machines.
+  The ignored `ide_freedos_golden` types `DIR C:` through the keyboard and
+  checks label `UNEMUHDD`, `MARKER.TXT` (29 bytes), the completed prompt,
+  screen hashes and POST. Three runs before pinning matched: 14,777,577 retired
+  at the first shell prompt, 17,748,107 after DIR, final screen FNV-1a
+  `ef5a10891b9ef196` (rechecked unchanged at CPU pin `8979fc9`, including the
+  corrected FDC INT acknowledgements). XT+ detects `UNEMU ATA-2 PIO DISK`.
+  No emulator device or CPU fix is included. The golden rejects missing XUB,
+  a byte data window, a renamed marker
+  in a copied HDD, and the original BIOS; disconnecting IRQ14 preserves its
+  pins because this build polls. CMOS
   fixed-disk types follow the provider: option ROMs (including XUB)
   leave 12h/19h/1Ah zero; a hash-matched system BIOS that provides fixed-disk
   and declares `cmos-drive-types` derives IBM AT types 1–14/16–22 and the

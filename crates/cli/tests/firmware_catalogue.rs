@@ -42,7 +42,7 @@ fn cli_escape_flag_reaches_assembly_and_prints_one_hash_warning() {
     let rejected = run(false);
     assert!(!rejected.status.success());
     assert!(rejected.stdout.is_empty());
-    assert_eq!(String::from_utf8(rejected.stderr).unwrap().lines().next().unwrap(), "Error: invalid configuration: bios image (sha256 4788bdc606fe61e142d4670b3c5eb1ad2827c84753fec7cdba242319476f4bc0) is not a known image for board \"ibm-5170\"; known: kiselev-xi8088-1.0.2 (open, vendor/kiselev-bios/fetch.sh)");
+    assert_eq!(String::from_utf8(rejected.stderr).unwrap().lines().next().unwrap(), "Error: invalid configuration: bios image (sha256 4788bdc606fe61e142d4670b3c5eb1ad2827c84753fec7cdba242319476f4bc0) is not a known image for board \"ibm-5170\"; known: kiselev-xi8088-1.0.2 (open, vendor/kiselev-bios/fetch.sh), kiselev-xi8088-1.0.2-atreset (open, vendor/kiselev-bios/fetch.sh)");
     let accepted = run(true);
     assert!(accepted.status.success(), "{:?}", accepted);
     assert_eq!(accepted.stdout, b"Z");
