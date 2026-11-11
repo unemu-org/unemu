@@ -75,7 +75,17 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   `media generations` and `verify` inspect under shared locks, with an explicit
   no-lock report when read-only storage has no lock entry;
   `verify --repair-tail` and `rollback --to N` require synchronized full backups and
-  exclusive locks. Closed/recovered markers do not imply a healthy filesystem.
+  exclusive locks. `media commit`/`compact` exports a verified immutable image;
+  configured retention keeps a verified anchor and the requested closed history.
+  Acceptance tests cover full volatile/journal guest results and replay,
+  failure isolation and rollback through fresh guest DMA. The ignored fixture
+  guard checks pinned hashes and vendor directory entries across volatile
+  BIOS/FreeDOS/DOS-write runs; golden expectations remain unchanged.
+  macOS/APFS sync/lock/publication paths were measured; Linux storage behavior
+  and physical power-loss durability remain assumptions under the documented
+  storage contract. See [persistence evidence](design/persistent-media.md#acceptance-evidence-appendix)
+  and the [runnable walkthrough](commands.md#journal-session-walkthrough).
+  Closed/recovered markers do not imply a healthy filesystem.
 - **Machines are declarative.** A `MachineConfig` (the `assembly` crate) is built by one
   `assemble()` and run under a `RunPolicy`; presets replace the old hand-written runners.
 - **CPU pin:** `73ed5d6ef4fc68f91cdad10b1e7c1c370363d030` (x86jit `main`).
@@ -160,8 +170,8 @@ was reported to the CPU core project.
   transfer is performed. Assembly coalesces adjacent MMIO device windows so
   those crossings reach the bus, but mixed RAM/MMIO accesses need the upstream
   CPU fix tracked by `xj-ir6.12 (x86jit)`.
-- Journal selection is available in machine-file floppy tables, but frontend
-  machine-file selection remains deferred.
+- Journal selection is available in machine-file floppy tables. The CLI and
+  window frontends do not load machine files yet; that integration is in progress.
   Immutable-image export (`media commit`/`compact`) and atomic retention pruning
   are implemented. Retention runs only after a durable closed generation, keeps
   a verified anchor bound to the original base, and reports maintenance failures

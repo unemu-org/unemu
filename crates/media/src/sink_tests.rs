@@ -34,6 +34,7 @@ struct Model {
     durable: Vec<u8>,
     events: Vec<Event>,
     fail_on: Option<usize>,
+    fail_errno: Option<i32>,
     write_budget: Option<usize>,
     short_limit: Option<usize>,
     interrupted: bool,
@@ -47,7 +48,10 @@ impl Model {
     fn step(&mut self, event: Event) -> io::Result<()> {
         self.events.push(event);
         if self.fail_on == Some(self.events.len() - 1) {
-            return Err(io::Error::other("injected operation failure"));
+            return Err(self
+                .fail_errno
+                .map(io::Error::from_raw_os_error)
+                .unwrap_or_else(|| io::Error::other("injected operation failure")));
         }
         Ok(())
     }
@@ -273,6 +277,28 @@ fn creation_and_each_command_have_ordered_barriers() {
 }
 
 #[test]
+fn mounted_sector_access_never_reads_or_seeks_host_storage() {
+    let mut fs = model_fs(None);
+    let mut medium = mount(&mut fs, SinkStatus::default()).unwrap();
+    fs.io.0.borrow_mut().events.clear();
+    assert_eq!(medium.read_sector(0), [0; SECTOR_LEN]);
+    assert_eq!(medium.read_sector(1), [0; SECTOR_LEN]);
+    assert!(fs.io.0.borrow().events.is_empty());
+    medium.write_batch(&batch(7));
+    assert_image(&medium, 7);
+    assert_eq!(
+        fs.io.0.borrow().events,
+        [
+            Event::Write(FRAME_LEN),
+            Event::Write(FRAME_LEN),
+            Event::Write(FRAME_LEN),
+            Event::Flush,
+            Event::Sync,
+        ]
+    );
+}
+
+#[test]
 fn short_and_interrupted_writes_never_duplicate_bytes() {
     let mut expected_fs = model_fs(None);
     let mut expected = mount(&mut expected_fs, SinkStatus::default()).unwrap();
@@ -344,6 +370,98 @@ fn failed_flush_sync_and_zero_write_preserve_guest_data_and_poison_output() {
         assert_eq!(media.finish(), Err(failure));
         assert_eq!(fs.io.0.borrow().events.len(), operations);
         assert_eq!(fs.io.0.borrow().durable.len(), HEADER_LEN);
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn enospc_and_eio_latch_without_write_protection_or_lost_memory_writes() {
+    for errno in [libc::ENOSPC, libc::EIO] {
+        for operation in [0, 4] {
+            let mut fs = model_fs(None);
+            let status = SinkStatus::default();
+            let mut medium = mount(&mut fs, status.clone()).unwrap();
+            {
+                let mut model = fs.io.0.borrow_mut();
+                model.events.clear();
+                model.fail_on = Some(operation);
+                model.fail_errno = Some(errno);
+            }
+            medium.write_batch(&batch(5));
+            assert_image(&medium, 5);
+            let failure = status.failure().unwrap();
+            assert!(failure
+                .message
+                .contains(&io::Error::from_raw_os_error(errno).to_string()));
+            assert_eq!(failure.last_confirmed_sequence, 0);
+            let events = fs.io.0.borrow().events.clone();
+            medium.write_batch(&batch(7));
+            assert_image(&medium, 7);
+            assert_eq!(status.failure(), Some(failure.clone()));
+            assert_eq!(medium.finish(), Err(failure));
+            assert_eq!(fs.io.0.borrow().events, events);
+            assert_eq!(fs.io.0.borrow().durable.len(), HEADER_LEN);
+        }
+    }
+}
+
+#[test]
+fn lost_or_reordered_unsynchronized_frames_never_half_replay_a_command() {
+    let mut fs = model_fs(None);
+    let status = SinkStatus::default();
+    let mut medium = mount(&mut fs, status.clone()).unwrap();
+    medium.write_batch(&batch(3));
+    medium.checkpoint().unwrap();
+    let confirmed = fs.io.0.borrow().durable.clone();
+    let previous = medium.image().to_vec();
+    {
+        let mut model = fs.io.0.borrow_mut();
+        model.events.clear();
+        model.fail_on = Some(4);
+    }
+    medium.write_batch(&batch(9));
+    assert_eq!(status.failure().unwrap().operation, "command/end sync");
+    assert_eq!(status.failure().unwrap().last_confirmed_sequence, 3);
+    assert_eq!(fs.io.0.borrow().durable, confirmed);
+    let updated = medium.image().to_vec();
+    let unconfirmed = fs.io.0.borrow().bytes.get_ref()[confirmed.len()..].to_vec();
+    assert_eq!(unconfirmed.len(), 3 * FRAME_LEN);
+    // A failed barrier may leave any subset/order of the new frames, but cannot
+    // revoke the earlier successful barrier under the storage contract.
+    for order in [
+        [0, 1, 2],
+        [0, 2, 1],
+        [1, 0, 2],
+        [1, 2, 0],
+        [2, 0, 1],
+        [2, 1, 0],
+    ] {
+        for mask in 0..8 {
+            let mut suffix = Vec::new();
+            for frame in order {
+                if mask & (1 << frame) != 0 {
+                    suffix.extend_from_slice(
+                        &unconfirmed[frame * FRAME_LEN..(frame + 1) * FRAME_LEN],
+                    );
+                }
+            }
+            for cut in 0..=suffix.len() {
+                let mut crashed = confirmed.clone();
+                crashed.extend_from_slice(&suffix[..cut]);
+                let recovered = scan(&crashed, &[0; 2 * SECTOR_LEN], (2 * SECTOR_LEN) as u64);
+                assert!(!matches!(recovered.report.status, Status::Refused(_)));
+                let expected = if order == [0, 1, 2] && mask == 7 && cut == suffix.len() {
+                    &updated
+                } else {
+                    &previous
+                };
+                assert_eq!(
+                    recovered.image.as_ref(),
+                    Some(expected),
+                    "order {order:?}, mask {mask}, cut {cut}"
+                );
+            }
+        }
     }
 }
 

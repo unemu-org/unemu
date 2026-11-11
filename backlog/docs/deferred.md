@@ -110,10 +110,17 @@ Things **deliberately not implemented**. If something seems missing and is liste
   rollback and immutable raw-image export (`media commit`/`compact`) are available
   with shared/exclusive stable locking. Retention atomically replaces a verified
   anchor plus retained history at closed boundaries; the positive count includes
-  the anchor.
-- **Still deferred:** Serialized journal configuration and frontend selection flags;
-  current selection uses Rust `MachineConfig` data. Physical power-cut validation
-  and support beyond the Unix storage contract remain unmeasured.
+  the anchor. Failure isolation, complete volatile/journal result comparisons,
+  rollback through guest DMA and volatile fixture hash/namespace protection have
+  executable acceptance evidence in the persistence design appendix. TOML/YAML
+  machine-file floppy drive tables accept `write = "journal"` with an explicit
+  journal path, alongside Rust `MachineConfig` selection.
+- **Still deferred:** Frontend journal-selection flags. The CLI and window
+  frontends do not load machine files yet; that integration is in progress.
+  The runnable walkthrough uses Rust configuration. Physical power-cut validation,
+  Linux storage measurement in this session and support beyond the local Unix
+  storage contract remain unmeasured; see the design's Supported host guarantees
+  section.
 - **Revisit when:** Frontend selection or another host platform is needed.
 - **Tracked in:** [`design/persistent-media.md`](design/persistent-media.md),
   §Offline commands and §Retention anchor.

@@ -1,6 +1,6 @@
 # Recoverable persistent floppy media
 
-Status: accepted design; offline tools, immutable export and retention implemented.
+Status: implemented and validated; offline tools, immutable export and retention available.
 The maintainer approved the defaults on 2026-11-10.
 The version-1 codec and recovery scanner are implemented in `crates/media`;
 the host-independent device media contract and its in-memory implementation
@@ -813,14 +813,13 @@ or changed by this documentation-only spike.
    slow suite with volatile explicitly selected and compare fixture hashes and
    directory entries before/after; no sidecars may appear beside fixtures.
 
-For the implementation, record red/green evidence or a targeted mutation for
-each new behavioral test. The two-run persistence check is expected to fail
-with today's load-once/no-output behavior (**READ**, not run against the current
-Rust baseline in this spike). Suppressing command mirroring/replay must fail
-the cross-run test; bypassing the sink latch must fail fault tests; skipping
-the anchor snapshot must fail retention tests. Existing goldens are regression
-evidence, not red tests for a feature that defaults off. Do not claim the
-proposed tests already prove the Rust integration.
+Record red/green evidence or a targeted mutation for each new behavioral test.
+The original design predicted that the two-run check would fail against the
+former load-once/no-output behavior; that prediction was **READ**, not an executed
+red test. Current executable evidence is listed in the appendix. Suppressing
+command mirroring/replay must fail the cross-run test; bypassing the sink latch
+must fail fault tests; skipping the anchor snapshot must fail retention tests.
+Existing goldens are regression evidence for the unchanged volatile default.
 
 ### Session wiring evidence
 
@@ -1014,9 +1013,9 @@ other operating systems/filesystems, storage latency or guest filesystem health.
 
 ## Implementation beads
 
-These are proposed narrow work items for the supervisor to file/link, not a
-second task board. No tracker state was changed by this spike. Each item needs
-its own tests and the normal project gates; dependencies refer to this list.
+Historical implementation breakdown, not a second task board. Items 2–7 are
+implemented; item 8 is validated by the evidence below. Current task lifecycle
+remains in beads. Dependencies refer to this design breakdown.
 
 1. **Re-scope upc-sk3.1: Recoverable journal-backed floppy persistence.** Make
    the existing write-back bead the umbrella for this contract, with volatile
@@ -1058,15 +1057,170 @@ its own tests and the normal project gates; dependencies refer to this list.
    full tests above, targeted mutation/red-green evidence, platform sync/locking
    validation, fixture hashes/absence of sidecars and full-result deterministic
    comparisons; document actual supported host guarantees and command examples.
-   Run slow fixture goldens in the implementation gate, not this spike.
-   Dependencies: 5–7.
+   **Done:** evidence appendix and supported host guarantees below record the
+   acceptance audit, regression tests and targeted mutations. The required slow
+   fixture gate runs without updating golden expectations. Dependencies: 5–7.
 
-Open maintainer choices, with defaults selected so implementation is actionable:
-confirm ten retained generations, synchronous per-command durability (including
-its latency), mandatory backups for destructive offline tools, and replay/seal
-of an interrupted command-complete tip on normal mount. The alternative for
-the last choice is to require explicit repair before mounting; do not silently
-change this behavior during implementation. Host/filesystem support and real
-power-cut validation remain work to establish, not assumptions to advertise as
-measured guarantees. The one-day estimate applies to this design spike, not
-to implementing all eight work items.
+Approved defaults are ten retained generations, synchronous per-command
+synchronization, mandatory backups for destructive offline tools, and replay/seal
+of an interrupted command-complete tip on normal mount. A requirement for
+explicit repair before normal mounting would be a contract change. Measured
+macOS/APFS support and the remaining host/storage assumptions are listed below.
+Real power-cut validation remains deferred. The original one-day estimate
+applied to the design spike, not implementation of this breakdown.
+
+## Supported host guarantees
+
+**MEASURED (2026-11-10):** this validation ran on macOS; `statfs` identified
+APFS for both the checkout and the temporary test directories. Real-file tests
+created, synchronized, closed and reopened journals, recovered interrupted tips,
+excluded a second writer and offline tools, and exported images through
+no-clobber hard-link publication. Renaming retained journals and syncing their
+directories succeeded. Injected errors establish operation order and old-or-new
+valid publication outcomes in the software model. None of these measurements
+is a power-loss test.
+
+**READ:** `sink.rs::platform_sync` calls `File::sync_all` for files and directories.
+The installed Rust 1.99.1 standard-library source (`sys/fs/unix.rs`, `File::fsync`)
+uses `fcntl(F_FULLFSYNC)` on Apple targets and retries interrupted calls;
+`File::try_lock`/`try_lock_shared` use nonblocking `flock`. Thus the passing real-file
+tests exercise those platform implementations; this audit did not trace syscalls
+or independently inspect a device cache. Journal creation and immutable exports
+use `std::fs::hard_link`; retention replaces the journal by same-directory rename.
+A successful export is checked byte for byte, and occupied destinations survive.
+
+On Linux the same code calls `File::sync_all` (`fsync` in Rust's Unix implementation),
+nonblocking `flock` and same-directory hard links/rename. Linux storage behavior
+is **ASSUMED, not measured in this macOS session**. The `ubuntu-latest` Forgejo
+job is an x86-64 Linux container; its workspace tests exercise
+`real_file_round_trip_checkpoints_finish_and_empty_generations`,
+`real_lock_excludes_second_open_and_drop_only_releases_handles`,
+`header_publication_never_replaces_an_existing_destination`,
+`commit_records_real_write_verification_and_publication_barriers`,
+`export_no_clobber_handles_destination_created_at_publication`,
+`retention_runs_after_checkpoint_and_finish_and_continues_on_replaced_inode`,
+and `exclusive_session_excludes_all_tools_and_shared_inspections_coexist`.
+This identifies CI coverage, not an assertion that a new remote CI run was observed.
+Permission tests may skip when the runner bypasses Unix permission bits.
+
+**ASSUMED storage contract:** local Unix storage honors successful file/directory
+syncs, preserves previously acknowledged bytes, and implements atomic same-directory
+namespace operations and working advisory locks. All writers must cooperate with
+the stable `<journal>.lock`; nobody deletes it or replaces mounted inputs. Network
+filesystems, other filesystems, non-Unix hosts, disk/controller caches, physical
+power cuts and storage latency bounds were not validated. Power-loss durability
+is assumed under this storage contract; it is not a measured guarantee. Host
+synchronization errors, including injected ENOSPC and EIO, stop persistence at the
+next checked frontend boundary, and the failed command's durability is uncertain.
+The first failure and last confirmed command sequence remain available; completed
+guest work still matches the corresponding volatile prefix.
+
+**MEASURED determinism scope:** the expanded assembly comparison uses full
+64 KiB RAM, all exposed general registers/RIP/CS, IF/interrupt readiness and pending
+IRQ, completed steps, retired instructions, virtual time/PIT clock, every device
+snapshot and IRQ level, and complete per-device/open-bus access traces (zero dropped
+events). Guest stores also capture final FLAGS and DS/ES/SS in compared RAM.
+The same guest performs multi-sector and partial-sector writes and a write that
+commits a sector before an abnormal missing-sector result. Every sector of the
+final controller image is compared with the volatile image and explicit expected
+bytes, then with scanner replay and a freshly reopened journal. The failing-output
+comparison checks the complete guest prefix and final media after subsequent
+writes, and refuses another checked run or a seal. Private CPU implementation
+state is outside the public CPU seam and is not independently inspected.
+Real synchronous journal I/O adds host latency in these comparisons without
+adding virtual time; no artificial sleep or timing threshold is used.
+
+The ignored fixture protection test runs the BIOS POST, FreeDOS prompt and DOS
+file-write paths with `WriteMode::Volatile` selected explicitly. It checks the
+pinned BIOS, FreeDOS and test386 SHA-256 values read from the included vendor
+build scripts; the HDD and XTIDE output pins are read from their scripts and
+checked whenever those auxiliary fixtures exist initially. A missing, ambiguous
+or malformed output pin fails with a fixture-specific script-format diagnostic. It compares
+recursive vendor directory entries and each present fixture's resolved parent
+tree before/after every run, covering worktree symlinks and sidecars of any name.
+Missing boot/CPU inputs fail under `UNEMUPC98_REQUIRE_FIXTURES=1`, otherwise the
+test skips like other goldens. Auxiliary fixtures are not required by the CI
+fixture-fetch gate and are not silently fetched by this test. All present pins
+must remain readable and unchanged. Existing golden expectations stay unchanged.
+This binary spawns no process and holds no journal lock.
+
+## Acceptance evidence appendix
+
+These are executable evidence locations, not a test-count inventory. File paths
+are relative to the repository root; names identify Rust tests in those files.
+**READ** identifies the assertion being audited; the local build/fast/slow gates
+provide **MEASURED** execution evidence. Filesystem fault tests are models, not
+physical disk-failure or power-cut measurements.
+
+| Acceptance requirement | File | Tests / evidence |
+| --- | --- | --- |
+| Format: exact header and every frame kind, endian/checksum bytes | `crates/media/tests/journal.rs` | `exact_header_vector_and_round_trip`, `exact_sector_vector_and_round_trip`, `exact_command_end_vector_and_round_trip`, `exact_generation_end_vector_and_round_trip` |
+| Format: reserved/unknown values, length, hash, base/geometry binding | `crates/media/tests/journal.rs` | `header_binding_sizes_and_reserved_fields_are_enforced`, `header_rejects_a_matching_non_sector_aligned_base`, `header_version_and_length_are_checked_before_self_hash`, `frame_sizes_reserved_fields_and_unknown_encodings_are_enforced`, `every_single_byte_corruption_is_detected` |
+| Format: sequence gaps/duplicates, generation transitions, LBA overflow/bounds, counts | `crates/media/tests/journal.rs` | `command_and_generation_grammar_is_enforced`, `final_grammar_failure_is_reported_as_uncertain_tail` |
+| Format: zero-sector exception and canonical anchors | `crates/media/tests/journal.rs` | `empty_anchor_is_the_only_legal_zero_sector_command`, `anchor_grammar_rejects_noncanonical_snapshots` |
+| Format: integer exhaustion without wrapping | `crates/media/src/scan.rs` | `exhausted_counters_never_wrap`; anchor-generation exhaustion also in `journal.rs::anchor_grammar_rejects_noncanonical_snapshots` |
+| Format: every header/command/marker truncation, atomic command replay | `crates/media/tests/journal.rs` | `every_truncation_replays_only_complete_commands`, `replay_preserves_order_padding_and_unchanged_sectors`, `streaming_matches_slice_at_every_cut_and_bounds_read_requests` |
+| Format: every anchor prefix requires complete synthetic command and marker | `crates/media/tests/journal.rs` | `anchor_round_trip_and_every_incomplete_prefix` |
+| Format: refuse damaged sealed history despite later markers | `crates/media/tests/journal.rs` | `torn_frame_with_later_marker_refuses_at_every_cut`, `later_marker_detection_is_conservative_and_uses_only_fixed_stride`, `refused_report_with_a_committed_tip_never_proposes_recovery` |
+| Writer: record write/flush/sync/publication/directory-sync/lock order | `crates/media/src/sink_tests.rs` | `creation_and_each_command_have_ordered_barriers`, `model_lock_contention_is_latched_before_journal_access` |
+| Writer: fail every creation operation and every partial header/command write | `crates/media/src/sink_tests.rs` | `every_creation_operation_failure_aborts_mount_and_releases_lock`, `header_failures_leave_no_published_journal_and_allow_retry`, `every_partial_command_failure_preserves_memory_and_latches_first_error` |
+| Writer: interrupted/short/zero writes and failed flush/sync | `crates/media/src/sink_tests.rs` | `short_and_interrupted_writes_never_duplicate_bytes`, `failed_flush_sync_and_zero_write_preserve_guest_data_and_poison_output` |
+| Writer: recovery truncation/seal failures and repeated checkpoint/finish | `crates/media/src/sink_tests.rs` | `repair_truncates_and_syncs_before_sealing_and_refuses_every_io_failure`, `failed_checkpoint_or_finish_never_seals_again` |
+| Writer: lost/reordered unsynchronized frames, every suffix cut, confirmed-prefix preservation | `crates/media/src/sink_tests.rs` | `lost_or_reordered_unsynchronized_frames_never_half_replay_a_command`; enumerates frame subsets/permutations and byte prefixes after failed sync |
+| Device isolation: normal/multi-track command batches and result/IRQ/read bytes | `crates/devices/src/upd765.rs` | `media_contract_batches_commands_in_transfer_order`, `write_data_commits_memory_then_reads_back_identical` (MockBus) |
+| Device isolation: partial TC padding and abnormal overrun/no-data/end-of-cylinder writes | `crates/devices/src/upd765.rs` | `media_contract_partial_sector_is_padded_in_one_batch`, `media_contract_abnormal_completion_keeps_committed_sectors` |
+| Device isolation: zero-byte, invalid/protected rejection emits no batch | `crates/devices/src/upd765.rs` | `media_contract_empty_and_invalid_writes_emit_no_batch`, `media_contract_read_only_rejects_without_a_batch` |
+| Device isolation: reset retains media/output state; incomplete writes discarded | `crates/devices/src/upd765.rs`; `crates/cli/tests/media_device.rs` | `media_contract_reset_preserves_media_and_discards_uncompleted_write`; `failing_sink_on_mock_bus_keeps_dma_results_irq_padding_and_reset_state` uses a thin test media bridge to a real failing sink, with volatile result/snapshot/trace/IRQ comparison |
+| Mount: the base pin is checked on the mounted bytes before a journal is opened | `crates/machine-file/tests/journal.rs`; `crates/assembly/src/assemble.rs` | `pinned_base_rewritten_after_load_is_refused_before_journal_creation`, `existing_journal_with_changed_base_reports_pin_mismatch_before_binding`; **READ:** `resolve_file_sources` hashes the loaded bytes before mounting drives |
+| Two-run integration: actual guest DMA, full/partial sector, finish/drop, immutable base, reason-3 interruption | `crates/assembly/tests/persistence.rs` | `guest_write_survives_fresh_assembly_including_partial_sector_and_interruption` |
+| Tools: A/B/C overwrite, rollback to A, guest read, reappend without discarded data | `crates/assembly/tests/persistence.rs`; `crates/cli/tests/media_tools.rs` | `rollback_then_reappend_is_visible_through_fresh_guest_dma_reads`; `rollback_remount_reappend_reuses_next_generation_and_discards_tip` |
+| Tools: generation 0, pruned/unavailable/open targets, backups and output aliases | `crates/cli/tests/media_tools.rs` | `rollback_zero_is_exactly_the_header`, `rollback_unavailable_ids_are_config_errors_without_backup`, `rollback_refuses_an_unsealed_target_and_backs_up_a_torn_suffix`, `backup_aliases_and_reserved_names_are_refused_without_changing_inputs`, `commit_refuses_input_aliases_open_tips_and_unavailable_targets` |
+| Tools: shared/exclusive lock exclusion, inspect immutability, exit classes/repair | `crates/cli/tests/media_tools.rs` | `exclusive_session_excludes_all_tools_and_shared_inspections_coexist`, `inspection_keeps_read_only_inputs_and_creation_leftovers_untouched`, `verify_exit_contract_covers_clean_tail_tip_damage_base_and_missing`, `repair_backs_up_full_torn_tip_then_seals_as_interrupted` |
+| Tools: production backup barriers before mutation, every backup/truncate/sync failure | `crates/media/src/offline_tests.rs` | `rollback_records_production_backup_truncate_and_sync_order`, `repair_records_production_backup_barriers_before_normal_recovery`, `production_backup_failures_leave_declared_invalid_backup_and_no_mutation`, `production_rollback_stops_on_failed_truncate_or_sync_with_journal_context` |
+| Export: every retained generation equals replay; base and journal unchanged | `crates/cli/tests/media_tools.rs` | `commit_and_compact_export_each_closed_generation_without_changing_inputs`, `retained_journal_verifies_and_exports_all_surviving_states` |
+| Export: verified temporary, real sync descriptors, no-clobber publication/race, every publication failure | `crates/media/src/offline_tests.rs` | `commit_records_real_write_verification_and_publication_barriers`, `export_checks_temporary_size_and_digest_before_any_barrier_or_publication`, `export_no_clobber_handles_destination_created_at_publication`, `export_publication_failures_preserve_inputs_and_only_publish_verified_bytes` |
+| Retention: keep=2 over multiple generations, surviving images/ids/reasons, original binding, new sequences | `crates/media/src/sink_tests.rs` | `retention_keeps_two_closed_states_with_anchor_ids_reasons_and_new_sequences`, `retention_runs_after_checkpoint_and_finish_and_continues_on_replaced_inode` |
+| Retention: pruned-only sector changes and anchor equal to base, pruned targets | `crates/media/src/sink_tests.rs`; `crates/cli/tests/media_tools.rs` | `retention_keeps_two_closed_states_with_anchor_ids_reasons_and_new_sequences`, `retention_encodes_empty_anchor_and_preserves_later_recovered_reason`; `retained_journal_verifies_and_exports_all_surviving_states` |
+| Retention: fail every temporary write/partial write/sync/replace/directory-sync; old or complete new authority | `crates/media/src/sink_tests.rs` | `retention_fails_every_temporary_write_without_changing_durable_closed_journal`, `retention_failures_report_maintenance_separately_and_keep_old_or_new_valid_files`, `retention_barriers_follow_complete_verified_temporary_and_namespace_is_isolated` |
+| Retention: verify intermediate states/metadata; never prune open or poisoned state | `crates/media/src/sink_tests.rs` | `retention_verifies_each_state_before_sync_even_when_final_image_matches`, `retention_checks_whole_history_metadata_before_sync`, `retention_never_runs_for_open_or_poisoned_generation` |
+| Regression: volatile second run starts from base without outputs; readonly ST1 NW and no outputs | `crates/assembly/tests/persistence.rs` | `volatile_and_readonly_create_no_outputs_and_restart_from_base` |
+| Regression: full healthy adapter result and image/reopen equivalence, multi-sector/partial/abnormal writes | `crates/assembly/tests/persistence.rs` | `journal_and_volatile_have_identical_guest_state_at_every_boundary` |
+| Regression: fast floppy write/boot goldens unchanged | `crates/cli/tests/fdc_write_golden.rs`; `crates/cli/tests/floppy_boot_golden.rs`; `crates/cli/tests/boot_golden.rs` | `fdc_write_commits_a_sector_and_reads_it_back`, `floppy_boot_reads_sector_and_runs_it`, `timer_interrupt_boot_matches_golden` |
+| Regression: volatile fixture slow paths, pinned hashes and no vendor/target-directory sidecars | `crates/cli/tests/media_fixtures.rs` | `volatile_boots_preserve_pinned_fixture_hashes_and_vendor_entries`; existing BIOS/FreeDOS/DOS and scheduler goldens run unchanged in the required ignored gate |
+| Host errors: latch first error/confirmed sequence, disable later appends but retain all memory writes | `crates/media/src/sink_tests.rs` | `every_partial_command_failure_preserves_memory_and_latches_first_error`, `failed_flush_sync_and_zero_write_preserve_guest_data_and_poison_output`, `enospc_and_eio_latch_without_write_protection_or_lost_memory_writes` |
+| Host errors: no guest error/write protection/IRQ/retry/replacement data; completed chunk matches volatile prefix | `crates/cli/tests/media_device.rs`; `crates/assembly/tests/persistence.rs` | `failing_sink_on_mock_bus_keeps_dma_results_irq_padding_and_reset_state`; `failed_output_preserves_complete_guest_prefix_and_final_media` (workspace enables `assembly/test-support`) |
+| Host errors: check every frontend cooperation/final-success boundary; stop further advancement and never seal/prune poison | `crates/assembly/src/persistence.rs`; `crates/cli/src/lib.rs`; `crates/window/src/main.rs` | `failing_sink_preserves_guest_prefix_and_stops_at_frontend_boundary`; `journal_host_failures_are_reported_as_persistence_failures`, `journal_frontend_finishes_successful_caps_but_leaves_execution_errors_unsealed`; `journal_host_failure_stops_at_the_first_window_boundary`, `journal_presenter_finishes_halts_and_preserves_unsealed_execution_errors` |
+| Host errors: uncertain retention disables appends at next boundary without altering guest state | `crates/assembly/tests/persistence.rs`; `crates/assembly/src/persistence.rs` | `uncertain_checkpoint_latches_disabled_appends_and_stops_the_next_boundary`; `retention_failures_preserve_controller_status_dma_irq_and_virtual_time` |
+| Determinism: identical memory/status/DMA/IRQ/clock despite synchronous host latency or output failure | `crates/assembly/tests/persistence.rs` | `journal_and_volatile_have_identical_guest_state_at_every_boundary`, `failed_output_preserves_complete_guest_prefix_and_final_media`; no wall-time thresholds |
+| Determinism: no journal/base reads during command access; closed retention uses saved base | `crates/media/src/sink_tests.rs` | `mounted_sector_access_never_reads_or_seeks_host_storage`; `retention_keeps_two_closed_states_with_anchor_ids_reasons_and_new_sequences`; **READ:** `JournalMedia::base` and retention implementation use owned original bytes |
+| Determinism: bytes/counters define hashes/sequences/ids; replay is an initial-state input | `crates/assembly/tests/persistence.rs`; `crates/media/tests/journal.rs` | `identical_guest_sessions_produce_byte_identical_journals` compares complete journal bytes across separate directories after identical full/partial writes, checkpoints and session closes; fixed vectors and `replay_preserves_order_padding_and_unchanged_sectors` establish replay |
+
+The strict per-instruction stop, interactive host-input timing, guest filesystem
+health and physical power-cut guarantees are intentionally outside the contract;
+they are not missing tests for promised behavior. Static inspection of the media
+and adapter execution paths finds no wall-clock input; behavioral comparisons
+exercise that property for the recorded guest inputs, rather than proving it
+for all possible programs or future edits.
+
+### Validation mutations
+
+Each newly added behavior has a matching isolated mutation that fails its targeted
+test: publishing sectors before COMMAND_END (crash-prefix model), adding a host
+read to command access (mounted-I/O boundary), turning a latched error into write
+protection (ENOSPC/EIO), mirroring only the first replacement (full-result/replay),
+dropping memory updates after a host error (complete failed prefix and MockBus
+reset/multi-track checks), skipping rollback truncation (fresh guest DMA), writing
+the volatile base (fixture hash), and creating a volatile sidecar (directory
+entries). Mutations run only in a disposable source copy with copied fixture
+bytes; no fixture target or source file in the tested worktree is mutated.
+The walkthrough in [commands.md](../commands.md#journal-session-walkthrough)
+was run against generated media in a temporary directory; its excerpts are
+captured output with relative filenames.
+
+Review follow-up evidence: identical independent guest sessions now compare the
+complete journal files directly, including hashes, sequence/generation fields and
+closing markers. A path-dependent but otherwise valid closing reason fails this
+test. Fixture pin tests read the output hashes from `include_str!` vendor scripts;
+missing, duplicate and malformed pin definitions fail explicitly. Their targeted
+mutations change a script pin selector and bypass hash syntax validation. These
+checks use the same disposable-copy rule as the validation above.

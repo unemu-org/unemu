@@ -171,6 +171,115 @@ identity checks; it never follows a symlink or mounts a leftover. Reserved
 cannot be mounted as journals or used for backups. Temporaries are never imported,
 and backups are never pruned.
 
+### Journal session walkthrough
+
+Journal mode is available in Rust `MachineConfig` data and in TOML/YAML
+machine-file floppy drive tables with `write = "journal"` and an explicit
+`journal` path. The CLI and window frontends do not load machine files yet;
+that integration is in progress, and their run arguments have no journal flag.
+This runnable Rust example uses the small WRITE DATA preset: it programs DMA
+channel 2, writes one sector, drains the controller result and halts. Run from
+the repository root in the devShell. Generated media and the example project's
+build output stay in a new temporary directory; `cargo build -p cli` uses the
+repository's `target/` directory.
+
+```sh
+repo_dir="$PWD"
+demo="$(mktemp -d)"
+mkdir "$demo/src"
+cat > "$demo/Cargo.toml" <<EOF
+[package]
+name = "journal-demo"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+assembly = { path = "$repo_dir/crates/assembly" }
+EOF
+cat > "$demo/src/main.rs" <<'RS'
+use assembly::{assemble, at_fdc_write, ImageSource, RunPolicy, WriteMode};
+use std::{error::Error, path::PathBuf};
+
+fn main() -> Result<(), Box<dyn Error>> {
+    let mut args = std::env::args().skip(1);
+    let directory = PathBuf::from(args.next().expect("media directory"));
+    let value: u8 = args.next().expect("byte value").parse()?;
+    let mut guest = vec![0xFA, 0xFC];
+    for (port, byte) in [
+        (0x3F2u16, 0x1C), (0x0A, 6), (0x0C, 0), (0x0B, 0x4A),
+        (4, 0), (4, 6), (0x81, 0), (5, 0xFF), (5, 1), (0x0A, 2),
+    ].into_iter().chain([5, 0, 0, 0, 1, 2, 1, 0x1B, 0xFF].map(|b| (0x3F5, b))) {
+        guest.extend([0xBA, port as u8, (port >> 8) as u8, 0xB0, byte, 0xEE]);
+    }
+    guest.extend([0xEC; 7]);
+    guest.push(0xF4);
+    let mut config = at_fdc_write(guest, vec![value; 512], 0x600);
+    let base = directory.join("disk.img");
+    if !base.exists() {
+        std::fs::write(&base, vec![0; config.drives[0].kind.image_bytes() as usize])?;
+    }
+    config.drives[0].image = ImageSource::File(base);
+    config.drives[0].write = WriteMode::Journal {
+        path: directory.join("disk.upfj"), keep_generations: 10,
+    };
+    let mut machine = assemble(&config)?;
+    println!("{:?}", machine.run_session(&RunPolicy::natural(Some(10_000), None))?);
+    machine.finish_persistence()?;
+    Ok(())
+}
+RS
+cargo run --offline --manifest-path "$demo/Cargo.toml" -- "$demo" 17
+cargo run --offline --manifest-path "$demo/Cargo.toml" -- "$demo" 34
+cargo build --offline -p cli
+(
+  cd "$demo"
+  "$repo_dir/target/debug/unemupc98" media generations --base disk.img --journal disk.upfj
+  "$repo_dir/target/debug/unemupc98" media verify --base disk.img --journal disk.upfj
+  "$repo_dir/target/debug/unemupc98" media rollback --base disk.img --journal disk.upfj --to 1 --backup before-rollback.upfj
+  "$repo_dir/target/debug/unemupc98" media commit --base disk.img --journal disk.upfj --to 1 --output restored.img
+  "$repo_dir/target/debug/unemupc98" media compact --base disk.img --journal disk.upfj --to 1 --output restored-alias.img
+)
+```
+
+**MEASURED:** both guest runs print `Halted`. These excerpts were captured from
+that generated-media run (all commands exited 0); `verify` prints the same
+closed-generation report as `generations`:
+
+```text
+base sha256: 36bd753facc985aad613c884a2040210d208b1aa520e957b31ba2e1e19cd4185
+retained anchor: 0
+generation 0: immutable base, end 128, commands 0, sectors 0
+generation 1: session end, end 2048, commands 1, sectors 1
+generation 2: session end, end 3968, commands 1, sectors 1
+recoverable-tail bytes: 0
+latest reconstructible state: generation 2 (closed), end 3968
+status: fully valid/closed
+closed markers do not establish filesystem health or bootability
+```
+
+Rollback prints the warning and changes the report to generation 1:
+
+```text
+rollback to generation 1: later generations and any open tip will be removed
+generation 1: session end, end 2048, commands 1, sectors 1
+latest reconstructible state: generation 1 (closed), end 2048
+status: fully valid/closed
+```
+
+The two export commands print:
+
+```text
+exported generation 1 to restored.img
+exported generation 1 to restored-alias.img
+```
+
+The base stays all zeroes. Both exports contain byte 17 throughout sector 0 and
+zeroes elsewhere; `before-rollback.upfj` retains the complete two-generation
+journal. Keep the immutable base with that backup. To continue from the export,
+select `restored.img` as the new base and choose a fresh journal path in Rust.
+See [Supported host guarantees](design/persistent-media.md#supported-host-guarantees)
+for the measured macOS/APFS behavior and storage assumptions.
+
 ## Typecheck / lint / format
 
 ```sh

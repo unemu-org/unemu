@@ -201,9 +201,36 @@ fn volatile_and_readonly_create_no_outputs_and_restart_from_base() {
 
 #[test]
 fn journal_and_volatile_have_identical_guest_state_at_every_boundary() {
-    for count in [512, 17] {
+    for count in [512, 17, 1024, 1024 + 17] {
         let temp = Temp::new();
-        let journal = config(&temp, true, count);
+        let mut journal = config(&temp, true, count);
+        let mut guest = vec![0xFA, 0xFC];
+        out(&mut guest, 0x3F2, 0x1C);
+        dma(&mut guest, true, count);
+        // EOT beyond the physical track forces an abnormal result after a committed sector.
+        for value in [5, 0, 0, 0, 9, 2, 10, 0x1B, 0xFF] {
+            out(&mut guest, 0x3F5, value);
+        }
+        guest.extend([0xBF, 0, 0x10]);
+        for _ in 0..7 {
+            guest.extend([0xEC, 0xAA]);
+        }
+        dma(&mut guest, true, count);
+        for value in [5, 0, 0, 0, 1, 2, 4, 0x1B, 0xFF] {
+            out(&mut guest, 0x3F5, value);
+        }
+        guest.extend([0xBF, 0x10, 0x10]);
+        for _ in 0..7 {
+            guest.extend([0xEC, 0xAA]);
+        }
+        // Capture the registers outside CpuReg through guest stores, including FLAGS.
+        guest.extend([
+            0x9C, 0x8F, 0x06, 0x20, 0x10, 0x8C, 0x1E, 0x22, 0x10, 0x8C, 0x06, 0x24, 0x10, 0x8C,
+            0x16, 0x26, 0x10, 0xF4,
+        ]);
+        journal.images[0].source = ImageSource::Inline(guest);
+        let payload: Vec<_> = (0..count).map(|i| (i as u8) ^ 0xC7).collect();
+        journal.images[1].source = ImageSource::Inline(payload.clone());
         let mut volatile = journal.clone();
         volatile.drives[0].write = WriteMode::Volatile;
         let observation = ObservationPolicy {
@@ -212,68 +239,158 @@ fn journal_and_volatile_have_identical_guest_state_at_every_boundary() {
         };
         let mut a = assemble_with_observation(&journal, &observation).unwrap();
         let mut b = assemble_with_observation(&volatile, &observation).unwrap();
-        for cap in (1..=1000).step_by(7) {
+        let mut halted = false;
+        for cap in (1..=2000).step_by(7) {
             let policy = RunPolicy::natural(Some(cap), None);
             let left = a.run_session(&policy).unwrap();
             let right = b.run_session(&policy).unwrap();
             assert_eq!(left, right);
-            let mut ma = vec![0; 0x10000];
-            let mut mb = ma.clone();
-            a.machine.cpu().read_mem(0, &mut ma).unwrap();
-            b.machine.cpu().read_mem(0, &mut mb).unwrap();
-            assert_eq!(ma, mb);
-            for reg in [
-                CpuReg::Rax,
-                CpuReg::Rbx,
-                CpuReg::Rcx,
-                CpuReg::Rdx,
-                CpuReg::Rsi,
-                CpuReg::Rdi,
-                CpuReg::Rsp,
-                CpuReg::Rbp,
-                CpuReg::Rip,
-            ] {
-                assert_eq!(a.machine.cpu().reg(reg), b.machine.cpu().reg(reg));
-            }
-            assert_eq!(
-                a.machine.cpu().code_segment(),
-                b.machine.cpu().code_segment()
-            );
-            assert_eq!(
-                a.machine.cpu().interrupts_enabled(),
-                b.machine.cpu().interrupts_enabled()
-            );
-            assert_eq!(a.machine.cpu().irq_ready(), b.machine.cpu().irq_ready());
-            assert_eq!(
-                a.machine.cpu().completed_steps(),
-                b.machine.cpu().completed_steps()
-            );
-            assert_eq!(a.machine.cpu().retired(), b.machine.cpu().retired());
-            assert_eq!(a.machine.virtual_time(), b.machine.virtual_time());
-            assert_eq!(a.machine.clock(), b.machine.clock());
-            for (&id, &index) in &a.device_index {
-                let other = b.device_index[&id];
-                assert_eq!(
-                    a.machine.bus().device_irq_line(index),
-                    b.machine.bus().device_irq_line(other)
-                );
-                assert_eq!(
-                    a.machine.bus().device(index).unwrap().save(),
-                    b.machine.bus().device(other).unwrap().save()
-                );
-                assert_eq!(
-                    a.machine.bus_mut().device_mut(index).unwrap().take_trace(),
-                    b.machine.bus_mut().device_mut(other).unwrap().take_trace()
-                );
-            }
+            assert_same_guest_state(&mut a, &mut b);
             if left == machine::RunOutcome::Halted {
+                halted = true;
                 break;
             }
         }
-        assert_eq!(readback(&a), readback(&b));
-        assert_ne!(readback(&a), vec![0; 512]);
+        assert!(halted, "guest must complete all commands");
+        let mut result = [0; 7];
+        a.machine.cpu().read_mem(0x1000, &mut result).unwrap();
+        if count > 512 {
+            assert_eq!(
+                &result[..2],
+                &[0x40, 4],
+                "invalid next sector after committed data"
+            );
+        } else {
+            assert_eq!(&result[..2], &[0, 0]);
+        }
+        a.machine.cpu().read_mem(0x1010, &mut result).unwrap();
+        assert_eq!(&result[..2], &[0, 0], "multi-sector/partial terminal count");
+        let image = controller_image(&mut a);
+        assert_eq!(image, controller_image(&mut b));
+        let mut expected = vec![0; image.len()];
+        expected[..payload.len()].copy_from_slice(&payload);
+        let last_sector = 8 * 512;
+        expected[last_sector..last_sector + usize::from(count.min(512))]
+            .copy_from_slice(&payload[..usize::from(count.min(512))]);
+        assert_eq!(
+            image, expected,
+            "complete image, including untouched sectors and padding"
+        );
         a.finish_persistence().unwrap();
+        drop(a);
+        let base = std::fs::read(temp.path("base.img")).unwrap();
+        let replay = media::scan(
+            &std::fs::read(temp.path("disk.upfj")).unwrap(),
+            &base,
+            base.len() as u64,
+        );
+        assert_eq!(replay.report.status, media::Status::Valid);
+        assert_eq!(replay.image.as_deref(), Some(image.as_slice()));
+        let reloaded = media::JournalMedia::open(
+            &temp.path("disk.upfj"),
+            &base,
+            base.len() as u64,
+            media::SinkStatus::default(),
+        )
+        .unwrap();
+        assert_eq!(reloaded.image(), image);
+        assert_eq!(std::fs::read(temp.path("base.img")).unwrap(), base);
     }
+}
+
+fn assert_same_guest_state(a: &mut AssembledMachine, b: &mut AssembledMachine) {
+    let mut ma = vec![0; 0x10000];
+    let mut mb = ma.clone();
+    a.machine.cpu().read_mem(0, &mut ma).unwrap();
+    b.machine.cpu().read_mem(0, &mut mb).unwrap();
+    assert_eq!(ma, mb);
+    for reg in [
+        CpuReg::Rax,
+        CpuReg::Rbx,
+        CpuReg::Rcx,
+        CpuReg::Rdx,
+        CpuReg::Rsi,
+        CpuReg::Rdi,
+        CpuReg::Rsp,
+        CpuReg::Rbp,
+        CpuReg::Rip,
+    ] {
+        assert_eq!(a.machine.cpu().reg(reg), b.machine.cpu().reg(reg));
+    }
+    assert_eq!(
+        a.machine.cpu().code_segment(),
+        b.machine.cpu().code_segment()
+    );
+    assert_eq!(
+        a.machine.cpu().interrupts_enabled(),
+        b.machine.cpu().interrupts_enabled()
+    );
+    assert_eq!(a.machine.cpu().irq_ready(), b.machine.cpu().irq_ready());
+    assert_eq!(
+        a.machine.cpu().has_pending_irq(),
+        b.machine.cpu().has_pending_irq()
+    );
+    assert_eq!(
+        a.machine.cpu().completed_steps(),
+        b.machine.cpu().completed_steps()
+    );
+    assert_eq!(a.machine.cpu().retired(), b.machine.cpu().retired());
+    assert_eq!(a.machine.virtual_time(), b.machine.virtual_time());
+    assert_eq!(a.machine.clock(), b.machine.clock());
+    assert_eq!(a.machine.bus().open_bus_trace_dropped(), 0);
+    assert_eq!(b.machine.bus().open_bus_trace_dropped(), 0);
+    assert_eq!(
+        a.machine.bus_mut().take_open_bus_trace(),
+        b.machine.bus_mut().take_open_bus_trace()
+    );
+    for (&id, &index) in &a.device_index {
+        let other = b.device_index[&id];
+        assert_eq!(
+            a.machine.bus().device_irq_line(index),
+            b.machine.bus().device_irq_line(other)
+        );
+        assert_eq!(
+            a.machine.bus().device(index).unwrap().save(),
+            b.machine.bus().device(other).unwrap().save()
+        );
+        assert_eq!(a.machine.bus().device(index).unwrap().trace_dropped(), 0);
+        assert_eq!(b.machine.bus().device(other).unwrap().trace_dropped(), 0);
+        assert_eq!(
+            a.machine.bus_mut().device_mut(index).unwrap().take_trace(),
+            b.machine.bus_mut().device_mut(other).unwrap().take_trace()
+        );
+    }
+}
+
+fn controller_image(assembled: &mut AssembledMachine) -> Vec<u8> {
+    let index = assembled.device_index[&DeviceId::Fdc];
+    let fdc = assembled.machine.bus_mut().device_mut(index).unwrap();
+    let saved = fdc.save();
+    fdc.reset();
+    fdc.port_write(0x3F2, 1, 0x1C).unwrap();
+    let mut image = Vec::new();
+    for cylinder in 0u8..40 {
+        for head in 0..2 {
+            for value in [6, head << 2, cylinder, head, 1, 2, 9, 0x1B, 0xFF] {
+                fdc.port_write(0x3F5, 1, value.into()).unwrap();
+            }
+            let request = fdc.take_dma_request().unwrap();
+            let device::DmaOp::ToMemory(bytes) = request.op else {
+                panic!("READ DATA must supply media bytes");
+            };
+            assert_eq!(bytes.len(), 9 * 512);
+            fdc.dma_complete(device::DmaOutcome::ToMemory {
+                transferred: bytes.len(),
+                terminal_count: true,
+            });
+            image.extend(bytes);
+            for _ in 0..7 {
+                fdc.port_read(0x3F5, 1).unwrap();
+            }
+        }
+    }
+    fdc.restore(&saved).unwrap();
+    image
 }
 
 #[test]
@@ -984,4 +1101,125 @@ fn assembly_protects_the_inode_of_the_single_loaded_base_read() {
     assert_eq!(std::fs::read(&alias).unwrap(), bytes);
     assert!(!orphan.exists());
     drop(machine);
+}
+
+#[test]
+fn rollback_then_reappend_is_visible_through_fresh_guest_dma_reads() {
+    use media::offline::{Access, JournalTool};
+
+    let temp = Temp::new();
+    for value in [0x11, 0x22, 0x33] {
+        let mut config = config(&temp, true, 512);
+        config.images[1].source = ImageSource::Inline(vec![value; 512]);
+        let mut assembled = assemble(&config).unwrap();
+        run(&mut assembled);
+        assert_eq!(readback(&assembled), vec![value; 512]);
+        assembled.finish_persistence().unwrap();
+    }
+    let original = std::fs::read(temp.path("disk.upfj")).unwrap();
+    {
+        let mut tool = JournalTool::open(
+            &temp.path("base.img"),
+            &temp.path("disk.upfj"),
+            Access::Mutate,
+        )
+        .unwrap();
+        tool.rollback(1, &temp.path("backup.upfj")).unwrap();
+    }
+    assert_eq!(std::fs::read(temp.path("backup.upfj")).unwrap(), original);
+    let mut reader = assemble(&config(&temp, false, 512)).unwrap();
+    run(&mut reader);
+    assert_eq!(readback(&reader), vec![0x11; 512]);
+    drop(reader);
+    let mut next = config(&temp, true, 512);
+    next.images[1].source = ImageSource::Inline(vec![0x55; 512]);
+    let mut writer = assemble(&next).unwrap();
+    run(&mut writer);
+    writer.finish_persistence().unwrap();
+    drop(writer);
+    let mut reader = assemble(&config(&temp, false, 512)).unwrap();
+    run(&mut reader);
+    assert_eq!(readback(&reader), vec![0x55; 512]);
+    let mut expected = vec![0; 368640];
+    expected[..512].fill(0x55);
+    assert_eq!(controller_image(&mut reader), expected);
+    let closed = report(&temp.path("disk.upfj"), &temp.path("base.img"));
+    assert_eq!(
+        closed.generations.iter().map(|g| g.id).collect::<Vec<_>>(),
+        [1, 2]
+    );
+    assert_eq!(
+        std::fs::read(temp.path("base.img")).unwrap(),
+        vec![0; 368640]
+    );
+}
+
+#[cfg(feature = "test-support")]
+#[test]
+fn failed_output_preserves_complete_guest_prefix_and_final_media() {
+    let temp = Temp::new();
+    let mut journal = config(&temp, true, 17);
+    let mut guest = program(true, 17);
+    guest.pop();
+    guest.extend(program(true, 512));
+    journal.images[0].source = ImageSource::Inline(guest);
+    let mut volatile = journal.clone();
+    volatile.drives[0].write = WriteMode::Volatile;
+    let observation = ObservationPolicy {
+        trace: device::TracePolicy::Ring { capacity: 4096 },
+        ..Default::default()
+    };
+    let mut a = assemble_with_observation(&journal, &observation).unwrap();
+    let mut b = assemble_with_observation(&volatile, &observation).unwrap();
+    a.persistence[0].fail_output();
+    let policy = RunPolicy::natural(Some(10_000), None);
+    assert!(matches!(
+        a.run_session(&policy),
+        Err(assembly::RunError::Persistence(_))
+    ));
+    assert_eq!(b.run_session(&policy).unwrap(), machine::RunOutcome::Halted);
+    assert_same_guest_state(&mut a, &mut b);
+    assert_eq!(
+        readback(&a),
+        pattern(),
+        "post-error command must still replace padded data"
+    );
+    assert_eq!(controller_image(&mut a), controller_image(&mut b));
+    let before = a.machine.virtual_time();
+    assert!(a
+        .run_session(&RunPolicy::natural(Some(20_000), None))
+        .is_err());
+    assert_eq!(a.machine.virtual_time(), before);
+    assert!(a.finish_persistence().is_err());
+    assert_eq!(
+        std::fs::metadata(temp.path("disk.upfj")).unwrap().len(),
+        media::HEADER_LEN as u64
+    );
+}
+
+#[test]
+fn identical_guest_sessions_produce_byte_identical_journals() {
+    let first = Temp::new();
+    let second = Temp::new();
+    for count in [512, 17] {
+        let journals = [&first, &second].map(|temp| {
+            let mut assembled = assemble(&config(temp, true, count)).unwrap();
+            run(&mut assembled);
+            let mut expected = pattern();
+            expected[usize::from(count)..].fill(0);
+            assert_eq!(readback(&assembled), expected);
+            assembled.persistence[0].checkpoint().unwrap();
+            assembled.finish_persistence().unwrap();
+            drop(assembled);
+            std::fs::read(temp.path("disk.upfj")).unwrap()
+        });
+        assert_eq!(
+            journals[0], journals[1],
+            "journal bytes must not depend on the session's directory"
+        );
+    }
+    assert_eq!(
+        std::fs::read(first.path("base.img")).unwrap(),
+        std::fs::read(second.path("base.img")).unwrap()
+    );
 }
