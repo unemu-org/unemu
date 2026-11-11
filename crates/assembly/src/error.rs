@@ -29,6 +29,10 @@ pub enum ConfigError {
         /// Role with inconsistent board control resources.
         device: DeviceId,
     },
+    /// Both VGA models decode the same ports and video memory.
+    #[error("vga and vga-text cards are mutually exclusive (shared ports and MMIO)")]
+    ConflictingVgaCards,
+
     /// Emulator firmware configuration cannot be attached to a period motherboard.
     #[error("fw-cfg port is emulator-only; it is allowed only on board generic-386-isa")]
     FwCfgBoard,

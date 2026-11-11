@@ -344,7 +344,7 @@ pub fn load_for_assembly(
             use schema::v1::CardKind::*;
             let device = match card.kind? {
                 Mda => assembly::DeviceId::Mda,
-                VgaText => assembly::DeviceId::Vga,
+                VgaText | Vga => assembly::DeviceId::Vga,
                 Uart16550 => assembly::DeviceId::Uart,
                 Fdc765 => assembly::DeviceId::Fdc,
                 Ide => assembly::DeviceId::Ide,
@@ -422,4 +422,20 @@ fn inspect_journal(
         notes.push("warning: journal recovery will run on the next mount");
     }
     Ok((!notes.is_empty()).then(|| notes.join("; ")))
+}
+
+#[cfg(test)]
+mod vga_tests {
+    use super::*;
+
+    #[test]
+    fn register_vga_kind_parses_in_toml_and_yaml() {
+        for document in [
+            parse_toml("machine.toml", "schema=1\n[[card]]\nkind='vga'\n").unwrap(),
+            parse_yaml("machine.yaml", "schema: 1\ncard:\n  - kind: vga\n").unwrap(),
+        ] {
+            let card = &document.card.as_ref().unwrap()[0];
+            assert_eq!(card.kind, Some(schema::v1::CardKind::Vga));
+        }
+    }
 }

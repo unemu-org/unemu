@@ -78,13 +78,12 @@ named_values! {
 named_values! {
     /// Card spellings, independent of the eventual device assembler.
     CardKind, "card kind" {
-        Mda => "mda", VgaText => "vga-text", Uart16550 => "uart-16550",
+        Mda => "mda", VgaText => "vga-text", Vga => "vga", Uart16550 => "uart-16550",
         Fdc765 => "fdc-765", Ide => "ide",
     } reserved {
         "hercules" => "needs a hercules display card model",
         "cga" => "needs a cga display card model",
         "ega" => "needs an EGA display card model",
-        "vga" => "needs a vga display card model",
         "svga-et4000" => "needs a svga-et4000 display card model",
         "svga-s3-trio64" => "needs a svga-s3-trio64 display card model",
         "voodoo" => "needs a voodoo display card model",

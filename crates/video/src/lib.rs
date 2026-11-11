@@ -27,7 +27,8 @@
 //!   exists precisely so a future framebuffer variant is an additive change, not
 //!   a reshape of the seam.
 //! - No glyph rasterisation: a text frame carries code-page bytes, raw attributes
-//!   and decoded styles, not pixels. Mapping a glyph byte + font to pixels is a
+//!   and decoded styles, with optional guest fonts and palette, not pixels.
+//!   Mapping a glyph byte + font to pixels is a
 //!   presenter's concern, deliberately left out of the seam.
 
 /// A finished frame handed across the [`FrameSink`] seam (§9.1).
@@ -57,7 +58,7 @@ pub trait FrameSink {
 /// Preserves the two bytes a text cell occupies in video memory alongside a
 /// decoded style, so presenters need no knowledge of the producing card. The
 /// glyph is kept as a raw byte, not a `char`, because interpreting it needs a code page
-/// and font that live in the presenter, not the seam.
+/// and font. A grid can capture a guest font; otherwise the presenter supplies it.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct TextCell {
     /// Code-page glyph index (e.g. CP437 on the IBM PC).
@@ -94,7 +95,7 @@ pub enum MonochromeEffect {
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum TextStyle {
     /// Colour attributes using the standard IBM text palette indices.
-    /// Programmable VGA palettes and font selection are not modelled.
+    /// Guest palettes, when present, are supplied by [`TextGrid::appearance`].
     Colour {
         /// Foreground index 0–15; bit 3 is foreground intensity.
         foreground: u8,
@@ -164,9 +165,56 @@ pub struct TextGrid {
     rows: u16,
     cells: Vec<TextCell>,
     cursor: Cursor,
+    appearance: Option<TextAppearance>,
+}
+
+/// Guest-supplied text presentation data (IBM VGA/XGA Technical Reference
+/// Manual, Alphanumeric Modes). Absent on legacy MDA and text-only VGA frames.
+/// Font rows use the low nine bits, with the leftmost dot at `cell_width - 1`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TextAppearance {
+    /// Dot width and scan-line height of each cell.
+    pub cell_width: u8,
+    /// Horizontal repetitions of each dot (1 or 2), from the sequencer clock.
+    pub horizontal_repeat: u8,
+    /// Number of font rows displayed per cell.
+    pub cell_height: u8,
+    /// Fonts for attribute bit 3 clear/set, 256 glyphs × 32 rows each.
+    pub fonts: [Vec<u16>; 2],
+    /// Attribute bit 3 additionally selects between fonts; colour is preserved.
+    pub dual_font: bool,
+    /// RGB colours indexed by decoded foreground/background styles.
+    pub palette: [[u8; 3]; 16],
+    /// Inclusive cursor scan-line range.
+    pub cursor_start: u8,
+    /// Inclusive cursor end; an end before start hides the VGA cursor.
+    pub cursor_end: u8,
+    /// Underline scan line; values outside the cell suppress underlining.
+    pub underline: u8,
+    /// False means a blank display, retaining the grid for text inspection.
+    pub enabled: bool,
 }
 
 impl TextGrid {
+    /// Optional guest font, palette and scan-line geometry.
+    #[must_use]
+    pub fn appearance(&self) -> Option<&TextAppearance> {
+        self.appearance.as_ref()
+    }
+
+    /// Guest font row for a cell, with line-graphics dot nine already resolved.
+    #[must_use]
+    pub fn glyph_row(&self, cell: &TextCell, row: u8) -> Option<u16> {
+        let appearance = self.appearance.as_ref()?;
+        if row >= appearance.cell_height {
+            return None;
+        }
+        let map = usize::from(appearance.dual_font && cell.attr & 8 != 0);
+        appearance.fonts[map]
+            .get(usize::from(cell.glyph) * 32 + usize::from(row))
+            .copied()
+    }
+
     /// Column count.
     #[must_use]
     pub fn cols(&self) -> u16 {
@@ -225,7 +273,7 @@ impl TextGrid {
 }
 
 /// Hardware-neutral scanout consumed by the text renderer (§9.2).
-pub use device::{TextAttributeSet, TextModeState};
+pub use device::{PlanarTextState, TextAttributeSet, TextModeState};
 
 /// Render MDA or colour text video memory into a [`TextGrid`] (§9.2).
 ///
@@ -281,6 +329,93 @@ pub fn render_text_mode(state: &TextModeState) -> TextGrid {
         rows,
         cells,
         cursor,
+        appearance: None,
+    }
+}
+
+/// Render planar alphanumeric scanout without rasterising it.
+///
+/// IBM VGA/XGA Technical Reference Manual, Alphanumeric Modes, Figs. 2-7–2-8,
+/// 2-33–2-35, 2-60, 2-65 and 2-84. See `backlog/docs/design/observation.md`.
+/// Fonts are captured once per observation, so later guest writes cannot change
+/// a retained frame. Blink is a request; no host-time phase is introduced.
+#[must_use]
+pub fn render_planar_text(state: &device::PlanarTextState<'_>) -> TextGrid {
+    let (cols, rows) = state.dimensions;
+    let (cell_width, cell_height) = state.cell_size;
+    let fonts = state.font_offsets.map(|base| {
+        (0..256 * 32)
+            .map(|offset| {
+                let bits = u16::from(state.planes[2][base + offset]);
+                if cell_width == 8 {
+                    bits
+                } else {
+                    let ninth = state.line_graphics
+                        && (0xC0..=0xDF).contains(&(offset / 32))
+                        && bits & 1 != 0;
+                    (bits << 1) | u16::from(ninth)
+                }
+            })
+            .collect()
+    });
+    let mut cells = Vec::with_capacity(usize::from(cols) * usize::from(rows));
+    let mut cursor = Cursor {
+        col: 0,
+        row: 0,
+        visible: false,
+    };
+    for row in 0..rows {
+        for col in 0..cols {
+            let address = state
+                .start
+                .wrapping_add(row.wrapping_mul(state.row_stride))
+                .wrapping_add(col);
+            let byte = match state.address_shift {
+                0 => address,
+                1 => (address << 1) | ((address >> state.word_wrap_bit) & 1),
+                _ => (address << 2) | ((address >> 12) & 3),
+            };
+            let glyph = state.planes[0][usize::from(byte)];
+            let attr = state.planes[1][usize::from(byte)];
+            cells.push(TextCell {
+                glyph,
+                attr,
+                style: decode_text_style(
+                    attr,
+                    TextAttributeSet::Colour {
+                        blink_enabled: state.blink_enabled,
+                    },
+                ),
+            });
+            if address == state.cursor && !cursor.visible {
+                cursor = Cursor {
+                    col,
+                    row,
+                    visible: state.enabled
+                        && state.cursor_shape.0
+                        && state.cursor_shape.1 <= state.cursor_shape.2
+                        && state.cursor_shape.1 < cell_height,
+                };
+            }
+        }
+    }
+    TextGrid {
+        cols,
+        rows,
+        cells,
+        cursor,
+        appearance: Some(TextAppearance {
+            cell_width,
+            horizontal_repeat: state.horizontal_repeat,
+            cell_height,
+            fonts,
+            dual_font: state.dual_font,
+            palette: state.palette,
+            cursor_start: state.cursor_shape.1,
+            cursor_end: state.cursor_shape.2,
+            underline: state.underline,
+            enabled: state.enabled,
+        }),
     }
 }
 

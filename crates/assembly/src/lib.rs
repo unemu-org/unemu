@@ -67,7 +67,7 @@ pub use cpu::{CpuChip, CpuConfig, ResetSpec, SegmentSeed};
 pub use device::{
     CmosCfg, CmosRam, DebugConsoleCfg, DeviceConfig, DeviceId, DeviceKind, DmaCfg, DmaSpec, FdcCfg,
     FwCfgCfg, I8042Cfg, IdeCfg, MdaTextCfg, NvramSource, PicCfg, PitCfg, PortWindow, PostPortCfg,
-    RtcStart, SysControlCfg, UartCfg, VgaTextCfg,
+    RtcStart, SysControlCfg, UartCfg, VgaCfg, VgaTextCfg,
 };
 pub use devices::FwCfgFile;
 pub use drive::{DriveConfig, DriveKind, FloppyGeometry, HardDiskGeometry, WriteMode};

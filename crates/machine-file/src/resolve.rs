@@ -239,6 +239,7 @@ fn kind_name(kind: CardKind) -> &'static str {
     match kind {
         CardKind::Mda => "mda",
         CardKind::VgaText => "vga-text",
+        CardKind::Vga => "vga",
         CardKind::Uart16550 => "uart-16550",
         CardKind::Fdc765 => "fdc-765",
         CardKind::Ide => "ide",

@@ -115,15 +115,18 @@ const WORD_PORT_SUPPORT: &[WordPortSupport] = &[
 impl MachineConfig {
     /// Validate this configuration, returning the first inconsistency found.
     ///
-    /// The checks run in a fixed order (journal mode, RTC RAM capacity, part
-    /// sources, identity, emulator-only devices, board constraints, firmware
-    /// layout and services, RTC start, access coupling, ports, MMIO,
-    /// image placement, interrupt and DMA wiring, drive binding and geometry,
-    /// clock) so malformed configs always yield the same [`ConfigError`]. File
-    /// lengths are checked when [`crate::assemble`] reads the sources and validates
-    /// their bytes. For a BIOS file not yet read, service validation uses the
-    /// declaration or defers missing services when it is empty. Catalogue checks
-    /// requiring image bytes run at assembly time.
+    /// Validation runs in this fixed order: journal modes; RTC RAM capacity and
+    /// NVRAM format; firmware-part sources; VGA exclusion; unique device IDs;
+    /// System Control Port A board support and resources; debug console; fw_cfg;
+    /// board constraints; firmware layout and services; RTC start; access coupling;
+    /// UART bases; IDE resources; port widths and overlaps; MMIO devices, sizes,
+    /// overlaps and RAM exclusion; address-space bounds; image placement; option
+    /// ROMs; IRQ conflicts and PIC faces; DMA controllers; drive binding and image
+    /// geometry; clock ratio; persistent path validation. This makes the first
+    /// error deterministic. File lengths are checked when [`crate::assemble`] reads
+    /// the sources and validates their bytes. For a BIOS file not yet read,
+    /// service validation uses the declaration or defers missing services when it
+    /// is empty. Catalogue checks requiring image bytes run at assembly time.
     ///
     /// Journal outputs additionally check canonical paths and
     /// existing file identities against mounted inputs and other outputs.
@@ -138,6 +141,17 @@ impl MachineConfig {
     pub(crate) fn validate_resolved(&self) -> Result<(), ConfigError> {
         self.check_rtc_ram()?;
         self.check_part_sources()?;
+        if self
+            .devices
+            .iter()
+            .any(|d| matches!(d.kind, DeviceKind::Vga(_)))
+            && self
+                .devices
+                .iter()
+                .any(|d| matches!(d.kind, DeviceKind::VgaRegisters(_)))
+        {
+            return Err(ConfigError::ConflictingVgaCards);
+        }
         self.check_unique_device_ids()?;
         self.check_sys_ctrl_port_a()?;
         self.check_debug_console()?;
@@ -1039,6 +1053,22 @@ mod tests {
                 Err(ConfigError::InvalidSysCtrlPortAResources {
                     device: DeviceId::SysCtrlPortA
                 })
+            );
+        }
+    }
+
+    #[test]
+    fn vga_models_are_mutually_exclusive_before_identity_or_decode_checks() {
+        for id in [DeviceId::Vga, DeviceId::Mda] {
+            let mut config = crate::at_vga_text(vec![0xF4]);
+            config.devices.push(DeviceConfig::new(
+                id,
+                DeviceKind::VgaRegisters(crate::VgaCfg {}),
+                crate::VgaCfg::port_windows(),
+            ));
+            assert_eq!(
+                config.validate().unwrap_err().to_string(),
+                "vga and vga-text cards are mutually exclusive (shared ports and MMIO)"
             );
         }
     }

@@ -96,7 +96,7 @@ numbered **M1–M8** and listed after the table.
 | `PostPortCfg.port` | `[board] post_port` | board default | — |
 | `CmosCfg.seed` | `[board.rtc] nvram = "derived"` or `"blank"` | user, default `"derived"` | **M7** |
 | `CmosCfg.timing` | none | not writable: a test-rig knob (the RTC demo) | — |
-| `VgaTextCfg`, `MdaTextCfg` | `kind = "vga-text"`, `"mda"` | user | — |
+| `VgaTextCfg`, `VgaCfg`, `MdaTextCfg` | `kind = "vga-text"`, `"vga"`, `"mda"` | user | — |
 | `FdcCfg.drive_slots` | none | type: 2 units | — |
 | `drives[].kind` (`Floppy { geometry }`) | `[[card.drives]] type = "1.44M"` | user | — |
 | `drives[].kind` (`HardDisk { geometry }`) | `[[card.drives]] geometry = { … }` on an `ide` card | user | **M5** |
@@ -424,15 +424,23 @@ kind-derived id. A missing kind does not synthesize an id from the array index.
 Kinds in schema 1. Each card lowers to one `DeviceConfig`, plus any MMIO
 windows and drives. A port override is accepted only where the device model
 honours it. The MDA, VGA and µPD765 models decode fixed absolute ports (READ,
-`devices/src/{mda,vga_text,upd765}.rs`).
+`devices/src/{mda,vga_text,vga,upd765}.rs`).
 
 | `kind` | `DeviceId` | Default ports | Port override | Default IRQ | Default DMA | MMIO (fixed) | Drives |
 |---|---|---|---|---|---|---|---|
 | `mda` | `Mda` | `0x3B0–0x3BB`, `0x3BF` | no | — | — | `0xB0000`, 32 KiB | — |
 | `vga-text` | `Vga` | `0x3D4–0x3D5`, `0x3D8–0x3DA` | no | — | — | `0xB8000`, 32 KiB | — |
+| `vga` | `Vga` | `0x3B4–0x3B5`, `0x3BA`, `0x3C0–0x3C2`, `0x3C4–0x3CA`, `0x3CC`, `0x3CE–0x3CF`, `0x3D4–0x3D5`, `0x3DA` | no | — | — | `0xA0000`, 128 KiB | — |
 | `uart-16550` | `Uart` | `base…base+7`, base `0x3F8` | yes, any base ≤ `0xFFF8` | 4 for `0x3F8` and `0x3E8`, 3 for `0x2F8` and `0x2E8`, otherwise required | — | — | — |
 | `fdc-765` | `Fdc` | `0x3F0–0x3F7`; with primary IDE: `0x3F0–0x3F5`, `0x3F7` | no (`0x370` is reserved) | 6 | 2 | — | `unit` 0–1 |
 | `ide` | `Ide` | `0x1F0` word data, `0x1F1–0x1F7` byte registers, `0x3F6` byte control | `0x1F0` or `0x170`; the control port is base + `0x206` | 14 (15 for `0x170`) | — (PIO) | — | `channel` master, slave |
+
+`vga` selects register-level VGA with guest fonts and DAC colours, and starts
+unprogrammed without an option ROM. `vga-text` remains the existing machine
+default. Both kinds are accepted in TOML and YAML; attaching both fails with
+`vga and vga-text cards are mutually exclusive (shared ports and MMIO)`.
+The full VGA aperture also conflicts with MDA. See
+[machine-config.md §Display cards](machine-config.md#display-cards).
 
 When an IDE card uses the primary channel, lowering gives the FDC card
 `0x3F0–0x3F5` and `0x3F7`, using `FdcCfg::port_windows(true)`. The IDE control
@@ -1256,7 +1264,7 @@ spike owns the board-model and firmware entries.
 | `[cpu]` | `fpu = "none" \| "8087" \| "80287" \| "80387"`, `turbo = { rate, initial = "on" \| "off" }` |
 | `[memory]` | `shadow`, `umb`, `upper = "ram" \| "open-bus"` |
 | `[firmware]` | `basic = { image, base }` (ROM BASIC); `provides` values `video`, `serial`, `network-boot` |
-| `[[card]] kind`, video | `hercules`, `cga`, `ega`, `vga`, `svga-et4000`, `svga-s3-trio64`, `voodoo`, `voodoo2`, `banshee` |
+| `[[card]] kind`, video | `hercules`, `cga`, `ega`, `svga-et4000`, `svga-s3-trio64`, `voodoo`, `voodoo2`, `banshee` |
 | `[[card]] kind`, sound | `adlib`, `sb1`, `sb2`, `sbpro`, `sb16`, `gus`, `mpu-401`, `covox` |
 | `[[card]] kind`, disks | `xt-mfm`, `xt-rll`, `xt-ide`, `xt-cf-lite` |
 | `[[card]] kind`, ports and others | `lpt`, `game-port`, `bus-mouse`, `ems`, `ne2000` |

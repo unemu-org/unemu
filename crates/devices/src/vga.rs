@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! IBM VGA register file and four-plane video memory, without scanout.
+//! IBM VGA register file, four-plane video memory and passive text scanout.
 //!
 //! Source: IBM VGA/XGA Technical Reference Manual (May 1992), VGA Function,
 //! especially the figures cited below. See `backlog/docs/design/spec.md` §7.1
@@ -11,9 +11,9 @@
 //! | IBM figure / section | Verified coverage | Limit or model choice |
 //! | --- | --- | --- |
 //! | Figs. 2-19–2-26: general registers | READ: port directions and MSR bit 0 select CRTC, status 1 and feature-control addresses | ASSUMED: inactive pair reads FF; status 0 reads 00; reserved MSR/feature bits retain writes. RAM-enable gating, monitor sense and IRQ omitted |
-//! | Figs. 2-29–2-37: sequencer | READ: five indexed registers, map mask, chain-4 and independent odd/even write control | Reset signalling, extended-memory gating and display clocks omitted; undefined read bits return their masked stored values |
+//! | Figs. 2-29–2-37: sequencer | READ: five indexed registers, map mask, chain-4 and independent odd/even write control | Reset signalling, CPU extended-memory gating and display timing omitted; undefined read bits return their masked stored values |
 //! | Fig. 2-58: CRTC protection | READ: R11 bit 7 protects R0–R7 except R7 bit 4 | Timing omitted; other registers retain full bytes, including reserved bits |
-//! | Figs. 2-81–2-89: attribute controller | READ: index/data flip-flop, status reset, PAS, palette widths; R10 mask EF, R11 mask FF, R12 mask 0F | ASSUMED: reserved bits read zero; PAS disables palette writes, but undefined PAS palette reads retain stored data; no scanout |
+//! | Figs. 2-81–2-89: attribute controller | READ: index/data flip-flop, status reset, PAS, palette widths; R10 mask EF, R11 mask FF, R12 mask 0F | ASSUMED: reserved bits read zero; PAS disables palette writes, but undefined PAS palette reads retain stored data |
 //! | Fig. 2-94, pp. 2-104–2-105: DAC | READ: one eight-bit palette address, read/write state, RGB order, six-bit components, increment after three bytes and address writes restart the cycle | ASSUMED: 3C8 reads shared address n during a read cycle (some RAMDACs prefetch n+1); components are stored immediately even if an address write aborts the triple; eight-bit wrap and wrong-direction data accesses use the shared component phase without changing state |
 //! | Fig. 2-94, p. 2-106: PEL mask | READ: mask register address and mode-set value FF | ASSUMED: writable mask ANDs the displayed palette index only; IBM warns against writes, while firmware programs it |
 //! | Fig. 2-25: input status 1 | READ: vertical retrace implies display disable (DE=1) | ASSUMED: per-read phase 00,01,09,09, not raster timing; tick updates only trace time |
@@ -21,6 +21,9 @@
 //! | Figs. 2-36, 2-74–2-77: odd/even | READ: parity selects maps, GC read-map bit 1 selects the read pair, GR6 bit 1 enables A0 replacement; otherwise A0 passes unchanged | ASSUMED: replacement is gated by odd/even routing (writes with SR4 bit 2 clear; reads with GR5 bit 4 set), not GR6 bit 1 alone; replacement uses CPU A16 in map 00 and inverted MSR bit 5 in other maps |
 //! | Figs. 2-37 and 2-65: chain-4 | DERIVED: plane = a & 3; offset = (a & FFFC) OR ((a >> 14) & 3), preserving doubleword scanout placement after unchaining | ASSUMED: both reads and writes use this mapping and the full GC latch/logic/bit-mask pipeline, with sequencer map mask applied |
 //! | Figs. 2-69–2-80: read/write modes | READ: all four write modes, rotate, set/reset, logic in modes 0/2/3, bit/map masks, read-map select and colour comparison with don't-care | Memory contention omitted |
+//! | Alphanumeric Modes, Figs. 2-31, 2-33–2-36, 2-41, 2-48, 2-50–2-56, 2-59–2-61, 2-64–2-65, 2-82–2-83, 2-84, 2-86, 2-89 and 2-94 | Passive planar text state: geometry, start, stride, cursor shape, font maps, blink, palette and DAC | Whole cells only; raster timing, panning, split screens and cursor skew omitted; glyph rasterisation belongs to the presenter |
+//! | Character Map Select / colour path | Compatibility policy: attribute bit 3 selects the font and remains in the foreground index; Color Plane Enable masks it | Maintainer-selected policy, supported by Linux vgacon.c, vgacon_do_font_op (512-character mode writes CPE=07h), DOSBox Staging vga_draw.cpp, draw_text_line_from_dac_palette, and 86Box vid_svga_render.c, svga_render_text_80 (foreground keeps all four attribute bits) |
+//! | Figs. 2-51 and 2-61: cursor start / underline | ASSUMED deviation: register values are zero-based scan lines, without adding one for the manual's minus-one wording | SeaVGABIOS stdvgamodes.c crtc_07 uses CR09=4Fh and CR14=0Fh; adding one would place its underline outside the 16-line cell. Cursor start uses the same zero-based convention; no physical-card verification |
 //! | Power-on / model reset | Reset clears registers, indices, phase, latches, palette and RAM, including PEL mask | ASSUMED deterministic initialization, not an electrical reset sequence |
 //!
 //! A literal reading of IBM Fig. 2-77 enables A0 replacement from GR6 bit 1
@@ -480,6 +483,60 @@ impl Default for Vga {
 }
 
 impl Device for Vga {
+    /// IBM VGA/XGA Technical Reference Manual, Alphanumeric Modes:
+    /// Figs. 2-31, 2-33–2-36 (clock/fonts); 2-41, 2-48, 2-50–2-56,
+    /// 2-59–2-61, 2-64–2-65 (geometry/cursor/address wiring);
+    /// 2-82–2-83, 2-84, 2-86, 2-89 and 2-94 (palette/attributes/DAC).
+    /// Cursor start and underline use the ASSUMED zero-based convention
+    /// documented with SeaVGABIOS evidence in the coverage matrix.
+    fn planar_text_scanout(&self) -> Option<device::PlanarTextState<'_>> {
+        let c = &self.crtc;
+        let a = &self.attribute;
+        let s = &self.sequencer;
+        let font_offset =
+            |low: u8, high: u8| usize::from(low) * 0x4000 + usize::from(high) * 0x2000;
+        let font_offsets = [
+            font_offset(s[3] & 3, (s[3] >> 4) & 1),
+            font_offset((s[3] >> 2) & 3, (s[3] >> 5) & 1),
+        ];
+        let height = (c[9] & 31) + 1;
+        let lines = u16::from(c[0x12]) | (u16::from(c[7] & 2) << 7) | (u16::from(c[7] & 0x40) << 3);
+        let rows = (lines + 1) / u16::from(height) / if c[9] & 0x80 != 0 { 2 } else { 1 };
+        let palette = std::array::from_fn(|index| {
+            let entry = a[index & usize::from(a[0x12])];
+            let low = if a[0x10] & 0x80 != 0 {
+                (entry & 15) | ((a[0x14] & 3) << 4)
+            } else {
+                entry
+            };
+            self.palette_entry(low | ((a[0x14] & 12) << 4))
+                .map(|value| (value << 2) | (value >> 4))
+        });
+        Some(device::PlanarTextState {
+            planes: [&self.planes[0], &self.planes[1], &self.planes[2]],
+            dimensions: (u16::from(c[1]) + 1, rows),
+            start: u16::from_be_bytes([c[0x0C], c[0x0D]]),
+            cursor: u16::from_be_bytes([c[0x0E], c[0x0F]]),
+            row_stride: u16::from(c[0x13]) * 2,
+            address_shift: if c[0x14] & 0x40 != 0 {
+                2
+            } else {
+                u8::from(c[0x17] & 0x40 == 0)
+            },
+            word_wrap_bit: if c[0x17] & 0x20 != 0 { 15 } else { 13 },
+            font_offsets,
+            dual_font: s[4] & 2 != 0 && font_offsets[0] != font_offsets[1],
+            cell_size: (if s[1] & 1 != 0 { 8 } else { 9 }, height),
+            horizontal_repeat: if s[1] & 8 != 0 { 2 } else { 1 },
+            line_graphics: a[0x10] & 4 != 0,
+            blink_enabled: a[0x10] & 8 != 0,
+            cursor_shape: (c[0x0A] & 0x20 == 0, c[0x0A] & 31, c[0x0B] & 31),
+            underline: c[0x14] & 31,
+            palette,
+            enabled: s[1] & 0x20 == 0 && self.palette_address_source() && a[0x10] & 1 == 0,
+        })
+    }
+
     fn name(&self) -> &'static str {
         NAME
     }
@@ -681,3 +738,6 @@ impl Device for Vga {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod planar_tests;

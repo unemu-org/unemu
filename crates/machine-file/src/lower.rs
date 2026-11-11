@@ -411,6 +411,14 @@ impl<R: ImageReader> Context<'_, R> {
                     vec![PortWindow::new(0x3B0, 0x3BB), PortWindow::single(0x3BF)],
                 )
             }
+            v1::CardKind::Vga => {
+                mmio.push(MmioWindow::new(0xA0000, 0x20000, DeviceId::Vga));
+                DeviceConfig::new(
+                    DeviceId::Vga,
+                    DeviceKind::VgaRegisters(assembly::VgaCfg {}),
+                    assembly::VgaCfg::port_windows(),
+                )
+            }
             v1::CardKind::VgaText => {
                 mmio.push(MmioWindow::new(0xB8000, 0x8000, DeviceId::Vga));
                 DeviceConfig::new(
@@ -458,7 +466,11 @@ impl<R: ImageReader> Context<'_, R> {
                     .with_irq(cfg.irq())
             }
         };
-        if matches!(kind, v1::CardKind::Mda | v1::CardKind::VgaText) && card.irq.is_some() {
+        if matches!(
+            kind,
+            v1::CardKind::Mda | v1::CardKind::VgaText | v1::CardKind::Vga
+        ) && card.irq.is_some()
+        {
             return Err(self.error(&format!("{field}.irq"), "this card has no interrupt source"));
         }
         if kind != v1::CardKind::Fdc765 && card.dma.is_some() {
@@ -667,6 +679,7 @@ impl<R: ImageReader> Context<'_, R> {
             FirmwareProvidesMismatch { image_index, .. } => {
                 vec![format!("{}.provides", self.image_label(*image_index))]
             }
+            ConflictingVgaCards => device_fields(&[DeviceId::Vga]),
             MultipleIdeChannels => device_fields(&[DeviceId::Ide]),
             DebugConsoleBoard | FwCfgBoard | Ibm5170RtcRam | SysCtrlPortABoard => {
                 vec!["board".into()]
@@ -844,6 +857,7 @@ fn kind_name(kind: v1::CardKind) -> &'static str {
     match kind {
         v1::CardKind::Mda => "mda",
         v1::CardKind::VgaText => "vga-text",
+        v1::CardKind::Vga => "vga",
         v1::CardKind::Uart16550 => "uart-16550",
         v1::CardKind::Fdc765 => "fdc-765",
         v1::CardKind::Ide => "ide",
@@ -1158,6 +1172,23 @@ mod tests {
             options: assembly::AssemblyOptions::default(),
             bios_parts: false,
         }
+    }
+
+    #[test]
+    fn register_vga_lowering_owns_full_aperture_and_exact_ports() {
+        let origins = Origins::new("machine.toml");
+        let mut reader = FileImageReader;
+        let mut context = context(&origins, &mut reader);
+        let document =
+            crate::parse_toml("machine.toml", "schema=1\n[[card]]\nkind='vga'\n").unwrap();
+        let mut mmio = Vec::new();
+        let device = context
+            .card(0, &document.card.unwrap()[0], &mut mmio, &mut Vec::new())
+            .unwrap();
+        assert_eq!(device.kind, DeviceKind::VgaRegisters(assembly::VgaCfg {}));
+        assert_eq!(device.ports, assembly::VgaCfg::port_windows());
+        assert_eq!(mmio, vec![MmioWindow::new(0xA0000, 0x20000, DeviceId::Vga)]);
+        assert_eq!((device.irq, device.dma), (None, None));
     }
 
     #[test]

@@ -370,7 +370,6 @@ fn all_reserved_model_and_kind_names_have_specific_errors() {
                 "hercules",
                 "cga",
                 "ega",
-                "vga",
                 "svga-et4000",
                 "svga-s3-trio64",
                 "voodoo",

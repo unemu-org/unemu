@@ -341,6 +341,7 @@ fn assemble_with_cpu_and_catalogue(
                 Box::new(rtc)
             }
             DeviceKind::Vga(_) => Box::new(VgaText::new()),
+            DeviceKind::VgaRegisters(_) => Box::new(devices::Vga::new()),
             DeviceKind::Mda(_) => Box::new(MdaText::new()),
             DeviceKind::SysControl(_) => Box::new(SysControl::new()),
             DeviceKind::Post(c) => Box::new(PostPort::with_port(c.port)),
@@ -448,7 +449,7 @@ fn validate_observation_policy(
                 matches!(
                     (&dc.kind, output),
                     (
-                        DeviceKind::Vga(_) | DeviceKind::Mda(_),
+                        DeviceKind::Vga(_) | DeviceKind::VgaRegisters(_) | DeviceKind::Mda(_),
                         OutputKind::TextScanout
                     ) | (
                         DeviceKind::Uart(_),

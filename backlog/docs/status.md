@@ -277,8 +277,11 @@ checks identity and diagnostics without execution; see `vendor/user-roms/README.
   Figs. 2-19–2-26, 2-29–2-37, 2-58, 2-69–2-80, 2-81–2-89 and 2-94.
   Chain-4 offsets are DERIVED from Figs. 2-37 and 2-65. ASSUMED: floating ports
   and unselected memory read FF, 128 KiB mirroring, MSR[5] page polarity, DAC
-  edge cases, odd/even gating of A0 replacement and the chain-4 pipeline. Rendering and board wiring remain pending;
-  the existing text-only card is unchanged.
+  edge cases, odd/even gating of A0 replacement and the chain-4 pipeline.
+  Alphanumeric rendering and opt-in `kind = "vga"` wiring now use guest fonts,
+  CRTC geometry/start/stride/cursor and AC/DAC colours through `Frame::Text`.
+  The existing text-only defaults and goldens are unchanged. No option ROM is
+  installed; SeaVGABIOS via fw_cfg and graphics scanout remain pending.
 
 - **2026-11-11, SeaBIOS fixture:** pinned rel-1.17.0 ISA build recipe and
   configuration added under `vendor/seabios/`, with a separate firmware

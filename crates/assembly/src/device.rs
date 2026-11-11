@@ -301,6 +301,29 @@ pub struct CmosCfg {
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct VgaTextCfg {}
 
+/// Register-level IBM VGA (IBM VGA/XGA Technical Reference Manual,
+/// General Registers and Memory Organization). No option ROM is installed.
+/// See `backlog/docs/design/machine-config.md`, §Display cards.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct VgaCfg {}
+
+impl VgaCfg {
+    /// Exact register decode, excluding the monochrome printer function.
+    #[must_use]
+    pub fn port_windows() -> Vec<PortWindow> {
+        vec![
+            PortWindow::new(0x3B4, 0x3B5),
+            PortWindow::single(0x3BA),
+            PortWindow::new(0x3C0, 0x3C2),
+            PortWindow::new(0x3C4, 0x3CA),
+            PortWindow::single(0x3CC),
+            PortWindow::new(0x3CE, 0x3CF),
+            PortWindow::new(0x3D4, 0x3D5),
+            PortWindow::single(0x3DA),
+        ]
+    }
+}
+
 /// IBM Monochrome Display Adapter selection (display portion only).
 ///
 /// IBM PC Technical Reference, Options and Adapters, Monochrome Display and
@@ -452,6 +475,8 @@ pub enum DeviceKind {
     Rtc(CmosCfg),
     /// VGA text card.
     Vga(VgaTextCfg),
+    /// Register-level IBM VGA with planar memory and alphanumeric scanout.
+    VgaRegisters(VgaCfg),
     /// IBM Monochrome Display Adapter (display portion only).
     Mda(MdaTextCfg),
     /// System control port.

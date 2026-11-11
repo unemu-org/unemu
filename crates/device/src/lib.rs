@@ -404,6 +404,48 @@ pub struct TextModeState<'a> {
     pub attributes: TextAttributeSet,
 }
 
+/// Passive planar alphanumeric scanout (IBM VGA/XGA Technical Reference Manual,
+/// Alphanumeric Modes, Figs. 2-33–2-35 and 2-60–2-61).
+/// Register decoding belongs to the card; glyph rasterisation belongs to the
+/// presenter. See `backlog/docs/design/observation.md`, §Typed capabilities and route ownership.
+#[derive(Clone, Debug)]
+pub struct PlanarTextState<'a> {
+    /// Character codes, attributes and font bytes, in separate planes.
+    pub planes: [&'a [u8]; 3],
+    /// Visible character columns and complete character rows.
+    pub dimensions: (u16, u16),
+    /// Display start and cursor in CRTC address-counter units.
+    pub start: u16,
+    /// Absolute cursor address.
+    pub cursor: u16,
+    /// Increment of the address counter between character rows.
+    pub row_stride: u16,
+    /// Left shift from the CRTC counter to a plane byte address.
+    pub address_shift: u8,
+    /// High address-counter bit wired to plane address bit zero in word mode.
+    pub word_wrap_bit: u8,
+    /// Font offsets for attribute bit 3 clear and set, respectively.
+    pub font_offsets: [usize; 2],
+    /// Whether bit 3 additionally selects a font; colour bits remain unchanged.
+    pub dual_font: bool,
+    /// Dot width (8 or 9) and character scan-line height (1–32).
+    pub cell_size: (u8, u8),
+    /// Horizontal repetitions per dot (1 or 2); IBM VGA/XGA TR, Fig. 2-31.
+    pub horizontal_repeat: u8,
+    /// Repeat dot eight in dot nine for character codes C0h–DFh.
+    pub line_graphics: bool,
+    /// Attribute bit 7 requests blink instead of background intensity.
+    pub blink_enabled: bool,
+    /// Cursor enable and inclusive start/end scan lines.
+    pub cursor_shape: (bool, u8, u8),
+    /// Inclusive underline scan line, or a value beyond the cell height.
+    pub underline: u8,
+    /// Resolved RGB palette, with six-bit DAC values expanded to eight bits.
+    pub palette: [[u8; 3]; 16],
+    /// False while the sequencer or attribute controller blanks the display.
+    pub enabled: bool,
+}
+
 /// The device swap seam (§3.2 seam 4, §7.1).
 ///
 /// Every emulated chip implements this. Method contracts:
@@ -432,6 +474,12 @@ pub struct TextModeState<'a> {
 /// invalidate the bus's cached deadline; the next query sees the resulting state.
 /// See `backlog/docs/design/scheduler.md`, §Access synchronization and invalidation.
 pub trait Device {
+    /// Passive planar text capability; unsupported by default. No guest access,
+    /// latch update, trace or virtual-time advance is permitted during observation.
+    fn planar_text_scanout(&self) -> Option<PlanarTextState<'_>> {
+        None
+    }
+
     /// Borrow current text memory and register-derived scanout together.
     ///
     /// This is a passive host query: no guest accesses, synchronization, trace

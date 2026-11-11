@@ -88,6 +88,57 @@ matches `crates/cli/tests/support/fixtures.rs`.
 Blink remains steady. A later deterministic blink phase can derive from virtual
 time; wall-clock blink and further hardware timing changes are outside this policy.
 
+## Register-level VGA text scanout
+
+`Device::planar_text_scanout` is the passive alternative to the existing
+interleaved `text_scanout`: separate character, attribute and font planes,
+register-derived geometry/addressing/cursor, and a resolved 16-colour RGB palette.
+`Observation::capture_text` uses either capability for `TextScanout`, renders
+only when requested, and distributes one owned `Frame::Text`. Neither capability
+changes latches, traces, snapshots or virtual time.
+
+`video::render_planar_text` preserves raw glyphs and attributes and extends
+`TextGrid` with optional `TextAppearance`. It captures both 8 KiB font maps
+(256 glyphs, 32 rows each), expands 8/9-dot rows including line-graphics dot nine,
+and carries the palette and cursor/underline scan lines. This keeps guest fonts
+out of a pixel-frame API: the existing window rasteriser draws them, while
+terminal dumps remain character grids. MDA and `vga-text` have no appearance
+extension and retain their existing cells, styles, cursor, dumps and raster output.
+DAC components expand from six to eight bits by `(v << 2) | (v >> 4)`.
+Blink remains a request with no wall-clock phase; the presenter leaves it visible.
+A blanked VGA retains its text for inspection but presents black pixels.
+
+READ: IBM VGA/XGA Technical Reference Manual (May 1992), Alphanumeric Modes,
+Figs. 2-7–2-8; sequencer, Figs. 2-31 and 2-33–2-36; CRTC, Figs. 2-41,
+2-48, 2-50–2-56, 2-59–2-61 and 2-64–2-65; Attribute Controller,
+Figs. 2-82–2-83, 2-84, 2-86 and 2-89; DAC, Fig. 2-94.
+The isolation fixture programs SeaVGABIOS `stdvgamodes.c` mode 03h using
+`sequ_03`, `crtc_03`, `actl_01` and `grdc_01`, then loads synthetic fonts.
+The sequencer's divided dot clock (SR01 bit 3) is carried as a horizontal dot
+repeat in the appearance. The window doubles every dot, including dot nine,
+so SeaVGABIOS modes 00h/01h (`sequ_01 = 08h`) occupy 720 pixels across
+40 nine-dot cells at presenter scale one.
+
+Attribute bit 3 remains in the foreground colour index when selecting between
+two fonts. This is the maintainer-selected compatibility policy, supported by
+[Linux vgacon, vgacon_do_font_op](https://github.com/torvalds/linux/blob/master/drivers/video/console/vgacon.c),
+which disables intensity with Color Plane Enable 07h, and by
+[DOSBox Staging, draw_text_line_from_dac_palette](https://github.com/dosbox-staging/dosbox-staging/blob/main/src/hardware/video/vga_draw.cpp)
+and [86Box, svga_render_text_80](https://github.com/86Box/86Box/blob/master/src/video/vid_svga_render.c),
+which keep the four foreground attribute bits. CPE masking remains in the
+palette path and does not change the selected font.
+
+ASSUMED deviation: cursor start and underline use the register values directly
+as zero-based scan lines, despite the minus-one wording in Figs. 2-51/2-61.
+SeaVGABIOS `crtc_07` sets CR09=4Fh and CR14=0Fh: adding one to underline would
+put it outside the 16-line cell. Cursor start follows the same convention.
+This compatibility choice has not been checked on a physical VGA.
+
+The model renders complete character rows, using the CRTC offset independently
+of displayed width. Panning, split screens, preset row scan, cursor skew and
+raster-timed latching are not modelled. Double scanning determines the logical
+row count; the presenter keeps the font's logical scan-line height.
+
 ## Host input
 
 The window frontend queues physical winit key transitions independently of
