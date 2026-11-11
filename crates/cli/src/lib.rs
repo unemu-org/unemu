@@ -1365,10 +1365,11 @@ pub fn run_fdc_write(program: &[u8]) -> Result<Vec<u8>> {
 /// stores surface on the bus and reach the card. Nothing runs a wall clock, so
 /// the produced grid is deterministic.
 pub fn run_vga_text(blob: &[u8]) -> Result<TextGrid> {
-    let mut config = assembly::at_vga_text(blob.to_vec());
-    config.output.frame_sink = assembly::FrameSinkKind::Capture;
-    let mut assembled = assemble_with_observation(&config, &display_policy())
-        .context("assembling vga-text machine")?;
+    let config = assembly::at_vga_text(blob.to_vec());
+    let mut observation = display_policy();
+    observation.output.frame_sink = assembly::FrameSinkKind::Capture;
+    let mut assembled =
+        assemble_with_observation(&config, &observation).context("assembling vga-text machine")?;
 
     let result = assembled.run_session(&RunPolicy::natural(None, None));
     let capture = assembled.capture_text(DeviceId::Vga);
@@ -1390,6 +1391,7 @@ fn display_policy() -> ObservationPolicy {
             output: OutputKind::TextScanout,
             byte_limit: 0,
         }],
+        ..Default::default()
     }
 }
 
@@ -1406,6 +1408,7 @@ fn byte_policy(device: DeviceId, kind: ByteStreamKind) -> ObservationPolicy {
             output: OutputKind::Bytes(kind),
             byte_limit: STREAM_BYTE_LIMIT,
         }],
+        ..Default::default()
     }
 }
 
@@ -1629,6 +1632,41 @@ mod tests {
     }
 
     #[test]
+    fn display_policy_selects_sinks_without_changing_the_vga_frame() {
+        let config = assembly::at_vga_text(VGA_TEXT_PROGRAM.to_vec());
+        let mut reference = assemble_with_observation(&config, &display_policy()).unwrap();
+        reference
+            .run_session(&RunPolicy::natural(None, None))
+            .unwrap();
+        let expected = reference.capture_text(DeviceId::Vga).unwrap().frame;
+        for kind in [
+            assembly::FrameSinkKind::Headless,
+            assembly::FrameSinkKind::Capture,
+        ] {
+            let mut policy = display_policy();
+            policy.output.frame_sink = kind;
+            let mut assembled = assemble_with_observation(&config, &policy).unwrap();
+            let count = usize::from(kind == assembly::FrameSinkKind::Capture);
+            assert_eq!(assembled.observation.subscriber_count(DeviceId::Vga), count);
+            assert_eq!(assembled.observation.captured_frame(DeviceId::Vga), None);
+            assembled
+                .run_session(&RunPolicy::natural(None, None))
+                .unwrap();
+            let frame = assembled.capture_text(DeviceId::Vga).unwrap().frame;
+            assert_eq!(
+                assembled.observation.captured_frame(DeviceId::Vga),
+                (count == 1).then(|| frame.clone())
+            );
+            assert_eq!(frame, expected);
+            assert_eq!(assembled.observation.subscriber_count(DeviceId::Vga), count);
+        }
+        assert_eq!(
+            Frame::Text(run_vga_text(VGA_TEXT_PROGRAM).unwrap()),
+            expected
+        );
+    }
+
+    #[test]
     fn inline_host_can_select_capture_output() {
         let mut devices: Vec<Box<dyn Device>> = vec![Box::new(devices::VgaText::new())];
         devices[0].mmio_write(0xB8000, 2, 0x7049).unwrap();
@@ -1707,21 +1745,34 @@ mod tests {
                 // Start at the ROM body without spending a poll on a reset jump.
                 let mut config = assembly::bios(rom, None);
                 config.cpu.reset = assembly::ResetSpec::Entry { cs: 0xF800, ip: 0 };
-                config.output.frame_sink = kind;
                 config.board = assembly::BoardModel::Bare;
                 config.devices.reverse();
-                let mut assembled =
-                    assemble_with_observation(&config, &bios_observation_policy()).unwrap();
+                let mut observation = bios_observation_policy();
+                observation.output.frame_sink = kind;
+                let mut assembled = assemble_with_observation(&config, &observation).unwrap();
+                let capture_count = usize::from(kind == assembly::FrameSinkKind::Capture);
+                for device in [DeviceId::Mda, DeviceId::Vga] {
+                    assert_eq!(
+                        assembled.observation.subscriber_count(device),
+                        capture_count
+                    );
+                    assert_eq!(assembled.observation.captured_frame(device), None);
+                }
                 let frames = Rc::new(RefCell::new(Vec::new()));
                 if record {
                     assembled
                         .observation
                         .subscribe(DeviceId::Mda, Box::new(Recorder(frames.clone())))
                         .unwrap();
-                } else {
-                    assert_eq!(assembled.observation.subscriber_count(DeviceId::Mda), 0);
-                    assert_eq!(assembled.observation.subscriber_count(DeviceId::Vga), 0);
                 }
+                assert_eq!(
+                    assembled.observation.subscriber_count(DeviceId::Mda),
+                    capture_count + usize::from(record)
+                );
+                assert_eq!(
+                    assembled.observation.subscriber_count(DeviceId::Vga),
+                    capture_count
+                );
                 let run = run_bios_assembled(&mut assembled, |indices| RunPolicy {
                     retired_cap: Some(100),
                     idle_limit: None,

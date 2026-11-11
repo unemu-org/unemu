@@ -309,8 +309,7 @@ fn assemble_with_cpu(
         device_index.insert(dc.id, index);
     }
 
-    let mut observation = Observation::bind(observation_policy, &device_index, &mut devices)?;
-    observation.configure_output(config.output);
+    let observation = Observation::bind(observation_policy, &device_index, &mut devices)?;
 
     // The machine needs exactly one controller. If the config has no PIC (an
     // interrupt-free machine), a null controller keeps the loop total.
@@ -1438,6 +1437,7 @@ mod tests {
                     output,
                     byte_limit: 8,
                 }],
+                ..Default::default()
             };
             assert!(matches!(
                 observe_synthetic(&config, &policy),
@@ -1457,7 +1457,6 @@ mod tests {
     use crate::drive::DriveConfig;
     use crate::image::LoadImage;
     use crate::memory::{MemoryConfig, MmioWindow, RamRegion};
-    use crate::output::OutputConfig;
     use cpu::Cpu;
     use device::{DmaOp, DmaOutcome};
 
@@ -1586,7 +1585,6 @@ mod tests {
             devices,
             drives,
             images,
-            output: OutputConfig::default(),
         }
     }
 
@@ -2156,7 +2154,6 @@ mod tests {
             )],
             drives: Vec::new(),
             images: Vec::new(),
-            output: OutputConfig::default(),
         };
         let assembled = assemble_synthetic(&config).expect("assembles");
         assert_eq!(assembled.device_index[&DeviceId::Uart], 0);

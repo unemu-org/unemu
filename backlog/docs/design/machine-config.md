@@ -67,7 +67,6 @@ MachineConfig {
     drives:  Vec<DriveConfig>,    // the ONE home for attached media
     images:  Vec<LoadImage>,      // the ONE home for pre-loaded bytes
     system_bios_image: Option<usize>, // declared BIOS index, if known
-    output:  OutputConfig,        // initial presentation subscribers
 }
 ```
 
@@ -715,6 +714,29 @@ built: an absent or incompatible drive controller, an unavailable unit, an IRQ l
 outside the memory map, a decode overlap. Assembly of a validated config does not
 fail for configuration reasons.
 
+### Observation and presentation policy
+
+`ObservationPolicy.output: OutputConfig { frame_sink: FrameSinkKind }` selects
+initial presentation wiring for every requested text route. It is run-scoped
+observation setup, outside the hardware-only `MachineConfig` and machine-file
+lowering. The default `Headless` installs no subscriber and keeps capture and
+prompt detection available.
+`Capture` installs one `video::CaptureFrameSink` per route; the facade retains
+only its last frame, available through `Observation::captured_frame(DeviceId)`.
+Selecting Capture without any requested display does not add observation routes.
+`Observation::bind` applies this selection for assembly and inline hosts alike.
+Hosts can later call public `Observation::configure_output(OutputConfig)`;
+reconfiguration clears configured last frames and preserves external subscribers.
+
+A host presenter attaches with `Observation::subscribe(DeviceId, Box<dyn FrameSink>)`.
+The route must already be bound. Subscribers receive the exact owned frame
+returned by capture, at existing prompt polls and final captures. They receive
+no machine reference and must not block, introduce host timing or call back into
+the machine. Assembly depends on the video trait, with no window dependency.
+Observation policy owns presentation selection, routes and byte limits;
+RunPolicy owns poll cadence. Presentation never changes execution step bounds. See
+[observation.md §Sinks, bounds and lifecycle](observation.md#sinks-bounds-and-lifecycle).
+
 ## Presets
 
 Presets are the ergonomic layer: **plain functions** that return a
@@ -769,27 +791,6 @@ both call `Observation::capture_text`, which renders `Device::text_scanout` once
 through `video::render_text_mode`, including the CRTC start address and cursor,
 then delivers that frame to the route's subscribers. Poll cadence and keyboard
 injection stay fixed.
-
-### Output configuration
-
-`OutputConfig { frame_sink: FrameSinkKind }` selects initial presentation wiring
-for every text route requested by `ObservationPolicy`. The default `Headless`
-installs no subscriber and keeps capture and prompt detection available.
-`Capture` installs one `video::CaptureFrameSink` per route; the facade retains
-only its last frame, available through `Observation::captured_frame(DeviceId)`.
-Selecting Capture without any requested display does not add observation routes.
-Inline hosts call public `Observation::configure_output(OutputConfig)` after
-`Observation::bind`; reconfiguration clears configured last frames and preserves
-external subscribers.
-
-A host presenter attaches with `Observation::subscribe(DeviceId, Box<dyn FrameSink>)`.
-The route must already be bound. Subscribers receive the exact owned frame
-returned by capture, at existing prompt polls and final captures. They receive
-no machine reference and must not block, introduce host timing or call back into
-the machine. Assembly depends on the video trait, with no window dependency.
-Observation policy owns route selection and byte limits; RunPolicy owns poll
-cadence. Presentation never changes execution step bounds. See
-[observation.md §Sinks, bounds and lifecycle](observation.md#sinks-bounds-and-lifecycle).
 
 ## RunPolicy — "how we run" is not "what the machine is"
 

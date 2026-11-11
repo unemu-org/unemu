@@ -82,10 +82,15 @@ pub struct ObservationRequest {
 
 /// Run-scoped observation choices, separate from guest hardware identity.
 ///
-/// The default selects no routes and allocates no stream history. This policy
-/// does not select CPU cooperation size or schedule capture boundaries.
+/// The default selects no routes or presentation subscribers and allocates no
+/// stream history. [`Observation::bind`] applies the presentation selection for
+/// inline hosts and assembly alike. This policy does not select CPU cooperation
+/// size or schedule capture boundaries.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ObservationPolicy {
+    /// Initial presentation subscribers installed by [`Observation::bind`] for
+    /// bound text routes; Headless by default. This does not add routes.
+    pub output: OutputConfig,
     /// Access diagnostics for every device and the open bus, independent of routes.
     /// Defaults to Off, including when semantic output capture is requested.
     pub trace: device::TracePolicy,
@@ -156,7 +161,8 @@ struct DisplaySubscribers {
 impl Observation {
     /// Resolve routes against a manually assembled device set before execution.
     /// This supports inline machines using the same collectors as config presets.
-    /// Presentation starts Headless; call [`Self::configure_output`] to select sinks.
+    /// Applies [`ObservationPolicy::output`] to the validated text routes.
+    /// Later sink changes use [`Self::configure_output`].
     /// Missing roles, invalid slots and unsupported capabilities are config errors.
     pub fn bind(
         policy: &ObservationPolicy,
@@ -203,6 +209,7 @@ impl Observation {
                 device_index: index,
             });
         }
+        observation.configure_output(policy.output);
         Ok(observation)
     }
 
@@ -359,6 +366,33 @@ mod tests {
     }
 
     #[test]
+    fn bind_applies_policy_capture_without_reconfiguration() {
+        let mut devices: Vec<Box<dyn Device>> = vec![Box::new(devices::VgaText::new())];
+        devices[0].mmio_write(0xB8000, 2, 0x7049).unwrap();
+        let observation = Observation::bind(
+            &ObservationPolicy {
+                output: OutputConfig {
+                    frame_sink: FrameSinkKind::Capture,
+                },
+                routes: vec![request(DeviceId::Vga, OutputKind::TextScanout, 0)],
+                ..Default::default()
+            },
+            &HashMap::from([(DeviceId::Vga, 0)]),
+            &mut devices,
+        )
+        .unwrap();
+        assert_eq!(observation.subscriber_count(DeviceId::Vga), 1);
+        assert_eq!(observation.captured_frame(DeviceId::Vga), None);
+        let bus = Bus::new(devices, bus::DecodeMap::default());
+        let frame = observation.capture_text(&bus, DeviceId::Vga).unwrap();
+        let Frame::Text(grid) = &frame;
+        assert_eq!(grid.cell(0, 0).unwrap().glyph, b'I');
+        assert_eq!(grid.cell(0, 0).unwrap().attr, 0x70);
+        assert_eq!(observation.captured_frame(DeviceId::Vga), Some(frame));
+        assert_eq!(observation.subscriber_count(DeviceId::Vga), 1);
+    }
+
+    #[test]
     fn display_fanout_updates_capture_before_external_subscription_order() {
         use std::rc::{Rc, Weak};
 
@@ -464,11 +498,13 @@ mod tests {
                 self.0.borrow_mut().push(frame.clone());
             }
         }
-        let mut config = crate::at_vga_text(vec![0xF4]);
-        config.output.frame_sink = FrameSinkKind::Capture;
+        let config = crate::at_vga_text(vec![0xF4]);
         let mut assembled = assemble_with_observation(
             &config,
             &ObservationPolicy {
+                output: OutputConfig {
+                    frame_sink: FrameSinkKind::Capture,
+                },
                 routes: vec![request(DeviceId::Vga, OutputKind::TextScanout, 0)],
                 ..Default::default()
             },
@@ -513,7 +549,6 @@ mod tests {
 
         for kind in [FrameSinkKind::Headless, FrameSinkKind::Capture] {
             let mut config = crate::bios(vec![0; 0x8000], None);
-            config.output.frame_sink = kind;
             config.cpu.reset = crate::ResetSpec::Entry { cs: 0xF800, ip: 0 };
             config.images[0].source = crate::ImageSource::Inline({
                 let mut rom = vec![0; 0x8000];
@@ -523,6 +558,7 @@ mod tests {
             config.board = crate::BoardModel::Bare;
             config.devices.reverse();
             let policy = ObservationPolicy {
+                output: OutputConfig { frame_sink: kind },
                 routes: vec![
                     request(DeviceId::Mda, OutputKind::TextScanout, 0),
                     request(DeviceId::Vga, OutputKind::TextScanout, 0),
@@ -620,6 +656,7 @@ mod tests {
                 request(DeviceId::Mda, OutputKind::TextScanout, 0),
                 request(DeviceId::Vga, OutputKind::TextScanout, 0),
             ],
+            ..Default::default()
         };
         let mut assembled = assemble_with_observation(&config, &policy).unwrap();
         let bus = assembled.machine.bus_mut();
@@ -704,6 +741,7 @@ mod tests {
         let policy = ObservationPolicy {
             trace: device::TracePolicy::Ring { capacity: 16 },
             routes: vec![request(card, OutputKind::TextScanout, 0)],
+            ..Default::default()
         };
         let mut assembled = assemble_with_observation(&config, &policy).unwrap();
         assert_eq!(
@@ -779,6 +817,7 @@ mod tests {
                     8,
                 ),
             ],
+            ..Default::default()
         };
         let mut assembled = assemble_with_observation(&config, &policy).unwrap();
         assert_eq!(assembled.observation.routes().len(), 3);
@@ -866,6 +905,7 @@ mod tests {
                     5,
                 ),
             ],
+            ..Default::default()
         };
         let mut assembled = assemble_with_observation(&config, &policy).unwrap();
         let bus = assembled.machine.bus_mut();
@@ -942,6 +982,7 @@ mod tests {
         let policy = ObservationPolicy {
             trace: device::TracePolicy::Off,
             routes: vec![request(DeviceId::Vga, OutputKind::TextScanout, 0)],
+            ..Default::default()
         };
         let mut assembled = assemble_with_observation(&config, &policy).unwrap();
         crate::run(
@@ -972,6 +1013,7 @@ mod tests {
         let policy = ObservationPolicy {
             trace: device::TracePolicy::Off,
             routes: vec![route, route],
+            ..Default::default()
         };
         assert!(matches!(assemble_with_observation(&config, &policy),
             Err(AssemblyError::Config(ConfigError::DuplicateObservationRoute { device: DeviceId::Uart, output }))
@@ -1012,6 +1054,7 @@ mod tests {
                 OutputKind::Bytes(ByteStreamKind::SerialTx),
                 1,
             )],
+            ..Default::default()
         };
         let mut assembled = assemble_with_observation(&config, &policy).unwrap();
         for byte in [0, 0xFF] {

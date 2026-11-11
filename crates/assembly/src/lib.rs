@@ -2,8 +2,8 @@
 //! Declarative machine configuration + validation (§3.1).
 //!
 //! A [`MachineConfig`] is a **pure-data description** of one emulated computer:
-//! its CPU, virtual clock, memory map, device set, drives, loadable images, and
-//! output. It names *what* the machine is made of, never *how* to wire it up.
+//! its CPU, virtual clock, memory map, device set, drives, and loadable images.
+//! It names *what* the machine is made of, never *how* to wire it up.
 //! Turning this description into a running machine (a [`bus::Bus`] with a
 //! [`bus::DecodeMap`], the [`::machine::IrqLine`] / [`::machine::DmaWiring`] tables,
 //! and a [`::machine::Machine`]) is the job of [`assemble`], the single data-driven
@@ -23,7 +23,9 @@
 //! - [`LoadImage`] — the single home for any blob loaded into the address space
 //!   (a masked BIOS ROM, a RAM-loaded boot blob).
 //! - [`DriveConfig`] — the removable/fixed media attached to a disk controller.
-//! - [`OutputConfig`] — initial presentation subscriber selection.
+//!
+//! [`ObservationPolicy`] carries [`OutputConfig`], the initial presentation
+//! subscriber selection, separately from the hardware description.
 //!
 //! ## Validation
 //!

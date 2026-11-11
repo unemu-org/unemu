@@ -106,7 +106,7 @@ numbered **M1–M8** and listed after the table.
 | `drives[].write_protect` | `write = "volatile" \| "readonly" \| "journal"` | user, default `"volatile"` | **M3** |
 | `images[]` with `ImageKind::Rom` | `[firmware] bios`, `option_roms` | user | **M6** (`provides`) |
 | `images[]` with `ImageKind::RamLoad` | none | not writable: test rigs only | — |
-| `output` (`OutputConfig`) | none | presentation, outside the file | **M8** |
+| `output` (`OutputConfig`) | none | moved to `ObservationPolicy.output`; presentation stays outside the file | **M8** (implemented) |
 | (new) board model | `[board] model` | user, required | **M1** |
 | (new) RTC start | `[board.rtc] start` | user, default `"2000-01-01T00:00:00"` | **M7** |
 | (new) NVRAM image | `[board.rtc] nvram = { image, … }` | user | **M7** |
@@ -149,10 +149,12 @@ Model changes the implementation must make:
   `nvram: NvramSource { Derived, Blank, Image { bytes, write } }`. Add
   `start: RtcStart`, whose default equals today's epoch, 2000-01-01 00:00:00
   (READ, `RtcTime::default_epoch`). Keep `timing`.
-- **M8. Presentation out of the machine.** `MachineConfig.output` selects
-  frame sinks, which is presentation. Move it to the observation setup. If this
-  is deferred, the loader writes `OutputConfig::default()` and nothing
-  observable changes.
+- **M8. Presentation out of the machine (implemented).**
+  `ObservationPolicy.output` selects frame sinks at assembly time, defaulting to
+  Headless. `MachineConfig` describes hardware only; presets and machine-file
+  lowering no longer select presentation. Inline hosts retain
+  `Observation::configure_output`. Capture boundaries and golden output are
+  unchanged.
 
 Not a model change: card-owned MMIO windows. `MemoryConfig.mmio` already names
 the owning `DeviceId`; lowering derives the windows from the card kinds.
@@ -1378,7 +1380,11 @@ Ordered; each bead is narrow and lands green.
     a `fixed-disk` provider. A golden boots from a hard-disk image once the
     firmware spike names the option ROM.
     *Depends on:* 2, 3, 5, and the firmware decision.
-11. **M8 (optional): `OutputConfig` out of `MachineConfig`.**
+11. **M8: `OutputConfig` out of `MachineConfig`.**
+    *Implemented:* `ObservationPolicy.output` owns Headless/Capture selection;
+    `Observation::bind` applies it to bound text routes for assembly and inline
+    hosts. CLI capture and window observation
+    use the policy, while inline hosts retain `Observation::configure_output`.
     *Accept:* sink selection moves to the observation setup, and goldens are
     unchanged.
     *Depends on:* 8.

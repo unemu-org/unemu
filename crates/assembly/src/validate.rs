@@ -911,7 +911,6 @@ mod tests {
     use crate::drive::{DriveConfig, DriveKind, FloppyGeometry, WriteMode};
     use crate::image::{ImageKind, ImageSource, LoadImage};
     use crate::memory::{MemoryConfig, MmioWindow, RamRegion};
-    use crate::output::OutputConfig;
 
     #[test]
     fn initialization_fdc_with_bound_drive_requires_floppy_provider() {
@@ -1944,7 +1943,6 @@ mod tests {
             devices,
             drives,
             images,
-            output: OutputConfig::default(),
         }
     }
 

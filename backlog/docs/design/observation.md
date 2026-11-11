@@ -258,7 +258,7 @@ there is no trace capacity or enable policy.
 | Port/MMIO diagnostics | UART, VGA, POST, `Pic8259`, `Pit8253`, `I8042`, `CmosRtc`, `Dma8237`, `Upd765`, `SysControl` in `crates/devices/src/` | `Device::take_trace`; all callers enumerated below. `SharedPic` forwards the drain to the same live PIC (`crates/chipset/src/shared_pic.rs`) | Every serviced access allocates retained history. Most machine runs never drain PIC/PIT/keyboard/RTC/DMA/FDC/system-control traces; UART output draining does not drain its trace. Access traffic is not a display/audio model. |
 | Undecoded-port diagnostics | `crates/bus/src/lib.rs`, `open_bus_trace` | `Bus::take_open_bus_trace`, only bus unit tests currently consume it | Unbounded recording also occurs outside devices; fixing device buffers alone leaves this path. No current BIOS runner returns these diagnostics despite its source comment mentioning goldens. |
 | Run termination / diagnostic site | CPU, bus and machine run results | CLI `StopReason` classification, returned in `Test386Run.stop` / `BiosRun.stop`; errors in other runners remain `anyhow::Result` | Orthogonal to device output. Preserve capture on halt, cap and fault. `Unsupported`/`Unmapped` detail strings include addresses/bytes for diagnosis, not stable golden text; `Exception` carries a vector. |
-| Presentation (done) | `Observation::capture_text`: one owned `Frame::Text` per capture | Facade fans out each prompt/final frame to its route subscribers. `OutputConfig.frame_sink` selects Headless or one `CaptureFrameSink` per requested display; the VGA runner selects Capture | `Observation::subscribe(DeviceId, Box<dyn FrameSink>)` is the presenter seam. Each configured capture sink retains only its last frame; ordered history is test-owned. |
+| Presentation (done) | `Observation::capture_text`: one owned `Frame::Text` per capture | Facade fans out each prompt/final frame to its route subscribers. `ObservationPolicy.output.frame_sink` selects Headless or one `CaptureFrameSink` per requested display; the VGA runner selects Capture | `Observation::subscribe(DeviceId, Box<dyn FrameSink>)` is the presenter seam. Each configured capture sink retains only its last frame; ordered history is test-owned. |
 | Speaker/audio (future) | Potentially PIT channel 2 plus `SysControl` gate/data-enable | No audio frame, sample sink or runner field exists. `SysControl` stores the control bits but does not wire the gate to PIT; its timer-2 status is a per-read toggle (`crates/devices/src/sys_control.rs`, coverage matrix). PIT exposes `out(n)` (`crates/devices/src/pit8253.rs`) | There is no valid sound output to capture yet. Replaying port writes would implement another timer. Audio needs actual emulated signal production before an observer can consume it. |
 | Floppy writes and machine-test capture bytes | `Upd765` / `Drive` mutate mounted image bytes; machine unit tests use mock capture devices | FDC tests inspect transfer/read-back results, CLI WRITE golden observes a serial marker; `crates/machine/src/lib.rs` tests inspect mock devices through `save()` | These are storage effects / test doubles, not additional frontend output fields. Host-file write-back and whole-machine snapshots remain deferred (`backlog/docs/deferred.md`). Do not turn `Device::save` blobs into a display API. |
 
@@ -425,10 +425,14 @@ observable immediately from restored state, without replay. Do not retroactively
 emit already captured stream bytes on restore. Machine-wide replay remains
 deferred; an eventual replay design must specify stream epochs/cursors.
 
-`OutputConfig.frame_sink` selects the initial facade/presenter wiring at assembly.
-An inline host calls public `Observation::configure_output(OutputConfig)` after
-`Observation::bind`. Reconfiguration replaces the configured last-frame sinks,
-clears their frames and preserves external subscriptions without adding routes.
+`ObservationPolicy.output.frame_sink` selects the initial facade/presenter wiring
+at assembly, defaulting to Headless. Presentation is run-scoped observation setup;
+`MachineConfig`, presets and machine-file lowering describe hardware only.
+`Observation::bind` applies the policy's presentation selection for assembly and
+inline hosts alike. Hosts can later call public
+`Observation::configure_output(OutputConfig)`. Reconfiguration replaces the
+configured last-frame sinks, clears their frames and preserves external
+subscriptions without adding routes.
 `Headless` installs no presentation subscriber; it must not disable state observation
 or explicitly requested stream capture. `Capture` connects one `CaptureFrameSink`
 per requested text route to the same rendered frames a window would receive.

@@ -8,7 +8,6 @@ use crate::device::DeviceConfig;
 use crate::drive::DriveConfig;
 use crate::image::LoadImage;
 use crate::memory::MemoryConfig;
-use crate::output::OutputConfig;
 
 /// A complete, declarative description of one emulated machine (§3.1).
 ///
@@ -38,6 +37,4 @@ pub struct MachineConfig {
     /// this unset. Presets and machine files retain their declared BIOS here.
     /// Update this index when reordering the image list.
     pub system_bios_image: Option<usize>,
-    /// How the machine is presented.
-    pub output: OutputConfig,
 }

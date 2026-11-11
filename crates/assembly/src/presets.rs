@@ -24,7 +24,6 @@ use crate::drive::{DriveConfig, DriveKind, FloppyGeometry, WriteMode};
 use crate::image::{ImageKind, ImageSource, LoadImage};
 use crate::machine::MachineConfig;
 use crate::memory::{MemoryConfig, MmioWindow, RamRegion};
-use crate::output::OutputConfig;
 
 use chipset::{
     COM1_BASE, COM1_TOP, PIC_COMMAND, PIC_DATA, PIT_BASE, PIT_TOP, SLAVE_PIC_COMMAND,
@@ -296,7 +295,6 @@ fn at_demo(blob: Vec<u8>, devices: Vec<DeviceConfig>) -> MachineConfig {
             kind: ImageKind::RamLoad,
             provides: Vec::new(),
         }],
-        output: OutputConfig::default(),
     }
 }
 
@@ -379,7 +377,6 @@ pub fn at_fdc_write(program: Vec<u8>, pattern: Vec<u8>, pattern_base: u64) -> Ma
                 provides: Vec::new(),
             },
         ],
-        output: OutputConfig::default(),
     }
 }
 
@@ -421,7 +418,6 @@ pub fn at_vga_text(blob: Vec<u8>) -> MachineConfig {
             kind: ImageKind::RamLoad,
             provides: Vec::new(),
         }],
-        output: OutputConfig::default(),
     }
 }
 
@@ -460,7 +456,6 @@ pub fn test386(image: Vec<u8>) -> MachineConfig {
             kind: ImageKind::RamLoad,
             provides: Vec::new(),
         }],
-        output: OutputConfig::default(),
     }
 }
 
@@ -504,7 +499,6 @@ pub fn floppy_boot(loader: Vec<u8>, floppy: Vec<u8>) -> MachineConfig {
             kind: ImageKind::RamLoad,
             provides: Vec::new(),
         }],
-        output: OutputConfig::default(),
     }
 }
 
@@ -602,7 +596,6 @@ pub fn bios(rom: Vec<u8>, floppy: Option<Vec<u8>>) -> MachineConfig {
             kind: ImageKind::Rom,
             provides: vec![crate::FirmwareService::Floppy],
         }],
-        output: OutputConfig::default(),
     }
 }
 

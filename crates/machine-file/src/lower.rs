@@ -15,8 +15,8 @@ use std::{
 use assembly::{
     BoardModel, ClockConfig, ConfigError, CpuChip, CpuConfig, DeviceConfig, DeviceId, DeviceKind,
     DmaSpec, DriveConfig, DriveKind, FloppyGeometry, ImageKind, ImageSource, LoadImage,
-    MachineConfig, MdaTextCfg, MemoryConfig, MmioWindow, NvramSource, OutputConfig, PortWindow,
-    PostPortCfg, RamRegion, ResetSpec, RtcStart, SegmentSeed, UartCfg, VgaTextCfg,
+    MachineConfig, MdaTextCfg, MemoryConfig, MmioWindow, NvramSource, PortWindow, PostPortCfg,
+    RamRegion, ResetSpec, RtcStart, SegmentSeed, UartCfg, VgaTextCfg,
 };
 use sha2::{Digest, Sha256};
 
@@ -1076,7 +1076,6 @@ pub(crate) fn lower_tracked<R: ImageReader>(
         devices,
         drives,
         images,
-        output: OutputConfig::default(),
     };
     config
         .validate()

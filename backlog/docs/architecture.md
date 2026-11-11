@@ -55,8 +55,8 @@ MachineConfig (preset or caller data)
 ```
 
 [`MachineConfig`](../../crates/assembly/src/machine.rs) describes CPU/reset state,
-clock rate, RAM/MMIO layout, devices, drives, loadable images, and
-output selection. [`assemble()`](../../crates/assembly/src/assemble.rs) validates
+clock rate, RAM/MMIO layout, devices, drives and loadable images.
+[`assemble()`](../../crates/assembly/src/assemble.rs) validates
 it before construction, maps CPU memory, loads images, creates devices in config
 order, derives CMOS contents from memory/drives, and resolves device roles into
 bus indices. It builds the decode map, IRQ lines and DMA couplings. One shared
@@ -256,8 +256,10 @@ COM1/POST streams, final floppy media and classified stop. The BIOS preset route
 printer ports `0x3BC..=0x3BE` remain undecoded. VGA retains only its colour ports,
 so the cards have independent CRTC state. Prompt detection selects the MDA route
 by `DeviceId` and uses the same facade capture as final capture. The facade
-renders once and fans out that frame to subscribers. `OutputConfig.frame_sink`
-selects Headless (none) or Capture (one last-frame sink per requested display).
+renders once and fans out that frame to subscribers.
+`ObservationPolicy.output.frame_sink` selects Headless (the default, no subscriber)
+or Capture (one last-frame sink per requested display). Presentation selection
+belongs to observation setup, outside the hardware-only `MachineConfig`.
 `Observation::subscribe` accepts a boxed `FrameSink` for a bound route, providing
 the window presenter seam without a window dependency. `run_vga_text` selects
 Capture; presentation stays outside the machine loop and adds no execution steps.
