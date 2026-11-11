@@ -667,12 +667,15 @@ impl<R: ImageReader> Context<'_, R> {
                 vec![format!("{}.provides", self.image_label(*image_index))]
             }
             MultipleIdeChannels => device_fields(&[DeviceId::Ide]),
-            DebugConsoleBoard => vec!["board".into()],
+            DebugConsoleBoard | FwCfgBoard => vec!["board".into()],
             FirmwareReset { .. } => vec!["cpu".into()],
             SystemBiosOverlapsRam { .. } => vec!["memory".into(), self.bios_source_field().into()],
             DuplicateDeviceId(id) | MmioDeviceMissing(id) => device_fields(&[*id]),
             InvalidIdeResources { device }
             | InvalidDebugConsoleResources { device }
+            | InvalidFwCfgResources { device }
+            | InvalidFwCfgFiles { device, .. }
+            | FwCfgCom1Missing { device }
             | InvalidIdePortWindows { device }
             | NoProvider { device, .. }
             | InvalidRtcStart { device, .. }

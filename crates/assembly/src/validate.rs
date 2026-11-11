@@ -102,10 +102,15 @@ struct WordPortSupport {
     supports: fn(&DeviceKind, u16) -> bool,
 }
 
-// IOCS16# follows the configured task-file base, including secondary channels.
-const WORD_PORT_SUPPORT: &[WordPortSupport] = &[WordPortSupport {
-    supports: |kind, port| matches!(kind, DeviceKind::Ide(cfg) if port == cfg.base),
-}];
+const WORD_PORT_SUPPORT: &[WordPortSupport] = &[
+    // IOCS16# follows the configured task-file base, including secondary channels.
+    WordPortSupport {
+        supports: |kind, port| matches!(kind, DeviceKind::Ide(cfg) if port == cfg.base),
+    },
+    WordPortSupport {
+        supports: |kind, port| matches!(kind, DeviceKind::FwCfg(_) if port == 0x510),
+    },
+];
 
 impl MachineConfig {
     /// Validate this configuration, returning the first inconsistency found.
@@ -132,6 +137,7 @@ impl MachineConfig {
         self.check_part_sources()?;
         self.check_unique_device_ids()?;
         self.check_debug_console()?;
+        self.check_fw_cfg()?;
         self.check_board()?;
         self.check_firmware_layout()?;
         self.check_firmware_services()?;
@@ -465,6 +471,24 @@ impl MachineConfig {
                         dependent,
                     });
                 }
+            }
+        }
+        Ok(())
+    }
+
+    fn check_fw_cfg(&self) -> Result<(), ConfigError> {
+        for device in &self.devices {
+            if let DeviceKind::FwCfg(cfg) = &device.kind {
+                if self.board != BoardModel::Bare {
+                    return Err(ConfigError::FwCfgBoard);
+                }
+                if device.ports != crate::FwCfgCfg::port_windows()
+                    || device.irq.is_some()
+                    || device.dma.is_some()
+                {
+                    return Err(ConfigError::InvalidFwCfgResources { device: device.id });
+                }
+                crate::fw_cfg::files(self, device.id, cfg)?;
             }
         }
         Ok(())

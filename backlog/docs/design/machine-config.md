@@ -94,6 +94,103 @@ Decision-19 confines emulator extensions to `generic-386-isa`, which does not
 exist yet. Its board bead (`upc-o0j.6`) will wire this device. There is deliberately
 no machine-file syntax or preset wiring in this change.
 
+### Emulator-only firmware configuration
+
+`DeviceKind::FwCfg(FwCfgCfg { files, sercon_from_com1 })` constructs the
+read-only QEMU firmware configuration device at `DeviceId::FwCfg`. Each
+`FwCfgFile { name, bytes }` contains inline bytes. This is the smallest useful
+configuration: no new image resolver or host I/O is needed; callers may resolve
+images before constructing the config. Files retain configuration order, with
+selectors from 0020h. Names must be unique, nonempty ASCII without NUL, at most
+55 bytes, leaving a terminating NUL in the directory's 56-byte field. Sizes
+are BE32, selectors BE16, reserved bytes zero; the count is BE32. There are at
+most 16352 files (selectors 0020h–3FFFh).
+The directory follows configuration order (with generated `etc/sercon-port`
+last), whereas QEMU sorts by name (`hw_nvram_fw_cfg.c:856–860`); the
+specification does not require sorting and SeaBIOS/Linux do not depend on it.
+
+`FwCfgCfg::port_windows()` returns a **Word** selector window at 510h and a
+**Byte** data window at 511h. These are exactly the required resources, with no
+IRQ or DMA. A byte-wide 510h window would make the existing ISA bus split
+`OUTW` into byte writes at 510h and 511h, losing the selector. The selector
+must receive the original word, including its architecture bit. This uses
+existing bus support without changing the bus. The QEMU Firmware Configuration
+(fw_cfg) Device specification, Selector (Control) Register, defines a 16-bit
+selector; it does not define selecting via two byte writes. QEMU's combined
+I/O handler ignores byte writes at either port. We follow that behavior,
+including ignored data writes under the deprecated write-channel bit. Byte
+reads at either port stream the selected item, as in QEMU's combined handler;
+a word or dword IN at 510h reaches the device as a size-2 read and returns
+`UnmappedRegister`, stopping the run with a bus error under the project's
+invalid-width policy (as for the ATA data port), whereas QEMU drops the invalid
+access and the guest continues.
+A dword OUT at 510h is split into a word cycle that selects the low word and an
+open-bus cycle at 512h, whereas QEMU rejects four-byte writes; SeaBIOS and Linux
+use OUTW.
+Reselecting rewinds the offset; every byte read advances it, and reads beyond
+an item or from an unknown selector return zero.
+Bit 14 aliases the corresponding read item; bit 15 selects the separate
+architecture namespace, never the generic signature or ID.
+
+The signature (0000h) is `QEMU`; ID (0001h) is LE32 value 1: traditional
+interface, no DMA. Ports 514h/518h are not decoded. READ: SeaBIOS rel-1.17.0
+`fw/paravirt.c:349–426,664–689` uses `OUTW` to select, `INSB` to read and repeated
+`INB` to skip when ID bit 1 is clear; it never starts a DMA transfer. Firmware
+file writes fail in SeaBIOS without DMA; device data-port writes are no-ops,
+as specified for the deprecated legacy write path.
+
+`sercon_from_com1` defaults to false. When explicitly true, assembly appends
+`etc/sercon-port` containing the two-byte little-endian base of the UART whose
+role is `DeviceId::Uart`. Missing or wrong-kind COM1 and duplicate file names
+are errors. READ: SeaBIOS `sercon.c:519` calls `romfile_loadint`, which copies a
+1/2/4/8-byte file into a zeroed integer (`romfile.c:84–100`); thus 03F8h is
+encoded as F8h,03h. An explicit file also works with the convenience disabled.
+The device does not infer files from UART presence or add option ROMs itself.
+
+All remaining legacy items are empty: any requested bytes read as zero. This
+includes boot-menu key 000Eh = 0, rather than an enabled interactive menu.
+READ: SeaBIOS `fw/paravirt.c:333–346,528–541,599–655,722–727`:
+
+| Key(s) | Zero/empty meaning and SeaBIOS consumer |
+|---|---|
+| 0002h UUID | Zero UUID if read; defined but not read by this paravirt.c. SMBIOS instead uses entries/files. |
+| 0003h RAM size (LE64) | Zero; this SeaBIOS paravirt.c does not read the legacy RAM-size key. Without `etc/e820`, early sizing falls back to CMOS. No board RAM-size claim is made here. |
+| 0004h nographic (LE16) | Zero; prevents SeaBIOS implicitly adding a default COM1 console. Explicit `etc/sercon-port` still works. |
+| 0005h current CPU count (LE16) | Zero; `qemu_get_present_cpus_count` compares with the CMOS count when RTC is present. |
+| 0006h machine ID, 000Ch boot device | Empty; not read by this paravirt.c. |
+| 0007h–000Bh kernel address/size/cmdline, initrd address/size | Empty; not read by this paravirt.c. These are legacy direct-kernel-loader inputs; no kernel/initrd is provided. |
+| 000Dh NUMA (LE64 count, then maps/nodes) | Zero nodes; SeaBIOS registers empty NUMA romfiles. |
+| 000Eh boot menu (LE16) | Zero via legacy `etc/show-boot-menu`. |
+| 000Fh max CPUs (LE16) | Zero via legacy `etc/max-cpus`; no NUMA CPU map entries. |
+| 0010h–0018h kernel entry/data, initrd data, cmdline address/size/data, setup address/size/data | Empty; not read by this paravirt.c; no direct-kernel-loader payloads. |
+| 8000h ACPI tables (LE16 count) | Zero tables; no legacy ACPI romfiles registered. |
+| 8001h SMBIOS entries (LE16 count) | Zero entries; no legacy SMBIOS romfiles registered. |
+| 8002h IRQ0 override | Zero via legacy `etc/irq0-override`. |
+| 8003h legacy e820 reservations (LE32 count) | Zero reservations; no legacy entries added. |
+
+`etc/e820` is absent unless explicitly supplied among the files. READ:
+`paravirt.c:733–790` uses its 20-byte address/length/type entries for early RAM
+sizing; `paravirt.c:560–594` otherwise handles legacy reservations and CMOS.
+No e820, ACPI, SMBIOS, CPU topology or RAM map is synthesized before a board
+owns those values. `vgaroms/*`, `genroms/*` and `bootorder` are ordinary files
+when explicitly configured. File delivery alone does not make SeaBIOS POST
+runnable on the current 286 core.
+
+Validation permits only `BoardModel::Bare` and rejects firmware boards by
+**kind**, regardless of role, with the exact message:
+`fw-cfg port is emulator-only; it is allowed only on board generic-386-isa`.
+The named future board does not exist yet. There is **no machine-file syntax
+or preset wiring** in this change; board wiring remains pending. See
+[firmware-and-machine-classes.md §3.6](firmware-and-machine-classes.md#36-phase-b-firmware-requirements-seabios-on-generic-386-isa).
+
+There is no host I/O or wall clock during execution. Snapshot version 1 stores
+selector (LE16), offset (LE64) and virtual trace clock (LE64), preceded by the
+version byte. Files and directory stay with the receiving configuration;
+restore requires the same configured contents, as with other immutable device
+configuration. Trace policy defaults to Off, supports the shared bounded ring,
+and is excluded from snapshots. Reset rewinds to signature without discarding
+files. The device is dormant and never requests an IRQ.
+
 ### Board model
 
 `MachineConfig.board` is `BoardModel::Ibm5170` or `BoardModel::Bare`. The BIOS

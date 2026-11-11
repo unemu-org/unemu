@@ -39,6 +39,8 @@ pub enum DeviceId {
     Post,
     /// Emulator-only firmware diagnostic console.
     DebugConsole,
+    /// Emulator-only firmware configuration.
+    FwCfg,
     /// uPD765 floppy-disk controller.
     Fdc,
     /// ATA PIO channel.
@@ -326,6 +328,27 @@ impl Default for DebugConsoleCfg {
     }
 }
 
+/// Emulator-only firmware files, frozen at assembly time.
+///
+/// See `backlog/docs/design/machine-config.md` §Emulator-only firmware configuration.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct FwCfgCfg {
+    /// Inline files in directory order; no host I/O occurs during execution.
+    pub files: Vec<devices::FwCfgFile>,
+    /// Append etc/sercon-port from the UART at DeviceId::Uart explicitly.
+    pub sercon_from_com1: bool,
+}
+
+impl FwCfgCfg {
+    /// Preserve the overlapping word selector without widening the data port.
+    pub fn port_windows() -> Vec<PortWindow> {
+        vec![
+            PortWindow::single(0x510).with_width(bus::PortWidth::Word),
+            PortWindow::single(0x511),
+        ]
+    }
+}
+
 /// uPD765 floppy-controller parameters (§7.7).
 ///
 /// Drives are not listed here — they live once in the top-level
@@ -426,6 +449,8 @@ pub enum DeviceKind {
     Post(PostPortCfg),
     /// Emulator-only firmware diagnostic console, confined to bare test rigs.
     DebugConsole(DebugConsoleCfg),
+    /// Emulator-only traditional firmware configuration, confined to bare rigs.
+    FwCfg(FwCfgCfg),
     /// uPD765 floppy controller.
     Fdc(FdcCfg),
     /// ATA PIO channel.

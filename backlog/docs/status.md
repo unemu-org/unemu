@@ -216,6 +216,14 @@ checks identity and diagnostics without execution; see `vendor/user-roms/README.
   derivation is available; exposing bytes above 3Fh awaits that board's RTC.
 
 - **2026-11-11, diagnostic-ROM validation:** [spike recorded](design/compatibility-diagnostics.md); user-supplied Landmark AT 1.2.0 prefix/full goldens remain pending (`upc-fro.3`–`upc-fro.5`), and Ruud XT v5.7 is a future `ibm-5160` fixture (`upc-fro.6`); no AT diagnostic run is qualified.
+
+- **2026-11-11, fw_cfg device:** traditional read-only selector/data interface,
+  inline file directory and explicit COM1 serial-console file are available
+  through Rust assembly configuration on Bare rigs. Full-word selector decode
+  at 510h preserves architecture keys; 511h is byte-wide. No DMA, machine-file
+  syntax or firmware-board wiring; `generic-386-isa` remains pending. See
+  [machine-config.md §Emulator-only firmware configuration](design/machine-config.md#emulator-only-firmware-configuration).
+
 - **2026-11-11, SeaBIOS fixture:** pinned rel-1.17.0 ISA build recipe and
   configuration added under `vendor/seabios/`, with a separate firmware
   devShell. Two independent builds matched on macOS arm64 with the flake-pinned

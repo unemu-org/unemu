@@ -45,6 +45,7 @@ mod device;
 mod drive;
 mod error;
 mod firmware;
+mod fw_cfg;
 mod image;
 mod machine;
 mod memory;
@@ -65,9 +66,10 @@ pub use clock::ClockConfig;
 pub use cpu::{CpuChip, CpuConfig, ResetSpec, SegmentSeed};
 pub use device::{
     CmosCfg, DebugConsoleCfg, DeviceConfig, DeviceId, DeviceKind, DmaCfg, DmaSpec, FdcCfg,
-    I8042Cfg, IdeCfg, MdaTextCfg, NvramSource, PicCfg, PitCfg, PortWindow, PostPortCfg, RtcStart,
-    SysControlCfg, UartCfg, VgaTextCfg,
+    FwCfgCfg, I8042Cfg, IdeCfg, MdaTextCfg, NvramSource, PicCfg, PitCfg, PortWindow, PostPortCfg,
+    RtcStart, SysControlCfg, UartCfg, VgaTextCfg,
 };
+pub use devices::FwCfgFile;
 pub use drive::{DriveConfig, DriveKind, FloppyGeometry, HardDiskGeometry, WriteMode};
 pub use error::ConfigError;
 pub use image::{

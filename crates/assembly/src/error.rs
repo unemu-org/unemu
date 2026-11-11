@@ -12,6 +12,21 @@ use crate::device::DeviceId;
 /// test can assert the exact failure a malformed config produces.
 #[derive(Clone, Debug, PartialEq, Eq, Error)]
 pub enum ConfigError {
+    /// Emulator firmware configuration cannot be attached to a period motherboard.
+    #[error("fw-cfg port is emulator-only; it is allowed only on board generic-386-isa")]
+    FwCfgBoard,
+    /// Selector and data decode, IRQ or DMA wiring is inconsistent.
+    #[error("device {device:?} fw-cfg requires a word selector at 0x510, byte data at 0x511 and no IRQ or DMA")]
+    InvalidFwCfgResources { device: DeviceId },
+    /// Inline files cannot be encoded in the firmware directory.
+    #[error("device {device:?}: {source}")]
+    InvalidFwCfgFiles {
+        device: DeviceId,
+        source: devices::FwCfgError,
+    },
+    /// The explicit serial console convenience needs a COM1 UART.
+    #[error("device {device:?} fw-cfg sercon_from_com1 requires a UART at DeviceId::Uart")]
+    FwCfgCom1Missing { device: DeviceId },
     /// Emulator diagnostics cannot be attached to a period motherboard.
     #[error("debug-console port is emulator-only; it is allowed only on board generic-386-isa")]
     DebugConsoleBoard,

@@ -16,6 +16,7 @@ pub mod cmos_rtc;
 pub mod coprocessor;
 pub mod debug_console;
 pub mod dma8237;
+pub mod fw_cfg;
 pub mod i8042;
 pub mod mda;
 pub mod pic8259;
@@ -32,6 +33,7 @@ pub use coprocessor::Absent80287;
 pub use debug_console::DebugConsole;
 pub use device::{DmaMemory, DmaOp, DmaOutcome, DmaRequest};
 pub use dma8237::{Dma8237, TransferType};
+pub use fw_cfg::{FwCfg, FwCfgError, FwCfgFile};
 pub use i8042::I8042;
 pub use mda::MdaText;
 pub use pic8259::Pic8259;
@@ -143,6 +145,8 @@ pub(crate) mod trace_policy_tests {
         };
     }
 
+    ring_test!(fw_cfg_trace_ring, FwCfg::new(), 0x511);
+    off_test!(fw_cfg_trace_off, FwCfg::new(), 0x511);
     ring_test!(uart_trace_ring, Uart16550::new(0x3F8), 0x3FD);
     off_test!(uart_trace_off, Uart16550::new(0x3F8), 0x3FD);
     ring_test!(post_trace_ring, PostPort::with_port(0x80), 0x80);
