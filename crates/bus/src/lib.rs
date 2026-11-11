@@ -32,7 +32,7 @@
 //! ones are not attempted. MMIO never uses the port open-bus policy.
 //!
 //! [`Bus::tick_due`] dispatches due transitions; [`Bus::tick_all`] supports the
-//! per-clock test oracle. IRQ levels reach the machine through [`Bus::device_irq_line`].
+//! per-clock test oracle. IRQ levels reach the machine through [`Bus::device_irq_output`].
 //! Before a port/MMIO access or mutable borrow, the bus synchronizes the target,
 //! then its declared access dependents in ascending bus-index order, before any
 //! register side effect. This keeps a dependent timer's next deadline based on
@@ -525,7 +525,14 @@ impl Bus {
     /// machine names a device only by the wiring index the configuration declared, not
     /// by a concrete type.
     pub fn device_irq_line(&self, index: usize) -> Option<bool> {
-        self.devices.get(index).map(|d| d.irq_pending())
+        self.device_irq_output(index, 0)
+    }
+
+    /// Raw level of a device-local interrupt output pin (§5.1).
+    /// Board wiring selects the pin; the machine applies the same edge policy
+    /// to every output. Devices without that pin return a low level.
+    pub fn device_irq_output(&self, index: usize, output: usize) -> Option<bool> {
+        self.devices.get(index).map(|d| d.irq_output(output))
     }
 
     /// Borrow a device by index (for tests and CLI serial draining).
@@ -2066,6 +2073,9 @@ mod tests {
         fn irq_pending(&self) -> bool {
             false
         }
+        fn irq_output(&self, output: usize) -> bool {
+            output == 1
+        }
         fn reset(&mut self) {}
         fn save(&self) -> Vec<u8> {
             Vec::new()
@@ -2086,6 +2096,16 @@ mod tests {
             mmio: Vec::new(),
         };
         Bus::new(devices, map)
+    }
+
+    #[test]
+    fn device_irq_outputs_select_independent_pins_and_preserve_the_primary_query() {
+        let bus = bus_decoding(0x60);
+        assert_eq!(bus.device_irq_line(0), Some(false));
+        assert_eq!(bus.device_irq_output(0, 0), Some(false));
+        assert_eq!(bus.device_irq_output(0, 1), Some(true));
+        assert_eq!(bus.device_irq_output(0, 2), Some(false));
+        assert_eq!(bus.device_irq_output(1, 1), None);
     }
 
     #[test]

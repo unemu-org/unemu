@@ -123,7 +123,7 @@ fn pit(irq: Option<u8>) -> DeviceConfig {
 fn keyboard(irq: Option<u8>) -> DeviceConfig {
     let dc = DeviceConfig::new(
         DeviceId::Keyboard,
-        DeviceKind::Keyboard(I8042Cfg {}),
+        DeviceKind::Keyboard(I8042Cfg::default()),
         vec![PortWindow::single(KBD_DATA), PortWindow::single(KBD_CMD)],
     );
     match irq {

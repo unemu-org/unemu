@@ -167,7 +167,11 @@ fn machine(cpu: X86JitCpu, state: Rc<RefCell<PortState>>) -> Machine<X86JitCpu> 
         cpu,
         bus,
         Box::new(pic),
-        vec![IrqLine { device: 0, irq: 0 }],
+        vec![IrqLine {
+            device: 0,
+            output: 0,
+            irq: 0,
+        }],
         None,
     )
 }

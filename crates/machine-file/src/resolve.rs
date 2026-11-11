@@ -466,7 +466,7 @@ macro_rules! table {
         }
     };
 }
-table!(Board, [model, post_port], [rtc]);
+table!(Board, [model, post_port, mouse], [rtc]);
 table!(Rtc, [start], [nvram]);
 table!(Cpu, [model, rate], []);
 table!(Memory, [conventional_kib, extended_kib], []);
@@ -1093,6 +1093,22 @@ mod tests {
             })
         );
     }
+    #[test]
+    fn board_mouse_inherits_and_can_be_explicitly_disabled() {
+        for (parent, child, expected) in [
+            ("mouse=true\n", "", Some(true)),
+            ("mouse=true\n", "mouse=false\n", Some(false)),
+            ("mouse=false\n", "mouse=true\n", Some(true)),
+        ] {
+            let resolved = merged(
+                &format!("[board]\nmodel='ibm-5170'\n{parent}"),
+                &format!("[board]\n{child}"),
+            )
+            .unwrap();
+            assert_eq!(resolved.document.board.unwrap().mouse, expected);
+        }
+    }
+
     #[test]
     fn tables_merge_recursively_field_by_field() {
         let r = merged("[board]\nmodel='ibm-5170'\npost_port=128\n[board.rtc]\nstart='2001-02-03T00:00:00'\nnvram='derived'\n[cpu]\nmodel='80286'\nrate=2\n[memory]\nconventional_kib=512\nextended_kib=64\n[firmware.bios]\nimage='rom.bin'\nbase=0xF8000\nprovides=['floppy']\n", "[board]\npost_port='none'\n[board.rtc]\nnvram='blank'\n[cpu]\nrate=3\n[memory]\nextended_kib=128\n[firmware.bios]\nbase=0xF0000\n").unwrap();

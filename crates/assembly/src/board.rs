@@ -124,7 +124,7 @@ impl BoardModel {
             ),
             DeviceConfig::new(
                 Keyboard,
-                DeviceKind::Keyboard(I8042Cfg {}),
+                DeviceKind::Keyboard(I8042Cfg::default()),
                 vec![PortWindow::single(0x60), PortWindow::single(0x64)],
             )
             .with_irq(1),
@@ -214,7 +214,7 @@ mod tests {
                 ),
                 (
                     Keyboard,
-                    DeviceKind::Keyboard(I8042Cfg {}),
+                    DeviceKind::Keyboard(I8042Cfg::default()),
                     vec![PortWindow::single(0x60), PortWindow::single(0x64)],
                     Some(1),
                     None

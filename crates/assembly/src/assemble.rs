@@ -290,9 +290,12 @@ fn assemble_with_cpu_and_catalogue(
                     Box::new(shared.slave_device())
                 }
             }
-            DeviceKind::Keyboard(_) => {
-                let keyboard =
+            DeviceKind::Keyboard(c) => {
+                let mut keyboard =
                     I8042::new().with_board_lines(Rc::clone(&reset_signal), a20_line.clone());
+                if c.mouse {
+                    keyboard = keyboard.with_aux_device(Box::new(devices::Ps2Mouse::new()));
+                }
                 Box::new(keyboard)
             }
             DeviceKind::Rtc(c) => {
@@ -883,9 +886,10 @@ fn build_irq_lines(
     config
         .devices
         .iter()
-        .filter_map(|dc| {
-            dc.irq.map(|irq| IrqLine {
+        .flat_map(|dc| {
+            dc.interrupt_outputs().map(|(output, irq)| IrqLine {
                 device: device_index[&dc.id],
+                output,
                 irq,
             })
         })
@@ -2007,7 +2011,7 @@ mod tests {
             ),
             DeviceConfig::new(
                 DeviceId::Keyboard,
-                DeviceKind::Keyboard(I8042Cfg {}),
+                DeviceKind::Keyboard(I8042Cfg::default()),
                 vec![PortWindow::single(0x60), PortWindow::single(0x64)],
             )
             .with_irq(1),

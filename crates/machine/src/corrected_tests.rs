@@ -946,7 +946,11 @@ fn halt_delivers_vector_latched_during_halt_without_idle_wait() {
                 })],
                 DecodeMap::default(),
             );
-            machine.irq_lines = vec![IrqLine { device: 0, irq: 0 }];
+            machine.irq_lines = vec![IrqLine {
+                device: 0,
+                output: 0,
+                irq: 0,
+            }];
             machine.last_levels = vec![None];
             machine.set_idle_limit(idle_limit);
             machine = machine.with_scheduler_engine(engine);
@@ -1020,7 +1024,11 @@ fn hlt_jumps_to_deadline_or_exact_cap_and_preserves_idle_span() {
             high: false,
         };
         machine.bus = Bus::new(vec![Box::new(line)], DecodeMap::default());
-        machine.irq_lines = vec![IrqLine { device: 0, irq: 0 }];
+        machine.irq_lines = vec![IrqLine {
+            device: 0,
+            output: 0,
+            irq: 0,
+        }];
         machine.last_levels = vec![None];
         machine.set_idle_limit(Some(200));
         machine.run_bounded(Some(cap)).unwrap();
@@ -1302,7 +1310,11 @@ fn out_drains_dma_and_follow_on_completion_before_inta() {
             mmio: Vec::new(),
         },
     );
-    machine.irq_lines = vec![IrqLine { device: 1, irq: 0 }];
+    machine.irq_lines = vec![IrqLine {
+        device: 1,
+        output: 0,
+        irq: 0,
+    }];
     machine.last_levels = vec![None];
     machine = machine.with_dma_wirings(vec![DmaWiring {
         requester: 1,

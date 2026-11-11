@@ -49,6 +49,23 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   bare Rust test rigs. IBM 5170 validation rejects the device; future
   `generic-386-isa` wiring and machine-file exposure remain pending.
 
+- **2026-11-11 — PS/2 auxiliary channel and mouse:** the 8042
+  can attach an `AuxDevice` at construction, routes D4h to it, tags aux output
+  with status bits 0/5 and exposes IRQ12 as interrupt output 1 (command-byte
+  bit 1). D3h injects an aux byte even without a peripheral. Clock inhibit
+  retains peripheral output; ready keyboard/aux bytes alternate after controller
+  replies. `Ps2Mouse` implements standard ID-00 commands, stream/remote/wrap,
+  signed motion, three buttons, overflow and stream-only 2:1 scaling. Snapshots
+  include partial exchanges and all peripheral state. Packets are emitted at
+  input injection boundaries and coalesced while busy; sample-rate pacing in
+  virtual time is not modelled. Machine configuration now opts in through `I8042Cfg.mouse` or
+  `board.mouse` in TOML/YAML; slave IR4 / IRQ12 uses the same edge policy as
+  IRQ1. `assembly::inject_mouse` deterministically accepts motion/buttons at
+  run boundaries, including accumulation with reporting disabled. A synthetic
+  AT ROM checks reset/enable replies and exact packets through a guest IRQ12
+  handler with both PIC EOIs. Existing profiles attach no mouse. Window pointer
+  capture remains pending.
+
 ## Works (as of 2026-11-10, main @ 479f8ed — the 286 foundation is finished)
 
 - **An unmodified open BIOS boots FreeDOS from a floppy, headless and deterministic.** The Kiselev
@@ -345,18 +362,6 @@ to the supervisor; complete proprietary POST/boot compatibility remains
 unqualified. See [scheduler calibration](design/scheduler.md#device-migration-inventory).
 
 ## In flight
-
-- **2026-11-11 — PS/2 auxiliary channel and mouse (device level):** the 8042
-  can attach an `AuxDevice` at construction, routes D4h to it, tags aux output
-  with status bits 0/5 and exposes IRQ12 as interrupt output 1 (command-byte
-  bit 1). D3h injects an aux byte even without a peripheral. Clock inhibit
-  retains peripheral output; ready keyboard/aux bytes alternate after controller
-  replies. `Ps2Mouse` implements standard ID-00 commands, stream/remote/wrap,
-  signed motion, three buttons, overflow and stream-only 2:1 scaling. Snapshots
-  include partial exchanges and all peripheral state. Packets are emitted at
-  input injection boundaries and coalesced while busy; sample-rate pacing in
-  virtual time is not modelled. Machine configuration, slave-PIC IRQ12 wiring
-  and frontend input routing remain pending. Existing profiles attach no mouse.
 
 - **2026-11-11 — A20 / System Control Port A device side:** Bare rigs can
   opt into port 92h with versioned snapshots, latch readback and CPU reset on

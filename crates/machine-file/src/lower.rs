@@ -83,6 +83,7 @@ struct Context<'a, R> {
     reader: &'a mut R,
     labels: Vec<Option<String>>,
     devices: Vec<(DeviceId, String)>,
+    irq_fields: Vec<(DeviceId, u8, String)>,
     drives: Vec<DriveOrigin>,
     images: Vec<String>,
     image_paths: Vec<PathBuf>,
@@ -720,9 +721,25 @@ impl<R: ImageReader> Context<'_, R> {
             DuplicatePicFace { a, b, .. }
             | PortOverlap { a, b, .. }
             | PortOverlapDecodeOrder { a, b, .. }
-            | MmioOverlap { a, b, .. }
-            | IrqConflict { a, b, .. } => device_fields(&[*a, *b]),
+            | MmioOverlap { a, b, .. } => device_fields(&[*a, *b]),
+            IrqConflict { a, b, line } => {
+                let mut fields = Vec::new();
+                for id in [a, b] {
+                    if let Some((_, _, field)) = self
+                        .irq_fields
+                        .iter()
+                        .find(|(device, irq, _)| device == id && irq == line)
+                    {
+                        fields.push(field.clone());
+                    } else {
+                        fields.extend(device_fields(&[*id]));
+                    }
+                }
+                fields.sort_by_key(|field| field.starts_with("board"));
+                fields
+            }
             DmaControllerMissing { requester, .. } => device_fields(&[*requester]),
+            UnsupportedMouse { .. } => vec!["board.mouse".into()],
             Nvram { .. } | UnsupportedExtendedNvram => vec!["board.rtc.nvram".into()],
             Journal { drive_index, .. }
             | DriveInput { drive_index, .. }
@@ -969,6 +986,7 @@ pub(crate) fn lower_tracked<R: ImageReader>(
             })
             .collect(),
         devices: Vec::new(),
+        irq_fields: Vec::new(),
         drives: Vec::new(),
         images: Vec::new(),
         image_paths: Vec::new(),
@@ -1007,6 +1025,13 @@ pub(crate) fn lower_tracked<R: ImageReader>(
     };
     let mut devices = board.motherboard_devices();
     if let Some(settings) = &document.board {
+        if let Some(mouse) = settings.mouse {
+            for device in &mut devices {
+                if let DeviceKind::Keyboard(cfg) = &mut device.kind {
+                    cfg.mouse = mouse;
+                }
+            }
+        }
         if let Some(port) = settings.post_port {
             let port = match port {
                 v1::NumberOrNone::Number(port) => Some(port),
@@ -1037,6 +1062,12 @@ pub(crate) fn lower_tracked<R: ImageReader>(
             }
         }
     }
+    context.irq_fields.extend(devices.iter().flat_map(|device| {
+        device
+            .interrupt_outputs()
+            .filter(|(output, _)| *output != 0)
+            .map(|(_, irq)| (device.id, irq, "board.mouse".into()))
+    }));
     context.devices.extend(devices.iter().map(|d| {
         (
             d.id,
@@ -1146,6 +1177,7 @@ pub(crate) fn lower_tracked<R: ImageReader>(
         origins: origins.clone(),
         labels: context.labels,
         devices: context.devices,
+        irq_fields: context.irq_fields,
         drives: context.drives,
         images: context.images,
         image_paths: context.image_paths,
@@ -1169,6 +1201,7 @@ mod tests {
                 (DeviceId::MasterPic, "board".into()),
                 (DeviceId::Uart, "card[0]".into()),
             ],
+            irq_fields: Vec::new(),
             drives: (0..3)
                 .map(|index| DriveOrigin {
                     field: format!("card[1].drives[{index}]"),
@@ -1268,6 +1301,7 @@ mod tests {
             origins: Origins::new("machine.toml"),
             labels: Vec::new(),
             devices: Vec::new(),
+            irq_fields: Vec::new(),
             drives: Vec::new(),
             images: Vec::new(),
             image_paths: Vec::new(),
@@ -1340,6 +1374,7 @@ mod tests {
                     origins: origins.clone(),
                     labels: context.labels.clone(),
                     devices: context.devices.clone(),
+                    irq_fields: context.irq_fields.clone(),
                     drives: context.drives.clone(),
                     images: context.images.clone(),
                     image_paths: context.image_paths.clone(),
@@ -1678,6 +1713,7 @@ mod tests {
             reader: &mut chips,
             labels: vec![],
             devices: vec![],
+            irq_fields: Vec::new(),
             drives: vec![],
             images: vec![],
             image_paths: vec![],
@@ -1767,6 +1803,7 @@ pub(crate) struct AssemblyDiagnostics {
     origins: Origins,
     labels: Vec<Option<String>>,
     devices: Vec<(DeviceId, String)>,
+    irq_fields: Vec<(DeviceId, u8, String)>,
     drives: Vec<DriveOrigin>,
     images: Vec<String>,
     image_paths: Vec<PathBuf>,
@@ -1792,6 +1829,7 @@ impl AssemblyDiagnostics {
             reader,
             labels: self.labels.clone(),
             devices: self.devices.clone(),
+            irq_fields: self.irq_fields.clone(),
             drives: self.drives.clone(),
             images: self.images.clone(),
             image_paths: self.image_paths.clone(),

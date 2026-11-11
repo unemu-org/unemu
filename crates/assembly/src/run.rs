@@ -453,6 +453,36 @@ pub fn try_inject_scancode(
     true
 }
 
+/// Inject relative device counts and current buttons at a completed run boundary.
+/// Positive Y is up; buttons use left/right/middle bits 0/1/2 (other bits ignored).
+/// Returns false only when the controller or attached mouse route is absent.
+/// Input is always accepted by an attached mouse: disabled reporting, remote
+/// mode and a busy serial link accumulate/coalesce motion per the mouse model.
+/// Commands may clear accumulated counts. No readiness polling or host clock
+/// is needed. The next device synchronization services newly queued output.
+/// IBM PS/2 Hardware Interface Technical Reference, Common Interfaces,
+/// "Pointing Device", Data Reporting; see machine-config.md §PS/2 mouse.
+pub fn inject_mouse(
+    machine: &mut Machine<X86JitCpu>,
+    kbc_index: usize,
+    dx: i32,
+    dy: i32,
+    buttons: u8,
+) -> bool {
+    let Some(mouse) = machine
+        .bus_mut()
+        .device_mut(kbc_index)
+        .and_then(|dev| dev.as_any_mut())
+        .and_then(|dev| dev.downcast_mut::<I8042>())
+        .and_then(I8042::aux_device_mut)
+        .and_then(|dev| dev.as_any_mut().downcast_mut::<devices::Ps2Mouse>())
+    else {
+        return false;
+    };
+    mouse.inject_motion(dx, dy, buttons);
+    true
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

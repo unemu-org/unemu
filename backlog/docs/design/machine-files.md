@@ -60,9 +60,9 @@ document uses that shape:
 6. **Paths are relative to the file that names them.** Images may pin a
    `sha256`.
 7. **`extends`** inherits from another file or from a built-in preset.
-8. **Schema 1 implements what exists, plus IDE, the floppy journal, NVRAM and
-   the RTC start.** Everything else is reserved names and shapes, so new
-   hardware arrives as a new card kind, not as a new format version.
+8. **Schema 1 includes IDE, floppy journals, NVRAM, RTC start and the optional
+   PS/2 mouse.** Other names and shapes are reserved. New hardware uses new
+   card kinds within the same format version.
 9. **Cycle-exact timing fields are rejected** with an explanation
    (decision-16 §3).
 
@@ -218,6 +218,7 @@ the owning `DeviceId`; lowering derives the windows from the card kinds.
 | `model` | string | required | `"ibm-5170"` | `MachineConfig.board`, plus the board device set |
 | `post_port` | u16 or `"none"` | `0x80` on `ibm-5170` | yes | the `Post` device; also the DMA page-register decode |
 | `rtc` | table | see below | yes | the `Rtc` device |
+| `mouse` | boolean | `false` | yes | attach a standard PS/2 mouse to the 8042 auxiliary port; reserve IRQ12 |
 
 The `ibm-5170` board model supplies the devices below, in this order (the
 canonical order, M2). The values are today's presets, unchanged.
@@ -243,6 +244,31 @@ The `Bare` board skips these rules.
 
 `model = "ibm-5160"` (generic XT) is reserved. The list of board models and the
 firmware each one accepts belong to the firmware spike.
+
+`board.mouse` is a board peripheral option because the board already supplies
+its 8042; keyboard/controller replacement remains reserved. TOML and YAML use
+the same boolean, merged as a scalar by `extends` (explicit `false` disables an
+inherited mouse):
+
+```toml
+[board]
+model = "ibm-5170"
+mouse = true
+```
+
+```yaml
+board:
+  model: ibm-5170
+  mouse: true
+```
+
+Omission leaves the mouse off, including all shipped presets and machine files.
+This option requires an 8042 and slave PIC (`ibm-5170` today). Assembly attaches
+an ID-00 PS/2 mouse and routes its interrupt through IRQ12 (slave IR4, master
+IR2 cascade); primary keyboard IRQ1 is unchanged. This is an opt-in auxiliary
+extension, not a claim that the original IBM AT shipped a mouse port. Host input
+and disabled-reporting accumulation are described in
+[machine-config.md §PS/2 mouse](machine-config.md#ps2-mouse).
 
 ### `[board.rtc]`
 

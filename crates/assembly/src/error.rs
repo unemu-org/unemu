@@ -12,6 +12,12 @@ use crate::device::DeviceId;
 /// test can assert the exact failure a malformed config produces.
 #[derive(Clone, Debug, PartialEq, Eq, Error)]
 pub enum ConfigError {
+    /// Auxiliary mice require the board's keyboard controller and slave PIC.
+    #[error("PS/2 mouse: {reason}")]
+    UnsupportedMouse {
+        /// Missing controller, missing slave PIC, or unsupported board.
+        reason: String,
+    },
     /// The IBM AT motherboard requires its original RTC part.
     #[error("board ibm-5170 requires a 64-byte RTC: the IBM AT has an MC146818")]
     Ibm5170RtcRam,

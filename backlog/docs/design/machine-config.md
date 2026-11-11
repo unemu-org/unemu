@@ -76,6 +76,49 @@ is what lets a golden test pin the machine it ran against, and it is the
 precondition for a future snapshot/save-restore feature (deferred — see
 [`deferred.md`](../deferred.md)).
 
+### PS/2 mouse
+
+`DeviceKind::Keyboard(I8042Cfg { mouse: true })` attaches the standard ID-00
+PS/2 mouse to the 8042 auxiliary port. `I8042Cfg::default()` leaves it absent;
+all existing presets keep that default. Validation returns
+`ConfigError::UnsupportedMouse { reason }` when the controller lacks the
+`Keyboard` role, the slave PIC is absent, or the board is unsupported. Board
+validation runs first: missing motherboard roles on `Ibm5170` produce
+`ConfigError::BoardDeviceMissing`. The optional peripheral does not change IRQ1,
+ports or motherboard device order. IRQ12 is reserved while the mouse is attached;
+a competing device produces `ConfigError::IrqConflict`.
+
+`DeviceConfig::interrupt_outputs()` describes the primary and auxiliary routes
+for assembly, board resource checks and generic IRQ conflict validation.
+Assembly maps device interrupt output 0 to the configured primary IRQ and the
+8042's output 1 to IRQ12 (slave PIC IR4, cascaded through master IR2). The bus
+samples `Device::irq_output(pin)`; each `machine::IrqLine` selects its device,
+output pin and PIC input. Both outputs use the same deterministic rising-edge
+sampling and refill timing. Command-byte bit 1 gates IRQ12. With no mouse,
+D4h consumes and drops its following data byte without a reply or interrupt;
+D3h remains a controller-injected auxiliary byte independently of attachment.
+
+Hosts call `assembly::inject_mouse(machine, kbc_index, dx, dy, buttons)` between
+completed runs. X is positive right, Y positive up, in device counts; button
+bits 0/1/2 mean left/right/middle. It returns false only for an absent route,
+otherwise accepts input even while reporting is disabled or the serial link is
+busy. The mouse accumulates/coalesces counts and current buttons; commands may
+clear counts. No readiness query, wall clock or sample-rate pacing is involved.
+The next device synchronization services queued output. Window pointer capture
+is separate frontend work.
+
+The synthetic AT ROM test initializes both PICs, unmasks slave IR4 and master
+IR2, enables auxiliary interrupts, resets/enables the mouse through D4h and
+collects every byte through an IRQ12 handler that acknowledges both PICs.
+It checks FA AA 00 FA and exact motion/button packets across run boundaries,
+plus disabled-reporting accumulation and the absent-mouse path.
+
+IBM PS/2 Hardware Interface Technical Reference, Common Interfaces, "Keyboard
+and Auxiliary Device Controller" and "Pointing Device", defines the interface;
+Intel 8259A datasheet, Cascading and End of Interrupt, defines the PIC protocol.
+The original IBM AT did not ship a PS/2 auxiliary mouse connector: this opt-in
+is an emulated auxiliary-port extension to the existing AT controller model.
+
 ### Emulator-only debug console
 
 `DeviceKind::DebugConsole(DebugConsoleCfg { port })` constructs the diagnostic

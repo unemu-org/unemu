@@ -155,8 +155,13 @@ pub struct PicCfg {
 }
 
 /// 8042 keyboard-controller selection (§7.5); ports live in [`DeviceConfig::ports`].
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub struct I8042Cfg {}
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+pub struct I8042Cfg {
+    /// Attach a standard PS/2 mouse to the auxiliary port; absent by default.
+    /// IBM PS/2 Hardware Interface Technical Reference, Common Interfaces,
+    /// "Keyboard and Auxiliary Device Controller", Auxiliary Device Interface.
+    pub mouse: bool,
+}
 
 /// Fixed calendar time for the MC146818, in binary, with a derived weekday.
 ///
@@ -551,6 +556,18 @@ impl DeviceConfig {
         self
     }
 
+    /// All wired `(device output, PIC input)` pairs, primary output first (§5.1).
+    /// Assembly and resource validation share this description so auxiliary
+    /// outputs cannot bypass IRQ ownership checks. IBM PS/2 Hardware Interface
+    /// Technical Reference, Common Interfaces, "Keyboard and Auxiliary Device
+    /// Controller", Interrupts: the auxiliary port has a separate IRQ12 output.
+    pub fn interrupt_outputs(&self) -> impl Iterator<Item = (usize, u8)> + '_ {
+        let primary = self.irq.map(|irq| (0, irq));
+        let auxiliary =
+            matches!(&self.kind, DeviceKind::Keyboard(cfg) if cfg.mouse).then_some((1, 12));
+        primary.into_iter().chain(auxiliary)
+    }
+
     /// Set this device's DMA wiring.
     #[must_use]
     pub fn with_dma(mut self, dma: DmaSpec) -> Self {
@@ -569,6 +586,29 @@ impl DeviceConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn interrupt_outputs_include_the_primary_and_optional_auxiliary_routes() {
+        let mut controller = DeviceConfig::new(
+            DeviceId::Keyboard,
+            DeviceKind::Keyboard(I8042Cfg::default()),
+            vec![],
+        )
+        .with_irq(1);
+        assert_eq!(controller.interrupt_outputs().collect::<Vec<_>>(), [(0, 1)]);
+        controller.kind = DeviceKind::Keyboard(I8042Cfg { mouse: true });
+        assert_eq!(
+            controller.interrupt_outputs().collect::<Vec<_>>(),
+            [(0, 1), (1, 12)]
+        );
+        controller.irq = None;
+        assert_eq!(
+            controller.interrupt_outputs().collect::<Vec<_>>(),
+            [(1, 12)]
+        );
+        controller.kind = DeviceKind::Keyboard(I8042Cfg::default());
+        assert_eq!(controller.interrupt_outputs().count(), 0);
+    }
 
     #[test]
     fn isa_port_window_constructors_default_to_byte_cycles() {

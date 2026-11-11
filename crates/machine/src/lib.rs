@@ -70,6 +70,8 @@ pub enum SchedulerEngine {
 pub struct IrqLine {
     /// Index of the source device in the bus's device set.
     pub device: usize,
+    /// Device-local interrupt output pin; zero is the primary output.
+    pub output: usize,
     /// The PIC input line this device's OUT is wired to (e.g. `0` for the PIT).
     pub irq: u8,
 }
@@ -641,7 +643,7 @@ impl<C: Cpu> Machine<C> {
     /// edge-detect; that is this integration layer's job.
     fn edge_detect(&mut self) {
         for (i, line) in self.irq_lines.iter().enumerate() {
-            let Some(level) = self.bus.device_irq_line(line.device) else {
+            let Some(level) = self.bus.device_irq_output(line.device, line.output) else {
                 continue;
             };
             let rising = matches!(self.last_levels[i], Some(false)) && level;
@@ -1275,7 +1277,11 @@ mod tests {
             instruction_cpu(program, true),
             bus,
             Box::<CountingIc>::default(),
-            vec![IrqLine { device: 0, irq: 0 }],
+            vec![IrqLine {
+                device: 0,
+                output: 0,
+                irq: 0,
+            }],
             Some(1),
         )
         .with_step_limit(NonZeroU64::MIN);
@@ -1309,7 +1315,11 @@ mod tests {
                 MockCpu::new(Vec::new()),
                 bus,
                 Box::<CountingIc>::default(),
-                vec![IrqLine { device: 0, irq: 0 }],
+                vec![IrqLine {
+                    device: 0,
+                    output: 0,
+                    irq: 0,
+                }],
                 None,
             )
             .with_scheduler_engine(engine);
@@ -1377,7 +1387,11 @@ mod tests {
             instruction_cpu(program, true),
             bus,
             Box::<CountingIc>::default(),
-            vec![IrqLine { device: 0, irq: 0 }],
+            vec![IrqLine {
+                device: 0,
+                output: 0,
+                irq: 0,
+            }],
             limit,
         )
         .with_step_limit(NonZeroU64::MIN)
@@ -1511,7 +1525,11 @@ mod tests {
             instruction_cpu(vec![CpuStop::Halt; 1000], true),
             bus,
             Box::<CountingIc>::default(),
-            vec![IrqLine { device: 0, irq: 0 }],
+            vec![IrqLine {
+                device: 0,
+                output: 0,
+                irq: 0,
+            }],
             Some(100_000),
         )
         .with_step_limit(NonZeroU64::MIN);
@@ -1658,7 +1676,11 @@ mod tests {
             cpu,
             bus,
             Box::<CountingIc>::default(),
-            vec![IrqLine { device: 0, irq: 0 }],
+            vec![IrqLine {
+                device: 0,
+                output: 0,
+                irq: 0,
+            }],
             Some(128),
         );
         let outcome = machine.run_bounded(Some(1000)).expect("run");

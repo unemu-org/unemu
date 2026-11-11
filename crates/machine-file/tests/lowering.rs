@@ -1261,3 +1261,45 @@ fn catalogued_bios_file_uses_omitted_empty_or_equal_services() {
             .is_empty());
     }
 }
+
+#[test]
+fn board_mouse_is_opt_in_and_lowers_into_the_8042() {
+    for (setting, expected) in [
+        ("", false),
+        ("mouse=false\n", false),
+        ("mouse=true\n", true),
+    ] {
+        let input = MINIMAL.replace(
+            "model = 'ibm-5170'\n",
+            &format!("model = 'ibm-5170'\n{setting}"),
+        );
+        let config = run(&input).unwrap();
+        let keyboard = config
+            .devices
+            .iter()
+            .find(|d| d.id == DeviceId::Keyboard)
+            .unwrap();
+        assert!(matches!(&keyboard.kind, DeviceKind::Keyboard(cfg) if cfg.mouse == expected));
+        assert_eq!(keyboard.irq, Some(1));
+    }
+}
+
+#[test]
+fn mouse_irq_conflict_names_the_mouse_field_and_its_origin() {
+    let input = MINIMAL.replace("model = 'ibm-5170'\n", "model = 'ibm-5170'\nmouse = true\n")
+        + "\n[[card]]\nid='serial'\nkind='uart-16550'\nirq=12\n";
+    let Err(error) = run(&input) else {
+        panic!("expected IRQ12 conflict")
+    };
+    assert_eq!(
+        error.validation.as_deref(),
+        Some(&ConfigError::IrqConflict {
+            a: DeviceId::Keyboard,
+            b: DeviceId::Uart,
+            line: 12,
+        })
+    );
+    assert_eq!(error.field, "card[serial]");
+    assert!(error.message.contains("board.mouse"), "{error}");
+    assert!(error.message.contains("custom.toml:4"), "{error}");
+}

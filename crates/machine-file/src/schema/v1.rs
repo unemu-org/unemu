@@ -56,6 +56,8 @@ timed_table! {
         pub model: Option<BoardModel>,
         pub post_port: Option<NumberOrNone<65535>>,
         pub rtc: Option<Rtc>,
+        /// Standard PS/2 mouse on the motherboard 8042 auxiliary port.
+        pub mouse: Option<bool>,
         #[serde(default, deserialize_with = "values::reject_a20")] a20: Option<Reserved>,
         #[serde(default, deserialize_with = "values::reject_kbc")] kbc: Option<Reserved>,
         #[serde(default, deserialize_with = "values::reject_keyboard")] keyboard: Option<Reserved>,

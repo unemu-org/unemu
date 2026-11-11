@@ -428,3 +428,85 @@ fn nested_origins_retain_card_drive_rtc_and_option_rom_lines() {
     assert_eq!(error.field, "card[fdc-765].drives[unit=1].image");
     assert_eq!(error.origin.line, Some(9));
 }
+
+#[test]
+fn board_mouse_yaml_and_toml_lower_to_identical_hardware() {
+    for mouse in [false, true] {
+        let yaml = MINIMAL.replace(
+            "board: {model: ibm-5170}",
+            &format!("board: {{model: ibm-5170, mouse: {mouse}}}"),
+        );
+        let toml = format!("schema=1\n[board]\nmodel='ibm-5170'\nmouse={mouse}\n[firmware.bios]\nimage='bios.bin'\n");
+        let file = Path::new("machines/test.toml");
+        let config = lower(
+            &parse_toml(file, &toml).unwrap(),
+            &Origins::from_toml(file, &toml).unwrap(),
+            &mut Reader(|_: &Path| Ok(vec![0xF4; 0x8000])),
+        )
+        .unwrap();
+        assert_eq!(run(&yaml).unwrap(), config);
+        assert!(config
+            .devices
+            .iter()
+            .any(|d| matches!(&d.kind, assembly::DeviceKind::Keyboard(cfg) if cfg.mouse == mouse)));
+    }
+    let config = run(MINIMAL).unwrap();
+    assert!(config
+        .devices
+        .iter()
+        .any(|d| matches!(&d.kind, assembly::DeviceKind::Keyboard(cfg) if !cfg.mouse)));
+}
+
+#[test]
+fn board_mouse_requires_a_boolean_in_both_syntaxes() {
+    for value in ["1", "'true'", "yes"] {
+        assert!(parse_yaml(
+            "machine.yaml",
+            &format!("schema: 1\nboard: {{mouse: {value}}}\n")
+        )
+        .is_err());
+    }
+    for value in ["1", "'true'", "'yes'"] {
+        assert!(parse_toml(
+            "machine.toml",
+            &format!("schema=1\n[board]\nmouse={value}\n")
+        )
+        .is_err());
+    }
+    for value in [true, false] {
+        let toml = parse_toml(
+            "machine.toml",
+            &format!("schema=1\n[board]\nmouse={value}\n"),
+        )
+        .unwrap();
+        let yaml = parse_yaml(
+            "machine.yaml",
+            &format!("schema: 1\nboard: {{mouse: {value}}}\n"),
+        )
+        .unwrap();
+        assert_eq!(toml.board.unwrap().mouse, Some(value));
+        assert_eq!(yaml.board.unwrap().mouse, Some(value));
+    }
+}
+
+#[test]
+fn mouse_irq_conflict_names_the_yaml_mouse_field() {
+    let input = MINIMAL.replace(
+        "board: {model: ibm-5170}",
+        "board: {model: ibm-5170, mouse: true}",
+    ) + "card: [{id: serial, kind: uart-16550, irq: 12}]\n";
+    let Err(error) = run(&input) else {
+        panic!("expected IRQ12 conflict")
+    };
+    assert_eq!(
+        error.validation.as_deref(),
+        Some(&assembly::ConfigError::IrqConflict {
+            a: assembly::DeviceId::Keyboard,
+            b: assembly::DeviceId::Uart,
+            line: 12,
+        })
+    );
+    assert_eq!(error.field, "card[serial]");
+    assert!(error.message.contains("board.mouse"), "{error}");
+    assert!(error.message.contains("test.yaml:2"), "{error}");
+}

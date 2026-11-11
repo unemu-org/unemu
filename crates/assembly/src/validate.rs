@@ -118,8 +118,8 @@ impl MachineConfig {
     /// Validation runs in this fixed order: journal modes; RTC RAM capacity and
     /// NVRAM format; firmware-part sources; VGA exclusion; unique device IDs;
     /// System Control Port A board support and resources; debug console; fw_cfg;
-    /// board constraints; firmware layout and services; RTC start; access coupling;
-    /// UART bases; IDE resources; port widths and overlaps; MMIO devices, sizes,
+    /// board constraints; mouse support; firmware layout and services; RTC start;
+    /// access coupling; UART bases; IDE resources; port widths and overlaps; MMIO devices, sizes,
     /// overlaps and RAM exclusion; address-space bounds; image placement; option
     /// ROMs; IRQ conflicts and PIC faces; DMA controllers; drive binding and image
     /// geometry; clock ratio; persistent path validation. This makes the first
@@ -157,6 +157,7 @@ impl MachineConfig {
         self.check_debug_console()?;
         self.check_fw_cfg()?;
         self.check_board()?;
+        self.check_mouse()?;
         self.check_firmware_layout()?;
         self.check_firmware_services()?;
         self.check_rtc_starts()?;
@@ -388,7 +389,7 @@ impl MachineConfig {
             self.check_board_wiring(actual, standard)?;
         }
         for card in &self.devices[expected.len()..] {
-            if let Some(line) = card.irq {
+            for (_, line) in card.interrupt_outputs() {
                 if !matches!(line, 3..=7 | 9..=12 | 14..=15) {
                     return Err(ConfigError::BoardCardIrq {
                         board: self.board,
@@ -417,16 +418,39 @@ impl MachineConfig {
         Ok(())
     }
 
+    fn check_mouse(&self) -> Result<(), ConfigError> {
+        for device in &self.devices {
+            if !matches!(&device.kind, DeviceKind::Keyboard(cfg) if cfg.mouse) {
+                continue;
+            }
+            let reason = if device.id != DeviceId::Keyboard {
+                "no 8042 at Keyboard".into()
+            } else if !self.devices.iter().any(|d| {
+                d.id == DeviceId::SlavePic
+                    && matches!(&d.kind, DeviceKind::Pic(cfg) if !cfg.cascade)
+            }) {
+                "no slave PIC".into()
+            } else if self.board != BoardModel::Ibm5170 {
+                format!("unsupported board {}", self.board.id())
+            } else {
+                continue;
+            };
+            return Err(ConfigError::UnsupportedMouse { reason });
+        }
+        Ok(())
+    }
+
     fn check_board_wiring(
         &self,
         actual: &DeviceConfig,
         standard: &DeviceConfig,
     ) -> Result<(), ConfigError> {
         let mut expected = standard.clone();
-        // RTC initialization and virtual timing are configurable, unlike its wiring.
+        // Peripheral selection and RTC initialization leave motherboard wiring fixed.
         if matches!(
             (&actual.kind, &expected.kind),
             (DeviceKind::Rtc(_), DeviceKind::Rtc(_))
+                | (DeviceKind::Keyboard(_), DeviceKind::Keyboard(_))
         ) {
             expected.kind = actual.kind.clone();
         }
@@ -822,18 +846,22 @@ impl MachineConfig {
 
     /// No two devices drive the same PIC input line.
     fn check_irq_conflicts(&self) -> Result<(), ConfigError> {
-        for (i, a) in self.devices.iter().enumerate() {
-            let Some(line) = a.irq else { continue };
+        let routes: Vec<_> = self
+            .devices
+            .iter()
+            .flat_map(|device| {
+                device
+                    .interrupt_outputs()
+                    .map(move |(_, irq)| (device.id, irq))
+            })
+            .collect();
+        for (i, &(a, line)) in routes.iter().enumerate() {
             if line >= 16 {
-                return Err(ConfigError::InvalidIrqLine { device: a.id, line });
+                return Err(ConfigError::InvalidIrqLine { device: a, line });
             }
-            for b in &self.devices[i + 1..] {
-                if b.irq == Some(line) {
-                    return Err(ConfigError::IrqConflict {
-                        a: a.id,
-                        b: b.id,
-                        line,
-                    });
+            for &(b, other) in &routes[i + 1..] {
+                if other == line {
+                    return Err(ConfigError::IrqConflict { a, b, line });
                 }
             }
         }
@@ -2149,7 +2177,7 @@ mod tests {
             ),
             dev(
                 DeviceId::Keyboard,
-                DeviceKind::Keyboard(I8042Cfg {}),
+                DeviceKind::Keyboard(I8042Cfg::default()),
                 vec![PortWindow::single(0x60), PortWindow::single(0x64)],
             )
             .with_irq(1),

@@ -87,8 +87,9 @@ pub use presets::{
     at_boot, at_fdc_write, at_keyboard, at_rtc, at_vga_text, bios, floppy_boot, test386,
 };
 pub use run::{
-    inject_scancodes, keyboard_leds_if_ready, run, run_with_persistence, try_inject_scancode,
-    ConsoleProbe, InjectionSchedule, KeyboardStimulus, RunError, RunPolicy, StopCondition,
+    inject_mouse, inject_scancodes, keyboard_leds_if_ready, run, run_with_persistence,
+    try_inject_scancode, ConsoleProbe, InjectionSchedule, KeyboardStimulus, RunError, RunPolicy,
+    StopCondition,
 };
 
 /// Shared host-side fixtures for image, diagnostic and persistence tests.
