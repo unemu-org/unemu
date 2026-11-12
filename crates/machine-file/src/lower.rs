@@ -409,11 +409,16 @@ impl<R: ImageReader> Context<'_, R> {
                 "port override is not supported by this fixed-port card kind",
             ));
         }
-        if kind != v1::CardKind::Sb16 && (card.base.is_some() || card.dma8.is_some()) {
-            return Err(self.error(&field, "base and dma8 are only supported by sb16 cards"));
+        if kind != v1::CardKind::Sb16
+            && (card.base.is_some() || card.dma8.is_some() || card.dma16.is_some())
+        {
+            return Err(self.error(
+                &field,
+                "base, dma8 and dma16 are only supported by sb16 cards",
+            ));
         }
         if kind == v1::CardKind::Sb16 && card.dma.is_some() {
-            return Err(self.error(&format!("{field}.dma"), "sb16 uses dma8"));
+            return Err(self.error(&format!("{field}.dma"), "sb16 uses dma8 and dma16"));
         }
         let mut device = match kind {
             v1::CardKind::Mda => {
@@ -461,6 +466,7 @@ impl<R: ImageReader> Context<'_, R> {
             }
             v1::CardKind::Sb16 => {
                 let cfg = assembly::Sb16Cfg {
+                    dma16: card.dma16.unwrap_or(5),
                     base: card.base.unwrap_or(0x220),
                 };
                 DeviceConfig::new(DeviceId::Sb16, DeviceKind::Sb16(cfg), cfg.port_windows())
@@ -721,7 +727,8 @@ impl<R: ImageReader> Context<'_, R> {
             FirmwareReset { .. } => vec!["cpu".into()],
             SystemBiosOverlapsRam { .. } => vec!["memory".into(), self.bios_source_field().into()],
             DuplicateDeviceId(id) | MmioDeviceMissing(id) => device_fields(&[*id]),
-            InvalidSb16Resources { device }
+            InvalidDmaChannel { device, .. }
+            | InvalidSb16Resources { device }
             | InvalidIdeResources { device }
             | InvalidDebugConsoleResources { device }
             | InvalidSysCtrlPortAResources { device }
@@ -1297,13 +1304,16 @@ mod tests {
             .unwrap();
         assert_eq!(
             dsp.kind,
-            DeviceKind::Sb16(assembly::Sb16Cfg { base: 0x220 })
+            DeviceKind::Sb16(assembly::Sb16Cfg {
+                base: 0x220,
+                dma16: 5
+            })
         );
         assert_eq!(dsp.irq, Some(5));
         assert_eq!(dsp.dma.unwrap().channel, 1);
         assert_eq!(
             dsp.ports.iter().map(|p| p.start).collect::<Vec<_>>(),
-            [0x226, 0x22A, 0x22C, 0x22E]
+            [0x224, 0x225, 0x226, 0x22A, 0x22C, 0x22E, 0x22F]
         );
         for base in [0x220, 0x240, 0x260, 0x280] {
             for irq in [2, 5, 7, 10] {
@@ -1334,6 +1344,8 @@ mod tests {
             "irq='none'",
             "dma8=2",
             "dma8=4",
+            "dma16=4",
+            "dma16=8",
             "port=0x220",
             "dma=1",
         ] {
@@ -1356,6 +1368,28 @@ mod tests {
             assert!(error.to_string().contains("card[sound]"), "{error}");
             assert!(error.to_string().contains("card[other]"), "{error}");
         }
+    }
+
+    #[test]
+    fn sb16_word_channel_defaults_overrides_and_required_controller() {
+        for channel in 5..=7 {
+            let mut config =
+                sb16_config(&format!("[[card]]\nkind='sb16'\ndma16={channel}\n")).unwrap();
+            assert!(config
+                .devices
+                .iter()
+                .any(|d| matches!(d.kind, DeviceKind::Sb16(cfg) if cfg.dma16 == channel)));
+            config.board = assembly::BoardModel::Bare;
+            config.devices.retain(|d| d.id != DeviceId::DmaWord);
+            assert_eq!(
+                config.validate(),
+                Err(assembly::ConfigError::DmaControllerMissing {
+                    requester: DeviceId::Sb16,
+                    controller: DeviceId::DmaWord
+                })
+            );
+        }
+        assert!(sb16_config("[[card]]\nkind='uart-16550'\ndma16=5\n").is_err());
     }
 
     #[test]

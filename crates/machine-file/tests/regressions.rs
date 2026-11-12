@@ -397,13 +397,14 @@ fn sha256_spelling_is_normalised_before_comparison() {
 fn sb16_toml_and_yaml_share_resource_fields() {
     let toml = parse_toml(
         "machine.toml",
-        "schema=1\n[[card]]\nkind='sb16'\nbase=0x240\nirq=7\ndma8=3\n",
+        "schema=1\n[[card]]\nkind='sb16'\nbase=0x240\nirq=7\ndma8=3\ndma16=7\n",
     )
     .unwrap();
     let yaml = machine_file::parse_yaml(
         "machine.yaml",
-        "schema: 1\ncard:\n  - kind: sb16\n    base: 0x240\n    irq: 7\n    dma8: 3\n",
+        "schema: 1\ncard:\n  - kind: sb16\n    base: 0x240\n    irq: 7\n    dma8: 3\n    dma16: 7\n",
     )
     .unwrap();
+    assert_eq!(toml.card.as_ref().unwrap()[0].dma16, Some(7));
     assert_eq!(toml, yaml);
 }

@@ -1,19 +1,24 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Creative Sound Blaster 16 DSP, 8-bit output.
+//! Creative Sound Blaster 16 DSP and CT1745 mixer, byte/word DMA output.
 //!
 //! Hardware source: Creative, Sound Blaster Series Hardware Programming Guide,
 //! §2 DSP I/O Ports, Resetting the DSP, Acknowledging DSP Interrupts; §3 8-bit
 //! DMA Mode and Auto-initialize DMA; §6 commands 10h, 14h, 1Ch, 40h, 41h,
-//! 48h, Cxh, D0h/D4h, D1h/D3h/D8h, DAh and E1h; Appendix A, SB16.
-//! See `backlog/docs/design/audio.md` §SB16 8-bit output.
+//! 48h, Bxh/Cxh, D0h/D4h/D5h/D6h, D1h/D3h/D8h, D9h/DAh and E1h;
+//! §4 CT1745 Mixer, Register Functions and Figure 4-3; Appendix A, SB16.
+//! See `backlog/docs/design/audio.md` §SB16 8-bit output, §SB16 16-bit output
+//! and §CT1745.
 //!
 //! | Guide section | Coverage |
 //! |---|---|
 //! | §2 DSP I/O, reset, interrupt acknowledgement | Byte ports, prompt reset-edge reply, latched IRQ |
-//! | §3/§6 8-bit DMA | Unsigned legacy mono, signed/unsigned Cxh mono/stereo, single/auto-init |
+//! | §3/§6 byte/word DMA | Unsigned legacy mono, signed/unsigned Bxh/Cxh mono/stereo, single/auto-init |
 //! | §6 rate and control | Exact rational periods, pause/resume, exit, identification |
 //! | §6 speaker control | Status flag only, as specified for DSP 4.xx |
-//! | §4 mixer, §5 MIDI, §6 input/16-bit/ADPCM | Not modelled |
+//! | §4 CT1745 | Register masks/defaults/compatibility aliases; master/voice attenuation |
+//! | §2 resource/status registers | Fixed IRQ/byte/word channel readback; separate latched IRQs |
+//! | §4 other mixer controls | Stored only; no switches, gains, AGC or tone processing |
+//! | §5 MIDI, §6 input/ADPCM | Not modelled |
 //!
 //! Creative's §2 Resetting the DSP recommends a 3 µs hold and describes typical
 //! 100 µs initialization. ASSUMED compatibility policy: clear state on writing 1,
@@ -32,14 +37,18 @@
 //! reply reads return FFh; unused status bits read zero (ASSUMED).
 //! Unsupported commands consume their complete known argument payload without a
 //! reply; unknown opcodes consume one byte (ASSUMED unsupported-command policy).
-//! Mixer +4/+5, 16-bit acknowledge +F, and OPL ports are unclaimed, leaving FFh
-//! from the empty bus rather than inventing registers.
+//! Mixer +4/+5 and word IRQ acknowledge +F are claimed; OPL remains unclaimed.
+//! ASSUMED: +F reads FFh after clearing only the word IRQ. Registers 80h/81h
+//! ignore writes: resources come from the machine file and are fixed for the
+//! run. Real SB16 software resource selection through these registers is not
+//! modelled. Register 82h reflects
+//! byte/word IRQs in bits 0/1; MPU-401 bit 2 is always zero.
 //!
 //! ASSUMED: the first frame is requested one period after the command; subsequent
 //! frames use origin + ceil(index * period), never repeated rounded additions.
-//! There is one frame of staging (one byte mono, two stereo), fetched exactly
-//! at its playback boundary through the DMA seam. Cxh FIFO enable is accepted
-//! but does not change this depth. IRQ asserts when the block's last byte arrives;
+//! There is one frame of staging (one sample mono, two stereo), fetched exactly
+//! at its playback boundary through the DMA seam. Bxh/Cxh FIFO enable is accepted
+//! but does not change this depth. IRQ asserts when the block's last sample arrives;
 //! the last frame lasts until the following boundary. A masked/exhausted DMA
 //! channel produces silence for that frame and retries at the next boundary.
 //! An odd stereo block ends with a silent right channel. Pause freezes phase,
@@ -50,13 +59,31 @@
 //! ASSUMED compatibility policy: a new DMA command while paused discards the
 //! unfinished transfer, clears pause and starts a fresh block, including an
 //! auto-init-to-single replacement. Its first fetch is one period later; only
-//! unpaused transfers defer a replacement to a frame/block boundary.
+//! unpaused transfers of the same width defer a replacement to a frame/block boundary.
+//! ASSUMED: switching between byte and word DMA replaces the output immediately,
+//! dropping any unfinished block and starting a new grid one period later; there
+//! is only one DAC stream. Pending interrupts remain separately latched.
 //!
 //! PCM scaling is unsigned `(byte - 128) * 256`, signed `i8(byte) * 256`;
-//! mono duplicates the result. Direct DAC holds its unsigned level until another
+//! words decode little-endian (unsigned words are offset by 32768); mono
+//! duplicates the result. Master and voice attenuation use constant Q24 gains,
+//! with one final division toward zero. Levels 0–31 follow the guide's -62 to
+//! 0 dB range in 2 dB steps; level zero has Q24 gain 13327, rather than mute.
+//! Reset master/voice level 24 gives -28 dB combined.
+//! SB Pro writes map nibble n to (n << 1) | 1 (ASSUMED), retaining unity at Fh;
+//! alias reads expose upper native volume bits. Unknown
+//! indices read FFh and reserved bits read zero (ASSUMED). Other mixer controls
+//! are stored only. The board PC speaker is never routed through this mixer.
+//! A DSP reset preserves mixer settings; whole-device reset restores them
+//! (ASSUMED separation of the DSP and mixer reset domains).
+//! Snapshots use SB16-MV3; SB16-8V2 restores with reset mixer and no word state.
+//! Direct DAC holds its unsigned level until another
 //! DAC write, DMA command or reset (ASSUMED analogue reconstruction). The output
 //! observer is installed by assembly; hardware never depends on an audio consumer.
 
+mod mixer;
+
+use mixer::Mixer;
 use std::collections::VecDeque;
 
 use device::{
@@ -88,6 +115,7 @@ struct Transfer {
     count: u32,
     auto: bool,
     mode: u8,
+    word: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -100,6 +128,9 @@ struct State {
     args: Vec<u8>,
     needed: u8,
     irq: bool,
+    irq16: bool,
+    word: bool,
+    mixer: Mixer,
     speaker: bool,
     rate: u16,
     tc: Option<u8>,
@@ -134,6 +165,9 @@ impl Default for State {
             args: Vec::new(),
             needed: 0,
             irq: false,
+            irq16: false,
+            word: false,
+            mixer: Mixer::default(),
             speaker: false,
             rate: 22050,
             tc: None,
@@ -159,11 +193,13 @@ impl Default for State {
     }
 }
 
-/// Optional ISA DSP with one 8-bit DMA input and one latched interrupt output.
+/// Optional ISA DSP with byte/word DMA inputs and a shared latched interrupt output.
 /// Creative Sound Blaster Series Hardware Programming Guide, §2 DSP I/O Ports.
 pub struct Sb16 {
     base: u16,
     dma8: u8,
+    dma16: u8,
+    irq: u8,
     state: State,
     output: Option<Box<dyn FnMut(Output)>>,
     trace: TraceBuffer,
@@ -176,10 +212,21 @@ impl Sb16 {
         Self {
             base,
             dma8,
+            dma16: 5,
+            irq: 5,
             state: State::default(),
             output: None,
             trace: TraceBuffer::default(),
         }
+    }
+
+    /// Select fixed resources (Creative Sound Blaster Series Hardware Programming
+    /// Guide, §2 Configuring DMA and Interrupt Settings). Assembly validates them.
+    #[must_use]
+    pub fn with_resources(mut self, dma16: u8, irq: u8) -> Self {
+        self.dma16 = dma16;
+        self.irq = irq;
+        self
     }
 
     /// Bind native audio once; no host clock or host audio API enters the DSP.
@@ -220,33 +267,42 @@ impl Sb16 {
             at: VClock(self.state.now),
             numerator,
             denominator,
-            pcm: self.state.level,
+            pcm: self.state.mixer.apply(self.state.level),
         });
     }
 
     fn clear(&mut self) {
         let now = self.state.now;
+        let mixer = self.state.mixer.clone();
         self.state = State {
             now,
+            mixer,
             ..State::default()
         };
         self.emit(Output::Pause(VClock(now)));
     }
 
-    fn start(&mut self, count: u32, auto: bool, mode: u8) {
+    fn start(&mut self, count: u32, auto: bool, mode: u8, word: bool) {
         // Unpaused playback drains the current frame before a chained block.
         // Auto-init also defers a single-cycle replacement until the block ends
         // (Creative Sound Blaster Series Hardware Programming Guide, §6 1Ch).
         if self.state.active
+            && self.state.word == word
             && self.state.paused.is_none()
             && (self.state.tail || (self.state.auto && !auto))
         {
-            self.state.next_block = Some(Transfer { count, auto, mode });
+            self.state.next_block = Some(Transfer {
+                count,
+                auto,
+                mode,
+                word,
+            });
             self.state.exit = true;
             return;
         }
         self.emit(Output::Pause(VClock(self.state.now)));
         let s = &mut self.state;
+        s.word = word;
         s.reload = count;
         s.remaining = count;
         s.auto = auto;
@@ -284,7 +340,7 @@ impl Sb16 {
             at: VClock(self.state.now),
             numerator: self.boundary().saturating_sub(self.state.now).max(1),
             denominator: 1,
-            pcm: self.state.level,
+            pcm: self.state.mixer.apply(self.state.level),
         });
     }
 
@@ -342,15 +398,16 @@ impl Sb16 {
                     at: VClock(self.state.now),
                     numerator: u64::MAX - self.state.now,
                     denominator: 1,
-                    pcm: [level; 2],
+                    pcm: self.state.mixer.apply([level; 2]),
                 });
             }
             0x14 => self.start(
                 u32::from(u16::from_le_bytes([args[0], args[1]])) + 1,
                 false,
                 0,
+                false,
             ),
-            0x1C => self.start(self.state.auto_block, true, 0),
+            0x1C => self.start(self.state.auto_block, true, 0, false),
             0x40 => {
                 let next = self.boundary();
                 self.state.tc = Some(args[0]);
@@ -363,20 +420,29 @@ impl Sb16 {
                 self.set_rate(next);
             }
             0x48 => self.state.auto_block = u32::from(u16::from_le_bytes([args[0], args[1]])) + 1,
-            0xC0..=0xCF => {
+            0xB0..=0xCF => {
                 if self.state.command & 9 == 0 {
+                    let word = self.state.command < 0xC0;
                     self.start(
-                        u32::from(u16::from_le_bytes([args[1], args[2]])) + 1,
+                        (u32::from(u16::from_le_bytes([args[1], args[2]])) + 1)
+                            * if word { 2 } else { 1 },
                         self.state.command & 4 != 0,
                         args[0],
+                        word,
                     );
                 }
             }
-            0xD0 if self.state.active && self.state.paused.is_none() => {
+            // ASSUMED: pause/continue pairs act only on their named width;
+            // Creative's guide lists separate commands, but some emulators alias them.
+            0xD0 | 0xD5
+                if self.state.active
+                    && self.state.word == (self.state.command == 0xD5)
+                    && self.state.paused.is_none() =>
+            {
                 self.state.paused = Some(self.state.now);
                 self.emit(Output::Pause(VClock(self.state.now)));
             }
-            0xD4 if self.state.active => {
+            0xD4 | 0xD6 if self.state.active && self.state.word == (self.state.command == 0xD6) => {
                 if let Some(at) = self.state.paused.take() {
                     self.state.origin = self.state.origin.saturating_add(self.state.now - at);
                     self.hold_until_boundary();
@@ -388,7 +454,8 @@ impl Sb16 {
                 .state
                 .reply
                 .push_back(if self.state.speaker { 0xFF } else { 0 }),
-            0xDA => {
+            // ASSUMED: exit commands are width-specific, like pause/continue.
+            0xDA | 0xD9 if self.state.word == (self.state.command == 0xD9) => {
                 self.state.exit = true;
                 self.state.next_block = None;
             }
@@ -419,6 +486,23 @@ impl Device for Sb16 {
     }
     fn port_read(&mut self, port: u16, size: u8) -> Result<u32, DeviceError> {
         let value = match port.wrapping_sub(self.base) {
+            4 => self.state.mixer.index,
+            5 => match self.state.mixer.index {
+                0x80 => match self.irq {
+                    2 => 1,
+                    5 => 2,
+                    7 => 4,
+                    10 => 8,
+                    _ => 0,
+                },
+                0x81 => (1 << self.dma8) | (1 << self.dma16),
+                0x82 => u8::from(self.state.irq) | (u8::from(self.state.irq16) << 1),
+                _ => self.state.mixer.read(),
+            },
+            0x0F => {
+                self.state.irq16 = false;
+                0xFF
+            }
             0x0A => self.state.reply.pop_front().unwrap_or(0xFF),
             0x0C => {
                 if self.state.reset_start.is_some() || self.state.reset_ready.is_some() {
@@ -443,6 +527,20 @@ impl Device for Sb16 {
     fn port_write(&mut self, port: u16, size: u8, value: u32) -> Result<(), DeviceError> {
         self.record(port, size, AccessDir::Write, value);
         match port.wrapping_sub(self.base) {
+            4 => self.state.mixer.index = value as u8,
+            5 => {
+                self.state.mixer.write(value as u8);
+                if self.state.direct {
+                    self.emit(Output::Frame {
+                        at: VClock(self.state.now),
+                        numerator: u64::MAX - self.state.now,
+                        denominator: 1,
+                        pcm: self.state.mixer.apply(self.state.level),
+                    });
+                } else if self.state.active && self.state.paused.is_none() {
+                    self.hold_until_boundary();
+                }
+            }
             6 if value as u8 & 1 != 0 => {
                 self.clear();
                 self.state.reset_start = Some(self.state.now);
@@ -492,6 +590,7 @@ impl Device for Sb16 {
                     self.state.remaining = transfer.count;
                     self.state.reload = transfer.count;
                     self.state.auto = transfer.auto;
+                    self.state.word = transfer.word;
                     self.state.exit = false;
                     self.state.stereo = transfer.mode & 0x20 != 0;
                     self.state.signed = transfer.mode & 0x10 != 0;
@@ -525,10 +624,11 @@ impl Device for Sb16 {
         })
     }
     fn irq_pending(&self) -> bool {
-        self.state.irq
+        self.state.irq || self.state.irq16
     }
     fn reset(&mut self) {
         self.clear();
+        self.state.mixer = Mixer::default();
         self.trace.clear();
     }
     fn take_dma_request(&mut self) -> Option<DmaRequest> {
@@ -538,10 +638,16 @@ impl Device for Sb16 {
         self.state.request = false;
         self.state.inflight = true;
         Some(DmaRequest {
-            channel: self.dma8,
+            channel: if self.state.word {
+                self.dma16
+            } else {
+                self.dma8
+            },
             op: DmaOp::FromMemory {
-                len: (if self.state.stereo { 2 } else { 1 } - self.state.staging.len())
-                    .min(self.state.remaining as usize),
+                len: ((if self.state.stereo { 2 } else { 1 })
+                    * if self.state.word { 2 } else { 1 }
+                    - self.state.staging.len())
+                .min(self.state.remaining as usize),
             },
         })
     }
@@ -553,8 +659,10 @@ impl Device for Sb16 {
         let DmaOutcome::FromMemory { bytes, .. } = outcome else {
             return;
         };
-        let expected = (if self.state.stereo { 2 } else { 1 } - self.state.staging.len())
-            .min(self.state.remaining as usize);
+        let expected = ((if self.state.stereo { 2 } else { 1 })
+            * if self.state.word { 2 } else { 1 }
+            - self.state.staging.len())
+        .min(self.state.remaining as usize);
         if bytes.is_empty() {
             self.state.level = [0; 2];
             self.state.staging.clear();
@@ -567,29 +675,49 @@ impl Device for Sb16 {
         self.state.remaining -= count as u32;
         let end = self.state.remaining == 0;
         if end {
-            self.state.irq = true;
+            if self.state.word {
+                self.state.irq16 = true;
+            } else {
+                self.state.irq = true;
+            }
             if self.state.auto && !self.state.exit {
                 self.state.remaining = self.state.reload;
             } else {
                 self.state.tail = true;
             }
         }
-        if self.state.stereo && self.state.staging.len() == 1 && !end {
+        if self.state.staging.len()
+            < (if self.state.stereo { 2 } else { 1 }) * if self.state.word { 2 } else { 1 }
+            && !end
+        {
             self.state.request = true;
             return;
         }
-        let sample = |byte| {
-            if self.state.signed {
-                i16::from(byte as i8) * 256
+        let sample = |offset: usize| {
+            if self.state.word {
+                self.state.staging.get(offset..offset + 2).map_or(0, |b| {
+                    let word = u16::from_le_bytes([b[0], b[1]]);
+                    if self.state.signed {
+                        word as i16
+                    } else {
+                        (word ^ 0x8000) as i16
+                    }
+                })
             } else {
-                (i16::from(byte) - 128) * 256
+                self.state.staging.get(offset).map_or(0, |&byte| {
+                    if self.state.signed {
+                        i16::from(byte as i8) * 256
+                    } else {
+                        (i16::from(byte) - 128) * 256
+                    }
+                })
             }
         };
-        let left = sample(self.state.staging[0]);
+        let left = sample(0);
         self.state.level = [
             left,
             if self.state.stereo {
-                self.state.staging.get(1).map_or(0, |&b| sample(b))
+                sample(if self.state.word { 2 } else { 1 })
             } else {
                 left
             },
@@ -652,7 +780,7 @@ impl Sb16 {
             u64::from(s.reload),
             s.next_block.map_or(0, |transfer| u64::from(transfer.auto)),
         ];
-        let mut bytes = b"SB16-8V2".to_vec();
+        let mut bytes = b"SB16-MV3".to_vec();
         for value in values {
             bytes.extend(value.to_le_bytes());
         }
@@ -664,15 +792,25 @@ impl Sb16 {
             bytes.push(values.len() as u8);
             bytes.extend(values);
         }
+        bytes.extend([
+            self.dma16,
+            self.irq,
+            u8::from(s.word),
+            u8::from(s.irq16),
+            s.next_block.map_or(0, |t| u8::from(t.word)),
+            s.mixer.index,
+        ]);
+        bytes.extend(s.mixer.registers);
         bytes
     }
 
     fn restore_state(&mut self, bytes: &[u8]) -> Result<(), DeviceError> {
         let bad = || DeviceError::InvalidSnapshot {
             device: "sb16-dsp",
-            reason: "invalid SB16 byte-DMA state",
+            reason: "invalid SB16 DSP/mixer state",
         };
-        if bytes.get(..8) != Some(b"SB16-8V2") {
+        let legacy = bytes.get(..8) == Some(b"SB16-8V2");
+        if !legacy && bytes.get(..8) != Some(b"SB16-MV3") {
             return Err(bad());
         }
         let mut rest = &bytes[8..];
@@ -689,7 +827,7 @@ impl Sb16 {
         let v = values;
         let optional = |value| if value == u64::MAX { None } else { Some(value) };
         let mut lists = Vec::new();
-        for limit in [16, 3, 1] {
+        for limit in [16, 3, if legacy { 1 } else { 3 }] {
             let len = usize::from(*rest.first().ok_or_else(bad)?);
             rest = &rest[1..];
             if len > limit {
@@ -698,6 +836,32 @@ impl Sb16 {
             lists.push(rest.get(..len).ok_or_else(bad)?.to_vec());
             rest = &rest[len..];
         }
+        let mut mixer = Mixer::default();
+        let (word, irq16, queued_word) = if legacy {
+            (false, false, false)
+        } else {
+            if rest.len() != 30
+                || rest[0] != self.dma16
+                || rest[1] != self.irq
+                || rest[2..5].iter().any(|&v| v > 1)
+            {
+                return Err(bad());
+            }
+            mixer.index = rest[5];
+            mixer.registers.copy_from_slice(&rest[6..]);
+            if mixer
+                .registers
+                .iter()
+                .enumerate()
+                .any(|(i, &v)| v & !Mixer::mask(i as u8 + 0x30) != 0)
+            {
+                return Err(bad());
+            }
+            let result = (rest[2] != 0, rest[3] != 0, rest[4] != 0);
+            rest = &[];
+            result
+        };
+        let maximum = if word { 131072 } else { 65536 };
         if !rest.is_empty()
             || v[0] != u64::from(self.base)
             || v[1] != u64::from(self.dma8)
@@ -706,14 +870,14 @@ impl Sb16 {
             || !(5000..=45000).contains(&v[9])
             || v[10] > 256
             || !(1..=65536).contains(&v[11])
-            || v[12] > 65536
+            || v[12] > maximum
             || v[12] > v[29]
             || (v[19] > v[2] && (v[13] == 0 || v[20] != 0))
             || (v[20] == 0 && v[13] == 0)
-            || !(1..=65536).contains(&v[29])
+            || !(1..=maximum).contains(&v[29])
             || v[30] > 1
             || (v[30] != 0 && v[27] == 0)
-            || v[27] > 65536
+            || v[27] > if queued_word { 131072 } else { 65536 }
             || v[28] > 255
             || (v[27] != 0 && (v[13] == 0 || (v[21] == 0 && (v[14] == 0 || v[15] == 0))))
             || v[24] > 65535
@@ -733,7 +897,9 @@ impl Sb16 {
         let expected_args = usize::from(Self::argument_count(v[5] as u8));
         if lists[1].len() + v[6] as usize != expected_args
             || (v[13] == 0 && (v[21] != 0 || v[22] != 0 || v[23] != 0 || v[18] != u64::MAX))
-            || (v[16] == 0 && !lists[2].is_empty())
+            || lists[2].len() >= (if v[16] != 0 { 2 } else { 1 }) * if word { 2 } else { 1 }
+            || (word && (v[12] % 2 != 0 || v[29] % 2 != 0))
+            || (queued_word && (v[27] == 0 || v[27] % 2 != 0))
         {
             return Err(bad());
         }
@@ -746,6 +912,9 @@ impl Sb16 {
             args: lists[1].clone(),
             needed: v[6] as u8,
             irq: v[7] != 0,
+            irq16,
+            word,
+            mixer,
             speaker: v[8] != 0,
             rate: v[9] as u16,
             tc: (v[10] < 256).then_some(v[10] as u8),
@@ -770,6 +939,7 @@ impl Sb16 {
                 count: v[27] as u32,
                 auto: v[30] != 0,
                 mode: v[28] as u8,
+                word: queued_word,
             }),
         };
         self.state = s;
@@ -780,7 +950,7 @@ impl Sb16 {
                 at: VClock(self.state.now),
                 numerator: u64::MAX - self.state.now,
                 denominator: 1,
-                pcm: self.state.level,
+                pcm: self.state.mixer.apply(self.state.level),
             });
         } else if self.state.active && self.state.paused.is_none() {
             self.hold_until_boundary();

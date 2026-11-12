@@ -610,7 +610,8 @@ impl MachineConfig {
     fn check_sb16_resources(&self) -> Result<(), ConfigError> {
         for device in &self.devices {
             if let DeviceKind::Sb16(cfg) = device.kind {
-                if !matches!(cfg.base, 0x220 | 0x240 | 0x260 | 0x280)
+                if !matches!(cfg.dma16, 5..=7)
+                    || !matches!(cfg.base, 0x220 | 0x240 | 0x260 | 0x280)
                     || !matches!(device.irq, Some(2 | 5 | 7 | 10))
                     || !matches!(
                         device.dma,
@@ -974,9 +975,16 @@ impl MachineConfig {
     /// Every device's DMA wiring names a controller that is present.
     fn check_dma_controllers_present(&self) -> Result<(), ConfigError> {
         for (index, dev) in self.devices.iter().enumerate() {
-            if let Some(dma) = &dev.dma {
+            for dma in dev.dma_inputs() {
+                if dma.controller == DeviceId::DmaWord && !matches!(dma.channel, 5..=7) {
+                    return Err(ConfigError::InvalidDmaChannel {
+                        device: dev.id,
+                        controller: dma.controller,
+                        channel: dma.channel,
+                    });
+                }
                 for other in &self.devices[index + 1..] {
-                    if other.dma == Some(*dma) {
+                    if other.dma_inputs().any(|input| input == dma) {
                         return Err(ConfigError::DmaConflict {
                             a: dev.id,
                             b: other.id,
@@ -985,7 +993,11 @@ impl MachineConfig {
                         });
                     }
                 }
-                if !self.devices.iter().any(|d| d.id == dma.controller) {
+                if !self.devices.iter().any(|d| {
+                    d.id == dma.controller
+                        && (dma.controller != DeviceId::DmaWord
+                            || matches!(d.kind, DeviceKind::DmaWord(_)))
+                }) {
                     return Err(ConfigError::DmaControllerMissing {
                         requester: dev.id,
                         controller: dma.controller,
@@ -2669,6 +2681,79 @@ mod tests {
                 b: DeviceId::Vga,
             }
         ));
+    }
+
+    #[test]
+    fn sb16_word_dma_conflicts_are_detected_in_either_device_order() {
+        for reversed in [false, true] {
+            let mut config = valid_config();
+            let cfg = crate::Sb16Cfg {
+                base: 0x220,
+                dma16: 5,
+            };
+            config.devices.push(
+                crate::DeviceConfig::new(DeviceId::Sb16, DeviceKind::Sb16(cfg), cfg.port_windows())
+                    .with_irq(5)
+                    .with_dma(crate::DmaSpec {
+                        controller: DeviceId::Dma,
+                        channel: 1,
+                    }),
+            );
+            config.devices.push(dev(
+                DeviceId::DmaWord,
+                DeviceKind::DmaWord(DmaCfg {}),
+                Vec::new(),
+            ));
+            // The spare POST identity stands for a mock DMA requester in this
+            // wiring-only fixture; the floppy retains its real byte-DMA format.
+            find_device(&mut config, DeviceId::Post).dma = Some(crate::DmaSpec {
+                controller: DeviceId::DmaWord,
+                channel: 6,
+            });
+            assert_eq!(config.validate(), Ok(()));
+            find_device(&mut config, DeviceId::Post)
+                .dma
+                .as_mut()
+                .unwrap()
+                .channel = 5;
+            if reversed {
+                config.devices.reverse();
+            }
+            assert!(matches!(
+                config.validate(),
+                Err(ConfigError::DmaConflict {
+                    controller: DeviceId::DmaWord,
+                    channel: 5,
+                    ..
+                })
+            ));
+        }
+    }
+
+    #[test]
+    fn word_dma_specs_reject_local_and_cascade_channel_numbers() {
+        for channel in [0, 1, 2, 3, 4, 8] {
+            let mut config = valid_config();
+            config.devices.push(dev(
+                DeviceId::DmaWord,
+                DeviceKind::DmaWord(DmaCfg {}),
+                Vec::new(),
+            ));
+            assert_eq!(config.validate(), Ok(()));
+            find_device(&mut config, DeviceId::Uart).dma = Some(crate::DmaSpec {
+                controller: DeviceId::DmaWord,
+                channel,
+            });
+            assert_eq!(
+                config.validate(),
+                Err(ConfigError::InvalidDmaChannel {
+                    device: DeviceId::Uart,
+                    controller: DeviceId::DmaWord,
+                    channel,
+                }),
+                "word DMA system channel {channel}"
+            );
+        }
     }
 
     #[test]

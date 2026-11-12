@@ -134,7 +134,8 @@ impl PortWindow {
 pub struct DmaSpec {
     /// The DMA controller this device masters the bus through.
     pub controller: DeviceId,
-    /// The DMA channel the transfer uses.
+    /// System DMA channel: 0–3 for the byte controller, 5–7 for the word controller.
+    /// Assembly translates word channels to the controller-local 1–3 numbering.
     pub channel: u8,
 }
 
@@ -469,14 +470,16 @@ impl IdeCfg {
 /// `backlog/docs/design/machine-files.md` §SB16.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct Sb16Cfg {
-    /// DSP base address; mixer and OPL windows remain unclaimed.
+    /// Word-DMA channel, one of 5, 6 or 7.
+    pub dma16: u8,
+    /// DSP and mixer base address; OPL windows remain unclaimed.
     pub base: u16,
 }
 
 impl Sb16Cfg {
-    /// Only the four implemented DSP byte ports belong to this card.
+    /// DSP, mixer and both interrupt acknowledgements are byte ports.
     pub fn port_windows(self) -> Vec<PortWindow> {
-        [6, 10, 12, 14]
+        [4, 5, 6, 10, 12, 14, 15]
             .into_iter()
             .map(|offset| PortWindow::single(self.base.saturating_add(offset)))
             .collect()
@@ -575,6 +578,18 @@ impl DeviceConfig {
             access_dependents: Vec::new(),
             allow_port_overlap: false,
         }
+    }
+
+    /// System DMA inputs, including the SB16's independent word input (§7.7).
+    /// IBM Personal Computer AT Technical Reference, System Board, Direct Memory Access.
+    pub(crate) fn dma_inputs(&self) -> impl Iterator<Item = DmaSpec> {
+        self.dma.into_iter().chain(match self.kind {
+            DeviceKind::Sb16(cfg) => Some(DmaSpec {
+                controller: DeviceId::DmaWord,
+                channel: cfg.dma16,
+            }),
+            _ => None,
+        })
     }
 
     /// Set the PIC input line this device drives.

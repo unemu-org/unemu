@@ -12,11 +12,21 @@ use crate::device::DeviceId;
 /// test can assert the exact failure a malformed config produces.
 #[derive(Clone, Debug, PartialEq, Eq, Error)]
 pub enum ConfigError {
-    /// SB16 resources must match its byte-DMA ISA wiring and DSP decode.
-    #[error("invalid SB16 resources for {device:?}: bases 220h/240h/260h/280h, IRQ 2/5/7/10, DMA 0/1/3 and four DSP byte ports required")]
+    /// SB16 resources must match its byte/word-DMA ISA wiring and DSP/mixer decode.
+    #[error("invalid SB16 resources for {device:?}: bases 220h/240h/260h/280h, IRQ 2/5/7/10, DMA8 0/1/3, DMA16 5/6/7 and DSP/mixer byte ports required")]
     InvalidSb16Resources {
         /// Card with inconsistent wiring.
         device: crate::DeviceId,
+    },
+    /// Word-controller DMA specs use system channels, never local/cascade channels.
+    #[error("invalid system DMA channel {channel} on {controller:?} for {device:?}: word channels must be 5/6/7")]
+    InvalidDmaChannel {
+        /// Requester with invalid wiring.
+        device: crate::DeviceId,
+        /// Selected word controller.
+        controller: crate::DeviceId,
+        /// Invalid system channel.
+        channel: u8,
     },
     /// Two devices cannot own the same DMA channel on one controller.
     #[error("DMA channel {channel} on {controller:?} is shared by {a:?} and {b:?}")]

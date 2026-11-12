@@ -4,7 +4,8 @@ The `audio` crate is the audio swap layer beside `video`. It provides an
 `AudioSink`, an integer mixer and headless capture, implementing rules 1–4 of
 [decision-20](../../decisions/decision-20%20-%20Audio%20through%20a%20virtual-time%20AudioSink%20seam%20with%20host%20output%20in%20the%20window.md).
 The AT PC speaker is the first sound-producing device. The window uses cpal
-for host playback. An optional SB16 supplies byte-DMA PCM; analogue filtering
+for host playback. An optional SB16 supplies byte/word-DMA PCM through a CT1745 master/voice
+volume model; analogue filtering
 and synthesis remain separate work. The audio crate itself needs only the existing `device`
 and `thiserror` workspace dependencies.
 
@@ -338,10 +339,11 @@ DSP version **4.05** follows the physical SB16 reported in Epson Product
 Support Bulletin S-0172, Software, page 4
 ([primary source](https://files.support.epson.com/pdf/e4p___/e4p___ps.pdf)).
 
-The four claimed byte ports are base+6 (reset), +Ah (read reply), +Ch (write
-command/data, read busy) and +Eh (read availability and acknowledge byte IRQ).
-Mixer +4/+5, word IRQ acknowledge +Fh and OPL ports remain unclaimed and
-read FFh from the empty bus. Creative's §2 Resetting the DSP recommends a
+The seven claimed byte ports are base+4/+5 (mixer index/data), +6 (reset),
++Ah (read reply), +Ch (write command/data, read busy), +Eh (read availability
+and acknowledge byte IRQ), and +Fh (acknowledge word IRQ). See
+[16-bit output](#sb16-16-bit-output) and [CT1745](#ct1745). Only OPL ports remain
+unclaimed and read FFh from the empty bus. Creative's §2 Resetting the DSP recommends a
 3 µs reset hold and describes typical 100 µs initialization. This model clears
 state on writing 1 and accepts **any 1→0 edge**, including two writes at the same
 PIT clock. AAh becomes available **immediately (zero initialization delay)** on
@@ -354,10 +356,11 @@ replies, DMA state, speaker flag and IRQ. Initial/reset defaults are 22050 Hz,
 unsigned mono and a 65536-byte legacy auto-init block (**ASSUMED**).
 Unsupported DSP commands consume all known argument bytes and perform no
 operation or reply. The parser recognizes Creative §6's input, ADPCM, silence,
-MIDI and 16-bit DMA argument lengths as well as SB16 ASP/test-command lengths
+MIDI and generic DMA argument lengths as well as SB16 ASP/test-command lengths
 (**ASSUMED** for 04h/05h/08h/0Eh/0Fh/F9h/FAh), cross-checked against
 [DOSBox-X's SB16 command-length table](https://github.com/joncampbell123/dosbox-x/blob/master/src/hardware/sblaster.cpp).
-For example, Bxh consumes mode and two length bytes; 42h/80h consume two;
+For example, recording Bxh consumes and ignores mode and two length bytes;
+42h/80h consume two;
 38h/E2h/E4h consume one; 2Ch/98h/99h take none. E4h/E8h remain no-ops.
 Unknown opcodes consume one byte, and none of these commands emits a diagnostic.
 The reply queue keeps 16 oldest bytes
@@ -427,7 +430,7 @@ incomplete output-frame boundary on every unobserved producer event, even
 without facade capture calls. `SampleBuffer::push_segment` replaces a segment
 starting at the same clock, whose duration would be zero; this small audio-helper
 change bounds repeated direct-DAC writes at one clock. Its public API is unchanged.
-Hardware snapshots use model marker `SB16-8V2`, preserve partial commands, replies,
+Hardware snapshots use model marker `SB16-MV3`, preserve partial commands, replies,
 phase, separate legacy/active block sizes, queued transfer format and auto-init
 flag, block position, staging, reset state and IRQ, and exclude trace/audio
 history. Restoring starts presentation at the restored clock without replay.
@@ -437,13 +440,112 @@ The synthetic ROM golden programs channel 1 at RAM 1000h and plays bytes
 last DSP argument is written at clock 204, frames begin at 354/503/652/801,
 the byte IRQ rises at **801**, the handler emits one marker at **805**, and
 the source goes silent at **950**. Capture through clock 1000 produces
-**40 frames**, FNV-1a **`0eb2d059128e5341`**. Whole and split runs match an
+**40 frames**, FNV-1a **`9c71fd79a30a2741`**.
+The previous hash `0eb2d059128e5341` used unity gain. Only CT1745 reset
+attenuation changes the PCM: master and voice each reset to level 24 (-14 dB).
+The independent integral applies both Q24 gains before accumulating each native
+level and reproduces every new output frame; all IRQ/sample timestamps are unchanged. Whole and split runs match an
 independent per-PIT-clock integral. A second ROM run uses three PIT clocks
 per retired step to put DMA deadlines inside CPU steps.
 
-Not modelled: 16-bit output/DMA, recording, ADPCM, high-speed legacy commands,
-CT1745 mixer/volume/resource registers, MPU-401/MIDI, OPL3, analogue filters,
-DSP execution latency and ISA contention.
+Not modelled: recording, ADPCM, high-speed legacy commands, MPU-401/MIDI,
+OPL3, analogue filters, DSP execution latency and ISA contention.
+
+## SB16 16-bit output
+
+Creative's *Sound Blaster Series Hardware Programming Guide*, §3 Digitized Sound
+Data Format, §6 Bxh/D5h/D6h/D9h and §2 Sharing of Interrupts define word playback.
+B0h/B2h start single-cycle and B4h/B6h auto-init output; command bit 1 (FIFO) is
+accepted with the same one-frame staging policy as Cxh. Bit 3 requests recording:
+those commands consume all three arguments and produce no playback. Bit 0 must
+be zero. The mode byte selects signedness (bit 4) and stereo (bit 5). Length is
+the count of **words**, minus one, including both channels in stereo. Little-endian
+words decode to signed PCM directly or, for unsigned data, by subtracting 32768.
+Stereo order is left then right; an odd word count gives a silent right tail.
+
+The configured system DMA channel (5 by default, 5/6/7 accepted) routes through
+the board's word 8237. Its local channel is system channel minus four; the
+controller owns word address shifts, page latches, terminal count and auto-init.
+The DSP length and controller count remain independent. Both widths use the
+same exact rational frame grid, fetch-at-boundary, empty-DMA retry, block/tail,
+rate-change and handler-chaining policies described above. **ASSUMED command-width
+policy:** D5h/D6h pause/continue only word playback; D9h exits word auto-init at
+the current block end. D0h/D4h/DAh operate only on byte playback. The guide lists
+separate commands, while some emulators treat each pair alike. Both widths retain
+fractional phase over pause.
+
+**ASSUMED one-output policy:** starting the other width immediately discards the
+unfinished transfer, including a paused block, and starts its first frame one
+period later. Only same-width commands can defer to the old frame/block boundary.
+There is no simultaneous byte/word DAC output. Already pending IRQs survive a
+replacement independently. Word block completion latches IRQ16; reading base+Fh
+clears only IRQ16 (read value FFh, **ASSUMED**). Byte acknowledgement at +Eh clears
+only IRQ8. Their logical OR drives the configured IRQ line. Mixer 82h reports
+IRQ8/IRQ16 in bits 0/1; MPU-401 bit 2 is always zero.
+
+Snapshots preserve word format, both pending IRQs, word staging and any queued
+transfer, mixer index/registers and fixed resources. Old `SB16-8V2` snapshots keep
+their byte-DMA state and restore a reset mixer with no word state. Presentation
+history remains excluded, and restoration applies the restored volumes at the
+restored clock.
+
+The synthetic word golden programs DMA5 at physical RAM 1000h (word address
+0800h), then plays signed stereo words 1234h/EDCCh/8000h/7FFFh at 8000 Hz.
+Master is 0 dB; voice is -2 dB left, -4 dB right. The last DSP argument is at
+clock 232, frames start at **382/531**, IRQ16 rises at **531**, the handler marker
+is at **535**, and the tail ends at **680**. Capture through 1000 has **40 frames**,
+FNV-1a **`45d03674db163436`**. Split runs around each boundary agree; an independent
+clock-by-clock integral with separately specified attenuation constants checks
+every PCM frame. Stereo-order and word-fetch mutations must break this golden.
+
+## CT1745
+
+Source: Creative's *Sound Blaster Series Hardware Programming Guide*, §4 CT1745
+Mixer, Figure 4-3 and Register Functions (pp. 4-10–4-17); resource/status registers
+come from §2 Sharing of Interrupts and Configuring DMA and Interrupt Settings.
+Base+4 selects a register and base+5 accesses it. Register 00h writes restore mixer
+defaults without stopping the DSP. DSP reset preserves mixer state; whole-device
+reset restores both (**ASSUMED** independent reset domains). Index readback,
+zero reset-register readback, reserved-bit zeroing and unknown-index FFh readback
+are **ASSUMED** where the guide does not specify a read value.
+
+| Registers | Implemented bits | Reset bytes | Effect |
+|---|---|---|---|
+| 30h–35h master, voice, MIDI L/R | 7–3 | C0h (level 24) | Master/voice applied; MIDI stored |
+| 36h–3Ah CD/line L/R, mic | 7–3 | 00h | Stored only |
+| 3Bh PC speaker | 7–6 | 00h | Stored only; board speaker is independent |
+| 3Ch output switches | 4–0 | 1Fh | Stored only |
+| 3Dh/3Eh input switches | 6–0 | 15h/0Bh | Stored only |
+| 3Fh–42h input/output gains | 7–6 | 00h | Stored only |
+| 43h AGC | 0 | 00h | Stored only |
+| 44h–47h treble/bass L/R | 7–4 | 80h | Stored only |
+| 80h IRQ setup | 3–0 | Configured IRQ bit | Writes ignored |
+| 81h DMA setup | 7–5, 3, 1–0 | Configured byte and word bits | Writes ignored |
+| 82h IRQ status | 1–0 | 00h | Live pending IRQs; writes ignored |
+
+The guide specifies volume levels 0–31 as -62 to 0 dB in 2 dB steps. Level zero
+uses Q24 gain **13327**, not digital mute. For all levels the constant Q24 table is
+`round(2^24 * 10^((level - 31)/10))`, generated and checked in a test using floating
+point **only in that test**. Each channel computes
+`pcm * master_gain * voice_gain / 2^48`, dividing once toward zero. Runtime is all
+integer arithmetic. At reset this maps -32768/-16384/0/32512 to
+-1304/-652/0/1294. Volume writes alter the held PCM immediately at the port-access
+clock, without changing the native sample grid, including direct DAC and paused
+playback on resume. Stored-only controls do not affect PCM, even output gain and
+tone controls. No board PC-speaker signal passes through this card.
+
+Compatibility registers 04h/22h/26h/28h/2Eh alias native voice/master/MIDI/CD/line.
+**ASSUMED common compatibility mapping:** each nibble n writes native level
+`(n << 1) | 1`, so Fh reaches native 1Fh (0 dB). Reading returns the upper native
+four bits. Register 0Ah aliases
+the upper three mic bits and clears the other two on write (**ASSUMED**). The
+guide says these are mapped but does not resolve the extra native bits. Native writes are immediately visible through compatibility reads.
+
+Registers 80h/81h expose the fixed machine-file resources, with IRQ2/5/7/10 in
+bits 0/1/2/3 and DMA channels in their numbered bits. **ASSUMED model policy:**
+resources come from the machine file and stay fixed for the run, so writes are
+ignored. A real SB16 can select resources through these registers in software;
+that behavior is not modelled. ISA PnP is also not modelled.
 
 ## Validation
 

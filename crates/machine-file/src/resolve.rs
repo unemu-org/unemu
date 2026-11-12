@@ -328,6 +328,7 @@ fn validate_layer(document: &MachineFile, origins: &Origins) -> Result<(), Lower
                 || card.port.is_some()
                 || card.base.is_some()
                 || card.dma8.is_some()
+                || card.dma16.is_some()
                 || card.irq.is_some()
                 || card.dma.is_some()
                 || card.drives.is_some())
@@ -678,6 +679,7 @@ fn merge(
             m.scalar(&mut inherited.port, card.port, "port");
             m.scalar(&mut inherited.base, card.base, "base");
             m.scalar(&mut inherited.dma8, card.dma8, "dma8");
+            m.scalar(&mut inherited.dma16, card.dma16, "dma16");
             m.scalar(&mut inherited.irq, card.irq, "irq");
             m.scalar(&mut inherited.dma, card.dma, "dma");
             merge_drives(inherited, card.drives, &mut m)?;
@@ -985,15 +987,16 @@ mod tests {
     #[test]
     fn sb16_resource_fields_merge_and_removed_cards_reject_overrides() {
         let result = merged(
-            "[[card]]\nkind='sb16'\nbase=0x220\nirq=5\ndma8=1\n",
-            "[[card]]\nid='sb16'\nbase=0x240\nirq=7\ndma8=3\n",
+            "[[card]]\nkind='sb16'\nbase=0x220\nirq=5\ndma8=1\ndma16=5\n",
+            "[[card]]\nid='sb16'\nbase=0x240\nirq=7\ndma8=3\ndma16=7\n",
         )
         .unwrap();
         let card = &result.document.card.as_ref().unwrap()[0];
         assert_eq!(card.base, Some(0x240));
         assert_eq!(card.dma8, Some(3));
+        assert_eq!(card.dma16, Some(7));
         assert_eq!(card.irq, Some(crate::schema::v1::NumberOrNone::Number(7)));
-        for field in ["base=0x240", "dma8=1"] {
+        for field in ["base=0x240", "dma8=1", "dma16=5"] {
             assert!(merged(
                 "[[card]]\nkind='sb16'\n",
                 &format!("[[card]]\nid='sb16'\nremove=true\n{field}\n")

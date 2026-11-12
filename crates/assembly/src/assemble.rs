@@ -55,7 +55,7 @@ use devices::{
     A20Line, Absent80287, Ata, AtaDrive, AtaGeometry, CmosRtc, DebugConsole, Dma8237, Drive, FwCfg,
     MdaText, PostPort, SysControl, SysCtrlPortA, Uart16550, Upd765, VgaText, I8042,
 };
-use machine::{DmaWiring, IrqLine, Machine};
+use machine::{DmaChannelWiring, DmaWiring, IrqLine, Machine};
 use sha2::{Digest, Sha256};
 
 use crate::device::{DeviceId, DeviceKind};
@@ -377,8 +377,12 @@ fn assemble_with_cpu_and_catalogue(
                     .map_err(|_| ConfigError::InvalidIdeResources { device: dc.id })?,
             ),
             DeviceKind::Sb16(cfg) => {
-                let (dsp, source) =
-                    crate::sb16_audio::build(cfg.base, dc.dma.map_or(1, |dma| dma.channel));
+                let (dsp, source) = crate::sb16_audio::build(
+                    cfg.base,
+                    dc.dma.map_or(1, |dma| dma.channel),
+                    cfg.dma16,
+                    dc.irq.unwrap_or(5),
+                );
                 native_audio.push(source);
                 Box::new(dsp)
             }
@@ -415,7 +419,7 @@ fn assemble_with_cpu_and_catalogue(
 
     let map = build_decode_map(config, &device_index);
     let irq_lines = build_irq_lines(config, &device_index);
-    let dma_wirings = build_dma_wirings(config, &device_index);
+    let (dma_wirings, dma_channel_wirings) = build_dma_wirings(config, &device_index);
 
     // The machine is built with no idle limit; the run policy stamps it on before
     // the loop runs (idle_limit is a "how we run" concern, not machine identity).
@@ -435,7 +439,8 @@ fn assemble_with_cpu_and_catalogue(
     bus.set_trace_policy(observation_policy.trace);
     let mut machine = Machine::new(cpu, bus, controller, irq_lines, None)
         .with_cpu_rate(rate_numerator, rate_denominator)
-        .with_dma_wirings(dma_wirings);
+        .with_dma_wirings(dma_wirings)
+        .with_dma_channel_wirings(dma_channel_wirings);
     if config.devices.iter().any(|device| {
         matches!(
             device.kind,
@@ -935,17 +940,36 @@ fn build_irq_lines(
 fn build_dma_wirings(
     config: &MachineConfig,
     device_index: &HashMap<DeviceId, usize>,
-) -> Vec<DmaWiring> {
-    config
-        .devices
-        .iter()
-        .filter_map(|dc| {
-            dc.dma.map(|dma| DmaWiring {
-                requester: device_index[&dc.id],
-                controller: device_index[&dma.controller],
-            })
-        })
-        .collect()
+) -> (Vec<DmaWiring>, Vec<DmaChannelWiring>) {
+    let mut primary = Vec::new();
+    let mut channels = Vec::new();
+    for dc in &config.devices {
+        let requester = device_index[&dc.id];
+        for (input, dma) in dc.dma_inputs().enumerate() {
+            let controller = device_index[&dma.controller];
+            if input == 0 {
+                primary.push(DmaWiring {
+                    requester,
+                    controller,
+                });
+            }
+            if dma.controller == DeviceId::DmaWord {
+                debug_assert!(
+                    matches!(dma.channel, 5..=7),
+                    "check_dma_controllers_present validates word DMA system channels 5..=7"
+                );
+                // IBM Personal Computer AT Technical Reference, System Board,
+                // Direct Memory Access: word-controller channels are local 1–3.
+                channels.push(DmaChannelWiring {
+                    requester,
+                    system_channel: dma.channel,
+                    controller,
+                    local_channel: dma.channel - 4,
+                });
+            }
+        }
+    }
+    (primary, channels)
 }
 
 fn build_ide_drives(
@@ -2648,10 +2672,108 @@ mod tests {
             .iter()
             .any(|l| l.device == index[&DeviceId::Fdc] && l.irq == 6));
 
-        let dma = build_dma_wirings(&config, index);
+        let (dma, channels) = build_dma_wirings(&config, index);
+        assert!(channels.is_empty());
         assert_eq!(dma.len(), 1);
         assert_eq!(dma[0].requester, index[&DeviceId::Fdc]);
         assert_eq!(dma[0].controller, index[&DeviceId::Dma]);
+    }
+
+    #[test]
+    fn all_word_dma_specs_translate_system_channels_at_assembly() {
+        let mut config = reference_config();
+        config.devices.push(crate::DeviceConfig::new(
+            DeviceId::DmaWord,
+            DeviceKind::DmaWord(crate::DmaCfg {}),
+            Vec::new(),
+        ));
+        let cfg = crate::Sb16Cfg {
+            base: 0x220,
+            dma16: 5,
+        };
+        config.devices.push(
+            crate::DeviceConfig::new(DeviceId::Sb16, DeviceKind::Sb16(cfg), cfg.port_windows())
+                .with_irq(5)
+                .with_dma(crate::DmaSpec {
+                    controller: DeviceId::Dma,
+                    channel: 1,
+                }),
+        );
+        // A generic wiring owner exercises the same rule without relying on
+        // a particular device's byte-DMA request format.
+        config
+            .devices
+            .iter_mut()
+            .find(|d| d.id == DeviceId::Post)
+            .unwrap()
+            .dma = Some(crate::DmaSpec {
+            controller: DeviceId::DmaWord,
+            channel: 5,
+        });
+        let index: HashMap<_, _> = config
+            .devices
+            .iter()
+            .enumerate()
+            .map(|(i, d)| (d.id, i))
+            .collect();
+        for channel in 5..=7 {
+            config
+                .devices
+                .iter_mut()
+                .find(|d| d.id == DeviceId::Post)
+                .unwrap()
+                .dma
+                .as_mut()
+                .unwrap()
+                .channel = channel;
+            let (_, routes) = build_dma_wirings(&config, &index);
+            assert!(routes.contains(&DmaChannelWiring {
+                requester: index[&DeviceId::Post],
+                system_channel: channel,
+                controller: index[&DeviceId::DmaWord],
+                local_channel: channel - 4
+            }));
+            let route = routes
+                .iter()
+                .find(|route| route.requester == index[&DeviceId::Post])
+                .unwrap();
+            struct Memory;
+            impl device::DmaMemory for Memory {
+                fn dma_read(&self, addr: u32) -> u8 {
+                    match addr {
+                        0x1000 => 0x34,
+                        0x1001 => 0x12,
+                        _ => panic!("unexpected DMA address {addr:x}"),
+                    }
+                }
+                fn dma_write(&mut self, _: u32, _: u8) {
+                    unreachable!()
+                }
+            }
+            let mut dma = Dma8237::new_at_word();
+            let local = route.local_channel;
+            for (port, value) in [
+                (0xD8, 0),
+                (0xC0 + u16::from(local) * 4, 0),
+                (0xC0 + u16::from(local) * 4, 8),
+                (0xC2 + u16::from(local) * 4, 0),
+                (0xC2 + u16::from(local) * 4, 0),
+                (0xD6, 0x48 | local),
+                (0xD4, local),
+            ] {
+                dma.port_write(port, 1, value.into()).unwrap();
+            }
+            let mut bytes = [0; 2];
+            let transfer = dma.dma_service_read(local, &mut Memory, &mut bytes);
+            assert_eq!(transfer.transferred, 2);
+            assert_eq!(bytes, [0x34, 0x12]);
+            assert!(routes.contains(&DmaChannelWiring {
+                requester: index[&DeviceId::Sb16],
+                system_channel: 5,
+                controller: index[&DeviceId::DmaWord],
+                local_channel: 1
+            }));
+        }
     }
 
     #[test]

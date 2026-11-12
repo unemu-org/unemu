@@ -150,6 +150,7 @@ timed_table! {
         pub port: Option<u16>,
         pub base: Option<u16>,
         pub dma8: Option<u8>,
+        pub dma16: Option<u8>,
         pub irq: Option<NumberOrNone<15>>,
         pub dma: Option<NumberOrNone<3>>,
         pub drives: Option<Vec<Drive>>,

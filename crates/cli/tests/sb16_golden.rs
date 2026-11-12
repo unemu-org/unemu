@@ -68,7 +68,10 @@ fn capture_clock(
     let mut config = assembly::bios(rom(), Some(vec![0; 1_474_560]));
     config.clock.retired_per_pit_clock = 1;
     config.clock.retired_per_pit_clock_denominator = pit_per_step;
-    let cfg = Sb16Cfg { base: 0x220 };
+    let cfg = Sb16Cfg {
+        base: 0x220,
+        dma16: 5,
+    };
     config.devices.push(
         DeviceConfig::new(DeviceId::Sb16, DeviceKind::Sb16(cfg), cfg.port_windows())
             .with_irq(5)
@@ -150,6 +153,8 @@ fn reference() -> Vec<[i16; 2]> {
                     801..950 => 32512,
                     _ => 0,
                 })
+                // Q24 round(2^24 * 10^(-14/20)) = 3347495 for each reset stage.
+                .map(|level| level * 3347495i64 * 3347495i64 / (1i64 << 48))
                 .sum();
             [(area / (end - begin) as i64) as i16; 2]
         })
@@ -164,8 +169,8 @@ fn sb16_byte_dma_has_frozen_pcm_irq_time_and_split_invariance() {
         capture(&[24, 150, 201, 299, 448, 799, 800, 801, 999], true)
     );
     assert_eq!(whole.0, 40);
-    assert_eq!(whole.1, 0x0eb2_d059_128e_5341);
     assert_eq!(whole.2, reference());
+    assert_eq!(whole.1, 0x9c71fd79a30a2741);
     assert_eq!(whole.3, [805]);
 }
 
@@ -185,6 +190,8 @@ fn sb16_dma_deadlines_inside_slow_cpu_steps_deliver_samples_on_time() {
                     1209..1358 => 32512,
                     _ => 0,
                 })
+                // Q24 round(2^24 * 10^(-14/20)) = 3347495 for each reset stage.
+                .map(|level| level * 3347495i64 * 3347495i64 / (1i64 << 48))
                 .sum();
             [(area / (end - begin) as i64) as i16; 2]
         })

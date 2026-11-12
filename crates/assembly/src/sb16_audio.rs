@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Native SB16 PCM observation adapter (Creative Sound Blaster Series Hardware
 //! Programming Guide, §3 PCM Data Formats). See `backlog/docs/design/audio.md`
-//! §SB16 8-bit output. Hardware owns deadlines; this adapter owns history only.
+//! §SB16 8-bit output and §SB16 16-bit output. Hardware owns deadlines; this
+//! adapter owns history only.
 
 use std::{cell::RefCell, num::NonZeroU64, rc::Rc};
 
@@ -39,7 +40,7 @@ impl AudioSource for Source {
     }
 }
 
-fn signal(base: u16, dma8: u8) -> (Sb16, Source) {
+fn signal(base: u16, dma8: u8, dma16: u8, irq: u8) -> (Sb16, Source) {
     let samples = SampleBuffer::default();
     let signal = Rc::new(RefCell::new(Signal {
         reader: RateSource::new(samples.clone()),
@@ -48,7 +49,7 @@ fn signal(base: u16, dma8: u8) -> (Sb16, Source) {
         enabled: true,
     }));
     let writer = signal.clone();
-    let mut device = Sb16::new(base, dma8);
+    let mut device = Sb16::new(base, dma8).with_resources(dma16, irq);
     device.observe_output(move |event| {
         let mut signal = writer.borrow_mut();
         let (at, result) = match event {
@@ -86,8 +87,8 @@ fn signal(base: u16, dma8: u8) -> (Sb16, Source) {
     (device, Source(signal))
 }
 
-pub(crate) fn build(base: u16, dma8: u8) -> (Sb16, Box<dyn AudioSource>) {
-    let (device, source) = signal(base, dma8);
+pub(crate) fn build(base: u16, dma8: u8, dma16: u8, irq: u8) -> (Sb16, Box<dyn AudioSource>) {
+    let (device, source) = signal(base, dma8, dma16, irq);
     (device, Box::new(source))
 }
 
@@ -95,6 +96,15 @@ pub(crate) fn build(base: u16, dma8: u8) -> (Sb16, Box<dyn AudioSource>) {
 mod tests {
     use super::*;
     use device::Device;
+
+    fn unity_signal() -> (Sb16, Source) {
+        let (mut dsp, source) = signal(0x220, 1, 5, 5);
+        for index in 0x30..=0x33 {
+            dsp.port_write(0x224, 1, index).unwrap();
+            dsp.port_write(0x225, 1, 0xF8).unwrap();
+        }
+        (dsp, source)
+    }
 
     fn command(dsp: &mut Sb16, bytes: &[u8]) {
         for &byte in bytes {
@@ -113,7 +123,7 @@ mod tests {
 
     #[test]
     fn paused_rate_change_holds_the_resumed_level_until_the_preserved_boundary() {
-        let (mut dsp, mut source) = build(0x220, 1);
+        let (mut dsp, mut source) = unity_signal();
         command(&mut dsp, &[0x41, 0x1F, 0x40, 0x14, 2, 0]);
         dma_frame(&mut dsp, 150, 0xFF);
         dsp.tick(VClock(180));
@@ -130,7 +140,7 @@ mod tests {
 
     #[test]
     fn chained_dma_blocks_preserve_the_full_last_sample_area() {
-        let (mut dsp, mut source) = build(0x220, 1);
+        let (mut dsp, mut source) = unity_signal();
         command(&mut dsp, &[0x41, 0x1F, 0x40, 0x14, 1, 0]);
         dma_frame(&mut dsp, 150, 0x80);
         dma_frame(&mut dsp, 299, 0x81);
@@ -145,7 +155,7 @@ mod tests {
 
     #[test]
     fn live_rate_change_preserves_the_held_sample_area() {
-        let (mut dsp, mut source) = build(0x220, 1);
+        let (mut dsp, mut source) = unity_signal();
         command(&mut dsp, &[0x41, 0x1F, 0x40, 0x14, 2, 0]);
         dma_frame(&mut dsp, 150, 0xFF);
         dsp.tick(VClock(200));
@@ -158,7 +168,7 @@ mod tests {
 
     #[test]
     fn same_clock_direct_dac_writes_replace_zero_duration_history() {
-        let (mut dsp, mut source) = signal(0x220, 1);
+        let (mut dsp, mut source) = unity_signal();
         source.set_output_enabled(false);
         dsp.tick(VClock(7));
         for _ in 0..10000 {
@@ -171,7 +181,7 @@ mod tests {
 
     #[test]
     fn direct_level_pause_and_rate_frames_integrate_in_one_source() {
-        let (mut dsp, mut source) = build(0x220, 1);
+        let (mut dsp, mut source) = unity_signal();
         dsp.tick(VClock(7));
         command(&mut dsp, &[0x10, 0xFF]);
         dsp.tick(VClock(13));
@@ -191,7 +201,7 @@ mod tests {
 
     #[test]
     fn no_consumer_history_is_bounded_and_late_history_errors_surface() {
-        let (mut dsp, mut source) = signal(0x220, 1);
+        let (mut dsp, mut source) = unity_signal();
         source.set_output_enabled(false);
         for at in 1..10000 {
             dsp.tick(VClock(at));

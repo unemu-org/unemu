@@ -93,6 +93,23 @@ pub struct DmaWiring {
     pub controller: usize,
 }
 
+/// One system-channel route for a requester with controller-local numbering.
+///
+/// IBM Personal Computer AT Technical Reference, System Board, Direct Memory
+/// Access: the word controller serves system channels 5–7 on local channels 1–3.
+/// Assembly supplies the translation; the machine treats both numbers as opaque.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct DmaChannelWiring {
+    /// Bus index of the device issuing requests.
+    pub requester: usize,
+    /// Channel number carried by the request, in system numbering.
+    pub system_channel: u8,
+    /// Bus index of the controller that services this channel.
+    pub controller: usize,
+    /// Channel number passed to that controller's service API.
+    pub local_channel: u8,
+}
+
 /// Bridges DMA memory cycles to the CPU map (§4.3), keeping RAM writes on the
 /// `note_write` path and queuing trapped bytes for bus dispatch. The controller
 /// borrows the bus during a transfer, so MMIO is serviced after that borrow ends,
@@ -201,6 +218,9 @@ pub struct Machine<C: Cpu> {
     /// Bus-master → DMA-controller couplings drained each boundary (§7.7). Empty
     /// for a machine with no DMA (the serial and timer demos).
     dma_wirings: Vec<DmaWiring>,
+    /// Per-requester system-channel routes that override the primary DMA coupling
+    /// (§7.7), supplying controller-local numbers for matching requests.
+    dma_channel_wirings: Vec<DmaChannelWiring>,
     reset_signal: Option<std::rc::Rc<std::cell::Cell<bool>>>,
     reset_pending: bool,
 }
@@ -238,6 +258,7 @@ impl<C: Cpu> Machine<C> {
             clock_remainder: 0,
             idle_limit,
             dma_wirings: Vec::new(),
+            dma_channel_wirings: Vec::new(),
             reset_signal: None,
             reset_pending: false,
         }
@@ -297,6 +318,17 @@ impl<C: Cpu> Machine<C> {
     #[must_use]
     pub fn with_dma_wirings(mut self, wirings: Vec<DmaWiring>) -> Self {
         self.dma_wirings = wirings;
+        self
+    }
+
+    /// Override a requester's controller for a selected system DMA channel.
+    /// IBM Personal Computer AT Technical Reference, System Board, Direct Memory
+    /// Access: byte and word channels belong to distinct controllers (§7.7).
+    /// Routes match both requester and system channel; other requests keep the
+    /// controller and channel from the primary wiring.
+    #[must_use]
+    pub fn with_dma_channel_wirings(mut self, wirings: Vec<DmaChannelWiring>) -> Self {
+        self.dma_channel_wirings = wirings;
         self
     }
 
@@ -704,6 +736,15 @@ impl<C: Cpu> Machine<C> {
             let Some(request) = request else {
                 continue;
             };
+            let (controller, channel) = self
+                .dma_channel_wirings
+                .iter()
+                .find(|route| {
+                    route.requester == wiring.requester && route.system_channel == request.channel
+                })
+                .map_or((wiring.controller, request.channel), |route| {
+                    (route.controller, route.local_channel)
+                });
             transferred = true;
             let mut mem = CpuDmaMemory {
                 cpu: &mut self.cpu,
@@ -715,8 +756,8 @@ impl<C: Cpu> Machine<C> {
                 DmaOp::ToMemory(data) => {
                     let transfer = self
                         .bus
-                        .device_mut(wiring.controller)
-                        .map(|ctrl| ctrl.dma_service_write(request.channel, &mut mem, &data))
+                        .device_mut(controller)
+                        .map(|ctrl| ctrl.dma_service_write(channel, &mut mem, &data))
                         .unwrap_or_default();
                     for (addr, value) in mem.mmio_writes {
                         self.bus.mmio_write(u64::from(addr), 1, u64::from(value))?;
@@ -730,8 +771,8 @@ impl<C: Cpu> Machine<C> {
                     let mut buf = vec![0u8; len];
                     let transfer = self
                         .bus
-                        .device_mut(wiring.controller)
-                        .map(|ctrl| ctrl.dma_service_read(request.channel, &mut mem, &mut buf))
+                        .device_mut(controller)
+                        .map(|ctrl| ctrl.dma_service_read(channel, &mut mem, &mut buf))
                         .unwrap_or_default();
                     buf.truncate(transfer.transferred);
                     for (offset, addr) in mem.mmio_reads.into_inner() {
@@ -1937,6 +1978,103 @@ mod tests {
             requester: 0,
             controller: 1,
         }])
+    }
+
+    #[test]
+    fn channel_routes_translate_only_the_selected_requester_and_system_channel() {
+        use std::{cell::RefCell, rc::Rc};
+        struct ControllerProbe {
+            bank: u8,
+            calls: Rc<RefCell<Vec<(u8, u8)>>>,
+        }
+        impl Device for ControllerProbe {
+            fn name(&self) -> &'static str {
+                "dma-controller-probe"
+            }
+            fn port_read(&mut self, _: u16, _: u8) -> Result<u32, DeviceError> {
+                Ok(0)
+            }
+            fn port_write(&mut self, _: u16, _: u8, _: u32) -> Result<(), DeviceError> {
+                Ok(())
+            }
+            fn mmio_read(&mut self, _: u64, _: u8) -> Result<u64, DeviceError> {
+                Ok(0)
+            }
+            fn mmio_write(&mut self, _: u64, _: u8, _: u64) -> Result<(), DeviceError> {
+                Ok(())
+            }
+            fn tick(&mut self, _: VClock) {}
+            fn irq_pending(&self) -> bool {
+                false
+            }
+            fn reset(&mut self) {}
+            fn save(&self) -> Vec<u8> {
+                Vec::new()
+            }
+            fn restore(&mut self, _: &[u8]) -> Result<(), DeviceError> {
+                Ok(())
+            }
+            fn dma_service_read(
+                &mut self,
+                channel: u8,
+                _: &mut dyn DmaMemory,
+                bytes: &mut [u8],
+            ) -> device::DmaTransfer {
+                self.calls.borrow_mut().push((self.bank, channel));
+                bytes.fill(0x55);
+                device::DmaTransfer {
+                    transferred: bytes.len(),
+                    terminal_count: true,
+                }
+            }
+        }
+        for (requester, channel, expected) in [(0, 5, (1, 1)), (0, 2, (0, 2)), (1, 5, (0, 5))] {
+            let calls = Rc::new(RefCell::new(Vec::new()));
+            let mut devices: Vec<Box<dyn Device>> = (0..2)
+                .map(|i| {
+                    Box::new(FromMemoryRequester {
+                        pending: (i == requester).then_some(DmaRequest {
+                            channel,
+                            op: DmaOp::FromMemory { len: 2 },
+                        }),
+                        received: None,
+                    }) as Box<dyn Device>
+                })
+                .collect();
+            for bank in 0..2 {
+                devices.push(Box::new(ControllerProbe {
+                    bank,
+                    calls: calls.clone(),
+                }));
+            }
+            let bus = Bus::new(
+                devices,
+                DecodeMap {
+                    ports: Vec::new(),
+                    mmio: Vec::new(),
+                },
+            );
+            let mut machine =
+                Machine::new(MemCpu::new(16), bus, Box::new(NoIc), Vec::new(), Some(1))
+                    .with_dma_wirings(vec![
+                        DmaWiring {
+                            requester: 0,
+                            controller: 2,
+                        },
+                        DmaWiring {
+                            requester: 1,
+                            controller: 2,
+                        },
+                    ])
+                    .with_dma_channel_wirings(vec![DmaChannelWiring {
+                        requester: 0,
+                        system_channel: 5,
+                        controller: 3,
+                        local_channel: 1,
+                    }]);
+            machine.service_dma().unwrap();
+            assert_eq!(*calls.borrow(), [expected]);
+        }
     }
 
     /// Read the outcome the requester captured after a serviced transfer.

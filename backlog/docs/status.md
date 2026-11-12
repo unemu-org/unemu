@@ -84,11 +84,13 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   fatally failed output reports once and leaves
   emulation running silently. Transient cpal notifications keep playback active;
   recoverable source errors never stop the window. Tests stay device-free; physical playback is
-  unmeasured. Optional SB16 DSP 4.05 now supports 8-bit mono/stereo DMA output
+  unmeasured. Optional SB16 DSP 4.05 now supports 8-bit and 16-bit mono/stereo DMA output
   (single-cycle and auto-init), exact programmable rates, direct DAC, pause/resume,
-  byte IRQ acknowledgement and hardware snapshots. The `sb16` machine-file card
-  defaults to base 220h, IRQ5 and DMA1; no preset adds it. Mixer, 16-bit audio,
-  recording and OPL3 remain unimplemented. See
+  independent byte/word IRQ acknowledgement and backward-compatible hardware snapshots. The `sb16` machine-file card
+  defaults to base 220h, IRQ5, DMA1 and word DMA5; no preset adds it. CT1745
+  registers and SB Pro aliases read back with documented reset values; master
+  and voice volumes attenuate PCM. Other mixer controls are stored only.
+  Recording and OPL3 remain unimplemented. See
   [audio design](design/audio.md).
 
 - **2026-11-12 — 8042 keyboard command transmission:** writing a keyboard
