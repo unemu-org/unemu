@@ -9,6 +9,7 @@ members = [
     "crates/machine",
     "crates/devices",
     "crates/video",
+    "crates/audio",
     "crates/assembly",
     "crates/testkit",
     "crates/cli",
@@ -54,6 +55,7 @@ machine-file = { path = "crates/machine-file", version = "0.1.0" }
 media = { path = "crates/media", version = "0.1.0" }
 devices = { path = "crates/devices", version = "0.1.0" }
 video = { path = "crates/video", version = "0.1.0" }
+audio = { path = "crates/audio", version = "0.1.0" }
 testkit = { path = "crates/testkit", version = "0.1.0" }
 
 # Optimize dependencies (the CPU core and its decoder) even in dev/test builds,

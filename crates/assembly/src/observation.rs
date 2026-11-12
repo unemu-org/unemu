@@ -8,8 +8,12 @@
 //! and PC16550D datasheet,
 //! Transmitter Holding Register, define the two producer contracts.
 
-use std::{cell::RefCell, collections::HashMap};
+use std::{
+    cell::{Ref, RefCell},
+    collections::HashMap,
+};
 
+use audio::{AudioBlock, AudioError, AudioSink, AudioSource, CaptureAudioSink, Mixer};
 use bus::Bus;
 use cpu::Cpu;
 use device::{ByteCapture, ByteOverflow, ByteStreamKind, Device};
@@ -17,7 +21,11 @@ use video::{
     render_graphics, render_planar_text, render_text_mode, CaptureFrameSink, Frame, FrameSink,
 };
 
-use crate::{AssembledMachine, ConfigError, DeviceId, FrameSinkKind, OutputConfig};
+use crate::{AssembledMachine, AudioSinkKind, ConfigError, DeviceId, FrameSinkKind, OutputConfig};
+
+#[cfg(test)]
+#[path = "observation_audio_tests.rs"]
+mod audio_tests;
 
 /// An owned display at a completed machine service boundary.
 ///
@@ -35,6 +43,20 @@ pub struct DisplayCapture {
 }
 
 impl AssembledMachine {
+    /// Attach a signal at the current PIT clock, including elapsed halted time.
+    /// Future device assembly supplies shared signal history through this seam.
+    pub fn add_audio_source(&mut self, source: Box<dyn AudioSource>) {
+        self.observation
+            .add_audio_source(self.machine.clock(), source);
+    }
+
+    /// Settle lazy devices and deliver PCM through this completed service boundary.
+    /// Direct callers of `machine.run_bounded` use this alongside display capture.
+    pub fn capture_audio(&mut self) -> Result<(), AudioError> {
+        let until = self.machine.clock();
+        self.observation.capture_audio(&mut self.machine, until)
+    }
+
     /// Capture a selected card with this machine's execution counters.
     /// Call after a completed service boundary, including an error stop.
     /// This presents the frame to subscribers and replaces the configured sink's
@@ -92,8 +114,8 @@ pub struct ObservationRequest {
 /// size or schedule capture boundaries.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ObservationPolicy {
-    /// Initial presentation subscribers installed by [`Observation::bind`] for
-    /// bound display routes; Headless by default. This does not add routes.
+    /// Initial display and audio subscribers installed by [`Observation::bind`].
+    /// Defaults to Headless video and None audio. This does not add routes.
     pub output: OutputConfig,
     /// Access diagnostics for every device and the open bus, independent of routes.
     /// Defaults to Off, including when semantic output capture is requested.
@@ -142,7 +164,7 @@ pub enum ObservationError {
     },
 }
 
-/// Assembly-owned routes, bounded byte collectors and per-display subscribers.
+/// Assembly-owned routes, byte collectors, display subscribers and audio mixer.
 ///
 /// Each display has an optional last-frame capture sink and external boxed
 /// `FrameSink` subscribers, delivered in that order and then subscription order.
@@ -157,6 +179,31 @@ pub struct Observation {
     routes: Vec<ObservationRoute>,
     streams: HashMap<(DeviceId, ByteStreamKind), ByteCapture>,
     displays: HashMap<DeviceId, DisplaySubscribers>,
+    audio: RefCell<AudioObservation>,
+}
+
+#[derive(Default)]
+struct AudioObservation {
+    mixer: Option<Mixer>,
+    capture: Option<CaptureAudioSink>,
+    sinks: Vec<Box<dyn AudioSink>>,
+}
+
+impl AudioSink for AudioObservation {
+    fn present(&mut self, block: AudioBlock<'_>) {
+        if let Some(capture) = &mut self.capture {
+            capture.present(block);
+        }
+        for sink in &mut self.sinks {
+            if sink.enabled() {
+                sink.present(block);
+            }
+        }
+    }
+
+    fn enabled(&self) -> bool {
+        self.capture.is_some() || self.sinks.iter().any(|sink| sink.enabled())
+    }
 }
 
 #[derive(Default)]
@@ -223,10 +270,17 @@ impl Observation {
         Ok(observation)
     }
 
-    /// Select presentation for all bound text routes, including inline hosts
-    /// that use [`Self::bind`]. Reconfiguration clears configured last frames
-    /// and preserves external subscribers; it does not add observation routes.
+    /// Select display and audio output, including inline hosts using [`Self::bind`].
+    /// Reconfiguration clears configured captures and preserves external subscribers
+    /// and audio phase; it does not add routes. Flush audio to the desired epoch
+    /// boundary before calling this method.
     pub fn configure_output(&mut self, output: OutputConfig) {
+        self.audio.get_mut().capture = match output.audio_sink {
+            AudioSinkKind::None => None,
+            AudioSinkKind::Capture => Some(CaptureAudioSink::with_frame_limit(
+                output.audio_capture_frame_limit,
+            )),
+        };
         for route in &self.routes {
             if route.output == OutputKind::TextScanout {
                 let subscribers = self.displays.entry(route.device).or_default();
@@ -236,6 +290,49 @@ impl Observation {
                 };
             }
         }
+    }
+
+    /// Attach source history with an explicit PIT origin. The mixer is allocated
+    /// only for the first producer; configuring capture alone never creates it.
+    pub fn add_audio_source(&mut self, origin: device::VClock, source: Box<dyn AudioSource>) {
+        self.audio
+            .get_mut()
+            .mixer
+            .get_or_insert_with(|| Mixer::new(origin))
+            .add_source(origin, source);
+    }
+
+    /// Subscribe to mixed PCM at explicit observation boundaries. No device or
+    /// display route is added. The same nonblocking contract as video applies.
+    pub fn subscribe_audio(&mut self, sink: Box<dyn AudioSink>) {
+        self.audio.get_mut().sinks.push(sink);
+    }
+
+    /// Settle device history, then render through an already completed PIT boundary.
+    /// With no producer this is a no-op and does not manufacture silence.
+    pub fn capture_audio<C: Cpu>(
+        &self,
+        machine: &mut ::machine::Machine<C>,
+        until: device::VClock,
+    ) -> Result<(), AudioError> {
+        if until > machine.clock() {
+            return Err(AudioError::FutureTime);
+        }
+        let mut state = self.audio.borrow_mut();
+        if let Some(mut mixer) = state.mixer.take() {
+            machine.bus_mut().settle();
+            let result = mixer.render_until(until, &mut *state);
+            state.mixer = Some(mixer);
+            result?;
+        }
+        Ok(())
+    }
+
+    /// Borrow the configured capture epoch without cloning retained PCM.
+    /// None means capture is disabled; a producer-free machine has an empty capture.
+    #[must_use]
+    pub fn captured_audio(&self) -> Option<Ref<'_, CaptureAudioSink>> {
+        Ref::filter_map(self.audio.borrow(), |state| state.capture.as_ref()).ok()
     }
 
     /// Subscribe a host presenter to a bound display, without lending it the
@@ -399,6 +496,7 @@ mod tests {
         let policy = ObservationPolicy {
             output: OutputConfig {
                 frame_sink: FrameSinkKind::Capture,
+                ..Default::default()
             },
             routes: vec![request(DeviceId::Vga, OutputKind::TextScanout, 0)],
             ..Default::default()
@@ -656,6 +754,7 @@ mod tests {
             &ObservationPolicy {
                 output: OutputConfig {
                     frame_sink: FrameSinkKind::Capture,
+                    ..Default::default()
                 },
                 routes: vec![request(DeviceId::Vga, OutputKind::TextScanout, 0)],
                 ..Default::default()
@@ -711,6 +810,7 @@ mod tests {
             .unwrap();
             observation.configure_output(OutputConfig {
                 frame_sink: FrameSinkKind::Capture,
+                ..Default::default()
             });
             for id in [1, 2] {
                 observation
@@ -789,6 +889,7 @@ mod tests {
             &ObservationPolicy {
                 output: OutputConfig {
                     frame_sink: FrameSinkKind::Capture,
+                    ..Default::default()
                 },
                 routes: vec![request(DeviceId::Vga, OutputKind::TextScanout, 0)],
                 ..Default::default()
@@ -843,7 +944,10 @@ mod tests {
             config.board = crate::BoardModel::Bare;
             config.devices.reverse();
             let policy = ObservationPolicy {
-                output: OutputConfig { frame_sink: kind },
+                output: OutputConfig {
+                    frame_sink: kind,
+                    ..Default::default()
+                },
                 routes: vec![
                     request(DeviceId::Mda, OutputKind::TextScanout, 0),
                     request(DeviceId::Vga, OutputKind::TextScanout, 0),

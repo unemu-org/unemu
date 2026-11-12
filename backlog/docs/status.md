@@ -5,6 +5,15 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-12 — Audio seam:** the `audio` crate provides exact PIT-to-48-kHz
+  mapping, interval box filtering of edge histories, timestamped native-rate integration,
+  saturating stereo mixing and bounded headless PCM capture with streaming hashes. Run-scoped
+  `AudioSinkKind` defaults to no output; source-free machines create no mixer.
+  Sources release history even with output disabled and retire after their tails.
+  Assembly settles devices before audio observation, including halted time.
+  Sound-producing devices and host playback remain unimplemented. See
+  [audio design](design/audio.md).
+
 - **2026-11-11 — Absent physical memory on firmware boards:** assembly covers
   the AT's fixed 24-bit extent (16 MiB) around configured RAM, ROM,
   MMIO and existing zero-filled adapter gaps. Remaining holes read FFh

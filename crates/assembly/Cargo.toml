@@ -21,6 +21,7 @@ bus.workspace = true
 device.workspace = true
 devices.workspace = true
 video.workspace = true
+audio.workspace = true
 # The one shared 8259 interrupt controller: a live master/slave pair presented
 # both as two bus device faces and as the machine's single controller seam.
 chipset.workspace = true
@@ -31,4 +32,5 @@ test-support = ["media/test-support"]
 reference-scheduler = ["machine/reference-scheduler"]
 
 [dev-dependencies]
+testkit.workspace = true
 media = { path = "../media", version = "0.1.0", features = ["test-support"] }

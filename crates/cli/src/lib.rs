@@ -535,9 +535,11 @@ fn classify_test386_stop(rip: u64, result: Result<RunOutcome, RunError>) -> Stop
         Err(error @ RunError::Persistence(_)) => StopReason::PersistenceFailed {
             detail: error.to_string(),
         },
-        Err(error @ RunError::ConsoleUnavailable { .. }) => StopReason::ObservationFailed {
-            detail: error.to_string(),
-        },
+        Err(error @ (RunError::ConsoleUnavailable { .. } | RunError::Audio(_))) => {
+            StopReason::ObservationFailed {
+                detail: error.to_string(),
+            }
+        }
         Err(error @ RunError::InsufficientCommandBudget { .. }) => StopReason::PolicyFailed {
             detail: error.to_string(),
         },
@@ -1173,9 +1175,11 @@ fn classify_bios_stop(
         Err(error @ RunError::Persistence(_)) => StopReason::PersistenceFailed {
             detail: error.to_string(),
         },
-        Err(error @ RunError::ConsoleUnavailable { .. }) => StopReason::ObservationFailed {
-            detail: error.to_string(),
-        },
+        Err(error @ (RunError::ConsoleUnavailable { .. } | RunError::Audio(_))) => {
+            StopReason::ObservationFailed {
+                detail: error.to_string(),
+            }
+        }
         Err(error @ RunError::InsufficientCommandBudget { .. }) => StopReason::PolicyFailed {
             detail: error.to_string(),
         },
@@ -1709,6 +1713,7 @@ mod tests {
             Observation::bind(&display_policy(), &device_index, &mut devices).unwrap();
         observation.configure_output(assembly::OutputConfig {
             frame_sink: assembly::FrameSinkKind::Capture,
+            ..Default::default()
         });
         let cpu =
             X86JitCpu::new_real16_bare(0x10000, 0, 0, cpu::x86jit_backend::RealSegments::flat(0))
@@ -1742,6 +1747,7 @@ mod tests {
             .observation
             .configure_output(assembly::OutputConfig {
                 frame_sink: assembly::FrameSinkKind::Headless,
+                ..Default::default()
             });
         assert_eq!(assembled.observation.subscriber_count(DeviceId::Vga), 0);
         assert_eq!(assembled.observation.captured_frame(DeviceId::Vga), None);

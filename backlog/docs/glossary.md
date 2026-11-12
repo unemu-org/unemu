@@ -30,6 +30,16 @@ Domain and project terminology. One term per entry. Keep definitions short — l
 - **SingleStepTests / ProcessorTests** — silicon-derived per-instruction test
   corpus used as the real-mode CPU oracle.
 
+## Audio
+
+- **PCM frame** — one pair of signed i16 left/right samples at 48 kHz; four
+  little-endian bytes in captures. See [audio design](design/audio.md).
+- **Zero-order hold** — resampling by keeping each native sample constant until
+  its next virtual-time boundary; deterministic but without anti-alias filtering.
+
+- **PCM clock area** — the exact signed sum of sample level times PIT-clock
+  duration; source areas are summed before one division to output PCM.
+
 ## Backlog.md
 
 - **task-N** — a Backlog.md task id (`task-1`, …; prefix set by `task_prefix`).

@@ -1,0 +1,13 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+[package]
+name = "audio"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+description = "Deterministic virtual-time PCM mixing and headless audio capture."
+
+[dependencies]
+device.workspace = true
+thiserror.workspace = true

@@ -1165,7 +1165,7 @@ fail for configuration reasons.
 
 ### Observation and presentation policy
 
-`ObservationPolicy.output: OutputConfig { frame_sink: FrameSinkKind }` selects
+`ObservationPolicy.output: OutputConfig { frame_sink: FrameSinkKind, audio_sink: AudioSinkKind }` selects
 initial presentation wiring for every requested text route. It is run-scoped
 observation setup, outside the hardware-only `MachineConfig` and machine-file
 lowering. The default `Headless` installs no subscriber and keeps capture and
@@ -1176,6 +1176,14 @@ Selecting Capture without any requested display does not add observation routes.
 `Observation::bind` applies this selection for assembly and inline hosts alike.
 Hosts can later call public `Observation::configure_output(OutputConfig)`;
 reconfiguration clears configured last frames and preserves external subscribers.
+
+`audio_sink` defaults to `None`; `Capture` hashes/counts the mixed PCM stream.
+`audio_capture_frame_limit` defaults to zero and bounds optional retained PCM,
+borrowed through `Observation::captured_audio()`. It adds no device or mixer until a source is
+attached. Assembly renders at service boundaries using `Machine::clock()`,
+including halted PIT time. Audio has no machine-file field and does not change
+hardware identity. See [audio.md](audio.md) for the exact output format, rational
+clock mapping, source contract and capture lifecycle.
 
 A host presenter attaches with `Observation::subscribe(DeviceId, Box<dyn FrameSink>)`.
 The route must already be bound. Subscribers receive the exact owned frame

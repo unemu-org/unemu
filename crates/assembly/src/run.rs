@@ -35,6 +35,9 @@ pub enum RunError {
     /// Host persistence failed at a completed service boundary.
     #[error(transparent)]
     Persistence(#[from] crate::PersistenceError),
+    /// Audio observation failed at a completed service boundary.
+    #[error(transparent)]
+    Audio(#[from] audio::AudioError),
     /// Hardware execution failed.
     #[error(transparent)]
     Machine(#[from] MachineError),
@@ -200,7 +203,9 @@ pub fn run_with_persistence(
     machine.set_idle_limit(policy.idle_limit);
 
     match &policy.stop {
-        StopCondition::Natural => run_past_reset_requests(machine, policy.retired_cap, persistence),
+        StopCondition::Natural => {
+            run_past_reset_requests(machine, observation, policy.retired_cap, persistence)
+        }
         StopCondition::PromptThen {
             console,
             needle,
@@ -239,7 +244,12 @@ pub fn run_with_persistence(
                 for stim in after_prompt {
                     inject_scancodes(machine, stim.keyboard_index, &stim.scancodes);
                 }
-                return run_past_reset_requests(machine, Some(now + *then_budget), persistence);
+                return run_past_reset_requests(
+                    machine,
+                    observation,
+                    Some(now + *then_budget),
+                    persistence,
+                );
             }
             Ok(outcome)
         }
@@ -250,11 +260,12 @@ pub fn run_with_persistence(
 // Reset is a CPU boundary, not a new media session.
 fn run_past_reset_requests(
     machine: &mut Machine<X86JitCpu>,
+    observation: &Observation,
     cap: Option<u64>,
     persistence: &[crate::PersistenceHandle],
 ) -> Result<RunOutcome, RunError> {
     loop {
-        let outcome = run_boundary(machine, cap, persistence)?;
+        let outcome = run_boundary(machine, observation, cap, persistence)?;
         if outcome != RunOutcome::ResetRequested {
             return Ok(outcome);
         }
@@ -308,7 +319,7 @@ fn poll_to_prompt_with_persistence(
     loop {
         let target = machine.virtual_time().saturating_add(poll_step);
         let cap = retired_cap.map_or(target, |hard| target.min(hard));
-        let outcome = run_past_reset_requests(machine, Some(cap), persistence)?;
+        let outcome = run_past_reset_requests(machine, observation, Some(cap), persistence)?;
         let found = console_contains(machine, observation, console, needle)?;
         let hit_cap = retired_cap.is_some_and(|hard| cap >= hard);
         if outcome == RunOutcome::Halted || found || hit_cap {
@@ -326,19 +337,23 @@ fn check_persistence(handles: &[crate::PersistenceHandle]) -> Result<(), crate::
 
 fn run_boundary(
     machine: &mut Machine<X86JitCpu>,
+    observation: &Observation,
     cap: Option<u64>,
     handles: &[crate::PersistenceHandle],
 ) -> Result<RunOutcome, RunError> {
     check_persistence(handles)?;
     let outcome = machine.run_bounded(cap);
-    check_persistence(handles)?;
-    if matches!(outcome, Ok(RunOutcome::ResetRequested)) {
+    let persistence = check_persistence(handles);
+    let outcome = outcome?;
+    persistence?;
+    observation.capture_audio(machine, machine.clock())?;
+    if outcome == RunOutcome::ResetRequested {
         for handle in handles {
             handle.before_cpu_reset()?;
         }
         machine.reset_cpu()?;
     }
-    outcome.map_err(Into::into)
+    Ok(outcome)
 }
 
 impl crate::AssembledMachine {

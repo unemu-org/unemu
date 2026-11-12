@@ -7,6 +7,18 @@ BIOS/FreeDOS monochrome output now comes from an independent MDA card, as
 specified in §The MDA card console below. Prompt polling, final captures and
 presentation now share the assembly-owned observation facade (migration step 5).
 
+## Audio observation
+
+The adjacent `audio` crate supplies virtual-time PCM sinks and integer mixing.
+`OutputConfig.audio_sink` defaults to `AudioSinkKind::None`; capture retains
+48 kHz stereo i16 little-endian PCM hashes/counts, with optional bounded frame
+retention. Assembly
+settles devices and renders after successful execution/persistence checks;
+direct machine callers use
+`AssembledMachine::capture_audio`. Source-free machines allocate no mixer and
+emit no audio. See [audio.md](audio.md) for exact PIT mapping, source history,
+resampling, capture lifecycle and the documented nominal-clock discrepancy.
+
 ## Window pacing
 
 Only the window event loop reads `std::time::Instant`. The machine scheduler,

@@ -81,7 +81,7 @@ pub use observation::{
     Observation, ObservationError, ObservationPolicy, ObservationRequest, ObservationRoute,
     OutputKind,
 };
-pub use output::{FrameSinkKind, OutputConfig};
+pub use output::{AudioSinkKind, FrameSinkKind, OutputConfig};
 pub use persistence::{PersistenceError, PersistenceHandle};
 pub use presets::{
     at_boot, at_fdc_write, at_keyboard, at_rtc, at_vga_text, bios, floppy_boot, test386,

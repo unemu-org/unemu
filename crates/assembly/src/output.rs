@@ -13,9 +13,23 @@ pub enum FrameSinkKind {
     Capture,
 }
 
+/// Initial receiver for the mixed PCM stream; no audio device is implied.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
+pub enum AudioSinkKind {
+    /// No capture or presentation; rendering skips all signal samples.
+    #[default]
+    None,
+    /// Retain deterministic PCM for headless assertions.
+    Capture,
+}
+
 /// Presentation wiring, independent of hardware and observation cadence (§9).
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
 pub struct OutputConfig {
     /// Initial sink for every text route selected by the observation policy.
     pub frame_sink: FrameSinkKind,
+    /// Initial receiver for audio, independent of display routes.
+    pub audio_sink: AudioSinkKind,
+    /// Maximum leading PCM frames retained by Capture; zero keeps only hash/count.
+    pub audio_capture_frame_limit: usize,
 }
