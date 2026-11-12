@@ -8,6 +8,11 @@ use std::{
     sync::atomic::{AtomicUsize, Ordering},
 };
 
+// Architectural exceptions enter the guest; task return remains a host refusal.
+const REFUSED_TASK_RETURN: &[u8] = &[
+    0xFA, 0xB8, 1, 0, 0x0F, 0x01, 0xF0, 0x68, 2, 0x40, 0x9D, 0xCF,
+];
+
 struct Files(PathBuf);
 impl Files {
     fn new(program: &[u8]) -> Self {
@@ -54,7 +59,7 @@ fn stderr(output: &Output) -> &str {
 #[test]
 fn machine_check_has_valid_invalid_and_usage_exit_codes() {
     // Executing this ROM would fail; check must assemble without executing it.
-    let files = Files::new(&[0x0F, 0x05]);
+    let files = Files::new(REFUSED_TASK_RETURN);
     let accepted = command(
         &["machine", "check"],
         &files.machine(),
@@ -156,7 +161,7 @@ fn run_prints_text_and_reports_budget_and_execution_failure() {
     assert_eq!(capped.status.code(), Some(0), "{capped:?}");
     assert!(stderr(&capped).ends_with("stopped: budget exhausted\n"));
     let mut rom = vec![0; 32768];
-    rom[0x7FF0..0x7FF2].copy_from_slice(&[0x0F, 0x05]);
+    rom[0x7FF0..0x7FF0 + REFUSED_TASK_RETURN.len()].copy_from_slice(REFUSED_TASK_RETURN);
     files.write("bios.bin", rom);
     let failed = command(
         &["run", "--machine"],
@@ -164,7 +169,9 @@ fn run_prints_text_and_reports_budget_and_execution_failure() {
         &["--allow-unlisted-firmware"],
     );
     assert_eq!(failed.status.code(), Some(1), "{failed:?}");
-    assert!(stderr(&failed).contains("stopped: unsupported instruction:"));
+    assert!(stderr(&failed).contains(
+        "stopped: unsupported instruction: unsupported cpu system operation LegacyTaskReturn"
+    ));
 }
 
 #[path = "support/fixtures.rs"]
@@ -218,7 +225,7 @@ fn journal_run(fail: bool) {
         out(&mut program, 0x3F5, value);
     }
     if fail {
-        program.extend([0x0F, 0x05]);
+        program.extend_from_slice(REFUSED_TASK_RETURN);
     } else {
         program.push(0xF4);
     }
@@ -242,7 +249,9 @@ fn journal_run(fail: bool) {
     );
     assert_eq!(run.status.code(), Some(i32::from(fail)), "{run:?}");
     if fail {
-        assert!(stderr(&run).contains("stopped: unsupported instruction:"));
+        assert!(stderr(&run).contains(
+            "stopped: unsupported instruction: unsupported cpu system operation LegacyTaskReturn"
+        ));
     }
     let verify = Command::new(env!("CARGO_BIN_EXE_unemupc98"))
         .args(["media", "verify", "--base"])

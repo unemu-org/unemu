@@ -86,15 +86,22 @@ fn legacy_post_runner_checks_the_catalogue_without_changing_the_bare_rig() {
 }
 
 #[test]
-fn bios_unsupported_instruction_prints_stop_and_exits_nonzero() {
-    let rom = RomFile::program("unsupported", &[0x0F, 0x05]);
+fn bios_invalid_286_instruction_reaches_its_ivt_handler_and_halts() {
+    let rom = RomFile::program("invalid-opcode", &[0xEA, 0, 0x81, 0, 0xF0]);
+    let mut bytes = std::fs::read(&rom.0).unwrap();
+    bytes[0x100..0x10F].copy_from_slice(&[
+        0xFA, 0xC7, 0x06, 0x18, 0, 0, 0x82, 0xC7, 0x06, 0x1A, 0, 0, 0xF0, 0x0F, 0x05,
+    ]);
+    bytes[0x200..0x208].copy_from_slice(&[0xFA, 0xBA, 0xF8, 3, 0xB0, b'U', 0xEE, 0xF4]);
+    std::fs::write(&rom.0, bytes).unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_unemupc98"))
         .arg("--bios")
         .arg(&rom.0)
         .arg("--allow-unlisted-firmware")
         .output()
         .unwrap();
-    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    assert_eq!(output.stdout, b"U");
     let stderr = String::from_utf8(output.stderr).unwrap();
     let lines: Vec<_> = stderr.lines().collect();
     assert_eq!(lines.len(), 2, "{stderr}");
@@ -102,10 +109,7 @@ fn bios_unsupported_instruction_prints_stop_and_exits_nonzero() {
         lines[0].starts_with("warning: running unlisted firmware (sha256 "),
         "{stderr}"
     );
-    assert!(
-        lines[1].starts_with("stopped: unsupported instruction: "),
-        "{stderr}"
-    );
+    assert_eq!(lines[1], "stopped: halt");
 }
 
 #[test]

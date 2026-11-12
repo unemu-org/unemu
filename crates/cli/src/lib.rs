@@ -389,6 +389,11 @@ pub enum StopReason {
         /// x86 exception vector.
         vector: u8,
     },
+    /// A legacy-system fault with vector, error code and CS:IP.
+    Fault {
+        /// Backend fault description without guest bytes.
+        detail: String,
+    },
     /// Machine configuration or assembly failed before execution.
     ConfigFailed {
         /// Human-readable assembly error.
@@ -504,6 +509,16 @@ fn classify_test386_stop(rip: u64, result: Result<RunOutcome, RunError>) -> Stop
         Err(RunError::Machine(MachineError::Cpu(CpuError::Unmapped { addr }))) => {
             StopReason::Unmapped {
                 detail: format!("unmapped guest access at {addr:#x} (rip {rip:#x})"),
+            }
+        }
+        Err(RunError::Machine(MachineError::Cpu(error @ CpuError::Fault { .. }))) => {
+            StopReason::Fault {
+                detail: error.to_string(),
+            }
+        }
+        Err(RunError::Machine(MachineError::Cpu(error @ CpuError::UnsupportedSystem { .. }))) => {
+            StopReason::Unsupported {
+                detail: error.to_string(),
             }
         }
         Err(RunError::Machine(MachineError::Cpu(CpuError::Memory(msg)))) => StopReason::Unmapped {
@@ -1132,6 +1147,16 @@ fn classify_bios_stop(
         Err(RunError::Machine(MachineError::Cpu(CpuError::Unmapped { addr }))) => {
             StopReason::Unmapped {
                 detail: format!("unmapped guest access at {addr:#x}; {site}"),
+            }
+        }
+        Err(RunError::Machine(MachineError::Cpu(error @ CpuError::Fault { .. }))) => {
+            StopReason::Fault {
+                detail: error.to_string(),
+            }
+        }
+        Err(RunError::Machine(MachineError::Cpu(error @ CpuError::UnsupportedSystem { .. }))) => {
+            StopReason::Unsupported {
+                detail: error.to_string(),
             }
         }
         Err(RunError::Machine(MachineError::Cpu(CpuError::Memory(msg)))) => StopReason::Unmapped {

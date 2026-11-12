@@ -1,13 +1,18 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! FreeDOS floppy boot with XTIDE Universal BIOS and an ATA FAT16 hard disk.
 //!
+//! The I286 model takes the BIOS single-step CPU probe traps per the Intel
+//! 80286 Programmer's Reference Manual, §9.7.1 and Appendix B, and delivers
+//! real-mode exceptions through the IVT. This changes retired counts; only the
+//! CPU detection line, its segment-load warning and shifted rows may change.
+//!
 //! Port 61h bits follow the PIT since 2026-11-11; delay loops take real refresh time.
 //!
 //! ATA-2 §§6.1–6.2 defines the primary task file and word data register.
 //! See `backlog/docs/design/firmware-and-machine-classes.md` §9 and
 //! `backlog/docs/design/spec.md` §7.5 for the keyboard input path.
 //! Firmware and media are pinned by machines/at-ide.toml; the CPU revision is
-//! pinned at 44403dd85077c0db29ad09780003ebd3b193ecdd in Cargo.lock.
+//! pinned at 8bad85dfef033ecedadc51e3e0addf09a145430e in Cargo.lock.
 //! Prompt polls use the existing DOS session cadence.
 
 use assembly::{
@@ -41,7 +46,7 @@ fn screen_hash(text: &str) -> u64 {
 #[ignore = "slow: BIOS POST, XTIDE detection and an interactive FreeDOS DIR C: session"]
 fn freedos_lists_the_readonly_ide_marker() {
     assert!(
-        include_str!("../../../Cargo.lock").contains("#44403dd85077c0db29ad09780003ebd3b193ecdd")
+        include_str!("../../../Cargo.lock").contains("#8bad85dfef033ecedadc51e3e0addf09a145430e")
     );
     for path in [
         "kiselev-bios/bios-xi8088-atreset.bin",
@@ -108,10 +113,11 @@ fn freedos_lists_the_readonly_ide_marker() {
     );
     let prompt_retired = assembled.machine.cpu().retired();
     let prompt_hash = screen_hash(&console(&assembled));
-    assert_eq!(
-        session::logical_hash(&console(&assembled)),
-        0x26cb04d76a1ee3c7
-    );
+    let Frame::Text(prompt_frame) = assembled.capture_text(DeviceId::Mda).unwrap().frame else {
+        panic!("expected MDA text frame");
+    };
+    eprintln!("OBS_IDE prompt_cursor={:?}", prompt_frame.cursor());
+    let prompt_logical_hash = session::logical_hash(&console(&assembled));
     // Shift-semicolon produces a colon in the BIOS's set-1 keyboard table.
     let script = [
         0x20, 0xa0, 0x17, 0x97, 0x13, 0x93, 0x39, 0xb9, 0x2e, 0xae, 0x2a, 0x27, 0xa7, 0xaa, 0x1c,
@@ -132,15 +138,24 @@ fn freedos_lists_the_readonly_ide_marker() {
         assembled.machine.run_bounded(Some(cap)).unwrap();
     }
     let console = console(&assembled);
+    let Frame::Text(final_frame) = assembled.capture_text(DeviceId::Mda).unwrap().frame else {
+        panic!("expected MDA text frame");
+    };
+    eprintln!(
+        "OBS_IDE final_cursor={:?}, final_logical_hash={:016x}",
+        final_frame.cursor(),
+        session::logical_hash(&console)
+    );
     eprintln!("DIR result: {result:?}\n{console}");
     eprintln!("OBS prompt_retired={prompt_retired} prompt_hash={prompt_hash:016x} final_retired={} final_virtual={} screen_hash={:016x}", assembled.machine.cpu().retired(), assembled.machine.virtual_time(), screen_hash(&console));
     assert!(console.contains("Volume in drive C is UNEMUHDD"));
     assert!(console
         .lines()
         .any(|line| line.split_whitespace().take(3).eq(["MARKER", "TXT", "29"])));
-    assert_eq!(prompt_retired, 15_777_577);
+    assert_eq!(prompt_logical_hash, 0x26cb04d76a1ee3c7);
+    assert_eq!(prompt_retired, 15_775_579);
     assert_eq!(prompt_hash, 0x49bbec2d36c0bbf0);
-    assert_eq!(assembled.machine.cpu().retired(), 19_748_107);
+    assert_eq!(assembled.machine.cpu().retired(), 19_746_109);
     assert_eq!(assembled.machine.virtual_time(), 21_000_000);
     assert_eq!(screen_hash(&console), 0xfb811e1f40836da7);
     assert_eq!(session::logical_hash(&console), 0xbf790c95b531f8e8);

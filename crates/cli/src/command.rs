@@ -551,6 +551,7 @@ fn bios_stop(stop: &crate::StopReason) -> (String, bool) {
         Unsupported { detail } => (format!("unsupported instruction: {detail}"), true),
         Unmapped { detail } => (format!("execution error: {detail}"), true),
         Exception { vector } => (format!("exception {vector}"), true),
+        Fault { detail } => (format!("cpu fault: {detail}"), true),
         ConfigFailed { detail } => (format!("configuration error: {detail}"), true),
         PolicyFailed { detail } => (format!("run policy error: {detail}"), true),
         ObservationFailed { detail } => (format!("observation error: {detail}"), true),
@@ -704,6 +705,9 @@ mod tests {
                 detail: "address".into(),
             },
             Exception { vector: 13 },
+            Fault {
+                detail: "vector 13 at 0008:1000".into(),
+            },
             ConfigFailed {
                 detail: "config".into(),
             },

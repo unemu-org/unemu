@@ -191,17 +191,29 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   synthetic fast tests keep their presets.
 - **Machines are declarative.** A `MachineConfig` (the `assembly` crate) is built by one
   `assemble()` and run under a `RunPolicy`; presets replace the old hand-written runners.
-- **CPU pin:** `44403dd85077c0db29ad09780003ebd3b193ecdd` (x86jit `main`).
-  Rechecked by the supervisor on 2026-11-11: the fast suite, slow set and
-  user-ROM lane pass with unchanged golden values. The IDE and Landmark
-  golden pin assertions name this revision.
-  Historical validation at `a92b676` on 2026-11-11: 1,666 fast tests,
-  611 release device tests and all existing slow golden expectations passed.
-  READ 2026-11-11: `44403dd` adds `xj-srh.11 (x86jit)` A20 gating, which
-  applies only in `LegacySystem` profiles. This re-pin retains
-  `Application(Real16)`; board A20 integration (`upc-o0j.5`) waits for the
-  I286 profile switch (`upc-6le.29`).
-- **CPU:** pinned x86jit `CpuMode::Real16` interpreter with exact step bounds,
+- **CPU pin:** `8bad85dfef033ecedadc51e3e0addf09a145430e` (x86jit `main`).
+  READ: real-mode I286/I386 machine execution now accepts the Application Real16
+  instruction set, including AAD/AAM, BCD/SALC, x87 with MSW.EM/TS checks and
+  resumable REP INS/OUTS. I286 rejects 386-only 66h/67h forms with #UD.
+  IDE and Landmark pin assertions name this revision. Open-firmware goldens
+  use the measured I286/IVT baseline below; proprietary runs remain unmeasured.
+  Historical validation by the supervisor at `44403dd` on 2026-11-11: the fast
+  suite, slow set and user-ROM lane passed with unchanged golden values on
+  Application Real16. At `a92b676`, 1,666 fast tests, 611 release device tests
+  and all existing slow golden expectations passed.
+  The `44403dd` update added `xj-srh.11 (x86jit)` A20 gating for LegacySystem.
+  Board A20 integration (`upc-o0j.5`) remains separate from this profile switch;
+  the retained board latch is not yet connected to the CPU gate.
+- **CPU:** `ibm-5170` with model `80286` selects the I286 machine profile, with
+  real-mode entry, LMSW protected entry and same-CPL 16-bit protected execution.
+  `set_cpu_model(I80286)` fixes the VM model and defaults to InGuest delivery:
+  real exceptions use the IVT; CPL-0 protected interrupts, exceptions, IRQs,
+  TF and IRET use the IDT. LDT selectors and descriptor-query instructions are
+  available; tasks, privilege transitions and V86 remain unsupported. Explicit
+  outward faults retain typed vector/error-code/CS:IP diagnostics. A fault
+  during #DF delivery requests the same CPU-only reset as the 8042, retaining
+  RAM, CMOS, the A20 latch, devices and accounting. The standalone Real16 constructor
+  and bare assembly rigs retain Application Real16. Both profiles have exact step bounds,
   per-iteration REP time, STI/SS-load inhibition and interrupt-readiness stops.
   Real16 INS/OUTS support byte/word elements, REP, OUTS segment overrides,
   and IRQ delivery between elements; answered INS stores retain their value on retry.
@@ -264,8 +276,9 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   persistence failure. Window reset diagnostics count only performed resets.
   RAM, CMOS shutdown byte 0Fh, devices, the 8042
   output-port/A20 latch, retirement counters and virtual time survive. Reset
-  does not end a journal session. The 1 MiB Real16 core does not model the
-  hidden reset CS base, MSW, IDTR or A20 address masking; see
+  does not end a journal session. I286 reset restores MSW/IDTR and real caches,
+  including hidden CS base FF0000h; the system ROM has a 24-bit reset mirror.
+  A20 address masking remains unsupported; see
   [machine-config.md, Board model](design/machine-config.md#board-model).
 
 ### User-supplied system ROM catalogue
@@ -286,9 +299,12 @@ both 1984 chip layouts) support identity checks, TOML/YAML inheritance,
 per-part pins and chip diagnostics (including partial pair swaps and exchanged
 halves). Child source overrides drop stale service declarations; known images
 use catalogue services. No proprietary bytes are distributed.
-No default firmware changes. These images have not run in a golden; POST,
-boot and guest compatibility remain unqualified. The ignored user-ROM test
-checks identity and diagnostics without execution; see `vendor/user-roms/README.md`.
+No default firmware changes. POST, boot and guest compatibility remain
+unqualified. `user_rom_ibm_5170_1985_post` measures the 1985-06-10 BIOS on
+I286 with MDA, a read-only FreeDOS A: floppy, derived volatile CMOS and a pinned
+RTC. It prints a safe stop, port-80h checkpoints, retirement count and DOS-prompt
+presence without screen text. TODO-MEASURE expectations await local capture;
+identity tests remain available. See `vendor/user-roms/README.md`.
 
 ## Port 61h timing re-baseline (2026-11-11)
 
@@ -368,6 +384,52 @@ the BIOS acceptance range). Actual firmware window measurements above belong
 to the supervisor; complete proprietary POST/boot compatibility remains
 unqualified. See [scheduler calibration](design/scheduler.md#device-migration-inventory).
 
+## I286 CPU-probe and exception-delivery re-baseline (2026-11-12)
+
+**MEASURED against main `5931d32`, CPU `44403dd`:** the new CPU pin `8bad85d`
+and `set_cpu_model(I80286)` take the BIOS single-step CPU probe traps per the
+Intel 80286 Programmer's Reference Manual §9.7.1 and Appendix B, and deliver
+real-mode exceptions through the IVT. This is the approved reason for the
+following golden changes. The synthetic boot sector reaches the normal
+20,000,000-step cap through the BIOS INT 13 handler rather than stopping at
+the segment-limit exception. Exception delivery itself retires no instruction.
+
+Full raw MDA and colour dumps, POST and COM1 were compared without normalizing
+away text differences. The sole visible change is:
+
+- `Main Processor:             Harris-designed 80C88 @ 4.77 MHz` ->
+  `Main Processor:             Intel 8088 '78 @ 4.77 MHz`;
+- the added line `WARNING: This CPU does not disable interrupts after loading segment registers!`;
+- following rows move down one; the final blank row leaves the 25-row display.
+
+This remains visible only in the floppy-boot endpoint. DOS and IDE scroll it
+off the screen, leaving their final screens byte-identical. The historical
+no-controller BIOS POST rig is Bare/Application Real16 and stays unchanged.
+All guest-rendered clock lines, boot messages, directory entries, prompts and
+file contents match main. T is virtual instruction-equivalent time, R is
+retired instructions, and hashes are FNV-1a over 25 canonical MDA rows.
+
+| Endpoint | Main R -> I286 R | Main T -> I286 T | Main MDA hash -> I286 hash | Main cursor -> I286 cursor |
+| --- | --- | --- | --- | --- |
+| Bare BIOS POST | 19,015,022 -> 19,015,022 | 20,000,000 -> 20,000,000 | `809829e50bc06fbd` -> same | (0,18) -> same |
+| BIOS floppy boot | 18,993,723 -> 19,008,614 | 20,000,000 -> 20,000,000 | `0744aaf03bcc6424` -> `938e07668f3b0b34` | (0,17) -> (0,18) |
+| FreeDOS date prompt | 8,802,475 -> 8,800,477 | 10,000,000 -> 10,000,000 | `526086b917baa58e` -> same | (31,24) -> same |
+| DOS DIR | 11,774,928 -> 11,772,930 | 13,000,000 -> 13,000,000 | `bb926924f4d7efa1` -> same | (4,24) -> same |
+| DOS write/DIR | 11,768,597 -> 11,766,599 | 13,000,000 -> 13,000,000 | `153da3e002975834` -> same | (4,24) -> same |
+| IDE initial A: prompt | 15,777,577 -> 15,775,579 | 17,000,000 -> 17,000,000 | `49bbec2d36c0bbf0` -> same | (4,24) -> same |
+| IDE DIR C: and final prompt | 19,748,107 -> 19,746,109 | 21,000,000 -> 21,000,000 | `fb811e1f40836da7` -> same | (4,24) -> same |
+
+The floppy logical hash changes `69d62210a69ffe15` -> `92c581d95567fb07`;
+all other logical hashes are unchanged. Both scheduler engines use the same
+new floppy screen baseline. Colour text stays blank with visible cursor (0,0).
+MDA cursors remain visible. POST remains
+`01 02 03 04 05 06 07 08 09 10 12 20 21 22 24 25 30 31 40 43 00`;
+IDE retains `41 42` between `40` and `43`. COM1 remains empty except for
+floppy boot's `42` (`B`). No firmware or media fixture is changed.
+
+IBM POST and the Landmark I286 stop keep TODO-MEASURE constants; no proprietary
+execution result is inferred from these open-firmware runs.
+
 ## In flight
 
 - **2026-11-11 — A20 / System Control Port A device side:** Bare rigs can
@@ -401,9 +463,11 @@ unqualified. See [scheduler calibration](design/scheduler.md#device-migration-in
 - **2026-11-11, diagnostic-ROM validation:** user-supplied
   `landmark-rom-post-at-1.2.0` is Listed for `ibm-5170`, with pinned assembled
   and U27/U47 hashes. The supervisor observed the first twelve diagnostics pass,
-  including DMA page registers, before unsupported SIDT at F000:A3CE; the
-  protected-mode status is empty. An ignored user-ROM prefix golden checks
-  these verdicts through the CLI loader/session path. Adapter gaps are now
+  including DMA page registers, before unsupported SIDT at F000:A3CE on the
+  former Real16 profile. I286 implements SIDT and protected entry; the ignored
+  user-ROM measurement prints the new stop and verdict classifications through
+  the CLI loader/session path. New expectations await supervisor measurement;
+  no protected-mode pass is claimed. Adapter gaps are now
   mapped by the board up to the system BIOS base, fixing the Listed entry's
   C0001h fault independently of its absent scan window. Retired count, MDA hash
   and assumed status coordinates await a new local capture/verification. No ROM bytes or screen transcript is stored.
@@ -451,12 +515,14 @@ wall-time comparison and historical CPU sample shares.
 
 - **An empty 80287 socket is modelled on the I/O bus only.** Its assigned ports
   read FFh and ignore writes, with IRQ13 inactive. The pinned CPU core still
-  defaults to a present FPU in Real16: FNINIT/FNSTCW writes 037Fh even on this
-  board. The pinned core now provides `Vcpu::set_fpu_model(FpuModel::None)`; machine
-  selection remains pending, and this re-pin retains the present-FPU default.
+  selects a present FPU in I286, with FPU emulation disabled. The legacy lifter
+  now supports x87 and resumable string port I/O, resolving the former
+  FNINIT/REP INSB refusal. FNINIT/FNSTCW stores 037Fh with the present model.
+  The core provides
+  `Vcpu::set_fpu_model(FpuModel::None)`; empty-socket CPU selection is deferred.
 
 - Multi-byte scalar accesses crossing a RAM/MMIO boundary in either direction
-  end the run with `Exit::UnmappedMemory` in pinned x86jit
+  ended the run with `Exit::UnmappedMemory` in historical x86jit
   `a92b676e081ce862dcb48c82645b3d3a8aa2364f` (READ). Its
   [`Memory::region_at`](https://github.com/unemu-org/x86jit/blob/a92b676e081ce862dcb48c82645b3d3a8aa2364f/x86jit-core/src/memory.rs#L2512-L2534)
   requires the whole transfer inside one region before read/write paths check

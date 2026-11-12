@@ -8,7 +8,7 @@ spike; no guest behaviour or scheduler change is proposed.
 
 ## String instruction accounting
 
-The current CPU pin is `a92b676e081ce862dcb48c82645b3d3a8aa2364f`.
+The current CPU pin is `8bad85dfef033ecedadc51e3e0addf09a145430e`.
 The profiling tables below retain the revisions on which they were measured;
 they are historical measurements, not new measurements of this pin.
 
@@ -399,7 +399,7 @@ LTO, debug assertions off) and the project Nix devShell:
 Host: macOS 27.0.1 (26A434), arm64 (`aarch64-apple-darwin`), rustc 1.99.1
 (`58cf8f9c3`, 2026-10-13), LLVM 23.1.1. READ: the machine still selects the
 original `CpuMode::Real16` application profile; this re-pin does not opt into
-the new I286/I386 `LegacySystem` execution or select an absent FPU.
+the I286/I386 machine execution profile or select an absent FPU.
 No adapter source changes were required by the compiler. The new
 `Exit::UnsupportedSystemContext` is already reported as
 `CpuError::UnexpectedExit` by the adapter's fallback (`crates/cpu/src/x86jit_backend.rs`,

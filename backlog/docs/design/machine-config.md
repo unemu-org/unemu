@@ -302,7 +302,26 @@ operation: both device snapshots must come from the same boundary because they
 contain the same pending reset line. Device reset clears that shared pending
 event; CPU warm reset consumes it without resetting devices.
 
-### Board model
+### CPU model selection
+
+`[cpu] model = "80286"` (`CpuChip::I80286`) selects the x86jit machine
+interpreter with `Vm::set_cpu_model(CpuModel::I80286)`. The model is fixed for
+the VM lifetime; its default `ExceptionDelivery::InGuest` delivers real-mode
+exceptions through the IVT and protected events through CPL-0 IDT interrupt
+and trap gates. It starts in real mode and can enter same-CPL 16-bit protected
+mode through LMSW. Unsupported system contexts retain typed CS:IP diagnostics;
+explicit outward exceptions retain vector/error-code metadata.
+This applies to `ibm-5170`. `BoardModel::Bare` assembly rigs and standalone
+`new_real16_bare` CPU tests retain the fixed application Real16 profile.
+No 386 model, paging, task gates or privilege transitions are selected.
+
+The VM default remains `FpuModel::Present` via `Vm::set_fpu_model`; the backend
+disables FPU emulation. The core's
+legacy real-mode path supports x87 with MSW.EM/TS checks and resumable string
+port I/O. FNINIT/FNSTCW stores 037Fh with the present model in both I286 and
+bare Real16. The empty motherboard I/O socket does not select CPU FPU policy.
+
+## Board model
 
 `MachineConfig.board` is `BoardModel::Ibm5170` or `BoardModel::Bare`. The BIOS
 preset selects `Ibm5170` when floppy media is attached. Its no-media variant
@@ -357,10 +376,9 @@ unmapped. An empty socket does not drive read data or IRQ13: reads on every
 assigned port return the emulator's open-bus byte FFh, and writes of any
 value are discarded. FFh is the emulator's bus convention, not an IBM-defined
 absent-coprocessor status value. This describes only the I/O bus socket.
-The pinned CPU core currently executes x87 in Real16 without an FPU-presence
-gate: FNINIT/FNSTCW writes 037Fh to a flat scratch word, despite the empty
-board socket. An absent-FPU model is requested from the CPU core project;
-this repository does not intercept or block x87 instructions.
+The CPU selects a present FPU despite the empty board I/O socket.
+FNINIT/FNSTCW stores 037Fh in both the I286 machine profile and bare Real16.
+The core has an absent-FPU API; machine selection of that policy is deferred.
 
 **Keyboard Controller**, **Commands** and **Output Port** (pp. 1-53–1-55)
 connect output bit 0 to active-low System Reset. D1h lowering that bit latches
@@ -394,13 +412,23 @@ A reset neither seals a journal generation nor ends a media session.
 Intel **80286 and 80287 Programmer's Reference Manual**, §5.3 **System
 Initialization**, Table 5-3 **Processor State after RESET**, specifies
 CS=F000h, IP=FFF0h, FLAGS=0002h and DS=ES=SS=0. The physical processor uses
-hidden CS base FF0000h until the first far transfer; the current Real16 reset
-model fetches at FFFF0h. The board's high alias is mapped independently of that
-reset limitation. General registers are unspecified by the table and are
-preserved. MSW=FFF0h and IDTR base=0, limit=03FFh (§10.4 Initialization) are
-not modelled by the Real16 core. The backend abandons pending execution,
+hidden CS base FF0000h until the first far transfer. The I286 model fetches
+at FFFFF0h through the board's single FE0000h–FFFFFFh alias of E0000h–FFFFFh.
+The alias is mapped independently of reset; bare Application Real16 retains
+its low FFFF0h fetch. General registers are unspecified by the table and are
+preserved. MSW=FFF0h and IDTR base=0, limit=03FFh (§10.4 Initialization) and
+real segment caches are restored, clearing protected mode. The backend abandons pending execution,
 IRQ/completion latches and interrupt shadows before installing these registers,
 and initializes its emulated x87 environment with FNINIT.
+
+CPU `Shutdown` also returns `ResetRequested` at a settled boundary and uses
+this same reset image on explicit reset or the next run, before checking the
+run cap. It adds no instruction or clock tick. The existing persistence reset
+boundary and frontend reset counter/trace therefore see both reset sources.
+The board does not reset devices or change the 8042 output latch.
+READ: IBM Personal Computer AT Technical Reference, System Board, Logic
+Diagrams, processor shutdown/reset decoding. The functional reset is modelled;
+physical reset-pulse timing is not.
 
 The IBM reference's **Keyboard Controller Output Port** resets only the CPU:
 RAM, CMOS (including shutdown byte 0Fh), peripheral state, retired-instruction

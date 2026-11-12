@@ -163,8 +163,8 @@ pub enum RunOutcome {
     Halted,
     /// The total virtual-time cap was reached before a natural stop.
     RetiredCapReached,
-    /// A wired board signal requested a CPU reset. The pending event is consumed;
-    /// the next run resets the CPU unless [`Machine::reset_cpu`] already did so.
+    /// A board signal or processor shutdown requested a CPU reset.
+    /// The next run resets the CPU unless [`Machine::reset_cpu`] already did so.
     ResetRequested,
 }
 
@@ -307,7 +307,8 @@ impl<C: Cpu> Machine<C> {
     /// Restart only the CPU, retaining RAM, devices and virtual time.
     ///
     /// IBM Personal Computer AT Technical Reference, System Board, Keyboard
-    /// Controller Output Port: bit 0 drives the CPU reset line. Media sessions
+    /// Controller Output Port: bit 0 drives the CPU reset line. Shutdown uses
+    /// the same CPU-only reset (System Board, Logic Diagrams). Media sessions
     /// survive (backlog/docs/design/machine-config.md §Board model).
     pub fn reset_cpu(&mut self) -> Result<(), MachineError> {
         self.cpu.reset()?;
@@ -608,6 +609,13 @@ impl<C: Cpu> Machine<C> {
                     completing = true;
                 }),
                 CpuStop::Exception { vector } => return Err(MachineError::Exception { vector }),
+                // IBM Personal Computer AT Technical Reference, System Board,
+                // Logic Diagrams: shutdown decoding resets the processor alone.
+                CpuStop::Shutdown => {
+                    self.reset_pending = true;
+                    self.settle(false)?;
+                    return Ok(RunOutcome::ResetRequested);
+                }
                 CpuStop::Halt => {
                     self.halted = true;
                     Ok(())
@@ -752,6 +760,111 @@ mod tests {
     use bus::{DecodeMap, PortRange};
     use device::{Device, DeviceError, DmaRequest, TraceEvent};
     use testkit::MockCpu;
+
+    #[test]
+    fn i286_shutdown_resets_to_high_rom_preserving_ram_cmos_a20_and_time() {
+        use cpu::{x86jit_backend::RealSegments, CpuReg, X86JitCpu};
+        use devices::{A20Line, CmosRtc, I8042};
+        use std::{cell::Cell, rc::Rc};
+
+        let mut cpu =
+            X86JitCpu::new_i286_bare(0x100_0000, 0, 0x1000, RealSegments::flat(0)).unwrap();
+        cpu.map_ram(0, 0x10000).unwrap();
+        cpu.write_mem(
+            0x1000,
+            &[
+                0xFA, 0xC6, 0x06, 0, 5, 0x77, 0xB0, 0x0F, 0xE6, 0x70, 0xB0, 0x0A, 0xE6, 0x71, 0xB0,
+                0xD1, 0xE6, 0x64, 0xB0, 1, 0xE6, 0x60, 0x0F, 0x01, 0x16, 0,
+                0x21, // LGDT [2100h]
+                0x0F, 0x01, 0x1E, 6, 0x21, // LIDT [2106h], no valid gates
+                0xB8, 1, 0, 0x0F, 0x01, 0xF0, 0xEA, 0, 0x12, 8, 0,
+            ],
+        )
+        .unwrap();
+        cpu.write_mem(0x2008, &[0xFF, 0xFF, 0, 0, 0, 0x9A, 0, 0])
+            .unwrap();
+        cpu.write_mem(0x2010, &[0xFF, 0xFF, 0, 0, 0, 0x92, 0, 0])
+            .unwrap();
+        cpu.write_mem(0x2100, &[23, 0, 0, 0x20, 0, 0, 0, 0, 0, 0x30, 0, 0])
+            .unwrap();
+        cpu.write_mem(
+            0x1200,
+            &[
+                0xB8, 0x10, 0, 0x8E, 0xD0, 0x8E, 0xD8, 0xB8, 0x18, 0, 0x8E,
+                0xD8, // #GP; invalid #GP and #DF gates
+            ],
+        )
+        .unwrap();
+        cpu.map_rom(0xFFFFF0, &[0xEA, 0, 0x15, 0, 0]).unwrap();
+        cpu.write_mem(
+            0x1500,
+            &[
+                0x0F, 0x01, 0xE3, // SMSW BX: reset left protected mode
+                0xB0, 0x0F, 0xE6, 0x70, 0xE4, 0x71, 0xA2, 1, 5, 0xF4,
+            ],
+        )
+        .unwrap();
+        let reset = Rc::new(Cell::new(false));
+        let a20 = A20Line::default();
+        let keyboard = I8042::new().with_board_lines(reset.clone(), a20.clone());
+        let bus = Bus::new(
+            vec![Box::new(keyboard), Box::new(CmosRtc::new())],
+            DecodeMap {
+                ports: vec![
+                    PortRange {
+                        ports: 0x60..=0x64,
+                        device: 0,
+                        width: bus::PortWidth::Byte,
+                    },
+                    PortRange {
+                        ports: 0x70..=0x71,
+                        device: 1,
+                        width: bus::PortWidth::Byte,
+                    },
+                ],
+                mmio: Vec::new(),
+            },
+        );
+        let mut machine = Machine::new(cpu, bus, Box::new(NoIc), Vec::new(), None)
+            .with_reset_signal(reset.clone());
+        assert_eq!(
+            machine.run_bounded(Some(100)).unwrap(),
+            RunOutcome::ResetRequested
+        );
+        assert_eq!(machine.cpu().code_segment(), 8);
+        assert_eq!(machine.cpu().reg(CpuReg::Rip), 0x120A);
+        assert!(
+            !reset.get(),
+            "shutdown must not pulse the keyboard reset latch"
+        );
+        assert!(!a20.enabled());
+        let changes = a20.change_count();
+        let time = machine.virtual_time();
+        let clock = machine.clock();
+        let retired = machine.cpu().retired();
+        assert_eq!(
+            retired, time,
+            "fault delivery and shutdown retire no instruction"
+        );
+        assert_eq!(
+            machine.run_bounded(Some(time)).unwrap(),
+            RunOutcome::RetiredCapReached
+        );
+        assert_eq!(machine.cpu().code_segment(), 0xF000);
+        assert_eq!(machine.cpu().reg(CpuReg::Rip), 0xFFF0);
+        assert_eq!(machine.cpu().retired(), retired);
+        assert_eq!(machine.virtual_time(), time);
+        assert_eq!(machine.clock(), clock);
+        assert_eq!(machine.bus_mut().port_read(0x71, 1).unwrap(), 0x0A);
+        assert_eq!(machine.run_bounded(Some(100)).unwrap(), RunOutcome::Halted);
+        assert_eq!(machine.cpu().reg(CpuReg::Rbx), 0xFFF0);
+        let mut markers = [0; 2];
+        machine.cpu().read_mem(0x500, &mut markers).unwrap();
+        assert_eq!(markers, [0x77, 0x0A]);
+        assert!(!a20.enabled());
+        assert_eq!(a20.change_count(), changes);
+        assert_eq!(machine.bus_mut().port_read(0x71, 1).unwrap(), 0x0A);
+    }
 
     /// A minimal capture device: records port writes, so the loop can be tested
     /// without a concrete `devices` chip.

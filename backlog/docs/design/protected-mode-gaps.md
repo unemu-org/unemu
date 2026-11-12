@@ -24,9 +24,49 @@ Evidence vocabulary throughout:
 - **ASSUMED:** a proposed scope choice or inference requiring later acceptance
   tests. In particular, no complete DOS extender was run.
 
-The current CPU pin is `a92b676e081ce862dcb48c82645b3d3a8aa2364f`.
-The core now offers opt-in I286/I386 `LegacySystem` execution; this machine
-continues to select the original `CpuMode::Real16` application profile.
+The current CPU pin is `8bad85dfef033ecedadc51e3e0addf09a145430e`.
+`Vm::set_cpu_model(CpuModel::I80286)` selects the machine profile on
+`ibm-5170`, fixes the model for the VM lifetime and defaults to
+`ExceptionDelivery::InGuest`. The separate I80386 core model is not selected
+by this board. The former `LegacySystem` profile/context names and
+`set_legacy_cpu_model` API are deprecated compatibility interfaces.
+READ: the pin provides 286 real entry, descriptor caches, LGDT/LIDT, LMSW,
+16-bit protected code/stack and same-CPL far transfers. At CPL 0, interrupt
+and trap gates deliver INT n, INT 3, INTO, BOUND, exceptions, IRQs and
+single-step through the IDT; IRET returns at CPL 0. Fault escalation reaches
+#DF and `Exit::Shutdown` if delivery of #DF faults. LLDT/SLDT, LDT selectors,
+LAR/LSL/VERR/VERW, ARPL and LTR/STR are available, with atomic descriptor
+busy/accessed-bit writes; descriptor tables must reside in RAM. Task gates,
+privilege transitions, V86 and paging remain outside this machine's scope.
+Real-mode exceptions (#DE, #UD, CS fetch/word limit faults, BOUND and INTO)
+are delivered through the IVT. Real-mode TF delivers vector 1 after the
+successor of a TF-setting POPF/IRET; only SS loads inhibit one instruction.
+See Intel 80286 Programmer's Reference Manual §9.7.1 and Appendix B MOV/POP.
+Explicit outward exceptions retain `CpuError::Fault` with vector, optional
+error code and CS:IP; unsupported machine contexts retain typed diagnostics.
+Bare assembly rigs and the separate `new_real16_bare` constructor retain the
+application profile.
+Reset abandons pending execution, then restores the 286 register/cache image,
+including MSW FFF0h, IVT limit 03FFh and reset-origin CS base FF0000h.
+The assembler maps the single FE0000h–FFFFFFh board ROM alias.
+CPU shutdown uses the same `ResetRequested` boundary and CPU-only reset
+protocol as the 8042: RAM, CMOS shutdown byte, A20 latch, device state and
+instruction/time counters survive. READ: IBM Personal Computer AT Technical
+Reference, System Board, Logic Diagrams (shutdown/reset decoding) and Keyboard
+Controller Output Port (processor reset). Pulse timing is not modelled.
+FPU selection remains explicitly `Present`, with emulation disabled. READ:
+the current core supports the Application Real16 instruction set in legacy
+real mode, including AAD/AAM immediate bases, BCD/SALC, x87 under MSW.EM/TS
+checks and resumable REP INS/OUTS. This resolves the AAD, FNINIT and REP INSB
+refusals measured during initial integration at `a92b676`. FNINIT/FNSTCW
+stores 037Fh with the present model. Empty-socket CPU policy is separate work.
+The deliberate generation differences remain: I286 rejects 386-only 66h/67h
+forms with #UD, and legacy follows the architectural operand/stack rules.
+Synthetic tests exercise real-mode compatibility, protected entry, outward
+#GP, FFFFh word-limit delivery through the IVT, shutdown after invalid #DF
+delivery, and reset/resume through retained RAM and CMOS.
+User-ROM measurements await the supervisor; these changes do not establish
+IBM BIOS POST completion or a Landmark protected-mode pass.
 The investigation below retains its original revision and conclusions.
 INS/OUTS are now implemented, including Real16 REP port handshakes and
 per-element accounting. This resolves the opcode/handshake portion of the
@@ -265,15 +305,15 @@ Board", System Memory Map (p. 1-8), assigns the high expansion-memory range
 and ROM aliases; it does not establish the absent-memory electrical value.
 The board's FE0000h–FFFFFFh alias is a read-only copy of the resolved low
 E0000h–FFFFFh map, including ROM and zero-filled gaps; `map_at_high_alias` is
-its single owner. A reset-origin fetch at FFFFF0h would read that alias; the
-current core starts at FFFF0h. MMIO in
+its single owner. I286 reset-origin fetch at FFFFF0h reads that alias;
+bare Application Real16 retains its low FFFF0h fetch. MMIO in
 the low alias source is rejected because a static copy cannot mirror a device.
 Bare rigs retain their prior VM/map.
 Configured extended memory remains RAM, with empty bus above its end;
 reduced conventional memory also leaves empty-bus holes below 1 MiB.
 See [MemoryConfig](machine-config.md#memoryconfig--a-semantic-memory-map).
 This changes physical-map coverage only, without adding PE entry or A20 gating.
-The current Real16 core still ignores A20: a would-be 1 MiB wrap at 100000h no longer
+The board's A20 latch is not yet wired to the legacy CPU gate: a would-be 1 MiB wrap at 100000h no longer
 stops on Unmapped, but reads empty bus (silently FFh without extended RAM) or
 installed extended RAM until CPU A20 gating is wired.
 

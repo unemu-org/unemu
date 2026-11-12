@@ -11,7 +11,7 @@
 //! The old `AtChipset` / `SerialChipset` chipsets are exactly these presets in a
 //! different guise: where the chipset trait returned a device set + decode map,
 //! a preset returns the pure-data config the assembler realises into the same
-//! parts. All presets construct step-bounded Real16 machines.
+//! parts. Board presets use the I286 machine profile; bare rigs retain step-bounded Real16.
 
 use crate::board::BoardModel;
 use crate::clock::ClockConfig;

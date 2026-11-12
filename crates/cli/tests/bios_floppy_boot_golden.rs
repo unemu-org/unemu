@@ -2,6 +2,11 @@
 //! BIOS floppy-boot golden: the real Kiselev Xi8088 ROM boots a disk over the
 //! µPD765 + 8237 (§3.1, §5, §7.7).
 //!
+//! The I286 model takes the BIOS single-step CPU probe traps per the Intel
+//! 80286 Programmer's Reference Manual, §9.7.1 and Appendix B, and delivers
+//! real-mode exceptions through the IVT. This changes retired counts; only the
+//! CPU detection line, its segment-load warning and shifted rows may change.
+//!
 //! Port 61h bits follow the PIT since 2026-11-11; delay loops take real refresh time.
 //!
 //! Assembles the full PC/AT machine as `bios_boot_golden` does but with a µPD765
@@ -35,7 +40,7 @@
 //! value is the COM1 marker, not the stop kind.
 //!
 //! The BIOS never programs the colour card, so its cursor stays at `(0, 0)`
-//! and visible. MDA card capture exposes the BIOS cursor at `(0, 17)`, visible;
+//! and visible. MDA card capture exposes the BIOS cursor at `(0, 18)`, visible;
 //! the earlier RAM probe hid it. These are the intended independent-card states.
 
 use cli::{bootable_floppy_image, run_bios_boot, FLOPPY_BOOT_MARKER};
@@ -53,12 +58,13 @@ fn bios_int19_reads_boot_sector_over_the_floppy() {
     assert_eq!(rom.len(), 32768, "Xi8088 BIOS is a 32 KiB image");
 
     let run = run_bios_boot(&rom, bootable_floppy_image());
+    assert_eq!(run.stop, cli::StopReason::BudgetExhausted);
     session::assert_golden(
         &run,
-        18_993_723,
+        19_008_614,
         20_000_000,
-        0x0744aaf03bcc6424,
-        0x69d62210a69ffe15,
+        0x938e07668f3b0b34,
+        0x92c581d95567fb07,
     );
 
     // The BIOS never programs the colour card, so it keeps its power-on cursor.
@@ -74,7 +80,7 @@ fn bios_int19_reads_boot_sector_over_the_floppy() {
         run.mda.cursor(),
         video::Cursor {
             col: 0,
-            row: 17,
+            row: 18,
             visible: true
         }
     );

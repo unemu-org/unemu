@@ -2,6 +2,11 @@
 //! DOS write golden: FreeDOS creates a file on the floppy through the keyboard
 //! (§3.1, §5, §7.7, §7.8) — the end-to-end proof of the floppy WRITE path.
 //!
+//! The I286 model takes the BIOS single-step CPU probe traps per the Intel
+//! 80286 Programmer's Reference Manual, §9.7.1 and Appendix B, and delivers
+//! real-mode exceptions through the IVT. This changes retired counts; only the
+//! CPU detection line, its segment-load warning and shifted rows may change.
+//!
 //! Port 61h bits follow the PIT since 2026-11-11; delay loops take real refresh time.
 //!
 //! Builds on the interactive DIR golden ([`dos_interactive_golden`]): the same
@@ -92,7 +97,7 @@ fn freedos_writes_a_file_from_the_keyboard() {
     );
     session::assert_golden(
         &run,
-        11_768_597,
+        11_766_599,
         13_000_000,
         0x153da3e002975834,
         0xa6601fff99236a61,

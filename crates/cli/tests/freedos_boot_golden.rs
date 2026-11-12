@@ -2,6 +2,11 @@
 //! FreeDOS boot golden: boot a real FreeDOS floppy image on the full machine
 //! (§3.1, §5, §9).
 //!
+//! The I286 model takes the BIOS single-step CPU probe traps per the Intel
+//! 80286 Programmer's Reference Manual, §9.7.1 and Appendix B, and delivers
+//! real-mode exceptions through the IVT. This changes retired counts; only the
+//! CPU detection line, its segment-load warning and shifted rows may change.
+//!
 //! Port 61h bits follow the PIT since 2026-11-11; delay loops take real refresh time.
 //!
 //! Assembles the PC/AT machine ([`cli::run_freedos_config`]) with the real Kiselev Xi8088
@@ -113,7 +118,7 @@ fn freedos_reaches_shell_prompt() {
     );
     session::assert_golden(
         &run,
-        8_802_475,
+        8_800_477,
         10_000_000,
         0x526086b917baa58e,
         0xaf201c7e8acb071d,

@@ -119,10 +119,11 @@ limits must use virtual time, never a host-clock timeout as the verdict.
 
 READ: manual p. 16 gives the order; pp. 17–36 describe the tests. Hardware
 and mode requirements below come from that reading unless marked ASSUMED.
-**Every entry in “Expected today” is ASSUMED, not a measured pass.** “Today”
-means the real-mode `ibm-5170` at x86jit pin
-`44403dd85077c0db29ad09780003ebd3b193ecdd`. Rows after test 13 are individual
-expectations if reached, not a claim that the current run reaches them.
+**Every entry in “Expected today” is ASSUMED, not a measured pass.** The table
+was formulated for Application Real16 at `44403dd`; the current `ibm-5170`
+selects the I286 machine profile at `8bad85dfef033ecedadc51e3e0addf09a145430e`.
+Rows after test 13 are individual expectations if reached, not a claim that
+the current run reaches them. No new user-ROM result is assumed.
 
 | # | Test (descriptive identifier) | Hardware | PM / >1 MiB | Expected today (ASSUMED) |
 |---|---|---|---|---|
@@ -149,16 +150,24 @@ expectations if reached, not a claim that the current run reaches them.
 | 31 | System BIOS | U17/U37 checksum | No | FAIL expected; manual says to ignore it |
 | 32 | CMOS configuration | Configuration display | No | Not applicable |
 
-MEASURED by the supervisor at the CPU pin above: screen lines 1–12 report
+Historical MEASURED by the supervisor on the Real16 application profile: screen lines 1–12 report
 Passed, in manual order: `cpu`, `rom_a`, `rom_b`, `pit_ch0`, `pit_ch1`,
 `pit_ch2`, `dma1`, `dma2`, `dma_page`, `kbc_parity`, `mem_16k`, `mem_refresh`.
 The page-register read-back risk did not occur; no device workaround is needed.
 Line 13 has an empty status when execution stops on unsupported SIDT at
 F000:A3CE (opcode prefix `0F 01`). The protected-mode test is not a pass.
 A budget of 30,000,000 scheduling steps reaches this stop without a disk.
-These observations supersede the assumptions for rows 1–13 in the table;
-rows 14–32 remain unexecuted expectations.
-READ: x86jit `8979fc9`, `x86jit-core/src/lift/mod.rs`, has no lifter arms for
+These observations describe the former Real16 profile; rows 14–32 remain
+unexecuted expectations. The board now runs the I286 machine profile at the current pin:
+SIDT, LGDT/LIDT, LMSW and same-CPL 16-bit protected execution are available.
+The former SIDT stop must be re-measured. CPL-0 IDT interrupt/trap gates,
+exception escalation through #DF/shutdown, IRET, LDT selectors and descriptor
+queries are now available; exceptions default to in-guest delivery. Shutdown
+requests a CPU-only board reset. Explicit outward faults retain vector,
+optional error code and CS:IP. Task gates and privilege transitions remain
+unsupported.
+No new diagnostic pass is assumed.
+Historical READ: x86jit `8979fc9`, `x86jit-core/src/lift/mod.rs`, has no lifter arms for
 SIDT or the protected-mode control instructions. Test 13 needs `xj-srh.15 (x86jit)` and more: the manual
 also requires exceptions and task switching, outside that bead's scope.
 
@@ -182,8 +191,15 @@ NVRAM. It follows `run --machine`: `machine_file::load_for_assembly`,
 no unlisted escape is used for the user ROM. This selects the preset hardware
 (640 KiB base RAM, MDA and VGA text, UART, wired FDC without a drive),
 volatile derived NVRAM, RTC start `2000-01-01T00:00:00`, and CPU revision
-`44403dd85077c0db29ad09780003ebd3b193ecdd`. It checks the unsupported-instruction
-exit, address, opcode, our twelve Passed verdicts and the empty thirteenth status.
+`8bad85dfef033ecedadc51e3e0addf09a145430e`, now selecting the I286 machine profile.
+The former Real16 golden checked the unsupported-instruction exit, address,
+opcode, twelve Passed verdicts and the empty thirteenth status, re-confirmed
+by the supervisor at `44403dd` as recorded below.
+The I286 measurement prints a safe stop summary, CS:IP, retired/completed
+counts, virtual time, MDA hash and verdict classifications. It does not read
+or print stop opcodes or screen text. Stop/count/hash constants remain
+TODO-MEASURE until the supervisor supplies a local capture; the former
+twelve-pass prefix remains historical evidence.
 Synthetic tests cover absolute paths (including escaped filenames), lane order,
 preset devices, RAM backing, clock and RTC/NVRAM settings through this loader.
 The preset retains RAM at A0000h–AFFFFh alongside the two text-card apertures;
@@ -242,11 +258,11 @@ READ (measured by the supervisor): the left box border is at zero-based column
 0, the test name starts at column 2, and the right border is at column 47.
 The status field is columns 35–46 on frame rows 1–13. Trim that field and
 classify `PASSED`, `FAILED` or `NOT PRESENT`; spaces denote an untested row.
-The retired count and text hash are pinned and asserted unconditionally. The catalogue
-entry remains Listed; the full protected-mode suite is not qualified.
-When `ibm-5170` switches to the I286 protected-mode core (`upc-6le.29`), the
-stop and counts will change: re-measure this golden, including its text hash,
-against the new CPU revision. Keep the test's `CPU_REV` pin check.
+The former Real16 golden asserted the retired count and text hash
+unconditionally. The catalogue entry remains Listed; the full protected-mode
+suite is not qualified. With `ibm-5170` now using I286, re-measure the stop,
+counts and text hash against the current CPU revision. The test retains its
+`CPU_REV` pin check and TODO-MEASURE constants until that capture is supplied.
 
 Pin ROM hashes, CMOS start, volatile NVRAM and the exact x86jit revision.
 The ROM's status tokens may be read to classify a result, but **never copy
@@ -366,3 +382,14 @@ above, not from the websites' descriptions.
   (`__DATE__` handling inspected in the spike).
 - WinWorld [IBM PC Diagnostics AT 2.x catalogue](https://winworldpc.com/product/ibm-pc-diagnostics/at-2x).
 - x86jit [`x86jit-core/src/lift/mod.rs` at 8979fc9](https://github.com/unemu-org/x86jit/blob/8979fc95cd81d73763d50d1d627b40ded3f8f284/x86jit-core/src/lift/mod.rs).
+
+## IBM 5170 POST measurement
+
+`user_rom_ibm_5170_1985_post` uses hash-discovered 1985-06-10 BIOS parts or
+an assembled image, replacing Kiselev on `preset:ibm-5170`. It selects MDA,
+a read-only `vendor/freedos/freedos.img` in A:, volatile derived NVRAM and RTC
+start `2000-01-01T00:00:00`. A 200,000,000-step budget bounds execution.
+The ignored lane skips absent user dumps and records stop kind, CS:IP and
+fault vector/error code, port-80h POST checkpoints, retired count and whether
+the MDA contains a DOS A: prompt. No screen text is emitted. TODO-MEASURE
+constants remain unset; completion and boot are not yet qualified.

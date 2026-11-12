@@ -19,9 +19,10 @@ Evidence labels:
 ## 1. Context
 
 At the initial survey there was one firmware machine (READ
-`crates/assembly/src/presets.rs`,
-`bios()`). It is an 80286 Real16 CPU with a 1 MiB memory mosaic and the
-following parts:
+`crates/assembly/src/presets.rs`, `bios()`). Current media-attached `ibm-5170`
+presets use an I286 machine-profile CPU with the 24-bit board memory map and
+the following parts; the historical no-controller `bios()` rig remains
+Bare/Application Real16:
 
 - a cascaded 8259 pair, an 8253, an 8042, an MC146818 with seeded CMOS, port
   61h, a POST latch at 80h and a COM1 16550;
@@ -30,6 +31,12 @@ following parts:
   DMA channel 2;
 - Sergey Kiselev's `8088_bios`, built for the Xi 8088 board, as a 32 KiB ROM at
   F8000h.
+
+MEASURED at CPU `e63cee1` and confirmed at `8bad85d`: the I286 TF probe returns AL=1, including a post-POP DS trap, so Kiselev labels it `Intel 8088 '78` and emits its segment-load warning. At the current pin, real-mode CPU
+exceptions also enter the IVT, allowing the synthetic floppy boot sector's
+CS-limit fault to reach the BIOS INT 13 handler. IBM user-ROM POST and the
+Landmark I286 stop remain TODO-MEASURE; CPL-0 event delivery does not qualify
+either firmware.
 
 Current memory-map policy: `ibm-5170` gets a 16 MiB VM for its fixed 24-bit
 decode, with validation of CPU width and mapping bounds. Configured RAM,
@@ -978,7 +985,7 @@ at 1F0h–1F7h and 3F6h on IRQ14. This works for four reasons:
 The original investigation identified two prerequisites:
 
 1. **x86jit string port I/O** (`INS`/`OUTS` with `REP`) in Real16 is now
-   available at the current pin `44403dd`, with machine integration tests.
+   available at the current pin `8bad85d`, with machine integration tests.
    The historical measurement at `96a49a9` found it missing; an XUB boot
    remains a separate qualification.
 2. **Port split at 3F6h.** The FDC's decode shrinks from 3F0h–3F7h to
@@ -1283,8 +1290,12 @@ The generic AT comes first.
     - *Implemented:* three IBM 5170 entries (1984-01-10, 1985-06-10,
       1985-11-15), alternative 1984 layouts, TOML/YAML parts with origins,
       assembled identity and swapped/wrong-chip diagnostics. All stay Listed;
-      defaults and golden execution are unchanged. Synthetic tests cover the
-      implementation; a separately gated ignored test checks user-supplied identity only.
+      defaults are unchanged. Synthetic tests cover the implementation; ignored
+      user-ROM tests check identity and measure 1985-06-10 POST execution on the
+      I286 machine-profile CPU. The POST test uses pinned RTC, volatile derived
+      NVRAM, MDA and a read-only FreeDOS A: floppy, and prints stop/checkpoints/
+      retired count/prompt presence without screen text. Expectations await the
+      supervisor; these BIOS entries remain Listed, not POST/boot-qualified.
 
 ## Sources
 

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! User-supplied Landmark AT real-mode-prefix golden.
+//! User-supplied Landmark AT I286 diagnostic measurement.
 //!
 //! Landmark Research International, ROM POST User's Manual v1.2, pp. 16–24:
 //! the first twelve tests precede the protected-mode test. IBM Personal
@@ -22,10 +22,16 @@ use std::{
 };
 
 const ENTRY_ID: &str = "landmark-rom-post-at-1.2.0";
-const CPU_REV: &str = "44403dd85077c0db29ad09780003ebd3b193ecdd";
+const CPU_REV: &str = "8bad85dfef033ecedadc51e3e0addf09a145430e";
 const STEP_BUDGET: u64 = 30_000_000;
-const GOLDEN_RETIRED: u64 = 15_785_137;
-const GOLDEN_TEXT_SHA256: &str = "373ae9a68d11ea20d8da2232d39a90cdbb1b6f573b9fb28ea04e3ab79d3b31d1";
+// Historical Application Real16 prefix after the PIT refresh calibration.
+const REAL16_GOLDEN_RETIRED: u64 = 15_785_137;
+const REAL16_GOLDEN_TEXT_SHA256: &str =
+    "373ae9a68d11ea20d8da2232d39a90cdbb1b6f573b9fb28ea04e3ab79d3b31d1";
+// TODO-MEASURE: supervisor supplies the new I286 stop, count and text hash.
+const GOLDEN_RETIRED: Option<u64> = None;
+const GOLDEN_TEXT_SHA256: Option<&str> = None;
+const GOLDEN_STOP: Option<(u16, u64)> = None;
 
 const ROW_IDS: [&str; 12] = [
     "cpu",
@@ -82,6 +88,17 @@ fn run_result_summary(result: &Result<RunOutcome, RunError>) -> String {
             CpuError::Unmapped { addr } => {
                 format!("Err(Machine(Cpu(Unmapped {{ addr: {addr:#x} }})))")
             }
+            CpuError::Fault {
+                vector,
+                error_code,
+                cs,
+                ip,
+            } => {
+                format!("Err(Machine(Cpu(Fault {{ vector: {vector}, error_code: {error_code:?}, cs: {cs:#x}, ip: {ip:#x} }})))")
+            }
+            CpuError::UnsupportedSystem { operation, cs, ip } => {
+                format!("Err(Machine(Cpu(UnsupportedSystem {{ operation: {operation}, cs: {cs:#x}, ip: {ip:#x} }})))")
+            }
             CpuError::Memory(_) => "Err(Machine(Cpu(Memory(<details omitted>))))".into(),
             CpuError::UnexpectedExit { .. } => {
                 "Err(Machine(Cpu(UnexpectedExit { <details omitted> })))".into()
@@ -95,22 +112,20 @@ fn run_result_summary(result: &Result<RunOutcome, RunError>) -> String {
     }
 }
 
-fn assert_prefix_stop(
+fn assert_synthetic_ud(
     assembled: &assembly::AssembledMachine,
     result: Result<RunOutcome, RunError>,
 ) {
     let cpu = assembled.machine.cpu();
-    // UnsupportedInstruction.addr is the offending RIP offset in Real16.
-    // Match the offset and code selector together to identify the instruction.
+    let mut frame = [0; 4];
+    cpu.read_mem(cpu.reg(CpuReg::Rsp), &mut frame).unwrap();
     assert!(
-        matches!(
-            result,
-            Err(RunError::Machine(MachineError::Cpu(
-                CpuError::UnsupportedInstruction { addr: 0xA3CE }
-            )))
-        ) && cpu.code_segment() == 0xF000,
-        "expected unsupported instruction at F000:A3CE; result={}; \
-         cs={:#x}; rip={:#x}; retired={}; completed_steps={}; virtual_time={}",
+        matches!(result, Ok(RunOutcome::Halted))
+            && cpu.code_segment() == 0xF000
+            && cpu.reg(CpuReg::Rip) == 0xA401
+            && frame == [0xCE, 0xA3, 0, 0xF0],
+        "expected invalid-opcode IVT frame F000:A3CE; result={}; \
+         cs={:#x}; rip={:#x}; return_frame={frame:02x?}; retired={}; completed_steps={}; virtual_time={}",
         run_result_summary(&result),
         cpu.code_segment(),
         cpu.reg(CpuReg::Rip),
@@ -128,13 +143,19 @@ fn synthetic_stop_machine(program: &[u8]) -> assembly::AssembledMachine {
     let image = temporary.path().join("synthetic.bin");
     std::fs::write(&image, rom).unwrap();
     let file = write_machine_file(temporary.path(), &ImageSource::File(image)).unwrap();
-    let loaded = machine_file::load_for_assembly(
+    let mut loaded = machine_file::load_for_assembly(
         file,
         AssemblyOptions {
             allow_unlisted_firmware: true,
         },
     )
     .unwrap();
+    loaded.config.images.push(assembly::LoadImage {
+        base: 6 * 4,
+        source: ImageSource::Inline(vec![0, 0xA4, 0, 0xF0]),
+        kind: assembly::ImageKind::RamLoad,
+        provides: Vec::new(),
+    });
     loaded.assemble(&mda_policy()).unwrap()
 }
 
@@ -204,6 +225,54 @@ fn write_machine_file(directory: &Path, source: &ImageSource) -> anyhow::Result<
     Ok(path)
 }
 
+fn write_post_machine_file(
+    directory: &Path,
+    source: &ImageSource,
+    floppy: &Path,
+) -> anyhow::Result<PathBuf> {
+    let file = write_machine_file(directory, source)?;
+    let floppy = quoted_path(floppy)?;
+    let mut text =
+        std::fs::read_to_string(&file)?.replace("provides=[]", "provides=['floppy','fixed-disk']");
+    writeln!(text, "\n[[card]]\nid='vga-text'\nremove=true\n[[card]]\nkind='mda'\n[[card]]\nkind='fdc-765'\n[[card.drives]]\nunit=0\ntype='1.44M'\nimage={floppy}\nwrite='readonly'")?;
+    std::fs::write(&file, text)?;
+    Ok(file)
+}
+
+#[test]
+fn ibm_post_measurement_uses_mda_readonly_floppy_and_volatile_cmos() {
+    let temporary = TempDir::new("ibm-post-synthetic");
+    let image = temporary.path().join("synthetic.bin");
+    let floppy = temporary.path().join("floppy.img");
+    std::fs::write(&image, vec![0xF4; 65536]).unwrap();
+    std::fs::write(&floppy, vec![0; 1_474_560]).unwrap();
+    let file =
+        write_post_machine_file(temporary.path(), &ImageSource::File(image), &floppy).unwrap();
+    let loaded = machine_file::load_for_assembly(
+        &file,
+        AssemblyOptions {
+            allow_unlisted_firmware: true,
+        },
+    )
+    .unwrap();
+    assert_eq!(loaded.config.board, BoardModel::Ibm5170);
+    assert_eq!(loaded.config.drives.len(), 1);
+    assert_eq!(loaded.config.drives[0].write, assembly::WriteMode::ReadOnly);
+    assert!(loaded.cards.iter().any(|(_, id)| *id == DeviceId::Mda));
+    assert!(!loaded.cards.iter().any(|(_, id)| *id == DeviceId::Vga));
+    let rtc = loaded
+        .config
+        .devices
+        .iter()
+        .find_map(|device| match &device.kind {
+            assembly::DeviceKind::Rtc(rtc) => Some(rtc),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(rtc.start, assembly::RtcStart::default());
+    assert_eq!(rtc.nvram, assembly::NvramSource::Derived);
+}
+
 fn expect_redacted<T, E: std::fmt::Display>(
     found: &FoundUserFirmware,
     result: Result<T, E>,
@@ -265,13 +334,8 @@ fn landmark_frontend_path_reads_board_adapter_gap() {
         synthetic_stop_machine(&[0xB8, 0, 0xC0, 0x8E, 0xD8, 0xA0, 1, 0, 0x0F, 0x01, 0x0F]);
     let result = assembled.run_session(&run_policy(16));
     assert!(
-        matches!(
-            result,
-            Err(RunError::Machine(MachineError::Cpu(
-                CpuError::UnsupportedInstruction { addr: 0xA3D6 }
-            )))
-        ),
-        "adapter read must reach the synthetic SIDT: {}",
+        matches!(result, Ok(RunOutcome::Halted)),
+        "{}",
         run_result_summary(&result)
     );
     assert_eq!(assembled.machine.cpu().reg(CpuReg::Rax) & 0xFF, 0);
@@ -346,27 +410,23 @@ fn landmark_machine_file_preserves_absolute_parts_and_preset_settings() {
 }
 
 #[test]
-fn landmark_stop_address_is_real_mode_offset() {
-    let mut assembled = synthetic_stop_machine(&[0x0F, 0x01, 0x0F]);
+fn landmark_invalid_opcode_delivers_real_mode_offset_through_ivt() {
+    let mut assembled = synthetic_stop_machine(&[0x0F, 0x05]);
     let result = assembled.run_session(&run_policy(8));
-    assert_prefix_stop(&assembled, result);
-    assert_eq!(assembled.machine.cpu().retired(), 1);
+    assert_synthetic_ud(&assembled, result);
+    assert_eq!(assembled.machine.cpu().retired(), 2);
 }
 
 #[test]
 fn landmark_unexpected_stop_reports_variant_location_and_counts() {
     for (program, expected_result, count) in [
-        (
-            &[0x90, 0x0F, 0x01, 0x0F][..],
-            "Err(Machine(Cpu(UnsupportedInstruction { addr: 0xa3cf })))",
-            2,
-        ),
+        (&[0x90, 0x0F, 0x05][..], "Ok(Halted)", 3),
         (&[0xEB, 0xFE][..], "Ok(RetiredCapReached)", 8),
     ] {
         let mut assembled = synthetic_stop_machine(program);
         let result = assembled.run_session(&run_policy(8));
         let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            assert_prefix_stop(&assembled, result);
+            assert_synthetic_ud(&assembled, result);
         }))
         .expect_err("unexpected stop must fail");
         let message = panic
@@ -462,10 +522,10 @@ fn landmark_status_cells_ignore_surrounding_text() {
 ///
 /// The refresh bit follows PIT channel 1 (IBM Personal Computer AT Technical
 /// Reference, System Timers) and the board runs at 8/13 steps per PIT clock, so
-/// the diagnostic's timed waits retire fewer instructions. The screen hash and
-/// stop are unchanged.
+/// the former Application Real16 prefix retires fewer instructions with the
+/// same text hash. I286's new stop and final screen still require measurement.
 #[test]
-#[ignore = "requires separately supplied proprietary firmware; real-mode prefix only"]
+#[ignore = "requires separately supplied proprietary firmware; I286 stop awaits measurement"]
 fn user_rom_landmark_at_real_mode_prefix() {
     let catalogue = BoardModel::Ibm5170.firmware_catalogue();
     let found = assembly::require_user_firmware!(ENTRY_ID, catalogue);
@@ -496,16 +556,18 @@ fn user_rom_landmark_at_real_mode_prefix() {
         temporary.path(),
         "assembling diagnostic",
     );
+    eprintln!("{ENTRY_ID}: real16_prefix_retired={REAL16_GOLDEN_RETIRED}, real16_prefix_text_sha256={REAL16_GOLDEN_TEXT_SHA256}");
     let result = assembled.run_session(&run_policy(STEP_BUDGET));
-    assert_prefix_stop(&assembled, result);
     let cpu = assembled.machine.cpu();
-    let mut opcode = [0; 3];
-    found.expect_redacted(cpu.read_mem(0xFA3CE, &mut opcode), "reading stop opcode");
-    // Boolean comparison keeps firmware bytes out of assertion diagnostics.
-    assert!(
-        opcode == [0x0F, 0x01, 0x0F],
-        "expected SIDT opcode prefix 0F 01"
-    );
+    eprintln!("{ENTRY_ID}: stop={}, cs={:04x}, ip={:04x}, retired={}, completed_steps={}, virtual_time={}",
+        run_result_summary(&result), cpu.code_segment(), cpu.reg(CpuReg::Rip),
+        cpu.retired(), cpu.completed_steps(), assembled.machine.virtual_time());
+    if let Some((cs, ip)) = GOLDEN_STOP {
+        assert_eq!(
+            (cpu.code_segment(), cpu.reg(CpuReg::Rip)),
+            (u64::from(cs), ip)
+        );
+    }
     let retired = cpu.retired();
     let capture = found.expect_redacted(assembled.capture_text(DeviceId::Mda), "capturing MDA");
     let Frame::Text(grid) = capture.frame else {
@@ -515,13 +577,93 @@ fn user_rom_landmark_at_real_mode_prefix() {
     let text_sha256 = assembly::test_support::text_plane_sha256(&video::Frame::Text(grid.clone()));
     eprintln!("{ENTRY_ID}: retired={retired}, text_sha256={text_sha256}");
     for (index, id) in ROW_IDS.iter().enumerate() {
-        assert_eq!(
-            row_verdict(&grid, index as u16 + 1),
-            Verdict::Passed,
-            "{id}"
-        );
+        eprintln!("{id}={:?}", row_verdict(&grid, index as u16 + 1));
     }
-    assert_eq!(row_verdict(&grid, 13), Verdict::Empty, "protected_mode");
-    assert_eq!(retired, GOLDEN_RETIRED, "retired count");
-    assert_eq!(text_sha256, GOLDEN_TEXT_SHA256, "MDA text plane hash");
+    eprintln!("protected_mode={:?}", row_verdict(&grid, 13));
+    if let Some(expected) = GOLDEN_RETIRED {
+        assert_eq!(retired, expected, "retired count");
+    }
+    if let Some(expected) = GOLDEN_TEXT_SHA256 {
+        assert_eq!(text_sha256, expected, "MDA text plane hash");
+    }
+}
+
+// TODO-MEASURE: stop, POST sequence, retired count and DOS prompt on I286.
+const IBM_GOLDEN_STOP: Option<(u16, u64)> = None;
+const IBM_GOLDEN_RETIRED: Option<u64> = None;
+const IBM_GOLDEN_POST: Option<&[u8]> = None;
+const IBM_GOLDEN_DOS_PROMPT: Option<bool> = None;
+
+#[test]
+#[ignore = "requires separately supplied proprietary firmware; measurement only"]
+fn user_rom_ibm_5170_1985_post() {
+    const IBM_ENTRY: &str = "ibm-5170-bios-1985-06-10";
+    let catalogue = BoardModel::Ibm5170.firmware_catalogue();
+    let found = assembly::require_user_firmware!(IBM_ENTRY, catalogue);
+    assert!(
+        include_str!("../../../Cargo.lock").contains(CPU_REV),
+        "CPU pin drifted"
+    );
+    let temporary = TempDir::new("ibm-post-machine");
+    let floppy = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../vendor/freedos/freedos.img");
+    let file = expect_redacted(
+        &found,
+        write_post_machine_file(temporary.path(), &found.source, &floppy),
+        temporary.path(),
+        "writing POST machine file",
+    );
+    let loaded = expect_redacted(
+        &found,
+        machine_file::load_for_assembly(&file, AssemblyOptions::default()),
+        temporary.path(),
+        "loading POST machine",
+    );
+    let mut policy = mda_policy();
+    policy.routes.push(ObservationRequest {
+        device: DeviceId::Post,
+        output: OutputKind::Bytes(device::ByteStreamKind::PostCheckpoints),
+        byte_limit: 1_048_576,
+    });
+    let mut assembled = expect_redacted(
+        &found,
+        loaded.assemble(&policy),
+        temporary.path(),
+        "assembling POST machine",
+    );
+    let result = assembled.run_session(&run_policy(200_000_000));
+    let cpu = assembled.machine.cpu();
+    let location = (cpu.code_segment(), cpu.reg(CpuReg::Rip));
+    let retired = cpu.retired();
+    eprintln!("{IBM_ENTRY}: stop={}, cs={:04x}, ip={:04x}, retired={retired}, completed_steps={}, virtual_time={}",
+        run_result_summary(&result), location.0, location.1, cpu.completed_steps(), assembled.machine.virtual_time());
+    let post = found.expect_redacted(
+        assembled
+            .observation
+            .drain_bytes(DeviceId::Post, device::ByteStreamKind::PostCheckpoints),
+        "reading POST checkpoints",
+    );
+    let capture = found.expect_redacted(assembled.capture_text(DeviceId::Mda), "capturing MDA");
+    let Frame::Text(grid) = capture.frame else {
+        panic!("POST measurement requires an MDA text frame, received pixels");
+    };
+    let dos_prompt = (0..grid.rows()).any(|row| {
+        let glyphs: Vec<_> = (0..grid.cols())
+            .map(|col| grid.cell(col, row).unwrap().glyph)
+            .collect();
+        glyphs.windows(3).any(|window| window == b"A:>")
+            || glyphs.windows(4).any(|window| window == b"A:\\>")
+    });
+    eprintln!("{IBM_ENTRY}: post={post:02x?}, dos_prompt={dos_prompt}");
+    if let Some((cs, ip)) = IBM_GOLDEN_STOP {
+        assert_eq!(location, (u64::from(cs), ip));
+    }
+    if let Some(expected) = IBM_GOLDEN_RETIRED {
+        assert_eq!(retired, expected);
+    }
+    if let Some(expected) = IBM_GOLDEN_POST {
+        assert_eq!(post, expected);
+    }
+    if let Some(expected) = IBM_GOLDEN_DOS_PROMPT {
+        assert_eq!(dos_prompt, expected);
+    }
 }

@@ -28,15 +28,19 @@ pub fn logical_hash(text: &str) -> u64 {
     screen_hash(&rows.join("\n"))
 }
 
-/// Pin timing and complete text, and prove the old logical screen survives
+/// Pin timing and complete text, and pin the expected logical screen
 /// after replacing only the guest's displayed RTC/time fields.
 pub fn assert_golden(
     run: &BiosRun,
     retired: u64,
     virtual_time: u64,
     text_hash: u64,
-    old_logical_hash: u64,
+    logical_text_hash: u64,
 ) {
+    eprintln!("OBS stamp={:?}, mda_hash={:016x}, logical_hash={:016x}, mda_cursor={:?}, colour_cursor={:?}",
+        run.screen_stamp, screen_hash(&run.mda.to_dump()), logical_hash(&run.mda.to_dump()),
+        run.mda.cursor(), run.screen.cursor());
+    eprintln!("stop: {:?}", run.stop);
     eprintln!(
         "capture {:?}, POST={:02x?}, COM1={:02x?}\n--- MDA ---\n{}\n--- VGA ---\n{}",
         run.screen_stamp,
@@ -53,6 +57,6 @@ pub fn assert_golden(
         })
     );
     assert_eq!(screen_hash(&run.mda.to_dump()), text_hash);
-    assert_eq!(logical_hash(&run.mda.to_dump()), old_logical_hash);
+    assert_eq!(logical_hash(&run.mda.to_dump()), logical_text_hash);
     assert!(run.screen.rows_as_strings().iter().all(String::is_empty));
 }

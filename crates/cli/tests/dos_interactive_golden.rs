@@ -2,6 +2,11 @@
 //! Interactive FreeDOS golden: drive the shell past its startup prompts and run a
 //! command through the keyboard (§3.1, §5, §7.5) — the input-path north star.
 //!
+//! The I286 model takes the BIOS single-step CPU probe traps per the Intel
+//! 80286 Programmer's Reference Manual, §9.7.1 and Appendix B, and delivers
+//! real-mode exceptions through the IVT. This changes retired counts; only the
+//! CPU detection line, its segment-load warning and shifted rows may change.
+//!
 //! Port 61h bits follow the PIT since 2026-11-11; delay loops take real refresh time.
 //!
 //! Builds on the FreeDOS boot spike ([`freedos_boot_golden`]): the same Kiselev
@@ -103,7 +108,7 @@ fn freedos_runs_dir_from_the_keyboard() {
     );
     session::assert_golden(
         &run,
-        11_774_928,
+        11_772_930,
         13_000_000,
         0xbb926924f4d7efa1,
         0xd330b78c4533697e,

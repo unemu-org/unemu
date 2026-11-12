@@ -3,8 +3,9 @@
 //!
 //! [`X86JitCpu`] wraps an `x86jit-core` [`Vm`] + [`Vcpu`] and maps the core's
 //! [`Exit`] variants onto the backend-neutral [`CpuStop`]. It runs in **Long64**
-//! mode (adapter unit tests, [`X86JitCpu::new`]) or in **Real16** mode (a PC/AT
-//! boot that takes hardware interrupts, [`X86JitCpu::new_real16_bare`]). It uses the
+//! mode (adapter unit tests, [`X86JitCpu::new`]), **Real16** application mode
+//! ([`X86JitCpu::new_real16_bare`]), or the **I286 machine** interpreter
+//! ([`X86JitCpu::new_i286_bare`]). It uses the
 //! `x86jit` integration surface: `Exit::PortIo` (`in`/`out` and each `ins`/`outs`
 //! element), `RegionKind::Trap` MMIO, and — in real mode — IVT-vectored IRQ injection.
 //!
@@ -13,8 +14,8 @@
 //! CPU without any local x86jit checkout present.
 
 use x86jit_core::{
-    CpuMode, Exit, PortDir, Prot, Reg, RegionKind, ResetOptions, StepOptions, StepRunError,
-    StepStop, Vcpu, Vm, VmConfig,
+    CpuMode, CpuModel, CpuState, ExecutionProfile, Exit, FpuModel, PortDir, Prot, Reg, RegionKind,
+    ResetOptions, StepOptions, StepRunError, StepStop, Vcpu, Vm, VmConfig,
 };
 
 use crate::{Cpu, CpuError, CpuReg, CpuStepRun, CpuStepStop, CpuStop, DmaAccess, StepRunOptions};
@@ -84,6 +85,38 @@ impl X86JitCpu {
         cpu.set_reg(Reg::Ss, u64::from(segments.ss));
         cpu.set_reg(Reg::Rsp, u64::from(segments.sp));
         cpu.set_reg(Reg::Rip, u64::from(ip));
+        Ok(Self {
+            vm,
+            cpu,
+            dma_regions: Vec::new(),
+            completed_steps: 0,
+        })
+    }
+
+    /// Build an Intel 80286 machine interpreter at a real-mode entry.
+    ///
+    /// Intel 80286 and 80287 Programmer's Reference Manual, §10.2–10.4:
+    /// LMSW can enter protected mode; leaving it requires a processor reset.
+    /// Unlike [`Self::new_real16_bare`], this profile retains descriptor caches
+    /// and delivers real/protected exceptions in the guest through IVT/IDT.
+    /// It enforces 286 instruction and segment limits. See
+    /// `backlog/docs/design/protected-mode-gaps.md` §Context.
+    /// The address space must include any reset ROM at physical FFFFF0h.
+    pub fn new_i286_bare(
+        space_bytes: u64,
+        cs: u16,
+        ip: u16,
+        segments: RealSegments,
+    ) -> Result<Self, CpuError> {
+        let mut vm = Vm::new(VmConfig::flat(space_bytes));
+        vm.set_cpu_model(CpuModel::I80286);
+        vm.set_fpu_model(FpuModel::Present);
+        let mut cpu = vm.new_vcpu();
+        cpu.cpu = CpuState::legacy_real_entry([cs, segments.ds, segments.es, segments.ss, 0, 0]);
+        cpu.cpu.legacy.cr0 = 0xFFF0;
+        cpu.set_reg(Reg::Rsp, u64::from(segments.sp));
+        cpu.set_reg(Reg::Rip, u64::from(ip));
+        cpu.set_fpu_emulation(false);
         Ok(Self {
             vm,
             cpu,
@@ -262,7 +295,37 @@ impl X86JitCpu {
                 addr, size, value, ..
             } => Ok(CpuStop::MmioWrite { addr, size, value }),
             Exit::Hlt => Ok(CpuStop::Halt),
+            Exit::Shutdown { .. } => Ok(CpuStop::Shutdown),
+            Exit::Exception {
+                addr,
+                vector,
+                ref metadata,
+                ..
+            } if self.vm.execution_profile() == ExecutionProfile::Machine => {
+                Err(CpuError::Fault {
+                    vector,
+                    error_code: metadata.as_deref().and_then(|fault| {
+                        // The 286 supplies a complete 16-bit error code. The
+                        // core's 32-bit projection requires a wider known mask.
+                        match fault.error_code() {
+                            x86jit_core::fault::ErrorCode::Bits {
+                                value, known_mask, ..
+                            } if known_mask & 0xFFFF == 0xFFFF => Some(value & 0xFFFF),
+                            _ => None,
+                        }
+                    }),
+                    cs: self.cpu.cpu.cs,
+                    ip: addr,
+                })
+            }
             Exit::Exception { vector, .. } => Ok(CpuStop::Exception { vector }),
+            Exit::UnsupportedSystemContext {
+                addr, operation, ..
+            } => Err(CpuError::UnsupportedSystem {
+                operation: format!("{operation:?}"),
+                cs: self.cpu.cpu.cs,
+                ip: addr,
+            }),
             Exit::BudgetExhausted => Ok(CpuStop::BudgetExhausted),
             Exit::UnmappedMemory { addr, .. } => Err(CpuError::Unmapped { addr }),
             Exit::UnknownInstruction { addr, .. } => Err(CpuError::UnsupportedInstruction { addr }),
@@ -304,6 +367,17 @@ impl Cpu for X86JitCpu {
         self.cpu
             .reset_execution_state(ResetOptions::default().with_x87_init(true));
         let state = &mut self.cpu.cpu;
+        if self.vm.execution_profile() == ExecutionProfile::Machine {
+            // Reset must discard protected caches as well as pending handoffs.
+            // Preserve GPRs, whose hardware reset contents are unspecified.
+            let reset = CpuState::legacy_real_entry([0xF000, 0, 0, 0, 0, 0]);
+            state.legacy = reset.legacy;
+            state.legacy.cr0 = 0xFFF0;
+            state.legacy.segments[0].base = 0xFF0000;
+            state.legacy.reset_fetch = 1;
+            state.fs = 0;
+            state.gs = 0;
+        }
         state.cs = 0xF000;
         state.rip = 0xFFF0;
         state.ds = 0;
@@ -429,6 +503,185 @@ impl Cpu for X86JitCpu {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn i286_guest(code: &[u8]) -> X86JitCpu {
+        let mut cpu =
+            X86JitCpu::new_i286_bare(0x100_0000, 0, 0x1000, RealSegments::flat(0)).unwrap();
+        cpu.map_ram(0, 0x10000).unwrap();
+        cpu.write_mem(0x1000, code).unwrap();
+        cpu
+    }
+
+    #[test]
+    fn i286_single_step_probe_traps_after_pop_ds_and_restores_the_stack() {
+        // Intel 80286 Programmer's Reference Manual, §9.7.1 and Appendix B
+        // MOV/POP: only SS loads inhibit the next single-step trap.
+        let mut cpu = i286_guest(&[]);
+        cpu.set_reg(CpuReg::Rip, 0xA7D0);
+        cpu.write_mem(4, &[0x35, 0xA8, 0, 0]).unwrap();
+        cpu.write_mem(
+            0xA7D0,
+            &[
+                0x9C, 0x9C, 0x58, 0x0D, 0, 1, 0x50, 0x31, 0xC0, 0x9D, 0x90, 0x1E, 0x1F, 0x90, 0x9D,
+                0xF4,
+            ],
+        )
+        .unwrap();
+        cpu.write_mem(
+            0xA835,
+            &[
+                0x55, 0x89, 0xE5, 0x81, 0x7E, 2, 0xDD, 0xA7, 0x75, 4, 0xB0, 1, 0xEB, 9, 0x81, 0x7E,
+                2, 0xDC, 0xA7, 0x75, 2, 0xB0, 2, 0x5D, 0xCF,
+            ],
+        )
+        .unwrap();
+        let mut returns = Vec::new();
+        let mut halted = false;
+        for _ in 0..100 {
+            if cpu.reg(CpuReg::Rip) == 0xA835 {
+                let mut frame = [0; 6];
+                cpu.read_mem(cpu.reg(CpuReg::Rsp), &mut frame).unwrap();
+                returns.push(u16::from_le_bytes([frame[0], frame[1]]));
+                assert_eq!(cpu.cpu.cpu.rflags_system & 0x100, 0);
+                assert!(!cpu.interrupts_enabled());
+            }
+            let run = cpu.run_steps(1, StepRunOptions::default()).unwrap();
+            if run.stop == CpuStepStop::Exit(CpuStop::Halt) {
+                halted = true;
+                break;
+            }
+            assert_eq!(run.stop, CpuStepStop::Exit(CpuStop::BudgetExhausted));
+        }
+        assert!(halted);
+        assert_eq!(returns, [0xA7DB, 0xA7DC, 0xA7DD, 0xA7DE, 0xA7DF]);
+        assert_eq!(cpu.reg(CpuReg::Rax), 1);
+        assert_eq!(cpu.reg(CpuReg::Rsp), u64::from(RealSegments::DEFAULT_SP));
+        assert_eq!(cpu.completed_steps(), 54);
+        assert_eq!(cpu.retired(), 54);
+    }
+
+    #[test]
+    fn i286_real_aad_x87_and_rep_ins_resume_at_element_boundaries() {
+        let mut cpu = i286_guest(&[
+            0xB8, 1, 1, 0xD5, 0x10, 0xA3, 0, 5, // AAD with a nondecimal base
+            0xDB, 0xE3, 0xD9, 0x3E, 2, 5, // FNINIT; FNSTCW [0502h]
+            0xBA, 0x60, 0, 0xBF, 4, 5, 0xB9, 2, 0, 0xF3, 0x6C, 0xF4,
+        ]);
+        assert_eq!(cpu.vm.cpu_model(), Some(CpuModel::I80286));
+        assert_eq!(
+            cpu.vm.exception_delivery(),
+            x86jit_core::ExceptionDelivery::InGuest
+        );
+        assert_eq!(cpu.vm.fpu_model(), FpuModel::Present);
+        let options = StepRunOptions::default();
+        let input = CpuStepStop::Exit(CpuStop::PortIn {
+            port: 0x60,
+            size: 1,
+        });
+        assert_eq!(cpu.run_steps(9, options).unwrap().stop, input);
+        assert_eq!(cpu.retired(), 8);
+        cpu.complete_port_in(0xA7);
+        assert_eq!(cpu.run_steps(1, options).unwrap().stop, input);
+        assert_eq!(cpu.retired(), 9);
+        cpu.complete_port_in(0x5C);
+        assert_eq!(
+            cpu.run_steps(1, options).unwrap().stop,
+            CpuStepStop::Exit(CpuStop::Halt)
+        );
+        let mut markers = [0; 6];
+        cpu.read_mem(0x500, &mut markers).unwrap();
+        assert_eq!(markers, [0x11, 0, 0x7F, 3, 0xA7, 0x5C]);
+        assert_eq!(cpu.completed_steps(), 11);
+        assert_eq!(cpu.retired(), 10);
+    }
+
+    #[test]
+    fn i286_bad_protected_selector_returns_typed_fault() {
+        let mut vm = Vm::new(VmConfig::flat(0x10000));
+        vm.set_cpu_model(CpuModel::I80286);
+        vm.set_exception_delivery(x86jit_core::ExceptionDelivery::Outward);
+        let core = vm.new_vcpu();
+        let mut cpu = X86JitCpu {
+            vm,
+            cpu: core,
+            dma_regions: Vec::new(),
+            completed_steps: 0,
+        };
+        cpu.map_ram(0, 0x10000).unwrap();
+        cpu.set_reg(CpuReg::Rip, 0x1000);
+        cpu.write_mem(
+            0x1000,
+            &[
+                0xB8, 1, 0, 0x0F, 0x01, 0xF0, // MOV AX,1; LMSW AX
+                0xEA, 0, 0x12, 8, 0, // JMP 0008:1200, beyond the empty GDT
+            ],
+        )
+        .unwrap();
+        let error = cpu.run_steps(20, StepRunOptions::default()).unwrap_err();
+        assert!(
+            matches!(
+                error,
+                CpuError::Fault {
+                    vector: 13,
+                    error_code: Some(8),
+                    cs: 0,
+                    ip: 0x1006
+                }
+            ),
+            "{error}"
+        );
+        assert_eq!(cpu.retired(), 2);
+        assert_eq!(cpu.completed_steps(), 2);
+        assert_eq!(cpu.reg(CpuReg::Rip), 0x1006);
+    }
+
+    #[test]
+    fn i286_real_word_at_ffff_delivers_gp_through_ivt_for_ds_and_ss() {
+        // Intel 80286 and 80287 Programmer's Reference Manual, §9.6.2:
+        // a word crossing a real-mode segment limit reports vector 13 even for SS.
+        for code in [&[0xA1, 0xFF, 0xFF][..], &[0x36, 0xA1, 0xFF, 0xFF][..]] {
+            let mut cpu = i286_guest(code);
+            cpu.write_mem(13 * 4, &[0, 0x18, 0, 0]).unwrap();
+            cpu.write_mem(0x1800, &[0xF4]).unwrap();
+            let run = cpu.run_steps(1, StepRunOptions::default()).unwrap();
+            assert_eq!(run.stop, CpuStepStop::Exit(CpuStop::Halt));
+            assert_eq!(cpu.reg(CpuReg::Rip), 0x1801);
+            assert_eq!(cpu.reg(CpuReg::Rax), 0);
+            assert_eq!(
+                cpu.reg(CpuReg::Rsp),
+                u64::from(RealSegments::DEFAULT_SP) - 6
+            );
+            let mut frame = [0; 4];
+            cpu.read_mem(cpu.reg(CpuReg::Rsp), &mut frame).unwrap();
+            assert_eq!(frame, [0, 0x10, 0, 0]);
+            assert_eq!(cpu.retired(), 1);
+        }
+    }
+
+    #[test]
+    fn i286_reset_discards_protected_caches_and_fetches_high_rom() {
+        let mut cpu = i286_guest(&[0xB8, 1, 0, 0x0F, 0x01, 0xF0]);
+        cpu.run_steps(2, StepRunOptions::default()).unwrap();
+        assert_eq!(cpu.cpu.cpu.legacy.cr0 & 1, 1);
+        cpu.cpu.cpu.legacy.segments[1].base = 0x123000;
+        cpu.inject_irq(0x20);
+        cpu.map_rom(0xFFFFF0, &[0xEA, 0, 0x15, 0, 0]).unwrap();
+        cpu.write_mem(0x1500, &[0x0F, 0x01, 0xE0, 0xF4]).unwrap(); // SMSW AX; HLT
+        let retired = cpu.retired();
+        cpu.reset().unwrap();
+        assert_eq!(cpu.retired(), retired);
+        assert_eq!(cpu.cpu.cpu.legacy.cr0, 0xFFF0);
+        assert_eq!(cpu.cpu.cpu.legacy.segments[0].base, 0xFF0000);
+        assert_eq!(cpu.cpu.cpu.legacy.segments[1].base, 0);
+        assert!(!cpu.has_pending_irq());
+        assert_eq!(
+            cpu.run_steps(3, StepRunOptions::default()).unwrap().stop,
+            CpuStepStop::Exit(CpuStop::Halt)
+        );
+        assert_eq!(cpu.reg(CpuReg::Rax), 0xFFF0);
+        assert_eq!(cpu.cpu.cpu.legacy.reset_fetch, 0);
+        assert_eq!(cpu.retired(), retired + 3);
+    }
 
     #[test]
     fn filled_rom_keeps_chunk_boundaries_inside_one_immutable_region() {

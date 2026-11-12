@@ -514,12 +514,20 @@ fn build_cpu_with_mapping_trace(
         crate::BoardModel::Ibm5170 => crate::memory::AT_PHYSICAL_END,
         crate::BoardModel::Bare => config.memory.address_space_bytes,
     };
-    let mut cpu = X86JitCpu::new_real16_bare(
-        physical_end,
-        config.cpu.reset.cs(),
-        config.cpu.reset.ip(),
-        config.cpu.segments.into(),
-    )?;
+    let mut cpu = match (config.board, config.cpu.chip) {
+        (crate::BoardModel::Ibm5170, crate::CpuChip::I80286) => X86JitCpu::new_i286_bare(
+            physical_end,
+            config.cpu.reset.cs(),
+            config.cpu.reset.ip(),
+            config.cpu.segments.into(),
+        )?,
+        (crate::BoardModel::Bare, crate::CpuChip::I80286) => X86JitCpu::new_real16_bare(
+            physical_end,
+            config.cpu.reset.cs(),
+            config.cpu.reset.ip(),
+            config.cpu.segments.into(),
+        )?,
+    };
     let mut mapped = Vec::new();
     let mut record_mapping = |base, end, kind| {
         mapped.push((base, end));
@@ -620,6 +628,9 @@ fn build_cpu_with_mapping_trace(
             record(crate::memory::AT_HIGH_ALIAS_BASE, physical_end, "rom");
         }
     }
+    if board_memory && matches!(config.cpu.reset, crate::ResetSpec::ResetVector { .. }) {
+        cpu::Cpu::reset(&mut cpu)?;
+    }
     Ok(cpu)
 }
 
@@ -628,8 +639,8 @@ fn build_cpu_with_mapping_trace(
 /// "System Board", System Memory Map (p. 1-8): FE0000h–FFFFFFh duplicates
 /// E0000h–FFFFFh. Copy the resolved low map, including gap fill, in bounded
 /// chunks that never cross source-region boundaries. This is the single owner
-/// of the high alias; a reset-origin fetch at FFFFF0h would read its copied bytes.
-/// The current core starts at FFFF0h.
+/// of the high alias; the I286 reset-origin fetch at FFFFF0h reads its copied
+/// bytes before the first far transfer replaces the hidden CS base.
 /// See machine-config.md §MemoryConfig.
 fn map_at_high_alias(cpu: &mut X86JitCpu, mapped: &[(u64, u64)]) -> Result<(), AssemblyError> {
     let high = crate::memory::AT_HIGH_ALIAS_BASE;
@@ -1562,6 +1573,80 @@ mod tests {
             .read_mem(0x3FE, &mut control_word)
             .unwrap();
         assert_eq!(u16::from_le_bytes(control_word), 0x037F);
+    }
+
+    #[test]
+    fn i286_protected_guest_resumes_through_keyboard_reset_and_cmos() {
+        for shutdown in [0x05, 0x0A] {
+            let mut rom = vec![0; 0x8000];
+            rom[0x7FF0..0x7FF5].copy_from_slice(&[0xEA, 0, 0x15, 0, 0]);
+            let mut config = crate::bios(rom, Some(vec![0; 1_474_560]));
+            config.cpu.segments = crate::SegmentSeed::flat(0);
+            let mut seed = |base, bytes: &[u8]| {
+                config.images.push(crate::LoadImage {
+                    base,
+                    source: ImageSource::Inline(bytes.to_vec()),
+                    kind: ImageKind::RamLoad,
+                    provides: Vec::new(),
+                });
+            };
+            seed(
+                0x1000,
+                &[
+                    0xFA, // CLI: no protected interrupt delivery is required.
+                    0xB0, 0x0F, 0xE6, 0x70, 0xB0, shutdown, 0xE6, 0x71, 0x0F, 0x01, 0x16, 0,
+                    0x21, // LGDT [2100h]
+                    0xB8, 1, 0, 0x0F, 0x01, 0xF0, // LMSW AX
+                    0xEA, 0, 0x12, 8, 0,
+                ],
+            );
+            seed(
+                0x2000,
+                &[
+                    0, 0, 0, 0, 0, 0, 0, 0, 0xFF, 0xFF, 0, 0, 0, 0x9A, 0, 0, 0xFF, 0xFF, 0, 0, 0,
+                    0x92, 0, 0,
+                ],
+            );
+            seed(0x2100, &[23, 0, 0, 0x20, 0, 0]);
+            seed(
+                0x1200,
+                &[
+                    0xB8, 0x10, 0, 0x8E, 0xD8, 0x8E, 0xD0, 0xC7, 0x06, 0, 5, 0xEF, 0xBE, 0xB0,
+                    0xFE, 0xE6, 0x64, // 8042 pulse RESET
+                    0xC7, 0x06, 2, 5, 0xAD, 0xDE,
+                ],
+            );
+            // A synthetic reset stub reads live shutdown state and the standard
+            // BIOS resume pointer; CMOS and RAM belong to the retained machine.
+            seed(
+                0x1500,
+                &[
+                    0x0F, 0x01, 0xE3, // SMSW BX
+                    0x81, 0x3E, 0, 5, 0xEF, 0xBE, 0x75, 10, 0xB0, 0x0F, 0xE6, 0x70, 0xE4, 0x71,
+                    0xFF, 0x2E, 0x67, 0x04, // JMP FAR [0467h]
+                    0xEA, 0, 0x10, 0, 0, // Cold entry before the protected marker exists.
+                ],
+            );
+            seed(0x467, &[0, 0x16, 0, 0]);
+            seed(0x1600, &[0xC7, 0x06, 4, 5, 0xFE, 0xCA, 0xFA, 0xF4]);
+            let mut assembled = assemble_synthetic(&config).unwrap();
+            assert_eq!(
+                assembled.machine.run_bounded(Some(100)).unwrap(),
+                machine::RunOutcome::ResetRequested
+            );
+            assert_eq!(assembled.machine.cpu().code_segment(), 8);
+            assert_eq!(
+                assembled.machine.run_bounded(Some(100)).unwrap(),
+                machine::RunOutcome::Halted
+            );
+            let cpu = assembled.machine.cpu();
+            assert_eq!(cpu.code_segment(), 0);
+            assert_eq!(cpu.reg(cpu::CpuReg::Rbx), 0xFFF0);
+            assert_eq!(cpu.reg(cpu::CpuReg::Rax) & 0xFF, u64::from(shutdown));
+            let mut markers = [0; 6];
+            cpu.read_mem(0x500, &mut markers).unwrap();
+            assert_eq!(markers, [0xEF, 0xBE, 0, 0, 0xFE, 0xCA]);
+        }
     }
 
     #[test]
@@ -2602,6 +2687,37 @@ mod tests {
             assert_eq!(mda.vram[0], 0);
             assert_eq!(&colour.vram[..2], &[0x12, 0]);
         }
+    }
+
+    #[test]
+    fn i286_reset_fetch_uses_the_single_board_high_alias() {
+        use cpu::{Cpu, CpuReg, CpuStepStop, CpuStop, StepRunOptions};
+        let mut rom = vec![0; 0x8000];
+        rom[0x7FF0..0x7FF3].copy_from_slice(&[0xB0, 0x7B, 0xF4]);
+        let config = crate::bios(rom, Some(vec![0; 1_474_560]));
+        assert_eq!(config.cpu.chip.physical_address_bits(), 24);
+        let mut regions = Vec::new();
+        let mut cpu = build_cpu_with_mapping_trace(&config, |base, end, kind| {
+            regions.push((base, end, kind));
+        })
+        .unwrap();
+        let high: Vec<_> = regions
+            .into_iter()
+            .filter(|(base, _, _)| *base >= 0xFE0000)
+            .collect();
+        assert_eq!(high, [(0xFE0000, 0x1000000, "rom")]);
+        let mut empty = [0];
+        cpu.read_mem(0x200000, &mut empty).unwrap();
+        assert_eq!(empty, [0xFF]);
+        assert!(cpu.read_mem(0x1000000, &mut empty).is_err());
+        // Host loading can distinguish the copied alias from its low source;
+        // guest stores remain unable to change either ROM mapping.
+        cpu.write_mem(0xFFFF0, &[0xB0, 0x11, 0xF4]).unwrap();
+        assert_eq!(
+            cpu.run_steps(2, StepRunOptions::default()).unwrap().stop,
+            CpuStepStop::Exit(CpuStop::Halt)
+        );
+        assert_eq!(cpu.reg(CpuReg::Rax) & 0xFF, 0x7B);
     }
 
     #[test]

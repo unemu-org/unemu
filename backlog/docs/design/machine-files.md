@@ -670,7 +670,7 @@ Further evidence:
   lowercase literals. The crate has its own `Spanned<T>`.
 - **`serde-saphyr` risks (READ):**
   - **MSRV.** Releases from 1.2.0 (2026-08-30) on declare rust-version 1.89.
-    The workspace declares Rust 1.99, pins x86jit `44403dd` (rust-version
+    The workspace declares Rust 1.99, pins x86jit `8bad85d` (rust-version
     1.95, inherited by `x86jit-core` from its workspace; READ), and the Nix
     devShell provides rustc 1.99.1 (MEASURED), so the YAML
     dependency's 1.89 minimum is satisfied. The original investigation used
@@ -1322,7 +1322,7 @@ spike owns the board-model and firmware entries.
 
 1. **MSRV — resolved.** `serde-saphyr` 2.1.1 needs rustc 1.89; the workspace
    declares 1.99, the Nix devShell provides 1.99.1, and the current x86jit pin
-   `44403dd` requires 1.95 (`x86jit-core` inherits its workspace's rust-version;
+   `8bad85d` requires 1.95 (`x86jit-core` inherits its workspace's rust-version;
    READ).
 2. **Device order.** Accept rewriting the `bios` preset into canonical order
    (bead 1, guarded by the slow goldens)? The alternative is a board model that

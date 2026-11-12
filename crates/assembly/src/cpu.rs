@@ -5,10 +5,13 @@ use cpu::x86jit_backend::RealSegments;
 
 /// The modelled CPU chip.
 ///
-/// Identifies the processor for documentation, physical address width and
-/// golden identity. It carries no execution-mode toggle and no
-/// clock rate — timing is the virtual clock's concern
-/// ([`crate::ClockConfig`]), and there is exactly one modelled real-mode core.
+/// Selects the board interpreter's instruction generation, system semantics
+/// and physical address width, and identifies it in golden traces. Timing is
+/// the virtual clock's concern ([`crate::ClockConfig`]).
+/// Intel 80286 and 80287 Programmer's Reference Manual, §10.2–10.4:
+/// the 80286 starts in real mode and enters protected mode through LMSW.
+/// Bare compatibility rigs retain the fixed Real16 application interpreter.
+/// See `backlog/docs/design/machine-config.md` §CPU model selection.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
 pub enum CpuChip {
     /// Intel 80286.
@@ -129,11 +132,11 @@ impl From<SegmentSeed> for RealSegments {
 
 /// The CPU section of a [`crate::MachineConfig`] (§2).
 ///
-/// Minimal today — a marker chip, a reset entry, and the seeded segments — but
+/// An execution model, a reset entry, and the seeded segments;
 /// the home for future CPU options that must not force a config restructure.
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub struct CpuConfig {
-    /// The modelled processor (marker only).
+    /// The modelled processor and its execution semantics.
     pub chip: CpuChip,
     /// Where execution begins after reset.
     pub reset: ResetSpec,

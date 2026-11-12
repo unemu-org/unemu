@@ -5,8 +5,8 @@
 //! `backlog/docs/architecture.md`: it abstracts the CPU core so the `machine`
 //! composition root never names a concrete backend. The only backend is
 //! [`X86JitCpu`], wrapping the `x86jit-core` recompiler; it runs in
-//! **Real16** mode for IBM PC/AT machines. **Long64** remains available for
-//! standalone adapter tests; machine assembly requires step-bounded Real16.
+//! **I286 machine** mode for IBM PC/AT machines. **Real16** and **Long64**
+//! remain available for standalone adapter tests; assembly uses exact steps.
 //!
 //! The backend exploits the integration surface `x86jit` exposes: `Exit::PortIo`
 //! with `complete_port_in` for ISA port I/O, and `RegionKind::Trap` MMIO (§2.1).
@@ -26,10 +26,11 @@
 //! Initialization, Table 5-3 (Processor State after RESET): CS=F000h, IP=FFF0h,
 //! FLAGS=0002h and DS=ES=SS=0. General registers are unspecified by that table;
 //! this model preserves them. The hardware's hidden CS base FF0000h lasts until
-//! a far transfer; this Real16 reset model instead fetches at FFFF0h.
-//! The board independently maps its high ROM alias. MSW=FFF0h
-//! and IDTR base=0, limit=03FFh (§10.4 Initialization) are not modelled by the
-//! Real16 core. Reset first abandons engine-private execution (including pending
+//! a far transfer. I286 restores that base, MSW=FFF0h and IDTR base=0,
+//! limit=03FFh (§10.4 Initialization), replacing protected segment caches.
+//! The board independently maps its complete FE0000h–FFFFFFh ROM alias.
+//! Application Real16 retains its low FFFF0h fetch. Reset first abandons
+//! engine-private execution (including pending
 //! INS/MMIO and IRQs), then
 //! installs these registers, with FNINIT for the core's emulated x87 environment.
 //! RAM, mappings, retirement and completed-step accounting survive. The AT's
@@ -112,6 +113,9 @@ pub enum CpuStop {
     },
     /// Guest executed `hlt`.
     Halt,
+    /// The processor faulted while delivering double fault and requests reset.
+    /// No instruction is retired by the shutdown cycle (Intel 80286 PRM §9.6.2).
+    Shutdown,
     /// A guest CPU exception (`#DE`, `#UD`, `#BP`, …); `vector` is the x86
     /// exception vector (§5.2).
     Exception {
@@ -168,6 +172,28 @@ pub enum CpuError {
     UnsupportedInstruction {
         /// Guest RIP of the offending instruction.
         addr: u64,
+    },
+    /// An exception explicitly returned outward by the machine CPU profile.
+    #[error("cpu fault vector {vector:#x}, error code {error_code:?} at {cs:04x}:{ip:04x}")]
+    Fault {
+        /// Architectural exception vector.
+        vector: u8,
+        /// Architectural error code, absent for exceptions without one.
+        error_code: Option<u32>,
+        /// Visible code selector at the fault.
+        cs: u16,
+        /// Restart or trap instruction pointer supplied by the core.
+        ip: u64,
+    },
+    /// A system operation outside the CPU core's supported execution scope.
+    #[error("unsupported cpu system operation {operation} at {cs:04x}:{ip:04x}")]
+    UnsupportedSystem {
+        /// Core operation name, without guest bytes.
+        operation: String,
+        /// Visible code selector.
+        cs: u16,
+        /// Instruction pointer of the refused operation.
+        ip: u64,
     },
     /// The core stopped for a reason the machine has no handling for (a host
     /// yield request, exhausted JIT code space, or an exit kind newer than this

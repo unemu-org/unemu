@@ -6,6 +6,7 @@
 //! Port 61h bits follow the PIT since 2026-11-11; delay loops take real refresh time.
 //!
 
+use cpu::Cpu;
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
@@ -208,6 +209,12 @@ fn volatile_boots_preserve_pinned_fixture_hashes_and_vendor_entries() {
             }
         };
         let outcome = assembled.run_session(&policy);
+        eprintln!(
+            "{boot}: stop={outcome:?}, cs={:04x}, ip={:04x}, retired={}",
+            assembled.machine.cpu().code_segment(),
+            assembled.machine.cpu().reg(cpu::CpuReg::Rip),
+            assembled.machine.cpu().retired()
+        );
         let video::Frame::Text(grid) = assembled.capture_text(DeviceId::Mda).unwrap().frame else {
             panic!("expected text frame")
         };
