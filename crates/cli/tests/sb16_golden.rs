@@ -1,0 +1,194 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+//! Creative Sound Blaster Series Hardware Programming Guide, §2 DSP ports,
+//! §3 DMA output, §6 41h/Cxh. A synthetic AT ROM plays RAM through the real 8237.
+//! PCM is pinned against x86jit revision fd6792777ea864745a776ccdd3279a2fa9dd4bff.
+
+use assembly::{
+    assemble_with_observation_and_options, AssemblyOptions, AudioSinkKind, DeviceConfig, DeviceId,
+    DeviceKind, DmaSpec, ObservationPolicy, RunPolicy, Sb16Cfg,
+};
+use device::{AccessDir, TraceEvent, TracePolicy};
+
+fn out(program: &mut Vec<u8>, port: u16, byte: u8) {
+    program.extend_from_slice(&[0xBA, port as u8, (port >> 8) as u8, 0xB0, byte, 0xEE]);
+}
+
+fn rom() -> Vec<u8> {
+    let mut program = vec![0xFA, 0x31, 0xC0, 0x8E, 0xD8, 0x8E, 0xD0, 0xBC, 0, 0x70];
+    // IRQ5 vector 0Dh points into our ROM; stack and IVT live in guest RAM.
+    program.extend_from_slice(&[0xC7, 6, 0x34, 0, 0, 3, 0xC7, 6, 0x36, 0, 0, 0xF8]);
+    for (offset, byte) in [0, 0x40, 0x80, 0xFF].into_iter().enumerate() {
+        program.extend_from_slice(&[0xC6, 6, offset as u8, 0x10, byte]);
+    }
+    for (port, byte) in [
+        (0x20, 0x11),
+        (0x21, 8),
+        (0x21, 4),
+        (0x21, 1),
+        (0x21, 0xDF),
+        (0x0A, 5),
+        (0x0C, 0),
+        (2, 0),
+        (2, 0x10),
+        (3, 3),
+        (3, 0),
+        (0x83, 0),
+        (0x0B, 0x49),
+        (0x0A, 1),
+        (0x226, 1),
+    ] {
+        out(&mut program, port, byte);
+    }
+    program.extend_from_slice(&[0x90; 4]);
+    out(&mut program, 0x226, 0);
+    program.extend_from_slice(&[0x90; 120]);
+    // Explicit 8000 Hz, unsigned mono C0h, four bytes.
+    for byte in [0x41, 0x1F, 0x40, 0xC0, 0, 3, 0] {
+        out(&mut program, 0x22C, byte);
+    }
+    program.extend_from_slice(&[0xFB, 0xEB, 0xFE]);
+    assert!(program.len() < 0x300);
+    let mut rom = vec![0; 32768];
+    rom[..program.len()].copy_from_slice(&program);
+    let mut handler = vec![0x50, 0x52];
+    out(&mut handler, 0x80, 0x5B);
+    handler.extend_from_slice(&[0xBA, 0x2E, 2, 0xEC]);
+    out(&mut handler, 0x20, 0x20);
+    handler.extend_from_slice(&[0x5A, 0x58, 0xCF]);
+    rom[0x300..0x300 + handler.len()].copy_from_slice(&handler);
+    rom[32752..32757].copy_from_slice(&[0xEA, 0, 0, 0, 0xF8]);
+    rom
+}
+
+fn capture_clock(
+    splits: &[u64],
+    check_irq: bool,
+    pit_per_step: u64,
+) -> (u64, u64, Vec<[i16; 2]>, Vec<u64>) {
+    let mut config = assembly::bios(rom(), Some(vec![0; 1_474_560]));
+    config.clock.retired_per_pit_clock = 1;
+    config.clock.retired_per_pit_clock_denominator = pit_per_step;
+    let cfg = Sb16Cfg { base: 0x220 };
+    config.devices.push(
+        DeviceConfig::new(DeviceId::Sb16, DeviceKind::Sb16(cfg), cfg.port_windows())
+            .with_irq(5)
+            .with_dma(DmaSpec {
+                controller: DeviceId::Dma,
+                channel: 1,
+            }),
+    );
+    let mut policy = ObservationPolicy {
+        trace: TracePolicy::Ring { capacity: 4096 },
+        ..ObservationPolicy::default()
+    };
+    policy.output.audio_sink = AudioSinkKind::Capture;
+    policy.output.audio_capture_frame_limit = 1024;
+    let mut rig = assemble_with_observation_and_options(
+        &config,
+        &policy,
+        AssemblyOptions {
+            allow_unlisted_firmware: true,
+        },
+    )
+    .unwrap();
+    let until = 1000;
+    for &cap in splits.iter().chain(std::iter::once(&until)) {
+        rig.run_session(&RunPolicy::natural(Some(cap), None))
+            .unwrap();
+        if check_irq && (cap == 800 || cap == 801) {
+            assert_eq!(
+                rig.machine
+                    .bus()
+                    .device(rig.device_index[&DeviceId::Sb16])
+                    .unwrap()
+                    .irq_pending(),
+                cap == 801
+            );
+        }
+    }
+    let post = rig.device_index[&DeviceId::Post];
+    let irqs = rig
+        .machine
+        .bus_mut()
+        .device_mut(post)
+        .unwrap()
+        .take_trace()
+        .into_iter()
+        .filter_map(|event| match event {
+            TraceEvent::Port {
+                at,
+                dir: AccessDir::Write,
+                value: 0x5B,
+                ..
+            } => Some(at.0),
+            _ => None,
+        })
+        .collect();
+    let audio = rig.observation.captured_audio().unwrap();
+    (
+        audio.frame_count(),
+        audio.hash(),
+        audio.frames().to_vec(),
+        irqs,
+    )
+}
+
+fn capture(splits: &[u64], check_irq: bool) -> (u64, u64, Vec<[i16; 2]>, Vec<u64>) {
+    capture_clock(splits, check_irq, 1)
+}
+
+fn reference() -> Vec<[i16; 2]> {
+    (0..40u64)
+        .map(|index| {
+            let begin = (index * 4375).div_ceil(176);
+            let end = ((index + 1) * 4375).div_ceil(176);
+            let area: i64 = (begin..end)
+                .map(|at| match at {
+                    354..503 => -32768,
+                    503..652 => -16384,
+                    652..801 => 0,
+                    801..950 => 32512,
+                    _ => 0,
+                })
+                .sum();
+            [(area / (end - begin) as i64) as i16; 2]
+        })
+        .collect()
+}
+
+#[test]
+fn sb16_byte_dma_has_frozen_pcm_irq_time_and_split_invariance() {
+    let whole = capture(&[], false);
+    assert_eq!(
+        whole,
+        capture(&[24, 150, 201, 299, 448, 799, 800, 801, 999], true)
+    );
+    assert_eq!(whole.0, 40);
+    assert_eq!(whole.1, 0x0eb2_d059_128e_5341);
+    assert_eq!(whole.2, reference());
+    assert_eq!(whole.3, [805]);
+}
+
+#[test]
+fn sb16_dma_deadlines_inside_slow_cpu_steps_deliver_samples_on_time() {
+    let whole = capture_clock(&[], false, 3);
+    assert_eq!(whole, capture_clock(&[254, 304, 354, 403, 453], false, 3));
+    let expected: Vec<_> = (0..120u64)
+        .map(|n| {
+            let begin = (n * 4375).div_ceil(176);
+            let end = ((n + 1) * 4375).div_ceil(176);
+            let area: i64 = (begin..end)
+                .map(|at| match at {
+                    762..911 => -32768,
+                    911..1060 => -16384,
+                    1060..1209 => 0,
+                    1209..1358 => 32512,
+                    _ => 0,
+                })
+                .sum();
+            [(area / (end - begin) as i64) as i16; 2]
+        })
+        .collect();
+    assert_eq!(whole.2, expected);
+    assert_eq!(whole.3.len(), 1);
+}

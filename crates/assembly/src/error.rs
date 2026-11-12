@@ -12,6 +12,24 @@ use crate::device::DeviceId;
 /// test can assert the exact failure a malformed config produces.
 #[derive(Clone, Debug, PartialEq, Eq, Error)]
 pub enum ConfigError {
+    /// SB16 resources must match its byte-DMA ISA wiring and DSP decode.
+    #[error("invalid SB16 resources for {device:?}: bases 220h/240h/260h/280h, IRQ 2/5/7/10, DMA 0/1/3 and four DSP byte ports required")]
+    InvalidSb16Resources {
+        /// Card with inconsistent wiring.
+        device: crate::DeviceId,
+    },
+    /// Two devices cannot own the same DMA channel on one controller.
+    #[error("DMA channel {channel} on {controller:?} is shared by {a:?} and {b:?}")]
+    DmaConflict {
+        /// First requester.
+        a: crate::DeviceId,
+        /// Second requester.
+        b: crate::DeviceId,
+        /// Shared controller.
+        controller: crate::DeviceId,
+        /// Channel both requesters own.
+        channel: u8,
+    },
     /// A forced board switch position needs a matching installed adapter.
     #[error("display switch {switch} requires an installed {}", .switch.required_card_class())]
     DisplaySwitchUnavailable {

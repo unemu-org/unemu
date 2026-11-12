@@ -99,7 +99,7 @@ named_values! {
     /// Card spellings, independent of the eventual device assembler.
     CardKind, "card kind" {
         Mda => "mda", VgaText => "vga-text", Vga => "vga", Uart16550 => "uart-16550",
-        Fdc765 => "fdc-765", Ide => "ide",
+        Fdc765 => "fdc-765", Ide => "ide", Sb16 => "sb16",
     } reserved {
         "hercules" => "needs a hercules display card model",
         "cga" => "needs a cga display card model",
@@ -113,7 +113,6 @@ named_values! {
         "sb1" => "needs a sb1 sound card model",
         "sb2" => "needs a sb2 sound card model",
         "sbpro" => "needs a sbpro sound card model",
-        "sb16" => "needs a sb16 sound card model",
         "gus" => "needs a gus sound card model",
         "mpu-401" => "needs an MPU-401 sound card model",
         "covox" => "needs a covox sound card model",

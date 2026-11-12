@@ -379,7 +379,6 @@ fn all_reserved_model_and_kind_names_have_specific_errors() {
                 "sb1",
                 "sb2",
                 "sbpro",
-                "sb16",
                 "gus",
                 "mpu-401",
                 "covox",

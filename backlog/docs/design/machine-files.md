@@ -491,6 +491,8 @@ Common fields:
 | `id` | string | Unique key for `extends` and messages. Defaults to the kind (`"fdc-765"`); repeated ids are refused. |
 | `kind` | string | Required, unless `extends` already defined a card with this `id`. |
 | `port` | u16 | The base port, where the kind is relocatable. |
+| `base` | u16 | SB16-only DSP base; default 220h; see [SB16](#sb16). |
+| `dma8` | u8 | SB16-only byte-DMA channel; default 1. |
 | `controller_model` | `"ata"` or `"at-adapter"` | Only for `ide`; defaults to `"ata"`. Merges by card id like `port`. |
 | `irq` | `0..15` or `"none"` | An IRQ on a kind with no interrupt source is an error. |
 | `dma` | `0..3` or `"none"` | Only for kinds that master DMA. |
@@ -513,6 +515,7 @@ honours it. The MDA, VGA and µPD765 models decode fixed absolute ports (READ,
 | `vga` | `Vga` | `0x3B4–0x3B5`, `0x3BA`, `0x3C0–0x3C2`, `0x3C4–0x3CA`, `0x3CC`, `0x3CE–0x3CF`, `0x3D4–0x3D5`, `0x3DA` | no | — | — | `0xA0000`, 128 KiB | — |
 | `uart-16550` | `Uart` | `base…base+7`, base `0x3F8` | yes, any base ≤ `0xFFF8` | 4 for `0x3F8` and `0x3E8`, 3 for `0x2F8` and `0x2E8`, otherwise required | — | — | — |
 | `fdc-765` | `Fdc` | `0x3F0–0x3F7`; with primary IDE: `0x3F0–0x3F5`, `0x3F7` | no (`0x370` is reserved) | 6 | 2 | — | `unit` 0–1 |
+| `sb16` | `Sb16` | `base+6`, `base+Ah`, `base+Ch`, `base+Eh`; base `0x220` | `base`: 220h/240h/260h/280h | 5 (2/5/7/10 allowed) | `dma8`: 1 (0/1/3 allowed) | — | — |
 | `ide` | `Ide` | `0x1F0` word data, `0x1F1–0x1F7` byte registers, `0x3F6` byte control | `0x1F0` or `0x170`; the control port is base + `0x206` | 14 (15 for `0x170`) | — (PIO) | — | `channel` master, slave |
 
 `vga` selects register-level VGA with guest fonts and DAC colours, and starts
@@ -1380,7 +1383,7 @@ spike owns the board-model and firmware entries.
 | `[memory]` | `shadow`, `umb`, `upper = "ram" \| "open-bus"` |
 | `[firmware]` | `basic = { image, base }` (ROM BASIC); `provides` values `video`, `serial`, `network-boot` |
 | `[[card]] kind`, video | `hercules`, `cga`, `ega`, `svga-et4000`, `svga-s3-trio64`, `voodoo`, `voodoo2`, `banshee` |
-| `[[card]] kind`, sound | `adlib`, `sb1`, `sb2`, `sbpro`, `sb16`, `gus`, `mpu-401`, `covox` |
+| `[[card]] kind`, sound | `adlib`, `sb1`, `sb2`, `sbpro`, `gus`, `mpu-401`, `covox` |
 | `[[card]] kind`, disks | `xt-mfm`, `xt-rll`, `xt-ide`, `xt-cf-lite` |
 | `[[card]] kind`, ports and others | `lpt`, `game-port`, `bus-mouse`, `ems`, `ne2000` |
 | `[[card]]` fields | `monitor = "green" \| "amber" \| "white" \| "color"` (display cards), `rom = { image, base }` (a card-owned ROM), `mmio` (relocation) |
@@ -1532,3 +1535,32 @@ Ordered; each bead is narrow and lands green.
     *Accept:* sink selection moves to the observation setup, and goldens are
     unchanged.
     *Depends on:* 8.
+
+
+## SB16
+
+An optional schema-1 ISA card supplies 8-bit DMA output; it is absent from all
+presets. TOML and YAML use the same fields:
+
+```toml
+[[card]]
+kind = "sb16"
+base = 0x220
+irq = 5
+dma8 = 1
+```
+
+Defaults are 220h, IRQ5 and DMA1. Allowed bases are 220h/240h/260h/280h
+(**ASSUMED** jumper-style subset). IRQ2/5/7/10 and DMA0/1/3 follow Creative's
+*Sound Blaster Series Hardware Programming Guide*, §2 Configuring DMA and
+Interrupt Settings. IRQ2 selects the AT slot's IRQ9 route. The `base` and `dma8`
+keys are SB16-only; `port` and `dma` are rejected for this card. DMA16 is not
+accepted yet. Layered files may override base/irq/dma8 by card id, or remove the
+card using the existing keyed-card rules.
+
+Only base+6, +Ah, +Ch and +Eh are claimed. Mixer, 16-bit acknowledgement and OPL
+ports float at FFh. Port and IRQ conflicts use existing diagnostics; duplicate
+DMA ownership on one controller reports both card identities. Invalid resources
+also retain the owning card's source location. See [audio.md §SB16 8-bit
+output](audio.md#sb16-8-bit-output) for supported commands, exact rates,
+FIFO policy, IRQ timing and exclusions.

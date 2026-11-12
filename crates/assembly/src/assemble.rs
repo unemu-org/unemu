@@ -276,6 +276,7 @@ fn assemble_with_cpu_and_catalogue(
     let a20_line = A20Line::default();
     let pit = devices::pit8253::SharedPit8253::default();
     let mut persistence = Vec::new();
+    let mut native_audio = Vec::new();
 
     for dc in &config.devices {
         let boxed: Box<dyn Device> = match &dc.kind {
@@ -375,6 +376,12 @@ fn assemble_with_cpu_and_catalogue(
                     .and_then(|ata| ata.with_resources(cfg.base, cfg.control, cfg.irq()))
                     .map_err(|_| ConfigError::InvalidIdeResources { device: dc.id })?,
             ),
+            DeviceKind::Sb16(cfg) => {
+                let (dsp, source) =
+                    crate::sb16_audio::build(cfg.base, dc.dma.map_or(1, |dma| dma.channel));
+                native_audio.push(source);
+                Box::new(dsp)
+            }
             DeviceKind::Dma(_) => Box::new(Dma8237::new()),
             DeviceKind::DmaWord(_) => Box::new(Dma8237::new_at_word()),
             DeviceKind::AbsentCoprocessor => Box::new(Absent80287::new()),
@@ -393,6 +400,10 @@ fn assemble_with_cpu_and_catalogue(
             writer.record_level(at, [if high { 16384 } else { 0 }; 2]);
         });
         observation.add_audio_source(device::VClock::ZERO, Box::new(source));
+    }
+
+    for source in native_audio {
+        observation.add_audio_source(device::VClock::ZERO, source);
     }
 
     // The machine needs exactly one controller. If the config has no PIC (an

@@ -148,6 +148,8 @@ timed_table! {
         pub kind: Option<CardKind>,
         pub controller_model: Option<ControllerModel>,
         pub port: Option<u16>,
+        pub base: Option<u16>,
+        pub dma8: Option<u8>,
         pub irq: Option<NumberOrNone<15>>,
         pub dma: Option<NumberOrNone<3>>,
         pub drives: Option<Vec<Drive>>,

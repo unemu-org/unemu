@@ -24,6 +24,24 @@ completed-transaction-before-INTA ordering, IF/STI/SS readiness, exact active
 caps, and halted event/bound jumps. Their ordered streams must match without
 normalization, including `FinalState` (RAM hashes, registers, saved device state).
 
+**DMA at device deadlines.** Every device-deadline visit ticks due devices, samples their interrupt outputs,
+and settles pending DMA, including immediate follow-on requests, **before the
+clock advances again**. This also applies when one CPU step spans several PIT
+clocks. For example, a request at clock 2 within a step ending at clock 10 must
+complete with device time 2, not 10. Native audio writes therefore reach their
+source buffers at the sample boundary; late data cannot fill an already observed
+interval. The rule applies to any DMA requester and is shared by the deadline
+engine and the per-clock oracle.
+
+DMA completion can update an IRQ level at that deadline. The CPU still accepts
+interrupts only at completed instruction boundaries, after the stopping
+instruction's bus effects and all pending DMA have settled. Moving a DMA byte
+at a device deadline does not inject an interrupt inside an instruction.
+The machine-crate mock regression
+`dma_deadline_inside_a_multi_clock_cpu_step_completes_before_clock_advances`
+pins both initial and immediate follow-on completions to clock 2 in a ten-clock
+CPU step.
+
 Access coupling is declared by `DeviceConfig.access_dependents`: an access to
 one device can change the listed devices' next events. Assembly resolves roles
 to bus indices and calls `Bus::add_access_coupling`. Before each port byte,

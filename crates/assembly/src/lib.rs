@@ -54,6 +54,7 @@ mod output;
 mod persistence;
 mod presets;
 mod run;
+mod sb16_audio;
 mod validate;
 
 pub use assemble::{
@@ -67,7 +68,7 @@ pub use cpu::{CpuChip, CpuConfig, FpuChip, ResetSpec, SegmentSeed};
 pub use device::{
     CmosCfg, CmosRam, DebugConsoleCfg, DeviceConfig, DeviceId, DeviceKind, DmaCfg, DmaSpec, FdcCfg,
     FwCfgCfg, I8042Cfg, IdeCfg, MdaTextCfg, NvramSource, PicCfg, PitCfg, PortWindow, PostPortCfg,
-    RtcStart, SysControlCfg, UartCfg, VgaCfg, VgaTextCfg,
+    RtcStart, Sb16Cfg, SysControlCfg, UartCfg, VgaCfg, VgaTextCfg,
 };
 pub use devices::ata::AtaControllerModel;
 pub use devices::FwCfgFile;

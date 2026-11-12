@@ -386,6 +386,15 @@ impl SampleBuffer {
             return Err(AudioError::HistoryOrder);
         }
         let last = last_sample_start(origin, period, 0, frames.len())?;
+        // Several device writes can share one PIT clock. The replaced segment
+        // then has no duration, so retaining it would grow history indefinitely.
+        if samples
+            .segments
+            .back()
+            .is_some_and(|segment| segment.origin == origin)
+        {
+            samples.segments.pop_back();
+        }
         if let Some(previous) = samples.segments.back_mut() {
             previous.end = Some(previous.end.map_or(origin, |end| end.min(origin)));
         }

@@ -409,6 +409,12 @@ impl<R: ImageReader> Context<'_, R> {
                 "port override is not supported by this fixed-port card kind",
             ));
         }
+        if kind != v1::CardKind::Sb16 && (card.base.is_some() || card.dma8.is_some()) {
+            return Err(self.error(&field, "base and dma8 are only supported by sb16 cards"));
+        }
+        if kind == v1::CardKind::Sb16 && card.dma.is_some() {
+            return Err(self.error(&format!("{field}.dma"), "sb16 uses dma8"));
+        }
         let mut device = match kind {
             v1::CardKind::Mda => {
                 mmio.push(MmioWindow::new(0xB0000, 0x8000, DeviceId::Mda));
@@ -452,6 +458,17 @@ impl<R: ImageReader> Context<'_, R> {
                 );
                 device.irq = irq;
                 device
+            }
+            v1::CardKind::Sb16 => {
+                let cfg = assembly::Sb16Cfg {
+                    base: card.base.unwrap_or(0x220),
+                };
+                DeviceConfig::new(DeviceId::Sb16, DeviceKind::Sb16(cfg), cfg.port_windows())
+                    .with_irq(5)
+                    .with_dma(DmaSpec {
+                        controller: DeviceId::Dma,
+                        channel: card.dma8.unwrap_or(1),
+                    })
             }
             v1::CardKind::Fdc765 => DeviceConfig::new(
                 DeviceId::Fdc,
@@ -704,7 +721,8 @@ impl<R: ImageReader> Context<'_, R> {
             FirmwareReset { .. } => vec!["cpu".into()],
             SystemBiosOverlapsRam { .. } => vec!["memory".into(), self.bios_source_field().into()],
             DuplicateDeviceId(id) | MmioDeviceMissing(id) => device_fields(&[*id]),
-            InvalidIdeResources { device }
+            InvalidSb16Resources { device }
+            | InvalidIdeResources { device }
             | InvalidDebugConsoleResources { device }
             | InvalidSysCtrlPortAResources { device }
             | InvalidFwCfgResources { device }
@@ -729,7 +747,8 @@ impl<R: ImageReader> Context<'_, R> {
             | BoardCardIrq { device, .. }
             | BoardCardDma { device, .. }
             | BoardCardDmaController { device, .. } => device_fields(&[*device]),
-            DuplicatePicFace { a, b, .. }
+            DmaConflict { a, b, .. }
+            | DuplicatePicFace { a, b, .. }
             | PortOverlap { a, b, .. }
             | PortOverlapDecodeOrder { a, b, .. }
             | MmioOverlap { a, b, .. } => device_fields(&[*a, *b]),
@@ -894,6 +913,7 @@ fn kind_name(kind: v1::CardKind) -> &'static str {
         v1::CardKind::Uart16550 => "uart-16550",
         v1::CardKind::Fdc765 => "fdc-765",
         v1::CardKind::Ide => "ide",
+        v1::CardKind::Sb16 => "sb16",
     }
 }
 
@@ -1237,6 +1257,104 @@ mod tests {
             image_paths: Vec::new(),
             options: assembly::AssemblyOptions::default(),
             bios_parts: false,
+        }
+    }
+
+    fn sb16_config(cards: &str) -> Result<MachineConfig, LowerError> {
+        struct Rom;
+        impl ImageReader for Rom {
+            fn read(&mut self, _: &Path) -> io::Result<Vec<u8>> {
+                Ok(vec![0xF4; 32768])
+            }
+        }
+        let input = format!(
+            "schema=1\n[board]\nmodel='ibm-5170'\n[firmware.bios]\nimage='synthetic.bin'\n{cards}"
+        );
+        let document = crate::parse_toml("machine.toml", &input).unwrap();
+        let origins = Origins::from_toml("machine.toml", &input).unwrap();
+        lower(
+            &document,
+            &origins,
+            &mut Rom,
+            assembly::AssemblyOptions {
+                allow_unlisted_firmware: true,
+            },
+        )
+    }
+
+    #[test]
+    fn sb16_optional_defaults_and_all_valid_resources() {
+        assert!(!sb16_config("")
+            .unwrap()
+            .devices
+            .iter()
+            .any(|d| d.id == DeviceId::Sb16));
+        let config = sb16_config("[[card]]\nkind='sb16'\n").unwrap();
+        let dsp = config
+            .devices
+            .iter()
+            .find(|d| d.id == DeviceId::Sb16)
+            .unwrap();
+        assert_eq!(
+            dsp.kind,
+            DeviceKind::Sb16(assembly::Sb16Cfg { base: 0x220 })
+        );
+        assert_eq!(dsp.irq, Some(5));
+        assert_eq!(dsp.dma.unwrap().channel, 1);
+        assert_eq!(
+            dsp.ports.iter().map(|p| p.start).collect::<Vec<_>>(),
+            [0x226, 0x22A, 0x22C, 0x22E]
+        );
+        for base in [0x220, 0x240, 0x260, 0x280] {
+            for irq in [2, 5, 7, 10] {
+                for dma in [0, 1, 3] {
+                    let config = sb16_config(&format!(
+                        "[[card]]\nkind='sb16'\nbase={base}\nirq={irq}\ndma8={dma}\n"
+                    ))
+                    .unwrap();
+                    let dsp = config
+                        .devices
+                        .iter()
+                        .find(|d| d.id == DeviceId::Sb16)
+                        .unwrap();
+                    assert_eq!(
+                        dsp.interrupt_outputs().next(),
+                        Some((0, if irq == 2 { 9 } else { irq }))
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn sb16_invalid_resources_and_port_irq_dma_conflicts_have_card_origins() {
+        for field in [
+            "base=0x230",
+            "irq=3",
+            "irq='none'",
+            "dma8=2",
+            "dma8=4",
+            "port=0x220",
+            "dma=1",
+        ] {
+            let error =
+                sb16_config(&format!("[[card]]\nid='sound'\nkind='sb16'\n{field}\n")).unwrap_err();
+            assert!(
+                error.to_string().contains("card[sound]"),
+                "{field}: {error}"
+            );
+        }
+        for card in [
+            "kind='uart-16550'\nport=0x226\nirq=4",
+            "kind='uart-16550'\nirq=5",
+            "kind='fdc-765'\ndma=1",
+        ] {
+            let error = sb16_config(&format!(
+                "[[card]]\nid='sound'\nkind='sb16'\n[[card]]\nid='other'\n{card}\n"
+            ))
+            .unwrap_err();
+            assert!(error.to_string().contains("card[sound]"), "{error}");
+            assert!(error.to_string().contains("card[other]"), "{error}");
         }
     }
 

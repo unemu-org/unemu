@@ -1202,9 +1202,10 @@ fn real_mode_sti_nop_accepts_before_the_next_device_deadline() {
     }
 }
 
-/// A bus write queues DMA, and its first completion queues immediate follow-on
+/// A bus write or deadline queues DMA; its first completion queues immediate follow-on
 /// work. Only the second completion raises the wired line (§7.7).
 struct DmaTrigger {
+    deadline: Option<VClock>,
     queued: bool,
     completions: std::rc::Rc<std::cell::Cell<u8>>,
     now: VClock,
@@ -1227,12 +1228,15 @@ impl Device for DmaTrigger {
     fn mmio_write(&mut self, _: u64, _: u8, _: u64) -> Result<(), device::DeviceError> {
         Ok(())
     }
-    fn tick(&mut self, _: VClock) {}
-    fn sync(&mut self, now: VClock) {
+    fn tick(&mut self, now: VClock) {
         self.now = now;
+        if self.deadline.is_some_and(|at| at <= now) {
+            self.deadline = None;
+            self.queued = true;
+        }
     }
     fn next_event(&self, _: VClock) -> NextEvent {
-        NextEvent::Dormant
+        self.deadline.map_or(NextEvent::Dormant, NextEvent::At)
     }
     fn irq_pending(&self) -> bool {
         self.completions.get() == 2
@@ -1294,6 +1298,7 @@ fn out_drains_dma_and_follow_on_completion_before_inta() {
         vec![
             Box::new(shared.clone()),
             Box::new(DmaTrigger {
+                deadline: None,
                 queued: false,
                 completions: completions.clone(),
                 now: VClock::ZERO,
@@ -1676,4 +1681,58 @@ fn access_error_survives_follow_on_clock_exhaustion() {
             );
         }
     }
+}
+
+#[test]
+fn dma_deadline_inside_a_multi_clock_cpu_step_completes_before_clock_advances() {
+    let completed_at = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let cpu = MockCpu::new(Vec::new()).with_step_program(vec![step(
+        1,
+        1,
+        CpuStop::BudgetExhausted,
+        false,
+    )]);
+    let mut controller = devices::Dma8237::new();
+    for (port, byte) in [
+        (0x0C, 0),
+        (4, 0),
+        (4, 0),
+        (5, 1),
+        (5, 0),
+        (0x0B, 0x46),
+        (0x0A, 2),
+    ] {
+        controller.port_write(port, 1, byte).unwrap();
+    }
+    let bus = Bus::new(
+        vec![
+            Box::new(DmaTrigger {
+                deadline: Some(VClock(2)),
+                queued: false,
+                completions: Default::default(),
+                now: VClock::ZERO,
+                completed_at: completed_at.clone(),
+            }),
+            Box::new(controller),
+        ],
+        DecodeMap::default(),
+    );
+    let mut machine = Machine::new(
+        cpu,
+        bus,
+        Box::new(chipset::NoInterruptController),
+        Vec::new(),
+        None,
+    )
+    .with_cpu_rate(NonZeroU64::new(1).unwrap(), NonZeroU64::new(10).unwrap())
+    .with_dma_wirings(vec![DmaWiring {
+        requester: 0,
+        controller: 1,
+    }]);
+    machine.run_bounded(Some(1)).unwrap();
+    assert_eq!(machine.clock(), VClock(10));
+    assert_eq!(*completed_at.borrow(), [VClock(2), VClock(2)]);
+    let controller = machine.bus.device_mut(1).unwrap();
+    assert_eq!(controller.port_read(8, 1).unwrap() & 4, 4);
+    assert_eq!(controller.port_read(4, 1).unwrap(), 2);
 }

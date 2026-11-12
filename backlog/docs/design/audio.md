@@ -4,8 +4,8 @@ The `audio` crate is the audio swap layer beside `video`. It provides an
 `AudioSink`, an integer mixer and headless capture, implementing rules 1–4 of
 [decision-20](../../decisions/decision-20%20-%20Audio%20through%20a%20virtual-time%20AudioSink%20seam%20with%20host%20output%20in%20the%20window.md).
 The AT PC speaker is the first sound-producing device. The window uses cpal
-for host playback; sound-card registers, DMA, analogue filtering and synthesis
-remain separate work. The audio crate itself needs only the existing `device`
+for host playback. An optional SB16 supplies byte-DMA PCM; analogue filtering
+and synthesis remain separate work. The audio crate itself needs only the existing `device`
 and `thiserror` workspace dependencies.
 
 ## Output format
@@ -326,6 +326,124 @@ rendering demand; unmute
 refreshes speaker-history demand before the next run so newly generated edges
 survive until observation. Automated validation never plays sound; physical
 playback and device support require a manual host check.
+
+## SB16 8-bit output
+
+The optional `sb16` ISA card implements Creative's *Sound Blaster Series
+Hardware Programming Guide*, §2 DSP I/O Ports, Resetting the DSP,
+Acknowledging DSP Interrupts and Configuring DMA and Interrupt Settings;
+§3 Digitized Sound I/O Programming; §6 commands 10h, 14h, 1Ch, 40h, 41h,
+48h, Cxh, D0h/D4h, D1h/D3h/D8h, DAh and E1h. No preset installs it.
+DSP version **4.05** follows the physical SB16 reported in Epson Product
+Support Bulletin S-0172, Software, page 4
+([primary source](https://files.support.epson.com/pdf/e4p___/e4p___ps.pdf)).
+
+The four claimed byte ports are base+6 (reset), +Ah (read reply), +Ch (write
+command/data, read busy) and +Eh (read availability and acknowledge byte IRQ).
+Mixer +4/+5, word IRQ acknowledge +Fh and OPL ports remain unclaimed and
+read FFh from the empty bus. Creative's §2 Resetting the DSP recommends a
+3 µs reset hold and describes typical 100 µs initialization. This model clears
+state on writing 1 and accepts **any 1→0 edge**, including two writes at the same
+PIT clock. AAh becomes available **immediately (zero initialization delay)** on
+that edge. This is an **ASSUMED compatibility policy**: counted driver polling
+loops can exhaust before one PIT clock elapses on a fast CPU/PIT ratio. A physical
+minimum pulse or fixed 120-clock delay would make those drivers miss the card.
+Busy is set only while reset is held; other writes and replies are immediate
+(**ASSUMED**, DSP execution latency is unmodelled). Reset clears the parser,
+replies, DMA state, speaker flag and IRQ. Initial/reset defaults are 22050 Hz,
+unsigned mono and a 65536-byte legacy auto-init block (**ASSUMED**).
+Unsupported DSP commands consume all known argument bytes and perform no
+operation or reply. The parser recognizes Creative §6's input, ADPCM, silence,
+MIDI and 16-bit DMA argument lengths as well as SB16 ASP/test-command lengths
+(**ASSUMED** for 04h/05h/08h/0Eh/0Fh/F9h/FAh), cross-checked against
+[DOSBox-X's SB16 command-length table](https://github.com/joncampbell123/dosbox-x/blob/master/src/hardware/sblaster.cpp).
+For example, Bxh consumes mode and two length bytes; 42h/80h consume two;
+38h/E2h/E4h consume one; 2Ch/98h/99h take none. E4h/E8h remain no-ops.
+Unknown opcodes consume one byte, and none of these commands emits a diagnostic.
+The reply queue keeps 16 oldest bytes
+and drops excess replies (**ASSUMED** bounded buffer policy). Empty reply reads
+return FFh and unused status bits read zero (**ASSUMED**).
+
+Time constant `tc` gives the exact frame period
+`105 * (256 - tc) * channels / 88` PIT clocks, where channels is one for
+legacy mono and two for Cxh stereo. The time constant byte remains unclamped,
+including 255 (**ASSUMED**); explicit-Hz limits apply only to 41h.
+Command 41h accepts 5000–45000 Hz and gives
+`105000000 / (88 * Hz)` clocks per frame, without the stereo factor.
+Out-of-range explicit rates clamp to 5000–45000 Hz (Creative §6 41h defines
+the range; clamping is the model's compatibility policy). A live 40h/41h change
+retains the held sample until its existing boundary, then starts the new
+rational grid there, without inserting a silent period. Absolute boundaries use
+`origin + ceil(index * numerator / denominator)` with integer u128 products.
+There is no floating point or repeated addition of a rounded period.
+
+**ASSUMED playback details:** one frame of staging, one byte mono or two bytes
+stereo, fetched at the playback boundary. The first frame starts one native
+period after the command. Cxh's FIFO bit is decoded but does not enlarge this
+staging depth. The machine settles DMA before leaving each device deadline,
+including deadlines inside a slow CPU instruction. Short DMA service can finish
+a stereo pair in a second service at the same timestamp; a zero-byte service
+renders silence and retries at the next native boundary. No bytes are fabricated
+into the DSP transfer count. Odd stereo blocks pad their right channel with
+silence. The 8237 owns its address/count, terminal count and auto-reload.
+DSP block lengths count bytes (the little-endian value plus one). A single-cycle
+command received during unpaused auto-init waits for the current block to drain, then
+starts on the following frame boundary, as described under 1Ch. A chained
+14h/Cxh received while an unpaused completed block's last frame is held also starts on
+that frame's existing end boundary. There is no intervening pause or phase
+restart when the sample period is unchanged. Command 48h stores a separate
+legacy auto-init size for 1Ch: single-cycle counts and Cxh's explicit auto-init
+length never overwrite it.
+
+A new DMA command received while paused clears the pause and starts a fresh
+block at the command timestamp, with its first fetch one native period later.
+This **ASSUMED compatibility policy** also discards an unfinished paused
+legacy auto-init block when replacing it with single-cycle playback. Only
+unpaused playback waits for the old frame/block to finish; a paused transfer
+cannot reach that boundary without another command.
+
+The last byte of each block asserts the configured level IRQ. Reading base+Eh
+lowers it; subsequent blocks continue even if an old IRQ remains unacknowledged
+(no counted interrupt queue). A single-cycle block or DAh drains the last
+frame and then pauses the source at the next exact boundary. Auto-init reloads
+the DSP block size independently of 8237 auto-init. D0h silences at its timestamp;
+D4h restores the held level and shifts the native origin by the paused duration,
+preserving fractional phase (**ASSUMED**, the guide only specifies stopping and
+resuming requests). D1h/D3h only update the D8h flag: on SB16 the guide explicitly
+says they have no practical effect on the output signal.
+
+Unsigned bytes map to `(byte - 128) * 256`, signed Cxh bytes to `i8(byte) * 256`;
+mono duplicates the level and stereo uses left then right. Direct DAC 10h holds
+an unsigned level from the data write until another DAC write, DMA command or
+reset (**ASSUMED** analogue reconstruction). E0h inversion and immediate F2h
+byte IRQ are compatibility probes **ASSUMED** here because this guide does not
+specify them.
+
+Assembly attaches one `RateSource`/`SampleBuffer` for the device lifetime.
+Every native frame begins a timestamped segment; the next segment clips it at
+the exact carried-phase boundary. Pauses, rates and reset keep that same source.
+The adapter latches audio-history errors for observation and prunes below the
+incomplete output-frame boundary on every unobserved producer event, even
+without facade capture calls. `SampleBuffer::push_segment` replaces a segment
+starting at the same clock, whose duration would be zero; this small audio-helper
+change bounds repeated direct-DAC writes at one clock. Its public API is unchanged.
+Hardware snapshots use model marker `SB16-8V2`, preserve partial commands, replies,
+phase, separate legacy/active block sizes, queued transfer format and auto-init
+flag, block position, staging, reset state and IRQ, and exclude trace/audio
+history. Restoring starts presentation at the restored clock without replay.
+
+The synthetic ROM golden programs channel 1 at RAM 1000h and plays bytes
+00h/40h/80h/FFh at 8000 Hz. At one retired instruction per PIT clock, the
+last DSP argument is written at clock 204, frames begin at 354/503/652/801,
+the byte IRQ rises at **801**, the handler emits one marker at **805**, and
+the source goes silent at **950**. Capture through clock 1000 produces
+**40 frames**, FNV-1a **`0eb2d059128e5341`**. Whole and split runs match an
+independent per-PIT-clock integral. A second ROM run uses three PIT clocks
+per retired step to put DMA deadlines inside CPU steps.
+
+Not modelled: 16-bit output/DMA, recording, ADPCM, high-speed legacy commands,
+CT1745 mixer/volume/resource registers, MPU-401/MIDI, OPL3, analogue filters,
+DSP execution latency and ISA contention.
 
 ## Validation
 

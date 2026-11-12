@@ -417,6 +417,9 @@ impl<C: Cpu> Machine<C> {
                 }
             }
             self.sample_irq_lines();
+            // A native audio deadline can fall inside one slow CPU step. Move
+            // its DMA bytes before advancing time again, preserving sample times.
+            self.settle(false)?;
         }
         Ok(())
     }

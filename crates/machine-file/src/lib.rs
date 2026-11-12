@@ -348,6 +348,7 @@ pub fn load_for_assembly(
                 Uart16550 => assembly::DeviceId::Uart,
                 Fdc765 => assembly::DeviceId::Fdc,
                 Ide => assembly::DeviceId::Ide,
+                Sb16 => assembly::DeviceId::Sb16,
             };
             Some((resolve::card_id(card)?.to_owned(), device))
         })

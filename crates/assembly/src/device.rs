@@ -45,6 +45,8 @@ pub enum DeviceId {
     FwCfg,
     /// uPD765 floppy-disk controller.
     Fdc,
+    /// Creative Sound Blaster 16 DSP.
+    Sb16,
     /// ATA PIO channel.
     Ide,
     /// 8237 DMA controller.
@@ -459,6 +461,28 @@ impl IdeCfg {
     }
 }
 
+/// Creative Sound Blaster 16 ISA resource selection.
+///
+/// Creative Sound Blaster Series Hardware Programming Guide, §2 DSP I/O Ports
+/// and §2 Configuring DMA and Interrupt Settings. ASSUMED: the accepted jumper-style
+/// base set is 220h/240h/260h/280h. See
+/// `backlog/docs/design/machine-files.md` §SB16.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct Sb16Cfg {
+    /// DSP base address; mixer and OPL windows remain unclaimed.
+    pub base: u16,
+}
+
+impl Sb16Cfg {
+    /// Only the four implemented DSP byte ports belong to this card.
+    pub fn port_windows(self) -> Vec<PortWindow> {
+        [6, 10, 12, 14]
+            .into_iter()
+            .map(|offset| PortWindow::single(self.base.saturating_add(offset)))
+            .collect()
+    }
+}
+
 /// 8237 DMA-controller selection (§7.7); ports live in [`DeviceConfig::ports`].
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct DmaCfg {}
@@ -498,6 +522,8 @@ pub enum DeviceKind {
     FwCfg(FwCfgCfg),
     /// uPD765 floppy controller.
     Fdc(FdcCfg),
+    /// Creative Sound Blaster 16 byte-DMA output.
+    Sb16(Sb16Cfg),
     /// ATA PIO channel.
     Ide(IdeCfg),
     /// 8237 DMA controller.
@@ -563,8 +589,21 @@ impl DeviceConfig {
     /// outputs cannot bypass IRQ ownership checks. IBM PS/2 Hardware Interface
     /// Technical Reference, Common Interfaces, "Keyboard and Auxiliary Device
     /// Controller", Interrupts: the auxiliary port has a separate IRQ12 output.
+    /// IBM Personal Computer AT Technical Reference, System Board, Interrupts:
+    /// IRQ2 is the cascade; the compatible ISA slot pin drives IRQ9 instead.
     pub fn interrupt_outputs(&self) -> impl Iterator<Item = (usize, u8)> + '_ {
-        let primary = self.irq.map(|irq| (0, irq));
+        // The AT slot's IRQ2 pin is wired to IRQ9. SB16 is currently the only
+        // card whose configuration offers IRQ2; other IRQ selections pass through.
+        let primary = self.irq.map(|irq| {
+            (
+                0,
+                if matches!(self.kind, DeviceKind::Sb16(_)) && irq == 2 {
+                    9
+                } else {
+                    irq
+                },
+            )
+        });
         let auxiliary =
             matches!(&self.kind, DeviceKind::Keyboard(cfg) if cfg.mouse).then_some((1, 12));
         primary.into_iter().chain(auxiliary)

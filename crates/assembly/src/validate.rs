@@ -165,6 +165,7 @@ impl MachineConfig {
         self.check_access_couplings()?;
         self.check_uart_bases()?;
         self.check_ide_resources()?;
+        self.check_sb16_resources()?;
         self.check_port_widths()?;
         self.check_port_overlaps()?;
         self.check_mmio_devices_present()?;
@@ -606,6 +607,27 @@ impl MachineConfig {
         Ok(())
     }
 
+    fn check_sb16_resources(&self) -> Result<(), ConfigError> {
+        for device in &self.devices {
+            if let DeviceKind::Sb16(cfg) = device.kind {
+                if !matches!(cfg.base, 0x220 | 0x240 | 0x260 | 0x280)
+                    || !matches!(device.irq, Some(2 | 5 | 7 | 10))
+                    || !matches!(
+                        device.dma,
+                        Some(crate::DmaSpec {
+                            controller: DeviceId::Dma,
+                            channel: 0 | 1 | 3
+                        })
+                    )
+                    || device.ports != cfg.port_windows()
+                {
+                    return Err(ConfigError::InvalidSb16Resources { device: device.id });
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn check_ide_resources(&self) -> Result<(), ConfigError> {
         for device in &self.devices {
             if let DeviceKind::Ide(cfg) = device.kind {
@@ -951,8 +973,18 @@ impl MachineConfig {
 
     /// Every device's DMA wiring names a controller that is present.
     fn check_dma_controllers_present(&self) -> Result<(), ConfigError> {
-        for dev in &self.devices {
+        for (index, dev) in self.devices.iter().enumerate() {
             if let Some(dma) = &dev.dma {
+                for other in &self.devices[index + 1..] {
+                    if other.dma == Some(*dma) {
+                        return Err(ConfigError::DmaConflict {
+                            a: dev.id,
+                            b: other.id,
+                            controller: dma.controller,
+                            channel: dma.channel,
+                        });
+                    }
+                }
                 if !self.devices.iter().any(|d| d.id == dma.controller) {
                     return Err(ConfigError::DmaControllerMissing {
                         requester: dev.id,

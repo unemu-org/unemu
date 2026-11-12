@@ -280,6 +280,7 @@ fn every_implemented_enum_spelling_maps_to_its_variant() {
         ("uart-16550", CardKind::Uart16550),
         ("fdc-765", CardKind::Fdc765),
         ("ide", CardKind::Ide),
+        ("sb16", CardKind::Sb16),
     ]);
     spellings(&[
         ("1.44M", DriveType::Hd144),
@@ -390,4 +391,19 @@ fn sha256_spelling_is_normalised_before_comparison() {
     .unwrap();
     assert_eq!(upper.as_str(), "ab12".repeat(16));
     assert_eq!(upper, lower);
+}
+
+#[test]
+fn sb16_toml_and_yaml_share_resource_fields() {
+    let toml = parse_toml(
+        "machine.toml",
+        "schema=1\n[[card]]\nkind='sb16'\nbase=0x240\nirq=7\ndma8=3\n",
+    )
+    .unwrap();
+    let yaml = machine_file::parse_yaml(
+        "machine.yaml",
+        "schema: 1\ncard:\n  - kind: sb16\n    base: 0x240\n    irq: 7\n    dma8: 3\n",
+    )
+    .unwrap();
+    assert_eq!(toml, yaml);
 }
