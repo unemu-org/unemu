@@ -20,8 +20,12 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   frame even without capture calls. Synthetic AT tone and toggle goldens pin PCM,
   while late device-history errors surface at the next observation and restore
   the current level in a new segment without waiting for another pin change.
-  The window now plays through cpal at 48 kHz (i16 or f32, stereo plus silent extra host channels), with a
-  200 ms capacity, 50 ms prefill/latency target and oldest-frame drops above
+  The window plays through cpal (i16 or f32, stereo plus silent extra host channels),
+  preferring 48 kHz, then a compatible device default, then the supported rate
+  nearest 48 kHz. Producer-side linear interpolation carries exact rational phase
+  across blocks; the deterministic stream stays at 48 kHz. Downsampling has no
+  anti-alias filter and can alias high frequencies. Device-rate ring frames keep
+  a 200 ms capacity, 50 ms prefill/latency target and oldest-frame drops above
   70 ms. Underruns play silence. Ctrl+Alt+M toggles host mute; unavailable or
   fatally failed output reports once and leaves
   emulation running silently. Transient cpal notifications keep playback active;

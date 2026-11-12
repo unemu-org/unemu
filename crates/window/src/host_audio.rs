@@ -19,24 +19,64 @@ use std::{
     },
 };
 
-const CAPACITY: usize = FRAMES_PER_SECOND as usize / 5;
-const TARGET: usize = FRAMES_PER_SECOND as usize / 20;
-const MARGIN: usize = FRAMES_PER_SECOND as usize / 50;
+/// Linear interpolation carries an exact rational position across input blocks.
+/// Only the producer uses this state; see audio.md §Host output for quality limits.
+struct RateConverter {
+    rate: u32,
+    previous: Option<StereoFrame>,
+    phase: u64,
+}
+
+impl RateConverter {
+    fn new(rate: u32) -> Self {
+        Self {
+            rate,
+            previous: None,
+            phase: 0,
+        }
+    }
+
+    fn process(&mut self, frames: &[StereoFrame], mut emit: impl FnMut(StereoFrame)) {
+        let rate = u64::from(self.rate);
+        for &current in frames {
+            if let Some(previous) = self.previous {
+                while self.phase <= rate {
+                    let frame = std::array::from_fn(|channel| {
+                        let left = i64::from(previous[channel]);
+                        let right = i64::from(current[channel]);
+                        (left + (right - left) * self.phase as i64 / i64::from(self.rate)) as i16
+                    });
+                    emit(frame);
+                    self.phase += u64::from(FRAMES_PER_SECOND);
+                }
+                self.phase -= rate;
+            } else {
+                emit(current);
+                self.phase = u64::from(FRAMES_PER_SECOND);
+            }
+            self.previous = Some(current);
+        }
+    }
+}
 
 struct Ring {
     frames: Box<[StereoFrame]>,
     head: usize,
     len: usize,
     primed: bool,
+    target: usize,
+    trim_threshold: usize,
 }
 
 impl Ring {
-    fn new(capacity: usize) -> Self {
+    fn new(capacity: usize, rate: u32) -> Self {
         Self {
             frames: vec![[0; 2]; capacity].into_boxed_slice(),
             head: 0,
             len: 0,
             primed: false,
+            target: (rate as usize / 20).min(capacity),
+            trim_threshold: (rate as usize * 70 / 1000).min(capacity),
         }
     }
 
@@ -54,13 +94,13 @@ impl Ring {
         self.frames[tail..tail + first].copy_from_slice(&frames[..first]);
         self.frames[..frames.len() - first].copy_from_slice(&frames[first..]);
         self.len += frames.len();
-        if self.len > (TARGET + MARGIN).min(capacity) {
-            self.discard(self.len - TARGET.min(capacity));
+        if self.len > self.trim_threshold {
+            self.discard(self.len - self.target);
         }
     }
 
     fn read(&mut self, output: &mut [StereoFrame]) -> usize {
-        if !self.primed && self.len < TARGET.min(self.frames.len()) {
+        if !self.primed && self.len < self.target {
             return 0;
         }
         self.primed = true;
@@ -97,16 +137,27 @@ fn record_stream_error(kind: cpal::ErrorKind, active: &AtomicBool, notices: &Ato
 #[derive(Clone)]
 pub(super) struct WindowAudioSink {
     ring: Arc<Mutex<Ring>>,
+    converter: Arc<Mutex<RateConverter>>,
     active: Arc<AtomicBool>,
     muted: Arc<AtomicBool>,
 }
 
 impl WindowAudioSink {
-    fn new(capacity: usize) -> Self {
+    fn new(capacity: usize, rate: u32) -> Self {
         Self {
-            ring: Arc::new(Mutex::new(Ring::new(capacity))),
+            ring: Arc::new(Mutex::new(Ring::new(capacity, rate))),
+            converter: Arc::new(Mutex::new(RateConverter::new(rate))),
             active: Arc::new(AtomicBool::new(false)),
             muted: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    fn configure(&self, rate: u32) {
+        if let Ok(mut converter) = self.converter.lock() {
+            *converter = RateConverter::new(rate);
+            if let Ok(mut ring) = self.ring.lock() {
+                *ring = Ring::new(rate as usize / 5, rate);
+            }
         }
     }
 
@@ -135,9 +186,30 @@ impl WindowAudioSink {
     }
 
     fn push(&self, frames: &[StereoFrame]) {
-        if self.enabled() {
+        if !self.enabled() {
+            return;
+        }
+        if let Ok(mut converter) = self.converter.lock() {
+            if converter.rate == FRAMES_PER_SECOND {
+                if let Ok(mut ring) = self.ring.lock() {
+                    ring.push(frames);
+                }
+                return;
+            }
+            let mut scratch = [[0; 2]; 1024];
+            let mut len = 0;
+            converter.process(frames, |frame| {
+                scratch[len] = frame;
+                len += 1;
+                if len == scratch.len() {
+                    if let Ok(mut ring) = self.ring.lock() {
+                        ring.push(&scratch);
+                    }
+                    len = 0;
+                }
+            });
             if let Ok(mut ring) = self.ring.lock() {
-                ring.push(frames);
+                ring.push(&scratch[..len]);
             }
         }
     }
@@ -153,7 +225,13 @@ impl AudioSink for WindowAudioSink {
     }
 }
 
-fn select_config(ranges: &[SupportedStreamConfigRange]) -> Option<SupportedStreamConfig> {
+fn select_config(
+    ranges: &[SupportedStreamConfigRange],
+    default: Option<&SupportedStreamConfig>,
+) -> Option<SupportedStreamConfig> {
+    let supported = |channels, rate, format| {
+        channels >= 2 && rate > 0 && matches!(format, SampleFormat::I16 | SampleFormat::F32)
+    };
     [SampleFormat::I16, SampleFormat::F32]
         .into_iter()
         .find_map(|format| {
@@ -162,6 +240,41 @@ fn select_config(ranges: &[SupportedStreamConfigRange]) -> Option<SupportedStrea
                     .then(|| range.try_with_sample_rate(FRAMES_PER_SECOND))
                     .flatten()
             })
+        })
+        .or_else(|| {
+            default
+                .filter(|config| {
+                    supported(
+                        config.channels(),
+                        config.sample_rate(),
+                        config.sample_format(),
+                    )
+                })
+                .cloned()
+        })
+        .or_else(|| {
+            ranges
+                .iter()
+                .filter(|range| {
+                    supported(
+                        range.channels(),
+                        range.min_sample_rate(),
+                        range.sample_format(),
+                    )
+                })
+                .map(|range| {
+                    range.with_sample_rate(
+                        FRAMES_PER_SECOND.clamp(range.min_sample_rate(), range.max_sample_rate()),
+                    )
+                })
+                .min_by_key(|config| {
+                    (
+                        config.sample_rate().abs_diff(FRAMES_PER_SECOND),
+                        u8::from(config.sample_format() != SampleFormat::I16),
+                        config.channels(),
+                        std::cmp::Reverse(config.sample_rate()),
+                    )
+                })
         })
 }
 
@@ -178,7 +291,7 @@ pub(super) struct HostAudio {
 impl HostAudio {
     pub(super) fn new() -> Self {
         Self {
-            sink: WindowAudioSink::new(CAPACITY),
+            sink: WindowAudioSink::new(FRAMES_PER_SECOND as usize / 5, FRAMES_PER_SECOND),
             stream: None,
             attempted: false,
             reported: false,
@@ -205,9 +318,12 @@ impl HostAudio {
             return;
         }
         self.sink.muted.store(!self.muted(), Ordering::Relaxed);
-        if let Ok(mut ring) = self.sink.ring.lock() {
-            ring.len = 0;
-            ring.primed = false;
+        if let Ok(mut converter) = self.sink.converter.lock() {
+            *converter = RateConverter::new(converter.rate);
+            if let Ok(mut ring) = self.sink.ring.lock() {
+                ring.len = 0;
+                ring.primed = false;
+            }
         }
     }
 
@@ -216,26 +332,39 @@ impl HostAudio {
             return;
         }
         self.attempted = true;
-        if let Err(error) = self.start() {
+        if let Err(error) = self.start(warnings) {
             self.sink.active.store(false, Ordering::Relaxed);
             let _ = writeln!(warnings, "audio disabled: {error}");
             self.reported = true;
         }
     }
 
-    fn start(&mut self) -> Result<(), Box<dyn Error>> {
+    fn start(&mut self, warnings: &mut impl io::Write) -> Result<(), Box<dyn Error>> {
         let device = cpal::default_host()
             .default_output_device()
             .ok_or("no default output device")?;
         let ranges: Vec<_> = device.supported_output_configs()?.collect();
-        let config = select_config(&ranges)
-            .ok_or("48 kHz output with at least two channels (i16/f32) is unavailable")?;
+        let default = device.default_output_config().ok();
+        let config = select_config(&ranges, default.as_ref())
+            .ok_or("output with at least two channels (i16/f32) is unavailable")?;
+        let rate = config.sample_rate();
+        self.sink.configure(rate);
         self.sink.active.store(true, Ordering::Relaxed);
         let stream = match config.sample_format() {
             SampleFormat::I16 => self.build_stream::<i16>(&device, config)?,
             _ => self.build_stream::<f32>(&device, config)?,
         };
         self.stream = Some(stream);
+        if rate != FRAMES_PER_SECOND {
+            let name = device
+                .description()
+                .map(|description| description.name().to_owned())
+                .unwrap_or_else(|_| "default output device".to_owned());
+            let _ = writeln!(
+                warnings,
+                "audio: converting {FRAMES_PER_SECOND} Hz to {rate} Hz for {name}"
+            );
+        }
         Ok(())
     }
 
@@ -271,7 +400,11 @@ impl HostAudio {
             }
         }
         if self.available() && !self.started {
-            let ready = self.sink.ring.lock().is_ok_and(|ring| ring.len >= TARGET);
+            let ready = self
+                .sink
+                .ring
+                .lock()
+                .is_ok_and(|ring| ring.len >= ring.target);
             if ready {
                 if let Some(stream) = &self.stream {
                     if stream.play().is_err() {

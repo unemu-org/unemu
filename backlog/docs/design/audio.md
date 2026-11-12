@@ -256,13 +256,34 @@ persistence checks and before handling a CPU reset. A pre-run capture refreshes
 consumer availability before speaker history can be pruned after enable/unmute.
 No assembly API change is needed.
 
-The supported-config search selects **48 kHz, at least two channels**, preferring
-signed i16 over f32. i16 samples pass through unchanged; f32 uses
-`sample / 32768`. Left and right occupy the first two channels; every extra
-host channel is zero. There is no resampling. A device without 48 kHz support,
-no matching format, or stream creation/playback failure leaves the window silent
-with one clear diagnostic. On macOS, opening the stream may switch the shared
-audio device to 48 kHz, affecting other applications using that device.
+The supported-config search first selects **48 kHz, at least two channels**,
+preferring signed i16 over f32. If unavailable, it accepts the device's default
+output configuration when it has at least two channels, a positive sample rate
+and i16/f32 samples. Otherwise it chooses the supported rate nearest 48 kHz
+(clamped to each range); ties prefer i16, fewer channels, then the higher rate.
+An unusable default or failure to query it does not prevent the range fallback.
+No compatible configuration or stream creation/playback failure leaves the window
+silent with one clear diagnostic. A selected rate other than 48 kHz prints one
+informational line: `audio: converting 48000 Hz to <rate> Hz for <device>`.
+On macOS, opening a 48 kHz stream may switch the shared audio device's rate,
+affecting other applications using that device.
+
+The emulated stream and headless captures remain **48,000 Hz stereo i16**.
+On the producer side, before frames enter the ring, a streaming linear
+interpolator converts to the device rate. It keeps the previous stereo frame
+and an integer fractional phase with the exact step **48000/device_rate** across
+blocks, including empty blocks; chunking cannot reset the phase or cause drift.
+The first frame is emitted unchanged at time zero. Fractional positions wait for
+the next input frame, so the unflushed tail is less than one input-frame interval
+(20.84 microseconds); no synthetic end padding is added. At 48 kHz the producer
+copies frames unchanged. Conversion uses bounded stack scratch with no per-block
+allocation and takes place outside the ring lock, never in the real-time callback.
+This inexpensive presentation converter has integer quantization and linear
+interpolation's high-frequency attenuation; it has **no anti-alias low-pass**,
+so downsampling, especially to 16 kHz, can alias content above the host Nyquist
+frequency. It is not a high-fidelity band-limited resampler and does not alter the
+deterministic mixer. The callback converts i16 to f32 as `sample / 32768` if needed.
+Left and right occupy the first two channels; every extra host channel is zero.
 
 cpal's `Xrun`, `DeviceChanged` and `RealtimeDenied` notifications leave playback
 active: the backend retains or reroutes the stream. Each kind is reported at
@@ -274,12 +295,15 @@ the next capture retries the recoverable observation interval. CPU and
 persistence failures retain their existing behavior. The Nix devShell adds
 `pkg-config` and `alsa-lib` on Linux for ALSA; macOS needs no extra system inputs.
 
-The preallocated ring retains a hard maximum of **9600 stereo frames (200 ms,
-38,400 PCM bytes)**. Playback starts after **2400 frames (50 ms)** are queued.
-An underrun plays silence and rearms the same prefill threshold. To bound clock
-drift latency, a queue exceeding **3360 frames (70 ms)** drops its oldest frames
-down to **2400 (50 ms)**. Capacity overrun also discards the oldest complete
-frames. These are presentation policies, independent of emulation.
+The preallocated ring and every queue threshold count **device-rate stereo
+frames**: capacity is `floor(device_rate * 200 / 1000)` (200 ms), prefill and
+latency target are `floor(device_rate * 50 / 1000)` (50 ms), and trimming starts
+above `floor(device_rate * 70 / 1000)` (70 ms). At 48 kHz these remain 9600,
+2400 and 3360 frames; at 44.1 kHz they are 8820, 2205 and 3087; at 16 kHz,
+3200, 800 and 1120. An underrun plays silence and rearms the same prefill threshold.
+A queue exceeding the trim threshold drops its oldest frames down to the target;
+capacity overrun also discards the oldest complete frames. These are presentation
+policies, independent of emulation.
 
 The mutex is retained because producer-side oldest-frame removal and consumer
 reads share a cursor. Each write/read critical section copies PCM in at most
@@ -297,7 +321,8 @@ and an M already held by the guest is not stolen when modifiers arrive later.
 F12 reaches the guest normally. Without an active device the title says
 **no audio** and does not advertise a mute chord; otherwise it shows
 **muted/unmuted** and the chord alongside the pointer-release hint. Mute clears
-queued audio, rearms prefill and disables this sink's rendering demand; unmute
+queued audio and interpolation history, rearms prefill and disables this sink's
+rendering demand; unmute
 refreshes speaker-history demand before the next run so newly generated edges
 survive until observation. Automated validation never plays sound; physical
 playback and device support require a manual host check.
