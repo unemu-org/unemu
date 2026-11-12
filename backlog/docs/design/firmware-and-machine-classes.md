@@ -34,9 +34,16 @@ Bare/Application Real16:
 
 MEASURED at CPU `e63cee1` and confirmed at `8bad85d`: the I286 TF probe returns AL=1, including a post-POP DS trap, so Kiselev labels it `Intel 8088 '78` and emits its segment-load warning. At the current pin, real-mode CPU
 exceptions also enter the IVT, allowing the synthetic floppy boot sector's
-CS-limit fault to reach the BIOS INT 13 handler. IBM user-ROM POST and the
-Landmark I286 stop remain TODO-MEASURE; CPL-0 event delivery does not qualify
-either firmware.
+CS-limit fault to reach the BIOS INT 13 handler. **MEASURED at CPU `fd67927`
+with locally supplied firmware:** the IBM 5170 BIOS 1985-06-10 passes POST
+cleanly and boots a 1.2 MB FreeDOS floppy to the DOS prompt. The measurement
+uses MDA with the automatic display switch, an `at-adapter` fixed-disk controller,
+derived volatile CMOS and a pinned
+RTC. Its regression test accepts FreeCOM's date/time with Enter and polls for
+the DOS prompt, recording only verdicts, checkpoints, counts, stop location and
+the final MDA-plane hash. IBM regression expectations pin this measurement;
+the Landmark I286 stop remains TODO-MEASURE, and other firmware revisions
+remain unqualified.
 
 Current memory-map policy: `ibm-5170` gets a 16 MiB VM for its fixed 24-bit
 decode, with validation of CPU width and mapping bounds. Configured RAM,
@@ -1333,9 +1340,12 @@ The generic AT comes first.
       defaults are unchanged. Synthetic tests cover the implementation; ignored
       user-ROM tests check identity and measure 1985-06-10 POST execution on the
       I286 machine-profile CPU. The POST test uses pinned RTC, volatile derived
-      NVRAM, MDA and a read-only FreeDOS A: floppy, and prints stop/checkpoints/
-      retired count/prompt presence without screen text. Expectations await the
-      supervisor; these BIOS entries remain Listed, not POST/boot-qualified.
+      NVRAM, MDA, automatic display selection, an AT fixed-disk adapter and a
+      read-only 1.2 MB FreeDOS A: floppy. It accepts date/time with Enter, polls
+      for the DOS prompt and prints stop/checkpoints/retired count/prompt verdict/
+      MDA-plane hash without screen text. Pinned expectations qualify clean POST
+      and floppy boot for 1985-06-10 at CPU `fd67927` with locally supplied
+      firmware; other revisions remain unqualified.
 
 ## Sources
 

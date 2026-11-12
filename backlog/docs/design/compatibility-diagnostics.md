@@ -390,9 +390,20 @@ above, not from the websites' descriptions.
 
 `user_rom_ibm_5170_1985_post` uses hash-discovered 1985-06-10 BIOS parts or
 an assembled image, replacing Kiselev on `preset:ibm-5170`. It selects MDA,
-a read-only `vendor/freedos/freedos.img` in A:, volatile derived NVRAM and RTC
-start `2000-01-01T00:00:00`. A 200,000,000-step budget bounds execution.
-The ignored lane skips absent user dumps and records stop kind, CS:IP and
-fault vector/error code, port-80h POST checkpoints, retired count and whether
-the MDA contains a DOS A: prompt. No screen text is emitted. TODO-MEASURE
-constants remain unset; completion and boot are not yet qualified.
+`display_switch = "auto"`, an IDE card with `controller_model = "at-adapter"`,
+and a read-only 1.2M A: drive with `vendor/freedos/freedos-1200.img`. NVRAM is
+volatile and derived; RTC start is `2000-01-01T00:00:00`. Execution waits for
+FreeCOM's date question, injects Enter twice to accept date and time, then polls
+for `A:\>` or `A:>` at the existing one-million-step cadence. A
+200,000,000-step safety cap bounds the run. The ignored lane skips absent user
+dumps; missing floppy media fails with its relative path and fetch command.
+
+**MEASURED at CPU `fd67927` with locally supplied firmware:** POST passes cleanly
+and the DOS prompt is reached. The stop is `Ok(RetiredCapReached)` at
+`0070:02AD`, with 24,872,018 retired instructions, 27,000,000 completed steps
+and virtual time 27,000,000. The DOS-prompt verdict is true. The regression
+pins the complete port-80h checkpoint sequence, stop location, retired count,
+prompt verdict and final MDA text-plane SHA-256
+`c02b5aeabf65118af62136535b8637d42a4792378d0e407463c3865debc484e7`.
+Reports retain checkpoint codes, counts, verdicts and the hash; no screen text
+is emitted. This qualifies this BIOS revision and floppy boot configuration.

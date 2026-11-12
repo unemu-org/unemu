@@ -48,10 +48,11 @@ target/
 /vendor/seabios/build/
 /vendor/seabios/bios-1.17.0-isa.bin
 # FreeDOS boot floppy: the fetched release archives, the boot-sector source clone,
-# and the assembled 1.44 MB image are rebuilt by vendor/freedos/fetch.sh, not
+# and the assembled 1.44 MB and 1.2 MB images are rebuilt by vendor/freedos/fetch.sh, not
 # checked in (FreeDOS is GPL; used unmodified as a read-only fixture).
 /vendor/freedos/build/
 /vendor/freedos/freedos.img
+/vendor/freedos/freedos-1200.img
 # XTIDE Universal BIOS AT option ROM: pinned download and padded/checksummed
 # image are rebuilt by vendor/xtide-universal-bios/fetch.sh, not checked in.
 /vendor/xtide-universal-bios/build/

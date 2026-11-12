@@ -444,7 +444,7 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   discovery and policy, including symlinks and loops, external-root configuration
   failures, partial-layout counts and downstream path redaction. External roots
   must be absolute folders of unpacked dumps. Proprietary firmware execution
-  remains unqualified.
+  remains limited to the measurements below.
 
 IBM 5170 BIOS versions 1984-01-10, 1985-06-10 and 1985-11-15 are Listed by
 assembled SHA-256. Single interleaved images and even/odd parts (including
@@ -452,12 +452,18 @@ both 1984 chip layouts) support identity checks, TOML/YAML inheritance,
 per-part pins and chip diagnostics (including partial pair swaps and exchanged
 halves). Child source overrides drop stale service declarations; known images
 use catalogue services. No proprietary bytes are distributed.
-No default firmware changes. POST, boot and guest compatibility remain
-unqualified. `user_rom_ibm_5170_1985_post` measures the 1985-06-10 BIOS on
-I286 with MDA, a read-only FreeDOS A: floppy, derived volatile CMOS and a pinned
-RTC. It prints a safe stop, port-80h checkpoints, retirement count and DOS-prompt
-presence without screen text. TODO-MEASURE expectations await local capture;
-identity tests remain available. See `vendor/user-roms/README.md`.
+No default firmware changes. **MEASURED at CPU `fd67927` with locally supplied
+firmware:** the 1985-06-10 BIOS passes POST cleanly and boots FreeDOS from a
+1.2 MB floppy to the DOS prompt.
+This does not qualify other BIOS revisions or broader guest compatibility.
+`user_rom_ibm_5170_1985_post` uses I286 with MDA, `display_switch='auto'`, an
+`at-adapter` fixed-disk controller, read-only `freedos-1200.img`, derived
+volatile CMOS and a pinned RTC. It waits for FreeCOM's date prompt, sends Enter
+for date and time, then polls for `A:\>` or `A:>`. Reports contain a safe stop,
+port-80h checkpoints, retirement count, DOS-prompt verdict and final MDA-plane
+SHA-256, without screen text. Regression expectations pin that measurement;
+identity tests remain available.
+See `vendor/user-roms/README.md` and `vendor/freedos/README.md`.
 
 ## Port 61h timing re-baseline (2026-11-11)
 
@@ -580,7 +586,8 @@ MDA cursors remain visible. POST remains
 IDE retains `41 42` between `40` and `43`. COM1 remains empty except for
 floppy boot's `42` (`B`). No firmware or media fixture is changed.
 
-IBM POST and the Landmark I286 stop keep TODO-MEASURE constants; no proprietary
+IBM POST now pins its measured regression values; the Landmark I286 stop keeps
+TODO-MEASURE constants; no proprietary
 execution result is inferred from these open-firmware runs.
 
 ## IRQ input level golden baseline (2026-11-12)

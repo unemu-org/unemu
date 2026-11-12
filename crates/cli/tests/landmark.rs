@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! User-supplied Landmark AT I286 diagnostic measurement.
+//! User-supplied Landmark AT diagnostics and IBM 5170 FreeDOS boot measurements.
 //!
 //! Landmark Research International, ROM POST User's Manual v1.2, pp. 16–24:
 //! the first twelve tests precede the protected-mode test. IBM Personal
@@ -13,8 +13,9 @@ use video::{Frame, TextGrid};
 
 use assembly::test_support::{FoundUserFirmware, TempDir};
 use assembly::{
-    AssemblyOptions, BoardModel, DeviceId, ImageSource, ObservationPolicy, ObservationRequest,
-    OutputKind, RunError, RunPolicy,
+    AssemblyOptions, BoardModel, ConsoleProbe, DeviceId, ImageSource, InjectionSchedule,
+    KeyboardStimulus, ObservationPolicy, ObservationRequest, OutputKind, RunError, RunPolicy,
+    StopCondition,
 };
 use std::{
     fmt::Write as _,
@@ -230,11 +231,16 @@ fn write_post_machine_file(
     source: &ImageSource,
     floppy: &Path,
 ) -> anyhow::Result<PathBuf> {
+    anyhow::ensure!(
+        floppy.is_file(),
+        "missing fixture vendor/freedos/freedos-1200.img — run vendor/freedos/fetch.sh"
+    );
     let file = write_machine_file(directory, source)?;
     let floppy = quoted_path(floppy)?;
-    let mut text =
-        std::fs::read_to_string(&file)?.replace("provides=[]", "provides=['floppy','fixed-disk']");
-    writeln!(text, "\n[[card]]\nid='vga-text'\nremove=true\n[[card]]\nkind='mda'\n[[card]]\nkind='fdc-765'\n[[card.drives]]\nunit=0\ntype='1.44M'\nimage={floppy}\nwrite='readonly'")?;
+    let mut text = std::fs::read_to_string(&file)?
+        .replace("provides=[]", "provides=['floppy','fixed-disk']")
+        .replace("[board.rtc]", "[board]\ndisplay_switch='auto'\n[board.rtc]");
+    writeln!(text, "\n[[card]]\nid='vga-text'\nremove=true\n[[card]]\nkind='mda'\n[[card]]\nkind='fdc-765'\n[[card.drives]]\nunit=0\ntype='1.2M'\nimage={floppy}\nwrite='readonly'\n[[card]]\nkind='ide'\ncontroller_model='at-adapter'")?;
     std::fs::write(&file, text)?;
     Ok(file)
 }
@@ -245,7 +251,7 @@ fn ibm_post_measurement_uses_mda_readonly_floppy_and_volatile_cmos() {
     let image = temporary.path().join("synthetic.bin");
     let floppy = temporary.path().join("floppy.img");
     std::fs::write(&image, vec![0xF4; 65536]).unwrap();
-    std::fs::write(&floppy, vec![0; 1_474_560]).unwrap();
+    std::fs::write(&floppy, vec![0; 1_228_800]).unwrap();
     let file =
         write_post_machine_file(temporary.path(), &ImageSource::File(image), &floppy).unwrap();
     let loaded = machine_file::load_for_assembly(
@@ -256,7 +262,18 @@ fn ibm_post_measurement_uses_mda_readonly_floppy_and_volatile_cmos() {
     )
     .unwrap();
     assert_eq!(loaded.config.board, BoardModel::Ibm5170);
+    assert_eq!(loaded.config.display_switch, assembly::DisplaySwitch::Auto);
+    assert_eq!(
+        loaded.config.primary_display().unwrap(),
+        assembly::PrimaryDisplay::Monochrome
+    );
     assert_eq!(loaded.config.drives.len(), 1);
+    assert_eq!(loaded.config.drives[0].kind.image_bytes(), 1_228_800);
+    assert!(loaded.cards.iter().any(|(_, id)| *id == DeviceId::Ide));
+    assert!(loaded.config.devices.iter().any(|device| matches!(
+        &device.kind,
+        assembly::DeviceKind::Ide(ide) if ide.model == devices::ata::AtaControllerModel::AtAdapter
+    )));
     assert_eq!(loaded.config.drives[0].write, assembly::WriteMode::ReadOnly);
     assert!(loaded.cards.iter().any(|(_, id)| *id == DeviceId::Mda));
     assert!(!loaded.cards.iter().any(|(_, id)| *id == DeviceId::Vga));
@@ -271,6 +288,23 @@ fn ibm_post_measurement_uses_mda_readonly_floppy_and_volatile_cmos() {
         .unwrap();
     assert_eq!(rtc.start, assembly::RtcStart::default());
     assert_eq!(rtc.nvram, assembly::NvramSource::Derived);
+}
+
+#[test]
+fn ibm_post_missing_floppy_reports_fetch_command_without_paths() {
+    let temporary = TempDir::new("ibm-post-missing-floppy");
+    let image = temporary.path().join("synthetic.bin");
+    std::fs::write(&image, vec![0xF4; 65536]).unwrap();
+    let error = write_post_machine_file(
+        temporary.path(),
+        &ImageSource::File(image),
+        &temporary.path().join("missing.img"),
+    )
+    .unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        "missing fixture vendor/freedos/freedos-1200.img — run vendor/freedos/fetch.sh"
+    );
 }
 
 fn expect_redacted<T, E: std::fmt::Display>(
@@ -588,11 +622,37 @@ fn user_rom_landmark_at_real_mode_prefix() {
     }
 }
 
-// TODO-MEASURE: stop, POST sequence, retired count and DOS prompt on I286.
-const IBM_GOLDEN_STOP: Option<(u16, u64)> = None;
-const IBM_GOLDEN_RETIRED: Option<u64> = None;
-const IBM_GOLDEN_POST: Option<&[u8]> = None;
-const IBM_GOLDEN_DOS_PROMPT: Option<bool> = None;
+const IBM_GOLDEN_STOP: Option<(u16, u64)> = Some((0x0070, 0x02ad));
+const IBM_GOLDEN_RETIRED: Option<u64> = Some(24_872_018);
+const IBM_GOLDEN_POST: Option<&[u8]> = Some(&[
+    0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
+    0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17,
+    0x18, 0x19, 0x1A, 0x1B, 0x1C, 0x1D, 0x1E, 0x1F, 0x20, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27,
+    0x28, 0x29, 0x2A, 0x2B, 0x2C, 0x2D, 0x2E, 0x2F, 0x30, 0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37,
+    0x38, 0x39, 0x3A, 0x3B, 0x3C, 0x3D, 0x3E, 0x3F, 0x40, 0x41, 0x42, 0x43, 0x44, 0x45, 0x46, 0x47,
+    0x48, 0x49, 0x4A, 0x4B, 0x4C, 0x4D, 0x4E, 0x4F, 0x50, 0x51, 0x52, 0x53, 0x54, 0x55, 0x56, 0x57,
+    0x58, 0x59, 0x5A, 0x5B, 0x5C, 0x5D, 0x5E, 0x5F, 0x60, 0x61, 0x62, 0x63, 0x64, 0x65, 0x66, 0x67,
+    0x68, 0x69, 0x6A, 0x6B, 0x6C, 0x6D, 0x6E, 0x6F, 0x70, 0x71, 0x72, 0x73, 0x74, 0x75, 0x76, 0x77,
+    0x78, 0x79, 0x7A, 0x7B, 0x7C, 0x7D, 0x7E, 0x7F, 0x80, 0x81, 0x82, 0x83, 0x84, 0x85, 0x86, 0x87,
+    0x88, 0x89, 0x8A, 0x8B, 0x8C, 0x8D, 0x8E, 0x8F, 0x90, 0x91, 0x92, 0x93, 0x94, 0x95, 0x96, 0x97,
+    0x98, 0x99, 0x9A, 0x9B, 0x9C, 0x9D, 0x9E, 0x9F, 0xA0, 0xA1, 0xA2, 0xA3, 0xA4, 0xA5, 0xA6, 0xA7,
+    0xA8, 0xA9, 0xAA, 0xAB, 0xAC, 0xAD, 0xAE, 0xAF, 0xB0, 0xB1, 0xB2, 0xB3, 0xB4, 0xB5, 0xB6, 0xB7,
+    0xB8, 0xB9, 0xBA, 0xBB, 0xBC, 0xBD, 0xBE, 0xBF, 0xC0, 0xC1, 0xC2, 0xC3, 0xC4, 0xC5, 0xC6, 0xC7,
+    0xC8, 0xC9, 0xCA, 0xCB, 0xCC, 0xCD, 0xCE, 0xCF, 0xD0, 0xD1, 0xD2, 0xD3, 0xD4, 0xD5, 0xD6, 0xD7,
+    0xD8, 0xD9, 0xDA, 0xDB, 0xDC, 0xDD, 0xDE, 0xDF, 0xE0, 0xE1, 0xE2, 0xE3, 0xE4, 0xE5, 0xE6, 0xE7,
+    0xE8, 0xE9, 0xEA, 0xEB, 0xEC, 0xED, 0xEE, 0xEF, 0xF0, 0xF1, 0xF2, 0xF3, 0xF4, 0xF5, 0xF6, 0xF7,
+    0xF8, 0xF9, 0xFA, 0xFB, 0xFC, 0xFD, 0x09, 0x0A, 0x0B, 0x0C, 0x0E, 0x0F, 0x32, 0x11, 0x12, 0x13,
+    0x14, 0x15, 0x16, 0x18, 0x19, 0x81, 0x85, 0x1A, 0x1B, 0x1C, 0x1D, 0x1E, 0x1F, 0x20, 0x21, 0x32,
+    0x22, 0x23, 0x23, 0x23, 0x23, 0x23, 0x23, 0x23, 0x23, 0x23, 0x23, 0x23, 0x23, 0x23, 0x23, 0x23,
+    0x23, 0x24, 0x25, 0x26, 0x27, 0x29, 0x2A, 0x2B, 0x2C, 0x2D, 0x2F, 0x30, 0x81, 0x85, 0x31, 0x31,
+    0x32, 0x31, 0x32, 0x31, 0x32, 0x31, 0x32, 0x31, 0x32, 0x31, 0x32, 0x31, 0x32, 0x31, 0x32, 0x31,
+    0x32, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x34, 0xF0, 0x81, 0x85, 0xF1, 0xB0,
+    0xF2, 0x9D, 0xF3, 0xF4, 0x95, 0x95, 0xF5, 0xF6, 0x9D, 0xF7, 0xF8, 0xF9, 0xFA, 0x35, 0x34, 0x35,
+    0x36, 0x37, 0x38, 0x3A, 0x3C, 0x3D, 0x3E, 0x3B, 0x40, 0x41, 0x43,
+]);
+const IBM_GOLDEN_DOS_PROMPT: Option<bool> = Some(true);
+const IBM_GOLDEN_TEXT_SHA256: Option<&str> =
+    Some("c02b5aeabf65118af62136535b8637d42a4792378d0e407463c3865debc484e7");
 
 #[test]
 #[ignore = "requires separately supplied proprietary firmware; measurement only"]
@@ -605,7 +665,8 @@ fn user_rom_ibm_5170_1985_post() {
         "CPU pin drifted"
     );
     let temporary = TempDir::new("ibm-post-machine");
-    let floppy = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../vendor/freedos/freedos.img");
+    let floppy =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../vendor/freedos/freedos-1200.img");
     let file = expect_redacted(
         &found,
         write_post_machine_file(temporary.path(), &found.source, &floppy),
@@ -630,7 +691,45 @@ fn user_rom_ibm_5170_1985_post() {
         temporary.path(),
         "assembling POST machine",
     );
-    let result = assembled.run_session(&run_policy(200_000_000));
+    let cap = 200_000_000;
+    let mut result = assembled.run_session(&RunPolicy {
+        retired_cap: Some(cap),
+        idle_limit: Some(cli::BIOS_IDLE_LIMIT),
+        stop: StopCondition::PromptThen {
+            console: ConsoleProbe {
+                device: DeviceId::Mda,
+            },
+            needle: cli::DOS_DATE_PROMPT.into(),
+            poll_step: cli::DOS_INTERACTIVE_POLL_STEP,
+            then_budget: 0,
+        },
+        stimuli: vec![KeyboardStimulus {
+            keyboard_index: assembled.device_index[&DeviceId::Keyboard],
+            scancodes: [cli::KEY_ENTER, cli::KEY_ENTER].concat(),
+            schedule: InjectionSchedule::AfterPrompt,
+        }],
+    });
+    let (grid, dos_prompt) = loop {
+        let capture = found.expect_redacted(assembled.capture_text(DeviceId::Mda), "capturing MDA");
+        let Frame::Text(grid) = capture.frame else {
+            panic!("POST measurement requires an MDA text frame, received pixels");
+        };
+        let dos_prompt = (0..grid.rows()).any(|row| {
+            let glyphs: Vec<_> = (0..grid.cols())
+                .map(|col| grid.cell(col, row).unwrap().glyph)
+                .collect();
+            glyphs.windows(3).any(|window| window == b"A:>")
+                || glyphs.windows(4).any(|window| window == b"A:\\>")
+        });
+        if dos_prompt
+            || !matches!(result, Ok(RunOutcome::RetiredCapReached))
+            || assembled.machine.virtual_time() >= cap
+        {
+            break (grid, dos_prompt);
+        }
+        let next = (assembled.machine.virtual_time() + cli::DOS_INTERACTIVE_POLL_STEP).min(cap);
+        result = assembled.run_session(&run_policy(next));
+    };
     let cpu = assembled.machine.cpu();
     let location = (cpu.code_segment(), cpu.reg(CpuReg::Rip));
     let retired = cpu.retired();
@@ -642,18 +741,13 @@ fn user_rom_ibm_5170_1985_post() {
             .drain_bytes(DeviceId::Post, device::ByteStreamKind::PostCheckpoints),
         "reading POST checkpoints",
     );
-    let capture = found.expect_redacted(assembled.capture_text(DeviceId::Mda), "capturing MDA");
-    let Frame::Text(grid) = capture.frame else {
-        panic!("POST measurement requires an MDA text frame, received pixels");
-    };
-    let dos_prompt = (0..grid.rows()).any(|row| {
-        let glyphs: Vec<_> = (0..grid.cols())
-            .map(|col| grid.cell(col, row).unwrap().glyph)
-            .collect();
-        glyphs.windows(3).any(|window| window == b"A:>")
-            || glyphs.windows(4).any(|window| window == b"A:\\>")
-    });
-    eprintln!("{IBM_ENTRY}: post={post:02x?}, dos_prompt={dos_prompt}");
+    let text_sha256 = assembly::test_support::text_plane_sha256(&Frame::Text(grid));
+    eprintln!("{IBM_ENTRY}: post={post:02x?}, dos_prompt={dos_prompt}, text_sha256={text_sha256}");
+    assert!(
+        matches!(result, Ok(RunOutcome::RetiredCapReached)),
+        "unexpected stop: {}",
+        run_result_summary(&result)
+    );
     if let Some((cs, ip)) = IBM_GOLDEN_STOP {
         assert_eq!(location, (u64::from(cs), ip));
     }
@@ -665,5 +759,8 @@ fn user_rom_ibm_5170_1985_post() {
     }
     if let Some(expected) = IBM_GOLDEN_DOS_PROMPT {
         assert_eq!(dos_prompt, expected);
+    }
+    if let Some(expected) = IBM_GOLDEN_TEXT_SHA256 {
+        assert_eq!(text_sha256, expected, "MDA text plane hash");
     }
 }

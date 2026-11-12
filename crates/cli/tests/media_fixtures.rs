@@ -33,6 +33,11 @@ const PINNED_SCRIPTS: &[(&str, &str, &str)] = &[
         "check_sha256 \"$OUT\" \"",
     ),
     (
+        "freedos/freedos-1200.img",
+        include_str!("../../../vendor/freedos/fetch.sh"),
+        "check_sha256 \"$OUT_1200\" \"",
+    ),
+    (
         "test386/test386.bin",
         include_str!("../../../vendor/test386/fetch.sh"),
         "check_sha256 \"$OUT\" \"",
@@ -97,6 +102,33 @@ fn fixture_pin_parser_rejects_script_format_drift() {
         assert!(parse_pin(&invalid, prefix)
             .unwrap_err()
             .contains("script format changed"));
+    }
+}
+
+#[test]
+fn freedos_floppy_fixtures_have_pinned_geometry_signature_and_hash() {
+    let pins = fixture_pins();
+    for (relative, size) in [
+        ("freedos/freedos.img", 1_474_560),
+        ("freedos/freedos-1200.img", 1_228_800),
+    ] {
+        let Some(bytes) = fixtures::fixture(relative) else {
+            continue;
+        };
+        assert_eq!(bytes.len(), size, "fixture size: {relative}");
+        assert_eq!(
+            &bytes[510..512],
+            &[0x55, 0xAA],
+            "boot signature: {relative}"
+        );
+        let hash: String = media::Header::new(&bytes, 0)
+            .unwrap()
+            .base_digest
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        let expected = pins.iter().find(|(path, _)| *path == relative).unwrap().1;
+        assert_eq!(hash, expected, "fixture SHA-256: {relative}");
     }
 }
 
