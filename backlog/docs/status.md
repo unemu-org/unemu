@@ -231,8 +231,22 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   changing the present cylinders. ST3 echoes unit/head, reports two-sided
   geometry, mounted track 0 and media write protection, and keeps READY active
   for every select. ASSUMED: an empty bay clears T0/TS/WP; FT is always clear
-  because drive faults are not modelled. Per-device module matrices record the
-  remaining unsupported cases and assumptions; changed expectations are listed in
+  because drive faults are not modelled.
+  CCR writes at 3F7h select 500/300/250 kbps (00/01/10); reserved 11 matches
+  no medium. READ ID and READ/WRITE DATA
+  report abnormal termination with ST1 missing-address-mark when the selected
+  rate differs from the medium: 500 kbps for 1.44/1.2 MB, 250 kbps for
+  720/360 KB. Fault result/IRQ occurs on the final command byte, without DMA
+  or rotational delay; DIR reads and seek/sense commands are unchanged.
+  IBM PC AT Technical Reference, Fixed Disk and Diskette Drive Adapter,
+  Diskette Control Register (3F7h), does not specify its reset value.
+  ASSUMED: device reset selects 500 kbps; DOR reset preserves the adapter
+  rate. Snapshot v4 stores it and restores v3 using 500 kbps. Separate drive
+  and medium types (360 KB media in a 1.2 MB drive at 300 kbps) and
+  rate-dependent transfer timing are not modelled.
+  WRITE DATA reports not-writable before rate or CHS errors on protected media.
+  Per-device module matrices record the remaining unsupported cases and
+  assumptions; changed expectations are listed in
   [scheduler adoption](design/scheduler.md#adoption).
 - **AT fixed-disk adapter registers:** `ide` cards accept
   `controller_model = "at-adapter"` on every board, keeping task latches

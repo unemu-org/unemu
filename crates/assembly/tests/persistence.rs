@@ -72,6 +72,7 @@ fn command(program: &mut Vec<u8>, write: bool, result: u16) {
 fn program(write: bool, count: u16) -> Vec<u8> {
     let mut program = vec![0xFA, 0xFC];
     out(&mut program, 0x3F2, 0x1C);
+    out(&mut program, 0x3F7, 2);
     if write {
         dma(&mut program, true, count);
         command(&mut program, true, 0x1000);
@@ -206,6 +207,7 @@ fn journal_and_volatile_have_identical_guest_state_at_every_boundary() {
         let mut journal = config(&temp, true, count);
         let mut guest = vec![0xFA, 0xFC];
         out(&mut guest, 0x3F2, 0x1C);
+        out(&mut guest, 0x3F7, 2);
         dma(&mut guest, true, count);
         // EOT beyond the physical track forces an abnormal result after a committed sector.
         for value in [5, 0, 0, 0, 9, 2, 10, 0x1B, 0xFF] {
@@ -368,6 +370,7 @@ fn controller_image(assembled: &mut AssembledMachine) -> Vec<u8> {
     let saved = fdc.save();
     fdc.reset();
     fdc.port_write(0x3F2, 1, 0x1C).unwrap();
+    fdc.port_write(0x3F7, 1, 2).unwrap();
     let mut image = Vec::new();
     for cylinder in 0u8..40 {
         for head in 0..2 {

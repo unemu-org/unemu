@@ -62,9 +62,38 @@
 //! | RECALIBRATE                    | `0x07` | partial  | PCN=0; empty bay: SE+EC, abnormal IRQ6 |
 //! | SENSE INTERRUPT STATUS         | `0x08` | yes      | ST0 + PCN, or invalid if idle  |
 //! | SEEK                           | `0x0F` | yes      | set present cylinder, IRQ6     |
-//! | READ ID                        | `0x4A` | partial  | mounted: synthetic R=1/N=2; empty: waits for index |
+//! | READ ID                        | `0x4A` | partial  | matching rate: synthetic R=1/N=2; empty: waits for index |
 //! | READ DATA                      | `0x06` | yes      | DMA transfer to memory, IRQ6   |
 //! | WRITE DATA                     | `0x05` | yes      | DMA transfer from memory, IRQ6 |
+//! | CCR data rate                  | `3F7h` write | yes | 500/300/250 kbps; rate mismatch faults with ST1 MA |
+//! | Rate-dependent timing          | —      | no       | transfer/ID-search delays are collapsed |
+//!
+//! IBM PC AT Technical Reference, Fixed Disk and Diskette Drive Adapter,
+//! Diskette Control Register (3F7h), p. 15: bits 1-0 select 00=500, 01=300,
+//! 10=250 kbps; 11 is unused. ASSUMED: 11 is retained but matches no medium.
+//! That section gives no reset value. Intel 82077AA datasheet, §8.2
+//! Initialization, specifies 250 kbps on hardware reset; emulators such as
+//! Bochs also use that alternative. ASSUMED: this AT adapter's power-on and
+//! Device::reset select 500 kbps to preserve the default high-density boot
+//! configuration. DOR reset preserves this adapter latch, separate from the
+//! FDC command reset (IBM reference, Digital Output Register, p. 12).
+//! The geometry describes both drive and medium: 1.44/1.2 MB record at 500 kbps,
+//! 720/360 KB at 250 kbps. A 360 KB disk in a 1.2 MB drive at 300 kbps is not
+//! representable without separate drive and medium types.
+//!
+//! NEC µPD765 datasheet, READ ID / READ DATA / WRITE DATA and Status Register 1,
+//! MA; Intel 8272A datasheet, Command Descriptions and Table 12, Status Registers:
+//! a missing ID address mark sets ST1 MA and ends abnormally. ASSUMED: a track
+//! without readable ID fields returns MA only (01h). Some references report
+//! MA|ND (05h) for READ ID / READ DATA; the distinction can affect a BIOS's
+//! INT 13h status (02h versus 04h). Rate mismatch uses the MA-only result on
+//! mounted media, at the final command byte like other pre-transfer faults,
+//! without DMA. WRITE DATA checks write protection before the ID search: NW
+//! wins over MA/ND. Otherwise MA precedes CHS-based ND, because the wrong rate
+//! prevents decoding any ID field. The two-index search delay is collapsed;
+//! empty bays still wait for index. READ ID faults use PCN/HD/R=1/N=2, the
+//! synthetic ID convention; DATA faults echo C/R/N and physical HD as below.
+//! Seek, recalibrate and sense commands do not depend on the selected rate.
 //!
 //! IBM Personal Computer AT Technical Reference, Fixed Disk and Diskette
 //! Drive Adapter, Digital Input Register (3F7h) and Interface Lines: connector
@@ -137,8 +166,10 @@
 //! and request data, and the absolute trace time base. Mounted media and wiring
 //! belong to the receiving instance and must match the saved controller. This
 //! model has no timed execution deadlines (NEC µPD765 datasheet, Execution Phase).
-//! Snapshot v3 stores the interrupt latch before the DOR gate and permits an
-//! empty-bay ID search without DMA; earlier versions are rejected. Restore
+//! Snapshot v4 appends the CCR rate encoding to v3's layout. V3 restores with
+//! the reset rate (500 kbps), because it did not retain CCR writes. V3 stores
+//! the interrupt latch before the DOR gate and permits an empty-bay ID search
+//! without DMA; versions before v3 are rejected. Restore
 //! validates the waiting opcode, full command, empty slot, and absence of
 //! results and DMA before accepting that execution phase.
 
@@ -225,6 +256,18 @@ impl FloppyGeometry {
         sectors_per_track: 9,
     };
 
+    /// Recording rate in the AT adapter's CCR encoding. The standard HD
+    /// formats use 500 kbps and DD formats 250 kbps; drive spindle speed is
+    /// not separate from medium geometry (see module coverage).
+    /// ASSUMED: custom layouts use the same density split at nine sectors.
+    fn recording_rate(&self) -> u8 {
+        if self.sectors_per_track > 9 {
+            0
+        } else {
+            2
+        }
+    }
+
     /// Total sectors described by the geometry, saturating if it exceeds `u64`.
     #[must_use]
     pub const fn sector_count(&self) -> u64 {
@@ -298,7 +341,10 @@ impl Drive {
 }
 
 /// Snapshot layout version tag.
-const SNAPSHOT_VERSION: u8 = 3;
+const SNAPSHOT_VERSION: u8 = 4;
+
+/// Assumed adapter reset rate: CCR 00 selects 500 kbps (see module coverage).
+const RESET_DATA_RATE: u8 = 0;
 
 /// ST0 bit 5: seek end (set after a completed RECALIBRATE / SEEK).
 const ST0_SEEK_END: u8 = 1 << 5;
@@ -310,6 +356,9 @@ const ST0_POLL: u8 = 0b1100_0000;
 const ST0_ABNORMAL: u8 = 0b0100_0000;
 /// ST0 bit 4 (EC): TRACK 0 was not reached within 77 recalibration steps.
 const ST0_EQUIPMENT_CHECK: u8 = 1 << 4;
+/// NEC µPD765 / Intel 8272A datasheets, Status Register 1, Missing Address
+/// Mark: no ID address mark detected after two index pulses.
+const ST1_MISSING_ADDRESS_MARK: u8 = 1;
 /// ST1 bit 2 (ND): no data — the requested sector was not found on the track.
 /// NEC µPD765 / Intel 8272A datasheets, Status Register 1, No Data.
 const ST1_NO_DATA: u8 = 1 << 2;
@@ -389,6 +438,8 @@ struct PendingWrite {
 pub struct Upd765 {
     /// Digital output register: motor-on bits, drive select, reset, DMA-enable.
     dor: u8,
+    /// Adapter CCR bits 1-0; independent of the DOR's FDC reset bit.
+    data_rate: u8,
     /// Current protocol phase.
     phase: Phase,
     /// Command opcode plus the parameter bytes collected so far.
@@ -430,6 +481,7 @@ impl Upd765 {
     pub fn new() -> Self {
         Self {
             dor: 0,
+            data_rate: RESET_DATA_RATE,
             phase: Phase::Idle,
             command: Vec::new(),
             expected: 0,
@@ -702,8 +754,12 @@ impl Upd765 {
         let drive = drive_head & 0b11;
         let head = (drive_head >> 2) & 1;
         let cylinder = self.present_cylinder[usize::from(drive)];
-        if self.drives[usize::from(drive)].is_none() {
+        let Some(media) = self.drives[usize::from(drive)].as_ref() else {
             self.phase = Phase::Execution;
+            return;
+        };
+        if self.data_rate != media.geometry.recording_rate() {
+            self.command_fault(drive, head, cylinder, 1, 2, 0, ST1_MISSING_ADDRESS_MARK);
             return;
         }
         self.st0 = (head << 2) | drive;
@@ -734,6 +790,18 @@ impl Upd765 {
             return;
         };
         let geometry = media.geometry;
+        if self.data_rate != geometry.recording_rate() {
+            self.command_fault(
+                drive,
+                head,
+                cylinder,
+                sector,
+                sector_size_code,
+                0,
+                ST1_MISSING_ADDRESS_MARK,
+            );
+            return;
+        }
 
         // An address outside the drive's geometry has no matching data field.
         if !geometry.contains(cylinder, param_head, sector) {
@@ -818,7 +886,7 @@ impl Upd765 {
         (cylinder, head, sector)
     }
 
-    /// Terminate a READ or WRITE DATA abnormally: build the seven-byte result
+    /// Terminate READ ID or READ/WRITE DATA abnormally: build the seven-byte result
     /// with the given ST0/ST1 fault bits and raise IRQ6.
     #[allow(clippy::too_many_arguments)]
     fn command_fault(
@@ -919,7 +987,8 @@ impl Upd765 {
         };
         let geometry = media.geometry;
 
-        // A write-protected disk rejects the command before any media is touched.
+        // Write protection rejects the command before the ID search, so NW
+        // takes precedence over rate/CHS faults (Intel 8272A, WRITE DATA).
         if media.write_protected() {
             self.command_fault(
                 drive,
@@ -929,6 +998,19 @@ impl Upd765 {
                 sector_size_code,
                 0,
                 ST1_NOT_WRITABLE,
+            );
+            return;
+        }
+
+        if self.data_rate != geometry.recording_rate() {
+            self.command_fault(
+                drive,
+                head,
+                cylinder,
+                sector,
+                sector_size_code,
+                0,
+                ST1_MISSING_ADDRESS_MARK,
             );
             return;
         }
@@ -1132,9 +1214,7 @@ impl Device for Upd765 {
         match port {
             DOR => self.write_dor(byte),
             DATA => self.write_data(byte),
-            // The configuration-control register selects the data rate, which this
-            // functional model does not act on.
-            DIR_CCR => {}
+            DIR_CCR => self.data_rate = byte & 3,
             // MSR is read-only; other ports are not driven.
             _ => {}
         }
@@ -1277,6 +1357,7 @@ impl Device for Upd765 {
         {
             blob.extend_from_slice(bytes);
         }
+        blob.push(self.data_rate);
         blob
     }
 
@@ -1287,7 +1368,8 @@ impl Device for Upd765 {
         };
         let mut it = snapshot.iter().copied();
         let mut next = || it.next().ok_or(bad("snapshot truncated"));
-        if next()? != SNAPSHOT_VERSION {
+        let version = next()?;
+        if !matches!(version, 3 | SNAPSHOT_VERSION) {
             return Err(bad("unsupported snapshot version"));
         }
         let dor = next()?;
@@ -1437,6 +1519,15 @@ impl Device for Upd765 {
         } else {
             None
         };
+        let data_rate = if version == SNAPSHOT_VERSION {
+            let rate = next()?;
+            if rate > 3 {
+                return Err(bad("invalid data rate"));
+            }
+            rate
+        } else {
+            RESET_DATA_RATE
+        };
         if it.next().is_some() {
             return Err(bad("trailing snapshot bytes"));
         }
@@ -1482,6 +1573,7 @@ impl Device for Upd765 {
             return Err(bad("inconsistent command phase"));
         }
         self.dor = dor;
+        self.data_rate = data_rate;
         self.phase = phase;
         self.st0 = st0;
         self.irq = irq != 0;
@@ -1515,6 +1607,266 @@ impl Device for Upd765 {
 mod tests {
     use super::*;
     use testkit::MockBus;
+
+    #[test]
+    fn data_rate_selection_masks_upper_bits_and_preserves_dir_reads() {
+        let mut bus = MockBus::new(Box::new(ready_fdc(Vec::new())));
+        for value in 0..=255 {
+            bus.port_write(DIR_CCR, 1, value).unwrap();
+            assert_eq!(bus.port_read(DIR_CCR, 1).unwrap(), 0);
+            let saved = bus.device().save();
+            assert_eq!(saved[0], 4);
+            assert_eq!(saved.last(), Some(&((value as u8) & 3)));
+        }
+    }
+
+    #[test]
+    fn data_rate_device_reset_defaults_to_500_but_dor_reset_preserves_selection() {
+        let mut bus = MockBus::new(Box::new(ready_fdc(Vec::new())));
+        assert_eq!(bus.device().save()[0], 4);
+        assert_eq!(bus.device().save().last(), Some(&0));
+        for rate in 0..4 {
+            bus.port_write(DIR_CCR, 1, rate).unwrap();
+            bus.port_write(DOR, 1, 0).unwrap();
+            assert_eq!(bus.device().save().last(), Some(&(rate as u8)));
+            bus.port_write(DOR, 1, 0x1C).unwrap();
+            assert_eq!(bus.device().save().last(), Some(&(rate as u8)));
+            bus.device_mut().reset();
+            assert_eq!(bus.device().save().last(), Some(&0));
+        }
+    }
+
+    fn check_media_data_rates(geometry: FloppyGeometry, matching: u32, opcode: u8) {
+        // Exercise both heads and every unit so fault status cannot lose HD/US.
+        let mut failures = Vec::new();
+        for rate in 0..4 {
+            for unit_head in 0..8 {
+                let drives = std::array::from_fn(|_| {
+                    Some(Drive::new(geometry, vec![0xA5; geometry.image_bytes()]))
+                });
+                let mut bus = MockBus::new(Box::new(ready_drives(drives)));
+                bus.port_write(DIR_CCR, 1, rate).unwrap();
+                let head = unit_head >> 2;
+                bus_command(&mut bus, &[0x07, unit_head]);
+                bus_command(&mut bus, &[0x04, unit_head]);
+                assert_eq!(bus_results(&mut bus, 1), [0x38 | unit_head]);
+                assert!(bus.device().irq_pending());
+                bus_command(&mut bus, &[8]);
+                assert_eq!(bus_results(&mut bus, 2), [0x20 | (unit_head & 3), 0]);
+                bus_command(&mut bus, &[0x0F, unit_head, 7]);
+                bus_command(&mut bus, &[8]);
+                assert_eq!(bus_results(&mut bus, 2), [0x20 | unit_head, 7]);
+                let bytes = if opcode == 0x4A {
+                    vec![opcode, unit_head]
+                } else {
+                    vec![opcode, unit_head, 7, head, 3, 2, 3, 0x1B, 0xFF]
+                };
+                // Completion must not precede the last command parameter.
+                bus_command(&mut bus, &bytes[..bytes.len() - 1]);
+                assert!(!bus.device().irq_pending());
+                bus_command(&mut bus, &bytes[bytes.len() - 1..]);
+                let request = bus.device_mut().take_dma_request();
+                if let Some(request) = &request {
+                    assert_eq!(request.op, DmaOp::ToMemory(vec![0xA5; SECTOR_SIZE]));
+                    assert!(!bus.device().irq_pending());
+                    bus.device_mut().dma_complete(DmaOutcome::ToMemory {
+                        transferred: SECTOR_SIZE,
+                        terminal_count: true,
+                    });
+                }
+                assert!(bus.device().irq_pending());
+                assert_eq!(
+                    bus.port_read(MSR, 1).unwrap(),
+                    u32::from(MSR_RQM | MSR_DIO | MSR_BUSY)
+                );
+                let result = bus_results(&mut bus, 7);
+                assert!(!bus.device().irq_pending());
+                let expected = if rate != matching {
+                    vec![
+                        0x40 | unit_head,
+                        1,
+                        0,
+                        7,
+                        head,
+                        if opcode == 0x4A { 1 } else { 3 },
+                        2,
+                    ]
+                } else if opcode == 0x4A {
+                    vec![unit_head, 0, 0, 7, head, 1, 2]
+                } else {
+                    vec![unit_head, 0, 0, 8, head, 1, 2]
+                };
+                if result != expected || request.is_some() != (rate == matching && opcode != 0x4A) {
+                    failures.push((rate, unit_head, result, expected));
+                }
+            }
+        }
+        assert!(failures.is_empty(), "rate/HD/US mismatches: {failures:?}");
+    }
+
+    #[test]
+    fn read_id_checks_recording_rate_for_every_standard_geometry() {
+        for (geometry, rate) in [
+            (FloppyGeometry::HD1440, 0),
+            (FloppyGeometry::HD1200, 0),
+            (FloppyGeometry::DD720, 2),
+            (FloppyGeometry::DD360, 2),
+        ] {
+            check_media_data_rates(geometry, rate, 0x4A);
+        }
+    }
+
+    #[test]
+    fn read_data_checks_recording_rate_for_every_standard_geometry() {
+        for (geometry, rate) in [
+            (FloppyGeometry::HD1440, 0),
+            (FloppyGeometry::HD1200, 0),
+            (FloppyGeometry::DD720, 2),
+            (FloppyGeometry::DD360, 2),
+        ] {
+            check_media_data_rates(geometry, rate, 0x46);
+        }
+    }
+
+    #[test]
+    fn write_data_rate_mismatch_leaves_media_unchanged() {
+        for (geometry, matching) in [
+            (FloppyGeometry::HD1440, 0),
+            (FloppyGeometry::HD1200, 0),
+            (FloppyGeometry::DD720, 2),
+            (FloppyGeometry::DD360, 2),
+        ] {
+            for rate in (0..4).filter(|&rate| rate != matching) {
+                let image = patterned(geometry, 0x93);
+                let mut bus = MockBus::new(Box::new(ready_drives([
+                    Some(Drive::new(geometry, image.clone())),
+                    None,
+                    None,
+                    None,
+                ])));
+                bus.port_write(DIR_CCR, 1, rate).unwrap();
+                bus_command(&mut bus, &[0x45, 4, 7, 1, 3, 2, 3, 0x1B, 0xFF]);
+                assert!(bus.device_mut().take_dma_request().is_none());
+                assert!(bus.device().irq_pending());
+                assert_eq!(bus_results(&mut bus, 7), [0x44, 1, 0, 7, 1, 3, 2]);
+                // A late completion must not commit data from a rejected command.
+                bus.device_mut().dma_complete(DmaOutcome::FromMemory {
+                    bytes: vec![0x5A; SECTOR_SIZE],
+                    terminal_count: true,
+                });
+                bus.port_write(DIR_CCR, 1, matching).unwrap();
+                for c in 0..geometry.cylinders as u8 {
+                    for h in 0..geometry.heads as u8 {
+                        bus_command(
+                            &mut bus,
+                            &[
+                                0x46,
+                                h << 2,
+                                c,
+                                h,
+                                1,
+                                2,
+                                geometry.sectors_per_track as u8,
+                                0x1B,
+                                0xFF,
+                            ],
+                        );
+                        let DmaOp::ToMemory(data) = bus.device_mut().take_dma_request().unwrap().op
+                        else {
+                            panic!("READ DMA direction");
+                        };
+                        let offset = geometry.chs_to_offset(c, h, 1);
+                        assert_eq!(data, image[offset..offset + data.len()]);
+                        bus.device_mut().dma_complete(DmaOutcome::ToMemory {
+                            transferred: data.len(),
+                            terminal_count: true,
+                        });
+                        bus_results(&mut bus, 7);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn write_protect_precedes_rate_mismatch_on_dd_media() {
+        for geometry in [FloppyGeometry::DD360, FloppyGeometry::DD720] {
+            for rate in 0..4 {
+                let original = vec![0xA5; SECTOR_SIZE];
+                let mut bus = MockBus::new(Box::new(ready_drives([
+                    Some(Drive::new_read_only(geometry, original.clone())),
+                    None,
+                    None,
+                    None,
+                ])));
+                bus.port_write(DIR_CCR, 1, rate).unwrap();
+                bus_command(&mut bus, &[0x45, 0, 0, 0, 1, 2, 1, 0x1B, 0xFF]);
+                assert!(bus.device_mut().take_dma_request().is_none());
+                assert!(bus.device().irq_pending());
+                assert_eq!(bus_results(&mut bus, 7), [0x40, 0x02, 0, 0, 0, 1, 2]);
+                assert!(!bus.device().irq_pending());
+                bus.device_mut().dma_complete(DmaOutcome::FromMemory {
+                    bytes: vec![0x5A; SECTOR_SIZE],
+                    terminal_count: true,
+                });
+                bus.port_write(DIR_CCR, 1, 2).unwrap();
+                assert_eq!(media_read(&mut bus, 0, 0, 1), original);
+            }
+        }
+    }
+
+    #[test]
+    fn rate_mismatch_precedes_invalid_chs_on_writable_media() {
+        for (geometry, matching) in [
+            (FloppyGeometry::HD1440, 0),
+            (FloppyGeometry::HD1200, 0),
+            (FloppyGeometry::DD720, 2),
+            (FloppyGeometry::DD360, 2),
+        ] {
+            for rate in (0..4).filter(|&rate| rate != matching) {
+                for opcode in [0x46, 0x45] {
+                    for (c, h, r) in [
+                        (geometry.cylinders as u8, 1, 1),
+                        (0, 2, 1),
+                        (0, 1, 0),
+                        (0, 1, geometry.sectors_per_track as u8 + 1),
+                    ] {
+                        let mut bus = MockBus::new(Box::new(ready_drives([
+                            Some(Drive::new(geometry, Vec::new())),
+                            None,
+                            None,
+                            None,
+                        ])));
+                        // Unreadable ID fields prevent the CHS search; MA wins ND.
+                        for (selected, st1) in [(rate, 0x01), (matching, 0x04)] {
+                            bus.port_write(DIR_CCR, 1, selected).unwrap();
+                            bus_command(&mut bus, &[opcode, 4, c, h, r, 2, r, 0x1B, 0xFF]);
+                            assert!(bus.device_mut().take_dma_request().is_none());
+                            assert!(bus.device().irq_pending());
+                            assert_eq!(bus_results(&mut bus, 7), [0x44, st1, 0, c, 1, r, 2]);
+                            assert!(!bus.device().irq_pending());
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn read_id_media_probe_rejects_300_then_accepts_500_on_1200k() {
+        let mut bus = MockBus::new(Box::new(ready_drives([
+            Some(Drive::new(FloppyGeometry::HD1200, Vec::new())),
+            None,
+            None,
+            None,
+        ])));
+        for (rate, expected) in [(1, [0x40, 1, 0, 0, 0, 1, 2]), (0, [0, 0, 0, 0, 0, 1, 2])] {
+            bus.port_write(DIR_CCR, 1, rate).unwrap();
+            bus_command(&mut bus, &[0x4A, 0]);
+            assert!(bus.device().irq_pending());
+            assert_eq!(bus_results(&mut bus, 7), expected);
+        }
+    }
 
     #[test]
     fn sense_drive_status_has_two_command_bytes_and_one_result() {
@@ -2141,9 +2493,14 @@ mod tests {
     }
 
     /// A controller with the given per-drive media, out of reset with the
-    /// DMA/interrupt path enabled and the reset polls drained.
+    /// DMA/interrupt path enabled and the reset polls drained. Select the
+    /// recording rate of drive 0; mixed-density tests must switch for other units.
     fn ready_drives(drives: [Option<Drive>; 4]) -> Upd765 {
+        let rate = drives[0]
+            .as_ref()
+            .map_or(0, |drive| drive.geometry.recording_rate());
         let mut fdc = Upd765::with_drives(drives);
+        fdc.port_write(DIR_CCR, 1, u32::from(rate)).unwrap();
         // Leave reset (bit 2), enable DMA (bit 3), motor 0 on (bit 4), drive 0.
         fdc.port_write(DOR, 1, 0x1C).unwrap();
         // The reset raises IRQ6 and queues the four polling senses; drain them so
@@ -3094,6 +3451,7 @@ mod tests {
             bus_command(&mut bus, &[0x08]);
             bus_results(&mut bus, 2);
         }
+        bus.port_write(DIR_CCR, 1, 2).unwrap();
         assert_eq!(media_read(&mut bus, 0, 0, 1), [0x66; SECTOR_SIZE]);
         assert_eq!(batches.borrow().len(), 2);
     }
@@ -3353,6 +3711,7 @@ mod tests {
         let o0 = FloppyGeometry::DD360.chs_to_offset(1, 0, 1);
         assert_eq!(d0, img0[o0..o0 + SECTOR_SIZE], "drive 0 reads 360 KB media");
 
+        fdc.port_write(DIR_CCR, 1, 0).unwrap();
         let d1 = read_sector(&mut fdc, 0x01, 1, 0, 1);
         let o1 = FloppyGeometry::HD1440.chs_to_offset(1, 0, 1);
         assert_eq!(

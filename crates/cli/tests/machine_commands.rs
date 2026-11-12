@@ -207,6 +207,7 @@ fn journal_run(fail: bool) {
         program.extend([0xBA, port as u8, (port >> 8) as u8, 0xB0, value, 0xEE]);
     };
     out(&mut program, 0x3F2, 0x1C);
+    out(&mut program, 0x3F7, 2);
     program.extend([0xBF, 0, 6, 0xB9, 0, 2, 0xB0, 0xC7, 0xF3, 0xAA]);
     for (port, value) in [
         (0x0A, 6),

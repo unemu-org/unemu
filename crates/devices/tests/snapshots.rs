@@ -847,3 +847,44 @@ checks!(
     || Box::new(Dma8237::new_at_word()),
     &[0xC4, 0xC6, 0xD0, 0xD6, 0xD8, 0xDA, 0xDC, 0xDE, 0x8B]
 );
+
+#[test]
+fn fdc_data_rate_round_trip_preserves_nondefault_and_reserved_selections() {
+    for rate in 1..4 {
+        let mut original = MockBus::new(mounted_fdc());
+        original.port_write(0x3F2, 1, 0x0C).unwrap();
+        original.port_write(0x3F7, 1, rate).unwrap();
+        let blob = original.device().save();
+        assert_eq!(blob[0], 4);
+        assert_eq!(blob.last(), Some(&(rate as u8)));
+        let mut restored = MockBus::new(mounted_fdc());
+        restored.device_mut().restore(&blob).unwrap();
+        assert_eq!(restored.device().save(), blob);
+        for bus in [&mut original, &mut restored] {
+            for byte in [0x4A, 0] {
+                bus.port_write(0x3F5, 1, byte).unwrap();
+            }
+            let result: Vec<_> = (0..7).map(|_| bus.port_read(0x3F5, 1).unwrap()).collect();
+            assert_eq!(result, [0x40, 1, 0, 0, 0, 1, 2]);
+        }
+    }
+}
+
+#[test]
+fn fdc_data_rate_previous_version_restores_with_500_kbps_default() {
+    // Literal v3 idle state: DOR=0Ch; no pending reset polls, IRQ or DMA;
+    // PCN=0, no command/results, and trace time zero. V3 has no rate byte.
+    let previous = [
+        3, 12, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    ];
+    let mut bus = MockBus::new(mounted_fdc());
+    bus.port_write(0x3F7, 1, 2).unwrap();
+    bus.device_mut().restore(&previous).unwrap();
+    assert_eq!(bus.device().save()[0], 4);
+    assert_eq!(bus.device().save().last(), Some(&0));
+    for byte in [0x4A, 0] {
+        bus.port_write(0x3F5, 1, byte).unwrap();
+    }
+    let result: Vec<_> = (0..7).map(|_| bus.port_read(0x3F5, 1).unwrap()).collect();
+    assert_eq!(result, [0, 0, 0, 0, 0, 1, 2]);
+}

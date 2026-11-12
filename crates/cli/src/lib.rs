@@ -234,8 +234,8 @@ pub const FDC_WRITE_DST: u16 = 0x0A00;
 pub const FDC_WRITE_MARKER: u8 = b'W';
 
 /// Step cap for the write/readback demo (§6). At the pinned inputs its `W`
-/// marker is written at instruction-start step 3,673 (completed at 3,674).
-/// 5,000 leaves 1,326 completed steps of margin before stopping the idle loop.
+/// marker is written at instruction-start step 3,676 (completed at 3,677).
+/// 5,000 leaves 1,323 completed steps of margin before stopping the idle loop.
 pub const FDC_WRITE_RETIRED_CAP: u64 = 5_000;
 
 /// The distinctive 512-byte sector the write demo commits to the blank floppy.
@@ -254,11 +254,12 @@ pub fn fdc_write_pattern() -> Vec<u8> {
 /// A hand-encoded 16-bit program (no assembler). The embedder seeds the segment
 /// registers and stack so the
 /// program starts straight at device setup. With a blank writable floppy in drive
-/// 0 it: brings the µPD765 out of reset (DOR: not-reset + DMA-enable + motor), then
-/// programs the 8237 channel 2 for a memory→device transfer of one 512-byte sector
-/// from [`FDC_WRITE_SRC`] and issues WRITE DATA (drive 0, C=0/H=0/R=1). The machine
-/// services the DMA on the boundary of the last parameter byte, so the sector is
-/// committed and the result phase is ready by the guest's next instruction; the
+/// 0 it: brings the µPD765 out of reset (DOR: not-reset + DMA-enable + motor),
+/// selects 250 kbps for the double-density medium, then programs the 8237 channel 2
+/// for a memory→device transfer of one 512-byte sector from [`FDC_WRITE_SRC`]
+/// and issues WRITE DATA (drive 0, C=0/H=0/R=1). The machine services the DMA
+/// on the boundary of the last parameter byte, so the sector is committed and
+/// the result phase is ready by the guest's next instruction; the
 /// guest drains the seven result bytes. It then programs channel 2 the other way
 /// (device→memory) into [`FDC_WRITE_DST`] and issues READ DATA for the same CHS,
 /// pulling the just-written sector back. Finally it compares all 512 read-back
@@ -274,6 +275,9 @@ pub const FDC_WRITE_PROGRAM: &[u8] = &[
     // ---- bring the FDC out of reset (DOR @ 0x3F2) ----
     0xB0, 0x1C,                         // mov al,0x1C            (not-reset|DMA|motor0, drive 0)
     0xBA, 0xF2, 0x03,                   // mov dx,0x03F2          (DOR)
+    0xEE,                               // out dx,al
+    0xB0, 0x02,                         // mov al,0x02            (250 kbps for DD media)
+    0xBA, 0xF7, 0x03,                   // mov dx,0x03F7          (CCR)
     0xEE,                               // out dx,al
     // ---- program 8237 ch2: memory -> device (read), src 0x0600, 512 bytes ----
     0xB0, 0x06, 0xE6, 0x0A,             // mov al,0x06 ; out 0x0A,al  (mask ch2)
@@ -1596,17 +1600,22 @@ mod tests {
         }
     }
 
+    fn hd_fdc_write_program() -> Vec<u8> {
+        let mut program = FDC_WRITE_PROGRAM.to_vec();
+        // These journal fixtures retain their HD images and need 500 kbps.
+        assert_eq!(&program[6..12], &[0xB0, 2, 0xBA, 0xF7, 3, 0xEE]);
+        program[7] = 0;
+        program
+    }
+
     #[test]
     fn journal_host_failures_are_reported_as_persistence_failures() {
         let temp = assembly::test_support::TempDir::new("cli-host-failure");
         let base = temp.path().join("base.img");
         let journal = temp.path().join("disk.upfj");
         std::fs::write(&base, vec![0; 1_474_560]).unwrap();
-        let demo = assembly::at_fdc_write(
-            FDC_WRITE_PROGRAM.to_vec(),
-            fdc_write_pattern(),
-            FDC_WRITE_SRC,
-        );
+        let demo =
+            assembly::at_fdc_write(hd_fdc_write_program(), fdc_write_pattern(), FDC_WRITE_SRC);
         let mut config = assembly::bios(vec![0xF4; 32768], Some(vec![0; 1_474_560]));
         config.board = assembly::BoardModel::Bare;
         config.cpu = demo.cpu;
@@ -1638,7 +1647,7 @@ mod tests {
             let path = temp.path();
             let base = path.join("base.img");
             let journal = path.join("disk.upfj");
-            let mut program = FDC_WRITE_PROGRAM.to_vec();
+            let mut program = hd_fdc_write_program();
             if fail {
                 program.truncate(program.len() - 3);
                 program.extend([0x0F, 0x05]);

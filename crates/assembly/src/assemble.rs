@@ -3354,6 +3354,12 @@ mod tests {
             // Direct accesses let the bare rig exercise two controller roles
             // without asking the fixed-port FDC model to relocate its registers.
             fdc.port_write(0x3F2, 1, 0x1C).unwrap();
+            let rate = if geometry == FloppyGeometry::DD_720K {
+                2
+            } else {
+                0
+            };
+            fdc.port_write(0x3F7, 1, rate).unwrap();
             for value in [0x06, 0, 0, 0, 1, 2, 1, 0x1B, 0xFF] {
                 fdc.port_write(0x3F5, 1, value).unwrap();
             }
@@ -3432,6 +3438,8 @@ mod tests {
             let _ = fdc.port_read(DATA, 1).unwrap();
             let _ = fdc.port_read(DATA, 1).unwrap();
         }
+
+        fdc.port_write(0x3F7, 1, 2).unwrap();
 
         // READ DATA at C=0 H=0 R=1 — a valid sector on a 360 KB disk. The
         // controller reads the configured drive's sector 0 and queues it for DMA.

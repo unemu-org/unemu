@@ -958,6 +958,7 @@ mod tests {
         };
         let mut program = vec![0xFA, 0xFC];
         out(&mut program, 0x3F2, 0x1C);
+        out(&mut program, 0x3F7, 2);
         for (operation, write) in [true, true, false].into_iter().enumerate() {
             for (port, value) in [
                 (0x0A, 6),
@@ -1067,6 +1068,7 @@ mod tests {
                 p.extend([0xBA, port as u8, (port >> 8) as u8, 0xB0, value, 0xEE]);
             };
             out(&mut program, 0x3F2, 0x1C);
+            out(&mut program, 0x3F7, 2);
             for (port, value) in [
                 (0x0A, 6),
                 (0x0C, 0),

@@ -185,6 +185,12 @@ the full listing/free-space text and final prompt, not the end of a budget windo
 | DIR and file-write/DIR | Injection at 10,000,000; DIR completes at 10,945,308 (945,308 steps), write/DIR at 11,167,482 (1,167,482 steps) | Command budget 3,000,000: 2,054,692 steps of DIR margin, 1,832,518 of write/DIR margin |
 | Overall BIOS/DOS | Latest measured command completion is write/DIR at 11,167,482; the fully reserved command window ends at 13,000,000 | 20,000,000: 8,832,518 after actual completion, 7,000,000 after the reserved window |
 
+**2026-11-12 FDC program update:** the guest now selects 250 kbps before DD
+media access, adding six bytes and three instructions. The current `W` OUT
+starts at 3,676 and completes at 3,677; the 5,000-step cap leaves 1,323 steps.
+The row above preserves the earlier 3,673/3,674 calibration and 1,326-step
+margin with CPU `44403dd`; the other calibration values remain historical.
+
 The policy checks remaining room before injecting keys. With a 20,000,000-step
 cap and 3,000,000-step command budget, a prompt observed **after 17,000,000**
 produces `InsufficientCommandBudget` (`PolicyFailed` in the frontend), never a

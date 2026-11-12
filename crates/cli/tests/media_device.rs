@@ -64,6 +64,7 @@ fn result(bus: &mut MockBus, count: usize) -> Vec<u8> {
 }
 fn ready(bus: &mut MockBus) {
     bus.port_write(0x3F2, 1, 0x1C).unwrap();
+    bus.port_write(0x3F7, 1, 2).unwrap();
     for _ in 0..4 {
         command(bus, &[8]);
         result(bus, 2);
