@@ -77,11 +77,12 @@ fn bios_int19_reads_boot_sector_over_the_floppy() {
 
     let run = run_bios_boot(&rom, bootable_floppy_image());
     assert_eq!(run.stop, cli::StopReason::BudgetExhausted);
+    // CMOS 32h=20h supplies the century in the BIOS RTC date 2000-01-01.
     session::assert_golden(
         &run,
         18_990_963,
         20_000_000,
-        0x9a13654e51c09b99,
+        0xbfa3c76f8f761e6b,
         0x92c581d95567fb07,
     );
 

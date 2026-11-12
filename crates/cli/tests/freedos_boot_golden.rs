@@ -56,7 +56,7 @@
 //! (C) Copyright 1995-2023 Pasquale J. Villani and The FreeDOS Project.
 //! ...
 //! FreeCom version 0.86 - WATCOMC - XMS_Swap [Dec 30 2024 22:10:51]
-//! Current date is Tue 01-01-1980
+//! Current date is Sat 01-01-2000
 //! Enter new date (mm-dd-[cc]yy):
 //! ```
 //!
@@ -122,12 +122,13 @@ fn freedos_reaches_shell_prompt() {
         )
         .unwrap(),
     );
+    // The BIOS reads 32h=20h, so FreeDOS reports Sat 01-01-2000.
     session::assert_golden(
         &run,
-        8_800_477,
+        8_800_473,
         10_000_000,
-        0xc95b91cec87e1379,
-        0xaf201c7e8acb071d,
+        0x83ffbc2844f28889,
+        0xc46f0c147c881837,
     );
 
     assert_eq!(

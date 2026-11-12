@@ -51,7 +51,7 @@
 //!  Directory of A:\
 //! KERNEL   SYS        45,868  01-01-80 12:00a
 //! COMMAND  COM        87,772  01-01-80 12:00a
-//! ZZ                       3  01-01-80 12:00a
+//! ZZ                       3  01-01-00 12:00a
 //!          3 file(s)        133,643 bytes
 //!          0 dir(s)       1,323,008 bytes free
 //! A:\>
@@ -101,12 +101,13 @@ fn freedos_writes_a_file_from_the_keyboard() {
         .unwrap(),
         &dos_write_file_script(),
     );
+    // The BIOS reads 32h=20h; FreeDOS reports Sat 01-01-2000 and stamps ZZ with year 00.
     session::assert_golden(
         &run,
-        11_766_599,
+        11_766_596,
         13_000_000,
-        0xe4c4f5de9a7f0d49,
-        0xa6601fff99236a61,
+        0x71f290c7a24fb363,
+        0x6b0404d06d7532c3,
     );
 
     // The BIOS never programs the colour card, so it keeps its power-on cursor.

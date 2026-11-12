@@ -243,10 +243,13 @@ neither triggers nor appears in replacements and takes the base image's value
 at mount. Guest reset still preserves its live value within the session.
 
 Time/date, alarms and registers A–D (00h–0Dh) come from `start` and RTC defaults
-every session: a guest DATE/TIME change is not kept. The century byte 32h stays
-persisted; `start` does not populate it. If a guest changes the century, 32h may
-conflict with `start`'s year; set `start` accordingly. Volatile images retain
-the existing initialization behavior.
+every session: a guest DATE/TIME change is not kept. The IBM PC AT Technical
+Reference, System Board, **CMOS RAM address map**, defines 32h as the BCD date
+century byte, outside the 10h–2Dh checksum range. Every derived AT CMOS layout
+initially seeds it from `start.year / 100`; this does not update it on a live
+99-to-00 year rollover. Image NVRAM keeps the supplied byte, and journal NVRAM
+keeps the persisted byte without replacing it from `start`. If a guest changes
+the century, 32h may conflict with `start`'s year; set `start` accordingly.
 
 Reuse version 1, its sink and all offline tools: additionally accept an exact
 64-byte base image, pinned by SHA-256 over all 64 original bytes. This is the

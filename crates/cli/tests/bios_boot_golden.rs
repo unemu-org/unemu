@@ -90,11 +90,12 @@ fn bios_boot_stop_point_matches_golden() {
     assert_eq!(rom.len(), 32768, "Xi8088 BIOS is a 32 KiB image");
 
     let run = run_bios_with_cap(&rom, cli::BIOS_GOLDEN_MAX_RETIRED);
+    // CMOS 32h=20h supplies the century in the BIOS RTC date 2000-01-01.
     session::assert_golden(
         &run,
         19_015_022,
         20_000_000,
-        0x0b55c39cf21513e6,
+        0xbfa9b5ab3f8508a4,
         0xe36ef0102a7cbc14,
     );
 

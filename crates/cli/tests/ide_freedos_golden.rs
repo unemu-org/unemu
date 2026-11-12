@@ -158,13 +158,14 @@ fn freedos_lists_the_readonly_ide_marker() {
     assert!(console
         .lines()
         .any(|line| line.split_whitespace().take(3).eq(["MARKER", "TXT", "29"])));
-    assert_eq!(prompt_logical_hash, 0x26cb04d76a1ee3c7);
-    assert_eq!(prompt_retired, 15_775_579);
-    assert_eq!(prompt_hash, 0xb93bd1a24305e490);
-    assert_eq!(assembled.machine.cpu().retired(), 19_746_109);
+    // The BIOS reads 32h=20h, so FreeDOS reports Sat 01-01-2000.
+    assert_eq!(prompt_logical_hash, 0xfbd3caf6e77b879d);
+    assert_eq!(prompt_retired, 15_775_575);
+    assert_eq!(prompt_hash, 0xb7d8e6cd59c50bf2);
+    assert_eq!(assembled.machine.cpu().retired(), 19_746_105);
     assert_eq!(assembled.machine.virtual_time(), 21_000_000);
-    assert_eq!(screen_hash(&console), 0xada1634e25758753);
-    assert_eq!(session::logical_hash(&console), 0xbf790c95b531f8e8);
+    assert_eq!(screen_hash(&console), 0xa045a62f7781ffa1);
+    assert_eq!(session::logical_hash(&console), 0x48d2b9699fbe5cc2);
     assert_eq!(
         post,
         [

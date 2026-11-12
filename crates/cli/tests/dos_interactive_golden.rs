@@ -112,12 +112,13 @@ fn freedos_runs_dir_from_the_keyboard() {
         .unwrap(),
         &dos_dir_script(),
     );
+    // The BIOS reads 32h=20h, so FreeDOS reports Sat 01-01-2000.
     session::assert_golden(
         &run,
-        11_772_930,
+        11_772_926,
         13_000_000,
-        0x20d57080f986a38c,
-        0xd330b78c4533697e,
+        0x806c1c1c475339a2,
+        0x65259fa4c26a891c,
     );
 
     // The BIOS never programs the colour card, so it keeps its power-on cursor.

@@ -227,8 +227,9 @@ fn volatile_boots_preserve_pinned_fixture_hashes_and_vendor_entries() {
         let console = grid.rows_as_strings().join("\n");
         let logical_hash = match boot {
             "bios" => 0xe36ef0102a7cbc14,
-            "freedos" => 0xaf201c7e8acb071d,
-            "dos-write" => 0xa6601fff99236a61,
+            // BIOS century 20h gives FreeDOS Sat 01-01-2000 and stamps new files with year 00.
+            "freedos" => 0xc46f0c147c881837,
+            "dos-write" => 0x6b0404d06d7532c3,
             _ => unreachable!(),
         };
         assert_eq!(session::logical_hash(&console), logical_hash, "{boot}");

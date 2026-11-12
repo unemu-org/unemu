@@ -1100,15 +1100,18 @@ retain normal semantics: A overlays live UIP, C clears flags after reading,
 and D reports valid RAM/time. These register meanings follow the Motorola
 MC146818 datasheet, **RAM**, **Time, Calendar, and Alarm Locations (Table 3)**,
 and **Registers A–D**. Volatile general RAM and alarm bytes are not normalized; neither image mode
-repairs the AT checksum. `Derived` with the default start retains
-every register and backing byte of the prior construction; tests compare the
-entire device snapshot and all 64 port-visible registers, alongside unchanged
-machine goldens.
+repairs the AT checksum. Apart from the century seed described below,
+`Derived` with the default start retains every register and backing byte of
+the prior construction. Tests compare the entire device snapshot and all 64
+port-visible registers with that single-byte adjustment, alongside machine goldens.
 
-The default AT layout does **not** populate the BIOS century byte at 32h:
-`Derived` leaves it at 00h and `Image` retains the supplied byte. The optional
-`cmos-qemu-layout` firmware capability instead derives 32h in BCD from
-`RtcStart.year / 100`. An NVRAM image can supply 32h for other firmware.
+Every derived AT CMOS layout seeds the BIOS century byte at 32h with
+`RtcStart.year / 100` in BCD (19h for 1999; 20h for 2000 and 2026), including
+layouts without the optional `cmos-qemu-layout` firmware capability. The
+IBM PC AT Technical Reference, System Board, **CMOS RAM address map**,
+defines 32h as the date century byte, outside the 10h–2Dh checksum range;
+seeding it leaves the checksum at 2Eh/2Fh unchanged. `Image` retains the
+supplied byte, and journal NVRAM retains the persisted byte.
 The live year register remains the two-digit year, including the 99-to-00 rollover;
 the derived century is an initial seed, not an automatic rollover update.
 
@@ -1150,7 +1153,7 @@ the existing equipment and floppy bytes or checksum range:
   units, saturated at 65535. 5Bh–5Dh hold the low 24 bits of the count of
   whole 64 KiB units above 4 GiB, as QEMU writes them. RAM is counted in its
   physical windows, so high RAM does not inflate low-memory fields.
-- 32h holds the RTC start century in BCD. 3Dh=21h selects floppy, then hard
+- 3Dh=21h selects floppy, then hard
   disk; 38h=00h enables floppy boot-signature checks. This corresponds to
   QEMU `-boot order=ac` with its default `fd_bootchk=true`. QEMU 29760ef's
   default PC order is `cad`: 3Dh=12h and 38h=30h. There is no new boot-order

@@ -1062,14 +1062,16 @@ fn to_device_geometry(geometry: &FloppyGeometry) -> devices::FloppyGeometry {
 /// (DeviceId::Fdc). Secondary
 /// controllers have no entries in the AT CMOS diskette inventory. For a plain AT — 640 KiB base, one 1.44 MB
 /// floppy, no display, hard disk or coprocessor — this reproduces [`devices::CmosConfig::default`]
-/// byte-for-byte. The returned 64-byte seed includes extended disk types and
-/// the checksum; explicit NVRAM images bypass it during assembly.
+/// byte-for-byte apart from the BIOS century byte at 32h, seeded in BCD from
+/// the RTC start year. The returned 64-byte seed includes extended disk types
+/// and the checksum; explicit NVRAM images bypass it during assembly.
 ///
 /// IBM Personal Computer AT Technical Reference (September 1985), System Board,
 /// Real-Time Clock/CMOS RAM Information: Fixed Disk Type Byte (Hex 12), Drive C/D
 /// Extended Bytes (Hex 19/1A), BIOS Fixed Disk Parameters, Equipment Byte
 /// (Hex 14, bits 5–4: display, bit 1: math coprocessor installed), and
-/// Checksum (Hex 2E/2F). The March 1984 edition defines the 40/80-column
+/// Checksum (Hex 2E/2F); CMOS RAM address map, Date Century Byte (Hex 32),
+/// outside the checksum range. The March 1984 edition defines the 40/80-column
 /// colour and monochrome equipment codes.
 /// Only a hash-matched system BIOS with `cmos-drive-types` and `fixed-disk`
 /// enables these types. Any fixed-disk option ROM keeps them zero. Geometries
@@ -1160,6 +1162,17 @@ fn derive_cmos_layout_with_catalogue(
     seed[0x15..=0x16].copy_from_slice(&base_memory_kb.to_le_bytes());
     seed[0x17..=0x18].copy_from_slice(&extended_memory_kb.to_le_bytes());
 
+    let start = config
+        .devices
+        .iter()
+        .find_map(|device| match &device.kind {
+            DeviceKind::Rtc(rtc) => Some(rtc.start),
+            _ => None,
+        })
+        .unwrap_or_default();
+    let century = (start.year / 100) as u8;
+    seed[0x32] = ((century / 10) << 4) | (century % 10);
+
     let bios = crate::firmware::system_bios(config).ok();
     let entry = bios.and_then(|image| crate::firmware::matched_entry(image, catalogue));
     if let Some(entry) = entry {
@@ -1224,16 +1237,6 @@ fn seed_qemu_cmos(config: &MachineConfig, seed: &mut [u8; 128]) {
     seed[0x34..=0x35].copy_from_slice(&above_16m.to_le_bytes());
     let above_4g = ram_bytes_in(config, FOUR_GIB, u64::MAX) / 65536;
     seed[0x5B..=0x5D].copy_from_slice(&above_4g.to_le_bytes()[..3]);
-    let start = config
-        .devices
-        .iter()
-        .find_map(|device| match &device.kind {
-            DeviceKind::Rtc(rtc) => Some(rtc.start),
-            _ => None,
-        })
-        .unwrap_or_default();
-    let century = (start.year / 100) as u8;
-    seed[0x32] = ((century / 10) << 4) | (century % 10);
     seed[0x3D] = 0x21;
     seed[0x38] = 0;
     seed[0x5F] = 0;
@@ -1857,7 +1860,7 @@ mod tests {
     }
 
     #[test]
-    fn initialization_default_rtc_matches_legacy_state_and_every_register() {
+    fn initialization_default_rtc_matches_legacy_state_and_every_register_except_century() {
         for (config, expected_nvram) in [
             (
                 crate::bios(vec![0; 32768], None),
@@ -1891,6 +1894,10 @@ mod tests {
                     equipment: 0x31,
                     ..devices::CmosConfig::default()
                 });
+                // CmosConfig leaves 32h at 00h; derived CMOS seeds the 2000 start-year century.
+                legacy.port_write(0x70, 1, 0x32).unwrap();
+                legacy.port_write(0x71, 1, 0x20).unwrap();
+                legacy.port_write(0x70, 1, 0).unwrap();
             }
             let mut assembled = assemble_synthetic(&config).unwrap();
             let index = assembled.device_index[&DeviceId::Rtc];
@@ -2654,6 +2661,9 @@ mod tests {
             equipment: 0x21,
             ..devices::CmosConfig::default()
         });
+        // CmosConfig leaves 32h at 00h; derived CMOS seeds the 2000 start-year century.
+        expected_rtc.port_write(0x70, 1, 0x32).unwrap();
+        expected_rtc.port_write(0x71, 1, 0x20).unwrap();
         let expected: [u8; 64] = std::array::from_fn(|index| {
             expected_rtc.port_write(0x70, 1, index as u32).unwrap();
             expected_rtc.port_read(0x71, 1).unwrap() as u8
@@ -3903,7 +3913,91 @@ mod tests {
         seed[0x14] = 0x31;
         seed[0x15..=0x16].copy_from_slice(&[0x80, 0x02]);
         seed[0x2E..=0x2F].copy_from_slice(&[0x00, 0xF3]);
+        // Every derived AT layout seeds the BCD start-year century (20h for 2000).
+        seed[0x32] = 0x20;
         seed
+    }
+
+    fn assert_derived_cmos_century(year: u16, century: u8) {
+        let mut config = qemu_cmos_config();
+        config.images[0]
+            .provides
+            .push(crate::FirmwareService::Floppy);
+        rtc_config(&mut config).start.year = year;
+        let mut expected = expected_at_seed();
+        expected[0x32] = century;
+
+        let mut qemu_expected = expected;
+        qemu_expected[0x3D] = 0x21;
+        assert_eq!(
+            derive_cmos_layout_with_catalogue(&config, &qemu_cmos_catalogue()).unwrap(),
+            qemu_expected,
+            "QEMU retains every previously seeded byte"
+        );
+
+        let mut image_config = config.clone();
+        let mut image = [0; 64];
+        image[0x32] = 0x18;
+        rtc_config(&mut image_config).nvram = crate::NvramSource::Image(image);
+        assert_eq!(rtc_registers(&image_config)[0x32], 0x18);
+
+        let seed = derive_cmos_config(&config).unwrap();
+        assert_eq!(&seed[0x2E..=0x2F], &[0x00, 0xF3]);
+        assert_cmos_checksum(&seed);
+        assert_eq!(derive_cmos_layout(&config).unwrap(), expected);
+        assert_eq!(seed, expected[..64]);
+        let mut bus = testkit::MockBus::new(Box::new(CmosRtc::new().with_nvram(seed)));
+        bus.port_write(0x70, 1, 0x32).unwrap();
+        assert_eq!(bus.port_read(0x71, 1).unwrap(), u32::from(century));
+        assert_eq!(rtc_registers(&config)[0x32], century);
+    }
+
+    #[test]
+    fn derived_cmos_century_1999_preserves_checksum_qemu_and_image() {
+        assert_derived_cmos_century(1999, 0x19);
+    }
+
+    #[test]
+    fn derived_cmos_century_2000_preserves_checksum_qemu_and_image() {
+        assert_derived_cmos_century(2000, 0x20);
+    }
+
+    #[test]
+    fn derived_cmos_century_2026_preserves_checksum_qemu_and_image() {
+        assert_derived_cmos_century(2026, 0x20);
+    }
+
+    /// IBM PC AT Technical Reference, System Board, CMOS RAM address map:
+    /// 32h is BIOS-owned RAM, separate from the RTC's two-digit year.
+    #[test]
+    fn derived_cmos_century_guest_read_stays_seeded_after_year_rollover() {
+        let mut config = crate::at_rtc(
+            vec![0xB0, 0x32, 0xE6, 0x70, 0xE4, 0x71, 0xFA, 0xF4],
+            100,
+            10,
+        );
+        let rtc = rtc_config(&mut config);
+        rtc.nvram = crate::NvramSource::Derived;
+        rtc.start = crate::RtcStart {
+            year: 1999,
+            month: 12,
+            day: 31,
+            hour: 23,
+            minute: 59,
+            second: 59,
+        };
+        let mut assembled = assemble_synthetic(&config).unwrap();
+        assert_eq!(
+            assembled.machine.run_bounded(Some(100)).unwrap(),
+            machine::RunOutcome::Halted
+        );
+        assert_eq!(assembled.machine.cpu().reg(cpu::CpuReg::Rax) & 0xFF, 0x19);
+        let bus = assembled.machine.bus_mut();
+        bus.tick_due(device::VClock(100));
+        for (index, expected) in [(9, 0x00), (0x32, 0x19)] {
+            bus.port_write(0x70, 1, index).unwrap();
+            assert_eq!(bus.port_read(0x71, 1).unwrap(), expected);
+        }
     }
 
     #[test]

@@ -75,10 +75,14 @@ fn provider_cmos_presets_match_their_display_and_drive_inventory() {
             base_memory_kb,
             extended_memory_kb: 0,
         });
+        let mut expected = legacy.save();
+        // CmosConfig leaves 32h at 00h; derived CMOS seeds the 2000 start-year century.
+        // The snapshot's version byte precedes CMOS RAM.
+        expected[1 + 0x32] = 0x20;
         let current = CmosRtc::new().with_nvram(derive_cmos_config(&config).unwrap());
         assert_eq!(
             current.save(),
-            legacy.save(),
+            expected,
             "{name}: all 64 backing bytes and live RTC state"
         );
     }

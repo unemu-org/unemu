@@ -5,6 +5,60 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-12 — Derived AT CMOS century:** every derived layout seeds 32h
+  from the RTC start year in BCD, including the standard AT layout. The IBM
+  PC AT Technical Reference, System Board, CMOS RAM address map, defines this
+  date century byte outside the checksum range. Images retain their supplied
+  byte; journals retain their persisted byte. The live two-digit year still
+  rolls from 99 to 00 without updating the century seed. The open Kiselev BIOS
+  displays `2000-01-01` instead of `0000-01-01`; FreeDOS keeps
+  `Sat 01-01-2000` instead of falling back to `Tue 01-01-1980`, and new DOS
+  files receive the 2000 date. Screen goldens retain these date differences. See
+  [machine-config.md §RTC start and NVRAM source](design/machine-config.md#rtc-start-and-nvram-source).
+
+  **MEASURED against `20cd1da`, with the same CPU pin:** seeding CMOS 32h
+  with 20h gives the Kiselev BIOS the century for its RTC line and date service.
+  FreeDOS accepts that date, and FreeCOM displays `Sat 01-01-2000`;
+  the DOS write golden's new `ZZ` entry is dated `01-01-00` rather than
+  `01-01-80`. Reversing only the RTC date, FreeCOM date line and `ZZ` year in
+  the captured consoles exactly recovers every previous raw and logical hash.
+  The raw MDA hash re-baseline is:
+
+  | Golden | Previous hash | Current hash |
+  | --- | --- | --- |
+  | BIOS POST | `0b55c39cf21513e6` | `bfa9b5ab3f8508a4` |
+  | BIOS floppy boot | `9a13654e51c09b99` | `bfa3c76f8f761e6b` |
+  | DOS DIR | `20d57080f986a38c` | `806c1c1c475339a2` |
+  | DOS write | `e4c4f5de9a7f0d49` | `71f290c7a24fb363` |
+  | FreeDOS prompt | `c95b91cec87e1379` | `83ffbc2844f28889` |
+  | IDE prompt | `b93bd1a24305e490` | `b7d8e6cd59c50bf2` |
+  | IDE final | `ada1634e25758753` | `a045a62f7781ffa1` |
+
+  Logical hashes normalize RTC/time rows but retain the DOS date and directory
+  entries. BIOS POST and floppy logical hashes remain unchanged; the moved
+  constants are:
+
+  | Golden | Previous logical hash | Current logical hash |
+  | --- | --- | --- |
+  | FreeDOS prompt; media fixture; scheduler prompt | `af201c7e8acb071d` | `c46f0c147c881837` |
+  | DOS DIR; scheduler DIR | `d330b78c4533697e` | `65259fa4c26a891c` |
+  | DOS write; media fixture; scheduler write | `a6601fff99236a61` | `6b0404d06d7532c3` |
+  | IDE prompt | `26cb04d76a1ee3c7` | `fbd3caf6e77b879d` |
+  | IDE final | `bf790c95b531f8e8` | `48d2b9699fbe5cc2` |
+
+  With the valid 2000 date, the measured retired endpoints move as follows;
+  virtual-time caps, cursors, POST/COM1 and stop kinds remain unchanged.
+  Both scheduler engines match complete access/state streams with these
+  date expectations.
+
+  | Golden / endpoint | Previous retired count | Current retired count |
+  | --- | --- | --- |
+  | FreeDOS prompt | 8,800,477 | 8,800,473 |
+  | DOS DIR | 11,772,930 | 11,772,926 |
+  | DOS write | 11,766,599 | 11,766,596 |
+  | IDE prompt | 15,775,579 | 15,775,575 |
+  | IDE final | 19,746,109 | 19,746,105 |
+
 - **2026-11-12 — Open AT BIOS:** legacy Bochs rejected; keep Kiselev with an explicit display switch for open goldens and use the user-firmware lane for AT fidelity; an open 286 AT BIOS is [deferred](deferred.md#open-at-class-80286-system-bios).
 
 - **2026-11-12 — Audio seam:** the `audio` crate provides exact PIT-to-48-kHz
@@ -743,7 +797,7 @@ wall-time comparison and historical CPU sample shares.
   ```text
   FreeDOS kernel 2044 (build 2044 OEM:0xfd) [compiled Jan 25 2026]
   FreeCom version 0.86 - WATCOMC - XMS_Swap
-  Current date is Tue 01-01-1980
+  Current date is Sat 01-01-2000
   Enter new date (mm-dd-[cc]yy):
   ```
   It then idles headless in the INT 16h keyboard wait. The whole stack runs under

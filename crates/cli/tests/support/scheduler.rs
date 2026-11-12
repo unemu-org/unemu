@@ -823,9 +823,10 @@ pub fn run_workload_engine(
             let expected = match workload {
                 Workload::BiosPost => Some(0xe36ef0102a7cbc14),
                 Workload::BiosFloppy => Some(0x92c581d95567fb07),
-                Workload::FreeDosPrompt => Some(0xaf201c7e8acb071d),
-                Workload::DosDir => Some(0xd330b78c4533697e),
-                Workload::DosWrite => Some(0xa6601fff99236a61),
+                // BIOS century 20h gives FreeDOS Sat 01-01-2000 and stamps new files with year 00.
+                Workload::FreeDosPrompt => Some(0xc46f0c147c881837),
+                Workload::DosDir => Some(0x65259fa4c26a891c),
+                Workload::DosWrite => Some(0x6b0404d06d7532c3),
                 _ => None,
             };
             if let Some(expected) = expected {
