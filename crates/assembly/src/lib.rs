@@ -69,6 +69,7 @@ pub use device::{
     FwCfgCfg, I8042Cfg, IdeCfg, MdaTextCfg, NvramSource, PicCfg, PitCfg, PortWindow, PostPortCfg,
     RtcStart, SysControlCfg, UartCfg, VgaCfg, VgaTextCfg,
 };
+pub use devices::ata::AtaControllerModel;
 pub use devices::FwCfgFile;
 pub use drive::{DriveConfig, DriveKind, FloppyGeometry, HardDiskGeometry, WriteMode};
 pub use error::ConfigError;

@@ -10,6 +10,7 @@ use assembly::*;
 fn machine(base: u16, code: Vec<u8>) -> MachineConfig {
     let mut config = at_boot(code);
     let cfg = IdeCfg {
+        model: assembly::AtaControllerModel::Ata,
         base,
         control: base + 0x206,
     };

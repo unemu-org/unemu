@@ -215,6 +215,7 @@ fn adapter_ram_and_ram_load_cannot_bypass_the_catalogue() {
 
 fn ide(config: &mut MachineConfig) {
     let cfg = IdeCfg {
+        model: assembly::AtaControllerModel::Ata,
         base: 0x1F0,
         control: 0x3F6,
     };

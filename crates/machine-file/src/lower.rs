@@ -397,6 +397,12 @@ impl<R: ImageReader> Context<'_, R> {
             ));
         }
         let kind = self.required(&format!("{field}.kind"), card.kind)?;
+        if kind != v1::CardKind::Ide && card.controller_model.is_some() {
+            return Err(self.error(
+                &format!("{field}.controller_model"),
+                "controller_model is only supported by ide cards",
+            ));
+        }
         if !matches!(kind, v1::CardKind::Uart16550 | v1::CardKind::Ide) && card.port.is_some() {
             return Err(self.error(
                 &format!("{field}.port"),
@@ -460,6 +466,10 @@ impl<R: ImageReader> Context<'_, R> {
             v1::CardKind::Ide => {
                 let base = card.port.unwrap_or(0x1F0);
                 let cfg = assembly::IdeCfg {
+                    model: match card.controller_model.unwrap_or(v1::ControllerModel::Ata) {
+                        v1::ControllerModel::Ata => assembly::AtaControllerModel::Ata,
+                        v1::ControllerModel::AtAdapter => assembly::AtaControllerModel::AtAdapter,
+                    },
                     base,
                     control: base.saturating_add(0x206),
                 };

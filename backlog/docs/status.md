@@ -154,6 +154,23 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   reset without an interrupt. Per-device module matrices record the remaining
   unsupported cases and assumptions; changed expectations are listed in
   [scheduler adoption](design/scheduler.md#adoption).
+- **AT fixed-disk adapter registers:** `ide` cards accept
+  `controller_model = "at-adapter"` on every board, keeping task latches
+  accessible without a disk (including cylinder-low 55h/AAh echo). Port 1F1h
+  reads Error and writes Precompensation. IBM's adapter reference, **Command
+  Register** (p. 7), inhibits drive commands without readiness and clears IRQ14
+  on every command write; **Diagnose** (p. 10) runs controller self-tests and
+  interrupts even without a disk, returning error 01h. Status acknowledges the
+  shared controller IRQ (pp. 5–6); write-only 3F6h reads FFh (p. 11 I/O table).
+  ASSUMED exact empty-drive idle status: 00h. Snapshots carry an explicit model
+  tag and preserve pending diagnostic IRQs without media. Default `"ata"` and
+  historical presets retain their behaviour. The adapter is opt-in alongside
+  the FDC, which owns all 3F7h bits; MFM and full WD1003 commands/timing remain
+  unmodelled. See
+  [machine-config.md](design/machine-config.md#the-fixed-disk-idehdd-attachment-seam)
+  for reference sections and coverage. MEASURED externally: an empty adapter
+  removes POST error 601 with an original IBM 5170 BIOS; this worker checks the
+  register probe using synthetic firmware rather than that BIOS.
 - **IDE PIO:** one primary (1F0h/3F6h, IRQ14) or secondary (170h/376h,
   IRQ15) channel assembles from Rust configs and TOML `ide` cards. Master/slave
   fixed disks use explicit CHS geometry and volatile/readonly `SectorMedia`.

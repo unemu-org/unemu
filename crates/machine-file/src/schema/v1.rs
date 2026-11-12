@@ -145,6 +145,7 @@ timed_table! {
     pub struct Card {
         pub id: Option<String>,
         pub kind: Option<CardKind>,
+        pub controller_model: Option<ControllerModel>,
         pub port: Option<u16>,
         pub irq: Option<NumberOrNone<15>>,
         pub dma: Option<NumberOrNone<3>>,

@@ -1079,6 +1079,59 @@ fn symlink_image_errors_show_the_spelled_and_resolved_paths() {
 
 const IDE: &str = "[[card]]\nid='disk'\nkind='ide'\n[[card.drives]]\nchannel='master'\nimage='disk.img'\ngeometry={cylinders=8,heads=2,sectors=4}\nwrite='readonly'\n";
 
+#[test]
+fn at_adapter_empty_ibm5170_card_echoes_through_assembled_bus_and_preserves_fdc() {
+    let input = format!("{MINIMAL}provides=['fixed-disk']\n[[card]]\nkind='ide'\ncontroller_model='at-adapter'\n[[card]]\nkind='fdc-765'\n");
+    let config = ide_lower(&input).unwrap();
+    assert_eq!(config.board, assembly::BoardModel::Ibm5170);
+    assert!(config.drives.is_empty());
+    let mut assembled = assembly::assemble_with_options(
+        &config,
+        assembly::AssemblyOptions {
+            allow_unlisted_firmware: true,
+        },
+    )
+    .unwrap();
+    let bus = assembled.machine.bus_mut();
+    bus.port_read(0x3F1, 1).unwrap();
+    assert_eq!(bus.port_read(0x5F7, 1).unwrap(), 0xFF);
+    let mut idle = false;
+    for _ in 0..16 {
+        if bus.port_read(0x1F7, 1).unwrap() & 0x80 == 0 {
+            idle = true;
+            break;
+        }
+    }
+    assert!(idle, "adapter remained busy during the register probe");
+    for pattern in [0x55, 0xAA] {
+        bus.port_write(0x1F4, 1, pattern).unwrap();
+        assert_eq!(bus.port_read(0x1F4, 1).unwrap(), pattern);
+    }
+    assert_eq!(bus.port_read(0x1F7, 1).unwrap(), 0);
+    assert_eq!(bus.port_read(0x1F1, 1).unwrap(), 1);
+    assert_eq!(bus.port_read(0x3F6, 1).unwrap(), 0xFF);
+    assert_eq!(bus.port_read(0x3F4, 1).unwrap(), 0x80);
+    assert_eq!(bus.port_read(0x3F7, 1).unwrap(), 0);
+}
+
+#[test]
+fn at_adapter_model_is_ide_only_and_unknown_models_keep_source_positions() {
+    let error = ide_lower(&format!(
+        "{MINIMAL}[[card]]\nkind='fdc-765'\ncontroller_model='at-adapter'\n"
+    ))
+    .unwrap_err();
+    assert_eq!(error.field, "card[fdc-765].controller_model");
+    assert!(error.message.contains("only supported by ide"));
+    assert_eq!(error.origin.line, Some(6));
+    let file = Path::new("model.toml");
+    let error = parse_toml(
+        file,
+        "schema=1\n[[card]]\nkind='ide'\ncontroller_model='unknown'\n",
+    )
+    .unwrap_err();
+    assert!(error.message().contains("unknown variant"));
+}
+
 fn ide_lower(input: &str) -> Result<assembly::MachineConfig, machine_file::LowerError> {
     let file = Path::new("machines/ide-test.toml");
     let mut images = Images::rom(file);
@@ -1111,6 +1164,7 @@ fn ide_lowering_binds_geometry_media_and_splits_fdc_for_primary_only() {
         assert_eq!(
             ide.kind,
             DeviceKind::Ide(assembly::IdeCfg {
+                model: assembly::AtaControllerModel::Ata,
                 base: port,
                 control
             })

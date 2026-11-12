@@ -323,6 +323,7 @@ fn validate_layer(document: &MachineFile, origins: &Origins) -> Result<(), Lower
         }
         if card.remove == Some(true)
             && (card.kind.is_some()
+                || card.controller_model.is_some()
                 || card.port.is_some()
                 || card.irq.is_some()
                 || card.dma.is_some()
@@ -666,6 +667,11 @@ fn merge(
             };
             m.scalar(&mut inherited.id, card.id, "id");
             m.scalar(&mut inherited.kind, card.kind, "kind");
+            m.scalar(
+                &mut inherited.controller_model,
+                card.controller_model,
+                "controller_model",
+            );
             m.scalar(&mut inherited.port, card.port, "port");
             m.scalar(&mut inherited.irq, card.irq, "irq");
             m.scalar(&mut inherited.dma, card.dma, "dma");
@@ -969,6 +975,35 @@ mod tests {
     }
     fn cards(d: &MachineFile) -> &[Card] {
         d.card.as_deref().unwrap()
+    }
+
+    #[test]
+    fn at_adapter_model_inherits_overrides_and_cannot_accompany_removal() {
+        let parent = "[[card]]\nkind='ide'\ncontroller_model='at-adapter'\n";
+        let inherited = merged(parent, "[[card]]\nid='ide'\nirq=14\n").unwrap();
+        assert_eq!(
+            cards(&inherited.document)[0].controller_model,
+            Some(ControllerModel::AtAdapter)
+        );
+        assert_eq!(
+            inherited.origins.get("card[0].controller_model").file,
+            Path::new("parent.toml")
+        );
+        let overridden = merged(parent, "[[card]]\nid='ide'\ncontroller_model='ata'\n").unwrap();
+        assert_eq!(
+            cards(&overridden.document)[0].controller_model,
+            Some(ControllerModel::Ata)
+        );
+        assert_eq!(
+            overridden.origins.get("card[0].controller_model").file,
+            Path::new("child.toml")
+        );
+        let error = merged(
+            parent,
+            "[[card]]\nid='ide'\nremove=true\ncontroller_model='at-adapter'\n",
+        )
+        .unwrap_err();
+        assert!(error.message.contains("only id and remove"));
     }
 
     #[test]

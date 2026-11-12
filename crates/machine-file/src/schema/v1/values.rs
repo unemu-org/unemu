@@ -127,6 +127,13 @@ named_values! {
 }
 
 named_values! {
+    /// Register ownership for an IDE card; omitted means ATA.
+    ControllerModel, "controller model" {
+        Ata => "ata", AtAdapter => "at-adapter",
+    } reserved {}
+}
+
+named_values! {
     /// IDE device selection within one controller's channel.
     Channel, "IDE channel" { Master => "master", Slave => "slave" } reserved {}
 }

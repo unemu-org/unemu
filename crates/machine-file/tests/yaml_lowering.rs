@@ -31,6 +31,29 @@ fn run(input: &str) -> Result<assembly::MachineConfig, machine_file::LowerError>
     )
 }
 
+#[test]
+fn at_adapter_yaml_selects_register_ownership_and_keeps_ata_as_default() {
+    for (setting, model) in [
+        ("", assembly::AtaControllerModel::Ata),
+        ("controller_model: ata", assembly::AtaControllerModel::Ata),
+        (
+            "controller_model: at-adapter",
+            assembly::AtaControllerModel::AtAdapter,
+        ),
+    ] {
+        let config = run(&format!(
+            "{MINIMAL}    provides: [fixed-disk]\ncard:\n  - kind: ide\n    {setting}\n"
+        ))
+        .unwrap();
+        let ide = config
+            .devices
+            .iter()
+            .find(|device| device.id == assembly::DeviceId::Ide)
+            .unwrap();
+        assert!(matches!(ide.kind, assembly::DeviceKind::Ide(cfg) if cfg.model == model));
+    }
+}
+
 fn twins(directory: &Path) -> Result<Vec<(PathBuf, PathBuf)>, String> {
     let mut pairs = Vec::new();
     let mut entries: Vec<_> = std::fs::read_dir(directory)

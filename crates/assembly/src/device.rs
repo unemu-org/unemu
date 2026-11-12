@@ -431,9 +431,11 @@ impl FdcCfg {
 /// `backlog/docs/design/machine-config.md` §The fixed-disk (IDE/HDD) attachment seam.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct IdeCfg {
+    /// ATA device registers or adapter-owned AT task latches.
+    pub model: devices::ata::AtaControllerModel,
     /// Task-file base: 1F0h (primary) or 170h (secondary).
     pub base: u16,
-    /// Alternate status / device control, task-file base plus 206h.
+    /// ATA alternate status / device control; AT adapter writes only, base plus 206h.
     pub control: u16,
 }
 

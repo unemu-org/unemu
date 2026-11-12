@@ -2066,6 +2066,7 @@ mod tests {
         config.images[0].source = ImageSource::Inline(bytes);
         config.images[0].provides.push(FirmwareService::FixedDisk);
         let cfg = crate::IdeCfg {
+            model: crate::AtaControllerModel::Ata,
             base: 0x1F0,
             control: 0x3F6,
         };
@@ -2129,6 +2130,7 @@ mod tests {
     #[test]
     fn primary_ata_requirement_matches_the_assembled_channel_contract() {
         let cfg = crate::IdeCfg {
+            model: crate::AtaControllerModel::Ata,
             base: 0x1F0,
             control: 0x3F6,
         };
@@ -2149,6 +2151,7 @@ mod tests {
                 1 => ide.ports.clear(),
                 2 => {
                     let secondary = crate::IdeCfg {
+                        model: crate::AtaControllerModel::Ata,
                         base: 0x170,
                         control: 0x376,
                     };
@@ -2159,6 +2162,7 @@ mod tests {
                 3 => {
                     // Hold control and IRQ fixed to check the base independently.
                     let mixed = crate::IdeCfg {
+                        model: crate::AtaControllerModel::Ata,
                         base: 0x170,
                         control: 0x3F6,
                     };

@@ -370,6 +370,7 @@ fn assemble_with_cpu_and_catalogue(
             )?)),
             DeviceKind::Ide(cfg) => Box::new(
                 Ata::with_drives(build_ide_drives(config, dc.id)?)
+                    .map(|ata| ata.with_model(cfg.model))
                     .and_then(|ata| ata.with_resources(cfg.base, cfg.control, cfg.irq()))
                     .map_err(|_| ConfigError::InvalidIdeResources { device: dc.id })?,
             ),
@@ -3543,6 +3544,7 @@ mod tests {
     fn ide_config(base: u16) -> MachineConfig {
         let mut config = reference_config();
         let cfg = crate::IdeCfg {
+            model: crate::AtaControllerModel::Ata,
             base,
             control: base + 0x206,
         };
@@ -3619,6 +3621,7 @@ mod tests {
     fn ide_firmware_board_requires_fixed_disk_even_without_drives() {
         let mut config = crate::bios(vec![0xF4; 0x8000], Some(vec![0; 1_474_560]));
         let cfg = crate::IdeCfg {
+            model: crate::AtaControllerModel::Ata,
             base: 0x1F0,
             control: 0x3F6,
         };
@@ -3663,12 +3666,14 @@ mod tests {
             match change {
                 0 => {
                     device.kind = DeviceKind::Ide(crate::IdeCfg {
+                        model: crate::AtaControllerModel::Ata,
                         base: 0x1E0,
                         control: 0x3E6,
                     })
                 }
                 1 => {
                     device.kind = DeviceKind::Ide(crate::IdeCfg {
+                        model: crate::AtaControllerModel::Ata,
                         base: 0x1F0,
                         control: 0x376,
                     })
@@ -3786,6 +3791,7 @@ mod tests {
                 }
                 _ => {
                     device.ports = crate::IdeCfg {
+                        model: crate::AtaControllerModel::Ata,
                         base: 0x170,
                         control: 0x376,
                     }
@@ -3995,6 +4001,7 @@ mod tests {
         ] {
             let mut config = qemu_cmos_config();
             let ide = crate::IdeCfg {
+                model: crate::AtaControllerModel::Ata,
                 base,
                 control: base + 0x206,
             };
@@ -4047,6 +4054,7 @@ mod tests {
         {
             let mut config = qemu_cmos_config();
             let ide = crate::IdeCfg {
+                model: crate::AtaControllerModel::Ata,
                 base: 0x1F0,
                 control: 0x3F6,
             };
@@ -4234,6 +4242,7 @@ mod tests {
     fn qemu_cmos_capability_requires_distinct_extended_cmos_addresses() {
         let mut config = qemu_cmos_config();
         let ide = crate::IdeCfg {
+            model: crate::AtaControllerModel::Ata,
             base: 0x1F0,
             control: 0x3F6,
         };
@@ -4307,6 +4316,7 @@ mod tests {
     fn qemu_cmos_type_47_is_independent_of_option_rom_disk_services() {
         let mut config = qemu_cmos_config();
         let ide = crate::IdeCfg {
+            model: crate::AtaControllerModel::Ata,
             base: 0x1F0,
             control: 0x3F6,
         };
@@ -4443,6 +4453,7 @@ mod tests {
         };
         config.drives.push(disk);
         let ide = crate::IdeCfg {
+            model: crate::AtaControllerModel::Ata,
             base: 0x1F0,
             control: 0x3F6,
         };
@@ -4649,6 +4660,7 @@ mod tests {
     fn ide_duplicate_channel_has_an_exact_explanation() {
         let mut config = ide_config(0x1F0);
         let cfg = crate::IdeCfg {
+            model: crate::AtaControllerModel::Ata,
             base: 0x170,
             control: 0x376,
         };

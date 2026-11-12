@@ -9,6 +9,32 @@
 //! and interrupt mapping. See `backlog/docs/design/spec.md` §7.1 and
 //! `backlog/docs/design/firmware-and-machine-classes.md` §§2.2, 9.
 //!
+//! [`AtaControllerModel::AtAdapter`] keeps the task latches on the adapter,
+//! following IBM PC AT Technical Reference, Fixed Disk and Diskette Drive
+//! Adapter, Fixed Disk Function / Task File Registers. Empty-channel reads
+//! expose these latches: 1F2h–1F6h echo writes; 1F1h reads the separate error
+//! latch and writes the precompensation/features latch. Command Register (p. 7)
+//! inhibits drive commands when ready or seek complete is inactive, and clears
+//! IRQ14 on every command write, even an ignored one. Diagnose (p. 10) runs
+//! controller self-tests and signals completion: 90h restores the signature,
+//! reports error 01h and raises IRQ14 even without disks. This controller-command
+//! exception takes precedence over the general drive-readiness gate. IRQ14 is
+//! shared across drive selections; reading Status acknowledges it (pp. 5–6).
+//! The I/O table (p. 11) makes 3F6h write-only: reads float to FFh without
+//! acknowledging IRQ, rather than supplying ATA alternate status. The exact
+//! idle status byte 00h without a drive (BSY, DRDY, seek-complete, DRQ and ERR
+//! clear) is a model assumption. Software reset blocks writes until released.
+//! Attached disks retain ATA PIO commands and idle status 50h.
+//! This is a register-ownership approximation, not a WD1003 command/timing model:
+//! no MFM encoding, index pulses, write precompensation, mechanical readiness,
+//! shared 3F7h input bits or original fixed-disk control extensions are modelled.
+//! See `backlog/docs/design/machine-config.md` §The fixed-disk (IDE/HDD) attachment seam.
+//! ATA/ATAPI-4, T13/1153D revision 17, §4.3.1 / Table 4 (DD7 pull-down) and
+//! §7.1 (device registers) instead describe a device-owned task file: an empty
+//! ATA cable has no device driving it, not an adapter register bank. The default
+//! ATA model retains its existing zero-read approximation rather than simulating
+//! electrical floating levels.
+//!
 //! Hardware coverage matrix (`backlog/docs/testing.md` §3):
 //!
 //! | Defined | Modelled | Skipped / approximation |
@@ -21,10 +47,11 @@
 //! | §7 SET FEATURES | 03h: default PIO (00h/01h), PIO modes 0–4 (08h–0Ch), accepted without timing effects | Other features and DMA modes ABRT |
 //! | §7.13 diagnostics | Command-block signature and success; translation and multiple mode retained | No physical diagnostic failures |
 //! | §7.27 RECALIBRATE | Cylinder/head zero; sector 1 in CHS, 0 in LBA | No mechanical movement |
-//! | §8.7 device 0 only | Absent-slave status/alternate status 00h; other accesses echo device 0 | No electrical bus behaviour |
+//! | ATA-2 §8.7 device 0 only (ATA model) | Absent-slave status/alternate status 00h; other accesses echo device 0 | No electrical bus behaviour |
 //! | §§7.24, 7.37, 8.3–8.4 multiple errors | Whole-block address checks; IDNF completes without DRQ | No genuine media faults or ECC; no new DRQ-with-error transfers |
 //! | §§8.2, 7.2 reset | Signature and default translation; software reset disables multiple mode | No electrical DASP/PDIAG handshake |
 //! | IBM adapter mapping | Configurable task/control ports and IRQ (1F0h/3F6h/14 defaults) | Floppy port sharing and machine wiring |
+//! | IBM Task File Registers / Command Register pp. 5–7, Diagnose p. 10, I/O table p. 11 | Optional adapter-owned latches; command/status acknowledge shared IRQ14; controller Diagnose interrupts without media; 3F6h write-only | Exact empty-drive status byte assumed; attached disks use ATA commands, not full WD1003 emulation |
 //!
 //! Media receives one ordered batch per completed write command. A sector is
 //! committed after its 256th data word; partial sectors are discarded. Normal
@@ -65,7 +92,32 @@ const IDNF: u8 = 0x10;
 const MAX_MULTIPLE: u8 = 16;
 const SECTOR: usize = 512;
 const SNAPSHOT_VERSION: u8 = 1;
+const AT_ADAPTER_SNAPSHOT_VERSION: u8 = 2;
+const AT_ADAPTER_SNAPSHOT_MODEL: u8 = 1;
 const SNAPSHOT_TASK_LEN: usize = 37 + SECTOR;
+
+/// Location of the task file: on an ATA device or on the AT adapter.
+///
+/// IBM PC AT Technical Reference, Fixed Disk and Diskette Drive Adapter,
+/// Fixed Disk Function / Task File describes adapter-owned registers.
+/// See `backlog/docs/design/machine-config.md` §The fixed-disk (IDE/HDD) attachment seam.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum AtaControllerModel {
+    /// ATA device-owned registers; an empty channel reads zero in this model.
+    #[default]
+    Ata,
+    /// Adapter-owned task latches remain accessible without a mounted disk.
+    AtAdapter,
+}
+
+impl AtaControllerModel {
+    fn snapshot_version(self) -> u8 {
+        match self {
+            Self::Ata => SNAPSHOT_VERSION,
+            Self::AtAdapter => AT_ADAPTER_SNAPSHOT_VERSION,
+        }
+    }
+}
 
 /// Logical CHS translation (ATA-2 §7.2); sector numbers on the wire start at 1.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -392,6 +444,7 @@ impl Task {
 /// a Command write abandons the current PIO buffer and starts the new request.
 /// Selection and task writes do not change the active transfer's latched address.
 pub struct Ata {
+    model: AtaControllerModel,
     base: u16,
     control_port: u16,
     irq: u8,
@@ -426,6 +479,7 @@ impl Ata {
     fn configured(drives: [Option<AtaDrive>; 2]) -> Self {
         let tasks = std::array::from_fn(|i| Task::new(drives[i].as_ref(), i));
         Self {
+            model: AtaControllerModel::Ata,
             base: 0x1F0,
             control_port: 0x3F6,
             irq: 14,
@@ -436,6 +490,12 @@ impl Ata {
             now: VClock::ZERO,
             trace: TraceBuffer::default(),
         }
+    }
+
+    /// Choose register ownership without changing attached disks or PIO state.
+    pub fn with_model(mut self, model: AtaControllerModel) -> Self {
+        self.model = model;
+        self
     }
 
     /// Select host resources without changing disk state.
@@ -514,12 +574,18 @@ impl Ata {
     }
 
     fn command(&mut self, command: u8) {
+        if self.model == AtaControllerModel::AtAdapter {
+            for task in &mut self.tasks {
+                task.irq = false;
+            }
+        }
         if self.control & 4 != 0 {
             return;
         }
         if command == 0x90 {
             self.diagnostic_signature();
-            self.tasks[0].irq = self.drives[0].is_some();
+            self.tasks[0].irq =
+                self.model == AtaControllerModel::AtAdapter || self.drives[0].is_some();
             return;
         }
         let index = self.selected;
@@ -819,10 +885,17 @@ impl Device for Ata {
 
     fn port_read(&mut self, port: u16, size: u8) -> Result<u32, DeviceError> {
         let offset = self.port_offset(port, size)?;
+        if self.model == AtaControllerModel::AtAdapter && offset == 7 {
+            for task in &mut self.tasks {
+                task.irq = false;
+            }
+        }
         let index = self.register_device();
         let value = if offset == 0 {
             u32::from(self.data(index, None))
-        } else if self.drives[index].is_none()
+        } else if self.model == AtaControllerModel::AtAdapter && offset == 8 {
+            0xFF
+        } else if (self.drives[index].is_none() && self.model == AtaControllerModel::Ata)
             || (self.drives[self.selected].is_none() && matches!(offset, 7 | 8))
         {
             0
@@ -870,7 +943,9 @@ impl Device for Ata {
             6 if self.control & 4 == 0 => {
                 self.selected = usize::from((byte >> 4) & 1);
                 for (task, drive) in self.tasks.iter_mut().zip(&self.drives) {
-                    if drive.is_some() && task.status & BSY == 0 {
+                    if (drive.is_some() || self.model == AtaControllerModel::AtAdapter)
+                        && task.status & BSY == 0
+                    {
                         task.head = byte;
                     }
                 }
@@ -878,7 +953,10 @@ impl Device for Ata {
             7 => self.command(byte),
             _ => {
                 for (task, drive) in self.tasks.iter_mut().zip(&self.drives) {
-                    if drive.is_none() || task.status & BSY != 0 || self.control & 4 != 0 {
+                    if (drive.is_none() && self.model == AtaControllerModel::Ata)
+                        || task.status & BSY != 0
+                        || self.control & 4 != 0
+                    {
                         continue;
                     }
                     match offset {
@@ -919,8 +997,11 @@ impl Device for Ata {
     }
     fn irq_pending(&self) -> bool {
         self.control & 6 == 0
-            && self.drives[self.selected].is_some()
-            && self.tasks[self.selected].irq
+            && if self.model == AtaControllerModel::AtAdapter {
+                self.tasks.iter().any(|task| task.irq)
+            } else {
+                self.drives[self.selected].is_some() && self.tasks[self.selected].irq
+            }
     }
     fn reset(&mut self) {
         self.signature();
@@ -929,7 +1010,7 @@ impl Device for Ata {
         self.trace.clear();
     }
     fn save(&self) -> Vec<u8> {
-        let mut blob = vec![SNAPSHOT_VERSION];
+        let mut blob = vec![self.model.snapshot_version()];
         blob.extend_from_slice(&self.base.to_le_bytes());
         blob.extend_from_slice(&self.control_port.to_le_bytes());
         blob.extend_from_slice(&[self.irq, self.selected as u8, self.control]);
@@ -976,6 +1057,9 @@ impl Device for Ata {
             ]);
             blob.push(task.transfer_head);
         }
+        if self.model == AtaControllerModel::AtAdapter {
+            blob.push(AT_ADAPTER_SNAPSHOT_MODEL);
+        }
         blob
     }
     fn restore(&mut self, snapshot: &[u8]) -> Result<(), DeviceError> {
@@ -986,12 +1070,18 @@ impl Device for Ata {
         let Some(&version) = snapshot.first() else {
             return Err(bad("snapshot truncated"));
         };
-        if version != SNAPSHOT_VERSION {
+        if version != self.model.snapshot_version() {
             return Err(bad("unsupported snapshot version"));
         }
         // Fixed-size parsing bounds every subsequent read, before any state changes.
-        if snapshot.len() != 16 + 2 * SNAPSHOT_TASK_LEN {
+        let model_len = usize::from(self.model == AtaControllerModel::AtAdapter);
+        if snapshot.len() != 16 + 2 * SNAPSHOT_TASK_LEN + model_len {
             return Err(bad("snapshot length mismatch"));
+        }
+        if self.model == AtaControllerModel::AtAdapter
+            && snapshot.last() != Some(&AT_ADAPTER_SNAPSHOT_MODEL)
+        {
+            return Err(bad("snapshot controller model mismatch"));
         }
         let mut bytes = snapshot[1..].iter().copied();
         let mut byte = || bytes.next().unwrap_or(0);
@@ -1111,7 +1201,11 @@ impl Device for Ata {
                             .is_some_and(|d| task.lba < task.media_limit(d))
                 };
             let idle_status = if drive.is_none() {
-                task.status == 0 && !task.irq
+                task.status == 0
+                    && (!task.irq
+                        || (self.model == AtaControllerModel::AtAdapter
+                            && control & 4 == 0
+                            && task.error == 1))
             } else if control & 4 != 0 {
                 task.status == BSY && !task.irq
             } else {
@@ -1235,6 +1329,246 @@ mod tests {
         put(bus, 2, count);
         command(bus, 0xC6);
         assert_eq!(status(bus), READY);
+    }
+
+    fn empty_adapter() -> MockBus {
+        MockBus::new(Box::new(
+            Ata::new().with_model(AtaControllerModel::AtAdapter),
+        ))
+    }
+
+    #[test]
+    fn at_adapter_diagnose_without_media_raises_controller_irq_and_restores_pending_snapshot() {
+        for masked in [false, true] {
+            let mut bus = empty_adapter();
+            control(&mut bus, if masked { 2 } else { 0 });
+            put(&mut bus, 6, 0xB0);
+            put(&mut bus, 4, 0xAA);
+            command(&mut bus, 0x90);
+            assert_eq!(bus.device().irq_pending(), !masked);
+            control(&mut bus, 0);
+            assert!(bus.device().irq_pending());
+            assert_eq!(get(&mut bus, 1), 1);
+            assert_eq!(get(&mut bus, 4), 0);
+            put(&mut bus, 6, 0xB0);
+            assert!(bus.device().irq_pending());
+            let saved = bus.device().save();
+            let mut restored = empty_adapter();
+            restored.device_mut().restore(&saved).unwrap();
+            assert_eq!(restored.device().save(), saved);
+            assert!(restored.device().irq_pending());
+            assert_eq!(status(&mut restored), 0);
+            assert!(!restored.device().irq_pending());
+            command(&mut bus, 0x20);
+            assert!(!bus.device().irq_pending());
+            assert_eq!(get(&mut bus, 1), 1);
+        }
+    }
+
+    #[test]
+    fn at_adapter_any_command_clears_irq_even_for_an_absent_selected_drive() {
+        for model in [AtaControllerModel::Ata, AtaControllerModel::AtAdapter] {
+            let mut bus = MockBus::new(Box::new(controller().with_model(model)));
+            command(&mut bus, 0xEC);
+            assert!(bus.device().irq_pending());
+            put(&mut bus, 6, 0xB0);
+            command(&mut bus, 0x20);
+            put(&mut bus, 6, 0xA0);
+            assert_eq!(bus.device().irq_pending(), model == AtaControllerModel::Ata);
+            assert_eq!(status(&mut bus), READY | DRQ);
+        }
+    }
+
+    #[test]
+    fn at_adapter_control_port_floats_on_read_without_acknowledging_irq() {
+        for present in [false, true] {
+            let ata = if present { controller() } else { Ata::new() };
+            let mut bus = MockBus::new(Box::new(ata.with_model(AtaControllerModel::AtAdapter)));
+            assert_eq!(alt(&mut bus), 0xFF);
+            command(&mut bus, 0x90);
+            let saved = bus.device().save();
+            assert_eq!(alt(&mut bus), 0xFF);
+            assert_eq!(bus.device().save(), saved);
+            assert!(bus.device().irq_pending());
+            status(&mut bus);
+            assert!(!bus.device().irq_pending());
+            control(&mut bus, 4);
+            assert_eq!(alt(&mut bus), 0xFF);
+        }
+    }
+
+    #[test]
+    fn at_adapter_snapshot_model_tag_is_independent_of_format_version() {
+        let mut adapter = empty_adapter();
+        let saved = adapter.device().save();
+        assert_eq!(saved.last(), Some(&1));
+        let mut ata = MockBus::new(Box::new(Ata::new()));
+        let ata_saved = ata.device().save();
+        let mut forged = saved.clone();
+        forged[0] = ata_saved[0];
+        assert!(ata.device_mut().restore(&forged).is_err());
+        assert_eq!(ata.device().save(), ata_saved);
+        let mut forged = ata_saved.clone();
+        forged[0] = saved[0];
+        assert!(adapter.device_mut().restore(&forged).is_err());
+        assert_eq!(adapter.device().save(), saved);
+        let mut wrong_model = saved.clone();
+        *wrong_model.last_mut().unwrap() = 0;
+        assert!(matches!(
+            adapter.device_mut().restore(&wrong_model),
+            Err(DeviceError::InvalidSnapshot {
+                reason: "snapshot controller model mismatch",
+                ..
+            })
+        ));
+        assert_eq!(adapter.device().save(), saved);
+    }
+
+    #[test]
+    fn at_adapter_empty_cylinder_low_echoes_both_test_patterns() {
+        let mut bus = empty_adapter();
+        for head in [0xA0, 0xB0] {
+            put(&mut bus, 6, head);
+            for pattern in [0x55, 0xAA] {
+                put(&mut bus, 4, pattern);
+                assert_eq!(get(&mut bus, 4), pattern);
+            }
+        }
+    }
+
+    #[test]
+    fn at_adapter_empty_task_file_retains_writes_with_separate_error_read() {
+        let mut bus = empty_adapter();
+        for pattern in [0x55, 0xAA] {
+            for offset in 1..=6 {
+                put(&mut bus, offset, pattern);
+            }
+            // IBM's error register is read-only; precompensation is write-only.
+            assert_eq!(get(&mut bus, 1), 1);
+            for offset in 2..=6 {
+                assert_eq!(get(&mut bus, offset), pattern);
+            }
+            let saved = bus.device().save();
+            assert_eq!(saved[25], pattern);
+        }
+        assert!(!bus.device().irq_pending());
+    }
+
+    #[test]
+    fn at_adapter_empty_commands_only_diagnose_completes_with_irq() {
+        let mut bus = empty_adapter();
+        for head in [0xA0, 0xB0] {
+            for opcode in 0..=255 {
+                put(&mut bus, 6, head);
+                put(&mut bus, 4, 0xAA);
+                command(&mut bus, opcode);
+                assert_eq!(bus.device().irq_pending(), opcode == 0x90);
+                assert_eq!(status(&mut bus), 0);
+                assert_eq!(alt(&mut bus), 0xFF);
+                assert_eq!(get(&mut bus, 1), 1);
+                assert_eq!(get(&mut bus, 4), if opcode == 0x90 { 0 } else { 0xAA });
+                assert!(!bus.device().irq_pending());
+                assert_eq!(bus.port_read(0x1F0, 2).unwrap(), 0xFFFF);
+                bus.port_write(0x1F0, 2, 0x1234).unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn at_adapter_empty_snapshot_restores_latches_and_rejects_other_model_atomically() {
+        let mut source = empty_adapter();
+        for (offset, value) in [
+            (1, 3),
+            (2, 0x17),
+            (3, 0x23),
+            (4, 0x55),
+            (5, 0xAA),
+            (6, 0xB7),
+        ] {
+            put(&mut source, offset, value);
+        }
+        let saved = source.device().save();
+        assert_eq!(saved[0], 2);
+        let mut restored = empty_adapter();
+        restored.device_mut().restore(&saved).unwrap();
+        assert_eq!(restored.device().save(), saved);
+        for (offset, value) in [
+            (1, 1),
+            (2, 0x17),
+            (3, 0x23),
+            (4, 0x55),
+            (5, 0xAA),
+            (6, 0xB7),
+        ] {
+            assert_eq!(get(&mut restored, offset), value);
+        }
+        assert_eq!(status(&mut restored), 0);
+        assert!(!restored.device().irq_pending());
+        let mut ata = MockBus::new(Box::new(Ata::new()));
+        let ata_saved = ata.device().save();
+        assert!(ata.device_mut().restore(&saved).is_err());
+        assert_eq!(ata.device().save(), ata_saved);
+        assert!(restored.device_mut().restore(&ata_saved).is_err());
+        assert_eq!(restored.device().save(), saved);
+    }
+
+    #[test]
+    fn at_adapter_empty_reset_and_diagnostics_restore_accessible_signature() {
+        for reset in 0..3 {
+            let mut bus = empty_adapter();
+            put(&mut bus, 4, 0xAA);
+            match reset {
+                0 => bus.device_mut().reset(),
+                1 => {
+                    control(&mut bus, 4);
+                    let held = bus.device().save();
+                    put(&mut bus, 4, 0x55);
+                    command(&mut bus, 0x90);
+                    assert_eq!(bus.device().save(), held);
+                    bus.device_mut().restore(&held).unwrap();
+                    control(&mut bus, 0);
+                }
+                _ => command(&mut bus, 0x90),
+            }
+            assert_eq!(bus.device().irq_pending(), reset == 2);
+            for (offset, value) in [(1, 1), (2, 1), (3, 1), (4, 0), (5, 0), (6, 0)] {
+                assert_eq!(get(&mut bus, offset), value);
+            }
+            assert_eq!(status(&mut bus), 0);
+            assert!(!bus.device().irq_pending());
+            put(&mut bus, 4, 0x55);
+            assert_eq!(get(&mut bus, 4), 0x55);
+        }
+    }
+
+    #[test]
+    fn at_adapter_attached_disks_keep_ata_pio_status_errors_and_irq_semantics() {
+        let make = || Ata::with_drives([Some(disk(0xA5)), Some(disk(0x69))]).unwrap();
+        let mut ata = MockBus::new(Box::new(make()));
+        let mut adapter = MockBus::new(Box::new(make().with_model(AtaControllerModel::AtAdapter)));
+        for slave in [false, true] {
+            for opcode in [0xEC, 0x20, 0x30, 0x40, 0x70, 0x90, 0xFF] {
+                for bus in [&mut ata, &mut adapter] {
+                    lba(bus, 0, 1, slave);
+                    command(bus, opcode);
+                }
+                assert_eq!(ata.device().irq_pending(), adapter.device().irq_pending());
+                for offset in 1..=7 {
+                    assert_eq!(get(&mut ata, offset), get(&mut adapter, offset));
+                }
+                assert_eq!(alt(&mut adapter), 0xFF);
+                if opcode == 0x30 {
+                    write_sector(&mut ata, &[0x42; SECTOR]);
+                    write_sector(&mut adapter, &[0x42; SECTOR]);
+                } else if matches!(opcode, 0xEC | 0x20) {
+                    assert_eq!(read_sector(&mut ata), read_sector(&mut adapter));
+                }
+                let saved = adapter.device().save();
+                assert_eq!(saved[0], 2);
+                adapter.device_mut().restore(&saved).unwrap();
+                assert_eq!(&ata.device().save()[1..], &saved[1..saved.len() - 1]);
+            }
+        }
     }
 
     #[test]

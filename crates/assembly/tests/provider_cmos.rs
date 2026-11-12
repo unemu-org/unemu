@@ -67,6 +67,7 @@ fn provider_cmos_xub_disk_keeps_system_bios_types_zero() {
     let mut config = bios(rom, Some(vec![0; 1_474_560]));
     let baseline = derive_cmos_config(&config).unwrap();
     let ide = IdeCfg {
+        model: assembly::AtaControllerModel::Ata,
         base: 0x1F0,
         control: 0x3F6,
     };

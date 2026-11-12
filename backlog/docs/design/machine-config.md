@@ -795,13 +795,64 @@ equipment byte are *derived* from the attached floppies, so attaching a second
 drive of a different geometry needs no manual CMOS edit — the whole point of the
 "attach different drive types" story.
 
-`HardDisk` binds to `DeviceKind::Ide(IdeCfg { base, control })` by controller
+`HardDisk` binds to `DeviceKind::Ide(IdeCfg { base, control, model })` by controller
 and unit: master 0, slave 1 (a slave requires a master). One channel is supported,
 with base `0x1F0` or `0x170`, control at base + `0x206`, IRQ14 or IRQ15,
 and no DMA. Only the data register at base supports word cycles; all other
 task-file and control registers use byte cycles. Lowering splits primary FDC
 windows with `FdcCfg::port_windows(true)`; Rust callers supply the same split.
 The secondary channel leaves the FDC's legacy decode intact.
+
+`model: AtaControllerModel::Ata` preserves the existing device-owned task file:
+an empty channel reads zero and drops task writes. `AtAdapter` retains the
+adapter's latches without media; the assembler passes this choice to `Ata`.
+No motherboard or preset silently installs this expansion card. Choose it
+explicitly in a machine file, including on `ibm-5170`; historical presets keep
+their device ordering, FDC decode, firmware-provider requirements and golden
+identity. This deliberately leaves the standard combination adapter opt-in.
+
+READ: IBM Personal Computer AT Technical Reference, **Fixed Disk and Diskette
+Drive Adapter**, **Fixed Disk Function / Task File Registers** (pp. 2–6):
+1F2h–1F6h are parameter latches; 1F1h reads Error but writes Precompensation.
+Error 01h denotes successful diagnostics; status bit 7 is controller busy,
+bit 6 drive ready and bit 4 seek complete.
+[IBM adapter reference](https://minuszerodegrees.net/oa/OA%20-%20IBM%20PC%20AT%20Fixed%20Disk%20and%20Diskette%20Drive%20Adapter.pdf).
+READ: **ATA/ATAPI-4**, T13/1153D revision 17, §4.3.1 / Table 4 note 3 and
+§7.1 describe device registers and DD7 termination for detecting absence.
+An empty ATA cable has no device driving a register bank; a particular full
+floating-bus byte is not guaranteed by that termination rule.
+
+READ: the same IBM adapter reference, **Command Register** (p. 7), inhibits
+commands when drive-ready or seek-complete is inactive and clears IRQ14 on
+any command write. Thus an absent-drive command clears an earlier completion
+IRQ, keeps the latches/error, and does not execute a media operation. **Diagnose**
+(p. 10) instead describes adapter self-tests with an interrupt on completion.
+The model treats 90h as a controller command independent of attached drives:
+it restores the signature, returns diagnostic success 01h and raises IRQ14
+unless masked. This specific controller command takes precedence over the
+general drive-readiness gate. IRQ14 belongs to the adapter across drive
+selections; Status reads acknowledge it (pp. 5–6). The **I/O address table**
+(p. 11) makes 3F6h write-only. Adapter reads there return floating-bus FFh,
+with no IRQ acknowledgement; ATA mode retains its alternate-status register.
+
+ASSUMED exact empty-drive idle status: 00h (no busy, ready, seek-complete,
+DRQ or error). Both selections expose the shared task latches; 1F2h–1F6h
+writes echo, including the 55h/AAh cylinder-low probe. Port 1F1h writes are
+saved but reads return Error, never the precompensation latch. Reset restores
+the signature/error 01h; held SRST blocks writes and command execution.
+Attached drives retain ATA PIO commands and idle status 50h. MFM, physical
+index/seek timing, precompensation effects, extra fixed-disk control bits and
+3F7h fixed-disk input bits remain outside coverage. The existing split leaves
+3F7h entirely with the FDC. This register model is available on every board,
+including Bare Rust rigs; it is not restricted to `ibm-5170`.
+
+Snapshots include the empty adapter's parameter and write-only latches using
+the existing task serialization. Adapter snapshots use named version 2 and
+an explicit trailing model byte (01h); ATA retains version 1 and identical
+bytes without that trailer. Restore checks format length and the model byte
+independently of the version, so matching version numbers cannot allow a
+cross-model restore. Adapter snapshots without the model trailer are rejected.
+Pending controller-diagnostic IRQs are saved/restored even without media.
 
 Assembly mounts `InMemoryMedia` through `SectorMedia`, selecting volatile or
 readonly writes. Geometry must have 1–16383 cylinders, 1–16 heads, 1–63 sectors

@@ -157,6 +157,7 @@ fn inherited_ide_card_and_drive_merge_then_lower() {
     assert_eq!(
         card.kind,
         assembly::DeviceKind::Ide(assembly::IdeCfg {
+            model: assembly::AtaControllerModel::Ata,
             base: 0x170,
             control: 0x376
         })

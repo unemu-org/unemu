@@ -451,6 +451,7 @@ Common fields:
 | `id` | string | Unique key for `extends` and messages. Defaults to the kind (`"fdc-765"`); repeated ids are refused. |
 | `kind` | string | Required, unless `extends` already defined a card with this `id`. |
 | `port` | u16 | The base port, where the kind is relocatable. |
+| `controller_model` | `"ata"` or `"at-adapter"` | Only for `ide`; defaults to `"ata"`. Merges by card id like `port`. |
 | `irq` | `0..15` or `"none"` | An IRQ on a kind with no interrupt source is an error. |
 | `dma` | `0..3` or `"none"` | Only for kinds that master DMA. |
 | `drives` | array of tables | Only for disk controllers. |
@@ -497,6 +498,36 @@ This model leaves all of `0x3F7` with the FDC: digital
 input register on read and configuration control register on write. The real
 adapter shares `0x3F7` read bits with the fixed disk; that bit-level sharing is
 not modelled.
+
+To install the fixed-disk half of the AT combination adapter without a disk,
+add this card alongside the existing `fdc-765` card on `ibm-5170`:
+
+```toml
+[[card]]
+kind = "ide"
+controller_model = "at-adapter"
+```
+
+YAML equivalent: `card: [{kind: ide, controller_model: at-adapter}]` (append
+to the existing card list). No `drives` entry is required; the usual fixed-disk
+firmware provider is still required. The board and presets do not automatically
+add the adapter, preserving their decode maps and golden identities. Omitting
+`controller_model`, or selecting `"ata"`, preserves existing machine behaviour.
+
+The adapter latches 1F2h–1F6h without a disk, so cylinder-low 55h/AAh reads
+back. Port 1F1h retains its separate write-precompensation/read-error meanings.
+The IBM PC AT Technical Reference, **Fixed Disk and Diskette Drive Adapter**,
+**Command Register** (p. 7), inhibits drive commands without ready/seek-complete
+and clears IRQ14 on every command write. **Diagnose** (p. 10) completes adapter
+self-tests with an interrupt: 90h restores the signature/error 01h and raises
+IRQ14 even without disks. This controller command is independent of drive
+readiness. **I/O address table** (p. 11) makes 3F6h write-only; reads return FFh
+without acknowledging IRQ. Status reads acknowledge the shared IRQ14 across
+drive selections (pp. 5–6). ASSUMED exact idle status without a drive: 00h.
+The option is accepted on every board, including Bare Rust rigs. Attached-drive
+PIO remains ATA. See [machine-config.md §The fixed-disk (IDE/HDD) attachment
+seam](machine-config.md#the-fixed-disk-idehdd-attachment-seam) for sources,
+snapshot compatibility and the WD1003 coverage limits.
 
 The decode map sorts by `(start, end)` and uses the first match. A flagged
 overlap is accepted only for strict containment with the same starting port,
