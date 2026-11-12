@@ -33,6 +33,19 @@
 //! Focus loss releases all held keys; unheld releases and stopped-machine input
 //! are ignored. macOS winit 0.30 does not deliver CapsLock key events.
 //! See `backlog/docs/design/observation.md` § Host input for timing and coverage.
+//! An opt-in PS/2 mouse captures on a client-area click (that click is swallowed).
+//! Ctrl+Alt+G, focus loss and suspension release capture and guest buttons.
+//! The window tries Locked then Confined, hides the cursor and shows the release
+//! chord in its title. winit 0.30 on macOS supports Locked by disassociating cursor
+//! position from movement; Confined is unsupported. Failed grabs leave input free.
+//! Raw DeviceEvent motion uses one host unit per PS/2 count, positive Y up, with
+//! carried fractions. Left/right/middle use packet bits 0/1/2 (IBM PS/2 Hardware
+//! Interface Technical Reference, Common Interfaces, Pointing Device, Data Reporting).
+//! Motion coalesces between button transitions and enters through inject_mouse
+//! immediately after keyboard delivery at each run boundary. Button transitions
+//! wait for empty mouse output and keep later changes queued; keyboard readiness
+//! is independent. No mouse means no capture or title changes. The device owns
+//! overflow and motion coalescing. Application exit also restores the pointer.
 //! Only the binary owns a window; library tests and frame sinks stay headless.
 
 /// Attribution carried by binaries that embed the original font files.
@@ -46,10 +59,12 @@ pub const FONT_NOTICE: &str = concat!(
 
 mod font;
 mod keyboard;
+mod mouse;
 mod raster;
 
 pub use font::{FontAtlas, FontError, MDA_FONT, VGA_FONT};
 pub use keyboard::{set1_scancodes, HostKeyboard};
+pub use mouse::{HostMouse, MouseInput};
 pub use raster::{PixelFrame, RasterError, Rasterizer};
 
 use std::{

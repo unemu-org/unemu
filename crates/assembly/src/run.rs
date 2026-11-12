@@ -453,13 +453,37 @@ pub fn try_inject_scancode(
     true
 }
 
+impl crate::AssembledMachine {
+    /// Whether the attached PS/2 mouse has no output awaiting serial delivery.
+    /// Interactive button transitions wait here so a pending packet cannot hide
+    /// a press followed by a release. This query neither reads ports nor changes
+    /// device state, and is independent of keyboard/controller input readiness.
+    /// It checks output only; reporting-disabled and remote modes still retain
+    /// input according to the device model. Missing mouse routes return false.
+    /// IBM PS/2 Hardware Interface Technical Reference, Common Interfaces,
+    /// "Pointing Device", Data Reporting; see observation.md § Host input.
+    pub fn mouse_input_ready(&mut self) -> bool {
+        let Some(&index) = self.device_index.get(&DeviceId::Keyboard) else {
+            return false;
+        };
+        self.machine
+            .bus_mut()
+            .device_mut(index)
+            .and_then(|dev| dev.as_any_mut())
+            .and_then(|dev| dev.downcast_mut::<I8042>())
+            .and_then(I8042::aux_device_mut)
+            .is_some_and(|dev| dev.as_any_mut().is::<devices::Ps2Mouse>() && !dev.has_output())
+    }
+}
+
 /// Inject relative device counts and current buttons at a completed run boundary.
 /// Positive Y is up; buttons use left/right/middle bits 0/1/2 (other bits ignored).
 /// Returns false only when the controller or attached mouse route is absent.
 /// Input is always accepted by an attached mouse: disabled reporting, remote
 /// mode and a busy serial link accumulate/coalesce motion per the mouse model.
-/// Commands may clear accumulated counts. No readiness polling or host clock
-/// is needed. The next device synchronization services newly queued output.
+/// Commands may clear accumulated counts. Interactive frontends can preserve
+/// button transitions with [`crate::AssembledMachine::mouse_input_ready`]. No
+/// host clock is needed. The next synchronization services newly queued output.
 /// IBM PS/2 Hardware Interface Technical Reference, Common Interfaces,
 /// "Pointing Device", Data Reporting; see machine-config.md §PS/2 mouse.
 pub fn inject_mouse(

@@ -336,6 +336,81 @@ uses `ControlFlow::Wait`, but requests another redraw while running; an active
 DOS polling loop still consumes host CPU. Detecting idle from prompt text would
 freeze a running guest, so further pacing remains separate work.
 
+### Captured PS/2 mouse
+
+When the configured 8042 has an attached PS/2 mouse (`board.mouse = true`
+in a machine file), a press inside the focused client area captures the pointer.
+Both edges of that initial click are swallowed. Without an attached mouse,
+clicks do not capture and the title and keyboard behavior are unchanged.
+**Ctrl+Alt+G** releases capture. G's make, repeats and break are host-only for
+that chord; Ctrl and Alt retain their ordinary guest make/break handling.
+A G already held by the guest is not stolen by a later modifier press.
+Focus loss releases capture and held guest buttons.
+Suspend acts like focus loss, releasing keys and the pointer; winit emits it only on mobile and web.
+CPU stop/error, window close, application exit (including macOS Cmd+Q) and
+frontend failure restore the host cursor.
+
+The window tries winit `CursorGrabMode::Locked`, then `Confined`. Only a
+successful grab hides the cursor and changes the title to show
+`pointer captured (ctrl+alt+g to release)`. If both fail, it reports the error
+and leaves capture disabled. READ from the pinned winit 0.30.13 implementation:
+macOS Locked disassociates mouse movement from the cursor position using
+Core Graphics; Confined returns NotSupported. The cursor is hidden while the
+window has input focus. This host behavior has not been exercised with a GUI.
+On a platform supporting confinement only, movement remains relative and does
+not depend on cursor coordinates or recentering.
+
+Only `DeviceEvent::MouseMotion` supplies movement; absolute cursor events only
+track client-area presence for the initial click. The fixed scale is **1 raw
+host motion unit = 1 device count**, with host Y-down negated to device Y-up.
+These units come from winit, so no promise is made about physical pixels or
+millimetres, OS acceleration or DPI normalization. Finite deltas truncate toward
+zero; fractional X/Y remainders survive run boundaries to preserve slow motion.
+Non-finite values are ignored per axis. Conversion and coalesced sums saturate
+at signed 32-bit limits, without clipping to the PS/2 packet range: the device
+owns its -256/+255 counters and overflow bits. Release discards fractional
+residue so it cannot leak into a later capture. Left/right/middle buttons map
+to packet bits 0/1/2; wheel and extra buttons are ignored by the guest.
+READ: IBM PS/2 Hardware Interface Technical Reference, Common Interfaces,
+Pointing Device, Data Reporting and Commands (device counts, signs and bits).
+The 1:1 host scale and capture controls are frontend policy.
+
+`HostMouse` coalesces motion between button transitions. A transition starts a
+new zero-motion segment carrying the new buttons; subsequent motion joins it.
+For example, motion A, right press, motion B, right release becomes
+`(A, buttons=0), (B, buttons=2), (0, buttons=0)`. Release keeps queued integer
+motion and appends a neutral-button segment if necessary. Event handlers only
+update this FIFO. Immediately before `run_bounded`, after keyboard delivery,
+the presenter delivers through `assembly::inject_mouse`; a zero-work paint
+injects nothing. Before changing the last delivered button state, it checks
+`AssembledMachine::mouse_input_ready`: the attached mouse must have no output
+awaiting serial delivery. Otherwise that change and later segments stay queued
+in order for later boundaries. In enabled stream mode, a motion packet followed
+by a press/release therefore produces separate button-down and button-up packets,
+even if the previous packet was unread when the click arrived. Motion with
+unchanged buttons can still accumulate/coalesce while output is busy. The query
+reads no ports and changes no device state or timing. Reporting-disabled, remote
+and wrap modes retain the existing device semantics; guest commands may clear
+accumulated motion and button transitions in these modes need not form packets.
+
+Keyboard bytes wait for the 8042's input readiness, while mouse transitions wait
+for their own peripheral output readiness. These queues are independent: a key
+and a click arriving within one boundary can reach the guest in a different order
+than on the host. Within each queue, delivery remains ordered. The event sequence,
+guest progress and run boundaries determine injections without a clock in
+conversion or guest execution.
+
+Pure tests cover capture prerequisites, swallowed clicks, both modifier sides,
+release, fractional/sign/large-delta conversion, button bits and segment ordering.
+Headless presenter tests check the controller snapshot stays unchanged until a
+run, the boundary log contains the expected segments, and a synthetic polling
+guest reads exact ACK/PS/2 bytes after a read-data command. They also cover focus
+loss, balanced keyboard releases, stopped input and machines without a mouse.
+Stream-mode regressions check press/release packets after motion both within one
+boundary and with an unread packet from an earlier boundary. Grab-failure retry
+and release during the held capture click are tested without a host window.
+No CLI, golden, CPU dependency or default machine profile changes are needed.
+
 ## Implemented access trace policy
 
 `device::TracePolicy` has two modes: `Off` (the default) and

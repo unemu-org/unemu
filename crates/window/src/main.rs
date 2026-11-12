@@ -4,7 +4,9 @@
 //! The event loop alone reads a monotonic host clock. A pure pacing policy
 //! converts elapsed time to bounded PIT targets and virtual-time run caps.
 //! Input enters only at run boundaries; observation captures the completed
-//! boundary. See `backlog/docs/design/observation.md` § Window pacing.
+//! boundary. An opt-in PS/2 mouse uses raw relative events while captured;
+//! Ctrl+Alt+G and focus loss release the host grab. See
+//! `backlog/docs/design/observation.md` § Window pacing and § Host input.
 
 use assembly::{AssembledMachine, DeviceId, ObservationPolicy, ObservationRequest, OutputKind};
 use machine::RunOutcome;
@@ -18,14 +20,14 @@ use std::{
     rc::Rc,
     time::{Duration, Instant},
 };
-use window::{HostKeyboard, WindowSink, FONT_NOTICE};
+use window::{HostKeyboard, HostMouse, WindowSink, FONT_NOTICE};
 use winit::{
     application::ApplicationHandler,
     dpi::PhysicalSize,
-    event::{ElementState, WindowEvent},
+    event::{DeviceEvent, DeviceId as HostDeviceId, ElementState, MouseButton, WindowEvent},
     event_loop::{ActiveEventLoop, ControlFlow, EventLoop},
     keyboard::{KeyCode, PhysicalKey},
-    window::{Window, WindowId},
+    window::{CursorGrabMode, Window, WindowId},
 };
 
 mod pacing;
@@ -73,6 +75,7 @@ struct Presenter {
     cpu_resets: u64,
     maintenance_reported: bool,
     keyboard: HostKeyboard,
+    mouse: HostMouse,
     error: Option<Box<dyn Error>>,
     rate: CpuRate,
     dropped_clocks: u128,
@@ -81,6 +84,8 @@ struct Presenter {
     occluded_since: Option<Duration>,
     #[cfg(test)]
     input_log: Vec<(u64, Vec<u8>)>,
+    #[cfg(test)]
+    mouse_log: Vec<(u64, Vec<window::MouseInput>)>,
 }
 
 impl Presenter {
@@ -132,6 +137,9 @@ impl Presenter {
             cpu_resets: 0,
             maintenance_reported: false,
             keyboard: HostKeyboard::default(),
+            mouse: HostMouse::new(config.devices.iter().any(|device| {
+                matches!(&device.kind, assembly::DeviceKind::Keyboard(controller) if controller.mouse)
+            })),
             error: None,
             rate: CpuRate {
                 numerator: NonZeroU64::new(clock.retired_per_pit_clock).ok_or("zero CPU rate")?,
@@ -144,6 +152,8 @@ impl Presenter {
             occluded_since: None,
             #[cfg(test)]
             input_log: Vec::new(),
+            #[cfg(test)]
+            mouse_log: Vec::new(),
         })
     }
 
@@ -196,6 +206,13 @@ impl Presenter {
             }
             #[cfg(not(test))]
             drop(delivered);
+            let mouse_input = self.mouse.inject_at_boundary(&mut self.assembled);
+            #[cfg(test)]
+            if !mouse_input.is_empty() {
+                self.mouse_log.push((time, mouse_input));
+            }
+            #[cfg(not(test))]
+            drop(mouse_input);
             let outcome = self.assembled.machine.run_bounded(Some(cap));
             if matches!(outcome, Ok(RunOutcome::ResetRequested)) {
                 self.reset_requests = self.reset_requests.saturating_add(1);
@@ -219,8 +236,11 @@ impl Presenter {
                 }
             }
         }
-        if !self.running && self.error.is_none() {
-            self.finish_persistence(warnings)?;
+        if !self.running {
+            self.release_pointer();
+            if self.error.is_none() {
+                self.finish_persistence(warnings)?;
+            }
         }
         // Even a CPU error must leave the screen at its last completed boundary.
         self.assembled.capture_text(self.display)?;
@@ -272,13 +292,79 @@ impl Presenter {
 
     fn key_event(&mut self, key: KeyCode, state: ElementState) {
         if self.running && self.error.is_none() {
-            self.keyboard.key_event(key, state);
+            let was_captured = self.mouse.captured();
+            if !self.mouse.key_event(key, state) {
+                self.keyboard.key_event(key, state);
+            }
+            if was_captured && !self.mouse.captured() {
+                self.restore_pointer();
+            }
         }
     }
 
     fn focus_changed(&mut self, focused: bool) {
+        let was_captured = self.mouse.captured();
+        self.mouse.focus_changed(focused);
+        if was_captured && !self.mouse.captured() {
+            self.restore_pointer();
+        }
         if !focused && self.running && self.error.is_none() {
             self.keyboard.release_all();
+        }
+    }
+
+    fn mouse_button(&mut self, button: MouseButton, state: ElementState) {
+        let window = self.window.clone();
+        self.mouse_button_with_grab(button, state, || {
+            if let Some(window) = window {
+                window
+                    .set_cursor_grab(CursorGrabMode::Locked)
+                    .or_else(|_| window.set_cursor_grab(CursorGrabMode::Confined))?;
+            }
+            Ok(())
+        });
+    }
+
+    fn mouse_button_with_grab(
+        &mut self,
+        button: MouseButton,
+        state: ElementState,
+        grab: impl FnOnce() -> Result<(), winit::error::ExternalError>,
+    ) {
+        if self.running && self.error.is_none() && self.mouse.button_event(button, state) {
+            if let Err(error) = grab() {
+                eprintln!("cannot capture pointer: {error}");
+                self.release_pointer();
+                return;
+            }
+            if let Some(window) = &self.window {
+                window.set_cursor_visible(false);
+                window.set_title("unemupc98 — freedos — pointer captured (ctrl+alt+g to release)");
+            }
+        }
+    }
+
+    fn mouse_motion(&mut self, dx: f64, dy: f64) {
+        if self.running && self.error.is_none() {
+            self.mouse.motion(dx, dy);
+        }
+    }
+
+    fn restore_pointer(&self) {
+        if let Some(window) = &self.window {
+            if let Err(error) = window.set_cursor_grab(CursorGrabMode::None) {
+                eprintln!("cannot release pointer: {error}");
+            }
+            window.set_cursor_visible(true);
+            window.set_title("unemupc98 — freedos");
+        }
+    }
+
+    fn release_pointer(&mut self) {
+        let was_captured = self.mouse.captured();
+        self.mouse.release();
+        if was_captured {
+            self.restore_pointer();
         }
     }
 
@@ -311,6 +397,7 @@ impl Presenter {
     }
 
     fn fail(&mut self, events: &ActiveEventLoop, error: Box<dyn Error>) {
+        self.release_pointer();
         self.running = false;
         self.error = Some(error);
         events.exit();
@@ -331,7 +418,12 @@ impl ApplicationHandler for Presenter {
         }
     }
 
+    fn exiting(&mut self, _events: &ActiveEventLoop) {
+        self.release_pointer();
+    }
+
     fn suspended(&mut self, _events: &ActiveEventLoop) {
+        self.focus_changed(false);
         if let Some(started) = self.started {
             self.occlusion_changed(true, started.elapsed());
         }
@@ -345,7 +437,15 @@ impl ApplicationHandler for Presenter {
             return;
         }
         match event {
-            WindowEvent::CloseRequested => events.exit(),
+            WindowEvent::CloseRequested => {
+                self.release_pointer();
+                events.exit();
+            }
+            WindowEvent::MouseInput { button, state, .. } => self.mouse_button(button, state),
+            WindowEvent::CursorEntered { .. } | WindowEvent::CursorMoved { .. } => {
+                self.mouse.pointer_inside(true);
+            }
+            WindowEvent::CursorLeft { .. } => self.mouse.pointer_inside(false),
             WindowEvent::KeyboardInput { event, .. } => {
                 if let PhysicalKey::Code(key) = event.physical_key {
                     self.key_event(key, event.state);
@@ -379,6 +479,12 @@ impl ApplicationHandler for Presenter {
                 }
             }
             _ => {}
+        }
+    }
+
+    fn device_event(&mut self, _events: &ActiveEventLoop, _id: HostDeviceId, event: DeviceEvent) {
+        if let DeviceEvent::MouseMotion { delta: (dx, dy) } = event {
+            self.mouse_motion(dx, dy);
         }
     }
 
@@ -554,6 +660,330 @@ mod tests {
             assembly::AssemblyOptions::default(),
             &mut io::sink(),
         )
+    }
+
+    fn mouse_presenter(enabled: bool) -> Presenter {
+        #[rustfmt::skip]
+        let program = [
+            0xFA, 0xFC, 0x31, 0xC0, 0x8E, 0xD8, 0x8E, 0xC0, 0xBF, 0, 0x20,
+            0xB0, 0xA8, 0xE6, 0x64,
+            0xE4, 0x64, 0xA8, 1, 0x74, 0xFA, 0xE4, 0x60, 0xAA, 0xEB, 0xF5,
+        ];
+        let mut rom = vec![0xF4; 0x8000];
+        rom[..program.len()].copy_from_slice(&program);
+        rom[0x7FF0..0x7FF5].copy_from_slice(&[0xEA, 0, 0, 0, 0xF8]);
+        let mut config = assembly::bios(rom, Some(vec![0; 1_474_560]));
+        for device in &mut config.devices {
+            if let assembly::DeviceKind::Keyboard(controller) = &mut device.kind {
+                controller.mouse = enabled;
+            }
+        }
+        Presenter::new(
+            &config,
+            assembly::AssemblyOptions {
+                allow_unlisted_firmware: true,
+            },
+            &mut io::sink(),
+        )
+        .unwrap()
+    }
+
+    fn assert_stream_click_survives(previous_unread: bool) {
+        use ElementState::{Pressed, Released};
+        let mut presenter = mouse_presenter(true);
+        let bus = presenter.assembled.machine.bus_mut();
+        bus.port_write(0x64, 1, 0xD4).unwrap();
+        bus.port_write(0x60, 1, 0xF4).unwrap();
+        advance_frame(&mut presenter);
+        presenter.mouse.pointer_inside(true);
+        presenter.mouse_button(MouseButton::Left, Pressed);
+        presenter.mouse_button(MouseButton::Left, Released);
+        presenter.mouse_motion(5.0, -7.0);
+        if previous_unread {
+            presenter.mouse.inject_at_boundary(&mut presenter.assembled);
+            let time = presenter.assembled.machine.virtual_time();
+            presenter
+                .assembled
+                .machine
+                .run_bounded(Some(time + 1))
+                .unwrap();
+        }
+        presenter.mouse_button(MouseButton::Left, Pressed);
+        presenter.mouse_button(MouseButton::Left, Released);
+        presenter.mouse.inject_at_boundary(&mut presenter.assembled);
+        for _ in 0..3 {
+            advance_frame(&mut presenter);
+        }
+        let mut bytes = [0; 13];
+        presenter
+            .assembled
+            .machine
+            .cpu()
+            .read_mem(0x2000, &mut bytes)
+            .unwrap();
+        assert_eq!(bytes, [0xFA, 8, 5, 7, 9, 0, 0, 8, 0, 0, 0, 0, 0]);
+        assert!(presenter
+            .mouse
+            .inject_at_boundary(&mut presenter.assembled)
+            .is_empty());
+        assert!(presenter.window.is_none());
+    }
+
+    #[test]
+    fn mouse_grab_failure_swallows_click_and_release_then_next_click_can_retry() {
+        use ElementState::{Pressed, Released};
+        let mut presenter = mouse_presenter(true);
+        presenter.mouse.pointer_inside(true);
+        presenter.mouse_button_with_grab(MouseButton::Left, Pressed, || {
+            Err(winit::error::ExternalError::Ignored)
+        });
+        assert!(!presenter.mouse.captured());
+        presenter.mouse_motion(4.0, 5.0);
+        presenter.mouse_button_with_grab(MouseButton::Left, Released, || {
+            panic!("the capture-click release must not attempt another grab")
+        });
+        assert!(presenter
+            .mouse
+            .inject_at_boundary(&mut presenter.assembled)
+            .is_empty());
+        let mut retried = false;
+        presenter.mouse_button_with_grab(MouseButton::Left, Pressed, || {
+            retried = true;
+            Ok(())
+        });
+        assert!(retried);
+        assert!(presenter.mouse.captured());
+        presenter.mouse_button(MouseButton::Left, Released);
+        assert!(presenter
+            .mouse
+            .inject_at_boundary(&mut presenter.assembled)
+            .is_empty());
+        presenter.mouse_button(MouseButton::Left, Pressed);
+        presenter.mouse_button(MouseButton::Left, Released);
+        let delivered = presenter.mouse.inject_at_boundary(&mut presenter.assembled);
+        assert_eq!(
+            delivered
+                .iter()
+                .map(|input| input.buttons)
+                .collect::<Vec<_>>(),
+            [1, 0]
+        );
+        assert!(presenter.window.is_none());
+    }
+
+    #[test]
+    fn mouse_readiness_query_preserves_controller_state_and_checks_its_own_output() {
+        let mut presenter = mouse_presenter(true);
+        assert!(presenter.assembled.mouse_input_ready());
+        let bus = presenter.assembled.machine.bus_mut();
+        bus.port_write(0x64, 1, 0xD4).unwrap();
+        bus.port_write(0x60, 1, 0xF4).unwrap();
+        advance_frame(&mut presenter);
+        let index = presenter.assembled.device_index[&DeviceId::Keyboard];
+        assert!(assembly::inject_mouse(
+            &mut presenter.assembled.machine,
+            index,
+            1,
+            2,
+            0
+        ));
+        let before = presenter
+            .assembled
+            .machine
+            .bus()
+            .device(index)
+            .unwrap()
+            .save();
+        assert!(!presenter.assembled.mouse_input_ready());
+        assert_eq!(
+            presenter
+                .assembled
+                .machine
+                .bus()
+                .device(index)
+                .unwrap()
+                .save(),
+            before
+        );
+        advance_frame(&mut presenter);
+        assert!(presenter.assembled.mouse_input_ready());
+        assert!(assembly::try_inject_scancode(
+            &mut presenter.assembled.machine,
+            index,
+            0x1E
+        ));
+        assert!(presenter.assembled.mouse_input_ready());
+        assert_eq!(
+            assembly::keyboard_leds_if_ready(&mut presenter.assembled.machine, index),
+            None
+        );
+        let mut absent = mouse_presenter(false);
+        assert!(!absent.assembled.mouse_input_ready());
+        presenter.assembled.device_index.remove(&DeviceId::Keyboard);
+        assert!(!presenter.assembled.mouse_input_ready());
+    }
+
+    #[test]
+    fn mouse_stream_click_after_motion_in_one_boundary_reaches_guest_down_then_up() {
+        assert_stream_click_survives(false);
+    }
+
+    #[test]
+    fn mouse_stream_click_with_previous_packet_unread_reaches_guest_down_then_up() {
+        assert_stream_click_survives(true);
+    }
+
+    #[test]
+    fn mouse_presenter_injects_only_at_run_boundaries_and_guest_reads_coalesced_counts() {
+        use window::MouseInput;
+        use ElementState::{Pressed, Released};
+        let mut presenter = mouse_presenter(true);
+        advance_frame(&mut presenter);
+        let index = presenter.assembled.device_index[&DeviceId::Keyboard];
+        let before = presenter
+            .assembled
+            .machine
+            .bus()
+            .device(index)
+            .unwrap()
+            .save();
+        let time = presenter.assembled.machine.virtual_time();
+        presenter.mouse.pointer_inside(true);
+        presenter.mouse_button(MouseButton::Left, Pressed);
+        presenter.mouse_button(MouseButton::Left, Released);
+        presenter.mouse_motion(1.5, 2.0);
+        presenter.mouse_motion(2.5, -3.0);
+        presenter.mouse_motion(4.0, 5.0);
+        presenter.mouse_button(MouseButton::Right, Pressed);
+        presenter.mouse_motion(5.0, -2.0);
+        assert_eq!(
+            presenter
+                .assembled
+                .machine
+                .bus()
+                .device(index)
+                .unwrap()
+                .save(),
+            before
+        );
+        presenter.advance(Duration::ZERO).unwrap();
+        assert!(presenter.mouse_log.is_empty());
+        advance_frame(&mut presenter);
+        assert_eq!(
+            presenter.mouse_log,
+            [(
+                time,
+                vec![
+                    MouseInput {
+                        dx: 8,
+                        dy: -4,
+                        buttons: 0
+                    },
+                    MouseInput {
+                        dx: 5,
+                        dy: 2,
+                        buttons: 2
+                    },
+                ]
+            )]
+        );
+        let bus = presenter.assembled.machine.bus_mut();
+        bus.port_write(0x64, 1, 0xD4).unwrap();
+        bus.port_write(0x60, 1, 0xEB).unwrap();
+        advance_frame(&mut presenter);
+        let mut bytes = [0; 7];
+        presenter
+            .assembled
+            .machine
+            .cpu()
+            .read_mem(0x2000, &mut bytes)
+            .unwrap();
+        assert_eq!(bytes, [0xFA, 0x2A, 13, 254, 0, 0, 0]);
+        assert_eq!(presenter.mouse_log.len(), 1);
+        assert!(presenter.window.is_none());
+    }
+
+    #[test]
+    fn mouse_presenter_release_keeps_keyboard_balanced_and_ignores_stopped_input() {
+        use ElementState::{Pressed, Released};
+        for focus_loss in [false, true] {
+            let mut presenter = mouse_presenter(true);
+            presenter.mouse.pointer_inside(true);
+            presenter.mouse_button(MouseButton::Left, Pressed);
+            presenter.mouse_button(MouseButton::Left, Released);
+            presenter.mouse_button(MouseButton::Right, Pressed);
+            presenter.key_event(KeyCode::ControlLeft, Pressed);
+            presenter.key_event(KeyCode::AltLeft, Pressed);
+            if focus_loss {
+                presenter.focus_changed(false);
+            } else {
+                presenter.key_event(KeyCode::KeyG, Pressed);
+                presenter.key_event(KeyCode::KeyG, Pressed);
+                presenter.key_event(KeyCode::KeyG, Released);
+                presenter.key_event(KeyCode::ControlLeft, Released);
+                presenter.key_event(KeyCode::AltLeft, Released);
+            }
+            assert!(!presenter.mouse.captured());
+            assert_eq!(presenter.keyboard.pending_events(), 4);
+            advance_frame(&mut presenter);
+            assert_eq!(
+                presenter.mouse_log[0]
+                    .1
+                    .iter()
+                    .map(|input| input.buttons)
+                    .collect::<Vec<_>>(),
+                [2, 0]
+            );
+            presenter.running = false;
+            presenter.mouse.pointer_inside(true);
+            presenter.mouse_button(MouseButton::Left, Pressed);
+            presenter.mouse_motion(20.0, 30.0);
+            assert!(!presenter.mouse.captured());
+            assert!(presenter
+                .mouse
+                .inject_at_boundary(&mut presenter.assembled)
+                .is_empty());
+            assert!(presenter.window.is_none());
+        }
+    }
+
+    #[test]
+    fn mouse_presenter_without_mouse_preserves_keyboard_and_device_state() {
+        use ElementState::{Pressed, Released};
+        let mut presenter = mouse_presenter(false);
+        let index = presenter.assembled.device_index[&DeviceId::Keyboard];
+        let before = presenter
+            .assembled
+            .machine
+            .bus()
+            .device(index)
+            .unwrap()
+            .save();
+        presenter.mouse.pointer_inside(true);
+        presenter.mouse_button(MouseButton::Left, Pressed);
+        presenter.mouse_motion(10.0, 20.0);
+        presenter.mouse_button(MouseButton::Left, Released);
+        assert!(!presenter.mouse.captured());
+        assert!(presenter
+            .mouse
+            .inject_at_boundary(&mut presenter.assembled)
+            .is_empty());
+        assert_eq!(
+            presenter
+                .assembled
+                .machine
+                .bus()
+                .device(index)
+                .unwrap()
+                .save(),
+            before
+        );
+        for key in [KeyCode::ControlLeft, KeyCode::AltLeft, KeyCode::KeyG] {
+            presenter.key_event(key, Pressed);
+            presenter.key_event(key, Released);
+        }
+        assert_eq!(presenter.keyboard.pending_events(), 6);
+        assert!(presenter.window.is_none());
     }
 
     #[test]

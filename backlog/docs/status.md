@@ -63,8 +63,15 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   IRQ1. `assembly::inject_mouse` deterministically accepts motion/buttons at
   run boundaries, including accumulation with reporting disabled. A synthetic
   AT ROM checks reset/enable replies and exact packets through a guest IRQ12
-  handler with both PIC EOIs. Existing profiles attach no mouse. Window pointer
-  capture remains pending.
+  handler with both PIC EOIs. Existing profiles attach no mouse. The window now
+  captures a configured mouse on a client-area click, swallows that click, and
+  releases with Ctrl+Alt+G, focus loss or suspension. It tries Locked then
+  Confined, hides the cursor and shows the release chord in the title; macOS
+  supports Locked only. Raw relative input uses a fixed 1:1 scale with Y-up
+  conversion and carried fractions. Motion coalesces between button changes
+  and enters only at run boundaries. Pure and headless presenter tests cover
+  conversion, capture, button ordering and guest-visible packets; host GUI grab
+  behavior remains unmeasured. See [window input](design/observation.md#captured-ps2-mouse).
 
 ## Works (as of 2026-11-10, main @ 479f8ed — the 286 foundation is finished)
 
