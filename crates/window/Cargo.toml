@@ -10,6 +10,8 @@ repository.workspace = true
 description = "Windowed presenter: draws text frames in a host window (§9)."
 
 [dependencies]
+audio.workspace = true
+cpal.workspace = true
 machine-file.workspace = true
 video.workspace = true
 assembly.workspace = true

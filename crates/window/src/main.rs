@@ -5,7 +5,9 @@
 //! converts elapsed time to bounded PIT targets and virtual-time run caps.
 //! Input enters only at run boundaries; observation captures the completed
 //! boundary. An opt-in PS/2 mouse uses raw relative events while captured;
-//! Ctrl+Alt+G and focus loss release the host grab. See
+//! Ctrl+Alt+G and focus loss release the host grab. Host audio opens only with
+//! the window, renders at each run boundary, and uses a bounded playback ring.
+//! Ctrl+Alt+M toggles mute without reaching the guest. Audio never paces execution. See
 //! `backlog/docs/design/observation.md` § Window pacing and § Host input.
 
 use assembly::{AssembledMachine, DeviceId, ObservationPolicy, ObservationRequest, OutputKind};
@@ -30,7 +32,10 @@ use winit::{
     window::{CursorGrabMode, Window, WindowId},
 };
 
+mod host_audio;
 mod pacing;
+
+use host_audio::HostAudio;
 
 use pacing::{frame_target, next_frame, pit_clocks, run_cap, wake, CpuRate};
 #[cfg(test)]
@@ -68,6 +73,11 @@ struct Presenter {
     assembled: AssembledMachine,
     display: DeviceId,
     sink: WindowSink,
+    audio: HostAudio,
+    mute_key_held: bool,
+    mute_modifiers: [bool; 4],
+    suppress_m: bool,
+    audio_error_reported: bool,
     surface: Option<HostSurface>,
     window: Option<Rc<Window>>,
     running: bool,
@@ -126,10 +136,19 @@ impl Presenter {
         assembled
             .observation
             .subscribe(display, Box::new(sink.clone()))?;
+        let audio = HostAudio::new();
+        assembled
+            .observation
+            .subscribe_audio(Box::new(audio.sink()));
         Ok(Self {
             assembled,
             display,
             sink,
+            audio,
+            mute_key_held: false,
+            mute_modifiers: [false; 4],
+            suppress_m: false,
+            audio_error_reported: false,
             surface: None,
             window: None,
             running: true,
@@ -158,10 +177,11 @@ impl Presenter {
     }
 
     fn open(&mut self, events: &ActiveEventLoop) -> Result<(), Box<dyn Error>> {
+        self.audio.open(&mut io::stderr());
         let window = Rc::new(
             events.create_window(
                 Window::default_attributes()
-                    .with_title("unemupc98 — freedos")
+                    .with_title(self.title())
                     .with_inner_size(PhysicalSize::new(1440, 700)),
             )?,
         );
@@ -181,10 +201,15 @@ impl Presenter {
         elapsed: Duration,
         warnings: &mut impl io::Write,
     ) -> Result<(), Box<dyn Error>> {
+        if self.audio.check_failure(warnings) {
+            self.update_title();
+        }
         if !self.running || self.occluded_since.is_some() {
             return Ok(());
         }
         self.assembled.check_persistence()?;
+        // Refresh consumer availability before devices can prune new history.
+        self.capture_audio(warnings);
         let (target, dropped) = frame_target(
             elapsed,
             self.assembled.machine.clock().0,
@@ -218,6 +243,9 @@ impl Presenter {
                 self.reset_requests = self.reset_requests.saturating_add(1);
             }
             self.assembled.check_persistence()?;
+            if outcome.is_ok() {
+                self.capture_audio(warnings);
+            }
             match outcome {
                 Ok(RunOutcome::RetiredCapReached) => self.running = cap < u64::MAX,
                 Ok(RunOutcome::ResetRequested) => {
@@ -248,6 +276,15 @@ impl Presenter {
             return Err(error.into());
         }
         Ok(())
+    }
+
+    fn capture_audio(&mut self, warnings: &mut impl io::Write) {
+        if let Err(error) = self.assembled.capture_audio() {
+            if !self.audio_error_reported {
+                let _ = writeln!(warnings, "audio observation failed: {error}; continuing");
+                self.audio_error_reported = true;
+            }
+        }
     }
 
     fn finish_persistence(
@@ -290,7 +327,57 @@ impl Presenter {
         }
     }
 
+    fn title(&self) -> String {
+        let audio = if !self.audio.available() {
+            "no audio"
+        } else if self.audio.muted() {
+            "audio muted (ctrl+alt+m to unmute)"
+        } else {
+            "audio unmuted (ctrl+alt+m to mute)"
+        };
+        let pointer = if self.mouse.captured() {
+            " — pointer captured (ctrl+alt+g to release)"
+        } else {
+            ""
+        };
+        format!("unemupc98 — freedos — {audio}{pointer}")
+    }
+
+    fn update_title(&self) {
+        if let Some(window) = &self.window {
+            window.set_title(&self.title());
+        }
+    }
+
     fn key_event(&mut self, key: KeyCode, state: ElementState) {
+        let modifier = match key {
+            KeyCode::ControlLeft => Some(0),
+            KeyCode::ControlRight => Some(1),
+            KeyCode::AltLeft => Some(2),
+            KeyCode::AltRight => Some(3),
+            _ => None,
+        };
+        if let Some(index) = modifier {
+            self.mute_modifiers[index] = state == ElementState::Pressed;
+        }
+        if key == KeyCode::KeyM {
+            let fresh = state == ElementState::Pressed && !self.mute_key_held;
+            self.mute_key_held = state == ElementState::Pressed;
+            if self.suppress_m {
+                self.suppress_m = state != ElementState::Released;
+                return;
+            }
+            if fresh
+                && self.audio.available()
+                && self.mute_modifiers[..2].contains(&true)
+                && self.mute_modifiers[2..].contains(&true)
+            {
+                self.audio.toggle_mute();
+                self.suppress_m = true;
+                self.update_title();
+                return;
+            }
+        }
         if self.running && self.error.is_none() {
             let was_captured = self.mouse.captured();
             if !self.mouse.key_event(key, state) {
@@ -303,6 +390,11 @@ impl Presenter {
     }
 
     fn focus_changed(&mut self, focused: bool) {
+        if !focused {
+            self.mute_key_held = false;
+            self.mute_modifiers = [false; 4];
+            self.suppress_m = false;
+        }
         let was_captured = self.mouse.captured();
         self.mouse.focus_changed(focused);
         if was_captured && !self.mouse.captured() {
@@ -339,7 +431,7 @@ impl Presenter {
             }
             if let Some(window) = &self.window {
                 window.set_cursor_visible(false);
-                window.set_title("unemupc98 — freedos — pointer captured (ctrl+alt+g to release)");
+                self.update_title();
             }
         }
     }
@@ -356,7 +448,7 @@ impl Presenter {
                 eprintln!("cannot release pointer: {error}");
             }
             window.set_cursor_visible(true);
-            window.set_title("unemupc98 — freedos");
+            self.update_title();
         }
     }
 
@@ -489,6 +581,9 @@ impl ApplicationHandler for Presenter {
     }
 
     fn about_to_wait(&mut self, events: &ActiveEventLoop) {
+        if self.audio.check_failure(&mut io::stderr()) {
+            self.update_title();
+        }
         if let (Some(window), Some(started)) = (&self.window, self.started) {
             let (redraw, deadline) = wake(
                 started.elapsed(),

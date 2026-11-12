@@ -3,10 +3,10 @@
 The `audio` crate is the audio swap layer beside `video`. It provides an
 `AudioSink`, an integer mixer and headless capture, implementing rules 1–4 of
 [decision-20](../../decisions/decision-20%20-%20Audio%20through%20a%20virtual-time%20AudioSink%20seam%20with%20host%20output%20in%20the%20window.md).
-The AT PC speaker is the first sound-producing device. Host playback,
-sound-card registers, DMA, analogue filtering and synthesis remain separate work.
-No new external dependency is needed: only the existing `device`
-and `thiserror` workspace dependencies are used.
+The AT PC speaker is the first sound-producing device. The window uses cpal
+for host playback; sound-card registers, DMA, analogue filtering and synthesis
+remain separate work. The audio crate itself needs only the existing `device`
+and `thiserror` workspace dependencies.
 
 ## Output format
 
@@ -136,7 +136,7 @@ latest incomplete output frame. Same-clock changes coalesce to the last level;
 there are at most 25 whole-clock positions in a frame, so the speaker retains
 at most 26 edges including a possible segment boundary. This bound holds even
 when a host only calls `machine.run_bounded` and never renders audio, including
-the window path. CLI session boundaries also continue advancing/releasing audio.
+window construction before playback starts. CLI session boundaries also continue advancing/releasing audio.
 No host changes or periodic cleanup calls are required. With a consumer enabled,
 the full history between observations is retained. The existing requirement to
 flush before changing output epochs preserves the partial frame on late enable.
@@ -245,6 +245,62 @@ it starts a fresh configured epoch while retaining mixer phase and external
 subscribers. Flush to the desired epoch boundary before reconfiguring. Backwards
 rendering returns a typed error and preserves the cursor. Repeated observations
 emit no duplicate PCM, but still release source history.
+
+## Host output
+
+Only the window binary opens the default cpal output device, when it opens its
+window. Constructing a presenter or sink is inert; headless CLI runs and tests
+never enumerate or open audio devices. The existing observation subscription
+API connects `WindowAudioSink`; each successful bounded run captures audio after
+persistence checks and before handling a CPU reset. A pre-run capture refreshes
+consumer availability before speaker history can be pruned after enable/unmute.
+No assembly API change is needed.
+
+The supported-config search selects **48 kHz, at least two channels**, preferring
+signed i16 over f32. i16 samples pass through unchanged; f32 uses
+`sample / 32768`. Left and right occupy the first two channels; every extra
+host channel is zero. There is no resampling. A device without 48 kHz support,
+no matching format, or stream creation/playback failure leaves the window silent
+with one clear diagnostic. On macOS, opening the stream may switch the shared
+audio device to 48 kHz, affecting other applications using that device.
+
+cpal's `Xrun`, `DeviceChanged` and `RealtimeDenied` notifications leave playback
+active: the backend retains or reroutes the stream. Each kind is reported at
+most once per session. Other errors disable output and release the stream on
+the event loop. Callbacks only set atomic flags; they never log. Automatic
+reconnection after a fatal error is not implemented. A latched audio-source
+error is also reported once, but does not disable playback or stop the window;
+the next capture retries the recoverable observation interval. CPU and
+persistence failures retain their existing behavior. The Nix devShell adds
+`pkg-config` and `alsa-lib` on Linux for ALSA; macOS needs no extra system inputs.
+
+The preallocated ring retains a hard maximum of **9600 stereo frames (200 ms,
+38,400 PCM bytes)**. Playback starts after **2400 frames (50 ms)** are queued.
+An underrun plays silence and rearms the same prefill threshold. To bound clock
+drift latency, a queue exceeding **3360 frames (70 ms)** drops its oldest frames
+down to **2400 (50 ms)**. Capacity overrun also discards the oldest complete
+frames. These are presentation policies, independent of emulation.
+
+The mutex is retained because producer-side oldest-frame removal and consumer
+reads share a cursor. Each write/read critical section copies PCM in at most
+two slices, with no per-sample work under the lock. A callback copies at most
+1024 frames per section into stack scratch, then converts and fills host channels
+outside the lock. It takes the short lock rather than replacing a whole buffer
+with silence on producer contention, and allocates nothing. The existing window
+host-clock pacing remains authoritative; neither the queue nor the device clock
+advances or delays virtual time. Occlusion/suspension stops production under
+that policy, so playback drains to silence.
+
+**Ctrl+Alt+M toggles host mute** while a device is active. Only the M pair is
+swallowed; modifier events still reach the guest. Repeats do not toggle again,
+and an M already held by the guest is not stolen when modifiers arrive later.
+F12 reaches the guest normally. Without an active device the title says
+**no audio** and does not advertise a mute chord; otherwise it shows
+**muted/unmuted** and the chord alongside the pointer-release hint. Mute clears
+queued audio, rearms prefill and disables this sink's rendering demand; unmute
+refreshes speaker-history demand before the next run so newly generated edges
+survive until observation. Automated validation never plays sound; physical
+playback and device support require a manual host check.
 
 ## Validation
 

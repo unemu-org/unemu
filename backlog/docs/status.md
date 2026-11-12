@@ -20,7 +20,13 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   frame even without capture calls. Synthetic AT tone and toggle goldens pin PCM,
   while late device-history errors surface at the next observation and restore
   the current level in a new segment without waiting for another pin change.
-  Sound Blaster and host playback remain unimplemented. See
+  The window now plays through cpal at 48 kHz (i16 or f32, stereo plus silent extra host channels), with a
+  200 ms capacity, 50 ms prefill/latency target and oldest-frame drops above
+  70 ms. Underruns play silence. Ctrl+Alt+M toggles host mute; unavailable or
+  fatally failed output reports once and leaves
+  emulation running silently. Transient cpal notifications keep playback active;
+  recoverable source errors never stop the window. Tests stay device-free; physical playback is
+  unmeasured. Sound Blaster remains unimplemented. See
   [audio design](design/audio.md).
 
 - **2026-11-12 — 8042 keyboard command transmission:** writing a keyboard

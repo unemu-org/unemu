@@ -68,6 +68,10 @@ point, skips missed paints, and uses winit `ControlFlow::WaitUntil`. Host key
 events queue for that cadence instead of forcing immediate redraws. Resize
 redraws may paint sooner; an ahead guest does no work and delivers no bytes.
 A stopped machine uses `ControlFlow::Wait` and keeps the last screen.
+The window captures mixed audio at each successful run boundary into a bounded
+cpal playback ring. Underruns play silence and overruns discard old frames;
+audio never changes these pacing targets or virtual time. Ctrl+Alt+M toggles
+host mute while an audio device is active. See [audio.md §Host output](audio.md#host-output).
 `Occluded(true)` also switches to `Wait`: the guest pauses and queued redraws
 are ignored, including on macOS where winit can still deliver them. On
 `Occluded(false)`, presentation resumes and the entire hidden interval is added
@@ -353,6 +357,8 @@ absorbing later synthetic releases from X11/Windows. Stopped or errored machines
 ignore key events. On macOS, winit 0.30 does not deliver CapsLock key events, so
 Caps Lock cannot reach the guest.
 
+Ctrl+Alt+M reserves the M pair for host mute while an audio device is active;
+modifiers and unmodified M still reach the guest.
 Letters, digits, punctuation, modifiers, locks, F1–F12, keypad and navigation
 are supported. Pause/Break and PrintScreen are intentionally
 unmapped because their special modifier-dependent sequences need a separate

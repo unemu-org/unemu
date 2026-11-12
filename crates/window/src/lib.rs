@@ -46,7 +46,13 @@
 //! wait for empty mouse output and keep later changes queued; keyboard readiness
 //! is independent. No mouse means no capture or title changes. The device owns
 //! overflow and motion coalescing. Application exit also restores the pointer.
-//! Only the binary owns a window; library tests and frame sinks stay headless.
+//! Only the binary owns a window and cpal output stream; library tests and frame
+//! sinks stay headless. Audio observations feed a 200 ms stereo ring at run
+//! boundaries; callbacks use silence on underrun and drop oldest frames on
+//! overrun. Playback never drives virtual time. Ctrl+Alt+M toggles host mute
+//! only while a device is active. Playback prefills 50 ms and trims above 70 ms;
+//! recoverable host/source errors leave the window running.
+//! See `backlog/docs/design/audio.md` §Host output for formats and fallback.
 
 /// Attribution carried by binaries that embed the original font files.
 pub const FONT_NOTICE: &str = concat!(

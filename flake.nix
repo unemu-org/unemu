@@ -83,6 +83,10 @@
 
             # Fetching the SingleStepTests / ProcessorTests corpus (real-mode oracle)
             pkgs.jq
+          ] ++ pkgs.lib.optionals pkgs.stdenv.isLinux [
+            # cpal's Linux backend discovers ALSA through pkg-config.
+            pkgs.pkg-config
+            pkgs.alsa-lib
           ];
         };
       }

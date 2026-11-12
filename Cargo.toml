@@ -37,6 +37,7 @@ anyhow = "1"
 # SHA-256 for media image identity.
 sha2 = "0.10"
 winit = "0.30"
+cpal = "=0.18.2"
 softbuffer = { version = "0.4", default-features = false, features = ["x11", "x11-dlopen", "wayland", "wayland-dlopen"] }
 # CPU core: I286 machine exception delivery and shutdown, pinned to x86jit main. Every build (and every
 # golden trace) runs against a known CPU. Not a bare path dependency — that breaks
