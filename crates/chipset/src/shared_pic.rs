@@ -25,9 +25,10 @@
 //! single-chip [`SharedPic`] stays usable on its own for chipsets that model
 //! only the master.
 //!
-//! The cascade input alone is level-gated per the Intel 8259A datasheet,
+//! Every input is level-gated per the Intel 8259A datasheet,
 //! "Edge and Level Triggered Modes": slave INT falling before INTA withdraws
-//! master IRR2 from priority resolution. Device-driven lines stay edge-latched.
+//! master IRR2 from priority resolution, just as device input falls withdraw
+//! their unacknowledged requests.
 //! The slave IR7 vector is a defensive fallback for a cascade INTA with no
 //! slave request ("Interrupt Sequence"); see `backlog/docs/design/spec.md` §5.1.
 //!
@@ -165,9 +166,6 @@ impl SharedPic {
             let slave_int = self.inner.borrow().irq_pending();
             let mut master = master.borrow_mut();
             master.set_irq_line(CASCADE_IRQ, slave_int);
-            if !slave_int {
-                master.withdraw_request(CASCADE_IRQ);
-            }
         }
     }
 }
@@ -301,8 +299,8 @@ const CASCADE_IRQ: u8 = 2;
 /// slave interrupts nested on top of each other (special fully-nested mode) are
 /// not modelled.
 ///
-/// Intel 8259A datasheet, "Edge and Level Triggered Modes": only the cascade
-/// input is level-gated. Slave INT falling before INTA withdraws master IRR2,
+/// Intel 8259A datasheet, "Edge and Level Triggered Modes": every input
+/// is level-gated. Slave INT falling before INTA withdraws master IRR2,
 /// allowing another master request to win or leaving no interrupt. Guest port
 /// writes therefore cannot cause a spurious cascade INTA. The slave IR7 vector
 /// ("Interrupt Sequence") remains a defensive fallback if a cascade INTA finds
@@ -391,9 +389,7 @@ impl InterruptController for CascadedPic {
         if master_line == Some(CASCADE_IRQ) {
             // Cascaded INTA: the slave supplies the vector and moves its line
             // into service; the master's IRQ2 moves into service in step.
-            let slave_vector = self.slave.inner.borrow_mut().acknowledge();
-            let vector =
-                slave_vector.unwrap_or_else(|| self.slave.inner.borrow().vector_base() + 7);
+            let vector = self.slave.inner.borrow_mut().acknowledge()?;
             self.master.inner.borrow_mut().acknowledge();
             self.master.observations.acknowledge(vector);
             // The slave's INT typically drops now that its line is in service.
@@ -557,8 +553,8 @@ mod tests {
                 scheduled_bus.device_mut().sync(VClock(target));
                 for pic in [&mut reference, &mut scheduled] {
                     pic.set_irq_line(3, true);
-                    pic.set_irq_line(3, false);
                     assert_eq!(pic.acknowledge(), Some(base + 3));
+                    pic.set_irq_line(3, false);
                 }
                 assert_eq!(
                     reference_bus.port_read(command + 1, 1).unwrap(),
@@ -709,7 +705,7 @@ mod tests {
         // The slave latched the request but does not assert its INT, so the
         // master's IRQ2 never rises and nothing is offered.
         assert_eq!(pic.poll(), None);
-        assert_eq!(pic.acknowledge(), None);
+        assert_eq!(pic.acknowledge(), Some(MASTER_BASE + 7));
         assert_eq!(pic.master.inner.borrow().highest_pending(), None);
     }
 

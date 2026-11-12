@@ -489,9 +489,10 @@ pub struct GraphicsScanout<'a> {
 ///   guest physical `addr`, `size` bytes. Backs `RegionKind::Trap` loads/stores.
 /// - [`Device::tick`]: advance internal timers/state to virtual time `now`
 ///   (§6). Deadline dispatch visits due transitions; accesses synchronize lazy state.
-/// - [`Device::irq_pending`]: the device's IRQ line (§5). The machine edge-detects its
-///   line onto the interrupt controller and injects the acknowledged vector into
-///   the CPU (see the `machine` crate).
+/// - [`Device::irq_pending`]: the device's IRQ level (§5). The machine forwards
+///   both transitions to the interrupt controller, which detects edges and gates
+///   requests by the current level (Intel 8259A datasheet, Edge and Level Triggered
+///   Modes). The machine injects the acknowledged vector into the CPU.
 /// - [`Device::irq_output`]: query a device-local interrupt pin (§5.1). Pin 0
 ///   defaults to `irq_pending`; additional pins default low. Board wiring maps
 ///   pins to interrupt-controller input lines.
@@ -582,6 +583,10 @@ pub trait Device {
     }
 
     /// Whether the device is currently asserting its IRQ line (§5.1).
+    ///
+    /// This is a non-consuming pin-level query, not a pending-event queue.
+    /// Intel 8259A datasheet, Edge and Level Triggered Modes: the integration
+    /// forwards both transitions; the controller owns request edge detection.
     fn irq_pending(&self) -> bool;
 
     /// Query an interrupt output by its device-local pin index (§5.1).
@@ -724,8 +729,10 @@ pub trait InterruptController {
     /// Drive input IRQ line `irq` to `level` (`true` = asserted).
     ///
     /// This is how devices raise and lower their request lines. Whether a rising
-    /// level actually latches a request depends on the controller's trigger mode
-    /// and mask.
+    /// level actually latches a request depends on the controller's trigger mode.
+    /// The mask controls serviceability, not the electrical input. Forward falls
+    /// too: Intel 8259A datasheet, Edge and Level Triggered Modes requires IR to
+    /// remain high until INTA, even for an edge-triggered request.
     fn set_irq_line(&mut self, irq: u8, level: bool);
 
     /// The vector the controller would dispatch on INTA right now, if any: the
@@ -735,7 +742,11 @@ pub trait InterruptController {
 
     /// Perform an INTA (interrupt-acknowledge) cycle: latch the highest-priority
     /// serviceable request into the in-service state and return its vector, or
-    /// `None` if nothing is serviceable (§5.4).
+    /// `None` if the controller supplies no vector (§5.4). The Intel 8259A
+    /// returns its default IR7 vector when INTA finds no serviceable request,
+    /// without setting ISR7 (datasheet, Interrupt Sequence and Edge and Level
+    /// Triggered Modes). Callers normally poll first; an explicit INTA after
+    /// a disappearing request can therefore return a spurious vector.
     fn acknowledge(&mut self) -> Option<u8>;
 
     /// End-of-interrupt: clear the highest-priority in-service request, allowing

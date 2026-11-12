@@ -246,7 +246,6 @@ fn pending_pic_irq_survives_cpu_reset_and_is_delivered_after_sti() {
             pic.port_write(port, 1, value).unwrap();
         }
         pic.set_irq_line(1, true);
-        pic.set_irq_line(1, false);
         let keyboard = I8042::new();
         let signal = keyboard.reset_signal();
         let bus = Bus::new(

@@ -21,7 +21,8 @@
 //!
 //! The production deadline engine visits every observable wired transition;
 //! `reference-scheduler` exposes a per-clock test oracle with identical CPU/IRQ
-//! semantics. IRQ levels are edge-detected onto PIC inputs in timestamp order.
+//! semantics. Device IRQ levels reach PIC inputs in timestamp order; the PIC
+//! detects edges (Intel 8259A datasheet, Edge and Level Triggered Modes).
 //!
 //! ## Virtual clock (§6)
 //!
@@ -64,8 +65,8 @@ pub enum SchedulerEngine {
 /// One wired connection from a device IRQ line to a PIC input (§5.1).
 ///
 /// Declares *which* device (by its index in the configured device set)
-/// drives *which* PIC input line. The machine edge-detects the device's line and
-/// pulses that PIC input; it never names the concrete device type.
+/// drives *which* PIC input line. The machine forwards the device's level;
+/// the PIC detects edges (Intel 8259A datasheet, Edge and Level Triggered Modes).
 #[derive(Copy, Clone, Debug)]
 pub struct IrqLine {
     /// Index of the source device in the bus's device set.
@@ -183,10 +184,10 @@ pub struct Machine<C: Cpu> {
     halted_clocks: u64,
     /// Consecutive halted PIT clocks since the CPU last ran or woke.
     idle_clocks: u64,
-    /// Device IRQ lines wired to PIC inputs, edge-detected each boundary.
+    /// Device IRQ lines wired to PIC inputs, sampled at scheduler boundaries.
     irq_lines: Vec<IrqLine>,
     /// Last observed level of each wired line (parallel to `irq_lines`), for
-    /// rising-edge detection. `None` until the first sample (no spurious edge at
+    /// change detection. `None` until the first sample (no spurious edge at
     /// reset).
     last_levels: Vec<Option<bool>>,
     /// CPU rate A/B in completed steps per PIT input clock.
@@ -415,7 +416,7 @@ impl<C: Cpu> Machine<C> {
                     self.bus.tick_due(at);
                 }
             }
-            self.edge_detect();
+            self.sample_irq_lines();
         }
         Ok(())
     }
@@ -444,14 +445,14 @@ impl<C: Cpu> Machine<C> {
             // An access can change a coupled device as well as its own pins.
             // Ordinary instruction boundaries have no such side effects.
             self.bus.settle();
-            self.edge_detect();
+            self.sample_irq_lines();
         }
         for _ in 0..1024 {
             if !self.service_dma_pass()? {
                 return Ok(());
             }
             self.bus.settle();
-            self.edge_detect();
+            self.sample_irq_lines();
         }
         Err(scheduler_error("DMA completion made no progress"))
     }
@@ -643,28 +644,21 @@ impl<C: Cpu> Machine<C> {
         }
     }
 
-    /// Edge-detect the wired device IRQ lines onto the PIC (§5.1).
+    /// Propagate device IRQ level changes to the PIC (§5.1).
     ///
-    /// A device drives a *level*; the PIC is *edge-triggered*. Pulse the PIC
-    /// input on a rising edge (low→high) of the device line — matching real IRQ0
-    /// wiring, one PIC request per timer period. The devices deliberately do not
-    /// edge-detect; that is this integration layer's job.
-    fn edge_detect(&mut self) {
+    /// Intel 8259A datasheet, Edge and Level Triggered Modes: inputs must stay
+    /// high until INTA. The PIC owns edge detection; forwarding falls lets it
+    /// withdraw requests whose device no longer needs service. The first sample
+    /// establishes reset levels without fabricating a rising edge.
+    fn sample_irq_lines(&mut self) {
         for (i, line) in self.irq_lines.iter().enumerate() {
             let Some(level) = self.bus.device_irq_output(line.device, line.output) else {
                 continue;
             };
-            let rising = matches!(self.last_levels[i], Some(false)) && level;
-            self.last_levels[i] = Some(level);
-            if rising {
-                // Emit a full high→low pulse on the PIC input, not a sustained
-                // high. The PIC latches a request on the rising edge; leaving the
-                // input high would defeat its own edge detection, so a later timer
-                // period would never latch a second request. The low half restores
-                // the input so the next period's rising edge latches again.
-                self.pic.set_irq_line(line.irq, true);
-                self.pic.set_irq_line(line.irq, false);
+            if self.last_levels[i].is_some_and(|previous| previous != level) {
+                self.pic.set_irq_line(line.irq, level);
             }
+            self.last_levels[i] = Some(level);
         }
     }
 
@@ -1341,8 +1335,8 @@ mod tests {
         }
     }
 
-    /// A counting interrupt controller: records set_irq_line pulses and hands out
-    /// one serviceable vector per pulse, cleared by acknowledge.
+    /// A counting interrupt controller: records rising input transitions and
+    /// hands out one serviceable vector per rise, cleared by acknowledge.
     #[derive(Default)]
     struct CountingIc {
         pulses: u32,
@@ -1372,14 +1366,14 @@ mod tests {
     }
 
     #[test]
-    fn edge_detect_produces_one_request_per_period() {
+    fn irq_sampling_produces_one_request_per_period() {
         // Drive the machine so the line device is ticked across several periods
-        // and assert exactly one PIC pulse per period. The line goes low at
+        // and assert exactly one rising PIC input per period. The line goes low at
         // ticks 4, 8, 12, … and high in between, so a rising edge occurs once per
         // 4-tick period.
         let program = vec![CpuStop::BudgetExhausted; 20];
         // Each run() retires one instruction (1 tick). We need the LineDevice at
-        // a known bus index and a CountingIc to observe pulses. Rebuild a bus.
+        // a known bus index and a CountingIc to observe rising inputs. Rebuild a bus.
         let devices: Vec<Box<dyn Device>> = vec![Box::new(LineDevice::default())];
         let map = DecodeMap {
             ports: Vec::new(),

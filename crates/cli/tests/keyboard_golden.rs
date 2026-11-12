@@ -11,8 +11,10 @@
 //! 4. `sti`, then loops on `hlt`.
 //!
 //! A single scancode is queued into the keyboard before the run. Once the guest
-//! enables keyboard interrupts the 8042 raises IRQ1; the machine edge-detects it
-//! onto the PIC and injects the keyboard vector. The handler reads the scancode
+//! enables keyboard interrupts the 8042 holds IRQ1 high; the machine forwards
+//! its level to the PIC, which detects edges and requires IR high until INTA
+//! (Intel 8259A datasheet, Edge and Level Triggered Modes). The machine injects
+//! the acknowledged keyboard vector. The handler reads the scancode
 //! from port `0x60`, emits it to the UART (COM1 THR, `0x3F8`), sends EOI
 //! (`out 0x20, 0x20`), masks all IRQs, and `iret`s. With the source masked the
 //! machine falls quiescent and terminates.

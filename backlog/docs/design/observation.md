@@ -19,6 +19,27 @@ direct machine callers use
 emit no audio. See [audio.md](audio.md) for exact PIT mapping, source history,
 resampling, capture lifecycle and the documented nominal-clock discrepancy.
 
+## Interrupt observations
+
+Device IRQ queries observe the current electrical level without consuming a
+request. The machine forwards rising and falling transitions at its existing
+device deadlines and access/DMA settle points; it never turns a held device
+output into a pulse. Intel 8259A datasheet, **Edge and Level Triggered Modes**:
+a pending edge-triggered request requires the input to remain high until INTA,
+even if masked. Thus reading an 8042 byte before unmasking IRQ1 withdraws the
+request; unmasking while the byte remains unread exposes exactly one edge.
+PIT IRQ0 is the sustained OUT0 level, including Mode-2 low pulses and Mode-3
+half-periods. Status/count observations do not acknowledge it.
+
+PIC observation logs record actual acknowledge calls and their CPU vectors.
+An explicit INTA with no serviceable input returns the default IR7 vector and
+does not set ISR7 (Intel 8259A datasheet, **Interrupt Sequence** and **Edge and
+Level Triggered Modes**). After a slave input falls before acknowledge, master
+IR2 is also withdrawn, so an explicit INTA returns master IR7 with both ISRs
+unchanged. Normal machine polling and acknowledge remain atomic; this does not
+model the physical INTR-to-INTA race interval. See
+[scheduler interrupt contract](scheduler.md#pic-state-must-follow-cpu-acceptance).
+
 ## Window pacing
 
 Only the window event loop reads `std::time::Instant`. The machine scheduler,

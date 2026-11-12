@@ -12,7 +12,12 @@
 //! the device deterministic and testable without a wall clock.
 //!
 //! Counter 0's OUT pin is wired to IRQ0 on the real machine; here it is surfaced
-//! through [`Device::irq_pending`]. Counters 1 (DRAM refresh) and 2 (PC speaker)
+//! through [`Device::irq_pending`] as a sustained level, never a consumed pulse.
+//! Intel 8254 datasheet, Modes 0, 2 and 3: OUT stays high after terminal count
+//! in Mode 0 until reload, goes low for one clock per period in Mode 2, and
+//! alternates high/low half-periods in Mode 3. Count/status reads leave OUT
+//! unchanged. See `backlog/docs/design/scheduler.md`, §PIC state must follow CPU
+//! acceptance. Counters 1 (DRAM refresh) and 2 (PC speaker)
 //! feed port 61h through [`SharedPit8253`]: channel 1 clocks refresh detect and
 //! channel 2 supplies OUT and accepts the software GATE.
 //!
@@ -1880,6 +1885,28 @@ mod tests {
                     readback_status(&mut bus, 0),
                     if high { 0xB0 } else { 0x30 } | u32::from(mode << 1)
                 );
+                bus.tick(1);
+            }
+        }
+    }
+
+    /// Intel 8254 datasheet, Modes 2 and 3: IRQ0 is OUT0, including the
+    /// one-clock rate-generator low phase and both square-wave half-periods.
+    #[test]
+    fn irq_level_matches_out0_across_status_and_count_reads() {
+        for (mode, levels) in [
+            (2, [true, true, true, true, false, true]),
+            (3, [true, true, true, false, false, true]),
+        ] {
+            let mut bus = fidelity_pit_bus(mode, 5);
+            for high in levels {
+                assert_eq!(bus.device().irq_pending(), high);
+                assert_eq!(readback_status(&mut bus, 0) & 0x80 != 0, high);
+                bus.port_write(CMD, 1, 0).unwrap();
+                bus.port_read(C0, 1).unwrap();
+                bus.port_read(C0, 1).unwrap();
+                assert_eq!(bus.device().irq_pending(), high);
+                assert_eq!(bus.device().irq_output(0), high);
                 bus.tick(1);
             }
         }

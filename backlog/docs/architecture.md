@@ -164,11 +164,14 @@ survive bounded runner calls.
   See [persistent media](design/persistent-media.md#integration-layers-flush-points-determinism-argument).
 - **`InterruptController`**, defined in `device`, supplies `set_irq_line`,
   non-mutating `poll`, `acknowledge`, and `end_of_interrupt`. Machine wiring
-  samples device levels and pulses a PIC input on a sampled low-to-high edge.
+  forwards rising and falling device pin levels to PIC inputs; the PIC detects
+  edges and withdraws unacknowledged requests when their inputs fall.
   Acknowledgement requires CPU IRQ readiness and no already queued vector,
   after the stopping instruction's bus/DMA effects have settled. Guest EOI port
   writes reach the same shared PIC state. See the adopted ordering in
   [scheduler design](design/scheduler.md#adoption).
+  Known limitation: cascaded-board validation does not reserve master IRQ2 for
+  slave INT, so a device route can still conflict with that internal connection.
 - **[`FrameSink`](../../crates/video/src/lib.rs)** consumes `&Frame` via
   `present`; the current frame is `Frame::Text(TextGrid)`. Rendering turns VRAM
   and display-start/cursor state into cells with glyph bytes and attributes.
@@ -189,7 +192,7 @@ clock; devices ignore earlier sync/tick times to avoid rewinding or replaying an
 interval. Restoring an earlier epoch requires restoring its global clock too.
 
 A future machine-level snapshot must also save `Machine::last_levels`, the IRQ
-edge detector's last sampled levels. No device snapshot contains these samples;
+IRQ sampler's last observed levels. No device snapshot contains these samples;
 losing them can suppress or invent an interrupt edge after restore. CPU state,
 the global clock and its fractional remainder, halted state and idle counters
 also belong to that machine-level snapshot.

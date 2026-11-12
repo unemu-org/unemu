@@ -174,8 +174,8 @@ pub const RTC_IDLE_LIMIT: u64 = 200;
 /// vector base `0x08`, IRQ2 unmasked for the cascade) and the slave 8259 (ICW1–
 /// ICW4, vector base `0x70`, IRQ8 unmasked), enables the RTC's update-ended
 /// interrupt (register B bit 4, UIE), `sti`, then loops on `hlt`. Once a full RTC
-/// second ticks the RTC raises IRQ8; the machine edge-detects it onto the slave
-/// PIC, which cascades into the master at IRQ2, and injects vector `0x70`. The
+/// second ticks the RTC asserts IRQ8; the machine forwards its level to the
+/// slave PIC, whose INT level drives master IRQ2, and injects vector `0x70`. The
 /// handler emits a marker byte `R` to COM1, ends the cascaded interrupt with an
 /// EOI to **both** the slave (`0xA0`) and the master (`0x20`), reads register C of
 /// the RTC to deassert IRQ8, masks all master IRQs so the source falls quiescent,
@@ -1302,7 +1302,9 @@ pub fn run_floppy_boot() -> Result<Vec<u8>> {
 /// guest sent to COM1 (§5, §7).
 ///
 /// The PIT counter-0 OUT line (bus device index `2`) is wired to PIC input IRQ0;
-/// the machine edge-detects it and acknowledges/injects the timer vector.
+/// the machine forwards both level transitions and acknowledges/injects the
+/// timer vector. The PIC detects edges (Intel 8259A datasheet, Edge and Level
+/// Triggered Modes).
 pub fn run_boot(blob: &[u8]) -> Result<Vec<u8>> {
     let config = assembly::at_boot(blob.to_vec());
     let mut assembled =
@@ -1322,8 +1324,10 @@ pub fn run_boot(blob: &[u8]) -> Result<Vec<u8>> {
 /// in real mode, and return the bytes the guest sent to COM1 (§5, §7).
 ///
 /// The 8042's keyboard-byte-ready line (resolved as `DeviceId::Keyboard`) is
-/// wired to PIC input IRQ1; the machine edge-detects it and acknowledges/injects
-/// the keyboard vector once the guest enables keyboard interrupts and sets `IF`.
+/// wired to PIC input IRQ1; the machine forwards both level transitions and
+/// acknowledges/injects the keyboard vector once the CPU is ready. A byte read
+/// before INTA withdraws the request (Intel 8259A datasheet, Edge and Level
+/// Triggered Modes).
 pub fn run_keyboard(blob: &[u8], scancodes: &[u8]) -> Result<Vec<u8>> {
     let config = assembly::at_keyboard(blob.to_vec());
     let mut assembled = assemble_with_observation(&config, &serial_policy())
@@ -1351,8 +1355,9 @@ pub fn run_keyboard(blob: &[u8], scancodes: &[u8]) -> Result<Vec<u8>> {
 /// and return the bytes the guest sent to COM1 (§5, §7).
 ///
 /// The RTC's update-ended output (`DeviceId::Rtc`) is wired to PIC input
-/// IRQ8, which lives on the *slave* 8259; the machine edge-detects it onto the
-/// cascaded pair, where it surfaces to the CPU through the master's IRQ2 cascade.
+/// IRQ8 on the slave 8259; the machine forwards both output transitions to it,
+/// and slave INT drives master IRQ2 as a level (Intel 8259A datasheet, Cascading
+/// the 8259A and Edge and Level Triggered Modes).
 /// This is the first path where an interrupt reaches the CPU across the cascade.
 /// The RTC is built with a small per-second tick ratio ([`RTC_SECOND_TICKS`]) so
 /// the update-ended interrupt fires within a bounded run; the timing is virtual,

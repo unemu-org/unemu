@@ -447,7 +447,7 @@ impl Upd765 {
         }
     }
 
-    /// The current IRQ6 line level, for tests and the machine's edge detector.
+    /// The current IRQ6 line level, for tests and the machine's IRQ sampler.
     /// IBM PC AT Technical Reference, Fixed Disk and Diskette Drive Adapter,
     /// Digital Output Register (3F2h): bit 3 gates the controller INT onto IRQ6.
     #[must_use]

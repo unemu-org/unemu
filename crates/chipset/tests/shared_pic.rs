@@ -29,9 +29,9 @@ fn eoi_via_port_write_clears_isr_seen_by_controller() {
 
     // The controller face raises IRQ0 and runs INTA (IRR -> ISR).
     ic.set_irq_line(0, true);
-    ic.set_irq_line(0, false);
     assert_eq!(ic.poll(), Some(0x08));
     assert_eq!(ic.acknowledge(), Some(0x08));
+    ic.set_irq_line(0, false);
     // While IRQ0 is in service, nothing further is serviceable.
     assert_eq!(ic.poll(), None);
 
@@ -40,7 +40,6 @@ fn eoi_via_port_write_clears_isr_seen_by_controller() {
 
     // The controller face now sees the ISR cleared: a fresh edge is serviceable.
     ic.set_irq_line(0, true);
-    ic.set_irq_line(0, false);
     assert_eq!(
         ic.poll(),
         Some(0x08),
@@ -49,24 +48,23 @@ fn eoi_via_port_write_clears_isr_seen_by_controller() {
 }
 
 #[test]
-fn pulse_latches_one_request_per_edge() {
-    // The machine drives IRQ0 as a high->low pulse per timer period. Each rising
-    // edge must latch exactly one request (edge-triggered), independent of how
-    // many times the line is re-pulsed after an unacknowledged one is pending.
+fn held_line_latches_one_request_per_edge() {
+    // Each request holds its input high until INTA. A fresh request needs
+    // another low-to-high transition after acknowledgement.
     let mut ic = SharedPic::new();
     let mut dev = ic.clone();
     init_master(&mut dev);
 
     ic.set_irq_line(0, true);
-    ic.set_irq_line(0, false);
     assert_eq!(ic.acknowledge(), Some(0x08));
+    ic.set_irq_line(0, false);
     dev.port_write(0x20, 1, 0x20).unwrap(); // EOI
 
-    // A second pulse latches a second request only because the input returned
+    // A second edge latches a second request only because the input returned
     // low between the two rising edges.
     ic.set_irq_line(0, true);
-    ic.set_irq_line(0, false);
     assert_eq!(ic.acknowledge(), Some(0x08));
+    ic.set_irq_line(0, false);
 }
 
 /// Program the PC/AT cascade through the guest's port interfaces.
@@ -92,13 +90,84 @@ fn read_register(bus: &mut MockBus, command: u16, select: u32) -> u32 {
     bus.port_read(command, 1).unwrap()
 }
 
+/// Intel 8259A datasheet, Edge and Level Triggered Modes: masking does not
+/// replace the requirement to hold IR high until INTA.
+#[test]
+fn irq_level_masked_request_is_withdrawn_before_unmask() {
+    let (mut pic, mut master, _) = init_cascade();
+    master.port_write(0x21, 1, 2).unwrap();
+    pic.set_irq_line(1, true);
+    assert_eq!(read_register(&mut master, 0x20, 0x0A), 2);
+    assert_eq!(pic.poll(), None);
+    pic.set_irq_line(1, false);
+    master.port_write(0x21, 1, 0).unwrap();
+    assert_eq!(read_register(&mut master, 0x20, 0x0A), 0);
+    assert_eq!(pic.poll(), None);
+}
+
+#[test]
+fn irq_level_unmasking_held_request_services_exactly_one_edge() {
+    let (mut pic, mut master, _) = init_cascade();
+    master.port_write(0x21, 1, 2).unwrap();
+    pic.set_irq_line(1, true);
+    master.port_write(0x21, 1, 0).unwrap();
+    assert_eq!(pic.acknowledge(), Some(9));
+    master.port_write(0x20, 1, 0x20).unwrap();
+    pic.set_irq_line(1, true);
+    assert_eq!(pic.poll(), None);
+    pic.set_irq_line(1, false);
+    pic.set_irq_line(1, true);
+    pic.set_irq_line(1, false);
+    assert_eq!(pic.poll(), None);
+}
+
+#[test]
+fn irq_level_fall_between_poll_and_inta_returns_default_ir7() {
+    for slave in [false, true] {
+        let mut pic = if slave {
+            SharedPic::new_slave()
+        } else {
+            SharedPic::new()
+        };
+        let command = if slave { 0xA0 } else { 0x20 };
+        let base = if slave { 0x70 } else { 8 };
+        let mut bus = MockBus::new(Box::new(pic.clone()));
+        for (port, value) in [(command, 0x13), (command + 1, base), (command + 1, 1)] {
+            bus.port_write(port, 1, value).unwrap();
+        }
+        pic.set_irq_line(1, true);
+        assert_eq!(pic.poll(), Some(base as u8 + 1));
+        pic.set_irq_line(1, false);
+        assert_eq!(pic.acknowledge(), Some(base as u8 + 7));
+        assert_eq!(read_register(&mut bus, command, 0x0B), 0);
+        pic.set_irq_line(7, true);
+        assert_eq!(pic.acknowledge(), Some(base as u8 + 7));
+        pic.set_irq_line(7, false);
+        assert_eq!(pic.acknowledge(), Some(base as u8 + 7));
+        assert_eq!(read_register(&mut bus, command, 0x0B), 0x80);
+    }
+}
+
+#[test]
+fn irq_level_slave_fall_withdraws_master_cascade_before_inta() {
+    let (mut pic, mut master, mut slave) = init_cascade();
+    pic.set_irq_line(14, true);
+    assert_eq!(pic.poll(), Some(0x76));
+    assert_eq!(read_register(&mut master, 0x20, 0x0A), 4);
+    pic.set_irq_line(14, false);
+    assert_eq!(read_register(&mut slave, 0xA0, 0x0A), 0);
+    assert_eq!(read_register(&mut master, 0x20, 0x0A), 0);
+    assert_eq!(pic.poll(), None);
+    assert_eq!(pic.acknowledge(), Some(0x0F));
+    assert_eq!(read_register(&mut slave, 0xA0, 0x0B), 0);
+    assert_eq!(read_register(&mut master, 0x20, 0x0B), 0);
+}
+
 #[test]
 fn masking_slave_withdraws_cascade_and_serves_pending_master_irq() {
     let (mut pic, mut master, mut slave) = init_cascade();
     pic.set_irq_line(8, true);
     pic.set_irq_line(6, true);
-    pic.set_irq_line(8, false);
-    pic.set_irq_line(6, false);
     assert_eq!(read_register(&mut master, 0x20, 0x0A), 0x44);
 
     slave.port_write(0xA1, 1, 0x01).unwrap();
@@ -108,7 +177,7 @@ fn masking_slave_withdraws_cascade_and_serves_pending_master_irq() {
     assert_eq!(read_register(&mut slave, 0xA0, 0x0A), 1);
     assert_eq!(read_register(&mut master, 0x20, 0x0B), 0x40);
     assert_eq!(read_register(&mut master, 0x20, 0x0A), 0);
-    assert_eq!(pic.acknowledge(), None);
+    assert_eq!(pic.poll(), None);
 
     master.port_write(0x20, 1, 0x20).unwrap();
     slave.port_write(0xA1, 1, 0x00).unwrap();
@@ -121,18 +190,18 @@ fn slave_port_eoi_delivers_pending_request_without_new_line_edge() {
     pic.set_irq_line(8, true);
     assert_eq!(pic.acknowledge(), Some(0x70));
     pic.set_irq_line(14, true);
-    assert_eq!(pic.acknowledge(), None);
+    assert_eq!(pic.poll(), None);
 
     slave.port_write(0xA0, 1, 0x20).unwrap();
     assert_eq!(read_register(&mut master, 0x20, 0x0A), 0x04);
-    assert_eq!(pic.acknowledge(), None);
+    assert_eq!(pic.poll(), None);
     master.port_write(0x20, 1, 0x20).unwrap();
     assert_eq!(pic.acknowledge(), Some(0x76));
     assert_eq!(read_register(&mut slave, 0xA0, 0x0B), 0x40);
 
     slave.port_write(0xA0, 1, 0x20).unwrap();
     master.port_write(0x20, 1, 0x20).unwrap();
-    assert_eq!(pic.acknowledge(), None);
+    assert_eq!(pic.poll(), None);
 }
 
 #[test]
@@ -140,7 +209,7 @@ fn unmasking_pending_slave_request_raises_cascade_without_line_edge() {
     let (mut pic, mut master, mut slave) = init_cascade();
     slave.port_write(0xA1, 1, 0x40).unwrap();
     pic.set_irq_line(14, true);
-    assert_eq!(pic.acknowledge(), None);
+    assert_eq!(pic.poll(), None);
 
     slave.port_write(0xA1, 1, 0x00).unwrap();
     assert_eq!(read_register(&mut master, 0x20, 0x0A), 0x04);
@@ -158,7 +227,7 @@ fn reinitializing_slave_withdraws_latched_cascade_request() {
     slave.port_write(0xA1, 1, 0x01).unwrap();
 
     assert_eq!(pic.poll(), None);
-    assert_eq!(pic.acknowledge(), None);
+    assert_eq!(pic.poll(), None);
     assert_eq!(read_register(&mut slave, 0xA0, 0x0B), 0);
     assert_eq!(read_register(&mut master, 0x20, 0x0B), 0);
     assert_eq!(read_register(&mut master, 0x20, 0x0A), 0);
@@ -176,7 +245,7 @@ fn observation_log_records_inta_and_eoi_without_changing_service_state() {
         bus.port_write(port, 1, value).unwrap();
     }
     bus.tick(17);
-    assert_eq!(controller.acknowledge(), None);
+    assert_eq!(controller.poll(), None);
     controller.set_irq_line(0, true);
     assert_eq!(controller.acknowledge(), Some(8));
     assert_eq!(controller.poll(), None);

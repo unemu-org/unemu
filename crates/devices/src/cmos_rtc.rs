@@ -48,9 +48,11 @@
 //!
 //! The RTC's interrupt output is **IRQ8**, exposed through
 //! [`Device::irq_pending`]. On the AT, IRQ8 is a line on the *slave* 8259 PIC;
-//! the machine edge-detects this output onto that slave input, which cascades
-//! into the master at IRQ2. The PIC owns interrupt vectoring (§5.4). Reading register C clears the flags and deasserts
-//! the line, as on hardware.
+//! the machine forwards both output transitions to that slave input, whose INT
+//! level drives master IRQ2. The PIC detects edges and withdraws pending requests
+//! on a fall (Intel 8259A datasheet, Edge and Level Triggered Modes). The PIC owns
+//! vectoring (§5.4). Reading register C clears the flags and deasserts the line
+//! (Motorola MC146818 datasheet, Register C).
 //!
 //! ## Coverage matrix (datasheet vs modelled)
 //!

@@ -46,6 +46,17 @@
 //! `54fad1766a458df7cedb6c0b4b5d50742628ef75` with the pinned Kiselev BIOS. The
 //! value is the COM1 marker, not the stop kind.
 //!
+//! ## IRQ input level baseline
+//!
+//! Intel 8259A datasheet, Edge and Level Triggered Modes: an input must remain
+//! high until the first INTA. POST reads the 8042 reply before accepting IRQ1;
+//! its falling line now withdraws the pending request. The former model took
+//! one stale vector 09h afterward. Removing that acknowledge changes the retired
+//! endpoint from 18,991,006 to 18,990,963 at virtual time 20,000,000. Restoring
+//! only stale IRQ1 latching reproduces the old endpoint and every acknowledge
+//! timestamp. All other acknowledged vectors, raw/logical screen hashes and
+//! cursors match; no timer arithmetic or keyboard transfer time changes here.
+//!
 //! The BIOS never programs the colour card, so its cursor stays at `(0, 0)`
 //! and visible. MDA card capture exposes the BIOS cursor at `(0, 18)`, visible;
 //! the earlier RAM probe hid it. These are the intended independent-card states.
@@ -68,7 +79,7 @@ fn bios_int19_reads_boot_sector_over_the_floppy() {
     assert_eq!(run.stop, cli::StopReason::BudgetExhausted);
     session::assert_golden(
         &run,
-        18_991_006,
+        18_990_963,
         20_000_000,
         0x9a13654e51c09b99,
         0x92c581d95567fb07,

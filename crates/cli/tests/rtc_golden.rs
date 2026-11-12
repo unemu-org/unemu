@@ -14,9 +14,10 @@
 //! 5. `sti`, then loops on `hlt`.
 //!
 //! The RTC is built with a small per-second tick ratio, so one RTC second ticks
-//! a few dozen PIT clocks into the `hlt` loop. The RTC raises IRQ8; the machine
-//! edge-detects it onto the slave PIC, which cascades into the master at IRQ2,
-//! and injects vector `0x70`. The handler writes a marker byte `R` to the UART
+//! a few dozen PIT clocks into the `hlt` loop. The RTC asserts IRQ8; the machine
+//! forwards its level to the slave PIC, whose INT level drives master IRQ2
+//! (Intel 8259A datasheet, Cascading the 8259A and Edge and Level Triggered Modes).
+//! The machine injects vector `0x70`. The handler writes a marker byte `R` to the UART
 //! (COM1 THR, `0x3F8`), ends the cascaded interrupt with an EOI to **both** the
 //! slave (`0xA0`) and the master (`0x20`) — the real cascaded-EOI sequence —
 //! reads register C of the RTC (`0x71`) to deassert IRQ8, masks all master IRQs,

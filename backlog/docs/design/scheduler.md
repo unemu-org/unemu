@@ -365,7 +365,7 @@ If no instruction completes exactly at `d`, the last instruction straddles it.
 After its completion, process **every** device transition due through that
 boundary in chronological order before executing another instruction. In
 particular, a low and a subsequent high within one slow instruction must both
-reach edge detection. Do not merely sample the final level. IRQ acceptance
+reach the PIC inputs in order. Do not merely sample the final level. IRQ acceptance
 lateness is less than one modeled instruction interval when IF and the
 architectural interrupt gates are open. Masking and shadows may extend it.
 
@@ -544,7 +544,7 @@ Bare synthetic rigs retain their explicit/default rates.
 
 Separate three things: device IRQ line/edge, PIC pending request (INTR), and CPU
 acceptance (INTA followed by IVT entry). A PIC request can remain pending while
-IF is clear. Do not move IRR to ISR, resolve a permanent vector, or populate a
+IF is clear, provided its device input stays high. Do not move IRR to ISR, resolve a permanent vector, or populate a
 CPU queue until the CPU reports an eligible architectural boundary.
 
 The readiness predicate belongs in the CPU core. It includes IF, the STI
@@ -560,8 +560,42 @@ that vector before any next guest instruction. These operations form a
 single-threaded transaction. An atomic core acceptance method must never
 silently enqueue/defer a vector after readiness was established. IVT/stack
 delivery faults may surface as deterministic CPU errors after INTA; do not undo
-PIC history or run guest code past them. Model physical multi-cycle INTA and
-spurious-vector races only if a later bus model requires them.
+PIC history or run guest code past them. Physical multi-cycle INTA remains
+unmodelled. An explicit controller acknowledge after a request disappears returns
+the default IR7 vector without setting that chip's ISR7; the machine's atomic
+poll/acknowledge transaction introduces no electrical race interval.
+
+The machine forwards both transitions of each device's current IRQ output to
+the PIC, at the existing deadline, access-settle and DMA-settle sampling points.
+It does not synthesize a high/low pulse. Initial reset samples establish the
+baseline without inventing an edge. Edge detection belongs to each PIC input;
+a falling input withdraws its unacknowledged IRR bit even when masked. An
+acknowledged ISR bit survives a fall and requires EOI. Holding an input high
+through EOI does not request another interrupt in edge mode. ICW1 LTIM remains
+unmodelled. See Intel 8259A datasheet, **Edge and Level Triggered Modes** and
+**Interrupt Sequence** ([datasheet](https://www.cs.cmu.edu/~410/doc/8259A.pdf)).
+
+PIC snapshot version 3 rejects IRR bits on low inputs and rejects version 2;
+restore leaves the previous state unchanged on either error. ISR bits may remain
+set after the corresponding input falls until software issues EOI.
+
+Slave INT drives master IR2 as a level, including changes caused by IMR/EOI
+port writes. If the slave request disappears before INTA, both slave IRR and
+master IRR2 are withdrawn. An explicit acknowledge then returns master IR7,
+leaving both ISRs unchanged. If a cascade has already been selected but its
+slave has no winner, the slave supplies default IR7 with no new slave ISR bit;
+master ISR2 is set and still needs EOI. The current atomic wiring cannot create
+that latter race during normal machine execution.
+
+PIT IRQ0 already exposes channel 0 OUT: Mode 2 is low for one clock per period,
+Mode 3 holds each high/low half-period, and Mode 0 stays high after terminal
+count until reload. Its deadlines preserve both OUT transitions. Reading count
+or status does not consume IRQ0. The 8042 holds IRQ1/IRQ12 while OBF contains a
+byte from the enabled source; FDC completion IRQ6 lasts until its first result
+byte (seek/reset uses SENSE INTERRUPT STATUS); ATA IRQ14 lasts until normal
+status read; RTC IRQ8 lasts until register C read. UART interrupts remain
+unmodelled (IIR reports none), and DMA has no CPU IRQ output. No new clock visits
+or per-instruction sampling are introduced.
 
 When PIC INTR is pending but CPU readiness is false, ask the CPU to return at
 the **first** eligible instruction boundary, or use one-instruction execution

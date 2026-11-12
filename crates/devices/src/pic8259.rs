@@ -48,7 +48,17 @@
 //!
 //! Modelled as **edge-triggered**: a request latches into the IRR on the rising
 //! edge of an input line ([`InterruptController::set_irq_line`] going low→high).
+//! Intel 8259A datasheet, Edge and Level Triggered Modes: the request requires
+//! both a latched edge and a high input until the first INTA. A falling input
+//! clears its pending IRR bit, including while masked, but never its ISR bit.
+//! Holding the input high after INTA/EOI does not create another edge.
 //! Level-triggered mode (ICW1 `LTIM`) is not modelled; see the coverage matrix.
+//!
+//! An explicit INTA with no serviceable request returns the default IR7 vector
+//! without setting ISR7, preserving any existing ISR bits (Intel 8259A datasheet,
+//! Interrupt Sequence and Edge and Level Triggered Modes). Polling still returns
+//! no vector in that state. The machine polls and acknowledges atomically; the
+//! electrical interval between INTR and INTA is not modelled.
 //!
 //! ## Coverage matrix (datasheet feature → status)
 //!
@@ -68,7 +78,8 @@
 //! - OCW1 (IMR programming).
 //! - OCW2 non-specific EOI (`0x20`) and specific EOI (`0x60 | level`).
 //! - OCW3 read-register select (read IRR / ISR through the command port).
-//! - Edge-triggered request latching.
+//! - Edge-triggered requests gated by the current input level.
+//! - Default IR7 on empty INTA, without setting ISR7.
 //!
 //! Skipped (documented gaps; not needed for timer/keyboard bring-up):
 //! - **Level-triggered mode** (ICW1 `LTIM`): input latching is always edge-based.
@@ -85,12 +96,9 @@
 //!   vectoring still uses the 8086/8088 path. Intel 8259A datasheet,
 //!   Initialization Command Words (ICW4) and Interrupt Sequence.
 //! - **Buffered mode** (ICW4 buffered bits).
-//! - **Spurious IRQ7/IRQ15** (Intel 8259A datasheet, Interrupt Sequence): no
-//!   default IR7 vector or spurious ISR semantics. Poll and acknowledge are one
-//!   atomic machine transaction, with no separate INTR/INTA pin interval in
-//!   which a request can disappear. The cascade wrapper withdraws stale IRQ2
-//!   requests; modelling the electrical race requires that interval first.
 //!
+//! Version-3 snapshots reject IRR bits whose input levels are low. Version 2
+//! allowed stale edge requests and is rejected rather than reinterpreted.
 //! Snapshots contain request/service/mask and initialization registers,
 //! read selection, input line levels and the absolute trace time base. Keeping
 //! line levels preserves edge detection (Intel 8259A datasheet, Edge and Level
@@ -131,7 +139,7 @@ const OCW3_READ: u8 = 0x02;
 const OCW3_READ_ISR: u8 = 0x01;
 
 /// Snapshot layout version tag, first byte of [`Device::save`] output.
-const SNAPSHOT_VERSION: u8 = 2;
+const SNAPSHOT_VERSION: u8 = 3;
 /// Snapshot length: version + irr + isr + imr + base + icw1 + icw4 + state +
 /// read_isr flag + input line levels (one byte each), then the 8-byte clock of
 /// the last synchronisation.
@@ -267,18 +275,6 @@ impl Pic8259 {
     #[must_use]
     pub fn vector_base(&self) -> u8 {
         self.vector_base
-    }
-
-    /// Withdraw a latched request without changing its input level or ISR.
-    ///
-    /// Intel 8259A datasheet, "Edge and Level Triggered Modes": an IR input
-    /// must remain high until after the falling edge of the first INTA. The
-    /// cascade wrapper uses this when slave INT falls before INTA; device
-    /// pulses retain their edge-latched requests unless explicitly withdrawn.
-    pub fn withdraw_request(&mut self, line: u8) {
-        if line < 8 {
-            self.irr &= !(1u8 << line);
-        }
     }
 
     /// The highest-priority line that may be serviced right now, or `None`.
@@ -429,6 +425,7 @@ impl InterruptController for Pic8259 {
             }
         } else {
             self.line_level &= !bit;
+            self.irr &= !bit;
         }
     }
 
@@ -437,7 +434,9 @@ impl InterruptController for Pic8259 {
     }
 
     fn acknowledge(&mut self) -> Option<u8> {
-        let irq = self.highest_pending()?;
+        let Some(irq) = self.highest_pending() else {
+            return Some(self.vector_base + 7);
+        };
         let bit = 1u8 << irq;
         // INTA: the request moves from pending to in-service.
         self.irr &= !bit;
@@ -577,6 +576,7 @@ impl Device for Pic8259 {
             }
         };
         if (snapshot[5] & ICW1_IC4 == 0 && snapshot[6] != 0)
+            || snapshot[1] & !snapshot[9] != 0
             || snapshot[4] & 7 != 0
             || snapshot[8] > 1
             || (snapshot[7] != 0 && snapshot[5] & ICW1_INIT == 0)
@@ -632,6 +632,46 @@ mod tests {
         let mut invalid = before.clone();
         invalid[6] = 1;
         assert!(bus.device_mut().restore(&invalid).is_err());
+        assert_eq!(bus.device().save(), before);
+    }
+
+    /// Intel 8259A datasheet, Edge and Level Triggered Modes: IRR requires a
+    /// high input, whereas an acknowledged ISR bit may outlive its input.
+    #[test]
+    fn restore_rejects_pending_request_on_low_input_atomically() {
+        let mut pic = Pic8259::new();
+        init_master(&mut pic);
+        pic.set_irq_line(7, true);
+        pic.acknowledge();
+        pic.set_irq_line(7, false);
+        pic.set_irq_line(1, true);
+        let mut bus = MockBus::new(Box::new(pic));
+        let valid = bus.device().save();
+        bus.device_mut().restore(&valid).unwrap();
+        for masked in [false, true] {
+            let mut invalid = valid.clone();
+            invalid[9] &= !2;
+            invalid[3] = if masked { 2 } else { 0 };
+            assert!(matches!(
+                bus.device_mut().restore(&invalid),
+                Err(DeviceError::InvalidSnapshot { .. })
+            ));
+            assert_eq!(bus.device().save(), valid);
+        }
+        bus.port_write(0x20, 1, 0x0B).unwrap();
+        assert_eq!(bus.port_read(0x20, 1).unwrap(), 0x80);
+    }
+
+    #[test]
+    fn restore_rejects_legacy_edge_latch_snapshot_version() {
+        let mut bus = MockBus::new(Box::new(Pic8259::new()));
+        let before = bus.device().save();
+        let mut legacy = before.clone();
+        legacy[0] = 2;
+        assert!(matches!(
+            bus.device_mut().restore(&legacy),
+            Err(DeviceError::InvalidSnapshot { .. })
+        ));
         assert_eq!(bus.device().save(), before);
     }
 
@@ -764,7 +804,7 @@ mod tests {
     }
 
     #[test]
-    fn withdrawing_request_preserves_other_requests_service_and_edge_detection() {
+    fn falling_input_preserves_other_requests_and_in_service_state() {
         let mut pic = Pic8259::new();
         init_master(&mut pic);
         pic.set_irq_line(2, true);
@@ -774,15 +814,14 @@ mod tests {
         pic.set_irq_line(6, true);
         assert_eq!(pic.irr(), 0x44);
 
-        pic.withdraw_request(2);
+        pic.set_irq_line(2, false);
         assert_eq!(pic.irr(), 0x40);
         assert_eq!(pic.isr(), 0x04);
-        pic.set_irq_line(2, true);
-        assert_eq!(pic.irr(), 0x40);
         pic.set_irq_line(2, false);
+        assert_eq!(pic.irr(), 0x40);
         pic.set_irq_line(2, true);
         assert_eq!(pic.irr(), 0x44);
-        pic.withdraw_request(8);
+        pic.set_irq_line(8, false);
         assert_eq!(pic.irr(), 0x44);
     }
 
@@ -833,7 +872,7 @@ mod tests {
         assert_eq!(pic.irr(), 0x01);
         assert_eq!(pic.poll(), None);
         assert!(!pic.irq_pending());
-        assert_eq!(pic.acknowledge(), None);
+        assert_eq!(pic.acknowledge(), Some(BASE + 7));
         // Unmasking surfaces it.
         pic.port_write(PORT_DATA, 1, 0x00).unwrap();
         assert_eq!(pic.poll(), Some(BASE));

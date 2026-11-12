@@ -97,7 +97,7 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   include partial exchanges and all peripheral state. Packets are emitted at
   input injection boundaries and coalesced while busy; sample-rate pacing in
   virtual time is not modelled. Machine configuration now opts in through `I8042Cfg.mouse` or
-  `board.mouse` in TOML/YAML; slave IR4 / IRQ12 uses the same edge policy as
+  `board.mouse` in TOML/YAML; slave IR4 / IRQ12 uses the same level propagation as
   IRQ1. `assembly::inject_mouse` deterministically accepts motion/buttons at
   run boundaries, including accumulation with reporting disabled. A synthetic
   AT ROM checks reset/enable replies and exact packets through a guest IRQ12
@@ -468,7 +468,42 @@ floppy boot's `42` (`B`). No firmware or media fixture is changed.
 IBM POST and the Landmark I286 stop keep TODO-MEASURE constants; no proprietary
 execution result is inferred from these open-firmware runs.
 
+## IRQ input level golden baseline (2026-11-12)
+
+**MEASURED against main `3f529bf`:** the BIOS floppy endpoint changes from
+R **18,991,006** to **18,990,963** at unchanged T **20,000,000**. The old model
+acknowledged one stale keyboard vector **09h at PIT clock 4,896,203**, after POST
+read FAh from port 60h at **4,896,116**. The new model withdraws that request when
+the line falls, as Intel 8259A datasheet, **Edge and Level Triggered Modes**
+requires. Main has 427 acknowledges; corrected inputs have 426, with identical
+remaining vector order. Subsequent acceptance times can shift because the stale
+handler no longer executes. Restoring only stale IRQ1 latching reproduces all
+427 vectors and timestamps and the old retired endpoint, isolating the cause.
+The trace's IMR is still its initialization value at the polled read; the first
+later OCW1 is B8h at 4,896,164. This is withdrawal before CPU acceptance, not a
+change in keyboard transfer timing or PIT arithmetic.
+
+Both MDA raw hash `9a13654e51c09b99` and logical hash `92c581d95567fb07` are
+unchanged. MDA cursor stays visible at (0,18); the blank colour screen keeps raw
+and logical hash `c1fdc54ce4885c65` and visible cursor (0,0). Only the retired
+count expectation in the floppy golden is updated. The other endpoints retain
+their main baselines.
+
+PIC snapshots now use version 3 and reject pending IRR bits on low inputs
+atomically; version 2 is rejected because it allowed requests to outlive their
+input levels. A low input may still have an ISR bit from an earlier INTA.
+
 ## In flight
+
+- **2026-11-12 — Device IRQ levels and PIC withdrawal:** the machine forwards
+  both device pin transitions at existing scheduler sampling points. Falling
+  inputs withdraw unacknowledged edge-triggered IRR bits, including masked
+  requests and slave INT on master IR2. Explicit empty INTA supplies default
+  IR7 without setting ISR7; normal poll/INTA remains atomic. PIT already exposes
+  sustained OUT0 in Modes 0/2/3; no timer pulse synthesis remains in the wiring.
+  8042, FDC, ATA and RTC retain their held-output acknowledgement rules; UART
+  IRQs and ICW1 LTIM remain unmodelled. See
+  [scheduler interrupt contract](design/scheduler.md#pic-state-must-follow-cpu-acceptance).
 
 - **2026-11-11 — A20 / System Control Port A device side:** Bare rigs can
   opt into port 92h with versioned snapshots, latch readback and CPU reset on
@@ -698,7 +733,7 @@ wall-time comparison and historical CPU sample shares.
 
 - Timer-interrupt boot (`task-4`): the real-mode machine takes an IRQ0 timer
   interrupt via the in-guest IVT and prints to serial. `AtChipset` = 16550 UART +
-  8259 PIC + 8253 PIT; PIT OUT → edge-detect → PIC → `inject_irq`; deterministic
+  8259 PIC + 8253 PIT; PIT OUT level → PIC edge detection → `inject_irq`; deterministic
   virtual clock from the retired-instruction counter. Boot golden passes.
 
 ## Not started

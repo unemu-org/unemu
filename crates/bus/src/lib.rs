@@ -519,18 +519,17 @@ impl Bus {
     /// The current IRQ-line level of the device at `index`, or `None` if the
     /// index is out of range (§5.1).
     ///
-    /// This is the raw line level (`irq_pending`), not an edge: the integration
-    /// layer edge-detects it before pulsing the interrupt controller, since a
-    /// device (the PIT) drives a *level* while the PIC is edge-triggered. The
-    /// machine names a device only by the wiring index the configuration declared, not
-    /// by a concrete type.
+    /// This is the non-consuming pin level (`irq_pending`). The machine forwards
+    /// both transitions; the PIC detects edges and withdraws pending requests
+    /// when an input falls (Intel 8259A datasheet, Edge and Level Triggered Modes).
+    /// Wiring uses the configured device index, without a concrete device type.
     pub fn device_irq_line(&self, index: usize) -> Option<bool> {
         self.device_irq_output(index, 0)
     }
 
     /// Raw level of a device-local interrupt output pin (§5.1).
-    /// Board wiring selects the pin; the machine applies the same edge policy
-    /// to every output. Devices without that pin return a low level.
+    /// Board wiring selects the pin; the machine forwards level changes
+    /// from every output. Devices without that pin return a low level.
     pub fn device_irq_output(&self, index: usize, output: usize) -> Option<bool> {
         self.devices.get(index).map(|d| d.irq_output(output))
     }
