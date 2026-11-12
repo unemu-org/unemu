@@ -945,3 +945,29 @@ fn ide_drive_pin_mismatch_retains_its_exact_origin_in_both_syntaxes() {
         ));
     }
 }
+
+#[test]
+fn ide_journal_lowers_from_toml_and_yaml_with_floppy_defaults() {
+    let tree = Tree::new();
+    tree.write("bios.bin", &"X".repeat(32768));
+    std::fs::write(tree.0.join("disk.img"), vec![0xAA; 32768]).unwrap();
+    for retention in [None, Some(3)] {
+        let toml_retention = retention
+            .map(|n| format!("keep_generations={n}\n"))
+            .unwrap_or_default();
+        let yaml_retention = retention
+            .map(|n| format!("        keep_generations: {n}\n"))
+            .unwrap_or_default();
+        for (ext, input) in [
+            ("toml", format!("schema=1\n[board]\nmodel='ibm-5170'\n[firmware.bios]\nimage='bios.bin'\nprovides=['fixed-disk']\n[[card]]\nkind='ide'\n[[card.drives]]\nchannel='master'\ngeometry={{cylinders=8,heads=2,sectors=4}}\nimage='disk.img'\nwrite='journal'\njournal='disk.upfj'\n{toml_retention}")),
+            ("yaml", format!("schema: 1\nboard: {{model: ibm-5170}}\nfirmware:\n  bios: {{image: bios.bin, provides: [fixed-disk]}}\ncard:\n  - kind: ide\n    drives:\n      - channel: master\n        geometry: {{cylinders: 8, heads: 2, sectors: 4}}\n        image: disk.img\n        write: journal\n        journal: disk.upfj\n{yaml_retention}")),
+        ] {
+            let path = tree.write(&format!("ide.{ext}"), &input);
+            let config = machine_file::load(path).unwrap();
+            assert_eq!(config.drives[0].write, assembly::WriteMode::Journal { path: tree.0.join("disk.upfj"), keep_generations: retention.unwrap_or(10) });
+            assert_eq!(config.drives[0].image, assembly::ImageSource::File(tree.0.join("disk.img")));
+            assert!(config.drives[0].expected_sha256.is_some());
+            assert!(!tree.0.join("disk.upfj").exists());
+        }
+    }
+}

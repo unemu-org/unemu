@@ -343,6 +343,12 @@ fn run_boundary(
 ) -> Result<RunOutcome, RunError> {
     check_persistence(handles)?;
     let outcome = machine.run_bounded(cap);
+    if outcome.is_err()
+        || check_persistence(handles).is_err()
+        || matches!(&outcome, Ok(RunOutcome::ResetRequested))
+    {
+        crate::persistence::flush_ata(machine, handles);
+    }
     let persistence = check_persistence(handles);
     let outcome = outcome?;
     persistence?;
@@ -367,16 +373,28 @@ impl crate::AssembledMachine {
         )
     }
 
-    /// Poll media latches without performing NVRAM I/O at host-paced stops.
+    /// Poll host error latches at ordinary run/frame/prompt boundaries.
+    /// This does not flush an active ATA command or perform NVRAM I/O. Use
+    /// `flush_persistence` before saving device snapshots or after a raw run
+    /// error; handle checkpoints and finish flush themselves with the machine.
     pub fn check_persistence(&self) -> Result<(), crate::PersistenceError> {
         check_persistence(&self.persistence)
+    }
+
+    /// Submit completed ATA sectors before a device snapshot or after a raw run
+    /// error. Partial PIO sectors and guest state remain in the controller;
+    /// generations stay open. Never use this for ordinary host pacing.
+    pub fn flush_persistence(&mut self) -> Result<(), crate::PersistenceError> {
+        crate::persistence::flush_ata(&mut self.machine, &self.persistence);
+        self.check_persistence()
     }
 
     /// Persist changed CMOS RAM before resetting the CPU, keeping the session open.
     /// Embedding frontends handling `ResetRequested` must call this before
     /// `reset_cpu()`. Otherwise the next `run_bounded()` resets automatically
     /// without capturing pre-reset CMOS state; a later error can lose it.
-    pub fn before_cpu_reset(&self) -> Result<(), crate::PersistenceError> {
+    pub fn before_cpu_reset(&mut self) -> Result<(), crate::PersistenceError> {
+        self.flush_persistence()?;
         for handle in &self.persistence {
             handle.before_cpu_reset()?;
         }
@@ -388,7 +406,7 @@ impl crate::AssembledMachine {
     pub fn finish_persistence(&mut self) -> Result<(), crate::PersistenceError> {
         let mut first = None;
         for handle in &mut self.persistence {
-            if let Err(error) = handle.finish() {
+            if let Err(error) = handle.finish(&mut self.machine) {
                 if first.is_none() {
                     first = Some(error);
                 }

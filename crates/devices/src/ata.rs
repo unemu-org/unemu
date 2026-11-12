@@ -58,9 +58,10 @@
 //! completion, address failure, replacement by a new command, diagnostics, SRST,
 //! hardware reset and successful snapshot restore end the interrupted command
 //! and submit its committed prefix. Reads see that prefix while a command is
-//! active. A future persistent IDE backend must call [`Ata::flush_pending`]
-//! at session end to submit completed sectors of an abandoned command; guest
-//! drive selection alone does not finish it. Media has no host error channel. ATA-2 §6.2.8 (Error register, ABRT)
+//! active. Completion itself submits the batch. Ordinary host caps/frame slices
+//! do not flush. Assembly calls [`Ata::flush_pending`] at finish, before CPU reset,
+//! after run errors and before device snapshots/checkpoints to submit an in-flight
+//! completed-sector prefix; guest drive selection alone does not finish it. Media has no host error channel. ATA-2 §6.2.8 (Error register, ABRT)
 //! defines aborted commands; this model aborts writes on protected media.
 //!
 //! Disk writes are volatile by default. Like the floppy controller, snapshots exclude
@@ -527,11 +528,11 @@ impl Ata {
         self.drives.get(index)?.as_ref()
     }
 
-    /// Submit complete sectors at session end only, leaving guest state intact.
-    /// A future persistent IDE backend must call this when no further guest
-    /// activity will end the pending command. Calling it mid-command splits that
-    /// command into multiple batches. Partial sectors remain controller state
-    /// and are never included in the batch.
+    /// Submit complete sectors at an explicit persistence boundary without
+    /// changing guest state. Call at finish, before CPU reset, after run errors,
+    /// or before device snapshots/checkpoints, never at ordinary host stops.
+    /// Flushing an in-flight command splits its batch; normal command completion
+    /// submits automatically. Partial sectors remain controller state.
     pub fn flush_pending(&mut self) {
         self.finish_writes();
     }

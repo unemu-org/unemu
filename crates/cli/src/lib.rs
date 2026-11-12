@@ -1560,7 +1560,7 @@ mod tests {
                 let mut assembled =
                     assemble_with_observation(&config, &bios_observation_policy()).unwrap();
                 for handle in &mut assembled.persistence {
-                    handle.checkpoint().unwrap();
+                    handle.checkpoint(&mut assembled.machine).unwrap();
                 }
                 assembled.persistence[0].fail_retention(operation);
                 if both_fail {

@@ -78,12 +78,12 @@ journaling off by setting `write = "volatile"` or `write = "readonly"` without
 repeating the image: inherited journal options are discarded. Explicit journal
 options with either of those modes remain errors.
 
-Floppy journals are explicit. For example, in a local machine file's
+Floppy and IDE journals are explicit. For example, in a local machine file's
 `[[card.drives]]` table, alongside a generated or copied floppy base:
 
 ```toml
 write = "journal"
-journal = "media/work.upfj"
+journal = "../tmp-golden/ide-media/work.upfj"
 keep_generations = 10 # optional, positive; defaults to 10
 ```
 
@@ -93,9 +93,53 @@ and assembling the file replays the journal before the first instruction.
 `journal` and `keep_generations` are errors with volatile/readonly modes.
 Journal paths must be nonempty and must not name a directory or alias any
 image or machine-file layer; failures identify the drive's file and line.
-The repository examples and goldens stay volatile and create no sidecars next
-to fixtures. IDE hard disks support volatile/readonly only; NVRAM write modes
-remain volatile only. The window and CLI select these files with `--machine`.
+Repository examples keep their existing write modes and create no sidecars next
+to fixtures. Persistence goldens use temporary copies. IDE supports the same
+three modes; NVRAM supports volatile and explicit journal mode. The window and
+CLI select these files with `--machine`.
+
+To journal C: with the fixture profile, create a local child next to
+`at-ide.toml`. From the repository root, first create `tmp-golden/ide-media/`.
+The root `tmp-golden/` directory is gitignored; journals, backups and exports in
+this example stay there so guest writes cannot enter the tracked repository.
+Journal parent directories must exist:
+
+```sh
+mkdir -p tmp-golden/ide-media
+```
+
+```toml
+schema = 1
+extends = "at-ide.toml"
+
+[[card]]
+id = "ide"
+[[card.drives]]
+channel = "master"
+write = "journal"
+journal = "../tmp-golden/ide-media/c.upfj"
+keep_generations = 10
+```
+
+Run the child with `--machine`; software writes to C: survive the next run.
+The inherited FAT16 base remains immutable. Close the emulator before offline
+operations; use the base image actually named by the drive:
+
+```sh
+unemupc98 media generations --base vendor/hdd/fat16.img --journal tmp-golden/ide-media/c.upfj
+unemupc98 media verify --base vendor/hdd/fat16.img --journal tmp-golden/ide-media/c.upfj
+unemupc98 media rollback --base vendor/hdd/fat16.img --journal tmp-golden/ide-media/c.upfj --to 1 --backup tmp-golden/ide-media/c-before-rollback.upfj
+unemupc98 media commit --base vendor/hdd/fat16.img --journal tmp-golden/ide-media/c.upfj --to 1 --output tmp-golden/ide-media/c-new.img
+```
+
+Choose an available closed generation from `generations`. Rollback backs up the
+journal and discards later history. Commit exports a new immutable base without
+changing the old inputs. To use that export, override the drive's `image`, set
+its new SHA-256 pin, and explicitly select `write = "journal"` with a **new**
+journal path; image overrides discard inherited journal settings. Commands and
+recovery semantics match floppies; ATA stores only full 512-byte sectors and
+offline capacity comes from image length.
+
 The schema and
 defaults are in
 [`machine-files.md`](../backlog/docs/design/machine-files.md).

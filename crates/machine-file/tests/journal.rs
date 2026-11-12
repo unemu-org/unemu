@@ -524,19 +524,20 @@ fn synthetic_reader_journal_is_refused_and_volatile_guest_reads_verified_bytes()
 }
 
 #[test]
-fn ide_journals_are_still_refused_by_assembly_validation() {
+fn ide_journal_requires_a_file_backed_base_before_assembly() {
     let temp = Temp::new();
     temp.write("base.img", [0; 512]);
     let input = "schema=1\n[board]\nmodel='ibm-5170'\n[firmware.bios]\nimage='bios.bin'\nprovides=['fixed-disk']\n[[card]]\nkind='ide'\n[[card.drives]]\nchannel='master'\ngeometry={cylinders=1,heads=1,sectors=1}\nimage='base.img'\nwrite='journal'\njournal='disk.upfj'\n";
     let path = temp.write("machine.toml", input);
-    let e = error(&path);
-    assert_eq!(e.origin.file, path);
-    assert_eq!(e.origin.line, Some(9));
-    assert!(matches!(
-        *e.validation.unwrap(),
-        ConfigError::Journal { drive_index: 0, .. }
-    ));
-    assert_eq!(e.message, "card[ide].drives[channel=master] journal configuration: journal mode requires a floppy with 512-byte sectors");
+    let config = machine_file::load(&path).unwrap();
+    assert!(matches!(config.drives[0].write, WriteMode::Journal { .. }));
+    let mut invalid = config;
+    invalid.drives[0].image = assembly::ImageSource::Inline(vec![0; 512]);
+    let e = invalid.validate().unwrap_err();
+    assert_eq!(
+        e.to_string(),
+        "drive 0 journal configuration: journal mode requires a file-backed image"
+    );
 }
 
 fn disable_inherited_journal(mode: &str, expected: WriteMode) {

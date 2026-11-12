@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Host journal ownership for NEC µPD765 media (WRITE DATA, N=2) and
+//! Host journal ownership for NEC µPD765 media (WRITE DATA, N=2), ATA-2 §7
+//! WRITE SECTORS / WRITE MULTIPLE (512-byte sectors), and
 //! Motorola MC146818 general RAM (0Eh–3Fh, excluding the transient AT shutdown
 //! byte 0Fh). See `backlog/docs/design/persistent-media.md`, §Integration and
 //! §Host errors and determinism. Only frontend boundaries observe host errors.
@@ -38,6 +39,7 @@ pub struct PersistenceHandle {
     pub drive_index: usize,
     /// Validated closed-generation retention setting (including the anchor).
     pub keep_generations: u32,
+    pub(crate) ata_index: Option<usize>,
     session: Rc<RefCell<Session>>,
     status: SinkStatus,
     report: VerificationReport,
@@ -76,6 +78,7 @@ impl PersistenceHandle {
             Self {
                 drive_index,
                 keep_generations,
+                ata_index: None,
                 session,
                 status,
                 report,
@@ -220,9 +223,14 @@ impl PersistenceHandle {
         self.persist_nvram()
     }
 
-    /// Close a drive generation at an explicit checkpoint. For CMOS, only
-    /// validate the active session: its generation closes at session finish.
-    pub fn checkpoint(&mut self) -> Result<(), PersistenceError> {
+    /// Flush this ATA controller's completed sectors before closing a generation.
+    /// Supply the owning assembly's machine; ordinary run stops must not flush.
+    /// For CMOS, only validate the session: its generation closes at finish.
+    pub fn checkpoint(
+        &mut self,
+        machine: &mut machine::Machine<cpu::X86JitCpu>,
+    ) -> Result<(), PersistenceError> {
+        flush_ata(machine, std::slice::from_ref(self));
         self.check()?;
         if self.nvram.is_some() && matches!(*self.session.borrow(), Session::Active(_)) {
             return Ok(());
@@ -245,9 +253,15 @@ impl PersistenceHandle {
         }
     }
 
-    /// Explicitly finish once. Retain readable bytes for final frontend capture;
-    /// the consuming sink API releases the lock only after attempting its marker.
-    pub fn finish(&mut self) -> Result<(), PersistenceError> {
+    /// Flush this ATA controller's completed sectors and explicitly finish once.
+    /// Supply the owning assembly's machine, after successful execution only.
+    /// Readable bytes remain available for capture; the sink releases its lock
+    /// only after attempting the closing marker. Partial sectors are excluded.
+    pub fn finish(
+        &mut self,
+        machine: &mut machine::Machine<cpu::X86JitCpu>,
+    ) -> Result<(), PersistenceError> {
+        flush_ata(machine, std::slice::from_ref(self));
         self.check()?;
         self.persist_nvram()?;
         let mut session = self.session.borrow_mut();
@@ -299,6 +313,23 @@ impl SectorMedia for JournalAdapter {
 
     fn write_protected(&self) -> bool {
         false
+    }
+}
+
+/// ATA-2 §8.4 commits sectors after their final word. An explicit persistence
+/// boundary submits that prefix; ordinary host pacing must not split commands.
+pub(crate) fn flush_ata(
+    machine: &mut machine::Machine<cpu::X86JitCpu>,
+    handles: &[PersistenceHandle],
+) {
+    for index in handles.iter().filter_map(|handle| handle.ata_index) {
+        let ata = machine
+            .bus_mut()
+            .device_mut(index)
+            .and_then(|device| device.as_any_mut())
+            .and_then(|device| device.downcast_mut::<devices::Ata>())
+            .expect("journal ATA controller must exist and expose Ata");
+        ata.flush_pending();
     }
 }
 
@@ -649,7 +680,9 @@ mod tests {
         };
         machine.run_session(&policy).unwrap();
         machine.check_persistence().unwrap();
-        machine.persistence[0].checkpoint().unwrap();
+        machine.persistence[0]
+            .checkpoint(&mut machine.machine)
+            .unwrap();
         assert_eq!(
             std::fs::metadata(&path).unwrap().len(),
             media::HEADER_LEN as u64
@@ -686,7 +719,7 @@ mod tests {
         assert_eq!(std::fs::metadata(&path).unwrap().len(), length);
         assert_eq!(
             first.persistence[0]
-                .checkpoint()
+                .checkpoint(&mut first.machine)
                 .unwrap_err()
                 .source
                 .message,
@@ -872,7 +905,9 @@ mod tests {
         assert_eq!(scan.report.generations.len(), 1);
         assert_eq!(scan.report.header.unwrap().anchor_generation, 2);
         assert_eq!(scan.image.unwrap()[16], 0x77);
-        let error = second.persistence[0].checkpoint().unwrap_err();
+        let error = second.persistence[0]
+            .checkpoint(&mut second.machine)
+            .unwrap_err();
         assert_eq!(error.source.operation, "checkpoint");
         assert_eq!(error.source.message, "session already finished");
     }
@@ -955,6 +990,109 @@ mod tests {
                 machine.finish_persistence().unwrap();
             }
         }
+    }
+
+    #[test]
+    #[should_panic(expected = "journal ATA controller must exist and expose Ata")]
+    fn ide_journal_invalid_controller_index_is_an_assembly_invariant() {
+        let temp = crate::test_support::TempDir::new("ide-controller-invariant");
+        let (config, _, _) = nvram_config(temp.path(), vec![0xF4]);
+        let mut machine = crate::assemble(&config).unwrap();
+        machine.persistence[0].ata_index = Some(machine.device_index[&crate::DeviceId::Rtc]);
+        flush_ata(&mut machine.machine, &machine.persistence);
+    }
+
+    #[test]
+    fn ide_journal_sink_failure_keeps_guest_writes_and_recovers_unsealed_prefix() {
+        let temp = crate::test_support::TempDir::new("ide-sink-failure");
+        let base = vec![0; 32768];
+        let base_path = temp.path().join("base.img");
+        let path = temp.path().join("ide.upfj");
+        std::fs::write(&base_path, &base).unwrap();
+        let mut config = crate::at_boot(vec![0xFA, 0xF4]);
+        let cfg = crate::IdeCfg {
+            model: crate::AtaControllerModel::Ata,
+            base: 0x1F0,
+            control: 0x3F6,
+        };
+        config.devices.push(
+            crate::DeviceConfig::new(
+                crate::DeviceId::Ide,
+                crate::DeviceKind::Ide(cfg),
+                cfg.port_windows(),
+            )
+            .with_irq(cfg.irq()),
+        );
+        config.drives.push(crate::DriveConfig {
+            controller: crate::DeviceId::Ide,
+            unit: 0,
+            kind: crate::DriveKind::HardDisk {
+                geometry: crate::HardDiskGeometry {
+                    cylinders: 8,
+                    heads: 2,
+                    sectors_per_track: 4,
+                    bytes_per_sector: 512,
+                },
+            },
+            image: ImageSource::File(base_path.clone()),
+            expected_sha256: None,
+            write: WriteMode::journal(&path),
+        });
+        let mut machine = crate::assemble(&config).unwrap();
+        for (lba, value) in [(1, 0x1234), (2, 0xABCD)] {
+            if lba == 2 {
+                machine.persistence[0].fail_output();
+            }
+            let bus = machine.machine.bus_mut();
+            for (port, byte) in [
+                (0x1F6, 0xE0),
+                (0x1F2, 1),
+                (0x1F3, lba),
+                (0x1F4, 0),
+                (0x1F5, 0),
+                (0x1F7, 0x30),
+            ] {
+                bus.port_write(port, 1, byte).unwrap();
+            }
+            for _ in 0..256 {
+                bus.port_write(0x1F0, 2, value).unwrap();
+            }
+            assert_eq!(bus.port_read(0x1F7, 1).unwrap(), 0x50);
+            if lba == 1 {
+                machine.check_persistence().unwrap();
+            }
+        }
+        let index = machine.device_index[&crate::DeviceId::Ide];
+        let before = machine.machine.bus().device(index).unwrap().save();
+        assert!(machine
+            .check_persistence()
+            .unwrap_err()
+            .to_string()
+            .starts_with("drive 0 persistence:"));
+        let device = machine.machine.bus_mut().device_mut(index).unwrap();
+        assert_eq!(device.save(), before);
+        let ata = device
+            .as_any_mut()
+            .unwrap()
+            .downcast_mut::<devices::Ata>()
+            .unwrap();
+        assert_eq!(
+            &ata.drive(0).unwrap().image()[1024..1536],
+            &0xABCDu16.to_le_bytes().repeat(256)
+        );
+        assert!(machine.finish_persistence().is_err());
+        drop(machine);
+        let scan = media::scan(&std::fs::read(&path).unwrap(), &base, base.len() as u64);
+        assert!(scan.report.generations.is_empty());
+        assert_eq!(scan.report.unsealed_tip.unwrap().commands, 1);
+        assert_eq!(
+            &scan.image.unwrap()[512..1024],
+            &0x1234u16.to_le_bytes().repeat(256)
+        );
+        let mut fresh = crate::assemble(&config).unwrap();
+        assert!(fresh.persistence[0].mount_report().unsealed_tip.is_some());
+        fresh.finish_persistence().unwrap();
+        assert_eq!(std::fs::read(base_path).unwrap(), base);
     }
 
     #[test]
@@ -1109,7 +1247,9 @@ mod tests {
                 keep_generations: 1,
             };
             let mut machine = crate::assemble(&config).unwrap();
-            machine.persistence[0].checkpoint().unwrap();
+            machine.persistence[0]
+                .checkpoint(&mut machine.machine)
+                .unwrap();
             machine.persistence[0].fail_retention(operation);
             machine
                 .run_session(&crate::RunPolicy::natural(Some(10_000), None))
@@ -1129,7 +1269,9 @@ mod tests {
                     )
                 })
                 .collect();
-            machine.persistence[0].checkpoint().unwrap();
+            machine.persistence[0]
+                .checkpoint(&mut machine.machine)
+                .unwrap();
             let failure = machine.persistence[0].maintenance_failure().unwrap();
             assert_eq!(machine.persistence[0].status().is_some(), failure.uncertain);
             assert_eq!(machine.check_persistence().is_err(), failure.uncertain);

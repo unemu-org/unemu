@@ -370,10 +370,16 @@ fn assemble_with_cpu_and_catalogue(
                 &base_metadata,
             )?)),
             DeviceKind::Ide(cfg) => Box::new(
-                Ata::with_drives(build_ide_drives(config, dc.id)?)
-                    .map(|ata| ata.with_model(cfg.model))
-                    .and_then(|ata| ata.with_resources(cfg.base, cfg.control, cfg.irq()))
-                    .map_err(|_| ConfigError::InvalidIdeResources { device: dc.id })?,
+                Ata::with_drives(mount_ide_drives(
+                    config,
+                    dc.id,
+                    &mut persistence,
+                    &base_metadata,
+                    devices.len(),
+                )?)
+                .map(|ata| ata.with_model(cfg.model))
+                .and_then(|ata| ata.with_resources(cfg.base, cfg.control, cfg.irq()))
+                .map_err(|_| ConfigError::InvalidIdeResources { device: dc.id })?,
             ),
             DeviceKind::Sb16(cfg) => {
                 let (dsp, source) = crate::sb16_audio::build(
@@ -986,9 +992,12 @@ fn build_dma_wirings(
     (primary, channels)
 }
 
-fn build_ide_drives(
+fn mount_ide_drives(
     config: &MachineConfig,
     controller: DeviceId,
+    persistence: &mut Vec<crate::PersistenceHandle>,
+    base_metadata: &[Option<std::fs::Metadata>],
+    controller_index: usize,
 ) -> Result<[Option<AtaDrive>; 2], AssemblyError> {
     let mut slots = [None, None];
     for (drive_index, drive) in config
@@ -1002,18 +1011,36 @@ fn build_ide_drives(
         };
         let bytes = load_image_bytes(&drive.image)?;
         let capacity = (bytes.len() / 512) as u32;
-        let media = device::media::InMemoryMedia::new(
-            bytes,
-            u64::from(capacity),
-            drive.write == WriteMode::ReadOnly,
-        );
+        let media: Box<dyn device::SectorMedia> = match &drive.write {
+            WriteMode::Journal {
+                path,
+                keep_generations,
+            } => {
+                let (mut handle, media) = crate::PersistenceHandle::mount(
+                    drive_index,
+                    path,
+                    &bytes,
+                    bytes.len() as u64,
+                    *keep_generations,
+                    base_metadata.get(drive_index).and_then(Option::as_ref),
+                )?;
+                handle.ata_index = Some(controller_index);
+                persistence.push(handle);
+                media
+            }
+            mode => Box::new(device::InMemoryMedia::new(
+                bytes,
+                u64::from(capacity),
+                *mode == WriteMode::ReadOnly,
+            )),
+        };
         let geometry = AtaGeometry {
             cylinders: geometry.cylinders as u16,
             heads: geometry.heads as u8,
             sectors_per_track: geometry.sectors_per_track as u8,
         };
         slots[usize::from(drive.unit)] = Some(
-            AtaDrive::with_media(geometry, capacity, Box::new(media))
+            AtaDrive::with_media(geometry, capacity, media)
                 .map_err(|_| ConfigError::InvalidAtaGeometry { drive_index })?,
         );
     }
@@ -4241,16 +4268,6 @@ mod tests {
             config.drives[1].kind = DriveKind::HardDisk { geometry };
             assert_eq!(config.validate().unwrap_err().to_string(), "drive 1 has invalid ATA geometry: expected cylinders 1..=16383, heads 1..=16, sectors 1..=63 and 512-byte sectors");
         }
-        let mut journal = ide_config(0x1F0);
-        journal.drives[1].image = ImageSource::File("disk.img".into());
-        journal.drives[1].write = WriteMode::Journal {
-            path: "disk.upfj".into(),
-            keep_generations: 1,
-        };
-        assert_eq!(
-            journal.validate().unwrap_err().to_string(),
-            "drive 1 journal configuration: journal mode requires a floppy with 512-byte sectors"
-        );
         let mut config = ide_config(0x1F0);
         config.drives[1].image = ImageSource::Blank { size: 512 };
         assert_eq!(

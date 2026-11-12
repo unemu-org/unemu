@@ -1023,9 +1023,11 @@ impl MachineConfig {
                     Some("keep_generations must be positive")
                 } else if !matches!(drive.image, crate::ImageSource::File(_)) {
                     Some("journal mode requires a file-backed image")
-                } else if !matches!(drive.kind, crate::DriveKind::Floppy { geometry } if geometry.bytes_per_sector == 512)
-                {
-                    Some("journal mode requires a floppy with 512-byte sectors")
+                } else if match drive.kind {
+                    crate::DriveKind::Floppy { geometry } => geometry.bytes_per_sector != 512,
+                    crate::DriveKind::HardDisk { geometry } => geometry.bytes_per_sector != 512,
+                } {
+                    Some("journal mode requires 512-byte sectors")
                 } else {
                     None
                 };

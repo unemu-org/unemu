@@ -316,7 +316,7 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   register probe using synthetic firmware rather than that BIOS.
 - **IDE PIO:** one primary (1F0h/3F6h, IRQ14) or secondary (170h/376h,
   IRQ15) channel assembles from Rust configs and TOML `ide` cards. Master/slave
-  fixed disks use explicit CHS geometry and volatile/readonly `SectorMedia`.
+  fixed disks use explicit CHS geometry and volatile/readonly/journal `SectorMedia`.
   Primary IDE splits the FDC decode at 3F6h. An assembled Bare rig transfers all
   256 IDENTIFY words with `rep insw`; firmware boards require a ROM declaring
   fixed-disk services, even for an empty IDE card. The fixture recipe retains
@@ -342,27 +342,29 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   convention. Kiselev declares no such capability; existing seeds are unchanged.
   Catalogued BIOS service
   declarations must match the catalogue, and omitted declarations inherit it. ATA write batches preserve complete sectors on interruption and
-  reject readonly writes with ERR/ABRT. The host-only pending-write flush is
-  available for future persistent sessions, and media capacity is checked at
+  reject readonly writes with ERR/ABRT. ATA submits completed commands independently of host pacing. Assembly flushes
+  in-flight prefixes only for finish, CPU reset, run errors and explicit
+  snapshots/checkpoints; partial sectors stay in controller state. Media capacity is checked at
   construction. Primary/secondary IDENTIFY interrupts reach the cascaded PIC.
   Existing ATA behavior tests are unchanged.
-- **Floppy write modes:** volatile is the default (in memory only), readonly
+- **Floppy and IDE write modes:** volatile is the default (in memory only), readonly
   rejects writes, and explicit journal mode persists command-complete writes
   beside an immutable file-backed base and replays them on the next mount.
   Journal selection is available in Rust `MachineConfig` data and TOML/YAML
-  floppy drive tables, with explicit per-layer journal paths and positive
+  floppy and IDE drive tables, with explicit per-layer journal paths and positive
   retention counts (default 10). Changing a drive image drops inherited journal
   settings while preserving readonly/volatile modes; a child can turn journaling
   off without repeating the image. Journal outputs cannot alias loaded images or
   machine-file layers, with source-positioned refusals before assembly.
-  Fixture machines and goldens remain volatile.
+  Fixture machines keep their existing modes; persistence goldens use temporary journals.
   NVRAM journals persist changed CMOS RAM (0Eh–3Fh except 0Fh) only before CPU
   reset and at finish. Reset records keep one session generation open; finish
   closes it and runs retention. Run stops and host frame slices perform no NVRAM
   I/O. The journal codec, recovery and offline tools are shared with drives.
   TOML/YAML accept explicit journal paths and retention with drive-style image
   override units. Readonly NVRAM is rejected with a volatile-mode hint because
-  the MC146818 has no write-protect input. IDE journals remain unsupported. Offline CLI
+  the MC146818 has no write-protect input. IDE shares the drive journal format and
+  offline tools (512-byte sectors; capacity from the base image length). Offline CLI
   `media generations` and `verify` inspect under shared locks, with an explicit
   no-lock report when read-only storage has no lock entry;
   `verify --repair-tail` and `rollback --to N` require synchronized full backups and

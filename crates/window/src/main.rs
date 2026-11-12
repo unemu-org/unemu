@@ -239,6 +239,9 @@ impl Presenter {
             #[cfg(not(test))]
             drop(mouse_input);
             let outcome = self.assembled.machine.run_bounded(Some(cap));
+            if outcome.is_err() {
+                self.assembled.flush_persistence()?;
+            }
             if matches!(outcome, Ok(RunOutcome::ResetRequested)) {
                 self.reset_requests = self.reset_requests.saturating_add(1);
             }
@@ -1287,6 +1290,99 @@ mod tests {
     }
 
     #[test]
+    fn window_ide_run_error_flushes_whole_outsw_prefix_without_opening_a_window() {
+        let temp = assembly::test_support::TempDir::new("window-ide-error");
+        let base_path = temp.path().join("base.img");
+        let journal = temp.path().join("disk.upfj");
+        let base = vec![0; 32768];
+        std::fs::write(&base_path, &base).unwrap();
+        let mut code = vec![0xFA, 0xFC];
+        for (port, byte) in [
+            (0x1F6u16, 0xE0),
+            (0x1F2, 3),
+            (0x1F3, 4),
+            (0x1F4, 0),
+            (0x1F5, 0),
+            (0x1F7, 0x30),
+        ] {
+            code.extend([0xBA, port as u8, (port >> 8) as u8, 0xB0, byte, 0xEE]);
+        }
+        code.extend([
+            0xBE, 0, 0x20, 0xBA, 0xF0, 1, 0xB9, 0x80, 1, 0xF3, 0x6F, 0xEC,
+        ]);
+        let demo = assembly::at_boot(code);
+        let mut config = assembly::bios(vec![0xF4; 32768], None);
+        config.board = assembly::BoardModel::Bare;
+        config.cpu = demo.cpu;
+        config.images = demo.images;
+        config.images.push(assembly::LoadImage {
+            base: 0x2000,
+            source: assembly::ImageSource::Inline(vec![0xA7; 1536]),
+            kind: assembly::ImageKind::RamLoad,
+            provides: vec![],
+        });
+        let ide = assembly::IdeCfg {
+            model: assembly::AtaControllerModel::Ata,
+            base: 0x1F0,
+            control: 0x3F6,
+        };
+        config.devices.push(
+            assembly::DeviceConfig::new(
+                DeviceId::Ide,
+                assembly::DeviceKind::Ide(ide),
+                ide.port_windows(),
+            )
+            .with_irq(ide.irq()),
+        );
+        config.drives.push(assembly::DriveConfig {
+            controller: DeviceId::Ide,
+            unit: 0,
+            kind: assembly::DriveKind::HardDisk {
+                geometry: assembly::HardDiskGeometry {
+                    cylinders: 8,
+                    heads: 2,
+                    sectors_per_track: 4,
+                    bytes_per_sector: 512,
+                },
+            },
+            image: assembly::ImageSource::File(base_path.clone()),
+            expected_sha256: None,
+            write: assembly::WriteMode::journal(&journal),
+        });
+        let mut presenter = test_presenter(&config).unwrap();
+        presenter.advance(Duration::from_millis(20)).unwrap();
+        assert!(presenter.error.is_some());
+        assert!(!presenter.running);
+        assert!(presenter.window.is_none());
+        assert_eq!(std::fs::read(&journal).unwrap().len(), 128 + 2 * 640);
+        drop(presenter);
+        let mut fresh = assembly::assemble(&config).unwrap();
+        let report = fresh.persistence[0].mount_report();
+        assert!(report.generations.is_empty());
+        assert_eq!(report.unsealed_tip.as_ref().unwrap().commands, 1);
+        let bus = fresh.machine.bus_mut();
+        for (port, byte) in [
+            (0x1F6, 0xE0),
+            (0x1F2, 64),
+            (0x1F3, 0),
+            (0x1F4, 0),
+            (0x1F5, 0),
+            (0x1F7, 0x20),
+        ] {
+            bus.port_write(port, 1, byte).unwrap();
+        }
+        for lba in 0..64 {
+            for _ in 0..256 {
+                assert_eq!(
+                    bus.port_read(0x1F0, 2).unwrap(),
+                    if lba == 4 { 0xA7A7 } else { 0 }
+                );
+            }
+        }
+        assert_eq!(std::fs::read(base_path).unwrap(), base);
+    }
+
+    #[test]
     fn journal_host_failure_stops_at_the_first_window_boundary() {
         for fail in [false, true] {
             let temp = assembly::test_support::TempDir::new("window-host-failure");
@@ -1445,7 +1541,7 @@ mod tests {
                 config.drives.push(second);
                 let mut presenter = test_presenter(&config).unwrap();
                 for handle in &mut presenter.assembled.persistence {
-                    handle.checkpoint().unwrap();
+                    handle.checkpoint(&mut presenter.assembled.machine).unwrap();
                 }
                 presenter.assembled.persistence[0].fail_retention(operation);
                 if both_fail {

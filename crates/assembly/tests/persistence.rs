@@ -447,7 +447,7 @@ fn journal_config_rejects_incompatible_sources_geometry_and_retention() {
                 cylinders: 1,
                 heads: 1,
                 sectors_per_track: 1,
-                bytes_per_sector: 512,
+                bytes_per_sector: 256,
             },
         },
     ] {
@@ -457,7 +457,7 @@ fn journal_config_rejects_incompatible_sources_geometry_and_retention() {
             .validate()
             .unwrap_err()
             .to_string()
-            .contains("floppy with 512-byte sectors"));
+            .contains("512-byte sectors"));
     }
     assert_eq!(temp.entries(), vec![temp.path("base.img")]);
 }
@@ -543,14 +543,18 @@ fn checkpoint_closes_a_generation_and_finish_is_explicit_and_idempotent() {
     let config = config(&temp, true, 512);
     let mut assembled = assemble(&config).unwrap();
     run(&mut assembled);
-    assembled.persistence[0].checkpoint().unwrap();
+    assembled.persistence[0]
+        .checkpoint(&mut assembled.machine)
+        .unwrap();
     assert_eq!(
         report(&temp.path("disk.upfj"), &temp.path("base.img")).generations[0].reason,
         ClosingReason::Checkpoint
     );
     assembled.finish_persistence().unwrap();
     assembled.finish_persistence().unwrap();
-    assert!(assembled.persistence[0].checkpoint().is_err());
+    assert!(assembled.persistence[0]
+        .checkpoint(&mut assembled.machine)
+        .is_err());
     assert!(assembled
         .run_session(&RunPolicy::natural(Some(20_000), None))
         .is_err());
@@ -596,7 +600,9 @@ fn latched_host_failure_prevents_frontend_boundary_from_advancing_or_sealing() {
     }
     std::fs::write(temp.path("disk.upfj"), &bytes).unwrap();
     let mut assembled = assemble(&config).unwrap();
-    assert!(assembled.persistence[0].checkpoint().is_err());
+    assert!(assembled.persistence[0]
+        .checkpoint(&mut assembled.machine)
+        .is_err());
     assert!(assembled.persistence[0].status().is_some());
     let before = assembled.machine.virtual_time();
     let error = assembled
@@ -913,7 +919,9 @@ fn assembly_passes_retention_and_reserves_retention_temporary_names() {
     let base = std::fs::read(temp.path("base.img")).unwrap();
     let mut machine = assemble(&candidate).unwrap();
     for _ in 0..4 {
-        machine.persistence[0].checkpoint().unwrap();
+        machine.persistence[0]
+            .checkpoint(&mut machine.machine)
+            .unwrap();
     }
     machine.finish_persistence().unwrap();
     drop(machine);
@@ -958,7 +966,9 @@ fn finish_attempts_every_drive_and_returns_the_first_real_error() {
             let mut machine = assemble(&config).unwrap();
             machine.persistence[0].fail_output();
             if latched {
-                assert!(machine.persistence[0].checkpoint().is_err());
+                assert!(machine.persistence[0]
+                    .checkpoint(&mut machine.machine)
+                    .is_err());
             }
             if both_fail {
                 machine.persistence[1].fail_output();
@@ -1066,9 +1076,13 @@ fn uncertain_checkpoint_latches_disabled_appends_and_stops_the_next_boundary() {
         keep_generations: 1,
     };
     let mut machine = assemble(&cfg).unwrap();
-    machine.persistence[0].checkpoint().unwrap();
+    machine.persistence[0]
+        .checkpoint(&mut machine.machine)
+        .unwrap();
     machine.persistence[0].fail_retention("publication directory sync");
-    machine.persistence[0].checkpoint().unwrap();
+    machine.persistence[0]
+        .checkpoint(&mut machine.machine)
+        .unwrap();
     assert!(
         machine.persistence[0]
             .maintenance_failure()
@@ -1225,7 +1239,9 @@ fn identical_guest_sessions_produce_byte_identical_journals() {
             let mut expected = pattern();
             expected[usize::from(count)..].fill(0);
             assert_eq!(readback(&assembled), expected);
-            assembled.persistence[0].checkpoint().unwrap();
+            assembled.persistence[0]
+                .checkpoint(&mut assembled.machine)
+                .unwrap();
             assembled.finish_persistence().unwrap();
             drop(assembled);
             std::fs::read(temp.path("disk.upfj")).unwrap()

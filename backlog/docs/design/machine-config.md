@@ -901,21 +901,24 @@ independently of the version, so matching version numbers cannot allow a
 cross-model restore. Adapter snapshots without the model trailer are rejected.
 Pending controller-diagnostic IRQs are saved/restored even without media.
 
-Assembly mounts `InMemoryMedia` through `SectorMedia`, selecting volatile or
-readonly writes. Geometry must have 1–16383 cylinders, 1–16 heads, 1–63 sectors
-per track and 512-byte sectors; the image must exactly match it. Journal mode
-remains floppy-only. ATA submits one batch per completed write command, including
-complete sectors before an address failure, command replacement, diagnostics,
-reset or successful snapshot restore. A partial sector is discarded. Protected
-writes finish with ERR/ABRT and submit no batch. Mounted media and the completed
-prefix of an active command remain outside snapshots; restore does not roll back
-committed sectors. The host-only `Ata::flush_pending()` submits any complete
-prefix without changing guest-visible state. A future persistent IDE backend
-must call it only at session end, when the guest will no longer finish or abort
-the pending command; calling it mid-command splits one command into multiple
-batches. The host reaches ATA through the device's `as_any_mut` seam.
-`SectorMedia::sector_count()` bounds the advertised ATA capacity at construction. ATA-2 §§6.2.8 and 8.4 define abort reporting and
-PIO data-out.
+Assembly mounts volatile/readonly `InMemoryMedia` or a journal adapter through
+`SectorMedia`. Journal bases remain immutable files identified by SHA-256;
+replacement sectors stay separate, and offline commit exports a new base.
+Geometry must have 1–16383 cylinders, 1–16 heads, 1–63 sectors per track and
+512-byte sectors; the image must exactly match it.
+
+ATA submits one batch at each guest write command's completion, including the
+complete prefix before address failure, command replacement, diagnostics, reset
+or successful snapshot restore. Ordinary host stops (window frames, CLI polling,
+or run caps) never split an active command's journal batch. Host-side
+`Ata::flush_pending()` submits an in-flight prefix only at session finish, before
+CPU reset, after a run error, or explicitly before device snapshots/checkpoints.
+A partial sector is excluded. Protected writes report ERR/ABRT and submit no batch.
+Media and completed prefixes remain outside device snapshots; restore does not
+roll back committed sectors. The host reaches ATA through `as_any_mut`; the
+mounted-controller downcast is an assembly invariant. `SectorMedia::sector_count()`
+bounds advertised capacity. ATA-2 §§6.2.8 and 8.4 define abort reporting and PIO
+data-out. See `persistent-media.md` §IDE hard disks for the public flush contract.
 
 CMOS fixed-disk types follow the firmware provider. Registers 12h, 19h and
 1Ah stay zero when an option ROM provides `fixed-disk`, including XUB. They

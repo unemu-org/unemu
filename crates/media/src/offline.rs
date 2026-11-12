@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Offline floppy/CMOS journal inspection and backed-up mutation, as specified in
+//! Offline floppy/IDE/CMOS journal inspection and backed-up mutation, as specified in
 //! `backlog/docs/design/persistent-media.md` § Offline commands and § Locking
 //! and retention. Inspections may report an absent lock on read-only storage.
 

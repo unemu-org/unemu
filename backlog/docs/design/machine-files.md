@@ -4,7 +4,7 @@ Status: **accepted** (decision-17). Schema 1 TOML and YAML parsing and lowering
 to an assembly-validated `MachineConfig` are implemented in `crates/machine-file`.
 `extends` and embedded presets are implemented, including per-value origins,
 per-layer image directories and completeness checks. IDE PIO channels and
-volatile/readonly hard disks and explicit floppy journal attachment are implemented.
+volatile/readonly hard disks and explicit floppy/IDE journal attachment are implemented.
 NVRAM images support volatile writes and reset/session journals; readonly is rejected.
 Drive-indexed assembly diagnostics, including journal configuration errors, map
 to the drive's source origin and unit label while preserving the message suffix.
@@ -604,8 +604,14 @@ Under an `ide` card, the fields are the same, with two replacements:
 `geometry = { cylinders, heads, sectors }` (512-byte sectors) instead of
 `type`. In schema 1 the geometry is required: cylinders 1–16383, heads 1–16,
 sectors 1–63, with 512-byte sectors and an image of exactly the implied size.
-A slave requires a master. IDE accepts `volatile` and `readonly`; journal mode
-remains floppy-only and is rejected by assembly validation for IDE drives.
+A slave requires a master. IDE accepts `volatile` (default), `readonly` and
+`journal`, with the same explicit `journal` path and positive `keep_generations`
+(default 10) as floppy drives. Paths remain relative to their defining layer.
+A journal requires an immutable file-backed image; it replays before guest
+execution. ATA journals record complete 512-byte sectors, including completed
+sectors from an interrupted multi-sector command; a partial sector is discarded.
+The existing offline media tools derive capacity from the base image length and
+use the same format and arguments for IDE and floppy journals.
 
 No write mode modifies the base image: `volatile` keeps guest writes in
 memory, `readonly` faults them, and `journal` appends them to a separate file.
@@ -620,8 +626,8 @@ digest before opening any journal or creating a lock. A changed base produces
 existing journal would also reject its base binding. The checked buffer supplies
 both the journal binding and the mounted bytes; no later base read intervenes.
 Volatile/readonly images still carry their verified bytes inline, with no digest
-field set. Repository fixture machines and goldens remain volatile and create
-no journal sidecars.
+field set. Repository fixture machines keep their existing write modes; persistence
+goldens use temporary bases and journals and create no fixture sidecars.
 
 `ImageReader::read_journal_base` refuses journal mode by default. Synthetic
 readers can still supply volatile/readonly bytes, with mandatory pin checks;
@@ -1507,7 +1513,7 @@ Ordered; each bead is narrow and lands green.
    has an absolute path.
    *Depends on:* 6, 7.
 9. **Journal write mode in files.** Add `write = "journal"`, `journal` and
-   `keep_generations` on floppy drives, mapped to `WriteMode::Journal`.
+   `keep_generations` on floppy and IDE drives, mapped to `WriteMode::Journal`.
    *Implemented:* TOML/YAML lowering, per-layer journal paths, journal/image
    override units and two-run guest WRITE/READ acceptance with immutable bases.
    NVRAM journals use the same override units and offline tools; readonly is rejected.

@@ -51,12 +51,13 @@ Evidence from the current implementation:
   behavior. `dos_write_golden.rs:132–136` inspects final in-memory FAT12 bytes;
   it does not establish persistence across assemblies.
 
-Scope: the existing 512-byte-sector floppy formats and 64-byte CMOS images, a single writer per journal,
-offline recovery tools, and deterministic headless execution. No CPU change,
-fixed-disk controller, whole-machine snapshot, guest-filesystem transaction,
+Scope: the existing 512-byte-sector floppy formats, ATA hard disks and 64-byte
+CMOS images, a single writer per journal, offline recovery tools, and deterministic
+headless execution. No CPU change,
+new fixed-disk controller, whole-machine snapshot, guest-filesystem transaction,
 live recovery service, compression, encryption or qcow2 compatibility is needed.
-Default drives and all goldens remain volatile. Fixture paths must never become
-journal outputs implicitly.
+Default drives remain volatile; persistence tests select private temporary
+journals. Fixture paths must never become journal outputs implicitly.
 
 **ASSUMED storage contract:** local storage preserves previously synchronized
 bytes when an append is interrupted, supports exclusive locking and atomic
@@ -324,6 +325,66 @@ only ST1-successful commands or the unpadded DMA buffer would change behavior.
 Reset keeps the mounted media and does not create a generation; device snapshots
 continue to exclude media. This does not implement machine snapshot/replay.
 
+### IDE hard disks
+
+ATA drives use the same `JournalAdapter`, version-1 codec, immutable file-backed
+base, retention count (default 10), sidecar lock and host failure latch as floppies.
+Sector size is 512 bytes and journal geometry length is the image byte length;
+assembly validates that the configured CHS capacity matches that image. No IDE
+format discriminator or media-specific sink hook is needed. `media generations`,
+`verify`, `rollback` and `commit` take the same `--base` and `--journal` arguments;
+the offline API derives capacity from the base length, without a floppy preset.
+`JournalMedia` retains both the immutable base and the working image, about twice
+the disk size in steady state before other emulator allocations. Mount peaks
+higher because loaded/resolved buffers and recovery copies can overlap. The base
+is SHA-256 checked on every assembly, including large hard disks; hashing is not
+skipped for speed. The follow-up bead **large disk images without whole-image
+memory copies** will address this memory cost. It must retain the read-only,
+hash-identified base and one sector-overlay interface so future hash-linked
+layers can replace the current base+journal without weakening integrity.
+
+ATA-2 §7 WRITE SECTORS (30h/31h), WRITE MULTIPLE (C5h), and §8.4 PIO data-out
+supply ordered whole-sector batches. Each sector becomes committed after its
+256th word. Normal command completion submits the batch; replacement, reset or
+an address failure submits the completed prefix of an interrupted command.
+Unlike floppy DMA's zero padding, an incomplete ATA sector is never journaled.
+The prefix remains readable while the command is still active.
+
+A completed guest command submits its batch immediately at the guest completion
+event. Ordinary run caps, CLI prompt polls, window frame slices and
+`check_persistence` only poll host error latches; they never flush an active
+command. Running the same complete workload with different host cap splits
+therefore produces byte-identical journal files.
+
+Assembly flushes an in-flight completed-sector prefix only at session finish,
+before CPU reset, after a run error, or explicitly before a device snapshot or
+checkpoint. `AssembledMachine::flush_persistence` prepares a device snapshot or
+captures a prefix after an embedder's raw `machine.run_bounded` error.
+`PersistenceHandle::checkpoint` and `finish` require the owning machine and flush
+themselves, so callers cannot accidentally close a generation without the prefix.
+`check_persistence` is a latch-only ordinary-boundary check. There is no
+whole-machine snapshot API. Explicit flushes leave PIO buffers/task/IRQ state
+intact and may split an in-flight command; partial sectors are never included.
+Dropping without a successful finish leaves submitted complete records unsealed
+and recoverable on the next mount. An abrupt drop during an active command may
+lose its still-buffered prefix.
+
+A host sink failure does not turn the ATA medium readonly: live reads and writes
+continue in memory with unchanged guest status. Assembly reports the latched
+failure at its boundary and refuses a clean session end. Explicit readonly mode
+still rejects writes with ERR/ABRT. Volatile mode creates no journal.
+
+IDE acceptance coverage is in `crates/assembly/tests/ide_persistence.rs`
+(single/multiple commands, interrupted prefixes, host pacing independence, snapshot preparation, continued
+PIO transfers, guest OUTSW state equivalence and execution-error recovery, retention, rollback and immutable
+export), `crates/assembly/src/persistence.rs` (sink failure isolation), and
+`crates/machine-file/tests/review.rs` (TOML/YAML paths and defaults).
+`crates/cli/tests/ide_journal_golden.rs` boots FreeDOS with the FAT16 fixture as
+C:, writes `ZZ`, checks its exact on-media bytes, then boots a fresh assembly
+and reads it through `TYPE C:ZZ`. It also exercises all four offline CLI tools
+and checks that the base image stays byte-identical. The existing ATA MockBus
+contract tests continue to define command batching and readonly ERR/ABRT.
+
 The assembly media loader must retain the original `ImageSource::File` metadata
 while resolving bytes: today's conversion to `Inline` otherwise loses the path
 needed for validation. Hash the single read already used for mounting, replay
@@ -589,10 +650,13 @@ loaded bytes. Volatile and readonly sessions create no host output.
 
 `AssembledMachine::persistence` contains one `PersistenceHandle` per journal
 with its drive index, configured retention count, mount recovery report, first
-latched host error, `checkpoint()` and `finish()`. The assembly-owned sector
+latched host error, `checkpoint(&mut machine)` and `finish(&mut machine)`.
+Those two methods flush completed ATA sectors themselves. The assembly-owned sector
 adapter shares the session with this handle. `run_session(policy)` checks errors
 before and after every existing natural/prompt/stimulus run boundary;
-`check_persistence()` supports an embedding frontend's own boundaries. A frontend
+`check_persistence()` supports an embedding frontend's own boundaries without
+flushing. `flush_persistence()` explicitly prepares device snapshots or captures
+an active prefix after a raw run error. A frontend
 handling `ResetRequested` itself must call `AssembledMachine::before_cpu_reset()`
 before `reset_cpu()`. Calling `run_bounded()` again instead performs the pending
 reset automatically without capturing pre-reset CMOS state. The journal can then
@@ -891,7 +955,11 @@ or changed by this documentation-only spike.
    inputs under volatile and journal adapters, including delayed/failing sinks
    up to the host error boundary. Volatile starts from the unchanged file on
    run two and creates no output; readonly rejects writes with the existing
-   ST1 not-writable result, also without output. Run existing fast floppy-write
+   ST1 not-writable result (ATA ERR/ABRT for IDE), also without output. The IDE
+   regression drives REP OUTSW with small caps and compares full guest memory,
+   ATA save(), retired instructions, virtual time and PIT clock across volatile,
+   journal and failing-sink runs. Journal bytes must also be identical across
+   different ordinary host cap splits. Run existing fast floppy-write
    and boot goldens unchanged. At implementation merge, run the fixture-backed
    slow suite with volatile explicitly selected and compare fixture hashes and
    directory entries before/after; no sidecars may appear beside fixtures.

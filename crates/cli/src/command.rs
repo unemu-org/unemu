@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Frontend argument parsing, machine-file runs and offline floppy exit policy;
+//! Frontend argument parsing, machine-file runs and offline media exit policy;
 //! `backlog/docs/design/machine-files.md` § Frontends,
 //! `backlog/docs/design/persistent-media.md` § Offline commands and
 //! `backlog/docs/design/firmware-and-machine-classes.md` §6.
