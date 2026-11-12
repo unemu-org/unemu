@@ -219,6 +219,7 @@ the owning `DeviceId`; lowering derives the windows from the card kinds.
 | `post_port` | u16 or `"none"` | `0x80` on `ibm-5170` | yes | the `Post` device; also the DMA page-register decode |
 | `rtc` | table | see below | yes | the `Rtc` device |
 | `mouse` | boolean | `false` | yes | attach a standard PS/2 mouse to the 8042 auxiliary port; reserve IRQ12 |
+| `display_switch` | `"auto"`, `"mono"`, `"colour"` | `"auto"` | yes | select the primary display class for the 8042 input switch and derived CMOS video bits |
 
 The `ibm-5170` board model supplies the devices below, in this order (the
 canonical order, M2). The values are today's presets, unchanged.
@@ -269,6 +270,34 @@ IR2 cascade); primary keyboard IRQ1 is unchanged. This is an opt-in auxiliary
 extension, not a claim that the original IBM AT shipped a mouse port. Host input
 and disabled-reporting accumulation are described in
 [machine-config.md §PS/2 mouse](machine-config.md#ps2-mouse).
+
+`board.display_switch` is the physical AT display slide switch. `auto` prefers
+MDA, then colour, independently of card order. `mono` requires an installed
+MDA; `colour` requires an installed `vga-text` or `vga` card. A forced class
+without a matching card is an error at `board.display_switch`. Unknown names
+(including `color`) and non-string values are rejected. A child inherits the
+parent switch; explicitly setting `auto` clears a parent's forced selection.
+
+Equivalent TOML/YAML overrides for a machine with MDA and `vga-text`:
+
+```toml
+[board]
+display_switch = "colour"
+```
+
+```yaml
+board:
+  display_switch: colour
+```
+
+MDA plus `vga-text` is supported; MDA plus register `vga` still has conflicting
+ports/MMIO. With no display card, `auto` leaves the switch at colour and CMOS
+video bits at 00 (the equipment byte has no no-adapter code). A ROM-less colour
+card derives 80-column colour (10); MDA derives mono (11); a colour card with a
+video option ROM at C0000h derives own-BIOS (00). Explicit NVRAM images are not
+rewritten, so their equipment byte must agree with the chosen switch and cards.
+See [machine-config.md §Primary display](machine-config.md#primary-display)
+for the hardware references, no-card policy and snapshot behavior.
 
 ### `[board.rtc]`
 

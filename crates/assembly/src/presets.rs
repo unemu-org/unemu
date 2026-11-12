@@ -273,6 +273,7 @@ fn at_demo(blob: Vec<u8>, devices: Vec<DeviceConfig>) -> MachineConfig {
     MachineConfig {
         system_bios_image: None,
         board: BoardModel::Bare,
+        display_switch: crate::DisplaySwitch::Auto,
         cpu: CpuConfig {
             chip: CpuChip::I80286,
             reset: ResetSpec::Entry {
@@ -347,6 +348,7 @@ pub fn at_fdc_write(program: Vec<u8>, pattern: Vec<u8>, pattern_base: u64) -> Ma
     MachineConfig {
         system_bios_image: None,
         board: BoardModel::Bare,
+        display_switch: crate::DisplaySwitch::Auto,
         cpu: CpuConfig {
             chip: CpuChip::I80286,
             reset: ResetSpec::Entry {
@@ -387,6 +389,7 @@ pub fn at_vga_text(blob: Vec<u8>) -> MachineConfig {
     MachineConfig {
         system_bios_image: None,
         board: BoardModel::Bare,
+        display_switch: crate::DisplaySwitch::Auto,
         cpu: CpuConfig {
             chip: CpuChip::I80286,
             reset: ResetSpec::Entry {
@@ -431,6 +434,7 @@ pub fn test386(image: Vec<u8>) -> MachineConfig {
     MachineConfig {
         system_bios_image: None,
         board: BoardModel::Bare,
+        display_switch: crate::DisplaySwitch::Auto,
         cpu: CpuConfig {
             chip: CpuChip::I80286,
             reset: ResetSpec::Entry {
@@ -477,6 +481,7 @@ pub fn floppy_boot(loader: Vec<u8>, floppy: Vec<u8>) -> MachineConfig {
     MachineConfig {
         system_bios_image: None,
         board: BoardModel::Bare,
+        display_switch: crate::DisplaySwitch::Auto,
         cpu: CpuConfig {
             chip: CpuChip::I80286,
             reset: ResetSpec::Entry {
@@ -507,6 +512,14 @@ pub fn floppy_boot(loader: Vec<u8>, floppy: Vec<u8>) -> MachineConfig {
 /// CMOS/RTC (seeded), the port-`0x61` latch, and a POST port at `0x80`, booting
 /// from the reset vector. CPU work uses exact steps and interrupts are accepted
 /// only at completed instruction boundaries.
+///
+/// For either pinned Kiselev Xi8088 image, this BIOS reads the AT display
+/// switch with inverted polarity; in the colour position it selects the
+/// monochrome adapter. The preset selects Colour, and derived CMOS video bits
+/// still describe the switch-selected colour primary (10b). Other firmware
+/// keeps Auto. IBM Personal Computer AT Technical Reference, System Board,
+/// Keyboard Controller, "Input-Port Bit Definitions", defines the AT polarity;
+/// see `backlog/docs/design/machine-config.md` §Primary display.
 ///
 /// `floppy` chooses the disk story:
 ///
@@ -554,9 +567,18 @@ pub fn bios(rom: Vec<u8>, floppy: Option<Vec<u8>>) -> MachineConfig {
         }
     };
 
+    let display_switch = crate::bios_display_switch(&rom);
+    let image = LoadImage {
+        base: BIOS_ROM_BASE,
+        source: ImageSource::Inline(rom),
+        kind: ImageKind::Rom,
+        provides: vec![crate::FirmwareService::Floppy],
+    };
+
     MachineConfig {
         system_bios_image: Some(0),
         board,
+        display_switch,
         cpu: CpuConfig {
             chip: CpuChip::I80286,
             reset: ResetSpec::ResetVector {
@@ -587,12 +609,7 @@ pub fn bios(rom: Vec<u8>, floppy: Option<Vec<u8>>) -> MachineConfig {
         },
         devices,
         drives,
-        images: vec![LoadImage {
-            base: BIOS_ROM_BASE,
-            source: ImageSource::Inline(rom),
-            kind: ImageKind::Rom,
-            provides: vec![crate::FirmwareService::Floppy],
-        }],
+        images: vec![image],
     }
 }
 

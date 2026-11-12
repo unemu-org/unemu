@@ -111,6 +111,19 @@ moves to a 386 board for firmware reasons as well as CPU reasons.
   mask at 70h), `AT_DELAY` (61h refresh bit), `SECOND_PIC`, `AT_KEYBOARD`,
   `PS2_MOUSE` and model byte FCh. `MAX_RAM_SIZE` is 640 and `EBDA_SIZE` 1
   (`config.inc`).
+- **Display switch.** This BIOS reads the AT display switch with inverted
+  polarity; in the colour position it selects the monochrome adapter
+  (`at_kbc.inc:468–473`). IBM Personal Computer AT Technical Reference, System
+  Board, Keyboard Controller, "Input-Port Bit Definitions", specifies bit 6
+  set for monochrome. The model keeps that IBM polarity. Kiselev profiles set
+  `board.display_switch = "colour"` (A0h input), so the firmware uses MDA.
+  The switch still names the IBM primary: derived CMOS 14h video bits are 10b,
+  colour, rather than the firmware-selected mono console. Both pinned BIOS
+  variants use this explicit setting in `presets::bios()` and in
+  `machines/at-freedos.toml`, its YAML twin, `at-freedos-from-preset.toml` and
+  `at-ide.toml`. The Rust helper matches the ROM hash, including for the
+  historical Bare POST rig; other firmware and the firmware-neutral board
+  preset retain Auto. See [primary display](machine-config.md#primary-display).
 - **Option-ROM scan.** It scans for a video BIOS from C000h to C800h, then for
   extensions from C800h to F800h (to F000h when a setup flag is set). The step is
   2 KiB. A ROM must have a 55AA header and a size byte, and its checksum must be
@@ -301,6 +314,9 @@ The **Kiselev Xi 8088 build on `ibm-5170`** mostly uses 5170 parts:
 
 It deviates from a 5170 in these places:
 
+- **Display switch polarity is inverted.** The explicit colour position makes
+  this BIOS select MDA; CMOS continues to describe the IBM colour primary
+  (10b). See §2.1 for the profile settings.
 - **Port 61h bit 2 is the Xi 8088 "turbo" bit** (`set_cpu_clk_turbo`). On a
   5170 that bit enables the parity check. Writes are harmless.
 - **Port C0h is written as an "unused" register** for I/O delays and bus
@@ -738,6 +754,9 @@ name = "freedos-floppy"
 
 [board]
 model = "ibm-5170"            # class "at" is derived
+# This BIOS reads the AT display switch with inverted polarity; in the colour
+# position it selects the monochrome adapter. Derived CMOS still declares colour.
+display_switch = "colour"
 
 [cpu]
 model = "80286"
@@ -752,6 +771,9 @@ bios = { image = "../vendor/kiselev-bios/bios-xi8088.bin",
 
 [[card]]
 kind = "mda"
+
+[[card]]
+kind = "vga-text"
 
 [[card]]
 kind = "fdc-765"

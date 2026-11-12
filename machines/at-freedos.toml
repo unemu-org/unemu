@@ -4,6 +4,9 @@ name = "at-freedos"
 description = "PC/AT-class machine booting FreeDOS from drive A: with the Xi8088 open BIOS"
 
 [board]
+# This BIOS reads the AT display switch with inverted polarity; in the colour
+# position it selects the monochrome adapter. Derived CMOS still declares colour.
+display_switch = "colour"
 model = "ibm-5170"
 post_port = 0x80
 

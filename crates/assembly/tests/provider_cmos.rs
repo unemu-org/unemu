@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! IBM Personal Computer AT Technical Reference, Real-Time Clock/CMOS RAM
-//! Information: provider selection must preserve existing NVRAM seeds.
+//! Information: provider selection preserves the board-derived NVRAM inventory.
 
 use assembly::*;
 use device::Device;
@@ -10,19 +10,19 @@ use devices::{CmosConfig, CmosRtc};
 mod fixtures;
 
 #[test]
-fn provider_cmos_existing_presets_keep_every_seed_byte() {
+fn provider_cmos_presets_match_their_display_and_drive_inventory() {
     for (name, config, floppy_types, equipment, base_memory_kb) in [
-        ("boot", at_boot(vec![0xF4]), 0, 0, 64),
-        ("keyboard", at_keyboard(vec![0xF4]), 0, 0, 64),
-        ("rtc", at_rtc(vec![0xF4], 100, 10), 0, 0, 64),
+        ("boot", at_boot(vec![0xF4]), 0, 0x20, 64),
+        ("keyboard", at_keyboard(vec![0xF4]), 0, 0x20, 64),
+        ("rtc", at_rtc(vec![0xF4], 100, 10), 0, 0x20, 64),
         (
             "fdc-write",
             at_fdc_write(vec![0xF4], vec![0; 512], 0x8000),
             0x10,
-            1,
+            0x21,
             64,
         ),
-        ("vga", at_vga_text(vec![0xF4]), 0, 0, 640),
+        ("vga", at_vga_text(vec![0xF4]), 0, 0x20, 640),
         ("test386", test386(vec![0; 65536]), 0, 0, 640),
         (
             "floppy-boot",
@@ -31,12 +31,12 @@ fn provider_cmos_existing_presets_keep_every_seed_byte() {
             1,
             64,
         ),
-        ("bios-no-media", bios(vec![0; 32768], None), 0x40, 1, 640),
+        ("bios-no-media", bios(vec![0; 32768], None), 0x40, 0x31, 640),
         (
             "bios-freedos",
             bios(vec![0; 32768], Some(vec![0; 1_474_560])),
             0x40,
-            1,
+            0x31,
             640,
         ),
     ] {

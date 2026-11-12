@@ -68,6 +68,16 @@
 //! Output Port, defines bit 1. CPU address masking is pending CPU-core support;
 //! see `backlog/docs/design/machine-config.md` §A20 line and System Control Port A.
 //!
+//! ## Input port and primary display
+//!
+//! IBM Personal Computer AT Technical Reference, System Board, Keyboard
+//! Controller, "Input-Port Bit Definitions": C0h reports the display switch in
+//! bit 6 (1 = monochrome primary, 0 = colour). Construction sets this physical
+//! strap; reset and snapshot restore retain the receiving board's setting.
+//! The strap is configuration, not mutable controller state, and is not saved
+//! in snapshots. Other input bits retain A0h. D0h reads the separate output
+//! port and is unaffected. See machine-config.md §Primary display.
+//!
 //! ## CPU reset
 //!
 //! D1h with output bit 0 low, or any even F0h–FEh pulse command, latches a
@@ -90,7 +100,7 @@
 //! | `0xA7` | Disable aux (mouse)         | yes      | sets command-byte bit 5       |
 //! | `0xA8` | Enable aux (mouse)          | yes      | clears command-byte bit 5     |
 //! | `0xA9` | Test aux port               | yes      | → `0x00` (no error)          |
-//! | `0xC0` | Read input port             | yes      | → benign strap value         |
+//! | `0xC0` | Read input port             | yes      | → board straps and display switch |
 //! | `0xD0` | Read output port            | yes      | → output buffer              |
 //! | `0xD1` | Write output port           | yes      | next `0x60` write; bit 1 = A20 |
 //! | `0xF0–0xFF` | Pulse output port | partial | reset event; no pulse timing |
@@ -260,13 +270,11 @@ const KBD_CMD_RESET: u8 = 0xFF;
 /// Basic-assurance-test "OK" byte the keyboard emits after a successful reset.
 const KBD_BAT_OK: u8 = 0xAA;
 
-/// Value returned for a read-input-port (`0xC0`) command.
+/// Input-port straps other than the configurable primary-display bit.
 ///
-/// The input port carries board straps the BIOS samples but that a headless AT
-/// has no real wiring for. A benign constant keeps POST moving: keyboard **not
-/// inhibited** (bit 7), color/CGA-class display (bit 6 clear), manufacturing
-/// jumper **absent** (bit 5 set, i.e. normal operation rather than the factory
-/// test loop). The low nibble is unwired and read as zero.
+/// IBM Personal Computer AT Technical Reference, System Board, Keyboard
+/// Controller, "Input-Port Bit Definitions": keyboard not inhibited (bit 7),
+/// manufacturing jumper absent (bit 5). Unmodelled low bits remain zero.
 const INPUT_PORT_VALUE: u8 = 0b1010_0000;
 
 /// Default command byte at power-on: keyboard enabled, interrupts off,
@@ -406,6 +414,9 @@ pub struct I8042 {
     command_byte: u8,
     /// The output port; bit 1 is the A20 gate.
     output_port: u8,
+    /// Board straps survive reset because the physical switch does not move.
+    /// IBM PC AT Technical Reference, Keyboard Controller, Input-Port Bit Definitions.
+    input_port: u8,
     reset_request: Rc<Cell<bool>>,
     a20_line: crate::A20Line,
     /// What the next `0x60` write means.
@@ -450,6 +461,7 @@ impl I8042 {
             last_was_command: false,
             command_byte: CMD_BYTE_RESET,
             output_port: OUTPUT_PORT_RESET,
+            input_port: INPUT_PORT_VALUE,
             reset_request: Rc::new(Cell::new(false)),
             a20_line: {
                 let line = crate::A20Line::default();
@@ -471,6 +483,16 @@ impl I8042 {
             trace: device::TraceBuffer::default(),
             now: VClock::ZERO,
         }
+    }
+
+    /// Set the board's display switch at construction (true = monochrome).
+    /// IBM Personal Computer AT Technical Reference, System Board, Keyboard
+    /// Controller, "Input-Port Bit Definitions", bit 6. Other straps retain
+    /// their defaults; guest commands cannot change the physical switch.
+    #[must_use]
+    pub fn with_primary_display(mut self, monochrome: bool) -> Self {
+        self.input_port = INPUT_PORT_VALUE | (u8::from(monochrome) << 6);
+        self
     }
 
     /// Attach an auxiliary peripheral at construction; the default is no device.
@@ -724,7 +746,7 @@ impl I8042 {
                     self.refill_output();
                 }
             }
-            0xC0 => self.respond(INPUT_PORT_VALUE),
+            0xC0 => self.respond(self.input_port),
             0xD0 => {
                 let op = self.output_port;
                 self.respond(op);
@@ -977,7 +999,9 @@ impl Device for I8042 {
         let signal = Rc::clone(&self.reset_request);
         signal.set(false);
         let a20 = self.a20_line.clone();
+        let input_port = self.input_port;
         *self = I8042::new().with_board_lines(signal, a20);
+        self.input_port = input_port;
         self.aux_device = aux_device;
         self.trace.set_policy(trace_policy);
     }
@@ -1233,6 +1257,33 @@ impl Device for I8042 {
 mod tests {
     use super::*;
     use testkit::MockBus;
+
+    #[test]
+    fn display_switch_c0_is_configured_without_changing_d0_or_other_straps() {
+        for (mono, expected) in [(false, 0xA0), (true, 0xE0)] {
+            let mut bus = MockBus::new(Box::new(I8042::new().with_primary_display(mono)));
+            for (command, value) in [(0xC0, expected), (0xD0, 0x03)] {
+                bus.port_write(PORT_CMD, 1, command).unwrap();
+                assert_eq!(bus.port_read(PORT_DATA, 1).unwrap(), value);
+            }
+        }
+    }
+
+    #[test]
+    fn display_switch_survives_reset_and_restore_as_board_configuration() {
+        let mut bus = MockBus::new(Box::new(I8042::new().with_primary_display(true)));
+        bus.device_mut().reset();
+        bus.port_write(PORT_CMD, 1, 0xC0).unwrap();
+        assert_eq!(bus.port_read(PORT_DATA, 1).unwrap(), 0xE0);
+        let snapshot = bus.device().save();
+        bus.device_mut().restore(&snapshot).unwrap();
+        bus.port_write(PORT_CMD, 1, 0xC0).unwrap();
+        assert_eq!(bus.port_read(PORT_DATA, 1).unwrap(), 0xE0);
+        let mut other = MockBus::new(Box::new(I8042::new()));
+        other.device_mut().restore(&snapshot).unwrap();
+        other.port_write(PORT_CMD, 1, 0xC0).unwrap();
+        assert_eq!(other.port_read(PORT_DATA, 1).unwrap(), 0xA0);
+    }
 
     #[test]
     fn keyboard_transmit_write_reenables_only_the_keyboard_interface() {
@@ -2831,7 +2882,7 @@ mod tests {
     }
 
     #[test]
-    fn read_input_port_returns_benign_value() {
+    fn read_input_port_returns_default_colour_straps() {
         let mut kbc = I8042::new();
         kbc.port_write(PORT_CMD, 1, 0xC0).unwrap();
         assert_eq!(kbc.port_read(PORT_DATA, 1).unwrap() as u8, INPUT_PORT_VALUE);

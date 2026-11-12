@@ -203,7 +203,10 @@ twelve-pass prefix remains historical evidence.
 Synthetic tests cover absolute paths (including escaped filenames), lane order,
 preset devices, RAM backing, clock and RTC/NVRAM settings through this loader.
 The preset retains RAM at A0000h–AFFFFh alongside the two text-card apertures;
-CMOS still reports 640 KiB base RAM, no extended RAM and equipment byte 00h.
+CMOS reports 640 KiB base RAM, no extended RAM and equipment byte 30h:
+Auto selects the installed MDA (video bits 11b), with no floppy drive or
+coprocessor bits set. This diagnostic BIOS does not use the catalogued Kiselev
+switch override.
 The preset clock rate is 8/13 retired steps per PIT clock, with the refresh
 detect bit driven by PIT channel 1 OUT rising edges.
 

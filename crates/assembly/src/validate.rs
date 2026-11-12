@@ -158,6 +158,7 @@ impl MachineConfig {
         self.check_fw_cfg()?;
         self.check_board()?;
         self.check_mouse()?;
+        self.primary_display()?;
         self.check_firmware_layout()?;
         self.check_firmware_services()?;
         self.check_rtc_starts()?;
@@ -2256,6 +2257,7 @@ mod tests {
         MachineConfig {
             system_bios_image: None,
             board: BoardModel::Bare,
+            display_switch: crate::DisplaySwitch::Auto,
             cpu: CpuConfig {
                 chip: CpuChip::I80286,
                 reset: ResetSpec::reset_vector(),

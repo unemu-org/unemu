@@ -60,7 +60,7 @@ pub use assemble::{
     assemble, assemble_with_observation, assemble_with_observation_and_options,
     assemble_with_options, derive_cmos_config, derive_cmos_layout, AssembledMachine, AssemblyError,
 };
-pub use board::{BoardModel, MachineClass};
+pub use board::{BoardModel, DisplaySwitch, MachineClass, PrimaryDisplay};
 pub use bus::PortWidth;
 pub use clock::ClockConfig;
 pub use cpu::{CpuChip, CpuConfig, ResetSpec, SegmentSeed};
@@ -237,8 +237,8 @@ pub mod test_support {
     }
 }
 pub use firmware::{
-    check_board_system_bios, check_firmware_parts, check_option_rom_catalogue, check_system_bios,
-    AssemblyOptions, FirmwareBase, FirmwareCapability, FirmwareCpu, FirmwareDistribution,
-    FirmwareEntry, FirmwareKind, FirmwarePart, FirmwareStatus, KnownPart, UnlistedFirmware,
-    KISELEV_XI8088,
+    bios_display_switch, check_board_system_bios, check_firmware_parts, check_option_rom_catalogue,
+    check_system_bios, AssemblyOptions, FirmwareBase, FirmwareCapability, FirmwareCpu,
+    FirmwareDistribution, FirmwareEntry, FirmwareKind, FirmwarePart, FirmwareStatus, KnownPart,
+    UnlistedFirmware, KISELEV_XI8088,
 };

@@ -54,6 +54,7 @@ timed_table! {
     /// Board selection and overrides; motherboard expansion belongs to lowering.
     pub struct Board {
         pub model: Option<BoardModel>,
+        pub display_switch: Option<DisplaySwitch>,
         pub post_port: Option<NumberOrNone<65535>>,
         pub rtc: Option<Rtc>,
         /// Standard PS/2 mouse on the motherboard 8042 auxiliary port.
@@ -195,4 +196,30 @@ pub struct NvramImage {
     pub write: Option<WriteMode>,
     pub journal: Option<String>,
     pub keep_generations: Option<std::num::NonZeroU32>,
+}
+
+/// AT board primary-display switch, independent of card declaration order.
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum DisplaySwitch {
+    Auto,
+    Mono,
+    Colour,
+}
+
+impl<'de> Deserialize<'de> for DisplaySwitch {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let value = String::deserialize(deserializer)?;
+        match value.as_str() {
+            "auto" => Ok(Self::Auto),
+            "mono" => Ok(Self::Mono),
+            "colour" => Ok(Self::Colour),
+            "color" => Err(serde::de::Error::custom(
+                "unknown display switch `color`; use `colour`",
+            )),
+            other => Err(serde::de::Error::unknown_variant(
+                other,
+                &["auto", "mono", "colour"],
+            )),
+        }
+    }
 }

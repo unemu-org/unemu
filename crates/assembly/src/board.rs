@@ -259,3 +259,112 @@ mod tests {
             .all(|d| d.access_dependents.is_empty() && !d.allow_port_overlap));
     }
 }
+
+/// Position of the AT motherboard's primary-display slide switch.
+///
+/// IBM Personal Computer AT Technical Reference, System Board, Keyboard
+/// Controller, "Input-Port Bit Definitions", bit 6. See
+/// `backlog/docs/design/machine-config.md` §Primary display.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+pub enum DisplaySwitch {
+    /// Prefer MDA, then colour; no adapter leaves the switch at colour.
+    #[default]
+    Auto,
+    /// Select an installed monochrome adapter.
+    Mono,
+    /// Select an installed colour adapter.
+    Colour,
+}
+
+impl std::fmt::Display for DisplaySwitch {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Auto => "auto",
+            Self::Mono => "mono",
+            Self::Colour => "colour",
+        })
+    }
+}
+
+impl DisplaySwitch {
+    pub(crate) const fn required_card_class(self) -> &'static str {
+        match self {
+            Self::Auto => "display card",
+            Self::Mono => "MDA card",
+            Self::Colour => "colour card (vga-text / vga)",
+        }
+    }
+}
+
+/// Primary adapter selected by the board switch and installed display cards.
+///
+/// IBM Personal Computer AT Technical Reference, System Board, Real-Time
+/// Clock/CMOS RAM Information, "Equipment Byte (Hex 14)", bits 5–4.
+/// See `backlog/docs/design/machine-config.md` §Primary display.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum PrimaryDisplay {
+    /// No installed adapter; retain CMOS video code 00 and the colour switch.
+    None,
+    /// Monochrome Display and Printer Adapter (CMOS video code 11).
+    Monochrome,
+    /// ROM-less colour adapter in 80-column mode (CMOS video code 10).
+    Colour80,
+    /// Colour adapter with a video option ROM (CMOS video code 00).
+    OwnBios,
+}
+
+impl PrimaryDisplay {
+    /// AT input-port bit 6 is set only for a monochrome primary display.
+    pub const fn monochrome(self) -> bool {
+        matches!(self, Self::Monochrome)
+    }
+
+    /// Video bits in the CMOS equipment byte; the AT has no no-adapter code.
+    pub const fn cmos_video_bits(self) -> u8 {
+        match self {
+            Self::None | Self::OwnBios => 0,
+            Self::Colour80 => 0x20,
+            Self::Monochrome => 0x30,
+        }
+    }
+}
+
+impl crate::MachineConfig {
+    /// Resolve the board's primary display independently of card order.
+    ///
+    /// Auto prefers MDA so a dual-card AT retains its monochrome console.
+    /// A ROM at C0000h identifies a video BIOS, matching firmware validation's
+    /// video-ROM requirement; unrelated option ROMs do not change the display.
+    /// IBM Personal Computer AT Technical Reference, System Board, Display
+    /// Adapter Switch and "Equipment Byte (Hex 14)". See machine-config.md
+    /// §Primary display for the no-card and ROM-less VGA policies.
+    pub fn primary_display(&self) -> Result<PrimaryDisplay, crate::ConfigError> {
+        let mono = self
+            .devices
+            .iter()
+            .any(|d| matches!(d.kind, DeviceKind::Mda(_)));
+        let colour = self
+            .devices
+            .iter()
+            .any(|d| matches!(d.kind, DeviceKind::Vga(_) | DeviceKind::VgaRegisters(_)));
+        let select_mono = match self.display_switch {
+            DisplaySwitch::Auto => mono,
+            DisplaySwitch::Mono if mono => true,
+            DisplaySwitch::Colour if colour => false,
+            switch => return Err(crate::ConfigError::DisplaySwitchUnavailable { switch }),
+        };
+        Ok(if select_mono {
+            PrimaryDisplay::Monochrome
+        } else if !colour {
+            PrimaryDisplay::None
+        } else if self.images.iter().enumerate().any(|(index, image)| {
+            image.kind == crate::ImageKind::Rom
+                && image.base == 0xC0000
+                && self.system_bios_image != Some(index)
+        }) {
+            PrimaryDisplay::OwnBios
+        } else {
+            PrimaryDisplay::Colour80
+        })
+    }
+}

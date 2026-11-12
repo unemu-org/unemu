@@ -467,7 +467,7 @@ macro_rules! table {
         }
     };
 }
-table!(Board, [model, post_port, mouse], [rtc]);
+table!(Board, [model, post_port, mouse, display_switch], [rtc]);
 table!(Rtc, [start], [nvram]);
 table!(Cpu, [model, rate], []);
 table!(Memory, [conventional_kib, extended_kib], []);
@@ -1128,6 +1128,25 @@ mod tests {
             })
         );
     }
+    #[test]
+    fn board_display_switch_inherits_and_auto_resets_the_parent_override() {
+        for (child, expected) in [
+            ("", DisplaySwitch::Mono),
+            ("display_switch='colour'", DisplaySwitch::Colour),
+            ("display_switch='auto'", DisplaySwitch::Auto),
+        ] {
+            let resolved = merged(
+                "[board]\nmodel='ibm-5170'\ndisplay_switch='mono'\n",
+                &format!("[board]\n{child}\n"),
+            )
+            .unwrap();
+            assert_eq!(
+                resolved.document.board.unwrap().display_switch,
+                Some(expected)
+            );
+        }
+    }
+
     #[test]
     fn board_mouse_inherits_and_can_be_explicitly_disabled() {
         for (parent, child, expected) in [

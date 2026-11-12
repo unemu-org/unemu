@@ -291,8 +291,9 @@ fn assemble_with_cpu_and_catalogue(
                 }
             }
             DeviceKind::Keyboard(c) => {
-                let mut keyboard =
-                    I8042::new().with_board_lines(Rc::clone(&reset_signal), a20_line.clone());
+                let mut keyboard = I8042::new()
+                    .with_primary_display(config.primary_display()?.monochrome())
+                    .with_board_lines(Rc::clone(&reset_signal), a20_line.clone());
                 if c.mouse {
                     keyboard = keyboard.with_aux_device(Box::new(devices::Ps2Mouse::new()));
                 }
@@ -1030,21 +1031,24 @@ fn to_device_geometry(geometry: &FloppyGeometry) -> devices::FloppyGeometry {
 }
 
 /// Derive the CMOS seed the BIOS expects from the memory map and the attached
-/// drives (§7.6).
+/// drives and selected primary display (§7.6).
 ///
 /// The BIOS checksums floppy types, the equipment byte, and the base/extended
 /// memory sizes against the real machine, so these are computed here rather than
 /// supplied by the caller: base memory is the RAM below 640 KiB, extended memory
 /// is the RAM at or above 1 MiB, and the floppy nibbles and equipment byte come
-/// from the floppy drives on the primary controller (DeviceId::Fdc). Secondary
+/// from the primary display and floppy drives on the primary controller
+/// (DeviceId::Fdc). Secondary
 /// controllers have no entries in the AT CMOS diskette inventory. For a plain AT — 640 KiB base, one 1.44 MB
-/// floppy, no hard disk or coprocessor — this reproduces [`devices::CmosConfig::default`]
+/// floppy, no display, hard disk or coprocessor — this reproduces [`devices::CmosConfig::default`]
 /// byte-for-byte. The returned 64-byte seed includes extended disk types and
 /// the checksum; explicit NVRAM images bypass it during assembly.
 ///
 /// IBM Personal Computer AT Technical Reference (September 1985), System Board,
 /// Real-Time Clock/CMOS RAM Information: Fixed Disk Type Byte (Hex 12), Drive C/D
-/// Extended Bytes (Hex 19/1A), BIOS Fixed Disk Parameters, and Checksum (Hex 2E/2F).
+/// Extended Bytes (Hex 19/1A), BIOS Fixed Disk Parameters, Equipment Byte
+/// (Hex 14, bits 5–4), and Checksum (Hex 2E/2F). The March 1984 edition
+/// defines the 40/80-column colour and monochrome equipment codes.
 /// Only a hash-matched system BIOS with `cmos-drive-types` and `fixed-disk`
 /// enables these types. Any fixed-disk option ROM keeps them zero. Geometries
 /// outside the documented table are refused: this reference reserves type 47,
@@ -1118,9 +1122,9 @@ fn derive_cmos_layout_with_catalogue(
     }
 
     // Equipment byte (index 0x14): bit 0 = a floppy drive is installed; bits 6-7
-    // = floppy count minus one (00 = one drive, 01 = two). No coprocessor
-    // (bit 1) and EGA/VGA display (bits 4-5 = 00), matching the modelled machine.
-    let mut equipment = 0u8;
+    // = floppy count minus one (00 = one drive, 01 = two). The empty
+    // coprocessor socket leaves bit 1 clear.
+    let mut equipment = config.primary_display()?.cmos_video_bits();
     if floppy_count > 0 {
         equipment |= 0x01;
         equipment |= (floppy_count - 1).min(0x03) << 6;
@@ -1861,7 +1865,10 @@ mod tests {
             }
             assert_eq!(rtc_cfg.nvram, expected_nvram);
             if expected_nvram == crate::NvramSource::Derived {
-                legacy = legacy.with_config(devices::CmosConfig::default());
+                legacy = legacy.with_config(devices::CmosConfig {
+                    equipment: 0x31,
+                    ..devices::CmosConfig::default()
+                });
             }
             let mut assembled = assemble_synthetic(&config).unwrap();
             let index = assembled.device_index[&DeviceId::Rtc];
@@ -2178,6 +2185,7 @@ mod tests {
         MachineConfig {
             system_bios_image: None,
             board: BoardModel::Bare,
+            display_switch: crate::DisplaySwitch::Auto,
             cpu: CpuConfig {
                 chip: crate::cpu::CpuChip::I80286,
                 reset: ResetSpec::reset_vector(),
@@ -2617,16 +2625,15 @@ mod tests {
     }
 
     #[test]
-    fn derived_cmos_equals_default_for_the_freedos_machine() {
-        // The reference machine is a plain AT: 640 KiB base, one 1.44 MB floppy,
-        // no hard disk or coprocessor. Its derived CMOS must match the device's
-        // own default byte-for-byte, or a stock BIOS's equipment probe would see
-        // a self-inconsistent machine.
+    fn derived_cmos_reference_colour_text_matches_explicit_equipment() {
         let derived = derive_cmos_config(&reference_config()).unwrap();
-        let mut legacy = CmosRtc::new().with_config(devices::CmosConfig::default());
+        let mut expected_rtc = CmosRtc::new().with_config(devices::CmosConfig {
+            equipment: 0x21,
+            ..devices::CmosConfig::default()
+        });
         let expected: [u8; 64] = std::array::from_fn(|index| {
-            legacy.port_write(0x70, 1, index as u32).unwrap();
-            legacy.port_read(0x71, 1).unwrap() as u8
+            expected_rtc.port_write(0x70, 1, index as u32).unwrap();
+            expected_rtc.port_read(0x71, 1).unwrap() as u8
         });
         assert_eq!(derived[0x0A..], expected[0x0A..]);
     }
@@ -3121,6 +3128,7 @@ mod tests {
         let config = MachineConfig {
             system_bios_image: None,
             board: BoardModel::Bare,
+            display_switch: crate::DisplaySwitch::Auto,
             cpu: CpuConfig {
                 chip: crate::cpu::CpuChip::I80286,
                 reset: ResetSpec::Entry { cs: 0, ip: 0 },
@@ -3273,11 +3281,11 @@ mod tests {
         assert_eq!(config.validate(), Ok(()));
         let cmos = derive_cmos_config(&config).unwrap();
         assert_eq!(cmos[0x10], 0x20);
-        assert_eq!(cmos[0x14], 0x01);
+        assert_eq!(cmos[0x14], 0x21);
         config.drives.remove(0);
         let cmos = derive_cmos_config(&config).unwrap();
         assert_eq!(cmos[0x10], 0);
-        assert_eq!(cmos[0x14], 0);
+        assert_eq!(cmos[0x14], 0x20);
     }
 
     #[test]
@@ -3868,27 +3876,27 @@ mod tests {
         seed[0x0B] = 0x02;
         seed[0x0D] = 0x80;
         seed[0x10] = 0x40;
-        seed[0x14] = 0x01;
+        seed[0x14] = 0x31;
         seed[0x15..=0x16].copy_from_slice(&[0x80, 0x02]);
-        seed[0x2E..=0x2F].copy_from_slice(&[0x00, 0xC3]);
+        seed[0x2E..=0x2F].copy_from_slice(&[0x00, 0xF3]);
         seed
     }
 
     #[test]
     fn qemu_cmos_memory_seeds_are_byte_exact_through_four_gib_and_field_limits() {
         for (top, ext, above_16m, high_bytes, high, checksum) in [
-            (1 << 20, [0, 0], [0, 0], 0, [0, 0, 0], [0, 0xC3]),
-            (15 << 20, [0, 0x38], [0, 0], 0, [0, 0, 0], [0, 0xFB]),
-            (16 << 20, [0, 0x3C], [0, 0], 0, [0, 0, 0], [0, 0xFF]),
-            (64 << 20, [0, 0xFC], [0, 3], 0, [0, 0, 0], [1, 0xBF]),
-            (65 << 20, [0xFF, 0xFF], [0x10, 3], 0, [0, 0, 0], [2, 0xC1]),
+            (1 << 20, [0, 0], [0, 0], 0, [0, 0, 0], [0, 0xF3]),
+            (15 << 20, [0, 0x38], [0, 0], 0, [0, 0, 0], [1, 0x2B]),
+            (16 << 20, [0, 0x3C], [0, 0], 0, [0, 0, 0], [1, 0x2F]),
+            (64 << 20, [0, 0xFC], [0, 3], 0, [0, 0, 0], [1, 0xEF]),
+            (65 << 20, [0xFF, 0xFF], [0x10, 3], 0, [0, 0, 0], [2, 0xF1]),
             (
                 1 << 32,
                 [0xFF, 0xFF],
                 [0, 0xFF],
                 65536,
                 [1, 0, 0],
-                [2, 0xC1],
+                [2, 0xF1],
             ),
             (
                 1 << 32,
@@ -3896,7 +3904,7 @@ mod tests {
                 [0, 0xFF],
                 0xFF_FFFFu64 << 16,
                 [0xFF, 0xFF, 0xFF],
-                [2, 0xC1],
+                [2, 0xF1],
             ),
             (
                 1 << 32,
@@ -3904,7 +3912,7 @@ mod tests {
                 [0, 0xFF],
                 0x100_0000u64 << 16,
                 [0, 0, 0],
-                [2, 0xC1],
+                [2, 0xF1],
             ),
         ] {
             let mut config = qemu_cmos_config();
@@ -4039,7 +4047,7 @@ mod tests {
                 } else {
                     &[0, 4, 8, 0xFF, 0xFF, 0xC0, 0, 4, 63]
                 });
-                let checksum: u16 = if large { 0x0411 } else { 0x03FF };
+                let checksum: u16 = if large { 0x0441 } else { 0x042F };
                 let checksum = checksum + u16::from(disk_type);
                 expected[0x2E..=0x2F].copy_from_slice(&checksum.to_be_bytes());
             }

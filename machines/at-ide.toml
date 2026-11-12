@@ -5,6 +5,11 @@ extends = "at-freedos.toml"
 name = "at-ide"
 description = "PC/AT with XTIDE Universal BIOS, booting FreeDOS from A: with a readonly FAT16 C:"
 
+[board]
+# This BIOS reads the AT display switch with inverted polarity; in the colour
+# position it selects the monochrome adapter. Derived CMOS still declares colour.
+display_switch = "colour"
+
 [firmware.bios]
 image = "../vendor/kiselev-bios/bios-xi8088-atreset.bin"
 sha256 = "61589573c9809273198b137d9419c87242b0a5f63c2ad834a9565950c3d6becc"

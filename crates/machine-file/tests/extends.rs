@@ -349,10 +349,9 @@ fn preset_example_equals_freedos_without_fixtures() {
     let a = lower(&a, &oa, &mut reader).unwrap();
     let b = lower(&b, &ob, &mut reader).unwrap();
     assert_eq!(a, b);
-    assert_eq!(
-        b,
-        assembly::bios(vec![0xF4; 0x8000], Some(vec![0; 1_474_560]))
-    );
+    let mut expected = assembly::bios(vec![0xF4; 0x8000], Some(vec![0; 1_474_560]));
+    expected.display_switch = assembly::DisplaySwitch::Colour;
+    assert_eq!(b, expected);
 }
 
 #[test]

@@ -20,6 +20,8 @@ use crate::memory::MemoryConfig;
 pub struct MachineConfig {
     /// Motherboard identity and its wiring constraints.
     pub board: BoardModel,
+    /// Board display switch; auto derives the primary adapter from the cards.
+    pub display_switch: crate::DisplaySwitch,
     /// The CPU: modelled chip, reset entry, seeded segments.
     pub cpu: CpuConfig,
     /// The virtual clock: the deterministic step-to-PIT ratio.

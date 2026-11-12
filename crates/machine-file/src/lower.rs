@@ -695,6 +695,7 @@ impl<R: ImageReader> Context<'_, R> {
             FirmwareProvidesMismatch { image_index, .. } => {
                 vec![format!("{}.provides", self.image_label(*image_index))]
             }
+            DisplaySwitchUnavailable { .. } => vec!["board.display_switch".into()],
             ConflictingVgaCards => device_fields(&[DeviceId::Vga]),
             MultipleIdeChannels => device_fields(&[DeviceId::Ide]),
             DebugConsoleBoard | FwCfgBoard | Ibm5170RtcRam | SysCtrlPortABoard => {
@@ -1152,7 +1153,17 @@ pub(crate) fn lower_tracked<R: ImageReader>(
     {
         v1::CpuModel::I80286 => CpuChip::I80286,
     };
+    let display_switch = match document
+        .board
+        .as_ref()
+        .and_then(|board| board.display_switch)
+    {
+        None | Some(v1::DisplaySwitch::Auto) => assembly::DisplaySwitch::Auto,
+        Some(v1::DisplaySwitch::Mono) => assembly::DisplaySwitch::Mono,
+        Some(v1::DisplaySwitch::Colour) => assembly::DisplaySwitch::Colour,
+    };
     let config = MachineConfig {
+        display_switch,
         system_bios_image: Some(0),
         board,
         cpu: CpuConfig {

@@ -100,7 +100,9 @@ fn synthetic_machine() -> (MachineFile, Origins, Images, Vec<u8>, Vec<u8>) {
 fn synthetic_round_trip_equals_the_whole_rust_preset() {
     let (document, origins, mut images, rom, floppy) = synthetic_machine();
     let config = lower(&document, &origins, &mut images).unwrap();
-    assert_eq!(config, assembly::bios(rom, Some(floppy)));
+    let mut expected = assembly::bios(rom, Some(floppy));
+    expected.display_switch = assembly::DisplaySwitch::Colour;
+    assert_eq!(config, expected);
     assert_eq!(images.reads.len(), 2);
     assert!(images.files.is_empty());
     assert!(config

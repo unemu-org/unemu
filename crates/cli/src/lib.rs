@@ -743,6 +743,7 @@ fn bios_file_config(
         .iter()
         .find(|entry| entry.kind == assembly::FirmwareKind::SystemBios && entry.identifies(&bytes));
     let size = bytes.len() as u64;
+    config.display_switch = assembly::bios_display_switch(&bytes);
     config.images[0].source = assembly::ImageSource::Inline(bytes);
     if size > 0 && size.is_multiple_of(8192) && size <= 0x100000 {
         config.images[0].base = 0x100000 - size;
@@ -2248,6 +2249,57 @@ mod configuration_error_tests {
 #[cfg(test)]
 mod user_bios_tests {
     use super::*;
+
+    #[test]
+    fn bios_file_display_switch_follows_the_loaded_firmware() {
+        let directory = assembly::test_support::TempDir::new("cli-display-switch");
+        let path = directory.path().join("bios.bin");
+        let catalogue = assembly::BoardModel::Ibm5170.firmware_catalogue();
+        for image in [
+            "kiselev-bios/bios-xi8088.bin",
+            "kiselev-bios/bios-xi8088-atreset.bin",
+        ] {
+            let Some(bytes) = trace_fixtures::fixture(image) else {
+                return;
+            };
+            std::fs::write(&path, bytes).unwrap();
+            let config = bios_file_config(&path, catalogue).unwrap();
+            assert_eq!(config.display_switch, assembly::DisplaySwitch::Colour);
+            let mut assembled = assembly::assemble(&config).unwrap();
+            assembled
+                .machine
+                .bus_mut()
+                .port_write(0x64, 1, 0xC0)
+                .unwrap();
+            assert_eq!(
+                assembled.machine.bus_mut().port_read(0x60, 1).unwrap(),
+                0xA0
+            );
+            assert_eq!(
+                assembly::derive_cmos_config(&config).unwrap()[0x14] & 0x30,
+                0x20
+            );
+        }
+        std::fs::write(&path, vec![0xF4; 32768]).unwrap();
+        let config = bios_file_config(&path, catalogue).unwrap();
+        assert_eq!(config.display_switch, assembly::DisplaySwitch::Auto);
+        let mut assembled = assembly::assemble_with_options(
+            &config,
+            assembly::AssemblyOptions {
+                allow_unlisted_firmware: true,
+            },
+        )
+        .unwrap();
+        assembled
+            .machine
+            .bus_mut()
+            .port_write(0x64, 1, 0xC0)
+            .unwrap();
+        assert_eq!(
+            assembled.machine.bus_mut().port_read(0x60, 1).unwrap(),
+            0xE0
+        );
+    }
 
     #[test]
     fn preinterleaved_bios_file_uses_catalogue_placement_and_services() {

@@ -146,10 +146,9 @@ fn check_synthetic_twins(root: &Path) -> Result<(), String> {
             ));
         }
         if toml.file_stem().unwrap() == "at-freedos" {
-            assert_eq!(
-                b,
-                assembly::bios(vec![0xF4; 0x8000], Some(vec![0; 1_474_560]))
-            );
+            let mut expected = assembly::bios(vec![0xF4; 0x8000], Some(vec![0; 1_474_560]));
+            expected.display_switch = assembly::DisplaySwitch::Colour;
+            assert_eq!(b, expected);
         }
     }
     Ok(())

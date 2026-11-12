@@ -312,6 +312,25 @@ pub const KISELEV_XI8088_ATRESET: FirmwareEntry = FirmwareEntry {
     ..KISELEV_XI8088
 };
 
+/// Choose the board display switch once the system BIOS bytes are available.
+///
+/// The two pinned Kiselev Xi8088 builds interpret the AT display switch with
+/// inverted polarity, so Colour selects their MDA console. IBM Personal
+/// Computer AT Technical Reference, System Board, Keyboard Controller,
+/// "Input-Port Bit Definitions", defines the model's unchanged AT polarity.
+/// Other images retain Auto. See machine-config.md §Primary display.
+/// Both in-memory presets and file loaders use this policy after reading bytes.
+pub fn bios_display_switch(bytes: &[u8]) -> crate::DisplaySwitch {
+    if [KISELEV_XI8088, KISELEV_XI8088_ATRESET]
+        .iter()
+        .any(|entry| entry.identifies(bytes))
+    {
+        crate::DisplaySwitch::Colour
+    } else {
+        crate::DisplaySwitch::Auto
+    }
+}
+
 /// A hash accepted only through the explicit run option.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct UnlistedFirmware {

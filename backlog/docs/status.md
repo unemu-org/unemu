@@ -524,6 +524,20 @@ input levels. A low input may still have an ISR bit from an earlier INTA.
   IRQs and ICW1 LTIM remain unmodelled. See
   [scheduler interrupt contract](design/scheduler.md#pic-state-must-follow-cpu-acceptance).
 
+- **2026-11-12 — AT primary-display configuration:** board display selection now
+  derives the 8042 C0h input bit 6 and CMOS 14h video bits from the installed
+  cards. Auto prefers MDA, then colour; `board.display_switch` accepts
+  `auto`, `mono` or `colour`, with unavailable adapter classes rejected.
+  ROM-less colour derives 80-column colour; a video ROM at C0000h selects
+  own-BIOS configuration. No adapter retains CMOS 00 and the colour switch
+  as an explicit compatibility policy. Explicit NVRAM is not rewritten.
+  Kiselev profiles explicitly select colour: that BIOS interprets the AT switch
+  with inverted polarity and uses MDA there, while derived CMOS video bits stay
+  colour (10b). Other firmware retains automatic selection.
+  Synthetic isolation, assembly and TOML/YAML tests cover these paths. The
+  goldens did not change, and the user-firmware lane passed (supervisor-measured).
+  See [primary display](design/machine-config.md#primary-display).
+
 - **2026-11-11 — A20 / System Control Port A device side:** Bare rigs can
   opt into port 92h with versioned snapshots, latch readback and CPU reset on
   bit-0 0→1; readback remains set after CPU reset until cleared by a write or

@@ -60,6 +60,7 @@ concrete Rust device type (that stays behind the assembler, decision-7).
 ```
 MachineConfig {
     board:   BoardModel,         // motherboard constraints; class is derived
+    display_switch: DisplaySwitch, // board slide switch; Auto by default
     cpu:     CpuConfig,
     clock:   ClockConfig,
     memory:  MemoryConfig,
@@ -496,7 +497,8 @@ Floppies on another named controller do not contribute type nibbles or the
 equipment-byte drive count, even when their local unit is 0 or 1. This rule also
 applies to `Bare` rigs using the same CMOS derivation. A primary 1.2 MB unit 0
 and a secondary 720 KB unit 0 therefore derive `floppy_types = 0x20` and
-`equipment = 0x01`.
+`equipment & 0xC1 = 0x01`; video bits are derived separately from the
+primary display.
 
 `WriteMode::Volatile` replaces `write_protect = false`: guest writes modify only
 the mounted in-memory image. `WriteMode::ReadOnly` replaces `write_protect = true`
@@ -1110,7 +1112,8 @@ known — not inside the core. Built in task-30.
 this map, by id, so the hand-counted `*_INDEX` constants disappear entirely.
 
 **CMOS defaults to a derived configuration.** The assembler derives floppy
-types, equipment and memory sizes from the attached drives and memory map.
+types, equipment and memory sizes from the attached drives, selected primary
+display and memory map.
 IBM fixed-disk types additionally require the capable system BIOS provider
 described above. `derive_cmos_config` returns a fallible, complete 64-byte seed, including
 12h/19h/1Ah and the AT checksum at 2Eh/2Fh (sum of 10h–2Dh). An explicit NVRAM
@@ -1276,6 +1279,72 @@ Cards follow in file order; the BIOS preset's card order is `Mda`, `Vga`, `Uart`
 BIOS rig omits both DMA banks and the empty coprocessor socket, and keeps its undecoded, unwired FDC. Other Rust test-rig
 presets retain their existing order. The BIOS MMIO windows are sorted by base:
 `Mda` at `0xB0000`, then `Vga` at `0xB8000`.
+
+### Primary display
+
+`MachineConfig.display_switch` models the board slide switch, separately from
+`BoardModel` identity. `MachineConfig::primary_display()` derives one
+`PrimaryDisplay` from the installed adapters and this setting. Both the 8042
+input-port bit 6 and derived CMOS equipment byte 14h bits 5–4 consume that result.
+
+| Installed primary adapter | `PrimaryDisplay` | 8042 input bit 6 | CMOS 14h bits 5–4 |
+| --- | --- | --- | --- |
+| MDA | `Monochrome` | 1 | 11 |
+| ROM-less colour text (`vga-text`, or register VGA without a video ROM) | `Colour80` | 0 | 10 |
+| Colour adapter with a video option ROM at C0000h | `OwnBios` | 0 | 00 |
+| None | `None` | 0 | 00 |
+
+`Auto` selects MDA first, then colour, regardless of card order. `Mono` and
+`Colour` select an installed adapter of that class and fail validation if none exists;
+they are physical switch positions, not card ids. MDA plus `vga-text` is valid.
+MDA plus register VGA still fails the existing overlapping-decode checks.
+There is no CGA card model yet; its schema name remains reserved.
+
+No-adapter handling is an emulator policy: the AT equipment field has no
+"absent" encoding, so an empty machine retains 00 and the colour switch. This
+does not promise successful firmware POST without a display. Register VGA
+without a ROM uses the ROM-less 80-column configuration policy; its registers
+and font still need firmware initialization. A ROM at C0000h other than the
+system BIOS identifies the video ROM, consistently with the firmware video-ROM
+requirement. Disk ROMs elsewhere do not change the display classification.
+
+IBM Personal Computer AT Technical Reference (March 1984), System Board,
+Keyboard Controller, "Input-Port Bit Definitions" (p. 1-43), defines bit 6:
+set for monochrome, clear for colour. "Equipment Byte (Hex 14)"
+(pp. 1-51–1-52) defines 01 = 40-column colour, 10 = 80-column colour and
+11 = monochrome. The September 1985 edition, "Equipment Byte (Hex 14)"
+(p. 1-63), assigns 00 to an adapter with its own BIOS. No current card selects
+40-column configuration at assembly time.
+
+C0h returns A0h for colour or no adapter, E0h for monochrome; all other input
+straps are unchanged. D0h reads the separate output port and is unaffected.
+`I8042::with_primary_display(bool)` configures this input at construction.
+Reset retains the physical switch; snapshots contain mutable controller state
+only, so restoring retains the receiving board's configured switch.
+
+Only derived NVRAM incorporates the selected video bits and recalculates the
+existing AT checksum (sum of 10h–2Dh, stored big-endian at 2Eh/2Fh). Explicit
+NVRAM images, blank NVRAM and journal-backed NVRAM retain their contents;
+the user is responsible for matching their equipment byte to the switch/cards.
+
+The pinned Kiselev Xi8088 BIOS is a firmware compatibility exception: this BIOS
+reads the AT display switch with inverted polarity; in the colour position it
+selects the monochrome adapter (`at_kbc.inc`, display-type initialization).
+`presets::bios()` explicitly sets `DisplaySwitch::Colour` for either pinned
+Kiselev image, including the historical no-controller Bare POST rig.
+`assembly::bios_display_switch(bytes)` owns this catalogue-hash policy; both
+the preset and the CLI `--bios` loader call it after the ROM bytes are known.
+Other firmware keeps Auto. The four machine files using those
+images set `board.display_switch = "colour"` explicitly: `at-freedos.toml`,
+`at-freedos.yaml`, `at-freedos-from-preset.toml` and `at-ide.toml`.
+The firmware-neutral `machines/presets/ibm-5170.toml` retains Auto.
+
+The switch still names the primary display according to IBM: these Kiselev
+profiles derive colour equipment bits 10b in CMOS 14h (21h with their one
+floppy), even though that BIOS renders its console through MDA. The 8042 input
+is A0h. The model's IBM polarity and shared display derivation are unchanged.
+See [firmware-and-machine-classes.md §2.1](firmware-and-machine-classes.md#21-kiselev-xi-8088-configuration-in-detail-read-pinned-clone-src)
+for the firmware-specific interpretation.
 
 ### Display cards
 

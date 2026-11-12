@@ -12,6 +12,12 @@ use crate::device::DeviceId;
 /// test can assert the exact failure a malformed config produces.
 #[derive(Clone, Debug, PartialEq, Eq, Error)]
 pub enum ConfigError {
+    /// A forced board switch position needs a matching installed adapter.
+    #[error("display switch {switch} requires an installed {}", .switch.required_card_class())]
+    DisplaySwitchUnavailable {
+        /// Requested physical switch position.
+        switch: crate::DisplaySwitch,
+    },
     /// Auxiliary mice require the board's keyboard controller and slave PIC.
     #[error("PS/2 mouse: {reason}")]
     UnsupportedMouse {
