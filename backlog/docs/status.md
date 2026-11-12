@@ -261,7 +261,7 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   synthetic fast tests keep their presets.
 - **Machines are declarative.** A `MachineConfig` (the `assembly` crate) is built by one
   `assemble()` and run under a `RunPolicy`; presets replace the old hand-written runners.
-- **CPU pin:** `8bad85dfef033ecedadc51e3e0addf09a145430e` (x86jit `main`).
+- **CPU pin:** `fd6792777ea864745a776ccdd3279a2fa9dd4bff` (x86jit `main`).
   READ: real-mode I286/I386 machine execution now accepts the Application Real16
   instruction set, including AAD/AAM, BCD/SALC, x87 with MSW.EM/TS checks and
   resumable REP INS/OUTS. I286 rejects 386-only 66h/67h forms with #UD.
@@ -279,7 +279,9 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   `set_cpu_model(I80286)` fixes the VM model and defaults to InGuest delivery:
   real exceptions use the IVT; CPL-0 protected interrupts, exceptions, IRQs,
   TF and IRET use the IDT. LDT selectors and descriptor-query instructions are
-  available; tasks, privilege transitions and V86 remain unsupported. Explicit
+  available. READ: `xj-srh.18 (x86jit)` adds CPL-0 hardware task switches
+  (TSS/task-gate JMP/CALL, IRET with NT, IDT task gates), busy bits and MSW.TS
+  under `decision-24 (x86jit)`; privilege transitions and V86 remain unsupported. Explicit
   outward faults retain typed vector/error-code/CS:IP diagnostics. A fault
   during #DF delivery requests the same CPU-only reset as the 8042, retaining
   RAM, CMOS, the A20 latch, devices and accounting. The standalone Real16 constructor
@@ -525,6 +527,40 @@ PIC snapshots now use version 3 and reject pending IRR bits on low inputs
 atomically; version 2 is rejected because it allowed requests to outlive their
 input levels. A low input may still have an ISR bit from an earlier INTA.
 
+## Empty 80287 socket integration (2026-11-12)
+
+ibm-5170 has an empty 80287 socket by default (maintainer decision 2026-11-12);
+the core reports no coprocessor (x86jit decision-25).
+The pin is `fd6792777ea864745a776ccdd3279a2fa9dd4bff`. The choice is carried by
+`cpu.fpu = "none"` (default) or `"80287"`, and derived CMOS 14h combines the
+selected display bits with coprocessor bit 1 and the drive inventory. Explicit
+NVRAM images retain their contents.
+
+**MEASURED:** the synthetic machine-file guest reads FFFFh from FNSTCW and
+FNSTSW m16/AX with no FPU, completes WAIT and reaches HLT. Selecting `"80287"`
+keeps the generic present engine, with control word 037Fh and CMOS bit 1 set.
+The isolated RTC test checks MDA equipment bytes 31h/33h, colour bytes 21h/23h
+and the AT checksum.
+
+**MEASURED:** a paired Kiselev BIOS floppy run with Present and None reaches
+the normal 20,000,000-step boundary with byte-identical raw screens. The exact
+coprocessor report is unchanged:
+
+- `Mathematics Co-processor:   Absent` -> `Mathematics Co-processor:   Absent`.
+
+**READ:** this BIOS first compares the stored control word with 03FFh;
+the generic Present engine returns 037Fh, so it already takes the absent branch.
+The empty socket's FFFFh takes that same branch. This observation does not
+qualify generation-specific 80287 behaviour or the board's FERR#/IRQ13 wiring.
+`decision-24 (x86jit)` / `xj-srh.18 (x86jit)` additionally provide CPL-0 task
+switches; that core capability is source-inspected, not a new guest-OS claim.
+
+**MEASURED final validation:** 1,911 fast tests, 694 release device tests and
+22 slow tests passed. Build, Clippy, formatting, publication guard and rustdoc
+with warnings denied passed. All existing golden text/logical hashes,
+retired/virtual counts, POST streams and cursor expectations remain unchanged;
+no golden re-baseline was needed.
+
 ## In flight
 
 - **2026-11-12 — Device IRQ levels and PIC withdrawal:** the machine forwards
@@ -632,13 +668,17 @@ wall-time comparison and historical CPU sample shares.
 
 ## Broken / known defects
 
-- **An empty 80287 socket is modelled on the I/O bus only.** Its assigned ports
-  read FFh and ignore writes, with IRQ13 inactive. The pinned CPU core still
-  selects a present FPU in I286, with FPU emulation disabled. The legacy lifter
-  now supports x87 and resumable string port I/O, resolving the former
-  FNINIT/REP INSB refusal. FNINIT/FNSTCW stores 037Fh with the present model.
-  The core provides
-  `Vcpu::set_fpu_model(FpuModel::None)`; empty-socket CPU selection is deferred.
+- **Coprocessor error/control wiring remains unimplemented.**
+  `ibm-5170` now defaults to no coprocessor; machine files can select
+  `cpu.fpu = "none"` or `"80287"`. Derived CMOS 14h bit 1 follows the choice,
+  with its checksum updated; explicit NVRAM images are preserved. Bare rigs
+  retain their present FPU. Under `decision-25 (x86jit)`, the I286 `None`
+  policy accepts FNINIT and WAIT, returns FFFFh for FNSTCW m16 and FNSTSW
+  m16/AX, and preserves other output destinations, subject to EM/TS/MP #NM
+  controls. The `"80287"`
+  option uses `Present`, with no generation-specific fidelity claim, and
+  FNINIT/FNSTCW stores 037Fh. Socket ports still read FFh and ignore writes;
+  FERR#/IRQ13 and F0h/F1h control wiring remain unimplemented.
 
 - Multi-byte scalar accesses crossing a RAM/MMIO boundary in either direction
   ended the run with `Exit::UnmappedMemory` in historical x86jit

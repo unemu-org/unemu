@@ -130,6 +130,20 @@ impl From<SegmentSeed> for RealSegments {
     }
 }
 
+/// Optional math coprocessor for an IBM PC/AT.
+///
+/// IBM Personal Computer AT Technical Reference, Section 2, Coprocessor:
+/// the 80287 occupies an optional socket. See
+/// `backlog/docs/design/machine-config.md` §CPU model selection.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
+pub enum FpuChip {
+    /// Empty socket (the board default).
+    #[default]
+    None,
+    /// Installed 80287, using the core's existing present x87 engine.
+    I80287,
+}
+
 /// The CPU section of a [`crate::MachineConfig`] (§2).
 ///
 /// An execution model, a reset entry, and the seeded segments;
@@ -138,6 +152,9 @@ impl From<SegmentSeed> for RealSegments {
 pub struct CpuConfig {
     /// The modelled processor and its execution semantics.
     pub chip: CpuChip,
+    /// Optional coprocessor on IBM PC/AT boards. Bare rigs retain their
+    /// constructor's existing FPU behaviour regardless of this field.
+    pub fpu: FpuChip,
     /// Where execution begins after reset.
     pub reset: ResetSpec,
     /// The real-mode data segments and stack the guest starts with.

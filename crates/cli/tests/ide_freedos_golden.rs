@@ -18,7 +18,7 @@
 //! See `backlog/docs/design/firmware-and-machine-classes.md` §9 and
 //! `backlog/docs/design/spec.md` §7.5 for the keyboard input path.
 //! Firmware and media are pinned by machines/at-ide.toml; the CPU revision is
-//! pinned at 8bad85dfef033ecedadc51e3e0addf09a145430e in Cargo.lock.
+//! pinned at fd6792777ea864745a776ccdd3279a2fa9dd4bff in Cargo.lock.
 //! Prompt polls use the existing DOS session cadence.
 
 use assembly::{
@@ -52,7 +52,7 @@ fn screen_hash(text: &str) -> u64 {
 #[ignore = "slow: BIOS POST, XTIDE detection and an interactive FreeDOS DIR C: session"]
 fn freedos_lists_the_readonly_ide_marker() {
     assert!(
-        include_str!("../../../Cargo.lock").contains("#8bad85dfef033ecedadc51e3e0addf09a145430e")
+        include_str!("../../../Cargo.lock").contains("#fd6792777ea864745a776ccdd3279a2fa9dd4bff")
     );
     for path in [
         "kiselev-bios/bios-xi8088-atreset.bin",

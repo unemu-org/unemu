@@ -24,7 +24,7 @@ Evidence vocabulary throughout:
 - **ASSUMED:** a proposed scope choice or inference requiring later acceptance
   tests. In particular, no complete DOS extender was run.
 
-The current CPU pin is `8bad85dfef033ecedadc51e3e0addf09a145430e`.
+The current CPU pin is `fd6792777ea864745a776ccdd3279a2fa9dd4bff`.
 `Vm::set_cpu_model(CpuModel::I80286)` selects the machine profile on
 `ibm-5170`, fixes the model for the VM lifetime and defaults to
 `ExceptionDelivery::InGuest`. The separate I80386 core model is not selected
@@ -36,8 +36,11 @@ and trap gates deliver INT n, INT 3, INTO, BOUND, exceptions, IRQs and
 single-step through the IDT; IRET returns at CPL 0. Fault escalation reaches
 #DF and `Exit::Shutdown` if delivery of #DF faults. LLDT/SLDT, LDT selectors,
 LAR/LSL/VERR/VERW, ARPL and LTR/STR are available, with atomic descriptor
-busy/accessed-bit writes; descriptor tables must reside in RAM. Task gates,
-privilege transitions, V86 and paging remain outside this machine's scope.
+busy/accessed-bit writes; descriptor tables must reside in RAM. CPL-0 hardware
+task switches (far JMP/CALL to a TSS or task gate, IRET
+with NT, and IDT task gates), busy bits and MSW.TS are supported by
+`xj-srh.18 (x86jit)` under `decision-24 (x86jit)` (READ). Privilege
+transitions, V86 and paging remain outside this machine's scope.
 Real-mode exceptions (#DE, #UD, CS fetch/word limit faults, BOUND and INTO)
 are delivered through the IVT. Real-mode TF delivers vector 1 after the
 successor of a TF-setting POPF/IRET; only SS loads inhibit one instruction.
@@ -54,12 +57,20 @@ protocol as the 8042: RAM, CMOS shutdown byte, A20 latch, device state and
 instruction/time counters survive. READ: IBM Personal Computer AT Technical
 Reference, System Board, Logic Diagrams (shutdown/reset decoding) and Keyboard
 Controller Output Port (processor reset). Pulse timing is not modelled.
-FPU selection remains explicitly `Present`, with emulation disabled. READ:
+The `ibm-5170` FPU defaults to `None`; `cpu.fpu = "80287"` selects `Present`,
+with emulation disabled. Bare rigs keep their present-FPU behaviour. READ:
 the current core supports the Application Real16 instruction set in legacy
 real mode, including AAD/AAM immediate bases, BCD/SALC, x87 under MSW.EM/TS
 checks and resumable REP INS/OUTS. This resolves the AAD, FNINIT and REP INSB
 refusals measured during initial integration at `a92b676`. FNINIT/FNSTCW
-stores 037Fh with the present model. Empty-socket CPU policy is separate work.
+stores 037Fh with the present model. Under `decision-25 (x86jit)`, absent
+I286 FNSTCW m16 and FNSTSW m16/AX return FFFFh, other output stores preserve
+memory and WAIT completes, subject to the ordinary EM/TS/MP #NM gates.
+I386 absent outputs retain refusal. Intel 80286 and 80287 Programmer's
+Reference Manual, Part I Appendix A and Part II Appendix B, item 10, ground
+the chosen all-high bus default; it is not a universal electrical value.
+Derived CMOS equipment bit 1 follows the selected FPU; explicit images do not.
+See [machine configuration](machine-config.md#cpu-model-selection).
 The deliberate generation differences remain: I286 rejects 386-only 66h/67h
 forms with #UD, and legacy follows the architectural operand/stack rules.
 Synthetic tests exercise real-mode compatibility, protected entry, outward

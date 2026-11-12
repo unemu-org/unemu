@@ -1168,6 +1168,10 @@ pub(crate) fn lower_tracked<R: ImageReader>(
         board,
         cpu: CpuConfig {
             chip,
+            fpu: match document.cpu.as_ref().and_then(|cpu| cpu.fpu) {
+                None | Some(v1::FpuModel::None) => assembly::FpuChip::None,
+                Some(v1::FpuModel::I80287) => assembly::FpuChip::I80287,
+            },
             reset: ResetSpec::reset_vector(),
             segments: SegmentSeed::flat(0xF000),
         },

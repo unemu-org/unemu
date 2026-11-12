@@ -8,9 +8,9 @@ use std::{
     sync::atomic::{AtomicUsize, Ordering},
 };
 
-// Architectural exceptions enter the guest; task return remains a host refusal.
-const REFUSED_TASK_RETURN: &[u8] = &[
-    0xFA, 0xB8, 1, 0, 0x0F, 0x01, 0xF0, 0x68, 2, 0x40, 0x9D, 0xCF,
+// A privilege-changing return keeps the failure path independent of task switching.
+const REFUSED_PRIVILEGE_RETURN: &[u8] = &[
+    0xFA, 0x31, 0xC0, 0x8E, 0xD0, 0x6A, 0x0B, 0x6A, 0, 0xB0, 1, 0x0F, 1, 0xF0, 0xCB,
 ];
 
 struct Files(PathBuf);
@@ -59,7 +59,7 @@ fn stderr(output: &Output) -> &str {
 #[test]
 fn machine_check_has_valid_invalid_and_usage_exit_codes() {
     // Executing this ROM would fail; check must assemble without executing it.
-    let files = Files::new(REFUSED_TASK_RETURN);
+    let files = Files::new(REFUSED_PRIVILEGE_RETURN);
     let accepted = command(
         &["machine", "check"],
         &files.machine(),
@@ -161,7 +161,7 @@ fn run_prints_text_and_reports_budget_and_execution_failure() {
     assert_eq!(capped.status.code(), Some(0), "{capped:?}");
     assert!(stderr(&capped).ends_with("stopped: budget exhausted\n"));
     let mut rom = vec![0; 32768];
-    rom[0x7FF0..0x7FF0 + REFUSED_TASK_RETURN.len()].copy_from_slice(REFUSED_TASK_RETURN);
+    rom[0x7FF0..0x7FF0 + REFUSED_PRIVILEGE_RETURN.len()].copy_from_slice(REFUSED_PRIVILEGE_RETURN);
     files.write("bios.bin", rom);
     let failed = command(
         &["run", "--machine"],
@@ -170,7 +170,7 @@ fn run_prints_text_and_reports_budget_and_execution_failure() {
     );
     assert_eq!(failed.status.code(), Some(1), "{failed:?}");
     assert!(stderr(&failed).contains(
-        "stopped: unsupported instruction: unsupported cpu system operation LegacyTaskReturn"
+        "stopped: unsupported instruction: unsupported cpu system operation LegacyPrivilegeTransition"
     ));
 }
 
@@ -225,7 +225,7 @@ fn journal_run(fail: bool) {
         out(&mut program, 0x3F5, value);
     }
     if fail {
-        program.extend_from_slice(REFUSED_TASK_RETURN);
+        program.extend_from_slice(REFUSED_PRIVILEGE_RETURN);
     } else {
         program.push(0xF4);
     }
@@ -250,7 +250,7 @@ fn journal_run(fail: bool) {
     assert_eq!(run.status.code(), Some(i32::from(fail)), "{run:?}");
     if fail {
         assert!(stderr(&run).contains(
-            "stopped: unsupported instruction: unsupported cpu system operation LegacyTaskReturn"
+            "stopped: unsupported instruction: unsupported cpu system operation LegacyPrivilegeTransition"
         ));
     }
     let verify = Command::new(env!("CARGO_BIN_EXE_unemupc98"))

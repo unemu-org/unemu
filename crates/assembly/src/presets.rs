@@ -275,6 +275,7 @@ fn at_demo(blob: Vec<u8>, devices: Vec<DeviceConfig>) -> MachineConfig {
         board: BoardModel::Bare,
         display_switch: crate::DisplaySwitch::Auto,
         cpu: CpuConfig {
+            fpu: crate::FpuChip::None,
             chip: CpuChip::I80286,
             reset: ResetSpec::Entry {
                 cs: DEMO_CS,
@@ -350,6 +351,7 @@ pub fn at_fdc_write(program: Vec<u8>, pattern: Vec<u8>, pattern_base: u64) -> Ma
         board: BoardModel::Bare,
         display_switch: crate::DisplaySwitch::Auto,
         cpu: CpuConfig {
+            fpu: crate::FpuChip::None,
             chip: CpuChip::I80286,
             reset: ResetSpec::Entry {
                 cs: DEMO_CS,
@@ -391,6 +393,7 @@ pub fn at_vga_text(blob: Vec<u8>) -> MachineConfig {
         board: BoardModel::Bare,
         display_switch: crate::DisplaySwitch::Auto,
         cpu: CpuConfig {
+            fpu: crate::FpuChip::None,
             chip: CpuChip::I80286,
             reset: ResetSpec::Entry {
                 cs: DEMO_CS,
@@ -436,6 +439,7 @@ pub fn test386(image: Vec<u8>) -> MachineConfig {
         board: BoardModel::Bare,
         display_switch: crate::DisplaySwitch::Auto,
         cpu: CpuConfig {
+            fpu: crate::FpuChip::None,
             chip: CpuChip::I80286,
             reset: ResetSpec::Entry {
                 cs: RESET_CS,
@@ -483,6 +487,7 @@ pub fn floppy_boot(loader: Vec<u8>, floppy: Vec<u8>) -> MachineConfig {
         board: BoardModel::Bare,
         display_switch: crate::DisplaySwitch::Auto,
         cpu: CpuConfig {
+            fpu: crate::FpuChip::None,
             chip: CpuChip::I80286,
             reset: ResetSpec::Entry {
                 cs: DEMO_CS,
@@ -580,6 +585,7 @@ pub fn bios(rom: Vec<u8>, floppy: Option<Vec<u8>>) -> MachineConfig {
         board,
         display_switch,
         cpu: CpuConfig {
+            fpu: crate::FpuChip::None,
             chip: CpuChip::I80286,
             reset: ResetSpec::ResetVector {
                 cs: RESET_CS,

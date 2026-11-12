@@ -60,6 +60,26 @@ named_values! {
     }
 }
 
+/// Optional IBM PC/AT coprocessor; an omitted field selects an empty socket.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FpuModel {
+    None,
+    I80287,
+}
+
+impl<'de> Deserialize<'de> for FpuModel {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let name = String::deserialize(deserializer)?;
+        match name.as_str() {
+            "none" => Ok(Self::None),
+            "80287" => Ok(Self::I80287),
+            _ => Err(de::Error::custom(format!(
+                "unsupported cpu.fpu `{name}`; allowed values: `none`, `80287`"
+            ))),
+        }
+    }
+}
+
 named_values! {
     /// CPU model names; instruction-set and board compatibility are separate.
     CpuModel, "cpu model" { I80286 => "80286" } reserved {
@@ -379,7 +399,6 @@ reserved_field! {
     reject_dip_switches => "XT DIP switches need an XT motherboard model",
     reject_chipset => "chipset register overrides need a chipset model",
     reject_speaker => "a speaker model is not implemented",
-    reject_fpu => "selectable 8087, 80287 or 80387 coprocessor models are not implemented",
     reject_turbo => "runtime CPU rate switching is not implemented",
     reject_shadow => "ROM shadowing is not modelled",
     reject_umb => "upper-memory block configuration is not implemented",

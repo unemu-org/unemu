@@ -526,11 +526,12 @@ fn build_cpu_with_mapping_trace(
         crate::BoardModel::Bare => config.memory.address_space_bytes,
     };
     let mut cpu = match (config.board, config.cpu.chip) {
-        (crate::BoardModel::Ibm5170, crate::CpuChip::I80286) => X86JitCpu::new_i286_bare(
+        (crate::BoardModel::Ibm5170, crate::CpuChip::I80286) => X86JitCpu::new_i286_bare_with_fpu(
             physical_end,
             config.cpu.reset.cs(),
             config.cpu.reset.ip(),
             config.cpu.segments.into(),
+            config.cpu.fpu == crate::FpuChip::I80287,
         )?,
         (crate::BoardModel::Bare, crate::CpuChip::I80286) => X86JitCpu::new_real16_bare(
             physical_end,
@@ -1056,8 +1057,9 @@ fn to_device_geometry(geometry: &FloppyGeometry) -> devices::FloppyGeometry {
 /// IBM Personal Computer AT Technical Reference (September 1985), System Board,
 /// Real-Time Clock/CMOS RAM Information: Fixed Disk Type Byte (Hex 12), Drive C/D
 /// Extended Bytes (Hex 19/1A), BIOS Fixed Disk Parameters, Equipment Byte
-/// (Hex 14, bits 5–4), and Checksum (Hex 2E/2F). The March 1984 edition
-/// defines the 40/80-column colour and monochrome equipment codes.
+/// (Hex 14, bits 5–4: display, bit 1: math coprocessor installed), and
+/// Checksum (Hex 2E/2F). The March 1984 edition defines the 40/80-column
+/// colour and monochrome equipment codes.
 /// Only a hash-matched system BIOS with `cmos-drive-types` and `fixed-disk`
 /// enables these types. Any fixed-disk option ROM keeps them zero. Geometries
 /// outside the documented table are refused: this reference reserves type 47,
@@ -1130,10 +1132,10 @@ fn derive_cmos_layout_with_catalogue(
         }
     }
 
-    // Equipment byte (index 0x14): bit 0 = a floppy drive is installed; bits 6-7
-    // = floppy count minus one (00 = one drive, 01 = two). The empty
-    // coprocessor socket leaves bit 1 clear.
     let mut equipment = config.primary_display()?.cmos_video_bits();
+    if config.board == crate::BoardModel::Ibm5170 && config.cpu.fpu == crate::FpuChip::I80287 {
+        equipment |= 0x02;
+    }
     if floppy_count > 0 {
         equipment |= 0x01;
         equipment |= (floppy_count - 1).min(0x03) << 6;
@@ -2196,6 +2198,7 @@ mod tests {
             board: BoardModel::Bare,
             display_switch: crate::DisplaySwitch::Auto,
             cpu: CpuConfig {
+                fpu: crate::FpuChip::None,
                 chip: crate::cpu::CpuChip::I80286,
                 reset: ResetSpec::reset_vector(),
                 segments: SegmentSeed::flat(0xF000),
@@ -3139,6 +3142,7 @@ mod tests {
             board: BoardModel::Bare,
             display_switch: crate::DisplaySwitch::Auto,
             cpu: CpuConfig {
+                fpu: crate::FpuChip::None,
                 chip: crate::cpu::CpuChip::I80286,
                 reset: ResetSpec::Entry { cs: 0, ip: 0 },
                 segments: SegmentSeed::flat(0),

@@ -102,17 +102,46 @@ impl X86JitCpu {
     /// It enforces 286 instruction and segment limits. See
     /// `backlog/docs/design/protected-mode-gaps.md` §Context.
     /// The address space must include any reset ROM at physical FFFFF0h.
+    /// Retains a present FPU for standalone compatibility rigs; board assembly
+    /// selects its socket policy through [`Self::new_i286_bare_with_fpu`].
     pub fn new_i286_bare(
         space_bytes: u64,
         cs: u16,
         ip: u16,
         segments: RealSegments,
     ) -> Result<Self, CpuError> {
+        Self::new_i286_bare_with_fpu(space_bytes, cs, ip, segments, true)
+    }
+
+    /// Build the 80286 machine profile with an optional coprocessor.
+    ///
+    /// IBM Personal Computer AT Technical Reference, Section 2, Coprocessor:
+    /// the 80287 is optional. The core's present model supplies its existing
+    /// x87 engine without claiming generation-specific 80287 behaviour.
+    /// Intel 80286 and 80287 Programmer's Reference Manual, Part I Appendix A
+    /// and Part II Appendix B, item 10: an empty socket supplies an all-high
+    /// status/control word under the core's board policy. See
+    /// `backlog/docs/design/machine-config.md` §CPU model selection.
+    pub fn new_i286_bare_with_fpu(
+        space_bytes: u64,
+        cs: u16,
+        ip: u16,
+        segments: RealSegments,
+        fpu_present: bool,
+    ) -> Result<Self, CpuError> {
+        let fpu = if fpu_present {
+            FpuModel::Present
+        } else {
+            FpuModel::None
+        };
         let mut vm = Vm::new(VmConfig::flat(space_bytes));
         vm.set_cpu_model(CpuModel::I80286);
-        vm.set_fpu_model(FpuModel::Present);
+        vm.set_fpu_model(fpu);
         let mut cpu = vm.new_vcpu();
         cpu.cpu = CpuState::legacy_real_entry([cs, segments.ds, segments.es, segments.ss, 0, 0]);
+        // Installing the real-mode entry replaces the FPU policy inherited
+        // from the VM, so restore the board's choice on the vCPU as well.
+        cpu.set_fpu_model(fpu);
         cpu.cpu.legacy.cr0 = 0xFFF0;
         cpu.set_reg(Reg::Rsp, u64::from(segments.sp));
         cpu.set_reg(Reg::Rip, u64::from(ip));
@@ -558,6 +587,27 @@ mod tests {
         assert_eq!(cpu.reg(CpuReg::Rsp), u64::from(RealSegments::DEFAULT_SP));
         assert_eq!(cpu.completed_steps(), 54);
         assert_eq!(cpu.retired(), 54);
+    }
+
+    #[test]
+    fn i286_optional_fpu_policy_survives_entry_and_reset() {
+        for (present, expected) in [(false, FpuModel::None), (true, FpuModel::Present)] {
+            let mut cpu = X86JitCpu::new_i286_bare_with_fpu(
+                0x100_0000,
+                0,
+                0x1000,
+                RealSegments::flat(0),
+                present,
+            )
+            .unwrap();
+            assert_eq!(cpu.vm.fpu_model(), expected);
+            assert_eq!(cpu.cpu.fpu_model(), expected);
+            assert!(!cpu.cpu.cpu.fpu_emulation);
+            cpu.reset().unwrap();
+            assert_eq!(cpu.vm.fpu_model(), expected);
+            assert_eq!(cpu.cpu.fpu_model(), expected);
+            assert!(!cpu.cpu.cpu.fpu_emulation);
+        }
     }
 
     #[test]

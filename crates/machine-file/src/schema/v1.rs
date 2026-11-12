@@ -83,7 +83,7 @@ timed_table! {
     pub struct Cpu {
         pub model: Option<CpuModel>,
         pub rate: Option<CpuRate>,
-        #[serde(default, deserialize_with = "values::reject_fpu")] fpu: Option<Reserved>,
+        pub fpu: Option<FpuModel>,
         #[serde(default, deserialize_with = "values::reject_turbo")] turbo: Option<Reserved>,
     }
 }

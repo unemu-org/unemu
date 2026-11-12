@@ -39,11 +39,11 @@ sha2 = "0.10"
 winit = "0.30"
 cpal = "=0.18.2"
 softbuffer = { version = "0.4", default-features = false, features = ["x11", "x11-dlopen", "wayland", "wayland-dlopen"] }
-# CPU core: I286 machine exception delivery and shutdown, pinned to x86jit main. Every build (and every
-# golden trace) runs against a known CPU. Not a bare path dependency — that breaks
+# CPU core: I286 empty-socket FPU policy and hardware task switches, pinned to x86jit main.
+# Every build and golden trace runs against a known CPU. A bare path dependency breaks
 # nix build and CI. To develop against a local x86jit checkout, add a gitignored
 # [patch] override instead of editing this line.
-x86jit-core = { version = "0.3", git = "https://git.lab.mikolajczyk.org/unemu-org/x86jit", rev = "8bad85dfef033ecedadc51e3e0addf09a145430e" }
+x86jit-core = { version = "0.3", git = "https://git.lab.mikolajczyk.org/unemu-org/x86jit", rev = "fd6792777ea864745a776ccdd3279a2fa9dd4bff" }
 
 # Internal crates share the workspace version.
 assembly = { path = "crates/assembly", version = "0.1.0" }

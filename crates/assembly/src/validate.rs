@@ -2259,6 +2259,7 @@ mod tests {
             board: BoardModel::Bare,
             display_switch: crate::DisplaySwitch::Auto,
             cpu: CpuConfig {
+                fpu: crate::FpuChip::None,
                 chip: CpuChip::I80286,
                 reset: ResetSpec::reset_vector(),
                 segments: SegmentSeed::flat(0xF000),

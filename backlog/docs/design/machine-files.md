@@ -351,6 +351,7 @@ format, recovery diagnostics, host failures and offline tools follow
 | Field | Type | Default | v1 | Lowers to |
 |---|---|---|---|---|
 | `model` | string | from the board (`"80286"` on `ibm-5170`) | `"80286"` | `CpuConfig.chip` |
+| `fpu` | string | `"none"` | `"none"` or `"80287"` on `ibm-5170` | `CpuConfig.fpu`; derived CMOS 14h bit 1 follows the choice |
 | `rate` | `"A/B"` string or a positive integer `A` | board default (`"8/13"` on `ibm-5170`) | yes | `ClockConfig` A/B. Both parts must be positive. It is a ratio of completed steps per PIT input clock, not a frequency. |
 
 An omitted `rate` comes from `BoardModel::default_clock` in
@@ -361,7 +362,17 @@ An explicit rate overrides that board default.
 
 `model = "8088"` is rejected: "cpu model 8088 needs an 8088 instruction model,
 which the CPU core does not have". A model that does not match the board is
-rejected. `fpu` and `turbo` are reserved.
+rejected. `turbo` is reserved. `fpu = "none"` leaves the optional 80287 socket
+empty; `fpu = "80287"` selects the core's existing present x87 engine, which
+does not claim generation-specific 80287 fidelity. Other names receive a typed
+`ParseError` with the exact message ``unsupported cpu.fpu `80387`; allowed values: `none`, `80287` ``
+(substituting the rejected name). TOML and YAML share this enum and diagnostic.
+Explicit NVRAM images are preserved, even if their equipment bit disagrees.
+On the I286 machine profile, an empty socket returns FFFFh for FNSTCW m16
+and FNSTSW m16/AX, completing BIOS presence probes; other output stores
+leave memory unchanged and WAIT completes (`decision-25 (x86jit)`).
+EM/TS/MP retain the architectural #NM controls. FERR#/IRQ13 and F0h/F1h
+coprocessor control wiring remain unimplemented.
 
 ### `[memory]`
 
@@ -730,7 +741,7 @@ Further evidence:
   lowercase literals. The crate has its own `Spanned<T>`.
 - **`serde-saphyr` risks (READ):**
   - **MSRV.** Releases from 1.2.0 (2026-08-30) on declare rust-version 1.89.
-    The workspace declares Rust 1.99, pins x86jit `8bad85d` (rust-version
+    The workspace declares Rust 1.99, pins x86jit `fd67927` (rust-version
     1.95, inherited by `x86jit-core` from its workspace; READ), and the Nix
     devShell provides rustc 1.99.1 (MEASURED), so the YAML
     dependency's 1.89 minimum is satisfied. The original investigation used
@@ -1365,7 +1376,7 @@ spike owns the board-model and firmware entries.
 | `[board]` | `a20 = "kbc" \| "port-92" \| "both"`, `kbc = "at" \| "ps2"`, `keyboard = "xt-83" \| "at-84" \| "mf2-101"`, `keyboard_layout`, `dip_switches` (XT), `chipset` (a table of chipset registers), `speaker` |
 | `[board.rtc]` | `start = "host"` (rejected: this is the run option `--rtc-start host`) |
 | `[cpu] model` | `8086`, `8088`, `v20`, `80386sx`, `80386dx`, `80486`, `pentium`, `pentium-ii`, `pentium-iii` |
-| `[cpu]` | `fpu = "none" \| "8087" \| "80287" \| "80387"`, `turbo = { rate, initial = "on" \| "off" }` |
+| `[cpu]` | `turbo = { rate, initial = "on" \| "off" }` |
 | `[memory]` | `shadow`, `umb`, `upper = "ram" \| "open-bus"` |
 | `[firmware]` | `basic = { image, base }` (ROM BASIC); `provides` values `video`, `serial`, `network-boot` |
 | `[[card]] kind`, video | `hercules`, `cga`, `ega`, `svga-et4000`, `svga-s3-trio64`, `voodoo`, `voodoo2`, `banshee` |
@@ -1382,7 +1393,7 @@ spike owns the board-model and firmware entries.
 
 1. **MSRV — resolved.** `serde-saphyr` 2.1.1 needs rustc 1.89; the workspace
    declares 1.99, the Nix devShell provides 1.99.1, and the current x86jit pin
-   `8bad85d` requires 1.95 (`x86jit-core` inherits its workspace's rust-version;
+   `fd67927` requires 1.95 (`x86jit-core` inherits its workspace's rust-version;
    READ).
 2. **Device order.** Accept rewriting the `bios` preset into canonical order
    (bead 1, guarded by the slow goldens)? The alternative is a board model that

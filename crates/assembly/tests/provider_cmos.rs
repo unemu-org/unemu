@@ -10,6 +10,34 @@ use devices::{CmosConfig, CmosRtc};
 mod fixtures;
 
 #[test]
+fn optional_coprocessor_cmos_on_mock_bus() {
+    let mut config = bios(vec![0xF4; 32768], Some(vec![0; 1_474_560]));
+    for (display, equipment) in [(DisplaySwitch::Auto, 0x31), (DisplaySwitch::Colour, 0x21)] {
+        config.display_switch = display;
+        config.cpu.fpu = FpuChip::None;
+        let absent = derive_cmos_config(&config).unwrap();
+        config.cpu.fpu = FpuChip::I80287;
+        let present = derive_cmos_config(&config).unwrap();
+        assert_eq!(absent[0x14], equipment);
+        assert_eq!(present[0x14], equipment | 2);
+        for (seed, installed) in [(absent, 0), (present, 2)] {
+            let mut bus = testkit::MockBus::new(Box::new(CmosRtc::new().with_nvram(seed)));
+            bus.port_write(0x70, 1, 0x14).unwrap();
+            assert_eq!(bus.port_read(0x71, 1).unwrap() & 2, installed);
+            let mut sum = 0u16;
+            for index in 0x10..=0x2D {
+                bus.port_write(0x70, 1, index).unwrap();
+                sum += bus.port_read(0x71, 1).unwrap() as u16;
+            }
+            for (index, expected) in [0x2E, 0x2F].into_iter().zip(sum.to_be_bytes()) {
+                bus.port_write(0x70, 1, index).unwrap();
+                assert_eq!(bus.port_read(0x71, 1).unwrap(), u32::from(expected));
+            }
+        }
+    }
+}
+
+#[test]
 fn provider_cmos_presets_match_their_display_and_drive_inventory() {
     for (name, config, floppy_types, equipment, base_memory_kb) in [
         ("boot", at_boot(vec![0xF4]), 0, 0x20, 64),

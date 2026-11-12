@@ -314,13 +314,30 @@ mode through LMSW. Unsupported system contexts retain typed CS:IP diagnostics;
 explicit outward exceptions retain vector/error-code metadata.
 This applies to `ibm-5170`. `BoardModel::Bare` assembly rigs and standalone
 `new_real16_bare` CPU tests retain the fixed application Real16 profile.
-No 386 model, paging, task gates or privilege transitions are selected.
+No 386 model, paging or privilege transitions are selected. The pin also
+provides CPL-0 hardware task switches through far JMP/CALL to a TSS or task
+gate, IRET with NT and IDT task gates, including busy bits and MSW.TS
+(READ: `xj-srh.18 (x86jit)`, `decision-24 (x86jit)`).
 
-The VM default remains `FpuModel::Present` via `Vm::set_fpu_model`; the backend
-disables FPU emulation. The core's
-legacy real-mode path supports x87 with MSW.EM/TS checks and resumable string
-port I/O. FNINIT/FNSTCW stores 037Fh with the present model in both I286 and
-bare Real16. The empty motherboard I/O socket does not select CPU FPU policy.
+`CpuConfig.fpu` is `FpuChip::None` by default or `FpuChip::I80287` when the
+optional coprocessor is installed. IBM Personal Computer AT Technical Reference,
+Section 2, Coprocessor, describes the optional 80287. On `ibm-5170`, assembly
+selects `FpuModel::None` or `FpuModel::Present` respectively, both at VM
+construction and on the vCPU after real-mode entry seeding. Emulation remains
+disabled. The core offers no generation-specific 80287 model; `Present` uses
+its existing x87 engine with MSW.EM/TS checks. FNINIT/FNSTCW stores 037Fh when
+present. With `None` and MSW.EM/TS clear, FNSTCW m16 and FNSTSW m16/AX
+produce FFFFh; other output stores leave memory unchanged and WAIT completes.
+This is the I286 board policy from `decision-25 (x86jit)`, grounded in Intel
+80286 and 80287 Programmer's Reference Manual, Part I Appendix A and Part II
+Appendix B, item 10. FFFFh is the chosen all-high bus default, not a universal
+electrical value. EM/TS/MP retain #NM controls; I386 absent outputs still
+refuse execution. CPU-only reset preserves the selected FPU policy.
+
+Bare rigs and standalone `new_real16_bare` / `new_i286_bare` constructors retain
+their present-FPU behaviour; the assembly choice applies only to `Ibm5170`.
+Of the Rust presets, only `bios(..., Some(floppy))` selects this board and
+changes its default FPU. `bios(..., None)`, test386 and all demo rigs stay bare.
 
 ## Board model
 
@@ -347,7 +364,7 @@ Map**, **Keyboard Controller**, and **Real-Time Clock/CMOS RAM Information**.
 | 5. `DmaWord` | Second 8237 at C0h–DFh (odd ports alias the preceding even register), pages 89h–8Fh, channels 4–7; channel 4 is cascade | No cycle-level arbitration between banks |
 | 6. `Keyboard` | 8042 at 60h/64h, IRQ1; D1h output bit 0 and F0h–FFh pulses restart only the CPU | A20 source latch is retained; CPU address masking is pending; pulse duration and temporary output levels are not timed |
 | 7. `Rtc` | MC146818 at 70h–71h, IRQ8, NMI-mask state | Seed and virtual timing remain configurable |
-| 8. `Coprocessor` | Empty 80287 socket: F0h, F1h, F8h–FFh; IRQ13 wired inactive | Empty bus socket only; CPU x87 is currently ungated |
+| 8. `Coprocessor` | F0h, F1h, F8h–FFh; IRQ13 wired inactive | Port face remains an empty socket even when the CPU has an optional FPU; FERR#/IRQ13 and F0h/F1h controls are unimplemented |
 | 9. `SysControl` | 61h control/status | Shares PIT state: refresh flip-flop from OUT1, OUT2 status, bit-0 GATE2; bit 1 AND OUT2 feeds the speaker audio source |
 | 10. `Post` | Diagnostic latch at 80h by default | Optional, relocatable diagnostic decode |
 
@@ -377,9 +394,8 @@ unmapped. An empty socket does not drive read data or IRQ13: reads on every
 assigned port return the emulator's open-bus byte FFh, and writes of any
 value are discarded. FFh is the emulator's bus convention, not an IBM-defined
 absent-coprocessor status value. This describes only the I/O bus socket.
-The CPU selects a present FPU despite the empty board I/O socket.
-FNINIT/FNSTCW stores 037Fh in both the I286 machine profile and bare Real16.
-The core has an absent-FPU API; machine selection of that policy is deferred.
+CPU coprocessor presence is selected independently through `CpuConfig.fpu`,
+as described above. Installing one does not enable the board error/control wiring.
 
 **Keyboard Controller**, **Commands** and **Output Port** (pp. 1-53–1-55)
 connect output bit 0 to active-low System Reset. D1h lowering that bit latches
@@ -533,6 +549,7 @@ bus-speed and CPU-type work is a *field addition*, never a re-architecture.
 ```
 CpuConfig {
     chip:         ModelledChip,   // marker for the modelled part (today: one variant)
+    fpu:          FpuChip,        // None (default) or I80287 on ibm-5170
     reset_vector: SegOff,         // CS:IP the CPU starts at
     segments:     SeedSegments,   // DS/ES/SS + SP seeded at reset (see below)
 }
@@ -1114,7 +1131,10 @@ this map, by id, so the hand-counted `*_INDEX` constants disappear entirely.
 
 **CMOS defaults to a derived configuration.** The assembler derives floppy
 types, equipment and memory sizes from the attached drives, selected primary
-display and memory map.
+display, CPU coprocessor choice and memory map. IBM Personal Computer AT
+Technical Reference, System Board, Real-Time Clock/CMOS RAM Information, Equipment Byte (Hex 14), assigns
+bit 1 to an installed math coprocessor. Derived seeds set it for
+`Ibm5170` with `FpuChip::I80287` and include it in the AT checksum.
 IBM fixed-disk types additionally require the capable system BIOS provider
 described above. `derive_cmos_config` returns a fallible, complete 64-byte seed, including
 12h/19h/1Ah and the AT checksum at 2Eh/2Fh (sum of 10h–2Dh). An explicit NVRAM

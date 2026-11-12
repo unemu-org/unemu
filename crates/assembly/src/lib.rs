@@ -63,7 +63,7 @@ pub use assemble::{
 pub use board::{BoardModel, DisplaySwitch, MachineClass, PrimaryDisplay};
 pub use bus::PortWidth;
 pub use clock::ClockConfig;
-pub use cpu::{CpuChip, CpuConfig, ResetSpec, SegmentSeed};
+pub use cpu::{CpuChip, CpuConfig, FpuChip, ResetSpec, SegmentSeed};
 pub use device::{
     CmosCfg, CmosRam, DebugConsoleCfg, DeviceConfig, DeviceId, DeviceKind, DmaCfg, DmaSpec, FdcCfg,
     FwCfgCfg, I8042Cfg, IdeCfg, MdaTextCfg, NvramSource, PicCfg, PitCfg, PortWindow, PostPortCfg,
