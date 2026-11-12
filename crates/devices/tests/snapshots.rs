@@ -580,6 +580,61 @@ fn mounted_fdc() -> Box<dyn Device> {
 }
 
 #[test]
+fn fdc_reset_poll_supersession_continues_at_every_byte_boundary() {
+    for (polls, completion, status, cylinder) in [
+        (1, vec![3, 0xDF, 2, 7, 0], 0x20, 0),
+        (2, vec![0x0F, 1, 5], 0x21, 5),
+        (0, vec![0x0F, 0, 9, 0x0F, 1, 5], 0x21, 5),
+        (4, vec![0x0F, 0, 9, 0x0F, 1, 5], 0x21, 5),
+    ] {
+        // None writes a command byte; Some reads the expected result byte.
+        let mut actions = Vec::new();
+        for unit in 0..polls {
+            actions.extend([(8, None), (0, Some(0xC0 | unit)), (0, Some(0))]);
+        }
+        actions.extend(completion.into_iter().map(|byte| (byte, None)));
+        actions.extend([
+            (8, None),
+            (0, Some(status)),
+            (0, Some(cylinder)),
+            (8, None),
+            (0, Some(0x80)),
+        ]);
+        for boundary in 0..=actions.len() {
+            let mut source = MockBus::new(mounted_fdc());
+            source.port_write(0x3F2, 1, 0x0C).unwrap();
+            for &(byte, expected) in &actions[..boundary] {
+                if let Some(expected) = expected {
+                    assert_eq!(source.port_read(0x3F5, 1).unwrap(), expected);
+                } else {
+                    source.port_write(0x3F5, 1, byte).unwrap();
+                }
+            }
+            let blob = source.device().save();
+            assert_eq!(blob[0], 4);
+            let mut restored = MockBus::new(mounted_fdc());
+            restored.device_mut().restore(&blob).unwrap();
+            assert_eq!(restored.device().save(), blob);
+            source.device_mut().take_trace();
+            for &(byte, expected) in &actions[boundary..] {
+                for bus in [&mut source, &mut restored] {
+                    if let Some(expected) = expected {
+                        assert_eq!(bus.port_read(0x3F5, 1).unwrap(), expected);
+                    } else {
+                        bus.port_write(0x3F5, 1, byte).unwrap();
+                    }
+                }
+                assert_eq!(source.device().save(), restored.device().save());
+                assert_eq!(
+                    source.device_mut().take_trace(),
+                    restored.device_mut().take_trace()
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn fdc_continues_each_command_prefix_result_and_dma_phase() {
     use device::{DmaOp, DmaOutcome};
     for opcode in [3, 4, 7, 8, 0x0F, 0x4A, 0x46, 0x45] {

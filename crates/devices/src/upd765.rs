@@ -53,6 +53,23 @@
 //! the same media; snapshots exclude it. See
 //! `backlog/docs/design/persistent-media.md`, §Integration.
 //!
+//! ## Reset polls and seek completion
+//!
+//! Reset release queues four SENSE INTERRUPT STATUS results (C0h–C3h, PCN=0).
+//! ASSUMED for silicon: a SEEK or RECALIBRATE completion discards any unread
+//! reset polls so the next sense reports that completion, then 80h when idle.
+//! NEC µPD765 datasheet, Functional Description of Commands, SENSE INTERRUPT
+//! STATUS, and Intel 8272A datasheet, Command Descriptions, SENSE INTERRUPT
+//! STATUS, do not define this interaction. Bochs clears its reset sense count
+//! when raising a new interrupt. MAME instead keeps pending ST0 per drive and
+//! senses the lowest pending drive. The reset-poll policy here is Bochs-style,
+//! limited to seek and recalibrate completion. Four reset polls remain available
+//! when no such completion intervenes.
+//!
+//! Known gap: overlapped seek completions are not modelled; one latch holds the
+//! latest completion, even across drives. Intel 8272A datasheet, Command
+//! Descriptions, SEEK, describes overlapped seeks on up to four drives.
+//!
 //! ## Coverage matrix (datasheet vs modelled)
 //!
 //! | Command                        | Opcode | Modelled | Notes                          |
@@ -60,7 +77,7 @@
 //! | SPECIFY                        | `0x03` | yes      | timings accepted, not enforced |
 //! | SENSE DRIVE STATUS             | `0x04` | yes      | ST3; no interrupt or seek-state change |
 //! | RECALIBRATE                    | `0x07` | partial  | PCN=0; empty bay: SE+EC, abnormal IRQ6 |
-//! | SENSE INTERRUPT STATUS         | `0x08` | yes      | ST0 + PCN, or invalid if idle  |
+//! | SENSE INTERRUPT STATUS         | `0x08` | yes      | ST0 + PCN, or invalid if idle; ASSUMED: seek/recalibrate completion discards remaining reset polls |
 //! | SEEK                           | `0x0F` | yes      | set present cylinder, IRQ6     |
 //! | READ ID                        | `0x4A` | partial  | matching rate: synthetic R=1/N=2; empty: waits for index |
 //! | READ DATA                      | `0x06` | yes      | DMA transfer to memory, IRQ6   |
@@ -598,8 +615,8 @@ impl Upd765 {
             self.pending_write = None;
         }
         if leaving_reset {
-            // Coming out of reset raises an interrupt; the BIOS then issues four
-            // SENSE INTERRUPT STATUS commands, one reporting each drive.
+            // Four drive polls remain available unless seek/recalibrate completes
+            // first; see the module's assumed reset-poll policy.
             self.reset_poll = 4;
             self.raise_irq();
         }
@@ -701,6 +718,7 @@ impl Upd765 {
         if self.drives[usize::from(drive)].is_none() {
             self.st0 |= ST0_ABNORMAL | ST0_EQUIPMENT_CHECK;
         }
+        self.reset_poll = 0;
         self.raise_irq();
         self.finish_no_result();
     }
@@ -715,13 +733,15 @@ impl Upd765 {
         let cylinder = self.command[2];
         self.st0 = ST0_SEEK_END | (head << 2) | drive;
         self.present_cylinder[usize::from(drive)] = cylinder;
+        self.reset_poll = 0;
         self.raise_irq();
         self.finish_no_result();
     }
 
     /// SENSE INTERRUPT STATUS: report ST0 and the present cylinder, clearing the
-    /// pending interrupt. After a reset the first four calls report the drive-poll
-    /// status instead. With nothing pending, return only invalid-command ST0.
+    /// pending interrupt. After reset, up to four calls report drive-poll status
+    /// unless seek/recalibrate completes first (see the module's assumed policy).
+    /// With nothing pending, return only invalid-command ST0.
     /// See NEC µPD765 datasheet, Functional Description of Commands, SENSE
     /// INTERRUPT STATUS / INVALID; Intel 8272A datasheet, Command Descriptions,
     /// SENSE INTERRUPT STATUS / INVALID.
@@ -2020,6 +2040,71 @@ mod tests {
             bus_command(&mut bus, &[0x08]);
             assert_eq!(bus_results(&mut bus, 2), vec![ST0_POLL | unit, 0]);
         }
+    }
+
+    #[test]
+    fn recalibrate_completion_supersedes_remaining_reset_polls() {
+        let mut bus = MockBus::new(Box::new(Upd765::with_image(Vec::new())));
+        bus.port_write(DOR, 1, 0x1C).unwrap();
+        bus_command(&mut bus, &[8]);
+        assert_eq!(bus_results(&mut bus, 2), [0xC0, 0]);
+        bus_command(&mut bus, &[3, 0xDF, 2]);
+        assert!(!bus.device().irq_pending());
+        bus_command(&mut bus, &[7, 0]);
+        assert!(bus.device().irq_pending());
+        bus_command(&mut bus, &[8]);
+        assert!(!bus.device().irq_pending());
+        assert_eq!(bus_results(&mut bus, 2), [0x20, 0]);
+        bus_command(&mut bus, &[8]);
+        assert_eq!(bus_results(&mut bus, 1), [0x80]);
+        assert_eq!(bus.port_read(MSR, 1).unwrap(), u32::from(MSR_RQM));
+    }
+
+    #[test]
+    fn seek_completion_supersedes_remaining_reset_polls() {
+        let mut bus = MockBus::new(Box::new(Upd765::new()));
+        bus.port_write(DOR, 1, 12).unwrap();
+        for unit in 0..2 {
+            bus_command(&mut bus, &[8]);
+            assert_eq!(bus_results(&mut bus, 2), [0xC0 | unit, 0]);
+        }
+        bus_command(&mut bus, &[0x0F, 1, 5]);
+        assert!(bus.device().irq_pending());
+        bus_command(&mut bus, &[8]);
+        assert!(!bus.device().irq_pending());
+        assert_eq!(bus_results(&mut bus, 2), [0x21, 5]);
+        bus_command(&mut bus, &[8]);
+        assert_eq!(bus_results(&mut bus, 1), [0x80]);
+        assert_eq!(bus.port_read(MSR, 1).unwrap(), u32::from(MSR_RQM));
+    }
+
+    #[test]
+    fn reset_polls_without_seek_completion_still_report_all_four_drives() {
+        let mut bus = MockBus::new(Box::new(Upd765::new()));
+        bus.port_write(DOR, 1, 12).unwrap();
+        for unit in 0..4 {
+            bus_command(&mut bus, &[8]);
+            assert_eq!(bus_results(&mut bus, 2), [0xC0 | unit, 0]);
+        }
+        bus_command(&mut bus, &[8]);
+        assert_eq!(bus_results(&mut bus, 1), [0x80]);
+        assert_eq!(bus.port_read(MSR, 1).unwrap(), u32::from(MSR_RQM));
+    }
+
+    #[test]
+    fn pending_seek_completion_is_replaced_by_the_latest_drive_seek() {
+        let mut bus = MockBus::new(Box::new(ready_fdc(Vec::new())));
+        bus_command(&mut bus, &[0x0F, 0, 9]);
+        assert!(bus.device().irq_pending());
+        bus_command(&mut bus, &[0x0F, 1, 5]);
+        assert!(bus.device().irq_pending());
+        bus_command(&mut bus, &[8]);
+        assert_eq!(bus_results(&mut bus, 2), [0x21, 5]);
+        bus_command(&mut bus, &[8]);
+        assert_eq!(bus_results(&mut bus, 1), [0x80]);
+        bus_command(&mut bus, &[0x0F, 0, 9]);
+        bus_command(&mut bus, &[8]);
+        assert_eq!(bus_results(&mut bus, 2), [0x20, 9]);
     }
 
     #[test]

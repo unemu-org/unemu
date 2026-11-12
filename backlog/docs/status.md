@@ -273,6 +273,14 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   geometry, mounted track 0 and media write protection, and keeps READY active
   for every select. ASSUMED: an empty bay clears T0/TS/WP; FT is always clear
   because drive faults are not modelled.
+  ASSUMED for silicon: SEEK/RECALIBRATE completion supersedes unread reset
+  polls (Bochs-style, limited to seek and recalibrate completion). MAME instead
+  retains pending ST0 per drive and senses the lowest pending drive; NEC µPD765
+  and Intel 8272A SENSE INTERRUPT STATUS descriptions do not define the interaction.
+  SIS reports the pending seek/recalibrate completion and then idle 80h.
+  All four C0h–C3h/00h reset polls remain available until a seek/recalibrate
+  completion supersedes them. Overlapped seek completions are not modelled:
+  one latch holds the latest completion, even across drives.
   CCR writes at 3F7h select 500/300/250 kbps (00/01/10); reserved 11 matches
   no medium. READ ID and READ/WRITE DATA
   report abnormal termination with ST1 missing-address-mark when the selected
