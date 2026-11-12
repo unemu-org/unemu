@@ -121,7 +121,7 @@ READ: manual p. 16 gives the order; pp. 17–36 describe the tests. Hardware
 and mode requirements below come from that reading unless marked ASSUMED.
 **Every entry in “Expected today” is ASSUMED, not a measured pass.** The table
 was formulated for Application Real16 at `44403dd`; the current `ibm-5170`
-selects the I286 machine profile at `fd6792777ea864745a776ccdd3279a2fa9dd4bff`.
+selects the I286 machine profile at `fe240a56ac2040e3deaebb2537e642137ee02c71`.
 Rows after test 13 are individual expectations if reached, not a claim that
 the current run reaches them. No new user-ROM result is assumed.
 
@@ -191,7 +191,7 @@ NVRAM. It follows `run --machine`: `machine_file::load_for_assembly`,
 no unlisted escape is used for the user ROM. This selects the preset hardware
 (640 KiB base RAM, MDA and VGA text, UART, wired FDC without a drive),
 volatile derived NVRAM, RTC start `2000-01-01T00:00:00`, and CPU revision
-`fd6792777ea864745a776ccdd3279a2fa9dd4bff`, now selecting the I286 machine profile.
+`fe240a56ac2040e3deaebb2537e642137ee02c71`, now selecting the I286 machine profile.
 The former Real16 golden checked the unsupported-instruction exit, address,
 opcode, twelve Passed verdicts and the empty thirteenth status, re-confirmed
 by the supervisor at `44403dd` as recorded below.

@@ -344,7 +344,7 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   synthetic fast tests keep their presets.
 - **Machines are declarative.** A `MachineConfig` (the `assembly` crate) is built by one
   `assemble()` and run under a `RunPolicy`; presets replace the old hand-written runners.
-- **CPU pin:** `fd6792777ea864745a776ccdd3279a2fa9dd4bff` (x86jit `main`).
+- **CPU pin:** `fe240a56ac2040e3deaebb2537e642137ee02c71` (x86jit `main`).
   READ: real-mode I286/I386 machine execution now accepts the Application Real16
   instruction set, including AAD/AAM, BCD/SALC, x87 with MSW.EM/TS checks and
   resumable REP INS/OUTS. I286 rejects 386-only 66h/67h forms with #UD.
@@ -621,7 +621,7 @@ input levels. A low input may still have an ISR bit from an earlier INTA.
 
 ibm-5170 has an empty 80287 socket by default (maintainer decision 2026-11-12);
 the core reports no coprocessor (x86jit decision-25).
-The pin is `fd6792777ea864745a776ccdd3279a2fa9dd4bff`. The choice is carried by
+The pin is `fe240a56ac2040e3deaebb2537e642137ee02c71`. The choice is carried by
 `cpu.fpu = "none"` (default) or `"80287"`, and derived CMOS 14h combines the
 selected display bits with coprocessor bit 1 and the drive inventory. Explicit
 NVRAM images retain their contents.
