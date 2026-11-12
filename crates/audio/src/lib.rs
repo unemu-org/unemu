@@ -70,6 +70,13 @@ impl SamplePeriod {
 /// latest register value. Assembly settles devices before rendering. See
 /// `backlog/docs/design/audio.md` §Mixing and §Source lifecycle.
 pub trait AudioSource {
+    /// Notify device histories whether any output consumer needs past signal.
+    /// Unobserved producers may retain only the latest incomplete frame.
+    fn set_output_enabled(&mut self, _enabled: bool) {}
+    /// Report the first producer error at the next observation, even without PCM.
+    fn take_error(&mut self) -> Option<AudioError> {
+        None
+    }
     /// Return exact stereo level*clock areas, without division or rounding.
     fn render(&mut self, start: VClock, end: VClock) -> SampleArea;
     /// Notify the producer that this observation has passed, even without output.
@@ -266,6 +273,12 @@ pub struct Mixer {
 }
 
 impl Mixer {
+    /// Propagate output selection without requiring a host render boundary.
+    pub fn set_output_enabled(&mut self, enabled: bool) {
+        for source in &mut self.sources {
+            source.signal.set_output_enabled(enabled);
+        }
+    }
     /// Begin delivery at this boundary on the absolute output grid.
     #[must_use]
     pub fn new(start: VClock) -> Self {
@@ -295,6 +308,12 @@ impl Mixer {
     ) -> Result<(), AudioError> {
         if end < self.until {
             return Err(AudioError::TimeReversed);
+        }
+        for source in &mut self.sources {
+            if let Some(error) = source.signal.take_error() {
+                self.release_history();
+                return Err(error);
+            }
         }
         self.sources.retain(|source| !source.signal.finished());
         if !self.stream_started || !sink.enabled() || end == self.until {

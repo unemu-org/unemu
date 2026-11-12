@@ -3,9 +3,9 @@
 The `audio` crate is the audio swap layer beside `video`. It provides an
 `AudioSink`, an integer mixer and headless capture, implementing rules 1–4 of
 [decision-20](../../decisions/decision-20%20-%20Audio%20through%20a%20virtual-time%20AudioSink%20seam%20with%20host%20output%20in%20the%20window.md).
-It adds no sound-producing device, host playback, sound-card registers, DMA,
-analogue filtering or synthesizer. The PC speaker and Sound Blaster are later
-device work. No new external dependency is needed: only the existing `device`
+The AT PC speaker is the first sound-producing device. Host playback,
+sound-card registers, DMA, analogue filtering and synthesis remain separate work.
+No new external dependency is needed: only the existing `device`
 and `thiserror` workspace dependencies are used.
 
 ## Output format
@@ -99,6 +99,75 @@ or time was skipped. A sample starting exactly at the frontier is still allowed.
 Sealed, paused, out-of-order and unrepresentable writes use the same error.
 Clones are writer handles for one mixer consumer, not independent cursors.
 
+## PC speaker
+
+IBM Personal Computer AT Technical Reference, September 1985, Section 1
+"System Board", "Speaker" and "System-Timer Block Diagram", describes the
+speaker drive as **PIT channel 2 OUT AND port 61h bit 1**. Bit 0 drives GATE2;
+it does not directly mask the speaker. In Intel 8254 datasheet Modes 2 and 3,
+lowering GATE forces OUT high, so software can toggle bit 1 with GATE low.
+Mode 0 instead pauses counting while GATE is low. The board reference is
+[IBM's Technical Reference](https://www.minuszerodegrees.net/manuals/IBM_5170_Technical_Reference_6280070_SEP85.pdf).
+
+The physical drive maps to **0/+16384**, duplicated to both stereo channels:
+OUT2 AND bit 1 low means no drive, hence exactly zero PCM, including idle and
+disabled output. The fixed gain leaves mixing headroom; it is not a calibrated
+voltage or acoustic response. The real speaker's analogue AC coupling, low-pass
+filter and mechanics are not modelled, so a sustained tone still carries a DC
+component. The existing output-frame box filter integrates square waves and PWM
+duty cycles.
+
+`SharedPit8253::observe_speaker` connects a board pin observer. Channel 2 is
+advanced through load and OUT boundaries when speaker data is enabled; no
+intermediate transition is lost during a lazy synchronization. Direct port 61h
+writes, GATE changes and timer programming also observe the resulting pin.
+The observer records only level changes; it adds neither a per-instruction
+callback nor scheduler deadlines. With bit 1 disabled, channel 2 retains its
+constant-time arithmetic advance.
+
+Assembly installs one `EdgeSource` through `Observation::add_audio_source`
+when both PIT and SysControl roles exist, including the `ibm-5170` board.
+The pin callback uses `EdgeSource::record_level`; devices do not depend on
+the audio crate. Default `AudioSinkKind::None` still skips rendering PCM.
+Observation propagates consumer availability through `AudioSource::set_output_enabled`
+when a source attaches, output changes, a sink subscribes and before capture.
+Without an enabled consumer, each device edge releases everything before its
+latest incomplete output frame. Same-clock changes coalesce to the last level;
+there are at most 25 whole-clock positions in a frame, so the speaker retains
+at most 26 edges including a possible segment boundary. This bound holds even
+when a host only calls `machine.run_bounded` and never renders audio, including
+the window path. CLI session boundaries also continue advancing/releasing audio.
+No host changes or periodic cleanup calls are required. With a consumer enabled,
+the full history between observations is retained. The existing requirement to
+flush before changing output epochs preserves the partial frame on late enable.
+Inline hosts wire the same
+observer explicitly. Existing BIOS and DOS goldens keep their default output;
+they do not acquire audio captures or new PCM expectations.
+
+### Device history errors and recovery
+
+Device `tick`/`sync` cannot return audio errors. `record_level` therefore latches
+the first `HistoryOrder` failure in the shared source instead of panicking or
+discarding it silently. `AudioSource::take_error` lets the mixer report that
+failure at the next observation, even for None/null output or a boundary with
+no complete frames. That failed render emits no PCM and leaves the mixer cursor
+unchanged; history is released only through the prior successful boundary.
+A retry can consume the pending interval after the error is reported.
+
+A rejected device write requires **a new segment**. The source remembers the
+current device level even when its edge was rejected. When reporting the error,
+it starts a segment at the latest of the observation frontier, release watermark,
+last accepted edge and any sealed tail, and re-reports that current level there.
+No further pin change is needed. An intervening valid `record_level` may also
+start the required segment; an invalid attempt keeps recovery pending and
+latches an error again. Prior observations cannot be repaired retroactively.
+Accepted history remains intact. The speaker source is not sealed at ordinary
+disables or rate changes.
+
+`EdgeSource::advance` tracks the full observation frontier, including disabled
+output and partial frames. Thus an edge cannot be inserted into already
+observed time just because the incomplete frame's history is still retained.
+
 ## Source lifecycle
 
 Every valid `Mixer::render_until` call invokes each active source's
@@ -109,7 +178,9 @@ a subsequent observation still needs that frame's beginning. Device histories
 may discard older records but must preserve the active level/native sample at
 the watermark. Thus default output cannot accumulate history across observations;
 producer-side memory between observations remains bounded by the caller's run
-chunk size. Invalid backwards/future requests do not advance the release cursor.
+chunk size with an active consumer. Unobserved speaker device edges have the
+stronger frame-sized bound above, independent of render calls. Invalid
+backwards/future requests do not advance the release cursor.
 
 `AudioSource::finished()` permanently retires a source. Finished sources are
 removed before rendering and after release, and receive no further callbacks.
@@ -130,7 +201,7 @@ contract after their final pending tail has been rendered.
 `ObservationPolicy.output.audio_sink` selects `None` (default) or `Capture`,
 beside `frame_sink`. Capture's explicit `audio_capture_frame_limit` defaults to
 zero: hash and total frame count are always maintained, while PCM retention is
-optional. Selecting capture creates no producer or mixer. External sinks attach
+optional. Selecting capture alone creates no producer or mixer. External sinks attach
 through `Observation::subscribe_audio`; the configured capture receives each
 block first. Sinks return promptly and never reenter or alter machine execution.
 
@@ -176,6 +247,29 @@ rendering returns a typed error and preserves the cursor. Repeated observations
 emit no duplicate PCM, but still release source history.
 
 ## Validation
+
+Mock-bus speaker tests pin Mode 0/2/3 OUT boundaries, independent GATE/data
+control and eight direct bit-1 transitions. Audio tests check their exact
+box-filtered frames, release and error recovery; observation tests force a
+late device callback and verify the next capture reports it with either output
+selection. Synthetic AT ROM goldens run the real CPU and board: a Mode 3 divisor
+1193 tone enabled for 11930 PIT clocks produces **482 frames**, FNV-1a
+`59dff6b1a48033ed`, over a 12000-clock capture. A second ROM toggles bit 1 at
+clocks 7, 13, 29, 31, 48, 52, 73 and 99; its five frames hash to
+`d8d6af3ebdc2782d`. Both compare whole and split captures; an independent
+per-PIT-clock reference checks every PCM frame. An idle/disabled-drive ROM test
+checks exactly zero PCM. These speaker hashes replace `8ac7ec7fc5f8c7ad` and
+`b01b4e720c32724d` after changing the physical drive mapping from −8192/+8192
+to 0/+16384. Other golden expectations are unchanged.
+
+A million-instruction bit-1 loop uses both direct `machine.run_bounded` and the
+CLI's `AssembledMachine::run_session` API without audio output. At 100 instructions
+per PIT clock it also stresses multiple writes at one timestamp; retained history
+stays at or below 26 edges. Later capture enable retains full new history.
+Recovery tests cover rejected rising and falling transitions without any later
+pin change. Mock-bus reprogramming tests pin a new count halfway through a Mode 3
+high half (the old half ends at clock 5) and a control word during a low half
+(OUT rises immediately at clock 6, with the new count loaded at 7).
 
 The exact time-base, capture-guard, post-error, HLT and device-sync tests remain.
 Native constant/ramp/square expectations now use clock-weighted integration:

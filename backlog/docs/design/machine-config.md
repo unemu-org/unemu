@@ -348,7 +348,7 @@ Map**, **Keyboard Controller**, and **Real-Time Clock/CMOS RAM Information**.
 | 6. `Keyboard` | 8042 at 60h/64h, IRQ1; D1h output bit 0 and F0h–FFh pulses restart only the CPU | A20 source latch is retained; CPU address masking is pending; pulse duration and temporary output levels are not timed |
 | 7. `Rtc` | MC146818 at 70h–71h, IRQ8, NMI-mask state | Seed and virtual timing remain configurable |
 | 8. `Coprocessor` | Empty 80287 socket: F0h, F1h, F8h–FFh; IRQ13 wired inactive | Empty bus socket only; CPU x87 is currently ungated |
-| 9. `SysControl` | 61h control/status | Shares PIT state: refresh flip-flop from OUT1, OUT2 status, bit-0 GATE2 |
+| 9. `SysControl` | 61h control/status | Shares PIT state: refresh flip-flop from OUT1, OUT2 status, bit-0 GATE2; bit 1 AND OUT2 feeds the speaker audio source |
 | 10. `Post` | Diagnostic latch at 80h by default | Optional, relocatable diagnostic decode |
 
 The **IBM Personal Computer AT Technical Reference** (September 1985),
@@ -764,9 +764,10 @@ target first, then its dependents in configuration order, regardless of edge
 declaration order. Unrelated devices receive no access synchronization, and
 legacy every-clock devices receive no extra sync. This makes dependent deadlines
 start at the current access clock rather than their earlier lazy-sync time. The
-field does not implement hardware signal wiring. No preset needs it today:
-the shared PIC faces are dormant and have no autonomous timer, and system
-control does not yet drive the PIT's speaker gate. See
+field does not implement hardware signal wiring. The assembler couples
+SysControl accesses to the shared PIT so bit-0 gate changes refresh its cached
+deadline; speaker data and OUT2 transitions use the same shared state. The
+shared PIC faces are dormant and have no autonomous timer. See
 [scheduler.md §Adoption](scheduler.md#adoption) for cache and settle ordering.
 
 ### Single homes (no triplication)
@@ -1234,7 +1235,14 @@ reconfiguration clears configured last frames and preserves external subscribers
 `audio_sink` defaults to `None`; `Capture` hashes/counts the mixed PCM stream.
 `audio_capture_frame_limit` defaults to zero and bounds optional retained PCM,
 borrowed through `Observation::captured_audio()`. It adds no device or mixer until a source is
-attached. Assembly renders at service boundaries using `Machine::clock()`,
+attached. A SysControl/PIT pair automatically attaches the AT speaker's
+timestamped `EdgeSource` through observation, including on `ibm-5170`.
+The logical drive is OUT2 AND 61h bit 1, mapped to 0/+16384 in both channels;
+bit 0 controls the timer gate. Silence is exactly zero; analogue AC coupling is
+not modelled. None output propagates to the source so device edges prune their
+own history to one incomplete frame, even on direct runs without audio capture.
+Observation still advances/releases history without rendering PCM. Assembly
+renders at service boundaries using `Machine::clock()`,
 including halted PIT time. Audio has no machine-file field and does not change
 hardware identity. See [audio.md](audio.md) for the exact output format, rational
 clock mapping, source contract and capture lifecycle.

@@ -189,6 +189,15 @@ struct AudioObservation {
     sinks: Vec<Box<dyn AudioSink>>,
 }
 
+impl AudioObservation {
+    fn update_source_output(&mut self) {
+        let enabled = self.enabled();
+        if let Some(mixer) = &mut self.mixer {
+            mixer.set_output_enabled(enabled);
+        }
+    }
+}
+
 impl AudioSink for AudioObservation {
     fn present(&mut self, block: AudioBlock<'_>) {
         if let Some(capture) = &mut self.capture {
@@ -281,6 +290,7 @@ impl Observation {
                 output.audio_capture_frame_limit,
             )),
         };
+        self.audio.get_mut().update_source_output();
         for route in &self.routes {
             if route.output == OutputKind::TextScanout {
                 let subscribers = self.displays.entry(route.device).or_default();
@@ -300,12 +310,14 @@ impl Observation {
             .mixer
             .get_or_insert_with(|| Mixer::new(origin))
             .add_source(origin, source);
+        self.audio.get_mut().update_source_output();
     }
 
     /// Subscribe to mixed PCM at explicit observation boundaries. No device or
     /// display route is added. The same nonblocking contract as video applies.
     pub fn subscribe_audio(&mut self, sink: Box<dyn AudioSink>) {
         self.audio.get_mut().sinks.push(sink);
+        self.audio.get_mut().update_source_output();
     }
 
     /// Settle device history, then render through an already completed PIT boundary.
@@ -319,6 +331,7 @@ impl Observation {
             return Err(AudioError::FutureTime);
         }
         let mut state = self.audio.borrow_mut();
+        state.update_source_output();
         if let Some(mut mixer) = state.mixer.take() {
             machine.bus_mut().settle();
             let result = mixer.render_until(until, &mut *state);

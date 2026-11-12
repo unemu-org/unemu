@@ -695,3 +695,66 @@ fn late_native_samples_and_segments_are_rejected_without_rewriting_silence() {
         .unwrap();
     assert_eq!(empty.push(&[[4; 2]]), Err(AudioError::HistoryOrder));
 }
+
+#[test]
+fn device_edge_error_is_latched_and_recovery_starts_a_segment() {
+    let edges = EdgeSource::new([0; 2]);
+    let mut mixer = Mixer::new(VClock::ZERO);
+    mixer.add_source(VClock::ZERO, Box::new(edges.clone()));
+    mixer.render_until(VClock(10), &mut NullAudioSink).unwrap();
+    edges.record_level(VClock(7), [16384; 2]);
+    edges.record_level(VClock(8), [16384; 2]);
+    assert_eq!(
+        mixer.render_until(VClock(10), &mut NullAudioSink),
+        Err(AudioError::HistoryOrder)
+    );
+    edges.record_level(VClock(10), [16384; 2]);
+    let mut sink = CaptureAudioSink::with_frame_limit(10);
+    mixer.render_until(VClock(25), &mut sink).unwrap();
+    assert_eq!(sink.frames(), &[[9830; 2]]);
+    assert_eq!(edges.pending_edges(), 0);
+}
+
+#[test]
+fn speaker_pwm_history_is_box_filtered_and_released() {
+    let edges = EdgeSource::new([0; 2]);
+    for (at, high) in [
+        (7, true),
+        (13, false),
+        (29, true),
+        (31, false),
+        (48, true),
+        (52, false),
+        (73, true),
+        (99, false),
+    ] {
+        edges.record_level(VClock(at), [if high { 16384 } else { 0 }; 2]);
+    }
+    let mut mixer = Mixer::new(VClock::ZERO);
+    mixer.add_source(VClock::ZERO, Box::new(edges.clone()));
+    let mut sink = CaptureAudioSink::with_frame_limit(10);
+    mixer.render_until(VClock(100), &mut sink).unwrap();
+    assert_eq!(
+        sink.frames(),
+        &[[3932; 2], [2621; 2], [2621; 2], [15728; 2]]
+    );
+    assert_eq!(edges.pending_edges(), 0);
+}
+
+#[test]
+fn rejected_device_edge_recovers_current_level_without_another_pin_change() {
+    for (initial, current, expected) in [(0, 16384, 9830), (16384, 0, 6553)] {
+        let edges = EdgeSource::new([initial; 2]);
+        let mut mixer = Mixer::new(VClock::ZERO);
+        mixer.add_source(VClock::ZERO, Box::new(edges.clone()));
+        mixer.render_until(VClock(10), &mut NullAudioSink).unwrap();
+        edges.record_level(VClock(7), [current; 2]);
+        assert_eq!(
+            mixer.render_until(VClock(10), &mut NullAudioSink),
+            Err(AudioError::HistoryOrder)
+        );
+        let mut sink = CaptureAudioSink::with_frame_limit(1);
+        mixer.render_until(VClock(25), &mut sink).unwrap();
+        assert_eq!(sink.frames(), &[[expected; 2]]);
+    }
+}

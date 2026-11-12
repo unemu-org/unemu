@@ -15,6 +15,41 @@ struct Edges {
     retained_from: VClock,
     changes: VecDeque<(VClock, StereoFrame)>,
     end: Option<VClock>,
+    covered_until: VClock,
+    error: Option<AudioError>,
+    needs_segment: bool,
+    device_level: StereoFrame,
+    output_enabled: bool,
+}
+
+impl Edges {
+    fn change(&mut self, at: VClock, level: StereoFrame) {
+        if let Some((_, last)) = self.changes.back_mut().filter(|(clock, _)| *clock == at) {
+            *last = level;
+        } else {
+            self.changes.push_back((at, level));
+        }
+    }
+
+    fn release(&mut self, retain_from: VClock) {
+        while self
+            .changes
+            .front()
+            .is_some_and(|(at, _)| *at <= retain_from)
+        {
+            if let Some((_, level)) = self.changes.pop_front() {
+                self.level = level;
+            }
+        }
+        self.retained_from = self.retained_from.max(retain_from);
+    }
+
+    fn bound_unobserved(&mut self, at: VClock) {
+        if !self.output_enabled {
+            let retain = super::frame_boundary(super::completed_frames(at)) as u64;
+            self.release(VClock(retain));
+        }
+    }
 }
 
 /// Shared producer history for one active mixer consumer. Clones are writer
@@ -31,6 +66,11 @@ impl EdgeSource {
             retained_from: VClock::ZERO,
             changes: VecDeque::new(),
             end: None,
+            covered_until: VClock::ZERO,
+            error: None,
+            needs_segment: false,
+            device_level: initial,
+            output_enabled: true,
         })))
     }
 
@@ -39,18 +79,60 @@ impl EdgeSource {
         let mut edges = self.0.borrow_mut();
         if edges.end.is_some()
             || at < edges.retained_from
+            || at < edges.covered_until
+            || edges.needs_segment
             || edges.changes.back().is_some_and(|(last, _)| at < *last)
         {
             return Err(AudioError::HistoryOrder);
         }
-        edges.changes.push_back((at, level));
+        edges.change(at, level);
         Ok(())
+    }
+
+    /// Begin a new ordered segment after a rejected device write or a sealed tail.
+    /// History already observed cannot be repaired; resume at or after its frontier.
+    pub fn start_segment(&self, at: VClock, level: StereoFrame) -> Result<(), AudioError> {
+        let mut edges = self.0.borrow_mut();
+        if at < edges.retained_from
+            || at < edges.covered_until
+            || edges.changes.back().is_some_and(|(last, _)| at < *last)
+            || edges.end.is_some_and(|end| at < end)
+        {
+            return Err(AudioError::HistoryOrder);
+        }
+        if let Some(end) = edges.end.take() {
+            edges.change(end, [0; 2]);
+        }
+        edges.change(at, level);
+        edges.needs_segment = false;
+        Ok(())
+    }
+
+    /// Infallible device callback: latch the first failure for the mixer, then
+    /// re-report the current pin at recovery. Device tick/sync cannot return errors.
+    pub fn record_level(&self, at: VClock, level: StereoFrame) {
+        self.0.borrow_mut().device_level = level;
+        let result = if self.0.borrow().needs_segment {
+            self.start_segment(at, level)
+        } else {
+            self.push(at, level)
+        };
+        if let Err(error) = result {
+            let mut edges = self.0.borrow_mut();
+            edges.error.get_or_insert(error);
+            edges.needs_segment = true;
+        } else {
+            self.0.borrow_mut().bound_unobserved(at);
+        }
     }
 
     /// Silence from this clock onward, then retire once its tail is released.
     pub fn finish_at(&self, at: VClock) -> Result<(), AudioError> {
         let mut edges = self.0.borrow_mut();
-        if at < edges.retained_from || edges.changes.back().is_some_and(|(last, _)| at < *last) {
+        if at < edges.retained_from
+            || at < edges.covered_until
+            || edges.changes.back().is_some_and(|(last, _)| at < *last)
+        {
             return Err(AudioError::HistoryOrder);
         }
         edges.end = Some(at);
@@ -65,6 +147,43 @@ impl EdgeSource {
 }
 
 impl AudioSource for EdgeSource {
+    fn set_output_enabled(&mut self, enabled: bool) {
+        let mut edges = self.0.borrow_mut();
+        edges.output_enabled = enabled;
+        let at = edges
+            .changes
+            .back()
+            .map_or(edges.covered_until, |(at, _)| *at);
+        edges.bound_unobserved(at);
+    }
+
+    fn take_error(&mut self) -> Option<AudioError> {
+        let (error, recovery) = {
+            let mut edges = self.0.borrow_mut();
+            let error = edges.error.take();
+            let recovery = (error.is_some() && edges.needs_segment).then(|| {
+                let at = edges
+                    .covered_until
+                    .max(edges.retained_from)
+                    .max(edges.changes.back().map_or(VClock::ZERO, |(at, _)| *at))
+                    .max(edges.end.unwrap_or(VClock::ZERO));
+                (at, edges.device_level)
+            });
+            (error, recovery)
+        };
+        if let Some((at, level)) = recovery {
+            if let Err(error) = self.start_segment(at, level) {
+                self.0.borrow_mut().error.get_or_insert(error);
+            }
+        }
+        error
+    }
+
+    fn advance(&mut self, until: VClock) {
+        let mut edges = self.0.borrow_mut();
+        edges.covered_until = edges.covered_until.max(until);
+    }
+
     fn render(&mut self, start: VClock, end: VClock) -> SampleArea {
         // Completed frames are never revisited, so long PWM histories scan once.
         self.release_before(start);
@@ -96,17 +215,7 @@ impl AudioSource for EdgeSource {
     }
 
     fn release_before(&mut self, retain_from: VClock) {
-        let mut edges = self.0.borrow_mut();
-        while edges
-            .changes
-            .front()
-            .is_some_and(|(at, _)| *at <= retain_from)
-        {
-            if let Some((_, level)) = edges.changes.pop_front() {
-                edges.level = level;
-            }
-        }
-        edges.retained_from = retain_from;
+        self.0.borrow_mut().release(retain_from);
     }
 
     fn finished(&self) -> bool {

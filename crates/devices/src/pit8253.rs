@@ -7,7 +7,8 @@
 //! PIT input clock. On the PC/AT that input is the ~1.193182 MHz OSC/12 signal,
 //! but this device models **counts, not real time**: [`Device::tick`] catches up
 //! arithmetically to the supplied PIT input clock. Only channel 0 OUT transitions
-//! and its pending load require clock visits; accesses synchronize all counters
+//! and its pending load require scheduler visits. A connected speaker observer
+//! also records channel 2 phase boundaries during catch-up; accesses synchronize all counters
 //! through [`Device::sync`] before reading, latching or programming (§6). This keeps
 //! the device deterministic and testable without a wall clock.
 //!
@@ -19,7 +20,8 @@
 //! unchanged. See `backlog/docs/design/scheduler.md`, §PIC state must follow CPU
 //! acceptance. Counters 1 (DRAM refresh) and 2 (PC speaker)
 //! feed port 61h through [`SharedPit8253`]: channel 1 clocks refresh detect and
-//! channel 2 supplies OUT and accepts the software GATE.
+//! channel 2 supplies OUT and accepts the software GATE and speaker data enable.
+//! See `backlog/docs/design/audio.md` §PC speaker for timestamped audio wiring.
 //!
 //! ## Clocking model
 //!
@@ -565,6 +567,9 @@ pub struct Pit8253 {
     refresh: bool,
     /// Standalone PITs retain a tied-high gate; AT assembly connects port 61h.
     gate2: bool,
+    speaker_data: bool,
+    speaker_level: bool,
+    speaker: Option<Box<dyn FnMut(VClock, bool)>>,
     /// Trace events observed since the last [`Device::take_trace`].
     trace: device::TraceBuffer,
     /// Virtual time of the most recent [`Device::tick`], stamped onto traces.
@@ -579,6 +584,9 @@ impl Pit8253 {
             counters: [Counter::new(), Counter::new(), Counter::new()],
             refresh: false,
             gate2: true,
+            speaker_data: false,
+            speaker_level: false,
+            speaker: None,
             trace: device::TraceBuffer::default(),
             now: VClock::ZERO,
         }
@@ -595,6 +603,54 @@ impl Pit8253 {
     #[must_use]
     pub fn count(&self, n: usize) -> u16 {
         self.counters[n].count
+    }
+
+    fn record_speaker(&mut self, at: VClock) {
+        let high = self.speaker_data && self.out(2);
+        if high != self.speaker_level {
+            self.speaker_level = high;
+            if let Some(record) = &mut self.speaker {
+                record(at, high);
+            }
+        }
+    }
+
+    /// Intel 8254 datasheet, Modes 0, 2 and 3: visit phase boundaries only,
+    /// retaining every OUT2 transition even when lazy sync skips whole periods.
+    fn advance_speaker(&mut self, mut at: VClock, until: VClock) {
+        while at < until {
+            let c = &self.counters[2];
+            let next = if c.reload_pending {
+                1
+            } else if !c.armed {
+                until.0 - at.0
+            } else {
+                match c.mode {
+                    0 if !c.out => {
+                        if c.count == 0 {
+                            65536
+                        } else {
+                            u64::from(c.count)
+                        }
+                    }
+                    2 if !c.out && c.reload == 1 && c.count == 1 => until.0 - at.0,
+                    2 if !c.out => 1,
+                    2 => {
+                        if c.count == 0 {
+                            65535
+                        } else {
+                            u64::from(c.count.saturating_sub(1)).max(1)
+                        }
+                    }
+                    3 => c.mode3_edge(),
+                    _ => until.0 - at.0,
+                }
+            };
+            let clocks = next.min(until.0 - at.0);
+            self.counters[2].advance(clocks);
+            at.0 += clocks;
+            self.record_speaker(at);
+        }
     }
 
     /// Byte offset of `port` within the PIT window, or an unmapped-port error.
@@ -683,6 +739,7 @@ impl Device for Pit8253 {
             3 => self.write_command(byte),
             _ => unreachable!("offset is bounded to 0..=3 by Self::offset"),
         }
+        self.record_speaker(self.now);
         self.trace_port(port, size, AccessDir::Write, value);
         Ok(())
     }
@@ -709,8 +766,12 @@ impl Device for Pit8253 {
         }
         // Each virtual-clock tick beyond the last one is one PIT input clock.
         let elapsed = now.0.saturating_sub(self.now.0);
+        let previous = self.now;
         self.now = now;
         for (index, counter) in self.counters.iter_mut().enumerate() {
+            if index == 2 && self.gate2 && self.speaker_data && self.speaker.is_some() {
+                continue;
+            }
             if index == 2 && !self.gate2 {
                 // Intel 8254 datasheet, Mode 0: GATE inhibits counting, not
                 // loading. Modes 2/3 force OUT high while GATE is low.
@@ -727,6 +788,10 @@ impl Device for Pit8253 {
                 }
             }
         }
+        if self.gate2 && self.speaker_data && self.speaker.is_some() {
+            self.advance_speaker(previous, now);
+        }
+        self.record_speaker(now);
     }
 
     fn next_event(&self, _now: VClock) -> NextEvent {
@@ -775,7 +840,14 @@ impl Device for Pit8253 {
 
     fn reset(&mut self) {
         let trace_policy = self.trace.policy();
+        // Audio wiring and the externally driven data pin outlive timer reset.
+        let speaker = self.speaker.take();
+        let speaker_data = self.speaker_data;
+        let speaker_level = self.speaker_level;
         *self = Pit8253::new();
+        self.speaker = speaker;
+        self.speaker_data = speaker_data;
+        self.speaker_level = speaker_level;
         self.trace.set_policy(trace_policy);
     }
 
@@ -948,6 +1020,28 @@ pub struct SharedPit8253(
 );
 
 impl SharedPit8253 {
+    /// IBM Personal Computer AT Technical Reference, System Board, Speaker:
+    /// the drive signal is OUT2 AND port B bit 1. Register one board observer;
+    /// callbacks occur only on pin changes, not on each retired instruction.
+    pub fn observe_speaker(&self, mut record: impl FnMut(VClock, bool) + 'static) {
+        let mut pit = self.0.borrow_mut();
+        pit.speaker_level = pit.speaker_data && pit.out(2);
+        record(pit.now, pit.speaker_level);
+        pit.speaker = Some(Box::new(record));
+    }
+
+    pub(crate) fn set_speaker_data(&self, now: VClock, enabled: bool) {
+        let mut pit = self.0.borrow_mut();
+        pit.sync(now);
+        pit.speaker_data = enabled;
+        pit.record_speaker(now);
+    }
+
+    pub(crate) fn clear_speaker_data(&self) {
+        let now = self.0.borrow().now;
+        self.set_speaker_data(now, false);
+    }
+
     /// Board wiring survives device reset and is not snapshot state.
     pub(crate) fn bind_gate2(&self) {
         self.1.set(true);
@@ -982,6 +1076,7 @@ impl SharedPit8253 {
             }
             pit.gate2 = high;
         }
+        pit.record_speaker(now);
     }
 }
 

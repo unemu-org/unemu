@@ -4,6 +4,9 @@
 //! IBM Personal Computer AT Technical Reference, System Timers and System Board
 //! I/O, Port B: bit 0 gates PIT channel 2; bit 4 is a flip-flop toggled by each
 //! channel-1 OUT rising edge (refresh request); bit 5 is channel-2 OUT.
+//! System Board, Speaker: the speaker drive is OUT2 AND bit 1. Timestamped
+//! pin changes feed the audio observer; analogue filtering is not modelled.
+//! See `backlog/docs/design/audio.md` §PC speaker.
 //! See `backlog/docs/design/scheduler.md` §Device migration inventory.
 //!
 //! ## Coverage matrix
@@ -13,7 +16,7 @@
 //! - Bits 4/5: refresh detect and OUT2 sampled at the virtual PIT access clock.
 //! - Bits 6/7: no parity or I/O-channel-check error is reported.
 //!
-//! Not modelled: speaker audio, DRAM transfers, error latching and NMIs.
+//! Not modelled: speaker analogue filtering, DRAM transfers, error latching and NMIs.
 //! Without PIT wiring, refresh stays low and OUT2 stays at its idle high level.
 //!
 //! Snapshots contain the control nibble and absolute trace clock. The shared
@@ -142,6 +145,7 @@ impl Device for SysControl {
         self.control = (value as u8) & CONTROL_MASK;
         if let Some(pit) = &self.pit {
             pit.set_gate2(self.now, self.control & GATE != 0);
+            pit.set_speaker_data(self.now, self.control & SPEAKER_DATA != 0);
         }
         self.trace.push(TraceEvent::Port {
             at: self.now,
@@ -189,6 +193,7 @@ impl Device for SysControl {
     fn reset(&mut self) {
         self.control = 0;
         if let Some(pit) = &self.pit {
+            pit.clear_speaker_data();
             pit.clear_gate2();
         }
         self.trace.clear();
@@ -246,6 +251,172 @@ impl Device for SysControl {
 mod tests {
     use super::*;
     use testkit::MockBus;
+
+    type SpeakerEdges = std::rc::Rc<std::cell::RefCell<Vec<(VClock, bool)>>>;
+
+    fn speaker_bus(mode: u8, divisor: u8) -> (MockBus, MockBus, SpeakerEdges) {
+        let pit = SharedPit8253::default();
+        let sys = SysControl::new().with_pit(pit.clone());
+        let edges = SpeakerEdges::default();
+        let output = edges.clone();
+        pit.observe_speaker(move |at, high| output.borrow_mut().push((at, high)));
+        let mut timer = MockBus::new(Box::new(pit));
+        timer
+            .port_write(0x43, 1, 0xB0 | u32::from(mode << 1))
+            .unwrap();
+        timer.port_write(0x42, 1, u32::from(divisor)).unwrap();
+        timer.port_write(0x42, 1, 0).unwrap();
+        (MockBus::new(Box::new(sys)), timer, edges)
+    }
+
+    /// Intel 8254 datasheet, Modes 0, 2 and 3: load takes one clock;
+    /// low pulses and square-wave half-periods must survive a sparse sync.
+    #[test]
+    fn speaker_sparse_sync_records_exact_out2_edges() {
+        for (mode, expected) in [
+            (0, vec![(0, false), (5, true)]),
+            (
+                2,
+                vec![
+                    (0, false),
+                    (0, true),
+                    (4, false),
+                    (5, true),
+                    (8, false),
+                    (9, true),
+                ],
+            ),
+            (
+                3,
+                vec![
+                    (0, false),
+                    (0, true),
+                    (3, false),
+                    (5, true),
+                    (7, false),
+                    (9, true),
+                ],
+            ),
+        ] {
+            let (mut sys, mut timer, edges) = speaker_bus(mode, 4);
+            sys.port_write(0x61, 1, 3).unwrap();
+            timer.tick(10);
+            assert_eq!(
+                *edges.borrow(),
+                expected
+                    .into_iter()
+                    .map(|(at, level)| (VClock(at), level))
+                    .collect::<Vec<_>>(),
+                "mode {mode}"
+            );
+        }
+    }
+
+    /// IBM Personal Computer AT Technical Reference, System Board, Speaker:
+    /// bit 0 controls the timer, while bit 1 independently masks its OUT pin.
+    #[test]
+    fn speaker_gate_and_data_enable_are_independent() {
+        let (mut sys, mut timer, edges) = speaker_bus(3, 4);
+        sys.port_write(0x61, 1, 2).unwrap();
+        sys.tick(100);
+        sys.port_write(0x61, 1, 3).unwrap();
+        sys.tick(3);
+        sys.port_read(0x61, 1).unwrap();
+        sys.port_write(0x61, 1, 2).unwrap();
+        sys.tick(1);
+        sys.port_write(0x61, 1, 0).unwrap();
+        timer.tick(200);
+        assert_eq!(
+            *edges.borrow(),
+            vec![
+                (VClock(0), false),
+                (VClock(0), true),
+                (VClock(103), false),
+                (VClock(103), true),
+                (VClock(104), false)
+            ]
+        );
+    }
+
+    #[test]
+    fn speaker_direct_bit1_writes_record_pwm_edges_without_gate() {
+        let (mut sys, _timer, edges) = speaker_bus(3, 4);
+        for (at, value) in [
+            (7, 2),
+            (13, 0),
+            (29, 2),
+            (31, 0),
+            (48, 2),
+            (52, 0),
+            (73, 2),
+            (99, 0),
+        ] {
+            sys.device_mut().sync(VClock(at));
+            sys.port_write(0x61, 1, value).unwrap();
+        }
+        assert_eq!(
+            *edges.borrow(),
+            vec![
+                (VClock(0), false),
+                (VClock(7), true),
+                (VClock(13), false),
+                (VClock(29), true),
+                (VClock(31), false),
+                (VClock(48), true),
+                (VClock(52), false),
+                (VClock(73), true),
+                (VClock(99), false)
+            ]
+        );
+    }
+
+    /// Intel 8254 datasheet, Mode 3: a new count waits for the current
+    /// half-period to finish, then defines the following half-periods.
+    #[test]
+    fn speaker_mode3_count_written_mid_half_preserves_current_edge() {
+        let (mut sys, mut timer, edges) = speaker_bus(3, 8);
+        sys.port_write(0x61, 1, 3).unwrap();
+        timer.device_mut().sync(VClock(3));
+        timer.port_write(0x42, 1, 4).unwrap();
+        timer.port_write(0x42, 1, 0).unwrap();
+        timer.device_mut().sync(VClock(12));
+        assert_eq!(
+            *edges.borrow(),
+            vec![
+                (VClock(0), false),
+                (VClock(0), true),
+                (VClock(5), false),
+                (VClock(7), true),
+                (VClock(9), false),
+                (VClock(11), true)
+            ]
+        );
+    }
+
+    /// Intel 8254 datasheet, Mode 3: a control word raises OUT immediately;
+    /// a following count loads on the next clock and establishes a new phase.
+    #[test]
+    fn speaker_control_word_during_low_half_restarts_tone_phase() {
+        let (mut sys, mut timer, edges) = speaker_bus(3, 8);
+        sys.port_write(0x61, 1, 3).unwrap();
+        timer.device_mut().sync(VClock(6));
+        timer.port_write(0x43, 1, 0xB6).unwrap();
+        timer.port_write(0x42, 1, 6).unwrap();
+        timer.port_write(0x42, 1, 0).unwrap();
+        timer.device_mut().sync(VClock(16));
+        assert_eq!(
+            *edges.borrow(),
+            vec![
+                (VClock(0), false),
+                (VClock(0), true),
+                (VClock(5), false),
+                (VClock(6), true),
+                (VClock(10), false),
+                (VClock(13), true),
+                (VClock(16), false)
+            ]
+        );
+    }
 
     #[test]
     fn dormant_matches_per_clock_seeded_accesses_and_long_jumps() {

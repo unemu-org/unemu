@@ -13,7 +13,14 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   `AudioSinkKind` defaults to no output; source-free machines create no mixer.
   Sources release history even with output disabled and retire after their tails.
   Assembly settles devices before audio observation, including halted time.
-  Sound-producing devices and host playback remain unimplemented. See
+  The AT speaker records OUT2 AND port 61h bit 1 at exact PIT clocks, with
+  independent GATE2 control, direct bit-banged/PWM output and 0/+16384 stereo
+  drive levels with exactly zero silence. SysControl/PIT pairs attach it
+  automatically; default None output bounds device history to an incomplete
+  frame even without capture calls. Synthetic AT tone and toggle goldens pin PCM,
+  while late device-history errors surface at the next observation and restore
+  the current level in a new segment without waiting for another pin change.
+  Sound Blaster and host playback remain unimplemented. See
   [audio design](design/audio.md).
 
 - **2026-11-12 — 8042 keyboard command transmission:** writing a keyboard

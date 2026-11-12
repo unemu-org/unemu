@@ -57,6 +57,31 @@ fn audio_source_free_machine_keeps_mixer_absent_and_capture_empty() {
 }
 
 #[test]
+fn speaker_device_error_surfaces_at_next_observation_even_without_output() {
+    for selection in [ObservationPolicy::default(), policy()] {
+        let config = crate::at_vga_text(vec![0xEB, 0xFE]);
+        let mut rig = assemble_with_observation(&config, &selection).unwrap();
+        let edges = audio::EdgeSource::new([0; 2]);
+        let writer = edges.clone();
+        let pit = devices::pit8253::SharedPit8253::default();
+        let sys = devices::SysControl::new().with_pit(pit.clone());
+        pit.observe_speaker(move |at, high| {
+            writer.record_level(at, [if high { 16384 } else { 0 }; 2])
+        });
+        let mut sys = testkit::MockBus::new(Box::new(sys));
+        rig.add_audio_source(Box::new(edges.clone()));
+        rig.run_session(&RunPolicy::natural(Some(100), None))
+            .unwrap();
+        sys.port_write(0x61, 1, 2).unwrap();
+        assert_eq!(rig.capture_audio(), Err(AudioError::HistoryOrder));
+        sys.tick(100);
+        sys.port_write(0x61, 1, 0).unwrap();
+        rig.capture_audio().unwrap();
+        assert!(edges.pending_edges() <= 1);
+    }
+}
+
+#[test]
 fn audio_machine_capture_is_split_independent_and_preserves_display_and_cpu() {
     let config = crate::at_vga_text(vec![0xEB, 0xFE]);
     let mut whole = assemble_with_observation(&config, &policy()).unwrap();
@@ -400,4 +425,96 @@ fn persistence_failure_is_checked_before_audio_rewind_error() {
     ));
     assert_eq!(observation.captured_audio().unwrap().frame_count(), 0);
     assert_eq!(machine.clock(), VClock(25));
+}
+
+#[test]
+fn speaker_history_stays_bounded_without_capture_on_direct_and_session_runs() {
+    for direct in [true, false] {
+        let pit = devices::pit8253::SharedPit8253::default();
+        let sys = devices::SysControl::new().with_pit(pit.clone());
+        let edges = audio::EdgeSource::new([0; 2]);
+        let writer = edges.clone();
+        pit.observe_speaker(move |at, high| {
+            writer.record_level(at, [if high { 16384 } else { 0 }; 2]);
+        });
+        let mut cpu = cpu::X86JitCpu::new_real16_bare(
+            0x10000,
+            0,
+            0,
+            cpu::x86jit_backend::RealSegments::flat(0),
+        )
+        .unwrap();
+        cpu.map_ram(0, 0x10000).unwrap();
+        cpu.write_mem(0, &[0xB0, 2, 0xE6, 0x61, 0x34, 2, 0xEB, 0xFA])
+            .unwrap();
+        let mut devices: Vec<Box<dyn Device>> = vec![Box::new(pit), Box::new(sys)];
+        let index = HashMap::from([(DeviceId::Pit, 0), (DeviceId::SysControl, 1)]);
+        let mut observation =
+            Observation::bind(&ObservationPolicy::default(), &index, &mut devices).unwrap();
+        observation.add_audio_source(VClock::ZERO, Box::new(edges.clone()));
+        let mut bus = bus::Bus::new(
+            devices,
+            bus::DecodeMap {
+                ports: vec![
+                    bus::PortRange {
+                        ports: 0x40..=0x43,
+                        device: 0,
+                        width: bus::PortWidth::Byte,
+                    },
+                    bus::PortRange {
+                        ports: 0x61..=0x61,
+                        device: 1,
+                        width: bus::PortWidth::Byte,
+                    },
+                ],
+                mmio: Vec::new(),
+            },
+        );
+        bus.add_access_coupling(1, 0).unwrap();
+        let machine = ::machine::Machine::new(
+            cpu,
+            bus,
+            Box::new(chipset::NoInterruptController),
+            Vec::new(),
+            None,
+        )
+        .with_cpu_rate(
+            std::num::NonZeroU64::new(100).unwrap(),
+            std::num::NonZeroU64::new(1).unwrap(),
+        );
+        let mut rig = crate::AssembledMachine {
+            machine,
+            observation,
+            device_index: index,
+            a20_line: Default::default(),
+            persistence: Vec::new(),
+            unlisted_firmware: Vec::new(),
+            option_roms: Vec::new(),
+        };
+        for cap in (1..=10).map(|chunk| chunk * 100_000) {
+            if direct {
+                rig.machine.run_bounded(Some(cap)).unwrap();
+            } else {
+                rig.run_session(&RunPolicy::natural(Some(cap), None))
+                    .unwrap();
+            }
+            assert!(
+                edges.pending_edges() <= 26,
+                "direct={direct}, edges={}",
+                edges.pending_edges()
+            );
+        }
+        assert!(rig.observation.captured_audio().is_none());
+        rig.capture_audio().unwrap();
+        rig.observation.configure_output(policy().output);
+        rig.machine.run_bounded(Some(1_100_000)).unwrap();
+        assert!(edges.pending_edges() > 26);
+        rig.capture_audio().unwrap();
+        assert!(edges.pending_edges() <= 26);
+        assert!(rig.observation.captured_audio().unwrap().frame_count() > 0);
+        rig.observation.configure_output(OutputConfig::default());
+        rig.observation.subscribe_audio(Box::new(NullAudioSink));
+        rig.machine.run_bounded(Some(1_200_000)).unwrap();
+        assert!(edges.pending_edges() <= 26);
+    }
 }

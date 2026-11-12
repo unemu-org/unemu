@@ -384,7 +384,16 @@ fn assemble_with_cpu_and_catalogue(
         device_index.insert(dc.id, index);
     }
 
-    let observation = Observation::bind(observation_policy, &device_index, &mut devices)?;
+    let mut observation = Observation::bind(observation_policy, &device_index, &mut devices)?;
+    if device_index.contains_key(&DeviceId::SysControl) && device_index.contains_key(&DeviceId::Pit)
+    {
+        let source = audio::EdgeSource::new([0; 2]);
+        let writer = source.clone();
+        pit.observe_speaker(move |at, high| {
+            writer.record_level(at, [if high { 16384 } else { 0 }; 2]);
+        });
+        observation.add_audio_source(device::VClock::ZERO, Box::new(source));
+    }
 
     // The machine needs exactly one controller. If the config has no PIC (an
     // interrupt-free machine), a null controller keeps the loop total.
