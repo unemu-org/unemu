@@ -58,6 +58,7 @@
 //! | Command                        | Opcode | Modelled | Notes                          |
 //! |--------------------------------|--------|----------|--------------------------------|
 //! | SPECIFY                        | `0x03` | yes      | timings accepted, not enforced |
+//! | SENSE DRIVE STATUS             | `0x04` | yes      | ST3; no interrupt or seek-state change |
 //! | RECALIBRATE                    | `0x07` | partial  | PCN=0; empty bay: SE+EC, abnormal IRQ6 |
 //! | SENSE INTERRUPT STATUS         | `0x08` | yes      | ST0 + PCN, or invalid if idle  |
 //! | SEEK                           | `0x0F` | yes      | set present cylinder, IRQ6     |
@@ -83,6 +84,21 @@
 //! can expire its software timeout, then DOR reset aborts the search and makes
 //! the four reset SIS results available. No controller timeout is invented.
 //!
+//! SENSE DRIVE STATUS takes a drive/head parameter and returns one ST3 byte
+//! without raising or acknowledging INT. NEC µPD765 datasheet, Functional
+//! Description of Commands, SENSE DRIVE STATUS and Status Register 3; Intel
+//! 8272A datasheet, Command Descriptions, SENSE DRIVE STATUS and Status Register
+//! 3: ST3 reports FT/WP/RY/T0/TS/HD/US1/US0 from bit 7 down to bit 0.
+//! HD and US echo the parameter; RY follows the active RDY policy above.
+//! ASSUMED: TS comes from the mounted geometry's two heads, and T0 from the
+//! selected drive's PCN=0. With no separate drive-without-media state, an empty
+//! bay clears T0/TS/WP, even after RECALIBRATE clears PCN. FT stays clear because
+//! drive faults are not modelled; WP follows the medium's write protection.
+//! ASSUMED: T0/WP/TS follow the command's unit regardless of DOR drive-select
+//! and motor bits. The AT adapter's selected, motor-on drive supplies these
+//! lines (IBM PC AT Technical Reference, Fixed Disk and Diskette Drive Adapter,
+//! Interface Lines); the model does not gate them.
+//!
 //! IBM PC AT Technical Reference, Digital Output Register (3F2h), bit 3 and
 //! adapter logic diagram sheet 5 of 9: IRQ6 is pending interrupt AND bit 3.
 //! ASSUMED: a DMA request is retained while the same gate is closed. Real
@@ -99,10 +115,9 @@
 //!   pre-transfer failures echo command C/R/N and physical HD as result H;
 //!   an empty-bay READ ID has no result CHRN. Logical-ID error reporting
 //!   needs an ID-field/rotational model and is not claimed.
-//! - **WRITE DELETED DATA** (`0x09`), **SENSE DRIVE STATUS** (`0x04`, whose ST3
-//!   is the other place the write-protect line surfaces on real hardware), and
-//!   **FORMAT TRACK**: the modelled write path is a plain WRITE DATA. A protected
-//!   disk is still honoured — WRITE DATA to one faults with ST1 not-writable.
+//! - **WRITE DELETED DATA** (`0x09`) and **FORMAT TRACK**: the modelled write
+//!   path is a plain WRITE DATA. A protected disk is still honoured — WRITE DATA
+//!   to one faults with ST1 not-writable.
 //! - **Non-DMA (PIO) transfer mode**: transfers always go through the 8237. The
 //!   DOR's DMA-enable bit gates IRQ6 and DMA requests, but the controller has
 //!   no data-port streaming path.
@@ -305,6 +320,15 @@ const ST1_END_OF_CYLINDER: u8 = 1 << 7;
 /// NEC µPD765 / Intel 8272A datasheets, Status Register 1, Overrun.
 const ST1_OVERRUN: u8 = 1 << 4;
 
+/// NEC µPD765 / Intel 8272A datasheets, Status Register 3, Two Side.
+const ST3_TWO_SIDE: u8 = 1 << 3;
+/// NEC µPD765 / Intel 8272A datasheets, Status Register 3, Track 0.
+const ST3_TRACK_ZERO: u8 = 1 << 4;
+/// NEC µPD765 / Intel 8272A datasheets, Status Register 3, Ready.
+const ST3_READY: u8 = 1 << 5;
+/// NEC µPD765 / Intel 8272A datasheets, Status Register 3, Write Protected.
+const ST3_WRITE_PROTECTED: u8 = 1 << 6;
+
 /// Which phase of the command protocol the controller is in.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 enum Phase {
@@ -479,6 +503,7 @@ impl Upd765 {
     fn command_info(opcode: u8) -> Option<CommandInfo> {
         let (length, result_interrupt) = match opcode & 0x1F {
             0x03 => (3, false), // SPECIFY
+            0x04 => (2, false), // SENSE DRIVE STATUS
             0x07 => (2, false), // RECALIBRATE
             0x08 => (1, false), // SENSE INTERRUPT STATUS
             0x0F => (3, false), // SEEK
@@ -572,6 +597,7 @@ impl Upd765 {
         let opcode = self.command[0] & 0x1F;
         match opcode {
             0x03 => self.cmd_specify(),
+            0x04 => self.cmd_sense_drive_status(),
             0x07 => self.cmd_recalibrate(),
             0x08 => self.cmd_sense_interrupt(),
             0x0F => self.cmd_seek(),
@@ -586,6 +612,30 @@ impl Upd765 {
     /// interrupt, no result phase.
     fn cmd_specify(&mut self) {
         self.finish_no_result();
+    }
+
+    /// NEC µPD765 datasheet, SENSE DRIVE STATUS / Status Register 3; Intel
+    /// 8272A datasheet, SENSE DRIVE STATUS / Status Register 3: report the
+    /// selected drive's signals without disturbing seek completion or INT.
+    /// RDY and empty-bay signal assumptions follow the module's board policy.
+    fn cmd_sense_drive_status(&mut self) {
+        let drive_head = self.command[1] & 0b111;
+        let unit = usize::from(drive_head & 0b11);
+        let mut st3 = ST3_READY | drive_head;
+        if let Some(drive) = &self.drives[unit] {
+            if drive.geometry.heads == 2 {
+                st3 |= ST3_TWO_SIDE;
+            }
+            if self.present_cylinder[unit] == 0 {
+                st3 |= ST3_TRACK_ZERO;
+            }
+            if drive.write_protected() {
+                st3 |= ST3_WRITE_PROTECTED;
+            }
+        }
+        self.result = vec![st3];
+        self.result_index = 0;
+        self.phase = Phase::Result;
     }
 
     /// RECALIBRATE: seek the selected drive to cylinder 0 and raise IRQ6. The
@@ -1394,6 +1444,7 @@ impl Device for Upd765 {
         let command_consistent =
             command.is_empty() || (valid_command == Some(expected) && command_len <= expected);
         let result_consistent = match command.first().map(|op| op & 0x1F) {
+            Some(4) => result_len == 1,
             Some(8) => matches!(result_len, 1 | 2),
             Some(5 | 6 | 0x0A) => result_len == 7,
             None => result_len == 1,
@@ -1464,6 +1515,175 @@ impl Device for Upd765 {
 mod tests {
     use super::*;
     use testkit::MockBus;
+
+    #[test]
+    fn sense_drive_status_has_two_command_bytes_and_one_result() {
+        for modifiers in (0..=7).map(|bits| bits << 5) {
+            let mut bus = MockBus::new(Box::new(ready_fdc(Vec::new())));
+            bus_command(&mut bus, &[modifiers | 0x04]);
+            assert_eq!(
+                bus.port_read(MSR, 1).unwrap(),
+                u32::from(MSR_RQM | MSR_BUSY),
+                "the drive/head parameter must precede the result"
+            );
+            bus_command(&mut bus, &[0xF8]);
+            assert_eq!(
+                bus.port_read(MSR, 1).unwrap(),
+                u32::from(MSR_RQM | MSR_DIO | MSR_BUSY)
+            );
+            assert_eq!(bus_results(&mut bus, 1), vec![0x38]);
+            assert_eq!(bus.port_read(MSR, 1).unwrap(), u32::from(MSR_RQM));
+        }
+    }
+
+    #[test]
+    fn sense_drive_status_echoes_unit_and_head_from_parameter() {
+        let drives = std::array::from_fn(|_| Some(Drive::new(FloppyGeometry::HD1440, Vec::new())));
+        let mut bus = MockBus::new(Box::new(ready_drives(drives)));
+        for drive_head in 0..8 {
+            bus_command(&mut bus, &[0x04, 0xF8 | drive_head]);
+            assert_eq!(bus_results(&mut bus, 1), vec![0x38 | drive_head]);
+        }
+    }
+
+    #[test]
+    fn sense_drive_status_two_side_follows_selected_geometry() {
+        let mut bus = MockBus::new(Box::new(ready_drives(std::array::from_fn(|unit| {
+            let geometry = FloppyGeometry {
+                heads: if unit % 2 == 0 { 1 } else { 2 },
+                ..FloppyGeometry::HD1440
+            };
+            Some(Drive::new(geometry, Vec::new()))
+        }))));
+        for unit in 0..4 {
+            bus_command(&mut bus, &[0x04, unit]);
+            let two_side = if unit % 2 == 0 { 0 } else { 0x08 };
+            assert_eq!(bus_results(&mut bus, 1), vec![0x30 | two_side | unit]);
+        }
+    }
+
+    #[test]
+    fn sense_drive_status_track_zero_follows_recalibrate_and_seek() {
+        let mut bus = MockBus::new(Box::new(ready_fdc(Vec::new())));
+        bus_command(&mut bus, &[0x0F, 0, 10]);
+        bus_command(&mut bus, &[0x07, 0]);
+        bus_command(&mut bus, &[0x04, 0]);
+        assert_eq!(bus_results(&mut bus, 1), vec![0x38]);
+        bus_command(&mut bus, &[0x0F, 0, 10]);
+        for _ in 0..2 {
+            bus_command(&mut bus, &[0x04, 0]);
+            assert_eq!(bus_results(&mut bus, 1), vec![0x28]);
+        }
+        bus_command(&mut bus, &[0x08]);
+        assert_eq!(bus_results(&mut bus, 2), vec![ST0_SEEK_END, 10]);
+    }
+
+    #[test]
+    fn sense_drive_status_write_protect_follows_selected_media() {
+        let mut bus = MockBus::new(Box::new(ready_drives([
+            Some(Drive::new_read_only(FloppyGeometry::HD1440, Vec::new())),
+            Some(Drive::new(FloppyGeometry::HD1440, Vec::new())),
+            None,
+            None,
+        ])));
+        for (unit, status) in [(0, 0x78), (1, 0x39)] {
+            bus_command(&mut bus, &[0x04, unit]);
+            assert_eq!(bus_results(&mut bus, 1), vec![status]);
+        }
+    }
+
+    /// Pins the assumed command-unit drive lines without DOR select/motor gating.
+    #[test]
+    fn sense_drive_status_ready_is_active_with_motors_and_gate_off() {
+        let mut bus = MockBus::new(Box::new(ready_fdc(Vec::new())));
+        bus.port_write(DOR, 1, 4).unwrap();
+        for unit in 0..4 {
+            bus_command(&mut bus, &[0x04, unit]);
+            let status = if unit == 0 { 0x38 } else { 0x20 | unit };
+            assert_eq!(bus_results(&mut bus, 1), vec![status]);
+        }
+    }
+
+    #[test]
+    fn sense_drive_status_empty_bay_has_no_track_zero_two_side_or_write_protect() {
+        let mut bus = MockBus::new(Box::new(ready_drives([None, None, None, None])));
+        for unit in 0..4 {
+            for command in [vec![0x07, unit], vec![0x0F, unit, 10]] {
+                bus_command(&mut bus, &command);
+                bus_command(&mut bus, &[0x04, 4 | unit]);
+                assert_eq!(bus_results(&mut bus, 1), vec![0x24 | unit]);
+            }
+        }
+    }
+
+    #[test]
+    fn sense_drive_status_fault_is_clear_for_mounted_and_empty_bays() {
+        let mut bus = MockBus::new(Box::new(ready_fdc(Vec::new())));
+        for unit in 0..4 {
+            bus_command(&mut bus, &[0x04, unit]);
+            assert_eq!(bus_results(&mut bus, 1)[0] & 0x80, 0);
+        }
+    }
+
+    #[test]
+    fn sense_drive_status_does_not_raise_an_interrupt() {
+        let mut bus = MockBus::new(Box::new(ready_fdc(Vec::new())));
+        for byte in [0x04, 0] {
+            bus_command(&mut bus, &[byte]);
+            assert!(!bus.device().irq_pending());
+        }
+        assert_eq!(bus_results(&mut bus, 1), vec![0x38]);
+        assert!(!bus.device().irq_pending());
+        bus_command(&mut bus, &[0x08]);
+        assert_eq!(bus_results(&mut bus, 1), vec![0x80]);
+    }
+
+    #[test]
+    fn sense_drive_status_preserves_pending_seek_and_other_drive_cylinders() {
+        let drives = std::array::from_fn(|_| Some(Drive::new(FloppyGeometry::HD1440, Vec::new())));
+        let mut bus = MockBus::new(Box::new(ready_drives(drives)));
+        bus_command(&mut bus, &[0x0F, 6, 10]);
+        for (drive_head, status) in [(0, 0x38), (6, 0x2E)] {
+            for byte in [0x04, drive_head] {
+                bus_command(&mut bus, &[byte]);
+                assert!(bus.device().irq_pending());
+            }
+            assert_eq!(bus_results(&mut bus, 1), vec![status]);
+            assert!(bus.device().irq_pending(), "ST3 does not acknowledge INT");
+        }
+        bus_command(&mut bus, &[0x08]);
+        assert!(!bus.device().irq_pending());
+        assert_eq!(bus_results(&mut bus, 2), vec![ST0_SEEK_END | 6, 10]);
+    }
+
+    #[test]
+    fn sense_drive_status_preserves_all_reset_polls() {
+        let mut bus = MockBus::new(Box::new(Upd765::new()));
+        bus.port_write(DOR, 1, 12).unwrap();
+        for unit in 0..4 {
+            let pending = bus.device().irq_pending();
+            bus_command(&mut bus, &[0x04, unit]);
+            assert_eq!(bus_results(&mut bus, 1), vec![0x20 | unit]);
+            assert_eq!(bus.device().irq_pending(), pending);
+            bus_command(&mut bus, &[0x08]);
+            assert_eq!(bus_results(&mut bus, 2), vec![ST0_POLL | unit, 0]);
+        }
+    }
+
+    #[test]
+    fn sense_drive_status_probe_sequence_accepts_the_next_command() {
+        let mut bus = MockBus::new(Box::new(ready_fdc(Vec::new())));
+        bus_command(&mut bus, &[0x07, 0]);
+        bus_command(&mut bus, &[0x0F, 4, 10]);
+        bus_command(&mut bus, &[0x04, 4]);
+        assert_eq!(bus_results(&mut bus, 1), vec![0x2C]);
+        assert_eq!(bus.port_read(MSR, 1).unwrap(), u32::from(MSR_RQM));
+        bus_command(&mut bus, &[0x03, 0xDF, 2]);
+        assert_eq!(bus.port_read(MSR, 1).unwrap(), u32::from(MSR_RQM));
+        bus_command(&mut bus, &[0x08]);
+        assert_eq!(bus_results(&mut bus, 2), vec![ST0_SEEK_END | 4, 10]);
+        assert_eq!(bus.port_read(MSR, 1).unwrap(), u32::from(MSR_RQM));
+    }
 
     #[test]
     fn dor_reset_assertion_clears_int_before_release() {

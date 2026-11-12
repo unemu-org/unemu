@@ -168,8 +168,13 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   16-bit address while scanout wraps at the CPU aperture by assumption. FDC
   IRQ6 and DMA requests obey DOR bit 3. With RDY active, empty-bay SEEK succeeds,
   RECALIBRATE reports equipment check with PCN=0, and ID/data searches wait for
-  reset without an interrupt. Per-device module matrices record the remaining
-  unsupported cases and assumptions; changed expectations are listed in
+  reset without an interrupt. SENSE DRIVE STATUS (04h) accepts the drive/head
+  parameter and returns ST3 without raising or acknowledging an interrupt or
+  changing the present cylinders. ST3 echoes unit/head, reports two-sided
+  geometry, mounted track 0 and media write protection, and keeps READY active
+  for every select. ASSUMED: an empty bay clears T0/TS/WP; FT is always clear
+  because drive faults are not modelled. Per-device module matrices record the
+  remaining unsupported cases and assumptions; changed expectations are listed in
   [scheduler adoption](design/scheduler.md#adoption).
 - **AT fixed-disk adapter registers:** `ide` cards accept
   `controller_model = "at-adapter"` on every board, keeping task latches

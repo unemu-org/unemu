@@ -582,9 +582,10 @@ fn mounted_fdc() -> Box<dyn Device> {
 #[test]
 fn fdc_continues_each_command_prefix_result_and_dma_phase() {
     use device::{DmaOp, DmaOutcome};
-    for opcode in [3, 7, 8, 0x0F, 0x4A, 0x46, 0x45] {
+    for opcode in [3, 4, 7, 8, 0x0F, 0x4A, 0x46, 0x45] {
         let bytes: &[u32] = match opcode {
             3 => &[3, 0, 0],
+            4 => &[4, 0],
             7 => &[7, 0],
             8 => &[8],
             0x0F => &[0x0F, 0, 42],
