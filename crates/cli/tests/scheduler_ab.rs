@@ -409,6 +409,8 @@ fn unequal_lengths_report_the_missing_event() {
 }
 
 // Same opt-in boundary as the firmware goldens; absent fixtures still skip.
+// The bare rig's 8042 selects 80286; the POP DS single-step trap changes only
+// the open BIOS's CPU identification and warning row in the pinned screen.
 #[test]
 #[ignore = "requires BIOS fixture and runs POST twice"]
 fn deadline_matches_per_clock_on_bios_post() {

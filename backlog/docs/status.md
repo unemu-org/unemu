@@ -5,6 +5,45 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-12 — CPU A20 wiring:** Assembly applies the shared 8042/92h OR
+  line at construction; the machine forwards effective transitions after port
+  writes and before runs using the change counter. CPU-only resets, including
+  shutdown, preserve the line. IBM 5170's I80286 Machine model honours the gate.
+  Bare rigs with an A20 source use that model too, retaining a low reset entry;
+  source-free rigs keep flat Application(Real16). The initial transition count
+  remains 1 after 8042 attachment, 0 for port 92h alone. CPU physical bit 20 is
+  gated; host memory access and ISA DMA bypass it. Source policy remains OR
+  (ASSUMED), with SeaBIOS qualification still owned by the generic ISA board.
+  Synthetic tests cover bidirectional 1 MiB aliasing through both controls,
+  OR combinations, CPU-only reset, gated fault metadata and redundant-call
+  suppression. Bare A20 rigs vector divide error through INT 0 in the guest.
+  The IBM 5170 reset test pins the assumed external-gate/ROM interaction:
+  with A20 off, FFFFF0h becomes empty-bus EFFFF0h and FFh bytes enter #UD.
+  See [the board contract](design/machine-config.md#a20-line-and-system-control-port-a).
+
+  **MEASURED CPU-detection re-baseline, with the same CPU pin:** the bare POST
+  rig has an 8042 and therefore runs the I80286 Machine model. The single-step
+  trap after POP DS changes Kiselev's 8088-identification result from
+  `Harris-designed 80C88` to `Intel 8088 '78` and adds its segment-load warning.
+  The maintainer accepted this model change. Only this CPU-detection report
+  changes; the floppy, FreeDOS and IDE screen expectations stay unchanged.
+
+  | Bare POST expectation | Previous | Current |
+  | --- | --- | --- |
+  | MDA FNV64 (`bios_boot_golden`) | `bfa9b5ab3f8508a4` | `b59246d76d78f3fc` |
+  | Logical FNV64 (`bios_boot_golden`, volatile media POST, scheduler POST) | `e36ef0102a7cbc14` | `945fcce568e5d520` |
+  | MDA cursor row | 18 | 19 |
+  | Retired instructions | 19,015,022 | 19,015,022 |
+  | Virtual time | 20,000,000 | 20,000,000 |
+
+  **Proof:** in the captured 25-row MDA console, restoring only the CPU
+  identification text, removing only the added warning row and appending the
+  resulting empty final row reproduces the previous raw MDA and logical FNV64
+  values exactly. Removing that row also restores cursor `(0,18,true)` from
+  `(0,19,true)`. RTC, other text, stop kind and POST bytes require no changes.
+  No A20-wrapped guest access explains this drift; it is the model's TF behavior
+  (Intel 80286 Programmer's Reference Manual, §9.7.1).
+
 - **2026-11-12 — Derived AT CMOS century:** every derived layout seeds 32h
   from the RTC start year in BCD, including the standard AT layout. The IBM
   PC AT Technical Reference, System Board, CMOS RAM address map, defines this
@@ -131,9 +170,9 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   IBM PC AT Technical Reference, Section 1, System Memory Map); Bare
   rigs retain their maps. FE0000h–FFFFFFh mirrors the resolved low 128 KiB
   read-only as a board decode. Fill/copy scratch is bounded to 8 KiB; VM extent
-  is fixed by AT decoding; CPU width and mapping bounds are validated. Real16
-  still ignores CPU A20 gating,
-  so a would-be 1 MiB wrap now reads FFh or extended RAM instead of Unmapped. See
+  is fixed by AT decoding; CPU width and mapping bounds are validated. With
+  A20 enabled, accesses above 1 MiB read FFh or extended RAM instead of Unmapped;
+  the CPU wiring follow-up now makes a disabled gate alias physical bit 20. See
   [memory-map policy](design/machine-config.md#memoryconfig--a-semantic-memory-map).
 
 - **2026-11-11 — Register-level VGA graphics:** opt-in `vga` cards capture
@@ -355,8 +394,8 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   Application Real16. At `a92b676`, 1,666 fast tests, 611 release device tests
   and all existing slow golden expectations passed.
   The `44403dd` update added `xj-srh.11 (x86jit)` A20 gating for LegacySystem.
-  Board A20 integration (`upc-o0j.5`) remains separate from this profile switch;
-  the retained board latch is not yet connected to the CPU gate.
+  Board A20 integration now forwards the retained shared line into this CPU
+  profile; the accepted no-media bare POST re-baseline is recorded above.
 - **CPU:** `ibm-5170` with model `80286` selects the I286 machine profile, with
   real-mode entry, LMSW protected entry and same-CPL 16-bit protected execution.
   `set_cpu_model(I80286)` fixes the VM model and defaults to InGuest delivery:
@@ -368,7 +407,9 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   outward faults retain typed vector/error-code/CS:IP diagnostics. A fault
   during #DF delivery requests the same CPU-only reset as the 8042, retaining
   RAM, CMOS, the A20 latch, devices and accounting. The standalone Real16 constructor
-  and bare assembly rigs retain Application Real16. Both profiles have exact step bounds,
+  and source-free bare rigs retain Application Real16; bare rigs with an A20
+  source select I80286 with low reset fetch and in-guest processor exceptions.
+  Both profiles have exact step bounds,
   per-iteration REP time, STI/SS-load inhibition and interrupt-readiness stops.
   Real16 INS/OUTS support byte/word elements, REP, OUTS segment overrides,
   and IRQ delivery between elements; answered INS stores retain their value on retry.
@@ -433,7 +474,7 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   output-port/A20 latch, retirement counters and virtual time survive. Reset
   does not end a journal session. I286 reset restores MSW/IDTR and real caches,
   including hidden CS base FF0000h; the system ROM has a 24-bit reset mirror.
-  A20 address masking remains unsupported; see
+  A20 address masking follows the shared board line; see
   [machine-config.md, Board model](design/machine-config.md#board-model).
 
 ### User-supplied system ROM catalogue
@@ -690,7 +731,7 @@ no golden re-baseline was needed.
   prevents SeaBIOS from disabling A20 through 92h alone; `upc-o0j.6` must choose
   arbitration and test INT 15h AX=2400h/2402h. Attaching the 8042 starts the
   change counter at 1; no source reports disabled despite flat CPU addressing.
-  Final defaults/counter baseline belong to `upc-o0j.5`, alongside CPU masking.
+  The CPU wiring follow-up below retains those source defaults and counter baseline.
   IBM 5170 rejects port 92h. See
   [machine-config.md §A20 line and System Control Port A](design/machine-config.md#a20-line-and-system-control-port-a).
 

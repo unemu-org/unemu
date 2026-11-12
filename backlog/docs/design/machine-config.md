@@ -12,7 +12,7 @@ Status: **implemented.** `assembly` owns the Rust data model and validation;
 
 Related: [`spec.md §3`](spec.md) (machine assembly), decision-7 (swap seams and
 its task-28 annex), decision-4 (IRQ-injection / interrupt latency), decision-5
-(retired-instruction clock), decision-8 (A20 always-on).
+(retired-instruction clock), decision-8 (original A20 deferral; now implemented).
 
 ## The problem
 
@@ -266,15 +266,46 @@ versus last-writer-wins and test SeaBIOS INT 15h AX=2400h (disable) and AX=2402h
 
 `AssembledMachine::a20_line.enabled()` exposes the effective state;
 `change_count()` counts effective transitions, including attachment and device
-reset/restore, wrapping at `u64::MAX`. Attaching the enabled 8042 to a fresh
-line counts one transition: assembled 8042 machines start at 1. An absent
-device contributes false; a machine with no A20 source reports disabled even
-though CPU addressing remains flat. Final source defaults and the counter
-baseline belong to the CPU-mask bead (`upc-o0j.5`). The counter is diagnostic
-history, excluded from snapshots. Device snapshots retain their own source
-latches; restoring one updates only that source. No clock, scheduled event or
-guest read is needed to observe a change. **Not yet applied to CPU addressing;
-the CPU-side mask lands with the CPU core's A20 support.**
+reset/restore, wrapping at `u64::MAX`. The baseline is zero with both sources
+absent/disabled. Attaching the enabled 8042 counts one transition, so assembled
+8042 machines start at 1; port 92h alone starts disabled at 0. Source defaults
+are unchanged. The counter is diagnostic history, excluded from snapshots.
+Device snapshots retain their own source latches; restoring one updates only
+that source.
+
+Assembly attaches the line to `Machine` only if an A20 source exists. It applies
+the initial state once and remembers the current counter, then forwards changes
+through `Cpu::set_a20_enabled` after each port write and before each run. The
+latter also observes host-side bus writes and device restore. Unchanged counts
+cause no CPU calls. A source-free bare rig reports a disabled *unattached board
+line* but retains flat CPU addressing.
+
+IBM 5170 uses the I80286 Machine profile, which honours A20. Bare rigs with
+an 8042 or port 92h also use that model because Application(Real16) ignores the
+core's gate. These bare rigs retain their low FFFF0h reset entry and explicit
+memory map and present FPU; rigs without either source retain Application(Real16).
+All I80286 Machine rigs, including bare rigs with an A20 source, deliver processor
+exceptions in the guest through the IVT/IDT (`ExceptionDelivery::InGuest`). This
+includes divide error, BOUND and segment-limit faults. The machine profile also
+brings its instruction and segment limits. Source-free Application rigs retain
+their existing execution/error behavior.
+This is a profile consequence of attaching the gate, not a new CPU config knob.
+
+A disabled gate clears physical bit 20 (100000h aliases 000000h); higher bits
+remain intact. The pinned CPU core applies changes at architectural interruption
+points, deferring an in-flight memory element/continuation until it retires or
+is abandoned. A completed OUT applies immediately before the next instruction.
+CPU reset preserves the effective line and applies any pending request before
+installing reset registers. 8042/92h reset and triple-fault shutdown reset only
+the CPU, preserving both source latches and the synchronization baseline. Reset
+fetches are also gated. **ASSUMED board interaction:** the AT's A20 gate sits
+after the CPU, so its FFFFF0h reset fetch becomes EFFFF0h with A20 disabled.
+IBM PC AT Technical Reference, System Board, System Memory Map decodes ROM only
+at E0000h–FFFFFh and FE0000h–FFFFFFh. EFFFF0h is empty bus in this model: FFh bytes
+cause #UD, delivered through the retained guest IVT. The synthetic IBM 5170
+8042-reset test pins this behavior; it is not independent electrical qualification.
+Host image loading/readback and ISA DMA use physical memory directly and bypass CPU A20.
+No clock, event, wall time or guest read is needed to propagate a change.
 
 Port 92h bit 0 requests reset through the **same** `Rc<Cell<bool>>` that the
 8042 and machine use. IBM ThinkPad 560 Technical Reference, "System Control
@@ -312,8 +343,12 @@ exceptions through the IVT and protected events through CPL-0 IDT interrupt
 and trap gates. It starts in real mode and can enter same-CPL 16-bit protected
 mode through LMSW. Unsupported system contexts retain typed CS:IP diagnostics;
 explicit outward exceptions retain vector/error-code metadata.
-This applies to `ibm-5170`. `BoardModel::Bare` assembly rigs and standalone
-`new_real16_bare` CPU tests retain the fixed application Real16 profile.
+This applies to `ibm-5170` and to `BoardModel::Bare` rigs attaching an 8042 or
+port 92h A20 source. Bare rigs without a source and standalone
+`new_real16_bare` CPU tests retain fixed Application(Real16), which ignores A20.
+A20-capable bare rigs retain the low reset fetch and present FPU; IBM 5170
+retains its high reset fetch and optional FPU. Both deliver processor exceptions
+in the guest. Source-free Application rigs are used by host-error-path tests.
 No 386 model, paging or privilege transitions are selected. The pin also
 provides CPL-0 hardware task switches through far JMP/CALL to a TSS or task
 gate, IRET with NT and IDT task gates, including busy bits and MSW.TS
@@ -362,7 +397,7 @@ Map**, **Keyboard Controller**, and **Real-Time Clock/CMOS RAM Information**.
 | 3. `Pit` | 40h–43h, IRQ0 | Existing 8253 model stands in for the AT's 8254 |
 | 4. `Dma` | 8237 at 00h–0Fh, channels 0–3, page latches 81h–88h | No refresh DMA requester |
 | 5. `DmaWord` | Second 8237 at C0h–DFh (odd ports alias the preceding even register), pages 89h–8Fh, channels 4–7; channel 4 is cascade | No cycle-level arbitration between banks |
-| 6. `Keyboard` | 8042 at 60h/64h, IRQ1; D1h output bit 0 and F0h–FFh pulses restart only the CPU | A20 source latch is retained; CPU address masking is pending; pulse duration and temporary output levels are not timed |
+| 6. `Keyboard` | 8042 at 60h/64h, IRQ1; D1h output bit 0 and F0h–FFh pulses restart only the CPU | A20 source latch drives CPU physical bit 20 and survives CPU-only reset; pulse duration and temporary output levels are not timed |
 | 7. `Rtc` | MC146818 at 70h–71h, IRQ8, NMI-mask state | Seed and virtual timing remain configurable |
 | 8. `Coprocessor` | F0h, F1h, F8h–FFh; IRQ13 wired inactive | Port face remains an empty socket even when the CPU has an optional FPU; FERR#/IRQ13 and F0h/F1h controls are unimplemented |
 | 9. `SysControl` | 61h control/status | Shares PIT state: refresh flip-flop from OUT1, OUT2 status, bit-0 GATE2; bit 1 AND OUT2 feeds the speaker audio source |
@@ -603,16 +638,10 @@ fields here rather than a redesign of everything above.
 `MemoryConfig` describes the address space as regions with *kinds*, not a flat
 byte count. Two things it must express that a naive "N kB of RAM" cannot:
 
-- **CPU A20 masking.** CPU addressing remains a flat 1 MB+ linear space with
-  no A20 wrap (decision-8, §4.4). The board line and its 8042/92h source latches
-  are observable, but applying the effective state awaits CPU-core support.
-
-  **A20 as a model constant.** A20 is always-on (decision-8, §4.4). The memory
-  map is a flat 1 MB+ linear space with no wrap; A20 is not a configurable knob.
-  The config records this as a fixed property of the modelled machine, so nobody
-  reintroduces it as a per-machine option.
-  The always-on statement describes current CPU address translation; the board
-  line separately exposes its controller-source state.
+- **CPU A20 masking.** The board line clears physical address bit 20 when
+  disabled; this is CPU translation, not an aliased RAM mapping. Host memory
+  loading/readback and ISA DMA bypass it. Source-free bare rigs keep flat
+  addressing; see [A20 line and System Control Port A](#a20-line-and-system-control-port-a).
 - **Adapter space belongs to the board.**
   **Firmware scan space is not system RAM.** IBM PC AT Technical Reference,
   Section 1 "System Board", **System Memory Map** assigns C0000h–DFFFFh to
@@ -677,10 +706,8 @@ byte count. Two things it must express that a naive "N kB of RAM" cannot:
   machine, plus at most 8 KiB of nested fill/copy scratch. Firmware/media
   buffers and CPU tracking metadata are additional; this is not a measured
   whole-process RSS.
-  The current Real16 CPU still ignores the A20 line: a would-be
-  wrap at 100000h now reads empty bus or installed extended RAM instead of
-  stopping on Unmapped, so code relying on a 1 MiB wrap silently reads FFh in
-  the no-extended-RAM case until the CPU A20 gate is wired.
+  With A20 enabled, 100000h reads installed extended RAM or empty bus.
+  With A20 disabled, CPU accesses at 100000h alias low RAM at 000000h.
   `Bare` rigs get neither
   the larger VM nor automatic empty-bus mappings; explicit mappings still work.
 

@@ -1657,6 +1657,15 @@ mod tests {
             config.board = assembly::BoardModel::Bare;
             config.cpu = demo.cpu;
             config.images = demo.images;
+            // Keep this host-error fixture on flat Application(Real16); an
+            // A20-capable 80286 rig delivers processor exceptions in the guest.
+            config.devices.retain(|device| {
+                !matches!(
+                    device.kind,
+                    assembly::DeviceKind::Keyboard(_) | assembly::DeviceKind::SysCtrlPortA
+                )
+            });
+
             std::fs::write(&base, vec![0; 1_474_560]).unwrap();
             config.drives[0].image = assembly::ImageSource::File(base.clone());
             config.drives[0].write = assembly::WriteMode::journal(&journal);
@@ -1786,6 +1795,7 @@ mod tests {
         }
 
         for tail in [&[0xFA, 0xF4][..], &[0x0F, 0x05], &[0xEB, 0xFE]] {
+            let error_path = tail == [0x0F, 0x05];
             let mut baseline = None;
             for (kind, record) in [
                 (assembly::FrameSinkKind::Headless, true),
@@ -1804,6 +1814,16 @@ mod tests {
                 let mut config = assembly::bios(rom, None);
                 config.cpu.reset = assembly::ResetSpec::Entry { cs: 0xF800, ip: 0 };
                 config.board = assembly::BoardModel::Bare;
+                if error_path {
+                    // Only this case needs a host decode error; keep keyboard
+                    // injection on the halt and budget cases below.
+                    config.devices.retain(|device| {
+                        !matches!(
+                            device.kind,
+                            assembly::DeviceKind::Keyboard(_) | assembly::DeviceKind::SysCtrlPortA
+                        )
+                    });
+                }
                 config.devices.reverse();
                 let mut observation = bios_observation_policy();
                 observation.output.frame_sink = kind;
@@ -1831,7 +1851,7 @@ mod tests {
                     assembled.observation.subscriber_count(DeviceId::Vga),
                     capture_count
                 );
-                let run = run_bios_assembled(&mut assembled, |indices| RunPolicy {
+                let mut policy = RunPolicy {
                     retired_cap: Some(100),
                     idle_limit: None,
                     stop: StopCondition::PromptThen {
@@ -1842,12 +1862,27 @@ mod tests {
                         poll_step: 4,
                         then_budget: 20,
                     },
-                    stimuli: vec![KeyboardStimulus {
-                        keyboard_index: indices[&DeviceId::Keyboard],
-                        scancodes: vec![0x1C],
-                        schedule: InjectionSchedule::AfterPrompt,
-                    }],
-                });
+                    stimuli: if error_path {
+                        Vec::new()
+                    } else {
+                        vec![KeyboardStimulus {
+                            keyboard_index: assembled.device_index[&DeviceId::Keyboard],
+                            scancodes: vec![0x1C],
+                            schedule: InjectionSchedule::AfterPrompt,
+                        }]
+                    },
+                };
+                if error_path {
+                    // Without keyboard stimuli, continue explicitly beyond the
+                    // prompt to retain the same prompt/final capture sequence.
+                    assert_eq!(
+                        assembled.run_session(&policy).unwrap(),
+                        machine::RunOutcome::RetiredCapReached
+                    );
+                    policy.stop = StopCondition::Natural;
+                    policy.retired_cap = Some(assembled.machine.virtual_time() + 20);
+                }
+                let run = run_bios_assembled(&mut assembled, |_| policy);
                 assert_eq!(run.com1, b"Z");
                 assert_eq!(run.post, [0xFF]);
                 match tail {
@@ -1960,7 +1995,16 @@ mod tests {
         ];
         rom[..program.len()].copy_from_slice(&program);
         rom[0x7FF0..0x7FF5].copy_from_slice(&[0xEA, 0, 0, 0, 0xF8]);
-        let run = run_bios_config(assembly::bios(rom, None), |_| {
+        let mut config = assembly::bios(rom, None);
+        // Keep this host-error fixture on flat Application(Real16); an
+        // A20-capable 80286 rig delivers processor exceptions in the guest.
+        config.devices.retain(|device| {
+            !matches!(
+                device.kind,
+                assembly::DeviceKind::Keyboard(_) | assembly::DeviceKind::SysCtrlPortA
+            )
+        });
+        let run = run_bios_config(config, |_| {
             RunPolicy::natural(Some(100), Some(BIOS_IDLE_LIMIT))
         });
         assert!(

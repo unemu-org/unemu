@@ -12,6 +12,10 @@ Things **deliberately not implemented**. If something seems missing and is liste
 - **Tracked in:** <task-N, if any>
 ```
 
+A20 gating is implemented: the board's 8042/port 92h line drives CPU physical
+address bit 20 and survives CPU-only reset. See
+[the board contract](design/machine-config.md#a20-line-and-system-control-port-a).
+
 ## Entries
 
 ### Open AT-class (80286) system BIOS
@@ -34,13 +38,6 @@ Things **deliberately not implemented**. If something seems missing and is liste
   decision-16, which chose the later machine generations. APIC stays out: the
   target span runs on the 8259 pair.
 - **Tracked in:** decision-1, decision-16; epics `protected-mode` and `win9x-base`.
-
-### Full A20 gate (via 8042)
-
-- **Why deferred:** A20 modelled as always-on for M1–M3 to unblock early boot.
-- **Revisit when:** A boot flow requires A20 toggling — protected-mode code
-  does (decision-16, phase B).
-- **Tracked in:** decision-8; the A20 bead in epic `protected-mode`.
 
 ### `RegionKind::Rom` in x86jit
 

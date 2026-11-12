@@ -796,11 +796,19 @@ mod tests {
                 0xFA, 0xB0, 0x10, 0xE6, 0x70, 0xB0, 9, 0xE6, 0x71, 0xB0, 0xFE, 0xE6, 0x64,
             ],
         );
-        reset_config(&mut config, vec![0x0F, 0x05]);
+        // A processor exception now vectors in the guest. Fetching beyond the
+        // rig's physical map still tests host-error recovery after CPU reset.
+        reset_config(&mut config, vec![0xEA, 0xFF, 0xFF, 0xFF, 0xFF]);
         let mut machine = crate::assemble(&config).unwrap();
-        assert!(machine
+        let error = machine
             .run_session(&crate::RunPolicy::natural(Some(100), None))
-            .is_err());
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            crate::RunError::Machine(machine::MachineError::Cpu(cpu::CpuError::Unmapped {
+                addr: 0x10FFEF
+            }))
+        ));
         drop(machine);
         let scan = media::scan(&std::fs::read(&path).unwrap(), &base, 64);
         assert!(scan.report.generations.is_empty());

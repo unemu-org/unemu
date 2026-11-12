@@ -281,8 +281,9 @@ const INPUT_PORT_VALUE: u8 = 0b1010_0000;
 /// translation off. The BIOS reprograms this early in POST.
 const CMD_BYTE_RESET: u8 = 0x00;
 
-/// Default output port at power-on: A20 enabled (matching the "A20 always-on for
-/// now" decision) and the CPU-reset line inactive (high).
+/// Board power-on policy: A20 enabled and CPU-reset inactive (high).
+/// IBM PC AT Technical Reference, Keyboard Controller, Output Port defines the
+/// signals; the enabled initial source preserves the existing boot configuration.
 const OUTPUT_PORT_RESET: u8 = OP_A20 | OP_CPU_RESET;
 
 /// What a subsequent write to the data port (`0x60`) means, set by the preceding
@@ -523,8 +524,8 @@ impl I8042 {
     /// Attaching the enabled power-on A20 source to a fresh line counts one
     /// transition, so an assembled 8042 machine starts at change_count=1.
     /// Without any A20 source the board reports disabled while CPU addressing
-    /// remains flat. Final defaults and counter baseline await CPU-side A20
-    /// application; see `backlog/docs/design/machine-config.md`
+    /// remains flat because assembly leaves the CPU line unattached. The machine
+    /// samples this baseline when attaching the line; see `backlog/docs/design/machine-config.md`
     /// §A20 line and System Control Port A.
     #[must_use]
     pub fn with_board_lines(mut self, reset: Rc<Cell<bool>>, a20: crate::A20Line) -> Self {
@@ -2607,7 +2608,7 @@ mod tests {
     fn power_on_state() {
         let kbc = I8042::new();
         assert!(!kbc.irq_pending());
-        // A20 defaults enabled per the "A20 always-on for now" decision.
+        // The board power-on policy enables the keyboard A20 source.
         assert!(kbc.a20_enabled());
     }
 

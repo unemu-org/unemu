@@ -34,8 +34,14 @@
 //! INS/MMIO and IRQs), then
 //! installs these registers, with FNINIT for the core's emulated x87 environment.
 //! RAM, mappings, retirement and completed-step accounting survive. The AT's
-//! CPU-only reset wiring and retained 8042 A20 latch are described in
-//! `backlog/docs/design/machine-config.md` §Board model.
+//! CPU-only reset wiring and retained board A20 line are described in
+//! `backlog/docs/design/machine-config.md` §Board model. The A20 gate clears
+//! physical bit 20 when disabled (IBM PC AT Technical Reference, Keyboard
+//! Controller, Output Port). The machine profile honours it for fetch and CPU
+//! data; application profiles ignore it. Source-free bare rigs keep flat
+//! Application(Real16); attaching an 8042 or port 92h selects I80286 Machine
+//! with a low reset entry. Host memory APIs and ISA DMA bypass the CPU gate.
+//! CPU reset retains both an effective line and a pending boundary change.
 
 pub mod x86jit_backend;
 
@@ -228,6 +234,23 @@ pub enum DmaAccess<T> {
 /// access, port/MMIO completion handshakes, the IRQ-injection contract (§5.2),
 /// and completed-step accounting for virtual time (§6).
 pub trait Cpu {
+    /// Drive the board's A20 gate on every vCPU owned by this backend.
+    ///
+    /// IBM PC AT Technical Reference, Keyboard Controller, Output Port: a low
+    /// gate clears physical address bit 20. Apply at the next architectural
+    /// interruption point; a completed OUT allows immediate application.
+    /// CPU reset preserves the line, including a pending request. DMA and host
+    /// physical-memory access bypass it. See
+    /// `backlog/docs/design/machine-config.md` §A20 line and System Control Port A.
+    /// Backends without a gate retain flat addressing by default.
+    fn set_a20_enabled(&mut self, _enabled: bool) {}
+
+    /// Effective A20 gate, excluding a change waiting for an in-flight access.
+    /// Backends without a gate report enabled (flat addressing).
+    fn a20_enabled(&self) -> bool {
+        true
+    }
+
     /// Reset the processor without changing memory or monotone accounting.
     ///
     /// Intel 80286 Programmer's Reference Manual, §5.3, Table 5-3 (Processor

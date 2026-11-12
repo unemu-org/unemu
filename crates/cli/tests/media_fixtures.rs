@@ -258,7 +258,9 @@ fn volatile_boots_preserve_pinned_fixture_hashes_and_vendor_entries() {
         assert_eq!(outcome.unwrap(), machine::RunOutcome::RetiredCapReached);
         let console = grid.rows_as_strings().join("\n");
         let logical_hash = match boot {
-            "bios" => 0xe36ef0102a7cbc14,
+            // The bare rig's 8042 selects 80286; the trap after POP DS changes
+            // the open BIOS's CPU identification and adds its warning row.
+            "bios" => 0x945fcce568e5d520,
             // BIOS century 20h gives FreeDOS Sat 01-01-2000 and stamps new files with year 00.
             "freedos" => 0xc46f0c147c881837,
             "dos-write" => 0x6b0404d06d7532c3,

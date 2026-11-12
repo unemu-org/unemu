@@ -36,7 +36,10 @@ IVT-vectored `INT`/exceptions — added under `CpuMode::Real16`.
 §4.1 Address-space and port-space decode.
 §4.2 RAM / MMIO (`Trap`) / ROM regions.
 §4.3 Writes via `note_write` (SMC safety) — DMA, BIOS loader, shadow RAM.
-§4.4 A20 gate (always-on for now).
+§4.4 Board-driven A20 gate: the effective line is the OR of 8042 output-port
+bit 1 and port 92h bit 1. A disabled line clears physical address bit 20. CPU-only reset retains the line; host
+physical-memory access and ISA DMA bypass it. Source-free bare rigs stay flat.
+See [machine-config.md §A20 line and System Control Port A](machine-config.md#a20-line-and-system-control-port-a).
 
 ## §5 Interrupt model
 

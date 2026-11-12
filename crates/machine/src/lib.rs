@@ -223,6 +223,8 @@ pub struct Machine<C: Cpu> {
     dma_channel_wirings: Vec<DmaChannelWiring>,
     reset_signal: Option<std::rc::Rc<std::cell::Cell<bool>>>,
     reset_pending: bool,
+    a20_line: Option<Box<dyn Fn() -> (u64, bool)>>,
+    a20_changes: u64,
 }
 
 impl<C: Cpu> Machine<C> {
@@ -261,6 +263,8 @@ impl<C: Cpu> Machine<C> {
             dma_channel_wirings: Vec::new(),
             reset_signal: None,
             reset_pending: false,
+            a20_line: None,
+            a20_changes: 0,
         }
     }
 
@@ -275,6 +279,33 @@ impl<C: Cpu> Machine<C> {
     pub fn with_reset_signal(mut self, signal: std::rc::Rc<std::cell::Cell<bool>>) -> Self {
         self.reset_signal = Some(signal);
         self
+    }
+
+    /// Attach a board A20 line reader returning (transition count, enabled).
+    ///
+    /// IBM PC AT Technical Reference, Keyboard Controller, Output Port: A20 is
+    /// a board signal retained across CPU-only reset. Sample once at assembly,
+    /// then after port writes and before each run (including host-side device
+    /// restore). The counter avoids redundant CPU calls. Without a line, the
+    /// CPU keeps its constructor's flat addressing. See
+    /// `backlog/docs/design/machine-config.md` §A20 line and System Control Port A.
+    #[must_use]
+    pub fn with_a20_line(mut self, line: impl Fn() -> (u64, bool) + 'static) -> Self {
+        let (changes, enabled) = line();
+        self.cpu.set_a20_enabled(enabled);
+        self.a20_changes = changes;
+        self.a20_line = Some(Box::new(line));
+        self
+    }
+
+    fn sync_a20(&mut self) {
+        if let Some(line) = &self.a20_line {
+            let (changes, enabled) = line();
+            if changes != self.a20_changes {
+                self.cpu.set_a20_enabled(enabled);
+                self.a20_changes = changes;
+            }
+        }
     }
 
     /// Configure the construction-time CPU rate A/B (§6).
@@ -344,6 +375,7 @@ impl<C: Cpu> Machine<C> {
     /// the same CPU-only reset (System Board, Logic Diagrams). Media sessions
     /// survive (backlog/docs/design/machine-config.md §Board model).
     pub fn reset_cpu(&mut self) -> Result<(), MachineError> {
+        self.sync_a20();
         self.cpu.reset()?;
         self.reset_pending = false;
         self.halted = false;
@@ -501,6 +533,7 @@ impl<C: Cpu> Machine<C> {
     /// A previously reported reset is performed before any execution or cap
     /// check, unless [`Self::reset_cpu`] already completed it.
     pub fn run_bounded(&mut self, cap: Option<u64>) -> Result<RunOutcome, MachineError> {
+        self.sync_a20();
         if self.reset_pending {
             self.reset_cpu()?;
         }
@@ -629,7 +662,9 @@ impl<C: Cpu> Machine<C> {
             completing = false;
             let access_result = match stop {
                 CpuStop::PortOut { port, size, value } => {
-                    self.bus.port_write(port, size, value as u32)
+                    let result = self.bus.port_write(port, size, value as u32);
+                    self.sync_a20();
+                    result
                 }
                 CpuStop::PortIn { port, size } => self.bus.port_read(port, size).map(|value| {
                     self.cpu.complete_port_in(u64::from(value));
@@ -834,6 +869,8 @@ mod tests {
         )
         .unwrap();
         cpu.map_rom(0xFFFFF0, &[0xEA, 0, 0x15, 0, 0]).unwrap();
+        // This synthetic rig supplies code at the gated reset fetch as well.
+        cpu.map_rom(0xEFFFF0, &[0xEA, 0, 0x15, 0, 0]).unwrap();
         cpu.write_mem(
             0x1500,
             &[
@@ -864,7 +901,11 @@ mod tests {
             },
         );
         let mut machine = Machine::new(cpu, bus, Box::new(NoIc), Vec::new(), None)
-            .with_reset_signal(reset.clone());
+            .with_reset_signal(reset.clone())
+            .with_a20_line({
+                let line = a20.clone();
+                move || (line.change_count(), line.enabled())
+            });
         assert_eq!(
             machine.run_bounded(Some(100)).unwrap(),
             RunOutcome::ResetRequested
@@ -876,6 +917,7 @@ mod tests {
             "shutdown must not pulse the keyboard reset latch"
         );
         assert!(!a20.enabled());
+        assert!(!machine.cpu().a20_enabled());
         let changes = a20.change_count();
         let time = machine.virtual_time();
         let clock = machine.clock();
@@ -890,6 +932,7 @@ mod tests {
         );
         assert_eq!(machine.cpu().code_segment(), 0xF000);
         assert_eq!(machine.cpu().reg(CpuReg::Rip), 0xFFF0);
+        assert!(!machine.cpu().a20_enabled());
         assert_eq!(machine.cpu().retired(), retired);
         assert_eq!(machine.virtual_time(), time);
         assert_eq!(machine.clock(), clock);
@@ -2304,3 +2347,6 @@ mod tests {
 
 #[cfg(test)]
 mod corrected_tests;
+
+#[cfg(test)]
+mod a20_tests;

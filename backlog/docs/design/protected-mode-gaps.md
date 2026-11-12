@@ -47,11 +47,13 @@ successor of a TF-setting POPF/IRET; only SS loads inhibit one instruction.
 See Intel 80286 Programmer's Reference Manual §9.7.1 and Appendix B MOV/POP.
 Explicit outward exceptions retain `CpuError::Fault` with vector, optional
 error code and CS:IP; unsupported machine contexts retain typed diagnostics.
-Bare assembly rigs and the separate `new_real16_bare` constructor retain the
-application profile.
-Reset abandons pending execution, then restores the 286 register/cache image,
-including MSW FFF0h, IVT limit 03FFh and reset-origin CS base FF0000h.
-The assembler maps the single FE0000h–FFFFFFh board ROM alias.
+Bare assembly rigs without an A20 source and the separate `new_real16_bare`
+constructor retain Application(Real16). Bare rigs with an 8042 or port 92h use
+I80286 Machine with in-guest processor exceptions and a low reset fetch.
+IBM 5170 reset abandons pending execution, then restores the 286 register/cache
+image, including MSW FFF0h, IVT limit 03FFh and reset-origin CS base FF0000h.
+The assembler maps the single FE0000h–FFFFFFh board ROM alias. Bare A20 rigs
+restore the same registers but retain their synthetic low FFFF0h fetch.
 CPU shutdown uses the same `ResetRequested` boundary and CPU-only reset
 protocol as the 8042: RAM, CMOS shutdown byte, A20 latch, device state and
 instruction/time counters survive. READ: IBM Personal Computer AT Technical
@@ -290,22 +292,27 @@ this as real-mode-only caller usage. The machine's readiness check normally
 prevents this misuse. It is neither IDT support nor a reason to enable
 Compat32 IRQ readiness before protected-mode delivery exists.
 
-### P5 — memory above 1 MiB exists as a mapping capability; CPU A20 is unwired
+### P5 — memory above 1 MiB and board A20 integration
 
-MEASURED: a scratch test using the repository's `X86JitCpu` mapped 2 MiB
+Historical MEASURED (before board integration): a scratch test using the
+repository's `X86JitCpu` mapped 2 MiB
 with `new_real16_bare`/`map_ram`, wrote `11h` at `20h` and `77h` at
 `100020h`, then ran `MOV AX,FFFFh; MOV DS,AX; MOV AL,[0030h]; HLT`.
 It halted after four steps with AL=`77h`. Separately, the repository's
 8042 received command D1h followed by data `01h`, and reported
 `a20_enabled()=false`; this did not change the CPU result.
 
-This is an adapter/device seam test, not a full assembled chipset test.
-The device-side follow-up now connects that latch and port 92h to a shared
-board A20 line with observable effective state and a change counter (READ:
-`crates/devices/src/a20.rs`, `crates/assembly/src/assemble.rs`). The CPU adapter
-still constructs a flat VM without an A20 input. Physical-address gating and
-its CPU wiring remain pending. Likewise,
-1 MiB was the BIOS preset's VM size, not an adapter-wide address-space limit.
+That adapter/device seam probe predates the assembled board wiring. The shared
+8042/92h line now drives `Cpu::set_a20_enabled`: assembly applies the initial
+state, and the machine forwards effective transitions after port writes and
+before runs. IBM 5170 and bare rigs with an 8042 or port 92h source use the
+I80286 Machine profile, with in-guest processor exceptions; bare rigs without
+either source retain flat Application(Real16).
+The baseline is 0 for a fresh line, 1 after attaching the enabled 8042. CPU-only
+reset preserves source latches and effective/pending gate state. Host physical
+memory access and ISA DMA bypass the CPU gate. See machine-config.md §A20 line
+and System Control Port A. The original 1 MiB BIOS VM size was never an
+adapter-wide address-space limit.
 Assembly now uses the AT's fixed 24-bit decode and 16 MiB VM, requires a
 matching CPU width, and fills holes after RAM, ROM, MMIO and existing
 adapter-gap mappings. Wider CPUs require a separate sparse-mapping design.
@@ -323,10 +330,8 @@ Bare rigs retain their prior VM/map.
 Configured extended memory remains RAM, with empty bus above its end;
 reduced conventional memory also leaves empty-bus holes below 1 MiB.
 See [MemoryConfig](machine-config.md#memoryconfig--a-semantic-memory-map).
-This changes physical-map coverage only, without adding PE entry or A20 gating.
-The board's A20 latch is not yet wired to the legacy CPU gate: a would-be 1 MiB wrap at 100000h no longer
-stops on Unmapped, but reads empty bus (silently FFh without extended RAM) or
-installed extended RAM until CPU A20 gating is wired.
+With A20 enabled, 100000h reads installed extended RAM or empty bus. With
+A20 disabled, CPU reads and writes at that address alias low RAM at 000000h.
 
 ### P6 — open extender inspection and deliberate runtime scope cut
 
@@ -575,10 +580,10 @@ cited here are existing follow-up work filed by the supervisor.
    The real bit-3 write restriction (writable only while zero) is unmodelled.
    Bit 4 is read-only watchdog-timeout status, modelled as no timeout (Bochs
    PORTS.LST, port 0092); only bits 2 and 5 are reserved. See machine-config.md
-   §A20 line and System Control Port A. CPU masking and its input remain pending;
-   the CPU-mask bead (`upc-o0j.5`) also owns final source defaults and counter
-   baseline. Today attachment of the enabled 8042 counts one transition
-   (initial count 1); no A20 source reports disabled while CPU addressing is flat.
+   §A20 line and System Control Port A. CPU masking and its input are wired;
+   source defaults retain 8042 enabled and 92h disabled. Attachment of the
+   enabled 8042 counts one transition (initial count 1); no source reports a
+   disabled unattached board line while CPU addressing stays flat.
    A disabled gate clears **physical address bit 20**, not every high
    address bit and not the linear address before paging. Cover instruction
    fetch, CPU data and implicit page-table accesses, crossing transfers,
@@ -902,8 +907,11 @@ existing follow-up beads are in firmware-and-machine-classes.md §3.6.
    semantics, reset values and snapshots. Test all combinations of 8042 and
    fast-A20 sources under the chosen OR policy; controls use declarative
    device/config wiring. No CPU masking is claimed by latch tests alone.
-4. **Wire effective A20 into CPU physical accesses.** Dependencies: 2–3,
-   x86jit request 11. Acceptance: assembled guest toggles D1h and 92h;
+4. **Partially implemented: wire effective A20 into CPU physical accesses.** Dependencies: 2–3,
+   x86jit request 11. Real-mode board wiring and alias/reset tests are implemented.
+   The paging case remains unimplemented: assembly does not select a paging-capable
+   CPU/profile, so the linear-page-to-A20-sensitive-physical-page test still needs
+   the later 386 integration. Full acceptance: assembled guest toggles D1h and 92h;
    `FFFF:0030` distinguishes/aliases `100020h` and `20h` correctly; repeat
    with paging mapping a linear page onto an A20-sensitive physical page.
    Test split fetch/read/write, code-alias invalidation, gate changes at

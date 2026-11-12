@@ -821,7 +821,9 @@ pub fn run_workload_engine(
         observe_with(prepared, |machine, observation, policy| {
             let result = assembly::run(machine, observation, policy);
             let expected = match workload {
-                Workload::BiosPost => Some(0xe36ef0102a7cbc14),
+                // The bare rig's 8042 selects 80286; its trap after POP DS
+                // changes the open BIOS's CPU identification and warning row.
+                Workload::BiosPost => Some(0x945fcce568e5d520),
                 Workload::BiosFloppy => Some(0x92c581d95567fb07),
                 // BIOS century 20h gives FreeDOS Sat 01-01-2000 and stamps new files with year 00.
                 Workload::FreeDosPrompt => Some(0xc46f0c147c881837),

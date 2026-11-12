@@ -10,7 +10,8 @@ use cpu::x86jit_backend::RealSegments;
 /// the virtual clock's concern ([`crate::ClockConfig`]).
 /// Intel 80286 and 80287 Programmer's Reference Manual, §10.2–10.4:
 /// the 80286 starts in real mode and enters protected mode through LMSW.
-/// Bare compatibility rigs retain the fixed Real16 application interpreter.
+/// Bare compatibility rigs without an A20 source retain the fixed Real16
+/// application interpreter; rigs with an 8042 or port 92h use the machine model.
 /// See `backlog/docs/design/machine-config.md` §CPU model selection.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
 pub enum CpuChip {

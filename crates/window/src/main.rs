@@ -1389,6 +1389,14 @@ mod tests {
             std::fs::write(&base, vec![0; 1_474_560]).unwrap();
             let mut config = assembly::bios(vec![0xF4; 32768], Some(vec![0; 1_474_560]));
             config.board = assembly::BoardModel::Bare;
+            // A source-free Application rig keeps this host-error-path fixture
+            // independent of in-guest processor-exception delivery.
+            config.devices.retain(|device| {
+                !matches!(
+                    device.kind,
+                    assembly::DeviceKind::Keyboard(_) | assembly::DeviceKind::SysCtrlPortA
+                )
+            });
             config.cpu = assembly::at_boot(Vec::new()).cpu;
             config.images = assembly::at_boot(if fail {
                 vec![0x0F, 0x05]

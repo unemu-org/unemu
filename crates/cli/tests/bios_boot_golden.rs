@@ -2,6 +2,10 @@
 //! BIOS POST golden: boot the Kiselev Xi8088 ROM without decoded floppy ports
 //! (§3.1, §5, §9).
 //!
+//! The bare rig's 8042 selects the 80286 model. Its single-step trap after POP DS
+//! (Intel 80286 Programmer's Reference Manual, §9.7.1) changes the open BIOS's
+//! CPU identification and adds a warning row; other screen content is unchanged.
+//!
 //! Port 61h bits follow the PIT since 2026-11-11; delay loops take real refresh time.
 //!
 //! Keyboard replies now take the host and reply transfer time and the keyboard's
@@ -50,7 +54,7 @@
 //! (`BudgetExhausted`), never an address.
 //!
 //! The BIOS never programs the colour card, so its cursor stays at `(0, 0)`
-//! and visible. MDA card capture exposes the BIOS cursor at `(0, 18)`, visible;
+//! and visible. MDA card capture exposes the BIOS cursor at `(0, 19)`, visible;
 //! the earlier RAM probe hid it. These are the intended independent-card states.
 //!
 //! ## Pinned inputs
@@ -90,13 +94,15 @@ fn bios_boot_stop_point_matches_golden() {
     assert_eq!(rom.len(), 32768, "Xi8088 BIOS is a 32 KiB image");
 
     let run = run_bios_with_cap(&rom, cli::BIOS_GOLDEN_MAX_RETIRED);
+    // The bare rig's 8042 selects the 80286 model; its trap after POP DS changes
+    // the open BIOS's CPU identification and adds its segment-load warning.
     // CMOS 32h=20h supplies the century in the BIOS RTC date 2000-01-01.
     session::assert_golden(
         &run,
         19_015_022,
         20_000_000,
-        0xbfa9b5ab3f8508a4,
-        0xe36ef0102a7cbc14,
+        0xb59246d76d78f3fc,
+        0x945fcce568e5d520,
     );
 
     // The BIOS never programs the colour card, so it keeps its power-on cursor.
@@ -112,7 +118,7 @@ fn bios_boot_stop_point_matches_golden() {
         run.mda.cursor(),
         video::Cursor {
             col: 0,
-            row: 18,
+            row: 19,
             visible: true
         }
     );

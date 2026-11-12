@@ -5,7 +5,9 @@
 //! [`Exit`] variants onto the backend-neutral [`CpuStop`]. It runs in **Long64**
 //! mode (adapter unit tests, [`X86JitCpu::new`]), **Real16** application mode
 //! ([`X86JitCpu::new_real16_bare`]), or the **I286 machine** interpreter
-//! ([`X86JitCpu::new_i286_bare`]). It uses the
+//! ([`X86JitCpu::new_i286_bare`] and [`X86JitCpu::new_a20_bare`]). Only the
+//! machine profile consults A20; application profiles retain flat addressing.
+//! It uses the
 //! `x86jit` integration surface: `Exit::PortIo` (`in`/`out` and each `ins`/`outs`
 //! element), `RegionKind::Trap` MMIO, and — in real mode — IVT-vectored IRQ injection.
 //!
@@ -14,8 +16,8 @@
 //! CPU without any local x86jit checkout present.
 
 use x86jit_core::{
-    CpuMode, CpuModel, CpuState, ExecutionProfile, Exit, FpuModel, PortDir, Prot, Reg, RegionKind,
-    ResetOptions, StepOptions, StepRunError, StepStop, Vcpu, Vm, VmConfig,
+    CpuMode, CpuModel, CpuState, ExceptionDelivery, ExecutionProfile, Exit, FpuModel, PortDir,
+    Prot, Reg, RegionKind, ResetOptions, StepOptions, StepRunError, StepStop, Vcpu, Vm, VmConfig,
 };
 
 use crate::{Cpu, CpuError, CpuReg, CpuStepRun, CpuStepStop, CpuStop, DmaAccess, StepRunOptions};
@@ -29,6 +31,8 @@ pub struct X86JitCpu {
     cpu: Vcpu,
     dma_regions: Vec<(std::ops::Range<u64>, RegionKind)>,
     completed_steps: u64,
+    // Synthetic rigs retain their low reset fetch without the AT high ROM alias.
+    low_reset_fetch: bool,
 }
 
 impl X86JitCpu {
@@ -46,12 +50,14 @@ impl X86JitCpu {
         vm.write_bytes(entry, code)
             .map_err(|e| CpuError::Memory(format!("{e:?}")))?;
         let mut cpu = vm.new_vcpu();
+        cpu.set_a20_enabled(true);
         cpu.set_reg(Reg::Rip, entry);
         Ok(Self {
             vm,
             cpu,
             dma_regions: vec![(0..ram_bytes, RegionKind::Ram)],
             completed_steps: 0,
+            low_reset_fetch: true,
         })
     }
 
@@ -79,6 +85,7 @@ impl X86JitCpu {
         let mut vm = Vm::new(VmConfig::flat(space_bytes));
         vm.set_cpu_mode(CpuMode::Real16);
         let mut cpu = vm.new_vcpu();
+        cpu.set_a20_enabled(true);
         cpu.set_reg(Reg::Cs, u64::from(cs));
         cpu.set_reg(Reg::Ds, u64::from(segments.ds));
         cpu.set_reg(Reg::Es, u64::from(segments.es));
@@ -90,6 +97,7 @@ impl X86JitCpu {
             cpu,
             dma_regions: Vec::new(),
             completed_steps: 0,
+            low_reset_fetch: true,
         })
     }
 
@@ -129,6 +137,17 @@ impl X86JitCpu {
         segments: RealSegments,
         fpu_present: bool,
     ) -> Result<Self, CpuError> {
+        Self::new_machine_bare(space_bytes, cs, ip, segments, fpu_present, false)
+    }
+
+    fn new_machine_bare(
+        space_bytes: u64,
+        cs: u16,
+        ip: u16,
+        segments: RealSegments,
+        fpu_present: bool,
+        low_reset_fetch: bool,
+    ) -> Result<Self, CpuError> {
         let fpu = if fpu_present {
             FpuModel::Present
         } else {
@@ -136,6 +155,7 @@ impl X86JitCpu {
         };
         let mut vm = Vm::new(VmConfig::flat(space_bytes));
         vm.set_cpu_model(CpuModel::I80286);
+        vm.set_exception_delivery(ExceptionDelivery::InGuest);
         vm.set_fpu_model(fpu);
         let mut cpu = vm.new_vcpu();
         cpu.cpu = CpuState::legacy_real_entry([cs, segments.ds, segments.es, segments.ss, 0, 0]);
@@ -151,7 +171,25 @@ impl X86JitCpu {
             cpu,
             dma_regions: Vec::new(),
             completed_steps: 0,
+            low_reset_fetch,
         })
+    }
+
+    /// Build an A20-capable bare rig using the I80286 machine interpreter.
+    ///
+    /// Application Real16 ignores A20, so attaching a board line requires a
+    /// machine profile. The rig keeps its low FFFF0h reset entry rather than
+    /// requiring the AT's high ROM alias (Intel 80286 PRM §5.3 System
+    /// Initialization). It retains a present FPU and delivers processor exceptions
+    /// in the guest through the IVT/IDT, like the AT machine profile (Intel 80286
+    /// PRM §9, Interrupts and Exceptions). See machine-config.md §CPU model selection.
+    pub fn new_a20_bare(
+        space_bytes: u64,
+        cs: u16,
+        ip: u16,
+        segments: RealSegments,
+    ) -> Result<Self, CpuError> {
+        Self::new_machine_bare(space_bytes, cs, ip, segments, true, true)
     }
 
     /// Map a conventional RAM window `[base, base + size)` as `RWX` `Ram`.
@@ -392,18 +430,30 @@ impl X86JitCpu {
 }
 
 impl Cpu for X86JitCpu {
+    fn set_a20_enabled(&mut self, enabled: bool) {
+        self.cpu.set_a20_enabled(enabled);
+    }
+
+    fn a20_enabled(&self) -> bool {
+        self.cpu.a20_enabled()
+    }
+
     fn reset(&mut self) -> Result<(), CpuError> {
         self.cpu
             .reset_execution_state(ResetOptions::default().with_x87_init(true));
+        let a20_enabled = self.cpu.a20_enabled();
         let state = &mut self.cpu.cpu;
         if self.vm.execution_profile() == ExecutionProfile::Machine {
             // Reset must discard protected caches as well as pending handoffs.
             // Preserve GPRs, whose hardware reset contents are unspecified.
             let reset = CpuState::legacy_real_entry([0xF000, 0, 0, 0, 0, 0]);
             state.legacy = reset.legacy;
+            state.legacy.a20_enabled = u8::from(a20_enabled);
             state.legacy.cr0 = 0xFFF0;
-            state.legacy.segments[0].base = 0xFF0000;
-            state.legacy.reset_fetch = 1;
+            if !self.low_reset_fetch {
+                state.legacy.segments[0].base = 0xFF0000;
+                state.legacy.reset_fetch = 1;
+            }
             state.fs = 0;
             state.gs = 0;
         }
@@ -542,6 +592,57 @@ mod tests {
     }
 
     #[test]
+    fn a20_fault_metadata_reports_gated_physical_address() {
+        use x86jit_core::fault::Knowledge;
+        for enabled in [false, true] {
+            let mut cpu =
+                X86JitCpu::new_i286_bare(0x200000, 0, 0x1000, RealSegments::flat(0)).unwrap();
+            cpu.map_ram(0x1000, 0x1000).unwrap();
+            cpu.write_mem(0x1000, &[0xB8, 0xFF, 0xFF, 0x8E, 0xD8, 0xA0, 0x10, 0])
+                .unwrap();
+            cpu.set_a20_enabled(enabled);
+            let exit = cpu.cpu.run(&cpu.vm, Some(100));
+            let Exit::UnmappedMemory {
+                addr,
+                metadata: Some(metadata),
+                ..
+            } = exit
+            else {
+                panic!("expected a physical mapping fault, got {exit:?}");
+            };
+            assert_eq!(addr, if enabled { 0x100000 } else { 0 });
+            assert_eq!(metadata.physical_address(), Knowledge::Known(addr));
+        }
+    }
+
+    #[test]
+    fn a20_reset_preserves_pending_line_when_abandoning_mmio() {
+        let mut cpu = X86JitCpu::new_i286_bare(0x200000, 0, 0x1000, RealSegments::flat(0)).unwrap();
+        cpu.map_ram(0, 0x2000).unwrap();
+        cpu.map_mmio(0x100000, 0x1000).unwrap();
+        cpu.write_mem(0x1000, &[0xB8, 0xFF, 0xFF, 0x8E, 0xD8, 0xA0, 0x10, 0])
+            .unwrap();
+        assert_eq!(
+            cpu.run(Some(100)).unwrap(),
+            CpuStop::MmioRead {
+                addr: 0x100000,
+                size: 1
+            }
+        );
+        cpu.set_a20_enabled(false);
+        assert!(cpu.a20_enabled());
+        assert_eq!(cpu.cpu.pending_a20_enabled(), Some(false));
+        cpu.reset().unwrap();
+        assert!(!cpu.a20_enabled());
+        assert_eq!(cpu.cpu.pending_a20_enabled(), None);
+        assert_eq!(cpu.guest_dma_write(0x10, 0x77), DmaAccess::Complete(()));
+        let mut low = [0];
+        cpu.read_mem(0x10, &mut low).unwrap();
+        assert_eq!(low, [0x77]);
+        assert_eq!(cpu.guest_dma_read(0x100000), DmaAccess::Mmio);
+    }
+
+    #[test]
     fn i286_single_step_probe_traps_after_pop_ds_and_restores_the_stack() {
         // Intel 80286 Programmer's Reference Manual, §9.7.1 and Appendix B
         // MOV/POP: only SS loads inhibit the next single-step trap.
@@ -656,6 +757,7 @@ mod tests {
             cpu: core,
             dma_regions: Vec::new(),
             completed_steps: 0,
+            low_reset_fetch: true,
         };
         cpu.map_ram(0, 0x10000).unwrap();
         cpu.set_reg(CpuReg::Rip, 0x1000);
@@ -1405,6 +1507,7 @@ mod tests {
                 cpu: vcpu,
                 dma_regions: Vec::new(),
                 completed_steps: 0,
+                low_reset_fetch: true,
             };
             cpu.map_ram(0, MMIO).unwrap();
             cpu.map_mmio(MMIO, 0x1000).unwrap();
@@ -1538,6 +1641,7 @@ mod tests {
         vcpu.set_reg(Reg::Rip, 0x1000);
         let mut cpu = X86JitCpu {
             completed_steps: 0,
+            low_reset_fetch: true,
             vm,
             cpu: vcpu,
             dma_regions: vec![(0..0x2000, RegionKind::Ram)],

@@ -83,8 +83,7 @@ const EXTENDED_BASE: u64 = 0x10_0000;
 pub struct AssembledMachine {
     /// The running machine, fully wired.
     pub machine: Machine<X86JitCpu>,
-    /// Effective board A20 state and transition counter; not yet applied to CPU
-    /// addressing. The CPU-side mask lands with the CPU core's A20 support.
+    /// Effective board A20 state and transition counter, applied to CPU addressing.
     /// See `backlog/docs/design/machine-config.md` §A20 line and System Control Port A.
     pub a20_line: A20Line,
     /// Stable device role → its index in the bus device set.
@@ -441,13 +440,11 @@ fn assemble_with_cpu_and_catalogue(
         .with_cpu_rate(rate_numerator, rate_denominator)
         .with_dma_wirings(dma_wirings)
         .with_dma_channel_wirings(dma_channel_wirings);
-    if config.devices.iter().any(|device| {
-        matches!(
-            device.kind,
-            DeviceKind::Keyboard(_) | DeviceKind::SysCtrlPortA
-        )
-    }) {
-        machine = machine.with_reset_signal(reset_signal);
+    if has_a20_source(config) {
+        let line = a20_line.clone();
+        machine = machine
+            .with_reset_signal(reset_signal)
+            .with_a20_line(move || (line.change_count(), line.enabled()));
     }
 
     Ok(AssembledMachine {
@@ -531,6 +528,15 @@ fn build_cpu(config: &MachineConfig) -> Result<X86JitCpu, AssemblyError> {
     build_cpu_with_mapping_trace(config, |_, _, _| {})
 }
 
+fn has_a20_source(config: &MachineConfig) -> bool {
+    config.devices.iter().any(|device| {
+        matches!(
+            device.kind,
+            DeviceKind::Keyboard(_) | DeviceKind::SysCtrlPortA
+        )
+    })
+}
+
 fn build_cpu_with_mapping_trace(
     config: &MachineConfig,
     mut record: impl FnMut(u64, u64, &'static str),
@@ -549,6 +555,14 @@ fn build_cpu_with_mapping_trace(
             config.cpu.segments.into(),
             config.cpu.fpu == crate::FpuChip::I80287,
         )?,
+        (crate::BoardModel::Bare, crate::CpuChip::I80286) if has_a20_source(config) => {
+            X86JitCpu::new_a20_bare(
+                physical_end,
+                config.cpu.reset.cs(),
+                config.cpu.reset.ip(),
+                config.cpu.segments.into(),
+            )?
+        }
         (crate::BoardModel::Bare, crate::CpuChip::I80286) => X86JitCpu::new_real16_bare(
             physical_end,
             config.cpu.reset.cs(),
@@ -1733,6 +1747,320 @@ mod tests {
             );
             assert_eq!(assembled.machine.cpu().reg(cpu::CpuReg::Rax) & 0xFF, 0x66);
         }
+    }
+
+    fn a20_probe(program: &mut Vec<u8>, marker: u16) {
+        program.extend([
+            0x31, 0xC0, 0x8E, 0xD8, 0xC6, 0x06, 0, 0, 0x11, 0xB8, 0xFF, 0xFF, 0x8E, 0xD8, 0xC6,
+            0x06, 0x10, 0, 0x77, 0x31, 0xC0, 0x8E, 0xD8, 0xA0, 0, 0, 0x26, 0xA2,
+        ]);
+        program.extend(marker.to_le_bytes());
+        program.extend([
+            0xC6, 0x06, 0, 0, 0x99, 0xB8, 0xFF, 0xFF, 0x8E, 0xD8, 0xA0, 0x10, 0, 0x26, 0xA2,
+        ]);
+        program.extend((marker + 1).to_le_bytes());
+    }
+
+    fn a20_rig(
+        mut program: Vec<u8>,
+        board: crate::BoardModel,
+        keyboard: bool,
+        fast: bool,
+    ) -> AssembledMachine {
+        program.extend([0xFA, 0xF4]);
+        let mut rom = vec![0; 0x8000];
+        rom[..program.len()].copy_from_slice(&program);
+        rom[0x7FF0..0x7FF2].copy_from_slice(&[0xFA, 0xF4]);
+        if board == crate::BoardModel::Ibm5170 {
+            rom[0x7FF0..0x7FF5].copy_from_slice(&[0xEA, 0, 0, 0, 0xF8]);
+        }
+        let mut config = crate::bios(rom, Some(vec![0; 1_474_560]));
+        config.board = board;
+        if board == crate::BoardModel::Bare {
+            config.cpu.reset = ResetSpec::Entry { cs: 0xF800, ip: 0 };
+        }
+        config.cpu.segments = SegmentSeed::flat(0);
+        config.memory.address_space_bytes = 0x200000;
+        config.memory.ram.push(RamRegion::new(0x100000, 0x100000));
+        if !keyboard {
+            config
+                .devices
+                .retain(|d| !matches!(d.kind, DeviceKind::Keyboard(_)));
+        }
+        if fast {
+            config.devices.push(crate::DeviceConfig::new(
+                DeviceId::SysCtrlPortA,
+                DeviceKind::SysCtrlPortA,
+                vec![crate::PortWindow::single(0x92)],
+            ));
+        }
+        assemble_synthetic(&config).unwrap()
+    }
+
+    #[test]
+    fn a20_keyboard_commands_gate_cpu_reads_and_writes_above_one_mib() {
+        use cpu::Cpu;
+        for board in [crate::BoardModel::Ibm5170, crate::BoardModel::Bare] {
+            let mut program = vec![0xB0, 0xD1, 0xE6, 0x64, 0xB0, 1, 0xE6, 0x60];
+            a20_probe(&mut program, 0x500);
+            program.extend([0xB0, 0xD1, 0xE6, 0x64, 0xB0, 3, 0xE6, 0x60]);
+            a20_probe(&mut program, 0x502);
+            let mut assembled = a20_rig(program, board, true, false);
+            assert!(assembled.machine.cpu().a20_enabled());
+            assert_eq!(assembled.a20_line.change_count(), 1);
+            assert_eq!(
+                assembled.machine.run().unwrap(),
+                machine::RunOutcome::Halted
+            );
+            let mut markers = [0; 4];
+            assembled
+                .machine
+                .cpu()
+                .read_mem(0x500, &mut markers)
+                .unwrap();
+            assert_eq!(markers, [0x77, 0x99, 0x11, 0x77]);
+            assert!(assembled.machine.cpu().a20_enabled());
+        }
+    }
+
+    #[test]
+    fn a20_port_92_initial_state_and_writes_gate_cpu_accesses() {
+        use cpu::Cpu;
+        let mut program = Vec::new();
+        a20_probe(&mut program, 0x500);
+        program.extend([0xB0, 2, 0xE6, 0x92]);
+        a20_probe(&mut program, 0x502);
+        program.extend([0xB0, 0, 0xE6, 0x92]);
+        a20_probe(&mut program, 0x504);
+        let mut assembled = a20_rig(program, crate::BoardModel::Bare, false, true);
+        assert!(!assembled.machine.cpu().a20_enabled());
+        assert_eq!(assembled.a20_line.change_count(), 0);
+        assert_eq!(
+            assembled.machine.run().unwrap(),
+            machine::RunOutcome::Halted
+        );
+        let mut markers = [0; 6];
+        assembled
+            .machine
+            .cpu()
+            .read_mem(0x500, &mut markers)
+            .unwrap();
+        assert_eq!(markers, [0x77, 0x99, 0x11, 0x77, 0x77, 0x99]);
+        assert!(!assembled.machine.cpu().a20_enabled());
+        let mut high = [0];
+        assembled
+            .machine
+            .cpu()
+            .read_mem(0x100000, &mut high)
+            .unwrap();
+        assert_eq!(high, [0x77], "host physical reads bypass A20");
+    }
+
+    #[test]
+    fn a20_either_source_keeps_cpu_gate_enabled() {
+        use cpu::Cpu;
+        let mut program = vec![0xB0, 0, 0xE6, 0x92];
+        a20_probe(&mut program, 0x500);
+        program.extend([
+            0xB0, 2, 0xE6, 0x92, 0xB0, 0xD1, 0xE6, 0x64, 0xB0, 1, 0xE6, 0x60,
+        ]);
+        a20_probe(&mut program, 0x502);
+        program.extend([0xB0, 0, 0xE6, 0x92]);
+        a20_probe(&mut program, 0x504);
+        program.extend([0xB0, 0xD1, 0xE6, 0x64, 0xB0, 3, 0xE6, 0x60]);
+        a20_probe(&mut program, 0x506);
+        let mut assembled = a20_rig(program, crate::BoardModel::Bare, true, true);
+        assert_eq!(
+            assembled.machine.run().unwrap(),
+            machine::RunOutcome::Halted
+        );
+        assert!(assembled.machine.cpu().a20_enabled());
+        let mut markers = [0; 8];
+        assembled
+            .machine
+            .cpu()
+            .read_mem(0x500, &mut markers)
+            .unwrap();
+        assert_eq!(markers, [0x11, 0x77, 0x11, 0x77, 0x77, 0x99, 0x11, 0x77]);
+    }
+
+    #[test]
+    fn a20_cpu_only_resets_preserve_enabled_and_disabled_gate() {
+        use cpu::Cpu;
+        for enabled in [false, true] {
+            for reset_port in [0x60, 0x64, 0x92] {
+                let mut program = vec![
+                    0xB0,
+                    0xD1,
+                    0xE6,
+                    0x64,
+                    0xB0,
+                    if enabled { 3 } else { 1 },
+                    0xE6,
+                    0x60,
+                ];
+                if reset_port == 0x60 {
+                    program.extend([0xB0, 0xD1, 0xE6, 0x64]);
+                }
+                program.extend([
+                    0xB0,
+                    match reset_port {
+                        0x60 => {
+                            if enabled {
+                                2
+                            } else {
+                                0
+                            }
+                        }
+                        0x64 => 0xFE,
+                        _ => {
+                            if enabled {
+                                3
+                            } else {
+                                1
+                            }
+                        }
+                    },
+                    0xE6,
+                    reset_port,
+                ]);
+                let mut assembled = a20_rig(program, crate::BoardModel::Bare, true, true);
+                assert_eq!(
+                    assembled.machine.run().unwrap(),
+                    machine::RunOutcome::ResetRequested
+                );
+                assert_eq!(assembled.machine.cpu().a20_enabled(), enabled);
+                let before = assembled.a20_line.change_count();
+                let time = assembled.machine.virtual_time();
+                assert_eq!(
+                    assembled.machine.run_bounded(Some(time)).unwrap(),
+                    machine::RunOutcome::RetiredCapReached
+                );
+                assert_eq!(assembled.machine.cpu().a20_enabled(), enabled);
+                assert_eq!(assembled.a20_line.change_count(), before);
+                assert_eq!(
+                    assembled.machine.run().unwrap(),
+                    machine::RunOutcome::Halted
+                );
+                assert_eq!(assembled.machine.cpu().a20_enabled(), enabled);
+            }
+        }
+    }
+
+    #[test]
+    fn a20_bare_divide_error_vectors_through_ivt() {
+        for (keyboard, fast) in [(true, false), (false, true)] {
+            let mut program = vec![0xFA, 0xC7, 0x06, 0, 0, 0, 6, 0xC7, 0x06, 2, 0, 0, 0];
+            for (offset, byte) in [0xC6, 0x06, 0, 5, 0x77, 0xFA, 0xF4].into_iter().enumerate() {
+                program.extend([0xC6, 0x06]);
+                program.extend((0x600u16 + offset as u16).to_le_bytes());
+                program.push(byte);
+            }
+            program.extend([0x31, 0xC0, 0xF6, 0xF0]);
+            let mut assembled = a20_rig(program, crate::BoardModel::Bare, keyboard, fast);
+            assert_eq!(
+                assembled.machine.run_bounded(Some(1000)).unwrap(),
+                machine::RunOutcome::Halted
+            );
+            let mut marker = [0];
+            assembled
+                .machine
+                .cpu()
+                .read_mem(0x500, &mut marker)
+                .unwrap();
+            assert_eq!(marker, [0x77], "INT 0 must execute the guest handler");
+            assert_eq!(assembled.machine.cpu().code_segment(), 0);
+        }
+    }
+
+    /// Pin the assumed external-gate/ROM-decode interaction (IBM PC AT Technical
+    /// Reference, System Board, System Memory Map; Keyboard Controller, Output Port).
+    #[test]
+    fn a20_ibm_reset_with_gate_disabled_fetches_empty_bus_and_vectors_ud() {
+        use cpu::{Cpu, CpuReg};
+        let mut program = vec![0xFA, 0xC7, 0x06, 0x18, 0, 0, 6, 0xC7, 0x06, 0x1A, 0, 0, 0];
+        for (offset, byte) in [0xC6, 0x06, 0, 5, 0x77, 0xFA, 0xF4].into_iter().enumerate() {
+            program.extend([0xC6, 0x06]);
+            program.extend((0x600u16 + offset as u16).to_le_bytes());
+            program.push(byte);
+        }
+        program.extend([
+            0xB0, 0xD1, 0xE6, 0x64, 0xB0, 1, 0xE6, 0x60, 0xB0, 0xFE, 0xE6, 0x64,
+        ]);
+        let mut assembled = a20_rig(program, crate::BoardModel::Ibm5170, true, false);
+        let mut bytes = [0; 5];
+        assembled
+            .machine
+            .cpu()
+            .read_mem(0xEFFFF0, &mut bytes)
+            .unwrap();
+        assert_eq!(bytes, [0xFF; 5]);
+        assembled
+            .machine
+            .cpu()
+            .read_mem(0xFFFFF0, &mut bytes)
+            .unwrap();
+        assert_eq!(bytes, [0xEA, 0, 0, 0, 0xF8]);
+        assert_eq!(
+            assembled.machine.run_bounded(Some(1000)).unwrap(),
+            machine::RunOutcome::ResetRequested
+        );
+        let time = assembled.machine.virtual_time();
+        assert_eq!(
+            assembled.machine.run_bounded(Some(time)).unwrap(),
+            machine::RunOutcome::RetiredCapReached
+        );
+        assert!(!assembled.machine.cpu().a20_enabled());
+        assert_eq!(assembled.machine.cpu().code_segment(), 0xF000);
+        assert_eq!(assembled.machine.cpu().reg(CpuReg::Rip), 0xFFF0);
+        assert_eq!(
+            assembled.machine.run_bounded(Some(time + 1000)).unwrap(),
+            machine::RunOutcome::Halted
+        );
+        let mut marker = [0];
+        assembled
+            .machine
+            .cpu()
+            .read_mem(0x500, &mut marker)
+            .unwrap();
+        assert_eq!(
+            marker,
+            [0x77],
+            "empty-bus FF FF must enter the guest #UD handler"
+        );
+        let mut frame = [0; 4];
+        assembled
+            .machine
+            .cpu()
+            .read_mem(assembled.machine.cpu().reg(CpuReg::Rsp), &mut frame)
+            .unwrap();
+        assert_eq!(
+            frame,
+            [0xF0, 0xFF, 0, 0xF0],
+            "#UD must restart at F000:FFF0"
+        );
+        assert!(!assembled.machine.cpu().a20_enabled());
+    }
+
+    #[test]
+    fn a20_bare_rig_without_sources_keeps_flat_addressing() {
+        use cpu::Cpu;
+        let mut program = Vec::new();
+        a20_probe(&mut program, 0x500);
+        let mut assembled = a20_rig(program, crate::BoardModel::Bare, false, false);
+        assert!(!assembled.a20_line.enabled());
+        assert!(assembled.machine.cpu().a20_enabled());
+        assert_eq!(
+            assembled.machine.run().unwrap(),
+            machine::RunOutcome::Halted
+        );
+        let mut markers = [0; 2];
+        assembled
+            .machine
+            .cpu()
+            .read_mem(0x500, &mut markers)
+            .unwrap();
+        assert_eq!(markers, [0x11, 0x77]);
     }
 
     #[test]

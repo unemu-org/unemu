@@ -12,8 +12,8 @@
 //! ISA board must choose OR versus last-writer-wins and test SeaBIOS INT 15h
 //! AX=2400h/2402h; today's OR default is not firmware qualification.
 //!
-//! This is not yet applied to CPU addressing; the CPU-side mask lands with the
-//! CPU core's A20 support. Devices retain source latches in their snapshots.
+//! Assembly forwards this line to CPU physical addressing at port boundaries.
+//! Devices retain source latches in their snapshots; DMA bypasses the CPU gate.
 
 use std::{cell::Cell, rc::Rc};
 
@@ -22,11 +22,11 @@ use std::{cell::Cell, rc::Rc};
 /// Clones observe the same state. Attaching an 8042 enables its power-on source
 /// and counts one transition: assembled 8042 machines start at change_count=1.
 /// Attaching port 92h leaves its source disabled. A machine with no A20 source
-/// reports disabled even though CPU addressing remains flat. Final defaults and
-/// the counter baseline await CPU-side A20 application; see
+/// reports disabled but does not attach this line to the CPU, retaining flat
+/// addressing. Machine synchronization samples the current count at attachment; see
 /// `backlog/docs/design/machine-config.md` §A20 line and System Control Port A.
 /// The counter observes effective transitions, including reset/restore; it is
-/// diagnostic history, not part of device snapshots. No CPU mask is applied yet.
+/// diagnostic history, not part of device snapshots.
 #[derive(Clone, Debug, Default)]
 pub struct A20Line(Rc<State>);
 

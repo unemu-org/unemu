@@ -612,15 +612,29 @@ fn latched_host_failure_prevents_frontend_boundary_from_advancing_or_sealing() {
 fn execution_error_keeps_commands_unsealed() {
     let temp = Temp::new();
     let mut config = config(&temp, true, 512);
+    // Keep the unsupported-opcode host error separate from the 80286's
+    // in-guest exception delivery, as in the frontend error-path fixtures.
+    config.devices.retain(|device| {
+        !matches!(
+            device.kind,
+            assembly::DeviceKind::Keyboard(_) | assembly::DeviceKind::SysCtrlPortA
+        )
+    });
     let ImageSource::Inline(program) = &mut config.images[0].source else {
         unreachable!()
     };
     program.pop();
     program.extend([0x0F, 0x05]);
     let mut assembled = assemble(&config).unwrap();
-    assert!(assembled
+    let error = assembled
         .run_session(&RunPolicy::natural(Some(10_000), None))
-        .is_err());
+        .unwrap_err();
+    assert!(matches!(
+        error,
+        assembly::RunError::Machine(machine::MachineError::Cpu(
+            cpu::CpuError::UnsupportedInstruction { .. }
+        ))
+    ));
     drop(assembled);
     let report = report(&temp.path("disk.upfj"), &temp.path("base.img"));
     assert!(report.unsealed_tip.is_some());
