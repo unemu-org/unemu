@@ -129,7 +129,9 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   defaults to base 220h, IRQ5, DMA1 and word DMA5; no preset adds it. CT1745
   registers and SB Pro aliases read back with documented reset values; master
   and voice volumes attenuate PCM. Other mixer controls are stored only.
-  Recording and OPL3 remain unimplemented. See
+  The onboard YMF262 now supplies native integer FM (Nuked-OPL3 1.8 port),
+  virtual timers and OPL aliases, with CT1745 MIDI/master attenuation. Recording
+  remains unimplemented. See
   [audio design](design/audio.md).
 
 - **2026-11-12 — 8042 keyboard command transmission:** writing a keyboard

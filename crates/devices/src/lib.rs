@@ -20,6 +20,7 @@ pub mod dma8237;
 pub mod fw_cfg;
 pub mod i8042;
 pub mod mda;
+pub mod opl3;
 pub mod pic8259;
 pub mod pit8253;
 pub mod post_port;

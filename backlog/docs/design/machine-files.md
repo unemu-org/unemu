@@ -516,7 +516,7 @@ honours it. The MDA, VGA and µPD765 models decode fixed absolute ports (READ,
 | `vga` | `Vga` | `0x3B4–0x3B5`, `0x3BA`, `0x3C0–0x3C2`, `0x3C4–0x3CA`, `0x3CC`, `0x3CE–0x3CF`, `0x3D4–0x3D5`, `0x3DA` | no | — | — | `0xA0000`, 128 KiB | — |
 | `uart-16550` | `Uart` | `base…base+7`, base `0x3F8` | yes, any base ≤ `0xFFF8` | 4 for `0x3F8` and `0x3E8`, 3 for `0x2F8` and `0x2E8`, otherwise required | — | — | — |
 | `fdc-765` | `Fdc` | `0x3F0–0x3F7`; with primary IDE: `0x3F0–0x3F5`, `0x3F7` | no (`0x370` is reserved) | 6 | 2 | — | `unit` 0–1 |
-| `sb16` | `Sb16` | `base+4/5/6/Ah/Ch/Eh/Fh`; base `0x220` | `base`: 220h/240h/260h/280h | 5 (2/5/7/10 allowed) | `dma8`: 1 (0/1/3 allowed), `dma16`: 5 (5/6/7 allowed) | — | — |
+| `sb16` | `Sb16` | `base+0..6/8/9/Ah/Ch/Eh/Fh`, `388h–38Bh`; base `0x220` | `base`: 220h/240h/260h/280h | 5 (2/5/7/10 allowed) | `dma8`: 1 (0/1/3 allowed), `dma16`: 5 (5/6/7 allowed) | — | — |
 | `ide` | `Ide` | `0x1F0` word data, `0x1F1–0x1F7` byte registers, `0x3F6` byte control | `0x1F0` or `0x170`; the control port is base + `0x206` | 14 (15 for `0x170`) | — (PIO) | — | `channel` master, slave |
 
 `vga` selects register-level VGA with guest fonts and DAC colours, and starts
@@ -1543,7 +1543,6 @@ Ordered; each bead is narrow and lands green.
     unchanged.
     *Depends on:* 8.
 
-
 ## SB16
 
 An optional schema-1 ISA card supplies 8-bit and 16-bit DMA output; it is absent from all
@@ -1568,8 +1567,14 @@ validation independently of byte DMA. Layered files may override base/irq/dma8/d
 card using the existing keyed-card rules.
 
 Base+4/+5 (mixer), +6/+Ah/+Ch/+Eh (DSP) and +Fh (16-bit acknowledgement)
-are claimed. OPL ports float at FFh. Port and IRQ conflicts use existing diagnostics; duplicate
+are claimed. OPL3 additionally claims 388h–38Bh and base+0..3/+8/+9. Port and IRQ conflicts use existing diagnostics; duplicate
 DMA ownership on one controller reports both card identities. Invalid resources
 also retain the owning card's source location. See [audio.md §SB16 8-bit
 output](audio.md#sb16-8-bit-output) for supported commands, exact rates,
 FIFO policy, IRQ timing and exclusions.
+
+The `sb16` card always includes a Yamaha YMF262 (OPL3). Besides its DSP/mixer
+ports, it claims 388h–38Bh, base+0..3 and base+8/9 as byte ports, including the
+standard bank aliases. These participate in normal port-conflict validation;
+there is no `opl3` switch. See [audio §OPL3](audio.md#opl3) for sample timing,
+timers and the native FM source.

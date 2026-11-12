@@ -2686,6 +2686,42 @@ mod tests {
     }
 
     #[test]
+    fn sb16_opl_ports_are_claimed_and_conflicts_are_rejected() {
+        for port in [
+            0x220, 0x221, 0x222, 0x223, 0x228, 0x229, 0x388, 0x389, 0x38a, 0x38b,
+        ] {
+            let mut config = valid_config();
+            let cfg = crate::Sb16Cfg {
+                base: 0x220,
+                dma16: 5,
+            };
+            assert!(cfg
+                .port_windows()
+                .iter()
+                .any(|w| w.start == port && w.end == port));
+            config.devices.push(
+                crate::DeviceConfig::new(DeviceId::Sb16, DeviceKind::Sb16(cfg), cfg.port_windows())
+                    .with_irq(5)
+                    .with_dma(crate::DmaSpec {
+                        controller: DeviceId::Dma,
+                        channel: 1,
+                    }),
+            );
+            config.devices.push(dev(
+                DeviceId::DmaWord,
+                DeviceKind::DmaWord(DmaCfg {}),
+                Vec::new(),
+            ));
+            assert_eq!(config.validate(), Ok(()));
+            find_device(&mut config, DeviceId::Post).ports = vec![PortWindow::single(port)];
+            assert!(
+                matches!(config.validate(), Err(ConfigError::PortOverlap { .. })),
+                "port {port:x}"
+            );
+        }
+    }
+
+    #[test]
     fn sb16_word_dma_conflicts_are_detected_in_either_device_order() {
         for reversed in [false, true] {
             let mut config = valid_config();

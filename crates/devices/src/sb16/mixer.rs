@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! CT1745 register storage and digital voice attenuation.
+//! CT1745 register storage and digital voice/FM attenuation.
 //!
 //! Creative Sound Blaster Series Hardware Programming Guide, §4 CT1745 Mixer,
 //! Register Functions and Figure 4-3. See `backlog/docs/design/audio.md` §CT1745.
@@ -89,9 +89,15 @@ impl Mixer {
         }
     }
     pub fn apply(&self, pcm: [i16; 2]) -> [i16; 2] {
+        self.apply_input(pcm, 2)
+    }
+    pub fn apply_fm(&self, pcm: [i16; 2]) -> [i16; 2] {
+        self.apply_input(pcm, 4)
+    }
+    fn apply_input(&self, pcm: [i16; 2], input: usize) -> [i16; 2] {
         std::array::from_fn(|i| {
             let master = GAIN[usize::from(self.registers[i] >> 3)];
-            let voice = GAIN[usize::from(self.registers[i + 2] >> 3)];
+            let voice = GAIN[usize::from(self.registers[i + input] >> 3)];
             // Divide once, toward zero, so the two analogue stages do not
             // introduce an intermediate integer PCM quantization.
             (i64::from(pcm[i]) * master * voice / (1i64 << 48)) as i16

@@ -472,16 +472,17 @@ impl IdeCfg {
 pub struct Sb16Cfg {
     /// Word-DMA channel, one of 5, 6 or 7.
     pub dma16: u8,
-    /// DSP and mixer base address; OPL windows remain unclaimed.
+    /// DSP, mixer and OPL alias base address.
     pub base: u16,
 }
 
 impl Sb16Cfg {
-    /// DSP, mixer and both interrupt acknowledgements are byte ports.
+    /// DSP, mixer, FM aliases and both interrupt acknowledgements are byte ports.
     pub fn port_windows(self) -> Vec<PortWindow> {
-        [4, 5, 6, 10, 12, 14, 15]
+        [0, 1, 2, 3, 4, 5, 6, 8, 9, 10, 12, 14, 15]
             .into_iter()
             .map(|offset| PortWindow::single(self.base.saturating_add(offset)))
+            .chain((0x388..=0x38b).map(PortWindow::single))
             .collect()
     }
 }

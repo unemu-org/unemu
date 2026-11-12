@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Creative Sound Blaster 16 DSP and CT1745 mixer, byte/word DMA output.
+//! Creative Sound Blaster 16 DSP, CT1745 mixer and YMF262 native FM output.
 //!
 //! Hardware source: Creative, Sound Blaster Series Hardware Programming Guide,
 //! §2 DSP I/O Ports, Resetting the DSP, Acknowledging DSP Interrupts; §3 8-bit
 //! DMA Mode and Auto-initialize DMA; §6 commands 10h, 14h, 1Ch, 40h, 41h,
 //! 48h, Bxh/Cxh, D0h/D4h/D5h/D6h, D1h/D3h/D8h, D9h/DAh and E1h;
 //! §4 CT1745 Mixer, Register Functions and Figure 4-3; Appendix A, SB16.
+//! FM source: Yamaha YMF262 datasheet, §2 CPU Interface and Register Map.
 //! See `backlog/docs/design/audio.md` §SB16 8-bit output, §SB16 16-bit output
 //! and §CT1745.
 //!
@@ -15,9 +16,10 @@
 //! | §3/§6 byte/word DMA | Unsigned legacy mono, signed/unsigned Bxh/Cxh mono/stereo, single/auto-init |
 //! | §6 rate and control | Exact rational periods, pause/resume, exit, identification |
 //! | §6 speaker control | Status flag only, as specified for DSP 4.xx |
-//! | §4 CT1745 | Register masks/defaults/compatibility aliases; master/voice attenuation |
+//! | §4 CT1745 | Register masks/defaults/compatibility aliases; master/voice/MIDI attenuation |
 //! | §2 resource/status registers | Fixed IRQ/byte/word channel readback; separate latched IRQs |
 //! | §4 other mixer controls | Stored only; no switches, gains, AGC or tone processing |
+//! | YMF262 CPU interface, register map, timers | Native FM, shared address latch, aliases, status-only timer IRQ |
 //! | §5 MIDI, §6 input/ADPCM | Not modelled |
 //!
 //! Creative's §2 Resetting the DSP recommends a 3 µs hold and describes typical
@@ -37,7 +39,8 @@
 //! reply reads return FFh; unused status bits read zero (ASSUMED).
 //! Unsupported commands consume their complete known argument payload without a
 //! reply; unknown opcodes consume one byte (ASSUMED unsupported-command policy).
-//! Mixer +4/+5 and word IRQ acknowledge +F are claimed; OPL remains unclaimed.
+//! Mixer +4/+5 and word IRQ acknowledge +F are claimed; OPL ports alias the
+//! onboard YMF262 (see §OPL3 in `backlog/docs/design/audio.md`).
 //! ASSUMED: +F reads FFh after clearing only the word IRQ. Registers 80h/81h
 //! ignore writes: resources come from the machine file and are fixed for the
 //! run. Real SB16 software resource selection through these registers is not
@@ -76,15 +79,17 @@
 //! are stored only. The board PC speaker is never routed through this mixer.
 //! A DSP reset preserves mixer settings; whole-device reset restores them
 //! (ASSUMED separation of the DSP and mixer reset domains).
-//! Snapshots use SB16-MV3; SB16-8V2 restores with reset mixer and no word state.
+//! Snapshots use SB16-FM4; SB16-MV3 restores with reset OPL3; SB16-8V2
+//! also restores with reset mixer and no word state.
 //! Direct DAC holds its unsigned level until another
 //! DAC write, DMA command or reset (ASSUMED analogue reconstruction). The output
 //! observer is installed by assembly; hardware never depends on an audio consumer.
 
+pub mod fm;
 mod mixer;
 
 use mixer::Mixer;
-use std::collections::VecDeque;
+use std::{cell::RefCell, collections::VecDeque, rc::Rc};
 
 use device::{
     AccessDir, Device, DeviceError, DmaOp, DmaOutcome, DmaRequest, NextEvent, TraceBuffer,
@@ -201,6 +206,7 @@ pub struct Sb16 {
     dma16: u8,
     irq: u8,
     state: State,
+    fm: Rc<RefCell<fm::Fm>>,
     output: Option<Box<dyn FnMut(Output)>>,
     trace: TraceBuffer,
 }
@@ -215,6 +221,7 @@ impl Sb16 {
             dma16: 5,
             irq: 5,
             state: State::default(),
+            fm: Rc::new(RefCell::new(fm::Fm::default())),
             output: None,
             trace: TraceBuffer::default(),
         }
@@ -232,6 +239,20 @@ impl Sb16 {
     /// Bind native audio once; no host clock or host audio API enters the DSP.
     pub fn observe_output(&mut self, output: impl FnMut(Output) + 'static) {
         self.output = Some(Box::new(output));
+    }
+
+    /// Shared native FM state; its lifetime matches the SB16 card.
+    pub fn fm(&self) -> Rc<RefCell<fm::Fm>> {
+        self.fm.clone()
+    }
+
+    fn fm_port(&self, port: u16) -> Option<u16> {
+        match port {
+            0x388..=0x38b => Some(port - 0x388),
+            p if (self.base..=self.base + 3).contains(&p) => Some(p - self.base),
+            p if (self.base + 8..=self.base + 9).contains(&p) => Some(p - self.base - 8),
+            _ => None,
+        }
     }
 
     fn emit(&mut self, event: Output) {
@@ -485,51 +506,62 @@ impl Device for Sb16 {
         "sb16-dsp"
     }
     fn port_read(&mut self, port: u16, size: u8) -> Result<u32, DeviceError> {
-        let value = match port.wrapping_sub(self.base) {
-            4 => self.state.mixer.index,
-            5 => match self.state.mixer.index {
-                0x80 => match self.irq {
-                    2 => 1,
-                    5 => 2,
-                    7 => 4,
-                    10 => 8,
-                    _ => 0,
+        self.fm.borrow_mut().advance(VClock(self.state.now));
+        let value = if let Some(offset) = self.fm_port(port) {
+            self.fm.borrow().read(offset)
+        } else {
+            match port.wrapping_sub(self.base) {
+                4 => self.state.mixer.index,
+                5 => match self.state.mixer.index {
+                    0x80 => match self.irq {
+                        2 => 1,
+                        5 => 2,
+                        7 => 4,
+                        10 => 8,
+                        _ => 0,
+                    },
+                    0x81 => (1 << self.dma8) | (1 << self.dma16),
+                    0x82 => u8::from(self.state.irq) | (u8::from(self.state.irq16) << 1),
+                    _ => self.state.mixer.read(),
                 },
-                0x81 => (1 << self.dma8) | (1 << self.dma16),
-                0x82 => u8::from(self.state.irq) | (u8::from(self.state.irq16) << 1),
-                _ => self.state.mixer.read(),
-            },
-            0x0F => {
-                self.state.irq16 = false;
-                0xFF
-            }
-            0x0A => self.state.reply.pop_front().unwrap_or(0xFF),
-            0x0C => {
-                if self.state.reset_start.is_some() || self.state.reset_ready.is_some() {
-                    0x80
-                } else {
-                    0
+                0x0F => {
+                    self.state.irq16 = false;
+                    0xFF
                 }
-            }
-            0x0E => {
-                self.state.irq = false;
-                if self.state.reply.is_empty() {
-                    0
-                } else {
-                    0x80
+                0x0A => self.state.reply.pop_front().unwrap_or(0xFF),
+                0x0C => {
+                    if self.state.reset_start.is_some() || self.state.reset_ready.is_some() {
+                        0x80
+                    } else {
+                        0
+                    }
                 }
+                0x0E => {
+                    self.state.irq = false;
+                    if self.state.reply.is_empty() {
+                        0
+                    } else {
+                        0x80
+                    }
+                }
+                _ => 0xFF,
             }
-            _ => 0xFF,
         };
         self.record(port, size, AccessDir::Read, value.into());
         Ok(value.into())
     }
     fn port_write(&mut self, port: u16, size: u8, value: u32) -> Result<(), DeviceError> {
         self.record(port, size, AccessDir::Write, value);
+        self.fm.borrow_mut().advance(VClock(self.state.now));
+        if let Some(offset) = self.fm_port(port) {
+            self.fm.borrow_mut().write(offset, value as u8);
+            return Ok(());
+        }
         match port.wrapping_sub(self.base) {
             4 => self.state.mixer.index = value as u8,
             5 => {
                 self.state.mixer.write(value as u8);
+                self.fm.borrow_mut().volume(&self.state.mixer);
                 if self.state.direct {
                     self.emit(Output::Frame {
                         at: VClock(self.state.now),
@@ -629,6 +661,7 @@ impl Device for Sb16 {
     fn reset(&mut self) {
         self.clear();
         self.state.mixer = Mixer::default();
+        self.fm.borrow_mut().reset(self.state.now);
         self.trace.clear();
     }
     fn take_dma_request(&mut self) -> Option<DmaRequest> {
@@ -780,7 +813,7 @@ impl Sb16 {
             u64::from(s.reload),
             s.next_block.map_or(0, |transfer| u64::from(transfer.auto)),
         ];
-        let mut bytes = b"SB16-MV3".to_vec();
+        let mut bytes = b"SB16-FM4".to_vec();
         for value in values {
             bytes.extend(value.to_le_bytes());
         }
@@ -801,6 +834,8 @@ impl Sb16 {
             s.mixer.index,
         ]);
         bytes.extend(s.mixer.registers);
+        self.fm.borrow_mut().advance(VClock(s.now));
+        bytes.extend(self.fm.borrow().save());
         bytes
     }
 
@@ -810,7 +845,8 @@ impl Sb16 {
             reason: "invalid SB16 DSP/mixer state",
         };
         let legacy = bytes.get(..8) == Some(b"SB16-8V2");
-        if !legacy && bytes.get(..8) != Some(b"SB16-MV3") {
+        let fm_version = bytes.get(..8) == Some(b"SB16-FM4");
+        if !legacy && !fm_version && bytes.get(..8) != Some(b"SB16-MV3") {
             return Err(bad());
         }
         let mut rest = &bytes[8..];
@@ -840,15 +876,18 @@ impl Sb16 {
         let (word, irq16, queued_word) = if legacy {
             (false, false, false)
         } else {
-            if rest.len() != 30
-                || rest[0] != self.dma16
+            if (if fm_version {
+                rest.len() < 30
+            } else {
+                rest.len() != 30
+            }) || rest[0] != self.dma16
                 || rest[1] != self.irq
                 || rest[2..5].iter().any(|&v| v > 1)
             {
                 return Err(bad());
             }
             mixer.index = rest[5];
-            mixer.registers.copy_from_slice(&rest[6..]);
+            mixer.registers.copy_from_slice(&rest[6..30]);
             if mixer
                 .registers
                 .iter()
@@ -858,8 +897,18 @@ impl Sb16 {
                 return Err(bad());
             }
             let result = (rest[2] != 0, rest[3] != 0, rest[4] != 0);
-            rest = &[];
+            rest = &rest[30..];
             result
+        };
+        let fm = if fm_version {
+            let fm = fm::Fm::decode(rest, mixer.clone(), v[2]).ok_or_else(bad)?;
+            rest = &[];
+            fm
+        } else {
+            let mut fm = fm::Fm::default();
+            fm.reset(v[2]);
+            fm.volume(&mixer);
+            fm
         };
         let maximum = if word { 131072 } else { 65536 };
         if !rest.is_empty()
@@ -943,6 +992,7 @@ impl Sb16 {
             }),
         };
         self.state = s;
+        self.fm.borrow_mut().restore(fm);
         // Presentation history is not hardware state. Restore resumes this source
         // at the restored clock; it never replays previously captured PCM.
         if self.state.direct {

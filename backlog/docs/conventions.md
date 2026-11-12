@@ -61,6 +61,14 @@ Generic conventions that apply regardless of stack. Stack-specific rules (langua
   chat with the maintainer — see AGENTS.md).
 - **License headers**: each source file carries an SPDX line
   `// SPDX-License-Identifier: AGPL-3.0-or-later`.
+  Exception: `crates/devices/src/opl3/mod.rs` and `opl3/tables.rs` translate
+  Nuked-OPL3 1.8, commit `765ec962`, and preserve Nuke.YKT's copyright with
+  `// SPDX-License-Identifier: LGPL-2.1-or-later` (decision-21).
+  `opl3/LICENSE` contains the upstream licence. Board timing, serialization and
+  tests remain AGPL. The publication guard enforces the exact two-file SPDX
+  exception. Cargo-deny checks crate metadata: `devices` and the combined
+  program remain AGPL-3.0-or-later; it does not enforce per-file licences.
+  URLs inside a verbatim upstream licence notice are allowed.
 - **Doc-comments (docs-first rule)**: every public module and trait has a `//!` /
   `///` doc-comment naming the modelled hardware and cross-referencing
   `backlog/docs/design/spec.md` (`§` style). Datasheet deviations are documented.

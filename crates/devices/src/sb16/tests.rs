@@ -289,7 +289,7 @@ fn snapshot_round_trip_mid_command_mid_block_and_reset_reply() {
     for bytes in [&[0x41, 0x1F][..], &[0x40, 0x14, 2, 0][..]] {
         command(&mut bus, bytes);
         let snapshot = bus.device().save();
-        assert_eq!(&snapshot[..8], b"SB16-MV3");
+        assert_eq!(&snapshot[..8], b"SB16-FM4");
         let mut restored = Sb16::new(0x220, 1);
         restored.restore(&snapshot).unwrap();
         assert_eq!(restored.save(), snapshot);
@@ -1017,7 +1017,7 @@ fn legacy_snapshot_restores_mixer_defaults_and_no_word_interrupt() {
     assert_eq!(restored.port_read(0x225, 1).unwrap(), 0xC0);
     restored.port_write(0x224, 1, 0x82).unwrap();
     assert_eq!(restored.port_read(0x225, 1).unwrap(), 0);
-    assert_eq!(&restored.save()[..8], b"SB16-MV3");
+    assert_eq!(&restored.save()[..8], b"SB16-FM4");
 }
 
 #[test]
@@ -1108,4 +1108,336 @@ fn native_zero_volume_is_minus_sixty_two_db_per_stage() {
     mixer_write(&mut bus, 0x32, 0);
     mixer_write(&mut bus, 0x31, 0);
     assert_eq!(frames(&events).last(), Some(&(0, [0; 2])));
+}
+
+fn fm_write(bus: &mut MockBus, address: u16, reg: u8, data: u8) {
+    bus.port_write(address, 1, reg.into()).unwrap();
+    bus.port_write(address + 1, 1, data.into()).unwrap();
+}
+const FM_TONE: [(u8, u8); 11] = [
+    (0x20, 0x21),
+    (0x23, 0x21),
+    (0x40, 0x10),
+    (0x43, 0),
+    (0x60, 0xf4),
+    (0x63, 0xf4),
+    (0x80, 0x45),
+    (0x83, 0x45),
+    (0xa0, 0x98),
+    (0xb0, 0x31),
+    (0xc0, 0x30),
+];
+
+fn fm_tone(bus: &mut MockBus, address: u16) {
+    for (reg, data) in FM_TONE {
+        fm_write(bus, address, reg, data);
+    }
+}
+
+#[test]
+fn opl3_classic_detection_and_timers_use_virtual_sample_boundaries() {
+    let (mut bus, _) = rig();
+    assert_eq!(bus.port_read(0x388, 1).unwrap(), 0);
+    assert_eq!(bus.port_read(0x38a, 1).unwrap(), 0xff);
+    fm_write(&mut bus, 0x388, 4, 0x60);
+    fm_write(&mut bus, 0x388, 4, 0x80);
+    assert_eq!(bus.port_read(0x388, 1).unwrap(), 0);
+    fm_write(&mut bus, 0x388, 2, 0xff);
+    fm_write(&mut bus, 0x388, 4, 1);
+    at(&mut bus, 95);
+    assert_eq!(bus.port_read(0x388, 1).unwrap(), 0);
+    at(&mut bus, 96);
+    assert_eq!(bus.port_read(0x388, 1).unwrap(), 0xc0);
+    assert!(!bus.device().irq_pending());
+    fm_write(&mut bus, 0x220, 4, 0x80);
+    assert_eq!(bus.port_read(0x228, 1).unwrap(), 0);
+    fm_write(&mut bus, 0x228, 3, 0xff);
+    fm_write(&mut bus, 0x228, 4, 3);
+    at(&mut bus, 384);
+    assert_eq!(bus.port_read(0x220, 1).unwrap(), 0xe0);
+    fm_write(&mut bus, 0x388, 4, 0x43);
+    assert_eq!(bus.port_read(0x388, 1).unwrap(), 0xa0);
+    fm_write(&mut bus, 0x388, 4, 0x63);
+    assert_eq!(bus.port_read(0x388, 1).unwrap(), 0);
+    at(&mut bus, 2000);
+    assert_eq!(bus.port_read(0x388, 1).unwrap(), 0);
+}
+
+#[test]
+fn opl3_banks_aliases_and_next_boundary_writes() {
+    fn capture(low: u16, high: u16) -> Vec<(u64, [i16; 2])> {
+        let events = Events::default();
+        let writer = events.clone();
+        let dsp = Sb16::new(0x240, 1);
+        dsp.fm()
+            .borrow_mut()
+            .observe_output(move |e| writer.borrow_mut().push(e));
+        let mut bus = MockBus::new(Box::new(dsp));
+        fm_write(&mut bus, high, 5, 1);
+        fm_tone(&mut bus, low);
+        fm_tone(&mut bus, high);
+        at(&mut bus, 23);
+        bus.port_read(low, 1).unwrap();
+        assert!(frames(&events).is_empty());
+        at(&mut bus, 10000);
+        bus.port_read(low, 1).unwrap();
+        let result = frames(&events);
+        assert_eq!(result[0].0, 24);
+        assert!(result.iter().any(|(_, p)| *p != [0; 2]));
+        let mut reference = crate::opl3::Opl3::default();
+        reference.write(0x105, 1);
+        for bank in [0, 0x100] {
+            for (reg, data) in FM_TONE {
+                reference.write(bank + u16::from(reg), data);
+            }
+        }
+        let mixer = Mixer::default();
+        let expected: Vec<_> = (1..=10000 / 24)
+            .map(|n| (n * 24, mixer.apply_fm(reference.generate())))
+            .collect();
+        assert_eq!(result, expected);
+        result
+    }
+    assert_eq!(capture(0x388, 0x38a), capture(0x240, 0x242));
+    assert_eq!(capture(0x388, 0x38a), capture(0x248, 0x242));
+}
+
+#[test]
+fn opl3_snapshot_keeps_pending_writes_envelope_phase_and_timers() {
+    let mut original = Sb16::new(0x220, 1);
+    original.tick(VClock(7));
+    let mut bus = MockBus::new(Box::new(original));
+    fm_tone(&mut bus, 0x388);
+    fm_write(&mut bus, 0x388, 2, 0xfe);
+    fm_write(&mut bus, 0x388, 4, 1);
+    at(&mut bus, 987);
+    fm_write(&mut bus, 0x38a, 5, 1);
+    let bytes = bus.device().save();
+    assert_eq!(&bytes[..8], b"SB16-FM4");
+    let mut restored = Sb16::new(0x220, 1);
+    restored.restore(&bytes).unwrap();
+    assert_eq!(restored.save(), bytes);
+    let a = Events::default();
+    let b = Events::default();
+    // The decoded hardware continues with exactly the same next boundary.
+    let mut second = Sb16::new(0x220, 1);
+    second.restore(&bytes).unwrap();
+    let writer = a.clone();
+    restored
+        .fm()
+        .borrow_mut()
+        .observe_output(move |e| writer.borrow_mut().push(e));
+    let writer = b.clone();
+    second
+        .fm()
+        .borrow_mut()
+        .observe_output(move |e| writer.borrow_mut().push(e));
+    restored.fm().borrow_mut().advance(VClock(4000));
+    second.fm().borrow_mut().advance(VClock(1100));
+    second.fm().borrow_mut().advance(VClock(4000));
+    assert_eq!(*a.borrow(), *b.borrow());
+    let legacy_end = 8 + 31 * 8 + 3 + 6 + 24;
+    // No replies/arguments/staging in this fixture; the old mixer suffix ends here.
+    let mut legacy = bytes[..legacy_end].to_vec();
+    legacy[..8].copy_from_slice(b"SB16-MV3");
+    restored.restore(&legacy).unwrap();
+    assert_eq!(restored.fm().borrow().read(0), 0);
+    let output = Events::default();
+    let writer = output.clone();
+    restored
+        .fm()
+        .borrow_mut()
+        .observe_output(move |e| writer.borrow_mut().push(e));
+    restored.fm().borrow_mut().advance(VClock(2000));
+    assert!(frames(&output).iter().all(|(_, p)| *p == [0; 2]));
+}
+
+#[test]
+fn opl3_new_bit_enables_panning_while_opl2_ignores_it() {
+    fn audible(new: u8) -> bool {
+        let events = Events::default();
+        let writer = events.clone();
+        let dsp = Sb16::new(0x220, 1);
+        dsp.fm()
+            .borrow_mut()
+            .observe_output(move |e| writer.borrow_mut().push(e));
+        let mut bus = MockBus::new(Box::new(dsp));
+        fm_write(&mut bus, 0x38a, 5, new);
+        fm_tone(&mut bus, 0x388);
+        fm_write(&mut bus, 0x388, 0xc0, 0);
+        at(&mut bus, 3000);
+        bus.port_read(0x388, 1).unwrap();
+        frames(&events).iter().any(|(_, p)| *p != [0; 2])
+    }
+    assert!(audible(0));
+    assert!(!audible(1));
+}
+
+#[test]
+fn opl3_bank_select_is_latched_at_address_write_and_data_a1_is_ignored() {
+    for data_port in [0x389, 0x38b, 0x221, 0x223, 0x229] {
+        let events = Events::default();
+        let writer = events.clone();
+        let dsp = Sb16::new(0x220, 1);
+        dsp.fm()
+            .borrow_mut()
+            .observe_output(move |e| writer.borrow_mut().push(e));
+        let mut bus = MockBus::new(Box::new(dsp));
+        // A bank-1 address followed by any data alias must enable NEW.
+        bus.port_write(0x38a, 1, 5).unwrap();
+        bus.port_write(data_port, 1, 1).unwrap();
+        fm_tone(&mut bus, 0x388);
+        // Zero panning silences NEW mode; OPL2 would ignore those bits.
+        bus.port_write(0x228, 1, 0xc0).unwrap();
+        bus.port_write(data_port, 1, 0).unwrap();
+        at(&mut bus, 3000);
+        bus.port_read(0x388, 1).unwrap();
+        assert!(
+            frames(&events).iter().all(|(_, p)| *p == [0; 2]),
+            "data alias {data_port:x}"
+        );
+    }
+}
+
+#[test]
+fn opl3_opl2_bank_one_channel_writes_fall_through_to_bank_zero() {
+    fn capture(address: u16) -> Vec<(u64, [i16; 2])> {
+        let events = Events::default();
+        let writer = events.clone();
+        let dsp = Sb16::new(0x220, 1);
+        dsp.fm()
+            .borrow_mut()
+            .observe_output(move |e| writer.borrow_mut().push(e));
+        let mut bus = MockBus::new(Box::new(dsp));
+        fm_tone(&mut bus, address);
+        at(&mut bus, 10000);
+        bus.port_read(0x388, 1).unwrap();
+        let result = frames(&events);
+        assert!(result.iter().any(|(_, pcm)| *pcm != [0; 2]));
+        result
+    }
+    let bank_zero = capture(0x388);
+    assert_eq!(bank_zero, capture(0x38a));
+    assert_eq!(bank_zero, capture(0x222));
+}
+
+#[test]
+fn opl3_timer_control_is_immediate_and_start_uses_native_grid_phase() {
+    for (start, timer, control, tick, status) in [
+        (5, 2, 1, 96, 0xc0),
+        (95, 2, 1, 96, 0xc0),
+        (96, 2, 1, 192, 0xc0),
+        (25, 3, 2, 384, 0xa0),
+        (383, 3, 2, 384, 0xa0),
+        (384, 3, 2, 768, 0xa0),
+    ] {
+        let (mut bus, _) = rig();
+        at(&mut bus, start);
+        fm_write(&mut bus, 0x388, timer, 0xff);
+        fm_write(&mut bus, 0x388, 4, control);
+        at(&mut bus, tick - 1);
+        assert_eq!(
+            bus.port_read(0x388, 1).unwrap(),
+            0,
+            "before tick from {start}"
+        );
+        at(&mut bus, tick);
+        assert_eq!(
+            bus.port_read(0x388, 1).unwrap(),
+            status,
+            "tick from {start}"
+        );
+        fm_write(&mut bus, 0x388, 4, 0x80);
+        assert_eq!(bus.port_read(0x388, 1).unwrap(), 0, "immediate reset");
+        at(&mut bus, tick + if timer == 2 { 96 } else { 384 });
+        assert_eq!(
+            bus.port_read(0x388, 1).unwrap(),
+            status,
+            "reset keeps running"
+        );
+        fm_write(&mut bus, 0x388, 4, 0x60 | control);
+        assert_eq!(bus.port_read(0x388, 1).unwrap(), 0, "immediate mask");
+    }
+}
+
+#[test]
+fn opl3_bank_one_address_after_new_enable_uses_last_written_new() {
+    let events = Events::default();
+    let writer = events.clone();
+    let dsp = Sb16::new(0x220, 1);
+    dsp.fm()
+        .borrow_mut()
+        .observe_output(move |e| writer.borrow_mut().push(e));
+    let mut bus = MockBus::new(Box::new(dsp));
+    fm_tone(&mut bus, 0x388);
+    fm_write(&mut bus, 0x38a, 5, 1);
+    bus.port_write(0x38a, 1, 0xc0).unwrap();
+    at(&mut bus, 24);
+    bus.port_read(0x388, 1).unwrap();
+    // The immediately preceding NEW write makes the latched address bank 1.
+    bus.port_write(0x38b, 1, 0).unwrap();
+    at(&mut bus, 3000);
+    bus.port_read(0x388, 1).unwrap();
+    assert!(frames(&events)
+        .iter()
+        .filter(|(at, _)| *at >= 96)
+        .any(|(_, pcm)| *pcm != [0; 2]));
+}
+
+#[test]
+fn opl3_pending_new_keeps_connection_select_out_of_timer_control() {
+    let events = Events::default();
+    let writer = events.clone();
+    let dsp = Sb16::new(0x220, 1);
+    dsp.fm()
+        .borrow_mut()
+        .observe_output(move |e| writer.borrow_mut().push(e));
+    let mut bus = MockBus::new(Box::new(dsp));
+    fm_write(&mut bus, 0x388, 2, 0xff);
+    fm_write(&mut bus, 0x38a, 5, 1);
+    fm_write(&mut bus, 0x38a, 4, 1);
+    fm_tone(&mut bus, 0x388);
+    at(&mut bus, 96);
+    assert_eq!(
+        bus.port_read(0x388, 1).unwrap(),
+        0,
+        "104h must not start timer 1"
+    );
+    at(&mut bus, 3000);
+    bus.port_read(0x388, 1).unwrap();
+    let pcm = frames(&events);
+    assert_eq!(pcm.len(), 125);
+    // Four-op routing ends in the unprogrammed pair, so the two programmed
+    // operators alone cannot drive the output. Dropping 104h would sound a tone.
+    assert!(pcm.iter().all(|(_, frame)| *frame == [0; 2]));
+}
+
+#[test]
+fn opl3_last_pending_new_value_controls_addressing_after_snapshot() {
+    for values in [&[1, 0, 1][..], &[1, 0][..], &[0, 1][..]] {
+        let events = Events::default();
+        let writer = events.clone();
+        let dsp = Sb16::new(0x220, 1);
+        dsp.fm()
+            .borrow_mut()
+            .observe_output(move |e| writer.borrow_mut().push(e));
+        let mut bus = MockBus::new(Box::new(dsp));
+        fm_tone(&mut bus, 0x388);
+        for &value in values {
+            fm_write(&mut bus, 0x38a, 5, value);
+        }
+        let snapshot = bus.device().save();
+        bus.device_mut().restore(&snapshot).unwrap();
+        assert_eq!(bus.device().save(), snapshot);
+        // Key-off must affect bank 0 only when the last NEW write disables OPL3.
+        fm_write(&mut bus, 0x38a, 0xb0, 0x11);
+        at(&mut bus, 3000);
+        bus.port_read(0x388, 1).unwrap();
+        let audible = frames(&events).iter().any(|(_, frame)| *frame != [0; 2]);
+        assert_eq!(
+            audible,
+            values.last() == Some(&1),
+            "NEW sequence {values:?}"
+        );
+    }
 }

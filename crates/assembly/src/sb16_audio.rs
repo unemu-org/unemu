@@ -40,6 +40,40 @@ impl AudioSource for Source {
     }
 }
 
+fn record(writer: &Rc<RefCell<Signal>>, event: Output) {
+    let mut signal = writer.borrow_mut();
+    let (at, result) = match event {
+        Output::Frame {
+            at,
+            numerator,
+            denominator,
+            pcm,
+        } => {
+            let result = match (NonZeroU64::new(numerator), NonZeroU64::new(denominator)) {
+                (Some(p), Some(q)) => {
+                    signal
+                        .samples
+                        .push_segment(at, SamplePeriod::new(p, q), &[pcm])
+                }
+                _ => Err(AudioError::HistoryOrder),
+            };
+            (at, result)
+        }
+        Output::Pause(at) => (at, signal.samples.pause(at)),
+    };
+    if let Err(error) = result {
+        signal.error.get_or_insert(error);
+    }
+    if !signal.enabled {
+        // Retain the incomplete output frame even during a long run without
+        // facade observations; enabling capture cannot recover discarded PCM.
+        let frames = audio::completed_frames(at);
+        let retain = (u128::from(frames) * u128::from(audio::CLOCKS_PER_FRAME_NUMERATOR))
+            .div_ceil(u128::from(audio::CLOCKS_PER_FRAME_DENOMINATOR)) as u64;
+        signal.reader.release_before(VClock(retain));
+    }
+}
+
 fn signal(base: u16, dma8: u8, dma16: u8, irq: u8) -> (Sb16, Source) {
     let samples = SampleBuffer::default();
     let signal = Rc::new(RefCell::new(Signal {
@@ -51,45 +85,67 @@ fn signal(base: u16, dma8: u8, dma16: u8, irq: u8) -> (Sb16, Source) {
     let writer = signal.clone();
     let mut device = Sb16::new(base, dma8).with_resources(dma16, irq);
     device.observe_output(move |event| {
-        let mut signal = writer.borrow_mut();
-        let (at, result) = match event {
-            Output::Frame {
-                at,
-                numerator,
-                denominator,
-                pcm,
-            } => {
-                let result = match (NonZeroU64::new(numerator), NonZeroU64::new(denominator)) {
-                    (Some(p), Some(q)) => {
-                        signal
-                            .samples
-                            .push_segment(at, SamplePeriod::new(p, q), &[pcm])
-                    }
-                    _ => Err(AudioError::HistoryOrder),
-                };
-                (at, result)
-            }
-            Output::Pause(at) => (at, signal.samples.pause(at)),
-        };
-        if let Err(error) = result {
-            signal.error.get_or_insert(error);
-        }
-        if !signal.enabled {
-            // Retain the incomplete output frame even during a long run without
-            // facade observations; enabling capture cannot recover discarded PCM.
-            let frames = audio::completed_frames(at);
-            let retain = (u128::from(frames) * u128::from(audio::CLOCKS_PER_FRAME_NUMERATOR))
-                .div_ceil(u128::from(audio::CLOCKS_PER_FRAME_DENOMINATOR))
-                as u64;
-            signal.reader.release_before(VClock(retain));
-        }
+        record(&writer, event);
     });
     (device, Source(signal))
 }
 
+struct CardSource {
+    voice: Source,
+    fm: Source,
+    chip: Rc<RefCell<devices::sb16::fm::Fm>>,
+}
+impl AudioSource for CardSource {
+    fn set_output_enabled(&mut self, enabled: bool) {
+        self.voice.set_output_enabled(enabled);
+        self.fm.set_output_enabled(enabled);
+    }
+    fn take_error(&mut self) -> Option<AudioError> {
+        let voice = self.voice.take_error();
+        let fm = self.fm.take_error();
+        voice.or(fm)
+    }
+    fn render(&mut self, start: VClock, end: VClock) -> SampleArea {
+        self.chip.borrow_mut().advance(end);
+        let voice = self.voice.render(start, end);
+        let fm = self.fm.render(start, end);
+        [voice[0] + fm[0], voice[1] + fm[1]]
+    }
+    fn advance(&mut self, until: VClock) {
+        self.chip.borrow_mut().advance(until);
+        self.voice.advance(until);
+        self.fm.advance(until);
+    }
+    fn release_before(&mut self, at: VClock) {
+        self.voice.release_before(at);
+        self.fm.release_before(at);
+    }
+    fn finished(&self) -> bool {
+        false
+    }
+}
+
 pub(crate) fn build(base: u16, dma8: u8, dma16: u8, irq: u8) -> (Sb16, Box<dyn AudioSource>) {
-    let (device, source) = signal(base, dma8, dma16, irq);
-    (device, Box::new(source))
+    let (device, voice) = signal(base, dma8, dma16, irq);
+    let samples = SampleBuffer::default();
+    let fm = Rc::new(RefCell::new(Signal {
+        reader: RateSource::new(samples.clone()),
+        samples,
+        error: None,
+        enabled: true,
+    }));
+    let writer = fm.clone();
+    let chip = device.fm();
+    chip.borrow_mut()
+        .observe_output(move |event| record(&writer, event));
+    (
+        device,
+        Box::new(CardSource {
+            voice,
+            fm: Source(fm),
+            chip,
+        }),
+    )
 }
 
 #[cfg(test)]
@@ -119,6 +175,56 @@ mod tests {
             bytes: vec![byte],
             terminal_count: false,
         });
+    }
+
+    #[test]
+    fn fm_native_samples_integrate_with_midi_master_gain_and_live_volume() {
+        let (mut dsp, mut source) = build(0x220, 1, 5, 5);
+        let mut reference = devices::opl3::Opl3::default();
+        for (reg, data) in [
+            (0x20, 0x21),
+            (0x23, 0x21),
+            (0x40, 0x10),
+            (0x43, 0),
+            (0x60, 0xf4),
+            (0x63, 0xf4),
+            (0x80, 0x45),
+            (0x83, 0x45),
+            (0xa0, 0x98),
+            (0xb0, 0x31),
+        ] {
+            dsp.port_write(0x388, 1, reg).unwrap();
+            dsp.port_write(0x389, 1, data).unwrap();
+            reference.write(reg as u16, data as u8);
+        }
+        let mut native = vec![[0; 2]];
+        for _ in 1..200 {
+            native.push(reference.generate());
+        }
+        let expected = |start: u64, end: u64, left: i64, right: i64| -> SampleArea {
+            let mut area = [0; 2];
+            for at in start..end {
+                let pcm = native[(at / 24) as usize];
+                for ch in 0..2 {
+                    let midi = if ch == 0 { left } else { right };
+                    area[ch] += i128::from(i64::from(pcm[ch]) * 3347495 * midi / (1i64 << 48));
+                }
+            }
+            area
+        };
+        dsp.tick(VClock(1001));
+        assert_eq!(
+            source.render(VClock(0), VClock(1001)),
+            expected(0, 1001, 3347495, 3347495)
+        );
+        // MIDI affects FM independently from voice, at an interior sample clock.
+        dsp.port_write(0x224, 1, 0x34).unwrap();
+        dsp.port_write(0x225, 1, 0xf8).unwrap();
+        assert_eq!(
+            source.render(VClock(1001), VClock(2000)),
+            expected(1001, 2000, 16777216, 3347495)
+        );
+        assert_eq!(source.take_error(), None);
     }
 
     #[test]

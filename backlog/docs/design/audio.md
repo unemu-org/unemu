@@ -5,8 +5,7 @@ The `audio` crate is the audio swap layer beside `video`. It provides an
 [decision-20](../../decisions/decision-20%20-%20Audio%20through%20a%20virtual-time%20AudioSink%20seam%20with%20host%20output%20in%20the%20window.md).
 The AT PC speaker is the first sound-producing device. The window uses cpal
 for host playback. An optional SB16 supplies byte/word-DMA PCM through a CT1745 master/voice
-volume model; analogue filtering
-and synthesis remain separate work. The audio crate itself needs only the existing `device`
+volume model and native YMF262 FM synthesis; analogue filtering remains unmodelled. The audio crate itself needs only the existing `device`
 and `thiserror` workspace dependencies.
 
 ## Output format
@@ -339,11 +338,10 @@ DSP version **4.05** follows the physical SB16 reported in Epson Product
 Support Bulletin S-0172, Software, page 4
 ([primary source](https://files.support.epson.com/pdf/e4p___/e4p___ps.pdf)).
 
-The seven claimed byte ports are base+4/+5 (mixer index/data), +6 (reset),
+The seven DSP/mixer byte ports are base+4/+5 (mixer index/data), +6 (reset),
 +Ah (read reply), +Ch (write command/data, read busy), +Eh (read availability
 and acknowledge byte IRQ), and +Fh (acknowledge word IRQ). See
-[16-bit output](#sb16-16-bit-output) and [CT1745](#ct1745). Only OPL ports remain
-unclaimed and read FFh from the empty bus. Creative's §2 Resetting the DSP recommends a
+[16-bit output](#sb16-16-bit-output) and [CT1745](#ct1745). OPL ports alias the onboard YMF262; see §OPL3. Creative's §2 Resetting the DSP recommends a
 3 µs reset hold and describes typical 100 µs initialization. This model clears
 state on writing 1 and accepts **any 1→0 edge**, including two writes at the same
 PIT clock. AAh becomes available **immediately (zero initialization delay)** on
@@ -430,7 +428,7 @@ incomplete output-frame boundary on every unobserved producer event, even
 without facade capture calls. `SampleBuffer::push_segment` replaces a segment
 starting at the same clock, whose duration would be zero; this small audio-helper
 change bounds repeated direct-DAC writes at one clock. Its public API is unchanged.
-Hardware snapshots use model marker `SB16-MV3`, preserve partial commands, replies,
+Hardware snapshots use model marker `SB16-FM4`, preserve partial commands, replies,
 phase, separate legacy/active block sizes, queued transfer format and auto-init
 flag, block position, staging, reset state and IRQ, and exclude trace/audio
 history. Restoring starts presentation at the restored clock without replay.
@@ -449,7 +447,7 @@ independent per-PIT-clock integral. A second ROM run uses three PIT clocks
 per retired step to put DMA deadlines inside CPU steps.
 
 Not modelled: recording, ADPCM, high-speed legacy commands, MPU-401/MIDI,
-OPL3, analogue filters, DSP execution latency and ISA contention.
+analogue filters, DSP execution latency and ISA contention.
 
 ## SB16 16-bit output
 
@@ -484,7 +482,7 @@ only IRQ8. Their logical OR drives the configured IRQ line. Mixer 82h reports
 IRQ8/IRQ16 in bits 0/1; MPU-401 bit 2 is always zero.
 
 Snapshots preserve word format, both pending IRQs, word staging and any queued
-transfer, mixer index/registers and fixed resources. Old `SB16-8V2` snapshots keep
+transfer, mixer index/registers and fixed resources, plus complete FM state. Old `SB16-8V2` snapshots keep
 their byte-DMA state and restore a reset mixer with no word state. Presentation
 history remains excluded, and restoration applies the restored volumes at the
 restored clock.
@@ -511,7 +509,7 @@ are **ASSUMED** where the guide does not specify a read value.
 
 | Registers | Implemented bits | Reset bytes | Effect |
 |---|---|---|---|
-| 30h–35h master, voice, MIDI L/R | 7–3 | C0h (level 24) | Master/voice applied; MIDI stored |
+| 30h–35h master, voice, MIDI L/R | 7–3 | C0h (level 24) | Master/voice and master/MIDI applied |
 | 36h–3Ah CD/line L/R, mic | 7–3 | 00h | Stored only |
 | 3Bh PC speaker | 7–6 | 00h | Stored only; board speaker is independent |
 | 3Ch output switches | 4–0 | 1Fh | Stored only |
@@ -592,3 +590,101 @@ The frozen three-source, 176-frame hash changes from `1f672be3ca235cfd` to
 clock-weighted blends, and sources no longer round separately in Q32. An
 independent per-PIT-clock integer reference confirms the new hash. Whole and
 split renders agree. Existing guest/video golden expectations are untouched.
+
+## OPL3
+
+The onboard **Yamaha YMF262** uses the integer native generator ported from
+[Nuked-OPL3 1.8](https://github.com/nukeykt/Nuked-OPL3), pinned to
+`765ec962e473aeb767e4cba74ffdc8f588ffbfe8` (decision-21). Hardware reference:
+[Yamaha YMF262 datasheet](https://www.bitsavers.org/components/yamaha/YMF262_199110.pdf),
+FM Sound Generator, §2 CPU Interface, Register Map, Timer and Status
+Register; board reference: Creative's *Sound Blaster Series Hardware Programming
+Guide*, §2 FM Music I/O Ports and §4 MIDI Volume.
+
+The translated generator and ROM tables preserve **Copyright (C) 2013-2020
+Nuke.YKT** and LGPL-2.1-or-later; the upstream licence is included in
+`crates/devices/src/opl3/LICENSE`. The rest of the integration remains AGPL.
+The combined application remains AGPL-3.0-or-later. There is no copied C core,
+FFI, upstream resampler, buffered-write queue or stream helper in the runtime.
+
+| Function | Coverage |
+|---|---|
+| 36 operators, 18 channels, log-sine/exp ROMs | Native integer generator, C narrowing/wrapping semantics |
+| Attack, decay, sustain, release, key scaling | Upstream rate/phase ordering, feedback and key edges |
+| NEW, OPL2 waveforms, 4-operator connections | Upstream register decoding and algorithm changes |
+| Rhythm, noise, tremolo, vibrato | Upstream integer state and depth controls |
+| Output channels | All A/B/C/D generated with upstream channel sample delay |
+| Board output | ASSUMED A=left/B=right; C/D disconnected |
+| Timers | 8-bit reload, start, mask, overflow latches, status IRQ reset |
+| External timer IRQ | ASSUMED disconnected on SB16; never asserts the PIC |
+| Analogue DAC, filters, stereo extension | Not modelled |
+
+One native frame is **24 PIT input clocks**, derived from the ISA master clock
+(288 master clocks / 12). The grid begins at whole-device reset. The chip catches
+up lazily on any SB16 port access or native-source rendering/advancement; CPU
+instruction boundaries and audio observation cadence never change its phase.
+Generator writes apply in order immediately before the **next** native boundary, including
+writes made exactly on a boundary. The first frame begins at origin + 24, with
+silence before it. The core continues running during silence, preserving its
+noise, LFO and envelope clocks before the first programmed tone.
+
+Timer 1 (02h) ticks every 4 samples (96 PIT clocks); timer 2 (03h) every 16
+(384 clocks). Registers 02h–04h act immediately on the data-port write, including
+IRQ reset and start; they do not use the generator's next-sample write queue.
+A rising start bit in 04h loads the preset. **ASSUMED divider phase:** the
+4-/16-sample dividers share the device-origin native grid, independently of
+software start time. The first tick is at the next strictly future divider
+boundary (origin + a multiple of 96/384 PIT clocks). For example, starting T1
+with FFh at clocks 5 or 95 overflows at 96; starting at 96 overflows at 192.
+Preset writes during a run affect the next reload. Bits 6/5 mask
+and clear their overflow latches. Bit 7 clears both latches without changing the
+running/mask state. Overflow flags are suppressed while masked. Status at the
+bank-0 address port returns IRQ/T1/T2 in bits 7/6/5, with low bits **zero**,
+including NEW=0: this is an OPL3, so classic AdLib detection distinguishes it
+from an OPL2. Other reads return FFh.
+
+The card always includes FM. Bank 0 address/data is at **388h/389h**, bank 1 at
+**38Ah/38Bh**; base+0..3 aliases both banks, base+8/9 aliases bank 0. A single 9-bit address latch is shared across aliases.
+Per Yamaha YMF262 datasheet §2 CPU Interface, A1 selects the bank during
+address writes and is ignored during data writes. **ASSUMED silicon compatibility,
+following [ymfm's YMF262 address-high handling](https://github.com/aaronsgiles/ymfm/blob/main/src/ymfm_opl.cpp)
+and [DOSBox DBOPL](https://dosbox-x.com/doxygen/html/dbopl_8cpp_source.html):** when the last written NEW=0,
+bank-1 addresses fall through to bank 0 except 105h, the NEW register itself.
+The gate applies when the address is latched, using the last 105h write still
+queued for generation, or the generator's current NEW bit when none is pending.
+Drivers can enable NEW and immediately program bank 1, including connection
+select at 104h, while generator changes still wait for the next sample boundary.
+The existing pending-write queue supplies this state, including after snapshot
+restore; there is no additional field or snapshot-format change. Dual-OPL2
+software with NEW disabled therefore reaches channels 0–8. All are claimed byte ports and participate
+in the normal resource-conflict validation. The DSP reset does not reset FM;
+a whole-device reset does. No optional machine-file switch is needed.
+
+Native A/B frames feed their own `SampleBuffer` / `RateSource`, at exact period
+24/1, beside the voice source. CT1745 MIDI volume 34h/35h and master 30h/31h use
+the existing Q24 table and one division toward zero, exactly like voice.
+Volume changes immediately update the held FM frame without moving the grid.
+FM and voice contribute unrounded areas to the existing saturating output mixer.
+An unprogrammed OPL3 contributes exactly zero and preserves the voice goldens.
+
+`SB16-FM4` snapshots include the address latch, queued next-boundary writes, timers,
+sample origin/index, held level, every decoded generator register, operator
+phase/envelope/feedback, channel connections, output pipeline, LFO and noise.
+Connections serialize as indices, with explicit little-endian fields and no
+Rust padding or pointers. `SB16-MV3` restores with FM reset at the restored clock;
+`SB16-8V2` also resets the mixer/word state as before. Presentation history is
+excluded; restored audio resumes at the restored time.
+
+Reference vectors under `crates/devices/tests/data/opl3/` contain full native
+A/B/C/D samples in lossless frame run-length encoding, fixed write sequences,
+SHA-256 of the decoded PCM, and a small original C driver linking the unmodified
+pinned upstream outside the repository. Tests compare every frame, both native
+generation APIs, and snapshot continuation during each sequence. They cover a
+key-on/off tone and release, all 4-op algorithms/pair changes, rhythm/noise,
+OPL2 waveform masking, LFO depths, feedback and all four panning buses.
+
+The synthetic FM ROM programs a 2-op tone through 388h/389h, runs a counted
+4000-instruction sustain, then keys off. At one retired instruction per PIT
+clock, capture through clock 24000 pins **965 frames**, FNV-1a
+**`31fe79c8e4314714`**. Whole and two differently split runs compare every captured
+frame. Existing byte/word SB16 goldens retain their original hashes.
