@@ -196,6 +196,24 @@ The resulting floppy boot and `DIR C:` are qualified in §9 item 11.
     Both reads return open bus on a plain ISA board, so RAM sizing falls
     back to CMOS (`src/fw/paravirt.c`).
 
+### 2.4 Open AT BIOS candidates
+
+**READ:** SeaBIOS requires a 386; GLaBIOS and the other open BIOS candidates
+surveyed here are XT-class. Kiselev targets the Xi8088 board, with an inverted
+display switch relative to the IBM AT. The maintainer's decision (2026-11-12)
+is to retain Kiselev with an explicit display switch for open-firmware goldens;
+AT-faithful firmware behaviour is measured through the user-firmware lane.
+
+**MEASURED:** legacy Bochs `rombios` at `6f8f69e5bb7a`, the last revision
+with `BX_CPU < 3` (removed as broken in `ddf4df1dc`), emits 97 instructions
+illegal for a 286. POST loops at F000:6107 (`xor eax,eax` in
+`timer_tick_post`); MDA/colour, floppy and AT XTIDE + IDE probes never boot
+FreeDOS. **READ:** it has no INT 10h implementation, assumes port-92h A20,
+and retains 386-only INT 15h AH=87h and disk paths. Reject it for `ibm-5170`.
+
+**ASSUMED:** porting would take about 2–4 weeks for runtime/timers, disk/video paths,
+8042 A20, protected-mode services, CMOS and boot qualification; see [deferred work](../deferred.md#open-at-class-80286-system-bios).
+
 ## 3. Board models
 
 ### 3.1 What a board model is

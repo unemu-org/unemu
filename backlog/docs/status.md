@@ -5,6 +5,8 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-12 — Open AT BIOS:** legacy Bochs rejected; keep Kiselev with an explicit display switch for open goldens and use the user-firmware lane for AT fidelity; an open 286 AT BIOS is [deferred](deferred.md#open-at-class-80286-system-bios).
+
 - **2026-11-12 — Audio seam:** the `audio` crate provides exact PIT-to-48-kHz
   mapping, interval box filtering of edge histories, timestamped native-rate integration,
   saturating stereo mixing and bounded headless PCM capture with streaming hashes. Run-scoped

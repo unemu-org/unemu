@@ -14,6 +14,18 @@ Things **deliberately not implemented**. If something seems missing and is liste
 
 ## Entries
 
+### Open AT-class (80286) system BIOS
+
+- **Why deferred:** No usable open 286 AT BIOS was identified in the candidate
+  survey. Legacy Bochs `rombios` was rejected; a proper port is **ASSUMED** to
+  take about 2–4 weeks for CPU/runtime, video, A20/protected-mode services and
+  boot qualification. Keep Kiselev with an explicit display switch for open
+  goldens and measure AT fidelity through the user-firmware lane; see
+  [open AT BIOS candidates](design/firmware-and-machine-classes.md#24-open-at-bios-candidates).
+- **Revisit when:** Goldens need AT-faithful firmware behaviour that Kiselev
+  cannot provide, or a maintainer asks.
+- **Tracked in:** upc-6le.37.
+
 ### Protected mode, paging (386+), APIC, PCI
 
 - **Why deferred:** Target is IBM PC/AT-class (80286). The 286 has no paging;
