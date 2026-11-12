@@ -302,24 +302,37 @@ mod tests {
     }
 
     fn set_guest_leds(assembled: &mut AssembledMachine, leds: u8) {
-        assembled
-            .machine
-            .bus_mut()
-            .port_write(0x60, 1, 0xED)
-            .unwrap();
-        assembled.machine.bus_mut().port_read(0x60, 1).unwrap();
-        assembled
-            .machine
-            .bus_mut()
-            .port_write(0x60, 1, u32::from(leds))
-            .unwrap();
+        for byte in [0xED, u32::from(leds)] {
+            assert_eq!(
+                assembled.machine.bus_mut().port_read(0x64, 1).unwrap() & 1,
+                0
+            );
+            assembled
+                .machine
+                .bus_mut()
+                .port_write(0x60, 1, byte)
+                .unwrap();
+            assert_eq!(
+                assembled.machine.bus_mut().port_read(0x64, 1).unwrap() & 1,
+                0
+            );
+            let cap = assembled.machine.virtual_time() + 100_000;
+            assembled.machine.run_bounded(Some(cap)).unwrap();
+            assert_eq!(
+                assembled.machine.bus_mut().port_read(0x64, 1).unwrap() & 1,
+                1
+            );
+            assert_eq!(
+                assembled.machine.bus_mut().port_read(0x60, 1).unwrap(),
+                0xFA
+            );
+        }
         let cap = assembled.machine.virtual_time() + 100_000;
         assembled.machine.run_bounded(Some(cap)).unwrap();
         assert_eq!(
-            assembled.machine.bus_mut().port_read(0x60, 1).unwrap(),
-            0xFA
+            assembled.machine.bus_mut().port_read(0x64, 1).unwrap() & 1,
+            0
         );
-        assembled.machine.run_bounded(Some(cap + 100_000)).unwrap();
     }
 
     #[test]
@@ -643,8 +656,19 @@ mod tests {
             .bus_mut()
             .port_write(0x60, 1, 0xED)
             .unwrap();
-        assembled.machine.bus_mut().port_read(0x60, 1).unwrap();
+        assert_eq!(
+            assembled.machine.bus_mut().port_read(0x64, 1).unwrap() & 1,
+            0
+        );
         assembled.machine.run_bounded(Some(100_000)).unwrap();
+        assert_eq!(
+            assembled.machine.bus_mut().port_read(0x64, 1).unwrap() & 1,
+            1
+        );
+        assert_eq!(
+            assembled.machine.bus_mut().port_read(0x60, 1).unwrap(),
+            0xFA
+        );
         input.inject_at_boundary(&mut assembled);
         assert!(
             input.pending.is_empty(),
@@ -652,8 +676,19 @@ mod tests {
         );
         assert_eq!(input.events.len(), 1);
         assembled.machine.bus_mut().port_write(0x60, 1, 2).unwrap();
+        assert_eq!(
+            assembled.machine.bus_mut().port_read(0x64, 1).unwrap() & 1,
+            0
+        );
         assembled.machine.run_bounded(Some(200_000)).unwrap();
-        assembled.machine.bus_mut().port_read(0x60, 1).unwrap();
+        assert_eq!(
+            assembled.machine.bus_mut().port_read(0x64, 1).unwrap() & 1,
+            1
+        );
+        assert_eq!(
+            assembled.machine.bus_mut().port_read(0x60, 1).unwrap(),
+            0xFA
+        );
         assembled.machine.run_bounded(Some(300_000)).unwrap();
         input.inject_at_boundary(&mut assembled);
         assert_eq!(

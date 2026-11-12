@@ -718,12 +718,34 @@ mod tests {
             .bus_mut()
             .port_write(0x60, 1, 0xED)
             .unwrap();
-        assembled.machine.bus_mut().port_read(0x60, 1).unwrap();
+        assert_eq!(
+            assembled.machine.bus_mut().port_read(0x64, 1).unwrap() & 1,
+            0
+        );
         assembled.machine.run_bounded(Some(100_000)).unwrap();
+        assert_eq!(
+            assembled.machine.bus_mut().port_read(0x64, 1).unwrap() & 1,
+            1
+        );
+        assert_eq!(
+            assembled.machine.bus_mut().port_read(0x60, 1).unwrap(),
+            0xFA
+        );
         assert_eq!(keyboard_leds_if_ready(&mut assembled.machine, index), None);
         assembled.machine.bus_mut().port_write(0x60, 1, 2).unwrap();
+        assert_eq!(
+            assembled.machine.bus_mut().port_read(0x64, 1).unwrap() & 1,
+            0
+        );
         assembled.machine.run_bounded(Some(200_000)).unwrap();
-        assembled.machine.bus_mut().port_read(0x60, 1).unwrap();
+        assert_eq!(
+            assembled.machine.bus_mut().port_read(0x64, 1).unwrap() & 1,
+            1
+        );
+        assert_eq!(
+            assembled.machine.bus_mut().port_read(0x60, 1).unwrap(),
+            0xFA
+        );
         assembled.machine.run_bounded(Some(300_000)).unwrap();
         assert_eq!(
             keyboard_leds_if_ready(&mut assembled.machine, index),

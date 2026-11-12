@@ -4,6 +4,12 @@
 //!
 //! Port 61h bits follow the PIT since 2026-11-11; delay loops take real refresh time.
 //!
+//! Keyboard replies now take the host and reply transfer time and the keyboard's
+//! basic assurance test delay (IBM PC AT Technical Reference, 101/102-Key
+//! Keyboard, "Basic Assurance Test"), so the BIOS keyboard reset finishes later
+//! in virtual time; screen content is unchanged apart from the clock rows.
+//! Normalized logical hashes and cursors are unchanged.
+//!
 //! Assembles the full PC/AT machine ([`run_bios_with_cap`]) — cascaded 8259 pair, 8253
 //! PIT, 8042, seeded MC146818 CMOS/RTC, VGA text card, port-`0x61` system
 //! control, POST port at `0x80` — over a full 1 MiB address space with the 32 KiB
@@ -88,7 +94,7 @@ fn bios_boot_stop_point_matches_golden() {
         &run,
         19_015_022,
         20_000_000,
-        0x809829e50bc06fbd,
+        0x0b55c39cf21513e6,
         0xe36ef0102a7cbc14,
     );
 

@@ -9,6 +9,13 @@
 //!
 //! Port 61h bits follow the PIT since 2026-11-11; delay loops take real refresh time.
 //!
+//! Keyboard replies now take the host and reply transfer time and the keyboard's
+//! basic assurance test delay (IBM PC AT Technical Reference, 101/102-Key
+//! Keyboard, "Basic Assurance Test"), so the BIOS keyboard reset finishes later
+//! in virtual time; screen content is unchanged apart from the clock rows.
+//! Normalized logical hashes and cursors are unchanged.
+//! The same 20,000,000-PIT-clock cap now retires 17,608 fewer instructions.
+//!
 //! Assembles the full PC/AT machine as `bios_boot_golden` does but with a µPD765
 //! floppy controller (ports `0x3F0..=0x3F7`, IRQ6) driven by the 8237 DMA
 //! (`0x00..=0x0F` + page latches `0x81..=0x8F`), backed by a minimal bootable
@@ -61,9 +68,9 @@ fn bios_int19_reads_boot_sector_over_the_floppy() {
     assert_eq!(run.stop, cli::StopReason::BudgetExhausted);
     session::assert_golden(
         &run,
-        19_008_614,
+        18_991_006,
         20_000_000,
-        0x938e07668f3b0b34,
+        0x9a13654e51c09b99,
         0x92c581d95567fb07,
     );
 

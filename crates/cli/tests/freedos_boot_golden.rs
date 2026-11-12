@@ -9,6 +9,12 @@
 //!
 //! Port 61h bits follow the PIT since 2026-11-11; delay loops take real refresh time.
 //!
+//! Keyboard replies now take the host and reply transfer time and the keyboard's
+//! basic assurance test delay (IBM PC AT Technical Reference, 101/102-Key
+//! Keyboard, "Basic Assurance Test"), so the BIOS keyboard reset finishes later
+//! in virtual time; screen content is unchanged apart from the clock rows.
+//! Normalized logical hashes and cursors are unchanged.
+//!
 //! Assembles the PC/AT machine ([`cli::run_freedos_config`]) with the real Kiselev Xi8088
 //! BIOS in masked ROM and a real, bootable **FreeDOS** 1.44 MB floppy image (8086
 //! kernel + FreeCOM, built by `vendor/freedos/fetch.sh`) in the µPD765 floppy
@@ -120,7 +126,7 @@ fn freedos_reaches_shell_prompt() {
         &run,
         8_800_477,
         10_000_000,
-        0x526086b917baa58e,
+        0xc95b91cec87e1379,
         0xaf201c7e8acb071d,
     );
 

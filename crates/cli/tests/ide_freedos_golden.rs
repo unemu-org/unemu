@@ -8,6 +8,12 @@
 //!
 //! Port 61h bits follow the PIT since 2026-11-11; delay loops take real refresh time.
 //!
+//! Keyboard replies now take the host and reply transfer time and the keyboard's
+//! basic assurance test delay (IBM PC AT Technical Reference, 101/102-Key
+//! Keyboard, "Basic Assurance Test"), so the BIOS keyboard reset finishes later
+//! in virtual time; screen content is unchanged apart from the clock rows.
+//! Normalized logical hashes and cursors are unchanged.
+//!
 //! ATA-2 §§6.1–6.2 defines the primary task file and word data register.
 //! See `backlog/docs/design/firmware-and-machine-classes.md` §9 and
 //! `backlog/docs/design/spec.md` §7.5 for the keyboard input path.
@@ -154,10 +160,10 @@ fn freedos_lists_the_readonly_ide_marker() {
         .any(|line| line.split_whitespace().take(3).eq(["MARKER", "TXT", "29"])));
     assert_eq!(prompt_logical_hash, 0x26cb04d76a1ee3c7);
     assert_eq!(prompt_retired, 15_775_579);
-    assert_eq!(prompt_hash, 0x49bbec2d36c0bbf0);
+    assert_eq!(prompt_hash, 0xb93bd1a24305e490);
     assert_eq!(assembled.machine.cpu().retired(), 19_746_109);
     assert_eq!(assembled.machine.virtual_time(), 21_000_000);
-    assert_eq!(screen_hash(&console), 0xfb811e1f40836da7);
+    assert_eq!(screen_hash(&console), 0xada1634e25758753);
     assert_eq!(session::logical_hash(&console), 0xbf790c95b531f8e8);
     assert_eq!(
         post,

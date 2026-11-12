@@ -14,6 +14,35 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   Sound-producing devices and host playback remain unimplemented. See
   [audio design](design/audio.md).
 
+- **2026-11-12 — 8042 keyboard command transmission:** writing a keyboard
+  byte to port 60h releases the keyboard clock and clears command-byte bit 4;
+  controller parameters and D3/D4 writes retain their routing, and the aux inhibit
+  bit is unchanged. ACK readiness waits two 11-bit serial frames (**DERIVED**:
+  2626 PIT clocks at the model's **ASSUMED** 10 kHz clock). Reset BAT adds
+  300 ms (**READ**: IBM PC AT Technical Reference, March 1986, 101/102-Key
+  Keyboard, Basic Assurance Test, p. 4-39; lower end of 300–500 ms) plus a reply
+  frame. Unread output remains first; draining it cannot shorten reply deadlines.
+  Snapshots preserve queued receive deadlines and use device version 7.
+  E0h read-test-inputs remains unmodelled because serial pin levels are not tracked.
+  Keyboard replies now take the host and reply transfer time and the keyboard's
+  basic assurance test delay (IBM PC AT Technical Reference, 101/102-Key Keyboard,
+  Basic Assurance Test), so the BIOS keyboard reset finishes later in virtual
+  time; screen content is unchanged apart from the clock rows. The six BIOS/DOS
+  goldens retain their normalized logical hashes and cursors. Only BIOS floppy
+  changes retired instructions: 19,008,614 → 18,991,006 (−17,608) within the same
+  20,000,000-PIT-clock cap; all other retired counts and virtual-time caps stay fixed.
+  The measured raw MDA hash re-baseline is:
+
+  | Golden | Previous hash | Current hash |
+  | --- | --- | --- |
+  | BIOS POST | `809829e50bc06fbd` | `0b55c39cf21513e6` |
+  | BIOS floppy boot | `938e07668f3b0b34` | `9a13654e51c09b99` |
+  | DOS DIR | `bb926924f4d7efa1` | `20d57080f986a38c` |
+  | DOS write | `153da3e002975834` | `e4c4f5de9a7f0d49` |
+  | FreeDOS prompt | `526086b917baa58e` | `c95b91cec87e1379` |
+  | IDE prompt | `49bbec2d36c0bbf0` | `b93bd1a24305e490` |
+  | IDE final | `fb811e1f40836da7` | `ada1634e25758753` |
+
 - **2026-11-11 — Absent physical memory on firmware boards:** assembly covers
   the AT's fixed 24-bit extent (16 MiB) around configured RAM, ROM,
   MMIO and existing zero-filled adapter gaps. Remaining holes read FFh

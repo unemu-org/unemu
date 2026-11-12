@@ -9,6 +9,12 @@
 //!
 //! Port 61h bits follow the PIT since 2026-11-11; delay loops take real refresh time.
 //!
+//! Keyboard replies now take the host and reply transfer time and the keyboard's
+//! basic assurance test delay (IBM PC AT Technical Reference, 101/102-Key
+//! Keyboard, "Basic Assurance Test"), so the BIOS keyboard reset finishes later
+//! in virtual time; screen content is unchanged apart from the clock rows.
+//! Normalized logical hashes and cursors are unchanged.
+//!
 //! Builds on the interactive DIR golden ([`dos_interactive_golden`]): the same
 //! Kiselev Xi8088 BIOS in masked ROM and the same bootable FreeDOS 1.44 MB floppy,
 //! driven by [`cli::run_freedos_interactive_config`], but the keyboard script
@@ -99,7 +105,7 @@ fn freedos_writes_a_file_from_the_keyboard() {
         &run,
         11_766_599,
         13_000_000,
-        0x153da3e002975834,
+        0xe4c4f5de9a7f0d49,
         0xa6601fff99236a61,
     );
 
