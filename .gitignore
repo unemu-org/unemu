@@ -31,6 +31,8 @@ Thumbs.db
 target/
 # Golden-test scratch / captured traces
 /tmp-golden/
+# User-created game disks, journals and machine-file overrides.
+/machines/local/
 
 # --- Vendored test data (fetched/built, never committed) ---
 # test386 CPU-test ROM: the upstream clone and the assembled image are rebuilt

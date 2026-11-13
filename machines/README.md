@@ -105,7 +105,8 @@ output selection stay outside the hardware description.
 
 ## Preparing disks
 
-Keep generated disks, local machine files and journals **outside the repository**.
+Keep generated disks, local machine files and journals outside the repository
+or in the gitignored `machines/local/` directory used by the game profiles.
 A mounted image is an immutable base. Guest writes belong in an overlay;
 `media commit` exports a new base and never changes its input. SHA-256 binding
 covers the entire base, including large disks. Never edit a mounted base with
@@ -339,3 +340,149 @@ image. Obtain the start LBA from its partition table; the fixture in
 copy with a fresh journal path and, optionally, a new SHA-256 pin. Host mtools
 operations may use host file timestamps; the built-in formatter itself is
 byte-deterministic and has no mtools dependency.
+
+## Playing DOS games
+
+`at-games.toml` combines the IBM 5170 BIOS dated 1985-06-10, register-level
+VGA with the IBM Display Adapter video BIOS, SB16/OPL3, a Microsoft serial
+mouse on COM1/IRQ4, and a journaled IDE C:. It extends `preset:ibm-5170` and
+removes both default text cards. It is a configuration for compatibility
+experiments, not a claim that individual games or mouse drivers have passed.
+
+Supply the two system BIOS chips and the complete 32 KiB VGA EPROM under the
+names in the file; [the ROM guide](../vendor/user-roms/README.md) gives their
+identities and layout. The pins cover both chips, the assembled system BIOS,
+and the complete video container; its 2000h prefix is skipped when mapping
+C0000h. Nothing downloads these ROMs. Unlike test discovery, machine-file paths
+use these exact filenames; a local child can override them.
+
+`at-games-open.toml` needs no user ROMs. Fetch/build the Kiselev AT-reset and
+XTIDE fixtures with `vendor/kiselev-bios/fetch.sh` and
+`vendor/xtide-universal-bios/fetch.sh`. It keeps the preset's MDA and VGA text
+cards and uses the established Kiselev colour-switch workaround; the window
+opens MDA, the first display. This is a text console and disk/audio/input
+baseline, not a VGA graphics-game substitute. No open VGA video BIOS is
+qualified here for the 286. The IBM variant needs user ROMs for both system
+and video firmware.
+
+Both profiles use 640 KiB conventional plus **4096 KiB extended RAM**, derived
+CMOS, a fixed RTC start of 2000-01-01, the preset's instruction/PIT ratio, and
+an empty 80287 socket. This fits the board's 15232 KiB extended-memory limit.
+The I286 model supports LMSW entry, 16-bit protected execution and task switches;
+the pinned IBM POST tests all 640 KiB + 4 MiB. No memory manager is supplied.
+XMS, INT 15h block move and DOS-extender use are not yet qualified. This CPU
+is an 80286, with no 386 instruction set.
+
+A: is **1.2M**, starting with the pinned FreeDOS fixture and followed by a local
+transfer floppy. B: is omitted: the June 1985 BIOS has no 1.44M drive type
+(it supports 360K, 1.2M and 720K). Each image in this A: list must be exactly
+1,228,800 bytes; mixed-density media in one drive are not modelled.
+
+From the repository root, prepare the ignored local media and fetch the
+FreeDOS fixtures:
+
+```sh
+vendor/freedos/fetch.sh
+mkdir -p machines/local
+unemupc98 media create hd --chs 615/4/17 machines/local/games.img
+unemupc98 media create floppy --type 1.2M --format --label TRANSFER machines/local/transfer-1200.img
+unemupc98 machine check machines/at-games.toml
+unemupc98-window --machine machines/at-games.toml
+# Open firmware, text console only:
+# unemupc98 machine check machines/at-games-open.toml
+# unemupc98-window --machine machines/at-games-open.toml
+```
+
+The disk is blank, 21,411,840 bytes (about 20.42 MiB), IBM fixed-disk type 2.
+`media create hd --size 32MiB` is also available, but produces 66/16/63 geometry;
+that needs the XTIDE path and a matching geometry override, as described in
+[Preparing disks](#preparing-disks). The IBM profile deliberately uses the exact
+615/4/17 mapping its system BIOS supports, with `controller_model = "at-adapter"`.
+The open profile uses ATA task-file semantics for XTIDE. Both profiles share
+`games.img` and `games.upfj`; run only one at a time.
+
+Boot from A: and press Enter for the date and time to reach the FreeDOS prompt.
+The fixture contains only the 8086 builds of `KERNEL.SYS` and `COMMAND.COM`,
+with a boot sector; it has **no FDISK, FORMAT, SYS, mouse driver or installer**.
+Supply 286-compatible utilities or your own 1.2M DOS installation floppies.
+The formatted transfer image above is an empty data disk, not a boot disk.
+Replace its contents before its first use, or extend the A: media list in a
+local child file. Relative paths in that child belong to the child's directory.
+For example, save `machines/local/play.toml` and place your tools disk beside it:
+
+```toml
+schema = 1
+extends = "../at-games.toml"
+
+[[card]]
+id = "fdc-765"
+[[card.drives]]
+unit = 0
+media = [
+  { image = "../../vendor/freedos/freedos-1200.img", write = "readonly" },
+  { image = "tools-1200.img", write = "readonly" },
+  { image = "transfer-1200.img", write = "readonly" },
+]
+```
+
+Check and start this child with `--machine machines/local/play.toml`. Swap to
+the tools disk after FreeDOS reaches the prompt. Run `FDISK`, create an active
+primary DOS partition, reboot with FreeDOS inserted, then run `FORMAT C: /S`
+(or `FORMAT C:` and `SYS C:` if your FORMAT has no `/S`). See
+[Partitioning and formatting](#partitioning-and-formatting) for the full disk
+workflow. These C: operations use the IBM fixed-disk BIOS on the AT adapter
+and have not been measured: the IBM profile's only measurement is POST with
+a blank type-2 disk, ending at `A:\>`. FDISK, FORMAT, copying files and running
+games from C: remain unqualified, as does C: boot for this pairing.
+
+Copy games and drivers with floppy swaps and DOS COPY/installers, or use
+[mtools on a new, unmounted image](#copying-host-files). Never modify a base
+already bound to a journal. At the DOS prompt, set the SB16 resources:
+
+```dos
+SET BLASTER=A220 I5 D1 H5 T6
+```
+
+Select Sound Blaster at 220h/IRQ5/DMA1 (16-bit DMA5 when offered) and
+AdLib/Sound Blaster FM for music. SB16 includes OPL3 at 388h–38Bh; no separate
+OPL card is needed. Load your compatible mouse driver, such as `CTMOUSE /S1`
+(for a CuteMouse version supporting that option) or `MOUSE.COM` configured for
+COM1. Driver versions and options vary; no driver is bundled or qualified by
+this profile. Change to the installed game's directory on C: and run it.
+
+Click the window to grab the pointer; **Ctrl+Alt+G releases** it (focus loss
+also releases). **Ctrl+Alt+M** toggles host mute. **Ctrl+Alt+F** cycles the A:
+media list and **Ctrl+Alt+E** ejects it; Shift selects B: if you add one. See
+[Removable floppy media](#removable-floppy-media) for swap and overlay behavior.
+
+Stop the emulator before using `media generations`, `media verify`,
+`media commit` or `media rollback`; follow
+[Exporting and rolling back](#exporting-and-rolling-back) with base
+`machines/local/games.img` and journal `machines/local/games.upfj`. Commit
+exports a new base, preserving the original; adopting it requires a fresh
+journal path in a local child. Rollback uses a retained generation and a new
+backup path. The full base is SHA-256-bound even without an explicit disk pin.
+
+Compatibility targets are experiments, not measured passes. Suggested 286
+starting points are Prince of Persia, Commander Keen and Wolfenstein 3D;
+version-specific graphics, CPU, memory and driver requirements still apply.
+The maintainer's named **Tyrian 2000** and **Duke Nukem 3D** targets are
+**not yet**: both require a 386 or later and cannot run on this 80286 profile.
+No memory manager is supplied; XMS, INT 15h block move and DOS-extender use
+remain unqualified. A20 and installed extended RAM do not supply a 386.
+
+The synthetic profile smoke covers configuration and `machine check` without
+proprietary bytes. It checks C0000h in the original document, then relocates
+only the synthetic video ROM to C8000h because an unknown system BIOS cannot
+establish the catalogue's video scan. The ignored
+`user_rom_at_games_freedos_prompt` exercises the unmodified IBM profile's
+C0000h layout with discovered user ROMs, the 1.2M fixture and a temporary blank
+HDD. Its stop/counter/hash and POST pins record a measured FreeDOS boot with
+both user-supplied IBM ROMs.
+
+The fixture-gated open-profile check uses the real pinned Kiselev AT-reset,
+XTIDE and FreeDOS 1.2M images with temporary local media created by `media create`.
+The ignored `open_game_profile_boots_freedos` pins its FreeDOS A: prompt's
+retired count and MDA text hash. Missing open fixtures skip unless
+`UNEMUPC98_REQUIRE_FIXTURES=1`; this open-firmware boot does not qualify the
+IBM fixed-disk BIOS's C: operations.

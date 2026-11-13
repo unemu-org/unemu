@@ -5,6 +5,43 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-13 — Game-ready AT profiles:** `machines/at-games.toml` combines
+  the user-supplied June 1985 IBM 5170 BIOS and IBM VGA EPROM, register-level
+  VGA, 640 KiB + 4 MiB RAM, SB16 with OPL3 (220h/IRQ5/DMA1/HDMA5), a COM1
+  Microsoft serial mouse, a type-2 IDE disk with a separate journal, and a
+  swappable 1.2M FreeDOS/transfer catalogue. B: is omitted because this BIOS
+  has no 1.44M drive type. `at-games-open.toml` uses Kiselev AT-reset and XTIDE
+  with the existing MDA/VGA-text console; no open VGA video BIOS is qualified
+  for this profile. Both keep the empty 80287 socket and fixed virtual RTC.
+  The [game guide](../../machines/README.md#playing-dos-games) covers supplying
+  ROMs/tools, disk preparation, copying files, BLASTER, mouse drivers and
+  journal export/rollback. The FreeDOS fixture supplies only kernel and shell.
+  Synthetic tests check resolved firmware pins/device selection, lowering,
+  resource wiring, full-base hashing and non-writing `machine check`.
+  Synthetic C0000h validation correctly refuses an unidentified system BIOS;
+  the rest of that smoke uses a relocated C8000h stand-in. The opt-in
+  `user_rom_at_games_freedos_prompt` keeps the actual C0000h mapping and uses
+  a disposable blank HDD. **MEASURED (supervisor user-ROM run):** this game-ready
+  AT boots FreeDOS with the user-supplied IBM 1985-06-10 system BIOS and IBM VGA
+  BIOS: `RetiredCapReached`, `CS:IP=0070:02CB`, `retired=68093462`,
+  `dos_prompt=true`, VGA text SHA-256
+  `a2b73fae1c7ee569829051dea41b7c997aaeace94f3d28a8d9ee7ab89e364452`.
+  The test pins these values and the complete POST checkpoint sequence against
+  CPU revision `fe240a56ac2040e3deaebb2537e642137ee02c71`.
+  The IBM profile's only measurement is POST with a blank type-2 disk, ending
+  at `A:\>`. FDISK, FORMAT, copying and running from C: through the IBM fixed-disk
+  BIOS on the AT adapter remain unmeasured, as does C: boot. No game or real
+  mouse-driver session is qualified. The I286 supports LMSW entry, 16-bit
+  protected execution and task switches; the pinned POST tests all 640 KiB +
+  4 MiB. No memory manager is supplied; XMS, INT 15h block move and DOS-extender
+  use remain unqualified. There is no 386 instruction set.
+  Tyrian 2000 and Duke Nukem 3D require a 386 or later and remain **not yet**.
+  **MEASURED (open fixtures):** `at-games-open.toml` passes non-writing
+  `machine check` with the real pinned Kiselev AT-reset, XTIDE and FreeDOS 1.2M
+  fixtures and `media create` local disks. Its ignored FreeDOS prompt golden
+  records `RetiredCapReached`, `retired=13772948`, `dos_prompt=true`, MDA text
+  SHA-256 `f016e6af8c82493b1a489b8753d1ad9c34f31da6af744e177984405ca1f4ead6`.
+
 - **2026-11-13 — Microsoft serial mouse:** opt-in `mouse = "microsoft"` on a
   UART card supplies a two-button 1200 7N1 endpoint. DTR/RTS power-up produces
   `M` after an assumed 10 ms startup plus a byte frame; inactive lines cancel

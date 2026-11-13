@@ -1,0 +1,79 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Open firmware baseline: no qualified open VGA video BIOS for this 286.
+# Keep the preset's text cards; graphical VGA games need at-games.toml's user ROMs.
+# Create local media first; see machines/README.md, Playing DOS games.
+schema = 1
+extends = "preset:ibm-5170"
+name = "at-games-open"
+description = "Open-firmware 80286 AT text console with SB16/OPL3, COM1 mouse and journaled C:"
+
+[board]
+# Kiselev reads this switch with inverted polarity and prints on MDA.
+# Keep both preset text cards, as in at-ide.toml; the window selects MDA first.
+display_switch = "colour"
+
+[board.rtc]
+start = "2000-01-01T00:00:00"
+nvram = "derived"
+
+[cpu]
+fpu = "none"
+
+[memory]
+conventional_kib = 640
+extended_kib = 4096
+
+[firmware.bios]
+image = "../vendor/kiselev-bios/bios-xi8088-atreset.bin"
+sha256 = "61589573c9809273198b137d9419c87242b0a5f63c2ad834a9565950c3d6becc"
+provides = ["floppy"]
+
+[[firmware.option_roms]]
+image = "../vendor/xtide-universal-bios/ide_xtp-r638-ata1f0-8k.bin"
+sha256 = "54975501e6887c836b8d57e7aad78421e745a9b71e250f94d5d1f9631eab1513"
+base = 0xC8000
+provides = ["fixed-disk"]
+
+[[card]]
+kind = "sb16"
+base = 0x220
+irq = 5
+dma8 = 1
+dma16 = 5
+
+[[card]]
+id = "uart-16550"
+port = 0x3F8
+irq = 4
+mouse = "microsoft"
+
+[[card]]
+kind = "ide"
+# XTIDE uses ATA task-file semantics rather than the IBM adapter's latches.
+controller_model = "ata"
+port = 0x1F0
+irq = 14
+
+[[card.drives]]
+channel = "master"
+image = "local/games.img"
+geometry = { cylinders = 615, heads = 4, sectors = 17 }
+write = "journal"
+journal = "local/games.upfj"
+keep_generations = 10
+
+[[card]]
+id = "fdc-765"
+
+[[card.drives]]
+unit = 0
+type = "1.2M"
+
+[[card.drives.media]]
+image = "../vendor/freedos/freedos-1200.img"
+sha256 = "4ee55e9c44d553041b9bbde99cacae31472f12debf6c9b9c09c5b9343c435d7e"
+write = "readonly"
+
+[[card.drives.media]]
+image = "local/transfer-1200.img"
+write = "readonly"

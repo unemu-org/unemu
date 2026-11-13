@@ -13,6 +13,9 @@ use std::{
 #[path = "../../cli/tests/support/fixtures.rs"]
 mod fixtures;
 
+#[path = "../../cli/tests/support/at_games.rs"]
+mod game_profiles;
+
 #[derive(Default)]
 struct Images {
     files: BTreeMap<PathBuf, Vec<u8>>,
@@ -585,6 +588,8 @@ fn repository_machine_cpu_regions_cover_the_full_firmware_board_space() {
             "at-freedos-from-preset.toml",
             "at-freedos.toml",
             "at-freedos.yaml",
+            "at-games-open.toml",
+            "at-games.toml",
             "at-ide.toml",
             "presets/ibm-5170.toml",
         ]
@@ -614,7 +619,55 @@ fn repository_machine_cpu_regions_cover_the_full_firmware_board_space() {
     let options = AssemblyOptions::default();
     let mut checked = 0;
     for name in names {
-        if name.starts_with("presets") {
+        if matches!(
+            name.to_str(),
+            Some(game_profiles::IBM | game_profiles::OPEN)
+        ) {
+            // Local game media and proprietary firmware are never CI inputs.
+            // An unidentified BIOS cannot establish the C0000h video scan.
+            let profile = game_profiles::Profile::new(name.to_str().unwrap(), true);
+            let ibm = name == Path::new(game_profiles::IBM);
+            if ibm {
+                profile.relocate_synthetic_video();
+            }
+            let options = AssemblyOptions {
+                allow_unlisted_firmware: true,
+            };
+            let config = machine_file::load_with_options(&profile.file, options).unwrap();
+            let expected = if ibm {
+                vec![
+                    (0, 0xA0000, "ram"),
+                    (0x100000, 0x500000, "ram"),
+                    (0xA0000, 0xC0000, "mmio"),
+                    (0xC0000, 0xC8000, "rom"),
+                    (0xCE000, 0xF0000, "rom"),
+                    (0xF0000, 0x100000, "rom"),
+                    (0xC8000, 0xCE000, "rom"),
+                    (0x500000, 0xFE0000, "empty-bus"),
+                    (0xFE0000, 0x1000000, "rom"),
+                ]
+            } else {
+                vec![
+                    (0, 0xB0000, "ram"),
+                    (0x100000, 0x500000, "ram"),
+                    (0xB0000, 0xC0000, "mmio"),
+                    (0xC0000, 0xC8000, "rom"),
+                    (0xCA000, 0xF8000, "rom"),
+                    (0xF8000, 0x100000, "rom"),
+                    (0xC8000, 0xCA000, "rom"),
+                    (0x500000, 0xFE0000, "empty-bus"),
+                    (0xFE0000, 0x1000000, "rom"),
+                ]
+            };
+            assert_eq!(
+                assembly::test_support::cpu_mapping_regions(&config, options).unwrap(),
+                expected,
+                "{}",
+                name.display()
+            );
+            assert!(!profile.journal().exists());
+            checked += 1;
+        } else if name.starts_with("presets") {
             for image in ["bios-xi8088.bin", "bios-xi8088-atreset.bin"] {
                 let layers = Layers::new();
                 let path = layers.0.join("preset.toml");
@@ -656,7 +709,7 @@ fn repository_machine_cpu_regions_cover_the_full_firmware_board_space() {
         }
     }
     assert_eq!(
-        checked, 6,
+        checked, 8,
         "every machine file and both preset BIOS variants"
     );
 }

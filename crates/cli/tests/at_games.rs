@@ -1,0 +1,580 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+//! Game-ready AT configuration contracts; machine-files.md §Validation.
+//! IBM Personal Computer AT Technical Reference, System Memory Map and TEST1
+//! video-ROM scan; Creative Sound Blaster Series Hardware Programming Guide,
+//! §2 Configuring DMA and Interrupt Settings.
+
+use assembly::{AssemblyOptions, BoardModel, DeviceId, DeviceKind, ImageSource, WriteMode};
+use machine_file::schema::v1;
+
+#[path = "support/at_games.rs"]
+mod support;
+
+const OPTIONS: AssemblyOptions = AssemblyOptions {
+    allow_unlisted_firmware: true,
+};
+
+#[path = "support/fixtures.rs"]
+mod fixtures;
+
+const CPU_REV: &str = "fe240a56ac2040e3deaebb2537e642137ee02c71";
+const OPEN_GOLDEN_RETIRED: u64 = 13_772_948;
+const OPEN_GOLDEN_TEXT_SHA256: &str =
+    "f016e6af8c82493b1a489b8753d1ad9c34f31da6af744e177984405ca1f4ead6";
+const GOLDEN_STOP: Option<(u64, u64)> = Some((0x0070, 0x02CB));
+const GOLDEN_RETIRED: Option<u64> = Some(68_093_462);
+const GOLDEN_TEXT_SHA256: Option<&str> =
+    Some("a2b73fae1c7ee569829051dea41b7c997aaeace94f3d28a8d9ee7ab89e364452");
+const GOLDEN_POST: Option<&[u8]> = Some(&[
+    0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
+    0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17,
+    0x18, 0x19, 0x1A, 0x1B, 0x1C, 0x1D, 0x1E, 0x1F, 0x20, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27,
+    0x28, 0x29, 0x2A, 0x2B, 0x2C, 0x2D, 0x2E, 0x2F, 0x30, 0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37,
+    0x38, 0x39, 0x3A, 0x3B, 0x3C, 0x3D, 0x3E, 0x3F, 0x40, 0x41, 0x42, 0x43, 0x44, 0x45, 0x46, 0x47,
+    0x48, 0x49, 0x4A, 0x4B, 0x4C, 0x4D, 0x4E, 0x4F, 0x50, 0x51, 0x52, 0x53, 0x54, 0x55, 0x56, 0x57,
+    0x58, 0x59, 0x5A, 0x5B, 0x5C, 0x5D, 0x5E, 0x5F, 0x60, 0x61, 0x62, 0x63, 0x64, 0x65, 0x66, 0x67,
+    0x68, 0x69, 0x6A, 0x6B, 0x6C, 0x6D, 0x6E, 0x6F, 0x70, 0x71, 0x72, 0x73, 0x74, 0x75, 0x76, 0x77,
+    0x78, 0x79, 0x7A, 0x7B, 0x7C, 0x7D, 0x7E, 0x7F, 0x80, 0x81, 0x82, 0x83, 0x84, 0x85, 0x86, 0x87,
+    0x88, 0x89, 0x8A, 0x8B, 0x8C, 0x8D, 0x8E, 0x8F, 0x90, 0x91, 0x92, 0x93, 0x94, 0x95, 0x96, 0x97,
+    0x98, 0x99, 0x9A, 0x9B, 0x9C, 0x9D, 0x9E, 0x9F, 0xA0, 0xA1, 0xA2, 0xA3, 0xA4, 0xA5, 0xA6, 0xA7,
+    0xA8, 0xA9, 0xAA, 0xAB, 0xAC, 0xAD, 0xAE, 0xAF, 0xB0, 0xB1, 0xB2, 0xB3, 0xB4, 0xB5, 0xB6, 0xB7,
+    0xB8, 0xB9, 0xBA, 0xBB, 0xBC, 0xBD, 0xBE, 0xBF, 0xC0, 0xC1, 0xC2, 0xC3, 0xC4, 0xC5, 0xC6, 0xC7,
+    0xC8, 0xC9, 0xCA, 0xCB, 0xCC, 0xCD, 0xCE, 0xCF, 0xD0, 0xD1, 0xD2, 0xD3, 0xD4, 0xD5, 0xD6, 0xD7,
+    0xD8, 0xD9, 0xDA, 0xDB, 0xDC, 0xDD, 0xDE, 0xDF, 0xE0, 0xE1, 0xE2, 0xE3, 0xE4, 0xE5, 0xE6, 0xE7,
+    0xE8, 0xE9, 0xEA, 0xEB, 0xEC, 0xED, 0xEE, 0xEF, 0xF0, 0xF1, 0xF2, 0xF3, 0xF4, 0xF5, 0xF6, 0xF7,
+    0xF8, 0xF9, 0xFA, 0xFB, 0xFC, 0xFD, 0x09, 0x0A, 0x0B, 0x0C, 0x0E, 0x0F, 0x32, 0x11, 0x12, 0x13,
+    0x14, 0x15, 0x16, 0x18, 0x19, 0x81, 0x85, 0x1A, 0x1B, 0x1C, 0x1D, 0x1E, 0x1F, 0x20, 0x21, 0x23,
+    0x23, 0x23, 0x23, 0x23, 0x24, 0x25, 0x26, 0x27, 0x29, 0x2A, 0x2B, 0x2C, 0x2D, 0x2F, 0x30, 0x81,
+    0x85, 0x31, 0x31, 0x32, 0x31, 0x32, 0x31, 0x32, 0x31, 0x32, 0x31, 0x32, 0x31, 0x32, 0x31, 0x32,
+    0x31, 0x32, 0x31, 0x32, 0x31, 0x32, 0x31, 0x32, 0x31, 0x32, 0x31, 0x32, 0x31, 0x32, 0x31, 0x32,
+    0x31, 0x32, 0x31, 0x32, 0x31, 0x32, 0x31, 0x32, 0x31, 0x32, 0x31, 0x32, 0x31, 0x32, 0x31, 0x32,
+    0x31, 0x32, 0x31, 0x32, 0x31, 0x32, 0x31, 0x32, 0x31, 0x32, 0x31, 0x32, 0x31, 0x32, 0x31, 0x32,
+    0x31, 0x32, 0x31, 0x32, 0x31, 0x32, 0x31, 0x32, 0x31, 0x32, 0x31, 0x32, 0x31, 0x32, 0x31, 0x32,
+    0x31, 0x32, 0x31, 0x32, 0x31, 0x32, 0x31, 0x32, 0x31, 0x32, 0x31, 0x32, 0x31, 0x32, 0x31, 0x32,
+    0x31, 0x32, 0x31, 0x32, 0x31, 0x32, 0x31, 0x32, 0x31, 0x32, 0x31, 0x32, 0x31, 0x32, 0x31, 0x32,
+    0x31, 0x32, 0x31, 0x32, 0x31, 0x32, 0x31, 0x32, 0x31, 0x32, 0x31, 0x32, 0x31, 0x32, 0x31, 0x32,
+    0x31, 0x32, 0x31, 0x32, 0x31, 0x32, 0x31, 0x32, 0x31, 0x32, 0x31, 0x32, 0x31, 0x32, 0x31, 0x32,
+    0x31, 0x32, 0x31, 0x32, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33,
+    0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33,
+    0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33,
+    0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33,
+    0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x34, 0xF0, 0x81,
+    0x85, 0xF1, 0xB0, 0xF2, 0x9D, 0xF3, 0xF4, 0x95, 0x95, 0xF5, 0xF6, 0x9D, 0xF7, 0xF8, 0xF9, 0xFA,
+    0x35, 0x34, 0x35, 0x36, 0x37, 0x38, 0x3A, 0x3C, 0x3D, 0x3E, 0x3B, 0x40, 0x41, 0x43,
+]);
+
+#[test]
+fn shipped_game_profiles_pin_firmware_and_select_the_intended_displays() {
+    for name in [support::IBM, support::OPEN] {
+        let (document, _) =
+            machine_file::resolve(support::repository().join("machines").join(name)).unwrap();
+        let memory = document.memory.as_ref().unwrap();
+        assert_eq!(memory.conventional_kib, Some(640));
+        assert_eq!(memory.extended_kib, Some(4096));
+        let rtc = document.board.as_ref().unwrap().rtc.as_ref().unwrap();
+        assert_eq!(rtc.start.as_deref(), Some("2000-01-01T00:00:00"));
+        assert_eq!(rtc.nvram, Some(v1::Nvram::Derived));
+        let firmware = document.firmware.unwrap();
+        let bios = firmware.bios.unwrap();
+        let catalogue = BoardModel::Ibm5170.firmware_catalogue();
+        let id = if name == support::IBM {
+            support::SYSTEM
+        } else {
+            "kiselev-xi8088-1.0.2-atreset"
+        };
+        let entry = catalogue.iter().find(|entry| entry.id == id).unwrap();
+        assert_eq!(bios.sha256.unwrap().as_str(), entry.sha256);
+        if name == support::IBM {
+            let parts = bios.parts.unwrap();
+            assert_eq!(parts.len(), 2);
+            for (part, known) in parts.iter().zip(entry.parts[0]) {
+                assert_eq!(part.sha256.as_ref().unwrap().as_str(), known.sha256);
+                assert_eq!(part.offset, known.offset);
+                assert_eq!(
+                    part.lane,
+                    if known.lane == assembly::Lane::Even {
+                        v1::Lane::Even
+                    } else {
+                        v1::Lane::Odd
+                    }
+                );
+            }
+        }
+        let roms = firmware.option_roms.unwrap();
+        assert_eq!(roms.len(), 1);
+        let rom = &roms[0];
+        let id = if name == support::IBM {
+            support::VIDEO
+        } else {
+            "xub-r638-xtp-ata1f0"
+        };
+        let entry = catalogue.iter().find(|entry| entry.id == id).unwrap();
+        assert_eq!(rom.sha256.as_ref().unwrap().as_str(), entry.sha256);
+        assert_eq!(
+            rom.base,
+            Some(if name == support::IBM {
+                0xC0000
+            } else {
+                0xC8000
+            })
+        );
+        assert_eq!(rom.offset.unwrap_or(0), entry.rom_offset);
+        let cards = document.card.unwrap();
+        assert_eq!(
+            cards
+                .iter()
+                .filter(|card| card.kind == Some(v1::CardKind::VgaText))
+                .count(),
+            usize::from(name == support::OPEN)
+        );
+        assert_eq!(
+            cards
+                .iter()
+                .filter(|card| card.kind == Some(v1::CardKind::Vga))
+                .count(),
+            usize::from(name == support::IBM)
+        );
+        assert_eq!(
+            cards
+                .iter()
+                .filter(|card| card.kind == Some(v1::CardKind::Mda))
+                .count(),
+            usize::from(name == support::OPEN)
+        );
+    }
+}
+
+#[test]
+#[ignore = "requires user-supplied IBM system/video ROMs and the FreeDOS 1.2M fixture"]
+fn user_rom_at_games_freedos_prompt() {
+    use assembly::{
+        ConsoleProbe, InjectionSchedule, KeyboardStimulus, ObservationPolicy, ObservationRequest,
+        OutputKind, RunPolicy, StopCondition,
+    };
+    use cpu::{Cpu, CpuReg};
+    use machine::RunOutcome;
+
+    let catalogue = BoardModel::Ibm5170.firmware_catalogue();
+    let bios = assembly::require_user_firmware!(support::SYSTEM, catalogue);
+    let video = assembly::require_user_firmware!(support::VIDEO, catalogue);
+    let Some(floppy) = fixtures::fixture("freedos/freedos-1200.img") else {
+        return;
+    };
+    assert!(
+        include_str!("../../../Cargo.lock").contains(CPU_REV),
+        "CPU pin drifted"
+    );
+    let profile = support::Profile::new(support::IBM, false);
+    let result = (|| -> anyhow::Result<()> {
+        let system = source_bytes(&bios.source)?;
+        profile.write(
+            &format!("vendor/user-roms/{}/6480090.u27", support::SYSTEM),
+            &system.iter().step_by(2).copied().collect::<Vec<_>>(),
+        );
+        profile.write(
+            &format!("vendor/user-roms/{}/6480091.u47", support::SYSTEM),
+            &system
+                .iter()
+                .skip(1)
+                .step_by(2)
+                .copied()
+                .collect::<Vec<_>>(),
+        );
+        profile.write(
+            &format!("vendor/user-roms/{}/ibm-vga-1987-32k.bin", support::VIDEO),
+            &source_bytes(&video.source)?,
+        );
+        profile.write("vendor/freedos/freedos-1200.img", &floppy);
+        let loaded = machine_file::load_for_assembly(&profile.file, AssemblyOptions::default())?;
+        let policy = ObservationPolicy {
+            routes: vec![
+                ObservationRequest {
+                    device: DeviceId::Vga,
+                    output: OutputKind::TextScanout,
+                    byte_limit: 0,
+                },
+                ObservationRequest {
+                    device: DeviceId::Post,
+                    output: OutputKind::Bytes(device::ByteStreamKind::PostCheckpoints),
+                    byte_limit: 1_048_576,
+                },
+            ],
+            ..ObservationPolicy::default()
+        };
+        let mut assembled = loaded.assemble(&policy)?;
+        let cap = 500_000_000;
+        let mut outcome = assembled.run_session(&RunPolicy {
+            retired_cap: Some(cap),
+            idle_limit: Some(cli::BIOS_IDLE_LIMIT),
+            stop: StopCondition::PromptThen {
+                console: ConsoleProbe {
+                    device: DeviceId::Vga,
+                },
+                needle: cli::DOS_DATE_PROMPT.into(),
+                poll_step: cli::DOS_INTERACTIVE_POLL_STEP,
+                then_budget: 0,
+            },
+            stimuli: vec![KeyboardStimulus {
+                keyboard_index: assembled.device_index[&DeviceId::Keyboard],
+                scancodes: [cli::KEY_ENTER, cli::KEY_ENTER].concat(),
+                schedule: InjectionSchedule::AfterPrompt,
+            }],
+        })?;
+        let (frame, dos_prompt) = loop {
+            let capture = assembled.capture_text(DeviceId::Vga)?;
+            let video::Frame::Text(grid) = &capture.frame else {
+                anyhow::bail!("expected VGA text mode at the DOS prompt");
+            };
+            let dos_prompt = (0..grid.rows()).any(|row| {
+                let glyphs: Vec<_> = (0..grid.cols())
+                    .map(|col| grid.cell(col, row).unwrap().glyph)
+                    .collect();
+                glyphs.windows(3).any(|text| text == b"A:>")
+                    || glyphs.windows(4).any(|text| text == b"A:\\>")
+            });
+            if dos_prompt
+                || outcome != RunOutcome::RetiredCapReached
+                || assembled.machine.virtual_time() >= cap
+            {
+                break (capture.frame, dos_prompt);
+            }
+            let next = (assembled.machine.virtual_time() + cli::DOS_INTERACTIVE_POLL_STEP).min(cap);
+            outcome = assembled
+                .run_session(&RunPolicy::natural(Some(next), Some(cli::BIOS_IDLE_LIMIT)))?;
+        };
+        let cpu = assembled.machine.cpu();
+        let location = (cpu.code_segment(), cpu.reg(CpuReg::Rip));
+        let retired = cpu.retired();
+        let hash = assembly::test_support::text_plane_sha256(&frame);
+        let post = assembled
+            .observation
+            .drain_bytes(DeviceId::Post, device::ByteStreamKind::PostCheckpoints)?;
+        eprintln!("at-games: stop={outcome:?} cs={:04x} ip={:04x} retired={retired} dos_prompt={dos_prompt} text_sha256={hash} post={post:02x?}", location.0, location.1);
+        anyhow::ensure!(dos_prompt, "FreeDOS prompt not reached before the cap");
+        assert_eq!(outcome, RunOutcome::RetiredCapReached);
+        if let Some(expected) = GOLDEN_STOP {
+            assert_eq!(location, expected);
+        }
+        if let Some(expected) = GOLDEN_RETIRED {
+            assert_eq!(retired, expected);
+        }
+        if let Some(expected) = GOLDEN_TEXT_SHA256 {
+            assert_eq!(hash, expected);
+        }
+        if let Some(expected) = GOLDEN_POST {
+            assert_eq!(post, expected);
+        }
+        assembled.finish_persistence()?;
+        Ok(())
+    })();
+    result.unwrap_or_else(|error| {
+        panic!(
+            "game profile boot: {}",
+            video
+                .redact(&bios.redact(&error.to_string()))
+                .replace(&profile.tree.path().display().to_string(), "<temporary>")
+        )
+    });
+}
+
+fn source_bytes(source: &ImageSource) -> anyhow::Result<Vec<u8>> {
+    Ok(match source {
+        ImageSource::File(path) => std::fs::read(path)?,
+        ImageSource::Interleaved(parts) => {
+            let parts = parts
+                .iter()
+                .map(|part| Ok((part.lane, part.offset, std::fs::read(&part.path)?)))
+                .collect::<std::io::Result<Vec<_>>>()?;
+            assembly::interleave_parts(&parts)?
+        }
+        _ => anyhow::bail!("user firmware discovery must return file-backed sources"),
+    })
+}
+
+#[test]
+fn synthetic_game_profiles_lower_and_pass_machine_check_without_opening_journals() {
+    for name in [support::IBM, support::OPEN] {
+        let profile = support::Profile::new(name, true);
+        if name == support::IBM {
+            let error = machine_file::load_with_options(&profile.file, OPTIONS).unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains("system BIOS unlisted has no known video-ROM scan"),
+                "{error}"
+            );
+            profile.relocate_synthetic_video();
+        }
+        let loaded = machine_file::load_for_assembly(&profile.file, OPTIONS).unwrap();
+        let config = &loaded.config;
+        assert_eq!(config.board, BoardModel::Ibm5170);
+        assert_eq!(config.cpu.fpu, assembly::FpuChip::None);
+        assert_eq!(config.memory.address_space_bytes, 5 * 1024 * 1024);
+        assert!(config
+            .memory
+            .ram
+            .contains(&assembly::RamRegion::new(0x100000, 4 * 1024 * 1024)));
+        assert!(config
+            .memory
+            .ram
+            .iter()
+            .any(|ram| ram.base == 0 && ram.size >= 640 * 1024));
+        let sb = config
+            .devices
+            .iter()
+            .find(|device| device.id == DeviceId::Sb16)
+            .unwrap();
+        assert!(matches!(sb.kind, DeviceKind::Sb16(cfg) if cfg.base == 0x220 && cfg.dma16 == 5));
+        assert_eq!(sb.irq, Some(5));
+        assert_eq!(sb.dma.unwrap().channel, 1);
+        for port in [
+            0x220, 0x223, 0x224, 0x225, 0x226, 0x228, 0x229, 0x22A, 0x22C, 0x22E, 0x22F, 0x388,
+            0x389, 0x38A, 0x38B,
+        ] {
+            assert!(
+                sb.ports
+                    .iter()
+                    .any(|range| range.start <= port && port <= range.end),
+                "missing SB16/OPL3 port {port:x}"
+            );
+        }
+        let uart = config
+            .devices
+            .iter()
+            .find(|device| device.id == DeviceId::Uart)
+            .unwrap();
+        assert!(matches!(uart.kind, DeviceKind::Uart(cfg) if cfg.base == 0x3F8 && cfg.mouse));
+        assert_eq!(uart.irq, Some(4));
+        assert!(config
+            .devices
+            .iter()
+            .any(|device| matches!(device.kind, DeviceKind::Keyboard(cfg) if !cfg.mouse)));
+        let ide = config
+            .devices
+            .iter()
+            .find(|device| device.id == DeviceId::Ide)
+            .unwrap();
+        assert!(
+            matches!(ide.kind, DeviceKind::Ide(cfg) if cfg.base == 0x1F0 && cfg.control == 0x3F6 && cfg.model == if name == support::IBM { assembly::AtaControllerModel::AtAdapter } else { assembly::AtaControllerModel::Ata })
+        );
+        assert_eq!(ide.irq, Some(14));
+        assert_eq!(config.drives.len(), 2);
+        let disk = config
+            .drives
+            .iter()
+            .find(|drive| drive.controller == DeviceId::Ide)
+            .unwrap();
+        assert_eq!(disk.unit, 0);
+        assert_eq!(disk.kind.image_bytes(), 615 * 4 * 17 * 512);
+        assert_eq!(disk.write, WriteMode::journal(profile.journal()));
+        assert!(matches!(disk.image, ImageSource::File(_)));
+        assert!(
+            disk.expected_sha256.is_some(),
+            "the entire journal base must be hashed"
+        );
+        let floppy = config
+            .drives
+            .iter()
+            .find(|drive| drive.controller == DeviceId::Fdc)
+            .unwrap();
+        assert_eq!(floppy.unit, 0);
+        assert_eq!(floppy.kind.image_bytes(), 1_228_800);
+        let media = floppy.media.as_ref().unwrap();
+        assert!(!media.empty);
+        assert_eq!(media.entries.len(), 2);
+        assert_eq!(media.entries[0].name, "freedos-1200.img");
+        assert_eq!(media.entries[1].name, "transfer-1200.img");
+        assert!(media
+            .entries
+            .iter()
+            .all(|entry| entry.write == WriteMode::ReadOnly && entry.expected_sha256.is_some()));
+        if name == support::IBM {
+            // The positive synthetic smoke moved the ROM to C8000h. Derive the
+            // display selection from the shipped C0000h layout instead.
+            let mut shipped = config.clone();
+            shipped.images[1].base = 0xC0000;
+            assert_eq!(
+                shipped.primary_display().unwrap(),
+                assembly::PrimaryDisplay::OwnBios
+            );
+            assert!(config
+                .devices
+                .iter()
+                .any(|device| matches!(device.kind, DeviceKind::VgaRegisters(_))));
+            assert!(matches!(
+                config.images[1].source,
+                ImageSource::RomContainer { offset: 8192, .. }
+            ));
+            assert_eq!(config.images[1].source.known_len(), Some(24576));
+        } else {
+            assert_eq!(
+                config.primary_display().unwrap(),
+                assembly::PrimaryDisplay::Colour80
+            );
+        }
+        let args = [
+            "machine".into(),
+            "check".into(),
+            profile.file.clone().into_os_string(),
+            "--allow-unlisted-firmware".into(),
+        ];
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        assert_eq!(
+            cli::command::run(&args, &mut out, &mut err),
+            0,
+            "{}",
+            String::from_utf8_lossy(&err)
+        );
+        assert!(!profile.journal().exists());
+        assert!(!profile.journal().with_extension("upfj.lock").exists());
+    }
+}
+
+fn open_fixture_profile() -> Option<support::Profile> {
+    let mut images = Vec::new();
+    for relative in [
+        "kiselev-bios/bios-xi8088-atreset.bin",
+        "xtide-universal-bios/ide_xtp-r638-ata1f0-8k.bin",
+        "freedos/freedos-1200.img",
+    ] {
+        images.push((relative, fixtures::fixture(relative)?));
+    }
+    let profile = support::Profile::new(support::OPEN, false);
+    for (relative, bytes) in images {
+        profile.write(&format!("vendor/{relative}"), &bytes);
+    }
+    let directory = profile.tree.path().join("machines/local");
+    for (name, options) in [
+        ("games.img", vec!["hd", "--chs", "615/4/17"]),
+        (
+            "transfer-1200.img",
+            vec!["floppy", "--type", "1.2M", "--format"],
+        ),
+    ] {
+        let path = directory.join(name);
+        std::fs::remove_file(&path).unwrap();
+        let mut args: Vec<std::ffi::OsString> = ["media", "create"]
+            .into_iter()
+            .chain(options)
+            .map(Into::into)
+            .collect();
+        args.push(path.into_os_string());
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        assert_eq!(
+            cli::command::run(&args, &mut out, &mut err),
+            0,
+            "{}",
+            String::from_utf8_lossy(&err)
+        );
+    }
+    Some(profile)
+}
+
+#[test]
+fn open_game_profile_checks_real_pinned_fixtures_without_creating_journals() {
+    let Some(profile) = open_fixture_profile() else {
+        return;
+    };
+    let args = [
+        "machine".into(),
+        "check".into(),
+        profile.file.clone().into_os_string(),
+    ];
+    let (mut out, mut err) = (Vec::new(), Vec::new());
+    assert_eq!(
+        cli::command::run(&args, &mut out, &mut err),
+        0,
+        "{}",
+        String::from_utf8_lossy(&err)
+    );
+    assert!(!profile.journal().exists());
+    assert!(!profile.journal().with_extension("upfj.lock").exists());
+
+    let bios = profile
+        .tree
+        .path()
+        .join("vendor/kiselev-bios/bios-xi8088-atreset.bin");
+    let mut bytes = std::fs::read(&bios).unwrap();
+    bytes[0] ^= 1;
+    std::fs::write(bios, bytes).unwrap();
+    out.clear();
+    err.clear();
+    assert_eq!(cli::command::run(&args, &mut out, &mut err), 1);
+    assert!(String::from_utf8_lossy(&err).contains("sha256 mismatch"));
+    assert!(!profile.journal().exists());
+    assert!(!profile.journal().with_extension("upfj.lock").exists());
+}
+
+#[test]
+#[ignore = "slow: open Kiselev/XTIDE POST and FreeDOS 1.2M boot with a blank type-2 HDD"]
+fn open_game_profile_boots_freedos() {
+    use assembly::{
+        ConsoleProbe, InjectionSchedule, KeyboardStimulus, ObservationPolicy, ObservationRequest,
+        OutputKind, RunPolicy, StopCondition,
+    };
+    use cpu::Cpu;
+    use machine::RunOutcome;
+
+    assert!(include_str!("../../../Cargo.lock").contains(CPU_REV));
+    let Some(profile) = open_fixture_profile() else {
+        return;
+    };
+    let loaded =
+        machine_file::load_for_assembly(&profile.file, AssemblyOptions::default()).unwrap();
+    let policy = ObservationPolicy {
+        routes: vec![ObservationRequest {
+            device: DeviceId::Mda,
+            output: OutputKind::TextScanout,
+            byte_limit: 0,
+        }],
+        ..ObservationPolicy::default()
+    };
+    let mut assembled = loaded.assemble(&policy).unwrap();
+    let cap = 100_000_000;
+    let mut outcome = assembled
+        .run_session(&RunPolicy {
+            retired_cap: Some(cap),
+            idle_limit: Some(cli::BIOS_IDLE_LIMIT),
+            stop: StopCondition::PromptThen {
+                console: ConsoleProbe {
+                    device: DeviceId::Mda,
+                },
+                needle: cli::DOS_DATE_PROMPT.into(),
+                poll_step: cli::DOS_INTERACTIVE_POLL_STEP,
+                then_budget: 0,
+            },
+            stimuli: vec![KeyboardStimulus {
+                keyboard_index: assembled.device_index[&DeviceId::Keyboard],
+                scancodes: [cli::KEY_ENTER, cli::KEY_ENTER].concat(),
+                schedule: InjectionSchedule::AfterPrompt,
+            }],
+        })
+        .unwrap();
+    let (frame, dos_prompt) = loop {
+        let capture = assembled.capture_text(DeviceId::Mda).unwrap();
+        let video::Frame::Text(grid) = &capture.frame else {
+            panic!("expected MDA text during FreeDOS boot");
+        };
+        let text = grid.rows_as_strings().join("\n");
+        let dos_prompt = text.contains("A:\\>") || text.contains("A:>");
+        if dos_prompt
+            || outcome != RunOutcome::RetiredCapReached
+            || assembled.machine.virtual_time() >= cap
+        {
+            eprintln!("at-games-open console:\n{text}");
+            break (capture.frame, dos_prompt);
+        }
+        let next = (assembled.machine.virtual_time() + cli::DOS_INTERACTIVE_POLL_STEP).min(cap);
+        outcome = assembled
+            .run_session(&RunPolicy::natural(Some(next), Some(cli::BIOS_IDLE_LIMIT)))
+            .unwrap();
+    };
+    let retired = assembled.machine.cpu().retired();
+    let text_hash = assembly::test_support::text_plane_sha256(&frame);
+    eprintln!("at-games-open: stop={outcome:?} retired={retired} dos_prompt={dos_prompt} text_sha256={text_hash}");
+    assert_eq!(outcome, RunOutcome::RetiredCapReached);
+    assert!(dos_prompt, "FreeDOS did not reach the A: prompt");
+    assert_eq!(retired, OPEN_GOLDEN_RETIRED);
+    assert_eq!(text_hash, OPEN_GOLDEN_TEXT_SHA256);
+    assembled.finish_persistence().unwrap();
+}

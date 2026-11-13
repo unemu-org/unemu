@@ -2,7 +2,9 @@
 
 These images are proprietary. Users supply them separately; this project never
 commits or distributes them. The catalogue stores identities and chip metadata
-only. No default preset or machine file selects these images. Most system BIOS
+only. Presets contain no proprietary ROM paths. The opt-in
+`machines/at-games.toml` selects the IBM 1985-06-10 system BIOS and IBM VGA BIOS
+from this directory; users must supply both separately. Most system BIOS
 entries remain Listed; execution qualification is specific to a measured machine
 and ROM pairing. The IBM Display Adapter VGA entry is Tested for the case below.
 Landmark AT has a partial real-mode golden awaiting final local measurement pins,
