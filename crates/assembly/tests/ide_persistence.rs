@@ -339,6 +339,75 @@ fn ide_journal_guest_outsw_error_preserves_exactly_one_completed_sector() {
     fresh.finish_persistence().unwrap();
 }
 
+/// ATA-2 §8.4 WRITE SECTORS and IBM PC AT Technical Reference, Keyboard
+/// Controller pulse commands: a CPU-only reset must persist whole sectors.
+#[test]
+fn ide_journal_guest_cpu_reset_preserves_exactly_one_completed_sector() {
+    let disk = Disk::new();
+    let mut config = pio_workload(&disk, true);
+    let ImageSource::Inline(code) = &mut config.images[0].source else {
+        panic!("PIO workload must be inline guest code");
+    };
+    assert_eq!(code.pop(), Some(0xEC));
+    // Replace the fault after 1.5 sectors with an 8042 reset request. The
+    // following marker must remain untouched when execution restarts in ROM.
+    code.extend([0xB0, 0xFE, 0xE6, 0x64, 0xC6, 0x06, 0, 0x30, 0xEE, 0xF4]);
+    config.memory.address_space_bytes = 0x100000;
+    config.images.push(LoadImage {
+        base: 0xFFFF0,
+        kind: ImageKind::Rom,
+        provides: vec![],
+        source: ImageSource::Inline(vec![0xB0, 0x66, 0xA2, 1, 0x30, 0xF4]),
+    });
+    let mut machine = assemble(&config).unwrap();
+    assert_eq!(
+        machine
+            .run_session(&RunPolicy::natural(Some(10_000), None))
+            .unwrap(),
+        machine::RunOutcome::Halted
+    );
+    assert_eq!(machine.machine.cpu().code_segment(), 0xF000);
+    let mut markers = [0; 2];
+    machine
+        .machine
+        .cpu()
+        .read_mem(0x3000, &mut markers)
+        .unwrap();
+    assert_eq!(markers, [0, 0x66]);
+
+    // An explicit flush or finish here would mask a missing reset flush.
+    assert_eq!(
+        std::fs::metadata(disk.root.join("disk.upfj"))
+            .unwrap()
+            .len(),
+        (media::HEADER_LEN + 2 * media::FRAME_LEN) as u64,
+        "reset must append one sector and its command end, without sealing the session"
+    );
+    let scan = disk.scan();
+    assert!(scan.report.generations.is_empty());
+    assert_eq!(scan.report.unsealed_tip.unwrap().commands, 1);
+    let mut expected = disk.base.clone();
+    expected[4 * 512..5 * 512]
+        .copy_from_slice(&(0..512).map(|i| (i ^ (i >> 8)) as u8).collect::<Vec<_>>());
+    assert_eq!(scan.image.unwrap(), expected);
+    drop(machine);
+
+    let mut fresh = assemble(&disk.config()).unwrap();
+    command(&mut fresh, 4, 3, 0x20);
+    let mut replayed = Vec::new();
+    for _ in 0..3 * 256 {
+        let word = fresh.machine.bus_mut().port_read(0x1F0, 2).unwrap() as u16;
+        replayed.extend(word.to_le_bytes());
+    }
+    assert_eq!(replayed, expected[4 * 512..7 * 512]);
+    assert_eq!(fresh.machine.bus_mut().port_read(0x1F7, 1).unwrap(), 0x50);
+    fresh.finish_persistence().unwrap();
+    assert_eq!(
+        std::fs::read(disk.root.join("base.img")).unwrap(),
+        disk.base
+    );
+}
+
 fn direct_handle_close(checkpoint: bool) {
     let disk = Disk::new();
     let mut machine = assemble(&disk.config()).unwrap();
