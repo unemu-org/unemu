@@ -33,8 +33,8 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   The CPU-region snapshot includes the card. MEASURED: the open-profile
   behaviour golden is unchanged. The supervisor's gate provides the user-ROM
   at-games golden measurement before merge. LTEMM r01 is a fetched,
-  double-hash-pinned, gitignored fixture, never redistributed or placed in a published disk image; its terms
-  still await maintainer confirmation under decision-23. The ignored open-firmware
+  double-hash-pinned, gitignored fixture, never redistributed or placed in a published disk image; the project
+  emulates the board only and LTEMM is the user's own driver (decision-23, accepted). The ignored open-firmware
   FreeDOS MEM golden uses a disposable in-memory tools disk and a synthetic DOS
   program that checks all 128 pages through all four windows before MEM /E,
   including an aliased-page negative control. MEASURED: MEM reports 2,048 KiB

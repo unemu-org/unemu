@@ -7,8 +7,9 @@ Requires Bash, curl (online only), unzip, and sha256sum or shasum.
 The archive README says the driver is based on Alex Tsourikov's 1988 driver,
 whose source was supplied under BSD-3-Clause. The modified LTEMM driver is
 subject to Lo-tech's general terms: non-commercial hobbyist use, with no
-redistribution right granted. It is not an open-software fixture. The terms
-await maintainer confirmation (decision-23); fetching does not add redistribution rights.
+redistribution right granted. It is not an open-software fixture. The project
+emulates the board only; LTEMM is the user's own driver (maintainer decision,
+decision-23). Fetching does not add redistribution rights.
 
 LTEMM.EXE and the archive are never committed, redistributed, published or
 included in a committed/published disk image. Tests add the driver only to an

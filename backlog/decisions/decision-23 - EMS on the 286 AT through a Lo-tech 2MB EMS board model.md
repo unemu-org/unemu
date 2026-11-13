@@ -2,7 +2,7 @@
 id: decision-23
 title: EMS on the 286 AT through a Lo-tech 2MB EMS board model
 date: 2026-11-13
-status: Proposed
+status: Accepted
 deciders: Mikołaj Mikołajczyk
 ---
 
@@ -10,8 +10,10 @@ deciders: Mikołaj Mikołajczyk
 
 ## Status
 
-Proposed — 2026-11-13. Records the outcome of the EMS spike. Waits for the
-maintainer's confirmation of the driver terms below.
+Accepted — 2026-11-13. Records the outcome of the EMS spike. The maintainer
+confirmed the driver terms the same day: the project emulates the board only;
+LTEMM is the user's own driver, installed by whoever wants it, and the fetch
+script is a convenience for local tests.
 
 ## Context
 
