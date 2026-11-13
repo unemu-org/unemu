@@ -1,0 +1,744 @@
+<title>Machine Library Mock-ups</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=VT323&display=swap">
+<style>
+/* Layout: one classic Win32-style application window (title bar, menu bar, toolbar,
+   client area, status bar). The client area shows a welcome/library view, and turns
+   into the emulated screen when a machine runs. Dialogs float over the window. */
+:root {
+  --desk: #5f7f86;          /* desktop behind the window */
+  --face: #d6d3cb;          /* window and control face */
+  --face-2: #e7e4dc;        /* lighter panels, list background */
+  --hi: #ffffff;            /* bevel highlight */
+  --lo: #8d8a83;            /* bevel shadow */
+  --dk: #3f3d39;            /* bevel dark edge */
+  --ink: #1d1c1a;
+  --muted: #5b5852;
+  --title-a: #13336f;       /* active title bar gradient */
+  --title-b: #4b79c1;
+  --title-ink: #ffffff;
+  --sel: #22468a;           /* selection */
+  --sel-ink: #ffffff;
+  --field: #ffffff;         /* text fields, list views */
+  --warn: #8a5300;
+  --warn-bg: #fff3cc;
+  --screen-bg: #050505;     /* emulated display */
+  --screen-fg: #b8b8b8;
+  --screen-hi: #ffffff;
+  --led-off: #4a4a44;
+  --led-power: #36d24a;
+  --led-disk: #ffb21f;
+  --radius: 0px;
+  --ui: Tahoma, Verdana, "Segoe UI", system-ui, sans-serif;
+  --mono: "VT323", "Courier New", ui-monospace, monospace;
+  --code: ui-monospace, SFMono-Regular, Consolas, monospace;
+  --out: inset -1px -1px var(--dk), inset 1px 1px var(--hi), inset -2px -2px var(--lo), inset 2px 2px var(--face-2);
+  --in: inset 1px 1px var(--lo), inset -1px -1px var(--hi), inset 2px 2px var(--dk), inset -2px -2px var(--face-2);
+  --thin-in: inset 1px 1px var(--lo), inset -1px -1px var(--hi);
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --desk: #1d2a2d; --face: #34363a; --face-2: #3e4045; --hi: #5c5f66; --lo: #1f2023; --dk: #0f1011;
+    --ink: #e6e4df; --muted: #a9a6a0; --title-a: #1b2f57; --title-b: #3a5f99; --title-ink: #f2f5fb;
+    --sel: #3c64b0; --sel-ink: #ffffff; --field: #26282b; --warn: #ffcf73; --warn-bg: #3e3320;
+    --led-off: #2a2a27; color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --desk: #1d2a2d; --face: #34363a; --face-2: #3e4045; --hi: #5c5f66; --lo: #1f2023; --dk: #0f1011;
+  --ink: #e6e4df; --muted: #a9a6a0; --title-a: #1b2f57; --title-b: #3a5f99; --title-ink: #f2f5fb;
+  --sel: #3c64b0; --sel-ink: #ffffff; --field: #26282b; --warn: #ffcf73; --warn-bg: #3e3320;
+  --led-off: #2a2a27; color-scheme: dark;
+}
+/* "Modern" skin: same structure, flat native controls. Only overrides tokens. */
+.app.modern { --radius: 6px; --out: 0 0 0 1px var(--lo); --in: inset 0 0 0 1px var(--lo); --thin-in: inset 0 0 0 1px var(--lo); }
+.app.modern .titlebar { background: var(--face); color: var(--ink); }
+.app.modern .titlebar .tbtn { box-shadow: none; background: transparent; color: var(--ink); }
+
+* { box-sizing: border-box; }
+html, body { min-height: 100%; }
+body {
+  background: var(--desk); color: var(--ink); font: 12px/1.35 var(--ui);
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-block: 20px 28px;
+}
+button, input, select { font: inherit; color: inherit; }
+:focus-visible { outline: 1px dotted var(--ink); outline-offset: -4px; }
+.page-note { max-width: 1040px; margin: 0 auto 12px; color: #eef3f3; display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; justify-content: space-between; }
+.page-note p { margin: 0; max-width: 65ch; }
+.page-note .ctrls { display: flex; gap: 8px; flex-wrap: wrap; }
+.page-note button { background: var(--face); color: var(--ink); border: 0; padding: 4px 10px; box-shadow: var(--out); border-radius: var(--radius); cursor: pointer; }
+
+/* window */
+.app { max-width: 1040px; margin: 0 auto; background: var(--face); box-shadow: var(--out), 0 18px 50px #0006; padding: 3px; border-radius: var(--radius); position: relative; }
+.titlebar { display: flex; align-items: center; gap: 6px; padding: 3px 3px 3px 6px; background: linear-gradient(90deg, var(--title-a), var(--title-b)); color: var(--title-ink); font-weight: 700; border-radius: var(--radius) var(--radius) 0 0; }
+.titlebar .appicon { width: 16px; height: 16px; flex: none; }
+.titlebar .ttl { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tbtn { width: 18px; height: 16px; display: grid; place-items: center; background: var(--face); color: var(--ink); box-shadow: var(--out); border: 0; padding: 0; font: 700 10px/1 var(--ui); cursor: default; }
+.menubar { display: flex; flex-wrap: wrap; position: relative; padding: 1px 0; }
+.menubar > .mi { position: relative; }
+.menubar > .mi > button { background: none; border: 0; padding: 3px 8px; cursor: default; }
+.menubar > .mi > button[aria-expanded="true"], .menubar > .mi > button:hover { background: var(--sel); color: var(--sel-ink); }
+.menu { position: absolute; top: 100%; left: 0; z-index: 30; min-width: 230px; background: var(--face); box-shadow: var(--out), 3px 3px 0 #0003; padding: 3px; display: none; }
+.menu.open { display: block; }
+.menu button { width: 100%; display: grid; grid-template-columns: 18px 1fr auto; gap: 6px; align-items: center; background: none; border: 0; padding: 4px 8px 4px 4px; text-align: left; cursor: default; }
+.menu button:hover:not(:disabled), .menu button:focus-visible { background: var(--sel); color: var(--sel-ink); outline: none; }
+.menu button:disabled { color: var(--lo); text-shadow: 1px 1px 0 var(--hi); }
+.menu .key { color: inherit; opacity: .8; font-size: 11px; }
+.menu hr { border: 0; border-top: 1px solid var(--lo); border-bottom: 1px solid var(--hi); margin: 3px 2px; }
+.menu .label { padding: 4px 8px 2px 28px; color: var(--muted); font-size: 11px; }
+.toolbar { display: flex; flex-wrap: wrap; gap: 2px; padding: 3px 2px; border-top: 1px solid var(--lo); box-shadow: inset 0 1px var(--hi); align-items: center; }
+.toolbar button { display: inline-flex; align-items: center; gap: 5px; background: none; border: 0; padding: 3px 6px; border-radius: var(--radius); cursor: default; }
+.toolbar button:hover:not(:disabled) { box-shadow: var(--thin-in); }
+.toolbar button:disabled { color: var(--lo); }
+.toolbar .sep { width: 2px; height: 20px; box-shadow: inset 1px 0 var(--lo), inset -1px 0 var(--hi); margin: 0 3px; }
+.ico { width: 16px; height: 16px; flex: none; }
+
+/* client area */
+.client { margin-top: 2px; box-shadow: var(--in); padding: 2px; min-height: 470px; display: flex; flex-direction: column; background: var(--face); border-radius: var(--radius); }
+.view { flex: 1; display: none; min-height: 0; }
+.view.active { display: flex; }
+/* welcome */
+#welcome { gap: 0; background: var(--face-2); }
+.welcome-side { width: 230px; flex: none; background: linear-gradient(180deg, var(--title-a), var(--title-b)); color: var(--title-ink); padding: 18px 14px; display: flex; flex-direction: column; gap: 14px; }
+.welcome-side h1 { font: 700 20px/1.15 var(--ui); margin: 0; letter-spacing: -.3px; }
+.welcome-side p { margin: 0; opacity: .9; }
+.welcome-side .links { display: grid; gap: 6px; margin-top: 6px; }
+.welcome-side .links button { text-align: left; background: #ffffff1f; border: 1px solid #ffffff40; color: var(--title-ink); padding: 6px 8px; cursor: pointer; border-radius: var(--radius); }
+.welcome-side .links button:hover { background: #ffffff33; }
+.welcome-side .foot { margin-top: auto; font-size: 11px; opacity: .85; }
+.welcome-main { flex: 1; min-width: 0; padding: 14px; display: grid; grid-template-columns: minmax(0, 1fr) 260px; gap: 12px; align-content: start; }
+.group { box-shadow: var(--thin-in), inset -1px -1px var(--hi); border: 1px solid transparent; padding: 14px 10px 10px; position: relative; margin-top: 6px; border-radius: var(--radius); }
+.group > .legend { position: absolute; top: -8px; left: 8px; background: var(--face-2); padding: 0 4px; }
+.listview { background: var(--field); box-shadow: var(--in); border-radius: var(--radius); overflow: auto; max-height: 330px; }
+.listview table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+.listview th { position: sticky; top: 0; background: var(--face); box-shadow: var(--out); text-align: left; font-weight: 400; padding: 3px 6px; white-space: nowrap; }
+.listview td { padding: 4px 6px; white-space: nowrap; border-bottom: 1px solid transparent; }
+.listview tr[aria-selected="true"] td { background: var(--sel); color: var(--sel-ink); }
+.listview tbody tr { cursor: default; }
+.listview .name { display: flex; align-items: center; gap: 6px; }
+.tag { font-family: var(--code); font-size: 11px; opacity: .85; }
+.warnbadge { color: var(--warn); font-weight: 700; }
+tr[aria-selected="true"] .warnbadge { color: var(--sel-ink); }
+.details dl { display: grid; grid-template-columns: auto 1fr; gap: 3px 10px; margin: 0; }
+.details dt { color: var(--muted); }
+.details dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+.btnrow { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+.btn { background: var(--face); border: 0; box-shadow: var(--out); padding: 4px 14px; min-width: 75px; border-radius: var(--radius); cursor: default; }
+.btn:active:not(:disabled) { box-shadow: var(--in); }
+.btn.default { box-shadow: 0 0 0 1px var(--dk), var(--out); }
+.btn:disabled { color: var(--lo); text-shadow: 1px 1px 0 var(--hi); }
+.notice { background: var(--warn-bg); color: var(--warn); padding: 6px 8px; margin-top: 8px; border-radius: var(--radius); }
+.chain { font-family: var(--code); font-size: 11px; color: var(--muted); margin-top: 8px; overflow-wrap: anywhere; }
+
+/* running */
+#running { flex-direction: column; background: #000; }
+.screenwrap { flex: 1; display: grid; place-items: center; padding: 10px; background: #000; min-height: 0; }
+.crt { width: 100%; max-width: 760px; aspect-ratio: 4 / 3; max-height: 100%; background: var(--screen-bg); color: var(--screen-fg); font: 20px/1 var(--mono); padding: 2.2% 2.6%; overflow: hidden; position: relative; white-space: pre; cursor: none; }
+.crt .hi { color: var(--screen-hi); }
+.crt .paused { position: absolute; inset: 0; display: grid; place-items: center; background: #000a; color: #fff; font: 700 13px var(--ui); letter-spacing: 2px; }
+.crt-cursor { animation: blink 1s steps(1) infinite; }
+@keyframes blink { 50% { opacity: 0; } }
+@media (prefers-reduced-motion: reduce) { .crt-cursor { animation: none; } .led.busy { animation: none !important; } }
+
+/* status bar */
+.statusbar { display: flex; flex-wrap: wrap; gap: 2px; margin-top: 2px; }
+.statusbar .cell { box-shadow: var(--thin-in); padding: 2px 6px; display: flex; align-items: center; gap: 5px; min-width: 0; white-space: nowrap; border-radius: var(--radius); }
+.statusbar .grow { flex: 1; overflow: hidden; text-overflow: ellipsis; }
+.led { width: 10px; height: 6px; background: var(--led-off); box-shadow: inset 0 0 0 1px #0006; display: inline-block; }
+.led.power.on { background: var(--led-power); }
+.led.disk.on { background: var(--led-disk); }
+.led.busy { animation: flick .18s steps(2) infinite; }
+@keyframes flick { 50% { background: var(--led-off); } }
+
+/* dialogs */
+.scrim { position: absolute; inset: 0; background: #0000; z-index: 40; display: none; }
+.scrim.open { display: grid; place-items: center; padding: 10px; }
+.dlg { background: var(--face); box-shadow: var(--out), 6px 6px 0 #0004; padding: 3px; width: min(560px, 100%); max-height: calc(100% - 10px); display: flex; flex-direction: column; border-radius: var(--radius); }
+.dlg.wide { width: min(680px, 100%); }
+.dlg .titlebar { cursor: default; }
+.dlg .body { padding: 10px; overflow: auto; min-height: 0; }
+.dlg .foot { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 6px; padding: 6px 10px 10px; }
+.tabs { display: flex; flex-wrap: wrap; gap: 0; padding-left: 2px; position: relative; z-index: 1; }
+.tabs button { background: var(--face); border: 0; box-shadow: inset 1px 1px var(--hi), inset -1px 0 var(--dk), inset -2px 0 var(--lo); padding: 3px 9px; margin-top: 2px; cursor: default; border-radius: var(--radius) var(--radius) 0 0; }
+.tabs button[aria-selected="true"] { margin-top: 0; padding-bottom: 5px; position: relative; top: 1px; }
+.tabpanel { box-shadow: var(--out); padding: 12px; min-height: 260px; border-radius: 0 var(--radius) var(--radius) var(--radius); }
+.tabpanel[hidden] { display: none; }
+.form { display: grid; grid-template-columns: 150px minmax(0, 1fr); gap: 7px 10px; align-items: center; }
+.form label { color: var(--ink); }
+.form select, .form input[type="text"] { background: var(--field); border: 0; box-shadow: var(--in); padding: 3px 4px; width: 100%; min-width: 0; border-radius: var(--radius); }
+.form .why { grid-column: 2; color: var(--warn); font-size: 11px; margin-top: -3px; }
+.form .hint { grid-column: 2; color: var(--muted); font-size: 11px; margin-top: -3px; }
+.form .full { grid-column: 1 / -1; }
+.check { display: flex; align-items: center; gap: 6px; }
+.media-list { background: var(--field); box-shadow: var(--in); max-height: 170px; overflow: auto; border-radius: var(--radius); }
+.media-list button { display: grid; grid-template-columns: 18px 1fr auto; gap: 6px; width: 100%; background: none; border: 0; padding: 4px 6px; text-align: left; cursor: default; }
+.media-list button[aria-selected="true"] { background: var(--sel); color: var(--sel-ink); }
+.media-list button:disabled { color: var(--muted); }
+.tree { background: var(--field); box-shadow: var(--in); padding: 8px; font-family: var(--code); font-size: 11.5px; white-space: pre; overflow-x: auto; line-height: 1.6; border-radius: var(--radius); }
+.tree .cur { background: var(--sel); color: var(--sel-ink); }
+.kbd-table { width: 100%; border-collapse: collapse; }
+.kbd-table td { padding: 3px 4px; border-bottom: 1px solid var(--lo); vertical-align: top; }
+.kbd-table td:first-child { white-space: nowrap; font-family: var(--code); font-size: 11px; }
+
+@media (max-width: 760px) {
+  .welcome-main { grid-template-columns: 1fr; }
+  .welcome-side { width: 170px; padding: 14px 10px; }
+  .form { grid-template-columns: 1fr; }
+  .form .why, .form .hint { grid-column: 1; }
+  .crt { font-size: 13px; }
+}
+@media (max-width: 560px) {
+  #welcome.active { flex-direction: column; }
+  .welcome-side { width: auto; }
+  .toolbar .txt { display: none; }
+  .crt { font-size: 9px; }
+  .client { min-height: 420px; }
+}
+</style>
+
+<div class="page-note">
+  <p><strong>Design mock-up, sample data only.</strong> Start a machine from the list (double-click or <em>Start</em>), then use the menus, toolbar and dialogs. Nothing here controls an emulator.</p>
+  <div class="ctrls">
+    <button type="button" id="skinBtn">Skin: classic</button>
+    <button type="button" id="themeBtn">Theme: system</button>
+  </div>
+</div>
+
+<div class="app" id="app">
+  <div class="titlebar">
+    <svg class="appicon" viewBox="0 0 16 16" aria-hidden="true"><rect x="1" y="2" width="14" height="9" fill="#c9d6e8" stroke="#0b1a33"/><rect x="3" y="4" width="10" height="5" fill="#0b2a5a"/><rect x="5" y="12" width="6" height="2" fill="#c9d6e8" stroke="#0b1a33"/></svg>
+    <span class="ttl" id="winTitle">unemupc98</span>
+    <button class="tbtn" type="button" aria-label="Minimize">_</button>
+    <button class="tbtn" type="button" aria-label="Maximize">□</button>
+    <button class="tbtn" type="button" aria-label="Close">×</button>
+  </div>
+
+  <nav class="menubar" id="menubar" aria-label="Main menu">
+    <div class="mi"><button type="button" data-menu="m-file" aria-haspopup="true" aria-expanded="false"><u>F</u>ile</button>
+      <div class="menu" id="m-file" role="menu">
+        <button type="button" data-act="new"><span></span><span>New machine…</span><span class="key">Ctrl+N</span></button>
+        <button type="button" data-act="open"><span></span><span>Open machine file…</span><span class="key">Ctrl+O</span></button>
+        <button type="button" data-act="import"><span></span><span>Import image…</span><span class="key"></span></button>
+        <hr>
+        <button type="button" data-act="welcome"><span></span><span>Machine library</span><span class="key">Ctrl+L</span></button>
+        <hr>
+        <button type="button" data-act="exit"><span></span><span>Exit</span><span class="key">Alt+F4</span></button>
+      </div>
+    </div>
+    <div class="mi"><button type="button" data-menu="m-machine" aria-haspopup="true" aria-expanded="false"><u>M</u>achine</button>
+      <div class="menu" id="m-machine" role="menu">
+        <button type="button" data-act="start" data-when="stopped"><span>▶</span><span>Start</span><span class="key">Enter</span></button>
+        <button type="button" data-act="pause" data-when="running"><span>Ⅱ</span><span id="pauseLabel">Pause</span><span class="key">Ctrl+Alt+P</span></button>
+        <button type="button" data-act="cad" data-when="running"><span></span><span>Send Ctrl+Alt+Del</span><span class="key">Ctrl+Alt+End</span></button>
+        <button type="button" data-act="power" data-when="running"><span></span><span>Power cycle</span><span class="key"></span></button>
+        <button type="button" data-act="stop" data-when="running"><span>■</span><span>Stop</span><span class="key">Ctrl+Alt+Q</span></button>
+        <hr>
+        <button type="button" data-act="snapshot" disabled><span></span><span>Save state (not yet available)</span><span class="key"></span></button>
+        <hr>
+        <button type="button" data-act="props"><span></span><span>Settings…</span><span class="key">Ctrl+,</span></button>
+        <button type="button" data-act="layers"><span></span><span>Disk layers…</span><span class="key"></span></button>
+      </div>
+    </div>
+    <div class="mi"><button type="button" data-menu="m-media" aria-haspopup="true" aria-expanded="false">M<u>e</u>dia</button>
+      <div class="menu" id="m-media" role="menu">
+        <div class="label">Drive A: (1.2M) — <span id="aNameMenu">empty</span></div>
+        <button type="button" data-act="insertA"><span></span><span>Insert into A:…</span><span class="key">Ctrl+Alt+I</span></button>
+        <button type="button" data-act="nextA"><span></span><span>Next image in catalogue</span><span class="key">Ctrl+Alt+F</span></button>
+        <button type="button" data-act="ejectA"><span>⏏</span><span>Eject A:</span><span class="key">Ctrl+Alt+E</span></button>
+        <hr>
+        <div class="label">Drive B: — not installed</div>
+        <button type="button" disabled><span></span><span>Insert into B:…</span><span class="key"></span></button>
+        <hr>
+        <div class="label">C: IDE master — journal, 3 changed sectors</div>
+        <button type="button" data-act="layers"><span></span><span>Disk layers…</span><span class="key"></span></button>
+        <hr>
+        <button type="button" disabled><span></span><span>CD-ROM (no controller yet)</span><span class="key"></span></button>
+      </div>
+    </div>
+    <div class="mi"><button type="button" data-menu="m-view" aria-haspopup="true" aria-expanded="false"><u>V</u>iew</button>
+      <div class="menu" id="m-view" role="menu">
+        <button type="button" data-act="toolbar"><span id="tbCheck">✓</span><span>Toolbar</span><span class="key"></span></button>
+        <button type="button" data-act="status"><span id="sbCheck">✓</span><span>Status bar</span><span class="key"></span></button>
+        <hr>
+        <button type="button" data-act="noop"><span>●</span><span>Scale to window, 4:3</span><span class="key"></span></button>
+        <button type="button" data-act="noop"><span></span><span>Integer scale</span><span class="key"></span></button>
+        <button type="button" data-act="noop"><span></span><span>Full screen</span><span class="key">Ctrl+Alt+Enter</span></button>
+        <hr>
+        <button type="button" data-act="mute"><span id="muteCheck"></span><span>Mute audio</span><span class="key">Ctrl+Alt+M</span></button>
+      </div>
+    </div>
+    <div class="mi"><button type="button" data-menu="m-tools" aria-haspopup="true" aria-expanded="false"><u>T</u>ools</button>
+      <div class="menu" id="m-tools" role="menu">
+        <button type="button" data-act="catalogue"><span></span><span>Media catalogue…</span><span class="key"></span></button>
+        <button type="button" data-act="firmware"><span></span><span>Locate firmware…</span><span class="key"></span></button>
+        <button type="button" data-act="newdisk"><span></span><span>Create blank disk…</span><span class="key"></span></button>
+        <hr>
+        <button type="button" data-act="prefs"><span></span><span>Preferences…</span><span class="key"></span></button>
+      </div>
+    </div>
+    <div class="mi"><button type="button" data-menu="m-help" aria-haspopup="true" aria-expanded="false"><u>H</u>elp</button>
+      <div class="menu" id="m-help" role="menu">
+        <button type="button" data-act="keys"><span></span><span>Keyboard shortcuts</span><span class="key">F1</span></button>
+        <hr>
+        <button type="button" data-act="about"><span></span><span>About unemupc98</span><span class="key"></span></button>
+      </div>
+    </div>
+  </nav>
+
+  <div class="toolbar" id="toolbar" role="toolbar" aria-label="Machine">
+    <button type="button" data-act="start" data-when="stopped" title="Start"><svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><path d="M4 2l10 6-10 6z" fill="#2c8a3a"/></svg><span class="txt">Start</span></button>
+    <button type="button" data-act="pause" data-when="running" title="Pause"><svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><rect x="3" y="2" width="3.5" height="12" fill="currentColor"/><rect x="9.5" y="2" width="3.5" height="12" fill="currentColor"/></svg><span class="txt">Pause</span></button>
+    <button type="button" data-act="stop" data-when="running" title="Stop"><svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><rect x="3" y="3" width="10" height="10" fill="#b23a2b"/></svg><span class="txt">Stop</span></button>
+    <button type="button" data-act="cad" data-when="running" title="Send Ctrl+Alt+Del"><span class="txt" style="font-family:var(--code);font-size:11px">Ctrl+Alt+Del</span></button>
+    <span class="sep"></span>
+    <button type="button" data-act="insertA" title="Insert floppy into A:"><svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><rect x="2" y="1.5" width="12" height="13" fill="#3a3f4a"/><rect x="4.5" y="1.5" width="7" height="4.5" fill="#c9cdd4"/><rect x="4" y="9" width="8" height="5.5" fill="#e9e6dc"/></svg><span class="txt">A:</span></button>
+    <button type="button" data-act="ejectA" title="Eject A:"><span aria-hidden="true">⏏</span><span class="txt">Eject</span></button>
+    <span class="sep"></span>
+    <button type="button" data-act="props" title="Settings"><svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="3" fill="none" stroke="currentColor" stroke-width="2"/><path d="M8 1v3M8 12v3M1 8h3M12 8h3M3 3l2 2M11 11l2 2M13 3l-2 2M5 11l-2 2" stroke="currentColor" stroke-width="1.5"/></svg><span class="txt">Settings</span></button>
+    <button type="button" data-act="layers" title="Disk layers"><svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2l6 3-6 3-6-3z" fill="#4b79c1"/><path d="M2 8l6 3 6-3" fill="none" stroke="currentColor"/><path d="M2 11l6 3 6-3" fill="none" stroke="currentColor"/></svg><span class="txt">Layers</span></button>
+  </div>
+
+  <div class="client" id="client">
+    <!-- Welcome / library -->
+    <section class="view active" id="welcome" aria-label="Welcome">
+      <div class="welcome-side">
+        <h1>Welcome to unemupc98</h1>
+        <p>Pick a machine to start it, or set up a new one.</p>
+        <div class="links">
+          <button type="button" data-act="new">New machine…</button>
+          <button type="button" data-act="open">Open machine file…</button>
+          <button type="button" data-act="import">Import image…</button>
+          <button type="button" data-act="keys">Keyboard shortcuts</button>
+        </div>
+        <div class="foot">Store: 104 MiB of images, 68 MiB on disk.<br>Shared bases save 36 MiB.</div>
+      </div>
+      <div class="welcome-main">
+        <div class="group"><span class="legend">Machines</span>
+          <div class="listview" role="grid" aria-label="Machines">
+            <table>
+              <thead><tr><th>Name</th><th>Image</th><th>Last run</th></tr></thead>
+              <tbody id="machineRows"></tbody>
+            </table>
+          </div>
+        </div>
+        <div class="group details" id="details"><span class="legend">Details</span>
+          <div id="detailsBody"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Running machine -->
+    <section class="view" id="running" aria-label="Emulated screen">
+      <div class="screenwrap">
+        <div class="crt" id="crt" role="img" aria-label="Emulated text-mode screen (illustration)"></div>
+      </div>
+    </section>
+  </div>
+
+  <div class="statusbar" id="statusbar">
+    <span class="cell grow" id="statusMsg">Ready</span>
+    <span class="cell" title="Power"><span class="led power" id="ledPower"></span>Power</span>
+    <span class="cell" title="Drive A:"><span class="led disk" id="ledA"></span>A:</span>
+    <span class="cell" title="Drive C:"><span class="led disk" id="ledC"></span>C:</span>
+    <span class="cell" id="cpuCell">80286 · 8/13</span>
+    <span class="cell" id="emsCell">EMS 2 MiB</span>
+    <span class="cell" id="audioCell">🔊 SB16</span>
+  </div>
+
+  <!-- Dialog layer -->
+  <div class="scrim" id="scrim">
+    <!-- Settings (property sheet) -->
+    <div class="dlg wide" id="dlg-props" role="dialog" aria-modal="true" aria-labelledby="propsTitle" hidden>
+      <div class="titlebar"><span class="ttl" id="propsTitle">Settings — AT games (IBM BIOS)</span><button class="tbtn" type="button" data-close aria-label="Close">×</button></div>
+      <div class="body">
+        <div class="tabs" role="tablist" id="propTabs">
+          <button type="button" role="tab" aria-selected="true" data-tab="t-sys">System</button>
+          <button type="button" role="tab" aria-selected="false" data-tab="t-mem">Memory</button>
+          <button type="button" role="tab" aria-selected="false" data-tab="t-vid">Display</button>
+          <button type="button" role="tab" aria-selected="false" data-tab="t-snd">Sound</button>
+          <button type="button" role="tab" aria-selected="false" data-tab="t-sto">Storage</button>
+          <button type="button" role="tab" aria-selected="false" data-tab="t-exp">Expansion</button>
+          <button type="button" role="tab" aria-selected="false" data-tab="t-fw">Firmware</button>
+        </div>
+        <div class="tabpanel" id="t-sys" role="tabpanel">
+          <div class="form">
+            <label for="board">Board</label><select id="board"><option>IBM PC/AT 5170</option><option disabled>IBM PC/XT 5160 — not available yet</option></select>
+            <label for="cpu">Processor</label><select id="cpu"><option>Intel 80286</option><option disabled>Intel 80386 — needs protected-mode support</option></select>
+            <label for="speed">Speed</label><select id="speed"><option>8/13 steps per PIT clock (about 6 MHz AT)</option><option>Fast (8 MHz AT)</option><option disabled>Cycle-exact — not available yet</option></select>
+            <span class="hint">Speed is an instruction rate, not a cycle-exact clock.</span>
+            <label for="fpu">Coprocessor</label><select id="fpu"><option>None</option><option>80287</option></select>
+            <label for="mouse">Serial mouse</label><select id="mouse"><option>Microsoft mouse on COM1</option><option>None</option></select>
+          </div>
+        </div>
+        <div class="tabpanel" id="t-mem" role="tabpanel" hidden>
+          <div class="form">
+            <label for="conv">Conventional</label><select id="conv"><option>640 KiB</option><option>512 KiB</option></select>
+            <label for="ext">Extended</label><select id="ext"><option>4096 KiB</option><option>2048 KiB</option><option>1024 KiB</option><option disabled>16384 KiB</option></select>
+            <span class="why">16384 KiB exceeds the 15 MiB the AT board can address above 1 MiB.</span>
+          </div>
+        </div>
+        <div class="tabpanel" id="t-vid" role="tabpanel" hidden>
+          <div class="form">
+            <label for="video">Video card</label><select id="video"><option>VGA (register level)</option><option>VGA text only</option><option>MDA</option><option disabled>CGA — not available yet</option></select>
+            <label for="vbios">Video BIOS</label><select id="vbios"><option>IBM VGA BIOS (user-supplied, verified)</option></select>
+            <span class="hint">sha256 3f1a…be20 · matched in your ROM folder</span>
+          </div>
+        </div>
+        <div class="tabpanel" id="t-snd" role="tabpanel" hidden>
+          <div class="form">
+            <label for="sb">Sound card</label><select id="sb"><option>Sound Blaster 16 with OPL3</option><option>None</option></select>
+            <label for="sbport">I/O port</label><select id="sbport"><option>220h</option><option>240h</option><option disabled>260h</option><option>280h</option></select>
+            <span class="why">260h is taken by the EMS board (Expansion tab).</span>
+            <label for="sbirq">IRQ</label><select id="sbirq"><option>5</option><option>7</option><option>10</option><option disabled>6</option></select>
+            <span class="why">IRQ 6 belongs to the floppy controller.</span>
+            <label for="sbdma">DMA (8 / 16-bit)</label><select id="sbdma"><option>1 / 5</option><option>3 / 5</option><option>1 / 7</option><option disabled>2 / 5</option></select>
+            <span class="why">DMA 2 belongs to the floppy controller.</span>
+          </div>
+        </div>
+        <div class="tabpanel" id="t-sto" role="tabpanel" hidden>
+          <div class="form">
+            <label for="fda">Drive A:</label><select id="fda"><option>5.25" 1.2M</option><option>3.5" 720K</option><option disabled>3.5" 1.44M</option></select>
+            <span class="why">This BIOS (June 1985) has no 1.44M drive type.</span>
+            <label for="fdb">Drive B:</label><select id="fdb"><option>Not installed</option><option>5.25" 360K</option></select>
+            <label for="hdd">Hard disk C:</label><select id="hdd"><option>IDE master · type 2 · 20 MiB · journal</option><option>None</option></select>
+            <label for="hdd2">Hard disk D:</label><select id="hdd2"><option>None</option><option disabled>IDE slave — not available yet</option></select>
+            <span class="full"><button type="button" class="btn" data-act="newdisk">Create blank disk…</button> <button type="button" class="btn" data-act="layers">Disk layers…</button></span>
+          </div>
+        </div>
+        <div class="tabpanel" id="t-exp" role="tabpanel" hidden>
+          <div class="form">
+            <label class="check full"><input type="checkbox" id="ems" checked> Lo-tech 2MB EMS board</label>
+            <label for="emsframe">Page frame</label><select id="emsframe"><option>D000h</option><option disabled>C000h</option><option disabled>E000h</option></select>
+            <span class="why">C000h holds the VGA BIOS; E000h is system-board ROM space on the 5170.</span>
+            <label for="emsport">I/O port</label><select id="emsport"><option>260h</option><option>264h</option><option>268h</option><option>26Ch</option></select>
+            <label for="emssize">Memory</label><select id="emssize"><option>2 MiB</option><option>1.5 MiB</option><option>1 MiB</option><option>512 KiB</option></select>
+            <span class="hint">DOS needs the board's driver: DEVICE=LTEMM.EXE /p:D000</span>
+          </div>
+        </div>
+        <div class="tabpanel" id="t-fw" role="tabpanel" hidden>
+          <div class="form">
+            <label for="bios">System BIOS</label><select id="bios"><option>IBM 5170, 1985-06-10 (user-supplied)</option><option>Open AT BIOS (bundled)</option></select>
+            <span class="hint">Two chips, sha256 e0a1…77c4 + 9b2f…0e13 · found in your ROM folder</span>
+            <label for="optrom">Option ROMs</label><select id="optrom"><option>None</option><option>XTIDE Universal BIOS (bundled)</option></select>
+          </div>
+        </div>
+      </div>
+      <div class="foot"><button type="button" class="btn default" data-close>OK</button><button type="button" class="btn" data-close>Cancel</button><button type="button" class="btn" disabled>Apply</button></div>
+    </div>
+
+    <!-- Insert floppy -->
+    <div class="dlg" id="dlg-insert" role="dialog" aria-modal="true" aria-labelledby="insTitle" hidden>
+      <div class="titlebar"><span class="ttl" id="insTitle">Insert floppy into A:</span><button class="tbtn" type="button" data-close aria-label="Close">×</button></div>
+      <div class="body">
+        <p style="margin:0 0 8px">Catalogue for this machine:</p>
+        <div class="media-list" id="mediaList" role="listbox" aria-label="Floppy images"></div>
+        <div class="btnrow"><button type="button" class="btn" data-act="browse">Browse…</button></div>
+        <div class="form" style="margin-top:10px">
+          <label for="wmode">Write mode</label><select id="wmode"><option>Read-only</option><option>Journal (keep my changes separately)</option></select>
+          <span class="hint" id="mediaInfo">1.2M · 80/2/15 · detected from size</span>
+        </div>
+      </div>
+      <div class="foot"><button type="button" class="btn default" id="insertOk">Insert</button><button type="button" class="btn" data-close>Cancel</button></div>
+    </div>
+
+    <!-- Layers -->
+    <div class="dlg wide" id="dlg-layers" role="dialog" aria-modal="true" aria-labelledby="layTitle" hidden>
+      <div class="titlebar"><span class="ttl" id="layTitle">Disk layers — AT games (IBM BIOS)</span><button class="tbtn" type="button" data-close aria-label="Close">×</button></div>
+      <div class="body">
+        <div class="tree" aria-label="Layer chain">C: IDE master (20 MiB)
+ └─ base  dos-clean            8ab4…c019   20.0 MiB  shared by 2 images
+     └─ layer  tools installed   40dc…018f    1.6 MiB
+         └─ layer  games: keen 4-6  b71e…22a0  4.1 MiB
+             └─ <span class="cur">working changes          3 sectors   not saved</span>
+
+A: catalogue   freedos-1200 (read-only) · fdtools (read-only) · transfer (journal)
+Firmware       IBM 5170 BIOS · IBM VGA BIOS        (user-supplied, by hash)
+Settings       revision 4</div>
+        <p class="notice">Saving a layer stops the machine first. The image keeps its settings, firmware and every drive together; a disk on its own is not an image.</p>
+      </div>
+      <div class="foot"><button type="button" class="btn default" data-act="savelayer">Save as layer…</button><button type="button" class="btn" data-act="discard">Discard changes</button><button type="button" class="btn" data-act="branch">New image from here…</button><button type="button" class="btn" data-close>Close</button></div>
+    </div>
+
+    <!-- Keyboard shortcuts -->
+    <div class="dlg" id="dlg-keys" role="dialog" aria-modal="true" aria-labelledby="keysTitle" hidden>
+      <div class="titlebar"><span class="ttl" id="keysTitle">Keyboard shortcuts</span><button class="tbtn" type="button" data-close aria-label="Close">×</button></div>
+      <div class="body">
+        <table class="kbd-table">
+          <tr><td>Ctrl+Alt+End</td><td>Send Ctrl+Alt+Del to the machine</td></tr>
+          <tr><td>Ctrl+Alt+F</td><td>Next floppy in A: catalogue (Shift: B:)</td></tr>
+          <tr><td>Ctrl+Alt+E</td><td>Eject A: (Shift: B:)</td></tr>
+          <tr><td>Ctrl+Alt+I</td><td>Insert into A:…</td></tr>
+          <tr><td>Ctrl+Alt+G</td><td>Release the mouse</td></tr>
+          <tr><td>Ctrl+Alt+M</td><td>Mute audio</td></tr>
+          <tr><td>Ctrl+Alt+P</td><td>Pause / resume</td></tr>
+          <tr><td>Ctrl+Alt+Enter</td><td>Full screen</td></tr>
+          <tr><td>Ctrl+Alt+Q</td><td>Stop the machine</td></tr>
+        </table>
+        <p style="margin:8px 0 0;color:var(--muted)">Every other key goes to the machine while it has focus.</p>
+      </div>
+      <div class="foot"><button type="button" class="btn default" data-close>OK</button></div>
+    </div>
+
+    <!-- About -->
+    <div class="dlg" id="dlg-about" role="dialog" aria-modal="true" aria-labelledby="aboutTitle" hidden>
+      <div class="titlebar"><span class="ttl" id="aboutTitle">About unemupc98</span><button class="tbtn" type="button" data-close aria-label="Close">×</button></div>
+      <div class="body">
+        <p style="margin:0 0 6px"><strong>unemupc98</strong> — IBM PC/AT emulator, deterministic and testable.</p>
+        <p style="margin:0;color:var(--muted)">CPU core x86jit · Sound: Nuked-OPL3 port · This screen is a design mock-up.</p>
+      </div>
+      <div class="foot"><button type="button" class="btn default" data-close>OK</button></div>
+    </div>
+
+    <!-- Generic message -->
+    <div class="dlg" id="dlg-msg" role="dialog" aria-modal="true" aria-labelledby="msgTitle" hidden>
+      <div class="titlebar"><span class="ttl" id="msgTitle">unemupc98</span><button class="tbtn" type="button" data-close aria-label="Close">×</button></div>
+      <div class="body"><p style="margin:0" id="msgText"></p></div>
+      <div class="foot"><button type="button" class="btn default" data-close>OK</button></div>
+    </div>
+  </div>
+</div>
+
+<script>
+(function () {
+  'use strict';
+  var $ = function (id) { return document.getElementById(id); };
+  var machines = [
+    { id: 'at-games', name: 'AT games (IBM BIOS)', image: 'at-games:2', last: 'Today 14:20', ok: true,
+      spec: [['Board', 'IBM PC/AT 5170, 80286'], ['Memory', '640 KiB + 4 MiB, EMS 2 MiB'], ['Display', 'VGA (IBM VGA BIOS)'], ['Sound', 'Sound Blaster 16 + OPL3'], ['Drives', 'A: 1.2M · C: 20 MiB']],
+      chain: 'dos-clean → tools → games: keen 4-6 → working' },
+    { id: 'at-games-open', name: 'AT games (open firmware)', image: 'at-games-open:1', last: 'Yesterday', ok: true,
+      spec: [['Board', 'IBM PC/AT 5170, 80286'], ['Memory', '640 KiB + 4 MiB, EMS 2 MiB'], ['Display', 'VGA text, MDA'], ['Sound', 'Sound Blaster 16 + OPL3'], ['Drives', 'A: 1.2M · C: 32 MiB (XTIDE)']],
+      chain: 'dos-clean → working' },
+    { id: 'dos-clean', name: 'Clean FreeDOS', image: 'dos-clean:1.0', last: '11 Nov', ok: true,
+      spec: [['Board', 'IBM PC/AT 5170, 80286'], ['Memory', '640 KiB + 1 MiB'], ['Display', 'MDA'], ['Sound', 'None'], ['Drives', 'A: 1.2M · C: 20 MiB']],
+      chain: 'dos-clean (base, read-only)' },
+    { id: 'fw-lab', name: 'Firmware lab', image: 'fw-lab:0.1', last: 'Never', ok: false,
+      spec: [['Board', 'IBM PC/AT 5170, 80286'], ['Memory', '640 KiB + 512 KiB'], ['Display', 'EGA'], ['Sound', 'None'], ['Drives', 'A: 1.2M']],
+      chain: 'no disk' }
+  ];
+  var catalogue = [
+    { n: 'freedos-1200.img', d: 'FreeDOS boot', ok: true },
+    { n: 'fdtools.img', d: 'FreeDOS tools (FDISK, FORMAT)', ok: true },
+    { n: 'transfer.img', d: 'Your transfer disk', ok: true },
+    { n: 'keen4-disk1.img', d: '1.44M — does not fit a 1.2M drive', ok: false }
+  ];
+  var state = { sel: 'at-games', running: false, paused: false, a: 'freedos-1200.img', mediaSel: 0, muted: false, booting: null };
+
+  /* ---------- welcome list ---------- */
+  function renderList() {
+    var rows = $('machineRows');
+    rows.textContent = '';
+    machines.forEach(function (m) {
+      var tr = document.createElement('tr');
+      tr.setAttribute('aria-selected', String(m.id === state.sel));
+      tr.tabIndex = 0;
+      tr.innerHTML = '<td><span class="name"><svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><rect x="1" y="2" width="14" height="9" fill="#c9d6e8" stroke="#1c2b44"/><rect x="3" y="4" width="10" height="5" fill="#16305c"/><rect x="5" y="12" width="6" height="2" fill="#c9d6e8" stroke="#1c2b44"/></svg>' +
+        esc(m.name) + (m.ok ? '' : ' <span class="warnbadge">⚠</span>') + '</span></td><td class="tag">' + esc(m.image) + '</td><td>' + esc(m.last) + '</td>';
+      tr.addEventListener('click', function () { state.sel = m.id; renderList(); });
+      tr.addEventListener('dblclick', function () { state.sel = m.id; start(); });
+      tr.addEventListener('keydown', function (e) { if (e.key === 'Enter') { state.sel = m.id; start(); } });
+      rows.appendChild(tr);
+    });
+    renderDetails();
+  }
+  function current() { return machines.filter(function (m) { return m.id === state.sel; })[0]; }
+  function renderDetails() {
+    var m = current();
+    var html = '<dl>' + m.spec.map(function (s) { return '<dt>' + s[0] + '</dt><dd>' + esc(s[1]) + '</dd>'; }).join('') + '</dl>';
+    html += '<div class="chain">' + esc(m.chain) + '</div>';
+    if (!m.ok) html += '<div class="notice">The system BIOS for this machine is user-supplied and was not found. Use Tools › Locate firmware… to point at your ROM folder.</div>';
+    html += '<div class="btnrow"><button type="button" class="btn default" id="startBtn"' + (m.ok ? '' : ' disabled') + '>Start</button>' +
+      '<button type="button" class="btn" data-act="props">Settings…</button><button type="button" class="btn" data-act="layers">Layers…</button></div>';
+    $('detailsBody').innerHTML = html;
+    var sb = $('startBtn'); if (sb) sb.addEventListener('click', start);
+    bindActs($('detailsBody'));
+    $('propsTitle').textContent = 'Settings — ' + m.name;
+    $('layTitle').textContent = 'Disk layers — ' + m.name;
+  }
+
+  /* ---------- running ---------- */
+  var bootLines = [
+    ['', 0], ['unemupc98 · ' , 0], ['', 300],
+    ['Memory test: 4736 KiB OK', 500], ['', 200], ['Starting FreeDOS...', 900], ['', 100],
+    ['FreeCom version 0.86', 400], ['', 0], ['Current date is Sat 11-13-2026', 200],
+    ['Enter new date (mm-dd-[cc]yy):', 300], ['Current time is  2:20:41.07p', 200], ['Enter new time:', 300], ['', 0]
+  ];
+  function start() {
+    var m = current();
+    if (!m.ok) { msg('This machine cannot start: its system BIOS is missing. Use Tools › Locate firmware…'); return; }
+    state.running = true; state.paused = false;
+    $('welcome').classList.remove('active'); $('running').classList.add('active');
+    $('winTitle').textContent = m.name + ' — unemupc98';
+    try { history.replaceState(null, '', '#running'); } catch (e) {}
+    boot();
+    sync();
+  }
+  function stop() {
+    clearTimeout(state.booting); state.running = false; state.paused = false;
+    $('running').classList.remove('active'); $('welcome').classList.add('active');
+    $('winTitle').textContent = 'unemupc98';
+    try { history.replaceState(null, '', '#welcome'); } catch (e) {}
+    sync(); setStatus('Machine stopped. Disk changes are kept in the working layer.');
+  }
+  function boot() {
+    var crt = $('crt'), i = 0, text = '';
+    clearTimeout(state.booting);
+    crt.textContent = '';
+    bootLines[1][0] = 'unemupc98 · ' + current().name;
+    flash('ledA', 1200); setStatus('Booting from A: ' + (state.a || '(empty)') + '…');
+    function step() {
+      if (!state.running) return;
+      if (state.paused) { state.booting = setTimeout(step, 200); return; }
+      if (i >= bootLines.length) {
+        crt.innerHTML = esc(text) + '\nA:\\&gt;<span class="crt-cursor">_</span>';
+        setStatus('Running · click the screen to capture the mouse, Ctrl+Alt+G releases it');
+        return;
+      }
+      text += (i ? '\n' : '') + bootLines[i][0];
+      crt.textContent = text;
+      if (i === 5) flash('ledA', 800);
+      state.booting = setTimeout(step, bootLines[i][1] + 120); i++;
+    }
+    step();
+  }
+  function flash(id, ms) { var el = $(id); el.classList.add('on', 'busy'); setTimeout(function () { el.classList.remove('busy', 'on'); }, ms); }
+  function togglePause() {
+    if (!state.running) return;
+    state.paused = !state.paused;
+    var crt = $('crt'), p = crt.querySelector('.paused');
+    if (state.paused && !p) { p = document.createElement('div'); p.className = 'paused'; p.textContent = 'PAUSED'; crt.appendChild(p); }
+    if (!state.paused && p) p.remove();
+    sync();
+  }
+  function cad() { if (!state.running) return; setStatus('Sent Ctrl+Alt+Del'); boot(); }
+
+  /* ---------- state sync ---------- */
+  function sync() {
+    document.querySelectorAll('[data-when]').forEach(function (b) {
+      b.disabled = (b.dataset.when === 'running') !== state.running;
+    });
+    $('pauseLabel').textContent = state.paused ? 'Resume' : 'Pause';
+    $('ledPower').classList.toggle('on', state.running);
+    $('aNameMenu').textContent = state.a || 'empty';
+    $('muteCheck').textContent = state.muted ? '✓' : '';
+    $('audioCell').textContent = state.muted ? '🔇 SB16' : '🔊 SB16';
+    if (!state.running) setStatus(machines.length + ' machines in library');
+  }
+  function setStatus(t) { $('statusMsg').textContent = t; }
+
+  /* ---------- menus ---------- */
+  var openMenu = null;
+  function closeMenus() {
+    document.querySelectorAll('.menu.open').forEach(function (m) { m.classList.remove('open'); });
+    document.querySelectorAll('[data-menu]').forEach(function (b) { b.setAttribute('aria-expanded', 'false'); });
+    openMenu = null;
+  }
+  function showMenu(btn) {
+    closeMenus();
+    var m = $(btn.dataset.menu); m.classList.add('open'); btn.setAttribute('aria-expanded', 'true'); openMenu = btn;
+  }
+  document.querySelectorAll('[data-menu]').forEach(function (btn) {
+    btn.addEventListener('click', function (e) { e.stopPropagation(); if (openMenu === btn) closeMenus(); else showMenu(btn); });
+    btn.addEventListener('mouseenter', function () { if (openMenu && openMenu !== btn) showMenu(btn); });
+  });
+  document.addEventListener('click', function (e) { if (!e.target.closest('.menu')) closeMenus(); });
+
+  /* ---------- dialogs ---------- */
+  var openDlg = null;
+  function dialog(id) {
+    closeMenus();
+    if (openDlg) openDlg.hidden = true;
+    openDlg = $(id); openDlg.hidden = false; $('scrim').classList.add('open');
+    var f = openDlg.querySelector('.btn.default, button'); if (f) f.focus();
+  }
+  function closeDlg() { if (openDlg) openDlg.hidden = true; openDlg = null; $('scrim').classList.remove('open'); }
+  document.querySelectorAll('[data-close]').forEach(function (b) { b.addEventListener('click', closeDlg); });
+  document.addEventListener('keydown', function (e) { if (e.key === 'Escape') { closeMenus(); closeDlg(); } });
+  function msg(t) { $('msgText').textContent = t; dialog('dlg-msg'); }
+
+  $('propTabs').addEventListener('click', function (e) {
+    var b = e.target.closest('[data-tab]'); if (!b) return;
+    document.querySelectorAll('#propTabs [data-tab]').forEach(function (t) {
+      var on = t === b; t.setAttribute('aria-selected', String(on)); $(t.dataset.tab).hidden = !on;
+    });
+  });
+
+  function renderMedia() {
+    var list = $('mediaList'); list.textContent = '';
+    catalogue.forEach(function (c, i) {
+      var b = document.createElement('button');
+      b.type = 'button'; b.setAttribute('role', 'option'); b.disabled = !c.ok;
+      b.setAttribute('aria-selected', String(i === state.mediaSel));
+      b.innerHTML = '<span>' + (c.n === state.a ? '●' : '') + '</span><span>' + esc(c.n) + '</span><span>' + esc(c.d) + '</span>';
+      b.addEventListener('click', function () { state.mediaSel = i; renderMedia(); });
+      b.addEventListener('dblclick', insertSel);
+      list.appendChild(b);
+    });
+  }
+  function insertSel() {
+    var c = catalogue[state.mediaSel]; if (!c || !c.ok) return;
+    state.a = c.n; closeDlg(); sync(); flash('ledA', 500); setStatus('Inserted ' + c.n + ' into A:');
+  }
+  $('insertOk').addEventListener('click', insertSel);
+
+  /* ---------- actions ---------- */
+  var acts = {
+    start: start, stop: stop, pause: togglePause, cad: cad,
+    power: function () { if (state.running) { setStatus('Power cycled'); boot(); } },
+    welcome: function () { if (state.running) msg('The machine keeps running in this window. Stop it to return to the library, or open a second window (later).'); },
+    props: function () { dialog('dlg-props'); },
+    layers: function () { dialog('dlg-layers'); },
+    keys: function () { dialog('dlg-keys'); },
+    about: function () { dialog('dlg-about'); },
+    insertA: function () { renderMedia(); dialog('dlg-insert'); },
+    nextA: function () {
+      var ok = catalogue.filter(function (c) { return c.ok; });
+      var i = ok.map(function (c) { return c.n; }).indexOf(state.a);
+      state.a = ok[(i + 1) % ok.length].n; sync(); flash('ledA', 400); setStatus('A: now holds ' + state.a);
+    },
+    ejectA: function () { state.a = null; sync(); setStatus('A: ejected'); },
+    mute: function () { state.muted = !state.muted; sync(); },
+    toolbar: function () { var t = $('toolbar'); t.hidden = !t.hidden; $('tbCheck').textContent = t.hidden ? '' : '✓'; },
+    status: function () { var s = $('statusbar'); s.hidden = !s.hidden; $('sbCheck').textContent = s.hidden ? '' : '✓'; },
+    new: function () { msg('New machine opens the Settings sheet with a template (AT games, clean DOS, blank) and creates the image when you press OK.'); },
+    open: function () { msg('Open machine file reads a .toml or .yaml machine file and adds it to the library.'); },
+    import: function () { msg('Import image adds a raw disk or floppy image to the store, verified by SHA-256, without changing the original file.'); },
+    catalogue: function () { renderMedia(); dialog('dlg-insert'); },
+    firmware: function () { msg('Locate firmware searches only folders you choose and matches files by SHA-256. Nothing is copied into the project.'); },
+    newdisk: function () { msg('Create blank disk makes a zero-filled hard disk or a formatted floppy image of a size the machine supports.'); },
+    prefs: function () { msg('Preferences: ROM folders, image store location, default scale, audio device.'); },
+    savelayer: function () { closeDlg(); msg('The working changes become a new read-only layer, named by you, and the image gets a new revision.'); },
+    discard: function () { closeDlg(); msg('Working changes discarded. The image is back at its last saved layer.'); },
+    branch: function () { closeDlg(); msg('A new image starts from this layer with the same settings and firmware, for example a second games set on the same clean DOS.'); },
+    browse: function () { msg('Browse opens a file picker. The file is checked (size, geometry) before it joins the catalogue.'); },
+    exit: function () { msg('Exit stops the machine (if running) and closes the window.'); },
+    snapshot: function () {}, noop: function () {}
+  };
+  function bindActs(root) {
+    root.querySelectorAll('[data-act]').forEach(function (b) {
+      if (b.dataset.bound) return; b.dataset.bound = '1';
+      b.addEventListener('click', function (e) { e.stopPropagation(); closeMenus(); var f = acts[b.dataset.act]; if (f) f(); });
+    });
+  }
+  bindActs(document);
+
+  /* ---------- page controls ---------- */
+  var themes = ['system', 'light', 'dark'], ti = 0;
+  $('themeBtn').addEventListener('click', function () {
+    ti = (ti + 1) % 3; if (ti === 0) delete document.documentElement.dataset.theme; else document.documentElement.dataset.theme = themes[ti];
+    this.textContent = 'Theme: ' + themes[ti];
+  });
+  $('skinBtn').addEventListener('click', function () {
+    var on = $('app').classList.toggle('modern'); this.textContent = 'Skin: ' + (on ? 'modern' : 'classic');
+  });
+
+  function esc(s) { return String(s).replace(/[&<>"]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); }
+
+  renderList(); sync();
+  if (location.hash === '#running') start();
+})();
+</script>
