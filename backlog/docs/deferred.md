@@ -163,3 +163,46 @@ but would be tied to the emulator version; disk layers would remain plain data.
   §Header: exactly 128 bytes, and
   [`design/machine-files.md`](design/machine-files.md), §Drives.
 - **Tracked in:** upc-18x.5.
+
+### Bridging real hardware: an OPL chip, later real ISA cards
+
+The maintainer asked (2026-11-13) whether a real chip or card could replace an
+emulated one. Two cases differ sharply.
+
+An OPL synthesizer is almost write-only: guests write registers and read only
+the status port (timer flags, AdLib detection). The emulated OPL3 would keep
+answering every read, so guest-visible behaviour and the goldens stay
+deterministic. Its register writes, stamped with virtual time, would also be
+streamed to a host backend. That backend replays them on a real chip in wall
+time behind a short buffer, over USB or a parallel-port board. After a snapshot
+restore, the backend reloads the chip from the model's registers. This is a
+host-side audio output, like today's sound output, not a new guest device.
+
+A general ISA card needs synchronous port and memory reads, its own IRQs and,
+for many cards, 8237 DMA handshakes (DRQ/DACK) in real time. That works only in
+an explicit live mode that runs in wall time and stalls on reads; such a mode
+has no determinism, no goldens and no snapshots. The bridge would be a `Device`
+that forwards accesses. The access time on the bus and the clock domains from
+decision-22 map virtual time to wall time.
+
+Transport sets what is feasible:
+
+- USB (tens of microseconds up to 1 ms per round trip) suits only write-mostly
+  devices such as the OPL.
+- Thunderbolt to PCIe (about a microsecond per access) is the only realistic
+  path for synchronous reads on a modern laptop. It means a PCIe enclosure, a
+  PCI or PCIe to ISA bridge with a powered ISA backplane (+-5 V, +-12 V), and a
+  host PCI driver.
+- Off-the-shelf bridges forward I/O, memory and IRQ cycles but rarely ISA DMA.
+  DMA cards (Sound Blaster digital audio, GUS) need an FPGA bridge that runs
+  the DMA handshake and buffering locally.
+
+- **Why deferred:** No workload needs it. The OPL bridge is an optional audio
+  output, and a live-mode ISA bridge is a separate hardware project that gives
+  up determinism by design.
+- **Revisit when:** The maintainer wants real OPL sound (OPL output bridge
+  first), or owns bridge hardware and wants a live mode.
+- **Requirement for now:** None beyond the existing seams. Devices stay behind
+  the `Device` trait, bus accesses carry their time, and audio output stays a
+  host-side sink.
+- **Tracked in:** not tracked; idea only.
