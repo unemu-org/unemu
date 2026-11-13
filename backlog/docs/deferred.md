@@ -147,9 +147,15 @@ start from the same disk state; committing it would create a new layer.
 Optional recipe layers would replay a deterministic input script (keys, mouse
 and media changes at virtual times) on the parent to reproduce the layer byte
 for byte. Results could be cached by `(parent hash, recipe hash, CPU core revision)`.
-Proprietary bases and layers would be user-supplied and identified by hash only,
-never committed, like user firmware. A saved machine state could also be a layer,
-but would be tied to the emulator version; disk layers would remain plain data.
+Proprietary bases and layers are never committed to the repository. They live
+in the user's private image store and private registry as parts of whole-machine
+images; see [`design/machine-images.md`](design/machine-images.md), §§4 and 5.
+A saved machine state would be tied to the emulator version; disk layers remain
+plain data.
+
+Still deferred beyond that design: recipe layers, block-level deduplication
+across similar bases, FAT-aware optimisation, payload compression, sector
+layers for floppies and merging sibling layers.
 
 - **Why deferred:** No workload needs layered images before Windows 98 SE runs
   in phase C. The floppy journal and the coming hard-disk write-back cover
@@ -163,6 +169,19 @@ but would be tied to the emulator version; disk layers would remain plain data.
   §Header: exactly 128 bytes, and
   [`design/machine-files.md`](design/machine-files.md), §Drives.
 - **Tracked in:** upc-18x.5.
+
+### Machine-image daemon
+
+The image store is a library that the GUI and CLI call directly, for local
+storage and for registry push/pull. Immutable blobs, lock files and tag
+compare-and-swap handle concurrent processes; see
+[`design/machine-images.md`](design/machine-images.md), §§3.1 and 5.1.
+
+- **Why deferred:** No current workflow needs a long-running service.
+- **Revisit when:** Machines must run headless on a server with remote viewing,
+  remote control is wanted, or background GC is needed.
+- **Requirement for now:** Keep the store API transport-neutral, so a daemon
+  would be a thin wrapper with no storage or validation rules of its own.
 
 ### Bridging real hardware: an OPL chip, later real ISA cards
 

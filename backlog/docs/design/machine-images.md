@@ -2,7 +2,8 @@
 
 Status: **desktop UX and toolkit accepted**, 2026-11-13; the machine-image format,
 store and capabilities API remain design proposals. This spike adds no Rust
-implementation, new command or runnable bundle.
+implementation, new command or runnable bundle. The storage direction below
+follows the maintainer's 2026-11-13 guidance; codecs and APIs remain proposals.
 
 ## 1. Scope and existing contracts
 
@@ -16,10 +17,27 @@ describes this accepted direction; implementation starts with the shell and
 existing machine files, before the image store and layer dialog.
 
 A machine image describes the **whole machine**, not just a hard disk: resolved
-hardware configuration, firmware identities, every controller/slot and ordered
-media catalogue, disk chains, initial inserted media, CMOS and optionally a
-compatible saved state. A tag such as `dos-lab:1.0` names this complete graph.
-An image can be incomplete locally when user-supplied blobs are missing.
+hardware configuration, firmware bytes (system BIOS, video BIOS and option
+ROMs), every controller/slot and ordered media catalogue, every disk base and
+layer, initial inserted media, CMOS and optionally a compatible saved state.
+A tag such as `dos-lab:1.0` names this complete graph. An image is
+self-contained: running it never reads user ROM folders or any other host file
+outside the store. A local tag is published only after the whole closure is
+present and verified, so an interrupted pull or import never leaves a
+half-present tagged image (§3.1).
+
+Three identities are used consistently below:
+
+| Identity | What is hashed | Changes when |
+|---|---|---|
+| **Blob digest** | The exact stored bytes of one object. | Never; different bytes are a different blob. |
+| **Machine digest** | The config blob (§2): hardware, firmware digests, media heads, slots, CMOS and saved state. | Anything the guest can observe changes. |
+| **Image digest** | The OCI manifest: config descriptor, closure list, metadata and artwork descriptors, annotations. | The machine digest changes, or only catalogue metadata, artwork or redistribution marks change. |
+
+Workspaces, saved states and tests pin the machine digest. Tags and registry
+transfer use the image digest. A metadata edit therefore gives a new image
+digest for the same machine, and nothing that runs is affected. Library edits
+remain local overlays until explicitly published as a new version or tag (§2.1).
 
 READ: [Machine files](machine-files.md), §§Schema, extends and Removable floppy
 catalogues; [Persistent media](persistent-media.md), §§Header, Media behind the
@@ -37,42 +55,124 @@ capabilities, even when their reserved positions appear in a mock-up.
 
 ## 2. Immutable manifest and identity
 
-Use **TOML** for manifest version 1: it matches machine files, supports readable
-hexadecimal hardware values and keeps reviewable diffs. JSON is appropriate for
-capabilities responses but offers no advantage for hand-edited image metadata.
-Hash exact UTF-8 object bytes with SHA-256; do not hash an unspecified TOML-to-JSON
-conversion. A versioned writer produces stable key order, LF and no timestamps;
-equivalent hand-edited TOML may have a different object identity. This is safe.
-Unknown fields/versions fail closed. Bound metadata to 1 MiB, chain depth to 64
-and total graph traversal to 10,000 objects before fetching blob bytes.
+Use a standard **OCI image manifest** as an artifact, following the
+[OCI image-spec](https://github.com/opencontainers/image-spec) version 1.1,
+Image Manifest, Content Descriptors and Image Layout sections. The JSON envelope
+has `schemaVersion = 2`, `mediaType = "application/vnd.oci.image.manifest.v1+json"`
+and `artifactType = "application/vnd.unemupc98.machine.v1"`. Its `config`
+descriptor points to the version-1 machine configuration TOML. `layers` lists
+exactly the closure of that configuration: every firmware blob, medium, disk
+base, sealed layer descriptor, sector pack, CMOS image and optional saved state
+reachable from it, including catalogue media that are not initially inserted,
+followed by the metadata blob and its artwork (§2.1). A manifest with a missing
+or an unreferenced descriptor is rejected. These are artifact payloads, not
+container filesystem tar layers.
 
-This is a schema sketch, not a copyable image. `<...>` stands for a full
-`sha256:` plus 64 lowercase hexadecimal characters. No host paths or URLs are
-stored. Every digest target also has a declared type and exact byte length in
-an object inventory, checked before decoding; duplicate/unused inventory entries
-and conflicting declarations are rejected. Firmware/media arrays retain order.
+| Media type | Role |
+|---|---|
+| `application/vnd.oci.image.manifest.v1+json` | Standard OCI manifest envelope. |
+| `application/vnd.oci.image.index.v1+json` | Standard OCI index for local image references. |
+| `application/vnd.unemupc98.machine.v1` | Manifest `artifactType`; identifies a whole machine. |
+| `application/vnd.unemupc98.machine.config.v1+toml` | Resolved hardware, firmware/media bindings, catalogues, selections and policies. |
+| `application/vnd.unemupc98.metadata.v1+json` | Versioned game/software catalogue, with independent metadata and launch commands per title. |
+| `image/png`, `image/jpeg` | Cover art and screenshots referenced from the metadata blob. |
+| `application/vnd.unemupc98.firmware.v1` | Exact system BIOS, video BIOS, option ROM or individual chip/container bytes. |
+| `application/vnd.unemupc98.disk.base.v1` | Complete raw fixed-disk base. |
+| `application/vnd.unemupc98.disk.layer.v1+toml` | Sealed fixed-disk layer descriptor from §4. |
+| `application/vnd.unemupc98.disk.sectors.v1` | Sector pack referenced by a sealed layer. |
+| `application/vnd.unemupc98.media.floppy.v1` | Complete raw floppy medium. |
+| `application/vnd.unemupc98.media.optical.v1` | Reserved: complete read-only optical image with 2048-byte sectors; rejected until supported. |
+| `application/vnd.unemupc98.cmos.v1` | Frozen 64-byte CMOS image. |
+| `application/vnd.unemupc98.machine.state.v1` | Reserved opaque saved state; rejected until supported. |
+
+A compressed binary payload appends `+zstd` to its media type. Codec support
+must land before any phase C multi-gigabyte image is pushed; its multi-gigabyte
+bases must use `+zstd` (§5.1). OCI
+`digest` and `size` always describe the stored bytes, compressed when applicable;
+the machine format must additionally declare and verify decoded length and full
+SHA-256 before use. Compression never weakens full-base verification. Metadata
+stays uncompressed in version 1. OCI treats payloads as opaque bytes; FAT-aware
+inspection, deduplication and compression belong only in our media tools.
+
+This is an abbreviated schema sketch, not a copyable image. `<...>` stands for
+a full `sha256:` plus 64 lowercase hexadecimal characters; sizes are illustrative.
+Every payload, including transitive layer parents and sector packs, needs its
+own OCI descriptor so an ordinary registry client can copy the complete image.
+
+```json
+{
+  "schemaVersion": 2,
+  "mediaType": "application/vnd.oci.image.manifest.v1+json",
+  "artifactType": "application/vnd.unemupc98.machine.v1",
+  "config": {
+    "mediaType": "application/vnd.unemupc98.machine.config.v1+toml",
+    "digest": "<machine-config>",
+    "size": 2048
+  },
+  "layers": [
+    {
+      "mediaType": "application/vnd.unemupc98.firmware.v1",
+      "digest": "<system-bios>",
+      "size": 65536,
+      "annotations": {
+        "org.opencontainers.image.title": "assets/system.bin",
+        "org.unemupc98.redistribution": "user-supplied"
+      }
+    },
+    {
+      "mediaType": "application/vnd.unemupc98.disk.layer.v1+toml",
+      "digest": "<sealed-disk-layer>",
+      "size": 512,
+      "annotations": {
+        "org.unemupc98.redistribution": "user-supplied"
+      }
+    }
+  ],
+  "annotations": {
+    "org.opencontainers.image.title": "DOS lab",
+    "org.opencontainers.image.base.digest": "<previous-machine-image>"
+  }
+}
+```
+
+Annotations are string values and never bind anything:
+
+| Annotation | Meaning |
+|---|---|
+| `org.opencontainers.image.title` | On a descriptor: optional logical name for generic OCI tools. On the manifest: a preview title for registry browsing. Informational only. |
+| `org.opencontainers.image.base.digest` | Manifest only: image digest this image was derived from. Provenance; never needed to run and never a reason to download an older image. |
+| `org.unemupc98.redistribution` | `open` or `user-supplied`; absent evidence defaults to user-supplied. |
+| `org.unemupc98.license` | Reviewed SPDX licence expression for open content. |
+| `org.unemupc98.provenance` | Publish-safe evidence supporting the open classification. |
+
+The config is the single authority for bindings, slots, catalogue order and
+media heads; layer descriptors (§4) are the single authority for parents.
+Because no annotation repeats those facts, there is nothing to disagree with.
+Identical bytes appear once in `layers`, however many bindings name them.
+Redistribution marks also apply to the config and metadata descriptors; a
+blob's effective class is the most restrictive one recorded for its digest in
+any local manifest. The writer emits `layers` in config traversal order, then
+metadata and artwork, so the same content always gives the same manifest bytes.
+`layers` enumerates the closure; per-medium heads and parents determine disk
+reconstruction, not one global disk stack.
+
+The config TOML is a bundle envelope, with `schema = 1` and a `[machine]` table
+containing flattened hardware. It holds only what the guest can observe: no
+name, tag, history or catalogue metadata. Its remaining tables retain the
+following model:
 
 ```toml
 schema = 1
-kind = "machine-image"
-name = "dos-lab"
-config = "<resolved-machine-toml>"
-# Provenance only: config is complete without consulting the parent manifest.
-parent_image = "<previous-machine-image>"
 
-[[objects]]
-id = "<resolved-machine-toml>"
-kind = "machine-config"
-bytes = 2048
-redistribution = "open"
-license = "AGPL-3.0-or-later"
-# Other references below each require their own inventory record.
+[machine]
+# Resolved schema-1 machine fields; hardware details omitted in this sketch.
+schema = 1
 
 [[firmware]]
 key = "system-bios"
 source = "assets/system.bin"
-blob = "<user-supplied-bios>"
-# Split chips use separate source/blob bindings; config retains lane and offset.
+blob = "<system-bios>"
+# Split chips use separate source/blob bindings; machine retains lane and offset.
 
 [[media]]
 id = "boot"
@@ -125,34 +225,54 @@ head = "<raw-64-byte-cmos>"
 # compatibility = "<emulator-cpu-device-config-media-identity>"
 ```
 
-The inventory includes the transitive closure of config, firmware, raw bases,
-layer descriptors and sector packs, CMOS and saved state. Each entry declares
-`redistribution = "open" | "user-supplied"`; only open entries carry a reviewed
-SPDX licence expression and provenance. Names never imply permission.
-`parent_image` is optional provenance, not hardware inheritance or a requirement
-to download obsolete machine images. Traverse it for history only, not for run.
+SHA-256 identifies exact stored bytes, including the JSON manifest and UTF-8 TOML;
+never hash an unspecified TOML-to-JSON conversion. A versioned writer produces
+stable key order, LF and no timestamps; a hand-edited equivalent config is a
+different machine digest. Check each descriptor's digest and exact byte length
+before decoding. Unknown fields or versions in the manifest, config or layer
+descriptors fail closed; the metadata blob degrades instead (§2.1). Bound each
+manifest, config, layer descriptor and metadata blob to 1 MiB, each artwork blob
+to 4 MiB, chain depth to 64 and graph traversal to 10,000 objects before
+fetching payload bytes.
 
 ### Resolved hardware and media bindings
 
-`config` is a flattened schema-1 machine TOML, with no `extends` or host endpoints.
-Use the current resolver first, preserving board/card order, defaults, RTC start,
-CPU/FPU, memory, ROM addresses/services, split-chip assembly and drive geometry.
+`config.machine` is a flattened schema-1 machine TOML, with no `extends` or host
+endpoints. Use the current resolver first, preserving board/card order, defaults,
+RTC start, CPU/FPU, memory, ROM addresses/services, split-chip assembly and drive
+geometry.
 Replace image paths with unique relative logical names (`assets/...`); these
 names are looked up only in manifest bindings, never opened on the host.
 Reject absolute paths, `..`, duplicate names, unresolved sources and unbound blobs.
 This requires a future bundle loader; the current file CLI does not resolve it.
 
-Config owns hardware and firmware mapping; manifest owns media content and initial
-selection. Config drive entries keep controller, unit/type/geometry but omit
-`image`, `sha256`, `media`, `empty`, `write`, `journal` and `keep_generations`.
-Config NVRAM retains derived/blank without a manifest NVRAM table, or an image
-with its logical name; image/journal policy belongs to the manifest table.
-This **bundle-config profile** is
-not a standalone machine file: the loader fills these holes from the manifest
+The config envelope separates hardware/firmware mapping in `machine` from media
+content and initial selection in its bundle tables. Config drive entries keep
+controller, unit/type/geometry but omit `image`, `sha256`, `media`, `empty`,
+`write`, `journal` and `keep_generations`.
+Machine NVRAM retains derived/blank without a bundle NVRAM table, or an image
+with its logical name; image/journal policy belongs to the bundle table.
+This **bundle-config profile** is not a standalone machine file: the loader
+fills these holes from the bundle tables and OCI payload descriptors
 before the existing lowering/validation path. No new hardware schema is invented.
 ROM `image` names bind to `firmware.source`; hashes pin whole containers/chips,
 with assembled BIOS pins retained when present. Catalogue compatibility and
 firmware services still come from the existing catalogue and assembly checks.
+
+Existing machine-file fields map to this envelope as follows:
+
+| Machine-file field | Image representation |
+|---|---|
+| `schema`, board/CPU/memory, ordered `card` entries and RTC `start` | Resolved under `config.machine`; preserve defaults and order. |
+| `extends` and source origins | Resolve at import; no runtime inheritance or source paths. |
+| Firmware `image`/`sha256`, chip lanes/offsets, ROM mapping and services | Logical `assets/...` names in `machine`, exact firmware digest in bindings/OCI descriptors; preserve mapping and assembly pins. |
+| Drive controller/unit/type/geometry | Hardware stays in `machine`; matching `slots` tables bind content. |
+| Drive `image`/`sha256` and ordered `media` catalogue | `media` entries point to content heads; `slots.catalogue` preserves order and `inserted` records the initial choice. |
+| Drive `empty` | Omit `slots.inserted`; never infer medium zero. |
+| `write`, `journal`, `keep_generations` | Image policy is `readonly`, `volatile` or `journal`; journal paths and retention settings stay local in the workspace. |
+| `[board.rtc].nvram` | Derived/blank remains hardware config; image/journal forms bind a CMOS blob in `nvram`, with workspace-local writes. |
+
+No host paths, registry endpoints or credentials are stored in the image.
 
 Require exact agreement between slot bindings and config drive positions. Units
 mean controller-local FDC unit or IDE master=0/slave=1; array order cannot change
@@ -167,38 +287,166 @@ Media policies are `readonly`, `volatile` or `journal`, matching today's modes.
 Volatile writes stay workspace-local in memory and are lost on close; only
 journaled workspace media offer crash recovery. Do not silently upgrade policy.
 
+### 2.1. Game and software metadata
+
+Rich catalogue metadata belongs in version 1, even for a purely local library.
+Each machine manifest lists one JSON blob of type
+`application/vnd.unemupc98.metadata.v1+json`. It never reaches the emulator core
+and is not part of the machine digest. Metadata and artwork are ordinary blobs
+in the image manifest. Materializing an edit writes new small metadata/artwork
+blobs and a manifest with a new image digest; the machine digest and existing
+config, firmware and disk blobs stay unchanged.
+
+Library edits stay in a **local overlay** in `local/library.toml`, keyed by the
+source image digest, until the user publishes them as a new version or tag.
+The original image and any pushed version tag stay unchanged (§5.1); nothing is
+automatically pushed. New artwork blobs referenced by an overlay are GC roots.
+Publishing applies the overlay, verifies the new closure and creates the new
+image/tag; active workspaces still pin the same machine digest.
+
+The JSON envelope is `{"schema": 1, "labels": [...], "titles": [...]}`. `labels`
+are the image-level labels that travel with the image. A machine may contain
+zero, one or several titles; every record has a stable unique `id` and required
+`title`. Other fields are optional; absent means unknown, and arrays retain all
+values. A reader that meets a newer `schema` still runs the image, shows what it
+understands read-only and never rewrites that blob.
+
+| Per-title fields | Schema v1 form |
+|---|---|
+| `title`, `sort_title`, `series` | Strings; sort title permits ignoring articles without changing the displayed title. |
+| `genres`, `developers`, `publishers` | Arrays of strings; multiple genres and credited companies are supported. |
+| `platform` | One of `DOS`, `Windows 3.x`, `Windows 9x`, `other`. |
+| `release_year`, `players` | Integer year; players is `{ "min": 1, "max": 2 }` with positive bounds and min <= max. |
+| `languages`, `regions` | Arrays of strings. |
+| `description`, `version`, `edition`, `source_media` | Strings; source media may read `4 x 1.2M floppies`. |
+| `tags` | Array of free-form tags that travel with the image. |
+| `cover`, `screenshots` | One artwork blob digest and an ordered array of them; each is listed in the manifest `layers`. |
+| `launch` | Optional object with `profile`, guest `program` path, `arguments` string array and `working_directory` path. |
+
+Personal `user_rating` (optional integer 0–5) and free-text `notes` live only in
+`local/library.toml`, associated with the library entry and stable title id.
+They are absent from the metadata blob, archives and pushes; editing them never
+creates an image revision or triggers a push.
+
+Suggested genres: action, adventure, RPG, strategy, simulation, sports, racing,
+puzzle, platformer, shooter, educational, demo and utility. This is a suggestion
+list, not a closed vocabulary; free genres are allowed.
+
+Each title can offer its own **Play “Title”** action while sharing one image and
+workspace. A launch is **host input, not machine content**: it compiles to a
+deterministic input script, the same kind of input as recorded keystrokes, so it
+never edits a disk and never changes the machine digest. A run is a function of
+the machine digest, the workspace's media state and the input script; a test
+that uses a launch pins the script bytes, not the metadata blob.
+
+`launch.profile` names a boot profile. Title launch is **DOS only now**, through
+`dos-prompt`; storing Windows title metadata does not enable launching it.
+A profile waits for a guest-observable condition, for example the keyboard
+buffer being polled while empty with a prompt on the text cursor row, sampled at
+retired-instruction boundaries through the observation seam. It then types the
+drive change, `CD` and the command line as scancodes at fixed instruction
+spacing. There are no wall-clock sleeps and no fixed boot delays, so a workspace
+whose disk has changed boots along a different path and still reaches the same
+condition. If the condition does not appear within a fixed instruction budget,
+scripting stops, the machine keeps running and the status bar says the launch
+was not performed. Paths are guest paths, never host commands, limited to
+characters the profile can type on the US layout. The command names files in
+this image's heads; a diverged workspace may no longer have them, which shows as
+an ordinary guest error. Phase C Windows launches use typed input too, such as
+Start > Run keystrokes, through a Windows-specific profile at deterministic
+input boundaries. There is no guest-side helper device. Without a supported
+profile, offer ordinary boot; this design does not claim launch support already
+exists.
+
+**Artwork travels inside the image.** Covers and screenshots are PNG/JPEG blobs
+listed in the manifest and referenced from title records by digest. An ordinary
+push, pull or archive carries them, with no dependency on a registry's Referrers
+API. The library and the registry browser fetch them lazily, without the disks;
+missing optional artwork never blocks Run. Cover edits follow the local-overlay
+and explicit-publication rule above; publishing gives a new image digest for
+the same machine digest. Artwork and metadata follow the same private/public
+blob policy as other content.
+OCI referrers remain a possible later extension; version 1 does not use them.
+
+Genre, Platform, Year, Developer, Publisher and Series become Explorer tree
+facets. Index them per title in the local summary cache, together with a compact
+search index covering **all text fields**, including description, notes and tags.
+Match facets on the same title record, then group matching titles under their
+repository/tag so a multi-title image remains one stored machine. The cache uses
+the metadata digest plus local overlay/personal-field revisions for invalidation
+and retains lazy bounded rebuilds (§7).
+Optional eXoDOS catalogue and LaunchBox XML import is future work only.
+
 ## 3. Content-addressed store, tags and local workspaces
+
+The local store follows the role of `/var/lib/docker`: one application-owned
+root, selectable in Preferences. Defaults are:
+
+- macOS: `~/Library/Application Support/unemupc98/`.
+- Linux per-user: `$XDG_DATA_HOME/unemupc98/`, falling back to
+  `~/.local/share/unemupc98/` when `XDG_DATA_HOME` is unset or empty.
+- Linux optional future system service: `/var/lib/unemupc98/`.
+
+The root must be on a local filesystem with working advisory locks, atomic
+rename and `fsync`. The library probes locking when it opens a store and refuses
+a root where it fails. A successful probe never permits a network filesystem:
+the local store is always local. The registry may live anywhere and manages its
+own storage, including an NFS backend (§5.1).
+
+Inside that root, `images/` follows the OCI image-spec, Image Layout. Writable
+workspaces and local metadata live beside the OCI layout, outside its
+content-addressed area:
 
 ```text
 <store>/
-  objects/sha256/ab/cdef...       immutable bytes, full digest split 2 + 62
-  tags/dos-lab/1.0.toml          digest of a machine-image manifest
-  workspaces/play-001/           mutable host state, never image content
-    session.toml                pinned manifest, per-medium heads and policies
-    media/system.upfj           current single-writer journal
-    media/cmos.upfj              independent NVRAM journal
-    transaction.toml            recoverable publication intent
-  local/blob-index.toml          digest -> local file hints, permissions, licence
-  local/library.toml             last run, favourites, labels, UI preferences
-  staging/                      unpublished files; not GC roots
+  store.toml                      store layout version; a newer one is refused
+  images/
+    oci-layout                    {"imageLayoutVersion":"1.0.0"}
+    index.json                    OCI index: one manifest descriptor per local tag
+    blobs/sha256/<hex>            immutable bytes; full 64-character digest
+  workspaces/play-001/            mutable host state, never image content
+    session.toml                  pinned machine and image digests, heads, policies
+    workspace.lock                exclusive owner for runs and offline mutations
+    media/system.upfj             current single-writer journal
+    media/cmos.upfj               independent NVRAM journal
+    transaction.toml              recoverable publication intent
+  cache/materialized/<hex>        flattened chain heads (§4); rebuildable
+  cache/summaries/                library summaries and search index; rebuildable
+  local/blob-index.toml           build-time source hints, redistribution class, licence
+  local/library.toml              metadata overlays, personal fields, last run, favourites
+  local/pulls/<hex>.toml          unfinished pull or import: source and manifest digest
+  locks/store.lock                shared operation leases; exclusive for GC
+  locks/index.lock                short exclusive tag/index updates
+  staging/                        temporary files; not GC roots
+  quarantine/                     blobs that failed verification
 ```
 
-Hash and length-check imported bytes, write a sibling temporary file, synchronize,
-verify the written file, then publish without clobbering and synchronize the
-directory. An existing object must verify before reuse. Base verification covers
+Imported bytes are copied into the store through the publication sequence in
+§3.1; never link a mutable user file into it or require an external descriptor
+at run time. User source files remain unchanged. Base verification covers
 **every byte, including large hard disks**; preserve mounted descriptor identity
-and mutation checks from persistent media. A filename/digest cache cannot replace
-verification. Never link a mutable user file into the immutable object store.
-Local copy or verified external descriptor access is explicit; external sources
-must remain unchanged while mounted and are never written by the emulator.
+and mutation checks from persistent media. For now, **every Start performs full
+SHA-256 verification**, including every multi-gigabyte base and any materialized
+chain head; a filename/digest cache cannot replace it.
 
-Tags are mutable local references; digests are immutable identities. Resolve a
-tag once at launch and pin that digest for the session. Tag replacement uses
-an expected-old-digest check and atomic durable publication. Branching creates a
-new tag/workspace without editing the parent. Start with local tags and explicit
-bundle archives; remote registry discovery/authentication is separate work.
-Names, tags and workspace/media ids use `[a-z0-9][a-z0-9._-]{0,63}`; reject path
-separators and duplicates. Digests, not user strings, determine object paths.
+A **planned change after phase C measurements** is verify-at-ingest plus an
+explicit **Check store** command, replacing repeated full hashing at Start.
+Ingest and Check store will still hash every byte, including large hard disks;
+this optimization is not active now and does not change mutation checks.
+
+Tags are mutable references in `index.json`, using
+`org.opencontainers.image.ref.name` on manifest descriptors, for example
+`dos-lab:1.0`. A local reference is `repository:tag` without a registry host;
+which registry a repository is pushed to is host configuration (§5.1). Digests
+are immutable identities. Resolve a tag once at launch and pin the result for
+the session. Unpublished local tag replacement uses compare-and-swap under the
+index lock (§3.1). References tracking pushed version tags retain their published digest;
+metadata/artwork edits use the library overlay until publication under a new
+version or tag. Moving remote aliases follow the force policy in §5.1.
+Branching creates a new tag/workspace without editing the parent.
+Workspace/media ids use `[a-z0-9][a-z0-9._-]{0,63}`; reject path separators and
+duplicates. Tags are index metadata, never host paths; validated SHA-256 digests
+alone determine blob paths. Explicit bundle archives preserve this OCI layout.
 
 Deduplication is exact object reuse: identical raw bases and identical sector
 packs occupy one object each, also across tags/bases. Sector packs can be reused
@@ -207,9 +455,64 @@ of deduplication for similar but nonidentical whole bases; chunking is deferred.
 Library size is the distinct reachable byte total, excluding working journals;
 savings compare it with the sum of each image's reachable size counted separately.
 Show exclusive bytes and estimated reclaim separately from virtual disk capacity.
-Deleting a tag removes a reference, not shared objects. GC marks tags, workspaces,
-archives being created, saved states and active-run pins under a store lock;
-recheck roots before sweeping. Never collect another image's shared base.
+
+Deleting a tag removes a reference, not shared objects, and never a workspace.
+GC roots are local tags, workspaces (their pinned image and current heads),
+unfinished pulls, local metadata/artwork overlays, open transactions and
+archives being written. A workspace
+whose tag was deleted or moved keeps its pinned image alive and is shown as
+detached. A materialized base is kept while a workspace uses it. GC is always
+an explicit action; it marks, rechecks roots, then sweeps, under the exclusive
+store lock.
+
+### 3.1. Concurrent access and failure handling without a daemon
+
+The GUI and CLI use the store library directly, including when several processes
+share a store. Immutable blobs are published from unique temporary files on the
+same filesystem: write, verify the complete digest/length, `fsync` the file,
+rename atomically without replacing an existing blob, then `fsync` the directory.
+If another writer has published the digest first, verify that blob and discard
+the temporary file. Readers see complete immutable bytes; they never open staging
+files. Downloads and hashing run outside the short index lock.
+
+Tag/index changes take an advisory exclusive lock on `locks/index.lock`, reread
+the current index, and compare-and-swap the target tag against its expected old
+digest (or expected absence). A mismatch returns a conflict, not a lost update.
+Publish the replacement index via temporary file, `fsync`, rename and directory
+`fsync`, preserving unrelated tags. Updates to `local/` files use the same short
+lock to avoid overwriting another process's changes.
+
+Each writable workspace has a stable `workspace.lock` file. The process running
+it holds an exclusive advisory lock for its entire run and journal finish; a
+second window or CLI run must choose another workspace or wait. Mutating stopped
+workspace tools take the same lock. The library also rejects a second owner
+within one process, so multiple GUI windows cannot bypass workspace ownership.
+Every store operation, including pull and push, first acquires a shared lease on
+`locks/store.lock`; a workspace owner retains that lease until releasing its
+workspace lock. GC takes the store lock exclusively, so it cannot run while any
+run or transfer is active, and nothing new starts during GC. Lock order is store
+lease, workspace lock if needed, then index lock; never wait for a workspace
+while holding the index lock. Release shared leases before requesting exclusive
+GC ownership.
+
+Operating-system advisory-lock liveness determines ownership: the kernel
+releases locks when the owning process exits. A leftover lock file does not mean
+a live owner, and a PID alone is not evidence that a lock is stale. Never unlink
+a live lock file or replace its inode to bypass a lock.
+
+| Event | Behaviour |
+|---|---|
+| Pull or import interrupted | No tag is written. Verified blobs stay, rooted by the `local/pulls` record; the library lists the image as incomplete with Resume and Remove. Resume fetches only missing blobs and continues a partial blob by HTTP range where the registry allows. |
+| Push interrupted | The remote tag is written last, so the registry holds the old tag or the complete new image, plus unreferenced blobs for its own GC. A retry uploads only what is missing. |
+| Disk full | Check free space against the known descriptor sizes before pull, materialize, seal and export. A failed write removes its temporary file and publishes nothing. During a run a full disk is a journal host error: execution stops with the persistence error ([Persistent media](persistent-media.md), §Host errors and determinism). |
+| Lock holder crashes | The next opener takes the stable lock first, then runs journal tail recovery and completes or rolls back `transaction.toml`, verifying staged data. GC removes `staging/` files, which no live lease can own while it holds the store lock. |
+| Blob fails verification | Move it to `quarantine/`, mark every image and workspace that needs it as damaged and block their Start. Repair fetches the digest again from a registry or re-imports the source. Nothing is deleted automatically and no substitute is accepted. |
+| Local tag race | Compare-and-swap conflict; the loser learns the current digest. Both manifests exist, so nothing is lost. |
+| Remote tag race | OCI has no tag compare-and-swap; see §5.1. |
+| Newer store or workspace schema | Refuse to write; never rewrite a format this build does not know. |
+
+These are proposed local-store contracts, requiring concurrency and crash
+injection tests on synthetic blobs before implementation is ready.
 
 ## 4. Disk chains and writable sessions
 
@@ -217,7 +520,10 @@ A raw base is immutable bytes with full SHA-256 and geometry. A sealed layer is
 an immutable TOML descriptor: `schema`, `kind = "disk-layer"`, `parent` (raw base
 or sealed layer digest), `base` (root raw digest), `geometry`, `sectors` (sector
 pack digest), `sector_count` (number of replacements), and `result_sha256`
-(digest of the complete reconstructed disk). All sizes must agree with the root.
+(digest of the complete reconstructed disk) and `capacity_sectors`, so capacity
+never depends on a CHS translation. All sizes must agree with the root.
+Layers apply to fixed disks only: a changed floppy or CMOS freezes to a new
+complete raw blob. There are no sector layers for floppies.
 A sector pack is ascending unique records of `u64le LBA + 512 data bytes`, no
 header/padding; its exact length is `sector_count * 520`, bounded by capacity.
 LBA bounds, digest and length are checked before use. Empty packs are allowed.
@@ -226,8 +532,9 @@ Sealing emits only final sectors differing from the exact parent; command histor
 and recovery generation markers stay in the local journal, outside the layer.
 
 Read order is writable sparse overlay -> newest sealed layer -> earlier layers
--> raw base, through **one `SectorMedia` adapter**. Controllers never see a chain
-or host path. Resolve and verify parents before executing; reject cycles, missing
+-> raw base, through **one `SectorMedia` adapter**, which merges the chain into
+one LBA index at mount so read cost does not grow with depth. Controllers never
+see a chain or host path. Resolve and verify parents before executing; reject cycles, missing
 objects and wrong parents/geometry. `result_sha256` is verified by streaming the
 complete reconstructed disk before mount or publication, independently of object
 hash checks. Hashing is host preparation; it cannot grant guest instructions.
@@ -239,17 +546,22 @@ a new complete machine manifest, even if all disk heads remain unchanged.
 
 A workspace pins every media head and holds mutable journals separately. Current
 version-1 journals bind a raw base's length/hash, not a chain: **do not relabel a
-v1 header to mean a layer hash**. Initially materialize a verified new raw base
-from the chain and use the current v1 journal unchanged. This costs space and
-full-image I/O. A later versioned journal binding may name a chain head plus its
-full logical digest/capacity; its scanner retains command/recovery guarantees.
-Both paths use the same overlay interface and always leave the old base intact.
+v1 header to mean a layer hash**. Initially materialize the chain head once as a
+verified immutable raw file, `cache/materialized/<result_sha256>`, and use the
+current v1 journal unchanged on top of it. Every workspace on that head,
+including each disposable gaming-mode workspace, shares the one file, so the
+materialization cost is one flat copy per distinct head, not per workspace or
+per run. Full SHA-256 verification still runs at every Start (§3), including
+for this shared cache file. A head that is itself a raw base needs no copy. A later
+versioned journal binding may name a chain head plus its full logical
+digest/capacity; its scanner retains command/recovery guarantees. Both paths
+use the same overlay interface and always leave the old base intact.
 
 | Action | Proposed behavior |
 |---|---|
 | Start | Resume a selected local workspace, or create one from the pinned image. Readonly media reject writes; journal media get explicit private paths. |
 | Gaming mode | Create an isolated disposable workspace for every writable disk/catalogue medium and CMOS; never reuse the regular journals. On exit ask keep as a new image or discard. No automatic discard after a crash. |
-| Save as layer… (commit layer) | Stop the machine, finish all active media, seal each changed overlay into a parent-bound layer and publish a complete new manifest/tag. Parents remain unchanged. |
+| Save as layer… (commit layer) | Stop the machine, finish all active media, seal each changed fixed-disk overlay into a parent-bound layer, freeze each changed floppy or CMOS to a new raw blob and publish a complete new manifest. Media without changes keep their head. The user names a new version/tag or moves an eligible unpublished local tag by compare-and-swap; pushed version tags remain immutable. Parents remain unchanged; the workspace then pins the new image and starts fresh journals. |
 | Discard changes | Stop and release writers, then remove only this workspace's changes after showing affected media. The pinned image still exists. |
 | New image from here… | Select a complete historical manifest and fork a workspace at all of its heads; picking only one disk is an explicit advanced operation with a mismatch warning. |
 | Export new base | Stream the selected chain into a new raw file, verify it, and publish without replacing any original. This is the existing media-tool meaning of commit/compact. |
@@ -264,8 +576,8 @@ There is no atomic multi-medium checkpoint today. Initial image publication is
 parked media, then freeze every head. Stage objects and an intent recording old
 and proposed manifest digests, publish all objects, then atomically replace the
 single tag pointer as the image's publication point. Updating the workspace pointer
-is a separate idempotent transaction step; both roots remain pinned until recovery
-finishes. Failure leaves an old or complete new image plus recoverable journals; startup
+and retiring its old journals is a separate idempotent transaction step; both
+roots and the old journals remain until it is durable. Failure leaves an old or complete new image plus recoverable journals; startup
 offers retry/inspect, never a silently mixed machine. Partial published objects
 are harmless unreferenced data. This is a proposed transaction requiring crash
 injection tests, not a measured power-loss guarantee or a guest-consistent save.
@@ -279,32 +591,119 @@ tuple without the enclosing manifest/state pointer to avoid self-reference;
 incompatibility offers a cold boot without
 the state, never an approximate restore. Saving media alone is not a snapshot.
 
-## 5. User-supplied blobs, pull and export
+## 5. Self-contained images and blob policy
 
-Proprietary firmware, OS media, derived disks and layers are user-supplied and
-identified by SHA-256 only in shared manifests. Never publish their bytes, names
-of private installations, source paths, screen captures or credentials. A layer
-containing copied proprietary sectors is restricted even if its parent is omitted.
-New content is user-supplied by default; export permission requires explicit,
-reviewed evidence. Restricted inputs propagate that classification to derived
-content unless a separate review establishes redistributable content.
+A private image includes **everything needed to run**: firmware (BIOS, video
+BIOS and option ROMs), resolved machine configuration, every disk base/layer and
+sector pack, complete media catalogues and their media, CMOS and any selected
+saved state. The user's private store and private registry may hold proprietary
+bytes. The repository
+still never contains proprietary blobs, derived proprietary sectors, private
+installation names, source paths, screen captures or credentials.
 
-Proposed `pull`: import the manifest/open objects, enumerate unresolved hashes,
-then let the user select folders to search. Hash complete candidate files and
-match digest plus length; filenames are hints only. Search is local and opt-in,
-with progress/cancel for large images. Never upload candidate bytes, folder lists
-or filenames. Split firmware is matched by individual chip/container identity;
-do not guess a match by assembled size. Store folder hints only in the local
-index. A missing required blob blocks Run and shows its role, digest and locate
-action; a missing saved-state blob permits an explicit cold boot.
+**Locate firmware** is a build-time action when creating or importing an image
+from user ROM folders. Search is local and opt-in, with progress/cancel; hash
+complete candidate files and match digest plus length, not filenames. Split
+firmware is matched by individual chip/container identity, never guessed by
+assembled size. Copy verified inputs into the store before completing the image.
+Store source-folder hints only in the local index. Running a complete image
+never searches those folders or depends on their continued existence.
 
-Export traverses the complete object graph, validates inventories and includes
-**only reviewed open blobs** with licence/provenance metadata. All restricted
-entries stay as hash/length/type references; derived layers and optional state
-are checked too. No mutable journals, local indexes or host paths leave the
-workspace. Export previews omitted objects and resulting run readiness. Metadata
-itself must be publish-safe. Hashes identify content, not ownership, licences or
-trusted publishers. Signed registries and remote transport are outside this spike.
+A tagged image is always complete (§3.1). A blob that later goes missing or
+fails verification is store damage: the library reports its role and digest,
+blocks Run and offers repair from a registry or by re-import. It never falls
+back to searching user folders. A damaged saved-state blob permits an explicit
+cold boot. New content
+is classified user-supplied by default. Restricted inputs propagate that
+classification to derived content unless separately reviewed; a layer containing
+copied proprietary sectors stays restricted even if its parent is omitted.
+
+Private push/pull and private OCI archive export preserve all blobs. Any future
+**public export** instead traverses the complete graph and strips every non-open
+blob, including derived layers and optional state. It records omitted digest,
+length, type and binding as user-supplied references in a separate export recipe;
+these references are not OCI payload descriptors claiming included bytes. Open
+blobs require reviewed SPDX licence/provenance evidence. Public metadata must
+itself be publish-safe. Preview omissions and explain that the public package is
+an incomplete recipe: the recipient supplies inputs at image-build/import time
+to create a complete private image. Never silently publish the private manifest
+or turn ordinary private pull into a runtime folder-matching workflow. Mutable
+journals, local indexes, source paths and credentials are never image payloads.
+Hashes identify content, not ownership, licences or trusted publishers.
+
+### 5.1. Private registry and optional daemon
+
+Push and pull use the
+[OCI distribution-spec](https://github.com/opencontainers/distribution-spec),
+Pull and Push sections, against an explicitly configured **private registry**.
+The registry may run anywhere: for example, on a Proxmox host with NFS storage
+behind the registry. This is separate from the always-local client store (§3):
+the registry manages its own blob storage and locking. Recommended registry:
+[zot](https://github.com/project-zot/zot), a small OCI-native registry with OCI 1.1
+`artifactType` and referrers support. Harbor and distribution/registry are
+alternatives; compatible Forgejo package registries remain usable too.
+
+**Before building transport**, a verification spike must pass using the `oras`
+CLI against the chosen registry: push and pull a synthetic artifact with our
+custom config/payload media types and a multi-gigabyte blob, verify the returned
+manifest/digests and record OCI 1.1 compatibility and size-limit results. This
+is a required gate, not measured compatibility or work performed by this note.
+
+Tags work like Docker, for example `dos-lab:1.0`. Pull resolves a tag to a
+manifest digest once, copies the complete descriptor closure, verifies every
+size and SHA-256 and only then writes the local tag (§3.1). Push checks image
+completeness and tag policy, uploads missing blobs by digest, then publishes
+the manifest and tag last. Uploads use chunked sessions and downloads resume
+by range. **`+zstd` support is required before any phase C multi-gigabyte image
+is pushed**, and its multi-gigabyte bases must be compressed; raw multi-gigabyte
+bases are not a temporary phase C upload path. Metadata remains uncompressed.
+The verification spike uses synthetic data and does not waive this gate.
+Identical blobs deduplicate by digest locally; cross-repository blob mounts are
+used when supported, otherwise the same verified bytes are uploaded. Physical
+registry deduplication is implementation-dependent, and the registry never
+interprets a filesystem. No registry service is bundled or deployed by this
+proposal.
+
+Registries are an explicit list in host configuration, each entry with a URL,
+a repository namespace and a `private` flag. The rules guard against publishing
+proprietary bytes by accident:
+
+- There is no default registry. An unqualified name resolves to the configured
+  registry or fails; it never falls back to a public service.
+- Push refuses a registry that is not in the list. An image containing any
+  user-supplied blob (the default classification) is pushed only to an entry
+  marked private. The first such push checks that anonymous access is refused
+  unless the entry explicitly opts into unauthenticated LAN access.
+- **TLS and authentication are the client defaults.** Plain HTTP and no
+  authentication each require a separate explicit per-registry LAN opt-in;
+  neither setting silently enables the other. The OCI distribution-spec itself
+  mandates neither TLS nor authentication; these are client policy.
+- Authentication and access policy belong to the registry and its identity
+  provider. Credentials come from the host credential store or a Docker-style
+  credential helper and never appear in images, the store, logs or diagnostics.
+- **Pushed version tags are immutable.** If a version tag already names another
+  image digest, refuse the push even with force; retrying the same digest is
+  idempotent. Publish changed machine content, metadata or artwork under a new
+  version or tag. Only explicitly designated `latest`-style moving aliases may
+  move, and every move requires explicit force. OCI has no tag compare-and-swap:
+  preflight-read the current digest, but do not claim this closes a remote race.
+  Enable registry-side version-tag immutability where available; a client
+  preflight alone cannot enforce it against concurrent writers.
+- Pull never rewrites a local reference tracking a pushed version. A conflicting
+  digest requires another local reference; a designated moving alias may move
+  only with explicit force. Workspaces are unaffected, because they pin digests.
+
+**No daemon is needed now**, for either a purely local library or registry
+push/pull. GUI and CLI call the same in-process store library directly. Its API
+owns image import/validation, store transactions, registry transfer, workspaces,
+machine lifecycle, locks, progress/cancellation and structured errors. A registry
+is optional; keeping every image locally is a complete supported workflow.
+
+Revisit an optional `unemupc98-daemon` only when machines must run headless on a
+server with remote viewing, remote control is wanted, or background GC is needed.
+If justified then, it is a thin local-socket/service wrapper around the same
+transport-neutral library API, with no duplicated storage or validation rules.
+It is not a planned dependency of the image store, library UI or registry client.
 
 ## 6. Capabilities API sketch: validator-owned choices
 
@@ -339,7 +738,8 @@ than enumerating every possible RAM size or UART base.
 A structured diagnostic carries `code`, `field_paths`, conflicting card ids,
 resource/range, severity and readable reason. For incomplete drafts, run every
 check whose prerequisites exist and mark the rest pending. Do not classify an
-option as forbidden just because unrelated required firmware is missing. For
+option as forbidden just because an unrelated required firmware blob is damaged
+or not yet imported. For
 complete configs the existing first-error API retains its order; an optional
 collecting adapter invokes the same checks in that order. Option states are
 `allowed`, `blocked`, or `pending` (for byte-dependent/missing inputs); pending
@@ -393,14 +793,51 @@ power, drive activity, CPU/rate, EMS and audio state; pointer capture/release is
 visible in status text. Indicators observe completed boundaries, never drive
 guest execution. View can hide the toolbar and status bar.
 
-When stopped, the client area shows a welcome pane, a machine list and details
-for the selected row. The list shows names, image tags and last run; details
-contain hardware, firmware readiness and the base/layer chain, with Start,
-Settings… and Layers… actions. Capacity, stored/exclusive bytes and dedup savings
-belong in these details and the library's store summary. Missing user-supplied
-firmware blocks Start and points to Tools › Locate firmware…. Last-run wall time
-is local library metadata only. Start, Enter or double-click replaces this same
-client area with the emulated screen and updates the title to the machine name.
+When stopped, the client area shows a welcome pane, the Machines view and details
+for the selected image. The library must remain usable with **1,000+ local
+images**, including stores with no configured registry. The Machines view is
+Explorer-like in the same classic Win32 style: a tree pane on the left with
+All machines, Recent, Favorites, user Labels/collections, the Genre, Platform,
+Year, Developer, Publisher and Series facets (§2.1) and, only when configured,
+Registry; a details list view fills the right pane. Sortable columns are name,
+tag, last run, size and labels. A search box filters all text fields incrementally.
+Group images by repository name, with tags as child rows, for example
+`dos-lab > 1.0, 2.0, gaming`. The list is virtualized: draw only visible rows.
+
+Startup reads the OCI index and the local summary cache, never every
+manifest. Cache name, tags, title, labels, stored size and last run, plus per-title
+facets and the text-search index (§2.1); key immutable summaries by manifest and
+metadata digests and version the cache schema. Index changes
+invalidate affected tag mappings; library-metadata revisions invalidate local
+labels/favourites/last-run, personal-field and overlay entries. Rebuild missing
+or stale summaries lazily from
+manifests in bounded batches after startup, prioritizing visible/selected rows;
+show pending values until ready. Continue until all stale entries are rebuilt.
+Warm-cache sorting and incremental search use summaries,
+without fetching payloads or rehashing disks. On a cold cache, search/sort results
+fill in as summaries are rebuilt rather than blocking startup on the whole
+library. Rebuildable size summaries never replace the current full hash check
+at every Start (§3).
+Labels, collections and favorites live in local metadata. Labels the user wants
+to travel with an image go in the metadata blob's `labels` (§2.1); edits stay
+in a local overlay until published as a new version/tag, giving a
+new image digest for the same machine. Local and travelling labels are combined
+for display and filtering. Personal ratings/notes always remain local (§2.1).
+
+The approved [main-window mock-up](mockups/main-window.html) shows the simple
+list. The Explorer-like library requires its own mock-up and maintainer approval
+before the library bead (`upc-5pw.9`) is implemented; this note changes no mock-up
+or accepted shell styling.
+
+Selected-image details contain hardware, firmware readiness and the base/layer
+chain, with Start, Settings… and Layers… actions. Capacity, stored/exclusive bytes
+and dedup savings belong in these details and the library's store summary.
+A damaged or missing blob blocks Start and offers repair; an unfinished pull is
+an incomplete row with Resume and Remove (§3.1). Tools › Locate firmware…
+supplies ROMs when building/importing an image.
+Last-run wall time is local library metadata only. Start, Enter or double-click
+on a tag row replaces this same client area with the emulated screen and updates
+the title to the machine name.
 Stop returns to the welcome/library view; it does not open a separate dashboard.
 Gaming mode uses the same transition with an isolated disposable workspace and
 the keep/discard behavior in §4, without a separate launcher view.
@@ -421,6 +858,19 @@ Actions open **classic modal dialogs** over the application window:
 - **Disk layers** shows the parent chain and writable changes alongside settings,
   firmware and other drive heads. Save as layer…, Discard changes and New image
   from here… use the complete-machine semantics in §4; saving stops the machine.
+- **Browse registry…** is a separate dialog opened from the configured Registry
+  tree node. It pages repositories and tags, offers search and pulls the selected
+  image into the local store. Use `/v2/_catalog?n=<count>&last=<repository>` where
+  supported and `/v2/<repository>/tags/list?n=<count>&last=<tag>`, following
+  pagination `Link` headers. Tag listing is in the OCI distribution-spec;
+  `_catalog` is the [Docker Registry HTTP API V2](https://github.com/distribution/distribution/blob/main/docs/content/spec/api.md)
+  repository-listing extension, not a required OCI distribution-spec endpoint.
+  Some registries, including Forgejo packages, do not expose `_catalog`; use
+  their package-listing API or accept a manually entered repository name.
+  Search filters fetched pages incrementally; use server-side search only when
+  the registry's own API supports it, and show when results are still partial.
+  Fetch titles lazily from the manifest title annotation for visible entries,
+  and the small metadata blob and cover for the selected one, never the disks. Ordinary local startup never browses a registry.
 - **Keyboard shortcuts** under Help lists both existing hotkeys and the new shell
   commands; **About** identifies the application and its components.
 
@@ -471,9 +921,14 @@ UI work and storage preparation never replace retired-instruction virtual time.
 Import an existing TOML/YAML machine through its current extends resolver and
 origin-aware loader; verify all bytes/hashes, flatten once, assign logical blob
 names and preserve effective device order, policies, slot order and catalogues.
-Review newly hash-pinned firmware/media and missing inputs before publishing a
-manifest. Existing files and CLI paths remain usable; import is opt-in and never
-rewrites source files, bases or journals. Re-export materializes each head to a
+Locate missing inputs during import, copy all firmware and media into OCI
+blobs, and include every catalogue medium, disk parent/sector pack and CMOS.
+Validate the full closure before publishing a self-contained OCI manifest and
+local tag; no imported image retains runtime dependencies on user folders.
+Existing files and CLI paths remain first-class; import is opt-in and never
+rewrites source files, bases or journals. The repository's tests and goldens
+keep using machine files with open fixtures and never need a store or a
+registry; store and transfer tests use synthetic open blobs in a temporary root. Re-export materializes each head to a
 new raw file and restores normal machine-file fields and fresh journal paths.
 
 For a v1 journal, stop/release its writer, verify the exact original base and
@@ -481,15 +936,32 @@ scan read-only using existing recovery rules. Interior corruption blocks import;
 interrupted tails require an explicit recovery choice on a private copy. Freeze
 a chosen closed/recovered generation into a new raw base first; keep the old
 journal/retention history as a local backup. A later verified conversion can
-create a sparse layer against the original base by comparing final sectors.
+create a fixed-disk sparse layer against the original base by comparing final
+sectors; floppies always freeze whole.
 Per-medium generation ids cannot become a synchronized machine snapshot. First
 import records the chosen generation separately for every disk/catalogue/CMOS.
+Copy the resulting bases and any verified converted layers into the OCI store;
+the image must run without the original journals, bases or firmware folders.
 
-No implementation, remote registry, signatures, chunk-level dedup, compression,
-encryption, qcow2 compatibility, sibling-layer merge, deterministic install
-recipes, live multi-disk transactions, new CPU/board, CD/DVD emulation or generic
-saved-state format is included. A reserved future field/button must stay disabled
+This note implements none of the image store, registry transport or daemon.
+Signatures, chunk-level dedup, encryption, qcow2 compatibility,
+OCI referrers, floppy sector layers,
+sibling-layer merge, deterministic install recipes, live multi-disk transactions,
+new CPU/board, CD/DVD emulation and a generic saved-state format remain excluded.
+Compression is planned and required before phase C image pushes (§5.1), while
+Windows typed-input launch profiles belong to phase C (§2.1).
+A reserved future field/button must stay disabled
 until its backend capability exists. Implementation proposals belong in the
 supervisor's tracker, not a second task list here. The shell appearance and
 egui/eframe choice are accepted in decision-24; the layer/journal codec rollout
 remains a review point. New GUI work requires an approved mock-up first.
+
+## 9. Open points for the maintainer
+
+All policy questions from the 2026-11-13 review are resolved in the sections
+above. Only these implementation gates remain pending:
+
+1. The chosen-registry `oras` verification spike with synthetic custom media
+   types and a multi-gigabyte blob must pass before transport work (§5.1).
+2. The Explorer-like library needs its own mock-up approval before implementation
+   of the library bead (§7).
