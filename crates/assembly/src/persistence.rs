@@ -14,6 +14,12 @@ use media::{JournalMedia, SinkFailure, SinkStatus, VerificationReport};
 
 use crate::{ConfigError, ImageSource, MachineConfig, WriteMode};
 
+struct Remount {
+    path: PathBuf,
+    base: Vec<u8>,
+    metadata: Option<std::fs::Metadata>,
+}
+
 enum Session {
     Active(Box<JournalMedia>),
     Finished(InMemoryMedia),
@@ -42,8 +48,12 @@ pub struct PersistenceHandle {
     pub(crate) ata_index: Option<usize>,
     session: Rc<RefCell<Session>>,
     status: SinkStatus,
+    maintenance: Option<media::MaintenanceFailure>,
     report: VerificationReport,
     nvram: Option<devices::cmos_rtc::NvramStore>,
+    remount: Option<Remount>,
+    ejected: bool,
+    pub(crate) floppy: Option<(crate::DeviceId, u8, usize)>,
 }
 
 impl PersistenceHandle {
@@ -81,11 +91,87 @@ impl PersistenceHandle {
                 ata_index: None,
                 session,
                 status,
+                maintenance: None,
                 report,
                 nvram: None,
+                remount: None,
+                ejected: false,
+                floppy: None,
             },
             adapter,
         ))
+    }
+
+    pub(crate) fn prepare_removable(
+        drive_index: usize,
+        path: &Path,
+        base: &[u8],
+        keep_generations: u32,
+        metadata: Option<&std::fs::Metadata>,
+    ) -> (Self, Box<dyn SectorMedia>) {
+        let session = Rc::new(RefCell::new(Session::Finished(InMemoryMedia::new(
+            base.to_vec(),
+            base.len() as u64 / 512,
+            false,
+        ))));
+        let adapter = Box::new(JournalAdapter(session.clone()));
+        let handle = Self {
+            drive_index,
+            keep_generations,
+            ata_index: None,
+            session,
+            status: SinkStatus::default(),
+            maintenance: None,
+            report: media::scan(&[], base, base.len() as u64).report,
+            nvram: None,
+            remount: Some(Remount {
+                path: path.into(),
+                base: base.to_vec(),
+                metadata: metadata.cloned(),
+            }),
+            ejected: true,
+            floppy: None,
+        };
+        (handle, adapter)
+    }
+
+    pub(crate) fn insert(&mut self) -> Result<(), crate::AssemblyError> {
+        let Some(remount) = &self.remount else {
+            return Ok(());
+        };
+        self.check().map_err(|e| {
+            crate::AssemblyError::Config(ConfigError::Journal {
+                drive_index: self.drive_index,
+                message: e.to_string(),
+            })
+        })?;
+        let (mounted, _) = Self::mount(
+            self.drive_index,
+            &remount.path,
+            &remount.base,
+            remount.base.len() as u64,
+            self.keep_generations,
+            remount.metadata.as_ref(),
+        )?;
+        let state = std::mem::replace(
+            &mut *mounted.session.borrow_mut(),
+            Session::Finished(InMemoryMedia::new(Vec::new(), 0, false)),
+        );
+        *self.session.borrow_mut() = state;
+        self.maintenance = self.maintenance_failure();
+        self.status = mounted.status;
+        self.report = mounted.report;
+        self.ejected = false;
+        Ok(())
+    }
+
+    pub(crate) fn eject(
+        &mut self,
+        machine: &mut machine::Machine<cpu::X86JitCpu>,
+    ) -> Result<(), PersistenceError> {
+        self.finish(machine)?;
+        self.ejected = true;
+        Ok(())
     }
 
     pub(crate) fn mount_nvram(
@@ -179,9 +265,12 @@ impl PersistenceHandle {
         self.status.failure()
     }
 
-    /// Maintenance diagnostics are separate from the guest-command error latch.
+    /// First maintenance diagnostic, retained across removable remounts and
+    /// separate from the guest-command error latch.
     pub fn maintenance_failure(&self) -> Option<media::MaintenanceFailure> {
-        self.status.maintenance_failure()
+        self.maintenance
+            .clone()
+            .or_else(|| self.status.maintenance_failure())
     }
 
     /// Recovery evidence from before mount repaired or sealed the tip.
@@ -202,7 +291,7 @@ impl PersistenceHandle {
 
     pub(crate) fn check_running(&self) -> Result<(), PersistenceError> {
         self.check()?;
-        if matches!(*self.session.borrow(), Session::Finished(_)) {
+        if !self.ejected && matches!(*self.session.borrow(), Session::Finished(_)) {
             return Err(PersistenceError {
                 drive_index: self.drive_index,
                 nvram: self.nvram.is_some(),
@@ -263,6 +352,7 @@ impl PersistenceHandle {
     ) -> Result<(), PersistenceError> {
         flush_ata(machine, std::slice::from_ref(self));
         self.check()?;
+        self.ejected = false;
         self.persist_nvram()?;
         let mut session = self.session.borrow_mut();
         let Session::Active(journal) = &*session else {
@@ -598,6 +688,145 @@ fn aliases(left: &Path, right: &Path) -> bool {
 mod tests {
     use super::*;
     use cpu::Cpu;
+
+    #[test]
+    fn floppy_media_journal_mock_bus_seals_releases_lock_and_reopens_overlay() {
+        use device::{Device, DmaOp, DmaOutcome};
+        use devices::{upd765::Drive, FloppyGeometry, Upd765};
+        let mut machine = crate::assemble(&crate::at_boot(vec![0xf4]))
+            .unwrap()
+            .machine;
+        let temp = crate::test_support::TempDir::new("floppy-eject-journal");
+        let path = temp.path().join("disk.upfj");
+        let base = vec![0x11; 1_474_560];
+        let (mut handle, media) = PersistenceHandle::prepare_removable(0, &path, &base, 10, None);
+        assert!(!path.exists(), "inactive journal must not be opened");
+        handle.check_running().unwrap();
+        handle.insert().unwrap();
+        let mut fdc = Upd765::with_drives([
+            Some(Drive::with_media(FloppyGeometry::HD1440, media)),
+            None,
+            None,
+            None,
+        ]);
+        fdc.port_write(0x3f2, 1, 0x1c).unwrap();
+        let mut bus = testkit::MockBus::new(Box::new(fdc));
+        for value in [5, 0, 0, 0, 1, 2, 1, 0x1b, 0xff] {
+            bus.port_write(0x3f5, 1, value).unwrap();
+        }
+        assert!(matches!(
+            bus.device_mut().take_dma_request().unwrap().op,
+            DmaOp::FromMemory { len: 512 }
+        ));
+        bus.device_mut().dma_complete(DmaOutcome::FromMemory {
+            bytes: vec![0x77; 512],
+            terminal_count: true,
+        });
+        for _ in 0..7 {
+            bus.port_read(0x3f5, 1).unwrap();
+        }
+        handle.eject(&mut machine).unwrap();
+        bus.device_mut()
+            .as_any_mut()
+            .unwrap()
+            .downcast_mut::<Upd765>()
+            .unwrap()
+            .eject(0)
+            .unwrap();
+        let scan = media::scan(&std::fs::read(&path).unwrap(), &base, base.len() as u64);
+        assert_eq!(scan.report.generations.len(), 1);
+        assert_eq!(
+            scan.report.generations[0].reason,
+            media::ClosingReason::SessionEnd
+        );
+        assert_eq!(&scan.image.unwrap()[..512], &[0x77; 512]);
+        let other =
+            JournalMedia::open(&path, &base, base.len() as u64, SinkStatus::default()).unwrap();
+        drop(other);
+        handle.check_running().unwrap();
+        handle.insert().unwrap();
+        bus.device_mut()
+            .as_any_mut()
+            .unwrap()
+            .downcast_mut::<Upd765>()
+            .unwrap()
+            .insert(0, 0)
+            .unwrap();
+        for value in [6, 0, 0, 0, 1, 2, 1, 0x1b, 0xff] {
+            bus.port_write(0x3f5, 1, value).unwrap();
+        }
+        let DmaOp::ToMemory(bytes) = bus.device_mut().take_dma_request().unwrap().op else {
+            panic!("READ DATA");
+        };
+        assert_eq!(bytes, vec![0x77; 512]);
+        bus.device_mut().dma_complete(DmaOutcome::ToMemory {
+            transferred: 512,
+            terminal_count: true,
+        });
+        handle.finish(&mut machine).unwrap();
+        let scan = media::scan(&std::fs::read(&path).unwrap(), &base, base.len() as u64);
+        assert_eq!(scan.report.generations.len(), 2);
+        assert_eq!(base, vec![0x11; 1_474_560]);
+    }
+
+    #[test]
+    fn floppy_media_reinsertion_preserves_retention_warning_from_eject() {
+        let mut machine = crate::assemble(&crate::at_boot(vec![0xf4]))
+            .unwrap()
+            .machine;
+        let temp = crate::test_support::TempDir::new("removable-retention-warning");
+        let path = temp.path().join("disk.upfj");
+        let base = vec![0; 512];
+        let (mut handle, mut media) =
+            PersistenceHandle::prepare_removable(0, &path, &base, 1, None);
+        handle.insert().unwrap();
+        media.write_batch(&[SectorWrite {
+            lba: 0,
+            bytes: [0x11; 512],
+        }]);
+        handle.eject(&mut machine).unwrap();
+        handle.insert().unwrap();
+        media.write_batch(&[SectorWrite {
+            lba: 0,
+            bytes: [0x22; 512],
+        }]);
+        handle.fail_retention("temporary write");
+        handle.eject(&mut machine).unwrap();
+        let warning = handle
+            .maintenance_failure()
+            .expect("retention warning latched on eject");
+        handle.insert().unwrap();
+        assert_eq!(
+            handle.maintenance_failure(),
+            Some(warning.clone()),
+            "reinsertion must retain the warning until the frontend can print it"
+        );
+        assert_eq!(media.read_sector(0), [0x22; 512]);
+        handle.eject(&mut machine).unwrap();
+        assert_eq!(handle.maintenance_failure(), Some(warning));
+    }
+
+    #[test]
+    fn floppy_media_journal_failed_eject_never_writes_a_clean_close() {
+        let mut machine = crate::assemble(&crate::at_boot(vec![0xf4]))
+            .unwrap()
+            .machine;
+        let temp = crate::test_support::TempDir::new("floppy-eject-error");
+        let path = temp.path().join("disk.upfj");
+        let base = vec![0; 1_474_560];
+        let (mut handle, mut media) =
+            PersistenceHandle::prepare_removable(0, &path, &base, 10, None);
+        handle.insert().unwrap();
+        handle.fail_output();
+        media.write_batch(&[SectorWrite {
+            lba: 0,
+            bytes: [0x77; 512],
+        }]);
+        assert!(handle.eject(&mut machine).is_err());
+        let scan = media::scan(&std::fs::read(&path).unwrap(), &base, base.len() as u64);
+        assert!(scan.report.generations.is_empty());
+        assert_eq!(media.read_sector(0), [0x77; 512]);
+    }
 
     fn nvram_config(dir: &Path, program: Vec<u8>) -> (MachineConfig, [u8; 64], PathBuf) {
         use sha2::{Digest, Sha256};
@@ -1024,6 +1253,7 @@ mod tests {
             .with_irq(cfg.irq()),
         );
         config.drives.push(crate::DriveConfig {
+            media: None,
             controller: crate::DeviceId::Ide,
             unit: 0,
             kind: crate::DriveKind::HardDisk {

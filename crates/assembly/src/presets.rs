@@ -226,6 +226,7 @@ fn fdc(ports: Vec<PortWindow>, irq: Option<u8>, dma_channel: Option<u8>) -> Devi
 /// CMOS. [`floppy_drive`] is the common single-drive, high-density default.
 fn floppy_drive_geo(image: ImageSource, geometry: FloppyGeometry, slot: u8) -> DriveConfig {
     DriveConfig {
+        media: None,
         kind: DriveKind::Floppy { geometry },
         image,
         controller: DeviceId::Fdc,

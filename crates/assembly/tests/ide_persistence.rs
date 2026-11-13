@@ -40,6 +40,7 @@ impl Disk {
                 .with_irq(cfg.irq()),
         );
         config.drives.push(DriveConfig {
+            media: None,
             controller: DeviceId::Ide,
             unit: 0,
             kind: DriveKind::HardDisk {

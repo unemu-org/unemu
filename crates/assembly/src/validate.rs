@@ -131,14 +131,70 @@ impl MachineConfig {
     /// Journal outputs additionally check canonical paths and
     /// existing file identities against mounted inputs and other outputs.
     pub fn validate(&self) -> Result<(), ConfigError> {
-        self.check_journal_modes()?;
+        let media = self.expanded_media()?;
+        let original_indices: Vec<_> = self
+            .drives
+            .iter()
+            .enumerate()
+            .flat_map(|(index, drive)| {
+                std::iter::repeat_n(
+                    index,
+                    drive.media.as_ref().map_or(1, |list| list.entries.len()),
+                )
+            })
+            .collect();
+        let original_drive = |mut error| {
+            match &mut error {
+                ConfigError::Journal { drive_index, .. }
+                | ConfigError::DriveInput { drive_index, .. } => {
+                    *drive_index = original_indices[*drive_index];
+                }
+                _ => {}
+            }
+            error
+        };
+        media.check_journal_modes().map_err(original_drive)?;
+        media.check_part_sources()?;
         self.validate_resolved()?;
-        crate::persistence::validate_paths(self)
+        crate::persistence::validate_paths(&media).map_err(original_drive)
+    }
+
+    pub(crate) fn expanded_media(&self) -> Result<Self, ConfigError> {
+        let mut expanded = self.clone();
+        expanded.drives.clear();
+        for (drive_index, drive) in self.drives.iter().enumerate() {
+            if let Some(list) = &drive.media {
+                if !matches!(drive.kind, crate::DriveKind::Floppy { .. })
+                    || (list.entries.is_empty() && !list.empty)
+                {
+                    return Err(ConfigError::Journal {
+                        drive_index,
+                        message: "media requires a floppy catalogue or an empty drive".into(),
+                    });
+                }
+                for medium in &list.entries {
+                    if let Some(actual) = medium.image.known_len() {
+                        if actual != drive.kind.image_bytes() {
+                            return Err(ConfigError::ImageGeometryMismatch {
+                                drive_index,
+                                expected: drive.kind.image_bytes(),
+                                actual,
+                            });
+                        }
+                    }
+                    expanded.drives.push(drive.with_medium(medium));
+                }
+            } else {
+                expanded.drives.push(drive.clone());
+            }
+        }
+        Ok(expanded)
     }
 
     // Journal source checks run before file resolution; repeat the remaining
     // checks on the exact loaded bytes without requiring those bytes to be files.
     pub(crate) fn validate_resolved(&self) -> Result<(), ConfigError> {
+        self.expanded_media()?;
         self.check_rtc_ram()?;
         self.check_part_sources()?;
         if self
@@ -187,7 +243,7 @@ impl MachineConfig {
 
     pub(crate) fn check_part_sources(&self) -> Result<(), ConfigError> {
         for drive in &self.drives {
-            if matches!(drive.image, crate::ImageSource::Interleaved(_)) {
+            if drive.media.is_none() && matches!(drive.image, crate::ImageSource::Interleaved(_)) {
                 return Err(ConfigError::FirmwareParts {
                     message: "drives cannot use parts".into(),
                 });
@@ -1118,6 +1174,9 @@ impl MachineConfig {
                     return Err(ConfigError::InvalidAtaGeometry { drive_index });
                 }
             }
+            if drive.media.is_some() {
+                continue;
+            }
             if let Some(actual) = drive.image.known_len() {
                 let expected = drive.kind.image_bytes();
                 if actual != expected {
@@ -1159,6 +1218,66 @@ mod tests {
     use crate::drive::{DriveConfig, DriveKind, FloppyGeometry, WriteMode};
     use crate::image::{ImageKind, ImageSource, LoadImage};
     use crate::memory::{MemoryConfig, MmioWindow, RamRegion};
+
+    #[test]
+    fn floppy_media_validation_reports_original_drive_indices_after_expansion() {
+        let temp = crate::test_support::TempDir::new("catalogue-diagnostics");
+        let base = temp.path().join("base.img");
+        std::fs::write(&base, vec![0; 1_474_560]).unwrap();
+        let mut config = crate::floppy_boot(vec![0xf4], vec![0; 1_474_560]);
+        config.drives[0].media = Some(crate::FloppyMediaList {
+            empty: false,
+            entries: (0..3)
+                .map(|_| crate::FloppyMedium {
+                    image: ImageSource::File(base.clone()),
+                    expected_sha256: None,
+                    write: WriteMode::ReadOnly,
+                    name: "base.img".into(),
+                })
+                .collect(),
+        });
+        let mut second = config.drives[0].clone();
+        second.unit = 1;
+        second.media = None;
+        second.write = WriteMode::journal(temp.path().join("second.upfj"));
+        config.drives.push(second);
+        assert!(
+            matches!(
+                config.validate(),
+                Err(ConfigError::Journal { drive_index: 1, .. })
+            ),
+            "journal-mode diagnostics must identify the original second drive"
+        );
+        config.drives[1].image = ImageSource::File(base.clone());
+        config.drives[1].write = WriteMode::journal(&base);
+        assert!(
+            matches!(
+                config.validate(),
+                Err(ConfigError::Journal { drive_index: 1, .. })
+            ),
+            "path diagnostics must identify the original second drive"
+        );
+        config.drives[1].write = WriteMode::Volatile;
+        config.drives[1].image = ImageSource::File(temp.path().join("base.retain-probe"));
+        assert!(
+            matches!(
+                config.validate(),
+                Err(ConfigError::DriveInput { drive_index: 1, .. })
+            ),
+            "input namespace diagnostics must identify the original second drive"
+        );
+        config.drives[1].image = ImageSource::File(base.clone());
+        config.drives[1].write = WriteMode::journal(&base);
+        config.drives[0].media.as_mut().unwrap().entries.clear();
+        config.drives[0].media.as_mut().unwrap().empty = true;
+        assert!(
+            matches!(
+                config.validate(),
+                Err(ConfigError::Journal { drive_index: 1, .. })
+            ),
+            "empty catalogues must not shift following drive diagnostics"
+        );
+    }
 
     #[test]
     fn port_a_is_confined_by_kind_and_rejects_invalid_resources() {
@@ -2288,6 +2407,7 @@ mod tests {
         }];
 
         let drives = vec![DriveConfig {
+            media: None,
             kind: DriveKind::Floppy {
                 geometry: FloppyGeometry::HD_1_44,
             },

@@ -377,7 +377,9 @@ fn validate_layer(document: &MachineFile, origins: &Origins) -> Result<(), Lower
                     || drive.geometry.is_some()
                     || drive.write.is_some()
                     || drive.journal.is_some()
-                    || drive.keep_generations.is_some())
+                    || drive.keep_generations.is_some()
+                    || drive.media.is_some()
+                    || drive.empty.is_some())
             {
                 return Err(error(
                     origins,
@@ -542,6 +544,32 @@ impl Merge for Geometry {
 }
 impl Merge for Drive {
     fn merge(&mut self, child: Self, m: &mut Merger<'_>) {
+        if child.media.is_some() {
+            self.empty = None;
+            self.image = None;
+            self.sha256 = None;
+            self.write = None;
+            self.journal = None;
+            self.keep_generations = None;
+            for name in [
+                "empty",
+                "image",
+                "sha256",
+                "write",
+                "journal",
+                "keep_generations",
+            ] {
+                m.out.remove_subtree(&join(&m.to, name));
+            }
+        } else if child.image.is_some() {
+            self.media = None;
+            self.empty = None;
+            for name in ["media", "empty"] {
+                m.out.remove_subtree(&join(&m.to, name));
+            }
+        }
+        m.scalar(&mut self.media, child.media, "media");
+        m.scalar(&mut self.empty, child.empty, "empty");
         m.scalar(&mut self.unit, child.unit, "unit");
         m.scalar(&mut self.channel, child.channel, "channel");
         m.scalar(&mut self.drive_type, child.drive_type, "type");
@@ -836,6 +864,14 @@ fn check_preset(document: &MachineFile, origins: &Origins) -> Result<(), LowerEr
     }
     for (i, card) in document.card.iter().flatten().enumerate() {
         for (j, drive) in card.drives.iter().flatten().enumerate() {
+            if let Some(media) = &drive.media {
+                for (k, medium) in media.iter().enumerate() {
+                    paths.push(format!("card[{i}].drives[{j}].media[{k}].image"));
+                    if medium.journal.is_some() {
+                        paths.push(format!("card[{i}].drives[{j}].media[{k}].journal"));
+                    }
+                }
+            }
             if drive.image.is_some() {
                 paths.push(format!("card[{i}].drives[{j}].image"));
             }
@@ -906,7 +942,10 @@ fn complete(resolved: &Resolved) -> Result<(), LowerError> {
         }
         for (j, drive) in card.drives.iter().flatten().enumerate() {
             let field = format!("{field}.drives[{j}]");
-            require(format!("{field}.image"), drive.image.is_some());
+            require(
+                format!("{field}.image"),
+                drive.image.is_some() || drive.media.is_some() || drive.empty == Some(true),
+            );
             match card.kind {
                 Some(CardKind::Fdc765) => {
                     require(format!("{field}.unit"), drive.unit.is_some());

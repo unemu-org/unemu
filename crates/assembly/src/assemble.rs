@@ -92,6 +92,8 @@ pub struct AssembledMachine {
     pub observation: Observation,
     /// Drive and CMOS journal status, boundary persistence and finalization.
     pub persistence: Vec<crate::PersistenceHandle>,
+    /// Host-only catalogue labels; media selection lives in the FDC snapshot.
+    pub floppy_names: HashMap<(DeviceId, u8), Vec<String>>,
     /// Unknown BIOS hashes accepted through a run-only escape option.
     pub unlisted_firmware: Vec<crate::UnlistedFirmware>,
     /// Option ROM images in ascending physical address, the BIOS scan order.
@@ -216,6 +218,27 @@ fn assemble_with_cpu_and_catalogue(
 
     // Validate the bytes that will actually be mounted, without a second file
     // read that could observe a different length or contents.
+    let floppy_names = config
+        .drives
+        .iter()
+        .filter(|d| matches!(d.kind, DriveKind::Floppy { .. }))
+        .map(|d| {
+            let names = d.media.as_ref().map_or_else(
+                || {
+                    vec![match &d.image {
+                        ImageSource::File(p) => p
+                            .file_name()
+                            .unwrap_or_default()
+                            .to_string_lossy()
+                            .into_owned(),
+                        _ => "disk 1".into(),
+                    }]
+                },
+                |list| list.entries.iter().map(|m| m.name.clone()).collect(),
+            );
+            ((d.controller, d.unit), names)
+        })
+        .collect();
     let nvram_bases = load_nvram_bases(config)?;
     let (resolved, base_metadata) =
         resolve_file_sources_with_catalogue(config, options, catalogue)?;
@@ -363,12 +386,12 @@ fn assemble_with_cpu_and_catalogue(
                     }
                 })?,
             ),
-            DeviceKind::Fdc(_) => Box::new(Upd765::with_drives(mount_fdc_drives(
+            DeviceKind::Fdc(_) => Box::new(mount_removable_fdc(
                 config,
                 dc.id,
                 &mut persistence,
                 &base_metadata,
-            )?)),
+            )?),
             DeviceKind::Ide(cfg) => Box::new(
                 Ata::with_drives(mount_ide_drives(
                     config,
@@ -459,6 +482,7 @@ fn assemble_with_cpu_and_catalogue(
         device_index,
         observation,
         persistence,
+        floppy_names,
         unlisted_firmware,
         option_roms,
     })
@@ -832,12 +856,13 @@ fn resolve_file_sources_with_catalogue<'a>(
             message: "option ROMs cannot use parts; only firmware.bios supports parts".into(),
         });
     }
-    if !config
-        .images
-        .iter()
-        .map(|image| &image.source)
-        .chain(config.drives.iter().map(|drive| &drive.image))
-        .any(|source| matches!(source, ImageSource::File(_) | ImageSource::Interleaved(_)))
+    if !config.drives.iter().any(|d| d.media.is_some())
+        && !config
+            .images
+            .iter()
+            .map(|image| &image.source)
+            .chain(config.drives.iter().map(|drive| &drive.image))
+            .any(|source| matches!(source, ImageSource::File(_) | ImageSource::Interleaved(_)))
     {
         return Ok((Cow::Borrowed(config), Vec::new()));
     }
@@ -870,6 +895,9 @@ fn resolve_file_sources_with_catalogue<'a>(
     }
     let mut base_metadata = vec![None; resolved.drives.len()];
     for (index, drive) in resolved.drives.iter_mut().enumerate() {
+        if drive.media.is_some() {
+            continue;
+        }
         if let ImageSource::File(path) = &drive.image {
             use std::io::Read;
             let (bytes, metadata) = (|| {
@@ -895,6 +923,60 @@ fn resolve_file_sources_with_catalogue<'a>(
             }
             base_metadata[index] = Some(metadata);
             drive.image = ImageSource::Inline(bytes);
+        }
+    }
+    for (drive_index, drive) in resolved.drives.iter_mut().enumerate() {
+        if let Some(list) = &mut drive.media {
+            for medium in &mut list.entries {
+                let metadata = if let ImageSource::File(path) = &medium.image {
+                    use std::io::Read;
+                    let mut file =
+                        std::fs::File::open(path).map_err(|error| ConfigError::ImageRead {
+                            path: path.clone(),
+                            message: error.to_string(),
+                        })?;
+                    let metadata = file.metadata().map_err(|error| ConfigError::ImageRead {
+                        path: path.clone(),
+                        message: error.to_string(),
+                    })?;
+                    let mut bytes = Vec::new();
+                    file.read_to_end(&mut bytes)
+                        .map_err(|error| ConfigError::ImageRead {
+                            path: path.clone(),
+                            message: error.to_string(),
+                        })?;
+                    if let Some(expected) = medium.expected_sha256 {
+                        let actual: [u8; 32] = Sha256::digest(&bytes).into();
+                        if actual != expected {
+                            return Err(ConfigError::DriveImageSha256 {
+                                drive_index,
+                                expected: format!(
+                                    "{:x}",
+                                    sha2::digest::Output::<Sha256>::from(expected)
+                                ),
+                                actual: format!(
+                                    "{:x}",
+                                    sha2::digest::Output::<Sha256>::from(actual)
+                                ),
+                            });
+                        }
+                    }
+                    medium.image = ImageSource::Inline(bytes);
+                    Some(metadata)
+                } else {
+                    None
+                };
+                if let Some(actual) = medium.image.known_len() {
+                    if actual != drive.kind.image_bytes() {
+                        return Err(ConfigError::ImageGeometryMismatch {
+                            drive_index,
+                            expected: drive.kind.image_bytes(),
+                            actual,
+                        });
+                    }
+                }
+                base_metadata.push(metadata);
+            }
         }
     }
     Ok((Cow::Owned(resolved), base_metadata))
@@ -1081,6 +1163,9 @@ fn mount_fdc_drives(
         if slot >= slots.len() {
             continue;
         }
+        if drive.media.is_some() {
+            continue;
+        }
         let image = load_image_bytes(&drive.image)?;
         let geometry = to_device_geometry(geometry);
         slots[slot] = Some(match &drive.write {
@@ -1090,20 +1175,77 @@ fn mount_fdc_drives(
                 path,
                 keep_generations,
             } => {
-                let (handle, media) = crate::PersistenceHandle::mount(
+                let (mut handle, media) = crate::PersistenceHandle::prepare_removable(
                     drive_index,
                     path,
                     &image,
-                    drive.kind.image_bytes(),
                     *keep_generations,
                     base_metadata.get(drive_index).and_then(Option::as_ref),
-                )?;
+                );
+                handle.floppy = Some((controller, drive.unit, 0));
+                handle.insert()?;
                 persistence.push(handle);
-                Drive::with_media(geometry, media)
+                Drive::with_journaled_media(geometry, media)
             }
         });
     }
     Ok(slots)
+}
+
+fn mount_removable_fdc(
+    config: &MachineConfig,
+    controller: DeviceId,
+    persistence: &mut Vec<crate::PersistenceHandle>,
+    metadata: &[Option<std::fs::Metadata>],
+) -> Result<Upd765, AssemblyError> {
+    let mut fdc = Upd765::with_drives(mount_fdc_drives(config, controller, persistence, metadata)?);
+    let mut metadata_index = config.drives.len();
+    for (drive_index, drive) in config.drives.iter().enumerate() {
+        let Some(list) = &drive.media else {
+            continue;
+        };
+        let start = metadata_index;
+        metadata_index += list.entries.len();
+        if drive.controller != controller {
+            continue;
+        }
+        let DriveKind::Floppy { geometry } = drive.kind else {
+            continue;
+        };
+        let geometry = to_device_geometry(&geometry);
+        let mut entries = Vec::new();
+        for (index, medium) in list.entries.iter().enumerate() {
+            let image = load_image_bytes(&medium.image)?;
+            entries.push(match &medium.write {
+                WriteMode::Volatile => Drive::new(geometry, image),
+                WriteMode::ReadOnly => Drive::new_read_only(geometry, image),
+                WriteMode::Journal {
+                    path,
+                    keep_generations,
+                } => {
+                    let (mut handle, media) = crate::PersistenceHandle::prepare_removable(
+                        drive_index,
+                        path,
+                        &image,
+                        *keep_generations,
+                        metadata.get(start + index).and_then(Option::as_ref),
+                    );
+                    handle.floppy = Some((controller, drive.unit, index));
+                    if index == 0 && !list.empty {
+                        handle.insert()?;
+                    }
+                    persistence.push(handle);
+                    Drive::with_journaled_media(geometry, media)
+                }
+            });
+        }
+        fdc.set_media_list(usize::from(drive.unit), entries, list.empty)
+            .map_err(|e| ConfigError::Journal {
+                drive_index,
+                message: e.to_string(),
+            })?;
+    }
+    Ok(fdc)
 }
 
 /// Convert a config [`FloppyGeometry`] into the floppy controller's own geometry
@@ -2578,6 +2720,7 @@ mod tests {
         }];
 
         let drives = vec![DriveConfig {
+            media: None,
             kind: DriveKind::Floppy {
                 geometry: FloppyGeometry::HD_1_44,
             },
@@ -3677,6 +3820,7 @@ mod tests {
         let mut config = reference_config();
         config.drives = vec![
             DriveConfig {
+                media: None,
                 kind: DriveKind::Floppy {
                     geometry: FloppyGeometry::HD_1_2,
                 },
@@ -3689,6 +3833,7 @@ mod tests {
                 expected_sha256: None,
             },
             DriveConfig {
+                media: None,
                 kind: DriveKind::Floppy {
                     geometry: FloppyGeometry::DD_720K,
                 },
@@ -3741,6 +3886,7 @@ mod tests {
         let mut config = reference_config();
         config.drives = vec![
             DriveConfig {
+                media: None,
                 kind: DriveKind::Floppy {
                     geometry: FloppyGeometry::HD_1_44,
                 },
@@ -3753,6 +3899,7 @@ mod tests {
                 expected_sha256: None,
             },
             DriveConfig {
+                media: None,
                 kind: DriveKind::Floppy {
                     geometry: FloppyGeometry::HD_1_44,
                 },
@@ -3877,6 +4024,7 @@ mod tests {
     fn single_floppy_config(geometry: FloppyGeometry, image: ImageSource) -> MachineConfig {
         let mut config = reference_config();
         config.drives = vec![DriveConfig {
+            media: None,
             kind: DriveKind::Floppy { geometry },
             image,
             controller: DeviceId::Fdc,
@@ -4092,6 +4240,7 @@ mod tests {
             bytes_per_sector: 512,
         };
         config.drives.push(DriveConfig {
+            media: None,
             controller: DeviceId::Ide,
             unit: 0,
             kind: DriveKind::HardDisk { geometry },
@@ -4341,6 +4490,7 @@ mod tests {
     fn cmos_disk_config(cylinders: u32, heads: u32, unit: u8) -> MachineConfig {
         let mut config = crate::bios(vec![0; 32768], Some(vec![0; 1_474_560]));
         config.drives.push(DriveConfig {
+            media: None,
             kind: DriveKind::HardDisk {
                 geometry: crate::HardDiskGeometry {
                     cylinders,
@@ -4617,6 +4767,7 @@ mod tests {
                 bytes_per_sector: 512,
             };
             config.drives.push(DriveConfig {
+                media: None,
                 controller: DeviceId::Ide,
                 unit,
                 kind: DriveKind::HardDisk { geometry },
@@ -4671,6 +4822,7 @@ mod tests {
                     bytes_per_sector: 512,
                 };
                 config.drives.push(DriveConfig {
+                    media: None,
                     controller: DeviceId::Ide,
                     unit,
                     kind: DriveKind::HardDisk { geometry },

@@ -114,7 +114,7 @@ fn rejection_fields_reject_null_presence_in_every_table() {
         false,
         "reserved, not implemented",
     );
-    null_fields::<Drive>(&["media"], false, "reserved, not implemented");
+    null_fields::<Drive>(&["media"], false, "sequence");
 }
 
 #[test]

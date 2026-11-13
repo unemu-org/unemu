@@ -117,6 +117,8 @@ impl DriveKind {
 /// when that size is known ([`ImageSource::known_len`]).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DriveConfig {
+    /// Optional removable-media catalogue; replaces the legacy image/write fields.
+    pub media: Option<FloppyMediaList>,
     /// Floppy or hard disk, with geometry.
     pub kind: DriveKind,
     /// Where the drive's contents come from.
@@ -160,6 +162,40 @@ impl WriteMode {
         Self::Journal {
             path: path.into(),
             keep_generations: Self::DEFAULT_KEEP_GENERATIONS,
+        }
+    }
+}
+
+/// Ordered floppy media and the power-on door state (machine-files.md § Drives).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FloppyMediaList {
+    /// Each image must match the drive geometry; mixed-density mechanics are absent.
+    pub entries: Vec<FloppyMedium>,
+    /// Start without a disk. The change line still starts clear.
+    pub empty: bool,
+}
+
+/// One immutable base and its independent overlay policy.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FloppyMedium {
+    /// Source of the immutable base bytes.
+    pub image: ImageSource,
+    /// Optional expected digest, verified on the bytes actually mounted.
+    pub expected_sha256: Option<[u8; 32]>,
+    /// Guest write policy for this medium.
+    pub write: WriteMode,
+    /// Display name, normally the source file name (never a host path).
+    pub name: String,
+}
+
+impl DriveConfig {
+    pub(crate) fn with_medium(&self, medium: &FloppyMedium) -> Self {
+        Self {
+            media: None,
+            image: medium.image.clone(),
+            expected_sha256: medium.expected_sha256,
+            write: medium.write.clone(),
+            ..self.clone()
         }
     }
 }

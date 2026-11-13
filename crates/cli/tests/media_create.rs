@@ -221,6 +221,7 @@ fn hd_size_rounds_up_to_chs_and_explicit_geometry_reaches_identify() {
             image: ImageSource::File(scratch.0.join("chs.img")),
             expected_sha256: None,
             write: WriteMode::Volatile,
+            media: None,
         });
         let mut machine = assemble(&config).unwrap();
         let bus = machine.machine.bus_mut();

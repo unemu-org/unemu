@@ -309,7 +309,6 @@ fn reserved_fields_values_and_outside_options_are_recognised() {
         ("card", "mmio", "0xB0000"),
         ("card.drives", "type", "\"2.88M\""),
         ("card.drives", "type", "\"atapi-cdrom\""),
-        ("card.drives", "media", "\"none\""),
         ("card.drives", "image", "\"blank\""),
         ("card.drives", "geometry", "\"auto\""),
     ] {

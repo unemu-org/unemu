@@ -16,12 +16,18 @@ pub(crate) fn validate_journals(
     origins: &Origins,
     images: &[PathBuf],
 ) -> Result<(), ConfigError> {
-    let drives = config.drives.iter().enumerate().filter_map(|(i, drive)| {
-        if let WriteMode::Journal { path, .. } = &drive.write {
-            Some((Some(i), path))
-        } else {
-            None
-        }
+    let drives = config.drives.iter().enumerate().flat_map(|(i, drive)| {
+        let writes: Vec<_> = drive.media.as_ref().map_or_else(
+            || vec![&drive.write],
+            |list| list.entries.iter().map(|m| &m.write).collect(),
+        );
+        writes.into_iter().filter_map(move |write| {
+            if let WriteMode::Journal { path, .. } = write {
+                Some((Some(i), path))
+            } else {
+                None
+            }
+        })
     });
     let nvram = config.devices.iter().filter_map(|device| {
         if let assembly::DeviceKind::Rtc(assembly::CmosCfg {

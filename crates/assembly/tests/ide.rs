@@ -29,6 +29,7 @@ fn machine(base: u16, code: Vec<u8>) -> MachineConfig {
             bytes_per_sector: 512,
         };
         config.drives.push(DriveConfig {
+            media: None,
             controller: DeviceId::Ide,
             unit,
             kind: DriveKind::HardDisk { geometry },

@@ -483,6 +483,7 @@ fn speaker_history_stays_bounded_without_capture_on_direct_and_session_runs() {
             std::num::NonZeroU64::new(1).unwrap(),
         );
         let mut rig = crate::AssembledMachine {
+            floppy_names: Default::default(),
             machine,
             observation,
             device_index: index,

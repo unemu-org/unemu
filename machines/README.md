@@ -37,8 +37,8 @@ images, journals and relative parent files.
 Diagnostics keep the path supplied by the caller. The supplied name also
 selects the format, even when the symlink target has another extension.
 Image errors show both spelled and resolved paths when they differ.
-The loader reads each image once, checks its SHA-256 pin
-and carries the bytes inline for volatile/readonly images. Journal bases retain
+The loader reads each image once and checks its SHA-256 pin. Single-image
+volatile/readonly bytes stay inline; catalogues and journal bases retain
 a file path for assembly's alias checks and are read again at mounting; keep the
 base unchanged between loading and assembly.
 
@@ -70,36 +70,7 @@ inherited pin, or supply a new pin. A `sha256`-only override re-pins an inherite
 image. Mismatches identify the file and line that set the pin. Each machine
 file is limited to 1 MiB, including parent files.
 
-For drives, overriding `image` discards the inherited journal and retention
-count. An inherited journal write mode falls back to volatile unless the child
-restates it; readonly and volatile modes keep their values. A child selecting
-journal mode again must provide a new journal path. A child can also turn
-journaling off by setting `write = "volatile"` or `write = "readonly"` without
-repeating the image: inherited journal options are discarded. Explicit journal
-options with either of those modes remain errors.
-
-Floppy and IDE journals are explicit. For example, in a local machine file's
-`[[card.drives]]` table, alongside a generated or copied floppy base:
-
-```toml
-write = "journal"
-journal = "../tmp-golden/ide-media/work.upfj"
-keep_generations = 10 # optional, positive; defaults to 10
-```
-
-The journal is relative to the canonical directory of the file that sets it,
-including through `extends`. Guest writes never modify the base image. Reloading
-and assembling the file replays the journal before the first instruction.
-`journal` and `keep_generations` are errors with volatile/readonly modes.
-Journal paths must be nonempty and must not name a directory or alias any
-image or machine-file layer; failures identify the drive's file and line.
-Repository examples keep their existing write modes and create no sidecars next
-to fixtures. Persistence goldens use temporary copies. IDE supports the same
-three modes; NVRAM supports volatile and explicit journal mode. The window and
-CLI select these files with `--machine`.
-
-For a complete HDD and floppy journal workflow, including installation,
-commit and rollback, see [Preparing disks](#preparing-disks) below.
+## Selecting a machine
 
 The schema and
 defaults are in
@@ -139,6 +110,8 @@ A mounted image is an immutable base. Guest writes belong in an overlay;
 `media commit` exports a new base and never changes its input. SHA-256 binding
 covers the entire base, including large disks. Never edit a mounted base with
 host tools or replace a base that still has a journal bound to it.
+
+### Creating images and a local profile
 
 Create a blank hard disk and a formatted data floppy without external tools:
 
@@ -209,16 +182,36 @@ only the kernel and shell: supply compatible FDISK, FORMAT and SYS utilities on
 B: (run them as `B:\FDISK`, `B:\FORMAT`, `B:\SYS`), or use your own DOS system
 floppy. Check the local file with
 `unemupc98 machine check FILE`, then boot it with the window frontend's
-`--machine FILE` option. No hot swapping is currently exposed: configure an
-installation/data floppy as drive B: before booting, or stop and change its
-image between sessions. A floppy override uses the inherited `fdc-765` card id,
-`unit = 1`, `type = "1.44M"`, `image = "transfer.img"` and a write mode.
+`--machine FILE` option. Configure installation/data disks on B: before booting,
+or use the [media-list and swap controls](#removable-floppy-media) below. The
+single-image B: override below uses the inherited `fdc-765` card id.
+
+### Write modes and journals
 
 The IDE journal lives next to the immutable disk base. Guest writes survive
 restarting the emulator, and mounting the same file replays the journal before
 execution. Journal directories must already exist. The same write modes and
 offline commands apply to floppies and IDE disks; ATA persists full 512-byte
 sectors, and offline capacity comes from the complete image length.
+
+Drives accept `write = "volatile"`, `"readonly"` or `"journal"`; NVRAM supports
+volatile and journal modes. `keep_generations` is positive and defaults to 10.
+`journal` and `keep_generations` are errors with volatile/readonly modes. Journal
+paths must be nonempty, must not name a directory, and must not alias an image
+or machine-file layer; diagnostics identify the drive's file and line.
+
+Overriding a drive's `image` discards its inherited journal and retention count.
+An inherited journal write mode falls back to volatile unless restated;
+readonly and volatile modes retain their values. Restating journal mode needs
+a new journal path. Setting volatile or readonly without repeating the image
+also discards inherited journal options; explicit journal options remain errors.
+
+Completed IDE commands are journaled at completion. For an unfinished command,
+completed sectors reach the journal only at a checkpoint, session finish, CPU
+reset or run error; partial sectors are excluded. Changing a floppy closes only
+that floppy's journal.
+
+### Partitioning and formatting
 
 Inside DOS, the preparation sequence is `FDISK` (create a primary DOS partition
 and mark it active if it will boot), then reboot with the same local machine
@@ -245,6 +238,62 @@ journal = "transfer.upfj"
 keep_generations = 10
 ```
 
+### Removable floppy media
+
+A floppy keeps its existing single `image`, `sha256`, `write`, `journal` and
+`keep_generations` form, or uses an ordered `media` list with those fields on
+each entry. For multiple installation/data disks, replace the single-image B:
+override above with this card override in `local.toml`. Supply `install-1.img`
+beside that file; `transfer.img` is the formatted image created earlier:
+
+```toml
+[[card]]
+id = "fdc-765"
+[[card.drives]]
+unit = 1
+type = "1.44M"
+media = [
+  { image = "install-1.img", write = "readonly" },
+  { image = "transfer.img", write = "journal", journal = "transfer.upfj" },
+]
+# empty = true
+```
+
+The first entry is inserted at power-on unless `empty = true`, which also permits
+an empty catalogue. A configured drive with `empty = true` starts with its
+disk-change line asserted; unconfigured positions and drives starting with a
+medium keep the line clear. YAML uses the same fields and a sequence for `media`.
+List and drive-level single-image fields cannot be combined. Every medium must have
+exactly the drive type's geometry; a 360K disk in a 1.2M drive is not modelled.
+Paths belong to the layer that declares them, and `extends` replaces a media
+list as a whole; a replacement list clears inherited `empty = true` unless the
+child restates it. The inherited A: boot floppy stays unchanged in this example.
+
+In the window, **Ctrl+Alt+F** inserts the next A: image, cycling from the last
+back to the first; **Ctrl+Alt+E** ejects A:. Hold **Shift** with either shortcut
+to operate B:, as in the example. From empty, next inserts entry zero. These
+host keys are applied before the next execution slice and do not reach the
+guest. The title shows each inserted file name or `empty`.
+
+Ejected volatile media retain their in-memory writes for the session. Ejecting
+journaled media flushes and seals that medium's generation and releases its
+lock; insertion reopens and replays it. The base is never rewritten, and a
+persistence failure stops execution. The journal API always closes a generation,
+even after an insert with no writes; it has no clean no-op close. Dropping it
+would use the recovery path instead. Each eject therefore uses a retention slot,
+so repeated swaps can prune older rollback states after ten closes by default.
+Export important states first or increase each medium's `keep_generations`.
+Host tools still require stopping the
+emulator and writing a new image, as described below.
+
+Headless embedders and tests use `AssembledMachine::run_floppy_schedule` with
+ordered `FloppyEvent { at, controller, unit, action }` inputs. `at` is cumulative
+virtual time in instruction equivalents, including halted PIT progress. Halted
+caps follow the scheduler's whole-PIT-clock rounding. `change_floppy` applies
+one event at an already reached boundary; no host timer enters the device path.
+
+### Exporting and rolling back
+
 After installing or copying software, exit DOS cleanly and stop the emulator.
 Inspect the HDD's closed generation numbers, export the installed state as a
 new base, or roll back with a fresh backup path:
@@ -263,10 +312,12 @@ journal and discards later history; commit exports a new immutable base without
 changing either input. Keep the original base with its original journal. To
 adopt `disk-next.img`, override the drive's `image`, optionally set its new
 SHA-256 pin, and explicitly select `write = "journal"` with a **new** journal
-path. Image overrides discard inherited journal settings. Journal tools preserve
+path. Journal tools preserve
 sector state, not filesystem health. Use the same commands with `transfer.img`
 and `transfer.upfj` for the floppy; for example, export it to `transfer-next.img`
 before using the host-copy example below.
+
+### Copying host files
 
 To put host files into FAT media, mtools is optional and runs while the emulator
 is stopped. Always create a new working image first; never modify an immutable

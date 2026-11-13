@@ -177,8 +177,20 @@ pub struct Drive {
     pub journal: Option<String>,
     pub keep_generations: Option<std::num::NonZeroU32>,
     pub remove: Option<bool>,
-    #[serde(default, deserialize_with = "values::reject_media")]
-    media: Option<Reserved>,
+    #[serde(default, deserialize_with = "values::media_list")]
+    pub media: Option<Vec<Medium>>,
+    pub empty: Option<bool>,
+}
+
+/// One removable floppy base and its overlay policy.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Medium {
+    pub image: String,
+    pub sha256: Option<Sha256>,
+    pub write: Option<WriteMode>,
+    pub journal: Option<String>,
+    pub keep_generations: Option<std::num::NonZeroU32>,
 }
 
 /// Explicit 512-byte-sector CHS geometry; its hardware limits are checked later.

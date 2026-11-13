@@ -119,6 +119,7 @@ fn provider_cmos_xub_disk_keeps_system_bios_types_zero() {
         bytes_per_sector: 512,
     };
     config.drives.push(DriveConfig {
+        media: None,
         kind: DriveKind::HardDisk { geometry },
         image: ImageSource::Blank {
             size: geometry.image_bytes(),

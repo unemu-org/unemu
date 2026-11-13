@@ -1375,3 +1375,58 @@ test. Fixture pin tests read the output hashes from `include_str!` vendor script
 missing, duplicate and malformed pin definitions fail explicitly. Their targeted
 mutations change a script pin selector and bypass hash syntax validation. These
 checks use the same disposable-copy rule as the validation above.
+
+## Media changes
+
+Floppy catalogues keep one independent persistence handle per journaled medium.
+Only the inserted medium has an active journal. Assembly reads, SHA-256-checks
+and geometry-checks every configured base before opening any journal, and
+validates all output/lock/temporary paths against all bases and configuration
+inputs, including inactive media. Inactive journal contents are validated when
+that medium is inserted. The saved immutable base and metadata are reused for
+reopening; insertion does not reread a potentially changed base file.
+
+At a completed execution boundary, eject calls the same `finish` API as a
+successful run: synchronize and close a session-end generation, run retention,
+keep readable overlay bytes, release the lock. This also closes an empty
+session after an insert with no writes: the current journal API deliberately
+records empty recovery points and has no clean no-op close. Dropping a session
+is the error/recovery path, not successful completion. Each eject therefore
+consumes one retained generation; with the default ten, repeated swaps can
+prune older rollback points even without writes. Export important states or
+raise `keep_generations` before such a session. A future no-op close must
+preserve recovery and lock-release guarantees before this policy can change.
+Reinsert opens the journal anew
+and replaces the adapter's backing session with replayed state. Failed seals
+or opens stop the frontend before another guest instruction. No disk-change
+error is substituted for a host persistence failure. Volatile media retain their
+working overlay while parked; readonly policy belongs to each medium.
+All guest sectors still pass through `SectorMedia`; the immutable base binding,
+full-base SHA-256 and separate sector replacements are unchanged. A future
+chain of hash-linked layers can replace that implementation at the same seam.
+
+The IBM PC AT Technical Reference, Fixed Disk and Diskette Drive Adapter,
+Digital Input Register (3F7h) and Interface Lines, defines the selected
+change line. Eject and insertion assert it independently for each drive. A
+moving SEEK or RECALIBRATE step sequence clears the DOR-selected physical
+drive's line with media present, even when the command names another drive; an empty
+drive cannot clear it. DIR bit 7 samples the DOR-selected drive; bits 6–0 remain
+zero in this model. Power-on asserts the line only for a configured drive with
+`empty = true`. Unconfigured positions have no drive asserting the line and
+start clear, as do drives starting with a medium for compatibility.
+FDC snapshot version 5 includes selected catalogue indices, empty slots and
+change lines. Versions 3 and 4 restore medium zero and clear lines. Media bytes,
+journal sessions and the catalogue itself remain external snapshot inputs;
+restoration requires a compatible catalogue and does not roll back disk writes.
+Device-only restore rejects any selection change in a slot containing a
+journaled medium, including transitions to/from empty and legacy defaults.
+Otherwise it would bypass the persistence handle's seal/reopen boundary.
+Same-medium restores remain supported. A future machine snapshot API must
+coordinate these journal sessions and device state before changing that slot.
+
+Hardware sources: [IBM PC AT Fixed Disk and Diskette Drive Adapter, Digital
+Input Register, pp. 12–13, and Interface Lines, p. 40](https://minuszerodegrees.net/oa/OA%20-%20IBM%20PC%20AT%20Fixed%20Disk%20and%20Diskette%20Drive%20Adapter.pdf);
+[IBM PC AT High Capacity Diskette Drive, Output Signals, -Diskette Change,
+p. 5](https://minuszerodegrees.net/oa/OA%20-%20IBM%20PC%20AT%20High%20Capacity%20Diskette%20Drive.pdf).
+The power-on clear line for inserted media is a deliberate compatibility policy;
+physical drive output can start asserted until its first step with a disk present.

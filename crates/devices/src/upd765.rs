@@ -29,6 +29,21 @@
 //! WRITE DATA and Table 2; Intel 8272A datasheet, Command Descriptions, READ DATA
 //! / WRITE DATA and Table 8.
 //!
+//! ## Diskette changes
+//!
+//! IBM PC AT Technical Reference, Fixed Disk and Diskette Drive Adapter,
+//! Digital Input Register (3F7h) and Interface Lines: DIR bit 7 samples the
+//! DOR-selected drive's change line. IBM PC AT High Capacity Diskette Drive,
+//! Output Signals, -Diskette Change, requires a disk and a step pulse to clear
+//! the signal. Configured empty-start drives assert it; absent positions and
+//! mounted drives start clear for compatibility. Eject and insert set it.
+//! A moving SEEK or RECALIBRATE step
+//! clears the DOR-selected drive's line only with media present.
+//! RECALIBRATE uses a collapsed step sequence even at PCN zero; separate
+//! physical head position is not modelled. Bits 6–0 remain zero, including the
+//! unmodelled fixed-disk signals. Controller
+//! reset preserves the door state and change line. See persistent-media.md § Media changes.
+//!
 //! ## Geometry and per-drive media
 //!
 //! Geometry is per-drive data, not a hardcoded constant. Each of the four
@@ -40,7 +55,7 @@
 //! differ. A CHS address maps to an image offset with the addressed drive's own
 //! geometry by `lba = (cyl * heads + head) * sectors_per_track + (sector - 1)`,
 //! `offset = lba * 512`. An empty bay supplies no index pulses: READ ID and
-//! READ/WRITE DATA wait in execution until reset. An address outside mounted
+//! READ/WRITE DATA wait in execution until reset or insertion. An address outside mounted
 //! media's geometry terminates abnormally with a no-data status.
 //!
 //! Media serves sector reads and accepts one ordered batch of complete sector
@@ -186,7 +201,11 @@
 //! Snapshot v4 appends the CCR rate encoding to v3's layout. V3 restores with
 //! the reset rate (500 kbps), because it did not retain CCR writes. V3 stores
 //! the interrupt latch before the DOR gate and permits an empty-bay ID search
-//! without DMA; versions before v3 are rejected. Restore
+//! without DMA. Version 5 adds catalogue indices and change lines; v3/v4 restore
+//! with medium zero and clear lines. Versions before v3 are rejected. Restore
+//! rejects selection changes in any slot containing journaled media: only the
+//! owning machine can seal/reopen those sessions. A future machine snapshot API
+//! must coordinate that persistence boundary before restoring devices. Restore
 //! validates the waiting opcode, full command, empty slot, and absence of
 //! results and DMA before accepting that execution phase.
 
@@ -323,6 +342,7 @@ pub struct Drive {
     /// Physical format of the mounted disk.
     pub geometry: FloppyGeometry,
     media: Box<dyn SectorMedia>,
+    journaled: bool,
 }
 
 impl Drive {
@@ -347,7 +367,22 @@ impl Drive {
     /// Mount sector media without exposing its host-side state to the controller.
     #[must_use]
     pub fn with_media(geometry: FloppyGeometry, media: Box<dyn SectorMedia>) -> Self {
-        Self { geometry, media }
+        Self {
+            geometry,
+            media,
+            journaled: false,
+        }
+    }
+
+    /// Mark a host-owned journal so device snapshots cannot change its session
+    /// without the owning machine's persistence boundary.
+    #[must_use]
+    pub fn with_journaled_media(geometry: FloppyGeometry, media: Box<dyn SectorMedia>) -> Self {
+        Self {
+            geometry,
+            media,
+            journaled: true,
+        }
     }
 
     /// The medium's controller-visible write-protection property.
@@ -357,8 +392,25 @@ impl Drive {
     }
 }
 
+/// A host media event must address a configured catalogue at a completed DMA boundary.
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+pub enum MediaChangeError {
+    /// Drive-select position is outside the adapter.
+    #[error("unknown floppy drive")]
+    UnknownDrive,
+    /// The requested catalogue entry does not exist.
+    #[error("unknown floppy medium")]
+    UnknownMedium,
+    /// DMA must complete before opening the drive door.
+    #[error("floppy DMA is still pending")]
+    DmaPending,
+    /// Mixed-density mechanics are not modelled.
+    #[error("medium geometry differs from drive type")]
+    GeometryMismatch,
+}
+
 /// Snapshot layout version tag.
-const SNAPSHOT_VERSION: u8 = 4;
+const SNAPSHOT_VERSION: u8 = 5;
 
 /// Assumed adapter reset rate: CCR 00 selects 500 kbps (see module coverage).
 const RESET_DATA_RATE: u8 = 0;
@@ -486,6 +538,9 @@ pub struct Upd765 {
     /// Media mounted in each of the four drive positions the DOR can select.
     /// `None` supplies neither TRACK 0 nor index pulses; RDY remains active.
     drives: [Option<Drive>; 4],
+    media_lists: [Vec<Option<Drive>>; 4],
+    inserted: [Option<usize>; 4],
+    disk_changed: [bool; 4],
     /// Trace events observed since the last [`Device::take_trace`].
     trace: device::TraceBuffer,
     /// Virtual time of the most recent [`Device::tick`], stamped onto traces.
@@ -512,6 +567,9 @@ impl Upd765 {
             pending_read: None,
             pending_write: None,
             drives: [None, None, None, None],
+            media_lists: std::array::from_fn(|_| Vec::new()),
+            inserted: [None; 4],
+            disk_changed: [false; 4],
             trace: device::TraceBuffer::default(),
             now: VClock::ZERO,
         }
@@ -534,9 +592,111 @@ impl Upd765 {
     /// carries its own geometry, so drive 0 and drive 1 may differ.
     #[must_use]
     pub fn with_drives(drives: [Option<Drive>; 4]) -> Self {
+        let inserted = std::array::from_fn(|unit| drives[unit].as_ref().map(|_| 0));
+        let media_lists = std::array::from_fn(|unit| {
+            if drives[unit].is_some() {
+                vec![None]
+            } else {
+                Vec::new()
+            }
+        });
         Self {
             drives,
+            inserted,
+            media_lists,
             ..Self::new()
+        }
+    }
+
+    /// Configure a catalogue before power-on; an empty drive asserts disk change.
+    pub fn set_media_list(
+        &mut self,
+        unit: usize,
+        media: Vec<Drive>,
+        empty: bool,
+    ) -> Result<(), MediaChangeError> {
+        if unit >= 4 {
+            return Err(MediaChangeError::UnknownDrive);
+        }
+        if let Some(first) = media.first() {
+            if media.iter().any(|entry| entry.geometry != first.geometry) {
+                return Err(MediaChangeError::GeometryMismatch);
+            }
+        }
+        self.drives[unit] = None;
+        self.inserted[unit] = None;
+        self.media_lists[unit] = media.into_iter().map(Some).collect();
+        if !empty && !self.media_lists[unit].is_empty() {
+            self.drives[unit] = self.media_lists[unit][0].take();
+            self.inserted[unit] = Some(0);
+        }
+        self.disk_changed[unit] = empty;
+        Ok(())
+    }
+
+    /// Host input is accepted only after any DMA completion has been serviced.
+    pub fn check_media_boundary(&self) -> Result<(), MediaChangeError> {
+        if self.pending_read.is_some() || self.pending_write.is_some() {
+            Err(MediaChangeError::DmaPending)
+        } else {
+            Ok(())
+        }
+    }
+
+    /// Eject at a completed run boundary. IBM PC AT Technical Reference,
+    /// Fixed Disk and Diskette Drive Adapter, Digital Input Register (3F7h)
+    /// and Interface Lines: opening the door asserts diskette change.
+    pub fn eject(&mut self, unit: usize) -> Result<(), MediaChangeError> {
+        if unit >= 4 {
+            return Err(MediaChangeError::UnknownDrive);
+        }
+        if self.pending_read.is_some() || self.pending_write.is_some() {
+            return Err(MediaChangeError::DmaPending);
+        }
+        if let Some(index) = self.inserted[unit].take() {
+            self.media_lists[unit][index] = self.drives[unit].take();
+        }
+        self.disk_changed[unit] = true;
+        Ok(())
+    }
+
+    /// Insert a catalogue entry at a run boundary; it asserts diskette change.
+    pub fn insert(&mut self, unit: usize, index: usize) -> Result<(), MediaChangeError> {
+        if unit >= 4 {
+            return Err(MediaChangeError::UnknownDrive);
+        }
+        if index >= self.media_lists[unit].len() {
+            return Err(MediaChangeError::UnknownMedium);
+        }
+        self.eject(unit)?;
+        self.drives[unit] = self.media_lists[unit][index].take();
+        self.inserted[unit] = Some(index);
+        if self.phase == Phase::Execution
+            && self
+                .command
+                .get(1)
+                .is_some_and(|value| usize::from(value & 3) == unit)
+        {
+            // A search parked without index pulses can see the newly inserted disk.
+            self.execute();
+        }
+        Ok(())
+    }
+
+    /// Catalogue entry currently inserted, or an open door.
+    pub fn inserted_medium(&self, unit: usize) -> Option<usize> {
+        self.inserted.get(unit).copied().flatten()
+    }
+
+    /// IBM PC AT High Capacity Diskette Drive, Output Signals, -Diskette Change:
+    /// removing the medium prevents a step pulse from clearing the signal.
+    /// IBM PC AT Technical Reference, Fixed Disk and Diskette Drive Adapter,
+    /// Interface Lines and Digital Output Register: DOR selects the physical
+    /// recipient, independently of the controller command's internal PCN counter.
+    fn step(&mut self) {
+        let unit = usize::from(self.dor & 3);
+        if self.drives[unit].is_some() {
+            self.disk_changed[unit] = false;
         }
     }
 
@@ -714,6 +874,7 @@ impl Upd765 {
     fn cmd_recalibrate(&mut self) {
         let drive = self.command[1] & 0b11;
         self.st0 = ST0_SEEK_END | drive;
+        self.step();
         self.present_cylinder[usize::from(drive)] = 0;
         if self.drives[usize::from(drive)].is_none() {
             self.st0 |= ST0_ABNORMAL | ST0_EQUIPMENT_CHECK;
@@ -732,6 +893,9 @@ impl Upd765 {
         let head = (drive_head >> 2) & 1;
         let cylinder = self.command[2];
         self.st0 = ST0_SEEK_END | (head << 2) | drive;
+        if self.present_cylinder[usize::from(drive)] != cylinder {
+            self.step();
+        }
         self.present_cylinder[usize::from(drive)] = cylinder;
         self.reset_poll = 0;
         self.raise_irq();
@@ -768,7 +932,7 @@ impl Upd765 {
     }
 
     /// READ ID: report synthetic C/H/R/N on mounted media. Without index pulses,
-    /// stay in execution until reset (NEC µPD765A, READ ID and ST1 MA).
+    /// stay in execution until reset or insertion (NEC µPD765A, READ ID and ST1 MA).
     fn cmd_read_id(&mut self) {
         let drive_head = self.command[1];
         let drive = drive_head & 0b11;
@@ -1198,6 +1362,10 @@ impl Default for Upd765 {
 }
 
 impl Device for Upd765 {
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
+    }
+
     fn name(&self) -> &'static str {
         NAME
     }
@@ -1213,9 +1381,13 @@ impl Device for Upd765 {
             DOR => u32::from(self.dor),
             MSR => u32::from(self.msr()),
             DATA => u32::from(self.read_result()),
-            // Digital input register: bit 7 is disk-change, reported clear (the
-            // disk is present and unchanged). The rest float high on real boards.
-            DIR_CCR => 0x00,
+            DIR_CCR => {
+                if self.disk_changed[usize::from(self.dor & 3)] {
+                    0x80
+                } else {
+                    0
+                }
+            }
             // Other ports in the decoded window are not driven by this controller.
             _ => 0xFF,
         };
@@ -1302,12 +1474,21 @@ impl Device for Upd765 {
         let trace_policy = self.trace.policy();
         // A controller reset clears the registers but does not eject any disk.
         let drives = std::mem::take(&mut self.drives);
-        *self = Self::with_drives(drives);
+        let media_lists = std::mem::take(&mut self.media_lists);
+        let inserted = self.inserted;
+        let disk_changed = self.disk_changed;
+        *self = Self {
+            drives,
+            media_lists,
+            inserted,
+            disk_changed,
+            ..Self::new()
+        };
         self.trace.set_policy(trace_policy);
     }
 
     fn save(&self) -> Vec<u8> {
-        // Mounted media is not controller state; it is not snapshotted.
+        // Sector contents and host journal sessions remain external snapshot inputs.
         let phase_tag = match self.phase {
             Phase::Idle => 0,
             Phase::Command => 1,
@@ -1378,6 +1559,14 @@ impl Device for Upd765 {
             blob.extend_from_slice(bytes);
         }
         blob.push(self.data_rate);
+        for unit in 0..4 {
+            blob.extend_from_slice(
+                &self.inserted[unit]
+                    .map_or(u32::MAX, |v| v as u32)
+                    .to_le_bytes(),
+            );
+            blob.push(u8::from(self.disk_changed[unit]));
+        }
         blob
     }
 
@@ -1389,8 +1578,43 @@ impl Device for Upd765 {
         let mut it = snapshot.iter().copied();
         let mut next = || it.next().ok_or(bad("snapshot truncated"));
         let version = next()?;
-        if !matches!(version, 3 | SNAPSHOT_VERSION) {
+        if !matches!(version, 3 | 4 | SNAPSHOT_VERSION) {
             return Err(bad("unsupported snapshot version"));
+        }
+        let mut inserted = std::array::from_fn(|unit| {
+            if self.media_lists[unit].is_empty() {
+                None
+            } else {
+                Some(0)
+            }
+        });
+        let mut disk_changed = [false; 4];
+        if version >= 5 {
+            let tail = snapshot
+                .get(
+                    snapshot
+                        .len()
+                        .checked_sub(20)
+                        .ok_or(bad("snapshot truncated"))?..,
+                )
+                .ok_or(bad("snapshot truncated"))?;
+            for unit in 0..4 {
+                let chunk = &tail[unit * 5..unit * 5 + 5];
+                let index = u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
+                inserted[unit] = if index == u32::MAX {
+                    None
+                } else {
+                    Some(index as usize)
+                };
+                disk_changed[unit] = match chunk[4] {
+                    0 => false,
+                    1 => true,
+                    _ => return Err(bad("invalid disk-change line")),
+                };
+                if inserted[unit].is_some_and(|i| i >= self.media_lists[unit].len()) {
+                    return Err(bad("medium absent from catalogue"));
+                }
+            }
         }
         let dor = next()?;
         let phase = match next()? {
@@ -1468,7 +1692,15 @@ impl Device for Upd765 {
             {
                 return Err(bad("invalid transfer context"));
             }
-            let Some(media) = &self.drives[usize::from(drive)] else {
+            let unit = usize::from(drive);
+            let media = inserted[unit].and_then(|index| {
+                if self.inserted[unit] == Some(index) {
+                    self.drives[unit].as_ref()
+                } else {
+                    self.media_lists[unit][index].as_ref()
+                }
+            });
+            let Some(media) = media else {
                 return Err(bad("transfer requires mounted media"));
             };
             if !media.geometry.contains(cylinder, param_head, sector)
@@ -1539,7 +1771,7 @@ impl Device for Upd765 {
         } else {
             None
         };
-        let data_rate = if version == SNAPSHOT_VERSION {
+        let data_rate = if version >= 4 {
             let rate = next()?;
             if rate > 3 {
                 return Err(bad("invalid data rate"));
@@ -1548,6 +1780,11 @@ impl Device for Upd765 {
         } else {
             RESET_DATA_RATE
         };
+        if version >= 5 {
+            for _ in 0..20 {
+                next()?;
+            }
+        }
         if it.next().is_some() {
             return Err(bad("trailing snapshot bytes"));
         }
@@ -1577,7 +1814,7 @@ impl Device for Upd765 {
                     let waiting_for_index = pending_tag == 0
                         && matches!(command.first().map(|op| op & 0x1F), Some(5 | 6 | 0x0A))
                         && command_len == expected
-                        && self.drives[usize::from(command[1] & 3)].is_none();
+                        && inserted[usize::from(command[1] & 3)].is_none();
                     (pending_tag != 0 || waiting_for_index)
                         && result.is_empty()
                         && result_index == 0
@@ -1592,6 +1829,25 @@ impl Device for Upd765 {
         if !valid_phase {
             return Err(bad("inconsistent command phase"));
         }
+        for (unit, &selected) in inserted.iter().enumerate() {
+            let journaled = self.drives[unit]
+                .iter()
+                .chain(self.media_lists[unit].iter().flatten())
+                .any(|drive| drive.journaled);
+            if selected != self.inserted[unit] && journaled {
+                return Err(bad(
+                    "cannot change journaled medium without the machine persistence API",
+                ));
+            }
+        }
+        for (unit, &selected) in inserted.iter().enumerate() {
+            if let Some(index) = self.inserted[unit].take() {
+                self.media_lists[unit][index] = self.drives[unit].take();
+            }
+            self.drives[unit] = selected.and_then(|index| self.media_lists[unit][index].take());
+        }
+        self.inserted = inserted;
+        self.disk_changed = disk_changed;
         self.dor = dor;
         self.data_rate = data_rate;
         self.phase = phase;
@@ -1628,6 +1884,263 @@ mod tests {
     use super::*;
     use testkit::MockBus;
 
+    fn swap_fdc(bus: &mut MockBus) -> &mut Upd765 {
+        bus.device_mut()
+            .as_any_mut()
+            .unwrap()
+            .downcast_mut()
+            .unwrap()
+    }
+
+    fn swap_bus() -> MockBus {
+        let mut fdc = ready_fdc(vec![0x11; SECTOR_SIZE]);
+        fdc.set_media_list(
+            0,
+            vec![
+                Drive::new(FloppyGeometry::HD1440, vec![0x11; SECTOR_SIZE]),
+                Drive::new_read_only(FloppyGeometry::HD1440, vec![0x22; SECTOR_SIZE]),
+            ],
+            false,
+        )
+        .unwrap();
+        fdc.set_media_list(
+            1,
+            vec![Drive::new(FloppyGeometry::HD1440, vec![0x33; SECTOR_SIZE])],
+            false,
+        )
+        .unwrap();
+        MockBus::new(Box::new(fdc))
+    }
+
+    #[test]
+    fn floppy_media_power_on_distinguishes_absent_and_configured_empty_drives() {
+        let controllers = [
+            Upd765::new(),
+            Upd765::with_drives([None, None, None, None]),
+            Upd765::with_image(vec![0; SECTOR_SIZE]),
+        ];
+        let mut readings = Vec::new();
+        for controller in controllers {
+            let mut bus = MockBus::new(Box::new(controller));
+            for stage in 0..3 {
+                match stage {
+                    1 => swap_fdc(&mut bus)
+                        .set_media_list(1, vec![Drive::new(FloppyGeometry::HD1440, vec![])], true)
+                        .unwrap(),
+                    2 => swap_fdc(&mut bus).set_media_list(3, vec![], true).unwrap(),
+                    _ => {}
+                }
+                for unit in 0..4 {
+                    bus.port_write(DOR, 1, 0x0c | unit).unwrap();
+                    readings.push(bus.port_read(DIR_CCR, 1).unwrap());
+                }
+            }
+        }
+        assert_eq!(
+            readings,
+            [0, 0, 0, 0, 0, 0x80, 0, 0, 0, 0x80, 0, 0x80].repeat(3),
+            "only configured empty-start drives assert change at power-on"
+        );
+    }
+
+    #[test]
+    fn floppy_media_empty_power_on_asserts_change_until_inserted_and_stepped() {
+        let mut bus = swap_bus();
+        swap_fdc(&mut bus)
+            .set_media_list(0, vec![Drive::new(FloppyGeometry::HD1440, vec![])], true)
+            .unwrap();
+        assert_eq!(bus.port_read(DIR_CCR, 1).unwrap(), 0x80);
+        bus_command(&mut bus, &[7, 0]);
+        assert_eq!(bus.port_read(DIR_CCR, 1).unwrap(), 0x80);
+        swap_fdc(&mut bus).insert(0, 0).unwrap();
+        assert_eq!(bus.port_read(DIR_CCR, 1).unwrap(), 0x80);
+        bus_command(&mut bus, &[7, 0]);
+        assert_eq!(bus.port_read(DIR_CCR, 1).unwrap(), 0);
+    }
+
+    #[test]
+    fn floppy_media_step_clears_dor_selected_drive_even_if_command_select_differs() {
+        let mut bus = swap_bus();
+        swap_fdc(&mut bus).insert(0, 0).unwrap();
+        swap_fdc(&mut bus).insert(1, 0).unwrap();
+        bus.port_write(DOR, 1, 0x2d).unwrap();
+        bus_command(&mut bus, &[0x0f, 0, 1]);
+        assert_eq!(bus.port_read(DIR_CCR, 1).unwrap(), 0);
+        bus.port_write(DOR, 1, 0x1c).unwrap();
+        assert_eq!(bus.port_read(DIR_CCR, 1).unwrap(), 0x80);
+        bus_command(&mut bus, &[7, 1]);
+        assert_eq!(bus.port_read(DIR_CCR, 1).unwrap(), 0);
+    }
+
+    #[test]
+    fn floppy_media_snapshot_cannot_change_a_journaled_slots_selection() {
+        for journal_at in [0, 1] {
+            let mut bus = swap_bus();
+            let entries = (0..2)
+                .map(|index| {
+                    let media = Box::new(InMemoryMedia::new(vec![index as u8; 512], 2880, false));
+                    if index == journal_at {
+                        Drive::with_journaled_media(FloppyGeometry::HD1440, media)
+                    } else {
+                        Drive::with_media(FloppyGeometry::HD1440, media)
+                    }
+                })
+                .collect();
+            swap_fdc(&mut bus)
+                .set_media_list(0, entries, false)
+                .unwrap();
+            let saved = bus.device_mut().save();
+            bus.device_mut().restore(&saved).unwrap();
+            swap_fdc(&mut bus).insert(0, 1).unwrap();
+            let before = bus.device_mut().save();
+            let error = bus
+                .device_mut()
+                .restore(&saved)
+                .expect_err("journal selection requires the machine persistence API");
+            assert!(error.to_string().contains("journaled medium"));
+            assert_eq!(
+                bus.device_mut().save(),
+                before,
+                "rejected restore is atomic"
+            );
+            for version in [3, 4] {
+                let mut legacy = saved[..saved.len() - 20].to_vec();
+                legacy[0] = version;
+                if version == 3 {
+                    legacy.pop();
+                }
+                assert!(
+                    bus.device_mut().restore(&legacy).is_err(),
+                    "legacy medium-zero defaults also require persistence"
+                );
+                assert_eq!(bus.device_mut().save(), before);
+            }
+            swap_fdc(&mut bus).eject(0).unwrap();
+            assert!(bus.device_mut().restore(&saved).is_err());
+        }
+    }
+
+    #[test]
+    fn floppy_media_change_line_tracks_door_step_and_dor_per_drive() {
+        let mut bus = swap_bus();
+        assert_eq!(bus.port_read(DIR_CCR, 1).unwrap(), 0);
+        swap_fdc(&mut bus).eject(0).unwrap();
+        assert_eq!(bus.port_read(DIR_CCR, 1).unwrap(), 0x80);
+        bus_command(&mut bus, &[0x0f, 0, 1]);
+        bus_command(&mut bus, &[7, 0]);
+        assert_eq!(
+            bus.port_read(DIR_CCR, 1).unwrap(),
+            0x80,
+            "no disk cannot clear change"
+        );
+        bus.port_write(DOR, 1, 0x1d).unwrap();
+        assert_eq!(bus.port_read(DIR_CCR, 1).unwrap(), 0);
+        swap_fdc(&mut bus).insert(0, 1).unwrap();
+        bus.port_write(DOR, 1, 0x1c).unwrap();
+        assert_eq!(bus.port_read(DIR_CCR, 1).unwrap(), 0x80);
+        bus_command(&mut bus, &[0x0f, 0, 0]);
+        assert_eq!(
+            bus.port_read(DIR_CCR, 1).unwrap(),
+            0x80,
+            "no movement means no step pulse"
+        );
+        bus_command(&mut bus, &[0x0f, 0, 1]);
+        assert_eq!(bus.port_read(DIR_CCR, 1).unwrap(), 0);
+        swap_fdc(&mut bus).eject(1).unwrap();
+        swap_fdc(&mut bus).insert(1, 0).unwrap();
+        bus.port_write(DOR, 1, 0x2d).unwrap();
+        assert_eq!(bus.port_read(DIR_CCR, 1).unwrap(), 0x80);
+        bus_command(&mut bus, &[7, 0]);
+        assert_eq!(
+            bus.port_read(DIR_CCR, 1).unwrap(),
+            0,
+            "DOR selects the step recipient even when the command names another drive"
+        );
+    }
+
+    #[test]
+    fn floppy_media_change_preserves_overlays_and_empty_bay_behavior() {
+        let mut bus = swap_bus();
+        swap_fdc(&mut bus).drives[0]
+            .as_mut()
+            .unwrap()
+            .media
+            .write_batch(&[SectorWrite {
+                lba: 0,
+                bytes: [0x77; SECTOR_SIZE],
+            }]);
+        swap_fdc(&mut bus).eject(0).unwrap();
+        bus_command(&mut bus, &[0x4a, 0]);
+        assert!(bus.device_mut().take_dma_request().is_none());
+        assert_eq!(bus.port_read(MSR, 1).unwrap(), 0x10);
+        bus.device_mut().reset();
+        assert_eq!(bus.port_read(DIR_CCR, 1).unwrap(), 0x80);
+        swap_fdc(&mut bus).insert(0, 1).unwrap();
+        assert_eq!(
+            swap_fdc(&mut bus).drives[0]
+                .as_ref()
+                .unwrap()
+                .media
+                .read_sector(0),
+            [0x22; SECTOR_SIZE]
+        );
+        assert!(swap_fdc(&mut bus).drives[0]
+            .as_ref()
+            .unwrap()
+            .write_protected());
+        swap_fdc(&mut bus).insert(0, 0).unwrap();
+        assert_eq!(
+            swap_fdc(&mut bus).drives[0]
+                .as_ref()
+                .unwrap()
+                .media
+                .read_sector(0),
+            [0x77; SECTOR_SIZE]
+        );
+        assert_eq!(swap_fdc(&mut bus).inserted_medium(0), Some(0));
+    }
+
+    #[test]
+    fn floppy_media_insertion_supplies_index_to_a_parked_empty_bay_search() {
+        let mut bus = swap_bus();
+        swap_fdc(&mut bus).eject(0).unwrap();
+        bus_command(&mut bus, &[0x4a, 0]);
+        assert_eq!(bus.port_read(MSR, 1).unwrap(), 0x10);
+        swap_fdc(&mut bus).insert(0, 1).unwrap();
+        assert_eq!(bus_results(&mut bus, 7), [0, 0, 0, 0, 0, 1, 2]);
+        let saved = bus.device().save();
+        bus.device_mut().restore(&saved).unwrap();
+        assert_eq!(bus.port_read(DIR_CCR, 1).unwrap(), 0x80);
+    }
+
+    #[test]
+    fn floppy_media_change_snapshot_restores_selection_door_and_legacy_defaults() {
+        let mut bus = swap_bus();
+        swap_fdc(&mut bus).insert(0, 1).unwrap();
+        swap_fdc(&mut bus).eject(1).unwrap();
+        let saved = bus.device().save();
+        swap_fdc(&mut bus).insert(0, 0).unwrap();
+        swap_fdc(&mut bus).insert(1, 0).unwrap();
+        bus.device_mut().restore(&saved).unwrap();
+        assert_eq!(swap_fdc(&mut bus).inserted_medium(0), Some(1));
+        assert_eq!(swap_fdc(&mut bus).inserted_medium(1), None);
+        assert_eq!(bus.device().save(), saved);
+        for version in [3, 4] {
+            let mut old = saved[..saved.len() - 20 - usize::from(version == 3)].to_vec();
+            old[0] = version;
+            bus.device_mut().restore(&old).unwrap();
+            assert_eq!(swap_fdc(&mut bus).inserted_medium(0), Some(0));
+            assert_eq!(swap_fdc(&mut bus).inserted_medium(1), Some(0));
+            assert_eq!(bus.port_read(DIR_CCR, 1).unwrap(), 0);
+        }
+        let before = bus.device().save();
+        let mut invalid = saved;
+        let end = invalid.len();
+        invalid[end - 20] = 99;
+        assert!(bus.device_mut().restore(&invalid).is_err());
+        assert_eq!(bus.device().save(), before);
+    }
+
     #[test]
     fn data_rate_selection_masks_upper_bits_and_preserves_dir_reads() {
         let mut bus = MockBus::new(Box::new(ready_fdc(Vec::new())));
@@ -1635,24 +2148,36 @@ mod tests {
             bus.port_write(DIR_CCR, 1, value).unwrap();
             assert_eq!(bus.port_read(DIR_CCR, 1).unwrap(), 0);
             let saved = bus.device().save();
-            assert_eq!(saved[0], 4);
-            assert_eq!(saved.last(), Some(&((value as u8) & 3)));
+            assert_eq!(saved[0], 5);
+            assert_eq!(saved.get(saved.len() - 21), Some(&((value as u8) & 3)));
         }
     }
 
     #[test]
     fn data_rate_device_reset_defaults_to_500_but_dor_reset_preserves_selection() {
         let mut bus = MockBus::new(Box::new(ready_fdc(Vec::new())));
-        assert_eq!(bus.device().save()[0], 4);
-        assert_eq!(bus.device().save().last(), Some(&0));
+        assert_eq!(bus.device().save()[0], 5);
+        assert_eq!(
+            bus.device().save().get(bus.device().save().len() - 21),
+            Some(&0)
+        );
         for rate in 0..4 {
             bus.port_write(DIR_CCR, 1, rate).unwrap();
             bus.port_write(DOR, 1, 0).unwrap();
-            assert_eq!(bus.device().save().last(), Some(&(rate as u8)));
+            assert_eq!(
+                bus.device().save().get(bus.device().save().len() - 21),
+                Some(&(rate as u8))
+            );
             bus.port_write(DOR, 1, 0x1C).unwrap();
-            assert_eq!(bus.device().save().last(), Some(&(rate as u8)));
+            assert_eq!(
+                bus.device().save().get(bus.device().save().len() - 21),
+                Some(&(rate as u8))
+            );
             bus.device_mut().reset();
-            assert_eq!(bus.device().save().last(), Some(&0));
+            assert_eq!(
+                bus.device().save().get(bus.device().save().len() - 21),
+                Some(&0)
+            );
         }
     }
 
@@ -3680,7 +4205,7 @@ mod tests {
         command(&mut fdc, &[0x0F, 0x00, 42]); // SEEK, leaves an interrupt pending
         let blob = fdc.save();
 
-        let mut restored = Upd765::new();
+        let mut restored = Upd765::with_image(vec![0; SECTOR_SIZE]);
         restored.restore(&blob).unwrap();
         assert_eq!(restored.present_cylinder(0), 42);
         assert_eq!(restored.dor, fdc.dor);

@@ -8,8 +8,8 @@
 //! cycle-exact timing requests receive positioned diagnostics.
 //!
 //! Complete documents lower to `assembly::MachineConfig` with board/card
-//! defaults and images checked with SHA-256 during lowering. Volatile/readonly
-//! images remain inline; journal bases retain paths and are reread at mounting.
+//! defaults and images checked with SHA-256 during lowering. Single volatile/readonly
+//! images remain inline; catalogues and journal bases retain paths and are reread at mounting.
 //! Assembly owns hardware validation. Inheritance resolves before lowering.
 //! This crate does not model hardware registers.
 
@@ -251,6 +251,23 @@ impl LoadedMachine {
         let mut config = self.config.clone();
         let mut notes = Vec::new();
         for (index, drive) in config.drives.iter_mut().enumerate() {
+            if let Some(list) = &mut drive.media {
+                for medium in &mut list.entries {
+                    if let assembly::WriteMode::Journal { path, .. } = &medium.write {
+                        let assembly::ImageSource::File(base) = &medium.image else {
+                            return Err(self
+                                .diagnostics
+                                .drive_error(index, "internal error: journal base is not a file"));
+                        };
+                        let message = inspect_journal(base, path, drive.kind.image_bytes())
+                            .map_err(|message| self.diagnostics.drive_error(index, message))?;
+                        if let Some(message) = message {
+                            notes.push(self.diagnostics.drive_error(index, message).to_string());
+                        }
+                        medium.write = assembly::WriteMode::Volatile;
+                    }
+                }
+            }
             if let assembly::WriteMode::Journal { path, .. } = &drive.write {
                 let assembly::ImageSource::File(base) = &drive.image else {
                     return Err(self
@@ -322,8 +339,15 @@ impl LoadedMachine {
         &self,
         observation: &assembly::ObservationPolicy,
     ) -> Result<assembly::AssembledMachine, LowerError> {
-        assembly::assemble_with_observation_and_options(&self.config, observation, self.options)
-            .map_err(|error| self.diagnostics.map(error))
+        let mut assembled = assembly::assemble_with_observation_and_options(
+            &self.config,
+            observation,
+            self.options,
+        )
+        .map_err(|error| self.diagnostics.map(error))?;
+        self.diagnostics
+            .label_floppies(&self.config, &mut assembled);
+        Ok(assembled)
     }
 }
 

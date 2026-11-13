@@ -28,7 +28,7 @@ const MIB: u64 = 0x100000;
 ///
 /// Lowering reads and hashes each referenced image through this seam, including
 /// synthetic bytes supplied by tests. Volatile/readonly bytes are retained inline;
-/// journal bases retain paths and the verified digest for assembly's mount check.
+/// catalogues and journal bases retain paths and the verified digest for assembly's mount check.
 /// Journal reads require a file-backed reader so the journal remains bound to a
 /// reproducible immutable base. Paths resolve against the defining layer's directory.
 pub trait ImageReader {
@@ -74,6 +74,7 @@ pub struct LowerError {
 
 #[derive(Clone)]
 struct DriveOrigin {
+    image_name: Option<String>,
     field: String,
     label: String,
 }
@@ -588,9 +589,93 @@ impl<R: ImageReader> Context<'_, R> {
                 )
             };
             self.drives.push(DriveOrigin {
+                image_name: drive
+                    .image
+                    .as_ref()
+                    .and_then(|name| Path::new(name).file_name())
+                    .map(|name| name.to_string_lossy().into_owned()),
                 field: drive_field.clone(),
                 label,
             });
+            if drive.media.is_some() || drive.empty.is_some() {
+                if kind == v1::CardKind::Ide
+                    || drive.image.is_some()
+                    || drive.sha256.is_some()
+                    || drive.write.is_some()
+                    || drive.journal.is_some()
+                    || drive.keep_generations.is_some()
+                {
+                    return Err(self.error(&drive_field, "media/empty require a floppy and cannot be combined with image/write/journal"));
+                }
+                let mut entries = Vec::new();
+                for (index, medium) in drive.media.iter().flatten().enumerate() {
+                    let field = format!("{drive_field}.media[{index}]");
+                    let write = if medium.write == Some(v1::WriteMode::Journal) {
+                        let path =
+                            self.required(&format!("{field}.journal"), medium.journal.as_deref())?;
+                        if path.is_empty() {
+                            return Err(self.error(&field, "an explicit journal path is required"));
+                        }
+                        assembly::WriteMode::Journal {
+                            path: self.origins.image_path(&format!("{field}.journal"), path),
+                            keep_generations: medium
+                                .keep_generations
+                                .map_or(assembly::WriteMode::DEFAULT_KEEP_GENERATIONS, |v| v.get()),
+                        }
+                    } else {
+                        self.write(
+                            &format!("{field}.write"),
+                            medium.write,
+                            medium.journal.is_some(),
+                            medium.keep_generations.is_some(),
+                        )?
+                    };
+                    let (bytes, digest) = self.image(
+                        &format!("{field}.image"),
+                        Some(&medium.image),
+                        medium.sha256.as_ref(),
+                        &format!("{field}.sha256"),
+                        matches!(write, assembly::WriteMode::Journal { .. }),
+                    )?;
+                    if bytes.len() as u64 != drive_kind.image_bytes() {
+                        return Err(self.error(&field, "medium geometry differs from drive type"));
+                    }
+                    let path = self
+                        .origins
+                        .image_path(&format!("{field}.image"), &medium.image);
+                    entries.push(assembly::FloppyMedium {
+                        name: std::path::Path::new(&medium.image)
+                            .file_name()
+                            .unwrap_or_default()
+                            .to_string_lossy()
+                            .into_owned(),
+                        image: ImageSource::File(path),
+                        expected_sha256: Some(digest),
+                        write,
+                    });
+                }
+                if entries.is_empty() && drive.empty != Some(true) {
+                    return Err(self.error(
+                        &drive_field,
+                        "a media list must be nonempty unless empty=true",
+                    ));
+                }
+                drives.push(DriveConfig {
+                    media: Some(assembly::FloppyMediaList {
+                        entries,
+                        empty: drive.empty.unwrap_or(false),
+                    }),
+                    controller: device.id,
+                    unit,
+                    kind: drive_kind,
+                    image: ImageSource::Blank {
+                        size: drive_kind.image_bytes(),
+                    },
+                    expected_sha256: None,
+                    write: assembly::WriteMode::Volatile,
+                });
+                continue;
+            }
             let write = if drive.write == Some(v1::WriteMode::Journal) {
                 let field = format!("{drive_field}.journal");
                 let journal = self.required(&field, drive.journal.as_deref())?;
@@ -639,6 +724,7 @@ impl<R: ImageReader> Context<'_, R> {
                 ImageSource::Inline(bytes)
             };
             drives.push(DriveConfig {
+                media: None,
                 controller: device.id,
                 unit,
                 kind: drive_kind,
@@ -1256,6 +1342,7 @@ mod tests {
             irq_fields: Vec::new(),
             drives: (0..3)
                 .map(|index| DriveOrigin {
+                    image_name: None,
                     field: format!("card[1].drives[{index}]"),
                     label: format!("card[1].drives[unit={}]", u8::from(index != 0)),
                 })
@@ -1990,6 +2077,18 @@ pub(crate) struct AssemblyDiagnostics {
 }
 
 impl AssemblyDiagnostics {
+    pub(crate) fn label_floppies(
+        &self,
+        config: &MachineConfig,
+        assembled: &mut assembly::AssembledMachine,
+    ) {
+        for (origin, drive) in self.drives.iter().zip(&config.drives) {
+            if let Some(name) = &origin.image_name {
+                assembled.set_floppy_name(drive.controller, drive.unit, 0, name.clone());
+            }
+        }
+    }
+
     pub(crate) fn drive_error(&self, index: usize, message: impl Into<String>) -> LowerError {
         let mut reader = crate::FileImageReader;
         let context = self.context(&mut reader);

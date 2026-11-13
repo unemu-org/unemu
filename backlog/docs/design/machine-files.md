@@ -1578,3 +1578,24 @@ ports, it claims 388h–38Bh, base+0..3 and base+8/9 as byte ports, including th
 standard bank aliases. These participate in normal port-conflict validation;
 there is no `opl3` switch. See [audio §OPL3](audio.md#opl3) for sample timing,
 timers and the native FM source.
+
+## Removable floppy catalogues
+
+Schema 1 keeps the single `image` form unchanged and adds an alternative
+`media = [{ image, sha256?, write?, journal?, keep_generations? }, ...]` on a
+floppy drive. A separate `empty = true` starts with no medium; it permits a
+zero-entry catalogue too. Otherwise entry zero is mounted at power-on. A child
+that replaces `media` also resets inherited `empty` unless it restates that field. YAML
+uses the identical entry fields in a sequence. This additive form preserves
+existing single-image machine configurations and their golden identities.
+Drive-level image/pin/write/journal fields cannot accompany `media`/`empty`.
+The declared drive `type` fixes every entry's exact geometry; 360K in a 1.2M
+drive is refused until separate mechanics and media densities are modelled.
+
+Media have independent write policies and journal paths. Every base is hashed
+on the actual mounted bytes and all geometries and path aliases are checked
+before any journal opens. `extends` replaces a media list atomically and retains
+its defining layer's path origins. A child single `image` replaces an inherited
+catalogue, and a child catalogue replaces an inherited single image and policy.
+See persistent-media.md § Media changes and machines/README.md § Removable
+floppy media for runtime host controls and deterministic headless input.

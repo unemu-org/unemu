@@ -430,7 +430,6 @@ fn reserved_fields_values_and_outside_options_are_recognised() {
             "\"atapi-cdrom\"",
             (4, 8),
         ),
-        ("[[card]]\n[[card.drives]]", "media", "\"none\"", (4, 9)),
         ("[[card]]\n[[card.drives]]", "image", "\"blank\"", (4, 9)),
         ("[[card]]\n[[card.drives]]", "geometry", "\"auto\"", (4, 12)),
     ] {

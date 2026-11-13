@@ -45,6 +45,7 @@ mod device;
 mod drive;
 mod error;
 mod firmware;
+mod floppy;
 mod fw_cfg;
 mod image;
 mod machine;
@@ -72,8 +73,12 @@ pub use device::{
 };
 pub use devices::ata::AtaControllerModel;
 pub use devices::FwCfgFile;
-pub use drive::{DriveConfig, DriveKind, FloppyGeometry, HardDiskGeometry, WriteMode};
+pub use drive::{
+    DriveConfig, DriveKind, FloppyGeometry, FloppyMediaList, FloppyMedium, HardDiskGeometry,
+    WriteMode,
+};
 pub use error::ConfigError;
+pub use floppy::{FloppyAction, FloppyError, FloppyEvent};
 pub use image::{
     interleave_parts, FirmwareService, ImageKind, ImagePart, ImageSource, Lane, LoadImage,
 };

@@ -406,7 +406,6 @@ reserved_field! {
     reject_monitor => "monitor colour selection is a future display-card feature",
     reject_rom => "card-owned option ROM declarations are not implemented",
     reject_mmio => "card MMIO window relocation is not implemented",
-    reject_media => "empty removable drives are not implemented",
 }
 
 pub(super) fn rtc_start<'de, D: Deserializer<'de>>(
@@ -431,4 +430,11 @@ pub(super) fn drive_image<'de, D: Deserializer<'de>>(
     } else {
         Ok(Some(value))
     }
+}
+
+/// Decode an explicit list; null is not an omitted field.
+pub(super) fn media_list<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<Vec<super::Medium>>, D::Error> {
+    Vec::<super::Medium>::deserialize(deserializer).map(Some)
 }

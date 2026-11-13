@@ -24,6 +24,11 @@
 //! Physical keyboard events enter a host FIFO. Immediately before each bounded
 //! run chunk it transfers bytes to the 8042, retaining bytes under backpressure.
 //! Events are quantised to chunk boundaries, never injected inside a chunk.
+//! The binary consumes Ctrl+Alt+F to insert the next A: medium and Ctrl+Alt+E
+//! to eject it; Shift selects B:. Next cycles the image list without an empty
+//! entry, and from empty selects the first image. Media events enter at the same
+//! run boundaries; the title shows current file names or `empty`. See
+//! `backlog/docs/design/observation.md` § Floppy host input.
 //! Repeated host presses emit make codes again (typematic); releases emit breaks.
 //! Captured physical Shift and guest LED NumLock select IBM artificial Shift
 //! wrappers for E0 navigation/Divide (IBM PS/2 Technical Reference, Set 1 Scan-Code

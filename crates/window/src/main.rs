@@ -7,7 +7,11 @@
 //! boundary. An opt-in PS/2 mouse uses raw relative events while captured;
 //! Ctrl+Alt+G and focus loss release the host grab. Host audio opens only with
 //! the window, renders at each run boundary, and uses a bounded playback ring.
-//! Ctrl+Alt+M toggles mute without reaching the guest. Audio never paces execution. See
+//! Ctrl+Alt+M toggles mute without reaching the guest. Ctrl+Alt+F inserts the
+//! next A: medium (wraps to the first); Ctrl+Alt+E ejects A:. Hold Shift for B:.
+//! These host keys queue media events for the next run boundary; their make,
+//! repeat and break codes never reach the guest. The title names both media.
+//! Audio never paces execution. See
 //! `backlog/docs/design/observation.md` § Window pacing and § Host input.
 
 use assembly::{AssembledMachine, DeviceId, ObservationPolicy, ObservationRequest, OutputKind};
@@ -77,9 +81,14 @@ struct Presenter {
     mute_key_held: bool,
     mute_modifiers: [bool; 4],
     suppress_m: bool,
+    media_keys: [bool; 2],
+    media_held: [bool; 2],
+    shift_keys: [bool; 2],
+    media_events: Vec<(u8, assembly::FloppyAction)>,
     audio_error_reported: bool,
     surface: Option<HostSurface>,
     window: Option<Rc<Window>>,
+    last_title: Option<String>,
     running: bool,
     reset_requests: u64,
     cpu_resets: u64,
@@ -148,9 +157,14 @@ impl Presenter {
             mute_key_held: false,
             mute_modifiers: [false; 4],
             suppress_m: false,
+            media_keys: [false; 2],
+            media_held: [false; 2],
+            shift_keys: [false; 2],
+            media_events: Vec::new(),
             audio_error_reported: false,
             surface: None,
             window: None,
+            last_title: None,
             running: true,
             reset_requests: 0,
             cpu_resets: 0,
@@ -178,10 +192,11 @@ impl Presenter {
 
     fn open(&mut self, events: &ActiveEventLoop) -> Result<(), Box<dyn Error>> {
         self.audio.open(&mut io::stderr());
+        let title = self.title();
         let window = Rc::new(
             events.create_window(
                 Window::default_attributes()
-                    .with_title(self.title())
+                    .with_title(title.clone())
                     .with_inner_size(PhysicalSize::new(1440, 700)),
             )?,
         );
@@ -189,6 +204,7 @@ impl Presenter {
         self.surface = Some(Surface::new(&context, window.clone())?);
         window.request_redraw();
         self.window = Some(window);
+        self.last_title = Some(title);
         Ok(())
     }
 
@@ -224,6 +240,17 @@ impl Presenter {
                 break;
             }
             self.assembled.check_persistence()?;
+            let media_events = std::mem::take(&mut self.media_events);
+            let media_changed = !media_events.is_empty();
+            for (unit, action) in media_events {
+                match self.assembled.change_floppy(DeviceId::Fdc, unit, action) {
+                    Err(assembly::FloppyError::Unavailable) => {}
+                    result => result?,
+                }
+            }
+            if media_changed {
+                self.update_title();
+            }
             let delivered = self.keyboard.inject_at_boundary(&mut self.assembled);
             #[cfg(test)]
             if !delivered.is_empty() {
@@ -330,7 +357,9 @@ impl Presenter {
         }
     }
 
-    fn title(&self) -> String {
+    fn title(&mut self) -> String {
+        let a = self.assembled.floppy_name(DeviceId::Fdc, 0);
+        let b = self.assembled.floppy_name(DeviceId::Fdc, 1);
         let audio = if !self.audio.available() {
             "no audio"
         } else if self.audio.muted() {
@@ -343,13 +372,19 @@ impl Presenter {
         } else {
             ""
         };
-        format!("unemupc98 — freedos — {audio}{pointer}")
+        format!("unemupc98 — freedos — a: {a} — b: {b} — {audio}{pointer}")
     }
 
-    fn update_title(&self) {
-        if let Some(window) = &self.window {
-            window.set_title(&self.title());
+    fn update_title(&mut self) -> bool {
+        let title = self.title();
+        if self.last_title.as_ref() == Some(&title) {
+            return false;
         }
+        if let Some(window) = &self.window {
+            window.set_title(&title);
+        }
+        self.last_title = Some(title);
+        true
     }
 
     fn key_event(&mut self, key: KeyCode, state: ElementState) {
@@ -362,6 +397,42 @@ impl Presenter {
         };
         if let Some(index) = modifier {
             self.mute_modifiers[index] = state == ElementState::Pressed;
+        }
+        match key {
+            KeyCode::ShiftLeft => self.shift_keys[0] = state == ElementState::Pressed,
+            KeyCode::ShiftRight => self.shift_keys[1] = state == ElementState::Pressed,
+            _ => {}
+        }
+        if let Some(index) = match key {
+            KeyCode::KeyF => Some(0),
+            KeyCode::KeyE => Some(1),
+            _ => None,
+        } {
+            let fresh = state == ElementState::Pressed && !self.media_held[index];
+            self.media_held[index] = state == ElementState::Pressed;
+            if self.media_keys[index] {
+                if state == ElementState::Released {
+                    self.media_keys[index] = false;
+                }
+                return;
+            }
+            if fresh
+                && self.mute_modifiers[..2].contains(&true)
+                && self.mute_modifiers[2..].contains(&true)
+            {
+                self.media_keys[index] = true;
+                if self.running && self.error.is_none() {
+                    self.media_events.push((
+                        u8::from(self.shift_keys.contains(&true)),
+                        if index == 0 {
+                            assembly::FloppyAction::Next
+                        } else {
+                            assembly::FloppyAction::Eject
+                        },
+                    ));
+                }
+                return;
+            }
         }
         if key == KeyCode::KeyM {
             let fresh = state == ElementState::Pressed && !self.mute_key_held;
@@ -394,6 +465,9 @@ impl Presenter {
 
     fn focus_changed(&mut self, focused: bool) {
         if !focused {
+            self.media_keys = [false; 2];
+            self.media_held = [false; 2];
+            self.shift_keys = [false; 2];
             self.mute_key_held = false;
             self.mute_modifiers = [false; 4];
             self.suppress_m = false;
@@ -445,7 +519,7 @@ impl Presenter {
         }
     }
 
-    fn restore_pointer(&self) {
+    fn restore_pointer(&mut self) {
         if let Some(window) = &self.window {
             if let Err(error) = window.set_cursor_grab(CursorGrabMode::None) {
                 eprintln!("cannot release pointer: {error}");
@@ -758,6 +832,76 @@ mod tests {
             assembly::AssemblyOptions::default(),
             &mut io::sink(),
         )
+    }
+
+    #[test]
+    fn floppy_media_host_keys_queue_at_boundaries_suppress_repeat_and_select_b_with_shift() {
+        use ElementState::{Pressed, Released};
+        let mut rom = vec![0xf4; 32768];
+        rom[..3].copy_from_slice(&[0xfa, 0xeb, 0xfe]);
+        rom[0x7ff0..0x7ff5].copy_from_slice(&[0xea, 0, 0, 0, 0xf8]);
+        let mut config = assembly::bios(rom, Some(vec![0; 1_474_560]));
+        config.drives[0].media = Some(assembly::FloppyMediaList {
+            empty: false,
+            entries: ["one.img", "two.img"]
+                .into_iter()
+                .map(|name| assembly::FloppyMedium {
+                    image: assembly::ImageSource::Inline(vec![0; 1_474_560]),
+                    expected_sha256: None,
+                    write: assembly::WriteMode::ReadOnly,
+                    name: name.into(),
+                })
+                .collect(),
+        });
+        let mut b = config.drives[0].clone();
+        b.unit = 1;
+        config.drives.push(b);
+        let mut presenter = Presenter::new(
+            &config,
+            assembly::AssemblyOptions {
+                allow_unlisted_firmware: true,
+            },
+            &mut io::sink(),
+        )
+        .unwrap();
+        for key in [
+            KeyCode::ControlLeft,
+            KeyCode::AltLeft,
+            KeyCode::KeyF,
+            KeyCode::KeyF,
+        ] {
+            presenter.key_event(key, Pressed);
+        }
+        presenter.key_event(KeyCode::KeyF, Released);
+        assert_eq!(
+            presenter.media_events,
+            vec![(0, assembly::FloppyAction::Next)]
+        );
+        assert_eq!(presenter.assembled.floppy_name(DeviceId::Fdc, 0), "one.img");
+        presenter.advance(Duration::ZERO).unwrap();
+        assert_eq!(presenter.assembled.floppy_name(DeviceId::Fdc, 0), "one.img");
+        advance_frame(&mut presenter);
+        assert_eq!(presenter.assembled.floppy_name(DeviceId::Fdc, 0), "two.img");
+        assert!(presenter.title().contains("a: two.img"));
+        presenter.key_event(KeyCode::ShiftLeft, Pressed);
+        presenter.key_event(KeyCode::KeyE, Pressed);
+        presenter.key_event(KeyCode::ControlLeft, Released);
+        presenter.key_event(KeyCode::KeyE, Released);
+        advance_frame(&mut presenter);
+        assert_eq!(presenter.assembled.floppy_name(DeviceId::Fdc, 1), "empty");
+        assert_eq!(presenter.assembled.floppy_name(DeviceId::Fdc, 0), "two.img");
+        assert!(presenter.title().contains("b: empty"));
+        presenter.update_title();
+        assert!(
+            !presenter.update_title(),
+            "an unchanged title must not be submitted again"
+        );
+        assert!(presenter
+            .input_log
+            .iter()
+            .flat_map(|(_, codes)| codes)
+            .all(|code| ![0x21, 0xa1, 0x12, 0x92].contains(code)));
+        presenter.assembled.finish_persistence().unwrap();
     }
 
     fn mouse_presenter(enabled: bool) -> Presenter {
@@ -1335,6 +1479,7 @@ mod tests {
             .with_irq(ide.irq()),
         );
         config.drives.push(assembly::DriveConfig {
+            media: None,
             controller: DeviceId::Ide,
             unit: 0,
             kind: assembly::DriveKind::HardDisk {
@@ -1513,6 +1658,39 @@ mod tests {
             }
             drop(presenter);
         }
+    }
+
+    #[test]
+    fn floppy_media_window_prints_retention_warning_after_same_boundary_reinsert() {
+        let temp = assembly::test_support::TempDir::new("window-removable-warning");
+        let base = temp.path().join("base.img");
+        std::fs::write(&base, vec![0; 1_474_560]).unwrap();
+        let mut config = assembly::bios(vec![0xF4; 32768], Some(vec![0; 1_474_560]));
+        config.board = assembly::BoardModel::Bare;
+        let demo = assembly::at_boot(vec![0xFA, 0xF4]);
+        config.cpu = demo.cpu;
+        config.images = demo.images;
+        config.drives[0].image = assembly::ImageSource::File(base);
+        config.drives[0].write = assembly::WriteMode::Journal {
+            path: temp.path().join("disk.upfj"),
+            keep_generations: 1,
+        };
+        let mut presenter = test_presenter(&config).unwrap();
+        presenter.assembled.persistence[0]
+            .checkpoint(&mut presenter.assembled.machine)
+            .unwrap();
+        presenter.assembled.persistence[0].fail_retention("temporary write");
+        presenter
+            .assembled
+            .change_floppy(DeviceId::Fdc, 0, assembly::FloppyAction::Insert(0))
+            .unwrap();
+        let mut warnings = Vec::new();
+        presenter.finish_persistence(&mut warnings).unwrap();
+        let expected = "warning: drive 0: retention maintenance failed before publication: injected retention write failure\n";
+        assert_eq!(String::from_utf8(warnings.clone()).unwrap(), expected);
+        presenter.finish_persistence(&mut warnings).unwrap();
+        assert_eq!(String::from_utf8(warnings).unwrap(), expected);
+        assert!(presenter.window.is_none());
     }
 
     #[test]

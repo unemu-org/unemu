@@ -1026,3 +1026,23 @@ here come from the spike brief; the tracker was not opened by this worker.
 Audio hardware and a window implementation remain follow-up consumers, not
 prerequisites for this seam. Do not add a speaker model or GUI as part of these
 observation fixes.
+
+### Floppy host input
+
+Ctrl+Alt+F queues insertion of the next A: catalogue entry; Ctrl+Alt+E queues
+ejection. Shift selects B:. Repeated presses and releases of the shortcut key
+are consumed by the host, even if modifiers are released first. Next wraps to
+entry zero and from an empty drive selects zero; empty is reached only by eject.
+The title shows each drive's current file name or `empty`. No GUI image or guest
+screen capture is needed to test these controls.
+
+The presenter drains media events before keyboard and mouse injection at the
+next completed run boundary, then advances execution. Journal sealing/reopening
+uses assembly's persistence handles synchronously there. A host failure stops
+execution. Headless runs use `run_floppy_schedule` and `FloppyEvent.at` in the
+same cumulative instruction-equivalent virtual time as run caps; equal-time
+events retain input order. This is input data, independent of observation
+subscriptions. Hardware semantics and snapshot compatibility are described in
+persistent-media.md § Media changes; the source is the IBM PC AT Technical
+Reference, Fixed Disk and Diskette Drive Adapter, Digital Input Register
+(3F7h) and Interface Lines.

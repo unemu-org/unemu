@@ -611,7 +611,7 @@ fn fdc_reset_poll_supersession_continues_at_every_byte_boundary() {
                 }
             }
             let blob = source.device().save();
-            assert_eq!(blob[0], 4);
+            assert_eq!(blob[0], 5);
             let mut restored = MockBus::new(mounted_fdc());
             restored.device_mut().restore(&blob).unwrap();
             assert_eq!(restored.device().save(), blob);
@@ -910,8 +910,8 @@ fn fdc_data_rate_round_trip_preserves_nondefault_and_reserved_selections() {
         original.port_write(0x3F2, 1, 0x0C).unwrap();
         original.port_write(0x3F7, 1, rate).unwrap();
         let blob = original.device().save();
-        assert_eq!(blob[0], 4);
-        assert_eq!(blob.last(), Some(&(rate as u8)));
+        assert_eq!(blob[0], 5);
+        assert_eq!(blob.get(blob.len() - 21), Some(&(rate as u8)));
         let mut restored = MockBus::new(mounted_fdc());
         restored.device_mut().restore(&blob).unwrap();
         assert_eq!(restored.device().save(), blob);
@@ -935,8 +935,11 @@ fn fdc_data_rate_previous_version_restores_with_500_kbps_default() {
     let mut bus = MockBus::new(mounted_fdc());
     bus.port_write(0x3F7, 1, 2).unwrap();
     bus.device_mut().restore(&previous).unwrap();
-    assert_eq!(bus.device().save()[0], 4);
-    assert_eq!(bus.device().save().last(), Some(&0));
+    assert_eq!(bus.device().save()[0], 5);
+    assert_eq!(
+        bus.device().save().get(bus.device().save().len() - 21),
+        Some(&0)
+    );
     for byte in [0x4A, 0] {
         bus.port_write(0x3F5, 1, byte).unwrap();
     }
