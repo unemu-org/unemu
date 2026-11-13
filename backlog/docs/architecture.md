@@ -21,7 +21,7 @@ crate: `machine-file` reads and hashes declared images into inline buffers,
 | `device` | Hardware-neutral contracts: `Device`, `InterruptController`, `DmaMemory`, `VClock`, `NextEvent`, access traces, DMA messages, and the observation capabilities (text scanout, byte output, `ByteCapture`) | `thiserror` | None |
 | `cpu` | `Cpu`/`CpuStop` seam and `X86JitCpu`, which owns the core's `Vm` and `Vcpu` | `x86jit-core`, `thiserror` | None |
 | `bus` | Owns boxed devices and executes a port/MMIO `DecodeMap`; open-bus policy and ticking | `device`, `thiserror` | None |
-| `devices` | UART 16550, PIC 8259, PIT 8253, 8042, CMOS/RTC, DMA 8237, uPD765 floppy controller, VGA and MDA text cards, system control and POST port | `device`, `thiserror` | `testkit`, `video` |
+| `devices` | UART 16550, PIC 8259, PIT 8253, 8042, CMOS/RTC, DMA 8237, uPD765 floppy controller, VGA and MDA text cards, system control, POST port and Lo-tech EMS board | `device`, `thiserror` | `testkit`, `video` |
 | `chipset` | Shared/cascaded PIC composition, null interrupt controller, AT port constants; no `Chipset` trait | `device`, `devices` | `testkit` |
 | `machine` | Generic `Machine<C: Cpu>` and execution/clock/IRQ/DMA loop | `cpu`, `bus`, `device`, `thiserror` | `testkit`, `devices` |
 | `video` | `FrameSink`, text frames/grids, text-mode renderer and capture sink | `device` | None |
@@ -327,6 +327,18 @@ not copied into this workspace
   (RX, executable/readable with guest stores dropped). Host image loading uses
   `Vm::write_bytes`, which can populate ROM. Real-mode `INT n` already vectors
   through the guest IVT; it is not an outstanding embedder implementation.
+- The Lo-tech EMS board owns its SRAM behind `Device` and a 64 KiB MMIO
+  frame. Port writes update its four latches synchronously before the next CPU
+  instruction; normal RAM still uses the existing `Vm` RAM regions. Every
+  400h I/O alias is represented in the decode map and conflict validation.
+  The IBM 5170's E0000h–FFFFFh system-board ROM decode rejects an E000h
+  frame; the shipped profiles use D000h. Only Rust bare test rigs accept E000h.
+  The normal high ROM alias is unchanged. CPU reset preserves latches and SRAM.
+  The pinned CPU cannot fetch instructions from trap regions. A code fetch
+  from the frame raises a CPU fetch fault and stops the run with a CPU error;
+  this limitation is tracked as open work (upc-6le.53).
+  See the coverage matrix in `crates/devices/src/lotech_ems.rs` and
+  [machine fields](../../machines/README.md#lo-tech-ems-card-reference).
 - `inject_irq` forwards a queued vector; the core gates delivery on IF, pending
   completions and the STI/SS-load shadows, then enters the guest IVT handler.
   `completed_steps()` drives machine time; `retired()` remains available for

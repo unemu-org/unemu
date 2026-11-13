@@ -69,8 +69,8 @@ pub use clock::ClockConfig;
 pub use cpu::{CpuChip, CpuConfig, FpuChip, ResetSpec, SegmentSeed};
 pub use device::{
     CmosCfg, CmosRam, DebugConsoleCfg, DeviceConfig, DeviceId, DeviceKind, DmaCfg, DmaSpec, FdcCfg,
-    FwCfgCfg, I8042Cfg, IdeCfg, MdaTextCfg, NvramSource, PicCfg, PitCfg, PortWindow, PostPortCfg,
-    RtcStart, Sb16Cfg, SysControlCfg, UartCfg, VgaCfg, VgaTextCfg,
+    FwCfgCfg, I8042Cfg, IdeCfg, LotechEmsCfg, MdaTextCfg, NvramSource, PicCfg, PitCfg, PortWindow,
+    PostPortCfg, RtcStart, Sb16Cfg, SysControlCfg, UartCfg, VgaCfg, VgaTextCfg,
 };
 pub use devices::ata::AtaControllerModel;
 pub use devices::FwCfgFile;
@@ -149,6 +149,12 @@ pub mod test_support {
             }
         }
         format!("{:x}", digest.finalize())
+    }
+
+    /// SHA-256 for local binary fixtures, including non-sector-aligned drivers.
+    pub fn fixture_sha256(bytes: &[u8]) -> String {
+        use sha2::{Digest, Sha256};
+        format!("{:x}", Sha256::digest(bytes))
     }
 
     /// SHA-256 of a captured indexed frame: little-endian dimensions/repeat,

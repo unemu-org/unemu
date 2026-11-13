@@ -152,6 +152,10 @@ timed_table! {
         /// Serial pointing device attached to a UART card.
         pub mouse: Option<SerialMouseModel>,
         pub port: Option<u16>,
+        /// Required Lo-tech EMS segment (for example 0xD000), not a physical address.
+        pub frame: Option<u16>,
+        /// Populated Lo-tech EMS SRAM in KiB.
+        pub size_kib: Option<u32>,
         pub base: Option<u16>,
         pub dma8: Option<u8>,
         pub dma16: Option<u8>,

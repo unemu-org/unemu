@@ -81,3 +81,8 @@ target/
 # Proprietary firmware remains user-supplied; only its instructions are tracked.
 /vendor/user-roms/*
 !/vendor/user-roms/README.md
+
+# Local-only Lo-tech driver fixture; no redistribution rights.
+/vendor/ltemm/LTEMM.EXE
+/vendor/ltemm/.extract.*/
+/vendor/ltemm/*.zip

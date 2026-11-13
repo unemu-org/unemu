@@ -517,7 +517,11 @@ impl<R: ImageReader> Context<'_, R> {
                 "controller_model is only supported by ide cards",
             ));
         }
-        if !matches!(kind, v1::CardKind::Uart16550 | v1::CardKind::Ide) && card.port.is_some() {
+        if !matches!(
+            kind,
+            v1::CardKind::Uart16550 | v1::CardKind::Ide | v1::CardKind::LotechEms
+        ) && card.port.is_some()
+        {
             return Err(self.error(
                 &format!("{field}.port"),
                 "port override is not supported by this fixed-port card kind",
@@ -534,7 +538,37 @@ impl<R: ImageReader> Context<'_, R> {
         if kind == v1::CardKind::Sb16 && card.dma.is_some() {
             return Err(self.error(&format!("{field}.dma"), "sb16 uses dma8 and dma16"));
         }
+        if kind != v1::CardKind::LotechEms && (card.frame.is_some() || card.size_kib.is_some()) {
+            return Err(self.error(
+                &field,
+                "frame and size_kib are only supported by lotech-ems cards",
+            ));
+        }
         let mut device = match kind {
+            v1::CardKind::LotechEms => {
+                let defaults = assembly::LotechEmsCfg::default();
+                let cfg = assembly::LotechEmsCfg {
+                    port: card.port.unwrap_or(defaults.port),
+                    frame: self.required(&format!("{field}.frame"), card.frame)?,
+                    size_kib: card.size_kib.unwrap_or(defaults.size_kib),
+                };
+                if let Some(name) = cfg.invalid_field() {
+                    return Err(self.error(
+                        &format!("{field}.{name}"),
+                        "invalid Lo-tech EMS jumper or SRAM population",
+                    ));
+                }
+                mmio.push(MmioWindow::new(
+                    u64::from(cfg.frame) << 4,
+                    0x10000,
+                    DeviceId::LotechEms,
+                ));
+                DeviceConfig::new(
+                    DeviceId::LotechEms,
+                    DeviceKind::LotechEms(cfg),
+                    cfg.port_windows(),
+                )
+            }
             v1::CardKind::Mda => {
                 mmio.push(MmioWindow::new(0xB0000, 0x8000, DeviceId::Mda));
                 DeviceConfig::new(
@@ -619,7 +653,7 @@ impl<R: ImageReader> Context<'_, R> {
         };
         if matches!(
             kind,
-            v1::CardKind::Mda | v1::CardKind::VgaText | v1::CardKind::Vga
+            v1::CardKind::Mda | v1::CardKind::VgaText | v1::CardKind::Vga | v1::CardKind::LotechEms
         ) && card.irq.is_some()
         {
             return Err(self.error(&format!("{field}.irq"), "this card has no interrupt source"));
@@ -935,6 +969,10 @@ impl<R: ImageReader> Context<'_, R> {
                 .map(|field| format!("{field}.base"))
                 .into_iter()
                 .collect(),
+            LotechEmsFrameInSystemRom { device } => device_fields(&[*device])
+                .into_iter()
+                .map(|field| format!("{field}.frame"))
+                .collect(),
             AdapterSpaceOverlapsRam { .. }
             | HighRomAliasOverlap { .. }
             | BoardPhysicalAddressOutOfRange { .. }
@@ -955,6 +993,7 @@ impl<R: ImageReader> Context<'_, R> {
             DuplicateDeviceId(id) | MmioDeviceMissing(id) => device_fields(&[*id]),
             InvalidDmaChannel { device, .. }
             | InvalidSb16Resources { device }
+            | InvalidLotechEmsResources { device }
             | InvalidIdeResources { device }
             | InvalidDebugConsoleResources { device }
             | InvalidSysCtrlPortAResources { device }
@@ -1157,6 +1196,7 @@ fn kind_name(kind: v1::CardKind) -> &'static str {
         v1::CardKind::Fdc765 => "fdc-765",
         v1::CardKind::Ide => "ide",
         v1::CardKind::Sb16 => "sb16",
+        v1::CardKind::LotechEms => "lotech-ems",
     }
 }
 
@@ -1501,6 +1541,121 @@ mod tests {
             image_paths: Vec::new(),
             options: assembly::AssemblyOptions::default(),
             bios_parts: false,
+        }
+    }
+
+    #[test]
+    fn lotech_ems_jumpers_population_and_frame_decode() {
+        for port in [0x260, 0x264, 0x268, 0x26C] {
+            for frame in [0xC000, 0xD000] {
+                for size in [512, 1024, 1536, 2048] {
+                    let config = sb16_config(&format!("[[card]]\nkind='lotech-ems'\nport={port}\nframe={frame}\nsize_kib={size}\n")).unwrap();
+                    let cfg = assembly::LotechEmsCfg {
+                        port,
+                        frame,
+                        size_kib: size,
+                    };
+                    let card = config
+                        .devices
+                        .iter()
+                        .find(|d| d.id == DeviceId::LotechEms)
+                        .unwrap();
+                    assert_eq!(card.kind, DeviceKind::LotechEms(cfg));
+                    assert_eq!(card.ports, cfg.port_windows());
+                    assert!(config.memory.mmio.contains(&MmioWindow::new(
+                        u64::from(frame) << 4,
+                        0x10000,
+                        DeviceId::LotechEms
+                    )));
+                }
+            }
+        }
+        let config = sb16_config("[[card]]\nkind='lotech-ems'\nframe=0xD000\n").unwrap();
+        assert!(config.devices.iter().any(|d| d.kind
+            == DeviceKind::LotechEms(assembly::LotechEmsCfg {
+                frame: 0xD000,
+                ..Default::default()
+            })));
+    }
+
+    #[test]
+    fn lotech_ems_frame_is_required_and_invalid_fields_are_named() {
+        let error = sb16_config("[[card]]\nkind='lotech-ems'\n")
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("card[lotech-ems].frame"), "{error}");
+        for (field, value) in [("port", "0x261"), ("frame", "0xB000"), ("size_kib", "513")] {
+            let frame = if field == "frame" {
+                ""
+            } else {
+                "frame=0xD000\n"
+            };
+            let error = sb16_config(&format!(
+                "[[card]]\nkind='lotech-ems'\n{frame}{field}={value}\n"
+            ))
+            .unwrap_err()
+            .to_string();
+            assert!(
+                error.contains(&format!("card[lotech-ems].{field}")),
+                "{error}"
+            );
+        }
+        let error = sb16_config("[[card]]\nkind='lotech-ems'\nframe=0xE000\n")
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("frame 0xD000"), "{error}");
+        assert!(error.contains("card[lotech-ems].frame"), "{error}");
+    }
+
+    #[test]
+    fn lotech_ems_card_fields_parse_in_toml_and_yaml() {
+        let toml = crate::parse_toml(
+            "ems.toml",
+            "schema=1\n[[card]]\nkind='lotech-ems'\nport=0x264\nframe=0xD000\nsize_kib=1536\n",
+        )
+        .unwrap();
+        let yaml = crate::parse_yaml("ems.yaml", "schema: 1\ncard:\n  - kind: lotech-ems\n    port: 0x264\n    frame: 0xD000\n    size_kib: 1536\n").unwrap();
+        assert_eq!(toml.card, yaml.card);
+        for field in ["port: -1", "frame: 65536", "size_kib: -1"] {
+            assert!(crate::parse_yaml(
+                "bad.yaml",
+                &format!("schema: 1\ncard:\n  - kind: lotech-ems\n    {field}\n")
+            )
+            .is_err());
+        }
+    }
+
+    #[test]
+    fn lotech_ems_rejects_bad_resources_and_alias_conflicts() {
+        for fields in [
+            "port=0x261",
+            "frame=0xB000",
+            "size_kib=0",
+            "size_kib=513",
+            "irq=5",
+            "dma=1",
+            "base=0x260",
+            "dma8=1",
+            "dma16=5",
+        ] {
+            let frame = if fields.starts_with("frame=") {
+                ""
+            } else {
+                "frame=0xD000\n"
+            };
+            assert!(
+                sb16_config(&format!("[[card]]\nkind='lotech-ems'\n{frame}{fields}\n")).is_err(),
+                "{fields}"
+            );
+        }
+        for fields in ["frame=0xE000", "size_kib=2048"] {
+            assert!(sb16_config(&format!("[[card]]\nkind='uart-16550'\n{fields}\n")).is_err());
+        }
+        for port in [0x260, 0x660, 0xFE60] {
+            assert!(sb16_config(&format!(
+                "[[card]]\nkind='lotech-ems'\nframe=0xD000\n[[card]]\nkind='uart-16550'\nport={port}\nirq=4\n"
+            ))
+            .is_err());
         }
     }
 

@@ -57,21 +57,14 @@ const PINNED_SCRIPTS: &[(&str, &str, &str)] = &[
         include_str!("../../../vendor/xtide-universal-bios/fetch.sh"),
         "OUTPUT_SHA256=\"",
     ),
+    (
+        "ltemm/LTEMM.EXE",
+        include_str!("../../../vendor/ltemm/fetch.sh"),
+        "OUTPUT_SHA256=\"",
+    ),
 ];
 
-fn parse_pin<'a>(script: &'a str, prefix: &str) -> Result<&'a str, &'static str> {
-    let mut matches = script
-        .lines()
-        .filter_map(|line| line.trim().strip_prefix(prefix));
-    let value = matches
-        .next()
-        .filter(|_| matches.next().is_none())
-        .ok_or("script format changed: expected exactly one output SHA-256 pin line")?;
-    value
-        .strip_suffix('"')
-        .filter(|pin| pin.len() == 64 && pin.bytes().all(|byte| byte.is_ascii_hexdigit()))
-        .ok_or("script format changed: expected a quoted 64-digit output SHA-256 pin")
-}
+use fixtures::parse_pin;
 
 fn fixture_pins() -> Vec<(&'static str, &'static str)> {
     PINNED_SCRIPTS
@@ -163,12 +156,7 @@ fn listing(vendor: &Path, checked: &[(&str, &str)]) -> BTreeSet<PathBuf> {
 fn assert_pinned(vendor: &Path, checked: &[(&str, &str)]) {
     for &(relative, expected) in checked {
         let bytes = std::fs::read(vendor.join(relative)).unwrap();
-        let hash: String = media::Header::new(&bytes, 0)
-            .unwrap()
-            .base_digest
-            .iter()
-            .map(|byte| format!("{byte:02x}"))
-            .collect();
+        let hash = assembly::test_support::fixture_sha256(&bytes);
         assert_eq!(hash, expected, "fixture SHA-256: {relative}");
     }
 }
@@ -182,7 +170,9 @@ fn volatile_boots_preserve_pinned_fixture_hashes_and_vendor_entries() {
     let checked: Vec<_> = fixture_pins()
         .into_iter()
         .filter(|&(relative, _)| {
-            !relative.starts_with("hdd/") && !relative.starts_with("xtide-")
+            !relative.starts_with("hdd/")
+                && !relative.starts_with("xtide-")
+                && !relative.starts_with("ltemm/")
                 || vendor.join(relative).symlink_metadata().is_ok()
         })
         .collect();
@@ -293,4 +283,21 @@ fn volatile_boots_preserve_pinned_fixture_hashes_and_vendor_entries() {
             "vendor entries changed during {boot}"
         );
     }
+}
+
+#[test]
+fn ltemm_local_fixture_has_pinned_hash_and_mz_header() {
+    let Some(bytes) = fixtures::optional_fixture("ltemm/LTEMM.EXE") else {
+        return;
+    };
+    assert_eq!(&bytes[..2], b"MZ");
+    let hash = assembly::test_support::fixture_sha256(&bytes);
+    let pins = fixture_pins();
+    assert_eq!(
+        hash,
+        pins.iter()
+            .find(|(path, _)| *path == "ltemm/LTEMM.EXE")
+            .unwrap()
+            .1
+    );
 }

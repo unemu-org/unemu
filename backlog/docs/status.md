@@ -18,6 +18,32 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   for new code. This implements decision-22 §1a–b; the private time field,
   permanent multi-tick test build and stateful VGA beam remain separate seams.
 
+- **2026-11-13 — Lo-tech hardware EMS:** the r02 board model owns 512 KiB
+  to 2 MiB SRAM behind a 64 KiB MMIO frame at C000h/D000h, or E000h on Bare. Four
+  write-only page latches decode 260h/264h/268h/26Ch and all 400h aliases;
+  values 80h–FFh and unpopulated chips float high and drop writes. Power-on
+  latches are deterministically FFh; CPU and device reset retain latches and
+  SRAM. Ordinary RAM keeps its existing CPU path. On IBM 5170, E0000h–FFFFFh
+  is system-board ROM space, so EMS uses C000h or D000h; Bare also permits E000h.
+  A code fetch from the frame raises a CPU fetch fault and stops the run with a
+  CPU error; this limitation is tracked as open work (upc-6le.53). Coverage and
+  model choices are in `crates/devices/src/lotech_ems.rs`.
+  Machine files require `frame` for `kind = "lotech-ems"`; `port` and `size_kib`
+  have defaults. Both shipped game profiles enable 2 MiB at D000h, port 260h.
+  The CPU-region snapshot includes the card. MEASURED: the open-profile
+  behaviour golden is unchanged. The supervisor's gate provides the user-ROM
+  at-games golden measurement before merge. LTEMM r01 is a fetched,
+  double-hash-pinned, gitignored fixture, never redistributed or placed in a published disk image; its terms
+  still await maintainer confirmation under decision-23. The ignored open-firmware
+  FreeDOS MEM golden uses a disposable in-memory tools disk and a synthetic DOS
+  program that checks all 128 pages through all four windows before MEM /E,
+  including an aliased-page negative control. MEASURED: MEM reports 2,048 KiB
+  total and free EMS (2,097,152 bytes). The D000h endpoint retires 18,681,813
+  instructions with text FNV-1a `0eda968da7052433`; the page-alias mutant fails
+  the DOS check at 16,355,288 instructions with text `df1f6dc3129c84ce`. See
+  [the machine reference](../../machines/README.md#lo-tech-ems-card-reference)
+  and [fixture terms](../../vendor/ltemm/README.md).
+
 - **2026-11-13 — Game-ready AT profiles:** `machines/at-games.toml` combines
   the user-supplied June 1985 IBM 5170 BIOS and IBM VGA EPROM, register-level
   VGA, 640 KiB + 4 MiB RAM, SB16 with OPL3 (220h/IRQ5/DMA1/HDMA5), a COM1

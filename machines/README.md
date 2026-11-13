@@ -345,13 +345,43 @@ copy with a fresh journal path and, optionally, a new SHA-256 pin. Host mtools
 operations may use host file timestamps; the built-in formatter itself is
 byte-deterministic and has no mtools dependency.
 
+## Lo-tech EMS card reference
+
+```toml
+[[card]]
+kind = "lotech-ems"
+port = 0x260
+frame = 0xD000
+size_kib = 2048
+```
+
+`frame` is required and must match the driver's `/p` switch. It is a segment
+(for example 0xD000), not a physical address. The card's jumper default is
+E000h, but E0000h–FFFFFh is system-board ROM space on `ibm-5170`: use C000h or
+D000h there. IBM 5170 is the only implemented machine-file board; only Rust
+bare test rigs accept E000h. `port` defaults to 260h and accepts 260h, 264h,
+268h or 26Ch; `size_kib` defaults to 2048 and accepts 512, 1024, 1536 or 2048
+(one to four 512 KiB SRAM chips). The 64 KiB frame must not overlap RAM,
+another MMIO window or a loaded ROM. All four byte ports and every 400h alias
+participate in conflict checking. The card has no IRQ or DMA setting.
+
+The r02 schematic's write-only page latches return FFh on reads. Values
+80h–FFh or unpopulated chips leave their 16 KiB windows unbacked. Deterministic
+power-on uses FFh latches and zero SRAM; a warm reset preserves both latches
+and SRAM. The frame uses the existing MMIO data-access path; executing code
+from the EMS frame is not supported by the pinned CPU's trap-region fetch path.
+A code fetch from the frame raises a CPU fetch fault and stops the run with a
+CPU error; this limitation is tracked as open work (upc-6le.53).
+Hardware coverage is recorded in `crates/devices/src/lotech_ems.rs`.
+
 ## Playing DOS games
 
 `at-games.toml` combines the IBM 5170 BIOS dated 1985-06-10, register-level
-VGA with the IBM Display Adapter video BIOS, SB16/OPL3, a Microsoft serial
-mouse on COM1/IRQ4, and a journaled IDE C:. It extends `preset:ibm-5170` and
-removes both default text cards. It is a configuration for compatibility
-experiments, not a claim that individual games or mouse drivers have passed.
+VGA with the IBM Display Adapter video BIOS, SB16/OPL3, the Lo-tech 2 MiB EMS
+board, a Microsoft serial mouse on COM1/IRQ4, and a journaled IDE C:. It
+extends `preset:ibm-5170` and removes both default text cards. It is a
+configuration for compatibility experiments, not a claim that individual games
+or mouse drivers have passed.
 
 Supply the two system BIOS chips and the complete 32 KiB VGA EPROM under the
 names in the file; [the ROM guide](../vendor/user-roms/README.md) gives their
@@ -368,6 +398,23 @@ opens MDA, the first display. This is a text console and disk/audio/input
 baseline, not a VGA graphics-game substitute. No open VGA video BIOS is
 qualified here for the 286. The IBM variant needs user ROMs for both system
 and video firmware.
+
+Both shipped game profiles enable the 2 MiB board at D000h, port 260h. For
+another machine, add the `lotech-ems` card above to a local child file. Fetch
+the local-only driver using `vendor/ltemm/fetch.sh` (see [its terms and
+pins](../vendor/ltemm/README.md)); copy LTEMM.EXE to your own working DOS
+disk. Add this line to CONFIG.SYS:
+
+```text
+DEVICE=LTEMM.EXE /p:D000 /n
+```
+
+Use `DEVICE=C:\LTEMM.EXE /p:D000 /n` if it is installed in C:\ instead. `/n`
+skips only the keyboard-polled memory test; the RAM probe still writes port
+61h. Match `/p` to the configured frame, and pass `/i:264` when using port
+264h. Reboot and run `MEM /E` from the open FreeDOS tools disk to check the
+total and free EMS pages. Never put the driver into a committed or published
+disk image. Extended RAM and XMS are separate from this board's expanded RAM.
 
 Both profiles use 640 KiB conventional plus **4096 KiB extended RAM**, derived
 CMOS, a fixed RTC start of 2000-01-01, the preset's instruction/PIT ratio, and

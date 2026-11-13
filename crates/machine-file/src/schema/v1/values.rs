@@ -99,7 +99,7 @@ named_values! {
     /// Card spellings, independent of the eventual device assembler.
     CardKind, "card kind" {
         Mda => "mda", VgaText => "vga-text", Vga => "vga", Uart16550 => "uart-16550",
-        Fdc765 => "fdc-765", Ide => "ide", Sb16 => "sb16",
+        Fdc765 => "fdc-765", Ide => "ide", Sb16 => "sb16", LotechEms => "lotech-ems",
     } reserved {
         "hercules" => "needs a hercules display card model",
         "cga" => "needs a cga display card model",

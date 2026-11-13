@@ -604,7 +604,9 @@ Common fields:
 |---|---|---|
 | `id` | string | Unique key for `extends` and messages. Defaults to the kind (`"fdc-765"`); repeated ids are refused. |
 | `kind` | string | Required, unless `extends` already defined a card with this `id`. |
-| `port` | u16 | The base port, where the kind is relocatable. |
+| `port` | u16 | The base port, where the kind is relocatable; Lo-tech EMS defaults to 260h and accepts 260h/264h/268h/26Ch with every 400h alias. |
+| `frame` | u16 | Required for `lotech-ems`: segment C000h/D000h on `ibm-5170`, the only machine-file board; E000h is rejected. Only Rust bare test rigs accept E000h. Fixed 64 KiB MMIO, must match LTEMM `/p`. |
+| `size_kib` | u32 | Lo-tech EMS only: 512/1024/1536/2048 KiB, default 2048. |
 | `base` | u16 | SB16-only DSP base; default 220h; see [SB16](#sb16). |
 | `dma8` | u8 | SB16-only byte-DMA channel; default 1. |
 | `dma16` | u8 | SB16-only word-DMA channel; default 5; 5/6/7 allowed. |
@@ -632,6 +634,13 @@ honours it. The MDA, VGA and µPD765 models decode fixed absolute ports (READ,
 | `fdc-765` | `Fdc` | `0x3F0–0x3F7`; with primary IDE: `0x3F0–0x3F5`, `0x3F7` | no (`0x370` is reserved) | 6 | 2 | — | `unit` 0–1 |
 | `sb16` | `Sb16` | `base+0..6/8/9/Ah/Ch/Eh/Fh`, `388h–38Bh`; base `0x220` | `base`: 220h/240h/260h/280h | 5 (2/5/7/10 allowed) | `dma8`: 1 (0/1/3 allowed), `dma16`: 5 (5/6/7 allowed) | — | — |
 | `ide` | `Ide` | `0x1F0` word data, `0x1F1–0x1F7` byte registers, `0x3F6` byte control | `0x1F0` or `0x170`; the control port is base + `0x206` | 14 (15 for `0x170`) | — (PIO) | — | `channel` master, slave |
+| `lotech-ems` | `LotechEms` | base 260h, four byte ports, every 400h alias | 260h/264h/268h/26Ch | — (no IRQ) | — (no DMA) | 64 KiB at required C000h/D000h segment; E000h rejected by `ibm-5170`, the only machine-file board; only Rust bare test rigs accept E000h | — |
+
+The Lo-tech board's physical jumper default is E000h. IBM 5170 decodes
+E0000h–FFFFFh as system-board ROM, so its EMS frame must instead be C000h or
+D000h and avoid other mappings. A machine file must specify the segment and
+use the same LTEMM `/p` switch; for example `frame = 0xD000` and
+`DEVICE=LTEMM.EXE /p:D000 /n`. No IRQ or DMA setting is accepted.
 
 `vga` selects register-level VGA with guest fonts and DAC colours, and starts
 unprogrammed without an option ROM. `vga-text` remains the existing machine

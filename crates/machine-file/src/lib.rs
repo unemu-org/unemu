@@ -399,6 +399,7 @@ pub fn load_for_assembly(
                 Fdc765 => assembly::DeviceId::Fdc,
                 Ide => assembly::DeviceId::Ide,
                 Sb16 => assembly::DeviceId::Sb16,
+                LotechEms => assembly::DeviceId::LotechEms,
             };
             Some((resolve::card_id(card)?.to_owned(), device))
         })

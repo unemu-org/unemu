@@ -55,6 +55,8 @@ pub enum DeviceId {
     DmaWord,
     /// Empty 80287 socket and motherboard coprocessor controls.
     Coprocessor,
+    /// Lo-tech expanded-memory board.
+    LotechEms,
 }
 
 /// A contiguous, inclusive port range decoded to a device (§4.1).
@@ -495,6 +497,59 @@ impl Sb16Cfg {
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct DmaCfg {}
 
+/// Lo-tech 2MB EMS Board schematic, revision r02: HCT688 port jumpers,
+/// frame decode and four possible 512 KiB SRAM chips.
+/// See `backlog/docs/architecture.md` §x86jit integration.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct LotechEmsCfg {
+    /// Jumpered I/O base: 260h, 264h, 268h or 26Ch.
+    pub port: u16,
+    /// Jumpered segment: C000h, D000h or E000h.
+    pub frame: u16,
+    /// Populated SRAM in KiB: 512, 1024, 1536 or 2048.
+    pub size_kib: u32,
+}
+
+impl Default for LotechEmsCfg {
+    fn default() -> Self {
+        Self {
+            port: 0x260,
+            frame: 0xE000,
+            size_kib: 2048,
+        }
+    }
+}
+
+impl LotechEmsCfg {
+    /// Whether the jumper positions and SRAM population exist on the board.
+    pub fn is_valid(self) -> bool {
+        devices::LotechEms::valid_configuration(self.port, self.frame, self.size_kib)
+    }
+
+    /// First invalid hardware field, using the device constructor's validators.
+    pub fn invalid_field(self) -> Option<&'static str> {
+        if !devices::LotechEms::valid_port(self.port) {
+            Some("port")
+        } else if !devices::LotechEms::valid_frame(self.frame) {
+            Some("frame")
+        } else if !devices::LotechEms::valid_size_kib(self.size_kib) {
+            Some("size_kib")
+        } else {
+            None
+        }
+    }
+
+    /// HCT688 ignores A10–A15, so every alias must participate in conflict checks.
+    pub fn port_windows(self) -> Vec<PortWindow> {
+        (0..64u16)
+            .map(|alias| {
+                let base = self.port.saturating_add(alias * 0x400);
+                PortWindow::new(base, base.saturating_add(3))
+            })
+            .collect()
+    }
+}
+
 /// The chip-specific parameters of a [`DeviceConfig`] (§7).
 ///
 /// One variant per modelled chip. The variant fixes *which* chip a device is;
@@ -540,6 +595,8 @@ pub enum DeviceKind {
     DmaWord(DmaCfg),
     /// IBM AT coprocessor controls with no 80287 fitted.
     AbsentCoprocessor,
+    /// Lo-tech 2MB expanded-memory board.
+    LotechEms(LotechEmsCfg),
 }
 
 /// One device in a [`crate::MachineConfig`] (§7).

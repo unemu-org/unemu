@@ -244,6 +244,7 @@ fn kind_name(kind: CardKind) -> &'static str {
         CardKind::Fdc765 => "fdc-765",
         CardKind::Ide => "ide",
         CardKind::Sb16 => "sb16",
+        CardKind::LotechEms => "lotech-ems",
     }
 }
 pub(crate) fn card_id(card: &Card) -> Option<&str> {
@@ -325,6 +326,8 @@ fn validate_layer(document: &MachineFile, origins: &Origins) -> Result<(), Lower
         if card.remove == Some(true)
             && (card.kind.is_some()
                 || card.controller_model.is_some()
+                || card.frame.is_some()
+                || card.size_kib.is_some()
                 || card.port.is_some()
                 || card.base.is_some()
                 || card.dma8.is_some()
@@ -708,6 +711,8 @@ fn merge(
                 "controller_model",
             );
             m.scalar(&mut inherited.port, card.port, "port");
+            m.scalar(&mut inherited.frame, card.frame, "frame");
+            m.scalar(&mut inherited.size_kib, card.size_kib, "size_kib");
             m.scalar(&mut inherited.mouse, card.mouse, "mouse");
             m.scalar(&mut inherited.base, card.base, "base");
             m.scalar(&mut inherited.dma8, card.dma8, "dma8");
@@ -1025,6 +1030,38 @@ mod tests {
     }
     fn cards(d: &MachineFile) -> &[Card] {
         d.card.as_deref().unwrap()
+    }
+
+    #[test]
+    fn lotech_ems_resource_fields_inherit_override_and_reject_remove() {
+        let parent = "[[card]]\nkind='lotech-ems'\nport=0x260\nframe=0xE000\nsize_kib=2048\n";
+        let inherited = merged(parent, "[[card]]\nid='lotech-ems'\nport=0x264\n").unwrap();
+        let card = &cards(&inherited.document)[0];
+        assert_eq!(
+            (card.port, card.frame, card.size_kib),
+            (Some(0x264), Some(0xE000), Some(2048))
+        );
+        let overridden = merged(
+            parent,
+            "[[card]]\nid='lotech-ems'\nframe=0xD000\nsize_kib=512\n",
+        )
+        .unwrap();
+        let card = &cards(&overridden.document)[0];
+        assert_eq!(
+            (card.port, card.frame, card.size_kib),
+            (Some(0x260), Some(0xD000), Some(512))
+        );
+        assert_eq!(
+            overridden.origins.get("card[0].frame").file,
+            Path::new("child.toml")
+        );
+        for field in ["frame=0xD000", "size_kib=512"] {
+            assert!(merged(
+                parent,
+                &format!("[[card]]\nid='lotech-ems'\nremove=true\n{field}\n")
+            )
+            .is_err());
+        }
     }
 
     #[test]

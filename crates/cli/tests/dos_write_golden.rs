@@ -77,6 +77,10 @@
 //! - CPU: `x86jit-core`, the rev pinned in `Cargo.lock`.
 
 use cli::{dos_write_file_script, StopReason};
+#[path = "support/fat12.rs"]
+mod fat12;
+use fat12::file as fat12_file;
+
 #[path = "support/fixtures.rs"]
 mod fixtures;
 #[path = "support/session.rs"]
@@ -174,50 +178,6 @@ fn freedos_writes_a_file_from_the_keyboard() {
     );
 }
 
-/// Microsoft FAT Specification, BPB, FAT12 entries and FAT Directory Structure.
-/// Follow the on-media cluster chain so DOS's cached directory cannot stand in
-/// for the root entry and file contents actually written to the drive.
-fn fat12_file(image: &[u8], name: &[u8; 11]) -> Option<Vec<u8>> {
-    let word = |at| usize::from(u16::from_le_bytes([image[at], image[at + 1]]));
-    let sector_bytes = word(11);
-    let cluster_bytes = usize::from(image[13]) * sector_bytes;
-    let fat_start = word(14) * sector_bytes;
-    let fat_bytes = word(22) * sector_bytes;
-    let root_start = fat_start + usize::from(image[16]) * fat_bytes;
-    let root_bytes = word(17) * 32;
-    let data_start = root_start + root_bytes.div_ceil(sector_bytes) * sector_bytes;
-    let entry = image[root_start..root_start + root_bytes]
-        .as_chunks::<32>()
-        .0
-        .iter()
-        .take_while(|entry| entry[0] != 0)
-        .find(|entry| entry[0] != 0xE5 && entry[11] & 0x18 == 0 && &entry[..11] == name)?;
-    let size = u32::from_le_bytes(entry[28..32].try_into().unwrap()) as usize;
-    assert!(size <= image.len(), "file size exceeds media size");
-    let mut cluster = usize::from(u16::from_le_bytes([entry[26], entry[27]]));
-    let fat = &image[fat_start..fat_start + fat_bytes];
-    let mut bytes = Vec::with_capacity(size);
-    while bytes.len() < size {
-        assert!((2..0xFF0).contains(&cluster), "invalid FAT12 data cluster");
-        let start = data_start + (cluster - 2) * cluster_bytes;
-        let count = cluster_bytes.min(size - bytes.len());
-        assert!(count > 0, "empty FAT12 cluster");
-        bytes.extend_from_slice(&image[start..start + count]);
-        let at = cluster + cluster / 2;
-        let packed = u16::from_le_bytes([fat[at], fat[at + 1]]);
-        cluster = usize::from(if cluster & 1 == 0 {
-            packed & 0xFFF
-        } else {
-            packed >> 4
-        });
-    }
-    assert!(
-        size == 0 || cluster >= 0xFF8,
-        "file chain must end after its data"
-    );
-    Some(bytes)
-}
-
 #[test]
 fn fat12_reads_noncontiguous_even_and_odd_clusters() {
     let mut image = vec![0u8; 7 * 512];
@@ -240,4 +200,23 @@ fn fat12_reads_noncontiguous_even_and_odd_clusters() {
     let mut expected = vec![b'a'; 512];
     expected.extend_from_slice(b"xyz");
     assert_eq!(fat12_file(&image, b"ZZ         "), Some(expected));
+}
+
+#[test]
+fn added_files_roundtrip_fragmented_clusters_and_both_fats() {
+    let mut image = vec![0; 12 * 512];
+    image[11..13].copy_from_slice(&512u16.to_le_bytes());
+    image[13] = 1;
+    image[14] = 1;
+    image[16] = 2;
+    image[17] = 16;
+    image[22] = 1;
+    // Reserve cluster three to force an even-to-even noncontiguous chain.
+    image[512 + 4..512 + 6].copy_from_slice(&0xFFF0u16.to_le_bytes());
+    image[1024 + 4..1024 + 6].copy_from_slice(&0xFFF0u16.to_le_bytes());
+    fat12::add_file(&mut image, b"TEST    BIN", &[0xA5; 1300]);
+    fat12::add_file(&mut image, b"EMPTY   TXT", &[]);
+    assert_eq!(fat12_file(&image, b"TEST    BIN"), Some(vec![0xA5; 1300]));
+    assert_eq!(fat12_file(&image, b"EMPTY   TXT"), Some(vec![]));
+    assert_eq!(&image[512..1024], &image[1024..1536]);
 }

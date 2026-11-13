@@ -225,6 +225,7 @@ impl MachineConfig {
         self.check_uart_bases()?;
         self.check_ide_resources()?;
         self.check_sb16_resources()?;
+        self.check_lotech_ems_resources()?;
         self.check_port_widths()?;
         self.check_port_overlaps()?;
         self.check_mmio_devices_present()?;
@@ -709,6 +710,43 @@ impl MachineConfig {
         Ok(())
     }
 
+    fn check_lotech_ems_resources(&self) -> Result<(), ConfigError> {
+        for device in &self.devices {
+            if let DeviceKind::LotechEms(cfg) = device.kind {
+                let windows: Vec<_> = self
+                    .memory
+                    .mmio
+                    .iter()
+                    .filter(|w| w.device == device.id)
+                    .collect();
+                if !cfg.is_valid()
+                    || device.ports != cfg.port_windows()
+                    || device.irq.is_some()
+                    || device.dma.is_some()
+                    || windows.len() != 1
+                    || windows[0].base != u64::from(cfg.frame) << 4
+                    || windows[0].size != 0x10000
+                {
+                    return Err(ConfigError::InvalidLotechEmsResources { device: device.id });
+                }
+                for other in self.devices.iter().filter(|other| other.id != device.id) {
+                    for window in &device.ports {
+                        if let Some(conflict) =
+                            other.ports.iter().find(|port| window.overlaps(port))
+                        {
+                            return Err(ConfigError::PortOverlap {
+                                a: device.id,
+                                b: other.id,
+                                port: window.start.max(conflict.start),
+                            });
+                        }
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn check_sb16_resources(&self) -> Result<(), ConfigError> {
         for device in &self.devices {
             if let DeviceKind::Sb16(cfg) = device.kind {
@@ -937,6 +975,13 @@ impl MachineConfig {
         }
         for window in &self.memory.mmio {
             if ranges_overlap(window.base, window.end(), 0xE0000, 0x100000) {
+                if self.devices.iter().any(|device| {
+                    device.id == window.device && matches!(device.kind, DeviceKind::LotechEms(_))
+                }) {
+                    return Err(ConfigError::LotechEmsFrameInSystemRom {
+                        device: window.device,
+                    });
+                }
                 return Err(ConfigError::HighRomAliasSourceMmio {
                     board: self.board.id(),
                     addr: window.base.max(0xE0000),
@@ -1264,6 +1309,156 @@ mod tests {
     use crate::drive::{DriveConfig, DriveKind, FloppyGeometry, WriteMode};
     use crate::image::{ImageKind, ImageSource, LoadImage};
     use crate::memory::{MemoryConfig, MmioWindow, RamRegion};
+
+    fn ems_config() -> MachineConfig {
+        let mut config = valid_config();
+        config.memory.ram = config
+            .memory
+            .ram
+            .iter()
+            .flat_map(|r| {
+                [
+                    (r.base, r.end().min(0xD0000)),
+                    (r.base.max(0xE0000), r.end()),
+                ]
+            })
+            .filter(|&(start, end)| start < end)
+            .map(|(start, end)| RamRegion::new(start, end - start))
+            .collect();
+        let cfg = crate::LotechEmsCfg {
+            frame: 0xD000,
+            ..Default::default()
+        };
+        config.devices.push(DeviceConfig::new(
+            DeviceId::LotechEms,
+            DeviceKind::LotechEms(cfg),
+            cfg.port_windows(),
+        ));
+        config
+            .memory
+            .mmio
+            .push(MmioWindow::new(0xD0000, 0x10000, DeviceId::LotechEms));
+        config
+    }
+
+    #[test]
+    fn lotech_ems_e000_is_system_rom_on_at_and_allowed_on_bare() {
+        let mut config = crate::bios(vec![0xF4; 0x8000], Some(vec![0; 1_474_560]));
+        let cfg = crate::LotechEmsCfg::default();
+        config.devices.push(DeviceConfig::new(
+            DeviceId::LotechEms,
+            DeviceKind::LotechEms(cfg),
+            cfg.port_windows(),
+        ));
+        config
+            .memory
+            .mmio
+            .push(MmioWindow::new(0xE0000, 0x10000, DeviceId::LotechEms));
+        let error = config.validate().unwrap_err();
+        assert!(matches!(
+            error,
+            ConfigError::LotechEmsFrameInSystemRom {
+                device: DeviceId::LotechEms
+            }
+        ));
+        assert!(error.to_string().contains("frame 0xD000"));
+        config.board = BoardModel::Bare;
+        config.validate().unwrap();
+    }
+
+    #[test]
+    fn lotech_ems_rejects_ram_rom_and_mmio_frame_conflicts() {
+        let config = ems_config();
+        config.validate().unwrap();
+        let mut ram = config.clone();
+        ram.memory.ram.push(RamRegion::new(0xD0000, 0x1000));
+        assert!(matches!(
+            ram.validate(),
+            Err(ConfigError::MmioOverlapsRam { .. })
+        ));
+        let mut rom = config.clone();
+        rom.images.push(LoadImage {
+            base: 0xD8000,
+            source: ImageSource::Inline(vec![0; 2048]),
+            kind: ImageKind::Rom,
+            provides: Vec::new(),
+        });
+        assert!(matches!(
+            rom.validate(),
+            Err(ConfigError::ImageOverlapsMmio { .. })
+        ));
+        let mut mmio = config;
+        mmio.memory
+            .mmio
+            .push(MmioWindow::new(0xD8000, 0x1000, DeviceId::Vga));
+        assert!(matches!(
+            mmio.validate(),
+            Err(ConfigError::MmioOverlap { .. })
+        ));
+    }
+
+    #[test]
+    fn lotech_ems_alias_conflicts_cannot_use_priority_overlap() {
+        let mut config = ems_config();
+        let uart = find_device(&mut config, DeviceId::Uart);
+        uart.kind = DeviceKind::Uart(UartCfg {
+            base: 0x660,
+            mouse: false,
+        });
+        uart.ports = vec![PortWindow::overlapping(0x660, 0x667)];
+        uart.allow_port_overlap = true;
+        assert!(matches!(
+            config.validate(),
+            Err(ConfigError::PortOverlap { port: 0x660, .. })
+        ));
+    }
+
+    #[test]
+    fn lotech_ems_requires_exact_frame_alias_ports_and_no_irq_dma() {
+        for mutation in 0..8 {
+            let mut config = ems_config();
+            let dev = config.devices.last_mut().unwrap();
+            match mutation {
+                0 => {
+                    dev.ports.pop();
+                }
+                1 => dev.irq = Some(5),
+                2 => {
+                    dev.dma = Some(DmaSpec {
+                        controller: DeviceId::Dma,
+                        channel: 1,
+                    })
+                }
+                3 => {
+                    if let DeviceKind::LotechEms(ref mut cfg) = dev.kind {
+                        cfg.port = 0xFFFF;
+                        dev.ports = cfg.port_windows();
+                    }
+                }
+                4 => {
+                    if let DeviceKind::LotechEms(ref mut cfg) = dev.kind {
+                        cfg.frame = 0xFFFF;
+                    }
+                }
+                5 => {
+                    if let DeviceKind::LotechEms(ref mut cfg) = dev.kind {
+                        cfg.size_kib = 0;
+                    }
+                }
+                6 => config.memory.mmio.last_mut().unwrap().size = 0x4000,
+                _ => {
+                    config.memory.mmio.pop();
+                }
+            }
+            assert!(
+                matches!(
+                    config.validate(),
+                    Err(ConfigError::InvalidLotechEmsResources { .. })
+                ),
+                "mutation {mutation}"
+            );
+        }
+    }
 
     #[test]
     fn drive_rom_containers_are_rejected_in_single_and_catalogued_media() {

@@ -412,6 +412,10 @@ fn assemble_preverified(
                 );
                 Box::new(rtc)
             }
+            DeviceKind::LotechEms(c) => Box::new(
+                devices::LotechEms::new(c.port, c.frame, c.size_kib)
+                    .map_err(|_| ConfigError::InvalidLotechEmsResources { device: dc.id })?,
+            ),
             DeviceKind::Vga(_) => Box::new(VgaText::new()),
             DeviceKind::VgaRegisters(_) => Box::new(devices::Vga::new()),
             DeviceKind::Mda(_) => Box::new(MdaText::new()),
@@ -3593,6 +3597,69 @@ mod tests {
             CpuStepStop::Exit(CpuStop::Halt)
         );
         assert_eq!(cpu.reg(CpuReg::Rax) & 0xFF, 0x7B);
+    }
+
+    #[test]
+    fn lotech_ems_page_write_reaches_the_next_instruction_and_survives_cpu_reset() {
+        use cpu::{Cpu, CpuReg};
+        let program = vec![
+            0xFA, 0xB8, 0, 0xD0, 0x8E, 0xD8, 0xBA, 0x60, 2, 0xB0, 127, 0xEE, 0xC6, 6, 0, 0, 0x5A,
+            0xB0, 0, 0xEE, 0xA0, 0, 0, 0x88, 0xC3, 0xB0, 127, 0xEE, 0xA0, 0, 0, 0x88, 0xC7, 0xB0,
+            0xFF, 0xEE, 0xA0, 0, 0, 0xF4,
+        ];
+        let mut config = crate::at_boot(program);
+        config.memory.address_space_bytes = 0x100000;
+        let cfg = crate::LotechEmsCfg {
+            frame: 0xD000,
+            ..Default::default()
+        };
+        config.devices.push(DeviceConfig::new(
+            DeviceId::LotechEms,
+            DeviceKind::LotechEms(cfg),
+            cfg.port_windows(),
+        ));
+        config
+            .memory
+            .mmio
+            .push(MmioWindow::new(0xD0000, 0x10000, DeviceId::LotechEms));
+        let mut rig = assemble(&config).unwrap();
+        assert_eq!(
+            rig.machine.run_bounded(Some(100)).unwrap(),
+            machine::RunOutcome::Halted
+        );
+        assert_eq!(rig.machine.cpu().reg(CpuReg::Rbx) & 0xFFFF, 0x5A00);
+        assert_eq!(rig.machine.cpu().reg(CpuReg::Rax) & 0xFF, 0xFF);
+        let mut board = crate::bios(vec![0xF4; 0x8000], Some(vec![0; 1_474_560]));
+        board.devices.push(DeviceConfig::new(
+            DeviceId::LotechEms,
+            DeviceKind::LotechEms(cfg),
+            cfg.port_windows(),
+        ));
+        board
+            .memory
+            .mmio
+            .push(MmioWindow::new(0xD0000, 0x10000, DeviceId::LotechEms));
+        let mut rig = assemble_synthetic(&board).unwrap();
+        assert_eq!(
+            rig.machine.cpu().guest_dma_read(0xD0000),
+            cpu::DmaAccess::Mmio
+        );
+        assert_eq!(
+            rig.machine.cpu().guest_dma_read(0xFE0000),
+            cpu::DmaAccess::Complete(0)
+        );
+        rig.machine.bus_mut().port_write(0xFE60, 1, 0).unwrap();
+        rig.machine.bus_mut().mmio_write(0xD0000, 1, 0x42).unwrap();
+        assert_eq!(rig.machine.bus_mut().mmio_read(0xD0000, 1).unwrap(), 0x42);
+        assert_eq!(
+            rig.machine.cpu().guest_dma_read(0xFE0000),
+            cpu::DmaAccess::Complete(0)
+        );
+        let index = rig.device_index[&DeviceId::LotechEms];
+        let state = rig.machine.bus().device(index).unwrap().save();
+        rig.machine.reset_cpu().unwrap();
+        assert_eq!(rig.machine.bus().device(index).unwrap().save(), state);
+        assert_eq!(rig.machine.bus_mut().mmio_read(0xD0000, 1).unwrap(), 0x42);
     }
 
     #[test]

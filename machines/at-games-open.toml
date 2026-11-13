@@ -82,3 +82,10 @@ write = "readonly"
 [[card.drives.media]]
 image = "local/transfer-1200.img"
 write = "readonly"
+
+# Lo-tech 2 MiB EMS board in the ISA expansion-memory window.
+[[card]]
+kind = "lotech-ems"
+port = 0x260
+frame = 0xD000
+size_kib = 2048

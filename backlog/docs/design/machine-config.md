@@ -690,8 +690,11 @@ byte count. Two things it must express that a naive "N kB of RAM" cannot:
   while the current core starts at FFFF0h.
   Explicit RAM, MMIO and images overlapping the high alias are rejected.
   MMIO in E0000h–FFFFFh is also rejected: an assembly-time copy cannot mirror
-  a device. Excess extended RAM is diagnosed before high-alias overlap;
-  ROM/MMIO and RAM windows within the alias retain the alias-overlap error.
+  a device, and that range is owned by the system-board ROM chip-select.
+  The Lo-tech EMS board therefore uses C000h or D000h on IBM 5170, despite its
+  physical jumper default of E000h; only Rust bare test rigs accept E000h.
+  Excess extended RAM is diagnosed before high-alias overlap; ROM/MMIO and
+  RAM windows within the alias retain the alias-overlap error.
   **READ: extended-memory limit.** Both lowering and assembly permit at most
   15,232 KiB of extended RAM: the manual's System Memory Map assigns
   100000h–FDFFFFh to expansion memory. A full configuration ends RAM at

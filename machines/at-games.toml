@@ -107,3 +107,10 @@ write = "readonly"
 image = "local/transfer-1200.img"
 write = "readonly"
 # Add user-supplied 1.2M installation/game floppies in a local child profile.
+
+# Lo-tech 2 MiB EMS board in the ISA expansion-memory window.
+[[card]]
+kind = "lotech-ems"
+port = 0x260
+frame = 0xD000
+size_kib = 2048

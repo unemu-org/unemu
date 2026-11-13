@@ -4,6 +4,16 @@
 use std::{io::ErrorKind, path::PathBuf};
 
 pub fn fixture(relative: &str) -> Option<Vec<u8>> {
+    read_fixture(relative, true)
+}
+
+/// Local-only fixtures remain optional under the CI boot-fixture gate.
+#[allow(dead_code)]
+pub fn optional_fixture(relative: &str) -> Option<Vec<u8>> {
+    read_fixture(relative, false)
+}
+
+fn read_fixture(relative: &str, required_by_gate: bool) -> Option<Vec<u8>> {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../vendor")
         .join(relative);
@@ -16,8 +26,9 @@ pub fn fixture(relative: &str) -> Option<Vec<u8>> {
                 path.display()
             );
             assert!(
-                std::env::var_os("UNEMUPC98_REQUIRE_FIXTURES").as_deref()
-                    != Some(std::ffi::OsStr::new("1")),
+                !required_by_gate
+                    || std::env::var_os("UNEMUPC98_REQUIRE_FIXTURES").as_deref()
+                        != Some(std::ffi::OsStr::new("1")),
                 "{message}"
             );
             eprintln!("skipping: {message}");
@@ -25,4 +36,20 @@ pub fn fixture(relative: &str) -> Option<Vec<u8>> {
         }
         Err(error) => panic!("cannot read fixture {}: {error}", path.display()),
     }
+}
+
+/// Read exactly one SHA-256 pin from a fetched-fixture script.
+#[allow(dead_code)]
+pub fn parse_pin<'a>(script: &'a str, prefix: &str) -> Result<&'a str, &'static str> {
+    let mut matches = script
+        .lines()
+        .filter_map(|line| line.trim().strip_prefix(prefix));
+    let value = matches
+        .next()
+        .filter(|_| matches.next().is_none())
+        .ok_or("script format changed: expected exactly one output SHA-256 pin line")?;
+    value
+        .strip_suffix('"')
+        .filter(|pin| pin.len() == 64 && pin.bytes().all(|byte| byte.is_ascii_hexdigit()))
+        .ok_or("script format changed: expected a quoted 64-digit output SHA-256 pin")
 }

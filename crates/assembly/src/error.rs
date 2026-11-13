@@ -12,6 +12,9 @@ use crate::device::DeviceId;
 /// test can assert the exact failure a malformed config produces.
 #[derive(Clone, Debug, PartialEq, Eq, Error)]
 pub enum ConfigError {
+    /// Jumpers, SRAM population, decode or wiring disagree with the EMS board.
+    #[error("invalid Lo-tech EMS resources for {device:?}: require port 260h/264h/268h/26Ch (all aliases), frame C000h/D000h/E000h (64 KiB MMIO), 512/1024/1536/2048 KiB and no IRQ/DMA")]
+    InvalidLotechEmsResources { device: DeviceId },
     /// SB16 resources must match its byte/word-DMA ISA wiring and DSP/mixer decode.
     #[error("invalid SB16 resources for {device:?}: bases 220h/240h/260h/280h, IRQ 2/5/7/10, DMA8 0/1/3, DMA16 5/6/7 and DSP/mixer byte ports required")]
     InvalidSb16Resources {
@@ -382,6 +385,13 @@ pub enum ConfigError {
         board: &'static str,
         /// First overlapping source address.
         addr: u64,
+    },
+
+    /// The EMS frame conflicts with the IBM 5170 system-board ROM decode.
+    #[error("Lo-tech EMS device {device:?} frame 0xE000 overlaps IBM 5170 system-board ROM; use frame 0xD000")]
+    LotechEmsFrameInSystemRom {
+        /// Card whose frame must be moved out of system-board ROM space.
+        device: DeviceId,
     },
 
     /// System ROM must have a valid size and end at the top of the first MiB.
