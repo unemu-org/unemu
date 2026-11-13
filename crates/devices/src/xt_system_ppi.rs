@@ -31,6 +31,7 @@
 //! | Snapshot | PPI, pins, receive latch, bounded queue, reset interval, deadline, clock; traces excluded |
 
 use crate::Ppi8255;
+use device::clock::PIT;
 use device::{AccessDir, Device, DeviceError, NextEvent, TraceEvent, VClock};
 use std::collections::VecDeque;
 
@@ -287,7 +288,7 @@ pub enum XtKey {
 
 /// Compatibility hold interval: reject adjacent mode-set/release writes while
 /// allowing the BIOS loop under instruction-based virtual timing, not CPU cycles.
-const RESET_LOW_CLOCKS: u64 = 1_193;
+const RESET_LOW_CLOCKS: u64 = PIT.ticks(1_193);
 /// The keyboard buffer excludes the system board's receive shift register.
 const QUEUE_CAPACITY: usize = 16;
 
@@ -441,7 +442,7 @@ impl Device for XtSystemPpi {
                 self.latch = None;
                 self.ready_at = None;
             } else if old & 0x80 != 0 {
-                self.ready_at = Some(self.now.advance(1));
+                self.ready_at = PIT.next_edge_after(self.now);
             }
             self.refill();
         }
@@ -1114,6 +1115,35 @@ mod tests {
         ] {
             assert!(bus.device_mut().restore(&invalid).is_err());
             assert_eq!(bus.device().save(), before);
+        }
+    }
+    #[test]
+    fn clock_domain_xt_reset_and_release_follow_pit_edges() {
+        let mut bus = bus();
+        bus.port_write(0x63, 1, 0x99).unwrap();
+        bus.port_write(0x61, 1, 0x08).unwrap();
+        bus.tick(PIT.ticks(1193));
+        bus.port_write(0x61, 1, 0xc8).unwrap();
+        bus.port_write(0x61, 1, 0x48).unwrap();
+        assert_eq!(
+            bus.device().next_event(bus.clock()),
+            NextEvent::At(PIT.next_edge_after(bus.clock()).unwrap())
+        );
+        bus.tick(PIT.ticks(1));
+        assert_eq!(bus.port_read(0x60, 1).unwrap(), 0xaa);
+    }
+
+    #[test]
+    fn clock_domain_xt_reset_threshold_is_a_pit_duration() {
+        for (clocks, reset) in [(1192, false), (1193, true)] {
+            let mut bus = bus();
+            bus.port_write(0x63, 1, 0x99).unwrap();
+            bus.port_write(0x61, 1, 0x08).unwrap();
+            bus.tick(PIT.ticks(clocks));
+            bus.port_write(0x61, 1, 0xc8).unwrap();
+            bus.port_write(0x61, 1, 0x48).unwrap();
+            bus.tick(PIT.ticks(1));
+            assert_eq!(bus.device().irq_pending(), reset);
         }
     }
 }

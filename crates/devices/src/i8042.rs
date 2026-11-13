@@ -28,14 +28,19 @@
 //! matters because the machine's PIC is edge-triggered: it latches one interrupt
 //! per *rising* edge of the line. If a read instantly refilled the buffer the line
 //! would never fall, so several queued scancodes would collapse into one sustained
-//! high level and interrupt only once. Delivering on a tick — after holding one
-//! tick so the fall is observed — gives every queued byte its own rising edge and
+//! high level and interrupt only once. Delivering on a PIT input edge — after holding one
+//! PIT input edge so the fall is observed — gives every queued byte its own rising edge and
 //! therefore its own IRQ1.
 //!
 //! Intel 8042 datasheet, "Data Bus Buffer" and "Interrupts", describes the
 //! host buffer interface. The two PIT boundaries above are the compatibility
 //! model's IRQ visibility policy, separate from `KEYBOARD_BYTE_CLOCKS`. See
 //! `backlog/docs/design/scheduler.md` § Device migration inventory.
+//!
+//! Compatibility exception: a command ACK uses two separately rounded frame
+//! durations, one host frame and one reply frame. It is not rounded once over
+//! the combined bit count; retaining that extra rounding preserves existing
+//! guest timing. See the timing rules in `backlog/docs/conventions.md`.
 //!
 //! ## Bounded buffering and response ordering
 //!
@@ -184,6 +189,7 @@
 //! absolute receive deadline to every queued keyboard byte. Restore
 //! requires the same peripheral type and rejects older snapshot versions.
 
+use device::clock::{ClockDomain, Ratio, PIT};
 use std::collections::VecDeque;
 
 use std::{cell::Cell, rc::Rc};
@@ -202,7 +208,7 @@ const PORT_CMD: u16 = 0x64;
 /// Snapshot layout version tag, first byte of [`Device::save`] output.
 const SNAPSHOT_VERSION: u8 = 7;
 
-/// Keyboard frame time in PIT input clocks (1,193,182 Hz), rounded up.
+/// Keyboard frame time in virtual ticks from the exact board timer, rounded up.
 ///
 /// IBM Personal Computer AT Technical Reference (March 1984), "Receiving Data
 /// from the Keyboard" (p. 1-32), defines 11-bit frames and inhibits the link until
@@ -212,9 +218,9 @@ const SNAPSHOT_VERSION: u8 = 7;
 /// Controller", "Auxiliary Device and System Timings", Figure 6 (p. 14):
 /// 30–50 us per clock phase on the shared serial interface. Choose 50 us high +
 /// 50 us low (10 kHz), the slow end of that range, to allow a full frame before
-/// another keyboard byte can interrupt the host:
-/// ceil(11 * 100 us * 1,193,182 Hz) = 1313 clocks.
-const KEYBOARD_BYTE_CLOCKS: u64 = 1313;
+/// another keyboard byte can interrupt the host.
+/// The duration is 1313 virtual ticks at the current one-tick-per-PIT scale.
+const KEYBOARD_BYTE_CLOCKS: u64 = ClockDomain::from_hz(Ratio::new(10_000, 1)).ticks(11);
 
 /// DERIVED round trip: one host frame followed by one keyboard reply frame.
 /// IBM PC AT Technical Reference, Keyboard, "Clock and Data Signals"; IBM PS/2
@@ -222,10 +228,10 @@ const KEYBOARD_BYTE_CLOCKS: u64 = 1313;
 /// Controller, "System Sending Data", Figures 6–7. See the module timing policy.
 const KEYBOARD_ACK_CLOCKS: u64 = 2 * KEYBOARD_BYTE_CLOCKS;
 
-/// DERIVED: ceil(300 ms * 1,193,182 Hz) = 357955 PIT clocks.
+/// DERIVED: 300 ms on the exact board timer, rounded up.
 /// IBM PC AT Technical Reference (March 1986), 101/102-Key Keyboard,
 /// "Basic Assurance Test" (p. 4-39), gives 300–500 ms after reset ACK.
-const KEYBOARD_BAT_CLOCKS: u64 = 357_955;
+const KEYBOARD_BAT_CLOCKS: u64 = ClockDomain::from_hz(Ratio::new(10, 3)).ticks(1);
 
 /// Maximum queued keyboard reply bytes; see the module buffering policy.
 const KEYBOARD_REPLY_CAPACITY: usize = 16;
@@ -439,7 +445,7 @@ pub struct I8042 {
     /// Next tie goes to aux after a keyboard byte, preventing serial starvation.
     prefer_aux: bool,
     /// Set when a read empties the output buffer, to hold the next serial refill
-    /// for one tick so the IRQ1 line is observed low (its falling edge) before the
+    /// for one PIT input edge so the IRQ1 line is observed low (its falling edge) before the
     /// next queued byte re-raises it. Preserved in snapshots.
     refill_hold: bool,
     /// Earliest next keyboard byte after the host releases the serial link.
@@ -585,7 +591,9 @@ impl I8042 {
             && self.input_queue.is_empty()
             && self.command_byte & CB_KBD_DISABLE == 0
             && !self.refill_hold
-            && self.keyboard_ready_at.is_none_or(|at| self.now >= at)
+            && self
+                .keyboard_ready_at
+                .is_none_or(|at| self.input_edge() >= at)
             && self.controller_reply.is_none()
             && self.injected_aux.is_none()
             && !(self.prefer_aux && self.aux_output_ready())
@@ -634,9 +642,14 @@ impl I8042 {
         st
     }
 
+    // Crossing earlier input edges does not complete an off-edge serial deadline.
+    fn input_edge(&self) -> VClock {
+        PIT.edge_at(PIT.edges_at(self.now) as u64)
+    }
+
     fn aux_output_ready(&self) -> bool {
         self.command_byte & CB_AUX_DISABLE == 0
-            && self.aux_ready_at.is_none_or(|at| self.now >= at)
+            && self.aux_ready_at.is_none_or(|at| self.input_edge() >= at)
             && self
                 .aux_device
                 .as_ref()
@@ -664,11 +677,13 @@ impl I8042 {
             return;
         }
         let keyboard_ready = self.command_byte & CB_KBD_DISABLE == 0
-            && self.keyboard_ready_at.is_none_or(|at| self.now >= at)
+            && self
+                .keyboard_ready_at
+                .is_none_or(|at| self.input_edge() >= at)
             && self
                 .input_queue
                 .front()
-                .is_some_and(|byte| self.now >= byte.ready_at);
+                .is_some_and(|byte| self.input_edge() >= byte.ready_at);
         let aux_ready = self.aux_output_ready();
         if aux_ready && (self.prefer_aux || !keyboard_ready) {
             if let Some(byte) = self
@@ -906,15 +921,18 @@ impl Device for I8042 {
         if now < self.now {
             return;
         }
-        let elapsed = now.0.saturating_sub(self.now.0);
+        let elapsed = PIT.edges_between(self.now, now);
         self.now = now;
         if elapsed == 0 {
             return;
         }
-        if self.keyboard_ready_at.is_some_and(|at| now >= at) {
+        if self
+            .keyboard_ready_at
+            .is_some_and(|at| self.input_edge() >= at)
+        {
             self.keyboard_ready_at = None;
         }
-        if self.aux_ready_at.is_some_and(|at| now >= at) {
+        if self.aux_ready_at.is_some_and(|at| self.input_edge() >= at) {
             self.aux_ready_at = None;
         }
         // A read holds the line low through the first clock; only the second
@@ -929,24 +947,29 @@ impl Device for I8042 {
     }
 
     fn next_event(&self, _now: VClock) -> NextEvent {
+        let at_or_after = |at: VClock| {
+            PIT.next_edge_after(VClock(at.0.saturating_sub(1)))
+                .map_or(NextEvent::Dormant, NextEvent::At)
+        };
         let keyboard_event = if self.refill_hold
             || (!self.output_full
                 && (self.controller_reply.is_some() || self.injected_aux.is_some()))
         {
-            self.now
-                .0
-                .checked_add(1)
+            PIT.next_edge_after(self.now)
+                .map(|at| at.0)
                 .map_or(NextEvent::Dormant, |at| NextEvent::At(VClock(at)))
         } else if let Some(at) = self.keyboard_ready_at.filter(|at| *at > self.now) {
-            NextEvent::At(at)
+            at_or_after(at)
         } else if !self.output_full
             && self.command_byte & CB_KBD_DISABLE == 0
             && !self.input_queue.is_empty()
         {
-            self.now.0.checked_add(1).map_or(NextEvent::Dormant, |at| {
-                let ready_at = self.input_queue.front().map_or(at, |byte| byte.ready_at.0);
-                NextEvent::At(VClock(at.max(ready_at)))
-            })
+            PIT.next_edge_after(self.now)
+                .map(|at| at.0)
+                .map_or(NextEvent::Dormant, |at| {
+                    let ready_at = self.input_queue.front().map_or(at, |byte| byte.ready_at.0);
+                    at_or_after(VClock(at.max(ready_at)))
+                })
         } else {
             NextEvent::Dormant
         };
@@ -958,15 +981,14 @@ impl Device for I8042 {
                 .as_ref()
                 .is_some_and(|device| device.has_output())
         {
-            self.now
-                .0
-                .checked_add(1)
+            PIT.next_edge_after(self.now)
+                .map(|at| at.0)
                 .map(|next| {
-                    NextEvent::At(VClock(next.max(self.aux_ready_at.map_or(next, |at| at.0))))
+                    at_or_after(VClock(next.max(self.aux_ready_at.map_or(next, |at| at.0))))
                 })
                 .unwrap_or(NextEvent::Dormant)
         } else if let Some(at) = self.aux_ready_at.filter(|at| *at > self.now) {
-            NextEvent::At(at)
+            at_or_after(at)
         } else {
             NextEvent::Dormant
         };
@@ -2968,6 +2990,134 @@ mod tests {
         assert_eq!(
             bus.port_read(PORT_DATA, 1).unwrap(),
             u32::from(SELF_TEST_PASS)
+        );
+    }
+}
+
+#[cfg(test)]
+mod clock_domain_regressions {
+    use super::*;
+
+    use testkit::MockBus;
+    fn keyboard(bus: &mut MockBus) -> &mut I8042 {
+        bus.device_mut()
+            .as_any_mut()
+            .unwrap()
+            .downcast_mut()
+            .unwrap()
+    }
+    #[test]
+    fn clock_domain_keyboard_frames_bat_and_refill_hold() {
+        let mut bus = MockBus::new(Box::new(I8042::new()));
+        bus.port_write(PORT_DATA, 1, 0xff).unwrap();
+        let frame = ClockDomain::from_hz(Ratio::new(10_000, 1)).ticks(11);
+        assert_eq!(
+            bus.device().next_event(bus.clock()),
+            NextEvent::At(VClock(2 * frame))
+        );
+        bus.tick(2 * frame);
+        assert_eq!(bus.port_read(PORT_DATA, 1).unwrap(), 0xfa);
+        assert_eq!(
+            bus.device().next_event(bus.clock()),
+            NextEvent::At(PIT.next_edge_after(bus.clock()).unwrap())
+        );
+        bus.tick(PIT.ticks(1));
+        let bat = ClockDomain::from_hz(Ratio::new(10, 3)).ticks(1);
+        let bat_at = PIT.next_edge_after(VClock(3 * frame + bat - 1)).unwrap();
+        bus.tick(bat_at.0 - bus.clock().0 - 1);
+        assert_eq!(bus.port_read(PORT_CMD, 1).unwrap() & u32::from(ST_OBF), 0);
+        bus.tick(1);
+        assert_eq!(bus.port_read(PORT_DATA, 1).unwrap(), 0xaa);
+        // A pending controller reply must keep its low-line hold for one input edge.
+        keyboard(&mut bus).controller_reply = Some(0x55);
+        bus.tick(PIT.ticks(1));
+        assert!(!keyboard(&mut bus).output_full);
+        bus.tick(PIT.ticks(1));
+        assert_eq!(bus.port_read(PORT_DATA, 1).unwrap(), 0x55);
+    }
+    #[test]
+    fn clock_domain_keyboard_and_aux_ready_deadlines_use_next_input_edge() {
+        let mut bus = MockBus::new(Box::new(I8042::new()));
+        keyboard(&mut bus).input_queue.push_back(KeyboardByte {
+            value: 0x1e,
+            is_reply: false,
+            ready_at: VClock(KEYBOARD_BYTE_CLOCKS),
+        });
+        keyboard(&mut bus).keyboard_ready_at = Some(VClock(KEYBOARD_BYTE_CLOCKS));
+        assert_eq!(
+            bus.device().next_event(bus.clock()),
+            NextEvent::At(
+                PIT.next_edge_after(VClock(KEYBOARD_BYTE_CLOCKS - 1))
+                    .unwrap()
+            )
+        );
+        keyboard(&mut bus).keyboard_ready_at = None;
+        keyboard(&mut bus).input_queue.clear();
+        keyboard(&mut bus).injected_aux = Some(0x42);
+        assert_eq!(
+            bus.device().next_event(bus.clock()),
+            NextEvent::At(PIT.next_edge_after(bus.clock()).unwrap())
+        );
+        keyboard(&mut bus).injected_aux = None;
+        for attached in [false, true] {
+            if attached {
+                let mut mouse = crate::Ps2Mouse::new();
+                mouse.receive(0xff);
+                keyboard(&mut bus).aux_device = Some(Box::new(mouse));
+            }
+            keyboard(&mut bus).aux_ready_at = Some(VClock(KEYBOARD_BYTE_CLOCKS));
+            let edge = PIT
+                .next_edge_after(VClock(KEYBOARD_BYTE_CLOCKS - 1))
+                .unwrap();
+            assert_eq!(bus.device().next_event(bus.clock()), NextEvent::At(edge));
+        }
+
+        let edge = PIT
+            .next_edge_after(VClock(KEYBOARD_BYTE_CLOCKS - 1))
+            .unwrap();
+        bus.tick(edge.0 - 1);
+        assert_eq!(bus.port_read(PORT_CMD, 1).unwrap() & u32::from(ST_OBF), 0);
+        bus.tick(1);
+        assert_eq!(bus.port_read(PORT_DATA, 1).unwrap(), 0xfa);
+    }
+
+    #[test]
+    fn clock_domain_aux_refill_uses_next_input_edge() {
+        let mut mouse = crate::Ps2Mouse::new();
+        mouse.receive(0xff);
+        let bus = MockBus::new(Box::new(I8042::new().with_aux_device(Box::new(mouse))));
+        assert_eq!(
+            bus.device().next_event(bus.clock()),
+            NextEvent::At(PIT.next_edge_after(bus.clock()).unwrap())
+        );
+    }
+
+    #[test]
+    fn clock_domain_refill_hold_lasts_one_pit_input_edge() {
+        let mut bus = MockBus::new(Box::new(I8042::new()));
+        keyboard(&mut bus).refill_hold = true;
+        keyboard(&mut bus).controller_reply = Some(0x55);
+        assert_eq!(
+            bus.device().next_event(bus.clock()),
+            NextEvent::At(PIT.next_edge_after(bus.clock()).unwrap())
+        );
+        bus.tick(PIT.ticks(1));
+        assert!(!keyboard(&mut bus).output_full);
+        bus.tick(PIT.ticks(1));
+        assert_eq!(bus.port_read(PORT_DATA, 1).unwrap(), 0x55);
+    }
+    #[test]
+    fn clock_domain_ready_queue_refills_at_next_pit_input_edge() {
+        let mut bus = MockBus::new(Box::new(I8042::new()));
+        keyboard(&mut bus).input_queue.push_back(KeyboardByte {
+            value: 0x1e,
+            is_reply: false,
+            ready_at: VClock::ZERO,
+        });
+        keyboard(&mut bus).keyboard_ready_at = None;
+        assert_eq!(
+            bus.device().next_event(bus.clock()),
+            NextEvent::At(PIT.next_edge_after(bus.clock()).unwrap())
         );
     }
 }

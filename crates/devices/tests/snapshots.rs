@@ -480,23 +480,36 @@ fn running_rtc_continues_through_uip_alarm_and_update() {
 }
 
 #[test]
-fn default_rtc_snapshot_preserves_thirds_and_timing_in_an_integer_device() {
-    for saved_at in [1_193_182, 2_386_364, 3_578_352] {
+fn clock_domain_rtc_snapshot_preserves_exact_phase_and_timing() {
+    use device::clock::{PIT, PIT_HZ, TICKS_PER_PIT_CLOCK};
+    let second = |n: u64| {
+        (u128::from(n) * u128::from(PIT_HZ.numerator()) * u128::from(TICKS_PER_PIT_CLOCK))
+            .div_ceil(u128::from(PIT_HZ.denominator())) as u64
+    };
+    let uip_start = |n| second(n) - PIT.ticks(1193);
+    for saved_at in [second(1), second(2), uip_start(3)] {
         let mut source = MockBus::new(Box::new(CmosRtc::new()));
         source.port_write(0x70, 1, 0x0A).unwrap();
         source.port_write(0x71, 1, 0x26).unwrap();
         source.device_mut().sync(VClock(saved_at));
         let blob = source.device().save();
+        assert_eq!(
+            u64::from_le_bytes(blob[82..90].try_into().unwrap()),
+            PIT_HZ.numerator() * TICKS_PER_PIT_CLOCK
+        );
+        assert_eq!(u64::from(blob[108]), PIT_HZ.denominator());
         let mut restored = MockBus::new(Box::new(CmosRtc::new().with_timing(64, 8)));
         restored.device_mut().restore(&blob).unwrap();
         source.device_mut().take_trace();
         for clock in [
             saved_at,
             saved_at + 1,
-            3_579_544,
-            3_579_545,
-            4_771_534,
-            4_772_727,
+            second(3) - 1,
+            second(3),
+            uip_start(4) - 1,
+            uip_start(4),
+            second(4) - 1,
+            second(4),
         ] {
             for bus in [&mut source, &mut restored] {
                 bus.device_mut().sync(VClock(clock));
@@ -510,6 +523,15 @@ fn default_rtc_snapshot_preserves_thirds_and_timing_in_an_integer_device() {
                     bus.port_write(0x70, 1, index).unwrap();
                 }
                 assert_eq!(source.port_read(0x71, 1), restored.port_read(0x71, 1));
+            }
+            let phase = u128::from(clock) * u128::from(PIT_HZ.denominator())
+                % (u128::from(PIT_HZ.numerator()) * u128::from(TICKS_PER_PIT_CLOCK));
+            let expected_uip = phase
+                >= u128::from(PIT_HZ.numerator()) * u128::from(TICKS_PER_PIT_CLOCK)
+                    - u128::from(PIT.ticks(1193)) * u128::from(PIT_HZ.denominator());
+            for bus in [&mut source, &mut restored] {
+                bus.port_write(0x70, 1, 0x0a).unwrap();
+                assert_eq!(bus.port_read(0x71, 1).unwrap() & 0x80 != 0, expected_uip);
             }
             assert_eq!(source.device().save(), restored.device().save());
             assert_eq!(

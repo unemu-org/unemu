@@ -295,9 +295,11 @@ is not the scheduler's arithmetic policy.
   `retired_per_pit_clock = r` converts to `r / 1`; the machine must actually
   receive it. A rational field also permits slower fractional profiles.
 - The modeled PIT frequency as a positive rational Hz value. The default RTC
-  now uses the exact nominal `3_579_545 / 3` ratio, derived from the IBM PC AT
-  Technical Reference, System Board, System Timers and Oscillator; explicit
-  integer RTC timing overrides retain their configured PIT-clock periods.
+  uses exact OSC = 315/22 MHz divided by twelve (13,125,000/11 Hz), from
+  the IBM PC AT Technical Reference, System Board, System Timers and Oscillator.
+  Calendar phase uses 11 units per virtual tick at the current scale; legacy
+  1- and 3-unit snapshots restore at their saved ratio. Explicit RTC timing
+  overrides retain their configured virtual-tick periods.
 - Per-device clock-domain configuration and phase origins, constructed by the
   assembler and passed through generic device/scheduler seams.
 - An explicit temporary `LegacyBoundaries` versus `InstructionDeadlines` mode
@@ -493,7 +495,7 @@ and wiring order, never hash-map iteration, define equal-time order.
 | Device and current source | Required scheduling behavior | Fidelity boundary |
 |---|---|---|
 | PIT, `pit8253.rs:275`, `:486` | Schedule load edges and both OUT transitions; lazily synchronize all three counters for count reads/latches; include any routed channel-1/2 outputs | Preserve currently implemented modes and count wrapping before fixing other hardware deviations |
-| RTC, `cmos_rtc.rs:165`, `:669` | Schedule UIP entry and second/update/alarm boundaries; synchronize before register access, reschedule on SET and timing writes; sample register-C clear immediately | Default second is exactly 3,579,545 / 3 PIT clocks, with carried calendar and 32,768 Hz periodic-divider remainders; retain the approximate 1193-PIT-clock UIP window and explicit integer timing overrides. SET freezes only the separate calendar phase, not the periodic divider |
+| RTC, `cmos_rtc.rs:165`, `:669` | Schedule UIP entry and second/update/alarm boundaries; synchronize before register access, reschedule on SET and timing writes; sample register-C clear immediately | Default second uses exact OSC = 315/22 MHz divided by twelve (13,125,000/11 PIT clocks), with carried calendar and 32,768 Hz periodic-divider remainders; retain the approximate 1193-PIT-clock UIP window and explicit virtual-tick timing overrides. SET freezes only the separate calendar phase, not the periodic divider |
 | Keyboard, `i8042.rs:341`, `:492` | Preserve hold at the first PIT boundary after data read and refill at the second when enabled/queued; reschedule on data read, command-byte write, enable, and host injection | Two modeled PIT steps are an edge-visibility policy, not a measured keyboard serial baud rate |
 | FDC, `upd765.rs:65`, `:882` | `Dormant` between command/access/DMA work; service request and completion at the instruction boundary; timestamp accesses directly | Seek/read/write timing remains immediate; no rotational-latency feature is added |
 | DMA, `dma8237.rs:466` | `Dormant`; channel programming invalidates affected transfers; completion can create immediate IRQ work | Whole-transfer service is retained; arbitration, per-byte clocks, and CPU stalls are deferred |

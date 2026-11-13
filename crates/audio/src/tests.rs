@@ -758,3 +758,13 @@ fn rejected_device_edge_recovers_current_level_without_another_pin_change() {
         assert_eq!(sink.frames(), &[[expected; 2]]);
     }
 }
+
+#[test]
+fn clock_domain_output_frames_follow_exact_sample_edges() {
+    use device::clock::AUDIO_OUTPUT;
+    for n in [1, 2, 176, 1_000_000_000] {
+        let end = AUDIO_OUTPUT.edge_at(n);
+        assert_eq!(completed_frames(end), n);
+        assert_eq!(completed_frames(VClock(end.0 - 1)), n - 1);
+    }
+}

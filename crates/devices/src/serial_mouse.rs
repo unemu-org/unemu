@@ -17,12 +17,13 @@
 //! | Logitech extensions | Not modelled: no M3, middle button or fourth byte |
 //! | Electrical signalling | No voltage, bit sampling, acceleration or physical resolution |
 //!
-//! Startup is 11932 PIT clocks (ceil(3579545 / 300)); it is a modelling
+//! Startup is 11932 PIT clocks (10 ms rounded up); it is a modelling
 //! assumption rather than a measured mouse power-on interval. Host input while
 //! unpowered drops motion but remembers current buttons, so a held button is
 //! reported after identification. Snapshots include the power lines, startup
 //! deadline, pending packet, counters and button state, identified by a model tag.
 
+use device::clock::{ClockDomain, Ratio};
 use std::{any::Any, collections::VecDeque};
 
 use device::{DeviceError, VClock};
@@ -30,8 +31,8 @@ use device::{DeviceError, VClock};
 use crate::uart16550::{SerialFormat, SerialPeripheral};
 
 const MODEL: &str = "microsoft-serial-mouse";
-/// Assumed 10 ms startup on the board's nominal 3579545/3 Hz PIT input.
-pub const STARTUP_CLOCKS: u64 = 11_932;
+/// Assumed 10 ms startup, converted through the exact board clock.
+pub const STARTUP_CLOCKS: u64 = ClockDomain::from_hz(Ratio::new(100, 1)).ticks(1);
 
 /// Microsoft serial protocol endpoint; no ISA register decoder of its own.
 #[derive(Clone, Default)]
@@ -186,5 +187,20 @@ impl SerialPeripheral for SerialMouse {
 
     fn as_any_mut(&mut self) -> &mut dyn Any {
         self
+    }
+}
+
+#[cfg(test)]
+mod clock_domain_regressions {
+    use super::*;
+
+    #[test]
+    fn clock_domain_mouse_startup_uses_elapsed_board_time() {
+        let mut mouse = SerialMouse::new();
+        mouse.modem_control(true, true, VClock::ZERO);
+        assert_eq!(
+            mouse.ready_at(),
+            Some(ClockDomain::from_hz(Ratio::new(100, 1)).edge_at(1))
+        );
     }
 }

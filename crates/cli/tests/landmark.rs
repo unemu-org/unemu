@@ -771,7 +771,9 @@ fn user_rom_landmark_at_full_pass() {
     }
 }
 
-const IBM_GOLDEN_STOP: Option<(u16, u64)> = Some((0x0070, 0x02ad));
+// This value moved once when the board oscillator became the exact 315/22 MHz
+// constant, shifting timer phase by a fraction of a PIT clock.
+const IBM_GOLDEN_STOP: Option<(u16, u64)> = Some((0x0070, 0x02aa));
 const IBM_GOLDEN_RETIRED: Option<u64> = Some(24_872_018);
 const IBM_GOLDEN_POST: Option<&[u8]> = Some(&[
     0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,

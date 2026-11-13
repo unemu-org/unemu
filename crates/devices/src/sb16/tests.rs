@@ -1441,3 +1441,114 @@ fn opl3_last_pending_new_value_controls_addressing_after_snapshot() {
         );
     }
 }
+
+#[test]
+fn clock_domain_dsp_period_deadline_and_fm_grid() {
+    let events = Events::default();
+    let writer = events.clone();
+    let mut dsp = Sb16::new(0x220, 1);
+    let fm = dsp.fm();
+    dsp.observe_output(move |event| writer.borrow_mut().push(event));
+    let mut bus = MockBus::new(Box::new(dsp));
+    command(&mut bus, &[0x41, 0x1f, 0x40, 0x14, 0, 0]);
+    let sample = ClockDomain::from_hz(Ratio::new(8000, 1));
+    assert_eq!(
+        bus.device().next_event(bus.clock()),
+        NextEvent::At(sample.edge_at(1))
+    );
+    at(&mut bus, sample.ticks(1));
+    request(&mut bus, &[0x80]);
+    let pcm = frames(&events);
+    assert_eq!(pcm[0].0, sample.ticks(1));
+    fm.borrow_mut().advance(bus.clock());
+    let emitted = Rc::new(RefCell::new(Vec::new()));
+    let out = emitted.clone();
+    fm.borrow_mut()
+        .observe_output(move |event| out.borrow_mut().push(event));
+    let start = bus.clock().0;
+    fm.borrow_mut()
+        .advance(VClock(start + device::clock::OPL3.ticks(3)));
+    let at: Vec<_> = emitted
+        .borrow()
+        .iter()
+        .filter_map(|event| match event {
+            Output::Frame {
+                at,
+                numerator,
+                denominator,
+                ..
+            } => {
+                assert_eq!(
+                    (*numerator, *denominator),
+                    (device::clock::OPL3.ticks(1), 1)
+                );
+                Some(*at)
+            }
+            _ => None,
+        })
+        .collect();
+    assert!(at
+        .iter()
+        .all(|&at| at.0 % device::clock::OPL3.ticks(1) == 0));
+    assert_eq!(at.len(), 3);
+}
+
+#[test]
+fn clock_domain_dsp_stale_boundary_waits_for_next_input_edge() {
+    let mut dsp = Sb16::new(0x220, 1);
+    dsp.state.active = true;
+    dsp.state.index = 0;
+    let bus = MockBus::new(Box::new(dsp));
+    assert_eq!(
+        bus.device().next_event(bus.clock()),
+        NextEvent::At(PIT.next_edge_after(bus.clock()).unwrap())
+    );
+}
+
+#[test]
+fn clock_domain_fm_reset_origin_snapshot_and_partial_period() {
+    use device::clock::OPL3;
+    let dsp = Sb16::new(0x220, 1);
+    let fm = dsp.fm();
+    let _bus = MockBus::new(Box::new(dsp));
+    let origin = PIT.ticks(1);
+    let now = origin + OPL3.ticks(3) + PIT.ticks(2);
+    fm.borrow_mut().reset(origin);
+    fm.borrow_mut().advance(VClock(now));
+    let snapshot = fm.borrow().save();
+    let restored = fm::Fm::decode(&snapshot, mixer::Mixer::default(), now).unwrap();
+    let events = Rc::new(RefCell::new(Vec::new()));
+    let out = events.clone();
+    fm.borrow_mut()
+        .observe_output(move |event| out.borrow_mut().push(event));
+    fm.borrow_mut().restore(restored);
+    assert!(
+        matches!(events.borrow().last().unwrap(), Output::Frame { at, numerator, denominator: 1, .. }
+        if *at == VClock(now) && *numerator == OPL3.ticks(1) - PIT.ticks(2))
+    );
+}
+
+#[test]
+fn clock_domain_dsp_preserves_future_subedge_deadlines() {
+    let (mut bus, _) = rig();
+    command(&mut bus, &[0x41, 0x1f, 0x40, 0x14, 0, 0]);
+    let boundary = ClockDomain::from_hz(Ratio::new(8000, 1)).edge_at(1);
+    bus.tick(boundary.0 - 1);
+    if device::clock::TICKS_PER_PIT_CLOCK > 1 {
+        assert!(boundary < PIT.next_edge_after(bus.clock()).unwrap());
+    }
+    assert_eq!(
+        bus.device().next_event(bus.clock()),
+        NextEvent::At(boundary)
+    );
+    bus.tick(1);
+    assert!(bus.device_mut().take_dma_request().is_some());
+    let mut exhausted = Sb16::new(0x220, 1);
+    exhausted.state.now = u64::MAX;
+    exhausted.state.reset_ready = Some(u64::MAX);
+    let exhausted = MockBus::new(Box::new(exhausted));
+    assert_eq!(
+        exhausted.device().next_event(VClock(u64::MAX)),
+        NextEvent::At(VClock(u64::MAX))
+    );
+}

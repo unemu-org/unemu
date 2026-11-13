@@ -29,7 +29,13 @@
 //! endpoint, TX retains its instantaneous output-only behaviour. Reset retains
 //! attachment and sink; restore checks the endpoint model and effective modem
 //! lines before changing state, and never re-emits historical output.
+//!
+//! Compatibility exception: back-to-back serial frames start at the previous
+//! frame's rounded completion time, adding one rounded frame duration at a time.
+//! This retains the existing byte-delivery cadence instead of carrying the baud
+//! clock's fractional phase across frames. See `backlog/docs/conventions.md`.
 
+use device::clock::{ClockDomain, Ratio, UART, UART_HZ};
 use std::{any::Any, collections::VecDeque};
 
 use device::{
@@ -81,7 +87,7 @@ impl SerialFormat {
     fn clocks(self) -> u64 {
         let bits =
             1 + u64::from(self.data_bits) + u64::from(self.parity) + u64::from(self.stop_bits);
-        (bits * 3_579_545).div_ceil(3 * u64::from(self.baud.max(1)))
+        ClockDomain::from_hz(Ratio::new(u64::from(self.baud.max(1)), 1)).ticks(bits)
     }
 }
 
@@ -241,7 +247,7 @@ impl Uart16550 {
             + u64::from(5 + (self.lcr & 3))
             + u64::from(self.lcr & 8 != 0)
             + if self.lcr & 4 == 0 { 1 } else { 2 };
-        let clocks = (4 * bits * divisor * 16 * 3_579_545).div_ceil(3 * 1_843_200);
+        let clocks = UART.ticks(4 * bits * divisor * 16);
         Some(VClock(self.last_rx.0.saturating_add(clocks)))
     }
 
@@ -454,7 +460,8 @@ impl Device for Uart16550 {
                 }
                 let format = serial.format();
                 let at = VClock(start.0.saturating_add(format.clocks()));
-                let valid = u64::from(divisor) * 16 * u64::from(format.baud) == 1_843_200
+                let valid = u64::from(divisor) * 16 * u64::from(format.baud)
+                    == UART_HZ.numerator() / UART_HZ.denominator()
                     && self.lcr & 3 == format.data_bits.saturating_sub(5)
                     && (self.lcr & 8 != 0) == format.parity;
                 let Some(byte) = serial.read_byte() else {
@@ -988,5 +995,42 @@ mod tests {
 
         assert_eq!(capture.drain().unwrap(), b"hello");
         assert!(bus.device_mut().take_trace().is_empty());
+    }
+}
+
+#[cfg(test)]
+mod clock_domain_regressions {
+    use super::*;
+
+    use testkit::MockBus;
+    #[test]
+    fn clock_domain_uart_frames_and_fifo_timeout_use_exact_rates() {
+        let mut bus = MockBus::new(Box::new(Uart16550::new(0x3f8)));
+        let uart: &mut Uart16550 = bus
+            .device_mut()
+            .as_any_mut()
+            .unwrap()
+            .downcast_mut()
+            .unwrap();
+        uart.fcr = 0x41;
+        uart.dll = 0xff;
+        uart.dlm = 0xff;
+        uart.lcr = 3;
+        uart.rx.push_back((0x41, 0));
+        let expected = UART.ticks(4 * 10 * 65535 * 16);
+        assert_eq!(
+            bus.device().next_event(bus.clock()),
+            NextEvent::At(VClock(expected))
+        );
+        assert_eq!(
+            SerialFormat {
+                baud: 1,
+                data_bits: 8,
+                parity: false,
+                stop_bits: 1
+            }
+            .clocks(),
+            ClockDomain::from_hz(Ratio::new(1, 1)).ticks(10)
+        );
     }
 }

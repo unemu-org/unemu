@@ -5,6 +5,19 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-13 — Exact clock domains:** `device::clock` centralizes OSC =
+  315/22 MHz and named PIT, CGA/VGA, UART, RTC, OPL3, 48 kHz output and
+  12/16 MHz AT CPU crystal domains. Device durations, PIT input-edge counting,
+  legacy scheduler ordering and visits, audio grids and host pacing use exact
+  ratios. Legacy devices run only when a PIT input edge has elapsed, including
+  when a scheduled transition occurs between PIT edges.
+  One virtual tick remains one PIT clock. Rounded RTC/UART/VGA/pacing crystal
+  spellings now derive from OSC; the existing RTC UIP window remains 1193 PIT
+  clocks. CPU instruction-rate calibration and policy units are unchanged.
+  See [conventions](conventions.md#device-time-and-clock-domains) for the rules
+  for new code. This implements decision-22 §1a–b; the private time field,
+  permanent multi-tick test build and stateful VGA beam remain separate seams.
+
 - **2026-11-13 — Game-ready AT profiles:** `machines/at-games.toml` combines
   the user-supplied June 1985 IBM 5170 BIOS and IBM VGA EPROM, register-level
   VGA, 640 KiB + 4 MiB RAM, SB16 with OPL3 (220h/IRQ5/DMA1/HDMA5), a COM1

@@ -51,6 +51,15 @@ See [machine-config.md §A20 line and System Control Port A](machine-config.md#a
 ## §6 Virtual clock
 
 §6.1 Completed-step time base, including REP iterations (not blocks).
+`device::clock` defines exact rational clock domains on the `VClock` timeline.
+One tick remains one PIT input clock (`TICKS_PER_PIT_CLOCK = 1`);
+`VClock::from_pit` converts PIT durations. The single board crystal is OSC =
+315/22 MHz; PIT is OSC/12 and OPL3 samples are OSC/288. Independent domains
+cover CGA/VGA dots, UART, RTC, audio output, and AT 12/16 MHz CPU crystals.
+`edges_between(a,b)` counts input edges in `(a,b]`; `edge_at` rounds upward,
+and `next_edge_after` retains epoch phase without adding rounded periods.
+See [`architecture.md` §Virtual clock](../architecture.md#virtual-clock) for
+constants, overflow contracts and the distinction from CPU instruction rates.
 §6.2 Step bounds, instruction-start accesses and IRQ-readiness ordering; see
 [`scheduler.md`](scheduler.md#adoption) for the budget-independence contract.
 §6.3 Golden pinning + re-baseline procedure.

@@ -534,7 +534,7 @@ fn scrolling_start_and_pel_pan_latch_at_retrace_even_when_tick_skips_the_pulse()
     reg(&mut b, 0x3C4, 2, 15);
     reg(&mut b, 0x3CE, 5, 2);
     write(&mut b, 80, 3);
-    let tick_for_dot = |dot: u64| (dot * 3_579_545).div_ceil(25_175_000 * 3);
+    let tick_for_dot = |dot: u64| device::clock::VGA_25.edge_at(dot).0;
     b.tick(tick_for_dot(80));
     reg(&mut b, 0x3D4, 0x0d, 80);
     ac(&mut b, 0x13, 3);
@@ -603,12 +603,12 @@ fn scrolling_raster() -> MockBus {
 }
 
 fn tick_at_dot(b: &mut MockBus, dot: u64) {
-    let target = (dot * 3_579_545).div_ceil(25_175_000 * 3);
+    let target = device::clock::VGA_25.edge_at(dot).0;
     b.tick(target - b.clock().0);
 }
 
 fn tick_before_dot(b: &mut MockBus, dot: u64) {
-    let target = (dot * 3_579_545).div_ceil(25_175_000 * 3) - 1;
+    let target = device::clock::VGA_25.edge_at(dot).0 - 1;
     b.tick(target - b.clock().0);
 }
 
@@ -624,7 +624,7 @@ fn scrolling_active_start_and_retrace_pan_pair_for_next_frame() {
     tick_at_dot(&mut b, 1360);
     assert_ne!(b.port_read(0x3DA, 1).unwrap() & 8, 0);
     ac(&mut b, 0x13, 0);
-    let end = (1520_u64 * 3_579_545).div_ceil(25_175_000 * 3);
+    let end = device::clock::VGA_25.edge_at(1520_u64).0;
     assert_eq!(
         b.device().next_event(b.clock()),
         device::NextEvent::At(device::VClock(end))
@@ -650,14 +650,12 @@ fn scrolling_display_pan_waits_for_retrace_end_and_restores_pending_phase() {
     tick_at_dot(&mut b, 720);
     assert_eq!(&render(&b).indices[..5], &[3, 4, 5, 0x14, 7]);
     b.device_mut().restore(&saved).unwrap();
-    b.device_mut().tick(device::VClock(
-        (560_u64 * 3_579_545).div_ceil(25_175_000 * 3),
-    ));
+    b.device_mut()
+        .tick(device::VClock(device::clock::VGA_25.edge_at(560_u64).0));
     assert_eq!(&render(&b).indices[..5], &[0, 1, 2, 3, 4]);
     // A coarse tick crosses both edges without status polling.
-    b.device_mut().tick(device::VClock(
-        (1600_u64 * 3_579_545).div_ceil(25_175_000 * 3),
-    ));
+    b.device_mut()
+        .tick(device::VClock(device::clock::VGA_25.edge_at(1600_u64).0));
     assert_eq!(&render(&b).indices[..5], &[3, 4, 5, 0x14, 7]);
 }
 
@@ -689,7 +687,7 @@ fn scrolling_crtc_row_pan_latches_with_start_and_snapshot_preserves_it() {
     assert_eq!(render(&b), f);
     let control = super::HEADER_LEN - 16;
     assert_eq!(saved[control + 6], 0x21);
-    let next_start = (1360_u64 * 3_579_545).div_ceil(25_175_000 * 3);
+    let next_start = device::clock::VGA_25.edge_at(1360_u64).0;
     assert_eq!(
         b.device().next_event(b.clock()),
         device::NextEvent::At(device::VClock(next_start))
@@ -715,7 +713,7 @@ fn scrolling_retrace_end_wraps_across_total_and_skipped_pulses() {
     reg(&mut b, 0x3D4, 0x11, 11);
     tick_at_dot(&mut b, 160);
     ac(&mut b, 0x13, 5);
-    let end = (880_u64 * 3_579_545).div_ceil(25_175_000 * 3);
+    let end = device::clock::VGA_25.edge_at(880_u64).0;
     assert_eq!(
         b.device().next_event(b.clock()),
         device::NextEvent::At(device::VClock(end))

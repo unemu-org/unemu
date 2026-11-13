@@ -32,18 +32,16 @@ intervals or intervals with no complete frame are valid. Every calculation uses
 absolute positions and u128 intermediates, including clocks near `u64::MAX`.
 There is no carried rounded sample duration and no long-run drift.
 
-The facade passes `Machine::clock()` (`VClock`), the same whole-PIT-clock
+The facade passes `Machine::clock()` (`VClock`), the same virtual-tick
 timeline the PIT consumes. It does not convert `virtual_time()` or `retired()`
 back into clocks: the scheduler already carries the configured CPU rate's
 fractional remainder and advances PIT time during HLT. CPU reset does not reset
 the device clock or audio phase. See [scheduler.md §Adoption](scheduler.md#adoption).
 
-The window and RTC currently describe their nominal clock with
-`14,318,180/12 Hz`; this differs slightly from `105,000,000/88 Hz`. This seam
-deliberately follows the audio contract without changing existing presentation,
-RTC timing or goldens. Its frame counts are exact against PIT clocks at the
-ratio above; this does not claim exact agreement with the window's host-second
-conversion.
+Audio, window pacing and the default RTC share exact OSC = **315/22 MHz**
+and PIT input OSC/12 = **13,125,000/11 Hz** (equivalently 105,000,000/88 Hz).
+Output boundaries come from `AUDIO_OUTPUT.period()` in virtual ticks, so no
+independent rounded presentation or RTC crystal spelling remains.
 
 ## Mixing
 

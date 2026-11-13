@@ -11,38 +11,41 @@ use std::num::NonZeroU64;
 mod sources;
 pub use sources::{EdgeSource, RateSource, SampleBuffer};
 
-/// Exact stereo integral in signed PCM level times whole PIT clocks.
+/// Exact stereo integral in signed PCM level times whole virtual ticks.
 pub type SampleArea = [i128; 2];
 
-use device::VClock;
+use device::{
+    clock::{AUDIO_OUTPUT, AUDIO_OUTPUT_HZ},
+    VClock,
+};
+
+const _: () = assert!(AUDIO_OUTPUT_HZ.denominator() == 1);
 
 /// Output frames per second. Each frame contains left, then right, signed i16.
-pub const FRAMES_PER_SECOND: u32 = 48_000;
-/// PIT clocks per output frame, numerator (105/88 MHz divided by 48 kHz).
-pub const CLOCKS_PER_FRAME_NUMERATOR: u64 = 4_375;
-/// PIT clocks per output frame, denominator.
-pub const CLOCKS_PER_FRAME_DENOMINATOR: u64 = 176;
+pub const FRAMES_PER_SECOND: u32 = AUDIO_OUTPUT_HZ.numerator() as u32;
+/// Virtual ticks per output frame, exact numerator.
+pub const CLOCKS_PER_FRAME_NUMERATOR: u64 = AUDIO_OUTPUT.period().numerator();
+/// Virtual ticks per output frame, denominator.
+pub const CLOCKS_PER_FRAME_DENOMINATOR: u64 = AUDIO_OUTPUT.period().denominator();
 
 /// One stereo frame. Serialization always uses left then right, little endian.
 pub type StereoFrame = [i16; 2];
 
-/// Number of complete output frames at a whole PIT-clock boundary.
+/// Number of complete output frames at a whole virtual-tick boundary.
 ///
-/// Frame n covers [ceil(n * 4375/176), ceil((n+1) * 4375/176)).
+/// Frame n spans the consecutive edges of `AUDIO_OUTPUT.period()`.
 /// Emit it only when its end is reached. Absolute u128 arithmetic preserves
 /// phase across observations, including at the end of the u64 clock range.
 #[must_use]
 pub fn completed_frames(at: VClock) -> u64 {
-    (u128::from(at.0) * u128::from(CLOCKS_PER_FRAME_DENOMINATOR)
-        / u128::from(CLOCKS_PER_FRAME_NUMERATOR)) as u64
+    AUDIO_OUTPUT.edges_at(at) as u64
 }
 
 fn frame_boundary(index: u64) -> u128 {
-    (u128::from(index) * u128::from(CLOCKS_PER_FRAME_NUMERATOR))
-        .div_ceil(u128::from(CLOCKS_PER_FRAME_DENOMINATOR))
+    AUDIO_OUTPUT.edge_at_wide(u128::from(index))
 }
 
-/// A source's exact period, in PIT clocks per native sample.
+/// A source's exact period, in virtual ticks per native sample.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct SamplePeriod {
     numerator: NonZeroU64,
@@ -64,7 +67,7 @@ impl SamplePeriod {
     }
 }
 
-/// A virtual-time signal integrated over an exact, nonempty PIT interval.
+/// A virtual-time signal integrated over an exact, nonempty virtual-tick interval.
 ///
 /// Device-backed sources read timestamped edge or DMA history, never just the
 /// latest register value. Assembly settles devices before rendering. See
@@ -82,7 +85,7 @@ pub trait AudioSource {
     /// Notify the producer that this observation has passed, even without output.
     /// Timestamped PCM uses this frontier to reject samples arriving too late.
     fn advance(&mut self, _until: VClock) {}
-    /// Release history strictly below this absolute PIT boundary. The active
+    /// Release history strictly below this absolute virtual-tick boundary. The active
     /// level/sample at the boundary must survive. Called even for disabled sinks
     /// and observations completing no frame, so silent output cannot leak history.
     fn release_before(&mut self, _retain_from: VClock) {}
@@ -97,20 +100,20 @@ pub trait AudioSource {
 #[derive(Copy, Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum AudioError {
     /// Device history is not available beyond the completed machine boundary.
-    #[error("audio boundary exceeds the machine PIT clock")]
+    #[error("audio boundary exceeds the machine virtual clock")]
     FutureTime,
-    /// Producer history must follow the PIT timeline.
+    /// Producer history must follow the virtual-tick timeline.
     #[error("audio history is out of order")]
     HistoryOrder,
     /// Rendering cannot rewind an already delivered stream.
     #[error("audio interval runs backwards")]
     TimeReversed,
     /// Each block must contain exactly the frames completed in its interval.
-    #[error("audio frame count does not match its PIT interval")]
+    #[error("audio frame count does not match its virtual-tick interval")]
     FrameCount,
 }
 
-/// Borrowed PCM for an exact PIT interval [start, end).
+/// Borrowed PCM for an exact virtual-tick interval [start, end).
 ///
 /// Frames whose ends are in (start, end] belong to this block. A partial frame
 /// is deferred to the next block, so empty blocks and arbitrary splits are safe.
@@ -133,12 +136,12 @@ impl<'a> AudioBlock<'a> {
         Ok(Self { start, end, frames })
     }
 
-    /// Beginning of the observation interval in whole PIT clocks.
+    /// Beginning of the observation interval in whole virtual ticks.
     #[must_use]
     pub fn start(&self) -> VClock {
         self.start
     }
-    /// End of the observation interval in whole PIT clocks.
+    /// End of the observation interval in whole virtual ticks.
     #[must_use]
     pub fn end(&self) -> VClock {
         self.end
@@ -153,7 +156,7 @@ impl<'a> AudioBlock<'a> {
 /// A consumer of virtual-time PCM blocks, beside `video::FrameSink`.
 ///
 /// Receivers must return promptly, never call back into the machine, and never
-/// affect guest timing. Consecutive blocks must have touching PIT intervals.
+/// affect guest timing. Consecutive blocks must have touching virtual-tick intervals.
 /// See `backlog/docs/design/audio.md` §Sinks and observation boundaries.
 pub trait AudioSink {
     /// Receive completed frames; retain a copy if needed beyond this call.
@@ -262,7 +265,7 @@ struct Source {
 
 /// Interval-average, saturating stereo mixer.
 ///
-/// Each source contributes exact level*clock area over the output frame's PIT
+/// Each source contributes exact level*clock area over the output frame's virtual-tick
 /// interval. Sum in i128, divide once by frame duration, then clamp so
 /// clipping is independent of source order. See `backlog/docs/design/audio.md`
 /// §Mixing; spec §6 defines device time.

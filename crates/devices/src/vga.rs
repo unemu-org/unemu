@@ -81,6 +81,7 @@
 //! register users need no firmware; adapter setup and subsystem disable remain
 //! independent. ROM decode is board-owned and stays readable while disabled.
 
+use device::clock::{ClockDomain, PIT, VGA_25, VGA_28};
 use device::{AccessDir, Device, DeviceError, NextEvent, TraceEvent, VClock};
 
 const NAME: &str = "vga";
@@ -105,7 +106,7 @@ struct RasterTiming {
     horizontal: (u128, u128),
     vertical: (u128, u128),
     retrace: (u128, u128),
-    character_rate: (u128, u128),
+    character_clock: ClockDomain,
 }
 
 impl RasterTiming {
@@ -118,8 +119,7 @@ impl RasterTiming {
     fn next_edge(&self, line: u128) -> Option<VClock> {
         let edge = (line % self.vertical.0) * self.horizontal.0;
         let next_character = self.edge_count(line) * self.horizontal.0 * self.vertical.0 + edge;
-        let next_tick = (next_character * self.character_rate.1).div_ceil(self.character_rate.0);
-        u64::try_from(next_tick).ok().map(VClock)
+        self.character_clock.checked_edge_at(next_character)
     }
 }
 
@@ -336,31 +336,30 @@ impl Vga {
             u128::from(c[0x12]) + (u128::from(c[7] & 2) << 7) + (u128::from(c[7] & 0x40) << 3) + 1;
         if c[0] < 5 || htotal <= hdisplay || vtotal <= vdisplay {
             return RasterTiming {
-                characters: u128::from(now.0),
+                characters: PIT.edges_at(now),
                 horizontal: (38, 30),
                 vertical: (449, 400),
                 retrace: (412, 2),
-                character_rate: (1, 1),
+                character_clock: PIT,
             };
         }
-        let dot_hz = if self.misc & 0x0c == 4 {
-            28_322_000
+        let dot_clock = if self.misc & 0x0c == 4 {
+            VGA_28
         } else {
-            25_175_000
+            VGA_25
         };
         let dots_per_char = if self.sequencer[1] & 1 != 0 { 8 } else { 9 }
             * if self.sequencer[1] & 8 != 0 { 2 } else { 1 };
-        // The AT oscillator supplies exactly 3,579,545 / 3 PIT clocks/s.
-        let character_rate = (dot_hz * 3, 3_579_545 * dots_per_char);
+        let character_clock = dot_clock.divided_by(dots_per_char);
         let start =
             u128::from(c[0x10]) + (u128::from(c[7] & 4) << 6) + (u128::from(c[7] & 0x80) << 2);
         let width = (u128::from(c[0x11] & 15) + 16 - (start & 15) - 1) % 16 + 1;
         RasterTiming {
-            characters: u128::from(now.0) * character_rate.0 / character_rate.1,
+            characters: character_clock.edges_at(now),
             horizontal: (htotal, hdisplay),
             vertical: (vtotal, vdisplay),
             retrace: (start, width),
-            character_rate,
+            character_clock,
         }
     }
 
@@ -1104,3 +1103,41 @@ mod planar_tests;
 
 #[cfg(test)]
 mod graphics_tests;
+
+#[cfg(test)]
+mod clock_domain_regressions {
+    use super::*;
+
+    use testkit::MockBus;
+    #[test]
+    fn clock_domain_vga_fallback_and_selected_dot_clocks_keep_phase() {
+        let mut bus = MockBus::new(Box::new(Vga::new()));
+        for (misc, dots) in [(0, VGA_25), (4, VGA_28)] {
+            bus.port_write(0x3c2, 1, misc).unwrap();
+            let vga: &mut Vga = bus
+                .device_mut()
+                .as_any_mut()
+                .unwrap()
+                .downcast_mut()
+                .unwrap();
+            let fallback = vga.raster_timing(VClock::from_pit(123));
+            assert_eq!(fallback.characters, 123);
+            vga.crtc[0] = 95;
+            vga.crtc[1] = 79;
+            vga.crtc[6] = 255;
+            vga.crtc[0x12] = 199;
+            let now = VClock::from_pit(1_000_000_000);
+            let timing = vga.raster_timing(now);
+            let character = dots.divided_by(9);
+            assert_eq!(timing.characters, character.edges_at(now));
+            let next = timing.next_edge(0).unwrap();
+            assert_eq!(
+                next,
+                character
+                    .checked_edge_at(timing.edge_count(0) * timing.horizontal.0 * timing.vertical.0)
+                    .unwrap()
+            );
+            vga.crtc[0] = 0;
+        }
+    }
+}

@@ -20,17 +20,16 @@
 //! read the host clock. It is seeded with an initial time and advances purely off
 //! [`Device::tick`]. IBM PC AT Technical Reference, System Board, "System
 //! Timers" and "Oscillator": the timer input is the 14.31818 MHz oscillator
-//! divided by twelve. Using its exact nominal ratio, 14,318,180 / 12,
-//! one RTC second is 3,579,545 / 3 PIT clocks. The default phase counts thirds
-//! of a PIT clock and carries the remainder across updates; events round up
-//! to the first whole PIT clock at or after their boundary. Explicit
-//! [`CmosRtc::with_timing`] overrides still count whole PIT clocks.
+//! divided by twelve. The exact oscillator ratio comes from `device::clock`.
+//! The default phase carries rational virtual-tick fractions across updates;
+//! events round up to the first whole virtual tick at or after their boundary.
+//! Explicit [`CmosRtc::with_timing`] overrides count whole virtual ticks.
 //! Each second increments the time and raises the update-ended flag; the
 //! **update-in-progress (UIP)** flag in register A is asserted during the short
 //! window before each update. Setting the SET bit (register B bit 7) freezes the
 //! calendar updates while the periodic divider keeps running.
 //! The default UIP width retains the model's approximately 1 ms polling window:
-//! floor(3,579,545 / 1000) = 3579 thirds, or 1193 PIT clocks. This is an
+//! 1193 PIT input clocks, converted to virtual ticks. This is an
 //! approximation of the Motorola MC146818 datasheet, "Update Cycle" (244 µs
 //! from UIP assertion to update start), not a model of the update bus cycle.
 //!
@@ -93,7 +92,7 @@
 //!
 //! Motorola MC146818A datasheet, Periodic Interrupt Selection, Table 5 and
 //! Registers A–C: PF latches independently of PIE; SET stops calendar updates,
-//! not the periodic divider. Events round up to whole PIT clocks with carried
+//! not the periodic divider. Events round up to whole virtual ticks with carried
 //! oscillator phase. Assumption: the selected divider tap's falling edges are
 //! aligned to oscillator counts divisible by its period, with phase zero on
 //! first entering DV=010. Unsupported DV values freeze this phase; DV=11x
@@ -106,10 +105,11 @@
 //! divider; that hardware relationship is not reproduced by these counters.
 //!
 //! Snapshots contain CMOS RAM, calendar, interrupt/UIP state, the subsecond
-//! phase, timing ratios and the absolute PIT time base. UIP and second deadlines
+//! phase, timing ratios and the absolute virtual-tick time base. UIP and second deadlines
 //! are derived from that phase (MC146818 datasheet, Update Cycle). Guest-written
 //! calendar bytes remain unrestricted, just as on the register interface.
 
+use device::clock::{PIT, PIT_HZ, RTC_HZ, TICKS_PER_PIT_CLOCK};
 use std::{cell::RefCell, rc::Rc};
 
 use device::{AccessDir, Device, DeviceError, NextEvent, TraceEvent, VClock};
@@ -239,12 +239,12 @@ const HOUR_PM: u8 = 0x80;
 /// any time (per the datasheet).
 const ALARM_DONT_CARE: u8 = 0xC0;
 
-/// Exact nominal PIT clocks per second, expressed in thirds of a PIT clock.
-const DEFAULT_SECOND_TICKS: u64 = 3_579_545;
-const DEFAULT_CLOCK_UNITS: u8 = 3;
+/// Exact virtual ticks per second, expressed in rational phase units.
+const DEFAULT_SECOND_TICKS: u64 = PIT_HZ.numerator() * TICKS_PER_PIT_CLOCK;
+const DEFAULT_CLOCK_UNITS: u8 = PIT_HZ.denominator() as u8;
 
-/// Retain the approximately 1 ms polling window in the same phase units.
-const DEFAULT_UIP_TICKS: u64 = DEFAULT_SECOND_TICKS / 1000;
+/// Preserve the compatibility polling window of 1193 PIT clocks.
+const DEFAULT_UIP_TICKS: u64 = PIT.ticks(1_193) * DEFAULT_CLOCK_UNITS as u64;
 
 /// Broken-down binary time held by the RTC. Encoded to the guest format on read.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -402,9 +402,9 @@ pub struct CmosRtc {
     nmi_disabled: bool,
     /// Phase units accumulated toward the next second.
     accum: u64,
-    /// Phase units that make one RTC second (the PIT-clock ratio numerator).
+    /// Phase units that make one RTC second (the virtual-tick ratio numerator).
     second_ticks: u64,
-    /// Phase units per PIT clock (the PIT-clock ratio denominator).
+    /// Phase units per virtual tick (the virtual-tick ratio denominator).
     clock_units: u8,
     /// Fractional oscillator clocks, in units of 1 / second_ticks.
     oscillator_phase: u64,
@@ -841,7 +841,7 @@ impl CmosRtc {
         }
         // u128 holds a full u64 clock jump multiplied by the oscillator rate.
         let phase = u128::from(self.oscillator_phase)
-            + u128::from(elapsed) * u128::from(self.clock_units) * 32768;
+            + u128::from(elapsed) * u128::from(self.clock_units) * u128::from(RTC_HZ.numerator());
         let ticks = phase / u128::from(self.second_ticks);
         self.oscillator_phase = (phase % u128::from(self.second_ticks)) as u64;
         if let Some(divisor) = self.periodic_divisor() {
@@ -850,7 +850,8 @@ impl CmosRtc {
                 self.nvram[REG_C] |= C_PF;
             }
         }
-        self.divider_phase = ((u128::from(self.divider_phase) + ticks) % 32768) as u16;
+        self.divider_phase =
+            ((u128::from(self.divider_phase) + ticks) % u128::from(RTC_HZ.numerator())) as u16;
         self.refresh_irqf();
     }
 
@@ -940,6 +941,8 @@ impl Device for CmosRtc {
             return;
         }
         let elapsed = now.0.saturating_sub(self.now.0);
+        let pit_edge = PIT.edges_between(self.now, now) > 0;
+        let correction_pending = self.uip != (self.accum >= self.second_ticks - self.uip_ticks);
         self.now = now;
         if elapsed == 0 {
             return;
@@ -947,7 +950,9 @@ impl Device for CmosRtc {
         self.advance_periodic(elapsed);
         // SET inhibits calendar updates, while the periodic divider keeps running.
         if self.nvram[REG_B] & B_SET != 0 {
-            self.uip = false;
+            if pit_edge {
+                self.uip = false;
+            }
             return;
         }
         let remaining = self.second_ticks - self.accum;
@@ -961,7 +966,11 @@ impl Device for CmosRtc {
             self.accum = (after % u128::from(self.second_ticks)) as u64;
             self.advance_seconds(1 + (after / u128::from(self.second_ticks)) as u64);
         }
-        self.uip = self.accum >= self.second_ticks - self.uip_ticks;
+        // Register writes can leave UIP inconsistent with the calendar phase.
+        // Keep those visibility corrections at the same input edge as their deadline.
+        if !correction_pending || pit_edge {
+            self.uip = self.accum >= self.second_ticks - self.uip_ticks;
+        }
     }
 
     fn next_event(&self, _now: VClock) -> NextEvent {
@@ -971,12 +980,14 @@ impl Device for CmosRtc {
             } else {
                 // SET clears a pre-existing UIP on the next clock, as in the
                 // per-clock model, rather than during a zero-elapsed access.
-                1
+                PIT.next_edge_after(self.now)
+                    .map_or(u64::MAX, |at| at.0 - self.now.0)
             }
         } else {
             let uip_start = self.second_ticks - self.uip_ticks;
             if self.uip != (self.accum >= uip_start) {
-                1
+                PIT.next_edge_after(self.now)
+                    .map_or(u64::MAX, |at| at.0 - self.now.0)
             } else if !self.uip && self.uip_ticks != 0 {
                 (uip_start - self.accum).div_ceil(u64::from(self.clock_units))
             } else {
@@ -992,8 +1003,11 @@ impl Device for CmosRtc {
                 let ticks = divisor - u64::from(self.divider_phase) % divisor;
                 let numerator = u128::from(ticks) * u128::from(self.second_ticks)
                     - u128::from(self.oscillator_phase);
-                u64::try_from(numerator.div_ceil(32768 * u128::from(self.clock_units)))
-                    .unwrap_or(u64::MAX)
+                u64::try_from(
+                    numerator
+                        .div_ceil(u128::from(RTC_HZ.numerator()) * u128::from(self.clock_units)),
+                )
+                .unwrap_or(u64::MAX)
             })
             .unwrap_or(u64::MAX);
         let clocks = calendar_clocks.min(periodic_clocks);
@@ -1087,10 +1101,10 @@ impl Device for CmosRtc {
         let divider_phase = u16::from_le_bytes([snapshot[timing + 32], snapshot[timing + 33]]);
         let clock_units = snapshot[timing + 34];
         if second_ticks == 0
-            || !matches!(clock_units, 1 | 3)
+            || !(matches!(clock_units, 1 | 3) || clock_units == DEFAULT_CLOCK_UNITS)
             || second_ticks < u64::from(clock_units)
             || oscillator_phase >= second_ticks
-            || divider_phase >= 32768
+            || u64::from(divider_phase) >= RTC_HZ.numerator()
             || accum >= second_ticks
             || uip_ticks > second_ticks
             || snapshot[1 + nvram_len + 7] >= nvram_len as u8
@@ -1295,7 +1309,11 @@ mod tests {
             0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00,
             0x00, 0x00, 0x00, 0x00, 0x00,
         ];
-        assert_eq!(CmosRtc::new().save(), ORIGINAL);
+        let mut expected = ORIGINAL;
+        expected[82..90].copy_from_slice(&DEFAULT_SECOND_TICKS.to_le_bytes());
+        expected[90..98].copy_from_slice(&DEFAULT_UIP_TICKS.to_le_bytes());
+        expected[108] = DEFAULT_CLOCK_UNITS;
+        assert_eq!(CmosRtc::new().save(), expected);
         let mut bus = MockBus::new(Box::new(CmosRtc::new()));
         bus_write_reg(&mut bus, 0x5B, 0xA5);
         bus.device_mut().restore(&ORIGINAL).unwrap();
@@ -1442,7 +1460,7 @@ mod tests {
         while bus.clock().0 < total {
             bus.tick(chunks[step % chunks.len()].min(total - bus.clock().0));
             step += 1;
-            let seconds = bus.clock().0 * 3 / 3_579_545;
+            let seconds = bus.clock().0 * u64::from(DEFAULT_CLOCK_UNITS) / DEFAULT_SECOND_TICKS;
             let days = seconds / 86400;
             let (month, day) = if days < 31 {
                 (1, days + 1)
@@ -1472,7 +1490,7 @@ mod tests {
     #[test]
     fn exact_default_rate_first_three_updates_keep_fractional_phase() {
         let mut bus = MockBus::new(Box::new(CmosRtc::new()));
-        for (second, deadline) in [(1, 1_193_182), (2, 2_386_364), (3, 3_579_545)] {
+        for (second, deadline) in [(1, 1_193_182), (2, 2_386_364), (3, 3_579_546)] {
             bus.tick(deadline - 1 - bus.clock().0);
             assert_eq!(bus_read_reg(&mut bus, REG_SECONDS), second - 1);
             assert_eq!(
@@ -1492,7 +1510,7 @@ mod tests {
         for (start, update) in [
             (1_191_989, 1_193_182),
             (2_385_171, 2_386_364),
-            (3_578_352, 3_579_545),
+            (3_578_353, 3_579_546),
         ] {
             assert_eq!(
                 bus.device().next_event(bus.clock()),
@@ -2434,5 +2452,69 @@ mod tests {
         let stored = (u16::from(read_reg(&mut restored, REG_CHECKSUM_HI as u8)) << 8)
             | u16::from(read_reg(&mut restored, REG_CHECKSUM_LO as u8));
         assert_eq!(stored, sum);
+    }
+}
+
+#[cfg(test)]
+mod clock_domain_regressions {
+    use super::*;
+
+    use testkit::MockBus;
+    #[test]
+    fn clock_domain_rtc_calendar_and_periodic_rates() {
+        let mut bus = MockBus::new(Box::new(CmosRtc::new()));
+        bus.port_write(PORT_INDEX, 1, REG_A as u32).unwrap();
+        bus.port_write(PORT_DATA, 1, 0x26).unwrap();
+        let first_pf = device::clock::RTC.divided_by(32).edge_at(1);
+        bus.tick(first_pf.0 - 1);
+        bus.port_write(PORT_INDEX, 1, REG_C as u32).unwrap();
+        assert_eq!(bus.port_read(PORT_DATA, 1).unwrap() & u32::from(C_PF), 0);
+        bus.tick(1);
+        assert_ne!(bus.port_read(PORT_DATA, 1).unwrap() & u32::from(C_PF), 0);
+        let seconds = device::clock::ClockDomain::from_hz(device::clock::Ratio::new(1, 1));
+        bus.tick(seconds.ticks(3) - 1 - bus.clock().0);
+        bus.port_write(PORT_INDEX, 1, REG_SECONDS as u32).unwrap();
+        assert_eq!(bus.port_read(PORT_DATA, 1).unwrap(), 2);
+        bus.tick(1);
+        assert_eq!(bus.port_read(PORT_DATA, 1).unwrap(), 3);
+        bus.port_write(PORT_INDEX, 1, REG_C as u32).unwrap();
+        assert_ne!(bus.port_read(PORT_DATA, 1).unwrap() & u32::from(C_PF), 0);
+    }
+
+    #[test]
+    fn clock_domain_rtc_visibility_corrections_wait_for_pit_edge() {
+        for set in [false, true] {
+            let mut rtc = CmosRtc::new();
+            rtc.nvram[REG_C] |= C_PF;
+            rtc.uip = set;
+            if set {
+                rtc.nvram[REG_B] |= B_SET;
+            } else {
+                rtc.accum = rtc.second_ticks - rtc.uip_ticks;
+            }
+            let accum = rtc.accum;
+            let units = u64::from(rtc.clock_units);
+            let mut bus = MockBus::new(Box::new(rtc));
+            let edge = PIT.next_edge_after(bus.clock()).unwrap();
+            assert_eq!(bus.device().next_event(bus.clock()), NextEvent::At(edge));
+            bus.tick(edge.0 - 1);
+            bus.port_write(PORT_INDEX, 1, REG_A as u32).unwrap();
+            assert_eq!(
+                bus.port_read(PORT_DATA, 1).unwrap() & u32::from(A_UIP),
+                if set { u32::from(A_UIP) } else { 0 }
+            );
+            assert_eq!(bus.device().next_event(bus.clock()), NextEvent::At(edge));
+            let snapshot = bus.device().save();
+            let expected_accum = accum + if set { 0 } else { (edge.0 - 1) * units };
+            assert_eq!(
+                u64::from_le_bytes(snapshot[74..82].try_into().unwrap()),
+                expected_accum
+            );
+            bus.tick(1);
+            assert_eq!(
+                bus.port_read(PORT_DATA, 1).unwrap() & u32::from(A_UIP),
+                if set { 0 } else { u32::from(A_UIP) }
+            );
+        }
     }
 }

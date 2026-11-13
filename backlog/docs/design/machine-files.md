@@ -345,7 +345,7 @@ fresh identification. Internal TX-to-RX and modem-input feedback are not modelle
 A transition from unpowered to both high queues `M` after **ASSUMED 10 ms**
 startup (11932 PIT clocks), then a full serial frame. A repeated active MCR write
 does not restart identification. Buttons held during power-up report after `M`.
-Each byte takes ceil(9 × 3579545 / (3 × 1200)) = **8949 PIT clocks**; rounding
+Each byte takes ceil(9 × 13125000 / (11 × 1200)) = **8949 PIT clocks**; rounding
 adds less than one PIT clock per frame. These clocks derive from retired
 instructions (and halted PIT progress), never host time. A new packet waits for
 the preceding packet's last byte to finish; there is no separate sample-rate timer.

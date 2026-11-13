@@ -26,14 +26,15 @@
 //!
 //! ## Virtual clock (§6)
 //!
-//! Completed steps convert to whole PIT input clocks at a configured rational
+//! Completed steps convert to whole virtual ticks at a configured rational
 //! rate, with carried remainder. While HLT suspends execution, time jumps to the
 //! next event, idle bound, or cap, without retiring instructions or consuming
 //! the running remainder. IF-clear HLT stops immediately because NMI is absent.
 //! Virtual-time caps include accumulated halted instruction equivalents; active
-//! caps are exact and halted caps round up to a whole PIT clock. No wall time
+//! caps are exact and halted caps round up to a whole virtual tick. No wall time
 //! enters execution. See `backlog/docs/design/scheduler.md` §Adoption.
 
+use device::clock::{PIT, TICKS_PER_PIT_CLOCK};
 use std::num::NonZeroU64;
 
 use bus::{Bus, BusError};
@@ -197,9 +198,9 @@ pub struct Machine<C: Cpu> {
     step_limit: NonZeroU64,
     /// HLT remains suspended across runner calls until an IRQ can wake the CPU.
     halted: bool,
-    /// Total PIT clocks spent halted, charged to the virtual-time safety cap.
+    /// Total virtual ticks spent halted, charged to the virtual-time safety cap.
     halted_clocks: u64,
-    /// Consecutive halted PIT clocks since the CPU last ran or woke.
+    /// Consecutive halted virtual ticks since the CPU last ran or woke.
     idle_clocks: u64,
     /// Device IRQ lines wired to PIC inputs, sampled at scheduler boundaries.
     irq_lines: Vec<IrqLine>,
@@ -210,7 +211,9 @@ pub struct Machine<C: Cpu> {
     /// CPU rate A/B in completed steps per PIT input clock.
     cpu_rate_numerator: NonZeroU64,
     cpu_rate_denominator: NonZeroU64,
-    /// Fractional PIT clocks not yet emitted, in units of 1/A.
+    /// B times the number of virtual ticks per PIT clock.
+    cpu_tick_denominator: u128,
+    /// Fractional virtual ticks not yet emitted, in units of 1/A.
     clock_remainder: u64,
     /// Consecutive halted PIT clocks with no interrupt injected before stopping.
     /// `None` waits no clocks; only an immediately deliverable IRQ wakes HLT.
@@ -257,6 +260,7 @@ impl<C: Cpu> Machine<C> {
             last_levels,
             cpu_rate_numerator: NonZeroU64::MIN,
             cpu_rate_denominator: NonZeroU64::MIN,
+            cpu_tick_denominator: u128::from(TICKS_PER_PIT_CLOCK),
             clock_remainder: 0,
             idle_limit,
             dma_wirings: Vec::new(),
@@ -318,6 +322,8 @@ impl<C: Cpu> Machine<C> {
     pub fn with_cpu_rate(mut self, numerator: NonZeroU64, denominator: NonZeroU64) -> Self {
         self.cpu_rate_numerator = numerator;
         self.cpu_rate_denominator = denominator;
+        self.cpu_tick_denominator =
+            u128::from(self.cpu_rate_denominator.get()) * u128::from(TICKS_PER_PIT_CLOCK);
         self
     }
 
@@ -393,7 +399,7 @@ impl<C: Cpu> Machine<C> {
         &mut self.bus
     }
 
-    /// The current device clock, in PIT input clocks (§6).
+    /// The current device clock, in virtual ticks (§6).
     pub fn clock(&self) -> VClock {
         self.clock
     }
@@ -401,15 +407,16 @@ impl<C: Cpu> Machine<C> {
     /// Total virtual time in instruction-equivalent units (§6).
     ///
     /// For CPU rate A/B, this is the active count plus
-    /// `floor(halted_clocks * A / B)`, saturating at `u64::MAX`. The floor applies
-    /// to accumulated halted clocks, so fractional instruction equivalents survive
+    /// `floor(halted_ticks * A / (B * ticks_per_PIT))`, saturating at `u64::MAX`.
+    /// The floor applies to accumulated halted ticks, so fractional instruction equivalents survive
     /// separate halts and runner calls. Halted clocks do not consume the running
-    /// CPU's fractional PIT-clock remainder. Unlike [`Cpu::retired`], this advances
-    /// during HLT too, so run caps and scheduled targets bound busy and idle time.
+    /// CPU's fractional virtual-tick remainder, measured in units of 1/A. Unlike
+    /// [`Cpu::retired`], this advances during HLT too, so run caps and scheduled
+    /// targets bound busy and idle time.
     /// Active time counts completed steps, including individual REP iterations.
     pub fn virtual_time(&self) -> u64 {
         let halted = u128::from(self.halted_clocks) * u128::from(self.cpu_rate_numerator.get())
-            / u128::from(self.cpu_rate_denominator.get());
+            / self.cpu_tick_denominator;
         let active = self.completed_steps;
         (u128::from(active) + halted).min(u128::from(u64::MAX)) as u64
     }
@@ -453,12 +460,9 @@ impl<C: Cpu> Machine<C> {
         let event = self.bus.next_event();
         let at = match event {
             NextEvent::Dormant => return Ok(None),
-            NextEvent::EveryPitClock => VClock(
-                self.clock
-                    .0
-                    .checked_add(1)
-                    .ok_or_else(|| scheduler_error("clock exhausted"))?,
-            ),
+            NextEvent::EveryPitClock => PIT
+                .next_edge_after(self.clock)
+                .ok_or_else(|| scheduler_error("clock exhausted"))?,
             NextEvent::At(at) => at,
         };
         if at <= self.clock {
@@ -493,8 +497,11 @@ impl<C: Cpu> Machine<C> {
             .completed_steps
             .checked_add(steps)
             .ok_or_else(|| scheduler_error("step counter exhausted"))?;
-        let total = u128::from(self.clock_remainder)
-            + u128::from(steps) * u128::from(self.cpu_rate_denominator.get());
+        let denominator = self.cpu_tick_denominator;
+        let total = u128::from(steps)
+            .checked_mul(denominator)
+            .and_then(|ticks| ticks.checked_add(u128::from(self.clock_remainder)))
+            .ok_or_else(|| scheduler_error("clock interval exhausted"))?;
         let rate = u128::from(self.cpu_rate_numerator.get());
         let clocks =
             u64::try_from(total / rate).map_err(|_| scheduler_error("clock interval exhausted"))?;
@@ -528,7 +535,7 @@ impl<C: Cpu> Machine<C> {
     ///
     /// The stopping instruction completes all bus/DMA effects before a ready
     /// interrupt is acknowledged. Active caps count exact completed steps;
-    /// halted caps round up to a whole PIT clock at fractional CPU rates.
+    /// halted caps round up to a whole virtual tick at fractional CPU rates.
     /// `None` imposes no cap. Captured output survives either stopping outcome.
     /// A previously reported reset is performed before any execution or cap
     /// check, unless [`Self::reset_cpu`] already completed it.
@@ -572,6 +579,7 @@ impl<C: Cpu> Machine<C> {
                         let Some(limit) = self.idle_limit else {
                             return Ok(RunOutcome::Halted);
                         };
+                        let limit = PIT.ticks(limit);
                         if self.idle_clocks >= limit {
                             return Ok(RunOutcome::Halted);
                         }
@@ -581,9 +589,12 @@ impl<C: Cpu> Machine<C> {
                         }
                         if let Some(cap) = cap {
                             let a = u128::from(self.cpu_rate_numerator.get());
-                            let b = u128::from(self.cpu_rate_denominator.get());
+                            let b = self.cpu_tick_denominator;
                             let credit = u128::from(self.halted_clocks) * a % b;
-                            let room = u128::from(cap - self.virtual_time()) * b - credit;
+                            let room = u128::from(cap - self.virtual_time())
+                                .checked_mul(b)
+                                .and_then(|ticks| ticks.checked_sub(credit))
+                                .ok_or_else(|| scheduler_error("clock interval exhausted"))?;
                             clocks =
                                 clocks.min(u64::try_from(room.div_ceil(a)).unwrap_or(u64::MAX));
                         }
@@ -616,7 +627,7 @@ impl<C: Cpu> Machine<C> {
                 let clocks = u128::from(deadline.0 - self.clock.0);
                 let phase = clocks * u128::from(self.cpu_rate_numerator.get())
                     - u128::from(self.clock_remainder);
-                let steps = phase.div_ceil(u128::from(self.cpu_rate_denominator.get()));
+                let steps = phase.div_ceil(self.cpu_tick_denominator);
                 budget = budget.min(u64::try_from(steps).unwrap_or(u64::MAX));
             }
             let before = self.cpu.completed_steps();
@@ -1287,17 +1298,17 @@ mod tests {
         );
         for retired in (2..=20).step_by(2) {
             machine.charge_steps(2).unwrap();
-            assert_eq!(machine.clock(), VClock(retired - 1));
-            assert_eq!(machine.clock_remainder, u64::MAX - retired);
+            assert_eq!(machine.clock(), VClock(PIT.ticks(retired) - 1));
+            assert_eq!(machine.clock_remainder, u64::MAX - PIT.ticks(retired));
         }
 
         let mut machine = machine_with(Vec::new()).with_cpu_rate(
             NonZeroU64::new(u64::MAX).unwrap(),
             NonZeroU64::new(u64::MAX / 2 + 1).unwrap(),
         );
-        machine.halted_clocks = 2;
+        machine.halted_clocks = PIT.ticks(2);
         assert_eq!(machine.virtual_time(), 3, "divide before saturating");
-        machine.cpu_rate_denominator = NonZeroU64::MIN;
+        machine = machine.with_cpu_rate(NonZeroU64::new(u64::MAX).unwrap(), NonZeroU64::MIN);
         assert_eq!(machine.virtual_time(), u64::MAX);
     }
 
@@ -2341,6 +2352,94 @@ mod tests {
                 );
             }
             other => panic!("expected a FromMemory outcome, got {other:?}"),
+        }
+    }
+    #[test]
+    fn clock_domain_machine_active_halted_and_legacy_deadlines() {
+        let mut machine = machine_with(vec![CpuStop::Halt]);
+        machine.charge_steps(7).unwrap();
+        assert_eq!(machine.clock(), VClock::from_pit(7));
+        assert_eq!(machine.next_deadline().unwrap(), Some(PIT.edge_at(8)));
+        machine.set_idle_limit(Some(10));
+        machine.halted = true;
+        machine.cpu = instruction_cpu(vec![CpuStop::Halt], true);
+        assert_eq!(
+            machine.run_bounded(Some(12)).unwrap(),
+            RunOutcome::RetiredCapReached
+        );
+        assert_eq!(machine.clock(), VClock::from_pit(12));
+        assert_eq!(machine.virtual_time(), 12);
+    }
+
+    #[test]
+    fn clock_domain_legacy_deadline_uses_next_pit_input_edge() {
+        let mut machine = machine_with(vec![CpuStop::Halt]);
+        machine.clock = VClock::from_pit(7);
+        assert_eq!(machine.next_deadline().unwrap(), Some(PIT.edge_at(8)));
+    }
+    #[test]
+    fn clock_domain_halted_limits_and_caps_use_pit_durations() {
+        for (idle, cap, end) in [(10, 12, 10), (20, 12, 12)] {
+            let mut machine = machine_with(vec![CpuStop::Halt]);
+            machine.cpu = instruction_cpu(vec![CpuStop::Halt], true);
+            machine.set_idle_limit(Some(idle));
+            machine.halted = true;
+            machine.run_bounded(Some(cap)).unwrap();
+            assert_eq!(machine.clock(), VClock::from_pit(end));
+            assert_eq!(machine.virtual_time(), end);
+        }
+    }
+    #[test]
+    fn clock_domain_active_product_overflow_is_a_scheduler_error() {
+        let mut machine = machine_with(Vec::new()).with_cpu_rate(
+            NonZeroU64::new(u64::MAX).unwrap(),
+            NonZeroU64::new(u64::MAX).unwrap(),
+        );
+        machine.bus = Bus::new(
+            Vec::new(),
+            DecodeMap {
+                ports: Vec::new(),
+                mmio: Vec::new(),
+            },
+        );
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            machine.charge_steps(u64::MAX)
+        }));
+        assert!(result.is_ok(), "clock arithmetic must not panic");
+        if TICKS_PER_PIT_CLOCK > 1 {
+            assert!(
+                result.unwrap().is_err(),
+                "an unrepresentable interval must be rejected"
+            );
+        } else {
+            assert!(result.unwrap().is_ok());
+        }
+    }
+    #[test]
+    fn clock_domain_halted_product_overflow_is_a_scheduler_error() {
+        let mut machine = machine_with(Vec::new())
+            .with_cpu_rate(NonZeroU64::MIN, NonZeroU64::new(u64::MAX).unwrap());
+        machine.bus = Bus::new(
+            Vec::new(),
+            DecodeMap {
+                ports: Vec::new(),
+                mmio: Vec::new(),
+            },
+        );
+        machine.cpu = instruction_cpu(vec![CpuStop::Halt], true);
+        machine.halted = true;
+        machine.set_idle_limit(Some(u64::MAX));
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            machine.run_bounded(Some(u64::MAX))
+        }));
+        assert!(result.is_ok(), "halted clock arithmetic must not panic");
+        if TICKS_PER_PIT_CLOCK > 1 {
+            assert!(
+                result.unwrap().is_err(),
+                "an unrepresentable halted interval must be rejected"
+            );
+        } else {
+            assert!(result.unwrap().is_ok());
         }
     }
 }

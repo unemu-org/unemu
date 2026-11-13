@@ -12,6 +12,8 @@
 //! [`TracePolicy::Off`] independently of display or byte-output observation;
 //! snapshots contain hardware state, never trace histories or counters.
 
+pub mod clock;
+
 pub mod media;
 pub use media::{InMemoryMedia, SectorMedia, SectorWrite};
 
@@ -150,8 +152,8 @@ impl ByteSink for ByteCapture {
 /// Virtual time base (see spec §6.1).
 ///
 /// A monotonic counter shared by every device's [`Device::tick`], measured in
-/// PIT input clocks. The machine advances it from the CPU's retired-instruction
-/// delta by a configured rational rate (§6, virtual-clock model), never from wall
+/// virtual ticks (currently one tick per PIT input clock). The machine advances
+/// it from the CPU's retired-instruction delta by a configured rational rate (§6, virtual-clock model), never from wall
 /// time — so device timing and every golden are reproducible.
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct VClock(pub u64);
@@ -160,6 +162,12 @@ impl VClock {
     /// The zero instant (machine reset).
     pub const ZERO: VClock = VClock(0);
 
+    /// Convert a duration in PIT input clocks to virtual ticks.
+    #[must_use]
+    pub const fn from_pit(clocks: u64) -> Self {
+        Self(clock::PIT.ticks(clocks))
+    }
+
     /// Advance the clock by `ticks` and return the new value.
     #[must_use]
     pub fn advance(self, ticks: u64) -> VClock {
@@ -167,7 +175,7 @@ impl VClock {
     }
 }
 
-/// A device's next observable autonomous transition in whole PIT clocks.
+/// A device's next observable autonomous transition in virtual ticks.
 ///
 /// Follows the accepted "Deterministic device scheduler with instruction-exact
 /// interrupt boundaries" decision; see `backlog/docs/design/scheduler.md`,
@@ -547,7 +555,7 @@ pub struct GraphicsScanout<'a> {
 ///   emits as output), routed by the assembly crate. Default: unsupported.
 ///
 /// Before each port or MMIO access, the bus calls [`Device::sync`] at its current
-/// whole-PIT clock for devices that opt out of [`NextEvent::EveryPitClock`].
+/// whole virtual tick for devices that opt out of [`NextEvent::EveryPitClock`].
 /// Synchronization catches counters up and stamps traces without consuming an
 /// access or changing byte/latch phases. It must be idempotent at the same time.
 /// Legacy devices receive no extra ticks. Accesses and mutable device borrows

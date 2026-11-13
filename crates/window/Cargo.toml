@@ -11,6 +11,7 @@ description = "Windowed presenter: draws text frames in a host window (§9)."
 
 [dependencies]
 audio.workspace = true
+device.workspace = true
 cpal.workspace = true
 machine-file.workspace = true
 video.workspace = true

@@ -21,7 +21,9 @@ const CPU_REV: &str = "fe240a56ac2040e3deaebb2537e642137ee02c71";
 const OPEN_GOLDEN_RETIRED: u64 = 13_772_948;
 const OPEN_GOLDEN_TEXT_SHA256: &str =
     "f016e6af8c82493b1a489b8753d1ad9c34f31da6af744e177984405ca1f4ead6";
-const GOLDEN_STOP: Option<(u64, u64)> = Some((0x0070, 0x02CB));
+// This value moved once when the board oscillator became the exact 315/22 MHz
+// constant, shifting timer phase by a fraction of a PIT clock.
+const GOLDEN_STOP: Option<(u64, u64)> = Some((0x05E3, 0x15B4));
 const GOLDEN_RETIRED: Option<u64> = Some(68_093_462);
 const GOLDEN_TEXT_SHA256: Option<&str> =
     Some("a2b73fae1c7ee569829051dea41b7c997aaeace94f3d28a8d9ee7ab89e364452");

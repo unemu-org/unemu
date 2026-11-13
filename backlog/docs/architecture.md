@@ -27,7 +27,7 @@ crate: `machine-file` reads and hashes declared images into inline buffers,
 | `video` | `FrameSink`, text frames/grids, text-mode renderer and capture sink | `device` | None |
 | `assembly` | `MachineConfig`, validation, presets, image/device construction, wiring, and `RunPolicy` driver | `machine`, `cpu`, `bus`, `device`, `devices`, `video`, `chipset`, `media`, `sha2`, `thiserror` | `media/test-support` |
 | `machine-file` | Schema 1 TOML/YAML parsing, source origins, image hashing and lowering through assembly validation; merging remains deferred ([schema](design/machine-files.md#schema-field-by-field)) | `assembly`, `serde`, `sha2`, `toml`, `serde-saphyr`, `thiserror` | None |
-| `window` | Optional CP437 rasteriser, shared `FrameSink`, and winit/softbuffer FreeDOS binary | `video`, `assembly`, `machine`, `winit`, `softbuffer` | `cpu`, `assembly/test-support` |
+| `window` | Optional CP437 rasteriser, shared `FrameSink`, and winit/softbuffer FreeDOS binary | `video`, `device`, `assembly`, `machine`, `winit`, `softbuffer` | `cpu`, `assembly/test-support` |
 | `testkit` | Single-device `MockBus`, scripted `MockCpu`, golden assertions | `device`, `cpu` | None |
 | `cli` | Binary and runner library: guest programs, assembly/policy selection, output capture and stop diagnostics | `assembly`, `device`, `bus`, `cpu`, `chipset`, `machine`, `devices`, `video`, `anyhow` | `testkit`, `machine/reference-scheduler`, `assembly/reference-scheduler`, `assembly/test-support` |
 
@@ -274,18 +274,37 @@ historical design inventory.
 
 [Decision-5](../decisions/decision-5%20-%20Virtual%20clock%20in%20retired%20instructions.md)
 sets retired instructions as the deterministic time source; block counts and
-wall time do not define device time. `VClock(u64)` counts whole PIT input clocks.
+wall time do not define device time. `VClock(u64)` counts virtual ticks;
+`device::clock::TICKS_PER_PIT_CLOCK` remains **1**. `VClock::from_pit` converts
+PIT input clocks at unit boundaries. The `device` crate owns clock domains
+because it already owns the common device-time seam; no additional crate or
+runtime dependency is needed.
+
+`device::clock::OSC` is exactly **315/22 MHz**. Named `ClockDomain` constants
+cover PIT (OSC/12), CGA horizontal dots (OSC), VGA dots (25.175/28.322 MHz),
+UART (1.8432 MHz), RTC (32.768 kHz), OPL3 samples (OSC/288), 48 kHz output,
+and AT 12/16 MHz CPU crystals (6/8 MHz 286 after division by two). The CPU
+crystals describe hardware frequencies, not the calibrated instruction rate.
+A domain stores an exact ratio of virtual ticks per edge. `edges_between(a,b)`
+counts edges in `(a,b]`; `edge_at(n)` rounds up once; `next_edge_after(t)` uses
+the absolute epoch to retain phase, including when several fast edges share a
+tick. Checked edge methods report exhaustion; duration conversion saturates.
+Devices keep local reset/programming origins where the existing model anchors them.
+Audio integration remains in virtual-tick areas. PIT counters advance by input
+edges, while deadlines, UART/keyboard durations and the VGA clock conversion use
+domains. The public `VClock` field and existing stateless VGA raster remain
+unchanged by this seam (decision-22 §1a–b).
 [`ClockConfig`](../../crates/assembly/src/clock.rs) supplies the positive rational
 CPU rate A/B (`retired_per_pit_clock` / `retired_per_pit_clock_denominator`), in
 completed steps per PIT clock. Assembly passes
 the rate into `Machine::with_cpu_rate`; the default is 1/1. Running time emits
-`floor((remainder + completed_steps_delta * B) / A)` PIT clocks and carries the remainder
+`floor((remainder + completed_steps_delta * B * ticks_per_PIT) / A)` virtual ticks and carries the remainder
 across CPU exits. This is an instruction-timed approximation, not cycle timing.
 
 [Decision-14](../decisions/decision-14%20-%20Virtual%20time%20advances%20while%20the%20CPU%20is%20halted.md)
 extends time through HLT: halted clocks tick devices without retiring CPU
 instructions or consuming the running clock remainder. `Machine::virtual_time`
-is completed steps plus `floor(total_halted_clocks * A / B)`, saturating
+is completed steps plus `floor(total_halted_ticks * A / (B * ticks_per_PIT))`, saturating
 at `u64::MAX`. Caps and policy targets use these instruction equivalents;
 device clocks use `VClock`. Golden runs depend on the CPU revision, config and
 policy cadence. Host cooperation size cannot change timing by contract;

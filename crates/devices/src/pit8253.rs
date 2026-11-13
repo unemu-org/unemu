@@ -6,7 +6,7 @@
 //! register. Each counter is an independent 16-bit down-counter clocked by the
 //! PIT input clock. On the PC/AT that input is the ~1.193182 MHz OSC/12 signal,
 //! but this device models **counts, not real time**: [`Device::tick`] catches up
-//! arithmetically to the supplied PIT input clock. Only channel 0 OUT transitions
+//! arithmetically from supplied virtual ticks to PIT input edges. Only channel 0 OUT transitions
 //! and its pending load require scheduler visits. A connected speaker observer
 //! also records channel 2 phase boundaries during catch-up; accesses synchronize all counters
 //! through [`Device::sync`] before reading, latching or programming (§6). This keeps
@@ -109,6 +109,7 @@
 //! PIT time base. OUT deadlines are derived from those saved counter phases.
 //! See Intel 8254 datasheet, Counter Programming and Modes 0, 2 and 3.
 
+use device::clock::PIT;
 use std::{
     cell::{Cell, RefCell},
     rc::Rc,
@@ -618,12 +619,12 @@ impl Pit8253 {
     /// Intel 8254 datasheet, Modes 0, 2 and 3: visit phase boundaries only,
     /// retaining every OUT2 transition even when lazy sync skips whole periods.
     fn advance_speaker(&mut self, mut at: VClock, until: VClock) {
-        while at < until {
+        while PIT.edges_between(at, until) != 0 {
             let c = &self.counters[2];
             let next = if c.reload_pending {
                 1
             } else if !c.armed {
-                until.0 - at.0
+                PIT.edges_between(at, until) as u64
             } else {
                 match c.mode {
                     0 if !c.out => {
@@ -633,7 +634,9 @@ impl Pit8253 {
                             u64::from(c.count)
                         }
                     }
-                    2 if !c.out && c.reload == 1 && c.count == 1 => until.0 - at.0,
+                    2 if !c.out && c.reload == 1 && c.count == 1 => {
+                        PIT.edges_between(at, until) as u64
+                    }
                     2 if !c.out => 1,
                     2 => {
                         if c.count == 0 {
@@ -643,12 +646,14 @@ impl Pit8253 {
                         }
                     }
                     3 => c.mode3_edge(),
-                    _ => until.0 - at.0,
+                    _ => PIT.edges_between(at, until) as u64,
                 }
             };
-            let clocks = next.min(until.0 - at.0);
+            let clocks = next.min(PIT.edges_between(at, until) as u64);
             self.counters[2].advance(clocks);
-            at.0 += clocks;
+            at = PIT
+                .checked_edge_at(PIT.edges_at(at) + u128::from(clocks))
+                .unwrap_or(until);
             self.record_speaker(at);
         }
     }
@@ -764,8 +769,7 @@ impl Device for Pit8253 {
         if now < self.now {
             return;
         }
-        // Each virtual-clock tick beyond the last one is one PIT input clock.
-        let elapsed = now.0.saturating_sub(self.now.0);
+        let elapsed = PIT.edges_between(self.now, now) as u64;
         let previous = self.now;
         self.now = now;
         for (index, counter) in self.counters.iter_mut().enumerate() {
@@ -826,10 +830,8 @@ impl Device for Pit8253 {
                 _ => return NextEvent::Dormant,
             }
         };
-        self.now
-            .0
-            .checked_add(clocks)
-            .map_or(NextEvent::Dormant, |at| NextEvent::At(VClock(at)))
+        PIT.checked_edge_at(PIT.edges_at(self.now) + u128::from(clocks))
+            .map_or(NextEvent::Dormant, NextEvent::At)
     }
 
     fn irq_pending(&self) -> bool {
@@ -2309,5 +2311,55 @@ mod tests {
             }
         }
         assert!(saw_low);
+    }
+}
+
+#[cfg(test)]
+mod clock_domain_regressions {
+    use super::*;
+
+    use testkit::MockBus;
+    #[test]
+    fn clock_domain_pit_load_count_and_deadline_follow_input_edges() {
+        let mut bus = MockBus::new(Box::new(Pit8253::new()));
+        bus.port_write(0x43, 1, 0x30).unwrap();
+        bus.port_write(0x40, 1, 4).unwrap();
+        bus.port_write(0x40, 1, 0).unwrap();
+        assert_eq!(
+            bus.device().next_event(bus.clock()),
+            NextEvent::At(PIT.edge_at(1))
+        );
+        bus.tick(PIT.ticks(1));
+        assert_eq!(
+            bus.device().next_event(bus.clock()),
+            NextEvent::At(PIT.edge_at(5))
+        );
+        bus.tick(PIT.ticks(3));
+        assert!(!bus.device().irq_pending());
+        bus.tick(PIT.ticks(1));
+        assert!(bus.device().irq_pending());
+    }
+    #[test]
+    fn clock_domain_speaker_catch_up_stamps_input_edges() {
+        let pit = SharedPit8253::default();
+        let edges = Rc::new(RefCell::new(Vec::new()));
+        let output = edges.clone();
+        pit.observe_speaker(move |at, level| output.borrow_mut().push((at, level)));
+        pit.set_speaker_data(VClock::ZERO, true);
+        let mut bus = MockBus::new(Box::new(pit));
+        bus.port_write(0x43, 1, 0xb6).unwrap();
+        bus.port_write(0x42, 1, 4).unwrap();
+        bus.port_write(0x42, 1, 0).unwrap();
+        edges.borrow_mut().clear();
+        bus.tick(PIT.ticks(9));
+        assert_eq!(
+            *edges.borrow(),
+            [
+                (PIT.edge_at(3), false),
+                (PIT.edge_at(5), true),
+                (PIT.edge_at(7), false),
+                (PIT.edge_at(9), true)
+            ]
+        );
     }
 }

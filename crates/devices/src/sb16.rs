@@ -88,6 +88,7 @@
 pub mod fm;
 mod mixer;
 
+use device::clock::{ClockDomain, Ratio, PIT};
 use mixer::Mixer;
 use std::{cell::RefCell, collections::VecDeque, rc::Rc};
 
@@ -100,13 +101,13 @@ use device::{
 /// Creative Sound Blaster Series Hardware Programming Guide, §3 PCM data format.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Output {
-    /// One frame held for this exact positive rational PIT-clock period.
+    /// One frame held for this exact positive rational virtual-tick period.
     Frame {
         /// Absolute start of the native frame.
         at: VClock,
-        /// PIT-clock period numerator.
+        /// Virtual-tick period numerator.
         numerator: u64,
-        /// PIT-clock period denominator.
+        /// Virtual-tick period denominator.
         denominator: u64,
         /// Signed left/right levels.
         pcm: [i16; 2],
@@ -261,18 +262,24 @@ impl Sb16 {
         }
     }
 
-    /// Native stereo-frame period in exact PIT clocks (numerator, denominator).
+    /// Native stereo-frame period in exact virtual ticks (numerator, denominator).
     /// Creative Sound Blaster Series Hardware Programming Guide, §6 40h/41h:
     /// time constants count interleaved bytes; explicit rates count frames.
     #[must_use]
     pub fn sample_period(&self) -> (u64, u64) {
+        let microsecond = ClockDomain::from_hz(Ratio::new(1_000_000, 1)).period();
         if let Some(tc) = self.state.tc {
             (
-                105 * u64::from(256 - u16::from(tc)) * if self.state.stereo { 2 } else { 1 },
-                88,
+                microsecond.numerator()
+                    * u64::from(256 - u16::from(tc))
+                    * if self.state.stereo { 2 } else { 1 },
+                microsecond.denominator(),
             )
         } else {
-            (105_000_000, 88 * u64::from(self.state.rate))
+            (
+                microsecond.numerator() * 1_000_000,
+                microsecond.denominator() * u64::from(self.state.rate),
+            )
         }
     }
 
@@ -357,9 +364,14 @@ impl Sb16 {
     }
 
     fn hold_until_boundary(&mut self) {
+        let remaining = self.boundary().saturating_sub(self.state.now);
         self.emit(Output::Frame {
             at: VClock(self.state.now),
-            numerator: self.boundary().saturating_sub(self.state.now).max(1),
+            numerator: if remaining == 0 {
+                PIT.ticks(1)
+            } else {
+                remaining
+            },
             denominator: 1,
             pcm: self.state.mixer.apply(self.state.level),
         });
@@ -652,7 +664,12 @@ impl Device for Sb16 {
             at = Some(at.map_or(self.boundary(), |at| at.min(self.boundary())));
         }
         at.map_or(NextEvent::Dormant, |at| {
-            NextEvent::At(VClock(at.max(now.0.saturating_add(1))))
+            if at > now.0 {
+                NextEvent::At(VClock(at))
+            } else {
+                // Retain the exhausted-time sentinel for the scheduler to reject.
+                NextEvent::At(PIT.next_edge_after(now).unwrap_or(VClock(u64::MAX)))
+            }
         })
     }
     fn irq_pending(&self) -> bool {

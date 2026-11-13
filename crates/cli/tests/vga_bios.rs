@@ -142,7 +142,9 @@ fn kiselev_post_executes_video_rom_from_eprom_container() {
 }
 
 const GOLDEN_STOP: Option<(u64, u64)> = Some((0x0000, 0x7C50));
-const GOLDEN_RETIRED: Option<u64> = Some(23_463_327);
+// This value moved once when the board oscillator became the exact 315/22 MHz
+// constant, shifting timer phase by a fraction of a PIT clock.
+const GOLDEN_RETIRED: Option<u64> = Some(23_463_330);
 const GOLDEN_TEXT_SHA256: Option<&str> =
     Some("707ba8a5e9a7f27f639e55cbc1a4375c86392f810c2742dc6aa0218ddc1adfab");
 const GOLDEN_GRAPHICS_SHA256: Option<&str> =

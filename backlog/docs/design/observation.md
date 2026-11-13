@@ -48,18 +48,20 @@ The event loop passes an elapsed `Duration` into the same `Presenter::advance`
 path used by fake-clock tests. It neither ticks devices nor injects input during
 a scheduler call. The pure policy lives in `crates/window/src/pacing.rs`.
 
-The PIT input uses the exact nominal rational **14,318,180 / 12 Hz** from the
-14.31818 MHz oscillator: [IBM Personal Computer AT Technical Reference
-(March 1984), System Board, System Timers and Oscillator](https://www.minuszerodegrees.net/manuals/IBM_5170_Technical_Reference_1502243_MAR84.pdf).
-This models the quoted decimal oscillator frequency, without crystal tolerance;
-it is not an independently rounded 1,193,182 Hz constant. For elapsed nanoseconds
-`t`, the absolute target is `floor(t * 14,318,180 / 12,000,000,000)` PIT clocks.
-The calculation uses `u128`, including at `Duration::MAX`, and rounds only the
-absolute target, so sub-clock remainders never drift with frame partitioning.
-The default guest RTC uses the same exact nominal ratio: 3,579,545 / 3 PIT
-clocks per second, carrying phase in thirds of a PIT clock. This avoids drift
-against the window timebase. Explicit integer RTC timing overrides keep their
-configured PIT-clock periods; see [machine-config.md](machine-config.md#rtc-start-and-nvram-source).
+The board oscillator is exactly **OSC = 315/22 MHz**, four times the NTSC
+315/88 MHz colour subcarrier. PIT input is OSC/12, or **13,125,000/11 Hz**:
+[IBM Personal Computer AT Technical Reference (March 1984), System Board,
+System Timers and Oscillator](https://www.minuszerodegrees.net/manuals/IBM_5170_Technical_Reference_1502243_MAR84.pdf).
+`device::clock` defines the shared exact ratio, without crystal tolerance.
+For elapsed nanoseconds `t`, the absolute target in virtual ticks is
+`floor(t * 13,125,000 * TICKS_PER_PIT_CLOCK / 11,000,000,000)`.
+Checked `u128` products saturate on exhaustion, including for `Duration::MAX`
+at large tick scales. Only the absolute target is rounded, so observation
+partitioning does not accumulate drift.
+The default guest RTC uses the same ratio, with 11 phase units per virtual
+tick at the current scale. Legacy 1- and 3-unit snapshots restore at their saved
+ratio. Explicit RTC timing overrides count virtual ticks; see
+[machine-config.md](machine-config.md#rtc-start-and-nvram-source).
 
 Paint deadlines follow a **60 Hz** epoch grid, `ceil(frame * 1e9 / 60)` ns,
 rather than repeatedly adding a rounded period. This balances input latency
@@ -224,7 +226,7 @@ bits and the unimplemented CRT interrupt return zero.
 Status 1 now derives from virtual PIT time, never from read count. Programmed
 CRTC horizontal/vertical totals, overflow, display ends and vertical retrace
 start/end determine the polling raster. Integer 25.175/28.322 MHz dot clocks
-are converted from the exact nominal PIT rate 3,579,545/3 Hz; sequencer 8/9-dot
+are converted through the exact OSC/12 PIT domain (13,125,000/11 Hz); sequencer 8/9-dot
 characters and dot-clock division affect horizontal periods. Retrace end wraps
 in its four-bit counter. Repeated reads at the same clock return the same
 status and still reset the attribute address/data flip-flop.

@@ -41,7 +41,7 @@ mod pacing;
 
 use host_audio::HostAudio;
 
-use pacing::{frame_target, next_frame, pit_clocks, run_cap, wake, CpuRate};
+use pacing::{frame_target, next_frame, run_cap, virtual_ticks, wake, CpuRate};
 #[cfg(test)]
 const BIOS_FIXTURE: &str = "vendor/kiselev-bios/bios-xi8088.bin";
 #[cfg(test)]
@@ -353,7 +353,7 @@ impl Presenter {
             self.next_paint = None;
         } else if let Some(since) = self.occluded_since.take() {
             // Hidden time grants no guest work when presentation resumes.
-            self.dropped_clocks += pit_clocks(elapsed) - pit_clocks(since);
+            self.dropped_clocks += virtual_ticks(elapsed) - virtual_ticks(since);
             self.next_paint = Some(elapsed);
         }
     }
@@ -1757,7 +1757,11 @@ mod tests {
 
     fn advance_frame(presenter: &mut Presenter) {
         let target = presenter.assembled.machine.clock().0 + TEST_FRAME_CLOCKS;
-        let nanos = (u128::from(target) * 12_000_000_000).div_ceil(14_318_180);
+        let frequency = device::clock::PIT_HZ;
+        let nanos = (u128::from(target) * u128::from(frequency.denominator()) * 1_000_000_000)
+            .div_ceil(
+                u128::from(frequency.numerator()) * u128::from(device::clock::TICKS_PER_PIT_CLOCK),
+            );
         presenter
             .advance(Duration::from_nanos(nanos as u64))
             .unwrap();
@@ -2296,7 +2300,7 @@ mod tests {
         presenter.occlusion_changed(false, resumed);
         assert_eq!(
             presenter.dropped_clocks,
-            pit_clocks(resumed) - pit_clocks(visible)
+            virtual_ticks(resumed) - virtual_ticks(visible)
         );
         assert!(wake(resumed, presenter.next_paint, true).0);
         presenter.advance(resumed).unwrap();

@@ -434,19 +434,25 @@ impl Bus {
         }
     }
 
-    /// Tick due devices in bus order at one whole PIT boundary (§6).
+    /// Tick due devices in bus order at any virtual-tick deadline (§6).
     ///
     /// Scheduled deadlines are refreshed after ticks; EveryPitClock answers
     /// stay cached until access or mutation invalidates them. Returning true
-    /// requests IRQ sampling, including pin changes
-    /// caused by accesses since the previous clock. Dormant devices receive no
-    /// clock visits; unmigrated devices retain exactly one visit per boundary.
+    /// requests IRQ sampling, including pin changes caused by accesses since
+    /// the previous visit. Dormant devices receive no clock visits; the scheduler
+    /// gives legacy EveryPitClock devices one visit per elapsed PIT input edge.
+    ///
+    /// `now` must not be earlier than the bus time. A same-instant call visits
+    /// only due At deadlines; no PIT edge has elapsed for legacy devices.
     pub fn tick_due(&mut self, now: VClock) -> bool {
         let mut changed = std::mem::take(&mut self.pins_dirty);
+        let previous = self.now.get();
+        debug_assert!(now >= previous, "bus time must not move backwards");
+        let pit_edge = now > previous && device::clock::PIT.edges_between(previous, now) > 0;
         for (dev, slot) in self.devices.iter_mut().zip(&mut self.deadlines) {
             let event = *slot.get_or_insert_with(|| dev.next_event(self.now.get()));
             let due = match event {
-                NextEvent::EveryPitClock => true,
+                NextEvent::EveryPitClock => pit_edge,
                 NextEvent::At(at) => at <= now,
                 NextEvent::Dormant => false,
             };
@@ -473,7 +479,9 @@ impl Bus {
             .zip(&mut self.deadlines)
             .map(|(dev, slot)| *slot.get_or_insert_with(|| dev.next_event(now)))
             .min_by_key(|event| match event {
-                NextEvent::EveryPitClock => u128::from(now.0) + 1,
+                NextEvent::EveryPitClock => device::clock::PIT
+                    .next_edge_after(now)
+                    .map_or(u128::from(u64::MAX) + 1, |at| u128::from(at.0)),
                 NextEvent::At(at) => u128::from(at.0),
                 NextEvent::Dormant => u128::MAX,
             })
@@ -2211,5 +2219,107 @@ mod tests {
         ));
         // A fault leaves nothing on the open-bus trace.
         assert!(bus.take_open_bus_trace().is_empty());
+    }
+    #[test]
+    fn clock_domain_bus_orders_subedge_deadlines() {
+        use device::clock::PIT;
+        let x = VClock((PIT.ticks(1) - 1).max(1));
+        let calls = CallLog::default();
+        let devices: Vec<Box<dyn Device>> = [NextEvent::EveryPitClock, NextEvent::At(x)]
+            .into_iter()
+            .map(|event| {
+                Box::new(TimedDevice {
+                    now: VClock::ZERO,
+                    event,
+                    calls: calls.clone(),
+                    before_access: None,
+                }) as Box<dyn Device>
+            })
+            .collect();
+        let mut bus = Bus::new(
+            devices,
+            DecodeMap {
+                ports: Vec::new(),
+                mmio: Vec::new(),
+            },
+        );
+        assert!(x > VClock::ZERO);
+        let expected = if x < PIT.edge_at(1) {
+            NextEvent::At(x)
+        } else {
+            NextEvent::EveryPitClock
+        };
+        assert_eq!(bus.next_event(), expected);
+    }
+
+    #[test]
+    fn clock_domain_bus_visits_legacy_only_on_pit_edges() {
+        use device::clock::PIT;
+        let (mut bus, calls) = timed_bus(NextEvent::EveryPitClock);
+        let before = VClock(PIT.ticks(1) - 1);
+        bus.tick_due(before);
+        assert!(!calls.borrow().iter().any(|(call, _)| *call == "tick"));
+        bus.tick_due(PIT.edge_at(1));
+        assert_eq!(
+            calls
+                .borrow()
+                .iter()
+                .filter(|(call, _)| *call == "tick")
+                .map(|(_, at)| *at)
+                .collect::<Vec<_>>(),
+            [PIT.edge_at(1)]
+        );
+    }
+
+    #[test]
+    fn clock_domain_bus_same_instant_visits_only_due_deadlines() {
+        use device::clock::PIT;
+        let now = PIT.edge_at(1);
+        for event in [
+            NextEvent::EveryPitClock,
+            NextEvent::Dormant,
+            NextEvent::At(now),
+            NextEvent::At(PIT.edge_at(2)),
+        ] {
+            let (mut bus, calls) = timed_bus(event);
+            assert_eq!(bus.next_event(), event);
+            // Preserve a previously queried deadline while moving bus time.
+            bus.now.set(now);
+            calls.borrow_mut().clear();
+            bus.tick_due(now);
+            let ticks: Vec<_> = calls
+                .borrow()
+                .iter()
+                .copied()
+                .filter(|(call, _)| *call == "tick")
+                .collect();
+            let expected = if event == NextEvent::At(now) {
+                vec![("tick", now)]
+            } else {
+                Vec::new()
+            };
+            assert_eq!(ticks, expected);
+        }
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "bus time must not move backwards")]
+    fn clock_domain_bus_backwards_time_checks_debug_precondition() {
+        use device::clock::PIT;
+        let (mut bus, _) = timed_bus(NextEvent::EveryPitClock);
+        bus.tick_due(PIT.edge_at(2));
+        bus.tick_due(PIT.edge_at(1));
+    }
+
+    #[test]
+    #[cfg(not(debug_assertions))]
+    fn clock_domain_bus_backwards_time_skips_legacy_in_release() {
+        use device::clock::PIT;
+        let (mut bus, calls) = timed_bus(NextEvent::EveryPitClock);
+        bus.tick_due(PIT.edge_at(2));
+        calls.borrow_mut().clear();
+        bus.tick_due(PIT.edge_at(1));
+        assert!(!calls.borrow().iter().any(|(call, _)| *call == "tick"));
     }
 }

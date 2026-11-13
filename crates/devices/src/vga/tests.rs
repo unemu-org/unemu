@@ -916,9 +916,9 @@ fn ibm_vga_programmed_retrace_uses_crtc_totals_clock_and_overflow() {
     reg(&mut b, 0x3B4, 0x12, 4);
     reg(&mut b, 0x3B4, 0x10, 7);
     reg(&mut b, 0x3B4, 0x11, 9);
-    let tick_for_dot = |dot: u64, hz: u64| (dot * 3_579_545).div_ceil(hz * 3);
+    let tick_for_dot = |dot: u64, clock: device::clock::ClockDomain| clock.edge_at(dot).0;
     let mut at = |dot, expected| {
-        let target = tick_for_dot(dot, 25_175_000);
+        let target = tick_for_dot(dot, VGA_25);
         b.tick(target - b.clock().0);
         assert_eq!(input(&mut b, 0x3BA) & 9, expected, "dot {dot}");
     };
@@ -930,17 +930,17 @@ fn ibm_vga_programmed_retrace_uses_crtc_totals_clock_and_overflow() {
     at(800, 0);
     // Overflow extends retrace to line 263, with a 266-line frame.
     reg(&mut b, 0x3B4, 7, 5);
-    let target = tick_for_dot(263 * 80, 25_175_000);
+    let target = tick_for_dot(263 * 80, VGA_25);
     b.tick(target - b.clock().0);
     assert_eq!(input(&mut b, 0x3BA) & 9, 9);
     out(&mut b, 0x3C2, 4);
     let frame_dots = 266 * 80;
-    let target = tick_for_dot(2 * frame_dots + 263 * 80, 28_322_000);
+    let target = tick_for_dot(2 * frame_dots + 263 * 80, VGA_28);
     b.tick(target - b.clock().0);
     assert_eq!(input(&mut b, 0x3BA) & 9, 9);
     for (sequencer, dots_per_char, frame) in [(0, 9, 3), (8, 18, 4)] {
         reg(&mut b, 0x3C4, 1, sequencer);
-        let target = tick_for_dot((frame * 266 + 263) * 10 * dots_per_char, 28_322_000);
+        let target = tick_for_dot((frame * 266 + 263) * 10 * dots_per_char, VGA_28);
         b.tick(target - b.clock().0);
         assert_eq!(input(&mut b, 0x3BA) & 9, 9);
     }

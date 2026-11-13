@@ -2174,6 +2174,7 @@ dependencies = [
  "audio",
  "cpal",
  "cpu",
+ "device",
  "machine",
  "machine-file",
  "softbuffer",

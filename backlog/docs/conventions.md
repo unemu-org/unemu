@@ -100,3 +100,36 @@ locks or pipe/FIFO descriptors whose lifetime affects another test. On Unix,
 fork duplicates every thread's open descriptors: `O_CLOEXEC` closes them only at
 exec, so a child can briefly retain a sibling's released lock or postpone EOF.
 Separate binaries prevent that inheritance without serializing the fast suite.
+
+## Device time and clock domains
+
+Decision-22 §5 applies to new code:
+
+- Durations come from `device::clock::ClockDomain`, never bare tick literals.
+  No device assumes one `VClock` tick is one PIT input clock. Use
+  `VClock::from_pit` when converting a PIT duration at a boundary.
+- Schedule the next input edge with `domain.next_edge_after(now)`, never
+  `now + 1`. Handle exhaustion of the virtual-time range.
+- Define each crystal once as an exact integer ratio. The board oscillator is
+  `device::clock::OSC` (315/22 MHz); derive its divided clocks from it.
+  Round edges up and carry epoch phase. Never accumulate rounded periods or
+  use floating point for clock arithmetic.
+- New devices report deadlines and catch up idempotently in `sync(at)` for any
+  time. Do not introduce devices requiring a visit on every PIT input edge.
+- Latch picture-affecting state at a raster position in a stateful beam.
+  Do not derive new beam state from absolute time or read live state at capture.
+- Status phases never advance per read.
+- DMA requesters accept partial transfers.
+- New run-policy and pacing features count virtual time, not instruction
+  equivalents. Existing policy units retain their documented contracts.
+- Bus width and wait states belong in the decode map or machine file, never
+  hidden inside a device.
+
+The clock-domain seam does not itself change VGA raster anchoring, privatize
+`VClock`, or add a cycle-exact CPU profile; those remain separate work.
+
+Known compatibility exceptions in the existing serial models: the 8042 ACK
+adds two separately rounded frame durations (host frame plus reply frame),
+and the UART starts each back-to-back receive frame at the previous rounded
+completion time. Both can accumulate fractional rounding. They deliberately
+retain existing guest timing and are not patterns for new clocked hardware.

@@ -21,6 +21,7 @@
 
 use super::{mixer::Mixer, Output};
 use crate::opl3::Opl3;
+use device::clock::OPL3;
 use device::VClock;
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -97,7 +98,7 @@ impl Fm {
         self.output = Some(Box::new(output));
     }
     fn boundary(&self) -> u64 {
-        self.origin.saturating_add(self.index.saturating_mul(24))
+        self.origin.saturating_add(OPL3.ticks(self.index))
     }
     fn emit(&mut self, event: Output) {
         if let Some(output) = &mut self.output {
@@ -112,7 +113,7 @@ impl Fm {
             pcm: self.mixer.apply_fm(self.level),
         });
     }
-    /// Catch up lazily to a PIT clock. The native core always runs, even silent.
+    /// Catch up lazily to a virtual tick. The native core always runs, even silent.
     pub fn advance(&mut self, until: VClock) {
         if until.0 < self.now {
             return;
@@ -125,7 +126,7 @@ impl Fm {
                 self.chip.write(reg, data);
             }
             self.level = self.chip.generate();
-            self.frame(at, 24);
+            self.frame(at, OPL3.ticks(1));
             self.index = self.index.saturating_add(1);
         }
         self.now = until.0;
@@ -174,7 +175,15 @@ impl Fm {
     pub(super) fn volume(&mut self, mixer: &Mixer) {
         self.mixer = mixer.clone();
         if self.index > 1 {
-            self.frame(self.now, self.boundary().saturating_sub(self.now).max(1));
+            let remaining = self.boundary().saturating_sub(self.now);
+            self.frame(
+                self.now,
+                if remaining == 0 {
+                    device::clock::PIT.ticks(1)
+                } else {
+                    remaining
+                },
+            );
         }
     }
     pub(super) fn reset(&mut self, now: u64) {
@@ -224,7 +233,7 @@ impl Fm {
         let origin = u64::from_le_bytes(take(&mut rest)?);
         let index = u64::from_le_bytes(take(&mut rest)?);
         let clock = u64::from_le_bytes(take(&mut rest)?);
-        if clock != now || origin > now || index != (now - origin) / 24 + 1 {
+        if clock != now || origin > now || index != OPL3.edges_at(VClock(now - origin)) as u64 + 1 {
             return None;
         }
         let address = u16::from_le_bytes(take(&mut rest)?);
@@ -283,7 +292,15 @@ impl Fm {
         restored.output = self.output.take();
         *self = restored;
         if self.index > 1 {
-            self.frame(self.now, self.boundary().saturating_sub(self.now).max(1));
+            let remaining = self.boundary().saturating_sub(self.now);
+            self.frame(
+                self.now,
+                if remaining == 0 {
+                    device::clock::PIT.ticks(1)
+                } else {
+                    remaining
+                },
+            );
         } else {
             self.emit(Output::Pause(VClock(self.now)));
         }
