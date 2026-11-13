@@ -690,9 +690,9 @@ MDA cursors remain visible. POST remains
 IDE retains `41 42` between `40` and `43`. COM1 remains empty except for
 floppy boot's `42` (`B`). No firmware or media fixture is changed.
 
-IBM POST now pins its measured regression values; the Landmark I286 stop keeps
-TODO-MEASURE constants; no proprietary
-execution result is inferred from these open-firmware runs.
+IBM POST and the Landmark full-pass golden now pin their measured regression
+values. The Landmark values below come from the supervisor's user-ROM run,
+not these open-firmware runs.
 
 ## IRQ input level golden baseline (2026-11-12)
 
@@ -807,19 +807,29 @@ no golden re-baseline was needed.
   stay 64-byte only; machine files have no size selector. Board selection
   remains pending.
 
-- **2026-11-11, diagnostic-ROM validation:** user-supplied
-  `landmark-rom-post-at-1.2.0` is Listed for `ibm-5170`, with pinned assembled
-  and U27/U47 hashes. The supervisor observed the first twelve diagnostics pass,
-  including DMA page registers, before unsupported SIDT at F000:A3CE on the
-  former Real16 profile. I286 implements SIDT and protected entry; the ignored
-  user-ROM measurement prints the new stop and verdict classifications through
-  the CLI loader/session path. New expectations await supervisor measurement;
-  no protected-mode pass is claimed. Adapter gaps are now
-  mapped by the board up to the system BIOS base, fixing the Listed entry's
-  C0001h fault independently of its absent scan window. Retired count, MDA hash
-  and assumed status coordinates await a new local capture/verification. No ROM bytes or screen transcript is stored.
-  The full golden remains pending (`upc-fro.5`); Ruud XT v5.7 is a future
-  `ibm-5160` fixture (`upc-fro.6`). See
+- **2026-11-13, diagnostic-ROM validation and full-pass golden:** user-supplied
+  `landmark-rom-post-at-1.2.0` remains Listed for `ibm-5170`, with pinned
+  assembled and U27/U47 hashes. **MEASURED by the supervisor at main `9bd422d`,
+  x86jit `fe240a5`:** full diagnostic passes complete; every test passes except
+  floppy read on a rig without a drive or medium. The earlier twelve-test
+  Real16 prefix and unsupported-SIDT stop remain historical evidence.
+  Catalogue-only, per-service direct-hardware-test permissions now allow this
+  diagnostic's FDC with media and fixed-disk adapter without claiming boot
+  services. Ordinary BIOS entries and unlisted images keep the provider rule.
+  The new ignored `user_rom_landmark_at_full_pass` uses MDA, automatic display
+  switch, a read-only 1.2 MB FreeDOS floppy, an `at-adapter` IDE card, fixed RTC
+  and derived volatile CMOS. After the floppy-controller fix, the supervisor
+  measured a passing floppy read and one complete pass before the 150,000,000
+  cap. The ROM counts two reset-based returns from protected mode as errors per
+  pass, matching its real IBM 5170 behaviour; the golden pins this state.
+  **MEASURED by the supervisor and pinned:** stop `Ok(RetiredCapReached)` at
+  `0004:0015`, retired instructions `138,208,231`, MDA text-plane SHA-256
+  `fe45632b8a9c1b762af117b162f56adc523b8aa2e5bda990bad5adb7079e807a`.
+  The existing diskless prefix configuration and constants remain unchanged.
+  The capture records only stop metadata, retired count and the text-plane
+  hash, with no screen text. Adapter gaps remain board-owned independently of
+  the absent option-ROM scan window. Ruud XT v5.7 is a future `ibm-5160`
+  fixture (`upc-fro.6`). See
   [compatibility diagnostics](design/compatibility-diagnostics.md#3-golden-capture-rule).
 
 - **2026-11-11, fw_cfg device:** traditional read-only selector/data interface,

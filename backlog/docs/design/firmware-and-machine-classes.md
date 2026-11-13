@@ -42,8 +42,10 @@ derived volatile CMOS and a pinned
 RTC. Its regression test accepts FreeCOM's date/time with Enter and polls for
 the DOS prompt, recording only verdicts, checkpoints, counts, stop location and
 the final MDA-plane hash. IBM regression expectations pin this measurement;
-the Landmark I286 stop remains TODO-MEASURE, and other firmware revisions
-remain unqualified.
+the Landmark AT full-pass regression at CPU `fe240a5` is also pinned. See
+[compatibility diagnostics](compatibility-diagnostics.md#3-golden-capture-rule)
+§3 for its media-equipped configuration and measured values. Other firmware
+revisions remain unqualified.
 
 Current memory-map policy: `ibm-5170` gets a 16 MiB VM for its fixed 24-bit
 decode, with validation of CPU width and mapping bounds. Configured RAM,
@@ -968,6 +970,17 @@ lowering adds the card id and defining file/line. A recognized system BIOS takes
 empty declaration uses that set, and a nonempty restatement must match it.
 A mismatch reports both sets as `FirmwareProvidesMismatch`, even with the
 unlisted-firmware escape enabled. Unlisted firmware retains declared services.
+A diagnostic system ROM can instead declare the catalogue-only capability
+`DirectHardwareTest(service)` for each controller family it tests directly.
+Landmark AT declares it for `Floppy` and `FixedDisk`: an FDC with a drive and
+an IDE card therefore need no INT 13h provider while that diagnostic runs.
+This waives only the corresponding device requirement; it supplies no guest
+service and changes neither CMOS fixed-disk conventions nor option-ROM scanning.
+Only the system ROM matched by SHA-256 and size receives this permission.
+Unlisted images never inherit it from the board's scan-window fallback, and
+ordinary BIOS entries without it retain the provider check. Machine files
+cannot declare this capability or opt into it through `provides`.
+
 Listed option ROMs use the same comparison and SHA-256 allowlist. Their
 board, CPU minimum and required parts are mandatory, including under the escape.
 An ATA resource mismatch reports `OptionRomCardMismatch`; other missing parts

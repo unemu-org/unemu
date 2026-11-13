@@ -33,6 +33,17 @@ const REAL16_GOLDEN_TEXT_SHA256: &str =
 const GOLDEN_RETIRED: Option<u64> = None;
 const GOLDEN_TEXT_SHA256: Option<&str> = None;
 const GOLDEN_STOP: Option<(u16, u64)> = None;
+/// One diagnostic pass completes before this cap. The ROM counts the two CPU
+/// resets used to return from its protected-mode tests as errors. Its error
+/// counter and failure title reflect its own reset handling, not an emulator
+/// fault. This also occurs on real IBM 5170 hardware; see minuszerodegrees,
+/// Supersoft/Landmark IBM 5170 notes.
+const FULL_PASS_RETIRED_CAP: u64 = 150_000_000;
+const FULL_PASS_GOLDEN_STOP_KIND: Option<RunOutcome> = Some(RunOutcome::RetiredCapReached);
+const FULL_PASS_GOLDEN_STOP: Option<(u16, u64)> = Some((0x0004, 0x0015));
+const FULL_PASS_GOLDEN_RETIRED: Option<u64> = Some(138_208_231);
+const FULL_PASS_GOLDEN_TEXT_SHA256: Option<&str> =
+    Some("fe45632b8a9c1b762af117b162f56adc523b8aa2e5bda990bad5adb7079e807a");
 
 const ROW_IDS: [&str; 12] = [
     "cpu",
@@ -231,6 +242,23 @@ fn write_post_machine_file(
     source: &ImageSource,
     floppy: &Path,
 ) -> anyhow::Result<PathBuf> {
+    write_storage_machine_file(directory, source, floppy, "['floppy','fixed-disk']")
+}
+
+fn write_landmark_machine_file(
+    directory: &Path,
+    source: &ImageSource,
+    floppy: &Path,
+) -> anyhow::Result<PathBuf> {
+    write_storage_machine_file(directory, source, floppy, "[]")
+}
+
+fn write_storage_machine_file(
+    directory: &Path,
+    source: &ImageSource,
+    floppy: &Path,
+    provides: &str,
+) -> anyhow::Result<PathBuf> {
     anyhow::ensure!(
         floppy.is_file(),
         "missing fixture vendor/freedos/freedos-1200.img — run vendor/freedos/fetch.sh"
@@ -238,7 +266,7 @@ fn write_post_machine_file(
     let file = write_machine_file(directory, source)?;
     let floppy = quoted_path(floppy)?;
     let mut text = std::fs::read_to_string(&file)?
-        .replace("provides=[]", "provides=['floppy','fixed-disk']")
+        .replace("provides=[]", &format!("provides={provides}"))
         .replace("[board.rtc]", "[board]\ndisplay_switch='auto'\n[board.rtc]");
     writeln!(text, "\n[[card]]\nid='vga-text'\nremove=true\n[[card]]\nkind='mda'\n[[card]]\nkind='fdc-765'\n[[card.drives]]\nunit=0\ntype='1.2M'\nimage={floppy}\nwrite='readonly'\n[[card]]\nkind='ide'\ncontroller_model='at-adapter'")?;
     std::fs::write(&file, text)?;
@@ -298,6 +326,21 @@ fn ibm_post_missing_floppy_reports_fetch_command_without_paths() {
     let error = write_post_machine_file(
         temporary.path(),
         &ImageSource::File(image),
+        &temporary.path().join("missing.img"),
+    )
+    .unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        "missing fixture vendor/freedos/freedos-1200.img — run vendor/freedos/fetch.sh"
+    );
+}
+
+#[test]
+fn landmark_missing_floppy_reports_fetch_command_without_paths() {
+    let temporary = TempDir::new("landmark-missing-floppy");
+    let error = write_landmark_machine_file(
+        temporary.path(),
+        &ImageSource::File(temporary.path().join("synthetic.bin")),
         &temporary.path().join("missing.img"),
     )
     .unwrap_err();
@@ -394,9 +437,13 @@ fn landmark_machine_file_preserves_absolute_parts_and_preset_settings() {
             offset: 0,
         },
     ]);
-    let file = write_machine_file(temporary.path(), &source).unwrap();
+    let floppy = temporary.path().join("floppy.img");
+    std::fs::write(&floppy, vec![0; 1_228_800]).unwrap();
+    let file = write_landmark_machine_file(temporary.path(), &source, &floppy).unwrap();
     let (document, _) = machine_file::resolve(&file).unwrap();
-    let parts = document.firmware.unwrap().bios.unwrap().parts.unwrap();
+    let bios = document.firmware.unwrap().bios.unwrap();
+    assert_eq!(bios.provides, Some(Vec::new()));
+    let parts = bios.parts.unwrap();
     assert_eq!(parts.len(), 2);
     for (part, (expected, lane)) in parts.iter().zip([
         (even, machine_file::schema::v1::Lane::Even),
@@ -407,6 +454,14 @@ fn landmark_machine_file_preserves_absolute_parts_and_preset_settings() {
         assert!(Path::new(&part.image).is_absolute());
         assert!(Path::new(&part.image) == expected.canonicalize().unwrap());
     }
+    // Synthetic bytes cannot receive the catalogue's diagnostic permission.
+    // Supply services only for lowering this fixture's hardware configuration.
+    let text = std::fs::read_to_string(&file).unwrap();
+    std::fs::write(
+        &file,
+        text.replace("provides=[]", "provides=['floppy','fixed-disk']"),
+    )
+    .unwrap();
     let loaded = machine_file::load_for_assembly(
         file,
         AssemblyOptions {
@@ -418,18 +473,40 @@ fn landmark_machine_file_preserves_absolute_parts_and_preset_settings() {
         panic!("expected lowered synthetic parts")
     };
     assert!(*bytes == [0x12, 0x34].repeat(32768), "part order changed");
-    assert!(loaded.config.drives.is_empty());
-    assert!(loaded.config.images[0].provides.is_empty());
+    assert_eq!(loaded.config.drives.len(), 1);
+    let drive = &loaded.config.drives[0];
+    assert_eq!(drive.controller, DeviceId::Fdc);
+    assert_eq!(drive.unit, 0);
+    assert_eq!(drive.kind.image_bytes(), 1_228_800);
+    assert_eq!(drive.image, ImageSource::Inline(vec![0; 1_228_800]));
+    assert_eq!(drive.write, assembly::WriteMode::ReadOnly);
+    assert_eq!(loaded.config.display_switch, assembly::DisplaySwitch::Auto);
+    assert_eq!(
+        loaded.config.primary_display().unwrap(),
+        assembly::PrimaryDisplay::Monochrome
+    );
+    assert!(loaded.config.devices.iter().any(|device| matches!(
+        &device.kind,
+        assembly::DeviceKind::Ide(ide) if ide.model == devices::ata::AtaControllerModel::AtAdapter
+    )));
     assert_eq!(loaded.config.images[0].base, 0xF0000);
     assert_eq!(
         loaded.config.memory.ram,
-        vec![assembly::RamRegion::new(0, 0xB0000)]
+        vec![
+            assembly::RamRegion::new(0, 0xB0000),
+            assembly::RamRegion::new(0xB8000, 0x8000),
+        ]
     );
     assert_eq!(loaded.config.clock.retired_per_pit_clock, 8);
     assert_eq!(loaded.config.clock.retired_per_pit_clock_denominator, 13);
-    for id in [DeviceId::Mda, DeviceId::Vga, DeviceId::Fdc] {
+    for id in [DeviceId::Mda, DeviceId::Fdc, DeviceId::Ide] {
         assert!(loaded.config.devices.iter().any(|device| device.id == id));
     }
+    assert!(!loaded
+        .config
+        .devices
+        .iter()
+        .any(|device| device.id == DeviceId::Vga));
     let rtc = loaded
         .config
         .devices
@@ -618,6 +695,78 @@ fn user_rom_landmark_at_real_mode_prefix() {
         assert_eq!(retired, expected, "retired count");
     }
     if let Some(expected) = GOLDEN_TEXT_SHA256 {
+        assert_eq!(text_sha256, expected, "MDA text plane hash");
+    }
+}
+
+/// Measure a complete diagnostic pass without retaining proprietary screen text.
+///
+/// Landmark Research International, ROM POST User's Manual v1.2, pp. 16–36:
+/// the ROM drives the controllers directly and repeats the tests. A fixed total
+/// virtual-time budget includes completed CPU steps and halted PIT progress,
+/// making the final text-plane hash reproducible.
+#[test]
+#[ignore = "requires separately supplied proprietary firmware"]
+fn user_rom_landmark_at_full_pass() {
+    let catalogue = BoardModel::Ibm5170.firmware_catalogue();
+    let found = assembly::require_user_firmware!(ENTRY_ID, catalogue);
+    assert!(
+        include_str!("../../../Cargo.lock").contains(CPU_REV),
+        "CPU pin drifted"
+    );
+    let temporary = TempDir::new("landmark-full-pass-machine");
+    let floppy =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../vendor/freedos/freedos-1200.img");
+    let file = expect_redacted(
+        &found,
+        write_landmark_machine_file(temporary.path(), &found.source, &floppy),
+        temporary.path(),
+        "writing diagnostic machine file",
+    );
+    let loaded = expect_redacted(
+        &found,
+        machine_file::load_for_assembly(&file, AssemblyOptions::default()),
+        temporary.path(),
+        "loading diagnostic machine file",
+    );
+    let mut assembled = expect_redacted(
+        &found,
+        loaded.assemble(&mda_policy()),
+        temporary.path(),
+        "assembling diagnostic",
+    );
+    let result = assembled.run_session(&run_policy(FULL_PASS_RETIRED_CAP));
+    let cpu = assembled.machine.cpu();
+    let location = (cpu.code_segment(), cpu.reg(CpuReg::Rip));
+    let retired = cpu.retired();
+    let virtual_time = assembled.machine.virtual_time();
+    let capture = found.expect_redacted(assembled.capture_text(DeviceId::Mda), "capturing MDA");
+    let Frame::Text(grid) = capture.frame else {
+        panic!("diagnostic golden requires an MDA text frame, received pixels");
+    };
+    assert_eq!((grid.cols(), grid.rows()), (80, 25));
+    let text_sha256 = assembly::test_support::text_plane_sha256(&Frame::Text(grid));
+    eprintln!(
+        "{ENTRY_ID}: stop={}, cs={:04x}, ip={:04x}, retired={retired}, virtual_time={virtual_time}, text_sha256={text_sha256}",
+        run_result_summary(&result),
+        location.0,
+        location.1,
+    );
+    assert_eq!(virtual_time, FULL_PASS_RETIRED_CAP, "total virtual time");
+    if let Some(expected) = FULL_PASS_GOLDEN_STOP_KIND {
+        assert!(
+            matches!(result, Ok(actual) if actual == expected),
+            "unexpected stop: {}",
+            run_result_summary(&result),
+        );
+    }
+    if let Some((cs, ip)) = FULL_PASS_GOLDEN_STOP {
+        assert_eq!(location, (u64::from(cs), ip));
+    }
+    if let Some(expected) = FULL_PASS_GOLDEN_RETIRED {
+        assert_eq!(retired, expected, "retired count");
+    }
+    if let Some(expected) = FULL_PASS_GOLDEN_TEXT_SHA256 {
         assert_eq!(text_sha256, expected, "MDA text plane hash");
     }
 }

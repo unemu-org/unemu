@@ -129,9 +129,15 @@ impl FirmwarePart {
     }
 }
 
-/// Configuration conventions explicitly supported by a reviewed firmware build.
+/// Hardware access and configuration conventions supported by a reviewed build.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FirmwareCapability {
+    /// A diagnostic system ROM tests this controller directly instead of
+    /// offering its BIOS service. Only a matched system image can waive the
+    /// corresponding device requirement; this does not provide INT 13h.
+    /// Landmark Research International, ROM POST User's Manual v1.2,
+    /// pp. 16–36; see the firmware design §6, rule 10.
+    DirectHardwareTest(FirmwareService),
     /// IBM AT CMOS fixed-disk types select the system BIOS disk parameters.
     /// IBM Personal Computer AT Technical Reference (September 1985),
     /// Real-Time Clock/CMOS RAM Information, Fixed Disk Type Byte (Hex 12)
@@ -147,10 +153,11 @@ pub enum FirmwareCapability {
 
 impl std::fmt::Display for FirmwareCapability {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(match self {
-            Self::CmosDriveTypes => "cmos-drive-types",
-            Self::CmosQemuLayout => "cmos-qemu-layout",
-        })
+        match self {
+            Self::DirectHardwareTest(service) => write!(f, "direct-hardware-test-{service}"),
+            Self::CmosDriveTypes => f.write_str("cmos-drive-types"),
+            Self::CmosQemuLayout => f.write_str("cmos-qemu-layout"),
+        }
     }
 }
 
@@ -211,7 +218,7 @@ pub struct FirmwareEntry {
     pub rom_offset: usize,
     /// Services documented for this build.
     pub provides: &'static [FirmwareService],
-    /// Configuration conventions supported by this build.
+    /// Hardware access and configuration conventions supported by this build.
     pub capabilities: &'static [FirmwareCapability],
     /// Required modelled board parts.
     pub requires: &'static [FirmwarePart],
@@ -520,8 +527,16 @@ pub(crate) fn image_services(
     config: &MachineConfig,
     index: usize,
 ) -> Result<Option<&[FirmwareService]>, ConfigError> {
+    image_services_from(config, index, config.board.firmware_catalogue())
+}
+
+pub(crate) fn image_services_from<'a>(
+    config: &'a MachineConfig,
+    index: usize,
+    catalogue: &[FirmwareEntry],
+) -> Result<Option<&'a [FirmwareService]>, ConfigError> {
     let image = &config.images[index];
-    if let Some(entry) = matched_entry(image, config.board.firmware_catalogue()) {
+    if let Some(entry) = matched_entry(image, catalogue) {
         return entry_services(index, image, entry).map(Some);
     }
     if matches!(
@@ -1235,7 +1250,10 @@ pub const LANDMARK_ROM_POST_AT_1_2_0: FirmwareEntry = FirmwareEntry {
     video_scan_window: None,
     rom_offset: 0,
     provides: &[],
-    capabilities: &[],
+    capabilities: &[
+        FirmwareCapability::DirectHardwareTest(FirmwareService::Floppy),
+        FirmwareCapability::DirectHardwareTest(FirmwareService::FixedDisk),
+    ],
     requires: &[
         FirmwarePart::Kbc8042,
         FirmwarePart::RtcCmos,
@@ -1345,7 +1363,10 @@ mod tests {
                 video_scan_window: None,
                 rom_offset: 0,
                 provides: &[],
-                capabilities: &[],
+                capabilities: &[
+                    FirmwareCapability::DirectHardwareTest(FirmwareService::Floppy),
+                    FirmwareCapability::DirectHardwareTest(FirmwareService::FixedDisk),
+                ],
                 requires: &[
                     FirmwarePart::Kbc8042,
                     FirmwarePart::RtcCmos,

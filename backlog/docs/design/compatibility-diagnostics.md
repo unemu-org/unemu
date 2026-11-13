@@ -69,8 +69,11 @@ MEASURED by the supervisor: both part SHA-1 values match MAME. Catalogue entry
 
 It occupies the system BIOS socket (`SystemBios`, `TopOfFirstMib`), requires
 an 80286, 8042, RTC/CMOS and cascaded PICs, and provides no boot services or
-option-ROM scan window. READ: validation accepts an FDC without a bound drive
-with empty services; attaching a drive requires a floppy service provider.
+option-ROM scan window. Its catalogue capabilities declare direct hardware
+tests for the floppy and fixed-disk controllers. Validation therefore accepts
+an FDC with a drive and an IDE card without claiming INT 13h services. This
+permission requires a matching system-ROM identity; ordinary BIOS entries and
+unlisted images still need the corresponding service provider.
 The EPROM type `27256` labels both parts; original MAME filenames are preserved
 in the user-ROM README. The commented-out `atdiag` set has unknown origin and
 is excluded.
@@ -157,23 +160,45 @@ The page-register read-back risk did not occur; no device workaround is needed.
 Line 13 has an empty status when execution stops on unsupported SIDT at
 F000:A3CE (opcode prefix `0F 01`). The protected-mode test is not a pass.
 A budget of 30,000,000 scheduling steps reaches this stop without a disk.
-These observations describe the former Real16 profile; rows 14–32 remain
-unexecuted expectations. The board now runs the I286 machine profile at the current pin:
+These observations describe the former Real16 profile; the rows below it
+were unexecuted expectations at that revision. The board now runs the I286
+machine profile at the current pin:
 SIDT, LGDT/LIDT, LMSW and same-CPL 16-bit protected execution are available.
-The former SIDT stop must be re-measured. CPL-0 IDT interrupt/trap gates,
+CPL-0 IDT interrupt/trap gates,
 exception escalation through #DF/shutdown, IRET, LDT selectors and descriptor
 queries are now available; exceptions default to in-guest delivery. Shutdown
 requests a CPU-only board reset. Explicit outward faults retain vector,
 optional error code and CS:IP. Task gates and privilege transitions remain
 unsupported.
-No new diagnostic pass is assumed.
+
+**MEASURED by the supervisor at main `9bd422d`, CPU `fe240a5`:** Landmark AT
+completes full diagnostic passes on `ibm-5170`. Every test passes except the
+floppy read test on the measurement rig, which has a controller but no drive
+or medium. This evidence supersedes the earlier unsupported-SIDT stop. The
+regression configuration below adds a read-only 1.2 MB medium; its subsequent
+measured endpoint and hash are pinned in §3.
+
+**MEASURED by the supervisor after the floppy-controller fix:** the floppy
+read test now passes with the medium attached. One complete diagnostic pass
+finishes between approximately 137 million and 150 million steps. The ROM's
+protected-mode tests return to real mode through an 8042 CPU reset, and the
+ROM counts each reset as an error: its error counter rises by two per pass.
+The counter and failure title therefore reflect the diagnostic's own reset
+handling, not an emulator fault. The minuszerodegrees Supersoft/Landmark IBM
+5170 notes describe the same behaviour on real IBM 5170 hardware. The golden
+now pins this state without reproducing screen text; its measured stop and
+hash values are recorded in §3.
+
 Historical READ: x86jit `8979fc9`, `x86jit-core/src/lift/mod.rs`, has no lifter arms for
 SIDT or the protected-mode control instructions. Test 13 needs `xj-srh.15 (x86jit)` and more: the manual
 also requires exceptions and task switching, outside that bead's scope.
 
 ## 3. Golden capture rule
 
-Run headlessly until exit or a deterministic virtual-time budget. Record:
+Run headlessly until exit or a deterministic virtual-time budget. The
+full-pass capture records only stop kind/location, retired count and the MDA
+text-plane hash. The historical prefix capture additionally records our own
+verdict classifications. Historical capture rules were:
 
 - exit reason and opcode, and retired-instruction count;
 - SHA-256 of the MDA text plane;
@@ -181,8 +206,46 @@ Run headlessly until exit or a deterministic virtual-time budget. Record:
   each row's fixed position to classify pass, fail or absent;
 - a reason for every expected non-PASS row.
 
-The ignored CLI test `user_rom_landmark_at_real_mode_prefix` in
-`crates/cli/tests/landmark.rs` implements this rule in the user-ROM lane. It loads
+The ignored CLI test `user_rom_landmark_at_full_pass` in
+`crates/cli/tests/landmark.rs` pins the complete-pass golden in the user-ROM
+lane. It extends `preset:ibm-5170` with MDA as the sole display,
+`display_switch = "auto"`, a unit-0 1.2 MB floppy drive using
+`vendor/freedos/freedos-1200.img` read-only, and an IDE card with
+`controller_model = "at-adapter"`. The adapter remains present because the
+diagnostic probes the fixed-disk adapter even without a hard disk. Missing
+media reports `vendor/freedos/fetch.sh` as the fixture command. The system ROM
+keeps `provides = []`: its catalogue permissions cover direct controller tests
+without inventing boot services. RTC start is `2000-01-01T00:00:00`, NVRAM is
+volatile and derived, and CPU revision is pinned to
+`fe240a56ac2040e3deaebb2537e642137ee02c71`.
+
+This test runs with the named `FULL_PASS_RETIRED_CAP` set to 150,000,000,
+using the existing deterministic `RunPolicy::natural` session policy. The cap
+is the machine's total virtual-time safety net, measured in retired-instruction
+units plus halted PIT progress; the actual retired count is recorded separately.
+The cap includes one complete pass with the reset-counted state described above.
+The test records only the typed stop summary and CS:IP, actual retired count
+and SHA-256 of the visible 80×25 MDA glyph/attribute plane. It neither classifies
+nor prints screen cells. **MEASURED by the supervisor on this branch** with
+that cap, the full-pass golden pins:
+
+| Field | Value |
+|---|---|
+| Stop kind | `Ok(RetiredCapReached)` |
+| CS:IP | `0004:0015` |
+| Retired instructions | `138,208,231` |
+| Total virtual time (steps) | `150,000,000` |
+| MDA text-plane SHA-256 | `fe45632b8a9c1b762af117b162f56adc523b8aa2e5bda990bad5adb7079e807a` |
+
+Synthetic writer tests cover the display, drive geometry and read-only policy, adapter model,
+escaped absolute chip paths, RAM backing (including B8000h–BFFFFh reclaimed
+when VGA is removed), clock and RTC settings. Validation tests cover a
+Landmark-like synthetic identity with no services and both controllers, and
+preserve ordinary BIOS and unlisted-image rejection.
+
+The existing `user_rom_landmark_at_real_mode_prefix` measurement and historical
+Real16 constants remain unchanged, with their original diskless configuration.
+They are historical prefix evidence, separate from the full-pass golden. It loads
 a temporary machine file extending `preset:ibm-5170`, using absolute part paths
 (or an assembled image), `provides = []`, explicit RTC start and volatile derived
 NVRAM. It follows `run --machine`: `machine_file::load_for_assembly`,
@@ -199,7 +262,7 @@ The I286 measurement prints a safe stop summary, CS:IP, retired/completed
 counts, virtual time, MDA hash and verdict classifications. It does not read
 or print stop opcodes or screen text. Stop/count/hash constants remain
 TODO-MEASURE until the supervisor supplies a local capture; the former
-twelve-pass prefix remains historical evidence.
+twelve-test prefix remains historical evidence.
 Synthetic tests cover absolute paths (including escaped filenames), lane order,
 preset devices, RAM backing, clock and RTC/NVRAM settings through this loader.
 The preset retains RAM at A0000h–AFFFFh alongside the two text-card apertures;
@@ -262,10 +325,10 @@ READ (measured by the supervisor): the left box border is at zero-based column
 The status field is columns 35–46 on frame rows 1–13. Trim that field and
 classify `PASSED`, `FAILED` or `NOT PRESENT`; spaces denote an untested row.
 The former Real16 golden asserted the retired count and text hash
-unconditionally. The catalogue entry remains Listed; the full protected-mode
-suite is not qualified. With `ibm-5170` now using I286, re-measure the stop,
-counts and text hash against the current CPU revision. The test retains its
-`CPU_REV` pin check and TODO-MEASURE constants until that capture is supplied.
+unconditionally. The catalogue entry remains Listed; the full-pass regression
+now pins the supervisor's media-equipped I286 measurement above. Both tests
+retain their `CPU_REV` pin check. The separate historical prefix configuration
+and its constants remain unchanged.
 
 Pin ROM hashes, CMOS start, volatile NVRAM and the exact x86jit revision.
 The ROM's status tokens may be read to classify a result, but **never copy

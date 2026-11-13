@@ -356,12 +356,13 @@ impl MachineConfig {
                 return Err(ConfigError::ServicesOnRamLoad { image: index });
             }
         }
-        self.check_firmware_requirements(FIRMWARE_REQUIREMENTS)
+        self.check_firmware_requirements(FIRMWARE_REQUIREMENTS, self.board.firmware_catalogue())
     }
 
     fn check_firmware_requirements(
         &self,
         requirements: &[FirmwareRequirement],
+        catalogue: &[crate::FirmwareEntry],
     ) -> Result<(), ConfigError> {
         if self.board == BoardModel::Bare {
             return Ok(());
@@ -371,8 +372,13 @@ impl MachineConfig {
             .iter()
             .enumerate()
             .filter(|(_, image)| image.kind == ImageKind::Rom)
-            .map(|(index, _)| crate::firmware::image_services(self, index))
+            .map(|(index, _)| crate::firmware::image_services_from(self, index, catalogue))
             .collect::<Result<Vec<_>, _>>()?;
+        // Scan-window fallback is only a memory-map policy: an unknown BIOS
+        // must never inherit a diagnostic ROM's permission to drive hardware.
+        let diagnostic = crate::firmware::system_bios(self)
+            .ok()
+            .and_then(|bios| crate::firmware::matched_entry(bios, catalogue));
         for device in &self.devices {
             for rule in requirements {
                 if (rule.matches)(&device.kind)
@@ -384,6 +390,12 @@ impl MachineConfig {
                     && !services
                         .iter()
                         .any(|services| services.is_none_or(|set| set.contains(&rule.service)))
+                    && !diagnostic.is_some_and(|entry| {
+                        entry.kind == crate::FirmwareKind::SystemBios
+                            && entry.capabilities.contains(
+                                &crate::FirmwareCapability::DirectHardwareTest(rule.service),
+                            )
+                    })
                 {
                     return Err(ConfigError::NoProvider {
                         device: device.id,
@@ -1498,6 +1510,96 @@ mod tests {
     }
 
     #[test]
+    fn diagnostic_system_rom_tests_only_catalogued_controllers_without_services() {
+        use crate::{FirmwareCapability, FirmwareEntry, FirmwareService};
+        use sha2::{Digest, Sha256};
+
+        let mut config = board_config();
+        config.images[0].base = 0xF0000;
+        config.images[0].source = ImageSource::Inline(vec![0; 65536]);
+        config.images[0].provides.clear();
+        let ide = crate::IdeCfg {
+            model: devices::ata::AtaControllerModel::AtAdapter,
+            base: 0x1F0,
+            control: 0x3F6,
+        };
+        config.devices.push(
+            DeviceConfig::new(DeviceId::Ide, DeviceKind::Ide(ide), ide.port_windows()).with_irq(14),
+        );
+        let diagnostic = FirmwareEntry {
+            sha256: Box::leak(format!("{:x}", Sha256::digest(vec![0; 65536])).into_boxed_str()),
+            ..crate::firmware::LANDMARK_ROM_POST_AT_1_2_0
+        };
+        let check = |entries: &[FirmwareEntry]| {
+            config.check_firmware_requirements(FIRMWARE_REQUIREMENTS, entries)
+        };
+        assert_eq!(check(&[diagnostic]), Ok(()));
+        assert_eq!(
+            check(&[FirmwareEntry {
+                capabilities: &[],
+                ..diagnostic
+            }]),
+            Err(ConfigError::NoProvider {
+                device: DeviceId::Fdc,
+                service: FirmwareService::Floppy,
+            })
+        );
+        assert_eq!(
+            check(&[FirmwareEntry {
+                capabilities: &[FirmwareCapability::DirectHardwareTest(
+                    FirmwareService::Floppy
+                )],
+                ..diagnostic
+            }]),
+            Err(ConfigError::NoProvider {
+                device: DeviceId::Ide,
+                service: FirmwareService::FixedDisk,
+            })
+        );
+        assert_eq!(
+            check(&[crate::firmware::LANDMARK_ROM_POST_AT_1_2_0]),
+            Err(ConfigError::NoProvider {
+                device: DeviceId::Fdc,
+                service: FirmwareService::Floppy,
+            })
+        );
+        assert_eq!(
+            check(&[FirmwareEntry {
+                kind: crate::FirmwareKind::OptionRom,
+                ..diagnostic
+            }]),
+            Err(ConfigError::NoProvider {
+                device: DeviceId::Fdc,
+                service: FirmwareService::Floppy,
+            })
+        );
+        assert!(config.images[0].provides.is_empty());
+        let adapter_catalogue = [FirmwareEntry {
+            kind: crate::FirmwareKind::OptionRom,
+            ..diagnostic
+        }];
+        for system_bios_image in [None, Some(0)] {
+            let mut non_top = config.clone();
+            non_top.images[0].base = 0xC8000;
+            non_top.system_bios_image = system_bios_image;
+            let selected = crate::firmware::system_bios(&non_top).unwrap();
+            assert!(std::ptr::eq(selected, &non_top.images[0]));
+            assert_eq!(
+                crate::firmware::matched_entry(selected, &adapter_catalogue),
+                Some(&adapter_catalogue[0])
+            );
+            assert_eq!(
+                non_top.check_firmware_requirements(FIRMWARE_REQUIREMENTS, &adapter_catalogue),
+                Err(ConfigError::NoProvider {
+                    device: DeviceId::Fdc,
+                    service: FirmwareService::Floppy,
+                }),
+                "non-top ROM selected with system_bios_image={system_bios_image:?}",
+            );
+        }
+    }
+
+    #[test]
     fn initialization_fdc_with_bound_drive_requires_floppy_provider() {
         let mut config = board_config();
         config.images[0].provides.clear();
@@ -1571,7 +1673,7 @@ mod tests {
             needs_bound_drive: false,
         }];
         assert_eq!(
-            config.check_firmware_requirements(&rules),
+            config.check_firmware_requirements(&rules, config.board.firmware_catalogue()),
             Err(ConfigError::NoProvider {
                 device: DeviceId::Uart,
                 service: crate::FirmwareService::FixedDisk,
@@ -1580,7 +1682,10 @@ mod tests {
         config.images[0]
             .provides
             .push(crate::FirmwareService::FixedDisk);
-        assert_eq!(config.check_firmware_requirements(&rules), Ok(()));
+        assert_eq!(
+            config.check_firmware_requirements(&rules, config.board.firmware_catalogue()),
+            Ok(())
+        );
     }
 
     #[test]
