@@ -197,11 +197,29 @@ Transport sets what is feasible:
   DMA cards (Sound Blaster digital audio, GUS) need an FPGA bridge that runs
   the DMA handshake and buffering locally.
 
+The maintainer floated designing that FPGA bridge as a project of our own
+(2026-11-13): an FPGA board with a PCIe endpoint, used in a Thunderbolt PCIe
+enclosure, with 5 V level shifting to a powered ISA backplane. Its gateware
+would:
+
+- drive ISA I/O and memory cycles with real bus timing (wait states, IOCHRDY,
+  0WS);
+- forward IRQ lines as message interrupts with their edge timestamps;
+- implement an 8237-compatible DMA engine on the bridge, which answers DRQ
+  with DACK at bus speed from a buffer that it fills and drains from host
+  memory by PCIe bus mastering;
+- expose one register window per mapped card for the host driver.
+
+The emulator's bridge `Device` would then exchange time-stamped transactions
+with the gateware, not single bus cycles, so only synchronous reads stall the
+guest.
+
 - **Why deferred:** No workload needs it. The OPL bridge is an optional audio
   output, and a live-mode ISA bridge is a separate hardware project that gives
   up determinism by design.
 - **Revisit when:** The maintainer wants real OPL sound (OPL output bridge
-  first), or owns bridge hardware and wants a live mode.
+  first), owns bridge hardware and wants a live mode, or starts the FPGA bridge
+  as a separate hardware project.
 - **Requirement for now:** None beyond the existing seams. Devices stay behind
   the `Device` trait, bus accesses carry their time, and audio output stays a
   host-side sink.
