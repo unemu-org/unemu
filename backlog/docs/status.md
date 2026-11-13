@@ -428,14 +428,17 @@ smooth-scrolling timing finer than a frame remain unmodelled. See
   from HLT; periodic and calendar phases remain an explicitly documented
   approximation. CRTC indices decode five bits; cursor comparison uses the full
   16-bit address while scanout wraps at the CPU aperture by assumption. FDC
-  IRQ6 and DMA requests obey DOR bit 3. With RDY active, empty-bay SEEK succeeds,
-  RECALIBRATE reports equipment check with PCN=0, and ID/data searches wait for
-  reset without an interrupt. SENSE DRIVE STATUS (04h) accepts the drive/head
-  parameter and returns ST3 without raising or acknowledging an interrupt or
-  changing the present cylinders. ST3 echoes unit/head, reports two-sided
-  geometry, mounted track 0 and media write protection, and keeps READY active
-  for every select. ASSUMED: an empty bay clears T0/TS/WP; FT is always clear
-  because drive faults are not modelled.
+  IRQ6 and DMA requests obey DOR bit 3. With RDY active, SEEK succeeds with or
+  without a disk or installed drive. RECALIBRATE reports equipment check with
+  PCN=0 only for absent drives; installed empty drives complete normally and
+  report T0 at PCN=0 while disk change remains asserted. Without a disk,
+  ID/data searches wait for reset without an interrupt. SENSE DRIVE STATUS
+  (04h) accepts the drive/head parameter and returns ST3 without raising or
+  acknowledging an interrupt or changing the present cylinders. ST3 echoes
+  unit/head, reports two-sided geometry, installed-drive track 0 and media
+  write protection, and keeps READY active for every select. ASSUMED: no disk
+  clears TS/WP; absent drives also clear T0. FT is always clear because drive
+  faults are not modelled.
   ASSUMED for silicon: SEEK/RECALIBRATE completion supersedes unread reset
   polls (Bochs-style, limited to seek and recalibrate completion). MAME instead
   retains pending ST0 per drive and senses the lowest pending drive; NEC µPD765
@@ -487,10 +490,19 @@ smooth-scrolling timing finer than a frame remain unmodelled. See
   partitions it as active FAT16, resets the CPU, runs FORMAT with system
   transfer, ejects A: and resets again to boot C:. With the open `at-ide.toml`
   firmware and CPU pin `fe240a56`, the final C: prompt has screen FNV-1a
-  `1429bef60948e1d5`, 102,208,270 retired instructions and virtual time
-  106,800,000. Omitting FORMAT makes the same C: boot fail at the partition
-  boot signature check. Writes stay in a hash-bound journal; the base remains
-  unchanged.
+  `8f1e57cd86975e25`, 104,210,281 retired instructions and virtual time
+  108,800,000. MEASURED: normal empty-drive recalibration reaches READ ID;
+  without index pulses the BIOS exhausts one IRQ wait (726,351 virtual steps)
+  and three command-ready waits (786,864 total). NEC uPD765A datasheet,
+  READ ID command and Status Register 1 (MA): an ID search ends only on an ID
+  field or after two index pulses. Intel 82077AA datasheet, §8.1 Command and
+  Result Phase Handshaking, corroborates the required software timeout. The
+  motor start is unchanged; the first C: boot read moves 1,507,019 virtual
+  steps later, rounded to two prompt-polling chunks at the endpoint. XTIDE now
+  sees timeout 80h and omits the old error 40h line; the retained top banner
+  and later RTC time change the screen hash.
+  Omitting FORMAT makes the same C: boot fail at the partition boot signature
+  check. Writes stay in a hash-bound journal; the base remains unchanged.
   See `machines/README.md` §Playing DOS games for the same installation steps.
 - **IDE PIO:** one primary (1F0h/3F6h, IRQ14) or secondary (170h/376h,
   IRQ15) channel assembles from Rust configs and TOML `ide` cards. Master/slave

@@ -1795,6 +1795,45 @@ mod tests {
     use super::*;
 
     #[test]
+    fn installed_empty_drive_guest_recalibrates_a_configured_media_list() {
+        let mut program = vec![
+            0xfa, // CLI
+            0xba, 0xf2, 0x03, 0xb0, 0x1c, 0xee, // release FDC reset
+            0xba, 0xf5, 0x03, // MOV DX,3F5h
+        ];
+        for _ in 0..4 {
+            program.extend([0xb0, 8, 0xee, 0xec, 0xec]);
+        }
+        program.extend([
+            0xb0, 7, 0xee, 0xb0, 0, 0xee, // RECALIBRATE drive 0
+            0xb0, 8, 0xee, // SENSE INTERRUPT STATUS
+            0xec, 0xa2, 0x00, 0x05, // store ST0 at 0500h
+            0xec, 0xa2, 0x01, 0x05, // store PCN at 0501h
+            0xf4,
+        ]);
+        let mut config = crate::at_fdc_write(program, vec![], 0x600);
+        config.drives[0].kind = DriveKind::Floppy {
+            geometry: FloppyGeometry::HD_1_2,
+        };
+        config.drives[0].media = Some(crate::FloppyMediaList {
+            entries: vec![],
+            empty: true,
+        });
+        let mut assembled = assemble(&config).unwrap();
+        assert_eq!(
+            assembled.machine.run_bounded(Some(100)).unwrap(),
+            machine::RunOutcome::Halted
+        );
+        let mut status = [0; 2];
+        assembled
+            .machine
+            .cpu()
+            .read_mem(0x500, &mut status)
+            .unwrap();
+        assert_eq!(status, [0x20, 0]);
+    }
+
+    #[test]
     fn guest_refresh_loop_counts_virtual_pit_clocks_at_rate_one() {
         // Synthetic IN/TEST/LOOPZ loop matching IBM AT BIOS TEST1, checkpoint
         // 11. After the count write retires, MOV CX,0 loads CE at t=7.

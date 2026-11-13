@@ -91,7 +91,7 @@
 //! |--------------------------------|--------|----------|--------------------------------|
 //! | SPECIFY                        | `0x03` | yes      | timings accepted, not enforced |
 //! | SENSE DRIVE STATUS             | `0x04` | yes      | ST3; no interrupt or seek-state change |
-//! | RECALIBRATE                    | `0x07` | partial  | PCN=0; empty bay: SE+EC, abnormal IRQ6 |
+//! | RECALIBRATE                    | `0x07` | partial  | PCN=0; installed, even empty: SE; absent: SE+EC, abnormal IRQ6 |
 //! | SENSE INTERRUPT STATUS         | `0x08` | yes      | ST0 + PCN, or invalid if idle; ASSUMED: seek/recalibrate completion discards remaining reset polls |
 //! | SEEK                           | `0x0F` | yes      | set present cylinder, IRQ6     |
 //! | READ ID                        | `0x4A` | partial  | matching rate: synthetic R=1/N=2; empty: waits for index |
@@ -134,16 +134,22 @@
 //! polls (NEC µPD765A datasheet, RESET / SENSE INTERRUPT STATUS).
 //! ASSUMED: RDY is held high independently of the selected slot; the available
 //! adapter logic diagram, sheet 4 of 9, does not resolve the tie unambiguously.
-//! No drive-presence/media distinction is modelled: an empty slot supplies
-//! neither TRACK 0 nor index. NEC µPD765A, SEEK / RECALIBRATE and ST0: SEEK
-//! reaches NCN normally; RECALIBRATE clears PCN even when TRACK 0 is absent,
-//! then ends with SE+EC and IC=01 after 77 unsuccessful steps. The step delay
+//! IBM PC AT Technical Reference, High Capacity Diskette Drive, Output Signals,
+//! -Track 00: head position supplies TRACK 0 independently of media. ASSUMED:
+//! head position is taken from PCN, so an installed drive supplies TRACK 0 at
+//! PCN zero, including without a disk. Absent positions supply neither TRACK 0
+//! nor index; only mounted media supplies index pulses. NEC µPD765A datasheet,
+//! SEEK / RECALIBRATE and Status Register 0: SEEK reaches NCN normally;
+//! RECALIBRATE clears PCN and ends with SE when TRACK 0 is reached. An absent
+//! drive ends with SE+EC and IC=01 after 77 unsuccessful steps. The step delay
 //! is collapsed, as for mounted seeks. READ ID / ST1 MA requires index pulses
 //! to end an unsuccessful ID search; without them there is no result or IRQ.
 //! This also applies to READ/WRITE DATA's ID search. The controller remains
 //! Dormant deterministically; a BIOS's timer IRQs or polling instruction budget
 //! can expire its software timeout, then DOR reset aborts the search and makes
 //! the four reset SIS results available. No controller timeout is invented.
+//! Intel 82077AA datasheet, §8.1 Command and Result Phase Handshaking, likewise
+//! requires a software timeout when an empty drive supplies no index pulses.
 //!
 //! SENSE DRIVE STATUS takes a drive/head parameter and returns one ST3 byte
 //! without raising or acknowledging INT. NEC µPD765 datasheet, Functional
@@ -152,8 +158,8 @@
 //! 3: ST3 reports FT/WP/RY/T0/TS/HD/US1/US0 from bit 7 down to bit 0.
 //! HD and US echo the parameter; RY follows the active RDY policy above.
 //! ASSUMED: TS comes from the mounted geometry's two heads, and T0 from the
-//! selected drive's PCN=0. With no separate drive-without-media state, an empty
-//! bay clears T0/TS/WP, even after RECALIBRATE clears PCN. FT stays clear because
+//! installed drive's PCN=0, independently of media. An installed empty drive
+//! clears TS/WP; an absent position also clears T0. FT stays clear because
 //! drive faults are not modelled; WP follows the medium's write protection.
 //! ASSUMED: T0/WP/TS follow the command's unit regardless of DOR drive-select
 //! and motor bits. The AT adapter's selected, motor-on drive supplies these
@@ -195,9 +201,10 @@
 //! WRITE DATA and Status Register 1).
 //!
 //! Snapshots contain registers, command/result phases, pending DMA context
-//! and request data, and the absolute trace time base. Mounted media and wiring
-//! belong to the receiving instance and must match the saved controller. This
-//! model has no timed execution deadlines (NEC µPD765 datasheet, Execution Phase).
+//! and request data, and the absolute trace time base. Mounted media and
+//! installed-drive wiring belong to the receiving instance and must match the
+//! saved controller. This model has no timed execution deadlines (NEC µPD765
+//! datasheet, Execution Phase).
 //! Snapshot v4 appends the CCR rate encoding to v3's layout. V3 restores with
 //! the reset rate (500 kbps), because it did not retain CCR writes. V3 stores
 //! the interrupt latch before the DOR gate and permits an empty-bay ID search
@@ -536,8 +543,10 @@ pub struct Upd765 {
     /// The WRITE context whose media commit and result phase follow the DMA.
     pending_write: Option<PendingWrite>,
     /// Media mounted in each of the four drive positions the DOR can select.
-    /// `None` supplies neither TRACK 0 nor index pulses; RDY remains active.
+    /// `None` supplies no index pulses; TRACK 0 depends on the installed drive.
     drives: [Option<Drive>; 4],
+    /// Drive wiring is configuration, independent of removable media and snapshots.
+    installed: [bool; 4],
     media_lists: [Vec<Option<Drive>>; 4],
     inserted: [Option<usize>; 4],
     disk_changed: [bool; 4],
@@ -567,6 +576,7 @@ impl Upd765 {
             pending_read: None,
             pending_write: None,
             drives: [None, None, None, None],
+            installed: [false; 4],
             media_lists: std::array::from_fn(|_| Vec::new()),
             inserted: [None; 4],
             disk_changed: [false; 4],
@@ -592,6 +602,7 @@ impl Upd765 {
     /// carries its own geometry, so drive 0 and drive 1 may differ.
     #[must_use]
     pub fn with_drives(drives: [Option<Drive>; 4]) -> Self {
+        let installed = std::array::from_fn(|unit| drives[unit].is_some());
         let inserted = std::array::from_fn(|unit| drives[unit].as_ref().map(|_| 0));
         let media_lists = std::array::from_fn(|unit| {
             if drives[unit].is_some() {
@@ -602,13 +613,16 @@ impl Upd765 {
         });
         Self {
             drives,
+            installed,
             inserted,
             media_lists,
             ..Self::new()
         }
     }
 
-    /// Configure a catalogue before power-on; an empty drive asserts disk change.
+    /// Install a drive and configure its catalogue before power-on, even if empty.
+    /// The `empty` flag opens the door and asserts disk change, regardless of
+    /// catalogue contents (see the module's AT interface policy).
     pub fn set_media_list(
         &mut self,
         unit: usize,
@@ -623,6 +637,7 @@ impl Upd765 {
                 return Err(MediaChangeError::GeometryMismatch);
             }
         }
+        self.installed[unit] = true;
         self.drives[unit] = None;
         self.inserted[unit] = None;
         self.media_lists[unit] = media.into_iter().map(Some).collect();
@@ -851,12 +866,12 @@ impl Upd765 {
         let drive_head = self.command[1] & 0b111;
         let unit = usize::from(drive_head & 0b11);
         let mut st3 = ST3_READY | drive_head;
+        if self.installed[unit] && self.present_cylinder[unit] == 0 {
+            st3 |= ST3_TRACK_ZERO;
+        }
         if let Some(drive) = &self.drives[unit] {
             if drive.geometry.heads == 2 {
                 st3 |= ST3_TWO_SIDE;
-            }
-            if self.present_cylinder[unit] == 0 {
-                st3 |= ST3_TRACK_ZERO;
             }
             if drive.write_protected() {
                 st3 |= ST3_WRITE_PROTECTED;
@@ -870,13 +885,14 @@ impl Upd765 {
     /// RECALIBRATE: seek the selected drive to cylinder 0 and raise IRQ6. The
     /// result is read later via SENSE INTERRUPT STATUS. NEC µPD765A datasheet,
     /// RECALIBRATE: PCN is cleared before checking TRACK 0; failure after 77
-    /// steps reports equipment check, with the step delay collapsed here.
+    /// steps reports equipment check for an absent drive only, with the step
+    /// delay collapsed here.
     fn cmd_recalibrate(&mut self) {
         let drive = self.command[1] & 0b11;
         self.st0 = ST0_SEEK_END | drive;
         self.step();
         self.present_cylinder[usize::from(drive)] = 0;
-        if self.drives[usize::from(drive)].is_none() {
+        if !self.installed[usize::from(drive)] {
             self.st0 |= ST0_ABNORMAL | ST0_EQUIPMENT_CHECK;
         }
         self.reset_poll = 0;
@@ -1474,11 +1490,13 @@ impl Device for Upd765 {
         let trace_policy = self.trace.policy();
         // A controller reset clears the registers but does not eject any disk.
         let drives = std::mem::take(&mut self.drives);
+        let installed = self.installed;
         let media_lists = std::mem::take(&mut self.media_lists);
         let inserted = self.inserted;
         let disk_changed = self.disk_changed;
         *self = Self {
             drives,
+            installed,
             media_lists,
             inserted,
             disk_changed,
@@ -2869,6 +2887,81 @@ mod tests {
         bus.port_write(DOR, 1, 12).unwrap();
         let request = bus.device_mut().take_dma_request().unwrap();
         assert!(matches!(request.op, DmaOp::ToMemory(bytes) if bytes == vec![0x5A; SECTOR_SIZE]));
+    }
+
+    #[test]
+    fn installed_empty_drive_recalibrates_without_equipment_check() {
+        for unit in 0..4 {
+            let mut fdc = ready_drives([None, None, None, None]);
+            fdc.set_media_list(usize::from(unit), vec![], true).unwrap();
+            let mut bus = MockBus::new(Box::new(fdc));
+            assert_empty_drive_recalibrates(&mut bus, unit);
+        }
+    }
+
+    #[test]
+    fn installed_empty_drive_recalibrates_after_ejection() {
+        let mut bus = MockBus::new(Box::new(ready_drives([
+            Some(Drive::new(FloppyGeometry::HD1200, vec![])),
+            None,
+            None,
+            None,
+        ])));
+        swap_fdc(&mut bus).eject(0).unwrap();
+        assert_empty_drive_recalibrates(&mut bus, 0);
+    }
+
+    fn assert_empty_drive_recalibrates(bus: &mut MockBus, unit: u8) {
+        bus.port_write(DOR, 1, u32::from(0x0c | unit)).unwrap();
+        bus_command(bus, &[0x0f, unit, 40]);
+        bus_command(bus, &[8]);
+        assert_eq!(bus_results(bus, 2), [ST0_SEEK_END | unit, 40]);
+        bus_command(bus, &[7, unit]);
+        assert!(bus.device().irq_pending());
+        bus_command(bus, &[8]);
+        assert_eq!(bus_results(bus, 2), [ST0_SEEK_END | unit, 0]);
+        bus_command(bus, &[4, unit]);
+        assert_eq!(bus_results(bus, 1), [ST3_READY | ST3_TRACK_ZERO | unit]);
+        assert_eq!(bus.port_read(DIR_CCR, 1).unwrap(), 0x80);
+    }
+
+    #[test]
+    fn installed_empty_drive_track_zero_follows_seek_and_recalibrate() {
+        let mut bus = MockBus::new(Box::new(ready_drives([None, None, None, None])));
+        swap_fdc(&mut bus).set_media_list(0, vec![], true).unwrap();
+        bus_command(&mut bus, &[4, 0]);
+        assert_eq!(bus_results(&mut bus, 1), [ST3_READY | ST3_TRACK_ZERO]);
+        bus_command(&mut bus, &[0x0f, 0, 40]);
+        bus_command(&mut bus, &[4, 0]);
+        assert_eq!(bus_results(&mut bus, 1), [ST3_READY]);
+        bus_command(&mut bus, &[7, 0]);
+        bus_command(&mut bus, &[4, 0]);
+        assert_eq!(bus_results(&mut bus, 1), [ST3_READY | ST3_TRACK_ZERO]);
+        bus.port_write(DOR, 1, 0x0d).unwrap();
+        bus_command(&mut bus, &[7, 1]);
+        bus_command(&mut bus, &[8]);
+        assert_eq!(
+            bus_results(&mut bus, 2),
+            [ST0_ABNORMAL | ST0_SEEK_END | ST0_EQUIPMENT_CHECK | 1, 0]
+        );
+    }
+
+    #[test]
+    fn installed_empty_drive_survives_reset_and_restore_into_another_controller() {
+        let mut source = MockBus::new(Box::new(ready_fdc(vec![])));
+        swap_fdc(&mut source).eject(0).unwrap();
+        let saved = source.device().save();
+        let mut receiver = ready_fdc(vec![]);
+        receiver.eject(0).unwrap();
+        let mut bus = MockBus::new(Box::new(receiver));
+        bus.device_mut().reset();
+        bus.device_mut().restore(&saved).unwrap();
+        assert_empty_drive_recalibrates(&mut bus, 0);
+        swap_fdc(&mut bus).set_media_list(1, vec![], true).unwrap();
+        bus.device_mut().reset();
+        bus.port_write(DOR, 1, 0x0d).unwrap();
+        bus_command(&mut bus, &[4, 1]);
+        assert_eq!(bus_results(&mut bus, 1), [ST3_READY | ST3_TRACK_ZERO | 1]);
     }
 
     #[test]

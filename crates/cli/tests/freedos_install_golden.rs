@@ -303,9 +303,16 @@ fn freedos_installs_and_boots_from_a_blank_hard_disk() {
         assembled.machine.cpu().retired(),
         assembled.machine.virtual_time()
     );
-    assert_eq!(session::screen_hash(&screen), 0x1429bef60948e1d5);
-    assert_eq!(assembled.machine.cpu().retired(), 102_208_270);
-    assert_eq!(assembled.machine.virtual_time(), 106_800_000);
+    // NEC uPD765A datasheet, READ ID command and Status Register 1 (MA): an ID
+    // search ends only on an ID field or after two index pulses. Successful
+    // empty-drive calibration reaches that search, which cannot end without a
+    // disk. Intel 82077AA datasheet, §8.1 Command and Result Phase Handshaking,
+    // corroborates the required software timeout. The BIOS exhausts one IRQ
+    // wait and three command-ready waits before booting C:. Prompt polling
+    // rounds the added firmware work up to two million virtual steps.
+    assert_eq!(session::screen_hash(&screen), 0x8f1e57cd86975e25);
+    assert_eq!(assembled.machine.cpu().retired(), 104_210_281);
+    assert_eq!(assembled.machine.virtual_time(), 108_800_000);
     let installed = hard_disk(&mut assembled);
     assembled.finish_persistence().unwrap();
     drop(assembled);
