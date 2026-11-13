@@ -382,3 +382,40 @@ fn run_machine_reboots_at_reset_vector_with_ram_retained() {
     assert_eq!(output.stdout, b"Z");
     assert!(stderr(&output).ends_with("stopped: halt\n"));
 }
+
+#[test]
+fn rom_discovery_requires_explicit_flags_and_reports_skipped_roots() {
+    let files = Files::new(&[0xF4]);
+    let dumps = files.0.join("dumps");
+    std::fs::create_dir(&dumps).unwrap();
+    std::fs::write(dumps.join("renamed.bin"), vec![0xf4; 32768]).unwrap();
+    files.write("bios.bin", vec![0; 32768]);
+    files.write("machine.toml", "schema=1\n[board]\nmodel='ibm-5170'\n[firmware.bios]\nimage='bios.bin'\nsha256='d7da9668c2e0720cf257c00882bf495ca672e7a4d972b4b124b6b853e7ac9668'\n[[card]]\nkind='mda'\n");
+    for args in [vec!["machine", "check"], vec!["run", "--machine"]] {
+        let output = Command::new(env!("CARGO_BIN_EXE_unemupc98"))
+            .args(&args)
+            .arg(files.machine())
+            .arg("--allow-unlisted-firmware")
+            .env("UNEMUPC98_USER_ROMS_DIR", &dumps)
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(1));
+        assert!(
+            stderr(&output).contains("sha256 mismatch"),
+            "{}",
+            stderr(&output)
+        );
+    }
+    let output = Command::new(env!("CARGO_BIN_EXE_unemupc98"))
+        .args(["machine", "check"])
+        .arg(files.machine())
+        .arg("--allow-unlisted-firmware")
+        .arg("--rom-dir")
+        .arg(files.0.join("unmounted"))
+        .arg("--rom-dir")
+        .arg(dumps)
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert!(stderr(&output).contains("warning: <--rom-dir>: skipped"));
+}

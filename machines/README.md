@@ -76,8 +76,70 @@ The schema and
 defaults are in
 [`machine-files.md`](../backlog/docs/design/machine-files.md).
 
-The window defaults to this workspace's `at-freedos.toml` (located at build time),
-independent of its working directory. `--display` selects an effective card id;
+Start the desktop library from the repository root with:
+
+```sh
+cargo run --offline -p window --bin unemupc98-window
+```
+
+The welcome screen lists machine files in `machines/` and `machines/local/`
+(located at build time), independently of the working directory. It selects
+`at-freedos.toml` initially. Select a ready machine and press Start, Enter, or
+double-click its name. Missing firmware or invalid media shows the existing
+validator diagnostic and disables Start. File › Open machine file… accepts a
+TOML/YAML path. New machine, settings, media insertion/import
+and layer editing currently show “not yet available”; existing next/eject media
+actions remain available. Help › Keyboard shortcuts lists all bindings.
+
+To start a specific machine immediately in the same shell:
+
+```sh
+cargo run --offline -p window --bin unemupc98-window -- --machine machines/at-freedos.toml
+```
+
+To locate user-supplied firmware, open **Tools › Locate firmware…** (or
+**Tools › Preferences…**). Choose **Browse…** and select a ROM folder, or type
+its directory path and select **Add folder**. Add more folders if chip dumps
+are stored separately, then select **Save**. The welcome screen checks readiness
+again on a host worker for the selected machine, showing “Checking firmware…”;
+Start is enabled once firmware, media and the machine configuration pass
+validation. Remaining missing-media errors still need the local disks described
+below. No ROM files are copied into the repository and no machine file is edited.
+
+Folders persist in `~/Library/Application Support/unemupc98/preferences.toml`
+on macOS, `$XDG_CONFIG_HOME/unemupc98/preferences.toml` on Linux (default
+`~/.config/unemupc98/preferences.toml`), or the app's config directory on Windows.
+`UNEMUPC98_USER_ROMS_DIR`, when set, is searched as well. File names do not select
+firmware: full-file SHA-256 pins do, including split chips and assembled ROMs.
+Correct existing machine-file paths take priority. Unavailable folders and entries
+produce warnings and do not block other folders. Discovery ignores symlinks that
+leave a chosen root and uses catalogue lengths or bounded ROM sizes to avoid
+hashing unrelated archives. Preferences are saved atomically and preserve unknown
+fields written by newer versions.
+
+The CLI accepts repeatable ROM directories for both validation and running:
+
+```sh
+unemupc98 machine check machines/at-games.toml --rom-dir /path/to/roms
+unemupc98 run --machine machines/at-games.toml --rom-dir /path/to/roms --print vga
+```
+
+Without `--rom-dir`, the CLI performs no ROM discovery. The
+window binary also accepts `--rom-dir`; its saved folders and environment are
+included. macOS keeps only the native title bar; toolbar icons are painted in
+both skins, and the in-window menus remain available on every platform.
+
+Pause/Resume is Ctrl+Alt+P; Ctrl+Alt+Q stops cleanly and returns to the library.
+Ctrl+Alt+End sends guest Ctrl+Alt+Del. Click the screen to focus guest input and
+capture a configured mouse; Ctrl+Alt+G releases it while preserving keyboard
+focus, as does Pause. Menus and dialogs release capture and keyboard focus.
+During guest focus only Ctrl+Alt chords control the host: F1, Ctrl+N, Ctrl+O
+and Ctrl+, reach the guest. Their shell actions require shell focus or a
+stopped machine. View › Skin selects classic (default) or modern controls; Theme follows
+the system by default. Drive activity is currently unavailable and labelled in
+the status bar. The maintainer checks appearance manually; tests open no windows.
+
+`--display` selects an effective card id;
 otherwise the first display in file order is used. Positional BIOS/floppy
 arguments have been removed. For different images, save a local file beside
 `at-freedos.toml`, for example:

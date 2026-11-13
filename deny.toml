@@ -6,6 +6,9 @@
 # documented advisory below is accepted until its review date.
 ignore = [
     { id = "RUSTSEC-2026-0192", reason = "Accepted 2026-11-11: window -> winit -> sctk-adwaita -> ab_glyph -> owned_ttf_parser -> ttf-parser 0.25.1 provides Wayland client-side decorations, required for window frames on GNOME. This is an unmaintained crate, not a known vulnerability; no safe upgrade is available. Keep winit's default wayland-csd-adwaita feature. Review 2027-05-11." },
+    { id = "RUSTSEC-2026-0371", reason = "Accepted 2026-11-13: window -> eframe -> egui-winit -> accesskit_winit -> accesskit_unix -> zbus 5.19.0 -> zbus_names 4.3.5 provides Linux AT-SPI accessibility through eframe's accesskit feature. This is an unmaintained crate, not a known vulnerability; merged into zbus 6, no compatible upgrade while the accesskit stack depends on zbus 5. Review 2027-05-13." },
+    { id = "RUSTSEC-2026-0370", reason = "Accepted 2026-11-13: window -> eframe -> egui-winit -> accesskit_winit -> accesskit_unix -> zbus 5.19.0 -> zvariant 5.15.1 provides Linux AT-SPI accessibility through eframe's accesskit feature. This is an unmaintained crate, not a known vulnerability; merged into zbus 6, no compatible upgrade while the accesskit stack depends on zbus 5. Review 2027-05-13." },
+    { id = "RUSTSEC-2026-0372", reason = "Accepted 2026-11-13: window -> eframe -> egui-winit -> accesskit_winit -> accesskit_unix -> zbus 5.19.0 -> zvariant 5.15.1 -> zvariant_derive 5.15.1 provides Linux AT-SPI accessibility through eframe's accesskit feature. This is an unmaintained crate, not a known vulnerability; merged into zbus 6, no compatible upgrade while the accesskit stack depends on zbus 5. Review 2027-05-13." },
 ]
 
 [licenses]
@@ -21,6 +24,12 @@ allow = [
     "BSD-2-Clause",
     "BSD-3-Clause",
     "ISC",
+    # slotmap requires Zlib.
+    "Zlib",
+    # epaint_default_fonts supplies the optional Noto Emoji font under OFL-1.1.
+    "OFL-1.1",
+    # epaint_default_fonts embeds Ubuntu Light under Ubuntu-font-1.0.
+    "Ubuntu-font-1.0",
 ]
 confidence-threshold = 0.9
 

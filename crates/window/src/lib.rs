@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Optional host-window text presenter; see `backlog/docs/design/spec.md` §9.4.
 //!
-//! Rasterisation is pure: pixels are `0x00RRGGBB` u32 values, matching softbuffer.
+//! Rasterisation is pure: pixels are `0x00RRGGBB` u32 values, uploaded as RGB to egui.
 //! CP437 glyphs come from VileR's Ultimate Oldschool PC Font Pack v2.2,
 //! <http://int10h.org/oldschool-pc-fonts/>, CC BY-SA 4.0. The original .FON files
 //! and attribution are in `assets/fonts/`; they are parsed at load time.
@@ -27,7 +27,7 @@
 //! The binary consumes Ctrl+Alt+F to insert the next A: medium and Ctrl+Alt+E
 //! to eject it; Shift selects B:. Next cycles the image list without an empty
 //! entry, and from empty selects the first image. Media events enter at the same
-//! run boundaries; the title shows current file names or `empty`. See
+//! run boundaries; the Media menu shows current file names or `empty`. See
 //! `backlog/docs/design/observation.md` § Floppy host input.
 //! Repeated host presses emit make codes again (typematic); releases emit breaks.
 //! Captured physical Shift and guest LED NumLock select IBM artificial Shift
@@ -41,7 +41,7 @@
 //! An opt-in PS/2 or serial mouse captures on a client-area click (that click is swallowed).
 //! Ctrl+Alt+G, focus loss and suspension release capture and guest buttons.
 //! The window tries Locked then Confined, hides the cursor and shows the release
-//! chord in its title. winit 0.30 on macOS supports Locked by disassociating cursor
+//! chord in its status bar. winit 0.30 on macOS supports Locked by disassociating cursor
 //! position from movement; Confined is unsupported. Failed grabs leave input free.
 //! Raw DeviceEvent motion uses one host unit per PS/2 count, positive Y up, with
 //! carried fractions. Left/right/middle use packet bits 0/1/2 (IBM PS/2 Hardware
@@ -51,6 +51,8 @@
 //! wait for empty mouse output and keep later changes queued; keyboard readiness
 //! is independent. No mouse means no capture or title changes. The device owns
 //! overflow and motion coalescing. Application exit also restores the pointer.
+//! The egui shell releases input for menus/dialogs and fits one nearest-filtered
+//! texture at 4:3. See `backlog/docs/design/machine-images.md` §7.
 //! Only the binary owns a window and cpal output stream; library tests and frame
 //! sinks stay headless. Audio observations feed a 200 ms stereo ring at run
 //! boundaries; callbacks use silence on underrun and drop oldest frames on
@@ -66,6 +68,19 @@ pub const FONT_NOTICE: &str = concat!(
     "CC BY-SA 4.0: https://creativecommons.org/licenses/by-sa/4.0/\n",
     "source: http://int10h.org/oldschool-pc-fonts/\n",
     "font files unmodified",
+);
+
+/// Attribution and original licence texts for egui's bundled UI fonts.
+pub const EGUI_FONT_NOTICE: &str = concat!(
+    include_str!("../assets/fonts/egui/NOTICE.txt"),
+    "\n",
+    include_str!("../assets/fonts/egui/UFL.txt"),
+    "\n",
+    include_str!("../assets/fonts/egui/Hack-Regular.txt"),
+    "\n",
+    include_str!("../assets/fonts/egui/OFL.txt"),
+    "\n",
+    include_str!("../assets/fonts/egui/emoji-icon-font-mit-license.txt"),
 );
 
 mod font;

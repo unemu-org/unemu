@@ -47,6 +47,7 @@ mod device;
 mod drive;
 mod error;
 mod firmware;
+pub mod firmware_discovery;
 mod floppy;
 mod fw_cfg;
 mod image;

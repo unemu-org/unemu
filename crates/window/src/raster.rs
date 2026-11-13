@@ -15,7 +15,7 @@ const PALETTE: [u32; 16] = [
     0x5555FF, 0x55FF55, 0x55FFFF, 0xFF5555, 0xFF55FF, 0xFFFF55, 0xFFFFFF,
 ];
 
-/// A complete row-major softbuffer-compatible image (`0x00RRGGBB`).
+/// A complete row-major RGB image (`0x00RRGGBB`) for host texture upload.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PixelFrame {
     /// Width in pixels, including integer scale.

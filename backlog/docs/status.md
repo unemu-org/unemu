@@ -16,6 +16,22 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   Repository-file synthetic parity snapshots and the existing lowering and
   validation corpus cover unchanged legacy behavior and source diagnostics.
 
+- **2026-11-13 — egui desktop shell:** `unemupc98-window` opens a classic
+  in-window File/Machine/Media/View/Tools/Help menu, toolbar, status bar and
+  machine library. Start changes the same client area to a nearest-filtered
+  4:3 guest texture; Pause/Resume, guest Ctrl+Alt+Del, media next/eject and Stop
+  reuse the existing session boundaries. Stop finishes persistence. Missing
+  firmware/media disables Start using the existing validator. View offers
+  modern skin and system/light/dark themes. File Open accepts a machine-file
+  path; Tools › Locate firmware/Preferences save ROM folders and refresh
+  readiness using the shared explicit-roots SHA-256 discovery. The CLI accepts
+  repeatable --rom-dir. The macOS shell uses only its native title bar and the
+  toolbar paints its icons without font symbols. Future editors/import/insertion/layers are placeholder dialogs, save
+  state/CD-ROM remain disabled. Drive activity observation is unavailable, so
+  only the power light changes. Last-run metadata stays blank. Existing window
+  tests remain headless; new command/discovery/texture/input tests also open no
+  windows. Visual appearance and physical capture/audio need manual checking.
+
 - **2026-11-13 — AT controller self-test and warm start:** 8042 command AAh
   reinitializes the output port to its power-on value and drives A20 enabled,
   while retaining the SYS flag/55h reply and issuing no CPU-reset request.

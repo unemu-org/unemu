@@ -27,7 +27,7 @@ crate: `machine-file` reads and hashes declared images into inline buffers,
 | `video` | `FrameSink`, text frames/grids, text-mode renderer and capture sink | `device` | None |
 | `assembly` | `MachineConfig`, validation, presets, image/device construction, wiring, and `RunPolicy` driver | `machine`, `cpu`, `bus`, `device`, `devices`, `video`, `chipset`, `media`, `sha2`, `thiserror` | `media/test-support` |
 | `machine-file` | Schema 1 TOML/YAML parsing, source origins, image hashing and lowering through assembly validation; merging remains deferred ([schema](design/machine-files.md#schema-field-by-field)) | `assembly`, `serde`, `sha2`, `toml`, `serde-saphyr`, `thiserror` | None |
-| `window` | Optional CP437 rasteriser, shared `FrameSink`, and winit/softbuffer FreeDOS binary | `video`, `device`, `assembly`, `machine`, `winit`, `softbuffer` | `cpu`, `assembly/test-support` |
+| `window` | CP437 rasteriser, shared `FrameSink`, and egui desktop shell | `video`, `device`, `assembly`, `machine`, `winit`, `egui`, `eframe` | `cpu`, `assembly/test-support` |
 | `testkit` | Single-device `MockBus`, scripted `MockCpu`, golden assertions | `device`, `cpu` | None |
 | `cli` | Binary and runner library: guest programs, assembly/policy selection, output capture and stop diagnostics | `assembly`, `device`, `bus`, `cpu`, `chipset`, `machine`, `devices`, `video`, `anyhow` | `testkit`, `machine/reference-scheduler`, `assembly/reference-scheduler`, `assembly/test-support` |
 
@@ -228,51 +228,106 @@ also belong to that machine-level snapshot.
 
 ### Observation and presentation
 
-The optional `window` crate is a leaf frontend: no other workspace crate depends
-on it. Headless capture remains the default. Its binary uses the same
-`assembly::bios` preset as the FreeDOS golden, advances toward paced PIT-clock
-targets with `Machine::run_bounded`, then calls
-`AssembledMachine::capture_text(DeviceId::Mda)`. The observation facade delivers
-the frame to a boxed `WindowSink`; a shared, single-threaded handle exposes the
-last rasterised pixels to winit/softbuffer. Neither sink nor window ticks devices.
-The frontend sets an effectively unlimited idle wait so a HLT with interrupts
-enabled can wait for timer IRQs, bounded by each run's absolute cap.
-Only the event loop reads `Instant`: pure integer-rational math maps elapsed
-host time to PIT targets through the configured CPU rate. Paints follow a 60 Hz
-grid with `ControlFlow::WaitUntil`; each advances at most 50 ms of guest time,
-plus instruction-boundary rounding. Excess backlog is discarded permanently,
-with hidden/suspended intervals discarded completely. Occlusion pauses the guest,
-ignores queued redraws and uses `Wait`; unocclusion resumes without catch-up.
-Resize redraws grant no extra time.
-Headless execution is unaffected. See `design/observation.md` § Window pacing
-for the constants, rounding and replay tests.
+The optional `window` crate remains a leaf frontend. Its `unemupc98-window`
+binary uses egui/eframe 0.37 with the glow renderer and the existing winit 0.30
+event loop. One client area switches between the machine library and a single
+nearest-filtered guest texture fitted at 4:3. Classic grey controls and a blue
+gradient title strip are the default; macOS uses its native title bar without
+an additional custom strip. Toolbar icons are painted geometry, independent of
+font coverage. View selects modern controls and the system, light or dark theme.
+Menus stay inside the window on every platform.
+
+`src/shell_model.rs` owns pure discovery, command enablement, hotkey mapping and
+pixel conversion. Discovery includes TOML/YAML files directly in `machines/`
+and `machines/local/`, with stable ordering and blank last-run metadata. The
+existing machine-file loader and read-only checker supply hardware details and
+readiness; missing firmware or invalid media disables Start and exposes the
+validator diagnostic. Open accepts a machine-file path. New/settings/media
+insertion/import/layer/catalogue dialogs remain placeholders; Locate firmware
+and Preferences edit a shared ROM-folder list. Save state and CD-ROM are disabled. No library/image-store format is introduced.
+
+`assembly::firmware_discovery` is a host-only API taking explicit search roots.
+It locates single ROMs or interleaved chips by full-file SHA-256 and optional
+catalogue length, preferring valid declared paths. Its process cache includes
+canonical path, size, modification time, Unix change time and file identity;
+fresh metadata is checked on hits, and Windows always rehashes. Catalogue pins
+supply exact image/chip lengths. Unknown pins scan only 512-byte ROM blocks from
+512 bytes through 1 MiB (or an exact declared length up to 1 MiB). Frontend scans
+stay inside each canonical root, skip unusable roots/entries with origin-labelled
+warnings and keep searching; the required-ROM test lane retains strict failures. The existing user-ROM test entry points are thin wrappers using
+the vendor directory and `UNEMUPC98_USER_ROMS_DIR`. No discovery runs while the
+guest executes.
+
+`machine_file::load_for_assembly_with_rom_dirs` resolves missing or mismatched
+firmware paths in the in-memory resolved document before ordinary lowering.
+Part pins and the assembled-image pin are validated with the existing checked
+interleaver; option-ROM container prefixes retain their full-file pins. Machine
+files and ROM files are never rewritten or copied. The launch loader still
+retains verified disk-base descriptors through assembly. CLI run/check accept
+repeatable `--rom-dir`; without explicit directories they perform no discovery,
+preserving ordinary path/hash diagnostics regardless of the environment.
+
+The shell stores host ROM folders in the platform config directory's
+`unemupc98/preferences.toml`. On macOS this is under Library/Application Support;
+on Linux it follows XDG_CONFIG_HOME, falling back to ~/.config. Preferences and
+Locate firmware share native folder browsing (rfd) and text entry. Saves write and
+sync a temporary file in the same directory, rename it, then sync the directory
+on Unix. Unknown TOML fields round-trip. Save invalidates welcome readiness;
+only the selected machine is checked on a single host worker, with a checking
+message meanwhile. Start requests another worker check, then consumes the prepared
+in-memory document without scanning on the UI thread. Stale results cannot replace
+newer preferences or selections. Launch uses the same roots, also searching the environment
+when set. The deterministic configuration and guest core do not store preferences.
+
+`src/shell.rs` draws the shell and wraps eframe's public winit application.
+The wrapper retains physical keyboard positions and ordered raw mouse motion
+instead of reconstructing scan codes from text events. The existing
+`Presenter`, `HostKeyboard`, `HostMouse`, `HostAudio` and pacing policy own the
+machine session. Menus, dialogs and focus loss release held guest keys and
+pointer capture; a screen click restores guest focus. The wrapper withholds
+keyboard/IME events from egui during guest focus and pointer events during
+capture, including when the host can only confine the pointer. The screen is
+not an egui keyboard-focus target, and keyboard UI zoom is disabled. Modifier
+changes always reach egui so a held Ctrl cannot survive into a dialog.
+Queued keys retain their arrival focus, session, repeat and synthetic flags.
+Start/Stop and keyboard focus transitions reset shell key state; only keys
+whose makes reached the guest can produce forwarded breaks. Modifier makes
+wait for a guest chord, keeping host shortcut prefixes out of the guest.
+Held keys from before Start/focus gain cannot enter through OS repeats or
+synthetic focus events. Only Ctrl+Alt chords remain host shortcuts during guest
+focus; F1 and Ctrl+N/O/comma reach the guest. Pointer release and Pause preserve
+keyboard focus. Reset queues explicit guest Ctrl/Alt/Delete makes rather than
+resetting the board directly. Stop and normal window close finish only a
+successful, still-running session. Execution errors remain unsealed; a halt
+has already finished. A failed finish drops the session, shows its diagnostic
+and retains a nonzero exit status while allowing the window to close. A later
+successful Start or an actual clean Stop clears the stale error.
+
+The frontend advances with `Machine::run_bounded` toward bounded virtual-clock
+targets, captures the selected display through the observation facade, and
+uploads `WindowSink`'s decoded pixels. No sink ticks devices. Only the binary
+reads `Instant`: the existing rational pacing policy limits catch-up to 50 ms,
+paints on a 60 Hz grid, and discards hidden, suspended, paused and modal time.
+One pause predicate combines user pause, modal/menu state, occlusion and
+minimization. Hidden logic passes retain focus-loss and key-release bookkeeping;
+restoring a minimized window needs no separate occlusion event.
+Audio retains its bounded cpal ring, mute and recoverable-error policy.
+Neither playback nor UI repaint frequency drives virtual guest time.
 
 ```text
-MDA scanout -> observation capture -> WindowSink -> CP437 rasteriser
-  -> last 0x00RRGGBB pixel buffer -> softbuffer -> winit window
+MDA/VGA scanout -> observation capture -> WindowSink -> CP437/graphics rasteriser
+  -> 0x00RRGGBB pixels -> egui texture (nearest) -> eframe/glow window
 ```
 
-The original VileR v2.2 fonts (CC BY-SA 4.0, attribution and hashes in
-`crates/window/assets/fonts/NOTICE.md`) are embedded and parsed from NE/FNT
-resources at load time. MDA uses 9×14 cells and colour uses 8×16 cells, with
-integer pixel replication. The binary uses scale 2, centres the frame on resize
-and clips it if the window becomes smaller; no interpolation or aspect correction
-is applied. Blink is steady; a later blink phase can derive from virtual time.
-Physical winit key events enter a host FIFO as set-1 make/break bytes (E0 for
-extended keys).
-Repeated presses emit make again. Before each run the FIFO uses assembly's
-`try_inject_scancode` controller seam and side-effect-free readiness accessor,
-retaining bytes while the 8042 is busy or inhibited; the scripted golden
-injection path remains unchanged. The host tracks held keys and captures physical
-Shift state with each queued event. It encodes the next transition only at a
-boundary where the 8042 can accept input, reading the guest's current LED NumLock
-bit. IBM artificial Shift wrappers cover the first make and final break of E0
-navigation/Divide; repeat makes are plain. Focus loss releases held keys.
-The 8042 snapshot v4 includes guest LEDs and the pending LED parameter exchange;
-keyboard/device reset clears both. Input never enters during a
-chunk. DOS prompts keep advancing; a halt, CPU failure or exhausted virtual-time
-range stops advancement while the last frame stays visible. Window creation
-is confined to the binary; workspace tests, including the observation-to-pixels smoke test, do not open a window.
+The original VileR fonts and attribution stay embedded. About and informational
+CLI output also carry egui's embedded font credits and original licence texts;
+AccessKit is enabled for the shell. Integer scaling first removes the sink's
+pixel-doubling factor. Rasterisation and all
+input/pacing/session tests remain headless. The status bar shows power,
+configured instruction/PIT ratio, EMS and host audio. Drive activity lamps stay
+off because the existing observation boundary exposes no activity signal; the
+UI labels that limitation. Headless CLI runs do not depend on the shell and
+retain their existing behavior. See `design/machine-images.md` §7.
 
 `assemble_with_observation` binds requested routes by `DeviceId` and validates
 capabilities before execution. `AssembledMachine::capture_text` captures display

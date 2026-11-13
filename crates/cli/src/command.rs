@@ -13,8 +13,8 @@ use std::path::PathBuf;
 
 const USAGE: &str = "usage: unemupc98 --boot (Real16 timer demo)
        unemupc98 --bios PATH [--allow-unlisted-firmware]
-       unemupc98 machine check FILE [--allow-unlisted-firmware]
-       unemupc98 run --machine FILE [--max-steps N] [--idle-limit N] [--print CARD] [--allow-unlisted-firmware]
+       unemupc98 machine check FILE [--allow-unlisted-firmware] [--rom-dir DIR]...
+       unemupc98 run --machine FILE [--rom-dir DIR]... [--max-steps N] [--idle-limit N] [--print CARD] [--allow-unlisted-firmware]
        unemupc98 media create floppy --type 1.44M|1.2M|720K|360K OUT [--format] [--label NAME] [--force]
        unemupc98 media create hd (--chs C/H/S | --size SIZE[MiB|GiB]) OUT [--force]
        unemupc98 media generations --base IMG --journal J
@@ -32,10 +32,12 @@ pub enum Command {
         options: assembly::AssemblyOptions,
     },
     Check {
+        rom_dirs: Vec<PathBuf>,
         path: PathBuf,
         options: assembly::AssemblyOptions,
     },
     Run {
+        rom_dirs: Vec<PathBuf>,
         path: PathBuf,
         max_steps: u64,
         idle_limit: u64,
@@ -67,17 +69,29 @@ pub fn parse(args: &[OsString]) -> Result<Command, &'static str> {
         return Ok(Command::Usage);
     }
     let mut options = assembly::AssemblyOptions::default();
-    let frontend: Vec<_> = args
-        .iter()
-        .filter(|arg| {
-            if *arg == "--allow-unlisted-firmware" {
-                options.allow_unlisted_firmware = true;
-                false
-            } else {
-                true
-            }
-        })
-        .collect();
+    let mut frontend = Vec::new();
+    let mut rom_dirs = Vec::new();
+    let mut arguments = args.iter();
+    while let Some(arg) = arguments.next() {
+        if arg == "--allow-unlisted-firmware" {
+            options.allow_unlisted_firmware = true;
+        } else if arg == "--rom-dir" {
+            let path = arguments
+                .next()
+                .filter(|value| !value.is_empty() && !value.as_encoded_bytes().starts_with(b"--"))
+                .ok_or("missing ROM directory")?;
+            rom_dirs.push(PathBuf::from(path));
+        } else {
+            frontend.push(arg);
+        }
+    }
+    if !rom_dirs.is_empty()
+        && !frontend
+            .first()
+            .is_some_and(|arg| matches!(arg.to_str(), Some("run" | "machine")))
+    {
+        return Err("--rom-dir requires run or machine check");
+    }
     if frontend.len() == 1 && frontend[0] == "--boot" {
         return Ok(Command::Boot);
     }
@@ -94,6 +108,7 @@ pub fn parse(args: &[OsString]) -> Result<Command, &'static str> {
             && !frontend[2].as_encoded_bytes().starts_with(b"--")
         {
             Ok(Command::Check {
+                rom_dirs,
                 path: frontend[2].into(),
                 options,
             })
@@ -120,6 +135,7 @@ pub fn parse(args: &[OsString]) -> Result<Command, &'static str> {
             }
         }
         return Ok(Command::Run {
+            rom_dirs,
             path: path.ok_or("run requires --machine FILE")?,
             max_steps: max_steps.unwrap_or(crate::BIOS_MAX_RETIRED),
             idle_limit: idle_limit.unwrap_or(crate::BIOS_IDLE_LIMIT),
@@ -394,11 +410,14 @@ pub fn run(args: &[OsString], output: &mut impl Write, errors: &mut impl Write) 
             }),
         Command::Bios { path, options } => run_bios(&path, options, output, errors)
             .map_err(|error| ToolError::Io(io::Error::other(format!("Error: {error:?}")))),
-        Command::Check { path, options } => {
-            check_machine(&path, options, errors).map_err(frontend_error)
-        }
+        Command::Check {
+            path,
+            options,
+            rom_dirs,
+        } => check_machine(&path, options, &rom_dirs, errors).map_err(frontend_error),
         Command::Run {
             path,
+            rom_dirs,
             max_steps,
             idle_limit,
             print,
@@ -406,9 +425,9 @@ pub fn run(args: &[OsString], output: &mut impl Write, errors: &mut impl Write) 
         } => run_machine(
             &path,
             options,
-            max_steps,
-            idle_limit,
+            (max_steps, idle_limit),
             print.as_deref(),
+            &rom_dirs,
             output,
             errors,
         )
@@ -435,9 +454,25 @@ fn frontend_error(error: anyhow::Error) -> ToolError {
 fn check_machine(
     path: &std::path::Path,
     options: assembly::AssemblyOptions,
+    rom_dirs: &[PathBuf],
     errors: &mut impl Write,
 ) -> anyhow::Result<u8> {
-    let loaded = machine_file::load_for_assembly(path, options)?;
+    let roots = rom_dirs
+        .iter()
+        .map(|path| {
+            assembly::firmware_discovery::FirmwareRoot::new(
+                path,
+                assembly::firmware_discovery::RootOrigin::CommandLine,
+            )
+        })
+        .collect::<Vec<_>>();
+    let mut warnings = Vec::new();
+    let result =
+        machine_file::load_for_assembly_with_firmware_roots(path, options, &roots, &mut warnings);
+    for warning in warnings {
+        writeln!(errors, "warning: {warning}")?;
+    }
+    let loaded = result?;
     for note in loaded.check()? {
         writeln!(errors, "{note}")?;
     }
@@ -447,14 +482,30 @@ fn check_machine(
 fn run_machine(
     path: &std::path::Path,
     options: assembly::AssemblyOptions,
-    max_steps: u64,
-    idle_limit: u64,
+    limits: (u64, u64),
     print: Option<&str>,
+    rom_dirs: &[PathBuf],
     output: &mut impl Write,
     errors: &mut impl Write,
 ) -> anyhow::Result<u8> {
     use assembly::{DeviceId, ObservationPolicy, ObservationRequest, OutputKind, RunPolicy};
-    let loaded = machine_file::load_for_assembly(path, options)?;
+    let (max_steps, idle_limit) = limits;
+    let roots = rom_dirs
+        .iter()
+        .map(|path| {
+            assembly::firmware_discovery::FirmwareRoot::new(
+                path,
+                assembly::firmware_discovery::RootOrigin::CommandLine,
+            )
+        })
+        .collect::<Vec<_>>();
+    let mut warnings = Vec::new();
+    let result =
+        machine_file::load_for_assembly_with_firmware_roots(path, options, &roots, &mut warnings);
+    for warning in warnings {
+        writeln!(errors, "warning: {warning}")?;
+    }
+    let loaded = result?;
     let printable =
         |device: DeviceId| matches!(device, DeviceId::Mda | DeviceId::Vga | DeviceId::Uart);
     let selected = if let Some(name) = print {
@@ -631,6 +682,7 @@ mod tests {
         assert_eq!(
             parse(&args(&["run", "--machine", "at.toml"])).unwrap(),
             Command::Run {
+                rom_dirs: Vec::new(),
                 path: "at.toml".into(),
                 max_steps: 20_000_000,
                 idle_limit: 1_000_000,
@@ -653,6 +705,7 @@ mod tests {
             ]))
             .unwrap(),
             Command::Run {
+                rom_dirs: Vec::new(),
                 path: "at.toml".into(),
                 max_steps: 42,
                 idle_limit: 0,
@@ -766,6 +819,25 @@ mod tests {
             vec!["--allow-unlisted-firmware"],
         ] {
             assert!(parse(&args.into_iter().map(OsString::from).collect::<Vec<_>>()).is_err());
+        }
+    }
+    #[test]
+    fn rom_directory_option_is_repeatable_for_launch_and_check() {
+        for prefix in [
+            vec!["run", "--machine", "machine.toml"],
+            vec!["machine", "check", "machine.toml"],
+        ] {
+            let mut args: Vec<OsString> = prefix.into_iter().map(Into::into).collect();
+            args.extend(
+                ["--rom-dir", "first", "--rom-dir", "second"]
+                    .into_iter()
+                    .map(OsString::from),
+            );
+            let roots = match parse(&args).unwrap() {
+                Command::Run { rom_dirs, .. } | Command::Check { rom_dirs, .. } => rom_dirs,
+                _ => panic!("machine command expected"),
+            };
+            assert_eq!(roots, [PathBuf::from("first"), PathBuf::from("second")]);
         }
     }
 }

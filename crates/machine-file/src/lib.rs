@@ -17,6 +17,7 @@ use std::{fmt, ops::Range, path::Path, path::PathBuf};
 
 use serde::Deserialize;
 
+mod firmware_discovery;
 mod integrity;
 mod lower;
 mod origin;
@@ -383,34 +384,110 @@ pub fn load_for_assembly(
     path: impl AsRef<Path>,
     options: assembly::AssemblyOptions,
 ) -> Result<LoadedMachine, LoadError> {
-    let (document, origins) = resolve(path)?;
-    let mut reader = LaunchImageReader::default();
-    let (config, diagnostics) = lower::lower_tracked(&document, &origins, &mut reader, options)?;
-    let cards = document
-        .card
+    load_for_assembly_with_rom_dirs(path, options, &[])
+}
+
+/// Load a launch configuration, resolving missing or mismatched pinned ROMs in
+/// explicit host search directories. Correct declared paths win. The source
+/// file is unchanged, and verified disk descriptors are retained as usual.
+pub fn load_for_assembly_with_rom_dirs(
+    path: impl AsRef<Path>,
+    options: assembly::AssemblyOptions,
+    roots: &[PathBuf],
+) -> Result<LoadedMachine, LoadError> {
+    use assembly::firmware_discovery::{FirmwareRoot, RootOrigin};
+    let roots = roots
         .iter()
-        .flatten()
-        .filter_map(|card| {
-            use schema::v1::CardKind::*;
-            let device = match card.kind? {
-                Mda => assembly::DeviceId::Mda,
-                VgaText | Vga => assembly::DeviceId::Vga,
-                Uart16550 => assembly::DeviceId::Uart,
-                Fdc765 => assembly::DeviceId::Fdc,
-                Ide => assembly::DeviceId::Ide,
-                Sb16 => assembly::DeviceId::Sb16,
-                LotechEms => assembly::DeviceId::LotechEms,
-            };
-            Some((resolve::card_id(card)?.to_owned(), device))
+        .map(|path| FirmwareRoot::new(path, RootOrigin::CommandLine))
+        .collect::<Vec<_>>();
+    let mut warnings = Vec::new();
+    let result = load_for_assembly_with_firmware_roots(path, options, &roots, &mut warnings);
+    for warning in warnings {
+        eprintln!("warning: {warning}");
+    }
+    result
+}
+
+/// Load with labelled host ROM roots, reporting skipped roots and entries even
+/// if subsequent machine validation fails. No discovery occurs with no roots.
+pub fn load_for_assembly_with_firmware_roots(
+    path: impl AsRef<Path>,
+    options: assembly::AssemblyOptions,
+    roots: &[assembly::firmware_discovery::FirmwareRoot],
+    warnings: &mut Vec<String>,
+) -> Result<LoadedMachine, LoadError> {
+    prepare_for_assembly_with_firmware_roots(path, roots, warnings)?.load(options)
+}
+
+/// A resolved host document that can cross the worker boundary without moving
+/// verified disk handles or guest execution state between threads. Loading it
+/// revalidates pins in place and performs no directory discovery.
+pub struct PreparedMachineFile {
+    document: MachineFile,
+    origins: Origins,
+}
+
+/// Locate firmware on a host worker before launch; no guest state is created.
+pub fn prepare_for_assembly_with_firmware_roots(
+    path: impl AsRef<Path>,
+    roots: &[assembly::firmware_discovery::FirmwareRoot],
+    warnings: &mut Vec<String>,
+) -> Result<PreparedMachineFile, LoadError> {
+    let (mut document, origins) = resolve(&path)?;
+    let roots = roots
+        .iter()
+        .filter_map(|root| match std::path::absolute(&root.path) {
+            Ok(path) => Some(assembly::firmware_discovery::FirmwareRoot::new(
+                path,
+                root.origin,
+            )),
+            Err(error) => {
+                warnings.push(format!(
+                    "{}: skipped ({})",
+                    root.origin.label(),
+                    error.kind()
+                ));
+                None
+            }
         })
-        .collect();
-    Ok(LoadedMachine {
-        config,
-        cards,
-        diagnostics,
-        options,
-        bases: reader.bases,
-    })
+        .collect::<Vec<_>>();
+    firmware_discovery::resolve(&mut document, &origins, &roots, warnings)?;
+    Ok(PreparedMachineFile { document, origins })
+}
+
+impl PreparedMachineFile {
+    /// Load the already-resolved document, verifying images without scanning roots.
+    pub fn load(&self, options: assembly::AssemblyOptions) -> Result<LoadedMachine, LoadError> {
+        let document = &self.document;
+        let origins = &self.origins;
+        let mut reader = LaunchImageReader::default();
+        let (config, diagnostics) = lower::lower_tracked(document, origins, &mut reader, options)?;
+        let cards = document
+            .card
+            .iter()
+            .flatten()
+            .filter_map(|card| {
+                use schema::v1::CardKind::*;
+                let device = match card.kind? {
+                    Mda => assembly::DeviceId::Mda,
+                    VgaText | Vga => assembly::DeviceId::Vga,
+                    Uart16550 => assembly::DeviceId::Uart,
+                    Fdc765 => assembly::DeviceId::Fdc,
+                    Ide => assembly::DeviceId::Ide,
+                    Sb16 => assembly::DeviceId::Sb16,
+                    LotechEms => assembly::DeviceId::LotechEms,
+                };
+                Some((resolve::card_id(card)?.to_owned(), device))
+            })
+            .collect();
+        Ok(LoadedMachine {
+            config,
+            cards,
+            diagnostics,
+            options,
+            bases: reader.bases,
+        })
+    }
 }
 
 fn inspect_journal(

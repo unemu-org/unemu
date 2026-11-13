@@ -10,6 +10,11 @@ repository.workspace = true
 description = "Windowed presenter: draws text frames in a host window (§9)."
 
 [dependencies]
+rfd = { version = "=0.18.0", default-features = false, features = ["xdg-portal"] }
+serde.workspace = true
+toml.workspace = true
+egui.workspace = true
+eframe.workspace = true
 audio.workspace = true
 device.workspace = true
 cpal.workspace = true
@@ -18,9 +23,9 @@ video.workspace = true
 assembly.workspace = true
 machine.workspace = true
 winit.workspace = true
-softbuffer.workspace = true
 
 [dev-dependencies]
+sha2.workspace = true
 assembly = { workspace = true, features = ["test-support"] }
 cpu.workspace = true
 

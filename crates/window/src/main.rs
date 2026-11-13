@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Minimal FreeDOS window frontend (design/spec.md §9.4).
+//! Desktop shell and paced machine session (design/spec.md §9.4).
 //!
 //! The event loop alone reads a monotonic host clock. A pure pacing policy
 //! converts elapsed time to bounded PIT targets and virtual-time run caps.
@@ -10,38 +10,42 @@
 //! Ctrl+Alt+M toggles mute without reaching the guest. Ctrl+Alt+F inserts the
 //! next A: medium (wraps to the first); Ctrl+Alt+E ejects A:. Hold Shift for B:.
 //! These host keys queue media events for the next run boundary; their make,
-//! repeat and break codes never reach the guest. The title names both media.
+//! repeat and break codes never reach the guest. The Media menu names both media.
 //! Audio never paces execution. See
 //! `backlog/docs/design/observation.md` § Window pacing and § Host input.
 
 use assembly::{AssembledMachine, DeviceId, ObservationPolicy, ObservationRequest, OutputKind};
 use machine::RunOutcome;
-use softbuffer::{Context, Surface};
 use std::{
     error::Error,
     ffi::OsStr,
     io,
-    num::{NonZeroU16, NonZeroU32, NonZeroU64},
+    num::{NonZeroU16, NonZeroU64},
     path::{Path, PathBuf},
-    rc::Rc,
+    sync::Arc,
     time::{Duration, Instant},
 };
-use window::{HostKeyboard, HostMouse, WindowSink, FONT_NOTICE};
+use window::{HostKeyboard, HostMouse, WindowSink, EGUI_FONT_NOTICE, FONT_NOTICE};
 use winit::{
-    application::ApplicationHandler,
-    dpi::PhysicalSize,
-    event::{DeviceEvent, DeviceId as HostDeviceId, ElementState, MouseButton, WindowEvent},
-    event_loop::{ActiveEventLoop, ControlFlow, EventLoop},
-    keyboard::{KeyCode, PhysicalKey},
-    window::{CursorGrabMode, Window, WindowId},
+    event::{ElementState, MouseButton},
+    keyboard::KeyCode,
+    window::{CursorGrabMode, Window},
 };
 
 mod host_audio;
 mod pacing;
+mod preferences;
+mod shell;
+mod shell_icons;
+mod shell_model;
+
+const SINK_SCALE: u16 = 2;
 
 use host_audio::HostAudio;
 
-use pacing::{frame_target, next_frame, run_cap, virtual_ticks, wake, CpuRate};
+#[cfg(test)]
+use pacing::wake;
+use pacing::{frame_target, run_cap, virtual_ticks, CpuRate};
 #[cfg(test)]
 const BIOS_FIXTURE: &str = "vendor/kiselev-bios/bios-xi8088.bin";
 #[cfg(test)]
@@ -71,8 +75,6 @@ fn read_fixture(path: &Path, fetch: &str) -> io::Result<Vec<u8>> {
     })
 }
 
-type HostSurface = Surface<Rc<Window>, Rc<Window>>;
-
 struct Presenter {
     assembled: AssembledMachine,
     display: DeviceId,
@@ -86,8 +88,7 @@ struct Presenter {
     shift_keys: [bool; 2],
     media_events: Vec<(u8, assembly::FloppyAction)>,
     audio_error_reported: bool,
-    surface: Option<HostSurface>,
-    window: Option<Rc<Window>>,
+    window: Option<Arc<Window>>,
     last_title: Option<String>,
     running: bool,
     reset_requests: u64,
@@ -141,7 +142,7 @@ impl Presenter {
         let clock = &config.clock;
         // HLT must wait for an IRQ; the pacing cap already bounds idle time.
         assembled.machine.set_idle_limit(Some(u64::MAX));
-        let sink = WindowSink::new(NonZeroU16::new(2).ok_or("invalid scale")?)?;
+        let sink = WindowSink::new(NonZeroU16::new(SINK_SCALE).ok_or("invalid scale")?)?;
         assembled
             .observation
             .subscribe(display, Box::new(sink.clone()))?;
@@ -162,7 +163,6 @@ impl Presenter {
             shift_keys: [false; 2],
             media_events: Vec::new(),
             audio_error_reported: false,
-            surface: None,
             window: None,
             last_title: None,
             running: true,
@@ -189,24 +189,6 @@ impl Presenter {
             #[cfg(test)]
             mouse_log: Vec::new(),
         })
-    }
-
-    fn open(&mut self, events: &ActiveEventLoop) -> Result<(), Box<dyn Error>> {
-        self.audio.open(&mut io::stderr());
-        let title = self.title();
-        let window = Rc::new(
-            events.create_window(
-                Window::default_attributes()
-                    .with_title(title.clone())
-                    .with_inner_size(PhysicalSize::new(1440, 700)),
-            )?,
-        );
-        let context = Context::new(window.clone())?;
-        self.surface = Some(Surface::new(&context, window.clone())?);
-        window.request_redraw();
-        self.window = Some(window);
-        self.last_title = Some(title);
-        Ok(())
     }
 
     fn advance(&mut self, elapsed: Duration) -> Result<(), Box<dyn Error>> {
@@ -381,9 +363,6 @@ impl Presenter {
         if self.last_title.as_ref() == Some(&title) {
             return false;
         }
-        if let Some(window) = &self.window {
-            window.set_title(&title);
-        }
         self.last_title = Some(title);
         true
     }
@@ -537,158 +516,16 @@ impl Presenter {
             self.restore_pointer();
         }
     }
-
-    fn paint(&mut self) -> Result<(), Box<dyn Error>> {
-        let (Some(window), Some(surface)) = (&self.window, &mut self.surface) else {
-            return Ok(());
-        };
-        let size = window.inner_size();
-        let (Some(width), Some(height)) =
-            (NonZeroU32::new(size.width), NonZeroU32::new(size.height))
-        else {
-            return Ok(());
-        };
-        surface.resize(width, height)?;
-        let mut buffer = surface.buffer_mut()?;
-        buffer.fill(0);
-        if let Some(frame) = self.sink.frame().as_ref() {
-            let left = size.width.saturating_sub(frame.width) / 2;
-            let top = size.height.saturating_sub(frame.height) / 2;
-            let copy_width = frame.width.min(size.width) as usize;
-            for y in 0..frame.height.min(size.height) {
-                let src = (y * frame.width) as usize;
-                let dst = ((y + top) * size.width + left) as usize;
-                buffer[dst..dst + copy_width].copy_from_slice(&frame.pixels[src..src + copy_width]);
-            }
-        }
-        window.pre_present_notify();
-        buffer.present()?;
-        Ok(())
-    }
-
-    fn fail(&mut self, events: &ActiveEventLoop, error: Box<dyn Error>) {
-        self.release_pointer();
-        self.running = false;
-        self.error = Some(error);
-        events.exit();
-    }
-}
-
-impl ApplicationHandler for Presenter {
-    fn resumed(&mut self, events: &ActiveEventLoop) {
-        if self.window.is_none() {
-            if let Err(error) = self.open(events) {
-                self.fail(events, error);
-                return;
-            }
-            let now = Instant::now();
-            let started = *self.started.get_or_insert(now);
-            self.occlusion_changed(false, now - started);
-            self.next_paint = Some(now - started);
-        }
-    }
-
-    fn exiting(&mut self, _events: &ActiveEventLoop) {
-        self.release_pointer();
-    }
-
-    fn suspended(&mut self, _events: &ActiveEventLoop) {
-        self.focus_changed(false);
-        if let Some(started) = self.started {
-            self.occlusion_changed(true, started.elapsed());
-        }
-        self.surface = None;
-        self.window = None;
-        self.next_paint = None;
-    }
-
-    fn window_event(&mut self, events: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
-        if self.window.as_ref().is_none_or(|window| window.id() != id) {
-            return;
-        }
-        match event {
-            WindowEvent::CloseRequested => {
-                self.release_pointer();
-                events.exit();
-            }
-            WindowEvent::MouseInput { button, state, .. } => self.mouse_button(button, state),
-            WindowEvent::CursorEntered { .. } | WindowEvent::CursorMoved { .. } => {
-                self.mouse.pointer_inside(true);
-            }
-            WindowEvent::CursorLeft { .. } => self.mouse.pointer_inside(false),
-            WindowEvent::KeyboardInput { event, .. } => {
-                if let PhysicalKey::Code(key) = event.physical_key {
-                    self.key_event(key, event.state);
-                }
-            }
-            WindowEvent::Focused(focused) => self.focus_changed(focused),
-            WindowEvent::Occluded(occluded) => {
-                if let Some(started) = self.started {
-                    self.occlusion_changed(occluded, started.elapsed());
-                }
-                if occluded {
-                    events.set_control_flow(ControlFlow::Wait);
-                }
-            }
-            WindowEvent::Resized(_) => {
-                if let Some(window) = &self.window {
-                    window.request_redraw();
-                }
-            }
-            WindowEvent::RedrawRequested => {
-                // Some platforms still deliver queued redraws while occluded.
-                if self.occluded_since.is_some() {
-                    return;
-                }
-                if let Some(started) = self.started {
-                    let elapsed = started.elapsed();
-                    if let Err(error) = self.advance(elapsed).and_then(|()| self.paint()) {
-                        self.fail(events, error);
-                    }
-                    self.next_paint = Some(next_frame(started.elapsed()));
-                }
-            }
-            _ => {}
-        }
-    }
-
-    fn device_event(&mut self, _events: &ActiveEventLoop, _id: HostDeviceId, event: DeviceEvent) {
-        if let DeviceEvent::MouseMotion { delta: (dx, dy) } = event {
-            self.mouse_motion(dx, dy);
-        }
-    }
-
-    fn about_to_wait(&mut self, events: &ActiveEventLoop) {
-        if self.audio.check_failure(&mut io::stderr()) {
-            self.update_title();
-        }
-        if let (Some(window), Some(started)) = (&self.window, self.started) {
-            let (redraw, deadline) = wake(
-                started.elapsed(),
-                self.next_paint,
-                self.running && self.occluded_since.is_none(),
-            );
-            self.next_paint = deadline;
-            if redraw {
-                window.request_redraw();
-            }
-            if let Some(deadline) = deadline {
-                events.set_control_flow(ControlFlow::WaitUntil(started + deadline));
-                return;
-            }
-        }
-        events.set_control_flow(ControlFlow::Wait);
-    }
 }
 
 fn informational_output(arg: &OsStr) -> Option<String> {
     if arg == "--help" {
         Some(format!(
-            "usage: unemupc98-window [--machine FILE] [--display CARD] [--allow-unlisted-firmware]\n\ndefault machine: {}\n\n{FONT_NOTICE}", default_machine().display()
+            "usage: unemupc98-window [--machine FILE] [--display CARD] [--rom-dir DIR]... [--allow-unlisted-firmware]\n\ndefault selection: {} (opens the machine library; --machine starts immediately)\n\n{FONT_NOTICE}\n\n{EGUI_FONT_NOTICE}", default_machine().display()
         ))
     } else if arg == "--version" || arg == "--about" {
         Some(format!(
-            "unemupc98-window {}\n\n{FONT_NOTICE}",
+            "unemupc98-window {}\n\n{FONT_NOTICE}\n\n{EGUI_FONT_NOTICE}",
             env!("CARGO_PKG_VERSION")
         ))
     } else {
@@ -703,6 +540,7 @@ fn default_machine() -> PathBuf {
 #[derive(Debug)]
 struct Args {
     machine: PathBuf,
+    rom_dirs: Vec<PathBuf>,
     display: Option<String>,
     options: assembly::AssemblyOptions,
 }
@@ -710,6 +548,7 @@ struct Args {
 fn parse_args(args: impl IntoIterator<Item = std::ffi::OsString>) -> Result<Args, &'static str> {
     let mut result = Args {
         machine: default_machine(),
+        rom_dirs: Vec::new(),
         display: None,
         options: assembly::AssemblyOptions::default(),
     };
@@ -718,6 +557,10 @@ fn parse_args(args: impl IntoIterator<Item = std::ffi::OsString>) -> Result<Args
     while let Some(arg) = args.next() {
         match arg.to_str() {
             Some("--allow-unlisted-firmware") => result.options.allow_unlisted_firmware = true,
+            Some("--rom-dir") => {
+                let path = args.next().filter(|path| !path.is_empty() && !path.as_encoded_bytes().starts_with(b"--")).ok_or("missing ROM directory")?;
+                result.rom_dirs.push(path.into());
+            }
             Some("--machine" | "--display") => {
                 let value = args.next().filter(|value| !value.is_empty() && !value.as_encoded_bytes().starts_with(b"--"))
                     .ok_or("missing option value")?;
@@ -757,12 +600,28 @@ fn selected_display(
         })
 }
 
+#[cfg(test)]
 fn load_machine(
     path: &Path,
     default: &Path,
     options: assembly::AssemblyOptions,
 ) -> Result<machine_file::LoadedMachine, Box<dyn Error>> {
-    machine_file::load_for_assembly(path, options).map_err(|error| {
+    load_machine_with_rom_dirs(
+        path,
+        default,
+        options,
+        &assembly::firmware_discovery::default_search_roots(),
+    )
+}
+
+#[cfg(test)]
+fn load_machine_with_rom_dirs(
+    path: &Path,
+    default: &Path,
+    options: assembly::AssemblyOptions,
+    roots: &[PathBuf],
+) -> Result<machine_file::LoadedMachine, Box<dyn Error>> {
+    machine_file::load_for_assembly_with_rom_dirs(path, options, roots).map_err(|error| {
         if path == default && !path.exists() {
             format!("{error}; use --machine FILE to select a machine description")
         } else {
@@ -772,9 +631,33 @@ fn load_machine(
     })
 }
 
+#[cfg(test)]
 fn setup(args: &Args, warnings: &mut impl io::Write) -> Result<Presenter, Box<dyn Error>> {
-    let loaded = load_machine(&args.machine, &default_machine(), args.options)?;
-    let display = selected_display(&loaded, args.display.as_deref())?;
+    let roots = if args.rom_dirs.is_empty() {
+        assembly::firmware_discovery::default_search_roots()
+    } else {
+        args.rom_dirs.clone()
+    };
+    setup_with_rom_dirs(args, &roots, warnings)
+}
+
+#[cfg(test)]
+fn setup_with_rom_dirs(
+    args: &Args,
+    roots: &[PathBuf],
+    warnings: &mut impl io::Write,
+) -> Result<Presenter, Box<dyn Error>> {
+    let loaded =
+        load_machine_with_rom_dirs(&args.machine, &default_machine(), args.options, roots)?;
+    setup_loaded(args, &loaded, warnings)
+}
+
+fn setup_loaded(
+    args: &Args,
+    loaded: &machine_file::LoadedMachine,
+    warnings: &mut impl io::Write,
+) -> Result<Presenter, Box<dyn Error>> {
+    let display = selected_display(loaded, args.display.as_deref())?;
     let assembled = loaded.assemble(&ObservationPolicy {
         routes: vec![ObservationRequest {
             device: display,
@@ -795,20 +678,8 @@ fn run() -> Result<(), Box<dyn Error>> {
         }
     }
     let args = parse_args(args)?;
-    let mut presenter = setup(&args, &mut io::stderr())?;
-    let events = EventLoop::new()?;
-    events.set_control_flow(ControlFlow::Wait);
-    let result = events.run_app(&mut presenter);
-    presenter.write_reset_summary(&mut io::stderr());
-    result?;
-    // A halt already finished its session in advance; closing a running window
-    // is the other normal end of a session.
-    if presenter.running && presenter.error.is_none() {
-        presenter.finish_persistence(&mut io::stderr())?;
-    }
-    if let Some(error) = presenter.error {
-        return Err(error);
-    }
+    let autostart = std::env::args_os().skip(1).any(|arg| arg == "--machine");
+    shell::run(args, autostart)?;
     Ok(())
 }
 
@@ -905,7 +776,7 @@ mod tests {
         presenter.assembled.finish_persistence().unwrap();
     }
 
-    fn mouse_presenter(enabled: bool) -> Presenter {
+    pub(super) fn mouse_presenter(enabled: bool) -> Presenter {
         #[rustfmt::skip]
         let program = [
             0xFA, 0xFC, 0x31, 0xC0, 0x8E, 0xD8, 0x8E, 0xC0, 0xBF, 0, 0x20,
@@ -1295,6 +1166,7 @@ mod tests {
         assert!(setup(&args_for(Some("missing")), &mut io::sink()).is_err());
         let missing = Args {
             machine: temp.path().join("missing.toml"),
+            rom_dirs: Vec::new(),
             display: None,
             options: assembly::AssemblyOptions::default(),
         };
@@ -1321,7 +1193,10 @@ mod tests {
         assert!(error.contains("use --machine FILE"), "{error}");
         assert!(error.contains("missing.toml"));
         let help = informational_output(OsStr::new("--help")).unwrap();
-        assert!(help.contains(&format!("default machine: {}", default_machine().display())));
+        assert!(help.contains(&format!(
+            "default selection: {} (opens the machine library; --machine starts immediately)",
+            default_machine().display()
+        )));
     }
 
     #[test]
