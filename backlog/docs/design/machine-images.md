@@ -16,10 +16,11 @@ sample data and illustrative interactions, not emulator wiring. Section 7
 describes this accepted direction; implementation starts with the shell and
 existing machine files, before the image store and layer dialog.
 
-A machine image describes the **whole machine**, not just a hard disk: resolved
-hardware configuration, firmware bytes (system BIOS, video BIOS and option
-ROMs), every controller/slot and ordered media catalogue, every disk base and
-layer, initial inserted media, CMOS and optionally a compatible saved state.
+A machine image describes the **whole machine**, not just a hard disk: platform,
+resolved hardware configuration, firmware bytes, every controller/slot and
+ordered media catalogue, every disk base and layer, initial inserted media,
+platform NVRAM and optionally a compatible saved state. For the PC, firmware
+includes system BIOS, video BIOS and option ROMs, and NVRAM is CMOS.
 A tag such as `dos-lab:1.0` names this complete graph. An image is
 self-contained: running it never reads user ROM folders or any other host file
 outside the store. A local tag is published only after the whole closure is
@@ -31,7 +32,7 @@ Three identities are used consistently below:
 | Identity | What is hashed | Changes when |
 |---|---|---|
 | **Blob digest** | The exact stored bytes of one object. | Never; different bytes are a different blob. |
-| **Machine digest** | The config blob (§2): hardware, firmware digests, media heads, slots, CMOS and saved state. | Anything the guest can observe changes. |
+| **Machine digest** | The config blob (§2): platform, hardware, firmware digests, media heads, slots, NVRAM and saved state. | Anything the guest can observe changes. |
 | **Image digest** | The OCI manifest: config descriptor, closure list, metadata and artwork descriptors, annotations. | The machine digest changes, or only catalogue metadata, artwork or redistribution marks change. |
 
 Workspaces, saved states and tests pin the machine digest. Tags and registry
@@ -53,16 +54,39 @@ click-to-capture and Ctrl+Alt+G/focus loss release. The approved shell makes the
 controls visible. CD, whole-machine save/restore and new hardware remain future
 capabilities, even when their reserved positions appear in a mock-up.
 
+### Platform neutrality
+
+The image design serves the unemu family: this PC emulator, a future x80 emulator
+for 8080/Z80 systems (CP/M, MSX, ZX Spectrum), and later C64 and Atari emulators.
+The store, registry client, metadata, library index, summary cache and classic
+shell widgets belong in shared crates. Store layout, tags, disk layers and image
+identities are platform-neutral. A required machine `platform` routes to an
+emulator provider; it identifies a machine family, not a host OS or CPU alone.
+Examples are `ibm-pc-at`, `zx-spectrum`, `c64` and `atari-800`; the list is extensible.
+
+Each emulator supplies its machine-config schema, validator capabilities (§6),
+devices/core, supported media kinds and launch-command mechanics (§2.1). The PC
+uses today's machine-file schema. Shared crates never depend on a specific
+emulator: platform providers implement the shared interfaces, and the application
+composes them. Shared code routes config validation and execution by platform;
+it does not embed PC hardware or guest-command rules. Start stays disabled with
+a reason when the selected provider or a required capability is unavailable.
+
+The config, metadata blob and manifest annotation carry the same machine
+platform (§2). Per-title catalogue platforms (§2.1) describe software environments
+such as DOS or CP/M separately. PC-specific schemas, media and UI examples below
+illustrate one provider rather than requirements on every emulator.
+
 ## 2. Immutable manifest and identity
 
 Use a standard **OCI image manifest** as an artifact, following the
 [OCI image-spec](https://github.com/opencontainers/image-spec) version 1.1,
 Image Manifest, Content Descriptors and Image Layout sections. The JSON envelope
 has `schemaVersion = 2`, `mediaType = "application/vnd.oci.image.manifest.v1+json"`
-and `artifactType = "application/vnd.unemupc98.machine.v1"`. Its `config`
+and `artifactType = "application/vnd.unemu.machine.v1"`. Its `config`
 descriptor points to the version-1 machine configuration TOML. `layers` lists
 exactly the closure of that configuration: every firmware blob, medium, disk
-base, sealed layer descriptor, sector pack, CMOS image and optional saved state
+base, sealed layer descriptor, sector pack, platform NVRAM and optional saved state
 reachable from it, including catalogue media that are not initially inserted,
 followed by the metadata blob and its artwork (§2.1). A manifest with a missing
 or an unreferenced descriptor is rejected. These are artifact payloads, not
@@ -72,18 +96,23 @@ container filesystem tar layers.
 |---|---|
 | `application/vnd.oci.image.manifest.v1+json` | Standard OCI manifest envelope. |
 | `application/vnd.oci.image.index.v1+json` | Standard OCI index for local image references. |
-| `application/vnd.unemupc98.machine.v1` | Manifest `artifactType`; identifies a whole machine. |
-| `application/vnd.unemupc98.machine.config.v1+toml` | Resolved hardware, firmware/media bindings, catalogues, selections and policies. |
-| `application/vnd.unemupc98.metadata.v1+json` | Versioned game/software catalogue, with independent metadata and launch commands per title. |
+| `application/vnd.unemu.machine.v1` | Manifest `artifactType`; identifies a whole machine. |
+| `application/vnd.unemu.machine.config.v1+toml` | Required platform and platform-owned resolved hardware, firmware/media bindings, catalogues, selections and policies. |
+| `application/vnd.unemu.metadata.v1+json` | Required machine platform and versioned game/software catalogue, with independent metadata and launch commands per title. |
 | `image/png`, `image/jpeg` | Cover art and screenshots referenced from the metadata blob. |
-| `application/vnd.unemupc98.firmware.v1` | Exact system BIOS, video BIOS, option ROM or individual chip/container bytes. |
-| `application/vnd.unemupc98.disk.base.v1` | Complete raw fixed-disk base. |
-| `application/vnd.unemupc98.disk.layer.v1+toml` | Sealed fixed-disk layer descriptor from §4. |
-| `application/vnd.unemupc98.disk.sectors.v1` | Sector pack referenced by a sealed layer. |
-| `application/vnd.unemupc98.media.floppy.v1` | Complete raw floppy medium. |
-| `application/vnd.unemupc98.media.optical.v1` | Reserved: complete read-only optical image with 2048-byte sectors; rejected until supported. |
-| `application/vnd.unemupc98.cmos.v1` | Frozen 64-byte CMOS image. |
-| `application/vnd.unemupc98.machine.state.v1` | Reserved opaque saved state; rejected until supported. |
+| `application/vnd.unemu.firmware.v1` | Exact firmware ROM or individual chip/container bytes; PC examples include system BIOS, video BIOS and option ROMs. |
+| `application/vnd.unemu.disk.base.v1` | Complete raw fixed-disk base. |
+| `application/vnd.unemu.disk.layer.v1+toml` | Sealed fixed-disk layer descriptor from §4. |
+| `application/vnd.unemu.disk.sectors.v1` | Sector pack referenced by a sealed layer. |
+| `application/vnd.unemu.media.floppy.v1` | Complete raw floppy medium. |
+| `application/vnd.unemu.media.optical.v1` | Reserved: complete read-only optical image with 2048-byte sectors; rejected until supported. |
+| `application/vnd.unemu.cmos.v1` | PC-specific frozen 64-byte CMOS image. |
+| `application/vnd.unemu.machine.state.v1` | Reserved opaque saved state; rejected until supported. |
+
+The table is extensible: platform-specific media types for tape images,
+cartridges and other media can be added under `application/vnd.unemu.*` when
+their formats and supporting providers are defined. Shared storage and transfer
+treat their payloads as opaque bytes; support is never inferred from the prefix.
 
 A compressed binary payload appends `+zstd` to its media type. Codec support
 must land before any phase C multi-gigabyte image is pushed; its multi-gigabyte
@@ -91,8 +120,9 @@ bases must use `+zstd` (§5.1). OCI
 `digest` and `size` always describe the stored bytes, compressed when applicable;
 the machine format must additionally declare and verify decoded length and full
 SHA-256 before use. Compression never weakens full-base verification. Metadata
-stays uncompressed in version 1. OCI treats payloads as opaque bytes; FAT-aware
-inspection, deduplication and compression belong only in our media tools.
+stays uncompressed in version 1. OCI treats payloads as opaque bytes; filesystem
+inspection (for example FAT-aware tools), deduplication and compression belong
+only in the appropriate media tools.
 
 This is an abbreviated schema sketch, not a copyable image. `<...>` stands for
 a full `sha256:` plus 64 lowercase hexadecimal characters; sizes are illustrative.
@@ -103,51 +133,57 @@ own OCI descriptor so an ordinary registry client can copy the complete image.
 {
   "schemaVersion": 2,
   "mediaType": "application/vnd.oci.image.manifest.v1+json",
-  "artifactType": "application/vnd.unemupc98.machine.v1",
+  "artifactType": "application/vnd.unemu.machine.v1",
   "config": {
-    "mediaType": "application/vnd.unemupc98.machine.config.v1+toml",
+    "mediaType": "application/vnd.unemu.machine.config.v1+toml",
     "digest": "<machine-config>",
     "size": 2048
   },
   "layers": [
     {
-      "mediaType": "application/vnd.unemupc98.firmware.v1",
+      "mediaType": "application/vnd.unemu.firmware.v1",
       "digest": "<system-bios>",
       "size": 65536,
       "annotations": {
         "org.opencontainers.image.title": "assets/system.bin",
-        "org.unemupc98.redistribution": "user-supplied"
+        "unemu.redistribution": "user-supplied"
       }
     },
     {
-      "mediaType": "application/vnd.unemupc98.disk.layer.v1+toml",
+      "mediaType": "application/vnd.unemu.disk.layer.v1+toml",
       "digest": "<sealed-disk-layer>",
       "size": 512,
       "annotations": {
-        "org.unemupc98.redistribution": "user-supplied"
+        "unemu.redistribution": "user-supplied"
       }
     }
   ],
   "annotations": {
     "org.opencontainers.image.title": "DOS lab",
+    "unemu.platform": "ibm-pc-at",
     "org.opencontainers.image.base.digest": "<previous-machine-image>"
   }
 }
 ```
 
-Annotations are string values and never bind anything:
+Annotations are string values and never bind hardware or media:
 
 | Annotation | Meaning |
 |---|---|
 | `org.opencontainers.image.title` | On a descriptor: optional logical name for generic OCI tools. On the manifest: a preview title for registry browsing. Informational only. |
 | `org.opencontainers.image.base.digest` | Manifest only: image digest this image was derived from. Provenance; never needed to run and never a reason to download an older image. |
-| `org.unemupc98.redistribution` | `open` or `user-supplied`; absent evidence defaults to user-supplied. |
-| `org.unemupc98.license` | Reviewed SPDX licence expression for open content. |
-| `org.unemupc98.provenance` | Publish-safe evidence supporting the open classification. |
+| `unemu.platform` | Required on the manifest: machine platform, matching config and metadata; a routing hint for registry/library previews, never an independent authority. |
+| `unemu.redistribution` | `open` or `user-supplied`; absent evidence defaults to user-supplied. |
+| `unemu.license` | Reviewed SPDX licence expression for open content. |
+| `unemu.provenance` | Publish-safe evidence supporting the open classification. |
 
 The config is the single authority for bindings, slots, catalogue order and
 media heads; layer descriptors (§4) are the single authority for parents.
-Because no annotation repeats those facts, there is nothing to disagree with.
+The required config `platform` is the authority for routing. Its value must match
+the metadata envelope and `unemu.platform` annotation before local tag publication;
+a mismatch or missing platform is rejected. Metadata edits cannot change this
+identity field. The annotation is a preview hint, not permission to launch without
+validating the config.
 Identical bytes appear once in `layers`, however many bindings name them.
 Redistribution marks also apply to the config and metadata descriptors; a
 blob's effective class is the most restrictive one recorded for its digest in
@@ -156,13 +192,16 @@ metadata and artwork, so the same content always gives the same manifest bytes.
 `layers` enumerates the closure; per-medium heads and parents determine disk
 reconstruction, not one global disk stack.
 
-The config TOML is a bundle envelope, with `schema = 1` and a `[machine]` table
-containing flattened hardware. It holds only what the guest can observe: no
-name, tag, history or catalogue metadata. Its remaining tables retain the
-following model:
+The config TOML has a common routing envelope with required `schema = 1` and
+`platform`. Each platform owns the schema of its machine config and its versioned
+validation. The PC bundle profile below puts flattened hardware in `[machine]`
+and bindings in the remaining tables; other platforms need not model PC drives
+or CMOS. The config holds the platform and only what the guest can observe: no
+name, tag, history or catalogue metadata. This PC example uses:
 
 ```toml
 schema = 1
+platform = "ibm-pc-at"
 
 [machine]
 # Resolved schema-1 machine fields; hardware details omitted in this sketch.
@@ -230,17 +269,18 @@ never hash an unspecified TOML-to-JSON conversion. A versioned writer produces
 stable key order, LF and no timestamps; a hand-edited equivalent config is a
 different machine digest. Check each descriptor's digest and exact byte length
 before decoding. Unknown fields or versions in the manifest, config or layer
-descriptors fail closed; the metadata blob degrades instead (§2.1). Bound each
-manifest, config, layer descriptor and metadata blob to 1 MiB, each artwork blob
-to 4 MiB, chain depth to 64 and graph traversal to 10,000 objects before
+descriptors fail closed; the selected provider validates its config schema. The
+metadata blob degrades instead (§2.1). Bound each manifest, config, layer
+descriptor and metadata blob to 1 MiB, each artwork blob to 4 MiB, chain depth to
+64 and graph traversal to 10,000 objects before
 fetching payload bytes.
 
 ### Resolved hardware and media bindings
 
-`config.machine` is a flattened schema-1 machine TOML, with no `extends` or host
-endpoints. Use the current resolver first, preserving board/card order, defaults,
-RTC start, CPU/FPU, memory, ROM addresses/services, split-chip assembly and drive
-geometry.
+For `platform = "ibm-pc-at"`, `config.machine` is a flattened schema-1 machine
+TOML, with no `extends` or host endpoints. Use the current resolver first,
+preserving board/card order, defaults, RTC start, CPU/FPU, memory, ROM
+addresses/services, split-chip assembly and drive geometry.
 Replace image paths with unique relative logical names (`assets/...`); these
 names are looked up only in manifest bindings, never opened on the host.
 Reject absolute paths, `..`, duplicate names, unresolved sources and unbound blobs.
@@ -291,7 +331,7 @@ journaled workspace media offer crash recovery. Do not silently upgrade policy.
 
 Rich catalogue metadata belongs in version 1, even for a purely local library.
 Each machine manifest lists one JSON blob of type
-`application/vnd.unemupc98.metadata.v1+json`. It never reaches the emulator core
+`application/vnd.unemu.metadata.v1+json`. It never reaches the emulator core
 and is not part of the machine digest. Metadata and artwork are ordinary blobs
 in the image manifest. Materializing an edit writes new small metadata/artwork
 blobs and a manifest with a new image digest; the machine digest and existing
@@ -304,24 +344,26 @@ automatically pushed. New artwork blobs referenced by an overlay are GC roots.
 Publishing applies the overlay, verifies the new closure and creates the new
 image/tag; active workspaces still pin the same machine digest.
 
-The JSON envelope is `{"schema": 1, "labels": [...], "titles": [...]}`. `labels`
-are the image-level labels that travel with the image. A machine may contain
-zero, one or several titles; every record has a stable unique `id` and required
-`title`. Other fields are optional; absent means unknown, and arrays retain all
-values. A reader that meets a newer `schema` still runs the image, shows what it
+The JSON envelope is
+`{"schema": 1, "platform": "ibm-pc-at", "labels": [...], "titles": [...]}`.
+The required top-level `platform` is the machine routing id from the config (§2),
+not a per-title software environment. `labels` are the image-level labels that
+travel with the image. A machine may contain zero, one or several titles; every
+record has a stable unique `id` and required `title`. Other fields are optional;
+absent means unknown, and arrays retain all values. A reader that meets a newer `schema` still runs the image, shows what it
 understands read-only and never rewrites that blob.
 
 | Per-title fields | Schema v1 form |
 |---|---|
 | `title`, `sort_title`, `series` | Strings; sort title permits ignoring articles without changing the displayed title. |
 | `genres`, `developers`, `publishers` | Arrays of strings; multiple genres and credited companies are supported. |
-| `platform` | One of `DOS`, `Windows 3.x`, `Windows 9x`, `other`. |
+| `platform` | Extensible controlled vocabulary: `DOS`, `Windows 3.x`, `Windows 9x`, `CP/M`, `MSX`, `ZX Spectrum`, `C64`, `Atari 8-bit`, `Atari ST`, `other`; distinct from the envelope machine platform. Preserve unknown future values for display and indexing. |
 | `release_year`, `players` | Integer year; players is `{ "min": 1, "max": 2 }` with positive bounds and min <= max. |
 | `languages`, `regions` | Arrays of strings. |
 | `description`, `version`, `edition`, `source_media` | Strings; source media may read `4 x 1.2M floppies`. |
 | `tags` | Array of free-form tags that travel with the image. |
 | `cover`, `screenshots` | One artwork blob digest and an ordered array of them; each is listed in the manifest `layers`. |
-| `launch` | Optional object with `profile`, guest `program` path, `arguments` string array and `working_directory` path. |
+| `launch` | Optional provider-defined object selected by `profile`; the PC command profile uses a guest `program` path, `arguments` string array and `working_directory` path. |
 
 Personal `user_rating` (optional integer 0–5) and free-text `notes` live only in
 `local/library.toml`, associated with the library entry and stable title id.
@@ -339,8 +381,13 @@ never edits a disk and never changes the machine digest. A run is a function of
 the machine digest, the workspace's media state and the input script; a test
 that uses a launch pins the script bytes, not the metadata blob.
 
-`launch.profile` names a boot profile. Title launch is **DOS only now**, through
-`dos-prompt`; storing Windows title metadata does not enable launching it.
+`launch.profile` names a boot profile supplied by the selected emulator. The
+shared metadata/launch widgets carry the request; the provider validates its
+fields and compiles the input script using its guest paths and input mechanism.
+The `program`, `arguments` and `working_directory` fields illustrate the PC
+command profile; future profiles may define platform-specific launch fields.
+The initial PC launch proposal is **DOS only**, through `dos-prompt`; storing
+Windows or other platform metadata does not enable launching it.
 A profile waits for a guest-observable condition, for example the keyboard
 buffer being polled while empty with a prompt on the text cursor row, sampled at
 retired-instruction boundaries through the observation seam. It then types the
@@ -380,12 +427,12 @@ Optional eXoDOS catalogue and LaunchBox XML import is future work only.
 ## 3. Content-addressed store, tags and local workspaces
 
 The local store follows the role of `/var/lib/docker`: one application-owned
-root, selectable in Preferences. Defaults are:
+root shared by the unemu family, selectable in Preferences. Defaults are:
 
-- macOS: `~/Library/Application Support/unemupc98/`.
-- Linux per-user: `$XDG_DATA_HOME/unemupc98/`, falling back to
-  `~/.local/share/unemupc98/` when `XDG_DATA_HOME` is unset or empty.
-- Linux optional future system service: `/var/lib/unemupc98/`.
+- macOS: `~/Library/Application Support/unemu/`.
+- Linux per-user: `$XDG_DATA_HOME/unemu/`, falling back to
+  `~/.local/share/unemu/` when `XDG_DATA_HOME` is unset or empty.
+- Linux optional future system service: `/var/lib/unemu/`.
 
 The root must be on a local filesystem with working advisory locks, atomic
 rename and `fsync`. The library probes locking when it opens a store and refuses
@@ -586,19 +633,19 @@ CMOS uses the existing 64-byte base/journal rules, including excluded transient
 and clock fields. The 512-byte disk pack is **not** used for CMOS: freeze to a new
 64-byte raw object. Derived/blank NVRAM remains config state. Saved states, when
 supported, pin exact config/firmware/media identities, inserted selections,
-emulator/device snapshot versions and x86jit revision. Hash this compatibility
-tuple without the enclosing manifest/state pointer to avoid self-reference;
-incompatibility offers a cold boot without
-the state, never an approximate restore. Saving media alone is not a snapshot.
+platform, emulator/device snapshot versions and CPU-core revision (x86jit for
+the PC provider). Hash this compatibility tuple without the enclosing
+manifest/state pointer to avoid self-reference; incompatibility offers a cold
+boot without the state, never an approximate restore. Saving media alone is not a snapshot.
 
 ## 5. Self-contained images and blob policy
 
 A private image includes **everything needed to run**: firmware (BIOS, video
-BIOS and option ROMs), resolved machine configuration, every disk base/layer and
-sector pack, complete media catalogues and their media, CMOS and any selected
-saved state. The user's private store and private registry may hold proprietary
-bytes. The repository
-still never contains proprietary blobs, derived proprietary sectors, private
+BIOS and option ROMs on PC), platform and resolved machine configuration, every
+disk base/layer and sector pack, complete media catalogues and their media,
+platform NVRAM and any selected saved state. The user's private store and private
+registry may hold proprietary bytes. The repository still never contains
+proprietary blobs, derived proprietary sectors, private
 installation names, source paths, screen captures or credentials.
 
 **Locate firmware** is a build-time action when creating or importing an image
@@ -696,10 +743,12 @@ proprietary bytes by accident:
 **No daemon is needed now**, for either a purely local library or registry
 push/pull. GUI and CLI call the same in-process store library directly. Its API
 owns image import/validation, store transactions, registry transfer, workspaces,
-machine lifecycle, locks, progress/cancellation and structured errors. A registry
-is optional; keeping every image locally is a complete supported workflow.
+locks, progress/cancellation and structured errors; provider interfaces supply
+config validation and machine lifecycle without emulator dependencies in the
+shared crates. A registry is optional; keeping every image locally is a complete
+supported workflow.
 
-Revisit an optional `unemupc98-daemon` only when machines must run headless on a
+Revisit an optional `unemu-daemon` only when machines must run headless on a
 server with remote viewing, remote control is wanted, or background GC is needed.
 If justified then, it is a thin local-socket/service wrapper around the same
 transport-neutral library API, with no duplicated storage or validation rules.
@@ -712,9 +761,11 @@ READ: `crates/assembly/src/validate.rs`, `validate_resolved`, resource checks,
 fixed order, not a form schema. Some current representation domains live in
 machine-file lowering/device configs. A UI must not transcribe those tables.
 
-Propose shared assembly-owned descriptors for boards, card kinds, fields,
-defaults, scalar/enum domains, units, derived resources and constraints. Lowering
-consumes these same domains; the validator consumes the same predicates. Keep
+Each emulator exposes capabilities through a shared interface; its own validator
+owns the hardware rules. The following is the PC provider sketch, not a dependency
+of shared crates on PC assembly. Propose PC assembly-owned descriptors for
+boards, card kinds, fields, defaults, scalar/enum domains, units, derived resources
+and constraints. Lowering consumes these same domains; the validator consumes the same predicates. Keep
 source-location mapping in machine-file. Move only duplicated facts as needed;
 this is a proposal, not a rewrite of validation or a second rules engine.
 
@@ -775,7 +826,11 @@ One classic Win32-style application window has a title bar, in-window menu bar,
 toolbar, client area and status bar with power and drive activity lights. The
 menu bar stays inside the window on **every platform, including macOS**; the
 macOS global menu keeps only the minimum About and Quit items. Application
-commands remain in the same place on macOS, Windows and Linux.
+commands remain in the same place on macOS, Windows and Linux. Shared shell
+widgets use the selected provider's capabilities for settings, media, guest
+commands and status fields; the PC menu/dialog examples below do not require
+other platforms to expose Ctrl+Alt+Del, floppy drives, CMOS or EMS. About names
+the active emulator.
 
 | Menu | Commands and role |
 |---|---|
@@ -805,9 +860,9 @@ Group images by repository name, with tags as child rows, for example
 `dos-lab > 1.0, 2.0, gaming`. The list is virtualized: draw only visible rows.
 
 Startup reads the OCI index and the local summary cache, never every
-manifest. Cache name, tags, title, labels, stored size and last run, plus per-title
-facets and the text-search index (§2.1); key immutable summaries by manifest and
-metadata digests and version the cache schema. Index changes
+manifest. Cache machine platform, name, tags, title, labels, stored size and last
+run, plus per-title facets and the text-search index (§2.1); key immutable
+summaries by manifest and metadata digests and version the cache schema. Index changes
 invalidate affected tag mappings; library-metadata revisions invalidate local
 labels/favourites/last-run, personal-field and overlay entries. Rebuild missing
 or stale summaries lazily from
@@ -918,9 +973,11 @@ UI work and storage preparation never replace retired-instruction virtual time.
 
 ## 8. Migration and explicit exclusions
 
-Import an existing TOML/YAML machine through its current extends resolver and
-origin-aware loader; verify all bytes/hashes, flatten once, assign logical blob
-names and preserve effective device order, policies, slot order and catalogues.
+Import selects a platform provider and records its required platform in the
+config, metadata and manifest annotation. For PC, import an existing TOML/YAML
+machine through its current extends resolver and origin-aware loader; verify all
+bytes/hashes, flatten once, assign logical blob names and preserve effective
+device order, policies, slot order and catalogues.
 Locate missing inputs during import, copy all firmware and media into OCI
 blobs, and include every catalogue medium, disk parent/sector pack and CMOS.
 Validate the full closure before publishing a self-contained OCI manifest and
