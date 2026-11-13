@@ -59,8 +59,31 @@ video = { path = "crates/video", version = "0.1.0" }
 audio = { path = "crates/audio", version = "0.1.0" }
 testkit = { path = "crates/testkit", version = "0.1.0" }
 
-# Optimize dependencies (the CPU core and its decoder) even in dev/test builds,
-# because emulator tests spend most of their time inside them. Workspace crates
-# stay unoptimized with debug assertions and overflow checks.
+# Keep hardware preconditions and arithmetic checked even in optimized dev/test code.
+[profile.dev]
+debug-assertions = true
+overflow-checks = true
+
+# The CPU core and its decoder dominate instruction execution in dev/test builds.
 [profile.dev.package."*"]
+opt-level = 3
+
+# Optimize the emulation loop while leaving frontends and test drivers unoptimized
+# for debugging. The test profile inherits these settings and shares artifacts.
+[profile.dev.package.devices]
+opt-level = 3
+
+[profile.dev.package.machine]
+opt-level = 3
+
+[profile.dev.package.bus]
+opt-level = 3
+
+[profile.dev.package.cpu]
+opt-level = 3
+
+[profile.dev.package.assembly]
+opt-level = 3
+
+[profile.dev.package.audio]
 opt-level = 3

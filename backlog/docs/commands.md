@@ -14,7 +14,7 @@ cargo run --offline -p cli -- run --machine machines/at-freedos.toml --max-steps
 cargo run --offline -p window --bin unemupc98-window -- --machine machines/at-freedos.toml --display mda
 cargo test --workspace                       # unit + golden + integration
 cargo test --release -p devices              # release-only device behaviour (CI runs it too)
-cargo test --workspace -- --ignored          # slow goldens: BIOS POST, FreeDOS boot, DOS sessions (~2 min)
+cargo test --workspace -- --ignored          # slow goldens: BIOS POST, FreeDOS boot, DOS sessions
 UNEMUPC98_REQUIRE_FIXTURES=1 cargo test --workspace -- --ignored # fail if a fixture is missing
 # Corrected per-clock oracle versus production deadlines (no environment gate):
 UNEMUPC98_REQUIRE_FIXTURES=1 cargo test --offline -p cli --test scheduler_ab -- --include-ignored --nocapture
@@ -30,6 +30,23 @@ cargo build --offline -p window --bin unemupc98-window
 cargo run --offline -p window --bin unemupc98-window # default machines/at-freedos.toml
 cargo run --offline -p window --bin unemupc98-window -- --machine machines/local.toml --allow-unlisted-firmware
 cargo tree --offline -i window               # window is a leaf frontend
+```
+
+The default `test` profile inherits the workspace's `dev` settings, so ordinary
+tests and ignored goldens share compiled artifacts. Use the same profile for
+both; `cargo test --profile test --workspace -- --ignored` makes the choice
+explicit, as the CI gate does. Keep the separate release device run to cover
+behaviour that intentionally differs when debug assertions are disabled.
+
+Dependencies, including the pinned CPU core, use optimization level 3. The hot
+workspace crates (`devices`, `machine`, `bus`, `cpu`, `assembly`, `audio`) also use
+level 3. Debug information, debug assertions and overflow checks remain enabled;
+frontends and the other workspace crates keep their unoptimized dev settings.
+Optimized code can be harder to step through even with debug information. For a
+focused device investigation, temporarily override just that crate:
+
+```sh
+cargo --config 'profile.dev.package.devices.opt-level=0' test -p devices
 ```
 
 To investigate an intermittent fast-suite failure, run two independent targets
@@ -395,7 +412,7 @@ bash scripts/ci-gate.sh clippy
 bash scripts/ci-gate.sh deny                     # advisories, licences, bans, sources; all features
 bash scripts/ci-gate.sh tests
 bash scripts/ci-gate.sh fixtures                 # build/hash-check BIOS, FreeDOS, test386; fetch missing inputs
-bash scripts/ci-gate.sh goldens                  # slow tests (~2 min); requires fixtures
+bash scripts/ci-gate.sh goldens                  # slow tests in the test profile; requires fixtures
 ```
 
 Fixture-dependent tests print a skip message when a fetched vendor file is missing.
@@ -411,7 +428,7 @@ This local opt-in lane is never called by CI; CI never has proprietary firmware:
 ```sh
 bash scripts/ci-gate.sh user-roms
 # Equivalent command inside the devShell:
-cargo test --locked --workspace --no-fail-fast -- --ignored user_rom_
+cargo test --locked --profile test --workspace --no-fail-fast -- --ignored user_rom_
 ```
 
 These tests are `#[ignore]` with names starting with `user_rom_`. The shared

@@ -27,7 +27,7 @@ case "$step" in
         # Release builds keep a few behaviours that debug builds assert against
         # (devices ignore an earlier clock); run the device tests in both.
         gate_command+=(bash -euc '
-            cargo test --locked --workspace
+            cargo test --locked --profile test --workspace
             cargo test --locked --release -p devices
         ')
         ;;
@@ -38,9 +38,9 @@ case "$step" in
             bash vendor/test386/fetch.sh
         ')
         ;;
-    goldens) gate_command+=(env UNEMUPC98_REQUIRE_FIXTURES=1 cargo test --locked --workspace -- --ignored) ;;
+    goldens) gate_command+=(env UNEMUPC98_REQUIRE_FIXTURES=1 cargo test --locked --profile test --workspace -- --ignored) ;;
     # Local opt-in lane: CI never calls it and never has user-supplied firmware.
-    user-roms) gate_command+=(cargo test --locked --workspace --no-fail-fast -- --ignored user_rom_) ;;
+    user-roms) gate_command+=(cargo test --locked --profile test --workspace --no-fail-fast -- --ignored user_rom_) ;;
     *) usage ;;
 esac
 

@@ -92,6 +92,8 @@ jobs:
         if: ${{ !cancelled() }}
         run: bash scripts/ci-gate.sh deny
 
+      # The gate selects the workspace test profile, including its hot-crate
+      # optimizations, while keeping debug assertions and overflow checks.
       - name: Tests
         id: tests
         if: ${{ !cancelled() }}
@@ -104,6 +106,7 @@ jobs:
         if: ${{ !cancelled() }}
         run: bash scripts/ci-gate.sh fixtures
 
+      # Reuse the same test profile and binaries as the ordinary workspace tests.
       - name: Slow goldens
         id: goldens
         if: ${{ !cancelled() }}
