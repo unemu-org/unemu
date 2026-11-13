@@ -532,3 +532,70 @@ fn mouse_irq_conflict_names_the_yaml_mouse_field() {
     assert!(error.message.contains("board.mouse"), "{error}");
     assert!(error.message.contains("test.yaml:2"), "{error}");
 }
+
+#[test]
+fn serial_mouse_toml_and_yaml_lower_to_the_same_com1_endpoint() {
+    let toml = "schema=1\n[board]\nmodel='ibm-5170'\n[firmware.bios]\nimage='bios.bin'\n[[card]]\nkind='uart-16550'\nmouse='microsoft'\n";
+    let yaml = format!("{MINIMAL}card: [{{kind: uart-16550, mouse: microsoft}}]\n");
+    let file = Path::new("machines/test.toml");
+    let config = lower(
+        &parse_toml(file, toml).unwrap(),
+        &Origins::from_toml(file, toml).unwrap(),
+        &mut Reader(|_: &Path| Ok(vec![0xf4; 0x8000])),
+    )
+    .unwrap();
+    assert_eq!(run(&yaml).unwrap(), config);
+    let uart = config
+        .devices
+        .iter()
+        .find(|d| d.id == assembly::DeviceId::Uart)
+        .unwrap();
+    assert_eq!(uart.irq, Some(4));
+    assert!(matches!(&uart.kind, assembly::DeviceKind::Uart(c) if c.base == 0x3f8 && c.mouse));
+}
+
+#[test]
+fn serial_mouse_both_syntaxes_reject_two_targets_wrong_card_and_unknown_models() {
+    let toml = "schema=1\n[board]\nmodel='ibm-5170'\nmouse=true\n[firmware.bios]\nimage='bios.bin'\n[[card]]\nkind='uart-16550'\nmouse='microsoft'\n";
+    let yaml = MINIMAL.replace(
+        "board: {model: ibm-5170}",
+        "board: {model: ibm-5170, mouse: true}",
+    ) + "card: [{kind: uart-16550, mouse: microsoft}]\n";
+    let file = Path::new("machines/test.toml");
+    let error = lower(
+        &parse_toml(file, toml).unwrap(),
+        &Origins::from_toml(file, toml).unwrap(),
+        &mut Reader(|_: &Path| Ok(vec![0xf4; 0x8000])),
+    )
+    .unwrap_err();
+    for error in [error, run(&yaml).unwrap_err()] {
+        assert_eq!(
+            error.validation.as_deref(),
+            Some(&assembly::ConfigError::MultipleMouseTargets)
+        );
+        assert_eq!(error.field, "board.mouse");
+        assert!(error.message.contains(".mouse"), "{error}");
+    }
+    for kind in ["mda", "vga-text"] {
+        let input = toml.replace("uart-16550", kind).replace("mouse=true\n", "");
+        let error = lower(
+            &parse_toml(file, &input).unwrap(),
+            &Origins::from_toml(file, &input).unwrap(),
+            &mut Reader(|_: &Path| Ok(vec![0xf4; 0x8000])),
+        )
+        .unwrap_err();
+        assert!(error.message.contains("only supported by uart-16550"));
+        assert!(run(&format!(
+            "{MINIMAL}card: [{{kind: {kind}, mouse: microsoft}}]\n"
+        ))
+        .is_err());
+    }
+    for model in ["logitech", "true"] {
+        assert!(parse_toml(file, &toml.replace("'microsoft'", &format!("'{model}'"))).is_err());
+        assert!(parse_yaml(
+            "machines/test.yaml",
+            &yaml.replace("mouse: microsoft", &format!("mouse: {model}"))
+        )
+        .is_err());
+    }
+}

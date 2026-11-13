@@ -144,6 +144,8 @@ pub struct DmaSpec {
 pub struct UartCfg {
     /// Base port (the eight UART registers decode from here). COM1 is `0x3F8`.
     pub base: u16,
+    /// Attach a Microsoft two-button serial mouse; no endpoint by default.
+    pub mouse: bool,
 }
 
 /// 8253 PIT selection (§7.4); port decoding lives in [`DeviceConfig::ports`].

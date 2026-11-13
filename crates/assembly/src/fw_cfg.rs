@@ -103,7 +103,10 @@ mod tests {
             .iter_mut()
             .find(|d| d.id == DeviceId::Uart)
             .unwrap();
-        uart.kind = DeviceKind::Uart(crate::UartCfg { base: 0x2F8 });
+        uart.kind = DeviceKind::Uart(crate::UartCfg {
+            base: 0x2F8,
+            mouse: false,
+        });
         uart.ports = vec![PortWindow::new(0x2F8, 0x2FF)];
         config.devices.push(entry(FwCfgCfg {
             sercon_from_com1: true,

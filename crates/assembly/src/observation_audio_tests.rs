@@ -487,6 +487,7 @@ fn speaker_history_stays_bounded_without_capture_on_direct_and_session_runs() {
             machine,
             observation,
             device_index: index,
+            mouse_target: None,
             a20_line: Default::default(),
             persistence: Vec::new(),
             unlisted_firmware: Vec::new(),

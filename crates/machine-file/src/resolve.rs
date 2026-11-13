@@ -705,6 +705,7 @@ fn merge(
                 "controller_model",
             );
             m.scalar(&mut inherited.port, card.port, "port");
+            m.scalar(&mut inherited.mouse, card.mouse, "mouse");
             m.scalar(&mut inherited.base, card.base, "base");
             m.scalar(&mut inherited.dma8, card.dma8, "dma8");
             m.scalar(&mut inherited.dma16, card.dma16, "dma16");
@@ -1211,6 +1212,21 @@ mod tests {
                 resolved.document.board.unwrap().display_switch,
                 Some(expected)
             );
+        }
+    }
+
+    #[test]
+    fn serial_mouse_inherits_and_can_be_explicitly_disabled() {
+        for (child, expected) in [
+            ("", SerialMouseModel::Microsoft),
+            ("mouse='none'\n", SerialMouseModel::None),
+        ] {
+            let resolved = merged(
+                "[[card]]\nkind='uart-16550'\nmouse='microsoft'\n",
+                &format!("[[card]]\nid='uart-16550'\n{child}"),
+            )
+            .unwrap();
+            assert_eq!(resolved.document.card.unwrap()[0].mouse, Some(expected));
         }
     }
 

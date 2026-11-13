@@ -61,7 +61,7 @@ document uses that shape:
    `sha256`.
 7. **`extends`** inherits from another file or from a built-in preset.
 8. **Schema 1 includes IDE, floppy journals, NVRAM, RTC start and the optional
-   PS/2 mouse.** Other names and shapes are reserved. New hardware uses new
+   PS/2 or Microsoft serial mouse.** Other names and shapes are reserved. New hardware uses new
    card kinds within the same format version.
 9. **Cycle-exact timing fields are rejected** with an explanation
    (decision-16 §3).
@@ -298,6 +298,81 @@ video option ROM at C0000h derives own-BIOS (00). Explicit NVRAM images are not
 rewritten, so their equipment byte must agree with the chosen switch and cards.
 See [machine-config.md §Primary display](machine-config.md#primary-display)
 for the hardware references, no-card policy and snapshot behavior.
+
+### Serial mouse
+
+An AT pointing device can attach to a UART card instead of the optional PS/2
+auxiliary port. The IBM 5170 has no physical PS/2 mouse port; serial mouse drivers
+use COM1 and IRQ4 without BIOS INT 15h C2h pointing services.
+
+```toml
+[[card]]
+kind = "uart-16550"
+port = 0x3F8
+irq = 4
+mouse = "microsoft"
+```
+
+```yaml
+card:
+  - kind: uart-16550
+    port: 0x3F8
+    irq: 4
+    mouse: microsoft
+```
+
+`mouse` accepts `microsoft` or `none` (default); it is rejected on other card
+kinds. A child inherits the attachment and can disable it with `none`.
+`UartCfg.mouse` selects the endpoint in Rust. Presets retain no mouse by default.
+Config validation refuses multiple host mouse targets, including `board.mouse =
+true` together with a serial mouse. The window automatically routes to the unique
+configured target, using its existing grab and release controls.
+
+The endpoint implements the two-button Microsoft serial protocol: fixed 1200
+bit/s, 7 data bits, no parity, one stop bit; identification `M`; then three-byte
+`01LRYYXX`, X-low-six, Y-low-six packets. Y is positive down. Counts accumulate
+with i32 saturation and split into successive -128..127 packets without discarding
+excess. Middle-button/Logitech `M3` and fourth-byte extensions are unsupported.
+The UART remains generic and exposes a serial-peripheral attachment, not a mouse
+register bank.
+
+Both DTR and RTS must be high. Either low aborts the in-flight frame, clears
+unsent bytes and drops motion; current host button levels remain known.
+MCR.LOOP (bit 4) disconnects the external serial input and forces DTR, RTS,
+OUT1 and OUT2 inactive. The mouse therefore loses power and the external IRQ
+is gated off during a loopback probe. Returning from MCR=1Fh to 0Bh starts a
+fresh identification. Internal TX-to-RX and modem-input feedback are not modelled.
+A transition from unpowered to both high queues `M` after **ASSUMED 10 ms**
+startup (11932 PIT clocks), then a full serial frame. A repeated active MCR write
+does not restart identification. Buttons held during power-up report after `M`.
+Each byte takes ceil(9 × 3579545 / (3 × 1200)) = **8949 PIT clocks**; rounding
+adds less than one PIT clock per frame. These clocks derive from retired
+instructions (and halted PIT progress), never host time. A new packet waits for
+the preceding packet's last byte to finish; there is no separate sample-rate timer.
+
+The UART uses a nominal 1.8432 MHz input, so divisor **96**, LCR **02h** is
+1200 7N1. LCR **06h** (7N2) also receives the mouse correctly: the receiver checks
+only the first stop bit. The peripheral still sends at the 7N1 byte rate.
+**ASSUMED mismatch model:** another divisor, data length or parity selection
+produces byte 00h with LSR.FE at the mouse's physical rate. In particular, 8N1
+retains this labelled approximation instead of bit-level resampling.
+Validity is sampled when the start bit begins, after startup: the guest may
+raise DTR/RTS and then program the UART during the startup delay. Changes after
+the start bit affect later frames. A future start is an explicit virtual-time
+event, so a lazy synchronization cannot sample the configuration too early.
+The receive holding register/FIFO, LSR.DR/OE/FE, receive and line-status IIR
+causes, four-frame FIFO timeout and OUT2/IER-gated IRQ are modelled. TX remains
+instantaneous, with no THRE IRQ, TX FIFO or modem-input signalling.
+
+Hardware references: Microsoft Mouse Programmer's Reference (serial protocol
+requirements); Microchip AN519, Table 1, Microsoft Format; National
+Semiconductor PC16550D datasheet §8.1–8.8 and §8.11, Line Control, Programmable Baud
+Generator, Line Status, FIFO Control, Interrupt Identification/Enable and Modem
+Control and FIFO Interrupt Mode Operation (character timeout). Startup delay
+and mismatch bytes are explicit model
+assumptions. Primary reference copies: [PC16550D datasheet](https://www.scs.stanford.edu/10wi-cs140/pintos/specs/pc16550d.pdf)
+and [Microchip AN519](https://ww1.microchip.com/downloads/en/Appnotes/00519c.pdf).
+See [window input](observation.md#captured-ps2-mouse).
 
 ### `[board.rtc]`
 

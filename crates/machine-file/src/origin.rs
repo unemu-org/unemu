@@ -163,7 +163,7 @@ impl Origins {
         for (field, origin) in values.fields {
             if field.ends_with(".sha256")
                 || field.starts_with("firmware.bios.parts")
-                || field == "board.mouse"
+                || field.ends_with(".mouse")
                 || field == "board.display_switch"
             {
                 self.insert(field, origin);

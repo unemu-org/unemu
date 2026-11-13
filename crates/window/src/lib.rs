@@ -38,7 +38,7 @@
 //! Focus loss releases all held keys; unheld releases and stopped-machine input
 //! are ignored. macOS winit 0.30 does not deliver CapsLock key events.
 //! See `backlog/docs/design/observation.md` § Host input for timing and coverage.
-//! An opt-in PS/2 mouse captures on a client-area click (that click is swallowed).
+//! An opt-in PS/2 or serial mouse captures on a client-area click (that click is swallowed).
 //! Ctrl+Alt+G, focus loss and suspension release capture and guest buttons.
 //! The window tries Locked then Confined, hides the cursor and shows the release
 //! chord in its title. winit 0.30 on macOS supports Locked by disassociating cursor

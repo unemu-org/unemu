@@ -88,6 +88,8 @@ pub struct AssembledMachine {
     pub a20_line: A20Line,
     /// Stable device role → its index in the bus device set.
     pub device_index: HashMap<DeviceId, usize>,
+    /// Unique host mouse role, resolved from validated config without device access.
+    pub mouse_target: Option<DeviceId>,
     /// Validated observation routes and their bounded, run-scoped collectors.
     pub observation: Observation,
     /// Drive and CMOS journal status, boundary persistence and finalization.
@@ -302,7 +304,13 @@ fn assemble_with_cpu_and_catalogue(
 
     for dc in &config.devices {
         let boxed: Box<dyn Device> = match &dc.kind {
-            DeviceKind::Uart(c) => Box::new(Uart16550::new(c.base)),
+            DeviceKind::Uart(c) => {
+                let mut uart = Uart16550::new(c.base);
+                if c.mouse {
+                    uart = uart.with_serial_device(Box::new(devices::SerialMouse::new()));
+                }
+                Box::new(uart)
+            }
             DeviceKind::Pit(_) => Box::new(pit.clone()),
             DeviceKind::Pic(c) => {
                 // One live master/slave pair backs both faces and the controller.
@@ -476,7 +484,13 @@ fn assemble_with_cpu_and_catalogue(
             .with_a20_line(move || (line.change_count(), line.enabled()));
     }
 
+    let mouse_target = config.devices.iter().find_map(|device| match &device.kind {
+        DeviceKind::Uart(cfg) if cfg.mouse => Some(device.id),
+        DeviceKind::Keyboard(cfg) if cfg.mouse => Some(device.id),
+        _ => None,
+    });
     Ok(AssembledMachine {
+        mouse_target,
         machine,
         a20_line,
         device_index,
@@ -2633,7 +2647,10 @@ mod tests {
         let devices = vec![
             DeviceConfig::new(
                 DeviceId::Uart,
-                DeviceKind::Uart(UartCfg { base: 0x3F8 }),
+                DeviceKind::Uart(UartCfg {
+                    base: 0x3F8,
+                    mouse: false,
+                }),
                 vec![PortWindow::new(0x3F8, 0x3FF)],
             ),
             DeviceConfig::new(
@@ -3796,7 +3813,10 @@ mod tests {
             },
             devices: vec![DeviceConfig::new(
                 DeviceId::Uart,
-                DeviceKind::Uart(UartCfg { base: 0x3F8 }),
+                DeviceKind::Uart(UartCfg {
+                    base: 0x3F8,
+                    mouse: false,
+                }),
                 vec![PortWindow::new(0x3F8, 0x3FF)],
             )],
             drives: Vec::new(),

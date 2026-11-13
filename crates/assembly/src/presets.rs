@@ -83,7 +83,10 @@ const BIOS_ROM_BASE: u64 = 0x0F_8000;
 fn uart() -> DeviceConfig {
     DeviceConfig::new(
         DeviceId::Uart,
-        DeviceKind::Uart(UartCfg { base: COM1_BASE }),
+        DeviceKind::Uart(UartCfg {
+            base: COM1_BASE,
+            mouse: false,
+        }),
         vec![PortWindow::new(COM1_BASE, COM1_TOP)],
     )
 }

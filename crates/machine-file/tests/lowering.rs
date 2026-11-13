@@ -297,7 +297,10 @@ fn card_defaults_overrides_and_file_order_are_preserved() {
         assert_eq!(uart.irq, Some(irq));
         assert_eq!(
             uart.kind,
-            DeviceKind::Uart(assembly::UartCfg { base: port })
+            DeviceKind::Uart(assembly::UartCfg {
+                base: port,
+                mouse: false
+            })
         );
         assert_eq!(uart.ports, [assembly::PortWindow::new(port, port + 7)]);
     }
@@ -1358,4 +1361,15 @@ fn mouse_irq_conflict_names_the_mouse_field_and_its_origin() {
     assert_eq!(error.field, "card[serial]");
     assert!(error.message.contains("board.mouse"), "{error}");
     assert!(error.message.contains("custom.toml:4"), "{error}");
+}
+
+#[test]
+fn serial_mouse_is_absent_by_default_and_none_explicitly_disables_it() {
+    for setting in ["", "mouse='none'\n"] {
+        let config = run(&format!("{MINIMAL}[[card]]\nkind='uart-16550'\n{setting}")).unwrap();
+        assert!(config
+            .devices
+            .iter()
+            .any(|d| matches!(&d.kind, DeviceKind::Uart(c) if !c.mouse)));
+    }
 }

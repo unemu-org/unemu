@@ -4,7 +4,7 @@
 //! The event loop alone reads a monotonic host clock. A pure pacing policy
 //! converts elapsed time to bounded PIT targets and virtual-time run caps.
 //! Input enters only at run boundaries; observation captures the completed
-//! boundary. An opt-in PS/2 mouse uses raw relative events while captured;
+//! boundary. An opt-in PS/2 or serial mouse uses raw relative events while captured;
 //! Ctrl+Alt+G and focus loss release the host grab. Host audio opens only with
 //! the window, renders at each run boundary, and uses a bounded playback ring.
 //! Ctrl+Alt+M toggles mute without reaching the guest. Ctrl+Alt+F inserts the
@@ -172,6 +172,7 @@ impl Presenter {
             keyboard: HostKeyboard::default(),
             mouse: HostMouse::new(config.devices.iter().any(|device| {
                 matches!(&device.kind, assembly::DeviceKind::Keyboard(controller) if controller.mouse)
+                    || matches!(&device.kind, assembly::DeviceKind::Uart(uart) if uart.mouse)
             })),
             error: None,
             rate: CpuRate {

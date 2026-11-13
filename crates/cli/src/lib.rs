@@ -1755,6 +1755,7 @@ mod tests {
             ),
             observation,
             device_index,
+            mouse_target: None,
             persistence: Vec::new(),
             unlisted_firmware: Vec::new(),
             option_roms: Vec::new(),

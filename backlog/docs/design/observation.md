@@ -377,8 +377,8 @@ freeze a running guest, so further pacing remains separate work.
 
 ### Captured PS/2 mouse
 
-When the configured 8042 has an attached PS/2 mouse (`board.mouse = true`
-in a machine file), a press inside the focused client area captures the pointer.
+When the machine has a PS/2 mouse (`board.mouse = true`) or a UART serial
+mouse (`[[card]] kind = "uart-16550", mouse = "microsoft"`), a press inside the focused client area captures the pointer.
 Both edges of that initial click are swallowed. Without an attached mouse,
 clicks do not capture and the title and keyboard behavior are unchanged.
 **Ctrl+Alt+G** releases capture. G's make, repeats and break are host-only for
@@ -412,7 +412,14 @@ residue so it cannot leak into a later capture. Left/right/middle buttons map
 to packet bits 0/1/2; wheel and extra buttons are ignored by the guest.
 READ: IBM PS/2 Hardware Interface Technical Reference, Common Interfaces,
 Pointing Device, Data Reporting and Commands (device counts, signs and bits).
-The 1:1 host scale and capture controls are frontend policy.
+The 1:1 host scale and capture controls are frontend policy. For the serial
+route, `assembly::inject_mouse` converts the common Y-up counts to Microsoft
+Y-down with saturating negation, keeps left/right, and ignores middle. The serial
+mouse splits large deltas into -128..127 packets. Configuration rejects multiple
+mouse targets, so capture always has one recipient. A UART with no mouse does
+not enable capture. Serial motion while DTR or RTS is low is dropped; held host
+buttons remain known for the next power-up. See
+[machine-files.md §Serial mouse](machine-files.md#serial-mouse).
 
 `HostMouse` coalesces motion between button transitions. A transition starts a
 new zero-motion segment carrying the new buttons; subsequent motion joins it.
@@ -428,7 +435,11 @@ in order for later boundaries. In enabled stream mode, a motion packet followed
 by a press/release therefore produces separate button-down and button-up packets,
 even if the previous packet was unread when the click arrived. Motion with
 unchanged buttons can still accumulate/coalesce while output is busy. The query
-reads no ports and changes no device state or timing. Reporting-disabled, remote
+reads no ports; ordinary bus synchronization settles only the selected device
+at the current virtual time before inspecting readiness. The mouse target is
+resolved once from configuration. `mouse_device_index` uses a map lookup without
+synchronizing the UART or 8042; machines without a mouse touch neither device at
+window run boundaries. Neither query advances virtual time. Reporting-disabled, remote
 and wrap modes retain the existing device semantics; guest commands may clear
 accumulated motion and button transitions in these modes need not form packets.
 
@@ -501,13 +512,18 @@ bounded `ByteCapture`; consumers drain that collector through
 `Observation::drain_bytes`. No assembly wiring change is needed. Divisor-latch
 writes still emit nothing, and sink overflow does not change device state.
 
-UART snapshot v3 is exactly 16 bytes: version, IER, FCR, LCR, MCR, scratch,
-DLL, DLM, then the little-endian 64-bit absolute trace clock. It excludes
-transmitted bytes and the former output-length field. Versions 1 and 2 are
-rejected rather than importing host capture history. Restore rejects every
-truncation and trailing byte before changing registers or time, retains the
-receiving instance's port base and sink, and emits no historical output.
-Hardware reset also retains the sink; capture epochs remain host-owned.
+UART snapshot v4 starts with the former 16-byte register/time layout: version, IER, FCR, LCR, MCR, scratch,
+DLL, DLM, then the little-endian 64-bit absolute trace clock. A 38-byte fixed
+header also stores RX count, overrun, last receive/read time and the in-flight
+byte's error/deadline; queued RX byte/error pairs, endpoint model name and
+endpoint snapshot follow. The serial mouse body includes DTR/RTS, startup time,
+pending protocol bytes, accumulated counts and current/reported buttons.
+Versions 1–3 are rejected. Restore validates the complete snapshot and matching
+endpoint model, plus endpoint DTR/RTS against the restored MCR's effective outputs
+(including loopback masking), before changing state. It retains the receiving port base and sink,
+and emits no historical output. Hardware reset retains and resets the endpoint,
+while capture epochs remain host-owned. No snapshot contains transmitted bytes,
+access traces or host input queues.
 
 An isolated mock-bus regression transmits 1 MiB each with no sink, an
 order-checking counting sink, and an overflowing three-byte capture. It checks

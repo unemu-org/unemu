@@ -1,36 +1,36 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! National Semiconductor 16550 UART (§7.2), the first emulated device.
+//! National Semiconductor PC16550D UART, Registers §8.1–8.8 and §8.11.
 //!
-//! Models the 16550's eight consecutive port-mapped registers at
-//! `base..=base+7` (COM1's `base` is `0x3F8`). This is the subset needed to
-//! carry transmitted bytes to an optional output sink for golden tests; it faithfully
-//! reproduces the register *map* and the DLAB banking, and documents every
-//! behaviour it deliberately does not model yet.
+//! Eight port-mapped registers, DLAB banking, a receive holding register or
+//! 16-byte FIFO, receive/line-status interrupts and an optional serial endpoint.
+//! PC16550D datasheet §8.3 (Programmable Baud Generator), §8.4 (Line Status),
+//! §8.5 (FIFO Control), §8.6 (Interrupt Identification), §8.7 (Interrupt Enable)
+//! and §8.8 (Modem Control) define these paths. Section 8.11, FIFO Interrupt
+//! Mode Operation, defines the character timeout. The board gates IRQ with OUT2.
+//! See `backlog/docs/design/spec.md` §7.2 and
+//! `backlog/docs/design/observation.md` §UART output ownership and snapshot compatibility.
 //!
-//! ## Deviations from the real chip (not yet modelled)
-//! - No baud-rate modelling: the divisor latches (DLL/DLM) are stored but never
-//!   affect timing. Transmission is instantaneous.
-//! - No IRQs: [`Device::irq_pending`] is always `false` and no THRE/RX-driven
-//!   interrupt is generated. On the real machine COM1 drives IRQ4; wiring that
-//!   up comes later.
-//! - No FIFOs: the FCR is stored but the RX/TX FIFOs are not modelled; the IIR
-//!   always reports "no interrupt pending".
-//! - No input source: the receiver holding register (RBR) always reads `0` and
-//!   the LSR data-ready bit is always clear.
-//! - **MCR loopback** is stored only: no internal TX-to-RX or modem-signal
-//!   loopback (National Semiconductor NS16550A datasheet, Modem Control
-//!   Register, bit 4). It needs the unmodelled receive/modem paths.
-//! - **MSR** always reads zero: modem inputs and delta flags are absent
-//!   (NS16550A datasheet, Modem Status Register); there is no modem endpoint.
+//! | Function | Coverage |
+//! | --- | --- |
+//! | RX timing | Endpoint's baud/frame; each frame rounds up to a whole PIT clock |
+//! | Guest divisor/LCR | 1.8432 MHz UART clock; mismatch yields byte 0 with FE (ASSUMED) |
+//! | RX FIFO | 1/16 bytes; triggers 1/4/8/14; four guest-frame timeout |
+//! | IRQ | RLS before RDA/timeout; IER and board OUT2 gate the line |
+//! | TX | Instant sink delivery; no timed TX, THRE IRQ or TX FIFO |
+//! | Modem | DTR/RTS notify endpoint; loopback disconnects external RX and forces modem outputs inactive |
+//! | Internal loopback | TX-to-RX and modem-input feedback remain unmodelled; MSR stays zero |
+//! | Snapshot | v4, RX/errors/deadlines and endpoint model/state; no sink/trace history |
 //!
-//! Transmitted bytes go directly to the optional sink; the UART retains no
-//! output history. Without a sink, bytes are discarded without allocating.
-//! Snapshots contain registers and the absolute trace time base; port wiring
-//! and output sinks belong to the receiving instance. Snapshot v3 rejects the
-//! earlier formats that included output history.
-//! Transmission has no timed deadlines here (PC16550D datasheet, Transmitter
-//! Holding Register). Restore does not emit historical bytes to a sink.
-//! See `backlog/docs/design/observation.md`, §Sinks, bounds and lifecycle.
+//! Mismatch is a deterministic byte-level approximation, not bit sampling:
+//! the physical peripheral keeps its rate even if the guest changes the divisor.
+//! RX validity is sampled when the start bit begins, after any startup wait.
+//! The receiver checks only the first stop bit (PC16550D §8.1, LCR bit 2), so
+//! selecting two stop bits accepts one-stop-bit peripheral frames. Without an
+//! endpoint, TX retains its instantaneous output-only behaviour. Reset retains
+//! attachment and sink; restore checks the endpoint model and effective modem
+//! lines before changing state, and never re-emits historical output.
+
+use std::{any::Any, collections::VecDeque};
 
 use device::{
     AccessDir, ByteOutput, ByteSink, ByteStreamKind, Device, DeviceError, NextEvent, TraceEvent,
@@ -41,12 +41,10 @@ use device::{
 const NAME: &str = "16550-uart";
 
 /// Line Status Register value reported: THRE (`0x20`) and TEMT (`0x40`) are
-/// always set because transmit is instantaneous, and the data-ready bit is clear
-/// because there is no input source. Yields `0x60` on every read.
+/// always set because transmit is instantaneous; RX adds DR and error bits.
 const LSR_TX_READY: u32 = 0x60;
 
-/// IIR value reported: bit 0 set means "no interrupt pending"; the FIFO status
-/// bits are `0` because FIFOs are not modelled.
+/// IIR bit 0 means no pending interrupt.
 const IIR_NO_IRQ: u32 = 0x01;
 
 /// Modem Status Register value reported: no modem lines are modelled.
@@ -56,12 +54,70 @@ const MSR_IDLE: u32 = 0x00;
 /// select the divisor-latch view instead of THR/RBR and IER.
 const LCR_DLAB: u8 = 0x80;
 
-/// Snapshot layout version tag, first byte of [`Device::save`] output.
-const SNAPSHOT_VERSION: u8 = 3;
+/// PC16550D §8.8: loopback disconnects SIN and forces modem output pins inactive.
+const MCR_LOOPBACK: u8 = 0x10;
 
-/// Fixed-size snapshot: version + 5 register bytes (IER, FCR, LCR, MCR,
-/// scratch), DLL, DLM and absolute trace clock.
-const SNAPSHOT_LEN: usize = 1 + 5 + 1 + 1 + 8;
+/// Snapshot layout version tag, first byte of [`Device::save`] output.
+const SNAPSHOT_VERSION: u8 = 4;
+
+/// Fixed snapshot header; receive bytes and endpoint model/state follow.
+const SNAPSHOT_LEN: usize = 38;
+
+/// Serial frame emitted by the far end, independent of guest UART programming.
+/// PC16550D datasheet §8.1, Line Control Register; baud is in bits per second.
+#[derive(Clone, Copy, Debug)]
+pub struct SerialFormat {
+    /// Peripheral bit rate, independent of the guest's divisor.
+    pub baud: u32,
+    /// Number of data bits following the start bit.
+    pub data_bits: u8,
+    /// Whether the peripheral includes a parity bit in each frame.
+    pub parity: bool,
+    /// Stop bits emitted by the peripheral; the receiver checks only the first.
+    pub stop_bits: u8,
+}
+
+impl SerialFormat {
+    fn clocks(self) -> u64 {
+        let bits =
+            1 + u64::from(self.data_bits) + u64::from(self.parity) + u64::from(self.stop_bits);
+        (bits * 3_579_545).div_ceil(3 * u64::from(self.baud.max(1)))
+    }
+}
+
+/// Far end of a UART line; no knowledge of ISA ports or IRQ wiring.
+/// PC16550D datasheet §8.8, Modem Control Register; see
+/// `backlog/docs/design/machine-files.md` §Serial mouse. The UART owns the
+/// in-flight frame; implementations own protocol queues and startup readiness.
+pub trait SerialPeripheral {
+    /// Stable model marker; restore requires the same attached model.
+    fn name(&self) -> &'static str;
+    /// Physical transmit format used to time received frames.
+    fn format(&self) -> SerialFormat;
+    /// Observe effective DTR/RTS at `now`, after the UART's loopback masking.
+    /// Return true to abort the in-flight frame (for example, on power loss).
+    fn modem_control(&mut self, dtr: bool, rts: bool, now: VClock) -> bool;
+    /// Earliest start time of pending output; None means no queued output.
+    fn ready_at(&self) -> Option<VClock>;
+    /// Take one byte at its start bit, after `ready_at`; None means no output.
+    fn read_byte(&mut self) -> Option<u8>;
+    /// Restore power-on protocol state while retaining the UART attachment.
+    fn reset(&mut self);
+    /// Save protocol queues, counters, deadlines and effective modem line state.
+    fn save(&self) -> Vec<u8>;
+    /// Restore protocol state only if valid and consistent with effective DTR/RTS.
+    /// Reject without mutation on failure; restoring emits no bytes.
+    fn restore(&mut self, data: &[u8], dtr: bool, rts: bool) -> Result<(), DeviceError>;
+    /// Expose the endpoint to host input without a guest register transaction.
+    fn as_any_mut(&mut self) -> &mut dyn Any;
+}
+
+#[derive(Clone, Copy)]
+struct ReceiveFrame {
+    byte: u8,
+    bad: bool,
+    at: VClock,
+}
 
 /// The 16550 UART device (§7.2).
 ///
@@ -76,19 +132,19 @@ const SNAPSHOT_LEN: usize = 1 + 5 + 1 + 1 + 8;
 /// the divisor latches when DLAB is set.
 pub struct Uart16550 {
     base: u16,
-    /// Interrupt Enable Register (+1, DLAB=0). Stored; raises no IRQ yet.
+    /// Interrupt Enable Register (+1, DLAB=0). Receive and line-status interrupt enables.
     ier: u8,
-    /// FIFO Control Register (+2 write). Stored; FIFOs not modelled.
+    /// FIFO Control Register (+2 write). Receive FIFO mode and trigger level.
     fcr: u8,
     /// Line Control Register (+3). Bit 7 is DLAB.
     lcr: u8,
-    /// Modem Control Register (+4). Stored only.
+    /// Modem Control Register (+4). DTR/RTS endpoint power and OUT2 IRQ gate.
     mcr: u8,
     /// Scratch Register (+7). A byte of RAM; a device-presence probe target.
     scratch: u8,
-    /// Divisor latch low (+0, DLAB=1). Stored; baud rate is not modelled.
+    /// Divisor latch low (+0, DLAB=1). Determines receiver rate and FIFO timeout.
     dll: u8,
-    /// Divisor latch high (+1, DLAB=1). Stored; baud rate is not modelled.
+    /// Divisor latch high (+1, DLAB=1). Determines receiver rate and FIFO timeout.
     dlm: u8,
     /// Optional receiver; binding must not change saved state.
     sink: Option<Box<dyn ByteSink>>,
@@ -96,6 +152,11 @@ pub struct Uart16550 {
     trace: device::TraceBuffer,
     /// Virtual time of the most recent [`Device::tick`], stamped onto traces.
     now: VClock,
+    serial: Option<Box<dyn SerialPeripheral>>,
+    rx: VecDeque<(u8, u8)>,
+    overrun: u8,
+    last_rx: VClock,
+    receiving: Option<ReceiveFrame>,
 }
 
 impl Uart16550 {
@@ -122,7 +183,113 @@ impl Uart16550 {
             sink: None,
             trace: device::TraceBuffer::default(),
             now: VClock::ZERO,
+            serial: None,
+            rx: VecDeque::new(),
+            overrun: 0,
+            last_rx: VClock::ZERO,
+            receiving: None,
         }
+    }
+
+    /// Attach a serial-line peripheral before starting execution.
+    #[must_use]
+    pub fn with_serial_device(mut self, mut serial: Box<dyn SerialPeripheral>) -> Self {
+        let outputs = Self::modem_outputs(self.mcr);
+        serial.modem_control(outputs & 1 != 0, outputs & 2 != 0, self.now);
+        self.serial = Some(serial);
+        self
+    }
+
+    /// Host injection seam; the bus synchronizes this UART before mutable access.
+    pub fn serial_device_mut(&mut self) -> Option<&mut (dyn SerialPeripheral + '_)> {
+        match &mut self.serial {
+            Some(serial) => Some(serial.as_mut()),
+            None => None,
+        }
+    }
+
+    /// Whether the serial endpoint and receive shift register have no pending output.
+    pub fn serial_input_ready(&self) -> bool {
+        self.receiving.is_none() && self.serial.as_ref().is_some_and(|s| s.ready_at().is_none())
+    }
+
+    fn modem_outputs(mcr: u8) -> u8 {
+        if mcr & MCR_LOOPBACK != 0 {
+            0
+        } else {
+            mcr & 0x0f
+        }
+    }
+
+    fn trigger(&self) -> usize {
+        if self.fcr & 1 == 0 {
+            1
+        } else {
+            [1, 4, 8, 14][usize::from(self.fcr >> 6)]
+        }
+    }
+
+    fn timeout_at(&self) -> Option<VClock> {
+        if self.fcr & 1 == 0 || self.rx.is_empty() || self.rx.len() >= self.trigger() {
+            return None;
+        }
+        let divisor = u64::from(u16::from_le_bytes([self.dll, self.dlm]));
+        if divisor == 0 {
+            return None;
+        }
+        let bits = 1
+            + u64::from(5 + (self.lcr & 3))
+            + u64::from(self.lcr & 8 != 0)
+            + if self.lcr & 4 == 0 { 1 } else { 2 };
+        let clocks = (4 * bits * divisor * 16 * 3_579_545).div_ceil(3 * 1_843_200);
+        Some(VClock(self.last_rx.0.saturating_add(clocks)))
+    }
+
+    fn interrupt_id(&self) -> u32 {
+        let error = self.overrun | self.rx.front().map_or(0, |(_, error)| *error);
+        let id = if self.ier & 4 != 0 && error != 0 {
+            6
+        } else if self.ier & 1 != 0 && self.rx.len() >= self.trigger() {
+            4
+        } else if self.ier & 1 != 0 && self.timeout_at().is_some_and(|at| self.now >= at) {
+            12
+        } else {
+            IIR_NO_IRQ
+        };
+        id | if self.fcr & 1 != 0 { 0xc0 } else { 0 }
+    }
+
+    fn receive(&mut self, frame: ReceiveFrame) {
+        let capacity = if self.fcr & 1 != 0 { 16 } else { 1 };
+        if self.rx.len() == capacity {
+            self.overrun = 2;
+            if capacity == 16 {
+                return;
+            }
+            self.rx.pop_front();
+        }
+        self.rx.push_back((
+            if frame.bad { 0 } else { frame.byte },
+            if frame.bad { 8 } else { 0 },
+        ));
+        self.last_rx = frame.at;
+    }
+
+    fn next_receive_event(&self) -> Option<VClock> {
+        if self.mcr & MCR_LOOPBACK != 0 {
+            return None;
+        }
+        if let Some(frame) = self.receiving {
+            return Some(frame.at);
+        }
+        let serial = self.serial.as_ref()?;
+        let start = serial.ready_at()?.max(self.now);
+        // A future start must be observed before later guest writes can alter LCR.
+        Some(if start > self.now {
+            start
+        } else {
+            VClock(start.0.saturating_add(serial.format().clocks()))
+        })
     }
 
     /// Whether the DLAB bit is currently set in the LCR.
@@ -177,13 +344,29 @@ impl Device for Uart16550 {
         let offset = self.offset(port)?;
         let value = match offset {
             0 if self.dlab() => u32::from(self.dll),
-            0 => 0, // RBR: no input source, so data-ready stays clear.
+            0 => {
+                let byte = self.rx.pop_front().map_or(0, |(byte, _)| byte);
+                self.last_rx = self.now;
+                u32::from(byte)
+            }
             1 if self.dlab() => u32::from(self.dlm),
             1 => u32::from(self.ier),
-            2 => IIR_NO_IRQ,
+            2 => self.interrupt_id(),
             3 => u32::from(self.lcr),
             4 => u32::from(self.mcr),
-            5 => LSR_TX_READY,
+            5 => {
+                let fifo_error = self.fcr & 1 != 0 && self.rx.iter().any(|(_, e)| *e != 0);
+                let error = self.overrun
+                    | self
+                        .rx
+                        .front_mut()
+                        .map_or(0, |(_, error)| std::mem::take(error));
+                self.overrun = 0;
+                LSR_TX_READY
+                    | u32::from(!self.rx.is_empty())
+                    | u32::from(error)
+                    | if fifo_error { 0x80 } else { 0 }
+            }
             6 => MSR_IDLE,
             7 => u32::from(self.scratch),
             _ => unreachable!("offset is bounded to 0..=7 by Self::offset"),
@@ -205,9 +388,26 @@ impl Device for Uart16550 {
             }
             1 if self.dlab() => self.dlm = byte,
             1 => self.ier = byte,
-            2 => self.fcr = byte,
+            2 => {
+                if (self.fcr ^ byte) & 1 != 0 || byte & 3 == 3 {
+                    self.rx.clear();
+                    self.overrun = 0;
+                }
+                self.fcr = byte & 0xc9;
+            }
             3 => self.lcr = byte,
-            4 => self.mcr = byte,
+            4 => {
+                self.mcr = byte;
+                if byte & MCR_LOOPBACK != 0 {
+                    self.receiving = None;
+                }
+                let outputs = Self::modem_outputs(byte);
+                if let Some(serial) = &mut self.serial {
+                    if serial.modem_control(outputs & 1 != 0, outputs & 2 != 0, self.now) {
+                        self.receiving = None;
+                    }
+                }
+            }
             5 | 6 => {} // LSR/MSR are read-only; writes are ignored on real hw.
             7 => self.scratch = byte,
             _ => unreachable!("offset is bounded to 0..=7 by Self::offset"),
@@ -236,16 +436,56 @@ impl Device for Uart16550 {
         if now < self.now {
             return;
         }
+        if self.mcr & MCR_LOOPBACK != 0 {
+            self.now = now;
+            return;
+        }
+        loop {
+            if self.receiving.is_none() {
+                let divisor = u32::from(u16::from_le_bytes([self.dll, self.dlm]));
+                let Some(serial) = &mut self.serial else {
+                    break;
+                };
+                let Some(start) = serial.ready_at().map(|at| at.max(self.now)) else {
+                    break;
+                };
+                if start > now {
+                    break;
+                }
+                let format = serial.format();
+                let at = VClock(start.0.saturating_add(format.clocks()));
+                let valid = u64::from(divisor) * 16 * u64::from(format.baud) == 1_843_200
+                    && self.lcr & 3 == format.data_bits.saturating_sub(5)
+                    && (self.lcr & 8 != 0) == format.parity;
+                let Some(byte) = serial.read_byte() else {
+                    break;
+                };
+                self.receiving = Some(ReceiveFrame {
+                    byte,
+                    bad: !valid,
+                    at,
+                });
+            }
+            let Some(frame) = self.receiving.filter(|frame| frame.at <= now) else {
+                break;
+            };
+            self.receiving = None;
+            self.now = frame.at;
+            self.receive(frame);
+        }
         self.now = now;
     }
 
-    fn next_event(&self, _now: VClock) -> NextEvent {
-        NextEvent::Dormant
+    fn next_event(&self, now: VClock) -> NextEvent {
+        self.next_receive_event()
+            .into_iter()
+            .chain(self.timeout_at().filter(|at| *at > now))
+            .min()
+            .map_or(NextEvent::Dormant, NextEvent::At)
     }
 
     fn irq_pending(&self) -> bool {
-        // No THRE/RX interrupts are modelled yet; COM1's IRQ4 line comes later.
-        false
+        Self::modem_outputs(self.mcr) & 8 != 0 && self.interrupt_id() & 1 == 0
     }
 
     fn reset(&mut self) {
@@ -253,8 +493,13 @@ impl Device for Uart16550 {
         // Capture epochs belong to the host; a hardware reset keeps the route.
         let base = self.base;
         let sink = self.sink.take();
+        let mut serial = self.serial.take();
+        if let Some(serial) = &mut serial {
+            serial.reset();
+        }
         *self = Uart16550::new(base);
         self.sink = sink;
+        self.serial = serial;
         self.trace.set_policy(trace_policy);
     }
 
@@ -269,20 +514,39 @@ impl Device for Uart16550 {
         blob.push(self.dll);
         blob.push(self.dlm);
         blob.extend_from_slice(&self.now.0.to_le_bytes());
+        blob.push(self.rx.len() as u8);
+        blob.push(self.overrun);
+        blob.extend(self.last_rx.0.to_le_bytes());
+        blob.push(u8::from(self.receiving.is_some()));
+        blob.push(self.receiving.map_or(0, |f| f.byte));
+        blob.push(u8::from(self.receiving.is_some_and(|f| f.bad)));
+        blob.extend(self.receiving.map_or(0, |f| f.at.0).to_le_bytes());
+        let model = self.serial.as_ref().map_or("", |serial| serial.name());
+        blob.push(model.len() as u8);
+        for (byte, error) in &self.rx {
+            blob.extend([*byte, *error]);
+        }
+        blob.extend(model.as_bytes());
+        if let Some(serial) = &self.serial {
+            blob.extend(serial.save());
+        }
         blob
     }
 
     fn restore(&mut self, snapshot: &[u8]) -> Result<(), DeviceError> {
+        if snapshot
+            .first()
+            .is_some_and(|version| *version != SNAPSHOT_VERSION)
+        {
+            return Err(DeviceError::InvalidSnapshot {
+                device: NAME,
+                reason: "unsupported snapshot version",
+            });
+        }
         if snapshot.len() < SNAPSHOT_LEN {
             return Err(DeviceError::InvalidSnapshot {
                 device: NAME,
                 reason: "snapshot shorter than fixed layout",
-            });
-        }
-        if snapshot[0] != SNAPSHOT_VERSION {
-            return Err(DeviceError::InvalidSnapshot {
-                device: NAME,
-                reason: "unsupported snapshot version",
             });
         }
         let ier = snapshot[1];
@@ -292,12 +556,52 @@ impl Device for Uart16550 {
         let scratch = snapshot[5];
         let dll = snapshot[6];
         let dlm = snapshot[7];
-        if snapshot.len() != SNAPSHOT_LEN {
-            return Err(DeviceError::InvalidSnapshot {
-                device: NAME,
-                reason: "snapshot has trailing bytes",
-            });
+        let invalid = || DeviceError::InvalidSnapshot {
+            device: NAME,
+            reason: "invalid receiver or endpoint state",
+        };
+        let count = usize::from(snapshot[16]);
+        let model_start = SNAPSHOT_LEN + count * 2;
+        let model_end = model_start + usize::from(snapshot[37]);
+        let now = u64::from_le_bytes(std::array::from_fn(|i| snapshot[8 + i]));
+        let last_rx = u64::from_le_bytes(std::array::from_fn(|i| snapshot[18 + i]));
+        let at = u64::from_le_bytes(std::array::from_fn(|i| snapshot[29 + i]));
+        if count > (if fcr & 1 != 0 { 16 } else { 1 })
+            || snapshot.len() < model_end
+            || ![0, 2].contains(&snapshot[17])
+            || snapshot[26] > 1
+            || snapshot[28] > 1
+            || last_rx > now
+            || (snapshot[26] != 0 && (at <= now || mcr & MCR_LOOPBACK != 0))
+            || (snapshot[26] == 0 && snapshot[27..37].iter().any(|b| *b != 0))
+        {
+            return Err(invalid());
         }
+        let mut rx = VecDeque::new();
+        for pair in snapshot[SNAPSHOT_LEN..model_start].as_chunks::<2>().0 {
+            if ![0, 8].contains(&pair[1]) {
+                return Err(invalid());
+            }
+            rx.push_back((pair[0], pair[1]));
+        }
+        let model = self.serial.as_ref().map_or("", |s| s.name());
+        if snapshot[model_start..model_end] != *model.as_bytes() {
+            return Err(invalid());
+        }
+        if let Some(serial) = &mut self.serial {
+            let outputs = Self::modem_outputs(mcr);
+            serial.restore(&snapshot[model_end..], outputs & 1 != 0, outputs & 2 != 0)?;
+        } else if snapshot.len() != model_end || snapshot[26] != 0 {
+            return Err(invalid());
+        }
+        self.rx = rx;
+        self.overrun = snapshot[17];
+        self.last_rx = VClock(last_rx);
+        self.receiving = (snapshot[26] != 0).then_some(ReceiveFrame {
+            byte: snapshot[27],
+            bad: snapshot[28] != 0,
+            at: VClock(at),
+        });
         self.ier = ier;
         self.fcr = fcr;
         self.lcr = lcr;

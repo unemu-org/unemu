@@ -46,6 +46,9 @@ pub enum ConfigError {
         /// Requested physical switch position.
         switch: crate::DisplaySwitch,
     },
+    /// Host input must have one unambiguous pointing-device route.
+    #[error("only one host mouse target may be configured (PS/2 or serial)")]
+    MultipleMouseTargets,
     /// Auxiliary mice require the board's keyboard controller and slave PIC.
     #[error("PS/2 mouse: {reason}")]
     UnsupportedMouse {

@@ -398,6 +398,12 @@ impl<R: ImageReader> Context<'_, R> {
             ));
         }
         let kind = self.required(&format!("{field}.kind"), card.kind)?;
+        if kind != v1::CardKind::Uart16550 && card.mouse.is_some() {
+            return Err(self.error(
+                &format!("{field}.mouse"),
+                "mouse is only supported by uart-16550 cards",
+            ));
+        }
         if kind != v1::CardKind::Ide && card.controller_model.is_some() {
             return Err(self.error(
                 &format!("{field}.controller_model"),
@@ -459,7 +465,10 @@ impl<R: ImageReader> Context<'_, R> {
                 };
                 let mut device = DeviceConfig::new(
                     DeviceId::Uart,
-                    DeviceKind::Uart(UartCfg { base }),
+                    DeviceKind::Uart(UartCfg {
+                        base,
+                        mouse: card.mouse == Some(v1::SerialMouseModel::Microsoft),
+                    }),
                     vec![PortWindow::new(base, base.saturating_add(7))],
                 );
                 device.irq = irq;
@@ -862,6 +871,16 @@ impl<R: ImageReader> Context<'_, R> {
                 fields
             }
             DmaControllerMissing { requester, .. } => device_fields(&[*requester]),
+            MultipleMouseTargets => {
+                let mut fields = vec!["board.mouse".into()];
+                fields.extend(
+                    self.devices
+                        .iter()
+                        .filter(|(id, _)| *id == DeviceId::Uart)
+                        .map(|(_, field)| format!("{field}.mouse")),
+                );
+                fields
+            }
             UnsupportedMouse { .. } => vec!["board.mouse".into()],
             Nvram { .. } | UnsupportedExtendedNvram => vec!["board.rtc.nvram".into()],
             Journal { drive_index, .. }

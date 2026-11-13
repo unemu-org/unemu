@@ -276,7 +276,7 @@ fn uart_output_legacy_snapshots_are_rejected_without_mutation() {
     bus.port_write(0x3FF, 1, 0xA5).unwrap();
     bus.tick(123);
     let before = bus.device().save();
-    for version in [1, 2] {
+    for version in [1, 2, 3] {
         let mut legacy = vec![version, 1, 2, 3, 4, 5, 6, 7];
         legacy.extend_from_slice(&3u32.to_le_bytes());
         legacy.extend_from_slice(&42u64.to_le_bytes());
@@ -290,8 +290,9 @@ fn uart_output_legacy_snapshots_are_rejected_without_mutation() {
         ));
         assert_eq!(bus.device().save(), before);
     }
-    assert_eq!(&before[..8], &[3, 0, 0, 0, 0, 0xA5, 0, 0]);
-    assert_eq!(&before[8..], &123u64.to_le_bytes());
+    assert_eq!(&before[..8], &[4, 0, 0, 0, 0, 0xA5, 0, 0]);
+    assert_eq!(&before[8..16], &123u64.to_le_bytes());
+    assert_eq!(before.len(), 38);
     for length in 0..before.len() {
         assert!(matches!(
             bus.device_mut().restore(&before[..length]),

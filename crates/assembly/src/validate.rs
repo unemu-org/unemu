@@ -44,7 +44,10 @@ fn format_board_ports(ports: &[PortWindow]) -> String {
 
 fn format_board_kind(kind: &DeviceKind) -> String {
     match kind {
-        DeviceKind::Uart(cfg) => format!("Uart(UartCfg {{ base: {:#x} }})", cfg.base),
+        DeviceKind::Uart(cfg) => format!(
+            "Uart(UartCfg {{ base: {:#x}, mouse: {} }})",
+            cfg.base, cfg.mouse
+        ),
         DeviceKind::Post(cfg) => format!("Post(PostPortCfg {{ port: {:#x} }})", cfg.port),
         DeviceKind::Fdc(cfg) => format!("Fdc(FdcCfg {{ drive_slots: {:#x} }})", cfg.drive_slots),
         DeviceKind::Rtc(cfg) => {
@@ -477,6 +480,18 @@ impl MachineConfig {
     }
 
     fn check_mouse(&self) -> Result<(), ConfigError> {
+        let targets = self
+            .devices
+            .iter()
+            .filter(|device| {
+                matches!(&device.kind,
+            DeviceKind::Keyboard(cfg) if cfg.mouse)
+                    || matches!(&device.kind, DeviceKind::Uart(cfg) if cfg.mouse)
+            })
+            .count();
+        if targets > 1 {
+            return Err(ConfigError::MultipleMouseTargets);
+        }
         for device in &self.devices {
             if !matches!(&device.kind, DeviceKind::Keyboard(cfg) if cfg.mouse) {
                 continue;
@@ -1781,8 +1796,8 @@ mod tests {
     fn board_wiring_numeric_kind_parameters_are_hexadecimal() {
         for (kind, actual) in [
             (
-                DeviceKind::Uart(UartCfg { base: 0x3F8 }),
-                "Uart(UartCfg { base: 0x3f8 })",
+                DeviceKind::Uart(UartCfg { base: 0x3F8, mouse: false }),
+                "Uart(UartCfg { base: 0x3f8, mouse: false })",
             ),
             (
                 DeviceKind::Post(PostPortCfg { port: 0x190 }),
@@ -1876,7 +1891,10 @@ mod tests {
             .iter_mut()
             .find(|d| d.id == DeviceId::Uart)
             .unwrap();
-        uart.kind = DeviceKind::Uart(UartCfg { base: 0x20 });
+        uart.kind = DeviceKind::Uart(UartCfg {
+            base: 0x20,
+            mouse: false,
+        });
         uart.ports = vec![PortWindow::new(0x20, 0x27)];
         board_error(
             &config,
@@ -2322,7 +2340,10 @@ mod tests {
         let devices = vec![
             dev(
                 DeviceId::Uart,
-                DeviceKind::Uart(UartCfg { base: 0x3F8 }),
+                DeviceKind::Uart(UartCfg {
+                    base: 0x3F8,
+                    mouse: false,
+                }),
                 vec![PortWindow::new(0x3F8, 0x3FF)],
             ),
             dev(
@@ -2507,7 +2528,8 @@ mod tests {
     fn uart_window_must_fit_port_space() {
         let mut config = valid_config();
         for base in 0xFFF9..=0xFFFF {
-            find_device(&mut config, DeviceId::Uart).kind = DeviceKind::Uart(UartCfg { base });
+            find_device(&mut config, DeviceId::Uart).kind =
+                DeviceKind::Uart(UartCfg { base, mouse: false });
             assert_eq!(
                 config.validate(),
                 Err(ConfigError::UartPortWindowOutOfSpace {
@@ -2516,7 +2538,10 @@ mod tests {
                 })
             );
         }
-        find_device(&mut config, DeviceId::Uart).kind = DeviceKind::Uart(UartCfg { base: 0xFFF8 });
+        find_device(&mut config, DeviceId::Uart).kind = DeviceKind::Uart(UartCfg {
+            base: 0xFFF8,
+            mouse: false,
+        });
         assert_eq!(config.validate(), Ok(()));
     }
 
@@ -2568,7 +2593,10 @@ mod tests {
         let mut config = valid_config();
         config.devices.push(dev(
             DeviceId::Uart,
-            DeviceKind::Uart(UartCfg { base: 0x2F8 }),
+            DeviceKind::Uart(UartCfg {
+                base: 0x2F8,
+                mouse: false,
+            }),
             vec![PortWindow::new(0x2F8, 0x2FF)],
         ));
         assert_eq!(

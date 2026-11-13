@@ -487,52 +487,73 @@ pub fn try_inject_scancode(
 }
 
 impl crate::AssembledMachine {
-    /// Whether the attached PS/2 mouse has no output awaiting serial delivery.
-    /// Interactive button transitions wait here so a pending packet cannot hide
-    /// a press followed by a release. This query neither reads ports nor changes
-    /// device state, and is independent of keyboard/controller input readiness.
-    /// It checks output only; reporting-disabled and remote modes still retain
-    /// input according to the device model. Missing mouse routes return false.
-    /// IBM PS/2 Hardware Interface Technical Reference, Common Interfaces,
-    /// "Pointing Device", Data Reporting; see observation.md § Host input.
+    /// Bus index of the unique configured host mouse (UART or 8042).
+    /// Microsoft Mouse Programmer's Reference, serial protocol requirements;
+    /// see observation.md § Host input. Configuration rejects multiple targets.
+    pub fn mouse_device_index(&self) -> Option<usize> {
+        self.device_index.get(&self.mouse_target?).copied()
+    }
+
+    /// Whether pending protocol output has drained before another button edge.
+    /// Interactive frontends retain transitions until this is true; ordinary
+    /// motion may still accumulate. Missing routes return false.
     pub fn mouse_input_ready(&mut self) -> bool {
-        let Some(&index) = self.device_index.get(&DeviceId::Keyboard) else {
+        let Some(index) = self.mouse_device_index() else {
             return false;
         };
-        self.machine
+        let Some(dev) = self
+            .machine
             .bus_mut()
             .device_mut(index)
-            .and_then(|dev| dev.as_any_mut())
-            .and_then(|dev| dev.downcast_mut::<I8042>())
-            .and_then(I8042::aux_device_mut)
-            .is_some_and(|dev| dev.as_any_mut().is::<devices::Ps2Mouse>() && !dev.has_output())
+            .and_then(|d| d.as_any_mut())
+        else {
+            return false;
+        };
+        if let Some(uart) = dev.downcast_mut::<devices::Uart16550>() {
+            uart.serial_input_ready()
+        } else {
+            dev.downcast_mut::<I8042>()
+                .and_then(I8042::aux_device_mut)
+                .is_some_and(|s| !s.has_output())
+        }
     }
 }
 
-/// Inject relative device counts and current buttons at a completed run boundary.
-/// Positive Y is up; buttons use left/right/middle bits 0/1/2 (other bits ignored).
-/// Returns false only when the controller or attached mouse route is absent.
-/// Input is always accepted by an attached mouse: disabled reporting, remote
-/// mode and a busy serial link accumulate/coalesce motion per the mouse model.
-/// Commands may clear accumulated counts. Interactive frontends can preserve
-/// button transitions with [`crate::AssembledMachine::mouse_input_ready`]. No
-/// host clock is needed. The next synchronization services newly queued output.
-/// IBM PS/2 Hardware Interface Technical Reference, Common Interfaces,
-/// "Pointing Device", Data Reporting; see machine-config.md §PS/2 mouse.
+/// Inject relative counts and buttons at a completed run boundary.
+/// Positive Y is up; buttons use left/right/middle bits 0/1/2. The serial route
+/// converts Y to positive-down with saturating negation and ignores middle.
+/// Disabled/unpowered devices apply their documented accumulation/drop policy.
+/// Microsoft Mouse Programmer's Reference, serial protocol requirements;
+/// IBM PS/2 Hardware Interface Technical Reference, Pointing Device, Data Reporting.
+/// See `backlog/docs/design/observation.md` § Host input.
 pub fn inject_mouse(
     machine: &mut Machine<X86JitCpu>,
-    kbc_index: usize,
+    device_index: usize,
     dx: i32,
     dy: i32,
     buttons: u8,
 ) -> bool {
-    let Some(mouse) = machine
+    let Some(dev) = machine
         .bus_mut()
-        .device_mut(kbc_index)
-        .and_then(|dev| dev.as_any_mut())
-        .and_then(|dev| dev.downcast_mut::<I8042>())
+        .device_mut(device_index)
+        .and_then(|d| d.as_any_mut())
+    else {
+        return false;
+    };
+    if let Some(uart) = dev.downcast_mut::<devices::Uart16550>() {
+        let Some(mouse) = uart
+            .serial_device_mut()
+            .and_then(|s| s.as_any_mut().downcast_mut::<devices::SerialMouse>())
+        else {
+            return false;
+        };
+        mouse.inject_motion(dx, dy.saturating_neg(), buttons);
+        return true;
+    }
+    let Some(mouse) = dev
+        .downcast_mut::<I8042>()
         .and_then(I8042::aux_device_mut)
-        .and_then(|dev| dev.as_any_mut().downcast_mut::<devices::Ps2Mouse>())
+        .and_then(|s| s.as_any_mut().downcast_mut::<devices::Ps2Mouse>())
     else {
         return false;
     };
@@ -546,6 +567,87 @@ mod tests {
     use bus::{Bus, DecodeMap};
     use cpu::x86jit_backend::RealSegments;
     use cpu::Cpu;
+
+    #[test]
+    fn mouse_target_lookup_uses_config_without_synchronizing_devices() {
+        use device::{Device, DeviceError, NextEvent, VClock};
+        use std::{cell::Cell, rc::Rc};
+
+        struct QueryProbe(Rc<Cell<u64>>);
+        impl Device for QueryProbe {
+            fn name(&self) -> &'static str {
+                "mouse-query-probe"
+            }
+            fn port_read(&mut self, _: u16, _: u8) -> Result<u32, DeviceError> {
+                Ok(0)
+            }
+            fn port_write(&mut self, _: u16, _: u8, _: u32) -> Result<(), DeviceError> {
+                Ok(())
+            }
+            fn mmio_read(&mut self, _: u64, _: u8) -> Result<u64, DeviceError> {
+                Ok(0)
+            }
+            fn mmio_write(&mut self, _: u64, _: u8, _: u64) -> Result<(), DeviceError> {
+                Ok(())
+            }
+            fn tick(&mut self, _: VClock) {
+                self.0.set(self.0.get() + 1);
+            }
+            fn next_event(&self, _: VClock) -> NextEvent {
+                NextEvent::Dormant
+            }
+            fn irq_pending(&self) -> bool {
+                false
+            }
+            fn reset(&mut self) {}
+            fn save(&self) -> Vec<u8> {
+                Vec::new()
+            }
+            fn restore(&mut self, _: &[u8]) -> Result<(), DeviceError> {
+                Ok(())
+            }
+        }
+
+        for target in [None, Some(DeviceId::Uart), Some(DeviceId::Keyboard)] {
+            let mut config = crate::bios(vec![0xf4; 0x8000], Some(vec![0; 1_474_560]));
+            for device in &mut config.devices {
+                match &mut device.kind {
+                    crate::DeviceKind::Uart(cfg) => cfg.mouse = target == Some(DeviceId::Uart),
+                    crate::DeviceKind::Keyboard(cfg) => {
+                        cfg.mouse = target == Some(DeviceId::Keyboard)
+                    }
+                    _ => {}
+                }
+            }
+            let mut assembled = crate::assemble_with_options(
+                &config,
+                crate::AssemblyOptions {
+                    allow_unlisted_firmware: true,
+                },
+            )
+            .unwrap();
+            let counters: Vec<_> = config
+                .devices
+                .iter()
+                .map(|_| Rc::new(Cell::new(0)))
+                .collect();
+            *assembled.machine.bus_mut() = Bus::new(
+                counters
+                    .iter()
+                    .map(|counter| Box::new(QueryProbe(counter.clone())) as Box<dyn Device>)
+                    .collect(),
+                DecodeMap::default(),
+            );
+            let expected = target.map(|id| assembled.device_index[&id]);
+            assert_eq!(assembled.mouse_device_index(), expected);
+            assert_eq!(assembled.mouse_device_index(), expected);
+            assert!(counters.iter().all(|counter| counter.get() == 0));
+            assert!(!assembled.mouse_input_ready());
+            for (index, counter) in counters.iter().enumerate() {
+                assert_eq!(counter.get(), u64::from(expected == Some(index)));
+            }
+        }
+    }
 
     #[test]
     fn reset_boundaries_check_journals_before_continuing_and_seal_once() {

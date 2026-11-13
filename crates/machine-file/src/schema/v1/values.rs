@@ -438,3 +438,8 @@ pub(super) fn media_list<'de, D: Deserializer<'de>>(
 ) -> Result<Option<Vec<super::Medium>>, D::Error> {
     Vec::<super::Medium>::deserialize(deserializer).map(Some)
 }
+
+named_values! {
+    /// Supported UART mouse endpoint; none explicitly disables inherited attachment.
+    SerialMouseModel, "serial mouse" { Microsoft => "microsoft", None => "none" } reserved {}
+}

@@ -1,14 +1,15 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Captured host input for the PS/2 auxiliary pointing device (spec.md §9.4).
+//! Captured host input for the configured PS/2 or serial pointing device (spec.md §9.4).
 //!
 //! IBM PS/2 Hardware Interface Technical Reference, Common Interfaces,
 //! "Pointing Device", Data Reporting, defines positive-up counts and packet
 //! button bits. Host policy uses one raw motion unit per count, carries fractions,
-//! and preserves button transitions between coalesced motion segments. The device
-//! owns packet saturation and overflow. See `backlog/docs/design/observation.md`
+//! and preserves button transitions between coalesced motion segments. Assembly
+//! converts serial input to Microsoft positive-down counts; each device owns
+//! packet saturation or splitting. See `backlog/docs/design/observation.md`
 //! § Host input for capture, release and boundary ordering.
 
-use assembly::{inject_mouse, AssembledMachine, DeviceId};
+use assembly::{inject_mouse, AssembledMachine};
 use std::collections::{BTreeSet, VecDeque};
 use winit::{
     event::{ElementState, MouseButton},
@@ -41,7 +42,7 @@ pub struct HostMouse {
 }
 
 impl HostMouse {
-    /// Enable capture only for a machine configured with a PS/2 mouse.
+    /// Enable capture only for a machine configured with a host mouse target.
     pub fn new(enabled: bool) -> Self {
         Self {
             enabled,
@@ -166,7 +167,7 @@ impl HostMouse {
 
     /// Queue raw relative host movement (Y down), with a fixed 1:1 scale.
     /// Finite values truncate toward zero with carried fractions. Conversion and
-    /// sums saturate at i32 limits, leaving PS/2 overflow handling to the device.
+    /// sums saturate at i32 limits, leaving packet limits to the target device.
     /// Non-finite values are ignored per axis so one bad event cannot poison it.
     pub fn motion(&mut self, dx: f64, dy: f64) {
         if !self.captured {
@@ -219,7 +220,7 @@ impl HostMouse {
     /// cannot swallow a subsequent press/release pair. Motion with unchanged
     /// buttons can still coalesce in the device. Keyboard readiness is separate.
     pub fn inject_at_boundary(&mut self, assembled: &mut AssembledMachine) -> Vec<MouseInput> {
-        let Some(&index) = assembled.device_index.get(&DeviceId::Keyboard) else {
+        let Some(index) = assembled.mouse_device_index() else {
             return Vec::new();
         };
         let mut buttons = self.delivered_buttons;
@@ -420,5 +421,78 @@ mod tests {
         assert!(drain(&mut mouse).is_empty());
         mouse.motion(0.5, -0.5);
         assert_eq!(drain(&mut mouse), [input(1, 1, 0)]);
+    }
+}
+
+#[cfg(test)]
+mod serial_tests {
+    use super::*;
+    use assembly::{DeviceId, DeviceKind};
+    use winit::event::ElementState::{Pressed, Released};
+
+    #[test]
+    fn serial_mouse_boundary_routes_y_down_and_preserves_busy_button_edges() {
+        let mut config = assembly::at_boot(vec![0xf4]);
+        for device in &mut config.devices {
+            if let DeviceKind::Uart(c) = &mut device.kind {
+                c.mouse = true;
+            }
+        }
+        let mut assembled = assembly::assemble(&config).unwrap();
+        let index = assembled.device_index[&DeviceId::Uart];
+        assert_eq!(assembled.mouse_device_index(), Some(index));
+        for (port, value) in [
+            (0x3fb, 0x80),
+            (0x3f8, 96),
+            (0x3f9, 0),
+            (0x3fb, 2),
+            (0x3fc, 3),
+        ] {
+            assembled
+                .machine
+                .bus_mut()
+                .port_write(port, 1, value)
+                .unwrap();
+        }
+        let origin = assembled.machine.clock();
+        assembled.machine.bus_mut().tick_all(origin.advance(20_881));
+        assert_eq!(
+            assembled.machine.bus_mut().port_read(0x3f8, 1).unwrap(),
+            u32::from(b'M')
+        );
+        let mut host = HostMouse::new(true);
+        host.pointer_inside(true);
+        assert!(host.button_event(MouseButton::Left, Pressed));
+        host.button_event(MouseButton::Left, Released);
+        host.motion(5.0, 7.0);
+        host.button_event(MouseButton::Right, Pressed);
+        host.button_event(MouseButton::Right, Released);
+        let before = assembled.machine.bus().device(index).unwrap().save();
+        assert_eq!(
+            host.inject_at_boundary(&mut assembled),
+            [MouseInput {
+                dx: 5,
+                dy: -7,
+                buttons: 0
+            }]
+        );
+        assert_ne!(
+            assembled.machine.bus().device(index).unwrap().save(),
+            before
+        );
+        let mut now = 20_881;
+        let mut packet = |assembled: &mut AssembledMachine| {
+            std::array::from_fn::<_, 3, _>(|_| {
+                now += 8949;
+                assembled.machine.bus_mut().tick_all(origin.advance(now));
+                assembled.machine.bus_mut().port_read(0x3f8, 1).unwrap() as u8
+            })
+        };
+        assert_eq!(packet(&mut assembled), [0x40, 5, 7]);
+        assert_eq!(host.inject_at_boundary(&mut assembled).len(), 1);
+        assert_eq!(packet(&mut assembled), [0x50, 0, 0]);
+        assert_eq!(host.inject_at_boundary(&mut assembled).len(), 1);
+        assert_eq!(packet(&mut assembled), [0x40, 0, 0]);
+        assert!(host.inject_at_boundary(&mut assembled).is_empty());
     }
 }

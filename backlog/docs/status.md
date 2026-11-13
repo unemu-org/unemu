@@ -5,6 +5,28 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-13 — Microsoft serial mouse:** opt-in `mouse = "microsoft"` on a
+  UART card supplies a two-button 1200 7N1 endpoint. DTR/RTS power-up produces
+  `M` after an assumed 10 ms startup plus a byte frame; inactive lines cancel
+  transmission and drop motion. Signed motion splits across three-byte packets,
+  with positive Y down. The generic UART now receives timed bytes, models RX
+  FIFO/overrun, receive/line-status IRQs and FIFO timeout, and gates its board IRQ
+  through OUT2. Loopback forces external modem outputs inactive and isolates
+  external RX; a driver probe therefore powers the mouse down and restarting it
+  identifies again. 7N2 receives the 7N1 stream; other divisor/data/parity
+  mismatches receive 00h with framing error (an explicit approximation, including
+  8N1). Line settings are sampled at the start bit, after startup, so raise-then-
+  program works.
+  Snapshots include endpoint identity, partial transmission and accumulated input.
+  Machine files reject simultaneous PS/2 and serial host targets; the window
+  routes its existing captured input to either target. Target lookup is resolved
+  from configuration without synchronizing unrelated devices. Restore rejects
+  endpoint/MCR line mismatches without mutation. Presets are unchanged.
+  Logitech extensions, bit sampling, TX timing/interrupts, modem inputs and
+  internal loopback feedback remain unmodelled. Synthetic IRQ4 ROM and mock-bus tests qualify the
+  protocol; CuteMouse, MOUSE.COM, games and Windows driver sessions have not
+  been exercised. See [serial mouse configuration](design/machine-files.md#serial-mouse).
+
 - **2026-11-12 — CPU A20 wiring:** Assembly applies the shared 8042/92h OR
   line at construction; the machine forwards effective transitions after port
   writes and before runs using the change counter. CPU-only resets, including
