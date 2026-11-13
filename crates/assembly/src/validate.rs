@@ -246,6 +246,17 @@ impl MachineConfig {
 
     pub(crate) fn check_part_sources(&self) -> Result<(), ConfigError> {
         for drive in &self.drives {
+            if matches!(drive.image, crate::ImageSource::RomContainer { .. })
+                || drive.media.as_ref().is_some_and(|list| {
+                    list.entries.iter().any(|medium| {
+                        matches!(medium.image, crate::ImageSource::RomContainer { .. })
+                    })
+                })
+            {
+                return Err(ConfigError::FirmwareParts {
+                    message: "drives cannot use ROM containers".into(),
+                });
+            }
             if drive.media.is_none() && matches!(drive.image, crate::ImageSource::Interleaved(_)) {
                 return Err(ConfigError::FirmwareParts {
                     message: "drives cannot use parts".into(),
@@ -253,6 +264,14 @@ impl MachineConfig {
             }
         }
         for image in &self.images {
+            if let crate::ImageSource::RomContainer { bytes, offset } = &image.source {
+                if image.kind != ImageKind::Rom || *offset >= bytes.len() {
+                    return Err(ConfigError::FirmwareParts {
+                        message: "ROM containers require a nonempty mapped suffix and ROM kind"
+                            .into(),
+                    });
+                }
+            }
             if matches!(image.source, crate::ImageSource::Interleaved(_)) {
                 if image.kind == ImageKind::RamLoad {
                     return Err(ConfigError::FirmwareParts {
@@ -1233,6 +1252,71 @@ mod tests {
     use crate::drive::{DriveConfig, DriveKind, FloppyGeometry, WriteMode};
     use crate::image::{ImageKind, ImageSource, LoadImage};
     use crate::memory::{MemoryConfig, MmioWindow, RamRegion};
+
+    #[test]
+    fn drive_rom_containers_are_rejected_in_single_and_catalogued_media() {
+        let mut config = valid_config();
+        let container = ImageSource::RomContainer {
+            bytes: vec![0; 2],
+            offset: 1,
+        };
+        let expected = Err(ConfigError::FirmwareParts {
+            message: "drives cannot use ROM containers".into(),
+        });
+        config.drives[0].image = container.clone();
+        assert_eq!(config.check_part_sources(), expected);
+        config.drives[0].media = Some(crate::FloppyMediaList {
+            entries: vec![],
+            empty: true,
+        });
+        assert_eq!(config.check_part_sources(), expected);
+        config.drives[0].image = ImageSource::Blank { size: 1_474_560 };
+        let medium = crate::FloppyMedium {
+            image: config.drives[0].image.clone(),
+            expected_sha256: None,
+            write: WriteMode::ReadOnly,
+            name: "synthetic".into(),
+        };
+        for empty in [false, true] {
+            for invalid in 0..2 {
+                let mut entries = vec![medium.clone(), medium.clone()];
+                entries[invalid].image = container.clone();
+                config.drives[0].media = Some(crate::FloppyMediaList { entries, empty });
+                assert_eq!(
+                    config.check_part_sources(),
+                    expected,
+                    "entry {invalid}, empty={empty}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn media_lists_replace_the_legacy_parts_source() {
+        let mut config = valid_config();
+        config.drives[0].image = ImageSource::Interleaved(vec![]);
+        assert_eq!(
+            config.check_part_sources(),
+            Err(ConfigError::FirmwareParts {
+                message: "drives cannot use parts".into(),
+            })
+        );
+        for entries in [
+            vec![],
+            vec![crate::FloppyMedium {
+                image: ImageSource::Blank { size: 1_474_560 },
+                expected_sha256: None,
+                write: WriteMode::ReadOnly,
+                name: "synthetic".into(),
+            }],
+        ] {
+            config.drives[0].media = Some(crate::FloppyMediaList {
+                entries,
+                empty: true,
+            });
+            config.check_part_sources().unwrap();
+        }
+    }
 
     #[test]
     fn floppy_media_validation_reports_original_drive_indices_after_expansion() {

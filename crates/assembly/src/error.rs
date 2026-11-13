@@ -237,6 +237,28 @@ pub enum ConfigError {
         /// Index of the refused option ROM.
         image_index: usize,
     },
+    /// This system firmware has no reviewed video ROM initialization scan.
+    #[error("system BIOS {firmware} has no known video-ROM scan at C0000h-C7FFFh")]
+    FirmwareDoesNotScanVideoRoms {
+        /// Identified system firmware, or "unlisted".
+        firmware: &'static str,
+        /// Index of the refused video ROM.
+        image_index: usize,
+    },
+    /// A video adapter image cannot supply the CPU reset firmware.
+    #[error("video BIOS {firmware} cannot be used as the system BIOS")]
+    VideoBiosAsSystemBios {
+        /// Video firmware catalogue identifier.
+        firmware: &'static str,
+    },
+    /// A reviewed extension ROM must use the extension scan window.
+    #[error("{firmware} is an extension option ROM and cannot occupy the video-ROM window C0000h-C7FFFh")]
+    OptionRomInVideoWindow {
+        /// Index of the refused option ROM.
+        image_index: usize,
+        /// Extension firmware catalogue identifier.
+        firmware: &'static str,
+    },
     /// Adapter firmware is not a reviewed build for this board.
     #[error("option ROM image (sha256 {sha256}) is not a known image for board \"{board}\"; known: {known}")]
     OptionRomNotListed {

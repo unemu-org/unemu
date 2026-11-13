@@ -66,7 +66,12 @@ fn option_rom_alignment_and_scan_window_exact_messages() {
             config.images[0].base = 0xFA000;
             config.images[0].source = ImageSource::Inline(vec![0; 24576]);
         }
-        assert_eq!(error(&config, true).to_string(), format!("option ROM at {base:#X} is outside the scan window 0xC8000..0xF8000 of \"kiselev-xi8088-1.0.2\""));
+        let expected = if base < 0xC8000 {
+            "system BIOS unlisted has no known video-ROM scan at C0000h-C7FFFh".to_string()
+        } else {
+            format!("option ROM at {base:#X} is outside the scan window 0xC8000..0xF8000 of \"kiselev-xi8088-1.0.2\"")
+        };
+        assert_eq!(error(&config, true).to_string(), expected);
     }
     let mut config = self::config();
     config.images[1].base = 0xF7800;

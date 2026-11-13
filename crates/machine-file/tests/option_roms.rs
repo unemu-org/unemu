@@ -58,7 +58,7 @@ fn option_rom_format_errors_retain_the_file_line_and_exact_assembly_message() {
     for yaml in [false, true] {
         for (bytes, base, message, field) in [
             (rom(), 0xC8001, "option ROM at 0xC8001 must be 2 KiB aligned", "firmware.option_roms[0].base"),
-            (rom(), 0xC7800, "option ROM at 0xC7800 is outside the scan window 0xC8000..0xF8000 of \"kiselev-xi8088-1.0.2\"", "firmware.option_roms[0].base"),
+            (rom(), 0xC7800, "system BIOS unlisted has no known video-ROM scan at C0000h-C7FFFh", "firmware.option_roms[0]"),
             (vec![0; 2048], 0xC8000, "option ROM at 0xC8000: expected 55AAh signature and a length byte", "firmware.option_roms[0]"),
             ({ let mut bytes = rom(); bytes[2] = 3; bytes }, 0xC8000, "option ROM at 0xC8000: length byte declares 1536 bytes, image has 2048 (must match and be nonzero)", "firmware.option_roms[0]"),
             ({ let mut bytes = rom(); bytes[100] = 0xB0; bytes }, 0xC8000, "option ROM at 0xC8000: byte sum is 0xB0, must be 0 (pad and checksum the image)", "firmware.option_roms[0]"),
@@ -78,7 +78,7 @@ fn unlisted_option_rom_has_its_own_origin_and_known_build_list() {
     for yaml in [false, true] {
         let error = load(rom(), 0xC8000, yaml, "").unwrap_err();
         let hash = format!("{:x}", Sha256::digest(rom()));
-        assert_eq!(error.message, format!("option ROM image (sha256 {hash}) is not a known image for board \"ibm-5170\"; known: xub-r638-at (open, vendor/xtide-universal-bios/fetch.sh), xub-r638-xtp-ata1f0 (open, vendor/xtide-universal-bios/fetch.sh)"));
+        assert_eq!(error.message, format!("option ROM image (sha256 {hash}) is not a known image for board \"ibm-5170\"; known: ibm-vga-bios-1987-32k (user-supplied), xub-r638-at (open, vendor/xtide-universal-bios/fetch.sh), xub-r638-xtp-ata1f0 (open, vendor/xtide-universal-bios/fetch.sh)"));
         assert_eq!(error.field, "firmware.option_roms[0]");
         assert_eq!(error.origin.line, Some(6));
         assert!(matches!(
@@ -203,4 +203,90 @@ fn machine_file_retains_the_declared_system_bios_index() {
     .unwrap();
     assert_eq!(config.system_bios_image, Some(0));
     assert_eq!(config.images[0].base, 0xF8000);
+}
+
+#[test]
+fn video_container_toml_yaml_hash_full_file_and_map_only_suffix() {
+    let mut bytes = vec![0; 8192];
+    let mut video = vec![0; 24576];
+    video[..4].copy_from_slice(&[0x55, 0xAA, 0x30, 0xCB]);
+    video[24575] = 0u8.wrapping_sub(video.iter().fold(0u8, |sum, b| sum.wrapping_add(*b)));
+    bytes.extend(video);
+    let pin = format!("{:x}", Sha256::digest(&bytes));
+    for yaml in [false, true] {
+        let text = if yaml {
+            format!("schema: 1\nboard: {{model: ibm-5170}}\nfirmware:\n  bios: {{image: bios.bin}}\n  option_roms:\n    - {{image: video.bin, base: 0xC8000, offset: 8192, sha256: '{pin}'}}\ncard: [{{kind: vga}}]\n")
+        } else {
+            format!("schema=1\n[board]\nmodel='ibm-5170'\n[firmware.bios]\nimage='bios.bin'\n[[firmware.option_roms]]\nimage='video.bin'\nbase=0xC8000\noffset=8192\nsha256='{pin}'\n[[card]]\nkind='vga'\n")
+        };
+        let path = Path::new(if yaml { "video.yaml" } else { "video.toml" });
+        let document = if yaml {
+            parse_yaml(path, &text).unwrap()
+        } else {
+            parse_toml(path, &text).unwrap()
+        };
+        let origins = if yaml {
+            Origins::from_yaml(path, &text).unwrap()
+        } else {
+            Origins::from_toml(path, &text).unwrap()
+        };
+        let options = assembly::AssemblyOptions {
+            allow_unlisted_firmware: true,
+        };
+        let config = machine_file::lower_with_options(
+            &document,
+            &origins,
+            &mut Images(bytes.clone()),
+            options,
+        )
+        .unwrap();
+        assert_eq!(config.images[1].source.known_len(), Some(24576));
+        assert!(matches!(
+            config.images[1].source,
+            assembly::ImageSource::RomContainer { offset: 8192, .. }
+        ));
+        let regions = assembly::test_support::cpu_mapping_regions(&config, options).unwrap();
+        assert!(regions.contains(&(0xC8000, 0xCE000, "rom")));
+        let mut corrupt = bytes.clone();
+        corrupt[0] = 1;
+        let error =
+            machine_file::lower_with_options(&document, &origins, &mut Images(corrupt), options)
+                .unwrap_err();
+        assert!(
+            error.message.contains("sha256 mismatch"),
+            "unmapped prefix is still pinned"
+        );
+    }
+}
+
+#[test]
+fn video_container_offsets_reject_empty_suffix_and_system_bios_slicing() {
+    for (field, text, expected) in [
+        (
+            "firmware.option_roms[0].offset",
+            "[[firmware.option_roms]]\nimage='video.bin'\nbase=0xC0000\noffset=2048\n",
+            "offset must leave a nonempty ROM",
+        ),
+        (
+            "firmware.bios.offset",
+            "offset=0\n",
+            "offset is only supported by option ROM images",
+        ),
+    ] {
+        let input = format!(
+            "schema=1\n[board]\nmodel='ibm-5170'\n[firmware.bios]\nimage='bios.bin'\n{text}"
+        );
+        let path = Path::new("video.toml");
+        let error = machine_file::lower_with_options(
+            &parse_toml(path, &input).unwrap(),
+            &Origins::from_toml(path, &input).unwrap(),
+            &mut Images(rom()),
+            assembly::AssemblyOptions {
+                allow_unlisted_firmware: true,
+            },
+        )
+        .unwrap_err();
+        assert_eq!(error.field, field);
+        assert_eq!(error.message, expected);
+    }
 }

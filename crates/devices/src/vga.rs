@@ -10,23 +10,23 @@
 //!
 //! | IBM figure / section | Verified coverage | Limit or model choice |
 //! | --- | --- | --- |
-//! | Figs. 2-19–2-26: general registers | READ: port directions and MSR bit 0 select CRTC, status 1 and feature-control addresses | ASSUMED: inactive pair reads FF; status 0 reads 00; reserved MSR/feature bits retain writes. RAM-enable gating, monitor sense and IRQ omitted |
-//! | Figs. 2-29–2-37: sequencer | READ: five indexed registers, map mask, chain-4 and independent odd/even write control | Reset signalling, CPU extended-memory gating and display timing omitted; undefined read bits return their masked stored values |
-//! | Fig. 2-58: CRTC protection | READ: R11 bit 7 protects R0–R7 except R7 bit 4 | Timing omitted; other registers retain full bytes, including reserved bits |
+//! | Figs. 2-19–2-26: general registers | READ: port directions and MSR bit 0 select CRTC, status 1 and feature-control addresses | ASSUMED: inactive pair reads FF; status 0 models a loaded colour monitor from DAC entry 0 with threshold 20h on any component; reserved MSR/feature bits retain writes. RAM-enable gating and IRQ omitted |
+//! | Figs. 2-29–2-37: sequencer | READ: five indexed registers, map mask, chain-4 and independent odd/even write control | Reset signalling, CPU extended-memory gating and cycle-exact display timing omitted; undefined read bits return their masked stored values |
+//! | Fig. 2-58: CRTC protection | READ: R11 bit 7 protects R0–R7 except R7 bit 4 | Polling uses totals/overflow/display-end/retrace-end; other registers retain full bytes, including reserved bits |
 //! | Figs. 2-81–2-89: attribute controller | READ: index/data flip-flop, status reset, PAS, palette widths; R10 mask EF, R11 mask FF, R12 mask 0F | ASSUMED: reserved bits read zero; PAS disables palette writes, but undefined PAS palette reads retain stored data |
 //! | Fig. 2-94, pp. 2-104–2-105: DAC | READ: one eight-bit palette address, read/write state, RGB order, six-bit components, increment after three bytes and address writes restart the cycle | ASSUMED: 3C8 reads shared address n during a read cycle (some RAMDACs prefetch n+1); components are stored immediately even if an address write aborts the triple; eight-bit wrap and wrong-direction data accesses use the shared component phase without changing state |
 //! | Fig. 2-94, p. 2-106: PEL mask | READ: mask register address and mode-set value FF | ASSUMED: writable mask ANDs the displayed palette index only; IBM warns against writes, while firmware programs it |
-//! | Fig. 2-25: input status 1 | READ: vertical retrace implies display disable (DE=1) | ASSUMED: per-read phase 00,01,09,09, not raster timing; tick updates only trace time |
+//! | Fig. 2-25: input status 1 | READ: vertical retrace implies display disable (DE=1) | DERIVED: integer dot clocks from virtual PIT time and programmed totals/retrace; ASSUMED: fixed ~70 Hz fallback before usable CRTC timing, unsupported clock selects use 25.175 MHz |
 //! | Figs. 2-77–2-78: memory maps | READ: all four GC memory windows | ASSUMED: unselected bytes read FF without loading latches and discard writes; 128 KiB planar map mirrors at 64 KiB |
 //! | Figs. 2-36, 2-74–2-77: odd/even | READ: parity selects maps, GC read-map bit 1 selects the read pair, GR6 bit 1 enables A0 replacement; otherwise A0 passes unchanged | ASSUMED: replacement is gated by odd/even routing (writes with SR4 bit 2 clear; reads with GR5 bit 4 set), not GR6 bit 1 alone; replacement uses CPU A16 in map 00 and inverted MSR bit 5 in other maps |
 //! | Figs. 2-37 and 2-65: chain-4 | DERIVED: plane = a & 3; offset = (a & FFFC) OR ((a >> 14) & 3), preserving doubleword scanout placement after unchaining | ASSUMED: both reads and writes use this mapping and the full GC latch/logic/bit-mask pipeline, with sequencer map mask applied |
 //! | Figs. 2-69–2-80: read/write modes | READ: all four write modes, rotate, set/reset, logic in modes 0/2/3, bit/map masks, read-map select and colour comparison with don't-care | Memory contention omitted |
 //! | Alphanumeric Modes, Figs. 2-31, 2-33–2-36, 2-41, 2-48, 2-50–2-56, 2-59–2-61, 2-64–2-65, 2-82–2-83, 2-84, 2-86, 2-89 and 2-94 | Passive planar text state: geometry, start, stride, cursor shape, font maps, blink, palette and DAC | Whole cells only; raster timing, panning, split screens and cursor skew omitted; glyph rasterisation belongs to the presenter |
-//! | Graphics Modes, Figs. 2-31, 2-50, 2-60–2-65, 2-75, 2-84–2-89 | Planar 16-colour and 256-colour serializers, logical geometry, start/stride, palette and screen-off | CGA-interleaved shift, mismatched GC/AC serializer settings, split screen, pixel panning, smooth scrolling and mid-frame register changes unmodelled; unsupported serializer settings blank the frame. READ: CMS0/SRC substitute row-scan bits into MA13/MA14 (Fig. 2-64), including mode 06h. Count-by-two/four variations and raster timing not claimed. Dot and scan-line repeats accompany logical pixels for presentation; Shift 4/Shift Load are ignored in Extended Graphics as specified in Fig. 2-31 |
+//! | Graphics Modes, Figs. 2-31, 2-50, 2-60–2-65, 2-75, 2-84–2-89 | Planar 16-colour and 256-colour serializers, logical geometry, start/stride, palette and screen-off | CGA-interleaved shift, mismatched GC/AC serializer settings, split screen, pixel panning, smooth scrolling and mid-frame register changes unmodelled; unsupported serializer settings blank the frame. READ: CMS0/SRC substitute row-scan bits into MA13/MA14 (Fig. 2-64), including mode 06h. Count-by-two/four variations and cycle-exact raster timing not claimed. Dot and scan-line repeats accompany logical pixels for presentation; Shift 4/Shift Load are ignored in Extended Graphics as specified in Fig. 2-31 |
 //! | Mode 13h internal palette, Fig. 2-89 and VGA Programming Considerations, pp. 2-96–2-97 | DERIVED/ASSUMED: each four-bit sample passes through Color Plane Enable and the internal palette low nibble; Color Select, P54S and palette high bits do not affect paired eight-bit output | IBM says "the 8-bit attribute is the digital color value to the video DAC" and "should not modify the contents of the Internal Palette registers". The nonidentity-palette behaviour is a model inference, not verified on physical hardware |
 //! | Character Map Select / colour path | Compatibility policy: attribute bit 3 selects the font and remains in the foreground index; Color Plane Enable masks it | Maintainer-selected policy, supported by Linux vgacon.c, vgacon_do_font_op (512-character mode writes CPE=07h), DOSBox Staging vga_draw.cpp, draw_text_line_from_dac_palette, and 86Box vid_svga_render.c, svga_render_text_80 (foreground keeps all four attribute bits) |
 //! | Figs. 2-51 and 2-61: cursor start / underline | ASSUMED deviation: register values are zero-based scan lines, without adding one for the manual's minus-one wording | SeaVGABIOS stdvgamodes.c crtc_07 uses CR09=4Fh and CR14=0Fh; adding one would place its underline outside the 16-line cell. Cursor start uses the same zero-based convention; no physical-card verification |
-//! | Power-on / model reset | Reset clears registers, indices, phase, latches, palette and RAM, including PEL mask | ASSUMED deterministic initialization, not an electrical reset sequence |
+//! | Power-on / model reset | Reset clears graphics registers, indices, latches, palette and RAM, including PEL mask; CPU decode starts enabled | ASSUMED deterministic initialization, not an electrical reset sequence |
 //!
 //! A literal reading of IBM Fig. 2-77 enables A0 replacement from GR6 bit 1
 //! alone. This model calls the replacement logic only after selecting odd/even
@@ -55,18 +55,34 @@
 //! an explicit CPU-offset formula in the manual: after the low two CPU bits
 //! select the plane, preserving A2–A15 and routing A14–A15 into memory A0–A1
 //! gives the doubleword memory layout. CPU accesses use this layout whenever
-//! chain-4 is selected; CRTC timing and address outputs are not executed here.
+//! chain-4 is selected; CRTC beam fetches and address outputs are not executed here.
 //!
 //! Byte I/O and adjacent little-endian word/dword I/O are accepted when every
 //! constituent port belongs to the device (including index/data OUTW). MMIO
 //! accepts widths 1–8; trailing unselected bytes float FF. Invalid accesses
-//! have no effects or traces. Version-2 snapshots preserve all hardware state
+//! have no effects or traces. Version-3 snapshots preserve all hardware state
 //! and virtual trace time; trace policy, history and drops remain run-scoped.
+//!
+//! IBM VGA/XGA Technical Reference, General Registers, Video Subsystem Enable
+//! (Fig. 2-27), reserves 3C3h. IBM Personal System/2 Models 50 and 60
+//! Technical Reference, I/O Controllers, Video Subsystem, Fig. 4-40 (p. 4-63),
+//! defines bit 0 as CPU I/O/memory enable and preserves access to 3C3h even
+//! when POS 102h disables the VGA. This model retains that interface on ISA.
+//! ISA setup follows Video Seven V7 VGA Technical Reference (June 1988),
+//! Miscellaneous Register Definitions, ROMMAP/ALTVSE (IBM Display Adapter
+//! compatibility): 46E8h bit 4 selects setup, bit 3 enables normal CPU decode;
+//! 102h bit 0 is writable only during setup. Both are write-only (reads FFh).
+//! Sparse 46E8h aliases are not decoded. ROM bank bits 2–0 are ignored:
+//! only the linear 24 KiB ROM is mapped by the
+//! board. All three enable gates affect CPU registers and RAM, preserving
+//! stored display state and scanout. ASSUMED reset enables all gates so direct
+//! register users need no firmware; adapter setup and subsystem disable remain
+//! independent. ROM decode is board-owned and stays readable while disabled.
 
 use device::{AccessDir, Device, DeviceError, NextEvent, TraceEvent, VClock};
 
 const NAME: &str = "vga";
-const VERSION: u8 = 2;
+const VERSION: u8 = 3;
 /// First address of the claimed VGA MMIO aperture, including unselected maps.
 pub const MEMORY_BASE: u64 = 0xA_0000;
 /// Size of the claimed VGA aperture in bytes.
@@ -105,13 +121,15 @@ pub struct Vga {
     dac_component: u8,
     dac_state: u8,
     latches: [u8; 4],
-    status_reads: u64,
+    subsystem_enable: u8,
+    adapter_control: u8,
+    setup_enable: u8,
     now: VClock,
     trace: device::TraceBuffer,
 }
 
 impl Vga {
-    /// Deterministic power-on state: all storage zero, monochrome I/O selected.
+    /// Deterministic power-on: cleared graphics storage, CPU decode on, mono I/O.
     #[must_use]
     pub fn new() -> Self {
         Self {
@@ -133,7 +151,9 @@ impl Vga {
             dac_component: 0,
             dac_state: 0,
             latches: [0; 4],
-            status_reads: 0,
+            subsystem_enable: 1,
+            adapter_control: 8,
+            setup_enable: 1,
             now: VClock::ZERO,
             trace: device::TraceBuffer::default(),
         }
@@ -190,6 +210,25 @@ impl Vga {
         self.pel_mask
     }
 
+    /// Stored Video Subsystem Enable (3C3h), without a guest port transaction.
+    /// IBM PS/2 Models 50 and 60 Technical Reference, Video Subsystem, Fig. 4-40.
+    #[must_use]
+    pub fn subsystem_enable(&self) -> u8 {
+        self.subsystem_enable
+    }
+    /// Latched write-only 46E8h state, including setup and normal-decode bits.
+    /// Video Seven V7 VGA Technical Reference, Miscellaneous Register Definitions, ROMMAP.
+    #[must_use]
+    pub fn adapter_control(&self) -> u8 {
+        self.adapter_control
+    }
+    /// Latched write-only 102h setup enable, without entering setup mode.
+    /// Video Seven V7 VGA Technical Reference, Miscellaneous Register Definitions, ALTVSE.
+    #[must_use]
+    pub fn setup_enable(&self) -> u8 {
+        self.setup_enable
+    }
+
     fn colour(&self) -> bool {
         self.misc & 1 != 0
     }
@@ -209,7 +248,7 @@ impl Vga {
     }
 
     fn owns_port(port: u16) -> bool {
-        matches!(port, 0x3B4..=0x3B5 | 0x3BA | 0x3C0..=0x3C2 | 0x3C4..=0x3CA | 0x3CC | 0x3CE..=0x3CF | 0x3D4..=0x3D5 | 0x3DA)
+        matches!(port, 0x3B4..=0x3B5 | 0x3BA | 0x102 | 0x46E8 | 0x3C0..=0x3C3 | 0x3C4..=0x3CA | 0x3CC | 0x3CE..=0x3CF | 0x3D4..=0x3D5 | 0x3DA)
     }
     fn check_port(port: u16, size: u8) -> Result<(), DeviceError> {
         if !matches!(size, 1 | 2 | 4)
@@ -234,7 +273,55 @@ impl Vga {
         Ok(())
     }
 
+    fn cpu_enabled(&self) -> bool {
+        self.subsystem_enable != 0 && self.setup_enable != 0 && self.adapter_control & 0x18 == 8
+    }
+
+    /// IBM VGA/XGA Technical Reference, Input Status 1 (Fig. 2-25),
+    /// Clocking Mode, and CRT Controller Registers: Horizontal Total, Vertical
+    /// Total/Overflow, Vertical Retrace Start/End. Integer dot clocks derive
+    /// from virtual PIT time.
+    /// Before a usable CRTC is programmed, an ASSUMED ~70 Hz polling raster
+    /// (38 PIT clocks/line, 449 lines) permits firmware's initial sync probes.
+    fn input_status_one(&self) -> u8 {
+        let c = &self.crtc;
+        let htotal = u64::from(c[0]) + 5;
+        let hdisplay = u64::from(c[1]) + 1;
+        let vtotal =
+            u64::from(c[6]) + (u64::from(c[7] & 1) << 8) + (u64::from(c[7] & 0x20) << 4) + 2;
+        let vdisplay =
+            u64::from(c[0x12]) + (u64::from(c[7] & 2) << 7) + (u64::from(c[7] & 0x40) << 3) + 1;
+        if c[0] < 5 || htotal <= hdisplay || vtotal <= vdisplay {
+            let phase = self.now.0 % (38 * 449);
+            let line = phase / 38;
+            let retrace = (412..414).contains(&line);
+            return u8::from(line >= 400 || phase % 38 >= 30 || retrace) | (u8::from(retrace) << 3);
+        }
+        let dot_hz: u128 = if self.misc & 0x0C == 4 {
+            28_322_000
+        } else {
+            25_175_000
+        };
+        let dots_per_char = if self.sequencer[1] & 1 != 0 { 8 } else { 9 }
+            * if self.sequencer[1] & 8 != 0 { 2 } else { 1 };
+        // The AT oscillator supplies exactly 3,579,545 / 3 PIT clocks/s.
+        let dots = u128::from(self.now.0) * dot_hz * 3 / 3_579_545;
+        let chars = dots / dots_per_char;
+        let column = (chars % u128::from(htotal)) as u64;
+        let line = ((chars / u128::from(htotal)) % u128::from(vtotal)) as u64;
+        let start = u64::from(c[0x10]) + (u64::from(c[7] & 4) << 6) + (u64::from(c[7] & 0x80) << 2);
+        let width = (u64::from(c[0x11] & 15) + 16 - (start & 15) - 1) % 16 + 1;
+        let retrace = (line + vtotal - start % vtotal) % vtotal < width;
+        u8::from(column >= hdisplay || line >= vdisplay || retrace) | (u8::from(retrace) << 3)
+    }
+
     fn read_port_byte(&mut self, port: u16) -> u8 {
+        if port == 0x3C3 {
+            return self.subsystem_enable;
+        }
+        if !self.cpu_enabled() {
+            return 0xFF;
+        }
         if port == self.active_crtc() {
             return self.crtc_index;
         }
@@ -247,10 +334,7 @@ impl Vga {
         }
         if port == self.active_status() {
             self.ac_data = false;
-            let phase = self.status_reads as u8;
-            self.status_reads = self.status_reads.wrapping_add(1);
-            let retrace = (phase & 2) << 2;
-            return (phase & 1) | retrace | u8::from(retrace != 0);
+            return self.input_status_one();
         }
         match port {
             0x3C0 => self.ac_address,
@@ -259,7 +343,17 @@ impl Vga {
                 .get(usize::from(self.ac_address & 0x1F))
                 .copied()
                 .unwrap_or(0),
-            0x3C2 => 0,
+            // IBM VGA/XGA Technical Reference, Input Status Register 0,
+            // Fig. 2-24: SS detects the display. ASSUMED colour-monitor load:
+            // any DAC-0 output at least 20h clears the comparator.
+            // Reserved bits and the unimplemented CRT interrupt read zero.
+            0x3C2 => {
+                if self.palette[0].iter().any(|component| *component >= 0x20) {
+                    0
+                } else {
+                    0x10
+                }
+            }
             0x3C4 => self.seq_index,
             0x3C5 => self
                 .sequencer
@@ -294,6 +388,24 @@ impl Vga {
         }
     }
     fn write_port_byte(&mut self, port: u16, value: u8) {
+        match port {
+            0x3C3 => {
+                self.subsystem_enable = value & 1;
+                return;
+            }
+            0x46E8 => {
+                self.adapter_control = value & 0x18;
+                return;
+            }
+            0x102 if self.adapter_control & 0x10 != 0 => {
+                self.setup_enable = value & 1;
+                return;
+            }
+            _ => {}
+        }
+        if !self.cpu_enabled() {
+            return;
+        }
         if port == self.active_crtc() {
             self.crtc_index = value & 0x1F;
             return;
@@ -392,6 +504,9 @@ impl Vga {
         (address & 0xFFFC) | ((address >> 14) & 3)
     }
     fn read_byte(&mut self, addr: u64) -> u8 {
+        if !self.cpu_enabled() {
+            return 0xFF;
+        }
         let Some(address) = self.window_offset(addr) else {
             return 0xFF;
         };
@@ -425,6 +540,9 @@ impl Vga {
         result
     }
     fn write_byte(&mut self, addr: u64, value: u8) {
+        if !self.cpu_enabled() {
+            return;
+        }
         let Some(address) = self.window_offset(addr) else {
             return;
         };
@@ -704,7 +822,16 @@ impl Device for Vga {
         for rgb in self.palette {
             blob.extend_from_slice(&rgb);
         }
-        blob.extend_from_slice(&self.status_reads.to_le_bytes());
+        blob.extend_from_slice(&[
+            self.subsystem_enable,
+            self.adapter_control,
+            self.setup_enable,
+            0,
+            0,
+            0,
+            0,
+            0,
+        ]);
         blob.extend_from_slice(&self.now.0.to_le_bytes());
         for plane in &self.planes {
             blob.extend_from_slice(plane);
@@ -758,7 +885,17 @@ impl Device for Vga {
         for rgb in &mut candidate.palette {
             *rgb = take(blob, &mut cursor);
         }
-        candidate.status_reads = u64::from_le_bytes(take(blob, &mut cursor));
+        let control: [u8; 8] = take(blob, &mut cursor);
+        if control[0] > 1
+            || control[1] & !0x18 != 0
+            || control[2] > 1
+            || control[3..].iter().any(|v| *v != 0)
+        {
+            return Err(invalid("invalid subsystem enable or adapter setup state"));
+        }
+        candidate.subsystem_enable = control[0];
+        candidate.adapter_control = control[1];
+        candidate.setup_enable = control[2];
         candidate.now = VClock(u64::from_le_bytes(take(blob, &mut cursor)));
         if candidate
             .sequencer

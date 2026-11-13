@@ -176,6 +176,88 @@ of displayed width. Panning, split screens, preset row scan, cursor skew and
 raster-timed latching are not modelled. Double scanning determines the logical
 row count; the presenter keeps the font's logical scan-line height.
 
+### VGA CPU decode, monitor sense and polling
+
+The register card now accepts 3C3h (read/write bit 0) and ISA adapter control
+46E8h (write-only; bit 4 setup, bit 3 normal decode enable). Setup exposes
+write-only 102h bit 0. Reads of 46E8h/102h return FFh; 3C3h returns only
+bit 0, with reserved bits zero. The enable gates suppress
+CPU register/MMIO access while retaining RAM, DAC, registers and the displayed
+image. ROM reads remain board-owned and available. Reset enables decode as a
+compatibility choice for direct register programs. Miscellaneous Output bit 0
+continues to select CRTC/status/feature ports at 3Bxh or 3Dxh; inactive pairs
+float FFh and do not reset the attribute flip-flop.
+
+READ: [IBM VGA/XGA Technical Reference, VGA Function](https://www.ardent-tool.com/docs/pdf/ibm_vgaxga_trm2.pdf),
+General Registers, Figs. 2-20–2-27: status 0 bit 4 is display switch sense,
+status 1 bit 3 is vertical retrace, bit 0 is display disable, and disabling CPU
+decode preserves scanout. The 1992 manual reserves 3C3h rather than specifying
+its bit interface. The earlier IBM Personal System/2 Models 50 and 60 Technical Reference,
+I/O Controllers, Video Subsystem, Fig. 4-40, p. 4-63, explicitly defines bit 0
+as I/O/memory enable and exempts 3C3h access from POS sleep
+([original section](https://www.ardent-tool.com/docs/pdf/ps2_50-60_techref_ch4b_system_board_io_controllers_video.pdf),
+[searchable transcription](https://manualzz.com/doc/14534054/ibm-video-graphics-array-video-subsystem-manual)).
+The model retains that bit interface on ISA. ISA setup is READ from the primary
+compatible-device reference, Video Seven
+*V7 VGA Technical Reference* (June 1988), Miscellaneous Register Definitions,
+ROMMAP/ALTVSE, pp. 3-16–3-17 ([manual](https://www.minuszerodegrees.net/manuals/Video%20Seven/Video%20Seven%20-%20V7%20VGA%20chip%20-%20Technical%20reference%20manual%20-%20JUN88.pdf)).
+An original 1987 Display Adapter register description was not available for
+independent verification. Sparse 46E8h aliases are not decoded. ROM-bank bits 2–0 are ignored; only the supplied
+linear 24 KiB mapping is claimed.
+
+ASSUMED colour-monitor model: the loaded DAC entry zero controls status-0
+switch sense. SS=0 if any six-bit component is at least 20h;
+otherwise SS=1. This is a deterministic analogue-comparator approximation,
+not an established IBM electrical threshold. It distinguishes low-intensity
+and high-intensity probes without hardcoding exact RGB triples. The threshold
+is an inference consistent with the colour-monitor probes documented by the
+primary [PCjs implementation, `inStatus0`](https://github.com/jeffpar/pcjs/blob/master/machines/pcx86/modules/v2/video.js):
+low components through 14h retain SS, while a 2Dh component clears it. This
+is software compatibility evidence, not physical-card verification. Reserved status
+bits and the unimplemented CRT interrupt return zero.
+
+Status 1 now derives from virtual PIT time, never from read count. Programmed
+CRTC horizontal/vertical totals, overflow, display ends and vertical retrace
+start/end determine the polling raster. Integer 25.175/28.322 MHz dot clocks
+are converted from the exact nominal PIT rate 3,579,545/3 Hz; sequencer 8/9-dot
+characters and dot-clock division affect horizontal periods. Retrace end wraps
+in its four-bit counter. Repeated reads at the same clock return the same
+status and still reset the attribute address/data flip-flop.
+
+Before usable totals are programmed, the ASSUMED fallback is a fixed 449-line
+frame, 38 PIT clocks per line, 400 active lines, horizontal disable after clock
+29 and vertical retrace at lines 412–413 (~70 Hz). Unsupported clock selects
+use 25.175 MHz. Beam phase is anchored at virtual clock zero; programming does
+not restart it. Cycle-exact blanking, retrace IRQs and mid-frame effects remain
+unmodelled. The virtual PIT clock derives from retired instructions and halted
+virtual time. Capture/presentation remain passive and share no poll phase.
+Version-3 snapshots retain all enable/setup state and virtual time; version-2
+snapshots are rejected. Existing text-only MDA/`vga-text` behavior is unchanged.
+
+Font upload remains the normal sequencer map-mask/GC CPU pipeline into plane 2
+(IBM RAM Loadable Character Generator, p. 2-101); DAC indexing remains one
+shared eight-bit address, a restarted RGB phase on either address write, state
+00h/03h and increment/wrap after each triple (Fig. 2-94, pp. 2-104–2-105).
+Mock-bus tests exercise both across enable changes. No presenter changes are
+needed for the video BIOS. The user-ROM graphics measurement hashes dimensions,
+repeat, row-major indices and RGB palette; its text hash covers visible raw
+glyph/attribute pairs, never a screenshot or firmware text transcript.
+
+**SUPERVISOR-MEASURED qualification at CPU `fe240a56`:** IBM 5170 BIOS
+1985-06-10 plus the IBM Display Adapter VGA BIOS 1987 passes POST with the
+video ROM on `ibm-5170`, INT 10h mode 03h (80×25, 16-line characters), and
+mode 13h (the complete 320×200 byte-ramp pattern). The ignored
+`user_rom_ibm_vga_bios_mode13_pattern` pins stop `Halted` at `0000:7C50`,
+23,463,327 retired instructions, and both capture hashes listed in
+[Video ROM placement](firmware-and-machine-classes.md#video-rom-placement).
+Text sampling requires the boot program's nonuniform magic/stage signature
+and CS=0 with IP inside its boot sector, excluding POST's repeated-word RAM
+fills. Stage-1/end diagnostics read passive register getters and the same
+`PlanarTextState` used by scanout; they print values only and never read guest
+status ports or copy firmware screen text. Qualification covers this ROM pair
+and these modes; the documented timing and rendering limits remain.
+
+
 ## Register-level VGA graphics scanout
 
 The existing `TextScanout` route is a display request, including graphics on

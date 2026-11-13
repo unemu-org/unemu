@@ -162,6 +162,7 @@ impl Origins {
         crate::source::record(&self.document.file, input, yaml, &mut values)?;
         for (field, origin) in values.fields {
             if field.ends_with(".sha256")
+                || (field.starts_with("firmware.") && field.ends_with(".offset"))
                 || field.starts_with("firmware.bios.parts")
                 || field.ends_with(".mouse")
                 || field == "board.display_switch"

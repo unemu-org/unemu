@@ -81,6 +81,8 @@ pub enum FirmwarePart {
     /// IBM Personal Computer AT Technical Reference, Section 1 "System Board",
     /// I/O Address Map and System Interrupts; see the firmware design §2.2.
     AtaPrimary,
+    /// Register-level VGA, rather than the fixed text-only compatibility card.
+    VgaRegisters,
 }
 
 impl std::fmt::Display for FirmwarePart {
@@ -92,6 +94,7 @@ impl std::fmt::Display for FirmwarePart {
             Self::PicCascade => "pic-cascade",
             Self::VideoRom => "a video-bios option ROM at 0xC0000",
             Self::AtaPrimary => "ata@1F0/14",
+            Self::VgaRegisters => "register-level vga",
         })
     }
 }
@@ -114,6 +117,7 @@ impl FirmwarePart {
                 .images
                 .iter()
                 .any(|image| image.kind == ImageKind::Rom && image.base == 0xC0000),
+            Self::VgaRegisters => has(|kind| matches!(kind, DeviceKind::VgaRegisters(_))),
             Self::AtaPrimary => config.devices.iter().any(|device| {
                 matches!(device.kind, DeviceKind::Ide(cfg)
                     if cfg.base == 0x1F0 && cfg.control == 0x3F6
@@ -192,15 +196,19 @@ pub struct FirmwareEntry {
     pub id: &'static str,
     /// Firmware purpose.
     pub kind: FirmwareKind,
-    /// Full lowercase SHA-256 of the raw loadable bytes.
+    /// Full lowercase SHA-256 of the complete file or assembled chip bytes.
     pub sha256: &'static str,
-    /// Exact raw image length in bytes.
+    /// Exact file length in bytes, including any unmapped container prefix.
     pub size: u64,
     /// System BIOS images end at the top of the first MiB. Adapter addresses
     /// are suggestions; explicit placements must fit the system BIOS scan.
     pub base: FirmwareBase,
     /// Exclusive adapter-ROM scan bounds of a system BIOS, if any.
     pub scan_window: Option<(u64, u64)>,
+    /// Separate video-ROM POST scan, with an exclusive end.
+    pub video_scan_window: Option<(u64, u64)>,
+    /// Unmapped prefix in an identified EPROM container (zero for raw ROMs).
+    pub rom_offset: usize,
     /// Services documented for this build.
     pub provides: &'static [FirmwareService],
     /// Configuration conventions supported by this build.
@@ -220,6 +228,28 @@ pub struct FirmwareEntry {
 }
 
 impl FirmwareEntry {
+    /// IBM Display Adapter (ISA VGA, 1987), full 32 KiB EPROM container.
+    /// The supplied identity covers the unused 8 KiB prefix as well as the
+    /// 24 KiB ROM. See firmware-and-machine-classes.md §Video ROM placement.
+    pub const IBM_VGA_1987: Self = Self {
+        id: "ibm-vga-bios-1987-32k",
+        kind: FirmwareKind::VideoBios,
+        sha256: "51b49761f72780a696c36f3d2e74a8168c1c99b865070f7f90b8e621a8b5ae17",
+        size: 32768,
+        base: FirmwareBase::Suggested(0xC0000),
+        scan_window: None,
+        video_scan_window: None,
+        rom_offset: 0x2000,
+        provides: &[],
+        capabilities: &[],
+        requires: &[FirmwarePart::VgaRegisters],
+        cpu_min: FirmwareCpu::I80286,
+        boards: &["ibm-5170"],
+        distribution: FirmwareDistribution::UserSupplied,
+        parts: &[],
+        status: FirmwareStatus::Tested,
+    };
+
     /// XTIDE Universal BIOS XT+ build configured for primary 16-bit ATA.
     ///
     /// XTIDE Universal BIOS, RomVars.inc, IDEVARS and DEVICE_16BIT_ATA;
@@ -251,6 +281,8 @@ impl FirmwareEntry {
         size: 8192,
         base: FirmwareBase::Suggested(0xC8000),
         scan_window: None,
+        video_scan_window: None,
+        rom_offset: 0,
         provides: &[FirmwareService::FixedDisk],
         capabilities: &[],
         requires: &[FirmwarePart::AtaPrimary],
@@ -275,8 +307,11 @@ pub const KISELEV_XI8088: FirmwareEntry = FirmwareEntry {
     sha256: "1ad458acb1f22dee6b3d9b6bd95e83218a7ddc5389fa2b2c67a4001e689c81a8",
     size: 32768,
     base: FirmwareBase::TopOfFirstMib,
-    // Kiselev 8088_bios bios.asm, detect_rom_ext: DX=C800h, BX=F800h.
+    // Kiselev 8088_bios bios.asm, video initialization: DX=C000h, BX=C800h;
+    // detect_rom_ext: DX=C800h, BX=F800h; both call extension_scan.
     scan_window: Some((0xC8000, 0xF8000)),
+    video_scan_window: Some((0xC0000, 0xC8000)),
+    rom_offset: 0,
     provides: &[FirmwareService::Floppy],
     // Kiselev 8088_bios rtc.inc, rtc_init/nvram_save: fixed-disk bytes are
     // checksummed but never interpreted as a system BIOS disk configuration.
@@ -392,21 +427,45 @@ pub(crate) fn is_system_bios(image: &LoadImage) -> bool {
             == Some(0x100000)
 }
 
+/// Retain the complete file identity while mapping an adapter-owned suffix.
+/// Adapter socket layouts must never crop the CPU reset firmware.
+pub(crate) fn rom_source(
+    bytes: Vec<u8>,
+    kind: ImageKind,
+    system_bios: bool,
+    catalogue: &[FirmwareEntry],
+) -> crate::ImageSource {
+    if kind == ImageKind::Rom && !system_bios {
+        if let Some(entry) = catalogue.iter().find(|entry| {
+            entry.kind != FirmwareKind::SystemBios
+                && entry.rom_offset != 0
+                && entry.identifies(&bytes)
+        }) {
+            return crate::ImageSource::RomContainer {
+                bytes,
+                offset: entry.rom_offset,
+            };
+        }
+    }
+    crate::ImageSource::Inline(bytes)
+}
+
 pub(crate) fn matched_entry<'a>(
     image: &LoadImage,
     catalogue: &'a [FirmwareEntry],
 ) -> Option<&'a FirmwareEntry> {
-    let crate::ImageSource::Inline(bytes) = &image.source else {
-        return None;
+    let (bytes, offset) = match &image.source {
+        crate::ImageSource::Inline(bytes) => (bytes, 0),
+        crate::ImageSource::RomContainer { bytes, offset } => (bytes, *offset),
+        _ => return None,
     };
+    let system = is_system_bios(image);
     let hash = format!("{:x}", Sha256::digest(bytes));
-    let kind = if is_system_bios(image) {
-        FirmwareKind::SystemBios
-    } else {
-        FirmwareKind::OptionRom
-    };
     catalogue.iter().find(|entry| {
-        entry.kind == kind && entry.sha256 == hash && entry.size == bytes.len() as u64
+        (entry.kind == FirmwareKind::SystemBios) == system
+            && entry.rom_offset == offset
+            && entry.size == bytes.len() as u64
+            && entry.sha256 == hash
     })
 }
 
@@ -480,8 +539,9 @@ pub(crate) fn image_services(
 /// IBM Personal Computer AT Technical Reference (March 1984), System BIOS,
 /// "Adapters with System-Accessible ROM Modules", p. 5-11: 55AAh signature,
 /// 512-byte length units, modulo-256 checksum, 2 KiB scan steps. Its documented
-/// C8000h–E0000h range differs from Kiselev 8088_bios bios.asm,
-/// detect_rom_ext / extension_scan (C8000h–F8000h, exclusive end).
+/// C8000h–E0000h extension range differs from Kiselev 8088_bios bios.asm,
+/// detect_rom_ext / extension_scan (C8000h–F8000h, exclusive end). Both BIOSes
+/// separately scan C0000h–C7FFFh for video ROMs (IBM TEST1; Kiselev video init).
 /// See `backlog/docs/design/firmware-and-machine-classes.md` §6.
 pub(crate) fn validate_option_roms(config: &MachineConfig) -> Result<(), ConfigError> {
     validate_option_roms_with_catalogue(config, config.board.firmware_catalogue())
@@ -503,11 +563,44 @@ pub(crate) fn validate_option_roms_with_catalogue(
         if image.kind != ImageKind::Rom || std::ptr::eq(image, bios) {
             continue;
         }
-        let Some((start, end)) = firmware.scan_window else {
-            return Err(ConfigError::FirmwareDoesNotScanOptionRoms {
-                firmware: firmware.id,
+        let video_address = (0xC0000..0xC8000).contains(&image.base);
+        let entry = matched_entry(image, catalogue);
+        let video_rom =
+            video_address || entry.is_some_and(|entry| entry.kind == FirmwareKind::VideoBios);
+        // Only reviewed BIOS bytes establish the separate video scan. A file
+        // must be identified before this check; the old extension fallback
+        // remains available for unlisted experimental system firmware.
+        if video_rom
+            && matches!(
+                bios.source,
+                crate::ImageSource::File(_) | crate::ImageSource::Interleaved(_)
+            )
+        {
+            continue;
+        }
+        if let Some(entry) =
+            entry.filter(|entry| video_address && entry.kind == FirmwareKind::OptionRom)
+        {
+            return Err(ConfigError::OptionRomInVideoWindow {
                 image_index,
+                firmware: entry.id,
             });
+        }
+        let (start, end) = if video_rom {
+            let known_bios = matched_entry(bios, catalogue);
+            known_bios.and_then(|bios| bios.video_scan_window).ok_or(
+                ConfigError::FirmwareDoesNotScanVideoRoms {
+                    firmware: known_bios.map_or("unlisted", |bios| bios.id),
+                    image_index,
+                },
+            )?
+        } else {
+            firmware
+                .scan_window
+                .ok_or(ConfigError::FirmwareDoesNotScanOptionRoms {
+                    firmware: firmware.id,
+                    image_index,
+                })?
         };
         if !image.base.is_multiple_of(2048) {
             return Err(ConfigError::OptionRomMisaligned {
@@ -530,18 +623,25 @@ pub(crate) fn validate_option_roms_with_catalogue(
                 firmware: firmware.id,
             });
         }
-        let bytes = match &image.source {
-            crate::ImageSource::Inline(bytes) => bytes,
-            crate::ImageSource::File(_) | crate::ImageSource::Interleaved(_) => continue,
-            crate::ImageSource::Blank { .. } => {
-                return Err(ConfigError::OptionRomBadHeader {
-                    image_index,
-                    name: format!("at {:#X}", image.base),
-                    reason: "expected 55AAh signature and a length byte".into(),
-                })
-            }
-        };
-        let entry = matched_entry(image, catalogue);
+        let bytes =
+            match &image.source {
+                crate::ImageSource::Inline(bytes) => bytes.as_slice(),
+                crate::ImageSource::RomContainer { bytes, offset } => bytes
+                    .get(*offset..)
+                    .ok_or_else(|| ConfigError::OptionRomBadHeader {
+                        image_index,
+                        name: format!("at {:#X}", image.base),
+                        reason: "container offset exceeds image length".into(),
+                    })?,
+                crate::ImageSource::File(_) | crate::ImageSource::Interleaved(_) => continue,
+                crate::ImageSource::Blank { .. } => {
+                    return Err(ConfigError::OptionRomBadHeader {
+                        image_index,
+                        name: format!("at {:#X}", image.base),
+                        reason: "expected 55AAh signature and a length byte".into(),
+                    })
+                }
+            };
         let name = entry.map_or_else(|| format!("at {:#X}", image.base), |entry| entry.id.into());
         let reason = if bytes.len() < 3 || bytes[..2] != [0x55, 0xAA] {
             Some("expected 55AAh signature and a length byte".to_string())
@@ -594,8 +694,11 @@ pub fn check_option_rom_catalogue(
         if image.kind != ImageKind::Rom || std::ptr::eq(image, bios) {
             continue;
         }
-        let crate::ImageSource::Inline(bytes) = &image.source else {
-            continue;
+        let bytes = match &image.source {
+            crate::ImageSource::Inline(bytes) | crate::ImageSource::RomContainer { bytes, .. } => {
+                bytes
+            }
+            _ => continue,
         };
         if matched_entry(image, catalogue).is_some() {
             continue;
@@ -608,7 +711,7 @@ pub fn check_option_rom_catalogue(
                 board: config.board.id(),
                 known: catalogue
                     .iter()
-                    .filter(|entry| entry.kind == FirmwareKind::OptionRom)
+                    .filter(|entry| entry.kind != FirmwareKind::SystemBios)
                     .map(FirmwareEntry::listing)
                     .collect::<Vec<_>>()
                     .join(", "),
@@ -659,6 +762,12 @@ pub fn check_system_bios(
     bytes: &[u8],
     options: AssemblyOptions,
 ) -> Result<Option<UnlistedFirmware>, ConfigError> {
+    if let Some(entry) = catalogue
+        .iter()
+        .find(|entry| entry.kind == FirmwareKind::VideoBios && entry.identifies(bytes))
+    {
+        return Err(ConfigError::VideoBiosAsSystemBios { firmware: entry.id });
+    }
     check_bios_placement(base, bytes.len() as u64)?;
     let hash = format!("{:x}", Sha256::digest(bytes));
     let Some(entry) = catalogue.iter().find(|entry| {
@@ -766,7 +875,7 @@ pub struct KnownPart {
     pub sha256: &'static str,
 }
 impl FirmwareEntry {
-    /// Compare an assembled image with this entry's size and SHA-256 identity.
+    /// Compare a complete file or assembled chips with the catalogue identity.
     pub fn identifies(&self, bytes: &[u8]) -> bool {
         self.size == bytes.len() as u64 && self.sha256 == format!("{:x}", Sha256::digest(bytes))
     }
@@ -950,6 +1059,8 @@ pub const IBM_5170_1984_01_10: FirmwareEntry = FirmwareEntry {
     kind: FirmwareKind::SystemBios,
     base: FirmwareBase::TopOfFirstMib,
     scan_window: Some((0xC8000, 0xE0000)),
+    video_scan_window: Some((0xC0000, 0xC8000)),
+    rom_offset: 0,
     provides: &[FirmwareService::Floppy, FirmwareService::FixedDisk],
     capabilities: &[FirmwareCapability::CmosDriveTypes],
     requires: &[
@@ -1030,6 +1141,8 @@ pub const IBM_5170_1985_06_10: FirmwareEntry = FirmwareEntry {
     kind: FirmwareKind::SystemBios,
     base: FirmwareBase::TopOfFirstMib,
     scan_window: Some((0xC8000, 0xE0000)),
+    video_scan_window: Some((0xC0000, 0xC8000)),
+    rom_offset: 0,
     provides: &[FirmwareService::Floppy, FirmwareService::FixedDisk],
     capabilities: &[FirmwareCapability::CmosDriveTypes],
     requires: &[
@@ -1074,6 +1187,8 @@ pub const IBM_5170_1985_11_15: FirmwareEntry = FirmwareEntry {
     kind: FirmwareKind::SystemBios,
     base: FirmwareBase::TopOfFirstMib,
     scan_window: Some((0xC8000, 0xE0000)),
+    video_scan_window: Some((0xC0000, 0xC8000)),
+    rom_offset: 0,
     provides: &[FirmwareService::Floppy, FirmwareService::FixedDisk],
     capabilities: &[FirmwareCapability::CmosDriveTypes],
     requires: &[
@@ -1117,6 +1232,8 @@ pub const LANDMARK_ROM_POST_AT_1_2_0: FirmwareEntry = FirmwareEntry {
     size: 65536,
     base: FirmwareBase::TopOfFirstMib,
     scan_window: None,
+    video_scan_window: None,
+    rom_offset: 0,
     provides: &[],
     capabilities: &[],
     requires: &[
@@ -1225,6 +1342,8 @@ mod tests {
                 size: 65536,
                 base: FirmwareBase::TopOfFirstMib,
                 scan_window: None,
+                video_scan_window: None,
+                rom_offset: 0,
                 provides: &[],
                 capabilities: &[],
                 requires: &[
@@ -1352,11 +1471,249 @@ mod tests {
         }
     }
 
+    fn video_rom() -> Vec<u8> {
+        let mut bytes = vec![0; 24 * 1024];
+        bytes[..4].copy_from_slice(&[0x55, 0xAA, 0x30, 0xCB]);
+        let sum = bytes.iter().fold(0u8, |sum, byte| sum.wrapping_add(*byte));
+        bytes[24 * 1024 - 1] = 0u8.wrapping_sub(sum);
+        bytes
+    }
+
+    #[test]
+    fn video_window_accepts_ibm_at_rom_and_rejects_absent_scan_or_overrun() {
+        let mut config = config();
+        config.images.push(LoadImage {
+            base: 0xC0000,
+            source: ImageSource::Inline(video_rom()),
+            kind: ImageKind::Rom,
+            provides: Vec::new(),
+        });
+        let ibm = FirmwareEntry {
+            video_scan_window: IBM_5170_1985_06_10.video_scan_window,
+            ..synthetic()
+        };
+        validate_option_roms_with_catalogue(&config, &[ibm]).unwrap();
+        let no_video = FirmwareEntry {
+            video_scan_window: None,
+            ..ibm
+        };
+        assert!(matches!(
+            validate_option_roms_with_catalogue(&config, &[no_video]),
+            Err(ConfigError::FirmwareDoesNotScanVideoRoms {
+                firmware: "kiselev-xi8088-1.0.2",
+                ..
+            })
+        ));
+        config.images[1].base = 0xC2800;
+        assert!(matches!(
+            validate_option_roms_with_catalogue(&config, &[ibm]),
+            Err(ConfigError::OptionRomOutsideScanWindow {
+                start: 0xC0000,
+                end: 0xC8000,
+                ..
+            })
+        ));
+        config.images[1].base = 0xC8000;
+        validate_option_roms_with_catalogue(&config, &[ibm]).unwrap();
+        config.images[1].base = 0xF8000;
+        assert!(matches!(
+            validate_option_roms_with_catalogue(&config, &[ibm]),
+            Err(ConfigError::OptionRomOutsideScanWindow {
+                start: 0xC8000,
+                end: 0xF8000,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn unlisted_system_bios_reports_no_known_video_scan() {
+        let mut config = config();
+        config.images.push(LoadImage {
+            base: 0xC0000,
+            source: ImageSource::Inline(video_rom()),
+            kind: ImageKind::Rom,
+            provides: Vec::new(),
+        });
+        assert!(matches!(
+            validate_option_roms_with_catalogue(&config, &[KISELEV_XI8088]),
+            Err(ConfigError::FirmwareDoesNotScanVideoRoms {
+                firmware: "unlisted",
+                ..
+            })
+        ));
+        config.images[0].source = ImageSource::File("system.bin".into());
+        validate_option_roms_with_catalogue(&config, &[KISELEV_XI8088]).unwrap();
+    }
+
+    #[test]
+    fn video_container_keeps_file_identity_and_validates_only_mapped_bytes() {
+        let mut bytes = vec![0; 8192];
+        bytes.extend(video_rom());
+        let video = FirmwareEntry {
+            sha256: Box::leak(format!("{:x}", Sha256::digest(&bytes)).into_boxed_str()),
+            requires: &[],
+            ..FirmwareEntry::IBM_VGA_1987
+        };
+        let mut config = config();
+        config.images.push(LoadImage {
+            base: 0xC0000,
+            source: rom_source(bytes.clone(), ImageKind::Rom, false, &[video]),
+            kind: ImageKind::Rom,
+            provides: Vec::new(),
+        });
+        assert_eq!(config.images[1].source.known_len(), Some(24576));
+        assert_eq!(matched_entry(&config.images[1], &[video]), Some(&video));
+        validate_option_roms_with_catalogue(&config, &[synthetic(), video]).unwrap();
+        config.images[1].source = ImageSource::Inline(bytes);
+        assert!(matches!(
+            validate_option_roms_with_catalogue(&config, &[synthetic(), video]),
+            Err(ConfigError::OptionRomBadHeader { .. })
+        ));
+    }
+
+    #[test]
+    fn system_bios_container_entry_never_applies_an_adapter_offset() {
+        let bytes = vec![0; 32768];
+        let entry = FirmwareEntry {
+            rom_offset: 8192,
+            ..synthetic()
+        };
+        assert!(matches!(
+            rom_source(bytes.clone(), ImageKind::Rom, false, &[entry]),
+            ImageSource::Inline(_)
+        ));
+        let video = FirmwareEntry {
+            sha256: entry.sha256,
+            ..FirmwareEntry::IBM_VGA_1987
+        };
+        assert!(matches!(
+            rom_source(bytes, ImageKind::Rom, true, &[video]),
+            ImageSource::Inline(_)
+        ));
+    }
+
+    #[test]
+    fn video_bios_cannot_be_used_as_the_system_bios_even_with_the_escape() {
+        let bytes = vec![0; 32768];
+        let video = FirmwareEntry {
+            sha256: synthetic().sha256,
+            ..FirmwareEntry::IBM_VGA_1987
+        };
+        for allow_unlisted_firmware in [false, true] {
+            let error = check_system_bios(
+                &config(),
+                BoardModel::Ibm5170,
+                &[video],
+                0xF8000,
+                &bytes,
+                AssemblyOptions {
+                    allow_unlisted_firmware,
+                },
+            )
+            .unwrap_err();
+            assert_eq!(
+                error.to_string(),
+                format!("video BIOS {} cannot be used as the system BIOS", video.id)
+            );
+        }
+    }
+
+    #[test]
+    fn missing_video_scan_names_the_actual_bios_or_unlisted() {
+        let mut config = config();
+        config.images.push(LoadImage {
+            base: 0xC0000,
+            source: ImageSource::Inline(video_rom()),
+            kind: ImageKind::Rom,
+            provides: vec![],
+        });
+        let no_video = FirmwareEntry {
+            video_scan_window: None,
+            ..synthetic()
+        };
+        for (catalogue, name) in [
+            (vec![no_video], no_video.id),
+            (vec![KISELEV_XI8088], "unlisted"),
+        ] {
+            let error = validate_option_roms_with_catalogue(&config, &catalogue).unwrap_err();
+            assert_eq!(
+                error.to_string(),
+                format!("system BIOS {name} has no known video-ROM scan at C0000h-C7FFFh")
+            );
+        }
+    }
+
+    #[test]
+    fn listed_video_and_extension_rom_kinds_use_their_own_windows() {
+        let bytes = video_rom();
+        let video = FirmwareEntry {
+            sha256: Box::leak(format!("{:x}", Sha256::digest(&bytes)).into_boxed_str()),
+            size: bytes.len() as u64,
+            rom_offset: 0,
+            requires: &[],
+            ..FirmwareEntry::IBM_VGA_1987
+        };
+        let mut config = config();
+        config.images.push(LoadImage {
+            base: 0xC8000,
+            source: ImageSource::Inline(bytes),
+            kind: ImageKind::Rom,
+            provides: vec![],
+        });
+        let error =
+            validate_option_roms_with_catalogue(&config, &[synthetic(), video]).unwrap_err();
+        assert!(matches!(
+            error,
+            ConfigError::OptionRomOutsideScanWindow {
+                start: 0xC0000,
+                end: 0xC8000,
+                ..
+            }
+        ));
+        config.images[1].base = 0xC0000;
+        validate_option_roms_with_catalogue(&config, &[synthetic(), video]).unwrap();
+        let extension = FirmwareEntry {
+            kind: FirmwareKind::OptionRom,
+            ..video
+        };
+        let error =
+            validate_option_roms_with_catalogue(&config, &[synthetic(), extension]).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("is an extension option ROM and cannot occupy the video-ROM window"));
+    }
+
+    #[test]
+    fn ibm_video_catalogue_is_container_only_and_requires_register_vga() {
+        let entry = FirmwareEntry::IBM_VGA_1987;
+        assert_eq!(entry.rom_offset, 0x2000);
+        assert_eq!(entry.size, 32768);
+        assert_eq!(entry.kind, FirmwareKind::VideoBios);
+        assert_eq!(
+            entry.sha256,
+            "51b49761f72780a696c36f3d2e74a8168c1c99b865070f7f90b8e621a8b5ae17"
+        );
+        assert_eq!(entry.distribution, FirmwareDistribution::UserSupplied);
+        assert_eq!(entry.status, FirmwareStatus::Tested);
+        assert!(entry.parts.is_empty());
+        assert!(matches!(
+            check_entry_requirements(&config(), BoardModel::Ibm5170, &entry, Some(1)),
+            Err(ConfigError::FirmwareRequiresDevice {
+                part: FirmwarePart::VgaRegisters,
+                ..
+            })
+        ));
+        assert!(BoardModel::Ibm5170.firmware_catalogue().contains(&entry));
+    }
+
     #[test]
     fn firmware_without_a_scan_window_refuses_any_option_rom() {
         let mut config = config();
         let entry = FirmwareEntry {
             scan_window: None,
+            video_scan_window: None,
+            rom_offset: 0,
             ..synthetic()
         };
         assert_eq!(
@@ -1696,7 +2053,10 @@ mod tests {
                 FirmwarePart::PicCascade => {
                     !matches!(device.kind, DeviceKind::Pic(p) if !p.cascade)
                 }
-                FirmwarePart::VideoRom | FirmwarePart::AtaPrimary | FirmwarePart::RtcCmos128 => {
+                FirmwarePart::VideoRom
+                | FirmwarePart::AtaPrimary
+                | FirmwarePart::RtcCmos128
+                | FirmwarePart::VgaRegisters => {
                     unreachable!()
                 }
             });

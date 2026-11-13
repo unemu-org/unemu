@@ -150,6 +150,28 @@ pub mod test_support {
         format!("{:x}", digest.finalize())
     }
 
+    /// SHA-256 of a captured indexed frame: little-endian dimensions/repeat,
+    /// row-major indices, then RGB palette bytes. No rendered text is included.
+    /// IBM VGA/XGA Technical Reference, 256-Color Graphics Mode (13h).
+    ///
+    /// # Panics
+    /// Panics if the frame contains text instead of indexed pixels.
+    pub fn graphics_frame_sha256(frame: &video::Frame) -> String {
+        use sha2::{Digest, Sha256};
+        let video::Frame::Pixels(pixels) = frame else {
+            panic!("graphics_frame_sha256 requires a pixel frame");
+        };
+        let mut digest = Sha256::new();
+        digest.update(pixels.width.to_le_bytes());
+        digest.update(pixels.height.to_le_bytes());
+        digest.update([pixels.repeat.0, pixels.repeat.1]);
+        digest.update(&pixels.indices);
+        for colour in pixels.palette.iter() {
+            digest.update(colour);
+        }
+        format!("{:x}", digest.finalize())
+    }
+
     /// Exercise production image resolution without building a CPU or executing firmware.
     pub fn resolve_file_sources(
         config: &crate::MachineConfig,

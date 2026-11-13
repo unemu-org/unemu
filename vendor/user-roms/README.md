@@ -2,8 +2,9 @@
 
 These images are proprietary. Users supply them separately; this project never
 commits or distributes them. The catalogue stores identities and chip metadata
-only. No default preset or machine file selects these images, and their status
-is Listed: identity checks work; full execution has not been qualified by goldens.
+only. No default preset or machine file selects these images. Most system BIOS
+entries remain Listed; execution qualification is specific to a measured machine
+and ROM pairing. The IBM Display Adapter VGA entry is Tested for the case below.
 Landmark AT has a partial real-mode golden awaiting final local measurement pins,
 as described in `backlog/docs/design/compatibility-diagnostics.md` §3.
 
@@ -131,3 +132,41 @@ POST codes, which tests passed, retired-instruction counts and similar measured
 outcomes. Never store proprietary firmware bytes or copies of its screen text
 beyond short identifiers. Screenshots and full console transcripts do not belong
 in these goldens. All committed discovery tests use synthetic bytes.
+
+
+## IBM Display Adapter video BIOS (ISA VGA, 1987)
+
+Catalogue id: `ibm-vga-bios-1987-32k`. Supply one **32768-byte EPROM file** in
+this ignored directory or under `UNEMUPC98_USER_ROMS_DIR`. Discovery is recursive
+and hash-based; an optional descriptive name is
+`ibm-vga-bios-1987-32k/ibm-vga-1987-32k.bin`. No separate socket or byte-lane
+parts are required; this is a single eight-bit EPROM, not an even/odd pair.
+
+- SHA-256: `51b49761f72780a696c36f3d2e74a8168c1c99b865070f7f90b8e621a8b5ae17`
+- SHA-1 (identification reference): `7b8b0e22ecd002d43d5ed1bb9f9a63d9b9948032`
+- Supervisor-measured layout: zero prefix 0000h–1FFFh, checksummed 24 KiB
+  option ROM at file offsets 2000h–7FFFh, signature 55AAh, size byte 30h.
+  The adapter presents that suffix at C0000h–C5FFFh.
+
+Keep the complete file: catalogue identity and machine-file pins cover all
+32 KiB. The loader applies the known 2000h offset automatically. A plain 24 KiB
+dump is **not listed** because its SHA-256 has not been measured. To add it,
+measure that dump, then add a separate catalogue entry with size 24576 and
+`rom_offset=0`; do not reuse the container hash or guess it from SHA-1.
+See `backlog/docs/design/machine-files.md` §VGA video BIOS for the existing
+`firmware.option_roms` declaration alongside `kind='vga'`.
+
+The entry requires `ibm-5170`, a system BIOS with a known video-window scan and
+the register-level VGA card. Validation requires its mapped bytes to fit inside
+that BIOS's video window; a video BIOS cannot be used as `firmware.bios`.
+The entry is Tested for this pairing. The ignored
+`user_rom_ibm_vga_bios_mode13_pattern` additionally requires the catalogued
+1985-06-10 IBM 5170 system BIOS (whole image or its U27/U47 pair above). It boots
+a synthetic program, captures the text plane before INT 10h mode 13h, draws a
+pattern and reports only stop/counters/hashes and numeric register state.
+The supervisor qualified POST with this ROM and INT 10h modes 03h/13h on
+`ibm-5170`; all four regression pins are populated. See
+`backlog/docs/design/firmware-and-machine-classes.md` §Video ROM placement
+for the measured stop, retired count and capture SHA-256 values. Missing ROMs
+skip cleanly even when ordinary open fixtures are required, unless `UNEMUPC98_REQUIRE_USER_ROMS=1`.
+No ROM is downloaded or distributed.

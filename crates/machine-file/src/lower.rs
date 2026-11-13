@@ -219,6 +219,12 @@ impl<R: ImageReader> Context<'_, R> {
         if bios {
             self.bios_parts = rom.parts.is_some();
         }
+        if bios && rom.offset.is_some() {
+            return Err(self.error(
+                &format!("{field}.offset"),
+                "offset is only supported by option ROM images",
+            ));
+        }
         if rom.image.is_some() && rom.parts.is_some() {
             return Err(self.error(field, "image and parts are mutually exclusive"));
         }
@@ -275,6 +281,15 @@ impl<R: ImageReader> Context<'_, R> {
             )?
             .0
         };
+        let identified = catalogue.iter().find(|entry| entry.identifies(&bytes));
+        if let Some(entry) =
+            identified.filter(|entry| bios && entry.kind == assembly::FirmwareKind::VideoBios)
+        {
+            return Err(self.error(
+                field,
+                ConfigError::VideoBiosAsSystemBios { firmware: entry.id }.to_string(),
+            ));
+        }
         let base = match rom.base {
             Some(base) => u64::from(base),
             None if bios => MIB
@@ -306,9 +321,32 @@ impl<R: ImageReader> Context<'_, R> {
                 provides = entry.provides.to_vec();
             }
         }
+        let adapter =
+            identified.filter(|entry| !bios && entry.kind != assembly::FirmwareKind::SystemBios);
+        let offset = rom
+            .offset
+            .unwrap_or_else(|| adapter.map_or(0, |entry| entry.rom_offset));
+        if (rom.offset.is_some() || offset != 0) && offset >= bytes.len() {
+            return Err(self.error(
+                &format!("{field}.offset"),
+                "offset must leave a nonempty ROM",
+            ));
+        }
+        if let Some(entry) = adapter {
+            if offset != entry.rom_offset {
+                return Err(self.error(
+                    &format!("{field}.offset"),
+                    "offset differs from the catalogue ROM layout",
+                ));
+            }
+        }
         Ok(LoadImage {
             base,
-            source: ImageSource::Inline(bytes),
+            source: if offset == 0 {
+                ImageSource::Inline(bytes)
+            } else {
+                ImageSource::RomContainer { bytes, offset }
+            },
             kind: ImageKind::Rom,
             provides,
         })
@@ -789,8 +827,11 @@ impl<R: ImageReader> Context<'_, R> {
             | FirmwareBoardMismatch { .. }
             | FirmwareNeedsCpu { .. }
             | FirmwareRequiresDevice { .. }
-            | BiosPlacement { .. } => vec![self.bios_source_field().into()],
+            | BiosPlacement { .. }
+            | VideoBiosAsSystemBios { .. } => vec![self.bios_source_field().into()],
             FirmwareDoesNotScanOptionRoms { image_index, .. }
+            | FirmwareDoesNotScanVideoRoms { image_index, .. }
+            | OptionRomInVideoWindow { image_index, .. }
             | OptionRomNotListed { image_index, .. }
             | OptionRomCardMismatch { image_index, .. }
             | OptionRomBadHeader { image_index, .. }
@@ -1946,6 +1987,103 @@ mod tests {
         assert_eq!(diagnostic.origin.line, Some(12));
         assert_eq!(diagnostic.message, error.to_string());
     }
+    fn catalogue_container_rom(
+        bios: bool,
+        offset: &str,
+        kind: assembly::FirmwareKind,
+    ) -> Result<LoadImage, LowerError> {
+        struct Container;
+        impl ImageReader for Container {
+            fn read(&mut self, _: &Path) -> io::Result<Vec<u8>> {
+                Ok(vec![0; 32768])
+            }
+        }
+        let entry = assembly::FirmwareEntry {
+            sha256: Box::leak(format!("{:x}", Sha256::digest(vec![0; 32768])).into_boxed_str()),
+            kind,
+            rom_offset: 8192,
+            ..assembly::FirmwareEntry::IBM_VGA_1987
+        };
+        let table = if bios {
+            "[firmware.bios]"
+        } else {
+            "[[firmware.option_roms]]"
+        };
+        let input = format!("schema=1\n{table}\nimage='synthetic.bin'\n{offset}");
+        let document = crate::parse_toml("machine.toml", &input).unwrap();
+        let origins = Origins::from_toml("machine.toml", &input).unwrap();
+        let mut reader = Container;
+        let mut context = Context {
+            origins: &origins,
+            reader: &mut reader,
+            labels: vec![],
+            devices: vec![],
+            irq_fields: vec![],
+            drives: vec![],
+            images: vec![],
+            image_paths: vec![],
+            options: assembly::AssemblyOptions::default(),
+            bios_parts: false,
+        };
+        let firmware = document.firmware.unwrap();
+        let rom = if bios {
+            firmware.bios.unwrap()
+        } else {
+            firmware.option_roms.unwrap().remove(0)
+        };
+        context.rom(
+            if bios {
+                "firmware.bios"
+            } else {
+                "firmware.option_roms[0]"
+            },
+            &rom,
+            bios,
+            &[entry],
+        )
+    }
+
+    #[test]
+    fn catalogue_container_offset_is_automatic_and_explicit_zero_is_refused() {
+        let image =
+            catalogue_container_rom(false, "base=0xC0000", assembly::FirmwareKind::VideoBios)
+                .unwrap();
+        assert_eq!(image.source.known_len(), Some(24576));
+        assert!(matches!(
+            image.source,
+            ImageSource::RomContainer { offset: 8192, .. }
+        ));
+        let error = catalogue_container_rom(
+            false,
+            "base=0xC0000\noffset=0",
+            assembly::FirmwareKind::VideoBios,
+        )
+        .expect_err("catalogue offset override must be refused");
+        assert_eq!(error.field, "firmware.option_roms[0].offset");
+        assert_eq!(
+            error.message,
+            "offset differs from the catalogue ROM layout"
+        );
+    }
+
+    #[test]
+    fn system_bios_never_uses_an_adapter_container_layout() {
+        let error =
+            catalogue_container_rom(true, "", assembly::FirmwareKind::VideoBios).unwrap_err();
+        assert_eq!(error.field, "firmware.bios");
+        assert_eq!(
+            error.message,
+            "video BIOS ibm-vga-bios-1987-32k cannot be used as the system BIOS"
+        );
+        let image = catalogue_container_rom(true, "", assembly::FirmwareKind::SystemBios).unwrap();
+        assert!(matches!(image.source, ImageSource::Inline(_)));
+        assert_eq!(image.source.known_len(), Some(32768));
+        let image =
+            catalogue_container_rom(false, "base=0xC8000", assembly::FirmwareKind::SystemBios)
+                .unwrap();
+        assert!(matches!(image.source, ImageSource::Inline(_)));
+    }
+
     #[test]
     fn parts_diagnosis_precedes_pin_and_call_site_preserves_escape_and_catalogue_services() {
         struct Chips;

@@ -650,7 +650,7 @@ records existing components, not demonstrated SeaBIOS compatibility.
 | FDC with READ ID and CCR | `floppy.c:249–256` | Have | — |
 | Primary/secondary ISA ATA | `ata.c:1020–1030` | Have | — |
 | COM1 UART | `sercon.c` | Have | — |
-| VGA ROM and register-level VGA | `optionroms.c:451`; `stdvga.c` | Partial: isolated register file and planar memory; IBM VGA/XGA TR (May 1992), only the module coverage-matrix figures checked: 2-19–2-26, 2-29–2-37, 2-58, 2-69–2-80, 2-81–2-89 and 2-94; chain-4 offset DERIVED from Figs. 2-37/2-65; ASSUMED floating ports/unselected memory FF, 128 KiB mirroring, MSR[5] polarity, DAC edge cases, odd/even gating of A0 replacement and chain-4 pipeline; alphanumeric rendering and opt-in `vga` card wiring implemented (READ: Alphanumeric Modes, Figs. 2-7–2-8, 2-31, 2-33–2-36, 2-41, 2-48, 2-50–2-56, 2-59–2-61, 2-64–2-65, 2-82–2-83, 2-84, 2-86, 2-89 and 2-94: guest fonts, divided dot clock, CRTC scanout/cursor, AC/DAC colours through Frame::Text; ASSUMED zero-based cursor start/underline despite the manual minus-one wording, following SeaVGABIOS crtc_07); CGA-compatible 06h, planar 0Dh/0Eh/10h/12h and chain-4 13h graphics scanout implemented through owned indexed Frame::Pixels (READ: Graphics Modes, Figs. 2-31, 2-50, 2-60–2-65, 2-75 and 2-84–2-89; DERIVED doubleword placement matches CPU chain-4; DERIVED/ASSUMED mode-13h internal palette low-nibble sample handling; logical dot/scan-line repetition retained as presentation factors; READ CMS0/SRC row-scan bank substitution from Fig. 2-64); CGA-interleaved shift, split screen, pixel panning, smooth scrolling and mid-frame changes unmodelled; no option ROM yet, SeaVGABIOS arrives via fw_cfg with the 386 board | `upc-o0j.15` (`upc-18x.2` is VBE only) |
+| VGA ROM and register-level VGA | `optionroms.c:451`; `stdvga.c` | Partial: isolated register file and planar memory; IBM VGA/XGA TR (May 1992), only the module coverage-matrix figures checked: 2-19–2-26, 2-29–2-37, 2-58, 2-69–2-80, 2-81–2-89 and 2-94; chain-4 offset DERIVED from Figs. 2-37/2-65; ASSUMED floating ports/unselected memory FF, 128 KiB mirroring, MSR[5] polarity, DAC edge cases, odd/even gating of A0 replacement and chain-4 pipeline; alphanumeric rendering and opt-in `vga` card wiring implemented (READ: Alphanumeric Modes, Figs. 2-7–2-8, 2-31, 2-33–2-36, 2-41, 2-48, 2-50–2-56, 2-59–2-61, 2-64–2-65, 2-82–2-83, 2-84, 2-86, 2-89 and 2-94: guest fonts, divided dot clock, CRTC scanout/cursor, AC/DAC colours through Frame::Text; ASSUMED zero-based cursor start/underline despite the manual minus-one wording, following SeaVGABIOS crtc_07); CGA-compatible 06h, planar 0Dh/0Eh/10h/12h and chain-4 13h graphics scanout implemented through owned indexed Frame::Pixels (READ: Graphics Modes, Figs. 2-31, 2-50, 2-60–2-65, 2-75 and 2-84–2-89; DERIVED doubleword placement matches CPU chain-4; DERIVED/ASSUMED mode-13h internal palette low-nibble sample handling; logical dot/scan-line repetition retained as presentation factors; READ CMS0/SRC row-scan bank substitution from Fig. 2-64); CGA-interleaved shift, split screen, pixel panning, smooth scrolling and mid-frame changes unmodelled; IBM ISA VGA BIOS qualified on ibm-5170 (§Video ROM placement), while SeaVGABIOS delivery via fw_cfg remains pending for the 386 board | `upc-o0j.15` (`upc-18x.2` is VBE only) |
 | FPU always reported | `misc.c:62–68` | Partial: empty socket | `upc-18x.9` (risk) |
 | Avoid unmapped FEE00030h MP-table read | `mptable.c:57` | Built fixture disables MPTABLE; Kconfig setting verified | `upc-o0j.9` (build half; catalogue waits for board) |
 | Debug console at 402h | `serialio.c:104–129`; `fw/paravirt.h:67` | Device and `DebugConsole` byte observation exist (E9h readback); Bare rigs only, board wiring pending | `upc-o0j.16`; `upc-o0j.6` (board) |
@@ -977,7 +977,7 @@ under Derived configuration above.
 
 The scan window governs firmware discovery and option-ROM placement, not the
 board's physical gap decoding below the system BIOS. A system BIOS entry with
-no scan window rejects every option ROM with
+neither an extension nor a video scan window rejects every option ROM with
 `FirmwareDoesNotScanOptionRoms`: `firmware X does not scan for option ROMs`.
 Machine-file loaders accept run-only `AssemblyOptions` through their
 `*_with_options` / `load_with_reader_and_options` APIs. Defaults stay strict;
@@ -1016,6 +1016,75 @@ shortens the scan can make an otherwise valid F0000h–F7FFFh ROM undiscoverable
 
 Rule 13 rejects the raw r638 `ide_at.bin` (MEASURED byte sum B0h), which is the
 intended behaviour: the fixture must pad and checksum it.
+
+### Video ROM placement
+
+The system catalogue stores **two distinct POST windows**, both with exclusive
+ends. IBM 5170 BIOS entries scan `[C0000h, C8000h)` for video firmware and
+`[C8000h, E0000h)` for extensions. READ by the supervisor: IBM AT BIOS listing
+for the 06/10/85 edition, TEST1, “CHECK FOR THE ADVANCED VIDEO CARD” / “CHECK FOR
+VIDEO ROM”, scans for 55AAh in 2 KiB steps through C7FFFh. The same video window
+on the 1984-01-10 and 1985-11-15 catalogue entries is an inference from that
+listing, not a separately read listing for those editions. READ directly in the
+pinned Kiselev
+`src/bios.asm:1127–1137`: DX=C000h, BX=C800h, `extension_scan`, followed by
+`call far [67h]`; `extension_scan:1532–1571` verifies length/checksum and returns
+offset 3. Kiselev's separate extension window remains `[C8000h, F8000h)`.
+Landmark has neither window and rejects adapter ROMs in both areas. An unlisted
+experimental BIOS retains only the previous extension-window fallback; it does
+not establish a video scan capability. A missing video scan reports the actual
+system BIOS identity, or “unlisted”, rather than the fallback extension window.
+Unresolved system files defer the video
+placement check until their exact loaded identity is available.
+
+ROMs starting in the video interval use **only** the video's declared window;
+there is no union that permits an image to straddle C8000h. Alignment, complete
+mapped length, 55AAh header, exact size byte and checksum checks still apply.
+A listed video BIOS must fit inside the system BIOS's video window even when
+placed at an extension address. A listed extension option ROM cannot occupy
+the video window. The board's read-only gap decode does not imply a firmware
+scan capability.
+
+`FirmwareEntry::IBM_VGA_1987` (`ibm-vga-bios-1987-32k`) identifies a user-supplied
+IBM Display Adapter (ISA VGA, 1987) EPROM. SUPERVISOR-MEASURED: the full 32 KiB
+file SHA-256 is `51b49761f72780a696c36f3d2e74a8168c1c99b865070f7f90b8e621a8b5ae17`;
+bytes 0000h–1FFFh are zero and bytes 2000h–7FFFh form a valid 24 KiB option
+ROM (size byte 30h, checksum zero). The catalogue owns `rom_offset=2000h`;
+`ImageSource::RomContainer` retains all bytes for identity/pins and maps only
+the suffix at C0000h–C5FFFh. It requires the register-level `vga`, not `vga-text`.
+The entry is **Tested** for the IBM 5170 BIOS 1985-06-10 pairing below; this
+does not qualify other system BIOS revisions or video modes.
+Only this container is listed. A plain 24 KiB representation needs its own
+measured SHA-256 and a second catalogue entry with size 24576 and offset zero;
+the full-file hash cannot identify a cropped dump.
+
+The synthetic CLI POST test loads an offset-2000h container through the machine
+file, proves FAR CALL/RETF with POST 10h/11h/20h, pins a RAM marker and checks
+the programmed VGA sequencer. Its IRET-only INT 10h stub lets Kiselev's
+immediate console calls return before the RTC checkpoint. The ignored
+`user_rom_ibm_vga_bios_mode13_pattern`
+uses both user ROM identities and a synthetic 1.2 MB boot disk: mode 03h, a
+bounded text capture stage, INT 10h mode 13h, then a 320×200 byte-ramp pattern.
+**SUPERVISOR-MEASURED at CPU `fe240a56ac2040e3deaebb2537e642137ee02c71`:**
+with IBM 5170 BIOS 1985-06-10 on `preset:ibm-5170`, POST initializes this video
+ROM and both INT 10h mode calls pass. The register-level card produces 80×25
+text with 16-line characters, followed by the complete 320×200 graphics pattern.
+The fixture uses derived CMOS, automatic display selection with the VGA ROM,
+an `at-adapter` IDE controller, and its synthetic read-only 1.2 MB boot disk.
+Only the boot program's `VGA!` magic/stage marker with CS=0 and IP in
+7C00h–7DFFh accepts a sample; POST memory fill cannot impersonate the stage.
+
+| Pinned result | Value |
+|---|---|
+| Stop | `Halted`, `0000:7C50` |
+| Retired instructions | `23,463,327` |
+| Text-plane SHA-256 | `707ba8a5e9a7f27f639e55cbc1a4375c86392f810c2742dc6aa0218ddc1adfab` |
+| Graphics-frame SHA-256 | `825d409a82c363538f60248d866bb8462c28eb7ebdb0499bbd0188c6d0740f27` |
+
+All four expectations are populated in the ignored user-ROM test. Cheap,
+passive register/derived-geometry dumps remain value-only at stage 1 and at
+the end. No proprietary bytes, screen text or images are stored. Missing user
+ROMs follow the shared skip/require policy.
 
 ## 7. Recommendation
 

@@ -487,7 +487,8 @@ has RAM [0, B0000h), MDA/VGA at B0000h–BFFFFh, and BIOS at F8000h–FFFFFh.
 | `bios.provides` | list of strings | `[]` | `"floppy"`, `"fixed-disk"` | `LoadImage.provides` (M6) |
 | `option_roms` | array of tables | `[]` | yes | one `LoadImage` (`Rom`) each |
 | `option_roms[].image`, `.sha256`, `.provides` | as for `bios` | | yes | |
-| `option_roms[].base` | integer, 2 KiB aligned, complete image in `[0xC8000, 0xF8000)` for Kiselev | required | yes | `LoadImage.base` |
+| `option_roms[].offset` | unsigned byte offset in the file | catalogue-owned for listed containers, otherwise `0` | yes | `ImageSource::RomContainer`; hash covers the full file |
+| `option_roms[].base` | integer, 2 KiB aligned, complete mapped image in the selected BIOS video or extension window | required | yes | `LoadImage.base` |
 
 Lowering records the `[firmware.bios]` image index in
 `MachineConfig.system_bios_image`. The shared BIOS preset also records this
@@ -506,6 +507,44 @@ Option ROMs need 55AAh, a nonzero length byte × 512 exactly equal to image
 size, and a zero modulo-256 byte sum. The whole image must fit the BIOS scan
 window; it cannot overlap another image. Assembly records effective scan order
 by ascending address, independent of file order.
+
+### VGA video BIOS
+
+The register-level `vga` uses the existing `firmware.option_roms` schema. A
+video ROM is still a board-mapped executable image, so it shares the normal
+pin, origin, overlap and scan-window checks rather than introducing card-local
+firmware loading. On `ibm-5170`, the IBM 5170 and Kiselev system BIOS entries
+scan C0000h–C7FFFh separately from their extension windows. A listed BIOS with
+no video scan rejects this placement. `vga-text` cannot satisfy the IBM video
+ROM's register-level VGA requirement.
+
+```toml
+[[card]]
+kind = "vga"
+
+[[firmware.option_roms]]
+image = "ibm-vga-1987-32k.bin"
+sha256 = "51b49761f72780a696c36f3d2e74a8168c1c99b865070f7f90b8e621a8b5ae17"
+base = 0xC0000
+# Optional restatement: the catalogue already owns this container offset.
+offset = 0x2000
+```
+
+When extending `preset:ibm-5170` or the existing floppy profiles, remove the
+inherited `mda` and `vga-text` cards (`id='mda', remove=true` and
+`id='vga-text', remove=true`) before adding `vga`. Its full A0000h–BFFFFh
+aperture conflicts with MDA, and the two VGA models are mutually exclusive.
+Existing profiles and their default cards are unchanged.
+
+The same fields work in YAML. Pins identify the complete 32 KiB file, including
+its unused prefix; only the trailing 24 KiB map at C0000h. A listed image must
+use its catalogue offset. Unknown synthetic containers may specify an offset
+under the run-only unlisted-firmware option; the suffix must still be a complete,
+checksummed option ROM fitting one scan window. `offset` is not supported on
+`firmware.bios`; system BIOS `parts[].offset` retains its lane-placement meaning.
+Replacing a ROM source during inheritance drops the inherited container offset
+unless the child restates it. Only the full 32 KiB IBM form is listed; a cropped
+24 KiB dump needs a separately measured identity.
 
 ### User-supplied split system BIOS
 

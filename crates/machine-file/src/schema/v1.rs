@@ -116,6 +116,8 @@ pub struct Firmware {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Rom {
+    /// Skip an EPROM prefix after checking the complete file's digest.
+    pub offset: Option<usize>,
     pub parts: Option<Vec<RomPart>>,
     pub image: Option<String>,
     pub sha256: Option<Sha256>,

@@ -324,12 +324,14 @@ impl VgaCfg {
         vec![
             PortWindow::new(0x3B4, 0x3B5),
             PortWindow::single(0x3BA),
-            PortWindow::new(0x3C0, 0x3C2),
+            PortWindow::new(0x3C0, 0x3C3),
             PortWindow::new(0x3C4, 0x3CA),
             PortWindow::single(0x3CC),
             PortWindow::new(0x3CE, 0x3CF),
             PortWindow::new(0x3D4, 0x3D5),
             PortWindow::single(0x3DA),
+            PortWindow::single(0x102),
+            PortWindow::single(0x46E8),
         ]
     }
 }

@@ -253,6 +253,33 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   conversion, capture, button ordering and guest-visible packets; host GUI grab
   behavior remains unmeasured. See [window input](design/observation.md#captured-ps2-mouse).
 
+## IBM ISA VGA video ROM integration (2026-11-12)
+
+- Firmware supports a separate C0000h–C7FFFh video scan for the IBM 5170 BIOS
+  catalogue and both Kiselev builds. Extension-ROM checks retain their separate
+  windows and checksums. The `ibm-vga-bios-1987-32k` entry is **Tested** for
+  the qualified IBM 5170 BIOS 1985-06-10 case below. Its supplied full EPROM
+  identity maps offset 2000h onward as 24 KiB at C0000h and requires register-level `vga`. A plain 24 KiB dump is unlisted.
+- Machine files use `firmware.option_roms` plus `kind='vga'`; the catalogue owns
+  the container offset, full-file SHA-256 pins include the unmapped prefix,
+  and TOML/YAML also support explicit offsets for synthetic/unlisted ROMs.
+- VGA adds subsystem and ISA setup/enable decode (3C3h/46E8h/102h), a
+  deterministic colour-monitor sense approximation and virtual-time retrace
+  polling. Existing mono/colour port select, plane-2 font upload and DAC index
+  protocols are covered across enable changes. Version-3 snapshots include
+  enable state. See [observation coverage and assumptions](design/observation.md#vga-cpu-decode-monitor-sense-and-polling).
+- A synthetic 24 KiB ROM inside a 32 KiB container tests the open Kiselev POST
+  path. **SUPERVISOR-MEASURED at CPU `fe240a56`:** the ignored
+  `user_rom_ibm_vga_bios_mode13_pattern` qualifies the user-supplied IBM VGA
+  BIOS with IBM 5170 BIOS 1985-06-10 on `ibm-5170`: POST initializes the video
+  ROM, INT 10h mode 03h produces 80×25 text with 16-line characters, and mode
+  13h produces the complete 320×200 byte-ramp pattern. The test pins Halted at
+  `0000:7C50`, **23,463,327** retired instructions, and both capture SHA-256
+  values in the [qualification table](design/firmware-and-machine-classes.md#video-rom-placement).
+  Sampling requires the boot program's magic/stage marker and CS/IP inside
+  its sector. Missing ROMs skip cleanly. No ROM or firmware screen text is
+  stored or fetched; other BIOS revisions and VGA modes are not qualified.
+
 ## Works (as of 2026-11-10, main @ 479f8ed — the 286 foundation is finished)
 
 - **An unmodified open BIOS boots FreeDOS from a floppy, headless and deterministic.** The Kiselev
@@ -803,7 +830,7 @@ no golden re-baseline was needed.
   [machine-config.md §Emulator-only firmware configuration](design/machine-config.md#emulator-only-firmware-configuration).
 
 - **2026-11-11 — Register-level VGA:** isolated registers, DAC, planar memory,
-  CPU read/write modes and version-2 snapshots. Register protocols, mode-3 logic,
+  CPU read/write modes and version-3 snapshots (including ISA enable state). Register protocols, mode-3 logic,
   attribute widths and retrace status are checked against the IBM VGA/XGA
   Technical Reference Manual (May 1992), limited to the module coverage matrix:
   Figs. 2-19–2-26, 2-29–2-37, 2-58, 2-69–2-80, 2-81–2-89 and 2-94.
@@ -813,7 +840,8 @@ no golden re-baseline was needed.
   Alphanumeric rendering and opt-in `kind = "vga"` wiring now use guest fonts,
   CRTC geometry/start/stride/cursor and AC/DAC colours through `Frame::Text`.
   The existing text-only defaults and goldens are unchanged. No option ROM is
-  installed; graphics scanout is available as described above, while
+  installed by default; the user-supplied IBM video ROM is opt-in as described
+  above. Graphics scanout is available, while
   SeaVGABIOS delivery via fw_cfg remains pending.
 
 - **2026-11-11, SeaBIOS fixture:** pinned rel-1.17.0 ISA build recipe and

@@ -4,7 +4,7 @@
 use super::*;
 use crate::{
     check_firmware_parts, check_system_bios, interleave_parts, AssemblyOptions, BoardModel,
-    FirmwareDistribution, FirmwareEntry, FirmwareStatus, ImagePart, KnownPart, Lane,
+    FirmwareDistribution, FirmwareEntry, FirmwareStatus, ImagePart, KnownPart, Lane, LoadImage,
 };
 use std::path::PathBuf;
 
@@ -350,7 +350,8 @@ fn parts_production_catalogue_exact_data_and_tiling() {
     assert_eq!(
         catalogue
             .iter()
-            .filter(|e| e.distribution == FirmwareDistribution::UserSupplied)
+            .filter(|e| e.distribution == FirmwareDistribution::UserSupplied
+                && e.kind == crate::FirmwareKind::SystemBios)
             .count(),
         4
     );
@@ -964,4 +965,83 @@ fn parts_resolution_call_site_diagnoses_swapped_and_bad_chips_and_preserves_esca
         &[entry],
     )
     .unwrap();
+}
+
+#[test]
+fn video_container_file_resolution_retains_complete_identity_and_mapped_size() {
+    let directory = PartsDirectory::new();
+    let mut bytes = vec![0; 32768];
+    bytes[8192..8196].copy_from_slice(&[0x55, 0xAA, 0x30, 0xCB]);
+    let sum = bytes.iter().fold(0u8, |sum, byte| sum.wrapping_add(*byte));
+    bytes[32767] = 0u8.wrapping_sub(sum);
+    let path = directory.0.join("video.bin");
+    std::fs::write(&path, &bytes).unwrap();
+    let video = FirmwareEntry {
+        sha256: Box::leak(format!("{:x}", Sha256::digest(&bytes)).into_boxed_str()),
+        requires: &[],
+        ..FirmwareEntry::IBM_VGA_1987
+    };
+    let mut config = crate::bios(vec![0; 32768], Some(vec![0; 1_474_560]));
+    config.images.push(LoadImage {
+        base: 0xC0000,
+        source: ImageSource::File(path),
+        kind: ImageKind::Rom,
+        provides: Vec::new(),
+    });
+    let (resolved, _) =
+        resolve_file_sources_with_catalogue(&config, AssemblyOptions::default(), &[video]).unwrap();
+    assert_eq!(resolved.images[1].source.known_len(), Some(24576));
+    assert!(matches!(
+        resolved.images[1].source,
+        ImageSource::RomContainer { offset: 8192, .. }
+    ));
+    assert_eq!(
+        crate::firmware::matched_entry(&resolved.images[1], &[video]),
+        Some(&video)
+    );
+    let mapped = load_image_bytes(&resolved.images[1].source).unwrap();
+    assert_eq!(mapped, bytes[8192..]);
+}
+
+#[test]
+fn video_container_used_as_system_file_is_not_sliced() {
+    let directory = PartsDirectory::new();
+    let bytes = vec![0; 32768];
+    let path = directory.0.join("video.bin");
+    std::fs::write(&path, &bytes).unwrap();
+    let entry = FirmwareEntry {
+        sha256: Box::leak(format!("{:x}", Sha256::digest(&bytes)).into_boxed_str()),
+        ..FirmwareEntry::IBM_VGA_1987
+    };
+    let mut config = crate::bios(vec![0; 32768], Some(vec![0; 1_474_560]));
+    config.images[0].source = ImageSource::File(path);
+    config.images.push(LoadImage {
+        base: 0xC8000,
+        source: ImageSource::Inline(vec![0; 2048]),
+        kind: ImageKind::Rom,
+        provides: vec![],
+    });
+    for marker in [Some(0), None] {
+        config.system_bios_image = marker;
+        let (resolved, _) =
+            resolve_file_sources_with_catalogue(&config, AssemblyOptions::default(), &[entry])
+                .unwrap();
+        assert!(matches!(resolved.images[0].source, ImageSource::Inline(_)));
+        assert_eq!(resolved.images[0].source.known_len(), Some(32768));
+        let error = check_system_bios(
+            &resolved,
+            BoardModel::Ibm5170,
+            &[entry],
+            0xF8000,
+            &load_image_bytes(&resolved.images[0].source).unwrap(),
+            AssemblyOptions {
+                allow_unlisted_firmware: true,
+            },
+        )
+        .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "video BIOS ibm-vga-bios-1987-32k cannot be used as the system BIOS"
+        );
+    }
 }

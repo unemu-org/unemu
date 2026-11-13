@@ -139,7 +139,7 @@ fn mono_colour_decode_misc_feature_and_status_are_direction_sensitive() {
     ] {
         out(&mut b, 0x3C2, misc);
         assert_eq!(input(&mut b, 0x3CC), misc);
-        assert_eq!(input(&mut b, 0x3C2), 0);
+        assert_eq!(input(&mut b, 0x3C2), 0x10);
         reg(&mut b, active, 0x0F, 0x42);
         reg(&mut b, inactive, 0x0F, 0x99);
         assert_eq!(input(&mut b, inactive), 0xFF);
@@ -182,10 +182,10 @@ fn status_phase_is_deterministic_without_ticks_and_tick_is_passive() {
     let mut b = bus();
     assert_eq!(
         (0..4).map(|_| input(&mut b, 0x3BA)).collect::<Vec<_>>(),
-        [0, 1, 9, 9]
+        [0; 4]
     );
-    b.tick(123);
-    assert_eq!(input(&mut b, 0x3BA), 0);
+    b.tick(412 * 38);
+    assert_eq!(input(&mut b, 0x3BA), 9);
     assert_eq!(b.device().next_event(b.clock()), NextEvent::Dormant);
     assert!(!b.device().irq_pending());
     assert!(b.device().text_scanout().is_none());
@@ -471,7 +471,7 @@ fn snapshot_round_trip_continues_partial_dac_ac_latches_and_status() {
             (0..3).map(|_| input(device, 0x3C9)).collect::<Vec<_>>(),
             [12, 21, 9]
         );
-        assert_eq!(input(device, 0x3BA), 1);
+        assert_eq!(input(device, 0x3BA), 0);
         reg(device, 0x3CE, 5, 1);
         device.mmio_write(MEMORY_BASE + 0x4321, 1, 0xFF).unwrap();
         assert_eq!(bytes(device, 0x4321), [1, 2, 3, 4]);
@@ -518,7 +518,7 @@ fn invalid_snapshots_and_accesses_are_atomic_and_untraced() {
         assert!(b.mmio_read(addr, 1).is_err());
         assert!(b.mmio_write(addr, 1, 0).is_err());
     }
-    for (port, size) in [(0x3C4, 0), (0x3C4, 3), (0x3C2, 2), (0xFFFF, 2)] {
+    for (port, size) in [(0x3C4, 0), (0x3C4, 3), (0x3CA, 2), (0xFFFF, 2)] {
         assert!(b.port_read(port, size).is_err());
         assert!(b.port_write(port, size, 0).is_err());
     }
@@ -741,4 +741,230 @@ fn dac_snapshot_continues_each_shared_read_and_write_component_phase() {
             assert_eq!(b.device().save(), restored.device().save());
         }
     }
+}
+
+#[test]
+fn ibm_vga_subsystem_enable_gates_cpu_access_but_preserves_storage() {
+    let mut b = bus();
+    out(&mut b, 0x3C3, 1);
+    planar(&mut b);
+    reg(&mut b, 0x3C4, 2, 4);
+    b.mmio_write(MEMORY_BASE + 32, 1, 0xA5).unwrap();
+    out(&mut b, 0x3C3, 0xFE);
+    assert_eq!(input(&mut b, 0x3C3), 0);
+    assert_eq!(input(&mut b, 0x3C4), 0xFF);
+    assert_eq!(b.mmio_read(MEMORY_BASE + 32, 1).unwrap(), 0xFF);
+    reg(&mut b, 0x3C4, 2, 1);
+    b.mmio_write(MEMORY_BASE + 32, 1, 0).unwrap();
+    out(&mut b, 0x3C3, 0xFF);
+    assert_eq!(input(&mut b, 0x3C3), 1);
+    assert_eq!(read_reg(&mut b, 0x3C4, 2), 4);
+    assert_eq!(bytes(&mut b, 32), [0, 0, 0xA5, 0]);
+}
+
+#[test]
+fn ibm_vga_adapter_setup_and_enable_are_write_only_and_snapshot_state() {
+    let mut b = bus();
+    planar(&mut b);
+    out(&mut b, 0x46E8, 0x10);
+    assert_eq!(input(&mut b, 0x46E8), 0xFF);
+    assert_eq!(input(&mut b, 0x3C4), 0xFF);
+    let saved = b.device().save();
+    let mut restored = bus();
+    restored.device_mut().restore(&saved).unwrap();
+    for device in [&mut b, &mut restored] {
+        out(device, 0x46E8, 0x18);
+        assert_eq!(input(device, 0x3C4), 0xFF, "setup suppresses normal decode");
+        out(device, 0x46E8, 8);
+        assert_eq!(read_reg(device, 0x3C4, 2), 15);
+        out(device, 0x46E8, 0);
+        assert_eq!(device.mmio_read(MEMORY_BASE, 1).unwrap(), 0xFF);
+        out(device, 0x46E8, 8);
+    }
+    assert_eq!(b.device().save(), restored.device().save());
+}
+
+#[test]
+fn ibm_vga_colour_monitor_sense_follows_loaded_dac_zero() {
+    let mut b = bus();
+    out(&mut b, 0x3C3, 1);
+    for (rgb, sense) in [
+        ([0, 0, 0], 0x10),
+        ([0x12; 3], 0x10),
+        ([0x14; 3], 0x10),
+        ([0x1F; 3], 0x10),
+        ([0x20, 0, 0], 0),
+        ([0x2D, 0x14, 0x14], 0),
+        ([0x14, 0x2D, 0x14], 0),
+        ([0x14, 0x14, 0x2D], 0),
+        ([0x3F, 0, 0], 0),
+        ([0, 0x3F, 0], 0),
+        ([0, 0, 0x3F], 0),
+    ] {
+        out(&mut b, 0x3C8, 0);
+        for component in rgb {
+            out(&mut b, 0x3C9, component);
+        }
+        assert_eq!(input(&mut b, 0x3C2) & 0x10, sense);
+    }
+}
+
+#[test]
+fn ibm_vga_retrace_depends_on_virtual_clock_and_not_read_count() {
+    let mut b = bus();
+    let first = input(&mut b, 0x3BA);
+    for _ in 0..8 {
+        assert_eq!(input(&mut b, 0x3BA), first);
+    }
+    let mut states = std::collections::BTreeSet::new();
+    for _ in (0..40_000).step_by(31) {
+        b.tick(31);
+        let state = input(&mut b, 0x3BA) & 9;
+        assert_ne!(state, 8, "retrace implies display disable");
+        states.insert(state);
+    }
+    assert_eq!(states, [0, 1, 9].into());
+    let mut raster = bus();
+    raster.tick(30);
+    assert_eq!(input(&mut raster, 0x3BA), 1);
+    raster.tick(38 * 412 - 30);
+    assert_eq!(input(&mut raster, 0x3BA), 9);
+    raster.tick(38 * 2);
+    assert_eq!(input(&mut raster, 0x3BA), 1);
+    raster.tick(38 * (449 - 414));
+    assert_eq!(input(&mut raster, 0x3BA), first);
+}
+
+#[test]
+fn ibm_vga_font_upload_and_dac_protocol_survive_enable_cycle() {
+    let mut b = bus();
+    out(&mut b, 0x46E8, 0x08);
+    out(&mut b, 0x3C3, 1);
+    // IBM VGA/XGA Technical Reference, RAM Loadable Character Generator:
+    // sequential addressing, map 2 only, A0000h aperture, write mode zero.
+    reg(&mut b, 0x3C4, 0, 1);
+    reg(&mut b, 0x3C4, 2, 4);
+    reg(&mut b, 0x3C4, 4, 6);
+    reg(&mut b, 0x3C4, 0, 3);
+    reg(&mut b, 0x3CE, 4, 2);
+    reg(&mut b, 0x3CE, 5, 0);
+    reg(&mut b, 0x3CE, 6, 4);
+    reg(&mut b, 0x3CE, 8, 255);
+    for (row, byte) in [0x18, 0x3C, 0x66, 0x7E].into_iter().enumerate() {
+        b.mmio_write(MEMORY_BASE + 65 * 32 + row as u64, 1, byte)
+            .unwrap();
+    }
+    assert_eq!(
+        &card(&mut b).planes()[2][65 * 32..65 * 32 + 4],
+        &[0x18, 0x3C, 0x66, 0x7E]
+    );
+    assert_eq!(card(&mut b).planes()[0][65 * 32], 0);
+    out(&mut b, 0x3C8, 255);
+    for byte in [1, 2, 3, 4, 5, 6] {
+        out(&mut b, 0x3C9, byte);
+    }
+    out(&mut b, 0x3C7, 255);
+    assert_eq!(input(&mut b, 0x3C7), 3);
+    out(&mut b, 0x3C3, 0);
+    out(&mut b, 0x3C3, 1);
+    assert_eq!(
+        (0..6).map(|_| input(&mut b, 0x3C9)).collect::<Vec<_>>(),
+        [1, 2, 3, 4, 5, 6]
+    );
+    assert_eq!(input(&mut b, 0x3C8), 1);
+    out(&mut b, 0x3C2, 1);
+    reg(&mut b, 0x3D4, 0x0F, 0x42);
+    reg(&mut b, 0x3B4, 0x0F, 0x99);
+    assert_eq!(read_reg(&mut b, 0x3D4, 0x0F), 0x42);
+    assert_eq!(input(&mut b, 0x3BA), 0xFF);
+}
+
+#[test]
+fn ibm_vga_setup_register_is_accessible_only_in_setup_mode() {
+    let mut b = bus();
+    out(&mut b, 0x102, 0);
+    assert_eq!(input(&mut b, 0x3C3), 1);
+    out(&mut b, 0x46E8, 0x10);
+    out(&mut b, 0x102, 0);
+    out(&mut b, 0x46E8, 8);
+    assert_eq!(input(&mut b, 0x3C4), 0xFF);
+    out(&mut b, 0x102, 1);
+    assert_eq!(input(&mut b, 0x3C4), 0xFF);
+    out(&mut b, 0x46E8, 0x10);
+    assert_eq!(input(&mut b, 0x102), 0xFF);
+    out(&mut b, 0x102, 0xFF);
+    out(&mut b, 0x46E8, 8);
+    assert_eq!(input(&mut b, 0x3C4), 0);
+    out(&mut b, 0x3C3, 0);
+    let saved = b.device().save();
+    let mut restored = bus();
+    restored.device_mut().restore(&saved).unwrap();
+    assert_eq!(input(&mut restored, 0x3C3), 0);
+    assert_eq!(input(&mut restored, 0x3C4), 0xFF);
+    out(&mut restored, 0x3C3, 1);
+    assert_eq!(input(&mut restored, 0x3C4), 0);
+}
+
+#[test]
+fn ibm_vga_programmed_retrace_uses_crtc_totals_clock_and_overflow() {
+    let mut b = bus();
+    out(&mut b, 0x3C3, 1);
+    reg(&mut b, 0x3C4, 1, 1);
+    reg(&mut b, 0x3B4, 0, 5);
+    reg(&mut b, 0x3B4, 1, 4);
+    reg(&mut b, 0x3B4, 6, 8);
+    reg(&mut b, 0x3B4, 0x12, 4);
+    reg(&mut b, 0x3B4, 0x10, 7);
+    reg(&mut b, 0x3B4, 0x11, 9);
+    let tick_for_dot = |dot: u64, hz: u64| (dot * 3_579_545).div_ceil(hz * 3);
+    let mut at = |dot, expected| {
+        let target = tick_for_dot(dot, 25_175_000);
+        b.tick(target - b.clock().0);
+        assert_eq!(input(&mut b, 0x3BA) & 9, expected, "dot {dot}");
+    };
+    at(0, 0);
+    at(40, 1);
+    at(80, 0);
+    at(560, 9);
+    at(720, 1);
+    at(800, 0);
+    // Overflow extends retrace to line 263, with a 266-line frame.
+    reg(&mut b, 0x3B4, 7, 5);
+    let target = tick_for_dot(263 * 80, 25_175_000);
+    b.tick(target - b.clock().0);
+    assert_eq!(input(&mut b, 0x3BA) & 9, 9);
+    out(&mut b, 0x3C2, 4);
+    let frame_dots = 266 * 80;
+    let target = tick_for_dot(2 * frame_dots + 263 * 80, 28_322_000);
+    b.tick(target - b.clock().0);
+    assert_eq!(input(&mut b, 0x3BA) & 9, 9);
+    for (sequencer, dots_per_char, frame) in [(0, 9, 3), (8, 18, 4)] {
+        reg(&mut b, 0x3C4, 1, sequencer);
+        let target = tick_for_dot((frame * 266 + 263) * 10 * dots_per_char, 28_322_000);
+        b.tick(target - b.clock().0);
+        assert_eq!(input(&mut b, 0x3BA) & 9, 9);
+    }
+}
+
+#[test]
+fn enable_register_observation_is_passive_and_keeps_write_only_latches() {
+    let mut b = bus();
+    out(&mut b, 0x46E8, 0x18);
+    out(&mut b, 0x102, 0);
+    out(&mut b, 0x3C3, 0);
+    let saved = b.device().save();
+    assert_eq!(card(&mut b).subsystem_enable(), 0);
+    assert_eq!(card(&mut b).adapter_control(), 0x18);
+    assert_eq!(card(&mut b).setup_enable(), 0);
+    assert_eq!(b.device().save(), saved);
+    assert_eq!(input(&mut b, 0x46E8), 0xFF);
+    assert_eq!(input(&mut b, 0x102), 0xFF);
+    out(&mut b, 0x3C3, 1);
+    out(&mut b, 0x102, 1);
+    out(&mut b, 0x46E8, 8);
+    let saved = b.device().save();
+    assert_eq!(card(&mut b).subsystem_enable(), 1);
+    assert_eq!(card(&mut b).adapter_control(), 8);
+    assert_eq!(card(&mut b).setup_enable(), 1);
+    assert_eq!(b.device().save(), saved);
 }

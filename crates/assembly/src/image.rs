@@ -12,6 +12,15 @@ use std::path::PathBuf;
 pub enum ImageSource {
     /// The bytes inline in the config.
     Inline(Vec<u8>),
+    /// A complete EPROM retained for identification, with only its suffix mapped.
+    /// Container layouts come from measured image identities; see
+    /// `backlog/docs/design/firmware-and-machine-classes.md` §Video ROM placement.
+    RomContainer {
+        /// Full file bytes; SHA-256 pins always cover these bytes.
+        bytes: Vec<u8>,
+        /// First mapped byte in the container.
+        offset: usize,
+    },
     /// A file read at load time.
     File(PathBuf),
     /// Even/odd EPROM parts assembled before firmware identification.
@@ -24,11 +33,14 @@ pub enum ImageSource {
 }
 
 impl ImageSource {
-    /// The image's size in bytes if it is known without I/O ([`ImageSource::Inline`]
-    /// or [`ImageSource::Blank`]); file and interleaved sizes require I/O.
+    /// Mapped size when known without I/O, excluding a ROM container prefix.
+    /// File and interleaved sizes require I/O; an out-of-bounds prefix has no size.
     pub fn known_len(&self) -> Option<u64> {
         match self {
             ImageSource::Inline(bytes) => Some(bytes.len() as u64),
+            ImageSource::RomContainer { bytes, offset } => {
+                bytes.len().checked_sub(*offset).map(|len| len as u64)
+            }
             ImageSource::Blank { size } => Some(*size),
             ImageSource::File(_) | ImageSource::Interleaved(_) => None,
         }

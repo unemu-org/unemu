@@ -482,6 +482,8 @@ impl Merge for Rom {
     fn merge(&mut self, child: Self, m: &mut Merger<'_>) {
         if child.image.is_some() || child.parts.is_some() {
             self.provides = None;
+            self.offset = None;
+            m.out.remove_subtree(&join(&m.to, "offset"));
             m.out.remove_subtree(&join(&m.to, "provides"));
         }
         if child.parts.is_some() {
@@ -495,6 +497,7 @@ impl Merge for Rom {
         }
         m.scalar(&mut self.parts, child.parts, "parts");
         m.image(&mut self.image, &mut self.sha256, child.image, child.sha256);
+        m.scalar(&mut self.offset, child.offset, "offset");
         m.scalar(&mut self.base, child.base, "base");
         m.scalar(&mut self.provides, child.provides, "provides");
     }

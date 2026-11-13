@@ -775,6 +775,12 @@ pub(crate) fn mapped_cpu(
 fn load_image_bytes(source: &ImageSource) -> Result<Vec<u8>, ConfigError> {
     match source {
         ImageSource::Inline(bytes) => Ok(bytes.clone()),
+        ImageSource::RomContainer { bytes, offset } => bytes
+            .get(*offset..)
+            .map(<[u8]>::to_vec)
+            .ok_or_else(|| ConfigError::FirmwareParts {
+                message: "ROM container offset exceeds image length".into(),
+            }),
         ImageSource::Blank { size } => Ok(vec![0u8; *size as usize]),
         ImageSource::Interleaved(parts) => {
             let loaded = read_parts(parts)?;
@@ -880,10 +886,19 @@ fn resolve_file_sources_with_catalogue<'a>(
     {
         return Ok((Cow::Borrowed(config), Vec::new()));
     }
+    let bios_index = crate::firmware::system_bios(config).ok().and_then(|bios| {
+        config
+            .images
+            .iter()
+            .position(|image| std::ptr::eq(image, bios))
+    });
     let mut resolved = config.clone();
-    for image in &mut resolved.images {
+    for (index, image) in resolved.images.iter_mut().enumerate() {
         if matches!(image.source, ImageSource::File(_)) {
-            image.source = ImageSource::Inline(load_image_bytes(&image.source)?);
+            let bytes = load_image_bytes(&image.source)?;
+            let system_bios = bios_index == Some(index)
+                || image.base.checked_add(bytes.len() as u64) == Some(0x100000);
+            image.source = crate::firmware::rom_source(bytes, image.kind, system_bios, catalogue);
         }
     }
     resolved.check_part_sources()?;
