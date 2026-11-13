@@ -21,8 +21,9 @@
 //! | Figs. 2-36, 2-74–2-77: odd/even | READ: parity selects maps, GC read-map bit 1 selects the read pair, GR6 bit 1 enables A0 replacement; otherwise A0 passes unchanged | ASSUMED: replacement is gated by odd/even routing (writes with SR4 bit 2 clear; reads with GR5 bit 4 set), not GR6 bit 1 alone; replacement uses CPU A16 in map 00 and inverted MSR bit 5 in other maps |
 //! | Figs. 2-37 and 2-65: chain-4 | DERIVED: plane = a & 3; offset = (a & FFFC) OR ((a >> 14) & 3), preserving doubleword scanout placement after unchaining | ASSUMED: both reads and writes use this mapping and the full GC latch/logic/bit-mask pipeline, with sequencer map mask applied |
 //! | Figs. 2-69–2-80: read/write modes | READ: all four write modes, rotate, set/reset, logic in modes 0/2/3, bit/map masks, read-map select and colour comparison with don't-care | Memory contention omitted |
-//! | Alphanumeric Modes, Figs. 2-31, 2-33–2-36, 2-41, 2-48, 2-50–2-56, 2-59–2-61, 2-64–2-65, 2-82–2-83, 2-84, 2-86, 2-89 and 2-94 | Passive planar text state: geometry, start, stride, cursor shape, font maps, blink, palette and DAC | Whole cells only; raster timing, panning, split screens and cursor skew omitted; glyph rasterisation belongs to the presenter |
-//! | Graphics Modes, Figs. 2-31, 2-50, 2-60–2-65, 2-75, 2-84–2-89 | Planar 16-colour and 256-colour serializers, logical geometry, start/stride, palette and screen-off | CGA-interleaved shift, mismatched GC/AC serializer settings, split screen, pixel panning, smooth scrolling and mid-frame register changes unmodelled; unsupported serializer settings blank the frame. READ: CMS0/SRC substitute row-scan bits into MA13/MA14 (Fig. 2-64), including mode 06h. Count-by-two/four variations and cycle-exact raster timing not claimed. Dot and scan-line repeats accompany logical pixels for presentation; Shift 4/Shift Load are ignored in Extended Graphics as specified in Fig. 2-31 |
+//! | Alphanumeric Modes, Figs. 2-31, 2-33–2-36, 2-41, 2-48, 2-50–2-56, 2-59–2-61, 2-64–2-65, 2-82–2-83, 2-84, 2-86, 2-89 and 2-94 | Passive planar text state: geometry, start, stride, cursor shape, font maps, blink, palette and DAC | Ordinary cell grids plus indexed raster output for panning, preset row scan and splits; cursor skew omitted |
+//! | Graphics Modes, Figs. 2-31, 2-50, 2-60–2-65, 2-75, 2-84–2-89 | Planar 16-colour and 256-colour serializers, logical geometry, start/stride, palette and screen-off | CGA-interleaved shift, mismatched GC/AC serializer settings, mid-frame changes other than the split and smooth scrolling finer than a frame unmodelled; unsupported serializer settings blank the frame. READ: CMS0/SRC substitute row-scan bits into MA13/MA14 (Fig. 2-64), including mode 06h. Count-by-two/four variations and cycle-exact raster timing not claimed. Dot and scan-line repeats accompany logical pixels for presentation; Shift 4/Shift Load are ignored in Extended Graphics as specified in Fig. 2-31 |
+//! | Figs. 2-48–2-50, 2-53–2-54, 2-60, 2-66, 2-84, 2-87–2-88; Split Screen Operation | READ: start-address retrace latch, pixel/byte panning, preset row scan and 10-bit physical-line compare; AC bit 5 suppresses lower-screen pixel panning | ASSUMED frame approximation: CRTC 08h shares the start-address latch; AC panning latches at retrace end; odd packed values ignore bit 0; split begins after the compared line and resets row/double-scan phase. Byte pan in supported single-shift modes is inferred; see observation.md §Frame scrolling |
 //! | Mode 13h internal palette, Fig. 2-89 and VGA Programming Considerations, pp. 2-96–2-97 | DERIVED/ASSUMED: each four-bit sample passes through Color Plane Enable and the internal palette low nibble; Color Select, P54S and palette high bits do not affect paired eight-bit output | IBM says "the 8-bit attribute is the digital color value to the video DAC" and "should not modify the contents of the Internal Palette registers". The nonidentity-palette behaviour is a model inference, not verified on physical hardware |
 //! | Character Map Select / colour path | Compatibility policy: attribute bit 3 selects the font and remains in the foreground index; Color Plane Enable masks it | Maintainer-selected policy, supported by Linux vgacon.c, vgacon_do_font_op (512-character mode writes CPE=07h), DOSBox Staging vga_draw.cpp, draw_text_line_from_dac_palette, and 86Box vid_svga_render.c, svga_render_text_80 (foreground keeps all four attribute bits) |
 //! | Figs. 2-51 and 2-61: cursor start / underline | ASSUMED deviation: register values are zero-based scan lines, without adding one for the manual's minus-one wording | SeaVGABIOS stdvgamodes.c crtc_07 uses CR09=4Fh and CR14=0Fh; adding one would place its underline outside the 16-line cell. Cursor start uses the same zero-based convention; no physical-card verification |
@@ -60,8 +61,9 @@
 //! Byte I/O and adjacent little-endian word/dword I/O are accepted when every
 //! constituent port belongs to the device (including index/data OUTW). MMIO
 //! accepts widths 1–8; trailing unselected bytes float FF. Invalid accesses
-//! have no effects or traces. Version-3 snapshots preserve all hardware state
-//! and virtual trace time; trace policy, history and drops remain run-scoped.
+//! have no effects or traces. Version-4 snapshots preserve address, row and pixel-panning latches, all hardware state
+//! and virtual trace time; version 3 initializes display latches from live registers.
+//! Trace policy, history and drops remain run-scoped.
 //!
 //! IBM VGA/XGA Technical Reference, General Registers, Video Subsystem Enable
 //! (Fig. 2-27), reserves 3C3h. IBM Personal System/2 Models 50 and 60
@@ -82,7 +84,7 @@
 use device::{AccessDir, Device, DeviceError, NextEvent, TraceEvent, VClock};
 
 const NAME: &str = "vga";
-const VERSION: u8 = 3;
+const VERSION: u8 = 4;
 /// First address of the claimed VGA MMIO aperture, including unselected maps.
 pub const MEMORY_BASE: u64 = 0xA_0000;
 /// Size of the claimed VGA aperture in bytes.
@@ -97,6 +99,29 @@ const AC_MASKS: [u8; 21] = [
 ];
 const HEADER_LEN: usize = 12 + 4 + 5 + 25 + 9 + 21 + 256 * 3 + 16;
 const SNAPSHOT_LEN: usize = HEADER_LEN + 4 * PLANE_LEN;
+
+struct RasterTiming {
+    characters: u128,
+    horizontal: (u128, u128),
+    vertical: (u128, u128),
+    retrace: (u128, u128),
+    character_rate: (u128, u128),
+}
+
+impl RasterTiming {
+    fn edge_count(&self, line: u128) -> u128 {
+        let period = self.horizontal.0 * self.vertical.0;
+        let edge = (line % self.vertical.0) * self.horizontal.0;
+        (self.characters + period - edge) / period
+    }
+
+    fn next_edge(&self, line: u128) -> Option<VClock> {
+        let edge = (line % self.vertical.0) * self.horizontal.0;
+        let next_character = self.edge_count(line) * self.horizontal.0 * self.vertical.0 + edge;
+        let next_tick = (next_character * self.character_rate.1).div_ceil(self.character_rate.0);
+        u64::try_from(next_tick).ok().map(VClock)
+    }
+}
 
 /// IBM VGA storage and CPU access pipeline behind [`Device`].
 ///
@@ -124,6 +149,9 @@ pub struct Vga {
     subsystem_enable: u8,
     adapter_control: u8,
     setup_enable: u8,
+    display_start: u16,
+    display_pan: u8,
+    display_row: u8,
     now: VClock,
     trace: device::TraceBuffer,
 }
@@ -154,6 +182,9 @@ impl Vga {
             subsystem_enable: 1,
             adapter_control: 8,
             setup_enable: 1,
+            display_start: 0,
+            display_pan: 0,
+            display_row: 0,
             now: VClock::ZERO,
             trace: device::TraceBuffer::default(),
         }
@@ -284,20 +315,35 @@ impl Vga {
     /// Before a usable CRTC is programmed, an ASSUMED ~70 Hz polling raster
     /// (38 PIT clocks/line, 449 lines) permits firmware's initial sync probes.
     fn input_status_one(&self) -> u8 {
+        let timing = self.raster_timing(self.now);
+        let (htotal, hdisplay) = timing.horizontal;
+        let (vtotal, vdisplay) = timing.vertical;
+        let (start, width) = timing.retrace;
+        let column = timing.characters % htotal;
+        let line = timing.characters / htotal % vtotal;
+        let retrace = (line + vtotal - start % vtotal) % vtotal < width;
+        u8::from(column >= hdisplay || line >= vdisplay || retrace) | (u8::from(retrace) << 3)
+    }
+
+    // Status polling and the display latch must cross the same virtual raster.
+    fn raster_timing(&self, now: VClock) -> RasterTiming {
         let c = &self.crtc;
-        let htotal = u64::from(c[0]) + 5;
-        let hdisplay = u64::from(c[1]) + 1;
+        let htotal = u128::from(c[0]) + 5;
+        let hdisplay = u128::from(c[1]) + 1;
         let vtotal =
-            u64::from(c[6]) + (u64::from(c[7] & 1) << 8) + (u64::from(c[7] & 0x20) << 4) + 2;
+            u128::from(c[6]) + (u128::from(c[7] & 1) << 8) + (u128::from(c[7] & 0x20) << 4) + 2;
         let vdisplay =
-            u64::from(c[0x12]) + (u64::from(c[7] & 2) << 7) + (u64::from(c[7] & 0x40) << 3) + 1;
+            u128::from(c[0x12]) + (u128::from(c[7] & 2) << 7) + (u128::from(c[7] & 0x40) << 3) + 1;
         if c[0] < 5 || htotal <= hdisplay || vtotal <= vdisplay {
-            let phase = self.now.0 % (38 * 449);
-            let line = phase / 38;
-            let retrace = (412..414).contains(&line);
-            return u8::from(line >= 400 || phase % 38 >= 30 || retrace) | (u8::from(retrace) << 3);
+            return RasterTiming {
+                characters: u128::from(now.0),
+                horizontal: (38, 30),
+                vertical: (449, 400),
+                retrace: (412, 2),
+                character_rate: (1, 1),
+            };
         }
-        let dot_hz: u128 = if self.misc & 0x0C == 4 {
+        let dot_hz = if self.misc & 0x0c == 4 {
             28_322_000
         } else {
             25_175_000
@@ -305,14 +351,51 @@ impl Vga {
         let dots_per_char = if self.sequencer[1] & 1 != 0 { 8 } else { 9 }
             * if self.sequencer[1] & 8 != 0 { 2 } else { 1 };
         // The AT oscillator supplies exactly 3,579,545 / 3 PIT clocks/s.
-        let dots = u128::from(self.now.0) * dot_hz * 3 / 3_579_545;
-        let chars = dots / dots_per_char;
-        let column = (chars % u128::from(htotal)) as u64;
-        let line = ((chars / u128::from(htotal)) % u128::from(vtotal)) as u64;
-        let start = u64::from(c[0x10]) + (u64::from(c[7] & 4) << 6) + (u64::from(c[7] & 0x80) << 2);
-        let width = (u64::from(c[0x11] & 15) + 16 - (start & 15) - 1) % 16 + 1;
-        let retrace = (line + vtotal - start % vtotal) % vtotal < width;
-        u8::from(column >= hdisplay || line >= vdisplay || retrace) | (u8::from(retrace) << 3)
+        let character_rate = (dot_hz * 3, 3_579_545 * dots_per_char);
+        let start =
+            u128::from(c[0x10]) + (u128::from(c[7] & 4) << 6) + (u128::from(c[7] & 0x80) << 2);
+        let width = (u128::from(c[0x11] & 15) + 16 - (start & 15) - 1) % 16 + 1;
+        RasterTiming {
+            characters: u128::from(now.0) * character_rate.0 / character_rate.1,
+            horizontal: (htotal, hdisplay),
+            vertical: (vtotal, vdisplay),
+            retrace: (start, width),
+            character_rate,
+        }
+    }
+
+    /// IBM VGA/XGA Technical Reference Manual, Figs. 2-49, 2-50, 2-66,
+    /// 2-84 and 2-87–2-88. ASSUMED: undefined panning values ignore high
+    /// bits, and odd 256-colour values ignore bit zero. Nine-dot text maps
+    /// 0–7 to 1–8 dots and 8 to zero; eight-dot text uses 0–7 directly.
+    fn scroll(&self, text: bool) -> device::VgaScroll {
+        let pixel_pan = if text && self.sequencer[1] & 1 == 0 {
+            if self.display_pan & 8 != 0 {
+                0
+            } else {
+                (self.display_pan & 7) + 1
+            }
+        } else if !text && self.graphics[5] & 0x40 != 0 {
+            (self.display_pan & 7) / 2
+        } else {
+            self.display_pan & 7
+        };
+        device::VgaScroll {
+            pixel_pan,
+            // Extended Graphics ignores BP (IBM Fig. 2-49).
+            byte_pan: if !text && self.graphics[5] & 0x40 != 0 {
+                0
+            } else {
+                (self.display_row >> 5) & 3
+            },
+            preset_row: self.display_row & 31,
+            split_line: (u16::from(self.crtc[0x18])
+                | (u16::from(self.crtc[7] & 0x10) << 4)
+                | (u16::from(self.crtc[9] & 0x40) << 3))
+                + 1,
+            split_pan_reset: self.attribute[0x10] & 0x20 != 0,
+            double_scan: if self.crtc[9] & 0x80 != 0 { 2 } else { 1 },
+        }
     }
 
     fn read_port_byte(&mut self, port: u16) -> u8 {
@@ -609,9 +692,26 @@ impl Device for Vga {
     fn graphics_scanout(&self) -> Option<device::GraphicsScanout<'_>> {
         let c = &self.crtc;
         let a = &self.attribute;
-        if a[0x10] & 1 == 0 {
-            return None;
-        }
+        let text = if a[0x10] & 1 == 0 {
+            // Preserve cell inspection before horizontal timing is configured;
+            // the power-on nine-dot setting is not a programmed scrolling mode.
+            if c[0] < 5 {
+                return None;
+            }
+            let state = self.planar_text_scanout()?;
+            let scroll = state.scroll;
+            if scroll.pixel_pan == 0
+                && scroll.byte_pan == 0
+                && scroll.preset_row == 0
+                && scroll.split_line >= state.scan_lines
+            {
+                return None;
+            }
+            Some(state)
+        } else {
+            None
+        };
+        let scroll = self.scroll(text.is_some());
         let packed = self.graphics[5] & 0x40 != 0;
         let wide_pel = a[0x10] & 0x40 != 0;
         let lines = u16::from(c[0x12]) | (u16::from(c[7] & 2) << 7) | (u16::from(c[7] & 0x40) << 3);
@@ -619,11 +719,15 @@ impl Device for Vga {
         let row_scan_mask = (if c[0x17] & 1 == 0 { 0x2000 } else { 0 })
             | (if c[0x17] & 2 == 0 { 0x4000 } else { 0 });
         // CGA-compatible row scans address separate banks instead of repeating pixels.
-        let scan_repeat = if row_scan_mask == 0 {
-            row_scan_height
-        } else {
+        let scan_repeat = if scroll.preset_row != 0 || scroll.split_line <= lines {
             1
-        } * if c[9] & 0x80 != 0 { 2 } else { 1 };
+        } else {
+            (if row_scan_mask == 0 {
+                row_scan_height
+            } else {
+                1
+            }) * scroll.double_scan
+        };
         let repeat = (
             (if self.sequencer[1] & 8 != 0 { 2 } else { 1 }) * if wide_pel { 2 } else { 1 },
             scan_repeat,
@@ -638,6 +742,8 @@ impl Device for Vga {
             low | ((a[0x14] & 12) << 4)
         });
         Some(device::GraphicsScanout {
+            scroll,
+            text,
             planes: std::array::from_fn(|p| self.planes[p].as_slice()),
             dimensions: (
                 (u16::from(c[1]) + 1) * 8 / if wide_pel { 2 } else { 1 },
@@ -646,7 +752,7 @@ impl Device for Vga {
             repeat,
             row_scan_height,
             row_scan_mask,
-            start: u16::from_be_bytes([c[0x0C], c[0x0D]]),
+            start: self.display_start,
             row_stride: u16::from(c[0x13]) * 2,
             address_shift: if c[0x14] & 0x40 != 0 {
                 2
@@ -696,9 +802,11 @@ impl Device for Vga {
                 .map(|value| (value << 2) | (value >> 4))
         });
         Some(device::PlanarTextState {
+            scroll: self.scroll(true),
+            scan_lines: lines + 1,
             planes: [&self.planes[0], &self.planes[1], &self.planes[2]],
             dimensions: (u16::from(c[1]) + 1, rows),
-            start: u16::from_be_bytes([c[0x0C], c[0x0D]]),
+            start: self.display_start,
             cursor: u16::from_be_bytes([c[0x0E], c[0x0F]]),
             row_stride: u16::from(c[0x13]) * 2,
             address_shift: if c[0x14] & 0x40 != 0 {
@@ -781,14 +889,50 @@ impl Device for Vga {
         });
         Ok(())
     }
+    /// IBM VGA/XGA Technical Reference Manual, Start Address High/Low:
+    /// the start address latches at vertical retrace start. ASSUMED frame
+    /// approximation: sample CRTC 08h with that address bundle.
+    /// Michael Abrash, Graphics Programming Black Book, Chapter 30, The Split
+    /// Screen and Horizontal Panning: An Example, programs panning after sync
+    /// starts because its hardware effect begins on the next line. ASSUMED
+    /// frame-level approximation: sample AC panning at vertical retrace end.
     fn tick(&mut self, now: VClock) {
         debug_assert!(now >= self.now, "device clock moved backwards");
         if now >= self.now {
+            let previous = self.raster_timing(self.now);
+            let current = self.raster_timing(now);
+            let start = current.retrace.0;
+            let end = start + current.retrace.1;
+            if current.edge_count(start) > previous.edge_count(start) {
+                self.display_start = u16::from_be_bytes([self.crtc[0x0c], self.crtc[0x0d]]);
+                self.display_row = self.crtc[8] & 0x7f;
+            }
+            if current.edge_count(end) > previous.edge_count(end) {
+                self.display_pan = self.attribute[0x13];
+            }
             self.now = now;
         }
     }
-    fn next_event(&self, _now: VClock) -> NextEvent {
-        NextEvent::Dormant
+    fn next_event(&self, now: VClock) -> NextEvent {
+        let address_pending = self.display_start
+            != u16::from_be_bytes([self.crtc[0x0c], self.crtc[0x0d]])
+            || self.display_row != self.crtc[8] & 0x7f;
+        let pan_pending = self.display_pan != self.attribute[0x13];
+        if !address_pending && !pan_pending {
+            return NextEvent::Dormant;
+        }
+        // Both deadlines invert the status raster, so neither rounding nor a
+        // retrace pulse wrapping across vertical total can mix the frame pair.
+        let timing = self.raster_timing(now);
+        [
+            (address_pending, timing.retrace.0),
+            (pan_pending, timing.retrace.0 + timing.retrace.1),
+        ]
+        .into_iter()
+        .filter(|(pending, _)| *pending)
+        .filter_map(|(_, line)| timing.next_edge(line))
+        .min()
+        .map_or(NextEvent::Dormant, NextEvent::At)
     }
     fn irq_pending(&self) -> bool {
         false
@@ -826,10 +970,10 @@ impl Device for Vga {
             self.subsystem_enable,
             self.adapter_control,
             self.setup_enable,
-            0,
-            0,
-            0,
-            0,
+            self.display_start as u8,
+            (self.display_start >> 8) as u8,
+            self.display_pan,
+            self.display_row,
             0,
         ]);
         blob.extend_from_slice(&self.now.0.to_le_bytes());
@@ -846,7 +990,7 @@ impl Device for Vga {
         if blob.len() != SNAPSHOT_LEN {
             return Err(invalid("snapshot length mismatch"));
         }
-        if blob[0] != VERSION {
+        if !matches!(blob[0], 3 | VERSION) {
             return Err(invalid("unsupported snapshot version"));
         }
         if blob[3] > 7
@@ -889,13 +1033,27 @@ impl Device for Vga {
         if control[0] > 1
             || control[1] & !0x18 != 0
             || control[2] > 1
-            || control[3..].iter().any(|v| *v != 0)
+            || (blob[0] == 3 && control[3..].iter().any(|v| *v != 0))
+            || (blob[0] == VERSION && (control[5] > 15 || control[6] > 0x7f || control[7] != 0))
         {
             return Err(invalid("invalid subsystem enable or adapter setup state"));
         }
         candidate.subsystem_enable = control[0];
         candidate.adapter_control = control[1];
         candidate.setup_enable = control[2];
+        (candidate.display_start, candidate.display_pan) = if blob[0] == 3 {
+            (
+                u16::from_be_bytes([candidate.crtc[0x0c], candidate.crtc[0x0d]]),
+                candidate.attribute[0x13],
+            )
+        } else {
+            (u16::from_le_bytes([control[3], control[4]]), control[5])
+        };
+        candidate.display_row = if blob[0] == 3 {
+            candidate.crtc[8] & 0x7f
+        } else {
+            control[6]
+        };
         candidate.now = VClock(u64::from_le_bytes(take(blob, &mut cursor)));
         if candidate
             .sequencer

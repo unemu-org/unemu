@@ -164,6 +164,7 @@ fn planar_start_stride_geometry_and_cursor_are_crtc_driven() {
     text(&mut b, 160, b'T', 7);
     text(&mut b, 240, b'U', 7);
     reg(&mut b, 0x3D4, 0x0D, 80);
+    b.tick(40_000);
     reg(&mut b, 0x3D4, 0x0F, 160);
     let grid = render(&b);
     assert_eq!(grid.cell(0, 0).unwrap().glyph, b'S');
@@ -295,6 +296,7 @@ fn planar_doubleword_routes_counter_bits_twelve_and_thirteen_to_low_bits() {
         reg(&mut b, 0x3D4, 0x14, 0x40);
         reg(&mut b, 0x3D4, 0x0C, (start >> 8) as u8);
         reg(&mut b, 0x3D4, 0x0D, start as u8);
+        b.tick(40_000);
         let grid = render(&b);
         let cell = grid.cell(0, 0).unwrap();
         assert_eq!((cell.glyph, cell.attr), (b'D', 0x1e), "start={start:#06x}");
@@ -307,6 +309,7 @@ fn planar_word_address_wrap_selects_counter_bit_thirteen_or_fifteen() {
     plane_bytes(&mut b, 0x4000, b'F', 7);
     plane_bytes(&mut b, 0x4001, b'T', 7);
     reg(&mut b, 0x3D4, 0x0C, 0x20);
+    b.tick(40_000);
     reg(&mut b, 0x3D4, 0x17, 0xa3);
     assert_eq!(render(&b).cell(0, 0).unwrap().glyph, b'F');
     reg(&mut b, 0x3D4, 0x17, 0x83);
@@ -429,4 +432,58 @@ fn planar_forty_columns_preserve_the_divided_dot_clock() {
     );
     reg(&mut b, 0x3C4, 1, 0);
     assert_eq!(render(&b).appearance().unwrap().horizontal_repeat, 1);
+}
+
+#[test]
+fn scrolling_text_nine_dot_panning_raster_has_exact_pixels_and_extra_cell() {
+    for pan in 0..=8 {
+        let mut b = mode3();
+        colour(&mut b, 1, [63, 0, 0]);
+        colour(&mut b, 2, [0, 63, 0]);
+        reg(&mut b, 0x3D4, 0x0a, 0x20);
+        font(&mut b, 0, b'A', &[0x81]);
+        font(&mut b, 0, b'B', &[0x42]);
+        text(&mut b, 0, b'A', 1);
+        text(&mut b, 1, b'B', 2);
+        text(&mut b, 80, b'B', 2);
+        ac(&mut b, 0x13, pan);
+        b.tick(40_000);
+        let shift = if pan == 8 { 0 } else { pan + 1 };
+        if shift == 0 {
+            assert!(b.device().graphics_scanout().is_none());
+            continue;
+        }
+        let f = video::render_graphics(&b.device().graphics_scanout().expect("panned text raster"));
+        let pattern = [1, 0, 0, 0, 0, 0, 0, 1, 0, 0, 2, 0, 0, 0, 0, 2, 0, 0];
+        assert_eq!(
+            &f.indices[..9],
+            &pattern[usize::from(shift)..usize::from(shift) + 9]
+        );
+        if shift > 1 {
+            assert_eq!(f.indices[721 - usize::from(shift)], 2);
+        }
+        assert_eq!((f.width, f.height), (720, 400));
+        assert_eq!(f.palette[1], [255, 0, 0]);
+        assert_eq!(f.palette[2], [0, 255, 0]);
+    }
+}
+
+#[test]
+fn scrolling_text_preset_row_byte_pan_and_split_restart_font_and_address() {
+    let mut b = mode3();
+    reg(&mut b, 0x3D4, 0x0a, 0x20);
+    font(&mut b, 0, b'A', &[0x80, 0x40, 0x20]);
+    text(&mut b, 1, b'A', 1);
+    text(&mut b, 81, b'A', 2);
+    reg(&mut b, 0x3D4, 8, 0x21);
+    reg(&mut b, 0x3D4, 0x0d, 80);
+    reg(&mut b, 0x3D4, 0x11, 0x0e);
+    reg(&mut b, 0x3D4, 7, 0x0f);
+    reg(&mut b, 0x3D4, 9, 0x0f);
+    reg(&mut b, 0x3D4, 0x18, 1);
+    b.tick(40_000);
+    let f = video::render_graphics(&b.device().graphics_scanout().expect("scrolled text raster"));
+    assert_eq!(&f.indices[..4], &[0, 2, 0, 0]);
+    assert_eq!(&f.indices[720..724], &[0, 0, 2, 0]);
+    assert_eq!(&f.indices[1440..1444], &[1, 0, 0, 0]);
 }

@@ -206,7 +206,8 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   AC text/graphics selection; the window presents pixels with integer scaling.
   CRTC logical geometry, start/stride, double scanning and Fig. 2-65 addressing,
   plane enable, AC colours and PEL mask are covered. CGA-interleaved shift,
-  split screens, panning, smooth scrolling and mid-frame changes are unmodelled.
+  mid-frame changes other than the split and smooth-scrolling timing finer than
+  a frame remain unmodelled. Frame-level panning and splits are covered below.
   Existing text presets and golden expectations are unchanged. See
   [graphics scanout](design/observation.md#register-level-vga-graphics-scanout).
 
@@ -252,6 +253,26 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   and enters only at run boundaries. Pure and headless presenter tests cover
   conversion, capture, button ordering and guest-visible packets; host GUI grab
   behavior remains unmeasured. See [window input](design/observation.md#captured-ps2-mouse).
+
+## VGA frame scrolling and page flipping (2026-11-13)
+
+Register-level VGA now applies AC horizontal pixel panning in planar, chained
+and unchained 256-colour graphics and in text; CRTC byte panning and preset row
+scan; and the 10-bit line-compare split with the AC panning-compatibility flag.
+Start address and CRTC 08h latch at vertical retrace start; pixel panning
+latches at retrace end using virtual time. This pairs a start written during
+display with panning written during retrace for the next frame.
+Scrolled text captures use indexed pixels for partial cells; ordinary text
+captures retain their cell grid. Snapshots use version 4 and restore version 3
+with latches initialized from the live registers. Mock-bus pixel tests and a
+synthetic planar ROM cover scrolling and page flips without external firmware.
+
+IBM establishes start-address latch timing. Abrash documents programming
+panning after sync starts; sampling it at retrace end and CRTC 08h at retrace
+start are explicit frame-level assumptions. Undefined panning values and split
+boundary phase remain ASSUMED. CGA-interleaved shift, mid-frame changes other than the split, and
+smooth-scrolling timing finer than a frame remain unmodelled. See
+[frame scrolling](design/observation.md#frame-scrolling-split-screens-and-retrace-latches).
 
 ## IBM ISA VGA video ROM integration (2026-11-12)
 
@@ -840,7 +861,8 @@ no golden re-baseline was needed.
   [machine-config.md §Emulator-only firmware configuration](design/machine-config.md#emulator-only-firmware-configuration).
 
 - **2026-11-11 — Register-level VGA:** isolated registers, DAC, planar memory,
-  CPU read/write modes and version-3 snapshots (including ISA enable state). Register protocols, mode-3 logic,
+  CPU read/write modes and version-4 snapshots (including ISA enable state and
+  display latches, with version-3 migration). Register protocols, mode-3 logic,
   attribute widths and retrace status are checked against the IBM VGA/XGA
   Technical Reference Manual (May 1992), limited to the module coverage matrix:
   Figs. 2-19–2-26, 2-29–2-37, 2-58, 2-69–2-80, 2-81–2-89 and 2-94.

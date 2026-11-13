@@ -171,10 +171,15 @@ SeaVGABIOS `crtc_07` sets CR09=4Fh and CR14=0Fh: adding one to underline would
 put it outside the 16-line cell. Cursor start follows the same convention.
 This compatibility choice has not been checked on a physical VGA.
 
-The model renders complete character rows, using the CRTC offset independently
-of displayed width. Panning, split screens, preset row scan, cursor skew and
-raster-timed latching are not modelled. Double scanning determines the logical
-row count; the presenter keeps the font's logical scan-line height.
+Ordinary text captures render complete character rows using the CRTC offset
+independently of displayed width. A frame with pixel/byte panning, preset row
+scan or a visible split uses the existing indexed-pixel route instead: partial
+cells and splits through glyphs cannot be represented by `TextGrid`. The passive
+text capability remains available for cell inspection. ASSUMED compatibility
+policy: text stays a cell grid before a usable horizontal total is programmed
+(CRTC 00h below 5), including the deterministic reset state. The pixel renderer reads
+the guest fonts, ninth-dot line graphics, palette, underline and cursor; blink
+and cursor retain a steady visible phase. Cursor skew remains unmodelled.
 
 ### VGA CPU decode, monitor sense and polling
 
@@ -231,8 +236,9 @@ use 25.175 MHz. Beam phase is anchored at virtual clock zero; programming does
 not restart it. Cycle-exact blanking, retrace IRQs and mid-frame effects remain
 unmodelled. The virtual PIT clock derives from retired instructions and halted
 virtual time. Capture/presentation remain passive and share no poll phase.
-Version-3 snapshots retain all enable/setup state and virtual time; version-2
-snapshots are rejected. Existing text-only MDA/`vga-text` behavior is unchanged.
+Version-4 snapshots retain all enable/setup state, display latches and virtual
+time; version 3 migrates its live registers into the latches and version 2 is
+rejected. Existing text-only MDA/`vga-text` behavior is unchanged.
 
 Font upload remains the normal sequencer map-mask/GC CPU pipeline into plane 2
 (IBM RAM Loadable Character Generator, p. 2-101); DAC indexing remains one
@@ -327,13 +333,80 @@ Logical indices remain compact; repeated dots and lines are generated only by
 the presenter. No additional monitor aspect correction is applied. Fig. 2-31
 specifies that Shift 4 and Shift Load behave as zero in Extended Graphics.
 
+Frame scrolling and page flipping are modelled as described below.
 Unmodelled: CGA-interleaved shift (GC bit 5 without bit 6), mismatched GC/AC
-serializer settings, split screen (line compare), pixel panning, smooth scrolling
-(preset row scan), mid-frame register changes and raster timing. Unsupported
-serializer combinations blank deterministically; other deferred timing effects
-are ignored. Modes 04h/05h remain unmodelled and blank: GC shift-register mode
+serializer settings, mid-frame changes other than the line-compare split,
+and smooth-scrolling timing finer than a frame. Unsupported serializer
+combinations blank deterministically; other deferred timing effects are ignored. Modes 04h/05h remain unmodelled and blank: GC shift-register mode
 (bit 5 without bit 6) is not a supported serializer. Count-by-two/four variations
 outside the listed BIOS tables and nonstandard CRTC timing are not claimed.
+
+#### Frame scrolling, split screens and retrace latches
+
+READ: [IBM VGA/XGA Technical Reference Manual (May 1992)](https://bitsavers.trailing-edge.com/pdf/ibm/pc/cards/IBM_VGA_XGA_Technical_Reference_Manual_May92.pdf),
+VGA Function, Preset Row Scan (Fig. 2-49), Maximum Scan Line (Fig. 2-50),
+Start Address High/Low (Figs. 2-53–2-54), Overflow (Fig. 2-48), Offset
+(Fig. 2-60), Line Compare (Fig. 2-66), Attribute Mode Control (Fig. 2-84),
+Horizontal PEL Panning and Image Shifting (Figs. 2-87–2-88), and Split Screen
+Operation (p. 2-103).
+
+The start address and CRTC 08h (byte panning / preset row scan) latch at the
+start of vertical retrace. AC pixel panning latches at the end of vertical
+retrace. `tick` detects both crossings in the same integer virtual raster used
+by status polling, including a pulse wrapping across vertical total or a tick
+that skips several frames. Pending changes schedule the appropriate edge even
+without further VGA accesses. Reads and frame capture do not latch anything.
+
+READ: Michael Abrash, Graphics Programming Black Book, Chapter 30, “Video Est
+Omnis Divisa”, §The Split Screen and Horizontal Panning: An Example
+([chapter text](https://raw.githubusercontent.com/jagregory/abrash-black-book/master/src/chapter-30.md)),
+programs start address before vertical sync and panning after sync starts,
+because panning takes effect on the next line. ASSUMED frame-level policy:
+sample panning at retrace end rather than implementing per-line effects, and
+sample CRTC 08h together with the start-address bundle. This keeps a start
+written during display paired with panning written during retrace in the next
+frame. A panning write during display waits for the next retrace end. IBM
+explicitly establishes retrace-start timing for the start address. Other
+registers are sampled at capture; mid-frame changes apart from the split remain
+outside this model.
+
+AC 13h shifts planar graphics and eight-dot text by 0–7 pixels. Nine-dot text
+uses values 0–7 for shifts 1–8 and value 8 for no shift. In 256-colour output,
+values 0, 2, 4, 6 shift by 0, 1, 2, 3 logical pixels. IBM leaves odd values and
+other table entries undefined: ASSUMED policy ignores bit 0 in 256-colour
+output, masks planar/eight-dot values to three bits, and treats nine-dot values
+with bit 3 set as unshifted. This applies equally to chained and unchained RAM.
+Pixels crossing a byte or cell boundary fetch the next byte/cell; they do not
+wrap within the visible row.
+
+CRTC 08h supplies byte panning (bits 5–6) and initial row scan (bits 0–4).
+The row scan advances up to MSL and then clears, advancing the address by twice
+Offset; DSC repeats each row scan twice. Extended Graphics ignores byte
+panning, as Fig. 2-49 specifies. DERIVED/ASSUMED extension to the supported
+single-shift modes: byte panning adds a plane-byte displacement after address
+wiring in graphics, and a character-counter displacement in text. The manual
+describes its use in multiple-shift modes rather than settling these cases.
+Initial row scans above MSL use arithmetic continuation (ASSUMED invalid-mode
+policy; normal scrolling uses values at or below MSL).
+
+The 10-bit line compare combines CRTC 18h, 07h bit 4 and 09h bit 6 and counts
+physical output scan lines, including double scans. The lower screen begins
+after the compared line, restarts the memory counter at zero and clears the
+preset row scan. AC 10h bit 5 clears the decoded pixel displacement below the
+split; when clear the displacement continues. Byte panning remains active
+below the split (ASSUMED; IBM explicitly specifies pixel panning only).
+ASSUMED boundary convention: the compared line belongs to the upper screen;
+the first lower line resets row scan and double-scan phase. IBM describes the
+counter match and requires an even compare for double-scanned 200-line modes,
+but does not completely specify the boundary phase or odd compares. Tests also
+pin a deterministic result for odd boundaries. If preset row scan or a split
+would break uniform scan-line repetition, graphics captures retain physical
+lines (`repeat.1 = 1`); ordinary frames retain their compact logical geometry.
+
+VGA snapshot version 4 stores the address, CRTC 08h and AC 13h display latches
+in formerly reserved header bytes without changing the blob length. Version 3
+restores those latches from the corresponding live registers. Invalid latch/reserved
+bytes fail atomically. Trace history remains run-scoped.
 
 Isolation tests program six SeaVGABIOS `stdvgamodes.c` mode tables through
 ports and draw through CPU MMIO writes. They compare complete 12h and 13h

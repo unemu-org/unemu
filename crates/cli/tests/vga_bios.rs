@@ -551,6 +551,7 @@ fn vga_register_dump_preserves_state_and_reports_scanout_geometry() {
             .unwrap();
     }
     bus.port_write(0x3C6, 1, 0x7F).unwrap();
+    bus.tick(40_000);
     let before = bus.device().save();
     let vga = bus
         .device_mut()

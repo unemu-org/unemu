@@ -412,6 +412,8 @@ mod planar_tests {
         palette[3] = [0, 0, 255];
         palette[11] = [0, 255, 0];
         let mut state = PlanarTextState {
+            scroll: Default::default(),
+            scan_lines: 2,
             planes: [&glyphs, &attributes, &font],
             dimensions: (2, 1),
             start: 0,
@@ -470,6 +472,8 @@ mod planar_tests {
         let mut palette = [[0; 3]; 16];
         palette[2] = [255, 0, 0];
         let state = PlanarTextState {
+            scroll: Default::default(),
+            scan_lines: 2,
             planes: [&glyphs, &attributes, &font],
             dimensions: (40, 1),
             start: 0,

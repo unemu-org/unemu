@@ -22,11 +22,9 @@
 //!   [`TextGrid`] (§9.2, VGA text mode 3, 80×25).
 //! - [`CaptureFrameSink`] — a trivial sink that keeps the last frame, for tests.
 //!
-//! ## Not modelled yet
-//! - No glyph rasterisation: a text frame carries code-page bytes, raw attributes
-//!   and decoded styles, with optional guest fonts and palette, not pixels.
-//!   Mapping a glyph byte + font to pixels is a
-//!   presenter's concern, deliberately left out of the seam.
+//! Ordinary text frames carry code-page bytes, decoded styles and optional
+//! guest fonts for the presenter. Scrolled VGA text uses indexed pixels instead,
+//! because partial cells and splits through glyphs require rasterisation here.
 
 /// A finished frame handed across the [`FrameSink`] seam (§9.1).
 ///
@@ -55,6 +53,35 @@ pub struct IndexedPixels {
     pub palette: Box<[[u8; 3]]>,
 }
 
+struct VgaScanLine {
+    lower_screen: bool,
+    counter_row: u16,
+    row_scan: u16,
+    pixel_pan: u8,
+}
+
+/// IBM VGA/XGA Technical Reference Manual, Preset Row Scan, Maximum Scan Line,
+/// Line Compare and Attribute Mode Control. ASSUMED: the first lower line
+/// resets both row scan and double-scan phase.
+fn vga_scan_line(scroll: device::VgaScroll, y: u16, height: u8) -> VgaScanLine {
+    let lower_screen = y >= scroll.split_line;
+    let scan = if lower_screen {
+        (y - scroll.split_line) / u16::from(scroll.double_scan)
+    } else {
+        y / u16::from(scroll.double_scan) + u16::from(scroll.preset_row)
+    };
+    VgaScanLine {
+        lower_screen,
+        counter_row: scan / u16::from(height),
+        row_scan: scan % u16::from(height),
+        pixel_pan: if lower_screen && scroll.split_pan_reset {
+            0
+        } else {
+            scroll.pixel_pan
+        },
+    }
+}
+
 /// Render VGA graphics without reading ports or updating CPU latches.
 /// IBM VGA/XGA Technical Reference Manual, Graphics Modes, Figs. 2-65, 2-75
 /// and 2-84: planar bits select the attribute palette. Fig. 2-64 supplies
@@ -63,40 +90,46 @@ pub struct IndexedPixels {
 /// with the manual's qualifications in `backlog/docs/design/observation.md`.
 #[must_use]
 pub fn render_graphics(state: &device::GraphicsScanout<'_>) -> IndexedPixels {
+    if let Some(text) = &state.text {
+        return render_planar_text_pixels(text);
+    }
     let (width, height) = state.dimensions;
     let mut indices = vec![0; usize::from(width) * usize::from(height)];
     if state.enabled {
         for y in 0..height {
-            let (row, scan) = if state.row_scan_mask == 0 {
-                (y, 0)
-            } else {
-                (
-                    y / u16::from(state.row_scan_height),
-                    y % u16::from(state.row_scan_height),
-                )
-            };
+            let line = vga_scan_line(
+                state.scroll,
+                y * u16::from(state.repeat.1),
+                state.row_scan_height,
+            );
             for x in 0..width {
-                let group = if state.packed { x / 4 } else { x / 8 };
-                let address = state
-                    .start
-                    .wrapping_add(row.wrapping_mul(state.row_stride))
+                let x_source = x + u16::from(line.pixel_pan);
+                let group = if state.packed {
+                    x_source / 4
+                } else {
+                    x_source / 8
+                };
+                let address = (if line.lower_screen { 0 } else { state.start })
+                    .wrapping_add(line.counter_row.wrapping_mul(state.row_stride))
                     .wrapping_add(group);
                 let byte = match state.address_shift {
                     0 => address,
                     1 => (address << 1) | ((address >> state.word_wrap_bit) & 1),
                     _ => (address << 2) | ((address >> 12) & 3),
                 };
-                let byte =
-                    (byte & !state.row_scan_mask) | (((scan & 3) << 13) & state.row_scan_mask);
+                let byte = (byte.wrapping_add(u16::from(state.scroll.byte_pan))
+                    & !state.row_scan_mask)
+                    | (((line.row_scan & 3) << 13) & state.row_scan_mask);
                 let index = if state.packed {
-                    let value = state.planes[usize::from(x & 3)][usize::from(byte)];
+                    let value = state.planes[usize::from(x_source & 3)][usize::from(byte)];
                     (state.colours[usize::from(value & 15)] & 15)
                         | ((state.colours[usize::from(value >> 4)] & 15) << 4)
                 } else {
                     let mut colour = 0;
                     for plane in 0..4 {
-                        colour |= ((state.planes[plane][usize::from(byte)] >> (7 - (x & 7))) & 1)
-                            << plane;
+                        colour |=
+                            ((state.planes[plane][usize::from(byte)] >> (7 - (x_source & 7))) & 1)
+                                << plane;
                     }
                     state.colours[usize::from(colour)]
                 };
@@ -114,6 +147,71 @@ pub fn render_graphics(state: &device::GraphicsScanout<'_>) -> IndexedPixels {
         } else {
             [[0; 3]; 256]
         }),
+    }
+}
+
+/// Rasterise scrolled VGA text when clipping or a split cannot fit a cell grid.
+/// IBM VGA/XGA Technical Reference Manual, Alphanumeric Modes, Figs. 2-49,
+/// 2-50, 2-66, 2-84 and 2-88. Blink and cursor use a steady visible phase,
+/// matching ordinary text presentation without introducing a host clock.
+#[must_use]
+pub fn render_planar_text_pixels(state: &device::PlanarTextState<'_>) -> IndexedPixels {
+    let (cell_width, cell_height) = state.cell_size;
+    let width = state.dimensions.0 * u16::from(cell_width);
+    let height = state.scan_lines;
+    let mut indices = vec![0; usize::from(width) * usize::from(height)];
+    if state.enabled {
+        for y in 0..height {
+            let line = vga_scan_line(state.scroll, y, cell_height);
+            for x in 0..width {
+                let source = x + u16::from(line.pixel_pan);
+                let col = source / u16::from(cell_width);
+                let dot = source % u16::from(cell_width);
+                let address = (if line.lower_screen { 0 } else { state.start })
+                    .wrapping_add(line.counter_row.wrapping_mul(state.row_stride))
+                    .wrapping_add(col)
+                    .wrapping_add(u16::from(state.scroll.byte_pan));
+                let byte = match state.address_shift {
+                    0 => address,
+                    1 => (address << 1) | ((address >> state.word_wrap_bit) & 1),
+                    _ => (address << 2) | ((address >> 12) & 3),
+                };
+                let glyph = state.planes[0][usize::from(byte)];
+                let attr = state.planes[1][usize::from(byte)];
+                let map = usize::from(state.dual_font && attr & 8 != 0);
+                let bits = state.planes[2][state.font_offsets[map]
+                    + usize::from(glyph) * 32
+                    + usize::from(line.row_scan)];
+                let ink = if dot < 8 {
+                    bits & (0x80 >> dot) != 0
+                } else {
+                    state.line_graphics && (0xc0..=0xdf).contains(&glyph) && bits & 1 != 0
+                };
+                let underline = attr & 0x77 == 1 && line.row_scan == u16::from(state.underline);
+                let cursor = address == state.cursor
+                    && state.cursor_shape.0
+                    && line.row_scan >= u16::from(state.cursor_shape.1)
+                    && line.row_scan <= u16::from(state.cursor_shape.2);
+                let colour = if ink || underline || cursor {
+                    attr & 15
+                } else {
+                    (attr >> 4) & if state.blink_enabled { 7 } else { 15 }
+                };
+                indices[usize::from(y) * usize::from(width) + usize::from(x)] = colour;
+            }
+        }
+    }
+    IndexedPixels {
+        width,
+        height,
+        repeat: (state.horizontal_repeat, 1),
+        indices,
+        palette: (if state.enabled {
+            state.palette
+        } else {
+            [[0; 3]; 16]
+        })
+        .into(),
     }
 }
 

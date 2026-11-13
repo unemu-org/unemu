@@ -226,6 +226,7 @@ fn graphics_start_offset_word_wrap_and_doubleword_addressing() {
         }
         write(&mut b, offset, 15);
         reg(&mut b, 0x3D4, 0x0d, 80);
+        latch(&mut b);
         assert_eq!(render(&b).indices[0], expected);
         reg(&mut b, 0x3D4, 0x13, 0);
         assert_eq!(render(&b).indices[usize::from(render(&b).width)], expected);
@@ -234,11 +235,13 @@ fn graphics_start_offset_word_wrap_and_doubleword_addressing() {
     reg(&mut b, 0x3CE, 5, 2);
     write(&mut b, 0x4001, 3);
     reg(&mut b, 0x3D4, 0x0c, 0x20);
+    latch(&mut b);
     reg(&mut b, 0x3D4, 0x17, 0x83);
     assert_eq!(render(&b).indices[0], 3);
     reg(&mut b, 0x3D4, 0x17, 0xa3);
     assert_eq!(render(&b).indices[0], 0);
     reg(&mut b, 0x3D4, 0x0c, 0x10);
+    latch(&mut b);
     reg(&mut b, 0x3D4, 0x14, 0x40);
     assert_eq!(render(&b).indices[0], 3);
 }
@@ -321,9 +324,11 @@ fn mode_six_cga_row_scan_banks_preserve_two_hundred_logical_lines() {
         &[0, 0, 0, 0, 0, 0x17, 0, 0]
     );
     reg(&mut b, 0x3D4, 0x0c, 0x60);
+    latch(&mut b);
     assert_eq!(render(&b).indices, frame.indices);
     reg(&mut b, 0x3D4, 0x17, 0x80);
     reg(&mut b, 0x3D4, 0x0c, 0x10);
+    latch(&mut b);
     assert_eq!(&render(&b).indices[..8], &[0x17, 0, 0, 0, 0, 0, 0, 0]);
 }
 
@@ -359,4 +364,369 @@ fn firmware_graphics_modes_retain_dot_and_scan_line_repeats() {
         assert_eq!((frame.width, frame.height), dimensions);
         assert_eq!(frame.repeat, repeat);
     }
+}
+
+fn latch(b: &mut MockBus) {
+    b.tick(40_000);
+}
+
+fn pattern(b: &mut MockBus) {
+    for (plane, bytes) in [
+        (1, [0x55, 0x55]),
+        (2, [0x33, 0x33]),
+        (4, [0x0f, 0x0f]),
+        (8, [0, 0xff]),
+    ] {
+        reg(b, 0x3C4, 2, plane);
+        for (i, value) in bytes.into_iter().enumerate() {
+            write(b, i as u64, value);
+        }
+    }
+}
+
+#[test]
+fn scrolling_planar_panning_all_eight_positions_crosses_byte_boundary() {
+    for m in [0x0d, 0x12] {
+        for pan in 0..8 {
+            let mut b = mode(m);
+            pattern(&mut b);
+            ac(&mut b, 0x13, pan);
+            latch(&mut b);
+            let colours = if m == 0x12 { &ACTL_10 } else { &ACTL_0D };
+            let expected: Vec<_> = (pan..pan + 8).map(|x| colours[usize::from(x)]).collect();
+            assert_eq!(&render(&b).indices[..8], expected, "mode {m:x}, pan {pan}");
+        }
+    }
+}
+
+#[test]
+fn scrolling_packed_half_steps_and_assumed_odd_values_in_both_memory_layouts() {
+    for chained in [true, false] {
+        for pan in 0..8 {
+            let mut b = mode(0x13);
+            if chained {
+                for x in 0..8 {
+                    write(&mut b, x, x as u8 + 1);
+                }
+            } else {
+                reg(&mut b, 0x3C4, 4, 6);
+                reg(&mut b, 0x3D4, 0x14, 0);
+                reg(&mut b, 0x3D4, 0x17, 0xe3);
+                for x in 0..8 {
+                    reg(&mut b, 0x3C4, 2, 1 << (x & 3));
+                    write(&mut b, x / 4, x as u8 + 1);
+                }
+            }
+            ac(&mut b, 0x13, pan);
+            latch(&mut b);
+            let first = pan / 2 + 1;
+            assert_eq!(
+                &render(&b).indices[..4],
+                &[first, first + 1, first + 2, first + 3]
+            );
+        }
+    }
+}
+
+#[test]
+fn scrolling_byte_panning_selects_next_plane_byte_and_packed_ignores_it() {
+    for pan in 1..=3 {
+        let mut b = mode(0x12);
+        reg(&mut b, 0x3CE, 5, 2);
+        write(&mut b, u64::from(pan), pan);
+        reg(&mut b, 0x3D4, 8, pan << 5);
+        latch(&mut b);
+        assert_eq!(&render(&b).indices[..8], &[pan; 8]);
+    }
+    let mut b = mode(0x13);
+    write(&mut b, 0, 0x45);
+    reg(&mut b, 0x3D4, 8, 0x60);
+    assert_eq!(render(&b).indices[0], 0x45);
+}
+
+#[test]
+fn scrolling_preset_row_scan_advances_address_after_remaining_scans() {
+    let mut b = mode(0x12);
+    reg(&mut b, 0x3D4, 9, 0x43);
+    reg(&mut b, 0x3D4, 8, 2);
+    reg(&mut b, 0x3CE, 5, 2);
+    write(&mut b, 0, 1);
+    write(&mut b, 80, 2);
+    latch(&mut b);
+    let frame = render(&b);
+    let rows: Vec<_> = frame.indices.chunks(640).take(6).map(|r| r[0]).collect();
+    assert_eq!(frame.repeat.1, 1);
+    assert_eq!(rows, [1, 1, 2, 2, 2, 2]);
+}
+
+#[test]
+fn scrolling_line_compare_restarts_zero_and_optionally_resets_pixel_panning() {
+    for compat in [false, true] {
+        let mut b = mode(0x12);
+        pattern(&mut b);
+        reg(&mut b, 0x3C4, 2, 15);
+        reg(&mut b, 0x3CE, 5, 2);
+        write(&mut b, 80, 3);
+        reg(&mut b, 0x3D4, 0x0d, 80);
+        reg(&mut b, 0x3D4, 0x11, 0x0c);
+        reg(&mut b, 0x3D4, 7, 0x2e);
+        reg(&mut b, 0x3D4, 9, 0);
+        reg(&mut b, 0x3D4, 0x18, 1);
+        ac(&mut b, 0x13, 3);
+        ac(&mut b, 0x10, if compat { 0x21 } else { 1 });
+        latch(&mut b);
+        let f = render(&b);
+        assert_eq!(&f.indices[..5], &[3; 5]);
+        assert_eq!(
+            &f.indices[2 * 640..2 * 640 + 5],
+            if compat {
+                &[0, 1, 2, 3, 4]
+            } else {
+                &[3, 4, 5, 0x14, 7]
+            }
+        );
+    }
+}
+
+#[test]
+fn scrolling_line_compare_uses_both_overflow_bits_and_physical_double_scans() {
+    for target in [2_u16, 258, 514, 770] {
+        let mut b = mode(0x12);
+        reg(&mut b, 0x3D4, 0x11, 0x0c);
+        reg(&mut b, 0x3D4, 7, 0x4a | (((target >> 8) as u8 & 1) << 4));
+        reg(&mut b, 0x3D4, 9, 0x80 | (((target >> 9) as u8 & 1) << 6));
+        reg(&mut b, 0x3D4, 0x12, 0xff);
+        reg(&mut b, 0x3D4, 0x18, target as u8);
+        reg(&mut b, 0x3D4, 0x0d, 80);
+        reg(&mut b, 0x3D4, 0x13, 0);
+        reg(&mut b, 0x3CE, 5, 2);
+        write(&mut b, 0, 1);
+        write(&mut b, 80, 2);
+        latch(&mut b);
+        let f = render(&b);
+        assert_eq!((f.height, f.repeat.1), (1024, 1));
+        for y in [0, target, target + 1, target + 2] {
+            assert_eq!(
+                f.indices[usize::from(y) * 640],
+                if y <= target { 2 } else { 1 },
+                "target {target}, y {y}"
+            );
+        }
+    }
+}
+
+#[test]
+fn scrolling_start_and_pel_pan_latch_at_retrace_even_when_tick_skips_the_pulse() {
+    let mut b = mode(0x12);
+    reg(&mut b, 0x3D4, 0x11, 9);
+    for (r, v) in [
+        (0, 5),
+        (1, 0),
+        (6, 8),
+        (7, 0x10),
+        (9, 0x40),
+        (0x10, 7),
+        (0x12, 3),
+    ] {
+        reg(&mut b, 0x3D4, r, v);
+    }
+    pattern(&mut b);
+    reg(&mut b, 0x3C4, 2, 15);
+    reg(&mut b, 0x3CE, 5, 2);
+    write(&mut b, 80, 3);
+    let tick_for_dot = |dot: u64| (dot * 3_579_545).div_ceil(25_175_000 * 3);
+    b.tick(tick_for_dot(80));
+    reg(&mut b, 0x3D4, 0x0d, 80);
+    ac(&mut b, 0x13, 3);
+    let pending = b.device().save();
+    assert_eq!(
+        b.device().next_event(b.clock()),
+        device::NextEvent::At(device::VClock(tick_for_dot(560)))
+    );
+    assert_eq!(&render(&b).indices[..5], &[0, 1, 2, 3, 4]);
+    b.tick(tick_for_dot(560) - 1 - b.clock().0);
+    assert_eq!(&render(&b).indices[..5], &[0, 1, 2, 3, 4]);
+    b.tick(tick_for_dot(560) - b.clock().0);
+    assert_eq!(&render(&b).indices[..5], &[3; 5]);
+    assert_eq!(
+        b.device().next_event(b.clock()),
+        device::NextEvent::At(device::VClock(tick_for_dot(720)))
+    );
+    reg(&mut b, 0x3D4, 0x0d, 0);
+    assert_eq!(&render(&b).indices[..5], &[3; 5]);
+    b.tick(tick_for_dot(1600) - b.clock().0);
+    assert_eq!(&render(&b).indices[..5], &[3, 4, 5, 0x14, 7]);
+    b.device_mut().restore(&pending).unwrap();
+    assert_eq!(&render(&b).indices[..5], &[0, 1, 2, 3, 4]);
+    b.device_mut().tick(device::VClock(tick_for_dot(560)));
+    assert_eq!(&render(&b).indices[..5], &[3; 5]);
+}
+
+#[test]
+fn scrolling_snapshot_four_preserves_pending_and_three_migrates_live_registers() {
+    let mut b = mode(0x12);
+    pattern(&mut b);
+    reg(&mut b, 0x3D4, 0x0d, 1);
+    ac(&mut b, 0x13, 2);
+    let saved = b.device().save();
+    assert_eq!(saved[0], 4);
+    let mut old = saved.clone();
+    old[0] = 3;
+    let control = super::HEADER_LEN - 16;
+    old[control + 3..control + 8].fill(0);
+    b.device_mut().restore(&old).unwrap();
+    assert_eq!(&render(&b).indices[..4], &[0x3a, 0x3b, 0x3c, 0x3d]);
+    b.device_mut().restore(&saved).unwrap();
+    assert_eq!(&render(&b).indices[..4], &[0, 1, 2, 3]);
+    let mut bad = saved.clone();
+    bad[control + 5] = 16;
+    assert!(b.device_mut().restore(&bad).is_err());
+    assert_eq!(b.device().save(), saved);
+}
+
+fn scrolling_raster() -> MockBus {
+    let mut b = mode(0x12);
+    reg(&mut b, 0x3D4, 0x11, 9);
+    for (index, value) in [
+        (0, 5),
+        (1, 0),
+        (6, 8),
+        (7, 0x10),
+        (9, 0x40),
+        (0x10, 7),
+        (0x12, 3),
+    ] {
+        reg(&mut b, 0x3D4, index, value);
+    }
+    pattern(&mut b);
+    b
+}
+
+fn tick_at_dot(b: &mut MockBus, dot: u64) {
+    let target = (dot * 3_579_545).div_ceil(25_175_000 * 3);
+    b.tick(target - b.clock().0);
+}
+
+fn tick_before_dot(b: &mut MockBus, dot: u64) {
+    let target = (dot * 3_579_545).div_ceil(25_175_000 * 3) - 1;
+    b.tick(target - b.clock().0);
+}
+
+#[test]
+fn scrolling_active_start_and_retrace_pan_pair_for_next_frame() {
+    let mut b = scrolling_raster();
+    ac(&mut b, 0x13, 7);
+    tick_at_dot(&mut b, 720);
+    assert_eq!(&render(&b).indices[..5], &[7, 0x38, 0x39, 0x3a, 0x3b]);
+    tick_at_dot(&mut b, 880);
+    reg(&mut b, 0x3D4, 0x0d, 1);
+    assert_eq!(&render(&b).indices[..5], &[7, 0x38, 0x39, 0x3a, 0x3b]);
+    tick_at_dot(&mut b, 1360);
+    assert_ne!(b.port_read(0x3DA, 1).unwrap() & 8, 0);
+    ac(&mut b, 0x13, 0);
+    let end = (1520_u64 * 3_579_545).div_ceil(25_175_000 * 3);
+    assert_eq!(
+        b.device().next_event(b.clock()),
+        device::NextEvent::At(device::VClock(end))
+    );
+    tick_before_dot(&mut b, 1520);
+    assert_eq!(render(&b).indices[0], 0x3f);
+    tick_at_dot(&mut b, 1520);
+    assert_eq!(b.port_read(0x3DA, 1).unwrap() & 8, 0);
+    assert_eq!(&render(&b).indices[..5], &[0x38, 0x39, 0x3a, 0x3b, 0x3c]);
+    assert_eq!(b.device().next_event(b.clock()), device::NextEvent::Dormant);
+}
+
+#[test]
+fn scrolling_display_pan_waits_for_retrace_end_and_restores_pending_phase() {
+    let mut b = scrolling_raster();
+    tick_at_dot(&mut b, 80);
+    ac(&mut b, 0x13, 3);
+    let saved = b.device().save();
+    tick_at_dot(&mut b, 560);
+    assert_eq!(&render(&b).indices[..5], &[0, 1, 2, 3, 4]);
+    tick_before_dot(&mut b, 720);
+    assert_eq!(&render(&b).indices[..5], &[0, 1, 2, 3, 4]);
+    tick_at_dot(&mut b, 720);
+    assert_eq!(&render(&b).indices[..5], &[3, 4, 5, 0x14, 7]);
+    b.device_mut().restore(&saved).unwrap();
+    b.device_mut().tick(device::VClock(
+        (560_u64 * 3_579_545).div_ceil(25_175_000 * 3),
+    ));
+    assert_eq!(&render(&b).indices[..5], &[0, 1, 2, 3, 4]);
+    // A coarse tick crosses both edges without status polling.
+    b.device_mut().tick(device::VClock(
+        (1600_u64 * 3_579_545).div_ceil(25_175_000 * 3),
+    ));
+    assert_eq!(&render(&b).indices[..5], &[3, 4, 5, 0x14, 7]);
+}
+
+#[test]
+fn scrolling_crtc_row_pan_latches_with_start_and_snapshot_preserves_it() {
+    let mut b = scrolling_raster();
+    reg(&mut b, 0x3D4, 9, 0x43);
+    reg(&mut b, 0x3C4, 2, 15);
+    reg(&mut b, 0x3CE, 5, 2);
+    for (offset, colour) in [(0, 1), (1, 2), (80, 3), (81, 4), (161, 5)] {
+        write(&mut b, offset, colour);
+    }
+    tick_at_dot(&mut b, 80);
+    reg(&mut b, 0x3D4, 8, 0x21);
+    reg(&mut b, 0x3D4, 0x0d, 80);
+    assert_eq!(&render(&b).indices[..5], &[1; 5]);
+    tick_before_dot(&mut b, 560);
+    assert_eq!(&render(&b).indices[..5], &[1; 5]);
+    tick_at_dot(&mut b, 560);
+    let f = render(&b);
+    assert_eq!(f.repeat.1, 1);
+    assert_eq!(
+        f.indices.chunks(8).map(|line| line[0]).collect::<Vec<_>>(),
+        [4, 4, 4, 5]
+    );
+    reg(&mut b, 0x3D4, 8, 0);
+    let saved = b.device().save();
+    b.device_mut().restore(&saved).unwrap();
+    assert_eq!(render(&b), f);
+    let control = super::HEADER_LEN - 16;
+    assert_eq!(saved[control + 6], 0x21);
+    let next_start = (1360_u64 * 3_579_545).div_ceil(25_175_000 * 3);
+    assert_eq!(
+        b.device().next_event(b.clock()),
+        device::NextEvent::At(device::VClock(next_start))
+    );
+    let mut invalid = saved.clone();
+    invalid[control + 6] = 0x80;
+    assert!(b.device_mut().restore(&invalid).is_err());
+    assert_eq!(b.device().save(), saved);
+    let mut old = saved;
+    old[0] = 3;
+    old[control + 3..control + 8].fill(0);
+    b.device_mut().restore(&old).unwrap();
+    assert_eq!(&render(&b).indices[..5], &[3; 5]);
+    old[12 + 4 + 5 + 8] = 0x21;
+    b.device_mut().restore(&old).unwrap();
+    assert_eq!(render(&b), f);
+}
+
+#[test]
+fn scrolling_retrace_end_wraps_across_total_and_skipped_pulses() {
+    let mut b = scrolling_raster();
+    reg(&mut b, 0x3D4, 0x10, 9);
+    reg(&mut b, 0x3D4, 0x11, 11);
+    tick_at_dot(&mut b, 160);
+    ac(&mut b, 0x13, 5);
+    let end = (880_u64 * 3_579_545).div_ceil(25_175_000 * 3);
+    assert_eq!(
+        b.device().next_event(b.clock()),
+        device::NextEvent::At(device::VClock(end))
+    );
+    tick_at_dot(&mut b, 800);
+    assert_ne!(b.port_read(0x3DA, 1).unwrap() & 8, 0);
+    assert_eq!(&render(&b).indices[..3], &[0, 1, 2]);
+    tick_at_dot(&mut b, 880);
+    assert_eq!(b.port_read(0x3DA, 1).unwrap() & 8, 0);
+    assert_eq!(&render(&b).indices[..3], &[5, 0x14, 7]);
+    ac(&mut b, 0x13, 2);
+    tick_at_dot(&mut b, 16_800);
+    assert_eq!(&render(&b).indices[..3], &[2, 3, 4]);
 }

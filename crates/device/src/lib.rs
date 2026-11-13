@@ -404,12 +404,49 @@ pub struct TextModeState<'a> {
     pub attributes: TextAttributeSet,
 }
 
+/// VGA frame addressing after the retrace latch (IBM VGA/XGA Technical
+/// Reference Manual, Preset Row Scan, Line Compare and Horizontal PEL Panning).
+/// Physical scan lines keep split boundaries independent of line repetition.
+#[derive(Clone, Copy, Debug)]
+pub struct VgaScroll {
+    /// Decoded left shift in logical pixels (or text dots).
+    pub pixel_pan: u8,
+    /// Byte panning: plane bytes after wiring in graphics, character-counter
+    /// units before wiring in text (ASSUMED single-shift interpretation).
+    pub byte_pan: u8,
+    /// Initial row scan; reset to zero below the split.
+    pub preset_row: u8,
+    /// First physical scan line below the comparison, target + 1.
+    pub split_line: u16,
+    /// Clear the decoded pixel displacement below the split.
+    pub split_pan_reset: bool,
+    /// Physical scan lines per row-scan count (1 or 2).
+    pub double_scan: u8,
+}
+
+impl Default for VgaScroll {
+    fn default() -> Self {
+        Self {
+            pixel_pan: 0,
+            byte_pan: 0,
+            preset_row: 0,
+            split_line: 1024,
+            split_pan_reset: false,
+            double_scan: 1,
+        }
+    }
+}
+
 /// Passive planar alphanumeric scanout (IBM VGA/XGA Technical Reference Manual,
 /// Alphanumeric Modes, Figs. 2-33–2-35 and 2-60–2-61).
-/// Register decoding belongs to the card; glyph rasterisation belongs to the
-/// presenter. See `backlog/docs/design/observation.md`, §Typed capabilities and route ownership.
+/// Register decoding belongs to the card; glyph rasterisation belongs to
+/// renderers. See `backlog/docs/design/observation.md`, §Typed capabilities and route ownership.
 #[derive(Clone, Debug)]
 pub struct PlanarTextState<'a> {
+    /// Frame scrolling and split-screen addressing.
+    pub scroll: VgaScroll,
+    /// Visible physical scan lines, including partial character rows.
+    pub scan_lines: u16,
     /// Character codes, attributes and font bytes, in separate planes.
     pub planes: [&'a [u8]; 3],
     /// Visible character columns and complete character rows.
@@ -451,6 +488,11 @@ pub struct PlanarTextState<'a> {
 /// Figs. 2-50, 2-65, 2-75, 2-84. See `backlog/docs/design/observation.md`.
 #[derive(Clone, Debug)]
 pub struct GraphicsScanout<'a> {
+    /// Frame scrolling and split-screen addressing.
+    pub scroll: VgaScroll,
+    /// When present, render this scrolled text instead of the graphics fields;
+    /// a cell grid cannot represent clipping within a glyph.
+    pub text: Option<PlanarTextState<'a>>,
     /// Four independent 64 KiB memory planes.
     pub planes: [&'a [u8]; 4],
     /// Logical pixels, excluding repeated dots and scan lines.
