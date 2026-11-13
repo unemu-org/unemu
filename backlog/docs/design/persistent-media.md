@@ -82,8 +82,8 @@ filesystem reflinks.
 | Block-mapped overlay, qcow-like | Data, allocation maps and generation roots must be published in a consistent order. Torn mapping/root changes need redundant roots or their own journal. | Changed blocks plus maps, allocation metadata and retained old blocks; repeated writes within a generation can reuse space. | More invariants: allocation, map updates, reference ownership and reclamation. Much larger fault-injection surface for these floppy sizes. | Select an old root; reclaiming unreachable blocks is separate work. |
 
 Choose the append-only journal: incremental command persistence is the requested
-behavior, and a floppy does not need an on-disk block lookup tree. Reconstruct
-the entire working image in memory at mount. For example, a one-sector command
+behavior, without an on-disk block lookup tree. Replay only sector replacements
+into a sparse in-memory overlay at mount. For example, a one-sector command
 adds two 640-byte frames (1,280 bytes); a full 1.44 MB image copy is 1,474,560
 bytes. Heavy repeated overwrites can make the journal larger than full copies;
 retention and export are explicit parts of the design.
@@ -117,7 +117,7 @@ or random identifier. SHA-256 fields contain the raw 32-byte digest.
 | 96–127 | 32 | SHA-256 of header bytes 0–95 |
 
 Before applying any frame, check the header, image length, configured geometry
-length and base digest against the exact bytes loaded for this assembly. A
+length and base digest against the once-verified base identity for this assembly. A
 different base, even one byte different at the same size, is a hard mount error.
 Never create a fresh journal over an existing invalid file or silently mount it
 as volatile. An incomplete header is not a recoverable tail.
@@ -312,7 +312,7 @@ WRITE DATA. The in-memory implementation retains today's zero-read and growth
 semantics for short isolation-test media. Normal assembly still validates a
 full geometry-sized floppy image.
 
-The journal adapter contains an ordinary in-memory image plus an output sink.
+The journal adapter contains a sparse sector overlay plus an output sink.
 It first applies the batch to memory exactly as today, then mirrors the final
 sector bytes and COMMAND_END. The device sees no file, pathname, flush policy,
 generation, lock, or host error. Write protection remains a controller-visible
@@ -334,14 +334,9 @@ assembly validates that the configured CHS capacity matches that image. No IDE
 format discriminator or media-specific sink hook is needed. `media generations`,
 `verify`, `rollback` and `commit` take the same `--base` and `--journal` arguments;
 the offline API derives capacity from the base length, without a floppy preset.
-`JournalMedia` retains both the immutable base and the working image, about twice
-the disk size in steady state before other emulator allocations. Mount peaks
-higher because loaded/resolved buffers and recovery copies can overlap. The base
-is SHA-256 checked on every assembly, including large hard disks; hashing is not
-skipped for speed. The follow-up bead **large disk images without whole-image
-memory copies** will address this memory cost. It must retain the read-only,
-hash-identified base and one sector-overlay interface so future hash-linked
-layers can replace the current base+journal without weakening integrity.
+`JournalMedia` shares a read-only verified base and keeps only written sectors
+in a deterministic `BTreeMap`. See § Memory and hashing for the bounded-memory
+mount, maintenance and immutable-source checks.
 
 ATA-2 §7 WRITE SECTORS (30h/31h), WRITE MULTIPLE (C5h), and §8.4 PIO data-out
 supply ordered whole-sector batches. Each sector becomes committed after its
@@ -385,19 +380,20 @@ and reads it through `TYPE C:ZZ`. It also exercises all four offline CLI tools
 and checks that the base image stays byte-identical. The existing ATA MockBus
 contract tests continue to define command batching and readonly ERR/ABRT.
 
-The assembly media loader must retain the original `ImageSource::File` metadata
-while resolving bytes: today's conversion to `Inline` otherwise loses the path
-needed for validation. Hash the single read already used for mounting, replay
-the journal into those bytes, then construct the drive. Do not reread the base
-between hashing and mounting. All host paths, journal ownership and finalization
-belong to assembly/frontend code, never the generic machine core.
+The assembly media loader retains the original `ImageSource::File` metadata
+and a `VerifiedBase` handle for journal drives, including removable floppies.
+It streams the base hash once, checks geometry and the configured digest, then
+shares that identity and open read-only descriptor with binding and replay.
+It does not resolve a journal drive into `Inline` bytes. All host paths, journal
+ownership and finalization belong to assembly/frontend code, never the generic
+machine core.
 
 Machine-file lowering retains the verified base digest in
 `DriveConfig.expected_sha256` alongside its file source, even when no explicit
-`sha256` pin is present. Assembly compares that digest after its single file read
+`sha256` pin is present. Assembly compares that digest after its streaming hash
 and before opening journals or creating locks. A mismatch names the drive and
 both hashes; it takes precedence over an existing journal's base-binding error.
-The same checked buffer then supplies journal binding, replay and guest reads.
+The checked descriptor supplies journal binding, replay and guest reads.
 Machine-file synthetic readers refuse journal reads by default through
 `ImageReader::read_journal_base`; only file-backed implementations may opt in.
 This preserves the immutable file base needed to reopen a journal and to use
@@ -414,7 +410,7 @@ is needed.
 
 For every nonempty completed command, in order:
 
-1. Apply all replacement bytes to the in-memory image.
+1. Apply all replacement bytes to the in-memory sparse overlay.
 2. Encode and `write_all` the SECTOR frames, followed by COMMAND_END, retrying
    interrupted writes and handling short writes without duplicating bytes.
 3. Flush any userspace buffer, then perform a durability synchronization of
@@ -459,11 +455,12 @@ consistency, even when the guest is at a prompt.
 
 ### Implemented host sink boundary
 
-`media::JournalMedia` owns the reconstructed image and host journal. Assembly
+`media::JournalMedia` owns the sparse working overlay and host journal. Assembly
 wraps its `(LBA, complete sector)` command batches in `device::SectorMedia`;
 this keeps host I/O out of device crates without adding a dependency between the
-format crate and device contracts. `JournalMedia::open` takes the exact loaded
-base bytes, geometry length and a frontend-owned `SinkStatus`. Each media session
+format crate and device contracts. `JournalMedia::open_verified` takes the shared
+verified base, geometry length and a frontend-owned `SinkStatus`. The byte-backed
+`open` entry point remains available for CMOS and small callers. Each media session
 uses its own status handle. Duplicate LBAs are collapsed to their final bytes,
 ordered by their last occurrence, before encoding unique SECTOR frames; memory
 applies the original batch in order, matching volatile last-wins behavior.
@@ -472,12 +469,98 @@ applies the original batch in order, matching volatile last-wins behavior.
 stable sidecar lock without writing a marker. The sink prunes only after a
 successfully synchronized checkpoint or session-end marker.
 
-Both scanner entry points share validation and classification. `scan_reader`
-uses `Read + Seek`, retaining the base, reconstructed image, one bounded command,
-one frame and generation summaries; it does not retain journal payload history.
-Memory is O(image bytes + number of closed generations), not O(journal bytes).
-Offsets must fit the host's `usize`; larger files are refused before replay.
-Read/seek errors abort mount rather than authorizing tail truncation.
+All scanner entry points share validation and classification.
+`scan_overlay_reader` uses `Read + Seek` and returns `SparseScan` (evidence plus
+an optional sparse overlay); offline verification, rollback, repair and retention
+use it. The byte-slice `scan` and `scan_reader` compatibility helpers explicitly
+materialize a small image for existing codec callers/tests. They are not used by
+file-backed journal mounts or maintenance. Offsets must fit the host's `usize`;
+larger journals are refused before replay. Read/seek errors abort mount rather
+than authorizing tail truncation.
+
+### Memory and hashing
+
+For a file-backed journal drive, mounting performs exactly one SHA-256 pass over
+all base bytes with a 64 KiB buffer. The verified length/digest are reused for
+header creation, header binding, replay, retention and prefix verification;
+maintenance never hashes the original base again. A configured digest still
+must match: large images never bypass integrity checks. An offline tool open
+performs its own single verification pass. Export separately hashes its outgoing
+stream and rereads the temporary in bounded chunks to verify length and SHA-256
+before synchronization and atomic no-clobber publication.
+
+Use positioned reads (`FileExt::read_exact_at` on Unix), rather than mapping the
+whole image: this bounds address-space/resident application allocations and
+reports read/truncation failures through the host error latch instead of risking
+a mapping fault. The verified open descriptor pins the mounted file object;
+replacing a pathname never redirects reads to an unverified replacement.
+Before and after each base read, including export ranges, compare descriptor
+metadata against its verification snapshot: length, mtime and, on Unix, ctime,
+including their nanosecond fields. Check it around verification/replay, before
+writes and closes, and at frontend status/run boundaries too. Overlay hits also
+check the parent. Any detected mutation is a hard host error; appends stop and
+the frontend stops at its next cooperation boundary. Controller interfaces have
+no I/O error result, so a failed read returns a placeholder zero sector only
+with the host failure latched; it never authorizes continued successful execution.
+Metadata is an integrity check only, never a clock or virtual-time input.
+Unix ctime changes from chmod, extended attributes or hard-link operations also
+stop a session, even if its content bytes remain identical.
+
+**ASSUMED immutability contract:** callers must not modify an active base.
+Metadata checks detect ordinary edits/truncations, including changes to sectors
+already shadowed by the overlay. They are not an adversarial filesystem change
+monitor: an actor able to change bytes while preserving all observed metadata,
+or a filesystem whose timestamp resolution misses an edit, can evade this policy.
+The unchanged-file assumption is explicit; a complete rehash per sector is not
+performed. On non-Unix targets the metadata comparison uses length and mtime;
+the durable journal sink itself remains Unix-only.
+
+`SectorSource` is the single immutable-parent interface (`byte_len`, sector/range
+reads, integrity check). Both `VerifiedBase` and `SparseOverlay` implement it.
+A sparse top owns an `Rc<dyn SectorSource>` parent plus an ordered map of last
+written sectors, so a future hash-linked chain can replace base → writable top
+with base → immutable layer → immutable layer → writable top. No layer format,
+base tags, deduplication or FAT-specific optimization is implemented here.
+Unchanged writes still emit their original journal records and may occupy one
+map entry; retention emits only entries differing from the immutable base.
+
+Let D be distinct written sectors, P the largest pending command and G generation
+summaries. Media memory is O(512 × (D + P) + G + 64 KiB), independent of
+base length and payload history; configured machine RAM/ROM allocations are
+additional. Retention holds a constant number of sparse
+prefix states while comparing each retained recovery point, then streams its
+canonical anchor and old frames. Finish moves the overlay to the readable closed
+session; it never clones a disk. Commit streams base plus overlay into a new
+file in 64 KiB ranges, verifies the temporary, and leaves both inputs untouched.
+Byte-backed callers still own their small base bytes; the explicit `materialize`
+capture helper allocates a complete image only when requested.
+
+This bound includes disk loading through `load_for_assembly` and
+`LoadedMachine::assemble`, as used by CLI/window launches. Lowering streams disk
+length/SHA-256 through `ImageReader::verify_journal_base`, retains the verified
+read-only descriptors in `LoadedMachine`, and passes them separately from the
+declarative configuration into assembly. Assembly rechecks metadata, geometry
+and configured pins without rehashing. The configuration-only `load` API returns
+paths/digests and drops descriptors; a later independent assembly verifies them
+anew. Volatile/readonly images retain their existing inline loading policy; CMOS
+uses a bounded small byte-backed loader. Invalid geometry in direct assembly is
+rejected from file metadata before hashing.
+
+A removable medium shares its verified open descriptor across reinserts within
+one assembly, checking metadata rather than hashing that same descriptor again.
+
+Tests in `crates/media/tests/sparse_large.rs` create a sparse 512 MiB base and
+measure peak additional live heap bytes with a counting global allocator through
+mount, replay, retention, finish, verify and rollback (limit 4 MiB), with an
+8 MiB streamed export to avoid a dense half-GiB temporary on each run. They
+skip with a message if sparse files are unavailable. `overlay_tests.rs` counts
+hash passes, rejects same-size edits and truncation, exercises a two-layer parent
+chain, and compares 32 deterministic workload seeds against the former dense
+replacement/frame-order algorithm, including every closed-generation export.
+A separate seeded keep=2 workload restores base bytes and exports every retained
+generation after each prune. The frontend launch test in
+`crates/machine-file/tests/sparse_launch.rs` counts exactly one disk hash and
+bounds heap allocations through lowering and assembly for a sparse 504 MiB disk.
 
 The supported implementation is Unix: `sync_all` for file and directory, with
 std supplying `F_FULLFSYNC` on Apple targets for both. A rejected barrier aborts
@@ -573,14 +656,18 @@ For fixed mounted bytes and fixed guest input, memory mutations, status bytes,
 DMA results, IRQ edges and virtual-time advancement are identical across
 volatile and journal adapters. Sink latency contributes no virtual time;
 hashing, sequencing and generation ids use only deterministic bytes/counters.
-There are no reads of the journal or base during guest execution; explicit
-closed-boundary retention reads the journal and uses the original base bytes
-retained in memory. Opening/replaying
-media is an explicit initial-state input, just like today's base-image load.
-Host failure can stop a run at a frontend boundary; its completed guest prefix
-must equal the corresponding volatile prefix. This is the precise limit of
-the determinism claim, not a promise that failing and healthy hosts finish
-the same amount of execution. Interactive-input timing remains a frontend
+Base sector reads during execution use the pinned verified descriptor; the
+journal is read only at mount and explicit closed-boundary maintenance. A base
+mutation is a host failure under the immutability policy above. Opening/replaying
+media is an explicit initial-state input, like a base-image load.
+Output-sink failure can stop a run at a frontend boundary; its completed guest
+prefix must equal the corresponding volatile prefix. A base I/O or integrity
+failure instead invalidates the current execution quantum: the unchanged
+`SectorMedia` interface cannot return an error, so a placeholder read is paired
+with a latched hard host failure. No successful execution or equivalent-prefix
+claim is made after that failed read. Frontends must check persistence at their
+cooperation boundaries. Failing and healthy hosts need not finish the same
+amount of execution. Interactive-input timing remains a frontend
 concern; persistence adds no new timing input.
 
 ## Tooling and config

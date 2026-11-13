@@ -259,7 +259,7 @@ fn creation_and_each_command_have_ordered_barriers() {
         &[0; 2 * SECTOR_LEN],
         (2 * SECTOR_LEN) as u64,
     );
-    assert_eq!(report.image.as_deref(), Some(media.image()));
+    assert_eq!(report.image.as_deref(), Some(media.image().as_slice()));
     assert_eq!(report.report.last_durable_sequence, 3);
     fs.io.0.borrow_mut().events.clear();
     media.checkpoint().unwrap();
@@ -1822,7 +1822,7 @@ fn retention_failures_report_maintenance_separately_and_keep_old_or_new_valid_fi
             let result = scan(&visible, &[0; 1024], 1024);
             assert_eq!(result.report.status, Status::Valid);
             assert!(!result.report.needs_recovery());
-            assert_eq!(result.image.as_deref(), Some(disk.image()));
+            assert_eq!(result.image.as_deref(), Some(disk.image().as_slice()));
             let uncertain = matches!(fail, "replace" | "publication directory sync");
             assert_eq!(status.maintenance_failure().unwrap().uncertain, uncertain);
             assert!(error.to_string().contains(if uncertain {
@@ -1851,7 +1851,7 @@ fn retention_failures_report_maintenance_separately_and_keep_old_or_new_valid_fi
                     scan(&std::fs::read(&path).unwrap(), &[0; 1024], 1024)
                         .image
                         .as_deref(),
-                    Some(disk.image())
+                    Some(disk.image().as_slice())
                 );
             } else {
                 let before = std::fs::read(&path).unwrap();

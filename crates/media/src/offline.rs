@@ -7,9 +7,12 @@ use crate::sink::{
     canonical_journal_path, inspection_lock, journal_lock_path, lock_journal, platform_sync,
     refuse_creation_temp_name,
 };
-use crate::{scan_reader, JournalMedia, OpenError, Refusal, Scan, Status, HEADER_LEN};
+use crate::{
+    scan_overlay_reader, JournalMedia, OpenError, Refusal, SectorSource, SparseScan, Status,
+    VerifiedBase, HEADER_LEN,
+};
 use std::fs::{File, OpenOptions, Permissions};
-use std::io::{self, Read, Seek, SeekFrom, Write};
+use std::io::{self, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, thiserror::Error)]
@@ -66,7 +69,7 @@ pub enum Access {
 /// mutation always owns the stable exclusive lock until its final verification.
 pub struct JournalTool {
     path: PathBuf,
-    base: Vec<u8>,
+    base: VerifiedBase,
     base_metadata: std::fs::Metadata,
     journal: File,
     lock: Option<File>,
@@ -88,7 +91,7 @@ impl JournalTool {
         refuse_reserved_path("journal", journal)?;
         let journal_error = |error| path_error("journal", journal, error);
         refuse_creation_temp_name(journal).map_err(journal_error)?;
-        let mut base_file = io
+        let base_file = io
             .open_input(base, false)
             .map_err(|e| path_error("base", base, e))?;
         // Check both inputs before creating lock metadata, but reopen the journal
@@ -115,13 +118,10 @@ impl JournalTool {
         let base_metadata = base_file
             .metadata()
             .map_err(|e| path_error("base", base, e))?;
-        let mut bytes = Vec::new();
-        base_file
-            .read_to_end(&mut bytes)
-            .map_err(|e| path_error("base", base, e))?;
+        let base = VerifiedBase::from_file(base_file).map_err(|e| path_error("base", base, e))?;
         Ok(Self {
             path,
-            base: bytes,
+            base,
             base_metadata,
             journal: file,
             lock,
@@ -134,8 +134,8 @@ impl JournalTool {
     }
 
     /// Replay and validate every frame without changing image or journal bytes.
-    pub fn verify(&mut self) -> Result<Scan, ToolError> {
-        scan_reader(&mut self.journal, &self.base, self.base.len() as u64)
+    pub fn verify(&mut self) -> Result<SparseScan, ToolError> {
+        scan_overlay_reader(&mut self.journal, &self.base, self.base.byte_len())
             .map_err(|e| path_error("journal", &self.path, e))
     }
 
@@ -200,7 +200,7 @@ impl JournalTool {
         };
         let image = crate::history::prefix(&mut self.journal, end, &self.base)
             .map_err(|e| path_error("journal", &self.path, e))?
-            .image
+            .overlay
             .ok_or_else(|| ToolError::Config("generation reconstruction refused".into()))?;
         let (mut temp, name) = io
             .create_temporary(output, "export", None)
@@ -208,12 +208,21 @@ impl JournalTool {
         let mut publishing = false;
         let mut published = false;
         let result = (|| {
-            io.write_temporary(&mut temp, &image)?;
-            temp.seek(SeekFrom::Start(0))?;
-            let mut check = Vec::new();
-            temp.read_to_end(&mut check)?;
-            if check.len() != image.len()
-                || crate::codec::digest(&check) != crate::codec::digest(&image)
+            use sha2::{Digest, Sha256};
+            let mut hash = Sha256::new();
+            let mut buffer = [0; 64 * 1024];
+            let mut offset = 0;
+            while offset < image.byte_len() {
+                let count = (image.byte_len() - offset).min(buffer.len() as u64) as usize;
+                image.read_range(offset / crate::SECTOR_LEN as u64, &mut buffer[..count])?;
+                hash.update(&buffer[..count]);
+                io.write_temporary(&mut temp, &buffer[..count])?;
+                offset += count as u64;
+            }
+            image.check_unchanged()?;
+            let expected: [u8; 32] = hash.finalize().into();
+            if temp.metadata()?.len() != image.byte_len()
+                || crate::overlay::hash_reader(&mut temp)? != expected
             {
                 return Err(io::Error::other("export size/digest verification failed"));
             }
@@ -244,11 +253,11 @@ impl JournalTool {
 
     /// Back up before applying precisely the writable mount's recovery. Dropping
     /// the recovered session avoids adding an unrelated empty session end.
-    pub fn repair_tail(self, backup: &Path) -> Result<Scan, ToolError> {
+    pub fn repair_tail(self, backup: &Path) -> Result<SparseScan, ToolError> {
         self.repair_with(&mut HostIo, backup)
     }
 
-    fn repair_with(mut self, io: &mut impl ToolIo, backup: &Path) -> Result<Scan, ToolError> {
+    fn repair_with(mut self, io: &mut impl ToolIo, backup: &Path) -> Result<SparseScan, ToolError> {
         self.require_mutation()?;
         self.validated()?;
         self.backup(io, backup)?;
@@ -274,7 +283,7 @@ impl JournalTool {
         self.rollback_end(generation).map(|_| ())
     }
 
-    pub fn rollback(&mut self, generation: u64, backup: &Path) -> Result<Scan, ToolError> {
+    pub fn rollback(&mut self, generation: u64, backup: &Path) -> Result<SparseScan, ToolError> {
         self.rollback_with(&mut HostIo, generation, backup)
     }
 
@@ -283,7 +292,7 @@ impl JournalTool {
         io: &mut impl ToolIo,
         generation: u64,
         backup: &Path,
-    ) -> Result<Scan, ToolError> {
+    ) -> Result<SparseScan, ToolError> {
         let end = self.rollback_end(generation)?;
         self.backup(io, backup)?;
         io.truncate(&self.journal, end as u64)
@@ -326,7 +335,7 @@ impl JournalTool {
         Ok(())
     }
 
-    fn validated(&mut self) -> Result<Scan, ToolError> {
+    fn validated(&mut self) -> Result<SparseScan, ToolError> {
         let scan = self.verify()?;
         if let Status::Refused(ref refusal) = scan.report.status {
             return Err(ToolError::Refused(refusal.clone()));
@@ -470,7 +479,7 @@ pub(crate) trait ToolIo {
     fn recover(
         &mut self,
         path: &Path,
-        base: &[u8],
+        base: &VerifiedBase,
         lock: File,
         base_metadata: &std::fs::Metadata,
     ) -> Result<JournalMedia, OpenError> {

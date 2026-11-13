@@ -191,6 +191,25 @@ pub fn assemble_with_observation_and_options(
     assemble_with_cpu(config, observation_policy, options, build_cpu)
 }
 
+/// Assemble using immutable bases already verified by a frontend loader.
+/// Integrity metadata is checked again; supplied identities are never rehashed.
+/// See persistent-media.md § Memory and hashing.
+pub fn assemble_with_verified_bases(
+    config: &MachineConfig,
+    observation_policy: &ObservationPolicy,
+    options: crate::AssemblyOptions,
+    bases: &std::collections::BTreeMap<std::path::PathBuf, media::VerifiedBase>,
+) -> Result<AssembledMachine, AssemblyError> {
+    assemble_preverified(
+        config,
+        observation_policy,
+        options,
+        build_cpu,
+        config.board.firmware_catalogue(),
+        bases,
+    )
+}
+
 fn assemble_with_cpu(
     config: &MachineConfig,
     observation_policy: &ObservationPolicy,
@@ -212,6 +231,24 @@ fn assemble_with_cpu_and_catalogue(
     options: crate::AssemblyOptions,
     build: impl FnOnce(&MachineConfig) -> Result<X86JitCpu, AssemblyError>,
     catalogue: &[crate::FirmwareEntry],
+) -> Result<AssembledMachine, AssemblyError> {
+    assemble_preverified(
+        config,
+        observation_policy,
+        options,
+        build,
+        catalogue,
+        &std::collections::BTreeMap::new(),
+    )
+}
+
+fn assemble_preverified(
+    config: &MachineConfig,
+    observation_policy: &ObservationPolicy,
+    options: crate::AssemblyOptions,
+    build: impl FnOnce(&MachineConfig) -> Result<X86JitCpu, AssemblyError>,
+    catalogue: &[crate::FirmwareEntry],
+    bases: &std::collections::BTreeMap<std::path::PathBuf, media::VerifiedBase>,
 ) -> Result<AssembledMachine, AssemblyError> {
     // A validated config does not fail assembly for configuration reasons; run
     // the checks first so any inconsistency surfaces as a precise ConfigError.
@@ -242,8 +279,7 @@ fn assemble_with_cpu_and_catalogue(
         })
         .collect();
     let nvram_bases = load_nvram_bases(config)?;
-    let (resolved, base_metadata) =
-        resolve_file_sources_with_catalogue(config, options, catalogue)?;
+    let (resolved, base_metadata) = resolve_sources_preverified(config, options, catalogue, bases)?;
     let config = resolved.as_ref();
     config.validate_resolved()?;
 
@@ -849,21 +885,43 @@ fn load_nvram_bases(
     Ok(bases)
 }
 
+/// Keep the exact opened journal base alongside ordinary file alias metadata.
+#[derive(Clone, Debug)]
+pub(crate) struct DriveBase {
+    metadata: Option<std::fs::Metadata>,
+    verified: Option<media::VerifiedBase>,
+}
+
 /// Resolve file lengths before validating placement and disk geometry. Inline
 /// presets borrow their config so the common path needs no additional copy.
 #[cfg(any(test, feature = "test-support"))]
 pub(crate) fn resolve_file_sources(
     config: &MachineConfig,
     options: crate::AssemblyOptions,
-) -> Result<(Cow<'_, MachineConfig>, Vec<Option<std::fs::Metadata>>), ConfigError> {
+) -> Result<(Cow<'_, MachineConfig>, Vec<Option<DriveBase>>), ConfigError> {
     resolve_file_sources_with_catalogue(config, options, config.board.firmware_catalogue())
 }
 
+#[cfg(any(test, feature = "test-support"))]
 fn resolve_file_sources_with_catalogue<'a>(
     config: &'a MachineConfig,
     options: crate::AssemblyOptions,
     catalogue: &[crate::FirmwareEntry],
-) -> Result<(Cow<'a, MachineConfig>, Vec<Option<std::fs::Metadata>>), ConfigError> {
+) -> Result<(Cow<'a, MachineConfig>, Vec<Option<DriveBase>>), ConfigError> {
+    resolve_sources_preverified(
+        config,
+        options,
+        catalogue,
+        &std::collections::BTreeMap::new(),
+    )
+}
+
+fn resolve_sources_preverified<'a>(
+    config: &'a MachineConfig,
+    options: crate::AssemblyOptions,
+    catalogue: &[crate::FirmwareEntry],
+    bases: &std::collections::BTreeMap<std::path::PathBuf, media::VerifiedBase>,
+) -> Result<(Cow<'a, MachineConfig>, Vec<Option<DriveBase>>), ConfigError> {
     config.check_part_sources()?;
     if config
         .images
@@ -928,6 +986,20 @@ fn resolve_file_sources_with_catalogue<'a>(
             continue;
         }
         if let ImageSource::File(path) = &drive.image {
+            if matches!(drive.write, WriteMode::Journal { .. }) {
+                let verified = verify_drive_base(
+                    path,
+                    drive.expected_sha256,
+                    drive.kind.image_bytes(),
+                    index,
+                    bases.get(path),
+                )?;
+                base_metadata[index] = Some(DriveBase {
+                    metadata: verified.metadata().cloned(),
+                    verified: Some(verified),
+                });
+                continue;
+            }
             use std::io::Read;
             let (bytes, metadata) = (|| {
                 let mut file = std::fs::File::open(path)?;
@@ -950,7 +1022,10 @@ fn resolve_file_sources_with_catalogue<'a>(
                     });
                 }
             }
-            base_metadata[index] = Some(metadata);
+            base_metadata[index] = Some(DriveBase {
+                metadata: Some(metadata),
+                verified: None,
+            });
             drive.image = ImageSource::Inline(bytes);
         }
     }
@@ -958,6 +1033,20 @@ fn resolve_file_sources_with_catalogue<'a>(
         if let Some(list) = &mut drive.media {
             for medium in &mut list.entries {
                 let metadata = if let ImageSource::File(path) = &medium.image {
+                    if matches!(medium.write, WriteMode::Journal { .. }) {
+                        let verified = verify_drive_base(
+                            path,
+                            medium.expected_sha256,
+                            drive.kind.image_bytes(),
+                            drive_index,
+                            bases.get(path),
+                        )?;
+                        base_metadata.push(Some(DriveBase {
+                            metadata: verified.metadata().cloned(),
+                            verified: Some(verified),
+                        }));
+                        continue;
+                    }
                     use std::io::Read;
                     let mut file =
                         std::fs::File::open(path).map_err(|error| ConfigError::ImageRead {
@@ -991,7 +1080,10 @@ fn resolve_file_sources_with_catalogue<'a>(
                         }
                     }
                     medium.image = ImageSource::Inline(bytes);
-                    Some(metadata)
+                    Some(DriveBase {
+                        metadata: Some(metadata),
+                        verified: None,
+                    })
                 } else {
                     None
                 };
@@ -1009,6 +1101,53 @@ fn resolve_file_sources_with_catalogue<'a>(
         }
     }
     Ok((Cow::Owned(resolved), base_metadata))
+}
+
+fn verify_drive_base(
+    path: &std::path::Path,
+    expected: Option<[u8; 32]>,
+    geometry: u64,
+    drive_index: usize,
+    verified: Option<&media::VerifiedBase>,
+) -> Result<media::VerifiedBase, ConfigError> {
+    use media::SectorSource;
+    let image_error = |error: std::io::Error| ConfigError::ImageRead {
+        path: path.into(),
+        message: error.to_string(),
+    };
+    let base = if let Some(base) = verified {
+        base.check_unchanged().map_err(image_error)?;
+        base.clone()
+    } else {
+        let file = std::fs::File::open(path).map_err(image_error)?;
+        let length = file.metadata().map_err(image_error)?.len();
+        if length != geometry {
+            return Err(ConfigError::ImageGeometryMismatch {
+                drive_index,
+                expected: geometry,
+                actual: length,
+            });
+        }
+        media::VerifiedBase::from_file(file).map_err(image_error)?
+    };
+    let actual = base.identity().base_digest;
+    if let Some(expected) = expected {
+        if actual != expected {
+            return Err(ConfigError::DriveImageSha256 {
+                drive_index,
+                expected: format!("{:x}", sha2::digest::Output::<Sha256>::from(expected)),
+                actual: format!("{:x}", sha2::digest::Output::<Sha256>::from(actual)),
+            });
+        }
+    }
+    if base.identity().base_length != geometry {
+        return Err(ConfigError::ImageGeometryMismatch {
+            drive_index,
+            expected: geometry,
+            actual: base.identity().base_length,
+        });
+    }
+    Ok(base)
 }
 
 /// Build the port + MMIO decode map from the device windows, sorted so the map is
@@ -1107,7 +1246,7 @@ fn mount_ide_drives(
     config: &MachineConfig,
     controller: DeviceId,
     persistence: &mut Vec<crate::PersistenceHandle>,
-    base_metadata: &[Option<std::fs::Metadata>],
+    base_metadata: &[Option<DriveBase>],
     controller_index: usize,
 ) -> Result<[Option<AtaDrive>; 2], AssemblyError> {
     let mut slots = [None, None];
@@ -1120,20 +1259,35 @@ fn mount_ide_drives(
         let DriveKind::HardDisk { geometry } = drive.kind else {
             continue;
         };
-        let bytes = load_image_bytes(&drive.image)?;
-        let capacity = (bytes.len() / 512) as u32;
+        let loaded = base_metadata.get(drive_index).and_then(Option::as_ref);
+        let verified = loaded.and_then(|b| b.verified.as_ref());
+        let bytes = if verified.is_some() {
+            Vec::new()
+        } else {
+            load_image_bytes(&drive.image)?
+        };
+        let capacity = (drive.kind.image_bytes() / 512) as u32;
         let media: Box<dyn device::SectorMedia> = match &drive.write {
             WriteMode::Journal {
                 path,
                 keep_generations,
             } => {
-                let (mut handle, media) = crate::PersistenceHandle::mount(
+                let base = match verified {
+                    Some(base) => base.clone(),
+                    None => media::VerifiedBase::from_bytes(&bytes).map_err(|source| {
+                        AssemblyError::Journal {
+                            drive_index,
+                            source: source.into(),
+                        }
+                    })?,
+                };
+                let (mut handle, media) = crate::PersistenceHandle::mount_verified(
                     drive_index,
                     path,
-                    &bytes,
-                    bytes.len() as u64,
+                    &base,
+                    drive.kind.image_bytes(),
                     *keep_generations,
-                    base_metadata.get(drive_index).and_then(Option::as_ref),
+                    loaded.and_then(|b| b.metadata.as_ref()),
                 )?;
                 handle.ata_index = Some(controller_index);
                 persistence.push(handle);
@@ -1178,7 +1332,7 @@ fn mount_fdc_drives(
     config: &MachineConfig,
     controller: DeviceId,
     persistence: &mut Vec<crate::PersistenceHandle>,
-    base_metadata: &[Option<std::fs::Metadata>],
+    base_metadata: &[Option<DriveBase>],
 ) -> Result<[Option<Drive>; 4], AssemblyError> {
     let mut slots: [Option<Drive>; 4] = [None, None, None, None];
     for (drive_index, drive) in config.drives.iter().enumerate() {
@@ -1195,7 +1349,13 @@ fn mount_fdc_drives(
         if drive.media.is_some() {
             continue;
         }
-        let image = load_image_bytes(&drive.image)?;
+        let loaded = base_metadata.get(drive_index).and_then(Option::as_ref);
+        let verified = loaded.and_then(|b| b.verified.as_ref());
+        let image = if verified.is_some() {
+            Vec::new()
+        } else {
+            load_image_bytes(&drive.image)?
+        };
         let geometry = to_device_geometry(geometry);
         slots[slot] = Some(match &drive.write {
             WriteMode::ReadOnly => Drive::new_read_only(geometry, image),
@@ -1207,9 +1367,16 @@ fn mount_fdc_drives(
                 let (mut handle, media) = crate::PersistenceHandle::prepare_removable(
                     drive_index,
                     path,
-                    &image,
+                    match verified {
+                        Some(base) => base.clone(),
+                        None => media::VerifiedBase::from_bytes(&image).map_err(|source| {
+                            AssemblyError::Journal {
+                                drive_index,
+                                source: source.into(),
+                            }
+                        })?,
+                    },
                     *keep_generations,
-                    base_metadata.get(drive_index).and_then(Option::as_ref),
                 );
                 handle.floppy = Some((controller, drive.unit, 0));
                 handle.insert()?;
@@ -1225,7 +1392,7 @@ fn mount_removable_fdc(
     config: &MachineConfig,
     controller: DeviceId,
     persistence: &mut Vec<crate::PersistenceHandle>,
-    metadata: &[Option<std::fs::Metadata>],
+    metadata: &[Option<DriveBase>],
 ) -> Result<Upd765, AssemblyError> {
     let mut fdc = Upd765::with_drives(mount_fdc_drives(config, controller, persistence, metadata)?);
     let mut metadata_index = config.drives.len();
@@ -1244,7 +1411,15 @@ fn mount_removable_fdc(
         let geometry = to_device_geometry(&geometry);
         let mut entries = Vec::new();
         for (index, medium) in list.entries.iter().enumerate() {
-            let image = load_image_bytes(&medium.image)?;
+            let verified = metadata
+                .get(start + index)
+                .and_then(Option::as_ref)
+                .and_then(|b| b.verified.as_ref());
+            let image = if verified.is_some() {
+                Vec::new()
+            } else {
+                load_image_bytes(&medium.image)?
+            };
             entries.push(match &medium.write {
                 WriteMode::Volatile => Drive::new(geometry, image),
                 WriteMode::ReadOnly => Drive::new_read_only(geometry, image),
@@ -1255,9 +1430,16 @@ fn mount_removable_fdc(
                     let (mut handle, media) = crate::PersistenceHandle::prepare_removable(
                         drive_index,
                         path,
-                        &image,
+                        match verified {
+                            Some(base) => base.clone(),
+                            None => media::VerifiedBase::from_bytes(&image).map_err(|source| {
+                                AssemblyError::Journal {
+                                    drive_index,
+                                    source: source.into(),
+                                }
+                            })?,
+                        },
                         *keep_generations,
-                        metadata.get(start + index).and_then(Option::as_ref),
                     );
                     handle.floppy = Some((controller, drive.unit, index));
                     if index == 0 && !list.empty {
@@ -5462,3 +5644,24 @@ mod tests {
 #[cfg(test)]
 #[path = "image_source_tests.rs"]
 mod image_source_tests;
+
+#[cfg(test)]
+mod base_length_tests {
+    #[test]
+    fn wrong_disk_geometry_is_rejected_before_hashing() {
+        let directory = crate::test_support::TempDir::new("geometry-before-hash");
+        let path = directory.path().join("base.img");
+        std::fs::write(&path, [0; 4096]).unwrap();
+        let before = media::hash_passes();
+        let error = super::verify_drive_base(&path, None, 8192, 0, None).unwrap_err();
+        assert!(matches!(
+            error,
+            crate::ConfigError::ImageGeometryMismatch {
+                actual: 4096,
+                expected: 8192,
+                ..
+            }
+        ));
+        assert_eq!(media::hash_passes(), before);
+    }
+}

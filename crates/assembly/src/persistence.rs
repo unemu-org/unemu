@@ -9,20 +9,23 @@ use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
-use device::{InMemoryMedia, SectorMedia, SectorWrite};
-use media::{JournalMedia, SinkFailure, SinkStatus, VerificationReport};
+use device::{SectorMedia, SectorWrite};
+use media::{
+    JournalMedia, SectorSource, SinkFailure, SinkStatus, SparseOverlay, VerificationReport,
+    VerifiedBase,
+};
 
 use crate::{ConfigError, ImageSource, MachineConfig, WriteMode};
 
 struct Remount {
     path: PathBuf,
-    base: Vec<u8>,
-    metadata: Option<std::fs::Metadata>,
+    base: VerifiedBase,
 }
 
 enum Session {
     Active(Box<JournalMedia>),
-    Finished(InMemoryMedia),
+    Finished(SparseOverlay, SinkStatus),
+    Empty,
 }
 
 /// One medium's persistence failure, identifying a drive or CMOS RAM.
@@ -65,17 +68,37 @@ impl PersistenceHandle {
         keep_generations: u32,
         base_metadata: Option<&std::fs::Metadata>,
     ) -> Result<(Self, Box<dyn SectorMedia>), crate::AssemblyError> {
+        let base =
+            VerifiedBase::from_bytes(base).map_err(|source| crate::AssemblyError::Journal {
+                drive_index,
+                source: source.into(),
+            })?;
+        Self::mount_verified(
+            drive_index,
+            path,
+            &base,
+            geometry_length,
+            keep_generations,
+            base_metadata,
+        )
+    }
+
+    pub(crate) fn mount_verified(
+        drive_index: usize,
+        path: &Path,
+        base: &VerifiedBase,
+        geometry_length: u64,
+        keep_generations: u32,
+        metadata: Option<&std::fs::Metadata>,
+    ) -> Result<(Self, Box<dyn SectorMedia>), crate::AssemblyError> {
         let status = SinkStatus::default();
-        let journal = match base_metadata {
-            Some(metadata) => JournalMedia::open_with_base_metadata(
-                path,
-                base,
-                geometry_length,
-                status.clone(),
-                metadata,
-            ),
-            None => JournalMedia::open(path, base, geometry_length, status.clone()),
-        }
+        let journal = JournalMedia::open_verified_with_metadata(
+            path,
+            base,
+            geometry_length,
+            status.clone(),
+            metadata,
+        )
         .map_err(|source| crate::AssemblyError::Journal {
             drive_index,
             source,
@@ -105,29 +128,24 @@ impl PersistenceHandle {
     pub(crate) fn prepare_removable(
         drive_index: usize,
         path: &Path,
-        base: &[u8],
+        base: VerifiedBase,
         keep_generations: u32,
-        metadata: Option<&std::fs::Metadata>,
     ) -> (Self, Box<dyn SectorMedia>) {
-        let session = Rc::new(RefCell::new(Session::Finished(InMemoryMedia::new(
-            base.to_vec(),
-            base.len() as u64 / 512,
-            false,
-        ))));
+        let session = Rc::new(RefCell::new(Session::Empty));
+        let status = SinkStatus::default();
         let adapter = Box::new(JournalAdapter(session.clone()));
         let handle = Self {
             drive_index,
             keep_generations,
             ata_index: None,
             session,
-            status: SinkStatus::default(),
+            status,
             maintenance: None,
-            report: media::scan(&[], base, base.len() as u64).report,
+            report: media::scan(&[], &[], 0).report,
             nvram: None,
             remount: Some(Remount {
                 path: path.into(),
-                base: base.to_vec(),
-                metadata: metadata.cloned(),
+                base,
             }),
             ejected: true,
             floppy: None,
@@ -145,18 +163,15 @@ impl PersistenceHandle {
                 message: e.to_string(),
             })
         })?;
-        let (mounted, _) = Self::mount(
+        let (mounted, _) = Self::mount_verified(
             self.drive_index,
             &remount.path,
             &remount.base,
-            remount.base.len() as u64,
+            remount.base.byte_len(),
             self.keep_generations,
-            remount.metadata.as_ref(),
+            remount.base.metadata(),
         )?;
-        let state = std::mem::replace(
-            &mut *mounted.session.borrow_mut(),
-            Session::Finished(InMemoryMedia::new(Vec::new(), 0, false)),
-        );
+        let state = std::mem::replace(&mut *mounted.session.borrow_mut(), Session::Empty);
         *self.session.borrow_mut() = state;
         self.maintenance = self.maintenance_failure();
         self.status = mounted.status;
@@ -198,7 +213,7 @@ impl PersistenceHandle {
         })?;
         let mut bytes = [0; 64];
         if let Session::Active(journal) = &*handle.session.borrow() {
-            bytes[14..].copy_from_slice(&journal.image()[14..]);
+            bytes[14..].copy_from_slice(&journal.read_sector(0)[14..64]);
         }
         // Clock, alarm and control registers belong to the RTC model on each run.
         *rtc = std::mem::take(rtc).with_general_nvram(std::array::from_fn(|i| bytes[14 + i]));
@@ -223,12 +238,13 @@ impl PersistenceHandle {
         };
         let bytes = store.snapshot();
         if let Session::Active(journal) = &mut *self.session.borrow_mut() {
-            if journal.image()[14] != bytes[0] || journal.image()[16..] != bytes[2..] {
+            if journal.read_sector(0)[14] != bytes[0]
+                || journal.read_sector(0)[16..64] != bytes[2..]
+            {
                 let mut block = journal.read_sector(0);
                 block[14] = bytes[0];
                 block[16..64].copy_from_slice(&bytes[2..]);
                 journal.write_batch(&[(0, block)]);
-                self.check()?;
             }
         }
         self.check()
@@ -238,10 +254,7 @@ impl PersistenceHandle {
     #[cfg(any(test, feature = "test-support"))]
     pub fn fail_output(&mut self) {
         let mut session = self.session.borrow_mut();
-        let Session::Active(journal) = std::mem::replace(
-            &mut *session,
-            Session::Finished(InMemoryMedia::new(Vec::new(), 0, false)),
-        ) else {
+        let Session::Active(journal) = std::mem::replace(&mut *session, Session::Empty) else {
             panic!("active session required")
         };
         *session = Session::Active(Box::new((*journal).with_failing_output()));
@@ -251,10 +264,7 @@ impl PersistenceHandle {
     #[cfg(any(test, feature = "test-support"))]
     pub fn fail_retention(&mut self, operation: &'static str) {
         let mut session = self.session.borrow_mut();
-        let Session::Active(journal) = std::mem::replace(
-            &mut *session,
-            Session::Finished(InMemoryMedia::new(Vec::new(), 0, false)),
-        ) else {
+        let Session::Active(journal) = std::mem::replace(&mut *session, Session::Empty) else {
             panic!("active session required")
         };
         *session = Session::Active(Box::new((*journal).with_failing_retention(operation)));
@@ -262,6 +272,15 @@ impl PersistenceHandle {
 
     /// First latched host error; the guest never observes this channel.
     pub fn status(&self) -> Option<SinkFailure> {
+        match &*self.session.borrow() {
+            Session::Active(journal) => journal.check_base(),
+            Session::Finished(overlay, status) => {
+                if let Err(error) = overlay.check_unchanged() {
+                    status.latch_host_error("base changed", error.to_string());
+                }
+            }
+            Session::Empty => {}
+        }
         self.status.failure()
     }
 
@@ -291,7 +310,7 @@ impl PersistenceHandle {
 
     pub(crate) fn check_running(&self) -> Result<(), PersistenceError> {
         self.check()?;
-        if !self.ejected && matches!(*self.session.borrow(), Session::Finished(_)) {
+        if !self.ejected && matches!(*self.session.borrow(), Session::Finished(..)) {
             return Err(PersistenceError {
                 drive_index: self.drive_index,
                 nvram: self.nvram.is_some(),
@@ -330,7 +349,7 @@ impl PersistenceHandle {
                 nvram: self.nvram.is_some(),
                 source,
             }),
-            Session::Finished(_) => Err(PersistenceError {
+            Session::Finished(..) | Session::Empty => Err(PersistenceError {
                 drive_index: self.drive_index,
                 nvram: self.nvram.is_some(),
                 source: SinkFailure {
@@ -355,17 +374,14 @@ impl PersistenceHandle {
         self.ejected = false;
         self.persist_nvram()?;
         let mut session = self.session.borrow_mut();
-        let Session::Active(journal) = &*session else {
+        if !matches!(*session, Session::Active(_)) {
             return Ok(());
-        };
-        let image = journal.image().to_vec();
-        let sectors = image.len() as u64 / 512;
-        let old = std::mem::replace(
-            &mut *session,
-            Session::Finished(InMemoryMedia::new(image, sectors, false)),
-        );
+        }
+        let old = std::mem::replace(&mut *session, Session::Empty);
         if let Session::Active(journal) = old {
-            (*journal).finish().map_err(|source| PersistenceError {
+            let (overlay, result) = (*journal).finish_readable();
+            *session = Session::Finished(overlay, self.status.clone());
+            result.map_err(|source| PersistenceError {
                 drive_index: self.drive_index,
                 nvram: self.nvram.is_some(),
                 source,
@@ -380,15 +396,20 @@ struct JournalAdapter(Rc<RefCell<Session>>);
 impl SectorMedia for JournalAdapter {
     fn sector_count(&self) -> u64 {
         match &*self.0.borrow() {
-            Session::Active(journal) => journal.image().len() as u64 / 512,
-            Session::Finished(image) => image.sector_count(),
+            Session::Active(journal) => journal.byte_len() / 512,
+            Session::Finished(image, _) => image.byte_len() / 512,
+            Session::Empty => 0,
         }
     }
 
     fn read_sector(&self, lba: u64) -> [u8; 512] {
         match &*self.0.borrow() {
             Session::Active(journal) => journal.read_sector(lba),
-            Session::Finished(image) => image.read_sector(lba),
+            Session::Finished(image, status) => image.read_sector(lba).unwrap_or_else(|error| {
+                status.latch_host_error("base read", error.to_string());
+                [0; 512]
+            }),
+            Session::Empty => [0; 512],
         }
     }
 
@@ -397,7 +418,7 @@ impl SectorMedia for JournalAdapter {
             Session::Active(journal) => {
                 journal.write_batch(&sectors.iter().map(|s| (s.lba, s.bytes)).collect::<Vec<_>>())
             }
-            Session::Finished(image) => image.write_batch(sectors),
+            Session::Finished(..) | Session::Empty => {}
         }
     }
 
@@ -699,7 +720,12 @@ mod tests {
         let temp = crate::test_support::TempDir::new("floppy-eject-journal");
         let path = temp.path().join("disk.upfj");
         let base = vec![0x11; 1_474_560];
-        let (mut handle, media) = PersistenceHandle::prepare_removable(0, &path, &base, 10, None);
+        let (mut handle, media) = PersistenceHandle::prepare_removable(
+            0,
+            &path,
+            VerifiedBase::from_bytes(&base).unwrap(),
+            10,
+        );
         assert!(!path.exists(), "inactive journal must not be opened");
         handle.check_running().unwrap();
         handle.insert().unwrap();
@@ -777,8 +803,12 @@ mod tests {
         let temp = crate::test_support::TempDir::new("removable-retention-warning");
         let path = temp.path().join("disk.upfj");
         let base = vec![0; 512];
-        let (mut handle, mut media) =
-            PersistenceHandle::prepare_removable(0, &path, &base, 1, None);
+        let (mut handle, mut media) = PersistenceHandle::prepare_removable(
+            0,
+            &path,
+            VerifiedBase::from_bytes(&base).unwrap(),
+            1,
+        );
         handle.insert().unwrap();
         media.write_batch(&[SectorWrite {
             lba: 0,
@@ -814,8 +844,12 @@ mod tests {
         let temp = crate::test_support::TempDir::new("floppy-eject-error");
         let path = temp.path().join("disk.upfj");
         let base = vec![0; 1_474_560];
-        let (mut handle, mut media) =
-            PersistenceHandle::prepare_removable(0, &path, &base, 10, None);
+        let (mut handle, mut media) = PersistenceHandle::prepare_removable(
+            0,
+            &path,
+            VerifiedBase::from_bytes(&base).unwrap(),
+            10,
+        );
         handle.insert().unwrap();
         handle.fail_output();
         media.write_batch(&[SectorWrite {

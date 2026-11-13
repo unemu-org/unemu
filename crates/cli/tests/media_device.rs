@@ -38,7 +38,7 @@ impl Drop for Temp {
 struct JournalAdapter(JournalMedia);
 impl SectorMedia for JournalAdapter {
     fn sector_count(&self) -> u64 {
-        (self.0.image().len() / 512) as u64
+        self.0.byte_len() / 512
     }
     fn read_sector(&self, lba: u64) -> [u8; 512] {
         self.0.read_sector(lba)

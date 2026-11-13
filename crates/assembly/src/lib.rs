@@ -60,7 +60,8 @@ mod validate;
 
 pub use assemble::{
     assemble, assemble_with_observation, assemble_with_observation_and_options,
-    assemble_with_options, derive_cmos_config, derive_cmos_layout, AssembledMachine, AssemblyError,
+    assemble_with_options, assemble_with_verified_bases, derive_cmos_config, derive_cmos_layout,
+    AssembledMachine, AssemblyError,
 };
 pub use board::{BoardModel, DisplaySwitch, MachineClass, PrimaryDisplay};
 pub use bus::PortWidth;

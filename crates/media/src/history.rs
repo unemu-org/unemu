@@ -2,22 +2,22 @@
 //! Closed-prefix reconstruction for export and retention; persistent-media.md
 //! § Offline commands and § Retention anchor. Payload history stays on disk.
 
-use crate::{scan_reader, Scan};
+use crate::{scan_overlay_reader, SectorSource, SparseScan, VerifiedBase};
 use std::io::{self, Read, Seek, SeekFrom};
 
 pub(crate) fn prefix<R: Read + Seek + ?Sized>(
     source: &mut R,
     end: usize,
-    base: &[u8],
-) -> io::Result<Scan> {
-    scan_reader(
+    base: &VerifiedBase,
+) -> io::Result<SparseScan> {
+    scan_overlay_reader(
         &mut Prefix {
             source,
             end: end as u64,
             position: 0,
         },
         base,
-        base.len() as u64,
+        base.byte_len(),
     )
 }
 

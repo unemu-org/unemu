@@ -9,7 +9,7 @@
 //!
 //! Complete documents lower to `assembly::MachineConfig` with board/card
 //! defaults and images checked with SHA-256 during lowering. Single volatile/readonly
-//! images remain inline; catalogues and journal bases retain paths and are reread at mounting.
+//! images remain inline. Frontend loads retain verified disk descriptors through assembly.
 //! Assembly owns hardware validation. Inheritance resolves before lowering.
 //! This crate does not model hardware registers.
 
@@ -211,10 +211,10 @@ pub fn load_with_options(
 ///
 /// SHA-256 pins are checked against the reader's bytes during lowering, and
 /// hardware validation remains mandatory. Volatile/readonly images retain those
-/// bytes inline. Journal bases require `ImageReader::read_journal_base`, which
-/// synthetic readers refuse by default: persistent replay requires a reproducible
-/// immutable file base. File-backed readers retain the verified digest alongside
-/// the path, and assembly checks its single read against that digest before mounting.
+/// bytes inline. Journal disks require `ImageReader::verify_journal_base`, which
+/// synthetic readers refuse by default. This configuration-only API retains the
+/// digest and path; `load_for_assembly` also retains verified descriptors so a
+/// frontend launch does not hash or copy its disk bases again.
 pub fn load_with_reader<R: ImageReader>(
     path: impl AsRef<Path>,
     reader: &mut R,
@@ -240,6 +240,7 @@ pub struct LoadedMachine {
     pub cards: Vec<(String, assembly::DeviceId)>,
     diagnostics: lower::AssemblyDiagnostics,
     options: assembly::AssemblyOptions,
+    bases: std::collections::BTreeMap<PathBuf, media::VerifiedBase>,
 }
 
 impl LoadedMachine {
@@ -339,15 +340,40 @@ impl LoadedMachine {
         &self,
         observation: &assembly::ObservationPolicy,
     ) -> Result<assembly::AssembledMachine, LowerError> {
-        let mut assembled = assembly::assemble_with_observation_and_options(
+        let mut assembled = assembly::assemble_with_verified_bases(
             &self.config,
             observation,
             self.options,
+            &self.bases,
         )
         .map_err(|error| self.diagnostics.map(error))?;
         self.diagnostics
             .label_floppies(&self.config, &mut assembled);
         Ok(assembled)
+    }
+}
+
+#[derive(Default)]
+struct LaunchImageReader {
+    bases: std::collections::BTreeMap<PathBuf, media::VerifiedBase>,
+}
+
+impl ImageReader for LaunchImageReader {
+    fn read(&mut self, path: &Path) -> std::io::Result<Vec<u8>> {
+        FileImageReader.read(path)
+    }
+    fn read_journal_base(&mut self, path: &Path) -> std::io::Result<Vec<u8>> {
+        FileImageReader.read_journal_base(path)
+    }
+    fn verify_journal_base(&mut self, path: &Path) -> std::io::Result<media::VerifiedBase> {
+        use media::SectorSource;
+        if let Some(base) = self.bases.get(path) {
+            base.check_unchanged()?;
+            return Ok(base.clone());
+        }
+        let base = FileImageReader.verify_journal_base(path)?;
+        self.bases.insert(path.into(), base.clone());
+        Ok(base)
     }
 }
 
@@ -358,8 +384,8 @@ pub fn load_for_assembly(
     options: assembly::AssemblyOptions,
 ) -> Result<LoadedMachine, LoadError> {
     let (document, origins) = resolve(path)?;
-    let (config, diagnostics) =
-        lower::lower_tracked(&document, &origins, &mut FileImageReader, options)?;
+    let mut reader = LaunchImageReader::default();
+    let (config, diagnostics) = lower::lower_tracked(&document, &origins, &mut reader, options)?;
     let cards = document
         .card
         .iter()
@@ -382,6 +408,7 @@ pub fn load_for_assembly(
         cards,
         diagnostics,
         options,
+        bases: reader.bases,
     })
 }
 

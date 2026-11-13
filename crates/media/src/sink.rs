@@ -4,7 +4,7 @@
 //!
 //! This is a disk-format service, not controller hardware. Assembly can adapt its
 //! complete-sector batches to `device::SectorMedia` without exposing this status
-//! channel to the controller. Reads use only the reconstructed memory image.
+//! channel to the controller. Reads consult sparse replacements, then the verified base.
 //! No wall clock, worker thread or host failure becomes a guest input.
 //!
 //! Each successful command/end flushes userspace output and calls `File::sync_all`.
@@ -20,8 +20,8 @@
 
 use crate::temporary::{cleanup_creation_temp, cleanup_retention_temp, HostCreationTempIo};
 use crate::{
-    scan_reader, ClosingReason, Error, Frame, Header, Record, Refusal, Status, VerificationReport,
-    FRAME_LEN, SECTOR_LEN,
+    scan_overlay_reader, ClosingReason, Error, Frame, Header, Record, Refusal, SectorSource,
+    SparseOverlay, Status, VerificationReport, VerifiedBase, FRAME_LEN, SECTOR_LEN,
 };
 use std::any::Any;
 use std::cell::{Cell, RefCell};
@@ -60,6 +60,15 @@ pub struct MaintenanceFailure {
 }
 
 impl SinkStatus {
+    /// Record an immutable source failure through the existing host-only latch.
+    pub fn latch_host_error(&self, operation: &'static str, message: String) {
+        self.latch(SinkFailure {
+            operation,
+            message,
+            last_confirmed_sequence: 0,
+        });
+    }
+
     pub fn maintenance_failure(&self) -> Option<MaintenanceFailure> {
         self.1.borrow().clone()
     }
@@ -83,7 +92,7 @@ pub enum OpenError {
     Refused(Refusal),
 }
 
-/// Memory-backed host media and its exclusive journal session.
+/// Sparse host media and its exclusive journal session.
 ///
 /// The assembly adapter supplies in-range LBAs in controller transfer order.
 /// Duplicate LBAs use their last bytes and last occurrence order; out-of-range
@@ -92,7 +101,7 @@ pub enum OpenError {
 /// leaving complete commands to be recovered on the next mount. Retention runs
 /// only after a synchronized close, under the same stable lock.
 pub struct JournalMedia {
-    image: Vec<u8>,
+    image: SparseOverlay,
     output: Box<dyn JournalIo>,
     _lock: Box<dyn Any>,
     status: SinkStatus,
@@ -100,7 +109,7 @@ pub struct JournalMedia {
     generation: u64,
     confirmed: u64,
     mount_report: VerificationReport,
-    base: Vec<u8>,
+    base: VerifiedBase,
     path: PathBuf,
     keep_generations: u32,
     closed_count: usize,
@@ -183,7 +192,13 @@ impl JournalMedia {
         geometry_length: u64,
         status: SinkStatus,
     ) -> Result<Self, OpenError> {
-        Self::open_host(path, base, geometry_length, status, None)
+        Self::open_host(
+            path,
+            &VerifiedBase::from_bytes(base)?,
+            geometry_length,
+            status,
+            None,
+        )
     }
 
     /// Protect the identity of the file read to obtain these exact base bytes.
@@ -195,16 +210,56 @@ impl JournalMedia {
         status: SinkStatus,
         base_metadata: &std::fs::Metadata,
     ) -> Result<Self, OpenError> {
-        Self::open_host(path, base, geometry_length, status, Some(base_metadata))
+        Self::open_host(
+            path,
+            &VerifiedBase::from_bytes(base)?,
+            geometry_length,
+            status,
+            Some(base_metadata),
+        )
+    }
+
+    /// Mount a once-verified read-only file without loading its bytes again.
+    pub fn open_verified(
+        path: &Path,
+        base: &VerifiedBase,
+        geometry_length: u64,
+        status: SinkStatus,
+    ) -> Result<Self, OpenError> {
+        Self::open_host(path, base, geometry_length, status, base.metadata())
+    }
+
+    /// Preserve a caller's input alias protection for in-memory bases too.
+    pub fn open_verified_with_metadata(
+        path: &Path,
+        base: &VerifiedBase,
+        geometry_length: u64,
+        status: SinkStatus,
+        metadata: Option<&std::fs::Metadata>,
+    ) -> Result<Self, OpenError> {
+        Self::open_host(
+            path,
+            base,
+            geometry_length,
+            status,
+            metadata.or(base.metadata()),
+        )
     }
 
     fn open_host(
         path: &Path,
-        base: &[u8],
+        base: &VerifiedBase,
         geometry_length: u64,
         status: SinkStatus,
         base_metadata: Option<&std::fs::Metadata>,
     ) -> Result<Self, OpenError> {
+        base.check_unchanged().map_err(|e| {
+            OpenError::Host(status.latch(SinkFailure {
+                operation: "verify base",
+                message: e.to_string(),
+                last_confirmed_sequence: 0,
+            }))
+        })?;
         let path = (|| {
             refuse_creation_temp_name(path)?;
             let canonical = canonical_journal_path(path)?;
@@ -254,12 +309,20 @@ impl JournalMedia {
         geometry_length: u64,
         status: SinkStatus,
     ) -> Result<Self, OpenError> {
-        Self::open_with_lock(fs, path, base, geometry_length, status, None, None)
+        Self::open_with_lock(
+            fs,
+            path,
+            &VerifiedBase::from_bytes(base)?,
+            geometry_length,
+            status,
+            None,
+            None,
+        )
     }
 
     pub(crate) fn recover_locked(
         path: &Path,
-        base: &[u8],
+        base: &VerifiedBase,
         lock: File,
         base_metadata: &std::fs::Metadata,
     ) -> Result<Self, OpenError> {
@@ -267,7 +330,7 @@ impl JournalMedia {
             &mut HostFilesystem,
             path,
             base,
-            base.len() as u64,
+            base.byte_len(),
             SinkStatus::default(),
             Some(Box::new(lock)),
             Some(base_metadata),
@@ -277,7 +340,7 @@ impl JournalMedia {
     fn open_with_lock(
         fs: &mut impl Filesystem,
         path: &Path,
-        base: &[u8],
+        base: &VerifiedBase,
         geometry_length: u64,
         status: SinkStatus,
         lock: Option<Box<dyn Any>>,
@@ -286,7 +349,7 @@ impl JournalMedia {
         if let Some(failure) = status.failure() {
             return Err(failure.into());
         }
-        let header = Header::new(base, 0)?;
+        let header = base.identity().clone();
         if header.base_length != geometry_length {
             return Err(Error::GeometryLength.into());
         }
@@ -335,8 +398,9 @@ impl JournalMedia {
         // Cover both a prior publication and removal of its leftover hard link.
         fs.sync_directory(path)
             .map_err(|e| host("directory sync", e))?;
-        let scan = scan_reader(&mut output, base, geometry_length).map_err(|e| host("scan", e))?;
-        let image = match scan.image {
+        let scan =
+            scan_overlay_reader(&mut output, base, geometry_length).map_err(|e| host("scan", e))?;
+        let image = match scan.overlay {
             Some(image) => image,
             None => match scan.report.status {
                 Status::Refused(ref refusal) => return Err(OpenError::Refused(refusal.clone())),
@@ -398,7 +462,7 @@ impl JournalMedia {
             closed_count: scan.report.generations.len()
                 + usize::from(scan.report.unsealed_tip.is_some()),
             mount_report: scan.report,
-            base: base.to_vec(),
+            base: base.clone(),
             path: path.to_owned(),
             keep_generations: 10,
             #[cfg(feature = "test-support")]
@@ -413,29 +477,51 @@ impl JournalMedia {
     }
 
     pub fn status(&self) -> SinkStatus {
+        self.check_base();
         self.status.clone()
     }
 
-    pub fn image(&self) -> &[u8] {
-        &self.image
+    /// Check host integrity at frontend boundaries even without a sector read.
+    pub fn check_base(&self) {
+        if let Err(error) = self.base.check_unchanged() {
+            self.status.latch(self.failure("base changed", error));
+        }
+    }
+
+    /// Explicit full-image capture for small tools/tests. Mount, finish and
+    /// maintenance use sector access instead, so disk size does not set their RAM use.
+    pub fn image(&self) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        for lba in 0..self.byte_len().div_ceil(SECTOR_LEN as u64) {
+            bytes.extend_from_slice(&self.read_sector(lba));
+        }
+        bytes.truncate(self.byte_len() as usize);
+        bytes
+    }
+
+    pub fn byte_len(&self) -> u64 {
+        self.image.byte_len()
+    }
+    pub fn written_sectors(&self) -> usize {
+        self.image.written_sectors()
     }
 
     pub fn read_sector(&self, lba: u64) -> [u8; SECTOR_LEN] {
-        let mut bytes = [0; SECTOR_LEN];
-        if let Some(range) = self.range(lba) {
-            bytes[..range.len()].copy_from_slice(&self.image[range]);
+        match self.image.read_sector(lba) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                self.status.latch(self.failure("base read", error));
+                [0; SECTOR_LEN]
+            }
         }
-        bytes
     }
 
     pub fn write_protected(&self) -> bool {
         false
     }
 
-    fn range(&self, lba: u64) -> Option<std::ops::Range<usize>> {
-        let start = usize::try_from(lba).ok()?.checked_mul(SECTOR_LEN)?;
-        let end = start.checked_add(SECTOR_LEN)?.min(self.image.len());
-        (start < end).then_some(start..end)
+    fn in_range(&self, lba: u64) -> bool {
+        lba < self.byte_len().div_ceil(SECTOR_LEN as u64)
     }
 
     /// Apply a completed nonempty command before attempting host output. The
@@ -443,22 +529,24 @@ impl JournalMedia {
     /// Host failures have no result channel here and never undo memory writes.
     /// Malformed CMOS batches latch an error before touching memory or output.
     pub fn write_batch(&mut self, sectors: &[(u64, [u8; SECTOR_LEN])]) {
-        if sectors.is_empty() || sectors.iter().any(|(lba, _)| self.range(*lba).is_none()) {
+        if sectors.is_empty() || sectors.iter().any(|(lba, _)| !self.in_range(*lba)) {
             return;
         }
-        if self.base.len() == 64
+        if self.base.byte_len() == 64
             && sectors
                 .iter()
-                .any(|(_, bytes)| !crate::codec::valid_nvram_block(&self.base, bytes))
+                .any(|(_, bytes)| !crate::codec::valid_nvram_block(&self.read_sector(0), bytes))
         {
             self.status
                 .latch(self.failure("write", "NVRAM immutable bytes or padding"));
             return;
         }
+        if let Err(error) = self.base.check_unchanged() {
+            self.status.latch(self.failure("base changed", error));
+            return;
+        }
         for (lba, bytes) in sectors {
-            let start = *lba as usize * SECTOR_LEN;
-            let end = (start + SECTOR_LEN).min(self.image.len());
-            self.image[start..end].copy_from_slice(&bytes[..end - start]);
+            self.image.replace(*lba, Box::new(*bytes));
         }
         if self.status.failure().is_some() {
             return;
@@ -501,8 +589,20 @@ impl JournalMedia {
 
     /// Explicit successful session termination. On execution failure, drop the
     /// media instead so recovery can identify its commands as interrupted.
-    pub fn finish(mut self) -> Result<(), SinkFailure> {
-        self.close_generation(ClosingReason::SessionEnd)
+    pub fn finish(self) -> Result<(), SinkFailure> {
+        self.finish_overlay().map(|_| ())
+    }
+
+    /// Release the writer and lock while moving readable media to the owner.
+    pub fn finish_overlay(self) -> Result<SparseOverlay, SinkFailure> {
+        let (overlay, result) = self.finish_readable();
+        result.map(|()| overlay)
+    }
+
+    /// Preserve readable completed writes even when the closing barrier fails.
+    pub fn finish_readable(mut self) -> (SparseOverlay, Result<(), SinkFailure>) {
+        let result = self.close_generation(ClosingReason::SessionEnd);
+        (self.image, result)
     }
 
     fn close_generation(&mut self, reason: ClosingReason) -> Result<(), SinkFailure> {
@@ -518,6 +618,9 @@ impl JournalMedia {
         reason: ClosingReason,
         io: &mut impl crate::offline::ToolIo,
     ) -> Result<(), SinkFailure> {
+        if let Err(error) = self.base.check_unchanged() {
+            return Err(self.status.latch(self.failure("base changed", error)));
+        }
         if let Some(failure) = self.status.maintenance_failure().filter(|f| f.uncertain) {
             return Err(self.failure("retention", failure));
         }
@@ -556,17 +659,18 @@ impl JournalMedia {
         let mut uncertain = false;
         let mut temporary = None;
         let result = (|| -> io::Result<()> {
-            let old = scan_reader(&mut self.output, &self.base, self.base.len() as u64)?;
+            let old = scan_overlay_reader(&mut self.output, &self.base, self.base.byte_len())?;
             if old.report.status != Status::Valid || old.report.unsealed_tip.is_some() {
                 return Err(io::Error::other(
                     "retention requires a valid closed boundary",
                 ));
             }
+            drop(old.overlay);
             let retained = &old.report.generations
                 [old.report.generations.len() - self.keep_generations as usize..];
             let anchor = &retained[0];
             let state = crate::history::prefix(&mut self.output, anchor.end_offset, &self.base)?
-                .image
+                .overlay
                 .ok_or_else(|| io::Error::other("anchor reconstruction refused"))?;
             let permissions = std::fs::metadata(&self.path)?.permissions();
             let (mut replacement, name) =
@@ -577,10 +681,12 @@ impl JournalMedia {
             let encode = |error| io::Error::other(error);
             io.write_temporary(
                 &mut replacement,
-                &Header::new(&self.base, anchor.id)
-                    .map_err(encode)?
-                    .encode()
-                    .map_err(encode)?,
+                &Header {
+                    anchor_generation: anchor.id,
+                    ..self.base.identity().clone()
+                }
+                .encode()
+                .map_err(encode)?,
             )?;
             let mut sequence = 0;
             let mut sectors = 0;
@@ -597,18 +703,12 @@ impl JournalMedia {
                     .map_err(encode)?,
                 )
             };
-            for (lba, (bytes, base)) in state
-                .chunks(SECTOR_LEN)
-                .zip(self.base.chunks(SECTOR_LEN))
-                .enumerate()
-            {
-                if bytes != base {
-                    let mut sector = [0; SECTOR_LEN];
-                    sector[..bytes.len()].copy_from_slice(bytes);
+            for (&lba, bytes) in state.replacements() {
+                if **bytes != self.base.read_sector(lba)? {
                     emit(
                         Record::Sector {
-                            lba: lba as u64,
-                            bytes: Box::new(sector),
+                            lba,
+                            bytes: bytes.clone(),
                         },
                         anchor.id,
                         &mut replacement,
@@ -616,6 +716,7 @@ impl JournalMedia {
                     sectors += 1;
                 }
             }
+            drop(state);
             emit(Record::CommandEnd { sectors }, anchor.id, &mut replacement)?;
             emit(
                 Record::GenerationEnd {
@@ -646,12 +747,12 @@ impl JournalMedia {
                 let after = crate::history::prefix(&mut replacement, new_end, &self.base)?;
                 if after.report.status != Status::Valid
                     || after.report.unsealed_tip.is_some()
-                    || after.image != before.image
+                    || !equivalent(after.overlay.as_ref(), before.overlay.as_ref(), &self.base)?
                 {
                     return Err(io::Error::other("retention state verification failed"));
                 }
             }
-            let check = scan_reader(&mut replacement, &self.base, self.base.len() as u64)?;
+            let check = scan_overlay_reader(&mut replacement, &self.base, self.base.byte_len())?;
             if check.report.status != Status::Valid
                 || check.report.unsealed_tip.is_some()
                 || check.report.generations.len() != retained.len()
@@ -664,6 +765,7 @@ impl JournalMedia {
             {
                 return Err(io::Error::other("retention history verification failed"));
             }
+            drop(check.overlay);
             replacement.seek(SeekFrom::End(0))?;
             io.sync(&replacement, "temporary sync")?;
             uncertain = true;
@@ -750,6 +852,26 @@ impl JournalMedia {
             last_confirmed_sequence: self.confirmed,
         }
     }
+}
+
+fn equivalent(
+    a: Option<&SparseOverlay>,
+    b: Option<&SparseOverlay>,
+    base: &VerifiedBase,
+) -> io::Result<bool> {
+    let (Some(a), Some(b)) = (a, b) else {
+        return Ok(false);
+    };
+    if a.same_replacements(b) {
+        return Ok(true);
+    }
+    for (&lba, _) in a.replacements().chain(b.replacements()) {
+        if a.read_sector(lba)? != b.read_sector(lba)? {
+            return Ok(false);
+        }
+    }
+    base.check_unchanged()?;
+    Ok(true)
 }
 
 /// Injectable host boundary; write_all remains the standard library's partial /

@@ -42,6 +42,21 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   records `RetiredCapReached`, `retired=13772948`, `dos_prompt=true`, MDA text
   SHA-256 `f016e6af8c82493b1a489b8753d1ad9c34f31da6af744e177984405ca1f4ead6`.
 
+- **2026-11-13 — Sparse persistent media:** journal drives read their immutable
+  base on demand and retain only written sectors, including removable floppies.
+  CLI/window journal-disk launches retain the verified read-only descriptor from
+  machine-file lowering through assembly: one streamed full-base SHA-256 and
+  no whole-disk buffer. Independent assembly/offline opens verify once each.
+  Metadata checks reject changes after verification through the host
+  failure channel. Retention, readable finish, verify/rollback and atomic export
+  use sparse states and bounded buffers; the version-1 format is unchanged.
+  Counting-allocator tests cover a sparse 512 MiB media lifecycle and 504 MiB
+  frontend launch. Seeded keep=2 workloads restore base sectors and compare every
+  retained generation export with dense snapshots.
+  `SectorSource` is the parent seam for future hash-linked layers; actual layer
+  files, deduplication and FAT optimizations remain deferred. See
+  [persistent media](design/persistent-media.md#memory-and-hashing).
+
 - **2026-11-13 — Microsoft serial mouse:** opt-in `mouse = "microsoft"` on a
   UART card supplies a two-button 1200 7N1 endpoint. DTR/RTS power-up produces
   `M` after an assumed 10 ms startup plus a byte frame; inactive lines cancel

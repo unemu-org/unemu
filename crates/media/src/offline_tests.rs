@@ -118,7 +118,7 @@ impl ToolIo for RecordingIo {
     fn recover(
         &mut self,
         path: &Path,
-        base: &[u8],
+        base: &VerifiedBase,
         lock: File,
         base_metadata: &std::fs::Metadata,
     ) -> Result<JournalMedia, OpenError> {
@@ -611,8 +611,11 @@ fn nvram_offline_retention_export_rollback_and_tail_repair() {
             .collect::<Vec<_>>(),
         [3, 4]
     );
-    assert_eq!(scan.image.as_ref().unwrap().len(), 64);
-    assert_eq!(scan.image.as_ref().unwrap()[63], 4);
+    assert_eq!(scan.overlay.as_ref().unwrap().byte_len(), 64);
+    assert_eq!(
+        scan.overlay.as_ref().unwrap().read_sector(0).unwrap()[63],
+        4
+    );
     assert_eq!(scan.report.header.unwrap().anchor_generation, 3);
     let exported = fixture.dir.join("exported.bin");
     tool.commit(3, &exported).unwrap();
@@ -623,7 +626,10 @@ fn nvram_offline_retention_export_rollback_and_tail_repair() {
     let rollback = tool
         .rollback(3, &fixture.dir.join("rollback.upfj"))
         .unwrap();
-    assert_eq!(rollback.image.as_ref().unwrap()[63], 3);
+    assert_eq!(
+        rollback.overlay.as_ref().unwrap().read_sector(0).unwrap()[63],
+        3
+    );
     drop(tool);
     std::fs::OpenOptions::new()
         .append(true)
@@ -634,7 +640,10 @@ fn nvram_offline_retention_export_rollback_and_tail_repair() {
     let mut tool = JournalTool::open(&base_path, &journal_path, Access::Mutate).unwrap();
     assert_eq!(tool.verify().unwrap().report.discarded_bytes, 9);
     let repaired = tool.repair_tail(&fixture.dir.join("repair.upfj")).unwrap();
-    assert_eq!(repaired.image.as_ref().unwrap()[63], 3);
+    assert_eq!(
+        repaired.overlay.as_ref().unwrap().read_sector(0).unwrap()[63],
+        3
+    );
     assert!(!repaired.report.needs_recovery());
     assert_eq!(std::fs::read(base_path).unwrap(), base);
 }

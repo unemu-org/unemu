@@ -24,9 +24,9 @@ use crate::{schema::v1, MachineFile, Origin, Origins};
 
 const MIB: u64 = 0x100000;
 
-/// Image I/O seam. Lowering hashes the bytes returned by each read.
+/// Image I/O seam. Inline images return bytes; journal disks return a verified source.
 ///
-/// Lowering reads and hashes each referenced image through this seam, including
+/// Lowering verifies each referenced image through this seam, including
 /// synthetic bytes supplied by tests. Volatile/readonly bytes are retained inline;
 /// catalogues and journal bases retain paths and the verified digest for assembly's mount check.
 /// Journal reads require a file-backed reader so the journal remains bound to a
@@ -34,7 +34,16 @@ const MIB: u64 = 0x100000;
 pub trait ImageReader {
     fn read(&mut self, path: &Path) -> io::Result<Vec<u8>>;
 
-    /// Read an immutable file base that can also be used to reopen the journal.
+    /// Verify a disk without returning a whole-image buffer. Synthetic readers
+    /// refuse persistent media; frontends can retain the verified descriptor.
+    fn verify_journal_base(&mut self, _path: &Path) -> io::Result<media::VerifiedBase> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "journal mode requires a file-backed image reader",
+        ))
+    }
+
+    /// Read a small CMOS journal base. Disk callers use `verify_journal_base`.
     /// Synthetic readers refuse journals because their bytes need not exist on disk.
     fn read_journal_base(&mut self, _path: &Path) -> io::Result<Vec<u8>> {
         Err(io::Error::new(
@@ -44,7 +53,7 @@ pub trait ImageReader {
     }
 }
 
-/// Read images from the filesystem without retaining open handles.
+/// Read inline images and verify disk sources with bounded buffers.
 pub struct FileImageReader;
 
 impl ImageReader for FileImageReader {
@@ -52,8 +61,21 @@ impl ImageReader for FileImageReader {
         std::fs::read(path)
     }
 
+    fn verify_journal_base(&mut self, path: &Path) -> io::Result<media::VerifiedBase> {
+        media::VerifiedBase::open(path)
+    }
+
     fn read_journal_base(&mut self, path: &Path) -> io::Result<Vec<u8>> {
-        self.read(path)
+        use std::io::Read;
+        // Only the small CMOS store uses the byte-backed journal path.
+        let mut bytes = Vec::new();
+        std::fs::File::open(path)?
+            .take(513)
+            .read_to_end(&mut bytes)?;
+        if bytes.len() > 512 {
+            return Err(io::Error::other("NVRAM image exceeds 512 bytes"));
+        }
+        Ok(bytes)
     }
 }
 
@@ -139,6 +161,53 @@ impl<R: ImageReader> Context<'_, R> {
 
     fn required<T>(&self, field: &str, value: Option<T>) -> Result<T, LowerError> {
         value.ok_or_else(|| self.error(field, "required field is missing"))
+    }
+
+    fn journal_image(
+        &mut self,
+        field: &str,
+        image: Option<&str>,
+        pin: Option<&v1::Sha256>,
+        pin_field: &str,
+    ) -> Result<(u64, [u8; 32]), LowerError> {
+        let image = self.required(field, image)?;
+        let origin = self.origins.get(field);
+        let display_path = origin.file.parent().unwrap_or(Path::new(".")).join(image);
+        let path = self.origins.image_path(field, image);
+        let description = if path == display_path {
+            display_path.display().to_string()
+        } else {
+            format!(
+                "{} (resolved to {})",
+                display_path.display(),
+                path.display()
+            )
+        };
+        if crate::paths::is_retention_input(&path) {
+            return Err(self.error(
+                field,
+                format!("image {description} uses a reserved retention-temporary name"),
+            ));
+        }
+        let base = self.reader.verify_journal_base(&path).map_err(|error| {
+            self.error(field, format!("cannot read image {description}: {error}"))
+        })?;
+        let digest = base.identity().base_digest;
+        let actual = format!("{:x}", sha2::digest::Output::<Sha256>::from(digest));
+        if let Some(pin) = pin {
+            if actual != pin.as_str() {
+                return Err(self.pin_error(
+                    field,
+                    pin_field,
+                    format!(
+                        "sha256 mismatch for {description}: expected {}, actual {actual}",
+                        pin.as_str()
+                    ),
+                ));
+            }
+        }
+        self.image_paths.push(path);
+        Ok((base.identity().base_length, digest))
     }
 
     fn image(
@@ -677,14 +746,24 @@ impl<R: ImageReader> Context<'_, R> {
                             medium.keep_generations.is_some(),
                         )?
                     };
-                    let (bytes, digest) = self.image(
-                        &format!("{field}.image"),
-                        Some(&medium.image),
-                        medium.sha256.as_ref(),
-                        &format!("{field}.sha256"),
-                        matches!(write, assembly::WriteMode::Journal { .. }),
-                    )?;
-                    if bytes.len() as u64 != drive_kind.image_bytes() {
+                    let (length, digest) = if matches!(write, assembly::WriteMode::Journal { .. }) {
+                        self.journal_image(
+                            &format!("{field}.image"),
+                            Some(&medium.image),
+                            medium.sha256.as_ref(),
+                            &format!("{field}.sha256"),
+                        )?
+                    } else {
+                        let (bytes, digest) = self.image(
+                            &format!("{field}.image"),
+                            Some(&medium.image),
+                            medium.sha256.as_ref(),
+                            &format!("{field}.sha256"),
+                            false,
+                        )?;
+                        (bytes.len() as u64, digest)
+                    };
+                    if length != drive_kind.image_bytes() {
                         return Err(self.error(&field, "medium geometry differs from drive type"));
                     }
                     let path = self
@@ -746,20 +825,31 @@ impl<R: ImageReader> Context<'_, R> {
                 )?
             };
             let journal = matches!(write, assembly::WriteMode::Journal { .. });
-            let (bytes, digest) = self.image(
-                &format!("{drive_field}.image"),
-                drive.image.as_deref(),
-                drive.sha256.as_ref(),
-                &format!("{drive_field}.sha256"),
-                journal,
-            )?;
+            let (length, digest, bytes) = if journal {
+                let (length, digest) = self.journal_image(
+                    &format!("{drive_field}.image"),
+                    drive.image.as_deref(),
+                    drive.sha256.as_ref(),
+                    &format!("{drive_field}.sha256"),
+                )?;
+                (length, digest, Vec::new())
+            } else {
+                let (bytes, digest) = self.image(
+                    &format!("{drive_field}.image"),
+                    drive.image.as_deref(),
+                    drive.sha256.as_ref(),
+                    &format!("{drive_field}.sha256"),
+                    false,
+                )?;
+                (bytes.len() as u64, digest, bytes)
+            };
             let image = if journal {
                 // Assembly needs the base path to reject aliases and mount the journal.
-                if bytes.len() as u64 != drive_kind.image_bytes() {
+                if length != drive_kind.image_bytes() {
                     return Err(self.validation_error(ConfigError::ImageGeometryMismatch {
                         drive_index: drives.len(),
                         expected: drive_kind.image_bytes(),
-                        actual: bytes.len() as u64,
+                        actual: length,
                     }));
                 }
                 let field = format!("{drive_field}.image");

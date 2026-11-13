@@ -480,7 +480,15 @@ fn ide_journal_rollback_and_commit_use_image_capacity() {
     tool.commit(1, &output).unwrap();
     assert_eq!(std::fs::read(output).unwrap(), expected);
     tool.rollback(1, &disk.root.join("backup.upfj")).unwrap();
-    assert_eq!(tool.verify().unwrap().image.unwrap(), expected);
+    assert_eq!(
+        tool.verify()
+            .unwrap()
+            .overlay
+            .unwrap()
+            .materialize()
+            .unwrap(),
+        expected
+    );
     drop(tool);
     let mut machine = assemble(&disk.config()).unwrap();
     assert_eq!(ata(&mut machine).drive(0).unwrap().image(), expected);
@@ -548,5 +556,21 @@ fn ide_journal_guest_outsw_state_matches_volatile_and_failing_sink_at_small_caps
         }
         journal.finish_persistence().unwrap();
         assert!(failing.finish_persistence().is_err());
+    }
+}
+
+#[test]
+fn base_mutation_stops_the_frontend_before_another_run_and_after_finish() {
+    for finish_first in [false, true] {
+        let disk = Disk::new();
+        let mut machine = assemble(&disk.config()).unwrap();
+        if finish_first {
+            machine.finish_persistence().unwrap();
+        }
+        std::fs::write(disk.root.join("base.img"), vec![0xA5; disk.base.len()]).unwrap();
+        let error = machine.check_persistence().unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("base file changed after verification"));
     }
 }

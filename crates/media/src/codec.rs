@@ -26,6 +26,8 @@ pub enum Error {
     GeometryLength,
     #[error("base digest does not match the journal")]
     BaseDigest,
+    #[error("base read failed: {0}")]
+    BaseRead(String),
     #[error("journal frame must be exactly 640 bytes")]
     FrameLength,
     #[error("invalid journal frame magic")]
@@ -96,6 +98,43 @@ impl Header {
 
     /// Parse exactly one header and bind it to the already loaded base/geometry.
     pub fn decode(bytes: &[u8], base: &[u8], geometry_length: u64) -> Result<Self, Error> {
+        let header = Self::decode_fields(bytes)?;
+        if base.len() as u64 != header.base_length {
+            return Err(Error::BaseLength);
+        }
+        if geometry_length != header.base_length {
+            return Err(Error::GeometryLength);
+        }
+        if digest(base) != header.base_digest {
+            return Err(Error::BaseDigest);
+        }
+        Ok(header)
+    }
+
+    pub(crate) fn decode_identity(
+        bytes: &[u8],
+        base: &Self,
+        geometry_length: u64,
+    ) -> Result<Self, Error> {
+        let header = Self::decode_fields(bytes)?;
+        let base_length = header.base_length;
+        if base.base_length != base_length {
+            return Err(Error::BaseLength);
+        }
+        if geometry_length != base_length {
+            return Err(Error::GeometryLength);
+        }
+        let base_digest = base.base_digest;
+        if base_digest != bytes[24..56] {
+            return Err(Error::BaseDigest);
+        }
+        Ok(Self {
+            base_length,
+            base_digest,
+            anchor_generation: read_u64(&bytes[56..64]),
+        })
+    }
+    fn decode_fields(bytes: &[u8]) -> Result<Self, Error> {
         if bytes.len() != HEADER_LEN {
             return Err(Error::HeaderLength);
         }
@@ -119,16 +158,8 @@ impl Header {
         }
         let base_length = read_u64(&bytes[16..24]);
         check_base_length(base_length)?;
-        if u64::try_from(base.len()).ok() != Some(base_length) {
-            return Err(Error::BaseLength);
-        }
-        if geometry_length != base_length {
-            return Err(Error::GeometryLength);
-        }
-        let base_digest = digest(base);
-        if base_digest != bytes[24..56] {
-            return Err(Error::BaseDigest);
-        }
+        let mut base_digest = [0; 32];
+        base_digest.copy_from_slice(&bytes[24..56]);
         Ok(Self {
             base_length,
             base_digest,
@@ -293,4 +324,20 @@ pub(crate) fn intact_generation_end(bytes: &[u8]) -> bool {
         && &bytes[..8] == FRAME_MAGIC
         && bytes[8] == 3
         && digest(&bytes[..608]) == bytes[608..]
+}
+
+#[cfg(test)]
+mod header_order_tests {
+    use super::*;
+    #[test]
+    fn header_errors_precede_invalid_base_and_geometry() {
+        assert_eq!(Header::decode(&[], &[], 0), Err(Error::HeaderLength));
+        assert_eq!(
+            Header::decode(&[0; HEADER_LEN], &[], 0),
+            Err(Error::HeaderMagic)
+        );
+        let mut bytes = Header::new(&[0; 512], 0).unwrap().encode().unwrap();
+        bytes[8..10].copy_from_slice(&2u16.to_le_bytes());
+        assert_eq!(Header::decode(&bytes, &[], 0), Err(Error::Version(2)));
+    }
 }

@@ -184,7 +184,7 @@ fn rollback_remount_reappend_reuses_next_generation_and_discards_tip() {
         [1, 2]
     );
     expected[..512].fill(0x55);
-    assert_eq!(scan.image.unwrap(), expected);
+    assert_eq!(scan.overlay.unwrap().materialize().unwrap(), expected);
     assert_eq!(f.invoke("verify", &[]).0, 0);
     assert_eq!(fs::read(&f.base).unwrap(), f.bytes);
 }

@@ -1,13 +1,15 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Command-atomic replay and fixed-stride recovery; persistent-media.md § Open and
 //! tail recovery. Both entry points share grammar and recovery classification.
-//! Streaming retains the image, one bounded command and generation summaries,
+//! Streaming retains sparse replacements, one bounded command and generation summaries,
 //! rather than retaining journal payload history.
 
 use crate::codec::intact_generation_end;
 use crate::{ClosingReason, Error, Frame, Header, Record, FRAME_LEN, HEADER_LEN, SECTOR_LEN};
+use crate::{SectorSource, SparseOverlay, VerifiedBase};
 use std::collections::BTreeMap;
 use std::io::{self, Read, Seek, SeekFrom};
+use std::rc::Rc;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Generation {
@@ -103,16 +105,35 @@ pub struct Scan {
     pub image: Option<Vec<u8>>,
 }
 
+/// Sparse replay evidence; a refused history never exposes its replacements.
+#[derive(Debug)]
+pub struct SparseScan {
+    pub report: VerificationReport,
+    pub overlay: Option<SparseOverlay>,
+}
+
+fn materialized(scan: SparseScan) -> Scan {
+    Scan {
+        report: scan.report,
+        image: scan.overlay.and_then(|s| s.materialize().ok()),
+    }
+}
+
 /// Validate a journal against the exact loaded base and configured image length.
 /// Valid unsealed commands are replayed; pending commands and torn suffixes are
 /// excluded. No bytes are repaired or sealed by this function.
 pub fn scan(journal: &[u8], base: &[u8], geometry_length: u64) -> Scan {
-    let result = scan_source(journal.len(), base, geometry_length, |offset, bytes| {
-        bytes.copy_from_slice(&journal[offset..offset + bytes.len()]);
-        Ok::<_, std::convert::Infallible>(())
-    });
+    let result = scan_source(
+        journal.len(),
+        &VerifiedBase::memory(base),
+        geometry_length,
+        |offset, bytes| {
+            bytes.copy_from_slice(&journal[offset..offset + bytes.len()]);
+            Ok::<_, std::convert::Infallible>(())
+        },
+    );
     match result {
-        Ok(scan) => scan,
+        Ok(scan) => materialized(scan),
         Err(never) => match never {},
     }
 }
@@ -126,20 +147,41 @@ pub fn scan_reader<R: Read + Seek>(
     base: &[u8],
     geometry_length: u64,
 ) -> io::Result<Scan> {
+    scan_overlay_reader(journal, &VerifiedBase::memory(base), geometry_length).map(materialized)
+}
+
+/// Sparse command-complete replay, with no base copy or additional base hash.
+/// The caller supplies the identity verified once when opening the base.
+pub fn scan_overlay_reader<R: Read + Seek>(
+    journal: &mut R,
+    base: &VerifiedBase,
+    geometry_length: u64,
+) -> io::Result<SparseScan> {
+    base.check_unchanged()?;
     let length = usize::try_from(journal.seek(SeekFrom::End(0))?)
         .map_err(|_| io::Error::other("journal offsets exceed address space"))?;
-    scan_source(length, base, geometry_length, |offset, bytes| {
+    let scan = scan_source(length, base, geometry_length, |offset, bytes| {
         journal.seek(SeekFrom::Start(offset as u64))?;
         journal.read_exact(bytes)
-    })
+    })?;
+    base.check_unchanged()?;
+    let reason = match &scan.report.status {
+        Status::TornTail(tail) => Some(&tail.reason),
+        Status::Refused(refusal) => Some(&refusal.reason),
+        Status::Valid => None,
+    };
+    if let Some(Error::BaseRead(message)) = reason {
+        return Err(io::Error::other(message.clone()));
+    }
+    Ok(scan)
 }
 
 fn scan_source<E>(
     length: usize,
-    base: &[u8],
+    base: &VerifiedBase,
     geometry_length: u64,
     mut read: impl FnMut(usize, &mut [u8]) -> Result<(), E>,
-) -> Result<Scan, E> {
+) -> Result<SparseScan, E> {
     let mut report = VerificationReport {
         header: None,
         status: Status::Valid,
@@ -153,7 +195,7 @@ fn scan_source<E>(
     let mut header_bytes = [0; HEADER_LEN];
     let header_bytes = &mut header_bytes[..length.min(HEADER_LEN)];
     read(0, header_bytes)?;
-    let header = match Header::decode(header_bytes, base, geometry_length) {
+    let header = match Header::decode_identity(header_bytes, base.identity(), geometry_length) {
         Ok(header) => header,
         Err(reason) => {
             report.status = Status::Refused(Refusal {
@@ -162,9 +204,9 @@ fn scan_source<E>(
                 later_generation_end: None,
                 incomplete_anchor: false,
             });
-            return Ok(Scan {
+            return Ok(SparseScan {
                 report,
-                image: None,
+                overlay: None,
             });
         }
     };
@@ -250,7 +292,7 @@ fn classify_failure<E>(
     Ok(())
 }
 
-fn finish(state: State, mut report: VerificationReport) -> Scan {
+fn finish(state: State, mut report: VerificationReport) -> SparseScan {
     if state.commands != 0 {
         report.unsealed_tip = Some(Tip {
             generation: state.generation,
@@ -258,17 +300,17 @@ fn finish(state: State, mut report: VerificationReport) -> Scan {
             sectors: state.sectors,
         });
     }
-    let image = if matches!(report.status, Status::Refused(_)) {
+    let overlay = if matches!(report.status, Status::Refused(_)) {
         None
     } else {
         Some(state.image)
     };
-    Scan { report, image }
+    SparseScan { report, overlay }
 }
 
-struct State<'a> {
-    base: &'a [u8],
-    image: Vec<u8>,
+struct State {
+    base: VerifiedBase,
+    image: SparseOverlay,
     pending: BTreeMap<u64, Box<[u8; SECTOR_LEN]>>,
     sequence: u64,
     generation: u64,
@@ -278,11 +320,11 @@ struct State<'a> {
     anchor_command_ended: bool,
 }
 
-impl<'a> State<'a> {
-    fn new(header: &Header, base: &'a [u8]) -> Self {
+impl State {
+    fn new(header: &Header, base: &VerifiedBase) -> Self {
         Self {
-            base,
-            image: base.to_vec(),
+            base: base.clone(),
+            image: SparseOverlay::new(Rc::new(base.clone())),
             pending: BTreeMap::new(),
             sequence: 1,
             generation: if header.anchor_generation == 0 {
@@ -324,10 +366,18 @@ impl<'a> State<'a> {
                 if self.anchor_pending && self.anchor_command_ended {
                     return Err(Error::Anchor("more than one synthetic command"));
                 }
-                if lba >= self.base.len().div_ceil(SECTOR_LEN) as u64 {
+                if lba >= self.base.byte_len().div_ceil(SECTOR_LEN as u64) {
                     return Err(Error::SectorBounds(lba));
                 }
-                if self.base.len() == 64 && !crate::codec::valid_nvram_block(self.base, &bytes) {
+                if self.base.byte_len() == 64
+                    && !crate::codec::valid_nvram_block(
+                        &self
+                            .base
+                            .read_sector(0)
+                            .map_err(|e| Error::BaseRead(e.to_string()))?,
+                        &bytes,
+                    )
+                {
                     return Err(Error::Encoding("NVRAM immutable bytes or padding"));
                 }
                 if self.pending.contains_key(&lba) {
@@ -341,9 +391,11 @@ impl<'a> State<'a> {
                     {
                         return Err(Error::Anchor("sectors must be in increasing LBA order"));
                     }
-                    let start = lba as usize * SECTOR_LEN;
-                    if self.base[start..(start + SECTOR_LEN).min(self.base.len())]
-                        == bytes[..self.base.len().min(SECTOR_LEN)]
+                    if self
+                        .base
+                        .read_sector(lba)
+                        .map_err(|e| Error::BaseRead(e.to_string()))?
+                        == *bytes
                     {
                         return Err(Error::Anchor("unchanged base sector"));
                     }
@@ -372,12 +424,9 @@ impl<'a> State<'a> {
                     .sectors
                     .checked_add(sectors)
                     .ok_or(Error::IntegerExhausted)?;
-                for (lba, bytes) in &self.pending {
-                    let start = *lba as usize * SECTOR_LEN;
-                    let end = (start + SECTOR_LEN).min(self.image.len());
-                    self.image[start..end].copy_from_slice(&bytes[..end - start]);
+                for (lba, bytes) in std::mem::take(&mut self.pending) {
+                    self.image.replace(lba, bytes);
                 }
-                self.pending.clear();
                 self.commands = commands;
                 self.sectors = total_sectors;
                 if self.anchor_pending {
@@ -433,7 +482,7 @@ mod tests {
         let base = [0; SECTOR_LEN];
         let header = Header::new(&base, 0).unwrap();
         let mut report = scan(&header.encode().unwrap(), &base, SECTOR_LEN as u64).report;
-        let mut state = State::new(&header, &base);
+        let mut state = State::new(&header, &VerifiedBase::memory(&base));
         state.sequence = u64::MAX;
         let mut frame = Frame {
             sequence: u64::MAX,
