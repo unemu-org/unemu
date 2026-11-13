@@ -963,5 +963,6 @@ above. Only these implementation gates remain pending:
 
 1. The chosen-registry `oras` verification spike with synthetic custom media
    types and a multi-gigabyte blob must pass before transport work (§5.1).
-2. The Explorer-like library needs its own mock-up approval before implementation
-   of the library bead (§7).
+2. Done 2026-11-13: the maintainer approved the Explorer-like library mock-up
+   ([mockups/library.html](mockups/library.html)) as the starting point for the
+   library bead (§7).
