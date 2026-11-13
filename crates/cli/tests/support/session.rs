@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Passive BIOS/DOS screen assertions; execution uses the shipped CLI helpers.
+//! BIOS/DOS polling guards and screen assertions using the shipped CLI helpers.
 //! See status.md §Port 61h timing re-baseline for the recorded comparisons.
 
 use cli::{BiosRun, ScreenStamp};
@@ -59,4 +59,23 @@ pub fn assert_golden(
     assert_eq!(screen_hash(&run.mda.to_dump()), text_hash);
     assert_eq!(logical_hash(&run.mda.to_dump()), logical_text_hash);
     assert!(run.screen.rows_as_strings().iter().all(String::is_empty));
+}
+
+/// Poll once, rejecting a stopped guest or a clock that cannot reach a later cap.
+pub fn run_progressing(
+    assembled: &mut assembly::AssembledMachine,
+    policy: &assembly::RunPolicy,
+) -> anyhow::Result<machine::RunOutcome> {
+    let before = assembled.machine.virtual_time();
+    let outcome = assembled.run_session(policy)?;
+    let after = assembled.machine.virtual_time();
+    anyhow::ensure!(
+        outcome == machine::RunOutcome::RetiredCapReached,
+        "poll stopped with {outcome:?} at virtual time {after}"
+    );
+    anyhow::ensure!(
+        after > before,
+        "poll made no virtual-time progress ({before} -> {after})"
+    );
+    Ok(outcome)
 }

@@ -70,8 +70,14 @@
 //! Command `0xD1` (write output port) latches a new output port; bit 1 is the
 //! A20 gate, exposed through [`I8042::a20_enabled`] and driven onto the shared
 //! [`crate::A20Line`]. IBM PC AT Technical Reference, Keyboard Controller,
-//! Output Port, defines bit 1. CPU address masking is pending CPU-core support;
-//! see `backlog/docs/design/machine-config.md` §A20 line and System Control Port A.
+//! Output Port, defines bit 1. Assembly forwards the line to CPU physical
+//! address masking; see `backlog/docs/design/machine-config.md` §A20 line and System Control Port A.
+//!
+//! IBM PC AT Technical Reference, Keyboard Controller, Commands, documents AAh
+//! as self-test with a 55h reply. The model also reinitializes the output port
+//! as AT-compatible controllers do, enabling A20 without requesting CPU reset.
+//! AT POST relies on this before entering protected-mode memory sizing after
+//! a warm start, when the previous DOS session may have disabled A20.
 //!
 //! ## Input port and primary display
 //!
@@ -98,7 +104,7 @@
 //! |--------|-----------------------------|----------|------------------------------|
 //! | `0x20` | Read command byte           | yes      | → output buffer              |
 //! | `0x60` | Write command byte          | yes      | next `0x60` write is the byte |
-//! | `0xAA` | Controller self-test        | yes      | → `0x55` (pass)              |
+//! | `0xAA` | Controller self-test        | yes      | → `0x55`, SYS set, output port initialized; A20 on, no reset |
 //! | `0xAB` | Keyboard interface test     | yes      | → `0x00` (no error)          |
 //! | `0xAD` | Disable keyboard interface  | yes      | sets command-byte bit 4       |
 //! | `0xAE` | Enable keyboard interface   | yes      | clears command-byte bit 4     |
@@ -734,6 +740,10 @@ impl I8042 {
     }
 
     /// Service a write to the command port (`0x64`).
+    ///
+    /// IBM PC AT Technical Reference, Keyboard Controller, Commands: AAh replies
+    /// 55h. Output-port reinitialization is the AT compatibility policy described
+    /// above: warm POST needs A20 enabled before protected-mode memory sizing.
     fn write_command(&mut self, cmd: u8) {
         self.last_was_command = true;
         match cmd {
@@ -743,7 +753,8 @@ impl I8042 {
             }
             0x60 => self.expect = Expect::CommandByte,
             0xAA => {
-                // Controller self-test also sets the system flag on real POST.
+                self.output_port = OUTPUT_PORT_RESET;
+                self.a20_line.set_keyboard(self.a20_enabled());
                 self.command_byte |= CB_SYS;
                 self.respond(SELF_TEST_PASS);
             }
@@ -2655,6 +2666,31 @@ mod tests {
         );
         // System flag was set by the self-test.
         assert_ne!(kbc.command_byte() & CB_SYS, 0);
+    }
+
+    #[test]
+    fn self_test_restores_output_port_and_a20_without_requesting_reset() {
+        let line = crate::A20Line::default();
+        let signal = Rc::new(Cell::new(false));
+        let keyboard = I8042::new().with_board_lines(signal.clone(), line.clone());
+        let mut bus = MockBus::new(Box::new(keyboard));
+        bus.port_write(PORT_CMD, 1, 0xD1).unwrap();
+        bus.port_write(PORT_DATA, 1, 0xDD).unwrap();
+        assert!(!line.enabled());
+        assert!(!bus_keyboard(&mut bus).a20_enabled());
+        assert!(!signal.get());
+
+        bus.port_write(PORT_CMD, 1, 0xAA).unwrap();
+        assert_eq!(bus.port_read(PORT_DATA, 1).unwrap(), 0x55);
+        assert_ne!(bus.port_read(PORT_CMD, 1).unwrap() as u8 & ST_SYS, 0);
+        bus.port_write(PORT_CMD, 1, 0xD0).unwrap();
+        assert_eq!(
+            bus.port_read(PORT_DATA, 1).unwrap(),
+            u32::from(OUTPUT_PORT_RESET)
+        );
+        assert!(bus_keyboard(&mut bus).a20_enabled());
+        assert!(line.enabled());
+        assert!(!signal.get());
     }
 
     #[test]

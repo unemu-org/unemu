@@ -5,6 +5,44 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-13 — AT controller self-test and warm start:** 8042 command AAh
+  reinitializes the output port to its power-on value and drives A20 enabled,
+  while retaining the SYS flag/55h reply and issuing no CPU-reset request.
+  This is an AT compatibility policy: IBM PC AT Technical Reference, Keyboard
+  Controller, Commands, documents the self-test reply but not that output-port
+  initialization. The IBM POST depends on it before protected-mode memory
+  sizing after DOS has disabled A20. Mock-bus and synthetic IBM 5170 ROM tests
+  cover D1h/DDh, AAh and the subsequent high reset fetch. The existing test
+  without AAh still pins the empty-bus/#UD result with A20 disabled.
+  `Machine::reset_cpu` remains a board CPU-line reset, preserving RAM, devices,
+  the 8042 output port and A20. Host reboots use guest Ctrl+Alt+Del or relaunch.
+  `user_rom_at_games_ctrl_alt_del_reboot` follows the guest path back to the
+  FreeDOS A: prompt. **MEASURED (supervisor user-ROM release run):** reboot
+  returns to `A:\>` at `CS:IP=05E3:15C4`, with 81,853,092 retired instructions
+  and VGA text SHA-256
+  `8810a375732aec052068b73542b7a9a9185e8be8d5224b75a7834aa5a02dc8b4`.
+  The test pins those values. Its polling and the open install golden reject
+  terminal run outcomes and a non-advancing virtual clock, so a failed warm
+  start cannot spin forever below a virtual-time cap. Transient non-text VGA
+  frames during POST are allowed. The open installation golden injects only
+  Ctrl/Alt/Del makes for both warm starts:
+  queued breaks would precede the keyboard reset ACK/BAT during POST.
+  **MEASURED (before the installed-empty-drive correction, unchanged CPU pin):**
+  guest warm starts move the C: prompt from
+  screen FNV-1a `1429bef60948e1d5`, 102,208,270 retired instructions and virtual
+  time 106,800,000 to `5d0c917f3ab08d17`, 98,075,818 and 100,800,000.
+  Guest warm POST replaces the former host CPU resets, changing the executed
+  path and the time displayed by DOS. This measurement predates the installed
+  empty-drive correction; the combined endpoint is recorded under Open FreeDOS
+  installation media below.
+  **MEASURED mutation:** reverting only AAh output-port initialization fails
+  both synthetic regression tests, but the open install golden still passes
+  with the same endpoint. That golden qualifies the guest reboot path, not
+  the IBM-specific dependency on AAh. With the user-supplied IBM BIOS, the
+  same mutation never returns to the prompt after Ctrl+Alt+Del (measured
+  before the polling guards existed; the guards now turn that into a prompt
+  test failure).
+
 - **2026-11-13 — Exact clock domains:** `device::clock` centralizes OSC =
   315/22 MHz and named PIT, CGA/VGA, UART, RTC, OPL3, 48 kHz output and
   12/16 MHz AT CPU crystal domains. Device durations, PIT input-edge counting,
@@ -67,9 +105,10 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   `a2b73fae1c7ee569829051dea41b7c997aaeace94f3d28a8d9ee7ab89e364452`.
   The test pins these values and the complete POST checkpoint sequence against
   CPU revision `fe240a56ac2040e3deaebb2537e642137ee02c71`.
-  The IBM profile's only measurement is POST with a blank type-2 disk, ending
-  at `A:\>`. FDISK, FORMAT, copying and running from C: through the IBM fixed-disk
-  BIOS on the AT adapter remain unmeasured, as does C: boot. No game or real
+  The IBM profile's measured boots are POST and guest Ctrl+Alt+Del with a blank
+  type-2 disk, ending at `A:\>`. FDISK, FORMAT, copying and running from C:
+  through the IBM fixed-disk BIOS on the AT adapter remain unmeasured, as does
+  C: boot. No game or real
   mouse-driver session is qualified. The I286 supports LMSW entry, 16-bit
   protected execution and task switches; the pinned POST tests all 640 KiB +
   4 MiB. No memory manager is supplied; XMS, INT 15h block move and DOS-extender
@@ -487,11 +526,20 @@ smooth-scrolling timing finer than a frame remain unmodelled. See
   Package versions, licences and compatibility evidence are in `vendor/freedos/README.md`; a local-package
   mode rebuilds it without network access from the verified boot fixture.
   `freedos_install_golden` creates a blank 32 MiB disk through `media create`,
-  partitions it as active FAT16, resets the CPU, runs FORMAT with system
-  transfer, ejects A: and resets again to boot C:. With the open `at-ide.toml`
-  firmware and CPU pin `fe240a56`, the final C: prompt has screen FNV-1a
-  `8f1e57cd86975e25`, 104,210,281 retired instructions and virtual time
-  108,800,000. MEASURED: normal empty-drive recalibration reaches READ ID;
+  partitions it as active FAT16, warm-starts through guest Ctrl+Alt+Del, runs
+  FORMAT with system transfer, ejects A: and warm-starts again to boot C:.
+  Before combining the paths, CPU resets with installed-empty-drive behavior
+  ended at screen FNV-1a `8f1e57cd86975e25`, 104,210,281 retired instructions
+  and virtual time 108,800,000. Guest warm starts before that drive correction
+  ended at `5d0c917f3ab08d17`, 98,075,818 instructions and virtual time
+  100,800,000. **MEASURED with both changes:** the final C: prompt has screen
+  FNV-1a `040490b8724fbaba`, 99,077,816 retired instructions and virtual time
+  101,800,000, with the same open `at-ide.toml` firmware and CPU pin `fe240a56`.
+  The new pin combines guest Ctrl+Alt+Del POST with successful recalibration
+  and T0 on the installed empty A: drive after eject, which reaches READ ID
+  instead of failing recalibration. Both POST work and the displayed DOS time
+  differ from the earlier baselines.
+  MEASURED on the CPU-reset path: normal empty-drive recalibration reaches READ ID;
   without index pulses the BIOS exhausts one IRQ wait (726,351 virtual steps)
   and three command-ready waits (786,864 total). NEC uPD765A datasheet,
   READ ID command and Status Register 1 (MA): an ID search ends only on an ID
@@ -500,7 +548,10 @@ smooth-scrolling timing finer than a frame remain unmodelled. See
   motor start is unchanged; the first C: boot read moves 1,507,019 virtual
   steps later, rounded to two prompt-polling chunks at the endpoint. XTIDE now
   sees timeout 80h and omits the old error 40h line; the retained top banner
-  and later RTC time change the screen hash.
+  and later RTC time change the screen hash. With guest warm starts, the
+  correction instead moves the endpoint by one polling chunk: 1,000,000
+  virtual steps and 1,001,998 retired instructions beyond the warm-start
+  baseline. The polling cadence and POST path determine the combined endpoint.
   Omitting FORMAT makes the same C: boot fail at the partition boot signature
   check. Writes stay in a hash-bound journal; the base remains unchanged.
   See `machines/README.md` §Playing DOS games for the same installation steps.

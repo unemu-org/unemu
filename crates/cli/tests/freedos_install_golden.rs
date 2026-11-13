@@ -85,10 +85,11 @@ fn keys(text: &str) -> Vec<u8> {
 }
 
 fn run_for(assembled: &mut AssembledMachine, budget: u64) {
-    let result = assembled.run_session(&RunPolicy::natural(
-        Some(assembled.machine.virtual_time() + budget),
-        Some(cli::BIOS_IDLE_LIMIT),
-    ));
+    let cap = assembled.machine.virtual_time() + budget;
+    let result = session::run_progressing(
+        assembled,
+        &RunPolicy::natural(Some(cap), Some(cli::BIOS_IDLE_LIMIT)),
+    );
     eprintln!(
         "run={result:?}, retired={}, virtual={}, CS:IP={:04x}:{:04x}\n{}",
         assembled.machine.cpu().retired(),
@@ -106,12 +107,12 @@ fn command(assembled: &mut AssembledMachine, command: &str) {
     // command while FreeCOM is still updating its line editor.
     for character in format!("{command}\r").chars() {
         assembly::inject_scancodes(&mut assembled.machine, index, &keys(&character.to_string()));
-        assembled
-            .run_session(&RunPolicy::natural(
-                Some(assembled.machine.virtual_time() + 100_000),
-                Some(cli::BIOS_IDLE_LIMIT),
-            ))
-            .unwrap();
+        let cap = assembled.machine.virtual_time() + 100_000;
+        session::run_progressing(
+            assembled,
+            &RunPolicy::natural(Some(cap), Some(cli::BIOS_IDLE_LIMIT)),
+        )
+        .unwrap();
     }
     let deadline = assembled.machine.virtual_time() + 100_000_000;
     loop {
@@ -148,7 +149,7 @@ fn boot_prompt(assembled: &mut AssembledMachine, drive: &str) {
             schedule: InjectionSchedule::AfterPrompt,
         }],
     };
-    let result = assembled.run_session(&policy);
+    let result = session::run_progressing(assembled, &policy);
     eprintln!(
         "boot {drive}: {result:?}, retired={}, virtual={}\n{}",
         assembled.machine.cpu().retired(),
@@ -165,8 +166,9 @@ fn boot_prompt(assembled: &mut AssembledMachine, drive: &str) {
 }
 
 fn reboot(assembled: &mut AssembledMachine) {
-    assembled.before_cpu_reset().unwrap();
-    assembled.machine.reset_cpu().unwrap();
+    let index = assembled.device_index[&DeviceId::Keyboard];
+    // Breaks would queue ahead of the keyboard reset ACK/BAT during POST.
+    assembly::inject_scancodes(&mut assembled.machine, index, &[0x1D, 0x38, 0x53]);
     // POST leaves the previous console visible until video initialization. Wait
     // for it to clear so the old date prompt cannot trigger keyboard injection.
     let deadline = assembled.machine.virtual_time() + 30_000_000;
@@ -177,6 +179,53 @@ fn reboot(assembled: &mut AssembledMachine) {
             "POST must clear the old prompt"
         );
     }
+}
+
+#[test]
+fn polling_rejects_if_clear_halt() {
+    for prompt in [false, true] {
+        let config = assembly::at_vga_text(vec![0xFA, 0xF4]);
+        let observation = ObservationPolicy {
+            routes: vec![ObservationRequest {
+                device: DeviceId::Vga,
+                output: OutputKind::TextScanout,
+                byte_limit: 0,
+            }],
+            ..Default::default()
+        };
+        let mut assembled = assembly::assemble_with_observation(&config, &observation).unwrap();
+        let mut policy = RunPolicy::natural(Some(100), Some(cli::BIOS_IDLE_LIMIT));
+        if prompt {
+            policy.stop = StopCondition::PromptThen {
+                console: ConsoleProbe {
+                    device: DeviceId::Vga,
+                },
+                needle: "missing prompt".into(),
+                poll_step: 10,
+                then_budget: 0,
+            };
+        }
+        let error = session::run_progressing(&mut assembled, &policy).unwrap_err();
+        assert!(error.to_string().contains("Halted"), "{error}");
+        assert_eq!(assembled.machine.cpu().retired(), 2);
+        let stopped_at = assembled.machine.virtual_time();
+        let error = session::run_progressing(&mut assembled, &policy).unwrap_err();
+        assert!(error.to_string().contains("Halted"), "{error}");
+        assert_eq!(assembled.machine.virtual_time(), stopped_at);
+    }
+}
+
+#[test]
+fn polling_rejects_a_nonadvancing_clock() {
+    let config = assembly::at_vga_text(vec![0xEB, 0xFE]);
+    let mut assembled = assembly::assemble(&config).unwrap();
+    let policy = RunPolicy::natural(Some(assembled.machine.virtual_time()), None);
+    let error = session::run_progressing(&mut assembled, &policy).unwrap_err();
+    assert!(
+        error.to_string().contains("no virtual-time progress"),
+        "{error}"
+    );
+    assert_eq!(assembled.machine.cpu().retired(), 0);
 }
 
 #[test]
@@ -308,11 +357,18 @@ fn freedos_installs_and_boots_from_a_blank_hard_disk() {
     // empty-drive calibration reaches that search, which cannot end without a
     // disk. Intel 82077AA datasheet, §8.1 Command and Result Phase Handshaking,
     // corroborates the required software timeout. The BIOS exhausts one IRQ
-    // wait and three command-ready waits before booting C:. Prompt polling
-    // rounds the added firmware work up to two million virtual steps.
-    assert_eq!(session::screen_hash(&screen), 0x8f1e57cd86975e25);
-    assert_eq!(assembled.machine.cpu().retired(), 104_210_281);
-    assert_eq!(assembled.machine.virtual_time(), 108_800_000);
+    // wait and three command-ready waits before booting C:.
+    // Guest Ctrl+Alt+Del also changes POST work and the displayed DOS time, so
+    // this endpoint combines warm starts with the installed empty drive.
+    // With CPU resets and installed empty drives, the previous endpoint was
+    // hash 8f1e57cd86975e25, retired=104_210_281, virtual=108_800_000; polling
+    // rounded the drive correction to two million extra virtual steps.
+    // With warm starts before that correction, it was hash 5d0c917f3ab08d17,
+    // retired=98_075_818, virtual=100_800_000. Combining both changes moves
+    // that warm-start endpoint by one million virtual steps instead.
+    assert_eq!(session::screen_hash(&screen), 0x040490b8724fbaba);
+    assert_eq!(assembled.machine.cpu().retired(), 99_077_816);
+    assert_eq!(assembled.machine.virtual_time(), 101_800_000);
     let installed = hard_disk(&mut assembled);
     assembled.finish_persistence().unwrap();
     drop(assembled);

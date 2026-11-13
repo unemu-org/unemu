@@ -2466,6 +2466,56 @@ mod tests {
     }
 
     #[test]
+    fn a20_ibm_self_test_restores_high_reset_rom_fetch() {
+        use cpu::{Cpu, CpuReg};
+        let mut program = vec![
+            0xFA, 0x80, 0x3E, 1, 5, 1, 0x74, 0, 0xC6, 0x06, 1, 5, 1, 0xC7, 0x06, 0x18, 0, 0, 6,
+            0xC7, 0x06, 0x1A, 0, 0, 0,
+        ];
+        for (offset, byte) in [0xC6, 0x06, 0, 5, 0x77, 0xFA, 0xF4].into_iter().enumerate() {
+            program.extend([0xC6, 0x06]);
+            program.extend((0x600u16 + offset as u16).to_le_bytes());
+            program.push(byte);
+        }
+        program.extend([
+            0xB0, 0xD1, 0xE6, 0x64, 0xB0, 0xDD, 0xE6, 0x60, 0xB0, 0xAA, 0xE6, 0x64, 0xE4, 0x60,
+            0xA2, 2, 5, 0xB0, 0xFE, 0xE6, 0x64,
+        ]);
+        program[7] = (program.len() - 8) as u8;
+        program.extend([0xC6, 0x06, 0, 5, 0x55]);
+        let mut assembled = a20_rig(program, crate::BoardModel::Ibm5170, true, false);
+        assert_eq!(
+            assembled.machine.run_bounded(Some(1000)).unwrap(),
+            machine::RunOutcome::ResetRequested
+        );
+        let time = assembled.machine.virtual_time();
+        assert_eq!(
+            assembled.machine.run_bounded(Some(time)).unwrap(),
+            machine::RunOutcome::RetiredCapReached
+        );
+        assert!(assembled.machine.cpu().a20_enabled());
+        assert_eq!(assembled.machine.cpu().code_segment(), 0xF000);
+        assert_eq!(assembled.machine.cpu().reg(CpuReg::Rip), 0xFFF0);
+        assert_eq!(
+            assembled.machine.run_bounded(Some(time + 1000)).unwrap(),
+            machine::RunOutcome::Halted
+        );
+        let mut markers = [0; 3];
+        assembled
+            .machine
+            .cpu()
+            .read_mem(0x500, &mut markers)
+            .unwrap();
+        assert_eq!(
+            markers,
+            [0x55, 1, 0x55],
+            "reset ROM must run instead of #UD; self-test must reply 55h"
+        );
+        assert_eq!(assembled.machine.cpu().code_segment(), 0xF800);
+        assert!(assembled.machine.cpu().a20_enabled());
+    }
+
+    #[test]
     fn a20_bare_rig_without_sources_keeps_flat_addressing() {
         use cpu::Cpu;
         let mut program = Vec::new();

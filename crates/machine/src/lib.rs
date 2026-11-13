@@ -374,12 +374,14 @@ impl<C: Cpu> Machine<C> {
         &self.cpu
     }
 
-    /// Restart only the CPU, retaining RAM, devices and virtual time.
+    /// Assert the board's CPU reset line, retaining RAM, devices and virtual time.
     ///
     /// IBM Personal Computer AT Technical Reference, System Board, Keyboard
     /// Controller Output Port: bit 0 drives the CPU reset line. Shutdown uses
     /// the same CPU-only reset (System Board, Logic Diagrams). Media sessions
     /// survive (backlog/docs/design/machine-config.md §Board model).
+    /// The 8042 output port and A20 gate keep their state. A host-side reboot
+    /// must go through the guest (Ctrl+Alt+Del) or relaunch the machine.
     pub fn reset_cpu(&mut self) -> Result<(), MachineError> {
         self.sync_a20();
         self.cpu.reset()?;

@@ -7,6 +7,8 @@
 use assembly::{AssemblyOptions, BoardModel, DeviceId, DeviceKind, ImageSource, WriteMode};
 use machine_file::schema::v1;
 
+#[path = "support/session.rs"]
+pub mod session;
 #[path = "support/at_games.rs"]
 mod support;
 
@@ -276,6 +278,175 @@ fn user_rom_at_games_freedos_prompt() {
     result.unwrap_or_else(|error| {
         panic!(
             "game profile boot: {}",
+            video
+                .redact(&bios.redact(&error.to_string()))
+                .replace(&profile.tree.path().display().to_string(), "<temporary>")
+        )
+    });
+}
+
+#[test]
+#[ignore = "requires user-supplied IBM system/video ROMs and the FreeDOS 1.2M fixture"]
+fn user_rom_at_games_ctrl_alt_del_reboot() {
+    use assembly::{
+        ConsoleProbe, InjectionSchedule, KeyboardStimulus, ObservationPolicy, ObservationRequest,
+        OutputKind, RunPolicy, StopCondition,
+    };
+    use cpu::{Cpu, CpuReg};
+    use machine::RunOutcome;
+
+    const REBOOT_STOP: Option<(u64, u64)> = Some((0x05E3, 0x15C4));
+    const REBOOT_RETIRED: Option<u64> = Some(81_853_092);
+    const REBOOT_TEXT_SHA256: Option<&str> =
+        Some("8810a375732aec052068b73542b7a9a9185e8be8d5224b75a7834aa5a02dc8b4");
+
+    let catalogue = BoardModel::Ibm5170.firmware_catalogue();
+    let bios = assembly::require_user_firmware!(support::SYSTEM, catalogue);
+    let video = assembly::require_user_firmware!(support::VIDEO, catalogue);
+    let Some(floppy) = fixtures::fixture("freedos/freedos-1200.img") else {
+        return;
+    };
+    assert!(
+        include_str!("../../../Cargo.lock").contains(CPU_REV),
+        "CPU pin drifted"
+    );
+    let Some(tools) = fixtures::fixture("freedos/freedos-tools-1200.img") else {
+        return;
+    };
+    let profile = support::Profile::new(support::IBM, false);
+    let result = (|| -> anyhow::Result<()> {
+        let system = source_bytes(&bios.source)?;
+        profile.write(
+            &format!("vendor/user-roms/{}/6480090.u27", support::SYSTEM),
+            &system.iter().step_by(2).copied().collect::<Vec<_>>(),
+        );
+        profile.write(
+            &format!("vendor/user-roms/{}/6480091.u47", support::SYSTEM),
+            &system
+                .iter()
+                .skip(1)
+                .step_by(2)
+                .copied()
+                .collect::<Vec<_>>(),
+        );
+        profile.write(
+            &format!("vendor/user-roms/{}/ibm-vga-1987-32k.bin", support::VIDEO),
+            &source_bytes(&video.source)?,
+        );
+        profile.write("vendor/freedos/freedos-1200.img", &floppy);
+        profile.write("vendor/freedos/freedos-tools-1200.img", &tools);
+        let loaded = machine_file::load_for_assembly(&profile.file, AssemblyOptions::default())?;
+        let policy = ObservationPolicy {
+            routes: vec![
+                ObservationRequest {
+                    device: DeviceId::Vga,
+                    output: OutputKind::TextScanout,
+                    byte_limit: 0,
+                },
+                ObservationRequest {
+                    device: DeviceId::Post,
+                    output: OutputKind::Bytes(device::ByteStreamKind::PostCheckpoints),
+                    byte_limit: 1_048_576,
+                },
+            ],
+            ..ObservationPolicy::default()
+        };
+        let mut assembled = loaded.assemble(&policy)?;
+        let boot = |assembled: &mut assembly::AssembledMachine| -> anyhow::Result<_> {
+            let cap = assembled.machine.virtual_time() + 500_000_000;
+            let policy = RunPolicy {
+                retired_cap: Some(cap),
+                idle_limit: Some(cli::BIOS_IDLE_LIMIT),
+                stop: StopCondition::PromptThen {
+                    console: ConsoleProbe {
+                        device: DeviceId::Vga,
+                    },
+                    needle: cli::DOS_DATE_PROMPT.into(),
+                    poll_step: cli::DOS_INTERACTIVE_POLL_STEP,
+                    then_budget: 0,
+                },
+                stimuli: vec![KeyboardStimulus {
+                    keyboard_index: assembled.device_index[&DeviceId::Keyboard],
+                    scancodes: [cli::KEY_ENTER, cli::KEY_ENTER].concat(),
+                    schedule: InjectionSchedule::AfterPrompt,
+                }],
+            };
+            let mut outcome = session::run_progressing(assembled, &policy)?;
+            let (frame, dos_prompt) = loop {
+                let capture = assembled.capture_text(DeviceId::Vga)?;
+                let dos_prompt = match &capture.frame {
+                    video::Frame::Text(grid) => (0..grid.rows()).any(|row| {
+                        let glyphs: Vec<_> = (0..grid.cols())
+                            .map(|col| grid.cell(col, row).unwrap().glyph)
+                            .collect();
+                        glyphs.windows(3).any(|text| text == b"A:>")
+                            || glyphs.windows(4).any(|text| text == b"A:\\>")
+                    }),
+                    _ => false,
+                };
+                if dos_prompt || assembled.machine.virtual_time() >= cap {
+                    break (capture.frame, dos_prompt);
+                }
+                let next =
+                    (assembled.machine.virtual_time() + cli::DOS_INTERACTIVE_POLL_STEP).min(cap);
+                outcome = session::run_progressing(
+                    assembled,
+                    &RunPolicy::natural(Some(next), Some(cli::BIOS_IDLE_LIMIT)),
+                )?;
+            };
+            anyhow::ensure!(dos_prompt, "FreeDOS prompt not reached before the cap");
+            assert_eq!(outcome, RunOutcome::RetiredCapReached);
+            Ok((frame, outcome))
+        };
+        boot(&mut assembled)?;
+        let index = assembled.device_index[&DeviceId::Keyboard];
+        // Breaks would precede the keyboard reset ACK/BAT during POST.
+        assembly::inject_scancodes(&mut assembled.machine, index, &[0x1D, 0x38, 0x53]);
+        let clear_cap = assembled.machine.virtual_time() + 100_000_000;
+        loop {
+            let capture = assembled.capture_text(DeviceId::Vga)?;
+            let video::Frame::Text(grid) = &capture.frame else {
+                break;
+            };
+            if !grid
+                .rows_as_strings()
+                .join("\n")
+                .contains(cli::DOS_DATE_PROMPT)
+            {
+                break;
+            }
+            anyhow::ensure!(
+                assembled.machine.virtual_time() < clear_cap,
+                "warm POST reached the cap before clearing the old date prompt"
+            );
+            let next =
+                (assembled.machine.virtual_time() + cli::DOS_INTERACTIVE_POLL_STEP).min(clear_cap);
+            session::run_progressing(
+                &mut assembled,
+                &RunPolicy::natural(Some(next), Some(cli::BIOS_IDLE_LIMIT)),
+            )?;
+        }
+        let (frame, outcome) = boot(&mut assembled)?;
+        let cpu = assembled.machine.cpu();
+        let location = (cpu.code_segment(), cpu.reg(CpuReg::Rip));
+        let retired = cpu.retired();
+        let hash = assembly::test_support::text_plane_sha256(&frame);
+        eprintln!("at-games reboot: stop={outcome:?} cs={:04x} ip={:04x} retired={retired} text_sha256={hash}", location.0, location.1);
+        if let Some(expected) = REBOOT_STOP {
+            assert_eq!(location, expected);
+        }
+        if let Some(expected) = REBOOT_RETIRED {
+            assert_eq!(retired, expected);
+        }
+        if let Some(expected) = REBOOT_TEXT_SHA256 {
+            assert_eq!(hash, expected);
+        }
+        assembled.finish_persistence()?;
+        Ok(())
+    })();
+    result.unwrap_or_else(|error| {
+        panic!(
+            "game profile reboot: {}",
             video
                 .redact(&bios.redact(&error.to_string()))
                 .replace(&profile.tree.path().display().to_string(), "<temporary>")

@@ -487,9 +487,8 @@ scan, `/S` to run SYS and copy the system files, `/V` for the label and
 with **Ctrl+Alt+E**, then press Ctrl+Alt+Del to boot C:. Accept date/time to
 reach `C:\>`.
 
-The install golden reboots through a CPU reset. Guest Ctrl+Alt+Del performs a
-BIOS warm start; that path is not measured by the golden. If the host
-intercepts Ctrl+Alt+Del, stop and relaunch with the same disk and journal:
+The install golden uses guest Ctrl+Alt+Del for both BIOS warm starts. If the
+host intercepts Ctrl+Alt+Del, stop and relaunch with the same disk and journal:
 the journal replays the partition and filesystem writes. For the second
 relaunch, keep A: empty using `machines/local/boot-c.toml`:
 
@@ -507,7 +506,7 @@ empty = true
 
 Use `../at-games.toml` as the parent for the IBM variant. The ignored
 `freedos_install_golden` measures these exact DOS commands and the two install
-resets/ejection on the open `at-ide.toml` profile with a blank 32 MiB disk.
+warm starts/ejection on the open `at-ide.toml` profile with a blank 32 MiB disk.
 The game profiles above use a type-2 disk; the IBM profile's fixed-disk
 installation and C: boot remain unqualified by that open-firmware golden.
 Its measured IBM boot ends at `A:\>` with a blank disk.
