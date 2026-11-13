@@ -15,6 +15,8 @@ const USAGE: &str = "usage: unemupc98 --boot (Real16 timer demo)
        unemupc98 --bios PATH [--allow-unlisted-firmware]
        unemupc98 machine check FILE [--allow-unlisted-firmware]
        unemupc98 run --machine FILE [--max-steps N] [--idle-limit N] [--print CARD] [--allow-unlisted-firmware]
+       unemupc98 media create floppy --type 1.44M|1.2M|720K|360K OUT [--format] [--label NAME] [--force]
+       unemupc98 media create hd (--chs C/H/S | --size SIZE[MiB|GiB]) OUT [--force]
        unemupc98 media generations --base IMG --journal J
        unemupc98 media verify --base IMG --journal J [--repair-tail --backup PATH]
        unemupc98 media rollback --base IMG --journal J --to N --backup PATH
@@ -41,6 +43,7 @@ pub enum Command {
         options: assembly::AssemblyOptions,
     },
     Media(MediaCommand),
+    Create(crate::create::CreateCommand),
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -128,6 +131,9 @@ pub fn parse(args: &[OsString]) -> Result<Command, &'static str> {
         return Err("unknown or extra arguments");
     }
     let operation = args[1].to_str().ok_or("invalid media command")?;
+    if operation == "create" {
+        return crate::create::parse(&args[2..]).map(Command::Create);
+    }
     if !matches!(
         operation,
         "generations" | "verify" | "rollback" | "commit" | "compact"
@@ -408,6 +414,9 @@ pub fn run(args: &[OsString], output: &mut impl Write, errors: &mut impl Write) 
         )
         .map_err(frontend_error),
         Command::Media(command) => execute(command, output),
+        Command::Create(command) => {
+            crate::create::execute(command, output).map_err(ToolError::from)
+        }
     };
     match result {
         Ok(code) => code,

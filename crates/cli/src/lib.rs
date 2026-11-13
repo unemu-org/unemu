@@ -12,6 +12,7 @@
 //! card-state observation facade. All captures share assembly-owned routing.
 
 pub mod command;
+pub mod create;
 
 use anyhow::{Context, Result};
 use assembly::{

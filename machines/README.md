@@ -98,47 +98,8 @@ to fixtures. Persistence goldens use temporary copies. IDE supports the same
 three modes; NVRAM supports volatile and explicit journal mode. The window and
 CLI select these files with `--machine`.
 
-To journal C: with the fixture profile, create a local child next to
-`at-ide.toml`. From the repository root, first create `tmp-golden/ide-media/`.
-The root `tmp-golden/` directory is gitignored; journals, backups and exports in
-this example stay there so guest writes cannot enter the tracked repository.
-Journal parent directories must exist:
-
-```sh
-mkdir -p tmp-golden/ide-media
-```
-
-```toml
-schema = 1
-extends = "at-ide.toml"
-
-[[card]]
-id = "ide"
-[[card.drives]]
-channel = "master"
-write = "journal"
-journal = "../tmp-golden/ide-media/c.upfj"
-keep_generations = 10
-```
-
-Run the child with `--machine`; software writes to C: survive the next run.
-The inherited FAT16 base remains immutable. Close the emulator before offline
-operations; use the base image actually named by the drive:
-
-```sh
-unemupc98 media generations --base vendor/hdd/fat16.img --journal tmp-golden/ide-media/c.upfj
-unemupc98 media verify --base vendor/hdd/fat16.img --journal tmp-golden/ide-media/c.upfj
-unemupc98 media rollback --base vendor/hdd/fat16.img --journal tmp-golden/ide-media/c.upfj --to 1 --backup tmp-golden/ide-media/c-before-rollback.upfj
-unemupc98 media commit --base vendor/hdd/fat16.img --journal tmp-golden/ide-media/c.upfj --to 1 --output tmp-golden/ide-media/c-new.img
-```
-
-Choose an available closed generation from `generations`. Rollback backs up the
-journal and discards later history. Commit exports a new immutable base without
-changing the old inputs. To use that export, override the drive's `image`, set
-its new SHA-256 pin, and explicitly select `write = "journal"` with a **new**
-journal path; image overrides discard inherited journal settings. Commands and
-recovery semantics match floppies; ATA stores only full 512-byte sectors and
-offline capacity comes from image length.
+For a complete HDD and floppy journal workflow, including installation,
+commit and rollback, see [Preparing disks](#preparing-disks) below.
 
 The schema and
 defaults are in
@@ -170,3 +131,160 @@ Run `unemupc98 machine check machines/local.toml` before booting with
 requires `--allow-unlisted-firmware` on either command. For a headless run, use
 `unemupc98 run --machine machines/local.toml --print mda`. Run limits and host
 output selection stay outside the hardware description.
+
+## Preparing disks
+
+Keep generated disks, local machine files and journals **outside the repository**.
+A mounted image is an immutable base. Guest writes belong in an overlay;
+`media commit` exports a new base and never changes its input. SHA-256 binding
+covers the entire base, including large disks. Never edit a mounted base with
+host tools or replace a base that still has a journal bound to it.
+
+Create a blank hard disk and a formatted data floppy without external tools:
+
+```sh
+mkdir -p "$HOME/unemupc98-disks"
+unemupc98 media create hd --size 32MiB "$HOME/unemupc98-disks/disk.img"
+unemupc98 media create floppy --type 1.44M --format --label TRANSFER "$HOME/unemupc98-disks/transfer.img"
+```
+
+Floppy types are `1.44M`, `1.2M`, `720K` and `360K`. Without `--format` every
+byte is zero. With it, the command writes standard FAT12 BPB/FAT/root metadata,
+a fixed serial (`0x28959855`) and, by default, `NO NAME` in the BPB. The root stays empty
+unless `--label` supplies an uppercase ASCII volume label; its timestamps are
+fixed at 1980-01-01. The boot sector silently disables interrupts and halts
+in a loop; it contains no DOS loader or system files. Use a bootable DOS floppy
+for starting the machine. `--label` requires `--format`, accepts 1–11 ASCII
+characters and rejects leading spaces and FAT filename punctuation. `--force`
+replaces an existing directory entry atomically; it never opens the old image for writing. Use a new
+output name for any base already referenced by a journal.
+
+For HDDs, an integer size defaults to MiB; `MiB` and `GiB` suffixes are explicit
+binary units. `--size` rounds **up** to whole cylinders of 16 heads × 63 sectors
+× 512 bytes. The command reports the actual size and geometry. The maximum is
+1024 cylinders, exactly 504 MiB, the conservative INT 13h CHS limit used by
+this command; larger/LBA images are refused even if a different BIOS could
+address them. `--chs C/H/S` creates the exact geometry instead (C=1–1024,
+H=1–16, S=1–63). Images contain no partition table or filesystem.
+
+Use the AT-reset Kiselev BIOS plus XUB option ROM from `at-ide.toml` for the
+16×63 mapping: XUB discovers the geometry through ATA IDENTIFY. An IBM AT
+system BIOS without a fixed-disk option ROM derives only IBM types 1–14 and
+16–22; arbitrary geometry is rejected. For that path, for example, create
+`--chs 615/4/17` (IBM type 2). Geometry must match the image exactly.
+
+Save `local.toml` beside the images. Parents in `extends` must be relative
+paths (or presets). To keep the example independent of the disks folder's
+location, put a symlink to the repository profile beside it. Replace the example
+repository path in this shell command:
+
+```sh
+ln -s /path/to/unemupc98/machines/at-ide.toml "$HOME/unemupc98-disks/at-ide.toml"
+```
+
+The relative `extends = "at-ide.toml"` below follows that link. The parent's
+vendor image paths and its own `extends = "at-freedos.toml"` resolve from the
+symlink target's directory in the repository. The child still resolves its
+`disk.img` and `disk.upfj` beside `local.toml`:
+
+```toml
+schema = 1
+extends = "at-ide.toml"
+
+[[card]]
+id = "ide"
+[[card.drives]]
+channel = "master"
+image = "disk.img"
+geometry = { cylinders = 66, heads = 16, sectors = 63 }
+write = "journal"
+journal = "disk.upfj"
+keep_generations = 10
+```
+
+The 32 MiB request above produces 66/16/63 (34,062,336 bytes). The command also
+prints a mount snippet with the actual geometry and an absolute image path.
+The inherited A: remains the bootable FreeDOS floppy. That fixture contains
+only the kernel and shell: supply compatible FDISK, FORMAT and SYS utilities on
+B: (run them as `B:\FDISK`, `B:\FORMAT`, `B:\SYS`), or use your own DOS system
+floppy. Check the local file with
+`unemupc98 machine check FILE`, then boot it with the window frontend's
+`--machine FILE` option. No hot swapping is currently exposed: configure an
+installation/data floppy as drive B: before booting, or stop and change its
+image between sessions. A floppy override uses the inherited `fdc-765` card id,
+`unit = 1`, `type = "1.44M"`, `image = "transfer.img"` and a write mode.
+
+The IDE journal lives next to the immutable disk base. Guest writes survive
+restarting the emulator, and mounting the same file replays the journal before
+execution. Journal directories must already exist. The same write modes and
+offline commands apply to floppies and IDE disks; ATA persists full 512-byte
+sectors, and offline capacity comes from the complete image length.
+
+Inside DOS, the preparation sequence is `FDISK` (create a primary DOS partition
+and mark it active if it will boot), then reboot with the same local machine
+file so the journal preserves the partition table. Run `FORMAT C: /S`. If FORMAT
+does not support `/S`, use `FORMAT C:` followed by `SYS C:` from a suitable boot/system
+floppy. These commands are destructive to the selected guest disk. Check its
+reported capacity first. Install or copy files from A: or B:, for example
+`COPY B:\*.* C:\` for loose files; use the software's installer for multi-disk
+sets and directory trees. Installing system files does not by itself qualify
+hard-disk boot support for a particular BIOS/guest combination.
+
+For drive B:, the same journal policy applies. For a local data floppy, use this
+complete card override and keep the journal beside its base:
+
+```toml
+[[card]]
+id = "fdc-765"
+[[card.drives]]
+unit = 1
+type = "1.44M"
+image = "transfer.img"
+write = "journal"
+journal = "transfer.upfj"
+keep_generations = 10
+```
+
+After installing or copying software, exit DOS cleanly and stop the emulator.
+Inspect the HDD's closed generation numbers, export the installed state as a
+new base, or roll back with a fresh backup path:
+
+```sh
+cd "$HOME/unemupc98-disks"
+unemupc98 media generations --base disk.img --journal disk.upfj
+unemupc98 media verify --base disk.img --journal disk.upfj
+# Use a retained closed generation reported above (1 is an example).
+unemupc98 media commit --base disk.img --journal disk.upfj --to 1 --output disk-next.img
+unemupc98 media rollback --base disk.img --journal disk.upfj --to 1 --backup disk-before-rollback.upfj
+```
+
+Choose an available closed generation from `generations`. Rollback backs up the
+journal and discards later history; commit exports a new immutable base without
+changing either input. Keep the original base with its original journal. To
+adopt `disk-next.img`, override the drive's `image`, optionally set its new
+SHA-256 pin, and explicitly select `write = "journal"` with a **new** journal
+path. Image overrides discard inherited journal settings. Journal tools preserve
+sector state, not filesystem health. Use the same commands with `transfer.img`
+and `transfer.upfj` for the floppy; for example, export it to `transfer-next.img`
+before using the host-copy example below.
+
+To put host files into FAT media, mtools is optional and runs while the emulator
+is stopped. Always create a new working image first; never modify an immutable
+base with a journal bound to it:
+
+```sh
+cp transfer-next.img transfer-host.img
+mcopy -i transfer-host.img file ::
+mdir -i transfer-host.img ::
+# For an already partitioned disk, use its partition-start LBA times 512.
+# Example only: a partition starting at LBA 63 has byte offset 32256.
+cp partitioned.img partitioned-host.img
+mcopy -i partitioned-host.img@@32256 file ::
+```
+
+Do not guess the partition offset or use `@@32256` on an unpartitioned blank
+image. Obtain the start LBA from its partition table; the fixture in
+`vendor/hdd/README.md` instead starts at LBA 17 (`@@8704`). Adopt the host-edited
+copy with a fresh journal path and, optionally, a new SHA-256 pin. Host mtools
+operations may use host file timestamps; the built-in formatter itself is
+byte-deterministic and has no mtools dependency.
