@@ -54,6 +54,7 @@ impl Profile {
             &option_rom(8192, 0),
         );
         profile.write("vendor/freedos/freedos-1200.img", &vec![0; 1_228_800]);
+        profile.write("vendor/freedos/freedos-tools-1200.img", &vec![0; 1_228_800]);
         profile.write("machines/local/transfer-1200.img", &vec![0; 1_228_800]);
         profile.write("machines/local/games.img", &vec![0; 615 * 4 * 17 * 512]);
         profile

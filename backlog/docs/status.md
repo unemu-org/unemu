@@ -438,6 +438,21 @@ smooth-scrolling timing finer than a frame remain unmodelled. See
   for reference sections and coverage. MEASURED externally: an empty adapter
   removes POST error 601 with an original IBM 5170 BIOS; this worker checks the
   register probe using synthetic firmware rather than that BIOS.
+- **Open FreeDOS installation media:** `vendor/freedos/fetch.sh` builds the
+  pinned `freedos-tools-1200.img` (1.2 MB FAT12) with FDISK, FORMAT, SYS,
+  XCOPY, EDIT, MEM and CTMOUSE. FDISK needs 186/286 or later, not 8086;
+  CTMOUSE needs a 286 or later, so the complete tools set requires a 286.
+  Package versions, licences and compatibility evidence are in `vendor/freedos/README.md`; a local-package
+  mode rebuilds it without network access from the verified boot fixture.
+  `freedos_install_golden` creates a blank 32 MiB disk through `media create`,
+  partitions it as active FAT16, resets the CPU, runs FORMAT with system
+  transfer, ejects A: and resets again to boot C:. With the open `at-ide.toml`
+  firmware and CPU pin `fe240a56`, the final C: prompt has screen FNV-1a
+  `1429bef60948e1d5`, 102,208,270 retired instructions and virtual time
+  106,800,000. Omitting FORMAT makes the same C: boot fail at the partition
+  boot signature check. Writes stay in a hash-bound journal; the base remains
+  unchanged.
+  See `machines/README.md` §Playing DOS games for the same installation steps.
 - **IDE PIO:** one primary (1F0h/3F6h, IRQ14) or secondary (170h/376h,
   IRQ15) channel assembles from Rust configs and TOML `ide` cards. Master/slave
   fixed disks use explicit CHS geometry and volatile/readonly/journal `SectorMedia`.

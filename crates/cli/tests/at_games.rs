@@ -164,6 +164,9 @@ fn user_rom_at_games_freedos_prompt() {
         include_str!("../../../Cargo.lock").contains(CPU_REV),
         "CPU pin drifted"
     );
+    let Some(tools) = fixtures::fixture("freedos/freedos-tools-1200.img") else {
+        return;
+    };
     let profile = support::Profile::new(support::IBM, false);
     let result = (|| -> anyhow::Result<()> {
         let system = source_bytes(&bios.source)?;
@@ -185,6 +188,7 @@ fn user_rom_at_games_freedos_prompt() {
             &source_bytes(&video.source)?,
         );
         profile.write("vendor/freedos/freedos-1200.img", &floppy);
+        profile.write("vendor/freedos/freedos-tools-1200.img", &tools);
         let loaded = machine_file::load_for_assembly(&profile.file, AssemblyOptions::default())?;
         let policy = ObservationPolicy {
             routes: vec![
@@ -381,9 +385,10 @@ fn synthetic_game_profiles_lower_and_pass_machine_check_without_opening_journals
         assert_eq!(floppy.kind.image_bytes(), 1_228_800);
         let media = floppy.media.as_ref().unwrap();
         assert!(!media.empty);
-        assert_eq!(media.entries.len(), 2);
+        assert_eq!(media.entries.len(), 3);
         assert_eq!(media.entries[0].name, "freedos-1200.img");
-        assert_eq!(media.entries[1].name, "transfer-1200.img");
+        assert_eq!(media.entries[1].name, "freedos-tools-1200.img");
+        assert_eq!(media.entries[2].name, "transfer-1200.img");
         assert!(media
             .entries
             .iter()
@@ -436,6 +441,7 @@ fn open_fixture_profile() -> Option<support::Profile> {
         "kiselev-bios/bios-xi8088-atreset.bin",
         "xtide-universal-bios/ide_xtp-r638-ata1f0-8k.bin",
         "freedos/freedos-1200.img",
+        "freedos/freedos-tools-1200.img",
     ] {
         images.push((relative, fixtures::fixture(relative)?));
     }

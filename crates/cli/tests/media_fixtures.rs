@@ -38,6 +38,11 @@ const PINNED_SCRIPTS: &[(&str, &str, &str)] = &[
         "check_sha256 \"$OUT_1200\" \"",
     ),
     (
+        "freedos/freedos-tools-1200.img",
+        include_str!("../../../vendor/freedos/fetch.sh"),
+        "check_sha256 \"$OUT_TOOLS\" \"",
+    ),
+    (
         "test386/test386.bin",
         include_str!("../../../vendor/test386/fetch.sh"),
         "check_sha256 \"$OUT\" \"",
@@ -111,6 +116,7 @@ fn freedos_floppy_fixtures_have_pinned_geometry_signature_and_hash() {
     for (relative, size) in [
         ("freedos/freedos.img", 1_474_560),
         ("freedos/freedos-1200.img", 1_228_800),
+        ("freedos/freedos-tools-1200.img", 1_228_800),
     ] {
         let Some(bytes) = fixtures::fixture(relative) else {
             continue;

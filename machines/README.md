@@ -178,14 +178,28 @@ keep_generations = 10
 
 The 32 MiB request above produces 66/16/63 (34,062,336 bytes). The command also
 prints a mount snippet with the actual geometry and an absolute image path.
-The inherited A: remains the bootable FreeDOS floppy. That fixture contains
-only the kernel and shell: supply compatible FDISK, FORMAT and SYS utilities on
-B: (run them as `B:\FDISK`, `B:\FORMAT`, `B:\SYS`), or use your own DOS system
-floppy. Check the local file with
-`unemupc98 machine check FILE`, then boot it with the window frontend's
-`--machine FILE` option. Configure installation/data disks on B: before booting,
-or use the [media-list and swap controls](#removable-floppy-media) below. The
-single-image B: override below uses the inherited `fdc-765` card id.
+For the [first DOS installation](#first-dos-install), replace the inherited A: with the open tools
+floppy built by `vendor/freedos/fetch.sh`. Add this override to the same local
+file; use an absolute path to the generated image in your checkout:
+
+```toml
+[[card]]
+id = "fdc-765"
+[[card.drives]]
+unit = 0
+type = "1.2M"
+image = "/path/to/unemupc98/vendor/freedos/freedos-tools-1200.img"
+sha256 = "8d91283a1c0d6fc5b5fdb5e40db5b66dd9fabbf014d37262b7892f3b150b6f63"
+write = "readonly"
+```
+
+The drive type must change with the image. The tools floppy includes FDISK,
+FORMAT, SYS, XCOPY, EDIT, MEM and CTMOUSE; package versions, licences and CPU
+compatibility evidence are in [the fixture README](../vendor/freedos/README.md).
+Check the local file with `unemupc98 machine check FILE`, then boot it with the
+window frontend's `--machine FILE` option. Configure installation/data disks on
+B: before booting, or use the [media-list and swap controls](#removable-floppy-media)
+below. The single-image B: override below uses the inherited `fdc-765` card id.
 
 ### Write modes and journals
 
@@ -212,17 +226,7 @@ completed sectors reach the journal only at a checkpoint, session finish, CPU
 reset or run error; partial sectors are excluded. Changing a floppy closes only
 that floppy's journal.
 
-### Partitioning and formatting
-
-Inside DOS, the preparation sequence is `FDISK` (create a primary DOS partition
-and mark it active if it will boot), then reboot with the same local machine
-file so the journal preserves the partition table. Run `FORMAT C: /S`. If FORMAT
-does not support `/S`, use `FORMAT C:` followed by `SYS C:` from a suitable boot/system
-floppy. These commands are destructive to the selected guest disk. Check its
-reported capacity first. Install or copy files from A: or B:, for example
-`COPY B:\*.* C:\` for loose files; use the software's installer for multi-disk
-sets and directory trees. Installing system files does not by itself qualify
-hard-disk boot support for a particular BIOS/guest combination.
+### Adding a data floppy
 
 For drive B:, the same journal policy applies. For a local data floppy, use this
 complete card override and keep the journal beside its base:
@@ -373,8 +377,8 @@ the pinned IBM POST tests all 640 KiB + 4 MiB. No memory manager is supplied.
 XMS, INT 15h block move and DOS-extender use are not yet qualified. This CPU
 is an 80286, with no 386 instruction set.
 
-A: is **1.2M**, starting with the pinned FreeDOS fixture and followed by a local
-transfer floppy. B: is omitted: the June 1985 BIOS has no 1.44M drive type
+A: is **1.2M**, with the minimal FreeDOS boot fixture, the `FDTOOLS`
+installation floppy, then a local transfer floppy. B: is omitted: the June 1985 BIOS has no 1.44M drive type
 (it supports 360K, 1.2M and 720K). Each image in this A: list must be exactly
 1,228,800 bytes; mixed-density media in one drive are not modelled.
 
@@ -401,39 +405,76 @@ that needs the XTIDE path and a matching geometry override, as described in
 The open profile uses ATA task-file semantics for XTIDE. Both profiles share
 `games.img` and `games.upfj`; run only one at a time.
 
-Boot from A: and press Enter for the date and time to reach the FreeDOS prompt.
-The fixture contains only the 8086 builds of `KERNEL.SYS` and `COMMAND.COM`,
-with a boot sector; it has **no FDISK, FORMAT, SYS, mouse driver or installer**.
-Supply 286-compatible utilities or your own 1.2M DOS installation floppies.
-The formatted transfer image above is an empty data disk, not a boot disk.
-Replace its contents before its first use, or extend the A: media list in a
-local child file. Relative paths in that child belong to the child's directory.
-For example, save `machines/local/play.toml` and place your tools disk beside it:
+### First DOS install
+
+The supplied tools floppy contains FDISK, FORMAT, SYS, XCOPY, EDIT, MEM and
+CTMOUSE. See [versions, licences and CPU requirements](../vendor/freedos/README.md).
+The transfer image is an empty data disk; populate a new, unmounted copy
+before use, then select that copy in a local child profile.
+
+For a single-image A: containing the tools floppy, boot it directly and accept
+date/time with two Enters. With the game profiles' media lists, first boot A:,
+accept date/time, press **Ctrl+Alt+F once** to select `FDTOOLS`, then press
+**Ctrl+Alt+Del in the guest** and accept date/time again. At `A:\>`, run each
+command separately, waiting for the prompt:
+
+```text
+FDISK /PRIO:100,100 1
+FDISK /ACTIVATE:1 1
+FDISK /MBR 1
+```
+
+`DOC/FDISK/HELP.TXT` documents `/PRIO` for FAT16, the `,100` percentage suffix,
+`/ACTIVATE` and `/MBR`. Use a blank guest disk: these commands replace its
+partition layout. **First reboot:** press Ctrl+Alt+Del with `FDTOOLS` still
+inserted, then accept date/time and run:
+
+```text
+FORMAT C: /S /Q /U /V:FREEDOS /Z:seriously
+```
+
+`DOC/FORMAT/HELP.TXT` documents `/Q /U` for a fresh disk without a surface
+scan, `/S` to run SYS and copy the system files, `/V` for the label and
+`/Z:seriously` to suppress the hard-disk confirmation. Wait for
+`System transferred.` and the final `A:\>` prompt. **Second reboot:** eject A:
+with **Ctrl+Alt+E**, then press Ctrl+Alt+Del to boot C:. Accept date/time to
+reach `C:\>`.
+
+The install golden reboots through a CPU reset. Guest Ctrl+Alt+Del performs a
+BIOS warm start; that path is not measured by the golden. If the host
+intercepts Ctrl+Alt+Del, stop and relaunch with the same disk and journal:
+the journal replays the partition and filesystem writes. For the second
+relaunch, keep A: empty using `machines/local/boot-c.toml`:
 
 ```toml
 schema = 1
-extends = "../at-games.toml"
+extends = "../at-games-open.toml"
 
 [[card]]
 id = "fdc-765"
 [[card.drives]]
 unit = 0
-media = [
-  { image = "../../vendor/freedos/freedos-1200.img", write = "readonly" },
-  { image = "tools-1200.img", write = "readonly" },
-  { image = "transfer-1200.img", write = "readonly" },
-]
+media = []
+empty = true
 ```
 
-Check and start this child with `--machine machines/local/play.toml`. Swap to
-the tools disk after FreeDOS reaches the prompt. Run `FDISK`, create an active
-primary DOS partition, reboot with FreeDOS inserted, then run `FORMAT C: /S`
-(or `FORMAT C:` and `SYS C:` if your FORMAT has no `/S`). See
-[Partitioning and formatting](#partitioning-and-formatting) for the full disk
-workflow. These C: operations use the IBM fixed-disk BIOS on the AT adapter
-and have not been measured: the IBM profile's only measurement is POST with
-a blank type-2 disk, ending at `A:\>`. FDISK, FORMAT, copying files and running
-games from C: remain unqualified, as does C: boot for this pairing.
+Use `../at-games.toml` as the parent for the IBM variant. The ignored
+`freedos_install_golden` measures these exact DOS commands and the two install
+resets/ejection on the open `at-ide.toml` profile with a blank 32 MiB disk.
+The game profiles above use a type-2 disk; the IBM profile's fixed-disk
+installation and C: boot remain unqualified by that open-firmware golden.
+Its measured IBM boot ends at `A:\>` with a blank disk.
+
+After booting C:, insert the populated transfer disk with Ctrl+Alt+F and copy
+its directory tree without a destination-type prompt:
+
+```text
+XCOPY A:\*.* C:\GAMES /S /E /I
+```
+
+The pinned `DOC/XCOPY/XCOPY.TXT` documents `/I` to assume a directory when
+copying multiple files to a destination that does not exist. Use a game's
+installer for multi-disk sets.
 
 Copy games and drivers with floppy swaps and DOS COPY/installers, or use
 [mtools on a new, unmounted image](#copying-host-files). Never modify a base
@@ -447,8 +488,8 @@ Select Sound Blaster at 220h/IRQ5/DMA1 (16-bit DMA5 when offered) and
 AdLib/Sound Blaster FM for music. SB16 includes OPL3 at 388h–38Bh; no separate
 OPL card is needed. Load your compatible mouse driver, such as `CTMOUSE /S1`
 (for a CuteMouse version supporting that option) or `MOUSE.COM` configured for
-COM1. Driver versions and options vary; no driver is bundled or qualified by
-this profile. Change to the installed game's directory on C: and run it.
+COM1. The tools floppy supplies CTMOUSE 2.1b4; its execution with this profile
+is not yet qualified. Change to the installed game's directory on C: and run it.
 
 Click the window to grab the pointer; **Ctrl+Alt+G releases** it (focus loss
 also releases). **Ctrl+Alt+M** toggles host mute. **Ctrl+Alt+F** cycles the A:

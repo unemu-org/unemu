@@ -75,5 +75,10 @@ sha256 = "4ee55e9c44d553041b9bbde99cacae31472f12debf6c9b9c09c5b9343c435d7e"
 write = "readonly"
 
 [[card.drives.media]]
+image = "../vendor/freedos/freedos-tools-1200.img"
+sha256 = "8d91283a1c0d6fc5b5fdb5e40db5b66dd9fabbf014d37262b7892f3b150b6f63"
+write = "readonly"
+
+[[card.drives.media]]
 image = "local/transfer-1200.img"
 write = "readonly"

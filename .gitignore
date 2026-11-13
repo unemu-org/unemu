@@ -55,6 +55,7 @@ target/
 /vendor/freedos/build/
 /vendor/freedos/freedos.img
 /vendor/freedos/freedos-1200.img
+/vendor/freedos/freedos-tools-1200.img
 # XTIDE Universal BIOS AT option ROM: pinned download and padded/checksummed
 # image are rebuilt by vendor/xtide-universal-bios/fetch.sh, not checked in.
 /vendor/xtide-universal-bios/build/

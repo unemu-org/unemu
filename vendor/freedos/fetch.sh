@@ -1,16 +1,17 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: AGPL-3.0-or-later
 #
-# Build bootable 1.44 MB and 1.2 MB FreeDOS floppy images (8086 build) used here
+# Build bootable FreeDOS boot and tools floppy images used here
 # as read-only boot fixtures (see README.md). Nothing is committed — the archives
 # are fetched from pinned FreeDOS releases and the image is rebuilt from them, so
 # the boot is reproducible against known kernel / shell / boot-sector revisions.
 #
-# Both images are FAT12 with a FreeDOS FAT12 boot sector, the 8086
-# KERNEL.SYS, and the 8086 FreeCOM COMMAND.COM in the root. FreeDOS is GPLv2+ and
-# redistributable; this project only reads the image, never links its code.
+# All images are FAT12 with a FreeDOS FAT12 boot sector, the 8086
+# KERNEL.SYS, and the 8086 FreeCOM COMMAND.COM in the root. Kernel/SYS and
+# FreeCOM are GPL v2 or later; the six utility packages are GPL v2 (see README.md).
+# This project reads the images without linking their code.
 #
-# Requires `git`, `nasm`, `unzip`, `curl`, and mtools (`mformat`/`mcopy`/`mdir`)
+# Requires `git`, `nasm`, `unzip`, `curl`, and mtools (`mformat`/`mcopy`/`mdir`/`mlabel`)
 # on PATH — all in the flake devShell.
 set -euo pipefail
 
@@ -60,6 +61,7 @@ WORK="$HERE/build"                     # gitignored scratch (downloads + clone)
 SRC_DIR="$WORK/kernel-src"             # gitignored clone (boot-sector source)
 OUT="$HERE/freedos.img"                # gitignored 1.44 MB build product
 OUT_1200="$HERE/freedos-1200.img"      # gitignored 1.2 MB build product
+OUT_TOOLS="$HERE/freedos-tools-1200.img" # gitignored installation floppy
 
 mkdir -p "$WORK"
 
@@ -72,6 +74,68 @@ fetch_release() {
 	fi
 	check_sha256 "$dest" "$4" archive
 }
+
+fetch_package() {
+	local name="$1" expected="$2" dest="$WORK/$1.zip"
+	if [ -n "${FREEDOS_PACKAGE_DIR:-}" ]; then
+		check_sha256 "$FREEDOS_PACKAGE_DIR/$name.zip" "$expected" archive
+		cp "$FREEDOS_PACKAGE_DIR/$name.zip" "$dest"
+	elif [ ! -f "$dest" ]; then
+		curl -fsSL -o "$dest" \
+			"https://www.ibiblio.org/pub/micro/pc-stuff/freedos/files/repositories/1.3/base/$name.zip"
+	fi
+	check_sha256 "$dest" "$expected" archive
+}
+
+build_tools_floppy() {
+	fetch_package fdisk 5f6f84fab35132cc7928137e0f350660cb7ff06d23da18e1b5caceed15ea7b8f
+	fetch_package format 9bd13d1cfa2084020bf37e8e6b61a05e8413629cf6d7f2d2779819e7b1f32bd4
+	fetch_package xcopy 33c43434964d2ae08cf868d5ea54760300588c9c2ea5e50e7936cecebf60fe52
+	fetch_package edit 582729981a967493f59f38b7d4464c1b1a6caa25f71c0a2fbf6dd9e3b782037b
+	fetch_package mem 4090eb3b08a283cf3fc974c72ab6eb5105bf2b5f27e6bd8dfe6682bd0c3605d1
+	fetch_package ctmouse a891124cd5b13e8141778fcae718f3b2667b0a49727ce92b782ab11a8c4bb63a
+	mkdir -p "$WORK/tools"
+	local name upper
+	for name in fdisk format xcopy edit mem ctmouse; do
+		upper="$(echo "$name" | tr '[:lower:]' '[:upper:]')"
+		unzip -o -j "$WORK/$name.zip" "BIN/$upper.EXE" -d "$WORK/tools" >/dev/null
+	done
+	unzip -o -j "$WORK/edit.zip" BIN/EDIT.HLP -d "$WORK/tools" >/dev/null
+	unzip -o -j "$WORK/$KERNEL_ZIP" bin/sys.com -d "$WORK/tools" >/dev/null
+	printf '%s\r\n' \
+		"FreeDOS installation tools - thank you to the FreeDOS developers!" \
+		"KERNEL.SYS and SYS.COM 2044 (8086 FAT12/16), COMMAND.COM FreeCOM 0.86:" \
+		"GNU GPL version 2 or later." \
+		"FDISK.EXE 1.3.4a, FORMAT.EXE 0.92, XCOPY.EXE 1.7, EDIT.EXE 0.9b," \
+		"MEM.EXE 1.12, CTMOUSE.EXE 2.1b4: GNU GPL version 2 (see upstream archives)." \
+		"EDIT.HLP is the editor's help file, under the same licence as EDIT." \
+		"FDISK requires 186/286 or later; CTMOUSE requires 286 or later, not 8086." \
+		"See the repository's vendor/freedos/README.md for sources and licences." > "$WORK/tools/README.TXT"
+	# The verified boot fixture also permits a fully offline tools-only build.
+	# Its hash binds the shell, kernel, loader and all FAT timestamps together.
+	local boot_image="$OUT_1200"
+	check_sha256 "$boot_image" "4ee55e9c44d553041b9bbde99cacae31472f12debf6c9b9c09c5b9343c435d7e"
+	rm -f "$OUT_TOOLS"
+	cp "$OUT_1200" "$OUT_TOOLS"
+	mlabel -i "$OUT_TOOLS" -N 0x28959854 ::FDTOOLS
+	for name in FDISK.EXE FORMAT.EXE sys.com XCOPY.EXE EDIT.EXE EDIT.HLP MEM.EXE CTMOUSE.EXE README.TXT; do
+		upper="$(echo "$name" | tr '[:lower:]' '[:upper:]')"
+		mcopy -i "$OUT_TOOLS" "$WORK/tools/$name" "::$upper"
+	done
+	check_sha256 "$OUT_TOOLS" "8d91283a1c0d6fc5b5fdb5e40db5b66dd9fabbf014d37262b7892f3b150b6f63"
+	mdir -i "$OUT_TOOLS" ::
+}
+
+export MTOOLS_SKIP_CHECK=1 SOURCE_DATE_EPOCH=315532800 TZ=UTC
+# Offline mode deliberately requires the already pinned boot fixture; it never
+# attempts a source clone or download. All supplied archives remain hash-checked.
+if [ -n "${FREEDOS_PACKAGE_DIR:-}" ]; then
+	check_sha256 "$FREEDOS_PACKAGE_DIR/$KERNEL_ZIP" "$KERNEL_ZIP_SHA256" archive
+	cp "$FREEDOS_PACKAGE_DIR/$KERNEL_ZIP" "$WORK/$KERNEL_ZIP"
+	check_sha256 "$WORK/$KERNEL_ZIP" "$KERNEL_ZIP_SHA256" archive
+	build_tools_floppy
+	exit 0
+fi
 
 fetch_release "kernel" "$KERNEL_TAG" "$KERNEL_ZIP" "$KERNEL_ZIP_SHA256"
 fetch_release "freecom" "$FREECOM_TAG" "$FREECOM_ZIP" "$FREECOM_ZIP_SHA256"
@@ -137,3 +201,5 @@ build_floppy "$OUT" 1440 2880
 check_sha256 "$OUT" "b7b088333f7f30584d768941fecea8288b63f2d61e13ec6c9472439eda66e51f"
 build_floppy "$OUT_1200" 1200 2400
 check_sha256 "$OUT_1200" "4ee55e9c44d553041b9bbde99cacae31472f12debf6c9b9c09c5b9343c435d7e"
+
+build_tools_floppy
