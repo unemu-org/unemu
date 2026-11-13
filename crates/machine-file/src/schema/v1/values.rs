@@ -14,7 +14,7 @@ use super::{Chs, NvramImage};
 
 macro_rules! named_values {
     ($(#[$meta:meta])* $name:ident, $category:literal {
-        $($variant:ident => $value:literal),* $(,)?
+        $($variant:ident => $value:expr),* $(,)?
     } reserved { $($reserved:literal => $reason:literal),* $(,)? }) => {
         $(#[$meta])*
         #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -31,12 +31,13 @@ macro_rules! named_values {
                         write!(f, "a {} name", $category)
                     }
                     fn visit_str<E: de::Error>(self, value: &str) -> Result<Self::Value, E> {
+                        const NAMES: &[&str] = &[$($value,)* $($reserved,)*];
                         match value {
-                            $($value => Ok($name::$variant),)*
+                            $(name if name == $value => Ok($name::$variant),)*
                             $($reserved => Err(E::custom(format!(
                                 "{} `{value}` is reserved, not implemented (schema 1): {}", $category, $reason
                             ))),)*
-                            _ => Err(E::unknown_variant(value, &[$($value,)* $($reserved,)*])),
+                            _ => Err(E::unknown_variant(value, NAMES)),
                         }
                     }
                 }
@@ -98,8 +99,8 @@ named_values! {
 named_values! {
     /// Card spellings, independent of the eventual device assembler.
     CardKind, "card kind" {
-        Mda => "mda", VgaText => "vga-text", Vga => "vga", Uart16550 => "uart-16550",
-        Fdc765 => "fdc-765", Ide => "ide", Sb16 => "sb16", LotechEms => "lotech-ems",
+        Mda => assembly::descriptors::CardKind::Mda.name(), VgaText => assembly::descriptors::CardKind::VgaText.name(), Vga => assembly::descriptors::CardKind::Vga.name(), Uart16550 => assembly::descriptors::CardKind::Uart16550.name(),
+        Fdc765 => assembly::descriptors::CardKind::Fdc765.name(), Ide => assembly::descriptors::CardKind::Ide.name(), Sb16 => assembly::descriptors::CardKind::Sb16.name(), LotechEms => assembly::descriptors::CardKind::LotechEms.name(),
     } reserved {
         "hercules" => "needs a hercules display card model",
         "cga" => "needs a cga display card model",
@@ -128,6 +129,22 @@ named_values! {
     }
 }
 
+impl CardKind {
+    pub(crate) fn descriptor(self) -> assembly::descriptors::CardKind {
+        use assembly::descriptors::CardKind;
+        match self {
+            Self::Mda => CardKind::Mda,
+            Self::VgaText => CardKind::VgaText,
+            Self::Vga => CardKind::Vga,
+            Self::Uart16550 => CardKind::Uart16550,
+            Self::Fdc765 => CardKind::Fdc765,
+            Self::Ide => CardKind::Ide,
+            Self::Sb16 => CardKind::Sb16,
+            Self::LotechEms => CardKind::LotechEms,
+        }
+    }
+}
+
 named_values! {
     /// Declared firmware services, not claims verified against an image catalogue.
     FirmwareService, "firmware service" {
@@ -140,7 +157,7 @@ named_values! {
 named_values! {
     /// Implemented floppy geometry spellings.
     DriveType, "drive type" {
-        Hd144 => "1.44M", Hd12 => "1.2M", Dd720 => "720K", Dd360 => "360K",
+        Hd144 => assembly::descriptors::FloppyType::HD_1_44.name, Hd12 => assembly::descriptors::FloppyType::HD_1_2.name, Dd720 => assembly::descriptors::FloppyType::DD_720K.name, Dd360 => assembly::descriptors::FloppyType::DD_360K.name,
     } reserved { "2.88M" => "needs a 2.88 MB floppy geometry model",
         "atapi-cdrom" => "needs an ATAPI CD-ROM device model" }
 }

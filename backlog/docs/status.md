@@ -5,6 +5,17 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-13 — Machine settings capabilities:** assembly owns shared card,
+  RAM, SB16/EMS/UART/IDE resource domains and defaults, video decodes, named
+  floppy geometries and firmware slots. `capabilities::describe`, `choices`
+  (with paging for large integer domains) and `validate_draft` expose options
+  and structured diagnostics without UI dependencies. Drafts replace resources
+  atomically, retain card identity paths and report unavailable firmware as
+  pending. Known firmware metadata also restricts floppy types and reserves
+  ROM ranges before bytes are available. Settings presentation remains separate.
+  Repository-file synthetic parity snapshots and the existing lowering and
+  validation corpus cover unchanged legacy behavior and source diagnostics.
+
 - **2026-11-13 — AT controller self-test and warm start:** 8042 command AAh
   reinitializes the output port to its power-on value and drives A20 enabled,
   while retaining the SYS flag/55h reply and issuing no CPU-reset request.

@@ -39,8 +39,10 @@
 
 mod assemble;
 mod board;
+pub mod capabilities;
 mod clock;
 mod cpu;
+pub mod descriptors;
 mod device;
 mod drive;
 mod error;

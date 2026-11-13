@@ -12,6 +12,8 @@ use crate::error::ConfigError;
 use crate::image::ImageKind;
 use crate::machine::MachineConfig;
 
+type ConfigCheck = fn(&MachineConfig) -> Result<(), ConfigError>;
+
 /// Whether two half-open ranges `[a_base, a_end)` and `[b_base, b_end)` share any
 /// byte.
 fn ranges_overlap(a_base: u64, a_end: u64, b_base: u64, b_end: u64) -> bool {
@@ -198,8 +200,13 @@ impl MachineConfig {
     // checks on the exact loaded bytes without requiring those bytes to be files.
     pub(crate) fn validate_resolved(&self) -> Result<(), ConfigError> {
         self.expanded_media()?;
-        self.check_rtc_ram()?;
-        self.check_part_sources()?;
+        for check in Self::resolved_checks() {
+            check(self)?;
+        }
+        Ok(())
+    }
+
+    fn check_vga_exclusion(&self) -> Result<(), ConfigError> {
         if self
             .devices
             .iter()
@@ -211,38 +218,88 @@ impl MachineConfig {
         {
             return Err(ConfigError::ConflictingVgaCards);
         }
-        self.check_unique_device_ids()?;
-        self.check_sys_ctrl_port_a()?;
-        self.check_debug_console()?;
-        self.check_fw_cfg()?;
-        self.check_board()?;
-        self.check_mouse()?;
-        self.primary_display()?;
-        self.check_firmware_layout()?;
-        self.check_firmware_services()?;
-        self.check_rtc_starts()?;
-        self.check_access_couplings()?;
-        self.check_uart_bases()?;
-        self.check_ide_resources()?;
-        self.check_sb16_resources()?;
-        self.check_lotech_ems_resources()?;
-        self.check_port_widths()?;
-        self.check_port_overlaps()?;
-        self.check_mmio_devices_present()?;
-        self.check_mmio_sizes()?;
-        self.check_mmio_overlaps()?;
-        self.check_mmio_vs_ram()?;
-        self.check_regions_in_space()?;
-        self.check_image_placement()?;
-        self.check_board_memory()?;
-        crate::firmware::validate_option_roms(self)?;
-        self.check_irq_conflicts()?;
-        self.check_pic_faces()?;
-        self.check_dma_controllers_present()?;
-        self.check_drive_controllers()?;
-        self.check_image_geometry()?;
-        self.clock.cpu_rate()?;
         Ok(())
+    }
+
+    fn check_primary_display(&self) -> Result<(), ConfigError> {
+        self.primary_display().map(|_| ())
+    }
+    fn check_clock(&self) -> Result<(), ConfigError> {
+        self.clock.cpu_rate().map(|_| ())
+    }
+    fn check_option_roms(&self) -> Result<(), ConfigError> {
+        crate::firmware::validate_option_roms(self)
+    }
+
+    fn resolved_checks() -> &'static [ConfigCheck] {
+        &[
+            Self::check_rtc_ram,
+            Self::check_part_sources,
+            Self::check_vga_exclusion,
+            Self::check_unique_device_ids,
+            Self::check_sys_ctrl_port_a,
+            Self::check_debug_console,
+            Self::check_fw_cfg,
+            Self::check_board,
+            Self::check_mouse,
+            Self::check_primary_display,
+            Self::check_firmware_layout,
+            Self::check_firmware_services,
+            Self::check_rtc_starts,
+            Self::check_access_couplings,
+            Self::check_uart_bases,
+            Self::check_ide_resources,
+            Self::check_sb16_resources,
+            Self::check_lotech_ems_resources,
+            Self::check_port_widths,
+            Self::check_port_overlaps,
+            Self::check_mmio_devices_present,
+            Self::check_mmio_sizes,
+            Self::check_mmio_overlaps,
+            Self::check_mmio_vs_ram,
+            Self::check_regions_in_space,
+            Self::check_image_placement,
+            Self::check_board_memory,
+            Self::check_option_roms,
+            Self::check_irq_conflicts,
+            Self::check_pic_faces,
+            Self::check_dma_controllers_present,
+            Self::check_drive_controllers,
+            Self::check_image_geometry,
+            Self::check_clock,
+        ]
+    }
+
+    /// Collect one error per independent check without changing first-error order.
+    pub(crate) fn draft_errors(&self) -> Vec<ConfigError> {
+        let mut errors = Vec::new();
+        match self.expanded_media() {
+            Ok(media) => {
+                if let Err(error) = media.check_journal_modes() {
+                    errors.push(error);
+                }
+            }
+            Err(error) => errors.push(error),
+        }
+        for check in Self::resolved_checks() {
+            if let Err(error) = check(self) {
+                errors.push(error);
+            }
+        }
+        errors
+    }
+
+    /// Placement checks can use a selected firmware's known size before its bytes arrive.
+    pub(crate) fn draft_image_errors(&self) -> Vec<ConfigError> {
+        [
+            self.check_firmware_layout(),
+            self.check_regions_in_space(),
+            self.check_image_placement(),
+            self.check_board_memory(),
+        ]
+        .into_iter()
+        .filter_map(Result::err)
+        .collect()
     }
 
     pub(crate) fn check_part_sources(&self) -> Result<(), ConfigError> {
@@ -699,7 +756,7 @@ impl MachineConfig {
     fn check_uart_bases(&self) -> Result<(), ConfigError> {
         for dev in &self.devices {
             if let DeviceKind::Uart(uart) = &dev.kind {
-                if uart.base > 0xFFF8 {
+                if !crate::descriptors::UART_PORT.contains(u32::from(uart.base)) {
                     return Err(ConfigError::UartPortWindowOutOfSpace {
                         device: dev.id,
                         base: uart.base,
@@ -750,16 +807,15 @@ impl MachineConfig {
     fn check_sb16_resources(&self) -> Result<(), ConfigError> {
         for device in &self.devices {
             if let DeviceKind::Sb16(cfg) = device.kind {
-                if !matches!(cfg.dma16, 5..=7)
-                    || !matches!(cfg.base, 0x220 | 0x240 | 0x260 | 0x280)
-                    || !matches!(device.irq, Some(2 | 5 | 7 | 10))
-                    || !matches!(
-                        device.dma,
-                        Some(crate::DmaSpec {
-                            controller: DeviceId::Dma,
-                            channel: 0 | 1 | 3
-                        })
-                    )
+                if !crate::descriptors::SB16_DMA16.contains(&cfg.dma16)
+                    || !crate::descriptors::SB16_BASES.contains(&cfg.base)
+                    || !device
+                        .irq
+                        .is_some_and(|irq| crate::descriptors::SB16_IRQS.contains(&irq))
+                    || !device.dma.is_some_and(|dma| {
+                        dma.controller == DeviceId::Dma
+                            && crate::descriptors::SB16_DMA8.contains(&dma.channel)
+                    })
                     || device.ports != cfg.port_windows()
                 {
                     return Err(ConfigError::InvalidSb16Resources { device: device.id });
@@ -772,7 +828,7 @@ impl MachineConfig {
     fn check_ide_resources(&self) -> Result<(), ConfigError> {
         for device in &self.devices {
             if let DeviceKind::Ide(cfg) = device.kind {
-                if !matches!(cfg.base, 0x1F0 | 0x170)
+                if !crate::descriptors::IDE_PORTS.contains(&cfg.base)
                     || cfg.control != cfg.base + 0x206
                     || device.irq != Some(cfg.irq())
                     || device.dma.is_some()

@@ -44,6 +44,35 @@ defining files, checks optional SHA-256 pins, and retains the bytes inline.
 It derives the RAM mosaic and calls `MachineConfig::validate()` before returning.
 The reference file is `machines/at-freedos.toml`; frontends still use Rust presets.
 
+`assembly::descriptors` owns the implemented card names, video decodes, RAM
+and resource domains, effective defaults, named floppy geometries and firmware
+slots. EMS domains reference the device model's public jumper/population
+constants, so the runtime constructor and configuration cannot drift.
+Machine-file parsing/lowering consumes these definitions. The
+transport-neutral `assembly::capabilities` API describes fields, pages large
+integer domains, offers choices and validates a lowered `Draft` with atomic
+pending edits. Paths use card identities (`card[sound].irq`) and drive units,
+with optional source-level card names and image-field paths supplied by the
+caller. Image paths exclude the system BIOS when numbering option ROMs.
+Port descriptors expose IRQ dependencies; edits follow a changed port's derived
+IRQ default when the old default is still selected, preserving explicit IRQ edits.
+Choices retain unrelated existing errors as diagnostics without disabling other
+fields, so staged resource swaps remain editable. Responses echo
+the caller's revision so a frontend can discard stale choices.
+
+`validate_draft` shares the ordered checks behind `MachineConfig::validate`,
+collecting one error per independent check. Diagnostics include stable codes,
+field paths, conflict partners, decoded ports/routed IRQs/DMA ownership and
+severity. Candidate edits replace existing resources and rebuild derived
+port/MMIO/RAM maps; several fields are applied before checking conflicts.
+Selected firmware uses catalogue requirements and sizes for placement checks,
+while absent bytes remain pending. The known June 1985 IBM BIOS drive-type
+restriction is exposed to drafts; legacy lowering's first-error behavior and
+source-origin mapping remain unchanged. No host image reads, UI types or
+execution clocks enter the API. Launch must still load/verify inputs and run
+assembly validation, including persistent-path checks. `Validation::ready`
+means no reported error or pending check, not permission to bypass assembly.
+
 The normal real-mode path is:
 
 ```text

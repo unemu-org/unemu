@@ -235,20 +235,10 @@ impl Resolver<'_> {
     }
 }
 
-fn kind_name(kind: CardKind) -> &'static str {
-    match kind {
-        CardKind::Mda => "mda",
-        CardKind::VgaText => "vga-text",
-        CardKind::Vga => "vga",
-        CardKind::Uart16550 => "uart-16550",
-        CardKind::Fdc765 => "fdc-765",
-        CardKind::Ide => "ide",
-        CardKind::Sb16 => "sb16",
-        CardKind::LotechEms => "lotech-ems",
-    }
-}
 pub(crate) fn card_id(card: &Card) -> Option<&str> {
-    card.id.as_deref().or_else(|| card.kind.map(kind_name))
+    card.id
+        .as_deref()
+        .or_else(|| card.kind.map(|kind| kind.descriptor().name()))
 }
 type DriveKey = (Option<u8>, Option<Channel>);
 

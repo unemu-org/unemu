@@ -14,9 +14,8 @@ use std::{
 
 use assembly::{
     BoardModel, ConfigError, CpuChip, CpuConfig, DeviceConfig, DeviceId, DeviceKind, DmaSpec,
-    DriveConfig, DriveKind, FloppyGeometry, ImageKind, ImageSource, LoadImage, MachineConfig,
-    MdaTextCfg, MemoryConfig, MmioWindow, NvramSource, PortWindow, PostPortCfg, RamRegion,
-    ResetSpec, RtcStart, SegmentSeed, UartCfg, VgaTextCfg,
+    DriveConfig, DriveKind, ImageKind, ImageSource, LoadImage, MachineConfig, MemoryConfig,
+    MmioWindow, NvramSource, PortWindow, PostPortCfg, ResetSpec, RtcStart, SegmentSeed, UartCfg,
 };
 use sha2::{Digest, Sha256};
 
@@ -569,37 +568,19 @@ impl<R: ImageReader> Context<'_, R> {
                     cfg.port_windows(),
                 )
             }
-            v1::CardKind::Mda => {
-                mmio.push(MmioWindow::new(0xB0000, 0x8000, DeviceId::Mda));
-                DeviceConfig::new(
-                    DeviceId::Mda,
-                    DeviceKind::Mda(MdaTextCfg {}),
-                    vec![PortWindow::new(0x3B0, 0x3BB), PortWindow::single(0x3BF)],
-                )
-            }
-            v1::CardKind::Vga => {
-                mmio.push(MmioWindow::new(0xA0000, 0x20000, DeviceId::Vga));
-                DeviceConfig::new(
-                    DeviceId::Vga,
-                    DeviceKind::VgaRegisters(assembly::VgaCfg {}),
-                    assembly::VgaCfg::port_windows(),
-                )
-            }
-            v1::CardKind::VgaText => {
-                mmio.push(MmioWindow::new(0xB8000, 0x8000, DeviceId::Vga));
-                DeviceConfig::new(
-                    DeviceId::Vga,
-                    DeviceKind::Vga(VgaTextCfg {}),
-                    vec![PortWindow::new(0x3D4, 0x3D5), PortWindow::new(0x3D8, 0x3DA)],
-                )
+            v1::CardKind::Mda | v1::CardKind::Vga | v1::CardKind::VgaText => {
+                let descriptor = kind.descriptor();
+                let device = descriptor.device();
+                if let Some(window) = descriptor.mmio(&device) {
+                    mmio.push(window);
+                }
+                device
             }
             v1::CardKind::Uart16550 => {
-                let base = card.port.unwrap_or(0x3F8);
-                let default_irq = match base {
-                    0x3F8 | 0x3E8 => Some(4),
-                    0x2F8 | 0x2E8 => Some(3),
-                    _ => None,
-                };
+                let base = card
+                    .port
+                    .unwrap_or(assembly::descriptors::UART_PORT.default as u16);
+                let default_irq = assembly::descriptors::uart_default_irq(base);
                 let irq = match card.irq {
                     Some(irq) => line(irq),
                     None => Some(self.required(&format!("{field}.irq"), default_irq)?),
@@ -617,28 +598,25 @@ impl<R: ImageReader> Context<'_, R> {
             }
             v1::CardKind::Sb16 => {
                 let cfg = assembly::Sb16Cfg {
-                    dma16: card.dma16.unwrap_or(5),
-                    base: card.base.unwrap_or(0x220),
+                    dma16: card
+                        .dma16
+                        .unwrap_or(assembly::descriptors::SB16_DEFAULT.dma16),
+                    base: card
+                        .base
+                        .unwrap_or(assembly::descriptors::SB16_DEFAULT.base),
                 };
                 DeviceConfig::new(DeviceId::Sb16, DeviceKind::Sb16(cfg), cfg.port_windows())
-                    .with_irq(5)
+                    .with_irq(assembly::descriptors::SB16_DEFAULT_IRQ)
                     .with_dma(DmaSpec {
                         controller: DeviceId::Dma,
-                        channel: card.dma8.unwrap_or(1),
+                        channel: card
+                            .dma8
+                            .unwrap_or(assembly::descriptors::SB16_DEFAULT_DMA8),
                     })
             }
-            v1::CardKind::Fdc765 => DeviceConfig::new(
-                DeviceId::Fdc,
-                DeviceKind::Fdc(assembly::FdcCfg { drive_slots: 2 }),
-                assembly::FdcCfg::port_windows(false),
-            )
-            .with_irq(6)
-            .with_dma(DmaSpec {
-                controller: DeviceId::Dma,
-                channel: 2,
-            }),
+            v1::CardKind::Fdc765 => assembly::descriptors::CardKind::Fdc765.device(),
             v1::CardKind::Ide => {
-                let base = card.port.unwrap_or(0x1F0);
+                let base = card.port.unwrap_or(assembly::descriptors::IDE_PORTS[0]);
                 let cfg = assembly::IdeCfg {
                     model: match card.controller_model.unwrap_or(v1::ControllerModel::Ata) {
                         v1::ControllerModel::Ata => assembly::AtaControllerModel::Ata,
@@ -727,10 +705,10 @@ impl<R: ImageReader> Context<'_, R> {
                 }
                 let geometry =
                     match self.required(&format!("{drive_field}.type"), drive.drive_type)? {
-                        v1::DriveType::Hd144 => FloppyGeometry::HD_1_44,
-                        v1::DriveType::Hd12 => FloppyGeometry::HD_1_2,
-                        v1::DriveType::Dd720 => FloppyGeometry::DD_720K,
-                        v1::DriveType::Dd360 => FloppyGeometry::DD_360K,
+                        v1::DriveType::Hd144 => assembly::descriptors::FloppyType::HD_1_44.geometry,
+                        v1::DriveType::Hd12 => assembly::descriptors::FloppyType::HD_1_2.geometry,
+                        v1::DriveType::Dd720 => assembly::descriptors::FloppyType::DD_720K.geometry,
+                        v1::DriveType::Dd360 => assembly::descriptors::FloppyType::DD_360K.geometry,
                     };
                 (
                     unit,
@@ -1188,16 +1166,7 @@ fn line<const MAX: u16>(value: v1::NumberOrNone<MAX>) -> Option<u8> {
 }
 
 fn kind_name(kind: v1::CardKind) -> &'static str {
-    match kind {
-        v1::CardKind::Mda => "mda",
-        v1::CardKind::VgaText => "vga-text",
-        v1::CardKind::Vga => "vga",
-        v1::CardKind::Uart16550 => "uart-16550",
-        v1::CardKind::Fdc765 => "fdc-765",
-        v1::CardKind::Ide => "ide",
-        v1::CardKind::Sb16 => "sb16",
-        v1::CardKind::LotechEms => "lotech-ems",
-    }
+    kind.descriptor().name()
 }
 
 fn rtc_start(text: &str) -> Option<RtcStart> {
@@ -1223,47 +1192,6 @@ fn rtc_start(text: &str) -> Option<RtcStart> {
         minute: text.get(14..16)?.parse().ok()?,
         second: text.get(17..19)?.parse().ok()?,
     })
-}
-
-fn ram(
-    conventional: u64,
-    extended: u64,
-    mmio: &[MmioWindow],
-    images: &[LoadImage],
-) -> Vec<RamRegion> {
-    let mut regions = vec![(0xA0000, 0xC0000)];
-    for (base, end) in mmio
-        .iter()
-        .map(|w| (w.base, w.end()))
-        .chain(images.iter().map(|image| {
-            (
-                image.base,
-                image.base + image.source.known_len().unwrap_or(0),
-            )
-        }))
-    {
-        regions = regions
-            .into_iter()
-            .flat_map(|(start, stop)| {
-                if base >= stop || end <= start {
-                    return vec![(start, stop)];
-                }
-                vec![(start, base.max(start)), (end.min(stop), stop)]
-            })
-            .filter(|(start, stop)| start < stop)
-            .collect();
-    }
-    regions.extend([(0, conventional), (MIB, MIB + extended)]);
-    regions.sort_unstable();
-    let mut joined: Vec<RamRegion> = Vec::new();
-    for (base, end) in regions.into_iter().filter(|(base, end)| base < end) {
-        if let Some(previous) = joined.last_mut().filter(|region| region.end() == base) {
-            previous.size = end - previous.base;
-        } else {
-            joined.push(RamRegion::new(base, end - base));
-        }
-    }
-    joined
 }
 
 /// Expand a complete typed document, read/hash its images and validate the result.
@@ -1422,19 +1350,19 @@ pub(crate) fn lower_tracked<R: ImageReader>(
         .memory
         .as_ref()
         .and_then(|memory| memory.conventional_kib)
-        .unwrap_or(640);
+        .unwrap_or(assembly::descriptors::CONVENTIONAL_KIB.default);
     let extended = document
         .memory
         .as_ref()
         .and_then(|memory| memory.extended_kib)
-        .unwrap_or(0);
-    if conventional > 640 || !conventional.is_multiple_of(16) {
+        .unwrap_or(assembly::descriptors::EXTENDED_KIB.default);
+    if !assembly::descriptors::CONVENTIONAL_KIB.contains(conventional) {
         return Err(context.error(
             "memory.conventional_kib",
             "must be a multiple of 16 KiB, at most 640 KiB",
         ));
     }
-    if extended > assembly::IBM5170_MAX_EXTENDED_KIB || !extended.is_multiple_of(64) {
+    if !assembly::descriptors::EXTENDED_KIB.contains(extended) {
         return Err(context.error(
             "memory.extended_kib",
             format!(
@@ -1481,7 +1409,7 @@ pub(crate) fn lower_tracked<R: ImageReader>(
         clock,
         memory: MemoryConfig {
             address_space_bytes: MIB + u64::from(extended) * 1024,
-            ram: ram(
+            ram: assembly::descriptors::ram_regions(
                 u64::from(conventional) * 1024,
                 u64::from(extended) * 1024,
                 &mmio,

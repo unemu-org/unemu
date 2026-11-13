@@ -44,6 +44,13 @@ pub struct LotechEms {
 }
 
 impl LotechEms {
+    /// Lo-tech 2MB EMS Board schematic r02, HCT688 I/O jumper positions.
+    pub const PORTS: &[u16] = &[0x260, 0x264, 0x268, 0x26C];
+    /// Lo-tech 2MB EMS Board schematic r02, physical frame segment jumpers.
+    pub const FRAMES: &[u16] = &[0xC000, 0xD000, 0xE000];
+    /// Lo-tech 2MB EMS Board schematic r02, one to four 512 KiB SRAM chips.
+    pub const SIZES_KIB: &[u32] = &[512, 1024, 1536, 2048];
+
     /// Check the physical jumper positions and chip populations without allocation.
     pub fn valid_configuration(port: u16, frame: u16, size_kib: u32) -> bool {
         Self::valid_port(port) && Self::valid_frame(frame) && Self::valid_size_kib(size_kib)
@@ -51,17 +58,17 @@ impl LotechEms {
 
     /// Whether the I/O base matches one of the HCT688 jumper positions.
     pub fn valid_port(port: u16) -> bool {
-        matches!(port, 0x260 | 0x264 | 0x268 | 0x26C)
+        Self::PORTS.contains(&port)
     }
 
     /// Whether the segment matches a physical frame jumper position.
     pub fn valid_frame(frame: u16) -> bool {
-        matches!(frame, 0xC000 | 0xD000 | 0xE000)
+        Self::FRAMES.contains(&frame)
     }
 
     /// Whether the SRAM population uses one to four complete chips.
     pub fn valid_size_kib(size_kib: u32) -> bool {
-        matches!(size_kib, 512 | 1024 | 1536 | 2048)
+        Self::SIZES_KIB.contains(&size_kib)
     }
 
     /// Power on with deterministic unbacked windows and zero-filled SRAM.

@@ -512,21 +512,17 @@ pub struct LotechEmsCfg {
 
 impl Default for LotechEmsCfg {
     fn default() -> Self {
-        Self {
-            port: 0x260,
-            frame: 0xE000,
-            size_kib: 2048,
-        }
+        crate::descriptors::EMS_DEFAULT
     }
 }
 
 impl LotechEmsCfg {
     /// Whether the jumper positions and SRAM population exist on the board.
     pub fn is_valid(self) -> bool {
-        devices::LotechEms::valid_configuration(self.port, self.frame, self.size_kib)
+        self.invalid_field().is_none()
     }
 
-    /// First invalid hardware field, using the device constructor's validators.
+    /// First invalid hardware field, using the shared configuration domains.
     pub fn invalid_field(self) -> Option<&'static str> {
         if !devices::LotechEms::valid_port(self.port) {
             Some("port")
