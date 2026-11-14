@@ -36,6 +36,11 @@ use winit::{
 };
 
 mod host_audio;
+mod layers_dialog;
+#[cfg(test)]
+mod library_test_support;
+mod library_view;
+mod library_worker;
 mod logo;
 mod media_dialog;
 mod pacing;

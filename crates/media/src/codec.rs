@@ -134,6 +134,12 @@ impl Header {
             anchor_generation: read_u64(&bytes[56..64]),
         })
     }
+    /// Read a checksummed header for advisory displays without loading its base.
+    /// Execution and publication must still bind it to a verified base identity.
+    pub fn decode_unbound(bytes: &[u8]) -> Result<Self, Error> {
+        Self::decode_fields(bytes)
+    }
+
     fn decode_fields(bytes: &[u8]) -> Result<Self, Error> {
         if bytes.len() != HEADER_LEN {
             return Err(Error::HeaderLength);

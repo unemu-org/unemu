@@ -568,14 +568,22 @@ pub fn import_machine(
         .filter(|p| !p.exists())
         .collect::<Vec<_>>();
     if !missing.is_empty() {
-        return Err(invalid(format!(
-            "missing inputs:\n{}",
-            missing
+        let mut firmware = false;
+        let mut hardware = encode::machine(document);
+        firmware_images(&mut hardware, |field, rom| {
+            if let Some(image) = rom.get("image").and_then(toml::Value::as_str) {
+                firmware |= !source_path(origins, &format!("{field}.image"), image)?.exists();
+            }
+            Ok(())
+        })?;
+        return Err(Error::MissingInputs {
+            paths: missing
                 .iter()
                 .map(|p| p.display().to_string())
                 .collect::<Vec<_>>()
-                .join("\n")
-        )));
+                .join("\n"),
+            firmware,
+        });
     }
     let scratch = Scratch::new(store)?;
     let (stream, policies) = streaming_document(document, origins, &scratch)?;

@@ -46,3 +46,49 @@ fn generic_locks_and_discard_tombstones_survive_interruption() {
     assert!(!temp.0.join("workspaces/session/discard.toml").exists());
     assert!(temp.0.join("workspaces/session/workspace.lock").exists());
 }
+
+#[test]
+fn workspace_inspection_does_not_take_ownership_or_accept_escaping_names() {
+    let temp = Temp(std::env::temp_dir().join(format!(
+        "store-workspace-inspection-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    )));
+    let store = image_store::Store::open(&temp.0).unwrap();
+    let owner = store.workspace("gaming").unwrap();
+    assert_eq!(store.workspace_path("gaming").unwrap(), owner.path());
+    assert!(store.open_workspace("gaming").is_err());
+    assert!(store.workspace_path("../escape").is_err());
+    assert!(store.workspace_path("/absolute").is_err());
+    assert!(store.workspace_path("missing").is_ok());
+    assert!(!temp.0.join("workspaces/missing").exists());
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(
+            temp.0.join("workspaces/gaming"),
+            temp.0.join("workspaces/alias"),
+        )
+        .unwrap();
+        assert!(store.workspace_path("alias").is_err());
+    }
+}
+
+#[test]
+fn complete_discard_removes_directory_and_lock_then_allows_a_new_owner() {
+    let temp = Temp(std::env::temp_dir().join(format!(
+        "store-complete-discard-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    )));
+    let store = image_store::Store::open(&temp.0).unwrap();
+    let owner = store.workspace("disposable").unwrap();
+    owner.write("desktop.toml", b"schema=1\n").unwrap();
+    assert_eq!(store.list_desktop_workspaces().unwrap(), ["disposable"]);
+    assert!(store.workspace("disposable").is_err());
+    owner.discard_and_remove().unwrap();
+    assert!(!store.workspace_path("disposable").unwrap().exists());
+    assert!(store.list_desktop_workspaces().unwrap().is_empty());
+    let replacement = store.workspace("disposable").unwrap();
+    assert!(store.workspace("disposable").is_err());
+    replacement.discard_and_remove().unwrap();
+}

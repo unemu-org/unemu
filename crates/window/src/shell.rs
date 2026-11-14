@@ -267,6 +267,10 @@ pub(super) fn run(args: Args, autostart: bool) -> Result<(), Box<dyn Error>> {
 struct Shell {
     args: Args,
     library: Vec<LibraryEntry>,
+    image_library: crate::library_view::LibraryView,
+    retain_workspace_on_stop: bool,
+    exit_requested: bool,
+    store_path_input: String,
     selected: Option<usize>,
     presenter: Option<Presenter>,
     paused: bool,
@@ -329,6 +333,71 @@ struct ReadinessJob {
 }
 
 impl Shell {
+    fn poll_images(&mut self, ctx: &egui::Context) {
+        self.image_library.poll(ctx);
+        if let Some(message) = self.image_library.status.take() {
+            self.message = message;
+        }
+        if let Some(error) = self.image_library.error.take() {
+            let firmware = std::mem::take(&mut self.image_library.firmware_error);
+            self.show_error(error.clone());
+            if firmware {
+                self.dialog = Some(("Missing firmware", error));
+            }
+        }
+        if let Some(transfer) = self.image_library.launched.take() {
+            self.selected = None;
+            let prepared = match transfer.restore() {
+                Ok(prepared) => prepared,
+                Err(e) => {
+                    self.image_library.finish_with_failure(false, true);
+                    self.show_error(e.to_string());
+                    return;
+                }
+            };
+            let display = prepared.machine.devices.iter().find_map(|d| match d.kind {
+                assembly::DeviceKind::Mda(_) => Some(assembly::DeviceId::Mda),
+                assembly::DeviceKind::Vga(_) => Some(assembly::DeviceId::Vga),
+                _ => None,
+            });
+            let result = display
+                .ok_or_else(|| "Machine has no display card".to_string())
+                .and_then(|display| {
+                    let assembled = assembly::assemble_with_verified_bases(
+                        &prepared.machine,
+                        &assembly::ObservationPolicy {
+                            routes: vec![assembly::ObservationRequest {
+                                device: display,
+                                output: assembly::OutputKind::TextScanout,
+                                byte_limit: 0,
+                            }],
+                            ..Default::default()
+                        },
+                        self.args.options,
+                        &prepared.bases,
+                    )
+                    .map_err(|e| e.to_string())?;
+                    Presenter::from_assembled(
+                        &prepared.machine,
+                        assembled,
+                        display,
+                        &mut io::stderr(),
+                    )
+                    .map_err(|e| e.to_string())
+                });
+            match result {
+                Ok(mut presenter) => {
+                    presenter.audio.open(&mut io::stderr());
+                    self.started(presenter);
+                }
+                Err(e) => {
+                    self.image_library.finish_with_failure(false, true);
+                    self.show_error(e);
+                }
+            }
+        }
+    }
+
     fn open_settings(&mut self) {
         self.release();
         if let Some(index) = self.selected {
@@ -391,6 +460,7 @@ impl Shell {
             || self.insert_dialog.is_some()
             || self.blank_disk.is_some()
             || self.settings.is_some()
+            || self.image_library.has_dialog()
     }
 
     fn confirm_insert(&mut self) {
@@ -690,6 +760,15 @@ impl Shell {
         Self {
             args,
             library,
+            image_library: crate::library_view::LibraryView::new(
+                preferences
+                    .store_root
+                    .clone()
+                    .or_else(|| crate::library_view::default_store_path().ok()),
+            ),
+            retain_workspace_on_stop: false,
+            exit_requested: false,
+            store_path_input: String::new(),
             selected,
             presenter: None,
             paused: false,
@@ -754,11 +833,34 @@ impl Shell {
         }
     }
 
+    fn command_allowed(&self, command: Command) -> bool {
+        self.enablement().allows(command)
+            && match command {
+                Command::GamingMode => self.image_library.selected.is_some(),
+                Command::ImportImage => {
+                    self.presenter.is_none() && self.selected.is_some() && !self.image_library.busy
+                }
+                Command::DeleteTag => {
+                    self.presenter.is_none()
+                        && self.image_library.selected.is_some()
+                        && !self.image_library.busy
+                }
+                Command::Settings => self.image_library.selected.is_none(),
+                _ => true,
+            }
+    }
+
     fn enablement(&self) -> Enablement {
         let entry = self.selected.and_then(|index| self.library.get(index));
         Enablement {
             state: self.state(),
-            ready: entry.is_some_and(|entry| entry.checked && entry.warning.is_none()),
+            ready: if self.image_library.selected.is_some() {
+                !self.image_library.busy
+                    && (self.image_library.ready() || self.image_library.readiness.is_none())
+            } else {
+                !self.image_library.busy
+                    && entry.is_some_and(|entry| entry.checked && entry.warning.is_none())
+            },
             floppy: self
                 .presenter
                 .as_ref()
@@ -848,6 +950,13 @@ impl Shell {
     }
 
     fn start(&mut self) {
+        if self.image_library.selected.is_some() {
+            if self.presenter.is_none() {
+                self.image_library
+                    .launch(crate::library_worker::WorkspaceKind::Regular);
+            }
+            return;
+        }
         if self.presenter.is_some() {
             return;
         }
@@ -1163,6 +1272,11 @@ impl Shell {
             }
             presenter.write_reset_summary(&mut io::stderr());
         }
+        let retain_workspace = std::mem::take(&mut self.retain_workspace_on_stop);
+        if had_session {
+            self.image_library
+                .finish_with_failure(retain_workspace, failure.is_some());
+        }
         self.texture = None;
         self.paused = false;
         self.modal_paused = false;
@@ -1183,8 +1297,39 @@ impl Shell {
         }
     }
 
+    fn stop_for_image_action(&mut self, action: &crate::library_view::Request) -> bool {
+        use crate::library_view::Request;
+        let target = match action {
+            Request::Publish(_, name, _, _) | Request::Discard(name) => name,
+            _ => return true,
+        };
+        let matches = self
+            .image_library
+            .active
+            .as_ref()
+            .is_none_or(|(_, name, _)| name == target);
+        self.retain_workspace_on_stop = matches && self.presenter.is_some();
+        let stopped = self.stop();
+        if !stopped || !matches {
+            self.image_library.cancel_operation();
+            return false;
+        }
+        true
+    }
+
+    fn request_exit(&mut self, ctx: &egui::Context) {
+        self.exit_requested = true;
+        self.stop();
+        if self.image_library.needs_decision() {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+        } else {
+            self.image_library.shutdown();
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        }
+    }
+
     fn command(&mut self, command: Command, ctx: &egui::Context) {
-        if !self.enablement().allows(command) {
+        if !self.command_allowed(command) {
             return;
         }
         let elapsed = self.elapsed();
@@ -1193,9 +1338,25 @@ impl Shell {
             Speed(speed) => if let Some(presenter) = &mut self.presenter { presenter.select_speed(speed, elapsed); },
             FastForward => if let Some(presenter) = &mut self.presenter { presenter.hold_fast_forward(true, elapsed); },
             Start => self.start(),
+            GamingMode => { if self.image_library.selected.is_some() { self.image_library.launch(crate::library_worker::WorkspaceKind::Disposable); } },
+            Layers => { self.release(); self.image_library.open_layers();
+                if self.image_library.selected.is_none() {
+                    if let (Some(entry),Some(dialog))=(self.selected.and_then(|i|self.library.get(i)),&mut self.image_library.layers){dialog.set_machine_name(&entry.name);}
+                }
+            },
+            ImportImage => { self.release(); if let Some(entry) = self.selected.and_then(|i| self.library.get(i)) { self.image_library.begin_import(&entry.path); } },
+            DeleteTag => { self.release(); self.image_library.begin_delete(); },
+            StoreFolder => { self.release(); self.store_path_input = self.image_library.root.as_ref().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default(); self.dialog = Some(("Image store folder", "Local store directory".into())); },
             Pause => { self.release_pointer(); if let Some(presenter) = &mut self.presenter { presenter.pacing.resync(elapsed, presenter.assembled.machine.clock().0); } self.paused = !self.paused; self.message = if self.paused { "Paused" } else { "Running" }.into(); },
             Stop | Library => { self.stop(); },
-            PowerCycle => { if self.stop() { self.start(); } },
+            PowerCycle => {
+                let image_session = self.image_library.active.clone();
+                self.retain_workspace_on_stop = image_session.is_some();
+                if self.stop() {
+                    if let Some((row, name, kind)) = image_session { self.image_library.resume(row, name, kind); }
+                    else { self.start(); }
+                }
+            },
             Reset => { self.guest_held.clear(); if let Some(presenter) = &mut self.presenter {
                 presenter.keyboard.ctrl_alt_del();
             } },
@@ -1215,7 +1376,7 @@ impl Shell {
             Release => self.release_pointer(),
             Fullscreen => { self.fullscreen = !self.fullscreen; ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(self.fullscreen)); },
             Minimize => { self.release(); ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true)); },
-            Exit => { self.stop(); ctx.send_viewport_cmd(egui::ViewportCommand::Close); },
+            Exit => self.request_exit(ctx),
             Shortcuts => self.dialog = Some(("Keyboard shortcuts", shortcuts_help(self.macos_shortcuts))),
             About => self.dialog = Some(("About unemupc98", format!("unemupc98 {}\nIBM PC/AT emulator\nAGPL-3.0-or-later\nx86jit · egui / eframe · cpal\n\n{}\n\n{}", env!("CARGO_PKG_VERSION"), window::FONT_NOTICE, window::EGUI_FONT_NOTICE))),
             Placeholder(title) => self.dialog = Some((title, if title == "Open machine file" { "Open a machine description in the library." } else { "not yet available" }.into())),
@@ -1236,7 +1397,7 @@ impl Shell {
     ) {
         if ui
             .add_enabled(
-                self.enablement().allows(command),
+                self.command_allowed(command),
                 egui::Button::new(label)
                     .shortcut_text(shell_model::shortcut_text(shortcut, self.macos_shortcuts)),
             )
@@ -1258,7 +1419,7 @@ impl Shell {
                         "Ctrl+O",
                         Placeholder("Open machine file"),
                     ),
-                    ("Import image…", "", Placeholder("Import image")),
+                    ("Import image…", "", ImportImage),
                 ] {
                     self.item(ui, label, shortcut, command, commands);
                 }
@@ -1272,9 +1433,16 @@ impl Shell {
                     commands,
                 );
             });
+            ui.menu_button("Edit", |ui| {
+                ui.add_enabled_ui(
+                    self.image_library.selected.is_some() && self.presenter.is_none(),
+                    |ui| self.item(ui, "Delete tag…", "", DeleteTag, commands),
+                );
+            });
             ui.menu_button("Machine", |ui| {
                 for (label, shortcut, command) in [
                     ("Start", "Enter", Start),
+                    ("Gaming mode", "", GamingMode),
                     (
                         if self.paused { "Resume" } else { "Pause" },
                         "Ctrl+Alt+P",
@@ -1296,7 +1464,7 @@ impl Shell {
                 );
                 ui.separator();
                 self.item(ui, "Settings…", "Ctrl+,", Settings, commands);
-                self.item(ui, "Disk layers…", "", Placeholder("Disk layers"), commands);
+                self.item(ui, "Disk layers…", "", Layers, commands);
             });
             ui.menu_button("Media", |ui| {
                 for unit in 0..2 {
@@ -1386,7 +1554,7 @@ impl Shell {
                             .map_or("C: — machine stopped", |p| &p.fixed_disk),
                     ),
                 );
-                self.item(ui, "Disk layers…", "", Placeholder("Disk layers"), commands);
+                self.item(ui, "Disk layers…", "", Layers, commands);
                 ui.add_enabled(
                     false,
                     egui::Button::new("CD-ROM — unsupported (no controller)"),
@@ -1437,6 +1605,7 @@ impl Shell {
                 });
             });
             ui.menu_button("Tools", |ui| {
+                self.item(ui, "Image store folder…", "", StoreFolder, commands);
                 for title in [
                     "Media catalogue",
                     "Locate firmware",
@@ -1468,9 +1637,15 @@ impl Shell {
         if self.presenter.is_some() {
             format!(
                 "{} — unemupc98",
-                self.selected
-                    .and_then(|index| self.library.get(index))
-                    .map_or("Machine", |entry| entry.name.as_str())
+                self.image_library
+                    .active
+                    .as_ref()
+                    .map(|(row, _, _)| row.name())
+                    .or_else(|| self
+                        .selected
+                        .and_then(|index| self.library.get(index))
+                        .map(|entry| entry.name.as_str()))
+                    .unwrap_or("Machine")
             )
         } else {
             "unemupc98".into()
@@ -1511,167 +1686,18 @@ impl Shell {
     }
 
     fn welcome(&mut self, ui: &mut egui::Ui, commands: &mut Vec<Command>) {
-        egui::Panel::left("welcome-side")
-            .exact_size(222.0)
-            .resizable(false)
-            .frame(
-                egui::Frame::new()
-                    .fill(Color32::from_rgb(28, 60, 116))
-                    .inner_margin(18.0),
-            )
-            .show(ui, |ui| {
-                ui.style_mut().visuals.override_text_color = Some(Color32::WHITE);
-                ui.add_space(10.0);
-                if let Some(logo) = &mut self.logo {
-                    ui.vertical_centered(|ui| {
-                        logo.welcome(
-                            ui,
-                            self.preferences.reduced_motion,
-                            !self.hidden && !self.minimized,
-                        )
-                    });
-                }
-                ui.add_space(10.0);
-                ui.heading("Welcome to\nunemupc98");
-                ui.add_space(14.0);
-                ui.label("Pick a machine to start it, or set up a new one.");
-                ui.add_space(12.0);
-                for (label, command) in [
-                    ("New machine…", Command::Placeholder("New machine")),
-                    (
-                        "Open machine file…",
-                        Command::Placeholder("Open machine file"),
-                    ),
-                    ("Import image…", Command::Placeholder("Import image")),
-                    ("Keyboard shortcuts", Command::Shortcuts),
-                ] {
-                    if ui
-                        .add_sized([186.0, 28.0], egui::Button::new(label))
-                        .clicked()
-                    {
-                        commands.push(command);
-                    }
-                }
-            });
-        egui::CentralPanel::default().show(ui, |ui| {
-            ui.add_space(8.0);
-            ui.columns(2, |columns| {
-                columns[0].heading("Machines");
-                egui::ScrollArea::both()
-                    .id_salt("machines")
-                    .show(&mut columns[0], |ui| {
-                        egui::Grid::new("library").striped(true).show(ui, |ui| {
-                            ui.strong("Name");
-                            ui.strong("File");
-                            ui.strong("Last run");
-                            ui.end_row();
-                            for (index, entry) in self.library.iter().enumerate() {
-                                let label = format!(
-                                    "{}{}",
-                                    if entry.has_problem() { "[!] " } else { "" },
-                                    if entry.checked {
-                                        entry.name.clone()
-                                    } else {
-                                        format!("{} · checking firmware…", entry.name)
-                                    }
-                                );
-                                let response =
-                                    ui.selectable_label(self.selected == Some(index), label);
-                                if response.clicked() || response.double_clicked() {
-                                    if self.selected != Some(index) {
-                                        self.library_revision =
-                                            self.library_revision.wrapping_add(1);
-                                        self.start_request = None;
-                                        if self.message == "Loading machine…" {
-                                            self.message = "Ready".into();
-                                        }
-                                    }
-                                    self.selected = Some(index);
-                                }
-                                if response.double_clicked() {
-                                    commands.push(Command::Start);
-                                }
-                                ui.label(
-                                    entry.path.file_name().unwrap_or_default().to_string_lossy(),
-                                );
-                                ui.label("");
-                                ui.end_row();
-                            }
-                        });
-                    });
-                columns[1].heading("Details");
-                egui::ScrollArea::vertical()
-                    .id_salt("details")
-                    .show(&mut columns[1], |ui| {
-                        if let Some(entry) = self.selected.and_then(|index| self.library.get(index))
-                        {
-                            ui.strong(&entry.name);
-                            ui.add_space(8.0);
-                            egui::Grid::new("machine-details").show(ui, |ui| {
-                                for (name, value) in &entry.details {
-                                    ui.label(name);
-                                    ui.label(value);
-                                    ui.end_row();
-                                }
-                            });
-                            ui.label(&entry.ems);
-                            if let Some(warning) = &entry.warning {
-                                ui.add_space(8.0);
-                                ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
-                                    ui.add(
-                                        egui::Label::new(
-                                            egui::RichText::new(warning.replace('/', "/\u{200b}"))
-                                                .color(if ui.visuals().dark_mode {
-                                                    Color32::LIGHT_YELLOW
-                                                } else {
-                                                    Color32::from_rgb(138, 83, 0)
-                                                }),
-                                        )
-                                        .wrap(),
-                                    );
-                                    if entry.has_problem() {
-                                        ui.add(egui::Label::new(entry.hint()).wrap());
-                                    }
-                                });
-                                if entry.hint().contains("Create blank disk")
-                                    && ui.button("Create blank disk…").clicked()
-                                {
-                                    commands.push(Command::CreateBlank);
-                                }
-                            }
-                            if !self.discovery_warnings.is_empty() {
-                                ui.label(format!(
-                                    "{} skipped firmware entries",
-                                    self.discovery_warnings.len()
-                                ));
-                                for warning in self.discovery_warnings.iter().take(3) {
-                                    ui.add(egui::Label::new(warning).wrap());
-                                }
-                            }
-                            ui.add_space(10.0);
-                            ui.horizontal(|ui| {
-                                if ui
-                                    .add_enabled(
-                                        self.enablement().allows(Command::Start),
-                                        egui::Button::new("Start"),
-                                    )
-                                    .clicked()
-                                {
-                                    commands.push(Command::Start);
-                                }
-                                if ui.button("Settings…").clicked() {
-                                    commands.push(Command::Settings);
-                                }
-                                if ui.button("Layers…").clicked() {
-                                    commands.push(Command::Placeholder("Disk layers"));
-                                }
-                            });
-                        } else {
-                            ui.label("No machine files found in machines/ or machines/local/.");
-                        }
-                    });
-            });
-        });
+        commands.extend(self.image_library.show(
+            ui,
+            &self.library,
+            &mut self.selected,
+            self.logo.as_mut().map(|logo| {
+                (
+                    logo,
+                    self.preferences.reduced_motion,
+                    !self.hidden && !self.minimized,
+                )
+            }),
+        ));
     }
 
     fn display(&mut self, ui: &mut egui::Ui) {
@@ -2077,6 +2103,7 @@ impl Drop for Shell {
         if let Some(job) = &self.readiness {
             job.control.cancel();
         }
+        self.image_library.shutdown();
     }
 }
 
@@ -2162,6 +2189,7 @@ fn firmware_progress(
 
 impl eframe::App for Shell {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.poll_images(ctx);
         self.poll_readiness(ctx);
         self.visibility(
             ctx,
@@ -2209,14 +2237,10 @@ impl eframe::App for Shell {
                             crate::shell_icons::Icon::Settings,
                             Command::Settings,
                         ),
-                        (
-                            "Layers",
-                            crate::shell_icons::Icon::Layers,
-                            Command::Placeholder("Disk layers"),
-                        ),
+                        ("Layers", crate::shell_icons::Icon::Layers, Command::Layers),
                     ] {
                         let response = ui
-                            .add_enabled_ui(self.enablement().allows(command), |ui| {
+                            .add_enabled_ui(self.command_allowed(command), |ui| {
                                 crate::shell_icons::button(ui, label, icon)
                             })
                             .inner;
@@ -2385,6 +2409,41 @@ impl eframe::App for Shell {
                     if ui.button("Cancel").clicked() {
                         close_dialog = true;
                     }
+                } else if *title == "Missing firmware" {
+                    if ui.button("Locate firmware…").clicked() {
+                        commands.push(Command::FirmwareFolders);
+                    }
+                    if ui.button("OK").clicked() {
+                        close_dialog = true;
+                    }
+                } else if *title == "Image store folder" {
+                    ui.text_edit_singleline(&mut self.store_path_input);
+                    if ui
+                        .add_enabled(
+                            self.presenter.is_none() && !self.image_library.busy,
+                            egui::Button::new("Save"),
+                        )
+                        .clicked()
+                    {
+                        let path = std::path::PathBuf::from(self.store_path_input.trim());
+                        if path.is_absolute() {
+                            self.preferences.store_root = Some(path.clone());
+                            if let Some(config) = &self.preferences_path {
+                                if let Err(e) = self.preferences.save(config) {
+                                    self.message = e.to_string();
+                                } else {
+                                    self.image_library =
+                                        crate::library_view::LibraryView::new(Some(path));
+                                    close_dialog = true;
+                                }
+                            }
+                        } else {
+                            self.message = "Store folder must be an absolute local path".into();
+                        }
+                    }
+                    if ui.button("Cancel").clicked() {
+                        close_dialog = true;
+                    }
                 } else if ui.button("OK").clicked() {
                     close_dialog = true;
                 }
@@ -2392,6 +2451,34 @@ impl eframe::App for Shell {
         }
         self.media_modals(&ctx);
         self.settings_modal(&ctx);
+        let path = self
+            .selected
+            .and_then(|i| self.library.get(i))
+            .map(|e| e.path.clone());
+        let roots = self
+            .preferences
+            .roots(&self.args.rom_dirs, &self.default_firmware_roots)
+            .into_iter()
+            .map(|r| r.path)
+            .collect();
+        let image_actions = self.image_library.modals(
+            &ctx,
+            path.as_deref(),
+            roots,
+            self.classic,
+            self.presenter.is_some(),
+        );
+        for action in image_actions {
+            if matches!(
+                action,
+                crate::library_view::Request::Publish(_, _, _, _)
+                    | crate::library_view::Request::Discard(_)
+            ) && !self.stop_for_image_action(&action)
+            {
+                continue;
+            }
+            self.image_library.send(action);
+        }
         if open_machine {
             self.open_machine();
         }
@@ -2442,12 +2529,20 @@ impl eframe::App for Shell {
         }
         self.cursor(&ctx);
         if ctx.input(|input| input.viewport().close_requested()) {
-            self.stop();
+            self.request_exit(&ctx);
+        } else if self.exit_requested
+            && !self.image_library.needs_decision()
+            && !self.image_library.busy
+            && !self.has_dialog()
+        {
+            self.image_library.shutdown();
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
     }
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
         self.stop();
+        self.image_library.shutdown();
     }
 }
 
@@ -2600,6 +2695,10 @@ mod tests {
         Shell {
             args: crate::parse_args([]).unwrap(),
             library: Vec::new(),
+            image_library: crate::library_view::LibraryView::new(None),
+            retain_workspace_on_stop: false,
+            exit_requested: false,
+            store_path_input: String::new(),
             selected: None,
             presenter: Some(presenter),
             paused: false,
@@ -5017,5 +5116,67 @@ kind='mda'
             shell.preferences
         );
         assert!(!temp.path().join("absent.bin").exists());
+    }
+    #[test]
+    fn stopped_layer_review_cannot_preserve_a_later_disposable_session() {
+        use crate::library_test_support::Fixture;
+        let f = Fixture::new();
+        let ctx = egui::Context::default();
+        let mut shell = shell();
+        shell.stop();
+        shell.args.options.allow_unlisted_firmware = true;
+        shell.image_library =
+            crate::library_view::LibraryView::synthetic(f.store.root().to_owned());
+        shell.image_library.selected = Some(f.row.clone());
+        shell.poll_images(&ctx);
+        shell.command(Command::GamingMode, &ctx);
+        for _ in 0..2000 {
+            shell.poll_images(&ctx);
+            if shell.presenter.is_some() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(shell.presenter.is_some(), "{:?}", shell.dialog);
+        let name = shell.image_library.active.as_ref().unwrap().1.clone();
+        let action = crate::library_view::Request::Discard("earlier-workspace".into());
+        assert!(!shell.stop_for_image_action(&action));
+        assert!(shell.presenter.is_none());
+        assert!(shell.image_library.needs_decision());
+        shell.image_library.shutdown();
+        assert!(f
+            .store
+            .workspace_path(&name)
+            .unwrap()
+            .join("desktop.toml")
+            .exists());
+    }
+    #[test]
+    fn unchecked_image_start_command_checks_then_launches_and_blockers_disable_start() {
+        use crate::library_test_support::Fixture;
+        let f = Fixture::new();
+        let ctx = egui::Context::default();
+        let mut shell = shell();
+        shell.stop();
+        shell.args.options.allow_unlisted_firmware = true;
+        shell.image_library =
+            crate::library_view::LibraryView::synthetic(f.store.root().to_owned());
+        shell.image_library.selected = Some(f.row.clone());
+        assert!(shell.image_library.readiness.is_none());
+        assert!(shell.command_allowed(Command::Start));
+        shell.command(Command::Start, &ctx);
+        for _ in 0..2000 {
+            shell.poll_images(&ctx);
+            if shell.presenter.is_some() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(shell.presenter.is_some(), "{:?}", shell.dialog);
+        shell.stop();
+        shell.image_library.shutdown();
+        shell.image_library.readiness = Some(Err("Missing disk blob".into()));
+        shell.image_library.busy = false;
+        assert!(!shell.command_allowed(Command::Start));
     }
 }

@@ -10,8 +10,10 @@ The installation-media library collection, Import dialog and transfer-medium gen
 are implemented in `crates/image-store`; PC machine-file import and bundle
 resolution (`upc-5pw.7`), immutable disk layers, isolated workspaces and offline
 publication (`upc-5pw.8`) are implemented in `crates/media`, `crates/image-store`
-and `crates/pc-image`, with opt-in CLI commands. Registry transport, image-store GUI integration and provider launch compilation
-remain separate; the corresponding sections describe those later contracts.
+and `crates/pc-image`, with opt-in CLI commands. The desktop library, pinned launch,
+regular/disposable workspaces with explicit keep/discard and startup recovery, and
+Disk layers publication are implemented in `crates/window`. Registry transport and
+provider launch compilation remain separate; those sections describe later contracts.
 
 ## 1. Scope and existing contracts
 
@@ -1501,8 +1503,9 @@ import records the chosen generation separately for every disk/catalogue/CMOS.
 Copy the resulting bases and any verified converted layers into the OCI store;
 the image must run without the original journals, bases or firmware folders.
 
-Implementation status: local store, PC import, disk layers, workspaces and offline
-publication are implemented; registry transport and daemon remain unimplemented.
+Implementation status: local store, PC import, disk layers, workspaces, offline
+publication and the desktop image library/layers dialog are implemented; registry
+transport and daemon remain unimplemented.
 Signatures, chunk-level dedup, encryption, qcow2 compatibility,
 OCI referrers, floppy sector layers,
 sibling-layer merge, deterministic install recipes, live multi-disk transactions,

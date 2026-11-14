@@ -31,6 +31,7 @@ pub trait SectorSource {
 #[derive(Clone)]
 pub struct VerifiedBase {
     source: Rc<dyn SectorSource>,
+    file: Option<Rc<File>>,
     identity: Header,
     metadata: Option<Metadata>,
 }
@@ -64,13 +65,15 @@ impl VerifiedBase {
             anchor_generation: 0,
         };
         identity.encode().map_err(io::Error::other)?;
+        let file = Rc::new(file);
         let source = FileSource {
-            file,
+            file: file.clone(),
             metadata: metadata.clone(),
         };
         source.check_unchanged()?;
         Ok(Self {
             source: Rc::new(source),
+            file: Some(file),
             identity,
             metadata: Some(metadata),
         })
@@ -87,13 +90,15 @@ impl VerifiedBase {
             return Err(io::Error::other("verified base length mismatch"));
         }
         identity.encode().map_err(io::Error::other)?;
+        let file = Rc::new(file);
         let source = FileSource {
-            file,
+            file: file.clone(),
             metadata: metadata.clone(),
         };
         source.check_unchanged()?;
         Ok(Self {
             source: Rc::new(source),
+            file: Some(file),
             identity,
             metadata: Some(metadata),
         })
@@ -113,8 +118,18 @@ impl VerifiedBase {
                 anchor_generation: 0,
             },
             source: Rc::new(MemorySource(bytes.to_vec())),
+            file: None,
             metadata: None,
         }
+    }
+
+    /// Duplicate the verified descriptor, never a replacement at its old path.
+    pub fn try_clone_verified_file(&self) -> io::Result<File> {
+        self.check_unchanged()?;
+        self.file
+            .as_ref()
+            .ok_or_else(|| io::Error::other("base is not file-backed"))?
+            .try_clone()
     }
 
     pub fn identity(&self) -> &Header {
@@ -141,7 +156,7 @@ impl SectorSource for VerifiedBase {
 }
 
 struct FileSource {
-    file: File,
+    file: Rc<File>,
     metadata: Metadata,
 }
 impl SectorSource for FileSource {
@@ -415,6 +430,7 @@ mod read_failure_tests {
     fn base_read_failure_during_anchor_validation_is_never_a_repairable_tail() {
         let base = VerifiedBase {
             source: Rc::new(FailedRead),
+            file: None,
             identity: Header::new(&[0; 512], 0).unwrap(),
             metadata: None,
         };

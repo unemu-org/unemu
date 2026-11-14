@@ -29,7 +29,7 @@ crate: `machine-file` reads and hashes declared images into inline buffers,
 | `video` | `FrameSink`, text frames/grids, text-mode renderer and capture sink | `device` | None |
 | `assembly` | `MachineConfig`, validation, presets, image/device construction, wiring, and `RunPolicy` driver | `machine`, `cpu`, `bus`, `device`, `devices`, `video`, `chipset`, `media`, `sha2`, `thiserror` | `media/test-support` |
 | `machine-file` | Schema 1 TOML/YAML parsing, source origins, image hashing and lowering through assembly validation; merging remains deferred ([schema](design/machine-files.md#schema-field-by-field)) | `assembly`, `serde`, `sha2`, `toml`, `serde-saphyr`, `thiserror` | None |
-| `window` | CP437 rasteriser, shared `FrameSink`, and egui desktop shell | `video`, `device`, `assembly`, `machine`, `winit`, `egui`, `eframe`, `image-store`, `pc-image` | `cpu`, `assembly/test-support`, `image-store/test-support`, `media/test-support` |
+| `window` | CP437 rasteriser, shared `FrameSink`, and egui desktop shell | `video`, `device`, `assembly`, `machine`, `winit`, `egui`, `eframe`, `image-store`, `pc-image` | `cpu`, `assembly/test-support`, `image-store/test-support`, `media/test-support`, `pc-image/test-support` |
 | `testkit` | Single-device `MockBus`, scripted `MockCpu`, golden assertions | `device`, `cpu` | None |
 | `cli` | Binary and runner library: guest programs, assembly/policy selection, output capture and stop diagnostics | `assembly`, `device`, `bus`, `cpu`, `chipset`, `machine`, `devices`, `video`, `anyhow`, `pc-image`, `image-store` | `testkit`, `machine/reference-scheduler`, `assembly/reference-scheduler`, `assembly/test-support` |
 
@@ -94,7 +94,7 @@ files are reused. Locality checks and a lock probe reject unsupported roots;
 Linux currently accepts ext-family, tmpfs, Btrfs, XFS, ZFS, F2FS and overlayfs;
 opening also probes no-clobber publication. macOS uses
 the filesystem's local flag, and other hosts are refused. This crate does not
-implement PC machine-file import, disk reconstruction, workspaces,
+implement PC machine-file import, disk reconstruction,
 registry transfer, quarantine/damage tracking or GC. Future GC must take the
 exclusive store lease before deleting any objects.
 
@@ -392,9 +392,47 @@ pixel conversion. Discovery includes TOML/YAML files directly in `machines/`
 and `machines/local/`, with stable ordering and blank last-run metadata. The
 existing machine-file loader and read-only checker supply hardware details and
 readiness; missing firmware or invalid media disables Start and exposes the
-validator diagnostic. Open accepts a machine-file path. New/settings/media
-insertion/import/layer/catalogue dialogs remain placeholders; Locate firmware
-and Preferences edit a shared ROM-folder list. Save state and CD-ROM are disabled. The Insert dialog reads media sets through the image-store summary and PC format provider.
+validator diagnostic. Open accepts a machine-file path. The Settings sheet edits
+machine files; Locate firmware and Preferences share a ROM-folder list. Save
+state, new-machine creation and CD-ROM remain disabled or placeholders.
+The Insert dialog reads media sets through the image-store summary and PC
+format provider.
+
+`src/library_view.rs` owns the Explorer tree, summary queries, repository/tag
+groups, fixed-column list and selected-image details. It builds widgets only for
+visible rows. `src/library_worker.rs` owns host jobs, session kinds and durable
+recovery records. One host worker owns the store and summary cache, sends bounded
+snapshot messages, rebuilds at most eight pending summaries per batch, and
+performs image readiness checks, imports, overlay edits and tag deletion.
+Warm startup opens only index/library/cache files; query and sort do not read
+manifests. Full descriptor verification and disk hashing remain mandatory at
+Start. Platform data-directory selection and the optional `store_root` preference
+use the shared `image_store::location` policy and the unemu family data root.
+
+Image launches use `pc_image::workspace::prepare_pinned`, so a moved tag cannot
+change the selected image. The worker holds workspace ownership through guest
+execution and persistence finish. `SessionTransfer` carries verified open files
+across threads; execution-local sector readers are reconstructed without another
+payload read. Start reuses regular workspaces. Gaming mode creates isolated
+disposable workspaces, including catalogue media and CMOS. Durable desktop records
+precede preparation; stop/exit offers Keep as new image or Discard. Successful
+publication removes a disposable workspace. Failures and deferred/forced exits
+retain it for the startup recovery list. Worker shutdown drains notifications and
+waits a bounded interval for queued finish operations. Declared read-only/volatile
+policies remain intact.
+Workspace discovery follows the pinned identity after publication rebases a
+workspace. Only local last-run metadata uses a host timestamp.
+
+`src/layers_dialog.rs` owns tag entry and affected-media confirmation.
+`pc_image::desktop` supplies cancellable descriptor-only readiness and base-to-head
+chains without hashing or materializing disks. Pending checks coalesce and yield
+to queries, edits and launches. The summary cache supplies distinct/shared storage
+without reading other manifests. The dialog shows stored/exclusive/shared
+bytes, firmware, catalogues and working-sector counts. Save/New/Discard first
+stop and finish the presenter, then queue the existing offline publication or
+discard operation. New images optionally flatten disk chains. Deleting a tag
+uses digest compare-and-swap and never removes blobs. Machine-file rows explain
+that layers require an imported image.
 
 `assembly::firmware_discovery` is a host-only API taking explicit search roots.
 It locates single ROMs or interleaved chips by full-file SHA-256 and optional

@@ -9,7 +9,8 @@ use std::{
 };
 
 /// Ownership spans guest execution, journal finish and offline publication.
-/// Locks are never unlinked, including after discard, to avoid inode races.
+/// Standard discard retains its lock. Complete removal serializes acquisition
+/// through the store namespace lock so it cannot race a replacement owner.
 pub struct Workspace<'a> {
     store: &'a Store,
     path: PathBuf,
@@ -28,12 +29,34 @@ fn valid_name(name: &str) -> bool {
             .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b"._-".contains(&b))
 }
 impl Store {
+    /// Locate a workspace without taking its writer lock, for read-only desktop
+    /// inspection while the emulator owns it. Symlinks cannot escape the store.
+    pub fn workspace_path(&self, name: &str) -> Result<PathBuf> {
+        if !valid_name(name) {
+            return Err(invalid("invalid workspace name"));
+        }
+        let parent = self.root().join("workspaces");
+        let path = parent.join(name);
+        for part in [&parent, &path] {
+            match fs::symlink_metadata(part) {
+                Ok(metadata) if metadata.file_type().is_symlink() => {
+                    return Err(invalid("workspace cannot be a symlink"))
+                }
+                Ok(_) => (),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => (),
+                Err(e) => return Err(e.into()),
+            }
+        }
+        Ok(path)
+    }
+
     /// Obtain one owner, rejecting concurrent owners even within this process.
     pub fn workspace(&self, name: &str) -> Result<Workspace<'_>> {
         if !valid_name(name) {
             return Err(invalid("invalid workspace name"));
         }
         let lease = self.lease()?;
+        let _namespace = host::exclusive_lock(&self.root().join("locks/workspaces.lock"))?;
         let parent = self.root().join("workspaces");
         fs::create_dir_all(&parent)?;
         host::sync_dir(self.root())?;
@@ -62,6 +85,7 @@ impl Store {
             return Err(invalid("invalid workspace name"));
         }
         let lease = self.lease()?;
+        let _namespace = host::exclusive_lock(&self.root().join("locks/workspaces.lock"))?;
         let path = self.root().join("workspaces").join(name);
         if !fs::symlink_metadata(&path)?.is_dir() {
             return Err(invalid("workspace does not exist"));
@@ -85,6 +109,25 @@ impl Store {
             return Err(invalid("workspace does not exist"));
         }
         Ok(owner)
+    }
+    /// Desktop recovery includes marked preparations that have no session yet.
+    pub fn list_desktop_workspaces(&self) -> Result<Vec<String>> {
+        let _lease = self.lease()?;
+        let parent = self.root().join("workspaces");
+        let entries = match fs::read_dir(parent) {
+            Ok(entries) => entries,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(e) => return Err(e.into()),
+        };
+        let mut names = Vec::new();
+        for entry in entries {
+            let entry = entry?;
+            if entry.file_type()?.is_dir() && entry.path().join("desktop.toml").is_file() {
+                names.push(entry.file_name().to_string_lossy().into_owned());
+            }
+        }
+        names.sort();
+        Ok(names)
     }
     pub fn list_workspaces(&self) -> Result<Vec<String>> {
         let _lease = self.lease()?;
@@ -141,6 +184,23 @@ impl Workspace<'_> {
     }
     /// Discard affects only the selected workspace. The stable lock survives.
     pub fn discard(self) -> Result<()> {
+        self.discard_contents()
+    }
+
+    /// Remove a discarded workspace under the same namespace lock used by
+    /// acquisition. A stale owner can never attach to an unlinked lock inode.
+    pub fn discard_and_remove(self) -> Result<()> {
+        let _namespace = host::exclusive_lock(&self.store.root().join("locks/workspaces.lock"))?;
+        self.discard_contents()?;
+        let parent = self
+            .path
+            .parent()
+            .ok_or_else(|| invalid("missing workspace parent"))?;
+        fs::remove_dir_all(&self.path)?;
+        host::sync_dir(parent)
+    }
+
+    fn discard_contents(&self) -> Result<()> {
         for name in ["session.toml", "transaction.toml", "discard.toml"] {
             if let Some(bytes) = self.read(name)? {
                 let table: toml::Table = std::str::from_utf8(&bytes)
@@ -175,6 +235,7 @@ impl Workspace<'_> {
         self.remove("transaction.toml")?;
         self.remove("session.toml")?;
         self.remove("discard.toml")?;
+        self.remove("desktop.toml")?;
         host::sync_dir(&self.path)
     }
     /// All local data affected by discard, independent of provider file names.
@@ -228,7 +289,10 @@ impl Workspace<'_> {
     }
 }
 fn document_name(name: &str) -> Result<()> {
-    if matches!(name, "session.toml" | "transaction.toml" | "discard.toml") {
+    if matches!(
+        name,
+        "session.toml" | "transaction.toml" | "discard.toml" | "desktop.toml"
+    ) {
         Ok(())
     } else {
         Err(invalid("unsupported workspace document"))

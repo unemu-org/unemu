@@ -81,6 +81,23 @@ fn graph(
     }
     Ok(Graph { root, layers, refs })
 }
+pub(crate) fn display_chain(
+    head: &Digest,
+    g: &Geometry,
+    descriptors: &[Descriptor],
+    blobs: &dyn BlobSource,
+) -> Result<Vec<(Digest, u64)>> {
+    let graph = graph(head, g, descriptors, blobs)?;
+    let mut members = vec![(graph.root.digest, graph.root.size)];
+    for (id, _, pack) in graph.layers.into_iter().rev() {
+        let descriptor = descriptors
+            .iter()
+            .find(|d| d.digest == id)
+            .ok_or_else(|| invalid("missing layer"))?;
+        members.push((id, descriptor.size + pack.size));
+    }
+    Ok(members)
+}
 pub(crate) fn references(
     head: &Digest,
     g: &Geometry,

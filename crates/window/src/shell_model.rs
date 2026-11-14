@@ -20,6 +20,11 @@ pub(crate) enum State {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Command {
     Start,
+    GamingMode,
+    Layers,
+    ImportImage,
+    DeleteTag,
+    StoreFolder,
     Pause,
     Stop,
     Reset,
@@ -55,7 +60,7 @@ pub(crate) struct Enablement {
 impl Enablement {
     pub fn allows(self, command: Command) -> bool {
         match command {
-            Command::Start => self.state == State::Stopped && self.ready,
+            Command::Start | Command::GamingMode => self.state == State::Stopped && self.ready,
             Command::Pause
             | Command::Stop
             | Command::Reset

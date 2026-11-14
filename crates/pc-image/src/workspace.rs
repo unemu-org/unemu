@@ -87,6 +87,24 @@ pub struct PreparedSession {
     pub image: Digest,
 }
 pub fn prepare_start(workspace: &Workspace<'_>, tag: &str, fresh: bool) -> Result<PreparedSession> {
+    prepare_selected(workspace, tag, fresh, None)
+}
+
+/// Start the exact descriptor selected by a desktop, even if its tag has moved.
+pub fn prepare_pinned(
+    workspace: &Workspace<'_>,
+    image: &Descriptor,
+    fresh: bool,
+) -> Result<PreparedSession> {
+    prepare_selected(workspace, "", fresh, Some(image))
+}
+
+fn prepare_selected(
+    workspace: &Workspace<'_>,
+    tag: &str,
+    fresh: bool,
+    selected: Option<&Descriptor>,
+) -> Result<PreparedSession> {
     if workspace.read("discard.toml")?.is_some() {
         return Err(invalid("discard pending; finish discarding this workspace"));
     }
@@ -113,7 +131,10 @@ pub fn prepare_start(workspace: &Workspace<'_>, tag: &str, fresh: bool) -> Resul
     let mut state = if existing {
         session(workspace)?
     } else {
-        let image = store.tag_descriptor(tag)?;
+        let image = match selected {
+            Some(image) => image.clone(),
+            None => store.tag_descriptor(tag)?,
+        };
         let retention = crate::ImportRecord::read(store, &image.digest)?
             .map(|r| {
                 r.generations
@@ -130,7 +151,11 @@ pub fn prepare_start(workspace: &Workspace<'_>, tag: &str, fresh: bool) -> Resul
         }
     };
     if existing {
-        match store.tag_descriptor(tag) {
+        let requested = match selected {
+            Some(image) => Ok(image.clone()),
+            None => store.tag_descriptor(tag),
+        };
+        match requested {
             Ok(requested) if requested.digest != state.image.digest => {
                 return Err(invalid(format!(
                     "workspace pins {}; requested tag points to {}",
@@ -302,7 +327,8 @@ pub fn publish_with_options(
             .iter()
             .find(|d| d.digest == m.head)
             .ok_or_else(|| invalid("missing medium head"))?;
-        let flatten_disk = flatten && old_head.media_type == mt::DISK_LAYER;
+        let flatten_disk =
+            flatten && matches!(old_head.media_type.as_str(), mt::DISK_BASE | mt::DISK_LAYER);
         let overlay = if m.policy == Policy::Journal {
             journal(workspace, &m.id, &disk.base)?
         } else {
@@ -627,4 +653,81 @@ fn save_retention(
             .as_bytes(),
     )?;
     Ok(())
+}
+
+/// Thread-transferable launch inputs keep verified file descriptors instead of
+/// the execution thread's reference-counted sector readers.
+pub struct SessionTransfer {
+    machine: assembly::MachineConfig,
+    image: Digest,
+    bases: std::collections::BTreeMap<std::path::PathBuf, (fs::File, media::Header, fs::Metadata)>,
+}
+impl PreparedSession {
+    /// Duplicate already verified handles; paths are never reopened during transfer.
+    pub fn into_transfer(self) -> Result<SessionTransfer> {
+        let mut bases = std::collections::BTreeMap::new();
+        for (path, base) in self.bases {
+            base.check_unchanged()?;
+            let metadata = base
+                .metadata()
+                .ok_or_else(|| invalid("launch base is not file-backed"))?
+                .clone();
+            let file = base.try_clone_verified_file()?;
+            let identity = base.identity().clone();
+            VerifiedBase::from_verified_file(
+                file.try_clone()?,
+                identity.clone(),
+                metadata.clone(),
+            )?;
+            bases.insert(path, (file, identity, metadata));
+        }
+        Ok(SessionTransfer {
+            machine: self.machine,
+            image: self.image,
+            bases,
+        })
+    }
+}
+impl SessionTransfer {
+    /// Rebuild execution-local sector readers without reading or hashing payloads.
+    pub fn restore(self) -> Result<PreparedSession> {
+        let bases = self
+            .bases
+            .into_iter()
+            .map(|(path, (file, identity, metadata))| {
+                Ok((
+                    path,
+                    VerifiedBase::from_verified_file(file, identity, metadata)?,
+                ))
+            })
+            .collect::<Result<_>>()?;
+        Ok(PreparedSession {
+            machine: self.machine,
+            image: self.image,
+            bases,
+        })
+    }
+}
+
+/// Read a workspace's image identity without acquiring its execution lock.
+/// Desktop discovery uses this only as a hint; Start rechecks under ownership.
+pub fn pinned_image_at(store: &Store, name: &str) -> Result<Option<Digest>> {
+    use std::io::Read;
+    let path = store.workspace_path(name)?.join("session.toml");
+    let file = match fs::File::open(path) {
+        Ok(file) => file,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e.into()),
+    };
+    let mut bytes = Vec::new();
+    file.take(image_store::MAX_SMALL_BLOB + 1)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > image_store::MAX_SMALL_BLOB {
+        return Err(invalid("workspace document exceeds size limit"));
+    }
+    let state: Session = parse(&bytes)?;
+    if state.schema != 1 {
+        return Err(invalid("unsupported workspace schema"));
+    }
+    Ok(Some(state.image.digest))
 }

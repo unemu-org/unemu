@@ -301,10 +301,41 @@ without a stale ratio; Stop returns the cell to `Speed 100%`. Blink stays visibl
 phase can derive from virtual time later. Workspace and presenter tests remain
 headless. The input log is test-owned, with no user-facing log flag.
 
-Machine > Settings… and ⌘, on macOS (Ctrl+, elsewhere outside guest focus) open the seven-tab property
-sheet for the selected machine. Stop before editing; running/paused sessions are
-read-only. Review the child-file preview before OK/Apply. The saved local child
-is selected in the library; replacing an existing child requires consent.
+Machine > Settings… and ⌘, on macOS (Ctrl+, elsewhere outside guest focus) open
+the seven-tab property sheet for the selected machine file. Stop before editing;
+running/paused sessions are read-only. Review the child-file preview before
+OK/Apply. The saved local child is selected in the library; replacing an existing
+child requires consent.
+
+The library tree includes All images, Recently played, Favourites, Machine files, Labels and
+Genre/Platform/Year/Developer/Publisher/Series facets. Search matches cached
+catalogue text; click a column header to sort, click a repository to expand its
+tags, and select a tag for hardware, readiness and storage details. Start, Enter
+and double-click check the pinned selection cheaply, then launch it when ready
+or display its blocker. Selection reads descriptors and file sizes; Start verifies
+and materializes the selected closure once. Start reuses the regular workspace.
+Machine > Gaming mode creates an isolated disposable workspace for every writable
+disk, catalogue medium and CMOS. On stop or exit choose Keep as new image… or
+Discard. Successful Keep publishes before removing the disposable workspace.
+After a crash or deferred exit, unfinished sessions appear in the library with
+those same choices. Read-only and volatile media retain their declared policies.
+
+File > Import image… imports a selected machine file under a new repository:tag.
+The status bar reports background import progress; missing inputs offer the
+existing Locate firmware flow. Tools > Image store folder… changes the optional
+`store_root` preference. Defaults are `~/Library/Application Support/unemu`
+on macOS, `%LOCALAPPDATA%/unemu` on Windows and
+`$XDG_DATA_HOME/unemu` (otherwise `~/.local/share/unemu`)
+on other Unix hosts. The store still requires a supported local filesystem.
+
+Machine > Disk layers… and the Layers toolbar button show per-medium chains,
+digests, sizes, sharing and working sectors. Save as layer… and New image from
+here… ask for a new repository:tag and stop the machine before publication;
+New also offers Flatten. Gaming sessions offer Keep as new image… instead.
+Discard changes lists writable media with changes before confirmation.
+For machine files the dialog offers Import image…. Edit > Delete tag… confirms
+removal of that tag only; shared bases remain. These menu commands have no new
+key chords; existing shell shortcuts retain their platform mapping.
 
 The window loads `machines/at-freedos.toml` from the workspace recorded by
 `CARGO_MANIFEST_DIR` at build time, independently of the current directory.

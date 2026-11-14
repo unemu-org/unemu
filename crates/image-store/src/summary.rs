@@ -9,7 +9,7 @@ use crate::{
     media_type,
     metadata::{Metadata, Title},
     store::read_bounded,
-    BlobSource, Digest, Manifest, PayloadType, Result, Store, Tag, MAX_SMALL_BLOB,
+    BlobSource, Descriptor, Digest, Manifest, PayloadType, Result, Store, Tag, MAX_SMALL_BLOB,
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -68,6 +68,8 @@ pub struct ImageSummary {
     pub platform: String,
     pub name: String,
     pub stored_size: u64,
+    #[serde(default)]
+    pub storage_blobs: Vec<Descriptor>,
     pub labels: Vec<String>,
     pub favorite: bool,
     pub last_run: Option<String>,
@@ -214,6 +216,55 @@ impl SummaryCache {
     fn local_hash(&self, image: &Digest) -> &Digest {
         self.local_hashes.get(image).unwrap_or(&self.empty_hash)
     }
+    /// Per-blob sharing counts, using cached descriptors only.
+    pub fn blob_sharing(&self) -> BTreeMap<Digest, usize> {
+        self.blob_sharing_cancellable(|| false).unwrap_or_default()
+    }
+    /// Stop a sharing projection between images when a newer desktop job arrives.
+    pub fn blob_sharing_cancellable(
+        &self,
+        cancelled: impl Fn() -> bool,
+    ) -> Option<BTreeMap<Digest, usize>> {
+        let mut seen = BTreeSet::new();
+        let mut counts = BTreeMap::new();
+        for tag in &self.tags {
+            if cancelled() {
+                return None;
+            }
+            if seen.insert(&tag.manifest.digest) {
+                if let Some(s) = self.summary(&tag.manifest.digest) {
+                    let unique: BTreeSet<_> =
+                        s.storage_blobs.iter().map(|d| d.digest.clone()).collect();
+                    for id in unique {
+                        *counts.entry(id).or_default() += 1;
+                    }
+                }
+            }
+        }
+        Some(counts)
+    }
+    /// Distinct stored bytes and savings over one complete copy per image.
+    /// None means an older cache needs a bounded background storage rebuild.
+    pub fn storage_totals(&self) -> Option<(u64, u64)> {
+        let mut images = BTreeSet::new();
+        let mut blobs = BTreeMap::new();
+        let mut nominal = 0u64;
+        for tag in &self.tags {
+            if !images.insert(&tag.manifest.digest) {
+                continue;
+            }
+            let summary = self.summary(&tag.manifest.digest)?;
+            if summary.storage_blobs.is_empty() {
+                return None;
+            }
+            nominal += summary.stored_size;
+            for blob in &summary.storage_blobs {
+                blobs.insert(&blob.digest, blob.size);
+            }
+        }
+        let total = blobs.values().sum();
+        Some((total, nominal.saturating_sub(total)))
+    }
     pub fn tags(&self) -> &[Tag] {
         &self.tags
     }
@@ -245,7 +296,8 @@ impl SummaryCache {
         self.tags
             .iter()
             .filter(|tag| {
-                self.summary(&tag.manifest.digest).is_none()
+                self.summary(&tag.manifest.digest)
+                    .is_none_or(|s| s.storage_blobs.is_empty())
                     && self.failure(&tag.manifest.digest).is_none()
             })
             .collect()
@@ -373,10 +425,17 @@ impl SummaryCache {
             search_limited: false,
             machine: (manifest.artifact_type() == media_type::MACHINE)
                 .then(|| manifest.config.digest.clone()),
-            config: manifest.config.digest,
+            config: manifest.config.digest.clone(),
             platform: metadata.platform,
             name,
             stored_size,
+            storage_blobs: manifest
+                .layers
+                .iter()
+                .chain(std::iter::once(&manifest.config))
+                .chain(std::iter::once(&tag.manifest))
+                .cloned()
+                .collect(),
             labels,
             favorite: entry.favorite,
             last_run: entry.last_run,
@@ -705,6 +764,7 @@ mod tests {
                 platform: "c64".into(),
                 name: "Large".into(),
                 stored_size: 1,
+                storage_blobs: vec![],
                 labels: vec!["facet".into()],
                 favorite: false,
                 last_run: None,

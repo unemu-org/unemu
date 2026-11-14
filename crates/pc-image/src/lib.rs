@@ -4,11 +4,15 @@
 //! The platform-neutral store never depends on this provider.
 
 mod defaults;
+pub mod desktop;
 mod disk;
 mod encode;
 mod import;
+pub mod inspection;
 pub mod media_set;
 mod provider;
+#[cfg(feature = "test-support")]
+pub mod test_support;
 pub mod workspace;
 
 pub use import::{import_machine, ChosenGeneration, ImportOptions, ImportRecord, RecoveryChoice};
@@ -30,10 +34,24 @@ pub enum Error {
     Io(#[from] std::io::Error),
     #[error(transparent)]
     Journal(#[from] media::offline::ToolError),
+    #[error("missing inputs:\n{paths}")]
+    MissingInputs { paths: String, firmware: bool },
     #[error("invalid PC image: {0}")]
     Invalid(String),
 }
 
+impl Error {
+    /// A firmware locator can act on these failures without parsing diagnostics.
+    pub fn needs_firmware(&self) -> bool {
+        match self {
+            Self::MissingInputs { firmware, .. } => *firmware,
+            Self::Load(machine_file::LoadError::Lower(e)) | Self::Lower(e) => {
+                e.field.starts_with("firmware.")
+            }
+            _ => false,
+        }
+    }
+}
 pub type Result<T> = std::result::Result<T, Error>;
 fn invalid(message: impl Into<String>) -> Error {
     Error::Invalid(message.into())
@@ -264,6 +282,15 @@ fn unit(kind: &str, drive: &toml::Table) -> Result<u8> {
     }
 }
 
+fn firmware_options() -> assembly::AssemblyOptions {
+    #[cfg(feature = "test-support")]
+    let allow_unlisted_firmware = test_support::permitted();
+    #[cfg(not(feature = "test-support"))]
+    let allow_unlisted_firmware = false;
+    assembly::AssemblyOptions {
+        allow_unlisted_firmware,
+    }
+}
 fn validate_bios(config: &assembly::MachineConfig) -> Result<()> {
     let bios = config
         .images
@@ -280,14 +307,8 @@ fn validate_bios(config: &assembly::MachineConfig) -> Result<()> {
     let assembly::ImageSource::Inline(bytes) = &bios.source else {
         return Err(invalid("system BIOS must already be resolved"));
     };
-    assembly::check_board_system_bios(
-        config,
-        config.board,
-        bios.base,
-        bytes,
-        assembly::AssemblyOptions::default(),
-    )
-    .map_err(|e| invalid(e.to_string()))?;
+    assembly::check_board_system_bios(config, config.board, bios.base, bytes, firmware_options())
+        .map_err(|e| invalid(e.to_string()))?;
     Ok(())
 }
 
@@ -305,4 +326,23 @@ fn medium_id<'de, D: serde::Deserializer<'de>>(
         return Err(serde::de::Error::custom("invalid or reserved medium id"));
     }
     Ok(id)
+}
+
+#[cfg(test)]
+mod desktop_error_tests {
+    use super::*;
+    #[test]
+    fn firmware_handoff_uses_error_kind_instead_of_diagnostic_words() {
+        assert!(!Error::Invalid("firmware BIOS ROM is missing".into()).needs_firmware());
+        assert!(Error::MissingInputs {
+            paths: "input absent".into(),
+            firmware: true
+        }
+        .needs_firmware());
+        assert!(!Error::MissingInputs {
+            paths: "bios firmware name used by a disk".into(),
+            firmware: false
+        }
+        .needs_firmware());
+    }
 }
