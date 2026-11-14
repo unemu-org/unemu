@@ -61,6 +61,11 @@ target/
 /vendor/xtide-universal-bios/build/
 /vendor/xtide-universal-bios/ide_at-r638-8k.bin
 /vendor/xtide-universal-bios/ide_xtp-r638-ata1f0-8k.bin
+# Open VGA BIOS (LGPL) and its INT 10h probe floppy: built by Nix from a pinned
+# release by vendor/vgabios/fetch.sh, never committed.
+/vendor/vgabios/build/
+/vendor/vgabios/vgabios-std.bin
+/vendor/vgabios/int10-probe-1200.img
 # FAT16 hard-disk data fixture: rebuilt offline by vendor/hdd/build.sh.
 /vendor/hdd/build/
 /vendor/hdd/fat16.img

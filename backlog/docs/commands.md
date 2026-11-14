@@ -668,7 +668,7 @@ bash scripts/ci-gate.sh guard
 bash scripts/ci-gate.sh clippy
 bash scripts/ci-gate.sh deny                     # advisories, licences, bans, sources; all features
 bash scripts/ci-gate.sh tests
-bash scripts/ci-gate.sh fixtures                 # build/hash-check BIOS, FreeDOS, test386; fetch missing inputs
+bash scripts/ci-gate.sh fixtures                 # build/hash-check BIOS, FreeDOS, test386, XTIDE, HDD, VGA BIOS
 bash scripts/ci-gate.sh goldens                  # slow tests in the test profile; requires fixtures
 ```
 
@@ -741,15 +741,16 @@ UNEMUPC98_REQUIRE_USER_ROMS=1 bash scripts/ci-gate.sh user-roms
 
 See `vendor/user-roms/README.md` for catalogue hashes and the proprietary golden rule.
 
-All three CI fixture scripts check pinned output SHA-256 hashes and rebuild offline
-when their pinned source commits and release archives are cached. FreeDOS also
+The CI `fixtures` gate runs the Kiselev, FreeDOS, test386, XTIDE, hard-disk and
+open VGA BIOS scripts below; each checks pinned output SHA-256 hashes, and all
+but the VGA BIOS rebuild offline when their pinned source commits and release
+archives are cached (Nix caches the VGA BIOS sources and store paths). FreeDOS also
 fixes the volume serial (`2895-9853`), label (`FREEDOS`) and all filesystem
 timestamps (1980-01-01 UTC). A hash mismatch requires checking the sources and
 toolchain and deliberately rebuilding the goldens' expectations before changing
 the expected hash. See each `vendor/*/README.md` for cache paths and hashes.
 
-The XTIDE Universal BIOS AT option-ROM fixture is built separately from the CI
-`fixtures` gate:
+The XTIDE Universal BIOS option-ROM fixtures:
 
 ```sh
 vendor/xtide-universal-bios/fetch.sh           # r638 AT binary, padded/checksummed to 8 KiB
@@ -761,6 +762,31 @@ It checks both the download and output SHA-256, reusing
 `vendor/xtide-universal-bios/ide_at-r638-8k.bin`. Its catalogue entry is `Listed`;
 building it does not add an ATA device or hard-disk boot profile. See
 `vendor/xtide-universal-bios/README.md` for provenance, padding and checksum rules.
+
+The open VGA BIOS and its INT 10h probe floppy are built with Nix (in the
+devShell) from the sibling `vgabios` repository on this project's forge:
+
+```sh
+vendor/vgabios/fetch.sh                        # vgabios-std.bin and int10-probe-1200.img
+UNEMU_VGABIOS_CHECKOUT=../vgabios vendor/vgabios/fetch.sh   # pinned revision from a local clone
+UNEMUPC98_REQUIRE_FIXTURES=1 cargo test --offline -p assembly --lib open_vga
+cargo test --offline -p cli --test open_vga_golden -- --include-ignored
+```
+
+The script derives the forge from this repository's `origin` remote (same host,
+transport and organization, repository `vgabios`), builds release
+`v0.8a-unemu.1` at its pinned revision and checks both output SHA-256 values
+before replacing anything. `UNEMU_VGABIOS_FLAKE` overrides the whole flake
+reference and `--print-flake` shows the one it would build. A clone from a mirror
+derives the mirror's address, so the mirror must publish `vgabios` next to this
+repository. In CI the origin is the checkout's HTTPS URL without credentials:
+the `fixtures` gate builds the VGA BIOS only while `vgabios` is readable
+anonymously, and otherwise fails with a message naming `UNEMU_VGABIOS_FLAKE`.
+The open VGA tests then do not skip: the `goldens` gate sets
+`UNEMUPC98_REQUIRE_FIXTURES=1`, so a missing ROM or probe fails them. Locally,
+without that variable, they print a skip line. See `vendor/vgabios/README.md`
+for pins, licence and the later registry delivery. `machines/at-games-open.toml`
+needs the ROM.
 
 The SeaBIOS ISA fixture uses its own firmware devShell, separately from the CI
 `fixtures` gate:
@@ -786,7 +812,7 @@ mdir -i vendor/hdd/fat16.img@@8704 ::          # UNEMUHDD, MARKER.TXT (29 bytes,
 
 It uses mtools 4.0.49 with a fixed serial, label and FAT-epoch timestamps.
 See `vendor/hdd/README.md` for the IBM AT type-2 geometry, partition/BPB layout,
-hash and licence. This fixture is built separately from the CI `fixtures` gate.
+hash and licence. The CI `fixtures` gate builds it.
 
 Each gate uses `nix develop --no-update-lock-file --command` (except `guard`, which
 runs directly), preserves its exit status, and tees combined output to the gitignored

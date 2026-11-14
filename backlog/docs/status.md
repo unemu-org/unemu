@@ -21,6 +21,7 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   fast-forward hold and re-anchors pacing like the menu. Headless tests cover
   each prompt path, the policy switch and the toolbar selection; native visual
   and Dock/menu-bar behaviour need manual checking.
+- **2026-11-14 — Open VGA BIOS on the open AT profile:** `vendor/vgabios/fetch.sh` builds the unemu fork of the LGPL VGABIOS (release `v0.8a-unemu.1`, revision `8e154f04`) and its INT 10h probe floppy with Nix from the sibling `vgabios` repository, deriving the forge from this repository's origin remote, and checks both SHA-256 pins; neither file is committed. Catalogue entry `vgabios-0.8a-unemu.1-std` is an open (LGPL-2.1-or-later), **Tested** video BIOS: raw 32 KiB at C0000h, requiring the register-level `vga`. `machines/at-games-open.toml` replaces its MDA/VGA-text console with that card and ROM; XTIDE stays at C8000h. **MEASURED at CPU `fe240a56`:** Kiselev POST runs the ROM, shows its sign-on and "EGA/VGA (Video BIOS Present)", and FreeDOS reaches `A:\>` (`retired=15241264`); the probe reports all 32 checks `ok`, `fails:0000` (13 screen lines, `Halted` at `0000:880A`, `retired=10239957`); a boot sector drives mode 0Dh panning, page 1 and a CRTC byte start through INT 10h and ports, then mode 13h with a BIOS pixel and DAC entry; all four 0Dh frames match planar memory and the 13h frame matches the chain-4 byte stream and the BIOS default palette, pixel for pixel (`retired=10730615`). The CI `fixtures` gate now also builds XTIDE, the FAT16 disk and these fixtures; from CI's credential-less HTTPS origin the VGA BIOS builds only while `vgabios` is anonymously readable (MEASURED readable from the LAN), otherwise the gate fails naming `UNEMU_VGABIOS_FLAKE`. Registry delivery from `registry.unemu.dev/unemu/` is later work. No game is qualified. See [the fixture notes](../../vendor/vgabios/README.md) and [Video ROM placement](design/firmware-and-machine-classes.md#video-rom-placement).
 - **2026-11-14 — Desktop image library and disk layers:** local-store summaries join machine files in an Explorer-style tree, virtualized details list and selected-image pane. Search, metadata facets, repository/tag groups, sorting, favorites and local labels use cached summaries. Store loading, bounded cache rebuilds, verification, imports and publication run in a background worker. Image launches pin the selected descriptor and reuse a regular workspace; Gaming mode isolates all writable media and CMOS, with explicit Keep as new image or Discard and startup recovery. Selection uses cancellable descriptor checks; full disk verification happens at Start. Disk layers exposes chains, sharing, working-sector counts, whole-machine publication/flatten and confirmed discard. Tag deletion preserves blobs. The store root follows platform data-directory conventions and can be changed under Tools. GUI acceptance remains manual; media-set browsing stays separate.
 - **2026-11-14 — macOS host shortcuts:** Command chords stay in the shell,
   with no guest modifier or letter scan codes. Ctrl/Alt and Ctrl+Alt+Del remain
@@ -259,9 +260,10 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   (220h/IRQ5/DMA1/HDMA5), a COM1
   Microsoft serial mouse, a type-2 IDE disk with a separate journal, and a
   swappable 1.2M FreeDOS/transfer catalogue. B: is omitted because this BIOS
-  has no 1.44M drive type. `at-games-open.toml` uses Kiselev AT-reset and XTIDE
-  with the existing MDA/VGA-text console; no open VGA video BIOS is qualified
-  for this profile. Both keep the empty 80287 socket and fixed virtual RTC.
+  has no 1.44M drive type. `at-games-open.toml` uses Kiselev AT-reset and XTIDE;
+  since 2026-11-14 it also has the register-level VGA with the open VGA BIOS
+  (entry above) instead of the MDA/VGA-text console. Both keep the empty 80287
+  socket and fixed virtual RTC.
   The [game guide](../../machines/README.md#playing-dos-games) covers supplying
   ROMs/tools, disk preparation, copying files, BLASTER, mouse drivers and
   journal export/rollback. The FreeDOS fixture supplies only kernel and shell.
@@ -287,10 +289,13 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   use remain unqualified. There is no 386 instruction set.
   Tyrian 2000 and Duke Nukem 3D require a 386 or later and remain **not yet**.
   **MEASURED (open fixtures):** `at-games-open.toml` passes non-writing
-  `machine check` with the real pinned Kiselev AT-reset, XTIDE and FreeDOS 1.2M
-  fixtures and `media create` local disks. Its ignored FreeDOS prompt golden
-  records `RetiredCapReached`, `retired=13772948`, `dos_prompt=true`, MDA text
-  SHA-256 `f016e6af8c82493b1a489b8753d1ad9c34f31da6af744e177984405ca1f4ead6`.
+  `machine check` with the real pinned Kiselev AT-reset, open VGA BIOS, XTIDE
+  and FreeDOS 1.2M fixtures and `media create` local disks. Its ignored FreeDOS
+  prompt golden samples the POST screen, then records `RetiredCapReached`,
+  `retired=15241264`, `dos_prompt=true`, VGA text SHA-256
+  `41ff081e1227af8f1a053df1b627b734de4032963cc0357c488cbbe67e01469e`
+  (previously, on MDA: `retired=13772948`, text
+  `f016e6af8c82493b1a489b8753d1ad9c34f31da6af744e177984405ca1f4ead6`).
 
 - **2026-11-13 — Sparse persistent media:** journal drives read their immutable
   base on demand and retain only written sectors, including removable floppies.

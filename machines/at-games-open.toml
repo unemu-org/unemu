@@ -1,15 +1,16 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-# Open firmware baseline: no qualified open VGA video BIOS for this 286.
-# Keep the preset's text cards; graphical VGA games need at-games.toml's user ROMs.
+# Open firmware only: Kiselev AT-reset system BIOS, the open VGA BIOS and XTIDE.
+# Fetch them with vendor/kiselev-bios/fetch.sh, vendor/vgabios/fetch.sh and
+# vendor/xtide-universal-bios/fetch.sh.
 # Create local media first; see machines/README.md, Playing DOS games.
 schema = 1
 extends = "preset:ibm-5170"
 name = "at-games-open"
-description = "Open-firmware 80286 AT text console with SB16/OPL3, COM1 mouse and journaled C:"
+description = "Open-firmware 80286 AT with VGA, SB16/OPL3, COM1 mouse and journaled C:"
 
 [board]
-# Kiselev reads this switch with inverted polarity and prints on MDA.
-# Keep both preset text cards, as in at-ide.toml; the window selects MDA first.
+# The only display is the VGA card; its video BIOS sets the BIOS data area's
+# display bits itself, so Kiselev's inverted reading of this switch is moot.
 display_switch = "colour"
 
 [board.rtc]
@@ -29,11 +30,29 @@ image = "../vendor/kiselev-bios/bios-xi8088-atreset.bin"
 sha256 = "61589573c9809273198b137d9419c87242b0a5f63c2ad834a9565950c3d6becc"
 provides = ["floppy"]
 
+# 32 KiB fills the C0000h-C7FFFh video-ROM window; XTIDE follows at C8000h.
+[[firmware.option_roms]]
+image = "../vendor/vgabios/vgabios-std.bin"
+sha256 = "7570ef9c66fd386450bb35fd2b6c91aba6f8ec69a565a1d7747e6e6716ea5389"
+base = 0xC0000
+
 [[firmware.option_roms]]
 image = "../vendor/xtide-universal-bios/ide_xtp-r638-ata1f0-8k.bin"
 sha256 = "54975501e6887c836b8d57e7aad78421e745a9b71e250f94d5d1f9631eab1513"
 base = 0xC8000
 provides = ["fixed-disk"]
+
+# The register-level VGA replaces the preset's MDA and text-only VGA cards.
+[[card]]
+id = "mda"
+remove = true
+
+[[card]]
+id = "vga-text"
+remove = true
+
+[[card]]
+kind = "vga"
 
 [[card]]
 kind = "sb16"

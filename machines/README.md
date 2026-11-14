@@ -563,14 +563,16 @@ and the complete video container; its 2000h prefix is skipped when mapping
 C0000h. Nothing downloads these ROMs. Unlike test discovery, machine-file paths
 use these exact filenames; a local child can override them.
 
-`at-games-open.toml` needs no user ROMs. Fetch/build the Kiselev AT-reset and
-XTIDE fixtures with `vendor/kiselev-bios/fetch.sh` and
-`vendor/xtide-universal-bios/fetch.sh`. It keeps the preset's MDA and VGA text
-cards and uses the established Kiselev colour-switch workaround; the window
-opens MDA, the first display. This is a text console and disk/audio/input
-baseline, not a VGA graphics-game substitute. No open VGA video BIOS is
-qualified here for the 286. The IBM variant needs user ROMs for both system
-and video firmware.
+`at-games-open.toml` needs no user ROMs. Fetch/build the Kiselev AT-reset,
+open VGA BIOS and XTIDE fixtures with `vendor/kiselev-bios/fetch.sh`,
+`vendor/vgabios/fetch.sh` and `vendor/xtide-universal-bios/fetch.sh`. It
+removes both preset text cards and adds the register-level `vga` card with
+the open VGA BIOS, the unemu fork of the LGPL VGABIOS built for the 286
+([fixture notes](../vendor/vgabios/README.md)), at C0000h–C7FFFh; XTIDE
+follows at C8000h. POST, FreeDOS and the fork's INT 10h probe floppy are
+measured on this profile, and a mode 0Dh golden pins panned and page-flipped
+frames. As with the IBM variant, no individual game is qualified. The IBM
+variant needs user ROMs for both system and video firmware.
 
 Both shipped game profiles enable the 2 MiB board at D000h, port 260h. For
 another machine, add the `lotech-ems` card above to a local child file. Fetch
@@ -614,7 +616,8 @@ unemupc98 media create hd --chs 615/4/17 machines/local/games.img
 unemupc98 media create floppy --type 1.2M --format --label TRANSFER machines/local/transfer-1200.img
 unemupc98 machine check machines/at-games.toml
 unemupc98-window --machine machines/at-games.toml
-# Open firmware, text console only:
+# Open firmware, no user ROMs (also run vendor/kiselev-bios/fetch.sh,
+# vendor/vgabios/fetch.sh and vendor/xtide-universal-bios/fetch.sh):
 # unemupc98 machine check machines/at-games-open.toml
 # unemupc98-window --machine machines/at-games-open.toml
 ```

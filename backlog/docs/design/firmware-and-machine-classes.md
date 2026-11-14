@@ -106,6 +106,7 @@ The forces on the design:
 | SeaBIOS 1.17.0 (2025-06-10), QEMU `isapc` config (128 KiB, `PCIBIOS=n`, `USB=n`, `ACPI=n`) | LGPL-3.0-only | **386** (32-bit flat POST) | ISA-only 486-class PC (QEMU `isapc`) | Yes (READ: §3.6), including E801h/E820h; RAM size from CMOS without fw_cfg | Built-in ATA PIO, floppy | SeaVGABIOS through fw_cfg, or SERCON configured by fw_cfg (§3.6) | ASSUMED yes | gcc + binutils | [seabios.org](https://www.seabios.org/), QEMU `roms/config.seabios-128k` |
 | SeaBIOS 1.17.0, QEMU `pc` config | LGPL-3.0-only | 386 | i440FX + PIIX3/PIIX4, Q35 | Yes, including E801h/E820h; also PCI BIOS and ACPI | ATA, AHCI, USB, … | SeaVGABIOS: std VGA, Cirrus, Bochs VBE | ASSUMED yes | gcc | as above |
 | SeaVGABIOS / LGPL VGABIOS (video option ROMs) | LGPL-3.0 / LGPL-2.1 | ASSUMED 386 | Video option ROM | — | — | VGA; VBE with Bochs VBE | — | gcc / bcc | SeaBIOS `vgasrc/`, Bochs |
+| LGPL VGABIOS, unemu fork `v0.8a-unemu.1` (std build) | LGPL-2.1-or-later | **286** (fork's 286 check) | Video option ROM, 32 KiB at C0000h | — | — | Standard VGA, no VBE | **Yes** with the Kiselev BIOS (MEASURED, goldens; §Video ROM placement) | bcc/as86 (dev86) via Nix | `unemu-org/vgabios` on this project's forge; `vendor/vgabios/README.md` |
 | fysnet i440fx BIOS 1.0 (2025-02-10) | **Freeware, not open source** | — | i440FX / 440BX | — | — | — | — | NBASM | [fysnet.github.io/i440fx](https://fysnet.github.io/i440fx); excluded on license grounds |
 | IBM 5150/5160/5170 ROMs; AMI/Award/Phoenix board BIOSes | Proprietary | per board | per board | per board | per board | per board | per board | — | **User-supplied only.** Hashes are listed, the images are never shipped |
 
@@ -652,7 +653,7 @@ records existing components, not demonstrated SeaBIOS compatibility.
 | FDC with READ ID and CCR | `floppy.c:249–256` | Have | — |
 | Primary/secondary ISA ATA | `ata.c:1020–1030` | Have | — |
 | COM1 UART | `sercon.c` | Have | — |
-| VGA ROM and register-level VGA | `optionroms.c:451`; `stdvga.c` | Partial: isolated register file and planar memory; IBM VGA/XGA TR (May 1992), only the module coverage-matrix figures checked: 2-19–2-26, 2-29–2-37, 2-58, 2-69–2-80, 2-81–2-89 and 2-94; chain-4 offset DERIVED from Figs. 2-37/2-65; ASSUMED floating ports/unselected memory FF, 128 KiB mirroring, MSR[5] polarity, DAC edge cases, odd/even gating of A0 replacement and chain-4 pipeline; alphanumeric rendering and opt-in `vga` card wiring implemented (READ: Alphanumeric Modes, Figs. 2-7–2-8, 2-31, 2-33–2-36, 2-41, 2-48, 2-50–2-56, 2-59–2-61, 2-64–2-65, 2-82–2-83, 2-84, 2-86, 2-89 and 2-94: guest fonts, divided dot clock, CRTC scanout/cursor, AC/DAC colours through Frame::Text; ASSUMED zero-based cursor start/underline despite the manual minus-one wording, following SeaVGABIOS crtc_07); CGA-compatible 06h, planar 0Dh/0Eh/10h/12h and chain-4 13h graphics scanout implemented through owned indexed Frame::Pixels (READ: Graphics Modes, Figs. 2-31, 2-50, 2-60–2-65, 2-75 and 2-84–2-89; DERIVED doubleword placement matches CPU chain-4; DERIVED/ASSUMED mode-13h internal palette low-nibble sample handling; logical dot/scan-line repetition retained as presentation factors; READ CMS0/SRC row-scan bank substitution from Fig. 2-64); CGA-interleaved shift, split screen, pixel panning, smooth scrolling and mid-frame changes unmodelled; IBM ISA VGA BIOS qualified on ibm-5170 (§Video ROM placement), while SeaVGABIOS delivery via fw_cfg remains pending for the 386 board | `upc-o0j.15` (`upc-18x.2` is VBE only) |
+| VGA ROM and register-level VGA | `optionroms.c:451`; `stdvga.c` | Partial: isolated register file and planar memory; IBM VGA/XGA TR (May 1992), only the module coverage-matrix figures checked: 2-19–2-26, 2-29–2-37, 2-58, 2-69–2-80, 2-81–2-89 and 2-94; chain-4 offset DERIVED from Figs. 2-37/2-65; ASSUMED floating ports/unselected memory FF, 128 KiB mirroring, MSR[5] polarity, DAC edge cases, odd/even gating of A0 replacement and chain-4 pipeline; alphanumeric rendering and opt-in `vga` card wiring implemented (READ: Alphanumeric Modes, Figs. 2-7–2-8, 2-31, 2-33–2-36, 2-41, 2-48, 2-50–2-56, 2-59–2-61, 2-64–2-65, 2-82–2-83, 2-84, 2-86, 2-89 and 2-94: guest fonts, divided dot clock, CRTC scanout/cursor, AC/DAC colours through Frame::Text; ASSUMED zero-based cursor start/underline despite the manual minus-one wording, following SeaVGABIOS crtc_07); CGA-compatible 06h, planar 0Dh/0Eh/10h/12h and chain-4 13h graphics scanout implemented through owned indexed Frame::Pixels (READ: Graphics Modes, Figs. 2-31, 2-50, 2-60–2-65, 2-75 and 2-84–2-89; DERIVED doubleword placement matches CPU chain-4; DERIVED/ASSUMED mode-13h internal palette low-nibble sample handling; logical dot/scan-line repetition retained as presentation factors; READ CMS0/SRC row-scan bank substitution from Fig. 2-64); AC pixel panning, CRTC byte panning and start-address page flips latched at retrace, and the line-compare split are modelled at frame level (status.md, VGA frame scrolling and page flipping); CGA-interleaved shift, smooth-scrolling timing finer than a frame and other mid-frame changes remain unmodelled; the IBM ISA VGA BIOS and the open LGPL VGABIOS fork are qualified on ibm-5170 (§Video ROM placement), while SeaVGABIOS delivery via fw_cfg remains pending for the 386 board | `upc-o0j.15` (`upc-18x.2` is VBE only) |
 | FPU always reported | `misc.c:62–68` | Partial: empty socket | `upc-18x.9` (risk) |
 | Avoid unmapped FEE00030h MP-table read | `mptable.c:57` | Built fixture disables MPTABLE; Kconfig setting verified | `upc-o0j.9` (build half; catalogue waits for board) |
 | Debug console at 402h | `serialio.c:104–129`; `fw/paravirt.h:67` | Device and `DebugConsole` byte observation exist (E9h readback); Bare rigs only, board wiring pending | `upc-o0j.16`; `upc-o0j.6` (board) |
@@ -1070,6 +1071,30 @@ does not qualify other system BIOS revisions or video modes.
 Only this container is listed. A plain 24 KiB representation needs its own
 measured SHA-256 and a second catalogue entry with size 24576 and offset zero;
 the full-file hash cannot identify a cropped dump.
+
+`FirmwareEntry::VGABIOS_0_8A_UNEMU_1_STD` (`vgabios-0.8a-unemu.1-std`) is the
+open counterpart: the unemu fork of the LGPL VGABIOS 0.8a, std build, release
+`v0.8a-unemu.1` (source revision `8e154f04c5b1c8029d1ac3a3827f077352d579b7`),
+LGPL-2.1-or-later. `vendor/vgabios/fetch.sh` builds it with Nix and pins the raw
+32 KiB image, SHA-256
+`7570ef9c66fd386450bb35fd2b6c91aba6f8ec69a565a1d7747e6e6716ea5389`, header
+`55 AA 40`, byte sum zero. It has no container offset, fills C0000h–C7FFFh and
+requires the register-level `vga`. `machines/at-games-open.toml` maps it with
+the Kiselev AT-reset BIOS and XTIDE at C8000h. The entry is **Tested**:
+**MEASURED at CPU `fe240a56ac2040e3deaebb2537e642137ee02c71`**, Kiselev POST
+calls the ROM, prints its sign-on and reports "EGA/VGA (Video BIOS Present)",
+and FreeDOS reaches `A:\>`; the fork's INT 10h probe floppy reports all 32
+checks `ok` and `fails:0000`; a synthetic boot sector sets mode 0Dh through
+INT 10h, then panning (AX=1000h), page 1 (AH=05h) and a CRTC byte start, and
+each scanned-out frame matches a decode of planar memory pixel for pixel; it
+then sets mode 13h, and that frame matches the chain-4 byte stream, one BIOS
+pixel and the default 256-colour DAC palette with one AX=1010h entry.
+
+| Open pinned result (`at_games.rs`, `open_vga_golden.rs`) | Value |
+|---|---|
+| FreeDOS prompt | `RetiredCapReached`, `15,241,264` retired, text SHA-256 `41ff081e1227af8f1a053df1b627b734de4032963cc0357c488cbbe67e01469e` |
+| INT 10h probe | `Halted`, `0000:880A`, `10,239,957` retired, text SHA-256 `567884f1a7356b91a49dc8be47861cd093db45402007cd48a0e5656788ff20ca` |
+| Mode 0Dh scroll, then mode 13h | `Halted`, `10,730,615` retired; five frame SHA-256 values pinned in the test |
 
 The synthetic CLI POST test loads an offset-2000h container through the machine
 file, proves FAR CALL/RETF with POST 10h/11h/20h, pins a RAM marker and checks

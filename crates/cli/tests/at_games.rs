@@ -20,11 +20,11 @@ const OPTIONS: AssemblyOptions = AssemblyOptions {
 mod fixtures;
 
 const CPU_REV: &str = "fe240a56ac2040e3deaebb2537e642137ee02c71";
-// Extended memory fell from 4 MiB to 1 MiB for a shorter POST memory test;
-// the open-firmware prompt count and text hash remain unchanged.
-const OPEN_GOLDEN_RETIRED: u64 = 13_772_948;
+// These values moved when the open profile replaced its MDA console with the
+// VGA card and open video BIOS, and when the test began sampling POST.
+const OPEN_GOLDEN_RETIRED: u64 = 15_241_264;
 const OPEN_GOLDEN_TEXT_SHA256: &str =
-    "f016e6af8c82493b1a489b8753d1ad9c34f31da6af744e177984405ca1f4ead6";
+    "41ff081e1227af8f1a053df1b627b734de4032963cc0357c488cbbe67e01469e";
 // These values moved when extended memory went from 4 MiB to 1 MiB,
 // shortening the POST memory test.
 const GOLDEN_STOP: Option<(u64, u64)> = Some((0x05E3, 0x1E59));
@@ -98,46 +98,31 @@ fn shipped_game_profiles_pin_firmware_and_select_the_intended_displays() {
             }
         }
         let roms = firmware.option_roms.unwrap();
-        assert_eq!(roms.len(), 1);
-        let rom = &roms[0];
-        let id = if name == support::IBM {
-            support::VIDEO
+        // Both video BIOSes fill the C0000h video-ROM window; the open
+        // profile's XTIDE ROM follows at C8000h.
+        let expected: &[(&str, u32)] = if name == support::IBM {
+            &[(support::VIDEO, 0xC0000)]
         } else {
-            "xub-r638-xtp-ata1f0"
+            &[
+                (
+                    assembly::FirmwareEntry::VGABIOS_0_8A_UNEMU_1_STD.id,
+                    0xC0000,
+                ),
+                ("xub-r638-xtp-ata1f0", 0xC8000),
+            ]
         };
-        let entry = catalogue.iter().find(|entry| entry.id == id).unwrap();
-        assert_eq!(rom.sha256.as_ref().unwrap().as_str(), entry.sha256);
-        assert_eq!(
-            rom.base,
-            Some(if name == support::IBM {
-                0xC0000
-            } else {
-                0xC8000
-            })
-        );
-        assert_eq!(rom.offset.unwrap_or(0), entry.rom_offset);
+        assert_eq!(roms.len(), expected.len());
+        for (rom, (id, base)) in roms.iter().zip(expected) {
+            let entry = catalogue.iter().find(|entry| entry.id == *id).unwrap();
+            assert_eq!(rom.sha256.as_ref().unwrap().as_str(), entry.sha256);
+            assert_eq!(rom.base, Some(*base));
+            assert_eq!(rom.offset.unwrap_or(0), entry.rom_offset);
+        }
         let cards = document.card.unwrap();
-        assert_eq!(
-            cards
-                .iter()
-                .filter(|card| card.kind == Some(v1::CardKind::VgaText))
-                .count(),
-            usize::from(name == support::OPEN)
-        );
-        assert_eq!(
-            cards
-                .iter()
-                .filter(|card| card.kind == Some(v1::CardKind::Vga))
-                .count(),
-            usize::from(name == support::IBM)
-        );
-        assert_eq!(
-            cards
-                .iter()
-                .filter(|card| card.kind == Some(v1::CardKind::Mda))
-                .count(),
-            usize::from(name == support::OPEN)
-        );
+        let count = |kind| cards.iter().filter(|card| card.kind == Some(kind)).count();
+        assert_eq!(count(v1::CardKind::Vga), 1, "{name}");
+        assert_eq!(count(v1::CardKind::VgaText), 0, "{name}");
+        assert_eq!(count(v1::CardKind::Mda), 0, "{name}");
     }
 }
 
@@ -482,16 +467,14 @@ fn source_bytes(source: &ImageSource) -> anyhow::Result<Vec<u8>> {
 fn synthetic_game_profiles_lower_and_pass_machine_check_without_opening_journals() {
     for name in [support::IBM, support::OPEN] {
         let profile = support::Profile::new(name, true);
-        if name == support::IBM {
-            let error = machine_file::load_with_options(&profile.file, OPTIONS).unwrap_err();
-            assert!(
-                error
-                    .to_string()
-                    .contains("system BIOS unlisted has no known video-ROM scan"),
-                "{error}"
-            );
-            profile.relocate_synthetic_video();
-        }
+        let error = machine_file::load_with_options(&profile.file, OPTIONS).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("system BIOS unlisted has no known video-ROM scan"),
+            "{error}"
+        );
+        profile.relocate_synthetic_video();
         let loaded = machine_file::load_for_assembly(&profile.file, OPTIONS).unwrap();
         let config = &loaded.config;
         assert_eq!(config.board, BoardModel::Ibm5170);
@@ -576,29 +559,33 @@ fn synthetic_game_profiles_lower_and_pass_machine_check_without_opening_journals
             .entries
             .iter()
             .all(|entry| entry.write == WriteMode::ReadOnly && entry.expected_sha256.is_some()));
+        // The positive synthetic smoke moved the video ROM out of the video
+        // window. Derive the display selection from the shipped C0000h layout.
+        let mut shipped = config.clone();
+        shipped.images[1].base = 0xC0000;
+        assert_eq!(
+            shipped.primary_display().unwrap(),
+            assembly::PrimaryDisplay::OwnBios
+        );
+        assert!(config
+            .devices
+            .iter()
+            .any(|device| matches!(device.kind, DeviceKind::VgaRegisters(_))));
+        assert!(!config
+            .devices
+            .iter()
+            .any(|device| matches!(device.kind, DeviceKind::Mda(_) | DeviceKind::Vga(_))));
         if name == support::IBM {
-            // The positive synthetic smoke moved the ROM to C8000h. Derive the
-            // display selection from the shipped C0000h layout instead.
-            let mut shipped = config.clone();
-            shipped.images[1].base = 0xC0000;
-            assert_eq!(
-                shipped.primary_display().unwrap(),
-                assembly::PrimaryDisplay::OwnBios
-            );
-            assert!(config
-                .devices
-                .iter()
-                .any(|device| matches!(device.kind, DeviceKind::VgaRegisters(_))));
             assert!(matches!(
                 config.images[1].source,
                 ImageSource::RomContainer { offset: 8192, .. }
             ));
             assert_eq!(config.images[1].source.known_len(), Some(24576));
         } else {
-            assert_eq!(
-                config.primary_display().unwrap(),
-                assembly::PrimaryDisplay::Colour80
-            );
+            // The open video BIOS is a raw ROM: every byte is mapped.
+            assert!(matches!(config.images[1].source, ImageSource::Inline(_)));
+            assert_eq!(config.images[1].source.known_len(), Some(32768));
+            assert_eq!(config.images[2].base, 0xC8000);
         }
         let args = [
             "machine".into(),
@@ -622,6 +609,7 @@ fn open_fixture_profile() -> Option<support::Profile> {
     let mut images = Vec::new();
     for relative in [
         "kiselev-bios/bios-xi8088-atreset.bin",
+        "vgabios/vgabios-std.bin",
         "xtide-universal-bios/ide_xtp-r638-ata1f0-8k.bin",
         "freedos/freedos-1200.img",
         "freedos/freedos-tools-1200.img",
@@ -695,7 +683,7 @@ fn open_game_profile_checks_real_pinned_fixtures_without_creating_journals() {
 }
 
 #[test]
-#[ignore = "slow: open Kiselev/XTIDE POST and FreeDOS 1.2M boot with a blank type-2 HDD"]
+#[ignore = "slow: open Kiselev/VGA/XTIDE POST and FreeDOS 1.2M boot with a blank type-2 HDD"]
 fn open_game_profile_boots_freedos() {
     use assembly::{
         ConsoleProbe, InjectionSchedule, KeyboardStimulus, ObservationPolicy, ObservationRequest,
@@ -710,9 +698,13 @@ fn open_game_profile_boots_freedos() {
     };
     let loaded =
         machine_file::load_for_assembly(&profile.file, AssemblyOptions::default()).unwrap();
+    assert_eq!(
+        loaded.config.primary_display().unwrap(),
+        assembly::PrimaryDisplay::OwnBios
+    );
     let policy = ObservationPolicy {
         routes: vec![ObservationRequest {
-            device: DeviceId::Mda,
+            device: DeviceId::Vga,
             output: OutputKind::TextScanout,
             byte_limit: 0,
         }],
@@ -720,13 +712,35 @@ fn open_game_profile_boots_freedos() {
     };
     let mut assembled = loaded.assemble(&policy).unwrap();
     let cap = 100_000_000;
+    // FreeDOS scrolls the POST screen away, so sample it while Kiselev's
+    // display line is visible: POST found and initialized the video BIOS.
+    let post_screen = loop {
+        let next = assembled.machine.virtual_time() + 100_000;
+        assert!(next < cap, "POST never reported the video BIOS");
+        let outcome = assembled
+            .run_session(&RunPolicy::natural(Some(next), Some(cli::BIOS_IDLE_LIMIT)))
+            .unwrap();
+        assert_eq!(outcome, RunOutcome::RetiredCapReached);
+        let capture = assembled.capture_text(DeviceId::Vga).unwrap();
+        if let video::Frame::Text(grid) = &capture.frame {
+            let text = grid.rows_as_strings().join("\n");
+            if text.contains("EGA/VGA (Video BIOS Present)") {
+                break text;
+            }
+        }
+    };
+    eprintln!("at-games-open POST:\n{post_screen}");
+    assert!(
+        post_screen.contains("Bochs VGABios 0.8a-unemu"),
+        "{post_screen}"
+    );
     let mut outcome = assembled
         .run_session(&RunPolicy {
             retired_cap: Some(cap),
             idle_limit: Some(cli::BIOS_IDLE_LIMIT),
             stop: StopCondition::PromptThen {
                 console: ConsoleProbe {
-                    device: DeviceId::Mda,
+                    device: DeviceId::Vga,
                 },
                 needle: cli::DOS_DATE_PROMPT.into(),
                 poll_step: cli::DOS_INTERACTIVE_POLL_STEP,
@@ -740,9 +754,9 @@ fn open_game_profile_boots_freedos() {
         })
         .unwrap();
     let (frame, dos_prompt) = loop {
-        let capture = assembled.capture_text(DeviceId::Mda).unwrap();
+        let capture = assembled.capture_text(DeviceId::Vga).unwrap();
         let video::Frame::Text(grid) = &capture.frame else {
-            panic!("expected MDA text during FreeDOS boot");
+            panic!("expected VGA text during FreeDOS boot");
         };
         let text = grid.rows_as_strings().join("\n");
         let dos_prompt = text.contains("A:\\>") || text.contains("A:>");

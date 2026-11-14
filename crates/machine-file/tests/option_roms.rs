@@ -78,7 +78,7 @@ fn unlisted_option_rom_has_its_own_origin_and_known_build_list() {
     for yaml in [false, true] {
         let error = load(rom(), 0xC8000, yaml, "").unwrap_err();
         let hash = format!("{:x}", Sha256::digest(rom()));
-        assert_eq!(error.message, format!("option ROM image (sha256 {hash}) is not a known image for board \"ibm-5170\"; known: ibm-vga-bios-1987-32k (user-supplied), xub-r638-at (open, vendor/xtide-universal-bios/fetch.sh), xub-r638-xtp-ata1f0 (open, vendor/xtide-universal-bios/fetch.sh)"));
+        assert_eq!(error.message, format!("option ROM image (sha256 {hash}) is not a known image for board \"ibm-5170\"; known: ibm-vga-bios-1987-32k (user-supplied), vgabios-0.8a-unemu.1-std (open, vendor/vgabios/fetch.sh), xub-r638-at (open, vendor/xtide-universal-bios/fetch.sh), xub-r638-xtp-ata1f0 (open, vendor/xtide-universal-bios/fetch.sh)"));
         assert_eq!(error.field, "firmware.option_roms[0]");
         assert_eq!(error.origin.line, Some(6));
         assert!(matches!(

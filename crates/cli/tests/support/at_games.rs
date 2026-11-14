@@ -53,6 +53,7 @@ impl Profile {
             "vendor/xtide-universal-bios/ide_xtp-r638-ata1f0-8k.bin",
             &option_rom(8192, 0),
         );
+        profile.write("vendor/vgabios/vgabios-std.bin", &option_rom(32768, 0));
         profile.write("vendor/freedos/freedos-1200.img", &vec![0; 1_228_800]);
         profile.write("vendor/freedos/freedos-tools-1200.img", &vec![0; 1_228_800]);
         profile.write("machines/local/transfer-1200.img", &vec![0; 1_228_800]);
@@ -76,9 +77,15 @@ impl Profile {
 
     pub fn relocate_synthetic_video(&self) {
         // Only identified system firmware establishes the C0000h video scan.
-        // Exercise the remaining hardware at the unlisted extension window.
+        // Exercise the remaining hardware at the unlisted extension window,
+        // above the open profile's XTIDE ROM at C8000h and EMS frame at D0000h.
+        let base = if self.file.ends_with(OPEN) {
+            "base = 0xE0000"
+        } else {
+            "base = 0xC8000"
+        };
         let text = std::fs::read_to_string(&self.file).unwrap();
-        std::fs::write(&self.file, text.replace("base = 0xC0000", "base = 0xC8000")).unwrap();
+        std::fs::write(&self.file, text.replace("base = 0xC0000", base)).unwrap();
     }
 }
 

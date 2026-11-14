@@ -32,10 +32,15 @@ case "$step" in
         ')
         ;;
     fixtures)
+        # The goldens gate requires every fixture its tests read. vgabios is
+        # built by Nix from the repository next to this checkout's origin.
         gate_command+=(bash -euc '
             bash vendor/kiselev-bios/fetch.sh
             bash vendor/freedos/fetch.sh
             bash vendor/test386/fetch.sh
+            bash vendor/xtide-universal-bios/fetch.sh
+            bash vendor/hdd/build.sh
+            bash vendor/vgabios/fetch.sh
         ')
         ;;
     goldens) gate_command+=(env UNEMUPC98_REQUIRE_FIXTURES=1 cargo test --locked --profile test --workspace -- --ignored) ;;

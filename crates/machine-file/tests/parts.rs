@@ -627,9 +627,7 @@ fn repository_machine_cpu_regions_cover_the_full_firmware_board_space() {
             // An unidentified BIOS cannot establish the C0000h video scan.
             let profile = game_profiles::Profile::new(name.to_str().unwrap(), true);
             let ibm = name == Path::new(game_profiles::IBM);
-            if ibm {
-                profile.relocate_synthetic_video();
-            }
+            profile.relocate_synthetic_video();
             let options = AssemblyOptions {
                 allow_unlisted_firmware: true,
             };
@@ -649,15 +647,18 @@ fn repository_machine_cpu_regions_cover_the_full_firmware_board_space() {
                     (0xFE0000, 0x1000000, "rom"),
                 ]
             } else {
+                // The VGA window starts at A0000h; the synthetic video ROM
+                // stand-in sits at E0000h, clear of XTIDE and the EMS frame.
                 vec![
-                    (0, 0xB0000, "ram"),
+                    (0, 0xA0000, "ram"),
                     (0x100000, 0x200000, "ram"),
-                    (0xB0000, 0xC0000, "mmio"),
+                    (0xA0000, 0xC0000, "mmio"),
                     (0xD0000, 0xE0000, "mmio"),
                     (0xC0000, 0xC8000, "rom"),
                     (0xCA000, 0xD0000, "rom"),
-                    (0xE0000, 0xF8000, "rom"),
+                    (0xE8000, 0xF8000, "rom"),
                     (0xF8000, 0x100000, "rom"),
+                    (0xE0000, 0xE8000, "rom"),
                     (0xC8000, 0xCA000, "rom"),
                     (0x200000, 0xFE0000, "empty-bus"),
                     (0xFE0000, 0x1000000, "rom"),

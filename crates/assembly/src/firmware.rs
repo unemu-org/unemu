@@ -257,6 +257,37 @@ impl FirmwareEntry {
         status: FirmwareStatus::Tested,
     };
 
+    /// Open standard-VGA video BIOS: the unemu fork of the LGPL VGABIOS 0.8a,
+    /// built for ISA VGA with 80286 instructions only (no VBE or PCI header).
+    ///
+    /// IBM VGA/XGA Technical Reference, Video BIOS: INT 10h services for the
+    /// register-level card. IBM Personal Computer AT Technical Reference,
+    /// "Adapters with System-Accessible ROM Modules": the raw 32 KiB image
+    /// starts with 55AAh and length byte 40h and fills the whole C0000h–C7FFFh
+    /// video-ROM window. See `vendor/vgabios/README.md` for the release pin.
+    pub const VGABIOS_0_8A_UNEMU_1_STD: Self = Self {
+        id: "vgabios-0.8a-unemu.1-std",
+        kind: FirmwareKind::VideoBios,
+        sha256: "7570ef9c66fd386450bb35fd2b6c91aba6f8ec69a565a1d7747e6e6716ea5389",
+        size: 32768,
+        base: FirmwareBase::Suggested(0xC0000),
+        scan_window: None,
+        video_scan_window: None,
+        rom_offset: 0,
+        provides: &[],
+        capabilities: &[],
+        requires: &[FirmwarePart::VgaRegisters],
+        cpu_min: FirmwareCpu::I80286,
+        boards: &["ibm-5170"],
+        distribution: FirmwareDistribution::Open {
+            fetch: "vendor/vgabios/fetch.sh",
+            license: "LGPL-2.1-or-later",
+            provenance: "unemu-org/vgabios v0.8a-unemu.1, 8e154f04c5b1c8029d1ac3a3827f077352d579b7 (std build)",
+        },
+        parts: &[],
+        status: FirmwareStatus::Tested,
+    };
+
     /// XTIDE Universal BIOS XT+ build configured for primary 16-bit ATA.
     ///
     /// XTIDE Universal BIOS, RomVars.inc, IDEVARS and DEVICE_16BIT_ATA;
@@ -1726,6 +1757,103 @@ mod tests {
             })
         ));
         assert!(BoardModel::Ibm5170.firmware_catalogue().contains(&entry));
+    }
+
+    #[test]
+    fn open_vga_catalogue_entry_matches_recipe_and_fixture() {
+        let entry = FirmwareEntry::VGABIOS_0_8A_UNEMU_1_STD;
+        assert_eq!(entry.id, "vgabios-0.8a-unemu.1-std");
+        assert_eq!(entry.kind, FirmwareKind::VideoBios);
+        assert_eq!(entry.size, 32768);
+        assert_eq!(entry.base, FirmwareBase::Suggested(0xC0000));
+        assert_eq!(entry.rom_offset, 0);
+        assert!(entry.provides.is_empty());
+        assert_eq!(entry.requires, &[FirmwarePart::VgaRegisters]);
+        assert_eq!(entry.cpu_min, FirmwareCpu::I80286);
+        assert_eq!(entry.boards, &["ibm-5170"]);
+        assert_eq!(entry.status, FirmwareStatus::Tested);
+        assert!(entry.parts.is_empty());
+        let FirmwareDistribution::Open {
+            fetch,
+            license,
+            provenance,
+        } = entry.distribution
+        else {
+            panic!("the open VGA BIOS must be fetchable");
+        };
+        assert_eq!(fetch, "vendor/vgabios/fetch.sh");
+        assert_eq!(license, "LGPL-2.1-or-later");
+        let catalogue = BoardModel::Ibm5170.firmware_catalogue();
+        assert!(catalogue.contains(&entry));
+        let script = include_str!("../../../vendor/vgabios/fetch.sh");
+        let pin = |prefix: &str| {
+            script
+                .lines()
+                .find_map(|line| line.strip_prefix(prefix)?.strip_suffix('"'))
+                .expect("fixture recipe pins its release")
+        };
+        assert_eq!(entry.sha256, pin("ROM_SHA256=\""));
+        assert!(provenance.contains(pin("TAG=\"")));
+        assert!(provenance.contains(pin("REVISION=\"")));
+
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../vendor/vgabios/vgabios-std.bin");
+        let bytes = match std::fs::read(&path) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                assert!(
+                    std::env::var_os("UNEMUPC98_REQUIRE_FIXTURES").as_deref()
+                        != Some(std::ffi::OsStr::new("1")),
+                    "missing fixture {}; run vendor/vgabios/fetch.sh",
+                    path.display()
+                );
+                eprintln!("skipping: missing fixture {}", path.display());
+                return;
+            }
+            Err(error) => panic!("cannot read {}: {error}", path.display()),
+        };
+        assert_eq!(bytes.len() as u64, entry.size);
+        assert_eq!(format!("{:x}", Sha256::digest(&bytes)), entry.sha256);
+        assert_eq!(&bytes[..3], &[0x55, 0xAA, 0x40]);
+        assert_eq!(
+            bytes.iter().fold(0u8, |sum, byte| sum.wrapping_add(*byte)),
+            0
+        );
+        // A raw image maps every byte, unlike the IBM EPROM container.
+        let source = rom_source(bytes, ImageKind::Rom, false, catalogue);
+        assert!(matches!(source, ImageSource::Inline(_)));
+        let mut config = config();
+        config.images.push(LoadImage {
+            base: 0xC0000,
+            source,
+            kind: ImageKind::Rom,
+            provides: Vec::new(),
+        });
+        assert_eq!(matched_entry(&config.images[1], catalogue), Some(&entry));
+        let listed = [synthetic(), entry];
+        assert!(matches!(
+            validate_option_roms_with_catalogue(&config, &listed),
+            Err(ConfigError::FirmwareRequiresDevice {
+                part: FirmwarePart::VgaRegisters,
+                ..
+            })
+        ));
+        for device in &mut config.devices {
+            if matches!(device.kind, DeviceKind::Vga(_)) {
+                device.kind = DeviceKind::VgaRegisters(crate::VgaCfg {});
+            }
+        }
+        validate_option_roms_with_catalogue(&config, &listed).unwrap();
+        // 32 KiB fills the video window, so no other start address fits.
+        config.images[1].base = 0xC0800;
+        assert!(matches!(
+            validate_option_roms_with_catalogue(&config, &listed),
+            Err(ConfigError::OptionRomOutsideScanWindow {
+                start: 0xC0000,
+                end: 0xC8000,
+                ..
+            })
+        ));
     }
 
     #[test]

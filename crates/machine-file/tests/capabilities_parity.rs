@@ -28,7 +28,7 @@ impl ImageReader for Images {
             32768
         };
         let mut bytes = vec![0; size];
-        if name.contains("ide_xtp") || name.contains("vga-1987") {
+        if name.contains("ide_xtp") || name.contains("vga-1987") || name.contains("vgabios") {
             let offset = if name.contains("vga-1987") { 8192 } else { 0 };
             bytes[offset..offset + 3].copy_from_slice(&[0x55, 0xAA, ((size - offset) / 512) as u8]);
             bytes[size - 1] =
@@ -40,6 +40,14 @@ impl ImageReader for Images {
 
 fn synthetic(document: &mut v1::MachineFile) {
     if let Some(firmware) = &mut document.firmware {
+        // Only an identified system BIOS establishes the C0000h video-ROM
+        // scan. Move video ROMs to an extension address that no repository
+        // machine uses, so their hardware is still fingerprinted.
+        for rom in firmware.option_roms.iter_mut().flatten() {
+            if rom.base == Some(0xC0000) {
+                rom.base = Some(0xE0000);
+            }
+        }
         for rom in firmware
             .bios
             .iter_mut()
@@ -143,6 +151,18 @@ fn repository_machine_file_parity() {
                 ) {
                     Ok(config) => {
                         config.validate().unwrap();
+                        if file.ends_with("machines/at-games-open.toml") {
+                            // The fingerprint must cover the open game hardware.
+                            let has = |kind: fn(&assembly::DeviceKind) -> bool| {
+                                config.devices.iter().any(|device| kind(&device.kind))
+                            };
+                            assert!(has(|k| matches!(k, assembly::DeviceKind::VgaRegisters(_))));
+                            assert!(has(|k| matches!(k, assembly::DeviceKind::LotechEms(_))));
+                            assert!(has(|k| matches!(k, assembly::DeviceKind::Ide(_))));
+                            assert!(has(|k| matches!(k, assembly::DeviceKind::Sb16(_))));
+                            assert_eq!(config.drives.len(), 2);
+                            assert_eq!(config.images[1].base, 0xE0000);
+                        }
                         fingerprint(config)
                     }
                     Err(error) => format!(
@@ -162,9 +182,10 @@ fn repository_machine_file_parity() {
         ("machines/at-freedos-from-preset.toml".into(), "3b07a7a4089cf617f743f2f7f5c80e3c85a3f7bdc0e5b6f3b6eb835946afac0c".into()),
         ("machines/at-freedos.toml".into(), "3b07a7a4089cf617f743f2f7f5c80e3c85a3f7bdc0e5b6f3b6eb835946afac0c".into()),
         ("machines/at-freedos.yaml".into(), "3b07a7a4089cf617f743f2f7f5c80e3c85a3f7bdc0e5b6f3b6eb835946afac0c".into()),
-        // Extended memory reduced from 4 MiB to 1 MiB.
-        ("machines/at-games-open.toml".into(), "4ee5dfccc25d08b8b31c27203a33cc08a7bf2717eae4028f9dc539d7f79f5829".into()),
-        ("machines/at-games.toml".into(), "error:firmware.option_roms[0]:system BIOS unlisted has no known video-ROM scan at C0000h-C7FFFh".into()),
+        // Open VGA BIOS and VGA card; the video ROM is relocated by synthetic().
+        ("machines/at-games-open.toml".into(), "8408bfe7e2d3d75a1044a012bad1d21a935a5d99a191a6b8398797e8d3476231".into()),
+        // The video ROM is relocated by synthetic().
+        ("machines/at-games.toml".into(), "5f809f39dc27e958b90c541ae3cedfa45fece732dbeb8b4ea80123509f5a4358".into()),
         ("machines/at-ide.toml".into(), "09037a394cd85fde6fedbb1570353db342b6cd8e886b1fa9fe198f77b8df3b51".into()),
         ("machines/presets/ibm-5170.toml".into(), "resolve:<repo>/machines/presets/ibm-5170.toml:16: firmware.bios.image: required fields are missing: firmware.bios.image (<repo>/machines/presets/ibm-5170.toml:16); inheritance chain: <repo>/machines/presets/ibm-5170.toml".into()),
     ];
