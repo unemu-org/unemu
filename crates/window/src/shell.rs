@@ -17,7 +17,7 @@ use winit::{
     application::ApplicationHandler,
     event::{DeviceEvent, ElementState, StartCause, WindowEvent},
     event_loop::{ActiveEventLoop, EventLoop},
-    keyboard::{KeyCode, PhysicalKey},
+    keyboard::{KeyCode, ModifiersState, PhysicalKey},
     window::{Window, WindowId},
 };
 
@@ -43,6 +43,7 @@ enum HostEvent {
 #[derive(Clone, Copy)]
 struct HostKey {
     key: KeyCode,
+    shortcut_key: Option<KeyCode>,
     state: ElementState,
     repeat: bool,
     synthetic: bool,
@@ -53,7 +54,7 @@ struct HostKey {
 impl Events {
     #[cfg(test)]
     fn key(&mut self, key: KeyCode, state: ElementState) -> bool {
-        self.keyboard(key, state, false, false)
+        self.keyboard(key, state, false, false, Some(key))
     }
 
     fn keyboard(
@@ -62,9 +63,11 @@ impl Events {
         state: ElementState,
         repeat: bool,
         synthetic: bool,
+        shortcut_key: Option<KeyCode>,
     ) -> bool {
         self.queue.push(HostEvent::Key(HostKey {
             key,
+            shortcut_key,
             state,
             repeat,
             synthetic,
@@ -82,7 +85,13 @@ impl Events {
         } = event
         {
             return if let PhysicalKey::Code(key) = event.physical_key {
-                self.keyboard(key, event.state, event.repeat, *is_synthetic)
+                self.keyboard(
+                    key,
+                    event.state,
+                    event.repeat,
+                    *is_synthetic,
+                    shell_model::logical_shortcut_key(&event.logical_key),
+                )
             } else {
                 !self.guest_focus
             };
@@ -109,6 +118,7 @@ impl Events {
         if matches!(
             event,
             WindowEvent::Focused(_)
+                | WindowEvent::ModifiersChanged(_)
                 | WindowEvent::MouseInput { .. }
                 | WindowEvent::CursorMoved { .. }
                 | WindowEvent::CursorLeft { .. }
@@ -275,7 +285,10 @@ struct Shell {
     screen: egui::Rect,
     guest_focus: bool,
     pointer: egui::Pos2,
-    modifiers: [bool; 6],
+    modifiers: [bool; 8],
+    macos_shortcuts: bool,
+    host_modifiers: ModifiersState,
+    fast_forward_key: Option<KeyCode>,
     consumed: BTreeSet<KeyCode>,
     held: BTreeSet<KeyCode>,
     guest_held: BTreeSet<KeyCode>,
@@ -570,7 +583,11 @@ impl Shell {
 
     fn status(&self, ui: &mut egui::Ui) {
         let message = if self.presenter.as_ref().is_some_and(|p| p.mouse.captured()) {
-            "Pointer captured — Ctrl+Alt+G releases"
+            if self.macos_shortcuts {
+                "Pointer captured — ⌘G releases"
+            } else {
+                "Pointer captured — Ctrl+Alt+G releases"
+            }
         } else {
             &self.message
         };
@@ -685,7 +702,10 @@ impl Shell {
             screen: egui::Rect::NOTHING,
             guest_focus: false,
             pointer: egui::Pos2::ZERO,
-            modifiers: [false; 6],
+            modifiers: [false; 8],
+            macos_shortcuts: cfg!(target_os = "macos"),
+            host_modifiers: ModifiersState::empty(),
+            fast_forward_key: None,
             consumed: BTreeSet::new(),
             held: BTreeSet::new(),
             guest_held: BTreeSet::new(),
@@ -761,13 +781,26 @@ impl Shell {
         self.sync_routing();
     }
 
+    fn modifiers_changed(&mut self, modifiers: ModifiersState) {
+        if self.host_modifiers.super_key() && !modifiers.super_key() {
+            let elapsed = self.elapsed();
+            if let Some(presenter) = &mut self.presenter {
+                presenter.hold_fast_forward(false, elapsed);
+            }
+            self.fast_forward_key = None;
+        }
+        // Guest focus resets must not erase modifiers still held by the host.
+        self.host_modifiers = modifiers;
+    }
+
     fn reset_keyboard(&mut self) {
         let elapsed = self.elapsed();
         if let Some(presenter) = &mut self.presenter {
             presenter.hold_fast_forward(false, elapsed);
             presenter.focus_changed(false);
         }
-        self.modifiers = [false; 6];
+        self.modifiers = [false; 8];
+        self.fast_forward_key = None;
         self.consumed.clear();
         self.held.clear();
         self.guest_held.clear();
@@ -1003,8 +1036,10 @@ impl Shell {
         self.guest_focus = true;
         self.modal_paused = false;
         self.texture = None;
-        self.message =
-            "Running — click the screen to capture the pointer; Ctrl+Alt+G releases".into();
+        self.message = format!(
+            "Running — click the screen to capture the pointer; {} releases",
+            shell_model::shortcut_text("Ctrl+Alt+G", self.macos_shortcuts)
+        );
         *self.errors.borrow_mut() = None;
         self.dialog = None;
         self.sync_routing();
@@ -1173,8 +1208,9 @@ impl Shell {
             Mute => if let Some(presenter) = &mut self.presenter { presenter.audio.toggle_mute(); },
             Release => self.release_pointer(),
             Fullscreen => { self.fullscreen = !self.fullscreen; ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(self.fullscreen)); },
+            Minimize => { self.release(); ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true)); },
             Exit => { self.stop(); ctx.send_viewport_cmd(egui::ViewportCommand::Close); },
-            Shortcuts => self.dialog = Some(("Keyboard shortcuts", SHORTCUTS.into())),
+            Shortcuts => self.dialog = Some(("Keyboard shortcuts", shortcuts_help(self.macos_shortcuts))),
             About => self.dialog = Some(("About unemupc98", format!("unemupc98 {}\nIBM PC/AT emulator\nAGPL-3.0-or-later\nx86jit · egui / eframe · cpal\n\n{}\n\n{}", env!("CARGO_PKG_VERSION"), window::FONT_NOTICE, window::EGUI_FONT_NOTICE))),
             Placeholder(title) => self.dialog = Some((title, if title == "Open machine file" { "Open a machine description in the library." } else { "not yet available" }.into())),
             FirmwareFolders => { self.preferences_draft = self.preferences.clone(); self.rom_folder_input.clear(); self.dialog = Some(("ROM folders", "Firmware is located by SHA-256. Files are read in place; nothing is copied.".into())); },
@@ -1195,7 +1231,8 @@ impl Shell {
         if ui
             .add_enabled(
                 self.enablement().allows(command),
-                egui::Button::new(label).shortcut_text(shortcut),
+                egui::Button::new(label)
+                    .shortcut_text(shell_model::shortcut_text(shortcut, self.macos_shortcuts)),
             )
             .clicked()
         {
@@ -1221,7 +1258,13 @@ impl Shell {
                 }
                 ui.separator();
                 self.item(ui, "Machine library", "", Library, commands);
-                self.item(ui, "Exit", "", Exit, commands);
+                self.item(
+                    ui,
+                    "Exit",
+                    if self.macos_shortcuts { "⌘Q" } else { "" },
+                    Exit,
+                    commands,
+                );
             });
             ui.menu_button("Machine", |ui| {
                 for (label, shortcut, command) in [
@@ -1282,7 +1325,13 @@ impl Shell {
                         self.item(
                             ui,
                             &format!("Insert into {drive}…"),
-                            if unit == 0 { "Ctrl+Alt+I" } else { "" },
+                            if unit == 0 {
+                                "Ctrl+Alt+I"
+                            } else if self.macos_shortcuts {
+                                "Ctrl+Alt+Shift+I"
+                            } else {
+                                ""
+                            },
                             Insert(unit),
                             commands,
                         );
@@ -1356,7 +1405,9 @@ impl Shell {
                     ui.separator();
                     ui.add_enabled(
                         false,
-                        egui::Button::new("Hold for Unlimited").shortcut_text("Ctrl+Alt+T"),
+                        egui::Button::new("Hold for Unlimited").shortcut_text(
+                            shell_model::shortcut_text("Ctrl+Alt+T", self.macos_shortcuts),
+                        ),
                     );
                 });
                 ui.menu_button("Skin", |ui| {
@@ -1670,6 +1721,9 @@ impl Shell {
                 }
             };
             match event {
+                WindowEvent::ModifiersChanged(modifiers) if self.macos_shortcuts => {
+                    self.modifiers_changed(modifiers.state());
+                }
                 WindowEvent::Focused(false) => self.focus_lost(),
                 WindowEvent::Focused(true) => self.release(),
                 WindowEvent::Occluded(hidden) => {
@@ -1738,6 +1792,7 @@ impl Shell {
         self.keyboard(
             HostKey {
                 key,
+                shortcut_key: Some(key),
                 state,
                 repeat: self.held.contains(&key) && state == ElementState::Pressed,
                 synthetic: false,
@@ -1756,12 +1811,23 @@ impl Shell {
             } else if !self.guest_held.remove(&key) {
                 return;
             }
-            presenter.key_event(key, state);
+            if self.macos_shortcuts {
+                // The legacy presenter reserves Ctrl+Alt for media and mouse
+                // controls; macOS must pass those chords intact to the guest.
+                if presenter.running && presenter.error.is_none() {
+                    presenter.keyboard.key_event(key, state);
+                }
+            } else {
+                presenter.key_event(key, state);
+            }
         }
     }
 
     fn consume_hotkey(&mut self, key: KeyCode) {
         self.consumed.insert(key);
+        if self.macos_shortcuts {
+            return;
+        }
         // A modifier already used by an earlier guest chord needs its break
         // before that same physical key becomes part of a host shortcut.
         let modifiers = self
@@ -1779,6 +1845,7 @@ impl Shell {
     fn keyboard(&mut self, event: HostKey, blocked: bool, ctx: &egui::Context) {
         let HostKey {
             key,
+            shortcut_key,
             state,
             repeat,
             synthetic,
@@ -1790,6 +1857,8 @@ impl Shell {
         }
         let blocked = blocked || self.has_dialog();
         let pressed = state == ElementState::Pressed;
+        let command_modifier =
+            self.macos_shortcuts && matches!(key, KeyCode::SuperLeft | KeyCode::SuperRight);
         if pressed && (synthetic || guest_focus != self.guest_focus) {
             return;
         }
@@ -1806,10 +1875,26 @@ impl Shell {
             if !pressed || fresh {
                 self.modifiers[index] = pressed;
             }
+            if self.macos_shortcuts {
+                let flag = match index {
+                    0 | 1 => ModifiersState::CONTROL,
+                    2 | 3 => ModifiersState::ALT,
+                    4 | 5 => ModifiersState::SHIFT,
+                    _ => ModifiersState::SUPER,
+                };
+                let first = index / 2 * 2;
+                let mut modifiers = self.host_modifiers;
+                modifiers.set(flag, self.modifiers[first..first + 2].contains(&true));
+                self.modifiers_changed(modifiers);
+            }
+        }
+        if command_modifier {
+            return;
         }
         if self.consumed.contains(&key) {
             if !pressed {
-                if key == KeyCode::KeyT {
+                if self.fast_forward_key == Some(key) {
+                    self.fast_forward_key = None;
                     let elapsed = self.elapsed();
                     if let Some(presenter) = &mut self.presenter {
                         presenter.hold_fast_forward(false, elapsed);
@@ -1819,19 +1904,55 @@ impl Shell {
             }
             return;
         }
+        let shortcut_key = if self.macos_shortcuts {
+            shortcut_key
+        } else {
+            Some(key)
+        };
+        let mut modifiers = self.modifiers;
+        if self.macos_shortcuts {
+            modifiers = [
+                self.host_modifiers.control_key(),
+                false,
+                self.host_modifiers.alt_key(),
+                false,
+                self.host_modifiers.shift_key(),
+                false,
+                self.host_modifiers.super_key(),
+                false,
+            ];
+        }
         if !blocked && fresh {
-            if let Some(command) = shell_model::hotkey(
-                key,
-                self.modifiers[..2].contains(&true),
-                self.modifiers[2..4].contains(&true),
-                self.modifiers[4..].contains(&true),
-                self.state(),
-                self.guest_focus,
-            ) {
+            if let Some(command) = shortcut_key.and_then(|shortcut_key| {
+                shell_model::hotkey(
+                    shortcut_key,
+                    modifiers,
+                    self.state(),
+                    self.guest_focus,
+                    self.macos_shortcuts,
+                )
+            }) {
                 self.consume_hotkey(key);
+                if command == Command::FastForward {
+                    self.fast_forward_key = Some(key);
+                }
                 self.command(command, ctx);
                 return;
             }
+        }
+        if self.macos_shortcuts
+            && self.host_modifiers.super_key()
+            && !matches!(
+                key,
+                KeyCode::ControlLeft | KeyCode::ControlRight | KeyCode::AltLeft | KeyCode::AltRight
+            )
+        {
+            if fresh {
+                self.consumed.insert(key);
+            } else if !pressed {
+                self.send_guest_key(key, state);
+            }
+            return;
         }
         if !self.guest_focus {
             return;
@@ -2300,7 +2421,15 @@ impl eframe::App for Shell {
     }
 }
 
-fn configure_context(ctx: &egui::Context) {
+pub(super) fn configure_context(ctx: &egui::Context) {
+    // The shortcut symbols need glyphs beyond the proportional Latin font.
+    let mut fonts = egui::FontDefinitions::default();
+    fonts
+        .families
+        .entry(egui::FontFamily::Proportional)
+        .or_default()
+        .push("Hack".into());
+    ctx.set_fonts(fonts);
     ctx.options_mut(|options| options.zoom_with_keyboard = false);
 }
 
@@ -2312,6 +2441,8 @@ fn modifier_index(key: KeyCode) -> Option<usize> {
         KeyCode::AltRight => Some(3),
         KeyCode::ShiftLeft => Some(4),
         KeyCode::ShiftRight => Some(5),
+        KeyCode::SuperLeft => Some(6),
+        KeyCode::SuperRight => Some(7),
         _ => None,
     }
 }
@@ -2386,7 +2517,37 @@ pub(crate) fn gradient_title(ui: &mut egui::Ui, title: &str) {
     );
 }
 
-const SHORTCUTS: &str = "Enter / double-click: start selected machine\nCtrl+Alt+P: pause / resume\nCtrl+Alt+T: hold to fast-forward (Unlimited)\nCtrl+Alt+Q: stop and return to library\nCtrl+Alt+End: send guest Ctrl+Alt+Del\nCtrl+Alt+F: next A: image (Shift for B:)\nCtrl+Alt+E: eject A: (Shift for B:)\nCtrl+Alt+I: insert A: floppy (Shift for B:)\nCtrl+Alt+M: toggle user mute (also while speed-muted)\nCtrl+Alt+G: release pointer\nCtrl+Alt+Enter: full screen\nCtrl+N: new machine (not yet available)\nCtrl+O: open machine file\nCtrl+,: settings\nF1: keyboard shortcuts (outside guest focus)\nCtrl+N/O/, also require shell focus while running.\n\nClick the emulated screen to focus guest input and capture the pointer.\nMenus, dialogs and focus loss release the pointer and held guest keys.";
+fn shortcuts_help(macos: bool) -> String {
+    let mut help = String::from("Enter / double-click: start selected machine\n");
+    for (shortcut, action) in [
+        ("Ctrl+Alt+P", "pause / resume"),
+        ("Ctrl+Alt+T", "hold to fast-forward (Unlimited)"),
+        ("Ctrl+Alt+Q", "stop and return to library"),
+        ("Ctrl+Alt+End", "send guest Ctrl+Alt+Del"),
+        ("Ctrl+Alt+F", "next A: image (Shift for B:)"),
+        ("Ctrl+Alt+E", "eject A: (Shift for B:)"),
+        ("Ctrl+Alt+I", "insert A: floppy (Shift for B:)"),
+        ("Ctrl+Alt+M", "toggle user mute (also while speed-muted)"),
+        ("Ctrl+Alt+G", "release pointer"),
+        ("Ctrl+Alt+Enter", "full screen"),
+        ("Ctrl+N", "new machine (not yet available)"),
+        ("Ctrl+O", "open machine file"),
+        ("Ctrl+,", "settings"),
+    ] {
+        help.push_str(&format!(
+            "{}: {action}\n",
+            shell_model::shortcut_text(shortcut, macos)
+        ));
+    }
+    if macos {
+        help.push_str("⌘⇧/: keyboard shortcuts\nPress ⌘ first for Command+Shift shortcuts. Shift pressed first remains guest input.\n");
+        help.push_str("⌘Q: quit; ⌘W: close; ⌘H: hide; ⌘M: minimize; ⌘Tab: switch application\nCommand chords never reach the guest. Ctrl and Alt remain guest input.\n");
+    } else {
+        help.push_str("F1: keyboard shortcuts (outside guest focus)\nCtrl+N/O/, also require shell focus while running.\n");
+    }
+    help.push_str("\nClick the emulated screen to focus guest input and capture the pointer.\nMenus, dialogs and focus loss release the pointer and held guest keys.");
+    help
+}
 
 #[cfg(test)]
 mod tests {
@@ -2427,7 +2588,10 @@ mod tests {
             screen: egui::Rect::NOTHING,
             guest_focus: true,
             pointer: egui::Pos2::ZERO,
-            modifiers: [false; 6],
+            modifiers: [false; 8],
+            macos_shortcuts: false,
+            host_modifiers: ModifiersState::empty(),
+            fast_forward_key: None,
             consumed: BTreeSet::new(),
             held: BTreeSet::new(),
             guest_held: BTreeSet::new(),
@@ -2879,21 +3043,21 @@ mod tests {
             shell
                 .events
                 .borrow_mut()
-                .keyboard(key, Pressed, true, false);
+                .keyboard(key, Pressed, true, false, Some(key));
             shell.started(presenter);
-            assert_eq!(shell.modifiers, [false; 6]);
+            assert_eq!(shell.modifiers, [false; 8]);
             assert!(shell.held.is_empty());
             assert!(shell.consumed.is_empty());
             shell
                 .events
                 .borrow_mut()
-                .keyboard(key, Pressed, true, false);
+                .keyboard(key, Pressed, true, false, Some(key));
             shell.events.borrow_mut().key(key, Released);
             shell.input(&ctx, false);
             assert!(take_guest_scancodes(&mut shell).is_empty(), "{key:?}");
             assert!(shell.guest_held.is_empty());
             shell.stop();
-            assert_eq!(shell.modifiers, [false; 6]);
+            assert_eq!(shell.modifiers, [false; 8]);
             assert!(shell.held.is_empty());
         }
     }
@@ -2907,15 +3071,21 @@ mod tests {
         shell.events.borrow_mut().key(KeyCode::ControlLeft, Pressed);
         shell.focus_guest();
         assert!(shell.held.is_empty());
-        assert_eq!(shell.modifiers, [false; 6]);
-        shell
-            .events
-            .borrow_mut()
-            .keyboard(KeyCode::ControlLeft, Pressed, false, true);
-        shell
-            .events
-            .borrow_mut()
-            .keyboard(KeyCode::ControlLeft, Pressed, true, false);
+        assert_eq!(shell.modifiers, [false; 8]);
+        shell.events.borrow_mut().keyboard(
+            KeyCode::ControlLeft,
+            Pressed,
+            false,
+            true,
+            Some(KeyCode::ControlLeft),
+        );
+        shell.events.borrow_mut().keyboard(
+            KeyCode::ControlLeft,
+            Pressed,
+            true,
+            false,
+            Some(KeyCode::ControlLeft),
+        );
         shell
             .events
             .borrow_mut()
@@ -2961,6 +3131,493 @@ mod tests {
         shell.events.borrow_mut().key(KeyCode::KeyC, Released);
         shell.input(&ctx, false);
         assert!(take_guest_scancodes(&mut shell).is_empty());
+    }
+
+    fn logical_key(
+        shell: &mut Shell,
+        physical: KeyCode,
+        logical: &str,
+        state: ElementState,
+        ctx: &egui::Context,
+    ) {
+        shell.keyboard(
+            HostKey {
+                key: physical,
+                shortcut_key: shell_model::logical_shortcut_key(&winit::keyboard::Key::Character(
+                    logical.into(),
+                )),
+                state,
+                repeat: shell.held.contains(&physical) && state == Pressed,
+                synthetic: false,
+                guest_focus: shell.guest_focus,
+                session: shell.session,
+            },
+            false,
+            ctx,
+        );
+    }
+
+    #[test]
+    fn macos_command_state_survives_guest_focus_resets() {
+        use KeyCode::*;
+        for reset in ["click", "start", "focus", "menu"] {
+            let mut shell = keyboard_shell();
+            shell.macos_shortcuts = true;
+            let ctx = egui::Context::default();
+            shell.release();
+            shell.key(SuperLeft, Pressed, false, &ctx);
+            match reset {
+                "start" => {
+                    let presenter = shell.presenter.take().unwrap();
+                    shell.started(presenter);
+                }
+                "focus" => {
+                    shell
+                        .events
+                        .borrow_mut()
+                        .forward(&WindowEvent::Focused(true));
+                    shell.input(&ctx, false);
+                    shell.focus_guest();
+                }
+                "menu" => {
+                    for _ in 0..3 {
+                        shell.release();
+                    }
+                    shell.focus_guest();
+                }
+                _ => shell.focus_guest(),
+            }
+            assert!(shell.host_modifiers.super_key(), "{reset}");
+            shell.key(KeyA, Pressed, false, &ctx);
+            shell.key(KeyA, Released, false, &ctx);
+            assert!(take_guest_scancodes(&mut shell).is_empty(), "{reset}");
+            shell.key(KeyK, Pressed, false, &ctx);
+            assert_eq!(shell.state(), State::Stopped, "{reset}");
+        }
+    }
+
+    #[test]
+    fn macos_modifiers_changed_alone_routes_shift_chords_and_ends_fast_forward() {
+        use KeyCode::*;
+        let mut shell = keyboard_shell();
+        shell.macos_shortcuts = true;
+        let ctx = egui::Context::default();
+        shell.focus_lost();
+        for event in [
+            WindowEvent::Focused(true),
+            WindowEvent::ModifiersChanged(winit::keyboard::ModifiersState::SUPER.into()),
+        ] {
+            shell.events.borrow_mut().forward(&event);
+        }
+        shell.input(&ctx, false);
+        shell.focus_guest();
+        logical_key(&mut shell, KeyY, "t", Pressed, &ctx);
+        assert_eq!(
+            shell.presenter.as_ref().unwrap().pacing.effective(),
+            crate::pacing::Speed::Unlimited
+        );
+        logical_key(&mut shell, KeyY, "t", Released, &ctx);
+        assert_eq!(
+            shell.presenter.as_ref().unwrap().pacing.effective(),
+            crate::pacing::Speed::Normal
+        );
+        logical_key(&mut shell, KeyY, "t", Pressed, &ctx);
+        shell
+            .events
+            .borrow_mut()
+            .forward(&WindowEvent::ModifiersChanged(
+                winit::keyboard::ModifiersState::empty().into(),
+            ));
+        shell.input(&ctx, false);
+        assert_eq!(
+            shell.presenter.as_ref().unwrap().pacing.effective(),
+            crate::pacing::Speed::Normal
+        );
+        logical_key(&mut shell, KeyY, "t", Released, &ctx);
+        assert!(take_guest_scancodes(&mut shell).is_empty());
+        shell.focus_lost();
+        shell
+            .events
+            .borrow_mut()
+            .forward(&WindowEvent::Focused(true));
+        shell
+            .events
+            .borrow_mut()
+            .forward(&WindowEvent::ModifiersChanged(
+                (ModifiersState::SUPER | ModifiersState::SHIFT).into(),
+            ));
+        shell.input(&ctx, false);
+        shell.focus_guest();
+        shell.presenter.as_mut().unwrap().audio.activate_for_test();
+        logical_key(&mut shell, Semicolon, "M", Pressed, &ctx);
+        logical_key(&mut shell, Semicolon, "M", Released, &ctx);
+        assert!(shell.presenter.as_ref().unwrap().audio.muted());
+        assert!(shell.guest_focus);
+        assert!(take_guest_scancodes(&mut shell).is_empty());
+    }
+
+    #[test]
+    fn macos_shortcuts_follow_logical_azerty_keys_and_guest_input_stays_physical() {
+        use KeyCode::*;
+        let mut shell = keyboard_shell();
+        shell.macos_shortcuts = true;
+        let ctx = egui::Context::default();
+        ctx.begin_pass(Default::default());
+        shell.key(SuperLeft, Pressed, false, &ctx);
+        for (physical, logical) in [(KeyQ, "a"), (KeyW, "z"), (KeyA, "q")] {
+            logical_key(&mut shell, physical, logical, Pressed, &ctx);
+            logical_key(&mut shell, physical, logical, Released, &ctx);
+            assert_eq!(shell.state(), State::Running);
+        }
+        logical_key(&mut shell, KeyM, ",", Pressed, &ctx);
+        logical_key(&mut shell, KeyM, ",", Released, &ctx);
+        assert!(!shell.guest_focus);
+        assert!(take_guest_scancodes(&mut shell).is_empty());
+        shell.focus_guest();
+        shell.presenter.as_mut().unwrap().audio.activate_for_test();
+        shell.key(ShiftLeft, Pressed, false, &ctx);
+        logical_key(&mut shell, Semicolon, "M", Pressed, &ctx);
+        logical_key(&mut shell, Semicolon, "M", Released, &ctx);
+        shell.key(ShiftLeft, Released, false, &ctx);
+        assert!(shell.presenter.as_ref().unwrap().audio.muted());
+        assert!(take_guest_scancodes(&mut shell).is_empty());
+        shell.key(SuperLeft, Released, false, &ctx);
+        logical_key(&mut shell, KeyQ, "a", Pressed, &ctx);
+        logical_key(&mut shell, KeyQ, "a", Released, &ctx);
+        assert_eq!(take_guest_scancodes(&mut shell), [0x10, 0x90]);
+        shell.key(SuperLeft, Pressed, false, &ctx);
+        logical_key(&mut shell, KeyZ, "w", Pressed, &ctx);
+        assert_eq!(shell.state(), State::Stopped);
+        let mut output = ctx.end_pass();
+        output.textures_delta.clear();
+        let commands = &output.viewport_output[&egui::ViewportId::ROOT].commands;
+        assert!(commands.contains(&egui::ViewportCommand::Close));
+        assert!(!commands.contains(&egui::ViewportCommand::Minimized(true)));
+    }
+
+    #[test]
+    fn macos_command_first_suppresses_shift_but_shift_first_remains_guest_input() {
+        use KeyCode::*;
+        for shift in [ShiftLeft, ShiftRight] {
+            for command_first in [false, true] {
+                let mut shell = keyboard_shell();
+                shell.macos_shortcuts = true;
+                shell.presenter.as_mut().unwrap().audio.activate_for_test();
+                let ctx = egui::Context::default();
+                for key in if command_first {
+                    [SuperLeft, shift]
+                } else {
+                    [shift, SuperLeft]
+                } {
+                    shell.key(key, Pressed, false, &ctx);
+                }
+                shell.key(KeyM, Pressed, false, &ctx);
+                shell.key(KeyM, Released, false, &ctx);
+                shell.key(shift, Released, false, &ctx);
+                shell.key(SuperLeft, Released, false, &ctx);
+                assert!(shell.presenter.as_ref().unwrap().audio.muted());
+                let expected = if command_first {
+                    Vec::new()
+                } else {
+                    [Pressed, Released]
+                        .into_iter()
+                        .flat_map(|state| window::set1_scancodes(shift, state).unwrap())
+                        .collect()
+                };
+                assert_eq!(take_guest_scancodes(&mut shell), expected);
+            }
+        }
+        assert!(shortcuts_help(true).contains("Press ⌘ first"));
+    }
+
+    #[test]
+    fn macos_command_shortcuts_route_actions_without_guest_key_transitions() {
+        use KeyCode::*;
+        for (key, shift, expected) in [
+            (KeyF, false, Command::Next(0)),
+            (KeyF, true, Command::Next(1)),
+            (KeyE, false, Command::Eject(0)),
+            (KeyE, true, Command::Eject(1)),
+            (KeyI, false, Command::Insert(0)),
+            (KeyI, true, Command::Insert(1)),
+            (KeyM, true, Command::Mute),
+            (KeyT, false, Command::FastForward),
+            (KeyG, false, Command::Release),
+            (KeyP, false, Command::Pause),
+            (KeyK, false, Command::Stop),
+            (End, false, Command::Reset),
+            (Enter, false, Command::Fullscreen),
+            (KeyN, false, Command::Placeholder("New machine")),
+            (KeyO, false, Command::Placeholder("Open machine file")),
+            (Comma, false, Command::Settings),
+            (Slash, true, Command::Shortcuts),
+            (KeyW, false, Command::Exit),
+            (KeyM, false, Command::Minimize),
+        ] {
+            for command_key in [SuperLeft, SuperRight] {
+                let mut shell = media_shell();
+                shell.presenter.as_mut().unwrap().assembled =
+                    assembly::assemble(&assembly::at_keyboard(vec![0xEB, 0xFE])).unwrap();
+                shell.macos_shortcuts = true;
+                let presenter = shell.presenter.as_mut().unwrap();
+                presenter.media_slots[1] = presenter.media_slots[0].clone();
+                presenter.audio.activate_for_test();
+                let ctx = egui::Context::default();
+                ctx.begin_pass(egui::RawInput::default());
+                shell.key(command_key, Pressed, false, &ctx);
+                assert!(take_guest_scancodes(&mut shell).is_empty());
+                if shift {
+                    shell.key(ShiftLeft, Pressed, false, &ctx);
+                    assert!(take_guest_scancodes(&mut shell).is_empty());
+                }
+                assert_eq!(
+                    shell_model::hotkey(key, shell.modifiers, shell.state(), true, true),
+                    Some(expected)
+                );
+                shell.key(key, Pressed, false, &ctx);
+                match expected {
+                    Command::Next(unit) | Command::Eject(unit) => {
+                        assert_eq!(
+                            shell.presenter.as_ref().unwrap().media_events,
+                            [(
+                                unit,
+                                if matches!(expected, Command::Next(_)) {
+                                    assembly::FloppyAction::Next
+                                } else {
+                                    assembly::FloppyAction::Eject
+                                }
+                            )]
+                        );
+                    }
+                    Command::Insert(unit) => {
+                        assert_eq!(shell.insert_dialog.as_ref().unwrap().unit, unit)
+                    }
+                    Command::Mute => assert!(shell.presenter.as_ref().unwrap().audio.muted()),
+                    Command::FastForward => assert_eq!(
+                        shell.presenter.as_ref().unwrap().pacing.effective(),
+                        crate::pacing::Speed::Unlimited
+                    ),
+                    Command::Pause => assert!(shell.paused),
+                    Command::Stop | Command::Exit => assert!(shell.presenter.is_none()),
+                    Command::Fullscreen => assert!(shell.fullscreen),
+                    Command::Placeholder(_) | Command::Shortcuts => assert!(shell.dialog.is_some()),
+                    Command::Minimize => assert!(!shell.guest_focus),
+                    Command::Settings => assert!(!shell.guest_focus),
+                    Command::Release => {
+                        assert!(!shell.presenter.as_ref().unwrap().mouse.captured())
+                    }
+                    Command::Reset => assert_eq!(
+                        take_guest_scancodes(&mut shell),
+                        [0x1D, 0x38, 0x53, 0xD3, 0xB8, 0x9D]
+                    ),
+                    _ => unreachable!(),
+                }
+                if shell.presenter.is_some() {
+                    assert!(take_guest_scancodes(&mut shell).is_empty(), "{expected:?}");
+                }
+                shell.key(key, Pressed, false, &ctx);
+                for released in [command_key, ShiftLeft, key] {
+                    shell.key(released, Released, false, &ctx);
+                }
+                if shell.presenter.is_some() {
+                    assert!(take_guest_scancodes(&mut shell).is_empty(), "{expected:?}");
+                }
+                assert!(shell.guest_held.is_empty());
+                let mut output = ctx.end_pass();
+                output.textures_delta.clear();
+                let commands = &output.viewport_output[&egui::ViewportId::ROOT].commands;
+                match expected {
+                    Command::Exit => assert!(commands.contains(&egui::ViewportCommand::Close)),
+                    Command::Minimize => {
+                        assert!(commands.contains(&egui::ViewportCommand::Minimized(true)))
+                    }
+                    Command::Fullscreen => {
+                        assert!(commands.contains(&egui::ViewportCommand::Fullscreen(true)))
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn macos_ctrl_alt_and_the_old_host_chords_remain_immediate_guest_input() {
+        use KeyCode::*;
+        for (ctrl, alt, prefix, suffix) in [
+            (ControlLeft, AltLeft, vec![0x1D, 0x38], vec![0xB8, 0x9D]),
+            (
+                ControlRight,
+                AltRight,
+                vec![0xE0, 0x1D, 0xE0, 0x38],
+                vec![0xE0, 0xB8, 0xE0, 0x9D],
+            ),
+        ] {
+            for key in [
+                KeyF, KeyE, KeyI, KeyM, KeyT, KeyG, KeyP, KeyQ, KeyN, KeyO, Comma, F1, Enter, End,
+                Delete,
+            ] {
+                let mut shell = keyboard_shell();
+                shell.macos_shortcuts = true;
+                let ctx = egui::Context::default();
+                shell.key(ctrl, Pressed, false, &ctx);
+                assert_eq!(take_guest_scancodes(&mut shell), prefix[..prefix.len() / 2]);
+                shell.key(alt, Pressed, false, &ctx);
+                assert_eq!(take_guest_scancodes(&mut shell), prefix[prefix.len() / 2..]);
+                shell.key(key, Pressed, false, &ctx);
+                assert_eq!(
+                    take_guest_scancodes(&mut shell),
+                    window::set1_scancodes(key, Pressed).unwrap()
+                );
+                shell.key(key, Released, false, &ctx);
+                assert_eq!(
+                    take_guest_scancodes(&mut shell),
+                    window::set1_scancodes(key, Released).unwrap()
+                );
+                shell.key(alt, Released, false, &ctx);
+                shell.key(ctrl, Released, false, &ctx);
+                assert_eq!(take_guest_scancodes(&mut shell), suffix);
+                assert_eq!(shell.state(), State::Running);
+                assert!(shell.dialog.is_none());
+            }
+        }
+    }
+
+    #[test]
+    fn macos_command_hold_ends_on_either_key_release_or_focus_loss() {
+        use KeyCode::*;
+        for selected in crate::pacing::Speed::ALL {
+            for end in [SuperLeft, KeyT, Escape] {
+                let mut shell = keyboard_shell();
+                shell.macos_shortcuts = true;
+                let ctx = egui::Context::default();
+                shell.command(Command::Speed(selected), &ctx);
+                shell.key(SuperLeft, Pressed, false, &ctx);
+                shell.key(KeyT, Pressed, false, &ctx);
+                assert_eq!(
+                    shell.presenter.as_ref().unwrap().pacing.effective(),
+                    crate::pacing::Speed::Unlimited
+                );
+                if end == Escape {
+                    shell.focus_lost();
+                    shell.focus_guest();
+                    shell.key(SuperLeft, Released, false, &ctx);
+                } else {
+                    shell.key(end, Released, true, &ctx);
+                }
+                assert_eq!(
+                    shell.presenter.as_ref().unwrap().pacing.effective(),
+                    selected
+                );
+                if end != KeyT {
+                    shell.key(KeyT, Pressed, false, &ctx);
+                }
+                shell.key(KeyT, Released, false, &ctx);
+                shell.key(SuperLeft, Released, false, &ctx);
+                if end == Escape {
+                    assert_eq!(take_guest_scancodes(&mut shell), [0x14, 0x94]);
+                } else {
+                    assert!(take_guest_scancodes(&mut shell).is_empty());
+                }
+                assert!(shell.modifiers.iter().all(|held| !held));
+            }
+        }
+    }
+
+    #[test]
+    fn macos_modifiers_changed_on_refocus_suppresses_keys_without_restarting_a_hold() {
+        use KeyCode::*;
+        let mut shell = keyboard_shell();
+        shell.macos_shortcuts = true;
+        let ctx = egui::Context::default();
+        shell.key(SuperLeft, Pressed, false, &ctx);
+        shell.key(KeyT, Pressed, false, &ctx);
+        shell.focus_lost();
+        for event in [
+            WindowEvent::ModifiersChanged(winit::keyboard::ModifiersState::empty().into()),
+            WindowEvent::Focused(true),
+            WindowEvent::ModifiersChanged(winit::keyboard::ModifiersState::SUPER.into()),
+        ] {
+            shell.events.borrow_mut().forward(&event);
+        }
+        shell.input(&ctx, false);
+        shell.focus_guest();
+        shell.keyboard(
+            HostKey {
+                key: KeyT,
+                shortcut_key: Some(KeyT),
+                state: Pressed,
+                repeat: true,
+                synthetic: false,
+                guest_focus: true,
+                session: shell.session,
+            },
+            false,
+            &ctx,
+        );
+        assert_eq!(
+            shell.presenter.as_ref().unwrap().pacing.effective(),
+            crate::pacing::Speed::Normal
+        );
+        shell.key(KeyA, Pressed, false, &ctx);
+        shell.key(KeyA, Released, false, &ctx);
+        assert!(take_guest_scancodes(&mut shell).is_empty());
+        shell
+            .events
+            .borrow_mut()
+            .forward(&WindowEvent::ModifiersChanged(
+                winit::keyboard::ModifiersState::empty().into(),
+            ));
+        shell.input(&ctx, false);
+        shell.key(KeyA, Pressed, false, &ctx);
+        shell.key(KeyA, Released, false, &ctx);
+        assert_eq!(take_guest_scancodes(&mut shell), [0x1E, 0x9E]);
+    }
+
+    #[test]
+    fn macos_ctrl_alt_g_keeps_capture_and_command_g_releases_it() {
+        use KeyCode::*;
+        let mut shell = captured_shell();
+        shell.presenter.as_mut().unwrap().assembled =
+            assembly::assemble(&assembly::at_keyboard(vec![0xEB, 0xFE])).unwrap();
+        shell.macos_shortcuts = true;
+        let ctx = egui::Context::default();
+        for key in [ControlLeft, AltLeft, KeyG] {
+            shell.key(key, Pressed, false, &ctx);
+        }
+        assert!(shell.presenter.as_ref().unwrap().mouse.captured());
+        assert_eq!(take_guest_scancodes(&mut shell), [0x1D, 0x38, 0x22]);
+        shell.key(KeyG, Released, false, &ctx);
+        shell.key(SuperLeft, Pressed, false, &ctx);
+        // Ctrl and Alt remain guest-held until their physical releases.
+        shell.key(ControlLeft, Released, false, &ctx);
+        shell.key(AltLeft, Released, false, &ctx);
+        assert_eq!(take_guest_scancodes(&mut shell), [0xA2, 0x9D, 0xB8]);
+        shell.key(KeyG, Pressed, false, &ctx);
+        assert!(!shell.presenter.as_ref().unwrap().mouse.captured());
+        shell.key(SuperLeft, Released, false, &ctx);
+        shell.key(KeyG, Released, false, &ctx);
+        assert!(take_guest_scancodes(&mut shell).is_empty());
+    }
+
+    #[test]
+    fn macos_unassigned_command_chords_and_focus_loss_never_type_guest_keys() {
+        use KeyCode::*;
+        for key in [KeyH, Tab, KeyA, ShiftLeft, ShiftRight, SuperRight] {
+            let mut shell = keyboard_shell();
+            shell.macos_shortcuts = true;
+            let ctx = egui::Context::default();
+            shell.key(SuperLeft, Pressed, false, &ctx);
+            shell.key(key, Pressed, false, &ctx);
+            shell.focus_lost();
+            shell.focus_guest();
+            shell.key(SuperLeft, Released, false, &ctx);
+            shell.key(key, Released, false, &ctx);
+            assert!(take_guest_scancodes(&mut shell).is_empty());
+        }
+        let help = shortcuts_help(true);
+        assert!(help.contains("⌘T: hold to fast-forward"));
+        assert!(help.contains("⌘⇧M: toggle user mute"));
+        assert!(!help.contains("Ctrl+Alt+T"));
     }
 
     #[test]
@@ -3013,7 +3670,7 @@ mod tests {
                 assert!(!presenter.pacing.status().starts_with("Fast-forward"));
             }
         }
-        assert!(SHORTCUTS.contains("Ctrl+Alt+T: hold to fast-forward"));
+        assert!(shortcuts_help(false).contains("Ctrl+Alt+T: hold to fast-forward"));
     }
 
     #[test]
@@ -3448,7 +4105,7 @@ mod tests {
         }
         shell.visibility(&ctx, true);
         assert!(shell.events.borrow().queue.is_empty());
-        assert_eq!(shell.modifiers, [false; 6]);
+        assert_eq!(shell.modifiers, [false; 8]);
         assert!(shell.held.is_empty());
         assert!(shell.consumed.is_empty());
         assert_eq!(take_guest_scancodes(&mut shell), [0x1D, 0x38, 0xB8, 0x9D]);

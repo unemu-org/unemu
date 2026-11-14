@@ -77,3 +77,25 @@ macOS the shell keeps the native title bar and does not draw its own; the
 in-window menu bar, toolbar, status bar and the rest of the classic skin stay.
 On other platforms the classic skin still draws its own title bar.
 Implemented in `crates/window/src/shell_icons.rs` (`custom_title_bar`).
+
+## Amendment 2026-11-14: Host shortcuts on macOS use Command
+
+Ctrl+Alt host chords delivered their modifiers before the shell could recognize
+an action. During a firmware keyboard test those otherwise balanced modifier
+bytes could cause a keyboard error. On macOS all host chords therefore use
+Command, which never reaches the guest. Command plus a key produces no guest
+key transitions; Ctrl and Alt are never reserved for host actions, since games
+use them as buttons. Physical Ctrl+Alt+Del remains guest input, and the existing
+menu/toolbar reset action still sends the complete guest chord.
+
+The bindings are ⌘F/⌘E/⌘I for next/eject/insert A: (Shift selects B:), ⌘P for
+pause/resume, ⌘K for Stop, ⌘End for guest reset, ⌘Enter for full screen,
+⌘G for pointer release, ⌘⇧M for mute and hold ⌘T for Unlimited. Releasing
+Command or T, or losing focus, ends the hold. Stop uses K to preserve Quit
+and avoid the system logout chord. New/Open/Settings use ⌘N/⌘O/⌘,.
+Help uses ⌘⇧/ on macOS; elsewhere F1 opens it only outside guest focus. The
+standard ⌘Q quit,
+⌘W close, ⌘H hide, ⌘M minimize and ⌘Tab application switching retain their
+meaning. Menus and Help display the platform's shortcuts. Other platforms keep
+the existing Ctrl+Alt table. Headless routing tests inject a platform flag so
+both tables run on every host.

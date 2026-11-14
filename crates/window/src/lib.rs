@@ -24,8 +24,8 @@
 //! Physical keyboard events enter a host FIFO. Immediately before each bounded
 //! run chunk it transfers bytes to the 8042, retaining bytes under backpressure.
 //! Events are quantised to chunk boundaries, never injected inside a chunk.
-//! The binary consumes Ctrl+Alt+F to insert the next A: medium and Ctrl+Alt+E
-//! to eject it; Shift selects B:. Next cycles the image list without an empty
+//! The binary consumes Command+F/E on macOS (Ctrl+Alt+F/E elsewhere) to insert
+//! the next A: medium or eject it; Shift selects B:. Next cycles the image list without an empty
 //! entry, and from empty selects the first image. Media events enter at the same
 //! run boundaries; the Media menu shows current file names or `empty`. See
 //! `backlog/docs/design/observation.md` § Floppy host input.
@@ -39,7 +39,8 @@
 //! are ignored. macOS winit 0.30 does not deliver CapsLock key events.
 //! See `backlog/docs/design/observation.md` § Host input for timing and coverage.
 //! An opt-in PS/2 or serial mouse captures on a client-area click (that click is swallowed).
-//! Ctrl+Alt+G, focus loss and suspension release capture and guest buttons.
+//! Command+G on macOS (Ctrl+Alt+G elsewhere), focus loss and suspension release
+//! capture and guest buttons.
 //! The window tries Locked then Confined, hides the cursor and shows the release
 //! chord in its status bar. winit 0.30 on macOS supports Locked by disassociating cursor
 //! position from movement; Confined is unsupported. Failed grabs leave input free.
@@ -56,7 +57,8 @@
 //! Only the binary owns a window and cpal output stream; library tests and frame
 //! sinks stay headless. Audio observations feed a 200 ms stereo ring at run
 //! boundaries; callbacks use silence on underrun and drop oldest frames on
-//! overrun. Playback never drives virtual time. Ctrl+Alt+M toggles host mute
+//! overrun. Playback never drives virtual time. Command+Shift+M on macOS
+//! (Ctrl+Alt+M elsewhere) toggles host mute
 //! only while a device is active. Playback prefills 50 ms and trims above 70 ms;
 //! recoverable host/source errors leave the window running.
 //! See `backlog/docs/design/audio.md` §Host output for formats and fallback.

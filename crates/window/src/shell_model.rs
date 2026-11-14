@@ -8,7 +8,7 @@ use std::{
     io,
     path::{Path, PathBuf},
 };
-use winit::keyboard::KeyCode;
+use winit::keyboard::{Key, KeyCode, NamedKey};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum State {
@@ -35,6 +35,7 @@ pub(crate) enum Command {
     Fullscreen,
     Library,
     Exit,
+    Minimize,
     Shortcuts,
     About,
     Placeholder(&'static str),
@@ -73,17 +74,69 @@ impl Enablement {
     }
 }
 
+pub(crate) fn logical_shortcut_key(key: &Key) -> Option<KeyCode> {
+    use KeyCode::*;
+    match key {
+        Key::Character(text) => match text.to_lowercase().as_str() {
+            "f" => Some(KeyF),
+            "e" => Some(KeyE),
+            "i" => Some(KeyI),
+            "m" => Some(KeyM),
+            "k" => Some(KeyK),
+            "w" => Some(KeyW),
+            "t" => Some(KeyT),
+            "g" => Some(KeyG),
+            "p" => Some(KeyP),
+            "n" => Some(KeyN),
+            "o" => Some(KeyO),
+            "," => Some(Comma),
+            "/" | "?" => Some(Slash),
+            _ => None,
+        },
+        Key::Named(NamedKey::End) => Some(End),
+        Key::Named(NamedKey::Enter) => Some(Enter),
+        _ => None,
+    }
+}
+
 pub(crate) fn hotkey(
     key: KeyCode,
-    ctrl: bool,
-    alt: bool,
-    shift: bool,
+    modifiers: [bool; 8],
     state: State,
     guest_focus: bool,
+    macos: bool,
 ) -> Option<Command> {
     use Command::*;
     use KeyCode::*;
-    if ctrl && alt {
+    let ctrl = modifiers[..2].contains(&true);
+    let alt = modifiers[2..4].contains(&true);
+    let shift = modifiers[4..6].contains(&true);
+    let command = modifiers[6..].contains(&true);
+    if macos && command {
+        if ctrl || alt {
+            return None;
+        }
+        return match (key, shift) {
+            (KeyF, _) => Some(Next(u8::from(shift))),
+            (KeyE, _) => Some(Command::Eject(u8::from(shift))),
+            (KeyI, _) => Some(Command::Insert(u8::from(shift))),
+            (KeyM, true) => Some(Mute),
+            (KeyM, false) => Some(Minimize),
+            (KeyK, false) => Some(Stop),
+            (KeyW, false) => Some(Exit),
+            (KeyT, false) => Some(FastForward),
+            (KeyG, false) => Some(Release),
+            (KeyP, false) => Some(Command::Pause),
+            (End, false) => Some(Reset),
+            (Enter, false) => Some(Fullscreen),
+            (KeyN, false) => Some(Placeholder("New machine")),
+            (KeyO, false) => Some(Placeholder("Open machine file")),
+            (Comma, false) => Some(Settings),
+            (Slash, true) => Some(Shortcuts),
+            _ => None,
+        };
+    }
+    if !macos && ctrl && alt {
         return Some(match key {
             KeyF => Next(u8::from(shift)),
             KeyE => Command::Eject(u8::from(shift)),
@@ -101,7 +154,7 @@ pub(crate) fn hotkey(
     if state != State::Stopped && guest_focus {
         return None;
     }
-    if ctrl && !alt {
+    if !macos && ctrl && !alt {
         return match key {
             KeyN => Some(Placeholder("New machine")),
             KeyO => Some(Placeholder("Open machine file")),
@@ -110,9 +163,36 @@ pub(crate) fn hotkey(
         };
     }
     match key {
-        F1 => Some(Shortcuts),
+        F1 if !macos => Some(Shortcuts),
         Enter if state == State::Stopped && !alt && !ctrl => Some(Start),
         _ => None,
+    }
+}
+
+/// Use the same labels in menus and help so platform-specific chords stay visible.
+pub(crate) fn shortcut_text(shortcut: &str, macos: bool) -> &str {
+    if !macos {
+        return shortcut;
+    }
+    match shortcut {
+        "Ctrl+Alt+P" => "⌘P",
+        "Ctrl+Alt+T" => "⌘T",
+        "Ctrl+Alt+Q" => "⌘K",
+        "Ctrl+Alt+End" => "⌘End",
+        "Ctrl+Alt+Enter" => "⌘Enter",
+        "Ctrl+Alt+M" => "⌘⇧M",
+        "Ctrl+Alt+G" => "⌘G",
+        "Ctrl+Alt+F" => "⌘F",
+        "Ctrl+Alt+Shift+F" => "⌘⇧F",
+        "Ctrl+Alt+E" => "⌘E",
+        "Ctrl+Alt+Shift+E" => "⌘⇧E",
+        "Ctrl+Alt+I" => "⌘I",
+        "Ctrl+Alt+Shift+I" => "⌘⇧I",
+        "F1" => "⌘⇧/",
+        "Ctrl+N" => "⌘N",
+        "Ctrl+O" => "⌘O",
+        "Ctrl+," => "⌘,",
+        _ => shortcut,
     }
 }
 
@@ -546,7 +626,86 @@ pub(crate) fn texture_image(frame: &window::PixelFrame) -> egui::ColorImage {
 
 #[cfg(test)]
 mod tests {
+    fn hotkey(
+        key: winit::keyboard::KeyCode,
+        ctrl: bool,
+        alt: bool,
+        shift: bool,
+        state: super::State,
+        guest_focus: bool,
+    ) -> Option<super::Command> {
+        super::hotkey(
+            key,
+            [ctrl, false, alt, false, shift, false, false, false],
+            state,
+            guest_focus,
+            false,
+        )
+    }
+
     use super::*;
+    #[test]
+    fn macos_logical_shortcut_letters_and_punctuation_match_menu_labels() {
+        use Command::*;
+        for (text, shift, expected) in [
+            ("f", false, Next(0)),
+            ("F", true, Next(1)),
+            ("e", false, Eject(0)),
+            ("E", true, Eject(1)),
+            ("i", false, Insert(0)),
+            ("I", true, Insert(1)),
+            ("m", false, Minimize),
+            ("M", true, Mute),
+            ("k", false, Stop),
+            ("w", false, Exit),
+            ("t", false, FastForward),
+            ("g", false, Release),
+            ("p", false, Pause),
+            ("n", false, Placeholder("New machine")),
+            ("o", false, Placeholder("Open machine file")),
+            (",", false, Settings),
+            ("?", true, Shortcuts),
+        ] {
+            let key = logical_shortcut_key(&Key::Character(text.into())).unwrap();
+            assert_eq!(
+                super::hotkey(
+                    key,
+                    [false, false, false, false, shift, false, true, false],
+                    State::Running,
+                    true,
+                    true
+                ),
+                Some(expected)
+            );
+        }
+        for text in ["q", "a", "z", "é"] {
+            assert_eq!(logical_shortcut_key(&Key::Character(text.into())), None);
+        }
+        for (named, expected) in [(NamedKey::End, Reset), (NamedKey::Enter, Fullscreen)] {
+            let key = logical_shortcut_key(&Key::Named(named)).unwrap();
+            assert_eq!(
+                super::hotkey(
+                    key,
+                    [false, false, false, false, false, false, true, false],
+                    State::Running,
+                    true,
+                    true
+                ),
+                Some(expected)
+            );
+        }
+        assert_eq!(
+            super::hotkey(
+                KeyCode::KeyQ,
+                [false, false, false, false, false, false, true, false],
+                State::Running,
+                true,
+                true
+            ),
+            None
+        );
+    }
+
     #[test]
     fn fix_round_library_ignores_dotfiles_and_pending_files() {
         let temp = assembly::test_support::TempDir::new("library-pending");

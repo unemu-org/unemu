@@ -11,9 +11,9 @@ DejaVu contributions are public domain.
 
 Noto Emoji: Copyright 2013 Google Inc. All Rights Reserved.
 SIL Open Font License 1.1 (OFL-1.1).
-Noto Emoji is an optional upstream monochrome emoji font; it is not enabled
-by this shell's default feature selection.
+The shell enables monochrome_emoji_fonts, embedding Noto Emoji and the full
+emoji-icon-font alongside the default fonts.
 
-egui-icons (subset of emoji-icon-font): Copyright 2014 John Slegers (MIT).
+emoji-icon-font and egui-icons (its subset): Copyright 2014 John Slegers (MIT).
 
 The original licence texts follow.

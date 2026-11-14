@@ -77,10 +77,12 @@ machine keeps its last screen and shows the selected speed without a stale ratio
 Stop returns the speed cell to `Speed 100%`.
 
 View > Speed selects 100%, 200%, 400% or Unlimited. Every session starts at 100%.
-Ctrl+Alt+T holds Unlimited; releasing T, losing focus or opening a menu/dialog
-restores the selected mode. T's make, repeats and break stay host-owned, using
-the same modifier balancing as the other Ctrl+Alt host chords. This choice avoids
-the input-source shortcut that can consume Ctrl+Option+Space on macOS.
+On macOS, ⌘T holds Unlimited; releasing Command or T restores the selected
+mode. Elsewhere Ctrl+Alt+T holds Unlimited until T is released. Focus loss or
+opening a menu/dialog also ends either hold. The shortcut's letter make,
+repeats and break stay host-owned. macOS Command state comes from winit modifier
+changes and survives guest-focus resets; Command never generates guest scan
+codes. Other platforms keep their existing Ctrl+Alt modifier balancing.
 
 The host execution budget follows the interval between advances, clamped to
 one 60 Hz period through 50 ms. The initial frame and the first frame after
@@ -97,7 +99,8 @@ The window captures mixed audio at each successful run boundary into a bounded
 cpal playback ring. Underruns play silence and overruns discard old frames;
 audio never changes pacing targets or virtual time. Outside 100%, playback is
 muted without time-stretch. Returning to 100% clears old PCM and interpolation
-history and prefills fresh output. Ctrl+Alt+M toggles the user's mute preference,
+history and prefills fresh output. ⌘⇧M on macOS (Ctrl+Alt+M elsewhere)
+toggles the user's mute preference,
 including during speed mute; it cannot override speed mute. The status bar and
 View menu distinguish the two reasons and expose the user preference. See
 [audio.md §Host output](audio.md#host-output).
@@ -541,8 +544,14 @@ absorbing later synthetic releases from X11/Windows. Stopped or errored machines
 ignore key events. On macOS, winit 0.30 does not deliver CapsLock key events, so
 Caps Lock cannot reach the guest.
 
-Ctrl+Alt+M reserves the M pair for host mute while an audio device is active;
-modifiers and unmodified M still reach the guest.
+On macOS, ⌘⇧M controls host mute while an audio device is active. Press ⌘
+first: Shift pressed before Command remains guest input with a balanced break;
+Shift pressed while Command is held is suppressed. Ctrl and Alt remain immediate
+guest input, including all Ctrl+Alt chords and Ctrl+Alt+Del. Other platforms
+retain Ctrl+Alt+M, reserving the M pair while forwarding the modifiers.
+macOS shortcut letters and punctuation follow the logical host layout; guest
+scan codes always follow physical positions. See [commands](../commands.md)
+for the complete Command table.
 Letters, digits, punctuation, modifiers, locks, F1–F12, keypad and navigation
 are supported. Pause/Break and PrintScreen are intentionally
 unmapped because their special modifier-dependent sequences need a separate
@@ -565,8 +574,9 @@ When the machine has a PS/2 mouse (`board.mouse = true`) or a UART serial
 mouse (`[[card]] kind = "uart-16550", mouse = "microsoft"`), a press inside the focused client area captures the pointer.
 Both edges of that initial click are swallowed. Without an attached mouse,
 clicks do not capture and the title and keyboard behavior are unchanged.
-**Ctrl+Alt+G** releases capture. G's make, repeats and break are host-only for
-that chord; Ctrl and Alt retain their ordinary guest make/break handling.
+**⌘G on macOS (Ctrl+Alt+G elsewhere)** releases capture. The shortcut's G
+make, repeats and break are host-only. macOS Ctrl+Alt+G remains guest input and
+preserves capture; Ctrl and Alt retain their ordinary guest make/break handling.
 A G already held by the guest is not stolen by a later modifier press.
 Focus loss releases capture and held guest buttons.
 Suspend acts like focus loss, releasing keys and the pointer; winit emits it only on mobile and web.
@@ -574,8 +584,8 @@ CPU stop/error, window close, application exit (including macOS Cmd+Q) and
 frontend failure restore the host cursor.
 
 The window tries winit `CursorGrabMode::Locked`, then `Confined`. Only a
-successful grab hides the cursor and changes the title to show
-`pointer captured (ctrl+alt+g to release)`. If both fail, it reports the error
+successful grab hides the cursor and updates the shell's status hint to show
+⌘G on macOS or Ctrl+Alt+G elsewhere as the release chord. If both fail, it reports the error
 and leaves capture disabled. READ from the pinned winit 0.30.13 implementation:
 macOS Locked disassociates mouse movement from the cursor position using
 Core Graphics; Confined returns NotSupported. The cursor is hidden while the
@@ -1229,11 +1239,11 @@ observation fixes.
 
 ### Floppy host input
 
-Ctrl+Alt+F queues insertion of the next A: catalogue entry; Ctrl+Alt+E queues
-ejection. Shift selects B:. Repeated presses and releases of the shortcut key
+⌘F/⌘E on macOS (Ctrl+Alt+F/E elsewhere) queue insertion of the next A:
+catalogue entry or ejection. Shift selects B:; on macOS press Command first. Repeated presses and releases of the shortcut key
 are consumed by the host, even if modifiers are released first. Next wraps to
 entry zero and from an empty drive selects zero; empty is reached only by eject.
-The title shows each drive's current file name or `empty`. No GUI image or guest
+The Media menu shows each drive's current file name or `empty`. No GUI image or guest
 screen capture is needed to test these controls.
 
 The presenter drains media events before keyboard and mouse injection at the

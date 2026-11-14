@@ -87,7 +87,7 @@ The welcome screen lists machine files in `machines/` and `machines/local/`
 `at-freedos.toml` initially. Select a ready machine and press Start, Enter, or
 double-click its name. Missing firmware or invalid media shows the existing
 validator diagnostic and disables Start. File › Open machine file… accepts a
-TOML/YAML path. Machine › Settings… (Ctrl+, outside guest focus) opens the
+TOML/YAML path. Machine › Settings… (⌘, on macOS; Ctrl+, elsewhere outside guest focus) opens the
 classic System, Memory, Display, Sound, Storage, Expansion and Firmware tabs.
 Hardware choices and their disabled reasons come from assembly capabilities.
 Running and paused machines show a read-only sheet; stop before editing.
@@ -198,13 +198,23 @@ window binary also accepts `--rom-dir`; its saved folders and environment are
 included. macOS keeps only the native title bar; toolbar icons are painted in
 both skins, and the in-window menus remain available on every platform.
 
-Pause/Resume is Ctrl+Alt+P; Ctrl+Alt+Q stops cleanly and returns to the library.
-Ctrl+Alt+End sends guest Ctrl+Alt+Del. Click the screen to focus guest input and
-capture a configured mouse; Ctrl+Alt+G releases it while preserving keyboard
-focus, as does Pause. Menus and dialogs release capture and keyboard focus.
-During guest focus only Ctrl+Alt chords control the host: F1, Ctrl+N, Ctrl+O
-and Ctrl+, reach the guest. Their shell actions require shell focus or a
-stopped machine. View › Skin selects classic (default) or modern controls; Theme follows
+On macOS, host shortcuts use Command: ⌘P pauses/resumes, ⌘K stops cleanly
+and returns to the library, and ⌘End sends guest Ctrl+Alt+Del. Command chords
+never type guest keys. Ctrl and Alt remain immediate guest input, including
+Ctrl+Alt+Del. ⌘Q quits, ⌘W closes, ⌘H hides, ⌘M minimizes and ⌘Tab switches
+applications; mute uses ⌘⇧M. Hold ⌘T for fast-forward; releasing Command or T
+ends the hold. ⌘Enter toggles full screen; ⌘N/⌘O/⌘, select New/Open/Settings.
+
+Elsewhere Pause/Resume is Ctrl+Alt+P; Ctrl+Alt+Q stops and Ctrl+Alt+End sends
+guest Ctrl+Alt+Del. Click the screen to focus guest input and capture a
+configured mouse; ⌘G on macOS (Ctrl+Alt+G elsewhere) releases it while
+preserving keyboard focus, as does Pause. Menus and dialogs release capture
+and keyboard focus. Help uses ⌘⇧/ on macOS; elsewhere F1, Ctrl+N, Ctrl+O
+and Ctrl+, require shell focus or a stopped machine and otherwise
+reach the guest. The recipes below spell Ctrl+Alt host chords for other
+platforms: on macOS use ⌘F/⌘E/⌘I for next/eject/insert A: (add Shift for B:),
+⌘G for pointer release and ⌘⇧M for mute. Guest Ctrl+Alt+Del stays the same.
+See [window commands](../backlog/docs/commands.md) for the complete table. View › Skin selects classic (default) or modern controls; Theme follows
 the system by default. Drive activity is currently unavailable and labelled in
 the status bar. The maintainer checks appearance manually; tests open no windows.
 

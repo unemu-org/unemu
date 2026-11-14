@@ -146,8 +146,9 @@ mod tests {
     }
 
     #[test]
-    fn shell_strings_have_default_font_coverage() {
+    fn shell_strings_have_configured_font_coverage() {
         let ctx = egui::Context::default();
+        crate::shell::configure_context(&ctx);
         let output = ctx.run_pass(Default::default(), |ctx| {
             ctx.fonts_mut(|fonts| {
                 for source in [include_str!("shell.rs"), include_str!("shell_model.rs")] {

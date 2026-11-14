@@ -5,10 +5,13 @@
 //! converts elapsed time to bounded PIT targets and virtual-time run caps.
 //! Input enters only at run boundaries; observation captures the completed
 //! boundary. An opt-in PS/2 or serial mouse uses raw relative events while captured;
-//! Ctrl+Alt+G and focus loss release the host grab. Host audio opens only with
-//! the window, renders at each run boundary, and uses a bounded playback ring.
-//! Ctrl+Alt+M toggles mute without reaching the guest. Ctrl+Alt+F inserts the
-//! next A: medium (wraps to the first); Ctrl+Alt+E ejects A:. Hold Shift for B:.
+//! Command+G on macOS (Ctrl+Alt+G elsewhere) and focus loss release the host grab.
+//! Host audio opens only with the window, renders at each run boundary, and uses
+//! a bounded playback ring.
+//! Command+Shift+M on macOS (Ctrl+Alt+M elsewhere) toggles mute. Command+F on
+//! macOS (Ctrl+Alt+F elsewhere) inserts the next A: medium (wraps to the first);
+//! Command+E on macOS (Ctrl+Alt+E elsewhere)
+//! ejects A:. Hold Shift for B:.
 //! These host keys queue media events for the next run boundary; their make,
 //! repeat and break codes never reach the guest. The Media menu names both media.
 //! Audio never paces execution. See
@@ -101,7 +104,6 @@ struct Presenter {
     fixed_disk: String,
     audio_error_reported: bool,
     window: Option<Arc<Window>>,
-    last_title: Option<String>,
     running: bool,
     reset_requests: u64,
     cpu_resets: u64,
@@ -191,7 +193,6 @@ impl Presenter {
                 .map_or_else(|| "C: not installed".into(), |drive| format!("C: — {}", media_dialog::write_name(&drive.write))),
             audio_error_reported: false,
             window: None,
-            last_title: None,
             running: true,
             reset_requests: 0,
             cpu_resets: 0,
@@ -242,9 +243,7 @@ impl Presenter {
         warnings: &mut impl io::Write,
         mut spent: impl FnMut() -> Duration,
     ) -> Result<(), Box<dyn Error>> {
-        if self.audio.check_failure(warnings) {
-            self.update_title();
-        }
+        self.audio.check_failure(warnings);
         if !self.running || self.occluded_since.is_some() {
             return Ok(());
         }
@@ -331,15 +330,11 @@ impl Presenter {
 
     fn apply_media_events(&mut self) -> Result<(), assembly::FloppyError> {
         let events = std::mem::take(&mut self.media_events);
-        let changed = !events.is_empty();
         for (unit, action) in events {
             match self.assembled.change_floppy(DeviceId::Fdc, unit, action) {
                 Err(assembly::FloppyError::Unavailable) => {}
                 result => result?,
             }
-        }
-        if changed {
-            self.update_title();
         }
         Ok(())
     }
@@ -415,27 +410,6 @@ impl Presenter {
         }
     }
 
-    fn title(&mut self) -> String {
-        let a = self.assembled.floppy_name(DeviceId::Fdc, 0);
-        let b = self.assembled.floppy_name(DeviceId::Fdc, 1);
-        let audio = self.audio.title_text();
-        let pointer = if self.mouse.captured() {
-            " — pointer captured (ctrl+alt+g to release)"
-        } else {
-            ""
-        };
-        format!("unemupc98 — freedos — a: {a} — b: {b} — {audio}{pointer}")
-    }
-
-    fn update_title(&mut self) -> bool {
-        let title = self.title();
-        if self.last_title.as_ref() == Some(&title) {
-            return false;
-        }
-        self.last_title = Some(title);
-        true
-    }
-
     fn key_event(&mut self, key: KeyCode, state: ElementState) {
         let modifier = match key {
             KeyCode::ControlLeft => Some(0),
@@ -497,7 +471,6 @@ impl Presenter {
             {
                 self.audio.toggle_mute();
                 self.suppress_m = true;
-                self.update_title();
                 return;
             }
         }
@@ -557,7 +530,6 @@ impl Presenter {
             }
             if let Some(window) = &self.window {
                 window.set_cursor_visible(false);
-                self.update_title();
             }
         }
     }
@@ -574,7 +546,6 @@ impl Presenter {
                 eprintln!("cannot release pointer: {error}");
             }
             window.set_cursor_visible(true);
-            self.update_title();
         }
     }
 
@@ -813,7 +784,6 @@ mod tests {
         assert_eq!(presenter.assembled.floppy_name(DeviceId::Fdc, 0), "one.img");
         advance_frame(&mut presenter);
         assert_eq!(presenter.assembled.floppy_name(DeviceId::Fdc, 0), "two.img");
-        assert!(presenter.title().contains("a: two.img"));
         presenter.key_event(KeyCode::ShiftLeft, Pressed);
         presenter.key_event(KeyCode::KeyE, Pressed);
         presenter.key_event(KeyCode::ControlLeft, Released);
@@ -821,12 +791,6 @@ mod tests {
         advance_frame(&mut presenter);
         assert_eq!(presenter.assembled.floppy_name(DeviceId::Fdc, 1), "empty");
         assert_eq!(presenter.assembled.floppy_name(DeviceId::Fdc, 0), "two.img");
-        assert!(presenter.title().contains("b: empty"));
-        presenter.update_title();
-        assert!(
-            !presenter.update_title(),
-            "an unchanged title must not be submitted again"
-        );
         assert!(presenter
             .input_log
             .iter()

@@ -5,6 +5,14 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-14 — macOS host shortcuts:** Command chords stay in the shell,
+  with no guest modifier or letter scan codes. Ctrl/Alt and Ctrl+Alt+Del remain
+  guest input. Mute uses ⌘⇧M and Stop uses ⌘K, preserving ⌘M minimize and
+  ⌘Q quit; ⌘W closes, ⌘H hides and ⌘Tab switches applications. Hold ⌘T for
+  Unlimited; releasing either key or losing focus restores the selected speed.
+  Menus and Help show macOS bindings; other platforms retain their shortcuts.
+  Headless tests inject either platform and cover actions, guest bytes, repeats
+  and focus loss. Native visual acceptance remains manual.
 - **2026-11-14 — Disk publication review fixes:** failed CAS releases publication intent; strict artwork/metadata checks precede intent, and abandon preserves journals. Starts enforce pinned tags and fresh-session requests, retain one raw verification plus one logical-head/cache verification for layered disks, and reuse captured preparation. Discard uses a durable tombstone and generic sidecar locks, lists affected media and requires explicit confirmation. Flatten streams new raw heads at the layer depth limit; published local records preserve retention. Regression coverage includes process exits with layered parents and both CAS modes.
 - **2026-11-14 — Immutable disk layers and workspaces:** fixed disks seal deterministic sparse sector packs into parent-bound descriptors; chain reads use the existing sector interface and verify complete logical SHA-256. Named isolated workspaces retain journal policies, with a shared materialized cache for layered heads. Offline whole-machine publication includes all catalogue media and CMOS, verifies the closure, publishes by tag CAS and rebases the workspace through a durable retryable intent. Opt-in CLI commands run, list, discard and publish workspaces. Fault injection covers publication steps; tag deletion leaves shared blobs intact. GUI integration, registry transport and GC remain separate.
 - **2026-11-14 — Machine settings:** Machine > Settings… (Ctrl+, outside guest

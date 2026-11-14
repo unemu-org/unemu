@@ -309,6 +309,11 @@ impl HostAudio {
         self.sink.clone()
     }
 
+    #[cfg(test)]
+    pub(super) fn activate_for_test(&self) {
+        self.sink.active.store(true, Ordering::Relaxed);
+    }
+
     pub(super) fn available(&self) -> bool {
         self.sink.active.load(Ordering::Relaxed)
     }
@@ -328,20 +333,6 @@ impl HostAudio {
             "Audio muted (user)"
         } else {
             "Audio on"
-        }
-    }
-
-    pub(super) fn title_text(&self) -> &'static str {
-        if !self.available() {
-            "no audio"
-        } else if self.speed_muted && self.user_muted {
-            "audio muted (speed; user mute on; ctrl+alt+m toggles user mute)"
-        } else if self.speed_muted {
-            "audio muted (speed; user mute off; ctrl+alt+m toggles user mute)"
-        } else if self.user_muted {
-            "audio muted (ctrl+alt+m to unmute)"
-        } else {
-            "audio unmuted (ctrl+alt+m to mute)"
         }
     }
 

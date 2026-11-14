@@ -313,12 +313,15 @@ host-clock pacing remains authoritative; neither the queue nor the device clock
 advances or delays virtual time. Occlusion/suspension stops production under
 that policy, so playback drains to silence.
 
-**Ctrl+Alt+M toggles host mute** while a device is active. Only the M pair is
-swallowed; modifier events still reach the guest. Repeats do not toggle again,
-and an M already held by the guest is not stolen when modifiers arrive later.
-F12 reaches the guest normally. Without an active device the title says
-**no audio** and does not advertise a mute chord; otherwise it shows
-**muted/unmuted** and the chord alongside the pointer-release hint. Mute clears
+**⌘⇧M on macOS (Ctrl+Alt+M elsewhere) toggles host mute** while a device is
+active. On macOS, press ⌘ first: Shift pressed before Command remains guest
+input; Shift pressed while Command is held is suppressed. Command never reaches
+the guest, and Ctrl/Alt chords remain guest input. Shortcut letters follow the
+logical host layout. Other platforms reserve the M pair and forward modifiers.
+Repeats do not toggle again, and an M already held by the guest is not stolen
+when modifiers arrive later. F12 reaches the guest normally. The shell's audio
+status and View menu describe availability, speed mute and the user preference;
+see [commands](../commands.md) for the complete shortcut table. Mute clears
 queued audio and interpolation history, rearms prefill and disables this sink's
 rendering demand; unmute
 refreshes speaker-history demand before the next run so newly generated edges

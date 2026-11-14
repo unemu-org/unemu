@@ -249,8 +249,7 @@ fn mute_chord_is_host_only_and_f12_reaches_the_guest() {
         keyboard::KeyCode::*,
     };
     let mut host = presenter();
-    assert!(host.title().contains("no audio"));
-    assert!(!host.title().contains("ctrl+alt+m"));
+    assert_eq!(host.audio.status_text(), "Audio unavailable");
     host.audio.sink.active.store(true, Ordering::Relaxed);
     host.key_event(ControlLeft, Pressed);
     host.key_event(AltRight, Pressed);
@@ -258,7 +257,6 @@ fn mute_chord_is_host_only_and_f12_reaches_the_guest() {
     host.key_event(KeyM, Pressed);
     host.key_event(KeyM, Pressed);
     assert!(host.audio.muted());
-    assert!(host.title().contains("audio muted"));
     host.key_event(KeyM, Released);
     assert_eq!(host.keyboard.pending_events(), pending);
     host.key_event(KeyM, Pressed);
@@ -711,14 +709,10 @@ fn speed_mute_labels_explain_the_user_preference_toggle() {
     host.audio.sink.active.store(true, Ordering::Relaxed);
     host.select_speed(crate::Speed::Double, std::time::Duration::ZERO);
     assert_eq!(host.audio.status_text(), "Audio muted (speed)");
-    assert!(host.title().contains("user mute off"));
-    assert!(!host.title().contains(" to unmute"));
     assert_eq!(host.audio.mute_label(), "User mute: off (speed muted)");
     host.audio.toggle_mute();
     assert!(host.audio.muted());
     assert_eq!(host.audio.status_text(), "Audio muted (speed + user)");
-    assert!(host.title().contains("user mute on"));
-    assert!(!host.title().contains(" to unmute"));
     assert_eq!(host.audio.mute_label(), "User mute: on (speed muted)");
     host.select_speed(crate::Speed::Normal, std::time::Duration::ZERO);
     assert_eq!(host.audio.status_text(), "Audio muted (user)");

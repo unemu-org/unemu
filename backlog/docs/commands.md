@@ -190,12 +190,42 @@ Focus loss releases all held keys, including modifiers. Keys are ignored after
 the machine stops. NumLock wrappers follow the guest's keyboard LED state,
 including guest reboots and Ctrl+NumLock (Pause), never the host OS lock state.
 
+Host shortcuts on macOS use Command. Shortcut letters and punctuation follow
+the logical host keyboard layout, as native macOS menus do. Guest scan codes
+continue to use physical positions. Press ⌘ first for Command+Shift shortcuts:
+Shift pressed before Command is ordinary guest input, with its balanced break.
+Shift pressed while Command is held produces no guest bytes.
+
+Command and its chord keys never produce guest scan codes; Ctrl and Alt reach the guest immediately, including
+Ctrl+Alt+Del. The reset menu/toolbar action still sends a complete guest
+Ctrl+Alt+Del sequence. On other platforms the existing bindings stay in effect.
+
+| Action | macOS | Other platforms |
+| --- | --- | --- |
+| Pause / resume | ⌘P | Ctrl+Alt+P |
+| Stop, return to library | ⌘K | Ctrl+Alt+Q |
+| Send guest Ctrl+Alt+Del | ⌘End | Ctrl+Alt+End |
+| Next / eject / insert A: | ⌘F / ⌘E / ⌘I | Ctrl+Alt+F / E / I |
+| Next / eject / insert B: | ⌘⇧F / ⌘⇧E / ⌘⇧I | Ctrl+Alt+Shift+F / E / I |
+| User mute | ⌘⇧M | Ctrl+Alt+M |
+| Release pointer | ⌘G | Ctrl+Alt+G |
+| Full screen | ⌘Enter | Ctrl+Alt+Enter |
+| Hold fast-forward | ⌘T | Ctrl+Alt+T |
+| New / open machine file | ⌘N / ⌘O | Ctrl+N / Ctrl+O outside guest focus |
+| Settings | ⌘, | Ctrl+, outside guest focus |
+| Keyboard shortcuts | ⌘⇧/ | F1 outside guest focus |
+
+On macOS, ⌘Q quits, ⌘W closes, ⌘H hides, ⌘M minimizes and ⌘Tab switches
+applications. Help > Keyboard shortcuts and the menus show the platform's bindings.
+New machine remains a placeholder. Enter starts the selection when stopped.
+
 View > Speed selects 100% (the default on every Start), 200%, 400% or Unlimited.
-Hold Ctrl+Alt+T for Unlimited; releasing T restores the selected mode,
-even if Ctrl or Alt was released first. Focus loss or opening a menu/dialog also
-ends the hold. The chord's T make, repeat and break never reach the guest;
-previously forwarded modifiers receive balanced breaks. The status bar reports
-the mode and measured virtual-time/host-time ratio over the last second.
+Hold ⌘T on macOS or Ctrl+Alt+T elsewhere for Unlimited. On macOS,
+releasing Command or T restores the selected mode; elsewhere releasing T
+restores it even if Ctrl or Alt was released first. Focus loss or opening a
+menu/dialog also ends the hold. The chord's T make, repeat and break never reach the guest;
+on other platforms, previously forwarded modifiers receive balanced breaks.
+The status bar reports the mode and measured virtual-time/host-time ratio over the last second.
 This host pacing control is separate from the machine's configured instruction rate.
 
 Input is queued until the next run boundary; a full 8042, a disabled
@@ -220,7 +250,7 @@ Host audio is muted outside 100%, including during the hold, without time-stretc
 Returning to 100% clears queued samples and converter history and prefills fresh
 audio; explicit user mute remains in effect. Status distinguishes `Audio muted
 (speed)` from user mute. During speed mute, the View menu shows whether
-user mute is on or off; Ctrl+Alt+M toggles that preference for the return to 100%
+user mute is on or off; ⌘⇧M on macOS (Ctrl+Alt+M elsewhere) toggles that preference for the return to 100%
 and does not override the speed mute. Playback never drives virtual time.
 Headless CLI execution and goldens retain their virtual-time budgets and never
 use host pacing. See [`design/observation.md`](design/observation.md#window-pacing)
@@ -231,7 +261,7 @@ without a stale ratio; Stop returns the cell to `Speed 100%`. Blink stays visibl
 phase can derive from virtual time later. Workspace and presenter tests remain
 headless. The input log is test-owned, with no user-facing log flag.
 
-Machine > Settings… and Ctrl+, (outside guest focus) open the seven-tab property
+Machine > Settings… and ⌘, on macOS (Ctrl+, elsewhere outside guest focus) open the seven-tab property
 sheet for the selected machine. Stop before editing; running/paused sessions are
 read-only. Review the child-file preview before OK/Apply. The saved local child
 is selected in the library; replacing an existing child requires consent.
