@@ -5,8 +5,9 @@ Status: **desktop UX and toolkit accepted**, 2026-11-13 (decision-24);
 §5.2 and its mock-up were approved by the maintainer on 2026-11-14. The local store core
 (`upc-5pw.6`), metadata codec, local overlays and summary cache (`upc-5pw.12`)
 are implemented in `crates/image-store`; PC machine-file import and bundle
-resolution (`upc-5pw.7`) are implemented in `crates/pc-image`. Disk layers,
-registry transport, image-store GUI integration and provider launch compilation
+resolution (`upc-5pw.7`), immutable disk layers, isolated workspaces and offline
+publication (`upc-5pw.8`) are implemented in `crates/media`, `crates/image-store`
+and `crates/pc-image`, with opt-in CLI commands. Registry transport, image-store GUI integration and provider launch compilation
 remain separate; the corresponding sections describe those later contracts.
 
 ## 1. Scope and existing contracts
@@ -567,9 +568,9 @@ a live lock file or replace its inode to bypass a lock.
 | Remote tag race | OCI has no tag compare-and-swap; see §5.1. |
 | Newer store or workspace schema | Refuse to write; never rewrite a format this build does not know. |
 
-The local store core is implemented in `crates/image-store` (`upc-5pw.6`), with
-synthetic concurrency and interruption tests. Import, layers, registry and GUI
-integration follow in later beads; their contracts above remain prospective.
+The local store, PC import, immutable layers, workspaces and offline publication
+are implemented, with synthetic concurrency, interruption and process-exit tests.
+Registry transport and image-store GUI integration remain prospective.
 
 ## 4. Disk chains and writable sessions
 
@@ -1183,8 +1184,8 @@ import records the chosen generation separately for every disk/catalogue/CMOS.
 Copy the resulting bases and any verified converted layers into the OCI store;
 the image must run without the original journals, bases or firmware folders.
 
-Implementation status: local store and PC import are implemented (`upc-5pw.6`,
-`upc-5pw.7`); registry transport and daemon remain unimplemented.
+Implementation status: local store, PC import, disk layers, workspaces and offline
+publication are implemented; registry transport and daemon remain unimplemented.
 Signatures, chunk-level dedup, encryption, qcow2 compatibility,
 OCI referrers, floppy sector layers,
 sibling-layer merge, deterministic install recipes, live multi-disk transactions,

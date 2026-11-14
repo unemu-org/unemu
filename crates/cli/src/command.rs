@@ -17,6 +17,11 @@ const USAGE: &str = "usage: unemupc98 --boot (Real16 timer demo)
        unemupc98 run --machine FILE [--rom-dir DIR]... [--max-steps N] [--idle-limit N] [--print CARD] [--allow-unlisted-firmware]
        unemupc98 image import FILE --store DIR --tag NAME:TAG [--create] [--rom-dir DIR]... [--recover MEDIUM=tip|MEDIUM=generation:N]...
        unemupc98 image ls --store DIR
+       unemupc98 image run NAME:TAG --store DIR --workspace NAME [--new] [--max-steps N]
+       unemupc98 image workspace ls --store DIR
+       unemupc98 image workspace discard NAME --store DIR --yes
+       unemupc98 image workspace abandon-publication NAME --store DIR
+       unemupc98 image publish --from-workspace NAME --store DIR --tag NAME:TAG [--flatten]
        unemupc98 media create floppy --type 1.44M|1.2M|720K|360K OUT [--format] [--label NAME] [--force]
        unemupc98 media create hd (--chs C/H/S | --size SIZE[MiB|GiB]) OUT [--force]
        unemupc98 media generations --base IMG --journal J

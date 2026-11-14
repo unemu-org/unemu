@@ -9,6 +9,13 @@ cargo run --offline -p cli -- image import machines/at-freedos.toml --store /pat
 cargo run --offline -p cli -- image import /path/to/machine.yaml --store /path/to/store --tag dos-lab:recovered --recover medium-0=tip
 cargo run --offline -p cli -- image import /path/to/machine.toml --store /path/to/store --tag dos-lab:checkpoint --recover medium-0=generation:1
 cargo run --offline -p cli -- image ls --store /path/to/store
+cargo run --offline -p cli -- image run dos-lab:1.0 --store /path/to/store --workspace play --max-steps 1000000
+cargo run --offline -p cli -- image run dos-lab:1.0 --store /path/to/store --workspace disposable --new --max-steps 1000000
+cargo run --offline -p cli -- image workspace ls --store /path/to/store
+cargo run --offline -p cli -- image workspace abandon-publication play --store /path/to/store
+cargo run --offline -p cli -- image publish --from-workspace play --store /path/to/store --tag dos-lab:flat --flatten
+cargo run --offline -p cli -- image publish --from-workspace play --store /path/to/store --tag dos-lab:1.1
+cargo run --offline -p cli -- image workspace discard play --store /path/to/store --yes
 ```
 
 Import is opt-in and creates a new local tag using compare-and-swap against
@@ -28,7 +35,26 @@ blobs. `--store` is required. Import uses an existing store unless `--create`
 explicitly allows initialization; listing never creates a store. Repeat
 `--rom-dir DIR` to locate pinned missing firmware through the same discovery path
 as machine-file runs. Tags are checked before ingest and again by CAS at publication.
-No platform default, layers or registry is selected.
+No platform default or registry is selected.
+
+`image run` owns the workspace until all writers finish. Resuming checks the
+supplied tag against the pinned image and prints that identity; a tag pointing elsewhere is rejected. A missing original tag permits
+a detached resume. `--new` requires a fresh workspace. Choose a fresh workspace
+name for a disposable gaming session; discard removes only that session. Journal
+policies persist locally; volatile policies still lose writes on close. Publication
+keeps journaled changes, seals fixed disks into sparse parent-bound layers and
+freezes changed floppies and CMOS as whole raw blobs. The CLI publishes only new
+tags. Publish, discard and abandon open existing workspaces only. Discard lists affected files and requires `--yes`; omitting it
+provides a preview. `abandon-publication` removes a pending intent while keeping
+media and any already published tag. CAS conflicts roll back the intent, so a
+losing workspace can immediately run or publish under another tag. `--flatten`
+streams layered fixed disks to new raw bases, permitting chains to restart
+before the 64-layer limit. A pending publication blocks Run: repeat the same
+publish command to finish its durable intent. The tag changes atomically after closure verification, then
+the workspace pins the new image with fresh journals. Interrupted journal tails
+must be explicitly recovered with the existing offline media tools before
+publication. A crash never automatically discards a workspace. These disk changes
+are independent recovery points, not a live machine snapshot.
 
 ## Build / run / test
 

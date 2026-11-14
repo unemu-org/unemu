@@ -4,9 +4,11 @@
 //! The platform-neutral store never depends on this provider.
 
 mod defaults;
+mod disk;
 mod encode;
 mod import;
 mod provider;
+pub mod workspace;
 
 pub use import::{import_machine, ChosenGeneration, ImportOptions, ImportRecord, RecoveryChoice};
 pub use provider::{resolve, PcProvider, CMOS, PAYLOAD_TYPES};

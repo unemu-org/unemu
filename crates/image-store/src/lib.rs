@@ -5,7 +5,7 @@
 //! 1.1: SHA-256 names exact stored bytes, not a decoded representation. See
 //! `backlog/docs/design/machine-images.md` §§1–3 and §5. Platform providers own
 //! config validation and ordered graph traversal; this crate owns no emulator,
-//! host data-directory policy, registry, disk reconstruction, workspace or GC.
+//! host data-directory policy, registry, disk reconstruction, or GC.
 //!
 //! Store roots must be local filesystems with advisory locks, atomic publication
 //! and directory fsync. Linux and macOS enforce locality; other hosts currently
@@ -18,10 +18,13 @@ pub mod library;
 pub mod metadata;
 mod store;
 pub mod summary;
+pub mod workspace;
 
 pub use artifact::{
     media_type, Descriptor, Digest, Manifest, PayloadType, MAX_OBJECTS, MAX_SMALL_BLOB,
 };
+#[cfg(feature = "test-support")]
+pub use store::verification_passes;
 pub use store::{Blob, BlobSource, ConfigValidator, ResolvedImage, Store, Tag, TagPage};
 
 /// Failures at the storage and untrusted artifact boundaries.

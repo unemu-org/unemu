@@ -56,11 +56,36 @@ impl VerifiedBase {
             return Err(io::Error::other("base must be a regular file"));
         }
         let length = metadata.len();
+        #[cfg(feature = "test-support")]
+        note_data_pass(length);
         let identity = Header {
             base_length: length,
             base_digest: hash_reader(&mut file)?,
             anchor_generation: 0,
         };
+        identity.encode().map_err(io::Error::other)?;
+        let source = FileSource {
+            file,
+            metadata: metadata.clone(),
+        };
+        source.check_unchanged()?;
+        Ok(Self {
+            source: Rc::new(source),
+            identity,
+            metadata: Some(metadata),
+        })
+    }
+
+    /// Reuse the same open descriptor and metadata from a completed full-file
+    /// verification. The caller supplies that verification's SHA-256 identity.
+    pub fn from_verified_file(
+        file: File,
+        identity: Header,
+        metadata: Metadata,
+    ) -> io::Result<Self> {
+        if identity.base_length != metadata.len() {
+            return Err(io::Error::other("verified base length mismatch"));
+        }
         identity.encode().map_err(io::Error::other)?;
         let source = FileSource {
             file,
@@ -229,6 +254,16 @@ impl SparseOverlay {
             sectors: BTreeMap::new(),
         }
     }
+    /// Test only written sectors; an unchanged disk needs no full comparison pass.
+    pub fn has_changes(&self) -> io::Result<bool> {
+        for (&lba, bytes) in &self.sectors {
+            if self.parent.read_sector(lba)? != **bytes {
+                return Ok(true);
+            }
+        }
+        self.check_unchanged()?;
+        Ok(false)
+    }
     pub fn written_sectors(&self) -> usize {
         self.sectors.len()
     }
@@ -309,6 +344,18 @@ thread_local! { pub(crate) static HASH_PASSES: std::cell::Cell<usize> = const { 
 #[cfg(feature = "test-support")]
 pub fn hash_passes() -> usize {
     HASH_PASSES.with(|count| count.get())
+}
+
+#[cfg(feature = "test-support")]
+thread_local! { static DATA_PASSES: std::cell::RefCell<BTreeMap<u64, usize>> = const { std::cell::RefCell::new(BTreeMap::new()) }; }
+#[cfg(feature = "test-support")]
+pub(crate) fn note_data_pass(length: u64) {
+    DATA_PASSES.with(|counts| *counts.borrow_mut().entry(length).or_default() += 1);
+}
+/// Complete raw/cache/logical passes of a given length on this thread.
+#[cfg(feature = "test-support")]
+pub fn data_passes(length: u64) -> usize {
+    DATA_PASSES.with(|counts| counts.borrow().get(&length).copied().unwrap_or(0))
 }
 
 #[cfg(test)]

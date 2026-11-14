@@ -142,3 +142,263 @@ fn image_import_parses_named_recovery_and_rom_directories() {
     duplicate.extend(["--recover".into(), "cmos=tip".into()]);
     assert!(cli::command::parse(&duplicate).is_err());
 }
+
+#[test]
+fn workspace_commands_require_explicit_store_session_and_tag() {
+    for valid in [
+        vec![
+            "image",
+            "run",
+            "test:a",
+            "--workspace",
+            "play",
+            "--store",
+            "store",
+        ],
+        vec!["image", "workspace", "ls", "--store", "store"],
+        vec!["image", "workspace", "discard", "play", "--store", "store"],
+        vec![
+            "image",
+            "publish",
+            "--from-workspace",
+            "play",
+            "--tag",
+            "test:b",
+            "--store",
+            "store",
+        ],
+    ] {
+        assert!(
+            cli::command::parse(&valid.into_iter().map(OsString::from).collect::<Vec<_>>()).is_ok()
+        );
+    }
+    for invalid in [
+        vec!["image", "run", "test:a", "--store", "store"],
+        vec!["image", "run", "test:a", "--workspace", "play"],
+        vec![
+            "image",
+            "publish",
+            "--from-workspace",
+            "play",
+            "--store",
+            "store",
+        ],
+        vec!["image", "workspace", "discard", "--store", "store"],
+        vec![
+            "image",
+            "workspace",
+            "ls",
+            "--store",
+            "store",
+            "--workspace",
+            "play",
+        ],
+        vec![
+            "image",
+            "run",
+            "test:a",
+            "--workspace",
+            "play",
+            "--store",
+            "store",
+            "--max-steps",
+            "0",
+        ],
+    ] {
+        assert!(
+            cli::command::parse(&invalid.into_iter().map(OsString::from).collect::<Vec<_>>())
+                .is_err()
+        );
+    }
+}
+
+#[test]
+fn cli_workspace_run_publish_list_and_discard_are_opt_in() {
+    let root = std::env::temp_dir().join(format!("workspace-command-test-{}", std::process::id()));
+    std::fs::create_dir(&root).unwrap();
+    let _cleanup = RemoveDir(root.clone());
+    let bios =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../vendor/kiselev-bios/bios-xi8088.bin");
+    std::fs::copy(bios, root.join("bios.bin")).unwrap();
+    std::fs::write(root.join("disk.img"), vec![0; 360 * 1024]).unwrap();
+    let machine = root.join("machine.toml");
+    std::fs::write(
+        &machine,
+        "schema=1\nextends='preset:ibm-5170'\n[firmware.bios]\nimage='bios.bin'\n[[card]]\nid='fdc-765'\n[[card.drives]]\nunit=0\ntype='360K'\nimage='disk.img'\nwrite='journal'\njournal='source.upfj'\n",
+    )
+    .unwrap();
+    let args = vec![
+        "image".into(),
+        "import".into(),
+        machine.into_os_string(),
+        "--store".into(),
+        root.clone().into_os_string(),
+        "--tag".into(),
+        "test:base".into(),
+        "--create".into(),
+    ];
+    let (code, _, errors) = run(&args);
+    assert_eq!(code, 0, "{errors}");
+    let execute = |args: &[&str]| {
+        let mut args = args.iter().map(OsString::from).collect::<Vec<_>>();
+        args.extend(["--store".into(), root.clone().into_os_string()]);
+        run(&args)
+    };
+    let (code, output, errors) = execute(&[
+        "image",
+        "run",
+        "test:base",
+        "--workspace",
+        "play",
+        "--max-steps",
+        "1",
+    ]);
+    assert_eq!(code, 0, "{errors}");
+    assert!(output.contains("workspace:play"));
+    assert!(output.starts_with("pinned-image:sha256:"));
+    assert_ne!(
+        execute(&[
+            "image",
+            "run",
+            "test:base",
+            "--workspace",
+            "play",
+            "--new",
+            "--max-steps",
+            "1"
+        ])
+        .0,
+        0
+    );
+    let local = image_store::Store::open_existing(&root).unwrap();
+    let owner = local.open_workspace("play").unwrap();
+    let journal_before = std::fs::read(owner.path().join("media/medium-0.upfj")).unwrap();
+    assert!(
+        pc_image::workspace::publish_with_hook(&owner, "test:aborted", None, |step| {
+            if step == pc_image::workspace::PublicationStep::IntentStored {
+                Err(pc_image::Error::Invalid("injected interruption".into()))
+            } else {
+                Ok(())
+            }
+        })
+        .is_err()
+    );
+    drop(owner);
+    assert_eq!(
+        execute(&["image", "workspace", "abandon-publication", "play"]).0,
+        0
+    );
+    assert_eq!(
+        std::fs::read(root.join("workspaces/play/media/medium-0.upfj")).unwrap(),
+        journal_before
+    );
+    let (code, output, errors) = execute(&["image", "workspace", "ls"]);
+    assert_eq!(code, 0, "{errors}");
+    assert_eq!(output, "play\n");
+    let (code, output, errors) = execute(&[
+        "image",
+        "publish",
+        "--from-workspace",
+        "play",
+        "--tag",
+        "test:saved",
+    ]);
+    assert_eq!(code, 0, "{errors}");
+    assert!(output.starts_with("test:saved\tsha256:"));
+    assert!(!root.join("workspaces/play/media/medium-0.upfj").exists());
+    let (code, _, _) = execute(&[
+        "image",
+        "publish",
+        "--from-workspace",
+        "play",
+        "--tag",
+        "test:saved",
+    ]);
+    assert_ne!(code, 0);
+    let (code, _, errors) = execute(&["image", "workspace", "discard", "play", "--yes"]);
+    assert_eq!(code, 0, "{errors}");
+    let (code, output, errors) = execute(&["image", "workspace", "ls"]);
+    assert_eq!(code, 0, "{errors}");
+    assert!(output.is_empty());
+    let (code, output, errors) = execute(&["image", "ls"]);
+    assert_eq!(code, 0, "{errors}");
+    assert!(output.contains("test:base\t"));
+    assert!(output.contains("test:saved\t"));
+}
+
+#[test]
+fn destructive_workspace_commands_require_existing_names_and_explicit_discard() {
+    let root = std::env::temp_dir().join(format!("workspace-review-cli-{}", std::process::id()));
+    std::fs::create_dir(&root).unwrap();
+    let _cleanup = RemoveDir(root.clone());
+    let store = image_store::Store::open(&root).unwrap();
+    let owner = store.workspace("kept").unwrap();
+    owner.write("session.toml", b"schema=1\n").unwrap();
+    std::fs::create_dir(owner.path().join("custom")).unwrap();
+    std::fs::write(owner.path().join("custom/disk.upfj"), b"synthetic journal").unwrap();
+    drop(owner);
+    let execute = |args: &[&str]| {
+        let mut args = args.iter().map(OsString::from).collect::<Vec<_>>();
+        args.extend(["--store".into(), root.clone().into_os_string()]);
+        run(&args)
+    };
+    for args in [
+        vec!["image", "workspace", "discard", "typo", "--yes"],
+        vec!["image", "workspace", "abandon-publication", "typo"],
+        vec![
+            "image",
+            "publish",
+            "--from-workspace",
+            "typo",
+            "--tag",
+            "test:new",
+        ],
+    ] {
+        assert_ne!(execute(&args).0, 0);
+        assert!(!root.join("workspaces/typo").exists());
+    }
+    let (code, output, _) = execute(&["image", "workspace", "discard", "kept"]);
+    assert_ne!(code, 0);
+    assert!(output.contains("affected:custom/disk.upfj"));
+    assert!(root.join("workspaces/kept/custom/disk.upfj").exists());
+    assert_eq!(
+        execute(&["image", "workspace", "discard", "kept", "--yes"]).0,
+        0
+    );
+    assert!(!root.join("workspaces/kept/session.toml").exists());
+    for args in [
+        vec![
+            "image",
+            "run",
+            "test:a",
+            "--store",
+            "store",
+            "--workspace",
+            "new",
+            "--new",
+        ],
+        vec![
+            "image",
+            "publish",
+            "--store",
+            "store",
+            "--from-workspace",
+            "new",
+            "--tag",
+            "test:b",
+            "--flatten",
+        ],
+        vec![
+            "image",
+            "workspace",
+            "abandon-publication",
+            "new",
+            "--store",
+            "store",
+        ],
+    ] {
+        assert!(
+            cli::command::parse(&args.into_iter().map(OsString::from).collect::<Vec<_>>()).is_ok()
+        );
+    }
+}

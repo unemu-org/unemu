@@ -241,6 +241,36 @@ fn probe_publish_with(staging: &Path, publish: impl Fn(&Path, &Path) -> Result<(
     }
 }
 
+pub(crate) fn require_space(path: &Path, required: u64) -> Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        let path = std::ffi::CString::new(path.as_os_str().as_bytes())
+            .map_err(|e| crate::invalid(e.to_string()))?;
+        let mut stats = std::mem::MaybeUninit::<libc::statvfs>::uninit();
+        // statvfs fills this output only on success; the path remains alive.
+        if unsafe { libc::statvfs(path.as_ptr(), stats.as_mut_ptr()) } != 0 {
+            return Err(io::Error::last_os_error().into());
+        }
+        let stats = unsafe { stats.assume_init() };
+        let available = u128::from(stats.f_bavail) * u128::from(stats.f_frsize);
+        if available < u128::from(required) {
+            return Err(io::Error::new(
+                io::ErrorKind::StorageFull,
+                "insufficient store space for media publication",
+            )
+            .into());
+        }
+        Ok(())
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (path, required);
+        eprintln!("warning: free-space check unavailable on this host");
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

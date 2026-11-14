@@ -5,6 +5,31 @@ use std::{ffi::OsString, io::Write, path::PathBuf};
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum ImageCommand {
+    Run {
+        store: PathBuf,
+        tag: String,
+        workspace: String,
+        max_steps: u64,
+        fresh: bool,
+    },
+    Workspaces {
+        store: PathBuf,
+    },
+    Discard {
+        store: PathBuf,
+        workspace: String,
+        yes: bool,
+    },
+    Abandon {
+        store: PathBuf,
+        workspace: String,
+    },
+    Publish {
+        store: PathBuf,
+        workspace: String,
+        tag: String,
+        flatten: bool,
+    },
     Import {
         machine: PathBuf,
         store: PathBuf,
@@ -17,6 +42,12 @@ pub enum ImageCommand {
     },
 }
 pub fn parse(args: &[OsString]) -> Result<ImageCommand, &'static str> {
+    if args
+        .first()
+        .is_some_and(|s| matches!(s.to_str(), Some("run" | "workspace" | "publish")))
+    {
+        return parse_workspace(args);
+    }
     let action = args
         .first()
         .and_then(|a| a.to_str())
@@ -102,6 +133,68 @@ pub fn execute(
     errors: &mut impl Write,
 ) -> anyhow::Result<u8> {
     match command {
+        ImageCommand::Run {
+            store,
+            tag,
+            workspace,
+            max_steps,
+            fresh,
+        } => {
+            let store = image_store::Store::open_existing(store)?;
+            let owner = store.workspace(&workspace)?;
+            let prepared = pc_image::workspace::prepare_start(&owner, &tag, fresh)?;
+            writeln!(output, "pinned-image:{}", prepared.image)?;
+            let mut machine = assembly::assemble_with_verified_bases(
+                &prepared.machine,
+                &assembly::ObservationPolicy::default(),
+                assembly::AssemblyOptions::default(),
+                &prepared.bases,
+            )?;
+            let result = machine.run_session(&assembly::RunPolicy::natural(
+                Some(max_steps),
+                Some(1_000_000),
+            ));
+            crate::finish_persistence(&mut machine, errors)?;
+            writeln!(output, "workspace:{workspace}\t{:?}", result?)?;
+        }
+        ImageCommand::Workspaces { store } => {
+            let store = image_store::Store::open_existing(store)?;
+            for name in store.list_workspaces()? {
+                writeln!(output, "{name}")?;
+            }
+        }
+        ImageCommand::Discard {
+            store,
+            workspace,
+            yes,
+        } => {
+            let store = image_store::Store::open_existing(store)?;
+            let owner = store.open_workspace(&workspace)?;
+            for path in owner.contents()? {
+                writeln!(output, "affected:{}", path.display())?;
+            }
+            if !yes {
+                anyhow::bail!("discard requires --yes after reviewing affected media");
+            }
+            owner.discard()?;
+        }
+        ImageCommand::Abandon { store, workspace } => {
+            let store = image_store::Store::open_existing(store)?;
+            let owner = store.open_workspace(&workspace)?;
+            pc_image::workspace::abandon_publication(&owner)?;
+        }
+        ImageCommand::Publish {
+            store,
+            workspace,
+            tag,
+            flatten,
+        } => {
+            let store = image_store::Store::open_existing(store)?;
+            let owner = store.open_workspace(&workspace)?;
+            let manifest =
+                pc_image::workspace::publish_with_options(&owner, &tag, None, flatten, |_| Ok(()))?;
+            writeln!(output, "{tag}\t{}", manifest.digest)?;
+        }
         ImageCommand::Import {
             machine,
             store,
@@ -147,4 +240,118 @@ pub fn execute(
         }
     }
     Ok(0)
+}
+
+fn parse_workspace(args: &[OsString]) -> Result<ImageCommand, &'static str> {
+    let action = args[0].to_str().ok_or("invalid image action")?;
+    let mut index = 1;
+    let mut tag = None;
+    let mut workspace = None;
+    let mut sub = None;
+    if action == "run" {
+        tag = Some(
+            args.get(index)
+                .and_then(|s| s.to_str())
+                .filter(|s| !s.starts_with("--"))
+                .ok_or("image run requires NAME:TAG")?
+                .to_owned(),
+        );
+        index += 1;
+    } else if action == "workspace" {
+        sub = Some(
+            args.get(index)
+                .and_then(|s| s.to_str())
+                .ok_or("expected workspace ls, discard or abandon-publication")?,
+        );
+        index += 1;
+        match sub {
+            Some("ls") => (),
+            Some("discard" | "abandon-publication") => {
+                workspace = Some(
+                    args.get(index)
+                        .and_then(|s| s.to_str())
+                        .ok_or("workspace discard requires NAME")?
+                        .to_owned(),
+                );
+                index += 1;
+            }
+            _ => return Err("expected workspace ls, discard or abandon-publication"),
+        }
+    }
+    let mut store = None;
+    let mut max_steps = None;
+    let (mut fresh, mut flatten, mut yes) = (false, false, false);
+    while index < args.len() {
+        let option = args[index].to_str().ok_or("invalid image option")?;
+        index += 1;
+        match option {
+            "--new" if action == "run" && !fresh => {
+                fresh = true;
+                continue;
+            }
+            "--flatten" if action == "publish" && !flatten => {
+                flatten = true;
+                continue;
+            }
+            "--yes" if sub == Some("discard") && !yes => {
+                yes = true;
+                continue;
+            }
+            _ => (),
+        }
+        let value = args
+            .get(index)
+            .filter(|s| !s.is_empty() && !s.as_encoded_bytes().starts_with(b"--"))
+            .ok_or("missing image option value")?;
+        index += 1;
+        match option {
+            "--store" if store.is_none() => store = Some(PathBuf::from(value)),
+            "--workspace" if action == "run" && workspace.is_none() => {
+                workspace = Some(value.to_str().ok_or("invalid workspace")?.into())
+            }
+            "--from-workspace" if action == "publish" && workspace.is_none() => {
+                workspace = Some(value.to_str().ok_or("invalid workspace")?.into())
+            }
+            "--tag" if action == "publish" && tag.is_none() => {
+                tag = Some(value.to_str().ok_or("invalid tag")?.into())
+            }
+            "--max-steps" if action == "run" && max_steps.is_none() => {
+                max_steps = Some(
+                    value
+                        .to_str()
+                        .and_then(|s| s.parse().ok())
+                        .filter(|n| *n > 0)
+                        .ok_or("invalid step limit")?,
+                )
+            }
+            _ => return Err("unknown or duplicate image option"),
+        }
+    }
+    let store = store.ok_or("image commands require --store DIR")?;
+    match (action, sub) {
+        ("workspace", Some("ls")) => Ok(ImageCommand::Workspaces { store }),
+        ("workspace", Some("discard")) => Ok(ImageCommand::Discard {
+            store,
+            workspace: workspace.ok_or("workspace required")?,
+            yes,
+        }),
+        ("workspace", Some("abandon-publication")) => Ok(ImageCommand::Abandon {
+            store,
+            workspace: workspace.ok_or("workspace required")?,
+        }),
+        ("run", _) => Ok(ImageCommand::Run {
+            store,
+            tag: tag.ok_or("tag required")?,
+            workspace: workspace.ok_or("--workspace required")?,
+            max_steps: max_steps.unwrap_or(1_000_000),
+            fresh,
+        }),
+        ("publish", _) => Ok(ImageCommand::Publish {
+            store,
+            tag: tag.ok_or("--tag required")?,
+            workspace: workspace.ok_or("--from-workspace required")?,
+            flatten,
+        }),
+        _ => Err("invalid image command"),
+    }
 }

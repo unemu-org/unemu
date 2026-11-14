@@ -1337,3 +1337,36 @@ fn schema_one_unknown_metadata_fields_degrade_on_resolve_but_reject_publication(
         );
     }
 }
+
+#[test]
+fn publication_receipts_refuse_mutation_wrong_store_and_display_only_resolution() {
+    let dir = Temp::new();
+    let store = dir.store();
+    let (manifest, _) = fixture(&store, b"firmware");
+    let descriptor = store.import_manifest(&manifest).unwrap();
+    let display = store
+        .resolve_descriptor(&descriptor, &Provider("zx-spectrum"))
+        .unwrap();
+    assert!(store
+        .update_verified_tag("receipt:display", &display, None)
+        .is_err());
+    let verified = store
+        .verify_publication(&descriptor, &Provider("zx-spectrum"))
+        .unwrap();
+    let mut changed = verified.clone();
+    changed.manifest.layers[0].size += 1;
+    assert!(store
+        .update_verified_tag("receipt:changed", &changed, None)
+        .is_err());
+    let another = Temp::new();
+    let other_store = another.store();
+    assert!(other_store
+        .update_verified_tag("receipt:other", &verified, None)
+        .is_err());
+    store
+        .update_verified_tag("receipt:valid", &verified, None)
+        .unwrap();
+    store
+        .resolve("receipt:valid", &Provider("zx-spectrum"))
+        .unwrap();
+}

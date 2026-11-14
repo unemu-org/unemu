@@ -6,17 +6,24 @@
 use crate::*;
 use image_store::{media_type as mt, BlobSource, ConfigValidator, PayloadType, Store};
 use std::{
-    cell::RefCell,
     collections::{BTreeMap, BTreeSet},
     io,
     path::Path,
 };
 
 pub const CMOS: &str = "application/vnd.unemu.cmos.v1";
-/// Explicit PC codecs. Optical images, saved states and sparse layers are refused.
+/// Explicit PC codecs. Optical images and saved states are refused.
 /// ATA/ATAPI-4, IDENTIFY DEVICE: raw fixed disks are further bounded by the
 /// existing XTIDE-compatible CHS geometry validator.
 pub const PAYLOAD_TYPES: &[PayloadType] = &[
+    PayloadType {
+        media_type: mt::DISK_LAYER,
+        max_size: image_store::MAX_SMALL_BLOB,
+    },
+    PayloadType {
+        media_type: mt::DISK_SECTORS,
+        max_size: 16383 * 16 * 63 * 520,
+    },
     PayloadType {
         media_type: mt::FIRMWARE,
         max_size: 16 * 1024 * 1024,
@@ -39,6 +46,16 @@ pub struct PcProvider;
 impl ConfigValidator for PcProvider {
     fn platform(&self) -> &str {
         "ibm-pc-at"
+    }
+    fn validate_resolved(
+        &self,
+        image: &image_store::ResolvedImage,
+        store: &Store,
+    ) -> image_store::Result<()> {
+        let config = config_from_image(image).map_err(store_error)?;
+        crate::disk::bases(store, &config, image)
+            .map(|_| ())
+            .map_err(store_error)
     }
     fn payload_types(&self) -> &[PayloadType] {
         PAYLOAD_TYPES
@@ -234,7 +251,15 @@ fn prepare(config: Config, descriptors: &[Descriptor], blobs: &dyn BlobSource) -
                 .find(|m| &m.id == id)
                 .ok_or_else(|| invalid("unknown catalogue medium"))?;
             let payload_type = if kind == "ide" {
-                mt::DISK_BASE
+                let head = descriptors
+                    .iter()
+                    .find(|d| d.digest == medium.head)
+                    .ok_or_else(|| invalid("missing disk head"))?;
+                if head.media_type == mt::DISK_LAYER {
+                    mt::DISK_LAYER
+                } else {
+                    mt::DISK_BASE
+                }
             } else {
                 mt::FLOPPY
             };
@@ -255,13 +280,21 @@ fn prepare(config: Config, descriptors: &[Descriptor], blobs: &dyn BlobSource) -
                 references.push(medium.head.clone());
                 descriptor(descriptors, &medium.head, payload_type)?
             };
+            let disk_size = if kind == "ide" && payload_type == mt::DISK_LAYER {
+                let refs =
+                    crate::disk::references(&medium.head, &medium.geometry, descriptors, blobs)?;
+                references.extend(refs.into_iter().skip(1));
+                crate::disk::geometry(&medium.geometry).capacity()? * 512
+            } else {
+                d.size
+            };
             let g = &medium.geometry;
             if g.sector_bytes != 512
                 || u64::from(g.cylinders)
                     .checked_mul(u64::from(g.heads))
                     .and_then(|n| n.checked_mul(u64::from(g.sectors)))
                     .and_then(|n| n.checked_mul(512))
-                    != Some(d.size)
+                    != Some(disk_size)
             {
                 return Err(invalid("medium geometry differs from payload length"));
             }
@@ -287,7 +320,7 @@ fn prepare(config: Config, descriptors: &[Descriptor], blobs: &dyn BlobSource) -
             }
         }
         // Lower only a bounded placeholder; descriptor geometry is validated above.
-        // Actual disk bytes are streamed and hashed by the store, never by this reader.
+        // The store verifies raw payloads; the resolved callback verifies a layered head once.
         if kind == "ide" {
             drive.insert("image".into(), "__pc_image_validation_disk__".into());
             drive.insert("write".into(), "volatile".into());
@@ -375,7 +408,11 @@ fn prepare(config: Config, descriptors: &[Descriptor], blobs: &dyn BlobSource) -
             }
             entries.push(assembly::FloppyMedium {
                 image: assembly::ImageSource::File(m.source.clone().into()),
-                expected_sha256: Some(hash_array(&m.head)?),
+                expected_sha256: Some(hash_array(&crate::disk::identity(
+                    &m.head,
+                    descriptors,
+                    blobs,
+                )?)?),
                 write: m.policy.write(format!("{}.upfj", m.id).into()),
                 name: m.name.clone().unwrap_or_default(),
             });
@@ -413,8 +450,28 @@ fn prepare(config: Config, descriptors: &[Descriptor], blobs: &dyn BlobSource) -
 
 /// Resolve a verified image to assembly input. Journal outputs use only the caller's
 /// session directory; bases remain immutable blobs in the store. No session is created.
+fn config_from_image(image: &image_store::ResolvedImage) -> Result<Config> {
+    let table: toml::Table = std::str::from_utf8(&image.config)
+        .map_err(|e| invalid(e.to_string()))?
+        .parse()
+        .map_err(|e: toml::de::Error| invalid(e.to_string()))?;
+    decode(table)
+}
 pub fn resolve(store: &Store, tag: &str, session: &Path) -> Result<assembly::MachineConfig> {
-    struct Capture(RefCell<Option<Prepared>>);
+    Ok(resolve_pinned(store, &store.tag_descriptor(tag)?, session, None)?.1)
+}
+pub(crate) struct PreparedImage {
+    pub image: image_store::ResolvedImage,
+    pub config: Config,
+    pub machine: assembly::MachineConfig,
+    pub bases: BTreeMap<Digest, crate::disk::Disk>,
+}
+pub(crate) fn load_pinned(
+    store: &Store,
+    descriptor: &Descriptor,
+    publication: bool,
+) -> Result<PreparedImage> {
+    struct Capture(std::cell::RefCell<Option<(Prepared, BTreeMap<Digest, crate::disk::Disk>)>>);
     impl ConfigValidator for Capture {
         fn platform(&self) -> &str {
             "ibm-pc-at"
@@ -424,35 +481,85 @@ pub fn resolve(store: &Store, tag: &str, session: &Path) -> Result<assembly::Mac
         }
         fn validate(
             &self,
-            config: &toml::Table,
+            table: &toml::Table,
             descriptors: &[Descriptor],
             blobs: &dyn BlobSource,
         ) -> image_store::Result<Vec<Digest>> {
             let prepared = prepare(
-                decode(config.clone()).map_err(store_error)?,
+                decode(table.clone()).map_err(store_error)?,
                 descriptors,
                 blobs,
             )
             .map_err(store_error)?;
-            let references = prepared.references.clone();
-            self.0.replace(Some(prepared));
-            Ok(references)
+            let refs = prepared.references.clone();
+            self.0.replace(Some((prepared, BTreeMap::new())));
+            Ok(refs)
+        }
+        fn validate_resolved(
+            &self,
+            image: &image_store::ResolvedImage,
+            store: &Store,
+        ) -> image_store::Result<()> {
+            let mut capture = self.0.borrow_mut();
+            let (prepared, bases) = capture
+                .as_mut()
+                .ok_or_else(|| image_store::Error::Invalid("provider was not called".into()))?;
+            *bases = crate::disk::bases(store, &prepared.config, image).map_err(store_error)?;
+            Ok(())
         }
     }
-    let capture = Capture(RefCell::new(None));
-    let image = store.resolve(tag, &capture)?;
-    let record = crate::ImportRecord::read(store, &image.image.digest)?;
-    let retention = |id: &str| {
-        record
-            .as_ref()
-            .and_then(|r| r.generations.iter().find(|g| g.medium == id))
-            .and_then(|g| g.keep_generations)
-            .unwrap_or(assembly::WriteMode::DEFAULT_KEEP_GENERATIONS)
+    let capture = Capture(std::cell::RefCell::new(None));
+    let image = if publication {
+        store.verify_publication(descriptor, &capture)?
+    } else {
+        store.resolve_descriptor(descriptor, &capture)?
     };
-    let mut prepared = capture
+    if publication && image.metadata_read_only {
+        return Err(invalid(
+            "read-only metadata must be repaired before publication",
+        ));
+    }
+    let (prepared, bases) = capture
         .0
         .into_inner()
         .ok_or_else(|| invalid("provider was not called"))?;
+    Ok(PreparedImage {
+        image,
+        config: prepared.config,
+        machine: prepared.machine,
+        bases,
+    })
+}
+pub(crate) fn resolve_pinned(
+    store: &Store,
+    descriptor: &Descriptor,
+    session: &Path,
+    overrides: Option<&BTreeMap<String, u32>>,
+) -> Result<(
+    image_store::ResolvedImage,
+    assembly::MachineConfig,
+    BTreeMap<std::path::PathBuf, media::VerifiedBase>,
+)> {
+    let resolved = load_pinned(store, descriptor, false)?;
+    let image = resolved.image;
+    let mut prepared = Prepared {
+        config: resolved.config,
+        machine: resolved.machine,
+        references: Vec::new(),
+    };
+    let bases = resolved.bases;
+    let record = crate::ImportRecord::read(store, &image.image.digest)?;
+    let retention = |id: &str| {
+        overrides
+            .and_then(|map| map.get(id).copied())
+            .or_else(|| {
+                record
+                    .as_ref()
+                    .and_then(|r| r.generations.iter().find(|g| g.medium == id))
+                    .and_then(|g| g.keep_generations)
+            })
+            .unwrap_or(assembly::WriteMode::DEFAULT_KEEP_GENERATIONS)
+    };
     let base_path = |digest: &Digest| -> Result<std::path::PathBuf> {
         let d = image
             .manifest
@@ -476,7 +583,11 @@ pub fn resolve(store: &Store, tag: &str, session: &Path) -> Result<assembly::Mac
                     .iter()
                     .find(|m| &m.id == id)
                     .ok_or_else(|| invalid("missing medium"))?;
-                entry.image = assembly::ImageSource::File(base_path(&m.head)?);
+                let disk = bases
+                    .get(&m.head)
+                    .ok_or_else(|| invalid("missing prepared disk"))?;
+                entry.image = assembly::ImageSource::File(disk.path.clone());
+                entry.expected_sha256 = Some(hash_array(&disk.identity)?);
                 entry.write = m.policy.write(session.join(format!("{}.upfj", m.id)));
                 if let assembly::WriteMode::Journal {
                     keep_generations, ..
@@ -499,8 +610,11 @@ pub fn resolve(store: &Store, tag: &str, session: &Path) -> Result<assembly::Mac
             {
                 *keep_generations = retention(&m.id);
             }
-            drive.image = assembly::ImageSource::File(base_path(&m.head)?);
-            drive.expected_sha256 = Some(hash_array(&m.head)?);
+            let disk = bases
+                .get(&m.head)
+                .ok_or_else(|| invalid("missing prepared disk"))?;
+            drive.image = assembly::ImageSource::File(disk.path.clone());
+            drive.expected_sha256 = Some(hash_array(&disk.identity)?);
         }
     }
     if let Some(n) = &prepared.config.nvram {
@@ -517,9 +631,13 @@ pub fn resolve(store: &Store, tag: &str, session: &Path) -> Result<assembly::Mac
             }
         }
     }
-    Ok(prepared.machine)
+    let verified = bases
+        .values()
+        .map(|disk| (disk.path.clone(), disk.base.clone()))
+        .collect();
+    Ok((image, prepared.machine, verified))
 }
-fn hash_array(digest: &Digest) -> Result<[u8; 32]> {
+pub(crate) fn hash_array(digest: &Digest) -> Result<[u8; 32]> {
     let mut bytes = [0; 32];
     for (i, b) in bytes.iter_mut().enumerate() {
         *b = u8::from_str_radix(&digest.hex()[i * 2..i * 2 + 2], 16)

@@ -28,6 +28,10 @@ pub struct Blob {
 pub trait BlobSource {
     /// Read and fully hash a bounded descriptor, refusing oversized data first.
     fn read_verified(&self, descriptor: &Descriptor, limit: u64) -> Result<Vec<u8>>;
+    /// Stream large payloads without requiring an allocation of their full size.
+    fn open_verified(&self, _descriptor: &Descriptor) -> Result<File> {
+        Err(invalid("file-backed payload access unavailable"))
+    }
 }
 
 /// Platform-owned validation of the common routing envelope's remaining fields.
@@ -43,6 +47,10 @@ pub trait BlobSource {
 pub trait ConfigValidator {
     /// Platform family this implementation understands.
     fn platform(&self) -> &str;
+    /// Validate reconstructed payloads once their verified file receipts exist.
+    fn validate_resolved(&self, _image: &ResolvedImage, _store: &Store) -> Result<()> {
+        Ok(())
+    }
 
     /// Extra payload codecs supported by this provider, with stored-size limits.
     fn payload_types(&self) -> &[PayloadType] {
@@ -86,6 +94,50 @@ pub struct ResolvedImage {
     pub metadata_read_only: bool,
     /// Artwork missing from storage; this never prevents running the machine.
     pub missing_artwork: Vec<Descriptor>,
+    verified: BTreeMap<Digest, VerifiedBlob>,
+    publication_ready: bool,
+    store_root: PathBuf,
+    receipt_image: Descriptor,
+    receipt_manifest: Vec<u8>,
+}
+#[derive(Clone, Debug)]
+struct VerifiedBlob {
+    file: std::sync::Arc<File>,
+    metadata: fs::Metadata,
+}
+impl VerifiedBlob {
+    fn check(&self) -> Result<()> {
+        let now = self.file.metadata()?;
+        #[cfg(unix)]
+        let same = {
+            use std::os::unix::fs::MetadataExt;
+            now.dev() == self.metadata.dev()
+                && now.ino() == self.metadata.ino()
+                && now.len() == self.metadata.len()
+                && now.mtime() == self.metadata.mtime()
+                && now.mtime_nsec() == self.metadata.mtime_nsec()
+                && now.ctime() == self.metadata.ctime()
+                && now.ctime_nsec() == self.metadata.ctime_nsec()
+        };
+        #[cfg(not(unix))]
+        let same =
+            now.len() == self.metadata.len() && now.modified()? == self.metadata.modified()?;
+        if !same {
+            return Err(invalid("payload changed after verification"));
+        }
+        Ok(())
+    }
+}
+impl ResolvedImage {
+    /// Reuse an already verified open descriptor, refusing mutations since hashing.
+    pub fn verified_file(&self, digest: &Digest) -> Result<(File, fs::Metadata)> {
+        let blob = self
+            .verified
+            .get(digest)
+            .ok_or_else(|| invalid("payload was not verified"))?;
+        blob.check()?;
+        Ok((blob.file.try_clone()?, blob.metadata.clone()))
+    }
 }
 
 /// Caller-rooted, platform-neutral store. Handles retain no locks between calls.
@@ -393,6 +445,15 @@ impl Store {
         validator: &dyn ConfigValidator,
         require_artwork: bool,
     ) -> Result<ResolvedImage> {
+        self.resolve_image_reusing(image, validator, require_artwork, None)
+    }
+    fn resolve_image_reusing(
+        &self,
+        image: &Descriptor,
+        validator: &dyn ConfigValidator,
+        require_artwork: bool,
+        reuse: Option<&ResolvedImage>,
+    ) -> Result<ResolvedImage> {
         image.validate()?;
         if image.media_type != media_type::MANIFEST {
             return Err(invalid("tag target is not a manifest"));
@@ -501,22 +562,46 @@ impl Store {
             ));
         }
         let mut missing_artwork = Vec::new();
+        let mut verified = BTreeMap::new();
         for descriptor in &manifest.layers {
-            match self.verify_inner(&descriptor.digest, descriptor.size, &descriptor.media_type) {
+            if let Some(source) = reuse {
+                if source.manifest.layers.iter().any(|old| old == descriptor) {
+                    if let Some(receipt) = source.verified.get(&descriptor.digest) {
+                        if receipt.metadata.len() != descriptor.size {
+                            return Err(invalid("source receipt size mismatch"));
+                        }
+                        receipt.check()?;
+                        verified.insert(descriptor.digest.clone(), receipt.clone());
+                        continue;
+                    }
+                }
+            }
+            match self.verify_file(&descriptor.digest, descriptor.size, &descriptor.media_type) {
                 Err(Error::MissingBlob { .. }) if !require_artwork && is_artwork(descriptor) => {
                     missing_artwork.push(descriptor.clone())
                 }
-                result => result?,
+                Ok(file) => {
+                    verified.insert(descriptor.digest.clone(), file);
+                }
+                Err(error) => return Err(error),
             }
         }
-        Ok(ResolvedImage {
+        let receipt_manifest = serde_json::to_vec(&manifest).map_err(|e| invalid(e.to_string()))?;
+        let image = ResolvedImage {
             image: image.clone(),
             manifest,
             config,
             metadata,
             metadata_read_only: envelope.is_read_only(),
             missing_artwork,
-        })
+            verified,
+            publication_ready: require_artwork,
+            store_root: self.root.clone(),
+            receipt_image: image.clone(),
+            receipt_manifest,
+        };
+        validator.validate_resolved(&image, self)?;
+        Ok(image)
     }
 
     fn check_version(&self) -> Result<()> {
@@ -564,11 +649,23 @@ impl Store {
         Ok(file)
     }
 
-    fn verify_inner(&self, digest: &Digest, size: u64, role: &str) -> Result<()> {
+    fn verify_file(&self, digest: &Digest, size: u64, role: &str) -> Result<VerifiedBlob> {
         let mut file = self.open_inner(digest, size, role)?;
+        let metadata = file.metadata()?;
+        #[cfg(feature = "test-support")]
+        VERIFICATIONS.with(|counts| *counts.borrow_mut().entry(digest.clone()).or_default() += 1);
         let actual = copy_hash(&mut file, None)?;
         check_size(size, actual.size)?;
-        check_digest(digest, &actual.digest)
+        check_digest(digest, &actual.digest)?;
+        let verified = VerifiedBlob {
+            file: std::sync::Arc::new(file),
+            metadata,
+        };
+        verified.check()?;
+        Ok(verified)
+    }
+    fn verify_inner(&self, digest: &Digest, size: u64, role: &str) -> Result<()> {
+        self.verify_file(digest, size, role).map(|_| ())
     }
 
     fn read_inner(&self, descriptor: &Descriptor, limit: u64) -> Result<Vec<u8>> {
@@ -632,6 +729,25 @@ impl Store {
 }
 
 impl BlobSource for Store {
+    fn open_verified(&self, descriptor: &Descriptor) -> Result<File> {
+        let _lease = self.lease()?;
+        let mut file =
+            self.open_inner(&descriptor.digest, descriptor.size, &descriptor.media_type)?;
+        #[cfg(feature = "test-support")]
+        VERIFICATIONS.with(|counts| {
+            *counts
+                .borrow_mut()
+                .entry(descriptor.digest.clone())
+                .or_default() += 1
+        });
+        let actual = copy_hash(&mut file, None)?;
+        check_size(descriptor.size, actual.size)?;
+        check_digest(&descriptor.digest, &actual.digest)?;
+        use std::io::{Seek, SeekFrom};
+        file.seek(SeekFrom::Start(0))?;
+        Ok(file)
+    }
+
     fn read_verified(&self, descriptor: &Descriptor, limit: u64) -> Result<Vec<u8>> {
         let _lease = self.lease()?;
         self.read_inner(descriptor, limit)
@@ -825,5 +941,159 @@ impl Store {
             }
         }
         Ok(())
+    }
+}
+
+impl Store {
+    /// Resolve a pinned descriptor independently of mutable tag names.
+    pub fn resolve_descriptor(
+        &self,
+        descriptor: &Descriptor,
+        validator: &dyn ConfigValidator,
+    ) -> Result<ResolvedImage> {
+        let _lease = self.lease()?;
+        self.resolve_image_inner(descriptor, validator, false)
+    }
+    /// Remove only index metadata, with compare-and-swap protection.
+    pub fn remove_tag(&self, name: &str, expected: &Digest) -> Result<()> {
+        validate_tag(name)?;
+        let _lease = self.lease()?;
+        let _lock = host::exclusive_lock(&self.root.join("locks/index.lock"))?;
+        let mut index = self.read_index()?;
+        let position = index
+            .manifests
+            .iter()
+            .position(|raw| {
+                local_descriptor(raw)
+                    .ok()
+                    .flatten()
+                    .is_some_and(|d| tag_name(&d) == Some(name))
+            })
+            .ok_or_else(|| Error::TagNotFound(name.into()))?;
+        let current = local_descriptor(&index.manifests[position])?
+            .ok_or_else(|| invalid("invalid local tag"))?;
+        if &current.digest != expected {
+            return Err(Error::Conflict {
+                current: Some(current.digest),
+            });
+        }
+        index.manifests.remove(position);
+        self.write_index(&index)
+    }
+}
+
+impl Store {
+    /// Check known staging requirements before a streamed disk operation. Other
+    /// writers can still exhaust the disk later; normal write errors remain fatal.
+    pub fn require_space(&self, bytes: u64) -> Result<()> {
+        let _lease = self.lease()?;
+        host::require_space(self.root(), bytes)
+    }
+}
+
+#[cfg(feature = "test-support")]
+thread_local! { static VERIFICATIONS: std::cell::RefCell<BTreeMap<Digest, usize>> = const { std::cell::RefCell::new(BTreeMap::new()) }; }
+/// Full SHA-256 passes over one stored object on this thread.
+#[cfg(feature = "test-support")]
+pub fn verification_passes(digest: &Digest) -> usize {
+    VERIFICATIONS.with(|counts| counts.borrow().get(digest).copied().unwrap_or(0))
+}
+
+impl Store {
+    /// Verify the complete publication closure, including metadata and artwork.
+    pub fn verify_publication(
+        &self,
+        descriptor: &Descriptor,
+        validator: &dyn ConfigValidator,
+    ) -> Result<ResolvedImage> {
+        let _lease = self.lease()?;
+        self.resolve_image_inner(descriptor, validator, true)
+    }
+    /// Resolve only the tag pointer; payload verification belongs to the pinned resolution.
+    pub fn tag_descriptor(&self, name: &str) -> Result<Descriptor> {
+        validate_tag(name)?;
+        let _lease = self.lease()?;
+        self.tags_inner()?
+            .into_iter()
+            .find(|t| t.name == name)
+            .map(|t| t.manifest)
+            .ok_or_else(|| Error::TagNotFound(name.into()))
+    }
+    /// Atomically persist a bounded local provenance document outside image blobs.
+    pub fn write_local_record(&self, digest: &Digest, bytes: &[u8]) -> Result<()> {
+        let _lease = self.lease()?;
+        let _lock = host::exclusive_lock(&self.root.join("locks/index.lock"))?;
+        if bytes.len() as u64 > MAX_SMALL_BLOB {
+            return Err(invalid("local record too large"));
+        }
+        let directory = self.root.join("local/imports");
+        fs::create_dir_all(&directory)?;
+        host::sync_dir(self.root())?;
+        host::sync_dir(&self.root.join("local"))?;
+        self.atomic_write(&directory.join(format!("{}.toml", digest.hex())), bytes)
+    }
+}
+
+impl Store {
+    /// Publish a strict verification receipt after rechecking open-file identity.
+    pub fn update_verified_tag(
+        &self,
+        name: &str,
+        image: &ResolvedImage,
+        expected: Option<&Digest>,
+    ) -> Result<()> {
+        if image.image != image.receipt_image
+            || serde_json::to_vec(&image.manifest).map_err(|e| invalid(e.to_string()))?
+                != image.receipt_manifest
+        {
+            return Err(invalid("verification receipt was modified"));
+        }
+        if image.store_root != self.root {
+            return Err(invalid("verification receipt belongs to another store"));
+        }
+        if !image.publication_ready {
+            return Err(invalid(
+                "publication requires strict metadata and artwork verification",
+            ));
+        }
+        let _lease = self.lease()?;
+        self.verify_inner(&image.image.digest, image.image.size, media_type::MANIFEST)?;
+        self.verify_inner(
+            &image.manifest.config.digest,
+            image.manifest.config.size,
+            media_type::CONFIG,
+        )?;
+        for descriptor in &image.manifest.layers {
+            let (verified, _) = image.verified_file(&descriptor.digest)?;
+            let current =
+                self.open_inner(&descriptor.digest, descriptor.size, &descriptor.media_type)?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::MetadataExt;
+                let a = verified.metadata()?;
+                let b = current.metadata()?;
+                if a.dev() != b.dev() || a.ino() != b.ino() {
+                    return Err(invalid("blob path changed after verification"));
+                }
+            }
+        }
+        let _lock = host::exclusive_lock(&self.root.join("locks/index.lock"))?;
+        self.update_tag_locked(name, &image.image, expected)
+    }
+}
+
+impl Store {
+    /// Reuse unchanged immutable inputs from this operation's source verification.
+    pub fn verify_publication_reusing(
+        &self,
+        descriptor: &Descriptor,
+        validator: &dyn ConfigValidator,
+        source: &ResolvedImage,
+    ) -> Result<ResolvedImage> {
+        if source.store_root != self.root || !source.publication_ready {
+            return Err(invalid("source publication receipt is unavailable"));
+        }
+        let _lease = self.lease()?;
+        self.resolve_image_reusing(descriptor, validator, true, Some(source))
     }
 }

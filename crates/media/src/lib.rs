@@ -23,6 +23,7 @@
 mod codec;
 pub mod create;
 mod history;
+pub mod layer;
 pub mod offline;
 mod overlay;
 mod scan;
@@ -42,4 +43,4 @@ pub use sink::{JournalMedia, MaintenanceFailure, OpenError, SinkFailure, SinkSta
 mod overlay_tests;
 
 #[cfg(feature = "test-support")]
-pub use overlay::hash_passes;
+pub use overlay::{data_passes, hash_passes};

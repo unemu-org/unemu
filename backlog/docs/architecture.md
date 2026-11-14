@@ -17,9 +17,9 @@ crate: `machine-file` reads and hashes declared images into inline buffers,
 
 | Crate | Responsibility | Runtime dependencies | Test-only dependencies |
 | --- | --- | --- | --- |
-| `pc-image` | IBM PC/AT provider, resolved bundle-profile validation, machine-file import and read-only journal freezing | `assembly`, `machine-file`, `media`, `image-store`, `serde`, `toml`, `thiserror` | `cpu`, `machine` |
-| `image-store` | Platform-neutral OCI Image Layout, streaming SHA-256 blobs, deterministic machine manifests, provider-validated closure and atomic compare-and-swap local tags | `serde`, `serde_json`, `toml`, `sha2`, `thiserror`, `libc` (Unix) | None |
-| `media` | Floppy journal encoding, streaming recovery/replay, retention-anchor validation, durable host sink and stable single-writer locks ([format](design/persistent-media.md#chosen-format-byte-layout)) | `sha2`, `thiserror`, `libc` (Unix) | None |
+| `pc-image` | IBM PC/AT provider, resolved bundle-profile validation, machine-file import, disk-chain validation, isolated sessions and offline publication | `assembly`, `machine-file`, `media`, `image-store`, `serde`, `toml`, `thiserror` | `cpu`, `machine` |
+| `image-store` | Platform-neutral OCI Image Layout, streaming SHA-256 blobs, deterministic machine manifests, provider-validated closure and atomic compare-and-swap local tags, stable workspace ownership | `serde`, `serde_json`, `toml`, `sha2`, `thiserror`, `libc` (Unix) | None |
+| `media` | Immutable sparse disk layers, chain sector sources, floppy journal encoding, streaming recovery/replay, retention-anchor validation, durable host sink and stable single-writer locks ([format](design/persistent-media.md#chosen-format-byte-layout)) | `sha2`, `serde`, `toml`, `thiserror`, `libc` (Unix) | None |
 | `device` | Hardware-neutral contracts: `Device`, `InterruptController`, `DmaMemory`, `VClock`, `NextEvent`, access traces, DMA messages, and the observation capabilities (text scanout, byte output, `ByteCapture`) | `thiserror` | None |
 | `cpu` | `Cpu`/`CpuStop` seam and `X86JitCpu`, which owns the core's `Vm` and `Vcpu` | `x86jit-core`, `thiserror` | None |
 | `bus` | Owns boxed devices and executes a port/MMIO `DecodeMap`; open-bus policy and ticking | `device`, `thiserror` | None |
@@ -106,7 +106,7 @@ bindings. Complete firmware containers/chips, every catalogue medium and CMOS
 become verified blobs. The provider validates media descriptors and geometry without reading their
 payloads into memory; bounded placeholders let the existing schema/lowering
 validate the hardware, followed by file-backed bindings and final assembly
-validation. Resolution prepares once and keeps full SHA-256 pins for assembly.
+validation. Resolution retains full SHA-256 pins for assembly.
 Imports materialize lowering defaults into immutable schema-1 hardware. Source directories are
 never a runtime fallback. Resolution puts persistent outputs under a caller-owned
 session directory; immutable bases stay in the store. Journal snapshots use an existing shared source lock when present and never
@@ -116,7 +116,39 @@ staging directories are swept under an exclusive importer lock. Local records
 under `local/imports/<image-digest>.toml` report each medium policy and independent
 recovery choice; they are outside image identity and do not claim a synchronized
 machine snapshot. Firmware-root discovery and origin paths remain machine-file
-APIs, with exhaustive projection views guarding schema evolution. No layer or registry support is added.
+APIs, with exhaustive projection views guarding schema evolution. Fixed-disk layers use immutable TOML descriptors plus sorted LBA/sector packs in
+`media::layer`; its `Chain` merges an LBA index behind `SectorSource` and streams
+logical SHA-256 verification. Providers enumerate head, pack and parent closure
+in deterministic order. Floppies and CMOS always freeze whole. For existing v1
+journals, a layered head materializes once in `cache/materialized/<result-sha256>`;
+every Start hashes this shared raw file again. Controllers keep their existing
+media adapters.
+
+`image-store::workspace` holds a shared store lease and a stable exclusive
+workspace lock across guest execution and journal finish, rejecting a second
+owner in the same process too. Mutable sessions and private media journals live
+under `workspaces/<name>/`, outside image blobs. `pc-image::workspace` pins the
+image descriptor and config digest, resolves stopped journal heads, publishes a
+complete new manifest, writes a durable intent, and performs a tag CAS. It then
+retires old journals, updates the session pointer and removes the intent. Retry
+is idempotent while the intent exists; Run refuses pending transactions. Fault
+hooks cover each publication operation. Tag deletion changes only index metadata;
+shared blobs and workspace roots survive. No registry or GC is implemented.
+
+Chain traversal and the materialized cache currently live in `pc-image::disk`
+and `media`. They would move into a shared module when a second platform provider
+needs them. The store remains independent of PC hardware; workspace discard
+uses generic sidecar locking across provider-selected directories.
+
+Resolution retains verified open-file receipts and the captured provider result.
+Raw disks bypass chain reconstruction. A layered head hashes its logical result
+once during materialization; warm starts verify the cache once and reuse it.
+A codec receipt binds reuse to the exact head, so a different chain claiming an
+already cached result must still prove its reconstructed bytes. Large range reads and buffered sealing avoid per-sector filesystem calls.
+Publication pre-verifies metadata/artwork, rolls back intent on CAS conflict,
+and records local retention before the tag becomes visible. Explicit abandon
+keeps journals. Discard keeps a durable tombstone until all media are removed;
+the session document is removed last.
 
 ## From configuration to a run
 
