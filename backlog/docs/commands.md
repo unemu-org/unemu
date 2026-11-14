@@ -88,12 +88,24 @@ Summary loading and full verification run on background jobs with progress and
 nonblocking store-busy errors. Damaged sets remain visible as disabled rows.
 Loading all disks in order defaults on; disks already in the catalogue are reused
 with their existing write policy. Machine-file sessions journal under
-`<machine-file>.local/media/`; image sessions use the owned workspace's `media/`
-directory. Journal keys contain set digest and medium id, independently of drive
+`<machine-file>.local/media/`; image sessions (regular and Gaming mode) use the
+running image workspace's `media/` directory, so discarding a Gaming-mode
+session removes them. Journal keys contain set digest and medium id, independently of drive
 unit. Store-local workspaces are allowed; immutable `images/blobs/` paths and
 aliases remain forbidden outputs. Catalogue provenance exposes set/medium GC
 roots. Write-protected new disks create no journal. The library collection,
 creation UI and extras transfer media remain deferred.
+
+In the Insert dialog only entries declared in the machine file show
+"fixed by the machine file". Disks added during the session with Browse… or
+From library… can be re-inserted read-only or with a journal: browsed images
+take a journal path, library disks use their workspace journal key above.
+Browse… reuses only rows it added; browsing an image the machine file also
+declares adds a separate row, so it can still be journaled.
+The drive catalogue only grows, so a switch adds one catalogue entry per policy
+and switching back reuses it; the dialog keeps one row per image, while
+Next image in catalogue cycles through every entry. Browsing the same file
+again (same path and SHA-256) selects its existing row instead of adding one.
 
 
 Import is opt-in and creates a new local tag using compare-and-swap against
@@ -297,7 +309,28 @@ On macOS, ⌘Q quits, ⌘W closes, ⌘H hides, ⌘M minimizes and ⌘Tab switche
 applications. Help > Keyboard shortcuts and the menus show the platform's bindings.
 New machine remains a placeholder. Enter starts the selection when stopped.
 
+While a machine runs, File > Machine library, Open in File > Open machine
+file… (after a path is entered; closing that dialog changes nothing), Exit,
+⌘Q, ⌘W and the window's close button pause it first and ask
+"unemupc98 is running <machine>. Stop it and continue?" with Stop machine and
+Cancel (Esc; Enter and Space do not answer). Cancel resumes the machine where
+it paused, without catch-up, and hands back guest keyboard focus and pointer
+capture if the guest had them; an explicit pause stays in effect. Exit, ⌘Q,
+⌘W and the close button also work while a menu or another dialog is open:
+they close or cancel it first, keeping only this question or the Gaming-mode
+keep-or-discard question. One Escape closes only the top-most dialog. A
+stopped, halted or failed machine is not asked about, and Machine > Stop and
+Power cycle act at once. A Gaming-mode session asks Keep as new image or
+Discard after stopping instead. On macOS the window installs no platform
+application menu, so ⌘Q reaches this question; ⌘H and ⌘⌥H still hide. Dock
+Quit and logout still quit immediately and finish persistence as before.
+
 View > Speed selects 100% (the default on every Start), 200%, 400% or Unlimited.
+The toolbar's Speed combobox, right after Layers, offers the same choices and
+issues the same command. Its closed box shows the mode in effect, so it reads
+Unlimited while the hold below is active and the selected mode again
+afterwards; its list and the View > Speed check mark the persistent selection,
+and a choice made during the hold takes effect when the hold ends.
 Hold ⌘T on macOS or Ctrl+Alt+T elsewhere for Unlimited. On macOS,
 releasing Command or T restores the selected mode; elsewhere releasing T
 restores it even if Ctrl or Alt was released first. Focus loss or opening a

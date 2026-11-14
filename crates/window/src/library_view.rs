@@ -716,6 +716,13 @@ impl LibraryView {
     pub fn has_dialog(&self) -> bool {
         self.layers.is_some() || self.import.is_some() || self.delete || self.decision.is_some()
     }
+    /// Close Disk layers, Import image and Delete tag for an exit. The Gaming
+    /// keep-or-discard question stays: the exit waits for that decision.
+    pub fn close_dialogs(&mut self) {
+        self.layers = None;
+        self.import = None;
+        self.delete = false;
+    }
     pub fn show(
         &mut self,
         ui: &mut egui::Ui,

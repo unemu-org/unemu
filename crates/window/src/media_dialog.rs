@@ -18,7 +18,44 @@ pub(super) struct CatalogueEntry {
     pub medium: FloppyMedium,
     pub geometry: Option<FloppyGeometry>,
     pub reason: Option<String>,
+    /// Drive catalogue entry currently used for this image and write policy.
     pub index: Option<usize>,
+    /// Declared by the machine file, whose write policy the dialog never changes.
+    /// Images added during the session (Browse…, From library…) may switch.
+    pub declared: bool,
+    /// Earlier catalogue entries of this image under another write policy. The
+    /// drive catalogue only grows, so switching back reuses one of these.
+    pub alternates: Vec<(WriteMode, usize)>,
+    /// Journal location for library media: inside the machine workspace,
+    /// never beside the store's immutable blob.
+    pub workspace_journal: Option<PathBuf>,
+}
+
+impl CatalogueEntry {
+    /// The same session image: one library medium, or one file with one SHA-256.
+    fn same_image(&self, other: &Self) -> bool {
+        match (&self.source, &other.source) {
+            (Some(left), Some(right)) => left.same_medium(right),
+            (None, None) => {
+                self.medium.expected_sha256.is_some()
+                    && self.medium.expected_sha256 == other.medium.expected_sha256
+                    && same_file(&self.medium.image, &other.medium.image)
+            }
+            _ => false,
+        }
+    }
+}
+
+fn same_file(left: &ImageSource, right: &ImageSource) -> bool {
+    let (ImageSource::File(left), ImageSource::File(right)) = (left, right) else {
+        return false;
+    };
+    left == right
+        || left
+            .canonicalize()
+            .ok()
+            .zip(right.canonicalize().ok())
+            .is_some_and(|(left, right)| left == right)
 }
 
 #[derive(Clone, Debug)]
@@ -72,6 +109,9 @@ impl FloppySlot {
                     geometry: Some(geometry),
                     reason: None,
                     index: Some(index),
+                    declared: true,
+                    alternates: Vec::new(),
+                    workspace_journal: None,
                 })
                 .collect();
             Some(Self {
@@ -80,6 +120,35 @@ impl FloppySlot {
                 journal_retention,
             })
         })
+    }
+
+    /// Record the catalogue entry an insertion used. Each session image keeps
+    /// one row; a policy switch moves the previous entry to its alternates.
+    fn record(&mut self, entry: &CatalogueEntry, index: usize) {
+        if entry.declared {
+            return;
+        }
+        let Some(row) = self
+            .entries
+            .iter_mut()
+            .find(|row| !row.declared && row.same_image(entry))
+        else {
+            self.entries.push(CatalogueEntry {
+                index: Some(index),
+                alternates: Vec::new(),
+                ..entry.clone()
+            });
+            return;
+        };
+        if row.index == Some(index) {
+            return;
+        }
+        if let Some(previous) = row.index {
+            row.alternates.push((row.medium.write.clone(), previous));
+        }
+        row.alternates.retain(|(_, alternate)| *alternate != index);
+        row.index = Some(index);
+        row.medium.write = entry.medium.write.clone();
     }
 }
 
@@ -150,6 +219,9 @@ pub(super) fn browse(path: &Path, drive: FloppyGeometry) -> io::Result<Catalogue
         geometry,
         reason,
         index: None,
+        declared: false,
+        alternates: Vec::new(),
+        workspace_journal: None,
     })
 }
 
@@ -184,22 +256,59 @@ impl InsertDialog {
         }
     }
 
+    /// Selecting a session image shows its current write policy, so Insert
+    /// without changes re-inserts the same catalogue entry. A journal used
+    /// earlier for the image is the default journal path again.
     pub fn select(&mut self, index: Option<usize>) {
         self.selected = index;
-        self.journal = false;
         self.error = None;
-        self.journal_path = index
+        let entry = index
             .and_then(|index| self.slot.entries.get(index))
-            .and_then(|entry| {
-                if let ImageSource::File(base) = &entry.medium.image {
-                    let mut path = base.as_os_str().to_os_string();
-                    path.push(".upfj");
-                    Some(path.to_string_lossy().into_owned())
-                } else {
-                    None
-                }
+            .filter(|entry| !entry.declared);
+        let journal_of = |write: &WriteMode| match write {
+            WriteMode::Journal { path, .. } => Some(path.clone()),
+            _ => None,
+        };
+        let current = entry.and_then(|entry| journal_of(&entry.medium.write));
+        self.journal = current.is_some();
+        self.journal_path = current
+            .or_else(|| {
+                entry.and_then(|entry| {
+                    entry
+                        .alternates
+                        .iter()
+                        .find_map(|(write, _)| journal_of(write))
+                })
             })
+            .or_else(|| {
+                entry.and_then(|entry| match &entry.medium.image {
+                    ImageSource::File(base) => {
+                        let mut path = base.as_os_str().to_os_string();
+                        path.push(".upfj");
+                        Some(PathBuf::from(path))
+                    }
+                    _ => None,
+                })
+            })
+            .map(|path| path.to_string_lossy().into_owned())
             .unwrap_or_default();
+    }
+
+    /// Browse… reuses the row of an image it already added this session (same
+    /// file and SHA-256). A machine-file row is never reused, so its image can
+    /// still be added again with another write policy.
+    pub fn add_browsed(&mut self, entry: CatalogueEntry) {
+        let index = self
+            .slot
+            .entries
+            .iter()
+            .position(|row| !row.declared && row.same_image(&entry))
+            .unwrap_or_else(|| {
+                self.slot.entries.push(entry);
+                self.slot.entries.len() - 1
+            });
+        let compatible = self.slot.entries[index].reason.is_none();
+        self.select(compatible.then_some(index));
     }
 
     pub fn selection(&self) -> Result<CatalogueEntry, String> {
@@ -211,21 +320,41 @@ impl InsertDialog {
         if let Some(reason) = &entry.reason {
             return Err(reason.clone());
         }
-        if entry.index.is_none() && self.journal {
+        if entry.declared {
+            return Ok(entry);
+        }
+        let keep_generations = self.slot.journal_retention;
+        let write = if !self.journal {
+            WriteMode::ReadOnly
+        } else if let Some(path) = &entry.workspace_journal {
+            WriteMode::Journal {
+                path: path.clone(),
+                keep_generations,
+            }
+        } else {
             let ImageSource::File(base) = &entry.medium.image else {
                 return Err("Journal mode requires a file-backed base".into());
             };
-            let keep_generations = self.slot.journal_retention;
             if self.journal_path.trim().is_empty() {
                 return Err("Choose a separate journal path".into());
             }
-            entry.medium.write = WriteMode::Journal {
+            WriteMode::Journal {
                 path: resolve_input(
                     base.parent().unwrap_or(Path::new(".")),
                     self.journal_path.trim(),
                 ),
                 keep_generations,
-            };
+            }
+        };
+        if write != entry.medium.write {
+            // The drive catalogue only grows: another policy is either an
+            // earlier entry of this image or a new one appended on Insert.
+            entry.index = entry
+                .alternates
+                .iter()
+                .find(|(mode, _)| *mode == write)
+                .map(|(_, index)| *index);
+            entry.medium.write = write;
         }
         Ok(entry)
     }
@@ -540,6 +669,7 @@ mod tests {
             .clone()
             .unwrap();
         slot.entries[0].index = None;
+        slot.entries[0].declared = false;
         let mut draft = InsertDialog::new(0, slot);
         draft.selected = Some(0);
         draft.journal = true;
@@ -557,6 +687,173 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    fn insert(
+        assembled: &mut assembly::AssembledMachine,
+        config: &mut MachineConfig,
+        slots: &mut [Option<FloppySlot>; 2],
+        draft: &InsertDialog,
+    ) -> usize {
+        let entry = draft.selection().unwrap();
+        append_entries(assembled, config, slots, 0, &[entry]).unwrap()[0]
+    }
+
+    fn catalogue_len(assembled: &assembly::AssembledMachine) -> usize {
+        assembled.floppy_names[&(assembly::DeviceId::Fdc, 0)].len()
+    }
+
+    #[test]
+    fn session_images_switch_write_policy_and_machine_file_entries_stay_fixed() {
+        let temp = assembly::test_support::TempDir::new("session-write-policy");
+        let root = temp.path().canonicalize().unwrap();
+        let path = root.join("extra.img");
+        std::fs::write(&path, vec![0; 1_474_560]).unwrap();
+        let mut config = assembly::floppy_boot(vec![0xEB, 0xFE], vec![0; 1_474_560]);
+        let mut assembled = assembly::assemble(&config).unwrap();
+        let mut slots = FloppySlot::from_config(&config);
+        let dialog =
+            |slots: &[Option<FloppySlot>; 2]| InsertDialog::new(0, slots[0].clone().unwrap());
+
+        let mut draft = dialog(&slots);
+        draft.add_browsed(browse(&path, FloppyGeometry::HD_1_44).unwrap());
+        assert_eq!(draft.selected, Some(1));
+        assert!(!draft.journal);
+        assert_eq!(insert(&mut assembled, &mut config, &mut slots, &draft), 1);
+        assert_eq!(slots[0].as_ref().unwrap().entries.len(), 2);
+        assert!(!slots[0].as_ref().unwrap().entries[1].declared);
+
+        // Re-inserted, the browsed image may now keep its changes in a journal.
+        let mut draft = dialog(&slots);
+        draft.select(Some(1));
+        assert!(!draft.journal);
+        draft.journal = true;
+        draft.journal_path = "extra.upfj".into();
+        assert_eq!(insert(&mut assembled, &mut config, &mut slots, &draft), 2);
+        let row = &slots[0].as_ref().unwrap().entries[1];
+        assert_eq!(slots[0].as_ref().unwrap().entries.len(), 2);
+        assert_eq!(row.index, Some(2));
+        assert_eq!(
+            row.medium.write,
+            WriteMode::journal(root.join("extra.upfj"))
+        );
+        assert_eq!(row.alternates, [(WriteMode::ReadOnly, 1)]);
+
+        // Back to read-only reuses the earlier catalogue entry, and the journal
+        // policy is remembered for the next switch.
+        let mut draft = dialog(&slots);
+        draft.select(Some(1));
+        assert!(draft.journal);
+        assert_eq!(Path::new(&draft.journal_path), root.join("extra.upfj"));
+        draft.journal = false;
+        assert_eq!(insert(&mut assembled, &mut config, &mut slots, &draft), 1);
+        let mut draft = dialog(&slots);
+        draft.select(Some(1));
+        assert!(!draft.journal);
+        assert_eq!(Path::new(&draft.journal_path), root.join("extra.upfj"));
+        draft.journal = true;
+        assert_eq!(insert(&mut assembled, &mut config, &mut slots, &draft), 2);
+        assert_eq!(catalogue_len(&assembled), 3);
+        assert_eq!(slots[0].as_ref().unwrap().entries.len(), 2);
+
+        // The machine file's own entry keeps its declared policy.
+        let mut draft = dialog(&slots);
+        draft.select(Some(0));
+        assert!(slots[0].as_ref().unwrap().entries[0].declared);
+        draft.journal = true;
+        draft.journal_path = "declared.upfj".into();
+        let entry = draft.selection().unwrap();
+        assert_eq!(entry.index, Some(0));
+        assert_eq!(entry.medium.write, config.drives[0].write);
+        assert_eq!(insert(&mut assembled, &mut config, &mut slots, &draft), 0);
+        assert_eq!(catalogue_len(&assembled), 3);
+        assert!(!root.join("declared.upfj").exists());
+    }
+
+    #[test]
+    fn browsing_the_same_image_again_reuses_its_catalogue_entry() {
+        let temp = assembly::test_support::TempDir::new("browse-reuse");
+        let root = temp.path().canonicalize().unwrap();
+        let path = root.join("disk.img");
+        let copy = root.join("copy.img");
+        std::fs::write(&path, vec![0; 1_474_560]).unwrap();
+        std::fs::write(&copy, vec![0; 1_474_560]).unwrap();
+        let mut config = assembly::floppy_boot(vec![0xEB, 0xFE], vec![0; 1_474_560]);
+        let mut assembled = assembly::assemble(&config).unwrap();
+        let mut slots = FloppySlot::from_config(&config);
+        let mut draft = InsertDialog::new(0, slots[0].clone().unwrap());
+        for _ in 0..2 {
+            draft.add_browsed(browse(&path, FloppyGeometry::HD_1_44).unwrap());
+            assert_eq!(draft.slot.entries.len(), 2);
+            assert_eq!(draft.selected, Some(1));
+        }
+        // The same path through another spelling is the same image.
+        draft.add_browsed(
+            browse(&root.join(".").join("disk.img"), FloppyGeometry::HD_1_44).unwrap(),
+        );
+        assert_eq!(draft.slot.entries.len(), 2);
+        draft.journal = true;
+        draft.journal_path = "disk.upfj".into();
+        assert_eq!(insert(&mut assembled, &mut config, &mut slots, &draft), 1);
+
+        let mut draft = InsertDialog::new(0, slots[0].clone().unwrap());
+        draft.add_browsed(browse(&path, FloppyGeometry::HD_1_44).unwrap());
+        assert_eq!(draft.slot.entries.len(), 2);
+        assert_eq!(draft.selected, Some(1));
+        assert!(draft.journal);
+        assert_eq!(insert(&mut assembled, &mut config, &mut slots, &draft), 1);
+        assert_eq!(catalogue_len(&assembled), 2);
+
+        // Equal bytes under another path, or changed bytes under the same
+        // path, are different images.
+        draft.add_browsed(browse(&copy, FloppyGeometry::HD_1_44).unwrap());
+        assert_eq!(draft.slot.entries.len(), 3);
+        std::fs::write(&path, vec![1; 1_474_560]).unwrap();
+        draft.add_browsed(browse(&path, FloppyGeometry::HD_1_44).unwrap());
+        assert_eq!(draft.slot.entries.len(), 4);
+        assert_eq!(draft.selected, Some(3));
+    }
+
+    #[test]
+    fn browsing_a_machine_file_image_adds_a_session_row_that_may_journal() {
+        use sha2::{Digest, Sha256};
+        let temp = assembly::test_support::TempDir::new("browse-declared");
+        let root = temp.path().canonicalize().unwrap();
+        let path = root.join("declared.img");
+        std::fs::write(&path, vec![0; 1_474_560]).unwrap();
+        let mut config = assembly::floppy_boot(vec![0xEB, 0xFE], vec![0; 1_474_560]);
+        config.drives[0].image = ImageSource::File(path.clone());
+        config.drives[0].expected_sha256 = Some(Sha256::digest(vec![0; 1_474_560]).into());
+        config.drives[0].write = WriteMode::ReadOnly;
+        let mut assembled = assembly::assemble(&config).unwrap();
+        let mut slots = FloppySlot::from_config(&config);
+        let declared = &slots[0].as_ref().unwrap().entries[0];
+        assert!(declared.declared);
+        let browsed = browse(&path, FloppyGeometry::HD_1_44).unwrap();
+        assert!(declared.same_image(&browsed));
+
+        let mut draft = InsertDialog::new(0, slots[0].clone().unwrap());
+        draft.add_browsed(browsed);
+        assert_eq!(draft.slot.entries.len(), 2);
+        assert_eq!(draft.selected, Some(1));
+        draft.journal = true;
+        assert_eq!(
+            Path::new(&draft.journal_path),
+            root.join("declared.img.upfj")
+        );
+        assert_eq!(insert(&mut assembled, &mut config, &mut slots, &draft), 1);
+        let rows = &slots[0].as_ref().unwrap().entries;
+        assert_eq!(rows[0].medium.write, WriteMode::ReadOnly);
+        assert_eq!(
+            rows[1].medium.write,
+            WriteMode::journal(root.join("declared.img.upfj"))
+        );
+        // Browsing it again now finds the session row, not the declared one.
+        let mut draft = InsertDialog::new(0, slots[0].clone().unwrap());
+        draft.add_browsed(browse(&path, FloppyGeometry::HD_1_44).unwrap());
+        assert_eq!(draft.slot.entries.len(), 2);
+        assert_eq!(draft.selected, Some(1));
+        assert!(draft.journal);
     }
 
     #[test]
@@ -618,13 +915,14 @@ pub(super) struct LibrarySet {
     pub config: Option<image_store::media_set::Config>,
 }
 impl LibraryInsert {
-    pub fn new(machine: &Path) -> Self {
+    /// `workspace` is the running session's media directory, which receives
+    /// every journal of a library disk.
+    pub fn new(workspace: PathBuf) -> Self {
         Self {
             store_path: image_store::location::default_store_root()
                 .map(|p| p.to_string_lossy().into_owned())
                 .unwrap_or_default(),
-            workspace: image_store::location::machine_media_dir(machine)
-                .unwrap_or_else(|_| machine.with_extension("local").join("media")),
+            workspace,
             rows: Vec::new(),
             selected: None,
             first: 0,
@@ -868,16 +1166,16 @@ impl LibraryInsert {
                 .map_err(|e| e.to_string())?
                 .identity()
                 .base_digest;
+            let journal = store
+                .validate_media_output(&workspace.join(format!(
+                    "{}-{}.upfj",
+                    row.image.digest.hex(),
+                    medium.id
+                )))
+                .map_err(|e| e.to_string())?;
             let write = if self.journal {
-                let path = store
-                    .validate_media_output(&workspace.join(format!(
-                        "{}-{}.upfj",
-                        row.image.digest.hex(),
-                        medium.id
-                    )))
-                    .map_err(|e| e.to_string())?;
                 WriteMode::Journal {
-                    path,
+                    path: journal.clone(),
                     keep_generations: slot.journal_retention,
                 }
             } else {
@@ -911,6 +1209,9 @@ impl LibraryInsert {
                 geometry: Some(slot.geometry),
                 reason: None,
                 index: None,
+                declared: false,
+                alternates: Vec::new(),
+                workspace_journal: Some(journal),
             });
         }
         if self.journal {
@@ -950,8 +1251,8 @@ pub(super) fn set_compatibility(
 }
 
 impl InsertDialog {
-    pub fn open_library(&mut self, machine: &Path, store_root: Option<&Path>) {
-        let mut library = LibraryInsert::new(machine);
+    pub fn open_library(&mut self, workspace: &Path, store_root: Option<&Path>) {
+        let mut library = LibraryInsert::new(workspace.to_path_buf());
         if let Some(root) = store_root {
             library.store_path = root.to_string_lossy().into_owned();
         }
@@ -959,15 +1260,11 @@ impl InsertDialog {
         self.library = Some(library);
     }
 
-    pub fn library_ui(&mut self, ui: &mut egui::Ui, machine: &Path, store_root: Option<&Path>) {
-        if self.library.is_none() {
-            if ui.button("From library…").clicked() {
-                self.open_library(machine, store_root);
-            }
-            return;
-        }
+    /// Returns true when From library… asks the caller to open the library,
+    /// which knows the session workspace.
+    pub fn library_ui(&mut self, ui: &mut egui::Ui) -> bool {
         let Some(library) = &mut self.library else {
-            return;
+            return ui.button("From library…").clicked();
         };
         if let Some(error) = library.poll() {
             self.error = Some(error);
@@ -1033,7 +1330,7 @@ impl InsertDialog {
             &mut library.load_all,
             "Load all disks of the set into the catalogue in order",
         );
-        ui.label("The library set stays read-only. Journal writes belong only to this machine workspace.");
+        ui.label("The library set stays read-only. Journals belong only to this session's workspace.");
         back = ui.button("Back to catalogue").clicked();
         });
         if busy {
@@ -1047,6 +1344,7 @@ impl InsertDialog {
         if back {
             self.library = None;
         }
+        false
     }
 }
 
@@ -1089,6 +1387,14 @@ pub(super) fn append_entries(
             return Err(reason.clone());
         }
         if entry.index.is_none() {
+            if let (Some(_), WriteMode::Journal { path, .. }) = (&entry.source, &entry.medium.write)
+            {
+                // A library disk first loaded write-protected has no workspace
+                // media directory yet, and validation requires the parent.
+                if let Some(parent) = path.parent() {
+                    std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+                }
+            }
             if let Some(list) = &mut drive.media {
                 list.entries.push(entry.medium.clone());
             }
@@ -1117,14 +1423,11 @@ pub(super) fn append_entries(
                         assembled.append_floppy(key.0, unit, config, &entry.medium)
                     }
                     .map_err(|e| e.to_string())?;
-                if let Some(slot) = &mut slots[usize::from(unit)] {
-                    slot.entries.push(CatalogueEntry {
-                        index: Some(index),
-                        ..entry.clone()
-                    });
-                }
                 index
             };
+            if let Some(slot) = &mut slots[usize::from(unit)] {
+                slot.record(entry, index);
+            }
             indices.push(index);
         }
         Ok(indices)
@@ -1238,7 +1541,9 @@ mod media_set_tests {
         let mut machine = assembly::floppy_boot(vec![0xFA, 0xEB, 0xFE], vec![0; bytes.len()]);
         let mut assembled = assembly::assemble(&machine).unwrap();
         let mut slots = FloppySlot::from_config(&machine);
-        let mut library = LibraryInsert::new(&root.join("machine.toml"));
+        let mut library = LibraryInsert::new(
+            image_store::location::machine_media_dir(&root.join("machine.toml")).unwrap(),
+        );
         library.store_path = store_path.to_string_lossy().into_owned();
         library.refresh(FloppyGeometry::HD_1_44, 0).unwrap();
         assert_eq!(library.rows.len(), 1);
@@ -1438,7 +1743,9 @@ mod review_tests {
             "{}",
             String::from_utf8_lossy(&error)
         );
-        let mut library = LibraryInsert::new(&root.join("machine.toml"));
+        let mut library = LibraryInsert::new(
+            image_store::location::machine_media_dir(&root.join("machine.toml")).unwrap(),
+        );
         library.store_path = root.join("store").to_string_lossy().into_owned();
         library.refresh(FloppyGeometry::HD_1_44, 0).unwrap();
         library.selected = Some(0);
@@ -1515,6 +1822,72 @@ mod review_tests {
             panic!("journal")
         };
         assert!(path.starts_with(owner.path().join("media")));
+    }
+    #[test]
+    fn library_disks_switch_between_write_protection_and_the_workspace_journal() {
+        let (_temp, mut library, mut config) = fixture();
+        let mut slots = FloppySlot::from_config(&config);
+        let mut assembled = assembly::assemble(&config).unwrap();
+        library.journal = false;
+        let (entries, _) = library.entries(slots[0].as_ref().unwrap(), 0).unwrap();
+        assert_eq!(entries[0].medium.write, WriteMode::ReadOnly);
+        let journal = entries[0].workspace_journal.clone().unwrap();
+        assert!(!journal.starts_with(&library.store_path));
+        assert!(!journal.parent().unwrap().exists());
+        assert_eq!(
+            append_entries(&mut assembled, &mut config, &mut slots, 0, &entries).unwrap(),
+            [1]
+        );
+
+        let mut draft = InsertDialog::new(0, slots[0].clone().unwrap());
+        draft.select(Some(1));
+        assert!(!draft.journal);
+        draft.journal = true;
+        draft.journal_path = "ignored-for-library-media.upfj".into();
+        let entry = draft.selection().unwrap();
+        assert_eq!(entry.index, None);
+        assert_eq!(
+            entry.medium.write,
+            WriteMode::Journal {
+                path: journal.clone(),
+                keep_generations: draft.slot.journal_retention,
+            }
+        );
+        assert_eq!(
+            append_entries(&mut assembled, &mut config, &mut slots, 0, &[entry]).unwrap(),
+            [2]
+        );
+        assert!(journal.parent().unwrap().is_dir());
+        for action in [
+            assembly::FloppyAction::Insert(2),
+            assembly::FloppyAction::Eject,
+        ] {
+            assembled
+                .change_floppy(assembly::DeviceId::Fdc, 0, action)
+                .unwrap();
+        }
+        let row = &slots[0].as_ref().unwrap().entries[1];
+        assert_eq!(slots[0].as_ref().unwrap().entries.len(), 2);
+        assert_eq!(row.alternates, [(WriteMode::ReadOnly, 1)]);
+
+        // Loading the set again keeps the disk's current policy; the
+        // catalogue switches it back without appending.
+        let (again, _) = library.entries(slots[0].as_ref().unwrap(), 0).unwrap();
+        assert_eq!(again[0].index, Some(2));
+        let mut draft = InsertDialog::new(0, slots[0].clone().unwrap());
+        draft.select(Some(1));
+        assert!(draft.journal);
+        draft.journal = false;
+        let entry = draft.selection().unwrap();
+        assert_eq!(entry.index, Some(1));
+        assert_eq!(
+            append_entries(&mut assembled, &mut config, &mut slots, 0, &[entry]).unwrap(),
+            [1]
+        );
+        assert_eq!(
+            assembled.floppy_names[&(assembly::DeviceId::Fdc, 0)].len(),
+            3
+        );
     }
     #[test]
     fn review_candidate_validation_and_mid_batch_failure_are_atomic() {

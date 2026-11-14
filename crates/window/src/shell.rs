@@ -31,6 +31,9 @@ struct Events {
     pointer: egui::Pos2,
     pixels_per_point: f32,
     session: u64,
+    /// Only macOS application chords need the host modifiers outside the shell.
+    #[cfg(target_os = "macos")]
+    modifiers: ModifiersState,
 }
 
 enum HostEvent {
@@ -113,6 +116,8 @@ impl Events {
                 self.guest_focus = false;
                 self.captured = false;
             }
+            #[cfg(target_os = "macos")]
+            WindowEvent::ModifiersChanged(modifiers) => self.modifiers = modifiers.state(),
             _ => {}
         }
         if matches!(
@@ -141,6 +146,22 @@ impl Events {
             | WindowEvent::TouchpadPressure { .. } => !self.captured,
             _ => true,
         }
+    }
+
+    /// The application chord a fresh physical key press makes with the
+    /// modifiers last reported by the window.
+    #[cfg(target_os = "macos")]
+    fn app_chord(
+        &self,
+        key: &winit::keyboard::Key,
+        state: ElementState,
+        repeat: bool,
+        synthetic: bool,
+    ) -> Option<shell_model::AppChord> {
+        if state != ElementState::Pressed || repeat || synthetic {
+            return None;
+        }
+        shell_model::macos_app_chord(key, self.modifiers)
     }
 
     fn repaint(&self) {
@@ -181,6 +202,8 @@ impl ApplicationHandler<eframe::UserEvent> for Runner<'_> {
         self.eframe.user_event(events, event);
     }
     fn window_event(&mut self, events: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
+        #[cfg(target_os = "macos")]
+        self.application_chord(events, &event);
         let forward = self.events.borrow_mut().forward(&event);
         if forward {
             self.eframe.window_event(events, id, event);
@@ -216,12 +239,52 @@ impl ApplicationHandler<eframe::UserEvent> for Runner<'_> {
     }
 }
 
+#[cfg(target_os = "macos")]
+impl Runner<'_> {
+    /// Without the platform application menu, Command+H and Command+Option+H
+    /// would be lost; they still hide applications as on every macOS app. The
+    /// key event also reaches the shell, which consumes Command chords.
+    fn application_chord(&self, events: &ActiveEventLoop, event: &WindowEvent) {
+        use winit::platform::{
+            macos::ActiveEventLoopExtMacOS, modifier_supplement::KeyEventExtModifierSupplement,
+        };
+        let WindowEvent::KeyboardInput {
+            event,
+            is_synthetic,
+            ..
+        } = event
+        else {
+            return;
+        };
+        let chord = self.events.borrow().app_chord(
+            &event.key_without_modifiers(),
+            event.state,
+            event.repeat,
+            *is_synthetic,
+        );
+        match chord {
+            Some(shell_model::AppChord::Hide) => events.hide_application(),
+            Some(shell_model::AppChord::HideOthers) => events.hide_other_applications(),
+            None => {}
+        }
+    }
+}
+
 pub(super) fn run(args: Args, autostart: bool) -> Result<(), Box<dyn Error>> {
     let events = Rc::new(RefCell::new(Events::default()));
     let shell_events = events.clone();
     let errors = Rc::new(RefCell::new(None::<String>));
     let shell_errors = errors.clone();
-    let event_loop = EventLoop::<eframe::UserEvent>::with_user_event().build()?;
+    #[cfg_attr(not(target_os = "macos"), allow(unused_mut))]
+    let mut builder = EventLoop::<eframe::UserEvent>::with_user_event();
+    #[cfg(target_os = "macos")]
+    {
+        use winit::platform::macos::EventLoopBuilderExtMacOS;
+        // The platform menu's Quit item terminates the process before the shell
+        // can ask to stop a running machine; Command+Q reaches the shell instead.
+        builder.with_default_menu(false);
+    }
+    let event_loop = builder.build()?;
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("unemupc98")
@@ -323,6 +386,20 @@ struct Shell {
     rescan: bool,
     refresh_listing: bool,
     discovery_finished: bool,
+    stop_prompt: Option<StopPrompt>,
+    /// Guest keyboard focus and pointer capture when the stop prompt opened.
+    stop_prompt_input: (bool, bool),
+    /// Input to hand back to the guest once Cancel has closed the prompt.
+    restore_input: Option<(bool, bool)>,
+}
+
+/// A shell action that would end a running session, held while the user
+/// decides whether to stop the machine for it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum StopPrompt {
+    Library,
+    OpenMachine,
+    Exit,
 }
 
 struct ReadinessJob {
@@ -458,6 +535,7 @@ impl Shell {
 
     fn has_dialog(&self) -> bool {
         self.dialog.is_some()
+            || self.stop_prompt.is_some()
             || self.insert_dialog.is_some()
             || self.blank_disk.is_some()
             || self.settings.is_some()
@@ -508,9 +586,47 @@ impl Shell {
         self.insert_dialog = None;
     }
 
+    /// Library disks journal into the running session's workspace: the image
+    /// workspace for an image session, the machine file's local media folder
+    /// otherwise. Never beside another machine file, never in the store's blobs.
+    fn library_media_dir(&self) -> Result<std::path::PathBuf, String> {
+        if let Some((_, name, _)) = &self.image_library.active {
+            let root = self
+                .image_library
+                .root
+                .as_ref()
+                .ok_or("The image store folder is not set")?;
+            let store = image_store::Store::open_existing(root).map_err(|e| e.to_string())?;
+            return store
+                .workspace_path(name)
+                .map(|workspace| workspace.join("media"))
+                .map_err(|e| e.to_string());
+        }
+        image_store::location::machine_media_dir(&self.args.machine).map_err(|e| e.to_string())
+    }
+
+    fn open_insert_library(&mut self) {
+        let workspace = self.library_media_dir();
+        let store_root = self.preferences.store_root.clone();
+        if let Some(draft) = &mut self.insert_dialog {
+            match workspace {
+                Ok(workspace) => draft.open_library(&workspace, store_root.as_deref()),
+                Err(error) => draft.error = Some(error),
+            }
+        }
+    }
+
     fn media_modals(&mut self, ctx: &egui::Context) {
         let mut insert = false;
         let mut cancel = false;
+        let mut open_library = false;
+        let journal_place = match &self.image_library.active {
+            Some((_, _, kind)) if kind.disposable() => {
+                "Journal in this Gaming-mode workspace; Discard removes it"
+            }
+            Some(_) => "Journal in this image's workspace",
+            None => "Journal in this machine file's local media folder",
+        };
         if let Some(draft) = &mut self.insert_dialog {
             let title = format!(
                 "{}{}:",
@@ -524,7 +640,7 @@ impl Shell {
             egui::Modal::new(egui::Id::unique("insert-floppy")).show(ctx, |ui| {
                 ui.set_width(560.0);
                 if self.classic { gradient_title(ui, &title); } else { ui.heading(title); }
-                draft.library_ui(ui, &self.args.machine, self.preferences.store_root.as_deref());
+                open_library |= draft.library_ui(ui);
                 insert |= draft.library.as_ref().is_some_and(|library| library.ready.is_some());
                 if draft.library.is_none() {
                 ui.label("Catalogue for this machine:");
@@ -545,11 +661,7 @@ impl Shell {
                     let picker = if let Some(window) = &self.window { picker.set_parent(window.as_ref()) } else { picker };
                     if let Some(path) = picker.pick_file() {
                         match crate::media_dialog::browse(&path, draft.slot.geometry) {
-                            Ok(entry) => {
-                                let compatible = entry.reason.is_none();
-                                draft.slot.entries.push(entry);
-                                draft.select(compatible.then_some(draft.slot.entries.len() - 1));
-                            }
+                            Ok(entry) => draft.add_browsed(entry),
                             Err(error) => draft.error = Some(error.to_string()),
                         }
                     }
@@ -559,7 +671,7 @@ impl Shell {
                         ui.label(format!("{} · {}/{}/{} · detected from size", crate::media_dialog::geometry_name(geometry), geometry.cylinders, geometry.heads, geometry.sectors_per_track));
                     }
                     ui.label("Write mode");
-                    if entry.index.is_some() {
+                    if entry.declared {
                         ui.label(format!("{} — fixed by the machine file", crate::media_dialog::write_name(&entry.medium.write)));
                         if let assembly::WriteMode::Journal { keep_generations, .. } = entry.medium.write {
                             ui.label(format!("Retains {keep_generations} closed generations; base stays read-only."));
@@ -567,7 +679,12 @@ impl Shell {
                     } else {
                         ui.radio_value(&mut draft.journal, false, "Read-only");
                         ui.radio_value(&mut draft.journal, true, "Journal (keep changes separately)");
-                        if draft.journal {
+                        if draft.journal && entry.workspace_journal.is_some() {
+                            if let Some(path) = &entry.workspace_journal {
+                                ui.add(egui::Label::new(format!("{journal_place}: {}", path.display())).wrap());
+                            }
+                            ui.label(format!("Retains {} closed generations. The library disk stays read-only.", draft.slot.journal_retention));
+                        } else if draft.journal {
                             ui.label("Separate journal path");
                             ui.text_edit_singleline(&mut draft.journal_path);
                             if let assembly::ImageSource::File(base) = &entry.medium.image {
@@ -591,13 +708,15 @@ impl Shell {
                     insert |= ui.add_enabled(draft.library.as_ref().map_or_else(|| draft.selection().is_ok(), |library| library.selected.is_some() && !library.is_busy()), egui::Button::new("Insert")).clicked();
                     cancel = ui.button("Cancel").clicked();
                 });
-                cancel |= ui.input(|input| input.key_pressed(egui::Key::Escape));
+                cancel |= ui.input_mut(escape_pressed);
             });
         }
         if cancel {
             self.insert_dialog = None;
         } else if insert {
             self.confirm_insert();
+        } else if open_library {
+            self.open_insert_library();
         }
 
         let mut close = false;
@@ -638,7 +757,7 @@ impl Shell {
                     }
                     close |= ui.button("Cancel").clicked();
                 });
-                close |= ui.input(|input| input.key_pressed(egui::Key::Escape));
+                close |= ui.input_mut(escape_pressed);
             });
         }
         if close {
@@ -822,6 +941,9 @@ impl Shell {
             rescan: false,
             refresh_listing: false,
             discovery_finished: false,
+            stop_prompt: None,
+            stop_prompt_input: (false, false),
+            restore_input: None,
         }
     }
 
@@ -1239,6 +1361,7 @@ impl Shell {
     fn show_error(&mut self, error: String) {
         self.insert_dialog = None;
         self.blank_disk = None;
+        self.stop_prompt = None;
         self.release();
         if let Some(presenter) = &mut self.presenter {
             presenter.running = false;
@@ -1248,7 +1371,18 @@ impl Shell {
         self.dialog = Some(("Machine error", error));
     }
 
+    /// The session ends only once a path is confirmed, and only after the
+    /// stop prompt; closing the dialog leaves a running machine untouched.
     fn open_machine(&mut self) {
+        if self.needs_stop_prompt() {
+            self.dialog = None;
+            self.ask_before_stopping(StopPrompt::OpenMachine);
+        } else {
+            self.open_machine_path();
+        }
+    }
+
+    fn open_machine_path(&mut self) {
         if !self.stop() {
             return;
         }
@@ -1262,6 +1396,7 @@ impl Shell {
     fn stop(&mut self) -> bool {
         self.insert_dialog = None;
         self.blank_disk = None;
+        self.stop_prompt = None;
         self.release();
         self.session = self.session.wrapping_add(1);
         self.events.borrow_mut().session = self.session;
@@ -1324,7 +1459,18 @@ impl Shell {
         true
     }
 
+    /// Exit, Command+Q/W and the window's close button all ask first while a
+    /// machine runs; the close itself waits for the answer.
     fn request_exit(&mut self, ctx: &egui::Context) {
+        self.close_dialogs_for_exit(ctx);
+        if self.ask_before_stopping(StopPrompt::Exit) {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+        } else {
+            self.exit(ctx);
+        }
+    }
+
+    fn exit(&mut self, ctx: &egui::Context) {
         self.exit_requested = true;
         self.stop();
         if self.image_library.needs_decision() {
@@ -1333,6 +1479,176 @@ impl Shell {
             self.image_library.shutdown();
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
+    }
+
+    /// Quitting closes or cancels whatever dialog or menu is open. The stop
+    /// prompt and the Gaming-mode keep-or-discard question stay, because they
+    /// decide how the exit proceeds.
+    fn close_dialogs_for_exit(&mut self, ctx: &egui::Context) {
+        egui::Popup::close_all(ctx);
+        if self
+            .dialog
+            .as_ref()
+            .is_some_and(|(title, _)| *title == "ROM folders")
+        {
+            self.close_firmware_dialog();
+        }
+        self.dialog = None;
+        self.insert_dialog = None;
+        self.blank_disk = None;
+        self.settings = None;
+        self.image_library.close_dialogs();
+    }
+
+    /// The window's close button arrives as a viewport close request.
+    fn window_close(&mut self, ctx: &egui::Context) {
+        if ctx.input(|input| input.viewport().close_requested()) {
+            self.request_exit(ctx);
+        } else if self.exit_requested
+            && !self.image_library.needs_decision()
+            && !self.image_library.busy
+            && !self.has_dialog()
+        {
+            self.image_library.shutdown();
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        }
+    }
+
+    fn session_name(&self) -> Option<&str> {
+        self.image_library
+            .active
+            .as_ref()
+            .map(|(row, _, _)| row.name())
+            .or_else(|| {
+                self.selected
+                    .and_then(|index| self.library.get(index))
+                    .map(|entry| entry.name.as_str())
+            })
+    }
+
+    /// Guest memory only survives while the machine executes. A halted or
+    /// failed session has nothing left to lose, and a Gaming-mode session
+    /// already asks to keep or discard its changes once stopped.
+    fn needs_stop_prompt(&self) -> bool {
+        let disposable = self
+            .image_library
+            .active
+            .as_ref()
+            .is_some_and(|(_, _, kind)| kind.disposable());
+        !disposable
+            && self
+                .presenter
+                .as_ref()
+                .is_some_and(|presenter| presenter.running && presenter.error.is_none())
+    }
+
+    /// Pause the running machine and ask before `action` ends the session.
+    /// Returns false when nothing needs asking and the caller may proceed.
+    fn ask_before_stopping(&mut self, action: StopPrompt) -> bool {
+        if !self.needs_stop_prompt() {
+            return false;
+        }
+        if self.stop_prompt.is_none() {
+            self.stop_prompt_input = (
+                self.guest_focus,
+                self.presenter
+                    .as_ref()
+                    .is_some_and(|presenter| presenter.mouse.captured()),
+            );
+        }
+        self.release();
+        // Pause at once rather than at the next repaint, so no guest time
+        // passes between the request and the question.
+        let elapsed = self.elapsed();
+        if let Some(presenter) = &mut self.presenter {
+            presenter.occlusion_changed(true, elapsed);
+        }
+        self.modal_paused = true;
+        self.stop_prompt = Some(action);
+        true
+    }
+
+    /// Stop machine performs the held action. Cancel only closes the question:
+    /// the next tick resumes the machine where it paused, and the guest gets
+    /// back the keyboard focus and pointer capture it had.
+    fn answer_stop_prompt(&mut self, stop: bool, ctx: &egui::Context) {
+        let Some(action) = self.stop_prompt.take() else {
+            return;
+        };
+        if !stop {
+            self.restore_input = Some(self.stop_prompt_input);
+            return;
+        }
+        match action {
+            StopPrompt::Library => {
+                self.stop();
+            }
+            StopPrompt::OpenMachine => self.open_machine_path(),
+            StopPrompt::Exit => self.exit(ctx),
+        }
+    }
+
+    /// `escape` reports an Escape already taken for this prompt, the top-most
+    /// dialog, before the dialogs beneath it could see the same key.
+    fn stop_prompt_modal(&self, ctx: &egui::Context, escape: bool) -> Option<bool> {
+        self.stop_prompt?;
+        let question = format!(
+            "unemupc98 is running {}. Stop it and continue?",
+            self.session_name().unwrap_or("a machine")
+        );
+        let mut answer = None;
+        egui::Modal::new(egui::Id::unique("stop-running-machine")).show(ctx, |ui| {
+            ui.set_max_width(420.0);
+            if self.classic {
+                gradient_title(ui, "unemupc98");
+            } else {
+                ui.heading("unemupc98");
+            }
+            ui.add(egui::Label::new(question).wrap());
+            ui.separator();
+            ui.horizontal(|ui| {
+                if ui.button("Stop machine").clicked() {
+                    answer = Some(true);
+                }
+                if ui.button("Cancel").clicked() {
+                    answer = Some(false);
+                }
+            });
+            if escape || ui.input_mut(escape_pressed) {
+                answer = Some(false);
+            }
+        });
+        answer
+    }
+
+    /// Hand input back after a cancelled stop prompt, on the first pass with no
+    /// menu or dialog: the pass that closed the prompt still releases input.
+    fn resume_input(&mut self, blocked: bool) {
+        if blocked {
+            return;
+        }
+        let Some((focus, captured)) = self.restore_input.take() else {
+            return;
+        };
+        if self.presenter.is_none() {
+            return;
+        }
+        if focus {
+            self.focus_guest();
+        }
+        if captured {
+            if let Some(presenter) = &mut self.presenter {
+                presenter.recapture_pointer();
+            }
+            self.sync_routing();
+        }
+    }
+
+    fn open_machine_dialog(&mut self) {
+        self.dialog = Some((
+            "Open machine file",
+            "Open a machine description in the library.".into(),
+        ));
     }
 
     fn command(&mut self, command: Command, ctx: &egui::Context) {
@@ -1355,7 +1671,8 @@ impl Shell {
             DeleteTag => { self.release(); self.image_library.begin_delete(); },
             StoreFolder => { self.release(); self.store_path_input = self.image_library.root.as_ref().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default(); self.dialog = Some(("Image store folder", "Local store directory".into())); },
             Pause => { self.release_pointer(); if let Some(presenter) = &mut self.presenter { presenter.pacing.resync(elapsed, presenter.assembled.machine.clock().0); } self.paused = !self.paused; self.message = if self.paused { "Paused" } else { "Running" }.into(); },
-            Stop | Library => { self.stop(); },
+            Stop => { self.stop(); },
+            Library => if !self.ask_before_stopping(StopPrompt::Library) { self.stop(); },
             PowerCycle => {
                 let image_session = self.image_library.active.clone();
                 self.retain_workspace_on_stop = image_session.is_some();
@@ -1386,7 +1703,8 @@ impl Shell {
             Exit => self.request_exit(ctx),
             Shortcuts => self.dialog = Some(("Keyboard shortcuts", shortcuts_help(self.macos_shortcuts))),
             About => self.dialog = Some(("About unemupc98", format!("unemupc98 {}\nIBM PC/AT emulator\nAGPL-3.0-or-later\nx86jit · egui / eframe · cpal\n\n{}\n\n{}", env!("CARGO_PKG_VERSION"), window::FONT_NOTICE, window::EGUI_FONT_NOTICE))),
-            Placeholder(title) => self.dialog = Some((title, if title == "Open machine file" { "Open a machine description in the library." } else { "not yet available" }.into())),
+            Placeholder("Open machine file") => self.open_machine_dialog(),
+            Placeholder(title) => self.dialog = Some((title, "not yet available".into())),
             FirmwareFolders => { self.preferences_draft = self.preferences.clone(); self.rom_folder_input.clear(); self.dialog = Some(("ROM folders", "Firmware is located by SHA-256. Files are read in place; nothing is copied.".into())); },
             Settings => self.open_settings(),
             SaveState => {},
@@ -1519,12 +1837,7 @@ impl Shell {
                             );
                             if ui.button("From library…").clicked() {
                                 self.command(Insert(unit), ui.ctx());
-                                if let Some(draft) = &mut self.insert_dialog {
-                                    draft.open_library(
-                                        &self.args.machine,
-                                        self.preferences.store_root.as_deref(),
-                                    );
-                                }
+                                self.open_insert_library();
                                 ui.close();
                             }
                         });
@@ -1580,10 +1893,7 @@ impl Shell {
                     .map_or("Mute audio", |p| p.audio.mute_label());
                 self.item(ui, mute, "Ctrl+Alt+M", Mute, commands);
                 ui.menu_button("Speed", |ui| {
-                    let mut selected = self
-                        .presenter
-                        .as_ref()
-                        .map_or(crate::pacing::Speed::Normal, |p| p.pacing.selected());
+                    let mut selected = self.selected_speed();
                     for speed in crate::pacing::Speed::ALL {
                         let response = ui
                             .add_enabled_ui(self.enablement().allows(Speed(speed)), |ui| {
@@ -1640,20 +1950,97 @@ impl Shell {
         });
     }
 
+    fn toolbar(&self, ui: &mut egui::Ui, commands: &mut Vec<Command>) {
+        ui.horizontal_wrapped(|ui| {
+            for (label, icon, command) in [
+                ("Start", crate::shell_icons::Icon::Play, Command::Start),
+                (
+                    if self.paused { "Resume" } else { "Pause" },
+                    if self.paused {
+                        crate::shell_icons::Icon::Play
+                    } else {
+                        crate::shell_icons::Icon::Pause
+                    },
+                    Command::Pause,
+                ),
+                ("Stop", crate::shell_icons::Icon::Stop, Command::Stop),
+                (
+                    "Ctrl+Alt+Del",
+                    crate::shell_icons::Icon::Reset,
+                    Command::Reset,
+                ),
+                ("A:", crate::shell_icons::Icon::Floppy, Command::Insert(0)),
+                ("Eject", crate::shell_icons::Icon::Eject, Command::Eject(0)),
+                (
+                    "Settings",
+                    crate::shell_icons::Icon::Settings,
+                    Command::Settings,
+                ),
+                ("Layers", crate::shell_icons::Icon::Layers, Command::Layers),
+            ] {
+                let response = ui
+                    .add_enabled_ui(self.command_allowed(command), |ui| {
+                        crate::shell_icons::button(ui, label, icon)
+                    })
+                    .inner;
+                if self.classic {
+                    bevel(ui, response.rect, response.is_pointer_button_down_on());
+                }
+                if response.clicked() {
+                    commands.push(command);
+                }
+            }
+            ui.separator();
+            self.speed_selector(ui, commands);
+        });
+    }
+
+    /// The selection View › Speed checks; a held fast-forward leaves it unchanged.
+    fn selected_speed(&self) -> crate::pacing::Speed {
+        self.presenter
+            .as_ref()
+            .map_or(crate::pacing::Speed::Normal, |p| p.pacing.selected())
+    }
+
+    /// The toolbar shows the mode in effect, so it reads Unlimited while the
+    /// fast-forward chord is held and the selected mode again after release.
+    fn toolbar_speed(&self) -> crate::pacing::Speed {
+        self.presenter
+            .as_ref()
+            .map_or(crate::pacing::Speed::Normal, |p| p.pacing.effective())
+    }
+
+    /// A classic toolbar combobox issuing the same command as View › Speed,
+    /// so a change re-anchors pacing at the current guest clock.
+    fn speed_selector(&self, ui: &mut egui::Ui, commands: &mut Vec<Command>) {
+        let shown = self.toolbar_speed();
+        let selected = self.selected_speed();
+        ui.add_enabled_ui(self.command_allowed(Command::Speed(shown)), |ui| {
+            ui.label("Speed:");
+            let combo = egui::ComboBox::from_id_salt("toolbar-speed")
+                .selected_text(shown.label())
+                .width(88.0)
+                .show_ui(ui, |ui| {
+                    for speed in crate::pacing::Speed::ALL {
+                        // The list marks the persistent choice; only the closed
+                        // box reports a held fast-forward.
+                        if ui
+                            .selectable_label(speed == selected, speed.label())
+                            .clicked()
+                        {
+                            commands.push(Command::Speed(speed));
+                        }
+                    }
+                });
+            if self.classic {
+                bevel(ui, combo.response.rect, true);
+            }
+        });
+    }
+
     fn title(&self) -> String {
         if self.presenter.is_some() {
-            format!(
-                "{} — unemupc98",
-                self.image_library
-                    .active
-                    .as_ref()
-                    .map(|(row, _, _)| row.name())
-                    .or_else(|| self
-                        .selected
-                        .and_then(|index| self.library.get(index))
-                        .map(|entry| entry.name.as_str()))
-                    .unwrap_or("Machine")
-            )
+            format!("{} — unemupc98", self.session_name().unwrap_or("Machine"))
         } else {
             "unemupc98".into()
         }
@@ -1973,16 +2360,20 @@ impl Shell {
                 false,
             ];
         }
-        if !blocked && fresh {
-            if let Some(command) = shortcut_key.and_then(|shortcut_key| {
-                shell_model::hotkey(
-                    shortcut_key,
-                    modifiers,
-                    self.state(),
-                    self.guest_focus,
-                    self.macos_shortcuts,
-                )
-            }) {
+        if fresh {
+            if let Some(command) = shortcut_key
+                .and_then(|shortcut_key| {
+                    shell_model::hotkey(
+                        shortcut_key,
+                        modifiers,
+                        self.state(),
+                        self.guest_focus,
+                        self.macos_shortcuts,
+                    )
+                })
+                // Quitting is never held back by an open dialog or menu.
+                .filter(|command| !blocked || *command == Command::Exit)
+            {
                 self.consume_hotkey(key);
                 if command == Command::FastForward {
                     self.fast_forward_key = Some(key);
@@ -2219,46 +2610,7 @@ impl eframe::App for Shell {
             self.menus(ui, &mut commands);
             if self.toolbar {
                 ui.separator();
-                ui.horizontal_wrapped(|ui| {
-                    for (label, icon, command) in [
-                        ("Start", crate::shell_icons::Icon::Play, Command::Start),
-                        (
-                            if self.paused { "Resume" } else { "Pause" },
-                            if self.paused {
-                                crate::shell_icons::Icon::Play
-                            } else {
-                                crate::shell_icons::Icon::Pause
-                            },
-                            Command::Pause,
-                        ),
-                        ("Stop", crate::shell_icons::Icon::Stop, Command::Stop),
-                        (
-                            "Ctrl+Alt+Del",
-                            crate::shell_icons::Icon::Reset,
-                            Command::Reset,
-                        ),
-                        ("A:", crate::shell_icons::Icon::Floppy, Command::Insert(0)),
-                        ("Eject", crate::shell_icons::Icon::Eject, Command::Eject(0)),
-                        (
-                            "Settings",
-                            crate::shell_icons::Icon::Settings,
-                            Command::Settings,
-                        ),
-                        ("Layers", crate::shell_icons::Icon::Layers, Command::Layers),
-                    ] {
-                        let response = ui
-                            .add_enabled_ui(self.command_allowed(command), |ui| {
-                                crate::shell_icons::button(ui, label, icon)
-                            })
-                            .inner;
-                        if self.classic {
-                            bevel(ui, response.rect, response.is_pointer_button_down_on());
-                        }
-                        if response.clicked() {
-                            commands.push(command);
-                        }
-                    }
-                });
+                self.toolbar(ui, &mut commands);
             }
         });
         if self.statusbar {
@@ -2275,6 +2627,9 @@ impl eframe::App for Shell {
         }
         let menu_open = egui::Popup::is_any_open(&ctx);
         let had_dialog = self.has_dialog();
+        // The stop prompt is drawn last, above any other dialog; it takes its
+        // Escape before the dialogs beneath it can read the same key.
+        let stop_escape = self.stop_prompt.is_some() && ctx.input_mut(escape_pressed);
         let mut close_dialog = false;
         let mut open_machine = false;
         let mut save_preferences = false;
@@ -2486,6 +2841,9 @@ impl eframe::App for Shell {
             }
             self.image_library.send(action);
         }
+        if let Some(stop) = self.stop_prompt_modal(&ctx, stop_escape) {
+            self.answer_stop_prompt(stop, &ctx);
+        }
         if open_machine {
             self.open_machine();
         }
@@ -2523,6 +2881,7 @@ impl eframe::App for Shell {
         if blocked {
             self.release();
         }
+        self.resume_input(blocked);
         self.tick(&ctx, blocked, self.elapsed());
         self.sync_routing();
         {
@@ -2535,22 +2894,19 @@ impl eframe::App for Shell {
             events.pixels_per_point = ctx.pixels_per_point();
         }
         self.cursor(&ctx);
-        if ctx.input(|input| input.viewport().close_requested()) {
-            self.request_exit(&ctx);
-        } else if self.exit_requested
-            && !self.image_library.needs_decision()
-            && !self.image_library.busy
-            && !self.has_dialog()
-        {
-            self.image_library.shutdown();
-            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-        }
+        self.window_close(&ctx);
     }
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
         self.stop();
         self.image_library.shutdown();
     }
+}
+
+/// One Escape closes one dialog: the first reader consumes the key, so a
+/// dialog stacked beneath cannot close on the same press.
+pub(crate) fn escape_pressed(input: &mut egui::InputState) -> bool {
+    input.consume_key(egui::Modifiers::NONE, egui::Key::Escape)
 }
 
 pub(super) fn configure_context(ctx: &egui::Context) {
@@ -2758,6 +3114,9 @@ mod tests {
             rescan: false,
             refresh_listing: false,
             discovery_finished: false,
+            stop_prompt: None,
+            stop_prompt_input: (false, false),
+            restore_input: None,
         }
     }
 
@@ -3401,11 +3760,18 @@ mod tests {
         let ctx = egui::Context::default();
         ctx.begin_pass(Default::default());
         shell.key(SuperLeft, Pressed, false, &ctx);
-        for (physical, logical) in [(KeyQ, "a"), (KeyW, "z"), (KeyA, "q")] {
+        for (physical, logical) in [(KeyQ, "a"), (KeyW, "z")] {
             logical_key(&mut shell, physical, logical, Pressed, &ctx);
             logical_key(&mut shell, physical, logical, Released, &ctx);
             assert_eq!(shell.state(), State::Running);
+            assert_eq!(shell.stop_prompt, None);
         }
+        // AZERTY's physical A types "q": Command+Q asks before quitting.
+        logical_key(&mut shell, KeyA, "q", Pressed, &ctx);
+        logical_key(&mut shell, KeyA, "q", Released, &ctx);
+        assert_eq!(shell.state(), State::Running);
+        assert_eq!(shell.stop_prompt, Some(StopPrompt::Exit));
+        shell.answer_stop_prompt(false, &ctx);
         logical_key(&mut shell, KeyM, ",", Pressed, &ctx);
         logical_key(&mut shell, KeyM, ",", Released, &ctx);
         assert!(!shell.guest_focus);
@@ -3424,6 +3790,8 @@ mod tests {
         assert_eq!(take_guest_scancodes(&mut shell), [0x10, 0x90]);
         shell.key(SuperLeft, Pressed, false, &ctx);
         logical_key(&mut shell, KeyZ, "w", Pressed, &ctx);
+        assert_eq!(shell.stop_prompt, Some(StopPrompt::Exit));
+        shell.answer_stop_prompt(true, &ctx);
         assert_eq!(shell.state(), State::Stopped);
         let mut output = ctx.end_pass();
         output.textures_delta.clear();
@@ -3488,6 +3856,7 @@ mod tests {
             (KeyO, false, Command::Placeholder("Open machine file")),
             (Comma, false, Command::Settings),
             (Slash, true, Command::Shortcuts),
+            (KeyQ, false, Command::Exit),
             (KeyW, false, Command::Exit),
             (KeyM, false, Command::Minimize),
         ] {
@@ -3535,7 +3904,13 @@ mod tests {
                         crate::pacing::Speed::Unlimited
                     ),
                     Command::Pause => assert!(shell.paused),
-                    Command::Stop | Command::Exit => assert!(shell.presenter.is_none()),
+                    Command::Stop => assert!(shell.presenter.is_none()),
+                    Command::Exit => {
+                        assert_eq!(shell.stop_prompt, Some(StopPrompt::Exit));
+                        assert!(shell.presenter.is_some());
+                        shell.answer_stop_prompt(true, &ctx);
+                        assert!(shell.presenter.is_none());
+                    }
                     Command::Fullscreen => assert!(shell.fullscreen),
                     Command::Placeholder(_) | Command::Shortcuts => assert!(shell.dialog.is_some()),
                     Command::Minimize => assert!(!shell.guest_focus),
@@ -4434,7 +4809,11 @@ mod tests {
         let mut shell = journal_shell(&temp, vec![0xeb, 0xfe]);
         shell.presenter.as_mut().unwrap().assembled.persistence[0].fail_output();
         let ctx = egui::Context::default();
-        let mut output = ctx.run_pass(Default::default(), |ctx| shell.command(Command::Exit, ctx));
+        let mut output = ctx.run_pass(Default::default(), |ctx| {
+            shell.command(Command::Exit, ctx);
+            assert_eq!(shell.stop_prompt, Some(StopPrompt::Exit));
+            shell.answer_stop_prompt(true, ctx);
+        });
         output.textures_delta.clear();
         assert!(shell.presenter.is_none());
         assert!(shell.errors.borrow().is_some());
@@ -5237,5 +5616,1093 @@ kind='mda'
         shell.image_library.readiness = Some(Err("Missing disk blob".into()));
         shell.image_library.busy = false;
         assert!(!shell.command_allowed(Command::Start));
+    }
+
+    /// Run one headless pass and return the viewport commands and painted text.
+    fn pass(
+        ctx: &egui::Context,
+        input: egui::RawInput,
+        run: impl FnMut(&egui::Context),
+    ) -> (Vec<egui::ViewportCommand>, Vec<(String, egui::Rect)>) {
+        let mut output = ctx.run_pass(input, run);
+        output.textures_delta.clear();
+        let commands = output.viewport_output[&egui::ViewportId::ROOT]
+            .commands
+            .clone();
+        let text = output
+            .shapes
+            .iter()
+            .filter_map(|shape| match &shape.shape {
+                egui::epaint::Shape::Text(text) => Some((
+                    text.galley.text().to_owned(),
+                    text.galley.rect.translate(text.pos.to_vec2()),
+                )),
+                _ => None,
+            })
+            .collect();
+        output.drop_without_applying_deltas();
+        (commands, text)
+    }
+
+    fn shows(text: &[(String, egui::Rect)], wanted: &str) -> bool {
+        text.iter().any(|(shown, _)| shown.contains(wanted))
+    }
+
+    fn guest_clock(shell: &Shell) -> u64 {
+        shell
+            .presenter
+            .as_ref()
+            .unwrap()
+            .assembled
+            .machine
+            .clock()
+            .0
+    }
+
+    #[test]
+    fn running_machine_actions_ask_before_stopping_and_cancel_resumes() {
+        use std::time::Duration;
+        let picked = std::path::Path::new("picked.toml");
+        for prompt in [
+            StopPrompt::Library,
+            StopPrompt::OpenMachine,
+            StopPrompt::Exit,
+        ] {
+            let command = match prompt {
+                StopPrompt::Library => Command::Library,
+                StopPrompt::OpenMachine => Command::Placeholder("Open machine file"),
+                StopPrompt::Exit => Command::Exit,
+            };
+            // Open machine file asks only once a path is confirmed.
+            let trigger = |shell: &mut Shell, ctx: &egui::Context| {
+                shell.command(command, ctx);
+                if prompt == StopPrompt::OpenMachine {
+                    assert_eq!(shell.stop_prompt, None);
+                    assert_eq!(
+                        shell.dialog.as_ref().map(|(title, _)| *title),
+                        Some("Open machine file")
+                    );
+                    shell.open_path = picked.to_string_lossy().into_owned();
+                    shell.open_machine();
+                }
+            };
+            for user_paused in [false, true] {
+                let mut shell = shell();
+                shell.paused = user_paused;
+                let ctx = egui::Context::default();
+                shell.presenter.as_mut().unwrap().next_paint = Some(Duration::ZERO);
+                shell.tick(&ctx, false, Duration::from_millis(20));
+                let before = guest_clock(&shell);
+                assert_eq!(before == 0, user_paused, "{command:?}");
+
+                let (commands, _) = pass(&ctx, Default::default(), |ctx| trigger(&mut shell, ctx));
+                assert_eq!(shell.stop_prompt, Some(prompt));
+                assert!(shell.presenter.as_ref().unwrap().running);
+                assert!(shell.presenter.as_ref().unwrap().occluded_since.is_some());
+                assert!(shell.has_dialog());
+                assert!(shell.dialog.is_none(), "{command:?}");
+                assert!(!shell.exit_requested);
+                assert!(!commands.contains(&egui::ViewportCommand::Close));
+                assert_eq!(
+                    commands.contains(&egui::ViewportCommand::CancelClose),
+                    prompt == StopPrompt::Exit
+                );
+                // No guest time passes while the question is open.
+                shell.tick(&ctx, false, Duration::from_millis(200));
+                assert_eq!(guest_clock(&shell), before);
+
+                // Cancel resumes exactly where the machine paused, without
+                // catching up the time the question was open.
+                shell.answer_stop_prompt(false, &ctx);
+                assert_eq!(shell.stop_prompt, None);
+                assert!(!shell.has_dialog());
+                assert_eq!(shell.paused, user_paused);
+                assert!(shell.library.iter().all(|entry| entry.path != picked));
+                shell.tick(&ctx, false, Duration::from_millis(400));
+                shell.tick(&ctx, false, Duration::from_millis(440));
+                let after = guest_clock(&shell);
+                if user_paused {
+                    assert_eq!(after, before);
+                } else {
+                    assert!(after > before);
+                    assert!(
+                        u128::from(after - before)
+                            <= crate::pacing::virtual_ticks(Duration::from_millis(45))
+                    );
+                }
+
+                // Stop machine stops the session and continues the action.
+                let (commands, _) = pass(&ctx, Default::default(), |ctx| {
+                    trigger(&mut shell, ctx);
+                    shell.answer_stop_prompt(true, ctx);
+                });
+                assert!(shell.presenter.is_none());
+                assert_eq!(shell.stop_prompt, None);
+                match prompt {
+                    StopPrompt::Library => assert!(shell.dialog.is_none()),
+                    StopPrompt::OpenMachine => {
+                        assert!(shell.dialog.is_none());
+                        let selected = shell
+                            .selected
+                            .map(|index| shell.library[index].path.clone());
+                        assert_eq!(selected.as_deref(), Some(picked));
+                    }
+                    StopPrompt::Exit => {
+                        assert!(commands.contains(&egui::ViewportCommand::Close))
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn stopped_halted_and_failed_sessions_end_without_a_stop_prompt() {
+        for case in ["stopped", "halted", "failed"] {
+            for command in [Command::Library, Command::Exit] {
+                let mut shell = shell();
+                match case {
+                    "stopped" => assert!(shell.stop()),
+                    "halted" => shell.presenter.as_mut().unwrap().running = false,
+                    _ => shell.presenter.as_mut().unwrap().error = Some("cpu failure".into()),
+                }
+                let ctx = egui::Context::default();
+                let (commands, _) =
+                    pass(&ctx, Default::default(), |ctx| shell.command(command, ctx));
+                assert_eq!(shell.stop_prompt, None, "{case} {command:?}");
+                assert!(shell.presenter.is_none(), "{case} {command:?}");
+                assert_eq!(
+                    commands.contains(&egui::ViewportCommand::Close),
+                    command == Command::Exit
+                );
+            }
+            let mut shell = shell();
+            if case == "stopped" {
+                shell.stop();
+            }
+            shell
+                .presenter
+                .iter_mut()
+                .for_each(|p| p.running = case != "halted");
+            if case == "failed" {
+                shell.presenter.as_mut().unwrap().error = Some("cpu failure".into());
+            }
+            shell.command(
+                Command::Placeholder("Open machine file"),
+                &egui::Context::default(),
+            );
+            assert_eq!(shell.stop_prompt, None);
+            assert_eq!(
+                shell.dialog.as_ref().map(|(title, _)| *title),
+                Some("Open machine file")
+            );
+        }
+    }
+
+    #[test]
+    fn window_close_and_command_q_ask_while_running_and_other_actions_keep_the_session() {
+        use KeyCode::*;
+        let mut shell = keyboard_shell();
+        shell.macos_shortcuts = true;
+        let ctx = egui::Context::default();
+        let close = || {
+            let mut input = egui::RawInput::default();
+            input
+                .viewports
+                .entry(egui::ViewportId::ROOT)
+                .or_default()
+                .events
+                .push(egui::ViewportEvent::Close);
+            input
+        };
+        for _ in 0..2 {
+            let (commands, _) = pass(&ctx, close(), |ctx| shell.window_close(ctx));
+            assert!(commands.contains(&egui::ViewportCommand::CancelClose));
+            assert!(!commands.contains(&egui::ViewportCommand::Close));
+            assert_eq!(shell.stop_prompt, Some(StopPrompt::Exit));
+            assert!(shell.presenter.is_some());
+        }
+        // Shortcuts wait while the question is open.
+        shell.key(SuperLeft, Pressed, false, &ctx);
+        shell.key(KeyK, Pressed, false, &ctx);
+        shell.key(KeyK, Released, false, &ctx);
+        assert!(shell.presenter.is_some());
+        shell.answer_stop_prompt(false, &ctx);
+        assert!(shell.presenter.as_ref().unwrap().running);
+
+        logical_key(&mut shell, KeyQ, "q", Pressed, &ctx);
+        logical_key(&mut shell, KeyQ, "q", Released, &ctx);
+        shell.key(SuperLeft, Released, false, &ctx);
+        assert_eq!(shell.stop_prompt, Some(StopPrompt::Exit));
+        assert!(take_guest_scancodes(&mut shell).is_empty());
+        shell.answer_stop_prompt(false, &ctx);
+
+        // New machine is still a placeholder and Import image needs a stopped
+        // machine: neither ends the session.
+        shell.command(Command::Placeholder("New machine"), &ctx);
+        assert_eq!(shell.stop_prompt, None);
+        assert_eq!(
+            shell.dialog.as_ref().map(|(title, _)| *title),
+            Some("New machine")
+        );
+        shell.dialog = None;
+        shell.command(Command::ImportImage, &ctx);
+        assert!(!shell.image_library.has_dialog());
+        assert!(shell.presenter.as_ref().unwrap().running);
+
+        let (commands, _) = pass(&ctx, close(), |ctx| {
+            shell.window_close(ctx);
+            shell.answer_stop_prompt(true, ctx);
+        });
+        assert!(commands.contains(&egui::ViewportCommand::Close));
+        assert!(shell.presenter.is_none());
+        assert!(shell.exit_requested);
+    }
+
+    #[test]
+    fn stop_prompt_names_the_machine_and_escape_cancels() {
+        let temp = assembly::test_support::TempDir::new("stop-prompt-name");
+        let path = temp.path().join("dos-games.toml");
+        std::fs::write(
+            &path,
+            "schema=1\nname='DOS games'\nextends='preset:ibm-5170'\n[firmware.bios]\nimage='missing.bin'\n",
+        )
+        .unwrap();
+        let mut shell = shell();
+        shell.library.push(LibraryEntry::pending(path));
+        shell.selected = Some(0);
+        let ctx = egui::Context::default();
+        shell.command(Command::Library, &ctx);
+        let mut text = Vec::new();
+        for _ in 0..2 {
+            text = pass(&ctx, Default::default(), |ctx| {
+                assert_eq!(shell.stop_prompt_modal(ctx, false), None)
+            })
+            .1;
+        }
+        assert_eq!(shell.library[0].name, "DOS games");
+        assert!(shows(
+            &text,
+            "unemupc98 is running DOS games. Stop it and continue?"
+        ));
+        assert!(shows(&text, "Stop machine"));
+        assert!(shows(&text, "Cancel"));
+        let escape = egui::RawInput {
+            events: vec![egui::Event::Key {
+                key: egui::Key::Escape,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: Default::default(),
+            }],
+            ..Default::default()
+        };
+        let mut answer = None;
+        pass(&ctx, escape, |ctx| {
+            answer = shell.stop_prompt_modal(ctx, false)
+        });
+        assert_eq!(answer, Some(false));
+        shell.answer_stop_prompt(false, &ctx);
+        assert!(shell.presenter.is_some());
+    }
+
+    #[test]
+    fn gaming_sessions_use_the_keep_or_discard_question_instead() {
+        use crate::library_test_support::Fixture;
+        let f = Fixture::new();
+        let ctx = egui::Context::default();
+        let mut shell = shell();
+        shell.stop();
+        shell.args.options.allow_unlisted_firmware = true;
+        shell.image_library =
+            crate::library_view::LibraryView::synthetic(f.store.root().to_owned());
+        shell.image_library.selected = Some(f.row.clone());
+        shell.poll_images(&ctx);
+        shell.command(Command::GamingMode, &ctx);
+        for _ in 0..2000 {
+            shell.poll_images(&ctx);
+            if shell.presenter.is_some() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(shell.presenter.is_some(), "{:?}", shell.dialog);
+        assert!(shell.presenter.as_ref().unwrap().running);
+        assert!(!shell.needs_stop_prompt());
+        let (commands, _) = pass(&ctx, Default::default(), |ctx| {
+            shell.command(Command::Exit, ctx)
+        });
+        assert_eq!(shell.stop_prompt, None);
+        assert!(shell.presenter.is_none());
+        assert!(shell.image_library.needs_decision());
+        assert!(commands.contains(&egui::ViewportCommand::CancelClose));
+        assert!(!commands.contains(&egui::ViewportCommand::Close));
+        // Quitting again while the question is open keeps the question.
+        shell.macos_shortcuts = true;
+        let (commands, _) = pass(&ctx, Default::default(), |ctx| {
+            shell.key(KeyCode::SuperLeft, Pressed, false, ctx);
+            logical_key(&mut shell, KeyCode::KeyQ, "q", Pressed, ctx);
+        });
+        assert!(shell.image_library.needs_decision());
+        assert_eq!(shell.stop_prompt, None);
+        assert!(commands.contains(&egui::ViewportCommand::CancelClose));
+        assert!(!commands.contains(&egui::ViewportCommand::Close));
+        shell.image_library.shutdown();
+    }
+
+    #[test]
+    fn insert_dialog_fixes_only_machine_file_policies_and_session_images_can_switch() {
+        let temp = assembly::test_support::TempDir::new("insert-write-policy");
+        let root = temp.path().canonicalize().unwrap();
+        let path = root.join("extra.img");
+        std::fs::write(&path, vec![0; 1_474_560]).unwrap();
+        let ctx = egui::Context::default();
+        let mut shell = media_shell();
+        shell.command(Command::Insert(0), &ctx);
+        let draft = shell.insert_dialog.as_mut().unwrap();
+        draft.add_browsed(crate::media_dialog::browse(&path, draft.slot.geometry).unwrap());
+        assert_eq!(draft.selected, Some(2));
+        shell.confirm_insert();
+        assert!(shell.insert_dialog.is_none());
+        let presenter = shell.presenter.as_mut().unwrap();
+        assert_eq!(
+            presenter.media_events,
+            [(0, assembly::FloppyAction::Insert(2))]
+        );
+        presenter.apply_media_events().unwrap();
+
+        let dialog_text = |shell: &mut Shell, row: usize| {
+            shell.command(Command::Insert(0), &ctx);
+            shell.insert_dialog.as_mut().unwrap().select(Some(row));
+            let mut text = Vec::new();
+            for _ in 0..2 {
+                text = pass(&ctx, Default::default(), |ctx| shell.media_modals(ctx)).1;
+            }
+            text
+        };
+        let browsed = dialog_text(&mut shell, 2);
+        assert!(shows(&browsed, "Journal (keep changes separately)"));
+        assert!(!shows(&browsed, "fixed by the machine file"));
+        let declared = dialog_text(&mut shell, 0);
+        assert!(shows(&declared, "Read-only — fixed by the machine file"));
+        assert!(!shows(&declared, "Journal (keep changes separately)"));
+
+        let draft = shell.insert_dialog.as_mut().unwrap();
+        draft.select(Some(2));
+        draft.journal = true;
+        draft.journal_path = "extra.upfj".into();
+        shell.confirm_insert();
+        let presenter = shell.presenter.as_mut().unwrap();
+        assert_eq!(
+            presenter.media_events,
+            [(0, assembly::FloppyAction::Insert(3))]
+        );
+        presenter.apply_media_events().unwrap();
+        assert_eq!(
+            presenter.assembled.floppy_name(assembly::DeviceId::Fdc, 0),
+            "extra.img"
+        );
+        let slot = presenter.media_slots[0].as_ref().unwrap();
+        assert_eq!(slot.entries.len(), 3);
+        assert_eq!(
+            slot.entries[2].medium.write,
+            assembly::WriteMode::journal(root.join("extra.upfj"))
+        );
+        let journaled = dialog_text(&mut shell, 2);
+        assert!(shows(&journaled, "Separate journal path"));
+        assert!(shell.insert_dialog.as_ref().unwrap().journal);
+        assert!(shell.stop());
+    }
+
+    struct Drawn {
+        text: Vec<(String, egui::Rect)>,
+        /// Selectable items and whether each is marked as the current choice.
+        toggled: Vec<(String, bool)>,
+        commands: Vec<Command>,
+    }
+
+    /// Draw the menu bar above the toolbar, as the shell's chrome panel does.
+    fn draw(ctx: &egui::Context, shell: &mut Shell, events: Vec<egui::Event>) -> Drawn {
+        ctx.enable_accesskit();
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                Vec2::new(1040.0, 700.0),
+            )),
+            events,
+            ..Default::default()
+        };
+        let mut commands = Vec::new();
+        let mut output = ctx.run_ui(input, |ui| {
+            shell.menus(ui, &mut commands);
+            shell.toolbar(ui, &mut commands);
+        });
+        output.textures_delta.clear();
+        let text = output
+            .shapes
+            .iter()
+            .filter_map(|shape| match &shape.shape {
+                egui::epaint::Shape::Text(text) => Some((
+                    text.galley.text().to_owned(),
+                    text.galley.rect.translate(text.pos.to_vec2()),
+                )),
+                _ => None,
+            })
+            .collect();
+        let toggled = output
+            .platform_output
+            .accesskit_update
+            .take()
+            .map(|update| {
+                update
+                    .nodes
+                    .iter()
+                    .filter_map(|(_, node)| {
+                        Some((
+                            node.label()?.to_owned(),
+                            node.toggled()? == egui::accesskit::Toggled::True,
+                        ))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        output.drop_without_applying_deltas();
+        Drawn {
+            text,
+            toggled,
+            commands,
+        }
+    }
+
+    fn click(ctx: &egui::Context, shell: &mut Shell, at: egui::Pos2) -> Vec<Command> {
+        let button = |pressed| egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Default::default(),
+        };
+        let mut commands = draw(
+            ctx,
+            shell,
+            vec![egui::Event::PointerMoved(at), button(true)],
+        )
+        .commands;
+        commands.extend(draw(ctx, shell, vec![button(false)]).commands);
+        commands
+    }
+
+    fn toolbar_pass(
+        ctx: &egui::Context,
+        shell: &mut Shell,
+        events: Vec<egui::Event>,
+    ) -> (Vec<(String, egui::Rect)>, Vec<Command>) {
+        let drawn = draw(ctx, shell, events);
+        (drawn.text, drawn.commands)
+    }
+
+    fn click_toolbar(ctx: &egui::Context, shell: &mut Shell, at: egui::Pos2) -> Vec<Command> {
+        click(ctx, shell, at)
+    }
+
+    /// The speed items currently marked as chosen (menus also mark Toolbar,
+    /// Status bar and the scale mode).
+    fn marked(drawn: &Drawn) -> Vec<&str> {
+        drawn
+            .toggled
+            .iter()
+            .filter(|(label, on)| {
+                *on && crate::pacing::Speed::ALL
+                    .iter()
+                    .any(|speed| speed.label() == label)
+            })
+            .map(|(label, _)| label.as_str())
+            .collect()
+    }
+
+    fn label_rect(text: &[(String, egui::Rect)], label: &str) -> egui::Rect {
+        text.iter()
+            .find(|(shown, _)| shown == label)
+            .map(|(_, rect)| *rect)
+            .unwrap_or_else(|| panic!("{label} not shown in {text:?}"))
+    }
+
+    /// Open View › Speed, return what the submenu draws, then close the menus.
+    fn speed_menu(ctx: &egui::Context, shell: &mut Shell) -> Drawn {
+        let mut drawn = draw(ctx, shell, Vec::new());
+        click(ctx, shell, label_rect(&drawn.text, "View").center());
+        drawn = draw(ctx, shell, Vec::new());
+        let speed = label_rect(&drawn.text, "Speed").center();
+        click(ctx, shell, speed);
+        for _ in 0..2 {
+            drawn = draw(ctx, shell, vec![egui::Event::PointerMoved(speed)]);
+        }
+        egui::Popup::close_all(ctx);
+        draw(ctx, shell, Vec::new());
+        drawn
+    }
+
+    #[test]
+    fn toolbar_speed_selector_changes_pacing_and_the_menu_check() {
+        use crate::pacing::{virtual_ticks, Speed};
+        use std::time::{Duration, Instant};
+        let mut shell = shell();
+        let ctx = egui::Context::default();
+        // Ten seconds into the session, with the guest behind the host clock.
+        let presenter = shell.presenter.as_mut().unwrap();
+        presenter.started = Instant::now().checked_sub(Duration::from_secs(10));
+        presenter.advance_fully(Duration::from_secs(10)).unwrap();
+        assert!(guest_clock(&shell) > 0);
+        let mut text = Vec::new();
+        for _ in 0..2 {
+            text = toolbar_pass(&ctx, &mut shell, Vec::new()).0;
+        }
+        let layers = label_rect(&text, "Layers");
+        let label = label_rect(&text, "Speed:");
+        let selected = label_rect(&text, "100%");
+        assert!(layers.right() < label.left() && label.right() < selected.left());
+        assert!((label.center().y - layers.center().y).abs() < 4.0);
+        assert!(!shows(&text, "200%"));
+        assert_eq!(marked(&speed_menu(&ctx, &mut shell)), ["100%"]);
+
+        assert!(click_toolbar(&ctx, &mut shell, selected.center()).is_empty());
+        let mut drawn = draw(&ctx, &mut shell, Vec::new());
+        for _ in 0..2 {
+            drawn = draw(&ctx, &mut shell, Vec::new());
+        }
+        for speed in Speed::ALL {
+            assert!(
+                shows(&drawn.text, speed.label()),
+                "{speed:?} missing from the list"
+            );
+        }
+        assert_eq!(marked(&drawn), ["100%"]);
+        let commands = click_toolbar(&ctx, &mut shell, label_rect(&drawn.text, "200%").center());
+        assert_eq!(commands, [Command::Speed(Speed::Double)]);
+        let clock = guest_clock(&shell);
+        let before = shell.elapsed();
+        for command in commands {
+            shell.command(command, &ctx);
+        }
+        let after = shell.elapsed();
+        assert!(before >= Duration::from_secs(10));
+        assert_eq!(shell.selected_speed(), Speed::Double);
+        assert_eq!(marked(&speed_menu(&ctx, &mut shell)), ["200%"]);
+
+        // Re-anchored at the change: the 200% target owes only the moments since
+        // then, not the full 100 ms frame allowance a stale anchor would grant.
+        let slack = Duration::from_millis(1);
+        let presenter = shell.presenter.as_mut().unwrap();
+        let owed = presenter.pacing.target(after, clock).unwrap() - clock;
+        assert!(u128::from(owed) <= virtual_ticks((after - before + slack) * 2));
+        assert!(u128::from(owed) < virtual_ticks(Duration::from_millis(100)));
+        // No catch-up burst on the next paint: 10 ms of host time runs about
+        // 20 ms of guest time at 200%.
+        presenter
+            .advance_fully(after + Duration::from_millis(10))
+            .unwrap();
+        let ran = u128::from(guest_clock(&shell) - clock);
+        assert!(ran >= virtual_ticks(Duration::from_millis(19)), "{ran}");
+        assert!(
+            ran <= virtual_ticks((after - before + Duration::from_millis(10) + slack) * 2),
+            "{ran}"
+        );
+        let text = toolbar_pass(&ctx, &mut shell, Vec::new()).0;
+        assert!(shows(&text, "200%"));
+        assert!(!shows(&text, "100%"));
+    }
+
+    #[test]
+    fn toolbar_list_marks_the_persistent_speed_during_a_hold_and_clicks_set_it() {
+        use crate::pacing::Speed;
+        let mut shell = keyboard_shell();
+        let ctx = egui::Context::default();
+        shell.command(Command::Speed(Speed::Quadruple), &ctx);
+        for key in [KeyCode::ControlLeft, KeyCode::AltLeft, KeyCode::KeyT] {
+            shell.key(key, Pressed, false, &ctx);
+        }
+        assert_eq!(shell.toolbar_speed(), Speed::Unlimited);
+        let mut text = Vec::new();
+        for _ in 0..2 {
+            text = toolbar_pass(&ctx, &mut shell, Vec::new()).0;
+        }
+        assert!(
+            click_toolbar(&ctx, &mut shell, label_rect(&text, "Unlimited").center()).is_empty()
+        );
+        let mut drawn = draw(&ctx, &mut shell, Vec::new());
+        for _ in 0..2 {
+            drawn = draw(&ctx, &mut shell, Vec::new());
+        }
+        // The closed box reads Unlimited; the list marks the persistent 400%.
+        assert_eq!(marked(&drawn), ["400%"]);
+        let commands = click_toolbar(&ctx, &mut shell, label_rect(&drawn.text, "200%").center());
+        assert_eq!(commands, [Command::Speed(Speed::Double)]);
+        for command in commands {
+            shell.command(command, &ctx);
+        }
+        assert_eq!(shell.selected_speed(), Speed::Double);
+        assert_eq!(shell.toolbar_speed(), Speed::Unlimited);
+        shell.key(KeyCode::KeyT, Released, false, &ctx);
+        assert_eq!(shell.toolbar_speed(), Speed::Double);
+    }
+
+    #[test]
+    fn toolbar_speed_shows_the_held_fast_forward_and_restores_the_selection() {
+        use crate::pacing::Speed;
+        let mut shell = keyboard_shell();
+        let ctx = egui::Context::default();
+        shell.command(Command::Speed(Speed::Quadruple), &ctx);
+        let shown = |shell: &mut Shell| {
+            let text = toolbar_pass(&ctx, shell, Vec::new()).0;
+            Speed::ALL
+                .into_iter()
+                .filter(|speed| shows(&text, speed.label()))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(shown(&mut shell), [Speed::Quadruple]);
+        for key in [KeyCode::ControlLeft, KeyCode::AltLeft, KeyCode::KeyT] {
+            shell.key(key, Pressed, false, &ctx);
+        }
+        assert_eq!(shell.toolbar_speed(), Speed::Unlimited);
+        assert_eq!(shown(&mut shell), [Speed::Unlimited]);
+        assert_eq!(shell.selected_speed(), Speed::Quadruple);
+        assert!(shell.speed_status().starts_with("Fast-forward"));
+        shell.key(KeyCode::KeyT, Released, false, &ctx);
+        assert_eq!(shown(&mut shell), [Speed::Quadruple]);
+        assert_eq!(shell.speed_status(), "Speed 400%");
+        for key in [KeyCode::AltLeft, KeyCode::ControlLeft] {
+            shell.key(key, Released, false, &ctx);
+        }
+        assert!(shell.command_allowed(Command::Speed(Speed::Normal)));
+        shell.stop();
+        assert!(!shell.command_allowed(Command::Speed(Speed::Normal)));
+        assert_eq!(shown(&mut shell), [Speed::Normal]);
+    }
+
+    fn command_q(shell: &mut Shell, blocked: bool, ctx: &egui::Context) {
+        shell.key(KeyCode::SuperLeft, Pressed, blocked, ctx);
+        shell.keyboard(
+            HostKey {
+                key: KeyCode::KeyQ,
+                shortcut_key: Some(KeyCode::KeyQ),
+                state: Pressed,
+                repeat: false,
+                synthetic: false,
+                guest_focus: shell.guest_focus,
+                session: shell.session,
+            },
+            blocked,
+            ctx,
+        );
+        shell.key(KeyCode::KeyQ, Released, blocked, ctx);
+        shell.key(KeyCode::SuperLeft, Released, blocked, ctx);
+    }
+
+    #[test]
+    fn quitting_closes_an_open_dialog_or_menu_and_then_asks() {
+        let temp = assembly::test_support::TempDir::new("exit-through-dialogs");
+        std::fs::create_dir(temp.path().join("machines")).unwrap();
+        let machine = temp.path().join("machines/example.toml");
+        std::fs::write(
+            &machine,
+            "schema=1\nextends='preset:ibm-5170'\n[firmware.bios]\nimage='missing.bin'\n",
+        )
+        .unwrap();
+        for open in [
+            "about", "insert", "blank", "settings", "layers", "menu", "library",
+        ] {
+            for close_button in [false, true] {
+                let mut shell = media_shell();
+                shell.macos_shortcuts = true;
+                shell.library.push(LibraryEntry::pending(machine.clone()));
+                shell.selected = Some(0);
+                let ctx = egui::Context::default();
+                match open {
+                    "about" => shell.command(Command::About, &ctx),
+                    "insert" => shell.command(Command::Insert(0), &ctx),
+                    "blank" => shell.command(Command::CreateBlank, &ctx),
+                    "settings" => shell.command(Command::Settings, &ctx),
+                    "layers" => shell.command(Command::Layers, &ctx),
+                    "menu" => egui::Popup::open_id(&ctx, egui::Id::unique("an open menu")),
+                    _ => shell.command(Command::Library, &ctx),
+                }
+                let menu = egui::Popup::is_any_open(&ctx);
+                assert!(shell.has_dialog() || menu, "{open}");
+                let (commands, _) = if close_button {
+                    let mut input = egui::RawInput::default();
+                    input
+                        .viewports
+                        .entry(egui::ViewportId::ROOT)
+                        .or_default()
+                        .events
+                        .push(egui::ViewportEvent::Close);
+                    pass(&ctx, input, |ctx| shell.window_close(ctx))
+                } else {
+                    pass(&ctx, Default::default(), |ctx| {
+                        command_q(&mut shell, menu, ctx)
+                    })
+                };
+                assert_eq!(shell.stop_prompt, Some(StopPrompt::Exit), "{open}");
+                assert!(commands.contains(&egui::ViewportCommand::CancelClose));
+                assert!(!egui::Popup::is_any_open(&ctx), "{open}");
+                assert!(shell.dialog.is_none(), "{open}");
+                assert!(shell.insert_dialog.is_none() && shell.blank_disk.is_none());
+                assert!(shell.settings.is_none(), "{open}");
+                assert!(!shell.image_library.has_dialog(), "{open}");
+                assert!(shell.presenter.as_ref().unwrap().running);
+                pass(&ctx, Default::default(), |ctx| {
+                    shell.answer_stop_prompt(true, ctx)
+                });
+                assert!(shell.presenter.is_none());
+            }
+        }
+        // A failed machine has nothing to ask about: its error dialog closes and
+        // the window closes.
+        let mut shell = media_shell();
+        shell.macos_shortcuts = true;
+        shell.show_error("cpu failure".into());
+        let ctx = egui::Context::default();
+        let (commands, _) = pass(&ctx, Default::default(), |ctx| {
+            command_q(&mut shell, false, ctx)
+        });
+        assert!(commands.contains(&egui::ViewportCommand::Close));
+        assert!(shell.dialog.is_none());
+        assert_eq!(shell.stop_prompt, None);
+    }
+
+    #[test]
+    fn closing_the_open_machine_dialog_leaves_the_session_running() {
+        use std::time::Duration;
+        let mut shell = shell();
+        let ctx = egui::Context::default();
+        shell.command(Command::Placeholder("Open machine file"), &ctx);
+        assert_eq!(shell.stop_prompt, None);
+        assert!(shell.presenter.as_ref().unwrap().occluded_since.is_none());
+        shell.open_path = "never-opened.toml".into();
+        // The dialog's Cancel button only drops the dialog.
+        shell.dialog = None;
+        shell.presenter.as_mut().unwrap().next_paint = Some(Duration::ZERO);
+        shell.tick(&ctx, false, Duration::from_millis(20));
+        assert!(guest_clock(&shell) > 0);
+        assert!(shell.presenter.as_ref().unwrap().running);
+        assert!(shell.library.is_empty());
+        assert_eq!(shell.stop_prompt, None);
+    }
+
+    #[test]
+    fn one_escape_closes_only_the_top_most_dialog() {
+        let mut shell = media_shell();
+        let ctx = egui::Context::default();
+        shell.command(Command::Library, &ctx);
+        shell.command(Command::Insert(0), &ctx);
+        assert!(shell.stop_prompt.is_some() && shell.insert_dialog.is_some());
+        let escape = || egui::RawInput {
+            events: vec![egui::Event::Key {
+                key: egui::Key::Escape,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: Default::default(),
+            }],
+            ..Default::default()
+        };
+        // The shell's pass order: the stop prompt takes Escape first, then the
+        // dialogs beneath it draw, then the prompt itself.
+        let frame = |shell: &mut Shell, input| {
+            let mut answer = None;
+            pass(&ctx, input, |ctx| {
+                let stop_escape = shell.stop_prompt.is_some() && ctx.input_mut(escape_pressed);
+                shell.media_modals(ctx);
+                answer = shell.stop_prompt_modal(ctx, stop_escape);
+            });
+            if let Some(stop) = answer {
+                shell.answer_stop_prompt(stop, &ctx);
+            }
+            answer
+        };
+        frame(&mut shell, Default::default());
+        assert_eq!(frame(&mut shell, escape()), Some(false));
+        assert!(shell.insert_dialog.is_some());
+        assert!(shell.presenter.is_some());
+        frame(&mut shell, escape());
+        assert!(shell.insert_dialog.is_none());
+    }
+
+    #[test]
+    fn enter_and_space_never_answer_the_stop_prompt() {
+        let mut shell = shell();
+        let ctx = egui::Context::default();
+        shell.command(Command::Exit, &ctx);
+        for key in [egui::Key::Enter, egui::Key::Space] {
+            for pressed in [true, false, true, false] {
+                let input = egui::RawInput {
+                    events: vec![egui::Event::Key {
+                        key,
+                        physical_key: None,
+                        pressed,
+                        repeat: false,
+                        modifiers: Default::default(),
+                    }],
+                    ..Default::default()
+                };
+                let mut answer = None;
+                pass(&ctx, input, |ctx| {
+                    answer = shell.stop_prompt_modal(ctx, false)
+                });
+                assert_eq!(answer, None, "{key:?}");
+            }
+        }
+        assert_eq!(shell.stop_prompt, Some(StopPrompt::Exit));
+        assert!(shell.presenter.as_ref().unwrap().running);
+    }
+
+    #[test]
+    fn cancel_hands_guest_focus_and_pointer_capture_back() {
+        let ctx = egui::Context::default();
+        for answer_stop in [false, true] {
+            let mut shell = captured_shell();
+            shell.macos_shortcuts = true;
+            assert!(shell.guest_focus);
+            command_q(&mut shell, false, &ctx);
+            assert_eq!(shell.stop_prompt, Some(StopPrompt::Exit));
+            assert!(!shell.guest_focus);
+            assert!(!shell.presenter.as_ref().unwrap().mouse.captured());
+            assert!(!shell.events.borrow().captured);
+            shell.answer_stop_prompt(answer_stop, &ctx);
+            // The pass that closed the prompt still releases input.
+            shell.resume_input(true);
+            assert!(!shell.guest_focus);
+            shell.resume_input(false);
+            if answer_stop {
+                assert!(shell.presenter.is_none());
+                assert!(!shell.guest_focus);
+                continue;
+            }
+            assert!(shell.guest_focus);
+            assert!(shell.presenter.as_ref().unwrap().mouse.captured());
+            let events = shell.events.borrow();
+            assert!(events.guest_focus && events.captured);
+        }
+        // A prompt opened from a menu had neither, and restores neither.
+        let mut shell = captured_shell();
+        shell.release_pointer();
+        shell.release();
+        shell.command(Command::Library, &ctx);
+        shell.answer_stop_prompt(false, &ctx);
+        shell.resume_input(false);
+        assert!(!shell.guest_focus);
+        assert!(!shell.presenter.as_ref().unwrap().mouse.captured());
+    }
+
+    #[test]
+    fn modifier_changes_reach_egui_and_drive_macos_application_chords() {
+        let mut events = Events::default();
+        assert!(events.forward(&WindowEvent::ModifiersChanged(ModifiersState::SUPER.into())));
+        assert!(matches!(
+            events.queue.last(),
+            Some(HostEvent::Window(event)) if matches!(**event, WindowEvent::ModifiersChanged(_))
+        ));
+        // The application chords exist only where the platform menu is absent.
+        #[cfg(target_os = "macos")]
+        {
+            use shell_model::AppChord;
+            let h = winit::keyboard::Key::Character("h".into());
+            assert_eq!(
+                events.app_chord(&h, Pressed, false, false),
+                Some(AppChord::Hide)
+            );
+            for (state, repeat, synthetic) in [
+                (Released, false, false),
+                (Pressed, true, false),
+                (Pressed, false, true),
+            ] {
+                assert_eq!(events.app_chord(&h, state, repeat, synthetic), None);
+            }
+            events.forward(&WindowEvent::ModifiersChanged(
+                (ModifiersState::SUPER | ModifiersState::ALT).into(),
+            ));
+            assert_eq!(
+                events.app_chord(&h, Pressed, false, false),
+                Some(AppChord::HideOthers)
+            );
+            events.forward(&WindowEvent::ModifiersChanged(
+                ModifiersState::empty().into(),
+            ));
+            assert_eq!(events.app_chord(&h, Pressed, false, false), None);
+        }
+    }
+
+    /// Import a one-disk 360K installation set into the fixture's store.
+    fn import_disk_set(f: &crate::library_test_support::Fixture) {
+        let disk = f.temp.path().join("set-disk.img");
+        let args: Vec<std::ffi::OsString> = vec![
+            "floppy".into(),
+            "--type".into(),
+            "360K".into(),
+            "--format".into(),
+            disk.clone().into_os_string(),
+        ];
+        cli::create::execute(cli::create::parse(&args).unwrap(), &mut io::sink()).unwrap();
+        let args: Vec<std::ffi::OsString> = vec![
+            "image".into(),
+            "media".into(),
+            "import".into(),
+            disk.into_os_string(),
+            "--store".into(),
+            f.store.root().as_os_str().to_owned(),
+            "--title".into(),
+            "Session disks".into(),
+            "--tag".into(),
+            "disks:set".into(),
+        ];
+        let mut errors = Vec::new();
+        assert_eq!(
+            cli::command::run(&args, &mut io::sink(), &mut errors),
+            0,
+            "{}",
+            String::from_utf8_lossy(&errors)
+        );
+    }
+
+    #[test]
+    fn image_sessions_journal_library_disks_in_their_own_workspace() {
+        use crate::library_test_support::Fixture;
+        use crate::library_worker::WorkspaceKind;
+        let pause = || std::thread::sleep(std::time::Duration::from_millis(5));
+        for kind in [WorkspaceKind::Regular, WorkspaceKind::Disposable] {
+            let f = Fixture::new();
+            import_disk_set(&f);
+            let ctx = egui::Context::default();
+            let mut shell = shell();
+            shell.stop();
+            shell.args.options.allow_unlisted_firmware = true;
+            shell.preferences.store_root = Some(f.store.root().to_owned());
+            shell.image_library =
+                crate::library_view::LibraryView::synthetic(f.store.root().to_owned());
+            shell.image_library.selected = Some(f.row.clone());
+            shell.poll_images(&ctx);
+            shell.command(
+                if kind.disposable() {
+                    Command::GamingMode
+                } else {
+                    Command::Start
+                },
+                &ctx,
+            );
+            for _ in 0..4000 {
+                shell.poll_images(&ctx);
+                if shell.presenter.is_some() {
+                    break;
+                }
+                pause();
+            }
+            assert!(shell.presenter.is_some(), "{:?}", shell.dialog);
+            let name = shell.image_library.active.as_ref().unwrap().1.clone();
+            let media = f.store.workspace_path(&name).unwrap().join("media");
+            assert_eq!(shell.library_media_dir().unwrap(), media);
+
+            shell.command(Command::Insert(0), &ctx);
+            shell.open_insert_library();
+            for _ in 0..4000 {
+                let library = shell
+                    .insert_dialog
+                    .as_mut()
+                    .unwrap()
+                    .library
+                    .as_mut()
+                    .unwrap();
+                assert_eq!(library.poll(), None);
+                if !library.is_busy() {
+                    break;
+                }
+                pause();
+            }
+            let library = shell
+                .insert_dialog
+                .as_mut()
+                .unwrap()
+                .library
+                .as_mut()
+                .unwrap();
+            assert_eq!(library.workspace, media);
+            let row = library
+                .rows
+                .iter()
+                .position(|row| row.tag == "disks:set")
+                .unwrap();
+            library.selected = Some(row);
+            library.journal = true;
+            for _ in 0..4000 {
+                shell.confirm_insert();
+                if shell.insert_dialog.is_none() {
+                    break;
+                }
+                assert_eq!(shell.insert_dialog.as_ref().unwrap().error, None);
+                pause();
+            }
+            let presenter = shell.presenter.as_mut().unwrap();
+            let entry = presenter.media_slots[0]
+                .as_ref()
+                .unwrap()
+                .entries
+                .last()
+                .unwrap()
+                .clone();
+            let assembly::WriteMode::Journal { path: journal, .. } = &entry.medium.write else {
+                panic!("journal");
+            };
+            assert!(journal.starts_with(&media), "{}", journal.display());
+            assert!(!journal.starts_with(f.store.root().join("images")));
+            presenter
+                .media_events
+                .push((0, assembly::FloppyAction::Eject));
+            presenter.apply_media_events().unwrap();
+            assert!(journal.is_file());
+
+            // The dialog names where the journal lives.
+            shell.command(Command::Insert(0), &ctx);
+            let rows = shell.insert_dialog.as_ref().unwrap().slot.entries.len();
+            shell.insert_dialog.as_mut().unwrap().select(Some(rows - 1));
+            let mut text = Vec::new();
+            for _ in 0..2 {
+                text = pass(&ctx, Default::default(), |ctx| shell.media_modals(ctx)).1;
+            }
+            assert!(shows(
+                &text,
+                if kind.disposable() {
+                    "Journal in this Gaming-mode workspace; Discard removes it"
+                } else {
+                    "Journal in this image's workspace"
+                }
+            ));
+            shell.insert_dialog = None;
+
+            shell.command(Command::Stop, &ctx);
+            if kind.disposable() {
+                assert!(shell.image_library.needs_decision());
+                shell
+                    .image_library
+                    .send(crate::library_view::Request::Discard(name.clone()));
+                let workspace = f.store.workspace_path(&name).unwrap();
+                for _ in 0..4000 {
+                    shell.poll_images(&ctx);
+                    if !workspace.exists() {
+                        break;
+                    }
+                    pause();
+                }
+                assert!(!workspace.exists());
+                assert!(!journal.exists());
+            } else {
+                for _ in 0..4000 {
+                    shell.poll_images(&ctx);
+                    if shell.image_library.active.is_none() {
+                        break;
+                    }
+                    pause();
+                }
+                assert!(shell.image_library.active.is_none());
+                assert!(journal.is_file());
+            }
+            shell.image_library.shutdown();
+        }
     }
 }

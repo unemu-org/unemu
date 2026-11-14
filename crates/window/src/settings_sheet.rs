@@ -159,7 +159,7 @@ pub(crate) fn show(ctx: &egui::Context, model: &mut SettingsModel, classic: bool
             }
         });
     });
-    if ctx.input(|input| input.key_pressed(egui::Key::Escape)) {
+    if ctx.input_mut(crate::shell::escape_pressed) {
         action = Action::Cancel;
     }
     action

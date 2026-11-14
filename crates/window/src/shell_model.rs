@@ -92,6 +92,7 @@ pub(crate) fn logical_shortcut_key(key: &Key) -> Option<KeyCode> {
             "t" => Some(KeyT),
             "g" => Some(KeyG),
             "p" => Some(KeyP),
+            "q" => Some(KeyQ),
             "n" => Some(KeyN),
             "o" => Some(KeyO),
             "," => Some(Comma),
@@ -128,7 +129,7 @@ pub(crate) fn hotkey(
             (KeyM, true) => Some(Mute),
             (KeyM, false) => Some(Minimize),
             (KeyK, false) => Some(Stop),
-            (KeyW, false) => Some(Exit),
+            (KeyQ, false) | (KeyW, false) => Some(Exit),
             (KeyT, false) => Some(FastForward),
             (KeyG, false) => Some(Release),
             (KeyP, false) => Some(Command::Pause),
@@ -172,6 +173,38 @@ pub(crate) fn hotkey(
         Enter if state == State::Stopped && !alt && !ctrl => Some(Start),
         _ => None,
     }
+}
+
+/// macOS application chords that the platform application menu would provide.
+#[cfg(any(target_os = "macos", test))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum AppChord {
+    Hide,
+    HideOthers,
+}
+
+/// Command+H hides the application and Command+Option+H the others. `key` is
+/// the layout's character without modifiers, as macOS menus match it.
+#[cfg(any(target_os = "macos", test))]
+pub(crate) fn macos_app_chord(
+    key: &Key,
+    modifiers: winit::keyboard::ModifiersState,
+) -> Option<AppChord> {
+    let Key::Character(text) = key else {
+        return None;
+    };
+    if !text.eq_ignore_ascii_case("h")
+        || !modifiers.super_key()
+        || modifiers.control_key()
+        || modifiers.shift_key()
+    {
+        return None;
+    }
+    Some(if modifiers.alt_key() {
+        AppChord::HideOthers
+    } else {
+        AppChord::Hide
+    })
 }
 
 /// Use the same labels in menus and help so platform-specific chords stay visible.
@@ -658,6 +691,7 @@ mod tests {
             ("m", false, Minimize),
             ("M", true, Mute),
             ("k", false, Stop),
+            ("q", false, Exit),
             ("w", false, Exit),
             ("t", false, FastForward),
             ("g", false, Release),
@@ -679,7 +713,7 @@ mod tests {
                 Some(expected)
             );
         }
-        for text in ["q", "a", "z", "é"] {
+        for text in ["a", "z", "é"] {
             assert_eq!(logical_shortcut_key(&Key::Character(text.into())), None);
         }
         for (named, expected) in [(NamedKey::End, Reset), (NamedKey::Enter, Fullscreen)] {
@@ -695,6 +729,8 @@ mod tests {
                 Some(expected)
             );
         }
+        // Without the platform menu, Command+Q reaches the shell, which asks
+        // before quitting while a machine runs.
         assert_eq!(
             super::hotkey(
                 KeyCode::KeyQ,
@@ -703,6 +739,44 @@ mod tests {
                 true,
                 true
             ),
+            Some(Exit)
+        );
+        assert_eq!(
+            super::hotkey(
+                KeyCode::KeyQ,
+                [false, false, false, false, true, false, true, false],
+                State::Running,
+                true,
+                true
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn macos_command_h_hides_without_the_platform_menu() {
+        use winit::keyboard::ModifiersState as M;
+        let h = Key::Character("h".into());
+        assert_eq!(macos_app_chord(&h, M::SUPER), Some(AppChord::Hide));
+        assert_eq!(
+            macos_app_chord(&Key::Character("H".into()), M::SUPER),
+            Some(AppChord::Hide)
+        );
+        assert_eq!(
+            macos_app_chord(&h, M::SUPER | M::ALT),
+            Some(AppChord::HideOthers)
+        );
+        for modifiers in [
+            M::empty(),
+            M::ALT,
+            M::SUPER | M::SHIFT,
+            M::SUPER | M::CONTROL,
+        ] {
+            assert_eq!(macos_app_chord(&h, modifiers), None, "{modifiers:?}");
+        }
+        assert_eq!(macos_app_chord(&Key::Character("j".into()), M::SUPER), None);
+        assert_eq!(
+            macos_app_chord(&Key::Named(NamedKey::Enter), M::SUPER),
             None
         );
     }

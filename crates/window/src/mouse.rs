@@ -143,6 +143,16 @@ impl HostMouse {
         false
     }
 
+    /// Resume a capture that a host dialog interrupted, without a capture
+    /// click. Returns true only when a host grab needs to be attempted.
+    pub fn recapture(&mut self) -> bool {
+        if self.captured || !self.enabled || !self.focused {
+            return false;
+        }
+        self.captured = true;
+        true
+    }
+
     /// Focus loss releases guest buttons and discards sub-count capture residue.
     pub fn focus_changed(&mut self, focused: bool) {
         self.focused = focused;
@@ -421,6 +431,22 @@ mod tests {
         assert!(drain(&mut mouse).is_empty());
         mouse.motion(0.5, -0.5);
         assert_eq!(drain(&mut mouse), [input(1, 1, 0)]);
+    }
+
+    #[test]
+    fn recapture_resumes_an_interrupted_capture_only_for_a_focused_mouse() {
+        assert!(!HostMouse::new(false).recapture());
+        let mut mouse = captured();
+        assert!(!mouse.recapture());
+        mouse.focus_changed(false);
+        assert!(!mouse.recapture());
+        assert!(!mouse.captured());
+        mouse.focus_changed(true);
+        assert!(mouse.recapture());
+        assert!(mouse.captured());
+        // No capture click is pending, so the next press reaches the guest.
+        mouse.button_event(Left, Pressed);
+        assert_eq!(drain(&mut mouse), [input(0, 0, 1)]);
     }
 }
 

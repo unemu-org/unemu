@@ -5,6 +5,22 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-14 — No silent stop, session write modes, toolbar speed:** with a
+  machine running, Machine library, Open machine file… (once a path is
+  confirmed), Exit, ⌘Q/⌘W and the window's close button pause it and ask
+  "Stop it and continue?" (Stop machine / Cancel); Cancel resumes without
+  catch-up and restores guest focus and pointer capture. Quitting works through
+  open menus and dialogs, closing them first. Gaming mode keeps its
+  Keep/Discard question. Library-disk journals of image sessions live in the
+  image workspace and Gaming Discard removes them. The macOS build installs no platform application menu so ⌘Q reaches
+  the shell; ⌘H/⌘⌥H still hide, while Dock Quit and logout still quit at once.
+  The Insert dialog fixes the write policy only for machine-file entries;
+  Browse… and From library… disks switch between read-only and a journal on
+  re-insert, and browsing the same file and SHA-256 reuses its row. A toolbar
+  Speed combobox after Layers mirrors View › Speed, shows Unlimited during the
+  fast-forward hold and re-anchors pacing like the menu. Headless tests cover
+  each prompt path, the policy switch and the toolbar selection; native visual
+  and Dock/menu-bar behaviour need manual checking.
 - **2026-11-14 — Desktop image library and disk layers:** local-store summaries join machine files in an Explorer-style tree, virtualized details list and selected-image pane. Search, metadata facets, repository/tag groups, sorting, favorites and local labels use cached summaries. Store loading, bounded cache rebuilds, verification, imports and publication run in a background worker. Image launches pin the selected descriptor and reuse a regular workspace; Gaming mode isolates all writable media and CMOS, with explicit Keep as new image or Discard and startup recovery. Selection uses cancellable descriptor checks; full disk verification happens at Start. Disk layers exposes chains, sharing, working-sector counts, whole-machine publication/flatten and confirmed discard. Tag deletion preserves blobs. The store root follows platform data-directory conventions and can be changed under Tools. GUI acceptance remains manual; media-set browsing stays separate.
 - **2026-11-14 — macOS host shortcuts:** Command chords stay in the shell,
   with no guest modifier or letter scan codes. Ctrl/Alt and Ctrl+Alt+Del remain

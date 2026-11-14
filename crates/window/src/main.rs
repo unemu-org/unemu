@@ -510,15 +510,21 @@ impl Presenter {
     }
 
     fn mouse_button(&mut self, button: MouseButton, state: ElementState) {
-        let window = self.window.clone();
-        self.mouse_button_with_grab(button, state, || {
+        let grab = Self::host_grab(self.window.clone());
+        self.mouse_button_with_grab(button, state, grab);
+    }
+
+    fn host_grab(
+        window: Option<Arc<Window>>,
+    ) -> impl FnOnce() -> Result<(), winit::error::ExternalError> {
+        move || {
             if let Some(window) = window {
                 window
                     .set_cursor_grab(CursorGrabMode::Locked)
                     .or_else(|_| window.set_cursor_grab(CursorGrabMode::Confined))?;
             }
             Ok(())
-        });
+        }
     }
 
     fn mouse_button_with_grab(
@@ -528,14 +534,26 @@ impl Presenter {
         grab: impl FnOnce() -> Result<(), winit::error::ExternalError>,
     ) {
         if self.running && self.error.is_none() && self.mouse.button_event(button, state) {
-            if let Err(error) = grab() {
-                eprintln!("cannot capture pointer: {error}");
-                self.release_pointer();
-                return;
-            }
-            if let Some(window) = &self.window {
-                window.set_cursor_visible(false);
-            }
+            self.complete_grab(grab);
+        }
+    }
+
+    /// Resume a capture that a shell question interrupted, without a click.
+    fn recapture_pointer(&mut self) {
+        if self.running && self.error.is_none() && self.mouse.recapture() {
+            let grab = Self::host_grab(self.window.clone());
+            self.complete_grab(grab);
+        }
+    }
+
+    fn complete_grab(&mut self, grab: impl FnOnce() -> Result<(), winit::error::ExternalError>) {
+        if let Err(error) = grab() {
+            eprintln!("cannot capture pointer: {error}");
+            self.release_pointer();
+            return;
+        }
+        if let Some(window) = &self.window {
+            window.set_cursor_visible(false);
         }
     }
 
