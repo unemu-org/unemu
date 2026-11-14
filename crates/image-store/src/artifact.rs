@@ -212,6 +212,17 @@ impl Manifest {
         Ok(manifest)
     }
 
+    /// Bounded display-only decode. Unknown provider payload types remain opaque;
+    /// this does not validate a closure or authorize execution/publication.
+    pub fn decode_for_summary(bytes: &[u8]) -> Result<Self> {
+        if bytes.len() as u64 > MAX_SMALL_BLOB {
+            return Err(invalid("manifest exceeds 1 MiB"));
+        }
+        let manifest: Self = serde_json::from_slice(bytes).map_err(|e| invalid(e.to_string()))?;
+        manifest.validate_policy(&[], true)?;
+        Ok(manifest)
+    }
+
     /// Encode stable field order, sorted annotations and no timestamps or whitespace.
     pub fn encode(&self) -> Result<Vec<u8>> {
         self.encode_with_types(&[])
@@ -237,6 +248,10 @@ impl Manifest {
     }
 
     fn validate(&self, types: &[PayloadType]) -> Result<()> {
+        self.validate_policy(types, false)
+    }
+
+    fn validate_policy(&self, types: &[PayloadType], display: bool) -> Result<()> {
         if self.schema_version != 2
             || self.media_type != media_type::MANIFEST
             || self.artifact_type != media_type::MACHINE
@@ -255,7 +270,13 @@ impl Manifest {
         let mut seen = std::collections::BTreeSet::from([&self.config.digest]);
         let mut metadata_count = 0;
         for layer in &self.layers {
-            layer.validate_with_types(types)?;
+            if display {
+                layer.validate_limit(
+                    neutral_size_limit(&layer.media_type).unwrap_or(i64::MAX as u64),
+                )?;
+            } else {
+                layer.validate_with_types(types)?;
+            }
             if matches!(
                 layer.media_type.as_str(),
                 media_type::MANIFEST | media_type::CONFIG

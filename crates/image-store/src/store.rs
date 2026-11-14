@@ -82,6 +82,8 @@ pub struct ResolvedImage {
     pub manifest: Manifest,
     pub config: Vec<u8>,
     pub metadata: Vec<u8>,
+    /// Metadata degraded to a display projection and must not be rewritten.
+    pub metadata_read_only: bool,
     /// Artwork missing from storage; this never prevents running the machine.
     pub missing_artwork: Vec<Descriptor>,
 }
@@ -117,27 +119,6 @@ struct Index {
     subject: Option<Box<RawValue>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     artifact_type: Option<Box<RawValue>>,
-}
-
-// Only the routing envelope is stable across metadata versions. Newer title
-// schemas remain opaque; their artwork is identified by the manifest descriptors.
-#[derive(Deserialize)]
-struct Metadata {
-    schema: u32,
-    platform: String,
-}
-
-#[derive(Deserialize)]
-struct MetadataTitles {
-    #[serde(default)]
-    titles: Vec<Artwork>,
-}
-
-#[derive(Deserialize)]
-struct Artwork {
-    cover: Option<Digest>,
-    #[serde(default)]
-    screenshots: Vec<Digest>,
 }
 
 impl Store {
@@ -283,6 +264,17 @@ impl Store {
         let _lease = self.lease()?;
         self.resolve_image_inner(manifest, validator, true)?;
         let _index_lock = host::exclusive_lock(&self.root.join("locks/index.lock"))?;
+        self.update_tag_locked(name, manifest, expected)
+    }
+
+    /// Caller holds the store lease and index lock and has verified the closure.
+    pub(crate) fn update_tag_locked(
+        &self,
+        name: &str,
+        manifest: &Descriptor,
+        expected: Option<&Digest>,
+    ) -> Result<()> {
+        validate_tag(name)?;
         let mut index = self.read_index()?;
         let position = index.manifests.iter().position(|raw| {
             local_descriptor(raw)
@@ -361,7 +353,24 @@ impl Store {
         if limit == 0 || limit > 1000 {
             return Err(invalid("page size must be 1..=1000"));
         }
+        let mut tags = self.all_tags()?;
+        tags.retain(|tag| after.is_none_or(|after| tag.name.as_str() > after));
+        let more = tags.len() > limit;
+        tags.truncate(limit);
+        let next_after = if more {
+            tags.last().map(|tag| tag.name.clone())
+        } else {
+            None
+        };
+        Ok(TagPage { tags, next_after })
+    }
+
+    pub(crate) fn all_tags(&self) -> Result<Vec<Tag>> {
         let _lease = self.lease()?;
+        self.tags_inner()
+    }
+
+    pub(crate) fn tags_inner(&self) -> Result<Vec<Tag>> {
         let mut tags: Vec<_> = self
             .read_index()?
             .manifests
@@ -375,18 +384,10 @@ impl Store {
             })
             .collect::<Result<_>>()?;
         tags.sort_by(|a, b| a.name.cmp(&b.name));
-        tags.retain(|tag| after.is_none_or(|after| tag.name.as_str() > after));
-        let more = tags.len() > limit;
-        tags.truncate(limit);
-        let next_after = if more {
-            tags.last().map(|tag| tag.name.clone())
-        } else {
-            None
-        };
-        Ok(TagPage { tags, next_after })
+        Ok(tags)
     }
 
-    fn resolve_image_inner(
+    pub(crate) fn resolve_image_inner(
         &self,
         image: &Descriptor,
         validator: &dyn ConfigValidator,
@@ -426,10 +427,18 @@ impl Store {
             .find(|d| d.media_type == media_type::METADATA)
             .ok_or_else(|| invalid("missing metadata"))?;
         let metadata = self.read_inner(metadata_descriptor, MAX_SMALL_BLOB)?;
-        let envelope: Metadata = decode_json(&metadata)?;
-        if envelope.schema == 0 || envelope.platform != platform {
-            return Err(invalid("metadata version or platform mismatch"));
-        }
+        let envelope = if require_artwork {
+            let decoded = crate::metadata::Metadata::decode(&metadata, &manifest.layers)?;
+            if decoded.platform != platform {
+                return Err(invalid("metadata version or platform mismatch"));
+            }
+            decoded
+        } else {
+            match crate::metadata::Metadata::decode_for_display(&metadata, &manifest.layers) {
+                Ok(decoded) if decoded.platform == platform => decoded,
+                _ => crate::metadata::Metadata::unavailable(platform),
+            }
+        };
         let mut ordered = Vec::new();
         let mut seen = BTreeSet::new();
         for digest in references {
@@ -451,13 +460,8 @@ impl Store {
         if seen.insert(metadata_descriptor.digest.clone()) {
             ordered.push(metadata_descriptor.digest.clone());
         }
-        let artwork = if envelope.schema == 1 {
-            let titles: MetadataTitles = decode_json(&metadata)?;
-            titles
-                .titles
-                .into_iter()
-                .flat_map(|title| title.cover.into_iter().chain(title.screenshots))
-                .collect::<Vec<_>>()
+        let artwork = if !envelope.is_read_only() {
+            envelope.artwork().cloned().collect::<Vec<_>>()
         } else {
             let position = manifest
                 .layers
@@ -510,6 +514,7 @@ impl Store {
             manifest,
             config,
             metadata,
+            metadata_read_only: envelope.is_read_only(),
             missing_artwork,
         })
     }
@@ -525,7 +530,7 @@ impl Store {
         Ok(())
     }
 
-    fn lease(&self) -> Result<File> {
+    pub(crate) fn lease(&self) -> Result<File> {
         host::shared_lease(&self.root.join("locks/store.lock"))
     }
 
@@ -612,7 +617,7 @@ impl Store {
         self.atomic_write(&self.root.join("images/index.json"), &bytes)
     }
 
-    fn atomic_write(&self, path: &Path, bytes: &[u8]) -> Result<()> {
+    pub(crate) fn atomic_write(&self, path: &Path, bytes: &[u8]) -> Result<()> {
         let mut temporary = host::Temporary::create(&self.root.join("staging"))?;
         temporary.file.write_all(bytes)?;
         temporary.file.sync_all()?;
@@ -637,7 +642,7 @@ fn decode_json<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> Result<T> {
     serde_json::from_slice(bytes).map_err(|e| invalid(e.to_string()))
 }
 
-fn read_bounded(path: &Path, limit: u64) -> Result<Vec<u8>> {
+pub(crate) fn read_bounded(path: &Path, limit: u64) -> Result<Vec<u8>> {
     let file = File::open(path)?;
     if file.metadata()?.len() > limit {
         return Err(invalid("document exceeds size limit"));

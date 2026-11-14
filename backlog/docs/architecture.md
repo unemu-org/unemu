@@ -52,6 +52,39 @@ manifest bytes identify the image; config bytes independently identify the
 machine. Reads never fall back to source paths. See
 [machine images](design/machine-images.md), §§1–3 and §5.
 
+The `metadata` module owns the deterministic schema-1 catalogue codec and strict
+publication validation. Resolution degrades damaged metadata to read-only display
+projections; newer schemas deserialize known fields without repeatedly copying
+large title objects. Launch objects remain provider-defined, without compilation.
+The `library` module stores source-image/title-id edits, personal fields and
+local labels/favourites/last-run in `local/library.toml`. Edit callbacks run outside
+the index lock, followed by content compare-and-swap under that lock. Conflicts
+require a fresh edit; re-entrant store calls cannot deadlock the short index lock.
+Corrupt/newer library files stay untouched and reject writes. Content hashes of
+local sections invalidate summaries even after a backup restores old counters.
+Publication verifies the source closure once, verifies new artwork, writes only
+catalogue metadata and a new manifest/tag, then consumes edits and moves personal
+fields, local labels and favourites to the new image by stable title id. The
+config (machine) digest stays fixed; provenance points to the source image.
+Empty/personal-only overlays reuse exact source bytes. Artwork descriptors are
+sanitized; external/embedded data is rejected. Only catalogue/artwork overlays
+root source images for GC; unchanged or empty local entries are not written.
+The `summary` module opens using only index/library/cache files. A damaged local
+library still permits read-only listing without local data and reports its error.
+Bounded lazy batches attempt at most 64 images, with visible references first;
+per-image error rows prevent damaged images starving later entries. Display-only
+manifest decoding accepts unknown provider payload types without authorizing
+execution. Unknown overlay title ids are skipped with warnings; publication rejects
+them. Writers merge on-disk rows under the index lock. Capacity pressure drops
+search text before replacing oversized facet rows with compact reported statuses.
+Per-title facets and token-prefix search cover catalogue text, opaque launch
+values, notes and combined labels, excluding artwork digests and numeric ratings.
+Lowercase and a small Latin accent table normalize text; CJK character/bigram
+tokens support incremental matching. Facets never combine different titles;
+results group under repository:tag. Corrupt caches rebuild; warm queries use
+summaries alone. Cache identities/sizes never replace full Start verification.
+See [machine images](design/machine-images.md), §§2.1, 3.1 and 7.
+
 Blob ingestion streams through a fixed 64 KiB buffer. Linux/macOS no-clobber
 rename publishes synced blobs without replacing existing inodes; tag updates
 reread the index under a short lock and atomically rewrite it after a digest

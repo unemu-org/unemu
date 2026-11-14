@@ -1,9 +1,10 @@
 # Machine images, capabilities and desktop UX
 
 Status: **desktop UX and toolkit accepted**, 2026-11-13. The local store core
-is implemented in `crates/image-store` (`upc-5pw.6`); machine-file import, disk
-layers, registry transport and image-store GUI integration follow in later beads.
-The remaining storage and UI sections describe those later contracts.
+(`upc-5pw.6`), metadata codec, local overlays and summary cache (`upc-5pw.12`)
+are implemented in `crates/image-store`. Machine-file import, disk layers,
+registry transport, image-store GUI integration and provider launch compilation
+remain separate; the corresponding sections describe those later contracts.
 
 ## 1. Scope and existing contracts
 
@@ -328,6 +329,10 @@ Volatile writes stay workspace-local in memory and are lost on close; only
 journaled workspace media offer crash recovery. Do not silently upgrade policy.
 
 ### 2.1. Game and software metadata
+
+Status: metadata codec, local overlay and summary cache implemented by
+`upc-5pw.12` in `crates/image-store`. Launch-profile compilation and input scripts,
+as well as GUI wiring, are not implemented here.
 
 Rich catalogue metadata belongs in version 1, even for a purely local library.
 Each machine manifest lists one JSON blob of type

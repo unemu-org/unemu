@@ -14,7 +14,10 @@
 
 mod artifact;
 mod filesystem;
+pub mod library;
+pub mod metadata;
 mod store;
+pub mod summary;
 
 pub use artifact::{
     media_type, Descriptor, Digest, Manifest, PayloadType, MAX_OBJECTS, MAX_SMALL_BLOB,
@@ -42,6 +45,9 @@ pub enum Error {
     /// An update used an outdated tag value. The current value permits retry.
     #[error("tag conflict; current digest: {current:?}")]
     Conflict { current: Option<Digest> },
+    /// A local edit raced another writer; rerun the edit against current data.
+    #[error("local library changed during edit")]
+    LibraryConflict,
     /// No such local tag exists.
     #[error("tag not found: {0}")]
     TagNotFound(String),

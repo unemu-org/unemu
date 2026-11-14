@@ -5,6 +5,18 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-14 — Machine image catalogue:** `image-store` now provides the strict,
+  deterministic schema-1 publication codec, read-only degraded display projections,
+  atomic local catalogue overlays and personal ratings/notes, and explicit overlay
+  publication preserving the machine digest. Personal fields never enter blobs.
+  Local per-title facet/search summaries rebuild in bounded lazy batches; warm
+  startup reads the index, library and cache without opening payload blobs.
+  Per-image failure rows prevent rebuild starvation; content hashes handle restored
+  local files. Corrupt libraries permit read-only listing, cache writers merge rows,
+  and capacity pressure is reported with reduced search data. Publication consumes
+  overlays and moves local personal data, sanitizes artwork and reuses unchanged
+  metadata bytes. Overlay artwork is exposed as GC roots. GUI wiring, provider
+  launch compilation, import and GC remain separate.
 - **2026-11-14 — Host speed controls:** View > Speed offers 100%, 200%, 400%
   and Unlimited; every session starts at 100%. Ctrl+Alt+T temporarily holds
   Unlimited and restores the selected mode on release or focus loss. The status

@@ -588,13 +588,13 @@ fn platform_agrees_in_config_manifest_metadata_and_provider() {
 }
 
 #[test]
-fn artwork_is_in_metadata_first_use_order_and_forward_metadata_is_readable() {
+fn artwork_is_in_metadata_first_use_order_and_missing_artwork_is_reported() {
     let dir = Temp::new();
     let store = dir.store();
     let (mut manifest, _) = fixture(&store, b"firmware");
     let cover = put(&store, mt::PNG, b"synthetic cover");
     let screenshot = put(&store, mt::JPEG, b"synthetic screenshot");
-    let json = serde_json::json!({"schema":1,"platform":"zx-spectrum","future":"preserved", "titles":[{"id":"demo","title":"Demo", "cover":cover.digest,"screenshots":[screenshot.digest,cover.digest]}]});
+    let json = serde_json::json!({"schema":1,"platform":"zx-spectrum", "titles":[{"id":"demo","title":"Demo", "cover":cover.digest,"screenshots":[screenshot.digest,cover.digest]}]});
     let metadata_bytes = serde_json::to_vec(&json).unwrap();
     manifest.layers[1] = put(&store, mt::METADATA, &metadata_bytes);
     manifest.layers.extend([cover.clone(), screenshot]);
@@ -1235,4 +1235,105 @@ fn foreign_index_json_is_preserved_byte_for_byte() {
         .update_tag("ours:2", &image, None, &Provider("zx-spectrum"))
         .unwrap();
     assert!(fs::read_to_string(&path).unwrap().contains(&foreign));
+}
+
+#[test]
+fn schema_one_catalogue_rejects_invalid_titles_before_tag_publication() {
+    let dir = Temp::new();
+    let store = dir.store();
+    for (i, titles) in [
+        serde_json::json!([{"id":"same","title":"One"},{"id":"same","title":"Two"}]),
+        serde_json::json!([{"id":"missing"}]),
+        serde_json::json!([{"id":"players","title":"Demo","players":{"min":0,"max":2}}]),
+        serde_json::json!([{"id":"extra","title":"Demo","unknown":true}]),
+        serde_json::json!([{"id":"private","title":"Demo","notes":"local only"}]),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let (mut manifest, _) = fixture(&store, b"firmware");
+        let bytes = serde_json::to_vec(
+            &serde_json::json!({"schema":1,"platform":"zx-spectrum","titles":titles}),
+        )
+        .unwrap();
+        manifest.layers[1] = put(&store, mt::METADATA, &bytes);
+        let image = store.import_manifest(&manifest).unwrap();
+        assert!(
+            store
+                .update_tag(
+                    &format!("invalid:{i}"),
+                    &image,
+                    None,
+                    &Provider("zx-spectrum")
+                )
+                .is_err(),
+            "invalid title variant {i} was published"
+        );
+    }
+}
+
+#[test]
+fn schema_one_unknown_metadata_fields_degrade_on_resolve_but_reject_publication() {
+    let dir = Temp::new();
+    let store = dir.store();
+    let (mut manifest, _) = fixture(&store, b"firmware");
+    let bytes = br#"{"schema":1,"platform":"zx-spectrum","future":"preserved","titles":[{"id":"demo","title":"Demo","new_field":true}]}"#;
+    manifest.layers[1] = put(&store, mt::METADATA, bytes);
+    let mut image = store.import_manifest(&manifest).unwrap();
+    assert!(store
+        .update_tag("lenient:one", &image, None, &Provider("zx-spectrum"))
+        .is_err());
+    // Simulate a tag written by a reader which accepted additive metadata fields.
+    image.annotations.insert(
+        "org.opencontainers.image.ref.name".into(),
+        "lenient:one".into(),
+    );
+    fs::write(
+        store.root().join("images/index.json"),
+        serde_json::to_vec(
+            &serde_json::json!({"schemaVersion":2,"mediaType":mt::INDEX,"manifests":[image]}),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let resolved = store
+        .resolve("lenient:one", &Provider("zx-spectrum"))
+        .unwrap();
+    assert!(resolved.metadata_read_only);
+    assert_eq!(resolved.metadata, bytes);
+    let projection =
+        image_store::metadata::Metadata::decode_for_display(&resolved.metadata, &manifest.layers)
+            .unwrap();
+    assert_eq!(projection.titles[0].title, "Demo");
+    assert!(projection.is_read_only());
+    assert!(projection.encode(&manifest.layers).is_err());
+    for bad in [
+        br#"{"schema":1,"platform":"zx-spectrum","titles":[{"id":"missing"}]}"#.as_slice(),
+        b"{broken",
+        br#"{"schema":1,"platform":"c64","titles":[]}"#,
+    ] {
+        manifest.layers[1] = put(&store, mt::METADATA, bad);
+        let mut image = store.import_manifest(&manifest).unwrap();
+        assert!(store
+            .update_tag("lenient:bad", &image, None, &Provider("zx-spectrum"))
+            .is_err());
+        image.annotations.insert(
+            "org.opencontainers.image.ref.name".into(),
+            "lenient:one".into(),
+        );
+        fs::write(
+            store.root().join("images/index.json"),
+            serde_json::to_vec(
+                &serde_json::json!({"schemaVersion":2,"mediaType":mt::INDEX,"manifests":[image]}),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert!(
+            store
+                .resolve("lenient:one", &Provider("zx-spectrum"))
+                .unwrap()
+                .metadata_read_only
+        );
+    }
 }
