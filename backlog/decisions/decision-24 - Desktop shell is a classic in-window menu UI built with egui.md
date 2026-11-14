@@ -67,3 +67,13 @@ approved the second round
   settings sheet, and later the image store and the layer dialog from the
   design note.
 - New GUI work starts from a mock-up that the maintainer approves first.
+
+## Amendment 2026-11-14: native title bar on macOS
+
+On macOS the system draws its own title bar and traffic-light buttons, and
+an application cannot remove them without losing standard window behaviour.
+Drawing the classic gradient title bar under it showed two title bars. So on
+macOS the shell keeps the native title bar and does not draw its own; the
+in-window menu bar, toolbar, status bar and the rest of the classic skin stay.
+On other platforms the classic skin still draws its own title bar.
+Implemented in `crates/window/src/shell_icons.rs` (`custom_title_bar`).
