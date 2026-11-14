@@ -45,6 +45,11 @@ pub trait BlobSource {
 /// by first use. The store independently checks exact agreement with the manifest.
 /// Implementations are trusted validators, not untrusted content.
 pub trait ConfigValidator {
+    /// Artifact codec accepted by this validator.
+    fn artifact_type(&self) -> &str {
+        media_type::MACHINE
+    }
+
     /// Platform family this implementation understands.
     fn platform(&self) -> &str;
     /// Validate reconstructed payloads once their verified file receipts exist.
@@ -445,7 +450,7 @@ impl Store {
         validator: &dyn ConfigValidator,
         require_artwork: bool,
     ) -> Result<ResolvedImage> {
-        self.resolve_image_reusing(image, validator, require_artwork, None)
+        self.resolve_image_reusing(image, validator, require_artwork, None, None)
     }
     fn resolve_image_reusing(
         &self,
@@ -453,6 +458,7 @@ impl Store {
         validator: &dyn ConfigValidator,
         require_artwork: bool,
         reuse: Option<&ResolvedImage>,
+        progress: Option<&dyn Fn(usize, usize)>,
     ) -> Result<ResolvedImage> {
         image.validate()?;
         if image.media_type != media_type::MANIFEST {
@@ -462,6 +468,9 @@ impl Store {
             &self.read_inner(image, MAX_SMALL_BLOB)?,
             validator.payload_types(),
         )?;
+        if manifest.artifact_type() != validator.artifact_type() {
+            return Err(invalid("artifact type does not match validator"));
+        }
         let config = self.read_inner(&manifest.config, MAX_SMALL_BLOB)?;
         let table: toml::Table = std::str::from_utf8(&config)
             .map_err(|e| invalid(e.to_string()))?
@@ -563,7 +572,10 @@ impl Store {
         }
         let mut missing_artwork = Vec::new();
         let mut verified = BTreeMap::new();
-        for descriptor in &manifest.layers {
+        for (position, descriptor) in manifest.layers.iter().enumerate() {
+            if let Some(progress) = progress {
+                progress(position, manifest.layers.len());
+            }
             if let Some(source) = reuse {
                 if source.manifest.layers.iter().any(|old| old == descriptor) {
                     if let Some(receipt) = source.verified.get(&descriptor.digest) {
@@ -585,6 +597,9 @@ impl Store {
                 }
                 Err(error) => return Err(error),
             }
+        }
+        if let Some(progress) = progress {
+            progress(manifest.layers.len(), manifest.layers.len());
         }
         let receipt_manifest = serde_json::to_vec(&manifest).map_err(|e| invalid(e.to_string()))?;
         let image = ResolvedImage {
@@ -1094,6 +1109,30 @@ impl Store {
             return Err(invalid("source publication receipt is unavailable"));
         }
         let _lease = self.lease()?;
-        self.resolve_image_reusing(descriptor, validator, true, Some(source))
+        self.resolve_image_reusing(descriptor, validator, true, Some(source), None)
+    }
+}
+
+impl Store {
+    /// A UI worker reports busy rather than waiting for an exclusive store owner.
+    pub fn try_read_lease(&self) -> Result<File> {
+        let file = host::lock_file(&self.root.join("locks/store.lock"))?;
+        file.try_lock_shared()
+            .map_err(|error| invalid(format!("store busy: {error}")))?;
+        Ok(file)
+    }
+    /// Resolve each payload once while reporting host preparation progress.
+    pub fn resolve_with_progress(
+        &self,
+        image: &Descriptor,
+        validator: &dyn ConfigValidator,
+        progress: &dyn Fn(usize, usize),
+    ) -> Result<ResolvedImage> {
+        let _lease = self.try_read_lease()?;
+        self.resolve_image_reusing(image, validator, false, None, Some(progress))
+    }
+    /// Validate an import reference before reading sources or creating blobs.
+    pub fn validate_tag_name(name: &str) -> Result<()> {
+        validate_tag(name)
     }
 }

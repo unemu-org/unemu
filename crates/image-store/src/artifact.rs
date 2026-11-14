@@ -13,11 +13,15 @@ pub const MAX_OBJECTS: usize = 10_000;
 pub const MAX_SMALL_BLOB: u64 = 1024 * 1024;
 
 /// Explicitly supported media types, from machine-images §2.
-/// Compression, optical media and saved-state codecs remain unsupported.
+/// Compression and saved-state codecs remain unsupported. Optical storage is reserved for media sets.
 pub mod media_type {
     pub const MANIFEST: &str = "application/vnd.oci.image.manifest.v1+json";
     pub const INDEX: &str = "application/vnd.oci.image.index.v1+json";
     pub const MACHINE: &str = "application/vnd.unemu.machine.v1";
+    pub const MEDIA_SET: &str = "application/vnd.unemu.media-set.v1";
+    pub const MEDIA_SET_CONFIG: &str = "application/vnd.unemu.media-set.config.v1+toml";
+    pub const OPTICAL: &str = "application/vnd.unemu.media.optical.v1";
+    pub const EXTRA: &str = "application/vnd.unemu.media.extra.v1";
     pub const CONFIG: &str = "application/vnd.unemu.machine.config.v1+toml";
     pub const METADATA: &str = "application/vnd.unemu.metadata.v1+json";
     pub const FIRMWARE: &str = "application/vnd.unemu.firmware.v1";
@@ -157,7 +161,7 @@ impl Descriptor {
     }
 }
 
-/// OCI machine artifact. Decode validates the envelope; publication also validates
+/// OCI machine or installation-media artifact. Decode validates the envelope; publication also validates
 /// the provider's exact ordered closure against the stored config and metadata.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -195,6 +199,29 @@ impl Manifest {
         };
         manifest.validate(types)?;
         Ok(manifest)
+    }
+
+    /// Construct a media-set envelope using the same OCI closure rules.
+    pub fn new_media_set(
+        platform: &str,
+        config: Descriptor,
+        layers: Vec<Descriptor>,
+    ) -> Result<Self> {
+        let manifest = Self {
+            schema_version: 2,
+            media_type: media_type::MANIFEST.into(),
+            artifact_type: media_type::MEDIA_SET.into(),
+            config,
+            layers,
+            annotations: BTreeMap::from([("unemu.platform".into(), platform.into())]),
+        };
+        manifest.validate(&[])?;
+        Ok(manifest)
+    }
+
+    /// Artifact identity determines the required config codec.
+    pub fn artifact_type(&self) -> &str {
+        &self.artifact_type
     }
 
     /// Decode bounded JSON, rejecting unknown envelope/descriptor fields and types.
@@ -254,14 +281,23 @@ impl Manifest {
     fn validate_policy(&self, types: &[PayloadType], display: bool) -> Result<()> {
         if self.schema_version != 2
             || self.media_type != media_type::MANIFEST
-            || self.artifact_type != media_type::MACHINE
+            || !matches!(
+                self.artifact_type.as_str(),
+                media_type::MACHINE | media_type::MEDIA_SET
+            )
         {
             return Err(invalid("unsupported manifest envelope"));
         }
         self.platform()?;
         validate_annotations(&self.annotations)?;
         self.config.validate()?;
-        if self.config.media_type != media_type::CONFIG {
+        if self.config.media_type
+            != if self.artifact_type == media_type::MEDIA_SET {
+                media_type::MEDIA_SET_CONFIG
+            } else {
+                media_type::CONFIG
+            }
+        {
             return Err(invalid("config descriptor has the wrong media type"));
         }
         if self.layers.len() + 2 > MAX_OBJECTS {
@@ -270,6 +306,16 @@ impl Manifest {
         let mut seen = std::collections::BTreeSet::from([&self.config.digest]);
         let mut metadata_count = 0;
         for layer in &self.layers {
+            if !display
+                && self.artifact_type == media_type::MACHINE
+                && matches!(
+                    layer.media_type.as_str(),
+                    media_type::OPTICAL | media_type::EXTRA
+                )
+                && !types.iter().any(|kind| kind.media_type == layer.media_type)
+            {
+                return Err(invalid("media-set payload is not supported in a machine"));
+            }
             if display {
                 layer.validate_limit(
                     neutral_size_limit(&layer.media_type).unwrap_or(i64::MAX as u64),
@@ -279,7 +325,7 @@ impl Manifest {
             }
             if matches!(
                 layer.media_type.as_str(),
-                media_type::MANIFEST | media_type::CONFIG
+                media_type::MANIFEST | media_type::CONFIG | media_type::MEDIA_SET_CONFIG
             ) {
                 return Err(invalid("manifest/config cannot be an artifact layer"));
             }
@@ -298,9 +344,9 @@ impl Manifest {
 pub(crate) fn neutral_size_limit(kind: &str) -> Option<u64> {
     use media_type::*;
     match kind {
-        MANIFEST | CONFIG | METADATA | DISK_LAYER => Some(MAX_SMALL_BLOB),
+        MANIFEST | CONFIG | MEDIA_SET_CONFIG | METADATA | DISK_LAYER => Some(MAX_SMALL_BLOB),
         PNG | JPEG => Some(4 * MAX_SMALL_BLOB),
-        FIRMWARE | DISK_BASE | DISK_SECTORS | FLOPPY => Some(i64::MAX as u64),
+        FIRMWARE | DISK_BASE | DISK_SECTORS | FLOPPY | OPTICAL | EXTRA => Some(i64::MAX as u64),
         _ => None,
     }
 }

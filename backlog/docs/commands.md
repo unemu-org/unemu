@@ -16,7 +16,47 @@ cargo run --offline -p cli -- image workspace abandon-publication play --store /
 cargo run --offline -p cli -- image publish --from-workspace play --store /path/to/store --tag dos-lab:flat --flatten
 cargo run --offline -p cli -- image publish --from-workspace play --store /path/to/store --tag dos-lab:1.1
 cargo run --offline -p cli -- image workspace discard play --store /path/to/store --yes
+cargo run --offline -p cli -- image media import /path/to/disks --title "Installation set" --tag install:1.0 --store /path/to/store --create
+cargo run --offline -p cli -- image media import /path/to/disk1.img /path/to/disk2.img --title "Installation set" --tag install:2.0 --label '1=Setup' --extra /path/to/manual.txt:MANUAL.TXT --store /path/to/store
+cargo run --offline -p cli -- image media import /path/to/disc.iso --title "Optical set" --tag optical:1.0 --format 1=iso-2048 --store /path/to/store
+cargo run --offline -p cli -- image media ls --store /path/to/store
+cargo run --offline -p cli -- image media show install:1.0 --store /path/to/store
 ```
+
+Media import preserves file-list order. A directory follows symlinks, rejects
+non-regular entries, and sorts by filename. Dotfiles are skipped and named in the
+preview. Candidates must have an `.img`, `.ima` or `.iso` extension or a known
+floppy size; otherwise supply an explicit file list. Every import prints its final
+order before copying. Add `--dry-run` to validate and preview without writing blobs
+or a tag (a missing store is not created). Label and format indices are one-based. Formats are `360K`, `720K`,
+`1.2M`, `1.44M` and `iso-2048`; floppy detection uses exact length, and unknown
+sizes require an explicit supported format with matching length. No padding or
+resizing occurs. Repeat `--extra PATH[:DOSNAME]` for loose files; DOS names require canonical uppercase
+8.3 spelling and cannot be reserved PC device names. Labels and filenames reject
+control characters and are limited to 128 characters. All inputs are checked
+before streaming any source. Sources stay
+unchanged and every copy is streamed with full SHA-256. Existing tags fail before
+reading sources; final publication uses compare-and-swap. All descriptors default
+to user-supplied. Optical storage does not enable CD-ROM emulation.
+
+In the window, Media > Insert > From library uses the shared unemu family store root:
+`~/Library/Application Support/unemu/` on macOS,
+`$XDG_DATA_HOME/unemu/` (or `~/.local/share/unemu/`) on Linux,
+and `%LOCALAPPDATA%/unemu/` on Windows. Linux falls back when XDG_DATA_HOME
+is unset or empty. This directory itself contains `store.toml` and `images/`;
+Preferences can override it; the Insert dialog also accepts an explicit root.
+CLI `--store` remains explicit.
+Summary loading and full verification run on background jobs with progress and
+nonblocking store-busy errors. Damaged sets remain visible as disabled rows.
+Loading all disks in order defaults on; disks already in the catalogue are reused
+with their existing write policy. Machine-file sessions journal under
+`<machine-file>.local/media/`; image sessions use the owned workspace's `media/`
+directory. Journal keys contain set digest and medium id, independently of drive
+unit. Store-local workspaces are allowed; immutable `images/blobs/` paths and
+aliases remain forbidden outputs. Catalogue provenance exposes set/medium GC
+roots. Write-protected new disks create no journal. The library collection,
+creation UI and extras transfer media remain deferred.
+
 
 Import is opt-in and creates a new local tag using compare-and-swap against
 absence. Use another tag when the name exists. It resolves inheritance, verifies

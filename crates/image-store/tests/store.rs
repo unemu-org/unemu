@@ -1370,3 +1370,30 @@ fn publication_receipts_refuse_mutation_wrong_store_and_display_only_resolution(
         .resolve("receipt:valid", &Provider("zx-spectrum"))
         .unwrap();
 }
+
+#[test]
+fn review_busy_store_and_workspace_media_outputs() {
+    let temp = Temp::new();
+    let store = temp.store();
+    let file = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(store.root().join("locks/store.lock"))
+        .unwrap();
+    file.lock().unwrap();
+    assert!(store
+        .try_read_lease()
+        .unwrap_err()
+        .to_string()
+        .contains("store busy"));
+    drop(file);
+    let owner = store.workspace("review").unwrap();
+    let media = image_store::location::workspace_media_dir(&owner);
+    assert_eq!(media, store.root().join("workspaces/review/media"));
+    assert!(store
+        .validate_media_output(&media.join("disk.upfj"))
+        .is_ok());
+    assert!(store
+        .validate_media_output(&store.root().join("images/blobs/bad.upfj"))
+        .is_err());
+}

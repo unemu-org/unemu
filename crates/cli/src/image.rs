@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Opt-in local image commands; machine-images §§2–3 and §8.
 
+mod media;
+
 use std::{ffi::OsString, io::Write, path::PathBuf};
 
 #[derive(Debug, PartialEq, Eq)]
@@ -30,6 +32,7 @@ pub enum ImageCommand {
         tag: String,
         flatten: bool,
     },
+    Media(media::MediaCommand),
     Import {
         machine: PathBuf,
         store: PathBuf,
@@ -47,6 +50,9 @@ pub fn parse(args: &[OsString]) -> Result<ImageCommand, &'static str> {
         .is_some_and(|s| matches!(s.to_str(), Some("run" | "workspace" | "publish")))
     {
         return parse_workspace(args);
+    }
+    if args.first().is_some_and(|a| a == "media") {
+        return media::parse(&args[1..]).map(ImageCommand::Media);
     }
     let action = args
         .first()
@@ -195,6 +201,7 @@ pub fn execute(
                 pc_image::workspace::publish_with_options(&owner, &tag, None, flatten, |_| Ok(()))?;
             writeln!(output, "{tag}\t{}", manifest.digest)?;
         }
+        ImageCommand::Media(command) => media::execute(command, output)?,
         ImageCommand::Import {
             machine,
             store,
@@ -230,7 +237,19 @@ pub fn execute(
             loop {
                 let page = store.list_tags(after.as_deref(), 1000)?;
                 for tag in page.tags {
-                    writeln!(output, "{}\t{}", tag.name, tag.manifest.digest)?;
+                    use image_store::BlobSource;
+                    let kind = store
+                        .read_verified(&tag.manifest, image_store::MAX_SMALL_BLOB)
+                        .and_then(|bytes| image_store::Manifest::decode_for_summary(&bytes))
+                        .map(|m| {
+                            if m.artifact_type() == image_store::media_type::MEDIA_SET {
+                                "media-set"
+                            } else {
+                                "machine"
+                            }
+                        })
+                        .unwrap_or("unknown");
+                    writeln!(output, "{}\t{}\t{}", tag.name, tag.manifest.digest, kind)?;
                 }
                 after = page.next_after;
                 if after.is_none() {

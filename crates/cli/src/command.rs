@@ -22,6 +22,9 @@ const USAGE: &str = "usage: unemupc98 --boot (Real16 timer demo)
        unemupc98 image workspace discard NAME --store DIR --yes
        unemupc98 image workspace abandon-publication NAME --store DIR
        unemupc98 image publish --from-workspace NAME --store DIR --tag NAME:TAG [--flatten]
+       unemupc98 image media import FILE...|DIR --title TITLE --tag NAME:TAG --store DIR [--create] [--dry-run] [--label N=TEXT]... [--format N=FORMAT]... [--extra PATH[:DOSNAME]]...
+       unemupc98 image media ls --store DIR
+       unemupc98 image media show NAME:TAG --store DIR
        unemupc98 media create floppy --type 1.44M|1.2M|720K|360K OUT [--format] [--label NAME] [--force]
        unemupc98 media create hd (--chs C/H/S | --size SIZE[MiB|GiB]) OUT [--force]
        unemupc98 media generations --base IMG --journal J
@@ -443,9 +446,8 @@ pub fn run(args: &[OsString], output: &mut impl Write, errors: &mut impl Write) 
             errors,
         )
         .map_err(frontend_error),
-        Command::Image(command) => {
-            crate::image::execute(command, output, errors).map_err(frontend_error)
-        }
+        Command::Image(command) => crate::image::execute(command, output, errors)
+            .map_err(|error| ToolError::Io(io::Error::other(format!("{error:#}")))),
         Command::Media(command) => execute(command, output),
         Command::Create(command) => {
             crate::create::execute(command, output).map_err(ToolError::from)

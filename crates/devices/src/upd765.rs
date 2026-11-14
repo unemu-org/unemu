@@ -669,6 +669,26 @@ impl Upd765 {
         Ok(index)
     }
 
+    /// Undo an unselected host catalogue extension at a completed boundary.
+    /// IBM PC AT Technical Reference, Diskette Drive Adapter: this does not move
+    /// the door or assert the diskette-change line.
+    pub fn truncate_catalogue(
+        &mut self,
+        unit: usize,
+        length: usize,
+    ) -> Result<(), MediaChangeError> {
+        self.check_media_boundary()?;
+        let list = self
+            .media_lists
+            .get(unit)
+            .ok_or(MediaChangeError::UnknownDrive)?;
+        if length > list.len() || self.inserted[unit].is_some_and(|index| index >= length) {
+            return Err(MediaChangeError::UnknownMedium);
+        }
+        self.media_lists[unit].truncate(length);
+        Ok(())
+    }
+
     /// Validate a host catalogue extension before opening its backing store.
     pub fn check_append_medium(
         &self,
@@ -1999,6 +2019,26 @@ mod tests {
         assert!(fdc.disk_changed[0]);
         assert!(fdc.drives[0].as_ref().unwrap().write_protected());
         assert_eq!(media_read(&mut bus, 0, 0, 1), vec![0x44; SECTOR_SIZE]);
+    }
+
+    #[test]
+    fn review_truncate_unselected_append_preserves_controller_state() {
+        let mut bus = swap_bus();
+        let fdc = swap_fdc(&mut bus);
+        let before = fdc.save();
+        fdc.append_medium(
+            0,
+            Drive::new_read_only(FloppyGeometry::HD1440, vec![0x44; SECTOR_SIZE]),
+        )
+        .unwrap();
+        fdc.truncate_catalogue(0, 2).unwrap();
+        assert_eq!(fdc.media_lists[0].len(), 2);
+        assert_eq!(fdc.save(), before);
+        assert_eq!(
+            fdc.truncate_catalogue(0, 0),
+            Err(MediaChangeError::UnknownMedium)
+        );
+        assert_eq!(fdc.save(), before);
     }
 
     #[test]

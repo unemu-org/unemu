@@ -44,17 +44,27 @@ pub struct TitleSummary {
     pub tokens: Vec<String>,
 }
 
+/// Library artifact category; media sets have no launch action.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ArtifactKind {
+    Machine,
+    MediaSet,
+}
+
 /// Immutable identities plus revisioned local data. Never used for Start hashing.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ImageSummary {
+    pub kind: ArtifactKind,
     pub image: Digest,
     pub metadata: Digest,
     pub metadata_schema: u32,
     pub local_content: Digest,
     pub warnings: Vec<String>,
     pub search_limited: bool,
-    pub machine: Digest,
+    /// Machine config identity exists only for machine artifacts.
+    pub machine: Option<Digest>,
+    pub config: Digest,
     pub platform: String,
     pub name: String,
     pub stored_size: u64,
@@ -104,7 +114,7 @@ struct CacheFile {
 impl Default for CacheFile {
     fn default() -> Self {
         Self {
-            schema: 2,
+            schema: 3,
             images: BTreeMap::new(),
             failures: BTreeMap::new(),
             warnings: Vec::new(),
@@ -126,7 +136,7 @@ fn read_cache(store: &Store) -> Result<CacheFile> {
                 for (id, failure) in &mut cache.failures {
                     failure.image = id.clone();
                 }
-                if cache.schema == 2
+                if cache.schema == 3
                     && cache.images.iter().all(|(id, row)| id == &row.image)
                     && cache.failures.iter().all(|(id, row)| id == &row.image)
                 {
@@ -350,13 +360,20 @@ impl SummaryCache {
             labels.join(" ")
         ));
         Ok(ImageSummary {
+            kind: if manifest.artifact_type() == media_type::MEDIA_SET {
+                ArtifactKind::MediaSet
+            } else {
+                ArtifactKind::Machine
+            },
             image: tag.manifest.digest.clone(),
             metadata: descriptor.digest.clone(),
             metadata_schema,
             local_content: self.local_hash(&tag.manifest.digest).clone(),
             warnings,
             search_limited: false,
-            machine: manifest.config.digest,
+            machine: (manifest.artifact_type() == media_type::MACHINE)
+                .then(|| manifest.config.digest.clone()),
+            config: manifest.config.digest,
             platform: metadata.platform,
             name,
             stored_size,
@@ -676,9 +693,11 @@ mod tests {
         cache.images.insert(
             id.clone(),
             ImageSummary {
+                kind: ArtifactKind::Machine,
                 image: id.clone(),
                 metadata: id.clone(),
-                machine: id.clone(),
+                machine: Some(id.clone()),
+                config: id.clone(),
                 local_content: id.clone(),
                 metadata_schema: 1,
                 warnings: vec![],

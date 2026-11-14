@@ -1,8 +1,9 @@
 # Machine images, capabilities and desktop UX
 
 Status: **desktop UX and toolkit accepted**, 2026-11-13 (decision-24);
-**installation media set shape accepted**, 2026-11-14 (decision-26);
+**installation media set codec/CLI/insert implemented**, 2026-11-14 (decision-26);
 **firmware package shape accepted**, 2026-11-14 (decision-27).
+The installation-media library collection, Import dialog and transfer-medium generator remain.
 §5.3 and its [Firmware mock-up](mockups/firmware.html) were approved by the maintainer on 2026-11-14.
 §5.2 and its mock-up were approved by the maintainer on 2026-11-14. The local store core
 (`upc-5pw.6`), metadata codec, local overlays and summary cache (`upc-5pw.12`)
@@ -972,9 +973,12 @@ available yet** and disable Insert/Add to machine… while keeping details and
 private Export available. Import validation for a known storage format is
 separate from insertion capability. No CD-ROM emulation is part of this step.
 
-**Review status:** the section and three installation-media mock-up views were
-approved on 2026-11-14. Extras use the accepted amendment above; their transfer
-generator and UI still require their own implementation and visual review.
+**Approved:** the maintainer approved this section and the three mock-up views
+(library/details, From library… and Import installation media…) on 2026-11-14.
+The codec, CLI and From library dialog are implemented; the library collection,
+Import dialog and transfer-medium generator remain separate work.
+Extras use the accepted amendment above; their transfer generator and UI still
+require their own implementation and visual review.
 
 ### 5.3. Firmware packages
 

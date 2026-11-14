@@ -10,6 +10,7 @@ use std::{
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub(super) struct Preferences {
+    pub store_root: Option<PathBuf>,
     pub rom_dirs: Vec<PathBuf>,
     pub reduced_motion: bool,
     #[serde(flatten)]
@@ -207,5 +208,21 @@ mod tests {
             .unwrap(),
             PathBuf::from("/synthetic-config/unemupc98/preferences.toml")
         );
+    }
+}
+
+#[cfg(test)]
+mod review_tests {
+    use super::*;
+    #[test]
+    fn review_store_override_round_trips_without_changing_old_preferences() {
+        let old: Preferences = toml::from_str("rom_dirs=[]").unwrap();
+        assert_eq!(old.store_root, None);
+        let prefs = Preferences {
+            store_root: Some(PathBuf::from("/data/custom-store")),
+            ..old
+        };
+        let loaded: Preferences = toml::from_str(&toml::to_string(&prefs).unwrap()).unwrap();
+        assert_eq!(loaded.store_root, prefs.store_root);
     }
 }

@@ -65,6 +65,33 @@ impl AssembledMachine {
         config: &mut crate::MachineConfig,
         medium: &crate::FloppyMedium,
     ) -> Result<usize, FloppyError> {
+        self.append_floppy_receipt(controller, unit, config, medium, None, None)
+    }
+
+    /// Reuse a host-prepared full-hash receipt without hashing the disk again.
+    /// The captured file checks its metadata on every sector read. Optional read-only
+    /// bytes must come from that receipt, so attachment needs no disk read.
+    pub fn append_floppy_verified(
+        &mut self,
+        controller: DeviceId,
+        unit: u8,
+        config: &mut crate::MachineConfig,
+        medium: &crate::FloppyMedium,
+        base: media::VerifiedBase,
+        readonly_bytes: Option<&[u8]>,
+    ) -> Result<usize, FloppyError> {
+        self.append_floppy_receipt(controller, unit, config, medium, Some(base), readonly_bytes)
+    }
+
+    fn append_floppy_receipt(
+        &mut self,
+        controller: DeviceId,
+        unit: u8,
+        config: &mut crate::MachineConfig,
+        medium: &crate::FloppyMedium,
+        verified: Option<media::VerifiedBase>,
+        readonly_bytes: Option<&[u8]>,
+    ) -> Result<usize, FloppyError> {
         use crate::{ConfigError, ImageSource, WriteMode};
         use media::SectorSource;
         self.check_persistence()?;
@@ -112,10 +139,18 @@ impl AssembledMachine {
             }
             .into());
         };
-        let base = media::VerifiedBase::open(path).map_err(|error| ConfigError::ImageRead {
-            path: path.clone(),
-            message: error.to_string(),
-        })?;
+        let base = match verified {
+            Some(base) => base,
+            None => media::VerifiedBase::open(path).map_err(|error| ConfigError::ImageRead {
+                path: path.clone(),
+                message: error.to_string(),
+            })?,
+        };
+        base.read_range(0, &mut [])
+            .map_err(|error| ConfigError::ImageRead {
+                path: path.clone(),
+                message: error.to_string(),
+            })?;
         if geometry.bytes_per_sector != 512 || base.byte_len() != geometry.image_bytes() {
             return Err(ConfigError::ImageGeometryMismatch {
                 drive_index,
@@ -158,12 +193,25 @@ impl AssembledMachine {
                 devices::Drive::with_journaled_media(device_geometry, media)
             }
             WriteMode::ReadOnly => {
-                let mut bytes = vec![0; base.byte_len() as usize];
-                base.read_range(0, &mut bytes)
-                    .map_err(|error| ConfigError::ImageRead {
-                        path: path.clone(),
-                        message: error.to_string(),
-                    })?;
+                let bytes = if let Some(bytes) = readonly_bytes {
+                    if bytes.len() as u64 != base.byte_len() {
+                        return Err(ConfigError::ImageGeometryMismatch {
+                            drive_index,
+                            expected: base.byte_len(),
+                            actual: bytes.len() as u64,
+                        }
+                        .into());
+                    }
+                    bytes.to_vec()
+                } else {
+                    let mut bytes = vec![0; base.byte_len() as usize];
+                    base.read_range(0, &mut bytes)
+                        .map_err(|error| ConfigError::ImageRead {
+                            path: path.clone(),
+                            message: error.to_string(),
+                        })?;
+                    bytes
+                };
                 devices::Drive::new_read_only(device_geometry, bytes)
             }
             WriteMode::Volatile => {

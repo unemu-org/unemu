@@ -18,7 +18,7 @@ crate: `machine-file` reads and hashes declared images into inline buffers,
 | Crate | Responsibility | Runtime dependencies | Test-only dependencies |
 | --- | --- | --- | --- |
 | `pc-image` | IBM PC/AT provider, resolved bundle-profile validation, machine-file import, disk-chain validation, isolated sessions and offline publication | `assembly`, `machine-file`, `media`, `image-store`, `serde`, `toml`, `thiserror` | `cpu`, `machine` |
-| `image-store` | Platform-neutral OCI Image Layout, streaming SHA-256 blobs, deterministic machine manifests, provider-validated closure and atomic compare-and-swap local tags, stable workspace ownership | `serde`, `serde_json`, `toml`, `sha2`, `thiserror`, `libc` (Unix) | None |
+| `image-store` | Platform-neutral OCI Image Layout, streaming SHA-256 blobs, deterministic machine/media-set manifests, provider-validated closure and atomic compare-and-swap local tags, stable workspace ownership | `serde`, `serde_json`, `toml`, `sha2`, `thiserror`, `libc` (Unix) | None |
 | `media` | Immutable sparse disk layers, chain sector sources, floppy journal encoding, streaming recovery/replay, retention-anchor validation, durable host sink and stable single-writer locks ([format](design/persistent-media.md#chosen-format-byte-layout)) | `sha2`, `serde`, `toml`, `thiserror`, `libc` (Unix) | None |
 | `device` | Hardware-neutral contracts: `Device`, `InterruptController`, `DmaMemory`, `VClock`, `NextEvent`, access traces, DMA messages, and the observation capabilities (text scanout, byte output, `ByteCapture`) | `thiserror` | None |
 | `cpu` | `Cpu`/`CpuStop` seam and `X86JitCpu`, which owns the core's `Vm` and `Vcpu` | `x86jit-core`, `thiserror` | None |
@@ -29,7 +29,7 @@ crate: `machine-file` reads and hashes declared images into inline buffers,
 | `video` | `FrameSink`, text frames/grids, text-mode renderer and capture sink | `device` | None |
 | `assembly` | `MachineConfig`, validation, presets, image/device construction, wiring, and `RunPolicy` driver | `machine`, `cpu`, `bus`, `device`, `devices`, `video`, `chipset`, `media`, `sha2`, `thiserror` | `media/test-support` |
 | `machine-file` | Schema 1 TOML/YAML parsing, source origins, image hashing and lowering through assembly validation; merging remains deferred ([schema](design/machine-files.md#schema-field-by-field)) | `assembly`, `serde`, `sha2`, `toml`, `serde-saphyr`, `thiserror` | None |
-| `window` | CP437 rasteriser, shared `FrameSink`, and egui desktop shell | `video`, `device`, `assembly`, `machine`, `winit`, `egui`, `eframe` | `cpu`, `assembly/test-support` |
+| `window` | CP437 rasteriser, shared `FrameSink`, and egui desktop shell | `video`, `device`, `assembly`, `machine`, `winit`, `egui`, `eframe`, `image-store`, `pc-image` | `cpu`, `assembly/test-support`, `image-store/test-support`, `media/test-support` |
 | `testkit` | Single-device `MockBus`, scripted `MockCpu`, golden assertions | `device`, `cpu` | None |
 | `cli` | Binary and runner library: guest programs, assembly/policy selection, output capture and stop diagnostics | `assembly`, `device`, `bus`, `cpu`, `chipset`, `machine`, `devices`, `video`, `anyhow`, `pc-image`, `image-store` | `testkit`, `machine/reference-scheduler`, `assembly/reference-scheduler`, `assembly/test-support` |
 
@@ -97,6 +97,29 @@ the filesystem's local flag, and other hosts are refused. This crate does not
 implement PC machine-file import, disk reconstruction, workspaces,
 registry transfer, quarantine/damage tracking or GC. Future GC must take the
 exclusive store lease before deleting any objects.
+
+Installation media sets reuse the OCI envelope, closure validation and tag CAS,
+with a neutral schema-1 config in `image-store::media_set`. Ordered stable media
+ids, labels and provider-owned format tables define insertion order. Extras carry
+original names, lengths, digests, kinds and optional validated DOS 8.3 names.
+`MediaFormats` delegates exact payload format/size checks to the provider;
+`pc-image::media_set` declares four floppy geometries and storage-only ISO-2048.
+Summary cache version 3 distinguishes machines from media sets and retains the
+same metadata/title facet projection for both. `image media` imports sources by
+streaming full hashes, deduplicates descriptors and publishes only verified sets.
+
+The shell's `media_dialog` model resolves a pinned set descriptor, checks every
+format before modifying a catalogue, and submits entries through
+`AssembledMachine::append_floppy`. It queues the initial selection through the
+existing floppy event path. Journal paths belong to the receiving machine's
+local sidecar or the owned image workspace's media directory; immutable blob
+storage is never writable through a journal; bases remain SHA-256-pinned files accessed through
+the existing sector overlay boundary. The shared location helper supplies platform data-directory defaults and workspace
+media directories; Preferences can override the root. Background jobs load summaries
+and verify each unique payload once, passing captured file receipts through assembly.
+Damaged rows carry errors; try-locks report store contention. Batch appends roll back
+controller entries, persistence handles, config and labels on any failure. Catalogue
+provenance reuses existing disks and exposes their set/medium digests as GC roots. Extras are stored and inspectable but not mounted.
 
 `pc-image` is the PC-side provider: it depends on `machine-file`, `assembly`
 and the shared store, with no reverse dependency from `image-store`. Import first
@@ -371,7 +394,7 @@ existing machine-file loader and read-only checker supply hardware details and
 readiness; missing firmware or invalid media disables Start and exposes the
 validator diagnostic. Open accepts a machine-file path. New/settings/media
 insertion/import/layer/catalogue dialogs remain placeholders; Locate firmware
-and Preferences edit a shared ROM-folder list. Save state and CD-ROM are disabled. The shell does not yet use the image-store library.
+and Preferences edit a shared ROM-folder list. Save state and CD-ROM are disabled. The Insert dialog reads media sets through the image-store summary and PC format provider.
 
 `assembly::firmware_discovery` is a host-only API taking explicit search roots.
 It locates single ROMs or interleaved chips by full-file SHA-256 and optional

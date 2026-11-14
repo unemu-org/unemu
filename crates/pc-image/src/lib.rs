@@ -7,6 +7,7 @@ mod defaults;
 mod disk;
 mod encode;
 mod import;
+pub mod media_set;
 mod provider;
 pub mod workspace;
 

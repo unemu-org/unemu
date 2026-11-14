@@ -5,7 +5,7 @@
 //! 1.1: SHA-256 names exact stored bytes, not a decoded representation. See
 //! `backlog/docs/design/machine-images.md` §§1–3 and §5. Platform providers own
 //! config validation and ordered graph traversal; this crate owns no emulator,
-//! host data-directory policy, registry, disk reconstruction, or GC.
+//! registry, disk reconstruction, or GC.
 //!
 //! Store roots must be local filesystems with advisory locks, atomic publication
 //! and directory fsync. Linux and macOS enforce locality; other hosts currently
@@ -15,6 +15,8 @@
 mod artifact;
 mod filesystem;
 pub mod library;
+pub mod location;
+pub mod media_set;
 pub mod metadata;
 mod store;
 pub mod summary;

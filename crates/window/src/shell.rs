@@ -394,11 +394,19 @@ impl Shell {
     }
 
     fn confirm_insert(&mut self) {
-        let Some(draft) = &self.insert_dialog else {
+        let Some(draft) = &mut self.insert_dialog else {
             return;
         };
-        let entry = match draft.selection() {
-            Ok(entry) => entry,
+        let result = if let Some(library) = &mut draft.library {
+            let Some(result) = library.request_entries(&draft.slot, draft.unit) else {
+                return;
+            };
+            result
+        } else {
+            draft.selection().map(|entry| (vec![entry], 0))
+        };
+        let (entries, chosen) = match result {
+            Ok(entries) => entries,
             Err(error) => {
                 if let Some(draft) = &mut self.insert_dialog {
                     draft.error = Some(error);
@@ -407,35 +415,24 @@ impl Shell {
             }
         };
         if let Some(presenter) = &mut self.presenter {
-            let index = if let Some(index) = entry.index {
-                index
-            } else {
-                match presenter.assembled.append_floppy(
-                    assembly::DeviceId::Fdc,
-                    draft.unit,
-                    &mut presenter.media_config,
-                    &entry.medium,
-                ) {
-                    Ok(index) => {
-                        if let Some(slot) = &mut presenter.media_slots[usize::from(draft.unit)] {
-                            slot.entries.push(crate::media_dialog::CatalogueEntry {
-                                index: Some(index),
-                                ..entry
-                            });
-                        }
-                        index
+            let result = crate::media_dialog::append_entries(
+                &mut presenter.assembled,
+                &mut presenter.media_config,
+                &mut presenter.media_slots,
+                draft.unit,
+                &entries,
+            );
+            match result {
+                Ok(indices) => presenter
+                    .media_events
+                    .push((draft.unit, assembly::FloppyAction::Insert(indices[chosen]))),
+                Err(error) => {
+                    if let Some(draft) = &mut self.insert_dialog {
+                        draft.error = Some(error);
                     }
-                    Err(error) => {
-                        if let Some(draft) = &mut self.insert_dialog {
-                            draft.error = Some(error.to_string());
-                        }
-                        return;
-                    }
+                    return;
                 }
-            };
-            presenter
-                .media_events
-                .push((draft.unit, assembly::FloppyAction::Insert(index)));
+            }
         }
         self.insert_dialog = None;
     }
@@ -445,12 +442,20 @@ impl Shell {
         let mut cancel = false;
         if let Some(draft) = &mut self.insert_dialog {
             let title = format!(
-                "Insert floppy into {}:",
+                "{}{}:",
+                if draft.library.is_some() {
+                    "From library — Insert into drive "
+                } else {
+                    "Insert floppy into "
+                },
                 if draft.unit == 0 { "A" } else { "B" }
             );
             egui::Modal::new(egui::Id::unique("insert-floppy")).show(ctx, |ui| {
                 ui.set_width(560.0);
                 if self.classic { gradient_title(ui, &title); } else { ui.heading(title); }
+                draft.library_ui(ui, &self.args.machine, self.preferences.store_root.as_deref());
+                insert |= draft.library.as_ref().is_some_and(|library| library.ready.is_some());
+                if draft.library.is_none() {
                 ui.label("Catalogue for this machine:");
                 let mut selected = None;
                 egui::ScrollArea::vertical().max_height(240.0).show(ui, |ui| {
@@ -508,10 +513,11 @@ impl Shell {
                         }
                     }
                 }
+                }
                 if let Some(error) = &draft.error { ui.add(egui::Label::new(error).wrap()); }
                 ui.separator();
                 ui.horizontal(|ui| {
-                    insert = ui.add_enabled(draft.selection().is_ok(), egui::Button::new("Insert")).clicked();
+                    insert |= ui.add_enabled(draft.library.as_ref().map_or_else(|| draft.selection().is_ok(), |library| library.selected.is_some() && !library.is_busy()), egui::Button::new("Insert")).clicked();
                     cancel = ui.button("Cancel").clicked();
                 });
                 cancel |= ui.input(|input| input.key_pressed(egui::Key::Escape));
@@ -1322,19 +1328,31 @@ impl Shell {
                         }),
                     );
                     ui.add_enabled_ui(present, |ui| {
-                        self.item(
-                            ui,
-                            &format!("Insert into {drive}…"),
-                            if unit == 0 {
-                                "Ctrl+Alt+I"
-                            } else if self.macos_shortcuts {
-                                "Ctrl+Alt+Shift+I"
-                            } else {
-                                ""
-                            },
-                            Insert(unit),
-                            commands,
-                        );
+                        ui.menu_button(format!("Insert into {drive}"), |ui| {
+                            self.item(
+                                ui,
+                                "Browse / catalogue…",
+                                if unit == 0 {
+                                    "Ctrl+Alt+I"
+                                } else if self.macos_shortcuts {
+                                    "Ctrl+Alt+Shift+I"
+                                } else {
+                                    ""
+                                },
+                                Insert(unit),
+                                commands,
+                            );
+                            if ui.button("From library…").clicked() {
+                                self.command(Insert(unit), ui.ctx());
+                                if let Some(draft) = &mut self.insert_dialog {
+                                    draft.open_library(
+                                        &self.args.machine,
+                                        self.preferences.store_root.as_deref(),
+                                    );
+                                }
+                                ui.close();
+                            }
+                        });
                     });
                     self.item(
                         ui,
@@ -2262,6 +2280,18 @@ impl eframe::App for Shell {
                     }
                 }
                 if *title == "ROM folders" {
+                    ui.label("Image store");
+                    let mut root = self
+                        .preferences_draft
+                        .store_root
+                        .clone()
+                        .or_else(|| image_store::location::default_store_root().ok())
+                        .map(|p| p.to_string_lossy().into_owned())
+                        .unwrap_or_default();
+                    if ui.text_edit_singleline(&mut root).changed() {
+                        self.preferences_draft.store_root =
+                            (!root.trim().is_empty()).then(|| std::path::PathBuf::from(root));
+                    }
                     let mut remove = None;
                     for (index, path) in self.preferences_draft.rom_dirs.iter().enumerate() {
                         ui.horizontal(|ui| {
