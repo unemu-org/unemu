@@ -64,3 +64,54 @@ technical reference or the BIOS source listings a vendor once published.
   everyday path.
 - The design note gains a firmware-package section. GUI work starts from a
   mock-up of the "Firmware" collection that the maintainer approves first.
+
+## Amendment 2026-11-15: licences, source archives and descriptive metadata
+
+The maintainer wants open firmware publishable under `unemu/` with its
+licence obligations met, and every package to describe itself well enough to
+be understood decades from now without this program.
+
+1. **Licence on every layer.** Each layer (ROM image, document, extra, source
+   archive) carries an SPDX licence expression, for example
+   `GPL-3.0-or-later` or `LGPL-2.1-or-later`, next to its redistribution mark
+   (`open` or `user-supplied`). A layer with no known licence is
+   `user-supplied`.
+2. **Marking at import.**
+   - A ROM that the firmware catalogue knows as open gets its licence and
+     `open` automatically.
+   - Any other ROM defaults to `user-supplied`. The user may mark it `open`
+     only by an explicit statement that names its licence, such as
+     `--open --license <SPDX>` in the CLI, or the same choice in the GUI
+     import review. The program never guesses `open`.
+3. **Source archives.** A package may carry the corresponding source as its
+   own layer (a zip or tar archive with the role `source`). For a copyleft
+   licence (the GPL, LGPL, AGPL and MPL families) a ROM can be marked `open`
+   only together with its source archive. The archives for the project's open
+   fixtures are built reproducibly from the pinned upstream revision plus the
+   project's patches.
+4. **The config follows its layers.** A package's config (the program's own
+   metadata) is `open` when every layer is `open`, and `user-supplied`
+   otherwise.
+5. **Publication.** The push guard refuses to publish a copyleft `open` ROM
+   to a non-private registry without its source archive in the same closure.
+   A machine image that embeds such a ROM also carries the source layer; the
+   blob is shared with the firmware package, so it costs nothing extra.
+6. **Descriptive metadata at import.** Every package records, prefilled from
+   the catalogue where an entry exists and editable during import:
+   - what it fits: boards, machine classes, and the devices a ROM requires
+     (for example the card kind a video BIOS or an option ROM drives);
+   - free labels (for example `ami`, `turbo`, `xt-ide`);
+   - a title and a description;
+   - provenance: where the bytes came from (dumped from a named board and
+     its chip markings, downloaded from a named source, or built from a
+     named revision) and when;
+   - a plain-text README layer (UTF-8 Markdown or text) that holds the
+     description, provenance, chip markings, known quirks and licence
+     notes in human-readable form.
+7. **Long-term readability.** Packages use only open, plain formats: OCI
+   layouts, JSON, UTF-8 text, zip or tar, SPDX identifiers and the standard
+   `org.opencontainers.image.*` annotations where they fit. Nothing needed to
+   understand or extract a package depends on this program.
+8. **Changing metadata.** A package is immutable. Editing its labels,
+   description, fit or licence publishes a new package revision with the same
+   ROM blobs.
