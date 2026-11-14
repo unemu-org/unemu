@@ -45,6 +45,16 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   Both `user_rom_at_games_ctrl_alt_del_reboot` and its frame-chunk variant use
   one-call typed injection; their existing pins await supervisor measurement.
 
+- **2026-11-14 — ATA read-block timing:** PIO reads now enter BSY with DRQ
+  cleared between blocks and schedule the next block from a nominal 3600 rpm,
+  17-sector service clock (about 1 ms). A Status acknowledgement after consuming
+  a block can lower IRQ14 before the next block raises it, preserving separate
+  edges at the cascaded PIC. Writes and the initial read block remain immediate.
+  Snapshot formats 3 (ATA) and 4 (AT adapter) include the pending deadline and
+  reject older formats. Mock-bus timing, reset/replacement, malformed-snapshot
+  and continuation checks accompany an open guest IRQ14 regression; both IRQ
+  regressions fail against the previous implementation.
+
 - **2026-11-13 — Machine settings capabilities:** assembly owns shared card,
   RAM, SB16/EMS/UART/IDE resource domains and defaults, video decodes, named
   floppy geometries and firmware slots. `capabilities::describe`, `choices`

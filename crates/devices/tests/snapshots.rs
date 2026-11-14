@@ -844,6 +844,11 @@ fn mounted_ata() -> Box<dyn Device> {
 
 #[test]
 fn ata_translated_mid_transfer_snapshots_continue_and_reject_malformed_state() {
+    let advance_read = |bus: &mut MockBus| {
+        if let device::NextEvent::At(at) = bus.device().next_event(bus.clock()) {
+            bus.tick(at.0 - bus.clock().0);
+        }
+    };
     for (opcode, prefix, fault) in [
         (0xC4, 1, false),
         (0xC4, 256, false),
@@ -877,6 +882,7 @@ fn ata_translated_mid_transfer_snapshots_continue_and_reject_malformed_state() {
                 bus.port_write(port, 1, value).unwrap();
             }
             for word in 0..prefix {
+                advance_read(&mut bus);
                 if opcode == 0xC5 {
                     bus.port_write(0x1F0, 2, word).unwrap();
                 } else {
@@ -886,14 +892,17 @@ fn ata_translated_mid_transfer_snapshots_continue_and_reject_malformed_state() {
             bus
         };
         let mut source = prepare();
-        source.device_mut().sync(VClock(137));
+        source.tick(137);
         let saved = source.device().save();
         sweep_blob(mounted_ata, &[0x1F7, 0x3F6], &saved);
         let mut restored = prepare();
+        restored.tick(137);
         restored.device_mut().restore(&saved).unwrap();
         assert_eq!(restored.device().save(), saved);
         let total = if fault { 4 } else { 6 } * 256;
         for word in prefix..total {
+            advance_read(&mut source);
+            advance_read(&mut restored);
             if opcode == 0xC5 {
                 source.port_write(0x1F0, 2, word).unwrap();
                 restored.port_write(0x1F0, 2, word).unwrap();

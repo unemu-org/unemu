@@ -43,7 +43,7 @@
 //! | §§6.1, 7.2 addressing | CHS translation, LBA28, 512-byte sectors; a lone disk must be device 0 | Default and translated geometry bounded to XUB limits: 16383 cylinders, 16 heads, 63 sectors per track |
 //! | §7.18 parameters | Default parameters select default CHS; rejected translation blocks media access with IDNF until valid parameters or reset | No physical geometry or mechanical faults |
 //! | §7 command descriptions | IDENTIFY, sector/retry and multiple reads/writes, READ VERIFY (40h/41h, §7.26), multiple mode, parameters, features, seek | Other commands ABRT; no DMA, packet, power management or cache |
-//! | §§8.3–8.5 protocols | DRQ blocks, interrupt acknowledgement, errors | Zero-delay completion; BSY only while SRST is held, no IORDY/bus timing |
+//! | §§8.3–8.5 protocols | DRQ blocks, inter-block read BSY, interrupt acknowledgement, errors | Immediate first read block and writes; nominal sector service latency between read blocks, no IORDY/bus timing |
 //! | §7 SET FEATURES | 03h: default PIO (00h/01h), PIO modes 0–4 (08h–0Ch), accepted without timing effects | Other features and DMA modes ABRT |
 //! | §7.13 diagnostics | Command-block signature and success; translation and multiple mode retained | No physical diagnostic failures |
 //! | §7.27 RECALIBRATE | Cylinder/head zero; sector 1 in CHS, 0 in LBA | No mechanical movement |
@@ -64,11 +64,17 @@
 //! completed-sector prefix; guest drive selection alone does not finish it. Media has no host error channel. ATA-2 §6.2.8 (Error register, ABRT)
 //! defines aborted commands; this model aborts writes on protected media.
 //!
+//! ATA-2 §8.3 (PIO data in, steps g–j) separates successive read blocks with
+//! BSY set and DRQ clear, then raises INTRQ when the next block is ready. A nominal
+//! 3600 rpm, 17-sector service clock provides an inter-block wait of about 1 ms.
+//! Status reads acknowledge INTRQ but never advance this phase. READ MULTIPLE
+//! waits between blocks, not between sectors within a block; writes stay immediate.
+//!
 //! Disk writes are volatile by default. Like the floppy controller, snapshots exclude
 //! backing media: restore requires the same mounted geometry/capacity and does
 //! not roll back completed disk writes. Partial PIO sector buffers, translated
-//! geometry, IRQ state and trace clock are saved. Media identity/content must
-//! be managed by the caller. Reset retains media, restores default translation
+//! geometry, IRQ state, pending read deadline and trace clock are saved. Media
+//! identity/content must be managed by the caller. Reset retains media, restores default translation
 //! and clears trace history while preserving its policy. Restore preserves the
 //! run-scoped trace buffer. Snapshots preserve the PIO addressing-mode latch
 //! separately from writable task registers.
@@ -77,6 +83,7 @@
 //! 16-bit cycles; 8-bit and 32-bit accesses are rejected. Host-bus IOCS16#
 //! cycle splitting belongs to the bus, not this device.
 
+use device::clock::{ClockDomain, Ratio};
 use device::media::{InMemoryMedia, SectorMedia, SectorWrite};
 
 use device::{
@@ -92,10 +99,14 @@ const ABRT: u8 = 4;
 const IDNF: u8 = 0x10;
 const MAX_MULTIPLE: u8 = 16;
 const SECTOR: usize = 512;
-const SNAPSHOT_VERSION: u8 = 1;
-const AT_ADAPTER_SNAPSHOT_VERSION: u8 = 2;
+const SNAPSHOT_VERSION: u8 = 3;
+const AT_ADAPTER_SNAPSHOT_VERSION: u8 = 4;
 const AT_ADAPTER_SNAPSHOT_MODEL: u8 = 1;
-const SNAPSHOT_TASK_LEN: usize = 37 + SECTOR;
+const SNAPSHOT_TASK_LEN: usize = 46 + SECTOR;
+
+/// Nominal sector service clock for a 3600 rpm, 17-sector track. ATA-2 §8.3
+/// requires a busy interval between read blocks; its duration is a model choice.
+const READ_BLOCK_CLOCK: ClockDomain = ClockDomain::from_hz(Ratio::new(3600 * 17, 60));
 
 /// Location of the task file: on an ATA device or on the AT adapter.
 ///
@@ -299,6 +310,7 @@ struct Task {
     block_left: u8,
     block_size: u8,
     buffer: [u8; SECTOR],
+    ready_at: Option<VClock>,
 }
 
 impl Task {
@@ -332,10 +344,12 @@ impl Task {
             block_left: 0,
             block_size: 0,
             buffer: [0; SECTOR],
+            ready_at: None,
         }
     }
 
     fn stop(&mut self) {
+        self.ready_at = None;
         self.phase = 0;
         self.multiple_transfer = false;
         self.transfer_head = 0;
@@ -598,7 +612,8 @@ impl Ata {
         };
         let task = &mut self.tasks[index];
         task.irq = false;
-        if task.status & BSY != 0 {
+        // Replacing a pending read must also cancel its scheduled interrupt.
+        if task.status & BSY != 0 && task.ready_at.is_none() {
             return;
         }
         task.stop();
@@ -795,6 +810,7 @@ impl Ata {
         if self.control & 4 != 0
             || self.drives[index].is_none()
             || task.phase == 0
+            || task.status & DRQ == 0
             || write.is_some() != (task.phase == 2)
         {
             return 0xFFFF;
@@ -845,6 +861,11 @@ impl Ata {
         if task.block_left == 0 {
             if !task.prepare_block(drive) {
                 drive.finish_write();
+                return result;
+            }
+            if task.phase == 1 {
+                task.status = READY | BSY;
+                task.ready_at = Some(VClock(self.now.0.saturating_add(READ_BLOCK_CLOCK.ticks(1))));
                 return result;
             }
             task.irq = true;
@@ -989,12 +1010,27 @@ impl Device for Ata {
     }
     fn tick(&mut self, now: VClock) {
         debug_assert!(now >= self.now, "device clock moved backwards");
-        if now >= self.now {
-            self.now = now;
+        if now < self.now {
+            return;
+        }
+        self.now = now;
+        for (task, drive) in self.tasks.iter_mut().zip(&self.drives) {
+            if task.ready_at.is_some_and(|at| at <= self.now) {
+                task.ready_at = None;
+                if let Some(drive) = drive {
+                    task.load_sector(drive);
+                    task.status = READY | DRQ;
+                    task.irq = true;
+                }
+            }
         }
     }
     fn next_event(&self, _: VClock) -> NextEvent {
-        NextEvent::Dormant
+        self.tasks
+            .iter()
+            .filter_map(|task| task.ready_at)
+            .min()
+            .map_or(NextEvent::Dormant, NextEvent::At)
     }
     fn irq_pending(&self) -> bool {
         self.control & 6 == 0
@@ -1057,6 +1093,8 @@ impl Device for Ata {
                 u8::from(task.multiple_transfer),
             ]);
             blob.push(task.transfer_head);
+            blob.push(u8::from(task.ready_at.is_some()));
+            blob.extend_from_slice(&task.ready_at.unwrap_or(VClock::ZERO).0.to_le_bytes());
         }
         if self.model == AtaControllerModel::AtAdapter {
             blob.push(AT_ADAPTER_SNAPSHOT_MODEL);
@@ -1152,6 +1190,12 @@ impl Device for Ata {
             task.translation_valid = translation_valid != 0;
             task.multiple_transfer = multiple_transfer != 0;
             task.transfer_head = byte();
+            let waiting = byte();
+            let deadline = VClock(u64::from_le_bytes(std::array::from_fn(|_| byte())));
+            if waiting > 1 || (waiting == 0 && deadline != VClock::ZERO) {
+                return Err(bad("invalid read deadline"));
+            }
+            task.ready_at = (waiting != 0).then_some(deadline);
             if pending > 1
                 || translation_valid > 1
                 || multiple_transfer > 1
@@ -1170,7 +1214,8 @@ impl Device for Ata {
                 && task.lba == 0
                 && task.buffer == [0; SECTOR]
                 && !task.multiple_transfer
-                && task.transfer_head == 0;
+                && task.transfer_head == 0
+                && task.ready_at.is_none();
             let active = (1..=3).contains(&task.phase)
                 && (task.phase != 2
                     || drive
@@ -1178,7 +1223,15 @@ impl Device for Ata {
                         .is_some_and(|drive| !drive.media.write_protected()))
                 && drive.is_some()
                 && control & 4 == 0
-                && task.status == READY | DRQ
+                && if let Some(at) = task.ready_at {
+                    task.phase == 1
+                        && task.status == READY | BSY
+                        && task.word == 0
+                        && task.block_left == u16::from(task.block_size).min(task.remaining) as u8
+                        && (at > now || at == VClock(u64::MAX) && at == now)
+                } else {
+                    task.status == READY | DRQ
+                }
                 && task.error == 0
                 && task.word < 256
                 && (1..=256).contains(&task.remaining)
@@ -1489,7 +1542,7 @@ mod tests {
             put(&mut source, offset, value);
         }
         let saved = source.device().save();
-        assert_eq!(saved[0], 2);
+        assert_eq!(saved[0], AT_ADAPTER_SNAPSHOT_VERSION);
         let mut restored = empty_adapter();
         restored.device_mut().restore(&saved).unwrap();
         assert_eq!(restored.device().save(), saved);
@@ -1565,7 +1618,7 @@ mod tests {
                     assert_eq!(read_sector(&mut ata), read_sector(&mut adapter));
                 }
                 let saved = adapter.device().save();
-                assert_eq!(saved[0], 2);
+                assert_eq!(saved[0], AT_ADAPTER_SNAPSHOT_VERSION);
                 adapter.device_mut().restore(&saved).unwrap();
                 assert_eq!(&ata.device().save()[1..], &saved[1..saved.len() - 1]);
             }
@@ -1618,6 +1671,9 @@ mod tests {
             assert!(bus.device().irq_pending());
             assert_eq!(status(&mut bus), READY | DRQ);
             assert_eq!(read_sector(&mut bus), payload);
+            assert!(!bus.device().irq_pending());
+            assert_eq!(status(&mut bus), READY | BSY);
+            bus.tick(READ_BLOCK_CLOCK.ticks(1));
             assert!(bus.device().irq_pending());
             assert_eq!(status(&mut bus), READY | DRQ);
             assert_eq!(read_sector(&mut bus), vec![0x69; SECTOR]);
@@ -1641,6 +1697,7 @@ mod tests {
         lba(&mut bus, 7, 2, false);
         command(&mut bus, 0x20);
         assert_eq!(read_sector(&mut bus), vec![0x12; SECTOR]);
+        bus.tick(READ_BLOCK_CLOCK.ticks(1));
         assert_eq!(read_sector(&mut bus), vec![0x34; SECTOR]);
     }
 
@@ -1661,6 +1718,7 @@ mod tests {
         lba(&mut bus, 256, 0, false);
         command(&mut bus, 0x20);
         for i in 0..256 {
+            bus.tick(READ_BLOCK_CLOCK.ticks(1));
             assert_eq!(status(&mut bus), READY | DRQ);
             assert_eq!(read_sector(&mut bus), vec![i as u8; SECTOR]);
         }
@@ -1769,6 +1827,11 @@ mod tests {
             for i in 0..sectors {
                 assert_eq!(read_sector(&mut bus), vec![i; SECTOR]);
                 let interrupt = (i + 1) % block == 0 && i + 1 < sectors;
+                assert!(!bus.device().irq_pending());
+                if interrupt {
+                    assert_eq!(status(&mut bus), READY | BSY);
+                    bus.tick(READ_BLOCK_CLOCK.ticks(1));
+                }
                 assert_eq!(
                     bus.device().irq_pending(),
                     interrupt,
@@ -1873,6 +1936,7 @@ mod tests {
         command(&mut bus, 0x20);
         status(&mut bus);
         assert_eq!(read_sector(&mut bus), vec![0x5A; SECTOR]);
+        bus.tick(READ_BLOCK_CLOCK.ticks(1));
         status(&mut bus);
         assert_eq!(read_sector(&mut bus), vec![0xA5; SECTOR]);
     }
@@ -2096,13 +2160,16 @@ mod tests {
                 command(&mut source, opcode);
                 let write = matches!(opcode, 0x30 | 0x31 | 0xC5);
                 for i in 0..prefix {
+                    if !write && i != 0 && i % 256 == 0 {
+                        source.tick(READ_BLOCK_CLOCK.ticks(1));
+                    }
                     if write {
                         source.port_write(0x1F0, 2, i).unwrap();
                     } else {
                         source.port_read(0x1F0, 2).unwrap();
                     }
                 }
-                source.device_mut().sync(VClock(137));
+                source.tick(137);
                 let saved = source.device().save();
                 let mut restored = bus();
                 // Completed writes are media, so supply matching media before restore.
@@ -2114,10 +2181,15 @@ mod tests {
                         restored.port_write(0x1F0, 2, i).unwrap();
                     }
                 }
+                restored.tick(source.clock().0);
                 restored.device_mut().restore(&saved).unwrap();
                 assert_eq!(restored.device().save(), saved);
                 let end = if opcode == 0xEC { 256 } else { 768 };
                 for i in prefix..end {
+                    if !write && i != 0 && i % 256 == 0 {
+                        source.tick(READ_BLOCK_CLOCK.ticks(1));
+                        restored.tick(READ_BLOCK_CLOCK.ticks(1));
+                    }
                     if write {
                         source.port_write(0x1F0, 2, i).unwrap();
                         restored.port_write(0x1F0, 2, i).unwrap();
@@ -2136,6 +2208,10 @@ mod tests {
                         command(device, 0x20);
                     }
                     for i in 0..768 {
+                        if i != 0 && i % 256 == 0 {
+                            source.tick(READ_BLOCK_CLOCK.ticks(1));
+                            restored.tick(READ_BLOCK_CLOCK.ticks(1));
+                        }
                         let expected = i;
                         assert_eq!(source.port_read(0x1F0, 2).unwrap(), expected);
                         assert_eq!(restored.port_read(0x1F0, 2).unwrap(), expected);
@@ -2163,7 +2239,7 @@ mod tests {
         invalid.push(trailing);
         // Header, mounted media, task flags, geometry and PIO cursor invariants.
         for (offset, value) in [
-            (0, 4),
+            (0, 0),
             (1, 0),
             (5, 16),
             (6, 2),
@@ -2412,6 +2488,9 @@ mod tests {
         assert_eq!(read_sector(&mut bus), vec![0xA5; SECTOR]);
         assert!(!bus.device().irq_pending());
         assert_eq!(read_sector(&mut bus), vec![0xA5; SECTOR]);
+        assert!(!bus.device().irq_pending());
+        assert_eq!(status(&mut bus), READY | BSY);
+        bus.tick(READ_BLOCK_CLOCK.ticks(1));
         assert!(bus.device().irq_pending());
         status(&mut bus);
         assert_eq!(read_sector(&mut bus), vec![0xA5; SECTOR]);
@@ -2739,6 +2818,7 @@ mod tests {
             for device in [&mut source, &mut restored] {
                 if opcode == 0x20 {
                     assert_eq!(read_sector(device), vec![0x70; SECTOR]);
+                    device.tick(READ_BLOCK_CLOCK.ticks(1));
                     assert_eq!(read_sector(device), vec![0x71; SECTOR]);
                 } else {
                     write_sector(device, &vec![0x42; SECTOR]);
@@ -2747,6 +2827,7 @@ mod tests {
                     lba(device, 70, 2, false);
                     command(device, 0x20);
                     assert_eq!(read_sector(device), vec![0x42; SECTOR]);
+                    device.tick(READ_BLOCK_CLOCK.ticks(1));
                     assert_eq!(read_sector(device), vec![0x69; SECTOR]);
                 }
                 assert_eq!(status(device), READY);
@@ -2761,9 +2842,9 @@ mod tests {
         command(&mut bus, 0x30);
         bus.port_write(0x1F0, 2, 0x1234).unwrap();
         let valid = bus.device().save();
-        assert_eq!(valid[0], 1);
+        assert_eq!(valid[0], SNAPSHOT_VERSION);
         for version in 0..=u8::MAX {
-            if version == 1 {
+            if version == SNAPSHOT_VERSION {
                 continue;
             }
             let mut invalid = valid.clone();
@@ -2820,6 +2901,7 @@ mod tests {
                     assert_eq!(get(&mut bus, 6), if lba_mode { 0xF0 } else { 0xB1 });
                     assert_eq!(get(&mut bus, 3), if lba_mode { 4 } else { 1 });
                     for _ in 0..2 {
+                        bus.tick(READ_BLOCK_CLOCK.ticks(1));
                         if write {
                             write_sector(&mut bus, &vec![0x5A; SECTOR]);
                         } else {
@@ -2846,17 +2928,17 @@ mod tests {
         source.port_write(0x1F0, 2, 0x1234).unwrap();
         source.device_mut().sync(VClock(137));
         let valid = source.device().save();
-        assert_eq!(valid[0], 1);
-        assert_eq!(valid.len(), 1114);
+        assert_eq!(valid[0], SNAPSHOT_VERSION);
+        assert_eq!(valid.len(), 16 + 2 * SNAPSHOT_TASK_LEN);
         let mut target = bus();
         target.device_mut().sync(VClock(77));
         let before = target.device().save();
         let mut padded = valid[..16].to_vec();
         for index in 0..2 {
-            let start = 16 + index * 549;
-            padded.extend_from_slice(&valid[start..start + 548]);
+            let start = 16 + index * SNAPSHOT_TASK_LEN;
+            padded.extend_from_slice(&valid[start..start + SNAPSHOT_TASK_LEN - 1]);
             padded.extend_from_slice(&u32::MAX.to_le_bytes());
-            padded.push(valid[start + 548]);
+            padded.push(valid[start + SNAPSHOT_TASK_LEN - 1]);
         }
         assert!(matches!(
             target.device_mut().restore(&padded),
@@ -2955,6 +3037,7 @@ mod tests {
                 lba(&mut bus, 5, count, false);
                 command(&mut bus, 0x20);
                 for sector in 0..count {
+                    bus.tick(READ_BLOCK_CLOCK.ticks(1));
                     assert_eq!(read_sector(&mut bus), [0x40 + sector; SECTOR]);
                 }
             }
@@ -2993,6 +3076,7 @@ mod tests {
             lba(&mut bus, 2, 2, false);
             command(&mut bus, 0x20);
             assert_eq!(read_sector(&mut bus), [0x55; SECTOR]);
+            bus.tick(READ_BLOCK_CLOCK.ticks(1));
             assert_eq!(read_sector(&mut bus), [0xA5; SECTOR]);
             assert_eq!(batches.borrow().len(), 1);
         }
@@ -3177,5 +3261,144 @@ mod tests {
             Box::new(InMemoryMedia::new(Vec::new(), 65, false))
         )
         .is_ok());
+    }
+    #[test]
+    fn unacknowledged_read_interrupt_is_not_merged_with_the_next_block() {
+        let mut bus = bus();
+        chs(&mut bus, 0, 0, 1, 3);
+        command(&mut bus, 0x20);
+        for block in 0..3 {
+            assert!(bus.device().irq_pending(), "block {block} interrupt");
+            assert_eq!(read_sector(&mut bus), vec![0xA5; SECTOR]);
+            let after = status(&mut bus);
+            assert!(!bus.device().irq_pending());
+            if block == 2 {
+                assert_eq!(after, READY);
+            } else {
+                assert_eq!(after & (BSY | DRQ), BSY);
+                bus.tick(READ_BLOCK_CLOCK.ticks(1));
+            }
+        }
+    }
+
+    #[test]
+    fn read_block_deadline_closes_data_and_survives_snapshot_restore() {
+        for model in [AtaControllerModel::Ata, AtaControllerModel::AtAdapter] {
+            for opcode in [0x20, 0x21, 0xC4] {
+                let mut source = MockBus::new(Box::new(controller().with_model(model)));
+                source.tick(137);
+                set_multiple(&mut source, 2);
+                chs(&mut source, 0, 0, 1, 5);
+                command(&mut source, opcode);
+                status(&mut source);
+                for _ in 0..if opcode == 0xC4 { 2 } else { 1 } {
+                    assert_eq!(read_sector(&mut source), vec![0xA5; SECTOR]);
+                }
+                assert_eq!(status(&mut source), READY | BSY);
+                assert!(!source.device().irq_pending());
+                let at = VClock(source.clock().0 + READ_BLOCK_CLOCK.ticks(1));
+                assert_eq!(
+                    source.device().next_event(source.clock()),
+                    NextEvent::At(at)
+                );
+                let saved = source.device().save();
+                assert_eq!(source.port_read(0x1F0, 2).unwrap(), 0xFFFF);
+                source.port_write(0x1F0, 2, 0x1234).unwrap();
+                for _ in 0..4 {
+                    assert_eq!(status(&mut source), READY | BSY);
+                }
+                assert_eq!(source.device().save(), saved);
+                let mut restored = MockBus::new(Box::new(controller().with_model(model)));
+                restored.tick(source.clock().0);
+                restored.device_mut().restore(&saved).unwrap();
+                for bus in [&mut source, &mut restored] {
+                    bus.tick(READ_BLOCK_CLOCK.ticks(1) - 1);
+                    assert_eq!(status(bus), READY | BSY);
+                    assert!(!bus.device().irq_pending());
+                    assert_eq!(bus.port_read(0x1F0, 2).unwrap(), 0xFFFF);
+                    bus.tick(1);
+                    assert_eq!(bus.device().next_event(bus.clock()), NextEvent::Dormant);
+                    assert!(bus.device().irq_pending());
+                    let ready = bus.device().save();
+                    bus.tick(0);
+                    assert_eq!(bus.device().save(), ready);
+                    assert_eq!(status(bus), READY | DRQ);
+                    assert_eq!(read_sector(bus), vec![0xA5; SECTOR]);
+                }
+                assert_eq!(source.device().save(), restored.device().save());
+            }
+        }
+    }
+
+    #[test]
+    fn read_block_deadline_is_cancelled_by_reset_and_replacement_commands() {
+        for end in 0..4 {
+            let mut bus = bus();
+            chs(&mut bus, 0, 0, 1, 3);
+            command(&mut bus, 0x20);
+            status(&mut bus);
+            read_sector(&mut bus);
+            assert_eq!(status(&mut bus), READY | BSY);
+            match end {
+                0 => command(&mut bus, 0xEC),
+                1 => command(&mut bus, 0x90),
+                2 => control(&mut bus, 4),
+                _ => bus.device_mut().reset(),
+            }
+            assert_eq!(bus.device().next_event(bus.clock()), NextEvent::Dormant);
+            let expected = match end {
+                0 => READY | DRQ,
+                2 => BSY,
+                _ => READY,
+            };
+            assert_eq!(status(&mut bus), expected);
+            bus.tick(READ_BLOCK_CLOCK.ticks(1));
+            assert_eq!(status(&mut bus), expected);
+            assert!(!bus.device().irq_pending());
+        }
+    }
+
+    #[test]
+    fn read_block_deadline_saturates_at_virtual_time_exhaustion() {
+        let mut bus = bus();
+        bus.tick(u64::MAX - 10);
+        chs(&mut bus, 0, 0, 1, 3);
+        command(&mut bus, 0x20);
+        status(&mut bus);
+        read_sector(&mut bus);
+        assert_eq!(status(&mut bus), READY | BSY);
+        assert_eq!(
+            bus.device().next_event(bus.clock()),
+            NextEvent::At(VClock(u64::MAX))
+        );
+        bus.tick(10);
+        assert_eq!(status(&mut bus), READY | DRQ);
+        read_sector(&mut bus);
+        let saved = bus.device().save();
+        bus.device_mut().restore(&saved).unwrap();
+        bus.tick(0);
+        assert_eq!(status(&mut bus), READY | DRQ);
+    }
+
+    #[test]
+    fn read_block_snapshot_rejects_inconsistent_deadlines_atomically() {
+        let mut bus = bus();
+        chs(&mut bus, 0, 0, 1, 3);
+        command(&mut bus, 0x20);
+        status(&mut bus);
+        read_sector(&mut bus);
+        status(&mut bus);
+        let saved = bus.device().save();
+        let flag = 16 + SNAPSHOT_TASK_LEN - 9;
+        for (offset, value) in [(flag, 2), (flag, 0), (16 + 16, READY | DRQ), (16 + 23, 2)] {
+            let mut invalid = saved.clone();
+            invalid[offset] = value;
+            assert!(bus.device_mut().restore(&invalid).is_err());
+            assert_eq!(bus.device().save(), saved);
+        }
+        let mut expired = saved.clone();
+        expired[flag + 1..flag + 9].copy_from_slice(&bus.clock().0.to_le_bytes());
+        assert!(bus.device_mut().restore(&expired).is_err());
+        assert_eq!(bus.device().save(), saved);
     }
 }

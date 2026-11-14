@@ -396,6 +396,9 @@ fn ide_journal_guest_cpu_reset_preserves_exactly_one_completed_sector() {
     command(&mut fresh, 4, 3, 0x20);
     let mut replayed = Vec::new();
     for _ in 0..3 * 256 {
+        if let device::NextEvent::At(at) = ata(&mut fresh).next_event(device::VClock::ZERO) {
+            fresh.machine.bus_mut().tick_all(at);
+        }
         let word = fresh.machine.bus_mut().port_read(0x1F0, 2).unwrap() as u16;
         replayed.extend(word.to_le_bytes());
     }

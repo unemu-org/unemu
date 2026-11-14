@@ -1409,6 +1409,7 @@ mod tests {
         let report = fresh.persistence[0].mount_report();
         assert!(report.generations.is_empty());
         assert_eq!(report.unsealed_tip.as_ref().unwrap().commands, 1);
+        let ide_index = fresh.device_index[&DeviceId::Ide];
         let bus = fresh.machine.bus_mut();
         for (port, byte) in [
             (0x1F6, 0xE0),
@@ -1421,6 +1422,13 @@ mod tests {
             bus.port_write(port, 1, byte).unwrap();
         }
         for lba in 0..64 {
+            if let device::NextEvent::At(at) = bus
+                .device(ide_index)
+                .unwrap()
+                .next_event(device::VClock::ZERO)
+            {
+                bus.tick_all(at);
+            }
             for _ in 0..256 {
                 assert_eq!(
                     bus.port_read(0x1F0, 2).unwrap(),
