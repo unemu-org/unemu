@@ -431,6 +431,23 @@ off because the existing observation boundary exposes no activity signal; the
 UI labels that limitation. Headless CLI runs do not depend on the shell and
 retain their existing behavior. See `design/machine-images.md` §7.
 
+`settings_model` resolves the selected machine's inheritance and consumes
+`MachineFile::describe`, the metadata-only path through normal machine-file
+lowering. It shares RTC, card, drive and ROM defaults without reading image bytes
+or opening journals. Unknown extents remain pending. Atomic pending edits live in
+`capabilities::Draft`; assembly owns field groups, display labels, domains and
+diagnostics. Each ROM retains its document index rather than a slot-wide identity.
+`settings_sheet` renders the classic tab strip, grouped controls, reasons and
+local-child preview. Saves retain inherited media bindings and hash pins, require
+a stopped machine and explicit overwrite consent, and select the child in the
+library. Saved local children are edited in place with current text and a diff;
+unique locked staging files are hidden from library scans and stale files are
+cleaned before publication. Image paths are rebased lexically, retaining symlink
+spellings. Firmware selections write a catalogue pin and plain filename without
+host discovery on edits. Metadata descriptions cannot authorize launch: readiness
+still uses ROM folders and the normal image-verifying loader. All state and save
+checks are headless-testable.
+
 `assemble_with_observation` binds requested routes by `DeviceId` and validates
 capabilities before execution. `AssembledMachine::capture_text` captures display
 state at a stamped machine boundary; semantic byte sinks collect UART TX and

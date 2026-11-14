@@ -37,6 +37,8 @@ mod logo;
 mod media_dialog;
 mod pacing;
 mod preferences;
+mod settings_model;
+mod settings_sheet;
 mod shell;
 mod shell_icons;
 mod shell_model;

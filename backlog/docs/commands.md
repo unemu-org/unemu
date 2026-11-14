@@ -205,6 +205,11 @@ without a stale ratio; Stop returns the cell to `Speed 100%`. Blink stays visibl
 phase can derive from virtual time later. Workspace and presenter tests remain
 headless. The input log is test-owned, with no user-facing log flag.
 
+Machine > Settings… and Ctrl+, (outside guest focus) open the seven-tab property
+sheet for the selected machine. Stop before editing; running/paused sessions are
+read-only. Review the child-file preview before OK/Apply. The saved local child
+is selected in the library; replacing an existing child requires consent.
+
 The window loads `machines/at-freedos.toml` from the workspace recorded by
 `CARGO_MANIFEST_DIR` at build time, independently of the current directory.
 `--machine FILE` is relative to the current directory; image and inheritance

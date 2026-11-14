@@ -468,7 +468,7 @@ macro_rules! table {
 }
 table!(Board, [model, post_port, mouse, display_switch], [rtc]);
 table!(Rtc, [start], [nvram]);
-table!(Cpu, [model, rate], []);
+table!(Cpu, [model, rate, fpu], []);
 table!(Memory, [conventional_kib, extended_kib], []);
 table!(Firmware, [option_roms], [bios]);
 impl Merge for Rom {
@@ -1274,6 +1274,34 @@ mod tests {
             .unwrap();
             assert_eq!(resolved.document.board.unwrap().mouse, expected);
         }
+    }
+
+    #[test]
+    fn child_cpu_fpu_override_is_merged_with_its_origin() {
+        for (parent, child, expected) in [
+            ("none", "80287", FpuModel::I80287),
+            ("80287", "none", FpuModel::None),
+        ] {
+            let resolved = merged(
+                &format!("[cpu]\nmodel='80286'\nrate='8/13'\nfpu='{parent}'\n"),
+                &format!("[cpu]\nfpu='{child}'\n"),
+            )
+            .unwrap();
+            let cpu = resolved.document.cpu.unwrap();
+            assert_eq!(cpu.fpu, Some(expected));
+            assert_eq!(cpu.model, Some(CpuModel::I80286));
+            assert_eq!(cpu.rate.unwrap().steps.get(), 8);
+            assert_eq!(
+                resolved.origins.get("cpu.fpu").file,
+                Path::new("child.toml")
+            );
+        }
+        let inherited = merged("[cpu]\nfpu='80287'\n", "[cpu]\nrate=2\n").unwrap();
+        assert_eq!(inherited.document.cpu.unwrap().fpu, Some(FpuModel::I80287));
+        assert_eq!(
+            inherited.origins.get("cpu.fpu").file,
+            Path::new("parent.toml")
+        );
     }
 
     #[test]

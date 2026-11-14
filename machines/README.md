@@ -87,9 +87,30 @@ The welcome screen lists machine files in `machines/` and `machines/local/`
 `at-freedos.toml` initially. Select a ready machine and press Start, Enter, or
 double-click its name. Missing firmware or invalid media shows the existing
 validator diagnostic and disables Start. File › Open machine file… accepts a
-TOML/YAML path. New machine, settings, media insertion/import
-and layer editing currently show “not yet available”; existing next/eject media
-actions remain available. Help › Keyboard shortcuts lists all bindings.
+TOML/YAML path. Machine › Settings… (Ctrl+, outside guest focus) opens the
+classic System, Memory, Display, Sound, Storage, Expansion and Firmware tabs.
+Hardware choices and their disabled reasons come from assembly capabilities.
+Running and paused machines show a read-only sheet; stop before editing.
+Help › Keyboard shortcuts lists all bindings.
+
+The sheet shows effective values after `extends`. Review the resulting TOML
+preview before OK or Apply. For a shipped machine, saving creates
+`machines/local/<parent>-custom.toml`, which extends the selected machine and
+overrides changed settings. Opening Settings on a saved local child edits that
+child in place. The sheet shows its current text, a diff and the proposed text;
+replacement requires explicit consent. Names retain a single `(custom)` suffix.
+Shipped files are never edited. The library selects the child after saving;
+Apply leaves the sheet open, and Cancel, Esc or the title-bar close button
+cancel unsaved changes.
+
+Unchanged media bindings, full SHA-256 pins and journal policies are preserved.
+Rewriting an option-ROM list rebases unchanged image paths relative to the new
+child directory while preserving symlink spellings. A firmware selection writes
+its catalogue pin and a plain filename; ROM folders resolve the location before
+Start. Settings never walks ROM folders or hashes images. Missing firmware/media
+can be described without reading their bytes; Start still runs normal image
+verification.
+New-machine/import and layer editing remain unavailable.
 
 To start a specific machine immediately in the same shell:
 

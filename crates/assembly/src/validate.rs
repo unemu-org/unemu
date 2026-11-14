@@ -270,7 +270,7 @@ impl MachineConfig {
         ]
     }
 
-    /// Collect one error per independent check without changing first-error order.
+    /// Collect independent checks and every resource conflict without changing launch order.
     pub(crate) fn draft_errors(&self) -> Vec<ConfigError> {
         let mut errors = Vec::new();
         match self.expanded_media() {
@@ -283,7 +283,25 @@ impl MachineConfig {
         }
         for check in Self::resolved_checks() {
             if let Err(error) = check(self) {
-                errors.push(error);
+                let original = error.clone();
+                match error {
+                    ConfigError::IrqConflict { .. } | ConfigError::InvalidIrqLine { .. } => {
+                        errors.extend(self.collect_irq_conflicts())
+                    }
+                    ConfigError::PortOverlap { .. }
+                    | ConfigError::PortOverlapDecodeOrder { .. } => {
+                        errors.extend(self.collect_port_overlaps())
+                    }
+                    ConfigError::DmaConflict { .. }
+                    | ConfigError::InvalidDmaChannel { .. }
+                    | ConfigError::DmaControllerMissing { .. } => {
+                        errors.extend(self.collect_dma_controllers_present())
+                    }
+                    _ => {}
+                }
+                if !errors.contains(&original) {
+                    errors.push(original);
+                }
             }
         }
         errors
@@ -422,6 +440,27 @@ impl MachineConfig {
         requirements: &[FirmwareRequirement],
         catalogue: &[crate::FirmwareEntry],
     ) -> Result<(), ConfigError> {
+        self.check_firmware_requirements_with_metadata(requirements, catalogue, &[])
+    }
+
+    pub(crate) fn draft_firmware_error(
+        &self,
+        known: &[(usize, &crate::FirmwareEntry)],
+    ) -> Option<ConfigError> {
+        self.check_firmware_requirements_with_metadata(
+            FIRMWARE_REQUIREMENTS,
+            self.board.firmware_catalogue(),
+            known,
+        )
+        .err()
+    }
+
+    fn check_firmware_requirements_with_metadata(
+        &self,
+        requirements: &[FirmwareRequirement],
+        catalogue: &[crate::FirmwareEntry],
+        known: &[(usize, &crate::FirmwareEntry)],
+    ) -> Result<(), ConfigError> {
         if self.board == BoardModel::Bare {
             return Ok(());
         }
@@ -430,13 +469,49 @@ impl MachineConfig {
             .iter()
             .enumerate()
             .filter(|(_, image)| image.kind == ImageKind::Rom)
-            .map(|(index, _)| crate::firmware::image_services_from(self, index, catalogue))
+            .map(|(index, image)| {
+                if let Some((_, entry)) = known.iter().find(|(image, _)| *image == index) {
+                    if !image.provides.is_empty()
+                        && (image
+                            .provides
+                            .iter()
+                            .any(|service| !entry.provides.contains(service))
+                            || entry
+                                .provides
+                                .iter()
+                                .any(|service| !image.provides.contains(service)))
+                    {
+                        let names = |services: &[crate::FirmwareService]| {
+                            let mut names: Vec<_> =
+                                services.iter().map(ToString::to_string).collect();
+                            names.sort();
+                            names.dedup();
+                            format!("{names:?}")
+                        };
+                        return Err(ConfigError::FirmwareProvidesMismatch {
+                            image_index: index,
+                            firmware: entry.id,
+                            declared: names(&image.provides),
+                            expected: names(entry.provides),
+                        });
+                    }
+                    Ok(Some(entry.provides))
+                } else {
+                    crate::firmware::image_services_from(self, index, catalogue)
+                }
+            })
             .collect::<Result<Vec<_>, _>>()?;
         // Scan-window fallback is only a memory-map policy: an unknown BIOS
         // must never inherit a diagnostic ROM's permission to drive hardware.
-        let diagnostic = crate::firmware::system_bios(self)
-            .ok()
-            .and_then(|bios| crate::firmware::matched_entry(bios, catalogue));
+        let diagnostic = known
+            .iter()
+            .find(|(index, _)| Some(*index) == self.system_bios_image)
+            .map(|(_, entry)| *entry)
+            .or_else(|| {
+                crate::firmware::system_bios(self)
+                    .ok()
+                    .and_then(|bios| crate::firmware::matched_entry(bios, catalogue))
+            });
         for device in &self.devices {
             for rule in requirements {
                 if (rule.matches)(&device.kind)
@@ -877,6 +952,14 @@ impl MachineConfig {
     /// A flagged overlap must be strict containment with the same start, so
     /// `(start, end)` order gives every shared port to the narrower window.
     fn check_port_overlaps(&self) -> Result<(), ConfigError> {
+        self.collect_port_overlaps()
+            .into_iter()
+            .next()
+            .map_or(Ok(()), Err)
+    }
+
+    fn collect_port_overlaps(&self) -> Vec<ConfigError> {
+        let mut errors = Vec::new();
         for (i, a) in self.devices.iter().enumerate() {
             for b in &self.devices[i + 1..] {
                 for wa in &a.ports {
@@ -887,14 +970,13 @@ impl MachineConfig {
                                 || wa.allow_overlap
                                 || wb.allow_overlap;
                             if !allowed {
-                                return Err(ConfigError::PortOverlap {
+                                errors.push(ConfigError::PortOverlap {
                                     a: a.id,
                                     b: b.id,
                                     port: wa.start.max(wb.start),
                                 });
-                            }
-                            if wa.start != wb.start || wa.end == wb.end {
-                                return Err(ConfigError::PortOverlapDecodeOrder {
+                            } else if wa.start != wb.start || wa.end == wb.end {
+                                errors.push(ConfigError::PortOverlapDecodeOrder {
                                     a: a.id,
                                     b: b.id,
                                     a_window: *wa,
@@ -907,7 +989,7 @@ impl MachineConfig {
                 }
             }
         }
-        Ok(())
+        errors
     }
 
     /// Every MMIO window traps to a device that is present.
@@ -1073,6 +1155,14 @@ impl MachineConfig {
 
     /// No two devices drive the same PIC input line.
     fn check_irq_conflicts(&self) -> Result<(), ConfigError> {
+        self.collect_irq_conflicts()
+            .into_iter()
+            .next()
+            .map_or(Ok(()), Err)
+    }
+
+    fn collect_irq_conflicts(&self) -> Vec<ConfigError> {
+        let mut errors = Vec::new();
         let routes: Vec<_> = self
             .devices
             .iter()
@@ -1084,15 +1174,15 @@ impl MachineConfig {
             .collect();
         for (i, &(a, line)) in routes.iter().enumerate() {
             if line >= 16 {
-                return Err(ConfigError::InvalidIrqLine { device: a, line });
+                errors.push(ConfigError::InvalidIrqLine { device: a, line });
             }
             for &(b, other) in &routes[i + 1..] {
                 if other == line {
-                    return Err(ConfigError::IrqConflict { a, b, line });
+                    errors.push(ConfigError::IrqConflict { a, b, line });
                 }
             }
         }
-        Ok(())
+        errors
     }
 
     fn check_pic_faces(&self) -> Result<(), ConfigError> {
@@ -1177,10 +1267,18 @@ impl MachineConfig {
 
     /// Every device's DMA wiring names a controller that is present.
     fn check_dma_controllers_present(&self) -> Result<(), ConfigError> {
+        self.collect_dma_controllers_present()
+            .into_iter()
+            .next()
+            .map_or(Ok(()), Err)
+    }
+
+    fn collect_dma_controllers_present(&self) -> Vec<ConfigError> {
+        let mut errors = Vec::new();
         for (index, dev) in self.devices.iter().enumerate() {
             for dma in dev.dma_inputs() {
                 if dma.controller == DeviceId::DmaWord && !matches!(dma.channel, 5..=7) {
-                    return Err(ConfigError::InvalidDmaChannel {
+                    errors.push(ConfigError::InvalidDmaChannel {
                         device: dev.id,
                         controller: dma.controller,
                         channel: dma.channel,
@@ -1188,7 +1286,7 @@ impl MachineConfig {
                 }
                 for other in &self.devices[index + 1..] {
                     if other.dma_inputs().any(|input| input == dma) {
-                        return Err(ConfigError::DmaConflict {
+                        errors.push(ConfigError::DmaConflict {
                             a: dev.id,
                             b: other.id,
                             controller: dma.controller,
@@ -1201,14 +1299,14 @@ impl MachineConfig {
                         && (dma.controller != DeviceId::DmaWord
                             || matches!(d.kind, DeviceKind::DmaWord(_)))
                 }) {
-                    return Err(ConfigError::DmaControllerMissing {
+                    errors.push(ConfigError::DmaControllerMissing {
                         requester: dev.id,
                         controller: dma.controller,
                     });
                 }
             }
         }
-        Ok(())
+        errors
     }
 
     /// Resolve each binding independently; counting all controller slots can

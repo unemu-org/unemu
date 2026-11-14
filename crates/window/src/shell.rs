@@ -297,6 +297,7 @@ struct Shell {
     checked_selection: Option<usize>,
     insert_dialog: Option<crate::media_dialog::InsertDialog>,
     blank_disk: Option<crate::media_dialog::BlankDisk>,
+    settings: Option<crate::settings_model::SettingsModel>,
     discovery_warnings: BTreeSet<String>,
     discovery_control: assembly::firmware_discovery::DiscoveryControl,
     firmware_cache: Option<std::path::PathBuf>,
@@ -315,8 +316,68 @@ struct ReadinessJob {
 }
 
 impl Shell {
+    fn open_settings(&mut self) {
+        self.release();
+        if let Some(index) = self.selected {
+            match crate::settings_model::SettingsModel::open(
+                &self.library[index].path,
+                self.presenter.is_some(),
+            ) {
+                Ok(model) => self.settings = Some(model),
+                Err(error) => self.dialog = Some(("Settings", error)),
+            }
+        }
+    }
+
+    fn settings_modal(&mut self, ctx: &egui::Context) {
+        let Some(model) = &mut self.settings else {
+            return;
+        };
+        model.read_only = self.presenter.is_some();
+        match crate::settings_sheet::show(ctx, model, self.classic) {
+            crate::settings_sheet::Action::None => {}
+            crate::settings_sheet::Action::Cancel => self.settings = None,
+            crate::settings_sheet::Action::Save { close } => self.save_settings(close),
+        }
+    }
+
+    fn save_settings(&mut self, close: bool) {
+        let Some(model) = &mut self.settings else {
+            return;
+        };
+        model.read_only = self.presenter.is_some();
+        match model.save() {
+            Ok(path) => {
+                let index = if let Some(index) = self.library.iter().position(|entry| {
+                    entry.path == path
+                        || entry
+                            .path
+                            .canonicalize()
+                            .ok()
+                            .zip(path.canonicalize().ok())
+                            .is_some_and(|(left, right)| left == right)
+                }) {
+                    index
+                } else {
+                    self.library.push(LibraryEntry::pending(path));
+                    self.library.len() - 1
+                };
+                self.selected = Some(index);
+                self.refresh_library();
+                self.message = "Local machine settings saved".into();
+                if close {
+                    self.settings = None;
+                }
+            }
+            Err(error) => model.error = Some(error),
+        }
+    }
+
     fn has_dialog(&self) -> bool {
-        self.dialog.is_some() || self.insert_dialog.is_some() || self.blank_disk.is_some()
+        self.dialog.is_some()
+            || self.insert_dialog.is_some()
+            || self.blank_disk.is_some()
+            || self.settings.is_some()
     }
 
     fn confirm_insert(&mut self) {
@@ -646,6 +707,7 @@ impl Shell {
             checked_selection: None,
             insert_dialog: None,
             blank_disk: None,
+            settings: None,
             discovery_warnings: BTreeSet::new(),
             discovery_control: Default::default(),
             firmware_cache: assembly::firmware_discovery::firmware_cache_path(),
@@ -1116,6 +1178,7 @@ impl Shell {
             About => self.dialog = Some(("About unemupc98", format!("unemupc98 {}\nIBM PC/AT emulator\nAGPL-3.0-or-later\nx86jit · egui / eframe · cpal\n\n{}\n\n{}", env!("CARGO_PKG_VERSION"), window::FONT_NOTICE, window::EGUI_FONT_NOTICE))),
             Placeholder(title) => self.dialog = Some((title, if title == "Open machine file" { "Open a machine description in the library." } else { "not yet available" }.into())),
             FirmwareFolders => { self.preferences_draft = self.preferences.clone(); self.rom_folder_input.clear(); self.dialog = Some(("ROM folders", "Firmware is located by SHA-256. Files are read in place; nothing is copied.".into())); },
+            Settings => self.open_settings(),
             SaveState => {},
         }
         self.sync_routing();
@@ -1183,7 +1246,7 @@ impl Shell {
                     commands,
                 );
                 ui.separator();
-                self.item(ui, "Settings…", "Ctrl+,", Placeholder("Settings"), commands);
+                self.item(ui, "Settings…", "Ctrl+,", Settings, commands);
                 self.item(ui, "Disk layers…", "", Placeholder("Disk layers"), commands);
             });
             ui.menu_button("Media", |ui| {
@@ -1528,7 +1591,7 @@ impl Shell {
                                     commands.push(Command::Start);
                                 }
                                 if ui.button("Settings…").clicked() {
-                                    commands.push(Command::Placeholder("Settings"));
+                                    commands.push(Command::Settings);
                                 }
                                 if ui.button("Layers…").clicked() {
                                     commands.push(Command::Placeholder("Disk layers"));
@@ -2005,7 +2068,7 @@ impl eframe::App for Shell {
                         (
                             "Settings",
                             crate::shell_icons::Icon::Settings,
-                            Command::Placeholder("Settings"),
+                            Command::Settings,
                         ),
                         (
                             "Layers",
@@ -2177,6 +2240,7 @@ impl eframe::App for Shell {
             });
         }
         self.media_modals(&ctx);
+        self.settings_modal(&ctx);
         if open_machine {
             self.open_machine();
         }
@@ -2264,7 +2328,7 @@ fn led(ui: &mut egui::Ui, on: bool, label: &str) {
     );
     ui.label(label);
 }
-fn bevel(ui: &egui::Ui, rect: egui::Rect, pressed: bool) {
+pub(crate) fn bevel(ui: &egui::Ui, rect: egui::Rect, pressed: bool) {
     let light = if ui.visuals().dark_mode {
         Color32::from_gray(92)
     } else {
@@ -2295,7 +2359,7 @@ fn bevel(ui: &egui::Ui, rect: egui::Rect, pressed: bool) {
     );
 }
 
-fn gradient_title(ui: &mut egui::Ui, title: &str) {
+pub(crate) fn gradient_title(ui: &mut egui::Ui, title: &str) {
     let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 23.0), Sense::hover());
     let mut mesh = egui::Mesh::default();
     for (pos, color) in [
@@ -2322,7 +2386,7 @@ fn gradient_title(ui: &mut egui::Ui, title: &str) {
     );
 }
 
-const SHORTCUTS: &str = "Enter / double-click: start selected machine\nCtrl+Alt+P: pause / resume\nCtrl+Alt+T: hold to fast-forward (Unlimited)\nCtrl+Alt+Q: stop and return to library\nCtrl+Alt+End: send guest Ctrl+Alt+Del\nCtrl+Alt+F: next A: image (Shift for B:)\nCtrl+Alt+E: eject A: (Shift for B:)\nCtrl+Alt+I: insert A: floppy (Shift for B:)\nCtrl+Alt+M: toggle user mute (also while speed-muted)\nCtrl+Alt+G: release pointer\nCtrl+Alt+Enter: full screen\nCtrl+N: new machine (not yet available)\nCtrl+O: open machine file\nCtrl+,: settings (not yet available)\nF1: keyboard shortcuts (outside guest focus)\nCtrl+N/O/, also require shell focus while running.\n\nClick the emulated screen to focus guest input and capture the pointer.\nMenus, dialogs and focus loss release the pointer and held guest keys.";
+const SHORTCUTS: &str = "Enter / double-click: start selected machine\nCtrl+Alt+P: pause / resume\nCtrl+Alt+T: hold to fast-forward (Unlimited)\nCtrl+Alt+Q: stop and return to library\nCtrl+Alt+End: send guest Ctrl+Alt+Del\nCtrl+Alt+F: next A: image (Shift for B:)\nCtrl+Alt+E: eject A: (Shift for B:)\nCtrl+Alt+I: insert A: floppy (Shift for B:)\nCtrl+Alt+M: toggle user mute (also while speed-muted)\nCtrl+Alt+G: release pointer\nCtrl+Alt+Enter: full screen\nCtrl+N: new machine (not yet available)\nCtrl+O: open machine file\nCtrl+,: settings\nF1: keyboard shortcuts (outside guest focus)\nCtrl+N/O/, also require shell focus while running.\n\nClick the emulated screen to focus guest input and capture the pointer.\nMenus, dialogs and focus loss release the pointer and held guest keys.";
 
 #[cfg(test)]
 mod tests {
@@ -2385,6 +2449,7 @@ mod tests {
             checked_selection: None,
             insert_dialog: None,
             blank_disk: None,
+            settings: None,
             discovery_warnings: BTreeSet::new(),
             discovery_control: Default::default(),
             firmware_cache: None,
@@ -2393,6 +2458,53 @@ mod tests {
             refresh_listing: false,
             discovery_finished: false,
         }
+    }
+
+    #[test]
+    fn settings_save_selects_the_child_and_live_sessions_reject_publication() {
+        let temp = assembly::test_support::TempDir::new("shell-settings");
+        std::fs::create_dir(temp.path().join("machines")).unwrap();
+        let parent = temp.path().join("machines/example.toml");
+        std::fs::write(
+            &parent,
+            "schema=1\nextends='preset:ibm-5170'\n[firmware.bios]\nimage='missing.bin'\n",
+        )
+        .unwrap();
+        let mut shell = shell();
+        shell.library.push(LibraryEntry::pending(parent));
+        shell.selected = Some(0);
+        shell.command(Command::Settings, &egui::Context::default());
+        assert!(shell.settings.as_ref().unwrap().read_only);
+        assert!(!shell.guest_focus);
+        shell.stop();
+        shell.open_settings();
+        shell.settings.as_mut().unwrap().set(
+            "memory.extended_kib",
+            assembly::capabilities::Value::Integer(1024),
+        );
+        let child = shell.settings.as_ref().unwrap().target.clone();
+        let alias = child
+            .parent()
+            .unwrap()
+            .join("../local")
+            .join(child.file_name().unwrap());
+        shell.library.push(LibraryEntry::pending(alias.clone()));
+        shell.save_settings(false);
+        assert_eq!(shell.library.len(), 2);
+        assert_eq!(shell.library[shell.selected.unwrap()].path, alias);
+        assert!(shell.settings.is_some());
+        assert!(child.exists());
+        shell.settings.as_mut().unwrap().set(
+            "memory.extended_kib",
+            assembly::capabilities::Value::Integer(2048),
+        );
+        shell.settings.as_mut().unwrap().overwrite = true;
+        let mut live = self::shell();
+        shell.presenter = live.presenter.take();
+        let before = std::fs::read(&child).unwrap();
+        shell.save_settings(true);
+        assert_eq!(std::fs::read(&child).unwrap(), before);
+        assert!(shell.settings.is_some());
     }
 
     fn take_guest_scancodes(shell: &mut Shell) -> Vec<u8> {

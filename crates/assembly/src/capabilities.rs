@@ -7,6 +7,12 @@
 //! Creative Sound Blaster Series Hardware Programming Guide, §2 resource
 //! configuration. See `backlog/docs/design/machine-images.md` §6.
 
+#[path = "capabilities_sheet.rs"]
+mod sheet;
+pub use sheet::{
+    fields, firmware_binding, storage_summary, value_label, Field, FirmwareBinding, Group,
+};
+
 mod diagnostic;
 pub use diagnostic::{Diagnostic, Resource, Severity};
 
@@ -17,6 +23,8 @@ use crate::{descriptors::*, *};
 pub enum Value {
     Integer(u32),
     Name(String),
+    /// An unverified file display name, never a catalogue identity.
+    FileName(String),
     Disconnected,
 }
 
@@ -36,6 +44,11 @@ pub struct Draft {
     /// Optional source field paths keyed by configuration image index.
     pub image_paths: Vec<(usize, String)>,
     pub edits: Vec<Edit>,
+    /// Catalogue identities declared by hash, awaiting normal byte verification.
+    pub firmware_ids: Vec<(usize, String)>,
+    pub firmware_files: Vec<(usize, String)>,
+    /// Preserve card roles when the persistence format merges cards by identity.
+    pub preserve_card_roles: bool,
     /// Caller-owned revision, echoed in validation and choices.
     pub revision: u64,
 }
@@ -47,12 +60,36 @@ impl Draft {
             card_ids: Vec::new(),
             image_paths: Vec::new(),
             edits: Vec::new(),
+            firmware_ids: Vec::new(),
+            firmware_files: Vec::new(),
+            preserve_card_roles: false,
             revision: 0,
         }
     }
 
     pub fn set(&mut self, field_path: impl Into<String>, value: Value) {
-        let field_path = field_path.into();
+        let field_path = canonical_field_path(self, &field_path.into());
+        if value == Value::Name("installed".into()) {
+            if let Some(kind) = optional_kind(self, &field_path) {
+                if !self
+                    .config
+                    .devices
+                    .iter()
+                    .any(|device| device.id == kind.id())
+                {
+                    self.add_card(kind.name().into(), kind);
+                    if kind == CardKind::LotechEms {
+                        let frame = format!("{}.frame", self.card_path(kind.id()));
+                        if let Some(choice) = choices(self, &frame)
+                            .into_iter()
+                            .find(|choice| choice.enabled)
+                        {
+                            self.set(frame, choice.value);
+                        }
+                    }
+                }
+            }
+        }
         self.edits.retain(|edit| edit.field_path != field_path);
         self.edits.push(Edit { field_path, value });
     }
@@ -167,6 +204,89 @@ fn integers(values: impl IntoIterator<Item = impl Into<u32>>) -> Domain {
     )
 }
 
+/// Resolve a legacy slot alias to the first existing image, preserving its identity.
+pub fn canonical_field_path(draft: &Draft, path: &str) -> String {
+    let Some(slot) = FIRMWARE_SLOTS.iter().find(|slot| slot.path == path) else {
+        return path.into();
+    };
+    draft
+        .image_paths
+        .iter()
+        .find(|(index, field)| {
+            field.starts_with("firmware.option_roms[") && firmware_kind(draft, *index) == slot.kind
+        })
+        .map_or_else(|| path.into(), |(_, field)| field.clone())
+}
+
+fn firmware_kind(draft: &Draft, index: usize) -> FirmwareKind {
+    if draft.config.system_bios_image == Some(index) {
+        return FirmwareKind::SystemBios;
+    }
+    draft
+        .firmware_ids
+        .iter()
+        .find(|(image, _)| *image == index)
+        .and_then(|(_, id)| {
+            draft
+                .config
+                .board
+                .firmware_catalogue()
+                .iter()
+                .find(|entry| entry.id == id)
+        })
+        .map_or_else(
+            || {
+                if draft
+                    .config
+                    .images
+                    .get(index)
+                    .is_some_and(|image| (0xC0000..0xC8000).contains(&image.base))
+                {
+                    FirmwareKind::VideoBios
+                } else {
+                    FirmwareKind::OptionRom
+                }
+            },
+            |entry| entry.kind,
+        )
+}
+
+fn firmware_slot(draft: &Draft, path: &str) -> Option<(FirmwareKind, bool, Option<usize>)> {
+    if let Some((index, _)) = draft.image_paths.iter().find(|(_, field)| field == path) {
+        let kind = firmware_kind(draft, *index);
+        return Some((kind, kind == FirmwareKind::SystemBios, Some(*index)));
+    }
+    let slot = FIRMWARE_SLOTS.iter().find(|slot| slot.path == path)?;
+    let index = if slot.kind == FirmwareKind::SystemBios {
+        draft.config.system_bios_image.or_else(|| {
+            if draft.image_paths.is_empty() {
+                crate::firmware::system_bios(&draft.config)
+                    .ok()
+                    .and_then(|bios| {
+                        draft
+                            .config
+                            .images
+                            .iter()
+                            .position(|image| std::ptr::eq(image, bios))
+                    })
+            } else {
+                None
+            }
+        })
+    } else {
+        draft
+            .config
+            .images
+            .iter()
+            .enumerate()
+            .find(|(index, image)| {
+                image.kind == ImageKind::Rom && firmware_kind(draft, *index) == slot.kind
+            })
+            .map(|(index, _)| index)
+    };
+    Some((slot.kind, slot.required, index))
+}
+
 /// Describe a stable field. Unknown or inapplicable paths have no descriptor.
 pub fn describe(draft: &Draft, path: &str) -> Option<FieldDescriptor> {
     let number = |domain: IntegerDomain, unit| FieldDescriptor {
@@ -175,12 +295,38 @@ pub fn describe(draft: &Draft, path: &str) -> Option<FieldDescriptor> {
         unit,
         dependent_fields: Vec::new(),
     };
+    let names = |values: &[&str]| FieldDescriptor {
+        domain: Domain::Values(
+            values
+                .iter()
+                .map(|name| Value::Name((*name).into()))
+                .collect(),
+        ),
+        default: None,
+        unit: None,
+        dependent_fields: Vec::new(),
+    };
     match path {
+        "board.model" => return Some(names(&[draft.config.board.id()])),
+        "cpu.model" => return Some(names(&["80286"])),
+        "cpu.fpu" => return Some(names(&["none", "80287"])),
+        "board.display_switch" => return Some(names(&["auto", "mono", "colour"])),
+        "cpu.rate_steps" | "cpu.rate_pit_clocks" => {
+            return Some(number(
+                IntegerDomain {
+                    min: 1,
+                    max: u32::MAX,
+                    step: 1,
+                    default: 1,
+                },
+                None,
+            ))
+        }
         "memory.conventional_kib" => return Some(number(CONVENTIONAL_KIB, Some("KiB"))),
         "memory.extended_kib" => return Some(number(EXTENDED_KIB, Some("KiB"))),
         _ => {}
     }
-    if let Some(slot) = FIRMWARE_SLOTS.iter().find(|slot| slot.path == path) {
+    if let Some((slot_kind, required, _)) = firmware_slot(draft, path) {
         return Some(FieldDescriptor {
             domain: Domain::Values(
                 draft
@@ -188,8 +334,9 @@ pub fn describe(draft: &Draft, path: &str) -> Option<FieldDescriptor> {
                     .board
                     .firmware_catalogue()
                     .iter()
-                    .filter(|entry| entry.kind == slot.kind)
+                    .filter(|entry| entry.kind == slot_kind)
                     .map(|entry| Value::Name(entry.id.into()))
+                    .chain((!required).then_some(Value::Disconnected))
                     .collect(),
             ),
             default: None,
@@ -212,6 +359,9 @@ pub fn describe(draft: &Draft, path: &str) -> Option<FieldDescriptor> {
             unit: None,
             dependent_fields: Vec::new(),
         });
+    }
+    if optional_kind(draft, path).is_some() {
+        return Some(names(&["installed", "none"]));
     }
     let (id, field) = draft.device_id(path)?;
     let device = draft.config.devices.iter().find(|device| device.id == id)?;
@@ -263,6 +413,7 @@ pub fn describe(draft: &Draft, path: &str) -> Option<FieldDescriptor> {
             Domain::Values(
                 CARD_KINDS
                     .iter()
+                    .filter(|candidate| !draft.preserve_card_roles || candidate.id() == device.id)
                     .map(|kind| Value::Name(kind.name().into()))
                     .collect(),
             ),
@@ -332,6 +483,18 @@ pub fn describe(draft: &Draft, path: &str) -> Option<FieldDescriptor> {
     })
 }
 
+fn optional_kind(draft: &Draft, path: &str) -> Option<CardKind> {
+    let owner = path.strip_suffix(".enabled")?;
+    [
+        CardKind::Sb16,
+        CardKind::LotechEms,
+        CardKind::Mda,
+        CardKind::VgaText,
+    ]
+    .into_iter()
+    .find(|kind| owner == draft.card_path(kind.id()) || owner == format!("card[{}]", kind.name()))
+}
+
 fn drive_index(draft: &Draft, path: &str) -> Option<usize> {
     draft.config.drives.iter().position(|drive| {
         format!(
@@ -398,10 +561,20 @@ pub fn validate_draft(draft: &Draft) -> Validation {
     let (mut conventional, mut extended) = sizes(&config);
     let mut remap = false;
     let mut pending_images = Vec::new();
-    let mut selected_bios = crate::firmware::system_bios(&config)
-        .ok()
-        .and_then(|image| crate::firmware::matched_entry(image, config.board.firmware_catalogue()))
-        .map(|entry| entry.id.to_string());
+    let mut removed_images = Vec::new();
+    let mut selected_bios = draft
+        .firmware_ids
+        .iter()
+        .find(|(index, _)| Some(*index) == config.system_bios_image)
+        .map(|(_, id)| id.clone())
+        .or_else(|| {
+            crate::firmware::system_bios(&config)
+                .ok()
+                .and_then(|image| {
+                    crate::firmware::matched_entry(image, config.board.firmware_catalogue())
+                })
+                .map(|entry| entry.id.to_string())
+        });
     let mut edits: Vec<_> = draft.edits.iter().collect();
     edits.sort_by_key(|edit| !edit.field_path.ends_with(".kind"));
     for edit in edits {
@@ -428,7 +601,42 @@ pub fn validate_draft(draft: &Draft) -> Validation {
             ));
             continue;
         }
-        if let Some(slot) = FIRMWARE_SLOTS.iter().find(|slot| slot.path == path) {
+        if optional_kind(draft, path).is_some() {
+            remap = true;
+            continue;
+        }
+        match (path, &edit.value) {
+            ("board.model" | "cpu.model", _) => continue,
+            ("cpu.fpu", Value::Name(name)) => {
+                config.cpu.fpu = if name == "none" {
+                    FpuChip::None
+                } else {
+                    FpuChip::I80287
+                };
+                continue;
+            }
+            ("board.display_switch", Value::Name(name)) => {
+                config.display_switch = match name.as_str() {
+                    "mono" => DisplaySwitch::Mono,
+                    "colour" => DisplaySwitch::Colour,
+                    _ => DisplaySwitch::Auto,
+                };
+                continue;
+            }
+            ("cpu.rate_steps", Value::Integer(value)) => {
+                config.clock.retired_per_pit_clock = u64::from(*value);
+                continue;
+            }
+            ("cpu.rate_pit_clocks", Value::Integer(value)) => {
+                config.clock.retired_per_pit_clock_denominator = u64::from(*value);
+                continue;
+            }
+            _ => {}
+        }
+        if let Some((slot_kind, _, index)) = firmware_slot(draft, path) {
+            if edit.value == Value::Disconnected {
+                removed_images.extend(index);
+            }
             if let Value::Name(name) = &edit.value {
                 let entry = config
                     .board
@@ -436,35 +644,17 @@ pub fn validate_draft(draft: &Draft) -> Validation {
                     .iter()
                     .find(|entry| entry.id == name);
                 if let Some(entry) = entry {
-                    let system = slot.kind == FirmwareKind::SystemBios;
-                    let index = if system {
-                        crate::firmware::system_bios(&config).ok().and_then(|bios| {
-                            config
-                                .images
-                                .iter()
-                                .position(|image| std::ptr::eq(image, bios))
-                        })
-                    } else {
-                        config
-                            .images
-                            .iter()
-                            .enumerate()
-                            .find(|(index, image)| {
-                                Some(*index) != config.system_bios_image
-                                    && crate::firmware::matched_entry(
-                                        image,
-                                        config.board.firmware_catalogue(),
-                                    )
-                                    .is_some_and(|entry| entry.kind == slot.kind)
-                            })
-                            .map(|(index, _)| index)
-                    };
+                    let system = slot_kind == FirmwareKind::SystemBios;
                     if index.is_some_and(|index| {
                         crate::firmware::matched_entry(
                             &config.images[index],
                             config.board.firmware_catalogue(),
                         )
                         .is_some_and(|current| current.id == entry.id)
+                            || draft
+                                .firmware_ids
+                                .iter()
+                                .any(|(image, id)| *image == index && id == name)
                     }) {
                         if system {
                             selected_bios = Some(name.clone());
@@ -657,14 +847,154 @@ pub fn validate_draft(draft: &Draft) -> Validation {
             (new.id, name.to_string())
         })
         .collect();
+    if draft.preserve_card_roles {
+        // A replacement receives a new file identity, so it appends to the inherited cards.
+        for edit in &draft.edits {
+            let Some((id, "kind")) = draft.device_id(&edit.field_path) else {
+                continue;
+            };
+            let Value::Name(name) = &edit.value else {
+                continue;
+            };
+            let old = draft
+                .config
+                .devices
+                .iter()
+                .find(|device| device.id == id)
+                .and_then(|device| CardKind::of(&device.kind));
+            if old.is_some_and(|kind| kind.name() != name) {
+                if let Some(index) = config.devices.iter().position(|device| {
+                    device.id == id
+                        && CardKind::of(&device.kind).is_some_and(|kind| kind.name() == name)
+                }) {
+                    let device = config.devices.remove(index);
+                    config.devices.push(device);
+                }
+            }
+        }
+    }
+    let removed: Vec<_> = draft
+        .edits
+        .iter()
+        .filter(|edit| edit.value == Value::Name("none".into()))
+        .filter_map(|edit| optional_kind(draft, &edit.field_path).map(CardKind::id))
+        .collect();
+    if !removed.is_empty() {
+        config
+            .devices
+            .retain(|device| !removed.contains(&device.id));
+        config
+            .memory
+            .mmio
+            .retain(|window| !removed.contains(&window.device));
+        config.memory.ram =
+            ram_regions(conventional, extended, &config.memory.mmio, &config.images);
+    }
     located.config = config.clone();
     for (index, _, path) in &pending_images {
         located.image_paths.retain(|(image, _)| image != index);
         located.image_paths.push((*index, path.clone()));
     }
+    let image_indices: Vec<_> = (0..config.images.len())
+        .filter(|index| !removed_images.contains(index))
+        .collect();
+    let image_index = |old: usize| image_indices.iter().position(|index| *index == old);
+    if !removed_images.is_empty() {
+        config.images = image_indices
+            .iter()
+            .map(|index| config.images[*index].clone())
+            .collect();
+        config.system_bios_image = config.system_bios_image.and_then(image_index);
+        located.image_paths = located
+            .image_paths
+            .iter()
+            .filter_map(|(index, path)| image_index(*index).map(|index| (index, path.clone())))
+            .collect();
+        located.config = config.clone();
+        pending_images = pending_images
+            .into_iter()
+            .filter_map(|(index, size, path)| image_index(index).map(|index| (index, size, path)))
+            .collect();
+    }
     let mut placement = config.clone();
     for (index, size, _) in &pending_images {
         placement.images[*index].source = ImageSource::Blank { size: *size };
+    }
+    for (original_index, id) in &draft.firmware_ids {
+        let Some(index) = image_index(*original_index) else {
+            continue;
+        };
+        if !draft
+            .edits
+            .iter()
+            .any(|edit| edit.field_path == draft.image_path(*original_index))
+        {
+            if let Some(entry) = config
+                .board
+                .firmware_catalogue()
+                .iter()
+                .find(|entry| entry.id == id)
+            {
+                placement.images[index].source = ImageSource::Blank {
+                    size: entry.size - entry.rom_offset as u64,
+                };
+                if let Err(error) =
+                    crate::firmware::check_entry_requirements(&config, config.board, entry, None)
+                {
+                    diagnostics.push(diagnostic::from_error(&located, &error));
+                }
+            }
+        }
+    }
+    let catalogue = config.board.firmware_catalogue();
+    let mut known = Vec::new();
+    for (old_index, id) in &draft.firmware_ids {
+        let Some(index) = image_index(*old_index) else {
+            continue;
+        };
+        let path = draft.image_path(*old_index);
+        let name = draft
+            .edits
+            .iter()
+            .find(|edit| edit.field_path == path)
+            .map_or(Some(id.as_str()), |edit| {
+                if let Value::Name(name) = &edit.value {
+                    Some(name.as_str())
+                } else {
+                    None
+                }
+            });
+        if let Some(entry) = name.and_then(|name| catalogue.iter().find(|entry| entry.id == name)) {
+            known.push((index, entry));
+        }
+    }
+    for (index, _, path) in &pending_images {
+        if !known.iter().any(|(image, _)| image == index) {
+            if let Some(entry) = draft
+                .edits
+                .iter()
+                .find(|edit| &edit.field_path == path)
+                .and_then(|edit| {
+                    if let Value::Name(name) = &edit.value {
+                        catalogue.iter().find(|entry| entry.id == name)
+                    } else {
+                        None
+                    }
+                })
+            {
+                known.push((*index, entry));
+            }
+        }
+    }
+    if !known.is_empty() {
+        if let Some(error) = config.draft_firmware_error(&known) {
+            let mut diagnostic = diagnostic::from_error(&located, &error);
+            if let ConfigError::FirmwareProvidesMismatch { image_index, .. } = error {
+                diagnostic.code = "firmware-provides";
+                diagnostic.field_paths = vec![located.image_path(image_index)];
+            }
+            diagnostics.push(diagnostic);
+        }
     }
     for error in placement.draft_image_errors() {
         diagnostics.push(diagnostic::from_error(&located, &error));
@@ -673,10 +1003,7 @@ pub fn validate_draft(draft: &Draft) -> Validation {
         && (crate::firmware::system_bios(&config).is_err()
             || crate::firmware::unresolved_roms(&config));
     for edit in &draft.edits {
-        if FIRMWARE_SLOTS
-            .iter()
-            .any(|slot| slot.path == edit.field_path)
-        {
+        if firmware_slot(draft, &edit.field_path).is_some() {
             if let Value::Name(name) = &edit.value {
                 if let Some(entry) = config
                     .board
@@ -864,7 +1191,8 @@ pub fn choices_page(draft: &Draft, path: &str, offset: usize, limit: usize) -> V
         .collect()
 }
 
-fn diagnostic_affects_field(diagnostic: &Diagnostic, path: &str) -> bool {
+/// Consumers share candidate validation's path relation, including owner-level errors.
+pub fn diagnostic_affects_field(diagnostic: &Diagnostic, path: &str) -> bool {
     let related = |field: &str| {
         field == path
             || path
@@ -886,3 +1214,7 @@ fn diagnostic_affects_field(diagnostic: &Diagnostic, path: &str) -> bool {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+#[path = "capabilities_conflict_tests.rs"]
+mod conflict_tests;

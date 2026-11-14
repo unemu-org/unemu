@@ -40,6 +40,7 @@ pub(crate) enum Command {
     Placeholder(&'static str),
     SaveState,
     FirmwareFolders,
+    Settings,
 }
 
 #[derive(Clone, Copy)]
@@ -104,7 +105,7 @@ pub(crate) fn hotkey(
         return match key {
             KeyN => Some(Placeholder("New machine")),
             KeyO => Some(Placeholder("Open machine file")),
-            Comma => Some(Placeholder("Settings")),
+            Comma => Some(Settings),
             _ => None,
         };
     }
@@ -491,7 +492,12 @@ pub(crate) fn machine_paths(root: &Path) -> io::Result<Vec<PathBuf>> {
         };
         for entry in entries {
             let path = entry?.path();
-            if path.is_file()
+            let visible = path.file_name().is_some_and(|name| {
+                let name = name.to_string_lossy();
+                !name.starts_with('.') && !name.contains(".pending.")
+            });
+            if visible
+                && path.is_file()
                 && matches!(
                     path.extension().and_then(|value| value.to_str()),
                     Some("toml" | "yaml" | "yml")
@@ -541,6 +547,26 @@ pub(crate) fn texture_image(frame: &window::PixelFrame) -> egui::ColorImage {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn fix_round_library_ignores_dotfiles_and_pending_files() {
+        let temp = assembly::test_support::TempDir::new("library-pending");
+        std::fs::create_dir_all(temp.path().join("local")).unwrap();
+        for file in [
+            "visible.toml",
+            ".hidden.toml",
+            "stale.pending.toml",
+            "local/.settings.pending.toml",
+            "local/saved.toml",
+        ] {
+            std::fs::write(temp.path().join(file), "").unwrap();
+        }
+        let paths = machine_paths(temp.path()).unwrap();
+        assert_eq!(paths.len(), 2);
+        assert!(paths.iter().all(|path| path
+            .file_name()
+            .is_some_and(|name| name == "visible.toml" || name == "saved.toml")));
+    }
+
     #[test]
     fn row_warnings_exclude_pending_checks_and_skipped_roots() {
         let mut entry = LibraryEntry::pending("synthetic.toml".into());
@@ -835,7 +861,7 @@ mod tests {
                         true,
                         Command::Placeholder("Open machine file"),
                     ),
-                    (KeyCode::Comma, true, Command::Placeholder("Settings")),
+                    (KeyCode::Comma, true, Command::Settings),
                 ] {
                     assert_eq!(
                         hotkey(key, ctrl, false, false, state, focus),

@@ -5,6 +5,20 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-14 — Machine settings:** Machine > Settings… (Ctrl+, outside guest
+  focus) opens the classic seven-tab property sheet from effective inherited
+  values, including user-ROM machines without their image bytes. Assembly owns
+  the fields, domains, disabled-choice reasons and all resource-conflict pairs.
+  Declared catalogue firmware also constrains services before ROM bytes are read.
+  Running/paused sessions are read-only. OK/Apply previews and writes a sparse
+  `machines/local/<parent>-custom.toml` child with explicit replacement consent,
+  then selects it in the library. Shipped files and inherited media pins/policies
+  stay unchanged; pending image checks still gate Start. Headless model tests
+  cover discovery, round-trips, preview bytes, invalid edits and save guards;
+  visual acceptance remains manual. Metadata uses the normal machine-file
+  lowering rules; indexed ROM edits preserve other bindings and symlink spellings.
+  Saved local children edit in place with a diff and overwrite consent; firmware
+  edits defer discovery to readiness checks.
 - **2026-11-14 — Installation media sets:** the design section and [mock-up](design/mockups/install-media.html) were approved by the maintainer; implementation remains pending.
 - **2026-11-14 — PC machine image import:** `pc-image` imports resolved TOML/YAML machines into self-contained OCI blobs and local tags, validates PC bundle bindings and resolves them back to assembly input. Firmware, full media catalogues and CMOS are copied; journal generations freeze to whole raw bases through private recovery copies. `image import` requires an explicit store and tag, with `--create` for initialization; interrupted journals require named per-medium recovery choices. Validation and resolution keep large disks file-backed, and local import records retain policies and generation choices. Source files and journals remain unchanged. Layers, workspaces and registry transport remain separate.
 - **2026-11-14 — PC machine image import:** `pc-image` imports resolved TOML/YAML machines into self-contained OCI blobs and local tags, validates PC bundle bindings and resolves them back to assembly input. Firmware, full media catalogues and CMOS are copied; journal generations freeze to whole raw bases through private recovery copies. `image import` requires an explicit store and tag; interrupted journals require a recovery choice. Source files and journals remain unchanged. Layers, workspaces and registry transport remain separate.

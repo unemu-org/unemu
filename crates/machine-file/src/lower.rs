@@ -111,6 +111,7 @@ struct Context<'a, R> {
     image_paths: Vec<PathBuf>,
     options: assembly::AssemblyOptions,
     bios_parts: bool,
+    metadata: bool,
 }
 
 impl<R: ImageReader> Context<'_, R> {
@@ -296,60 +297,96 @@ impl<R: ImageReader> Context<'_, R> {
         if rom.image.is_some() && rom.parts.is_some() {
             return Err(self.error(field, "image and parts are mutually exclusive"));
         }
-        let bytes = if let Some(parts) = &rom.parts {
-            if !bios {
-                return Err(self.error(
-                    &format!("{field}.parts"),
-                    "option ROMs cannot use parts; only firmware.bios supports parts",
-                ));
-            }
-            let mut loaded = Vec::new();
-            for (i, part) in parts.iter().enumerate() {
-                let (bytes, _) = self.image(
-                    &format!("{field}.parts[{i}].image"),
-                    Some(&part.image),
-                    part.sha256.as_ref(),
-                    &format!("{field}.parts[{i}].sha256"),
-                    false,
-                )?;
-                loaded.push((
-                    match part.lane {
-                        v1::Lane::Even => assembly::Lane::Even,
-                        v1::Lane::Odd => assembly::Lane::Odd,
-                    },
-                    part.offset,
-                    bytes,
-                ));
-            }
-            let bytes = assembly::interleave_parts(&loaded)
-                .map_err(|e| self.error(&format!("{field}.parts"), e.to_string()))?;
-            assembly::check_firmware_parts(&loaded, &bytes, catalogue, self.options)
-                .map_err(|e| self.error(&format!("{field}.parts"), e.to_string()))?;
-            if let Some(pin) = &rom.sha256 {
-                let actual = format!("{:x}", Sha256::digest(&bytes));
-                if actual != pin.as_str() {
-                    return Err(self.pin_error(
+        let bytes = if self.metadata {
+            None
+        } else {
+            Some(if let Some(parts) = &rom.parts {
+                if !bios {
+                    return Err(self.error(
                         &format!("{field}.parts"),
-                        &format!("{field}.sha256"),
-                        format!(
-                            "sha256 mismatch for assembled BIOS: expected {}, actual {actual}",
-                            pin.as_str()
-                        ),
+                        "option ROMs cannot use parts; only firmware.bios supports parts",
                     ));
                 }
-            }
-            bytes
-        } else {
-            self.image(
-                &format!("{field}.image"),
-                rom.image.as_deref(),
-                rom.sha256.as_ref(),
-                &format!("{field}.sha256"),
-                false,
-            )?
-            .0
+                let mut loaded = Vec::new();
+                for (i, part) in parts.iter().enumerate() {
+                    let (bytes, _) = self.image(
+                        &format!("{field}.parts[{i}].image"),
+                        Some(&part.image),
+                        part.sha256.as_ref(),
+                        &format!("{field}.parts[{i}].sha256"),
+                        false,
+                    )?;
+                    loaded.push((
+                        match part.lane {
+                            v1::Lane::Even => assembly::Lane::Even,
+                            v1::Lane::Odd => assembly::Lane::Odd,
+                        },
+                        part.offset,
+                        bytes,
+                    ));
+                }
+                let bytes = assembly::interleave_parts(&loaded)
+                    .map_err(|e| self.error(&format!("{field}.parts"), e.to_string()))?;
+                assembly::check_firmware_parts(&loaded, &bytes, catalogue, self.options)
+                    .map_err(|e| self.error(&format!("{field}.parts"), e.to_string()))?;
+                if let Some(pin) = &rom.sha256 {
+                    let actual = format!("{:x}", Sha256::digest(&bytes));
+                    if actual != pin.as_str() {
+                        return Err(self.pin_error(
+                            &format!("{field}.parts"),
+                            &format!("{field}.sha256"),
+                            format!(
+                                "sha256 mismatch for assembled BIOS: expected {}, actual {actual}",
+                                pin.as_str()
+                            ),
+                        ));
+                    }
+                }
+                bytes
+            } else {
+                self.image(
+                    &format!("{field}.image"),
+                    rom.image.as_deref(),
+                    rom.sha256.as_ref(),
+                    &format!("{field}.sha256"),
+                    false,
+                )?
+                .0
+            })
         };
-        let identified = catalogue.iter().find(|entry| entry.identifies(&bytes));
+        let identified = if let Some(bytes) = &bytes {
+            catalogue.iter().find(|entry| entry.identifies(bytes))
+        } else {
+            rom.sha256
+                .as_ref()
+                .and_then(|pin| catalogue.iter().find(|entry| entry.sha256 == pin.as_str()))
+        };
+        let size = if let Some(bytes) = &bytes {
+            Some(bytes.len() as u64)
+        } else if let Some(entry) = identified {
+            Some(entry.size)
+        } else if let Some(parts) = &rom.parts {
+            parts
+                .iter()
+                .enumerate()
+                .map(|(index, part)| {
+                    std::fs::metadata(
+                        self.origins
+                            .image_path(&format!("{field}.parts[{index}].image"), &part.image),
+                    )
+                    .ok()
+                    .map(|meta| part.offset.saturating_add(meta.len().saturating_mul(2)))
+                })
+                .collect::<Option<Vec<_>>>()
+                .and_then(|sizes| sizes.into_iter().max())
+        } else {
+            rom.image.as_ref().and_then(|image| {
+                std::fs::metadata(self.origins.image_path(&format!("{field}.image"), image))
+                    .ok()
+                    .map(|meta| meta.len())
+            })
+        };
+
         if let Some(entry) =
             identified.filter(|entry| bios && entry.kind == assembly::FirmwareKind::VideoBios)
         {
@@ -361,14 +398,14 @@ impl<R: ImageReader> Context<'_, R> {
         let base = match rom.base {
             Some(base) => u64::from(base),
             None if bios => MIB
-                .checked_sub(bytes.len() as u64)
+                .checked_sub(size.unwrap_or(0))
                 .ok_or_else(|| self.error(field, "BIOS exceeds the 1 MiB reset address space"))?,
             None => return Err(self.error(&format!("{field}.base"), "required field is missing")),
         };
-        if bios && base.checked_add(bytes.len() as u64) != Some(MIB) {
+        if bios && size.is_some_and(|size| base.checked_add(size) != Some(MIB)) {
             return Err(self.validation_error(ConfigError::BiosPlacement {
                 base,
-                size: bytes.len() as u64,
+                size: size.unwrap_or(0),
             }));
         }
         self.images.push(field.into());
@@ -382,10 +419,9 @@ impl<R: ImageReader> Context<'_, R> {
             })
             .collect();
         if provides.is_empty() {
-            if let Some(entry) = catalogue.iter().find(|entry| {
-                entry.identifies(&bytes)
-                    && (entry.kind == assembly::FirmwareKind::SystemBios) == bios
-            }) {
+            if let Some(entry) = identified
+                .filter(|entry| (entry.kind == assembly::FirmwareKind::SystemBios) == bios)
+            {
                 provides = entry.provides.to_vec();
             }
         }
@@ -394,7 +430,7 @@ impl<R: ImageReader> Context<'_, R> {
         let offset = rom
             .offset
             .unwrap_or_else(|| adapter.map_or(0, |entry| entry.rom_offset));
-        if (rom.offset.is_some() || offset != 0) && offset >= bytes.len() {
+        if (rom.offset.is_some() || offset != 0) && size.is_some_and(|size| offset as u64 >= size) {
             return Err(self.error(
                 &format!("{field}.offset"),
                 "offset must leave a nonempty ROM",
@@ -410,10 +446,34 @@ impl<R: ImageReader> Context<'_, R> {
         }
         Ok(LoadImage {
             base,
-            source: if offset == 0 {
-                ImageSource::Inline(bytes)
+            source: if let Some(bytes) = bytes {
+                if offset == 0 {
+                    ImageSource::Inline(bytes)
+                } else {
+                    ImageSource::RomContainer { bytes, offset }
+                }
+            } else if let Some(parts) = &rom.parts {
+                ImageSource::Interleaved(
+                    parts
+                        .iter()
+                        .enumerate()
+                        .map(|(index, part)| assembly::ImagePart {
+                            path: self
+                                .origins
+                                .image_path(&format!("{field}.parts[{index}].image"), &part.image),
+                            lane: match part.lane {
+                                v1::Lane::Even => assembly::Lane::Even,
+                                v1::Lane::Odd => assembly::Lane::Odd,
+                            },
+                            offset: part.offset,
+                        })
+                        .collect(),
+                )
             } else {
-                ImageSource::RomContainer { bytes, offset }
+                ImageSource::File(rom.image.as_ref().map_or_else(
+                    || PathBuf::from("pending-firmware"),
+                    |image| self.origins.image_path(&format!("{field}.image"), image),
+                ))
             },
             kind: ImageKind::Rom,
             provides,
@@ -451,6 +511,13 @@ impl<R: ImageReader> Context<'_, R> {
                     )?;
                     None
                 };
+                if self.metadata {
+                    return Ok(assembly::CmosCfg {
+                        start,
+                        nvram: NvramSource::Blank,
+                        ..Default::default()
+                    });
+                }
                 let (bytes, expected_sha256) = self.image(
                     "board.rtc.nvram.image",
                     image.image.as_deref(),
@@ -758,6 +825,22 @@ impl<R: ImageReader> Context<'_, R> {
                             medium.keep_generations.is_some(),
                         )?
                     };
+                    if self.metadata {
+                        entries.push(assembly::FloppyMedium {
+                            name: Path::new(&medium.image)
+                                .file_name()
+                                .unwrap_or_default()
+                                .to_string_lossy()
+                                .into_owned(),
+                            image: ImageSource::File(
+                                self.origins
+                                    .image_path(&format!("{field}.image"), &medium.image),
+                            ),
+                            expected_sha256: medium.sha256.as_ref().map(metadata_pin),
+                            write,
+                        });
+                        continue;
+                    }
                     let (length, digest) = if matches!(write, assembly::WriteMode::Journal { .. }) {
                         self.journal_image(
                             &format!("{field}.image"),
@@ -836,6 +919,28 @@ impl<R: ImageReader> Context<'_, R> {
                     drive.keep_generations.is_some(),
                 )?
             };
+            if self.metadata {
+                drives.push(DriveConfig {
+                    media: None,
+                    controller: device.id,
+                    unit,
+                    kind: drive_kind,
+                    image: drive.image.as_ref().map_or(
+                        ImageSource::Blank {
+                            size: drive_kind.image_bytes(),
+                        },
+                        |image| {
+                            ImageSource::File(
+                                self.origins
+                                    .image_path(&format!("{drive_field}.image"), image),
+                            )
+                        },
+                    ),
+                    expected_sha256: drive.sha256.as_ref().map(metadata_pin),
+                    write,
+                });
+                continue;
+            }
             let journal = matches!(write, assembly::WriteMode::Journal { .. });
             let (length, digest, bytes) = if journal {
                 let (length, digest) = self.journal_image(
@@ -1214,6 +1319,16 @@ pub(crate) fn lower_tracked<R: ImageReader>(
     reader: &mut R,
     options: assembly::AssemblyOptions,
 ) -> Result<(MachineConfig, AssemblyDiagnostics), LowerError> {
+    lower_tracked_mode(document, origins, reader, options, false)
+}
+
+fn lower_tracked_mode<R: ImageReader>(
+    document: &MachineFile,
+    origins: &Origins,
+    reader: &mut R,
+    options: assembly::AssemblyOptions,
+    metadata: bool,
+) -> Result<(MachineConfig, AssemblyDiagnostics), LowerError> {
     let mut context = Context {
         origins,
         reader,
@@ -1234,6 +1349,7 @@ pub(crate) fn lower_tracked<R: ImageReader>(
         image_paths: Vec::new(),
         options,
         bios_parts: false,
+        metadata,
     };
     if document.extends.is_some() {
         return Err(context.error(
@@ -1321,10 +1437,24 @@ pub(crate) fn lower_tracked<R: ImageReader>(
             .into(),
         )
     }));
-    let firmware = context.required("firmware.bios", document.firmware.as_ref())?;
-    let bios = context.required("firmware.bios", firmware.bios.as_ref())?;
-    let mut images = vec![context.rom("firmware.bios", bios, true, board.firmware_catalogue())?];
-    for (index, rom) in firmware.option_roms.iter().flatten().enumerate() {
+    let mut images = Vec::new();
+    let mut system_bios_image = None;
+    if let Some(bios) = document
+        .firmware
+        .as_ref()
+        .and_then(|firmware| firmware.bios.as_ref())
+    {
+        images.push(context.rom("firmware.bios", bios, true, board.firmware_catalogue())?);
+        system_bios_image = Some(0);
+    } else if !metadata {
+        return Err(context.error("firmware.bios", "required field is missing"));
+    }
+    for (index, rom) in document
+        .firmware
+        .iter()
+        .flat_map(|firmware| firmware.option_roms.iter().flatten())
+        .enumerate()
+    {
         images.push(context.rom(
             &format!("firmware.option_roms[{index}]"),
             rom,
@@ -1395,7 +1525,7 @@ pub(crate) fn lower_tracked<R: ImageReader>(
     };
     let config = MachineConfig {
         display_switch,
-        system_bios_image: Some(0),
+        system_bios_image,
         board,
         cpu: CpuConfig {
             chip,
@@ -1421,13 +1551,15 @@ pub(crate) fn lower_tracked<R: ImageReader>(
         drives,
         images,
     };
-    config
-        .validate()
-        .map_err(|error| context.validation_error(error))?;
-    crate::paths::validate_journals(&config, origins, &context.image_paths)
-        .map_err(|error| context.validation_error(error))?;
-    assembly::check_option_rom_catalogue(&config, options)
-        .map_err(|error| context.validation_error(error))?;
+    if !metadata {
+        config
+            .validate()
+            .map_err(|error| context.validation_error(error))?;
+        crate::paths::validate_journals(&config, origins, &context.image_paths)
+            .map_err(|error| context.validation_error(error))?;
+        assembly::check_option_rom_catalogue(&config, options)
+            .map_err(|error| context.validation_error(error))?;
+    }
     let diagnostics = AssemblyDiagnostics {
         bios_parts: context.bios_parts,
         origins: origins.clone(),
@@ -1439,6 +1571,99 @@ pub(crate) fn lower_tracked<R: ImageReader>(
         image_paths: context.image_paths,
     };
     Ok((config, diagnostics))
+}
+
+fn metadata_pin(pin: &v1::Sha256) -> [u8; 32] {
+    let mut digest = [0; 32];
+    for (byte, pair) in digest
+        .iter_mut()
+        .zip(pin.as_str().as_bytes().as_chunks::<2>().0)
+    {
+        *byte = (hex_digit(pair[0]) << 4) | hex_digit(pair[1]);
+    }
+    digest
+}
+fn hex_digit(byte: u8) -> u8 {
+    if byte.is_ascii_digit() {
+        byte - b'0'
+    } else {
+        byte.to_ascii_lowercase() - b'a' + 10
+    }
+}
+
+struct MetadataReader;
+impl ImageReader for MetadataReader {
+    fn read(&mut self, _: &Path) -> io::Result<Vec<u8>> {
+        Err(io::Error::other("metadata lowering does not read images"))
+    }
+}
+
+impl MachineFile {
+    /// Describe resolved settings through the normal lowering rules without reading or
+    /// hashing image bytes or opening journals. Unknown extents stay pending; known
+    /// catalogue sizes or file metadata determine ROM placement. This draft cannot
+    /// authorize execution. See `backlog/docs/design/machine-images.md` §6.
+    pub fn describe(&self, origins: &Origins) -> Result<assembly::capabilities::Draft, LowerError> {
+        let (config, diagnostics) = lower_tracked_mode(
+            self,
+            origins,
+            &mut MetadataReader,
+            assembly::AssemblyOptions::default(),
+            true,
+        )?;
+        let mut draft = assembly::capabilities::Draft::new(config);
+        draft.card_ids = diagnostics
+            .devices
+            .iter()
+            .filter_map(|(id, path)| {
+                path.strip_prefix("card[")
+                    .and_then(|path| path.strip_suffix(']'))
+                    .and_then(|index| index.parse::<usize>().ok())
+                    .and_then(|index| diagnostics.labels.get(index).and_then(Clone::clone))
+                    .map(|name| (*id, name))
+            })
+            .collect();
+        draft.image_paths = diagnostics.images.iter().cloned().enumerate().collect();
+        for (index, path) in &draft.image_paths {
+            let rom = if path == "firmware.bios" {
+                self.firmware.as_ref().and_then(|f| f.bios.as_ref())
+            } else {
+                path.strip_prefix("firmware.option_roms[")
+                    .and_then(|s| s.strip_suffix(']'))
+                    .and_then(|s| s.parse::<usize>().ok())
+                    .and_then(|i| {
+                        self.firmware
+                            .as_ref()
+                            .and_then(|f| f.option_roms.as_ref())
+                            .and_then(|roms| roms.get(i))
+                    })
+            };
+            if let Some(rom) = rom {
+                if let Some(entry) = rom.sha256.as_ref().and_then(|pin| {
+                    draft
+                        .config
+                        .board
+                        .firmware_catalogue()
+                        .iter()
+                        .find(|entry| entry.sha256 == pin.as_str())
+                }) {
+                    draft.firmware_ids.push((*index, entry.id.into()));
+                } else {
+                    draft.firmware_files.push((
+                        *index,
+                        rom.image
+                            .as_ref()
+                            .and_then(|image| Path::new(image).file_name())
+                            .map_or_else(
+                                || "Chip dumps".into(),
+                                |name| name.to_string_lossy().into_owned(),
+                            ),
+                    ));
+                }
+            }
+        }
+        Ok(draft)
+    }
 }
 
 #[cfg(test)]
@@ -1469,6 +1694,7 @@ mod tests {
             image_paths: Vec::new(),
             options: assembly::AssemblyOptions::default(),
             bios_parts: false,
+            metadata: false,
         }
     }
 
@@ -2197,6 +2423,7 @@ mod tests {
             image_paths: vec![],
             options: assembly::AssemblyOptions::default(),
             bios_parts: false,
+            metadata: false,
         };
         let firmware = document.firmware.unwrap();
         let rom = if bios {
@@ -2316,6 +2543,7 @@ mod tests {
             image_paths: vec![],
             options: assembly::AssemblyOptions::default(),
             bios_parts: false,
+            metadata: false,
         };
         let mut rom = doc.firmware.unwrap().bios.unwrap();
         let error = context
@@ -2444,6 +2672,7 @@ impl AssemblyDiagnostics {
             image_paths: self.image_paths.clone(),
             options: assembly::AssemblyOptions::default(),
             bios_parts: self.bios_parts,
+            metadata: false,
         }
     }
 
@@ -2472,5 +2701,76 @@ impl AssemblyDiagnostics {
                 context.error("memory", format!("cpu memory map: {error}"))
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod metadata_tests {
+    use super::*;
+    use assembly::capabilities::{self as caps, Value};
+
+    #[test]
+    fn metadata_uses_normal_lowering_defaults_and_file_length_without_reading_bytes() {
+        let temp = assembly::test_support::TempDir::new("metadata-lowering");
+        std::fs::write(temp.path().join("bios.bin"), vec![0xF4; 32768]).unwrap();
+        let path = temp.path().join("machine.toml");
+        let text = "schema=1\n[board]\nmodel='ibm-5170'\n[cpu]\nfpu='80287'\n[board.rtc]\nstart='2001-02-03T04:05:06'\n[firmware.bios]\nimage='bios.bin'\n[[card]]\nkind='mda'\n";
+        let file = crate::parse_toml(&path, text).unwrap();
+        let origins = Origins::from_toml(&path, text).unwrap();
+        let metadata = file.describe(&origins).unwrap();
+        let config = lower(
+            &file,
+            &origins,
+            &mut FileImageReader,
+            assembly::AssemblyOptions {
+                allow_unlisted_firmware: true,
+            },
+        )
+        .unwrap();
+        assert_eq!(metadata.config.images[0].base, 0xF8000);
+        assert_eq!(metadata.config.images[0].base, config.images[0].base);
+        assert_eq!(metadata.config.cpu, config.cpu);
+        assert_eq!(metadata.config.devices, config.devices);
+        assert_eq!(metadata.config.memory, config.memory);
+        let mut expected = caps::Draft::new(config);
+        expected.card_ids.push((DeviceId::Mda, "mda".into()));
+        expected.image_paths.push((0, "firmware.bios".into()));
+        expected.firmware_files.push((0, "bios.bin".into()));
+        let fields = |draft: &caps::Draft| {
+            caps::fields(draft)
+                .into_iter()
+                .map(|field| (field.path, field.value))
+                .collect::<BTreeMap<_, _>>()
+        };
+        assert_eq!(fields(&metadata), fields(&expected));
+        assert!(!caps::validate_draft(&metadata).ready());
+    }
+
+    #[test]
+    fn indexed_options_work_without_a_bios_and_keep_catalogue_and_file_names_distinct() {
+        let text = format!("schema=1\n[board]\nmodel='ibm-5170'\n[[firmware.option_roms]]\nimage='{}'\nbase=0xC8000\n[[firmware.option_roms]]\nimage='second.bin'\nbase=0xD0000\n[[card]]\nkind='mda'\n", assembly::KISELEV_XI8088.id);
+        let file = crate::parse_toml("machine.toml", &text).unwrap();
+        let mut draft = file.describe(&Origins::new("machine.toml")).unwrap();
+        assert_eq!(draft.config.system_bios_image, None);
+        assert_eq!(
+            draft.image_paths,
+            [
+                (0, "firmware.option_roms[0]".into()),
+                (1, "firmware.option_roms[1]".into())
+            ]
+        );
+        assert!(draft.firmware_ids.is_empty());
+        assert!(caps::fields(&draft)
+            .iter()
+            .any(|field| field.value == Value::FileName(assembly::KISELEV_XI8088.id.into())));
+        draft.set("firmware.option_roms[1]", Value::Disconnected);
+        draft.set(
+            "firmware.bios",
+            Value::Name(assembly::KISELEV_XI8088.id.into()),
+        );
+        let validation = caps::validate_draft(&draft);
+        assert_eq!(validation.config.system_bios_image, Some(1));
+        assert_eq!(validation.config.images.len(), 2);
+        assert_eq!(validation.config.images[0].base, 0xC8000);
     }
 }
