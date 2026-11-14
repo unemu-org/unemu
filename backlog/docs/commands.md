@@ -39,13 +39,51 @@ unchanged and every copy is streamed with full SHA-256. Existing tags fail befor
 reading sources; final publication uses compare-and-swap. All descriptors default
 to user-supplied. Optical storage does not enable CD-ROM emulation.
 
-In the window, Media > Insert > From library uses the shared unemu family store root:
+Firmware packages use the same store, with the shared default data root when
+`--store` is omitted:
+
+```sh
+cargo run --offline -p cli -- image firmware import /path/to/roms --store /path/to/store --create --dry-run
+cargo run --offline -p cli -- image firmware import /path/to/even.bin /path/to/odd.bin --store /path/to/store
+cargo run --offline -p cli -- image firmware import /path/to/roms --rescan --for ibm-5170-bios-1985-06-10 --extra /path/to/manual.pdf --store /path/to/store
+cargo run --offline -p cli -- image firmware ls --store /path/to/store
+cargo run --offline -p cli -- image firmware show firmware/ibm-5170-bios-1985-06-10:1 --store /path/to/store
+```
+
+Firmware import recursively enumerates files in stable name order (32 directory
+levels and 10,000 entries maximum; hitting a limit imports no candidates), matches full
+SHA-256 and length against the catalogue and verifies reconstructed chip sets.
+It reports unmatched/unreadable inputs and incomplete sets with missing sockets;
+those inputs are never published. Multiple complete layouts require an explicit
+file list containing one layout; ambiguous catalogue identities require `--for`.
+Tags are `firmware/<catalogue-id>:1`; identical packages report already imported,
+while different digests conflict before copying, with CAS at publication. `--rescan` bypasses reusable persistent ROM hashes. `--dry-run`
+previews without writing blobs/tags or creating a store. Extras require
+`--for CATALOGUE-ID`; repeat `--extra PATH[:DOSNAME]` using the media-set attachment
+schema and DOS naming rules above. Sources remain unchanged. Catalogue-reviewed
+open ROMs retain licence/provenance; config and documents default to user-supplied.
+The window uses Preferences > store root, falling back to the shared unemu
+platform location, for both library media and firmware readiness. CLI `run` uses
+the shared default, accepts `--store DIR`, and disables package lookup with
+`--no-store`. Plain `load_for_assembly*` library calls never open a host store.
+Only wholly pinned declarations participate: an assembled pin or all chip pins
+is required, and image/parts shape and chip placement stay unchanged. A store
+root that does not exist yet is a silent miss. Other store infrastructure
+failures before selection warn and fall back to declared files and ROM
+folders; selected-package corruption still blocks use. Machine-image
+import uses its explicit target store. Loaded bytes still pass machine pins and ordinary
+assembly validation; importing unlisted firmware never grants permission to run it.
+The Firmware collection UI is pending.
+
+In the window, firmware readiness and Media > Insert > From library use the
+Preferences store root when set, otherwise the shared unemu family default:
 `~/Library/Application Support/unemu/` on macOS,
 `$XDG_DATA_HOME/unemu/` (or `~/.local/share/unemu/`) on Linux,
 and `%LOCALAPPDATA%/unemu/` on Windows. Linux falls back when XDG_DATA_HOME
 is unset or empty. This directory itself contains `store.toml` and `images/`;
-Preferences can override it; the Insert dialog also accepts an explicit root.
-CLI `--store` remains explicit.
+The Insert dialog also accepts an explicit root.
+CLI image/media commands require explicit `--store`; firmware commands and
+`run` also accept the shared default.
 Summary loading and full verification run on background jobs with progress and
 nonblocking store-busy errors. Damaged sets remain visible as disabled rows.
 Loading all disks in order defaults on; disks already in the catalogue are reused

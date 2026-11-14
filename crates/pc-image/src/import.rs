@@ -560,8 +560,12 @@ pub fn import_machine(
             )
         })
         .collect::<Vec<_>>();
-    let prepared =
-        machine_file::prepare_for_assembly_with_firmware_roots(path, &roots, &mut warnings)?;
+    let prepared = machine_file::prepare_for_assembly_with_firmware_store(
+        path,
+        &roots,
+        &mut warnings,
+        Some(store),
+    )?;
     let (document, origins) = prepared.resolved();
     let missing = inputs(document, origins)?
         .into_iter()
@@ -766,12 +770,23 @@ pub fn import_machine(
         d.annotations
             .insert("unemu.redistribution".into(), "user-supplied".into());
     }
-    let manifest = image_store::Manifest::new_with_types(
+    let mut manifest = image_store::Manifest::new_with_types(
         "ibm-pc-at",
         configuration,
         layers,
         PcProvider.payload_types(),
     )?;
+    if !prepared.firmware_sources().is_empty() {
+        let sources = prepared
+            .firmware_sources()
+            .iter()
+            .map(|d| format!("\"{d}\""))
+            .collect::<Vec<_>>()
+            .join(",");
+        manifest
+            .annotations
+            .insert("unemu.firmware.sources".into(), format!("[{sources}]"));
+    }
     let manifest = store.import_manifest_with_types(&manifest, PcProvider.payload_types())?;
     let record = ImportRecord {
         schema: 1,

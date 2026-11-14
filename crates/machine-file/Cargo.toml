@@ -9,6 +9,7 @@ repository.workspace = true
 description = "Machine description files (TOML and YAML) over one versioned schema."
 
 [dependencies]
+image-store = { path = "../image-store", version = "0.1.0" }
 assembly.workspace = true
 media.workspace = true
 sha2.workspace = true

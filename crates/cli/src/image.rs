@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Opt-in local image commands; machine-images §§2–3 and §8.
 
+mod firmware;
 mod media;
 
 use std::{ffi::OsString, io::Write, path::PathBuf};
@@ -33,6 +34,7 @@ pub enum ImageCommand {
         flatten: bool,
     },
     Media(media::MediaCommand),
+    Firmware(firmware::FirmwareCommand),
     Import {
         machine: PathBuf,
         store: PathBuf,
@@ -50,6 +52,9 @@ pub fn parse(args: &[OsString]) -> Result<ImageCommand, &'static str> {
         .is_some_and(|s| matches!(s.to_str(), Some("run" | "workspace" | "publish")))
     {
         return parse_workspace(args);
+    }
+    if args.first().is_some_and(|a| a == "firmware") {
+        return firmware::parse(&args[1..]).map(ImageCommand::Firmware);
     }
     if args.first().is_some_and(|a| a == "media") {
         return media::parse(&args[1..]).map(ImageCommand::Media);
@@ -133,10 +138,13 @@ pub fn parse(args: &[OsString]) -> Result<ImageCommand, &'static str> {
         None => Ok(ImageCommand::List { store }),
     }
 }
-pub fn execute(
+/// Host callers explicitly supply the default firmware store and persistent ROM
+/// index; library callers and tests can disable both.
+pub fn execute_with_firmware_sources(
     command: ImageCommand,
     output: &mut impl Write,
     errors: &mut impl Write,
+    firmware: &crate::command::FirmwareSources,
 ) -> anyhow::Result<u8> {
     match command {
         ImageCommand::Run {
@@ -202,6 +210,7 @@ pub fn execute(
             writeln!(output, "{tag}\t{}", manifest.digest)?;
         }
         ImageCommand::Media(command) => media::execute(command, output)?,
+        ImageCommand::Firmware(command) => firmware::execute(command, output, firmware)?,
         ImageCommand::Import {
             machine,
             store,
@@ -244,6 +253,8 @@ pub fn execute(
                         .map(|m| {
                             if m.artifact_type() == image_store::media_type::MEDIA_SET {
                                 "media-set"
+                            } else if m.artifact_type() == image_store::media_type::FIRMWARE {
+                                "firmware"
                             } else {
                                 "machine"
                             }

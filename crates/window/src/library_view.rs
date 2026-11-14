@@ -142,9 +142,21 @@ pub(super) fn snapshot(cache: &SummaryCache, q: &Query) -> Snapshot {
     let mut counted = BTreeSet::new();
     for tag in cache.tags() {
         let s = cache.summary(&tag.manifest.digest);
+        // Media sets and firmware packages have no launch action; they belong
+        // to their own collections, not to the machine rows.
         if s.map_or_else(
-            || tag.manifest.artifact_type.as_deref() == Some(image_store::media_type::MEDIA_SET),
-            |summary| summary.kind == ArtifactKind::MediaSet,
+            || {
+                matches!(
+                    tag.manifest.artifact_type.as_deref(),
+                    Some(image_store::media_type::MEDIA_SET | image_store::media_type::FIRMWARE)
+                )
+            },
+            |summary| {
+                matches!(
+                    summary.kind,
+                    ArtifactKind::MediaSet | ArtifactKind::Firmware
+                )
+            },
         ) {
             result.total -= 1;
             continue;
@@ -1818,6 +1830,38 @@ pub(super) mod tests {
         let result = snapshot(&cache, &Query::default());
         assert_eq!(result.total, 1);
         assert_eq!(result.matched, 1);
+        assert_eq!(result.rows[0].image.descriptor.digest, images[0].digest);
+    }
+    #[test]
+    fn firmware_packages_stay_out_of_machine_launch_rows() {
+        let (temp, store, images) = catalogue(1);
+        let bytes = vec![0xf4; 32768];
+        let source = temp.path().join("synthetic.bin");
+        std::fs::write(&source, &bytes).unwrap();
+        let digest = Digest::of(&bytes);
+        let config = image_store::firmware::Config::decode(format!("schema=1\nplatform='ibm-pc-at'\nname='Synthetic firmware'\n[[roms]]\nid='system-bios'\nrole='system-bios'\nsize=32768\nsha256='{}'\nblob='{}'\n", digest.hex(), digest).as_bytes()).unwrap();
+        let candidate = pc_image::firmware_import::Candidate {
+            catalogue_id: "synthetic".into(),
+            config,
+            sources: vec![source],
+            distribution: assembly::FirmwareDistribution::UserSupplied,
+        };
+        let package = pc_image::firmware_import::publish(
+            &store,
+            &candidate,
+            &[],
+            pc_image::firmware::catalogue(),
+        )
+        .unwrap();
+        let cache = warm(&store);
+        let summary = cache.summary(&package.digest).unwrap();
+        assert_eq!(summary.kind, ArtifactKind::Firmware);
+        assert!(!summary.storage_blobs.is_empty());
+        assert!(cache.pending().is_empty());
+        let result = snapshot(&cache, &Query::default());
+        assert_eq!(result.total, 1);
+        assert_eq!(result.matched, 1);
+        assert_eq!(result.rows.len(), 1);
         assert_eq!(result.rows[0].image.descriptor.digest, images[0].digest);
     }
 }

@@ -18,10 +18,12 @@ use std::{fmt, ops::Range, path::Path, path::PathBuf};
 use serde::Deserialize;
 
 mod firmware_discovery;
+pub mod firmware_package;
 mod integrity;
 mod lower;
 mod origin;
 mod paths;
+pub mod pc_names;
 mod resolve;
 pub mod schema;
 mod source;
@@ -409,7 +411,8 @@ pub fn load_for_assembly_with_rom_dirs(
 }
 
 /// Load with labelled host ROM roots, reporting skipped roots and entries even
-/// if subsequent machine validation fails. No discovery occurs with no roots.
+/// if subsequent machine validation fails. Package lookup is disabled; folder
+/// discovery requires explicit roots.
 pub fn load_for_assembly_with_firmware_roots(
     path: impl AsRef<Path>,
     options: assembly::AssemblyOptions,
@@ -423,6 +426,7 @@ pub fn load_for_assembly_with_firmware_roots(
 /// verified disk handles or guest execution state between threads. Loading it
 /// revalidates pins in place and performs no directory discovery.
 pub struct PreparedMachineFile {
+    firmware_sources: Vec<image_store::Digest>,
     document: MachineFile,
     origins: Origins,
 }
@@ -432,6 +436,39 @@ pub fn prepare_for_assembly_with_firmware_roots(
     path: impl AsRef<Path>,
     roots: &[assembly::firmware_discovery::FirmwareRoot],
     warnings: &mut Vec<String>,
+) -> Result<PreparedMachineFile, LoadError> {
+    prepare_for_assembly_with_firmware_store(path, roots, warnings, None)
+}
+
+/// Prepare using a frontend-selected store root. A root that does not exist yet
+/// is a silent miss, because frontends pass the shared default before any store
+/// has been created. Other unavailable store infrastructure is a warning and a
+/// miss; corruption after selecting a package remains fatal.
+pub fn prepare_for_assembly_with_store_root(
+    path: impl AsRef<Path>,
+    roots: &[assembly::firmware_discovery::FirmwareRoot],
+    warnings: &mut Vec<String>,
+    store_root: Option<&Path>,
+) -> Result<PreparedMachineFile, LoadError> {
+    let store_root = store_root.filter(|root| !matches!(root.try_exists(), Ok(false)));
+    let store = match store_root.map(image_store::Store::open_existing) {
+        Some(Ok(store)) => Some(store),
+        Some(Err(error)) => {
+            warnings.push(format!("firmware store unavailable: {error}"));
+            None
+        }
+        None => None,
+    };
+    prepare_for_assembly_with_firmware_store(path, roots, warnings, store.as_ref())
+}
+
+/// Prepare against an explicit local store, or disable package lookup with None.
+/// Import and readiness share this seam without changing global host settings.
+pub fn prepare_for_assembly_with_firmware_store(
+    path: impl AsRef<Path>,
+    roots: &[assembly::firmware_discovery::FirmwareRoot],
+    warnings: &mut Vec<String>,
+    store: Option<&image_store::Store>,
 ) -> Result<PreparedMachineFile, LoadError> {
     let (mut document, origins) = resolve(&path)?;
     let roots = roots
@@ -451,11 +488,25 @@ pub fn prepare_for_assembly_with_firmware_roots(
             }
         })
         .collect::<Vec<_>>();
+    let firmware_sources = match store {
+        Some(store) => firmware_package::resolve_document(&mut document, store, warnings)
+            .map_err(|e| ParseError::new(path.as_ref(), None, e.to_string(), None))?,
+        None => Vec::new(),
+    };
     firmware_discovery::resolve(&mut document, &origins, &roots, warnings)?;
-    Ok(PreparedMachineFile { document, origins })
+    Ok(PreparedMachineFile {
+        document,
+        origins,
+        firmware_sources,
+    })
 }
 
 impl PreparedMachineFile {
+    /// Contributing immutable packages, in first-use order; provenance only.
+    pub fn firmware_sources(&self) -> &[image_store::Digest] {
+        &self.firmware_sources
+    }
+
     /// Borrow the resolved, discovered document and its unchanged source origins.
     pub fn resolved(&self) -> (&MachineFile, &Origins) {
         (&self.document, &self.origins)

@@ -833,6 +833,12 @@ macro_rules! require_user_firmware {
     };
 }
 
+/// Full streaming hash with metadata-validated persistent-index reuse during import.
+/// Cache values are hints; store ingestion still verifies the copied bytes.
+pub fn hash_firmware_file(path: &Path) -> io::Result<String> {
+    persistent::with_cache(|cache| Ok(cache.hash(path))).map_err(io::Error::other)?
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1442,5 +1448,41 @@ mod tests {
         .unwrap()
         .unwrap();
         assert_eq!(found.source, ImageSource::File(path));
+    }
+}
+
+#[cfg(test)]
+mod package_hash_tests {
+    use super::*;
+    #[test]
+    fn firmware_import_hash_reuses_index_metadata_and_rescan_reads_again() {
+        let temp = crate::test_support::TempDir::new("firmware-import-hash");
+        let rom = temp.path().join("rom");
+        fs::write(&rom, [0x37; 512]).unwrap();
+        let index = temp.path().join("index");
+        let first = DiscoveryControl::default();
+        with_discovery_session(Some(&index), false, &first, || {
+            persistent::with_cache(|cache| {
+                cache.hash_time =
+                    Some(std::time::SystemTime::now() + std::time::Duration::from_secs(10));
+                Ok(())
+            })
+            .unwrap();
+            assert_eq!(
+                hash_firmware_file(&rom).unwrap(),
+                format!("{:x}", Sha256::digest([0x37; 512]))
+            );
+        });
+        assert_eq!(first.snapshot().files_read, 1);
+        let cached = DiscoveryControl::default();
+        with_discovery_session(Some(&index), false, &cached, || {
+            hash_firmware_file(&rom).unwrap();
+        });
+        assert_eq!(cached.snapshot().files_read, usize::from(cfg!(windows)));
+        let forced = DiscoveryControl::default();
+        with_discovery_session(Some(&index), true, &forced, || {
+            hash_firmware_file(&rom).unwrap();
+        });
+        assert_eq!(forced.snapshot().files_read, 1);
     }
 }

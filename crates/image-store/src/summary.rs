@@ -27,6 +27,10 @@ pub struct Facets {
     pub publishers: Vec<String>,
     pub series: Vec<String>,
     pub labels: Vec<String>,
+    pub firmware_roles: Vec<String>,
+    pub boards: Vec<String>,
+    pub machine_classes: Vec<String>,
+    pub catalogue_ids: Vec<String>,
 }
 
 /// A compact local projection. Tokens include every textual title/personal field.
@@ -49,6 +53,18 @@ pub struct TitleSummary {
 pub enum ArtifactKind {
     Machine,
     MediaSet,
+    Firmware,
+}
+
+/// Provider-declared firmware facets and exact pins, rebuilt without reading ROMs.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FirmwareSummary {
+    pub roles: Vec<String>,
+    pub boards: Vec<String>,
+    pub machine_classes: Vec<String>,
+    pub catalogue_ids: Vec<String>,
+    pub hashes: Vec<String>,
 }
 
 /// Immutable identities plus revisioned local data. Never used for Start hashing.
@@ -56,6 +72,7 @@ pub enum ArtifactKind {
 #[serde(deny_unknown_fields)]
 pub struct ImageSummary {
     pub kind: ArtifactKind,
+    pub firmware: Option<FirmwareSummary>,
     pub image: Digest,
     pub metadata: Digest,
     pub metadata_schema: u32,
@@ -116,7 +133,7 @@ struct CacheFile {
 impl Default for CacheFile {
     fn default() -> Self {
         Self {
-            schema: 3,
+            schema: 4,
             images: BTreeMap::new(),
             failures: BTreeMap::new(),
             warnings: Vec::new(),
@@ -138,7 +155,7 @@ fn read_cache(store: &Store) -> Result<CacheFile> {
                 for (id, failure) in &mut cache.failures {
                     failure.image = id.clone();
                 }
-                if cache.schema == 3
+                if cache.schema == 4
                     && cache.images.iter().all(|(id, row)| id == &row.image)
                     && cache.failures.iter().all(|(id, row)| id == &row.image)
                 {
@@ -358,6 +375,9 @@ impl SummaryCache {
     fn build(&self, store: &Store, tag: &Tag) -> Result<ImageSummary> {
         let manifest =
             Manifest::decode_for_summary(&store.read_verified(&tag.manifest, MAX_SMALL_BLOB)?)?;
+        if manifest.artifact_type() == media_type::FIRMWARE {
+            return self.build_firmware(store, tag, manifest);
+        }
         let descriptor = manifest
             .layers
             .iter()
@@ -417,6 +437,7 @@ impl SummaryCache {
             } else {
                 ArtifactKind::Machine
             },
+            firmware: None,
             image: tag.manifest.digest.clone(),
             metadata: descriptor.digest.clone(),
             metadata_schema,
@@ -443,6 +464,98 @@ impl SummaryCache {
             personal_revision: entry.personal_revision,
             local_revision: entry.local_revision,
             titles,
+            tokens,
+        })
+    }
+
+    fn build_firmware(&self, store: &Store, tag: &Tag, manifest: Manifest) -> Result<ImageSummary> {
+        let config = crate::firmware::Config::decode(
+            &store.read_verified(&manifest.config, MAX_SMALL_BLOB)?,
+        )?;
+        if config.platform != manifest.platform()? {
+            return Err(invalid("firmware summary platform mismatch"));
+        }
+        let strings = |key: &str| {
+            config
+                .fits
+                .get(key)
+                .and_then(toml::Value::as_array)
+                .map(|a| {
+                    a.iter()
+                        .filter_map(toml::Value::as_str)
+                        .map(str::to_owned)
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+        let mut facets = FirmwareSummary {
+            boards: strings("boards"),
+            machine_classes: strings("machine_classes"),
+            ..FirmwareSummary::default()
+        };
+        for rom in &config.roms {
+            facets.roles.push(rom.role.clone());
+            facets.hashes.push(rom.sha256.clone());
+            facets
+                .hashes
+                .extend(rom.parts.iter().map(|p| p.sha256.clone()));
+            facets.catalogue_ids.extend(rom.catalogue_id.clone());
+        }
+        facets.roles.sort();
+        facets.roles.dedup();
+        facets.hashes.sort();
+        facets.hashes.dedup();
+        facets.catalogue_ids.sort();
+        facets.catalogue_ids.dedup();
+        let entry = self
+            .library
+            .images
+            .get(&tag.manifest.digest)
+            .cloned()
+            .unwrap_or_default();
+        let stored_size = manifest
+            .layers
+            .iter()
+            .chain(std::iter::once(&manifest.config))
+            .try_fold(tag.manifest.size, |sum, d| {
+                sum.checked_add(d.size)
+                    .ok_or_else(|| invalid("summary size overflow"))
+            })?;
+        // Same storage set as other artifacts: every layer, the config and the
+        // manifest itself, so sharing and totals count firmware packages too.
+        let storage_blobs = manifest
+            .layers
+            .iter()
+            .chain(std::iter::once(&manifest.config))
+            .chain(std::iter::once(&tag.manifest))
+            .cloned()
+            .collect();
+        let value = serde_json::to_value(&config).map_err(|e| invalid(e.to_string()))?;
+        let mut text = String::new();
+        collect_text(&value, &mut text);
+        let tokens = tokenize(&text);
+        Ok(ImageSummary {
+            kind: ArtifactKind::Firmware,
+            firmware: Some(facets),
+            image: tag.manifest.digest.clone(),
+            metadata: manifest.config.digest.clone(),
+            metadata_schema: 1,
+            local_content: self.local_hash(&tag.manifest.digest).clone(),
+            warnings: Vec::new(),
+            search_limited: false,
+            machine: None,
+            config: manifest.config.digest,
+            platform: config.platform,
+            name: config.name,
+            stored_size,
+            storage_blobs,
+            labels: entry.labels,
+            favorite: entry.favorite,
+            last_run: entry.last_run,
+            overlay_revision: entry.overlay_revision,
+            personal_revision: entry.personal_revision,
+            local_revision: entry.local_revision,
+            titles: Vec::new(),
             tokens,
         })
     }
@@ -505,7 +618,18 @@ impl SummaryCache {
             .iter()
             .filter_map(|tag| {
                 let image = self.summary(&tag.manifest.digest)?;
-                if !all_in(&facets.labels, &image.labels) {
+                let firmware_matches = if let Some(f) = &image.firmware {
+                    all_in(&facets.firmware_roles, &f.roles)
+                        && all_in(&facets.boards, &f.boards)
+                        && all_in(&facets.machine_classes, &f.machine_classes)
+                        && all_in(&facets.catalogue_ids, &f.catalogue_ids)
+                } else {
+                    facets.firmware_roles.is_empty()
+                        && facets.boards.is_empty()
+                        && facets.machine_classes.is_empty()
+                        && facets.catalogue_ids.is_empty()
+                };
+                if !firmware_matches || !all_in(&facets.labels, &image.labels) {
                     return None;
                 }
                 let tag_tokens = tokenize(&tag.name);
@@ -753,6 +877,7 @@ mod tests {
             id.clone(),
             ImageSummary {
                 kind: ArtifactKind::Machine,
+                firmware: None,
                 image: id.clone(),
                 metadata: id.clone(),
                 machine: Some(id.clone()),

@@ -14,6 +14,7 @@
 
 mod artifact;
 mod filesystem;
+pub mod firmware;
 pub mod library;
 pub mod location;
 pub mod media_set;

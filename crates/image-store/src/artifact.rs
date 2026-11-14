@@ -24,6 +24,7 @@ pub mod media_type {
     pub const EXTRA: &str = "application/vnd.unemu.media.extra.v1";
     pub const CONFIG: &str = "application/vnd.unemu.machine.config.v1+toml";
     pub const METADATA: &str = "application/vnd.unemu.metadata.v1+json";
+    pub const FIRMWARE_CONFIG: &str = "application/vnd.unemu.firmware.config.v1+toml";
     pub const FIRMWARE: &str = "application/vnd.unemu.firmware.v1";
     pub const DISK_BASE: &str = "application/vnd.unemu.disk.base.v1";
     pub const DISK_LAYER: &str = "application/vnd.unemu.disk.layer.v1+toml";
@@ -219,6 +220,24 @@ impl Manifest {
         Ok(manifest)
     }
 
+    /// Construct a firmware package; its closure contains ROMs and extras only.
+    pub fn new_firmware(
+        platform: &str,
+        config: Descriptor,
+        layers: Vec<Descriptor>,
+    ) -> Result<Self> {
+        let manifest = Self {
+            schema_version: 2,
+            media_type: media_type::MANIFEST.into(),
+            artifact_type: media_type::FIRMWARE.into(),
+            config,
+            layers,
+            annotations: BTreeMap::from([("unemu.platform".into(), platform.into())]),
+        };
+        manifest.validate(&[])?;
+        Ok(manifest)
+    }
+
     /// Artifact identity determines the required config codec.
     pub fn artifact_type(&self) -> &str {
         &self.artifact_type
@@ -283,7 +302,7 @@ impl Manifest {
             || self.media_type != media_type::MANIFEST
             || !matches!(
                 self.artifact_type.as_str(),
-                media_type::MACHINE | media_type::MEDIA_SET
+                media_type::MACHINE | media_type::MEDIA_SET | media_type::FIRMWARE
             )
         {
             return Err(invalid("unsupported manifest envelope"));
@@ -294,6 +313,8 @@ impl Manifest {
         if self.config.media_type
             != if self.artifact_type == media_type::MEDIA_SET {
                 media_type::MEDIA_SET_CONFIG
+            } else if self.artifact_type == media_type::FIRMWARE {
+                media_type::FIRMWARE_CONFIG
             } else {
                 media_type::CONFIG
             }
@@ -325,7 +346,10 @@ impl Manifest {
             }
             if matches!(
                 layer.media_type.as_str(),
-                media_type::MANIFEST | media_type::CONFIG | media_type::MEDIA_SET_CONFIG
+                media_type::MANIFEST
+                    | media_type::CONFIG
+                    | media_type::MEDIA_SET_CONFIG
+                    | media_type::FIRMWARE_CONFIG
             ) {
                 return Err(invalid("manifest/config cannot be an artifact layer"));
             }
@@ -334,7 +358,17 @@ impl Manifest {
             }
             metadata_count += usize::from(layer.media_type == media_type::METADATA);
         }
-        if metadata_count != 1 {
+        if self.artifact_type == media_type::FIRMWARE
+            && self.layers.iter().any(|d| {
+                !matches!(
+                    d.media_type.as_str(),
+                    media_type::FIRMWARE | media_type::EXTRA
+                )
+            })
+        {
+            return Err(invalid("firmware layers must be ROMs or extras"));
+        }
+        if metadata_count != usize::from(self.artifact_type != media_type::FIRMWARE) {
             return Err(invalid("exactly one metadata descriptor is required"));
         }
         Ok(())
@@ -344,7 +378,9 @@ impl Manifest {
 pub(crate) fn neutral_size_limit(kind: &str) -> Option<u64> {
     use media_type::*;
     match kind {
-        MANIFEST | CONFIG | MEDIA_SET_CONFIG | METADATA | DISK_LAYER => Some(MAX_SMALL_BLOB),
+        MANIFEST | CONFIG | MEDIA_SET_CONFIG | FIRMWARE_CONFIG | METADATA | DISK_LAYER => {
+            Some(MAX_SMALL_BLOB)
+        }
         PNG | JPEG => Some(4 * MAX_SMALL_BLOB),
         FIRMWARE | DISK_BASE | DISK_SECTORS | FLOPPY | OPTICAL | EXTRA => Some(i64::MAX as u64),
         _ => None,

@@ -260,7 +260,7 @@ impl LibraryEntry {
                 )
             })
             .collect::<Vec<_>>();
-        Self::prepare(path, options, &roots, None).0
+        Self::prepare(path, options, &roots, None, None).0
     }
 
     fn prepare(
@@ -268,6 +268,7 @@ impl LibraryEntry {
         options: assembly::AssemblyOptions,
         roots: &[assembly::firmware_discovery::FirmwareRoot],
         control: Option<&assembly::firmware_discovery::DiscoveryControl>,
+        store_root: Option<&Path>,
     ) -> PreparedEntry {
         let name = machine_file::resolve(&path)
             .ok()
@@ -292,10 +293,11 @@ impl LibraryEntry {
             source,
         };
         let mut prepared = None;
-        match machine_file::prepare_for_assembly_with_firmware_roots(
+        match machine_file::prepare_for_assembly_with_store_root(
             &entry.path,
             roots,
             &mut entry.discovery_warnings,
+            store_root,
         )
         .and_then(|document| {
             if let Some(control) = control {
@@ -481,6 +483,7 @@ pub(crate) struct LibraryCheck {
     pub options: assembly::AssemblyOptions,
     pub roots: Vec<assembly::firmware_discovery::FirmwareRoot>,
     pub cache: Option<PathBuf>,
+    pub store_root: Option<PathBuf>,
     pub rescan: bool,
     pub refresh_listing: bool,
     pub control: assembly::firmware_discovery::DiscoveryControl,
@@ -499,6 +502,7 @@ pub(crate) fn spawn_library_check(
             options,
             roots,
             cache,
+            store_root,
             rescan,
             refresh_listing,
             control,
@@ -551,15 +555,7 @@ pub(crate) fn spawn_library_check(
                     }
                 }
             }
-            let mut warnings = Vec::new();
-            assembly::firmware_discovery::list_firmware_roots(&roots, &mut warnings);
-            let mut prepared = LibraryEntry::prepare(path, options, &roots, Some(&control));
-            for warning in warnings {
-                if !prepared.0.discovery_warnings.contains(&warning) {
-                    prepared.0.discovery_warnings.push(warning);
-                }
-            }
-            prepared
+            LibraryEntry::prepare(path, options, &roots, Some(&control), store_root.as_deref())
         });
         let _ = tx.send(prepared);
         wake();
@@ -809,6 +805,7 @@ mod tests {
                 options: assembly::AssemblyOptions::default(),
                 roots: vec![],
                 cache: None,
+                store_root: None,
                 rescan: false,
                 refresh_listing: false,
                 control: Default::default(),

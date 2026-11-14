@@ -7,6 +7,8 @@ mod defaults;
 pub mod desktop;
 mod disk;
 mod encode;
+pub mod firmware;
+pub mod firmware_import;
 mod import;
 pub mod inspection;
 pub mod media_set;

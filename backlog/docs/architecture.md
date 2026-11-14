@@ -18,7 +18,7 @@ crate: `machine-file` reads and hashes declared images into inline buffers,
 | Crate | Responsibility | Runtime dependencies | Test-only dependencies |
 | --- | --- | --- | --- |
 | `pc-image` | IBM PC/AT provider, resolved bundle-profile validation, machine-file import, disk-chain validation, isolated sessions and offline publication | `assembly`, `machine-file`, `media`, `image-store`, `serde`, `toml`, `thiserror` | `cpu`, `machine` |
-| `image-store` | Platform-neutral OCI Image Layout, streaming SHA-256 blobs, deterministic machine/media-set manifests, provider-validated closure and atomic compare-and-swap local tags, stable workspace ownership | `serde`, `serde_json`, `toml`, `sha2`, `thiserror`, `libc` (Unix) | None |
+| `image-store` | Platform-neutral OCI Image Layout, streaming SHA-256 blobs, deterministic machine/media-set/firmware manifests, provider-validated closure and atomic compare-and-swap local tags, stable workspace ownership | `serde`, `serde_json`, `toml`, `sha2`, `thiserror`, `libc` (Unix) | None |
 | `media` | Immutable sparse disk layers, chain sector sources, floppy journal encoding, streaming recovery/replay, retention-anchor validation, durable host sink and stable single-writer locks ([format](design/persistent-media.md#chosen-format-byte-layout)) | `sha2`, `serde`, `toml`, `thiserror`, `libc` (Unix) | None |
 | `device` | Hardware-neutral contracts: `Device`, `InterruptController`, `DmaMemory`, `VClock`, `NextEvent`, access traces, DMA messages, and the observation capabilities (text scanout, byte output, `ByteCapture`) | `thiserror` | None |
 | `cpu` | `Cpu`/`CpuStop` seam and `X86JitCpu`, which owns the core's `Vm` and `Vcpu` | `x86jit-core`, `thiserror` | None |
@@ -28,8 +28,8 @@ crate: `machine-file` reads and hashes declared images into inline buffers,
 | `machine` | Generic `Machine<C: Cpu>` and execution/clock/IRQ/DMA loop | `cpu`, `bus`, `device`, `thiserror` | `testkit`, `devices` |
 | `video` | `FrameSink`, text frames/grids, text-mode renderer and capture sink | `device` | None |
 | `assembly` | `MachineConfig`, validation, presets, image/device construction, wiring, and `RunPolicy` driver | `machine`, `cpu`, `bus`, `device`, `devices`, `video`, `chipset`, `media`, `sha2`, `thiserror` | `media/test-support` |
-| `machine-file` | Schema 1 TOML/YAML parsing, source origins, image hashing and lowering through assembly validation; merging remains deferred ([schema](design/machine-files.md#schema-field-by-field)) | `assembly`, `serde`, `sha2`, `toml`, `serde-saphyr`, `thiserror` | None |
 | `window` | CP437 rasteriser, shared `FrameSink`, and egui desktop shell | `video`, `device`, `assembly`, `machine`, `winit`, `egui`, `eframe`, `image-store`, `pc-image` | `cpu`, `assembly/test-support`, `image-store/test-support`, `media/test-support`, `pc-image/test-support` |
+| `machine-file` | Schema 1 TOML/YAML parsing, source origins, image hashing and lowering through assembly validation; merging remains deferred ([schema](design/machine-files.md#schema-field-by-field)) | `assembly`, `image-store`, `serde`, `sha2`, `toml`, `serde-saphyr`, `thiserror` | None |
 | `testkit` | Single-device `MockBus`, scripted `MockCpu`, golden assertions | `device`, `cpu` | None |
 | `cli` | Binary and runner library: guest programs, assembly/policy selection, output capture and stop diagnostics | `assembly`, `device`, `bus`, `cpu`, `chipset`, `machine`, `devices`, `video`, `anyhow`, `pc-image`, `image-store` | `testkit`, `machine/reference-scheduler`, `assembly/reference-scheduler`, `assembly/test-support` |
 
@@ -172,6 +172,27 @@ Publication pre-verifies metadata/artwork, rolls back intent on CAS conflict,
 and records local retention before the tag becomes visible. Explicit abandon
 keeps journals. Discard keeps a durable tombstone until all media are removed;
 the session document is removed last.
+
+Firmware package envelopes and bindings live in `image-store::firmware`; attachments
+reuse `media_set::Extra` and its shared validation. Packages have no machine digest
+or machine-metadata layer. The PC provider exposes roles, fit and catalogue rules
+through `pc-image::firmware`; `machine-file::firmware_package` shares those rules
+with resolution so no provider-to-loader dependency cycle is needed. Host import
+uses the persistent ROM hash cache through `assembly::firmware_discovery` and
+streams selected complete sets into content-addressed blobs before CAS tagging.
+
+Frontends explicitly pass their store root (desktop preferences or its injected
+default; CLI `run --store` or the shared location, with `--no-store` available).
+Plain machine-file library loaders never discover host store/index paths.
+Preselection store errors warn and fall back to ordinary file resolution.
+Machine-file preparation queries rebuildable firmware summaries by complete pins,
+then verifies the selected complete package and retains its digest as provenance.
+Store hits preserve declaration shape, chip order, lanes and offsets without listing ROM folders;
+misses retain declared-path and indexed-folder fallback. Desktop readiness uses
+this same preparation path. Selected-package corruption is an error. PC machine
+import embeds the ROM closure independently and writes `unemu.firmware.sources`;
+execution never needs the source package tag. Firmware summary rows index roles,
+boards/classes and catalogue ids, and warm listing reads no ROM payloads.
 
 ## From configuration to a run
 

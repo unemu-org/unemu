@@ -318,6 +318,7 @@ struct Shell {
     discovery_warnings: BTreeSet<String>,
     discovery_control: assembly::firmware_discovery::DiscoveryControl,
     firmware_cache: Option<std::path::PathBuf>,
+    default_store_root: Option<std::path::PathBuf>,
     default_firmware_roots: Vec<assembly::firmware_discovery::FirmwareRoot>,
     rescan: bool,
     refresh_listing: bool,
@@ -816,6 +817,7 @@ impl Shell {
             discovery_warnings: BTreeSet::new(),
             discovery_control: Default::default(),
             firmware_cache: assembly::firmware_discovery::firmware_cache_path(),
+            default_store_root: image_store::location::default_store_root().ok(),
             default_firmware_roots,
             rescan: false,
             refresh_listing: false,
@@ -1118,6 +1120,11 @@ impl Shell {
                                 .preferences
                                 .roots(&self.args.rom_dirs, &self.default_firmware_roots),
                             cache: self.firmware_cache.clone(),
+                            store_root: self
+                                .preferences
+                                .store_root
+                                .clone()
+                                .or_else(|| self.default_store_root.clone()),
                             rescan: std::mem::take(&mut self.rescan),
                             refresh_listing: std::mem::take(&mut self.refresh_listing),
                             control: self.discovery_control.clone(),
@@ -2746,6 +2753,7 @@ mod tests {
             discovery_warnings: BTreeSet::new(),
             discovery_control: Default::default(),
             firmware_cache: None,
+            default_store_root: None,
             default_firmware_roots: Vec::new(),
             rescan: false,
             refresh_listing: false,
@@ -4496,6 +4504,57 @@ kind='mda'
         let progress = job.control.snapshot();
         shell.apply_readiness(job.index, job.revision, prepared);
         progress
+    }
+
+    #[test]
+    fn readiness_uses_preferences_store_then_injected_default_without_rom_folders() {
+        let temp = assembly::test_support::TempDir::new("readiness-store-root");
+        let root = temp.path().join("configured");
+        let store = image_store::Store::open(&root).unwrap();
+        let bytes = vec![0xf4; 32768];
+        let path = temp.path().join("source.bin");
+        std::fs::write(&path, &bytes).unwrap();
+        let digest = image_store::Digest::of(&bytes);
+        let config = image_store::firmware::Config::decode(format!("schema=1\nplatform='ibm-pc-at'\nname='Synthetic readiness'\n[[roms]]\nid='system-bios'\nrole='system-bios'\nsize=32768\nsha256='{}'\nblob='{}'\n",digest.hex(),digest).as_bytes()).unwrap();
+        let candidate = pc_image::firmware_import::Candidate {
+            catalogue_id: "readiness".into(),
+            config,
+            sources: vec![path],
+            distribution: assembly::FirmwareDistribution::UserSupplied,
+        };
+        let package = pc_image::firmware_import::publish(
+            &store,
+            &candidate,
+            &[],
+            pc_image::firmware::catalogue(),
+        )
+        .unwrap();
+        let machine = temp.path().join("machine.toml");
+        std::fs::write(&machine,format!("schema=1\n[board]\nmodel='ibm-5170'\n[firmware.bios]\nimage='absent.bin'\nsha256='{}'\n[[card]]\nkind='mda'\n",digest.hex())).unwrap();
+        for preference in [true, false] {
+            let mut shell = shell();
+            shell.presenter = None;
+            shell.library = vec![LibraryEntry::pending(machine.clone())];
+            shell.selected = Some(0);
+            shell.args.options.allow_unlisted_firmware = true;
+            if preference {
+                shell.preferences.store_root = Some(root.clone());
+                shell.default_store_root = Some(temp.path().join("wrong-default"));
+            } else {
+                shell.default_store_root = Some(root.clone());
+            }
+            let progress = finish_discovery(&mut shell, &egui::Context::default());
+            assert!(
+                !shell.library[0].has_problem(),
+                "{:?}",
+                shell.library[0].warning
+            );
+            assert_eq!(progress.folder_listings, 0);
+            assert_eq!(
+                shell.prepared[&0].firmware_sources(),
+                std::slice::from_ref(&package.digest)
+            );
+        }
     }
 
     #[test]

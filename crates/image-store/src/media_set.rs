@@ -92,23 +92,29 @@ impl Config {
                 return Err(invalid("invalid or duplicate media id, or empty label"));
             }
         }
-        let mut dos_names = BTreeSet::new();
-        for e in &self.extras {
-            if !valid_text(&e.filename)
-                || e.filename.contains(['/', '\\', '\0'])
-                || matches!(e.filename.as_str(), "." | "..")
-                || e.size > i64::MAX as u64
-            {
-                return Err(invalid("invalid extra filename or size"));
-            }
-            if let Some(name) = &e.dos_name {
-                if !valid_text(name) || !dos_names.insert(name.clone()) {
-                    return Err(invalid("invalid or duplicate DOS 8.3 name"));
-                }
-            }
-        }
+        validate_extras(&self.extras)?;
         Ok(())
     }
+}
+
+/// Shared attachment checks for installation media and firmware packages.
+pub fn validate_extras(extras: &[Extra]) -> Result<()> {
+    let mut dos_names = BTreeSet::new();
+    for e in extras {
+        if !valid_text(&e.filename)
+            || e.filename.contains(['/', '\\', '\0'])
+            || matches!(e.filename.as_str(), "." | "..")
+            || e.size > i64::MAX as u64
+        {
+            return Err(invalid("invalid extra filename or size"));
+        }
+        if let Some(name) = &e.dos_name {
+            if !valid_text(name) || !dos_names.insert(name.clone()) {
+                return Err(invalid("invalid or duplicate DOS 8.3 name"));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Bounded display text cannot inject terminal or menu controls.

@@ -513,6 +513,7 @@ fn cache_facets_match_the_same_title_and_search_covers_all_text_fields() {
         publishers: vec!["Publisher".into()],
         series: vec!["Saga".into()],
         labels: vec!["localword".into(), "travel".into()],
+        ..Facets::default()
     };
     assert_eq!(cache.query("moon", &matching)[0].title_ids, ["alpha"]);
     assert_eq!(

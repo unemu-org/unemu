@@ -2,7 +2,7 @@
 
 Status: **desktop UX and toolkit accepted**, 2026-11-13 (decision-24);
 **installation media set codec/CLI/insert implemented**, 2026-11-14 (decision-26);
-**firmware package shape accepted**, 2026-11-14 (decision-27).
+**firmware package codec/import/resolution implemented; UI pending**, 2026-11-14 (decision-27).
 The installation-media library collection, Import dialog and transfer-medium generator remain.
 §5.3 and its [Firmware mock-up](mockups/firmware.html) were approved by the maintainer on 2026-11-14.
 §5.2 and its mock-up were approved by the maintainer on 2026-11-14. The local store core
@@ -984,11 +984,10 @@ require their own implementation and visual review.
 
 ### 5.3. Firmware packages
 
-Status: **approved by the maintainer, 2026-11-14** — this section and the
-[Firmware collection mock-up](mockups/firmware.html).
+Status: **codec/import/store-first resolution implemented; Firmware collection UI pending**, 2026-11-14. The approved [Firmware collection mock-up](mockups/firmware.html) defines the later UI.
 [decision-27](<../../decisions/decision-27 - Firmware packages are their own OCI artifact type.md>)
-accepts the artifact shape; this is a design proposal, with no codec, resolver or
-GUI implementation implied. A package holds reusable ROM inputs and their fit
+accepts the artifact shape; codec, import and explicit store-first resolution
+are implemented. The Firmware collection GUI remains pending. A package holds reusable ROM inputs and their fit
 information, not a machine, writable media, NVRAM or a saved state.
 
 **Artifact and config.** Use the §2 OCI manifest envelope with
@@ -1171,8 +1170,8 @@ paths remain local hints, never package fields. Afterwards the imported packages
 work with the folder offline or removed; readiness does not rescan it. Re-import
 or refreshing the remaining folder fallback is a separate explicit action.
 
-**Store-first machine-file resolution.** This is a future provider integration;
-today `firmware_discovery` checks declared paths and then ROM roots. Resolve a
+**Store-first machine-file resolution.** Implemented with explicit frontend store
+roots; plain library loaders use declared paths and ROM roots without a store. Resolve a
 machine file's inherited declarations and pins first, then use this order:
 
 1. Query a rebuildable store firmware index by exact assembled/per-chip pins and

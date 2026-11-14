@@ -14,7 +14,7 @@ use std::path::PathBuf;
 const USAGE: &str = "usage: unemupc98 --boot (Real16 timer demo)
        unemupc98 --bios PATH [--allow-unlisted-firmware]
        unemupc98 machine check FILE [--allow-unlisted-firmware] [--rom-dir DIR]...
-       unemupc98 run --machine FILE [--rom-dir DIR]... [--max-steps N] [--idle-limit N] [--print CARD] [--allow-unlisted-firmware]
+       unemupc98 run --machine FILE [--store DIR | --no-store] [--rom-dir DIR]... [--max-steps N] [--idle-limit N] [--print CARD] [--allow-unlisted-firmware]
        unemupc98 image import FILE --store DIR --tag NAME:TAG [--create] [--rom-dir DIR]... [--recover MEDIUM=tip|MEDIUM=generation:N]...
        unemupc98 image ls --store DIR
        unemupc98 image run NAME:TAG --store DIR --workspace NAME [--new] [--max-steps N]
@@ -23,6 +23,9 @@ const USAGE: &str = "usage: unemupc98 --boot (Real16 timer demo)
        unemupc98 image workspace abandon-publication NAME --store DIR
        unemupc98 image publish --from-workspace NAME --store DIR --tag NAME:TAG [--flatten]
        unemupc98 image media import FILE...|DIR --title TITLE --tag NAME:TAG --store DIR [--create] [--dry-run] [--label N=TEXT]... [--format N=FORMAT]... [--extra PATH[:DOSNAME]]...
+       unemupc98 image firmware import FOLDER|FILES... [--store DIR] [--create] [--rescan] [--dry-run] [--for CATALOGUE-ID] [--extra PATH[:DOSNAME]]...
+       unemupc98 image firmware ls [--store DIR]
+       unemupc98 image firmware show NAME:TAG [--store DIR]
        unemupc98 image media ls --store DIR
        unemupc98 image media show NAME:TAG --store DIR
        unemupc98 media create floppy --type 1.44M|1.2M|720K|360K OUT [--format] [--label NAME] [--force]
@@ -32,6 +35,22 @@ const USAGE: &str = "usage: unemupc98 --boot (Real16 timer demo)
        unemupc98 media rollback --base IMG --journal J --to N --backup PATH
        unemupc98 media commit (alias compact) --base IMG --journal J --to N --output OUT
 DOS boot and interactive sessions: see crates/cli/tests/*dos*golden.rs\n";
+
+/// Host paths are supplied by the executable, never discovered by library tests.
+#[derive(Clone, Debug, Default)]
+pub struct FirmwareSources {
+    /// Default store for `run` and `image firmware` when no `--store` is given.
+    pub store_root: Option<PathBuf>,
+    /// Persistent ROM hash index reused by `image firmware import`.
+    pub index: Option<PathBuf>,
+}
+/// The firmware store a `run` command asked for.
+#[derive(Debug, PartialEq, Eq)]
+pub enum FirmwareStore {
+    Default,
+    Disabled,
+    Root(PathBuf),
+}
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum Command {
@@ -48,6 +67,7 @@ pub enum Command {
         options: assembly::AssemblyOptions,
     },
     Run {
+        store: FirmwareStore,
         rom_dirs: Vec<PathBuf>,
         path: PathBuf,
         max_steps: u64,
@@ -132,13 +152,23 @@ pub fn parse(args: &[OsString]) -> Result<Command, &'static str> {
     }
     if frontend.first().is_some_and(|arg| *arg == "run") {
         let (mut path, mut max_steps, mut idle_limit, mut print) = (None, None, None, None);
+        let mut store = None;
         let mut args = frontend[1..].iter();
         while let Some(arg) = args.next() {
+            if *arg == "--no-store" {
+                if store.replace(FirmwareStore::Disabled).is_some() {
+                    return Err("duplicate or conflicting store option");
+                }
+                continue;
+            }
             let value = args
                 .next()
                 .filter(|value| !value.is_empty() && !value.as_encoded_bytes().starts_with(b"--"))
                 .ok_or("missing option value")?;
             match arg.to_str() {
+                Some("--store") if store.is_none() => {
+                    store = Some(FirmwareStore::Root(PathBuf::from(value)))
+                }
                 Some("--machine") if path.is_none() => path = Some(PathBuf::from(value)),
                 Some("--max-steps") if max_steps.is_none() => max_steps = Some(decimal(value)?),
                 Some("--idle-limit") if idle_limit.is_none() => idle_limit = Some(decimal(value)?),
@@ -149,6 +179,7 @@ pub fn parse(args: &[OsString]) -> Result<Command, &'static str> {
             }
         }
         return Ok(Command::Run {
+            store: store.unwrap_or(FirmwareStore::Default),
             rom_dirs,
             path: path.ok_or("run requires --machine FILE")?,
             max_steps: max_steps.unwrap_or(crate::BIOS_MAX_RETIRED),
@@ -399,9 +430,19 @@ fn execute(command: MediaCommand, output: &mut impl Write) -> Result<u8, ToolErr
     Ok(report_exit_code(&scan.report))
 }
 
-/// The binary delegates here so argument, output and exit contracts are tested
-/// without starting a process or assembling a guest for media operations.
+/// Library runner with host firmware defaults disabled. The executable supplies
+/// its configured sources through `run_with_firmware_sources`.
 pub fn run(args: &[OsString], output: &mut impl Write, errors: &mut impl Write) -> u8 {
+    run_with_firmware_sources(args, output, errors, &FirmwareSources::default())
+}
+
+/// Run with explicit host defaults. None disables the corresponding host source.
+pub fn run_with_firmware_sources(
+    args: &[OsString],
+    output: &mut impl Write,
+    errors: &mut impl Write,
+    sources: &FirmwareSources,
+) -> u8 {
     let command = match parse(args) {
         Ok(command) => command,
         Err(error) => {
@@ -430,6 +471,7 @@ pub fn run(args: &[OsString], output: &mut impl Write, errors: &mut impl Write) 
             rom_dirs,
         } => check_machine(&path, options, &rom_dirs, errors).map_err(frontend_error),
         Command::Run {
+            store,
             path,
             rom_dirs,
             max_steps,
@@ -441,13 +483,22 @@ pub fn run(args: &[OsString], output: &mut impl Write, errors: &mut impl Write) 
             options,
             (max_steps, idle_limit),
             print.as_deref(),
-            &rom_dirs,
+            (
+                &rom_dirs,
+                match &store {
+                    FirmwareStore::Default => sources.store_root.as_deref(),
+                    FirmwareStore::Disabled => None,
+                    FirmwareStore::Root(path) => Some(path.as_path()),
+                },
+            ),
             output,
             errors,
         )
         .map_err(frontend_error),
-        Command::Image(command) => crate::image::execute(command, output, errors)
-            .map_err(|error| ToolError::Io(io::Error::other(format!("{error:#}")))),
+        Command::Image(command) => {
+            crate::image::execute_with_firmware_sources(command, output, errors, sources)
+                .map_err(|error| ToolError::Io(io::Error::other(format!("{error:#}"))))
+        }
         Command::Media(command) => execute(command, output),
         Command::Create(command) => {
             crate::create::execute(command, output).map_err(ToolError::from)
@@ -500,12 +551,13 @@ fn run_machine(
     options: assembly::AssemblyOptions,
     limits: (u64, u64),
     print: Option<&str>,
-    rom_dirs: &[PathBuf],
+    firmware: (&[PathBuf], Option<&std::path::Path>),
     output: &mut impl Write,
     errors: &mut impl Write,
 ) -> anyhow::Result<u8> {
     use assembly::{DeviceId, ObservationPolicy, ObservationRequest, OutputKind, RunPolicy};
     let (max_steps, idle_limit) = limits;
+    let (rom_dirs, store_root) = firmware;
     let roots = rom_dirs
         .iter()
         .map(|path| {
@@ -517,7 +569,8 @@ fn run_machine(
         .collect::<Vec<_>>();
     let mut warnings = Vec::new();
     let result =
-        machine_file::load_for_assembly_with_firmware_roots(path, options, &roots, &mut warnings);
+        machine_file::prepare_for_assembly_with_store_root(path, &roots, &mut warnings, store_root)
+            .and_then(|document| document.load(options));
     for warning in warnings {
         writeln!(errors, "warning: {warning}")?;
     }
@@ -698,6 +751,7 @@ mod tests {
         assert_eq!(
             parse(&args(&["run", "--machine", "at.toml"])).unwrap(),
             Command::Run {
+                store: FirmwareStore::Default,
                 rom_dirs: Vec::new(),
                 path: "at.toml".into(),
                 max_steps: 20_000_000,
@@ -721,6 +775,7 @@ mod tests {
             ]))
             .unwrap(),
             Command::Run {
+                store: FirmwareStore::Default,
                 rom_dirs: Vec::new(),
                 path: "at.toml".into(),
                 max_steps: 42,
@@ -731,6 +786,43 @@ mod tests {
                 },
             }
         );
+    }
+
+    #[test]
+    fn run_store_flags_are_explicit_and_exclusive() {
+        let parse_run = |options: &[&str]| {
+            let args = ["run", "--machine", "machine.toml"]
+                .into_iter()
+                .chain(options.iter().copied())
+                .map(OsString::from)
+                .collect::<Vec<_>>();
+            parse(&args)
+        };
+        assert!(matches!(
+            parse_run(&[]).unwrap(),
+            Command::Run {
+                store: FirmwareStore::Default,
+                ..
+            }
+        ));
+        assert!(matches!(
+            parse_run(&["--no-store"]).unwrap(),
+            Command::Run {
+                store: FirmwareStore::Disabled,
+                ..
+            }
+        ));
+        assert!(
+            matches!(parse_run(&["--store","local"]).unwrap(),Command::Run { store: FirmwareStore::Root(root), .. } if root.as_path() == std::path::Path::new("local"))
+        );
+        for options in [
+            &["--store"][..],
+            &["--no-store", "--no-store"],
+            &["--store", "local", "--no-store"],
+            &["--no-store", "--store", "local"],
+        ] {
+            assert!(parse_run(options).is_err());
+        }
     }
 
     #[test]

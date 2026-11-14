@@ -494,10 +494,15 @@ impl Store {
         let metadata_descriptor = manifest
             .layers
             .iter()
-            .find(|d| d.media_type == media_type::METADATA)
-            .ok_or_else(|| invalid("missing metadata"))?;
-        let metadata = self.read_inner(metadata_descriptor, MAX_SMALL_BLOB)?;
-        let envelope = if require_artwork {
+            .find(|d| d.media_type == media_type::METADATA);
+        let metadata = match metadata_descriptor {
+            Some(d) => self.read_inner(d, MAX_SMALL_BLOB)?,
+            None if manifest.artifact_type() == media_type::FIRMWARE => Vec::new(),
+            None => return Err(invalid("missing metadata")),
+        };
+        let envelope = if manifest.artifact_type() == media_type::FIRMWARE {
+            crate::metadata::Metadata::new(platform)
+        } else if require_artwork {
             let decoded = crate::metadata::Metadata::decode(&metadata, &manifest.layers)?;
             if decoded.platform != platform {
                 return Err(invalid("metadata version or platform mismatch"));
@@ -527,8 +532,10 @@ impl Store {
                 ordered.push(digest);
             }
         }
-        if seen.insert(metadata_descriptor.digest.clone()) {
-            ordered.push(metadata_descriptor.digest.clone());
+        if let Some(d) = metadata_descriptor {
+            if seen.insert(d.digest.clone()) {
+                ordered.push(d.digest.clone());
+            }
         }
         let artwork = if !envelope.is_read_only() {
             envelope.artwork().cloned().collect::<Vec<_>>()
@@ -536,7 +543,7 @@ impl Store {
             let position = manifest
                 .layers
                 .iter()
-                .position(|d| d.digest == metadata_descriptor.digest)
+                .position(|d| Some(d) == metadata_descriptor)
                 .ok_or_else(|| invalid("missing metadata"))?;
             manifest.layers[position + 1..]
                 .iter()

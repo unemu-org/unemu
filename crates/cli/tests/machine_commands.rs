@@ -49,6 +49,11 @@ fn command(args: &[&str], path: &Path, extra: &[&str]) -> Output {
         .args(args)
         .arg(path)
         .args(extra)
+        .args(if args.first() == Some(&"run") {
+            &["--no-store"][..]
+        } else {
+            &[]
+        })
         .output()
         .unwrap()
 }
@@ -395,6 +400,11 @@ fn rom_discovery_requires_explicit_flags_and_reports_skipped_roots() {
         let output = Command::new(env!("CARGO_BIN_EXE_unemupc98"))
             .args(&args)
             .arg(files.machine())
+            .args(if args.first() == Some(&"run") {
+                &["--no-store"][..]
+            } else {
+                &[]
+            })
             .arg("--allow-unlisted-firmware")
             .env("UNEMUPC98_USER_ROMS_DIR", &dumps)
             .output()
