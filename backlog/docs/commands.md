@@ -400,9 +400,15 @@ they close or cancel it first, keeping only this question or the Gaming-mode
 keep-or-discard question. One Escape closes only the top-most dialog. A
 stopped, halted or failed machine is not asked about, and Machine > Stop and
 Power cycle act at once. A Gaming-mode session asks Keep as new image or
-Discard after stopping instead. On macOS the window installs no platform
-application menu, so ⌘Q reaches this question; ⌘H and ⌘⌥H still hide. Dock
-Quit and logout still quit immediately and finish persistence as before.
+Discard after stopping instead. On macOS the global menu bar holds only the
+application menu: About unemupc98, Hide unemupc98 (⌘H), Hide Others (⌥⌘H),
+Show All and Quit unemupc98 (⌘Q). Quit and ⌘Q reach this question like Exit.
+Dock › Quit, logout, restart and shutdown wait for it as well: with no machine
+running they quit at once after persistence; Stop machine quits once the stop
+and persistence have finished; Cancel keeps the application running (logout
+reports that unemupc98 cancelled it). A stop that fails to finish its journals
+also cancels them and keeps the error dialog up. While a file dialog is open
+they are cancelled; close the dialog and quit again.
 
 View > Speed selects 100% (the default on every Start), 200%, 400% or Unlimited.
 The toolbar's Speed combobox, right after Layers, offers the same choices and

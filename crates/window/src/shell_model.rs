@@ -175,38 +175,6 @@ pub(crate) fn hotkey(
     }
 }
 
-/// macOS application chords that the platform application menu would provide.
-#[cfg(any(target_os = "macos", test))]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum AppChord {
-    Hide,
-    HideOthers,
-}
-
-/// Command+H hides the application and Command+Option+H the others. `key` is
-/// the layout's character without modifiers, as macOS menus match it.
-#[cfg(any(target_os = "macos", test))]
-pub(crate) fn macos_app_chord(
-    key: &Key,
-    modifiers: winit::keyboard::ModifiersState,
-) -> Option<AppChord> {
-    let Key::Character(text) = key else {
-        return None;
-    };
-    if !text.eq_ignore_ascii_case("h")
-        || !modifiers.super_key()
-        || modifiers.control_key()
-        || modifiers.shift_key()
-    {
-        return None;
-    }
-    Some(if modifiers.alt_key() {
-        AppChord::HideOthers
-    } else {
-        AppChord::Hide
-    })
-}
-
 /// Use the same labels in menus and help so platform-specific chords stay visible.
 pub(crate) fn shortcut_text(shortcut: &str, macos: bool) -> &str {
     if !macos {
@@ -749,34 +717,6 @@ mod tests {
                 true,
                 true
             ),
-            None
-        );
-    }
-
-    #[test]
-    fn macos_command_h_hides_without_the_platform_menu() {
-        use winit::keyboard::ModifiersState as M;
-        let h = Key::Character("h".into());
-        assert_eq!(macos_app_chord(&h, M::SUPER), Some(AppChord::Hide));
-        assert_eq!(
-            macos_app_chord(&Key::Character("H".into()), M::SUPER),
-            Some(AppChord::Hide)
-        );
-        assert_eq!(
-            macos_app_chord(&h, M::SUPER | M::ALT),
-            Some(AppChord::HideOthers)
-        );
-        for modifiers in [
-            M::empty(),
-            M::ALT,
-            M::SUPER | M::SHIFT,
-            M::SUPER | M::CONTROL,
-        ] {
-            assert_eq!(macos_app_chord(&h, modifiers), None, "{modifiers:?}");
-        }
-        assert_eq!(macos_app_chord(&Key::Character("j".into()), M::SUPER), None);
-        assert_eq!(
-            macos_app_chord(&Key::Named(NamedKey::Enter), M::SUPER),
             None
         );
     }

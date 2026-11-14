@@ -35,6 +35,7 @@ use winit::{
     window::{CursorGrabMode, Window},
 };
 
+mod app_menu;
 mod host_audio;
 mod layers_dialog;
 #[cfg(test)]
@@ -42,6 +43,8 @@ mod library_test_support;
 mod library_view;
 mod library_worker;
 mod logo;
+#[cfg(target_os = "macos")]
+mod macos_menu;
 mod media_dialog;
 mod pacing;
 mod preferences;

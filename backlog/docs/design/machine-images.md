@@ -1346,9 +1346,12 @@ The shell follows the approved [window mock-up](mockups/main-window.html) and
 One classic Win32-style application window has a title bar, in-window menu bar,
 toolbar, client area and status bar with power and drive activity lights. The
 menu bar stays inside the window on **every platform, including macOS**; the
-macOS global menu keeps only the minimum About and Quit items. Application
-commands remain in the same place on macOS, Windows and Linux. Shared shell
-widgets use the selected provider's capabilities for settings, media, guest
+macOS global menu keeps only the minimum: the application menu with About,
+the standard Hide, Hide Others and Show All, and Quit. About and Quit run the
+shell's own About and Exit, so Quit, Dock › Quit and logout ask before stopping
+a running machine. Application commands remain in the same place on macOS,
+Windows and Linux. Shared shell widgets use the selected provider's
+capabilities for settings, media, guest
 commands and status fields; the PC menu/dialog examples below do not require
 other platforms to expose Ctrl+Alt+Del, floppy drives, CMOS or EMS. About names
 the active emulator.

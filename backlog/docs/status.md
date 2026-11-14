@@ -5,6 +5,44 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-14 — macOS application menu:** the global menu bar has one
+  application menu: About unemupc98, Hide unemupc98 (⌘H), Hide Others (⌥⌘H),
+  Show All and Quit unemupc98 (⌘Q). About opens the shell's About dialog; Quit
+  runs the shell's Exit, never NSApplication `terminate:`. Both bring a
+  minimized window forward; an open shell dialog holds back About, never Quit.
+  AppKit takes ⌘H, ⌥⌘H and ⌘Q as menu key equivalents, so each acts once and
+  the letter never reaches the guest; the shell's own ⌘H handling is gone. An
+  Option pressed while Command is held no longer reaches the guest either, so
+  ⌥⌘H sends no Alt tap. Dock › Quit, logout, restart and shutdown answer
+  "terminate later" through a method added to winit's application delegate, run
+  the same Exit and reply once the shell decides: at once with no machine
+  running, YES after Stop machine and persistence, NO on Cancel. A stop whose
+  persistence fails replies NO and keeps the error dialog up; File › Exit still
+  closes. While an application-modal panel (a file dialog) is open, or when the
+  shell cannot take the request, the system quit is cancelled. The stop prompt
+  and Gaming mode's Keep/Discard question bring a hidden or minimized window
+  forward. AppKit ends the process on YES, so a stop error is printed to stderr
+  and the exit status is 0. If a later winit answers the quit question itself,
+  startup prints a warning and Dock › Quit quits at once again. Headless tests
+  cover the menu model, the reply state machine and the shell paths. The native
+  menu needs manual checks:
+  1. the menu's items and shortcuts (its bold title is the process name for a
+     bare binary);
+  2. About, also from a minimized window;
+  3. ⌘H, ⌥⌘H and Show All hide or show once, typing nothing, not even an Alt
+     tap, in a focused guest;
+  4. ⌘Q and Quit with and without a running machine (Cancel resumes, Stop
+     machine quits);
+  5. Dock › Quit with and without a running machine, also after ⌘H and from a
+     minimized window;
+  6. logout with a running machine (Cancel makes macOS report the cancelled
+     logout, Stop machine lets it continue) and with none (no prompt);
+  7. Dock › Quit during Gaming mode, also hidden or minimized, keeps its
+     Keep/Discard question;
+  8. Dock › Quit twice while the prompt is up, then Cancel: the application
+     stays responsive and a later quit still works;
+  9. Dock › Quit while a file dialog (Browse…) is open is cancelled, and works
+     again once the dialog is closed.
 - **2026-11-14 — No silent stop, session write modes, toolbar speed:** with a
   machine running, Machine library, Open machine file… (once a path is
   confirmed), Exit, ⌘Q/⌘W and the window's close button pause it and ask
@@ -12,8 +50,9 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   catch-up and restores guest focus and pointer capture. Quitting works through
   open menus and dialogs, closing them first. Gaming mode keeps its
   Keep/Discard question. Library-disk journals of image sessions live in the
-  image workspace and Gaming Discard removes them. The macOS build installs no platform application menu so ⌘Q reaches
-  the shell; ⌘H/⌘⌥H still hide, while Dock Quit and logout still quit at once.
+  image workspace and Gaming Discard removes them. The macOS build then
+  installed no platform application menu so ⌘Q reached the shell; the macOS
+  application menu entry above replaces that.
   The Insert dialog fixes the write policy only for machine-file entries;
   Browse… and From library… disks switch between read-only and a journal on
   re-insert, and browsing the same file and SHA-256 reuses its row. A toolbar

@@ -31,9 +31,8 @@ struct Events {
     pointer: egui::Pos2,
     pixels_per_point: f32,
     session: u64,
-    /// Only macOS application chords need the host modifiers outside the shell.
-    #[cfg(target_os = "macos")]
-    modifiers: ModifiersState,
+    /// Requests from the native application menu and the system's quit question.
+    native: crate::app_menu::NativeRequests,
 }
 
 enum HostEvent {
@@ -116,8 +115,6 @@ impl Events {
                 self.guest_focus = false;
                 self.captured = false;
             }
-            #[cfg(target_os = "macos")]
-            WindowEvent::ModifiersChanged(modifiers) => self.modifiers = modifiers.state(),
             _ => {}
         }
         if matches!(
@@ -146,22 +143,6 @@ impl Events {
             | WindowEvent::TouchpadPressure { .. } => !self.captured,
             _ => true,
         }
-    }
-
-    /// The application chord a fresh physical key press makes with the
-    /// modifiers last reported by the window.
-    #[cfg(target_os = "macos")]
-    fn app_chord(
-        &self,
-        key: &winit::keyboard::Key,
-        state: ElementState,
-        repeat: bool,
-        synthetic: bool,
-    ) -> Option<shell_model::AppChord> {
-        if state != ElementState::Pressed || repeat || synthetic {
-            return None;
-        }
-        shell_model::macos_app_chord(key, self.modifiers)
     }
 
     fn repaint(&self) {
@@ -202,8 +183,6 @@ impl ApplicationHandler<eframe::UserEvent> for Runner<'_> {
         self.eframe.user_event(events, event);
     }
     fn window_event(&mut self, events: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
-        #[cfg(target_os = "macos")]
-        self.application_chord(events, &event);
         let forward = self.events.borrow_mut().forward(&event);
         if forward {
             self.eframe.window_event(events, id, event);
@@ -239,37 +218,6 @@ impl ApplicationHandler<eframe::UserEvent> for Runner<'_> {
     }
 }
 
-#[cfg(target_os = "macos")]
-impl Runner<'_> {
-    /// Without the platform application menu, Command+H and Command+Option+H
-    /// would be lost; they still hide applications as on every macOS app. The
-    /// key event also reaches the shell, which consumes Command chords.
-    fn application_chord(&self, events: &ActiveEventLoop, event: &WindowEvent) {
-        use winit::platform::{
-            macos::ActiveEventLoopExtMacOS, modifier_supplement::KeyEventExtModifierSupplement,
-        };
-        let WindowEvent::KeyboardInput {
-            event,
-            is_synthetic,
-            ..
-        } = event
-        else {
-            return;
-        };
-        let chord = self.events.borrow().app_chord(
-            &event.key_without_modifiers(),
-            event.state,
-            event.repeat,
-            *is_synthetic,
-        );
-        match chord {
-            Some(shell_model::AppChord::Hide) => events.hide_application(),
-            Some(shell_model::AppChord::HideOthers) => events.hide_other_applications(),
-            None => {}
-        }
-    }
-}
-
 pub(super) fn run(args: Args, autostart: bool) -> Result<(), Box<dyn Error>> {
     let events = Rc::new(RefCell::new(Events::default()));
     let shell_events = events.clone();
@@ -280,11 +228,28 @@ pub(super) fn run(args: Args, autostart: bool) -> Result<(), Box<dyn Error>> {
     #[cfg(target_os = "macos")]
     {
         use winit::platform::macos::EventLoopBuilderExtMacOS;
-        // The platform menu's Quit item terminates the process before the shell
-        // can ask to stop a running machine; Command+Q reaches the shell instead.
+        // winit's default menu quits through NSApplication `terminate:` before
+        // the shell can ask to stop a running machine; the shell's own
+        // application menu runs Exit instead.
         builder.with_default_menu(false);
     }
     let event_loop = builder.build()?;
+    // Menu items and the system's quit question reach the shell's next pass.
+    // Command+H, Command+Option+H and Command+Q are the menu's key
+    // equivalents, so AppKit takes those key presses before the window sees
+    // them and each acts once.
+    #[cfg(target_os = "macos")]
+    {
+        let native = events.clone();
+        crate::macos_menu::install(move |request| {
+            let Ok(mut events) = native.try_borrow_mut() else {
+                return false;
+            };
+            events.native.push(request);
+            events.repaint();
+            true
+        });
+    }
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("unemupc98")
@@ -1472,12 +1437,68 @@ impl Shell {
 
     fn exit(&mut self, ctx: &egui::Context) {
         self.exit_requested = true;
-        self.stop();
+        let stopped = self.stop();
+        if !stopped && self.events.borrow().native.system_quit_pending() {
+            // Logout or shutdown would take the error dialog away unseen, so
+            // that quit is cancelled and the dialog stays: the session's
+            // changes were not finished.
+            self.exit_requested = false;
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            return;
+        }
         if self.image_library.needs_decision() {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
         } else {
             self.image_library.shutdown();
+            self.close_window(ctx);
+        }
+    }
+
+    /// Stop and persistence have finished. A system quit waiting for this is
+    /// told to terminate, and AppKit then closes the window itself.
+    fn close_window(&mut self, ctx: &egui::Context) {
+        self.answer_system_quit(crate::app_menu::ExitProgress::Closing, ctx);
+        if !self.events.borrow().native.terminating() {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        }
+    }
+
+    fn exit_progress(&self) -> crate::app_menu::ExitProgress {
+        use crate::app_menu::ExitProgress;
+        if self.stop_prompt == Some(StopPrompt::Exit) {
+            ExitProgress::Asking
+        } else if self.exit_requested {
+            ExitProgress::Waiting
+        } else {
+            ExitProgress::Idle
+        }
+    }
+
+    /// Dock › Quit, logout and shutdown wait while the shell's Exit runs: the
+    /// stop prompt comes forward, Stop machine answers terminate once
+    /// persistence has finished, and Cancel answers keep running.
+    fn answer_system_quit(&mut self, exit: crate::app_menu::ExitProgress, ctx: &egui::Context) {
+        use crate::app_menu::QuitStep;
+        let step = self.events.borrow_mut().native.settle(exit);
+        match step {
+            QuitStep::Wait => {}
+            QuitStep::ShowPrompt => {
+                #[cfg(target_os = "macos")]
+                crate::macos_menu::unhide();
+                ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+                ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+            }
+            QuitStep::Reply(terminate) => {
+                if terminate {
+                    // AppKit ends the process without returning from the
+                    // event loop, so report a failed stop here.
+                    if let Some(error) = self.errors.borrow().as_deref() {
+                        eprintln!("{error}");
+                    }
+                }
+                #[cfg(target_os = "macos")]
+                crate::macos_menu::reply_to_terminate(terminate);
+            }
         }
     }
 
@@ -1510,7 +1531,7 @@ impl Shell {
             && !self.has_dialog()
         {
             self.image_library.shutdown();
-            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            self.close_window(ctx);
         }
     }
 
@@ -2140,7 +2161,28 @@ impl Shell {
     }
 
     fn input(&mut self, ctx: &egui::Context, blocked: bool) {
-        let events = std::mem::take(&mut self.events.borrow_mut().queue);
+        let (events, menu_commands, system_quit) = {
+            let mut shared = self.events.borrow_mut();
+            (
+                std::mem::take(&mut shared.queue),
+                shared.native.take_commands(),
+                shared.native.take_system_quit(),
+            )
+        };
+        for command in menu_commands {
+            // Like a hotkey, a shell dialog holds back all but quitting. The
+            // application menu also works while the window is minimized, so
+            // bring forward what it opens.
+            if command == Command::Exit || !self.has_dialog() {
+                egui::Popup::close_all(ctx);
+                ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+                ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+                self.command(command, ctx);
+            }
+        }
+        if system_quit {
+            self.command(Command::Exit, ctx);
+        }
         for event in events {
             let blocked = blocked || self.has_dialog();
             let event = match event {
@@ -2223,6 +2265,9 @@ impl Shell {
             }
         }
         self.sync_routing();
+        // Every pass reads input, so a cancelled or abandoned question is
+        // answered here, after the Exit that a system quit asked for has run.
+        self.answer_system_quit(self.exit_progress(), ctx);
     }
 
     #[cfg(test)]
@@ -2382,12 +2427,12 @@ impl Shell {
                 return;
             }
         }
+        // Under Command only Ctrl stays guest input. An Option pressed for a
+        // chord such as Command+Option+H would reach the guest as an Alt tap,
+        // which opens the menu bar in many DOS programs.
         if self.macos_shortcuts
             && self.host_modifiers.super_key()
-            && !matches!(
-                key,
-                KeyCode::ControlLeft | KeyCode::ControlRight | KeyCode::AltLeft | KeyCode::AltRight
-            )
+            && !matches!(key, KeyCode::ControlLeft | KeyCode::ControlRight)
         {
             if fresh {
                 self.consumed.insert(key);
@@ -6493,41 +6538,345 @@ kind='mda'
     }
 
     #[test]
-    fn modifier_changes_reach_egui_and_drive_macos_application_chords() {
+    fn modifier_changes_reach_egui() {
         let mut events = Events::default();
         assert!(events.forward(&WindowEvent::ModifiersChanged(ModifiersState::SUPER.into())));
         assert!(matches!(
             events.queue.last(),
             Some(HostEvent::Window(event)) if matches!(**event, WindowEvent::ModifiersChanged(_))
         ));
-        // The application chords exist only where the platform menu is absent.
-        #[cfg(target_os = "macos")]
-        {
-            use shell_model::AppChord;
-            let h = winit::keyboard::Key::Character("h".into());
-            assert_eq!(
-                events.app_chord(&h, Pressed, false, false),
-                Some(AppChord::Hide)
-            );
-            for (state, repeat, synthetic) in [
-                (Released, false, false),
-                (Pressed, true, false),
-                (Pressed, false, true),
-            ] {
-                assert_eq!(events.app_chord(&h, state, repeat, synthetic), None);
-            }
-            events.forward(&WindowEvent::ModifiersChanged(
-                (ModifiersState::SUPER | ModifiersState::ALT).into(),
-            ));
-            assert_eq!(
-                events.app_chord(&h, Pressed, false, false),
-                Some(AppChord::HideOthers)
-            );
-            events.forward(&WindowEvent::ModifiersChanged(
-                ModifiersState::empty().into(),
-            ));
-            assert_eq!(events.app_chord(&h, Pressed, false, false), None);
+    }
+
+    /// A request as the native application layer delivers it.
+    fn native(shell: &Shell, request: crate::app_menu::NativeRequest) {
+        shell.events.borrow_mut().native.push(request);
+    }
+
+    /// The replies AppKit gets, oldest first.
+    fn replies(shell: &Shell) -> Rc<RefCell<Vec<bool>>> {
+        let replies = Rc::new(RefCell::new(Vec::new()));
+        let log = replies.clone();
+        shell.events.borrow_mut().native.on_reply =
+            Some(Box::new(move |terminate| log.borrow_mut().push(terminate)));
+        replies
+    }
+
+    /// One shell pass as far as a system quit sees it.
+    fn quit_pass(shell: &mut Shell, ctx: &egui::Context) -> Vec<egui::ViewportCommand> {
+        pass(ctx, Default::default(), |ctx| {
+            shell.input(ctx, false);
+            shell.window_close(ctx);
+        })
+        .0
+    }
+
+    #[test]
+    fn application_menu_about_and_quit_run_shell_commands_like_hotkeys() {
+        use crate::app_menu::NativeRequest;
+        let mut shell = shell();
+        let replies = replies(&shell);
+        let ctx = egui::Context::default();
+        native(&shell, NativeRequest::Command(Command::About));
+        // The menu works while the window is minimized; what it opens comes forward.
+        shell.minimized = true;
+        let commands = pass(&ctx, Default::default(), |ctx| shell.visibility(ctx, true)).0;
+        assert_eq!(
+            shell.dialog.as_ref().map(|(title, _)| *title),
+            Some("About unemupc98")
+        );
+        assert!(commands.contains(&egui::ViewportCommand::Minimized(false)));
+        assert!(commands.contains(&egui::ViewportCommand::Focus));
+        shell.minimized = false;
+        // An open dialog holds back everything but quitting.
+        native(&shell, NativeRequest::Command(Command::Shortcuts));
+        let commands = quit_pass(&mut shell, &ctx);
+        assert_eq!(
+            shell.dialog.as_ref().map(|(title, _)| *title),
+            Some("About unemupc98")
+        );
+        assert!(!commands.contains(&egui::ViewportCommand::Focus));
+        // Quit closes the dialog and asks, exactly like File › Exit; a menu
+        // Quit owes AppKit no reply.
+        native(&shell, NativeRequest::Command(Command::Exit));
+        let commands = quit_pass(&mut shell, &ctx);
+        assert!(shell.dialog.is_none());
+        assert_eq!(shell.stop_prompt, Some(StopPrompt::Exit));
+        assert!(shell.presenter.as_ref().unwrap().running);
+        assert!(commands.contains(&egui::ViewportCommand::Focus));
+        assert!(!commands.contains(&egui::ViewportCommand::Close));
+        shell.answer_stop_prompt(true, &ctx);
+        let commands = quit_pass(&mut shell, &ctx);
+        assert!(shell.presenter.is_none());
+        assert!(commands.contains(&egui::ViewportCommand::Close));
+        assert!(replies.borrow().is_empty());
+    }
+
+    #[test]
+    fn system_quit_without_a_running_machine_terminates_in_the_same_pass() {
+        let mut shell = shell();
+        assert!(shell.stop());
+        let replies = replies(&shell);
+        let ctx = egui::Context::default();
+        native(&shell, crate::app_menu::NativeRequest::SystemQuit);
+        let commands = quit_pass(&mut shell, &ctx);
+        assert!(shell.exit_requested);
+        assert_eq!(shell.stop_prompt, None);
+        assert_eq!(*replies.borrow(), [true]);
+        // AppKit closes the window and ends the process itself.
+        assert!(!commands.contains(&egui::ViewportCommand::Close));
+        assert!(!commands.contains(&egui::ViewportCommand::Focus));
+        assert!(quit_pass(&mut shell, &ctx).is_empty());
+        assert_eq!(*replies.borrow(), [true]);
+    }
+
+    #[test]
+    fn system_quit_while_running_asks_and_stop_terminates_after_persistence() {
+        let temp = assembly::test_support::TempDir::new("shell-system-quit-stop");
+        let journal = temp.path().join("disk.upfj");
+        let mut shell = journal_shell(&temp, vec![0xeb, 0xfe]);
+        // The journal's length when each reply is given.
+        let replies = Rc::new(RefCell::new(Vec::new()));
+        let (log, path) = (replies.clone(), journal.clone());
+        shell.events.borrow_mut().native.on_reply = Some(Box::new(move |terminate| {
+            let length = std::fs::metadata(&path).unwrap().len();
+            log.borrow_mut().push((terminate, length));
+        }));
+        let ctx = egui::Context::default();
+        native(&shell, crate::app_menu::NativeRequest::SystemQuit);
+        let commands = quit_pass(&mut shell, &ctx);
+        assert_eq!(shell.stop_prompt, Some(StopPrompt::Exit));
+        assert!(shell.presenter.as_ref().unwrap().running);
+        assert!(shell.presenter.as_ref().unwrap().occluded_since.is_some());
+        // The question comes forward, even out of a hidden or minimized window.
+        assert!(commands.contains(&egui::ViewportCommand::Focus));
+        assert!(commands.contains(&egui::ViewportCommand::Minimized(false)));
+        assert!(!commands.contains(&egui::ViewportCommand::Close));
+        let commands = quit_pass(&mut shell, &ctx);
+        assert!(!commands.contains(&egui::ViewportCommand::Focus));
+        assert!(replies.borrow().is_empty());
+        let open = std::fs::metadata(&journal).unwrap().len();
+        let commands = pass(&ctx, Default::default(), |ctx| {
+            shell.answer_stop_prompt(true, ctx);
+            shell.input(ctx, false);
+            shell.window_close(ctx);
+        })
+        .0;
+        assert!(shell.presenter.is_none());
+        let finished = std::fs::metadata(&journal).unwrap().len();
+        assert!(finished > open);
+        // The reply came only once the session's journal was finished.
+        assert_eq!(*replies.borrow(), [(true, finished)]);
+        assert!(shell.errors.borrow().is_none());
+        assert!(!commands.contains(&egui::ViewportCommand::Close));
+    }
+
+    #[test]
+    fn system_quit_cancel_keeps_running_and_the_next_quit_asks_again() {
+        let mut shell = shell();
+        let replies = replies(&shell);
+        let ctx = egui::Context::default();
+        native(&shell, crate::app_menu::NativeRequest::SystemQuit);
+        quit_pass(&mut shell, &ctx);
+        assert_eq!(shell.stop_prompt, Some(StopPrompt::Exit));
+        // A Dock Quit while asking joins the open question.
+        native(&shell, crate::app_menu::NativeRequest::SystemQuit);
+        quit_pass(&mut shell, &ctx);
+        assert!(replies.borrow().is_empty());
+        let commands = pass(&ctx, Default::default(), |ctx| {
+            shell.answer_stop_prompt(false, ctx);
+            shell.input(ctx, false);
+            shell.window_close(ctx);
+        })
+        .0;
+        assert_eq!(*replies.borrow(), [false]);
+        assert_eq!(shell.stop_prompt, None);
+        assert!(!shell.exit_requested);
+        assert!(shell.presenter.as_ref().unwrap().running);
+        assert!(!commands.contains(&egui::ViewportCommand::Close));
+        native(&shell, crate::app_menu::NativeRequest::SystemQuit);
+        let commands = quit_pass(&mut shell, &ctx);
+        assert_eq!(shell.stop_prompt, Some(StopPrompt::Exit));
+        assert!(commands.contains(&egui::ViewportCommand::Focus));
+        assert_eq!(*replies.borrow(), [false]);
+    }
+
+    /// A stopped Gaming-mode session whose keep-or-discard question is open.
+    fn gaming_decision(shell: &mut Shell) {
+        assert!(shell.stop());
+        shell.image_library.decision = Some(crate::library_worker::Recovery {
+            schema: 1,
+            kind: crate::library_worker::WorkspaceKind::Disposable,
+            reference: "games:1".into(),
+            image: image_store::Descriptor::new(
+                image_store::media_type::CONFIG,
+                image_store::Digest::of(b"gaming"),
+                6,
+            ),
+            title: "Games".into(),
+            recovery: true,
+            name: "gaming-workspace".into(),
+        });
+    }
+
+    #[test]
+    fn system_quit_waits_for_the_gaming_mode_decision_before_terminating() {
+        let mut shell = shell();
+        gaming_decision(&mut shell);
+        let replies = replies(&shell);
+        let ctx = egui::Context::default();
+        native(&shell, crate::app_menu::NativeRequest::SystemQuit);
+        let commands = quit_pass(&mut shell, &ctx);
+        assert!(shell.exit_requested);
+        assert!(commands.contains(&egui::ViewportCommand::CancelClose));
+        assert!(commands.contains(&egui::ViewportCommand::Focus));
+        assert!(replies.borrow().is_empty());
+        let commands = quit_pass(&mut shell, &ctx);
+        assert!(!commands.contains(&egui::ViewportCommand::Focus));
+        shell.image_library.decision = None;
+        let commands = quit_pass(&mut shell, &ctx);
+        assert_eq!(*replies.borrow(), [true]);
+        assert!(!commands.contains(&egui::ViewportCommand::Close));
+    }
+
+    #[test]
+    fn system_quit_brings_a_hidden_or_minimized_gaming_decision_forward() {
+        for minimized in [false, true] {
+            let mut shell = shell();
+            gaming_decision(&mut shell);
+            let replies = replies(&shell);
+            shell.hidden = !minimized;
+            let ctx = egui::Context::default();
+            native(&shell, crate::app_menu::NativeRequest::SystemQuit);
+            // Only the logic pass runs while the window cannot be seen.
+            let commands = pass(&ctx, Default::default(), |ctx| {
+                shell.visibility(ctx, minimized)
+            })
+            .0;
+            assert!(shell.exit_requested, "{minimized}");
+            assert!(shell.image_library.needs_decision());
+            assert!(commands.contains(&egui::ViewportCommand::Minimized(false)));
+            assert!(commands.contains(&egui::ViewportCommand::Focus));
+            assert!(replies.borrow().is_empty());
         }
+    }
+
+    #[test]
+    fn system_quit_of_a_hidden_window_asks_from_the_logic_pass() {
+        let mut shell = shell();
+        let replies = replies(&shell);
+        shell.hidden = true;
+        let ctx = egui::Context::default();
+        native(&shell, crate::app_menu::NativeRequest::SystemQuit);
+        let commands = pass(&ctx, Default::default(), |ctx| shell.visibility(ctx, false)).0;
+        assert_eq!(shell.stop_prompt, Some(StopPrompt::Exit));
+        assert!(shell.presenter.as_ref().unwrap().running);
+        assert!(commands.contains(&egui::ViewportCommand::Focus));
+        assert!(commands.contains(&egui::ViewportCommand::Minimized(false)));
+        assert!(replies.borrow().is_empty());
+        // Shown again, the user cancels from the full pass.
+        shell.hidden = false;
+        let commands = pass(&ctx, Default::default(), |ctx| {
+            shell.answer_stop_prompt(false, ctx);
+            shell.input(ctx, false);
+            shell.window_close(ctx);
+        })
+        .0;
+        assert_eq!(*replies.borrow(), [false]);
+        assert!(!commands.contains(&egui::ViewportCommand::Close));
+    }
+
+    #[test]
+    fn system_quit_with_a_failed_stop_keeps_running_and_shows_the_error() {
+        let temp = assembly::test_support::TempDir::new("shell-system-quit-failed-stop");
+        let mut shell = journal_shell(&temp, vec![0xeb, 0xfe]);
+        shell.presenter.as_mut().unwrap().assembled.persistence[0].fail_output();
+        let replies = replies(&shell);
+        let ctx = egui::Context::default();
+        native(&shell, crate::app_menu::NativeRequest::SystemQuit);
+        quit_pass(&mut shell, &ctx);
+        assert_eq!(shell.stop_prompt, Some(StopPrompt::Exit));
+        let commands = pass(&ctx, Default::default(), |ctx| {
+            shell.answer_stop_prompt(true, ctx);
+            shell.input(ctx, false);
+            shell.window_close(ctx);
+        })
+        .0;
+        // Logout is cancelled so the unfinished journal is reported.
+        assert_eq!(*replies.borrow(), [false]);
+        assert!(shell.presenter.is_none());
+        assert_eq!(
+            shell.dialog.as_ref().map(|(title, _)| *title),
+            Some("Machine error")
+        );
+        assert!(shell.errors.borrow().is_some());
+        assert!(!shell.exit_requested);
+        assert!(!shell.events.borrow().native.terminating());
+        assert!(commands.contains(&egui::ViewportCommand::CancelClose));
+        assert!(!commands.contains(&egui::ViewportCommand::Close));
+        // Closing the error does not quit; a later quit stops nothing and terminates.
+        shell.dialog = None;
+        assert!(quit_pass(&mut shell, &ctx).is_empty());
+        native(&shell, crate::app_menu::NativeRequest::SystemQuit);
+        quit_pass(&mut shell, &ctx);
+        assert_eq!(*replies.borrow(), [false, true]);
+    }
+
+    #[test]
+    fn command_chords_taken_by_the_application_menu_never_reach_the_guest() {
+        use KeyCode::*;
+        // AppKit gives Command+H, Command+Option+H and Command+Q to the menu,
+        // so the window sees the modifiers and only the letter's release, with
+        // Command still down or already released.
+        for command_first in [false, true] {
+            for (option, letter, logical) in
+                [(false, KeyH, "h"), (true, KeyH, "h"), (false, KeyQ, "q")]
+            {
+                let mut shell = keyboard_shell();
+                shell.macos_shortcuts = true;
+                let ctx = egui::Context::default();
+                shell.key(SuperLeft, Pressed, false, &ctx);
+                if option {
+                    shell.key(AltLeft, Pressed, false, &ctx);
+                }
+                if command_first {
+                    shell.key(SuperLeft, Released, false, &ctx);
+                }
+                logical_key(&mut shell, letter, logical, Released, &ctx);
+                if option {
+                    shell.key(AltLeft, Released, false, &ctx);
+                }
+                if !command_first {
+                    shell.key(SuperLeft, Released, false, &ctx);
+                }
+                // Neither the letter nor an Option pressed under Command
+                // reaches the guest, so no Alt tap opens a DOS menu bar.
+                assert!(
+                    take_guest_scancodes(&mut shell).is_empty(),
+                    "{letter:?} {option} {command_first}"
+                );
+                assert_eq!(shell.stop_prompt, None);
+                assert!(shell.dialog.is_none());
+                // Later guest typing is unaffected.
+                shell.key(KeyA, Pressed, false, &ctx);
+                shell.key(KeyA, Released, false, &ctx);
+                assert_eq!(take_guest_scancodes(&mut shell), [0x1E, 0x9E]);
+            }
+        }
+    }
+
+    #[test]
+    fn alt_held_before_command_stays_guest_input_through_the_chord() {
+        use KeyCode::*;
+        let mut shell = keyboard_shell();
+        shell.macos_shortcuts = true;
+        let ctx = egui::Context::default();
+        shell.key(AltLeft, Pressed, false, &ctx);
+        assert_eq!(take_guest_scancodes(&mut shell), [0x38]);
+        shell.key(SuperLeft, Pressed, false, &ctx);
+        logical_key(&mut shell, KeyH, "h", Released, &ctx);
+        shell.key(AltLeft, Released, false, &ctx);
+        shell.key(SuperLeft, Released, false, &ctx);
+        assert_eq!(take_guest_scancodes(&mut shell), [0xB8]);
     }
 
     /// Import a one-disk 360K installation set into the fixture's store.
