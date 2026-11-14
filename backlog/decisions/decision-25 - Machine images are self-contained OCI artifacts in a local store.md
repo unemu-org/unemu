@@ -116,3 +116,15 @@ their short form; the full reference is used only when pulling, pushing or
 recording provenance. Until registry.unemu.dev is reachable from the
 internet it serves the maintainer's LAN; public templates and fixtures live
 under its `unemu/` namespace.
+
+## Amendment 2026-11-14: private content never reaches a public registry
+
+- Every registry the user configures has its own login. Secrets live in the
+  operating system's credential store, never in preferences or project files.
+- `private/` repositories always require login. They hold the maintainer's
+  proprietary images (vendor ROMs, commercial software) and are never
+  downloadable anonymously. A public (cloud) registry never hosts them.
+- The client enforces this before any upload: an image whose closure contains
+  a `user-supplied` blob can be pushed only to a registry marked private, and
+  never into the public `unemu/` namespace; pushes to `unemu/` require every
+  blob to be `open`. The GUI offers no override.
