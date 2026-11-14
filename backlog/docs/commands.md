@@ -154,6 +154,8 @@ cargo run --offline -p cli -- image push dos-lab:1.0.0 private/dos-lab:1.0.0 --s
 cargo run --offline -p cli -- image push dos-lab:latest private/dos-lab:latest --store /path/to/store --move
 cargo run --offline -p cli -- image pull private/dos-lab:1.0.0 --store /path/to/store
 cargo run --offline -p cli -- image pull nas.example:5000/private/games:1 --store /path/to/new-store --create --tag games:1
+cargo run --offline -p cli -- image push firmware/kiselev-xi8088-1.0.2:1 nas.example:5000/firmware/kiselev-xi8088-1.0.2:1 --store /path/to/store --dry-run
+cargo run --offline -p cli -- image pull nas.example:5000/firmware/kiselev-xi8088-1.0.2:1 --store /path/to/store
 cargo run --offline -p cli -- image remote ls private/dos-lab
 cargo run --offline -p cli -- image remote ls registry.unemu.dev
 cargo run --offline -p cli -- image login registry.unemu.dev --user NAME
@@ -168,6 +170,12 @@ and `@sha256:…` pins content. `--registry HOST`, then `UNEMU_REGISTRY`, then
 reference uses the local tag. `pull` tags locally in short form (no host, no
 `unemu/`), or `--tag`; a digest pull needs `--tag`. `--create` initializes a
 missing store.
+
+Firmware packages (`firmware/<catalogue-id>:1`) push and pull like machine
+images and media sets; a pulled package lists in `image firmware ls`. Their
+ROM layers keep the import's mark (`open` for reviewed open firmware), but the
+package config is user-supplied like every config, so even an open package
+goes only to a private registry outside `unemu/` for now.
 
 Registries are listed in the shared preferences file (`unemupc98/preferences.toml`
 in the platform config directory, or `--config FILE`):

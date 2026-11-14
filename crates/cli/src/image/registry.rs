@@ -9,7 +9,8 @@ use image_registry::{
     credentials::{keychain, Anonymous, EnvCredentials, HostCredentials},
     pull, push, Client, Reference,
 };
-use image_store::{media_set, ConfigValidator, Store};
+use image_store::{firmware, media_set, ConfigValidator, Store};
+use pc_image::firmware::{catalogue, PcFirmwareRules};
 use std::{
     ffi::OsString,
     io::Write,
@@ -209,9 +210,11 @@ fn conflicting_registry(options: &Common, reference: &Reference) -> anyhow::Resu
 
 const MEDIA_SETS: media_set::Validator<'static> =
     media_set::Validator(&pc_image::media_set::PcMediaFormats);
-const PROVIDERS: [&dyn ConfigValidator; 2] = [&pc_image::PcProvider, &MEDIA_SETS];
 
 pub fn execute(command: RegistryCommand, output: &mut impl Write) -> anyhow::Result<()> {
+    let firmware_rules = PcFirmwareRules(catalogue());
+    let firmware = firmware::Validator(&firmware_rules);
+    let providers: [&dyn ConfigValidator; 3] = [&pc_image::PcProvider, &MEDIA_SETS, &firmware];
     match command {
         RegistryCommand::Push {
             store,
@@ -255,7 +258,7 @@ pub fn execute(command: RegistryCommand, output: &mut impl Write) -> anyhow::Res
             let mut progress = |d: &image_store::Descriptor, o: push::BlobOutcome| {
                 let _ = writeln!(output, "{}\t{}", o.as_str(), d.digest);
             };
-            let report = push::push(&store, &plan, &PROVIDERS, &client, &options, &mut progress)?;
+            let report = push::push(&store, &plan, &providers, &client, &options, &mut progress)?;
             match report.tag {
                 push::TagOutcome::Unchanged => writeln!(
                     output,
@@ -297,7 +300,7 @@ pub fn execute(command: RegistryCommand, output: &mut impl Write) -> anyhow::Res
                 Store::open_existing(store)?
             };
             let client = client(&config, &source.host)?;
-            let report = pull::pull(&store, &client, &source, &local_tag, &PROVIDERS, &|_| {})?;
+            let report = pull::pull(&store, &client, &source, &local_tag, &providers, &|_| {})?;
             for descriptor in &report.fetched {
                 writeln!(output, "fetched\t{}", descriptor.digest)?;
             }
