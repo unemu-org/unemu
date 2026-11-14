@@ -78,3 +78,20 @@ layers, its media catalogues and its CMOS.
   view with a summary cache. It gets its own mock-up for maintainer approval.
 - Machine images carry rich, eXoDOS-style game metadata, several titles per
   image and launch commands. Library facets come from that metadata.
+
+## Amendment 2026-11-14: free tag names and which tags may move
+
+The maintainer chose free tag names: a version (`1.0.0`), `latest`, or a
+descriptive tag that says what the image holds, such as
+`open-at:8mhz-1mb-2mbems`. Point 8 becomes:
+
+- A tag that has the shape of a semantic version (`x.y.z`, optionally with a
+  pre-release or build suffix) is immutable, locally and when pushed: once it
+  names a digest, it always names that digest.
+- Any other tag, `latest` or a descriptive one, may be moved to a newer image,
+  but only after an explicit confirmation that shows the old and the new
+  digest. The update stays a compare-and-swap. The old image remains reachable
+  by its digest and by its other tags.
+- Creating an image (New machine…) or saving one (Save as new image…) asks for
+  the repository name and the tag; the version tag defaults to `1.0.0`, and a
+  later save suggests the next version.
