@@ -685,28 +685,39 @@ Push and pull use the
 Pull and Push sections, against an explicitly configured **private registry**.
 The registry may run anywhere: for example, on a Proxmox host with NFS storage
 behind the registry. This is separate from the always-local client store (§3):
-the registry manages its own blob storage and locking. Recommended registry:
+the registry manages its own blob storage and locking. Chosen registry:
 [zot](https://github.com/project-zot/zot), a small OCI-native registry with OCI 1.1
 `artifactType` and referrers support. Harbor and distribution/registry are
 alternatives; compatible Forgejo package registries remain usable too.
-
-**Before building transport**, a verification spike must pass using the `oras`
-CLI against the chosen registry: push and pull a synthetic artifact with our
-custom config/payload media types and a multi-gigabyte blob, verify the returned
-manifest/digests and record OCI 1.1 compatibility and size-limit results. This
-is a required gate, not measured compatibility or work performed by this note.
 
 Tags work like Docker, for example `dos-lab:1.0`. Pull resolves a tag to a
 manifest digest once, copies the complete descriptor closure, verifies every
 size and SHA-256 and only then writes the local tag (§3.1). Push checks image
 completeness and tag policy, uploads missing blobs by digest, then publishes
-the manifest and tag last. Uploads use chunked sessions and downloads resume
-by range. **`+zstd` support is required before any phase C multi-gigabyte image
+the manifest and tag last. The transport implementation must:
+
+- Use `POST`/`PATCH`/`PUT` upload sessions with chunks of about 64 MiB and an
+  8 MiB floor. Persist the session `Location` after each accepted chunk. On
+  resume, query the server offset rather than trusting local progress; a `404`
+  restarts the upload. Downloads resume by range.
+- Check blob presence with `HEAD` and attempt a cross-repository mount before
+  uploading missing bytes; fall back to uploading the same verified bytes when
+  mounting is unavailable.
+- `HEAD` every referenced blob before the manifest `PUT`: zot does not verify
+  blob existence for manifests with custom config media types.
+- Check the target tag digest before the manifest `PUT`: skip the same digest
+  and refuse a different digest for version tags. Moving aliases follow the
+  explicit-force policy below.
+- Write deterministic manifest bytes without a created timestamp, including
+  `org.opencontainers.image.created`.
+- Always pass `n` when listing repositories or tags and follow pagination
+  `Link` headers.
+
+**`+zstd` support is required before any phase C multi-gigabyte image
 is pushed**, and its multi-gigabyte bases must be compressed; raw multi-gigabyte
 bases are not a temporary phase C upload path. Metadata remains uncompressed.
 The verification spike uses synthetic data and does not waive this gate.
-Identical blobs deduplicate by digest locally; cross-repository blob mounts are
-used when supported, otherwise the same verified bytes are uploaded. Physical
+Identical blobs deduplicate by digest locally. Physical
 registry deduplication is implementation-dependent, and the registry never
 interprets a filesystem. No registry service is bundled or deployed by this
 proposal.
@@ -719,8 +730,11 @@ proprietary bytes by accident:
   registry or fails; it never falls back to a public service.
 - Push refuses a registry that is not in the list. An image containing any
   user-supplied blob (the default classification) is pushed only to an entry
-  marked private. The first such push checks that anonymous access is refused
-  unless the entry explicitly opts into unauthenticated LAN access.
+  marked private. Before the first such push, probe anonymous `tags/list` and
+  catalog access for the target namespace, not just `/v2/`: `401`/`403` indicate
+  private access; `200` or `404 NAME_UNKNOWN` indicate open access and refuse
+  the restricted push unless the entry explicitly opts into unauthenticated
+  LAN access.
 - **TLS and authentication are the client defaults.** Plain HTTP and no
   authentication each require a separate explicit per-registry LAN opt-in;
   neither setting silently enables the other. The OCI distribution-spec itself
@@ -753,6 +767,23 @@ server with remote viewing, remote control is wanted, or background GC is needed
 If justified then, it is a thin local-socket/service wrapper around the same
 transport-neutral library API, with no duplicated storage or validation rules.
 It is not a planned dependency of the image store, library UI or registry client.
+
+#### Registry verification (2026-11-14)
+
+The synthetic spike with zot v2.1.23 and oras v1.3.6 passed: byte-identical
+round-trip of custom artifact/config/six layer media types and annotations,
+a 3.5 GiB blob and digest-verified pull, catalog/tag paging, native referrers,
+TLS with htpasswd authentication (anonymous `401`), detection of anonymous
+access on a misconfigured public registry, and cross-repository mounting of the
+large blob. **zot is chosen.** distribution/registry and Harbor are untested.
+
+Weak spots: oras single-`PUT` uploads restart from zero; a client death during
+`PATCH` makes zot discard the whole session, including earlier chunks. A clean
+stop between chunks resumes at the server offset, including after zot restarts.
+zot accepted a custom-config manifest naming a missing layer and has no default
+size limit or timeout. oras adds a nondeterministic created annotation; tag
+immutability rules are per repository pattern and user. The transport rules
+above account for these findings; this spike does not waive the compression gate.
 
 ## 6. Capabilities API sketch: validator-owned choices
 
@@ -1016,10 +1047,9 @@ remains a review point. New GUI work requires an approved mock-up first.
 ## 9. Open points for the maintainer
 
 All policy questions from the 2026-11-13 review are resolved in the sections
-above. Only these implementation gates remain pending:
+above. Implementation gate outcomes:
 
-1. The chosen-registry `oras` verification spike with synthetic custom media
-   types and a multi-gigabyte blob must pass before transport work (§5.1).
+1. Done 2026-11-14: the zot/`oras` registry verification spike passed (§5.1).
 2. Done 2026-11-13: the maintainer approved the Explorer-like library mock-up
    ([mockups/library.html](mockups/library.html)) as the starting point for the
    library bead (§7).
