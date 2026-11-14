@@ -658,6 +658,37 @@ impl Upd765 {
         }
     }
 
+    /// Extend an installed drive's catalogue without changing its door or medium.
+    /// Mixed-density mechanics are absent; IBM PC AT Technical Reference,
+    /// Fixed Disk and Diskette Drive Adapter, Interface Lines describes the
+    /// separate door-change signal. Host catalogue edits do not assert it.
+    pub fn append_medium(&mut self, unit: usize, medium: Drive) -> Result<usize, MediaChangeError> {
+        self.check_append_medium(unit, medium.geometry)?;
+        let index = self.media_lists[unit].len();
+        self.media_lists[unit].push(Some(medium));
+        Ok(index)
+    }
+
+    /// Validate a host catalogue extension before opening its backing store.
+    pub fn check_append_medium(
+        &self,
+        unit: usize,
+        geometry: FloppyGeometry,
+    ) -> Result<(), MediaChangeError> {
+        self.check_media_boundary()?;
+        if !self.installed.get(unit).copied().unwrap_or(false) {
+            return Err(MediaChangeError::UnknownDrive);
+        }
+        if self.drives[unit]
+            .iter()
+            .chain(self.media_lists[unit].iter().filter_map(Option::as_ref))
+            .any(|medium| medium.geometry != geometry)
+        {
+            return Err(MediaChangeError::GeometryMismatch);
+        }
+        Ok(())
+    }
+
     /// Eject at a completed run boundary. IBM PC AT Technical Reference,
     /// Fixed Disk and Diskette Drive Adapter, Digital Input Register (3F7h)
     /// and Interface Lines: opening the door asserts diskette change.
@@ -1928,6 +1959,62 @@ mod tests {
         )
         .unwrap();
         MockBus::new(Box::new(fdc))
+    }
+
+    #[test]
+    fn append_medium_preserves_the_door_and_rejects_wrong_geometry_or_absent_drives() {
+        let mut bus = swap_bus();
+        let fdc = swap_fdc(&mut bus);
+        let changed = fdc.disk_changed;
+        let index = fdc
+            .append_medium(
+                0,
+                Drive::new_read_only(FloppyGeometry::HD1440, vec![0x44; SECTOR_SIZE]),
+            )
+            .unwrap();
+        assert_eq!(index, 2);
+        assert_eq!(fdc.inserted_medium(0), Some(0));
+        assert_eq!(fdc.disk_changed, changed);
+        assert_eq!(
+            fdc.append_medium(2, Drive::new(FloppyGeometry::HD1440, vec![])),
+            Err(MediaChangeError::UnknownDrive)
+        );
+        assert_eq!(
+            fdc.append_medium(
+                0,
+                Drive::new(
+                    FloppyGeometry {
+                        cylinders: 80,
+                        heads: 2,
+                        sectors_per_track: 15
+                    },
+                    vec![]
+                )
+            ),
+            Err(MediaChangeError::GeometryMismatch)
+        );
+        assert_eq!(fdc.media_lists[0].len(), 3);
+        fdc.insert(0, index).unwrap();
+        assert_eq!(fdc.inserted_medium(0), Some(index));
+        assert!(fdc.disk_changed[0]);
+        assert!(fdc.drives[0].as_ref().unwrap().write_protected());
+        assert_eq!(media_read(&mut bus, 0, 0, 1), vec![0x44; SECTOR_SIZE]);
+    }
+
+    #[test]
+    fn append_medium_waits_for_a_completed_dma_boundary() {
+        let mut bus = swap_bus();
+        bus_command(&mut bus, &[6, 0, 0, 0, 1, 2, 1, 0x1b, 0xff]);
+        let fdc = swap_fdc(&mut bus);
+        assert_eq!(
+            fdc.append_medium(
+                0,
+                Drive::new_read_only(FloppyGeometry::HD1440, vec![0x44; SECTOR_SIZE])
+            ),
+            Err(MediaChangeError::DmaPending)
+        );
+        assert_eq!(fdc.media_lists[0].len(), 2);
+        assert_eq!(fdc.inserted_medium(0), Some(0));
     }
 
     #[test]

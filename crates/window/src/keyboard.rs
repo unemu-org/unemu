@@ -166,6 +166,7 @@ pub struct HostKeyboard {
     pending: VecDeque<u8>,
     held: BTreeSet<KeyCode>,
     events: VecDeque<HostInput>,
+    typed_ranges: Vec<std::ops::Range<usize>>,
 }
 
 impl HostKeyboard {
@@ -281,9 +282,13 @@ impl HostKeyboard {
     /// the frontend and guest share one thread and this exclusive borrow.
     /// Reset chords transfer as a whole to the keyboard buffer even if inhibited;
     /// their releases must already belong to the keyboard when POST resets it.
+    /// IBM PC AT Technical Reference, Keyboard, Keyboard Buffer specifies 16
+    /// bytes. A backlog exceeding the remaining space is discarded; the reset
+    /// chord waits until all six bytes fit.
     /// Returns only accepted bytes, for replay at the current virtual time.
     pub fn inject_at_boundary(&mut self, assembled: &mut AssembledMachine) -> Vec<u8> {
         let mut delivered = Vec::new();
+        self.typed_ranges.clear();
         let Some(&index) = assembled.device_index.get(&DeviceId::Keyboard) else {
             return delivered;
         };
@@ -295,15 +300,31 @@ impl HostKeyboard {
             let Some(leds) = assembled.keyboard_leds() else {
                 return delivered;
             };
-            // Earlier transitions must join the chord even if interface inhibit
-            // would otherwise leave their modifier makes in host staging.
+            let capacity = assembled
+                .machine
+                .bus_mut()
+                .device_mut(index)
+                .and_then(|device| device.as_any_mut())
+                .and_then(|device| device.downcast_mut::<devices::I8042>())
+                .map_or(0, |keyboard| keyboard.typed_capacity_remaining());
+            if capacity < CTRL_ALT_DEL.len() {
+                return delivered;
+            }
+            // Keep short modifier sequences balanced, but leave room for every
+            // reset-chord release in the keyboard's 16-byte typed buffer.
             for _ in 0..=reset {
                 if let Some(event) = self.events.pop_front() {
                     self.encode(event, leds & 2 != 0);
                 }
             }
+            if self.pending.len() > capacity {
+                self.pending.clear();
+                self.pending.extend(CTRL_ALT_DEL);
+            }
             let bytes: Vec<_> = self.pending.drain(..).collect();
             assembled.type_scancodes(&bytes);
+            self.typed_ranges
+                .push(delivered.len()..delivered.len() + bytes.len());
             delivered.extend(bytes);
         }
         loop {
@@ -329,6 +350,12 @@ impl HostKeyboard {
         }
         delivered
     }
+
+    /// Ranges delivered as keyboard-owned sequences at the latest boundary.
+    /// Replay must preserve this ownership while the interface is inhibited.
+    pub fn typed_ranges(&self) -> &[std::ops::Range<usize>] {
+        &self.typed_ranges
+    }
 }
 
 #[cfg(test)]
@@ -336,6 +363,65 @@ mod tests {
     use super::*;
     use ElementState::{Pressed, Released};
     use KeyCode::*;
+
+    #[test]
+    fn reset_chord_waits_until_the_keyboard_has_room_for_all_six_bytes() {
+        let mut assembled = assembly::assemble(&assembly::at_keyboard(vec![0xEB, 0xFE])).unwrap();
+        assembled
+            .machine
+            .bus_mut()
+            .port_write(0x64, 1, 0xAD)
+            .unwrap();
+        assert!(assembled.type_scancodes(&[0x1E; 11]));
+        let mut input = HostKeyboard::default();
+        input.ctrl_alt_del();
+        assert!(input.inject_at_boundary(&mut assembled).is_empty());
+        assert_eq!(input.pending_events(), 1);
+        assembled
+            .machine
+            .bus_mut()
+            .port_write(0x60, 1, 0xFF)
+            .unwrap();
+        assert_eq!(input.inject_at_boundary(&mut assembled), CTRL_ALT_DEL);
+        assert_eq!(input.pending_events(), 0);
+    }
+
+    #[test]
+    fn reset_chord_accounts_for_bytes_already_owned_by_the_keyboard() {
+        let mut assembled = assembly::assemble(&assembly::at_keyboard(vec![0xEB, 0xFE])).unwrap();
+        assembled
+            .machine
+            .bus_mut()
+            .port_write(0x64, 1, 0xAD)
+            .unwrap();
+        assert!(assembled.type_scancodes(&[0x1E; 10]));
+        let mut input = HostKeyboard::default();
+        for _ in 0..3 {
+            input.key_event(KeyB, Pressed);
+            input.key_event(KeyB, Released);
+        }
+        input.ctrl_alt_del();
+        assert_eq!(input.inject_at_boundary(&mut assembled), CTRL_ALT_DEL);
+        assert_eq!(input.pending_events(), 0);
+    }
+
+    #[test]
+    fn reset_chord_drops_a_backlog_that_exceeds_the_keyboard_buffer() {
+        let mut assembled = assembly::assemble(&assembly::at_keyboard(vec![0xEB, 0xFE])).unwrap();
+        assembled
+            .machine
+            .bus_mut()
+            .port_write(0x64, 1, 0xAD)
+            .unwrap();
+        let mut input = HostKeyboard::default();
+        for _ in 0..20 {
+            input.key_event(KeyA, Pressed);
+            input.key_event(KeyA, Released);
+        }
+        input.ctrl_alt_del();
+        assert_eq!(input.inject_at_boundary(&mut assembled), CTRL_ALT_DEL);
+        assert_eq!(input.pending_events(), 0);
+    }
 
     fn take_codes(input: &mut HostKeyboard, leds: u8) -> Vec<u8> {
         let mut codes: Vec<_> = input.pending.drain(..).collect();

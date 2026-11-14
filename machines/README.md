@@ -342,6 +342,38 @@ to operate B:, as in the example. From empty, next inserts entry zero. These
 host keys are applied before the next execution slice and do not reach the
 guest. The title shows each inserted file name or `empty`.
 
+The **Media** menu shows the inserted name for each drive, with **Insert…**,
+**Next image in catalogue** and **Eject**. **Ctrl+Alt+I** opens Insert for A:
+(hold Shift for B:). Absent drives and CD-ROM are disabled with a reason.
+The C: summary shows its machine-file write policy; live changed-sector counts
+are not exposed by the current frontend boundary.
+
+In **Insert floppy**, select an image from this machine's catalogue or use
+**Browse…** to check an image's size and full SHA-256. Incompatible geometries
+are disabled with the image and drive types shown. The current controller requires
+an exact geometry match. Existing entries keep the write policy from the machine
+file. Browsed images default to read-only; journal mode requires an explicit
+separate journal path, defaulting to `<base>.upfj` with a Save picker. Relative
+journal paths use the selected base's directory. Retention follows the drive's
+existing journal policy, or defaults to ten closed generations. **Insert** applies at the same boundary
+as the hotkeys, including while paused; **Cancel** keeps the current medium.
+Browsed additions last for the running session; edit the machine file to retain
+them across starts. The base file is never rewritten. A failed mount or persistence
+operation stops execution and opens an error dialog.
+Browse validation errors stay in Insert so the path can be corrected or the
+dialog cancelled while retaining the running session.
+
+**Tools › Create blank disk…** creates an unpartitioned fixed disk by exact CHS
+or rounded size, or a formatted FAT12 1.2M/1.44M/720K/360K data floppy. For a
+missing machine-file disk, use its declared path and geometry (for example the
+AT games fixed disk uses `615/4/17`, and its transfer floppy uses `1.2M`). Existing
+files are never overwritten; an occupied name asks for a new name. The form
+prefills the failing drive's resolved path and geometry. Relative output paths
+use the selected machine file's directory. A fixed disk still needs partitioning
+and formatting in DOS. Readiness refreshes after creation. Missing-media details offer this
+action; firmware errors point to **Locate firmware…**. Skipped firmware-search
+entries appear once in Locate firmware, separately from each machine's own errors.
+
 Ejected volatile media retain their in-memory writes for the session. Ejecting
 journaled media flushes and seals that medium's generation and releases its
 lock; insertion reopens and replays it. The base is never rewritten, and a

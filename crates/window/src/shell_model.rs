@@ -24,6 +24,8 @@ pub(crate) enum Command {
     Stop,
     Reset,
     PowerCycle,
+    Insert(u8),
+    CreateBlank,
     Next(u8),
     Eject(u8),
     Mute,
@@ -55,7 +57,7 @@ impl Enablement {
             | Command::Reset
             | Command::PowerCycle
             | Command::Release => self.state != State::Stopped,
-            Command::Next(unit) | Command::Eject(unit) => {
+            Command::Insert(unit) | Command::Next(unit) | Command::Eject(unit) => {
                 self.state != State::Stopped
                     && self.floppy.get(unit as usize).copied().unwrap_or(false)
             }
@@ -80,7 +82,7 @@ pub(crate) fn hotkey(
         return Some(match key {
             KeyF => Next(u8::from(shift)),
             KeyE => Command::Eject(u8::from(shift)),
-            KeyI => Placeholder("Insert floppy"),
+            KeyI => Command::Insert(u8::from(shift)),
             KeyM => Mute,
             KeyG => Release,
             KeyP => Command::Pause,
@@ -136,7 +138,7 @@ impl LibraryEntry {
             path,
             details: Vec::new(),
             warning: Some("Checking firmware…".into()),
-            ems: "EMS absent".into(),
+            ems: "EMS unknown".into(),
             rate: String::new(),
             floppy: [false; 2],
             checked: false,
@@ -186,7 +188,7 @@ impl LibraryEntry {
             name,
             details: Vec::new(),
             warning: None,
-            ems: "EMS absent".into(),
+            ems: "EMS unknown".into(),
             rate: String::new(),
             floppy: [false; 2],
             checked: true,
@@ -202,6 +204,7 @@ impl LibraryEntry {
         {
             Ok((document, loaded)) => {
                 let config = &loaded.config;
+                entry.ems = "EMS absent".into();
                 entry.rate = format!(
                     "80286 · {}/{}",
                     config.clock.retired_per_pit_clock,
@@ -259,8 +262,65 @@ impl LibraryEntry {
             }
             Err(error) => entry.warning = Some(error.to_string()),
         }
+        if let Some(warning) = &entry.warning {
+            entry.warning = Some(relative_diagnostic(warning, &entry.path));
+        }
         (entry, prepared)
     }
+}
+
+impl LibraryEntry {
+    pub fn has_problem(&self) -> bool {
+        self.checked && self.warning.is_some()
+    }
+
+    pub fn hint(&self) -> &str {
+        match self.warning.as_deref() {
+            Some(warning) if warning.contains("cannot read image") && warning.contains("drives[") =>
+                "Media image is missing or unreadable. Use Tools › Create blank disk… for a new disk, or correct the image path in the machine file.",
+            Some(warning) if (warning.contains("SHA-256") || warning.contains("sha256")) && warning.contains("drives[") =>
+                "Media image has the wrong SHA-256. Restore the expected image or correct its pin in the machine file.",
+            Some(warning) if warning.contains("firmware") || warning.contains("ROM") || warning.contains("bios") =>
+                "Required firmware is missing, unreadable or incompatible. Use Tools › Locate firmware… and check the firmware declarations.",
+            Some(_) if self.checked => "Correct the reported configuration field in the machine file.",
+            _ => "Checking machine configuration…",
+        }
+    }
+}
+
+pub(crate) fn relative_diagnostic(text: &str, machine: &Path) -> String {
+    let root = machine
+        .ancestors()
+        .find(|path| path.file_name().is_some_and(|name| name == "machines"))
+        .or_else(|| machine.parent())
+        .unwrap_or(Path::new("."));
+    let mut result = text.to_owned();
+    for root in [
+        Some(root.to_path_buf()),
+        root.canonicalize().ok(),
+        std::path::absolute(root).ok(),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        let prefix = format!("{}/", root.display());
+        result = result.replace(&prefix, "");
+    }
+    result
+}
+
+/// Message, power, A:, C:, CPU, EMS and audio cells. The message absorbs spare
+/// space; every cell is clipped independently even on a narrow client.
+pub(crate) fn status_widths(available: f32) -> [f32; 7] {
+    let fixed = [68.0, 40.0, 40.0, 156.0, 112.0, 118.0];
+    let total: f32 = fixed.iter().sum();
+    let scale = (available.max(0.0) / total).min(1.0);
+    let mut widths = [0.0; 7];
+    widths[0] = (available - total).max(0.0);
+    for (width, fixed) in widths[1..].iter_mut().zip(fixed) {
+        *width = fixed * scale;
+    }
+    widths
 }
 
 pub(crate) type PreparedEntry = (LibraryEntry, Option<machine_file::PreparedMachineFile>);
@@ -342,6 +402,64 @@ pub(crate) fn texture_image(frame: &window::PixelFrame) -> egui::ColorImage {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn row_warnings_exclude_pending_checks_and_skipped_roots() {
+        let mut entry = LibraryEntry::pending("synthetic.toml".into());
+        assert!(!entry.has_problem());
+        entry.checked = true;
+        entry.warning = None;
+        entry
+            .discovery_warnings
+            .push("skipped unreadable root".into());
+        assert!(!entry.has_problem());
+        entry.warning = Some("missing local disk".into());
+        assert!(entry.has_problem());
+    }
+
+    #[test]
+    fn cause_specific_hints_distinguish_media_firmware_and_integrity() {
+        let mut entry = LibraryEntry::pending("machines/example.toml".into());
+        entry.checked = true;
+        for (warning, expected) in [
+            (
+                "card[ide].drives[master]: cannot read image local/games.img",
+                "Create blank disk",
+            ),
+            (
+                "card[fdc].drives[unit=0]: cannot read image local/transfer-1200.img",
+                "Create blank disk",
+            ),
+            (
+                "card[fdc].drives[unit=0]: SHA-256 mismatch",
+                "Restore the expected image",
+            ),
+            ("firmware.bios: missing ROM", "Locate firmware"),
+            ("memory: invalid size", "configuration field"),
+        ] {
+            entry.warning = Some(warning.into());
+            assert!(entry.hint().contains(expected), "{}", entry.hint());
+        }
+        assert_eq!(
+            relative_diagnostic(
+                "machines/local/games.img",
+                Path::new("machines/example.toml")
+            ),
+            "local/games.img"
+        );
+    }
+
+    #[test]
+    fn status_cells_fit_without_consuming_each_others_width() {
+        for available in [0.0, 200.0, 760.0, 1040.0, 2000.0] {
+            let widths = status_widths(available);
+            assert!(widths.iter().all(|width| *width >= 0.0));
+            assert!((widths.iter().sum::<f32>() - available).abs() < 0.01);
+            if available >= 760.0 {
+                assert_eq!(&widths[1..], &status_widths(760.0)[1..]);
+            }
+        }
+    }
+
     #[test]
     fn firmware_readiness_is_lazy_and_runs_on_a_host_worker() {
         let temp = assembly::test_support::TempDir::new("worker-firmware-check");
@@ -427,6 +545,7 @@ mod tests {
                     Command::Stop,
                     Command::Reset,
                     Command::PowerCycle,
+                    Command::Insert(0),
                     Command::Next(0),
                     Command::Eject(0),
                     Command::Mute,
@@ -434,6 +553,8 @@ mod tests {
                     assert_eq!(model.allows(command), state != State::Stopped);
                 }
                 assert!(!model.allows(Command::Eject(1)));
+                assert!(!model.allows(Command::Insert(1)));
+                assert!(!model.allows(Command::Insert(2)));
                 assert!(!model.allows(Command::SaveState));
             }
         }
@@ -449,6 +570,7 @@ mod tests {
     fn hotkeys_preserve_media_shift_and_leave_plain_guest_keys_alone() {
         use KeyCode::*;
         for (key, command) in [
+            (KeyI, Command::Insert(0)),
             (KeyF, Command::Next(0)),
             (KeyE, Command::Eject(0)),
             (KeyM, Command::Mute),
@@ -510,7 +632,39 @@ mod tests {
         let entry = LibraryEntry::inspect(path, assembly::AssemblyOptions::default());
         assert_eq!(entry.name, "Missing firmware");
         assert!(entry.warning.as_deref().unwrap().contains("absent.bin"));
+        assert_eq!(entry.ems, "EMS unknown");
     }
+    #[test]
+    fn missing_local_media_names_the_media_cause_and_shortens_resolved_paths() {
+        let temp = assembly::test_support::TempDir::new("missing-media-hint");
+        std::fs::create_dir(temp.path().join("machines")).unwrap();
+        let path = temp.path().join("machines/example.toml");
+        std::fs::write(temp.path().join("machines/bios.bin"), vec![0xF4; 32768]).unwrap();
+        std::fs::write(&path, "schema=1\nextends='preset:ibm-5170'\n[firmware.bios]\nimage='bios.bin'\nprovides=['floppy']\n[[card]]\nid='fdc-765'\n[[card.drives]]\nunit=0\ntype='1.2M'\nimage='local/transfer-1200.img'\nwrite='readonly'\n").unwrap();
+        let entry = LibraryEntry::inspect(
+            path,
+            assembly::AssemblyOptions {
+                allow_unlisted_firmware: true,
+            },
+        );
+        assert!(entry
+            .warning
+            .as_deref()
+            .unwrap()
+            .contains("transfer-1200.img"));
+        assert!(!entry
+            .warning
+            .as_deref()
+            .unwrap()
+            .contains(&temp.path().to_string_lossy().to_string()));
+        assert!(
+            entry.hint().contains("Create blank disk"),
+            "{}: {}",
+            entry.warning.as_deref().unwrap(),
+            entry.hint()
+        );
+    }
+
     #[test]
     fn ordinary_shortcuts_belong_to_a_focused_guest() {
         for state in [State::Stopped, State::Running, State::Paused] {

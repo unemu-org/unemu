@@ -33,6 +33,7 @@ use winit::{
 };
 
 mod host_audio;
+mod media_dialog;
 mod pacing;
 mod preferences;
 mod shell;
@@ -75,6 +76,9 @@ fn read_fixture(path: &Path, fetch: &str) -> io::Result<Vec<u8>> {
     })
 }
 
+#[cfg(test)]
+type InputLogEntry = (u64, Vec<u8>, Vec<std::ops::Range<usize>>);
+
 struct Presenter {
     assembled: AssembledMachine,
     display: DeviceId,
@@ -87,6 +91,9 @@ struct Presenter {
     media_held: [bool; 2],
     shift_keys: [bool; 2],
     media_events: Vec<(u8, assembly::FloppyAction)>,
+    media_slots: [Option<media_dialog::FloppySlot>; 2],
+    media_config: assembly::MachineConfig,
+    fixed_disk: String,
     audio_error_reported: bool,
     window: Option<Arc<Window>>,
     last_title: Option<String>,
@@ -103,7 +110,7 @@ struct Presenter {
     next_paint: Option<Duration>,
     occluded_since: Option<Duration>,
     #[cfg(test)]
-    input_log: Vec<(u64, Vec<u8>)>,
+    input_log: Vec<InputLogEntry>,
     #[cfg(test)]
     mouse_log: Vec<(u64, Vec<window::MouseInput>)>,
 }
@@ -150,6 +157,17 @@ impl Presenter {
         assembled
             .observation
             .subscribe_audio(Box::new(audio.sink()));
+        let mut media_slots = media_dialog::FloppySlot::from_config(config);
+        for (unit, slot) in media_slots.iter_mut().enumerate() {
+            if let (Some(slot), Some(names)) = (
+                slot,
+                assembled.floppy_names.get(&(DeviceId::Fdc, unit as u8)),
+            ) {
+                for (entry, name) in slot.entries.iter_mut().zip(names) {
+                    entry.medium.name = name.clone();
+                }
+            }
+        }
         Ok(Self {
             assembled,
             display,
@@ -162,6 +180,10 @@ impl Presenter {
             media_held: [false; 2],
             shift_keys: [false; 2],
             media_events: Vec::new(),
+            media_slots,
+            media_config: config.clone(),
+            fixed_disk: config.drives.iter().find(|drive| matches!(drive.kind, assembly::DriveKind::HardDisk { .. }))
+                .map_or_else(|| "C: not installed".into(), |drive| format!("C: — {}", media_dialog::write_name(&drive.write))),
             audio_error_reported: false,
             window: None,
             last_title: None,
@@ -223,21 +245,12 @@ impl Presenter {
                 break;
             }
             self.assembled.check_persistence()?;
-            let media_events = std::mem::take(&mut self.media_events);
-            let media_changed = !media_events.is_empty();
-            for (unit, action) in media_events {
-                match self.assembled.change_floppy(DeviceId::Fdc, unit, action) {
-                    Err(assembly::FloppyError::Unavailable) => {}
-                    result => result?,
-                }
-            }
-            if media_changed {
-                self.update_title();
-            }
+            self.apply_media_events()?;
             let delivered = self.keyboard.inject_at_boundary(&mut self.assembled);
             #[cfg(test)]
             if !delivered.is_empty() {
-                self.input_log.push((time, delivered));
+                self.input_log
+                    .push((time, delivered, self.keyboard.typed_ranges().to_vec()));
             }
             #[cfg(not(test))]
             drop(delivered);
@@ -287,6 +300,21 @@ impl Presenter {
         self.assembled.capture_text(self.display)?;
         if let Some(error) = self.sink.error() {
             return Err(error.into());
+        }
+        Ok(())
+    }
+
+    fn apply_media_events(&mut self) -> Result<(), assembly::FloppyError> {
+        let events = std::mem::take(&mut self.media_events);
+        let changed = !events.is_empty();
+        for (unit, action) in events {
+            match self.assembled.change_floppy(DeviceId::Fdc, unit, action) {
+                Err(assembly::FloppyError::Unavailable) => {}
+                result => result?,
+            }
+        }
+        if changed {
+            self.update_title();
         }
         Ok(())
     }
@@ -771,7 +799,7 @@ mod tests {
         assert!(presenter
             .input_log
             .iter()
-            .flat_map(|(_, codes)| codes)
+            .flat_map(|(_, codes, _)| codes)
             .all(|code| ![0x21, 0xa1, 0x12, 0x92].contains(code)));
         presenter.assembled.finish_persistence().unwrap();
     }
@@ -1947,21 +1975,53 @@ mod tests {
         assert!(presenter.window.is_none());
     }
 
+    #[test]
+    fn tagged_reset_chords_replay_through_the_inhibited_keyboard_buffer() {
+        let config = assembly::at_keyboard(vec![0xEB, 0xFE]);
+        let mut original = assembly::assemble(&config).unwrap();
+        original
+            .machine
+            .bus_mut()
+            .port_write(0x64, 1, 0xAD)
+            .unwrap();
+        let mut keyboard = HostKeyboard::default();
+        keyboard.ctrl_alt_del();
+        let bytes = keyboard.inject_at_boundary(&mut original);
+        let log = vec![(0, bytes, keyboard.typed_ranges().to_vec())];
+        assert_eq!(log[0].2.len(), 1);
+        assert_eq!(log[0].2[0], 0..6);
+        let mut replay = assembly::assemble(&config).unwrap();
+        replay.machine.bus_mut().port_write(0x64, 1, 0xAD).unwrap();
+        replay_input(&mut replay, &log, 0, 1);
+        let index = original.device_index[&DeviceId::Keyboard];
+        assert_eq!(
+            original.machine.bus().device(index).unwrap().save(),
+            replay.machine.bus().device(index).unwrap().save()
+        );
+    }
+
     fn replay_input(
         assembled: &mut AssembledMachine,
-        log: &[(u64, Vec<u8>)],
+        log: &[InputLogEntry],
         final_time: u64,
         chunk: u64,
     ) {
         let keyboard = assembled.device_index[&DeviceId::Keyboard];
-        for (time, bytes) in log {
+        for (time, bytes, typed) in log {
             run_to(assembled, *time, chunk);
-            for byte in bytes {
-                assert!(assembly::try_inject_scancode(
-                    &mut assembled.machine,
-                    keyboard,
-                    *byte
-                ));
+            let mut offset = 0;
+            while offset < bytes.len() {
+                if let Some(range) = typed.iter().find(|range| range.start == offset) {
+                    assert!(assembled.type_scancodes(&bytes[range.clone()]));
+                    offset = range.end;
+                } else {
+                    assert!(assembly::try_inject_scancode(
+                        &mut assembled.machine,
+                        keyboard,
+                        bytes[offset]
+                    ));
+                    offset += 1;
+                }
             }
         }
         run_to(assembled, final_time, chunk);
@@ -2096,7 +2156,7 @@ mod tests {
             let bytes: Vec<_> = paced
                 .input_log
                 .iter()
-                .flat_map(|(_, bytes)| bytes.clone())
+                .flat_map(|(_, bytes, _)| bytes.clone())
                 .collect();
             assert_eq!(bytes, [0x21, 0x22, 0xA1, 0xA2, 0xE0, 0x4D, 0xE0, 0xCD]);
             assert_eq!(paced.input_log[0].0, 0);
@@ -2116,7 +2176,7 @@ mod tests {
             let shifted: Vec<_> = paced
                 .input_log
                 .iter()
-                .map(|(time, bytes)| (time + 17, bytes.clone()))
+                .map(|(time, bytes, typed)| (time + 17, bytes.clone(), typed.clone()))
                 .collect();
             let mut wrong = observed_machine(&config);
             replay_input(&mut wrong, &shifted, final_time, 137);

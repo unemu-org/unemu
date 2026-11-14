@@ -5,6 +5,30 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-14 — Desktop media controls:** the Media menu and Ctrl+Alt+I
+  expose a per-drive Insert dialog, catalogue next/eject, disabled absent drives
+  and CD-ROM, and the fixed disk's write policy. Browse checks geometry and full
+  SHA-256, then appends through assembly's validated media boundary. Existing
+  catalogue policies stay fixed; browsed media permit read-only or a separately
+  named journal with the drive's retention policy (ten generations by default).
+  Cancel preserves the medium; paused insertion advances no guest time.
+  Browse validation errors
+  remain editable in Insert without ending the session. Mount/persistence failures
+  open an error dialog and stop execution. Tools creates blank CHS/size fixed disks
+  or formatted standard FAT12 floppies using the existing media-create code. Relative
+  journal paths use the base directory; relative creation paths use the machine
+  directory. Creation prefills the failing drive's path and geometry. Journals
+  default beside their base with a Save picker. Occupied creation outputs ask for
+  a new name. Status cells clip independently; library warning markers exclude
+  pending checks
+  and skipped firmware roots. Details wrap left, shorten machine-folder paths,
+  offer cause-specific recovery hints and report EMS unknown after failed loading.
+  Reset chords account for remaining typed-buffer capacity, discarding stale host
+  backlogs and waiting when the complete chord cannot yet fit;
+  replay retains typed-chord ownership. Headless tests cover these paths; native
+  picker and visual acceptance remain manual. Live journal-sector counts are not
+  exposed by the frontend and are omitted.
+
 - **2026-11-14 — Buffered guest warm-reset input:** the shell's menu,
   toolbar and Ctrl+Alt+End transfer the whole Ctrl/Alt/Del make-and-break chord
   to the keyboard in one call. Its 16-byte typed buffer accepts keys while the
@@ -42,7 +66,7 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   path; Tools › Locate firmware/Preferences save ROM folders and refresh
   readiness using the shared explicit-roots SHA-256 discovery. The CLI accepts
   repeatable --rom-dir. The macOS shell uses only its native title bar and the
-  toolbar paints its icons without font symbols. Future editors/import/insertion/layers are placeholder dialogs, save
+  toolbar paints its icons without font symbols. Future editors/import/layers are placeholder dialogs, save
   state/CD-ROM remain disabled. Drive activity observation is unavailable, so
   only the power light changes. Last-run metadata stays blank. Existing window
   tests remain headless; new command/discovery/texture/input tests also open no

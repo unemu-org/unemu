@@ -35,6 +35,8 @@ pub struct FloppyEvent {
 /// Host-side failure applying a media input; never becomes a guest disk error.
 #[derive(Debug, thiserror::Error)]
 pub enum FloppyError {
+    #[error(transparent)]
+    Config(#[from] crate::ConfigError),
     #[error("floppy controller or drive is unavailable")]
     Unavailable,
     #[error("floppy event times must be ordered and within the run interval")]
@@ -50,6 +52,141 @@ pub enum FloppyError {
 }
 
 impl AssembledMachine {
+    /// Append a fully verified immutable base at a completed run boundary.
+    /// Selection still uses `change_floppy`, so journal finish/remount and the
+    /// drive's change line have exactly the same semantics as catalogue cycling.
+    /// The caller retains the live configuration; successful appends update it
+    /// so shared validation protects every mounted input and journal path.
+    /// See persistent-media.md § Media changes and § Memory and hashing.
+    pub fn append_floppy(
+        &mut self,
+        controller: DeviceId,
+        unit: u8,
+        config: &mut crate::MachineConfig,
+        medium: &crate::FloppyMedium,
+    ) -> Result<usize, FloppyError> {
+        use crate::{ConfigError, ImageSource, WriteMode};
+        use media::SectorSource;
+        self.check_persistence()?;
+        let drive_index = config
+            .drives
+            .iter()
+            .position(|drive| drive.controller == controller && drive.unit == unit)
+            .ok_or(FloppyError::Unavailable)?;
+        let crate::DriveKind::Floppy { geometry } = config.drives[drive_index].kind else {
+            return Err(FloppyError::Unavailable);
+        };
+        let mut candidate = config.clone();
+        let drive = &mut candidate.drives[drive_index];
+        if drive.media.is_none() {
+            drive.media = Some(crate::FloppyMediaList {
+                empty: false,
+                entries: vec![crate::FloppyMedium {
+                    image: drive.image.clone(),
+                    expected_sha256: drive.expected_sha256,
+                    write: drive.write.clone(),
+                    name: self.floppy_name(controller, unit),
+                }],
+            });
+        }
+        if let Some(list) = &mut drive.media {
+            list.entries.push(medium.clone());
+        }
+        candidate.validate()?;
+        let device_geometry = devices::FloppyGeometry {
+            cylinders: geometry.cylinders,
+            heads: geometry.heads,
+            sectors_per_track: geometry.sectors_per_track,
+        };
+        self.floppy(controller)?
+            .check_append_medium(usize::from(unit), device_geometry)?;
+        let count = self
+            .floppy_names
+            .get(&(controller, unit))
+            .ok_or(FloppyError::Unavailable)?
+            .len();
+        let ImageSource::File(path) = &medium.image else {
+            return Err(ConfigError::Journal {
+                drive_index,
+                message: "appended media require a file-backed base".into(),
+            }
+            .into());
+        };
+        let base = media::VerifiedBase::open(path).map_err(|error| ConfigError::ImageRead {
+            path: path.clone(),
+            message: error.to_string(),
+        })?;
+        if geometry.bytes_per_sector != 512 || base.byte_len() != geometry.image_bytes() {
+            return Err(ConfigError::ImageGeometryMismatch {
+                drive_index,
+                expected: geometry.image_bytes(),
+                actual: base.byte_len(),
+            }
+            .into());
+        }
+        if medium
+            .expected_sha256
+            .is_some_and(|expected| expected != base.identity().base_digest)
+        {
+            return Err(ConfigError::Journal {
+                drive_index,
+                message: "appended medium SHA-256 changed since selection".into(),
+            }
+            .into());
+        }
+        let mut persistence = None;
+        let drive = match &medium.write {
+            WriteMode::Journal {
+                path,
+                keep_generations,
+            } => {
+                if *keep_generations == 0 {
+                    return Err(ConfigError::Journal {
+                        drive_index,
+                        message: "keep_generations must be positive".into(),
+                    }
+                    .into());
+                }
+                let (mut handle, media) = crate::PersistenceHandle::prepare_removable(
+                    drive_index,
+                    path,
+                    base,
+                    *keep_generations,
+                );
+                handle.floppy = Some((controller, unit, count));
+                persistence = Some(handle);
+                devices::Drive::with_journaled_media(device_geometry, media)
+            }
+            WriteMode::ReadOnly => {
+                let mut bytes = vec![0; base.byte_len() as usize];
+                base.read_range(0, &mut bytes)
+                    .map_err(|error| ConfigError::ImageRead {
+                        path: path.clone(),
+                        message: error.to_string(),
+                    })?;
+                devices::Drive::new_read_only(device_geometry, bytes)
+            }
+            WriteMode::Volatile => {
+                return Err(ConfigError::Journal {
+                    drive_index,
+                    message: "appended media require read-only or journal mode".into(),
+                }
+                .into())
+            }
+        };
+        let index = self
+            .floppy(controller)?
+            .append_medium(usize::from(unit), drive)?;
+        if let Some(handle) = persistence {
+            self.persistence.push(handle);
+        }
+        if let Some(names) = self.floppy_names.get_mut(&(controller, unit)) {
+            names.push(medium.name.clone());
+        }
+        *config = candidate;
+        Ok(index)
+    }
+
     fn floppy(&mut self, controller: DeviceId) -> Result<&mut Upd765, FloppyError> {
         let index = *self
             .device_index
@@ -174,6 +311,118 @@ impl AssembledMachine {
 mod tests {
     use super::*;
     use crate::{FloppyMediaList, FloppyMedium, ImageSource, WriteMode};
+
+    #[test]
+    fn append_floppy_verifies_pins_and_paths_before_changing_the_catalogue() {
+        use sha2::{Digest, Sha256};
+        let temp = crate::test_support::TempDir::new("append-floppy");
+        let path = temp.path().join("extra.img");
+        let base = vec![0x33; 1_474_560];
+        std::fs::write(&path, &base).unwrap();
+        let mut config = crate::floppy_boot(vec![0xFA, 0xEB, 0xFE], vec![0; base.len()]);
+        let mut assembled = crate::assemble(&config).unwrap();
+        let mut medium = FloppyMedium {
+            image: ImageSource::File(path.clone()),
+            expected_sha256: Some([0; 32]),
+            write: WriteMode::ReadOnly,
+            name: "extra.img".into(),
+        };
+        let original = assembled.floppy_name(DeviceId::Fdc, 0);
+        assert!(assembled
+            .append_floppy(DeviceId::Fdc, 0, &mut config, &medium)
+            .unwrap_err()
+            .to_string()
+            .contains("SHA-256"));
+        assert_eq!(assembled.floppy_names[&(DeviceId::Fdc, 0)].len(), 1);
+        medium.expected_sha256 = Some(Sha256::digest(&base).into());
+        medium.write = WriteMode::journal(&path);
+        assert!(assembled
+            .append_floppy(DeviceId::Fdc, 0, &mut config, &medium)
+            .unwrap_err()
+            .to_string()
+            .contains("aliases"));
+        medium.write = WriteMode::ReadOnly;
+        assert_eq!(
+            assembled
+                .append_floppy(DeviceId::Fdc, 0, &mut config, &medium)
+                .unwrap(),
+            1
+        );
+        assert_eq!(assembled.floppy_name(DeviceId::Fdc, 0), original);
+        assembled
+            .change_floppy(DeviceId::Fdc, 0, FloppyAction::Insert(1))
+            .unwrap();
+        assert_eq!(assembled.floppy_name(DeviceId::Fdc, 0), "extra.img");
+        assembled
+            .change_floppy(DeviceId::Fdc, 0, FloppyAction::Eject)
+            .unwrap();
+        assembled
+            .change_floppy(DeviceId::Fdc, 0, FloppyAction::Next)
+            .unwrap();
+        assert_eq!(assembled.floppy_name(DeviceId::Fdc, 0), original);
+        assert_eq!(std::fs::read(path).unwrap(), base);
+        assembled.finish_persistence().unwrap();
+    }
+
+    #[test]
+    fn appended_journal_keeps_guest_writes_separate_and_reopens_the_overlay() {
+        let temp = crate::test_support::TempDir::new("append-journal");
+        let path = temp.path().join("extra.img");
+        let journal = temp.path().join("extra.upfj");
+        let base = vec![0x33; 1_474_560];
+        std::fs::write(&path, &base).unwrap();
+        let mut config = crate::floppy_boot(vec![0xFA, 0xEB, 0xFE], vec![0; base.len()]);
+        let mut assembled = crate::assemble(&config).unwrap();
+        let medium = FloppyMedium {
+            image: ImageSource::File(path.clone()),
+            expected_sha256: None,
+            write: WriteMode::journal(&journal),
+            name: "extra.img".into(),
+        };
+        let index = assembled
+            .append_floppy(DeviceId::Fdc, 0, &mut config, &medium)
+            .unwrap();
+        assert!(!journal.exists());
+        assembled
+            .change_floppy(DeviceId::Fdc, 0, FloppyAction::Insert(index))
+            .unwrap();
+        let fdc_index = assembled.device_index[&DeviceId::Fdc];
+        let fdc = assembled.machine.bus_mut().device_mut(fdc_index).unwrap();
+        fdc.port_write(0x3f2, 1, 0x1c).unwrap();
+        for byte in [5, 0, 0, 0, 1, 2, 1, 0x1b, 0xff] {
+            fdc.port_write(0x3f5, 1, byte).unwrap();
+        }
+        assert!(fdc.take_dma_request().is_some());
+        fdc.dma_complete(device::DmaOutcome::FromMemory {
+            bytes: vec![0x77; 512],
+            terminal_count: true,
+        });
+        for _ in 0..7 {
+            fdc.port_read(0x3f5, 1).unwrap();
+        }
+        assembled
+            .change_floppy(DeviceId::Fdc, 0, FloppyAction::Eject)
+            .unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), base);
+        let scan = media::scan(&std::fs::read(&journal).unwrap(), &base, base.len() as u64);
+        assert_eq!(&scan.image.unwrap()[..512], &[0x77; 512]);
+        assembled
+            .change_floppy(DeviceId::Fdc, 0, FloppyAction::Insert(index))
+            .unwrap();
+        let fdc = assembled.machine.bus_mut().device_mut(fdc_index).unwrap();
+        for byte in [6, 0, 0, 0, 1, 2, 1, 0x1b, 0xff] {
+            fdc.port_write(0x3f5, 1, byte).unwrap();
+        }
+        let device::DmaOp::ToMemory(bytes) = fdc.take_dma_request().unwrap().op else {
+            panic!("READ DATA");
+        };
+        assert_eq!(bytes, vec![0x77; 512]);
+        fdc.dma_complete(device::DmaOutcome::ToMemory {
+            transferred: 512,
+            terminal_count: true,
+        });
+        assembled.finish_persistence().unwrap();
+    }
 
     #[test]
     fn floppy_media_schedule_is_ordered_and_applies_only_at_the_requested_boundary() {

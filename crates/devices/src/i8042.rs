@@ -634,6 +634,20 @@ impl I8042 {
         self.refill_output();
     }
 
+    /// Free scan-code slots in the keyboard-owned typed buffer. Controller
+    /// output, command replies and host-script staging consume separate space.
+    /// IBM PC AT Technical Reference, Keyboard, "Keyboard Buffer" specifies
+    /// sixteen bytes. This observation does not advance serial delivery (§7.5).
+    #[must_use]
+    pub fn typed_capacity_remaining(&self) -> usize {
+        KEYBOARD_TYPED_CAPACITY
+            - self
+                .input_queue
+                .iter()
+                .filter(|byte| byte.kind == KeyboardByteKind::Typed)
+                .count()
+    }
+
     /// Type a complete host sequence into the keyboard's output buffer.
     /// IBM PC AT Technical Reference, Keyboard, "Keyboard Buffer": interface
     /// inhibit holds delivery, not keystrokes. See the module overflow policy.
@@ -1445,6 +1459,24 @@ mod tests {
     }
 
     const RESET_CHORD: [u8; 6] = [0x1D, 0x38, 0x53, 0xD3, 0xB8, 0x9D];
+
+    #[test]
+    fn remaining_typed_capacity_counts_only_typed_bytes_without_mutating_state() {
+        let mut bus = MockBus::new(Box::new(I8042::new()));
+        bus.port_write(PORT_CMD, 1, 0xAD).unwrap();
+        assert_eq!(bus_keyboard(&mut bus).typed_capacity_remaining(), 16);
+        bus_keyboard(&mut bus).push_scancode(0x30);
+        bus_keyboard(&mut bus).push_keyboard_scancodes(&[0x1E; 10]);
+        let before = bus_keyboard(&mut bus).save();
+        assert_eq!(bus_keyboard(&mut bus).typed_capacity_remaining(), 6);
+        assert_eq!(bus_keyboard(&mut bus).save(), before);
+        bus.port_write(PORT_CMD, 1, 0xAE).unwrap();
+        assert_eq!(bus.port_read(PORT_DATA, 1).unwrap(), 0x30);
+        bus.tick(KEYBOARD_BYTE_CLOCKS);
+        assert_eq!(bus_keyboard(&mut bus).typed_capacity_remaining(), 7);
+        bus.port_write(PORT_DATA, 1, 0xFF).unwrap();
+        assert_eq!(bus_keyboard(&mut bus).typed_capacity_remaining(), 16);
+    }
 
     #[test]
     fn typed_buffer_accepts_a_whole_chord_while_inhibited_and_commands_clear_it() {

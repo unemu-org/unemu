@@ -284,6 +284,9 @@ struct Shell {
     readiness: Option<ReadinessJob>,
     start_request: Option<usize>,
     checked_selection: Option<usize>,
+    insert_dialog: Option<crate::media_dialog::InsertDialog>,
+    blank_disk: Option<crate::media_dialog::BlankDisk>,
+    discovery_warnings: BTreeSet<String>,
 }
 
 struct ReadinessJob {
@@ -293,6 +296,252 @@ struct ReadinessJob {
 }
 
 impl Shell {
+    fn has_dialog(&self) -> bool {
+        self.dialog.is_some() || self.insert_dialog.is_some() || self.blank_disk.is_some()
+    }
+
+    fn confirm_insert(&mut self) {
+        let Some(draft) = &self.insert_dialog else {
+            return;
+        };
+        let entry = match draft.selection() {
+            Ok(entry) => entry,
+            Err(error) => {
+                if let Some(draft) = &mut self.insert_dialog {
+                    draft.error = Some(error);
+                }
+                return;
+            }
+        };
+        if let Some(presenter) = &mut self.presenter {
+            let index = if let Some(index) = entry.index {
+                index
+            } else {
+                match presenter.assembled.append_floppy(
+                    assembly::DeviceId::Fdc,
+                    draft.unit,
+                    &mut presenter.media_config,
+                    &entry.medium,
+                ) {
+                    Ok(index) => {
+                        if let Some(slot) = &mut presenter.media_slots[usize::from(draft.unit)] {
+                            slot.entries.push(crate::media_dialog::CatalogueEntry {
+                                index: Some(index),
+                                ..entry
+                            });
+                        }
+                        index
+                    }
+                    Err(error) => {
+                        if let Some(draft) = &mut self.insert_dialog {
+                            draft.error = Some(error.to_string());
+                        }
+                        return;
+                    }
+                }
+            };
+            presenter
+                .media_events
+                .push((draft.unit, assembly::FloppyAction::Insert(index)));
+        }
+        self.insert_dialog = None;
+    }
+
+    fn media_modals(&mut self, ctx: &egui::Context) {
+        let mut insert = false;
+        let mut cancel = false;
+        if let Some(draft) = &mut self.insert_dialog {
+            let title = format!(
+                "Insert floppy into {}:",
+                if draft.unit == 0 { "A" } else { "B" }
+            );
+            egui::Modal::new(egui::Id::unique("insert-floppy")).show(ctx, |ui| {
+                ui.set_width(560.0);
+                if self.classic { gradient_title(ui, &title); } else { ui.heading(title); }
+                ui.label("Catalogue for this machine:");
+                let mut selected = None;
+                egui::ScrollArea::vertical().max_height(240.0).show(ui, |ui| {
+                    for (index, entry) in draft.slot.entries.iter().enumerate() {
+                        let label = format!("{} — {}", entry.medium.name, crate::media_dialog::write_name(&entry.medium.write));
+                        let response = ui.add_enabled(entry.reason.is_none(), egui::Button::selectable(draft.selected == Some(index), label));
+                        if response.clicked() {
+                            selected = Some(index);
+                        }
+                        if let Some(reason) = &entry.reason { ui.add(egui::Label::new(reason).wrap()); }
+                    }
+                });
+                if let Some(index) = selected { draft.select(Some(index)); }
+                if ui.button("Browse…").clicked() {
+                    let picker = rfd::FileDialog::new().set_title("Choose a floppy image").add_filter("Disk images", &["img", "ima", "dsk"]);
+                    let picker = if let Some(window) = &self.window { picker.set_parent(window.as_ref()) } else { picker };
+                    if let Some(path) = picker.pick_file() {
+                        match crate::media_dialog::browse(&path, draft.slot.geometry) {
+                            Ok(entry) => {
+                                let compatible = entry.reason.is_none();
+                                draft.slot.entries.push(entry);
+                                draft.select(compatible.then_some(draft.slot.entries.len() - 1));
+                            }
+                            Err(error) => draft.error = Some(error.to_string()),
+                        }
+                    }
+                }
+                if let Some(entry) = draft.selected.and_then(|index| draft.slot.entries.get(index)) {
+                    if let Some(geometry) = entry.geometry {
+                        ui.label(format!("{} · {}/{}/{} · detected from size", crate::media_dialog::geometry_name(geometry), geometry.cylinders, geometry.heads, geometry.sectors_per_track));
+                    }
+                    ui.label("Write mode");
+                    if entry.index.is_some() {
+                        ui.label(format!("{} — fixed by the machine file", crate::media_dialog::write_name(&entry.medium.write)));
+                        if let assembly::WriteMode::Journal { keep_generations, .. } = entry.medium.write {
+                            ui.label(format!("Retains {keep_generations} closed generations; base stays read-only."));
+                        }
+                    } else {
+                        ui.radio_value(&mut draft.journal, false, "Read-only");
+                        ui.radio_value(&mut draft.journal, true, "Journal (keep changes separately)");
+                        if draft.journal {
+                            ui.label("Separate journal path");
+                            ui.text_edit_singleline(&mut draft.journal_path);
+                            if let assembly::ImageSource::File(base) = &entry.medium.image {
+                                let directory = base.parent().unwrap_or(std::path::Path::new("."));
+                                ui.label(format!("Relative paths use {}", directory.display()));
+                                if ui.button("Save as…").clicked() {
+                                    let path = crate::media_dialog::resolve_input(directory, &draft.journal_path);
+                                    let picker = rfd::FileDialog::new().set_title("Choose a separate journal").set_directory(if draft.journal_path.trim().is_empty() { directory } else { path.parent().unwrap_or(directory) }).set_file_name(crate::media_dialog::filename(&path));
+                                    let picker = if let Some(window) = &self.window { picker.set_parent(window.as_ref()) } else { picker };
+                                    if let Some(path) = picker.save_file() { draft.journal_path = path.to_string_lossy().into_owned(); }
+                                }
+                            }
+                            ui.label(format!("Retains {} closed generations. The base remains immutable.", draft.slot.journal_retention));
+                        }
+                    }
+                }
+                if let Some(error) = &draft.error { ui.add(egui::Label::new(error).wrap()); }
+                ui.separator();
+                ui.horizontal(|ui| {
+                    insert = ui.add_enabled(draft.selection().is_ok(), egui::Button::new("Insert")).clicked();
+                    cancel = ui.button("Cancel").clicked();
+                });
+                cancel |= ui.input(|input| input.key_pressed(egui::Key::Escape));
+            });
+        }
+        if cancel {
+            self.insert_dialog = None;
+        } else if insert {
+            self.confirm_insert();
+        }
+
+        let mut close = false;
+        let mut created = false;
+        if let Some(form) = &mut self.blank_disk {
+            egui::Modal::new(egui::Id::unique("blank-disk")).show(ctx, |ui| {
+                ui.set_width(520.0);
+                if self.classic { gradient_title(ui, "Create blank disk"); } else { ui.heading("Create blank disk"); }
+                egui::ComboBox::from_label("Disk type").selected_text(crate::media_dialog::BlankDisk::FORMATS[form.format]).show_ui(ui, |ui| {
+                    for (index, name) in crate::media_dialog::BlankDisk::FORMATS.iter().enumerate() { ui.selectable_value(&mut form.format, index, *name); }
+                });
+                if form.format == 0 {
+                    ui.horizontal(|ui| {
+                        ui.radio_value(&mut form.by_size, false, "CHS");
+                        ui.radio_value(&mut form.by_size, true, "Size (MiB/GiB)");
+                    });
+                    if form.by_size { ui.text_edit_singleline(&mut form.size); } else { ui.label("Cylinders / heads / sectors"); ui.text_edit_singleline(&mut form.chs); }
+                    ui.label("Unpartitioned disk. Use CHS for an exact machine-file geometry; size rounds up to 16 heads / 63 sectors. Partition and format in DOS.");
+                } else {
+                    ui.label("Formatted FAT12 data floppy; not a boot disk.");
+                }
+                ui.label("New image path (existing files are never overwritten)");
+                ui.text_edit_singleline(&mut form.output);
+                ui.label(format!("Relative paths use {}", form.directory.display()));
+                if ui.button("Browse…").clicked() {
+                    let path = crate::media_dialog::resolve_input(&form.directory, &form.output);
+                    let picker = rfd::FileDialog::new().set_title("Create blank disk").set_directory(if form.output.trim().is_empty() { form.directory.as_path() } else { path.parent().unwrap_or(&form.directory) }).set_file_name(if form.output.trim().is_empty() { "disk.img".into() } else { crate::media_dialog::filename(&path) });
+                    let picker = if let Some(window) = &self.window { picker.set_parent(window.as_ref()) } else { picker };
+                    if let Some(path) = picker.save_file() { form.output = path.to_string_lossy().into_owned(); }
+                }
+                if let Some(error) = &form.error { ui.add(egui::Label::new(error).wrap()); }
+                ui.horizontal(|ui| {
+                    if ui.button("Create").clicked() {
+                        match form.create() {
+                            Ok(_) => { close = true; created = true; },
+                            Err(error) => form.error = Some(error),
+                        }
+                    }
+                    close |= ui.button("Cancel").clicked();
+                });
+                close |= ui.input(|input| input.key_pressed(egui::Key::Escape));
+            });
+        }
+        if close {
+            self.blank_disk = None;
+            if created {
+                self.message = "Blank disk created; select its path in the machine file or insert it with Media › Insert…".into();
+                if self.presenter.is_none() {
+                    self.refresh_library();
+                }
+            }
+        }
+    }
+
+    fn status(&self, ui: &mut egui::Ui) {
+        let message = if self.presenter.as_ref().is_some_and(|p| p.mouse.captured()) {
+            "Pointer captured — Ctrl+Alt+G releases"
+        } else {
+            &self.message
+        };
+        let entry = self.selected.and_then(|index| self.library.get(index));
+        let audio = self.presenter.as_ref().map_or("Audio stopped", |p| {
+            if !p.audio.available() {
+                "Audio unavailable"
+            } else if p.audio.muted() {
+                "Audio muted"
+            } else {
+                "Audio on"
+            }
+        });
+        let labels = [
+            message,
+            "Power",
+            "A:",
+            "C:",
+            entry
+                .filter(|entry| !entry.rate.is_empty())
+                .map_or("CPU unknown", |entry| &entry.rate),
+            entry.map_or("EMS unknown", |entry| &entry.ems),
+            audio,
+        ];
+        let widths = shell_model::status_widths(ui.available_width());
+        let (rect, _) =
+            ui.allocate_exact_size(Vec2::new(ui.available_width(), 20.0), Sense::hover());
+        let mut x = rect.left();
+        for (index, (label, width)) in labels.into_iter().zip(widths).enumerate() {
+            let cell = egui::Rect::from_min_size(
+                egui::pos2(x, rect.top()),
+                Vec2::new(width, rect.height()),
+            );
+            x += width;
+            ui.scope_builder(
+                egui::UiBuilder::new()
+                    .max_rect(cell.shrink(3.0))
+                    .layout(egui::Layout::left_to_right(egui::Align::Center)),
+                |ui| {
+                    ui.set_clip_rect(cell.intersect(ui.clip_rect()));
+                    if (1..=3).contains(&index) {
+                        led(ui, index == 1 && self.presenter.is_some(), label);
+                        if index > 1 {
+                            ui.response().on_hover_text(
+                                "Drive activity unavailable at the observation boundary.",
+                            );
+                        }
+                    } else {
+                        ui.add(egui::Label::new(label).truncate())
+                            .on_hover_text(label);
+                    }
+                },
+            );
+            bevel(ui, cell, true);
+        }
+    }
+
     fn new(
         args: Args,
         events: Rc<RefCell<Events>>,
@@ -361,6 +610,9 @@ impl Shell {
             readiness: None,
             start_request: None,
             checked_selection: None,
+            insert_dialog: None,
+            blank_disk: None,
+            discovery_warnings: BTreeSet::new(),
         }
     }
 
@@ -378,8 +630,14 @@ impl Shell {
         let entry = self.selected.and_then(|index| self.library.get(index));
         Enablement {
             state: self.state(),
-            ready: entry.is_some_and(|entry| entry.warning.is_none()),
-            floppy: entry.map_or([false; 2], |entry| entry.floppy),
+            ready: entry.is_some_and(|entry| entry.checked && entry.warning.is_none()),
+            floppy: self
+                .presenter
+                .as_ref()
+                .filter(|presenter| presenter.running)
+                .map_or([false; 2], |presenter| {
+                    presenter.media_slots.each_ref().map(Option::is_some)
+                }),
             audio: self.presenter.as_ref().is_some_and(|p| p.audio.available()),
         }
     }
@@ -461,6 +719,8 @@ impl Shell {
             return;
         }
         let (entry, loaded) = prepared;
+        self.discovery_warnings
+            .extend(entry.discovery_warnings.iter().cloned());
         self.library[index] = entry;
         if self.selected != Some(index) || self.start_request != Some(index) {
             return;
@@ -556,6 +816,7 @@ impl Shell {
     fn refresh_library(&mut self) {
         self.library_revision = self.library_revision.wrapping_add(1);
         self.start_request = None;
+        self.discovery_warnings.clear();
         for entry in &mut self.library {
             *entry = LibraryEntry::pending(entry.path.clone());
         }
@@ -583,6 +844,8 @@ impl Shell {
     }
 
     fn show_error(&mut self, error: String) {
+        self.insert_dialog = None;
+        self.blank_disk = None;
         self.release();
         if let Some(presenter) = &mut self.presenter {
             presenter.running = false;
@@ -604,6 +867,8 @@ impl Shell {
     }
 
     fn stop(&mut self) -> bool {
+        self.insert_dialog = None;
+        self.blank_disk = None;
         self.release();
         self.session = self.session.wrapping_add(1);
         self.events.borrow_mut().session = self.session;
@@ -654,6 +919,15 @@ impl Shell {
             Reset => { self.guest_held.clear(); if let Some(presenter) = &mut self.presenter {
                 presenter.keyboard.ctrl_alt_del();
             } },
+            Insert(unit) => if let Some(slot) = self.presenter.as_ref().and_then(|p| p.media_slots[usize::from(unit)].clone()) {
+                self.release();
+                self.insert_dialog = Some(crate::media_dialog::InsertDialog::new(unit, slot));
+            },
+            CreateBlank => {
+                self.release();
+                let entry = self.selected.and_then(|index| self.library.get(index));
+                self.blank_disk = Some(crate::media_dialog::BlankDisk::for_machine(entry.map_or(self.args.machine.as_path(), |entry| entry.path.as_path()), entry.and_then(|entry| entry.warning.as_deref())));
+            },
             Next(unit) | Eject(unit) => if let Some(presenter) = &mut self.presenter {
                 presenter.media_events.push((unit, if matches!(command, Next(_)) { assembly::FloppyAction::Next } else { assembly::FloppyAction::Eject }));
             },
@@ -743,14 +1017,33 @@ impl Shell {
                         .map(|p| p.assembled.floppy_name(assembly::DeviceId::Fdc, unit))
                         .unwrap_or_else(|| "stopped".into());
                     let drive = if unit == 0 { "A:" } else { "B:" };
-                    ui.label(format!("Drive {drive} — {name}"));
                     let present = self.enablement().floppy[unit as usize];
+                    let geometry = self
+                        .presenter
+                        .as_ref()
+                        .and_then(|p| p.media_slots[usize::from(unit)].as_ref())
+                        .map(|slot| crate::media_dialog::geometry_name(slot.geometry));
+                    ui.add_enabled(
+                        present,
+                        egui::Label::new(if let Some(geometry) = geometry {
+                            format!("Drive {drive} ({geometry}) — {name}")
+                        } else {
+                            format!(
+                                "Drive {drive} — {}",
+                                if self.presenter.is_none() {
+                                    "machine stopped"
+                                } else {
+                                    "not installed"
+                                }
+                            )
+                        }),
+                    );
                     ui.add_enabled_ui(present, |ui| {
                         self.item(
                             ui,
                             &format!("Insert into {drive}…"),
                             if unit == 0 { "Ctrl+Alt+I" } else { "" },
-                            Placeholder("Insert floppy"),
+                            Insert(unit),
                             commands,
                         );
                     });
@@ -778,8 +1071,19 @@ impl Shell {
                     );
                     ui.separator();
                 }
+                ui.add_enabled(
+                    false,
+                    egui::Label::new(
+                        self.presenter
+                            .as_ref()
+                            .map_or("C: — machine stopped", |p| &p.fixed_disk),
+                    ),
+                );
                 self.item(ui, "Disk layers…", "", Placeholder("Disk layers"), commands);
-                ui.add_enabled(false, egui::Button::new("CD-ROM (no controller yet)"));
+                ui.add_enabled(
+                    false,
+                    egui::Button::new("CD-ROM — unsupported (no controller)"),
+                );
             });
             ui.menu_button("View", |ui| {
                 ui.checkbox(&mut self.toolbar, "Toolbar");
@@ -808,10 +1112,11 @@ impl Shell {
                         ui,
                         &format!("{title}…"),
                         "",
-                        if matches!(title, "Locate firmware" | "Preferences") {
-                            FirmwareFolders
-                        } else {
-                            Placeholder(title)
+                        match title {
+                            "Locate firmware" | "Preferences" => FirmwareFolders,
+                            "Media catalogue" => Insert(0),
+                            "Create blank disk" => CreateBlank,
+                            _ => Placeholder(title),
                         },
                         commands,
                     );
@@ -918,11 +1223,7 @@ impl Shell {
                             for (index, entry) in self.library.iter().enumerate() {
                                 let label = format!(
                                     "{}{}",
-                                    if entry.warning.is_some() {
-                                        "Warning: "
-                                    } else {
-                                        ""
-                                    },
+                                    if entry.has_problem() { "[!] " } else { "" },
                                     entry.name
                                 );
                                 let response =
@@ -962,20 +1263,27 @@ impl Shell {
                                 }
                             });
                             ui.label(&entry.ems);
-                            for warning in &entry.discovery_warnings {
-                                ui.label(format!("Warning: {warning}"));
-                            }
                             if let Some(warning) = &entry.warning {
                                 ui.add_space(8.0);
-                                ui.colored_label(
-                                    if ui.visuals().dark_mode {
-                                        Color32::LIGHT_YELLOW
-                                    } else {
-                                        Color32::from_rgb(138, 83, 0)
-                                    },
-                                    warning,
-                                );
-                                ui.label("Check firmware and media; Tools › Locate firmware…");
+                                ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
+                                    ui.add(
+                                        egui::Label::new(
+                                            egui::RichText::new(warning.replace('/', "/\u{200b}"))
+                                                .color(if ui.visuals().dark_mode {
+                                                    Color32::LIGHT_YELLOW
+                                                } else {
+                                                    Color32::from_rgb(138, 83, 0)
+                                                }),
+                                        )
+                                        .wrap(),
+                                    );
+                                    ui.add(egui::Label::new(entry.hint()).wrap());
+                                });
+                                if entry.hint().contains("Create blank disk")
+                                    && ui.button("Create blank disk…").clicked()
+                                {
+                                    commands.push(Command::CreateBlank);
+                                }
                             }
                             ui.add_space(10.0);
                             ui.horizontal(|ui| {
@@ -1051,7 +1359,7 @@ impl Shell {
     fn input(&mut self, ctx: &egui::Context, blocked: bool) {
         let events = std::mem::take(&mut self.events.borrow_mut().queue);
         for event in events {
-            let blocked = blocked || self.dialog.is_some();
+            let blocked = blocked || self.has_dialog();
             let event = match event {
                 HostEvent::Window(event) => *event,
                 HostEvent::Key(event) => {
@@ -1176,7 +1484,7 @@ impl Shell {
         if session != self.session {
             return;
         }
-        let blocked = blocked || self.dialog.is_some();
+        let blocked = blocked || self.has_dialog();
         let pressed = state == ElementState::Pressed;
         if pressed && (synthetic || guest_focus != self.guest_focus) {
             return;
@@ -1247,11 +1555,17 @@ impl Shell {
     }
 
     fn tick(&mut self, ctx: &egui::Context, blocked: bool, elapsed: std::time::Duration) {
+        let has_dialog = self.has_dialog();
         let Some(presenter) = &mut self.presenter else {
             return;
         };
-        let pause =
-            self.paused || blocked || self.dialog.is_some() || self.hidden || self.minimized;
+        if presenter.running {
+            if let Err(error) = presenter.apply_media_events() {
+                self.show_error(error.to_string());
+                return;
+            }
+        }
+        let pause = self.paused || blocked || has_dialog || self.hidden || self.minimized;
         if pause && !self.modal_paused {
             presenter.occlusion_changed(true, elapsed);
         }
@@ -1343,11 +1657,7 @@ impl eframe::App for Shell {
                             crate::shell_icons::Icon::Reset,
                             Command::Reset,
                         ),
-                        (
-                            "A:",
-                            crate::shell_icons::Icon::Floppy,
-                            Command::Placeholder("Insert floppy"),
-                        ),
+                        ("A:", crate::shell_icons::Icon::Floppy, Command::Insert(0)),
                         ("Eject", crate::shell_icons::Icon::Eject, Command::Eject(0)),
                         (
                             "Settings",
@@ -1376,39 +1686,7 @@ impl eframe::App for Shell {
             }
         });
         if self.statusbar {
-            egui::Panel::bottom("statusbar").show(ui, |ui| {
-                ui.horizontal_wrapped(|ui| {
-                    let message = if self.presenter.as_ref().is_some_and(|p| p.mouse.captured()) {
-                        "Pointer captured — Ctrl+Alt+G releases"
-                    } else {
-                        &self.message
-                    };
-                    ui.label(message);
-                    ui.separator();
-                    led(ui, self.presenter.is_some(), "Power");
-                    led(ui, false, "A:");
-                    led(ui, false, "C:");
-                    ui.label("Drive activity unavailable").on_hover_text(
-                        "The current observation boundary exposes no disk activity signal.",
-                    );
-                    if let Some(entry) = self.selected.and_then(|index| self.library.get(index)) {
-                        ui.separator();
-                        ui.label(&entry.rate);
-                        ui.separator();
-                        ui.label(&entry.ems);
-                    }
-                    ui.separator();
-                    ui.label(self.presenter.as_ref().map_or("Audio stopped", |p| {
-                        if !p.audio.available() {
-                            "Audio unavailable"
-                        } else if p.audio.muted() {
-                            "Audio muted"
-                        } else {
-                            "Audio on"
-                        }
-                    }));
-                });
-            });
+            egui::Panel::bottom("statusbar").show(ui, |ui| self.status(ui));
         }
         self.screen = egui::Rect::NOTHING;
         if self.presenter.is_some() {
@@ -1417,7 +1695,7 @@ impl eframe::App for Shell {
             self.welcome(ui, &mut commands);
         }
         let menu_open = egui::Popup::is_any_open(&ctx);
-        let had_dialog = self.dialog.is_some();
+        let had_dialog = self.has_dialog();
         let mut close_dialog = false;
         let mut open_machine = false;
         let mut save_preferences = false;
@@ -1482,6 +1760,13 @@ impl eframe::App for Shell {
                             }
                         }
                     });
+                    if !self.discovery_warnings.is_empty() {
+                        ui.separator();
+                        ui.label("Skipped firmware search entries:");
+                        for warning in &self.discovery_warnings {
+                            ui.add(egui::Label::new(warning).wrap());
+                        }
+                    }
                     ui.label("UNEMUPC98_USER_ROMS_DIR is searched as well when set.");
                     if let Some(path) = &self.preferences_path {
                         ui.label(format!("Preferences file: {}", path.display()));
@@ -1497,6 +1782,7 @@ impl eframe::App for Shell {
                 }
             });
         }
+        self.media_modals(&ctx);
         if open_machine {
             self.open_machine();
         }
@@ -1513,7 +1799,7 @@ impl eframe::App for Shell {
         for command in commands {
             self.command(command, &ctx);
         }
-        let blocked = menu_open || had_dialog || self.dialog.is_some();
+        let blocked = menu_open || had_dialog || self.has_dialog();
         if blocked {
             self.release();
         }
@@ -1625,7 +1911,7 @@ fn gradient_title(ui: &mut egui::Ui, title: &str) {
     );
 }
 
-const SHORTCUTS: &str = "Enter / double-click: start selected machine\nCtrl+Alt+P: pause / resume\nCtrl+Alt+Q: stop and return to library\nCtrl+Alt+End: send guest Ctrl+Alt+Del\nCtrl+Alt+F: next A: image (Shift for B:)\nCtrl+Alt+E: eject A: (Shift for B:)\nCtrl+Alt+I: insert floppy (not yet available)\nCtrl+Alt+M: mute host audio\nCtrl+Alt+G: release pointer\nCtrl+Alt+Enter: full screen\nCtrl+N: new machine (not yet available)\nCtrl+O: open machine file\nCtrl+,: settings (not yet available)\nF1: keyboard shortcuts (outside guest focus)\nCtrl+N/O/, also require shell focus while running.\n\nClick the emulated screen to focus guest input and capture the pointer.\nMenus, dialogs and focus loss release the pointer and held guest keys.";
+const SHORTCUTS: &str = "Enter / double-click: start selected machine\nCtrl+Alt+P: pause / resume\nCtrl+Alt+Q: stop and return to library\nCtrl+Alt+End: send guest Ctrl+Alt+Del\nCtrl+Alt+F: next A: image (Shift for B:)\nCtrl+Alt+E: eject A: (Shift for B:)\nCtrl+Alt+I: insert A: floppy (Shift for B:)\nCtrl+Alt+M: mute host audio\nCtrl+Alt+G: release pointer\nCtrl+Alt+Enter: full screen\nCtrl+N: new machine (not yet available)\nCtrl+O: open machine file\nCtrl+,: settings (not yet available)\nF1: keyboard shortcuts (outside guest focus)\nCtrl+N/O/, also require shell focus while running.\n\nClick the emulated screen to focus guest input and capture the pointer.\nMenus, dialogs and focus loss release the pointer and held guest keys.";
 
 #[cfg(test)]
 mod tests {
@@ -1682,6 +1968,9 @@ mod tests {
             readiness: None,
             start_request: None,
             checked_selection: None,
+            insert_dialog: None,
+            blank_disk: None,
+            discovery_warnings: BTreeSet::new(),
         }
     }
 
@@ -1725,6 +2014,316 @@ mod tests {
             assembly::assemble(&assembly::at_keyboard(vec![0xEB, 0xFE])).unwrap();
         shell.sync_routing();
         shell
+    }
+
+    fn media_shell() -> Shell {
+        let mut shell = shell();
+        let mut config = assembly::bios(vec![0xF4; 32768], Some(vec![0; 1_474_560]));
+        config.drives[0].media = Some(assembly::FloppyMediaList {
+            empty: false,
+            entries: ["first.img", "second.img"]
+                .into_iter()
+                .map(|name| assembly::FloppyMedium {
+                    image: assembly::ImageSource::Inline(vec![0; 1_474_560]),
+                    expected_sha256: None,
+                    write: assembly::WriteMode::ReadOnly,
+                    name: name.into(),
+                })
+                .collect(),
+        });
+        shell.presenter = Some(
+            Presenter::new(
+                &config,
+                assembly::AssemblyOptions {
+                    allow_unlisted_firmware: true,
+                },
+                &mut io::sink(),
+            )
+            .unwrap(),
+        );
+        shell
+    }
+
+    #[test]
+    fn invalid_browse_paths_keep_the_session_running_and_the_dialog_editable() {
+        let ctx = egui::Context::default();
+        for failure in [
+            "base alias",
+            "missing parent",
+            "changed pin",
+            "journal alias",
+        ] {
+            let temp = assembly::test_support::TempDir::new("browse-validation");
+            let path = temp.path().join("extra.img");
+            std::fs::write(&path, vec![0; 1_474_560]).unwrap();
+            let mut shell = media_shell();
+            if failure == "journal alias" {
+                let mut config = shell.presenter.as_ref().unwrap().media_config.clone();
+                let initial = temp.path().join("initial.img");
+                std::fs::write(&initial, vec![0; 1_474_560]).unwrap();
+                config.drives[0].media.as_mut().unwrap().entries[0].image =
+                    assembly::ImageSource::File(initial);
+                config.drives[0].media.as_mut().unwrap().entries[0].write =
+                    assembly::WriteMode::journal(temp.path().join("occupied.upfj"));
+                shell.presenter = Some(
+                    Presenter::new(
+                        &config,
+                        assembly::AssemblyOptions {
+                            allow_unlisted_firmware: true,
+                        },
+                        &mut io::sink(),
+                    )
+                    .unwrap(),
+                );
+            }
+            shell.command(Command::Insert(0), &ctx);
+            let draft = shell.insert_dialog.as_mut().unwrap();
+            draft
+                .slot
+                .entries
+                .push(crate::media_dialog::browse(&path, draft.slot.geometry).unwrap());
+            draft.selected = Some(2);
+            draft.journal = failure != "changed pin";
+            draft.journal_path = if failure == "base alias" {
+                path.clone()
+            } else if failure == "journal alias" {
+                temp.path().join("occupied.upfj")
+            } else {
+                temp.path().join("missing/extra.upfj")
+            }
+            .to_string_lossy()
+            .into_owned();
+            if failure == "changed pin" {
+                std::fs::write(&path, vec![1; 1_474_560]).unwrap();
+            }
+            shell.confirm_insert();
+            assert!(shell.presenter.as_ref().unwrap().running, "{failure}");
+            assert!(
+                shell
+                    .insert_dialog
+                    .as_ref()
+                    .is_some_and(|draft| draft.error.is_some()),
+                "{failure}"
+            );
+            assert!(shell.dialog.is_none());
+            assert!(shell.presenter.as_ref().unwrap().media_events.is_empty());
+            assert_eq!(
+                shell
+                    .presenter
+                    .as_mut()
+                    .unwrap()
+                    .assembled
+                    .floppy_name(assembly::DeviceId::Fdc, 0),
+                "first.img"
+            );
+            assert_eq!(
+                shell
+                    .presenter
+                    .as_ref()
+                    .unwrap()
+                    .assembled
+                    .machine
+                    .virtual_time(),
+                0
+            );
+            if failure != "changed pin" {
+                shell.insert_dialog.as_mut().unwrap().journal = false;
+                shell.confirm_insert();
+                assert!(shell.insert_dialog.is_none());
+                assert_eq!(
+                    shell.presenter.as_ref().unwrap().media_events,
+                    [(0, assembly::FloppyAction::Insert(2))]
+                );
+            }
+            assert!(shell.stop());
+        }
+    }
+
+    #[test]
+    fn create_blank_disk_prefills_the_selected_failed_drives_path_and_geometry() {
+        let temp = assembly::test_support::TempDir::new("shell-blank-prefill");
+        let root = temp.path().canonicalize().unwrap();
+        let machine = root.join("example.toml");
+        std::fs::write(&machine, "schema=1\nextends='preset:ibm-5170'\n[firmware.bios]\nimage='missing.bin'\n[[card]]\nid='fdc-765'\n[[card.drives]]\nunit=0\ntype='360K'\nimage='transfer.img'\nwrite='readonly'\n").unwrap();
+        machine_file::resolve(&machine).unwrap();
+        let mut shell = shell();
+        shell.presenter = None;
+        let mut entry = LibraryEntry::pending(machine);
+        entry.checked = true;
+        entry.warning = Some("cannot read image transfer.img".into());
+        shell.library = vec![entry];
+        shell.selected = Some(0);
+        shell.command(Command::CreateBlank, &egui::Context::default());
+        let form = shell.blank_disk.as_ref().unwrap();
+        assert_eq!(form.directory, root);
+        assert_eq!(form.command().unwrap().output, root.join("transfer.img"));
+        assert_eq!(form.format, 4);
+    }
+
+    #[test]
+    fn skipped_firmware_entries_are_collected_once_outside_machine_rows() {
+        let mut shell = shell();
+        shell.presenter = None;
+        for path in ["first.toml", "second.toml"] {
+            let mut entry = LibraryEntry::pending(path.into());
+            entry.checked = true;
+            entry.warning = None;
+            entry.discovery_warnings = vec!["skipped unreadable entry".into()];
+            shell.library.push(LibraryEntry::pending(path.into()));
+            let index = shell.library.len() - 1;
+            shell.apply_readiness(index, shell.library_revision, (entry, None));
+        }
+        assert_eq!(shell.discovery_warnings.len(), 1);
+        assert!(shell.library.iter().all(|entry| !entry.has_problem()));
+    }
+
+    #[test]
+    fn failed_journal_mount_stops_execution_and_shows_a_persistence_dialog() {
+        let temp = assembly::test_support::TempDir::new("shell-journal-error");
+        let path = temp.path().join("extra.img");
+        let journal = temp.path().join("invalid.upfj");
+        std::fs::write(&path, vec![0; 1_474_560]).unwrap();
+        std::fs::write(&journal, b"invalid journal").unwrap();
+        let ctx = egui::Context::default();
+        let mut shell = media_shell();
+        shell.command(Command::Insert(0), &ctx);
+        let draft = shell.insert_dialog.as_mut().unwrap();
+        draft
+            .slot
+            .entries
+            .push(crate::media_dialog::browse(&path, draft.slot.geometry).unwrap());
+        draft.slot.journal_retention = 2;
+        draft.journal = true;
+        draft.journal_path = journal.to_string_lossy().into_owned();
+        draft.selected = Some(2);
+        shell.confirm_insert();
+        shell.tick(&ctx, false, std::time::Duration::ZERO);
+        assert!(!shell.presenter.as_ref().unwrap().running);
+        assert!(shell.dialog.as_ref().unwrap().1.contains("journal mount"));
+        assert_eq!(
+            shell
+                .presenter
+                .as_ref()
+                .unwrap()
+                .assembled
+                .machine
+                .virtual_time(),
+            0
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), vec![0; 1_474_560]);
+        assert_eq!(std::fs::read(&journal).unwrap(), b"invalid journal");
+    }
+
+    #[test]
+    fn media_dialog_cancel_preserves_the_medium_and_insert_and_eject_wait_for_the_boundary() {
+        let ctx = egui::Context::default();
+        let mut shell = media_shell();
+        shell.command(Command::Insert(0), &ctx);
+        shell.insert_dialog.as_mut().unwrap().selected = Some(1);
+        shell.insert_dialog = None;
+        assert!(shell.presenter.as_ref().unwrap().media_events.is_empty());
+        assert_eq!(
+            shell
+                .presenter
+                .as_mut()
+                .unwrap()
+                .assembled
+                .floppy_name(assembly::DeviceId::Fdc, 0),
+            "first.img"
+        );
+        shell.command(Command::Insert(0), &ctx);
+        shell.insert_dialog.as_mut().unwrap().selected = Some(1);
+        shell.confirm_insert();
+        let presenter = shell.presenter.as_mut().unwrap();
+        assert_eq!(
+            presenter.assembled.floppy_name(assembly::DeviceId::Fdc, 0),
+            "first.img"
+        );
+        assert_eq!(
+            presenter.media_events,
+            [(0, assembly::FloppyAction::Insert(1))]
+        );
+        presenter.apply_media_events().unwrap();
+        assert_eq!(
+            presenter.assembled.floppy_name(assembly::DeviceId::Fdc, 0),
+            "second.img"
+        );
+        shell.command(Command::Eject(0), &ctx);
+        let presenter = shell.presenter.as_mut().unwrap();
+        assert_eq!(
+            presenter.assembled.floppy_name(assembly::DeviceId::Fdc, 0),
+            "second.img"
+        );
+        assert_eq!(presenter.media_events, [(0, assembly::FloppyAction::Eject)]);
+        presenter.apply_media_events().unwrap();
+        assert_eq!(
+            presenter.assembled.floppy_name(assembly::DeviceId::Fdc, 0),
+            "empty"
+        );
+    }
+
+    #[test]
+    fn browse_insertion_runs_while_paused_and_a_changed_pin_stays_in_the_dialog() {
+        let ctx = egui::Context::default();
+        for changed in [false, true] {
+            let temp = assembly::test_support::TempDir::new("shell-browse");
+            let path = temp.path().join("extra.img");
+            std::fs::write(&path, vec![0; 1_474_560]).unwrap();
+            let mut shell = media_shell();
+            shell.paused = true;
+            shell.command(Command::Insert(0), &ctx);
+            let draft = shell.insert_dialog.as_mut().unwrap();
+            draft
+                .slot
+                .entries
+                .push(crate::media_dialog::browse(&path, draft.slot.geometry).unwrap());
+            draft.selected = Some(2);
+            if changed {
+                std::fs::write(&path, vec![1; 1_474_560]).unwrap();
+            }
+            shell.confirm_insert();
+            let time = shell
+                .presenter
+                .as_ref()
+                .unwrap()
+                .assembled
+                .machine
+                .virtual_time();
+            shell.tick(&ctx, false, std::time::Duration::ZERO);
+            assert_eq!(
+                shell
+                    .presenter
+                    .as_ref()
+                    .unwrap()
+                    .assembled
+                    .machine
+                    .virtual_time(),
+                time
+            );
+            if changed {
+                assert!(shell
+                    .insert_dialog
+                    .as_ref()
+                    .unwrap()
+                    .error
+                    .as_ref()
+                    .unwrap()
+                    .contains("SHA-256"));
+                assert!(shell.dialog.is_none());
+                assert!(shell.presenter.as_ref().unwrap().running);
+            } else {
+                assert_eq!(
+                    shell
+                        .presenter
+                        .as_mut()
+                        .unwrap()
+                        .assembled
+                        .floppy_name(assembly::DeviceId::Fdc, 0),
+                    "extra.img"
+                );
+                assert!(shell.paused);
+            }
+        }
     }
 
     #[test]
