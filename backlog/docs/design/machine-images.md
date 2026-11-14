@@ -1,9 +1,9 @@
 # Machine images, capabilities and desktop UX
 
-Status: **desktop UX and toolkit accepted**, 2026-11-13; the machine-image format,
-store and capabilities API remain design proposals. This spike adds no Rust
-implementation, new command or runnable bundle. The storage direction below
-follows the maintainer's 2026-11-13 guidance; codecs and APIs remain proposals.
+Status: **desktop UX and toolkit accepted**, 2026-11-13. The local store core
+is implemented in `crates/image-store` (`upc-5pw.6`); machine-file import, disk
+layers, registry transport and image-store GUI integration follow in later beads.
+The remaining storage and UI sections describe those later contracts.
 
 ## 1. Scope and existing contracts
 
@@ -558,8 +558,9 @@ a live lock file or replace its inode to bypass a lock.
 | Remote tag race | OCI has no tag compare-and-swap; see §5.1. |
 | Newer store or workspace schema | Refuse to write; never rewrite a format this build does not know. |
 
-These are proposed local-store contracts, requiring concurrency and crash
-injection tests on synthetic blobs before implementation is ready.
+The local store core is implemented in `crates/image-store` (`upc-5pw.6`), with
+synthetic concurrency and interruption tests. Import, layers, registry and GUI
+integration follow in later beads; their contracts above remain prospective.
 
 ## 4. Disk chains and writable sessions
 
@@ -655,6 +656,8 @@ firmware is matched by individual chip/container identity, never guessed by
 assembled size. Copy verified inputs into the store before completing the image.
 Store source-folder hints only in the local index. Running a complete image
 never searches those folders or depends on their continued existence.
+
+Missing artwork never blocks Run: resolution reports missing artwork, while tag publication still requires it (§2.1, §3.1).
 
 A tagged image is always complete (§3.1). A blob that later goes missing or
 fails verification is store damage: the library reports its role and digest,

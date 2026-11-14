@@ -1,0 +1,19 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+[package]
+name = "image-store"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+description = "Platform-neutral content-addressed machine image store in OCI Image Layout."
+
+[dependencies]
+serde.workspace = true
+serde_json = { version = "1.0.154", features = ["raw_value"] }
+toml.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true

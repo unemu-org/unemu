@@ -17,6 +17,7 @@ crate: `machine-file` reads and hashes declared images into inline buffers,
 
 | Crate | Responsibility | Runtime dependencies | Test-only dependencies |
 | --- | --- | --- | --- |
+| `image-store` | Platform-neutral OCI Image Layout, streaming SHA-256 blobs, deterministic machine manifests, provider-validated closure and atomic compare-and-swap local tags | `serde`, `serde_json`, `toml`, `sha2`, `thiserror`, `libc` (Unix) | None |
 | `media` | Floppy journal encoding, streaming recovery/replay, retention-anchor validation, durable host sink and stable single-writer locks ([format](design/persistent-media.md#chosen-format-byte-layout)) | `sha2`, `thiserror`, `libc` (Unix) | None |
 | `device` | Hardware-neutral contracts: `Device`, `InterruptController`, `DmaMemory`, `VClock`, `NextEvent`, access traces, DMA messages, and the observation capabilities (text scanout, byte output, `ByteCapture`) | `thiserror` | None |
 | `cpu` | `Cpu`/`CpuStop` seam and `X86JitCpu`, which owns the core's `Vm` and `Vcpu` | `x86jit-core`, `thiserror` | None |
@@ -35,6 +36,33 @@ Concrete hardware selection lives in `assembly` and the frontend. `machine`
 does not depend on `chipset`, `devices`, `video`, or x86jit directly. `Bus` is a
 concrete router over `dyn Device`, not a trait; the config-derived decode map is
 its routing authority. Concrete devices do not depend on the runtime bus.
+
+`image-store` takes a caller-selected local root and owns `store.toml`, the
+OCI layout under `images/`, immutable blobs, staging files and stable advisory
+locks. It has no emulator dependencies. `ConfigValidator` providers validate
+platform-owned config schemas and enumerate their complete ordered payload
+closure, including transitive disk references when supported. The store checks
+routing-platform agreement, metadata/artwork references, descriptor limits,
+exact closure order and every blob hash before publishing a tag. Providers
+declare extra payload media types and size limits; shared code has no platform
+payload allowlist. Resolution reports missing artwork without blocking required
+payloads, while publication still requires the full artwork closure. Foreign OCI
+index entries and optional fields survive local tag updates. Canonical
+manifest bytes identify the image; config bytes independently identify the
+machine. Reads never fall back to source paths. See
+[machine images](design/machine-images.md), §§1–3 and §5.
+
+Blob ingestion streams through a fixed 64 KiB buffer. Linux/macOS no-clobber
+rename publishes synced blobs without replacing existing inodes; tag updates
+reread the index under a short lock and atomically rewrite it after a digest
+compare-and-swap. Stable kernel locks release on process exit, so leftover lock
+files are reused. Locality checks and a lock probe reject unsupported roots;
+Linux currently accepts ext-family, tmpfs, Btrfs, XFS, ZFS, F2FS and overlayfs;
+opening also probes no-clobber publication. macOS uses
+the filesystem's local flag, and other hosts are refused. This crate does not
+implement machine-file import, providers, disk reconstruction, workspaces,
+registry transfer, quarantine/damage tracking or GC. Future GC must take the
+exclusive store lease before deleting any objects.
 
 ## From configuration to a run
 
@@ -244,7 +272,7 @@ existing machine-file loader and read-only checker supply hardware details and
 readiness; missing firmware or invalid media disables Start and exposes the
 validator diagnostic. Open accepts a machine-file path. New/settings/media
 insertion/import/layer/catalogue dialogs remain placeholders; Locate firmware
-and Preferences edit a shared ROM-folder list. Save state and CD-ROM are disabled. No library/image-store format is introduced.
+and Preferences edit a shared ROM-folder list. Save state and CD-ROM are disabled. The shell does not yet use the image-store library.
 
 `assembly::firmware_discovery` is a host-only API taking explicit search roots.
 It locates single ROMs or interleaved chips by full-file SHA-256 and optional
