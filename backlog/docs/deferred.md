@@ -183,6 +183,24 @@ compare-and-swap handle concurrent processes; see
 - **Requirement for now:** Keep the store API transport-neutral, so a daemon
   would be a thin wrapper with no storage or validation rules of its own.
 
+### Reusing Docker and oras registry logins
+
+The registry client reads secrets only from its own sources: environment
+variables bound to one host, or the macOS Keychain item it creates with
+`image login`. It does not read `~/.docker/config.json`, oras credentials or
+Docker credential helpers, so a registry already logged in with those tools
+needs its own `image login`; see
+[`design/machine-images.md`](design/machine-images.md) §5.1.
+
+- **Why deferred:** Credential helpers are external programs with their own
+  storage and prompts, and their entries are not scoped the way this client
+  scopes credentials (one login per registry, never offered to another host).
+  Supporting them safely needs its own design and tests, which no current
+  workflow requires.
+- **Revisit when:** Users pull from registries they already use with Docker or
+  oras, or Bearer-token authentication lands and helpers become the natural
+  source of tokens.
+
 ### Bridging real hardware: an OPL chip, later real ISA cards
 
 The maintainer asked (2026-11-13) whether a real chip or card could replace an

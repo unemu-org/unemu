@@ -146,6 +146,77 @@ must be explicitly recovered with the existing offline media tools before
 publication. A crash never automatically discards a workspace. These disk changes
 are independent recovery points, not a live machine snapshot.
 
+## Registry push and pull
+
+```sh
+cargo run --offline -p cli -- image push dos-lab:1.0.0 --store /path/to/store --dry-run
+cargo run --offline -p cli -- image push dos-lab:1.0.0 private/dos-lab:1.0.0 --store /path/to/store
+cargo run --offline -p cli -- image push dos-lab:latest private/dos-lab:latest --store /path/to/store --move
+cargo run --offline -p cli -- image pull private/dos-lab:1.0.0 --store /path/to/store
+cargo run --offline -p cli -- image pull nas.example:5000/private/games:1 --store /path/to/new-store --create --tag games:1
+cargo run --offline -p cli -- image remote ls private/dos-lab
+cargo run --offline -p cli -- image remote ls registry.unemu.dev
+cargo run --offline -p cli -- image login registry.unemu.dev --user NAME
+UNEMU_REGISTRY_LIVE=1 cargo test --offline -p image-registry -- --ignored live_
+```
+
+References resolve like Docker's against `registry.unemu.dev`: `name:tag` is
+`registry.unemu.dev/unemu/name:tag`, `owner/name:tag` keeps its owner, a first
+component with a dot, a colon or `localhost` is a host, no tag means `latest`,
+and `@sha256:…` pins content. `--registry HOST`, then `UNEMU_REGISTRY`, then
+`default_registry` in preferences replace the default host. `push` without a
+reference uses the local tag. `pull` tags locally in short form (no host, no
+`unemu/`), or `--tag`; a digest pull needs `--tag`. `--create` initializes a
+missing store.
+
+Registries are listed in the shared preferences file (`unemupc98/preferences.toml`
+in the platform config directory, or `--config FILE`):
+
+```toml
+[[registries]]
+host = "registry.unemu.dev"
+private = true      # may receive user-supplied blobs outside unemu/
+user = "NAME"       # Keychain account; never a password here
+```
+
+The default registry is known without an entry and is public until marked
+private. Push refuses any other unlisted host. `plain_http = true` is accepted
+only for loopback test registries. Secrets come from `UNEMU_REGISTRY_USER` and
+`UNEMU_REGISTRY_PASSWORD`, which belong to one host only: `UNEMU_REGISTRY_HOST`,
+or `registry.unemu.dev` when that is unset (so CI that points `UNEMU_REGISTRY`
+elsewhere sets `UNEMU_REGISTRY_HOST` too). Otherwise (macOS) they come from the
+Keychain item `unemu-registry:<host>` for the entry's user, read through
+`/usr/bin/security`. `image login` lets `security` prompt for the password,
+then records the user in preferences under the `preferences.toml.lock` lock that
+the desktop shell's saves also take, so neither writer drops the other's keys.
+Existing Docker or oras logins are not reused.
+
+Push guard, before any upload: a blob's class is the most restrictive one any
+tagged local manifest records for its digest (absent marks count as
+user-supplied, and machine import marks everything so). An image with a
+user-supplied blob goes only to a registry marked private, never into `unemu/`;
+`unemu/` requires every blob to be open; a restricted push also refuses a
+repository that answers anonymous reads, and one whose anonymous answer is a
+Bearer token challenge (inconclusive; Bearer authentication is not supported
+yet). There is no override. `--dry-run` prints the target, the image digest, one
+`role digest size media-type class source` line per blob (source `this image`,
+or `local tag NAME` when another local image restricts the digest) and
+`guard:allowed` or `guard:refused` (exit 1), without network access. A reference
+with both a tag and a digest is refused. Version tags (`x.y.z`) never move;
+other tags move only with `--move`, and the refusal shows both digests.
+Interrupted chunked uploads resume from the registry's offset, also on a later
+push. Cross-repository mounts exist in the library API only; the CLI does not
+try them. Pull continues a blob cut off mid-download with `Range` requests (up
+to three) from the bytes already staged, and never rewrites a local tag that
+names another digest. Credentials go only to the registry's own scheme, host
+and port; redirects elsewhere (such as object storage) get none, and error
+messages omit URL query strings.
+
+The live test pushes to `registry.unemu.dev` (or `UNEMU_REGISTRY`) with
+`UNEMU_REGISTRY_USER`/`UNEMU_REGISTRY_PASSWORD`, which need push and delete
+rights on `unemu/test-*`; set `UNEMU_REGISTRY_HOST` as well when `UNEMU_REGISTRY`
+names another host. It deletes its repository content afterwards.
+
 ## Build / run / test
 
 ```sh

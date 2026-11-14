@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Opt-in local image commands; machine-images §§2–3 and §8.
+//! Opt-in local image commands; machine-images §§2–3, §5.1 and §8.
 
 mod firmware;
 mod media;
+mod registry;
 
 use std::{ffi::OsString, io::Write, path::PathBuf};
 
@@ -35,6 +36,7 @@ pub enum ImageCommand {
     },
     Media(media::MediaCommand),
     Firmware(firmware::FirmwareCommand),
+    Registry(registry::RegistryCommand),
     Import {
         machine: PathBuf,
         store: PathBuf,
@@ -58,6 +60,11 @@ pub fn parse(args: &[OsString]) -> Result<ImageCommand, &'static str> {
     }
     if args.first().is_some_and(|a| a == "media") {
         return media::parse(&args[1..]).map(ImageCommand::Media);
+    }
+    if let Some(action @ ("push" | "pull" | "remote" | "login")) =
+        args.first().and_then(|a| a.to_str())
+    {
+        return registry::parse(action, &args[1..]).map(ImageCommand::Registry);
     }
     let action = args
         .first()
@@ -211,6 +218,7 @@ pub fn execute_with_firmware_sources(
         }
         ImageCommand::Media(command) => media::execute(command, output)?,
         ImageCommand::Firmware(command) => firmware::execute(command, output, firmware)?,
+        ImageCommand::Registry(command) => registry::execute(command, output)?,
         ImageCommand::Import {
             machine,
             store,

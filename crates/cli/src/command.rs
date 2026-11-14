@@ -28,6 +28,10 @@ const USAGE: &str = "usage: unemupc98 --boot (Real16 timer demo)
        unemupc98 image firmware show NAME:TAG [--store DIR]
        unemupc98 image media ls --store DIR
        unemupc98 image media show NAME:TAG --store DIR
+       unemupc98 image push NAME:TAG [REFERENCE] --store DIR [--registry HOST] [--move] [--dry-run] [--config FILE]
+       unemupc98 image pull REFERENCE --store DIR [--tag NAME:TAG] [--create] [--registry HOST] [--config FILE]
+       unemupc98 image remote ls REPOSITORY|REGISTRY [--registry HOST] [--config FILE]
+       unemupc98 image login HOST --user NAME [--config FILE]
        unemupc98 media create floppy --type 1.44M|1.2M|720K|360K OUT [--format] [--label NAME] [--force]
        unemupc98 media create hd (--chs C/H/S | --size SIZE[MiB|GiB]) OUT [--force]
        unemupc98 media generations --base IMG --journal J

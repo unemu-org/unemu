@@ -25,6 +25,10 @@ impl Preferences {
             Err(error) => Err(error),
         }
     }
+    /// Write this shell's keys into the file as it is now. Other writers (the
+    /// command-line registry login, a hand edit) own the remaining keys, so
+    /// those come from a fresh read under the shared lock, not from the copy
+    /// loaded at startup.
     pub fn save(&self, path: &Path) -> io::Result<()> {
         self.save_before_rename(path, || Ok(()))
     }
@@ -36,12 +40,27 @@ impl Preferences {
     ) -> io::Result<()> {
         use std::sync::atomic::{AtomicU64, Ordering};
         static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
-        let text = toml::to_string(self).map_err(io::Error::other)?;
         let parent = path
             .parent()
             .filter(|p| !p.as_os_str().is_empty())
             .unwrap_or(Path::new("."));
         std::fs::create_dir_all(parent)?;
+        let _lock = lock(path)?;
+        let mut table: toml::Table = match std::fs::read_to_string(path) {
+            Ok(text) => text.parse().map_err(|error| {
+                io::Error::other(format!("not overwriting invalid preferences: {error}"))
+            })?,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => toml::Table::new(),
+            Err(error) => return Err(error),
+        };
+        let mine = toml::Table::try_from(self).map_err(io::Error::other)?;
+        for key in OWNED_KEYS {
+            match mine.get(key) {
+                Some(value) => table.insert(key.into(), value.clone()),
+                None => table.remove(key),
+            };
+        }
+        let text = toml::to_string(&table).map_err(io::Error::other)?;
         let (temp, mut file) = loop {
             let temp = parent.join(format!(
                 ".preferences-{}-{}.tmp",
@@ -101,6 +120,27 @@ impl Preferences {
         roots.extend_from_slice(defaults);
         roots
     }
+}
+
+/// The keys this shell writes; every other key belongs to another writer.
+const OWNED_KEYS: [&str; 3] = ["store_root", "rom_dirs", "reduced_motion"];
+
+/// Advisory lock on the sibling `<file>.lock`, shared with the command-line
+/// registry login. The file itself is replaced by rename, so it cannot carry
+/// the lock. Released when the returned handle drops.
+fn lock(path: &Path) -> io::Result<std::fs::File> {
+    let mut name = path
+        .file_name()
+        .ok_or_else(|| io::Error::other("preferences path has no file name"))?
+        .to_owned();
+    name.push(".lock");
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(path.with_file_name(name))?;
+    file.lock()?;
+    Ok(file)
 }
 
 pub(super) fn config_path() -> io::Result<PathBuf> {
@@ -169,7 +209,7 @@ mod tests {
             .save_before_rename(&path, || Err(io::Error::other("injected save failure")))
             .is_err());
         assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
-        assert_eq!(std::fs::read_dir(temp.path()).unwrap().count(), 1);
+        assert_eq!(temporary_files(temp.path()), 0);
         #[cfg(unix)]
         let old_handle = std::fs::File::open(&path).unwrap();
         prefs.save(&path).unwrap();
@@ -179,7 +219,7 @@ mod tests {
             prefs.extra["future_table"]["value"].as_str(),
             Some("preserved")
         );
-        assert_eq!(std::fs::read_dir(temp.path()).unwrap().count(), 1);
+        assert_eq!(temporary_files(temp.path()), 0);
         #[cfg(unix)]
         {
             use std::io::Read;
@@ -187,6 +227,67 @@ mod tests {
             (&old_handle).read_to_string(&mut contents).unwrap();
             assert_eq!(contents, original);
         }
+    }
+
+    fn temporary_files(dir: &Path) -> usize {
+        std::fs::read_dir(dir)
+            .unwrap()
+            .filter(|e| {
+                e.as_ref()
+                    .unwrap()
+                    .file_name()
+                    .to_string_lossy()
+                    .ends_with(".tmp")
+            })
+            .count()
+    }
+
+    #[test]
+    fn a_save_keeps_registry_settings_written_after_the_shell_loaded_its_copy() {
+        let temp = assembly::test_support::TempDir::new("shared-shell-preferences");
+        let path = temp.path().join("preferences.toml");
+        let registry = |private: bool, user: &str| {
+            format!(
+                "[[registries]]\nhost = \"nas.example\"\nprivate = {private}\nuser = \"{user}\"\n"
+            )
+        };
+        std::fs::write(&path, format!("rom_dirs = []\n{}", registry(true, "old"))).unwrap();
+        let mut prefs = Preferences::load(&path).unwrap();
+        // Meanwhile a registry login records a user, and the user un-marks
+        // the registry as private by hand.
+        std::fs::write(
+            &path,
+            format!(
+                "rom_dirs = []\ndefault_registry = \"nas.example\"\n{}",
+                registry(false, "new")
+            ),
+        )
+        .unwrap();
+        prefs.add_folder(temp.path()).unwrap();
+        prefs.reduced_motion = true;
+        prefs.save(&path).unwrap();
+        let saved: toml::Table = std::fs::read_to_string(&path).unwrap().parse().unwrap();
+        let entry = &saved["registries"][0];
+        assert_eq!(entry["private"].as_bool(), Some(false));
+        assert_eq!(entry["user"].as_str(), Some("new"));
+        assert_eq!(saved["default_registry"].as_str(), Some("nas.example"));
+        assert_eq!(saved["reduced_motion"].as_bool(), Some(true));
+        let reloaded = Preferences::load(&path).unwrap();
+        assert_eq!(reloaded.rom_dirs, prefs.rom_dirs);
+
+        prefs.store_root = None;
+        std::fs::write(
+            &path,
+            format!("store_root = \"/elsewhere\"\n{}", registry(false, "new")),
+        )
+        .unwrap();
+        prefs.save(&path).unwrap();
+        let saved: toml::Table = std::fs::read_to_string(&path).unwrap().parse().unwrap();
+        assert!(
+            saved.get("store_root").is_none(),
+            "the shell owns store_root"
+        );
+        assert_eq!(saved["registries"][0]["user"].as_str(), Some("new"));
     }
 
     #[cfg(unix)]

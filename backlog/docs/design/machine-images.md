@@ -12,8 +12,10 @@ resolution (`upc-5pw.7`), immutable disk layers, isolated workspaces and offline
 publication (`upc-5pw.8`) are implemented in `crates/media`, `crates/image-store`
 and `crates/pc-image`, with opt-in CLI commands. The desktop library, pinned launch,
 regular/disposable workspaces with explicit keep/discard and startup recovery, and
-Disk layers publication are implemented in `crates/window`. Registry transport and
-provider launch compilation remain separate; those sections describe later contracts.
+Disk layers publication are implemented in `crates/window`. Registry push/pull (§5.1,
+`upc-5pw.10`), the push guard (`upc-5pw.36`) and the CLI commands are implemented in `crates/registry`
+(`image-registry`); bearer-token authentication, GUI login and Browse registry remain.
+Provider launch compilation remains separate; those sections describe later contracts.
 
 ## 1. Scope and existing contracts
 
@@ -700,15 +702,15 @@ Hashes identify content, not ownership, licences or trusted publishers.
 
 Push and pull use the
 [OCI distribution-spec](https://github.com/opencontainers/distribution-spec),
-Pull and Push sections, against an explicitly configured **private registry**.
-The registry may run anywhere: for example, on a Proxmox host with NFS storage
-behind the registry. This is separate from the always-local client store (§3):
+Pull and Push sections, against a configured registry; images with
+user-supplied content go only to a **private registry**. The registry may run
+anywhere: for example, on a Proxmox host with NFS storage behind the registry. This is separate from the always-local client store (§3):
 the registry manages its own blob storage and locking. Chosen registry:
 [zot](https://github.com/project-zot/zot), a small OCI-native registry with OCI 1.1
 `artifactType` and referrers support. Harbor and distribution/registry are
 alternatives; compatible Forgejo package registries remain usable too.
 
-Tags work like Docker, for example `dos-lab:1.0`. Pull resolves a tag to a
+Tags work like Docker, for example `dos-lab:1.0.0`. Pull resolves a tag to a
 manifest digest once, copies the complete descriptor closure, verifies every
 size and SHA-256 and only then writes the local tag (§3.1). Push checks image
 completeness and tag policy, uploads missing blobs by digest, then publishes
@@ -717,10 +719,12 @@ the manifest and tag last. The transport implementation must:
 - Use `POST`/`PATCH`/`PUT` upload sessions with chunks of about 64 MiB and an
   8 MiB floor. Persist the session `Location` after each accepted chunk. On
   resume, query the server offset rather than trusting local progress; a `404`
-  restarts the upload. Downloads resume by range.
-- Check blob presence with `HEAD` and attempt a cross-repository mount before
-  uploading missing bytes; fall back to uploading the same verified bytes when
-  mounting is unavailable.
+  restarts the upload, as does a refused offset. Downloads resume by range: an
+  interrupted blob continues with `Range: bytes=<have>-` into the same staged
+  file and hash (up to three times); a `200` answer restarts the blob.
+- Check blob presence with `HEAD` and upload only missing bytes. A
+  cross-repository mount, falling back to uploading the same verified bytes, is
+  available in the client library; the CLI does not try it yet.
 - `HEAD` every referenced blob before the manifest `PUT`: zot does not verify
   blob existence for manifests with custom config media types.
 - Check the target tag digest before the manifest `PUT`: skip the same digest
@@ -740,37 +744,50 @@ registry deduplication is implementation-dependent, and the registry never
 interprets a filesystem. No registry service is bundled or deployed by this
 proposal.
 
-Registries are an explicit list in host configuration, each entry with a URL,
-a repository namespace and a `private` flag. The rules guard against publishing
-proprietary bytes by accident:
+Registries follow
+[decision-25](<../../decisions/decision-25 - Machine images are self-contained OCI artifacts in a local store.md>)
+and its amendments. The rules guard against
+publishing proprietary bytes by accident:
 
-- There is no default registry. An unqualified name resolves to the configured
-  registry or fails; it never falls back to a public service.
-- Push refuses a registry that is not in the list. An image containing any
-  user-supplied blob (the default classification) is pushed only to an entry
-  marked private. Before the first such push, probe anonymous `tags/list` and
-  catalog access for the target namespace, not just `/v2/`: `401`/`403` indicate
-  private access; `200` or `404 NAME_UNKNOWN` indicate open access and refuse
-  the restricted push unless the entry explicitly opts into unauthenticated
-  LAN access.
-- **TLS and authentication are the client defaults.** Plain HTTP and no
-  authentication each require a separate explicit per-registry LAN opt-in;
-  neither setting silently enables the other. The OCI distribution-spec itself
-  mandates neither TLS nor authentication; these are client policy.
-- Authentication and access policy belong to the registry and its identity
-  provider. Credentials come from the host credential store or a Docker-style
-  credential helper and never appear in images, the store, logs or diagnostics.
-- **Pushed version tags are immutable.** If a version tag already names another
-  image digest, refuse the push even with force; retrying the same digest is
-  idempotent. Publish changed machine content, metadata or artwork under a new
-  version or tag. Only explicitly designated `latest`-style moving aliases may
-  move, and every move requires explicit force. OCI has no tag compare-and-swap:
+- `registry.unemu.dev` is the default registry, with Docker-style name
+  resolution: `name:tag` is `registry.unemu.dev/unemu/name:tag`, `owner/name:tag`
+  keeps its owner, and a first component with a dot, a colon or `localhost`
+  names the host. Preferences, `--registry` and an environment variable override
+  the default host. Local tags keep the short form.
+- The registries list in preferences holds entries of a host, an optional
+  `private` flag and an optional login user, never a secret. The default
+  registry is known without an entry and is public until marked private.
+- Push refuses a registry that is neither listed nor the default. A blob's
+  effective class is the most restrictive one recorded for its digest in any
+  local manifest (§2). An image with any user-supplied blob (the default
+  classification) goes only to an entry marked private and never into the
+  official `unemu/` namespace; pushes into `unemu/` require every blob to be
+  open. Before such a restricted push, probe anonymous `tags/list` and catalog
+  access for the target namespace, not just `/v2/`: `403`, or `401` with a Basic
+  challenge, indicate private access; `200` or `404 NAME_UNKNOWN` indicate open
+  access, and a `401` Bearer challenge is inconclusive; both refuse the push.
+  There is no override.
+- **TLS is mandatory** except for a loopback test registry (`plain_http`).
+  Requests start anonymous and send credentials only after a `401` Basic
+  challenge, so an anonymous push is attempted only where the registry accepts
+  it, and the guard still applies. Credentials go only to the registry's own
+  scheme, host and port, never through a redirect elsewhere. The OCI
+  distribution-spec itself mandates neither TLS nor authentication; these are
+  client policy.
+- Authentication and access policy belong to the registry. Every registry has
+  its own login. Secrets come from the operating system's credential store, or
+  from environment variables bound to one host for CI, and never appear in
+  images, the store, preferences, logs or diagnostics.
+- **Version tags are immutable.** If a tag of semantic-version shape already
+  names another image digest, refuse the push even with force; retrying the same
+  digest is idempotent. Any other tag moves only after an explicit confirmation
+  showing the old and the new digest. OCI has no tag compare-and-swap:
   preflight-read the current digest, but do not claim this closes a remote race.
   Enable registry-side version-tag immutability where available; a client
   preflight alone cannot enforce it against concurrent writers.
-- Pull never rewrites a local reference tracking a pushed version. A conflicting
-  digest requires another local reference; a designated moving alias may move
-  only with explicit force. Workspaces are unaffected, because they pin digests.
+- Pull never rewrites a local tag that names another digest; the image is then
+  pulled under another local tag. Workspaces are unaffected, because they pin
+  digests.
 
 **No daemon is needed now**, for either a purely local library or registry
 push/pull. GUI and CLI call the same in-process store library directly. Its API
@@ -802,6 +819,8 @@ zot accepted a custom-config manifest naming a missing layer and has no default
 size limit or timeout. oras adds a nondeterministic created annotation; tag
 immutability rules are per repository pattern and user. The transport rules
 above account for these findings; this spike does not waive the compression gate.
+The spike's mount used oras; the unemu client offers mounts in its library API
+only, and its CLI does not try them yet.
 
 ### 5.2. Installation media sets
 

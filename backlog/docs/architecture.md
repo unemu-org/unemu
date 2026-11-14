@@ -19,6 +19,7 @@ crate: `machine-file` reads and hashes declared images into inline buffers,
 | --- | --- | --- | --- |
 | `pc-image` | IBM PC/AT provider, resolved bundle-profile validation, machine-file import, disk-chain validation, isolated sessions and offline publication | `assembly`, `machine-file`, `media`, `image-store`, `serde`, `toml`, `thiserror` | `cpu`, `machine` |
 | `image-store` | Platform-neutral OCI Image Layout, streaming SHA-256 blobs, deterministic machine/media-set/firmware manifests, provider-validated closure and atomic compare-and-swap local tags, stable workspace ownership | `serde`, `serde_json`, `toml`, `sha2`, `thiserror`, `libc` (Unix) | None |
+| `image-registry` | Platform-neutral OCI distribution client: Docker-style references against the default registry, preferences registries list, environment/Keychain credentials, anonymous-then-Basic authentication, resumable chunked push, parallel verified pull, push guard and paged listings | `image-store`, `ureq` (rustls, no default features), `rustls` (ring), `rustls-native-certs`, `serde`, `serde_json`, `toml`, `thiserror` | None |
 | `media` | Immutable sparse disk layers, chain sector sources, floppy journal encoding, streaming recovery/replay, retention-anchor validation, durable host sink and stable single-writer locks ([format](design/persistent-media.md#chosen-format-byte-layout)) | `sha2`, `serde`, `toml`, `thiserror`, `libc` (Unix) | None |
 | `device` | Hardware-neutral contracts: `Device`, `InterruptController`, `DmaMemory`, `VClock`, `NextEvent`, access traces, DMA messages, and the observation capabilities (text scanout, byte output, `ByteCapture`) | `thiserror` | None |
 | `cpu` | `Cpu`/`CpuStop` seam and `X86JitCpu`, which owns the core's `Vm` and `Vcpu` | `x86jit-core`, `thiserror` | None |
@@ -31,7 +32,7 @@ crate: `machine-file` reads and hashes declared images into inline buffers,
 | `window` | CP437 rasteriser, shared `FrameSink`, and egui desktop shell | `video`, `device`, `assembly`, `machine`, `winit`, `egui`, `eframe`, `image-store`, `pc-image` | `cpu`, `assembly/test-support`, `image-store/test-support`, `media/test-support`, `pc-image/test-support` |
 | `machine-file` | Schema 1 TOML/YAML parsing, source origins, image hashing and lowering through assembly validation; merging remains deferred ([schema](design/machine-files.md#schema-field-by-field)) | `assembly`, `image-store`, `serde`, `sha2`, `toml`, `serde-saphyr`, `thiserror` | None |
 | `testkit` | Single-device `MockBus`, scripted `MockCpu`, golden assertions | `device`, `cpu` | None |
-| `cli` | Binary and runner library: guest programs, assembly/policy selection, output capture and stop diagnostics | `assembly`, `device`, `bus`, `cpu`, `chipset`, `machine`, `devices`, `video`, `anyhow`, `pc-image`, `image-store` | `testkit`, `machine/reference-scheduler`, `assembly/reference-scheduler`, `assembly/test-support` |
+| `cli` | Binary and runner library: guest programs, assembly/policy selection, output capture and stop diagnostics | `assembly`, `device`, `bus`, `cpu`, `chipset`, `machine`, `devices`, `video`, `anyhow`, `pc-image`, `image-store`, `image-registry`, `toml` | `testkit`, `machine/reference-scheduler`, `assembly/reference-scheduler`, `assembly/test-support`, `image-registry/test-support` |
 
 Concrete hardware selection lives in `assembly` and the frontend. `machine`
 does not depend on `chipset`, `devices`, `video`, or x86jit directly. `Bus` is a
@@ -156,7 +157,56 @@ complete new manifest, writes a durable intent, and performs a tag CAS. It then
 retires old journals, updates the session pointer and removes the intent. Retry
 is idempotent while the intent exists; Run refuses pending transactions. Fault
 hooks cover each publication operation. Tag deletion changes only index metadata;
-shared blobs and workspace roots survive. No registry or GC is implemented.
+shared blobs and workspace roots survive. GC is not implemented.
+
+`image-registry` moves tagged images between the store and OCI distribution
+registries without emulator code; callers pass their `ConfigValidator`
+providers, and the CLI passes the PC machine and media-set providers.
+References follow Docker's rules against `registry.unemu.dev` (`name:tag` is
+`unemu/name:tag`), with the default overridable by `--registry`,
+`UNEMU_REGISTRY` and the preferences `default_registry`. The `registries` list
+in the shared preferences file holds host, `private` flag, user name and a
+loopback-only `plain_http` opt-in, never secrets. Secrets come from
+`UNEMU_REGISTRY_USER`/`UNEMU_REGISTRY_PASSWORD`, which apply to one host only
+(`UNEMU_REGISTRY_HOST`, else `registry.unemu.dev`), else from the macOS Keychain
+through `/usr/bin/security` (service `unemu-registry:<host>`), never through the
+Keychain API. `image login` and the desktop shell update the preferences file
+under a shared sibling lock, each re-reading it and changing only its own keys.
+TLS (rustls with ring, operating-system roots) is mandatory except for loopback
+test registries; requests start anonymous and answer a `401` Basic challenge
+once, then reuse the credentials. The client follows redirects itself and sends
+`Authorization` only to the registry's own scheme, host and port; registry URLs
+(`Location`, `Link`) resolve against the request URL and must be HTTPS, or plain
+HTTP on loopback. Errors never show URL query strings. Bearer realms are parsed
+and refused until implemented.
+
+Push runs the guard first: every closure blob gets its effective class, the most
+restrictive `unemu.redistribution` mark that any tagged local manifest records
+for its digest (absent means user-supplied). User-supplied content requires a
+registry entry marked private and a repository outside `unemu/`, pushes into
+`unemu/` require all-open closures, and unlisted registries are refused. These
+checks need no network. `PushPlan` is read-only and `push` runs the checks again
+on the plan's target and closure. The store then verifies the closure,
+restricted pushes probe anonymous `tags/list` and catalog reads (readable, or a
+Bearer challenge that cannot show privacy, refuses), and the remote tag is
+checked: version tags never move and other tags move only with `--move`. Each
+blob is `HEAD`ed and only missing ones upload: single `PUT` up to one chunk,
+otherwise chunked `PATCH` sessions (64 MiB default, 8 MiB floor) whose
+`Location` is persisted under `local/registry-uploads/` after every accepted
+chunk and which resume from the registry's reported offset, restarting when the
+session is gone or the registry refuses the offset it reported. A blob already
+present drops its persisted session. Cross-repository mounts exist in the
+library API (`PushOptions::mount_from`); the CLI does not try them yet. Every
+blob is `HEAD`ed again, the tag is rechecked, and the store's canonical manifest
+bytes are `PUT` last. Pull fetches the manifest by tag or digest and checks its
+digest, bounds descriptors with the provider's payload types, streams missing
+blobs (four in parallel) through `Store::import` with the expected digest,
+continuing an interrupted body with up to three `Range` requests into the same
+staged file and hash (a whole-blob `200` restarts the blob), imports the
+manifest and sets the local tag by compare-and-swap after full closure
+verification. A local tag naming another digest is never rewritten. Listings
+pass `n` and follow `Link` headers. An in-process mock registry (`test-support`)
+covers these paths over loopback HTTP.
 
 Chain traversal and the materialized cache currently live in `pc-image::disk`
 and `media`. They would move into a shared module when a second platform provider
