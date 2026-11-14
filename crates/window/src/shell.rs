@@ -290,6 +290,9 @@ struct Shell {
     rom_folder_input: String,
     library_revision: u64,
     readiness: Option<ReadinessJob>,
+    prepared: std::collections::BTreeMap<usize, machine_file::PreparedMachineFile>,
+    discovery_session: assembly::firmware_discovery::DiscoverySession,
+    discovery_roots: Vec<assembly::firmware_discovery::FirmwareRoot>,
     start_request: Option<usize>,
     checked_selection: Option<usize>,
     insert_dialog: Option<crate::media_dialog::InsertDialog>,
@@ -299,6 +302,7 @@ struct Shell {
     firmware_cache: Option<std::path::PathBuf>,
     default_firmware_roots: Vec<assembly::firmware_discovery::FirmwareRoot>,
     rescan: bool,
+    refresh_listing: bool,
     discovery_finished: bool,
 }
 
@@ -306,7 +310,6 @@ struct ReadinessJob {
     index: usize,
     revision: u64,
     user_cancelled: bool,
-    used_draft: bool,
     control: assembly::firmware_discovery::DiscoveryControl,
     receiver: std::sync::mpsc::Receiver<shell_model::PreparedEntry>,
 }
@@ -544,7 +547,7 @@ impl Shell {
                     .layout(egui::Layout::left_to_right(egui::Align::Center)),
                 |ui| {
                     ui.set_clip_rect(cell.intersect(ui.clip_rect()));
-                    if index == 0 && self.visible_discovery() {
+                    if index == 0 && self.visible_discovery() && self.start_request.is_none() {
                         firmware_progress(
                             ui,
                             &self.discovery_control.snapshot(),
@@ -599,6 +602,7 @@ impl Shell {
         }
         let selected = Some(shell_model::select_machine(&mut paths, &args.machine));
         let library = paths.into_iter().map(LibraryEntry::pending).collect();
+        let discovery_roots = preferences.roots(&args.rom_dirs, &default_firmware_roots);
         Self {
             args,
             library,
@@ -635,6 +639,9 @@ impl Shell {
             rom_folder_input: String::new(),
             library_revision: 0,
             readiness: None,
+            prepared: Default::default(),
+            discovery_session: Default::default(),
+            discovery_roots,
             start_request: None,
             checked_selection: None,
             insert_dialog: None,
@@ -644,6 +651,7 @@ impl Shell {
             firmware_cache: assembly::firmware_discovery::firmware_cache_path(),
             default_firmware_roots,
             rescan: false,
+            refresh_listing: false,
             discovery_finished: false,
         }
     }
@@ -731,6 +739,13 @@ impl Shell {
             .map_or(std::time::Duration::ZERO, |started| started.elapsed())
     }
 
+    fn abandon_start(&mut self) {
+        self.start_request = None;
+        if self.message == "Loading machine…" {
+            self.message = "Ready".into();
+        }
+    }
+
     fn start(&mut self) {
         if self.presenter.is_some() {
             return;
@@ -739,7 +754,9 @@ impl Shell {
         if let Some(index) = self.selected {
             self.start_request = Some(index);
             self.library[index].checked = false;
-            self.library[index].warning = Some("Checking firmware…".into());
+            self.library[index].warning = Some("Loading machine…".into());
+            self.message = "Loading machine…".into();
+            *self.errors.borrow_mut() = None;
         }
     }
 
@@ -757,6 +774,9 @@ impl Shell {
             .extend(entry.discovery_warnings.iter().cloned());
         self.library[index] = entry;
         if self.selected != Some(index) || self.start_request != Some(index) {
+            if let Some(loaded) = loaded {
+                self.prepared.insert(index, loaded);
+            }
             return;
         }
         self.start_request = None;
@@ -768,6 +788,7 @@ impl Shell {
                 .and_then(|loaded| crate::setup_loaded(&self.args, &loaded, &mut io::stderr()))
             {
                 Ok(mut presenter) => {
+                    self.prepared.insert(index, loaded);
                     presenter.audio.open(&mut io::stderr());
                     self.started(presenter);
                 }
@@ -791,9 +812,16 @@ impl Shell {
     }
 
     fn poll_readiness(&mut self, ctx: &egui::Context) {
+        let roots = self
+            .preferences
+            .roots(&self.args.rom_dirs, &self.default_firmware_roots);
+        if self.presenter.is_none() && self.discovery_roots != roots {
+            self.discovery_roots = roots;
+            self.refresh_library();
+        }
         if self.selected != self.checked_selection {
             if self.checked_selection.is_some() {
-                self.start_request = None;
+                self.abandon_start();
             }
             if self.message.starts_with("Rescanning ROM folders") {
                 self.message = "Ready".into();
@@ -804,9 +832,6 @@ impl Shell {
                 if let Some(entry) = self.library.get_mut(job.index) {
                     entry.checked = false;
                 }
-            }
-            if let Some(index) = self.selected {
-                self.library[index].checked = false;
             }
             self.checked_selection = self.selected;
             self.discovery_finished = false;
@@ -848,7 +873,7 @@ impl Shell {
                         Err(()) => {
                             self.library[job.index].checked = true;
                             self.library[job.index].warning = Some("Firmware check failed".into());
-                            self.start_request = None;
+                            self.abandon_start();
                         }
                     }
                 }
@@ -863,37 +888,37 @@ impl Shell {
         {
             if let Some(index) = self.selected.filter(|index| !self.library[*index].checked) {
                 let wake = ctx.clone();
-                self.library[index].warning = Some("checking firmware…".into());
+                self.library[index].warning = Some(if self.start_request == Some(index) {
+                    "Loading machine…".into()
+                } else {
+                    "Checking firmware…".into()
+                });
                 self.discovery_control = Default::default();
                 self.discovery_finished = false;
-                let used_draft = self
-                    .dialog
-                    .as_ref()
-                    .is_some_and(|(title, _)| *title == "ROM folders")
-                    && self.preferences_draft.rom_dirs != self.preferences.rom_dirs;
                 self.readiness = Some(ReadinessJob {
                     index,
                     revision: self.library_revision,
                     user_cancelled: false,
-                    used_draft,
                     control: self.discovery_control.clone(),
                     receiver: shell_model::spawn_library_check(
-                        self.library[index].path.clone(),
-                        self.args.options,
-                        if self
-                            .dialog
-                            .as_ref()
-                            .is_some_and(|(title, _)| *title == "ROM folders")
-                        {
-                            self.preferences_draft
-                                .roots(&self.args.rom_dirs, &self.default_firmware_roots)
-                        } else {
-                            self.preferences
-                                .roots(&self.args.rom_dirs, &self.default_firmware_roots)
+                        shell_model::LibraryCheck {
+                            path: self.library[index].path.clone(),
+                            options: self.args.options,
+                            roots: self
+                                .preferences
+                                .roots(&self.args.rom_dirs, &self.default_firmware_roots),
+                            cache: self.firmware_cache.clone(),
+                            rescan: std::mem::take(&mut self.rescan),
+                            refresh_listing: std::mem::take(&mut self.refresh_listing),
+                            control: self.discovery_control.clone(),
+                            session: self.discovery_session.clone(),
+                            prepared: self.prepared.remove(&index).map(|document| {
+                                let mut entry = self.library[index].clone();
+                                entry.checked = true;
+                                entry.warning = None;
+                                (entry, Some(document))
+                            }),
                         },
-                        self.firmware_cache.clone(),
-                        std::mem::take(&mut self.rescan),
-                        self.discovery_control.clone(),
                         move || wake.request_repaint(),
                     ),
                 });
@@ -929,8 +954,9 @@ impl Shell {
             job.control.cancel();
         }
         self.discovery_finished = false;
+        self.prepared.clear();
         self.library_revision = self.library_revision.wrapping_add(1);
-        self.start_request = None;
+        self.abandon_start();
         self.discovery_warnings.clear();
         for entry in &mut self.library {
             *entry = LibraryEntry::pending(entry.path.clone());
@@ -944,7 +970,8 @@ impl Shell {
             job.control.cancel();
         }
         self.rescan = false;
-        self.start_request = None;
+        self.refresh_listing = false;
+        self.abandon_start();
         if pending {
             if let Some(entry) = self.selected.and_then(|index| self.library.get_mut(index)) {
                 entry.checked = true;
@@ -954,20 +981,13 @@ impl Shell {
     }
 
     fn close_firmware_dialog(&mut self) {
-        if let Some(job) = &mut self.readiness {
-            if job.used_draft {
-                job.user_cancelled = false;
-                job.control.cancel();
-                if let Some(entry) = self.library.get_mut(job.index) {
-                    entry.checked = false;
-                }
-                self.start_request = None;
-                self.rescan = false;
-                self.discovery_finished = false;
-                self.discovery_control = Default::default();
-            }
-        }
         self.dialog = None;
+    }
+
+    fn check_firmware_again(&mut self) {
+        self.refresh_library();
+        self.refresh_listing = true;
+        self.rescan = false;
     }
 
     fn rescan_firmware(&mut self) {
@@ -1370,6 +1390,16 @@ impl Shell {
             .show(ui, |ui| {
                 ui.style_mut().visuals.override_text_color = Some(Color32::WHITE);
                 ui.add_space(10.0);
+                if let Some(logo) = &mut self.logo {
+                    ui.vertical_centered(|ui| {
+                        logo.welcome(
+                            ui,
+                            self.preferences.reduced_motion,
+                            !self.hidden && !self.minimized,
+                        )
+                    });
+                }
+                ui.add_space(10.0);
                 ui.heading("Welcome to\nunemupc98");
                 ui.add_space(14.0);
                 ui.label("Pick a machine to start it, or set up a new one.");
@@ -1389,13 +1419,6 @@ impl Shell {
                     {
                         commands.push(command);
                     }
-                }
-                if let Some(logo) = &mut self.logo {
-                    logo.welcome(
-                        ui,
-                        self.preferences.reduced_motion,
-                        !self.hidden && !self.minimized,
-                    );
                 }
             });
         egui::CentralPanel::default().show(ui, |ui| {
@@ -1427,6 +1450,9 @@ impl Shell {
                                         self.library_revision =
                                             self.library_revision.wrapping_add(1);
                                         self.start_request = None;
+                                        if self.message == "Loading machine…" {
+                                            self.message = "Ready".into();
+                                        }
                                     }
                                     self.selected = Some(index);
                                 }
@@ -1471,7 +1497,9 @@ impl Shell {
                                         )
                                         .wrap(),
                                     );
-                                    ui.add(egui::Label::new(entry.hint()).wrap());
+                                    if entry.has_problem() {
+                                        ui.add(egui::Label::new(entry.hint()).wrap());
+                                    }
                                 });
                                 if entry.hint().contains("Create blank disk")
                                     && ui.button("Create blank disk…").clicked()
@@ -2156,8 +2184,7 @@ impl eframe::App for Shell {
             self.save_preferences();
         }
         if recheck_firmware {
-            self.refresh_library();
-            self.rescan = false;
+            self.check_firmware_again();
         }
         if rescan_firmware {
             self.rescan_firmware();
@@ -2351,6 +2378,9 @@ mod tests {
             rom_folder_input: String::new(),
             library_revision: 0,
             readiness: None,
+            prepared: Default::default(),
+            discovery_session: Default::default(),
+            discovery_roots: Vec::new(),
             start_request: None,
             checked_selection: None,
             insert_dialog: None,
@@ -2360,6 +2390,7 @@ mod tests {
             firmware_cache: None,
             default_firmware_roots: Vec::new(),
             rescan: false,
+            refresh_listing: false,
             discovery_finished: false,
         }
     }
@@ -3554,6 +3585,292 @@ kind='mda'
         shell
     }
 
+    fn finish_discovery(
+        shell: &mut Shell,
+        ctx: &egui::Context,
+    ) -> assembly::firmware_discovery::DiscoveryProgress {
+        shell.poll_readiness(ctx);
+        let job = shell.readiness.take().unwrap();
+        let prepared = job
+            .receiver
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .unwrap();
+        let progress = job.control.snapshot();
+        shell.apply_readiness(job.index, job.revision, prepared);
+        progress
+    }
+
+    #[test]
+    fn start_status_remains_loading_while_discovery_progress_is_pending() {
+        let mut shell = shell();
+        shell.presenter = None;
+        shell.library = vec![LibraryEntry::pending("synthetic.toml".into())];
+        shell.selected = Some(0);
+        shell.start();
+        let (_sender, receiver) = std::sync::mpsc::channel();
+        shell.readiness = Some(ReadinessJob {
+            index: 0,
+            revision: 0,
+            user_cancelled: false,
+            control: shell.discovery_control.clone(),
+            receiver,
+        });
+        let ctx = egui::Context::default();
+        let output = ctx.run_ui(Default::default(), |ui| {
+            ui.set_width(1600.0);
+            shell.status(ui);
+        });
+        assert!(output.shapes.iter().any(|shape| {
+            matches!(&shape.shape, egui::epaint::Shape::Text(text) if text.galley.text().contains("Loading machine…"))
+        }));
+        output.drop_without_applying_deltas();
+    }
+
+    #[test]
+    fn checked_start_has_zero_discovery_reads_without_an_error_hint() {
+        let temp = assembly::test_support::TempDir::new("checked-start-reuse");
+        let mut shell = discovery_shell(&temp);
+        let ctx = egui::Context::default();
+        let checked = finish_discovery(&mut shell, &ctx);
+        assert_eq!(checked.folder_listings, 1);
+        assert_eq!(checked.files_read, 1);
+        assert!(!shell.library[0].has_problem());
+        shell.start();
+        assert_eq!(shell.message, "Loading machine…");
+        assert_eq!(
+            shell.library[0].warning.as_deref(),
+            Some("Loading machine…")
+        );
+        assert!(!shell.library[0].has_problem());
+        assert!(!shell.library[0].hint().contains("missing"));
+        assert!(shell.errors.borrow().is_none());
+        let launched = finish_discovery(&mut shell, &ctx);
+        assert_eq!(launched.folder_listings, 0);
+        assert_eq!(launched.files_read, 0);
+        assert_eq!(launched.checked, 0);
+        assert!(shell.presenter.is_some());
+        assert!(shell.errors.borrow().is_none());
+    }
+
+    #[test]
+    fn changed_located_rom_relists_only_its_folder_and_retries_once() {
+        let temp = assembly::test_support::TempDir::new("changed-start-rom");
+        let mut shell = discovery_shell(&temp);
+        let untouched = temp.path().join("untouched");
+        std::fs::create_dir(&untouched).unwrap();
+        std::fs::write(untouched.join("other"), [0; 512]).unwrap();
+        shell.preferences.add_folder(&untouched).unwrap();
+        let ctx = egui::Context::default();
+        assert_eq!(finish_discovery(&mut shell, &ctx).folder_listings, 2);
+        std::fs::rename(
+            temp.path().join("roms/bios"),
+            temp.path().join("roms/replacement"),
+        )
+        .unwrap();
+        std::fs::write(temp.path().join("roms/bios"), [0; 32768]).unwrap();
+        shell.start();
+        let retried = finish_discovery(&mut shell, &ctx);
+        assert_eq!(retried.folder_listings, 1);
+        assert_eq!(retried.files_read, 3);
+        assert!(shell.presenter.is_some());
+        assert!(shell.errors.borrow().is_none());
+    }
+
+    #[test]
+    fn missing_replacement_reports_only_the_final_failure_without_looping() {
+        let temp = assembly::test_support::TempDir::new("failed-start-retry");
+        let mut shell = discovery_shell(&temp);
+        let ctx = egui::Context::default();
+        finish_discovery(&mut shell, &ctx);
+        std::fs::write(temp.path().join("roms/bios"), [0; 32768]).unwrap();
+        shell.start();
+        assert!(shell.errors.borrow().is_none());
+        let failed = finish_discovery(&mut shell, &ctx);
+        assert_eq!(failed.folder_listings, 1);
+        assert_eq!(failed.files_read, 1);
+        assert!(shell.presenter.is_none());
+        assert!(shell.errors.borrow().is_some());
+        shell.poll_readiness(&ctx);
+        assert!(shell.readiness.is_none());
+    }
+
+    #[test]
+    fn folder_add_scans_once_and_selection_reuses_the_session_listing() {
+        let temp = assembly::test_support::TempDir::new("folder-add-scan");
+        let mut shell = discovery_shell(&temp);
+        shell.preferences = Default::default();
+        shell.preferences_draft = Default::default();
+        let second = temp.path().join("second.toml");
+        std::fs::copy(&shell.library[0].path, &second).unwrap();
+        shell.library.push(LibraryEntry::pending(second));
+        let ctx = egui::Context::default();
+        assert_eq!(finish_discovery(&mut shell, &ctx).folder_listings, 0);
+        shell.dialog = Some(("ROM folders", String::new()));
+        shell
+            .preferences_draft
+            .add_folder(&temp.path().join("roms"))
+            .unwrap();
+        shell.poll_readiness(&ctx);
+        assert!(shell.readiness.is_none());
+        shell.preferences_path = Some(temp.path().join("preferences.toml"));
+        shell.save_preferences();
+        assert_eq!(finish_discovery(&mut shell, &ctx).folder_listings, 1);
+        assert!(!shell.library[0].has_problem());
+        shell.selected = Some(1);
+        let selected = finish_discovery(&mut shell, &ctx);
+        assert_eq!(selected.folder_listings, 0);
+        assert_eq!(selected.files_read, 1);
+        shell.selected = Some(0);
+        shell.poll_readiness(&ctx);
+        assert!(shell.readiness.is_none());
+    }
+
+    #[test]
+    fn automatic_check_recovers_a_rom_moved_into_a_subfolder() {
+        let temp = assembly::test_support::TempDir::new("moved-session-rom");
+        let mut shell = discovery_shell(&temp);
+        let ctx = egui::Context::default();
+        finish_discovery(&mut shell, &ctx);
+        shell.start();
+        finish_discovery(&mut shell, &ctx);
+        assert!(shell.stop());
+        let nested = temp.path().join("roms/nested");
+        std::fs::create_dir(&nested).unwrap();
+        std::fs::rename(temp.path().join("roms/bios"), nested.join("bios")).unwrap();
+        let recovered = finish_discovery(&mut shell, &ctx);
+        assert_eq!(recovered.folder_listings, 2);
+        assert_eq!(recovered.files_read, 1);
+        assert!(!shell.library[0].has_problem());
+        shell.check_firmware_again();
+        assert_eq!(finish_discovery(&mut shell, &ctx).folder_listings, 2);
+    }
+
+    #[test]
+    fn saved_folder_changes_keep_existing_listings_and_drafts_do_not_scan() {
+        let temp = assembly::test_support::TempDir::new("incremental-rom-folders");
+        let mut shell = discovery_shell(&temp);
+        let ctx = egui::Context::default();
+        finish_discovery(&mut shell, &ctx);
+        shell.preferences_path = Some(temp.path().join("preferences.toml"));
+        let added = temp.path().join("added");
+        std::fs::create_dir(&added).unwrap();
+        shell.dialog = Some(("ROM folders", String::new()));
+        shell.preferences_draft.add_folder(&added).unwrap();
+        shell.poll_readiness(&ctx);
+        assert!(shell.readiness.is_none());
+        shell.save_preferences();
+        assert_eq!(finish_discovery(&mut shell, &ctx).folder_listings, 1);
+        shell.preferences_draft.rom_dirs.pop();
+        shell.save_preferences();
+        assert_eq!(finish_discovery(&mut shell, &ctx).folder_listings, 0);
+        let revision = shell.library_revision;
+        shell.dialog = Some(("ROM folders", String::new()));
+        shell.preferences_draft.rom_dirs.clear();
+        shell.poll_readiness(&ctx);
+        shell.close_firmware_dialog();
+        shell.poll_readiness(&ctx);
+        assert_eq!(shell.library_revision, revision);
+        assert!(shell.readiness.is_none());
+    }
+
+    #[test]
+    fn saved_folder_changes_defer_readiness_while_a_machine_runs() {
+        let temp = assembly::test_support::TempDir::new("running-rom-folders");
+        let mut shell = discovery_shell(&temp);
+        let ctx = egui::Context::default();
+        finish_discovery(&mut shell, &ctx);
+        shell.presenter = self::shell().presenter.take();
+        shell.preferences_path = Some(temp.path().join("preferences.toml"));
+        let added = temp.path().join("added");
+        std::fs::create_dir(&added).unwrap();
+        shell.preferences_draft.add_folder(&added).unwrap();
+        let revision = shell.library_revision;
+        shell.save_preferences();
+        shell.poll_readiness(&ctx);
+        assert_eq!(shell.library_revision, revision);
+        assert!(shell.library[0].checked);
+        assert!(shell.readiness.is_none());
+        assert!(shell.stop());
+        assert_eq!(finish_discovery(&mut shell, &ctx).folder_listings, 1);
+    }
+
+    #[test]
+    fn abandoned_start_resets_loading_after_selection_cancel_and_disconnect() {
+        for action in 0..3 {
+            let temp = assembly::test_support::TempDir::new("abandoned-start-status");
+            let mut shell = discovery_shell(&temp);
+            shell.discovery_roots = shell
+                .preferences
+                .roots(&shell.args.rom_dirs, &shell.default_firmware_roots);
+            shell.checked_selection = Some(0);
+            let mut other = LibraryEntry::pending(temp.path().join("other.toml"));
+            other.checked = true;
+            other.warning = None;
+            shell.library.push(other);
+            shell.start();
+            let (sender, receiver) = std::sync::mpsc::channel();
+            shell.readiness = Some(ReadinessJob {
+                index: 0,
+                revision: shell.library_revision,
+                user_cancelled: false,
+                control: shell.discovery_control.clone(),
+                receiver,
+            });
+            match action {
+                0 => shell.selected = Some(1),
+                1 => shell.cancel_firmware(),
+                _ => drop(sender),
+            }
+            shell.poll_readiness(&egui::Context::default());
+            assert_eq!(shell.message, "Ready");
+            assert!(shell.start_request.is_none());
+        }
+    }
+
+    #[test]
+    fn changed_machine_document_is_not_replaced_by_the_checked_document() {
+        let temp = assembly::test_support::TempDir::new("changed-machine-start");
+        let mut shell = discovery_shell(&temp);
+        let path = shell.library[0].path.clone();
+        let parent = temp.path().join("parent.toml");
+        std::fs::rename(&path, &parent).unwrap();
+        std::fs::write(&path, "schema=1\nextends='parent.toml'\n").unwrap();
+        let ctx = egui::Context::default();
+        finish_discovery(&mut shell, &ctx);
+        let previous_memory = shell.library[0]
+            .details
+            .iter()
+            .find(|(name, _)| name == "Memory")
+            .cloned();
+        let contents = std::fs::read_to_string(&parent).unwrap();
+        std::fs::write(
+            &parent,
+            format!("{contents}\n[memory]\nconventional_kib=512\nextended_kib=0\n"),
+        )
+        .unwrap();
+        shell.start();
+        assert_eq!(finish_discovery(&mut shell, &ctx).folder_listings, 0);
+        assert_ne!(
+            shell.library[0]
+                .details
+                .iter()
+                .find(|(name, _)| name == "Memory")
+                .cloned(),
+            previous_memory
+        );
+        assert_eq!(
+            shell.prepared[&0]
+                .resolved()
+                .0
+                .memory
+                .as_ref()
+                .unwrap()
+                .conventional_kib,
+            Some(512)
+        );
+        assert!(shell.presenter.is_some());
+    }
+
     #[test]
     fn discovery_job_uses_only_explicit_and_injected_roots() {
         use assembly::firmware_discovery::{FirmwareRoot, RootOrigin};
@@ -3637,39 +3954,24 @@ kind='mda'
     }
 
     #[test]
-    fn closing_folders_preserves_saved_jobs_and_rechecks_discarded_drafts() {
-        for draft in [false, true] {
-            let temp = assembly::test_support::TempDir::new("close-firmware-folders");
-            let mut shell = discovery_shell(&temp);
-            shell.checked_selection = shell.selected;
-            shell.dialog = Some(("ROM folders", String::new()));
-            let (sender, receiver) = std::sync::mpsc::channel();
-            let control = assembly::firmware_discovery::DiscoveryControl::default();
-            shell.readiness = Some(ReadinessJob {
-                index: 0,
-                revision: shell.library_revision,
-                user_cancelled: false,
-                used_draft: draft,
-                control: control.clone(),
-                receiver,
-            });
-            shell.close_firmware_dialog();
-            assert_eq!(control.is_cancelled(), draft);
-            assert!(!shell.library[0].checked);
-            assert!(!shell.rescan);
-            sender
-                .send((LibraryEntry::pending(shell.library[0].path.clone()), None))
+    fn closing_folders_discards_drafts_without_touching_a_saved_job() {
+        let temp = assembly::test_support::TempDir::new("close-firmware-folders");
+        let mut shell = discovery_shell(&temp);
+        let ctx = egui::Context::default();
+        shell.poll_readiness(&ctx);
+        let control = shell.readiness.as_ref().unwrap().control.clone();
+        let revision = shell.library_revision;
+        shell.dialog = Some(("ROM folders", String::new()));
+        shell.preferences_draft.rom_dirs.clear();
+        shell.poll_readiness(&ctx);
+        shell.close_firmware_dialog();
+        shell.poll_readiness(&ctx);
+        assert!(!control.is_cancelled());
+        assert_eq!(shell.library_revision, revision);
+        if let Some(job) = shell.readiness.take() {
+            job.receiver
+                .recv_timeout(std::time::Duration::from_secs(10))
                 .unwrap();
-            if draft {
-                shell.poll_readiness(&egui::Context::default());
-                assert!(!shell.library[0].checked);
-                let job = shell.readiness.take().unwrap();
-                assert!(!job.used_draft);
-                assert!(!job.user_cancelled);
-                job.receiver
-                    .recv_timeout(std::time::Duration::from_secs(10))
-                    .unwrap();
-            }
         }
     }
 
@@ -3686,7 +3988,6 @@ kind='mda'
             index: 0,
             revision: shell.library_revision,
             user_cancelled: false,
-            used_draft: false,
             control: Default::default(),
             receiver,
         });
@@ -3734,7 +4035,6 @@ kind='mda'
                     index: 0,
                     revision: 0,
                     user_cancelled: false,
-                    used_draft: false,
                     control: shell.discovery_control.clone(),
                     receiver,
                 });
@@ -3789,7 +4089,6 @@ kind='mda'
             index: 0,
             revision: shell.library_revision,
             user_cancelled: false,
-            used_draft: false,
             control: Default::default(),
             receiver,
         });

@@ -15,10 +15,13 @@ use std::{
 
 mod frontend;
 mod persistent;
-pub use frontend::{default_firmware_roots, locate_firmware_with_roots, FirmwareRoot, RootOrigin};
+pub use frontend::{
+    default_firmware_roots, list_firmware_roots, locate_firmware_with_roots,
+    refresh_changed_firmware_roots, refresh_firmware_roots, FirmwareRoot, RootOrigin,
+};
 pub use persistent::{
     firmware_cache_path, with_discovery_session, with_firmware_pins, DiscoveryControl,
-    DiscoveryPhase, DiscoveryProgress,
+    DiscoveryPhase, DiscoveryProgress, DiscoverySession,
 };
 
 /// The identity representation found by discovery.
@@ -201,7 +204,9 @@ struct HashCache {
     hashes: BTreeMap<HashKey, String>,
     seen: BTreeSet<PathBuf>,
     listed_directories: BTreeSet<PathBuf>,
-    listing: Option<(Vec<FirmwareRoot>, Vec<ListedFile>)>,
+    listings: Vec<(FirmwareRoot, Vec<ListedFile>, Vec<String>, usize)>,
+    retained_roots: Vec<FirmwareRoot>,
+    stale_roots: Vec<FirmwareRoot>,
     candidates: Vec<Candidate>,
     checked_candidates: BTreeSet<PathBuf>,
     matched_candidates: BTreeSet<PathBuf>,

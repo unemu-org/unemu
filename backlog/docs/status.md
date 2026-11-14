@@ -16,7 +16,10 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   The status bar and Locate firmware dialog show listing/hashing progress,
   all found lines plus bounded skip results, Cancel scan, cached Check again and
   an uncached Rescan action. Progress stays in the fixed-height message pane;
-  listing is shared across BIOS/option ROMs and loading has its own phase.
+  listing and index are shared across machine checks for the desktop session.
+  Start reuses the checked document, verifies images while showing “Loading machine…”,
+  and retries discovery once after a located firmware file fails verification.
+  Folder changes and Rescan refresh listings; selection alone does not.
   Pending machine rows show “checking firmware…” with Start disabled. Synthetic
   headless regressions cover cache reuse, edits, deletion, invalid indexes,
   cancellation and rescans; native visual acceptance remains manual.
@@ -47,7 +50,11 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   audio and synthetic-machine determinism tests cover these paths; no GUI
   acceptance was performed. See [window commands](commands.md).
 - **2026-11-14 — Machine image store:** platform-neutral OCI layout, streamed immutable SHA-256 blobs, deterministic manifests, provider-validated complete closures, paged local tags, provider-declared payload codecs, foreign OCI index preservation, missing-artwork reporting and atomic compare-and-swap updates are implemented; application wiring, import, layers, workspaces and registry remain separate.
-- **2026-11-14 — Application logo:** embedded window/Dock icon, GIF-timed welcome animation (file-only `reduced_motion` preference), static About logo and README branding; visual acceptance remains manual.
+- **2026-11-14 — Application logo:** embedded window/Dock icon, GIF-timed welcome animation (file-only `reduced_motion` preference), static About logo and README branding. The welcome logo is centred above the heading
+  at up to 128 px; welcome/About frames key only the exact uniform border colour
+  connected to the perimeter by four-neighbour paths. Enclosed regions of that
+  colour remain opaque, preserving the logo interior. The window/Dock icon is unchanged; visual
+  acceptance remains manual.
 
 - **2026-11-14 — Desktop media controls:** the Media menu and Ctrl+Alt+I
   expose a per-drive Insert dialog, catalogue next/eject, disabled absent drives

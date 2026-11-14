@@ -115,7 +115,7 @@ pub(crate) fn hotkey(
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub(crate) struct LibraryEntry {
     pub path: PathBuf,
     pub name: String,
@@ -126,10 +126,12 @@ pub(crate) struct LibraryEntry {
     pub floppy: [bool; 2],
     pub checked: bool,
     pub discovery_warnings: Vec<String>,
+    source: Option<String>,
 }
 
 impl LibraryEntry {
     pub fn pending(path: PathBuf) -> Self {
+        let source = source_revision(&path);
         Self {
             name: machine_file::resolve(&path)
                 .ok()
@@ -148,6 +150,7 @@ impl LibraryEntry {
             floppy: [false; 2],
             checked: false,
             discovery_warnings: Vec::new(),
+            source,
         }
     }
 
@@ -189,6 +192,7 @@ impl LibraryEntry {
                     .to_string_lossy()
                     .into_owned()
             });
+        let source = source_revision(&path);
         let mut entry = Self {
             path,
             name,
@@ -199,6 +203,7 @@ impl LibraryEntry {
             floppy: [false; 2],
             checked: true,
             discovery_warnings: Vec::new(),
+            source,
         };
         let mut prepared = None;
         match machine_file::prepare_for_assembly_with_firmware_roots(
@@ -285,6 +290,9 @@ impl LibraryEntry {
     }
 
     pub fn hint(&self) -> &str {
+        if !self.checked {
+            return "Checking machine configuration…";
+        }
         match self.warning.as_deref() {
             Some(warning) if warning.contains("cancelled") =>
                 "Use Tools › Locate firmware… › Check again for a normal cached firmware check.",
@@ -335,32 +343,138 @@ pub(crate) fn status_widths(available: f32) -> [f32; 8] {
     widths
 }
 
+fn source_revision(path: &Path) -> Option<String> {
+    machine_file::resolve(path)
+        .ok()
+        .map(|(file, origins)| format!("{file:?}{origins:?}"))
+}
+
+fn failed_firmware_paths(
+    document: &machine_file::PreparedMachineFile,
+    field: &str,
+) -> Vec<PathBuf> {
+    let (document, origins) = document.resolved();
+    let mut paths = Vec::new();
+    if let Some(firmware) = &document.firmware {
+        let roms = firmware
+            .bios
+            .iter()
+            .map(|rom| ("firmware.bios".into(), rom))
+            .chain(
+                firmware
+                    .option_roms
+                    .iter()
+                    .flatten()
+                    .enumerate()
+                    .map(|(index, rom)| (format!("firmware.option_roms[{index}]"), rom)),
+            );
+        for (rom_field, rom) in roms {
+            if !field.starts_with(&rom_field) {
+                continue;
+            }
+            if let Some(image) = &rom.image {
+                paths.push(origins.image_path(&format!("{rom_field}.image"), image));
+            }
+            for (index, part) in rom.parts.iter().flatten().enumerate() {
+                let part_field = format!("{rom_field}.parts[{index}]");
+                if !field.contains(".parts[") || field.starts_with(&part_field) {
+                    paths.push(origins.image_path(&format!("{part_field}.image"), &part.image));
+                }
+            }
+        }
+    }
+    paths
+}
+
 pub(crate) type PreparedEntry = (LibraryEntry, Option<machine_file::PreparedMachineFile>);
 
 /// Only host loading/checking runs on this worker. Guest assembly, audio and
 /// execution remain on the frontend's existing execution path.
+pub(crate) struct LibraryCheck {
+    pub path: PathBuf,
+    pub options: assembly::AssemblyOptions,
+    pub roots: Vec<assembly::firmware_discovery::FirmwareRoot>,
+    pub cache: Option<PathBuf>,
+    pub rescan: bool,
+    pub refresh_listing: bool,
+    pub control: assembly::firmware_discovery::DiscoveryControl,
+    pub session: assembly::firmware_discovery::DiscoverySession,
+    pub prepared: Option<PreparedEntry>,
+}
+
 pub(crate) fn spawn_library_check(
-    path: PathBuf,
-    options: assembly::AssemblyOptions,
-    roots: Vec<assembly::firmware_discovery::FirmwareRoot>,
-    cache: Option<PathBuf>,
-    rescan: bool,
-    control: assembly::firmware_discovery::DiscoveryControl,
+    request: LibraryCheck,
     wake: impl FnOnce() + Send + 'static,
 ) -> std::sync::mpsc::Receiver<PreparedEntry> {
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
-        let prepared = assembly::firmware_discovery::with_discovery_session(
-            cache.as_deref(),
+        let LibraryCheck {
+            path,
+            options,
+            roots,
+            cache,
             rescan,
-            &control,
-            || {
-                if control.is_cancelled() {
-                    return (LibraryEntry::pending(path), None);
+            refresh_listing,
+            control,
+            session,
+            prepared,
+        } = request;
+        let roots = roots
+            .into_iter()
+            .map(|root| {
+                assembly::firmware_discovery::FirmwareRoot::new(
+                    std::path::absolute(&root.path).unwrap_or(root.path),
+                    root.origin,
+                )
+            })
+            .collect::<Vec<_>>();
+        let prepared = session.run(cache.as_deref(), rescan, &control, || {
+            if control.is_cancelled() {
+                return (LibraryEntry::pending(path), None);
+            }
+            if refresh_listing {
+                assembly::firmware_discovery::refresh_firmware_roots(&roots);
+            }
+            if let Some((mut entry, Some(document))) = prepared {
+                if entry.source.is_some() && entry.source == source_revision(&path) {
+                    control.loading();
+                    match document
+                        .load(options)
+                        .and_then(|loaded| loaded.check().map(|_| ()).map_err(Into::into))
+                    {
+                        Ok(()) => return (entry, Some(document)),
+                        Err(error) => {
+                            let failed_paths = match &error {
+                                machine_file::LoadError::Lower(error)
+                                    if error.field.starts_with("firmware.") =>
+                                {
+                                    Some(failed_firmware_paths(&document, &error.field))
+                                }
+                                _ => None,
+                            };
+                            let error = error.to_string();
+                            if let Some(paths) = failed_paths {
+                                assembly::firmware_discovery::refresh_changed_firmware_roots(
+                                    &roots, &paths,
+                                );
+                            } else {
+                                entry.warning = Some(relative_diagnostic(&error, &path));
+                                return (entry, None);
+                            }
+                        }
+                    }
                 }
-                LibraryEntry::prepare(path, options, &roots, Some(&control))
-            },
-        );
+            }
+            let mut warnings = Vec::new();
+            assembly::firmware_discovery::list_firmware_roots(&roots, &mut warnings);
+            let mut prepared = LibraryEntry::prepare(path, options, &roots, Some(&control));
+            for warning in warnings {
+                if !prepared.0.discovery_warnings.contains(&warning) {
+                    prepared.0.discovery_warnings.push(warning);
+                }
+            }
+            prepared
+        });
         let _ = tx.send(prepared);
         wake();
     });
@@ -431,6 +545,7 @@ mod tests {
     fn row_warnings_exclude_pending_checks_and_skipped_roots() {
         let mut entry = LibraryEntry::pending("synthetic.toml".into());
         assert!(!entry.has_problem());
+        assert!(!entry.hint().contains("Required firmware"));
         entry.checked = true;
         entry.warning = None;
         entry
@@ -499,12 +614,17 @@ mod tests {
         let caller = std::thread::current().id();
         let (tx, rx) = std::sync::mpsc::channel();
         let result = spawn_library_check(
-            path,
-            assembly::AssemblyOptions::default(),
-            vec![],
-            None,
-            false,
-            Default::default(),
+            LibraryCheck {
+                path,
+                options: assembly::AssemblyOptions::default(),
+                roots: vec![],
+                cache: None,
+                rescan: false,
+                refresh_listing: false,
+                control: Default::default(),
+                session: Default::default(),
+                prepared: None,
+            },
             move || {
                 tx.send(std::thread::current().id()).unwrap();
             },

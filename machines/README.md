@@ -125,7 +125,8 @@ Windows; discovery rehashes files there. The index contains the user's
 own canonical paths, lengths, timestamps, file identities where available and
 hashes, never ROM bytes; it stays local. Fresh metadata validates every hit.
 A changed file is hashed again; hashes taken within two seconds of the file's
-mtime or change time are not persisted, protecting against coarse timestamps.
+mtime or change time are not persisted and are rehashed in the next discovery
+run, protecting against coarse timestamps. They are reused only within one scan.
 A corrupt or unknown-version index is rebuilt. An unchanged index is not rewritten;
 unreadable indexes are preserved. Stale temporary index files are swept after five minutes.
 Successful directory listings remove missing direct-child entries; unavailable
@@ -136,9 +137,22 @@ Cache write failures remain nonfatal.
 The fixed-height status message pane and Locate firmware dialog show a segmented
 progress bar: listing is indeterminate, then hashing shows checked candidates
 (including cache hits) against the total, plus match counts. One listing is shared
-by the BIOS and option ROMs. All found lines are retained; up to 256 skipped lines
-are shown, with one summary for size skips. **Check again** uses the normal cache;
-**Rescan** ignores cached hashes for that run. Both use the dialog's current folders.
+by the BIOS, option ROMs and machine checks for the whole desktop session.
+Startup scans once; saved folder changes list only added roots and drop removed
+listings. Draft edits do not scan until Save, and Cancel leaves the session intact.
+Saved changes defer readiness updates until a running machine stops.
+Selecting another machine reuses the listing.
+Start reuses the checked document and shows **Loading machine…**, without repeating
+discovery. The loader still verifies firmware and pinned media. If a located ROM
+fails verification, its folder is listed again and discovery retries once.
+An unresolved pin or a missing/changed cached candidate also refreshes the affected
+cached roots once, retaining the hash index, so moved dumps can be found again.
+All found lines are retained; up to 256 skipped lines
+are shown, with one summary for size skips. **Check again** refreshes listings of
+the saved machine roots while reusing non-racy, metadata-validated hashes;
+**Rescan** refreshes listings and ignores cached hashes for that run. Both use
+saved folders; select **Save** to apply draft edits. Discovery read counters exclude
+the normal loader's firmware and pinned-media verification.
 
 **Cancel scan** stops discovery between files and hash chunks, retaining completed,
 non-racy hashes; an in-flight operating-system network call must return first.
@@ -146,8 +160,8 @@ The following **Loading machine…** phase reads ROMs and pinned disks through t
 normal loader and cannot be cancelled mid-read. A cancellation during that phase
 is applied when loading returns. Cancelled checks keep Start disabled until a
 normal **Check again** resolves them. Save persists folders and refreshes readiness.
-Closing with **Cancel** discards draft folders: a saved-folder job continues, while
-a job using different draft folders is superseded by an automatic cached recheck.
+Closing with **Cancel** discards draft folder edits and leaves any saved-folder
+job and its session listing intact.
 Idle dialogs show no scan status. Discovery and loading run on the host worker
 and never advance guest time.
 

@@ -33,11 +33,13 @@ pub enum DiscoveryPhase {
 pub struct DiscoveryProgress {
     pub phase: DiscoveryPhase,
     pub listed: usize,
+    /// Directory listing attempts, including empty directories.
+    pub folder_listings: usize,
     pub size_skipped: usize,
     pub candidates: usize,
     /// Candidates checked, including metadata-validated cache hits.
     pub checked: usize,
-    /// Files actually opened and read for SHA-256, excluding cache hits.
+    /// Discovery SHA-256 reads only; excludes cache hits and loader verification.
     pub files_read: usize,
     pub matches: usize,
     pub result_count: usize,
@@ -176,6 +178,24 @@ pub(super) fn racy_timestamp(key: &HashKey, hashed_at: SystemTime) -> bool {
     recent(key.2) || change.is_some_and(recent)
 }
 
+/// A desktop session retains folder listings and verified hashes between host jobs.
+#[derive(Clone, Default)]
+pub struct DiscoverySession(Arc<Mutex<Option<(HashCache, bool)>>>);
+
+impl DiscoverySession {
+    /// Serialize host checks while keeping their listing outside guest state.
+    pub fn run<T>(
+        &self,
+        path: Option<&Path>,
+        rescan: bool,
+        control: &DiscoveryControl,
+        operation: impl FnOnce() -> T,
+    ) -> T {
+        let mut retained = self.0.lock().unwrap_or_else(|error| error.into_inner());
+        run_session(path, rescan, control, Some(&mut retained), operation)
+    }
+}
+
 /// Run existing resolver calls with one explicit local cache and cancellation flag.
 /// `None` disables disk persistence (including in tests). Invalid indexes are
 /// ignored. A cancelled run retains the old index plus completed, validated hashes.
@@ -186,36 +206,68 @@ pub fn with_discovery_session<T>(
     control: &DiscoveryControl,
     operation: impl FnOnce() -> T,
 ) -> T {
+    run_session(path, rescan, control, None, operation)
+}
+
+fn run_session<T>(
+    path: Option<&Path>,
+    rescan: bool,
+    control: &DiscoveryControl,
+    mut retained: Option<&mut Option<(HashCache, bool)>>,
+    operation: impl FnOnce() -> T,
+) -> T {
+    let previous = retained.as_mut().and_then(|cache| cache.take());
     let path = path.filter(|_| !cfg!(windows));
     if let Some(path) = path {
         sweep_temps(path, SystemTime::now());
     }
-    let (mut cache, writable) = match path.map(load_result) {
-        Some(Ok(Some(cache))) => (cache, true),
-        Some(Ok(None)) => (
-            HashCache {
-                dirty: true,
-                ..Default::default()
-            },
-            true,
-        ),
-        Some(Err(error)) if error.kind() == io::ErrorKind::NotFound => (
-            HashCache {
-                dirty: true,
-                ..Default::default()
-            },
-            true,
-        ),
-        Some(Err(_)) => {
-            control.result("Local firmware index: skipped (cannot read cache)".into());
-            (HashCache::default(), false)
+    let (mut cache, writable) = if let Some(previous) = previous {
+        previous
+    } else {
+        match path.map(load_result) {
+            Some(Ok(Some(cache))) => (cache, true),
+            Some(Ok(None)) => (
+                HashCache {
+                    dirty: true,
+                    ..Default::default()
+                },
+                true,
+            ),
+            Some(Err(error)) if error.kind() == io::ErrorKind::NotFound => (
+                HashCache {
+                    dirty: true,
+                    ..Default::default()
+                },
+                true,
+            ),
+            Some(Err(_)) => {
+                control.result("Local firmware index: skipped (cannot read cache)".into());
+                (HashCache::default(), false)
+            }
+            None => (HashCache::default(), false),
         }
-        None => (HashCache::default(), false),
     };
+    cache.bypass.extend(cache.unpersistable.iter().cloned());
+    cache.retained_roots = cache
+        .listings
+        .iter()
+        .map(|(root, _, _, _)| root.clone())
+        .collect();
+    cache.stale_roots.clear();
+    cache.listed_directories.clear();
     control.update(|progress| progress.phase = DiscoveryPhase::Listing);
     if rescan {
         cache.bypass = cache.hashes.keys().map(|key| key.0.clone()).collect();
+        cache.listings.clear();
+        cache.retained_roots.clear();
+        cache.seen.clear();
+        cache.listed_directories.clear();
     }
+    cache.candidates.clear();
+    cache.checked_candidates.clear();
+    cache.matched_candidates.clear();
+    cache.reported_mismatches.clear();
+    cache.pins.clear();
     cache.control = Some(control.clone());
     struct Restore(Option<HashCache>);
     impl Drop for Restore {
@@ -251,8 +303,27 @@ pub fn with_discovery_session<T>(
                 cache.dirty |= !cache.unpersistable.contains(&old.0);
             }
         }
-        if writable && cache.dirty && path.is_some_and(|path| save(path, &cache).is_err()) {
-            control.result("Local firmware index: skipped (cannot save cache)".into());
+        if writable && cache.dirty {
+            if let Some(path) = path {
+                match save(path, &cache) {
+                    Ok(()) => cache.dirty = false,
+                    Err(_) => {
+                        control.result("Local firmware index: skipped (cannot save cache)".into())
+                    }
+                }
+            }
+        }
+        let indexed = cache
+            .hashes
+            .keys()
+            .map(|key| key.0.clone())
+            .collect::<BTreeSet<_>>();
+        cache.seen.retain(|path| indexed.contains(path));
+        cache.listed_directories.clear();
+        cache.control = None;
+        cache.bypass.clear();
+        if let Some(retained) = retained {
+            *retained = Some((cache, writable));
         }
     }
     control.update(|progress| {
@@ -396,8 +467,45 @@ fn sweep_temps(path: &Path, now: SystemTime) {
 
 fn save(path: &Path, cache: &HashCache) -> io::Result<()> {
     static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
+    let mut hashes = match load_result(path) {
+        Ok(Some(latest)) => latest.hashes,
+        Ok(None) => BTreeMap::new(),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => BTreeMap::new(),
+        Err(error) => return Err(error),
+    };
+    let own_paths = cache
+        .hashes
+        .keys()
+        .map(|key| &key.0)
+        .collect::<BTreeSet<_>>();
+    hashes.retain(|key, _| {
+        !own_paths.contains(&key.0)
+            && !cache.unpersistable.contains(&key.0)
+            && !(key
+                .0
+                .parent()
+                .is_some_and(|parent| cache.listed_directories.contains(parent))
+                && !cache.seen.contains(&key.0)
+                && fs::metadata(&key.0).is_err_and(|error| error.kind() == io::ErrorKind::NotFound))
+    });
+    hashes.extend(
+        cache
+            .hashes
+            .iter()
+            .map(|(key, hash)| (key.clone(), hash.clone())),
+    );
+    while hashes.len() > MAX_ENTRIES {
+        let old = hashes
+            .keys()
+            .find(|key| !cache.seen.contains(&key.0))
+            .or_else(|| hashes.keys().next())
+            .cloned();
+        if let Some(old) = old {
+            hashes.remove(&old);
+        }
+    }
     let mut text = String::from("unemupc98-firmware-index 2\n");
-    for (key, hash) in &cache.hashes {
+    for (key, hash) in &hashes {
         if cache.unpersistable.contains(&key.0) {
             continue;
         }
@@ -499,6 +607,133 @@ mod tests {
             )
             .unwrap();
         });
+    }
+
+    #[test]
+    fn retained_runs_rehash_racy_entries_once_per_discovery_run() {
+        let temp = TempDir::new("racy-retained-index");
+        let file = temp.path().join("rom");
+        fs::write(&file, [1; 512]).unwrap();
+        let session = DiscoverySession::default();
+        for _ in 0..2 {
+            let control = DiscoveryControl::default();
+            session.run(None, false, &control, || {
+                with_cache(|cache| {
+                    cache.hash_time = Some(UNIX_EPOCH);
+                    for _ in 0..2 {
+                        cache.hash(&file).unwrap();
+                    }
+                    assert!(cache.unpersistable.contains(&file.canonicalize().unwrap()));
+                    Ok(())
+                })
+                .unwrap();
+            });
+            assert_eq!(control.snapshot().files_read, 1);
+        }
+    }
+
+    #[test]
+    fn retained_save_merges_entries_written_by_another_instance() {
+        let temp = TempDir::new("merged-retained-index");
+        let index = temp.path().join("index");
+        let session = DiscoverySession::default();
+        let hash = |file: &Path| {
+            with_cache(|cache| {
+                cache.hash_time = Some(SystemTime::now() + Duration::from_secs(10));
+                cache.hash(file).unwrap();
+                Ok(())
+            })
+            .unwrap()
+        };
+        let first = temp.path().join("first");
+        let second = temp.path().join("second");
+        let third = temp.path().join("third");
+        for file in [&first, &second, &third] {
+            fs::write(file, [1; 512]).unwrap();
+        }
+        session.run(Some(&index), false, &DiscoveryControl::default(), || {
+            hash(&first)
+        });
+        test_session(Some(&index), false, &DiscoveryControl::default(), || {
+            hash(&second)
+        });
+        session.run(Some(&index), false, &DiscoveryControl::default(), || {
+            hash(&third)
+        });
+        let stored = load(&index).unwrap();
+        assert_eq!(stored.hashes.len(), 3);
+        for file in [&first, &second, &third] {
+            assert!(stored
+                .hashes
+                .keys()
+                .any(|key| key.0 == file.canonicalize().unwrap()));
+        }
+    }
+
+    #[test]
+    fn desktop_session_retains_listing_hashes_and_does_not_rewrite_a_clean_index() {
+        let temp = TempDir::new("desktop-firmware-session");
+        let root = temp.path().join("roms");
+        fs::create_dir(&root).unwrap();
+        fs::write(root.join("rom"), [1; 512]).unwrap();
+        let path = temp.path().join("index");
+        let roots = [FirmwareRoot::new(&root, RootOrigin::Preferences)];
+        let pin = FirmwarePin {
+            sha256: format!("{:x}", Sha256::digest([1; 512])),
+            length: Some(512),
+        };
+        let session = DiscoverySession::default();
+        let discover = |control: &DiscoveryControl| {
+            session.run(Some(&path), false, control, || {
+                with_cache(|cache| {
+                    cache.hash_time = Some(SystemTime::now() + Duration::from_secs(10));
+                    Ok(())
+                })
+                .unwrap();
+                assert!(
+                    locate_firmware_with_roots(&roots, None, Some(&pin), &[], &mut Vec::new())
+                        .unwrap()
+                        .is_some()
+                );
+            })
+        };
+        let first = DiscoveryControl::default();
+        discover(&first);
+        assert_eq!(first.snapshot().folder_listings, 1);
+        assert_eq!(first.snapshot().files_read, 1);
+        let before = hash_key(path.clone(), &fs::metadata(&path).unwrap()).unwrap();
+        let second = DiscoveryControl::default();
+        discover(&second);
+        assert_eq!(second.snapshot().folder_listings, 0);
+        assert_eq!(second.snapshot().files_read, 0);
+        assert_eq!(
+            hash_key(path.clone(), &fs::metadata(&path).unwrap()).unwrap(),
+            before
+        );
+    }
+
+    #[test]
+    fn desktop_session_preserves_an_unreadable_index_across_checks() {
+        let temp = TempDir::new("desktop-unreadable-index");
+        let path = temp.path().join("index");
+        fs::create_dir(&path).unwrap();
+        let session = DiscoverySession::default();
+        for _ in 0..2 {
+            let control = DiscoveryControl::default();
+            session.run(Some(&path), false, &control, || {
+                with_cache(|cache| {
+                    cache.dirty = true;
+                    Ok(())
+                })
+                .unwrap();
+            });
+            assert!(path.is_dir());
+            assert!(!control
+                .snapshot()
+                .results
+                .iter()
+                .any(|line| line.contains("cannot save")));
+        }
     }
 
     #[test]
