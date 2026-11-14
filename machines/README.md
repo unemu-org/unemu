@@ -478,11 +478,13 @@ skips only the keyboard-polled memory test; the RAM probe still writes port
 total and free EMS pages. Never put the driver into a committed or published
 disk image. Extended RAM and XMS are separate from this board's expanded RAM.
 
-Both profiles use 640 KiB conventional plus **4096 KiB extended RAM**, derived
+Both profiles use 640 KiB conventional plus **1024 KiB extended RAM**, derived
 CMOS, a fixed RTC start of 2000-01-01, the preset's instruction/PIT ratio, and
-an empty 80287 socket. This fits the board's 15232 KiB extended-memory limit.
+an empty 80287 socket. The 1 MiB extended-memory default shortens the POST memory
+test. To raise it, set `memory.extended_kib` in a local child profile; allowed
+values are 0–15232 KiB in steps of 64 KiB.
 The I286 model supports LMSW entry, 16-bit protected execution and task switches;
-the pinned IBM POST tests all 640 KiB + 4 MiB. No memory manager is supplied.
+the pinned IBM POST tests all 640 KiB + 1 MiB. No memory manager is supplied.
 XMS, INT 15h block move and DOS-extender use are not yet qualified. This CPU
 is an 80286, with no 386 instruction set.
 

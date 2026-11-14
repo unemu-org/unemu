@@ -18,9 +18,9 @@ fpu = "none"
 
 [memory]
 conventional_kib = 640
-# The board permits 15232 KiB extended; 4 MiB leaves room below its ROM alias.
+# 1 MiB shortens the POST memory test; raise memory.extended_kib (0–15232 KiB, steps of 64) for more RAM.
 # IBM Personal Computer AT Technical Reference, System Board, System Memory Map.
-extended_kib = 4096
+extended_kib = 1024
 
 [firmware.bios]
 sha256 = "6fb653b58e678cb69b0f943a105c6c803b18a6db23d13c0abccec5b66c6ee652"

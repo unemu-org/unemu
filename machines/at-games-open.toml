@@ -21,7 +21,8 @@ fpu = "none"
 
 [memory]
 conventional_kib = 640
-extended_kib = 4096
+# 1 MiB shortens the POST memory test; raise memory.extended_kib (0–15232 KiB, steps of 64) for more RAM.
+extended_kib = 1024
 
 [firmware.bios]
 image = "../vendor/kiselev-bios/bios-xi8088-atreset.bin"

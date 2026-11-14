@@ -127,7 +127,8 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
 
 - **2026-11-13 — Game-ready AT profiles:** `machines/at-games.toml` combines
   the user-supplied June 1985 IBM 5170 BIOS and IBM VGA EPROM, register-level
-  VGA, 640 KiB + 4 MiB RAM, SB16 with OPL3 (220h/IRQ5/DMA1/HDMA5), a COM1
+  VGA, 640 KiB + 1 MiB RAM for a shorter POST memory test, SB16 with OPL3
+  (220h/IRQ5/DMA1/HDMA5), a COM1
   Microsoft serial mouse, a type-2 IDE disk with a separate journal, and a
   swappable 1.2M FreeDOS/transfer catalogue. B: is omitted because this BIOS
   has no 1.44M drive type. `at-games-open.toml` uses Kiselev AT-reset and XTIDE
@@ -141,7 +142,7 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   Synthetic C0000h validation correctly refuses an unidentified system BIOS;
   the rest of that smoke uses a relocated C8000h stand-in. The opt-in
   `user_rom_at_games_freedos_prompt` keeps the actual C0000h mapping and uses
-  a disposable blank HDD. **MEASURED (supervisor user-ROM run):** this game-ready
+  a disposable blank HDD. **MEASURED (supervisor user-ROM run, earlier 4 MiB extended RAM):** this game-ready
   AT boots FreeDOS with the user-supplied IBM 1985-06-10 system BIOS and IBM VGA
   BIOS: `RetiredCapReached`, `CS:IP=0070:02CB`, `retired=68093462`,
   `dos_prompt=true`, VGA text SHA-256
@@ -154,7 +155,7 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   C: boot. No game or real
   mouse-driver session is qualified. The I286 supports LMSW entry, 16-bit
   protected execution and task switches; the pinned POST tests all 640 KiB +
-  4 MiB. No memory manager is supplied; XMS, INT 15h block move and DOS-extender
+  1 MiB. No memory manager is supplied; XMS, INT 15h block move and DOS-extender
   use remain unqualified. There is no 386 instruction set.
   Tyrian 2000 and Duke Nukem 3D require a 386 or later and remain **not yet**.
   **MEASURED (open fixtures):** `at-games-open.toml` passes non-writing

@@ -637,7 +637,7 @@ fn repository_machine_cpu_regions_cover_the_full_firmware_board_space() {
             let expected = if ibm {
                 vec![
                     (0, 0xA0000, "ram"),
-                    (0x100000, 0x500000, "ram"),
+                    (0x100000, 0x200000, "ram"),
                     (0xA0000, 0xC0000, "mmio"),
                     (0xD0000, 0xE0000, "mmio"),
                     (0xC0000, 0xC8000, "rom"),
@@ -645,13 +645,13 @@ fn repository_machine_cpu_regions_cover_the_full_firmware_board_space() {
                     (0xE0000, 0xF0000, "rom"),
                     (0xF0000, 0x100000, "rom"),
                     (0xC8000, 0xCE000, "rom"),
-                    (0x500000, 0xFE0000, "empty-bus"),
+                    (0x200000, 0xFE0000, "empty-bus"),
                     (0xFE0000, 0x1000000, "rom"),
                 ]
             } else {
                 vec![
                     (0, 0xB0000, "ram"),
-                    (0x100000, 0x500000, "ram"),
+                    (0x100000, 0x200000, "ram"),
                     (0xB0000, 0xC0000, "mmio"),
                     (0xD0000, 0xE0000, "mmio"),
                     (0xC0000, 0xC8000, "rom"),
@@ -659,7 +659,7 @@ fn repository_machine_cpu_regions_cover_the_full_firmware_board_space() {
                     (0xE0000, 0xF8000, "rom"),
                     (0xF8000, 0x100000, "rom"),
                     (0xC8000, 0xCA000, "rom"),
-                    (0x500000, 0xFE0000, "empty-bus"),
+                    (0x200000, 0xFE0000, "empty-bus"),
                     (0xFE0000, 0x1000000, "rom"),
                 ]
             };

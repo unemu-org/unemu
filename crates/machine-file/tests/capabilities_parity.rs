@@ -162,7 +162,8 @@ fn repository_machine_file_parity() {
         ("machines/at-freedos-from-preset.toml".into(), "3b07a7a4089cf617f743f2f7f5c80e3c85a3f7bdc0e5b6f3b6eb835946afac0c".into()),
         ("machines/at-freedos.toml".into(), "3b07a7a4089cf617f743f2f7f5c80e3c85a3f7bdc0e5b6f3b6eb835946afac0c".into()),
         ("machines/at-freedos.yaml".into(), "3b07a7a4089cf617f743f2f7f5c80e3c85a3f7bdc0e5b6f3b6eb835946afac0c".into()),
-        ("machines/at-games-open.toml".into(), "55d7dbb014215c120f3f7d59ad75f1df5de3803d0dc0b86503df282873eff2c7".into()),
+        // Extended memory reduced from 4 MiB to 1 MiB.
+        ("machines/at-games-open.toml".into(), "4ee5dfccc25d08b8b31c27203a33cc08a7bf2717eae4028f9dc539d7f79f5829".into()),
         ("machines/at-games.toml".into(), "error:firmware.option_roms[0]:system BIOS unlisted has no known video-ROM scan at C0000h-C7FFFh".into()),
         ("machines/at-ide.toml".into(), "09037a394cd85fde6fedbb1570353db342b6cd8e886b1fa9fe198f77b8df3b51".into()),
         ("machines/presets/ibm-5170.toml".into(), "resolve:<repo>/machines/presets/ibm-5170.toml:16: firmware.bios.image: required fields are missing: firmware.bios.image (<repo>/machines/presets/ibm-5170.toml:16); inheritance chain: <repo>/machines/presets/ibm-5170.toml".into()),
