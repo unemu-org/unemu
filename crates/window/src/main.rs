@@ -33,6 +33,7 @@ use winit::{
 };
 
 mod host_audio;
+mod logo;
 mod media_dialog;
 mod pacing;
 mod preferences;

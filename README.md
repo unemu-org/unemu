@@ -1,3 +1,5 @@
+<img src="assets/brand/unemupc98-logo-512.png" width="128" alt="unemupc98 logo">
+
 # unemupc98
 
 A low-level emulator (LLE) of an **IBM PC/AT-class (Intel 80286) personal

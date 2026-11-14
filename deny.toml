@@ -33,11 +33,11 @@ allow = [
 ]
 confidence-threshold = 0.9
 
-# The window presenter embeds unmodified CC BY-SA 4.0 font data; the license is
-# allowed for that crate only, so no dependency can bring it in unnoticed.
+# The window presenter embeds CC BY-SA 4.0 fonts and CC0 1.0 logo data; these
+# licenses are allowed for that crate only.
 [[licenses.exceptions]]
 crate = "window"
-allow = ["CC-BY-SA-4.0"]
+allow = ["CC-BY-SA-4.0", "CC0-1.0"]
 
 [bans]
 multiple-versions = "warn"

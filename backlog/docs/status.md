@@ -5,6 +5,8 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-14 — Application logo:** embedded window/Dock icon, GIF-timed welcome animation (file-only `reduced_motion` preference), static About logo and README branding; visual acceptance remains manual.
+
 - **2026-11-14 — Desktop media controls:** the Media menu and Ctrl+Alt+I
   expose a per-drive Insert dialog, catalogue next/eject, disabled absent drives
   and CD-ROM, and the fixed disk's write policy. Browse checks geometry and full

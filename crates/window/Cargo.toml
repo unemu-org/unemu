@@ -3,13 +3,14 @@
 name = "window"
 version.workspace = true
 edition.workspace = true
-# The binary embeds CC BY-SA font data alongside the AGPL source code.
-license = "AGPL-3.0-or-later AND CC-BY-SA-4.0"
+# The binary embeds CC BY-SA fonts and CC0 logo data alongside the AGPL source.
+license = "AGPL-3.0-or-later AND CC-BY-SA-4.0 AND CC0-1.0"
 rust-version.workspace = true
 repository.workspace = true
 description = "Windowed presenter: draws text frames in a host window (§9)."
 
 [dependencies]
+image = { version = "=0.25.10", default-features = false, features = ["png", "gif"] }
 cli = { path = "../cli", version = "0.1.0" }
 media.workspace = true
 sha2.workspace = true

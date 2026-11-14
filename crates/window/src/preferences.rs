@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Host-only ROM folder preferences; machine-images.md §7.
+//! Host-only ROM folder and presentation preferences; machine-images.md §7.
 
 use serde::{Deserialize, Serialize};
 use std::{
@@ -11,6 +11,7 @@ use std::{
 #[serde(default)]
 pub(super) struct Preferences {
     pub rom_dirs: Vec<PathBuf>,
+    pub reduced_motion: bool,
     #[serde(flatten)]
     extra: std::collections::BTreeMap<String, toml::Value>,
 }
@@ -129,6 +130,15 @@ fn platform_path(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn reduced_motion_defaults_off_and_round_trips() {
+        let mut prefs: Preferences = toml::from_str("rom_dirs = []").unwrap();
+        assert!(!prefs.reduced_motion);
+        prefs.reduced_motion = true;
+        let restored: Preferences = toml::from_str(&toml::to_string(&prefs).unwrap()).unwrap();
+        assert!(restored.reduced_motion);
+    }
+
     #[test]
     fn preferences_round_trip_with_validated_rom_folders() {
         let temp = assembly::test_support::TempDir::new("shell-preferences");

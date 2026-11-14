@@ -215,6 +215,7 @@ pub(super) fn run(args: Args, autostart: bool) -> Result<(), Box<dyn Error>> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("unemupc98")
+            .with_icon(crate::logo::icon()?)
             .with_inner_size([1040.0, 700.0])
             .with_min_inner_size([760.0, 500.0]),
         renderer: eframe::Renderer::Glow,
@@ -229,6 +230,7 @@ pub(super) fn run(args: Args, autostart: bool) -> Result<(), Box<dyn Error>> {
             configure_context(&cc.egui_ctx);
             let mut shell =
                 Shell::new(args, shell_events, shell_errors, cc.winit_window().cloned());
+            shell.logo = Some(crate::logo::Logo::load(&cc.egui_ctx)?);
             if autostart {
                 shell.start();
             }
@@ -261,6 +263,7 @@ struct Shell {
     dialog: Option<(&'static str, String)>,
     message: String,
     texture: Option<egui::TextureHandle>,
+    logo: Option<crate::logo::Logo>,
     events: Rc<RefCell<Events>>,
     errors: Rc<RefCell<Option<String>>>,
     window: Option<Arc<Window>>,
@@ -587,6 +590,7 @@ impl Shell {
             dialog: None,
             message,
             texture: None,
+            logo: None,
             events,
             errors,
             window,
@@ -1207,6 +1211,13 @@ impl Shell {
                         commands.push(command);
                     }
                 }
+                if let Some(logo) = &mut self.logo {
+                    logo.welcome(
+                        ui,
+                        self.preferences.reduced_motion,
+                        !self.hidden && !self.minimized,
+                    );
+                }
             });
         egui::CentralPanel::default().show(ui, |ui| {
             ui.add_space(8.0);
@@ -1545,6 +1556,11 @@ impl Shell {
         self.minimized = minimized;
         let lifecycle = self.events.borrow().queue.iter().any(|event| matches!(event,
             HostEvent::Window(event) if matches!(**event, WindowEvent::Focused(false) | WindowEvent::Occluded(_))));
+        if minimized || self.hidden {
+            if let Some(logo) = &mut self.logo {
+                logo.pause();
+            }
+        }
         if minimized || self.hidden || lifecycle {
             self.input(ctx, true);
             if minimized {
@@ -1690,6 +1706,9 @@ impl eframe::App for Shell {
         }
         self.screen = egui::Rect::NOTHING;
         if self.presenter.is_some() {
+            if let Some(logo) = &mut self.logo {
+                logo.pause();
+            }
             self.display(ui);
         } else {
             self.welcome(ui, &mut commands);
@@ -1706,6 +1725,11 @@ impl eframe::App for Shell {
                     gradient_title(ui, title);
                 } else {
                     ui.heading(*title);
+                }
+                if *title == "About unemupc98" {
+                    if let Some(logo) = &self.logo {
+                        logo.about(ui);
+                    }
                 }
                 egui::ScrollArea::vertical()
                     .max_height(400.0)
@@ -1945,6 +1969,7 @@ mod tests {
             dialog: None,
             message: String::new(),
             texture: None,
+            logo: None,
             events: Rc::default(),
             errors: Rc::default(),
             window: None,

@@ -279,6 +279,13 @@ in-memory document without scanning on the UI thread. Stale results cannot repla
 newer preferences or selections. Launch uses the same roots, also searching the environment
 when set. The deterministic configuration and guest core do not store preferences.
 
+`src/logo.rs` embeds the CC0 brand assets, decodes the icon and GIF once at
+startup, and uploads reusable welcome/About textures. Its pure animation clock
+uses GIF delays and wraps by elapsed UI time; only a visible welcome pane
+requests the next frame repaint. Running sessions and hidden/minimized windows
+reset the animation epoch. The file-only `reduced_motion` preference defaults
+to false and pins the first frame without animation repaints when enabled.
+
 `src/shell.rs` draws the shell and wraps eframe's public winit application.
 The wrapper retains physical keyboard positions and ordered raw mouse motion
 instead of reconstructing scan codes from text events. The existing
