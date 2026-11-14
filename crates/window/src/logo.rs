@@ -7,8 +7,8 @@
 use image::{codecs::gif::GifDecoder, AnimationDecoder};
 use std::{io::Cursor, time::Duration};
 
-const ICON: &[u8] = include_bytes!("../../../assets/brand/unemupc98-logo-512.png");
-const ANIMATION: &[u8] = include_bytes!("../../../assets/brand/unemupc98-logo.gif");
+const ICON: &[u8] = include_bytes!("../../../assets/brand/unemupc-logo-512.png");
+const ANIMATION: &[u8] = include_bytes!("../../../assets/brand/unemupc-logo.gif");
 
 pub(super) fn icon() -> image::ImageResult<egui::IconData> {
     let image = image::load_from_memory_with_format(ICON, image::ImageFormat::Png)?.into_rgba8();

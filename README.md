@@ -1,4 +1,4 @@
-<img src="assets/brand/unemupc98-logo-512.png" width="128" alt="unemupc98 logo">
+<img src="assets/brand/unemupc-logo-512.png" width="128" alt="unemupc98 logo">
 
 # unemupc98
 

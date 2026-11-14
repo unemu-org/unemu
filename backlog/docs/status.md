@@ -76,7 +76,7 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   audio and synthetic-machine determinism tests cover these paths; no GUI
   acceptance was performed. See [window commands](commands.md).
 - **2026-11-14 — Machine image store:** platform-neutral OCI layout, streamed immutable SHA-256 blobs, deterministic manifests, provider-validated complete closures, paged local tags, provider-declared payload codecs, foreign OCI index preservation, missing-artwork reporting and atomic compare-and-swap updates are implemented; application wiring, import, layers, workspaces and registry remain separate.
-- **2026-11-14 — Application logo:** embedded window/Dock icon, GIF-timed welcome animation (file-only `reduced_motion` preference), static About logo and README branding. The welcome logo is centred above the heading
+- **2026-11-14 — Application logo:** the logo now shows "PC"; the project name remains unemupc98. Embedded window/Dock icon, GIF-timed welcome animation (file-only `reduced_motion` preference), static About logo and README branding. The welcome logo is centred above the heading
   at up to 128 px; welcome/About frames key only the exact uniform border colour
   connected to the perimeter by four-neighbour paths. Enclosed regions of that
   colour remain opaque, preserving the logo interior. The window/Dock icon is unchanged; visual
