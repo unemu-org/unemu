@@ -60,16 +60,19 @@ cargo run --offline -p window --bin unemupc98-window -- --machine machines/local
 cargo tree --offline -i window               # window is a leaf frontend
 ```
 
-The default `test` profile inherits the workspace's `dev` settings, so ordinary
-tests and ignored goldens share compiled artifacts. Use the same profile for
-both; `cargo test --profile test --workspace -- --ignored` makes the choice
-explicit, as the CI gate does. Keep the separate release device run to cover
-behaviour that intentionally differs when debug assertions are disabled.
+Ordinary tests and ignored goldens share compiled artifacts because both are
+`cargo test` runs in the same profile. The default `test` profile inherits the
+workspace's `dev` settings, which lets `cargo build` and `cargo test` also share
+library artifacts. Use the same profile for ordinary tests and goldens;
+`cargo test --profile test --workspace -- --ignored` makes the choice explicit,
+as the CI gate does. Keep the separate release device run to cover behaviour
+that intentionally differs when debug assertions are disabled.
 
 Dependencies, including the pinned CPU core, use optimization level 3. The hot
-workspace crates (`devices`, `machine`, `bus`, `cpu`, `assembly`, `audio`) also use
-level 3. Debug information, debug assertions and overflow checks remain enabled;
-frontends and the other workspace crates keep their unoptimized dev settings.
+workspace crates (`devices`, `machine`, `bus`, `cpu`, `assembly`, `audio`,
+`chipset`, `media`) also use level 3. Debug information, debug assertions and
+overflow checks remain enabled; frontends and the other workspace crates keep
+their unoptimized dev settings.
 Optimized code can be harder to step through even with debug information. For a
 focused device investigation, temporarily override just that crate:
 
