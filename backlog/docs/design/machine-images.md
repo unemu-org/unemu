@@ -1,6 +1,8 @@
 # Machine images, capabilities and desktop UX
 
-Status: **desktop UX and toolkit accepted**, 2026-11-13. The local store core
+Status: **desktop UX and toolkit accepted**, 2026-11-13 (decision-24);
+**installation media set shape accepted**, 2026-11-14 (decision-26).
+§5.2 and its mock-up were approved by the maintainer on 2026-11-14. The local store core
 (`upc-5pw.6`), metadata codec, local overlays and summary cache (`upc-5pw.12`)
 are implemented in `crates/image-store`; PC machine-file import and bundle
 resolution (`upc-5pw.7`) are implemented in `crates/pc-image`. Disk layers,
@@ -107,7 +109,7 @@ container filesystem tar layers.
 | `application/vnd.unemu.disk.layer.v1+toml` | Sealed fixed-disk layer descriptor from §4. |
 | `application/vnd.unemu.disk.sectors.v1` | Sector pack referenced by a sealed layer. |
 | `application/vnd.unemu.media.floppy.v1` | Complete raw floppy medium. |
-| `application/vnd.unemu.media.optical.v1` | Reserved: complete read-only optical image with 2048-byte sectors; rejected until supported. |
+| `application/vnd.unemu.media.optical.v1` | Complete read-only optical image with 2048-byte sectors; storable in media sets (§5.2), rejected as a machine binding until supported. |
 | `application/vnd.unemu.cmos.v1` | PC-specific frozen 64-byte CMOS image. |
 | `application/vnd.unemu.machine.state.v1` | Reserved opaque saved state; rejected until supported. |
 
@@ -794,6 +796,146 @@ zot accepted a custom-config manifest naming a missing layer and has no default
 size limit or timeout. oras adds a nondeterministic created annotation; tag
 immutability rules are per repository pattern and user. The transport rules
 above account for these findings; this spike does not waive the compression gate.
+
+### 5.2. Installation media sets
+
+[decision-26](<../../decisions/decision-26 - Installation media sets are their own OCI artifact type.md>)
+accepts a second artifact beside the whole-machine image. The proposed
+[installation-media mock-up](mockups/install-media.html) follows the approved
+library/window styling; the section and mock-up await maintainer review before
+implementation. A set is portable installation input, with no hardware, firmware,
+NVRAM, saved state or workspace journals of its own.
+
+**Artifact and config.** Use the §2 OCI manifest envelope with
+`artifactType = "application/vnd.unemu.media-set.v1"` and config media type
+`application/vnd.unemu.media-set.config.v1+toml`. The neutral config envelope has
+required `schema = 1`, `platform` and a nonempty ordered `media` array. Each entry
+has a unique stable `id` (the §3 media-id grammar), a nonempty editable `label`,
+a `blob` digest and a provider-declared `format`. Array position is authoritative;
+filenames, labels and manifest layer order never infer disk order. This sketch
+uses the PC provider's format vocabulary; shared code never owns CHS rules:
+
+```toml
+schema = 1
+platform = "ibm-pc-at"
+
+[[media]]
+id = "disk-1"
+label = "Disk 1 of 4 - Setup"
+blob = "<raw-floppy>"
+format = { kind = "floppy", geometry = { cylinders = 80, heads = 2, sectors = 18, sector_bytes = 512 } }
+
+# Further entries retain the user's confirmed order.
+# An optical entry uses format = { kind = "optical", encoding = "iso-2048" }.
+```
+
+The provider validates formats, exact byte lengths and drive compatibility.
+Floppies use `application/vnd.unemu.media.floppy.v1`; reserved ISO images use
+`application/vnd.unemu.media.optical.v1` (2048-byte sectors). The remaining layers
+are exactly one `application/vnd.unemu.metadata.v1+json` blob and its PNG/JPEG
+artwork, using the **same §2.1 schema**, not a parallel metadata format. The
+metadata envelope's platform and `unemu.platform` annotation must match config.
+Title records supply title, publishers, release year, cover and other §2.1 fields;
+a set has no Play action and metadata launch fields do not execute on insertion.
+Repeated identical disks may occupy several ordered entries but have one layer
+descriptor. Emit unique medium descriptors in first-occurrence config order,
+then metadata and artwork. Reject missing/unreferenced descriptors, invalid
+config fields/versions, duplicate ids and malformed digests under §2 bounds;
+newer metadata keeps §2.1's read-only degraded display behavior.
+
+**Identity and rights.** A blob's identity is SHA-256 of its exact stored bytes;
+the config digest identifies the ordered media, labels, formats and platform.
+The **set digest** is its OCI manifest digest, used by tags, transfers and source
+provenance. Metadata/artwork edits change the set digest while retaining config
+and medium digests; order, label or format edits change config too. A set is not
+a machine and has no machine digest. Stable versioned serialization, LF, stable
+key/descriptor order and no timestamps give byte-identical output for identical
+inputs. Verify every descriptor's full SHA-256 and length before use, including
+large optical blobs; compression uses §2's stored/decoded verification contract.
+Import and hashing never advance guest time. An insertion replay pins the medium
+bytes, format, selection, workspace state and event at a retired-instruction
+boundary, never a mutable tag or host timing.
+
+All descriptors default to `unemu.redistribution = "user-supplied"`, including
+metadata/artwork, unless reviewed licence/provenance proves them open (§5).
+The most restrictive local classification for a digest still wins. Restricted
+sets stay in the private store/registry and private archives, never repository
+fixtures or public exports. §5's future public recipe strips restricted bytes;
+it never silently exports the original private manifest.
+
+**Read-only bases, writable installations.** Media > Insert > From library…
+resolves a set tag once, verifies it and offers loading the whole set into the
+selected drive's catalogue **in config order** (default), initially inserting
+the chosen entry. With that option cleared, add only the chosen entry. Validate
+all entries being added against the selected provider/drive before changing the
+catalogue: PC floppy geometry must agree exactly, and a mixed/incompatible set
+cannot be partially loaded silently. Cancel or validation failure leaves the
+catalogue and current insertion unchanged. Existing next/previous-disk actions
+then traverse the catalogue. Add to machine… performs the same validation on a
+stopped machine draft and publishes only after explicit confirmation.
+
+The set and its stored medium blobs are always read-only. The receiving
+workspace may explicitly select journal mode for installer writes; those go to
+separate per-workspace, per-medium journals under the ownership/recovery rules
+of §§3.1/4, even for parked catalogue disks. A write-protected selection rejects
+writes rather than silently switching modes. Each workspace pins imported set
+and medium digests as GC roots, so tag movement/deletion cannot change a mounted
+base. Reads use the same `SectorMedia` overlay interface as §4; no controller
+opens blobs or bypasses the overlay. Full base hashes remain mandatory. Saving
+changed floppies freezes new complete raw blobs and a new machine image, never
+modifies the set; export/commit writes a new base file and leaves the old base
+intact. A later hash-linked chain can replace the base beneath that interface;
+this proposal adds no floppy sector-layer format.
+
+**Embedding and transfer.** A machine image may copy a set's ordered bindings
+into a drive catalogue. Its config remains the authority for order, inserted
+entry, format and write policy (§2); all media bytes enter the machine's own
+closure. Identical medium digests reuse the same stored blobs across sets,
+machines and tags. Record source manifest digests in the machine manifest's
+`unemu.media-set.sources` annotation, a string containing a JSON array of unique
+set digests in first-use order. This is provenance only: loading the machine
+never fetches a source set or needs its tag. It pins the embedded media, not a
+mutable external reference. §5.1 push/pull, private-registry rules, version-tag
+policy, upload resumption, complete-closure verification and tag-last publication
+apply unchanged to sets. Private OCI archives carry the same verified closure.
+
+**Import and library.** Import installation media… accepts a folder or an
+explicit file list. A folder preview enumerates candidate image files in stable
+relative-filename order; a file-list preview preserves the supplied order. No
+filesystem enumeration or picker ordering is accepted without a visible preview.
+The user reorders entries and edits labels before publication; basenames provide
+initial labels, never authoritative sequence numbers. Detect standard floppy
+geometry from exact byte size through the provider. Offer an explicit per-file
+format override, still requiring byte-length agreement; unknown/ambiguous sizes
+require a choice, never silent truncation, padding or resizing. Optical detection
+proposes ISO-2048, with provider validation before import. Copy and fully hash
+sources using §3.1, leaving source files unchanged; host paths remain local hints
+and never enter config, metadata or annotations. The metadata subset is title,
+software platform, publisher, year, genre, description, tags and optional cover;
+platform routing is selected separately. Publishing uses the §2.1 codec and
+§3.1 atomic complete-tag contract.
+
+The Explorer tree adds **Installation media** alongside machine collections.
+Reuse §2.1's Genre, Platform, Year, Developer, Publisher and Series facets and
+same-title matching, with media count/formats and insertion availability in set
+rows. Summaries include artifact type to distinguish sets from machines and are
+keyed by manifest/metadata digests plus overlay/personal revisions. Extend §7's
+versioned summary cache, lazy bounded rebuilds and incremental all-text search;
+warm startup/sorting never opens media payloads. Missing or damaged media block
+insertion with repair actions; incomplete imports retain Resume/Remove (§3.1).
+Library metadata edits stay local overlays until explicit new-version
+publication, and personal notes/ratings never travel (§2.1).
+
+The format permits storing, transferring, indexing and inspecting optical sets;
+this reserves no emulated controller. Their rows show **CD-ROM emulation not
+available yet** and disable Insert/Add to machine… while keeping details and
+private Export available. Import validation for a known storage format is
+separate from insertion capability. No CD-ROM emulation is part of this step.
+
+**Open point:** maintainer approval of this section and the three mock-up views
+(library/details, From library… and Import installation media…) before coding.
+The artifact shape and private/read-only policy are already accepted; there are
+no additional policy choices proposed here.
 
 ## 6. Capabilities API sketch: validator-owned choices
 
