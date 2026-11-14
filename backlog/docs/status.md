@@ -5,6 +5,19 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-14 — Firmware folder index and progress:** desktop readiness uses a
+  local, bounded, atomically replaced SHA-256 cache with fresh metadata checks;
+  invalid indexes rebuild and completed scans drop deleted files from scanned
+  folders without discarding hashes for other folders or pin sizes. All pins in a
+  chip layout share one folder walk, and declared paths obey the size filter.
+  The status bar and Locate firmware dialog show listing/hashing progress,
+  all found lines plus bounded skip results, Cancel scan, cached Check again and
+  an uncached Rescan action. Progress stays in the fixed-height message pane;
+  listing is shared across BIOS/option ROMs and loading has its own phase.
+  Pending machine rows show “checking firmware…” with Start disabled. Synthetic
+  headless regressions cover cache reuse, edits, deletion, invalid indexes,
+  cancellation and rescans; native visual acceptance remains manual.
+
 - **2026-11-14 — Machine image catalogue:** `image-store` now provides the strict,
   deterministic schema-1 publication codec, read-only degraded display projections,
   atomic local catalogue overlays and personal ratings/notes, and explicit overlay

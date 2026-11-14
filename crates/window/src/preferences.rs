@@ -82,8 +82,12 @@ impl Preferences {
         }
         Ok(())
     }
-    pub fn roots(&self, explicit: &[PathBuf]) -> Vec<assembly::firmware_discovery::FirmwareRoot> {
-        use assembly::firmware_discovery::{default_firmware_roots, FirmwareRoot, RootOrigin};
+    pub fn roots(
+        &self,
+        explicit: &[PathBuf],
+        defaults: &[assembly::firmware_discovery::FirmwareRoot],
+    ) -> Vec<assembly::firmware_discovery::FirmwareRoot> {
+        use assembly::firmware_discovery::{FirmwareRoot, RootOrigin};
         let mut roots = explicit
             .iter()
             .map(|path| FirmwareRoot::new(path, RootOrigin::CommandLine))
@@ -93,7 +97,7 @@ impl Preferences {
                 .iter()
                 .map(|path| FirmwareRoot::new(path, RootOrigin::Preferences)),
         );
-        roots.extend(default_firmware_roots());
+        roots.extend_from_slice(defaults);
         roots
     }
 }

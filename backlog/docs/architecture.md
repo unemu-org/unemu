@@ -134,6 +134,19 @@ execution clocks enter the API. Launch must still load/verify inputs and run
 assembly validation, including persistent-path checks. `Validation::ready`
 means no reported error or pending check, not permission to bypass assembly.
 
+Host firmware discovery lives in `assembly::firmware_discovery`. Its `frontend`
+module reuses one listing for the union of BIOS and option-ROM pins in a check, enforces the same
+size bounds on declared paths, and hashes only eligible files. The `persistent`
+module supplies a scoped host-worker session to existing machine-file resolver
+calls: an explicit cache path, metadata-validated SHA-256 index, cancellation flag
+and bounded progress/result snapshots. No guest configuration or execution state
+contains cache settings. Tests explicitly disable persistence or use temporary
+cache paths. The window readiness worker owns the session; the UI polls snapshots
+without doing filesystem I/O or waiting for the worker to join. Non-racy cache hits avoid
+candidate file reads, while the ordinary loader still verifies the selected ROM
+bytes before launch. See [machine descriptions](../../machines/README.md#selecting-a-machine)
+for local cache locations, privacy and Rescan/Cancel behavior.
+
 The normal real-mode path is:
 
 ```text

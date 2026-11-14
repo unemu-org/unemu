@@ -228,8 +228,13 @@ pub(super) fn run(args: Args, autostart: bool) -> Result<(), Box<dyn Error>> {
         options,
         Box::new(move |cc| {
             configure_context(&cc.egui_ctx);
-            let mut shell =
-                Shell::new(args, shell_events, shell_errors, cc.winit_window().cloned());
+            let mut shell = Shell::new(
+                args,
+                shell_events,
+                shell_errors,
+                cc.winit_window().cloned(),
+                assembly::firmware_discovery::default_firmware_roots(),
+            );
             shell.logo = Some(crate::logo::Logo::load(&cc.egui_ctx)?);
             if autostart {
                 shell.start();
@@ -290,11 +295,19 @@ struct Shell {
     insert_dialog: Option<crate::media_dialog::InsertDialog>,
     blank_disk: Option<crate::media_dialog::BlankDisk>,
     discovery_warnings: BTreeSet<String>,
+    discovery_control: assembly::firmware_discovery::DiscoveryControl,
+    firmware_cache: Option<std::path::PathBuf>,
+    default_firmware_roots: Vec<assembly::firmware_discovery::FirmwareRoot>,
+    rescan: bool,
+    discovery_finished: bool,
 }
 
 struct ReadinessJob {
     index: usize,
     revision: u64,
+    user_cancelled: bool,
+    used_draft: bool,
+    control: assembly::firmware_discovery::DiscoveryControl,
     receiver: std::sync::mpsc::Receiver<shell_model::PreparedEntry>,
 }
 
@@ -531,7 +544,13 @@ impl Shell {
                     .layout(egui::Layout::left_to_right(egui::Align::Center)),
                 |ui| {
                     ui.set_clip_rect(cell.intersect(ui.clip_rect()));
-                    if (1..=3).contains(&index) {
+                    if index == 0 && self.visible_discovery() {
+                        firmware_progress(
+                            ui,
+                            &self.discovery_control.snapshot(),
+                            self.preferences.reduced_motion,
+                        );
+                    } else if (1..=3).contains(&index) {
                         led(ui, index == 1 && self.presenter.is_some(), label);
                         if index > 1 {
                             ui.response().on_hover_text(
@@ -553,6 +572,7 @@ impl Shell {
         events: Rc<RefCell<Events>>,
         errors: Rc<RefCell<Option<String>>>,
         window: Option<Arc<Window>>,
+        default_firmware_roots: Vec<assembly::firmware_discovery::FirmwareRoot>,
     ) -> Self {
         let root = crate::default_machine()
             .parent()
@@ -620,6 +640,11 @@ impl Shell {
             insert_dialog: None,
             blank_disk: None,
             discovery_warnings: BTreeSet::new(),
+            discovery_control: Default::default(),
+            firmware_cache: assembly::firmware_discovery::firmware_cache_path(),
+            default_firmware_roots,
+            rescan: false,
+            discovery_finished: false,
         }
     }
 
@@ -759,40 +784,116 @@ impl Shell {
         self.sync_routing();
     }
 
+    fn visible_discovery(&self) -> bool {
+        self.readiness
+            .as_ref()
+            .is_some_and(|job| !job.control.is_cancelled() || job.user_cancelled)
+    }
+
     fn poll_readiness(&mut self, ctx: &egui::Context) {
         if self.selected != self.checked_selection {
+            if self.checked_selection.is_some() {
+                self.start_request = None;
+            }
+            if self.message.starts_with("Rescanning ROM folders") {
+                self.message = "Ready".into();
+            }
+            if let Some(job) = &mut self.readiness {
+                job.user_cancelled = false;
+                job.control.cancel();
+                if let Some(entry) = self.library.get_mut(job.index) {
+                    entry.checked = false;
+                }
+            }
             if let Some(index) = self.selected {
                 self.library[index].checked = false;
             }
             self.checked_selection = self.selected;
+            self.discovery_finished = false;
+            self.discovery_control = Default::default();
         }
-        if let Some(job) = &self.readiness {
-            match job.receiver.try_recv() {
-                Ok(prepared) => {
-                    let (index, revision) = (job.index, job.revision);
-                    self.readiness = None;
-                    self.apply_readiness(index, revision, prepared);
+        let ready = self
+            .readiness
+            .as_ref()
+            .and_then(|job| match job.receiver.try_recv() {
+                Ok(prepared) => Some(Ok(prepared)),
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => Some(Err(())),
+                Err(std::sync::mpsc::TryRecvError::Empty) => None,
+            });
+        if let Some(result) = ready {
+            if let Some(job) = self.readiness.take() {
+                if self.message.starts_with("Rescanning ROM folders") {
+                    self.message = "Ready".into();
                 }
-                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                    let index = job.index;
-                    self.readiness = None;
-                    self.library[index].checked = true;
-                    self.library[index].warning = Some("Firmware check failed".into());
-                    self.start_request = None;
+                let current =
+                    job.revision == self.library_revision && self.selected == Some(job.index);
+                if job.control.is_cancelled() {
+                    if job.user_cancelled {
+                        if current {
+                            self.library[job.index].checked = true;
+                            self.library[job.index].warning =
+                                Some("Firmware check cancelled; check again".into());
+                            self.discovery_finished = true;
+                        }
+                    } else {
+                        if let Some(entry) = self.library.get_mut(job.index) {
+                            entry.checked = false;
+                        }
+                        self.discovery_finished = false;
+                    }
+                } else if current {
+                    self.discovery_finished = true;
+                    match result {
+                        Ok(prepared) => self.apply_readiness(job.index, job.revision, prepared),
+                        Err(()) => {
+                            self.library[job.index].checked = true;
+                            self.library[job.index].warning = Some("Firmware check failed".into());
+                            self.start_request = None;
+                        }
+                    }
                 }
-                Err(std::sync::mpsc::TryRecvError::Empty) => {}
             }
         }
-        if self.presenter.is_none() && self.readiness.is_none() {
+        if self.readiness.is_none()
+            && (self.presenter.is_none()
+                || self
+                    .dialog
+                    .as_ref()
+                    .is_some_and(|(title, _)| *title == "ROM folders"))
+        {
             if let Some(index) = self.selected.filter(|index| !self.library[*index].checked) {
                 let wake = ctx.clone();
+                self.library[index].warning = Some("checking firmware…".into());
+                self.discovery_control = Default::default();
+                self.discovery_finished = false;
+                let used_draft = self
+                    .dialog
+                    .as_ref()
+                    .is_some_and(|(title, _)| *title == "ROM folders")
+                    && self.preferences_draft.rom_dirs != self.preferences.rom_dirs;
                 self.readiness = Some(ReadinessJob {
                     index,
                     revision: self.library_revision,
+                    user_cancelled: false,
+                    used_draft,
+                    control: self.discovery_control.clone(),
                     receiver: shell_model::spawn_library_check(
                         self.library[index].path.clone(),
                         self.args.options,
-                        self.preferences.roots(&self.args.rom_dirs),
+                        if self
+                            .dialog
+                            .as_ref()
+                            .is_some_and(|(title, _)| *title == "ROM folders")
+                        {
+                            self.preferences_draft
+                                .roots(&self.args.rom_dirs, &self.default_firmware_roots)
+                        } else {
+                            self.preferences
+                                .roots(&self.args.rom_dirs, &self.default_firmware_roots)
+                        },
+                        self.firmware_cache.clone(),
+                        std::mem::take(&mut self.rescan),
+                        self.discovery_control.clone(),
                         move || wake.request_repaint(),
                     ),
                 });
@@ -823,12 +924,56 @@ impl Shell {
     }
 
     fn refresh_library(&mut self) {
+        if let Some(job) = &mut self.readiness {
+            job.user_cancelled = false;
+            job.control.cancel();
+        }
+        self.discovery_finished = false;
         self.library_revision = self.library_revision.wrapping_add(1);
         self.start_request = None;
         self.discovery_warnings.clear();
         for entry in &mut self.library {
             *entry = LibraryEntry::pending(entry.path.clone());
         }
+    }
+
+    fn cancel_firmware(&mut self) {
+        let pending = self.readiness.is_some() || self.rescan;
+        if let Some(job) = &mut self.readiness {
+            job.user_cancelled = true;
+            job.control.cancel();
+        }
+        self.rescan = false;
+        self.start_request = None;
+        if pending {
+            if let Some(entry) = self.selected.and_then(|index| self.library.get_mut(index)) {
+                entry.checked = true;
+                entry.warning = Some("Firmware check cancelled; check again".into());
+            }
+        }
+    }
+
+    fn close_firmware_dialog(&mut self) {
+        if let Some(job) = &mut self.readiness {
+            if job.used_draft {
+                job.user_cancelled = false;
+                job.control.cancel();
+                if let Some(entry) = self.library.get_mut(job.index) {
+                    entry.checked = false;
+                }
+                self.start_request = None;
+                self.rescan = false;
+                self.discovery_finished = false;
+                self.discovery_control = Default::default();
+            }
+        }
+        self.dialog = None;
+    }
+
+    fn rescan_firmware(&mut self) {
+        self.refresh_library();
+        self.rescan = true;
+        self.message = "Rescanning ROM folders…".into();
     }
 
     fn save_preferences(&mut self) {
@@ -1269,7 +1414,11 @@ impl Shell {
                                 let label = format!(
                                     "{}{}",
                                     if entry.has_problem() { "[!] " } else { "" },
-                                    entry.name
+                                    if entry.checked {
+                                        entry.name.clone()
+                                    } else {
+                                        format!("{} · checking firmware…", entry.name)
+                                    }
                                 );
                                 let response =
                                     ui.selectable_label(self.selected == Some(index), label);
@@ -1328,6 +1477,15 @@ impl Shell {
                                     && ui.button("Create blank disk…").clicked()
                                 {
                                     commands.push(Command::CreateBlank);
+                                }
+                            }
+                            if !self.discovery_warnings.is_empty() {
+                                ui.label(format!(
+                                    "{} skipped firmware entries",
+                                    self.discovery_warnings.len()
+                                ));
+                                for warning in self.discovery_warnings.iter().take(3) {
+                                    ui.add(egui::Label::new(warning).wrap());
                                 }
                             }
                             ui.add_space(10.0);
@@ -1684,6 +1842,94 @@ impl Shell {
     }
 }
 
+impl Drop for Shell {
+    fn drop(&mut self) {
+        if let Some(job) = &self.readiness {
+            job.control.cancel();
+        }
+    }
+}
+
+fn firmware_progress(
+    ui: &mut egui::Ui,
+    progress: &assembly::firmware_discovery::DiscoveryProgress,
+    reduced_motion: bool,
+) {
+    use assembly::firmware_discovery::DiscoveryPhase;
+    if progress.phase == DiscoveryPhase::Idle {
+        return;
+    }
+    let text = match progress.phase {
+        DiscoveryPhase::Loading => "Loading machine…".into(),
+        DiscoveryPhase::Cancelled => "Firmware check cancelled · Check again uses the cache".into(),
+        DiscoveryPhase::Complete => {
+            format!("Firmware check complete · {} matches", progress.matches)
+        }
+        _ => format!(
+            "Scanning ROM folders… {} files listed · {}/{} candidates hashed · {} matches",
+            progress.listed, progress.checked, progress.candidates, progress.matches
+        ),
+    };
+    let (rect, response) = ui.allocate_exact_size(
+        Vec2::new(ui.available_width().max(0.0), 14.0),
+        Sense::hover(),
+    );
+    let bar = egui::Rect::from_min_size(
+        rect.min,
+        Vec2::new(96.0_f32.min(rect.width() * 0.3), rect.height()),
+    );
+    bevel(ui, bar, true);
+    let inner = bar.shrink(3.0);
+    let indeterminate = matches!(
+        progress.phase,
+        DiscoveryPhase::Listing | DiscoveryPhase::Loading
+    );
+    let filled = if indeterminate {
+        4
+    } else if progress.candidates == 0 {
+        0
+    } else {
+        (progress.checked * 16)
+            .div_ceil(progress.candidates)
+            .min(16)
+    };
+    let offset = if indeterminate && !reduced_motion {
+        (ui.input(|input| input.time) * 8.0) as usize % 16
+    } else {
+        0
+    };
+    for index in 0..16 {
+        if (index + 16 - offset) % 16 < filled {
+            let width = inner.width() / 16.0;
+            ui.painter().rect_filled(
+                egui::Rect::from_min_size(
+                    egui::pos2(inner.left() + index as f32 * width, inner.top()),
+                    Vec2::new((width - 2.0).max(0.0), inner.height().max(0.0)),
+                ),
+                0.0,
+                ui.visuals().selection.bg_fill,
+            );
+        }
+    }
+    let text_rect = egui::Rect::from_min_max(
+        egui::pos2((bar.right() + 6.0).min(rect.right()), rect.top()),
+        rect.max,
+    );
+    let mut job = egui::text::LayoutJob::simple_singleline(
+        text.clone(),
+        egui::FontId::proportional(12.0),
+        ui.visuals().text_color(),
+    );
+    job.wrap.max_width = text_rect.width();
+    job.wrap.max_rows = 1;
+    job.wrap.break_anywhere = true;
+    let galley = ui.fonts_mut(|fonts| fonts.layout_job(job));
+    ui.painter()
+        .with_clip_rect(text_rect.intersect(ui.clip_rect()))
+        .galley(text_rect.min, galley, ui.visuals().text_color());
+    response.on_hover_text(text);
+}
+
 impl eframe::App for Shell {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.poll_readiness(ctx);
@@ -1771,6 +2017,10 @@ impl eframe::App for Shell {
         let mut close_dialog = false;
         let mut open_machine = false;
         let mut save_preferences = false;
+        let mut rescan_firmware = false;
+        let mut recheck_firmware = false;
+        let mut cancel_firmware = false;
+        let show_firmware_progress = self.visible_discovery() || self.discovery_finished;
         if let Some((title, text)) = &self.dialog {
             egui::Modal::new(egui::Id::unique("shell-dialog")).show(&ctx, |ui| {
                 ui.set_max_width(600.0);
@@ -1837,10 +2087,49 @@ impl eframe::App for Shell {
                             }
                         }
                     });
+                    ui.separator();
+                    let progress = self.discovery_control.snapshot();
+                    if show_firmware_progress {
+                        firmware_progress(ui, &progress, self.preferences.reduced_motion);
+                    }
+                    ui.horizontal(|ui| {
+                        if ui
+                            .add_enabled(self.selected.is_some(), egui::Button::new("Check again"))
+                            .clicked()
+                        {
+                            recheck_firmware = true;
+                        }
+                        if ui
+                            .add_enabled(self.selected.is_some(), egui::Button::new("Rescan"))
+                            .clicked()
+                        {
+                            rescan_firmware = true;
+                        }
+                        if ui
+                            .add_enabled(self.readiness.is_some(), egui::Button::new("Cancel scan"))
+                            .clicked()
+                        {
+                            cancel_firmware = true;
+                        }
+                    });
+                    ui.label(format!(
+                        "{} found · {} results (all matches, up to 256 skips)",
+                        progress.matches, progress.result_count
+                    ));
+                    egui::ScrollArea::vertical()
+                        .id_salt("firmware-results")
+                        .max_height(120.0)
+                        .show(ui, |ui| {
+                            for result in &progress.results {
+                                ui.add(egui::Label::new(result).wrap());
+                            }
+                        });
                     if !self.discovery_warnings.is_empty() {
-                        ui.separator();
-                        ui.label("Skipped firmware search entries:");
-                        for warning in &self.discovery_warnings {
+                        ui.label(format!(
+                            "{} skipped firmware search entries",
+                            self.discovery_warnings.len()
+                        ));
+                        for warning in self.discovery_warnings.iter().take(3) {
                             ui.add(egui::Label::new(warning).wrap());
                         }
                     }
@@ -1866,8 +2155,26 @@ impl eframe::App for Shell {
         if save_preferences {
             self.save_preferences();
         }
+        if recheck_firmware {
+            self.refresh_library();
+            self.rescan = false;
+        }
+        if rescan_firmware {
+            self.rescan_firmware();
+        }
+        if cancel_firmware {
+            self.cancel_firmware();
+        }
         if close_dialog {
-            self.dialog = None;
+            if self
+                .dialog
+                .as_ref()
+                .is_some_and(|(title, _)| *title == "ROM folders")
+            {
+                self.close_firmware_dialog();
+            } else {
+                self.dialog = None;
+            }
         }
         if menu_open || had_dialog {
             self.release();
@@ -2049,6 +2356,11 @@ mod tests {
             insert_dialog: None,
             blank_disk: None,
             discovery_warnings: BTreeSet::new(),
+            discovery_control: Default::default(),
+            firmware_cache: None,
+            default_firmware_roots: Vec::new(),
+            rescan: false,
+            discovery_finished: false,
         }
     }
 
@@ -3206,6 +3518,325 @@ mod tests {
         *shell.errors.borrow_mut() = Some("previous failure".into());
         assert!(shell.stop());
         assert!(shell.errors.borrow().is_none());
+    }
+
+    fn discovery_shell(temp: &assembly::test_support::TempDir) -> Shell {
+        use sha2::{Digest, Sha256};
+        let root = temp.path().join("roms");
+        std::fs::create_dir(&root).unwrap();
+        let bytes = vec![0xf4; 32768];
+        std::fs::write(root.join("bios"), &bytes).unwrap();
+        let path = temp.path().join("machine.toml");
+        std::fs::write(
+            &path,
+            format!(
+                "schema=1
+[board]
+model='ibm-5170'
+[firmware.bios]
+image='absent-bios'
+sha256='{:x}'
+[[card]]
+kind='mda'
+",
+                Sha256::digest(&bytes)
+            ),
+        )
+        .unwrap();
+        let mut shell = shell();
+        shell.presenter = None;
+        shell.args.options.allow_unlisted_firmware = true;
+        shell.library = vec![LibraryEntry::pending(path)];
+        shell.selected = Some(0);
+        shell.preferences.add_folder(&root).unwrap();
+        shell.preferences_draft = shell.preferences.clone();
+        shell.firmware_cache = Some(temp.path().join("cache/index"));
+        shell
+    }
+
+    #[test]
+    fn discovery_job_uses_only_explicit_and_injected_roots() {
+        use assembly::firmware_discovery::{FirmwareRoot, RootOrigin};
+        let temp = assembly::test_support::TempDir::new("isolated-shell-discovery");
+        let mut shell = discovery_shell(&temp);
+        let env_like = FirmwareRoot::new(
+            temp.path().join("missing-env-like"),
+            RootOrigin::Environment,
+        );
+        shell.default_firmware_roots = vec![env_like.clone()];
+        assert_eq!(
+            shell
+                .preferences
+                .roots(&shell.args.rom_dirs, &shell.default_firmware_roots),
+            vec![
+                FirmwareRoot::new(
+                    temp.path().join("roms").canonicalize().unwrap(),
+                    RootOrigin::Preferences
+                ),
+                env_like
+            ],
+        );
+        shell.poll_readiness(&egui::Context::default());
+        let job = shell.readiness.take().unwrap();
+        let (entry, prepared) = job
+            .receiver
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .unwrap();
+        assert!(prepared.is_some());
+        assert_eq!(job.control.snapshot().listed, 1);
+        assert_eq!(job.control.snapshot().files_read, 1);
+        assert_eq!(job.control.snapshot().matches, 1);
+        assert_eq!(entry.discovery_warnings.len(), 1);
+        assert!(entry.discovery_warnings[0].starts_with("<UNEMUPC98_USER_ROMS_DIR>: skipped"));
+    }
+
+    #[test]
+    fn cancel_and_rescan_preserve_dialog_disable_start_and_discard_old_readiness() {
+        let temp = assembly::test_support::TempDir::new("cancel-rescan-readiness");
+        let mut shell = discovery_shell(&temp);
+        shell.dialog = Some(("ROM folders", String::new()));
+        let ctx = egui::Context::default();
+        shell.poll_readiness(&ctx);
+        assert!(!shell.enablement().allows(Command::Start));
+        let mut job = shell.readiness.take().unwrap();
+        let prepared = job
+            .receiver
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .unwrap();
+        assert!(job.control.snapshot().listed > 0);
+        assert!(job.control.snapshot().files_read > 0);
+        let (sender, receiver) = std::sync::mpsc::channel();
+        sender.send(prepared).unwrap();
+        job.receiver = receiver;
+        shell.readiness = Some(job);
+        shell.cancel_firmware();
+        shell.poll_readiness(&ctx);
+        assert!(shell.readiness.is_none());
+        assert!(shell.library[0].checked);
+        assert!(shell.library[0]
+            .warning
+            .as_ref()
+            .unwrap()
+            .contains("cancelled"));
+        assert!(shell.library[0].hint().contains("Check again"));
+        assert!(!shell.library[0].hint().contains("Rescan"));
+        assert!(!shell.enablement().allows(Command::Start));
+        shell.rescan_firmware();
+        assert!(shell.rescan);
+        assert!(shell.dialog.is_some());
+        shell.poll_readiness(&ctx);
+        assert!(!shell.rescan);
+        let job = shell.readiness.take().unwrap();
+        let prepared = job
+            .receiver
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .unwrap();
+        assert!(!job.control.is_cancelled());
+        shell.apply_readiness(job.index, job.revision, prepared);
+        assert!(shell.enablement().allows(Command::Start));
+    }
+
+    #[test]
+    fn closing_folders_preserves_saved_jobs_and_rechecks_discarded_drafts() {
+        for draft in [false, true] {
+            let temp = assembly::test_support::TempDir::new("close-firmware-folders");
+            let mut shell = discovery_shell(&temp);
+            shell.checked_selection = shell.selected;
+            shell.dialog = Some(("ROM folders", String::new()));
+            let (sender, receiver) = std::sync::mpsc::channel();
+            let control = assembly::firmware_discovery::DiscoveryControl::default();
+            shell.readiness = Some(ReadinessJob {
+                index: 0,
+                revision: shell.library_revision,
+                user_cancelled: false,
+                used_draft: draft,
+                control: control.clone(),
+                receiver,
+            });
+            shell.close_firmware_dialog();
+            assert_eq!(control.is_cancelled(), draft);
+            assert!(!shell.library[0].checked);
+            assert!(!shell.rescan);
+            sender
+                .send((LibraryEntry::pending(shell.library[0].path.clone()), None))
+                .unwrap();
+            if draft {
+                shell.poll_readiness(&egui::Context::default());
+                assert!(!shell.library[0].checked);
+                let job = shell.readiness.take().unwrap();
+                assert!(!job.used_draft);
+                assert!(!job.user_cancelled);
+                job.receiver
+                    .recv_timeout(std::time::Duration::from_secs(10))
+                    .unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn superseded_selection_is_not_a_user_cancel_even_when_selected_again() {
+        let temp = assembly::test_support::TempDir::new("superseded-firmware-check");
+        let mut shell = discovery_shell(&temp);
+        shell.checked_selection = Some(0);
+        shell
+            .library
+            .push(LibraryEntry::pending(temp.path().join("second.toml")));
+        let (sender, receiver) = std::sync::mpsc::channel();
+        shell.readiness = Some(ReadinessJob {
+            index: 0,
+            revision: shell.library_revision,
+            user_cancelled: false,
+            used_draft: false,
+            control: Default::default(),
+            receiver,
+        });
+        shell.selected = Some(1);
+        shell.start_request = Some(0);
+        shell.message = "Rescanning ROM folders…".into();
+        shell.poll_readiness(&egui::Context::default());
+        assert!(shell.start_request.is_none());
+        assert_eq!(shell.message, "Ready");
+        assert!(!shell.discovery_finished);
+        assert!(!shell.visible_discovery());
+        shell.selected = Some(0);
+        sender
+            .send((LibraryEntry::pending(shell.library[0].path.clone()), None))
+            .unwrap();
+        shell.poll_readiness(&egui::Context::default());
+        assert!(!shell.library[0].checked);
+        assert!(!shell.library[0]
+            .warning
+            .as_ref()
+            .unwrap()
+            .contains("cancelled"));
+        let job = shell.readiness.take().unwrap();
+        assert!(!job.user_cancelled);
+        job.receiver
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .unwrap();
+    }
+
+    #[test]
+    fn discovery_uses_the_existing_status_cell_without_changing_height() {
+        use assembly::firmware_discovery::{DiscoveryPhase, DiscoveryProgress};
+        let mut shell = shell();
+        assert_eq!(
+            shell.discovery_control.snapshot().phase,
+            DiscoveryPhase::Idle
+        );
+        let ctx = egui::Context::default();
+        let mut heights = Vec::new();
+        for active in [false, true] {
+            if active {
+                let (_sender, receiver) = std::sync::mpsc::channel();
+                shell.discovery_control.loading();
+                shell.readiness = Some(ReadinessJob {
+                    index: 0,
+                    revision: 0,
+                    user_cancelled: false,
+                    used_draft: false,
+                    control: shell.discovery_control.clone(),
+                    receiver,
+                });
+            }
+            let mut output = ctx.run_ui(Default::default(), |ui| {
+                shell.status(ui);
+                heights.push(ui.min_rect().height());
+            });
+            let single_line = output
+                .shapes
+                .iter()
+                .filter_map(|shape| {
+                    if let egui::epaint::Shape::Text(text) = &shape.shape {
+                        Some(text)
+                    } else {
+                        None
+                    }
+                })
+                .all(|text| text.galley.rows.len() <= 1);
+            output.textures_delta.clear();
+            output.drop_without_applying_deltas();
+            assert!(single_line);
+        }
+        assert_eq!(heights[0], heights[1]);
+        let mut output = ctx.run_ui(Default::default(), |ui| {
+            let before = ui.min_rect();
+            firmware_progress(
+                ui,
+                &DiscoveryProgress {
+                    phase: DiscoveryPhase::Idle,
+                    ..Default::default()
+                },
+                false,
+            );
+            assert_eq!(before, ui.min_rect());
+        });
+        output.textures_delta.clear();
+        output.drop_without_applying_deltas();
+    }
+
+    #[test]
+    fn cancel_discards_a_queued_rescan_before_the_previous_worker_finishes() {
+        let temp = assembly::test_support::TempDir::new("cancel-queued-rescan");
+        let mut shell = shell();
+        shell.presenter = None;
+        let path = temp.path().join("machine.toml");
+        shell.library = vec![LibraryEntry::pending(path.clone())];
+        shell.selected = Some(0);
+        shell.checked_selection = Some(0);
+        let (sender, receiver) = std::sync::mpsc::channel();
+        shell.readiness = Some(ReadinessJob {
+            index: 0,
+            revision: shell.library_revision,
+            user_cancelled: false,
+            used_draft: false,
+            control: Default::default(),
+            receiver,
+        });
+        shell.rescan_firmware();
+        shell.cancel_firmware();
+        assert!(!shell.rescan);
+        sender.send((LibraryEntry::pending(path), None)).unwrap();
+        shell.poll_readiness(&egui::Context::default());
+        assert!(shell.readiness.is_none());
+        assert!(!shell.enablement().allows(Command::Start));
+    }
+
+    #[test]
+    fn firmware_progress_renders_headlessly_in_each_phase() {
+        use assembly::firmware_discovery::{DiscoveryPhase, DiscoveryProgress};
+        let ctx = egui::Context::default();
+        for phase in [
+            DiscoveryPhase::Listing,
+            DiscoveryPhase::Hashing,
+            DiscoveryPhase::Loading,
+            DiscoveryPhase::Cancelled,
+            DiscoveryPhase::Complete,
+        ] {
+            let progress = DiscoveryProgress {
+                phase,
+                listed: 20,
+                candidates: 4,
+                checked: 2,
+                matches: 1,
+                ..Default::default()
+            };
+            let mut output = ctx.run_ui(Default::default(), |ui| {
+                firmware_progress(ui, &progress, true);
+            });
+            let expected = match phase {
+                DiscoveryPhase::Loading => "Loading machine…",
+                DiscoveryPhase::Complete => "Firmware check complete",
+                DiscoveryPhase::Cancelled => "Firmware check cancelled",
+                _ => "Scanning ROM folders…",
+            };
+            let has_progress = output.shapes.iter().any(|shape| {
+                matches!(&shape.shape, egui::epaint::Shape::Text(text) if text.galley.text().contains(expected) && text.galley.rows.len() <= 1)
+            });
+            output.textures_delta.clear();
+            output.drop_without_applying_deltas();
+            assert!(has_progress);
+        }
     }
 
     #[test]

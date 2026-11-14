@@ -673,12 +673,7 @@ fn load_machine(
     default: &Path,
     options: assembly::AssemblyOptions,
 ) -> Result<machine_file::LoadedMachine, Box<dyn Error>> {
-    load_machine_with_rom_dirs(
-        path,
-        default,
-        options,
-        &assembly::firmware_discovery::default_search_roots(),
-    )
+    load_machine_with_rom_dirs(path, default, options, &[])
 }
 
 #[cfg(test)]
@@ -700,12 +695,7 @@ fn load_machine_with_rom_dirs(
 
 #[cfg(test)]
 fn setup(args: &Args, warnings: &mut impl io::Write) -> Result<Presenter, Box<dyn Error>> {
-    let roots = if args.rom_dirs.is_empty() {
-        assembly::firmware_discovery::default_search_roots()
-    } else {
-        args.rom_dirs.clone()
-    };
-    setup_with_rom_dirs(args, &roots, warnings)
+    setup_with_rom_dirs(args, &args.rom_dirs, warnings)
 }
 
 #[cfg(test)]

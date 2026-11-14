@@ -171,13 +171,14 @@ impl LibraryEntry {
                 )
             })
             .collect::<Vec<_>>();
-        Self::prepare(path, options, &roots).0
+        Self::prepare(path, options, &roots, None).0
     }
 
     fn prepare(
         path: PathBuf,
         options: assembly::AssemblyOptions,
         roots: &[assembly::firmware_discovery::FirmwareRoot],
+        control: Option<&assembly::firmware_discovery::DiscoveryControl>,
     ) -> PreparedEntry {
         let name = machine_file::resolve(&path)
             .ok()
@@ -205,8 +206,12 @@ impl LibraryEntry {
             roots,
             &mut entry.discovery_warnings,
         )
-        .and_then(|document| document.load(options).map(|loaded| (document, loaded)))
-        {
+        .and_then(|document| {
+            if let Some(control) = control {
+                control.loading();
+            }
+            document.load(options).map(|loaded| (document, loaded))
+        }) {
             Ok((document, loaded)) => {
                 let config = &loaded.config;
                 entry.ems = "EMS absent".into();
@@ -281,6 +286,8 @@ impl LibraryEntry {
 
     pub fn hint(&self) -> &str {
         match self.warning.as_deref() {
+            Some(warning) if warning.contains("cancelled") =>
+                "Use Tools › Locate firmware… › Check again for a normal cached firmware check.",
             Some(warning) if warning.contains("cannot read image") && warning.contains("drives[") =>
                 "Media image is missing or unreadable. Use Tools › Create blank disk… for a new disk, or correct the image path in the machine file.",
             Some(warning) if (warning.contains("SHA-256") || warning.contains("sha256")) && warning.contains("drives[") =>
@@ -336,11 +343,24 @@ pub(crate) fn spawn_library_check(
     path: PathBuf,
     options: assembly::AssemblyOptions,
     roots: Vec<assembly::firmware_discovery::FirmwareRoot>,
+    cache: Option<PathBuf>,
+    rescan: bool,
+    control: assembly::firmware_discovery::DiscoveryControl,
     wake: impl FnOnce() + Send + 'static,
 ) -> std::sync::mpsc::Receiver<PreparedEntry> {
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
-        let prepared = LibraryEntry::prepare(path, options, &roots);
+        let prepared = assembly::firmware_discovery::with_discovery_session(
+            cache.as_deref(),
+            rescan,
+            &control,
+            || {
+                if control.is_cancelled() {
+                    return (LibraryEntry::pending(path), None);
+                }
+                LibraryEntry::prepare(path, options, &roots, Some(&control))
+            },
+        );
         let _ = tx.send(prepared);
         wake();
     });
@@ -482,6 +502,9 @@ mod tests {
             path,
             assembly::AssemblyOptions::default(),
             vec![],
+            None,
+            false,
+            Default::default(),
             move || {
                 tx.send(std::thread::current().id()).unwrap();
             },

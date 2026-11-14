@@ -14,7 +14,12 @@ use std::{
 };
 
 mod frontend;
+mod persistent;
 pub use frontend::{default_firmware_roots, locate_firmware_with_roots, FirmwareRoot, RootOrigin};
+pub use persistent::{
+    firmware_cache_path, with_discovery_session, with_firmware_pins, DiscoveryControl,
+    DiscoveryPhase, DiscoveryProgress,
+};
 
 /// The identity representation found by discovery.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -76,6 +81,9 @@ impl FoundUserFirmware {
 /// Discovery failures contain safe labels rather than private absolute paths.
 #[derive(Debug, thiserror::Error)]
 pub enum UserFirmwareError {
+    /// A host scan was cancelled before resolution completed.
+    #[error("firmware scan cancelled")]
+    Cancelled,
     /// A test requested an entry outside the supplied board catalogue.
     #[error("unknown user-supplied firmware entry {0}")]
     UnknownEntry(String),
@@ -191,6 +199,22 @@ fn hash_key(path: PathBuf, metadata: &fs::Metadata) -> io::Result<HashKey> {
 #[derive(Default)]
 struct HashCache {
     hashes: BTreeMap<HashKey, String>,
+    seen: BTreeSet<PathBuf>,
+    listed_directories: BTreeSet<PathBuf>,
+    listing: Option<(Vec<FirmwareRoot>, Vec<ListedFile>)>,
+    candidates: Vec<Candidate>,
+    checked_candidates: BTreeSet<PathBuf>,
+    matched_candidates: BTreeSet<PathBuf>,
+    reported_mismatches: BTreeSet<PathBuf>,
+    pins: Vec<FirmwarePin>,
+    unpersistable: BTreeSet<PathBuf>,
+    dirty: bool,
+    #[cfg(test)]
+    hash_time: Option<std::time::SystemTime>,
+    #[cfg(test)]
+    cancel_after_hash: bool,
+    bypass: BTreeSet<PathBuf>,
+    control: Option<DiscoveryControl>,
     #[cfg(test)]
     calls: usize,
     #[cfg(test)]
@@ -199,23 +223,51 @@ struct HashCache {
 
 impl HashCache {
     fn hash(&mut self, path: &Path) -> io::Result<String> {
+        if self
+            .control
+            .as_ref()
+            .is_some_and(DiscoveryControl::is_cancelled)
+        {
+            return Err(io::Error::new(io::ErrorKind::Interrupted, "scan cancelled"));
+        }
+        #[cfg(test)]
+        let hashed_at = self.hash_time.unwrap_or_else(std::time::SystemTime::now);
+        #[cfg(not(test))]
+        let hashed_at = std::time::SystemTime::now();
         let canonical = path.canonicalize()?;
-        let mut file = fs::File::open(&canonical)?;
-        let before = file.metadata()?;
+        let before = fs::metadata(&canonical)?;
         let key = hash_key(canonical.clone(), &before)?;
+        self.seen.insert(canonical.clone());
         // Windows metadata has no portable change-time identity. Rehash there
         // rather than trust a hit after an in-place edit with a restored mtime.
         #[cfg(not(windows))]
-        if let Some(hash) = self.hashes.get(&key) {
+        if let Some(hash) = self
+            .hashes
+            .get(&key)
+            .filter(|_| !self.bypass.contains(&key.0))
+        {
             if hash_key(canonical.clone(), &fs::metadata(&canonical)?)? == key {
                 return Ok(hash.clone());
             }
+        }
+        let mut file = fs::File::open(&canonical)?;
+        if let Some(control) = &self.control {
+            control.update(|progress| progress.files_read += 1);
         }
         let mut digest = Sha256::new();
         let mut buffer = [0; 8192];
         let mut length = 0;
         loop {
-            let count = file.read(&mut buffer)?;
+            if self
+                .control
+                .as_ref()
+                .is_some_and(DiscoveryControl::is_cancelled)
+            {
+                return Err(io::Error::new(io::ErrorKind::Interrupted, "scan cancelled"));
+            }
+            let remaining = before.len().saturating_add(1).saturating_sub(length);
+            let limit = buffer.len().min(remaining as usize);
+            let count = file.read(&mut buffer[..limit])?;
             if count == 0 {
                 break;
             }
@@ -233,8 +285,34 @@ impl HashCache {
             return Err(io::Error::other("ROM changed while hashing"));
         }
         let hash = format!("{:x}", digest.finalize());
+        // Coarse filesystem timestamps can hide another write in this window.
+        // Such hashes are useful within this scan but must not enter the disk index.
+        let racy = persistent::racy_timestamp(&key, hashed_at);
+        let unchanged =
+            self.hashes.get(&key) == Some(&hash) && self.unpersistable.contains(&key.0) == racy;
+        let previously_persisted = self
+            .hashes
+            .keys()
+            .any(|old| old.0 == key.0 && !self.unpersistable.contains(&old.0));
         self.hashes.retain(|old, _| old.0 != key.0);
+        self.bypass.remove(&key.0);
+        if racy {
+            self.unpersistable.insert(key.0.clone());
+        } else {
+            self.unpersistable.remove(&key.0);
+        }
         self.hashes.insert(key, hash.clone());
+        self.dirty |= if racy {
+            previously_persisted
+        } else {
+            !unchanged
+        };
+        #[cfg(test)]
+        if self.cancel_after_hash {
+            if let Some(control) = &self.control {
+                control.cancel();
+            }
+        }
         #[cfg(test)]
         {
             self.calls += 1;
@@ -243,6 +321,9 @@ impl HashCache {
     }
 }
 
+type ListedFile = (PathBuf, PathBuf, u64, String);
+
+#[derive(Clone)]
 struct Candidate {
     path: PathBuf,
     canonical: PathBuf,
@@ -590,10 +671,7 @@ pub struct PinnedPart {
 
 /// Match a complete file, reading it in place and checking its full length.
 pub fn matches_file(path: &Path, pin: &FirmwarePin) -> io::Result<bool> {
-    if pin
-        .length
-        .is_some_and(|length| fs::metadata(path).map_or(true, |metadata| metadata.len() != length))
-    {
+    if !pin.accepts_size(fs::metadata(path)?.len()) {
         return Ok(false);
     }
     let mut cache = shared_cache()
@@ -602,19 +680,52 @@ pub fn matches_file(path: &Path, pin: &FirmwarePin) -> io::Result<bool> {
     Ok(cache.hash(path)? == pin.sha256)
 }
 
-fn parts_match(parts: &[PinnedPart], assembled: Option<&FirmwarePin>) -> bool {
+fn parts_match(
+    parts: &[PinnedPart],
+    assembled: Option<&FirmwarePin>,
+    cache: &mut HashCache,
+) -> bool {
     let mut loaded = Vec::new();
     for part in parts {
-        if part
-            .pin
+        if cache
+            .control
             .as_ref()
-            .is_some_and(|pin| !matches_file(&part.part.path, pin).unwrap_or(false))
+            .is_some_and(DiscoveryControl::is_cancelled)
         {
             return false;
         }
-        let Ok(bytes) = fs::read(&part.part.path) else {
+        let Ok(metadata) = fs::metadata(&part.part.path) else {
             return false;
         };
+        if !metadata.is_file()
+            || part
+                .pin
+                .as_ref()
+                .map_or(metadata.len() > 1024 * 1024, |pin| {
+                    !pin.accepts_size(metadata.len())
+                })
+        {
+            return false;
+        }
+        if part.pin.as_ref().is_some_and(|pin| {
+            !cache
+                .hash(&part.part.path)
+                .is_ok_and(|hash| hash == pin.sha256)
+        }) {
+            return false;
+        }
+        let Ok(file) = fs::File::open(&part.part.path) else {
+            return false;
+        };
+        let mut bytes = Vec::new();
+        if file
+            .take(metadata.len() + 1)
+            .read_to_end(&mut bytes)
+            .is_err()
+            || bytes.len() as u64 != metadata.len()
+        {
+            return false;
+        }
         loaded.push((part.part.lane, part.part.offset, bytes));
     }
     let Ok(bytes) = crate::interleave_parts(&loaded) else {

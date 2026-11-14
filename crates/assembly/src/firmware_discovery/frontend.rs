@@ -25,7 +25,7 @@ impl RootOrigin {
 }
 
 /// An explicit host directory with the origin needed to explain skipped entries.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FirmwareRoot {
     pub path: PathBuf,
     pub origin: RootOrigin,
@@ -84,7 +84,7 @@ impl FirmwarePin {
         }
     }
 
-    fn accepts_size(&self, length: u64) -> bool {
+    pub(super) fn accepts_size(&self, length: u64) -> bool {
         if length > 1024 * 1024 {
             return false;
         }
@@ -100,21 +100,24 @@ impl FirmwarePin {
 struct FrontendScan<'a> {
     root: SearchRoot,
     canonical_root: PathBuf,
-    pin: &'a FirmwarePin,
-    cache: &'a mut HashCache,
+    control: Option<&'a DiscoveryControl>,
     warnings: &'a mut Vec<String>,
-    visited: BTreeSet<PathBuf>,
-    found: Option<PathBuf>,
+    visited: &'a mut BTreeSet<PathBuf>,
+    files: &'a mut Vec<ListedFile>,
+    listed_directories: &'a mut BTreeSet<PathBuf>,
 }
 
 impl FrontendScan<'_> {
     fn warn(&mut self, path: &Path, reason: impl std::fmt::Display) {
-        self.warnings
-            .push(format!("{}: skipped ({reason})", self.root.name(path)));
+        let text = format!("{}: skipped ({reason})", self.root.name(path));
+        if let Some(control) = self.control {
+            control.result(text.clone());
+        }
+        self.warnings.push(text);
     }
 
     fn visit(&mut self, path: &Path) {
-        if self.found.is_some() {
+        if self.control.is_some_and(DiscoveryControl::is_cancelled) {
             return;
         }
         let canonical = match path.canonicalize() {
@@ -135,10 +138,10 @@ impl FrontendScan<'_> {
                 return;
             }
         };
+        if !self.visited.insert(canonical.clone()) {
+            return;
+        }
         if metadata.is_dir() {
-            if !self.visited.insert(canonical) {
-                return;
-            }
             let children = match fs::read_dir(path) {
                 Ok(children) => children,
                 Err(error) => {
@@ -147,85 +150,287 @@ impl FrontendScan<'_> {
                 }
             };
             let mut paths = Vec::new();
+            let mut complete = true;
             for child in children {
+                if self.control.is_some_and(DiscoveryControl::is_cancelled) {
+                    return;
+                }
                 match child {
                     Ok(child) => paths.push(child.path()),
-                    Err(error) => self.warn(path, error.kind()),
+                    Err(error) => {
+                        complete = false;
+                        self.warn(path, error.kind());
+                    }
                 }
+            }
+            if complete {
+                self.listed_directories.insert(canonical);
             }
             paths.sort();
             for child in paths {
                 self.visit(&child);
             }
-        } else if metadata.is_file() && self.pin.accepts_size(metadata.len()) {
-            match self.cache.hash(&canonical) {
-                Ok(hash) if hash == self.pin.sha256 => self.found = Some(path.into()),
-                Ok(_) => {}
-                Err(error) => self.warn(
-                    path,
-                    if error.kind() == io::ErrorKind::Other {
-                        "file changed while hashing".into()
-                    } else {
-                        error.kind().to_string()
-                    },
-                ),
+        } else if metadata.is_file() {
+            if let Some(control) = self.control {
+                control.update(|progress| progress.listed += 1);
             }
+            self.files
+                .push((path.into(), canonical, metadata.len(), self.root.name(path)));
         }
     }
 }
 
+fn collect_candidates(
+    roots: &[FirmwareRoot],
+    pins: &[&FirmwarePin],
+    warnings: &mut Vec<String>,
+    cache: &mut HashCache,
+) -> Vec<Candidate> {
+    if cache.control.is_none() {
+        cache.listing = None;
+        cache.candidates.clear();
+        cache.checked_candidates.clear();
+        cache.matched_candidates.clear();
+        cache.reported_mismatches.clear();
+    }
+    let union = if cache.pins.is_empty() {
+        pins.iter().map(|pin| (*pin).clone()).collect::<Vec<_>>()
+    } else {
+        cache.pins.clone()
+    };
+    if cache
+        .listing
+        .as_ref()
+        .is_none_or(|(listed_roots, _)| listed_roots != roots)
+    {
+        let mut files = Vec::new();
+        let mut visited = BTreeSet::new();
+        if let Some(control) = &cache.control {
+            control.update(|progress| progress.phase = DiscoveryPhase::Listing);
+        }
+        for root in roots {
+            if cache
+                .control
+                .as_ref()
+                .is_some_and(DiscoveryControl::is_cancelled)
+            {
+                break;
+            }
+            let canonical_root = match root.path.canonicalize() {
+                Ok(path) if path.is_dir() => path,
+                result => {
+                    let reason = match result {
+                        Ok(_) => "not a directory".into(),
+                        Err(error) => {
+                            if root.origin == RootOrigin::Vendor
+                                && error.kind() == io::ErrorKind::NotFound
+                            {
+                                continue;
+                            }
+                            error.kind().to_string()
+                        }
+                    };
+                    let warning = format!("{}: skipped ({reason})", root.origin.label());
+                    if let Some(control) = &cache.control {
+                        control.result(warning.clone());
+                    }
+                    warnings.push(warning);
+                    continue;
+                }
+            };
+            FrontendScan {
+                root: SearchRoot {
+                    path: root.path.clone(),
+                    label: root.origin.label(),
+                    external: false,
+                },
+                canonical_root,
+                control: cache.control.as_ref(),
+                warnings,
+                visited: &mut visited,
+                files: &mut files,
+                listed_directories: &mut cache.listed_directories,
+            }
+            .visit(&root.path);
+        }
+        cache.seen.extend(visited);
+        cache.listing = Some((roots.to_vec(), files));
+    }
+    let files = cache
+        .listing
+        .as_ref()
+        .map(|(_, files)| files.clone())
+        .unwrap_or_default();
+    if let Some(control) = &cache.control {
+        control.update(|progress| {
+            progress.phase = DiscoveryPhase::Hashing;
+            progress.candidates += files
+                .iter()
+                .filter(|(_, canonical, size, _)| {
+                    union.iter().any(|pin| pin.accepts_size(*size))
+                        && !cache.checked_candidates.contains(canonical)
+                })
+                .count();
+            progress.size_skipped = files
+                .iter()
+                .filter(|(_, _, size, _)| !union.iter().any(|pin| pin.accepts_size(*size)))
+                .count();
+        });
+    }
+    for (path, canonical, size, name) in files {
+        if cache
+            .control
+            .as_ref()
+            .is_some_and(DiscoveryControl::is_cancelled)
+        {
+            break;
+        }
+        if !union.iter().any(|pin| pin.accepts_size(size)) {
+            continue;
+        }
+        if cache.checked_candidates.insert(canonical.clone()) {
+            let result = cache.hash(&canonical);
+            if let Some(control) = &cache.control {
+                control.update(|progress| progress.checked += 1);
+            }
+            match result {
+                Ok(hash) => {
+                    cache.candidates.push(Candidate {
+                        canonical: canonical.clone(),
+                        path,
+                        name: name.clone(),
+                        size,
+                        hash,
+                    });
+                }
+                Err(error) => {
+                    let reason = if error.kind() == io::ErrorKind::Other {
+                        "file changed while hashing".into()
+                    } else {
+                        error.kind().to_string()
+                    };
+                    let warning = format!("{name}: skipped ({reason})");
+                    if let Some(control) = &cache.control {
+                        control.result(warning.clone());
+                    }
+                    warnings.push(warning);
+                }
+            }
+        }
+    }
+    for file in &cache.candidates {
+        let found = union
+            .iter()
+            .any(|pin| pin.accepts_size(file.size) && pin.sha256 == file.hash);
+        if found && cache.matched_candidates.insert(file.canonical.clone()) {
+            if let Some(control) = &cache.control {
+                control.update(|progress| progress.matches += 1);
+                control.found(format!("{}: found (SHA-256 match)", file.name));
+            }
+        } else if !found && cache.reported_mismatches.insert(file.canonical.clone()) {
+            if let Some(control) = &cache.control {
+                control.result(format!("{}: skipped (SHA-256 mismatch)", file.name));
+            }
+        }
+    }
+    cache.candidates.clone()
+}
+
+#[cfg(test)]
 fn find_image(
     roots: &[FirmwareRoot],
     pin: &FirmwarePin,
     warnings: &mut Vec<String>,
     cache: &mut HashCache,
 ) -> Option<PathBuf> {
-    for root in roots {
-        let canonical_root = match root.path.canonicalize() {
-            Ok(path) if path.is_dir() => path,
-            Ok(_) => {
-                warnings.push(format!(
-                    "{}: skipped (not a directory)",
-                    root.origin.label()
-                ));
+    collect_candidates(roots, &[pin], warnings, cache)
+        .into_iter()
+        .find(|file| file.hash == pin.sha256)
+        .map(|file| file.path)
+}
+
+fn matches_cached(path: &Path, pin: &FirmwarePin, cache: &mut HashCache) -> bool {
+    fs::metadata(path).is_ok_and(|metadata| metadata.is_file() && pin.accepts_size(metadata.len()))
+        && cache.hash(path).is_ok_and(|hash| hash == pin.sha256)
+}
+
+fn declared_match(cache: &HashCache, path: &Path) {
+    if let Some(control) = &cache.control {
+        control.update(|progress| {
+            progress.candidates += 1;
+            progress.checked += 1;
+            progress.matches += 1;
+        });
+        control.found(format!(
+            "<declared ROM>/{}: found (declared path)",
+            path.file_name().unwrap_or_default().to_string_lossy()
+        ));
+    }
+}
+
+fn resolve(
+    roots: &[FirmwareRoot],
+    image: Option<&Path>,
+    assembled: Option<&FirmwarePin>,
+    parts: &[PinnedPart],
+    warnings: &mut Vec<String>,
+    cache: &mut HashCache,
+) -> Option<ImageSource> {
+    if let (Some(path), Some(pin)) = (image, assembled) {
+        if matches_cached(path, pin, cache) {
+            declared_match(cache, path);
+            return Some(ImageSource::File(path.into()));
+        }
+    }
+    if !parts.is_empty() && parts_match(parts, assembled, cache) {
+        for part in parts {
+            declared_match(cache, &part.part.path);
+        }
+        return Some(ImageSource::Interleaved(
+            parts.iter().map(|p| p.part.clone()).collect(),
+        ));
+    }
+    let pins = assembled
+        .into_iter()
+        .chain(parts.iter().filter_map(|part| part.pin.as_ref()))
+        .collect::<Vec<_>>();
+    if pins.is_empty() {
+        return None;
+    }
+    let candidates = collect_candidates(roots, &pins, warnings, cache);
+    let mut resolved = parts.to_vec();
+    for part in &mut resolved {
+        if let Some(pin) = &part.pin {
+            if matches_cached(&part.part.path, pin, cache) {
                 continue;
             }
-            Err(error) => {
-                // The optional vendor directory is normally absent in a checkout.
-                if root.origin != RootOrigin::Vendor || error.kind() != io::ErrorKind::NotFound {
-                    warnings.push(format!(
-                        "{}: skipped ({})",
-                        root.origin.label(),
-                        error.kind()
-                    ));
-                }
-                continue;
+            if let Some(file) = candidates
+                .iter()
+                .find(|file| pin.accepts_size(file.size) && file.hash == pin.sha256)
+            {
+                part.part.path = file.path.clone();
             }
-        };
-        let mut scan = FrontendScan {
-            root: SearchRoot {
-                path: root.path.clone(),
-                label: root.origin.label(),
-                external: false,
-            },
-            canonical_root,
-            pin,
-            cache,
-            warnings,
-            visited: BTreeSet::new(),
-            found: None,
-        };
-        scan.visit(&root.path);
-        if scan.found.is_some() {
-            return scan.found;
+        }
+    }
+    if !resolved.is_empty() && parts_match(&resolved, assembled, cache) {
+        return Some(ImageSource::Interleaved(
+            resolved.into_iter().map(|p| p.part).collect(),
+        ));
+    }
+    if let Some(pin) = assembled {
+        if let Some(file) = candidates
+            .iter()
+            .find(|file| pin.accepts_size(file.size) && file.hash == pin.sha256)
+        {
+            return Some(ImageSource::File(file.path.clone()));
         }
     }
     None
 }
 
-/// Resolve pinned firmware before assembly. Unusable roots/entries are warnings;
-/// they cannot prevent a later directory from supplying a valid image. Directory
-/// symlinks are followed only while their target stays inside the selected root.
+/// Resolve all pins in one folder walk before assembly. Unusable roots and
+/// entries are warnings; directory symlinks cannot leave the selected root.
+/// A scoped discovery session enables persistence, progress and cancellation.
 pub fn locate_firmware_with_roots(
     roots: &[FirmwareRoot],
     image: Option<&Path>,
@@ -233,49 +438,17 @@ pub fn locate_firmware_with_roots(
     parts: &[PinnedPart],
     warnings: &mut Vec<String>,
 ) -> Result<Option<ImageSource>, UserFirmwareError> {
-    if let (Some(path), Some(pin)) = (image, assembled) {
-        if matches_file(path, pin).unwrap_or(false) {
-            return Ok(Some(ImageSource::File(path.into())));
+    persistent::with_cache(|cache| {
+        let found = resolve(roots, image, assembled, parts, warnings, cache);
+        if cache
+            .control
+            .as_ref()
+            .is_some_and(DiscoveryControl::is_cancelled)
+        {
+            return Err(UserFirmwareError::Cancelled);
         }
-    }
-    if !parts.is_empty() && parts_match(parts, assembled) {
-        return Ok(Some(ImageSource::Interleaved(
-            parts.iter().map(|p| p.part.clone()).collect(),
-        )));
-    }
-    let mut cache = shared_cache()
-        .lock()
-        .map_err(|_| UserFirmwareError::CacheUnavailable)?;
-    let mut resolved = parts.to_vec();
-    for part in &mut resolved {
-        if let Some(pin) = &part.pin {
-            if cache
-                .hash(&part.part.path)
-                .is_ok_and(|hash| hash == pin.sha256)
-            {
-                continue;
-            }
-            if let Some(path) = find_image(roots, pin, warnings, &mut cache) {
-                part.part.path = path;
-            }
-        }
-    }
-    // Layout verification uses the same cache, so release the scan lock first.
-    drop(cache);
-    if !resolved.is_empty() && parts_match(&resolved, assembled) {
-        return Ok(Some(ImageSource::Interleaved(
-            resolved.into_iter().map(|p| p.part).collect(),
-        )));
-    }
-    if let Some(pin) = assembled {
-        let mut cache = shared_cache()
-            .lock()
-            .map_err(|_| UserFirmwareError::CacheUnavailable)?;
-        if let Some(path) = find_image(roots, pin, warnings, &mut cache) {
-            return Ok(Some(ImageSource::File(path)));
-        }
-    }
-    Ok(None)
+        Ok(found)
+    })
 }
 
 #[cfg(test)]
@@ -295,6 +468,213 @@ mod tests {
             .iter()
             .map(|path| FirmwareRoot::new(*path, RootOrigin::Preferences))
             .collect()
+    }
+
+    #[test]
+    fn all_chip_pins_share_one_listing() {
+        let temp = TempDir::new("single-firmware-walk");
+        let mut parts = Vec::new();
+        for index in 0..4 {
+            let bytes = [index; 512];
+            fs::write(temp.path().join(format!("chip-{index}")), bytes).unwrap();
+            parts.push(PinnedPart {
+                part: ImagePart {
+                    path: temp.path().join("absent"),
+                    lane: if index % 2 == 0 {
+                        crate::Lane::Even
+                    } else {
+                        crate::Lane::Odd
+                    },
+                    offset: (index / 2) as u64 * 1024,
+                },
+                pin: Some(pin(&bytes, Some(512))),
+            });
+        }
+        let control = DiscoveryControl::default();
+        let assembled = [[0, 1].repeat(512), [2, 3].repeat(512)].concat();
+        with_discovery_session(None, false, &control, || {
+            assert!(matches!(
+                locate_firmware_with_roots(
+                    &roots(&[temp.path()]),
+                    None,
+                    Some(&pin(&assembled, Some(2048))),
+                    &parts,
+                    &mut Vec::new(),
+                )
+                .unwrap(),
+                Some(ImageSource::Interleaved(_))
+            ));
+        });
+        assert_eq!(control.snapshot().listed, 4);
+        assert_eq!(
+            control.snapshot().files_read,
+            if cfg!(windows) { 8 } else { 4 }
+        );
+        assert_eq!(control.snapshot().candidates, 4);
+    }
+
+    #[test]
+    fn declared_oversized_images_and_parts_are_not_read() {
+        let temp = TempDir::new("bounded-declared-firmware");
+        let large = temp.path().join("oversized");
+        fs::File::create(&large)
+            .unwrap()
+            .set_len(2 * 1024 * 1024)
+            .unwrap();
+        let oversized = FirmwarePin {
+            sha256: format!("{:x}", Sha256::digest(vec![0; 2 * 1024 * 1024])),
+            length: Some(2 * 1024 * 1024),
+        };
+        assert!(!matches_file(&large, &oversized).unwrap());
+        let mut cache = HashCache::default();
+        assert!(resolve(
+            &[],
+            Some(&large),
+            Some(&oversized),
+            &[],
+            &mut Vec::new(),
+            &mut cache
+        )
+        .is_none());
+        assert_eq!(cache.calls, 0);
+        let parts = [PinnedPart {
+            part: ImagePart {
+                path: large,
+                lane: crate::Lane::Even,
+                offset: 0,
+            },
+            pin: Some(oversized),
+        }];
+        assert!(resolve(&[], None, None, &parts, &mut Vec::new(), &mut cache).is_none());
+        assert_eq!(cache.calls, 0);
+    }
+
+    #[test]
+    fn session_reuses_one_listing_and_keeps_found_lines_after_size_skips() {
+        let temp = TempDir::new("firmware-session-listing");
+        for index in 0..300 {
+            fs::write(temp.path().join(format!("a-skip-{index}")), [0; 3]).unwrap();
+        }
+        fs::write(temp.path().join("z-first"), [1; 512]).unwrap();
+        fs::write(temp.path().join("z-second"), [2; 1024]).unwrap();
+        let pins = [pin(&[1; 512], Some(512)), pin(&[2; 1024], Some(1024))];
+        let control = DiscoveryControl::default();
+        with_discovery_session(None, false, &control, || {
+            with_firmware_pins(&pins, || {
+                for expected in &pins {
+                    assert!(locate_firmware_with_roots(
+                        &roots(&[temp.path()]),
+                        None,
+                        Some(expected),
+                        &[],
+                        &mut Vec::new()
+                    )
+                    .unwrap()
+                    .is_some());
+                    assert_eq!(control.snapshot().listed, 302);
+                    assert_eq!(control.snapshot().candidates, 2);
+                    assert_eq!(control.snapshot().checked, 2);
+                    assert_eq!(control.snapshot().phase, DiscoveryPhase::Hashing);
+                }
+            })
+        });
+        let progress = control.snapshot();
+        assert_eq!(progress.matches, 2);
+        assert_eq!(progress.size_skipped, 300);
+        assert_eq!(
+            progress
+                .results
+                .iter()
+                .filter(|line| line.contains("size is not a candidate"))
+                .count(),
+            1
+        );
+        assert_eq!(
+            progress
+                .results
+                .iter()
+                .filter(|line| line.contains(": found ("))
+                .count(),
+            2
+        );
+        let control = DiscoveryControl::default();
+        for index in 0..300 {
+            control.result(format!("skip {index}"));
+        }
+        for index in 0..300 {
+            control.found(format!("match {index}"));
+        }
+        assert_eq!(control.snapshot().results.len(), 556);
+    }
+
+    #[test]
+    fn unpinned_odd_sized_declared_parts_do_not_walk_folders() {
+        let temp = TempDir::new("odd-declared-parts");
+        let mut parts = Vec::new();
+        for lane in [crate::Lane::Even, crate::Lane::Odd] {
+            let path = temp.path().join(format!("{lane:?}"));
+            fs::write(&path, [1; 3]).unwrap();
+            parts.push(PinnedPart {
+                part: ImagePart {
+                    path,
+                    lane,
+                    offset: 0,
+                },
+                pin: None,
+            });
+        }
+        let control = DiscoveryControl::default();
+        with_discovery_session(None, false, &control, || {
+            assert!(locate_firmware_with_roots(
+                &roots(&[temp.path()]),
+                None,
+                None,
+                &parts,
+                &mut Vec::new()
+            )
+            .unwrap()
+            .is_some());
+        });
+        assert_eq!(control.snapshot().listed, 0);
+    }
+
+    #[cfg(all(unix, not(windows)))]
+    #[test]
+    fn failed_subdirectory_listing_keeps_its_cached_children() {
+        use std::os::unix::fs::PermissionsExt;
+        let temp = TempDir::new("firmware-failed-listing");
+        let root = temp.path().join("roms");
+        let locked = root.join("locked");
+        fs::create_dir_all(&locked).unwrap();
+        let file = locked.join("rom");
+        fs::write(&file, [1; 512]).unwrap();
+        let path = temp.path().join("index");
+        with_discovery_session(Some(&path), false, &DiscoveryControl::default(), || {
+            persistent::with_cache(|cache| {
+                cache.hash_time =
+                    Some(std::time::SystemTime::now() + std::time::Duration::from_secs(10));
+                cache.hash(&file).unwrap();
+                Ok(())
+            })
+            .unwrap();
+        });
+        let before = fs::read(&path).unwrap();
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o0)).unwrap();
+        let mut warnings = Vec::new();
+        with_discovery_session(Some(&path), false, &DiscoveryControl::default(), || {
+            assert!(locate_firmware_with_roots(
+                &roots(&[&root]),
+                None,
+                Some(&pin(&[1; 512], Some(512))),
+                &[],
+                &mut warnings
+            )
+            .unwrap()
+            .is_none());
+        });
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(!warnings.is_empty());
+        assert_eq!(fs::read(&path).unwrap(), before);
     }
 
     #[test]

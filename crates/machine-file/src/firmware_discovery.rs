@@ -4,7 +4,7 @@
 
 use crate::{schema::v1, LoadError, LowerError, MachineFile, Origins};
 use assembly::firmware_discovery::{
-    locate_firmware_with_roots, FirmwarePin, FirmwareRoot, PinnedPart,
+    locate_firmware_with_roots, with_firmware_pins, FirmwarePin, FirmwareRoot, PinnedPart,
 };
 use std::path::Path;
 
@@ -17,21 +17,48 @@ pub(crate) fn resolve(
     if roots.is_empty() {
         return Ok(());
     }
-    if let Some(firmware) = &mut document.firmware {
-        if let Some(bios) = &mut firmware.bios {
-            rom(bios, "firmware.bios", origins, roots, warnings)?;
+    let pins = document
+        .firmware
+        .iter()
+        .flat_map(|firmware| {
+            firmware
+                .bios
+                .iter()
+                .chain(firmware.option_roms.iter().flatten())
+        })
+        .flat_map(|rom| {
+            rom.sha256.iter().chain(
+                rom.parts
+                    .iter()
+                    .flatten()
+                    .filter_map(|part| part.sha256.as_ref()),
+            )
+        })
+        .map(|pin| {
+            FirmwarePin::from_catalogue(
+                pin.as_str(),
+                assembly::BoardModel::Ibm5170.firmware_catalogue(),
+                None,
+            )
+        })
+        .collect::<Vec<_>>();
+    with_firmware_pins(&pins, || {
+        if let Some(firmware) = &mut document.firmware {
+            if let Some(bios) = &mut firmware.bios {
+                rom(bios, "firmware.bios", origins, roots, warnings)?;
+            }
+            for (index, option) in firmware.option_roms.iter_mut().flatten().enumerate() {
+                rom(
+                    option,
+                    &format!("firmware.option_roms[{index}]"),
+                    origins,
+                    roots,
+                    warnings,
+                )?;
+            }
         }
-        for (index, option) in firmware.option_roms.iter_mut().flatten().enumerate() {
-            rom(
-                option,
-                &format!("firmware.option_roms[{index}]"),
-                origins,
-                roots,
-                warnings,
-            )?;
-        }
-    }
-    Ok(())
+        Ok(())
+    })
 }
 
 fn rom(
@@ -111,4 +138,49 @@ fn path_text(path: &Path) -> Result<String, LoadError> {
     path.to_str().map(str::to_owned).ok_or_else(|| {
         crate::ParseError::new(path, None, "discovered ROM path is not valid Unicode", None).into()
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use assembly::{
+        firmware_discovery::{with_discovery_session, DiscoveryControl, RootOrigin},
+        test_support::TempDir,
+    };
+    use sha2::{Digest, Sha256};
+
+    #[test]
+    fn bios_and_option_roms_share_one_listing_and_progress_total() {
+        let temp = TempDir::new("machine-firmware-session");
+        let root = temp.path().join("roms");
+        std::fs::create_dir(&root).unwrap();
+        let bios = vec![1; 32768];
+        let option = vec![2; 16384];
+        std::fs::write(root.join("bios"), &bios).unwrap();
+        std::fs::write(root.join("option"), &option).unwrap();
+        let machine = temp.path().join("machine.toml");
+        std::fs::write(&machine, format!("schema=1\n[board]\nmodel='ibm-5170'\n[firmware.bios]\nimage='absent-bios'\nsha256='{:x}'\n[[firmware.option_roms]]\nimage='absent-option'\nsha256='{:x}'\nbase=0xC0000\n", Sha256::digest(&bios), Sha256::digest(&option))).unwrap();
+        let control = DiscoveryControl::default();
+        with_discovery_session(None, false, &control, || {
+            let prepared = crate::prepare_for_assembly_with_firmware_roots(
+                &machine,
+                &[FirmwareRoot::new(&root, RootOrigin::CommandLine)],
+                &mut Vec::new(),
+            )
+            .unwrap();
+            let firmware = prepared.document.firmware.unwrap();
+            assert!(firmware.bios.unwrap().image.unwrap().ends_with("bios"));
+            assert!(firmware.option_roms.unwrap()[0]
+                .image
+                .as_ref()
+                .unwrap()
+                .ends_with("option"));
+        });
+        let progress = control.snapshot();
+        assert_eq!(progress.listed, 2);
+        assert_eq!(progress.candidates, 2);
+        assert_eq!(progress.checked, 2);
+        assert_eq!(progress.files_read, 2);
+        assert_eq!(progress.matches, 2);
+    }
 }

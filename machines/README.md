@@ -117,6 +117,40 @@ leave a chosen root and uses catalogue lengths or bounded ROM sizes to avoid
 hashing unrelated archives. Preferences are saved atomically and preserve unknown
 fields written by newer versions.
 
+The desktop keeps a local SHA-256 index at
+`~/Library/Caches/unemupc98/firmware-index.v2` on macOS,
+`$XDG_CACHE_HOME/unemupc98/firmware-index.v2` on Linux (default
+`~/.cache/unemupc98/firmware-index.v2`). Persistence is currently disabled on
+Windows; discovery rehashes files there. The index contains the user's
+own canonical paths, lengths, timestamps, file identities where available and
+hashes, never ROM bytes; it stays local. Fresh metadata validates every hit.
+A changed file is hashed again; hashes taken within two seconds of the file's
+mtime or change time are not persisted, protecting against coarse timestamps.
+A corrupt or unknown-version index is rebuilt. An unchanged index is not rewritten;
+unreadable indexes are preserved. Stale temporary index files are swept after five minutes.
+Successful directory listings remove missing direct-child entries; unavailable
+directories retain their cached children. Hashes for other folders and pin sizes
+are preserved, capped at 4096 entries and 16 MiB, evicting unseen entries first.
+Cache write failures remain nonfatal.
+
+The fixed-height status message pane and Locate firmware dialog show a segmented
+progress bar: listing is indeterminate, then hashing shows checked candidates
+(including cache hits) against the total, plus match counts. One listing is shared
+by the BIOS and option ROMs. All found lines are retained; up to 256 skipped lines
+are shown, with one summary for size skips. **Check again** uses the normal cache;
+**Rescan** ignores cached hashes for that run. Both use the dialog's current folders.
+
+**Cancel scan** stops discovery between files and hash chunks, retaining completed,
+non-racy hashes; an in-flight operating-system network call must return first.
+The following **Loading machine…** phase reads ROMs and pinned disks through the
+normal loader and cannot be cancelled mid-read. A cancellation during that phase
+is applied when loading returns. Cancelled checks keep Start disabled until a
+normal **Check again** resolves them. Save persists folders and refreshes readiness.
+Closing with **Cancel** discards draft folders: a saved-folder job continues, while
+a job using different draft folders is superseded by an automatic cached recheck.
+Idle dialogs show no scan status. Discovery and loading run on the host worker
+and never advance guest time.
+
 The CLI accepts repeatable ROM directories for both validation and running:
 
 ```sh
