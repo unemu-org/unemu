@@ -5,6 +5,7 @@
 //! tables preserve TOML error positions; kind-specific checks belong to lowering.
 //! Optional fields preserve override intent until the `extends` merge.
 
+pub mod projection;
 mod values;
 pub use values::*;
 

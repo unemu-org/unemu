@@ -13,6 +13,8 @@ name = "unemupc98"
 path = "src/main.rs"
 
 [dependencies]
+pc-image = { path = "../pc-image", version = "0.1.0" }
+image-store = { path = "../image-store", version = "0.1.0" }
 machine-file.workspace = true
 anyhow.workspace = true
 assembly.workspace = true

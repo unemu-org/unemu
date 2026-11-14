@@ -17,6 +17,7 @@ crate: `machine-file` reads and hashes declared images into inline buffers,
 
 | Crate | Responsibility | Runtime dependencies | Test-only dependencies |
 | --- | --- | --- | --- |
+| `pc-image` | IBM PC/AT provider, resolved bundle-profile validation, machine-file import and read-only journal freezing | `assembly`, `machine-file`, `media`, `image-store`, `serde`, `toml`, `thiserror` | `cpu`, `machine` |
 | `image-store` | Platform-neutral OCI Image Layout, streaming SHA-256 blobs, deterministic machine manifests, provider-validated closure and atomic compare-and-swap local tags | `serde`, `serde_json`, `toml`, `sha2`, `thiserror`, `libc` (Unix) | None |
 | `media` | Floppy journal encoding, streaming recovery/replay, retention-anchor validation, durable host sink and stable single-writer locks ([format](design/persistent-media.md#chosen-format-byte-layout)) | `sha2`, `thiserror`, `libc` (Unix) | None |
 | `device` | Hardware-neutral contracts: `Device`, `InterruptController`, `DmaMemory`, `VClock`, `NextEvent`, access traces, DMA messages, and the observation capabilities (text scanout, byte output, `ByteCapture`) | `thiserror` | None |
@@ -30,7 +31,7 @@ crate: `machine-file` reads and hashes declared images into inline buffers,
 | `machine-file` | Schema 1 TOML/YAML parsing, source origins, image hashing and lowering through assembly validation; merging remains deferred ([schema](design/machine-files.md#schema-field-by-field)) | `assembly`, `serde`, `sha2`, `toml`, `serde-saphyr`, `thiserror` | None |
 | `window` | CP437 rasteriser, shared `FrameSink`, and egui desktop shell | `video`, `device`, `assembly`, `machine`, `winit`, `egui`, `eframe` | `cpu`, `assembly/test-support` |
 | `testkit` | Single-device `MockBus`, scripted `MockCpu`, golden assertions | `device`, `cpu` | None |
-| `cli` | Binary and runner library: guest programs, assembly/policy selection, output capture and stop diagnostics | `assembly`, `device`, `bus`, `cpu`, `chipset`, `machine`, `devices`, `video`, `anyhow` | `testkit`, `machine/reference-scheduler`, `assembly/reference-scheduler`, `assembly/test-support` |
+| `cli` | Binary and runner library: guest programs, assembly/policy selection, output capture and stop diagnostics | `assembly`, `device`, `bus`, `cpu`, `chipset`, `machine`, `devices`, `video`, `anyhow`, `pc-image`, `image-store` | `testkit`, `machine/reference-scheduler`, `assembly/reference-scheduler`, `assembly/test-support` |
 
 Concrete hardware selection lives in `assembly` and the frontend. `machine`
 does not depend on `chipset`, `devices`, `video`, or x86jit directly. `Bus` is a
@@ -93,9 +94,29 @@ files are reused. Locality checks and a lock probe reject unsupported roots;
 Linux currently accepts ext-family, tmpfs, Btrfs, XFS, ZFS, F2FS and overlayfs;
 opening also probes no-clobber publication. macOS uses
 the filesystem's local flag, and other hosts are refused. This crate does not
-implement machine-file import, providers, disk reconstruction, workspaces,
+implement PC machine-file import, disk reconstruction, workspaces,
 registry transfer, quarantine/damage tracking or GC. Future GC must take the
 exclusive store lease before deleting any objects.
+
+`pc-image` is the PC-side provider: it depends on `machine-file`, `assembly`
+and the shared store, with no reverse dependency from `image-store`. Import first
+uses the existing extends resolver and origin-aware loader, then projects schema-1
+hardware into the bundle profile and replaces host paths with logical asset
+bindings. Complete firmware containers/chips, every catalogue medium and CMOS
+become verified blobs. The provider validates media descriptors and geometry without reading their
+payloads into memory; bounded placeholders let the existing schema/lowering
+validate the hardware, followed by file-backed bindings and final assembly
+validation. Resolution prepares once and keeps full SHA-256 pins for assembly.
+Imports materialize lowering defaults into immutable schema-1 hardware. Source directories are
+never a runtime fallback. Resolution puts persistent outputs under a caller-owned
+session directory; immutable bases stay in the store. Journal snapshots use an existing shared source lock when present and never
+create one in the source folder. Private recovery reuses the scanner and streams
+the resulting overlay directly into blob ingestion. Abandoned `pc-import-v1-*`
+staging directories are swept under an exclusive importer lock. Local records
+under `local/imports/<image-digest>.toml` report each medium policy and independent
+recovery choice; they are outside image identity and do not claim a synchronized
+machine snapshot. Firmware-root discovery and origin paths remain machine-file
+APIs, with exhaustive projection views guarding schema evolution. No layer or registry support is added.
 
 ## From configuration to a run
 

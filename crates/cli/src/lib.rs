@@ -13,6 +13,7 @@
 
 pub mod command;
 pub mod create;
+mod image;
 
 use anyhow::{Context, Result};
 use assembly::{

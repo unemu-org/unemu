@@ -658,9 +658,11 @@ dependencies = [
  "cpu",
  "device",
  "devices",
+ "image-store",
  "machine",
  "machine-file",
  "media",
+ "pc-image",
  "testkit",
  "video",
 ]
@@ -2481,6 +2483,21 @@ dependencies = [
  "redox_syscall 0.5.18",
  "smallvec",
  "windows-link",
+]
+
+[[package]]
+name = "pc-image"
+version = "0.1.0"
+dependencies = [
+ "assembly",
+ "cpu",
+ "image-store",
+ "machine",
+ "machine-file",
+ "media",
+ "serde",
+ "thiserror 1.0.69",
+ "toml",
 ]
 
 [[package]]

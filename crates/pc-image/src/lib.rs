@@ -1,0 +1,305 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+//! IBM PC/AT OCI bundle import and validation; machine-images §§1–2, 4, 5 and 8.
+//! Hardware parsing, defaults and catalogue checks remain in machine-file and assembly.
+//! The platform-neutral store never depends on this provider.
+
+mod defaults;
+mod encode;
+mod import;
+mod provider;
+
+pub use import::{import_machine, ChosenGeneration, ImportOptions, ImportRecord, RecoveryChoice};
+pub use provider::{resolve, PcProvider, CMOS, PAYLOAD_TYPES};
+
+use image_store::{Descriptor, Digest};
+use serde::{Deserialize, Serialize};
+
+/// Import and bundle validation failures, preserving source diagnostics.
+#[derive(Debug, thiserror::Error)]
+pub enum Error {
+    #[error(transparent)]
+    Store(#[from] image_store::Error),
+    #[error(transparent)]
+    Load(#[from] machine_file::LoadError),
+    #[error(transparent)]
+    Lower(#[from] machine_file::LowerError),
+    #[error(transparent)]
+    Io(#[from] std::io::Error),
+    #[error(transparent)]
+    Journal(#[from] media::offline::ToolError),
+    #[error("invalid PC image: {0}")]
+    Invalid(String),
+}
+
+pub type Result<T> = std::result::Result<T, Error>;
+fn invalid(message: impl Into<String>) -> Error {
+    Error::Invalid(message.into())
+}
+fn decode<T: serde::de::DeserializeOwned>(table: toml::Table) -> Result<T> {
+    toml::Value::Table(table)
+        .try_into()
+        .map_err(|e: toml::de::Error| invalid(e.to_string()))
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Config {
+    schema: u32,
+    platform: String,
+    machine: toml::Table,
+    #[serde(default)]
+    firmware: Vec<Firmware>,
+    #[serde(default)]
+    media: Vec<Medium>,
+    #[serde(default)]
+    slots: Vec<Slot>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    nvram: Option<Nvram>,
+}
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Firmware {
+    key: String,
+    source: String,
+    blob: Digest,
+}
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Medium {
+    #[serde(deserialize_with = "medium_id")]
+    id: String,
+    source: String,
+    head: Digest,
+    name: Option<String>,
+    policy: Policy,
+    geometry: Geometry,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+/// Local media persistence intent, independent of a chosen recovery generation.
+pub enum Policy {
+    Readonly,
+    Volatile,
+    Journal,
+}
+impl Policy {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Readonly => "readonly",
+            Self::Volatile => "volatile",
+            Self::Journal => "journal",
+        }
+    }
+    fn from_write(write: &assembly::WriteMode) -> Self {
+        match write {
+            assembly::WriteMode::ReadOnly => Self::Readonly,
+            assembly::WriteMode::Volatile => Self::Volatile,
+            assembly::WriteMode::Journal { .. } => Self::Journal,
+        }
+    }
+    fn write(self, path: std::path::PathBuf) -> assembly::WriteMode {
+        match self {
+            Self::Readonly => assembly::WriteMode::ReadOnly,
+            Self::Volatile => assembly::WriteMode::Volatile,
+            Self::Journal => assembly::WriteMode::journal(path),
+        }
+    }
+}
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Geometry {
+    cylinders: u32,
+    heads: u32,
+    sectors: u32,
+    sector_bytes: u32,
+}
+impl Geometry {
+    fn of(kind: assembly::DriveKind) -> Self {
+        match kind {
+            assembly::DriveKind::Floppy { geometry: g } => Self {
+                cylinders: g.cylinders,
+                heads: g.heads,
+                sectors: g.sectors_per_track,
+                sector_bytes: g.bytes_per_sector,
+            },
+            assembly::DriveKind::HardDisk { geometry: g } => Self {
+                cylinders: g.cylinders,
+                heads: g.heads,
+                sectors: g.sectors_per_track,
+                sector_bytes: g.bytes_per_sector,
+            },
+        }
+    }
+}
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Slot {
+    controller: String,
+    unit: u8,
+    catalogue: Vec<String>,
+    catalogue_mode: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    inserted: Option<String>,
+}
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Nvram {
+    mode: NvramMode,
+    source: String,
+    head: Digest,
+}
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum NvramMode {
+    Image,
+    Journal,
+}
+
+fn descriptor(descriptors: &[Descriptor], digest: &Digest, kind: &str) -> Result<Descriptor> {
+    descriptors
+        .iter()
+        .find(|d| &d.digest == digest && d.media_type == kind)
+        .cloned()
+        .ok_or_else(|| invalid(format!("missing {kind} descriptor for {digest}")))
+}
+
+fn firmware_images(
+    table: &mut toml::Table,
+    mut visit: impl FnMut(&str, &mut toml::Table) -> Result<()>,
+) -> Result<()> {
+    let Some(firmware) = table
+        .get_mut("firmware")
+        .and_then(toml::Value::as_table_mut)
+    else {
+        return Ok(());
+    };
+    let mut roms = Vec::new();
+    if let Some(bios) = firmware.get_mut("bios") {
+        roms.push(("firmware.bios".to_owned(), bios));
+    }
+    for (field, rom) in roms {
+        visit_rom(&field, rom, &mut visit)?;
+    }
+    if let Some(roms) = firmware
+        .get_mut("option_roms")
+        .and_then(toml::Value::as_array_mut)
+    {
+        for (i, rom) in roms.iter_mut().enumerate() {
+            visit_rom(&format!("firmware.option_roms[{i}]"), rom, &mut visit)?;
+        }
+    }
+    Ok(())
+}
+fn visit_rom(
+    field: &str,
+    rom: &mut toml::Value,
+    visit: &mut impl FnMut(&str, &mut toml::Table) -> Result<()>,
+) -> Result<()> {
+    let rom = rom
+        .as_table_mut()
+        .ok_or_else(|| invalid("ROM must be a table"))?;
+    if let Some(parts) = rom.get_mut("parts").and_then(toml::Value::as_array_mut) {
+        for (i, part) in parts.iter_mut().enumerate() {
+            visit(
+                &format!("{field}.parts[{i}]"),
+                part.as_table_mut()
+                    .ok_or_else(|| invalid("ROM part must be a table"))?,
+            )?;
+        }
+    } else {
+        visit(field, rom)?;
+    }
+    Ok(())
+}
+fn drive_tables(
+    machine: &mut toml::Table,
+    mut visit: impl FnMut(&str, &str, &mut toml::Table) -> Result<()>,
+) -> Result<()> {
+    if let Some(cards) = machine.get_mut("card").and_then(toml::Value::as_array_mut) {
+        for card in cards {
+            let card = card
+                .as_table_mut()
+                .ok_or_else(|| invalid("card must be a table"))?;
+            let kind = card
+                .get("kind")
+                .and_then(toml::Value::as_str)
+                .ok_or_else(|| invalid("missing card kind"))?
+                .to_owned();
+            let id = card
+                .get("id")
+                .and_then(toml::Value::as_str)
+                .unwrap_or(&kind)
+                .to_owned();
+            if let Some(drives) = card.get_mut("drives").and_then(toml::Value::as_array_mut) {
+                for drive in drives {
+                    visit(
+                        &id,
+                        &kind,
+                        drive
+                            .as_table_mut()
+                            .ok_or_else(|| invalid("drive must be a table"))?,
+                    )?;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+fn unit(kind: &str, drive: &toml::Table) -> Result<u8> {
+    if kind == "ide" {
+        match drive.get("channel").and_then(toml::Value::as_str) {
+            Some("master") => Ok(0),
+            Some("slave") => Ok(1),
+            _ => Err(invalid("invalid IDE channel")),
+        }
+    } else {
+        drive
+            .get("unit")
+            .and_then(toml::Value::as_integer)
+            .and_then(|n| u8::try_from(n).ok())
+            .ok_or_else(|| invalid("missing drive unit"))
+    }
+}
+
+fn validate_bios(config: &assembly::MachineConfig) -> Result<()> {
+    let bios = config
+        .images
+        .iter()
+        .find(|image| {
+            image.kind == assembly::ImageKind::Rom
+                && image
+                    .source
+                    .known_len()
+                    .and_then(|n| image.base.checked_add(n))
+                    == Some(0x100000)
+        })
+        .ok_or_else(|| invalid("missing resolved system BIOS"))?;
+    let assembly::ImageSource::Inline(bytes) = &bios.source else {
+        return Err(invalid("system BIOS must already be resolved"));
+    };
+    assembly::check_board_system_bios(
+        config,
+        config.board,
+        bios.base,
+        bytes,
+        assembly::AssemblyOptions::default(),
+    )
+    .map_err(|e| invalid(e.to_string()))?;
+    Ok(())
+}
+
+fn medium_id<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> std::result::Result<String, D::Error> {
+    let id = String::deserialize(deserializer)?;
+    if id == "cmos"
+        || id.is_empty()
+        || id.len() > 32
+        || !id
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+    {
+        return Err(serde::de::Error::custom("invalid or reserved medium id"));
+    }
+    Ok(id)
+}

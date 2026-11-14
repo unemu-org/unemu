@@ -64,7 +64,8 @@ impl Origins {
             .filter(|file| !file.to_string_lossy().starts_with("preset:"))
     }
 
-    pub(crate) fn image_path(&self, field: &str, image: &str) -> PathBuf {
+    /// Resolve an asset against its defining layer, including preset and symlink origins.
+    pub fn image_path(&self, field: &str, image: &str) -> PathBuf {
         let origin = self.get(field);
         let file = if let Some(file) = self.image_files.get(&origin.file) {
             file

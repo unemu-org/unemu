@@ -2,6 +2,34 @@
 
 Everyday commands for this project. Keep this file **flat and copy-pasteable** — agents and humans both grep it.
 
+## Local machine images
+
+```sh
+cargo run --offline -p cli -- image import machines/at-freedos.toml --store /path/to/store --tag dos-lab:1.0 --create
+cargo run --offline -p cli -- image import /path/to/machine.yaml --store /path/to/store --tag dos-lab:recovered --recover medium-0=tip
+cargo run --offline -p cli -- image import /path/to/machine.toml --store /path/to/store --tag dos-lab:checkpoint --recover medium-0=generation:1
+cargo run --offline -p cli -- image ls --store /path/to/store
+```
+
+Import is opt-in and creates a new local tag using compare-and-swap against
+absence. Use another tag when the name exists. It resolves inheritance, verifies
+firmware catalogue identities and full media SHA-256, and copies all required
+bytes into the store. No input is rewritten. Interrupted journal tails require
+`--recover MEDIUM=tip` (the command-complete recovered tip) or
+`--recover MEDIUM=generation:N` (a retained closed generation, including zero only
+when retained). Repeat the flag for independent choices; unnamed clean journals
+use their tip, and an unnamed interrupted journal reports its medium id and
+recoverable generations. `cmos` names NVRAM; disk/catalogue ids are `medium-0`,
+`medium-1`, etc., in effective traversal order. The local record under
+`local/imports/<image-digest>.toml` and CLI output record policy and generation
+separately; readonly/volatile media have no generation.
+Interior corruption blocks import. Frozen disks, floppies and CMOS are whole raw
+blobs. `--store` is required. Import uses an existing store unless `--create`
+explicitly allows initialization; listing never creates a store. Repeat
+`--rom-dir DIR` to locate pinned missing firmware through the same discovery path
+as machine-file runs. Tags are checked before ingest and again by CAS at publication.
+No platform default, layers or registry is selected.
+
 ## Build / run / test
 
 ```sh

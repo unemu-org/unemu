@@ -783,3 +783,47 @@ fn validate_tag(value: &str) -> Result<()> {
     }
     Ok(())
 }
+
+impl Store {
+    /// Open an initialized store without creating a directory or layout.
+    pub fn open_existing(root: impl AsRef<Path>) -> Result<Self> {
+        let root = root.as_ref().canonicalize()?;
+        host::require_local(&root)?;
+        let store = Self { root };
+        store.check_version()?;
+        let layout: Layout = decode_json(&read_bounded(
+            &store.root.join("images/oci-layout"),
+            MAX_SMALL_BLOB,
+        )?)?;
+        if layout.image_layout_version != "1.0.0" {
+            return Err(invalid("unsupported OCI image layout version"));
+        }
+        store.read_index()?;
+        Ok(store)
+    }
+
+    /// Return a checked immutable blob path for file-backed platform media.
+    /// This checks length and file kind; resolution performs the streamed hash.
+    pub fn blob_file_path(&self, digest: &Digest, size: u64) -> Result<PathBuf> {
+        let _lease = self.lease()?;
+        drop(self.open_inner(digest, size, "payload")?);
+        Ok(self.blob_path(digest))
+    }
+
+    /// Reject invalid or occupied tag names before an expensive ingest.
+    /// Publication must still use compare-and-swap to catch concurrent changes.
+    pub fn check_new_tag(&self, name: &str) -> Result<()> {
+        validate_tag(name)?;
+        let _lease = self.lease()?;
+        for raw in self.read_index()?.manifests {
+            if let Some(d) = local_descriptor(&raw)? {
+                if tag_name(&d) == Some(name) {
+                    return Err(Error::Conflict {
+                        current: Some(d.digest),
+                    });
+                }
+            }
+        }
+        Ok(())
+    }
+}

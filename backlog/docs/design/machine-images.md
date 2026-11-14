@@ -2,7 +2,8 @@
 
 Status: **desktop UX and toolkit accepted**, 2026-11-13. The local store core
 (`upc-5pw.6`), metadata codec, local overlays and summary cache (`upc-5pw.12`)
-are implemented in `crates/image-store`. Machine-file import, disk layers,
+are implemented in `crates/image-store`; PC machine-file import and bundle
+resolution (`upc-5pw.7`) are implemented in `crates/pc-image`. Disk layers,
 registry transport, image-store GUI integration and provider launch compilation
 remain separate; the corresponding sections describe those later contracts.
 
@@ -282,6 +283,7 @@ For `platform = "ibm-pc-at"`, `config.machine` is a flattened schema-1 machine
 TOML, with no `extends` or host endpoints. Use the current resolver first,
 preserving board/card order, defaults, RTC start, CPU/FPU, memory, ROM
 addresses/services, split-chip assembly and drive geometry.
+Import materializes all lowering defaults in schema-1 config, so later default changes cannot alter an existing image without changing its digest.
 Replace image paths with unique relative logical names (`assets/...`); these
 names are looked up only in manifest bindings, never opened on the host.
 Reject absolute paths, `..`, duplicate names, unresolved sources and unbound blobs.
@@ -1039,7 +1041,8 @@ import records the chosen generation separately for every disk/catalogue/CMOS.
 Copy the resulting bases and any verified converted layers into the OCI store;
 the image must run without the original journals, bases or firmware folders.
 
-This note implements none of the image store, registry transport or daemon.
+Implementation status: local store and PC import are implemented (`upc-5pw.6`,
+`upc-5pw.7`); registry transport and daemon remain unimplemented.
 Signatures, chunk-level dedup, encryption, qcow2 compatibility,
 OCI referrers, floppy sector layers,
 sibling-layer merge, deterministic install recipes, live multi-disk transactions,

@@ -17,6 +17,7 @@ members = [
     "crates/media",
     "crates/machine-file",
     "crates/image-store",
+    "crates/pc-image",
 ]
 
 [workspace.package]

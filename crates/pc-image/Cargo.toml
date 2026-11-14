@@ -1,0 +1,22 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+[package]
+name = "pc-image"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+description = "IBM PC/AT machine-file import and resolved OCI bundle provider."
+
+[dependencies]
+assembly.workspace = true
+machine-file.workspace = true
+media.workspace = true
+image-store = { path = "../image-store", version = "0.1.0" }
+serde.workspace = true
+toml.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+cpu.workspace = true
+machine.workspace = true

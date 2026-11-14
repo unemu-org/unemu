@@ -15,6 +15,8 @@ const USAGE: &str = "usage: unemupc98 --boot (Real16 timer demo)
        unemupc98 --bios PATH [--allow-unlisted-firmware]
        unemupc98 machine check FILE [--allow-unlisted-firmware] [--rom-dir DIR]...
        unemupc98 run --machine FILE [--rom-dir DIR]... [--max-steps N] [--idle-limit N] [--print CARD] [--allow-unlisted-firmware]
+       unemupc98 image import FILE --store DIR --tag NAME:TAG [--create] [--rom-dir DIR]... [--recover MEDIUM=tip|MEDIUM=generation:N]...
+       unemupc98 image ls --store DIR
        unemupc98 media create floppy --type 1.44M|1.2M|720K|360K OUT [--format] [--label NAME] [--force]
        unemupc98 media create hd (--chs C/H/S | --size SIZE[MiB|GiB]) OUT [--force]
        unemupc98 media generations --base IMG --journal J
@@ -25,6 +27,7 @@ DOS boot and interactive sessions: see crates/cli/tests/*dos*golden.rs\n";
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum Command {
+    Image(crate::image::ImageCommand),
     Usage,
     Boot,
     Bios {
@@ -67,6 +70,9 @@ pub enum Action {
 pub fn parse(args: &[OsString]) -> Result<Command, &'static str> {
     if args.is_empty() {
         return Ok(Command::Usage);
+    }
+    if args.first().is_some_and(|arg| arg == "image") {
+        return crate::image::parse(&args[1..]).map(Command::Image);
     }
     let mut options = assembly::AssemblyOptions::default();
     let mut frontend = Vec::new();
@@ -432,6 +438,9 @@ pub fn run(args: &[OsString], output: &mut impl Write, errors: &mut impl Write) 
             errors,
         )
         .map_err(frontend_error),
+        Command::Image(command) => {
+            crate::image::execute(command, output, errors).map_err(frontend_error)
+        }
         Command::Media(command) => execute(command, output),
         Command::Create(command) => {
             crate::create::execute(command, output).map_err(ToolError::from)

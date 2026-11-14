@@ -456,6 +456,11 @@ pub fn prepare_for_assembly_with_firmware_roots(
 }
 
 impl PreparedMachineFile {
+    /// Borrow the resolved, discovered document and its unchanged source origins.
+    pub fn resolved(&self) -> (&MachineFile, &Origins) {
+        (&self.document, &self.origins)
+    }
+
     /// Load the already-resolved document, verifying images without scanning roots.
     pub fn load(&self, options: assembly::AssemblyOptions) -> Result<LoadedMachine, LoadError> {
         let document = &self.document;
