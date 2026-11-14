@@ -62,3 +62,22 @@ machine, and get back the same floppies or discs when importing it elsewhere.
   approves first.
 - No CD-ROM work follows from this decision; optical support only reserves
   the format.
+
+## Amendment 2026-11-14: extras (loose files)
+
+The maintainer asked for loose files in a set too, for example a DOS release
+with its manuals, or a CD game with patches in zip or exe form. Accepted shape:
+
+1. **Extras in the config.** A set lists extras next to its media. Each extra
+   is a blob with its original file name, size, digest, a kind (document,
+   archive, executable or other) and an optional DOS 8.3 name.
+2. **Host side.** Documents open on the host from the library, without
+   starting a machine.
+3. **Guest side.** Chosen extras are packed on demand into a generated,
+   deterministic FAT transfer medium: a 1.44M floppy when they fit, otherwise
+   a FAT16 disk image. It is inserted like any other medium. An ISO variant
+   follows once CD-ROM emulation exists. There is no guest-side helper and no
+   host folder sharing.
+4. **Order of work.** The media-set codec and CLI import carry extras from the
+   start; the transfer-medium generator and the UI come after, the UI from an
+   updated mock-up that the maintainer approves first.
