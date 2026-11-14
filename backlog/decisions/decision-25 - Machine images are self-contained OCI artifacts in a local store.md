@@ -128,3 +128,23 @@ under its `unemu/` namespace.
   a `user-supplied` blob can be pushed only to a registry marked private, and
   never into the public `unemu/` namespace; pushes to `unemu/` require every
   blob to be `open`. The GUI offers no override.
+
+## Amendment 2026-11-14: tag grammar, no build metadata
+
+The OCI distribution specification limits a tag to
+`[A-Za-z0-9_][A-Za-z0-9._-]{0,127}`, so a `+` cannot be pushed. The
+maintainer accepted the consequence:
+
+- Every tag, local or pushed, follows that grammar. The client refuses any
+  other tag when it creates, saves or moves one, so a local tag can always be
+  pushed unchanged.
+- A version tag is `x.y.z` or `x.y.z-<pre-release>` (`1.0.0`, `1.1.0-rc1`).
+  Semantic-version build metadata (`1.0.0+build.5`) is not allowed; the
+  digest already identifies the build. The first amendment's "optionally with
+  a pre-release or build suffix" now reads "optionally with a pre-release
+  suffix".
+- Secrets live in one credential-store backend per operating system, detected
+  at run time: the macOS Keychain, the Secret Service on Linux (GNOME Keyring,
+  KWallet, KeePassXC) and the Windows Credential Manager. Without one the
+  password lasts for the session only; scripts and CI use environment
+  variables. A plain-text file is never used.
