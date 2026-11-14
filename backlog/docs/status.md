@@ -5,6 +5,22 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-14 — Buffered guest warm-reset input:** the shell's menu,
+  toolbar and Ctrl+Alt+End transfer the whole Ctrl/Alt/Del make-and-break chord
+  to the keyboard in one call. Its 16-byte typed buffer accepts keys while the
+  controller interface is disabled; FFh/F5h/F4h/F6h discard all unsent typed bytes,
+  preserving the controller output and ACK/BAT order (IBM PC AT Technical
+  Reference, Keyboard, Keyboard Buffer and Commands from the System). The
+  bounded overflow policy replaces the last buffered byte with 00h. Whole-script
+  golden injection retains its existing order. Snapshot version 9 saves and
+  validates the typed buffer. Host shortcuts now pass Ctrl/Alt taps to the guest
+  because modifier deferral was removed; Ctrl or Alt held alone reach games.
+  Consuming a host chord releases every already-forwarded modifier, and plain
+  Ctrl+C retains its make/break sequence. Mock-bus and headless tests cover
+  buffering under ADh, reset flushing, delivery, overflow and snapshot restore.
+  Both `user_rom_at_games_ctrl_alt_del_reboot` and its frame-chunk variant use
+  one-call typed injection; their existing pins await supervisor measurement.
+
 - **2026-11-13 — Machine settings capabilities:** assembly owns shared card,
   RAM, SB16/EMS/UART/IDE resource domains and defaults, video decodes, named
   floppy geometries and firmware slots. `capabilities::describe`, `choices`

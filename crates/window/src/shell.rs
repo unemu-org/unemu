@@ -271,7 +271,6 @@ struct Shell {
     consumed: BTreeSet<KeyCode>,
     held: BTreeSet<KeyCode>,
     guest_held: BTreeSet<KeyCode>,
-    pending_modifiers: Vec<KeyCode>,
     session: u64,
     modal_paused: bool,
     hidden: bool,
@@ -349,7 +348,6 @@ impl Shell {
             consumed: BTreeSet::new(),
             held: BTreeSet::new(),
             guest_held: BTreeSet::new(),
-            pending_modifiers: Vec::new(),
             session: 0,
             modal_paused: false,
             hidden: false,
@@ -411,7 +409,6 @@ impl Shell {
         self.consumed.clear();
         self.held.clear();
         self.guest_held.clear();
-        self.pending_modifiers.clear();
     }
 
     fn focus_guest(&mut self) {
@@ -654,9 +651,8 @@ impl Shell {
             Pause => { self.release_pointer(); self.paused = !self.paused; self.message = if self.paused { "Paused" } else { "Running" }.into(); },
             Stop | Library => { self.stop(); },
             PowerCycle => { if self.stop() { self.start(); } },
-            Reset => { self.guest_held.clear(); self.pending_modifiers.clear(); if let Some(presenter) = &mut self.presenter {
-                presenter.keyboard.release_all();
-                for key in [KeyCode::ControlLeft, KeyCode::AltLeft, KeyCode::Delete] { presenter.keyboard.key_event(key, ElementState::Pressed); }
+            Reset => { self.guest_held.clear(); if let Some(presenter) = &mut self.presenter {
+                presenter.keyboard.ctrl_alt_del();
             } },
             Next(unit) | Eject(unit) => if let Some(presenter) = &mut self.presenter {
                 presenter.media_events.push((unit, if matches!(command, Next(_)) { assembly::FloppyAction::Next } else { assembly::FloppyAction::Eject }));
@@ -1152,15 +1148,8 @@ impl Shell {
         }
     }
 
-    fn flush_modifiers(&mut self) {
-        for key in std::mem::take(&mut self.pending_modifiers) {
-            self.send_guest_key(key, ElementState::Pressed);
-        }
-    }
-
     fn consume_hotkey(&mut self, key: KeyCode) {
         self.consumed.insert(key);
-        self.pending_modifiers.clear();
         // A modifier already used by an earlier guest chord needs its break
         // before that same physical key becomes part of a host shortcut.
         let modifiers = self
@@ -1229,24 +1218,8 @@ impl Shell {
         if !self.guest_focus {
             return;
         }
-        if !pressed {
-            if self.pending_modifiers.contains(&key) {
-                if blocked || self.paused {
-                    self.pending_modifiers.retain(|pending| *pending != key);
-                } else {
-                    self.flush_modifiers();
-                }
-            }
+        if !pressed || (!blocked && !self.paused && (fresh || self.guest_held.contains(&key))) {
             self.send_guest_key(key, state);
-        } else if !blocked && !self.paused {
-            if modifier_index(key).is_some() {
-                if fresh {
-                    self.pending_modifiers.push(key);
-                }
-            } else if fresh || self.guest_held.contains(&key) {
-                self.flush_modifiers();
-                self.send_guest_key(key, state);
-            }
         }
     }
 
@@ -1696,7 +1669,6 @@ mod tests {
             consumed: BTreeSet::new(),
             held: BTreeSet::new(),
             guest_held: BTreeSet::new(),
-            pending_modifiers: Vec::new(),
             session: 0,
             modal_paused: false,
             hidden: false,
@@ -1860,7 +1832,7 @@ mod tests {
     }
 
     #[test]
-    fn host_shortcuts_never_inject_their_modifiers_or_command_key() {
+    fn host_shortcuts_balance_forwarded_modifiers_without_the_command_key() {
         let mut shell = keyboard_shell();
         let ctx = egui::Context::default();
         for key in [KeyCode::ControlLeft, KeyCode::AltLeft, KeyCode::KeyP] {
@@ -1870,7 +1842,7 @@ mod tests {
             shell.key(key, Released, false, &ctx);
         }
         assert!(shell.paused);
-        assert!(take_guest_scancodes(&mut shell).is_empty());
+        assert_eq!(take_guest_scancodes(&mut shell), [0x1D, 0x38, 0xB8, 0x9D]);
         shell.command(Command::Pause, &ctx);
         shell.key(KeyCode::ControlLeft, Pressed, false, &ctx);
         shell.key(KeyCode::KeyC, Pressed, false, &ctx);
@@ -1936,20 +1908,41 @@ mod tests {
         shell.key(KeyCode::AltLeft, Released, false, &ctx);
         assert_eq!(
             shell.presenter.as_ref().unwrap().keyboard.pending_events(),
-            0
+            4
         );
     }
 
     #[test]
-    fn reset_queues_explicit_guest_makes_and_stop_returns_to_the_library() {
+    fn held_ctrl_alt_end_releases_forwarded_modifiers_before_guest_reset() {
+        let mut shell = keyboard_shell();
+        let ctx = egui::Context::default();
+        shell.key(KeyCode::ControlLeft, Pressed, false, &ctx);
+        shell.key(KeyCode::AltLeft, Pressed, false, &ctx);
+        assert_eq!(take_guest_scancodes(&mut shell), [0x1D, 0x38]);
+        shell.key(KeyCode::End, Pressed, false, &ctx);
+        for key in [KeyCode::End, KeyCode::AltLeft, KeyCode::ControlLeft] {
+            shell.key(key, Released, false, &ctx);
+        }
+        assert_eq!(
+            take_guest_scancodes(&mut shell),
+            [0xB8, 0x9D, 0x1D, 0x38, 0x53, 0xD3, 0xB8, 0x9D]
+        );
+        assert!(shell.guest_held.is_empty());
+    }
+
+    #[test]
+    fn reset_queues_balanced_guest_keys_and_stop_returns_to_the_library() {
         let mut shell = keyboard_shell();
         let ctx = egui::Context::default();
         shell.command(Command::Reset, &ctx);
         assert_eq!(
             shell.presenter.as_ref().unwrap().keyboard.pending_events(),
-            3
+            1
         );
-        assert_eq!(take_guest_scancodes(&mut shell), [0x1D, 0x38, 0xE0, 0x53]);
+        assert_eq!(
+            take_guest_scancodes(&mut shell),
+            [0x1D, 0x38, 0x53, 0xD3, 0xB8, 0x9D]
+        );
         assert_eq!(shell.state(), State::Running);
         shell.command(Command::Pause, &ctx);
         assert_eq!(shell.state(), State::Paused);
@@ -2244,7 +2237,7 @@ mod tests {
 
     #[test]
     fn minimized_focus_loss_keeps_host_modifiers_and_guest_releases_consistent() {
-        let mut shell = shell();
+        let mut shell = keyboard_shell();
         let ctx = egui::Context::default();
         for key in [KeyCode::ControlLeft, KeyCode::AltLeft, KeyCode::KeyP] {
             shell.key(key, Pressed, false, &ctx);
@@ -2261,10 +2254,7 @@ mod tests {
         assert_eq!(shell.modifiers, [false; 6]);
         assert!(shell.held.is_empty());
         assert!(shell.consumed.is_empty());
-        assert_eq!(
-            shell.presenter.as_ref().unwrap().keyboard.pending_events(),
-            0
-        );
+        assert_eq!(take_guest_scancodes(&mut shell), [0x1D, 0x38, 0xB8, 0x9D]);
         shell.visibility(&ctx, false);
         shell.paused = false;
         shell.focus_guest();

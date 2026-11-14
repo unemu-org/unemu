@@ -152,13 +152,20 @@ struct KeyTransition {
     right_shift: bool,
 }
 
+const CTRL_ALT_DEL: [u8; 6] = [0x1D, 0x38, 0x53, 0xD3, 0xB8, 0x9D];
+
+enum HostInput {
+    Key(KeyTransition),
+    CtrlAltDel,
+}
+
 /// Host-owned event FIFO; byte encoding waits for guest LEDs at a run boundary.
 /// Enqueueing never borrows or advances the guest machine.
 #[derive(Default)]
 pub struct HostKeyboard {
     pending: VecDeque<u8>,
     held: BTreeSet<KeyCode>,
-    events: VecDeque<KeyTransition>,
+    events: VecDeque<HostInput>,
 }
 
 impl HostKeyboard {
@@ -172,16 +179,33 @@ impl HostKeyboard {
             return;
         }
         let repeat = state == ElementState::Pressed && !self.held.insert(key);
-        self.events.push_back(KeyTransition {
+        self.events.push_back(HostInput::Key(KeyTransition {
             key,
             state,
             repeat,
             left_shift: self.held.contains(&KeyCode::ShiftLeft),
             right_shift: self.held.contains(&KeyCode::ShiftRight),
-        });
+        }));
     }
 
-    fn encode(&mut self, event: KeyTransition, num_lock: bool) {
+    /// Queue one complete keyboard-owned reset chord after releasing held keys.
+    /// At the next boundary the whole chord transfers even while inhibited.
+    /// The keypad Delete codes avoid navigation wrappers tied to guest NumLock.
+    /// IBM PS/2 Hardware Interface Technical Reference, Keyboards, Set 1
+    /// Scan-Code Tables, defines these makes and their high-bit breaks.
+    pub fn ctrl_alt_del(&mut self) {
+        self.release_all();
+        self.events.push_back(HostInput::CtrlAltDel);
+    }
+
+    fn encode(&mut self, input: HostInput, num_lock: bool) {
+        let event = match input {
+            HostInput::Key(event) => event,
+            HostInput::CtrlAltDel => {
+                self.pending.extend(CTRL_ALT_DEL);
+                return;
+            }
+        };
         let KeyTransition {
             key,
             state,
@@ -255,12 +279,33 @@ impl HostKeyboard {
     /// Transfer in order immediately before a run chunk, retaining bytes when
     /// the 8042 cannot accept input yet. The machine cannot run concurrently:
     /// the frontend and guest share one thread and this exclusive borrow.
+    /// Reset chords transfer as a whole to the keyboard buffer even if inhibited;
+    /// their releases must already belong to the keyboard when POST resets it.
     /// Returns only accepted bytes, for replay at the current virtual time.
     pub fn inject_at_boundary(&mut self, assembled: &mut AssembledMachine) -> Vec<u8> {
         let mut delivered = Vec::new();
         let Some(&index) = assembled.device_index.get(&DeviceId::Keyboard) else {
             return delivered;
         };
+        while let Some(reset) = self
+            .events
+            .iter()
+            .position(|input| matches!(input, HostInput::CtrlAltDel))
+        {
+            let Some(leds) = assembled.keyboard_leds() else {
+                return delivered;
+            };
+            // Earlier transitions must join the chord even if interface inhibit
+            // would otherwise leave their modifier makes in host staging.
+            for _ in 0..=reset {
+                if let Some(event) = self.events.pop_front() {
+                    self.encode(event, leds & 2 != 0);
+                }
+            }
+            let bytes: Vec<_> = self.pending.drain(..).collect();
+            assembled.type_scancodes(&bytes);
+            delivered.extend(bytes);
+        }
         loop {
             if self.pending.is_empty() {
                 if self.events.is_empty() {
@@ -333,6 +378,101 @@ mod tests {
             assembled.machine.bus_mut().port_read(0x64, 1).unwrap() & 1,
             0
         );
+    }
+
+    #[test]
+    fn reset_chord_is_owned_by_keyboard_even_while_interface_is_inhibited() {
+        for (inhibited, queued_modifiers) in [(false, false), (true, false), (true, true)] {
+            let mut assembled =
+                assembly::assemble(&assembly::at_keyboard(vec![0xEB, 0xFE])).unwrap();
+            let mut input = HostKeyboard::default();
+            if inhibited {
+                assembled
+                    .machine
+                    .bus_mut()
+                    .port_write(0x64, 1, 0xAD)
+                    .unwrap();
+            }
+            let mut expected = Vec::new();
+            if queued_modifiers {
+                input.key_event(ControlLeft, Pressed);
+                input.key_event(AltLeft, Pressed);
+                expected.extend([0x1D, 0x38, 0xB8, 0x9D]);
+            }
+            input.ctrl_alt_del();
+            expected.extend([0x1D, 0x38, 0x53, 0xD3, 0xB8, 0x9D]);
+            assert_eq!(input.inject_at_boundary(&mut assembled), expected);
+            assert_eq!(input.pending_events(), 0);
+            if !inhibited {
+                for (time, byte) in [(0, 0x1D), (100_000, 0x38), (200_000, 0x53)] {
+                    if time != 0 {
+                        assembled.machine.run_bounded(Some(time)).unwrap();
+                    }
+                    if byte == 0x53 {
+                        // INT 9 inhibits the interface before consuming Delete and jumping to POST.
+                        assembled
+                            .machine
+                            .bus_mut()
+                            .port_write(0x64, 1, 0xAD)
+                            .unwrap();
+                    }
+                    assert_eq!(
+                        assembled.machine.bus_mut().port_read(0x60, 1).unwrap(),
+                        byte
+                    );
+                }
+            } else {
+                assert_eq!(
+                    assembled.machine.bus_mut().port_read(0x64, 1).unwrap() & 1,
+                    0
+                );
+            }
+            assembled
+                .machine
+                .bus_mut()
+                .port_write(0x60, 1, 0xFF)
+                .unwrap();
+            let start = assembled.machine.virtual_time();
+            for (elapsed, reply) in [
+                (100_000, Some(0xFA)),
+                (500_000, Some(0xAA)),
+                (600_000, None),
+            ] {
+                assert!(input.inject_at_boundary(&mut assembled).is_empty());
+                assembled
+                    .machine
+                    .run_bounded(Some(start + elapsed))
+                    .unwrap();
+                assert_eq!(
+                    assembled.machine.bus_mut().port_read(0x64, 1).unwrap() & 1,
+                    u32::from(reply.is_some())
+                );
+                if let Some(byte) = reply {
+                    assert_eq!(
+                        assembled.machine.bus_mut().port_read(0x60, 1).unwrap(),
+                        byte
+                    );
+                }
+            }
+            assert!(input.held.is_empty());
+            assert_eq!(input.pending_events(), 0);
+        }
+    }
+
+    #[test]
+    fn reset_chord_is_balanced_independently_of_guest_locks() {
+        for leds in [0, 2, 7] {
+            let mut input = HostKeyboard::default();
+            input.key_event(ControlLeft, Pressed);
+            input.key_event(AltRight, Pressed);
+            input.ctrl_alt_del();
+            assert_eq!(
+                take_codes(&mut input, leds),
+                [0x1D, 0xE0, 0x38, 0xE0, 0xB8, 0x9D, 0x1D, 0x38, 0x53, 0xD3, 0xB8, 0x9D,]
+            );
+            input.release_all();
+            assert!(take_codes(&mut input, leds).is_empty());
+        }
     }
 
     #[test]

@@ -363,6 +363,38 @@ fn run_boundary(
 }
 
 impl crate::AssembledMachine {
+    /// Observe keyboard LEDs while encoding an entire typed reset sequence.
+    /// Unlike the ordinary-key readiness query, interface inhibit does not defer
+    /// ownership of the reset chord. This performs no guest port transaction.
+    pub fn keyboard_leds(&mut self) -> Option<u8> {
+        let &index = self.device_index.get(&DeviceId::Keyboard)?;
+        let kbc = self
+            .machine
+            .bus_mut()
+            .device_mut(index)?
+            .as_any_mut()?
+            .downcast_mut::<I8042>()?;
+        Some(kbc.keyboard_leds())
+    }
+
+    /// Transfer a complete typed sequence to the keyboard, including while inhibited.
+    /// IBM PC AT Technical Reference, Keyboard, "Keyboard Buffer" and "Commands
+    /// from the System": buffered keystrokes belong to the keyboard and clear
+    /// on reset/default commands. Returns false only when no keyboard is routed.
+    pub fn type_scancodes(&mut self, scancodes: &[u8]) -> bool {
+        let Some(kbc) = self
+            .device_index
+            .get(&DeviceId::Keyboard)
+            .and_then(|&index| self.machine.bus_mut().device_mut(index))
+            .and_then(|dev| dev.as_any_mut())
+            .and_then(|dev| dev.downcast_mut::<I8042>())
+        else {
+            return false;
+        };
+        kbc.push_keyboard_scancodes(scancodes);
+        true
+    }
+
     /// Run to the selected boundary without ending the media session.
     pub fn run_session(&mut self, policy: &RunPolicy) -> Result<RunOutcome, RunError> {
         run_with_persistence(
@@ -462,10 +494,10 @@ pub fn keyboard_leds_if_ready(machine: &mut Machine<X86JitCpu>, kbc_index: usize
 
 /// Try one host byte at a completed run boundary, leaving ownership with the
 /// caller when the controller cannot deliver it yet or the route is absent.
-/// [`I8042::host_input_ready`] observes readiness without a guest port access.
-/// This conservative frontend policy keeps
-/// backpressure outside the device's unbounded script queue; scripted golden
-/// injection through [`inject_scancodes`] retains its existing behaviour.
+/// [`I8042::try_push_keyboard_scancode`] accepts at most one keyboard-owned byte
+/// after the guest reads the previous byte, without a guest port access. Keyboard
+/// commands can discard that untransmitted byte; host scripts staged through
+/// [`inject_scancodes`] retain their existing behaviour.
 pub fn try_inject_scancode(
     machine: &mut Machine<X86JitCpu>,
     kbc_index: usize,
@@ -479,11 +511,7 @@ pub fn try_inject_scancode(
     else {
         return false;
     };
-    if !kbc.host_input_ready() {
-        return false;
-    }
-    kbc.push_scancode(scancode);
-    true
+    kbc.try_push_keyboard_scancode(scancode)
 }
 
 impl crate::AssembledMachine {
@@ -795,9 +823,19 @@ mod tests {
             assembled.machine.bus_mut().port_read(0x60, 1).unwrap(),
             0x1E
         );
-        assert!(!try_inject_scancode(&mut assembled.machine, index, 0x9E));
-        assembled.machine.run_bounded(Some(100_000)).unwrap();
         assert!(try_inject_scancode(&mut assembled.machine, index, 0x9E));
+        assert_eq!(assembled.machine.virtual_time(), 0);
+        assert_eq!(
+            assembled.machine.bus_mut().port_read(0x64, 1).unwrap() & 1,
+            0
+        );
+        assert!(!try_inject_scancode(&mut assembled.machine, index, 0x30));
+        assembled.machine.run_bounded(Some(100_000)).unwrap();
+        assert!(!try_inject_scancode(&mut assembled.machine, index, 0x30));
+        assert_eq!(
+            assembled.machine.bus_mut().port_read(0x60, 1).unwrap(),
+            0x9E
+        );
         assert!(!try_inject_scancode(
             &mut assembled.machine,
             usize::MAX,

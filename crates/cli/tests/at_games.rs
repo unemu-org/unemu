@@ -288,6 +288,17 @@ fn user_rom_at_games_freedos_prompt() {
 #[test]
 #[ignore = "requires user-supplied IBM system/video ROMs and the FreeDOS 1.2M fixture"]
 fn user_rom_at_games_ctrl_alt_del_reboot() {
+    run_ctrl_alt_del_reboot(None);
+}
+
+#[test]
+#[ignore = "requires user-supplied IBM system/video ROMs and the FreeDOS 1.2M fixture"]
+fn user_rom_at_games_ctrl_alt_del_reboot_frame_chunks() {
+    use device::clock::{ClockDomain, Ratio};
+    run_ctrl_alt_del_reboot(Some(ClockDomain::from_hz(Ratio::new(60, 1)).ticks(1)));
+}
+
+fn run_ctrl_alt_del_reboot(frame_chunk: Option<u64>) {
     use assembly::{
         ConsoleProbe, InjectionSchedule, KeyboardStimulus, ObservationPolicy, ObservationRequest,
         OutputKind, RunPolicy, StopCondition,
@@ -399,9 +410,7 @@ fn user_rom_at_games_ctrl_alt_del_reboot() {
             Ok((frame, outcome))
         };
         boot(&mut assembled)?;
-        let index = assembled.device_index[&DeviceId::Keyboard];
-        // Breaks would precede the keyboard reset ACK/BAT during POST.
-        assembly::inject_scancodes(&mut assembled.machine, index, &[0x1D, 0x38, 0x53]);
+        assert!(assembled.type_scancodes(&[0x1D, 0x38, 0x53, 0xD3, 0xB8, 0x9D]));
         let clear_cap = assembled.machine.virtual_time() + 100_000_000;
         loop {
             let capture = assembled.capture_text(DeviceId::Vga)?;
@@ -421,10 +430,16 @@ fn user_rom_at_games_ctrl_alt_del_reboot() {
             );
             let next =
                 (assembled.machine.virtual_time() + cli::DOS_INTERACTIVE_POLL_STEP).min(clear_cap);
-            session::run_progressing(
-                &mut assembled,
-                &RunPolicy::natural(Some(next), Some(cli::BIOS_IDLE_LIMIT)),
-            )?;
+            // Keep observation caps fixed while also testing frame-sized run boundaries.
+            while assembled.machine.virtual_time() < next {
+                let chunk = frame_chunk.map_or(next, |size| {
+                    (assembled.machine.virtual_time() + size).min(next)
+                });
+                session::run_progressing(
+                    &mut assembled,
+                    &RunPolicy::natural(Some(chunk), Some(cli::BIOS_IDLE_LIMIT)),
+                )?;
+            }
         }
         let (frame, outcome) = boot(&mut assembled)?;
         let cpu = assembled.machine.cpu();

@@ -51,9 +51,19 @@
 //! overflow drops the whole new reply (ACK and BAT together for reset), preserving
 //! older bytes. This limit is a compatibility policy for a host that does not
 //! wait for ACK, not a claim that the physical keyboard buffers 16 responses.
-//! The host scancode queue stages an entire frontend script, rather than modelling
-//! the physical keyboard FIFO, and does not consume reply capacity. Physical FIFO
-//! overruns and the reserved seventeenth overrun-code position are not modelled.
+//! Host-script entries stage an entire frontend script, do not consume typed
+//! buffer capacity, and retain their delivery order for deterministic boots.
+//! [`I8042::push_keyboard_scancodes`] instead transfers the whole typed sequence
+//! to the keyboard, even while the controller inhibits its interface. Delivery
+//! still waits for OBF, the serial deadline and the interface enable bit.
+//! IBM PC AT Technical Reference (March 1984), Keyboard, "Keyboard Buffer" and
+//! "Commands to the System", Overrun (Hex 00), specifies 16 data positions and a
+//! reserved seventeenth overrun position. This bounded model folds the reserved
+//! position into the last of 16 entries: overflow replaces the last typed byte
+//! with 00h; further bytes are lost until delivery frees space.
+//! "Commands from the System": Reset (FFh), Default Disable (F5h), Enable (F4h)
+//! and Set Default (F6h) clear all unsent typed output, retaining host scripts,
+//! replies and any byte already transmitted to the controller output buffer.
 //!
 //! Intel UPI-41A/41AH/42/42AH User's Manual, "General Handshaking Protocol"
 //! (p. 60, step 5), requires the UPI to wait for OBF=0 before writing DBBOUT.
@@ -180,7 +190,8 @@
 //!
 //! Deliberately **not** modelled (decoded as no-ops where a byte is consumed):
 //! - **Password / security commands** (`0xA4`–`0xA6`).
-//! - **Keyboard-side command semantics** beyond reset/ACK and LED state:
+//! - **Keyboard-side command semantics** beyond output-buffer clearing, reset/ACK
+//!   and LED state (F5/F4/F6 scanning state is not modelled):
 //!   typematic-rate and scancode-set commands are not interpreted.
 //! - **Test inputs** read (`0xE0`): AT bit 0 is keyboard clock, bit 1 is keyboard
 //!   data (IBM Personal Computer AT Technical Reference, Keyboard Controller,
@@ -191,8 +202,8 @@
 //! frame deadline (Intel 8042 datasheet, Data Bus Buffer and Interrupts), plus
 //! guest keyboard LEDs and the pending LED parameter exchange, aux provenance,
 //! D3/D4 expectations, injected output, arbitration preference, the aux serial
-//! deadline and the attached peripheral identity/state. Version 7 adds an
-//! absolute receive deadline to every queued keyboard byte. Restore
+//! deadline and the attached peripheral identity/state. Version 9 saves the bounded
+//! typed buffer alongside host-script staging and validates its capacity. Restore
 //! requires the same peripheral type and rejects older snapshot versions.
 
 use device::clock::{ClockDomain, Ratio, PIT};
@@ -212,7 +223,7 @@ const PORT_DATA: u16 = 0x60;
 const PORT_CMD: u16 = 0x64;
 
 /// Snapshot layout version tag, first byte of [`Device::save`] output.
-const SNAPSHOT_VERSION: u8 = 7;
+const SNAPSHOT_VERSION: u8 = 9;
 
 /// Keyboard frame time in virtual ticks from the exact board timer, rounded up.
 ///
@@ -238,6 +249,9 @@ const KEYBOARD_ACK_CLOCKS: u64 = 2 * KEYBOARD_BYTE_CLOCKS;
 /// IBM PC AT Technical Reference (March 1986), 101/102-Key Keyboard,
 /// "Basic Assurance Test" (p. 4-39), gives 300–500 ms after reset ACK.
 const KEYBOARD_BAT_CLOCKS: u64 = ClockDomain::from_hz(Ratio::new(10, 3)).ticks(1);
+
+/// Bounded typed output; see the module's IBM AT Keyboard Buffer policy.
+const KEYBOARD_TYPED_CAPACITY: usize = 16;
 
 /// Maximum queued keyboard reply bytes; see the module buffering policy.
 const KEYBOARD_REPLY_CAPACITY: usize = 16;
@@ -397,10 +411,17 @@ pub trait AuxDevice {
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any;
 }
 
-/// A staged keyboard byte, tagged so frontend scripts do not consume reply slots.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum KeyboardByteKind {
+    HostScript = 0,
+    Reply = 1,
+    Typed = 2,
+}
+
+/// Ownership distinguishes future host input from bytes the keyboard can discard.
 struct KeyboardByte {
     value: u8,
-    is_reply: bool,
+    kind: KeyboardByteKind,
     /// A reply cannot arrive before its host transfer and response have finished.
     ready_at: VClock,
 }
@@ -567,10 +588,60 @@ impl I8042 {
     pub fn push_scancode(&mut self, scancode: u8) {
         self.input_queue.push_back(KeyboardByte {
             value: scancode,
-            is_reply: false,
+            kind: KeyboardByteKind::HostScript,
             ready_at: VClock::ZERO,
         });
         self.refill_output();
+    }
+
+    /// Accept one typed byte after the guest consumes the previous byte.
+    /// Ownership stays with the caller on backpressure. Unlike a host script,
+    /// an accepted byte waiting for its serial frame belongs to the keyboard.
+    /// IBM PC AT Technical Reference, Keyboard, "Commands from the System":
+    /// Reset, Default Disable and Enable discard untransmitted keyboard output.
+    /// This conservative frontend policy may defer while inhibited; the whole
+    /// typed-sequence API transfers ownership independently of delivery readiness.
+    pub fn try_push_keyboard_scancode(&mut self, scancode: u8) -> bool {
+        if !self.keyboard_input_ready() {
+            return false;
+        }
+        self.push_keyboard_scancode(scancode);
+        true
+    }
+
+    fn push_keyboard_scancode(&mut self, scancode: u8) {
+        if self
+            .input_queue
+            .iter()
+            .filter(|byte| byte.kind == KeyboardByteKind::Typed)
+            .count()
+            == KEYBOARD_TYPED_CAPACITY
+        {
+            if let Some(last) = self
+                .input_queue
+                .iter_mut()
+                .rfind(|byte| byte.kind == KeyboardByteKind::Typed)
+            {
+                last.value = 0x00;
+            }
+            return;
+        }
+        self.input_queue.push_back(KeyboardByte {
+            value: scancode,
+            kind: KeyboardByteKind::Typed,
+            ready_at: VClock::ZERO,
+        });
+        self.refill_output();
+    }
+
+    /// Type a complete host sequence into the keyboard's output buffer.
+    /// IBM PC AT Technical Reference, Keyboard, "Keyboard Buffer": interface
+    /// inhibit holds delivery, not keystrokes. See the module overflow policy.
+    /// All input is consumed, including bytes lost to a buffer overrun.
+    pub fn push_keyboard_scancodes(&mut self, scancodes: &[u8]) {
+        for &byte in scancodes {
+            self.push_keyboard_scancode(byte);
+        }
     }
 
     /// Last guest Set/Reset Status Indicators parameter; bit 1 is NumLock.
@@ -593,13 +664,17 @@ impl I8042 {
     /// never performs a guest port transaction or changes device state.
     #[must_use]
     pub fn host_input_ready(&self) -> bool {
-        !self.output_full
-            && self.input_queue.is_empty()
-            && self.command_byte & CB_KBD_DISABLE == 0
+        self.keyboard_input_ready()
             && !self.refill_hold
             && self
                 .keyboard_ready_at
                 .is_none_or(|at| self.input_edge() >= at)
+    }
+
+    fn keyboard_input_ready(&self) -> bool {
+        !self.output_full
+            && self.input_queue.is_empty()
+            && self.command_byte & CB_KBD_DISABLE == 0
             && self.controller_reply.is_none()
             && self.injected_aux.is_none()
             && !(self.prefer_aux && self.aux_output_ready())
@@ -704,7 +779,7 @@ impl I8042 {
             }
         } else if keyboard_ready {
             if let Some(byte) = self.input_queue.pop_front() {
-                if byte.is_reply {
+                if byte.kind == KeyboardByteKind::Reply {
                     self.queued_replies -= 1;
                 }
                 self.output_buffer = byte.value;
@@ -805,6 +880,10 @@ impl I8042 {
                         self.keyboard_leds = 0;
                     }
                 }
+                if matches!(byte, KBD_CMD_RESET | 0xF5 | 0xF4 | 0xF6) {
+                    self.input_queue
+                        .retain(|byte| byte.kind != KeyboardByteKind::Typed);
+                }
                 let reply_len = if byte == KBD_CMD_RESET { 2 } else { 1 };
                 // Keep reset's ACK/BAT together: a lone ACK promises a BAT that
                 // would never arrive, and a lone BAT has no matching command ACK.
@@ -812,13 +891,13 @@ impl I8042 {
                     let ack_at = VClock(self.now.0.saturating_add(KEYBOARD_ACK_CLOCKS));
                     self.input_queue.push_back(KeyboardByte {
                         value: KBD_ACK,
-                        is_reply: true,
+                        kind: KeyboardByteKind::Reply,
                         ready_at: ack_at,
                     });
                     if byte == KBD_CMD_RESET {
                         self.input_queue.push_back(KeyboardByte {
                             value: KBD_BAT_OK,
-                            is_reply: true,
+                            kind: KeyboardByteKind::Reply,
                             ready_at: VClock(
                                 ack_at
                                     .0
@@ -1044,7 +1123,7 @@ impl Device for I8042 {
         // Layout: version, command byte, output port, output buffer, flags,
         // expect, source, queue length (8), pending controller reply,
         // clock (8), keyboard deadline (8), LEDs, awaiting LED parameter, queue
-        // entries (value, is_reply, ready_at (8)). Host scripts can exceed a u16 count.
+        // entries (value, kind, ready_at (8)). Host scripts can exceed a u16 count.
         // The auxiliary extension follows the queue: flags, injected byte, deadline,
         // identity length (8), identity, state length (8), peripheral state.
         let mut blob = Vec::with_capacity(60 + 10 * self.input_queue.len());
@@ -1090,7 +1169,7 @@ impl Device for I8042 {
         );
         blob.extend([self.keyboard_leds, u8::from(self.awaiting_leds)]);
         for byte in &self.input_queue {
-            blob.extend([byte.value, u8::from(byte.is_reply)]);
+            blob.extend([byte.value, byte.kind as u8]);
             blob.extend(byte.ready_at.0.to_le_bytes());
         }
         let aux_flags = u8::from(self.aux_ready_at.is_some())
@@ -1177,23 +1256,26 @@ impl Device for I8042 {
             .ok_or_else(|| invalid("queue length mismatch"))?;
         let body = &snapshot[HEADER..queue_end];
         let (entries, _) = body.as_chunks::<10>();
-        if entries.iter().any(|entry| entry[1] > 1) {
+        if entries.iter().any(|entry| entry[1] > 2) {
             return Err(DeviceError::InvalidSnapshot {
                 device: NAME,
                 reason: "invalid keyboard byte tag",
             });
         }
-        let queued_replies = entries.iter().filter(|entry| entry[1] != 0).count();
+        let queued_replies = entries.iter().filter(|entry| entry[1] == 1).count();
         if queued_replies > KEYBOARD_REPLY_CAPACITY {
             return Err(DeviceError::InvalidSnapshot {
                 device: NAME,
                 reason: "keyboard replies exceed capacity",
             });
         }
+        if entries.iter().filter(|entry| entry[1] == 2).count() > KEYBOARD_TYPED_CAPACITY {
+            return Err(invalid("typed keyboard output exceeds capacity"));
+        }
         let mut input_queue = VecDeque::with_capacity(entries.len());
         for entry in entries {
             let ready_at = u64::from_le_bytes(std::array::from_fn(|i| entry[2 + i]));
-            if (entry[1] == 0 && ready_at != 0)
+            if (entry[1] != 1 && ready_at != 0)
                 || ready_at.saturating_sub(now)
                     > KEYBOARD_ACK_CLOCKS + KEYBOARD_BAT_CLOCKS + KEYBOARD_BYTE_CLOCKS
             {
@@ -1201,7 +1283,11 @@ impl Device for I8042 {
             }
             input_queue.push_back(KeyboardByte {
                 value: entry[0],
-                is_reply: entry[1] != 0,
+                kind: match entry[1] {
+                    1 => KeyboardByteKind::Reply,
+                    2 => KeyboardByteKind::Typed,
+                    _ => KeyboardByteKind::HostScript,
+                },
                 ready_at: VClock(ready_at),
             });
         }
@@ -1291,6 +1377,160 @@ impl Device for I8042 {
 mod tests {
     use super::*;
     use testkit::MockBus;
+
+    fn keyboard_command_clears_typed_scancodes(command: u8) {
+        for restore in [false, true] {
+            let mut bus = MockBus::new(Box::new(I8042::new()));
+            bus_keyboard(&mut bus).push_keyboard_scancode(0x1D);
+            bus_keyboard(&mut bus).push_keyboard_scancode(0x9D);
+            bus_keyboard(&mut bus).push_keyboard_scancode(0xB8);
+            // The controller already owns the first byte; only keyboard output clears.
+            if restore {
+                let blob = bus.device().save();
+                bus.device_mut().reset();
+                bus.device_mut().restore(&blob).unwrap();
+            }
+            bus.port_write(PORT_DATA, 1, u32::from(command)).unwrap();
+            bus_keyboard(&mut bus).push_keyboard_scancode(0x1E);
+            assert_eq!(bus.port_read(PORT_DATA, 1).unwrap(), 0x1D);
+            bus.tick(KEYBOARD_ACK_CLOCKS - 1);
+            assert_eq!(bus.port_read(PORT_CMD, 1).unwrap() & 1, 0);
+            bus.tick(1);
+            assert_eq!(bus.port_read(PORT_DATA, 1).unwrap(), u32::from(KBD_ACK));
+            if command == KBD_CMD_RESET {
+                bus.tick(KEYBOARD_BAT_CLOCKS + KEYBOARD_BYTE_CLOCKS - 1);
+                assert_eq!(bus.port_read(PORT_CMD, 1).unwrap() & 1, 0);
+                bus.tick(1);
+                assert_eq!(bus.port_read(PORT_DATA, 1).unwrap(), u32::from(KBD_BAT_OK));
+            }
+            bus.tick(KEYBOARD_BYTE_CLOCKS);
+            assert_eq!(bus.port_read(PORT_DATA, 1).unwrap(), 0x1E);
+            bus.tick(KEYBOARD_BYTE_CLOCKS);
+            assert_eq!(bus.port_read(PORT_CMD, 1).unwrap() & 1, 0);
+        }
+    }
+
+    #[test]
+    fn keyboard_reset_clears_typed_scancodes() {
+        keyboard_command_clears_typed_scancodes(0xFF);
+    }
+
+    #[test]
+    fn keyboard_default_disable_clears_typed_scancodes() {
+        keyboard_command_clears_typed_scancodes(0xF5);
+    }
+
+    #[test]
+    fn keyboard_enable_clears_typed_scancodes() {
+        keyboard_command_clears_typed_scancodes(0xF4);
+    }
+
+    #[test]
+    fn keyboard_commands_preserve_host_script_staging() {
+        for command in [0xFF, 0xF5, 0xF4, 0xF6] {
+            let mut bus = MockBus::new(Box::new(I8042::new()));
+            bus_keyboard(&mut bus).push_scancode(0x1E);
+            bus_keyboard(&mut bus).push_scancode(0x9E);
+            bus.port_write(PORT_DATA, 1, command).unwrap();
+            assert_eq!(bus.port_read(PORT_DATA, 1).unwrap(), 0x1E);
+            bus.tick(KEYBOARD_BYTE_CLOCKS);
+            assert_eq!(bus.port_read(PORT_DATA, 1).unwrap(), 0x9E);
+            bus.tick(KEYBOARD_BYTE_CLOCKS);
+            assert_eq!(bus.port_read(PORT_DATA, 1).unwrap(), u32::from(KBD_ACK));
+            if command == 0xFF {
+                bus.tick(KEYBOARD_BAT_CLOCKS + KEYBOARD_BYTE_CLOCKS);
+                assert_eq!(bus.port_read(PORT_DATA, 1).unwrap(), u32::from(KBD_BAT_OK));
+            }
+        }
+    }
+
+    const RESET_CHORD: [u8; 6] = [0x1D, 0x38, 0x53, 0xD3, 0xB8, 0x9D];
+
+    #[test]
+    fn typed_buffer_accepts_a_whole_chord_while_inhibited_and_commands_clear_it() {
+        for command in [0xFF, 0xF5, 0xF4, 0xF6] {
+            let mut bus = MockBus::new(Box::new(I8042::new()));
+            bus.port_write(PORT_CMD, 1, 0xAD).unwrap();
+            bus_keyboard(&mut bus).push_keyboard_scancodes(&RESET_CHORD);
+            assert_eq!(bus_keyboard(&mut bus).input_queue.len(), 6);
+            assert_eq!(bus.port_read(PORT_CMD, 1).unwrap() & 1, 0);
+            bus.tick(8 * KEYBOARD_BYTE_CLOCKS);
+            assert_eq!(bus.port_read(PORT_CMD, 1).unwrap() & 1, 0);
+            bus.port_write(PORT_DATA, 1, command).unwrap();
+            bus.tick(KEYBOARD_ACK_CLOCKS);
+            assert_eq!(bus.port_read(PORT_DATA, 1).unwrap(), u32::from(KBD_ACK));
+            if command == 0xFF {
+                bus.tick(KEYBOARD_BAT_CLOCKS + KEYBOARD_BYTE_CLOCKS);
+                assert_eq!(bus.port_read(PORT_DATA, 1).unwrap(), u32::from(KBD_BAT_OK));
+            }
+            bus.tick(KEYBOARD_BYTE_CLOCKS);
+            assert_eq!(bus.port_read(PORT_CMD, 1).unwrap() & 1, 0);
+            bus_keyboard(&mut bus).push_keyboard_scancodes(&[0x1E]);
+            assert_eq!(bus.port_read(PORT_DATA, 1).unwrap(), 0x1E);
+        }
+    }
+
+    #[test]
+    fn typed_buffer_delivers_an_enabled_chord_in_order() {
+        let mut bus = MockBus::new(Box::new(I8042::new()));
+        bus_keyboard(&mut bus).push_keyboard_scancodes(&RESET_CHORD);
+        for byte in RESET_CHORD {
+            assert_eq!(bus.port_read(PORT_CMD, 1).unwrap() & 1, 1);
+            assert_eq!(bus.port_read(PORT_DATA, 1).unwrap(), u32::from(byte));
+            bus.tick(KEYBOARD_BYTE_CLOCKS);
+        }
+        assert_eq!(bus.port_read(PORT_CMD, 1).unwrap() & 1, 0);
+    }
+
+    #[test]
+    fn typed_buffer_overflow_replaces_the_last_entry_with_overrun() {
+        let mut bus = MockBus::new(Box::new(I8042::new()));
+        bus.port_write(PORT_CMD, 1, 0xAD).unwrap();
+        let bytes: Vec<u8> = (1..=17).collect();
+        bus_keyboard(&mut bus).push_keyboard_scancodes(&bytes);
+        assert_eq!(bus_keyboard(&mut bus).input_queue.len(), 16);
+        bus_keyboard(&mut bus).push_keyboard_scancodes(&[0x1E, 0x9E]);
+        bus.port_write(PORT_CMD, 1, 0xAE).unwrap();
+        for byte in (1..=15).chain([0]) {
+            assert_eq!(bus.port_read(PORT_DATA, 1).unwrap(), byte);
+            bus.tick(KEYBOARD_BYTE_CLOCKS);
+        }
+        assert_eq!(bus.port_read(PORT_CMD, 1).unwrap() & 1, 0);
+        bus_keyboard(&mut bus).push_keyboard_scancodes(&[0x30]);
+        assert_eq!(bus.port_read(PORT_DATA, 1).unwrap(), 0x30);
+    }
+
+    #[test]
+    fn typed_buffer_snapshot_round_trip_preserves_all_pending_bytes() {
+        let mut bus = MockBus::new(Box::new(I8042::new()));
+        bus.port_write(PORT_CMD, 1, 0xAD).unwrap();
+        bus_keyboard(&mut bus).push_keyboard_scancodes(&RESET_CHORD);
+        assert_eq!(bus_keyboard(&mut bus).input_queue.len(), 6);
+        let snapshot = bus.device().save();
+        bus.device_mut().reset();
+        bus.device_mut().restore(&snapshot).unwrap();
+        assert_eq!(bus.device().save(), snapshot);
+        let mut legacy = snapshot.clone();
+        legacy[0] = 8;
+        assert!(bus.device_mut().restore(&legacy).is_err());
+        let mut oversized = snapshot.clone();
+        for _ in 6..17 {
+            oversized.splice(34..34, snapshot[34..44].iter().copied());
+        }
+        oversized[7..15].copy_from_slice(&17u64.to_le_bytes());
+        assert!(bus.device_mut().restore(&oversized).is_err());
+        assert_eq!(bus.device().save(), snapshot);
+        bus.port_write(PORT_CMD, 1, 0xAE).unwrap();
+        for byte in RESET_CHORD {
+            assert_eq!(bus.port_read(PORT_DATA, 1).unwrap(), u32::from(byte));
+            bus.tick(KEYBOARD_BYTE_CLOCKS);
+        }
+    }
+
+    #[test]
+    fn typed_buffer_set_default_clears_pending_scancodes() {
+        keyboard_command_clears_typed_scancodes(0xF6);
+    }
 
     #[test]
     fn display_switch_c0_is_configured_without_changing_d0_or_other_straps() {
@@ -2068,7 +2308,7 @@ mod tests {
                 1 => kbc.output_full = true,
                 2 => kbc.input_queue.push_back(KeyboardByte {
                     value: 0x1E,
-                    is_reply: false,
+                    kind: KeyboardByteKind::HostScript,
                     ready_at: VClock::ZERO,
                 }),
                 3 => kbc.command_byte |= CB_KBD_DISABLE,
@@ -3076,7 +3316,7 @@ mod clock_domain_regressions {
         let mut bus = MockBus::new(Box::new(I8042::new()));
         keyboard(&mut bus).input_queue.push_back(KeyboardByte {
             value: 0x1e,
-            is_reply: false,
+            kind: KeyboardByteKind::HostScript,
             ready_at: VClock(KEYBOARD_BYTE_CLOCKS),
         });
         keyboard(&mut bus).keyboard_ready_at = Some(VClock(KEYBOARD_BYTE_CLOCKS));
@@ -3147,7 +3387,7 @@ mod clock_domain_regressions {
         let mut bus = MockBus::new(Box::new(I8042::new()));
         keyboard(&mut bus).input_queue.push_back(KeyboardByte {
             value: 0x1e,
-            is_reply: false,
+            kind: KeyboardByteKind::HostScript,
             ready_at: VClock::ZERO,
         });
         keyboard(&mut bus).keyboard_ready_at = None;
