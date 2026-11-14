@@ -184,6 +184,27 @@ tr[aria-selected="true"] .warnbadge { color: var(--sel-ink); }
 .kbd-table td { padding: 3px 4px; border-bottom: 1px solid var(--lo); vertical-align: top; }
 .kbd-table td:first-child { white-space: nowrap; font-family: var(--code); font-size: 11px; }
 
+/* Revision 2: the changes list, the mock-up control and the drive chips with their tooltip and menu. */
+.page-note .rev-h { margin: 8px 0 2px; font-weight: 700; }
+.page-note ul.rev { margin: 0; padding-left: 18px; max-width: 65ch; }
+.page-note ul.rev li { margin: 2px 0; }
+.page-note .mock-switch { flex-basis: 100%; display: flex; flex-wrap: wrap; gap: 4px 6px; align-items: center; padding: 6px 8px; border: 1px dashed #eef3f3; }
+.page-note .mock-switch button[aria-pressed="true"] { box-shadow: var(--in); font-weight: 700; }
+.statusbar { position: relative; }
+.statusbar .chips { display: flex; flex-wrap: wrap; gap: 2px; min-width: 0; max-width: 100%; }
+.statusbar .chip { background: none; border: 0; color: inherit; font: inherit; cursor: default; max-width: 300px; text-align: left; }
+.statusbar .chip:hover, .statusbar .chip[aria-expanded="true"] { background: var(--face-2); }
+.statusbar .chip .ctext { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.statusbar .chip.empty .ctext { color: var(--muted); }
+.menu.drive-menu { top: auto; bottom: 100%; }
+.menu .label .now { color: var(--ink); font-weight: 400; }
+.chip-tip { position: absolute; bottom: calc(100% + 4px); left: 0; z-index: 35; background: var(--field); color: var(--ink); box-shadow: var(--out), 3px 3px 0 #0003; padding: 6px 8px; width: max-content; max-width: min(360px, calc(100vw - 48px)); font-size: 11px; border-radius: var(--radius); }
+.chip-tip dl { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 2px 8px; margin: 0; }
+.chip-tip dt { color: var(--muted); }
+.chip-tip dd { margin: 0; overflow-wrap: anywhere; }
+.chip-tip .rev { margin-top: 5px; padding-top: 4px; border-top: 1px solid var(--lo); color: var(--muted); }
+@media (max-width: 560px) { .statusbar .chip { max-width: 100%; } }
+
 @media (max-width: 760px) {
   .welcome-main { grid-template-columns: 1fr; }
   .welcome-side { width: 170px; padding: 14px 10px; }
@@ -201,10 +222,22 @@ tr[aria-selected="true"] .warnbadge { color: var(--sel-ink); }
 </style>
 
 <div class="page-note">
-  <p><strong>Design mock-up, sample data only.</strong> Start a machine from the list (double-click or <em>Start</em>), then use the menus, toolbar and dialogs. Nothing here controls an emulator.</p>
+  <div>
+    <p><strong>Design mock-up — revision 2 — approved by the maintainer on 2026-11-15.</strong> Sample data only. Start a machine from the list (double-click or <em>Start</em>), then use the menus, toolbar and dialogs. Nothing here controls an emulator.</p>
+    <p class="rev-h">Changes in revision 2</p>
+    <ul class="rev">
+      <li><strong>Proposed in revision 2, part of the MVP:</strong> drive chips in the status bar, one per drive the machine has, showing the image in it now, with an activity light. Hover shows the full name, the source, a short SHA-256 and the write mode; a click opens that drive’s menu (Eject, Insert…, From library…, write mode).</li>
+      <li>The Media menu shows the current image next to each drive.</li>
+      <li>Decided: Save as layer… and Save as new image… are one dialog with name and tag; a memory or drive change in Settings recomputes only the affected CMOS bytes and the checksum; 8 MHz is 32/39; image tags use x.y.z versions.</li>
+    </ul>
+  </div>
   <div class="ctrls">
     <button type="button" id="skinBtn">Skin: classic</button>
     <button type="button" id="themeBtn">Theme: system</button>
+  </div>
+  <div class="mock-switch" role="group" aria-label="Mock-up control: drive A: sample state">
+    <span>Mock-up control — drive A:</span>
+    <button type="button" data-sample="empty" aria-pressed="false">Empty</button><button type="button" data-sample="inserted" aria-pressed="true">Floppy inserted</button><button type="button" data-sample="reading" aria-pressed="false">Being read (light on)</button>
   </div>
 </div>
 
@@ -244,20 +277,7 @@ tr[aria-selected="true"] .warnbadge { color: var(--sel-ink); }
       </div>
     </div>
     <div class="mi"><button type="button" data-menu="m-media" aria-haspopup="true" aria-expanded="false">M<u>e</u>dia</button>
-      <div class="menu" id="m-media" role="menu">
-        <div class="label">Drive A: (1.2M) — <span id="aNameMenu">empty</span></div>
-        <button type="button" data-act="insertA"><span></span><span>Insert into A:…</span><span class="key">Ctrl+Alt+I</span></button>
-        <button type="button" data-act="nextA"><span></span><span>Next image in catalogue</span><span class="key">Ctrl+Alt+F</span></button>
-        <button type="button" data-act="ejectA"><span>⏏</span><span>Eject A:</span><span class="key">Ctrl+Alt+E</span></button>
-        <hr>
-        <div class="label">Drive B: — not installed</div>
-        <button type="button" disabled><span></span><span>Insert into B:…</span><span class="key"></span></button>
-        <hr>
-        <div class="label">C: IDE master — journal, 3 changed sectors</div>
-        <button type="button" data-act="layers"><span></span><span>Disk layers…</span><span class="key"></span></button>
-        <hr>
-        <button type="button" disabled><span></span><span>CD-ROM (no controller yet)</span><span class="key"></span></button>
-      </div>
+      <div class="menu" id="m-media" role="menu"><!-- filled per drive by renderMediaMenu() --></div>
     </div>
     <div class="mi"><button type="button" data-menu="m-view" aria-haspopup="true" aria-expanded="false"><u>V</u>iew</button>
       <div class="menu" id="m-view" role="menu">
@@ -342,8 +362,9 @@ tr[aria-selected="true"] .warnbadge { color: var(--sel-ink); }
   <div class="statusbar" id="statusbar">
     <span class="cell grow" id="statusMsg">Ready</span>
     <span class="cell" title="Power"><span class="led power" id="ledPower"></span>Power</span>
-    <span class="cell" title="Drive A:"><span class="led disk" id="ledA"></span>A:</span>
-    <span class="cell" title="Drive C:"><span class="led disk" id="ledC"></span>C:</span>
+    <span class="chips" id="driveChips" role="group" aria-label="Drives: the image in each drive now"></span>
+    <div class="menu drive-menu" id="m-drive" role="menu" aria-label="Drive menu"></div>
+    <div class="chip-tip" id="chipTip" role="tooltip" hidden></div>
     <span class="cell" id="cpuCell">80286 · 8/13</span>
     <span class="cell" id="emsCell">EMS 2 MiB</span>
     <span class="cell" id="audioCell">🔊 SB16</span>
@@ -368,7 +389,7 @@ tr[aria-selected="true"] .warnbadge { color: var(--sel-ink); }
           <div class="form">
             <label for="board">Board</label><select id="board"><option>IBM PC/AT 5170</option><option disabled>IBM PC/XT 5160 — not available yet</option></select>
             <label for="cpu">Processor</label><select id="cpu"><option>Intel 80286</option><option disabled>Intel 80386 — needs protected-mode support</option></select>
-            <label for="speed">Speed</label><select id="speed"><option>8/13 steps per PIT clock (about 6 MHz AT)</option><option>Fast (8 MHz AT)</option><option disabled>Cycle-exact — not available yet</option></select>
+            <label for="speed">Speed</label><select id="speed"><option>6 MHz AT — 8/13 steps per PIT clock</option><option>8 MHz AT — 32/39 steps per PIT clock</option><option disabled>Cycle-exact — not available yet</option></select>
             <span class="hint">Speed is an instruction rate, not a cycle-exact clock.</span>
             <label for="fpu">Coprocessor</label><select id="fpu"><option>None</option><option>80287</option></select>
             <label for="mouse">Serial mouse</label><select id="mouse"><option>Microsoft mouse on COM1</option><option>None</option></select>
@@ -379,6 +400,7 @@ tr[aria-selected="true"] .warnbadge { color: var(--sel-ink); }
             <label for="conv">Conventional</label><select id="conv"><option>640 KiB</option><option>512 KiB</option></select>
             <label for="ext">Extended</label><select id="ext"><option>4096 KiB</option><option>2048 KiB</option><option>1024 KiB</option><option disabled>16384 KiB</option></select>
             <span class="why">16384 KiB exceeds the 15 MiB the AT board can address above 1 MiB.</span>
+            <span class="hint">A memory change recomputes only the CMOS memory-size bytes and the checksum, as SETUP would; the clock and other options are kept. The diff before Apply lists the changed bytes.</span>
           </div>
         </div>
         <div class="tabpanel" id="t-vid" role="tabpanel" hidden>
@@ -403,10 +425,11 @@ tr[aria-selected="true"] .warnbadge { color: var(--sel-ink); }
           <div class="form">
             <label for="fda">Drive A:</label><select id="fda"><option>5.25" 1.2M</option><option>3.5" 720K</option><option disabled>3.5" 1.44M</option></select>
             <span class="why">This BIOS (June 1985) has no 1.44M drive type.</span>
-            <label for="fdb">Drive B:</label><select id="fdb"><option>Not installed</option><option>5.25" 360K</option></select>
+            <label for="fdb">Drive B:</label><select id="fdb"><option>5.25" 360K</option><option>Not installed</option></select>
             <label for="hdd">Hard disk C:</label><select id="hdd"><option>IDE master · type 2 · 20 MiB · journal</option><option>None</option></select>
             <label for="hdd2">Hard disk D:</label><select id="hdd2"><option>None</option><option disabled>IDE slave — not available yet</option></select>
             <span class="full"><button type="button" class="btn" data-act="newdisk">Create blank disk…</button> <button type="button" class="btn" data-act="layers">Disk layers…</button></span>
+            <span class="hint full">A drive change recomputes only the affected CMOS bytes (drive types) and the checksum, as SETUP would; the rest is kept.</span>
           </div>
         </div>
         <div class="tabpanel" id="t-exp" role="tabpanel" hidden>
@@ -438,7 +461,7 @@ tr[aria-selected="true"] .warnbadge { color: var(--sel-ink); }
         <div class="media-list" id="mediaList" role="listbox" aria-label="Floppy images"></div>
         <div class="btnrow"><button type="button" class="btn" data-act="browse">Browse…</button></div>
         <div class="form" style="margin-top:10px">
-          <label for="wmode">Write mode</label><select id="wmode"><option>Read-only</option><option>Journal (keep my changes separately)</option></select>
+          <label for="wmode">Write mode</label><select id="wmode"><option value="ro">Read-only</option><option value="journal">Journal (keep my changes separately)</option></select>
           <span class="hint" id="mediaInfo">1.2M · 80/2/15 · detected from size</span>
         </div>
       </div>
@@ -452,15 +475,16 @@ tr[aria-selected="true"] .warnbadge { color: var(--sel-ink); }
         <div class="tree" aria-label="Layer chain">C: IDE master (20 MiB)
  └─ base  dos-clean            8ab4…c019   20.0 MiB  shared by 2 images
      └─ layer  tools installed   40dc…018f    1.6 MiB
-         └─ layer  games: keen 4-6  b71e…22a0  4.1 MiB
+         └─ layer  games installed  b71e…22a0  4.1 MiB
              └─ <span class="cur">working changes          3 sectors   not saved</span>
 
 A: catalogue   freedos-1200 (read-only) · fdtools (read-only) · transfer (journal)
+B: catalogue   utils-360 (read-only)
 Firmware       IBM 5170 BIOS · IBM VGA BIOS        (user-supplied, by hash)
 Settings       revision 4</div>
         <p class="notice">Saving a layer stops the machine first. The image keeps its settings, firmware and every drive together; a disk on its own is not an image.</p>
       </div>
-      <div class="foot"><button type="button" class="btn default" data-act="savelayer">Save as layer…</button><button type="button" class="btn" data-act="discard">Discard changes</button><button type="button" class="btn" data-act="branch">New image from here…</button><button type="button" class="btn" data-close>Close</button></div>
+      <div class="foot"><button type="button" class="btn default" data-act="savelayer">Save as new image…</button><button type="button" class="btn" data-act="discard">Discard changes</button><button type="button" class="btn" data-close>Close</button></div>
     </div>
 
     <!-- Keyboard shortcuts -->
@@ -507,26 +531,47 @@ Settings       revision 4</div>
   'use strict';
   var $ = function (id) { return document.getElementById(id); };
   var machines = [
-    { id: 'at-games', name: 'AT games (IBM BIOS)', image: 'at-games:2', last: 'Today 14:20', ok: true,
-      spec: [['Board', 'IBM PC/AT 5170, 80286'], ['Memory', '640 KiB + 4 MiB, EMS 2 MiB'], ['Display', 'VGA (IBM VGA BIOS)'], ['Sound', 'Sound Blaster 16 + OPL3'], ['Drives', 'A: 1.2M · C: 20 MiB']],
-      chain: 'dos-clean → tools → games: keen 4-6 → working' },
-    { id: 'at-games-open', name: 'AT games (open firmware)', image: 'at-games-open:1', last: 'Yesterday', ok: true,
+    { id: 'at-games', name: 'AT games (IBM BIOS)', image: 'at-games:2.0.0', last: 'Today 14:20', ok: true,
+      spec: [['Board', 'IBM PC/AT 5170, 80286'], ['Memory', '640 KiB + 4 MiB, EMS 2 MiB'], ['Display', 'VGA (IBM VGA BIOS)'], ['Sound', 'Sound Blaster 16 + OPL3'], ['Drives', 'A: 1.2M · B: 360K · C: 20 MiB']],
+      chain: 'dos-clean → tools → games installed → working',
+      drives: [{ id: 'A', fmt: '1.2M', label: '5.25" 1.2M' }, { id: 'B', fmt: '360K', label: '5.25" 360K' },
+        { id: 'C', hdd: true, label: 'IDE master', size: '20 MiB, type 2', image: 'at-games:2.0.0', base: 'dos-clean → tools → games installed', top: 'b71e09c4…22a0', changed: 3 }] },
+    { id: 'at-games-open', name: 'AT games (open firmware)', image: 'at-games-open:1.0.0', last: 'Yesterday', ok: true,
       spec: [['Board', 'IBM PC/AT 5170, 80286'], ['Memory', '640 KiB + 4 MiB, EMS 2 MiB'], ['Display', 'VGA text, MDA'], ['Sound', 'Sound Blaster 16 + OPL3'], ['Drives', 'A: 1.2M · C: 32 MiB (XTIDE)']],
-      chain: 'dos-clean → working' },
-    { id: 'dos-clean', name: 'Clean FreeDOS', image: 'dos-clean:1.0', last: '11 Nov', ok: true,
+      chain: 'dos-clean → working',
+      drives: [{ id: 'A', fmt: '1.2M', label: '5.25" 1.2M' },
+        { id: 'C', hdd: true, label: 'IDE master', size: '32 MiB (XTIDE)', image: 'at-games-open:1.0.0', base: 'dos-clean', top: '8ab4d2e1…c019', changed: 0 }] },
+    { id: 'dos-clean', name: 'Clean FreeDOS', image: 'dos-clean:1.0.0', last: '11 Nov', ok: true,
       spec: [['Board', 'IBM PC/AT 5170, 80286'], ['Memory', '640 KiB + 1 MiB'], ['Display', 'MDA'], ['Sound', 'None'], ['Drives', 'A: 1.2M · C: 20 MiB']],
-      chain: 'dos-clean (base, read-only)' },
-    { id: 'fw-lab', name: 'Firmware lab', image: 'fw-lab:0.1', last: 'Never', ok: false,
+      chain: 'dos-clean (base, read-only)',
+      drives: [{ id: 'A', fmt: '1.2M', label: '5.25" 1.2M' },
+        { id: 'C', hdd: true, label: 'IDE master', size: '20 MiB, type 2', image: 'dos-clean:1.0.0', base: 'zero base + FreeDOS installed', top: '8ab4d2e1…c019', changed: 0 }] },
+    { id: 'fw-lab', name: 'Firmware lab', image: 'fw-lab:0.1.0', last: 'Never', ok: false,
       spec: [['Board', 'IBM PC/AT 5170, 80286'], ['Memory', '640 KiB + 512 KiB'], ['Display', 'EGA'], ['Sound', 'None'], ['Drives', 'A: 1.2M']],
-      chain: 'no disk' }
+      chain: 'no disk',
+      drives: [{ id: 'A', fmt: '1.2M', label: '5.25" 1.2M' }] }
   ];
+  /* Floppy images in this machine's catalogue, with where each one came from. */
   var catalogue = [
-    { n: 'freedos-1200.img', d: 'FreeDOS boot', ok: true },
-    { n: 'fdtools.img', d: 'FreeDOS tools (FDISK, FORMAT)', ok: true },
-    { n: 'transfer.img', d: 'Your transfer disk', ok: true },
-    { n: 'keen4-disk1.img', d: '1.44M — does not fit a 1.2M drive', ok: false }
+    { n: 'freedos-1200.img', t: 'FreeDOS 1.2 boot', d: 'FreeDOS boot', fmt: '1.2M', src: 'Media set freedos-1.2:1.0.0 from the library · disk 1 of 2', sha: '9a3ec07b…41c2' },
+    { n: 'fdtools.img', t: 'FreeDOS tools', d: 'FreeDOS tools (FDISK, FORMAT)', fmt: '1.2M', src: 'Media set freedos-1.2:1.0.0 from the library · disk 2 of 2', sha: 'e5d1a983…0b7f' },
+    { n: 'transfer.img', t: 'Transfer media', d: 'Your transfer disk', fmt: '1.2M', src: 'Generated from the extras of Example Adventure', sha: '27c4f0d9…ae51' },
+    { n: 'sample-atlas-1.img', t: 'Sample Atlas 1.0 disk 1', d: 'Sample Atlas, disk 1 of 3', fmt: '1.2M', src: 'Installation media sample-atlas:1.0 from the library · disk 1 of 3', sha: '5b0e7a12…d38c' },
+    { n: 'utils-360.img', t: 'Utilities 360K', d: 'Utilities, 360K', fmt: '360K', src: 'File utils-360.img, copied into the store by Browse…', sha: 'c19f8e44…7a06' },
+    { n: 'meadow-puzzle-1.img', t: 'Meadow Puzzle 1.0 disk 1', d: 'Meadow Puzzle, disk 1 of 2', fmt: '1.44M', src: 'Installation media meadow-puzzle:1.0 from the library · disk 1 of 2', sha: '3f6d21b8…94e0' }
   ];
-  var state = { sel: 'at-games', running: false, paused: false, a: 'freedos-1200.img', mediaSel: 0, muted: false, booting: null };
+  var formats = { '1.2M': '80/2/15', '360K': '40/2/9', '1.44M': '80/2/18' };
+  var state = { sel: 'at-games', running: false, paused: false, muted: false, booting: null,
+    ins: { A: 'freedos-1200.img', B: null }, mode: { A: 'ro', B: 'ro', C: 'journal' }, busy: {}, pinned: null,
+    insDrive: 'A', mediaSel: 0 };
+
+  function find(n) { return catalogue.filter(function (c) { return c.n === n; })[0] || null; }
+  function driveOf(id) { return current().drives.filter(function (d) { return d.id === id; })[0] || null; }
+  function fits(c, drive) { return c.fmt === drive.fmt || (drive.fmt === '1.2M' && c.fmt === '360K'); }
+  function modeText(id, long) {
+    if (state.mode[id] === 'journal') return long ? 'Journal — changes go to this workspace’s journal; the image stays unchanged' : 'journal';
+    return long ? 'Read-only — the guest’s writes are refused' : 'read-only';
+  }
 
   /* ---------- welcome list ---------- */
   function renderList() {
@@ -538,7 +583,7 @@ Settings       revision 4</div>
       tr.tabIndex = 0;
       tr.innerHTML = '<td><span class="name"><svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><rect x="1" y="2" width="14" height="9" fill="#c9d6e8" stroke="#1c2b44"/><rect x="3" y="4" width="10" height="5" fill="#16305c"/><rect x="5" y="12" width="6" height="2" fill="#c9d6e8" stroke="#1c2b44"/></svg>' +
         esc(m.name) + (m.ok ? '' : ' <span class="warnbadge">⚠</span>') + '</span></td><td class="tag">' + esc(m.image) + '</td><td>' + esc(m.last) + '</td>';
-      tr.addEventListener('click', function () { state.sel = m.id; renderList(); });
+      tr.addEventListener('click', function () { if (state.running) return; state.sel = m.id; renderList(); sync(); });
       tr.addEventListener('dblclick', function () { state.sel = m.id; start(); });
       tr.addEventListener('keydown', function (e) { if (e.key === 'Enter') { state.sel = m.id; start(); } });
       rows.appendChild(tr);
@@ -589,7 +634,8 @@ Settings       revision 4</div>
     clearTimeout(state.booting);
     crt.textContent = '';
     bootLines[1][0] = 'unemupc98 · ' + current().name;
-    flash('ledA', 1200); setStatus('Booting from A: ' + (state.a || '(empty)') + '…');
+    var a = find(state.ins.A);
+    flash('A', 1200); setStatus('Booting from A: ' + (a ? a.t : '(empty)') + '…');
     function step() {
       if (!state.running) return;
       if (state.paused) { state.booting = setTimeout(step, 200); return; }
@@ -600,12 +646,17 @@ Settings       revision 4</div>
       }
       text += (i ? '\n' : '') + bootLines[i][0];
       crt.textContent = text;
-      if (i === 5) flash('ledA', 800);
+      if (i === 5) flash('A', 800);
+      if (i === 7 && driveOf('C')) flash('C', 600);
       state.booting = setTimeout(step, bootLines[i][1] + 120); i++;
     }
     step();
   }
-  function flash(id, ms) { var el = $(id); el.classList.add('on', 'busy'); setTimeout(function () { el.classList.remove('busy', 'on'); }, ms); }
+  /* Drive activity: a short flash, unless the mock-up control pins the LED on. */
+  function flash(id, ms) {
+    state.busy[id] = true; renderChips();
+    setTimeout(function () { state.busy[id] = false; renderChips(); }, ms);
+  }
   function togglePause() {
     if (!state.running) return;
     state.paused = !state.paused;
@@ -616,6 +667,114 @@ Settings       revision 4</div>
   }
   function cad() { if (!state.running) return; setStatus('Sent Ctrl+Alt+Del'); boot(); }
 
+  /* ---------- drive chips in the status bar (proposed in revision 2, in the MVP) ---------- */
+  function chipText(d) {
+    if (d.hdd) return d.id + ': ' + d.image + ' · ' + modeText(d.id);
+    var c = find(state.ins[d.id]);
+    return c ? d.id + ': ' + c.t + ' · ' + c.fmt + ' · ' + modeText(d.id) : d.id + ': empty';
+  }
+  function isLit(id) { return !!state.busy[id] || state.pinned === id; }
+  function renderChips() {
+    var box = $('driveChips');
+    box.innerHTML = current().drives.map(function (d) {
+      var empty = !d.hdd && !state.ins[d.id];
+      return '<button type="button" class="cell chip' + (empty ? ' empty' : '') + '" data-drive="' + d.id + '" aria-haspopup="true" aria-expanded="false" aria-describedby="chipTip" aria-label="Drive ' + esc(chipText(d)) + (isLit(d.id) ? ', active' : '') + '">' +
+        '<span class="led disk' + (isLit(d.id) ? ' on busy' : '') + '"></span><span class="ctext">' + esc(chipText(d)) + '</span></button>';
+    }).join('');
+  }
+  function tipHtml(d) {
+    var rows = [];
+    if (d.hdd) {
+      rows.push(['Drive', d.id + ': ' + d.label + ' · ' + d.size]);
+      rows.push(['Image', d.image]);
+      rows.push(['Source', 'Machine image ' + d.image + ' · ' + d.base + (state.mode.C === 'journal' ? ' → working changes' : '')]);
+      rows.push(['SHA-256', d.top + ' (top layer)']);
+      rows.push(['Write mode', state.mode.C === 'journal' ? 'Journal — ' + d.changed + ' changed sectors, not saved' : modeText('C', true)]);
+    } else {
+      var c = find(state.ins[d.id]);
+      rows.push(['Drive', d.id + ': ' + d.label]);
+      if (!c) rows.push(['Medium', 'Empty · click to insert a floppy']);
+      else {
+        rows.push(['Image', c.t + ' (' + c.n + ')']);
+        rows.push(['Source', c.src]);
+        rows.push(['SHA-256', c.sha]);
+        rows.push(['Format', c.fmt + ' · ' + formats[c.fmt]]);
+        rows.push(['Write mode', modeText(d.id, true)]);
+      }
+    }
+    if (isLit(d.id)) rows.push(['Activity', d.hdd ? 'Reading and writing sectors' : 'Reading sectors · LED on']);
+    return '<dl>' + rows.map(function (r) { return '<dt>' + r[0] + '</dt><dd>' + esc(r[1]) + '</dd>'; }).join('') + '</dl><div class="rev">Proposed in revision 2 · part of the MVP · click for this drive’s menu</div>';
+  }
+  function place(el, chip) {
+    el.style.left = '0px';
+    var max = $('statusbar').clientWidth - el.offsetWidth;
+    el.style.left = Math.max(0, Math.min(chip.offsetLeft, max)) + 'px';
+  }
+  function showTip(chip) {
+    if ($('m-drive').classList.contains('open')) return;
+    var d = driveOf(chip.dataset.drive); if (!d) return;
+    $('chipTip').innerHTML = tipHtml(d); $('chipTip').hidden = false; place($('chipTip'), chip);
+  }
+  function hideTip() { $('chipTip').hidden = true; }
+  function openDriveMenu(chip) {
+    var d = driveOf(chip.dataset.drive); if (!d) return;
+    var was = $('m-drive').classList.contains('open') && $('m-drive').dataset.drive === d.id;
+    closeMenus(); hideTip();
+    if (was) return;
+    var m = $('m-drive'), html;
+    var item = function (act, label, disabled, mark) { return '<button type="button" data-dact="' + act + '"' + (disabled ? ' disabled' : '') + '><span>' + (mark || '') + '</span><span>' + label + '</span><span class="key"></span></button>'; };
+    if (d.hdd) {
+      html = '<div class="label">' + esc(d.id + ': ' + d.label + ' — ' + d.image) + '</div>' +
+        item('eject', 'Eject (fixed disk, part of the image)', true) + item('layers', 'Disk layers…') + '<hr>' +
+        '<div class="label">Write mode</div>' + item('mode-journal', 'Journal (keep my changes in this workspace)', false, state.mode.C === 'journal' ? '●' : '') + item('mode-ro', 'Read-only (refuse writes)', false, state.mode.C === 'ro' ? '●' : '');
+    } else {
+      var c = find(state.ins[d.id]);
+      html = '<div class="label">' + esc('Drive ' + d.id + ': (' + d.fmt + ') — ' + (c ? c.t : 'empty')) + '</div>' +
+        item('eject', 'Eject ' + d.id + ':', !c, '⏏') + item('insert', 'Insert into ' + d.id + ':…') + item('library', 'From library…') + '<hr>' +
+        '<div class="label">Write mode' + (c ? '' : ' for the next floppy') + '</div>' + item('mode-ro', 'Read-only', false, state.mode[d.id] === 'ro' ? '●' : '') + item('mode-journal', 'Journal (keep my changes separately)', false, state.mode[d.id] === 'journal' ? '●' : '');
+    }
+    m.innerHTML = html; m.dataset.drive = d.id;
+    m.classList.add('open'); chip.setAttribute('aria-expanded', 'true');
+    place(m, chip);
+    var first = m.querySelector('button:not(:disabled)'); if (first) first.focus();
+  }
+  $('driveChips').addEventListener('click', function (e) { var chip = e.target.closest('.chip'); if (!chip) return; e.stopPropagation(); openDriveMenu(chip); });
+  $('driveChips').addEventListener('mouseover', function (e) { var chip = e.target.closest('.chip'); if (chip) showTip(chip); });
+  $('driveChips').addEventListener('mouseout', function (e) { if (!e.relatedTarget || !e.relatedTarget.closest || !e.relatedTarget.closest('.chip')) hideTip(); });
+  $('driveChips').addEventListener('focusin', function (e) { var chip = e.target.closest('.chip'); if (chip) showTip(chip); });
+  $('driveChips').addEventListener('focusout', hideTip);
+  $('m-drive').addEventListener('click', function (e) {
+    var b = e.target.closest('[data-dact]'); if (!b || b.disabled) return;
+    var id = $('m-drive').dataset.drive, act = b.dataset.dact;
+    closeMenus();
+    if (act === 'eject') eject(id);
+    else if (act === 'insert') openInsert(id);
+    else if (act === 'library') msg('From library… opens the installation-media picker for drive ' + id + ': (see the Installation media mock-up). Sets whose format does not fit a ' + driveOf(id).fmt + ' drive stay visible with the reason.');
+    else if (act === 'layers') dialog('dlg-layers');
+    else if (act === 'mode-ro' || act === 'mode-journal') { state.mode[id] = act === 'mode-ro' ? 'ro' : 'journal'; sync(); setStatus(id + ': write mode is now ' + modeText(id) + (state.running ? ', from the next run boundary' : '')); }
+  });
+
+  /* ---------- Media menu: each drive with the image it holds now ---------- */
+  function renderMediaMenu() {
+    var m = current(), html = '';
+    var line = function (act, drive, mark, label, key, disabled) { return '<button type="button" data-act="' + act + '" data-drive="' + drive + '"' + (disabled ? ' disabled' : '') + '><span>' + mark + '</span><span>' + label + '</span><span class="key">' + key + '</span></button>'; };
+    ['A', 'B'].forEach(function (id) {
+      var d = driveOf(id);
+      if (!d) { html += '<div class="label">Drive ' + id + ': — not installed</div>' + line('insert', id, '', 'Insert into ' + id + ':…', '', true) + '<hr>'; return; }
+      var c = find(state.ins[id]), shift = id === 'B' ? 'Shift+' : '';
+      html += '<div class="label">Drive ' + id + ': (' + d.fmt + ') — <strong class="now">' + esc(c ? c.t + ' · ' + modeText(id) : 'empty') + '</strong></div>' +
+        line('insert', id, '', 'Insert into ' + id + ':…', id === 'A' ? 'Ctrl+Alt+I' : '') +
+        line('next', id, '', 'Next image in catalogue', shift + 'Ctrl+Alt+F') +
+        line('eject', id, '⏏', 'Eject ' + id + ':', shift + 'Ctrl+Alt+E', !c) + '<hr>';
+    });
+    var cd = driveOf('C');
+    html += cd ? '<div class="label">C: IDE master — <strong class="now">' + esc(cd.image + ' · ' + modeText('C') + (state.mode.C === 'journal' && cd.changed ? ', ' + cd.changed + ' changed sectors' : '')) + '</strong></div>' + '<button type="button" data-act="layers"><span></span><span>Disk layers…</span><span class="key"></span></button><hr>'
+      : '<div class="label">C: — no fixed disk</div><hr>';
+    html += '<button type="button" disabled><span></span><span>CD-ROM (no controller yet)</span><span class="key"></span></button>';
+    $('m-media').innerHTML = html;
+    bindActs($('m-media'));
+  }
+
   /* ---------- state sync ---------- */
   function sync() {
     document.querySelectorAll('[data-when]').forEach(function (b) {
@@ -623,9 +782,10 @@ Settings       revision 4</div>
     });
     $('pauseLabel').textContent = state.paused ? 'Resume' : 'Pause';
     $('ledPower').classList.toggle('on', state.running);
-    $('aNameMenu').textContent = state.a || 'empty';
     $('muteCheck').textContent = state.muted ? '✓' : '';
     $('audioCell').textContent = state.muted ? '🔇 SB16' : '🔊 SB16';
+    renderChips();
+    renderMediaMenu();
     if (!state.running) setStatus(machines.length + ' machines in library');
   }
   function setStatus(t) { $('statusMsg').textContent = t; }
@@ -634,7 +794,7 @@ Settings       revision 4</div>
   var openMenu = null;
   function closeMenus() {
     document.querySelectorAll('.menu.open').forEach(function (m) { m.classList.remove('open'); });
-    document.querySelectorAll('[data-menu]').forEach(function (b) { b.setAttribute('aria-expanded', 'false'); });
+    document.querySelectorAll('[data-menu], .chip').forEach(function (b) { b.setAttribute('aria-expanded', 'false'); });
     openMenu = null;
   }
   function showMenu(btn) {
@@ -650,14 +810,14 @@ Settings       revision 4</div>
   /* ---------- dialogs ---------- */
   var openDlg = null;
   function dialog(id) {
-    closeMenus();
+    closeMenus(); hideTip();
     if (openDlg) openDlg.hidden = true;
     openDlg = $(id); openDlg.hidden = false; $('scrim').classList.add('open');
     var f = openDlg.querySelector('.btn.default, button'); if (f) f.focus();
   }
   function closeDlg() { if (openDlg) openDlg.hidden = true; openDlg = null; $('scrim').classList.remove('open'); }
   document.querySelectorAll('[data-close]').forEach(function (b) { b.addEventListener('click', closeDlg); });
-  document.addEventListener('keydown', function (e) { if (e.key === 'Escape') { closeMenus(); closeDlg(); } });
+  document.addEventListener('keydown', function (e) { if (e.key === 'Escape') { closeMenus(); closeDlg(); hideTip(); } });
   function msg(t) { $('msgText').textContent = t; dialog('dlg-msg'); }
 
   $('propTabs').addEventListener('click', function (e) {
@@ -667,21 +827,46 @@ Settings       revision 4</div>
     });
   });
 
+  /* ---------- Insert floppy ---------- */
+  function openInsert(id) {
+    var d = driveOf(id);
+    if (!d || d.hdd) return;
+    state.insDrive = id;
+    var cur = catalogue.map(function (c) { return c.n; }).indexOf(state.ins[id]);
+    state.mediaSel = cur >= 0 ? cur : catalogue.map(function (c) { return fits(c, d); }).indexOf(true);
+    $('insTitle').textContent = 'Insert floppy into ' + id + ':';
+    $('wmode').value = state.mode[id];
+    renderMedia();
+    dialog('dlg-insert');
+  }
   function renderMedia() {
-    var list = $('mediaList'); list.textContent = '';
+    var d = driveOf(state.insDrive), list = $('mediaList'); list.textContent = '';
     catalogue.forEach(function (c, i) {
+      var ok = fits(c, d);
       var b = document.createElement('button');
-      b.type = 'button'; b.setAttribute('role', 'option'); b.disabled = !c.ok;
+      b.type = 'button'; b.setAttribute('role', 'option'); b.disabled = !ok;
       b.setAttribute('aria-selected', String(i === state.mediaSel));
-      b.innerHTML = '<span>' + (c.n === state.a ? '●' : '') + '</span><span>' + esc(c.n) + '</span><span>' + esc(c.d) + '</span>';
+      b.innerHTML = '<span>' + (c.n === state.ins[state.insDrive] ? '●' : '') + '</span><span>' + esc(c.n) + '</span><span>' + esc(ok ? c.d : c.fmt + ' — does not fit a ' + d.fmt + ' drive') + '</span>';
       b.addEventListener('click', function () { state.mediaSel = i; renderMedia(); });
       b.addEventListener('dblclick', insertSel);
       list.appendChild(b);
     });
+    var sel = catalogue[state.mediaSel];
+    $('mediaInfo').textContent = sel ? sel.fmt + ' · ' + formats[sel.fmt] + ' · detected from size · ' + sel.src : '';
   }
   function insertSel() {
-    var c = catalogue[state.mediaSel]; if (!c || !c.ok) return;
-    state.a = c.n; closeDlg(); sync(); flash('ledA', 500); setStatus('Inserted ' + c.n + ' into A:');
+    var id = state.insDrive, c = catalogue[state.mediaSel];
+    if (!c || !fits(c, driveOf(id))) return;
+    state.ins[id] = c.n; state.mode[id] = $('wmode').value;
+    closeDlg(); sync(); flash(id, 500); setStatus('Inserted ' + c.t + ' into ' + id + ': · ' + modeText(id));
+  }
+  function eject(id) { if (!driveOf(id) || !state.ins[id]) return; state.ins[id] = null; if (state.pinned === id) state.pinned = null; sync(); setStatus(id + ': ejected'); }
+  function next(id) {
+    var d = driveOf(id); if (!d || d.hdd) return;
+    var ok = catalogue.filter(function (c) { return fits(c, d); });
+    if (!ok.length) return;
+    var i = ok.map(function (c) { return c.n; }).indexOf(state.ins[id]);
+    state.ins[id] = ok[(i + 1) % ok.length].n; sync(); flash(id, 400); setStatus(id + ': now holds ' + find(state.ins[id]).t);
   }
   $('insertOk').addEventListener('click', insertSel);
 
@@ -694,34 +879,32 @@ Settings       revision 4</div>
     layers: function () { dialog('dlg-layers'); },
     keys: function () { dialog('dlg-keys'); },
     about: function () { dialog('dlg-about'); },
-    insertA: function () { renderMedia(); dialog('dlg-insert'); },
-    nextA: function () {
-      var ok = catalogue.filter(function (c) { return c.ok; });
-      var i = ok.map(function (c) { return c.n; }).indexOf(state.a);
-      state.a = ok[(i + 1) % ok.length].n; sync(); flash('ledA', 400); setStatus('A: now holds ' + state.a);
-    },
-    ejectA: function () { state.a = null; sync(); setStatus('A: ejected'); },
+    insertA: function () { openInsert('A'); },
+    nextA: function () { next('A'); },
+    ejectA: function () { eject('A'); },
+    insert: function (b) { openInsert(b.dataset.drive); },
+    next: function (b) { next(b.dataset.drive); },
+    eject: function (b) { eject(b.dataset.drive); },
     mute: function () { state.muted = !state.muted; sync(); },
     toolbar: function () { var t = $('toolbar'); t.hidden = !t.hidden; $('tbCheck').textContent = t.hidden ? '' : '✓'; },
     status: function () { var s = $('statusbar'); s.hidden = !s.hidden; $('sbCheck').textContent = s.hidden ? '' : '✓'; },
-    new: function () { msg('New machine opens the Settings sheet with a template (AT games, clean DOS, blank) and creates the image when you press OK.'); },
+    new: function () { msg('New machine… opens the wizard: machine class, motherboard and its BIOS, CPU and memory, cards, drives, then name and tag (see the New machine mock-up).'); },
     open: function () { msg('Open machine file reads a .toml or .yaml machine file and adds it to the library.'); },
     import: function () { msg('Import image adds a raw disk or floppy image to the store, verified by SHA-256, without changing the original file.'); },
-    catalogue: function () { renderMedia(); dialog('dlg-insert'); },
+    catalogue: function () { openInsert('A'); },
     firmware: function () { msg('Locate firmware searches only folders you choose and matches files by SHA-256. Nothing is copied into the project.'); },
     newdisk: function () { msg('Create blank disk makes a zero-filled hard disk or a formatted floppy image of a size the machine supports.'); },
-    prefs: function () { msg('Preferences: ROM folders, image store location, default scale, audio device.'); },
-    savelayer: function () { closeDlg(); msg('The working changes become a new read-only layer, named by you, and the image gets a new revision.'); },
+    prefs: function () { msg('Preferences: ROM folders, image store location, registries, default scale, audio device.'); },
+    savelayer: function () { closeDlg(); msg('Save as new image… is one dialog for saving a layer and saving a new image: it asks for the repository name and the tag (the next version, such as at-games:2.1.0, is suggested). The machine stops first; the working changes become a sealed layer. New layers count as user-supplied until you mark them open.'); },
     discard: function () { closeDlg(); msg('Working changes discarded. The image is back at its last saved layer.'); },
-    branch: function () { closeDlg(); msg('A new image starts from this layer with the same settings and firmware, for example a second games set on the same clean DOS.'); },
-    browse: function () { msg('Browse opens a file picker. The file is checked (size, geometry) before it joins the catalogue.'); },
+    browse: function () { msg('Browse opens a file picker. The file is checked (size, geometry) and copied into the store before it joins the catalogue.'); },
     exit: function () { msg('Exit stops the machine (if running) and closes the window.'); },
     snapshot: function () {}, noop: function () {}
   };
   function bindActs(root) {
     root.querySelectorAll('[data-act]').forEach(function (b) {
       if (b.dataset.bound) return; b.dataset.bound = '1';
-      b.addEventListener('click', function (e) { e.stopPropagation(); closeMenus(); var f = acts[b.dataset.act]; if (f) f(); });
+      b.addEventListener('click', function (e) { e.stopPropagation(); closeMenus(); var f = acts[b.dataset.act]; if (f) f(b); });
     });
   }
   bindActs(document);
@@ -734,6 +917,19 @@ Settings       revision 4</div>
   });
   $('skinBtn').addEventListener('click', function () {
     var on = $('app').classList.toggle('modern'); this.textContent = 'Skin: ' + (on ? 'modern' : 'classic');
+  });
+  /* Mock-up control: put drive A: into a sample state. */
+  document.querySelectorAll('[data-sample]').forEach(function (b) {
+    b.addEventListener('click', function () {
+      var s = b.dataset.sample;
+      document.querySelectorAll('[data-sample]').forEach(function (x) { x.setAttribute('aria-pressed', String(x === b)); });
+      state.pinned = null;
+      if (s === 'empty') state.ins.A = null;
+      if (s === 'inserted' || s === 'reading') state.ins.A = state.ins.A || 'freedos-1200.img';
+      if (s === 'reading') state.pinned = 'A';
+      sync();
+      setStatus(s === 'empty' ? 'A: empty' : s === 'inserted' ? 'A: ' + find(state.ins.A).t + ' inserted' : 'Reading A: ' + find(state.ins.A).t + '…');
+    });
   });
 
   function esc(s) { return String(s).replace(/[&<>"]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); }
