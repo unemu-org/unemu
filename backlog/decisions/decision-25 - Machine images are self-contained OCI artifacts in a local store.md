@@ -95,3 +95,24 @@ descriptive tag that says what the image holds, such as
 - Creating an image (New machine…) or saving one (Save as new image…) asks for
   the repository name and the tag; the version tag defaults to `1.0.0`, and a
   later save suggests the next version.
+
+## Amendment 2026-11-14: registry.unemu.dev is the default registry
+
+The maintainer chose `registry.unemu.dev` as the default registry of the unemu
+family, in the role `docker.io` plays for Docker. Reference resolution follows
+Docker's rules:
+
+- `name:tag` (no slash) means `registry.unemu.dev/unemu/name:tag`. `unemu` is
+  the official namespace, like Docker's `library`.
+- `owner/name:tag` means `registry.unemu.dev/owner/name:tag`.
+- A first component that contains a dot or a colon, or is `localhost`, is a
+  registry host: `nas.example:5000/private/games:1` goes to that host.
+- A reference without a tag means `:latest`; a digest reference (`@sha256:…`)
+  pins exact content and ignores tags.
+
+The default can be overridden: per user in the preferences, per command with
+`--registry`, and by an environment variable for CI. Local store tags keep
+their short form; the full reference is used only when pulling, pushing or
+recording provenance. Until registry.unemu.dev is reachable from the
+internet it serves the maintainer's LAN; public templates and fixtures live
+under its `unemu/` namespace.
