@@ -19,8 +19,8 @@
 //! unavailable. Phosphor response and aspect correction are absent.
 //! Colour uses the standard 16-entry CGA/VGA text palette. Blink is drawn steady:
 //! its phase can later derive from virtual time. VGA frames carry guest fonts
-//! or indexed graphics and a captured palette. Only the binary event loop reads
-//! the host clock for pacing.
+//! or indexed graphics and a captured palette. Only the binary host frontend reads
+//! the host clock for pacing and slice deadlines.
 //! Physical keyboard events enter a host FIFO. Immediately before each bounded
 //! run chunk it transfers bytes to the 8042, retaining bytes under backpressure.
 //! Events are quantised to chunk boundaries, never injected inside a chunk.

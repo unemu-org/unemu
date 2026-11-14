@@ -5,6 +5,19 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-14 — Host speed controls:** View > Speed offers 100%, 200%, 400%
+  and Unlimited; every session starts at 100%. Ctrl+Alt+T temporarily holds
+  Unlimited and restores the selected mode on release or focus loss. The status
+  cell measures virtual-time progress against host time over the last second.
+  Paced modes may use the full observed frame period; Unlimited leaves 3 ms
+  for presentation. Periods track repaint cadence within 16.7–50 ms, with at
+  most one guest frame on each 60 Hz deadline. Mode changes and resume re-anchor
+  without catch-up. Audio is muted outside 100%, without time-stretch; the UI
+  distinguishes speed mute from the user preference toggled by Ctrl+Alt+M.
+  Returning to 100% uses fresh buffering and preserves that preference.
+  Guest clocks and headless execution are unchanged. Headless pacing, keyboard,
+  audio and synthetic-machine determinism tests cover these paths; no GUI
+  acceptance was performed. See [window commands](commands.md).
 - **2026-11-14 — Machine image store:** platform-neutral OCI layout, streamed immutable SHA-256 blobs, deterministic manifests, provider-validated complete closures, paged local tags, provider-declared payload codecs, foreign OCI index preservation, missing-artwork reporting and atomic compare-and-swap updates are implemented; application wiring, import, layers, workspaces and registry remain separate.
 - **2026-11-14 — Application logo:** embedded window/Dock icon, GIF-timed welcome animation (file-only `reduced_motion` preference), static About logo and README branding; visual acceptance remains manual.
 

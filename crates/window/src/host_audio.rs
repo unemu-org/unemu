@@ -286,6 +286,8 @@ pub(super) struct HostAudio {
     notices: Arc<AtomicU8>,
     reported_notices: u8,
     started: bool,
+    user_muted: bool,
+    speed_muted: bool,
 }
 
 impl HostAudio {
@@ -298,6 +300,8 @@ impl HostAudio {
             notices: Arc::new(AtomicU8::new(0)),
             reported_notices: 0,
             started: false,
+            user_muted: false,
+            speed_muted: false,
         }
     }
 
@@ -313,11 +317,66 @@ impl HostAudio {
         self.sink.muted.load(Ordering::Relaxed)
     }
 
+    pub(super) fn status_text(&self) -> &'static str {
+        if !self.available() {
+            "Audio unavailable"
+        } else if self.speed_muted && self.user_muted {
+            "Audio muted (speed + user)"
+        } else if self.speed_muted {
+            "Audio muted (speed)"
+        } else if self.user_muted {
+            "Audio muted (user)"
+        } else {
+            "Audio on"
+        }
+    }
+
+    pub(super) fn title_text(&self) -> &'static str {
+        if !self.available() {
+            "no audio"
+        } else if self.speed_muted && self.user_muted {
+            "audio muted (speed; user mute on; ctrl+alt+m toggles user mute)"
+        } else if self.speed_muted {
+            "audio muted (speed; user mute off; ctrl+alt+m toggles user mute)"
+        } else if self.user_muted {
+            "audio muted (ctrl+alt+m to unmute)"
+        } else {
+            "audio unmuted (ctrl+alt+m to mute)"
+        }
+    }
+
+    pub(super) fn mute_label(&self) -> &'static str {
+        if self.speed_muted && self.user_muted {
+            "User mute: on (speed muted)"
+        } else if self.speed_muted {
+            "User mute: off (speed muted)"
+        } else if self.user_muted {
+            "Unmute audio"
+        } else {
+            "Mute audio"
+        }
+    }
+
     pub(super) fn toggle_mute(&mut self) {
         if !self.available() {
             return;
         }
-        self.sink.muted.store(!self.muted(), Ordering::Relaxed);
+        self.user_muted = !self.user_muted;
+        self.update_mute();
+    }
+
+    pub(super) fn set_speed_muted(&mut self, muted: bool) {
+        self.speed_muted = muted;
+        self.update_mute();
+    }
+
+    fn update_mute(&mut self) {
+        let muted = self.user_muted || self.speed_muted;
+        if self.muted() == muted {
+            return;
+        }
+        // Keep callbacks silent until old samples and interpolation history are gone.
+        self.sink.muted.store(true, Ordering::Relaxed);
         if let Ok(mut converter) = self.sink.converter.lock() {
             *converter = RateConverter::new(converter.rate);
             if let Ok(mut ring) = self.sink.ring.lock() {
@@ -325,6 +384,7 @@ impl HostAudio {
                 ring.primed = false;
             }
         }
+        self.sink.muted.store(muted, Ordering::Relaxed);
     }
 
     pub(super) fn open(&mut self, warnings: &mut impl io::Write) {

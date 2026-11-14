@@ -485,6 +485,12 @@ impl Shell {
         }
     }
 
+    fn speed_status(&self) -> String {
+        self.presenter
+            .as_ref()
+            .map_or_else(|| "Speed 100%".into(), |p| p.speed_status())
+    }
+
     fn status(&self, ui: &mut egui::Ui) {
         let message = if self.presenter.as_ref().is_some_and(|p| p.mouse.captured()) {
             "Pointer captured — Ctrl+Alt+G releases"
@@ -492,15 +498,11 @@ impl Shell {
             &self.message
         };
         let entry = self.selected.and_then(|index| self.library.get(index));
-        let audio = self.presenter.as_ref().map_or("Audio stopped", |p| {
-            if !p.audio.available() {
-                "Audio unavailable"
-            } else if p.audio.muted() {
-                "Audio muted"
-            } else {
-                "Audio on"
-            }
-        });
+        let audio = self
+            .presenter
+            .as_ref()
+            .map_or("Audio stopped", |p| p.audio.status_text());
+        let speed = self.speed_status();
         let labels = [
             message,
             "Power",
@@ -511,6 +513,7 @@ impl Shell {
                 .map_or("CPU unknown", |entry| &entry.rate),
             entry.map_or("EMS unknown", |entry| &entry.ems),
             audio,
+            &speed,
         ];
         let widths = shell_model::status_widths(ui.available_width());
         let (rect, _) =
@@ -664,7 +667,9 @@ impl Shell {
     }
 
     fn reset_keyboard(&mut self) {
+        let elapsed = self.elapsed();
         if let Some(presenter) = &mut self.presenter {
+            presenter.hold_fast_forward(false, elapsed);
             presenter.focus_changed(false);
         }
         self.modifiers = [false; 6];
@@ -914,10 +919,13 @@ impl Shell {
         if !self.enablement().allows(command) {
             return;
         }
+        let elapsed = self.elapsed();
         use Command::*;
         match command {
+            Speed(speed) => if let Some(presenter) = &mut self.presenter { presenter.select_speed(speed, elapsed); },
+            FastForward => if let Some(presenter) = &mut self.presenter { presenter.hold_fast_forward(true, elapsed); },
             Start => self.start(),
-            Pause => { self.release_pointer(); self.paused = !self.paused; self.message = if self.paused { "Paused" } else { "Running" }.into(); },
+            Pause => { self.release_pointer(); if let Some(presenter) = &mut self.presenter { presenter.pacing.resync(elapsed, presenter.assembled.machine.clock().0); } self.paused = !self.paused; self.message = if self.paused { "Paused" } else { "Running" }.into(); },
             Stop | Library => { self.stop(); },
             PowerCycle => { if self.stop() { self.start(); } },
             Reset => { self.guest_held.clear(); if let Some(presenter) = &mut self.presenter {
@@ -1096,7 +1104,33 @@ impl Shell {
                 ui.selectable_value(&mut self.integer_scale, false, "Scale to window, 4:3");
                 ui.selectable_value(&mut self.integer_scale, true, "Integer scale");
                 self.item(ui, "Full screen", "Ctrl+Alt+Enter", Fullscreen, commands);
-                self.item(ui, "Mute audio", "Ctrl+Alt+M", Mute, commands);
+                let mute = self
+                    .presenter
+                    .as_ref()
+                    .map_or("Mute audio", |p| p.audio.mute_label());
+                self.item(ui, mute, "Ctrl+Alt+M", Mute, commands);
+                ui.menu_button("Speed", |ui| {
+                    let mut selected = self
+                        .presenter
+                        .as_ref()
+                        .map_or(crate::pacing::Speed::Normal, |p| p.pacing.selected());
+                    for speed in crate::pacing::Speed::ALL {
+                        let response = ui
+                            .add_enabled_ui(self.enablement().allows(Speed(speed)), |ui| {
+                                ui.selectable_value(&mut selected, speed, speed.label())
+                            })
+                            .inner;
+                        if response.clicked() {
+                            commands.push(Speed(speed));
+                            ui.close();
+                        }
+                    }
+                    ui.separator();
+                    ui.add_enabled(
+                        false,
+                        egui::Button::new("Hold for Unlimited").shortcut_text("Ctrl+Alt+T"),
+                    );
+                });
                 ui.menu_button("Skin", |ui| {
                     ui.selectable_value(&mut self.classic, true, "Classic");
                     ui.selectable_value(&mut self.classic, false, "Modern");
@@ -1389,7 +1423,17 @@ impl Shell {
             match event {
                 WindowEvent::Focused(false) => self.focus_lost(),
                 WindowEvent::Focused(true) => self.release(),
-                WindowEvent::Occluded(hidden) => self.hidden = hidden,
+                WindowEvent::Occluded(hidden) => {
+                    self.hidden = hidden;
+                    if !hidden {
+                        let elapsed = self.elapsed();
+                        if let Some(presenter) = &mut self.presenter {
+                            presenter
+                                .pacing
+                                .resync(elapsed, presenter.assembled.machine.clock().0);
+                        }
+                    }
+                }
                 WindowEvent::CursorMoved { position, .. } => {
                     self.pointer = egui::pos2(
                         position.x as f32 / ctx.pixels_per_point(),
@@ -1516,6 +1560,12 @@ impl Shell {
         }
         if self.consumed.contains(&key) {
             if !pressed {
+                if key == KeyCode::KeyT {
+                    let elapsed = self.elapsed();
+                    if let Some(presenter) = &mut self.presenter {
+                        presenter.hold_fast_forward(false, elapsed);
+                    }
+                }
                 self.consumed.remove(&key);
             }
             return;
@@ -1571,6 +1621,7 @@ impl Shell {
     }
 
     fn tick(&mut self, ctx: &egui::Context, blocked: bool, elapsed: std::time::Duration) {
+        let tick_started = Instant::now();
         let has_dialog = self.has_dialog();
         let Some(presenter) = &mut self.presenter else {
             return;
@@ -1623,7 +1674,9 @@ impl Shell {
             }
         }
         if let Some(deadline) = deadline {
-            ctx.request_repaint_after(deadline.saturating_sub(elapsed));
+            ctx.request_repaint_after(
+                deadline.saturating_sub(elapsed.saturating_add(tick_started.elapsed())),
+            );
         }
         if presenter.audio.check_failure(&mut io::stderr()) {
             self.message = "Host audio unavailable".into();
@@ -1935,7 +1988,7 @@ fn gradient_title(ui: &mut egui::Ui, title: &str) {
     );
 }
 
-const SHORTCUTS: &str = "Enter / double-click: start selected machine\nCtrl+Alt+P: pause / resume\nCtrl+Alt+Q: stop and return to library\nCtrl+Alt+End: send guest Ctrl+Alt+Del\nCtrl+Alt+F: next A: image (Shift for B:)\nCtrl+Alt+E: eject A: (Shift for B:)\nCtrl+Alt+I: insert A: floppy (Shift for B:)\nCtrl+Alt+M: mute host audio\nCtrl+Alt+G: release pointer\nCtrl+Alt+Enter: full screen\nCtrl+N: new machine (not yet available)\nCtrl+O: open machine file\nCtrl+,: settings (not yet available)\nF1: keyboard shortcuts (outside guest focus)\nCtrl+N/O/, also require shell focus while running.\n\nClick the emulated screen to focus guest input and capture the pointer.\nMenus, dialogs and focus loss release the pointer and held guest keys.";
+const SHORTCUTS: &str = "Enter / double-click: start selected machine\nCtrl+Alt+P: pause / resume\nCtrl+Alt+T: hold to fast-forward (Unlimited)\nCtrl+Alt+Q: stop and return to library\nCtrl+Alt+End: send guest Ctrl+Alt+Del\nCtrl+Alt+F: next A: image (Shift for B:)\nCtrl+Alt+E: eject A: (Shift for B:)\nCtrl+Alt+I: insert A: floppy (Shift for B:)\nCtrl+Alt+M: toggle user mute (also while speed-muted)\nCtrl+Alt+G: release pointer\nCtrl+Alt+Enter: full screen\nCtrl+N: new machine (not yet available)\nCtrl+O: open machine file\nCtrl+,: settings (not yet available)\nF1: keyboard shortcuts (outside guest focus)\nCtrl+N/O/, also require shell focus while running.\n\nClick the emulated screen to focus guest input and capture the pointer.\nMenus, dialogs and focus loss release the pointer and held guest keys.";
 
 #[cfg(test)]
 mod tests {
@@ -2456,6 +2509,74 @@ mod tests {
     }
 
     #[test]
+    fn speed_cell_drops_measurement_after_halt_and_stop() {
+        for selected in crate::pacing::Speed::ALL {
+            let mut shell = shell();
+            let presenter = shell.presenter.as_mut().unwrap();
+            presenter.select_speed(selected, std::time::Duration::ZERO);
+            presenter.pacing.observe(std::time::Duration::ZERO, 0);
+            presenter.pacing.observe(
+                std::time::Duration::from_secs(1),
+                crate::pacing::virtual_ticks(std::time::Duration::from_secs(2)) as u64,
+            );
+            assert!(shell.speed_status().contains("2.0x"));
+            shell.presenter.as_mut().unwrap().running = false;
+            assert_eq!(shell.speed_status(), format!("Speed {}", selected.label()));
+            shell.stop();
+            assert_eq!(shell.speed_status(), "Speed 100%");
+        }
+    }
+
+    #[test]
+    fn speed_fast_forward_release_and_focus_loss_restore_the_selected_mode() {
+        for selected in crate::pacing::Speed::ALL {
+            for lose_focus in [false, true] {
+                let mut shell = keyboard_shell();
+                let ctx = egui::Context::default();
+                shell.command(Command::Speed(selected), &ctx);
+                for key in [KeyCode::ControlRight, KeyCode::AltRight, KeyCode::KeyT] {
+                    shell.key(key, Pressed, false, &ctx);
+                }
+                shell.key(KeyCode::KeyT, Pressed, false, &ctx);
+                let presenter = shell.presenter.as_ref().unwrap();
+                assert_eq!(
+                    presenter.pacing.effective(),
+                    crate::pacing::Speed::Unlimited
+                );
+                assert!(presenter.audio.muted());
+                assert!(presenter.pacing.status().starts_with("Fast-forward"));
+                if lose_focus {
+                    shell.focus_lost();
+                } else {
+                    shell.key(KeyCode::AltRight, Released, false, &ctx);
+                    shell.key(KeyCode::ControlRight, Released, false, &ctx);
+                    shell.key(KeyCode::KeyT, Released, true, &ctx);
+                }
+                let presenter = shell.presenter.as_ref().unwrap();
+                assert_eq!(presenter.pacing.effective(), selected);
+                assert_eq!(presenter.audio.muted(), !selected.audio_enabled());
+                assert!(!presenter.pacing.status().starts_with("Fast-forward"));
+            }
+        }
+        assert!(SHORTCUTS.contains("Ctrl+Alt+T: hold to fast-forward"));
+    }
+
+    #[test]
+    fn speed_fast_forward_chord_never_delivers_t_to_the_guest() {
+        let mut shell = keyboard_shell();
+        let ctx = egui::Context::default();
+        for key in [KeyCode::ControlLeft, KeyCode::AltLeft, KeyCode::KeyT] {
+            shell.key(key, Pressed, false, &ctx);
+        }
+        shell.key(KeyCode::KeyT, Pressed, false, &ctx);
+        for key in [KeyCode::AltLeft, KeyCode::ControlLeft, KeyCode::KeyT] {
+            shell.key(key, Released, false, &ctx);
+        }
+        assert_eq!(take_guest_scancodes(&mut shell), [0x1D, 0x38, 0xB8, 0x9D]);
+        assert!(shell.guest_held.is_empty());
+    }
+
+    #[test]
     fn host_shortcuts_balance_forwarded_modifiers_without_the_command_key() {
         let mut shell = keyboard_shell();
         let ctx = egui::Context::default();
@@ -2841,10 +2962,7 @@ mod tests {
         shell.tick(&ctx, false, Duration::from_millis(200));
         let presenter = shell.presenter.as_ref().unwrap();
         assert!(presenter.occluded_since.is_none());
-        assert_eq!(
-            presenter.dropped_clocks,
-            crate::pacing::virtual_ticks(Duration::from_millis(200))
-        );
+        assert_eq!(presenter.pacing.dropped, 0);
         assert_eq!(presenter.assembled.machine.virtual_time(), 0);
         shell.tick(&ctx, false, Duration::from_millis(220));
         assert!(

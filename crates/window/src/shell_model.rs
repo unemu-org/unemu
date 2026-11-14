@@ -29,6 +29,8 @@ pub(crate) enum Command {
     Next(u8),
     Eject(u8),
     Mute,
+    Speed(crate::pacing::Speed),
+    FastForward,
     Release,
     Fullscreen,
     Library,
@@ -56,7 +58,9 @@ impl Enablement {
             | Command::Stop
             | Command::Reset
             | Command::PowerCycle
-            | Command::Release => self.state != State::Stopped,
+            | Command::Release
+            | Command::Speed(_)
+            | Command::FastForward => self.state != State::Stopped,
             Command::Insert(unit) | Command::Next(unit) | Command::Eject(unit) => {
                 self.state != State::Stopped
                     && self.floppy.get(unit as usize).copied().unwrap_or(false)
@@ -84,6 +88,7 @@ pub(crate) fn hotkey(
             KeyE => Command::Eject(u8::from(shift)),
             KeyI => Command::Insert(u8::from(shift)),
             KeyM => Mute,
+            KeyT => FastForward,
             KeyG => Release,
             KeyP => Command::Pause,
             KeyQ => Stop,
@@ -309,13 +314,13 @@ pub(crate) fn relative_diagnostic(text: &str, machine: &Path) -> String {
     result
 }
 
-/// Message, power, A:, C:, CPU, EMS and audio cells. The message absorbs spare
+/// Message, power, A:, C:, CPU, EMS, audio and speed cells. The message absorbs spare
 /// space; every cell is clipped independently even on a narrow client.
-pub(crate) fn status_widths(available: f32) -> [f32; 7] {
-    let fixed = [68.0, 40.0, 40.0, 156.0, 112.0, 118.0];
+pub(crate) fn status_widths(available: f32) -> [f32; 8] {
+    let fixed = [68.0, 40.0, 40.0, 156.0, 112.0, 118.0, 150.0];
     let total: f32 = fixed.iter().sum();
     let scale = (available.max(0.0) / total).min(1.0);
-    let mut widths = [0.0; 7];
+    let mut widths = [0.0; 8];
     widths[0] = (available - total).max(0.0);
     for (width, fixed) in widths[1..].iter_mut().zip(fixed) {
         *width = fixed * scale;
@@ -450,6 +455,10 @@ mod tests {
 
     #[test]
     fn status_cells_fit_without_consuming_each_others_width() {
+        assert_eq!(
+            &status_widths(1040.0)[1..7],
+            &[68.0, 40.0, 40.0, 156.0, 112.0, 118.0]
+        );
         for available in [0.0, 200.0, 760.0, 1040.0, 2000.0] {
             let widths = status_widths(available);
             assert!(widths.iter().all(|width| *width >= 0.0));
@@ -569,6 +578,11 @@ mod tests {
     #[test]
     fn hotkeys_preserve_media_shift_and_leave_plain_guest_keys_alone() {
         use KeyCode::*;
+        assert_eq!(hotkey(Space, true, true, false, State::Running, true), None);
+        assert_eq!(
+            hotkey(KeyT, false, false, false, State::Running, true),
+            None
+        );
         for (key, command) in [
             (KeyI, Command::Insert(0)),
             (KeyF, Command::Next(0)),
@@ -576,6 +590,7 @@ mod tests {
             (KeyM, Command::Mute),
             (KeyG, Command::Release),
             (KeyP, Command::Pause),
+            (KeyT, Command::FastForward),
             (KeyQ, Command::Stop),
             (End, Command::Reset),
             (Enter, Command::Fullscreen),

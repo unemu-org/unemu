@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Desktop shell and paced machine session (design/spec.md §9.4).
 //!
-//! The event loop alone reads a monotonic host clock. A pure pacing policy
+//! The host frontend reads a monotonic clock for cadence and slice deadlines. A pure policy
 //! converts elapsed time to bounded PIT targets and virtual-time run caps.
 //! Input enters only at run boundaries; observation captures the completed
 //! boundary. An opt-in PS/2 or serial mouse uses raw relative events while captured;
@@ -46,8 +46,10 @@ const SINK_SCALE: u16 = 2;
 use host_audio::HostAudio;
 
 #[cfg(test)]
+use pacing::frame_target;
+#[cfg(test)]
 use pacing::wake;
-use pacing::{frame_target, run_cap, virtual_ticks, CpuRate};
+use pacing::{run_cap, CpuRate, Pacing, Speed};
 #[cfg(test)]
 const BIOS_FIXTURE: &str = "vendor/kiselev-bios/bios-xi8088.bin";
 #[cfg(test)]
@@ -106,7 +108,7 @@ struct Presenter {
     mouse: HostMouse,
     error: Option<Box<dyn Error>>,
     rate: CpuRate,
-    dropped_clocks: u128,
+    pacing: Pacing,
     started: Option<Instant>,
     next_paint: Option<Duration>,
     occluded_since: Option<Duration>,
@@ -203,7 +205,7 @@ impl Presenter {
                 denominator: NonZeroU64::new(clock.retired_per_pit_clock_denominator)
                     .ok_or("zero CPU rate denominator")?,
             },
-            dropped_clocks: 0,
+            pacing: Pacing::default(),
             started: None,
             next_paint: None,
             occluded_since: None,
@@ -223,6 +225,21 @@ impl Presenter {
         elapsed: Duration,
         warnings: &mut impl io::Write,
     ) -> Result<(), Box<dyn Error>> {
+        let started = Instant::now();
+        self.advance_with_slice_clock(elapsed, warnings, || started.elapsed())
+    }
+
+    #[cfg(test)]
+    fn advance_fully(&mut self, elapsed: Duration) -> Result<(), Box<dyn Error>> {
+        self.advance_with_slice_clock(elapsed, &mut io::sink(), || Duration::ZERO)
+    }
+
+    fn advance_with_slice_clock(
+        &mut self,
+        elapsed: Duration,
+        warnings: &mut impl io::Write,
+        mut spent: impl FnMut() -> Duration,
+    ) -> Result<(), Box<dyn Error>> {
         if self.audio.check_failure(warnings) {
             self.update_title();
         }
@@ -232,15 +249,18 @@ impl Presenter {
         self.assembled.check_persistence()?;
         // Refresh consumer availability before devices can prune new history.
         self.capture_audio(warnings);
-        let (target, dropped) = frame_target(
-            elapsed,
-            self.assembled.machine.clock().0,
-            self.dropped_clocks,
-        );
-        self.dropped_clocks = dropped;
-        while self.running && self.assembled.machine.clock().0 < target {
+        let frame_period = self.pacing.frame_period(elapsed);
+        let target = self
+            .pacing
+            .target(elapsed, self.assembled.machine.clock().0);
+        while self.running
+            && target.is_none_or(|target| self.assembled.machine.clock().0 < target)
+            && self.pacing.slice_open(spent(), frame_period)
+        {
+            let clock = self.assembled.machine.clock().0;
             let time = self.assembled.machine.virtual_time();
-            let cap = run_cap(target, self.assembled.machine.clock().0, time, self.rate);
+            let chunk = self.pacing.chunk_target(clock, target);
+            let cap = run_cap(chunk, clock, time, self.rate);
             if cap == time {
                 self.running = false;
                 break;
@@ -297,6 +317,8 @@ impl Presenter {
                 self.finish_persistence(warnings)?;
             }
         }
+        self.pacing
+            .observe(elapsed, self.assembled.machine.clock().0);
         // Even a CPU error must leave the screen at its last completed boundary.
         self.assembled.capture_text(self.display)?;
         if let Some(error) = self.sink.error() {
@@ -362,23 +384,39 @@ impl Presenter {
         if occluded {
             self.occluded_since.get_or_insert(elapsed);
             self.next_paint = None;
-        } else if let Some(since) = self.occluded_since.take() {
-            // Hidden time grants no guest work when presentation resumes.
-            self.dropped_clocks += virtual_ticks(elapsed) - virtual_ticks(since);
+        } else if self.occluded_since.take().is_some() {
+            self.pacing
+                .resync(elapsed, self.assembled.machine.clock().0);
             self.next_paint = Some(elapsed);
+        }
+    }
+
+    fn select_speed(&mut self, speed: Speed, elapsed: Duration) {
+        self.pacing
+            .select(speed, elapsed, self.assembled.machine.clock().0);
+        self.audio
+            .set_speed_muted(!self.pacing.effective().audio_enabled());
+    }
+
+    fn hold_fast_forward(&mut self, held: bool, elapsed: Duration) {
+        self.pacing
+            .hold(held, elapsed, self.assembled.machine.clock().0);
+        self.audio
+            .set_speed_muted(!self.pacing.effective().audio_enabled());
+    }
+
+    fn speed_status(&self) -> String {
+        if self.running {
+            self.pacing.status()
+        } else {
+            format!("Speed {}", self.pacing.selected().label())
         }
     }
 
     fn title(&mut self) -> String {
         let a = self.assembled.floppy_name(DeviceId::Fdc, 0);
         let b = self.assembled.floppy_name(DeviceId::Fdc, 1);
-        let audio = if !self.audio.available() {
-            "no audio"
-        } else if self.audio.muted() {
-            "audio muted (ctrl+alt+m to unmute)"
-        } else {
-            "audio unmuted (ctrl+alt+m to mute)"
-        };
+        let audio = self.audio.title_text();
         let pointer = if self.mouse.captured() {
             " — pointer captured (ctrl+alt+g to release)"
         } else {
@@ -779,7 +817,7 @@ mod tests {
             vec![(0, assembly::FloppyAction::Next)]
         );
         assert_eq!(presenter.assembled.floppy_name(DeviceId::Fdc, 0), "one.img");
-        presenter.advance(Duration::ZERO).unwrap();
+        presenter.advance_fully(Duration::ZERO).unwrap();
         assert_eq!(presenter.assembled.floppy_name(DeviceId::Fdc, 0), "one.img");
         advance_frame(&mut presenter);
         assert_eq!(presenter.assembled.floppy_name(DeviceId::Fdc, 0), "two.img");
@@ -1009,7 +1047,7 @@ mod tests {
                 .save(),
             before
         );
-        presenter.advance(Duration::ZERO).unwrap();
+        presenter.advance_fully(Duration::ZERO).unwrap();
         assert!(presenter.mouse_log.is_empty());
         advance_frame(&mut presenter);
         assert_eq!(
@@ -1314,7 +1352,7 @@ mod tests {
                 let step = if lane == "window-single" { 100 } else { 1 };
                 for elapsed in (step..=200).step_by(step) {
                     presenter
-                        .advance(Duration::from_micros(elapsed as u64))
+                        .advance_fully(Duration::from_micros(elapsed as u64))
                         .unwrap();
                     if !presenter.running {
                         break;
@@ -1400,7 +1438,7 @@ mod tests {
             write: assembly::WriteMode::journal(&journal),
         });
         let mut presenter = test_presenter(&config).unwrap();
-        presenter.advance(Duration::from_millis(20)).unwrap();
+        presenter.advance_fully(Duration::from_millis(20)).unwrap();
         assert!(presenter.error.is_some());
         assert!(!presenter.running);
         assert!(presenter.window.is_none());
@@ -1506,7 +1544,7 @@ mod tests {
                 assert!(error.to_string().contains("drive 0 persistence"), "{error}");
                 assert_eq!(presenter.assembled.machine.virtual_time(), boundary);
                 assert_eq!(presenter.assembled.machine.cpu().code_segment(), 0);
-                assert!(presenter.advance(Duration::from_millis(40)).is_err());
+                assert!(presenter.advance_fully(Duration::from_millis(40)).is_err());
                 assert_eq!(presenter.assembled.machine.virtual_time(), boundary);
                 assert_eq!(std::fs::read(journal).unwrap().len(), 128);
             } else {
@@ -1561,7 +1599,7 @@ mod tests {
             config.drives[0].image = assembly::ImageSource::File(base);
             config.drives[0].write = assembly::WriteMode::journal(&journal);
             let mut presenter = test_presenter(&config).unwrap();
-            presenter.advance(Duration::from_millis(20)).unwrap();
+            presenter.advance_fully(Duration::from_millis(20)).unwrap();
             assert!(!presenter.running);
             assert_eq!(presenter.error.is_some(), fail);
             let bytes = std::fs::read(journal).unwrap();
@@ -1675,7 +1713,7 @@ mod tests {
                 u128::from(frequency.numerator()) * u128::from(device::clock::TICKS_PER_PIT_CLOCK),
             );
         presenter
-            .advance(Duration::from_nanos(nanos as u64))
+            .advance_fully(Duration::from_nanos(nanos as u64))
             .unwrap();
     }
 
@@ -1958,7 +1996,19 @@ mod tests {
                 & 1,
             0
         );
-        advance_frame(&mut presenter);
+        let mut checks = 0;
+        presenter
+            .advance_with_slice_clock(Duration::from_millis(12), &mut io::sink(), || {
+                checks += 1;
+                if checks == 1 {
+                    Duration::ZERO
+                } else {
+                    Duration::from_secs(1)
+                }
+            })
+            .unwrap();
+        let first_time = presenter.assembled.machine.virtual_time();
+        assert!(first_time > 0);
         assert_eq!(presenter.keyboard.pending_events(), 1);
         let first = presenter.assembled.capture_text(DeviceId::Mda).unwrap();
         let video::Frame::Text(first) = first.frame else {
@@ -1978,7 +2028,7 @@ mod tests {
         assert!(second.to_dump().starts_with("1!\""));
         assert_eq!(
             presenter.assembled.machine.virtual_time(),
-            2 * TEST_FRAME_CLOCKS
+            first_time + TEST_FRAME_CLOCKS
         );
         assert!(presenter.sink.frame().is_some());
         assert!(presenter.window.is_none());
@@ -2088,6 +2138,153 @@ mod tests {
     }
 
     #[test]
+    fn speed_paced_frame_reaches_target_after_eight_host_milliseconds() {
+        let target = pacing::virtual_ticks(Duration::from_millis(8)) as u64;
+        for (mode, millis) in [
+            (Speed::Normal, 8),
+            (Speed::Double, 4),
+            (Speed::Quadruple, 2),
+        ] {
+            let mut presenter = test_presenter(&timer_guest_config()).unwrap();
+            presenter.select_speed(mode, Duration::ZERO);
+            let mut host_time = Duration::ZERO;
+            presenter
+                .advance_with_slice_clock(Duration::from_millis(millis), &mut io::sink(), || {
+                    let now = host_time;
+                    host_time += Duration::from_millis(1);
+                    now
+                })
+                .unwrap();
+            assert!(host_time >= Duration::from_millis(8), "{mode:?}");
+            assert!(presenter.assembled.machine.clock().0 >= target, "{mode:?}");
+        }
+    }
+
+    #[test]
+    fn speed_unlimited_presenter_stops_at_the_host_slice_budget() {
+        let mut presenter = test_presenter(&timer_guest_config()).unwrap();
+        presenter.select_speed(Speed::Unlimited, Duration::ZERO);
+        let period = pacing::next_frame(Duration::ZERO);
+        let budget = Speed::Unlimited.slice_budget(period);
+        let mut host_time = Duration::ZERO;
+        presenter
+            .advance_with_slice_clock(Duration::ZERO, &mut io::sink(), || {
+                let spent = host_time;
+                host_time += Duration::from_millis(1);
+                spent
+            })
+            .unwrap();
+        assert!(host_time >= budget);
+        assert!(
+            host_time < period,
+            "Unlimited must yield before the next paint"
+        );
+        let clock = presenter.assembled.machine.clock().0;
+        assert!(clock > 0);
+        assert!(clock < pacing::virtual_ticks(period) as u64);
+        presenter
+            .advance_with_slice_clock(Duration::ZERO, &mut io::sink(), || period)
+            .unwrap();
+        assert_eq!(presenter.assembled.machine.clock().0, clock);
+        presenter.select_speed(Speed::Normal, Duration::from_secs(100));
+        presenter
+            .advance_with_slice_clock(Duration::from_secs(100), &mut io::sink(), || Duration::ZERO)
+            .unwrap();
+        assert_eq!(presenter.assembled.machine.clock().0, clock);
+    }
+
+    #[test]
+    fn speed_modes_replay_the_same_script_at_equal_retired_counts() {
+        #[rustfmt::skip]
+        let program = [
+            0xB8, 0, 0xB0, 0x8E, 0xD8,
+            0xBB, 0, 0, 0xB9, 0, 0,
+            0x41, 0xE4, 0x64, 0xA8, 1, 0x74, 0xF9,
+            0xE4, 0x60, 0x88, 0x07, 0x83, 0xC3, 2,
+            0x89, 0x0F, 0x83, 0xC3, 2, 0xEB, 0xEB,
+        ];
+        let mut rom = vec![0; 0x8000];
+        rom[..program.len()].copy_from_slice(&program);
+        let mut config = assembly::bios(rom, None);
+        config.cpu.reset = assembly::ResetSpec::Entry { cs: 0xF800, ip: 0 };
+        config.cpu.segments = assembly::SegmentSeed::flat(0);
+        config.clock.retired_per_pit_clock = 1;
+        config.clock.retired_per_pit_clock_denominator = 1;
+        let script = [(5000, 0x1E), (12000, 0x30), (19000, 0x9E), (26000, 0xB0)];
+        let final_time = 60_000;
+        let replay = |mode| {
+            let mut assembled = observed_machine(&config);
+            let keyboard = assembled.device_index[&DeviceId::Keyboard];
+            let mut policy = Pacing::default();
+            policy.select(mode, Duration::ZERO, 0);
+            let rate = CpuRate {
+                numerator: NonZeroU64::new(1).unwrap(),
+                denominator: NonZeroU64::new(1).unwrap(),
+            };
+            let mut elapsed = Duration::ZERO;
+            let mut caps = Vec::new();
+            let mut delivered = Vec::new();
+            let mut binding_targets = 0;
+            let mut frames = 0;
+            while assembled.machine.virtual_time() < final_time {
+                elapsed += pacing::next_frame(Duration::ZERO);
+                let period = policy.frame_period(elapsed);
+                let target = policy.target(elapsed, assembled.machine.clock().0);
+                let mut spent = Duration::ZERO;
+                loop {
+                    let time = assembled.machine.virtual_time();
+                    if let Some(&(stamp, byte)) = script.get(delivered.len()) {
+                        if time == stamp {
+                            assert!(assembly::try_inject_scancode(
+                                &mut assembled.machine,
+                                keyboard,
+                                byte
+                            ));
+                            delivered.push((time, byte));
+                        }
+                    }
+                    let clock = assembled.machine.clock().0;
+                    if time == final_time
+                        || target.is_some_and(|target| clock >= target)
+                        || !policy.slice_open(spent, period)
+                    {
+                        break;
+                    }
+                    let input_boundary = script
+                        .get(delivered.len())
+                        .map_or(final_time, |event| event.0);
+                    let cap = run_cap(policy.chunk_target(clock, target), clock, time, rate)
+                        .min(input_boundary)
+                        .min(final_time);
+                    assert!(cap > time);
+                    caps.push(cap);
+                    run_to(&mut assembled, cap, cap - time);
+                    spent += Duration::from_micros(100);
+                }
+                if target.is_some_and(|target| assembled.machine.clock().0 >= target) {
+                    binding_targets += 1;
+                }
+                policy.observe(elapsed, assembled.machine.clock().0);
+                frames += 1;
+                assert!(frames < 1000);
+            }
+            assert_eq!(delivered, script);
+            let state = guest_state(&mut assembled);
+            assert_eq!(state.retired, final_time);
+            (state, caps, binding_targets, frames)
+        };
+        let unlimited = replay(Speed::Unlimited);
+        assert_eq!(unlimited.2, 0);
+        for mode in [Speed::Normal, Speed::Double] {
+            let paced = replay(mode);
+            assert!(paced.2 > 0, "the paced target must bind");
+            assert!(paced.3 > unlimited.3, "the frame partitions must differ");
+            assert_ne!(paced.1, unlimited.1, "the run caps must differ");
+            assert_eq!(paced.0, unlimited.0, "mode {mode:?}");
+        }
+    }
+
+    #[test]
     fn replay_oracle_detects_cpu_and_ram_changes_without_display_changes() {
         // Equal instruction counts and unchanged display/device state leave
         // CPU registers, IF and ordinary RAM as the only distinguishing state.
@@ -2157,10 +2354,10 @@ mod tests {
                     6 => paced.key_event(KeyCode::ArrowRight, Released),
                     _ => {}
                 }
-                paced.advance(Duration::from_millis(millis)).unwrap();
+                paced.advance_fully(Duration::from_millis(millis)).unwrap();
                 assert!(paced.running);
             }
-            assert!(paced.dropped_clocks > 0, "the fake stall must drop backlog");
+            assert!(paced.pacing.dropped > 0, "the fake stall must drop backlog");
             assert_eq!(paced.keyboard.pending_events(), 0);
             let bytes: Vec<_> = paced
                 .input_log
@@ -2205,9 +2402,10 @@ mod tests {
                 let (target, _) = frame_target(
                     elapsed,
                     presenter.assembled.machine.clock().0,
-                    presenter.dropped_clocks,
+                    presenter.pacing.dropped,
+                    1,
                 );
-                presenter.advance(elapsed).unwrap();
+                presenter.advance_fully(elapsed).unwrap();
                 let clock = presenter.assembled.machine.clock().0;
                 assert!(presenter.running);
                 assert!(
@@ -2222,14 +2420,14 @@ mod tests {
     fn hidden_presenter_pauses_and_discards_all_hidden_time() {
         let mut presenter = test_presenter(&timer_guest_config()).unwrap();
         let visible = Duration::from_millis(10);
-        presenter.advance(visible).unwrap();
+        presenter.advance_fully(visible).unwrap();
         let before = guest_state(&mut presenter.assembled);
         presenter.key_event(KeyCode::KeyF, ElementState::Pressed);
         presenter.occlusion_changed(true, visible);
         // Repeated notifications cannot shorten the hidden interval.
         presenter.occlusion_changed(true, Duration::from_secs(1));
         let resumed = Duration::from_secs(120);
-        presenter.advance(resumed).unwrap();
+        presenter.advance_fully(resumed).unwrap();
         assert_eq!(guest_state(&mut presenter.assembled), before);
         assert_eq!(presenter.keyboard.pending_events(), 1);
         assert!(presenter.input_log.is_empty());
@@ -2242,15 +2440,12 @@ mod tests {
             (false, None)
         );
         presenter.occlusion_changed(false, resumed);
-        assert_eq!(
-            presenter.dropped_clocks,
-            virtual_ticks(resumed) - virtual_ticks(visible)
-        );
+        assert_eq!(presenter.pacing.dropped, 0);
         assert!(wake(resumed, presenter.next_paint, true).0);
-        presenter.advance(resumed).unwrap();
+        presenter.advance_fully(resumed).unwrap();
         assert_eq!(guest_state(&mut presenter.assembled), before);
         presenter
-            .advance(resumed + Duration::from_millis(10))
+            .advance_fully(resumed + Duration::from_millis(10))
             .unwrap();
         assert!(presenter.assembled.machine.clock().0 > before.clock);
         assert_eq!(presenter.keyboard.pending_events(), 0);
@@ -2262,7 +2457,7 @@ mod tests {
         config.cpu.reset = assembly::ResetSpec::Entry { cs: 0xF800, ip: 0 };
         let mut presenter = test_presenter(&config).unwrap();
         presenter.key_event(KeyCode::KeyF, ElementState::Pressed);
-        presenter.advance(Duration::ZERO).unwrap();
+        presenter.advance_fully(Duration::ZERO).unwrap();
         assert_eq!(presenter.assembled.machine.clock().0, 0);
         assert_eq!(presenter.assembled.machine.virtual_time(), 0);
         assert_eq!(presenter.keyboard.pending_events(), 1);

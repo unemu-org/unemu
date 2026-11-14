@@ -133,21 +133,44 @@ Focus loss releases all held keys, including modifiers. Keys are ignored after
 the machine stops. NumLock wrappers follow the guest's keyboard LED state,
 including guest reboots and Ctrl+NumLock (Pause), never the host OS lock state.
 
-Input is queued until the next paced run boundary; a full 8042, a disabled
-interface or a pending serial byte defers input without drops. The window uses
-`Instant` only in its event loop, targets PIT time from elapsed real time and
-paints at 60 Hz with `ControlFlow::WaitUntil` between frames. Each paint advances
-at most 50 ms of guest time (plus scheduler instruction-boundary rounding).
-Excess backlog is discarded permanently, so a slow host runs the guest slower
-than real time without accumulating catch-up work. A resize can request an
-extra paint but does not grant extra guest time. An occlusion notification pauses
-the guest and switches to `Wait`, ignoring queued redraws. Resuming discards the
-entire hidden interval, with no catch-up; suspension follows the same policy. Headless execution
-and goldens keep their virtual-time budgets and never use this pacing.
-See [`design/observation.md`](design/observation.md#window-pacing) for the exact
-frequency, rounding, input replay contract and tests. No pacing flags are needed.
+View > Speed selects 100% (the default on every Start), 200%, 400% or Unlimited.
+Hold Ctrl+Alt+T for Unlimited; releasing T restores the selected mode,
+even if Ctrl or Alt was released first. Focus loss or opening a menu/dialog also
+ends the hold. The chord's T make, repeat and break never reach the guest;
+previously forwarded modifiers receive balanced breaks. The status bar reports
+the mode and measured virtual-time/host-time ratio over the last second.
+This host pacing control is separate from the machine's configured instruction rate.
+
+Input is queued until the next run boundary; a full 8042, a disabled
+interface or a pending serial byte defers input without drops. Only the window
+frontend reads `Instant`; it targets virtual time from elapsed host time scaled
+by the selected mode. Guest time remains retired instructions plus halted PIT
+clocks. The host budget follows the observed presentation period, clamped between
+one 60 Hz period (about 16.7 ms) and 50 ms. Paced modes run until their virtual
+target is reached or that full period is used up. Unlimited has no virtual-time
+target and leaves 3 ms of the period for presentation (about 13.7 ms of execution
+at 60 Hz). Budget checks occur between chunks of at most 1 ms of virtual time,
+plus scheduler instruction-boundary rounding. A 100% frame needing 8 ms of host
+work can finish in one presentation. Slower repaint cadences allow larger slices
+within the 50 ms bound. Rendering and other host costs still
+contribute to the measured achievable speed. Display
+capture and texture upload run at most once on each 60 Hz presentation deadline;
+extra UI repaints grant no guest work. Paced modes discard backlog above 50 ms
+times the selected ratio, so a slow host accumulates no catch-up debt. Mode
+changes, pause/resume and uncovering re-anchor pacing at the current guest clock.
+Hidden, suspended, paused and modal time grants no catch-up work.
+Host audio is muted outside 100%, including during the hold, without time-stretch.
+Returning to 100% clears queued samples and converter history and prefills fresh
+audio; explicit user mute remains in effect. Status distinguishes `Audio muted
+(speed)` from user mute. During speed mute, the View menu shows whether
+user mute is on or off; Ctrl+Alt+M toggles that preference for the return to 100%
+and does not override the speed mute. Playback never drives virtual time.
+Headless CLI execution and goldens retain their virtual-time budgets and never
+use host pacing. See [`design/observation.md`](design/observation.md#window-pacing)
+for board-clock conversion and the input replay contract.
 A natural halt, CPU failure or exhausted virtual-time range stops advancement
-and retains the last screen until closed. Blink stays visible; its deterministic
+and retains the last screen until closed. Its speed cell keeps the selected mode
+without a stale ratio; Stop returns the cell to `Speed 100%`. Blink stays visible; its deterministic
 phase can derive from virtual time later. Workspace and presenter tests remain
 headless. The input log is test-owned, with no user-facing log flag.
 

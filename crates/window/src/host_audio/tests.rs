@@ -215,10 +215,10 @@ fn presenter_wiring_is_inert_until_enabled_and_captures_each_run_boundary() {
         playing.audio.sink.active.store(true, Ordering::Relaxed);
         for millis in [20, 40, 60] {
             silent
-                .advance(std::time::Duration::from_millis(millis))
+                .advance_fully(std::time::Duration::from_millis(millis))
                 .unwrap();
             playing
-                .advance(std::time::Duration::from_millis(millis))
+                .advance_fully(std::time::Duration::from_millis(millis))
                 .unwrap();
             let clock = playing.assembled.machine.clock();
             assert_eq!(silent.assembled.machine.clock(), clock);
@@ -420,14 +420,16 @@ fn unmute_refreshes_trimmed_speaker_history_before_the_next_run() {
     for host in [&mut actual, &mut reference] {
         host.audio.sink.active.store(true, Ordering::Relaxed);
         host.audio.toggle_mute();
-        host.advance(std::time::Duration::from_millis(20)).unwrap();
+        host.advance_fully(std::time::Duration::from_millis(20))
+            .unwrap();
         assert_eq!(host.audio.sink.ring.lock().unwrap().len, 0);
         host.audio.toggle_mute();
     }
     // This independent explicit flush is the expected output-enable boundary.
     reference.assembled.capture_audio().unwrap();
     for host in [&mut actual, &mut reference] {
-        host.advance(std::time::Duration::from_millis(40)).unwrap();
+        host.advance_fully(std::time::Duration::from_millis(40))
+            .unwrap();
     }
     let snapshot = |host: &crate::Presenter| {
         let mut ring = host.audio.sink.ring.lock().unwrap();
@@ -658,4 +660,73 @@ fn mute_resets_converter_history_before_playback_resumes() {
     let mut output = vec![[0; 2]; ring.len];
     ring.read(&mut output);
     assert!(output.iter().all(|frame| *frame == [1000, -1000]));
+}
+
+#[test]
+fn speed_mute_discards_samples_and_converter_history_before_fresh_prefill() {
+    let mut host = HostAudio::new();
+    host.sink.active.store(true, Ordering::Relaxed);
+    host.sink.configure(44_100);
+    host.sink.push(&vec![[1234, -1234]; TARGET]);
+    assert!(host.sink.ring.lock().unwrap().len > 0);
+    host.set_speed_muted(true);
+    assert!(host.muted());
+    assert_eq!(host.sink.ring.lock().unwrap().len, 0);
+    host.sink.push(&vec![[1234, -1234]; TARGET]);
+    host.set_speed_muted(false);
+    assert!(!host.muted());
+    assert!(host.sink.converter.lock().unwrap().previous.is_none());
+    let mut output = [99i16; 2];
+    host.sink.read(&mut output, 2);
+    assert_eq!(output, [0, 0]);
+    host.sink.push(&[[42, -42]]);
+    host.sink.read(&mut output, 2);
+    assert_eq!(output, [0, 0]);
+    host.sink.push(&vec![[42, -42]; TARGET]);
+    host.sink.read(&mut output, 2);
+    assert_eq!(output, [42, -42]);
+}
+
+#[test]
+fn speed_return_to_normal_preserves_the_users_mute_choice() {
+    let mut host = HostAudio::new();
+    host.sink.active.store(true, Ordering::Relaxed);
+    host.toggle_mute();
+    host.set_speed_muted(true);
+    host.set_speed_muted(false);
+    assert!(host.muted());
+    host.toggle_mute();
+    assert!(!host.muted());
+    host.set_speed_muted(true);
+    host.toggle_mute();
+    host.toggle_mute();
+    assert!(host.muted());
+    host.set_speed_muted(false);
+    assert!(!host.muted());
+}
+
+#[test]
+fn speed_mute_labels_explain_the_user_preference_toggle() {
+    let mut host = speaker_presenter();
+    host.audio.sink.active.store(true, Ordering::Relaxed);
+    host.select_speed(crate::Speed::Double, std::time::Duration::ZERO);
+    assert_eq!(host.audio.status_text(), "Audio muted (speed)");
+    assert!(host.title().contains("user mute off"));
+    assert!(!host.title().contains(" to unmute"));
+    assert_eq!(host.audio.mute_label(), "User mute: off (speed muted)");
+    host.audio.toggle_mute();
+    assert!(host.audio.muted());
+    assert_eq!(host.audio.status_text(), "Audio muted (speed + user)");
+    assert!(host.title().contains("user mute on"));
+    assert!(!host.title().contains(" to unmute"));
+    assert_eq!(host.audio.mute_label(), "User mute: on (speed muted)");
+    host.select_speed(crate::Speed::Normal, std::time::Duration::ZERO);
+    assert_eq!(host.audio.status_text(), "Audio muted (user)");
+    assert!(host.audio.muted());
+    host.select_speed(crate::Speed::Double, std::time::Duration::ZERO);
+    host.audio.toggle_mute();
+    assert_eq!(host.audio.status_text(), "Audio muted (speed)");
+    host.select_speed(crate::Speed::Normal, std::time::Duration::ZERO);
+    assert!(!host.audio.muted());
+    assert_eq!(host.audio.status_text(), "Audio on");
 }

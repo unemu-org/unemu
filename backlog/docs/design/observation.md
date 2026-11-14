@@ -42,11 +42,14 @@ model the physical INTR-to-INTA race interval. See
 
 ## Window pacing
 
-Only the window event loop reads `std::time::Instant`. The machine scheduler,
-headless runner, devices, frame sinks and keyboard encoder never read host time.
-The event loop passes an elapsed `Duration` into the same `Presenter::advance`
-path used by fake-clock tests. It neither ticks devices nor injects input during
-a scheduler call. The pure policy lives in `crates/window/src/pacing.rs`.
+Only the host frontend reads `std::time::Instant`: the shell measures cadence
+and repaint delay, and `Presenter::advance_with_warnings` wraps the bounded
+advance path with a slice clock. The machine scheduler, headless runner, devices,
+frame sinks and keyboard encoder never read host time. Tests inject elapsed host
+durations and a simulated slice clock into `advance_with_slice_clock`; older
+virtual-target tests use `advance_fully`, which supplies zero host cost. The
+frontend neither ticks devices nor injects input during a scheduler call.
+The pure policy lives in `crates/window/src/pacing.rs`.
 
 The board oscillator is exactly **OSC = 315/22 MHz**, four times the NTSC
 315/88 MHz colour subcarrier. PIT input is OSC/12, or **13,125,000/11 Hz**:
@@ -63,44 +66,68 @@ tick at the current scale. Legacy 1- and 3-unit snapshots restore at their saved
 ratio. Explicit RTC timing overrides count virtual ticks; see
 [machine-config.md](machine-config.md#rtc-start-and-nvram-source).
 
-Paint deadlines follow a **60 Hz** epoch grid, `ceil(frame * 1e9 / 60)` ns,
-rather than repeatedly adding a rounded period. This balances input latency
-and presentation work. After painting, the loop chooses the first future grid
-point, skips missed paints, and uses winit `ControlFlow::WaitUntil`. Host key
-events queue for that cadence instead of forcing immediate redraws. Resize
-redraws may paint sooner; an ahead guest does no work and delivers no bytes.
-A stopped machine uses `ControlFlow::Wait` and keeps the last screen.
+Guest presentation deadlines follow a **60 Hz** epoch grid,
+`ceil(frame * 1e9 / 60)` ns, rather than repeatedly adding a rounded period.
+The shell advances a due deadline before requesting work, skips missed paints,
+and schedules eframe repaints for the remaining time after host work completes.
+Extra UI repaints do not advance or capture the guest again before its next
+deadline. Display capture and texture upload happen once per eligible frame;
+the platform's display cadence can further limit actual paints. A stopped
+machine keeps its last screen and shows the selected speed without a stale ratio.
+Stop returns the speed cell to `Speed 100%`.
+
+View > Speed selects 100%, 200%, 400% or Unlimited. Every session starts at 100%.
+Ctrl+Alt+T holds Unlimited; releasing T, losing focus or opening a menu/dialog
+restores the selected mode. T's make, repeats and break stay host-owned, using
+the same modifier balancing as the other Ctrl+Alt host chords. This choice avoids
+the input-source shortcut that can consume Ctrl+Option+Space on macOS.
+
+The host execution budget follows the interval between advances, clamped to
+one 60 Hz period through 50 ms. The initial frame and the first frame after
+re-anchoring use the 60 Hz period. Paced modes may use that full period to reach
+their virtual target. Unlimited has
+no virtual target and leaves 3 ms of the period for input/presentation work
+(about 13.7 ms of execution at 60 Hz). Thus slower repaint cadences permit
+larger slices within the 50 ms bound.
+Host rendering costs still limit achievable speed. Budget checks occur between
+chunks of at most 1 ms of virtual time; an in-flight chunk can overrun the host
+budget. No host duration is supplied to a machine or device.
+
 The window captures mixed audio at each successful run boundary into a bounded
 cpal playback ring. Underruns play silence and overruns discard old frames;
-audio never changes these pacing targets or virtual time. Ctrl+Alt+M toggles
-host mute while an audio device is active. See [audio.md §Host output](audio.md#host-output).
-`Occluded(true)` also switches to `Wait`: the guest pauses and queued redraws
-are ignored, including on macOS where winit can still deliver them. On
-`Occluded(false)`, presentation resumes and the entire hidden interval is added
-to discarded debt, granting no catch-up work. Suspension uses the same pause
-policy. winit 0.30 reports occlusion only on macOS, X11, iOS and the web; on
-Windows and Wayland a hidden window pauses the guest only as far as the
-platform withholds redraws. The pure wake-up decision advances a due deadline before requesting
-redraw; repeated loop wakeups before that deadline request no more redraws.
+audio never changes pacing targets or virtual time. Outside 100%, playback is
+muted without time-stretch. Returning to 100% clears old PCM and interpolation
+history and prefills fresh output. Ctrl+Alt+M toggles the user's mute preference,
+including during speed mute; it cannot override speed mute. The status bar and
+View menu distinguish the two reasons and expose the user preference. See
+[audio.md §Host output](audio.md#host-output).
 
-Each paint advances at most **50 ms** of guest PIT time (59,659 whole clocks),
-allowing moderate jitter without unbounded work after a stall. Given the raw
-wall target `W`, accumulated discarded clocks `D`, and machine clock `C`, choose
-`T = min(W - D, C + 59,659)` (subtraction saturates). Add `W - D - T` to `D`.
-Discarding this debt permanently prevents a slow host from catching up on later
-frames. The guest therefore runs slower under overload; hidden/suspended
-intervals are discarded completely on resume as described above. The machine
-clock is never rewound or fast-forwarded. A zero-time frame cannot advance it.
+Occlusion, minimization, suspension, user pause and modal/menu pause grant no
+guest work. On resume or uncovering, the host anchor is set to the current
+elapsed duration and the current machine clock, with discarded debt reset.
+Every speed change and hold transition also re-anchors. Hidden time is therefore
+excluded rather than added to old debt, and switching to a slower mode grants
+no catch-up burst. Platform visibility notifications still determine when the
+frontend can recognize a hidden window.
+
+For a paced mode, elapsed host time since the anchor is multiplied by its
+integer ratio before conversion to virtual ticks. Each paint targets at most
+**50 ms times that ratio** of guest time beyond the current clock. Given raw
+relative wall target `W`, discarded ticks `D`, and relative machine clock `C`,
+choose `T = min(W - D, C + virtual_ticks(50 ms * ratio))` (subtraction saturates).
+Add `W - D - T` to `D` and add the anchor clock to `T`. This permanently discards
+excess backlog; it does not rewind or fast-forward the machine. The host frame
+budget can stop a slice before this virtual target on a slow host.
 
 For configured CPU rate `A/B` steps per PIT clock, current virtual time `V`,
-and a target ahead of `C`, the pure run-cap function returns
-`V + ceil((T - C) * A / B)`, saturating at `u64::MAX`. The scheduler retains
-active and halted fractional phases, so the presenter rechecks `machine.clock()`
-and computes another cap if required. A final indivisible instruction or HLT
-clock can pass the target slightly; there is no tick outside the scheduler.
-This discrete rounding is the only allowance beyond the per-frame bound.
-At exhausted virtual time the presenter stops. The limit bounds guest work,
-not host milliseconds spent executing it.
+and an absolute chunk target ahead of machine clock `C`, the pure run-cap
+function returns `V + ceil((T - C) * A / (B * TICKS_PER_PIT_CLOCK))`, saturating
+at `u64::MAX`. The scheduler retains active and halted fractional phases, so the
+presenter rechecks `machine.clock()` and computes another cap if required.
+A final indivisible instruction or HLT clock can pass the target slightly;
+there is no tick outside the scheduler. At exhausted virtual time the presenter
+stops. Measured speed is the virtual-clock/host-time ratio over samples from the
+last second, restarted on re-anchoring.
 
 The keyboard delivery seam returns only bytes the 8042 actually accepted.
 Tests record `(virtual_time_before_run, accepted_bytes)` at every nonempty
