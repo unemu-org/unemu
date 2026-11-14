@@ -1,0 +1,393 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Firmware — design mock-up (approved)</title>
+<style>
+:root {
+  --desk: #5f7f86; --face: #d6d3cb; --face-2: #e7e4dc; --hi: #ffffff; --lo: #8d8a83; --dk: #3f3d39;
+  --ink: #1d1c1a; --muted: #5b5852; --title-a: #13336f; --title-b: #4b79c1; --title-ink: #ffffff;
+  --sel: #22468a; --sel-ink: #ffffff; --field: #ffffff; --stripe: #f3f1ea; --warn: #8a5300; --warn-bg: #fff3cc;
+  --good: #1f6b33; --note: #eef3f3;
+  --ui: Tahoma, Verdana, "Segoe UI", system-ui, sans-serif;
+  --pix: "Courier New", monospace;
+  --code: ui-monospace, SFMono-Regular, Consolas, monospace;
+  --out: inset -1px -1px var(--dk), inset 1px 1px var(--hi), inset -2px -2px var(--lo), inset 2px 2px var(--face-2);
+  --in: inset 1px 1px var(--lo), inset -1px -1px var(--hi), inset 2px 2px var(--dk), inset -2px -2px var(--face-2);
+  --thin-in: inset 1px 1px var(--lo), inset -1px -1px var(--hi);
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --desk: #1d2a2d; --face: #34363a; --face-2: #3e4045; --hi: #5c5f66; --lo: #1f2023; --dk: #0f1011;
+    --ink: #e6e4df; --muted: #a9a6a0; --title-a: #1b2f57; --title-b: #3a5f99; --title-ink: #f2f5fb;
+    --sel: #3c64b0; --sel-ink: #ffffff; --field: #26282b; --stripe: #2c2e32; --warn: #ffcf73; --warn-bg: #3e3320;
+    --good: #8fd6a0; --note: #dfe8e8; color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --desk: #1d2a2d; --face: #34363a; --face-2: #3e4045; --hi: #5c5f66; --lo: #1f2023; --dk: #0f1011;
+  --ink: #e6e4df; --muted: #a9a6a0; --title-a: #1b2f57; --title-b: #3a5f99; --title-ink: #f2f5fb;
+  --sel: #3c64b0; --sel-ink: #ffffff; --field: #26282b; --stripe: #2c2e32; --warn: #ffcf73; --warn-bg: #3e3320;
+  --good: #8fd6a0; --note: #dfe8e8; color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+body { margin: 0; padding: 18px 16px 26px; background: var(--desk); color: var(--ink); font: 12px/1.35 var(--ui); }
+button, input, select, textarea { font: inherit; color: inherit; }
+button { cursor: default; }
+:focus-visible { outline: 1px dotted currentColor; outline-offset: -3px; }
+[hidden] { display: none !important; }
+.note { max-width: 1180px; margin: 0 auto 10px; color: var(--note); display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; justify-content: space-between; }
+.note p { margin: 0; max-width: 72ch; }
+.btn, .note button { background: var(--face); border: 0; box-shadow: var(--out); padding: 4px 12px; color: var(--ink); }
+.btn:active:not(:disabled) { box-shadow: var(--in); }
+.btn.default { box-shadow: 0 0 0 1px var(--dk), var(--out); }
+button:disabled { color: var(--muted); }
+.app { max-width: 1180px; margin: auto; background: var(--face); box-shadow: var(--out), 0 18px 50px #0006; padding: 3px; }
+.titlebar { display: flex; align-items: center; gap: 6px; padding: 3px 3px 3px 6px; background: linear-gradient(90deg, var(--title-a), var(--title-b)); color: var(--title-ink); font-weight: 700; }
+.titlebar .t { flex: 1; min-width: 0; }
+.tbtn { width: 18px; height: 16px; display: grid; place-items: center; background: var(--face); color: var(--ink); box-shadow: var(--out); border: 0; padding: 0; font: 700 10px/1 var(--ui); }
+.menubar { display: flex; flex-wrap: wrap; padding: 1px 0; gap: 2px; align-items: center; }
+.menu { position: relative; }
+.menu > summary { list-style: none; padding: 3px 8px; cursor: default; }
+.menu > summary::-webkit-details-marker { display: none; }
+.menu[open] > summary, .menu > summary:hover { background: var(--sel); color: var(--sel-ink); }
+.menu-panel { position: absolute; z-index: 10; top: 100%; left: 0; width: 238px; padding: 4px; background: var(--face); box-shadow: var(--out), 3px 3px #0003; }
+.menu-panel .menu-panel { left: 100%; top: 0; width: 180px; }
+.menu-panel button, .menu-panel summary { width: 100%; border: 0; background: transparent; padding: 5px 8px; text-align: left; }
+.menu-panel button:hover { background: var(--sel); color: var(--sel-ink); }
+.menu-panel small { display: block; padding: 4px 8px; color: var(--muted); }
+.toolbar { display: flex; flex-wrap: wrap; gap: 6px; padding: 6px 4px; border-top: 1px solid var(--lo); box-shadow: inset 0 1px var(--hi); align-items: center; }
+.toolbar .grow { flex: 1; }
+input:not([type="checkbox"]):not([type="radio"]):not([type="file"]), select, textarea { background: var(--field); border: 0; box-shadow: var(--in); padding: 5px 6px; min-width: 0; max-width: 100%; }
+.search { display: flex; align-items: center; gap: 6px; }
+.search input { width: 200px; }
+.body { display: grid; grid-template-columns: 215px minmax(0, 1fr); gap: 3px; margin-top: 2px; min-height: 600px; }
+.pane { background: var(--field); box-shadow: var(--in); min-width: 0; overflow: auto; }
+.tree { padding: 6px; }
+.tree ul { list-style: none; margin: 0; padding: 0 0 0 14px; }
+.tree > ul { padding-left: 0; }
+.tree li { padding: 2px 0; }
+.tree .node { padding: 3px 4px; display: block; }
+.tree button.node { width: 100%; text-align: left; border: 0; background: transparent; }
+.tree .node[aria-current="page"] { background: var(--sel); color: var(--sel-ink); }
+.tree summary { cursor: default; }
+.tree small { color: var(--muted); }
+.right { display: grid; grid-template-rows: 258px 6px minmax(300px, auto); min-width: 0; }
+.split { box-shadow: inset 0 1px var(--hi); }
+.listview table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+.listview th { background: var(--face); box-shadow: var(--out); text-align: left; font-weight: 400; padding: 4px 6px; position: sticky; top: 0; }
+.listview td { padding: 5px 6px; vertical-align: top; }
+.listview tbody tr:nth-child(even) { background: var(--stripe); }
+.listview tr[aria-selected="true"] { background: var(--sel) !important; color: var(--sel-ink); }
+.library-table { min-width: 700px; }
+.name-button { border: 0; padding: 0; background: transparent; text-align: left; color: inherit; }
+.name-button:disabled { color: var(--muted); }
+.unavailable { color: var(--muted); }
+.reason { display: block; font-size: 11px; margin-top: 3px; }
+.details { display: grid; grid-template-columns: 120px minmax(0, 1fr); gap: 14px; padding: 14px; background: var(--face-2); box-shadow: var(--in); }
+.cover { aspect-ratio: 3 / 4; max-height: 162px; display: grid; place-items: center; text-align: center; padding: 12px; color: var(--title-ink); background: linear-gradient(155deg, var(--title-b), var(--title-a)); box-shadow: var(--out); font: 18px/1.15 "Courier New", monospace; }
+h2 { margin: 0 0 5px; font-size: 15px; }
+h3 { margin: 10px 0 5px; font-size: 12px; }
+p { margin: 6px 0; }
+.sub, .hint { color: var(--muted); }
+dl { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 3px 12px; margin: 8px 0; }
+dt { color: var(--muted); } dd { margin: 0; overflow-wrap: anywhere; }
+.media-list { margin: 0; padding-left: 24px; }
+.media-list li { padding: 3px 0; }
+.media-list span { color: var(--muted); }
+.btnrow { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 10px; }
+.notice { color: var(--warn); background: var(--warn-bg); padding: 6px 8px; margin-top: 8px; }
+.statusbar { display: flex; flex-wrap: wrap; gap: 2px; margin-top: 2px; }
+.statusbar .cell { box-shadow: var(--thin-in); padding: 3px 6px; min-width: 0; }
+.statusbar .grow { flex: 1; }
+.dlg { background: var(--face); color: var(--ink); border: 0; box-shadow: var(--out), 6px 6px #0004; padding: 3px; width: min(760px, calc(100% - 24px)); max-height: calc(100dvh - 24px); overflow: auto; }
+.dlg::backdrop { background: #0003; }
+.dlg .bd { padding: 12px; }
+.dlg .ft { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 7px; padding: 4px 12px 12px; }
+.form { display: grid; grid-template-columns: 130px minmax(0, 1fr); gap: 7px 10px; align-items: center; }
+.form .hint { grid-column: 2; margin-top: -3px; font-size: 11px; }
+.form textarea { resize: vertical; min-height: 52px; }
+.check { display: flex; align-items: flex-start; gap: 6px; margin: 10px 0; }
+.pick-list { margin: 10px 0; }
+.pick-row { padding: 8px; display: flex; gap: 8px; border-bottom: 1px solid var(--face); }
+.pick-row input { margin-top: 3px; }
+.pick-row strong { font-weight: 400; }
+fieldset { border: 1px solid var(--lo); padding: 10px; margin: 12px 0 0; min-width: 0; }
+legend { padding: 0 5px; }
+.import-table { min-width: 630px; }
+.import-table input { width: 100%; }
+.import-table th:first-child { width: 32px; }
+.import-table td:nth-child(3) { min-width: 180px; }
+.import-table td:nth-child(4) { min-width: 155px; }
+.import-table .btn { padding: 3px 6px; }
+input[type="file"] { width: 100%; margin: 5px 0; }
+code { font: 11px var(--code); overflow-wrap: anywhere; }
+@media (max-width: 860px) {
+  .body { grid-template-columns: 1fr; }
+  .tree { max-height: 170px; }
+  .right { grid-template-rows: 250px 6px auto; }
+  .menu-panel .menu-panel { left: 10px; top: 100%; }
+}
+@media (max-width: 520px) {
+  body { padding: 10px 8px; }
+  .details, .form { grid-template-columns: 1fr; }
+  .cover { max-width: 110px; }
+  .form .hint { grid-column: 1; }
+  .search { width: 100%; } .search input { flex: 1; width: 0; }
+  .toolbar .grow { display: none; }
+  .dlg { width: calc(100% - 16px); }
+}
+
+.details { display: block; }
+.detail-grid { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr); gap: 18px; }
+.chip-layout { display: flex; flex-wrap: wrap; gap: 10px; padding: 12px; background: var(--field); box-shadow: var(--in); }
+.chip { border: 2px solid var(--lo); padding: 9px 13px; background: var(--face); text-align: center; min-width: 120px; }
+.chip strong, .chip code { display: block; margin: 3px 0; }
+.fit-list { padding-left: 18px; margin: 6px 0; }
+.fit-list li { margin: 5px 0; }
+.good { color: var(--good); }
+.documents { list-style: none; margin: 0; padding: 0; }
+.documents li { display: flex; align-items: center; gap: 8px; justify-content: space-between; padding: 6px 0; border-bottom: 1px solid var(--lo); }
+.documents small { display: block; color: var(--muted); }
+.progress { width: 100%; accent-color: var(--sel); margin: 6px 0; }
+.import-table { min-width: 0; }
+.import-table td:first-child { width: 28px; }
+.import-table input[type="checkbox"] { width: auto; }
+.package-summary { margin-bottom: 8px; }
+.library-table { min-width: 790px; }
+.library-table th:first-child { width: 29%; }
+.right { grid-template-rows: 220px 6px auto; }
+.notice code { color: inherit; }
+@media (max-width: 860px) { .right { grid-template-rows: 250px 6px auto; } }
+@media (max-width: 600px) {
+  .detail-grid { grid-template-columns: 1fr; gap: 6px; }
+  .details { padding: 12px; }
+  .library-table { min-width: 0; }
+  .library-table thead { display: none; }
+  .library-table tr { display: block; padding: 6px; border-bottom: 1px solid var(--lo); }
+  .library-table td { display: block; padding: 3px; }
+  .library-table td::before { content: attr(data-label) ": "; font-weight: bold; }
+  .library-table td:first-child::before { content: none; }
+  .import-table th, .import-table td { overflow-wrap: anywhere; }
+  .documents li { align-items: flex-start; }
+}
+</style>
+</head>
+<body>
+<div class="note">
+  <p><strong>Firmware design — approved 2026-11-14.</strong> Real firmware names and ROM identities; package digests, documents and fit results are illustrative. No ROM or document bytes are included. Actions are previews. No files are read, imported, opened or exported.</p>
+  <div class="btnrow"><button type="button" data-open="importDialog">Import ROM folder…</button><button type="button" id="themeBtn">Theme: system</button></div>
+</div>
+<main class="app">
+  <div class="titlebar"><span class="t">Library — Firmware</span><span aria-hidden="true">□</span></div>
+  <nav class="menubar" aria-label="Main menu">
+    <details class="menu"><summary><u>F</u>ile</summary><div class="menu-panel"><button type="button" data-open="importDialog">Import ROM folder…</button><button type="button" data-action="export">Export selected package…</button></div></details>
+    <details class="menu"><summary><u>T</u>ools</summary><div class="menu-panel"><button type="button" data-open="importDialog">Import ROM folder…</button></div></details>
+    <details class="menu"><summary><u>H</u>elp</summary><div class="menu-panel"><button type="button" id="aboutPreview">About this preview</button></div></details>
+  </nav>
+  <div class="toolbar" role="toolbar" aria-label="Firmware">
+    <button class="btn" type="button" data-open="importDialog">Import ROM folder…</button>
+    <button class="btn" type="button" id="toolbarUse">Use in machine…</button>
+    <span class="grow"></span><label class="search">Find: <input id="find" type="search" placeholder="name, role, board, catalogue…"></label>
+  </div>
+  <div class="body">
+    <nav class="pane tree" aria-label="Library collections">
+      <ul>
+        <li><span class="node">All machines <small>(3)</small></span></li>
+        <li><span class="node">Recently played</span></li>
+        <li><span class="node">Favourites</span></li>
+        <li><span class="node">Installation media</span></li>
+        <li><button class="node" type="button" aria-current="page" id="firmwareCollection">Firmware <small>(5)</small></button></li>
+        <li><details open><summary>Roles</summary><ul><li>System BIOS</li><li>Option ROM</li><li>Video BIOS</li></ul></details></li>
+        <li><details open><summary>Machine classes</summary><ul><li>AT</li><li>386 ISA (future)</li></ul></details></li>
+        <li><details><summary>Redistribution</summary><ul><li>Open</li><li>User-supplied</li></ul></details></li>
+      </ul>
+    </nav>
+    <div class="right">
+      <div class="pane listview"><table class="library-table" aria-label="Firmware packages"><thead><tr><th>Name</th><th>Role summary</th><th>Fits</th><th>Version / date</th><th>Redistribution</th></tr></thead><tbody id="packageRows"></tbody></table><p id="noMatches" hidden>No packages match this search.</p></div>
+      <div class="split" aria-hidden="true"></div>
+      <section class="details" aria-label="Selected firmware package">
+        <h2 id="detailTitle"></h2><p class="sub" id="detailSummary"></p>
+        <div class="detail-grid">
+          <div>
+            <dl><dt>Vendor</dt><dd id="detailVendor"></dd><dt>Version / date</dt><dd id="detailVersion"></dd><dt>Catalogue id</dt><dd><code id="detailCatalogue"></code></dd><dt>Package SHA-256</dt><dd><code id="detailDigest"></code></dd><dt>Redistribution</dt><dd id="detailRights"></dd></dl>
+            <h3>Chip layout</h3><div class="chip-layout" id="chipLayout"></div>
+            <p class="hint" id="assemblyInfo"></p>
+          </div>
+          <div>
+            <h3>Fits — boards and machine classes</h3><ul class="fit-list" id="fitList"></ul>
+            <h3>Machines in this library</h3><ul class="fit-list" id="machineFits"></ul>
+            <p class="hint">✓ Provider checks passed with verified bytes. Stored fit claims alone do not enable Use.</p>
+            <h3>Documents (extras)</h3><ul class="documents" id="documents"></ul>
+          </div>
+        </div>
+        <p class="notice" id="detailReason" hidden></p>
+        <div class="btnrow"><button class="btn default" type="button" id="detailUse">Use in machine…</button><button class="btn" type="button" id="detailExport">Export</button></div>
+        <p class="hint">The machine embeds its ROM blobs and records the source package digest. Source folders are not needed after import.</p>
+      </section>
+    </div>
+  </div>
+  <div class="statusbar"><span class="cell grow" id="status" role="status">Ready — design preview</span><span class="cell" id="packageCount">4 packages · 1 incomplete import</span><span class="cell">Local store</span></div>
+</main>
+
+<dialog class="dlg" id="importDialog" aria-labelledby="importTitle">
+  <div class="titlebar"><span class="t" id="importTitle">Import ROM folder…</span><button class="tbtn" type="button" data-close aria-label="Close import dialog">×</button></div>
+  <div class="bd">
+    <p>Folder: <strong>Example ROM folder</strong> <span class="hint">(sample, no host path)</span></p>
+    <p class="hint">Match full SHA-256 and size against the catalogue, then assemble complete logical BIOS sets. Socket placement comes from the matching layout.</p>
+    <div class="btnrow"><button class="btn" type="button" id="reviewScan">Preview scan progress</button><button class="btn" type="button" id="finishScan">Show completed scan</button></div>
+    <label for="scanProgress" id="progressLabel">Scan complete — 6 of 6 files checked</label>
+    <progress class="progress" id="scanProgress" value="6" max="6">6 of 6</progress>
+    <p class="hint" id="scanCounts" role="status">6 files checked · 3 matched parts · 2 unmatched · 1 unreadable</p>
+    <h3>Matched packages — assembled from parts</h3>
+    <div class="pane listview"><table class="import-table" aria-label="Matched packages"><thead><tr><th scope="col">Pick</th><th scope="col">Package / parts</th><th scope="col">Result</th></tr></thead><tbody>
+      <tr><td><input type="checkbox" id="pickComplete" checked aria-label="Import IBM 5170 BIOS 1985-06-10"></td><td>IBM 5170 BIOS 1985-06-10 (2 chips)<span class="reason">6480090.u27 → U27 even @ 0<br>6480091.u47 → U47 odd @ 0</span></td><td>2 of 2 chips present<span class="reason">Assembled SHA-256 matches<br><code>6fb653b5…e652</code></span></td></tr>
+      <tr class="unavailable" aria-disabled="true"><td><input type="checkbox" disabled aria-label="Cannot import incomplete chip set" aria-describedby="missingChip"></td><td>IBM 5170 BIOS 1985-11-15 (2 chips)<span class="reason">61X9266.u27 → U27 even @ 0</span></td><td id="missingChip">1 of 2 chips present<span class="reason">Missing U47 odd chip.<br>Import disabled.</span></td></tr>
+    </tbody></table></div>
+    <h3>Unmatched files — excluded by default</h3>
+    <div class="pane listview"><table class="import-table" aria-label="Unmatched ROM folder files"><thead><tr><th scope="col">File</th><th scope="col">Reason</th><th scope="col">Action</th></tr></thead><tbody>
+      <tr><td>unknown.bin</td><td>No catalogue hash match</td><td><button class="btn" type="button" id="addUnlisted">Add explicitly…</button></td></tr>
+      <tr><td>reference.txt</td><td>Not a catalogue ROM; possible document</td><td><button class="btn" type="button" id="addDocument">Add as extra…</button></td></tr>
+      <tr><td>unreadable.bin</td><td>Could not read file; hash unavailable</td><td>Not imported</td></tr>
+    </tbody></table></div>
+    <p id="extraPreview" class="hint" hidden>Selected extra: reference.txt → IBM 5170 BIOS 1985-06-10 · document · user-supplied</p>
+    <p class="notice">User-supplied by default. Only selected complete packages and explicitly added extras are copied. Unmatched files stay excluded unless explicitly added. Source files remain unchanged.</p>
+  </div>
+  <div class="ft"><button class="btn default" type="button" id="confirmImport">Import selected</button><button class="btn" type="button" data-close>Cancel</button></div>
+</dialog>
+
+<dialog class="dlg" id="useDialog" aria-labelledby="useTitle">
+  <div class="titlebar"><span class="t" id="useTitle">Use in machine…</span><button class="tbtn" type="button" data-close aria-label="Close machine selection">×</button></div>
+  <div class="bd"><p id="usePackage"></p><label for="machineChoice">Stopped machine draft:</label><select id="machineChoice"></select><p class="notice">Next, review the firmware binding diff. The source package stays unchanged.</p></div>
+  <div class="ft"><button class="btn default" type="button" id="previewDiff">Preview changes…</button><button class="btn" type="button" data-close>Cancel</button></div>
+</dialog>
+
+<dialog class="dlg" id="messageDialog" aria-labelledby="messageTitle">
+  <div class="titlebar"><span class="t" id="messageTitle">Design preview</span><button class="tbtn" type="button" data-close aria-label="Close preview">×</button></div>
+  <div class="bd"><p id="messageText"></p></div><div class="ft"><button class="btn default" type="button" data-close>OK</button></div>
+</dialog>
+<script>
+'use strict';
+const $ = id => document.getElementById(id);
+const escapeHtml = value => String(value).replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]));
+const packages = [
+  { name: 'IBM 5170 BIOS 1985-06-10 (2 chips)', roles: 'System BIOS · 2 chips', fits: 'ibm-5170 · AT', vendor: 'IBM', version: 'Version unknown / 1985-06-10', catalogue: 'ibm-5170-bios-1985-06-10', digest: '9e82c1b4…f270 (illustrative)', rights: 'User-supplied',
+    chips: [['U27 · 6480090', 'System BIOS · even @ 0', '32768 bytes', 'c8654ed7…1bfd'], ['U47 · 6480091', 'System BIOS · odd @ 0', '32768 bytes', '470ab30f…471b']],
+    assembly: 'One logical system BIOS · 65536 assembled bytes · SHA-256 6fb653b5…e652. Each pair interleaves even/odd bytes; offsets are in assembled bytes.',
+    boards: ['Board: ibm-5170', 'Machine class: at'], machines: ['AT workbench', 'AT diagnostics'],
+    documents: [['IBM PC/AT Technical Reference', 'Document · user-supplied · preview'], ['BIOS source listing (Technical Reference appendix)', 'Document · user-supplied · preview']], reason: '' },
+  { name: 'SeaBIOS 1.17.0 (open)', roles: 'System BIOS', fits: 'generic-386-isa · future', vendor: 'SeaBIOS project', version: '1.17.0 / date unknown', catalogue: 'Not yet in current catalogue', digest: 'b154edac…81a2 (illustrative)', rights: 'Open · build provenance reviewed separately',
+    chips: [['Single image', 'System BIOS', '131072 bytes', '07add888…4a13']], assembly: 'Single-image package matching the open ISA fixture recipe. This preview does not claim a qualified machine or an active catalogue entry.',
+    boards: ['Board: generic-386-isa (future)', 'Machine class: provider confirmation pending'], machines: [], documents: [['Build notes.txt', 'Document · 2 KiB · open (sample)']], reason: 'No supported target machine in this library. This build is unlisted; CPU and board support must be checked before Use.' },
+  { name: 'XTIDE Universal BIOS r638 (open)', roles: 'Option ROM', fits: 'ibm-5170 · AT', vendor: 'XTIDE Universal BIOS project', version: 'r638 / date unknown', catalogue: 'xub-r638-at', digest: '3ac2190e…ff81 (illustrative)', rights: 'Open · GPL-2.0-only',
+    chips: [['Adapter ROM', 'Option ROM', '8192 bytes', '6409de91…662d0']], assembly: 'One option ROM. Provider checks primary ATA wiring and the system BIOS scan window.',
+    boards: ['Board: ibm-5170', 'Machine class: at'], machines: ['AT workbench'], documents: [['Build provenance.txt', 'Document · 1 KiB · open (sample)']], reason: '' },
+  { name: 'IBM VGA BIOS 1987 (32 KiB)', roles: 'Video BIOS · option ROM', fits: 'ibm-5170 · AT · VGA', vendor: 'IBM', version: 'Version unknown / 1987 (day unknown)', catalogue: 'ibm-vga-bios-1987-32k', digest: 'd81a6b40…321e (illustrative)', rights: 'User-supplied',
+    chips: [['EPROM container', 'Video BIOS', '32768 bytes', '51b49761…ae17']], assembly: 'Full 32 KiB EPROM identity. Machine option-ROM binding skips the 8192-byte prefix (offset 0x2000), mapping the 24 KiB suffix at 0xC0000. Requires register-level VGA.',
+    boards: ['Board: ibm-5170', 'Machine class: at'], machines: ['AT workbench'], documents: [], reason: '' },
+  { name: 'IBM 5170 BIOS 1985-11-15 (2 chips)', roles: 'System BIOS · incomplete', fits: 'ibm-5170 · AT', vendor: 'IBM', version: 'Version unknown / 1985-11-15', catalogue: 'ibm-5170-bios-1985-11-15', digest: 'No package digest — import incomplete', rights: 'User-supplied',
+    chips: [['U27 · 61X9266', 'System BIOS · even @ 0', '32768 bytes', '3b921a45…764e'], ['U47 · 61X9265', 'System BIOS · odd @ 0', 'Missing · expected 32768 bytes', 'Expected aec1759a…9e4d']], assembly: 'Expected assembled identity: 65536 bytes · SHA-256 872febf7…337d. Verification waits for both chips.',
+    boards: ['Board: ibm-5170', 'Machine class: at'], machines: [], documents: [], reason: '1 of 2 chips present — missing U47 odd chip (61X9265). Resume import with the matching part; Use and Export are disabled.', incomplete: true }
+];
+let selected = 0;
+let scanComplete = true;
+let extraSelected = false;
+function renderLibrary() {
+  const query = $('find').value.trim().toLowerCase();
+  let count = 0;
+  $('packageRows').innerHTML = packages.map((pkg, index) => {
+    if (![pkg.name, pkg.roles, pkg.fits, pkg.vendor, pkg.version, pkg.rights, pkg.catalogue, ...pkg.boards].join(' ').toLowerCase().includes(query)) return '';
+    count++;
+    return '<tr aria-selected="' + (selected === index) + '"' + (pkg.incomplete ? ' class="unavailable" aria-disabled="true"' : '') + '><td data-label="Name"><button type="button" class="name-button" data-select="' + index + '"' + (pkg.incomplete ? ' disabled aria-describedby="incompleteReason"' : '') + '>' + escapeHtml(pkg.name) + '</button>' + (pkg.incomplete ? '<span class="reason" id="incompleteReason">1 of 2 chips present — missing U47 odd</span><button class="btn" type="button" data-select="' + index + '">Details</button>' : '') + '</td><td data-label="Role summary">' + escapeHtml(pkg.roles) + '</td><td data-label="Fits">' + escapeHtml(pkg.fits) + '</td><td data-label="Version / date">' + escapeHtml(pkg.version) + '</td><td data-label="Redistribution">' + escapeHtml(pkg.rights) + '</td></tr>';
+  }).join('');
+  $('noMatches').hidden = count !== 0;
+  $('packageCount').textContent = count + ' of 5 entries · 1 incomplete import';
+  renderDetails();
+}
+function renderDetails() {
+  const pkg = packages[selected];
+  $('detailTitle').textContent = pkg.name;
+  $('detailSummary').textContent = pkg.incomplete ? 'Incomplete import record · no usable package published' : pkg.roles + ' · local package · documented ROM identities';
+  $('detailVendor').textContent = pkg.vendor;
+  $('detailVersion').textContent = pkg.version;
+  $('detailCatalogue').textContent = pkg.catalogue;
+  $('detailDigest').textContent = pkg.digest;
+  $('detailRights').textContent = pkg.rights;
+  $('chipLayout').innerHTML = pkg.chips.map(chip => '<div class="chip"><strong>' + escapeHtml(chip[0]) + '</strong>' + escapeHtml(chip[1]) + '<small class="reason">' + escapeHtml(chip[2]) + '</small><code>' + escapeHtml(chip[3]) + '</code></div>').join('');
+  $('assemblyInfo').textContent = pkg.assembly;
+  $('fitList').innerHTML = pkg.boards.map(board => '<li>' + escapeHtml(board) + '</li>').join('');
+  $('machineFits').innerHTML = ['AT workbench', 'AT diagnostics', '386 study draft'].map(name => '<li' + (pkg.machines.includes(name) ? ' class="good"' : '') + '>' + (pkg.machines.includes(name) ? '✓ ' + escapeHtml(name) + ' — compatible' : '— ' + escapeHtml(name) + ' — ' + (pkg.incomplete ? 'missing chip' : name === '386 study draft' ? 'provider unavailable' : 'not compatible')) + '</li>').join('');
+  $('documents').innerHTML = pkg.documents.length ? pkg.documents.map((doc, index) => '<li><span>' + escapeHtml(doc[0]) + '<small>' + escapeHtml(doc[1]) + '</small></span><button class="btn" type="button" data-document="' + index + '">Open</button></li>').join('') : '<li>No documents attached.</li>';
+  $('detailReason').hidden = !pkg.reason;
+  $('detailReason').textContent = pkg.reason;
+  $('detailUse').disabled = $('toolbarUse').disabled = !!pkg.reason;
+  $('detailExport').disabled = !!pkg.incomplete;
+  document.querySelector('[data-action="export"]').disabled = !!pkg.incomplete;
+}
+function openDialog(id) {
+  document.querySelectorAll('details.menu[open]').forEach(menu => { menu.open = false; });
+  $(id).showModal();
+}
+function message(text) { $('messageText').textContent = text; openDialog('messageDialog'); }
+function usePackage() {
+  const pkg = packages[selected];
+  if (pkg.reason) return;
+  $('usePackage').textContent = pkg.name;
+  $('machineChoice').innerHTML = pkg.machines.map(name => '<option>' + escapeHtml(name) + '</option>').join('');
+  openDialog('useDialog');
+}
+function exportPackage() {
+  const pkg = packages[selected];
+  if (pkg.incomplete) return;
+  message('Preview: export ' + pkg.name + ' as a complete ' + (pkg.rights.startsWith('User-supplied') ? 'private ' : '') + 'OCI archive, including ROM blobs, config and documents. Full hashes are verified. No file is written.');
+}
+function updateImport() {
+  $('scanProgress').value = scanComplete ? 6 : 3;
+  $('progressLabel').textContent = scanComplete ? 'Scan complete — 6 of 6 files checked' : 'Hashing — 3 of 6 files checked';
+  $('scanCounts').textContent = scanComplete ? '6 files checked · 3 matched parts · 2 unmatched · 1 unreadable' : 'Listing complete · checking full-file hashes and known chip layouts';
+  $('pickComplete').disabled = !scanComplete;
+  $('addDocument').disabled = !scanComplete;
+  $('addUnlisted').disabled = !scanComplete;
+  $('confirmImport').disabled = !scanComplete || !$('pickComplete').checked;
+  $('extraPreview').hidden = !extraSelected;
+  $('addDocument').textContent = extraSelected ? 'Remove extra' : 'Add as extra…';
+}
+document.querySelectorAll('[data-open]').forEach(button => button.addEventListener('click', () => openDialog(button.dataset.open)));
+document.querySelectorAll('[data-close]').forEach(button => button.addEventListener('click', () => button.closest('dialog').close()));
+$('packageRows').addEventListener('click', event => { const button = event.target.closest('[data-select]'); if (button) { selected = Number(button.dataset.select); renderLibrary(); } });
+$('find').addEventListener('input', renderLibrary);
+$('firmwareCollection').addEventListener('click', () => { $('find').value = ''; renderLibrary(); });
+$('detailUse').addEventListener('click', usePackage);
+$('toolbarUse').addEventListener('click', usePackage);
+$('detailExport').addEventListener('click', exportPackage);
+document.querySelector('[data-action="export"]').addEventListener('click', exportPackage);
+$('documents').addEventListener('click', event => {
+  const button = event.target.closest('[data-document]');
+  if (button) message('Preview: verify and open “' + packages[selected].documents[Number(button.dataset.document)][0] + '” in the host document handler. Starting a machine is unnecessary. This preview opens no file.');
+});
+$('previewDiff').addEventListener('click', () => {
+  $('useDialog').close();
+  message('Preview: update ' + $('machineChoice').value + ' with ' + packages[selected].name + '. Preserve the selected ROM’s parts, lanes, offsets and pins; record its source package digest in the new machine image. Review and confirm before saving.');
+});
+$('reviewScan').addEventListener('click', () => { scanComplete = false; updateImport(); });
+$('finishScan').addEventListener('click', () => { scanComplete = true; updateImport(); });
+$('pickComplete').addEventListener('change', updateImport);
+$('addDocument').addEventListener('click', () => { extraSelected = !extraSelected; updateImport(); });
+$('addUnlisted').addEventListener('click', () => message('Explicit addition would require a role, layout and fit claims for unknown.bin. It remains unlisted, and Use still needs the run-only unlisted-firmware permission. This sample leaves it excluded.'));
+$('confirmImport').addEventListener('click', () => {
+  if (!scanComplete || !$('pickComplete').checked) return;
+  $('importDialog').close();
+  $('status').textContent = 'Preview only: 1 complete package selected' + (extraSelected ? ' with 1 document extra' : '') + '; incomplete and unmatched ROM files excluded.';
+  message('Preview: fully verify and copy IBM 5170 BIOS 1985-06-10 into the private store, then publish its tag. The original folder will not be needed again. No import was performed.');
+});
+$('aboutPreview').addEventListener('click', () => message('Firmware collection design, approved 2026-11-14. Real catalogue ROM identities, open firmware examples, no ROM bytes or emulator/store wiring.'));
+const themes = ['system', 'light', 'dark'];
+let theme = 0;
+$('themeBtn').addEventListener('click', () => { theme = (theme + 1) % themes.length; if (theme) document.documentElement.dataset.theme = themes[theme]; else delete document.documentElement.dataset.theme; $('themeBtn').textContent = 'Theme: ' + themes[theme]; });
+renderLibrary();
+updateImport();
+</script>
+</body>
+</html>

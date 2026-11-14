@@ -1,7 +1,9 @@
 # Machine images, capabilities and desktop UX
 
 Status: **desktop UX and toolkit accepted**, 2026-11-13 (decision-24);
-**installation media set shape accepted**, 2026-11-14 (decision-26).
+**installation media set shape accepted**, 2026-11-14 (decision-26);
+**firmware package shape accepted**, 2026-11-14 (decision-27).
+§5.3 and its [Firmware mock-up](mockups/firmware.html) were approved by the maintainer on 2026-11-14.
 §5.2 and its mock-up were approved by the maintainer on 2026-11-14. The local store core
 (`upc-5pw.6`), metadata codec, local overlays and summary cache (`upc-5pw.12`)
 are implemented in `crates/image-store`; PC machine-file import and bundle
@@ -105,7 +107,7 @@ container filesystem tar layers.
 | `application/vnd.unemu.machine.config.v1+toml` | Required platform and platform-owned resolved hardware, firmware/media bindings, catalogues, selections and policies. |
 | `application/vnd.unemu.metadata.v1+json` | Required machine platform and versioned game/software catalogue, with independent metadata and launch commands per title. |
 | `image/png`, `image/jpeg` | Cover art and screenshots referenced from the metadata blob. |
-| `application/vnd.unemu.firmware.v1` | Exact firmware ROM or individual chip/container bytes; PC examples include system BIOS, video BIOS and option ROMs. |
+| `application/vnd.unemu.firmware.v1` | Exact ROM/chip/container payload bytes; also the firmware-package manifest `artifactType` (§5.3), distinguished by descriptor context. |
 | `application/vnd.unemu.disk.base.v1` | Complete raw fixed-disk base. |
 | `application/vnd.unemu.disk.layer.v1+toml` | Sealed fixed-disk layer descriptor from §4. |
 | `application/vnd.unemu.disk.sectors.v1` | Sector pack referenced by a sealed layer. |
@@ -801,11 +803,12 @@ above account for these findings; this spike does not waive the compression gate
 ### 5.2. Installation media sets
 
 [decision-26](<../../decisions/decision-26 - Installation media sets are their own OCI artifact type.md>)
-accepts a second artifact beside the whole-machine image. The proposed
+accepts a second artifact beside the whole-machine image. The
 [installation-media mock-up](mockups/install-media.html) follows the approved
-library/window styling; the section and mock-up await maintainer review before
-implementation. A set is portable installation input, with no hardware, firmware,
-NVRAM, saved state or workspace journals of its own.
+library/window styling; the maintainer approved the section and mock-up on
+2026-11-14. The extras amendment below records the accepted shared contract.
+A set is portable installation input, with no hardware, firmware, NVRAM, saved
+state or workspace journals of its own.
 
 **Artifact and config.** Use the §2 OCI manifest envelope with
 `artifactType = "application/vnd.unemu.media-set.v1"` and config media type
@@ -833,19 +836,55 @@ format = { kind = "floppy", geometry = { cylinders = 80, heads = 2, sectors = 18
 The provider validates formats, exact byte lengths and drive compatibility.
 Floppies use `application/vnd.unemu.media.floppy.v1`; reserved ISO images use
 `application/vnd.unemu.media.optical.v1` (2048-byte sectors). The remaining layers
-are exactly one `application/vnd.unemu.metadata.v1+json` blob and its PNG/JPEG
-artwork, using the **same §2.1 schema**, not a parallel metadata format. The
+are optional extras (below), exactly one `application/vnd.unemu.metadata.v1+json`
+blob and its PNG/JPEG artwork, using the **same §2.1 schema**, not a parallel
+metadata format. The
 metadata envelope's platform and `unemu.platform` annotation must match config.
 Title records supply title, publishers, release year, cover and other §2.1 fields;
 a set has no Play action and metadata launch fields do not execute on insertion.
 Repeated identical disks may occupy several ordered entries but have one layer
 descriptor. Emit unique medium descriptors in first-occurrence config order,
-then metadata and artwork. Reject missing/unreferenced descriptors, invalid
-config fields/versions, duplicate ids and malformed digests under §2 bounds;
+then extras, metadata and artwork. Reject missing/unreferenced descriptors,
+invalid config fields/versions, duplicate ids and malformed digests under §2 bounds;
 newer metadata keeps §2.1's read-only degraded display behavior.
 
+**Extras (shared with firmware packages).** The accepted decision-26 extras
+amendment adds an optional ordered `extras` array to config. Each entry has a
+unique `id` (the §3 grammar), original basename `file_name`, exact stored `size`,
+`blob` (full SHA-256 descriptor digest), `kind` (`document`, `archive`,
+`executable` or `other`) and optional `dos_name` (DOS 8.3). For example:
+
+```toml
+[[extras]]
+id = "manual"
+file_name = "Technical reference.txt"
+size = 4096
+blob = "<reference-document>"
+kind = "document"
+dos_name = "TECHREF.TXT"
+```
+
+Extras are opaque payload layers, using the descriptor's content media type or
+`application/octet-stream`; list unique extras after media, before metadata and
+artwork. Verify digest and length, reject path components in names and duplicate
+ids, and apply §5 rights to each extra independently. A ROM's open licence never
+makes an accompanying manual open. **Open** on a document explicitly extracts a
+verified copy to host temporary storage and invokes the host document handler;
+archives and executables are not automatically opened or run. Export preserves
+original names without allowing traversal or overwriting existing files.
+
+Chosen extras can later be packed into a generated deterministic FAT transfer
+medium: a 1.44M floppy when they fit, otherwise a FAT16 disk image. Validate or
+assign collision-free 8.3 names in config order, with fixed timestamps and stable
+allocation; pin the generated bytes for replay. The generated base is immutable,
+fully SHA-256 verified, and inserted through the ordinary overlay interface;
+writes stay in a separate workspace journal and export creates a new file.
+There is no guest helper or host folder sharing. An ISO variant waits for CD-ROM
+emulation. Codec/CLI import carry extras from the start; the transfer generator
+and UI follow separately, with approved mock-ups before GUI implementation.
+
 **Identity and rights.** A blob's identity is SHA-256 of its exact stored bytes;
-the config digest identifies the ordered media, labels, formats and platform.
+the config digest identifies the ordered media, labels, formats, extras and platform.
 The **set digest** is its OCI manifest digest, used by tags, transfers and source
 provenance. Metadata/artwork edits change the set digest while retaining config
 and medium digests; order, label or format edits change config too. A set is not
@@ -933,10 +972,284 @@ available yet** and disable Insert/Add to machine… while keeping details and
 private Export available. Import validation for a known storage format is
 separate from insertion capability. No CD-ROM emulation is part of this step.
 
-**Open point:** maintainer approval of this section and the three mock-up views
-(library/details, From library… and Import installation media…) before coding.
-The artifact shape and private/read-only policy are already accepted; there are
-no additional policy choices proposed here.
+**Review status:** the section and three installation-media mock-up views were
+approved on 2026-11-14. Extras use the accepted amendment above; their transfer
+generator and UI still require their own implementation and visual review.
+
+### 5.3. Firmware packages
+
+Status: **approved by the maintainer, 2026-11-14** — this section and the
+[Firmware collection mock-up](mockups/firmware.html).
+[decision-27](<../../decisions/decision-27 - Firmware packages are their own OCI artifact type.md>)
+accepts the artifact shape; this is a design proposal, with no codec, resolver or
+GUI implementation implied. A package holds reusable ROM inputs and their fit
+information, not a machine, writable media, NVRAM or a saved state.
+
+**Artifact and config.** Use the §2 OCI manifest envelope with
+`artifactType = "application/vnd.unemu.firmware.v1"` and config media type
+`application/vnd.unemu.firmware.config.v1+toml`. The same firmware string already
+names raw ROM payloads in §2: a manifest's `artifactType` denotes the package,
+whereas a layer descriptor's `mediaType` denotes ROM bytes; a ROM is never parsed
+as a manifest. Config requires `schema = 1`, `platform`, nonempty `name` and a
+nonempty ordered `roms` array. Optional `vendor`, `version`, `date` (ISO calendar
+date) and `notes` describe the package; absent means unknown. `fits` carries
+provider-owned board and machine-class ids. Catalogue ids belong to individual
+logical ROMs, and the package summary indexes their unique union. This sketch
+uses the existing IBM 5170 BIOS catalogue entry and the chip pins from
+`machines/at-games.toml`; it contains identities only, never ROM bytes:
+
+```toml
+schema = 1
+platform = "ibm-pc-at"
+name = "IBM 5170 BIOS 1985-06-10 (2 chips)"
+vendor = "IBM"
+date = "1985-06-10"
+notes = "U27 even / U47 odd; user-supplied ROMs in a private store."
+
+[fits]
+boards = ["ibm-5170"]
+machine_classes = ["at"]
+
+[[roms]]
+id = "system-bios"
+role = "system-bios"
+catalogue_id = "ibm-5170-bios-1985-06-10"
+sha256 = "6fb653b58e678cb69b0f943a105c6c803b18a6db23d13c0abccec5b66c6ee652"
+size = 65536
+
+[[roms.parts]]
+position = "U27"
+part_number = "6480090"
+blob = "sha256:c8654ed7a922644db2b2cce54c540fcfa7cbbae8c514d7eb3dbfbb8187471bfd"
+sha256 = "c8654ed7a922644db2b2cce54c540fcfa7cbbae8c514d7eb3dbfbb8187471bfd"
+size = 32768
+lane = "even"
+offset = 0
+
+[[roms.parts]]
+position = "U47"
+part_number = "6480091"
+blob = "sha256:470ab30f9eb7d56c24f5ce10c7d307c539b9f923ea97dd536d2d5ba7e36d471b"
+sha256 = "470ab30f9eb7d56c24f5ce10c7d307c539b9f923ea97dd536d2d5ba7e36d471b"
+size = 32768
+lane = "odd"
+offset = 0
+```
+
+The single-image **IBM VGA BIOS 1987 (32 KiB)** package uses catalogue id
+`ibm-vga-bios-1987-32k`, role `video-bios`, size 32768 and full SHA-256
+`51b49761f72780a696c36f3d2e74a8168c1c99b865070f7f90b8e621a8b5ae17`.
+It fits `ibm-5170`, class `at`, and remains user-supplied. As in
+`machines/at-games.toml`, the option-ROM binding maps at `0xC0000` after skipping
+`0x2000` container bytes; the stored/hash-identified input stays the full 32 KiB.
+The mock-up's incomplete set uses `ibm-5170-bios-1985-11-15`, with U27 part
+`61X9266` present and U47 part `61X9265` missing. These real catalogue names and
+hashes may be documented publicly; the ROM bytes remain private. Documents such
+as **IBM PC/AT Technical Reference** and **BIOS source listing (Technical Reference
+appendix)** illustrate user-supplied extras, without including their contents.
+
+Each logical ROM has a unique §3-grammar `id`, a provider-declared `role`, optional
+`catalogue_id`, full lowercase `sha256` and exact decoded `size`. It has either
+a single `blob` with optional physical `position`/`part_number`, or a nonempty
+`parts` array, never both. PC roles `system-bios`, `option-rom` and `video-bios`
+map to `FirmwareKind::{SystemBios, OptionRom, VideoBios}` in
+`crates/assembly/src/firmware.rs`. `keyboard-controller` and `other` reserve roles
+for storage and display, not executable support. Unknown roles need a provider
+schema extension; shared code never guesses ROM mapping from their names.
+
+**One BIOS, several chips.** `parts` mirrors machine-file `RomPart` in
+`crates/machine-file/src/schema/v1.rs`: `blob` supplies `image` bytes, with the
+same `lane`, assembled-byte `offset` (default zero) and per-chip `sha256` pin.
+Every part also has exact `size` and optional socket `position` and `part_number`.
+Its role and catalogue id are inherited from the logical ROM. `KnownPart` has
+socket/part labels, hashes, sizes, lanes and offsets, not independent catalogue
+ids; do not invent one id per socket. A catalogue ROM's top-level hash/size pin
+the **assembled** image, as machine-file `Rom.sha256` does for `parts`.
+
+Preserve the declared part array order when lowering/exporting, but placement
+is determined by lane and offset, not by filename, socket label or array index.
+For part byte `i`, even maps to `offset + 2*i`, odd to `offset + 2*i + 1`.
+The existing `assembly::interleave_parts` requires equal-sized nonempty pairs,
+one of each lane at each offset, and contiguous pairs from offset zero; gaps,
+overlaps, duplicate lanes and missing partners fail validation. A four-chip set
+records the lower pair first, then the upper pair with its explicit assembled
+byte offset. Validate both chip identities and the reconstructed BIOS identity,
+including the selected `FirmwareEntry.parts` alternative layout. Never mix
+alternative layouts because they share a BIOS hash. An already assembled file
+is the single-blob representation of that BIOS; it needs no fictional sockets.
+Keep full EPROM/container bytes and their hash; the existing ROM-level `offset`
+that skips an adapter container prefix is distinct from part placement and
+remains provider/machine mapping, not a truncated payload identity.
+
+`layers` contains precisely the unique ROM/chip blobs in first-use config/part
+order, then extras under §5.2. There is no extra assembled payload unless it is
+itself a single-blob ROM binding. Raw firmware uses §2's payload media type;
+compressed variants obey its stored/decoded hash contract. For uncompressed
+bytes, `blob` is `sha256:` plus the image/part's `sha256` and descriptor size equals
+`size`. Reject mismatching identities, malformed digests, duplicate ids,
+missing/unreferenced descriptors and unknown config fields/versions under §2's
+bounds. The shared store handles manifests, descriptors and extras; the platform
+provider owns roles, chip assembly, catalogue lookup and compatibility checks.
+
+**Fit information and validation.** `platform` routes to a provider and must
+match manifest `unemu.platform`. `fits.boards` and `fits.machine_classes` are
+arrays of provider ids: alternatives within each array, conjunction between
+nonempty arrays. Omitted/empty lists mean unspecified, never universal fit.
+PC classes derive from board models (`BoardModel::class`); class `at` alone does
+not establish fit for every AT board. The provider checks each declared catalogue
+id against `FirmwareEntry` kind, full hash/size, chip layout and board list.
+Package declarations can narrow that list but cannot broaden it. Mismatches are
+errors; vendor/version/date and free notes cannot override the catalogue.
+
+For a particular machine, the provider checks platform, board/class constraints,
+all selected logical ROM roles, CPU minimum, required board parts, services,
+ROM placement/scan windows and the ordinary assembly validator. A multi-ROM
+package is usable only if every chosen binding passes together; it never
+silently replaces unrelated machine firmware. Library check marks mean that a
+named local machine draft passes these checks with verified bytes; pending byte
+checks show “Checking…”, with no check mark. Return structured reasons for an
+incompatible board, missing device, unsupported provider or incomplete chip set.
+Fit is distinct from catalogue execution evidence (`Listed` versus `Tested`);
+a check mark is not a new boot qualification. Reserved boards or unsupported
+roles remain storable/listable, with Use disabled and a reason.
+
+For an unlisted digest, fit declarations are user claims, shown as unverified.
+Store/import may retain it only by explicit addition. Use still follows the
+existing run-only `allow_unlisted_firmware` permission and validator; importing
+a package never grants that permission or adds a trusted catalogue entry.
+
+**Extras and redistribution.** Reuse §5.2's exact `extras` schema, blob ordering,
+Open-on-host document action, deterministic transfer-medium proposal and safe
+export rules. Manuals, technical references, source listings and errata stay
+with their ROMs without becoming executable firmware or guest launch commands.
+No second attachment format is introduced. All descriptors, including config
+and documents, default to `unemu.redistribution = "user-supplied"`. Proprietary
+ROMs and restricted documents stay in private stores, registries and private
+archives; they never enter repository fixtures or public exports. Reviewed open
+firmware can be `open` with SPDX licence/provenance under §5, for example SeaBIOS,
+Kiselev BIOS or XTIDE Universal BIOS. Matching an open project name alone proves
+no licence. The most restrictive local classification per digest still wins;
+public-export recipes omit restricted bytes as §5 requires.
+
+**Identity and determinism.** Full SHA-256 identifies each exact stored blob;
+per-ROM/part hashes also verify decoded bytes (§2). The config digest identifies
+ROM bindings, part order/placement, fit claims, descriptive fields and extras.
+The **package digest** is the OCI manifest digest; tags, transfers and source
+provenance pin it. A firmware package has no machine digest. Editing fit text or
+documents changes package identity; a machine's identity changes only when its
+resolved guest-visible config/firmware changes. Use stable versioned TOML and
+manifest serialization, LF, config/part traversal order and no generated time
+fields; `date` is supplied firmware metadata, never the host clock. Folder import
+and hashing are host preparation and cannot advance virtual time. Replays pin
+resolved bytes/config and events at retired-instruction boundaries, not tags,
+folder order or discovery timing. Full verification, closure checks, tag-last
+publication, repair and private transfers reuse §§3.1/5.1.
+
+**Import a ROM folder once.** An explicit Import ROM folder… action enumerates
+files in stable relative-name order, with cancellable listing/hashing progress.
+Match complete-file SHA-256 **and length** against the provider catalogue and its
+known chip layouts, independently of filenames. Preview logical packages assembled
+from complete matching layouts; show socket/lane/offset and the assembled hash.
+Duplicates share one blob; alternative layouts remain separate choices, never
+an arbitrary mixed set. If several catalogue identities fit, ask for a selection
+in the preview rather than choosing by enumeration order.
+
+Report unmatched, unreadable, size-mismatching and incomplete inputs separately,
+with reasons. An incomplete chip set is a disabled candidate (“1 of 2 chips
+present”), not a tagged package. Unmatched files are unchecked and **not imported**
+unless explicitly added with a role, layout and fit claims; they remain unlisted.
+Documents likewise require explicit addition as extras. Import selected copies
+and fully verifies only selected complete packages through §3.1 before publishing
+tags. Cancellation publishes no incomplete package. Source files stay unchanged;
+paths remain local hints, never package fields. Afterwards the imported packages
+work with the folder offline or removed; readiness does not rescan it. Re-import
+or refreshing the remaining folder fallback is a separate explicit action.
+
+**Store-first machine-file resolution.** This is a future provider integration;
+today `firmware_discovery` checks declared paths and then ROM roots. Resolve a
+machine file's inherited declarations and pins first, then use this order:
+
+1. Query a rebuildable store firmware index by exact assembled/per-chip pins and
+   compatible role/layout/catalogue identity. It maps identities to package
+   manifest digests and blob bindings, not to mutable tags or name matches. Resolve
+   and pin a complete package once, verify its bytes and all supplied machine
+   pins, then use the existing assembly/validation path. Identical-byte matches
+   are interchangeable; use a stable package-digest order for provenance. No
+   “latest BIOS” selection or package metadata may change the machine's mapping.
+2. On a store miss, check the explicitly declared image/part paths, preserving
+   defining origins and existing pin diagnostics. An unpinned explicit path stays
+   an explicit path: never infer a store package by basename or title. Missing
+   identity requires user selection and verified pins before store lookup.
+3. For still-unresolved pinned inputs, use the existing persistent ROM index
+   (`firmware-index.v2`) and configured ROM-folder discovery, with the frontend's
+   current root policy. Metadata-validated cached hashes are candidate hints;
+   final load still verifies bytes. Refresh stale listings and retain the current
+   single retry after a located file fails verification. Discovery alone does
+   not import files; offer the explicit import action to avoid later rescans.
+
+The store firmware index and persistent host-folder index have different jobs.
+Rebuild store summaries from package configs without listing external folders;
+never load or refresh folder roots on a complete store hit. A damaged selected
+store package blocks use and offers repair, rather than silently substituting
+folder bytes. A store miss is different from corruption. With no configured
+store, preserve today's machine-file workflow and its folder fallback; repository
+fixtures/goldens need no store. Neither index replaces full hash/pin validation.
+
+**Embedding in machines.** Use in machine… previews selected bindings and the
+resolved machine diff for a stopped draft; it never changes a running machine
+or writes source TOML implicitly. Machine image construction embeds the exact
+ROM/chip blobs into its **own closure**, preserving machine-file parts, lanes,
+offsets, container mapping and pins (§2). Record contributing package manifest
+digests in manifest annotation `unemu.firmware.sources`, a string containing a
+JSON array of unique digests in first-use order, parallel to
+`unemu.media-set.sources`. This is provenance only; execution never fetches the
+package or depends on its tag, extras, source folder or index. Package and machine
+share identical blobs by digest. Removing the package tag cannot break the
+machine; its own closure is a GC root. A provenance-only change creates a new
+image digest with the same machine digest.
+
+**Library.** Add **Firmware** beside All machines and Installation media. Rows
+show name, role summary, fits, version/date and redistribution. The details pane
+shows catalogue ids, logical ROMs, socket/lane/offset layout, short SHA-256
+(with full values available), boards/classes and checked compatible library
+machines, documents with Open, and Use in machine… / Export. Incomplete import
+records stay visible but disabled with the missing-chip reason and Resume/Remove;
+no incomplete candidate is presented as a usable package. Private Export carries
+the complete verified package closure. Use is disabled for missing/damaged blobs,
+unverified pending checks or unsupported roles/providers, with the provider's
+reason. Reuse §7's versioned summary cache, lazy bounded rebuilds and incremental
+text search over name/vendor/version/notes, roles, boards/classes and catalogue
+ids. Warm listing never reads ROM bytes or scans folders; fit checks for selected
+machines remain separate readiness work. Edits stay local overlays until explicit
+new-version publication; personal notes remain local as in §2.1.
+
+**Open point:** maintainer approval of this section and the Firmware collection,
+chip-details and Import ROM folder… views. The artifact shape, private default,
+extras reuse and store-first order are accepted; no further policy choice is
+needed for this design step.
+
+### 5.4. Future artifact types
+
+These are accepted directions, not detailed schemas or implemented capabilities.
+
+**Saved states.** `upc-5pw.17` will define the portable artifact and compatibility
+contract around §2's reserved `saved_state` field and
+`application/vnd.unemu.machine.state.v1` payload. Pin exact machine/media and
+emulator/CPU/device versions as §4 requires; reject the reserved field until
+save/restore support exists. A disk checkpoint alone is not a saved machine.
+
+**Deterministic input recordings / replays.** A recording pins a machine digest,
+initial disk heads (and other mutable initial state) plus a virtual-time input
+script. Events use retired-instruction boundaries, with the halted-clock contract
+where applicable, never host timing. This supports speedruns, demos, reproducible
+bug reports and goldens. Event encoding, compatibility and verification still
+need their own design; this section enables no replay action.
+
+**Collections.** A portable collection can use a native OCI image index to group
+machine, installation-media and firmware manifest descriptors by digest, reusing
+ordinary OCI traversal and deduplication. This differs from today's local UI
+collections/labels. Ordering, collection metadata and missing-member behavior
+remain for a later design; no custom collection payload is specified here.
 
 ## 6. Capabilities API sketch: validator-owned choices
 
