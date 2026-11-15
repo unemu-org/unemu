@@ -11,22 +11,31 @@
 //! stored raw in one image and compressed in another shares one class.
 //! The guard runs on the manifest's complete closure before any upload:
 //!
-//! 1. a closure with any user-supplied blob may go only to a registry entry
-//!    marked private, and never into the official `unemu/` namespace;
+//! 1. a closure with any user-supplied blob may go only to a namespace the
+//!    registry entry marks private, or to an entry without namespaces that is
+//!    marked private as a whole, and never into the official `unemu/`
+//!    namespace, which is never private on any host;
 //! 2. a push into `unemu/` requires every blob to be open;
 //! 3. a restricted push additionally needs the target repository to refuse
 //!    anonymous reads (checked against the registry before the first upload);
 //! 4. an open ROM under a copyleft licence (GPL, LGPL, AGPL or MPL family)
-//!    goes to a registry not marked private, or into `unemu/`, only with its
-//!    linked source archive (`unemu.source`) in the same closure;
-//! 5. open installation media go to a registry not marked private, or into
-//!    `unemu/`, only with the vendor's terms text they link (`unemu.terms`)
-//!    as an open extra in the same closure; in a media set every medium and
-//!    extra links the one terms text of the set (machine-images §5.2).
+//!    goes to a namespace or registry not marked private, or into `unemu/`,
+//!    only with its linked source archive (`unemu.source`) in the same closure;
+//! 5. open installation media go to a namespace or registry not marked
+//!    private, or into `unemu/`, only with the vendor's terms text they link
+//!    (`unemu.terms`) as an open extra in the same closure; in a media set
+//!    every medium and extra links the one terms text of the set
+//!    (machine-images §5.2).
 //!
-//! There is no override.
+//! An entry that lists namespaces takes pushes only into them: a push to a
+//! repository outside every listed namespace is refused whatever it holds
+//! ([`crate::config::Scope`]). There is no override.
 
-use crate::{config::RegistryEntry, reference::OFFICIAL_NAMESPACE, Reference};
+use crate::{
+    config::{RegistryEntry, Scope},
+    reference::OFFICIAL_NAMESPACE,
+    Reference,
+};
 use image_store::{
     license, media_type, BlobSource, Descriptor, Digest, Manifest, Store, MAX_SMALL_BLOB,
 };
@@ -193,13 +202,28 @@ pub enum Refusal {
         /// As for [`Refusal::OfficialNamespaceNeedsOpen`].
         hint: &'static str,
     },
+    #[error("{host}/{namespace}/ is not marked private, so it cannot receive user-supplied blobs: {}{hint}", list(.blobs))]
+    NamespaceNotPrivate {
+        host: String,
+        namespace: String,
+        blobs: Vec<Descriptor>,
+        /// As for [`Refusal::OfficialNamespaceNeedsOpen`].
+        hint: &'static str,
+    },
+    #[error("{}", unlisted(.host, .repository, .namespace.as_deref()))]
+    UnlistedNamespace {
+        host: String,
+        repository: String,
+        /// The repository's first path component; `None` when its name has one.
+        namespace: Option<String>,
+    },
     #[error("{host} is not a configured registry; add it to the registries list first")]
     UnknownRegistry { host: String },
     #[error("{reference} can be read anonymously, so it cannot receive user-supplied blobs")]
     AnonymousReadable { reference: String },
     #[error("{reference} answers anonymous reads with a token challenge, which does not show whether it is private; Bearer authentication is not supported yet, so it cannot receive user-supplied blobs")]
     AnonymousAccessUnverified { reference: String },
-    #[error("{target} is in unemu/ or on a registry not marked private, and these open copyleft ROMs have no source archive in the image ({hint}): {}", list(.blobs))]
+    #[error("{target} is in unemu/ or in a namespace or registry not marked private, and these open copyleft ROMs have no source archive in the image ({hint}): {}", list(.blobs))]
     CopyleftWithoutSource {
         target: String,
         /// What adds the source to this kind of artifact.
@@ -213,6 +237,17 @@ pub enum Refusal {
         hint: &'static str,
         blobs: Vec<Descriptor>,
     },
+}
+
+fn unlisted(host: &str, repository: &str, namespace: Option<&str>) -> String {
+    match namespace {
+        Some(namespace) => {
+            format!("{host}/{namespace}/ is not a configured namespace on this registry")
+        }
+        None => {
+            format!("{host}/{repository} is in none of the namespaces configured on this registry")
+        }
+    }
 }
 
 fn list(blobs: &[Descriptor]) -> String {
@@ -265,26 +300,43 @@ pub fn check(
     let entry = entry.ok_or_else(|| Refusal::UnknownRegistry {
         host: target.host.clone(),
     })?;
+    let scope = entry.scope(&target.repository);
+    if let Scope::Unlisted { namespace } = scope {
+        return Err(Refusal::UnlistedNamespace {
+            host: entry.host.clone(),
+            repository: target.repository.clone(),
+            namespace,
+        });
+    }
     let restricted: Vec<_> = closure
         .iter()
         .filter(|c| c.effective == Redistribution::UserSupplied)
         .map(|c| c.descriptor.clone())
         .collect();
-    if !restricted.is_empty() && target.namespace() == OFFICIAL_NAMESPACE {
+    let official = target.namespace() == OFFICIAL_NAMESPACE;
+    if !restricted.is_empty() && official {
         return Err(Refusal::OfficialNamespaceNeedsOpen {
             repository: target.repository.clone(),
             blobs: restricted,
             hint: restriction_hint(closure),
         });
     }
-    if !restricted.is_empty() && !entry.private {
-        return Err(Refusal::RegistryNotPrivate {
-            host: entry.host.clone(),
-            blobs: restricted,
-            hint: restriction_hint(closure),
+    if !restricted.is_empty() && !scope.private() {
+        return Err(match scope {
+            Scope::Namespace { name, .. } => Refusal::NamespaceNotPrivate {
+                host: entry.host.clone(),
+                namespace: name,
+                blobs: restricted,
+                hint: restriction_hint(closure),
+            },
+            _ => Refusal::RegistryNotPrivate {
+                host: entry.host.clone(),
+                blobs: restricted,
+                hint: restriction_hint(closure),
+            },
         });
     }
-    if entry.private && target.namespace() != OFFICIAL_NAMESPACE {
+    if scope.private() && !official {
         return Ok(());
     }
     let missing = copyleft_without_source(closure);
@@ -375,10 +427,11 @@ pub fn copyleft_without_source(closure: &[ClosureEntry]) -> Vec<Descriptor> {
 pub enum Reach {
     /// Any configured registry, including `unemu/`.
     Anywhere,
-    /// Private registries outside `unemu/` only: a user-supplied blob.
+    /// Private namespaces or registries outside `unemu/` only: a
+    /// user-supplied blob.
     UserSupplied,
-    /// Private registries outside `unemu/` only: an open copyleft ROM
-    /// without its linked source archive.
+    /// Private namespaces or registries outside `unemu/` only: an open
+    /// copyleft ROM without its linked source archive.
     CopyleftWithoutSource,
 }
 /// The [`Reach`] of a closure; a user-supplied blob is named before a
@@ -905,5 +958,127 @@ mod tests {
             check(None, &target("other.example/lab:1"), &open),
             Err(Refusal::UnknownRegistry { .. })
         ));
+    }
+
+    /// The default registry with a public `unemu/`, a private `private/`
+    /// and, when `games` is set, a public `games/`.
+    fn namespaced(games: bool) -> RegistryEntry {
+        let namespace = |name: &str, private| crate::config::Namespace {
+            name: name.into(),
+            private,
+        };
+        let mut namespaces = vec![namespace("unemu", false), namespace("private", true)];
+        if games {
+            namespaces.push(namespace("games", false));
+        }
+        RegistryEntry {
+            namespaces,
+            ..RegistryEntry::builtin("registry.unemu.dev")
+        }
+    }
+
+    #[test]
+    fn user_supplied_blobs_go_only_into_a_namespace_marked_private() {
+        let mixed = [
+            entry(Some("open"), mt::CONFIG, b"c"),
+            entry(Some("user-supplied"), mt::FIRMWARE, b"rom"),
+        ];
+        let entry = namespaced(true);
+        assert_eq!(
+            check(Some(&entry), &target("private/lab:1"), &mixed),
+            Ok(())
+        );
+        assert!(needs_private_probe(&mixed));
+        assert!(matches!(
+            check(Some(&entry), &target("lab:1"), &mixed),
+            Err(Refusal::OfficialNamespaceNeedsOpen { .. })
+        ));
+        let public = check(Some(&entry), &target("games/lab:1"), &mixed).unwrap_err();
+        assert!(
+            matches!(public, Refusal::NamespaceNotPrivate { ref namespace, ref blobs, .. }
+                if namespace == "games" && blobs.len() == 1),
+            "{public:?}"
+        );
+        assert!(public
+            .to_string()
+            .starts_with("registry.unemu.dev/games/ is not marked private"));
+    }
+
+    #[test]
+    fn an_entry_with_namespaces_refuses_every_push_outside_them() {
+        let open = [entry(Some("open"), mt::CONFIG, b"c")];
+        let mixed = [
+            entry(Some("open"), mt::CONFIG, b"c"),
+            entry(None, mt::FIRMWARE, b"rom"),
+        ];
+        let entry = namespaced(false);
+        for closure in [&open[..], &mixed[..]] {
+            let refusal = check(Some(&entry), &target("owner/lab:1"), closure).unwrap_err();
+            assert_eq!(
+                refusal.to_string(),
+                "registry.unemu.dev/owner/ is not a configured namespace on this registry"
+            );
+            assert!(matches!(
+                check(
+                    Some(&entry),
+                    &target("registry.unemu.dev/private:1"),
+                    closure
+                ),
+                Err(Refusal::UnlistedNamespace {
+                    namespace: None,
+                    ..
+                })
+            ));
+        }
+        // Open content still goes to the listed namespaces.
+        for reference in ["lab:1", "private/lab:1"] {
+            assert_eq!(check(Some(&entry), &target(reference), &open), Ok(()));
+        }
+    }
+
+    #[test]
+    fn the_official_namespace_takes_open_content_only_whatever_the_entry_says() {
+        // Preferences refuse this entry; one built in code still gets no exception.
+        let entry = RegistryEntry {
+            namespaces: vec![crate::config::Namespace {
+                name: "unemu".into(),
+                private: true,
+            }],
+            ..RegistryEntry::builtin("registry.unemu.dev")
+        };
+        assert!(!entry.scope("unemu/lab").private());
+        let mixed = [entry_with_rom()];
+        assert!(matches!(
+            check(Some(&entry), &target("lab:1"), &mixed),
+            Err(Refusal::OfficialNamespaceNeedsOpen { .. })
+        ));
+        let without = package("GPL-3.0-or-later", None);
+        assert!(matches!(
+            check(Some(&entry), &target("lab:1"), &without),
+            Err(Refusal::CopyleftWithoutSource { .. })
+        ));
+    }
+
+    fn entry_with_rom() -> ClosureEntry {
+        entry(Some("user-supplied"), mt::FIRMWARE, b"rom")
+    }
+
+    #[test]
+    fn a_copyleft_rom_without_source_stays_in_a_private_namespace() {
+        let without = package("GPL-3.0-or-later", None);
+        let entry = namespaced(true);
+        assert_eq!(
+            check(Some(&entry), &target("private/bios:1"), &without),
+            Ok(())
+        );
+        for reference in ["bios:1", "games/bios:1"] {
+            assert!(
+                matches!(
+                    check(Some(&entry), &target(reference), &without),
+                    Err(Refusal::CopyleftWithoutSource { .. })
+                ),
+                "{reference}"
+            );
+        }
     }
 }

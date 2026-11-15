@@ -20,6 +20,7 @@
 
 use crate::{
     client::{AnonymousAccess, Chunk, Started},
+    config::Scope,
     guard::{self, ClosureEntry, LocalMarks, Refusal},
     http::Body,
     reference::is_version_tag,
@@ -109,6 +110,14 @@ impl PushPlan {
     /// The guard's configuration-only verdict; [`push`] decides again.
     pub fn verdict(&self) -> &std::result::Result<(), Refusal> {
         &self.verdict
+    }
+
+    /// Where the target falls on its registry entry: the whole registry, a
+    /// listed namespace, or none; `None` when the host is not configured.
+    pub fn scope(&self) -> Option<Scope> {
+        self.entry
+            .as_ref()
+            .map(|entry| entry.scope(&self.target.repository))
     }
 }
 

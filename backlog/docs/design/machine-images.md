@@ -784,18 +784,39 @@ publishing proprietary bytes by accident:
   names the host. Preferences, `--registry` and an environment variable override
   the default host. Local tags keep the short form.
 - The registries list in preferences holds entries of a host, an optional
-  `private` flag and an optional login user, never a secret. The default
-  registry is known without an entry and is public until marked private.
-- Push refuses a registry that is neither listed nor the default. A blob's
-  effective class is the most restrictive one recorded for its digest in any
-  local manifest (§2). An image with any user-supplied blob (the default
-  classification) goes only to an entry marked private and never into the
-  official `unemu/` namespace; pushes into `unemu/` require every blob to be
-  open. Before such a restricted push, probe anonymous `tags/list` and catalog
-  access for the target namespace, not just `/v2/`: `403`, or `401` with a Basic
-  challenge, indicate private access; `200` or `404 NAME_UNKNOWN` indicate open
-  access, and a `401` Bearer challenge is inconclusive; both refuse the push.
-  There is no override.
+  login user and its privacy, never a secret. Privacy is set for the whole
+  registry with a `private` flag, or per namespace (the first path component
+  of a repository) with a `namespaces` list, each namespace public or private;
+  an entry with namespaces carries no `private = true` of its own. One host can
+  so serve a public `unemu/` and a private `private/`:
+
+  ```toml
+  [[registries]]
+  host = "registry.unemu.dev"
+  user = "NAME"
+  namespaces = [{ name = "unemu", private = false }, { name = "private", private = true }]
+  ```
+
+  `unemu/` is never private: an entry that marks it private is refused when
+  preferences are read. The default registry is known without an entry and is
+  public until marked private. When the public namespace moves to another
+  host, `private/` keeps its entry and the new host's entry lists `unemu/`
+  only. The command line sets privacy with `image registry set`, the desktop
+  shell with Preferences › Registries; both write the same keys.
+- Push refuses a registry that is neither listed nor the default, and, on an
+  entry that lists namespaces, any repository outside them, whatever the image
+  holds ("X/ is not a configured namespace on this registry"). A repository is
+  in a namespace only below it: `private/games` is in `private/`, a repository
+  named `private` is not. A blob's effective class is the most restrictive one
+  recorded for its digest in any local manifest (§2). An image with any
+  user-supplied blob (the default classification) goes only to a namespace
+  marked private, or to an entry without namespaces marked private as a whole,
+  and never into the official `unemu/` namespace on any host; pushes into
+  `unemu/` require every blob to be open. Before such a restricted push, probe
+  anonymous `tags/list` and catalog access for the target namespace, not just
+  `/v2/`: `403`, or `401` with a Basic challenge, indicate private access;
+  `200` or `404 NAME_UNKNOWN` indicate open access, and a `401` Bearer
+  challenge is inconclusive; both refuse the push. There is no override.
 - **TLS is mandatory** except for a loopback test registry (`plain_http`).
   Requests start anonymous and send credentials only after a `401` Basic
   challenge, so an anonymous push is attempted only where the registry accepts

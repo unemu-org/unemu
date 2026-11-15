@@ -28,7 +28,7 @@
 
 use crate::registries_model::{Check, Mark};
 use image_registry::{
-    config::{self, RegistryConfig},
+    config::{self, RegistryConfig, Scope},
     credential_store::CredentialStore,
     credentials::EnvCredentials,
     guard::{self, ClosureEntry, MarkSource, Redistribution, Refusal},
@@ -499,13 +499,29 @@ fn pull_failure(error: Error) -> PullFailure {
     })
 }
 
+/// "HOST is configured; NAMESPACE/ is marked private", as Push… and Pull…
+/// name the registry entry and the namespace a reference falls in.
+fn configured_line(host: &str, default_host: &str, scope: &Scope) -> String {
+    format!(
+        "{host} is configured{}; {scope}",
+        if host == default_host {
+            " (default registry)"
+        } else {
+            ""
+        }
+    )
+}
+
 /// The guard's refusal as the dialog says it.
 fn refusal_text(refusal: &Refusal, closure: &[ClosureEntry]) -> String {
     match refusal {
         Refusal::UnknownRegistry { host } => format!(
             "{host} is not in your registry list. Add it in Tools › Preferences › Registries first."
         ),
-        Refusal::OfficialNamespaceNeedsOpen { .. } | Refusal::RegistryNotPrivate { .. } => {
+        Refusal::UnlistedNamespace { .. } => format!("{refusal}."),
+        Refusal::OfficialNamespaceNeedsOpen { .. }
+        | Refusal::RegistryNotPrivate { .. }
+        | Refusal::NamespaceNotPrivate { .. } => {
             let firmware = closure.iter().any(|c| {
                 c.effective == Redistribution::UserSupplied
                     && c.descriptor.decoded_media_type() == mt::FIRMWARE
@@ -865,24 +881,13 @@ impl PushDialog {
             return evaluation;
         }
         let entry = self.config.entry(&target.host);
-        match &entry {
-            Some(entry) => {
+        let scope = entry.as_ref().map(|e| e.scope(&target.repository));
+        let unlisted = matches!(scope, Some(Scope::Unlisted { .. }));
+        match (&entry, &scope) {
+            (Some(entry), Some(scope)) => {
                 evaluation.checks.push(check(
-                    Mark::Good,
-                    format!(
-                        "{} is configured{}; it is {}",
-                        entry.host,
-                        if entry.host == self.default_host {
-                            " (default registry)"
-                        } else {
-                            ""
-                        },
-                        if entry.private {
-                            "marked private"
-                        } else {
-                            "public"
-                        }
-                    ),
+                    if unlisted { Mark::Bad } else { Mark::Good },
+                    configured_line(&entry.host, &self.default_host, scope),
                 ));
                 evaluation.checks.push(match &entry.user {
                     Some(user) => check(
@@ -898,7 +903,7 @@ impl PushDialog {
                     ),
                 });
             }
-            None => evaluation.checks.push(check(
+            _ => evaluation.checks.push(check(
                 Mark::Bad,
                 format!("{} is not in your registry list", target.host),
             )),
@@ -909,42 +914,46 @@ impl PushDialog {
             .count();
         let official = target.namespace() == OFFICIAL_NAMESPACE;
         let count = blobs.len();
-        if restricted == 0 {
-            evaluation.checks.push(check(
-                Mark::Good,
-                format!(
-                    "Every blob is open{}",
-                    if official { ": allowed in unemu/" } else { "" }
-                ),
-            ));
-        } else if official {
-            evaluation.checks.push(check(
-                Mark::Bad,
-                format!(
-                    "{restricted} of {count} blobs are user-supplied; unemu/ accepts only open blobs"
-                ),
-            ));
-        } else if entry.as_ref().is_some_and(|e| e.private) {
-            evaluation.checks.push(check(
-                Mark::Good,
-                format!(
-                    "{restricted} of {count} blobs are user-supplied and may go here: the target is private and not under unemu/"
-                ),
-            ));
-            evaluation.checks.push(check(
-                Mark::Note,
-                format!(
-                    "Before the upload, anonymous reads of {}/{} are tried; the push stops unless the registry refuses them",
-                    target.host, target.repository
-                ),
-            ));
-        } else if entry.is_some() {
-            evaluation.checks.push(check(
-                Mark::Bad,
-                format!(
-                    "{restricted} of {count} blobs are user-supplied; the target is not marked private"
-                ),
-            ));
+        // An entry that lists namespaces takes no push outside them, whatever
+        // the image holds, so the class lines would only distract.
+        if !unlisted {
+            if restricted == 0 {
+                evaluation.checks.push(check(
+                    Mark::Good,
+                    format!(
+                        "Every blob is open{}",
+                        if official { ": allowed in unemu/" } else { "" }
+                    ),
+                ));
+            } else if official {
+                evaluation.checks.push(check(
+                    Mark::Bad,
+                    format!(
+                        "{restricted} of {count} blobs are user-supplied; unemu/ accepts only open blobs"
+                    ),
+                ));
+            } else if scope.as_ref().is_some_and(Scope::private) {
+                evaluation.checks.push(check(
+                    Mark::Good,
+                    format!(
+                        "{restricted} of {count} blobs are user-supplied and may go here: the target is private and not under unemu/"
+                    ),
+                ));
+                evaluation.checks.push(check(
+                    Mark::Note,
+                    format!(
+                        "Before the upload, anonymous reads of {}/{} are tried; the push stops unless the registry refuses them",
+                        target.host, target.repository
+                    ),
+                ));
+            } else if entry.is_some() {
+                evaluation.checks.push(check(
+                    Mark::Bad,
+                    format!(
+                        "{restricted} of {count} blobs are user-supplied; the target is not marked private"
+                    ),
+                ));
+            }
         }
         let elsewhere =
             |wanted: fn(&MarkSource) -> bool| blobs.iter().filter(|c| wanted(&c.source)).count();
@@ -1317,6 +1326,7 @@ pub(crate) enum PullState {
 
 pub(crate) struct PullDialog {
     accounts: Accounts,
+    config: RegistryConfig,
     pub default_host: String,
     pub reference: String,
     /// Empty: the short form of the reference.
@@ -1335,12 +1345,17 @@ impl Drop for PullDialog {
 
 impl PullDialog {
     pub fn open(accounts: Accounts) -> Self {
-        let (default_host, error) = match accounts.settings() {
-            Ok((_, host)) => (host, None),
-            Err(error) => (DEFAULT_REGISTRY.into(), Some(error)),
+        let (config, default_host, error) = match accounts.settings() {
+            Ok((config, host)) => (config, host, None),
+            Err(error) => (
+                RegistryConfig::default(),
+                DEFAULT_REGISTRY.into(),
+                Some(error),
+            ),
         };
         Self {
             accounts,
+            config,
             default_host,
             reference: String::new(),
             local_tag: String::new(),
@@ -1376,6 +1391,18 @@ impl PullDialog {
             )
         })?;
         Ok((source, local))
+    }
+
+    /// The source's registry entry and namespace, as Push… names them;
+    /// `None` until the reference resolves, or for a host with no entry.
+    pub fn namespace_line(&self) -> Option<String> {
+        let (source, _) = self.resolve().ok()?;
+        let entry = self.config.entry(&source.host)?;
+        Some(configured_line(
+            &entry.host,
+            &self.default_host,
+            &entry.scope(&source.repository),
+        ))
     }
 
     pub fn can_pull(&self) -> bool {
@@ -1888,6 +1915,115 @@ pub(crate) mod tests {
             .log()
             .iter()
             .any(|l| l.starts_with("POST ") || l.starts_with("PUT ")));
+    }
+
+    /// List the lab registry with a public `unemu/` and a private `private/`,
+    /// as the maintainer's one host serves them, keeping its login.
+    fn namespaced(lab: &Lab) {
+        let host = lab.host();
+        std::fs::write(
+            lab.accounts.path.as_ref().unwrap(),
+            format!(
+                "[[registries]]\nhost = \"{host}\"\nuser = \"ci\"\nplain_http = true\nnamespaces = [{{ name = \"unemu\", private = false }}, {{ name = \"private\", private = true }}]\n"
+            ),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn push_and_pull_name_the_namespace_and_the_guard_decides_per_namespace() {
+        let mut lab = Lab::new(false);
+        namespaced(&lab);
+        let host = lab.host();
+        let image = lab.f.row.descriptor.clone();
+        let dialog = lab.open_push("test:source");
+        for (destination, refusal, mark, line) in [
+            (
+                format!("{host}/unemu/test:1"),
+                "never to unemu/".to_owned(),
+                Mark::Good,
+                format!("{host} is configured; unemu/ is public"),
+            ),
+            (
+                format!("{host}/owner/test:1"),
+                format!("{host}/owner/ is not a configured namespace on this registry."),
+                Mark::Bad,
+                format!(
+                    "{host} is configured; owner/ is not a configured namespace on this registry"
+                ),
+            ),
+        ] {
+            dialog.destination = destination.clone();
+            let evaluation = dialog.evaluate();
+            assert!(evaluation.refused_by_guard, "{destination}");
+            assert!(
+                evaluation.refusal.as_deref().unwrap().contains(&refusal),
+                "{destination}: {evaluation:?}"
+            );
+            assert!(
+                evaluation
+                    .checks
+                    .iter()
+                    .any(|c| c.mark == mark && c.text == line),
+                "{destination}: {:?}",
+                evaluation.checks
+            );
+            assert!(dialog.push().is_none());
+        }
+        dialog.destination = format!("{host}/private/test:1.0.0");
+        let evaluation = dialog.evaluate();
+        assert!(evaluation.allowed(), "{evaluation:?}");
+        assert_eq!(
+            evaluation.checks[0].text,
+            format!("{host} is configured; private/ is marked private")
+        );
+        assert!(evaluation
+            .checks
+            .iter()
+            .any(|c| c.mark == Mark::Good && c.text.contains("may go here")));
+        let request = dialog.push().unwrap();
+        lab.view.send(Request::Transfer(request));
+        lab.view.pump_until(push_settled);
+        let state = &lab.view.push.as_ref().unwrap().state;
+        assert!(
+            matches!(state, PushState::Finished { ok: true, .. }),
+            "{state:?}"
+        );
+        assert_eq!(
+            lab.registry.tag_digest("private/test", "1.0.0"),
+            Some(image.digest.clone())
+        );
+
+        // A job built past the dialog for an unlisted namespace reaches no registry.
+        lab.registry.clear_log();
+        let forged = TransferRequest::Push(Box::new(PushJob {
+            id: next_id(),
+            local_tag: "test:source".into(),
+            image: image.digest.clone(),
+            target: Reference::parse(&format!("{host}/owner/test:1"), "unused.example").unwrap(),
+            move_from: None,
+            accounts: lab.accounts.clone(),
+            cancel: Arc::default(),
+            live: Live::default(),
+        }));
+        let events = run_here(&lab.f.store, forged, &[]);
+        assert!(
+            matches!(events.as_slice(), [TransferEvent::Pushed { result: Err(PushFailure::Refused(text)), .. }]
+                if text.contains("is not a configured namespace on this registry")),
+            "{:?}",
+            events.len()
+        );
+        assert!(lab.registry.log().is_empty(), "{:?}", lab.registry.log());
+
+        // Pull… names the namespace the same way, and nothing for an unlisted host.
+        let mut pull = PullDialog::open(lab.accounts.clone());
+        pull.reference = format!("{host}/private/test:1.0.0");
+        assert_eq!(
+            pull.namespace_line().as_deref(),
+            Some(format!("{host} is configured; private/ is marked private").as_str())
+        );
+        pull.reference = "other.example/x/y:1".into();
+        assert_eq!(pull.namespace_line(), None);
     }
 
     #[test]

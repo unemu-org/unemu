@@ -17,9 +17,10 @@
 use image_registry::{
     accounts::{self, ConnectionReport, LoginCheck, LoginOutcome},
     client::ApiAccess,
-    config::{self, EntryEdit, RegistryConfig, RegistryEntry},
+    config::{self, EntryEdit, EntrySettings, RegistryConfig, RegistryEntry},
     credential_store::{CredentialStore, Secret, StoreKind, MAX_KEYCHAIN_SECRET},
     credentials::{EnvCredentials, HostCredentials},
+    reference::OFFICIAL_NAMESPACE,
     Error, DEFAULT_REGISTRY,
 };
 use std::{
@@ -85,11 +86,15 @@ pub(crate) struct Editor {
     /// The host being edited; `None` adds a registry.
     pub original: Option<String>,
     pub host: String,
+    /// The Namespaces field: comma-separated names, empty for the whole
+    /// registry ([`config::parse_namespaces`]).
+    pub namespaces: String,
+    /// The whole registry, or each listed namespace without its own mark.
     pub private: bool,
     pub plain_http: bool,
-    /// `(private, plain_http)` as the dialog opened, so a save can tell
+    /// The entry's settings as the dialog opened, so a save can tell
     /// whether the entry changed meanwhile.
-    started: Option<(bool, bool)>,
+    started: Option<EntrySettings>,
     pub error: Option<String>,
 }
 
@@ -117,11 +122,13 @@ impl fmt::Debug for LoginDialog {
     }
 }
 
-/// Un-marking a private registry waits for this confirmation.
+/// Un-marking a private registry or namespace waits for this confirmation.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct ConfirmPublic {
     pub host: String,
-    pub plain_http: bool,
+    /// What becomes public: the host, or `host/name/` for each namespace.
+    pub exposed: String,
+    pub settings: EntrySettings,
 }
 
 /// Why a login ended without a stored secret.
@@ -491,6 +498,7 @@ impl RegistriesPage {
         self.editor = Some(Editor {
             original: None,
             host: String::new(),
+            namespaces: String::new(),
             private: true,
             plain_http: false,
             started: None,
@@ -512,24 +520,34 @@ impl RegistriesPage {
     pub fn open_edit(&mut self) {
         self.reload();
         if let Some(row) = self.selected_row() {
+            let entry = &row.entry;
+            // With namespaces listed, the box shows whether any of them is
+            // private, and the field marks the ones that differ.
+            let private = if entry.namespaces.is_empty() {
+                entry.private
+            } else {
+                entry.namespaces.iter().any(|n| n.private)
+            };
             self.editor = Some(Editor {
-                original: Some(row.entry.host.clone()),
-                host: row.entry.host.clone(),
-                private: row.entry.private,
-                plain_http: row.entry.plain_http,
-                started: Some((row.entry.private, row.entry.plain_http)),
+                original: Some(entry.host.clone()),
+                host: entry.host.clone(),
+                namespaces: config::namespaces_field(&entry.namespaces, private),
+                private,
+                plain_http: entry.plain_http,
+                started: Some(entry.settings()),
                 error: None,
             });
         }
     }
 
-    /// Validate the editor and apply it; un-marking a private registry first
-    /// asks for confirmation.
+    /// Validate the editor and apply it; making a private registry or
+    /// namespace public first asks for confirmation.
     pub fn submit_editor(&mut self) {
         let Some(editor) = &self.editor else {
             return;
         };
-        let (private, plain_http, started) = (editor.private, editor.plain_http, editor.started);
+        let (private, plain_http) = (editor.private, editor.plain_http);
+        let started = editor.started.clone();
         let host = match &editor.original {
             Some(host) => Ok(host.clone()),
             None => config::validate_registry_host(&editor.host)
@@ -554,9 +572,14 @@ impl RegistriesPage {
             } else {
                 Ok(host)
             }
+        })
+        .and_then(|host| {
+            let namespaces = config::parse_namespaces(&editor.namespaces, private)
+                .map_err(|error| format!("Namespaces: {}.", plain(&error)))?;
+            Ok((host, namespaces))
         });
-        let host = match host {
-            Ok(host) => host,
+        let (host, namespaces) = match host {
+            Ok(parsed) => parsed,
             Err(error) => {
                 if let Some(editor) = &mut self.editor {
                     editor.error = Some(error);
@@ -564,20 +587,31 @@ impl RegistriesPage {
                 return;
             }
         };
-        if started == Some((private, plain_http)) {
+        let settings = EntrySettings {
+            private: private && namespaces.is_empty(),
+            namespaces,
+            plain_http,
+        };
+        if started.as_ref() == Some(&settings) {
             self.editor = None;
             self.status = Some(format!("No changes to {host}."));
             return;
         }
-        if started.is_some_and(|(was_private, _)| was_private) && !private {
-            self.confirm = Some(ConfirmPublic { host, plain_http });
+        if let Some(exposed) = started
+            .as_ref()
+            .and_then(|started| config::made_public(started, &settings))
+        {
+            self.confirm = Some(ConfirmPublic {
+                exposed: exposed.describe(&host),
+                host,
+                settings,
+            });
             return;
         }
         self.apply_edit(EntryEdit {
             host,
             started,
-            private,
-            plain_http,
+            settings,
             confirmed_public: false,
         });
     }
@@ -593,9 +627,8 @@ impl RegistriesPage {
         if accept {
             let edit = EntryEdit {
                 host: confirm.host,
-                started: editor.started,
-                private: false,
-                plain_http: confirm.plain_http,
+                started: editor.started.clone(),
+                settings: confirm.settings,
                 confirmed_public: true,
             };
             self.apply_edit(edit);
@@ -999,12 +1032,114 @@ pub(crate) fn store_description(kind: StoreKind) -> (&'static str, &'static str)
     }
 }
 
-/// The push rule a registry's private flag selects; there is no override.
-pub(crate) fn namespaces_text(entry: &RegistryEntry) -> String {
-    if entry.private {
-        "unemu/ — public, open content only; every other namespace — private, may receive images with user-supplied content".into()
+/// One line of the registries table: a registry, or one of its namespaces
+/// right under it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct TableRow {
+    /// The registry row this line belongs to; choosing the line selects it.
+    pub row: usize,
+    pub namespace: bool,
+    pub name: String,
+    pub user: String,
+    pub signed_in: String,
+    pub private: String,
+}
+
+impl RegistriesPage {
+    /// The table as the mock-up shows it: each registry, then a child line
+    /// per listed namespace. A registry without namespaces is private or not
+    /// as a whole; one with namespaces says "Per namespace".
+    pub fn table(&self) -> Vec<TableRow> {
+        let session = self.store.kind() == StoreKind::Session;
+        let mut lines = Vec::new();
+        for (index, row) in self.rows.iter().enumerate() {
+            let entry = &row.entry;
+            let mut name = entry.host.clone();
+            if entry.host == self.default_host {
+                name.push_str("  [default]");
+            }
+            if !row.listed {
+                name.push_str("  (built in)");
+            }
+            lines.push(TableRow {
+                row: index,
+                namespace: false,
+                name,
+                user: entry.user.clone().unwrap_or_else(|| "—".into()),
+                signed_in: match &row.sign_in {
+                    SignIn::SignedIn if session => "● Signed in · this session".into(),
+                    SignIn::SignedIn => "● Signed in".into(),
+                    SignIn::SignedOut => "○ Signed out".into(),
+                    SignIn::Checking => "… Checking…".into(),
+                    SignIn::Unknown(_) => "? Unknown".into(),
+                },
+                private: match (entry.namespaces.is_empty(), entry.private) {
+                    (false, _) => "Per namespace",
+                    (true, true) => "Yes",
+                    (true, false) => "No",
+                }
+                .into(),
+            });
+            for namespace in &entry.namespaces {
+                let private = entry.scope(&format!("{}/", namespace.name)).private();
+                lines.push(TableRow {
+                    row: index,
+                    namespace: true,
+                    name: format!(
+                        "    {}/ — {}",
+                        namespace.name,
+                        namespace_label(&namespace.name, private)
+                    ),
+                    user: String::new(),
+                    signed_in: String::new(),
+                    private: if private { "Yes" } else { "No — open only" }.into(),
+                });
+            }
+        }
+        lines
+    }
+}
+
+/// What a namespace holds, as the table says it beside the name.
+fn namespace_label(name: &str, private: bool) -> &'static str {
+    if name == OFFICIAL_NAMESPACE {
+        "official namespace — open images, public pulls"
+    } else if private {
+        "proprietary images — login always required"
     } else {
-        "every namespace — public, open content only".into()
+        "public — open images only"
+    }
+}
+
+/// The details pane's Namespaces line: each namespace, or the whole
+/// registry, with the push rule its mark selects. There is no override.
+pub(crate) fn namespaces_text(entry: &RegistryEntry) -> String {
+    let rule = |private: bool| {
+        if private {
+            "private"
+        } else {
+            "public, open content only"
+        }
+    };
+    if entry.namespaces.is_empty() {
+        return format!("whole registry — {}", rule(entry.private));
+    }
+    entry
+        .namespaces
+        .iter()
+        .map(|n| {
+            let private = entry.scope(&format!("{}/", n.name)).private();
+            format!("{}/ — {}", n.name, rule(private))
+        })
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
+/// A configuration error without its "registry configuration:" prefix.
+fn plain(error: &Error) -> String {
+    match error {
+        Error::Config(message) => message.clone(),
+        other => other.to_string(),
     }
 }
 
@@ -1160,7 +1295,8 @@ mod tests {
             f.page.confirm,
             Some(ConfirmPublic {
                 host: "nas.example".into(),
-                plain_http: false
+                exposed: "nas.example".into(),
+                settings: EntrySettings::default(),
             })
         );
         assert!(f.page.selected_row().unwrap().entry.private);
@@ -1615,6 +1751,168 @@ mod tests {
         select(&mut f.page, DEFAULT_REGISTRY);
         f.page.open_login();
         assert!(f.page.login_hint().contains("over TLS"));
+    }
+
+    const NAMESPACED: &str = "[[registries]]\nhost = \"registry.unemu.dev\"\nuser = \"maintainer\"\nnamespaces = [{ name = \"unemu\", private = false }, { name = \"private\", private = true }]\n[[registries]]\nhost = \"nas.example:5000\"\nprivate = true\n[[registries]]\nhost = \"lab.example\"\n";
+
+    #[test]
+    fn the_table_lists_namespaces_under_their_registry_as_the_mock_up_does() {
+        let mut f = fixture(NAMESPACED);
+        f.page.wait();
+        let table: Vec<_> = f
+            .page
+            .table()
+            .into_iter()
+            .map(|line| (line.row, line.name, line.user, line.signed_in, line.private))
+            .collect();
+        let line = |row, name: &str, user: &str, signed: &str, private: &str| {
+            (row, name.into(), user.into(), signed.into(), private.into())
+        };
+        assert_eq!(
+            table,
+            [
+                line(
+                    0,
+                    "registry.unemu.dev  [default]",
+                    "maintainer",
+                    "○ Signed out",
+                    "Per namespace"
+                ),
+                line(
+                    0,
+                    "    unemu/ — official namespace — open images, public pulls",
+                    "",
+                    "",
+                    "No — open only"
+                ),
+                line(
+                    0,
+                    "    private/ — proprietary images — login always required",
+                    "",
+                    "",
+                    "Yes"
+                ),
+                line(1, "nas.example:5000", "—", "○ Signed out", "Yes"),
+                line(2, "lab.example", "—", "○ Signed out", "No"),
+            ]
+        );
+        let details: Vec<_> = f
+            .page
+            .rows
+            .iter()
+            .map(|r| namespaces_text(&r.entry))
+            .collect();
+        assert_eq!(
+            details,
+            [
+                "unemu/ — public, open content only; private/ — private",
+                "whole registry — private",
+                "whole registry — public, open content only",
+            ]
+        );
+        // The built-in default registry has no namespaces until they are set.
+        let builtin = fixture("rom_dirs = []\n");
+        let lines = builtin.page.table();
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0].name, "registry.unemu.dev  [default]  (built in)");
+        assert_eq!(lines[0].private, "No");
+    }
+
+    #[test]
+    fn the_add_dialog_lists_namespaces_and_edit_reads_them_back() {
+        let mut f = fixture("rom_dirs = [\"/roms\"]\n");
+        f.page.open_add();
+        let editor = f.page.editor.as_mut().unwrap();
+        assert!(editor.namespaces.is_empty(), "empty = the whole registry");
+        editor.host = DEFAULT_REGISTRY.into();
+        editor.namespaces = "unemu, private/".into();
+        f.page.submit_editor();
+        assert_eq!(
+            f.page.status.as_deref(),
+            Some("Added registry.unemu.dev."),
+            "{:?}",
+            f.page.editor
+        );
+        let entry = &f.page.selected_row().unwrap().entry;
+        assert!(!entry.private);
+        assert!(entry.scope("private/games").private());
+        assert!(!entry.scope("unemu/open-at").private());
+        assert_eq!(f.page.table().len(), 3);
+
+        f.page.open_edit();
+        let editor = f.page.editor.as_ref().unwrap();
+        assert_eq!(
+            (editor.namespaces.as_str(), editor.private),
+            ("unemu, private", true)
+        );
+        f.page.submit_editor();
+        assert_eq!(
+            f.page.status.as_deref(),
+            Some("No changes to registry.unemu.dev.")
+        );
+
+        // Adding a public namespace makes nothing public that was private.
+        f.page.open_edit();
+        f.page.editor.as_mut().unwrap().namespaces = "unemu, private, games:public".into();
+        f.page.submit_editor();
+        assert!(f.page.confirm.is_none());
+        assert_eq!(f.page.status.as_deref(), Some("Saved registry.unemu.dev."));
+        assert_eq!(f.page.table().len(), 4);
+
+        for (typed, problem) in [
+            ("unemu:private", "never private"),
+            ("private/games", "Namespaces:"),
+            ("a, a", "listed twice"),
+        ] {
+            f.page.open_edit();
+            f.page.editor.as_mut().unwrap().namespaces = typed.into();
+            f.page.submit_editor();
+            let error = f.page.editor.as_ref().unwrap().error.clone().unwrap();
+            assert!(error.contains(problem), "{typed}: {error}");
+        }
+
+        // Un-marking private/ asks first and names it.
+        f.page.open_edit();
+        f.page.editor.as_mut().unwrap().namespaces = "unemu, private:public, games:public".into();
+        f.page.submit_editor();
+        let confirm = f.page.confirm.clone().unwrap();
+        assert_eq!(confirm.exposed, "registry.unemu.dev/private/");
+        assert!(f
+            .page
+            .selected_row()
+            .unwrap()
+            .entry
+            .scope("private/a")
+            .private());
+        f.page.confirm_public(true);
+        assert!(!f
+            .page
+            .selected_row()
+            .unwrap()
+            .entry
+            .scope("private/a")
+            .private());
+
+        // A dialog opened before another writer changed the list is stale.
+        f.page.open_edit();
+        config::update_preferences(&f.path, |table| {
+            config::set_privacy(
+                table,
+                DEFAULT_REGISTRY,
+                false,
+                vec![image_registry::config::Namespace {
+                    name: "private".into(),
+                    private: true,
+                }],
+            )
+        })
+        .unwrap();
+        f.page.editor.as_mut().unwrap().namespaces = "unemu".into();
+        f.page.submit_editor();
+        let error = f.page.editor.as_ref().unwrap().error.clone().unwrap();
+        assert!(error.contains("changed meanwhile"), "{error}");
+        let table = config::read_preferences(&f.path).unwrap();
+        assert_eq!(table["rom_dirs"][0].as_str(), Some("/roms"));
     }
 }
 

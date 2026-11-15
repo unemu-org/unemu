@@ -19,8 +19,9 @@
 //! - push uploads only missing blobs (monolithic when small, resumable
 //!   chunked sessions when large), streams from the store, and publishes the
 //!   manifest last under the tag rules ([`push`]);
-//! - the push guard refuses user-supplied content outside private registries
-//!   and anything but open content in the official namespace ([`guard`]);
+//! - the push guard refuses user-supplied content outside private
+//!   namespaces and private registries, and anything but open content in the
+//!   official namespace ([`guard`]);
 //! - pull fetches the manifest, then the closure in parallel, verifies every
 //!   SHA-256 through the store's streaming import, and sets the local tag by
 //!   compare-and-swap only after the closure is complete ([`pull`]).

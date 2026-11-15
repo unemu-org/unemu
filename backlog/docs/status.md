@@ -5,6 +5,53 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-15 — Registry privacy per namespace:** one registry can serve a
+  public `unemu/` and a private `private/`, as decision-25's amendment "privacy
+  per namespace" and the approved registry-accounts mock-up describe.
+  - **Preferences:** a registry entry either keeps one `private` flag for the
+    whole registry (older entries read and write unchanged) or lists
+    `namespaces = [{ name = "unemu", private = false }, { name = "private",
+    private = true }]`; an entry with namespaces may not also say
+    `private = true`. `unemu/` is never private: an entry that marks it so is
+    refused when preferences are read, with an error saying why.
+  - **Guard:** user-supplied blobs go only into a namespace marked private, or
+    to an entry without namespaces marked private as a whole; `unemu/` takes
+    open content only on every host; the anonymous-read probe still runs on
+    the target repository. An entry that lists namespaces refuses every push
+    outside them ("X/ is not a configured namespace on this registry"), open
+    content included, as the mock-up does. A repository is in a namespace only
+    below it. The other guard rules are unchanged.
+  - **Command line:** `image registry set HOST [--private | --namespace
+    NAME[:private|:public]...]` writes an entry's privacy under the
+    preferences lock and keeps its user and every other key. `image push
+    --dry-run` prints a `scope:` line.
+  - **Desktop shell:** Preferences › Registries lists a child row per
+    namespace with "Per namespace" in the registry's Private column, the
+    details pane lists the namespaces, and Add/Edit has the Namespaces field
+    (empty = the whole registry; `NAME:public` or `NAME:private` sets one
+    namespace on its own, `unemu` stays public). Making a private namespace
+    public asks for confirmation, and a dialog opened before another writer
+    changed the namespaces is refused. Push… names the namespace in its first
+    check and gives the unlisted-namespace refusal; Pull… shows the same line
+    under the resolved reference. Every rule comes from the registry crate.
+  - **Tests:** preferences round trip of both forms, the guard per namespace
+    (private allowed, `unemu/` and unlisted refused, a private namespace that
+    answers anonymous reads refused through the mock registry, whole-registry
+    privacy unchanged, `unemu/` marked private refused), `image registry set`
+    and the dry run's namespace, and headless presenter and rendering tests
+    of the rows, the Add/Edit field, the confirmation and Push…/Pull….
+  - **Manual checks (maintainer):** configure `registry.unemu.dev` with
+    `unemu/` public and `private/` private, then push a user-supplied image to
+    `private/` and see the refusal for `unemu/` and for another namespace.
+  - **Mock-up departures, not yet reviewed by the maintainer:**
+    - The Namespaces field also takes `NAME:public` and `NAME:private`, so
+      Edit can show and keep an entry whose namespaces differ; the mock-up
+      gives every listed namespace the one Private registry checkbox.
+    - Child rows derive their description from the mark (official,
+      proprietary or public) instead of a free-text label.
+    - `unemu/` takes open content only on every host, as the guard already
+      did; the mock-up applies that rule to `registry.unemu.dev` only.
+    - Pull… shows the namespace line; the mock-up has no Pull… dialog.
 - **2026-11-15 — Redistributable installation media sets:** `image media
   import … --open --license LicenseRef-NAME --license-text EXTRA` states that a
   set may be redistributed under the vendor's own terms (decision-26
@@ -251,8 +298,6 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
     - The login line only informs: there is no Log in… inside the dialog,
       and Push stays enabled without a recorded login. A refusal from the
       registry points to Preferences › Registries.
-    - The private flag is per registry, as on the Registries page, not per
-      namespace.
     - Pull… had no mock-up of its own (the mock-up shows it disabled); its
       layout follows Push….
 - **2026-11-15 — Settings on an image and Save as new image…:** the library's Settings… (and
@@ -637,9 +682,9 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   - **Mock-up departures, accepted for now by the maintainer on 2026-11-15:**
     - Only the General and Registries tabs exist; the mock-up also shows
       Library, Display and Input.
-    - The Add dialog has no Display name, Namespaces or "Allow access without
-      login" fields; registry rows show no display name, and namespaces appear
-      only as an `unemu/ — open only` row under private registries.
+    - The Add dialog has no Display name or "Allow access without login"
+      fields, and registry rows show no display name. Namespaces landed later
+      (privacy per namespace, entry above).
     - "Allow plain HTTP" is limited to a test registry on this computer, not
       the local network.
     - The Log in dialog says Basic authentication over TLS (or plain HTTP to a

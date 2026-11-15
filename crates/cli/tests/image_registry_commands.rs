@@ -157,6 +157,46 @@ fn registry_commands_validate_their_arguments() {
             "--store",
             "s",
         ],
+        vec!["image", "registry"],
+        vec!["image", "registry", "set"],
+        vec!["image", "registry", "ls", "registry.unemu.dev"],
+        vec!["image", "registry", "set", "a.example", "b.example"],
+        vec!["image", "registry", "set", "a.example", "--store", "s"],
+        vec![
+            "image",
+            "registry",
+            "set",
+            "a.example",
+            "--registry",
+            "b.example",
+        ],
+        vec![
+            "image",
+            "registry",
+            "set",
+            "a.example",
+            "--private",
+            "--private",
+        ],
+        vec![
+            "image",
+            "registry",
+            "set",
+            "a.example",
+            "--private",
+            "--namespace",
+            "private",
+        ],
+        vec![
+            "image",
+            "push",
+            "lab:1.0.0",
+            "--store",
+            "s",
+            "--namespace",
+            "a",
+        ],
+        vec!["image", "login", "a.example", "--user", "me", "--private"],
     ] {
         let args: Vec<OsString> = args.into_iter().map(OsString::from).collect();
         let (code, output, errors) = run(&args);
@@ -207,7 +247,132 @@ fn dry_run_lists_redistribution_marks_and_refuses_the_official_namespace_offline
         assert!(line.ends_with(&format!("\t{mark}\tthis image")), "{output}");
     }
     assert!(output.ends_with("guard:refused\n"));
+    assert!(
+        output.contains("\nscope:the whole registry is public\n"),
+        "{output}"
+    );
     assert!(errors.contains("official namespace"), "{errors}");
+}
+
+/// `image registry set` writes the namespaces of an entry under the
+/// preferences lock and keeps every other key, the entry's user included.
+#[test]
+fn registry_set_marks_namespaces_without_the_desktop_shell() {
+    let dir = Dir::new("registry-set");
+    let preferences = dir.join("preferences.toml");
+    std::fs::write(
+        &preferences,
+        "rom_dirs = [\"/roms\"]\n[[registries]]\nhost = \"registry.unemu.dev\"\nuser = \"maintainer\"\n",
+    )
+    .unwrap();
+    let set = |extra: &[&str]| {
+        let mut args: Vec<OsString> = ["image", "registry", "set", "registry.unemu.dev"]
+            .iter()
+            .chain(extra)
+            .map(OsString::from)
+            .collect();
+        args.extend(os(&[&"--config", &preferences]));
+        run(&args)
+    };
+    let (code, output, errors) = set(&["--namespace", "unemu", "--namespace", "private:private"]);
+    assert_eq!(code, 0, "{errors}");
+    assert_eq!(
+        output,
+        "registry\tregistry.unemu.dev\tper namespace\nnamespace\tregistry.unemu.dev/unemu/\tpublic\nnamespace\tregistry.unemu.dev/private/\tprivate\n"
+    );
+    let read = || {
+        let table = image_registry::config::read_preferences(&preferences).unwrap();
+        let entry = image_registry::RegistryConfig::from_table(&table)
+            .unwrap()
+            .entry("registry.unemu.dev")
+            .unwrap();
+        (table, entry)
+    };
+    let (table, entry) = read();
+    assert_eq!(table["rom_dirs"][0].as_str(), Some("/roms"));
+    assert_eq!(entry.user.as_deref(), Some("maintainer"));
+    assert!(entry.scope("private/games").private());
+    assert!(!entry.scope("unemu/open-at").private());
+
+    let before = std::fs::read(&preferences).unwrap();
+    for (extra, message) in [
+        (&["--namespace", "unemu:private"][..], "never private"),
+        (&["--namespace", "Private"][..], "lowercase letters"),
+        (
+            &["--namespace", "a", "--namespace", "a:private"][..],
+            "listed twice",
+        ),
+    ] {
+        let (code, output, errors) = set(extra);
+        assert_eq!(code, 1, "{extra:?}: {output}{errors}");
+        assert!(errors.contains(message), "{extra:?}: {errors}");
+    }
+    assert_eq!(std::fs::read(&preferences).unwrap(), before);
+
+    let (code, output, errors) = set(&["--private"]);
+    assert_eq!(code, 0, "{errors}");
+    assert_eq!(output, "registry\tregistry.unemu.dev\tprivate\n");
+    let (_, entry) = read();
+    assert!(entry.private && entry.namespaces.is_empty());
+    assert_eq!(entry.user.as_deref(), Some("maintainer"));
+}
+
+/// With namespaces listed, the dry run names the target's namespace and
+/// refuses one the entry does not list, without any network access.
+#[test]
+fn dry_run_names_the_namespace_and_refuses_an_unlisted_one() {
+    let dir = Dir::new("dry-run-namespaces");
+    let store = dir.join("store");
+    if import(&store, "lab:1.0.0").is_none() {
+        return;
+    }
+    let preferences = dir.join("preferences.toml");
+    std::fs::write(
+        &preferences,
+        "[[registries]]\nhost = \"registry.unemu.dev\"\nnamespaces = [{ name = \"unemu\", private = false }, { name = \"private\", private = true }]\n",
+    )
+    .unwrap();
+    for (target, code, scope, refusal) in [
+        ("private/lab:1.0.0", 0, "private/ is marked private", None),
+        (
+            "lab:1.0.0",
+            1,
+            "unemu/ is public",
+            Some("official namespace"),
+        ),
+        (
+            "owner/lab:1.0.0",
+            1,
+            "owner/ is not a configured namespace on this registry",
+            Some("registry.unemu.dev/owner/ is not a configured namespace on this registry"),
+        ),
+    ] {
+        let (exit, output, errors) = run(&os(&[
+            &"image",
+            &"push",
+            &"lab:1.0.0",
+            &target,
+            &"--store",
+            &store,
+            &"--registry",
+            &"registry.unemu.dev",
+            &"--config",
+            &preferences,
+            &"--dry-run",
+        ]));
+        assert_eq!(exit, code, "{target}: {output}{errors}");
+        assert!(
+            output.contains(&format!("\nscope:{scope}\n")),
+            "{target}: {output}"
+        );
+        match refusal {
+            None => assert!(output.ends_with("guard:allowed\n"), "{output}"),
+            Some(refusal) => {
+                assert!(output.ends_with("guard:refused\n"), "{output}");
+                assert!(errors.contains(refusal), "{target}: {errors}");
+            }
+        }
+    }
 }
 
 #[test]

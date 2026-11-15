@@ -4,6 +4,7 @@
 
 use crate::{
     client::{AnonymousAccess, Client},
+    config::Namespace,
     credentials::{Anonymous, CredentialSource, Credentials, EnvCredentials, HostCredentials},
     guard::{MarkSource, Redistribution, Refusal},
     pull, push,
@@ -767,6 +768,119 @@ fn the_push_guard_refuses_before_any_upload() {
     let entry = listed.entry(true);
     let catalog = client(&entry, Anonymous).anonymous_access("private/rom");
     assert_eq!(catalog.unwrap(), crate::client::AnonymousAccess::Readable);
+}
+
+/// One host with a public `unemu/` and a private `private/`, as the
+/// maintainer's registry serves them.
+fn namespaced(registry: &MockRegistry) -> RegistryEntry {
+    RegistryEntry {
+        namespaces: vec![
+            Namespace {
+                name: "unemu".into(),
+                private: false,
+            },
+            Namespace {
+                name: "private".into(),
+                private: true,
+            },
+        ],
+        ..registry.entry(false)
+    }
+}
+
+#[test]
+fn per_namespace_privacy_sends_user_supplied_images_only_into_a_private_namespace_that_refuses_anonymous_reads(
+) {
+    let dir = Temp::new();
+    let store = dir.store();
+    let rom = image(&store, "rom:1.0.0", &[(b"vendor rom", None)], Some("open"));
+    let open = open_image(&store, "open:1.0.0", b"open rom");
+    let registry = MockRegistry::start(Policy {
+        anonymous_read: vec!["unemu".into()],
+        anonymous_write: vec!["unemu".into()],
+        user: Some(("maintainer".into(), "synthetic-secret".into())),
+        ..Policy::default()
+    });
+    let entry = namespaced(&registry);
+    let maintainer = client(&entry, Credentials::new("maintainer", "synthetic-secret"));
+    let options = PushOptions::default();
+    for (local, path) in [
+        ("rom:1.0.0", "unemu/rom:1.0.0"),
+        ("rom:1.0.0", "owner/rom:1.0.0"),
+        ("open:1.0.0", "owner/open:1.0.0"),
+    ] {
+        let refused = push_with(
+            &store,
+            local,
+            target(&registry, path),
+            &entry,
+            &maintainer,
+            &options,
+        );
+        assert!(
+            matches!(
+                refused,
+                Err(Error::Refused(
+                    Refusal::OfficialNamespaceNeedsOpen { .. } | Refusal::UnlistedNamespace { .. }
+                ))
+            ),
+            "{path}: {refused:?}"
+        );
+    }
+    assert!(
+        registry.log().is_empty(),
+        "configuration refusals need no network"
+    );
+    push_with(
+        &store,
+        "rom:1.0.0",
+        target(&registry, "private/rom:1.0.0"),
+        &entry,
+        &maintainer,
+        &options,
+    )
+    .unwrap();
+    assert_eq!(
+        registry.tag_digest("private/rom", "1.0.0"),
+        Some(rom.digest)
+    );
+    push_with(
+        &store,
+        "open:1.0.0",
+        target(&registry, "unemu/open:1.0.0"),
+        &entry,
+        &maintainer,
+        &options,
+    )
+    .unwrap();
+    assert_eq!(
+        registry.tag_digest("unemu/open", "1.0.0"),
+        Some(open.digest)
+    );
+
+    // A private namespace that answers anonymous reads receives nothing.
+    let readable = MockRegistry::start(Policy {
+        anonymous_read: vec!["private".into()],
+        anonymous_write: vec!["*".into()],
+        ..Policy::default()
+    });
+    let entry = namespaced(&readable);
+    let refused = push_with(
+        &store,
+        "rom:1.0.0",
+        target(&readable, "private/rom:1.0.0"),
+        &entry,
+        &client(&entry, Anonymous),
+        &options,
+    );
+    assert!(
+        matches!(
+            refused,
+            Err(Error::Refused(Refusal::AnonymousReadable { .. }))
+        ),
+        "{refused:?}"
+    );
+    assert_no_upload(&readable);
 }
 
 #[test]

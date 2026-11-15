@@ -411,6 +411,9 @@ pub(crate) fn show_pull(ctx: &egui::Context, dialog: &mut PullDialog, classic: b
         match dialog.resolve() {
             Ok((source, local)) => {
                 ui.label(format!("Resolves to {source}; stored as {local}"));
+                if let Some(line) = dialog.namespace_line() {
+                    small(ui, line);
+                }
             }
             Err(problem) if !dialog.reference.trim().is_empty() => error(ui, &problem),
             Err(_) => {}

@@ -340,6 +340,8 @@ cargo run --offline -p cli -- image remote ls private/dos-lab
 cargo run --offline -p cli -- image remote ls registry.unemu.dev
 cargo run --offline -p cli -- image login registry.unemu.dev --user NAME
 printf '%s\n' "$TOKEN" | cargo run --offline -p cli -- image login nas.example:5000 --user NAME
+cargo run --offline -p cli -- image registry set registry.unemu.dev --namespace unemu --namespace private:private
+cargo run --offline -p cli -- image registry set nas.example:5000 --private
 UNEMU_REGISTRY_LIVE=1 cargo test --offline -p image-registry -- --ignored live_
 UNEMU_KEYCHAIN_TEST=1 cargo test --offline -p image-registry -- --ignored keychain_
 ```
@@ -368,9 +370,41 @@ in the platform config directory, or `--config FILE`):
 ```toml
 [[registries]]
 host = "registry.unemu.dev"
-private = true      # may receive user-supplied blobs outside unemu/
 user = "NAME"       # Keychain account; never a password here
+# Privacy per namespace (the first path component of a repository):
+namespaces = [{ name = "unemu", private = false }, { name = "private", private = true }]
+
+[[registries]]
+host = "nas.example:5000"
+private = true      # the whole registry; may receive user-supplied blobs outside unemu/
 ```
+
+An entry without `namespaces` keeps one `private` flag for every repository,
+as before. An entry with `namespaces` marks each namespace public or private,
+must not also say `private = true`, and takes pushes only into the namespaces
+it lists. `unemu/` is the official namespace on every host and never private:
+an entry that marks it private is refused when preferences are read. The
+array-of-tables spelling (`[[registries.namespaces]]`) is the same document,
+and writers keep whichever keys they did not change.
+
+To serve a public `unemu/` and a private `private/` from `registry.unemu.dev`:
+
+- Command line: `image registry set registry.unemu.dev --namespace unemu
+  --namespace private:private`. A `--namespace` value is `NAME`, `NAME:private`
+  or `NAME:public` (default public); `--private` without `--namespace` marks
+  the whole registry private, and with neither the whole registry is public.
+  The command creates the entry if needed, keeps its user, plain-HTTP opt-in
+  and every other key, and prints a `registry HOST private|public|per
+  namespace` line and a `namespace HOST/NAME/ private|public` line per
+  namespace.
+- Desktop shell: Tools › Preferences… › Registries, Add… (or Edit… on the
+  built-in row), type `unemu, private` into Namespaces and keep Private
+  registry checked. Listed names without a suffix take the checkbox; `unemu`
+  always stays public, and `NAME:public` or `NAME:private` sets one namespace
+  on its own.
+
+When the public namespace moves to another host, keep the `private` entry and
+give the new host an entry that lists `unemu` only.
 
 The default registry is known without an entry and is public until marked
 private. Push refuses any other unlisted host. `plain_http = true` is accepted
@@ -398,9 +432,12 @@ standard input, and the user is recorded in preferences under the
 `preferences.toml.lock` lock that the desktop shell's saves also take, so
 neither writer drops the other's keys. The desktop shell's Tools ›
 Preferences… › Registries page uses the same functions and store:
-- Add and Edit change the private flag and the loopback plain-HTTP opt-in.
-  Only changed keys are written, an entry that changed since the dialog opened
-  is refused with "reopen it", and un-marking private asks for confirmation.
+- Add and Edit change the namespaces (comma-separated; empty for the whole
+  registry), the private flag and the loopback plain-HTTP opt-in. The table
+  shows a child row per namespace under its registry, with "Per namespace" in
+  the registry's Private column. Only changed keys are written, an entry that
+  changed since the dialog opened is refused with "reopen it", and making a
+  private registry or namespace public asks for confirmation.
 - Remove deletes the entry with its stored secret; the default registry cannot
   be removed.
 - Log in… can be cancelled until the user name is recorded; Cancel, Escape or
@@ -415,8 +452,11 @@ The desktop shell's Image › Push… and Image › Pull… build the same push 
 `image pull`, and resolve short names against the same default registry
 (`UNEMU_REGISTRY`, then preferences). They run on the library worker thread:
 - Push… shows the `--dry-run` classification as a table and the guard's
-  verdict while the destination is typed. A non-version tag moves only after
-  a confirmation that shows both digests, and only from the digest shown. A
+  verdict while the destination is typed, starting with the registry entry
+  and the namespace the destination falls in ("HOST is configured;
+  private/ is marked private"). Pull… shows the same line under the resolved
+  reference. A non-version tag moves only after a confirmation that shows
+  both digests, and only from the digest shown. A
   local tag that names another image than the reviewed one is not pushed.
 - Pull… writes the short form of the reference as the local tag unless
   another one is typed.
@@ -439,13 +479,17 @@ delete-keychain "$TMPDIR/unemu-registry-test-<pid>.keychain-db"`, and check
 
 Push guard, before any upload: a blob's class is the most restrictive one any
 tagged local manifest records for its digest (absent marks count as
-user-supplied, and machine import marks everything so). An image with a
-user-supplied blob goes only to a registry marked private, never into `unemu/`;
+user-supplied, and machine import marks everything so). An entry that lists
+namespaces takes no push outside them. An image with a user-supplied blob goes
+only to a namespace marked private, or to a registry marked private as a
+whole, never into `unemu/`;
 `unemu/` requires every blob to be open; a restricted push also refuses a
 repository that answers anonymous reads, and one whose anonymous answer is a
 Bearer token challenge (inconclusive; Bearer authentication is not supported
-yet). There is no override. `--dry-run` prints the target, the image digest, one
-`role digest size media-type class source` line per blob (source `this image`,
+yet). There is no override. `--dry-run` prints the target, the image digest,
+for a configured host a `scope:` line naming the namespace (or the whole
+registry) and whether it is private, one `role digest size media-type class
+source` line per blob (source `this image`,
 or `local tag NAME` when another local image restricts the digest) and
 `guard:allowed` or `guard:refused` (exit 1), without network access. A reference
 with both a tag and a digest is refused. Version tags (`x.y.z`) never move;

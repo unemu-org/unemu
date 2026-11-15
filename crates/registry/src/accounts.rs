@@ -375,6 +375,7 @@ mod tests {
             private: true,
             user: None,
             plain_http: true,
+            namespaces: Vec::new(),
         };
         let failed = test_connection(&unreachable, &Anonymous);
         assert!(matches!(failed, Err(Error::Transport(_))), "{failed:?}");

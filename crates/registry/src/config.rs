@@ -7,6 +7,29 @@
 //! system's credential store (see [`crate::credentials`]). Unknown preference
 //! keys are ignored so the desktop shell and this crate can share one file.
 //!
+//! Privacy is set for the whole registry or per namespace, the first path
+//! component of a repository. An entry without namespaces keeps the older
+//! form, one `private` flag for every repository:
+//!
+//! ```toml
+//! [[registries]]
+//! host = "nas.example:5000"
+//! private = true
+//! ```
+//!
+//! An entry that lists namespaces marks each of them, and its own `private`
+//! flag must then be absent or false; a push into a namespace the entry does
+//! not list is refused ([`RegistryEntry::scope`]):
+//!
+//! ```toml
+//! [[registries]]
+//! host = "registry.unemu.dev"
+//! namespaces = [{ name = "unemu", private = false }, { name = "private", private = true }]
+//! ```
+//!
+//! The official `unemu` namespace takes open content only on every host, so an
+//! entry that marks it private is refused when preferences are read.
+//!
 //! Writers share one rule ([`update_preferences`]): take the advisory lock on
 //! the sibling `<file>.lock`, read the file afresh, change only their own keys
 //! and replace the file atomically. The command line, the desktop shell's
@@ -14,11 +37,12 @@
 //! drops a key another one wrote meanwhile.
 
 use crate::{
-    reference::{validate_host, DEFAULT_REGISTRY},
+    reference::{validate_host, validate_namespace, DEFAULT_REGISTRY, OFFICIAL_NAMESPACE},
     Error, Result,
 };
 use serde::{Deserialize, Serialize};
 use std::{
+    fmt,
     io::Write,
     path::{Path, PathBuf},
 };
@@ -32,7 +56,8 @@ pub const DEFAULT_REGISTRY_ENV: &str = "UNEMU_REGISTRY";
 pub struct RegistryEntry {
     /// `name[:port]`, exactly as it appears in references.
     pub host: String,
-    /// Only a private registry may receive images that contain user-supplied blobs.
+    /// The whole registry is private: it may receive images that contain
+    /// user-supplied blobs. Used only while `namespaces` is empty.
     #[serde(default)]
     pub private: bool,
     /// Account name for the credential store; the password is looked up separately.
@@ -41,6 +66,82 @@ pub struct RegistryEntry {
     /// Plain HTTP for a registry on a loopback address, such as a local test
     /// registry. TLS stays mandatory for every other host.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub plain_http: bool,
+    /// The namespaces pushes may go to, each public or private; empty means
+    /// the whole registry, as `private` says.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub namespaces: Vec<Namespace>,
+}
+
+/// One namespace of a registry entry: the first path component of the
+/// repositories it holds, such as `private` for `private/games`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Namespace {
+    pub name: String,
+    /// Only a private namespace may receive images that contain
+    /// user-supplied blobs.
+    #[serde(default)]
+    pub private: bool,
+}
+
+/// How an entry's privacy applies to one repository.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Scope {
+    /// The entry lists no namespaces; its own flag covers every repository.
+    WholeRegistry { private: bool },
+    /// The repository is in this listed namespace.
+    Namespace { name: String, private: bool },
+    /// The entry lists namespaces and the repository is in none of them;
+    /// `namespace` is its first path component, `None` for a repository
+    /// whose name has a single component.
+    Unlisted { namespace: Option<String> },
+}
+
+impl Scope {
+    /// The entry lets user-supplied blobs go here, subject to the guard's
+    /// other rules (the official namespace and the anonymous-read probe).
+    pub fn private(&self) -> bool {
+        match self {
+            Self::WholeRegistry { private } | Self::Namespace { private, .. } => *private,
+            Self::Unlisted { .. } => false,
+        }
+    }
+}
+
+/// The scope as the push checks say it, after "HOST is configured; ".
+impl fmt::Display for Scope {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::WholeRegistry { private: true } => {
+                f.write_str("the whole registry is marked private")
+            }
+            Self::WholeRegistry { private: false } => f.write_str("the whole registry is public"),
+            Self::Namespace {
+                name,
+                private: true,
+            } => write!(f, "{name}/ is marked private"),
+            Self::Namespace {
+                name,
+                private: false,
+            } => write!(f, "{name}/ is public"),
+            Self::Unlisted {
+                namespace: Some(name),
+            } => write!(f, "{name}/ is not a configured namespace on this registry"),
+            Self::Unlisted { namespace: None } => f.write_str(
+                "the repository is in none of the namespaces configured on this registry",
+            ),
+        }
+    }
+}
+
+/// The settings the Add and Edit dialog and `image registry set` change; the
+/// host and the user stay as they are.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct EntrySettings {
+    /// The whole-registry flag; false whenever `namespaces` is not empty.
+    pub private: bool,
+    pub namespaces: Vec<Namespace>,
     pub plain_http: bool,
 }
 
@@ -53,6 +154,37 @@ impl RegistryEntry {
             private: false,
             user: None,
             plain_http: false,
+            namespaces: Vec::new(),
+        }
+    }
+
+    /// Where `repository` falls on this registry. A repository is in a
+    /// namespace only below it: `private/games` is in `private`, a repository
+    /// named just `private` is not. The official namespace is never private,
+    /// whatever the entry says.
+    pub fn scope(&self, repository: &str) -> Scope {
+        if self.namespaces.is_empty() {
+            return Scope::WholeRegistry {
+                private: self.private,
+            };
+        }
+        let first = repository.split_once('/').map(|(first, _)| first);
+        match first.and_then(|name| self.namespaces.iter().find(|n| n.name == name)) {
+            Some(namespace) => Scope::Namespace {
+                name: namespace.name.clone(),
+                private: namespace.private && namespace.name != OFFICIAL_NAMESPACE,
+            },
+            None => Scope::Unlisted {
+                namespace: first.map(str::to_owned),
+            },
+        }
+    }
+
+    pub fn settings(&self) -> EntrySettings {
+        EntrySettings {
+            private: self.private,
+            namespaces: self.namespaces.clone(),
+            plain_http: self.plain_http,
         }
     }
 }
@@ -124,6 +256,7 @@ impl RegistryConfig {
             if let Some(user) = &entry.user {
                 validate_user(user)?;
             }
+            validate_namespaces(&entry.host, entry.private, &entry.namespaces)?;
         }
         Ok(())
     }
@@ -197,43 +330,106 @@ pub fn validate_registry_host(input: &str) -> Result<String> {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EntryEdit {
     pub host: String,
-    /// `(private, plain_http)` as the dialog showed them; `None` adds an entry.
-    pub started: Option<(bool, bool)>,
-    pub private: bool,
-    pub plain_http: bool,
-    /// The user confirmed that a private registry becomes public.
+    /// The settings as the dialog showed them; `None` adds an entry.
+    pub started: Option<EntrySettings>,
+    pub settings: EntrySettings,
+    /// The user confirmed that what was private becomes public.
     pub confirmed_public: bool,
+}
+
+/// What an edit makes public that was private before.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Exposed {
+    /// The registry was private as a whole and is public as a whole now.
+    WholeRegistry,
+    /// These namespaces were private, listed or as part of a private
+    /// registry, and are public now.
+    Namespaces(Vec<String>),
+}
+
+impl Exposed {
+    /// `host` or `host/name/`, joined, as a confirmation names them.
+    pub fn describe(&self, host: &str) -> String {
+        match self {
+            Self::WholeRegistry => host.to_owned(),
+            Self::Namespaces(names) => names
+                .iter()
+                .map(|name| format!("{host}/{name}/"))
+                .collect::<Vec<_>>()
+                .join(", "),
+        }
+    }
+}
+
+/// Whether going from `current` to `next` makes anything public that was
+/// private. A namespace that becomes unlisted is not public: pushes into it
+/// are refused. The official namespace never counts, because it is never
+/// private.
+pub fn made_public(current: &EntrySettings, next: &EntrySettings) -> Option<Exposed> {
+    let public_in_next = |name: &str| {
+        if next.namespaces.is_empty() {
+            !next.private
+        } else {
+            next.namespaces.iter().any(|n| n.name == name && !n.private)
+        }
+    };
+    let names: Vec<String> = if current.namespaces.is_empty() {
+        if !current.private {
+            return None;
+        }
+        if next.namespaces.is_empty() {
+            return (!next.private).then_some(Exposed::WholeRegistry);
+        }
+        next.namespaces
+            .iter()
+            .filter(|n| !n.private && n.name != OFFICIAL_NAMESPACE)
+            .map(|n| n.name.clone())
+            .collect()
+    } else {
+        current
+            .namespaces
+            .iter()
+            .filter(|n| n.private && n.name != OFFICIAL_NAMESPACE && public_in_next(&n.name))
+            .map(|n| n.name.clone())
+            .collect()
+    };
+    (!names.is_empty()).then_some(Exposed::Namespaces(names))
 }
 
 /// Apply `edit` to the document as it is now, keeping every other key, the
 /// entry's user included. The edit is refused when the entry changed since
 /// the dialog read it, so a stale dialog never re-marks or un-marks a
-/// registry; a private registry becomes public only with confirmation. Only
-/// the keys the user changed are written. A refused edit leaves `table` as it was.
+/// registry or a namespace; what was private becomes public only with
+/// confirmation. Only the keys the user changed are written. A refused edit
+/// leaves `table` as it was.
 pub fn apply_entry_edit(table: &mut toml::Table, edit: &EntryEdit) -> Result<()> {
     let host = edit.host.as_str();
     validate_host(host)?;
     let now = RegistryConfig::from_table(table)?;
     let listed = now.registries.iter().find(|entry| entry.host == host);
     let current = listed
-        .map(|entry| (entry.private, entry.plain_http))
-        .or_else(|| (host == DEFAULT_REGISTRY).then_some((false, false)));
-    match edit.started {
+        .map(RegistryEntry::settings)
+        .or_else(|| (host == DEFAULT_REGISTRY).then(EntrySettings::default));
+    match &edit.started {
         None if listed.is_some() => {
             return Err(config(format!("{host} is already in the list")));
         }
-        Some(started) if current != Some(started) => {
+        Some(started) if current.as_ref() != Some(started) => {
             return Err(config(format!(
                 "{host} changed meanwhile; reopen it to see its current settings"
             )));
         }
         _ => {}
     }
-    let (was_private, was_plain_http) = current.unwrap_or((false, false));
-    if was_private && !edit.private && !edit.confirmed_public {
-        return Err(config(format!(
-            "making {host} public needs the user's confirmation"
-        )));
+    let was = current.unwrap_or_default();
+    let next = &edit.settings;
+    if let Some(exposed) = made_public(&was, next) {
+        if !edit.confirmed_public {
+            return Err(config(format!(
+                "making {} public needs the user's confirmation",
+                exposed.describe(host)
+            )));
+        }
     }
     let adding = listed.is_none();
     let mut edited = table.clone();
@@ -254,11 +450,18 @@ pub fn apply_entry_edit(table: &mut toml::Table, edit: &EntryEdit) -> Result<()>
     let entry = registries[index]
         .as_table_mut()
         .ok_or_else(|| config("registries must be an array of tables"))?;
-    if adding || edit.private != was_private {
-        entry.insert("private".into(), edit.private.into());
+    if adding || next.private != was.private {
+        entry.insert("private".into(), next.private.into());
     }
-    if adding || edit.plain_http != was_plain_http {
-        if edit.plain_http {
+    if adding || next.namespaces != was.namespaces {
+        if next.namespaces.is_empty() {
+            entry.remove("namespaces");
+        } else {
+            entry.insert("namespaces".into(), namespaces_value(&next.namespaces));
+        }
+    }
+    if adding || next.plain_http != was.plain_http {
+        if next.plain_http {
             entry.insert("plain_http".into(), true.into());
         } else {
             entry.remove("plain_http");
@@ -266,6 +469,158 @@ pub fn apply_entry_edit(table: &mut toml::Table, edit: &EntryEdit) -> Result<()>
     }
     RegistryConfig::from_table(&edited)?;
     *table = edited;
+    Ok(())
+}
+
+/// Set how private `host` is, as `image registry set` does: the whole
+/// registry private or public when `namespaces` is empty, otherwise exactly
+/// these namespaces. The entry's user, its plain-HTTP opt-in and every other
+/// key stay; an unlisted host gets an entry. The command itself is the
+/// confirmation the dialog asks for when something private becomes public.
+pub fn set_privacy(
+    table: &mut toml::Table,
+    host: &str,
+    private: bool,
+    namespaces: Vec<Namespace>,
+) -> Result<()> {
+    if private && !namespaces.is_empty() {
+        return Err(config(
+            "a registry that lists namespaces is private per namespace: mark each one NAME:private",
+        ));
+    }
+    let current = RegistryConfig::from_table(table)?
+        .entry(host)
+        .map(|entry| entry.settings());
+    let plain_http = current.as_ref().is_some_and(|c| c.plain_http);
+    apply_entry_edit(
+        table,
+        &EntryEdit {
+            host: host.into(),
+            started: current,
+            settings: EntrySettings {
+                private,
+                namespaces,
+                plain_http,
+            },
+            confirmed_public: true,
+        },
+    )
+}
+
+/// One namespace as typed: `NAME`, optionally with a trailing `/`, and an
+/// optional `:private` or `:public`; without one it is private when `private`
+/// is set. The official namespace stays public without a suffix, because it
+/// is never private, and `unemu:private` is refused.
+pub fn parse_namespace(item: &str, private: bool) -> Result<Namespace> {
+    let item = item.trim();
+    let (name, marked) = match item.rsplit_once(':') {
+        Some((name, "private")) => (name, Some(true)),
+        Some((name, "public")) => (name, Some(false)),
+        Some(_) => {
+            return Err(config(format!(
+                "namespace {item}: write NAME, NAME:private or NAME:public"
+            )))
+        }
+        None => (item, None),
+    };
+    let name = name.trim().trim_end_matches('/');
+    validate_namespace(name).map_err(|_| {
+        config(format!(
+            "namespace {name:?}: use lowercase letters and digits, separated by . _ or -, and no further /"
+        ))
+    })?;
+    let official = name == OFFICIAL_NAMESPACE;
+    if official && marked == Some(true) {
+        return Err(config(official_never_private()));
+    }
+    Ok(Namespace {
+        name: name.to_owned(),
+        private: marked.unwrap_or(private && !official),
+    })
+}
+
+/// A comma-separated namespaces list, as the Add and Edit dialog's field holds
+/// it, each item read by [`parse_namespace`]. Empty means the whole registry.
+pub fn parse_namespaces(text: &str, private: bool) -> Result<Vec<Namespace>> {
+    let mut namespaces: Vec<Namespace> = Vec::new();
+    for item in text.split(',').filter(|item| !item.trim().is_empty()) {
+        let namespace = parse_namespace(item, private)?;
+        if namespaces.iter().any(|n| n.name == namespace.name) {
+            return Err(config(format!(
+                "namespace {}/ is listed twice",
+                namespace.name
+            )));
+        }
+        namespaces.push(namespace);
+    }
+    Ok(namespaces)
+}
+
+/// `namespaces` written for the dialog's field, so that [`parse_namespaces`]
+/// with the same `private` reads them back: a suffix only where a namespace
+/// differs from `private`, never on the official namespace.
+pub fn namespaces_field(namespaces: &[Namespace], private: bool) -> String {
+    namespaces
+        .iter()
+        .map(|n| {
+            if n.private == private || n.name == OFFICIAL_NAMESPACE {
+                n.name.clone()
+            } else if n.private {
+                format!("{}:private", n.name)
+            } else {
+                format!("{}:public", n.name)
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn namespaces_value(namespaces: &[Namespace]) -> toml::Value {
+    toml::Value::Array(
+        namespaces
+            .iter()
+            .map(|n| {
+                toml::Value::Table(toml::Table::from_iter([
+                    ("name".to_owned(), toml::Value::from(n.name.as_str())),
+                    ("private".to_owned(), toml::Value::from(n.private)),
+                ]))
+            })
+            .collect(),
+    )
+}
+
+fn official_never_private() -> String {
+    format!(
+        "{OFFICIAL_NAMESPACE}/ is the official namespace and is never private: it takes open content only"
+    )
+}
+
+/// The namespaces of the entry for `host`: valid, distinct names, the official
+/// one never private, and no whole-registry flag beside them.
+fn validate_namespaces(host: &str, private: bool, namespaces: &[Namespace]) -> Result<()> {
+    if private && !namespaces.is_empty() {
+        return Err(config(format!(
+            "{host} lists namespaces, so each namespace is marked private on its own; remove private = true from the entry"
+        )));
+    }
+    let mut seen = std::collections::BTreeSet::new();
+    for namespace in namespaces {
+        validate_namespace(&namespace.name).map_err(|_| {
+            config(format!(
+                "{host}: invalid namespace name {:?}",
+                namespace.name
+            ))
+        })?;
+        if !seen.insert(namespace.name.as_str()) {
+            return Err(config(format!(
+                "{host}: namespace {}/ is listed twice",
+                namespace.name
+            )));
+        }
+        if namespace.private && namespace.name == OFFICIAL_NAMESPACE {
+            return Err(config(format!("{host}: {}", official_never_private())));
+        }
+    }
     Ok(())
 }
 
@@ -506,7 +861,8 @@ mod tests {
                 host: "a.example".into(),
                 private: true,
                 user: Some("me".into()),
-                plain_http: false
+                plain_http: false,
+                namespaces: Vec::new(),
             }
         );
         assert!(!config.entry("b.example").unwrap().private);
@@ -552,11 +908,15 @@ mod tests {
         private: bool,
         plain_http: bool,
     ) -> EntryEdit {
+        let settings = |(private, plain_http)| EntrySettings {
+            private,
+            namespaces: Vec::new(),
+            plain_http,
+        };
         EntryEdit {
             host: host.into(),
-            started,
-            private,
-            plain_http,
+            started: started.map(settings),
+            settings: settings((private, plain_http)),
             confirmed_public: false,
         }
     }
@@ -671,5 +1031,265 @@ mod tests {
             .count();
         assert_eq!(leftovers, 0);
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    const NAMESPACED: &str = r#"
+        rom_dirs = []
+        [[registries]]
+        host = "registry.unemu.dev"
+        user = "maintainer"
+        namespaces = [{ name = "unemu", private = false }, { name = "private", private = true }]
+    "#;
+
+    fn namespace(name: &str, private: bool) -> Namespace {
+        Namespace {
+            name: name.into(),
+            private,
+        }
+    }
+
+    #[test]
+    fn old_and_namespaced_entries_read_and_write_back_unchanged() {
+        let old = "[[registries]]\nhost = \"nas.example:5000\"\nprivate = true\n";
+        let nas = RegistryConfig::from_toml(old)
+            .unwrap()
+            .entry("nas.example:5000")
+            .unwrap();
+        assert!(nas.namespaces.is_empty());
+        for repository in ["private/games", "anything/else", "games"] {
+            assert_eq!(
+                nas.scope(repository),
+                Scope::WholeRegistry { private: true },
+                "{repository}"
+            );
+        }
+
+        let config = RegistryConfig::from_toml(NAMESPACED).unwrap();
+        let entry = config.entry(DEFAULT_REGISTRY).unwrap();
+        assert_eq!(
+            entry.namespaces,
+            [namespace("unemu", false), namespace("private", true)]
+        );
+        assert!(!entry.private);
+        assert_eq!(
+            entry.scope("private/ibm-at-games"),
+            Scope::Namespace {
+                name: "private".into(),
+                private: true
+            }
+        );
+        assert_eq!(entry.scope("unemu/open-at").to_string(), "unemu/ is public");
+        assert_eq!(
+            entry.scope("owner/game"),
+            Scope::Unlisted {
+                namespace: Some("owner".into())
+            }
+        );
+        // A repository named like a namespace is not inside it.
+        assert_eq!(entry.scope("private"), Scope::Unlisted { namespace: None });
+        assert_eq!(
+            entry.scope("private/a").to_string(),
+            "private/ is marked private"
+        );
+
+        // The array-of-tables spelling is the same document.
+        let tables = "[[registries]]\nhost = \"registry.unemu.dev\"\nuser = \"maintainer\"\n[[registries.namespaces]]\nname = \"unemu\"\n[[registries.namespaces]]\nname = \"private\"\nprivate = true\n";
+        assert_eq!(RegistryConfig::from_toml(tables).unwrap(), config);
+
+        // Writing keeps both forms as they were read.
+        let dir =
+            std::env::temp_dir().join(format!("image-registry-namespaces-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("preferences.toml");
+        for text in [old, NAMESPACED] {
+            std::fs::write(&path, text).unwrap();
+            let before = RegistryConfig::from_toml(text).unwrap();
+            let written =
+                update_preferences(&path, |table| set_user(table, "other.example", "me")).unwrap();
+            let mut after = RegistryConfig::from_table(&written).unwrap();
+            after.registries.retain(|e| e.host != "other.example");
+            assert_eq!(after, before, "{text}");
+            assert_eq!(
+                RegistryConfig::from_table(&read_preferences(&path).unwrap()).unwrap(),
+                RegistryConfig::from_table(&written).unwrap()
+            );
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn the_official_namespace_marked_private_and_bad_namespaces_are_refused() {
+        let entry = |namespaces: &str, extra: &str| {
+            format!("[[registries]]\nhost = \"a.example\"\n{extra}namespaces = [{namespaces}]\n")
+        };
+        let official =
+            RegistryConfig::from_toml(&entry("{ name = \"unemu\", private = true }", ""))
+                .unwrap_err()
+                .to_string();
+        assert!(official.contains("never private"), "{official}");
+        for text in [
+            entry("{ name = \"private\", private = true }", "private = true\n"),
+            entry("{ name = \"a\" }, { name = \"a\", private = true }", ""),
+            entry("{ name = \"Private\" }", ""),
+            entry("{ name = \"a/b\" }", ""),
+            entry("{ name = \"*\" }", ""),
+            entry("{ name = \"\" }", ""),
+            entry("{ name = \"a\", public = true }", ""),
+        ] {
+            assert!(RegistryConfig::from_toml(&text).is_err(), "{text}");
+        }
+        // An empty list is the whole registry, as before.
+        let whole = RegistryConfig::from_toml(&entry("", "private = true\n")).unwrap();
+        assert_eq!(
+            whole.entry("a.example").unwrap().scope("x/y"),
+            Scope::WholeRegistry { private: true }
+        );
+    }
+
+    #[test]
+    fn the_namespaces_field_reads_back_what_it_shows() {
+        assert_eq!(parse_namespaces(" ", true).unwrap(), []);
+        assert_eq!(
+            parse_namespaces("unemu, private/", true).unwrap(),
+            [namespace("unemu", false), namespace("private", true)],
+            "the official namespace stays public"
+        );
+        assert_eq!(
+            parse_namespaces("unemu,private:private,games", false).unwrap(),
+            [
+                namespace("unemu", false),
+                namespace("private", true),
+                namespace("games", false)
+            ]
+        );
+        for text in ["unemu:private", "a, a:private", "a/b", "a:secret", "UPPER"] {
+            assert!(parse_namespaces(text, true).is_err(), "{text}");
+        }
+        assert!(parse_namespace("unemu:private", false)
+            .unwrap_err()
+            .to_string()
+            .contains("never private"));
+        let mixed = [
+            namespace("unemu", false),
+            namespace("private", true),
+            namespace("games", false),
+        ];
+        for private in [true, false] {
+            let field = namespaces_field(&mixed, private);
+            assert_eq!(parse_namespaces(&field, private).unwrap(), mixed, "{field}");
+        }
+        assert_eq!(
+            namespaces_field(&mixed, true),
+            "unemu, private, games:public"
+        );
+    }
+
+    #[test]
+    fn namespace_edits_ask_before_anything_private_becomes_public() {
+        let settings = |private: bool, namespaces: &[Namespace]| EntrySettings {
+            private,
+            namespaces: namespaces.to_vec(),
+            plain_http: false,
+        };
+        let split = [namespace("unemu", false), namespace("private", true)];
+        let whole_private = settings(true, &[]);
+        let whole_public = settings(false, &[]);
+        assert_eq!(
+            made_public(&whole_private, &whole_public),
+            Some(Exposed::WholeRegistry)
+        );
+        assert_eq!(made_public(&whole_private, &settings(false, &split)), None);
+        assert_eq!(
+            made_public(&settings(false, &split), &whole_public),
+            Some(Exposed::Namespaces(vec!["private".into()]))
+        );
+        assert_eq!(
+            made_public(
+                &settings(false, &split),
+                &settings(false, &[namespace("private", false)])
+            )
+            .unwrap()
+            .describe("h.example"),
+            "h.example/private/"
+        );
+        assert_eq!(
+            made_public(&settings(false, &split), &settings(false, &split[..1])),
+            None,
+            "an unlisted namespace refuses pushes, so it is not public"
+        );
+        assert_eq!(
+            made_public(
+                &whole_private,
+                &settings(false, &[namespace("games", false)])
+            ),
+            Some(Exposed::Namespaces(vec!["games".into()]))
+        );
+
+        let mut table: toml::Table = NAMESPACED.parse().unwrap();
+        let started = Some(settings(false, &split));
+        let mut edit = EntryEdit {
+            host: DEFAULT_REGISTRY.into(),
+            started: started.clone(),
+            settings: settings(
+                false,
+                &[namespace("unemu", false), namespace("private", false)],
+            ),
+            confirmed_public: false,
+        };
+        let before = table.clone();
+        let refused = apply_entry_edit(&mut table, &edit).unwrap_err().to_string();
+        assert!(
+            refused.contains("registry.unemu.dev/private/ public needs the user's confirmation"),
+            "{refused}"
+        );
+        assert_eq!(table, before);
+        edit.confirmed_public = true;
+        apply_entry_edit(&mut table, &edit).unwrap();
+        let entry = RegistryConfig::from_table(&table)
+            .unwrap()
+            .entry(DEFAULT_REGISTRY)
+            .unwrap();
+        assert!(!entry.scope("private/x").private());
+        assert_eq!(entry.user.as_deref(), Some("maintainer"));
+        assert!(
+            table["registries"][0].get("private").is_none(),
+            "an unchanged flag is not written"
+        );
+        // A dialog that still shows the old namespaces is stale.
+        edit.settings = settings(false, &split);
+        edit.started = started;
+        assert!(apply_entry_edit(&mut table, &edit)
+            .unwrap_err()
+            .to_string()
+            .contains("changed meanwhile"));
+    }
+
+    #[test]
+    fn set_privacy_lists_namespaces_or_marks_the_whole_registry() {
+        let mut table: toml::Table = "rom_dirs = []\n".parse().unwrap();
+        set_user(&mut table, "nas.example:5000", "me").unwrap();
+        let split = vec![namespace("unemu", false), namespace("private", true)];
+        set_privacy(&mut table, DEFAULT_REGISTRY, false, split.clone()).unwrap();
+        set_privacy(&mut table, "nas.example:5000", true, Vec::new()).unwrap();
+        let config = RegistryConfig::from_table(&table).unwrap();
+        let default = config.entry(DEFAULT_REGISTRY).unwrap();
+        assert_eq!(default.namespaces, split);
+        assert!(default.scope("private/a").private() && !default.scope("unemu/a").private());
+        let nas = config.entry("nas.example:5000").unwrap();
+        assert!(nas.private && nas.namespaces.is_empty());
+        assert_eq!(nas.user.as_deref(), Some("me"));
+        // Back to one flag for the whole registry: the list goes away.
+        set_privacy(&mut table, DEFAULT_REGISTRY, true, Vec::new()).unwrap();
+        assert!(table["registries"][1].get("namespaces").is_none());
+        assert_eq!(
+            RegistryConfig::from_table(&table)
+                .unwrap()
+                .entry(DEFAULT_REGISTRY)
+                .unwrap()
+                .scope("private/a"),
+            Scope::WholeRegistry { private: true }
+        );
+        assert!(set_privacy(&mut table, DEFAULT_REGISTRY, true, split).is_err());
+        assert_eq!(table["rom_dirs"].as_array().map(Vec::len), Some(0));
     }
 }

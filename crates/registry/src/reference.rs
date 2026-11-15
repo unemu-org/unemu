@@ -239,6 +239,15 @@ fn validate_repository(repository: &str) -> Result<()> {
     Ok(())
 }
 
+/// A namespace is one repository path component, the first one of the
+/// repositories it holds.
+pub(crate) fn validate_namespace(name: &str) -> Result<()> {
+    if name.contains('/') {
+        return Err(bad(format!("invalid namespace name: {name}")));
+    }
+    validate_repository(name)
+}
+
 pub(crate) fn validate_tag(tag: &str) -> Result<()> {
     if tag.is_empty()
         || tag.len() > 128

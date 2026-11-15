@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Registry push, pull, listing and login commands; machine-images §5.1.
-//! The registries list comes from the shared preferences file (or `--config`);
-//! secrets come from the environment or the host credential store only. `image
-//! login` goes through the same accounts functions and credential store as the
-//! desktop shell's Registries page, so a login in one is visible in the other.
+//! Registry push, pull, listing, login and privacy commands; machine-images
+//! §5.1. The registries list comes from the shared preferences file (or
+//! `--config`); secrets come from the environment or the host credential store
+//! only. `image login` goes through the same accounts functions and credential
+//! store as the desktop shell's Registries page, so a login in one is visible
+//! in the other, and `image registry set` writes the same keys as the page's
+//! Add and Edit dialog.
 
 use anyhow::Context;
 use image_registry::{
@@ -51,6 +53,14 @@ pub enum RegistryCommand {
         user: String,
         config: Option<PathBuf>,
     },
+    /// `image registry set`: the whole registry private or public, or the
+    /// listed namespaces, each `NAME`, `NAME:private` or `NAME:public`.
+    Set {
+        host: String,
+        private: bool,
+        namespaces: Vec<String>,
+        config: Option<PathBuf>,
+    },
 }
 
 /// Options shared by every networked command.
@@ -64,13 +74,16 @@ pub fn parse(action: &str, args: &[OsString]) -> Result<RegistryCommand, &'stati
     let mut positional = Vec::new();
     let (mut store, mut tag, mut user) = (None, None, None);
     let mut common = Common::default();
-    let (mut allow_move, mut dry_run, mut create) = (false, false, false);
+    let (mut allow_move, mut dry_run, mut create, mut private) = (false, false, false, false);
+    let mut namespaces = Vec::new();
+    let transfer = matches!(action, "push" | "pull");
     let mut args = args.iter();
     while let Some(arg) = args.next() {
         let flag = match arg.to_str() {
             Some("--move") if action == "push" && !allow_move => &mut allow_move,
             Some("--dry-run") if action == "push" && !dry_run => &mut dry_run,
             Some("--create") if action == "pull" && !create => &mut create,
+            Some("--private") if action == "registry" && !private => &mut private,
             Some(text) if text.starts_with("--") => {
                 let value = args
                     .next()
@@ -78,12 +91,15 @@ pub fn parse(action: &str, args: &[OsString]) -> Result<RegistryCommand, &'stati
                     .ok_or("missing registry option value")?;
                 let text_value = value.to_str().ok_or("invalid registry option value")?;
                 match text {
-                    "--store" if action != "remote" && action != "login" && store.is_none() => {
-                        store = Some(PathBuf::from(value))
-                    }
-                    "--registry" if action != "login" && common.registry.is_none() => {
+                    "--store" if transfer && store.is_none() => store = Some(PathBuf::from(value)),
+                    "--registry"
+                        if action != "login"
+                            && action != "registry"
+                            && common.registry.is_none() =>
+                    {
                         common.registry = Some(text_value.to_owned())
                     }
+                    "--namespace" if action == "registry" => namespaces.push(text_value.to_owned()),
                     "--config" if common.config.is_none() => {
                         common.config = Some(PathBuf::from(value))
                     }
@@ -149,6 +165,20 @@ pub fn parse(action: &str, args: &[OsString]) -> Result<RegistryCommand, &'stati
                 config: common.config,
             })
         }
+        "registry" => match <[String; 2]>::try_from(positional) {
+            Ok([set, host]) if set == "set" => {
+                if private && !namespaces.is_empty() {
+                    return Err("--private marks the whole registry; mark a listed namespace NAME:private instead");
+                }
+                Ok(RegistryCommand::Set {
+                    host,
+                    private,
+                    namespaces,
+                    config: common.config,
+                })
+            }
+            _ => Err("expected image registry set HOST"),
+        },
         _ => Err("invalid registry command"),
     }
 }
@@ -346,6 +376,9 @@ fn execute_with(
             if dry_run {
                 writeln!(output, "target:{}", plan.target())?;
                 writeln!(output, "image:{}", plan.image().digest)?;
+                if let Some(scope) = plan.scope() {
+                    writeln!(output, "scope:{scope}")?;
+                }
                 for entry in plan.closure() {
                     writeln!(output, "{entry}")?;
                 }
@@ -454,6 +487,56 @@ fn execute_with(
             };
             log_in(&path, &host, &user, &*secrets, read_secret, output)?;
         }
+        RegistryCommand::Set {
+            host,
+            private,
+            namespaces,
+            config,
+        } => {
+            let path = match config {
+                Some(path) => path,
+                None => preferences_path()?,
+            };
+            set_privacy(&path, &host, private, &namespaces, output)?;
+        }
+    }
+    Ok(())
+}
+
+/// Write how private `host` is under the preferences lock, keeping its user
+/// and every other key, then print what the entry says now: one `registry`
+/// line, then a `namespace` line for each listed namespace.
+fn set_privacy(
+    path: &Path,
+    host: &str,
+    private: bool,
+    namespaces: &[String],
+    output: &mut impl Write,
+) -> anyhow::Result<()> {
+    let host = config::validate_registry_host(host)?;
+    let namespaces = namespaces
+        .iter()
+        .map(|item| config::parse_namespace(item, false))
+        .collect::<image_registry::Result<Vec<_>>>()?;
+    let table = config::update_preferences(path, |table| {
+        config::set_privacy(table, &host, private, namespaces)
+    })?;
+    let entry = RegistryConfig::from_table(&table)?
+        .entry(&host)
+        .context("the registry entry was not written")?;
+    let whole = match (entry.namespaces.is_empty(), entry.private) {
+        (false, _) => "per namespace",
+        (true, true) => "private",
+        (true, false) => "public",
+    };
+    writeln!(output, "registry\t{host}\t{whole}")?;
+    for namespace in &entry.namespaces {
+        let mark = if namespace.private {
+            "private"
+        } else {
+            "public"
+        };
+        writeln!(output, "namespace\t{host}/{}/\t{mark}", namespace.name)?;
     }
     Ok(())
 }

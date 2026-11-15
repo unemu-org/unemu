@@ -151,6 +151,7 @@ impl MockRegistry {
             private,
             user: None,
             plain_http: true,
+            namespaces: Vec::new(),
         }
     }
 

@@ -77,7 +77,7 @@ pub fn parse(args: &[OsString]) -> Result<ImageCommand, &'static str> {
     if args.first().is_some_and(|a| a == "template") {
         return template::parse(&args[1..]).map(ImageCommand::Template);
     }
-    if let Some(action @ ("push" | "pull" | "remote" | "login")) =
+    if let Some(action @ ("push" | "pull" | "remote" | "login" | "registry")) =
         args.first().and_then(|a| a.to_str())
     {
         return registry::parse(action, &args[1..]).map(ImageCommand::Registry);

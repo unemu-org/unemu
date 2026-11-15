@@ -41,6 +41,7 @@ const USAGE: &str = "usage: unemupc98 --boot (Real16 timer demo)
        unemupc98 image pull REFERENCE --store DIR [--tag NAME:TAG] [--create] [--registry HOST] [--config FILE]
        unemupc98 image remote ls REPOSITORY|REGISTRY [--registry HOST] [--config FILE]
        unemupc98 image login HOST --user NAME [--config FILE]
+       unemupc98 image registry set HOST [--private | --namespace NAME[:private|:public]...] [--config FILE]
        unemupc98 image template build --store DIR [--vendor DIR] [--dry-run]
        unemupc98 media create floppy --type 1.44M|1.2M|720K|360K OUT [--format] [--label NAME] [--force]
        unemupc98 media create hd (--chs C/H/S | --size SIZE[MiB|GiB]) OUT [--force]

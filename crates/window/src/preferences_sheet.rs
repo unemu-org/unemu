@@ -7,7 +7,7 @@
 use crate::registries_model::{
     namespaces_text, secret_hint, store_description, Mark, RegistriesPage, SignIn, TestState,
 };
-use image_registry::credential_store::{CredentialStore, StoreKind};
+use image_registry::credential_store::CredentialStore;
 use std::{path::PathBuf, sync::Arc};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -196,46 +196,17 @@ fn registries_page(ui: &mut egui::Ui, page: &mut RegistriesPage) {
                                 ui.strong(heading);
                             }
                             ui.end_row();
-                            let kind = page.store_kind();
-                            for (index, row) in page.rows.iter().enumerate() {
-                                let selected = index == page.selected;
-                                let mut name = row.entry.host.clone();
-                                if row.entry.host == page.default_host {
-                                    name.push_str("  [default]");
+                            for line in page.table() {
+                                if ui
+                                    .selectable_label(line.row == page.selected, line.name)
+                                    .clicked()
+                                {
+                                    clicked = Some(line.row);
                                 }
-                                if !row.listed {
-                                    name.push_str("  (built in)");
-                                }
-                                if ui.selectable_label(selected, name).clicked() {
-                                    clicked = Some(index);
-                                }
-                                ui.label(row.entry.user.as_deref().unwrap_or("—"));
-                                ui.label(match &row.sign_in {
-                                    SignIn::SignedIn if kind == StoreKind::Session => {
-                                        "● Signed in · this session".to_owned()
-                                    }
-                                    SignIn::SignedIn => "● Signed in".to_owned(),
-                                    SignIn::SignedOut => "○ Signed out".to_owned(),
-                                    SignIn::Checking => "… Checking…".to_owned(),
-                                    SignIn::Unknown(_) => "? Unknown".to_owned(),
-                                });
-                                ui.label(if row.entry.private { "Yes" } else { "No" });
+                                ui.label(line.user);
+                                ui.label(line.signed_in);
+                                ui.label(line.private);
                                 ui.end_row();
-                                if row.entry.private {
-                                    if ui
-                                        .selectable_label(
-                                            selected,
-                                            "    unemu/ — official namespace",
-                                        )
-                                        .clicked()
-                                    {
-                                        clicked = Some(index);
-                                    }
-                                    ui.label("");
-                                    ui.label("");
-                                    ui.label("No — open only");
-                                    ui.end_row();
-                                }
                             }
                         });
                 });
@@ -386,10 +357,27 @@ fn editor_modal(ctx: &egui::Context, page: &mut RegistriesPage) {
                 });
                 ui.end_row();
             });
+        egui::Grid::new("registry-editor-namespaces")
+            .num_columns(2)
+            .spacing([10.0, 6.0])
+            .show(ui, |ui| {
+                ui.label("Namespaces");
+                ui.vertical(|ui| {
+                    ui.add(
+                        egui::TextEdit::singleline(&mut editor.namespaces)
+                            .hint_text("empty = the whole registry"),
+                    );
+                    small(
+                        ui,
+                        "Comma-separated, such as unemu, private. The box below marks each listed namespace private; NAME:public or NAME:private sets one on its own. unemu/ is always public, open content only. A push into a namespace not listed here is refused.",
+                    );
+                });
+                ui.end_row();
+            });
         ui.checkbox(&mut editor.private, "Private registry");
         small(
             ui,
-            "Images with user-supplied content may be pushed only to a private registry, never into unemu/. Before the first such push, anonymous access is probed and must be refused. There is no override.",
+            "Images with user-supplied content may be pushed only to a private registry or namespace, never into unemu/. Before the first such push, anonymous access is probed and must be refused. There is no override.",
         );
         ui.checkbox(
             &mut editor.plain_http,
@@ -506,11 +494,11 @@ fn confirm_modal(ctx: &egui::Context, page: &mut RegistriesPage) {
     let mut answer = None;
     egui::Modal::new(egui::Id::unique("registry-confirm-public")).show(ctx, |ui| {
         ui.set_width(460.0);
-        ui.heading(format!("Make {} public?", confirm.host));
+        ui.heading(format!("Make {} public?", confirm.exposed));
         ui.add(
             egui::Label::new(format!(
-                "Images with user-supplied content can then no longer be pushed to {}. Only a registry marked private may receive them; there is no override.",
-                confirm.host
+                "Images with user-supplied content can then no longer be pushed to {}. Only a registry or namespace marked private may receive them; there is no override.",
+                confirm.exposed
             ))
             .wrap(),
         );
@@ -621,7 +609,8 @@ mod tests {
         dialog.registries.open_edit();
         dialog.registries.confirm = Some(ConfirmPublic {
             host: "nas.example".into(),
-            plain_http: false,
+            exposed: "nas.example".into(),
+            settings: Default::default(),
         });
         let _ = frame(&mut dialog, vec![]);
         let (_, output) = frame(&mut dialog, vec![]);
@@ -637,6 +626,52 @@ mod tests {
         let _ = frame(&mut dialog, vec![]);
         let (action, _) = frame(&mut dialog, escape());
         assert!(matches!(action, Action::Close));
+    }
+
+    #[test]
+    fn namespaces_render_as_child_rows_and_the_add_dialog_has_their_field() {
+        let temp = assembly::test_support::TempDir::new("preferences-namespaces");
+        let path = temp.path().join("preferences.toml");
+        std::fs::write(
+            &path,
+            "[[registries]]\nhost = \"registry.unemu.dev\"\nnamespaces = [{ name = \"unemu\", private = false }, { name = \"private\", private = true }]\n",
+        )
+        .unwrap();
+        let mut dialog = PreferencesDialog {
+            tab: Tab::Registries,
+            registries: RegistriesPage::new(
+                Some(path),
+                Arc::new(SessionStore::default()),
+                EnvCredentials::default(),
+            ),
+        };
+        let ctx = egui::Context::default();
+        let frame = |dialog: &mut PreferencesDialog| {
+            let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+                let _ = show(ui.ctx(), dialog, true);
+            });
+            output.textures_delta.clear();
+            texts(&output)
+        };
+        let _ = frame(&mut dialog);
+        let shown = frame(&mut dialog);
+        for wanted in [
+            "Per namespace",
+            "    unemu/ — official namespace — open images, public pulls",
+            "No — open only",
+            "    private/ — proprietary images — login always required",
+            "unemu/ — public, open content only; private/ — private",
+        ] {
+            assert!(shown.iter().any(|t| t == wanted), "{wanted}: {shown:?}");
+        }
+        dialog.registries.open_add();
+        let _ = frame(&mut dialog);
+        let shown = frame(&mut dialog);
+        assert!(shown.iter().any(|t| t == "Namespaces"), "{shown:?}");
+        assert!(shown.iter().any(|t| t == "empty = the whole registry"));
+        assert!(shown
+            .iter()
+            .any(|t| t.contains("unemu/ is always public, open content only")));
     }
 
     #[test]
