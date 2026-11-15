@@ -5,6 +5,17 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-15 — An unsupported-instruction stop names CS:IP and the
+  instruction bytes:** the CPU core reports the bytes of an instruction it
+  does not lift, but the stop message used to show only the offset
+  ("unsupported instruction at 0x72b"), so a field report could not tell a
+  missing opcode from a jump into data. `CpuError::UnsupportedInstruction`
+  now carries the visible code selector and the bytes, and the message reads
+  `unsupported instruction at 0700:072b (bytes 0f 20 c0)`; the window's
+  machine error shows it as is. Found with Commander Keen 4 1.4, which stops
+  this way after its title screen on the open AT games profile. The cause is
+  still open.
+
 - **2026-11-15 — Machines in the desktop library and the media picker
   (approved machines and media-picker mock-ups):** the library opens on
   **Machines**. The sidebar is one Library group in the mock-up's order —

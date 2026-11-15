@@ -94,7 +94,7 @@ fn run_result_summary(result: &Result<RunOutcome, RunError>) -> String {
     // their variant and address fields; no guest memory is read for this report.
     match result {
         Err(RunError::Machine(MachineError::Cpu(error))) => match error {
-            CpuError::UnsupportedInstruction { addr } => {
+            CpuError::UnsupportedInstruction { addr, .. } => {
                 format!("Err(Machine(Cpu(UnsupportedInstruction {{ addr: {addr:#x} }})))")
             }
             CpuError::Unmapped { addr } => {

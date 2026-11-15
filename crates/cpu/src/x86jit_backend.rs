@@ -427,7 +427,13 @@ impl X86JitCpu {
             }),
             Exit::BudgetExhausted => Ok(CpuStop::BudgetExhausted),
             Exit::UnmappedMemory { addr, .. } => Err(CpuError::Unmapped { addr }),
-            Exit::UnknownInstruction { addr, .. } => Err(CpuError::UnsupportedInstruction { addr }),
+            Exit::UnknownInstruction {
+                addr, bytes, len, ..
+            } => Err(CpuError::UnsupportedInstruction {
+                addr,
+                cs: self.cpu.cpu.cs,
+                bytes: bytes[..usize::from(len).min(bytes.len())].to_vec(),
+            }),
             // Only `syscall`, or `int 0x80` outside real mode, end up
             // here: in real mode every `int n` is delivered inside the guest
             // through the IVT, and the long-mode serial programs make no system
@@ -442,6 +448,8 @@ impl X86JitCpu {
                         })?;
                 Err(CpuError::UnsupportedInstruction {
                     addr: evidence.rip(),
+                    cs: self.cpu.cpu.cs,
+                    bytes: Vec::new(),
                 })
             }
             // Nothing in this backend requests a host yield, and the interpreter
@@ -1126,6 +1134,31 @@ mod tests {
         assert_eq!(mmio.reg(CpuReg::Rax), 0x43);
     }
 
+    /// A stop on an instruction the core does not lift names the code segment
+    /// and the instruction bytes, so a field report identifies the opcode.
+    #[test]
+    fn unsupported_instruction_reports_code_segment_and_bytes() {
+        let mut cpu =
+            X86JitCpu::new_real16_bare(0x20000, 0x0700, 0x072B, RealSegments::flat(0)).unwrap();
+        cpu.map_ram(0, 0x10000).unwrap();
+        // MOV EAX, CR0: a 386 encoding this pin does not lift in Real16, as
+        // the next test also relies on; pick another encoding if a future
+        // core lifts it.
+        cpu.write_mem(0x772B, &[0x0F, 0x20, 0xC0]).unwrap();
+        let error = cpu.run(None).unwrap_err();
+        match &error {
+            CpuError::UnsupportedInstruction { addr, cs, bytes } => {
+                assert_eq!((*addr, *cs), (0x072B, 0x0700));
+                assert_eq!(bytes, &[0x0F, 0x20, 0xC0]);
+            }
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(
+            error.to_string(),
+            "unsupported instruction at 0700:072b (bytes 0f 20 c0)"
+        );
+    }
+
     #[test]
     fn completed_steps_survives_error_exits_and_zero_budget_calls() {
         for unsupported in [false, true] {
@@ -1658,7 +1691,7 @@ mod tests {
                 X86JitCpu::new(0x2000, 0x1000, &[0x90, opcode[0], opcode[1], 0xF4]).unwrap();
             let error = cpu.run(None).unwrap_err();
             assert!(
-                matches!(error, CpuError::UnsupportedInstruction { addr: 0x1001 }),
+                matches!(error, CpuError::UnsupportedInstruction { addr: 0x1001, .. }),
                 "{opcode:02x?}: {error:?}"
             );
             assert_eq!(cpu.cpu.syscall_evidence().map(|e| e.rip()), Some(0x1001));

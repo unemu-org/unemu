@@ -172,12 +172,18 @@ pub enum CpuError {
         /// Faulting guest address.
         addr: u64,
     },
-    /// The core hit an instruction it does not lift (surfaces the bytes so the
-    /// missing opcode can be added).
-    #[error("unsupported instruction at {addr:#x}")]
+    /// The core hit an instruction it does not lift. The message carries the
+    /// visible code selector and the instruction bytes, because a bare offset
+    /// cannot tell a missing opcode from a jump into data.
+    #[error("unsupported instruction at {cs:04x}:{addr:04x}{}", instruction_bytes(.bytes))]
     UnsupportedInstruction {
-        /// Guest RIP of the offending instruction.
+        /// Guest RIP of the offending instruction (the IP in real mode).
         addr: u64,
+        /// Visible code selector when the core stopped.
+        cs: u16,
+        /// The instruction bytes the core decoded; empty when the core did
+        /// not report them.
+        bytes: Vec<u8>,
     },
     /// An exception explicitly returned outward by the machine CPU profile.
     #[error("cpu fault vector {vector:#x}, error code {error_code:?} at {cs:04x}:{ip:04x}")]
@@ -211,6 +217,16 @@ pub enum CpuError {
         /// Which exit the core returned, with its details.
         what: String,
     },
+}
+
+/// The " (bytes 0f 0b)" tail of an unsupported-instruction message, or
+/// nothing when the core reported no bytes.
+fn instruction_bytes(bytes: &[u8]) -> String {
+    if bytes.is_empty() {
+        return String::new();
+    }
+    let hex: Vec<String> = bytes.iter().map(|b| format!("{b:02x}")).collect();
+    format!(" (bytes {})", hex.join(" "))
 }
 
 /// Result of one DMA byte cycle in the guest physical memory map (§4.3).

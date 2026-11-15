@@ -511,11 +511,12 @@ fn classify_test386_stop(rip: u64, result: Result<RunOutcome, RunError>) -> Stop
         Ok(RunOutcome::Halted) => StopReason::Halt,
         Ok(RunOutcome::ResetRequested) => StopReason::ResetRequested,
         Ok(RunOutcome::RetiredCapReached) => StopReason::BudgetExhausted,
-        Err(RunError::Machine(MachineError::Cpu(CpuError::UnsupportedInstruction { addr }))) => {
-            StopReason::Unsupported {
-                detail: format!("unsupported instruction at {addr:#x} (rip {rip:#x})"),
-            }
-        }
+        Err(RunError::Machine(MachineError::Cpu(CpuError::UnsupportedInstruction {
+            addr,
+            ..
+        }))) => StopReason::Unsupported {
+            detail: format!("unsupported instruction at {addr:#x} (rip {rip:#x})"),
+        },
         Err(RunError::Machine(MachineError::Cpu(CpuError::Unmapped { addr }))) => {
             StopReason::Unmapped {
                 detail: format!("unmapped guest access at {addr:#x} (rip {rip:#x})"),
@@ -1152,11 +1153,12 @@ fn classify_bios_stop(
         Ok(RunOutcome::Halted) => StopReason::Halt,
         Ok(RunOutcome::ResetRequested) => StopReason::ResetRequested,
         Ok(RunOutcome::RetiredCapReached) => StopReason::BudgetExhausted,
-        Err(RunError::Machine(MachineError::Cpu(CpuError::UnsupportedInstruction { addr }))) => {
-            StopReason::Unsupported {
-                detail: format!("unsupported instruction at {addr:#x}; {site}"),
-            }
-        }
+        Err(RunError::Machine(MachineError::Cpu(CpuError::UnsupportedInstruction {
+            addr,
+            ..
+        }))) => StopReason::Unsupported {
+            detail: format!("unsupported instruction at {addr:#x}; {site}"),
+        },
         Err(RunError::Machine(MachineError::Cpu(CpuError::Unmapped { addr }))) => {
             StopReason::Unmapped {
                 detail: format!("unmapped guest access at {addr:#x}; {site}"),
