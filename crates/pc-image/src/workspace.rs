@@ -285,7 +285,7 @@ pub fn publish_with_options(
     if expected.is_none() {
         store.check_new_tag(tag)?;
     }
-    let resolved = crate::provider::load_pinned(store, &old.image, true)?;
+    let resolved = crate::provider::load_pinned(store, &old.image, true, true)?;
     let image = resolved.image;
     let mut config = resolved.config;
     let bases = resolved.bases;
@@ -325,10 +325,13 @@ pub fn publish_with_options(
             .ok_or_else(|| invalid("missing verified medium"))?;
         let old_head = descriptors
             .iter()
-            .find(|d| d.digest == m.head)
+            .find(|d| d.names(&m.head))
             .ok_or_else(|| invalid("missing medium head"))?;
-        let flatten_disk =
-            flatten && matches!(old_head.media_type.as_str(), mt::DISK_BASE | mt::DISK_LAYER);
+        let flatten_disk = flatten
+            && matches!(
+                old_head.decoded_media_type(),
+                mt::DISK_BASE | mt::DISK_LAYER
+            );
         let overlay = if m.policy == Policy::Journal {
             journal(workspace, &m.id, &disk.base)?
         } else {
@@ -348,25 +351,25 @@ pub fn publish_with_options(
         let final_disk: &dyn SectorSource = overlay
             .as_ref()
             .map_or(&disk.base as &dyn SectorSource, |overlay| overlay);
-        let d = if old_head.media_type == mt::FLOPPY || flatten_disk {
+        let d = if old_head.decoded_media_type() == mt::FLOPPY || flatten_disk {
             store.require_space(final_disk.byte_len())?;
-            let blob = store.import(
+            let kind = if old_head.decoded_media_type() == mt::FLOPPY {
+                mt::FLOPPY
+            } else {
+                mt::DISK_BASE
+            };
+            let d = store.import_payload(
                 SectorReader {
                     source: final_disk,
                     position: 0,
                 },
+                kind,
+                final_disk.byte_len(),
                 None,
+                PAYLOAD_TYPES,
             )?;
-            hook(PublicationStep::BlobStored(blob.digest.clone()))?;
-            classify(Descriptor::new(
-                if old_head.media_type == mt::FLOPPY {
-                    mt::FLOPPY
-                } else {
-                    mt::DISK_BASE
-                },
-                blob.digest,
-                blob.size,
-            ))
+            hook(PublicationStep::BlobStored(d.digest.clone()))?;
+            classify(d)
         } else {
             store.require_space(
                 (overlay
@@ -387,16 +390,19 @@ pub fn publish_with_options(
             )?;
             file.sync_all()?;
             hook(PublicationStep::PackStaged(m.id.clone()))?;
-            let blob = store.import_file(&pack_path, Some(&layer.sectors.parse()?))?;
-            hook(PublicationStep::BlobStored(blob.digest.clone()))?;
-            descriptors.push(classify(Descriptor::new(
+            let file = fs::File::open(&pack_path)?;
+            let d = store.import_payload(
+                &file,
                 mt::DISK_SECTORS,
-                blob.digest,
-                blob.size,
-            )));
+                file.metadata()?.len(),
+                Some(&layer.sectors.parse()?),
+                PAYLOAD_TYPES,
+            )?;
+            hook(PublicationStep::BlobStored(d.digest.clone()))?;
+            descriptors.push(classify(d));
             stored(store, mt::DISK_LAYER, &layer.encode()?, &mut hook)?
         };
-        m.head = d.digest.clone();
+        m.head = d.decoded_digest()?;
         descriptors.push(d);
     }
     if let Some(n) = &mut config.nvram {
@@ -431,7 +437,7 @@ pub fn publish_with_options(
             layers.push(
                 descriptors
                     .iter()
-                    .find(|d| d.digest == digest)
+                    .find(|d| d.names(&digest))
                     .ok_or_else(|| invalid("missing closure object"))?
                     .clone(),
             );
@@ -660,7 +666,13 @@ fn save_retention(
 pub struct SessionTransfer {
     machine: assembly::MachineConfig,
     image: Digest,
-    bases: std::collections::BTreeMap<std::path::PathBuf, (fs::File, media::Header, fs::Metadata)>,
+    bases: std::collections::BTreeMap<std::path::PathBuf, Transfer>,
+}
+/// A file-backed base travels as its verified descriptor; an in-memory base,
+/// a compressed floppy, as its decoded bytes.
+enum Transfer {
+    File(fs::File, media::Header, fs::Metadata),
+    Memory(Vec<u8>),
 }
 impl PreparedSession {
     /// Duplicate already verified handles; paths are never reopened during transfer.
@@ -668,18 +680,25 @@ impl PreparedSession {
         let mut bases = std::collections::BTreeMap::new();
         for (path, base) in self.bases {
             base.check_unchanged()?;
-            let metadata = base
-                .metadata()
-                .ok_or_else(|| invalid("launch base is not file-backed"))?
-                .clone();
-            let file = base.try_clone_verified_file()?;
-            let identity = base.identity().clone();
-            VerifiedBase::from_verified_file(
-                file.try_clone()?,
-                identity.clone(),
-                metadata.clone(),
-            )?;
-            bases.insert(path, (file, identity, metadata));
+            let transfer = match base.metadata() {
+                Some(metadata) => {
+                    let metadata = metadata.clone();
+                    let file = base.try_clone_verified_file()?;
+                    let identity = base.identity().clone();
+                    VerifiedBase::from_verified_file(
+                        file.try_clone()?,
+                        identity.clone(),
+                        metadata.clone(),
+                    )?;
+                    Transfer::File(file, identity, metadata)
+                }
+                None => {
+                    let mut bytes = vec![0; base.byte_len() as usize];
+                    base.read_range(0, &mut bytes)?;
+                    Transfer::Memory(bytes)
+                }
+            };
+            bases.insert(path, transfer);
         }
         Ok(SessionTransfer {
             machine: self.machine,
@@ -689,16 +708,22 @@ impl PreparedSession {
     }
 }
 impl SessionTransfer {
-    /// Rebuild execution-local sector readers without reading or hashing payloads.
+    /// Rebuild execution-local sector readers without reading or hashing
+    /// file-backed payloads.
     pub fn restore(self) -> Result<PreparedSession> {
         let bases = self
             .bases
             .into_iter()
-            .map(|(path, (file, identity, metadata))| {
-                Ok((
-                    path,
-                    VerifiedBase::from_verified_file(file, identity, metadata)?,
-                ))
+            .map(|(path, transfer)| {
+                let base = match transfer {
+                    Transfer::File(file, identity, metadata) => {
+                        VerifiedBase::from_verified_file(file, identity, metadata)?
+                    }
+                    Transfer::Memory(bytes) => {
+                        VerifiedBase::from_bytes(&bytes).map_err(|e| invalid(e.to_string()))?
+                    }
+                };
+                Ok((path, base))
             })
             .collect::<Result<_>>()?;
         Ok(PreparedSession {
@@ -707,6 +732,19 @@ impl SessionTransfer {
             bases,
         })
     }
+}
+
+/// Sweep decoded payload files that neither a tag nor a workspace's pinned
+/// image reaches; see `Store::sweep_materialized`. A damaged session refuses
+/// the sweep instead of dropping what that workspace may need.
+pub fn sweep_materialized(store: &Store) -> Result<image_store::codec::Sweep> {
+    let mut pinned = Vec::new();
+    for name in store.list_workspaces()? {
+        if let Some(digest) = pinned_image_at(store, &name)? {
+            pinned.push(digest);
+        }
+    }
+    Ok(store.sweep_materialized(&pinned)?)
 }
 
 /// Read a workspace's image identity without acquiring its execution lock.

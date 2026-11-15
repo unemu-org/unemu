@@ -67,6 +67,9 @@ impl Store {
         if path.starts_with(self.root().join("images/blobs").canonicalize()?) {
             return Err(invalid("journal cannot write into blobs"));
         }
+        if path.starts_with(prospective_path(&self.root().join("cache/materialized"))?) {
+            return Err(invalid("journal cannot write into materialized blobs"));
+        }
         #[cfg(unix)]
         if let Ok(metadata) = std::fs::metadata(&path) {
             use std::os::unix::fs::MetadataExt;

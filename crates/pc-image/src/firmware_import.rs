@@ -386,6 +386,32 @@ fn descriptor(kind: &str, digest: Digest, size: u64) -> Descriptor {
         .insert("unemu.redistribution".into(), "user-supplied".into());
     d
 }
+/// The stored descriptor of one package payload: a ROM or extra of at least
+/// 4 KiB is a deterministic `+zstd` frame, so the package identity is known
+/// before anything is written and equals what publication stores.
+/// A source that no longer has the scanned bytes is refused, naming the ROM.
+fn payload(path: &Path, kind: &str, digest: &Digest, size: u64) -> Result<Descriptor> {
+    let changed =
+        |reason: String| invalid(format!("ROM {digest} changed since the scan: {reason}"));
+    let mut d = fs::File::open(path)
+        .map_err(image_store::Error::from)
+        .and_then(|file| {
+            image_store::codec::describe(
+                file,
+                kind,
+                size,
+                image_store::codec::FIRMWARE_PAYLOAD_TYPES,
+            )
+        })
+        .map_err(|e| changed(e.to_string()))?;
+    let actual = d.decoded_digest()?;
+    if &actual != digest {
+        return Err(changed(format!("it now reads as {actual}")));
+    }
+    d.annotations
+        .insert("unemu.redistribution".into(), "user-supplied".into());
+    Ok(d)
+}
 /// Compute the immutable package identity without writing any store objects.
 pub fn preview_manifest(candidate: &Candidate, attachments: &[Attachment]) -> Result<Manifest> {
     Ok(plan(candidate, attachments)?.0)
@@ -401,7 +427,7 @@ fn plan(candidate: &Candidate, attachments: &[Attachment]) -> Result<PackagePlan
         return Err(invalid("firmware source count differs from bindings"));
     }
     for ((digest, size, kind), path) in bindings.into_iter().zip(&candidate.sources) {
-        let mut d = descriptor(kind, digest, size);
+        let mut d = payload(path, kind, &digest, size)?;
         if let assembly::FirmwareDistribution::Open {
             license,
             provenance,
@@ -456,7 +482,7 @@ fn plan(candidate: &Candidate, attachments: &[Attachment]) -> Result<PackagePlan
         });
         payloads.push((
             extra.path.clone(),
-            descriptor(mt::EXTRA, digest, stat.len()),
+            payload(&extra.path, mt::EXTRA, &digest, stat.len())?,
         ));
     }
     let bytes = config.encode()?;
@@ -514,9 +540,15 @@ pub fn publish(
         return Ok(expected);
     }
     for (path, descriptor) in payloads {
-        let blob = store.import_file(path, Some(&descriptor.digest))?;
-        if blob.size != descriptor.size {
-            return Err(invalid("source length changed during import"));
+        let stored = store.import_payload(
+            fs::File::open(&path)?,
+            descriptor.decoded_media_type(),
+            descriptor.decoded_size()?,
+            Some(&descriptor.decoded_digest()?),
+            image_store::codec::FIRMWARE_PAYLOAD_TYPES,
+        )?;
+        if stored.digest != descriptor.digest || stored.size != descriptor.size {
+            return Err(invalid("source changed during import"));
         }
     }
     store.import(config.as_slice(), Some(&manifest.config.digest))?;

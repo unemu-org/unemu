@@ -23,6 +23,7 @@ pub struct MediaCommand {
     store: PathBuf,
     create: bool,
     dry_run: bool,
+    no_compress: bool,
     tag: String,
     title: String,
     files: Vec<PathBuf>,
@@ -44,6 +45,7 @@ pub fn parse(args: &[OsString]) -> Result<MediaCommand, &'static str> {
         store: PathBuf::new(),
         create: false,
         dry_run: false,
+        no_compress: false,
         tag: String::new(),
         title: String::new(),
         files: Vec::new(),
@@ -53,6 +55,10 @@ pub fn parse(args: &[OsString]) -> Result<MediaCommand, &'static str> {
     };
     let mut args = args[1..].iter();
     while let Some(arg) = args.next() {
+        if arg == "--no-compress" && action == "import" && !command.no_compress {
+            command.no_compress = true;
+            continue;
+        }
         if arg == "--dry-run" && action == "import" && !command.dry_run {
             command.dry_run = true;
             continue;
@@ -134,7 +140,9 @@ pub fn parse(args: &[OsString]) -> Result<MediaCommand, &'static str> {
 }
 
 fn descriptor(kind: &str, blob: image_store::Blob) -> Descriptor {
-    let mut d = Descriptor::new(kind, blob.digest, blob.size);
+    user_supplied(Descriptor::new(kind, blob.digest, blob.size))
+}
+fn user_supplied(mut d: Descriptor) -> Descriptor {
     d.annotations
         .insert("unemu.redistribution".into(), "user-supplied".into());
     d
@@ -380,32 +388,37 @@ fn import(command: MediaCommand, output: &mut impl Write) -> anyhow::Result<()> 
         return Ok(());
     }
     let store = store.ok_or_else(|| anyhow::anyhow!("store unavailable"))?;
+    let codecs = if command.no_compress {
+        &[]
+    } else {
+        image_store::codec::MEDIA_PAYLOAD_TYPES
+    };
     let mut layers = Vec::new();
     for (index, path) in files.iter().enumerate() {
         let file = std::fs::File::open(path).with_context(|| format!("source {:?}", path))?;
         let blob = store
-            .import(file, None)
+            .import_payload(file, kinds[index], sizes[index], None, codecs)
             .with_context(|| format!("source {:?}", path))?;
         anyhow::ensure!(
-            blob.size == sizes[index],
+            blob.decoded_size()? == sizes[index],
             "source {:?}: length changed during import",
             path
         );
-        config.media[index].blob = blob.digest.clone();
-        layers.push(descriptor(kinds[index], blob));
+        config.media[index].blob = blob.decoded_digest()?;
+        layers.push(user_supplied(blob));
     }
     for (index, (path, _)) in command.extras.iter().enumerate() {
         let file = std::fs::File::open(path).with_context(|| format!("extra {:?}", path))?;
         let blob = store
-            .import(file, None)
+            .import_payload(file, mt::EXTRA, config.extras[index].size, None, codecs)
             .with_context(|| format!("extra {:?}", path))?;
         anyhow::ensure!(
-            blob.size == config.extras[index].size,
+            blob.decoded_size()? == config.extras[index].size,
             "extra {:?}: length changed during import",
             path
         );
-        config.extras[index].blob = blob.digest.clone();
-        layers.push(descriptor(mt::EXTRA, blob));
+        config.extras[index].blob = blob.decoded_digest()?;
+        layers.push(user_supplied(blob));
     }
     let mut seen = BTreeSet::new();
     let mut unique = Vec::<Descriptor>::new();

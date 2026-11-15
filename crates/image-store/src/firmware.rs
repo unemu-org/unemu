@@ -225,6 +225,9 @@ impl ConfigValidator for Validator<'_> {
     fn platform(&self) -> &str {
         self.0.platform()
     }
+    fn payload_types(&self) -> &[crate::PayloadType] {
+        crate::codec::FIRMWARE_PAYLOAD_TYPES
+    }
     fn validate(
         &self,
         table: &toml::Table,
@@ -239,12 +242,13 @@ impl ConfigValidator for Validator<'_> {
             return Err(invalid("firmware platform mismatch"));
         }
         let mut references = Vec::new();
+        // Bindings name decoded content, so a ROM matches raw or `+zstd`.
         for (digest, size, kind) in config.payloads() {
             let descriptor = descriptors
                 .iter()
-                .find(|d| d.digest == digest)
+                .find(|d| d.names(&digest))
                 .ok_or_else(|| invalid("missing firmware payload"))?;
-            if descriptor.size != size || descriptor.media_type != kind {
+            if descriptor.decoded_size()? != size || descriptor.decoded_media_type() != kind {
                 return Err(invalid("firmware payload size or type mismatch"));
             }
             references.push(digest);

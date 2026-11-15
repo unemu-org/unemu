@@ -6,6 +6,8 @@
 //! §5). A blob's effective class is the most restrictive one recorded for its
 //! digest in any local manifest, so an image that labels a vendor ROM `open`
 //! cannot carry it out when another local image records it as user-supplied.
+//! A `+zstd` payload is also matched by its decoded digest, so the same ROM
+//! stored raw in one image and compressed in another shares one class.
 //! The guard runs on the manifest's complete closure before any upload:
 //!
 //! 1. a closure with any user-supplied blob may go only to a registry entry
@@ -91,9 +93,9 @@ impl LocalMarks {
                 let manifest = Manifest::decode_for_summary(&bytes)?;
                 for descriptor in std::iter::once(&manifest.config).chain(&manifest.layers) {
                     if Redistribution::of(descriptor) == Redistribution::UserSupplied {
-                        restricted
-                            .entry(descriptor.digest.clone())
-                            .or_insert_with(|| tag.name.clone());
+                        for digest in identities(descriptor) {
+                            restricted.entry(digest).or_insert_with(|| tag.name.clone());
+                        }
                     }
                 }
             }
@@ -109,9 +111,20 @@ impl LocalMarks {
         self.restricted.entry(digest).or_insert_with(|| tag.into());
     }
 
-    fn restricted_by(&self, digest: &Digest) -> Option<&String> {
-        self.restricted.get(digest)
+    fn restricted_by(&self, descriptor: &Descriptor) -> Option<&String> {
+        identities(descriptor)
+            .iter()
+            .find_map(|digest| self.restricted.get(digest))
     }
+}
+
+/// The stored digest and, for a compressed payload, the decoded content digest.
+fn identities(descriptor: &Descriptor) -> Vec<Digest> {
+    let mut digests = vec![descriptor.digest.clone()];
+    if descriptor.is_compressed() {
+        digests.extend(descriptor.decoded_digest().ok());
+    }
+    digests
 }
 
 /// The config followed by every layer, in manifest order, with each blob's
@@ -121,7 +134,7 @@ pub fn closure(manifest: &Manifest, local: &LocalMarks) -> Vec<ClosureEntry> {
         .chain(manifest.layers.iter().map(|d| ("layer", d)))
         .map(|(role, descriptor)| {
             let mark = Redistribution::of(descriptor);
-            let (effective, source) = match (mark, local.restricted_by(&descriptor.digest)) {
+            let (effective, source) = match (mark, local.restricted_by(descriptor)) {
                 (Redistribution::Open, Some(tag)) => (
                     Redistribution::UserSupplied,
                     MarkSource::LocalTag(tag.clone()),

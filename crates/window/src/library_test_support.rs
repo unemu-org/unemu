@@ -40,7 +40,15 @@ impl Fixture {
             let assembly::WriteMode::Journal { path: journal, .. } = write else {
                 panic!("expected journal")
             };
-            let bytes = fs::read(path).unwrap();
+            // A compressed floppy has no file; its verified base holds the bytes.
+            let bytes = match prepared.bases.get(path) {
+                Some(base) if base.metadata().is_none() => {
+                    let mut bytes = vec![0; media::SectorSource::byte_len(base) as usize];
+                    media::SectorSource::read_range(base, 0, &mut bytes).unwrap();
+                    bytes
+                }
+                _ => fs::read(path).unwrap(),
+            };
             let mut media =
                 media::JournalMedia::open(journal, &bytes, bytes.len() as u64, Default::default())
                     .unwrap();

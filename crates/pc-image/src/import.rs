@@ -25,6 +25,18 @@ pub enum RecoveryChoice {
 pub struct ImportOptions {
     pub recovery: BTreeMap<String, RecoveryChoice>,
     pub rom_dirs: Vec<PathBuf>,
+    /// Store every payload raw, for fixtures that inspect exact blob bytes.
+    pub no_compress: bool,
+}
+impl ImportOptions {
+    /// Payload codecs offered to ingest; CMOS declares no compressed variant.
+    fn codecs(&self) -> &'static [image_store::PayloadType] {
+        if self.no_compress {
+            &[]
+        } else {
+            PAYLOAD_TYPES
+        }
+    }
 }
 /// Local evidence for one independent medium, never a synchronized snapshot.
 #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -139,11 +151,16 @@ fn expected(hash: [u8; 32]) -> Result<Digest> {
     .parse()?)
 }
 #[derive(Default)]
-struct BaseReader {
+struct BaseReader<'a> {
     bases: BTreeMap<PathBuf, media::VerifiedBase>,
+    /// ROMs decoded from compressed firmware packages during resolution.
+    prepared: Option<&'a machine_file::PreparedMachineFile>,
 }
-impl ImageReader for BaseReader {
+impl ImageReader for BaseReader<'_> {
     fn read(&mut self, path: &Path) -> io::Result<Vec<u8>> {
+        if let Some(bytes) = self.prepared.and_then(|p| p.firmware_image(path)) {
+            return Ok(bytes.to_vec());
+        }
         machine_file::FileImageReader.read(path)
     }
     fn read_journal_base(&mut self, path: &Path) -> io::Result<Vec<u8>> {
@@ -246,7 +263,7 @@ impl Read for SectorReader<'_> {
 struct Freezer<'a> {
     store: &'a Store,
     scratch: &'a Scratch,
-    reader: &'a BaseReader,
+    reader: &'a BaseReader<'a>,
     options: &'a ImportOptions,
     generations: Vec<ChosenGeneration>,
 }
@@ -299,12 +316,15 @@ impl Freezer<'_> {
                         )));
                     }
                     record.generation = Some(0);
-                    self.store.import(
+                    self.store.import_payload(
                         SectorReader {
                             source: base,
                             position: 0,
                         },
+                        kind,
+                        base.byte_len(),
                         pin.as_ref(),
+                        self.options.codecs(),
                     )?
                 }
                 Err(e) => return Err(e.into()),
@@ -402,12 +422,15 @@ impl Freezer<'_> {
                     let overlay = chosen
                         .overlay
                         .ok_or_else(|| invalid("generation reconstruction refused"))?;
-                    self.store.import(
+                    self.store.import_payload(
                         SectorReader {
                             source: &overlay,
                             position: 0,
                         },
+                        kind,
+                        overlay.byte_len(),
                         None,
+                        self.options.codecs(),
                     )?
                 }
             }
@@ -420,25 +443,38 @@ impl Freezer<'_> {
             match source {
                 assembly::ImageSource::File(path) => {
                     if let Some(base) = self.reader.bases.get(path) {
-                        self.store.import(
+                        self.store.import_payload(
                             SectorReader {
                                 source: base,
                                 position: 0,
                             },
+                            kind,
+                            base.byte_len(),
                             pin.as_ref(),
+                            self.options.codecs(),
                         )?
                     } else {
-                        self.store.import_file(path, pin.as_ref())?
+                        self.store.import_payload(
+                            fs::File::open(path)?,
+                            kind,
+                            fs::metadata(path)?.len(),
+                            pin.as_ref(),
+                            self.options.codecs(),
+                        )?
                     }
                 }
-                assembly::ImageSource::Inline(bytes) => {
-                    self.store.import(bytes.as_slice(), pin.as_ref())?
-                }
+                assembly::ImageSource::Inline(bytes) => self.store.import_payload(
+                    bytes.as_slice(),
+                    kind,
+                    bytes.len() as u64,
+                    pin.as_ref(),
+                    self.options.codecs(),
+                )?,
                 _ => return Err(invalid("unsupported media source")),
             }
         };
         self.generations.push(record);
-        Ok(Descriptor::new(kind, blob.digest, blob.size))
+        Ok(blob)
     }
 }
 fn write_mode(
@@ -567,16 +603,18 @@ pub fn import_machine(
         Some(store),
     )?;
     let (document, origins) = prepared.resolved();
+    // A ROM from a compressed firmware package exists only in memory.
+    let present = |p: &Path| p.exists() || prepared.firmware_image(p).is_some();
     let missing = inputs(document, origins)?
         .into_iter()
-        .filter(|p| !p.exists())
+        .filter(|p| !present(p))
         .collect::<Vec<_>>();
     if !missing.is_empty() {
         let mut firmware = false;
         let mut hardware = encode::machine(document);
         firmware_images(&mut hardware, |field, rom| {
             if let Some(image) = rom.get("image").and_then(toml::Value::as_str) {
-                firmware |= !source_path(origins, &format!("{field}.image"), image)?.exists();
+                firmware |= !present(&source_path(origins, &format!("{field}.image"), image)?);
             }
             Ok(())
         })?;
@@ -591,7 +629,10 @@ pub fn import_machine(
     }
     let scratch = Scratch::new(store)?;
     let (stream, policies) = streaming_document(document, origins, &scratch)?;
-    let mut reader = BaseReader::default();
+    let mut reader = BaseReader {
+        prepared: Some(&prepared),
+        ..BaseReader::default()
+    };
     let mut effective = machine_file::lower(&stream, origins, &mut reader)?;
     for (drive, writes) in effective.drives.iter_mut().zip(policies) {
         if let Some(list) = &mut drive.media {
@@ -626,16 +667,31 @@ pub fn import_machine(
             .and_then(toml::Value::as_str)
             .map(|s| format!("sha256:{s}").parse())
             .transpose()?;
-        let b = store.import_file(path, pin.as_ref())?;
+        let b = match prepared.firmware_image(&path) {
+            Some(bytes) => store.import_payload(
+                bytes,
+                mt::FIRMWARE,
+                bytes.len() as u64,
+                pin.as_ref(),
+                options.codecs(),
+            )?,
+            None => store.import_payload(
+                fs::File::open(&path)?,
+                mt::FIRMWARE,
+                fs::metadata(&path)?.len(),
+                pin.as_ref(),
+                options.codecs(),
+            )?,
+        };
         let source = format!("assets/firmware-{}.bin", config.firmware.len());
         rom.insert("image".into(), source.clone().into());
-        rom.insert("sha256".into(), b.digest.hex().into());
+        rom.insert("sha256".into(), b.decoded_digest()?.hex().into());
         config.firmware.push(Firmware {
             key: field.into(),
             source,
-            blob: b.digest.clone(),
+            blob: b.decoded_digest()?,
         });
-        layers.push(Descriptor::new(mt::FIRMWARE, b.digest, b.size));
+        layers.push(b);
         Ok(())
     })?;
     let mut freezer = Freezer {
@@ -672,7 +728,7 @@ pub fn import_machine(
             config.media.push(Medium {
                 id: id.clone(),
                 source: format!("assets/{id}.img"),
-                head: d.digest.clone(),
+                head: d.decoded_digest()?,
                 name,
                 policy: Policy::from_write(write),
                 geometry: Geometry::of(drive.kind),
@@ -745,7 +801,7 @@ pub fn import_machine(
         config.nvram = Some(Nvram {
             mode,
             source,
-            head: d.digest.clone(),
+            head: d.decoded_digest()?,
         });
         layers.push(d);
     }

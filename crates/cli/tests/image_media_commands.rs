@@ -3,7 +3,7 @@
 use image_store::{
     media_set::{Config, Validator},
     summary::{ArtifactKind, Facets, SummaryCache},
-    Store,
+    BlobSource, Store,
 };
 use pc_image::media_set::PcMediaFormats;
 use std::{
@@ -100,6 +100,16 @@ fn media_set_cli_directory_list_extras_sources_and_tag_precheck() {
         .unwrap();
     let config = Config::decode(&image.config).unwrap();
     assert_eq!(config.media.len(), 2);
+    let payload = image
+        .manifest
+        .layers
+        .iter()
+        .find(|d| d.names(&config.media[0].blob))
+        .unwrap();
+    assert!(payload.is_compressed());
+    // The push guard reads this mark on the stored descriptor.
+    assert_eq!(payload.annotations["unemu.redistribution"], "user-supplied");
+    assert_eq!(store.read_verified(payload, a.len() as u64).unwrap(), a);
     assert_eq!(config.media[0].label, "Setup");
     assert_eq!(config.extras[0].dos_name.as_deref(), Some("MANUAL.TXT"));
     assert_eq!(config.extras[0].size, 21);
@@ -122,6 +132,8 @@ fn media_set_cli_directory_list_extras_sources_and_tag_precheck() {
         ArtifactKind::MediaSet
     );
     assert_eq!(cache.query("synthetic", &Facets::default()).len(), 1);
+    let summary = cache.summary(&image.image.digest).unwrap();
+    assert!(summary.stored_size < summary.decoded_size);
     fs::remove_dir_all(p.join("disks")).unwrap();
     let (code, _, err) = run(p, &import);
     assert_ne!(code, 0);
@@ -401,14 +413,14 @@ fn review_schema_two_summary_is_discarded_and_rebuilt() {
     assert_eq!(code, 0, "{error}");
     let path = p.join("store/cache/summaries/index.json");
     let bytes = fs::read_to_string(&path).unwrap();
-    assert!(bytes.contains("\"schema\":4"));
-    fs::write(&path, bytes.replacen("\"schema\":4", "\"schema\":2", 1)).unwrap();
+    assert!(bytes.contains("\"schema\":5"));
+    fs::write(&path, bytes.replacen("\"schema\":5", "\"schema\":2", 1)).unwrap();
     let store = Store::open_existing(p.join("store")).unwrap();
     let mut cache = SummaryCache::open(&store).unwrap();
     assert_eq!(cache.pending().len(), 1);
     cache.rebuild(&store, 64, &[], &[]).unwrap();
     assert!(cache.pending().is_empty());
-    assert!(fs::read_to_string(path).unwrap().contains("\"schema\":4"));
+    assert!(fs::read_to_string(path).unwrap().contains("\"schema\":5"));
     let command = vec![
         "image".into(),
         "ls".into(),
@@ -417,7 +429,9 @@ fn review_schema_two_summary_is_discarded_and_rebuilt() {
     ];
     let (mut listed, mut errors) = (Vec::new(), Vec::new());
     assert_eq!(cli::command::run(&command, &mut listed, &mut errors), 0);
-    assert!(String::from_utf8(listed).unwrap().contains("\tmedia-set\n"));
+    assert!(String::from_utf8(listed)
+        .unwrap()
+        .contains("\tmedia-set\tstored:"));
     let tag = &store.list_tags(None, 1000).unwrap().tags[0];
     fs::remove_file(
         store
@@ -427,5 +441,74 @@ fn review_schema_two_summary_is_discarded_and_rebuilt() {
     .unwrap();
     let mut listed = Vec::new();
     assert_eq!(cli::command::run(&command, &mut listed, &mut errors), 0);
-    assert!(String::from_utf8(listed).unwrap().contains("\tunknown\n"));
+    assert!(String::from_utf8(listed)
+        .unwrap()
+        .contains("\tunknown\tstored:"));
+}
+
+#[test]
+fn compression_command_preserves_media_set_config_for_optical_and_extra_payloads() {
+    let temp = Temp::new();
+    let path = &temp.0;
+    let optical = path.join("disc.iso");
+    let extra = path.join("manual.txt");
+    fs::write(&optical, vec![0x39; 8192]).unwrap();
+    fs::write(&extra, vec![b'x'; 8192]).unwrap();
+    let (code, _, errors) = run(
+        path,
+        &[
+            "import",
+            optical.to_str().unwrap(),
+            "--format",
+            "1=iso-2048",
+            "--extra",
+            extra.to_str().unwrap(),
+            "--title",
+            "Synthetic optical set",
+            "--tag",
+            "test:raw",
+            "--create",
+            "--no-compress",
+        ],
+    );
+    assert_eq!(code, 0, "{errors}");
+    let store = Store::open_existing(path.join("store")).unwrap();
+    let raw = store
+        .resolve("test:raw", &Validator(&PcMediaFormats))
+        .unwrap();
+    assert!(raw.manifest.layers.iter().all(|d| !d.is_compressed()));
+    let command = [
+        "image".into(),
+        "compress".into(),
+        "test:raw".into(),
+        "--tag".into(),
+        "test:compressed".into(),
+        "--store".into(),
+        store.root().as_os_str().to_owned(),
+    ];
+    let mut errors = Vec::new();
+    assert_eq!(
+        cli::command::run(&command, &mut Vec::new(), &mut errors),
+        0,
+        "{}",
+        String::from_utf8_lossy(&errors)
+    );
+    fs::remove_file(optical).unwrap();
+    fs::remove_file(extra).unwrap();
+    let image = store
+        .resolve("test:compressed", &Validator(&PcMediaFormats))
+        .unwrap();
+    assert_eq!(raw.config, image.config);
+    assert_eq!(raw.manifest.config.digest, image.manifest.config.digest);
+    for d in &image.manifest.layers {
+        if matches!(
+            d.decoded_media_type(),
+            image_store::media_type::OPTICAL | image_store::media_type::EXTRA
+        ) {
+            assert!(d.is_compressed());
+            assert_eq!(store.read_verified(d, 8192).unwrap().len(), 8192);
+        } else {
+            assert!(!d.is_compressed());
+        }
+    }
 }

@@ -274,7 +274,7 @@ fn firmware_store_first_resolves_without_folders_rechecks_pins_and_blocks_tamper
             )
         })
         .unwrap();
-    assert_eq!(prepared.firmware_sources(), &[d.digest]);
+    assert_eq!(prepared.firmware_sources(), std::slice::from_ref(&d.digest));
     assert_eq!(control.snapshot().folder_listings, 0);
     let options = assembly::AssemblyOptions {
         allow_unlisted_firmware: true,
@@ -295,8 +295,36 @@ fn firmware_store_first_resolves_without_folders_rechecks_pins_and_blocks_tamper
         .parts
         .as_ref()
         .unwrap()[0];
-    fs::write(&part.image, vec![0; 16384]).unwrap();
-    assert!(prepared.load(options).is_err());
+    // The compressed chip was decoded into memory; its key is never a file.
+    let key = Path::new(&part.image);
+    assert!(!key.exists());
+    assert_eq!(prepared.firmware_image(key).unwrap().len(), 16384);
+    assert!(!store.root().join("cache/materialized").exists());
+    // Damage to the stored frame blocks every later resolution.
+    let image = store
+        .resolve_descriptor(&d, &Validator(&PcFirmwareRules(&cat)))
+        .unwrap();
+    let digest: Digest = format!("sha256:{}", key.file_name().unwrap().to_str().unwrap())
+        .parse()
+        .unwrap();
+    let stored = image
+        .manifest
+        .layers
+        .iter()
+        .find(|l| l.names(&digest))
+        .unwrap();
+    assert!(stored.is_compressed());
+    let path = store.blob_file_path(&stored.digest, stored.size).unwrap();
+    let mut frame = fs::read(&path).unwrap();
+    *frame.last_mut().unwrap() ^= 0xff;
+    fs::write(path, frame).unwrap();
+    assert!(machine_file::prepare_for_assembly_with_firmware_store(
+        &machine,
+        &[],
+        &mut Vec::new(),
+        Some(&store)
+    )
+    .is_err());
     let root = chips(&t);
     let roots = [assembly::firmware_discovery::FirmwareRoot::new(
         root,
@@ -418,8 +446,10 @@ fn firmware_machine_image_records_open_package_provenance_and_owns_rom_closure()
         .manifest
         .layers
         .iter()
-        .find(|l| l.media_type == mt::FIRMWARE)
+        .find(|l| l.decoded_media_type() == mt::FIRMWARE)
         .unwrap();
+    // Deterministic frames: the machine image reuses the package's ROM blob.
+    assert!(firmware.is_compressed());
     let manifest = Manifest::decode(
         &store
             .read_verified(&d, image_store::MAX_SMALL_BLOB)
@@ -1281,4 +1311,166 @@ fn split_package_presence_cannot_change_a_scalar_machine_image_digest() {
     }
     let after = pc_image::import_machine(&store, &machine, "after:1", &Default::default()).unwrap();
     assert_eq!(before.manifest.digest, after.manifest.digest);
+}
+
+#[test]
+fn compressed_and_older_raw_packages_resolve_and_summarize_both_sizes() {
+    use std::io::Read;
+    let t = Temp::new();
+    let root = chips(&t);
+    let store = t.store();
+    let (d, cat) = unlisted_package(&store, &root);
+    let validator = Validator(&PcFirmwareRules(&cat));
+    let image = store.resolve_descriptor(&d, &validator).unwrap();
+    // Package import stores each ROM chip as one deterministic frame.
+    assert!(image.manifest.layers.iter().all(|l| l.is_compressed()));
+    let mut cache = SummaryCache::open(&store).unwrap();
+    cache.rebuild(&store, 64, &[], &[]).unwrap();
+    let row = cache.summary(&d.digest).unwrap();
+    assert_eq!(row.kind, ArtifactKind::Firmware);
+    assert!(row.stored_size < row.decoded_size, "{row:?}");
+    assert_eq!(
+        row.decoded_size,
+        d.size + image.manifest.config.size + 2 * 16384
+    );
+
+    // A package from an older store keeps raw ROM blobs; rewrite it that way.
+    let mut layers = Vec::new();
+    for layer in &image.manifest.layers {
+        let mut bytes = Vec::new();
+        image
+            .content_reader(&layer.decoded_digest().unwrap())
+            .unwrap()
+            .read_to_end(&mut bytes)
+            .unwrap();
+        let blob = store.import(bytes.as_slice(), None).unwrap();
+        let mut raw = Descriptor::new(layer.decoded_media_type(), blob.digest, blob.size);
+        raw.annotations.insert(
+            "unemu.redistribution".into(),
+            layer.annotations["unemu.redistribution"].clone(),
+        );
+        layers.push(raw);
+    }
+    let mut manifest = Manifest::new_firmware(
+        image.manifest.platform().unwrap(),
+        image.manifest.config.clone(),
+        layers,
+    )
+    .unwrap();
+    manifest.annotations = image.manifest.annotations.clone();
+    let raw = store.import_manifest(&manifest).unwrap();
+    let tag = "firmware/synthetic-two-chip-bios:1";
+    store.remove_tag(tag, &d.digest).unwrap();
+    store.update_tag(tag, &raw, None, &validator).unwrap();
+    let machine = t.0.join("machine.toml");
+    fs::write(&machine, format!("schema=1\n[board]\nmodel='ibm-5170'\n[firmware.bios]\nsha256='{}'\nparts=[{{image='absent-even',lane='even'}},{{image='absent-odd',lane='odd'}}]\n[[card]]\nkind='mda'\n", cat[0].sha256)).unwrap();
+    let prepared = machine_file::prepare_for_assembly_with_firmware_store(
+        &machine,
+        &[],
+        &mut Vec::new(),
+        Some(&store),
+    )
+    .unwrap();
+    assert_eq!(
+        prepared.firmware_sources(),
+        std::slice::from_ref(&raw.digest)
+    );
+    let (doc, _) = prepared.resolved();
+    for part in doc
+        .firmware
+        .as_ref()
+        .unwrap()
+        .bios
+        .as_ref()
+        .unwrap()
+        .parts
+        .as_ref()
+        .unwrap()
+    {
+        // A raw ROM is read in place from the store.
+        assert!(Path::new(&part.image).starts_with(store.root().join("images/blobs")));
+        assert!(prepared.firmware_image(Path::new(&part.image)).is_none());
+    }
+    let loaded = prepared
+        .load(assembly::AssemblyOptions {
+            allow_unlisted_firmware: true,
+        })
+        .unwrap();
+    assert_eq!(
+        loaded.config.images[0].source,
+        assembly::ImageSource::Inline([0x31, 0x72].repeat(16384))
+    );
+    let mut cache = SummaryCache::open(&store).unwrap();
+    cache.rebuild(&store, 64, &[], &[]).unwrap();
+    let row = cache.summary(&raw.digest).unwrap();
+    assert_eq!(row.stored_size, row.decoded_size);
+}
+
+#[test]
+fn an_in_memory_package_rom_is_not_searched_for_in_fallback_folders() {
+    let t = Temp::new();
+    let store = t.store();
+    let Some(bytes) = fixtures::fixture("kiselev-bios/bios-xi8088.bin") else {
+        return;
+    };
+    let rom = t.0.join("open.bin");
+    fs::write(&rom, &bytes).unwrap();
+    let scan =
+        firmware_import::scan(std::slice::from_ref(&rom), pc_image::firmware::catalogue()).unwrap();
+    firmware_import::publish(
+        &store,
+        &scan.candidates[0],
+        &[],
+        pc_image::firmware::catalogue(),
+    )
+    .unwrap();
+    fs::remove_file(rom).unwrap();
+    // A real fallback folder that discovery would have to list.
+    let folder = t.0.join("roms");
+    fs::create_dir(&folder).unwrap();
+    fs::write(folder.join("unrelated.bin"), [0x55; 4096]).unwrap();
+    let path = t.0.join("machine.toml");
+    fs::write(
+        &path,
+        format!(
+            "schema=1\nextends='preset:ibm-5170'\n[firmware.bios]\nimage='absent'\nsha256='{}'\n",
+            assembly::KISELEV_XI8088.sha256
+        ),
+    )
+    .unwrap();
+    let roots = [assembly::firmware_discovery::FirmwareRoot::new(
+        folder,
+        assembly::firmware_discovery::RootOrigin::CommandLine,
+    )];
+    let control = assembly::firmware_discovery::DiscoveryControl::default();
+    let mut warnings = Vec::new();
+    let prepared =
+        assembly::firmware_discovery::with_discovery_session(None, false, &control, || {
+            machine_file::prepare_for_assembly_with_firmware_store(
+                &path,
+                &roots,
+                &mut warnings,
+                Some(&store),
+            )
+        })
+        .unwrap();
+    let image = prepared
+        .resolved()
+        .0
+        .firmware
+        .as_ref()
+        .unwrap()
+        .bios
+        .as_ref()
+        .unwrap()
+        .image
+        .clone()
+        .unwrap();
+    assert_eq!(
+        prepared.firmware_image(Path::new(&image)),
+        Some(bytes.as_slice())
+    );
+    assert_eq!(control.snapshot().folder_listings, 0, "{warnings:?}");
+    assert!(warnings.is_empty(), "{warnings:?}");
+    assert!(prepared.load(assembly::AssemblyOptions::default()).is_ok());
 }

@@ -63,9 +63,9 @@ pub fn check(
         let head = manifest
             .layers
             .iter()
-            .find(|d| d.digest == m.head)
+            .find(|d| d.names(&m.head))
             .ok_or_else(|| invalid("missing disk head"))?;
-        let members = if matches!(head.media_type.as_str(), mt::DISK_BASE | mt::DISK_LAYER) {
+        let members = if matches!(head.decoded_media_type(), mt::DISK_BASE | mt::DISK_LAYER) {
             crate::disk::display_chain(
                 &m.head,
                 &m.geometry,
@@ -76,7 +76,7 @@ pub fn check(
                 },
             )?
         } else {
-            if head.media_type != mt::FLOPPY {
+            if head.decoded_media_type() != mt::FLOPPY {
                 return Err(invalid("unsupported medium"));
             }
             vec![(head.digest.clone(), head.size)]

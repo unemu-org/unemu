@@ -188,6 +188,30 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   Windows 3.x Standard-mode acceptance steps are in
   [`design/at-pm-test.md`](design/at-pm-test.md).
 - **2026-11-14 — Desktop image library and disk layers:** local-store summaries join machine files in an Explorer-style tree, virtualized details list and selected-image pane. Search, metadata facets, repository/tag groups, sorting, favorites and local labels use cached summaries. Store loading, bounded cache rebuilds, verification, imports and publication run in a background worker. Image launches pin the selected descriptor and reuse a regular workspace; Gaming mode isolates all writable media and CMOS, with explicit Keep as new image or Discard and startup recovery. Selection uses cancellable descriptor checks; full disk verification happens at Start. Disk layers exposes chains, sharing, working-sector counts, whole-machine publication/flatten and confirmed discard. Tag deletion preserves blobs. The store root follows platform data-directory conventions and can be changed under Tools. GUI acceptance remains manual; media-set browsing stays separate.
+- **2026-11-14 — Image blob compression (`+zstd`):** disk bases, sector packs,
+  floppies, firmware, media-set payloads and firmware-package ROMs and extras
+  of at least 4 KiB are stored as streaming single-threaded zstd level 3
+  frames, because the platform provider (or the media-set or firmware-package
+  envelope) declares their `+zstd` types. Frames are deterministic, so a ROM
+  embedded in a machine image reuses its package's blob. Metadata, layer
+  descriptors, CMOS and tiny payloads stay raw; `--no-compress` keeps raw
+  fixtures. OCI descriptors name the stored bytes; `unemu.decoded.digest` and
+  `unemu.decoded.size` carry the raw identity that configs and layer parents
+  use, so machine digests do not change. Every reader accepts raw and `+zstd`
+  blobs and fails closed, naming the blob, on a corrupt stream or decoded
+  mismatch. Resolution verifies by streaming and writes nothing; only a mounted
+  hard-disk base or inserted media-set medium is decoded into
+  `cache/materialized/`, after a free-space check. Machine floppies, firmware
+  and sector packs decode in memory, and layered heads stream their members.
+  `image sweep` removes decoded files no tag or workspace pin reaches;
+  `image ls` shows stored and decoded sizes and the cache size. Store-first
+  firmware resolution decodes a compressed package ROM into memory; a raw ROM
+  from an older store is still read in place. No filesystem sparse files are
+  used. `image compress` writes a new tag for existing machine images, media
+  sets and firmware packages, and keeps a machine's import record (journal
+  retention). Registry push and pull move the stored frames unchanged (no decode
+  on push), and the push guard also matches a compressed blob by its decoded
+  digest, so a raw and a compressed copy of one ROM share one class.
 - **2026-11-14 — macOS host shortcuts:** Command chords stay in the shell,
   with no guest modifier or letter scan codes. Ctrl/Alt and Ctrl+Alt+Del remain
   guest input. Mute uses ⌘⇧M and Stop uses ⌘K, preserving ⌘M minimize and

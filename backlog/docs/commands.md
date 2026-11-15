@@ -8,7 +8,9 @@ Everyday commands for this project. Keep this file **flat and copy-pasteable** â
 cargo run --offline -p cli -- image import machines/at-freedos.toml --store /path/to/store --tag dos-lab:1.0 --create
 cargo run --offline -p cli -- image import /path/to/machine.yaml --store /path/to/store --tag dos-lab:recovered --recover medium-0=tip
 cargo run --offline -p cli -- image import /path/to/machine.toml --store /path/to/store --tag dos-lab:checkpoint --recover medium-0=generation:1
+cargo run --offline -p cli -- image compress dos-lab:1.0 --tag dos-lab:compressed --store /path/to/store
 cargo run --offline -p cli -- image ls --store /path/to/store
+cargo run --offline -p cli -- image sweep --store /path/to/store
 cargo run --offline -p cli -- image run dos-lab:1.0 --store /path/to/store --workspace play --max-steps 1000000
 cargo run --offline -p cli -- image run dos-lab:1.0 --store /path/to/store --workspace disposable --new --max-steps 1000000
 cargo run --offline -p cli -- image workspace ls --store /path/to/store
@@ -22,6 +24,51 @@ cargo run --offline -p cli -- image media import /path/to/disc.iso --title "Opti
 cargo run --offline -p cli -- image media ls --store /path/to/store
 cargo run --offline -p cli -- image media show install:1.0 --store /path/to/store
 ```
+
+Compression policy (store side). Machine imports, media-set imports and
+workspace publication compress payloads of at least 4 KiB with single-threaded
+zstd level 3 when the provider declares the `+zstd` type: disk bases, sector
+packs, floppies, firmware, and media-set floppy/optical/extra payloads. Metadata,
+sealed layer TOML, CMOS and tiny blobs stay raw. Add `--no-compress` to either
+import command for raw fixtures. Compressed descriptors carry
+`unemu.decoded.digest` and `unemu.decoded.size`; OCI `digest` and `size` name the
+compressed bytes, and frames record their content size. Output is deterministic
+for the pinned zstd version; a codec update may change blob and image digests,
+never machine digests.
+
+Blobs stay compressed in the store, so compression only saves disk. Resolving an
+image (import, publication checks, `image compress`, Start, Insert) verifies the
+stored SHA-256 and streams the decoded bytes through SHA-256 without writing a
+file. A decoded copy in `cache/materialized/<decoded-sha256>` is made only for
+media a machine opens by file: a compressed hard-disk base at Start, reused at
+later Starts while its SHA-256 still matches, and a media-set medium when it is
+inserted. Floppies of machine images, firmware and sector
+packs decode in memory, and a layered disk head streams its compressed base and
+packs into the one flattened head file. Before decoding, the store must have the
+payload's size plus 256 MiB free, or the mount fails with a storage-full error.
+`image ls` ends with `materialized:BYTES`, the size of that cache. `image sweep
+--store DIR` removes decoded files that no tag or workspace pin reaches, and
+stale lock or partial files; it refuses to run while the store is in use, and a
+removed file is rebuilt at the next mount. Flattened chain heads stay until the
+future GC. No filesystem sparse files are used.
+
+The zstd crates are pinned exactly (`zstd`, `zstd-safe`, `zstd-sys`) and build
+the bundled libzstd 1.5.7. Setting `ZSTD_SYS_USE_PKG_CONFIG` in the environment
+makes `zstd-sys` link the system libzstd instead, and no Cargo setting can turn
+that off; do not set it. The `linked_zstd_is_the_pinned_release` test in
+`image-store` and the pinned compressed digest fail if another libzstd is
+linked. Media-set compression is limited by declared decoded size: floppies
+2880 KiB, optical images 900 MiB, extras 2 GiB; larger payloads stay raw.
+
+`image compress SOURCE --tag TARGET --store DIR` verifies the source and publishes
+a new manifest and tag with the declared payloads compressed, keeping the exact
+config bytes and machine digest. The source tag and its blobs stay intact; the
+destination tag must be absent. It accepts machine images and media sets; a
+machine's local import record, with its journal retention, is copied to the new
+image digest.
+`image ls` adds `stored:BYTES` and `decoded:BYTES` totals, including the manifest
+and config, for each complete image closure. No registry transport exists yet;
+multi-gigabyte bases must be compressed before any future push.
 
 Media import preserves file-list order. A directory follows symlinks, rejects
 non-regular entries, and sorts by filename. Dotfiles are skipped and named in the
@@ -120,9 +167,9 @@ recoverable generations. `cmos` names NVRAM; disk/catalogue ids are `medium-0`,
 `medium-1`, etc., in effective traversal order. The local record under
 `local/imports/<image-digest>.toml` and CLI output record policy and generation
 separately; readonly/volatile media have no generation.
-Interior corruption blocks import. Frozen disks, floppies and CMOS are whole raw
-blobs. `--store` is required. Import uses an existing store unless `--create`
-explicitly allows initialization; listing never creates a store. Repeat
+Interior corruption blocks import. Frozen disks and floppies are whole payloads,
+compressed by default; CMOS stays raw. `--store` is required. Import uses an
+existing store unless `--create` explicitly allows initialization; listing never creates a store. Repeat
 `--rom-dir DIR` to locate pinned missing firmware through the same discovery path
 as machine-file runs. Tags are checked before ingest and again by CAS at publication.
 No platform default or registry is selected.
@@ -133,12 +180,12 @@ a detached resume. `--new` requires a fresh workspace. Choose a fresh workspace
 name for a disposable gaming session; discard removes only that session. Journal
 policies persist locally; volatile policies still lose writes on close. Publication
 keeps journaled changes, seals fixed disks into sparse parent-bound layers and
-freezes changed floppies and CMOS as whole raw blobs. The CLI publishes only new
-tags. Publish, discard and abandon open existing workspaces only. Discard lists affected files and requires `--yes`; omitting it
+freezes changed floppies as whole compressed payloads and CMOS as raw blobs.
+The CLI publishes only new tags. Publish, discard and abandon open existing workspaces only. Discard lists affected files and requires `--yes`; omitting it
 provides a preview. `abandon-publication` removes a pending intent while keeping
 media and any already published tag. CAS conflicts roll back the intent, so a
 losing workspace can immediately run or publish under another tag. `--flatten`
-streams layered fixed disks to new raw bases, permitting chains to restart
+streams layered fixed disks to new compressed bases, permitting chains to restart
 before the 64-layer limit. A pending publication blocks Run: repeat the same
 publish command to finish its durable intent. The tag changes atomically after closure verification, then
 the workspace pins the new image with fresh journals. Interrupted journal tails

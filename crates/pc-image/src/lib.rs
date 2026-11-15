@@ -18,7 +18,7 @@ pub mod test_support;
 pub mod workspace;
 
 pub use import::{import_machine, ChosenGeneration, ImportOptions, ImportRecord, RecoveryChoice};
-pub use provider::{resolve, PcProvider, CMOS, PAYLOAD_TYPES};
+pub use provider::{compress_image, resolve, PcProvider, CMOS, PAYLOAD_TYPES};
 
 use image_store::{Descriptor, Digest};
 use serde::{Deserialize, Serialize};
@@ -181,7 +181,7 @@ enum NvramMode {
 fn descriptor(descriptors: &[Descriptor], digest: &Digest, kind: &str) -> Result<Descriptor> {
     descriptors
         .iter()
-        .find(|d| &d.digest == digest && d.media_type == kind)
+        .find(|d| d.names(digest) && d.decoded_media_type() == kind)
         .cloned()
         .ok_or_else(|| invalid(format!("missing {kind} descriptor for {digest}")))
 }

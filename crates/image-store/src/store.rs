@@ -14,6 +14,7 @@ use std::{
     fs::{self, File},
     io::{self, Read, Write},
     path::{Path, PathBuf},
+    sync::{Arc, Mutex},
 };
 
 /// Verified content identity and length returned by streaming ingestion.
@@ -28,7 +29,9 @@ pub struct Blob {
 pub trait BlobSource {
     /// Read and fully hash a bounded descriptor, refusing oversized data first.
     fn read_verified(&self, descriptor: &Descriptor, limit: u64) -> Result<Vec<u8>>;
-    /// Stream large payloads without requiring an allocation of their full size.
+    /// Open a verified file of the decoded payload for random access. A raw
+    /// payload is its stored blob; a compressed one is decoded into the
+    /// rebuildable materialized cache first.
     fn open_verified(&self, _descriptor: &Descriptor) -> Result<File> {
         Err(invalid("file-backed payload access unavailable"))
     }
@@ -42,7 +45,8 @@ pub trait BlobSource {
 /// descriptors (including depth <= 64, cycles and reconstruction identities).
 /// Return the complete digest closure in deterministic traversal order, excluding
 /// config, metadata and artwork. Repeated references are allowed and deduplicated
-/// by first use. The store independently checks exact agreement with the manifest.
+/// by first use. References name decoded content; the store maps them to stored
+/// descriptors and independently checks exact agreement with the manifest.
 /// Implementations are trusted validators, not untrusted content.
 pub trait ConfigValidator {
     /// Artifact codec accepted by this validator.
@@ -57,7 +61,9 @@ pub trait ConfigValidator {
         Ok(())
     }
 
-    /// Extra payload codecs supported by this provider, with stored-size limits.
+    /// Extra payload codecs supported by this provider, with size limits that
+    /// bound both stored and decoded lengths. A `+zstd` entry declares that the
+    /// matching raw payload type is compressible.
     fn payload_types(&self) -> &[PayloadType] {
         &[]
     }
@@ -99,49 +105,221 @@ pub struct ResolvedImage {
     pub metadata_read_only: bool,
     /// Artwork missing from storage; this never prevents running the machine.
     pub missing_artwork: Vec<Descriptor>,
+    /// One receipt per stored descriptor digest.
     verified: BTreeMap<Digest, VerifiedBlob>,
+    /// Decoded content digest to the stored digest of the first layer proving it.
+    content: BTreeMap<Digest, Digest>,
     publication_ready: bool,
     store_root: PathBuf,
     receipt_image: Descriptor,
     receipt_manifest: Vec<u8>,
 }
+/// A fully hashed stored blob, held open with the metadata captured before
+/// its hash. A compressed payload also carries its streamed decoded identity
+/// and, once a caller asked for a file, the verified decoded cache file.
 #[derive(Clone, Debug)]
 struct VerifiedBlob {
-    file: std::sync::Arc<File>,
+    file: Arc<File>,
     metadata: fs::Metadata,
+    /// SHA-256 of the stored bytes in `file`.
+    digest: Digest,
+    decoded: Option<Decoded>,
+}
+/// A verified decoded cache file with the metadata captured before its hash.
+type CacheFile = (Arc<File>, fs::Metadata);
+/// Decoded identity proven by streaming the stored frame through SHA-256.
+#[derive(Clone, Debug)]
+struct Decoded {
+    digest: Digest,
+    size: u64,
+    /// Filled on the first file request and shared by clones of the receipt.
+    file: Arc<Mutex<Option<CacheFile>>>,
 }
 impl VerifiedBlob {
-    fn check(&self) -> Result<()> {
-        let now = self.file.metadata()?;
-        #[cfg(unix)]
-        let same = {
-            use std::os::unix::fs::MetadataExt;
-            now.dev() == self.metadata.dev()
-                && now.ino() == self.metadata.ino()
-                && now.len() == self.metadata.len()
-                && now.mtime() == self.metadata.mtime()
-                && now.mtime_nsec() == self.metadata.mtime_nsec()
-                && now.ctime() == self.metadata.ctime()
-                && now.ctime_nsec() == self.metadata.ctime_nsec()
+    /// Refuse a receipt that does not prove exactly this descriptor's stored
+    /// and decoded identities, for example one carried over from a receipt
+    /// whose manifest was edited after verification.
+    fn proves(&self, descriptor: &Descriptor) -> Result<()> {
+        let decoded = match (&self.decoded, descriptor.is_compressed()) {
+            (None, false) => true,
+            (Some(decoded), true) => {
+                descriptor
+                    .decoded_digest()
+                    .is_ok_and(|d| d == decoded.digest)
+                    && descriptor.decoded_size().is_ok_and(|n| n == decoded.size)
+            }
+            _ => false,
         };
-        #[cfg(not(unix))]
-        let same =
-            now.len() == self.metadata.len() && now.modified()? == self.metadata.modified()?;
-        if !same {
-            return Err(invalid("payload changed after verification"));
+        if !decoded || self.digest != descriptor.digest || self.metadata.len() != descriptor.size {
+            return Err(invalid(format!(
+                "blob {}: verification receipt does not match its descriptor",
+                descriptor.digest
+            )));
         }
         Ok(())
     }
+
+    fn check(&self) -> Result<()> {
+        unchanged(&self.file, &self.metadata)
+    }
+}
+/// Refuse a file whose identity, length or timestamps moved since `before`.
+fn unchanged(file: &File, before: &fs::Metadata) -> Result<()> {
+    let now = file.metadata()?;
+    #[cfg(unix)]
+    let same = {
+        use std::os::unix::fs::MetadataExt;
+        now.dev() == before.dev()
+            && now.ino() == before.ino()
+            && now.len() == before.len()
+            && now.mtime() == before.mtime()
+            && now.mtime_nsec() == before.mtime_nsec()
+            && now.ctime() == before.ctime()
+            && now.ctime_nsec() == before.ctime_nsec()
+    };
+    #[cfg(not(unix))]
+    let same = now.len() == before.len() && now.modified()? == before.modified()?;
+    if !same {
+        return Err(invalid("payload changed after verification"));
+    }
+    Ok(())
 }
 impl ResolvedImage {
-    /// Reuse an already verified open descriptor, refusing mutations since hashing.
+    /// A verified file whose content has this SHA-256, as config references
+    /// name it: the raw blob, or for a compressed payload its decoded cache
+    /// file, materialized on the first request only. Use this for media that
+    /// needs random access; [`ResolvedImage::content_reader`] streams without
+    /// writing anything. Refuses mutations since hashing.
     pub fn verified_file(&self, digest: &Digest) -> Result<(File, fs::Metadata)> {
-        let blob = self
-            .verified
+        let (descriptor, receipt) = self.content_receipt(digest)?;
+        receipt.check()?;
+        match &receipt.decoded {
+            None => Ok((receipt.file.try_clone()?, receipt.metadata.clone())),
+            Some(decoded) => {
+                let (file, metadata) = self.decoded_file(descriptor, receipt, decoded)?;
+                Ok((file.try_clone()?, metadata))
+            }
+        }
+    }
+
+    /// Stream the decoded content with this SHA-256 without writing a file.
+    pub fn content_reader(&self, digest: &Digest) -> Result<ContentReader> {
+        let (descriptor, receipt) = self.content_receipt(digest)?;
+        receipt.check()?;
+        let stored = crate::codec::At::new(receipt.file.clone());
+        let (inner, size): (Box<dyn Read>, u64) = match &receipt.decoded {
+            None => (Box::new(stored), descriptor.size),
+            Some(decoded) => (Box::new(crate::codec::decoder(stored)?), decoded.size),
+        };
+        Ok(ContentReader {
+            inner,
+            receipt: receipt.clone(),
+            blob: descriptor.digest.clone(),
+            digest: digest.clone(),
+            size,
+            hash: Sha256::new(),
+            read: 0,
+            done: false,
+        })
+    }
+
+    fn content_receipt(&self, digest: &Digest) -> Result<(&Descriptor, &VerifiedBlob)> {
+        let stored = self
+            .content
             .get(digest)
             .ok_or_else(|| invalid("payload was not verified"))?;
-        blob.check()?;
-        Ok((blob.file.try_clone()?, blob.metadata.clone()))
+        let descriptor = self
+            .manifest
+            .layers
+            .iter()
+            .find(|d| &d.digest == stored)
+            .ok_or_else(|| invalid("payload was not verified"))?;
+        let receipt = self
+            .verified
+            .get(stored)
+            .ok_or_else(|| invalid("payload was not verified"))?;
+        receipt.proves(descriptor)?;
+        Ok((descriptor, receipt))
+    }
+
+    /// The decoded cache file of a compressed receipt, decoded on first use.
+    fn decoded_file(
+        &self,
+        descriptor: &Descriptor,
+        receipt: &VerifiedBlob,
+        decoded: &Decoded,
+    ) -> Result<CacheFile> {
+        let mut slot = decoded
+            .file
+            .lock()
+            .map_err(|_| invalid("decoded cache receipt poisoned"))?;
+        if let Some((file, metadata)) = slot.as_ref() {
+            unchanged(file, metadata).map_err(|e| named(descriptor, e))?;
+            return Ok((file.clone(), metadata.clone()));
+        }
+        let store = Store {
+            root: self.store_root.clone(),
+        };
+        let _lease = store.lease()?;
+        let (file, metadata) = store
+            .materialize(&decoded.digest, decoded.size, &receipt.file)
+            .map_err(|e| named(descriptor, e))?;
+        // The stored frame must not have changed while it was decoded.
+        receipt.check()?;
+        let file = Arc::new(file);
+        *slot = Some((file.clone(), metadata.clone()));
+        Ok((file, metadata))
+    }
+}
+
+/// Sequential reader of a verified payload's decoded bytes: the raw blob, or
+/// a compressed blob decoded on the fly. It reads at its own offset and, at
+/// the end of the stream, refuses content whose length or SHA-256 differs
+/// from the descriptor, or whose stored file changed since verification.
+pub struct ContentReader {
+    inner: Box<dyn Read>,
+    receipt: VerifiedBlob,
+    blob: Digest,
+    digest: Digest,
+    size: u64,
+    hash: Sha256,
+    read: u64,
+    done: bool,
+}
+impl ContentReader {
+    /// Decoded length the stream must deliver.
+    pub fn size(&self) -> u64 {
+        self.size
+    }
+}
+impl Read for ContentReader {
+    fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
+        if bytes.is_empty() {
+            return Ok(0);
+        }
+        let blob = &self.blob;
+        let count = self
+            .inner
+            .read(bytes)
+            .map_err(|e| io::Error::new(e.kind(), format!("blob {blob}: {e}")))?;
+        self.read = self.read.saturating_add(count as u64);
+        if self.read > self.size {
+            return Err(io::Error::other(format!(
+                "blob {blob}: payload exceeds its declared size"
+            )));
+        }
+        self.hash.update(&bytes[..count]);
+        if count == 0 && !self.done {
+            self.done = true;
+            let actual = Digest::from_hash(std::mem::take(&mut self.hash).finalize());
+            if self.read != self.size || actual != self.digest {
+                return Err(io::Error::other(format!(
+                    "blob {blob}: content differs from its descriptor"
+                )));
+            }
+            self.receipt.check().map_err(io::Error::other)?;
+        }
+        Ok(count)
     }
 }
 
@@ -247,14 +425,39 @@ impl Store {
 
     /// Stream and hash with a fixed 64 KiB buffer. A reader error is also the
     /// interruption-injection seam: dropping the staged file publishes no blob.
-    pub fn import(&self, mut reader: impl Read, expected: Option<&Digest>) -> Result<Blob> {
+    pub fn import(&self, reader: impl Read, expected: Option<&Digest>) -> Result<Blob> {
+        self.import_sized(reader, expected, None)
+    }
+
+    /// Import with an optional exact length, checked before publication so a
+    /// source that changed size leaves no blob behind.
+    pub(crate) fn import_sized(
+        &self,
+        mut reader: impl Read,
+        expected: Option<&Digest>,
+        size: Option<u64>,
+    ) -> Result<Blob> {
         let _lease = self.lease()?;
         let mut temporary = host::Temporary::create(&self.root.join("staging"))?;
         let blob = copy_hash(&mut reader, Some(&mut temporary.file))?;
+        if size.is_some_and(|n| n != blob.size) {
+            return Err(invalid("source size changed during ingest"));
+        }
         if let Some(expected) = expected {
             check_digest(expected, &blob.digest)?;
         }
         temporary.file.sync_all()?;
+        self.publish_staged(&mut temporary, &blob)?;
+        Ok(blob)
+    }
+
+    /// Rename a synced staged file to its content address without replacing
+    /// an existing blob; an existing one is verified instead.
+    pub(crate) fn publish_staged(
+        &self,
+        temporary: &mut host::Temporary,
+        blob: &Blob,
+    ) -> Result<()> {
         let destination = self.blob_path(&blob.digest);
         match host::publish_blob(&temporary.path, &destination) {
             Ok(()) => temporary.disarm(),
@@ -264,8 +467,7 @@ impl Store {
             Err(error) => return Err(error),
         }
         host::sync_dir(&self.root.join("images/blobs/sha256"))?;
-        host::sync_dir(&self.root.join("staging"))?;
-        Ok(blob)
+        host::sync_dir(&self.root.join("staging"))
     }
 
     /// Copy a source file without linking it or retaining its path in content.
@@ -284,6 +486,13 @@ impl Store {
     pub fn verify(&self, digest: &Digest, expected_size: u64) -> Result<()> {
         let _lease = self.lease()?;
         self.verify_inner(digest, expected_size, "payload")
+    }
+
+    /// Re-hash a payload's stored bytes and, when it is compressed, stream its
+    /// decoded bytes through SHA-256 against the descriptor. Writes nothing.
+    pub fn verify_descriptor(&self, descriptor: &Descriptor) -> Result<()> {
+        let _lease = self.lease()?;
+        self.verify_payload(descriptor).map(|_| ())
     }
 
     /// Store canonical manifest bytes, without creating a tag.
@@ -520,7 +729,7 @@ impl Store {
             let descriptor = manifest
                 .layers
                 .iter()
-                .find(|d| d.digest == digest)
+                .find(|d| d.names(&digest))
                 .ok_or_else(|| invalid("referenced config blob absent from manifest"))?;
             if matches!(
                 descriptor.media_type.as_str(),
@@ -528,8 +737,8 @@ impl Store {
             ) {
                 return Err(invalid("config references catalogue content"));
             }
-            if seen.insert(digest.clone()) {
-                ordered.push(digest);
+            if seen.insert(descriptor.digest.clone()) {
+                ordered.push(descriptor.digest.clone());
             }
         }
         if let Some(d) = metadata_descriptor {
@@ -579,6 +788,7 @@ impl Store {
         }
         let mut missing_artwork = Vec::new();
         let mut verified = BTreeMap::new();
+        let mut content = BTreeMap::new();
         for (position, descriptor) in manifest.layers.iter().enumerate() {
             if let Some(progress) = progress {
                 progress(position, manifest.layers.len());
@@ -586,20 +796,24 @@ impl Store {
             if let Some(source) = reuse {
                 if source.manifest.layers.iter().any(|old| old == descriptor) {
                     if let Some(receipt) = source.verified.get(&descriptor.digest) {
-                        if receipt.metadata.len() != descriptor.size {
-                            return Err(invalid("source receipt size mismatch"));
-                        }
+                        receipt.proves(descriptor)?;
                         receipt.check()?;
+                        content
+                            .entry(descriptor.decoded_digest()?)
+                            .or_insert_with(|| descriptor.digest.clone());
                         verified.insert(descriptor.digest.clone(), receipt.clone());
                         continue;
                     }
                 }
             }
-            match self.verify_file(&descriptor.digest, descriptor.size, &descriptor.media_type) {
+            match self.verify_payload(descriptor) {
                 Err(Error::MissingBlob { .. }) if !require_artwork && is_artwork(descriptor) => {
                     missing_artwork.push(descriptor.clone())
                 }
                 Ok(file) => {
+                    content
+                        .entry(descriptor.decoded_digest()?)
+                        .or_insert_with(|| descriptor.digest.clone());
                     verified.insert(descriptor.digest.clone(), file);
                 }
                 Err(error) => return Err(error),
@@ -617,6 +831,7 @@ impl Store {
             metadata_read_only: envelope.is_read_only(),
             missing_artwork,
             verified,
+            content,
             publication_ready: require_artwork,
             store_root: self.root.clone(),
             receipt_image: image.clone(),
@@ -680,22 +895,58 @@ impl Store {
         check_size(size, actual.size)?;
         check_digest(digest, &actual.digest)?;
         let verified = VerifiedBlob {
-            file: std::sync::Arc::new(file),
+            file: Arc::new(file),
             metadata,
+            digest: digest.clone(),
+            decoded: None,
         };
         verified.check()?;
         Ok(verified)
     }
+    /// Verify stored bytes and, for a compressed payload, stream the decoded
+    /// bytes through SHA-256. Nothing is written; the receipt binds to the
+    /// stored blob. Failures that are not typed mismatches name the blob.
+    fn verify_payload(&self, descriptor: &Descriptor) -> Result<VerifiedBlob> {
+        let mut stored = self
+            .verify_file(&descriptor.digest, descriptor.size, &descriptor.media_type)
+            .map_err(|e| named(descriptor, e))?;
+        if !descriptor.is_compressed() {
+            return Ok(stored);
+        }
+        let decoded = (|| -> Result<Decoded> {
+            let digest = descriptor.decoded_digest()?;
+            let size = descriptor.decoded_size()?;
+            crate::codec::verify_decoded(&stored.file, &digest, size)?;
+            stored.check()?;
+            Ok(Decoded {
+                digest,
+                size,
+                file: Arc::default(),
+            })
+        })();
+        stored.decoded = Some(decoded.map_err(|e| named(descriptor, e))?);
+        Ok(stored)
+    }
+
     fn verify_inner(&self, digest: &Digest, size: u64, role: &str) -> Result<()> {
         self.verify_file(digest, size, role).map(|_| ())
     }
 
     fn read_inner(&self, descriptor: &Descriptor, limit: u64) -> Result<Vec<u8>> {
         descriptor.validate_limit(
-            crate::artifact::neutral_size_limit(&descriptor.media_type).unwrap_or(limit),
+            crate::artifact::neutral_size_limit(&descriptor.media_type).unwrap_or(i64::MAX as u64),
         )?;
-        if descriptor.size > limit {
+        if descriptor.decoded_size()? > limit {
             return Err(invalid("blob exceeds read limit"));
+        }
+        if descriptor.is_compressed() {
+            // Bounded payloads decode into memory; no cache file is needed.
+            let stored = self
+                .verify_file(&descriptor.digest, descriptor.size, &descriptor.media_type)
+                .map_err(|e| named(descriptor, e))?;
+            return self
+                .decode_bounded(descriptor, &stored.file)
+                .map_err(|e| named(descriptor, e));
         }
         let file = self.open_inner(&descriptor.digest, descriptor.size, &descriptor.media_type)?;
         let mut bytes = Vec::new();
@@ -753,18 +1004,15 @@ impl Store {
 impl BlobSource for Store {
     fn open_verified(&self, descriptor: &Descriptor) -> Result<File> {
         let _lease = self.lease()?;
-        let mut file =
-            self.open_inner(&descriptor.digest, descriptor.size, &descriptor.media_type)?;
-        #[cfg(feature = "test-support")]
-        VERIFICATIONS.with(|counts| {
-            *counts
-                .borrow_mut()
-                .entry(descriptor.digest.clone())
-                .or_default() += 1
-        });
-        let actual = copy_hash(&mut file, None)?;
-        check_size(descriptor.size, actual.size)?;
-        check_digest(&descriptor.digest, &actual.digest)?;
+        let verified = self.verify_payload(descriptor)?;
+        let mut file = match &verified.decoded {
+            None => verified.file.try_clone()?,
+            Some(decoded) => {
+                self.materialize(&decoded.digest, decoded.size, &verified.file)
+                    .map_err(|e| named(descriptor, e))?
+                    .0
+            }
+        };
         use std::io::{Seek, SeekFrom};
         file.seek(SeekFrom::Start(0))?;
         Ok(file)
@@ -819,14 +1067,28 @@ fn copy_hash(reader: &mut dyn Read, mut writer: Option<&mut File>) -> Result<Blo
     })
 }
 
-fn check_size(expected: u64, actual: u64) -> Result<()> {
+/// Name the stored blob in a compressed payload's failure. Typed errors stay
+/// typed so callers can act on them: a missing blob, a digest or size
+/// mismatch, and a full store.
+fn named(descriptor: &Descriptor, error: Error) -> Error {
+    match error {
+        Error::MissingBlob { .. } | Error::DigestMismatch { .. } | Error::SizeMismatch { .. } => {
+            error
+        }
+        Error::Io(ref e) if e.kind() == io::ErrorKind::StorageFull => error,
+        _ if descriptor.is_compressed() => invalid(format!("blob {}: {error}", descriptor.digest)),
+        _ => error,
+    }
+}
+
+pub(crate) fn check_size(expected: u64, actual: u64) -> Result<()> {
     if expected != actual {
         return Err(Error::SizeMismatch { expected, actual });
     }
     Ok(())
 }
 
-fn check_digest(expected: &Digest, actual: &Digest) -> Result<()> {
+pub(crate) fn check_digest(expected: &Digest, actual: &Digest) -> Result<()> {
     if expected != actual {
         return Err(Error::DigestMismatch {
             expected: expected.clone(),
@@ -946,6 +1208,41 @@ impl Store {
         let _lease = self.lease()?;
         drop(self.open_inner(digest, size, "payload")?);
         Ok(self.blob_path(digest))
+    }
+
+    /// Path of the verified file a resolved image holds for this content
+    /// digest: the raw blob, or the decoded cache file of a compressed payload,
+    /// which this materializes on the first request. Refuses a path whose file
+    /// is no longer the verified one.
+    pub fn resolved_file_path(&self, image: &ResolvedImage, digest: &Digest) -> Result<PathBuf> {
+        let (descriptor, receipt) = image.content_receipt(digest)?;
+        receipt.check()?;
+        let (path, verified) = match &receipt.decoded {
+            Some(decoded) => (
+                self.decoded_path(&decoded.digest),
+                image.decoded_file(descriptor, receipt, decoded)?.1,
+            ),
+            None => (self.blob_path(&descriptor.digest), receipt.metadata.clone()),
+        };
+        let mut options = fs::OpenOptions::new();
+        options.read(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+        }
+        let current = options.open(&path)?.metadata()?;
+        if !current.is_file() || current.len() != verified.len() {
+            return Err(invalid("payload path changed after verification"));
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            if current.dev() != verified.dev() || current.ino() != verified.ino() {
+                return Err(invalid("payload path changed after verification"));
+            }
+        }
+        Ok(path)
     }
 
     /// Reject invalid or occupied tag names before an expensive ingest.
@@ -1086,7 +1383,13 @@ impl Store {
             media_type::CONFIG,
         )?;
         for descriptor in &image.manifest.layers {
-            let (verified, _) = image.verified_file(&descriptor.digest)?;
+            let receipt = image
+                .verified
+                .get(&descriptor.digest)
+                .ok_or_else(|| invalid("missing receipt"))?;
+            receipt.proves(descriptor)?;
+            receipt.check()?;
+            let verified = receipt.file.try_clone()?;
             let current =
                 self.open_inner(&descriptor.digest, descriptor.size, &descriptor.media_type)?;
             #[cfg(unix)]

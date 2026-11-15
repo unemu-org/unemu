@@ -1,17 +1,18 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Fixed-disk closure traversal and shared raw journal bases; machine-images §4.
 //! Journals keep their original raw-byte identity instead of naming descriptors.
+//! Validation writes nothing. Mounting materializes only what a machine opens
+//! as a file: a hard-disk base and a flattened layered head. Compressed
+//! floppies decode into memory, and layered heads stream their members.
 
 use crate::*;
-use image_store::{media_type as mt, BlobSource, ResolvedImage, Store};
-use media::{
-    layer::{Chain, Descriptor as Layer},
-    SectorSource, VerifiedBase,
-};
+use image_store::{media_type as mt, BlobSource, ContentReader, ResolvedImage, Store};
+use media::{layer::Descriptor as Layer, SectorSource, VerifiedBase, SECTOR_LEN};
 use std::{
+    cell::RefCell,
     collections::{BTreeMap, BTreeSet},
     fs,
-    io::{self, BufWriter, Read, Write},
+    io::{self, BufReader, BufWriter, Read, Write},
     path::PathBuf,
 };
 
@@ -44,10 +45,10 @@ fn graph(
         }
         let d = descriptors
             .iter()
-            .find(|d| d.digest == next)
+            .find(|d| d.names(&next))
             .ok_or_else(|| invalid("missing disk parent"))?;
         refs.push(next.clone());
-        match d.media_type.as_str() {
+        match d.decoded_media_type() {
             mt::DISK_BASE => break d.clone(),
             mt::DISK_LAYER => {
                 if layers.len() >= 64 {
@@ -60,23 +61,23 @@ fn graph(
                     return Err(invalid("chain geometry mismatch"));
                 }
                 let pack = descriptor(descriptors, &layer.sectors.parse()?, mt::DISK_SECTORS)?;
-                if Some(pack.size) != layer.sector_count.checked_mul(media::layer::RECORD_LEN) {
+                if Some(pack.decoded_size()?)
+                    != layer.sector_count.checked_mul(media::layer::RECORD_LEN)
+                {
                     return Err(invalid("sector pack size mismatch"));
                 }
-                refs.push(pack.digest.clone());
+                refs.push(pack.decoded_digest()?);
                 next = layer.parent.parse()?;
                 layers.push((d.digest.clone(), layer, pack));
             }
             _ => return Err(invalid("invalid fixed-disk parent type")),
         }
     };
-    if geometry(g).capacity()?.checked_mul(512) != Some(root.size) {
+    if geometry(g).capacity()?.checked_mul(512) != Some(root.decoded_size()?) {
         return Err(invalid("root geometry mismatch"));
     }
-    if layers
-        .iter()
-        .any(|(_, layer, _)| layer.base != root.digest.to_string())
-    {
+    let root_digest = root.decoded_digest()?.to_string();
+    if layers.iter().any(|(_, layer, _)| layer.base != root_digest) {
         return Err(invalid("layer root mismatch"));
     }
     Ok(Graph { root, layers, refs })
@@ -113,7 +114,7 @@ pub(crate) fn identity(
 ) -> Result<Digest> {
     let d = descriptors
         .iter()
-        .find(|d| &d.digest == head)
+        .find(|d| d.names(head))
         .ok_or_else(|| invalid("missing disk head"))?;
     if d.media_type == mt::DISK_LAYER {
         Ok(
@@ -125,35 +126,165 @@ pub(crate) fn identity(
         Ok(head.clone())
     }
 }
-fn base(image: &ResolvedImage, d: &Descriptor) -> Result<VerifiedBase> {
-    let (file, metadata) = image.verified_file(&d.digest)?;
+/// A file-backed base from the verified file the image holds for `d`; for a
+/// compressed hard disk this materializes its decoded file on first use.
+fn file_base(image: &ResolvedImage, d: &Descriptor) -> Result<VerifiedBase> {
+    let (file, metadata) = image.verified_file(&d.decoded_digest()?)?;
     Ok(VerifiedBase::from_verified_file(
         file,
         media::Header {
-            base_length: d.size,
-            base_digest: super::provider::hash_array(&d.digest)?,
+            base_length: d.decoded_size()?,
+            base_digest: super::provider::hash_array(&d.decoded_digest()?)?,
             anchor_generation: 0,
         },
         metadata,
     )?)
 }
-pub(crate) fn chain(
-    store: &Store,
-    head: &Digest,
-    g: &Geometry,
-    image: &ResolvedImage,
-) -> Result<Chain> {
-    let graph = graph(head, g, &image.manifest.layers, store)?;
-    let mut chain = Chain::new(base(image, &graph.root)?, geometry(g))?;
-    for (id, layer, pack) in graph.layers.into_iter().rev() {
-        let (file, metadata) = image.verified_file(&pack.digest)?;
-        chain.apply_verified(&id.to_string(), &layer, file, metadata)?;
-    }
-    Ok(chain)
+/// A compressed floppy is small and bounded, so it decodes into memory and
+/// never becomes a cache file.
+fn memory_base(image: &ResolvedImage, d: &Descriptor) -> Result<VerifiedBase> {
+    let mut bytes = Vec::new();
+    image
+        .content_reader(&d.decoded_digest()?)?
+        .read_to_end(&mut bytes)?;
+    VerifiedBase::from_bytes(&bytes).map_err(|e| invalid(e.to_string()))
 }
+
+/// One sequential pass over a layered disk. The base and every sector pack
+/// are read once, in LBA order, through verified content readers, and a
+/// higher layer's record replaces the sector below it, so neither a
+/// compressed base nor a compressed pack is decoded to a file or held whole
+/// in memory. Reads must run contiguously from LBA 0, the way
+/// `media::layer::copy_and_digest` drives a source; each member's length,
+/// SHA-256 and receipt are checked when the last sector has been read.
+struct Layered {
+    length: u64,
+    stream: RefCell<Stream>,
+}
+struct Stream {
+    base: BufReader<ContentReader>,
+    position: u64,
+    /// Bottom layer first.
+    packs: Vec<Pack>,
+}
+struct Pack {
+    reader: BufReader<ContentReader>,
+    remaining: u64,
+    capacity: u64,
+    previous: Option<u64>,
+    next: Option<(u64, [u8; SECTOR_LEN])>,
+}
+impl Pack {
+    /// The LBA of the next unconsumed record, reading it when needed.
+    fn peek(&mut self) -> io::Result<Option<u64>> {
+        if self.next.is_none() && self.remaining > 0 {
+            let mut address = [0; 8];
+            let mut sector = [0; SECTOR_LEN];
+            self.reader.read_exact(&mut address)?;
+            self.reader.read_exact(&mut sector)?;
+            let lba = u64::from_le_bytes(address);
+            if lba >= self.capacity || self.previous.is_some_and(|p| lba <= p) {
+                return Err(io::Error::other("unordered or out-of-range sector pack"));
+            }
+            self.previous = Some(lba);
+            self.remaining -= 1;
+            self.next = Some((lba, sector));
+        }
+        Ok(self.next.as_ref().map(|(lba, _)| *lba))
+    }
+}
+impl SectorSource for Layered {
+    fn byte_len(&self) -> u64 {
+        self.length
+    }
+    fn read_sector(&self, lba: u64) -> io::Result<[u8; SECTOR_LEN]> {
+        let mut sector = [0; SECTOR_LEN];
+        self.read_range(lba, &mut sector)?;
+        Ok(sector)
+    }
+    fn check_unchanged(&self) -> io::Result<()> {
+        // Each content reader checks its receipt when its stream ends.
+        Ok(())
+    }
+    fn read_range(&self, first_lba: u64, bytes: &mut [u8]) -> io::Result<()> {
+        let mut stream = self
+            .stream
+            .try_borrow_mut()
+            .map_err(|_| io::Error::other("layered disk read re-entered"))?;
+        let start = first_lba
+            .checked_mul(SECTOR_LEN as u64)
+            .filter(|start| *start == stream.position)
+            .ok_or_else(|| io::Error::other("layered disk read out of order"))?;
+        let end = start
+            .checked_add(bytes.len() as u64)
+            .filter(|end| *end <= self.length)
+            .ok_or_else(|| io::Error::other("layered disk read past its end"))?;
+        stream.base.read_exact(bytes)?;
+        stream.position = end;
+        let last = first_lba + bytes.len().div_ceil(SECTOR_LEN) as u64;
+        for pack in &mut stream.packs {
+            while let Some(lba) = pack.peek()? {
+                if lba >= last {
+                    break;
+                }
+                let offset = lba
+                    .checked_sub(first_lba)
+                    .ok_or_else(|| io::Error::other("unordered sector pack"))?
+                    as usize
+                    * SECTOR_LEN;
+                let count = SECTOR_LEN.min(bytes.len() - offset);
+                if let Some((_, sector)) = pack.next.take() {
+                    bytes[offset..offset + count].copy_from_slice(&sector[..count]);
+                }
+            }
+        }
+        if end == self.length {
+            // The end of the disk is the end of every member; the final empty
+            // read lets each reader check length, SHA-256 and receipt.
+            let mut probe = [0; 1];
+            if stream.base.read(&mut probe)? != 0 {
+                return Err(io::Error::other("disk base longer than its geometry"));
+            }
+            for pack in &mut stream.packs {
+                if pack.peek()?.is_some() || pack.reader.read(&mut probe)? != 0 {
+                    return Err(io::Error::other("unordered or out-of-range sector pack"));
+                }
+            }
+        }
+        Ok(())
+    }
+}
+fn layered(store: &Store, head: &Digest, g: &Geometry, image: &ResolvedImage) -> Result<Layered> {
+    let graph = graph(head, g, &image.manifest.layers, store)?;
+    let base = image.content_reader(&graph.root.decoded_digest()?)?;
+    let length = base.size();
+    let mut packs = Vec::new();
+    for (_, layer, pack) in graph.layers.into_iter().rev() {
+        packs.push(Pack {
+            reader: BufReader::with_capacity(
+                64 * 1024,
+                image.content_reader(&pack.decoded_digest()?)?,
+            ),
+            remaining: layer.sector_count,
+            capacity: layer.capacity_sectors,
+            previous: None,
+            next: None,
+        });
+    }
+    Ok(Layered {
+        length,
+        stream: RefCell::new(Stream {
+            base: BufReader::with_capacity(64 * 1024, base),
+            position: 0,
+            packs,
+        }),
+    })
+}
+/// A medium ready to mount. `path` is the verified file assembly opens, or
+/// `None` for a compressed floppy, whose bytes live only in `base`.
 #[derive(Clone)]
 pub(crate) struct Disk {
-    pub path: PathBuf,
+    pub path: Option<PathBuf>,
     pub identity: Digest,
     pub base: VerifiedBase,
     pub root: Digest,
@@ -170,32 +301,102 @@ pub(crate) fn bases(
         }
     }
     if let Some(n) = &config.nvram {
-        let d = descriptor(&image.manifest.layers, &n.head, CMOS)?;
-        bases.insert(
-            n.head.clone(),
-            Disk {
-                path: store.blob_file_path(&d.digest, d.size)?,
-                identity: d.digest.clone(),
-                base: base(image, &d)?,
-                root: d.digest.clone(),
-            },
-        );
+        bases.insert(n.head.clone(), nvram(store, n, image)?);
     }
     Ok(bases)
 }
-pub(crate) fn base_path(store: &Store, m: &Medium, image: &ResolvedImage) -> Result<Disk> {
-    let d = image
+pub(crate) fn nvram(store: &Store, n: &Nvram, image: &ResolvedImage) -> Result<Disk> {
+    let d = descriptor(&image.manifest.layers, &n.head, CMOS)?;
+    Ok(Disk {
+        path: Some(store.resolved_file_path(image, &d.decoded_digest()?)?),
+        identity: d.decoded_digest()?,
+        base: file_base(image, &d)?,
+        root: d.decoded_digest()?,
+    })
+}
+/// Validate every medium without writing to the store: a layered head is
+/// rebuilt in one streamed pass and compared with its recorded result, and a
+/// compressed base or floppy was already proven by resolution's streamed
+/// decode. Mounting, which may write decoded files, is [`bases`].
+pub(crate) fn check(store: &Store, config: &Config, image: &ResolvedImage) -> Result<()> {
+    let mut seen = BTreeSet::new();
+    for m in &config.media {
+        if !seen.insert(&m.head) {
+            continue;
+        }
+        let d = head(m, image)?;
+        if d.media_type == mt::DISK_LAYER {
+            let identity = identity(&m.head, &image.manifest.layers, store)?;
+            let (path, marker) = head_paths(store, &identity, m);
+            if path.is_file() && known_head(&marker) {
+                cached_head(&path, m, &identity)?;
+            } else {
+                let layered = layered(store, &m.head, &m.geometry, image)?;
+                if media::layer::copy_and_digest(&layered, &mut io::sink())? != identity.to_string()
+                {
+                    return Err(invalid("reconstructed disk digest mismatch"));
+                }
+            }
+        } else if !d.is_compressed() {
+            base_path(store, m, image)?;
+        }
+    }
+    if let Some(n) = &config.nvram {
+        nvram(store, n, image)?;
+    }
+    Ok(())
+}
+fn head<'a>(m: &Medium, image: &'a ResolvedImage) -> Result<&'a Descriptor> {
+    image
         .manifest
         .layers
         .iter()
-        .find(|d| d.digest == m.head)
-        .ok_or_else(|| invalid("missing disk head"))?;
+        .find(|d| d.names(&m.head))
+        .ok_or_else(|| invalid("missing disk head"))
+}
+fn head_paths(store: &Store, identity: &Digest, m: &Medium) -> (PathBuf, PathBuf) {
+    let directory = store.root().join("cache/materialized");
+    (
+        directory.join(identity.hex()),
+        directory.join(format!("{}.{}.verified", identity.hex(), m.head.hex())),
+    )
+}
+const MARKER: &[u8] = b"verified disk head v1\n";
+fn known_head(marker: &std::path::Path) -> bool {
+    fs::File::open(marker)
+        .and_then(|file| {
+            let mut bytes = Vec::new();
+            file.take(MARKER.len() as u64 + 1).read_to_end(&mut bytes)?;
+            Ok(bytes == MARKER)
+        })
+        .unwrap_or(false)
+}
+fn cached_head(path: &std::path::Path, m: &Medium, identity: &Digest) -> Result<VerifiedBase> {
+    let verified = VerifiedBase::open(path)?;
+    if verified.byte_len() != geometry(&m.geometry).capacity()? * 512
+        || verified.identity().base_digest != super::provider::hash_array(identity)?
+    {
+        return Err(invalid("materialized disk damaged"));
+    }
+    Ok(verified)
+}
+pub(crate) fn base_path(store: &Store, m: &Medium, image: &ResolvedImage) -> Result<Disk> {
+    let d = head(m, image)?;
     if d.media_type != mt::DISK_LAYER {
+        let digest = d.decoded_digest()?;
+        if d.is_compressed() && d.decoded_media_type() == mt::FLOPPY {
+            return Ok(Disk {
+                path: None,
+                identity: digest.clone(),
+                base: memory_base(image, d)?,
+                root: digest,
+            });
+        }
         return Ok(Disk {
-            path: store.blob_file_path(&d.digest, d.size)?,
-            identity: d.digest.clone(),
-            base: base(image, d)?,
-            root: d.digest.clone(),
+            path: Some(store.resolved_file_path(image, &digest)?),
+            identity: digest.clone(),
+            base: file_base(image, d)?,
+            root: digest,
         });
     }
     let identity = identity(&m.head, &image.manifest.layers, store)?;
@@ -203,7 +404,7 @@ pub(crate) fn base_path(store: &Store, m: &Medium, image: &ResolvedImage) -> Res
     fs::create_dir_all(&directory)?;
     fs::File::open(store.root())?.sync_all()?;
     fs::File::open(store.root().join("cache"))?.sync_all()?;
-    let path = directory.join(identity.hex());
+    let (path, marker) = head_paths(store, &identity, m);
     let lock = fs::OpenOptions::new()
         .read(true)
         .write(true)
@@ -213,47 +414,32 @@ pub(crate) fn base_path(store: &Store, m: &Medium, image: &ResolvedImage) -> Res
     lock.lock()?;
     // A result digest may be shared by different heads. Only a head already
     // reconstructed under this codec may skip decoding and applying its packs.
-    let marker = directory.join(format!("{}.{}.verified", identity.hex(), m.head.hex()));
-    let marker_bytes = b"verified disk head v1\n";
-    let known_head = fs::File::open(&marker)
-        .and_then(|file| {
-            let mut bytes = Vec::new();
-            file.take(marker_bytes.len() as u64 + 1)
-                .read_to_end(&mut bytes)?;
-            Ok(bytes == marker_bytes)
-        })
-        .unwrap_or(false);
+    let known_head = known_head(&marker);
     let verified = if path.exists() && known_head {
-        let verified = VerifiedBase::open(&path)?;
-        if verified.byte_len() != geometry(&m.geometry).capacity()? * 512
-            || verified.identity().base_digest != super::provider::hash_array(&identity)?
-        {
-            return Err(invalid("materialized disk damaged"));
-        }
-        verified
+        cached_head(&path, m, &identity)?
     } else if path.exists() {
-        let chain = chain(store, &m.head, &m.geometry, image)?;
+        let layered = layered(store, &m.head, &m.geometry, image)?;
         let file = fs::File::open(&path)?;
         let metadata = file.metadata()?;
-        if metadata.len() != chain.byte_len() {
+        if metadata.len() != layered.byte_len() {
             return Err(invalid("materialized disk length mismatch"));
         }
         let mut compare = CompareCache(file);
-        if media::layer::copy_and_digest(&chain, &mut compare)? != identity.to_string() {
+        if media::layer::copy_and_digest(&layered, &mut compare)? != identity.to_string() {
             return Err(invalid("reconstructed disk digest mismatch"));
         }
         VerifiedBase::from_verified_file(
             compare.0,
             media::Header {
-                base_length: chain.byte_len(),
+                base_length: layered.byte_len(),
                 base_digest: super::provider::hash_array(&identity)?,
                 anchor_generation: 0,
             },
             metadata,
         )?
     } else {
-        let chain = chain(store, &m.head, &m.geometry, image)?;
-        store.require_space(chain.byte_len())?;
+        let layered = layered(store, &m.head, &m.geometry, image)?;
+        store.require_space(layered.byte_len())?;
         let temporary = directory.join(format!("{}.pending", identity.hex()));
         if temporary.exists() {
             fs::remove_file(&temporary)?;
@@ -265,7 +451,7 @@ pub(crate) fn base_path(store: &Store, m: &Medium, image: &ResolvedImage) -> Res
                 .create_new(true)
                 .open(&temporary)?;
             let mut writer = BufWriter::with_capacity(64 * 1024, &file);
-            if media::layer::copy_and_digest(&chain, &mut writer)? != identity.to_string() {
+            if media::layer::copy_and_digest(&layered, &mut writer)? != identity.to_string() {
                 return Err(invalid("reconstructed disk digest mismatch"));
             }
             writer.flush()?;
@@ -277,7 +463,7 @@ pub(crate) fn base_path(store: &Store, m: &Medium, image: &ResolvedImage) -> Res
             Ok(VerifiedBase::from_verified_file(
                 fs::File::open(&path)?,
                 media::Header {
-                    base_length: chain.byte_len(),
+                    base_length: layered.byte_len(),
                     base_digest: super::provider::hash_array(&identity)?,
                     anchor_generation: 0,
                 },
@@ -296,7 +482,7 @@ pub(crate) fn base_path(store: &Store, m: &Medium, image: &ResolvedImage) -> Res
                 fs::remove_file(&temporary)?;
             }
             let mut file = fs::File::create_new(&temporary)?;
-            file.write_all(marker_bytes)?;
+            file.write_all(MARKER)?;
             file.sync_all()?;
             fs::rename(&temporary, &marker)?;
             fs::File::open(&directory)?.sync_all()?;
@@ -309,7 +495,7 @@ pub(crate) fn base_path(store: &Store, m: &Medium, image: &ResolvedImage) -> Res
     }
     let layer = Layer::decode(&store.read_verified(d, image_store::MAX_SMALL_BLOB)?)?;
     Ok(Disk {
-        path,
+        path: Some(path),
         identity,
         base: verified,
         root: layer.base.parse()?,

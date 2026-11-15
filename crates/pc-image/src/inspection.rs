@@ -42,7 +42,9 @@ pub fn inspect(
     image: &Descriptor,
     workspace_name: Option<&str>,
 ) -> Result<ImageDetails> {
-    let prepared = crate::provider::load_pinned(store, image, false)?;
+    // Inspection verifies but never mounts: a base is prepared only when a
+    // working journal has to be read against it.
+    let prepared = crate::provider::load_pinned(store, image, false, false)?;
     let config = &prepared.config;
     let manifest = &prepared.image.manifest;
     let selected: BTreeSet<_> = manifest
@@ -89,7 +91,7 @@ pub fn inspect(
             let d = manifest
                 .layers
                 .iter()
-                .find(|d| d.digest == head)
+                .find(|d| d.names(&head))
                 .ok_or_else(|| invalid("missing disk chain member"))?;
             let mut size = d.size;
             let parent = if d.media_type == mt::DISK_LAYER {
@@ -99,7 +101,7 @@ pub fn inspect(
                 size += manifest
                     .layers
                     .iter()
-                    .find(|d| d.digest == pack)
+                    .find(|d| d.names(&pack))
                     .ok_or_else(|| invalid("missing sector pack"))?
                     .size;
                 Some(layer.parent.parse()?)
@@ -121,16 +123,9 @@ pub fn inspect(
         let working_sectors = match m.policy {
             Policy::Readonly => Some(0),
             Policy::Volatile => None,
-            Policy::Journal => working(
-                store,
-                workspace_name,
-                &m.id,
-                &prepared
-                    .bases
-                    .get(&m.head)
-                    .ok_or_else(|| invalid("missing verified base"))?
-                    .base,
-            )?,
+            Policy::Journal => working(store, workspace_name, &m.id, || {
+                Ok(crate::disk::base_path(store, m, &prepared.image)?.base)
+            })?,
         };
         media.push(MediumDetails {
             id: m.id.clone(),
@@ -160,11 +155,6 @@ pub fn inspect(
             .find(|d| d.digest == nvram.head)
             .ok_or_else(|| invalid("missing CMOS blob"))?;
         let journaled = matches!(nvram.mode, NvramMode::Journal);
-        let base = &prepared
-            .bases
-            .get(&nvram.head)
-            .ok_or_else(|| invalid("missing CMOS base"))?
-            .base;
         media.push(MediumDetails {
             id: "cmos".into(),
             drive: "CMOS".into(),
@@ -180,7 +170,9 @@ pub fn inspect(
                 shared_by: uses.get(&nvram.head).copied().unwrap_or(0),
             }],
             working_sectors: if journaled {
-                working(store, workspace_name, "cmos", base)?
+                working(store, workspace_name, "cmos", || {
+                    Ok(crate::disk::nvram(store, nvram, &prepared.image)?.base)
+                })?
             } else {
                 None
             },
@@ -252,7 +244,7 @@ fn working(
     store: &Store,
     workspace_name: Option<&str>,
     id: &str,
-    base: &media::VerifiedBase,
+    base: impl FnOnce() -> Result<media::VerifiedBase>,
 ) -> Result<Option<usize>> {
     let Some(name) = workspace_name else {
         return Ok(Some(0));
@@ -266,7 +258,8 @@ fn working(
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Some(0)),
         Err(e) => return Err(e.into()),
     };
-    let scan = media::scan_overlay_reader(&mut file, base, media::SectorSource::byte_len(base))?;
+    let base = base()?;
+    let scan = media::scan_overlay_reader(&mut file, &base, media::SectorSource::byte_len(&base))?;
     Ok(Some(
         scan.overlay
             .ok_or_else(|| invalid("working journal requires repair"))?

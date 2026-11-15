@@ -35,7 +35,7 @@ fn whole_image_publication_layers_fixed_disks_freezes_catalogue_and_cmos() {
             .manifest
             .layers
             .iter()
-            .filter(|d| d.media_type == mt::DISK_SECTORS)
+            .filter(|d| d.decoded_media_type() == mt::DISK_SECTORS)
             .count(),
         1
     );
@@ -44,7 +44,7 @@ fn whole_image_publication_layers_fixed_disks_freezes_catalogue_and_cmos() {
             .manifest
             .layers
             .iter()
-            .filter(|d| d.media_type == mt::FLOPPY)
+            .filter(|d| d.decoded_media_type() == mt::FLOPPY)
             .count(),
         1
     );
@@ -710,7 +710,7 @@ fn depth_limit_accepts_sixty_four_and_flatten_allows_further_publication() {
             .map(|digest| {
                 descriptors
                     .iter()
-                    .find(|d| d.digest == digest)
+                    .find(|d| d.names(&digest))
                     .unwrap()
                     .clone()
             })
@@ -814,7 +814,7 @@ fn shared_result_cache_does_not_validate_an_unseen_invalid_head() {
     let mut layers = refs
         .into_iter()
         .filter(|id| seen.insert(id.clone()))
-        .map(|id| descriptors.iter().find(|d| d.digest == id).unwrap().clone())
+        .map(|id| descriptors.iter().find(|d| d.names(&id)).unwrap().clone())
         .collect::<Vec<_>>();
     layers.extend(
         image
@@ -844,4 +844,228 @@ fn shared_result_cache_does_not_validate_an_unseen_invalid_head() {
         .update_tag("test:invalid", &descriptor, None, &PcProvider)
         .is_err());
     fixture.assert_complete("test:good", 91);
+}
+
+#[test]
+fn compressed_bases_and_sector_packs_publish_and_resume_through_disk_chains() {
+    use image_store::BlobSource;
+    let fixture = Fixture::new();
+    fixture
+        .store
+        .compress_image("test:source", "test:compressed", &PcProvider)
+        .unwrap();
+    fixture.changed_from("compressed", "test:compressed", 0x91);
+    let owner = fixture.store.workspace("compressed").unwrap();
+    let machine = workspace::start(&owner, "test:compressed").unwrap();
+    let fixed = machine
+        .drives
+        .iter()
+        .find(|d| matches!(d.kind, assembly::DriveKind::HardDisk { .. }))
+        .unwrap();
+    let assembly::ImageSource::File(base) = &fixed.image else {
+        panic!()
+    };
+    let assembly::WriteMode::Journal { path, .. } = &fixed.write else {
+        panic!()
+    };
+    let raw = fs::read(base).unwrap();
+    let mut journal =
+        media::JournalMedia::open(path, &raw, raw.len() as u64, Default::default()).unwrap();
+    let sectors: Vec<_> = (0..9).map(|lba| (lba, [0x91; 512])).collect();
+    journal.write_batch(&sectors);
+    journal.finish().unwrap();
+    let published = workspace::publish(&owner, "test:layered-compressed", None).unwrap();
+    let image = fixture
+        .store
+        .resolve_descriptor(&published, &PcProvider)
+        .unwrap();
+    let pack = image
+        .manifest
+        .layers
+        .iter()
+        .find(|d| d.decoded_media_type() == mt::DISK_SECTORS)
+        .unwrap();
+    assert!(pack.is_compressed());
+    assert_eq!(
+        fixture.store.read_verified(pack, 8192).unwrap().len(),
+        9 * 520
+    );
+    let resumed = workspace::start(&owner, "test:layered-compressed").unwrap();
+    let fixed = resumed
+        .drives
+        .iter()
+        .find(|d| matches!(d.kind, assembly::DriveKind::HardDisk { .. }))
+        .unwrap();
+    let assembly::ImageSource::File(path) = &fixed.image else {
+        panic!()
+    };
+    assert_eq!(&fs::read(path).unwrap()[..9 * 512], &[0x91; 9 * 512]);
+}
+
+/// Decoded payload and flattened-head files in the cache, without lock files.
+fn decoded_files(store: &image_store::Store) -> Vec<String> {
+    let mut names: Vec<_> = match fs::read_dir(store.root().join("cache/materialized")) {
+        Ok(entries) => entries
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|name| !name.ends_with(".lock"))
+            .collect(),
+        Err(_) => Vec::new(),
+    };
+    names.sort();
+    names
+}
+fn fixed_disk(machine: &assembly::MachineConfig) -> &assembly::DriveConfig {
+    machine
+        .drives
+        .iter()
+        .find(|d| matches!(d.kind, assembly::DriveKind::HardDisk { .. }))
+        .unwrap()
+}
+/// Every regular file under `root` with its length and modification time.
+fn tree(root: &std::path::Path) -> Vec<(std::path::PathBuf, u64, std::time::SystemTime)> {
+    let mut files = Vec::new();
+    let mut pending = vec![root.to_path_buf()];
+    while let Some(directory) = pending.pop() {
+        for entry in fs::read_dir(&directory).unwrap() {
+            let entry = entry.unwrap();
+            let metadata = entry.metadata().unwrap();
+            if metadata.is_dir() {
+                pending.push(entry.path());
+            } else {
+                files.push((entry.path(), metadata.len(), metadata.modified().unwrap()));
+            }
+        }
+    }
+    files.sort();
+    files
+}
+
+#[test]
+fn layered_heads_stream_compressed_bases_and_packs_and_flatten_compressed_bases() {
+    let fixture = Fixture::new();
+    pc_image::compress_image(&fixture.store, "test:source", "test:compressed").unwrap();
+    let source = fixture
+        .store
+        .resolve("test:compressed", &PcProvider)
+        .unwrap();
+    let base = source
+        .manifest
+        .layers
+        .iter()
+        .find(|d| d.decoded_media_type() == mt::DISK_BASE)
+        .unwrap()
+        .clone();
+    assert!(base.is_compressed());
+    let base_hex = base.decoded_digest().unwrap().hex().to_owned();
+    let owner = fixture.store.workspace("layer").unwrap();
+    let prepared = workspace::prepare_start(&owner, "test:compressed", true).unwrap();
+    // The session mounted the hard disk only.
+    assert_eq!(
+        decoded_files(&fixture.store),
+        std::slice::from_ref(&base_hex)
+    );
+    let fixed = fixed_disk(&prepared.machine);
+    let (assembly::ImageSource::File(path), assembly::WriteMode::Journal { path: journal, .. }) =
+        (&fixed.image, &fixed.write)
+    else {
+        panic!("journaled file-backed disk expected")
+    };
+    let raw = fs::read(path).unwrap();
+    let mut media =
+        media::JournalMedia::open(journal, &raw, raw.len() as u64, Default::default()).unwrap();
+    // Enough sectors that the pack is large enough to compress.
+    let sectors: Vec<_> = (0..9).map(|lba| (lba, [0x93; 512])).collect();
+    media.write_batch(&sectors);
+    media.finish().unwrap();
+    drop(prepared);
+    workspace::publish(&owner, "test:layered", None).unwrap();
+    drop(owner);
+    let layered = fixture.store.resolve("test:layered", &PcProvider).unwrap();
+    let pack = layered
+        .manifest
+        .layers
+        .iter()
+        .find(|d| d.decoded_media_type() == mt::DISK_SECTORS)
+        .unwrap();
+    assert!(pack.is_compressed());
+    // Publication marks every compressed payload for the push guard.
+    assert!(layered
+        .manifest
+        .layers
+        .iter()
+        .all(|d| d.annotations.contains_key("unemu.redistribution")));
+    let pack_hex = pack.decoded_digest().unwrap().hex().to_owned();
+    // Without a decoded base, the head must stream the compressed base.
+    fs::remove_file(
+        fixture
+            .store
+            .root()
+            .join("cache/materialized")
+            .join(&base_hex),
+    )
+    .unwrap();
+    let before = tree(fixture.store.root());
+    fixture.store.resolve("test:layered", &PcProvider).unwrap();
+    pc_image::inspection::inspect(
+        &fixture.store,
+        &fixture.store.tag_descriptor("test:layered").unwrap(),
+        None,
+    )
+    .unwrap();
+    assert_eq!(tree(fixture.store.root()), before);
+    let next = fixture.store.workspace("resume").unwrap();
+    let prepared = workspace::prepare_start(&next, "test:layered", true).unwrap();
+    let names = decoded_files(&fixture.store);
+    assert_eq!(names.len(), 2, "{names:?}");
+    assert!(names.iter().any(|n| n.ends_with(".verified")));
+    assert!(!names.contains(&base_hex) && !names.contains(&pack_hex));
+    let assembly::ImageSource::File(head) = &fixed_disk(&prepared.machine).image else {
+        panic!("file-backed head expected")
+    };
+    let head = fs::read(head).unwrap();
+    assert_eq!(&head[..9 * 512], &[0x93; 9 * 512]);
+    assert_eq!(&head[9 * 512..], &raw[9 * 512..]);
+    drop(prepared);
+    drop(next);
+    // Flattening a compressed base produces a new base, not a layer.
+    fixture.changed_from("flat", "test:compressed", 0x94);
+    let owner = fixture.store.open_workspace("flat").unwrap();
+    workspace::publish_with_options(&owner, "test:flat", None, true, |_| Ok(())).unwrap();
+    drop(owner);
+    let flat = fixture.store.resolve("test:flat", &PcProvider).unwrap();
+    assert!(!flat
+        .manifest
+        .layers
+        .iter()
+        .any(|d| d.media_type == mt::DISK_LAYER));
+    fixture.assert_complete("test:flat", 0x94);
+}
+
+#[test]
+fn sweep_keeps_decoded_bases_of_tags_and_workspace_pins_only() {
+    let fixture = Fixture::new();
+    pc_image::compress_image(&fixture.store, "test:source", "test:compressed").unwrap();
+    let descriptor = fixture.store.tag_descriptor("test:compressed").unwrap();
+    let owner = fixture.store.workspace("pinned").unwrap();
+    workspace::prepare_start(&owner, "test:compressed", true).unwrap();
+    drop(owner);
+    let decoded = decoded_files(&fixture.store);
+    assert_eq!(decoded.len(), 1);
+    fixture
+        .store
+        .remove_tag("test:compressed", &descriptor.digest)
+        .unwrap();
+    // The workspace still pins the detached image, so its base stays.
+    workspace::sweep_materialized(&fixture.store).unwrap();
+    assert_eq!(decoded_files(&fixture.store), decoded);
+    fixture
+        .store
+        .open_workspace("pinned")
+        .unwrap()
+        .discard_and_remove()
+        .unwrap();
+    let sweep = workspace::sweep_materialized(&fixture.store).unwrap();
+    assert!(decoded_files(&fixture.store).is_empty());
+    assert_eq!(sweep.removed_bytes, 32 * 512);
+    assert_eq!(fixture.store.materialized_bytes().unwrap(), 0);
 }

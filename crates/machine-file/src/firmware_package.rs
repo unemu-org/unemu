@@ -180,10 +180,11 @@ pub fn reconstructed(
     blobs: &dyn BlobSource,
     descriptors: &[Descriptor],
 ) -> Result<Vec<u8>> {
+    // Bindings name decoded content; a compressed ROM decodes in memory.
     let read = |digest: &Digest| {
         let descriptor = descriptors
             .iter()
-            .find(|d| &d.digest == digest)
+            .find(|d| d.names(digest))
             .ok_or_else(|| invalid("missing ROM descriptor"))?;
         blobs.read_verified(descriptor, 1024 * 1024)
     };
@@ -207,10 +208,14 @@ pub fn reconstructed(
 
 /// Resolve matching pins in stable package-digest order without visiting ROM roots.
 /// A selected package is fully verified; corruption is an error, never a miss.
+/// A raw ROM blob is named by its store path. A compressed ROM is decoded into
+/// `memory` under a key path that is never created, so no decoded copy of a
+/// ROM reaches the disk; loaders read that key from `memory`.
 pub(crate) fn resolve_document(
     document: &mut crate::MachineFile,
     store: &image_store::Store,
     warnings: &mut Vec<String>,
+    memory: &mut std::collections::BTreeMap<std::path::PathBuf, Vec<u8>>,
 ) -> Result<Vec<Digest>> {
     use image_store::{
         firmware::Validator,
@@ -257,7 +262,7 @@ pub(crate) fn resolve_document(
     tags.dedup_by(|a, b| a.manifest.digest == b.manifest.digest);
     let catalogue = model.firmware_catalogue();
     let mut sources = Vec::new();
-    let mut verified = std::collections::BTreeSet::new();
+    let mut verified = std::collections::BTreeMap::new();
     if let Some(firmware) = &mut document.firmware {
         for (is_bios, rom) in firmware.bios.iter_mut().map(|r| (true, r)).chain(
             firmware
@@ -331,21 +336,22 @@ pub(crate) fn resolve_document(
                 let Some(found) = found else {
                     continue;
                 };
-                if verified.insert(tag.manifest.digest.clone()) {
-                    store.resolve_descriptor(
+                if !verified.contains_key(&tag.manifest.digest) {
+                    let image = store.resolve_descriptor(
                         &tag.manifest,
                         &Validator(&PcFirmwareRules(catalogue)),
                     )?;
+                    verified.insert(tag.manifest.digest.clone(), image);
                 }
+                let image = &verified[&tag.manifest.digest];
                 if let Some(blob) = &found.blob {
-                    rom.image = Some(path_text(&store.blob_file_path(blob, found.size)?)?);
+                    rom.image = Some(rom_path(store, image, blob, found.size, memory)?);
                 } else if let Some(parts) = &mut rom.parts {
                     let indices = bijection(parts, &found.parts, part_matches)
                         .ok_or_else(|| invalid("package chip layout changed"))?;
                     for (part, index) in parts.iter_mut().zip(indices) {
                         let matching = &found.parts[index];
-                        part.image =
-                            path_text(&store.blob_file_path(&matching.blob, matching.size)?)?;
+                        part.image = rom_path(store, image, &matching.blob, matching.size, memory)?;
                     }
                 }
                 if !sources.contains(&tag.manifest.digest) {
@@ -356,6 +362,37 @@ pub(crate) fn resolve_document(
         }
     }
     Ok(sources)
+}
+fn rom_path(
+    store: &image_store::Store,
+    image: &image_store::ResolvedImage,
+    digest: &Digest,
+    size: u64,
+    memory: &mut std::collections::BTreeMap<std::path::PathBuf, Vec<u8>>,
+) -> Result<String> {
+    use std::io::Read;
+    let compressed = image
+        .manifest
+        .layers
+        .iter()
+        .find(|d| d.names(digest))
+        .ok_or_else(|| invalid("missing ROM descriptor"))?
+        .is_compressed();
+    if !compressed {
+        return path_text(&store.blob_file_path(digest, size)?);
+    }
+    let mut bytes = Vec::new();
+    image
+        .content_reader(digest)?
+        .take(1024 * 1024 + 1)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() as u64 != size {
+        return Err(invalid("package ROM length differs from its binding"));
+    }
+    let key = store.root().join("cache/in-memory").join(digest.hex());
+    let text = path_text(&key)?;
+    memory.insert(key, bytes);
+    Ok(text)
 }
 fn path_text(path: &std::path::Path) -> Result<String> {
     path.to_str()

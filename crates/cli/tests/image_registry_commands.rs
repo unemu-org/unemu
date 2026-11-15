@@ -311,7 +311,20 @@ fn push_pull_and_list_through_a_private_registry() {
     );
     let (code, listed, errors) = run(&os(&[&"image", &"ls", &"--store", &target]));
     assert_eq!(code, 0, "{errors}");
-    assert_eq!(listed, format!("private/lab:1.0.0\t{digest}\tmachine\n"));
+    // The pulled image arrived as compressed frames and nothing was decoded.
+    let (row, cache) = listed.split_once('\n').unwrap();
+    assert_eq!(cache, "materialized:0\n");
+    let fields: Vec<_> = row.split('\t').collect();
+    assert_eq!(
+        fields[..3],
+        ["private/lab:1.0.0", digest.as_str(), "machine"]
+    );
+    let size =
+        |field: &str, key: &str| -> u64 { field.strip_prefix(key).unwrap().parse().unwrap() };
+    assert!(
+        size(fields[3], "stored:") < size(fields[4], "decoded:"),
+        "{row}"
+    );
 
     let (code, output, errors) = child(
         &os(&[
@@ -406,6 +419,36 @@ fn closure(store: &Path, tag: &str) -> (String, BTreeSet<String>) {
         .map(|d| d.digest.to_string())
         .collect();
     (image.digest.to_string(), blobs)
+}
+
+/// The stored ROM layer of a local firmware package, found by the decoded
+/// SHA-256 its config binds, whether the layer is raw or `+zstd`.
+fn rom_layer(store: &Path, tag: &str, rom: &str) -> image_store::Descriptor {
+    use image_store::BlobSource;
+    let store = image_store::Store::open_existing(store).unwrap();
+    let image = store.tag_descriptor(tag).unwrap();
+    let bytes = store
+        .read_verified(&image, image_store::MAX_SMALL_BLOB)
+        .unwrap();
+    let manifest = image_store::Manifest::decode_for_summary(&bytes).unwrap();
+    let rom: image_store::Digest = rom.parse().unwrap();
+    let layer = manifest
+        .layers
+        .into_iter()
+        .find(|d| d.names(&rom))
+        .unwrap_or_else(|| panic!("no layer holds {rom}"));
+    assert_eq!(
+        layer.decoded_media_type(),
+        image_store::media_type::FIRMWARE
+    );
+    layer
+}
+/// The dry-run line of a stored layer: `layer digest size media-type `.
+fn layer_line(layer: &image_store::Descriptor) -> String {
+    format!(
+        "layer\t{}\t{}\t{}\t",
+        layer.digest, layer.size, layer.media_type
+    )
 }
 
 /// Digests of the progress lines that start with `word`.
@@ -540,7 +583,12 @@ fn an_open_firmware_package_round_trips_through_a_private_registry() {
     // offers it no Start, and running it as a machine is refused.
     let (code, listed, errors) = run(&os(&[&"image", &"ls", &"--store", &target]));
     assert_eq!(code, 0, "{errors}");
-    assert_eq!(listed, format!("{tag}\t{digest}\tfirmware\n"));
+    let (row, cache) = listed.split_once('\n').unwrap();
+    assert!(
+        row.starts_with(&format!("{tag}\t{digest}\tfirmware\tstored:")),
+        "{listed}"
+    );
+    assert_eq!(cache, "materialized:0\n");
     let (code, output, errors) = run(&os(&[
         &"image",
         &"run",
@@ -629,21 +677,27 @@ fn user_supplied_firmware_is_refused_by_public_registries_and_the_official_names
         }
         run(&args)
     };
+    // Refusals and the dry run name the blob that would be uploaded: the
+    // ROM's stored layer, raw or compressed, found by its decoded digest.
+    let layer = rom_layer(&store, &tag, &rom);
+    assert_eq!(layer.decoded_size().unwrap(), 32768);
+    let stored = layer.digest.to_string();
     let public = config(&dir, &registry, false);
     let (code, _, errors) = push(format!("{host}/private/rom:1"), &public, false);
     assert_eq!(code, 1);
     assert!(errors.contains("not marked private"), "{errors}");
-    assert!(errors.contains(&rom), "{errors}");
+    assert!(errors.contains(&stored), "{errors}");
     let private = config(&dir, &registry, true);
     let (code, _, errors) = push(format!("{host}/unemu/rom:1"), &private, false);
     assert_eq!(code, 1);
     assert!(errors.contains("official namespace"), "{errors}");
-    assert!(errors.contains(&rom), "{errors}");
+    assert!(errors.contains(&stored), "{errors}");
     let (code, output, errors) = push(format!("{host}/private/rom:1"), &private, true);
     assert_eq!(code, 0, "{errors}");
     assert!(
         output.contains(&format!(
-            "layer\t{rom}\t32768\tapplication/vnd.unemu.firmware.v1\tuser-supplied\tthis image\n"
+            "{}user-supplied\tthis image\n",
+            layer_line(&layer)
         )),
         "{output}"
     );
@@ -661,6 +715,8 @@ fn a_firmware_dry_run_shows_the_rom_layer_effective_class() {
     let registry = MockRegistry::start(Policy::default());
     let host = registry.host();
     let rom = format!("sha256:{}", assembly::KISELEV_XI8088.sha256);
+    let layer = rom_layer(&store, &tag, &rom);
+    assert_eq!(layer.decoded_size().unwrap(), 32768);
     let dry_run = |preferences: &Path| {
         run(&os(&[
             &"image",
@@ -678,7 +734,7 @@ fn a_firmware_dry_run_shows_the_rom_layer_effective_class() {
     let (code, output, errors) = dry_run(&private);
     assert_eq!(code, 0, "{errors}");
     assert!(output.contains(&format!("image:{digest}\n")), "{output}");
-    let rom_layer = format!("layer\t{rom}\t32768\tapplication/vnd.unemu.firmware.v1\t");
+    let rom_layer = layer_line(&layer);
     assert!(
         output.contains(&format!("{rom_layer}open\tthis image\n")),
         "{output}"
@@ -692,8 +748,20 @@ fn a_firmware_dry_run_shows_the_rom_layer_effective_class() {
     assert!(output.ends_with("guard:allowed\n"), "{output}");
 
     // A machine image embedding the same BIOS records it as user-supplied;
-    // the most restrictive local mark decides.
-    import(&store, "lab:1.0.0");
+    // the most restrictive local mark decides. It holds the BIOS raw, so the
+    // package's compressed copy inherits the mark through its decoded digest.
+    let machine = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../machines/at-freedos.toml");
+    let (code, _, errors) = run(&os(&[
+        &"image",
+        &"import",
+        &machine,
+        &"--store",
+        &store,
+        &"--tag",
+        &"lab:1.0.0",
+        &"--no-compress",
+    ]));
+    assert_eq!(code, 0, "{errors}");
     let (code, output, errors) = dry_run(&private);
     assert_eq!(code, 0, "{errors}");
     assert!(
@@ -704,6 +772,6 @@ fn a_firmware_dry_run_shows_the_rom_layer_effective_class() {
     let (code, output, errors) = dry_run(&public);
     assert_eq!(code, 1, "{output}");
     assert!(output.ends_with("guard:refused\n"), "{output}");
-    assert!(errors.contains(&rom), "{errors}");
+    assert!(errors.contains(&layer.digest.to_string()), "{errors}");
     assert!(registry.log().is_empty(), "{:?}", registry.log());
 }

@@ -1397,3 +1397,93 @@ fn review_busy_store_and_workspace_media_outputs() {
         .validate_media_output(&store.root().join("images/blobs/bad.upfj"))
         .is_err());
 }
+
+#[test]
+fn decoded_receipts_do_not_alias_stored_ids_or_trust_changed_bindings() {
+    struct CompressedProvider;
+    impl ConfigValidator for CompressedProvider {
+        fn platform(&self) -> &str {
+            "c64"
+        }
+        fn payload_types(&self) -> &[image_store::PayloadType] {
+            &[image_store::PayloadType {
+                media_type: "application/vnd.unemu.disk.base.v1+zstd",
+                max_size: 64 * 1024,
+            }]
+        }
+        fn validate(
+            &self,
+            table: &toml::Table,
+            descriptors: &[Descriptor],
+            blobs: &dyn BlobSource,
+        ) -> Result<Vec<Digest>> {
+            Provider("c64").validate(table, descriptors, blobs)
+        }
+    }
+    let temp = Temp::new();
+    let store = temp.store();
+    let b = store
+        .import_payload(
+            [0x45; 8192].as_slice(),
+            mt::DISK_BASE,
+            8192,
+            None,
+            CompressedProvider.payload_types(),
+        )
+        .unwrap();
+    let encoded_b = fs::read(store.blob_file_path(&b.digest, b.size).unwrap()).unwrap();
+    let a_raw = Digest::of(&encoded_b);
+    assert_eq!(a_raw, b.digest);
+    let encoded_a = zstd::stream::encode_all(encoded_b.as_slice(), 3).unwrap();
+    let blob = store.import(encoded_a.as_slice(), None).unwrap();
+    let mut a = Descriptor::new(
+        "application/vnd.unemu.disk.base.v1+zstd",
+        blob.digest,
+        blob.size,
+    );
+    a.annotations
+        .insert(image_store::codec::DECODED_DIGEST.into(), a_raw.to_string());
+    a.annotations.insert(
+        image_store::codec::DECODED_SIZE.into(),
+        encoded_b.len().to_string(),
+    );
+    let b_raw = b.decoded_digest().unwrap();
+    let cfg = config(&store, "c64", &[&a_raw, &b_raw]);
+    let metadata = put(
+        &store,
+        mt::METADATA,
+        br#"{"schema":1,"platform":"c64","titles":[]}"#,
+    );
+    let provider = CompressedProvider;
+    let manifest =
+        Manifest::new_with_types("c64", cfg, vec![a, b, metadata], provider.payload_types())
+            .unwrap();
+    let descriptor = store
+        .import_manifest_with_types(&manifest, provider.payload_types())
+        .unwrap();
+    let image = store.verify_publication(&descriptor, &provider).unwrap();
+    let (mut file, metadata) = image.verified_file(&a_raw).unwrap();
+    assert_eq!(metadata.len(), encoded_b.len() as u64);
+    std::io::Seek::rewind(&mut file).unwrap();
+    let mut actual = Vec::new();
+    file.read_to_end(&mut actual).unwrap();
+    assert_eq!(Digest::of(&actual), a_raw);
+    let mut changed_source = image.clone();
+    let fake = Digest::of(b"unrelated decoded identity");
+    changed_source.manifest.layers[0]
+        .annotations
+        .insert(image_store::codec::DECODED_DIGEST.into(), fake.to_string());
+    let mut changed = changed_source.manifest.clone();
+    changed.config = config(&store, "c64", &[&fake, &b_raw]);
+    let proposed = store
+        .import_manifest_with_types(&changed, provider.payload_types())
+        .unwrap();
+    let error = store
+        .verify_publication_reusing(&proposed, &provider, &changed_source)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains(&changed.layers[0].digest.to_string()),
+        "{error}"
+    );
+}

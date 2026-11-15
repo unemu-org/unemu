@@ -357,12 +357,17 @@ impl LoadedMachine {
 }
 
 #[derive(Default)]
-struct LaunchImageReader {
+struct LaunchImageReader<'a> {
     bases: std::collections::BTreeMap<PathBuf, media::VerifiedBase>,
+    /// Verified decoded ROMs from compressed firmware packages.
+    memory: Option<&'a std::collections::BTreeMap<PathBuf, Vec<u8>>>,
 }
 
-impl ImageReader for LaunchImageReader {
+impl ImageReader for LaunchImageReader<'_> {
     fn read(&mut self, path: &Path) -> std::io::Result<Vec<u8>> {
+        if let Some(bytes) = self.memory.and_then(|memory| memory.get(path)) {
+            return Ok(bytes.clone());
+        }
         FileImageReader.read(path)
     }
     fn read_journal_base(&mut self, path: &Path) -> std::io::Result<Vec<u8>> {
@@ -427,6 +432,9 @@ pub fn load_for_assembly_with_firmware_roots(
 /// revalidates pins in place and performs no directory discovery.
 pub struct PreparedMachineFile {
     firmware_sources: Vec<image_store::Digest>,
+    /// Decoded ROMs of compressed firmware packages, keyed by the never-created
+    /// path the document names; see [`PreparedMachineFile::firmware_image`].
+    firmware_images: std::collections::BTreeMap<PathBuf, Vec<u8>>,
     document: MachineFile,
     origins: Origins,
 }
@@ -488,16 +496,20 @@ pub fn prepare_for_assembly_with_firmware_store(
             }
         })
         .collect::<Vec<_>>();
+    let mut firmware_images = std::collections::BTreeMap::new();
     let firmware_sources = match store {
-        Some(store) => firmware_package::resolve_document(&mut document, store, warnings)
-            .map_err(|e| ParseError::new(path.as_ref(), None, e.to_string(), None))?,
+        Some(store) => {
+            firmware_package::resolve_document(&mut document, store, warnings, &mut firmware_images)
+                .map_err(|e| ParseError::new(path.as_ref(), None, e.to_string(), None))?
+        }
         None => Vec::new(),
     };
-    firmware_discovery::resolve(&mut document, &origins, &roots, warnings)?;
+    firmware_discovery::resolve(&mut document, &origins, &roots, warnings, &firmware_images)?;
     Ok(PreparedMachineFile {
         document,
         origins,
         firmware_sources,
+        firmware_images,
     })
 }
 
@@ -505,6 +517,13 @@ impl PreparedMachineFile {
     /// Contributing immutable packages, in first-use order; provenance only.
     pub fn firmware_sources(&self) -> &[image_store::Digest] {
         &self.firmware_sources
+    }
+
+    /// The verified decoded bytes of a ROM that a compressed firmware package
+    /// supplied. The document names such a ROM by a path that does not exist,
+    /// so readers of the resolved document must look here first.
+    pub fn firmware_image(&self, path: &Path) -> Option<&[u8]> {
+        self.firmware_images.get(path).map(Vec::as_slice)
     }
 
     /// Borrow the resolved, discovered document and its unchanged source origins.
@@ -516,7 +535,10 @@ impl PreparedMachineFile {
     pub fn load(&self, options: assembly::AssemblyOptions) -> Result<LoadedMachine, LoadError> {
         let document = &self.document;
         let origins = &self.origins;
-        let mut reader = LaunchImageReader::default();
+        let mut reader = LaunchImageReader {
+            memory: Some(&self.firmware_images),
+            ..LaunchImageReader::default()
+        };
         let (config, diagnostics) = lower::lower_tracked(document, origins, &mut reader, options)?;
         let cards = document
             .card

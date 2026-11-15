@@ -101,6 +101,7 @@ pub struct ImageSummary {
     pub stored_size: u64,
     #[serde(default)]
     pub storage_blobs: Vec<Descriptor>,
+    pub decoded_size: u64,
     pub labels: Vec<String>,
     pub favorite: bool,
     pub last_run: Option<String>,
@@ -147,7 +148,7 @@ struct CacheFile {
 impl Default for CacheFile {
     fn default() -> Self {
         Self {
-            schema: 4,
+            schema: 5,
             images: BTreeMap::new(),
             failures: BTreeMap::new(),
             warnings: Vec::new(),
@@ -169,7 +170,8 @@ fn read_cache(store: &Store) -> Result<CacheFile> {
                 for (id, failure) in &mut cache.failures {
                     failure.image = id.clone();
                 }
-                if cache.schema == 4
+                // Schema 5 adds decoded sizes; older rows are rebuilt.
+                if cache.schema == 5
                     && cache.images.iter().all(|(id, row)| id == &row.image)
                     && cache.failures.iter().all(|(id, row)| id == &row.image)
                 {
@@ -440,6 +442,7 @@ impl SummaryCache {
                 sum.checked_add(d.size)
                     .ok_or_else(|| invalid("summary size overflow"))
             })?;
+        let decoded_size = decoded_total(tag, &manifest)?;
         let tokens = tokenize(&format!(
             "{} {} {}",
             name,
@@ -472,6 +475,7 @@ impl SummaryCache {
                 .chain(std::iter::once(&tag.manifest))
                 .cloned()
                 .collect(),
+            decoded_size,
             labels,
             favorite: entry.favorite,
             last_run: entry.last_run,
@@ -550,6 +554,7 @@ impl SummaryCache {
             .chain(std::iter::once(&tag.manifest))
             .cloned()
             .collect();
+        let decoded_size = decoded_total(tag, &manifest)?;
         let value = serde_json::to_value(&config).map_err(|e| invalid(e.to_string()))?;
         let mut text = String::new();
         collect_text(&value, &mut text);
@@ -569,6 +574,7 @@ impl SummaryCache {
             name: config.name,
             stored_size,
             storage_blobs,
+            decoded_size,
             labels: entry.labels,
             favorite: entry.favorite,
             last_run: entry.last_run,
@@ -698,6 +704,19 @@ impl SummaryCache {
             })
             .collect()
     }
+}
+
+/// Decoded bytes of one complete image closure: the manifest, the config and
+/// every layer at its decoded length.
+fn decoded_total(tag: &Tag, manifest: &Manifest) -> Result<u64> {
+    manifest
+        .layers
+        .iter()
+        .chain(std::iter::once(&manifest.config))
+        .try_fold(tag.manifest.size, |sum, d| {
+            sum.checked_add(d.decoded_size()?)
+                .ok_or_else(|| invalid("summary size overflow"))
+        })
 }
 
 fn all_in(wanted: &[String], actual: &[String]) -> bool {
@@ -910,6 +929,7 @@ mod tests {
                 name: "Large".into(),
                 stored_size: 1,
                 storage_blobs: vec![],
+                decoded_size: 1,
                 labels: vec!["facet".into()],
                 favorite: false,
                 last_run: None,

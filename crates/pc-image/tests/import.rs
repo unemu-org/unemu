@@ -86,7 +86,7 @@ fn first_bytes(store: &Store, tag: &str, kind: &str) -> Vec<u8> {
         .manifest
         .layers
         .iter()
-        .find(|d| d.media_type == kind)
+        .find(|d| d.decoded_media_type() == kind)
         .unwrap();
     store.read_verified(d, 16 * 1024 * 1024).unwrap()
 }
@@ -475,7 +475,7 @@ fn catalogue_order_empty_slots_policies_and_unused_media_survive() {
             .manifest
             .layers
             .iter()
-            .filter(|d| d.media_type == image_store::media_type::FLOPPY)
+            .filter(|d| d.decoded_media_type() == image_store::media_type::FLOPPY)
             .count(),
         2
     );
@@ -651,7 +651,7 @@ fn split_open_firmware_preserves_chips_lanes_offsets_and_assembled_pin() {
             .manifest
             .layers
             .iter()
-            .filter(|d| d.media_type == image_store::media_type::FIRMWARE)
+            .filter(|d| d.decoded_media_type() == image_store::media_type::FIRMWARE)
             .count(),
         4
     );
@@ -659,6 +659,18 @@ fn split_open_firmware_preserves_chips_lanes_offsets_and_assembled_pin() {
     assert!(text.contains(Digest::of(&bios).hex()));
 }
 
+/// The verified decoded bytes a resolved image holds for this SHA-256.
+fn medium_bytes(image: &image_store::ResolvedImage, sha256: [u8; 32]) -> Vec<u8> {
+    use std::io::Read;
+    let hex: String = sha256.iter().map(|b| format!("{b:02x}")).collect();
+    let mut bytes = Vec::new();
+    image
+        .content_reader(&format!("sha256:{hex}").parse().unwrap())
+        .unwrap()
+        .read_to_end(&mut bytes)
+        .unwrap();
+    bytes
+}
 fn catalogue_journals(temp: &Temp, absent_first: bool) -> PathBuf {
     for (name, value) in [("first", 0x11), ("second", 0x22)] {
         let base = vec![0; 360 * 1024];
@@ -710,11 +722,14 @@ fn recovery_choices_are_independent_and_absent_journals_use_zero() {
         assert_eq!(record.generations[1].generation, Some(1));
         let config = resolve(&store, "test:independent", &temp.0.join("session")).unwrap();
         let entries = &config.drives[0].media.as_ref().unwrap().entries;
+        let image = store.resolve("test:independent", &PcProvider).unwrap();
         let bytes = |entry: &assembly::FloppyMedium| {
             let assembly::ImageSource::File(path) = &entry.image else {
-                panic!("file-backed base expected")
+                panic!("journal media name a file-shaped base")
             };
-            fs::read(path).unwrap()
+            // A compressed floppy stays in memory; its key is never a file.
+            assert!(!path.exists());
+            medium_bytes(&image, entry.expected_sha256.unwrap())
         };
         assert_eq!(&bytes(&entries[0])[..512], &[0; 512]);
         assert_eq!(&bytes(&entries[1])[..512], &[0x22; 512]);
@@ -912,4 +927,263 @@ fn journaled_ide_resolves_file_backed_and_runs_short_checkpoint() {
     );
     machine.finish_persistence().unwrap();
     assert_eq!(fs::read(temp.0.join("ide.upfj")).unwrap(), original_journal);
+}
+
+#[test]
+fn compression_preserves_machine_identity_and_resolves_mixed_payloads_without_sources() {
+    use image_store::media_type as mt;
+    let temp = Temp::new();
+    let path = fixture(&temp, &floppy(false));
+    fs::write(temp.0.join("disk.img"), vec![0x29; 360 * 1024]).unwrap();
+    let store = temp.store();
+    import_machine(
+        &store,
+        &path,
+        "test:raw",
+        &ImportOptions {
+            no_compress: true,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    import_machine(&store, &path, "test:default", &ImportOptions::default()).unwrap();
+    let raw = store.resolve("test:raw", &PcProvider).unwrap();
+    let compressed = store.resolve("test:default", &PcProvider).unwrap();
+    assert_eq!(
+        raw.manifest.config.digest,
+        compressed.manifest.config.digest
+    );
+    assert_eq!(raw.config, compressed.config);
+    assert!(raw.manifest.layers.iter().all(|d| !d.is_compressed()));
+    assert!(compressed
+        .manifest
+        .layers
+        .iter()
+        .filter(|d| matches!(d.decoded_media_type(), mt::FIRMWARE | mt::FLOPPY))
+        .all(|d| d.is_compressed()));
+    let target = store
+        .compress_image("test:raw", "test:compressed", &PcProvider)
+        .unwrap();
+    assert_eq!(target.digest, compressed.image.digest);
+    let mut mixed = raw.manifest.clone();
+    for d in &mut mixed.layers {
+        if d.media_type == mt::FIRMWARE {
+            *d = store
+                .compress_payload(d, PcProvider.payload_types())
+                .unwrap();
+        }
+    }
+    let descriptor = store
+        .import_manifest_with_types(&mixed, PcProvider.payload_types())
+        .unwrap();
+    store
+        .update_tag("test:mixed", &descriptor, None, &PcProvider)
+        .unwrap();
+    fs::remove_file(temp.0.join("bios.bin")).unwrap();
+    fs::remove_file(temp.0.join("disk.img")).unwrap();
+    fs::remove_file(path).unwrap();
+    for tag in ["test:raw", "test:default", "test:compressed", "test:mixed"] {
+        let machine = resolve(&store, tag, &temp.0.join(tag.replace(':', "-"))).unwrap();
+        assert_eq!(machine.drives[0].kind.image_bytes(), 360 * 1024);
+    }
+    let owner = store.workspace("compressed").unwrap();
+    pc_image::workspace::prepare_start(&owner, "test:default", true).unwrap();
+}
+
+/// Every regular file under `root` with its length and modification time, so a
+/// comparison proves an operation wrote nothing.
+fn tree(root: &Path) -> Vec<(PathBuf, u64, std::time::SystemTime)> {
+    let mut files = Vec::new();
+    let mut pending = vec![root.to_path_buf()];
+    while let Some(directory) = pending.pop() {
+        for entry in fs::read_dir(&directory).unwrap() {
+            let entry = entry.unwrap();
+            let metadata = entry.metadata().unwrap();
+            if metadata.is_dir() {
+                pending.push(entry.path());
+            } else {
+                files.push((entry.path(), metadata.len(), metadata.modified().unwrap()));
+            }
+        }
+    }
+    files.sort();
+    files
+}
+/// Decoded payload and flattened-head files in the cache, without lock files.
+fn decoded_files(store: &Store) -> Vec<String> {
+    let mut names: Vec<_> = match fs::read_dir(store.root().join("cache/materialized")) {
+        Ok(entries) => entries
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|name| !name.ends_with(".lock"))
+            .collect(),
+        Err(_) => Vec::new(),
+    };
+    names.sort();
+    names
+}
+
+#[test]
+fn compressed_import_and_resolution_write_nothing_and_a_mount_decodes_only_the_hard_disk() {
+    use image_store::media_type as mt;
+    let temp = Temp::new();
+    // A near-blank fixed disk, a floppy and two ROMs, all compressible.
+    let mut disk = vec![0; 8 * 2 * 4 * 512];
+    disk[512..1024].fill(0xA7);
+    fs::write(temp.0.join("ide.img"), &disk).unwrap();
+    fs::write(temp.0.join("disk.img"), vec![0x29; 360 * 1024]).unwrap();
+    fs::copy(
+        root().join("vendor/xtide-universal-bios/ide_xtp-r638-ata1f0-8k.bin"),
+        temp.0.join("xtide.bin"),
+    )
+    .unwrap();
+    let path = fixture(
+        &temp,
+        &format!("\n[[firmware.option_roms]]\nimage='xtide.bin'\nbase=0xC8000\nprovides=['fixed-disk']\n[[card]]\nkind='ide'\n[[card.drives]]\nchannel='master'\ngeometry={{cylinders=8,heads=2,sectors=4}}\nimage='ide.img'\nwrite='journal'\njournal='ide.upfj'\n{}", floppy(true)),
+    );
+    let store = temp.store();
+    let record =
+        import_machine(&store, &path, "test:compressed", &ImportOptions::default()).unwrap();
+    // Import verified every payload by streaming; the cache was never touched.
+    assert!(!store.root().join("cache/materialized").exists());
+    let image = store.resolve("test:compressed", &PcProvider).unwrap();
+    for kind in [mt::FIRMWARE, mt::FLOPPY, mt::DISK_BASE] {
+        assert!(image
+            .manifest
+            .layers
+            .iter()
+            .filter(|d| d.decoded_media_type() == kind)
+            .all(|d| d.is_compressed()));
+    }
+    // The push guard reads the redistribution mark on stored descriptors.
+    assert!(image
+        .manifest
+        .layers
+        .iter()
+        .chain(std::iter::once(&image.manifest.config))
+        .all(|d| d.annotations["unemu.redistribution"] == "user-supplied"));
+    let before = tree(store.root());
+    store.resolve("test:compressed", &PcProvider).unwrap();
+    pc_image::inspection::inspect(&store, &record.manifest, None).unwrap();
+    pc_image::desktop::check(&store, &record.manifest, None, || false).unwrap();
+    assert_eq!(tree(store.root()), before);
+    // A mount decodes the hard disk only; the floppy and ROMs stay in memory.
+    let owner = store.workspace("mount").unwrap();
+    let prepared = pc_image::workspace::prepare_start(&owner, "test:compressed", true).unwrap();
+    let base = image
+        .manifest
+        .layers
+        .iter()
+        .find(|d| d.decoded_media_type() == mt::DISK_BASE)
+        .unwrap();
+    assert_eq!(
+        decoded_files(&store),
+        [base.decoded_digest().unwrap().hex()]
+    );
+    let floppy = prepared
+        .machine
+        .drives
+        .iter()
+        .find(|d| matches!(d.kind, assembly::DriveKind::Floppy { .. }))
+        .unwrap();
+    let assembly::ImageSource::File(key) = &floppy.image else {
+        panic!("journal media name a file-shaped base")
+    };
+    assert!(!key.exists());
+    assert_eq!(
+        media::SectorSource::read_sector(&prepared.bases[key], 0).unwrap(),
+        [0x29; 512]
+    );
+    // In-memory bases cross to the execution thread and run with the disk.
+    let prepared = prepared.into_transfer().unwrap().restore().unwrap();
+    let mut machine = assembly::assemble_with_verified_bases(
+        &prepared.machine,
+        &assembly::ObservationPolicy::default(),
+        assembly::AssemblyOptions::default(),
+        &prepared.bases,
+    )
+    .unwrap();
+    machine
+        .run_session(&assembly::RunPolicy::natural(Some(10_000), None))
+        .unwrap();
+    machine.finish_persistence().unwrap();
+    assert_eq!(decoded_files(&store).len(), 1);
+}
+
+#[test]
+fn compressing_a_machine_keeps_its_journal_retention() {
+    let temp = Temp::new();
+    fs::write(temp.0.join("disk.img"), vec![0x31; 360 * 1024]).unwrap();
+    let path = fixture(&temp, &floppy(true));
+    let store = temp.store();
+    let raw = import_machine(
+        &store,
+        &path,
+        "test:raw",
+        &ImportOptions {
+            no_compress: true,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let compressed = pc_image::compress_image(&store, "test:raw", "test:small").unwrap();
+    assert_ne!(compressed.digest, raw.manifest.digest);
+    let image = store.resolve("test:small", &PcProvider).unwrap();
+    assert!(image.manifest.layers.iter().any(|d| d.is_compressed()));
+    assert!(image
+        .manifest
+        .layers
+        .iter()
+        .all(|d| d.annotations["unemu.redistribution"] == "user-supplied"));
+    let record = pc_image::ImportRecord::read(&store, &compressed.digest)
+        .unwrap()
+        .unwrap();
+    assert_eq!(record.manifest, compressed);
+    assert_eq!(record.generations, raw.generations);
+    assert_eq!(record.generations[0].keep_generations, Some(3));
+    let owner = store.workspace("small").unwrap();
+    let prepared = pc_image::workspace::prepare_start(&owner, "test:small", true).unwrap();
+    assert!(matches!(
+        prepared.machine.drives[0].write,
+        assembly::WriteMode::Journal {
+            keep_generations: 3,
+            ..
+        }
+    ));
+}
+
+#[test]
+fn a_damaged_raw_base_is_refused_and_its_receipt_rejected() {
+    let temp = Temp::new();
+    fs::write(temp.0.join("disk.img"), vec![0x52; 360 * 1024]).unwrap();
+    let path = fixture(&temp, &floppy(false));
+    let store = temp.store();
+    import_machine(
+        &store,
+        &path,
+        "test:raw",
+        &ImportOptions {
+            no_compress: true,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let image = store.resolve("test:raw", &PcProvider).unwrap();
+    let floppy = image
+        .manifest
+        .layers
+        .iter()
+        .find(|d| d.media_type == image_store::media_type::FLOPPY)
+        .unwrap();
+    let blob = store.blob_file_path(&floppy.digest, floppy.size).unwrap();
+    image.verified_file(&floppy.digest).unwrap();
+    let mut bytes = fs::read(&blob).unwrap();
+    bytes[0] ^= 0xff;
+    fs::write(&blob, bytes).unwrap();
+    // A receipt taken before the damage refuses the changed file.
+    assert!(image.verified_file(&floppy.digest).is_err());
+    assert!(store.resolved_file_path(&image, &floppy.digest).is_err());
+    assert!(matches!(
+        store.resolve("test:raw", &PcProvider),
+        Err(image_store::Error::DigestMismatch { .. })
+    ));
 }

@@ -1,6 +1,12 @@
 # Machine images, capabilities and desktop UX
 
-Status: **desktop UX and toolkit accepted**, 2026-11-13 (decision-24);
+Status: **`+zstd` binary blobs implemented** (§2), 2026-11-14: provider-declared payloads
+are stored compressed (level 3, single-threaded) with decoded SHA-256/size annotations;
+resolution verifies decoded bytes by streaming and writes nothing; only mounted file-backed
+media are decoded into the rebuildable materialized cache, which `image sweep` trims;
+imports and publication compress by default, `--no-compress` keeps raw fixtures, and
+`image compress` preserves the machine digest;
+**desktop UX and toolkit accepted**, 2026-11-13 (decision-24);
 **installation media set codec/CLI/insert implemented**, 2026-11-14 (decision-26);
 **firmware package codec/import/resolution implemented; UI pending**, 2026-11-14 (decision-27).
 The installation-media library collection, Import dialog and transfer-medium generator remain.
@@ -474,7 +480,8 @@ content-addressed area:
     media/system.upfj             current single-writer journal
     media/cmos.upfj               independent NVRAM journal
     transaction.toml              recoverable publication intent
-  cache/materialized/<hex>        flattened chain heads (§4); rebuildable
+  cache/materialized/<hex>        flattened chain heads (§4), and decoded payloads only
+                                  for mounted file-backed media; rebuildable
   cache/summaries/                library summaries and search index; rebuildable
   local/blob-index.toml           build-time source hints, redistribution class, licence
   local/library.toml              metadata overlays, personal fields, last run, favourites
@@ -525,7 +532,10 @@ GC roots are local tags, workspaces (their pinned image and current heads),
 unfinished pulls, local metadata/artwork overlays, open transactions and
 archives being written. A workspace
 whose tag was deleted or moved keeps its pinned image alive and is shown as
-detached. A materialized base is kept while a workspace uses it. GC is always
+detached. A materialized base is kept while a workspace uses it. Config references,
+including a media-set catalogue source's medium, name decoded digests; a compressed
+payload is stored under another digest, so GC marks through manifest descriptors.
+GC is always
 an explicit action; it marks, rechecks roots, then sweeps, under the exclusive
 store lock.
 

@@ -57,24 +57,13 @@ fn redistribution_label(open: bool) -> &'static str {
     }
 }
 
-/// A compressed payload appends this to its media type; the stored digest then
-/// names the compressed bytes and an annotation names the raw identity (§2).
-const COMPRESSED: &str = "+zstd";
+/// A ROM layer, stored raw or as a `+zstd` frame (machine-images §2).
 fn is_rom(descriptor: &Descriptor) -> bool {
-    let kind = descriptor.media_type.as_str();
-    kind.strip_suffix(COMPRESSED).unwrap_or(kind) == media_type::FIRMWARE
+    descriptor.decoded_media_type() == media_type::FIRMWARE
 }
 /// The raw identity that configs and ROM pins use, whether stored raw or compressed.
 fn decoded_identity(descriptor: &Descriptor) -> Option<Digest> {
-    if descriptor.media_type.ends_with(COMPRESSED) {
-        descriptor
-            .annotations
-            .get("unemu.decoded.digest")?
-            .parse()
-            .ok()
-    } else {
-        Some(descriptor.digest.clone())
-    }
+    descriptor.decoded_digest().ok()
 }
 fn pin(sha256: &str) -> Option<Digest> {
     format!("sha256:{sha256}").parse().ok()
@@ -1700,6 +1689,8 @@ pub(crate) mod tests {
         assert!(dialog.can_import());
 
         // A chip that changes after the scan is refused, and no tag appears.
+        // The import re-reads it to compute the package identity, so the
+        // refusal names the scanned chip and the bytes it now holds.
         fs::write(folder.join("a"), [0x30; 16384]).unwrap();
         let outcomes = import_selected(
             &store,
@@ -1713,7 +1704,7 @@ pub(crate) mod tests {
         };
         assert_eq!(tag, "firmware/synthetic-two-chip-bios:1");
         assert!(
-            reason.contains("blob digest mismatch")
+            reason.contains("changed since the scan")
                 && reason.contains(&Digest::of(&[0x31; 16384]).to_string())
                 && reason.contains(&Digest::of(&[0x30; 16384]).to_string()),
             "{reason}"
@@ -1971,15 +1962,21 @@ pub(crate) mod tests {
             let tag = cache.tags().iter().find(|t| t.name == reference).unwrap();
             cache.summary(&tag.manifest.digest).unwrap().clone()
         };
-        // Stored bytes are compressed: the digest names them, the annotation the raw ROM.
+        // Stored bytes are compressed: the digest names them, the annotations the raw ROM.
         let compress = |mut summary: ImageSummary| {
             for blob in summary
                 .storage_blobs
                 .iter_mut()
                 .filter(|d| d.media_type == media_type::FIRMWARE)
             {
-                blob.annotations
-                    .insert("unemu.decoded.digest".into(), blob.digest.to_string());
+                blob.annotations.insert(
+                    image_store::codec::DECODED_DIGEST.into(),
+                    blob.digest.to_string(),
+                );
+                blob.annotations.insert(
+                    image_store::codec::DECODED_SIZE.into(),
+                    blob.size.to_string(),
+                );
                 blob.digest = Digest::of(format!("compressed {}", blob.digest).as_bytes());
                 blob.media_type.push_str("+zstd");
             }

@@ -143,6 +143,9 @@ impl ConfigValidator for Validator<'_> {
     fn platform(&self) -> &str {
         self.0.platform()
     }
+    fn payload_types(&self) -> &[crate::PayloadType] {
+        crate::codec::MEDIA_PAYLOAD_TYPES
+    }
     fn validate(
         &self,
         table: &toml::Table,
@@ -160,9 +163,9 @@ impl ConfigValidator for Validator<'_> {
         for m in &config.media {
             let d = descriptors
                 .iter()
-                .find(|d| d.digest == m.blob)
+                .find(|d| d.names(&m.blob))
                 .ok_or_else(|| invalid("missing media descriptor"))?;
-            if d.media_type != self.0.validate_format(&m.format, d.size)? {
+            if d.decoded_media_type() != self.0.validate_format(&m.format, d.decoded_size()?)? {
                 return Err(invalid("media format and payload type mismatch"));
             }
             references.push(m.blob.clone());
@@ -173,9 +176,9 @@ impl ConfigValidator for Validator<'_> {
             }
             let d = descriptors
                 .iter()
-                .find(|d| d.digest == e.blob)
+                .find(|d| d.names(&e.blob))
                 .ok_or_else(|| invalid("missing extra descriptor"))?;
-            if d.size != e.size || d.media_type != media_type::EXTRA {
+            if d.decoded_size()? != e.size || d.decoded_media_type() != media_type::EXTRA {
                 return Err(invalid("extra size or type mismatch"));
             }
             references.push(e.blob.clone());
@@ -252,9 +255,14 @@ mod tests {
 pub struct CatalogueSource {
     pub set: Digest,
     pub medium_id: String,
+    /// Decoded content identity, as the set's config names the medium.
     pub blob: Digest,
 }
 impl CatalogueSource {
+    /// The set manifest digest and the medium's decoded digest. A compressed
+    /// medium is stored under a different blob digest, so a GC must mark
+    /// through the set manifest's descriptors, never treat `blob` as a stored
+    /// blob name.
     pub fn roots(&self) -> BTreeSet<Digest> {
         BTreeSet::from([self.set.clone(), self.blob.clone()])
     }

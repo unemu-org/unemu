@@ -13,6 +13,7 @@
 //! filesystem honoring fsync. Content digests never include local lock metadata.
 
 mod artifact;
+pub mod codec;
 mod filesystem;
 pub mod firmware;
 pub mod library;
@@ -28,7 +29,9 @@ pub use artifact::{
 };
 #[cfg(feature = "test-support")]
 pub use store::verification_passes;
-pub use store::{Blob, BlobSource, ConfigValidator, ResolvedImage, Store, Tag, TagPage};
+pub use store::{
+    Blob, BlobSource, ConfigValidator, ContentReader, ResolvedImage, Store, Tag, TagPage,
+};
 
 /// Failures at the storage and untrusted artifact boundaries.
 #[derive(Debug, thiserror::Error)]

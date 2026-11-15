@@ -14,8 +14,25 @@ use std::{
 pub const CMOS: &str = "application/vnd.unemu.cmos.v1";
 /// Explicit PC codecs. Optical images and saved states are refused.
 /// ATA/ATAPI-4, IDENTIFY DEVICE: raw fixed disks are further bounded by the
-/// existing XTIDE-compatible CHS geometry validator.
+/// existing XTIDE-compatible CHS geometry validator. A `+zstd` limit bounds
+/// the declared decoded size, the same limit as the raw type.
 pub const PAYLOAD_TYPES: &[PayloadType] = &[
+    PayloadType {
+        media_type: "application/vnd.unemu.firmware.v1+zstd",
+        max_size: 16 * 1024 * 1024,
+    },
+    PayloadType {
+        media_type: "application/vnd.unemu.disk.base.v1+zstd",
+        max_size: 16383 * 16 * 63 * 512,
+    },
+    PayloadType {
+        media_type: "application/vnd.unemu.disk.sectors.v1+zstd",
+        max_size: 16383 * 16 * 63 * 520,
+    },
+    PayloadType {
+        media_type: "application/vnd.unemu.media.floppy.v1+zstd",
+        max_size: 1440 * 1024,
+    },
     PayloadType {
         media_type: mt::DISK_LAYER,
         max_size: image_store::MAX_SMALL_BLOB,
@@ -53,9 +70,7 @@ impl ConfigValidator for PcProvider {
         store: &Store,
     ) -> image_store::Result<()> {
         let config = config_from_image(image).map_err(store_error)?;
-        crate::disk::bases(store, &config, image)
-            .map(|_| ())
-            .map_err(store_error)
+        crate::disk::check(store, &config, image).map_err(store_error)
     }
     fn payload_types(&self) -> &[PayloadType] {
         PAYLOAD_TYPES
@@ -105,12 +120,12 @@ impl machine_file::ImageReader for Reader<'_> {
             .bindings
             .get(&path.to_string_lossy().to_string())
             .ok_or_else(|| io::Error::other("unbound logical asset"))?;
-        if !matches!(d.media_type.as_str(), mt::FIRMWARE | CMOS) {
+        if !matches!(d.decoded_media_type(), mt::FIRMWARE | CMOS) {
             return Err(io::Error::other("disk payload must stay file-backed"));
         }
         let limit = PAYLOAD_TYPES
             .iter()
-            .find(|t| t.media_type == d.media_type)
+            .find(|t| t.media_type == d.decoded_media_type())
             .map(|t| t.max_size)
             .ok_or_else(|| io::Error::other("unsupported payload"))?;
         self.blobs.read_verified(d, limit).map_err(io::Error::other)
@@ -140,7 +155,7 @@ fn bind(
         .find(|t| t.media_type == kind)
         .map(|t| t.max_size)
         .ok_or_else(|| invalid("unsupported payload"))?;
-    if d.size > limit {
+    if d.decoded_size()? > limit {
         return Err(invalid("payload exceeds PC size limit"));
     }
     reader.bindings.insert(source.into(), d.clone());
@@ -253,7 +268,7 @@ fn prepare(config: Config, descriptors: &[Descriptor], blobs: &dyn BlobSource) -
             let payload_type = if kind == "ide" {
                 let head = descriptors
                     .iter()
-                    .find(|d| d.digest == medium.head)
+                    .find(|d| d.names(&medium.head))
                     .ok_or_else(|| invalid("missing disk head"))?;
                 if head.media_type == mt::DISK_LAYER {
                     mt::DISK_LAYER
@@ -286,7 +301,7 @@ fn prepare(config: Config, descriptors: &[Descriptor], blobs: &dyn BlobSource) -
                 references.extend(refs.into_iter().skip(1));
                 crate::disk::geometry(&medium.geometry).capacity()? * 512
             } else {
-                d.size
+                d.decoded_size()?
             };
             let g = &medium.geometry;
             if g.sector_bytes != 512
@@ -457,6 +472,8 @@ fn config_from_image(image: &image_store::ResolvedImage) -> Result<Config> {
         .map_err(|e: toml::de::Error| invalid(e.to_string()))?;
     decode(table)
 }
+/// Assembly input only: a compressed journal floppy has no file, so launch
+/// through `workspace::prepare_start`, which also returns the verified bases.
 pub fn resolve(store: &Store, tag: &str, session: &Path) -> Result<assembly::MachineConfig> {
     Ok(resolve_pinned(store, &store.tag_descriptor(tag)?, session, None)?.1)
 }
@@ -466,12 +483,19 @@ pub(crate) struct PreparedImage {
     pub machine: assembly::MachineConfig,
     pub bases: BTreeMap<Digest, crate::disk::Disk>,
 }
+/// Resolve a pinned image. With `mount`, every medium is prepared for a
+/// machine, which may materialize decoded files; without it the image is
+/// only verified, nothing is written and `bases` stays empty.
 pub(crate) fn load_pinned(
     store: &Store,
     descriptor: &Descriptor,
     publication: bool,
+    mount: bool,
 ) -> Result<PreparedImage> {
-    struct Capture(std::cell::RefCell<Option<(Prepared, BTreeMap<Digest, crate::disk::Disk>)>>);
+    struct Capture(
+        std::cell::RefCell<Option<(Prepared, BTreeMap<Digest, crate::disk::Disk>)>>,
+        bool,
+    );
     impl ConfigValidator for Capture {
         fn platform(&self) -> &str {
             "ibm-pc-at"
@@ -504,11 +528,15 @@ pub(crate) fn load_pinned(
             let (prepared, bases) = capture
                 .as_mut()
                 .ok_or_else(|| image_store::Error::Invalid("provider was not called".into()))?;
-            *bases = crate::disk::bases(store, &prepared.config, image).map_err(store_error)?;
+            if self.1 {
+                *bases = crate::disk::bases(store, &prepared.config, image).map_err(store_error)?;
+            } else {
+                crate::disk::check(store, &prepared.config, image).map_err(store_error)?;
+            }
             Ok(())
         }
     }
-    let capture = Capture(std::cell::RefCell::new(None));
+    let capture = Capture(std::cell::RefCell::new(None), mount);
     let image = if publication {
         store.verify_publication(descriptor, &capture)?
     } else {
@@ -540,7 +568,7 @@ pub(crate) fn resolve_pinned(
     assembly::MachineConfig,
     BTreeMap<std::path::PathBuf, media::VerifiedBase>,
 )> {
-    let resolved = load_pinned(store, descriptor, false)?;
+    let resolved = load_pinned(store, descriptor, false, true)?;
     let image = resolved.image;
     let mut prepared = Prepared {
         config: resolved.config,
@@ -561,13 +589,7 @@ pub(crate) fn resolve_pinned(
             .unwrap_or(assembly::WriteMode::DEFAULT_KEEP_GENERATIONS)
     };
     let base_path = |digest: &Digest| -> Result<std::path::PathBuf> {
-        let d = image
-            .manifest
-            .layers
-            .iter()
-            .find(|d| &d.digest == digest)
-            .ok_or_else(|| invalid("missing medium descriptor"))?;
-        Ok(store.blob_file_path(digest, d.size)?)
+        Ok(store.resolved_file_path(&image, digest)?)
     };
     for (drive, slot) in prepared
         .machine
@@ -586,8 +608,6 @@ pub(crate) fn resolve_pinned(
                 let disk = bases
                     .get(&m.head)
                     .ok_or_else(|| invalid("missing prepared disk"))?;
-                entry.image = assembly::ImageSource::File(disk.path.clone());
-                entry.expected_sha256 = Some(hash_array(&disk.identity)?);
                 entry.write = m.policy.write(session.join(format!("{}.upfj", m.id)));
                 if let assembly::WriteMode::Journal {
                     keep_generations, ..
@@ -595,6 +615,8 @@ pub(crate) fn resolve_pinned(
                 {
                     *keep_generations = retention(&m.id);
                 }
+                entry.image = source(store, disk, &entry.write)?;
+                entry.expected_sha256 = Some(hash_array(&disk.identity)?);
             }
         } else {
             let m = prepared
@@ -613,7 +635,7 @@ pub(crate) fn resolve_pinned(
             let disk = bases
                 .get(&m.head)
                 .ok_or_else(|| invalid("missing prepared disk"))?;
-            drive.image = assembly::ImageSource::File(disk.path.clone());
+            drive.image = source(store, disk, &drive.write)?;
             drive.expected_sha256 = Some(hash_array(&disk.identity)?);
         }
     }
@@ -633,9 +655,64 @@ pub(crate) fn resolve_pinned(
     }
     let verified = bases
         .values()
-        .map(|disk| (disk.path.clone(), disk.base.clone()))
+        .map(|disk| (base_key(store, disk), disk.base.clone()))
         .collect();
     Ok((image, prepared.machine, verified))
+}
+/// The verified-base key assembly looks a medium up by: its file, or for a
+/// compressed floppy held in memory a path under `cache/in-memory` that is
+/// never created. Assembly reads such a journal base only through its
+/// verified base, so nothing opens that path.
+fn base_key(store: &Store, disk: &crate::disk::Disk) -> std::path::PathBuf {
+    disk.path.clone().unwrap_or_else(|| {
+        store
+            .root()
+            .join("cache/in-memory")
+            .join(disk.identity.hex())
+    })
+}
+/// A file-backed medium is opened by path. A compressed floppy stays in
+/// memory: a journal needs a file-shaped source, so it names the in-memory
+/// key; read-only and volatile drives receive the verified decoded bytes.
+fn source(
+    store: &Store,
+    disk: &crate::disk::Disk,
+    write: &assembly::WriteMode,
+) -> Result<assembly::ImageSource> {
+    use media::SectorSource;
+    Ok(match (&disk.path, write) {
+        (Some(path), _) => assembly::ImageSource::File(path.clone()),
+        (None, assembly::WriteMode::Journal { .. }) => {
+            assembly::ImageSource::File(base_key(store, disk))
+        }
+        (None, _) => {
+            let mut bytes = vec![0; disk.base.byte_len() as usize];
+            disk.base.read_range(0, &mut bytes)?;
+            assembly::ImageSource::Inline(bytes)
+        }
+    })
+}
+/// Publish `target` as a compressed copy of the PC machine at `source`. The
+/// local import record, which holds per-medium journal retention, is copied
+/// to the new image digest before the tag appears.
+pub fn compress_image(store: &Store, source: &str, target: &str) -> Result<Descriptor> {
+    store.check_new_tag(target)?;
+    let original = store.tag_descriptor(source)?;
+    let result = store.compress_manifest(&original, &PcProvider)?;
+    if let Some(record) = crate::ImportRecord::read(store, &original.digest)? {
+        let record = crate::ImportRecord {
+            manifest: result.clone(),
+            ..record
+        };
+        store.write_local_record(
+            &result.digest,
+            toml::to_string(&record)
+                .map_err(|e| invalid(e.to_string()))?
+                .as_bytes(),
+        )?;
+    }
+    store.update_tag(target, &result, None, &PcProvider)?;
+    Ok(result)
 }
 pub(crate) fn hash_array(digest: &Digest) -> Result<[u8; 32]> {
     let mut bytes = [0; 32];

@@ -1063,7 +1063,7 @@ impl LibraryInsert {
                 }
                 for layer in &manifest.layers {
                     if matches!(
-                        layer.media_type.as_str(),
+                        layer.decoded_media_type(),
                         store::media_type::FLOPPY
                             | store::media_type::OPTICAL
                             | store::media_type::EXTRA
@@ -1160,7 +1160,7 @@ impl LibraryInsert {
                 .verified_file(&medium.blob)
                 .map_err(|e| e.to_string())?;
             let path = store
-                .blob_file_path(&medium.blob, metadata.len())
+                .resolved_file_path(&resolved, &medium.blob)
                 .map_err(|e| e.to_string())?;
             let hash = pc_image::media_set::verified_base(&resolved, &medium.blob)
                 .map_err(|e| e.to_string())?
@@ -1611,7 +1611,15 @@ mod media_set_tests {
             .unwrap();
         let store = store::Store::open_existing(&store_path).unwrap();
         let source = entries[0].source.as_ref().unwrap();
-        store.verify(&source.blob, bytes.len() as u64).unwrap();
+        let image = entries[0].receipt.as_ref().unwrap();
+        let stored = image
+            .manifest
+            .layers
+            .iter()
+            .find(|d| d.names(&source.blob))
+            .unwrap();
+        assert!(stored.is_compressed());
+        store.verify(&stored.digest, stored.size).unwrap();
         assert_eq!(std::fs::read(base_path).unwrap(), bytes);
         let scan = media::scan(&std::fs::read(path).unwrap(), &bytes, bytes.len() as u64);
         assert_eq!(&scan.image.unwrap()[..512], &[0xA5; 512]);
@@ -1662,7 +1670,7 @@ mod media_set_tests {
         receiving_machine
             .change_floppy(assembly::DeviceId::Fdc, 1, assembly::FloppyAction::Eject)
             .unwrap();
-        store.verify(&source.blob, bytes.len() as u64).unwrap();
+        store.verify(&stored.digest, stored.size).unwrap();
 
         let (reused, _) = library.entries(slots[0].as_ref().unwrap(), 0).unwrap();
         let reused_indices =
@@ -1761,7 +1769,22 @@ mod review_tests {
         let mut slots = FloppySlot::from_config(&config);
         let mut assembled = assembly::assemble(&config).unwrap();
         let medium = &library.rows[0].config.as_ref().unwrap().media[0];
-        let digest = medium.blob.clone();
+        let decoded_digest = medium.blob.clone();
+        let store = image_store::Store::open_existing(&library.store_path).unwrap();
+        let image = store
+            .resolve_descriptor(
+                &library.rows[0].image,
+                &image_store::media_set::Validator(&pc_image::media_set::PcMediaFormats),
+            )
+            .unwrap();
+        let digest = image
+            .manifest
+            .layers
+            .iter()
+            .find(|d| d.names(&medium.blob))
+            .unwrap()
+            .digest
+            .clone();
         let stored = image_store::verification_passes(&digest);
         let hashes = media::hash_passes();
         let (entries, _) = library.entries(slots[0].as_ref().unwrap(), 0).unwrap();
@@ -1804,7 +1827,7 @@ mod review_tests {
         assert!(progress);
 
         let roots = entries[0].source.as_ref().unwrap().roots();
-        assert!(roots.contains(&digest));
+        assert!(roots.contains(&decoded_digest));
         assert!(roots.contains(&library.rows[0].image.digest));
         let store = image_store::Store::open_existing(&library.store_path).unwrap();
         let owner = store.workspace("review").unwrap();
@@ -1943,13 +1966,32 @@ mod review_tests {
         let ImageSource::File(base) = &entries[0].medium.image else {
             panic!("base")
         };
+        // The decoded file is a rebuildable cache: a damaged copy is rebuilt from
+        // the verified stored blob, while receipts taken before stay refused.
         std::fs::write(base, vec![0x22; 1_474_560]).unwrap();
+        library.entries(slots[0].as_ref().unwrap(), 0).unwrap();
+        assert_eq!(std::fs::read(base).unwrap(), vec![0x11; 1_474_560]);
+        assert!(append_entries(&mut assembled, &mut config, &mut slots, 0, &entries).is_err());
+        assert_eq!(slots[0].as_ref().unwrap().entries.len(), 1);
+        // Damaged stored bytes cannot be repaired and refuse the set.
+        let receipt = entries[0].receipt.as_ref().unwrap();
+        let blob = &entries[0].source.as_ref().unwrap().blob;
+        let stored = receipt
+            .manifest
+            .layers
+            .iter()
+            .find(|d| d.names(blob))
+            .unwrap();
+        assert!(stored.is_compressed());
+        let store = image_store::Store::open_existing(&library.store_path).unwrap();
+        let path = store.blob_file_path(&stored.digest, stored.size).unwrap();
+        let mut bytes = std::fs::read(&path).unwrap();
+        *bytes.last_mut().unwrap() ^= 0xff;
+        std::fs::write(&path, bytes).unwrap();
         assert!(library
             .entries(slots[0].as_ref().unwrap(), 0)
             .unwrap_err()
             .contains("digest mismatch"));
-        assert!(append_entries(&mut assembled, &mut config, &mut slots, 0, &entries).is_err());
-        assert_eq!(slots[0].as_ref().unwrap().entries.len(), 1);
     }
     #[test]
     fn review_damaged_set_is_a_disabled_row_and_refresh_is_nonblocking() {

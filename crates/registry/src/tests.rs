@@ -1522,3 +1522,273 @@ fn live_round_trip_through_the_default_registry() {
     let (pulled, _fresh) = pulled.unwrap();
     assert_eq!(pulled.unwrap(), image);
 }
+
+/// A synthetic platform whose firmware and disk payloads may be `+zstd`.
+struct Compressed;
+const COMPRESSED_TYPES: &[image_store::PayloadType] = &[
+    image_store::PayloadType {
+        media_type: "application/vnd.unemu.firmware.v1+zstd",
+        max_size: 16 * 1024 * 1024,
+    },
+    image_store::PayloadType {
+        media_type: "application/vnd.unemu.disk.base.v1+zstd",
+        max_size: 1 << 40,
+    },
+];
+impl ConfigValidator for Compressed {
+    fn platform(&self) -> &str {
+        "synthetic-zstd"
+    }
+    fn payload_types(&self) -> &[image_store::PayloadType] {
+        COMPRESSED_TYPES
+    }
+    fn validate(
+        &self,
+        table: &toml::Table,
+        descriptors: &[Descriptor],
+        blobs: &dyn BlobSource,
+    ) -> image_store::Result<Vec<Digest>> {
+        Synthetic.validate(table, descriptors, blobs)
+    }
+}
+const COMPRESSED: [&dyn ConfigValidator; 1] = [&Compressed];
+
+/// Compress `bytes` as `kind`, then mark it.
+fn compressed(store: &Store, kind: &str, bytes: &[u8], mark: &str) -> Descriptor {
+    let mut d = store
+        .import_payload(bytes, kind, bytes.len() as u64, None, COMPRESSED_TYPES)
+        .unwrap();
+    assert!(d.is_compressed());
+    d.annotations
+        .insert("unemu.redistribution".into(), mark.into());
+    d
+}
+
+/// Tag a compressed image: a user-supplied ROM and an open disk base.
+fn compressed_image(store: &Store, tag: &str, rom: &[u8], disk: &[u8]) -> Descriptor {
+    let layers = vec![
+        compressed(store, mt::FIRMWARE, rom, "user-supplied"),
+        compressed(store, mt::DISK_BASE, disk, "open"),
+    ];
+    let blobs = layers
+        .iter()
+        .map(|d| format!("\"{}\"", d.decoded_digest().unwrap()))
+        .collect::<Vec<_>>()
+        .join(",");
+    let config = marked(
+        store,
+        mt::CONFIG,
+        format!("schema = 1\nplatform = \"synthetic-zstd\"\nblobs = [{blobs}]\n").as_bytes(),
+        Some("open"),
+    );
+    let metadata = marked(
+        store,
+        mt::METADATA,
+        br#"{"schema":1,"platform":"synthetic-zstd","titles":[]}"#,
+        Some("open"),
+    );
+    let mut all = layers;
+    all.push(metadata);
+    let manifest =
+        Manifest::new_with_types("synthetic-zstd", config, all, COMPRESSED_TYPES).unwrap();
+    let descriptor = store
+        .import_manifest_with_types(&manifest, COMPRESSED_TYPES)
+        .unwrap();
+    store
+        .update_tag(tag, &descriptor, None, &Compressed)
+        .unwrap();
+    descriptor
+}
+
+fn blob_bytes(store: &Store, d: &Descriptor) -> Vec<u8> {
+    std::fs::read(store.blob_file_path(&d.digest, d.size).unwrap()).unwrap()
+}
+
+#[test]
+fn compressed_images_travel_as_stored_blobs_and_pull_back_identical() {
+    let dir = Temp::new();
+    let store = dir.store();
+    let rom: Vec<u8> = (0..32 * 1024_u32).map(|i| (i % 97) as u8).collect();
+    let disk = vec![0_u8; 1024 * 1024];
+    let image = compressed_image(&store, "game:1.0.0", &rom, &disk);
+    let manifest = Manifest::decode_with_types(
+        &store.read_verified(&image, MAX_SMALL_BLOB).unwrap(),
+        COMPRESSED_TYPES,
+    )
+    .unwrap();
+    let rom_layer = manifest.layers[0].clone();
+
+    // The ROM is user-supplied, so the official namespace refuses the image.
+    let public = MockRegistry::start(Policy {
+        anonymous_read: vec!["unemu".into()],
+        anonymous_write: vec!["*".into()],
+        ..Policy::default()
+    });
+    let public_entry = public.entry(true);
+    let plan = push::plan(
+        &store,
+        "game:1.0.0",
+        target(&public, "unemu/game:1.0.0"),
+        Some(&public_entry),
+    )
+    .unwrap();
+    let refused = push::push(
+        &store,
+        &plan,
+        &COMPRESSED,
+        &client(&public_entry, Anonymous),
+        &PushOptions::default(),
+        &mut |_, _| {},
+    );
+    assert!(
+        matches!(&refused, Err(Error::Refused(Refusal::OfficialNamespaceNeedsOpen { blobs, .. }))
+            if blobs.iter().map(|d| &d.digest).eq([&rom_layer.digest])),
+        "{refused:?}"
+    );
+    assert!(public.log().is_empty(), "{:?}", public.log());
+
+    // A private registry receives exactly the stored frames.
+    let private = MockRegistry::start(user_policy());
+    let entry = private.entry(true);
+    let client = client(&entry, maintainer());
+    let reference = target(&private, "private/game:1.0.0");
+    let plan = push::plan(&store, "game:1.0.0", reference.clone(), Some(&entry)).unwrap();
+    push::push(
+        &store,
+        &plan,
+        &COMPRESSED,
+        &client,
+        &PushOptions::default(),
+        &mut |_, _| {},
+    )
+    .unwrap();
+    for d in &manifest.layers {
+        assert!(private.has_blob("private/game", &d.digest));
+        if d.is_compressed() {
+            assert!(!private.has_blob("private/game", &d.decoded_digest().unwrap()));
+        }
+    }
+    // Verification before push streamed; nothing was decoded to disk.
+    assert!(!store.root().join("cache/materialized").exists());
+
+    let fresh = Temp::new();
+    let pulled = fresh.store();
+    let report = pull::pull(
+        &pulled,
+        &client,
+        &reference,
+        "game:1.0.0",
+        &COMPRESSED,
+        &|_| {},
+    )
+    .unwrap();
+    assert_eq!(report.outcome, pull::PullOutcome::Pulled);
+    assert_eq!(
+        pulled.tag_descriptor("game:1.0.0").unwrap().digest,
+        image.digest
+    );
+    for d in std::iter::once(&manifest.config).chain(&manifest.layers) {
+        assert_eq!(blob_bytes(&pulled, d), blob_bytes(&store, d));
+    }
+    let resolved = pulled.resolve("game:1.0.0", &Compressed).unwrap();
+    let mut decoded = Vec::new();
+    std::io::Read::read_to_end(
+        &mut resolved
+            .content_reader(&rom_layer.decoded_digest().unwrap())
+            .unwrap(),
+        &mut decoded,
+    )
+    .unwrap();
+    assert_eq!(decoded, rom);
+    assert_eq!(
+        resolved.manifest.layers[0].annotations["unemu.redistribution"],
+        "user-supplied"
+    );
+    assert!(!pulled.root().join("cache/materialized").exists());
+
+    let mut cache = image_store::summary::SummaryCache::open(&pulled).unwrap();
+    cache.rebuild(&pulled, 64, &[], &[]).unwrap();
+    let row = cache.summary(&image.digest).unwrap();
+    let expected = image.size
+        + manifest.config.size
+        + rom.len() as u64
+        + disk.len() as u64
+        + manifest.layers[2].size;
+    assert_eq!(row.decoded_size, expected);
+    assert!(row.stored_size < row.decoded_size / 4, "{row:?}");
+    assert!(row
+        .storage_blobs
+        .iter()
+        .any(|d| d.digest == rom_layer.digest));
+}
+
+/// The same ROM stored raw and user-supplied in one image restricts a
+/// compressed copy that another image labels open.
+#[test]
+fn a_compressed_copy_shares_the_class_of_its_raw_content() {
+    let dir = Temp::new();
+    let store = dir.store();
+    let rom: Vec<u8> = (0..32 * 1024_u32).map(|i| (i % 89) as u8).collect();
+    image(
+        &store,
+        "rom:1.0.0",
+        &[(&rom, Some("user-supplied"))],
+        Some("open"),
+    );
+    let mut layer = compressed(&store, mt::FIRMWARE, &rom, "open");
+    let config = marked(
+        &store,
+        mt::CONFIG,
+        format!(
+            "schema = 1\nplatform = \"synthetic-zstd\"\nblobs = [\"{}\"]\n",
+            layer.decoded_digest().unwrap()
+        )
+        .as_bytes(),
+        Some("open"),
+    );
+    let metadata = marked(
+        &store,
+        mt::METADATA,
+        br#"{"schema":1,"platform":"synthetic-zstd","titles":[]}"#,
+        Some("open"),
+    );
+    layer
+        .annotations
+        .insert("unemu.redistribution".into(), "open".into());
+    let manifest = Manifest::new_with_types(
+        "synthetic-zstd",
+        config,
+        vec![layer.clone(), metadata],
+        COMPRESSED_TYPES,
+    )
+    .unwrap();
+    let descriptor = store
+        .import_manifest_with_types(&manifest, COMPRESSED_TYPES)
+        .unwrap();
+    store
+        .update_tag("labelled:1.0.0", &descriptor, None, &Compressed)
+        .unwrap();
+    let registry = MockRegistry::start(open_policy());
+    let entry = registry.entry(false);
+    let plan = push::plan(
+        &store,
+        "labelled:1.0.0",
+        target(&registry, "owner/labelled:1.0.0"),
+        Some(&entry),
+    )
+    .unwrap();
+    let rom_entry = plan
+        .closure()
+        .iter()
+        .find(|c| c.descriptor.digest == layer.digest)
+        .unwrap();
+    assert_eq!(
+        (rom_entry.mark, rom_entry.effective),
+        (Redistribution::Open, Redistribution::UserSupplied)
+    );
+    assert_eq!(rom_entry.source, MarkSource::LocalTag("rom:1.0.0".into()));
+    assert!(matches!(
+        plan.verdict(),
+        Err(Refusal::RegistryNotPrivate { .. })
+    ));
+}

@@ -13,7 +13,7 @@ pub const MAX_OBJECTS: usize = 10_000;
 pub const MAX_SMALL_BLOB: u64 = 1024 * 1024;
 
 /// Explicitly supported media types, from machine-images §2.
-/// Compression and saved-state codecs remain unsupported. Optical storage is reserved for media sets.
+/// Binary compression is provider-declared. Optical storage is reserved for media sets.
 pub mod media_type {
     pub const MANIFEST: &str = "application/vnd.oci.image.manifest.v1+json";
     pub const INDEX: &str = "application/vnd.oci.image.index.v1+json";
@@ -137,6 +137,59 @@ impl Descriptor {
         }
     }
 
+    /// Whether the stored bytes are a Zstandard frame (a `+zstd` media type).
+    pub fn is_compressed(&self) -> bool {
+        self.media_type.ends_with(crate::codec::SUFFIX)
+    }
+
+    /// Payload type after decoding; support still requires provider declaration.
+    pub fn decoded_media_type(&self) -> &str {
+        self.media_type
+            .strip_suffix(crate::codec::SUFFIX)
+            .unwrap_or(&self.media_type)
+    }
+
+    /// Raw identity used by machine configs, journals and layer parents.
+    pub fn decoded_digest(&self) -> Result<Digest> {
+        if self.is_compressed() {
+            self.annotations
+                .get(crate::codec::DECODED_DIGEST)
+                .ok_or_else(|| invalid(format!("blob {} missing decoded digest", self.digest)))?
+                .parse()
+                .map_err(|e| invalid(format!("blob {}: {e}", self.digest)))
+        } else {
+            Ok(self.digest.clone())
+        }
+    }
+
+    /// Raw length, checked before allocating or decoding. Only canonical
+    /// decimal is accepted, so one length has one manifest spelling.
+    pub fn decoded_size(&self) -> Result<u64> {
+        if self.is_compressed() {
+            self.annotations
+                .get(crate::codec::DECODED_SIZE)
+                .filter(|s| {
+                    s.bytes().all(|b| b.is_ascii_digit())
+                        && (s.as_str() == "0" || !s.starts_with('0'))
+                })
+                .and_then(|s| s.parse::<u64>().ok())
+                .filter(|n| *n <= i64::MAX as u64)
+                .ok_or_else(|| {
+                    invalid(format!(
+                        "blob {} missing or invalid decoded size",
+                        self.digest
+                    ))
+                })
+        } else {
+            Ok(self.size)
+        }
+    }
+
+    /// Match a config reference without tying machine identity to compression.
+    pub fn names(&self, digest: &Digest) -> bool {
+        self.decoded_digest().is_ok_and(|d| &d == digest)
+    }
+
     pub(crate) fn validate(&self) -> Result<()> {
         self.validate_with_types(&[])
     }
@@ -153,9 +206,34 @@ impl Descriptor {
         self.validate_limit(max)
     }
 
+    /// `max` bounds the stored length of a raw payload and the declared
+    /// decoded length of a compressed one, whose stored frame may not exceed
+    /// the worst-case frame size for that decoded length.
     pub(crate) fn validate_limit(&self, max: u64) -> Result<()> {
         validate_annotations(&self.annotations)?;
-        if self.size > max.min(i64::MAX as u64) {
+        let max = max.min(i64::MAX as u64);
+        if self.is_compressed() {
+            self.decoded_digest()?;
+            let decoded = self.decoded_size()?;
+            if decoded > max {
+                return Err(invalid(format!(
+                    "blob {}: decoded size exceeds its media type size limit",
+                    self.digest
+                )));
+            }
+            if self.size > crate::codec::max_frame_size(decoded) {
+                return Err(invalid("compressed frame exceeds its worst-case size"));
+            }
+            return Ok(());
+        }
+        if self.annotations.contains_key(crate::codec::DECODED_DIGEST)
+            || self.annotations.contains_key(crate::codec::DECODED_SIZE)
+        {
+            return Err(invalid(
+                "decoded identity annotations require a compressed payload",
+            ));
+        }
+        if self.size > max {
             return Err(invalid("descriptor exceeds its media type size limit"));
         }
         Ok(())
@@ -342,6 +420,14 @@ impl Manifest {
                     neutral_size_limit(&layer.media_type).unwrap_or(i64::MAX as u64),
                 )?;
             } else {
+                // Envelope-owned artifacts declare their own codecs.
+                let types = match self.artifact_type.as_str() {
+                    media_type::MEDIA_SET if types.is_empty() => crate::codec::MEDIA_PAYLOAD_TYPES,
+                    media_type::FIRMWARE if types.is_empty() => {
+                        crate::codec::FIRMWARE_PAYLOAD_TYPES
+                    }
+                    _ => types,
+                };
                 layer.validate_with_types(types)?;
             }
             if matches!(
@@ -361,7 +447,7 @@ impl Manifest {
         if self.artifact_type == media_type::FIRMWARE
             && self.layers.iter().any(|d| {
                 !matches!(
-                    d.media_type.as_str(),
+                    d.decoded_media_type(),
                     media_type::FIRMWARE | media_type::EXTRA
                 )
             })

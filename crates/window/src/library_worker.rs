@@ -910,19 +910,37 @@ mod tests {
                 pc_image::resolve(&f.store, "test:kept", &f.temp.path().join("inspect"))
             })
             .unwrap();
-            let assert_medium = |source: &assembly::ImageSource| {
+            let image = pc_image::test_support::with_synthetic_firmware(|| {
+                f.store.resolve("test:kept", &pc_image::PcProvider)
+            })
+            .unwrap();
+            let assert_medium = |source: &assembly::ImageSource, sha256: Option<[u8; 32]>| {
                 let assembly::ImageSource::File(path) = source else {
                     panic!("expected file")
                 };
-                assert_eq!(&fs::read(path).unwrap()[..512], &[42; 512]);
+                // A compressed floppy has no file; read its verified payload.
+                let bytes = if path.is_file() {
+                    fs::read(path).unwrap()
+                } else {
+                    let hex: String = sha256.unwrap().iter().map(|b| format!("{b:02x}")).collect();
+                    let mut bytes = Vec::new();
+                    let digest = format!("sha256:{hex}").parse().unwrap();
+                    std::io::Read::read_to_end(
+                        &mut image.content_reader(&digest).unwrap(),
+                        &mut bytes,
+                    )
+                    .unwrap();
+                    bytes
+                };
+                assert_eq!(&bytes[..512], &[42; 512]);
             };
             for drive in &resolved.drives {
                 if let Some(list) = &drive.media {
                     for entry in &list.entries {
-                        assert_medium(&entry.image);
+                        assert_medium(&entry.image, entry.expected_sha256);
                     }
                 } else {
-                    assert_medium(&drive.image);
+                    assert_medium(&drive.image, drive.expected_sha256);
                 }
             }
             let mut cmos = false;
@@ -993,10 +1011,12 @@ mod tests {
                 machine: assembly::bios(vec![0xf4; 32768], None),
                 image: image.digest.clone(),
                 bases: if self.phase == 1 {
-                    std::collections::BTreeMap::from([(
-                        w.path().join("base"),
-                        media::VerifiedBase::from_bytes(&[0; 512]).unwrap(),
-                    )])
+                    // A base changed after verification cannot be transferred.
+                    let path = w.path().join("base");
+                    fs::write(&path, [0; 512]).unwrap();
+                    let base = media::VerifiedBase::open(&path).unwrap();
+                    fs::write(&path, [1; 512]).unwrap();
+                    std::collections::BTreeMap::from([(path, base)])
                 } else {
                     Default::default()
                 },
@@ -1100,7 +1120,7 @@ mod tests {
         let root = manifest
             .layers
             .iter()
-            .find(|d| d.media_type == image_store::media_type::DISK_BASE)
+            .find(|d| d.decoded_media_type() == image_store::media_type::DISK_BASE)
             .unwrap()
             .digest
             .clone();

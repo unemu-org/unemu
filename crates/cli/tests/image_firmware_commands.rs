@@ -107,7 +107,20 @@ fn firmware_cli_dry_run_import_extras_inspection_and_tag_conflicts() {
     ];
     assert_eq!(cli::command::run(&generic, &mut listing, &mut errors), 0);
     let listing = String::from_utf8(listing).unwrap();
-    assert!(listing.ends_with("\tfirmware\n"), "{listing:?}");
+    // The package's ROM is stored as a frame; nothing is decoded to disk.
+    let row = listing
+        .lines()
+        .find(|l| l.contains("\tfirmware\t"))
+        .unwrap_or_else(|| panic!("{listing:?}"));
+    let size = |key: &str| -> u64 {
+        row.split('\t')
+            .find_map(|f| f.strip_prefix(key))
+            .unwrap()
+            .parse()
+            .unwrap()
+    };
+    assert!(size("stored:") < size("decoded:"), "{row}");
+    assert!(listing.ends_with("\nmaterialized:0\n"), "{listing:?}");
     let (code, out, err) = run(&t.0, &["show", &tag]);
     assert_eq!(code, 0, "{err}");
     assert!(out.contains("MANUAL") || out.contains("manual.txt"));

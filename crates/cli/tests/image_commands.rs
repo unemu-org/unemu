@@ -40,6 +40,8 @@ fn image_commands_require_store_tag_and_valid_recovery_choice() {
             "automatic",
         ],
         vec!["image", "ls", "--store", "store", "--store", "other"],
+        vec!["image", "sweep"],
+        vec!["image", "sweep", "--store", "store", "--tag", "test:a"],
         vec![
             "image",
             "ls",
@@ -75,6 +77,7 @@ fn cli_import_lists_a_tag_and_refuses_to_replace_it() {
         "--tag".into(),
         "test:cli".into(),
         "--create".into(),
+        "--no-compress".into(),
     ];
     let (code, output, errors) = run(&import);
     assert_eq!(code, 0, "{errors}");
@@ -90,6 +93,46 @@ fn cli_import_lists_a_tag_and_refuses_to_replace_it() {
     ]);
     assert_eq!(code, 0, "{errors}");
     assert!(listed.starts_with("test:cli\tsha256:"));
+    assert!(listed.contains("stored:") && listed.contains("decoded:"));
+    let compress = [
+        "image".into(),
+        "compress".into(),
+        "test:cli".into(),
+        "--tag".into(),
+        "test:compressed".into(),
+        "--store".into(),
+        root.clone().into_os_string(),
+    ];
+    let (code, output, errors) = run(&compress);
+    assert_eq!(code, 0, "{errors}");
+    assert!(output.starts_with("test:compressed\tsha256:"));
+    let store = image_store::Store::open_existing(&root).unwrap();
+    let raw = store.resolve("test:cli", &pc_image::PcProvider).unwrap();
+    let compressed = store
+        .resolve("test:compressed", &pc_image::PcProvider)
+        .unwrap();
+    assert_eq!(
+        raw.manifest.config.digest,
+        compressed.manifest.config.digest
+    );
+    assert_ne!(raw.image.digest, compressed.image.digest);
+    assert!(compressed.manifest.layers.iter().any(|d| d.is_compressed()));
+    assert_ne!(run(&compress).0, 0);
+    let store_args = |action: &str| -> Vec<OsString> {
+        vec![
+            "image".into(),
+            action.into(),
+            "--store".into(),
+            root.clone().into_os_string(),
+        ]
+    };
+    // Compressing and resolving verify by streaming: nothing is decoded to disk.
+    let (code, listed, errors) = run(&store_args("ls"));
+    assert_eq!(code, 0, "{errors}");
+    assert!(listed.ends_with("\nmaterialized:0\n"), "{listed}");
+    let (code, swept, errors) = run(&store_args("sweep"));
+    assert_eq!(code, 0, "{errors}");
+    assert_eq!(swept, "removed:0\tbytes:0\tkept:0\n");
     let (code, _, errors) = run(&import);
     assert_ne!(code, 0);
     assert!(errors.contains("tag conflict"));

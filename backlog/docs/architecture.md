@@ -18,7 +18,7 @@ crate: `machine-file` reads and hashes declared images into inline buffers,
 | Crate | Responsibility | Runtime dependencies | Test-only dependencies |
 | --- | --- | --- | --- |
 | `pc-image` | IBM PC/AT provider, resolved bundle-profile validation, machine-file import, disk-chain validation, isolated sessions and offline publication | `assembly`, `machine-file`, `media`, `image-store`, `serde`, `toml`, `thiserror` | `cpu`, `machine` |
-| `image-store` | Platform-neutral OCI Image Layout, streaming SHA-256 blobs, deterministic machine/media-set/firmware manifests, provider-validated closure and atomic compare-and-swap local tags, stable workspace ownership | `serde`, `serde_json`, `toml`, `sha2`, `thiserror`, `libc` (Unix) | None |
+| `image-store` | Platform-neutral OCI Image Layout, streaming SHA-256/zstd blobs, deterministic machine/media-set/firmware manifests, provider-validated closure and atomic compare-and-swap local tags, stable workspace ownership | `serde`, `serde_json`, `toml`, `sha2`, `zstd`, `thiserror`, `libc` (Unix) | None |
 | `image-registry` | Platform-neutral OCI distribution client: Docker-style references against the default registry, preferences registries list, environment/Keychain credentials, anonymous-then-Basic authentication, resumable chunked push, parallel verified pull, push guard and paged listings | `image-store`, `ureq` (rustls, no default features), `rustls` (ring), `rustls-native-certs`, `serde`, `serde_json`, `toml`, `thiserror` | None |
 | `media` | Immutable sparse disk layers, chain sector sources, floppy journal encoding, streaming recovery/replay, retention-anchor validation, durable host sink and stable single-writer locks ([format](design/persistent-media.md#chosen-format-byte-layout)) | `sha2`, `serde`, `toml`, `thiserror`, `libc` (Unix) | None |
 | `device` | Hardware-neutral contracts: `Device`, `InterruptController`, `DmaMemory`, `VClock`, `NextEvent`, access traces, DMA messages, and the observation capabilities (text scanout, byte output, `ByteCapture`) | `thiserror` | None |
@@ -121,6 +121,58 @@ and verify each unique payload once, passing captured file receipts through asse
 Damaged rows carry errors; try-locks report store contention. Batch appends roll back
 controller entries, persistence handles, config and labels on any failure. Catalogue
 provenance reuses existing disks and exposes their set/medium digests as GC roots. Extras are stored and inspectable but not mounted.
+
+`image-store::codec` owns the `+zstd` payload codec: streaming, single-threaded
+zstd level 3 through fixed 64 KiB buffers, frame checksum and pledged content
+size. Providers declare which payload types have a `+zstd` variant
+(`ConfigValidator::payload_types`; `codec::MEDIA_PAYLOAD_TYPES` for media sets
+and `codec::FIRMWARE_PAYLOAD_TYPES` for firmware packages), so the shared store
+never infers compressibility from a type name. `codec::describe` computes the
+descriptor an import would store without writing, which firmware packages use
+to know their identity before publication. OCI
+digests and sizes describe stored bytes; `unemu.decoded.digest` and
+`unemu.decoded.size` bind the raw identity that config references, layer
+parents and journals use, so recompression changes blob and manifest digests
+but not the machine digest. `Descriptor::names` and `decoded_*` give providers
+one way to match a config reference to a raw or compressed descriptor.
+`ResolvedImage` keeps one receipt per stored digest plus a decoded-content
+index; receipt reuse must prove both identities. A receipt binds to the stored
+blob: resolution (import, publication checks, `image compress`, Start, Insert)
+hashes the stored bytes and streams the decoded bytes through SHA-256, writing
+nothing. `content_reader` streams verified decoded content. Only a request for a
+file of random-access media, `verified_file` or `Store::resolved_file_path` with
+the content digest a config names, decodes a compressed payload into
+`cache/materialized/<decoded-sha256>`, once per receipt, under the same
+per-digest lock as flattened chain heads. An existing single-link file whose
+SHA-256 matches is reused; anything else at that path is removed first, then
+the payload is decoded to `<hex>.decoding` after a free-space check of its size
+plus 256 MiB, verified and published without clobbering.
+`Store::sweep_materialized`, under the exclusive store lease, removes decoded
+files no tag or pinned image reaches, plus lock and partial-decode leftovers;
+flattened heads stay. Decoding caps output at the declared size and the window
+at 8 MiB. Failed ingest or decode publishes nothing.
+
+`pc-image` mounts only what a machine opens as a file. Provider validation
+(`disk::check`) writes nothing: a layered head is rebuilt in one streamed pass
+and compared with its recorded result. Start (`disk::bases`) materializes a
+compressed hard-disk base and flattens a layered head; the head streams its
+base and sector packs through content readers, so neither is decoded to a
+file. A compressed floppy decodes into memory: read-only and volatile drives
+get its bytes, a journal drive a never-created `cache/in-memory/<hex>` key in
+the verified-base map, and `SessionTransfer` carries those bytes to the
+execution thread. Firmware is read with bounded in-memory decoding. Disk reads
+and writes still go through the existing `SectorSource` overlay chain;
+compression changes only the storage representation of an immutable base.
+Store-first firmware resolution (`machine-file::firmware_package`) names a raw
+package ROM by its blob path and decodes a compressed one into
+`PreparedMachineFile`, under a never-created `cache/in-memory/<hex>` key that
+the launch reader, folder discovery and machine-image import read from memory.
+
+`image-registry` moves stored blobs unchanged: push verifies the closure by
+streaming and uploads the compressed frames, pull bounds descriptors with the
+provider's payload types and imports by stored digest. The guard reads
+`unemu.redistribution` on stored descriptors and keys a compressed descriptor
+by both its stored and decoded digest.
 
 `pc-image` is the PC-side provider: it depends on `machine-file`, `assembly`
 and the shared store, with no reverse dependency from `image-store`. Import first

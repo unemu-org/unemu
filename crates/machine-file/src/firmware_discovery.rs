@@ -8,11 +8,14 @@ use assembly::firmware_discovery::{
 };
 use std::path::Path;
 
+/// `memory` holds ROMs already resolved from compressed firmware packages; their
+/// key paths do not exist and are never searched for.
 pub(crate) fn resolve(
     document: &mut MachineFile,
     origins: &Origins,
     roots: &[FirmwareRoot],
     warnings: &mut Vec<String>,
+    memory: &std::collections::BTreeMap<std::path::PathBuf, Vec<u8>>,
 ) -> Result<(), LoadError> {
     if roots.is_empty() {
         return Ok(());
@@ -45,7 +48,7 @@ pub(crate) fn resolve(
     with_firmware_pins(&pins, || {
         if let Some(firmware) = &mut document.firmware {
             if let Some(bios) = &mut firmware.bios {
-                rom(bios, "firmware.bios", origins, roots, warnings)?;
+                rom(bios, "firmware.bios", origins, roots, warnings, memory)?;
             }
             for (index, option) in firmware.option_roms.iter_mut().flatten().enumerate() {
                 rom(
@@ -54,6 +57,7 @@ pub(crate) fn resolve(
                     origins,
                     roots,
                     warnings,
+                    memory,
                 )?;
             }
         }
@@ -67,8 +71,18 @@ fn rom(
     origins: &Origins,
     roots: &[FirmwareRoot],
     warnings: &mut Vec<String>,
+    memory: &std::collections::BTreeMap<std::path::PathBuf, Vec<u8>>,
 ) -> Result<(), LoadError> {
     if (rom.image.is_some() && rom.parts.is_some()) || rom.parts.as_ref().is_some_and(Vec::is_empty)
+    {
+        return Ok(());
+    }
+    let in_memory = |image: &str| memory.contains_key(std::path::Path::new(image));
+    if rom.image.as_deref().is_some_and(in_memory)
+        || rom
+            .parts
+            .as_ref()
+            .is_some_and(|parts| parts.iter().all(|p| in_memory(&p.image)))
     {
         return Ok(());
     }
