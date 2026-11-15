@@ -81,3 +81,27 @@ with its manuals, or a CD game with patches in zip or exe form. Accepted shape:
 4. **Order of work.** The media-set codec and CLI import carry extras from the
    start; the transfer-medium generator and the UI come after, the UI from an
    updated mock-up that the maintainer approves first.
+
+## Amendment 2026-11-15: redistributable shareware sets
+
+The maintainer approved publishing public shareware sets, starting with the
+original Apogee shareware releases of Commander Keen 4, Wolfenstein 3D
+episode 1 and Duke Nukem II episode 1, to the public `unemu/` namespace.
+Point 8 stays the default; this amendment adds one exception to it:
+
+1. **Explicit statement only.** A set is open only when the import says so,
+   with a licence identifier for the vendor's terms (an SPDX `LicenseRef-`).
+   Nothing is guessed from file names or contents; without the statement a
+   set stays `user-supplied`.
+2. **The terms travel with the bytes.** An open set carries the vendor's own
+   terms text as an extra, and every layer records the digest of that extra.
+   The client guard refuses to publish an open set whose terms text is not
+   in the same closure and open.
+3. **Unmodified releases.** The media hold the files exactly as the vendor
+   released them, pinned by SHA-256 in the fetch scripts under
+   `vendor/shareware/`.
+4. **Still never in the repository.** Game files and the vendor's terms
+   texts are never committed; the repository holds only the fetch scripts,
+   the pins and a paraphrase of the terms.
+5. **Rights follow the bytes**, as in [[decision-27]]: a machine image that
+   embeds an open set is open only where all its other layers are.
