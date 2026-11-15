@@ -24,7 +24,7 @@ const USAGE: &str = "usage: unemupc98 --boot (Real16 timer demo)
        unemupc98 image workspace discard NAME --store DIR --yes
        unemupc98 image workspace abandon-publication NAME --store DIR
        unemupc98 image publish --from-workspace NAME --store DIR --tag NAME:TAG [--flatten]
-       unemupc98 image media import FILE...|DIR --title TITLE --tag NAME:TAG --store DIR [--create] [--dry-run] [--no-compress] [--label N=TEXT]... [--format N=FORMAT]... [--extra PATH[:DOSNAME]]...
+       unemupc98 image media import FILE...|DIR --title TITLE --tag NAME:TAG --store DIR [--create] [--dry-run] [--no-compress] [--label N=TEXT]... [--format N=FORMAT]... [--extra PATH[:DOSNAME]]... [--open --license LicenseRef-NAME --license-text EXTRA]
        unemupc98 image firmware import FOLDER|FILES... [--store DIR] [--create] [--rescan] [--dry-run] [--for CATALOGUE-ID [EXTRAS] [METADATA]]
        unemupc98 image firmware import FILE --unlisted ID --role ROLE [--store DIR] [--create] [--dry-run] [EXTRAS] [METADATA]
        unemupc98 image firmware edit NAME:TAG [--to NAME:TAG] [--store DIR] [--regenerate-readme] METADATA

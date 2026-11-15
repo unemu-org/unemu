@@ -194,6 +194,8 @@ Annotations are string values and never bind hardware or media:
 | `unemu.platform` | Required on the manifest: machine platform, matching config and metadata; a routing hint for registry/library previews, never an independent authority. |
 | `unemu.redistribution` | `open` or `user-supplied`; absent evidence defaults to user-supplied. |
 | `unemu.license` | Reviewed SPDX licence expression for open content. |
+| `unemu.source` | On an open ROM: decoded digest of its corresponding source archive in the same closure (§5.3). |
+| `unemu.terms` | On an open installation medium or extra: decoded digest of the vendor's terms-text extra in the same closure (§5.2). |
 | `unemu.provenance` | Publish-safe evidence supporting the open classification. |
 
 The config is the single authority for bindings, slots, catalogue order and
@@ -973,6 +975,68 @@ The most restrictive local classification for a digest still wins. Restricted
 sets stay in the private store/registry and private archives, never repository
 fixtures or public exports. §5's future public recipe strips restricted bytes;
 it never silently exports the original private manifest.
+
+**Redistributable sets** ([decision-26](<../../decisions/decision-26 - Installation media sets are their own OCI artifact type.md>)
+amendment 2026-11-15, implemented 2026-11-15). A set is open only by an
+explicit statement at import: `image media import … --open --license
+LicenseRef-<name> --license-text <EXTRA>`. The licence is one SPDX
+`LicenseRef-` that names the vendor's own terms; an identifier from the SPDX
+License List is refused, because a set cannot carry the source an
+open-source licence may oblige. `--license-text` names, by file name, exactly
+one of the set's `--extra` files: the vendor's terms text as released.
+`--open` needs both flags and each flag needs `--open`; nothing is guessed
+from file names or contents. The statement uses the `image_store::license`
+machinery of §5.3:
+
+- Every medium and every extra layer is marked `open` under that licence and
+  carries `unemu.terms`, the decoded digest of the terms-text extra (the
+  counterpart of a ROM's `unemu.source`; the terms extra links itself).
+- The config and the metadata, which this program generates, follow the
+  firmware-package rule: open under `CC0-1.0` because every other layer is
+  open. They carry no terms link: the amendment's "every layer records the
+  digest" is read as every layer of the vendor's bytes, and the generated
+  metadata layer is this program's own CC0 output (the title and labels the
+  user typed), not the vendor's work. The manifest adds
+  `org.opencontainers.image.licenses`,
+  the conjunction of the layer licences (for example
+  `LicenseRef-<name> AND CC0-1.0`).
+- Without the statement every descriptor stays user-supplied, byte for byte
+  as before (a test pins a default set's manifest digest). Marks are part of
+  the set: when the tag exists, the same bytes under other marks, another
+  licence or another terms extra are a tag conflict, so a set is opened by a
+  new import under a new tag.
+
+*Push guard, rule 5.* Open installation media go to a registry not marked
+private, or into `unemu/`, only with their terms text: in a media set every
+open layer except the generated metadata must link, through `unemu.terms`,
+one and the same digest (the first link in manifest order names it), and
+that digest must be an open extra layer of the same closure. A missing or
+unparsable link, a link to another digest, or a terms text that is absent,
+not an extra or not open refuses the push and names the layers; a registry
+marked private outside `unemu/` keeps the user's own copy. The refusal's hint
+says to import the set again under a new tag with the statement. A
+user-supplied set falls under rules 1 and 2 and never enters `unemu/`; for a
+media set their refusals add the same hint. Outside a media set
+the rule checks only the links it finds: any open layer that links a terms
+text needs that text, open, in its closure. The status is
+`image_store::license::terms_unlinked`, or `guard::terms_without_text` with
+the guard's effective classes. `image media show` prints the terms extra each
+link names, every layer's class, licence and link, and the guard's verdict
+from its own classification.
+
+*Rights follow the bytes.* The most restrictive local mark per digest still
+wins: when another local tag records one of the set's media or its terms
+text as user-supplied (the same disk imported without `--open`, or a machine
+image built from the disk file), the open set stays private and `image push
+--dry-run` names that tag. A new import cannot clear such a record: the
+refusal says so, and only deleting that tag (the library's Delete tag) or
+pushing from a store without it does. A machine image that embeds an open set's media is
+open only when every other layer is open; machine import still marks every
+floppy user-supplied, so today such an image stays private, and its floppy
+records restrict the set's media in the same store. The media themselves
+hold the vendor's unmodified files, pinned by SHA-256 in the fetch scripts
+under `vendor/shareware/`; game files and terms texts never enter the
+repository.
 
 **Read-only bases, writable installations.** Media > Insert > From library…
 resolves a set tag once, verifies it and offers loading the whole set into the

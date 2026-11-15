@@ -6,16 +6,23 @@ version 1.0** (Apogee Software, Todd Replogle, 1993), and copies its licence
 texts to `extras/`.
 
 The archive, the image and the extras are third-party shareware. They are
-never committed, and the media set built from them stays `user-supplied` in
-the user's private store (decision-26 §8). Fetching does not add any
-redistribution right. The terms are summarised below, not interpreted; the
-full texts stay local, in `extras/`.
+never committed, and fetching does not add any redistribution right. The
+maintainer approved publishing this release on 2026-11-15 (decision-26,
+amendment of that date), so its media set is imported with the licence
+statement `--open --license LicenseRef-apogee-license-v12.01.93
+--license-text LICENSE.DOC` (Usage below): the set is open under Apogee's
+`LICENSE.DOC` terms (revision `[V.12.01.93]`), that text travels in the set
+as its terms text, and the push guard lets the set into `unemu/`. Imported
+without the statement the set stays `user-supplied` in the user's private
+store (decision-26 §8). The terms are summarised below, not interpreted; the
+full texts are never in the repository, only in `extras/` and in the set.
 
 ## Usage
 
 ```sh
 vendor/shareware/duke2/fetch.sh                                  # download once, then offline
 SHAREWARE_ARCHIVE=/path/to/4duke.zip vendor/shareware/duke2/fetch.sh   # never uses the network
+cargo run --offline -p cli -- image media import vendor/shareware/duke2/duke2-sw10-1440.img --title "Duke Nukem II: Episode 1 (shareware 1.0)" --tag duke2-shareware:1.0 --label '1=Disk 1 of 1 - Shareware v1.0 installation' --extra vendor/shareware/duke2/extras/LICENSE.DOC:LICENSE.DOC --extra vendor/shareware/duke2/extras/ORDER.FRM:ORDER.FRM --open --license LicenseRef-apogee-license-v12.01.93 --license-text LICENSE.DOC --store /path/to/store --create
 ```
 
 Run it inside `nix develop`, which provides mtools 4.0.49, the version that

@@ -18,7 +18,11 @@
 //!    anonymous reads (checked against the registry before the first upload);
 //! 4. an open ROM under a copyleft licence (GPL, LGPL, AGPL or MPL family)
 //!    goes to a registry not marked private, or into `unemu/`, only with its
-//!    linked source archive (`unemu.source`) in the same closure.
+//!    linked source archive (`unemu.source`) in the same closure;
+//! 5. open installation media go to a registry not marked private, or into
+//!    `unemu/`, only with the vendor's terms text they link (`unemu.terms`)
+//!    as an open extra in the same closure; in a media set every medium and
+//!    extra links the one terms text of the set (machine-images §5.2).
 //!
 //! There is no override.
 
@@ -174,15 +178,20 @@ pub fn closure(manifest: &Manifest, local: &LocalMarks) -> Vec<ClosureEntry> {
 /// Why a push was refused. Messages name digests and media types only.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum Refusal {
-    #[error("{repository} is in the official namespace and every blob must be open; user-supplied: {}", list(.blobs))]
+    #[error("{repository} is in the official namespace and every blob must be open; user-supplied: {}{hint}", list(.blobs))]
     OfficialNamespaceNeedsOpen {
         repository: String,
         blobs: Vec<Descriptor>,
+        /// What clears the restriction, when the closure shows it; empty
+        /// otherwise.
+        hint: &'static str,
     },
-    #[error("{host} is not marked private, so it cannot receive user-supplied blobs: {}", list(.blobs))]
+    #[error("{host} is not marked private, so it cannot receive user-supplied blobs: {}{hint}", list(.blobs))]
     RegistryNotPrivate {
         host: String,
         blobs: Vec<Descriptor>,
+        /// As for [`Refusal::OfficialNamespaceNeedsOpen`].
+        hint: &'static str,
     },
     #[error("{host} is not a configured registry; add it to the registries list first")]
     UnknownRegistry { host: String },
@@ -194,6 +203,13 @@ pub enum Refusal {
     CopyleftWithoutSource {
         target: String,
         /// What adds the source to this kind of artifact.
+        hint: &'static str,
+        blobs: Vec<Descriptor>,
+    },
+    #[error("{target} is in unemu/ or on a registry not marked private, and these open installation media do not link one open terms text of their set in the image (unemu.terms; {hint}): {}", list(.blobs))]
+    TermsWithoutText {
+        target: String,
+        /// What records the link for this kind of artifact.
         hint: &'static str,
         blobs: Vec<Descriptor>,
     },
@@ -238,9 +254,9 @@ impl fmt::Display for ClosureEntry {
     }
 }
 
-/// Rules 1, 2 and 4, decided from configuration and the closure's effective
-/// classes alone; rule 3 needs the registry. `entry` is `None` when the
-/// target host is neither configured nor the family default.
+/// Rules 1, 2, 4 and 5, decided from configuration and the closure's
+/// effective classes alone; rule 3 needs the registry. `entry` is `None` when
+/// the target host is neither configured nor the family default.
 pub fn check(
     entry: Option<&RegistryEntry>,
     target: &Reference,
@@ -258,12 +274,14 @@ pub fn check(
         return Err(Refusal::OfficialNamespaceNeedsOpen {
             repository: target.repository.clone(),
             blobs: restricted,
+            hint: restriction_hint(closure),
         });
     }
     if !restricted.is_empty() && !entry.private {
         return Err(Refusal::RegistryNotPrivate {
             host: entry.host.clone(),
             blobs: restricted,
+            hint: restriction_hint(closure),
         });
     }
     if entry.private && target.namespace() != OFFICIAL_NAMESPACE {
@@ -284,7 +302,57 @@ pub fn check(
             blobs: missing,
         });
     }
+    let unlinked = terms_without_text(closure);
+    if !unlinked.is_empty() {
+        let set = closure
+            .iter()
+            .any(|c| c.descriptor.media_type == media_type::MEDIA_SET_CONFIG);
+        return Err(Refusal::TermsWithoutText {
+            target: target.to_string(),
+            hint: if set {
+                "import the set again under a new tag with --open --license LicenseRef-NAME --license-text EXTRA"
+            } else {
+                "the image must carry the terms text of the set its media come from"
+            },
+            blobs: unlinked,
+        });
+    }
     Ok(())
+}
+
+/// What clears a user-supplied restriction, when the closure shows it: a
+/// record in another local tag, which only deleting that tag (the library's
+/// Delete tag) or pushing from a store without it removes; or a media set
+/// imported without the open statement, which only a new import under a new
+/// tag can open, because the marks are part of what the tag names.
+fn restriction_hint(closure: &[ClosureEntry]) -> &'static str {
+    let restricted = |c: &&ClosureEntry| c.effective == Redistribution::UserSupplied;
+    if closure
+        .iter()
+        .filter(restricted)
+        .any(|c| matches!(c.source, MarkSource::LocalTag(_)))
+    {
+        "; another local tag records some of these bytes user-supplied (image push --dry-run names it): delete that tag in the library, or push from a store without it"
+    } else if closure
+        .iter()
+        .any(|c| c.descriptor.media_type == media_type::MEDIA_SET_CONFIG)
+    {
+        "; a media set is open only when imported under a new tag with --open --license LicenseRef-NAME --license-text EXTRA"
+    } else {
+        ""
+    }
+}
+
+/// Rule 5: effectively open layers whose vendor terms text does not travel
+/// with them ([`license::terms_unlinked`]).
+pub fn terms_without_text(closure: &[ClosureEntry]) -> Vec<Descriptor> {
+    let layers: Vec<Descriptor> = closure.iter().map(|c| c.descriptor.clone()).collect();
+    let unlinked = license::terms_unlinked(&layers);
+    closure
+        .iter()
+        .filter(|c| c.effective == Redistribution::Open && unlinked.contains(&c.descriptor))
+        .map(|c| c.descriptor.clone())
+        .collect()
 }
 
 /// Rule 4: effectively open ROM layers whose licence obliges the
@@ -653,6 +721,181 @@ mod tests {
         assert!(hint(&machine).contains("image firmware edit --source"));
         machine[0] = entry(Some("open"), mt::CONFIG, b"machine config");
         assert!(hint(&machine).contains("import the machine again"));
+    }
+
+    /// A layer of an open shareware set: the vendor's terms by reference and,
+    /// when given, the link to the terms text's bytes.
+    fn shareware(kind: &str, bytes: &[u8], terms: Option<&[u8]>) -> Descriptor {
+        let mut d = Descriptor::new(kind, Digest::of(bytes), bytes.len() as u64);
+        let vendor = license::Expression::parse("LicenseRef-synthetic-shareware").unwrap();
+        license::mark(&mut d, Some(&vendor));
+        if let Some(terms) = terms {
+            d.annotations
+                .insert(license::TERMS.into(), Digest::of(terms).to_string());
+        }
+        d
+    }
+    /// A complete open media set: two disks and the terms text, all linking
+    /// it, and the generated config and metadata open under their own licence.
+    fn open_set() -> Vec<ClosureEntry> {
+        vec![
+            entry(Some("open"), mt::MEDIA_SET_CONFIG, b"set config"),
+            classified(shareware(mt::FLOPPY, b"disk 1", Some(b"terms"))),
+            classified(shareware(mt::FLOPPY, b"disk 2", Some(b"terms"))),
+            classified(shareware(mt::EXTRA, b"terms", Some(b"terms"))),
+            entry(Some("open"), mt::METADATA, b"set metadata"),
+        ]
+    }
+    fn verdict(private: bool, reference: &str, closure: &[ClosureEntry]) -> Result<(), Refusal> {
+        check(Some(&registry(private)), &target(reference), closure)
+    }
+
+    #[test]
+    fn a_complete_open_media_set_may_enter_the_official_namespace() {
+        let set = open_set();
+        for (private, reference) in [
+            (false, "shareware:1"),
+            (true, "shareware:1"),
+            (false, "owner/shareware:1"),
+            (true, "private/shareware:1"),
+        ] {
+            assert_eq!(verdict(private, reference, &set), Ok(()), "{reference}");
+        }
+        assert!(terms_without_text(&set).is_empty());
+        assert!(!needs_private_probe(&set));
+    }
+
+    #[test]
+    fn an_open_media_set_without_its_linked_terms_text_stays_private() {
+        let disk = |n: &[u8]| shareware(mt::FLOPPY, n, Some(b"terms"));
+        // The terms text is not in the closure.
+        let mut absent = open_set();
+        absent.remove(3);
+        // One disk's link is missing, or names another extra of the set.
+        let mut missing = open_set();
+        missing[2] = classified(shareware(mt::FLOPPY, b"disk 2", None));
+        let mut other = open_set();
+        other.insert(
+            3,
+            classified(shareware(mt::EXTRA, b"manual", Some(b"terms"))),
+        );
+        other[2] = classified(shareware(mt::FLOPPY, b"disk 2", Some(b"manual")));
+        // The terms text is restricted by another local tag.
+        let mut local = LocalMarks::default();
+        local.restrict(Digest::of(b"terms"), "elsewhere:1");
+        let manifest = Manifest::new_media_set(
+            "synthetic",
+            open_set()[0].descriptor.clone(),
+            open_set()[1..]
+                .iter()
+                .map(|c| c.descriptor.clone())
+                .collect(),
+        )
+        .unwrap();
+        let restricted = closure(&manifest, &local);
+        for (case, set, blobs) in [
+            ("absent", &absent, vec![disk(b"disk 1"), disk(b"disk 2")]),
+            (
+                "missing",
+                &missing,
+                vec![shareware(mt::FLOPPY, b"disk 2", None)],
+            ),
+            ("other", &other, vec![other[2].descriptor.clone()]),
+        ] {
+            for (private, reference) in [
+                (false, "shareware:1"),
+                (true, "shareware:1"),
+                (false, "owner/shareware:1"),
+            ] {
+                let refusal = verdict(private, reference, set).unwrap_err();
+                assert!(
+                    matches!(&refusal, Refusal::TermsWithoutText { blobs: b, hint, .. }
+                        if *b == blobs && hint.contains("under a new tag with --open")),
+                    "{case} {reference}: {refusal}"
+                );
+                assert!(refusal.to_string().contains("terms text"), "{refusal}");
+            }
+            // The user's own copy may still go to a private registry.
+            assert_eq!(verdict(true, "private/shareware:1", set), Ok(()), "{case}");
+        }
+        let refusal = verdict(true, "shareware:1", &restricted).unwrap_err();
+        assert!(matches!(
+            &refusal,
+            Refusal::OfficialNamespaceNeedsOpen { blobs, .. }
+                if blobs.len() == 1 && blobs[0].digest == Digest::of(b"terms")
+        ));
+        // Only removing the other tag's record clears it, not a new import.
+        assert!(
+            refusal.to_string().ends_with(
+                "; another local tag records some of these bytes user-supplied \
+                 (image push --dry-run names it): delete that tag in the library, \
+                 or push from a store without it"
+            ),
+            "{refusal}"
+        );
+    }
+
+    #[test]
+    fn a_user_supplied_media_set_never_enters_the_official_namespace() {
+        let set = [
+            entry(Some("user-supplied"), mt::MEDIA_SET_CONFIG, b"set config"),
+            entry(Some("user-supplied"), mt::FLOPPY, b"disk 1"),
+            entry(Some("user-supplied"), mt::EXTRA, b"manual"),
+            entry(Some("user-supplied"), mt::METADATA, b"set metadata"),
+        ];
+        for private in [false, true] {
+            assert!(matches!(
+                verdict(private, "shareware:1", &set),
+                Err(Refusal::OfficialNamespaceNeedsOpen { ref blobs, hint, .. })
+                    if blobs.len() == 4 && hint.contains("under a new tag with --open")
+            ));
+        }
+        assert!(matches!(
+            verdict(false, "owner/shareware:1", &set),
+            Err(Refusal::RegistryNotPrivate { hint, .. }) if hint.contains("--license-text")
+        ));
+        assert_eq!(verdict(true, "private/shareware:1", &set), Ok(()));
+    }
+
+    #[test]
+    fn a_machine_image_embedding_open_set_media_is_open_only_when_every_other_layer_is() {
+        // Rights follow the bytes: the set's disk and terms text stay open in
+        // the machine image, but its user-supplied ROM keeps the image private.
+        let mixed = [
+            entry(Some("open"), mt::CONFIG, b"machine config"),
+            entry(Some("user-supplied"), mt::FIRMWARE, b"vendor rom"),
+            classified(shareware(mt::FLOPPY, b"disk 1", Some(b"terms"))),
+            classified(shareware(mt::EXTRA, b"terms", Some(b"terms"))),
+            entry(Some("open"), mt::METADATA, b"machine metadata"),
+        ];
+        for private in [false, true] {
+            assert!(matches!(
+                verdict(private, "lab:1", &mixed),
+                Err(Refusal::OfficialNamespaceNeedsOpen { ref blobs, hint: "", .. })
+                    if blobs.len() == 1 && blobs[0].digest == Digest::of(b"vendor rom")
+            ));
+        }
+        assert!(matches!(
+            verdict(false, "owner/lab:1", &mixed),
+            Err(Refusal::RegistryNotPrivate { .. })
+        ));
+        assert_eq!(verdict(true, "private/lab:1", &mixed), Ok(()));
+
+        // With an open ROM the image is open, but only with the terms text.
+        let mut open = mixed.clone();
+        open[1] = entry(Some("open"), mt::FIRMWARE, b"open rom");
+        assert_eq!(verdict(false, "lab:1", &open), Ok(()));
+        let without: Vec<_> = open
+            .iter()
+            .filter(|c| c.descriptor.media_type != mt::EXTRA)
+            .cloned()
+            .collect();
+        assert!(matches!(
+            verdict(false, "lab:1", &without),
+            Err(Refusal::TermsWithoutText { ref blobs, hint, .. })
+                if blobs.len() == 1 && blobs[0].digest == Digest::of(b"disk 1")
+                    && hint.contains("terms text of the set")
+        ));
     }
 
     #[test]

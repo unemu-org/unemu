@@ -5,6 +5,35 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-15 — Redistributable installation media sets:** `image media
+  import … --open --license LicenseRef-NAME --license-text EXTRA` states that a
+  set may be redistributed under the vendor's own terms (decision-26
+  amendment). `--open` needs both flags; the licence must be one SPDX
+  `LicenseRef-` and the terms text exactly one of the set's `--extra` files,
+  so nothing is guessed. An open set marks every medium and extra open under
+  that licence, each linking the terms text's decoded digest in the new
+  `unemu.terms` annotation (the counterpart of `unemu.source`); the generated
+  config and metadata are open under CC0-1.0 and the manifest carries
+  `org.opencontainers.image.licenses`. Without the statement a set is
+  user-supplied exactly as before (a test pins a default set's manifest
+  digest, measured with the earlier import). Re-importing the same bytes
+  under the same tag with other marks is a tag conflict, so a set is opened
+  under a new tag; the refusal hints say so, and say that a user-supplied
+  record in another local tag is cleared only by deleting that tag or pushing
+  from a store without it. Push-guard rule 5 lets an open set into `unemu/`
+  or onto a registry not marked private only when every open medium and extra
+  links one terms text that is an open extra of the same closure; a missing or
+  mismatched link, or an absent terms text, is refused with the layers named,
+  and a private registry outside `unemu/` keeps the user's own copy. Rights
+  follow the bytes: a machine image with an open set's media stays private
+  while any other layer is user-supplied (machine import still marks every
+  floppy user-supplied), and another local tag recording one of the set's
+  disks user-supplied keeps the set private. `image media show` prints the
+  terms extra, each layer's class, licence and link, and the guard's verdict.
+  Synthetic floppies and terms texts in the tests. **MEASURED:** the three
+  `vendor/shareware/` sets, imported with their statements (entry below)
+  into a scratch store, pass the guard for `unemu/` in `image push
+  --dry-run`. The GUI for open sets and set-level metadata are separate work.
 - **2026-11-15 — Open VGA BIOS re-pinned to `v0.8a-unemu.2`:**
   `vendor/vgabios/fetch.sh` builds fork release `v0.8a-unemu.2` (revision
   `d883bbac`), which drops upstream's prebuilt `VGABIOS-lgpl-latest*.bin`
@@ -32,14 +61,20 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
     identical images. The vendor and licence texts go to `extras/`; each
     README summarises them. Everything under `vendor/shareware/` except the
     scripts and READMEs is gitignored; the scripts are not in CI.
-  - **Media sets:** `image media import` of each floppy with its extras gives
-    user-supplied sets, which the push guard refuses for `unemu/`. The CLI
-    import records the title and medium label only; genre, year, publisher
-    and the DOS software platform need the window's import dialog.
+  - **Media sets:** `image media import` of each floppy with its extras and
+    the licence statement (`commands.md`, each README) gives an open set:
+    Wolfenstein 3-D under `LicenseRef-apogee-vendor-v11.01.92` with
+    `VENDOR.DOC`, Duke Nukem II under `LicenseRef-apogee-license-v12.01.93`
+    with `LICENSE.DOC`, Commander Keen 4 under
+    `LicenseRef-apogee-readme-keen4-v1.4` with `README.DOC` (its only
+    distribution text, without a revision mark). Imported without the
+    statement a set stays user-supplied. The CLI import records the title and
+    medium label only; genre, year, publisher and the DOS software platform
+    need the window's import dialog.
   - **Publication:** the maintainer approved on 2026-11-15 that these public
-    shareware sets may be published. Marking a set redistributable, so the
-    push guard lets it into `unemu/`, is tracked separately and not done
-    here; until then the sets stay user-supplied.
+    shareware sets may be published. Imported with the statement they are
+    open, and the push guard lets them into `unemu/` with their terms texts
+    (entry above); pushing them to the registry is the maintainer's step.
 - **2026-11-15 — INT 15h AH=88h and AH=87h on the AT test floppy:** before
   its rounds, `vendor/at-pm-test` now calls INT 15h AH=88h (AX must equal
   CMOS 31h:30h) and AH=87h through a caller GDT: 128 words to `10C000h`,

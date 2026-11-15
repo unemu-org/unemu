@@ -21,8 +21,10 @@ cargo run --offline -p cli -- image workspace discard play --store /path/to/stor
 cargo run --offline -p cli -- image media import /path/to/disks --title "Installation set" --tag install:1.0 --store /path/to/store --create
 cargo run --offline -p cli -- image media import /path/to/disk1.img /path/to/disk2.img --title "Installation set" --tag install:2.0 --label '1=Setup' --extra /path/to/manual.txt:MANUAL.TXT --store /path/to/store
 cargo run --offline -p cli -- image media import /path/to/disc.iso --title "Optical set" --tag optical:1.0 --format 1=iso-2048 --store /path/to/store
+cargo run --offline -p cli -- image media import vendor/shareware/wolf3d/wolf3d-sw14-1440.img --title "Wolfenstein 3-D: Episode 1 (shareware 1.4)" --tag wolf3d-shareware:1.4 --extra vendor/shareware/wolf3d/extras/VENDOR.DOC:VENDOR.DOC --extra vendor/shareware/wolf3d/extras/ORDER.FRM:ORDER.FRM --open --license LicenseRef-apogee-vendor-v11.01.92 --license-text VENDOR.DOC --store /path/to/store --create
 cargo run --offline -p cli -- image media ls --store /path/to/store
 cargo run --offline -p cli -- image media show install:1.0 --store /path/to/store
+cargo run --offline -p cli -- image push wolf3d-shareware:1.4 --store /path/to/store --dry-run
 ```
 
 Compression policy (store side). Machine imports, media-set imports and
@@ -85,6 +87,29 @@ before streaming any source. Sources stay
 unchanged and every copy is streamed with full SHA-256. Existing tags fail before
 reading sources; final publication uses compare-and-swap. All descriptors default
 to user-supplied. Optical storage does not enable CD-ROM emulation.
+
+A redistributable set (decision-26 amendment of 2026-11-15, for example a
+shareware release fetched under `vendor/shareware/` below: the disk image and
+the vendor's terms text in `extras/`) is open only by an explicit statement:
+`--open --license LicenseRef-NAME --license-text EXTRA`. `--open` needs both
+flags and each flag needs `--open`. The licence must be one SPDX `LicenseRef-`
+(the vendor's own terms; `MIT`, `GPL-2.0-only` or any other SPDX List
+identifier is refused), and `--license-text` names, by file name, exactly one
+of the `--extra` files. Every medium and extra is then marked open under that
+licence and linked to the terms text's digest (`unemu.terms`); the generated
+config and metadata are open under CC0-1.0. The preview prints
+`open LICENCE terms "FILE"`. `image media show` prints `terms "FILE" DIGEST`,
+one `layer` line per descriptor (kind, digest, class, licence, linked terms
+digest) and a `push` line with the guard's verdict. The push guard lets an
+open set into `unemu/`, or onto a registry not marked private, only when every
+open medium and extra links the same terms text and that text is an open extra
+of the set; a set without the statement stays private. Another local tag that
+records one of the set's disks or its terms text as user-supplied (the same
+file imported without `--open`, say) keeps the set private, and `image push
+--dry-run` names it; delete that tag in the library (Delete tag) or push from
+a store without it. Marks are part of the set, so a tag that already names
+the set under other marks refuses a new statement: import under a new tag.
+Game files and terms texts never enter the repository.
 
 Firmware packages use the same store, with the shared default data root when
 `--store` is omitted:
@@ -541,9 +566,10 @@ vendor/shareware/keen4/fetch.sh                # Commander Keen 4 1.4: keen4-sw1
 vendor/shareware/wolf3d/fetch.sh               # Wolfenstein 3-D 1.4: wolf3d-sw14-1440.img, extras/
 vendor/shareware/duke2/fetch.sh                # Duke Nukem II 1.0: duke2-sw10-1440.img, extras/
 SHAREWARE_ARCHIVE=/path/to/1wolf14.zip vendor/shareware/wolf3d/fetch.sh   # your own copy; no network
-cargo run --offline -p cli -- image media import vendor/shareware/keen4/keen4-sw14-1440.img --title "Commander Keen 4: Secret of the Oracle (shareware 1.4)" --tag keen4-shareware:1.4 --label '1=Disk 1 of 1 - Shareware v1.4 installation' --extra vendor/shareware/keen4/extras/README.DOC:README.DOC --extra vendor/shareware/keen4/extras/ORDER.FRM:ORDER.FRM --store /path/to/store --create
-cargo run --offline -p cli -- image media import vendor/shareware/wolf3d/wolf3d-sw14-1440.img --title "Wolfenstein 3-D: Episode 1 (shareware 1.4)" --tag wolf3d-shareware:1.4 --label '1=Disk 1 of 1 - Shareware v1.4 installation' --extra vendor/shareware/wolf3d/extras/VENDOR.DOC:VENDOR.DOC --extra vendor/shareware/wolf3d/extras/ORDER.FRM:ORDER.FRM --store /path/to/store
-cargo run --offline -p cli -- image media import vendor/shareware/duke2/duke2-sw10-1440.img --title "Duke Nukem II: Episode 1 (shareware 1.0)" --tag duke2-shareware:1.0 --label '1=Disk 1 of 1 - Shareware v1.0 installation' --extra vendor/shareware/duke2/extras/LICENSE.DOC:LICENSE.DOC --extra vendor/shareware/duke2/extras/ORDER.FRM:ORDER.FRM --store /path/to/store
+cargo run --offline -p cli -- image media import vendor/shareware/keen4/keen4-sw14-1440.img --title "Commander Keen 4: Secret of the Oracle (shareware 1.4)" --tag keen4-shareware:1.4 --label '1=Disk 1 of 1 - Shareware v1.4 installation' --extra vendor/shareware/keen4/extras/README.DOC:README.DOC --extra vendor/shareware/keen4/extras/ORDER.FRM:ORDER.FRM --open --license LicenseRef-apogee-readme-keen4-v1.4 --license-text README.DOC --store /path/to/store --create
+cargo run --offline -p cli -- image media import vendor/shareware/wolf3d/wolf3d-sw14-1440.img --title "Wolfenstein 3-D: Episode 1 (shareware 1.4)" --tag wolf3d-shareware:1.4 --label '1=Disk 1 of 1 - Shareware v1.4 installation' --extra vendor/shareware/wolf3d/extras/VENDOR.DOC:VENDOR.DOC --extra vendor/shareware/wolf3d/extras/ORDER.FRM:ORDER.FRM --open --license LicenseRef-apogee-vendor-v11.01.92 --license-text VENDOR.DOC --store /path/to/store
+cargo run --offline -p cli -- image media import vendor/shareware/duke2/duke2-sw10-1440.img --title "Duke Nukem II: Episode 1 (shareware 1.0)" --tag duke2-shareware:1.0 --label '1=Disk 1 of 1 - Shareware v1.0 installation' --extra vendor/shareware/duke2/extras/LICENSE.DOC:LICENSE.DOC --extra vendor/shareware/duke2/extras/ORDER.FRM:ORDER.FRM --open --license LicenseRef-apogee-license-v12.01.93 --license-text LICENSE.DOC --store /path/to/store
+cargo run --offline -p cli -- image push wolf3d-shareware:1.4 --store /path/to/store --dry-run   # guard verdict for unemu/wolf3d-shareware:1.4
 ```
 
 Each script downloads the publisher's original shareware archive from a pinned
@@ -559,8 +585,12 @@ Info-ZIP UnZip 6.00; Linux not measured); unzip and curl come from the host.
 They are not part of CI: they need the network and third-party content.
 Everything under `vendor/shareware/` except the scripts and READMEs is
 gitignored, so archives, images, extras and unpacked files are never committed.
-The media sets imported from them are user-supplied, so the push guard keeps
-them in private registries. Each `vendor/shareware/<title>/README.md` lists the
+The maintainer approved publishing the three sets on 2026-11-15 (decision-26
+amendment), so the imports above carry the licence statement: each set is open
+under the vendor document's own `LicenseRef-` (named after the document and
+its revision; Keen 4's `README.DOC` has none, so its id names the release),
+with that document as its terms text, and the push guard lets it into
+`unemu/`. Imported without `--open` a set stays user-supplied and private. Each `vendor/shareware/<title>/README.md` lists the
 source and every hash and summarises the distribution terms; the full texts
 stay local, in `extras/`.
 

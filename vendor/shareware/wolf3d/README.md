@@ -6,16 +6,23 @@ version 1.4** (id Software, 1992, published by Apogee Software Productions),
 and copies its vendor texts to `extras/`.
 
 The archive, the image and the extras are third-party shareware. They are
-never committed, and the media set built from them stays `user-supplied` in
-the user's private store (decision-26 §8). Fetching does not add any
-redistribution right. The terms are summarised below, not interpreted; the
-full texts stay local, in `extras/`.
+never committed, and fetching does not add any redistribution right. The
+maintainer approved publishing this release on 2026-11-15 (decision-26,
+amendment of that date), so its media set is imported with the licence
+statement `--open --license LicenseRef-apogee-vendor-v11.01.92
+--license-text VENDOR.DOC` (Usage below): the set is open under Apogee's
+`VENDOR.DOC` terms (revision `[V.11.01.92]`), that text travels in the set
+as its terms text, and the push guard lets the set into `unemu/`. Imported
+without the statement the set stays `user-supplied` in the user's private
+store (decision-26 §8). The terms are summarised below, not interpreted; the
+full texts are never in the repository, only in `extras/` and in the set.
 
 ## Usage
 
 ```sh
 vendor/shareware/wolf3d/fetch.sh                                    # download once, then offline
 SHAREWARE_ARCHIVE=/path/to/1wolf14.zip vendor/shareware/wolf3d/fetch.sh  # never uses the network
+cargo run --offline -p cli -- image media import vendor/shareware/wolf3d/wolf3d-sw14-1440.img --title "Wolfenstein 3-D: Episode 1 (shareware 1.4)" --tag wolf3d-shareware:1.4 --label '1=Disk 1 of 1 - Shareware v1.4 installation' --extra vendor/shareware/wolf3d/extras/VENDOR.DOC:VENDOR.DOC --extra vendor/shareware/wolf3d/extras/ORDER.FRM:ORDER.FRM --open --license LicenseRef-apogee-vendor-v11.01.92 --license-text VENDOR.DOC --store /path/to/store --create
 ```
 
 Run it inside `nix develop`, which provides mtools 4.0.49, the version that

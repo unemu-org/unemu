@@ -2,14 +2,20 @@
 //! Installation-set CLI import and inspection; machine-images §5.2.
 //! Validation and publication are shared with the desktop library through
 //! `pc_image::media_import`; sources are copied by the store's streaming,
-//! full-SHA-256 ingestion path.
+//! full-SHA-256 ingestion path. A set is user-supplied unless `--open` states
+//! the vendor's terms (`--license LicenseRef-NAME`) and names the extra that
+//! holds their text (`--license-text`); nothing is guessed.
 
+use image_registry::guard;
 use image_store::{
+    license,
     media_set::{Config, Validator},
+    media_type,
     metadata::Title,
     Store,
 };
 use pc_image::{
+    firmware::catalogue,
     media_import,
     media_set::{self as pc, PcMediaFormats},
 };
@@ -28,6 +34,11 @@ pub struct MediaCommand {
     labels: BTreeMap<usize, String>,
     formats: BTreeMap<usize, String>,
     extras: Vec<(PathBuf, Option<String>)>,
+    /// `--open`: the user states the set may be redistributed.
+    open: bool,
+    license: Option<String>,
+    /// `--license-text`: the file name of the extra with the vendor's terms.
+    license_text: Option<String>,
 }
 
 pub fn parse(args: &[OsString]) -> Result<MediaCommand, &'static str> {
@@ -50,6 +61,9 @@ pub fn parse(args: &[OsString]) -> Result<MediaCommand, &'static str> {
         labels: BTreeMap::new(),
         formats: BTreeMap::new(),
         extras: Vec::new(),
+        open: false,
+        license: None,
+        license_text: None,
     };
     let mut args = args[1..].iter();
     while let Some(arg) = args.next() {
@@ -63,6 +77,10 @@ pub fn parse(args: &[OsString]) -> Result<MediaCommand, &'static str> {
         }
         if arg == "--create" && action == "import" && !command.create {
             command.create = true;
+            continue;
+        }
+        if arg == "--open" && action == "import" && !command.open {
+            command.open = true;
             continue;
         }
         if !arg.as_encoded_bytes().starts_with(b"--") {
@@ -120,8 +138,22 @@ pub fn parse(args: &[OsString]) -> Result<MediaCommand, &'static str> {
                 }
                 command.extras.push((path.into(), dos));
             }
+            Some("--license") if action == "import" && command.license.is_none() => {
+                command.license = Some(value.to_str().ok_or("invalid licence")?.into())
+            }
+            Some("--license-text") if action == "import" && command.license_text.is_none() => {
+                command.license_text = Some(value.to_str().ok_or("invalid terms text name")?.into())
+            }
             _ => return Err("unknown or duplicate media option"),
         }
+    }
+    if (command.license.is_some() || command.license_text.is_some()) && !command.open {
+        return Err("--license and --license-text state the terms of an open set; add --open");
+    }
+    if command.open && (command.license.is_none() || command.license_text.is_none()) {
+        return Err(
+            "--open needs --license LicenseRef-NAME and --license-text EXTRA: a set's terms are stated, never guessed",
+        );
     }
     if command.store.as_os_str().is_empty() {
         return Err("image commands require --store DIR");
@@ -160,37 +192,101 @@ pub fn execute(command: MediaCommand, output: &mut impl Write) -> anyhow::Result
                 }
             }
         }
-        "show" => {
-            let image = store.resolve(&command.tag, &Validator(&PcMediaFormats))?;
-            let config = Config::decode(&image.config)?;
-            writeln!(
-                output,
-                "{}\t{}\t{}",
-                command.tag, image.image.digest, config.platform
-            )?;
-            for (index, m) in config.media.iter().enumerate() {
-                writeln!(
-                    output,
-                    "{}\t{}\t{}\t{}",
-                    index + 1,
-                    format_args!("{:?}", m.label),
-                    pc::format_name(&m.format)?,
-                    m.blob
-                )?;
-            }
-            for e in config.extras {
-                writeln!(
-                    output,
-                    "extra\t{}\t{}\t{}\t{}",
-                    format_args!("{:?}", e.filename),
-                    e.size,
-                    e.blob,
-                    e.dos_name.as_deref().unwrap_or("")
-                )?;
-            }
-        }
+        "show" => show(&store, &command.tag, output)?,
         _ => unreachable!(),
     }
+    Ok(())
+}
+
+/// One set in full: media, extras, the terms text its layers link, every
+/// layer's class, licence and link, and where its marks allow it to be pushed.
+fn show(store: &Store, tag: &str, output: &mut impl Write) -> anyhow::Result<()> {
+    let image = store.resolve(tag, &Validator(&PcMediaFormats))?;
+    let config = Config::decode(&image.config)?;
+    writeln!(
+        output,
+        "{}\t{}\t{}",
+        tag, image.image.digest, config.platform
+    )?;
+    for (index, m) in config.media.iter().enumerate() {
+        writeln!(
+            output,
+            "{}\t{}\t{}\t{}",
+            index + 1,
+            format_args!("{:?}", m.label),
+            pc::format_name(&m.format)?,
+            m.blob
+        )?;
+    }
+    for e in &config.extras {
+        writeln!(
+            output,
+            "extra\t{}\t{}\t{}\t{}",
+            format_args!("{:?}", e.filename),
+            e.size,
+            e.blob,
+            e.dos_name.as_deref().unwrap_or("")
+        )?;
+    }
+    let link = |d: &image_store::Descriptor| d.annotations.get(license::TERMS).cloned();
+    let mut linked: Vec<String> = Vec::new();
+    for text in image.manifest.layers.iter().filter_map(link) {
+        if !linked.contains(&text) {
+            linked.push(text);
+        }
+    }
+    for text in &linked {
+        let extra = config.extras.iter().find(|e| &e.blob.to_string() == text);
+        writeln!(
+            output,
+            "terms\t{}\t{text}",
+            extra.map_or_else(|| "-".into(), |e| format!("{:?}", e.filename))
+        )?;
+    }
+    let class = |d: &image_store::Descriptor| {
+        let terms = link(d).unwrap_or_else(|| "-".into());
+        match license::open_license(d) {
+            Some(l) => format!("open\t{l}\t{terms}"),
+            None => format!("user-supplied\t-\t{terms}"),
+        }
+    };
+    writeln!(
+        output,
+        "layer\tconfig\t{}\t{}",
+        image.manifest.config.digest,
+        class(&image.manifest.config)
+    )?;
+    for d in &image.manifest.layers {
+        let kind = match d.decoded_media_type() {
+            media_type::FLOPPY | media_type::OPTICAL => "medium",
+            media_type::METADATA => "metadata",
+            media_type::EXTRA => "extra",
+            _ => "other",
+        };
+        writeln!(
+            output,
+            "layer\t{kind}\t{}\t{}",
+            d.decoded_digest()?,
+            class(d)
+        )?;
+    }
+    // The guard's own classification: local marks and the catalogue included.
+    let marks = super::registry::guard_marks(store, &image.manifest, catalogue())?;
+    let closure = guard::closure(&image.manifest, &marks);
+    let restricted = closure
+        .iter()
+        .any(|c| c.effective == guard::Redistribution::UserSupplied);
+    writeln!(
+        output,
+        "push\t{}",
+        if restricted {
+            "private registries outside unemu/ only: user-supplied layers"
+        } else if !guard::terms_without_text(&closure).is_empty() {
+            "private registries outside unemu/ only: open media without the set's terms text"
+        } else {
+            "any configured registry, including unemu/"
+        }
+    )?;
     Ok(())
 }
 
@@ -257,7 +353,14 @@ fn import(command: MediaCommand, output: &mut impl Write) -> anyhow::Result<()> 
             .collect(),
         compress: !command.no_compress,
     };
-    let plan = media_import::plan(&request)?;
+    let open = match (&command.license, &command.license_text) {
+        (Some(license), Some(terms)) if command.open => Some(media_import::OpenStatement {
+            license: license.clone(),
+            terms: terms.clone(),
+        }),
+        _ => None,
+    };
+    let plan = media_import::plan_with(&request, open.as_ref())?;
     writeln!(output, "media order:")?;
     for (index, (path, medium)) in plan.media().enumerate() {
         writeln!(
@@ -271,6 +374,9 @@ fn import(command: MediaCommand, output: &mut impl Write) -> anyhow::Result<()> 
     }
     for extra in &plan.config().extras {
         writeln!(output, "extra\t{:?}\t{:?}", extra.filename, extra.dos_name)?;
+    }
+    if let Some((license, terms)) = plan.open() {
+        writeln!(output, "open\t{license}\tterms\t{:?}", terms.filename)?;
     }
     if command.dry_run {
         writeln!(output, "dry run; no blobs or tag written")?;

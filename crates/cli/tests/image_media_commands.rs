@@ -512,3 +512,293 @@ fn compression_command_preserves_media_set_config_for_optical_and_extra_payloads
         }
     }
 }
+
+/// A synthetic 360K floppy of one repeated byte.
+fn raw_disk(path: &Path, byte: u8) -> PathBuf {
+    fs::write(path, vec![byte; 368_640]).unwrap();
+    path.to_owned()
+}
+fn blob_count(root: &Path) -> usize {
+    fs::read_dir(root.join("store/images/blobs/sha256")).map_or(0, |d| d.count())
+}
+
+#[test]
+fn an_open_statement_goes_together_and_names_a_licence_reference_and_an_extra() {
+    let t = Temp::new();
+    let p = &t.0;
+    let disk = raw_disk(&p.join("disk.img"), 7);
+    let terms = p.join("VENDOR.TXT");
+    fs::write(&terms, b"Synthetic vendor terms").unwrap();
+    let import = |flags: &[&str]| {
+        let mut args = vec![
+            "import",
+            disk.to_str().unwrap(),
+            "--title",
+            "Synthetic shareware",
+            "--tag",
+            "test:open",
+            "--create",
+            "--extra",
+            terms.to_str().unwrap(),
+        ];
+        args.extend(flags);
+        run(p, &args)
+    };
+    for (flags, reason) in [
+        (
+            vec!["--open"],
+            "--open needs --license LicenseRef-NAME and --license-text EXTRA",
+        ),
+        (
+            vec!["--open", "--license", "LicenseRef-synthetic"],
+            "--open needs",
+        ),
+        (
+            vec!["--open", "--license-text", "VENDOR.TXT"],
+            "--open needs",
+        ),
+        (vec!["--license", "LicenseRef-synthetic"], "add --open"),
+        (vec!["--license-text", "VENDOR.TXT"], "add --open"),
+        (
+            vec![
+                "--open",
+                "--license",
+                "LicenseRef-a",
+                "--license",
+                "LicenseRef-b",
+                "--license-text",
+                "VENDOR.TXT",
+            ],
+            "unknown or duplicate media option",
+        ),
+    ] {
+        let (code, _, err) = import(&flags);
+        assert_eq!(code, 2, "{flags:?}: {err}");
+        assert!(err.contains(reason), "{flags:?}: {err}");
+        // The usage printed with the refusal names the statement's flags.
+        assert!(
+            err.contains("[--open --license LicenseRef-NAME --license-text EXTRA]"),
+            "{err}"
+        );
+    }
+    assert!(
+        !p.join("store").exists(),
+        "a refused statement creates nothing"
+    );
+    for (license, text, reason) in [
+        (
+            "not a licence",
+            "VENDOR.TXT",
+            "unknown SPDX licence identifier",
+        ),
+        ("MIT", "VENDOR.TXT", "the vendor's own terms"),
+        (
+            "LicenseRef-synthetic",
+            "MANUAL.TXT",
+            "not the file name of an extra",
+        ),
+    ] {
+        let (code, _, err) = import(&["--open", "--license", license, "--license-text", text]);
+        assert_eq!(code, 1, "{license} {text}: {err}");
+        assert!(err.contains(reason), "{license} {text}: {err}");
+        assert_eq!(blob_count(p), 0, "a refused statement writes no blobs");
+    }
+}
+
+/// `image push LOCAL [TARGET] --dry-run` against the default registry with no
+/// configured registries: the guard's verdict for the official namespace.
+fn dry_run(root: &Path, tag: &str) -> (u8, String, String) {
+    let preferences = root.join("empty.toml");
+    fs::write(&preferences, "").unwrap();
+    let args: Vec<OsString> = vec![
+        "image".into(),
+        "push".into(),
+        tag.into(),
+        "shareware:1".into(),
+        "--store".into(),
+        root.join("store").into_os_string(),
+        "--registry".into(),
+        "registry.unemu.dev".into(),
+        "--config".into(),
+        preferences.into_os_string(),
+        "--dry-run".into(),
+    ];
+    let (mut out, mut err) = (Vec::new(), Vec::new());
+    let code = cli::command::run(&args, &mut out, &mut err);
+    (
+        code,
+        String::from_utf8(out).unwrap(),
+        String::from_utf8(err).unwrap(),
+    )
+}
+
+#[test]
+fn an_open_set_shows_its_licence_and_terms_and_only_a_linked_closure_enters_unemu() {
+    use image_store::{license, Digest, Manifest};
+    let t = Temp::new();
+    let p = &t.0;
+    let one = raw_disk(&p.join("one.img"), 1);
+    let two = raw_disk(&p.join("two.img"), 2);
+    let manual = p.join("MANUAL.TXT");
+    fs::write(&manual, b"Synthetic manual").unwrap();
+    let terms = p.join("VENDOR.TXT");
+    fs::write(&terms, b"Synthetic vendor terms").unwrap();
+    let (code, out, err) = run(
+        p,
+        &[
+            "import",
+            one.to_str().unwrap(),
+            two.to_str().unwrap(),
+            "--title",
+            "Synthetic shareware",
+            "--tag",
+            "test:open",
+            "--extra",
+            manual.to_str().unwrap(),
+            "--extra",
+            &format!("{}:VENDOR.TXT", terms.display()),
+            "--open",
+            "--license",
+            "LicenseRef-synthetic-shareware",
+            "--license-text",
+            "VENDOR.TXT",
+            "--create",
+        ],
+    );
+    assert_eq!(code, 0, "{err}");
+    assert!(
+        out.contains("open\tLicenseRef-synthetic-shareware\tterms\t\"VENDOR.TXT\"\n"),
+        "{out}"
+    );
+    let terms_digest = Digest::of(b"Synthetic vendor terms").to_string();
+    let (code, out, err) = run(p, &["show", "test:open"]);
+    assert_eq!(code, 0, "{err}");
+    assert!(
+        out.contains(&format!("terms\t\"VENDOR.TXT\"\t{terms_digest}\n")),
+        "{out}"
+    );
+    let layers: Vec<&str> = out.lines().filter(|l| l.starts_with("layer\t")).collect();
+    assert_eq!(layers.len(), 6, "{out}");
+    for line in &layers {
+        let generated =
+            line.starts_with("layer\tconfig\t") || line.starts_with("layer\tmetadata\t");
+        let class = if generated {
+            "\topen\tCC0-1.0\t-".to_owned()
+        } else {
+            format!("\topen\tLicenseRef-synthetic-shareware\t{terms_digest}")
+        };
+        assert!(line.ends_with(&class), "{line}");
+    }
+    assert!(
+        out.ends_with("push\tany configured registry, including unemu/\n"),
+        "{out}"
+    );
+    let (code, out, err) = dry_run(p, "test:open");
+    assert_eq!(code, 0, "{out}{err}");
+    assert!(
+        out.starts_with("target:registry.unemu.dev/unemu/shareware:1\n"),
+        "{out}"
+    );
+    assert!(out.ends_with("guard:allowed\n"), "{out}");
+
+    // Hand-edited copies of the set: one disk loses its link, or every layer
+    // links a terms text that is not in the closure.
+    let store = Store::open_existing(p.join("store")).unwrap();
+    let image = store
+        .resolve("test:open", &Validator(&PcMediaFormats))
+        .unwrap();
+    for (tag, edit) in [
+        ("test:unlinked", "missing"),
+        ("test:elsewhere", "elsewhere"),
+    ] {
+        let mut layers = image.manifest.layers.clone();
+        match edit {
+            "missing" => {
+                layers[0].annotations.remove(license::TERMS);
+            }
+            _ => {
+                for d in layers
+                    .iter_mut()
+                    .filter(|d| d.annotations.contains_key(license::TERMS))
+                {
+                    d.annotations
+                        .insert(license::TERMS.into(), Digest::of(b"elsewhere").to_string());
+                }
+            }
+        }
+        let mut manifest =
+            Manifest::new_media_set("ibm-pc-at", image.manifest.config.clone(), layers).unwrap();
+        manifest.annotations.clone_from(&image.manifest.annotations);
+        let descriptor = store.import_manifest(&manifest).unwrap();
+        store
+            .update_tag(tag, &descriptor, None, &Validator(&PcMediaFormats))
+            .unwrap();
+        let (code, out, err) = dry_run(p, tag);
+        assert_eq!(code, 1, "{tag}: {out}{err}");
+        assert!(out.ends_with("guard:refused\n"), "{tag}: {out}");
+        assert!(
+            err.contains("terms text") && err.contains("--license-text"),
+            "{tag}: {err}"
+        );
+        let (code, out, err) = run(p, &["show", tag]);
+        assert_eq!(code, 0, "{err}");
+        assert!(
+            out.ends_with("push\tprivate registries outside unemu/ only: open media without the set's terms text\n"),
+            "{tag}: {out}"
+        );
+    }
+
+    // A set imported without the statement stays user-supplied and private.
+    let three = raw_disk(&p.join("three.img"), 3);
+    let (code, _, err) = run(
+        p,
+        &[
+            "import",
+            three.to_str().unwrap(),
+            "--title",
+            "Synthetic private set",
+            "--tag",
+            "test:private",
+        ],
+    );
+    assert_eq!(code, 0, "{err}");
+    let (code, out, _) = run(p, &["show", "test:private"]);
+    assert_eq!(code, 0);
+    assert!(!out.contains("\nterms\t"), "{out}");
+    assert!(out.contains("layer\tmedium\t"), "{out}");
+    assert!(
+        out.lines()
+            .filter(|l| l.starts_with("layer\t"))
+            .all(|l| l.ends_with("\tuser-supplied\t-\t-")),
+        "{out}"
+    );
+    assert!(
+        out.ends_with("push\tprivate registries outside unemu/ only: user-supplied layers\n"),
+        "{out}"
+    );
+    let (code, out, err) = dry_run(p, "test:private");
+    assert_eq!(code, 1, "{out}{err}");
+    assert!(err.contains("official namespace"), "{err}");
+
+    // Rights follow the bytes: once another local set records one of the
+    // open set's disks user-supplied, the open set stays private too.
+    let (code, _, err) = run(
+        p,
+        &[
+            "import",
+            one.to_str().unwrap(),
+            "--title",
+            "Synthetic copy",
+            "--tag",
+            "test:copy",
+        ],
+    );
+    assert_eq!(code, 0, "{err}");
+    let (code, out, err) = dry_run(p, "test:open");
+    assert_eq!(code, 1, "{out}{err}");
+    assert!(
+        out.contains("\tuser-supplied\tlocal tag test:copy\n"),
+        "{out}"
+    );
+    assert!(err.contains("official namespace"), "{err}");
+}

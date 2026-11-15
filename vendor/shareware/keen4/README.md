@@ -6,16 +6,24 @@ the Oracle", version 1.4** (id Software, 1991, distributed by Apogee
 Software Productions), and copies its shareware texts to `extras/`.
 
 The archive, the image and the extras are third-party shareware. They are
-never committed, and the media set built from them stays `user-supplied` in
-the user's private store (decision-26 §8). Fetching does not add any
-redistribution right. The terms are summarised below, not interpreted; the
-full texts stay local, in `extras/`.
+never committed, and fetching does not add any redistribution right. The
+maintainer approved publishing this release on 2026-11-15 (decision-26,
+amendment of that date), so its media set is imported with the licence
+statement `--open --license LicenseRef-apogee-readme-keen4-v1.4
+--license-text README.DOC` (Usage below): the set is open under the
+release's `README.DOC`, its only text about distribution (it has no revision
+mark, so the identifier names the release), that text travels in the set as
+its terms text, and the push guard lets the set into `unemu/`. Imported
+without the statement the set stays `user-supplied` in the user's private
+store (decision-26 §8). The terms are summarised below, not interpreted; the
+full texts are never in the repository, only in `extras/` and in the set.
 
 ## Usage
 
 ```sh
 vendor/shareware/keen4/fetch.sh                                  # download once, then offline
 SHAREWARE_ARCHIVE=/path/to/4keen.zip vendor/shareware/keen4/fetch.sh   # never uses the network
+cargo run --offline -p cli -- image media import vendor/shareware/keen4/keen4-sw14-1440.img --title "Commander Keen 4: Secret of the Oracle (shareware 1.4)" --tag keen4-shareware:1.4 --label '1=Disk 1 of 1 - Shareware v1.4 installation' --extra vendor/shareware/keen4/extras/README.DOC:README.DOC --extra vendor/shareware/keen4/extras/ORDER.FRM:ORDER.FRM --open --license LicenseRef-apogee-readme-keen4-v1.4 --license-text README.DOC --store /path/to/store --create
 ```
 
 Run it inside `nix develop`, which provides mtools 4.0.49, the version that

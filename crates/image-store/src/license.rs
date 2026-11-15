@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! SPDX licence expressions and the redistribution marks on descriptors;
-//! machine-images §5 and §5.3.
+//! machine-images §5, §5.2 and §5.3.
 //!
 //! SPDX Specification 2.3, Annex D "SPDX License Expressions": licence
 //! identifiers combine with `AND`, `OR`, `WITH` (an exception) and
@@ -23,6 +23,10 @@ pub const LICENSE: &str = "unemu.license";
 /// ROM descriptor annotation naming the decoded digest of its corresponding
 /// source archive, which travels in the same closure.
 pub const SOURCE: &str = "unemu.source";
+/// Installation-media descriptor annotation naming the decoded digest of the
+/// vendor's terms text the bytes are redistributed under. The text is an
+/// extra of the same set and travels in the same closure.
+pub const TERMS: &str = "unemu.terms";
 /// Mark values.
 pub const OPEN: &str = "open";
 pub const USER_SUPPLIED: &str = "user-supplied";
@@ -253,6 +257,11 @@ impl Expression {
     pub fn as_str(&self) -> &str {
         &self.canonical
     }
+    /// Whether the expression is one `LicenseRef-<idstring>`: a licence named
+    /// by its own text rather than by the SPDX License List.
+    pub fn is_reference(&self) -> bool {
+        matches!(&self.node, Node::License(id) if id.starts_with("LicenseRef-"))
+    }
     /// Whether distributing under this expression obliges the corresponding
     /// source: under [`Policy::STRICT`] when any identifier is a GPL, LGPL,
     /// AGPL or MPL family licence, under [`Policy::ACCEPTED`] only when every
@@ -410,6 +419,50 @@ pub fn source_missing(rom: &Descriptor, closure: &[Descriptor]) -> bool {
                 )
         })
     })
+}
+
+/// Push-guard rule 5, for any frontend: the open layers of `closure` whose
+/// vendor terms text does not travel with them. An open layer that links a
+/// terms text (`unemu.terms`) needs it as an open extra layer of `closure`.
+/// In an installation media set every open layer except the generated
+/// metadata must link one, and all of them the same one: the set's terms
+/// text, which the first linking layer in manifest order names. A missing or
+/// unparsable link, a link to another digest, or a text that is absent, not
+/// an extra or not open refuses the layer, which may then stay only in a
+/// private registry outside `unemu/`.
+pub fn terms_unlinked(closure: &[Descriptor]) -> Vec<Descriptor> {
+    use crate::media_type as mt;
+    let media_set = closure.iter().any(|d| d.media_type == mt::MEDIA_SET_CONFIG);
+    // `None` without the annotation, `Some(None)` when it does not parse.
+    let link = |d: &Descriptor| {
+        d.annotations
+            .get(TERMS)
+            .map(|s| s.parse::<crate::Digest>().ok())
+    };
+    let bound = |d: &Descriptor| {
+        media_set && d.media_type != mt::MEDIA_SET_CONFIG && d.decoded_media_type() != mt::METADATA
+    };
+    let open: Vec<&Descriptor> = closure
+        .iter()
+        .filter(|d| open_license(d).is_some())
+        .collect();
+    let set_terms = open
+        .iter()
+        .filter(|d| bound(d))
+        .find_map(|d| link(d).flatten());
+    let travels = |text: &crate::Digest| {
+        closure.iter().any(|d| {
+            d.names(text) && d.decoded_media_type() == mt::EXTRA && open_license(d).is_some()
+        })
+    };
+    open.into_iter()
+        .filter(|d| match link(d) {
+            None => bound(d),
+            Some(None) => true,
+            Some(Some(text)) => !travels(&text) || (bound(d) && set_terms.as_ref() != Some(&text)),
+        })
+        .cloned()
+        .collect()
 }
 
 #[cfg(test)]
@@ -570,5 +623,110 @@ mod tests {
         assert_eq!(d.annotations[REDISTRIBUTION], USER_SUPPLIED);
         assert!(!d.annotations.contains_key(LICENSE));
         assert!(open_license(&d).is_none());
+    }
+
+    #[test]
+    fn only_a_single_licence_reference_is_a_reference() {
+        for text in ["LicenseRef-vendor-terms", "LicenseRef-a.1"] {
+            assert!(Expression::parse(text).unwrap().is_reference(), "{text}");
+        }
+        for text in [
+            "MIT",
+            "CC0-1.0",
+            "LicenseRef-a AND LicenseRef-b",
+            "LicenseRef-a OR MIT",
+        ] {
+            assert!(!Expression::parse(text).unwrap().is_reference(), "{text}");
+        }
+    }
+
+    /// A synthetic open media set: config, two disks, a manual and the terms
+    /// text, every content layer linking `terms`, and its generated metadata.
+    fn open_set(terms: &Digest) -> Vec<Descriptor> {
+        let vendor = Expression::parse("LicenseRef-synthetic-terms").unwrap();
+        let generated = Expression::parse("CC0-1.0").unwrap();
+        let layer = |kind: &str, bytes: &[u8], license: &Expression, link: bool| {
+            let mut d = Descriptor::new(kind, Digest::of(bytes), bytes.len() as u64);
+            mark(&mut d, Some(license));
+            if link {
+                d.annotations.insert(TERMS.into(), terms.to_string());
+            }
+            d
+        };
+        vec![
+            layer(media_type::MEDIA_SET_CONFIG, b"config", &generated, false),
+            layer(media_type::FLOPPY, b"disk 1", &vendor, true),
+            layer(media_type::FLOPPY, b"disk 2", &vendor, true),
+            layer(media_type::EXTRA, b"manual", &vendor, true),
+            layer(media_type::EXTRA, b"terms", &vendor, true),
+            layer(media_type::METADATA, b"metadata", &generated, false),
+        ]
+    }
+
+    #[test]
+    fn rule_five_needs_one_open_terms_text_of_the_set_on_every_content_layer() {
+        let terms = Digest::of(b"terms");
+        let set = open_set(&terms);
+        assert!(terms_unlinked(&set).is_empty());
+
+        // The terms text left out of the closure refuses every linking layer.
+        let mut absent = set.clone();
+        absent.remove(4);
+        assert_eq!(terms_unlinked(&absent).len(), 3);
+        // A link to bytes that are not in the closure at all.
+        let elsewhere = open_set(&Digest::of(b"other terms"));
+        assert_eq!(terms_unlinked(&elsewhere).len(), 4);
+        // The text present but user-supplied, or not an extra.
+        let mut private = set.clone();
+        mark(&mut private[4], None);
+        assert_eq!(terms_unlinked(&private).len(), 3);
+        let mut not_extra = set.clone();
+        not_extra[4].media_type = media_type::FLOPPY.into();
+        assert_eq!(terms_unlinked(&not_extra).len(), 4);
+
+        // One content layer without the link, with an unparsable link, or
+        // naming another extra of the set.
+        let mut missing = set.clone();
+        missing[2].annotations.remove(TERMS);
+        assert_eq!(terms_unlinked(&missing), [missing[2].clone()]);
+        let mut garbled = set.clone();
+        garbled[3]
+            .annotations
+            .insert(TERMS.into(), "not a digest".into());
+        assert_eq!(terms_unlinked(&garbled), [garbled[3].clone()]);
+        let mut other = set.clone();
+        other[2]
+            .annotations
+            .insert(TERMS.into(), Digest::of(b"manual").to_string());
+        assert_eq!(terms_unlinked(&other), [other[2].clone()]);
+
+        // Without any link the set has no terms text: every content layer.
+        let mut unlinked = set.clone();
+        for d in &mut unlinked {
+            d.annotations.remove(TERMS);
+        }
+        assert_eq!(terms_unlinked(&unlinked).len(), 4);
+        // User-supplied layers are rules 1 and 2, never rule 5.
+        for d in &mut unlinked {
+            mark(d, None);
+        }
+        assert!(terms_unlinked(&unlinked).is_empty());
+    }
+
+    #[test]
+    fn rule_five_outside_a_media_set_checks_only_the_links_it_finds() {
+        let terms = Digest::of(b"terms");
+        let mut set = open_set(&terms);
+        // A machine image embedding the set's disk: no media-set config, so
+        // only layers that carry a link need their text.
+        set[0].media_type = media_type::CONFIG.into();
+        let disk = set[1].clone();
+        let machine = vec![set[0].clone(), disk.clone()];
+        assert_eq!(terms_unlinked(&machine), std::slice::from_ref(&disk));
+        let with_text = vec![set[0].clone(), disk.clone(), set[4].clone()];
+        assert!(terms_unlinked(&with_text).is_empty());
+        let mut plain = disk;
+        plain.annotations.remove(TERMS);
+        assert!(terms_unlinked(&[set[0].clone(), plain]).is_empty());
     }
 }
