@@ -649,6 +649,9 @@ pub(super) struct LibraryView {
     query: Query,
     pub selected: Option<ImageRow>,
     pub readiness: Option<Result<pc_image::inspection::ImageDetails>>,
+    /// The machine of the image a check last read, by digest: the drives a
+    /// floppy inserted before Start goes into.
+    checked_machine: Option<(Digest, Box<assembly::MachineConfig>)>,
     pub active: Option<(ImageRow, String, WorkspaceKind)>,
     pub layers: Option<LayersDialog>,
     pub busy: bool,
@@ -714,6 +717,7 @@ impl LibraryView {
             query: Query::default(),
             selected: None,
             readiness: None,
+            checked_machine: None,
             active: None,
             layers: None,
             busy: false,
@@ -948,7 +952,7 @@ impl LibraryView {
                     self.send(Request::FirmwarePackages);
                 }
             }
-            Event::Checked(id, result) => {
+            Event::Checked(id, result, machine) => {
                 if self
                     .selected
                     .as_ref()
@@ -956,6 +960,7 @@ impl LibraryView {
                 {
                     let ready = result.is_ok();
                     self.readiness = Some(result);
+                    self.checked_machine = machine.map(|machine| (id.clone(), machine));
                     if self
                         .pending_launch
                         .as_ref()
@@ -1192,6 +1197,13 @@ impl LibraryView {
         }
         self.worker_dead = true;
     }
+    /// The machine of image `digest`, once a check has read it.
+    pub fn selected_machine(&self, digest: &Digest) -> Option<&assembly::MachineConfig> {
+        self.checked_machine
+            .as_ref()
+            .filter(|(id, _)| id == digest)
+            .map(|(_, machine)| machine.as_ref())
+    }
     pub fn ready(&self) -> bool {
         !self.busy && matches!(self.readiness, Some(Ok(_)))
     }
@@ -1254,7 +1266,7 @@ impl LibraryView {
     pub fn needs_decision(&self) -> bool {
         self.decision.is_some()
     }
-    fn recheck(&mut self) {
+    pub(super) fn recheck(&mut self) {
         if let Some(row) = self.selected.clone() {
             self.readiness = None;
             self.send(Request::Check(row.clone(), None));

@@ -152,6 +152,14 @@ struct Presenter {
     audio_error_reported: bool,
     window: Option<Arc<Window>>,
     running: bool,
+    /// The guest halted with interrupts off, as a clone AT BIOS does after
+    /// "No ROM BASIC" while it waits for the reset button. Its media stay
+    /// open: a floppy can still go in, and [`Presenter::reset_halted`] runs
+    /// POST again on the same session.
+    halted: bool,
+    /// The shell reported a host error for this session: it takes no more
+    /// input, but Stop still finishes the media of a halted one.
+    host_failed: bool,
     reset_requests: u64,
     cpu_resets: u64,
     maintenance_reported: bool,
@@ -246,6 +254,8 @@ impl Presenter {
             audio_error_reported: false,
             window: None,
             running: true,
+            halted: false,
+            host_failed: false,
             reset_requests: 0,
             cpu_resets: 0,
             maintenance_reported: false,
@@ -371,6 +381,11 @@ impl Presenter {
                 }
                 Ok(RunOutcome::Halted) => {
                     self.running = false;
+                    self.halted = true;
+                    // The session stays open for a reset, but what the guest
+                    // wrote up to the halt becomes durable now, as before a
+                    // reset: changed CMOS RAM and completed ATA sectors.
+                    self.assembled.before_cpu_reset()?;
                     eprintln!("machine halted");
                 }
                 Err(error) => {
@@ -382,7 +397,8 @@ impl Presenter {
         }
         if !self.running {
             self.release_pointer();
-            if self.error.is_none() {
+            // A halted guest can still be reset, so its session ends at Stop.
+            if self.error.is_none() && !self.halted {
                 self.finish_persistence(warnings)?;
             }
         }
@@ -486,6 +502,42 @@ impl Presenter {
         result
     }
 
+    /// Whether the drives take media changes now: while the guest runs, and
+    /// while it waits halted for a reset.
+    fn takes_media(&self) -> bool {
+        (self.running || self.halted) && self.error.is_none() && !self.host_failed
+    }
+
+    /// Whether Ctrl+Alt+Del restarts the machine rather than reaching the
+    /// guest: it halted with interrupts off and no error ended the session.
+    fn awaits_reset(&self) -> bool {
+        self.halted && self.error.is_none() && !self.host_failed
+    }
+
+    /// Restart a halted machine. This asserts only the CPU reset line, the one
+    /// the 8042 output-port pulse and the shutdown cycle assert (IBM Personal
+    /// Computer AT Technical Reference, System Board, Keyboard Controller
+    /// Output Port); unlike a hardware reset button it resets no board device.
+    /// The CPU restarts at its reset vector, RAM, the devices and the inserted
+    /// media keep their state, and POST initialises the board again. Queued
+    /// media changes go in first. The reset takes no virtual time, so the run
+    /// stays deterministic.
+    fn reset_halted(&mut self, diagnostics: &mut impl io::Write) -> Result<(), Box<dyn Error>> {
+        if !self.awaits_reset() {
+            return Ok(());
+        }
+        self.apply_media_events()?;
+        self.assembled.before_cpu_reset()?;
+        self.assembled.machine.reset_cpu()?;
+        self.record_cpu_reset(diagnostics);
+        // Keys held or queued before the halt belong to the old boot; none of
+        // them may reach the new POST.
+        self.keyboard = HostKeyboard::default();
+        self.halted = false;
+        self.running = true;
+        Ok(())
+    }
+
     fn record_cpu_reset(&mut self, diagnostics: &mut impl io::Write) {
         self.cpu_resets = self.cpu_resets.saturating_add(1);
         if self.cpu_resets == 1 {
@@ -566,7 +618,7 @@ impl Presenter {
                 && self.mute_modifiers[2..].contains(&true)
             {
                 self.media_keys[index] = true;
-                if self.running && self.error.is_none() {
+                if self.takes_media() {
                     self.media_events.push((
                         u8::from(self.shift_keys.contains(&true)),
                         if index == 0 {
@@ -937,6 +989,167 @@ mod tests {
             .flat_map(|(_, codes, _)| codes)
             .all(|code| ![0x21, 0xa1, 0x12, 0x92].contains(code)));
         presenter.assembled.finish_persistence().unwrap();
+    }
+
+    /// A machine whose firmware counts each start in RAM byte 0500h, then
+    /// halts with interrupts off, and whose A: holds `one.img` of two disks.
+    pub(super) fn counting_halt_presenter() -> Presenter {
+        #[rustfmt::skip]
+        let program = [
+            0x31, 0xC0, 0x8E, 0xD8, // xor ax,ax; mov ds,ax
+            0xFE, 0x06, 0x00, 0x05, // inc byte [0500h]
+            0xFA, 0xF4,             // cli; hlt
+        ];
+        let mut rom = vec![0xF4; 0x8000];
+        rom[..program.len()].copy_from_slice(&program);
+        rom[0x7FF0..0x7FF5].copy_from_slice(&[0xEA, 0, 0, 0, 0xF8]);
+        let mut config = assembly::bios(rom, Some(vec![0; 1_474_560]));
+        config.drives[0].media = Some(assembly::FloppyMediaList {
+            empty: false,
+            entries: ["one.img", "two.img"]
+                .into_iter()
+                .map(|name| assembly::FloppyMedium {
+                    image: assembly::ImageSource::Inline(vec![0; 1_474_560]),
+                    expected_sha256: None,
+                    write: assembly::WriteMode::ReadOnly,
+                    name: name.into(),
+                })
+                .collect(),
+        });
+        Presenter::new(
+            &config,
+            assembly::AssemblyOptions {
+                allow_unlisted_firmware: true,
+            },
+            &mut io::sink(),
+        )
+        .unwrap()
+    }
+
+    pub(super) fn starts_counted(presenter: &Presenter) -> u8 {
+        match cpu::Cpu::guest_dma_read(presenter.assembled.machine.cpu(), 0x500) {
+            cpu::DmaAccess::Complete(count) => count,
+            cpu::DmaAccess::Mmio => panic!("0500h is RAM"),
+        }
+    }
+
+    #[test]
+    fn halted_presenter_changes_floppies_and_reset_runs_the_firmware_again() {
+        let mut presenter = counting_halt_presenter();
+        presenter.advance_fully(Duration::from_millis(20)).unwrap();
+        assert!(!presenter.running);
+        assert!(presenter.halted);
+        assert!(presenter.error.is_none());
+        assert_eq!(starts_counted(&presenter), 1);
+        // Host media keys still reach the drives of the halted machine.
+        assert!(presenter.takes_media());
+        for (key, state) in [
+            (KeyCode::ControlLeft, ElementState::Pressed),
+            (KeyCode::AltLeft, ElementState::Pressed),
+            (KeyCode::KeyF, ElementState::Pressed),
+            (KeyCode::KeyF, ElementState::Released),
+        ] {
+            presenter.key_event(key, state);
+        }
+        assert_eq!(
+            presenter.media_events,
+            vec![(0, assembly::FloppyAction::Next)]
+        );
+        let time = presenter.assembled.machine.virtual_time();
+        let mut diagnostics = Vec::new();
+        presenter.reset_halted(&mut diagnostics).unwrap();
+        // The queued change goes in before the CPU leaves reset; the reset
+        // itself takes no virtual time.
+        assert_eq!(presenter.assembled.floppy_name(DeviceId::Fdc, 0), "two.img");
+        assert_eq!(presenter.assembled.machine.virtual_time(), time);
+        assert!(presenter.running);
+        assert!(!presenter.halted);
+        assert_eq!(presenter.cpu_resets, 1);
+        assert_eq!(diagnostics, b"cpu reset\n");
+        presenter.advance_fully(Duration::from_millis(40)).unwrap();
+        // The firmware ran again from the reset vector with RAM kept, and the
+        // inserted disk stayed in its drive.
+        assert!(presenter.halted);
+        assert_eq!(starts_counted(&presenter), 2);
+        assert_eq!(presenter.assembled.floppy_name(DeviceId::Fdc, 0), "two.img");
+        presenter.finish_persistence(&mut io::sink()).unwrap();
+    }
+
+    #[test]
+    fn reset_of_a_running_or_failed_presenter_changes_nothing() {
+        let mut presenter = counting_halt_presenter();
+        presenter.reset_halted(&mut io::sink()).unwrap();
+        assert!(presenter.running);
+        assert_eq!(presenter.cpu_resets, 0);
+        presenter.advance_fully(Duration::from_millis(20)).unwrap();
+        presenter.error = Some("cpu failure".into());
+        presenter.reset_halted(&mut io::sink()).unwrap();
+        assert!(!presenter.running);
+        assert!(!presenter.takes_media());
+        assert_eq!(presenter.cpu_resets, 0);
+        assert_eq!(starts_counted(&presenter), 1);
+    }
+
+    /// A machine whose program writes 55h to CMOS register 10h and halts with
+    /// interrupts off; CMOS RAM journals to `journal` over the 64 zero bytes
+    /// in `base`.
+    pub(super) fn cmos_halt_config(base: &Path, journal: &Path) -> assembly::MachineConfig {
+        #[rustfmt::skip]
+        let program = vec![
+            0xFA,                   // cli
+            0xB0, 0x10, 0xE6, 0x70, // mov al,10h; out 70h,al
+            0xB0, 0x55, 0xE6, 0x71, // mov al,55h; out 71h,al
+            0xF4,                   // hlt
+        ];
+        let mut config = assembly::at_rtc(program, 100, 10);
+        for device in &mut config.devices {
+            if let assembly::DeviceKind::Rtc(rtc) = &mut device.kind {
+                rtc.nvram = assembly::NvramSource::Journal {
+                    image: base.to_owned(),
+                    expected_sha256: [
+                        245, 165, 253, 66, 209, 106, 32, 48, 39, 152, 239, 110, 211, 9, 151, 155,
+                        67, 0, 61, 35, 32, 217, 240, 232, 234, 152, 49, 169, 39, 89, 251, 75,
+                    ],
+                    journal: journal.to_owned(),
+                    keep_generations: 10,
+                };
+            }
+        }
+        config
+    }
+
+    pub(super) fn vga_presenter(config: &assembly::MachineConfig) -> Presenter {
+        let assembled = assemble_with_observation(
+            config,
+            &ObservationPolicy {
+                routes: vec![ObservationRequest {
+                    device: DeviceId::Vga,
+                    output: OutputKind::TextScanout,
+                    byte_limit: 0,
+                }],
+                ..ObservationPolicy::default()
+            },
+        )
+        .unwrap();
+        Presenter::from_assembled(config, assembled, DeviceId::Vga, &mut io::sink()).unwrap()
+    }
+
+    #[test]
+    fn cmos_written_before_a_halt_is_durable_without_stop() {
+        let temp = assembly::test_support::TempDir::new("window-halt-cmos");
+        let base = temp.path().join("cmos.bin");
+        std::fs::write(&base, [0; 64]).unwrap();
+        let config = cmos_halt_config(&base, &temp.path().join("cmos.upfj"));
+        let mut presenter = vga_presenter(&config);
+        presenter.advance_fully(Duration::from_millis(20)).unwrap();
+        assert!(presenter.halted);
+        // As after a crash: the presenter goes away without Stop.
+        drop(presenter);
+        let mut fresh = assembly::assemble(&config).unwrap();
+        let bus = fresh.machine.bus_mut();
+        bus.port_write(0x70, 1, 0x10).unwrap();
+        assert_eq!(bus.port_read(0x71, 1).unwrap() & 0xFF, 0x55);
+        fresh.finish_persistence().unwrap();
     }
 
     pub(super) fn mouse_presenter(enabled: bool) -> Presenter {
@@ -1457,6 +1670,9 @@ mod tests {
                 assert!(!presenter.running);
                 assert!(presenter.error.is_none());
                 assert_eq!(presenter.cpu_resets, 1);
+                // A halted guest can still be reset; Stop ends its session.
+                assert!(presenter.halted);
+                presenter.finish_persistence(&mut io::sink()).unwrap();
             }
             let bytes = std::fs::read(journal).unwrap();
             assert_eq!(
@@ -1859,7 +2075,7 @@ mod tests {
     }
 
     #[test]
-    fn journal_presenter_finishes_halts_and_preserves_unsealed_execution_errors() {
+    fn journal_presenter_keeps_a_halt_open_until_stop_and_preserves_unsealed_execution_errors() {
         for fail in [false, true] {
             let temp = assembly::test_support::TempDir::new("journal-test");
             let path = temp.path();
@@ -1889,6 +2105,12 @@ mod tests {
             presenter.advance_fully(Duration::from_millis(20)).unwrap();
             assert!(!presenter.running);
             assert_eq!(presenter.error.is_some(), fail);
+            assert_eq!(presenter.halted, !fail);
+            // The halt leaves the session open for a reset; Stop finishes it.
+            assert_eq!(std::fs::read(&journal).unwrap().len(), 128);
+            if !fail {
+                presenter.finish_persistence(&mut io::sink()).unwrap();
+            }
             let bytes = std::fs::read(journal).unwrap();
             assert_eq!(bytes.len(), if fail { 128 } else { 128 + 640 });
             if !fail {
@@ -1969,6 +2191,10 @@ mod tests {
                     .unwrap();
                 assert!(!presenter.running);
                 assert!(presenter.error.is_none());
+                // The halted session ends at Stop, which reports maintenance.
+                assert!(presenter.halted);
+                assert!(warnings.is_empty());
+                presenter.finish_persistence(&mut warnings).unwrap();
                 let expected = if operation == "temporary write" {
                     "warning: drive 0: retention maintenance failed before publication: injected retention write failure\n"
                 } else {

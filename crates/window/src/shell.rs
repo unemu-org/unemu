@@ -341,6 +341,9 @@ struct Shell {
     start_request: Option<usize>,
     checked_selection: Option<usize>,
     insert_dialog: Option<crate::media_dialog::InsertDialog>,
+    /// Floppies inserted while the selected machine is stopped; Start puts
+    /// them into its drives before POST.
+    pending_media: Option<crate::media_dialog::PendingMedia>,
     blank_disk: Option<crate::media_dialog::BlankDisk>,
     settings: Option<crate::settings_model::SettingsModel>,
     preferences_dialog: Option<crate::preferences_sheet::PreferencesDialog>,
@@ -434,6 +437,11 @@ impl Shell {
                 Ok(mut presenter) => {
                     presenter.audio.open(&mut io::stderr());
                     self.started(presenter);
+                    if let Some((row, _, _)) = &self.image_library.active {
+                        let owner =
+                            crate::media_dialog::PendingOwner::Image(row.descriptor.digest.clone());
+                        self.insert_pending_media(&owner);
+                    }
                 }
                 Err(e) => {
                     self.image_library.finish_with_failure(false, true);
@@ -551,8 +559,87 @@ impl Shell {
                     return;
                 }
             }
+        } else if let Some(pending) = &mut self.pending_media {
+            let name = entries
+                .get(chosen)
+                .map(|entry| entry.medium.name.clone())
+                .unwrap_or_default();
+            let drive = if draft.unit == 0 { "A" } else { "B" };
+            pending.insert(draft.unit, entries, chosen);
+            self.message = format!("{drive}: {name} is in the drive when Start boots");
         }
         self.insert_dialog = None;
+    }
+
+    /// The catalogue Insert offers for `unit`: the session's, or while no
+    /// session runs, the selected machine's.
+    fn floppy_slot(&self, unit: u8) -> Option<crate::media_dialog::FloppySlot> {
+        match &self.presenter {
+            Some(presenter) => presenter.media_slots.get(usize::from(unit))?.clone(),
+            None => self
+                .pending_media
+                .as_ref()?
+                .slots
+                .get(usize::from(unit))?
+                .clone(),
+        }
+    }
+
+    /// Floppies inserted before Start belong to the selected machine: another
+    /// selection drops them, and Start takes them into the session.
+    fn sync_pending_media(&mut self) {
+        use crate::media_dialog::{PendingMedia, PendingOwner};
+        if self.presenter.is_some() {
+            self.pending_media = None;
+            return;
+        }
+        let owner = match &self.image_library.selected {
+            Some(row) => Some(PendingOwner::Image(row.descriptor.digest.clone())),
+            None => self
+                .selected
+                .and_then(|index| self.library.get(index))
+                .map(|entry| PendingOwner::MachineFile(entry.path.clone())),
+        };
+        if self.pending_media.as_ref().map(|pending| &pending.owner) == owner.as_ref() {
+            return;
+        }
+        // A draft lists the previous machine's catalogue.
+        self.insert_dialog = None;
+        self.pending_media = owner.and_then(|owner| {
+            let config = match &owner {
+                PendingOwner::MachineFile(_) => {
+                    let (document, origins) = self.prepared.get(&self.selected?)?.resolved();
+                    document.describe(origins).ok()?.config
+                }
+                PendingOwner::Image(digest) => self.image_library.selected_machine(digest)?.clone(),
+            };
+            Some(PendingMedia::new(owner, config))
+        });
+    }
+
+    /// Start puts the floppies inserted before it into their drives, before
+    /// the machine's first instruction.
+    fn insert_pending_media(&mut self, owner: &crate::media_dialog::PendingOwner) {
+        let Some(pending) = self.pending_media.take() else {
+            return;
+        };
+        if &pending.owner != owner {
+            return;
+        }
+        let directory = self.library_media_dir().ok();
+        let Some(presenter) = &mut self.presenter else {
+            return;
+        };
+        let failures = pending.apply(presenter, directory.as_deref());
+        if !failures.is_empty() {
+            self.dialog = Some((
+                "Insert floppy",
+                format!(
+                    "Start left out floppies inserted before it:\n{}",
+                    failures.join("\n")
+                ),
+            ));
+        }
     }
 
     /// Library disks journal into the running session's workspace: the image
@@ -571,6 +658,26 @@ impl Shell {
                 .map(|workspace| workspace.join("media"))
                 .map_err(|e| e.to_string());
         }
+        if self.presenter.is_none() {
+            use crate::media_dialog::PendingOwner;
+            match self.pending_media.as_ref().map(|pending| &pending.owner) {
+                Some(PendingOwner::MachineFile(path)) => {
+                    return image_store::location::machine_media_dir(path)
+                        .map_err(|e| e.to_string());
+                }
+                // An image's workspace opens only at Start, which moves the
+                // journals there; before it, library disks go in
+                // write-protected, so nothing is written under this folder.
+                Some(PendingOwner::Image(_)) => {
+                    return self
+                        .image_library
+                        .root
+                        .clone()
+                        .ok_or_else(|| "The image store folder is not set".into());
+                }
+                None => {}
+            }
+        }
         image_store::location::machine_media_dir(&self.args.machine).map_err(|e| e.to_string())
     }
 
@@ -587,9 +694,19 @@ impl Shell {
         set: Option<image_store::Digest>,
     ) {
         let workspace = self.library_media_dir();
+        let before_image_start = self.presenter.is_none()
+            && matches!(
+                self.pending_media.as_ref().map(|pending| &pending.owner),
+                Some(crate::media_dialog::PendingOwner::Image(_))
+            );
         if let Some(draft) = &mut self.insert_dialog {
             match workspace {
-                Ok(workspace) => draft.open_library_at(&workspace, store_root.as_deref(), set),
+                Ok(workspace) => {
+                    draft.open_library_at(&workspace, store_root.as_deref(), set);
+                    if let Some(library) = draft.library.as_mut().filter(|_| before_image_start) {
+                        library.write_protected_only("Before Start, library disks go in write-protected: their journals belong to the session workspace, which Start opens.");
+                    }
+                }
                 Err(error) => draft.error = Some(error),
             }
         }
@@ -823,12 +940,18 @@ impl Shell {
         }
     }
 
-    /// The running machine's drives, naming where its own media came from.
+    /// The running machine's drives, naming where its own media came from;
+    /// while no machine runs, the drives holding a floppy inserted for Start.
     fn drive_views(&mut self) -> Vec<crate::drive_chips::DriveView> {
         use crate::drive_chips::Origin;
-        let origin = match &self.image_library.active {
-            Some((row, _, _)) => Origin::Image(row.reference.clone()),
-            None => Origin::MachineFile(
+        let pending_image = self
+            .pending_media
+            .as_ref()
+            .filter(|pending| matches!(pending.owner, crate::media_dialog::PendingOwner::Image(_)))
+            .and(self.image_library.selected.as_ref());
+        let origin = match (&self.image_library.active, pending_image) {
+            (Some((row, _, _)), _) | (None, Some(row)) => Origin::Image(row.reference.clone()),
+            (None, None) => Origin::MachineFile(
                 self.selected
                     .and_then(|index| self.library.get(index))
                     .map_or_else(
@@ -844,14 +967,18 @@ impl Shell {
                     ),
             ),
         };
-        self.presenter
-            .as_mut()
-            .map_or_else(Vec::new, |presenter| presenter.drive_views(&origin))
+        match &mut self.presenter {
+            Some(presenter) => presenter.drive_views(&origin),
+            None => self
+                .pending_media
+                .as_ref()
+                .map_or_else(Vec::new, |pending| pending.drive_views(&origin)),
+        }
     }
 
     /// One chip per drive inside the status bar's fixed drive area: the image,
-    /// an activity light, a tooltip with its details and a click menu. The
-    /// area stays empty while no machine runs.
+    /// an activity light, a tooltip with its details and a click menu. While
+    /// no machine runs, only the floppies inserted for Start have a chip.
     fn drive_chips(
         &self,
         ui: &mut egui::Ui,
@@ -1166,6 +1293,7 @@ impl Shell {
             start_request: None,
             checked_selection: None,
             insert_dialog: None,
+            pending_media: None,
             blank_disk: None,
             settings: None,
             preferences_dialog: None,
@@ -1225,6 +1353,15 @@ impl Shell {
                     self.presenter.is_none() && self.image_library.can_import_media()
                 }
                 Command::InsertSet(_) => self.image_library.selected_set().is_some(),
+                // A halted guest waits for a reset; Resume would only hide that.
+                Command::Pause => !self.presenter.as_ref().is_some_and(|p| p.halted),
+                Command::Eject(unit) => {
+                    self.presenter.is_some()
+                        || self
+                            .pending_media
+                            .as_ref()
+                            .is_some_and(|pending| pending.has_insert(unit))
+                }
                 _ => true,
             }
     }
@@ -1290,13 +1427,15 @@ impl Shell {
                 !self.image_library.busy
                     && entry.is_some_and(|entry| entry.checked && entry.warning.is_none())
             },
-            floppy: self
-                .presenter
-                .as_ref()
-                .filter(|presenter| presenter.running)
-                .map_or([false; 2], |presenter| {
+            floppy: match &self.presenter {
+                Some(presenter) if presenter.takes_media() => {
                     presenter.media_slots.each_ref().map(Option::is_some)
+                }
+                Some(_) => [false; 2],
+                None => self.pending_media.as_ref().map_or([false; 2], |pending| {
+                    pending.slots.each_ref().map(Option::is_some)
                 }),
+            },
             audio: self.presenter.as_ref().is_some_and(|p| p.audio.available()),
         }
     }
@@ -1358,6 +1497,25 @@ impl Shell {
         self.reset_keyboard();
         self.guest_focus = false;
         self.sync_routing();
+    }
+
+    /// Ctrl+Alt+Del of a halted machine is its reset button: POST runs again
+    /// in the same session, with RAM and the inserted media kept.
+    fn reset_halted(&mut self) {
+        let elapsed = self.elapsed();
+        let Some(presenter) = &mut self.presenter else {
+            return;
+        };
+        if let Err(error) = presenter.reset_halted(&mut io::stderr()) {
+            self.show_error(error.to_string());
+            return;
+        }
+        // The next frame resumes the run as it does after a modal pause, so
+        // host pacing restarts from that frame's time.
+        presenter.occlusion_changed(true, elapsed);
+        self.modal_paused = true;
+        self.paused = false;
+        self.message = "Machine reset — POST runs again".into();
     }
 
     fn focus_lost(&mut self) {
@@ -1430,6 +1588,9 @@ impl Shell {
                     self.prepared.insert(index, loaded);
                     presenter.audio.open(&mut io::stderr());
                     self.started(presenter);
+                    self.insert_pending_media(&crate::media_dialog::PendingOwner::MachineFile(
+                        self.library[index].path.clone(),
+                    ));
                 }
                 Err(error) => self.show_error(error.to_string()),
             }
@@ -1581,6 +1742,8 @@ impl Shell {
         presenter.started = Some(Instant::now());
         presenter.next_paint = Some(std::time::Duration::ZERO);
         self.presenter = Some(presenter);
+        // A draft built before Start lists the stopped machine's catalogue.
+        self.insert_dialog = None;
         self.paused = false;
         self.guest_focus = true;
         self.modal_paused = false;
@@ -1602,6 +1765,20 @@ impl Shell {
         self.discovery_finished = false;
         self.prepared.clear();
         self.library_revision = self.library_revision.wrapping_add(1);
+        // The machine file is read again and its catalogue may have changed,
+        // so floppies inserted for Start are taken out rather than kept by a
+        // place in a list that no longer holds them.
+        if self.presenter.is_none() {
+            if self
+                .pending_media
+                .take()
+                .is_some_and(|pending| pending.has_inserts())
+            {
+                self.message =
+                    "Floppies inserted for Start were taken out: the machine was read again".into();
+            }
+            self.insert_dialog = None;
+        }
         self.abandon_start();
         self.discovery_warnings.clear();
         for entry in &mut self.library {
@@ -1670,6 +1847,7 @@ impl Shell {
         self.release();
         if let Some(presenter) = &mut self.presenter {
             presenter.running = false;
+            presenter.host_failed = true;
         }
         *self.errors.borrow_mut() = Some(error.clone());
         self.message = error.clone();
@@ -1709,7 +1887,7 @@ impl Shell {
         let mut failure = None;
         let had_session = self.presenter.is_some();
         if let Some(mut presenter) = self.presenter.take() {
-            if presenter.running && presenter.error.is_none() {
+            if (presenter.running || presenter.halted) && presenter.error.is_none() {
                 if let Err(error) = presenter.finish_persistence(&mut io::stderr()) {
                     failure = Some(error.to_string());
                 }
@@ -1893,9 +2071,10 @@ impl Shell {
             })
     }
 
-    /// Guest memory only survives while the machine executes. A halted or
-    /// failed session has nothing left to lose, and a Gaming-mode session
-    /// already asks to keep or discard its changes once stopped.
+    /// Guest memory only matters while a program runs in it. A halted guest
+    /// waits for a reset with nothing running, a failed session has nothing
+    /// left to lose, and a Gaming-mode session already asks to keep or
+    /// discard its changes once stopped.
     fn needs_stop_prompt(&self) -> bool {
         let disposable = self
             .image_library
@@ -2059,6 +2238,7 @@ impl Shell {
     }
 
     fn command(&mut self, command: Command, ctx: &egui::Context) {
+        self.sync_pending_media();
         if !self.command_allowed(command) {
             return;
         }
@@ -2094,10 +2274,14 @@ impl Shell {
                     else { self.start(); }
                 }
             },
-            Reset => { self.guest_held.clear(); if let Some(presenter) = &mut self.presenter {
-                presenter.keyboard.ctrl_alt_del();
-            } },
-            Insert(unit) => if let Some(slot) = self.presenter.as_ref().and_then(|p| p.media_slots[usize::from(unit)].clone()) {
+            Reset => { self.guest_held.clear();
+                if self.presenter.as_ref().is_some_and(Presenter::awaits_reset) {
+                    self.reset_halted();
+                } else if let Some(presenter) = &mut self.presenter {
+                    presenter.keyboard.ctrl_alt_del();
+                }
+            },
+            Insert(unit) => if let Some(slot) = self.floppy_slot(unit) {
                 self.release();
                 self.insert_dialog = Some(crate::media_dialog::InsertDialog::new(unit, slot));
             },
@@ -2118,6 +2302,9 @@ impl Shell {
             },
             Next(unit) | Eject(unit) => if let Some(presenter) = &mut self.presenter {
                 presenter.media_events.push((unit, if matches!(command, Next(_)) { assembly::FloppyAction::Next } else { assembly::FloppyAction::Eject }));
+            } else if let (Eject(_), Some(pending)) = (command, &mut self.pending_media) {
+                pending.eject(unit);
+                self.message = format!("{}: ejected before Start", if unit == 0 { "A" } else { "B" });
             },
             Mute => if let Some(presenter) = &mut self.presenter { presenter.audio.toggle_mute(); },
             Release => self.release_pointer(),
@@ -2202,6 +2389,11 @@ impl Shell {
                 self.item(ui, "Pull…", "", Pull, commands);
             });
             ui.menu_button("Machine", |ui| {
+                let reset = if self.presenter.as_ref().is_some_and(Presenter::awaits_reset) {
+                    "Reset halted machine"
+                } else {
+                    "Send Ctrl+Alt+Del"
+                };
                 for (label, shortcut, command) in [
                     ("Start", "Enter", Start),
                     ("Gaming mode", "", GamingMode),
@@ -2210,7 +2402,7 @@ impl Shell {
                         "Ctrl+Alt+P",
                         Pause,
                     ),
-                    ("Send Ctrl+Alt+Del", "Ctrl+Alt+End", Reset),
+                    (reset, "Ctrl+Alt+End", Reset),
                     ("Power cycle", "", PowerCycle),
                     ("Stop", "Ctrl+Alt+Q", Stop),
                 ] {
@@ -2904,7 +3096,7 @@ impl Shell {
         let Some(presenter) = &mut self.presenter else {
             return;
         };
-        if presenter.running {
+        if presenter.takes_media() {
             if let Err(error) = presenter.apply_media_events() {
                 self.show_error(error.to_string());
                 return;
@@ -2948,7 +3140,12 @@ impl Shell {
                 return;
             }
             if !presenter.running {
-                self.message = "Machine halted — Stop returns to the library".into();
+                self.message = if presenter.halted {
+                    "Machine halted — insert a boot disk and press Ctrl+Alt+Del, or Stop to return to the library"
+                } else {
+                    "Machine halted — Stop returns to the library"
+                }
+                .into();
                 self.paused = true;
             }
         }
@@ -3056,6 +3253,7 @@ impl eframe::App for Shell {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.poll_images(ctx);
         self.poll_readiness(ctx);
+        self.sync_pending_media();
         self.visibility(
             ctx,
             ctx.input(|input| input.viewport().minimized == Some(true)),
@@ -3565,7 +3763,10 @@ fn shortcuts_help(macos: bool) -> String {
         ("Ctrl+Alt+P", "pause / resume"),
         ("Ctrl+Alt+T", "hold to fast-forward (Unlimited)"),
         ("Ctrl+Alt+Q", "stop and return to library"),
-        ("Ctrl+Alt+End", "send guest Ctrl+Alt+Del"),
+        (
+            "Ctrl+Alt+End",
+            "send guest Ctrl+Alt+Del; reset a halted machine",
+        ),
         ("Ctrl+Alt+F", "next A: image (Shift for B:)"),
         ("Ctrl+Alt+E", "eject A: (Shift for B:)"),
         ("Ctrl+Alt+I", "insert A: floppy (Shift for B:)"),
@@ -3680,6 +3881,7 @@ mod tests {
             start_request: None,
             checked_selection: None,
             insert_dialog: None,
+            pending_media: None,
             blank_disk: None,
             settings: None,
             preferences_dialog: None,
@@ -5460,7 +5662,7 @@ mod tests {
     }
 
     #[test]
-    fn stop_skips_the_already_finished_halt_session() {
+    fn stop_finishes_the_session_a_halt_left_open() {
         let temp = assembly::test_support::TempDir::new("shell-finished-halt");
         let mut shell = journal_shell(&temp, vec![0xfa, 0xf4]);
         shell
@@ -5470,25 +5672,635 @@ mod tests {
             .advance_fully(std::time::Duration::from_millis(20))
             .unwrap();
         assert!(!shell.presenter.as_ref().unwrap().running);
+        assert!(shell.presenter.as_ref().unwrap().halted);
         assert!(shell.presenter.as_ref().unwrap().error.is_none());
-        let size = std::fs::metadata(temp.path().join("disk.upfj"))
-            .unwrap()
-            .len();
-        assert_eq!(size, 128 + 640);
-        std::fs::OpenOptions::new()
-            .write(true)
-            .open(temp.path().join("base.img"))
-            .unwrap()
-            .set_len(512)
-            .unwrap();
+        let journal = temp.path().join("disk.upfj");
+        // The halted guest can still be reset, so its journal stays open.
+        assert_eq!(std::fs::metadata(&journal).unwrap().len(), 128);
         assert!(shell.stop());
         assert!(shell.errors.borrow().is_none());
+        assert_eq!(std::fs::metadata(&journal).unwrap().len(), 128 + 640);
+    }
+
+    #[test]
+    fn a_halted_session_takes_floppies_and_ctrl_alt_del_restarts_it() {
+        use std::time::Duration;
+        let ctx = egui::Context::default();
+        let mut shell = shell();
+        let mut presenter = crate::tests::counting_halt_presenter();
+        presenter.full_slices = true;
+        shell.started(presenter);
+        shell.tick(&ctx, false, Duration::from_millis(20));
+        assert!(shell.presenter.as_ref().unwrap().halted);
+        assert!(shell.paused);
         assert_eq!(
-            std::fs::metadata(temp.path().join("disk.upfj"))
-                .unwrap()
-                .len(),
-            size
+            shell.message,
+            "Machine halted — insert a boot disk and press Ctrl+Alt+Del, or Stop to return to the library"
         );
+        for command in [
+            Command::Insert(0),
+            Command::FromLibrary(0),
+            Command::Next(0),
+            Command::Eject(0),
+            Command::Reset,
+        ] {
+            assert!(shell.command_allowed(command), "{command:?}");
+        }
+        // Resume would only hide that the guest waits for a reset.
+        assert!(!shell.command_allowed(Command::Pause));
+        shell.command(Command::Insert(0), &ctx);
+        shell.insert_dialog.as_mut().unwrap().select(Some(1));
+        shell.confirm_insert();
+        shell.tick(&ctx, false, Duration::from_millis(40));
+        let presenter = shell.presenter.as_mut().unwrap();
+        assert_eq!(
+            presenter.assembled.floppy_name(assembly::DeviceId::Fdc, 0),
+            "two.img"
+        );
+        assert!(presenter.halted);
+        let time = presenter.assembled.machine.virtual_time();
+        shell.command(Command::Reset, &ctx);
+        let presenter = shell.presenter.as_ref().unwrap();
+        // The reset button, not keystrokes the halted guest cannot read.
+        assert_eq!(presenter.keyboard.pending_events(), 0);
+        assert!(presenter.running);
+        assert_eq!(presenter.cpu_resets, 1);
+        assert_eq!(presenter.assembled.machine.virtual_time(), time);
+        assert!(!shell.paused);
+        for elapsed in (60..=2000).step_by(20) {
+            shell.tick(&ctx, false, Duration::from_millis(elapsed));
+            if shell.presenter.as_ref().unwrap().halted {
+                break;
+            }
+        }
+        let presenter = shell.presenter.as_mut().unwrap();
+        assert!(presenter.halted, "the firmware ran again and halted");
+        assert_eq!(crate::tests::starts_counted(presenter), 2);
+        assert_eq!(
+            presenter.assembled.floppy_name(assembly::DeviceId::Fdc, 0),
+            "two.img"
+        );
+        // A halted session still ends without the stop prompt.
+        assert!(!shell.needs_stop_prompt());
+        assert!(shell.stop());
+    }
+
+    fn finish_readiness(shell: &mut Shell) {
+        shell.poll_readiness(&egui::Context::default());
+        let job = shell.readiness.take().unwrap();
+        let prepared = job
+            .receiver
+            .recv_timeout(crate::test_wait::HANG_GUARD)
+            .unwrap();
+        shell.apply_readiness(job.index, job.revision, prepared);
+    }
+
+    /// A stopped shell with one ready machine file selected: its 1.44M A:
+    /// starts empty with `boot.img` in its catalogue, and its B: is empty.
+    fn stopped_machine_file_shell(
+        temp: &assembly::test_support::TempDir,
+    ) -> (Shell, std::path::PathBuf) {
+        std::fs::write(temp.path().join("bios.bin"), vec![0xF4; 32768]).unwrap();
+        std::fs::write(temp.path().join("boot.img"), vec![0; 1_474_560]).unwrap();
+        let path = temp.path().join("machine.toml");
+        std::fs::write(&path, "schema=1\n[board]\nmodel='ibm-5170'\n[firmware.bios]\nimage='bios.bin'\nprovides=['floppy']\n[[card]]\nkind='mda'\n[[card]]\nkind='fdc-765'\n[[card.drives]]\nunit=0\ntype='1.44M'\nempty=true\n[[card.drives.media]]\nimage='boot.img'\nwrite='readonly'\n[[card.drives]]\nunit=1\ntype='1.44M'\nempty=true\n").unwrap();
+        let mut shell = shell();
+        shell.presenter = None;
+        shell.args.options.allow_unlisted_firmware = true;
+        // A store path that does not exist: the user's own store is never read.
+        shell.preferences.store_root = Some(temp.path().join("no-store"));
+        shell.library = vec![LibraryEntry::inspect_with_rom_dirs(
+            path.clone(),
+            shell.args.options,
+            &[],
+        )];
+        shell.selected = Some(0);
+        shell.refresh_library();
+        finish_readiness(&mut shell);
+        shell.sync_pending_media();
+        (shell, path)
+    }
+
+    #[test]
+    fn floppies_inserted_before_start_go_in_before_the_first_instruction() {
+        let temp = assembly::test_support::TempDir::new("shell-pending-floppy");
+        let (mut shell, path) = stopped_machine_file_shell(&temp);
+        let machine_file = std::fs::read(&path).unwrap();
+        let ctx = egui::Context::default();
+        for command in [
+            Command::Insert(0),
+            Command::Insert(1),
+            Command::FromLibrary(0),
+        ] {
+            assert!(shell.command_allowed(command), "{command:?}");
+        }
+        for command in [
+            Command::Eject(0),
+            Command::Next(0),
+            Command::WriteMode(0),
+            Command::InsertSet(0),
+        ] {
+            assert!(!shell.command_allowed(command), "{command:?}");
+        }
+        assert!(shell.drive_views().is_empty());
+        // From library… journals into the machine file's local media folder,
+        // as it does once the machine runs.
+        shell.command(Command::FromLibrary(0), &ctx);
+        let library = shell.insert_dialog.as_ref().unwrap().library.as_ref();
+        assert_eq!(
+            library.map(|library| (library.workspace.clone(), library.journal)),
+            Some((
+                image_store::location::machine_media_dir(&path).unwrap(),
+                true
+            ))
+        );
+        shell.insert_dialog = None;
+        shell.command(Command::Insert(0), &ctx);
+        let draft = shell.insert_dialog.as_mut().unwrap();
+        assert_eq!(draft.slot.entries.len(), 1, "the machine file's catalogue");
+        draft.select(Some(0));
+        shell.confirm_insert();
+        assert!(shell.insert_dialog.is_none());
+        assert_eq!(
+            shell.message,
+            "A: boot.img is in the drive when Start boots"
+        );
+        let other = temp.path().join("other.img");
+        std::fs::write(&other, vec![0; 737_280]).unwrap();
+        shell.command(Command::Insert(1), &ctx);
+        let draft = shell.insert_dialog.as_mut().unwrap();
+        let browsed = crate::media_dialog::browse(&other, draft.slot.geometry).unwrap();
+        draft.add_browsed(browsed);
+        shell.confirm_insert();
+        let chips: Vec<_> = shell
+            .drive_views()
+            .iter()
+            .map(crate::drive_chips::DriveView::chip_text)
+            .collect();
+        assert_eq!(
+            chips,
+            [
+                "A: boot.img · 1.44M · read-only",
+                "B: other.img · 720K · read-only"
+            ]
+        );
+        assert!(shell.command_allowed(Command::Eject(1)));
+        shell.command(Command::Eject(1), &ctx);
+        assert_eq!(shell.drive_views().len(), 1);
+        assert!(!shell.command_allowed(Command::Eject(1)));
+        shell.command(Command::Start, &ctx);
+        finish_readiness(&mut shell);
+        assert!(shell.pending_media.is_none());
+        let presenter = shell.presenter.as_mut().unwrap();
+        // Queued before the first instruction: the first run boundary puts
+        // the floppy in before POST reads the drive.
+        assert_eq!(presenter.assembled.machine.virtual_time(), 0);
+        assert_eq!(
+            presenter.media_events,
+            [(0, assembly::FloppyAction::Insert(0))]
+        );
+        shell.tick(&ctx, false, std::time::Duration::ZERO);
+        let presenter = shell.presenter.as_mut().unwrap();
+        assert_eq!(
+            presenter.assembled.floppy_name(assembly::DeviceId::Fdc, 0),
+            "boot.img"
+        );
+        assert_eq!(
+            presenter.assembled.floppy_name(assembly::DeviceId::Fdc, 1),
+            "empty"
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), machine_file);
+        assert!(shell.stop());
+    }
+
+    #[test]
+    fn another_selection_drops_the_floppies_inserted_for_start() {
+        let temp = assembly::test_support::TempDir::new("shell-pending-selection");
+        let (mut shell, _) = stopped_machine_file_shell(&temp);
+        let ctx = egui::Context::default();
+        shell.command(Command::Insert(0), &ctx);
+        shell.insert_dialog.as_mut().unwrap().select(Some(0));
+        shell.confirm_insert();
+        assert_eq!(shell.drive_views().len(), 1);
+        // A draft of this machine's catalogue closes with the selection.
+        shell.command(Command::Insert(0), &ctx);
+        assert!(shell.insert_dialog.is_some());
+        shell.selected = None;
+        shell.sync_pending_media();
+        assert!(shell.pending_media.is_none());
+        assert!(shell.insert_dialog.is_none());
+        assert!(!shell.command_allowed(Command::Insert(0)));
+        shell.selected = Some(0);
+        shell.sync_pending_media();
+        assert!(shell.command_allowed(Command::Insert(0)));
+        assert!(shell.drive_views().is_empty());
+        assert!(!shell.command_allowed(Command::Eject(0)));
+    }
+
+    #[test]
+    fn a_floppy_inserted_before_an_image_starts_joins_its_catalogue() {
+        use crate::library_test_support::Fixture;
+        let f = Fixture::new();
+        let ctx = egui::Context::default();
+        let mut shell = shell();
+        shell.stop();
+        shell.args.options.allow_unlisted_firmware = true;
+        shell.preferences.store_root = Some(f.temp.path().join("no-store"));
+        shell.image_library =
+            crate::library_view::LibraryView::synthetic(f.store.root().to_owned());
+        shell.image_library.selected = Some(f.row.clone());
+        shell.image_library.recheck();
+        for _ in crate::test_wait::rounds() {
+            shell.poll_images(&ctx);
+            if shell.image_library.readiness.is_some() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(shell.image_library.ready());
+        shell.sync_pending_media();
+        assert!(shell.command_allowed(Command::Insert(0)));
+        // The image's workspace opens only at Start, so library disks chosen
+        // before it go in write-protected.
+        shell.command(Command::FromLibrary(0), &ctx);
+        let library = shell.insert_dialog.as_ref().unwrap().library.as_ref();
+        assert!(library
+            .is_some_and(|library| !library.journal && library.journal_unavailable.is_some()));
+        shell.insert_dialog = None;
+        shell.command(Command::Insert(0), &ctx);
+        let draft = shell.insert_dialog.as_mut().unwrap();
+        assert!(
+            draft.slot.entries.is_empty(),
+            "the image's disks join at Start"
+        );
+        let extra = f.temp.path().join("extra.img");
+        std::fs::write(&extra, vec![7; 360 * 1024]).unwrap();
+        let browsed = crate::media_dialog::browse(&extra, draft.slot.geometry).unwrap();
+        draft.add_browsed(browsed);
+        shell.confirm_insert();
+        let chips: Vec<_> = shell
+            .drive_views()
+            .iter()
+            .map(crate::drive_chips::DriveView::chip_text)
+            .collect();
+        assert_eq!(chips, ["A: extra.img · 360K · read-only"]);
+        shell.command(Command::Start, &ctx);
+        for _ in crate::test_wait::rounds() {
+            shell.poll_images(&ctx);
+            if shell.presenter.is_some() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        let presenter = shell.presenter.as_mut().expect("the image started");
+        // Appended after the image's own two disks.
+        assert_eq!(
+            presenter.media_events,
+            [(0, assembly::FloppyAction::Insert(2))]
+        );
+        presenter.apply_media_events().unwrap();
+        assert_eq!(
+            presenter.assembled.floppy_name(assembly::DeviceId::Fdc, 0),
+            "extra.img"
+        );
+        assert!(shell.stop());
+        shell.image_library.shutdown();
+    }
+
+    #[test]
+    fn an_error_dialog_on_a_halted_session_still_lets_stop_finish_it() {
+        let temp = assembly::test_support::TempDir::new("shell-halt-error");
+        let mut shell = journal_shell(&temp, vec![0xfa, 0xf4]);
+        shell
+            .presenter
+            .as_mut()
+            .unwrap()
+            .advance_fully(std::time::Duration::from_millis(20))
+            .unwrap();
+        assert!(shell.presenter.as_ref().unwrap().halted);
+        shell.show_error("Image store worker stopped".into());
+        // The error ends the session's input; Ctrl+Alt+Del is no reset now.
+        assert!(!shell.command_allowed(Command::Insert(0)));
+        assert!(!shell.presenter.as_ref().unwrap().awaits_reset());
+        let journal = temp.path().join("disk.upfj");
+        assert_eq!(std::fs::metadata(&journal).unwrap().len(), 128);
+        assert!(shell.stop());
+        assert_eq!(std::fs::metadata(&journal).unwrap().len(), 128 + 640);
+    }
+
+    #[test]
+    fn exit_from_a_halted_session_finishes_its_cmos_journal_as_the_cli_does() {
+        let temp = assembly::test_support::TempDir::new("shell-halt-exit");
+        let base = temp.path().join("cmos.bin");
+        std::fs::write(&base, [0; 64]).unwrap();
+        let cli = temp.path().join("cli.upfj");
+        let mut reference =
+            assembly::assemble(&crate::tests::cmos_halt_config(&base, &cli)).unwrap();
+        reference
+            .run_session(&assembly::RunPolicy::natural(Some(200), None))
+            .unwrap();
+        reference.finish_persistence().unwrap();
+        drop(reference);
+        let window = temp.path().join("window.upfj");
+        let mut shell = shell();
+        let mut presenter =
+            crate::tests::vga_presenter(&crate::tests::cmos_halt_config(&base, &window));
+        presenter
+            .advance_fully(std::time::Duration::from_millis(20))
+            .unwrap();
+        assert!(presenter.halted);
+        shell.presenter = Some(presenter);
+        let ctx = egui::Context::default();
+        let (commands, _) = pass(&ctx, Default::default(), |ctx| {
+            shell.command(Command::Exit, ctx)
+        });
+        assert!(commands.contains(&egui::ViewportCommand::Close));
+        assert!(shell.presenter.is_none());
+        assert_eq!(std::fs::read(window).unwrap(), std::fs::read(cli).unwrap());
+    }
+
+    #[test]
+    fn ctrl_alt_end_resets_a_halted_machine_and_drops_keys_held_at_the_halt() {
+        use std::time::Duration;
+        let ctx = egui::Context::default();
+        let mut shell = shell();
+        let mut presenter = crate::tests::counting_halt_presenter();
+        presenter.full_slices = true;
+        shell.started(presenter);
+        // Shift goes down while the guest runs and comes up while it is
+        // halted, when no key reaches the guest.
+        shell.key(KeyCode::ShiftLeft, Pressed, false, &ctx);
+        shell.tick(&ctx, false, Duration::from_millis(20));
+        assert!(shell.presenter.as_ref().unwrap().awaits_reset());
+        shell.key(KeyCode::ShiftLeft, Released, false, &ctx);
+        for key in [KeyCode::ControlLeft, KeyCode::AltLeft, KeyCode::End] {
+            shell.key(key, Pressed, false, &ctx);
+        }
+        let presenter = shell.presenter.as_ref().unwrap();
+        assert!(presenter.running);
+        assert_eq!(presenter.cpu_resets, 1);
+        for key in [KeyCode::End, KeyCode::AltLeft, KeyCode::ControlLeft] {
+            shell.key(key, Released, false, &ctx);
+        }
+        // Neither the chord nor the Shift held at the halt reaches the new
+        // boot, not even as the break a later focus loss sends for held keys.
+        let presenter = shell.presenter.as_mut().unwrap();
+        presenter.focus_changed(false);
+        assert_eq!(presenter.keyboard.pending_events(), 0);
+        assert!(shell.stop());
+    }
+
+    #[test]
+    fn start_leaves_out_a_changed_pending_floppy_and_inserts_the_others() {
+        let temp = assembly::test_support::TempDir::new("shell-pending-failure");
+        let (mut shell, _) = stopped_machine_file_shell(&temp);
+        let ctx = egui::Context::default();
+        for (unit, name) in [(0, "a.img"), (1, "b.img")] {
+            let path = temp.path().join(name);
+            std::fs::write(&path, vec![0; 1_474_560]).unwrap();
+            shell.command(Command::Insert(unit), &ctx);
+            let draft = shell.insert_dialog.as_mut().unwrap();
+            let browsed = crate::media_dialog::browse(&path, draft.slot.geometry).unwrap();
+            draft.add_browsed(browsed);
+            shell.confirm_insert();
+        }
+        // A: changes after its Insert pinned its SHA-256.
+        std::fs::write(temp.path().join("a.img"), vec![1; 1_474_560]).unwrap();
+        shell.command(Command::Start, &ctx);
+        finish_readiness(&mut shell);
+        let (title, text) = shell.dialog.clone().expect("the left-out floppy is named");
+        assert_eq!(title, "Insert floppy");
+        assert!(text.contains("A: a.img: "), "{text}");
+        assert!(!text.contains("B:"), "{text}");
+        shell.dialog = None;
+        shell.tick(&ctx, false, std::time::Duration::ZERO);
+        let presenter = shell.presenter.as_mut().unwrap();
+        assert_eq!(
+            presenter.assembled.floppy_name(assembly::DeviceId::Fdc, 0),
+            "empty"
+        );
+        assert_eq!(
+            presenter.assembled.floppy_name(assembly::DeviceId::Fdc, 1),
+            "b.img"
+        );
+        assert!(shell.stop());
+    }
+
+    #[test]
+    fn a_changed_machine_file_never_swaps_the_disk_inserted_before_start() {
+        let temp = assembly::test_support::TempDir::new("shell-pending-changed");
+        let other = temp.path().join("other.img");
+        std::fs::write(&other, vec![0; 1_474_560]).unwrap();
+        let ctx = egui::Context::default();
+        let insert_boot = |shell: &mut Shell| {
+            shell.command(Command::Insert(0), &ctx);
+            let draft = shell.insert_dialog.as_mut().unwrap();
+            assert_eq!(draft.slot.entries[0].medium.name, "boot.img");
+            draft.select(Some(0));
+            shell.confirm_insert();
+            assert_eq!(shell.drive_views().len(), 1);
+        };
+        // The same catalogue place now lists another disk.
+        let resave = |path: &std::path::Path| {
+            let text = std::fs::read_to_string(path).unwrap();
+            std::fs::write(path, text.replace("image='boot.img'", "image='other.img'")).unwrap();
+        };
+        // Saved again from Settings: the library reads the file again.
+        let (mut shell, path) = stopped_machine_file_shell(&temp);
+        insert_boot(&mut shell);
+        resave(&path);
+        shell.refresh_library();
+        assert!(shell.pending_media.is_none());
+        assert_eq!(
+            shell.message,
+            "Floppies inserted for Start were taken out: the machine was read again"
+        );
+        finish_readiness(&mut shell);
+        shell.sync_pending_media();
+        assert!(shell.drive_views().is_empty());
+        // Edited outside the program: Start reads the new file and leaves the
+        // pending disk out instead of inserting another one.
+        let temp = assembly::test_support::TempDir::new("shell-pending-edited");
+        std::fs::write(temp.path().join("other.img"), vec![0; 1_474_560]).unwrap();
+        let (mut shell, path) = stopped_machine_file_shell(&temp);
+        insert_boot(&mut shell);
+        resave(&path);
+        shell.command(Command::Start, &ctx);
+        finish_readiness(&mut shell);
+        let (_, text) = shell.dialog.clone().expect("the left-out floppy is named");
+        assert!(
+            text.contains("A: boot.img: the machine file now lists another disk there"),
+            "{text}"
+        );
+        shell.dialog = None;
+        shell.tick(&ctx, false, std::time::Duration::ZERO);
+        assert_eq!(
+            shell
+                .presenter
+                .as_mut()
+                .unwrap()
+                .assembled
+                .floppy_name(assembly::DeviceId::Fdc, 0),
+            "empty"
+        );
+        assert!(shell.stop());
+    }
+
+    /// A machine file for the open AT BIOS with a 1.2M A: and the FreeDOS
+    /// 1.2M boot disk in its catalogue; `None` without fixtures. With
+    /// `no_boot`, A: starts with a disk whose boot sector gives up through
+    /// INT 18h, as a hard disk's master boot record does without an active
+    /// partition; otherwise A: starts empty.
+    fn open_bios_floppy_machine(
+        temp: &assembly::test_support::TempDir,
+        no_boot: bool,
+    ) -> Option<std::path::PathBuf> {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let bios = root.join("vendor/unemu-at-bios/bios-unemu-at.bin");
+        let floppy = root.join("vendor/freedos/freedos-1200.img");
+        for (path, fetch) in [
+            (&bios, "vendor/unemu-at-bios/fetch.sh"),
+            (&floppy, "vendor/freedos/fetch.sh"),
+        ] {
+            if !path.exists() {
+                let message = format!("missing fixture {} — run {fetch}", path.display());
+                assert!(
+                    std::env::var_os("UNEMUPC98_REQUIRE_FIXTURES").as_deref()
+                        != Some(std::ffi::OsStr::new("1")),
+                    "{message}"
+                );
+                eprintln!("skipping: {message}");
+                return None;
+            }
+        }
+        let quoted = |path: &std::path::Path| {
+            toml::Value::String(path.to_string_lossy().into_owned()).to_string()
+        };
+        let first = if no_boot {
+            let mut disk = vec![0; 1_228_800];
+            disk[..2].copy_from_slice(&[0xCD, 0x18]); // int 18h
+            disk[510..512].copy_from_slice(&[0x55, 0xAA]);
+            std::fs::write(temp.path().join("no-boot.img"), disk).unwrap();
+            "[[card.drives.media]]\nimage='no-boot.img'\nwrite='readonly'\n"
+        } else {
+            "empty=true\n"
+        };
+        let path = temp.path().join("machine.toml");
+        std::fs::write(
+            &path,
+            format!(
+                "schema=1\nextends='preset:ibm-5170'\n[board.rtc]\nstart='2000-01-01T00:00:00'\nnvram='derived'\n[memory]\nextended_kib=0\n[firmware.bios]\nimage={}\nsha256='f8ecd4a2ad4906eb94a7595ede755019f545f40111725819eeb80e423adc8db6'\nprovides=['floppy']\n[[card]]\nid='fdc-765'\n[[card.drives]]\nunit=0\ntype='1.2M'\n{first}[[card.drives.media]]\nimage={}\nsha256='4ee55e9c44d553041b9bbde99cacae31472f12debf6c9b9c09c5b9343c435d7e'\nwrite='readonly'\n",
+                quoted(&bios),
+                quoted(&floppy)
+            ),
+        )
+        .unwrap();
+        Some(path)
+    }
+
+    fn screen_text(shell: &mut Shell) -> String {
+        let presenter = shell.presenter.as_mut().unwrap();
+        let capture = presenter.assembled.capture_text(presenter.display).unwrap();
+        match &capture.frame {
+            video::Frame::Text(grid) => grid.rows_as_strings().join("\n"),
+            _ => String::new(),
+        }
+    }
+
+    /// Tick in 100 ms host frames until the screen shows `needle`, within a
+    /// bound of emulated time.
+    fn tick_until_screen_shows(
+        shell: &mut Shell,
+        elapsed: &mut std::time::Duration,
+        needle: &str,
+        done: impl Fn(&Shell) -> bool,
+    ) {
+        let ctx = egui::Context::default();
+        let bound = *elapsed + std::time::Duration::from_secs(120);
+        while !(done(shell) && screen_text(shell).contains(needle)) {
+            assert!(
+                *elapsed < bound,
+                "no {needle:?} on screen:\n{}",
+                screen_text(shell)
+            );
+            *elapsed += std::time::Duration::from_millis(100);
+            shell.tick(&ctx, false, *elapsed);
+        }
+    }
+
+    #[test]
+    #[ignore = "slow: open AT BIOS POST twice and a FreeDOS 1.2M boot through the shell"]
+    fn no_rom_basic_takes_a_boot_floppy_and_ctrl_alt_del_boots_freedos() {
+        let temp = assembly::test_support::TempDir::new("shell-no-rom-basic");
+        let Some(path) = open_bios_floppy_machine(&temp, true) else {
+            return;
+        };
+        let ctx = egui::Context::default();
+        let mut shell = shell();
+        shell.presenter = None;
+        shell.library = vec![LibraryEntry::inspect_with_rom_dirs(
+            path,
+            shell.args.options,
+            &[],
+        )];
+        shell.selected = Some(0);
+        shell.refresh_library();
+        finish_readiness(&mut shell);
+        shell.command(Command::Start, &ctx);
+        finish_readiness(&mut shell);
+        shell.presenter.as_mut().unwrap().full_slices = true;
+        let mut elapsed = std::time::Duration::ZERO;
+        // The boot code gives up: INT 18h prints its message and halts with
+        // interrupts off, as clone AT BIOSes do while they wait for reset.
+        tick_until_screen_shows(&mut shell, &mut elapsed, "No ROM BASIC", |shell| {
+            shell.presenter.as_ref().unwrap().halted
+        });
+        assert!(shell.message.contains("press Ctrl+Alt+Del"));
+        shell.command(Command::Insert(0), &ctx);
+        shell.insert_dialog.as_mut().unwrap().select(Some(1));
+        shell.confirm_insert();
+        let resets = shell.presenter.as_ref().unwrap().cpu_resets;
+        shell.command(Command::Reset, &ctx);
+        let presenter = shell.presenter.as_mut().unwrap();
+        assert!(presenter.running);
+        assert_eq!(presenter.cpu_resets, resets + 1);
+        assert_eq!(
+            presenter.assembled.floppy_name(assembly::DeviceId::Fdc, 0),
+            "freedos-1200.img"
+        );
+        tick_until_screen_shows(&mut shell, &mut elapsed, "FreeDOS kernel", |_| true);
+        assert!(shell.presenter.as_ref().unwrap().error.is_none());
+        assert!(shell.stop());
+    }
+
+    #[test]
+    #[ignore = "slow: open AT BIOS POST and a FreeDOS 1.2M boot through the shell"]
+    fn a_floppy_inserted_before_start_boots_freedos_on_the_open_bios() {
+        let temp = assembly::test_support::TempDir::new("shell-pending-boot");
+        let Some(path) = open_bios_floppy_machine(&temp, false) else {
+            return;
+        };
+        let ctx = egui::Context::default();
+        let mut shell = shell();
+        shell.presenter = None;
+        shell.library = vec![LibraryEntry::inspect_with_rom_dirs(
+            path,
+            shell.args.options,
+            &[],
+        )];
+        shell.selected = Some(0);
+        shell.refresh_library();
+        finish_readiness(&mut shell);
+        shell.command(Command::Insert(0), &ctx);
+        shell.insert_dialog.as_mut().unwrap().select(Some(0));
+        shell.confirm_insert();
+        shell.command(Command::Start, &ctx);
+        finish_readiness(&mut shell);
+        shell.presenter.as_mut().unwrap().full_slices = true;
+        let mut elapsed = std::time::Duration::ZERO;
+        tick_until_screen_shows(&mut shell, &mut elapsed, "FreeDOS kernel", |_| true);
+        assert!(!shell.presenter.as_ref().unwrap().halted);
+        assert!(shell.stop());
     }
 
     #[test]
@@ -6674,7 +7486,11 @@ kind='mda'
                 let mut shell = shell();
                 match case {
                     "stopped" => assert!(shell.stop()),
-                    "halted" => shell.presenter.as_mut().unwrap().running = false,
+                    "halted" => {
+                        let presenter = shell.presenter.as_mut().unwrap();
+                        presenter.running = false;
+                        presenter.halted = true;
+                    }
                     _ => shell.presenter.as_mut().unwrap().error = Some("cpu failure".into()),
                 }
                 let ctx = egui::Context::default();
@@ -6691,10 +7507,10 @@ kind='mda'
             if case == "stopped" {
                 shell.stop();
             }
-            shell
-                .presenter
-                .iter_mut()
-                .for_each(|p| p.running = case != "halted");
+            shell.presenter.iter_mut().for_each(|p| {
+                p.running = case != "halted";
+                p.halted = case == "halted";
+            });
             if case == "failed" {
                 shell.presenter.as_mut().unwrap().error = Some("cpu failure".into());
             }

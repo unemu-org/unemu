@@ -58,7 +58,7 @@ pub(crate) struct ImageSettings {
 }
 
 /// Describe hardware tables through the same lowering as a machine file.
-fn describe(machine: &Table) -> Result<Draft, String> {
+pub(super) fn describe(machine: &Table) -> Result<Draft, String> {
     let text = toml::to_string(&Source::describable(machine)).map_err(|e| e.to_string())?;
     let file = machine_file::parse_toml("image.toml", &text).map_err(|e| e.to_string())?;
     file.describe(&machine_file::Origins::new("image.toml"))

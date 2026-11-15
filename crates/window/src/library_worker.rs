@@ -140,7 +140,13 @@ pub(super) struct Refused {
 pub(super) type OpenedSettings = (ImageRow, pc_image::revision::Source, Vec<(String, Digest)>);
 pub(super) enum Event {
     Snapshot(Arc<library_view::Snapshot>),
-    Checked(Digest, Result<pc_image::inspection::ImageDetails>),
+    /// A readiness check, with the image's machine for floppies inserted
+    /// before Start.
+    Checked(
+        Digest,
+        Result<pc_image::inspection::ImageDetails>,
+        Option<Box<assembly::MachineConfig>>,
+    ),
     Launched(
         Box<pc_image::workspace::SessionTransfer>,
         Box<ImageRow>,
@@ -263,6 +269,15 @@ impl Drop for Worker {
 pub(super) fn regular_name(image: &Digest) -> String {
     format!("regular-{}", &image.hex()[..56])
 }
+/// An image's machine with empty floppy catalogues, as Settings reads it:
+/// the drives a floppy inserted before Start goes into. Only the manifest
+/// and configuration are read; no workspace is opened.
+fn floppy_machine(store: &Store, row: &ImageRow) -> Option<Box<assembly::MachineConfig>> {
+    let source = pc_image::revision::Source::open(store, &row.descriptor).ok()?;
+    let draft = crate::image_settings::describe(source.machine()).ok()?;
+    Some(Box::new(draft.config))
+}
+
 pub(super) fn regular_workspace(store: &Store, image: &Digest) -> Result<String> {
     let names = store.list_workspaces().map_err(|e| e.to_string())?;
     // Older persistent desktop sessions used this prefix; retain their journals.
@@ -777,7 +792,12 @@ fn run<B: Backend>(
                                 storage_details(&store, &cache, row, details, &cancelled)
                             });
                         if !cancelled() {
-                            send(Event::Checked(row.descriptor.digest.clone(), result));
+                            let machine = result.is_ok().then(|| floppy_machine(&store, row));
+                            send(Event::Checked(
+                                row.descriptor.digest.clone(),
+                                result,
+                                machine.flatten(),
+                            ));
                             pending_check = None;
                         }
                         continue;
@@ -1697,7 +1717,7 @@ mod tests {
             .unwrap();
         w.send.send(Request::Query(Query::default())).unwrap();
         release.send(()).unwrap();
-        let Event::Checked(_, result) = until(&w, |e| matches!(e, Event::Checked(..))) else {
+        let Event::Checked(_, result, _) = until(&w, |e| matches!(e, Event::Checked(..))) else {
             unreachable!()
         };
         assert!(result.unwrap().media.iter().any(|m| m.chain.len() == 4));

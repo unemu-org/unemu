@@ -5,6 +5,46 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-15 — A halted machine takes a floppy and Ctrl+Alt+Del restarts
+  it; a stopped machine takes floppies for Start:** a guest that halts with
+  interrupts off (the open AT BIOS after "No ROM BASIC", when the boot code
+  of an empty disk gives up through INT 18h) no longer ends the session. The
+  status line reads "Machine halted — insert a boot disk and press
+  Ctrl+Alt+Del, or Stop to return to the library"; Media › Insert, Browse…,
+  From library…, Eject, Next image, the drive chips and the host media keys
+  act on its drives as on a running machine; Pause/Resume is disabled.
+  Ctrl+Alt+Del (toolbar, Ctrl+Alt+End and Machine › Reset halted machine)
+  restarts a halted machine with a CPU-only reset, the line the 8042 pulse and
+  the shutdown cycle use: unlike a hardware reset button it resets no board
+  device; RAM, devices and the inserted media are kept, POST reinitialises the
+  board and runs again in the same session, keys held at the halt are
+  dropped, and the reset takes no virtual time. On a running machine
+  Ctrl+Alt+Del still sends the keys to the guest. A halted session's journals
+  and CMOS stay open for the reset: at the halt, changed CMOS RAM and
+  completed ATA sectors are made durable as before a reset, and Stop finishes
+  the session (before, the halt finished it). An error dialog ends a halted
+  session's input but Stop still finishes it. Stop, Library and Exit still
+  end a halted session without the stop prompt, and Gaming mode still asks
+  Keep or Discard. While no session runs, Media › Insert, Browse… and From
+  library… (and the A: toolbar button) put floppies into the selected
+  machine file's or machine image's drives, under the usual accepted-media
+  and write-policy rules; the drive chips show them, Eject takes one out, and
+  Start inserts them before the first instruction, so POST boots from them.
+  They are kept only in the shell, never written to the machine file or the
+  stored image, and last until Start, until another machine is selected, or
+  until the library reads the machine file again (Settings save, firmware
+  check), which takes them out. At Start a disk the machine file lists goes
+  in only if the file still lists the same image there, and a Browse… disk
+  only if its SHA-256 is unchanged; Start names each drive left out and
+  inserts the others.
+  Before an image starts, From library… disks go in write-protected, since
+  their journals belong to the workspace Start opens; an image's own catalogue
+  joins at Start. **MEASURED headless (shell, open AT BIOS
+  `unemu-at-bios-1.0.2-unemu.2`, 1.2M A:):** a disk whose boot sector runs
+  INT 18h reaches "No ROM BASIC" and halts; Insert of `freedos-1200.img` and
+  Ctrl+Alt+Del then boot to the FreeDOS kernel banner; with A: empty, the same
+  disk inserted before Start boots FreeDOS too (both `#[ignore]`d, about 22 s
+  and 11 s in a debug build).
 - **2026-11-15 — File › New machine… keeps one size:** an egui modal lays its
   content out inside last frame's size, and the wizard's vertical separator
   between the step list and the page filled all the height on offer, so the

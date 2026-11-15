@@ -431,8 +431,11 @@ impl<C: Cpu> Machine<C> {
     /// Controller Output Port: bit 0 drives the CPU reset line. Shutdown uses
     /// the same CPU-only reset (System Board, Logic Diagrams). Media sessions
     /// survive (backlog/docs/design/machine-config.md §Board model).
-    /// The 8042 output port and A20 gate keep their state. A host-side reboot
-    /// must go through the guest (Ctrl+Alt+Del) or relaunch the machine.
+    /// The 8042 output port and A20 gate keep their state. A frontend may also
+    /// assert it to restart a guest that halted with interrupts disabled. That
+    /// is a CPU-only reset, unlike a hardware reset button, which also resets
+    /// the board: POST reinitialises the board instead. A running guest
+    /// reboots through Ctrl+Alt+Del.
     pub fn reset_cpu(&mut self) -> Result<(), MachineError> {
         self.sync_a20();
         self.cpu.reset()?;

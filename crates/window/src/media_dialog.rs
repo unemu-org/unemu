@@ -971,6 +971,8 @@ pub(super) struct LibraryInsert {
     pub progress: String,
     /// The set chosen in the library window, selected once the rows arrive.
     pub preselect: Option<image_store::Digest>,
+    /// Why journals are unavailable here; the disks then go in write-protected.
+    pub journal_unavailable: Option<&'static str>,
 }
 #[derive(Clone)]
 pub(super) struct LibrarySet {
@@ -998,7 +1000,13 @@ impl LibraryInsert {
             ready: None,
             progress: String::new(),
             preselect: None,
+            journal_unavailable: None,
         }
+    }
+    /// Library disks go in write-protected only, for `reason`.
+    pub fn write_protected_only(&mut self, reason: &'static str) {
+        self.journal = false;
+        self.journal_unavailable = Some(reason);
     }
     fn snapshot(&self) -> Self {
         Self {
@@ -1013,6 +1021,7 @@ impl LibraryInsert {
             ready: None,
             progress: String::new(),
             preselect: None,
+            journal_unavailable: self.journal_unavailable,
         }
     }
     pub fn is_busy(&self) -> bool {
@@ -1434,8 +1443,13 @@ impl InsertDialog {
         }
         ui.label("Workspace writes");
         ui.label("Already loaded disks retain their existing catalogue write policy.");
-        ui.radio_value(&mut library.journal, true, "Per-workspace journal");
-        ui.radio_value(&mut library.journal, false, "Write-protected");
+        if let Some(reason) = library.journal_unavailable {
+            ui.add(egui::Label::new(reason).wrap());
+        }
+        ui.add_enabled_ui(library.journal_unavailable.is_none(), |ui| {
+            ui.radio_value(&mut library.journal, true, "Per-workspace journal");
+            ui.radio_value(&mut library.journal, false, "Write-protected");
+        });
         ui.checkbox(
             &mut library.load_all,
             "Load all disks of the set into the catalogue in order",
@@ -1564,6 +1578,224 @@ pub(super) fn append_entries(
         *slots = original_slots;
     }
     result
+}
+
+/// Whose floppies wait for Start: a machine file by path, or a machine image
+/// by digest.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) enum PendingOwner {
+    MachineFile(PathBuf),
+    Image(image_store::Digest),
+}
+
+/// Floppies put into the drives of the selected machine while it is stopped,
+/// as into a powered-off PC. Start inserts them before the first instruction,
+/// so POST boots from them. They live only in the shell: the machine file and
+/// the stored image never change, and selecting another machine drops them.
+pub(super) struct PendingMedia {
+    pub owner: PendingOwner,
+    /// The selection's machine; a machine image lists no catalogue here, its
+    /// own media join at Start.
+    config: MachineConfig,
+    pub slots: [Option<FloppySlot>; 2],
+    /// Per drive, the entries one Insert chose and the one that goes in.
+    inserts: [Option<(Vec<CatalogueEntry>, usize)>; 2],
+}
+
+impl PendingMedia {
+    pub fn new(owner: PendingOwner, config: MachineConfig) -> Self {
+        Self {
+            owner,
+            slots: FloppySlot::from_config(&config),
+            config,
+            inserts: [None, None],
+        }
+    }
+
+    /// A later Insert into the same drive replaces the earlier floppy.
+    pub fn insert(&mut self, unit: u8, entries: Vec<CatalogueEntry>, chosen: usize) {
+        if let Some(insert) = self.inserts.get_mut(usize::from(unit)) {
+            *insert = Some((entries, chosen));
+        }
+    }
+
+    /// Eject before Start takes the pending floppy out again.
+    pub fn eject(&mut self, unit: u8) {
+        if let Some(insert) = self.inserts.get_mut(usize::from(unit)) {
+            *insert = None;
+        }
+    }
+
+    pub fn has_insert(&self, unit: u8) -> bool {
+        self.inserts
+            .get(usize::from(unit))
+            .is_some_and(Option::is_some)
+    }
+
+    pub fn has_inserts(&self) -> bool {
+        self.inserts.iter().any(Option::is_some)
+    }
+
+    /// The drives that hold a pending floppy, as the status bar shows them:
+    /// each floppy is listed after the drive's own catalogue, where Start
+    /// appends it.
+    pub fn drive_views(
+        &self,
+        origin: &crate::drive_chips::Origin,
+    ) -> Vec<crate::drive_chips::DriveView> {
+        let mut config = self.config.clone();
+        let mut slots = self.slots.clone();
+        let mut inserted = [None, None];
+        for (unit, insert) in self.inserts.iter().enumerate() {
+            let Some(entry) = insert
+                .as_ref()
+                .and_then(|(entries, chosen)| entries.get(*chosen))
+            else {
+                continue;
+            };
+            let Some(drive) = config.drives.iter_mut().find(|drive| {
+                drive.controller == assembly::DeviceId::Fdc && usize::from(drive.unit) == unit
+            }) else {
+                continue;
+            };
+            let index = match entry.index {
+                Some(index) => index,
+                None => {
+                    if drive.media.is_none() {
+                        drive.media = Some(assembly::FloppyMediaList {
+                            empty: false,
+                            entries: vec![FloppyMedium {
+                                image: drive.image.clone(),
+                                expected_sha256: drive.expected_sha256,
+                                write: drive.write.clone(),
+                                name: String::new(),
+                            }],
+                        });
+                    }
+                    let Some(list) = &mut drive.media else {
+                        continue;
+                    };
+                    list.entries.push(entry.medium.clone());
+                    list.entries.len() - 1
+                }
+            };
+            if let Some(slot) = &mut slots[unit] {
+                slot.record(entry, index);
+            }
+            inserted[unit] = Some((index, entry.medium.name.clone()));
+        }
+        crate::drive_chips::drive_views(&config, &slots, &inserted, origin)
+            .into_iter()
+            .filter(|view| {
+                view.floppy_unit()
+                    .is_some_and(|unit| inserted[usize::from(unit)].is_some())
+            })
+            .collect()
+    }
+
+    /// Put each pending floppy into its drive of the machine Start assembled,
+    /// before its first instruction, and name each drive whose floppy did not
+    /// go in. A disk the machine file lists goes in only while the started
+    /// catalogue still lists the same image at that place, so an edit of the
+    /// file after the Insert never swaps in another disk. A library disk's
+    /// journal belongs to the started session's media folder `media_dir`,
+    /// which only Start opens; without one, that disk stays out.
+    pub fn apply(self, presenter: &mut crate::Presenter, media_dir: Option<&Path>) -> Vec<String> {
+        let mut failures = Vec::new();
+        for (unit, insert) in (0u8..).zip(self.inserts) {
+            let Some((mut entries, chosen)) = insert else {
+                continue;
+            };
+            let name = entries
+                .get(chosen)
+                .map(|entry| entry.medium.name.clone())
+                .unwrap_or_default();
+            let mut insert = || -> Result<(), String> {
+                for entry in &mut entries {
+                    let listed = entry
+                        .index
+                        .filter(|_| entry.declared)
+                        .map(|index| listed_medium(&presenter.media_config, unit, index));
+                    // Start pins the hash it verified; the Insert knew only
+                    // the file's own pin, if it has one.
+                    let same =
+                        |(image, sha256, write): (&ImageSource, Option<[u8; 32]>, &WriteMode)| {
+                            image == &entry.medium.image
+                                && write == &entry.medium.write
+                                && entry
+                                    .medium
+                                    .expected_sha256
+                                    .is_none_or(|pin| sha256 == Some(pin))
+                        };
+                    if listed.is_some_and(|listed| !listed.is_some_and(same)) {
+                        return Err("the machine file now lists another disk there".into());
+                    }
+                    if entry.workspace_journal.is_some() {
+                        entry.move_workspace_journal(
+                            media_dir.ok_or("no session media folder for its journal")?,
+                        );
+                    }
+                }
+                let indices = append_entries(
+                    &mut presenter.assembled,
+                    &mut presenter.media_config,
+                    &mut presenter.media_slots,
+                    unit,
+                    &entries,
+                )?;
+                let index = *indices.get(chosen).ok_or("Select an image")?;
+                presenter
+                    .media_events
+                    .push((unit, assembly::FloppyAction::Insert(index)));
+                Ok(())
+            };
+            if let Err(error) = insert() {
+                failures.push(format!("{}: {name}: {error}", char::from(b'A' + unit)));
+            }
+        }
+        failures
+    }
+}
+
+/// Catalogue entry `index` of floppy `unit` in `config`, as its image, pin
+/// and write policy; a drive without a list holds its single image.
+fn listed_medium(
+    config: &MachineConfig,
+    unit: u8,
+    index: usize,
+) -> Option<(&ImageSource, Option<[u8; 32]>, &WriteMode)> {
+    let drive = config
+        .drives
+        .iter()
+        .find(|drive| drive.controller == assembly::DeviceId::Fdc && drive.unit == unit)?;
+    match &drive.media {
+        Some(list) => list
+            .entries
+            .get(index)
+            .map(|medium| (&medium.image, medium.expected_sha256, &medium.write)),
+        None => (index == 0).then_some((&drive.image, drive.expected_sha256, &drive.write)),
+    }
+}
+
+impl CatalogueEntry {
+    /// Keep a library disk's workspace journal under the same name in
+    /// `directory`, the media folder of the session that now runs.
+    fn move_workspace_journal(&mut self, directory: &Path) {
+        let Some(name) = self
+            .workspace_journal
+            .as_ref()
+            .and_then(|journal| journal.file_name())
+        else {
+            return;
+        };
+        let moved = directory.join(name);
+        if let WriteMode::Journal { path, .. } = &mut self.medium.write {
+            if Some(&*path) == self.workspace_journal.as_ref() {
+                path.clone_from(&moved);
+            }
+        }
+        self.workspace_journal = Some(moved);
+    }
 }
 
 #[cfg(test)]

@@ -750,9 +750,13 @@ reset automatically without capturing pre-reset CMOS state. The journal can then
 differ from the CLI's, and a later execution error can lose that state. A failed
 run must be dropped without `finish_persistence()`. A latched error during a run
 skips every drive's finish; the other drives' unsealed sessions are recovered
-on their next mount. A successful cap, halt or
-explicit normal window close calls `finish_persistence()`; repeated finish calls
+on their next mount. A successful cap or halt, or an
+explicit normal window close, calls `finish_persistence()`; repeated finish calls
 are harmless, and the session run API refuses further advancement after finish.
+The window keeps a session whose guest halted with interrupts disabled open
+for a reset: at the halt it calls `before_cpu_reset()`, which appends changed
+CMOS RAM and submits completed ATA sectors without closing a generation, and
+it finishes the session at Stop.
 Drop never writes a clean marker. Final display/disk capture can still read the
 finished media bytes. There is no atomic close across multiple drives.
 

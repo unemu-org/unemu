@@ -73,6 +73,8 @@ pub(crate) enum Command {
 pub(crate) struct Enablement {
     pub state: State,
     pub ready: bool,
+    /// Drives that take a floppy now: those of the session, or while stopped,
+    /// those of the selected machine, whose floppies Start puts in.
     pub floppy: [bool; 2],
     pub audio: bool,
 }
@@ -88,12 +90,10 @@ impl Enablement {
             | Command::Release
             | Command::Speed(_)
             | Command::FastForward => self.state != State::Stopped,
-            Command::Insert(unit)
-            | Command::FromLibrary(unit)
-            | Command::InsertSet(unit)
-            | Command::WriteMode(unit)
-            | Command::Next(unit)
-            | Command::Eject(unit) => {
+            Command::Insert(unit) | Command::FromLibrary(unit) | Command::Eject(unit) => {
+                self.floppy.get(unit as usize).copied().unwrap_or(false)
+            }
+            Command::InsertSet(unit) | Command::WriteMode(unit) | Command::Next(unit) => {
                 self.state != State::Stopped
                     && self.floppy.get(unit as usize).copied().unwrap_or(false)
             }
@@ -951,14 +951,20 @@ mod tests {
                     Command::Stop,
                     Command::Reset,
                     Command::PowerCycle,
-                    Command::Insert(0),
-                    Command::FromLibrary(0),
+                    Command::InsertSet(0),
                     Command::WriteMode(0),
                     Command::Next(0),
-                    Command::Eject(0),
                     Command::Mute,
                 ] {
                     assert_eq!(model.allows(command), state != State::Stopped);
+                }
+                // A stopped machine's drives take floppies for Start.
+                for command in [
+                    Command::Insert(0),
+                    Command::FromLibrary(0),
+                    Command::Eject(0),
+                ] {
+                    assert!(model.allows(command), "{state:?} {command:?}");
                 }
                 assert!(!model.allows(Command::Eject(1)));
                 assert!(!model.allows(Command::Insert(1)));
