@@ -2,6 +2,9 @@
 //! Explorer-style local image library; machine-images §§2.1, 3 and 7.
 //! Store jobs own I/O and PC readiness, launch and publication adapters.
 //! The tree, facets and virtualized rows consume platform-neutral summaries.
+//! Firmware packages form their own collection (§5.3), see [`firmware`].
+
+pub(crate) mod firmware;
 
 use crate::{
     layers_dialog::LayersDialog,
@@ -35,7 +38,18 @@ enum Filter {
     Recent,
     Favorites,
     MachineFiles,
+    Firmware,
     Facet(String, String),
+}
+impl Filter {
+    /// The Firmware collection and its facets list packages instead of machines.
+    fn is_firmware(&self) -> bool {
+        match self {
+            Self::Firmware => true,
+            Self::Facet(kind, _) => firmware::is_facet(kind),
+            _ => false,
+        }
+    }
 }
 #[derive(Clone, Debug, Default)]
 pub(super) struct Query {
@@ -44,6 +58,9 @@ pub(super) struct Query {
     sort: usize,
     descending: bool,
     expanded: BTreeSet<String>,
+    /// The Firmware list has other columns, so it keeps its own sort.
+    firmware_sort: usize,
+    firmware_descending: bool,
 }
 #[derive(Clone, Debug)]
 pub(super) struct ImageRow {
@@ -88,6 +105,8 @@ pub(super) struct Snapshot {
     nominal_bytes: u64,
     storage: Option<(u64, u64)>,
     warning: Option<String>,
+    firmware_rows: Vec<firmware::FirmwareRow>,
+    firmware_total: usize,
 }
 
 fn facets_for(filter: &Filter) -> Facets {
@@ -105,6 +124,9 @@ fn facets_for(filter: &Filter) -> Facets {
             "Publisher" => f.publishers.push(value.clone()),
             "Series" => f.series.push(value.clone()),
             "Labels" => f.labels.push(value.clone()),
+            "Role" => f.firmware_roles.push(value.clone()),
+            "Board" => f.boards.push(value.clone()),
+            "Machine class" => f.machine_classes.push(value.clone()),
             _ => (),
         }
     }
@@ -140,26 +162,34 @@ pub(super) fn snapshot(cache: &SummaryCache, q: &Query) -> Snapshot {
         .collect();
     let mut groups: BTreeMap<String, Vec<ImageRow>> = BTreeMap::new();
     let mut counted = BTreeSet::new();
+    let firmware_mode = q.filter.is_firmware();
+    let mut packages = Vec::new();
+    let mut machine_roms = firmware::MachineRoms::default();
     for tag in cache.tags() {
         let s = cache.summary(&tag.manifest.digest);
+        let kind = s.map_or_else(
+            || match tag.manifest.artifact_type.as_deref() {
+                Some(image_store::media_type::MEDIA_SET) => ArtifactKind::MediaSet,
+                Some(image_store::media_type::FIRMWARE) => ArtifactKind::Firmware,
+                _ => ArtifactKind::Machine,
+            },
+            |summary| summary.kind,
+        );
         // Media sets and firmware packages have no launch action; they belong
         // to their own collections, not to the machine rows.
-        if s.map_or_else(
-            || {
-                matches!(
-                    tag.manifest.artifact_type.as_deref(),
-                    Some(image_store::media_type::MEDIA_SET | image_store::media_type::FIRMWARE)
-                )
-            },
-            |summary| {
-                matches!(
-                    summary.kind,
-                    ArtifactKind::MediaSet | ArtifactKind::Firmware
-                )
-            },
-        ) {
+        if kind != ArtifactKind::Machine {
             result.total -= 1;
+            if kind == ArtifactKind::Firmware {
+                result.firmware_total += 1;
+                if let Some(s) = s {
+                    firmware::add_facets(&mut result.facets, s);
+                }
+                packages.push(tag);
+            }
             continue;
+        }
+        if let Some(s) = s.filter(|_| firmware_mode) {
+            machine_roms.add(&tag.name, s);
         }
         if let Some(s) = s {
             if counted.insert(s.image.clone()) {
@@ -184,6 +214,9 @@ pub(super) fn snapshot(cache: &SummaryCache, q: &Query) -> Snapshot {
                     result.facets.entry(kind.into()).or_default().extend(values);
                 }
             }
+        }
+        if firmware_mode {
+            continue;
         }
         let text_match = if s.is_some() {
             matches.contains(&tag.name)
@@ -213,6 +246,10 @@ pub(super) fn snapshot(cache: &SummaryCache, q: &Query) -> Snapshot {
             .or_default()
             .push(image);
         result.matched += 1;
+    }
+    if firmware_mode {
+        result.firmware_rows = firmware::rows(cache, &packages, &matches, q, &machine_roms);
+        result.matched = result.firmware_rows.len();
     }
     let mut groups: Vec<_> = groups.into_values().collect();
     for images in &mut groups {
@@ -282,9 +319,42 @@ fn row_cells(row: &ViewRow) -> [String; 9] {
         summary.map(|s| s.labels.join(", ")).unwrap_or_default(),
     ]
 }
+/// Sortable column headers; a click on the sorted column reverses it.
+fn sort_header(
+    ui: &mut egui::Ui,
+    labels: &[&str; 9],
+    widths: &[f32; 9],
+    sort: &mut usize,
+    descending: &mut bool,
+) -> bool {
+    let mut changed = false;
+    ui.horizontal(|ui| {
+        for (column, label) in labels.iter().enumerate() {
+            let label = if *sort == column {
+                format!("{label} {}", if *descending { "▼" } else { "▲" })
+            } else {
+                (*label).into()
+            };
+            if ui
+                .add_sized([widths[column], 22.0], egui::Button::new(label))
+                .clicked()
+            {
+                if *sort == column {
+                    *descending = !*descending;
+                } else {
+                    *sort = column;
+                    *descending = false;
+                }
+                changed = true;
+            }
+        }
+    });
+    changed
+}
 fn draw_cells(
     ui: &mut egui::Ui,
     cells: &[String; 9],
+    widths: &[f32; 9],
     selected: bool,
     striped: bool,
 ) -> (bool, bool) {
@@ -299,7 +369,7 @@ fn draw_cells(
     };
     egui::Frame::new().fill(fill).show(ui, |ui| {
         ui.horizontal(|ui| {
-            for (text, width) in cells.iter().zip(COLUMN_WIDTHS) {
+            for (text, width) in cells.iter().zip(widths.iter().copied()) {
                 let response = ui
                     .add_sized(
                         [width, 20.0],
@@ -357,6 +427,7 @@ fn facet_list(
     kind: &str,
     values: &BTreeSet<String>,
     current: &Filter,
+    label: fn(&str, &str) -> String,
 ) -> (Option<Filter>, usize) {
     let values: Vec<_> = values.iter().collect();
     let mut selected = None;
@@ -369,7 +440,10 @@ fn facet_list(
                 built += 1;
                 let value = values[index];
                 let filter = Filter::Facet(kind.into(), value.clone());
-                if ui.selectable_label(current == &filter, value).clicked() {
+                if ui
+                    .selectable_label(current == &filter, label(kind, value))
+                    .clicked()
+                {
                     selected = Some(filter);
                 }
             }
@@ -418,6 +492,9 @@ pub(super) struct LibraryView {
     pub firmware_error: bool,
     pending_launch: Option<(Digest, WorkspaceKind)>,
     worker_dead: bool,
+    /// Kept apart from `selected`: a package is never a Start target.
+    firmware_selected: Option<firmware::FirmwareRow>,
+    firmware_import: Option<firmware::ImportDialog>,
 }
 impl LibraryView {
     pub fn new(root: Option<PathBuf>) -> Self {
@@ -444,6 +521,8 @@ impl LibraryView {
             firmware_error: false,
             pending_launch: None,
             worker_dead: false,
+            firmware_selected: None,
+            firmware_import: None,
         }
     }
     #[cfg(test)]
@@ -486,7 +565,45 @@ impl LibraryView {
                             }
                         }
                     }
+                    if let Some(selected) = &mut self.firmware_selected {
+                        if let Some(current) =
+                            snapshot.firmware_rows.iter().find(|r| r.same(selected))
+                        {
+                            *selected = current.clone();
+                        }
+                    }
                     self.snapshot = snapshot;
+                }
+                Event::FirmwareScanned(report) => {
+                    self.busy = false;
+                    self.status = Some(if report.cancelled {
+                        "ROM folder scan cancelled".into()
+                    } else {
+                        "ROM folder scanned".into()
+                    });
+                    if let Some(dialog) = &mut self.firmware_import {
+                        dialog.scanned(*report);
+                    }
+                }
+                Event::FirmwareFailed(error) => {
+                    self.busy = false;
+                    match &mut self.firmware_import {
+                        Some(dialog) => dialog.failed(error),
+                        None => self.error = Some(error),
+                    }
+                }
+                Event::FirmwareImported(outcomes) => {
+                    self.busy = false;
+                    self.status = Some(
+                        outcomes
+                            .iter()
+                            .map(ToString::to_string)
+                            .collect::<Vec<_>>()
+                            .join("; "),
+                    );
+                    if let Some(dialog) = &mut self.firmware_import {
+                        dialog.finished(outcomes);
+                    }
                 }
                 Event::Checked(id, result) => {
                     if self
@@ -590,6 +707,7 @@ impl LibraryView {
             self.busy = false;
             self.pending_operation = false;
             self.worker_dead = true;
+            self.fail_firmware_import();
             if self.error.is_none() {
                 self.error = Some(
                     "Image store worker stopped; choose the Image store folder to retry".into(),
@@ -612,6 +730,7 @@ impl LibraryView {
             self.worker_dead = true;
             self.error =
                 Some("Image store worker stopped; choose the Image store folder to retry".into());
+            self.fail_firmware_import();
         }
     }
     pub fn shutdown(&mut self) {
@@ -714,14 +833,36 @@ impl LibraryView {
         self.delete = self.selected.is_some() && self.active.is_none();
     }
     pub fn has_dialog(&self) -> bool {
-        self.layers.is_some() || self.import.is_some() || self.delete || self.decision.is_some()
+        self.layers.is_some()
+            || self.import.is_some()
+            || self.delete
+            || self.decision.is_some()
+            || self.firmware_import.is_some()
     }
-    /// Close Disk layers, Import image and Delete tag for an exit. The Gaming
-    /// keep-or-discard question stays: the exit waits for that decision.
+    /// Close Disk layers, Import image, Delete tag and Import ROM folder for an
+    /// exit; a running scan is cancelled. The Gaming keep-or-discard question
+    /// stays: the exit waits for that decision.
     pub fn close_dialogs(&mut self) {
         self.layers = None;
         self.import = None;
         self.delete = false;
+        if let Some(dialog) = self.firmware_import.take() {
+            dialog.control.cancel();
+        }
+    }
+    /// Entering the Firmware collection drops the machine selection, so Start
+    /// never targets a machine that is no longer shown.
+    fn set_filter(&mut self, filter: Filter, selected_file: &mut Option<usize>) {
+        if filter.is_firmware() && !self.query.filter.is_firmware() {
+            self.selected = None;
+            self.readiness = None;
+            self.pending_launch = None;
+            *selected_file = None;
+        }
+        if !filter.is_firmware() {
+            self.firmware_selected = None;
+        }
+        self.query.filter = filter;
     }
     pub fn show(
         &mut self,
@@ -748,38 +889,56 @@ impl LibraryView {
             .exact_size(230.0)
             .show(ui, |ui| {
                 ui.strong("Library");
+                let firmware_label = format!("Firmware ({})", self.snapshot.firmware_total);
                 for (label, filter) in [
                     ("All images", Filter::All),
                     ("Recently played", Filter::Recent),
                     ("Favourites", Filter::Favorites),
                     ("Machine files", Filter::MachineFiles),
+                    (firmware_label.as_str(), Filter::Firmware),
                 ] {
                     if ui
                         .selectable_label(self.query.filter == filter, label)
                         .clicked()
                     {
-                        self.query.filter = filter;
+                        self.set_filter(filter, selected_file);
                         changed = true;
                     }
                 }
-                for kind in [
-                    "Labels",
-                    "Genre",
-                    "Platform",
-                    "Year",
-                    "Developer",
-                    "Publisher",
-                    "Series",
-                ] {
-                    egui::CollapsingHeader::new(kind).show(ui, |ui| {
-                        if let Some(values) = self.snapshot.facets.get(kind) {
-                            if let Some(filter) = facet_list(ui, kind, values, &self.query.filter).0
-                            {
-                                self.query.filter = filter;
-                                changed = true;
-                            }
-                        }
-                    });
+                let firmware_mode = self.query.filter.is_firmware();
+                let kinds: &[&str] = if firmware_mode {
+                    &firmware::FACETS
+                } else {
+                    &[
+                        "Labels",
+                        "Genre",
+                        "Platform",
+                        "Year",
+                        "Developer",
+                        "Publisher",
+                        "Series",
+                    ]
+                };
+                let label: fn(&str, &str) -> String = if firmware_mode {
+                    firmware::facet_label
+                } else {
+                    |_, value| value.to_owned()
+                };
+                let snapshot = self.snapshot.clone();
+                for kind in kinds {
+                    let picked = egui::CollapsingHeader::new(*kind)
+                        .default_open(firmware_mode && *kind != "Board")
+                        .show(ui, |ui| {
+                            snapshot.facets.get(*kind).and_then(|values| {
+                                facet_list(ui, kind, values, &self.query.filter, label).0
+                            })
+                        })
+                        .body_returned
+                        .flatten();
+                    if let Some(filter) = picked {
+                        self.set_filter(filter, selected_file);
+                        changed = true;
+                    }
                 }
                 ui.separator();
 
@@ -793,7 +952,14 @@ impl LibraryView {
                 egui::ScrollArea::vertical()
                     .id_salt("selected-image-details")
                     .show(ui, |ui| {
-                        if let Some(row) = self.selected.clone() {
+                        if self.query.filter.is_firmware() {
+                            match &self.firmware_selected {
+                                Some(row) => firmware::details(ui, row),
+                                None => {
+                                    ui.label("Select a firmware package for details.");
+                                }
+                            }
+                        } else if let Some(row) = self.selected.clone() {
                             ui.columns(3, |columns| {
                                 egui::Frame::new()
                                     .fill(egui::Color32::from_rgb(28, 60, 116))
@@ -968,12 +1134,34 @@ impl LibraryView {
                     });
             });
         egui::CentralPanel::default().show(ui, |ui| {
+            let firmware_mode = self.query.filter.is_firmware();
             ui.horizontal(|ui| {
+                if firmware_mode
+                    && ui
+                        .add_enabled(
+                            self.can_import_firmware(),
+                            egui::Button::new("Import ROM folder…"),
+                        )
+                        .clicked()
+                {
+                    commands.push(Command::ImportFirmware);
+                }
                 ui.label("Search:");
                 if ui.text_edit_singleline(&mut self.query.text).changed() {
                     changed = true;
                 }
             });
+            if firmware_mode {
+                if let Some(warning) = &self.snapshot.warning {
+                    ui.label(warning);
+                }
+                changed |= self.firmware_list(ui, selected_file);
+                ui.label(format!(
+                    "{} of {} packages · {} pending",
+                    self.snapshot.matched, self.snapshot.firmware_total, self.snapshot.pending
+                ));
+                return;
+            }
             if !self.recoveries.is_empty() {
                 ui.strong("Unfinished sessions");
                 let recoveries = self.recoveries.clone();
@@ -1040,8 +1228,9 @@ impl LibraryView {
                 .id_salt("library-columns")
                 .show(ui, |ui| {
                     ui.set_min_width(COLUMN_WIDTHS.iter().sum::<f32>() + 64.0);
-                    ui.horizontal(|ui| {
-                        for (column, label) in [
+                    changed |= sort_header(
+                        ui,
+                        &[
                             "Name",
                             "Tag",
                             "Platform",
@@ -1051,29 +1240,11 @@ impl LibraryView {
                             "Last run",
                             "Size",
                             "Labels",
-                        ]
-                        .into_iter()
-                        .enumerate()
-                        {
-                            let label = if self.query.sort == column {
-                                format!("{label} {}", if self.query.descending { "▼" } else { "▲" })
-                            } else {
-                                label.into()
-                            };
-                            if ui
-                                .add_sized([COLUMN_WIDTHS[column], 22.0], egui::Button::new(label))
-                                .clicked()
-                            {
-                                if self.query.sort == column {
-                                    self.query.descending = !self.query.descending;
-                                } else {
-                                    self.query.sort = column;
-                                    self.query.descending = false;
-                                }
-                                changed = true;
-                            }
-                        }
-                    });
+                        ],
+                        &COLUMN_WIDTHS,
+                        &mut self.query.sort,
+                        &mut self.query.descending,
+                    );
                     egui::ScrollArea::vertical()
                         .id_salt("image-list")
                         .max_height((ui.available_height() - 26.0).max(80.0))
@@ -1104,6 +1275,7 @@ impl LibraryView {
                                         let (clicked, double) = draw_cells(
                                             ui,
                                             &cells,
+                                            &COLUMN_WIDTHS,
                                             self.selected.is_none() && *selected_file == Some(i),
                                             index % 2 == 0,
                                         );
@@ -1130,7 +1302,15 @@ impl LibraryView {
                                                 },
                                                 row.image.name()
                                             );
-                                            if draw_cells(ui, &cells, false, index % 2 == 0).0 {
+                                            if draw_cells(
+                                                ui,
+                                                &cells,
+                                                &COLUMN_WIDTHS,
+                                                false,
+                                                index % 2 == 0,
+                                            )
+                                            .0
+                                            {
                                                 if !self.query.expanded.remove(&repo) {
                                                     self.query.expanded.insert(repo);
                                                 }
@@ -1146,8 +1326,13 @@ impl LibraryView {
                                                         && r.descriptor.digest
                                                             == image.descriptor.digest
                                                 });
-                                            let (clicked, double) =
-                                                draw_cells(ui, &cells, selected, index % 2 == 0);
+                                            let (clicked, double) = draw_cells(
+                                                ui,
+                                                &cells,
+                                                &COLUMN_WIDTHS,
+                                                selected,
+                                                index % 2 == 0,
+                                            );
                                             if (clicked || double) && !selected {
                                                 self.pending_launch = None;
                                                 self.selected = Some(image.clone());
@@ -1297,6 +1482,17 @@ impl LibraryView {
                     requests.push(Request::Discard(name));
                 }
                 crate::layers_dialog::Action::None => (),
+            }
+        }
+        if let Some(dialog) = &mut self.firmware_import {
+            match dialog.show(ctx, classic) {
+                firmware::DialogAction::Import => requests.extend(self.import_picks()),
+                firmware::DialogAction::Close => {
+                    if let Some(dialog) = self.firmware_import.take() {
+                        dialog.control.cancel();
+                    }
+                }
+                firmware::DialogAction::None => (),
             }
         }
         requests
@@ -1737,7 +1933,7 @@ pub(super) mod tests {
         let values = (0..1000).map(|i| format!("Label {i}")).collect();
         let mut built = 0;
         let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
-            built = facet_list(ui, "Labels", &values, &Filter::All).1;
+            built = facet_list(ui, "Labels", &values, &Filter::All, |_, v| v.into()).1;
         });
         output.textures_delta.clear();
         assert!(built > 0 && built < 20, "built {built}");

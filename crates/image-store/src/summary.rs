@@ -57,6 +57,8 @@ pub enum ArtifactKind {
 }
 
 /// Provider-declared firmware facets and exact pins, rebuilt without reading ROMs.
+/// The descriptive fields, ROM bindings and extras copy the package config so a
+/// library can show chip layout and documents from the summary alone (§5.3).
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FirmwareSummary {
@@ -65,6 +67,18 @@ pub struct FirmwareSummary {
     pub machine_classes: Vec<String>,
     pub catalogue_ids: Vec<String>,
     pub hashes: Vec<String>,
+    #[serde(default)]
+    pub vendor: Option<String>,
+    #[serde(default)]
+    pub version: Option<String>,
+    #[serde(default)]
+    pub date: Option<String>,
+    /// Never empty for a current summary: a package config has at least one ROM,
+    /// so an empty list marks a row cached before these fields and queues a rebuild.
+    #[serde(default)]
+    pub roms: Vec<crate::firmware::Rom>,
+    #[serde(default)]
+    pub extras: Vec<crate::media_set::Extra>,
 }
 
 /// Immutable identities plus revisioned local data. Never used for Start hashing.
@@ -313,9 +327,10 @@ impl SummaryCache {
         self.tags
             .iter()
             .filter(|tag| {
-                self.summary(&tag.manifest.digest)
-                    .is_none_or(|s| s.storage_blobs.is_empty())
-                    && self.failure(&tag.manifest.digest).is_none()
+                self.summary(&tag.manifest.digest).is_none_or(|s| {
+                    s.storage_blobs.is_empty()
+                        || s.firmware.as_ref().is_some_and(|f| f.roms.is_empty())
+                }) && self.failure(&tag.manifest.digest).is_none()
             })
             .collect()
     }
@@ -491,6 +506,11 @@ impl SummaryCache {
         let mut facets = FirmwareSummary {
             boards: strings("boards"),
             machine_classes: strings("machine_classes"),
+            vendor: config.vendor.clone(),
+            version: config.version.clone(),
+            date: config.date.clone(),
+            roms: config.roms.clone(),
+            extras: config.extras.clone(),
             ..FirmwareSummary::default()
         };
         for rom in &config.roms {

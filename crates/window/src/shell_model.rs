@@ -23,6 +23,7 @@ pub(crate) enum Command {
     GamingMode,
     Layers,
     ImportImage,
+    ImportFirmware,
     DeleteTag,
     StoreFolder,
     Pause,

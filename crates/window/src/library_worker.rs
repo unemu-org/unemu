@@ -73,6 +73,14 @@ pub(super) enum Request {
     Layers(ImageRow, String),
     Publish(ImageRow, String, String, bool),
     Discard(String),
+    /// Scan a picked ROM folder, reusing the persistent ROM hash index.
+    ScanFirmware(
+        PathBuf,
+        Option<PathBuf>,
+        assembly::firmware_discovery::DiscoveryControl,
+    ),
+    /// Publish the named catalogue sets of the last scan.
+    ImportFirmware(Vec<String>),
     Shutdown,
 }
 pub(super) enum Event {
@@ -92,6 +100,10 @@ pub(super) enum Event {
     Recoveries(Vec<Recovery>),
     Error(String),
     FirmwareError(String),
+    FirmwareScanned(Box<library_view::firmware::ScanReport>),
+    FirmwareImported(Vec<library_view::firmware::Outcome>),
+    /// A scan or import job failed; only the import dialog shows it.
+    FirmwareFailed(String),
 }
 pub(super) struct Worker {
     pub send: mpsc::Sender<Request>,
@@ -283,6 +295,9 @@ trait Backend: Send + 'static {
     ) -> Result<pc_image::inspection::ImageDetails> {
         pc_image::desktop::check(store, &row.descriptor, name, cancelled).map_err(|e| e.to_string())
     }
+    fn firmware_catalogue(&self) -> &'static [assembly::FirmwareEntry] {
+        pc_image::firmware::catalogue()
+    }
 }
 struct PcBackend;
 impl Backend for PcBackend {
@@ -314,11 +329,51 @@ impl Backend for SyntheticBackend {
     fn publish(&self, w: &Workspace<'_>, tag: &str, flatten: bool) -> Result<Descriptor> {
         pc_image::test_support::with_synthetic_firmware(|| PcBackend.publish(w, tag, flatten))
     }
+    fn firmware_catalogue(&self) -> &'static [assembly::FirmwareEntry] {
+        library_view::firmware::tests::synthetic_catalogue()
+    }
 }
 #[cfg(test)]
 impl Worker {
     pub(crate) fn synthetic(root: PathBuf) -> Self {
         Self::spawn_backend(root, egui::Context::default(), SyntheticBackend)
+    }
+    /// A worker whose thread dies inside a firmware job after `survive`
+    /// successful catalogue lookups: 0 dies in the scan, 1 in the import.
+    pub(crate) fn firmware_crash(root: PathBuf, survive: usize) -> Self {
+        Self::spawn_backend(
+            root,
+            egui::Context::default(),
+            FirmwareCrash {
+                survive,
+                calls: Default::default(),
+            },
+        )
+    }
+}
+#[cfg(test)]
+struct FirmwareCrash {
+    survive: usize,
+    calls: std::sync::atomic::AtomicUsize,
+}
+#[cfg(test)]
+impl Backend for FirmwareCrash {
+    fn prepare(
+        &self,
+        _: &Workspace<'_>,
+        _: &Descriptor,
+        _: bool,
+    ) -> Result<pc_image::workspace::PreparedSession> {
+        Err("not used by firmware tests".into())
+    }
+    fn publish(&self, _: &Workspace<'_>, _: &str, _: bool) -> Result<Descriptor> {
+        Err("not used by firmware tests".into())
+    }
+    fn firmware_catalogue(&self) -> &'static [assembly::FirmwareEntry] {
+        if self.calls.fetch_add(1, Ordering::Relaxed) >= self.survive {
+            panic!("injected worker crash in a firmware job");
+        }
+        library_view::firmware::tests::synthetic_catalogue()
     }
 }
 
@@ -396,6 +451,8 @@ fn run<B: Backend>(
         let mut query = Query::default();
         let mut pending_check: Option<(ImageRow, Option<String>)> = None;
         let mut priority = Vec::<String>::new();
+        // Matched sets of the last ROM-folder scan, awaiting the user's picks.
+        let mut firmware_candidates = Vec::new();
         send(Event::Snapshot(Arc::new(library_view::snapshot(
             &cache, &query,
         ))));
@@ -629,6 +686,36 @@ fn run<B: Backend>(
                             }
                         }
                     },
+                    Request::ScanFirmware(folder, index, control) => {
+                        match library_view::firmware::scan_folder(
+                            &store,
+                            &folder,
+                            index.as_deref(),
+                            &control,
+                            backend.firmware_catalogue(),
+                        ) {
+                            Ok((report, candidates)) => {
+                                firmware_candidates = candidates;
+                                send(Event::FirmwareScanned(Box::new(report)));
+                            }
+                            Err(error) => {
+                                firmware_candidates.clear();
+                                send(Event::FirmwareFailed(error));
+                            }
+                        }
+                    }
+                    Request::ImportFirmware(selected) => {
+                        match library_view::firmware::import_selected(
+                            &store,
+                            &firmware_candidates,
+                            &selected,
+                            backend.firmware_catalogue(),
+                        ) {
+                            Ok(outcomes) => send(Event::FirmwareImported(outcomes)),
+                            Err(error) => send(Event::FirmwareFailed(error)),
+                        }
+                        firmware_candidates.clear();
+                    }
                     Request::Finish(_) => (),
                 }
                 Ok(true)

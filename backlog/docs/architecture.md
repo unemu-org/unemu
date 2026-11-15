@@ -471,10 +471,14 @@ format provider.
 
 `src/library_view.rs` owns the Explorer tree, summary queries, repository/tag
 groups, fixed-column list and selected-image details. It builds widgets only for
-visible rows. `src/library_worker.rs` owns host jobs, session kinds and durable
-recovery records. One host worker owns the store and summary cache, sends bounded
-snapshot messages, rebuilds at most eight pending summaries per batch, and
-performs image readiness checks, imports, overlay edits and tag deletion.
+visible rows. `src/library_view/firmware.rs` owns the Firmware collection: package
+rows, facets and the chip-layout pane from summaries, the Import ROM folder…
+review dialog, and the worker-side scan and import functions. `src/library_worker.rs`
+owns host jobs, session kinds and durable recovery records. One host worker owns
+the store and summary cache, sends bounded snapshot messages, rebuilds at most
+eight pending summaries per batch, and performs image readiness checks, imports,
+overlay edits, tag deletion, and the ROM-folder scan and firmware-package import
+jobs (which report failures only to the import dialog).
 Warm startup opens only index/library/cache files; query and sort do not read
 manifests. Full descriptor verification and disk hashing remain mandatory at
 Start. Platform data-directory selection and the optional `store_root` preference

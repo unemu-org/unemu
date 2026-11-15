@@ -31,6 +31,17 @@ impl Candidate {
     pub fn tag(&self) -> String {
         format!("firmware/{}:1", self.catalogue_id)
     }
+    /// Another catalogue entry pins the same logical ROM, so the folder alone
+    /// cannot choose its identity: the user must select one entry.
+    pub fn is_ambiguous(&self, catalogue: &[assembly::FirmwareEntry]) -> bool {
+        self.config.roms.first().is_some_and(|rom| {
+            catalogue.iter().any(|entry| {
+                entry.id != self.catalogue_id
+                    && entry.sha256 == rom.sha256
+                    && entry.size == rom.size
+            })
+        })
+    }
 }
 #[derive(Debug, Default)]
 pub struct Scan {

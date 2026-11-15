@@ -43,6 +43,32 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
      stays responsive and a later quit still works;
   9. Dock › Quit while a file dialog (Browse…) is open is cancelled, and works
      again once the dialog is closed.
+- **2026-11-15 — Library Firmware collection:** the library tree has a
+  Firmware node with the package count and Role, Board, Machine class and
+  Redistribution facets; its virtualized rows show name, roles, chip count,
+  vendor, version/date, fits, catalogue ids, open/user-supplied and size, with
+  search and sorting. The package pane shows the chip layout (socket, part
+  number, lane, offset, size, short SHA-256), fits, documents and Used by (local
+  machine images that embed the ROM blobs, by digest). Everything comes from
+  summaries, which now carry the package's vendor/version/date, ROMs and extras;
+  older cached rows rebuild once. Import ROM folder… (File, Tools and the
+  collection) picks a folder, scans it on the library worker with progress
+  (Cancel stops the scan), and reviews complete, already imported, ambiguous
+  and refused sets, the count of unmatched files by cause and the unreadable
+  files by name. It imports the picks with the CLI's matching and ambiguity
+  rule, but refuses per set: a tag conflict or changed source refuses only that
+  set, whereas `image firmware import` stops the whole run at a tag conflict.
+  Re-import reports "already imported". A missing or stopped worker fails the
+  dialog, which can then be closed. Packages have no Start; Use in
+  machine… and Export are disabled, documents have no Open, and incomplete
+  imports are not stored as records. Used by and the redistribution badge
+  compare raw identities, so `+zstd` ROM layers match too. Headless tests cover
+  rows, facets, search, the pane, virtualization, the worker import flow,
+  refusals, index reuse and worker failure. Manual checks: open Tools ›
+  Import ROM folder… on a real ROM folder (progress, Cancel scan, review
+  layout, a re-import), browse the Firmware facets and the pane at the default
+  window size in both skins, and confirm Start stays disabled with a package
+  selected.
 - **2026-11-14 — No silent stop, session write modes, toolbar speed:** with a
   machine running, Machine library, Open machine file… (once a path is
   confirmed), Exit, ⌘Q/⌘W and the window's close button pause it and ask
@@ -88,7 +114,7 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   lowering rules; indexed ROM edits preserve other bindings and symlink spellings.
   Saved local children edit in place with a diff and overwrite consent; firmware
   edits defer discovery to readiness checks.
-- **2026-11-14 — Firmware packages:** The neutral strict OCI codec, shared extras, PC roles/chip layouts/fit validation, ROM-folder import and `image firmware ls/show` are implemented. Import matches full hashes and lengths, rejects incomplete or ambiguous sets, preserves sources and publishes by CAS. Frontends explicitly select the store: desktop readiness honors Preferences, CLI run accepts --store/--no-store, and plain library loaders disable store lookup. Fully pinned declarations keep their image/chip shape; identical package re-import is idempotent and preselection store failures warn and fall back to declared paths and ROM folders; damaged selected packages block use. Machine-image import embeds ROMs and records package provenance. Firmware summaries expose role, board/class and catalogue facets without reading ROMs. The Firmware collection UI remains pending; see [design §5.3](design/machine-images.md#53-firmware-packages).
+- **2026-11-14 — Firmware packages:** The neutral strict OCI codec, shared extras, PC roles/chip layouts/fit validation, ROM-folder import and `image firmware ls/show` are implemented. Import matches full hashes and lengths, rejects incomplete or ambiguous sets, preserves sources and publishes by CAS. Frontends explicitly select the store: desktop readiness honors Preferences, CLI run accepts --store/--no-store, and plain library loaders disable store lookup. Fully pinned declarations keep their image/chip shape; identical package re-import is idempotent and preselection store failures warn and fall back to declared paths and ROM folders; damaged selected packages block use. Machine-image import embeds ROMs and records package provenance. Firmware summaries expose role, board/class and catalogue facets without reading ROMs. The library's Firmware collection landed on 2026-11-15 (entry above); see [design §5.3](design/machine-images.md#53-firmware-packages).
 - **2026-11-14 — Installation media sets:** the design section and [mock-up](design/mockups/install-media.html) were approved by the maintainer. The codec, CLI and From library dialog are implemented; the library collection, Import dialog and transfer-medium generator remain deferred.
 - **2026-11-14 — PC machine image import:** `pc-image` imports resolved TOML/YAML machines into self-contained OCI blobs and local tags, validates PC bundle bindings and resolves them back to assembly input. Firmware, full media catalogues and CMOS are copied; journal generations freeze to whole raw bases through private recovery copies. `image import` requires an explicit store and tag, with `--create` for initialization; interrupted journals require named per-medium recovery choices. Validation and resolution keep large disks file-backed, and local import records retain policies and generation choices. Source files and journals remain unchanged. Layers, workspaces and registry transport remain separate.
 - **2026-11-14 — PC machine image import:** `pc-image` imports resolved TOML/YAML machines into self-contained OCI blobs and local tags, validates PC bundle bindings and resolves them back to assembly input. Firmware, full media catalogues and CMOS are copied; journal generations freeze to whole raw bases through private recovery copies. `image import` requires an explicit store and tag; interrupted journals require a recovery choice. Source files and journals remain unchanged. Layers, workspaces and registry transport remain separate.

@@ -181,7 +181,10 @@ pub fn execute(
                 writeln!(
                     output,
                     "{}\t{}\t{:?}\t{:?}",
-                    tag.name, tag.manifest.digest, row.name, row.firmware
+                    tag.name,
+                    tag.manifest.digest,
+                    row.name,
+                    row.firmware.as_ref().map(Listed)
                 )?;
             }
         }
@@ -196,6 +199,20 @@ pub fn execute(
         }
     }
     Ok(())
+}
+/// The `ls` facets column keeps the fields it was introduced with; the summary's
+/// descriptive fields, ROM bindings and extras belong to `show`.
+struct Listed<'a>(&'a image_store::summary::FirmwareSummary);
+impl std::fmt::Debug for Listed<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FirmwareSummary")
+            .field("roles", &self.0.roles)
+            .field("boards", &self.0.boards)
+            .field("machine_classes", &self.0.machine_classes)
+            .field("catalogue_ids", &self.0.catalogue_ids)
+            .field("hashes", &self.0.hashes)
+            .finish()
+    }
 }
 fn import(
     command: FirmwareCommand,
@@ -230,13 +247,7 @@ fn import(
     }
     let mut eligible = Vec::new();
     for candidate in candidates {
-        if command.selected.is_none()
-            && catalogue.iter().any(|entry| {
-                entry.id != candidate.catalogue_id
-                    && entry.sha256 == candidate.config.roms[0].sha256
-                    && entry.size == candidate.config.roms[0].size
-            })
-        {
+        if command.selected.is_none() && candidate.is_ambiguous(catalogue) {
             writeln!(
                 output,
                 "{}: ambiguous catalogue identities; select --for CATALOGUE-ID",
@@ -386,5 +397,34 @@ mod tests {
             .unwrap()
             .contains("ambiguous catalogue identities"));
         assert_eq!(store.list_tags(None, 10).unwrap().tags.len(), 1);
+    }
+    #[test]
+    fn listing_prints_only_the_original_facet_fields() {
+        let temp = assembly::test_support::TempDir::new("firmware-ls-fields");
+        let root = temp.path();
+        let file = root.join("rom");
+        std::fs::write(&file, vec![0x11; 32768]).unwrap();
+        let cat = [entry("synthetic-first", 0x11)];
+        let store = Store::open(root.join("store")).unwrap();
+        let scan = firmware_import::scan(std::slice::from_ref(&file), &cat).unwrap();
+        let package = firmware_import::publish(&store, &scan.candidates[0], &[], &cat).unwrap();
+        let mut listing = command(store.root(), &file);
+        listing.action = "ls".into();
+        let mut out = Vec::new();
+        execute(
+            listing,
+            &mut out,
+            &crate::command::FirmwareSources::default(),
+        )
+        .unwrap();
+        assert_eq!(
+            String::from_utf8(out).unwrap(),
+            format!(
+                "firmware/synthetic-first:1\t{}\t\"synthetic-first\"\tSome(FirmwareSummary {{ \
+                 roles: [\"system-bios\"], boards: [\"ibm-5170\"], machine_classes: [\"at\"], \
+                 catalogue_ids: [\"synthetic-first\"], hashes: [\"{}\"] }})\n",
+                package.digest, cat[0].sha256
+            )
+        );
     }
 }

@@ -1003,10 +1003,11 @@ require their own implementation and visual review.
 
 ### 5.3. Firmware packages
 
-Status: **codec/import/store-first resolution implemented; Firmware collection UI pending**, 2026-11-14. The approved [Firmware collection mock-up](mockups/firmware.html) defines the later UI.
+Status: **codec/import/store-first resolution and the library Firmware collection implemented**, 2026-11-15. The approved [Firmware collection mock-up](mockups/firmware.html) defines the UI; Use in machine…, Export, Open for documents, incomplete-import records and explicit additions of unmatched files are still pending.
 [decision-27](<../../decisions/decision-27 - Firmware packages are their own OCI artifact type.md>)
 accepts the artifact shape; codec, import and explicit store-first resolution
-are implemented. The Firmware collection GUI remains pending. A package holds reusable ROM inputs and their fit
+are implemented, and so is the library's Firmware collection with Import ROM
+folder… (see **Library** below). A package holds reusable ROM inputs and their fit
 information, not a machine, writable media, NVRAM or a saved state.
 
 **Artifact and config.** Use the §2 OCI manifest envelope with
@@ -1247,6 +1248,29 @@ ids. Warm listing never reads ROM bytes or scans folders; fit checks for selecte
 machines remain separate readiness work. Edits stay local overlays until explicit
 new-version publication; personal notes remain local as in §2.1.
 
+*Implemented (2026-11-15):* the Firmware node with its package count, Role, Board,
+Machine class and Redistribution facets, search, and sortable rows with name,
+roles, chip count, vendor, version/date, fits, catalogue ids, redistribution and
+size. Package summaries carry the config's descriptive fields, logical ROMs and
+extras, so the pane shows the chip layout (socket, part number, lane, offset,
+size, short SHA-256 with the full value on hover), documents and **Used by**: the
+local machine images that hold every chip of a ROM, or its assembled image.
+Both sides compare raw identities (ROM and chip pins; a `+zstd` layer's decoded
+digest), so compression does not hide a match. Used by is not a compatibility
+check. Import ROM folder… (File, Tools and the collection) scans on the library
+worker with the persistent ROM index and progress; Cancel stops the scan. The
+review lists complete sets (picked by default), already imported sets,
+ambiguous identities (unpicked; two picks of one identity are refused) and
+refused sets with the scanner's reasons. Unmatched files appear only as a count
+by cause (size or SHA-256 mismatch); unreadable files are listed by name.
+Import selected verifies and publishes the picks. The GUI refuses per set: a tag
+conflict, a changed source or another failure refuses only that set, and the
+other picks still import. `image firmware import` stops the whole run at the
+first tag conflict instead. Both use the same ambiguity rule
+(`Candidate::is_ambiguous`). Firmware rows never offer Start. Use in machine…
+and Export are shown disabled; documents are listed without Open because no
+host-open path exists yet.
+
 **Open point:** maintainer approval of this section and the Firmware collection,
 chip-details and Import ROM folder… views. The artifact shape, private default,
 extras reuse and store-first order are accepted; no further policy choice is
@@ -1358,11 +1382,11 @@ the active emulator.
 
 | Menu | Commands and role |
 |---|---|
-| File | New machine…, Open machine file…, Import image…, Machine library and Exit. |
+| File | New machine…, Open machine file…, Import image…, Import ROM folder…, Machine library and Exit. |
 | Machine | Start, Pause/Resume, Send Ctrl+Alt+Del, Power cycle, Stop, Settings… and Disk layers…; Save state remains disabled until supported. Gaming mode is a Machine-menu action when disposable workspaces are available. |
 | Media | Per-slot inserted names, Insert…, Next image in catalogue and Eject; absent drives and unsupported CD-ROM are disabled with reasons. |
 | View | Toolbar/status-bar visibility, scale, full screen and host audio mute. |
-| Tools | Media catalogue…, Locate firmware…, Create blank disk… and Preferences…. |
+| Tools | Image store folder…, Import ROM folder…, Media catalogue…, Locate firmware…, Create blank disk… and Preferences…. |
 | Help | Keyboard shortcuts and About unemupc98. |
 
 The toolbar repeats common Start, Pause, Stop, Send Ctrl+Alt+Del, floppy,
@@ -1377,8 +1401,8 @@ for the selected image. The library must remain usable with **1,000+ local
 images**, including stores with no configured registry. The Machines view is
 Explorer-like in the same classic Win32 style: a tree pane on the left with
 All machines, Recent, Favorites, user Labels/collections, the Genre, Platform,
-Year, Developer, Publisher and Series facets (§2.1) and, only when configured,
-Registry; a details list view fills the right pane. Sortable columns are name,
+Year, Developer, Publisher and Series facets (§2.1), the Firmware collection
+(§5.3) and, only when configured, Registry; a details list view fills the right pane. Sortable columns are name,
 tag, last run, size and labels. A search box filters all text fields incrementally.
 Group images by repository name, with tags as child rows, for example
 `dos-lab > 1.0, 2.0, gaming`. The list is virtualized: draw only visible rows.

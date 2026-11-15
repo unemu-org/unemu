@@ -934,6 +934,9 @@ impl Shell {
                         && self.image_library.selected.is_some()
                         && !self.image_library.busy
                 }
+                Command::ImportFirmware => {
+                    self.presenter.is_none() && self.image_library.can_import_firmware()
+                }
                 Command::Settings => self.image_library.selected.is_none(),
                 _ => true,
             }
@@ -1690,6 +1693,12 @@ impl Shell {
             },
             ImportImage => { self.release(); if let Some(entry) = self.selected.and_then(|i| self.library.get(i)) { self.image_library.begin_import(&entry.path); } },
             DeleteTag => { self.release(); self.image_library.begin_delete(); },
+            ImportFirmware => {
+                self.release();
+                let picker = rfd::FileDialog::new().set_title("Import ROM folder");
+                let picker = if let Some(window) = &self.window { picker.set_parent(window.as_ref()) } else { picker };
+                if let Some(folder) = picker.pick_folder() { self.image_library.begin_firmware_import(folder, self.firmware_cache.clone()); }
+            },
             StoreFolder => { self.release(); self.store_path_input = self.image_library.root.as_ref().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default(); self.dialog = Some(("Image store folder", "Local store directory".into())); },
             Pause => { self.release_pointer(); if let Some(presenter) = &mut self.presenter { presenter.pacing.resync(elapsed, presenter.assembled.machine.clock().0); } self.paused = !self.paused; self.message = if self.paused { "Paused" } else { "Running" }.into(); },
             Stop => { self.stop(); },
@@ -1766,6 +1775,7 @@ impl Shell {
                         Placeholder("Open machine file"),
                     ),
                     ("Import image…", "", ImportImage),
+                    ("Import ROM folder…", "", ImportFirmware),
                 ] {
                     self.item(ui, label, shortcut, command, commands);
                 }
@@ -1944,6 +1954,7 @@ impl Shell {
             });
             ui.menu_button("Tools", |ui| {
                 self.item(ui, "Image store folder…", "", StoreFolder, commands);
+                self.item(ui, "Import ROM folder…", "", ImportFirmware, commands);
                 for title in [
                     "Media catalogue",
                     "Locate firmware",
@@ -5661,6 +5672,29 @@ kind='mda'
         shell.image_library.readiness = Some(Err("Missing disk blob".into()));
         shell.image_library.busy = false;
         assert!(!shell.command_allowed(Command::Start));
+    }
+    #[test]
+    fn firmware_import_waits_for_a_stopped_machine_and_packages_are_never_started() {
+        use crate::library_test_support::Fixture;
+        use crate::library_view::firmware::tests::{publish_open_package, warm};
+        let f = Fixture::new();
+        publish_open_package(&f);
+        let cache = warm(&f.store);
+        let mut shell = shell();
+        shell.image_library =
+            crate::library_view::LibraryView::synthetic(f.store.root().to_owned());
+        assert!(shell.presenter.is_some());
+        assert!(!shell.command_allowed(Command::ImportFirmware));
+        shell.stop();
+        assert!(shell.command_allowed(Command::ImportFirmware));
+        shell.image_library.selected = Some(f.row.clone());
+        assert!(shell.command_allowed(Command::Start));
+        shell
+            .image_library
+            .select_first_package(&cache, &mut shell.selected);
+        assert!(!shell.command_allowed(Command::Start));
+        assert!(!shell.command_allowed(Command::GamingMode));
+        shell.image_library.shutdown();
     }
 
     /// Run one headless pass and return the viewport commands and painted text.
