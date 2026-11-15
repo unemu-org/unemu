@@ -1,4 +1,4 @@
-vgabios-0.8a-unemu.2-src
+vgabios-0.8a-unemu.3-src
 
 Corresponding source for two files that the unemupc98 emulator project builds
 from the unemu fork of the LGPL VGABIOS, the video BIOS used by Bochs and
@@ -11,13 +11,10 @@ QEMU, changed to run on an 80286 (repository unemu-org/vgabios):
 
 Contents
 
-  vgabios/  the fork at release tag v0.8a-unemu.2, revision
-            d883bbac49238a57f7dddd9ddb2ee253fb6bfe71: the tree Nix builds
-            both files from, with one file left out: .beads/config.yaml,
-            the issue tracker's settings, which name a developer's own
-            sync remote. It is not used to build the files above. Nothing
-            else is changed. README.unemu.md lists the changes from
-            upstream VGABIOS 0.8a.
+  vgabios/  the fork at release tag v0.8a-unemu.3, revision
+            72bf5d988f2188a0118416d88a8c90e58c648b06: the tree Nix builds
+            both files from, unchanged. README.unemu.md lists the changes
+            from upstream VGABIOS 0.8a.
   NOTICE    this file.
 
 Licence

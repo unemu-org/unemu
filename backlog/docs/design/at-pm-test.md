@@ -239,7 +239,7 @@ block move read FFh and returned AH=FFh with CF set for every move.
 ## Results
 
 **Open profile — MEASURED (since 2026-11-15, unemu-at-bios).** The golden
-runs the at-games-open BIOS, unemu-at-bios `v1.0.2-unemu.2` (the unemu fork of
+runs the at-games-open BIOS, unemu-at-bios `v1.0.2-unemu.3` (the unemu fork of
 Kiselev 8088_bios, `MACHINE_UNEMU_AT`; `vendor/unemu-at-bios/README.md`), on
 the same board, memory map (640 KiB + 1 MiB extended) and RTC seed as
 `machines/at-games-open.toml`, without its game cards. Those are the journaled
@@ -249,7 +249,8 @@ BIOS reads it with the IBM polarity and prints on the preset's MDA, where the
 golden reads the screen. Every line passes, as with the IBM BIOS:
 `int15 88h ok`, `int15 87h ok`, all 16 `pm`, `kbc`, `tf` and `a20` lines
 `ok`, `int15 87h fault ah 02 info 0000` and `failures 0`. The run halts after
-6,589,934 retired instructions: one POST (with the 8042 CPU reset of its
+6,590,023 retired instructions (6,589,934 with `v1.0.2-unemu.2`, before POST
+cleared extended memory): one POST (with the 8042 CPU reset of its
 extended-memory sizing, shutdown code 09h) and one floppy boot, then every
 reset resumes through `0040:0067h` without POST. **READ** (the fork's
 `README.unemu.md`): its reset entry checks the 8042 system flag, reads and

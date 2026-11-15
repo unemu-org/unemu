@@ -349,7 +349,7 @@ const SOURCE_ARCHIVES: &[SourceArchive] = &[
         absent: &["8088_bios/binaries", "8088_bios/xtide_r625"],
     },
     SourceArchive {
-        relative: "vgabios/vgabios-0.8a-unemu.2-src.tar",
+        relative: "vgabios/vgabios-0.8a-unemu.3-src.tar",
         script: include_str!("../../../vendor/vgabios/fetch.sh"),
         entries: &["NOTICE", "vgabios"],
         copies: &[(
@@ -360,7 +360,7 @@ const SOURCE_ARCHIVES: &[SourceArchive] = &[
         absent: &["vgabios/.beads/config.yaml"],
     },
     SourceArchive {
-        relative: "unemu-at-bios/unemu-at-bios-1.0.2-unemu.2-src.tar",
+        relative: "unemu-at-bios/unemu-at-bios-1.0.2-unemu.3-src.tar",
         script: include_str!("../../../vendor/unemu-at-bios/fetch.sh"),
         entries: &["NOTICE", "unemu-at-bios"],
         copies: &[(
@@ -370,7 +370,7 @@ const SOURCE_ARCHIVES: &[SourceArchive] = &[
         // The release's own version string, which the banner prints.
         marker: (
             "unemu-at-bios/src/config.inc",
-            "%define VERSION\t\t'1.0.2-unemu.2'",
+            "%define VERSION\t\t'1.0.2-unemu.3'",
         ),
         absent: &["unemu-at-bios/binaries", "unemu-at-bios/xtide_r625"],
     },

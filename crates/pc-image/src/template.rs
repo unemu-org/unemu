@@ -39,7 +39,7 @@ use std::path::{Path, PathBuf};
 
 /// The version tag of this template generation. Version tags never move, so
 /// a changed template needs a new version here.
-pub const VERSION: &str = "1.1.0";
+pub const VERSION: &str = "1.1.1";
 /// The moving tag that follows the newest version.
 pub const ALIAS: &str = "latest";
 /// The registry namespace every template lives in.
@@ -89,23 +89,23 @@ impl FirmwareSource {
 /// order a template binds them.
 pub const FIRMWARE: [FirmwareSource; 3] = [
     FirmwareSource {
-        catalogue_id: "unemu-at-bios-1.0.2-unemu.2",
+        catalogue_id: "unemu-at-bios-1.0.2-unemu.3",
         rom: "unemu-at-bios/bios-unemu-at.bin",
-        source_archive: "unemu-at-bios/unemu-at-bios-1.0.2-unemu.2-src.tar",
-        title: "unemu AT BIOS 1.0.2-unemu.2",
-        description: "The system BIOS of the open AT templates: release 1.0.2-unemu.2 of unemu-at-bios, the unemu fork of 8088_bios 1.0.2 by Sergey Kiselev, its original author. Its unemu-at build is a 32 KiB ROM at F8000h-FFFFFh for IBM 5170-class 80286 boards with two 8259s, two 8237s, an 8042 and an MC146818. Unlike upstream it resumes through the CMOS shutdown byte, answers INT 15h AH=87h and AH=88h, measures extended memory into CMOS 30h-31h and checks the CMOS as the IBM PC/AT BIOS does. It serves diskettes only; fixed disks come from an option ROM such as the XTIDE Universal BIOS. Licensed under GPL-3.0-or-later; the package includes its corresponding source archive.",
+        source_archive: "unemu-at-bios/unemu-at-bios-1.0.2-unemu.3-src.tar",
+        title: "unemu AT BIOS 1.0.2-unemu.3",
+        description: "The system BIOS of the open AT templates: release 1.0.2-unemu.3 of unemu-at-bios, the unemu fork of 8088_bios 1.0.2 by Sergey Kiselev, its original author. Its unemu-at build is a 32 KiB ROM at F8000h-FFFFFh for IBM 5170-class 80286 boards with two 8259s, two 8237s, an 8042 and an MC146818. Unlike upstream it resumes through the CMOS shutdown byte, answers INT 15h AH=87h and AH=88h, measures extended memory into CMOS 30h-31h, clears the memory it finds above 1 MiB on every POST and checks the CMOS as the IBM PC/AT BIOS does. It serves diskettes only; fixed disks come from an option ROM such as the XTIDE Universal BIOS. Licensed under GPL-3.0-or-later; the package includes its corresponding source archive.",
         vendor: "unemu (fork of Sergey Kiselev's 8088_bios)",
-        version: "1.0.2-unemu.2",
+        version: "1.0.2-unemu.3",
         labels: &["open-source", "pc-at", "system-bios"],
     },
     FirmwareSource {
         catalogue_id: "vgabios-0.8a-unemu.1-std",
         rom: "vgabios/vgabios-std.bin",
-        source_archive: "vgabios/vgabios-0.8a-unemu.2-src.tar",
-        title: "unemu VGA BIOS 0.8a-unemu.2, standard VGA",
-        description: "The video BIOS of the open AT templates: the unemu fork of the LGPL VGABIOS 0.8a, the video BIOS Bochs and QEMU use, in its standard ISA VGA build with no VBE, PCI, Cirrus or Banshee code and 80286 instructions only. The 32 KiB ROM fills the C0000h-C7FFFh video-ROM window of an IBM 5170-class board with a register-level VGA card. Release 0.8a-unemu.1 first built these bytes, and release 0.8a-unemu.2 builds them unchanged. Licensed under LGPL-2.1-or-later; the package includes its corresponding source archive.",
+        source_archive: "vgabios/vgabios-0.8a-unemu.3-src.tar",
+        title: "unemu VGA BIOS 0.8a-unemu.3, standard VGA",
+        description: "The video BIOS of the open AT templates: the unemu fork of the LGPL VGABIOS 0.8a, the video BIOS Bochs and QEMU use, in its standard ISA VGA build with no VBE, PCI, Cirrus or Banshee code and 80286 instructions only. The 32 KiB ROM fills the C0000h-C7FFFh video-ROM window of an IBM 5170-class board with a register-level VGA card. Release 0.8a-unemu.1 first built these bytes, and releases 0.8a-unemu.2 and 0.8a-unemu.3 build them unchanged. Licensed under LGPL-2.1-or-later; the package includes its corresponding source archive.",
         vendor: "unemu (fork of the LGPL VGABIOS project)",
-        version: "0.8a-unemu.2",
+        version: "0.8a-unemu.3",
         labels: &["open-source", "pc-at", "vga", "video-bios"],
     },
     FirmwareSource {
@@ -1029,7 +1029,7 @@ mod tests {
 
     #[test]
     fn names_follow_the_registry_grammar_and_the_pull_short_form() {
-        assert_eq!(local_tag("unemu/open-at", VERSION), "open-at:1.1.0");
+        assert_eq!(local_tag("unemu/open-at", VERSION), "open-at:1.1.1");
         assert_eq!(
             local_tag("unemu/firmware/xub-r638-xtp-ata1f0", ALIAS),
             "unemu/firmware/xub-r638-xtp-ata1f0:latest"

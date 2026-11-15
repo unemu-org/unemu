@@ -4,12 +4,12 @@
 machines, from **unemu-at-bios**, the unemu fork of Sergey Kiselev's
 [8088_bios](https://github.com/skiselev/8088_bios). The fork is the
 `unemu-at-bios` repository in the same forge organization as this repository
-(`unemu-org/unemu-at-bios`). It is pinned at release tag **`v1.0.2-unemu.2`**,
-source revision `a2cf362d05ee6cf78ef03cd3cc383ba3a19c40bd`:
+(`unemu-org/unemu-at-bios`). It is pinned at release tag **`v1.0.2-unemu.3`**,
+source revision `4548c1769aed67323979d5fa8eff52eed266b64b`:
 
 | File | Flake output | Size | SHA-256 |
 |---|---|---|---|
-| `bios-unemu-at.bin` | `#unemu-at` | 32,768 bytes | `f8ecd4a2ad4906eb94a7595ede755019f545f40111725819eeb80e423adc8db6` |
+| `bios-unemu-at.bin` | `#unemu-at` | 32,768 bytes | `6938dc8b665fa120f33775163ab6bacc559389525db87adedf734416f9ef2442` |
 
 The image is the fork's `MACHINE_UNEMU_AT` configuration: an IBM PC/AT
 compatible 80286 board with two 8259s, two 8237s, an 8042 and an MC146818.
@@ -36,6 +36,15 @@ that change what the guest sees on these machines:
 - POST measures the memory above 1 MiB in protected mode and stores the size
   in CMOS 30h–31h, as the IBM POST does. The sizing returns to real mode
   through one more 8042 CPU reset (shutdown code 09h) on every POST;
+- since `v1.0.2-unemu.3`, that sizing also clears (zeroes) every 64 KiB block
+  it finds above 1 MiB on every POST, cold or warm, as the IBM PC/AT BIOS
+  listing dated 06/10/85 does in TEST1, "storage size/clear" (`HOW_BIG_2A`),
+  which clears each sized 64 KiB block above 1 MiB, on a soft reset too (the
+  source the fork's change cites): nothing a previous boot left there survives
+  a restart, such as the VDISK header at 100000h that the FreeDOS kernel
+  writes when it loads high. With `v1.0.2-unemu.2` FDXMS286 found that header
+  after Ctrl+Alt+Del or an 8042 reset and did not load, so FreeDOS had no XMS
+  until power off;
 - POST checks the CMOS as the IBM PC/AT POST does: battery, the checksum over
   10h–2Dh (upstream sums 10h–20h), the equipment byte against the drives,
   coprocessor and display, the memory sizes and the clock. Errors 161–164
@@ -52,7 +61,7 @@ that change what the guest sees on these machines:
 - POST initialises the second 8237 (channel 4 cascade), and the scratch port
   written before the serial and parallel port detection moves from C0h to
   8Eh;
-- the banner reads "unemu AT BIOS, Version 1.0.2-unemu.2".
+- the banner reads "unemu AT BIOS, Version 1.0.2-unemu.3".
 
 The Kiselev Xi 8088 images stay: the unmodified one boots
 `machines/at-freedos.toml` (and its YAML and preset twins) and the BIOS POST,
@@ -79,7 +88,7 @@ vendor/unemu-at-bios/fetch.sh
 ```
 
 The script runs `nix build --no-link` for
-`<forge>/unemu-org/unemu-at-bios?ref=refs/tags/v1.0.2-unemu.2&rev=a2cf362d…#unemu-at`,
+`<forge>/unemu-org/unemu-at-bios?ref=refs/tags/v1.0.2-unemu.3&rev=4548c176…#unemu-at`,
 checks the ROM's size, the far jump at the reset entry and the SHA-256 pin,
 and only then replaces the file here. The tag names the release; Nix checks
 out the pinned revision, so a moved tag cannot change the sources. The fork's
@@ -122,10 +131,10 @@ missing; without that variable they print a skip line and return. See
 ## Source archive
 
 After the ROM passes its checks, `fetch.sh` writes
-`unemu-at-bios-1.0.2-unemu.2-src.tar`, its corresponding source. It is what a
+`unemu-at-bios-1.0.2-unemu.3-src.tar`, its corresponding source. It is what a
 published firmware package carries as its `source` layer: the ROM is
 GPL-3.0-or-later, so it may be published only together with it. Its root
-directory, `unemu-at-bios-1.0.2-unemu.2-src/`, holds:
+directory, `unemu-at-bios-1.0.2-unemu.3-src/`, holds:
 
 - `unemu-at-bios/`: the tree Nix built the ROM from (the flake's own source,
   read with `builtins.getFlake`), so a mirror or a local clone gives the same
@@ -148,27 +157,32 @@ so the archive always builds what we ship.
 
 The whole archive is **GPL-3.0-or-later**. It is an uncompressed POSIX ustar
 file written by GNU tar: members sorted by name, every timestamp set to the
-revision's commit time (2026-11-15 09:10:22 UTC, the flake's
+revision's commit time (2026-11-15 21:06:51 UTC, the flake's
 `lastModified`), owner and group 0 with no names, and modes 0644 or 0755. Its
 SHA-256 is pinned in `fetch.sh`:
 
 | File | SHA-256 |
 |---|---|
-| `unemu-at-bios-1.0.2-unemu.2-src.tar` | `6c7aaace8c2bc35661ced2596bcad2fd26e77778985aab45742cee560e0fa47e` |
+| `unemu-at-bios-1.0.2-unemu.3-src.tar` | `59d3d92178d8839b0e38ce3d878a99e947ae7f6f1275ce0bcdb032f84e199d67` |
 
-MEASURED on 2026-11-15 on aarch64-darwin with GNU tar 1.35: two runs from the
-origin and one with `UNEMU_AT_BIOS_CHECKOUT` write this same archive and the
-same ROM, and the staged tree rebuilds the pinned ROM hash. A Linux run has
-not been measured.
+MEASURED on 2026-11-15 on aarch64-darwin with GNU tar 1.35: two runs with
+`UNEMU_AT_BIOS_CHECKOUT` and one from the origin write this same archive and
+the same ROM, and the staged tree rebuilds the pinned ROM hash. A Linux run
+has not been measured.
 
 ## Catalogue and machines
 
-`UNEMU_AT_BIOS_1_0_2_UNEMU_2` in `crates/assembly/src/firmware.rs` identifies
-`unemu-at-bios-1.0.2-unemu.2` as an open system BIOS for `ibm-5170`,
+`UNEMU_AT_BIOS_1_0_2_UNEMU_3` in `crates/assembly/src/firmware.rs` identifies
+`unemu-at-bios-1.0.2-unemu.3` as an open system BIOS for `ibm-5170`,
 providing the floppy service and requiring the 8042, the RTC/CMOS and the
 cascaded 8259s, with an 80286 at least. `machines/at-games-open.toml` and
 `machines/at-ide.toml` boot it, and the `open-at` templates carry it as their
-system BIOS package.
+system BIOS package. `UNEMU_AT_BIOS_1_0_2_UNEMU_2` stays listed with the
+status `Superseded` and the source archive pin of its own release
+(`unemu-at-bios-1.0.2-unemu.2-src.tar`,
+`6c7aaace8c2bc35661ced2596bcad2fd26e77778985aab45742cee560e0fa47e`), so
+machines and images made with that ROM (templates 1.1.0) still start; this
+script no longer builds it.
 
 ## Later: registry artifacts
 

@@ -38,7 +38,7 @@ const CPU_REV: &str = "060d446a883a9b2fc94b3ef91258cb4e6e98d916";
 const IMAGE: &str = "at-pm-test/at-pm-test-1200.img";
 const OPEN_BIOS: &str = "unemu-at-bios/bios-unemu-at.bin";
 // The BIOS image of machines/at-games-open.toml; checked against that file.
-const OPEN_BIOS_SHA256: &str = "f8ecd4a2ad4906eb94a7595ede755019f545f40111725819eeb80e423adc8db6";
+const OPEN_BIOS_SHA256: &str = "6938dc8b665fa120f33775163ab6bacc559389525db87adedf734416f9ef2442";
 const IBM_ENTRY: &str = "ibm-5170-bios-1985-06-10";
 const ROUNDS: u32 = 16;
 
@@ -46,8 +46,9 @@ const ROUNDS: u32 = 16;
 const OPEN_CAP: u64 = 300_000_000;
 // One POST (including the 8042 reset of its extended-memory sizing), one
 // floppy boot, three INT 15h block moves and 16 rounds that resume without
-// POST, with the open AT BIOS. Measured at the CPU pin above.
-const OPEN_GOLDEN_RETIRED: u64 = 6_589_934;
+// POST, with the open AT BIOS. Measured at the CPU pin above; it moved from
+// 6,589,934 when the BIOS began clearing extended memory during POST.
+const OPEN_GOLDEN_RETIRED: u64 = 6_590_023;
 // The IBM BIOS resumes without POST, so one POST and the rounds fit easily.
 const IBM_CAP: u64 = 300_000_000;
 // One POST, one floppy boot, three INT 15h block moves and 16 rounds that

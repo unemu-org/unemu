@@ -21,10 +21,12 @@ mod fixtures;
 
 const CPU_REV: &str = "060d446a883a9b2fc94b3ef91258cb4e6e98d916";
 // These values moved when the open profile replaced its MDA console with the
-// VGA card and open video BIOS, and when the test began sampling POST.
-const OPEN_GOLDEN_RETIRED: u64 = 15_241_264;
+// VGA card and open video BIOS, and when the test began sampling POST. They
+// moved again (from 15,241,264 and 41ff081e…) when the open AT BIOS began
+// clearing extended memory during POST and its banner named the new release.
+const OPEN_GOLDEN_RETIRED: u64 = 15_216_991;
 const OPEN_GOLDEN_TEXT_SHA256: &str =
-    "41ff081e1227af8f1a053df1b627b734de4032963cc0357c488cbbe67e01469e";
+    "39d92d28ffaa57015ab79e09e693f8bd1aeda19203709963dcb8fa22ace82492";
 // These values moved when extended memory went from 4 MiB to 1 MiB,
 // shortening the POST memory test.
 const GOLDEN_STOP: Option<(u64, u64)> = Some((0x05E3, 0x1E59));
@@ -77,7 +79,7 @@ fn shipped_game_profiles_pin_firmware_and_select_the_intended_displays() {
         let id = if name == support::IBM {
             support::SYSTEM
         } else {
-            "unemu-at-bios-1.0.2-unemu.2"
+            "unemu-at-bios-1.0.2-unemu.3"
         };
         let entry = catalogue.iter().find(|entry| entry.id == id).unwrap();
         assert_eq!(bios.sha256.unwrap().as_str(), entry.sha256);
@@ -759,7 +761,7 @@ fn open_game_profile_boots_freedos() {
     );
     // The open AT BIOS signs on and identifies the 80286 without the 8088
     // interrupt warning.
-    for line in ["unemu AT BIOS, Version 1.0.2-unemu.2", "Intel 80286"] {
+    for line in ["unemu AT BIOS, Version 1.0.2-unemu.3", "Intel 80286"] {
         assert!(post_screen.contains(line), "{line}: {post_screen}");
     }
     let mut outcome = assembled
@@ -874,10 +876,12 @@ fn add_fat12_file(image: &mut [u8], name: &[u8; 11], cluster: u16, data: &[u8]) 
     image[offset..offset + data.len()].copy_from_slice(data);
 }
 
-// MEASURED with the CPU pin above when the open profile gained its empty B:.
-const MIXED_DENSITY_RETIRED: u64 = 22_988_197;
+// MEASURED with the CPU pin above when the open profile gained its empty B:,
+// and again (from 22,988,197 and b9e3a1cb…) when the open AT BIOS began
+// clearing extended memory during POST and its banner named the new release.
+const MIXED_DENSITY_RETIRED: u64 = 23_463_925;
 const MIXED_DENSITY_TEXT_SHA256: &str =
-    "b9e3a1cbed205ef8cc2e2c697a83dc79ffbd4803c3f7b7b9a67602685e8bf16a";
+    "0bebf03ee8725b641ef5ce13995f39a26ae6f76237989c23439359b139afddf3";
 
 /// FreeDOS on the open profile reads a 720K disk inserted into the empty
 /// 1.44M B: (250 kbps) and a 360K disk swapped into the 1.2M A: (300 kbps,

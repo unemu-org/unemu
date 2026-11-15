@@ -614,7 +614,7 @@ fn a_copyleft_rom_without_its_source_archive_keeps_a_new_image_private() {
     };
     // The same open AT BIOS, from a package another program wrote: open
     // under the GPL, but without its source archive.
-    let original = open.rom("unemu-at-bios-1.0.2-unemu.2");
+    let original = open.rom("unemu-at-bios-1.0.2-unemu.3");
     let package = &original.package;
     let mut config = package.config.clone();
     config.sources.clear();

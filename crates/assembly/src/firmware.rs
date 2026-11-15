@@ -184,13 +184,17 @@ pub enum FirmwareDistribution {
 /// Source archive pins, one per fetch script (`SOURCE_ARCHIVE_SHA256`): the
 /// Kiselev archive holds the source of both Xi8088 builds, the XTIDE archive
 /// that of both r638 builds, and the open VGA and open AT BIOS archives each
-/// that of their one ROM.
+/// that of their one ROM. A superseded entry keeps the pin of the archive its
+/// own release's script built.
 const KISELEV_SOURCE_ARCHIVE: &str =
     "ced63707661747fc045d1e6e565a5cc9be73f95a9c944accedd77b19467fb5f9";
 const UNEMU_AT_BIOS_SOURCE_ARCHIVE: &str =
+    "59d3d92178d8839b0e38ce3d878a99e947ae7f6f1275ce0bcdb032f84e199d67";
+/// `unemu-at-bios-1.0.2-unemu.2-src.tar`, which that release's fetch script built.
+const UNEMU_AT_BIOS_1_0_2_UNEMU_2_SOURCE_ARCHIVE: &str =
     "6c7aaace8c2bc35661ced2596bcad2fd26e77778985aab45742cee560e0fa47e";
 const VGABIOS_SOURCE_ARCHIVE: &str =
-    "6304d0c24eb5289f6149b7e5a23a3feb74308f9baf8534ab1706ab953b7cd1d9";
+    "2d93fcaaa87ac0f310af097ef184d94932a0c9cb255b9e8f991cee511a1cf8eb";
 const XTIDE_SOURCE_ARCHIVE: &str =
     "7bbd5de269f4e1d52ae30b52531fcda842709b9ae49166ac249f9b37187b91e8";
 
@@ -210,6 +214,10 @@ pub enum FirmwareStatus {
     Tested,
     /// Identified but not yet executed by a golden.
     Listed,
+    /// Executed by pinned goldens until a later release from the same fetch
+    /// script replaced it. It stays listed, with the source archive pin of its
+    /// own release, so machines and images made with it still start.
+    Superseded,
 }
 
 /// One reviewed firmware build. Its services override an omitted declaration;
@@ -299,7 +307,7 @@ impl FirmwareEntry {
         distribution: FirmwareDistribution::Open {
             fetch: "vendor/vgabios/fetch.sh",
             license: "LGPL-2.1-or-later",
-            provenance: "unemu-org/vgabios v0.8a-unemu.2, d883bbac49238a57f7dddd9ddb2ee253fb6bfe71 (std build)",
+            provenance: "unemu-org/vgabios v0.8a-unemu.3, 72bf5d988f2188a0118416d88a8c90e58c648b06 (std build)",
             source_archive_sha256: Some(VGABIOS_SOURCE_ARCHIVE),
         },
         parts: &[],
@@ -413,14 +421,33 @@ pub const KISELEV_XI8088_ATRESET: FirmwareEntry = FirmwareEntry {
 /// IBM Personal Computer AT Technical Reference, BIOS listing: like the IBM
 /// BIOS it resumes a processor reset through the CMOS shutdown byte (POST,
 /// shutdown codes 04h, 05h, 09h and 0Ah), measures extended memory into
-/// CMOS 30h–31h, checks the CMOS (errors 161–164, checksum over 10h–2Dh),
-/// answers INT 15h AH=87h and AH=88h, leaves A20 disabled after POST and
-/// reads the System Board display switch (8042 input port bit 6) and the
-/// port 70h NMI mask with the AT polarity. The block move and the memory
-/// sizing use 80286 protected mode, so the 80286 minimum is the firmware's
-/// own. The ROM scans are those of the Xi 8088 build it starts
-/// from, and fixed disks still come from an option ROM. See
+/// CMOS 30h–31h, clears the memory it finds above 1 MiB on every POST (so no
+/// VDISK header a previous boot left there survives a restart), checks the
+/// CMOS (errors 161–164, checksum over 10h–2Dh), answers INT 15h AH=87h and
+/// AH=88h, leaves A20 disabled after POST and reads the System Board display
+/// switch (8042 input port bit 6) and the port 70h NMI mask with the AT
+/// polarity. The block move and the memory sizing use 80286 protected mode,
+/// so the 80286 minimum is the firmware's own. The ROM scans are those of the
+/// Xi 8088 build it starts from, and fixed disks still come from an option
+/// ROM. See
 /// `vendor/unemu-at-bios/README.md` and the firmware design §2.1.
+pub const UNEMU_AT_BIOS_1_0_2_UNEMU_3: FirmwareEntry = FirmwareEntry {
+    id: "unemu-at-bios-1.0.2-unemu.3",
+    sha256: "6938dc8b665fa120f33775163ab6bacc559389525db87adedf734416f9ef2442",
+    distribution: FirmwareDistribution::Open {
+        fetch: "vendor/unemu-at-bios/fetch.sh",
+        license: "GPL-3.0-or-later",
+        provenance: "unemu-org/unemu-at-bios v1.0.2-unemu.3, 4548c1769aed67323979d5fa8eff52eed266b64b (unemu-at build); fork of skiselev/8088_bios 1.0.2 by Sergey Kiselev",
+        source_archive_sha256: Some(UNEMU_AT_BIOS_SOURCE_ARCHIVE),
+    },
+    status: FirmwareStatus::Tested,
+    ..KISELEV_XI8088
+};
+
+/// The open AT BIOS release before [`UNEMU_AT_BIOS_1_0_2_UNEMU_3`], with the
+/// same board contract; its POST kept the contents of memory above 1 MiB.
+/// Superseded by 1.0.2-unemu.3, which clears memory above 1 MiB on POST; kept
+/// so machines made before it still start.
 pub const UNEMU_AT_BIOS_1_0_2_UNEMU_2: FirmwareEntry = FirmwareEntry {
     id: "unemu-at-bios-1.0.2-unemu.2",
     sha256: "f8ecd4a2ad4906eb94a7595ede755019f545f40111725819eeb80e423adc8db6",
@@ -428,10 +455,10 @@ pub const UNEMU_AT_BIOS_1_0_2_UNEMU_2: FirmwareEntry = FirmwareEntry {
         fetch: "vendor/unemu-at-bios/fetch.sh",
         license: "GPL-3.0-or-later",
         provenance: "unemu-org/unemu-at-bios v1.0.2-unemu.2, a2cf362d05ee6cf78ef03cd3cc383ba3a19c40bd (unemu-at build); fork of skiselev/8088_bios 1.0.2 by Sergey Kiselev",
-        source_archive_sha256: Some(UNEMU_AT_BIOS_SOURCE_ARCHIVE),
+        source_archive_sha256: Some(UNEMU_AT_BIOS_1_0_2_UNEMU_2_SOURCE_ARCHIVE),
     },
-    status: FirmwareStatus::Tested,
-    ..KISELEV_XI8088
+    status: FirmwareStatus::Superseded,
+    ..UNEMU_AT_BIOS_1_0_2_UNEMU_3
 };
 
 /// Choose the board display switch once the system BIOS bytes are available.
@@ -1368,7 +1395,7 @@ mod tests {
     use super::*;
     use crate::{assemble, assemble_with_options, AssemblyError, ImageSource};
 
-    const KNOWN: &str = "kiselev-xi8088-1.0.2 (open, vendor/kiselev-bios/fetch.sh), kiselev-xi8088-1.0.2-atreset (open, vendor/kiselev-bios/fetch.sh), unemu-at-bios-1.0.2-unemu.2 (open, vendor/unemu-at-bios/fetch.sh), ibm-5170-bios-1984-01-10 (user-supplied: U27 6181028 even, U47 6181029 odd or U17 6181024 even@0, U37 6181026 odd@0, U27 6181025 even@32768, U47 6181027 odd@32768; see vendor/user-roms/README.md), ibm-5170-bios-1985-06-10 (user-supplied: U27 6480090 even, U47 6480091 odd; see vendor/user-roms/README.md), ibm-5170-bios-1985-11-15 (user-supplied: U27 61X9266 even, U47 61X9265 odd; see vendor/user-roms/README.md), landmark-rom-post-at-1.2.0 (user-supplied: U27 27256 even, U47 27256 odd; see vendor/user-roms/README.md)";
+    const KNOWN: &str = "kiselev-xi8088-1.0.2 (open, vendor/kiselev-bios/fetch.sh), kiselev-xi8088-1.0.2-atreset (open, vendor/kiselev-bios/fetch.sh), unemu-at-bios-1.0.2-unemu.3 (open, vendor/unemu-at-bios/fetch.sh), unemu-at-bios-1.0.2-unemu.2 (open, vendor/unemu-at-bios/fetch.sh), ibm-5170-bios-1984-01-10 (user-supplied: U27 6181028 even, U47 6181029 odd or U17 6181024 even@0, U37 6181026 odd@0, U27 6181025 even@32768, U47 6181027 odd@32768; see vendor/user-roms/README.md), ibm-5170-bios-1985-06-10 (user-supplied: U27 6480090 even, U47 6480091 odd; see vendor/user-roms/README.md), ibm-5170-bios-1985-11-15 (user-supplied: U27 61X9266 even, U47 61X9265 odd; see vendor/user-roms/README.md), landmark-rom-post-at-1.2.0 (user-supplied: U27 27256 even, U47 27256 odd; see vendor/user-roms/README.md)";
 
     fn config() -> MachineConfig {
         crate::bios(vec![0; 32768], Some(vec![0; 1_474_560]))
@@ -1980,8 +2007,8 @@ mod tests {
         assert_eq!(entry.sha256, hash);
     }
 
-    #[test]
-    fn open_entries_pin_the_source_archive_their_fetch_script_builds() {
+    /// `SOURCE_ARCHIVE_SHA256` of each open fetch script.
+    fn fetch_script_source_pins() -> [(&'static str, String); 4] {
         let pin = |script: &str| {
             script
                 .lines()
@@ -1992,7 +2019,7 @@ mod tests {
                 .expect("fixture recipe pins its source archive")
                 .to_owned()
         };
-        let scripts = [
+        [
             (
                 "vendor/kiselev-bios/fetch.sh",
                 pin(include_str!("../../../vendor/kiselev-bios/fetch.sh")),
@@ -2011,30 +2038,118 @@ mod tests {
                     "../../../vendor/xtide-universal-bios/fetch.sh"
                 )),
             ),
-        ];
-        let mut open = 0;
-        for entry in BoardModel::Ibm5170.firmware_catalogue() {
+        ]
+    }
+
+    /// Every open entry the fetch script builds pins that script's source
+    /// archive. A superseded entry pins the archive of its own release
+    /// instead: a well-formed hash other than the script's, with a provenance
+    /// that names the release its id carries.
+    fn source_archive_pin_problems(
+        catalogue: &[FirmwareEntry],
+        scripts: &[(&str, String)],
+    ) -> Vec<String> {
+        let mut problems = Vec::new();
+        for entry in catalogue {
             let FirmwareDistribution::Open {
                 fetch,
+                provenance,
                 source_archive_sha256,
                 ..
             } = entry.distribution
             else {
                 continue;
             };
-            open += 1;
-            let (_, expected) = scripts
-                .iter()
-                .find(|(script, _)| *script == fetch)
-                .unwrap_or_else(|| panic!("{}: unknown fetch script {fetch}", entry.id));
-            assert_eq!(
+            let Some((_, expected)) = scripts.iter().find(|(script, _)| *script == fetch) else {
+                problems.push(format!("{}: unknown fetch script {fetch}", entry.id));
+                continue;
+            };
+            if entry.status != FirmwareStatus::Superseded {
+                if source_archive_sha256 != Some(expected.as_str()) {
+                    problems.push(format!("{}: pin differs from {fetch}", entry.id));
+                }
+                continue;
+            }
+            let release = entry
+                .id
+                .match_indices('-')
+                .find(|(at, _)| entry.id[at + 1..].starts_with(|c: char| c.is_ascii_digit()))
+                .map(|(at, _)| &entry.id[at + 1..]);
+            let well_formed = source_archive_sha256.is_some_and(|pin| {
+                pin.len() == 64
+                    && pin
+                        .bytes()
+                        .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+                    && pin != expected
+            });
+            if !well_formed
+                || !release.is_some_and(|release| provenance.contains(&format!("v{release}")))
+            {
+                problems.push(format!(
+                    "{}: a superseded entry pins its own release's archive",
+                    entry.id
+                ));
+            }
+        }
+        problems
+    }
+
+    #[test]
+    fn open_entries_pin_the_source_archive_their_fetch_script_builds() {
+        let catalogue = BoardModel::Ibm5170.firmware_catalogue();
+        let scripts = fetch_script_source_pins();
+        assert_eq!(
+            source_archive_pin_problems(catalogue, &scripts),
+            Vec::<String>::new()
+        );
+        let open = catalogue
+            .iter()
+            .filter(|entry| matches!(entry.distribution, FirmwareDistribution::Open { .. }))
+            .count();
+        assert_eq!(open, 7);
+        let superseded: Vec<_> = catalogue
+            .iter()
+            .filter(|entry| entry.status == FirmwareStatus::Superseded)
+            .map(|entry| entry.id)
+            .collect();
+        assert_eq!(superseded, ["unemu-at-bios-1.0.2-unemu.2"]);
+    }
+
+    #[test]
+    fn the_source_archive_check_catches_a_current_entry_with_another_pin() {
+        let scripts = fetch_script_source_pins();
+        let mut catalogue = BoardModel::Ibm5170.firmware_catalogue().to_vec();
+        let current = catalogue
+            .iter_mut()
+            .find(|entry| entry.id == UNEMU_AT_BIOS_1_0_2_UNEMU_3.id)
+            .unwrap();
+        // The superseded release's pin on the current entry, as a re-pin that
+        // forgot the catalogue would leave it.
+        current.distribution = UNEMU_AT_BIOS_1_0_2_UNEMU_2.distribution;
+        assert_eq!(
+            source_archive_pin_problems(&catalogue, &scripts),
+            ["unemu-at-bios-1.0.2-unemu.3: pin differs from vendor/unemu-at-bios/fetch.sh"]
+        );
+        // A superseded entry may not carry the current pin or a malformed one.
+        let mut catalogue = BoardModel::Ibm5170.firmware_catalogue().to_vec();
+        for pin in [UNEMU_AT_BIOS_SOURCE_ARCHIVE, "not-a-hash"] {
+            let old = catalogue
+                .iter_mut()
+                .find(|entry| entry.id == UNEMU_AT_BIOS_1_0_2_UNEMU_2.id)
+                .unwrap();
+            let FirmwareDistribution::Open {
                 source_archive_sha256,
-                Some(expected.as_str()),
-                "{}",
-                entry.id
+                ..
+            } = &mut old.distribution
+            else {
+                unreachable!()
+            };
+            *source_archive_sha256 = Some(pin);
+            assert_eq!(
+                source_archive_pin_problems(&catalogue, &scripts),
+                ["unemu-at-bios-1.0.2-unemu.2: a superseded entry pins its own release's archive"]
             );
         }
-        assert_eq!(open, 6);
     }
 
     #[test]
@@ -2132,9 +2247,45 @@ mod tests {
     }
 
     #[test]
+    fn a_superseded_open_at_bios_still_identifies_its_rom() {
+        let old = UNEMU_AT_BIOS_1_0_2_UNEMU_2;
+        assert!(BoardModel::Ibm5170.firmware_catalogue().contains(&old));
+        assert_eq!(old.status, FirmwareStatus::Superseded);
+        assert_eq!(
+            old.sha256,
+            "f8ecd4a2ad4906eb94a7595ede755019f545f40111725819eeb80e423adc8db6"
+        );
+        // The board contract is the current release's, so a machine made
+        // with the old ROM lowers and assembles as it did.
+        assert_eq!(
+            FirmwareEntry {
+                id: UNEMU_AT_BIOS_1_0_2_UNEMU_3.id,
+                sha256: UNEMU_AT_BIOS_1_0_2_UNEMU_3.sha256,
+                distribution: UNEMU_AT_BIOS_1_0_2_UNEMU_3.distribution,
+                status: UNEMU_AT_BIOS_1_0_2_UNEMU_3.status,
+                ..old
+            },
+            UNEMU_AT_BIOS_1_0_2_UNEMU_3
+        );
+        // The ROM bytes are not a fixture any more: the check runs on
+        // synthetic bytes under the entry's identity. A superseded entry is
+        // listed firmware, accepted without the unlisted-firmware escape.
+        let listed = FirmwareEntry {
+            sha256: synthetic().sha256,
+            ..old
+        };
+        assert_eq!(check(listed, AssemblyOptions::default()).unwrap(), None);
+        let catalogue = [KISELEV_XI8088, listed];
+        assert_eq!(
+            scan_firmware_from(&config(), &catalogue).unwrap().id,
+            old.id
+        );
+    }
+
+    #[test]
     fn unemu_at_bios_catalogue_entry_matches_recipe_and_fixture() {
-        let entry = UNEMU_AT_BIOS_1_0_2_UNEMU_2;
-        assert_eq!(entry.id, "unemu-at-bios-1.0.2-unemu.2");
+        let entry = UNEMU_AT_BIOS_1_0_2_UNEMU_3;
+        assert_eq!(entry.id, "unemu-at-bios-1.0.2-unemu.3");
         assert!(BoardModel::Ibm5170.firmware_catalogue().contains(&entry));
         assert_eq!(entry.kind, FirmwareKind::SystemBios);
         assert_eq!(entry.size, 32768);

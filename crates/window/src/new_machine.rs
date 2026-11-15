@@ -68,6 +68,9 @@ pub(crate) struct Offer {
     pub detail: String,
     pub layout: String,
     pub open: bool,
+    /// The catalogue lists the ROM as superseded by a later release: it is
+    /// still offered, for machines made with it, but never chosen by default.
+    pub superseded: bool,
     pub reasons: Vec<String>,
 }
 
@@ -716,6 +719,11 @@ impl Wizard {
                     &rom.sha256[..8],
                     &rom.sha256[rom.sha256.len() - 4..]
                 );
+                let superseded = rom
+                    .catalogue_id
+                    .as_deref()
+                    .and_then(|id| pc_image::firmware::catalogue().iter().find(|e| e.id == id))
+                    .is_some_and(|e| e.status == assembly::FirmwareStatus::Superseded);
                 let offer = Offer {
                     rom: (package.descriptor.digest.clone(), rom.id.clone()),
                     name: config.name.clone(),
@@ -723,6 +731,7 @@ impl Wizard {
                     detail,
                     layout,
                     open,
+                    superseded,
                     reasons,
                 };
                 let text = format!(
@@ -752,7 +761,13 @@ impl Wizard {
     fn default_offer(&self, slot: Slot, prefer_vendor: Option<&str>) -> Option<RomRef> {
         let (fits, _) = self.offers_matching(slot, "");
         fits.iter()
-            .min_by_key(|o| (Some(o.vendor.as_str()) != prefer_vendor, !o.open))
+            .min_by_key(|o| {
+                (
+                    o.superseded,
+                    Some(o.vendor.as_str()) != prefer_vendor,
+                    !o.open,
+                )
+            })
             .map(|o| o.rom.clone())
     }
 
@@ -1349,7 +1364,7 @@ mod tests {
             offer_names(&fits),
             [
                 "Kiselev AT BIOS (private copy)",
-                "unemu-at-bios-1.0.2-unemu.2"
+                "unemu-at-bios-1.0.2-unemu.3"
             ]
         );
         // The default is the open package, so the image stays redistributable.
@@ -1388,6 +1403,48 @@ mod tests {
             Some("vgabios-0.8a-unemu.1-std")
         );
         assert!(wizard.problems().is_empty(), "{:?}", wizard.problems());
+    }
+
+    #[test]
+    fn a_superseded_bios_is_offered_but_never_the_default() {
+        let Some(store) = FirmwareStore::new(false) else {
+            return;
+        };
+        let (mut packages, tags, marks) = store.choices();
+        let current = "unemu-at-bios-1.0.2-unemu.3";
+        let old = "unemu-at-bios-1.0.2-unemu.2";
+        let package = packages
+            .iter()
+            .find(|p| p.config.roms[0].catalogue_id.as_deref() == Some(current))
+            .unwrap()
+            .clone();
+        // The superseded release as a store holds it beside the current one:
+        // the same vendor, licence and source, so only its name, which sorts
+        // first, and its catalogue status tell them apart. Its ROM bytes are
+        // no fixture, so the package is the current one under the old id.
+        let mut superseded = package.clone();
+        superseded.config.name = old.into();
+        superseded.config.roms[0].catalogue_id = Some(old.into());
+        superseded.descriptor.digest = Digest::of(b"superseded package");
+        packages.push(superseded);
+        let mut wizard = Wizard::new();
+        wizard.store = Some(store.store.clone());
+        wizard.set_store((packages, tags, marks));
+        let (fits, _) = wizard.offers(Slot::Bios);
+        assert_eq!(offer_names(&fits), [old, current]);
+        assert!(fits.iter().all(|o| o.open));
+        assert_eq!(
+            fits.iter().map(|o| o.superseded).collect::<Vec<_>>(),
+            [true, false]
+        );
+        assert_eq!(
+            wizard.selection().bios.as_ref().map(|rom| &rom.0),
+            Some(&package.descriptor.digest),
+            "the default is the current release"
+        );
+        // It stays a choice.
+        wizard.choose_bios(fits[0].rom.clone());
+        assert_eq!(wizard.selection().bios.as_ref(), Some(&fits[0].rom));
     }
 
     #[test]
@@ -1624,7 +1681,7 @@ mod tests {
         };
         let wizard = wizard(&bare);
         let notice = wizard.private_notice().unwrap();
-        assert!(notice.contains("unemu-at-bios-1.0.2-unemu.2"), "{notice}");
+        assert!(notice.contains("unemu-at-bios-1.0.2-unemu.3"), "{notice}");
         assert!(notice.contains("never to unemu/"), "{notice}");
         assert!(wizard.full_reference().contains("/private/"));
         let (image, reference, expected) = wizard.request().unwrap();

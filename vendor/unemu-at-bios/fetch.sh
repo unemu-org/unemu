@@ -74,10 +74,10 @@ check_sha256() {
 # The fork's flake assembles src/bios.asm with nasm from its nixpkgs pin (the
 # one this repository's devShell uses), with the MACHINE_UNEMU_AT
 # configuration, and checks the same ROM hash itself.
-TAG="v1.0.2-unemu.2"
-REVISION="a2cf362d05ee6cf78ef03cd3cc383ba3a19c40bd"
-ROM_SHA256="f8ecd4a2ad4906eb94a7595ede755019f545f40111725819eeb80e423adc8db6"
-SOURCE_ARCHIVE_SHA256="6c7aaace8c2bc35661ced2596bcad2fd26e77778985aab45742cee560e0fa47e"
+TAG="v1.0.2-unemu.3"
+REVISION="4548c1769aed67323979d5fa8eff52eed266b64b"
+ROM_SHA256="6938dc8b665fa120f33775163ab6bacc559389525db87adedf734416f9ef2442"
+SOURCE_ARCHIVE_SHA256="59d3d92178d8839b0e38ce3d878a99e947ae7f6f1275ce0bcdb032f84e199d67"
 QUERY="ref=refs/tags/$TAG&rev=$REVISION"
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

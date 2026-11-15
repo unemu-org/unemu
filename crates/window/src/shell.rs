@@ -7270,7 +7270,7 @@ mod tests {
         std::fs::write(
             &path,
             format!(
-                "schema=1\nextends='preset:ibm-5170'\n[board.rtc]\nstart='2000-01-01T00:00:00'\nnvram='derived'\n[memory]\nextended_kib=0\n[firmware.bios]\nimage={}\nsha256='f8ecd4a2ad4906eb94a7595ede755019f545f40111725819eeb80e423adc8db6'\nprovides=['floppy']\n[[card]]\nid='fdc-765'\n[[card.drives]]\nunit=0\ntype='1.2M'\n{first}[[card.drives.media]]\nimage={}\nsha256='4ee55e9c44d553041b9bbde99cacae31472f12debf6c9b9c09c5b9343c435d7e'\nwrite='readonly'\n",
+                "schema=1\nextends='preset:ibm-5170'\n[board.rtc]\nstart='2000-01-01T00:00:00'\nnvram='derived'\n[memory]\nextended_kib=0\n[firmware.bios]\nimage={}\nsha256='6938dc8b665fa120f33775163ab6bacc559389525db87adedf734416f9ef2442'\nprovides=['floppy']\n[[card]]\nid='fdc-765'\n[[card.drives]]\nunit=0\ntype='1.2M'\n{first}[[card.drives.media]]\nimage={}\nsha256='4ee55e9c44d553041b9bbde99cacae31472f12debf6c9b9c09c5b9343c435d7e'\nwrite='readonly'\n",
                 quoted(&bios),
                 quoted(&floppy)
             ),

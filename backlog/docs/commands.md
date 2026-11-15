@@ -610,11 +610,11 @@ machine-images §5.5):
 
 | Local tags | Registry repository | Image |
 | --- | --- | --- |
-| `unemu/firmware/unemu-at-bios-1.0.2-unemu.2:1.1.0`, `:latest` | `unemu/firmware/unemu-at-bios-1.0.2-unemu.2` | unemu AT BIOS package (the unemu fork of Kiselev 8088_bios) with its source archive |
-| `unemu/firmware/vgabios-0.8a-unemu.1-std:1.1.0`, `:latest` | `unemu/firmware/vgabios-0.8a-unemu.1-std` | unemu LGPL VGA BIOS package with its source archive |
-| `unemu/firmware/xub-r638-xtp-ata1f0:1.1.0`, `:latest` | `unemu/firmware/xub-r638-xtp-ata1f0` | XTIDE Universal BIOS r638 package with its source archive |
-| `open-at:1.1.0`, `:latest` | `unemu/open-at` | IBM 5170-class 80286, the three ROMs, 640 KiB + 1 MiB, VGA, COM1 without a mouse, an empty 1.2M A: and an empty 1.44M B: drive, a blank zero-base 504 MiB (1024/16/63) ATA disk at 1F0h, no sound card |
-| `open-at-games:1.1.0`, `:latest` | `unemu/open-at-games` | `open-at` plus SB16 (220h, IRQ 5, DMA 1/5), a Microsoft mouse on COM1 and a 2 MiB Lo-tech EMS board (260h, frame D000h) |
+| `unemu/firmware/unemu-at-bios-1.0.2-unemu.3:1.1.1`, `:latest` | `unemu/firmware/unemu-at-bios-1.0.2-unemu.3` | unemu AT BIOS package (the unemu fork of Kiselev 8088_bios) with its source archive |
+| `unemu/firmware/vgabios-0.8a-unemu.1-std:1.1.1`, `:latest` | `unemu/firmware/vgabios-0.8a-unemu.1-std` | unemu LGPL VGA BIOS package with its source archive |
+| `unemu/firmware/xub-r638-xtp-ata1f0:1.1.1`, `:latest` | `unemu/firmware/xub-r638-xtp-ata1f0` | XTIDE Universal BIOS r638 package with its source archive |
+| `open-at:1.1.1`, `:latest` | `unemu/open-at` | IBM 5170-class 80286, the three ROMs, 640 KiB + 1 MiB, VGA, COM1 without a mouse, an empty 1.2M A: and an empty 1.44M B: drive, a blank zero-base 504 MiB (1024/16/63) ATA disk at 1F0h, no sound card |
+| `open-at-games:1.1.1`, `:latest` | `unemu/open-at-games` | `open-at` plus SB16 (220h, IRQ 5, DMA 1/5), a Microsoft mouse on COM1 and a 2 MiB Lo-tech EMS board (260h, frame D000h) |
 
 After the machines the build imports the FreeDOS 1.4 Floppy Edition
 installation sets (fixtures: `bash vendor/freedos/fetch-floppy-1.4.sh`, a
@@ -635,7 +635,7 @@ linked (machine-images §5.5). Its version tag is the release's (`1.4.0`), not
 set fixture against the pin of `vendor/freedos/fetch-floppy-1.4.sh` before
 it writes the first tag of any image; another or a missing file stops it and
 names the script. `pc_image::template::build` (firmware and machines) and
-`build_media` (the sets) are separate, so the 1.1.0 template tests need only
+`build_media` (the sets) are separate, so the 1.1.1 template tests need only
 the firmware fixtures.
 
 The local tags are the short form `image pull` writes for each repository, so
@@ -675,15 +675,15 @@ the version tags and the aliases:
 
 ```sh
 S=/path/to/templates
-cargo run --offline -p cli -- image push unemu/firmware/unemu-at-bios-1.0.2-unemu.2:1.1.0 unemu/firmware/unemu-at-bios-1.0.2-unemu.2:1.1.0 --store "$S" --dry-run
-cargo run --offline -p cli -- image push unemu/firmware/vgabios-0.8a-unemu.1-std:1.1.0 unemu/firmware/vgabios-0.8a-unemu.1-std:1.1.0 --store "$S" --dry-run
-cargo run --offline -p cli -- image push unemu/firmware/xub-r638-xtp-ata1f0:1.1.0 unemu/firmware/xub-r638-xtp-ata1f0:1.1.0 --store "$S" --dry-run
-cargo run --offline -p cli -- image push open-at:1.1.0 unemu/open-at:1.1.0 --store "$S" --dry-run
-cargo run --offline -p cli -- image push open-at-games:1.1.0 unemu/open-at-games:1.1.0 --store "$S" --dry-run
+cargo run --offline -p cli -- image push unemu/firmware/unemu-at-bios-1.0.2-unemu.3:1.1.1 unemu/firmware/unemu-at-bios-1.0.2-unemu.3:1.1.1 --store "$S" --dry-run
+cargo run --offline -p cli -- image push unemu/firmware/vgabios-0.8a-unemu.1-std:1.1.1 unemu/firmware/vgabios-0.8a-unemu.1-std:1.1.1 --store "$S" --dry-run
+cargo run --offline -p cli -- image push unemu/firmware/xub-r638-xtp-ata1f0:1.1.1 unemu/firmware/xub-r638-xtp-ata1f0:1.1.1 --store "$S" --dry-run
+cargo run --offline -p cli -- image push open-at:1.1.1 unemu/open-at:1.1.1 --store "$S" --dry-run
+cargo run --offline -p cli -- image push open-at-games:1.1.1 unemu/open-at-games:1.1.1 --store "$S" --dry-run
 cargo run --offline -p cli -- image push unemu/media/freedos-floppy-1.44m:1.4.0 unemu/media/freedos-floppy-1.44m:1.4.0 --store "$S" --dry-run
 cargo run --offline -p cli -- image push unemu/media/freedos-floppy-1.2m:1.4.0 unemu/media/freedos-floppy-1.2m:1.4.0 --store "$S" --dry-run
 cargo run --offline -p cli -- image push unemu/media/freedos-floppy-720k:1.4.0 unemu/media/freedos-floppy-720k:1.4.0 --store "$S" --dry-run
-cargo run --offline -p cli -- image push unemu/firmware/unemu-at-bios-1.0.2-unemu.2:latest unemu/firmware/unemu-at-bios-1.0.2-unemu.2:latest --store "$S" --dry-run
+cargo run --offline -p cli -- image push unemu/firmware/unemu-at-bios-1.0.2-unemu.3:latest unemu/firmware/unemu-at-bios-1.0.2-unemu.3:latest --store "$S" --dry-run
 cargo run --offline -p cli -- image push unemu/firmware/vgabios-0.8a-unemu.1-std:latest unemu/firmware/vgabios-0.8a-unemu.1-std:latest --store "$S" --dry-run
 cargo run --offline -p cli -- image push unemu/firmware/xub-r638-xtp-ata1f0:latest unemu/firmware/xub-r638-xtp-ata1f0:latest --store "$S" --dry-run
 cargo run --offline -p cli -- image push open-at:latest unemu/open-at:latest --store "$S" --dry-run
@@ -692,16 +692,16 @@ cargo run --offline -p cli -- image push unemu/media/freedos-floppy-1.44m:latest
 cargo run --offline -p cli -- image push unemu/media/freedos-floppy-1.2m:latest unemu/media/freedos-floppy-1.2m:latest --store "$S" --dry-run
 cargo run --offline -p cli -- image push unemu/media/freedos-floppy-720k:latest unemu/media/freedos-floppy-720k:latest --store "$S" --dry-run
 
-cargo run --offline -p cli -- image push unemu/firmware/unemu-at-bios-1.0.2-unemu.2:1.1.0 unemu/firmware/unemu-at-bios-1.0.2-unemu.2:1.1.0 --store "$S"
-cargo run --offline -p cli -- image push unemu/firmware/vgabios-0.8a-unemu.1-std:1.1.0 unemu/firmware/vgabios-0.8a-unemu.1-std:1.1.0 --store "$S"
-cargo run --offline -p cli -- image push unemu/firmware/xub-r638-xtp-ata1f0:1.1.0 unemu/firmware/xub-r638-xtp-ata1f0:1.1.0 --store "$S"
-cargo run --offline -p cli -- image push open-at:1.1.0 unemu/open-at:1.1.0 --store "$S"
-cargo run --offline -p cli -- image push open-at-games:1.1.0 unemu/open-at-games:1.1.0 --store "$S"
+cargo run --offline -p cli -- image push unemu/firmware/unemu-at-bios-1.0.2-unemu.3:1.1.1 unemu/firmware/unemu-at-bios-1.0.2-unemu.3:1.1.1 --store "$S"
+cargo run --offline -p cli -- image push unemu/firmware/vgabios-0.8a-unemu.1-std:1.1.1 unemu/firmware/vgabios-0.8a-unemu.1-std:1.1.1 --store "$S"
+cargo run --offline -p cli -- image push unemu/firmware/xub-r638-xtp-ata1f0:1.1.1 unemu/firmware/xub-r638-xtp-ata1f0:1.1.1 --store "$S"
+cargo run --offline -p cli -- image push open-at:1.1.1 unemu/open-at:1.1.1 --store "$S"
+cargo run --offline -p cli -- image push open-at-games:1.1.1 unemu/open-at-games:1.1.1 --store "$S"
 cargo run --offline -p cli -- image push unemu/media/freedos-floppy-1.44m:1.4.0 unemu/media/freedos-floppy-1.44m:1.4.0 --store "$S"
 cargo run --offline -p cli -- image push unemu/media/freedos-floppy-1.2m:1.4.0 unemu/media/freedos-floppy-1.2m:1.4.0 --store "$S"
 cargo run --offline -p cli -- image push unemu/media/freedos-floppy-720k:1.4.0 unemu/media/freedos-floppy-720k:1.4.0 --store "$S"
 
-cargo run --offline -p cli -- image push unemu/firmware/unemu-at-bios-1.0.2-unemu.2:latest unemu/firmware/unemu-at-bios-1.0.2-unemu.2:latest --store "$S"
+cargo run --offline -p cli -- image push unemu/firmware/unemu-at-bios-1.0.2-unemu.3:latest unemu/firmware/unemu-at-bios-1.0.2-unemu.3:latest --store "$S"
 cargo run --offline -p cli -- image push unemu/firmware/vgabios-0.8a-unemu.1-std:latest unemu/firmware/vgabios-0.8a-unemu.1-std:latest --store "$S"
 cargo run --offline -p cli -- image push unemu/firmware/xub-r638-xtp-ata1f0:latest unemu/firmware/xub-r638-xtp-ata1f0:latest --store "$S"
 cargo run --offline -p cli -- image push open-at:latest unemu/open-at:latest --store "$S"
@@ -1392,8 +1392,8 @@ package carries as its `source` layer:
 |---|---|---|
 | `vendor/kiselev-bios/kiselev-bios-a4af458-atreset-src.tar` | upstream at the pinned commit with `at-reset.patch` applied (without upstream's prebuilt `binaries/` and `xtide_r625/`), the patch, `NOTICE` | GPL-3.0-or-later |
 | `vendor/xtide-universal-bios/xtide-universal-bios-r638-src.tar` | SVN r638 trunk export, `NOTICE` | GPL-2.0-only |
-| `vendor/vgabios/vgabios-0.8a-unemu.2-src.tar` | the fork at the pinned revision (without `.beads/config.yaml`, the issue tracker's settings, which name a developer's own sync remote), `NOTICE` | LGPL-2.1-or-later |
-| `vendor/unemu-at-bios/unemu-at-bios-1.0.2-unemu.2-src.tar` | the fork at the pinned revision (without upstream's prebuilt `binaries/` and `xtide_r625/`), `NOTICE` | GPL-3.0-or-later |
+| `vendor/vgabios/vgabios-0.8a-unemu.3-src.tar` | the fork at the pinned revision, `NOTICE` | LGPL-2.1-or-later |
+| `vendor/unemu-at-bios/unemu-at-bios-1.0.2-unemu.3-src.tar` | the fork at the pinned revision (without upstream's prebuilt `binaries/` and `xtide_r625/`), `NOTICE` | GPL-3.0-or-later |
 
 Each is an uncompressed POSIX ustar archive written by GNU tar (from the
 devShell) with members sorted by name, one timestamp (the source revision's
@@ -1451,7 +1451,7 @@ cargo test --offline -p cli --test open_vga_golden -- --include-ignored
 
 The script derives the forge from this repository's `origin` remote (same host,
 transport and organization, repository `vgabios`), builds release
-`v0.8a-unemu.2` at its pinned revision and checks both output SHA-256 values
+`v0.8a-unemu.3` at its pinned revision and checks both output SHA-256 values
 before replacing anything, then writes the source archive of the tree it
 built from. `UNEMU_VGABIOS_FLAKE` overrides the whole flake
 reference and `--print-flake` shows the one it would build. A clone from a mirror
@@ -1472,9 +1472,14 @@ from the sibling `unemu-at-bios` repository:
 vendor/unemu-at-bios/fetch.sh                  # bios-unemu-at.bin and its source archive
 UNEMU_AT_BIOS_CHECKOUT=../unemu-at-bios vendor/unemu-at-bios/fetch.sh   # pinned revision from a local clone
 UNEMUPC98_REQUIRE_FIXTURES=1 cargo test --offline -p assembly --lib unemu_at_bios
+UNEMUPC98_REQUIRE_FIXTURES=1 cargo test --offline --release -p cli --test xms_warm_boot_golden -- --ignored --nocapture
 ```
 
-It builds release `v1.0.2-unemu.2` at its pinned revision (`#unemu-at`),
+The restart golden `xms_warm_boot_golden` boots the pinned ROM; with
+`UNEMUPC98_OPEN_AT_BIOS=/path/to/bios-unemu-at.bin` it boots that image instead,
+so a release candidate of the BIOS can be checked before it is pinned.
+
+It builds release `v1.0.2-unemu.3` at its pinned revision (`#unemu-at`),
 checks the ROM's SHA-256, then writes the source archive. The overrides are
 `UNEMU_AT_BIOS_FLAKE` and `UNEMU_AT_BIOS_CHECKOUT`, and `--print-flake` shows
 the reference; in CI it builds only while `unemu-at-bios` is anonymously

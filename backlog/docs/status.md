@@ -5,6 +5,59 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-15 — FreeDOS keeps its XMS after Ctrl+Alt+Del: open AT BIOS
+  `v1.0.2-unemu.3`, open VGA BIOS `v0.8a-unemu.3`, templates 1.1.1:** with
+  FreeDOS 1.4 loaded high over FDXMS286, a restart through guest
+  Ctrl+Alt+Del or an 8042 CPU reset used to boot into "VDISK has been
+  detected. Driver won't be installed.": MEM showed Extended (XMS) 1,024K
+  total and 0K free, with the kernel and FreeCOM in conventional memory,
+  until power off. **MEASURED** cause: the FreeDOS kernel marks the HMA in use
+  with a VDISK boot record at 100000h ("VDISK" at 100003h, kernel/inithma.c
+  InstallVDISK); RAM keeps it across both restarts, as on the AT, and POST of
+  `v1.0.2-unemu.2` never wrote memory above 1 MiB, so FDXMS286's check_vdisk
+  found the old session's record. CMOS 30h–31h and INT 15h AH=88h were
+  correct; the emulator was not at fault. unemu-at-bios `v1.0.2-unemu.3`
+  (revision `4548c176`, ROM `6938dc8b…ef2442`, source archive
+  `unemu-at-bios-1.0.2-unemu.3-src.tar`, `59d3d921…9d67`) clears every
+  64 KiB block its POST sizing finds above 1 MiB, cold or warm. Its catalogue
+  entry `unemu-at-bios-1.0.2-unemu.3` is the one `machines/at-games-open.toml`,
+  `machines/at-ide.toml` and the templates use; `unemu-at-bios-1.0.2-unemu.2`
+  stays listed as a superseded open entry (new `FirmwareStatus::Superseded`)
+  with its own source archive pin (`6c7aaace…a47e`), so machines and images
+  made with it still start. The catalogue self-test holds the entries a fetch
+  script builds to that script's archive pin; a superseded entry needs a
+  well-formed pin of its own release. MEASURED with `v1.0.2-unemu.3`: 865K
+  XMS free after Ctrl+Alt+Del and after an 8042 reset, as after power-on, on
+  the open game profile and on `at-ide` with 1 MiB. The ignored golden
+  `xms_warm_boot_golden` leaves the kernel's record at 1 MiB, restarts both
+  ways and checks that it is gone
+  (it failed with `v1.0.2-unemu.2`); `UNEMUPC98_OPEN_AT_BIOS` runs it against
+  a candidate image instead. The open goldens moved with the BIOS:
+  `open_game_profile_boots_freedos` 15,216,991 retired (from 15,241,264),
+  `open_game_profile_reads_720k_in_b_and_360k_in_a` 23,463,925 (from
+  22,988,197), both with new screen hashes (the banner names the new
+  release), the at-pm-test open run 6,590,023 (from 6,589,934, every line
+  still passing), the INT 10h probe 10,240,139 (from 10,240,118) and the mode
+  0Dh/13h run 10,730,175 (from 10,730,616), screens and frames unchanged. The
+  `at-ide` goldens and the 0 KiB extended-memory window tests are unchanged.
+  The open VGA BIOS moves to vgabios `v0.8a-unemu.3` (revision `72bf5d98`):
+  ROM and probe bytes unchanged, new source archive
+  `vgabios-0.8a-unemu.3-src.tar` (`2d93fcaa…f8eb`, nothing left out now that
+  the fork no longer tracks its issue tracker's settings). The official
+  templates and firmware packages move once, to version 1.1.1 (pinned
+  digests in `crates/pc-image/tests/template.rs`; the XTIDE package keeps its
+  digest). Machines made from templates 1.1.0 keep the `v1.0.2-unemu.2` BIOS,
+  without the fix; a machine made from 1.1.1, or a machine file, gets the
+  fix. **MEASURED** with that ROM rebuilt from its release: a machine file
+  pinned to its hash and an image made with its package both start and show
+  its banner; with the superseded entry removed from the catalogue both are
+  refused. New machine… still offers the superseded package but never
+  chooses it by default, and firmware labels mark the entry "(superseded)".
+  **READ:** Settings on an image or on a machine made from one does not edit
+  firmware ("Firmware stays as the image stores it",
+  `window/src/image_settings.rs`); firmware edits in Settings are separate,
+  planned work.
+
 - **2026-11-15 — Sound card and PC speaker host levels:** the SB16 was audible
   only at a high host volume while the PC speaker was startlingly loud. Measured
   through the window presenter and its host sink on the open AT games machine

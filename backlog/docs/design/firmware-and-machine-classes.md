@@ -106,8 +106,8 @@ The forces on the design:
 | SeaBIOS 1.17.0 (2025-06-10), QEMU `isapc` config (128 KiB, `PCIBIOS=n`, `USB=n`, `ACPI=n`) | LGPL-3.0-only | **386** (32-bit flat POST) | ISA-only 486-class PC (QEMU `isapc`) | Yes (READ: §3.6), including E801h/E820h; RAM size from CMOS without fw_cfg | Built-in ATA PIO, floppy | SeaVGABIOS through fw_cfg, or SERCON configured by fw_cfg (§3.6) | ASSUMED yes | gcc + binutils | [seabios.org](https://www.seabios.org/), QEMU `roms/config.seabios-128k` |
 | SeaBIOS 1.17.0, QEMU `pc` config | LGPL-3.0-only | 386 | i440FX + PIIX3/PIIX4, Q35 | Yes, including E801h/E820h; also PCI BIOS and ACPI | ATA, AHCI, USB, … | SeaVGABIOS: std VGA, Cirrus, Bochs VBE | ASSUMED yes | gcc | as above |
 | SeaVGABIOS / LGPL VGABIOS (video option ROMs) | LGPL-3.0 / LGPL-2.1 | ASSUMED 386 | Video option ROM | — | — | VGA; VBE with Bochs VBE | — | gcc / bcc | SeaBIOS `vgasrc/`, Bochs |
-| unemu-at-bios, the unemu fork of Kiselev `8088_bios` (`v1.0.2-unemu.2`, `MACHINE_UNEMU_AT`) | GPL-3.0-or-later | **286** (block move and memory sizing in protected mode) | IBM 5170-class: 2×8259, **two** 8237s, 8042, MC146818 | **Yes**: INT 15h 87h, 88h; CMOS shutdown-byte resume (04h, 05h, 09h, 0Ah); extended memory measured into CMOS 30h–31h; A20 through the 8042, off after POST; IBM CMOS checks (161–164) | None; through an option ROM (XUB) as Kiselev | As Kiselev; display switch read with the IBM polarity | **Yes** (MEASURED, goldens) | NASM via Nix | `unemu-org/unemu-at-bios` on this project's forge; `vendor/unemu-at-bios/README.md` |
-| LGPL VGABIOS, unemu fork `v0.8a-unemu.2` (std build) | LGPL-2.1-or-later | **286** (fork's 286 check) | Video option ROM, 32 KiB at C0000h | — | — | Standard VGA, no VBE | **Yes** with the Kiselev and the unemu AT BIOS (MEASURED, goldens; §Video ROM placement) | bcc/as86 (dev86) via Nix | `unemu-org/vgabios` on this project's forge; `vendor/vgabios/README.md` |
+| unemu-at-bios, the unemu fork of Kiselev `8088_bios` (`v1.0.2-unemu.3`, `MACHINE_UNEMU_AT`) | GPL-3.0-or-later | **286** (block move and memory sizing in protected mode) | IBM 5170-class: 2×8259, **two** 8237s, 8042, MC146818 | **Yes**: INT 15h 87h, 88h; CMOS shutdown-byte resume (04h, 05h, 09h, 0Ah); extended memory measured into CMOS 30h–31h, and the memory found above 1 MiB cleared on every POST; A20 through the 8042, off after POST; IBM CMOS checks (161–164) | None; through an option ROM (XUB) as Kiselev | As Kiselev; display switch read with the IBM polarity | **Yes** (MEASURED, goldens) | NASM via Nix | `unemu-org/unemu-at-bios` on this project's forge; `vendor/unemu-at-bios/README.md` |
+| LGPL VGABIOS, unemu fork `v0.8a-unemu.3` (std build) | LGPL-2.1-or-later | **286** (fork's 286 check) | Video option ROM, 32 KiB at C0000h | — | — | Standard VGA, no VBE | **Yes** with the Kiselev and the unemu AT BIOS (MEASURED, goldens; §Video ROM placement) | bcc/as86 (dev86) via Nix | `unemu-org/vgabios` on this project's forge; `vendor/vgabios/README.md` |
 | fysnet i440fx BIOS 1.0 (2025-02-10) | **Freeware, not open source** | — | i440FX / 440BX | — | — | — | — | NBASM | [fysnet.github.io/i440fx](https://fysnet.github.io/i440fx); excluded on license grounds |
 | IBM 5150/5160/5170 ROMs; AMI/Award/Phoenix board BIOSes | Proprietary | per board | per board | per board | per board | per board | per board | — | **User-supplied only.** Hashes are listed, the images are never shipped |
 
@@ -244,25 +244,30 @@ and retains 386-only INT 15h AH=87h and disk paths. Reject it for `ibm-5170`.
 8042 A20, protected-mode services, CMOS and boot qualification; see [deferred work](../deferred.md#open-at-class-80286-system-bios).
 
 **Outcome (2026-11-15): unemu-at-bios.** Instead of a port, the project forked
-the Kiselev BIOS (`unemu-org/unemu-at-bios`, GPL-3.0-or-later; Sergey Kiselev's
-history kept, the unemu changes behind defines) and added a
-`MACHINE_UNEMU_AT` configuration for this board. Release `v1.0.2-unemu.2`
-(revision `a2cf362d`, ROM SHA-256 `f8ecd4a2…c8db6`, catalogue id
-`unemu-at-bios-1.0.2-unemu.2`, **Tested**) is the system BIOS of
-`machines/at-games-open.toml`, `machines/at-ide.toml` and the `open-at`
-templates; `vendor/unemu-at-bios/fetch.sh` builds it with Nix. READ (the
-fork's `README.unemu.md`): next to the Xi 8088 settings it resumes a reset
-through CMOS 0Fh (05h and 0Ah through 0040:0067h, 09h for the block move and
-the POST memory sizing, 04h through POST), answers INT 15h AH=87h and AH=88h
-as the IBM listing does, measures extended memory into CMOS 30h–31h in
-protected mode (one 8042 CPU reset per POST), checks the CMOS as the IBM POST
-does (161–164, checksum over 10h–2Dh, then the F1/F2 prompt), disables A20
-after the 8042 initialization, uses the IBM polarity for the display switch
-and the port 70h NMI mask, initializes the second 8237 (scratch port 8Eh
-instead of C0h) and identifies the 80286 and an 80287. The ROM scans, the
-floppy-only INT 13h and the IPL are the Xi 8088 build's (§2.1). The Kiselev
-Xi 8088 entries stay catalogued: the unmodified image still boots
-`machines/at-freedos.toml` and the BIOS POST and FreeDOS goldens.
+the Kiselev BIOS (`unemu-org/unemu-at-bios`, GPL-3.0-or-later; Sergey
+Kiselev's history kept, the unemu changes behind defines) and added a
+`MACHINE_UNEMU_AT` configuration for this board. Release `v1.0.2-unemu.3`
+(revision `4548c176`, ROM SHA-256 `6938dc8b…ef2442`, catalogue id
+`unemu-at-bios-1.0.2-unemu.3`, **Tested**; `v1.0.2-unemu.2` stays catalogued
+as **Superseded** with its own source archive pin, so machines made with it
+still start) is the system BIOS of `machines/at-games-open.toml`,
+`machines/at-ide.toml` and the `open-at` templates;
+`vendor/unemu-at-bios/fetch.sh` builds it with Nix. READ (the fork's
+`README.unemu.md`): next to the Xi 8088 settings it resumes a reset through
+CMOS 0Fh (05h and 0Ah through 0040:0067h, 09h for the block move and the POST
+memory sizing, 04h through POST), answers INT 15h AH=87h and AH=88h as the IBM
+listing does, measures extended memory into CMOS 30h–31h in protected mode
+(one 8042 CPU reset per POST) and clears every block it finds above 1 MiB on
+every POST (since `v1.0.2-unemu.3`; `v1.0.2-unemu.2` kept the contents, so the
+VDISK header a DOS=HIGH FreeDOS kernel leaves at 1 MiB survived Ctrl+Alt+Del
+and FDXMS286 refused to load), checks the CMOS as the IBM POST does (161–164,
+checksum over 10h–2Dh, then the F1/F2 prompt), disables A20 after the 8042
+initialization, uses the IBM polarity for the display switch and the port 70h
+NMI mask, initializes the second 8237 (scratch port 8Eh instead of C0h) and
+identifies the 80286 and an 80287. The ROM scans, the floppy-only INT 13h and
+the IPL are the Xi 8088 build's (§2.1). The Kiselev Xi 8088 entries stay
+catalogued: the unmodified image still boots `machines/at-freedos.toml` and
+the BIOS POST and FreeDOS goldens.
 
 ## 3. Board models
 
@@ -1101,9 +1106,10 @@ the full-file hash cannot identify a cropped dump.
 
 `FirmwareEntry::VGABIOS_0_8A_UNEMU_1_STD` (`vgabios-0.8a-unemu.1-std`) is the
 open counterpart: the unemu fork of the LGPL VGABIOS 0.8a, std build, release
-`v0.8a-unemu.2` (source revision `d883bbac49238a57f7dddd9ddb2ee253fb6bfe71`),
+`v0.8a-unemu.3` (source revision `72bf5d988f2188a0118416d88a8c90e58c648b06`),
 LGPL-2.1-or-later. The id keeps the name of `v0.8a-unemu.1`, the release that
-first built these bytes; `v0.8a-unemu.2` builds the same image.
+first built these bytes; `v0.8a-unemu.2` and `v0.8a-unemu.3` build the same
+image.
 `vendor/vgabios/fetch.sh` builds it with Nix and pins the raw 32 KiB image,
 SHA-256
 `7570ef9c66fd386450bb35fd2b6c91aba6f8ec69a565a1d7747e6e6716ea5389`, header

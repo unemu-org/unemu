@@ -1973,29 +1973,28 @@ before an import, so other bytes at a fixture path are refused.
 
 `image template build` imports the three sets after the template machines
 (`pc_image::template::build_media`, separate from the firmware and machine
-build, after checking every set fixture before the first tag), open under
-the conjunction of their programs' licences, `GPL-1.0-only AND
-GPL-1.0-or-later AND GPL-2.0-only AND GPL-2.0-or-later AND GPL-3.0-or-later
-AND LGPL-2.1-or-later AND MIT AND BSD-2-Clause AND MPL-2.0 AND Watcom-1.0 AND
+build, after checking every set fixture before the first tag), open under the
+conjunction of their programs' licences, `GPL-1.0-only AND GPL-1.0-or-later
+AND GPL-2.0-only AND GPL-2.0-or-later AND GPL-3.0-or-later AND
+LGPL-2.1-or-later AND MIT AND BSD-2-Clause AND MPL-2.0 AND Watcom-1.0 AND
 Info-ZIP AND Artistic-1.0 AND GFDL-1.1-or-later AND Zlib AND
-LicenseRef-FreeDOS-other` (exactly the 256-byte statement limit; the
-non-SPDX terms named together and quoted in `LICENSES.TXT`; a test keeps the
-code and the index equal), with
-`LICENSES.TXT` as the licence text and the source tar as the source archive
-(`--license-text` and `--source` of §5.2). Each set goes through the guard
-of `unemu/` before its manifest is stored (rules 4 and 5 pass: every medium
-and extra links both), tagged `unemu/media/<name>:1.4.0` and `latest`. The
-template machines' closure is unchanged, so their generation stays `1.1.0`
-with its pins; a separate test pins the three sets' digests. Each program's
-licence is read from its own notices (main source headers, licence files)
-and from the LSM only where those name no version; the narrowest grant of a
-package is listed. Two parts are read closely and are inside the claim: the
-cpidos fonts ship as UPX-packed CPI files, the form their author edits
-(`SOURCES.TXT`), so each CPX carries its source losslessly; the zlib 1.2.3
-library SHSURDRV links is modified and marked as such (`ZLIBCDRD.TXT`), and
-the zlib licence obliges no source. Get templates… lists machine
-images only, so it skips `unemu/media/…` after reading each manifest;
-offering sets belongs to the media picker.
+LicenseRef-FreeDOS-other` (exactly the 256-byte statement limit; the non-SPDX
+terms named together and quoted in `LICENSES.TXT`; a test keeps the code and
+the index equal), with `LICENSES.TXT` as the licence text and the source tar
+as the source archive (`--license-text` and `--source` of §5.2). Each set goes
+through the guard of `unemu/` before its manifest is stored (rules 4 and 5
+pass: every medium and extra links both), tagged `unemu/media/<name>:1.4.0`
+and `latest`. The template machines' closure did not change with them, so
+their generation stayed `1.1.0` with its pins (it is `1.1.1` since, below); a
+separate test pins the three sets' digests. Each program's licence is read
+from its own notices (main source headers, licence files) and from the LSM
+only where those name no version; the narrowest grant of a package is listed.
+Two parts are read closely and are inside the claim: the cpidos fonts ship as
+UPX-packed CPI files, the form their author edits (`SOURCES.TXT`), so each CPX
+carries its source losslessly; the zlib 1.2.3 library SHSURDRV links is
+modified and marked as such (`ZLIBCDRD.TXT`), and the zlib licence obliges no
+source. Get templates… lists machine images only, so it skips `unemu/media/…`
+after reading each manifest; offering sets belongs to the media picker.
 
 **First generation (1.0.0).** `open-at`: an IBM 5170-class board with the
 Kiselev AT-reset BIOS, the unemu VGA BIOS and XTIDE Universal BIOS r638 (each
@@ -2013,7 +2012,12 @@ BIOS package with the open AT BIOS, `unemu/firmware/unemu-at-bios-1.0.2-unemu.2`
 empty 3.5-inch 1.44M B: drive (unit 1, which also takes 720K disks) beside the
 1.2M A:; the rest of the hardware is unchanged. Its firmware packages also
 state a title, description, vendor, version and labels; earlier generations
-had only the catalogue id as their title.
+had only the catalogue id as their title. **Generation 1.1.1** replaces the
+system BIOS package with `unemu/firmware/unemu-at-bios-1.0.2-unemu.3`, the
+fix release whose POST clears extended memory (so FreeDOS keeps its XMS after
+Ctrl+Alt+Del), and moves the VGA BIOS package to the source archive of
+release `v0.8a-unemu.3`, with unchanged ROM bytes; the XTIDE package and the
+hardware are unchanged.
 
 **Build.** `image template build` (commands.md, Official template images)
 imports the three packages from the fetched fixtures with their pinned source

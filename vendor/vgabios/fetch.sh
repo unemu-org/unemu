@@ -72,13 +72,13 @@ check_sha256() {
 # every system, without platform macros or system headers, then runs dev86
 # 1.0.1 bcc/as86; it also fixes the intermediate file names, which bcc's
 # output depends on. MEASURED on aarch64-darwin: this release gives the same
-# ROM and probe hashes as the one before it. A Linux build of the hashes has
-# not been measured.
-TAG="v0.8a-unemu.2"
-REVISION="d883bbac49238a57f7dddd9ddb2ee253fb6bfe71"
+# ROM and probe hashes as the releases before it. The fork's CI checks both
+# hashes on x86_64-linux with nix flake check.
+TAG="v0.8a-unemu.3"
+REVISION="72bf5d988f2188a0118416d88a8c90e58c648b06"
 ROM_SHA256="7570ef9c66fd386450bb35fd2b6c91aba6f8ec69a565a1d7747e6e6716ea5389"
 PROBE_SHA256="21b9dd1db3068bb73f3fde16058578368719f98b6d4335f45ec6681eb47beb58"
-SOURCE_ARCHIVE_SHA256="6304d0c24eb5289f6149b7e5a23a3feb74308f9baf8534ab1706ab953b7cd1d9"
+SOURCE_ARCHIVE_SHA256="2d93fcaaa87ac0f310af097ef184d94932a0c9cb255b9e8f991cee511a1cf8eb"
 QUERY="ref=refs/tags/$TAG&rev=$REVISION"
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -218,7 +218,8 @@ mkdir -p "$STAGE"
 cp -R "$SOURCE_TREE" "$STAGE/vgabios"
 chmod -R u+w "$STAGE"
 # The issue tracker's settings build nothing and name a developer's own sync
-# remote, an address the published archive must not carry.
+# remote, an address the published archive must not carry. The fork stopped
+# tracking them before v0.8a-unemu.3; the removal stays as a guard.
 rm -f "$STAGE/vgabios/.beads/config.yaml"
 cp "$HERE/source-notice.txt" "$STAGE/NOTICE"
 # Member order, timestamps, owners and modes are fixed so the archive has the

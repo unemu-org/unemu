@@ -27,7 +27,7 @@ extended_kib = 1024
 
 [firmware.bios]
 image = "../vendor/unemu-at-bios/bios-unemu-at.bin"
-sha256 = "f8ecd4a2ad4906eb94a7595ede755019f545f40111725819eeb80e423adc8db6"
+sha256 = "6938dc8b665fa120f33775163ab6bacc559389525db87adedf734416f9ef2442"
 provides = ["floppy"]
 
 # 32 KiB fills the C0000h-C7FFFh video-ROM window; XTIDE follows at C8000h.

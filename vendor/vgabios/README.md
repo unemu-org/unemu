@@ -3,8 +3,8 @@
 `fetch.sh` builds two files from the **unemu fork of the LGPL VGABIOS**, the
 video BIOS used by Bochs and QEMU, changed to run on an 80286. The fork is the
 `vgabios` repository in the same forge organization as this repository
-(`unemu-org/vgabios`). It is pinned at release tag **`v0.8a-unemu.2`**, source
-revision `d883bbac49238a57f7dddd9ddb2ee253fb6bfe71`:
+(`unemu-org/vgabios`). It is pinned at release tag **`v0.8a-unemu.3`**, source
+revision `72bf5d988f2188a0118416d88a8c90e58c648b06`:
 
 | File | Flake output | Size | SHA-256 |
 |---|---|---|---|
@@ -39,7 +39,7 @@ vendor/vgabios/fetch.sh
 ```
 
 The script runs `nix build --no-link` for both outputs of
-`<forge>/unemu-org/vgabios?ref=refs/tags/v0.8a-unemu.2&rev=d883bbac…`, checks the
+`<forge>/unemu-org/vgabios?ref=refs/tags/v0.8a-unemu.3&rev=72bf5d98…`, checks the
 ROM's size, header and byte sum, checks both SHA-256 pins, and only then
 replaces the files here. The tag names the release; Nix checks out the pinned
 revision, so a moved tag cannot change the sources. Nix caches the fetched
@@ -74,10 +74,11 @@ pin on every system, as `gcc -E -P -undef -nostdinc` (no platform macros, no
 system headers), followed by dev86 1.0.1 `bcc`/`as86`; the fork's
 `README.unemu.md`, "Reproducibility", lists what the build fixes. The ROM bytes
 do depend on the intermediate file names, which the flake fixes too. MEASURED
-on aarch64-darwin: `v0.8a-unemu.2` builds the same ROM and probe bytes as
-`v0.8a-unemu.1`. A complete x86_64-linux build has not been measured (no Linux
-builder was available); the fork's `nix flake check` compares both outputs with
-the release hashes on whichever system runs it.
+on aarch64-darwin: `v0.8a-unemu.3` builds the same ROM and probe bytes as
+`v0.8a-unemu.1` and `v0.8a-unemu.2`. The fork's `nix flake check` compares
+both outputs with the release hashes on whichever system runs it, and since
+`v0.8a-unemu.3` its CI runs it on x86_64-linux; this repository has not
+measured a Linux build itself.
 
 Only `fetch.sh`, `source-notice.txt` and this README are committed in this
 directory. The outputs, the source archive and the temporary `build/` directory
@@ -96,33 +97,34 @@ print a skip line and return. See `backlog/docs/commands.md`.
 ## Source archive
 
 After both files pass their checks, `fetch.sh` writes
-`vgabios-0.8a-unemu.2-src.tar`, their corresponding source. It is what a
+`vgabios-0.8a-unemu.3-src.tar`, their corresponding source. It is what a
 published firmware package carries as its `source` layer: the ROM is
 LGPL-2.1-or-later, so it may be published only together with it. Its root
-directory, `vgabios-0.8a-unemu.2-src/`, holds:
+directory, `vgabios-0.8a-unemu.3-src/`, holds:
 
 - `vgabios/`: the tree Nix built both files from (the flake's own source,
   read with `builtins.getFlake`), so a mirror or a local clone gives the same
-  bytes. One file of the pinned revision is left out: `.beads/config.yaml`,
-  the issue tracker's settings, which name a developer's own sync remote, a
-  forge address the published archive must not carry. It builds nothing.
-  Everything else is unchanged. The release no longer has upstream's prebuilt
+  bytes. Nothing is left out: the fork stopped tracking `.beads/config.yaml`,
+  the issue tracker's settings, which named a developer's own sync remote,
+  before `v0.8a-unemu.3`; `fetch.sh` still removes that file should a
+  release carry it again, since the published archive must not carry such a
+  forge address. The release no longer has upstream's prebuilt
   `VGABIOS-lgpl-latest*.bin` images, and a source archive carries no prebuilt
   image.
 - `NOTICE`: [`source-notice.txt`](source-notice.txt), unchanged. It names the
-  release, revision and licence, both file hashes, the file left out and the
-  `nix build` commands that rebuild the files. It names the repository
+  release, revision and licence, both file hashes and the `nix build`
+  commands that rebuild the files. It names the repository
   `unemu-org/vgabios` but no forge address.
 
 The whole archive is **LGPL-2.1-or-later**. It is an uncompressed POSIX ustar
 file written by GNU tar: members sorted by name, every timestamp set to the
-revision's commit time (2026-11-15 00:34:54 UTC, the flake's `lastModified`),
+revision's commit time (2026-11-15 21:06:16 UTC, the flake's `lastModified`),
 owner and group 0 with no names, and modes 0644 or 0755. Its SHA-256 is pinned
 in `fetch.sh`:
 
 | File | SHA-256 |
 |---|---|
-| `vgabios-0.8a-unemu.2-src.tar` | `6304d0c24eb5289f6149b7e5a23a3feb74308f9baf8534ab1706ab953b7cd1d9` |
+| `vgabios-0.8a-unemu.3-src.tar` | `2d93fcaaa87ac0f310af097ef184d94932a0c9cb255b9e8f991cee511a1cf8eb` |
 
 The archive adds no network access of its own: it reads the source Nix
 fetched for the build, which Nix caches (see Rebuild above), so only a first
@@ -142,9 +144,9 @@ give both pinned file hashes. A Linux run has not been measured.
 as an open video BIOS for `ibm-5170`, suggested at C0000h, requiring an
 80286 and the register-level `vga` card. It occupies C0000h–C7FFFh, the whole
 video-ROM window that both the IBM and Kiselev BIOSes scan. The id keeps the
-name of the release that first built these ROM bytes; `v0.8a-unemu.2` builds
-them unchanged, and the entry's provenance and source archive pin name the
-current release.
+name of the release that first built these ROM bytes; `v0.8a-unemu.2` and
+`v0.8a-unemu.3` build them unchanged, and the entry's provenance and source
+archive pin name the current release.
 `machines/at-games-open.toml` maps it there with the `vga` card; its XTIDE
 option ROM follows at C8000h. The goldens in `crates/cli/tests/at_games.rs`
 and `crates/cli/tests/open_vga_golden.rs` boot FreeDOS, run the probe and pin

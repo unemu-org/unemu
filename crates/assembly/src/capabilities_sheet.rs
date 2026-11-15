@@ -475,7 +475,17 @@ pub fn value_label(draft: &Draft, path: &str, value: &Value) -> String {
         }
     }
 }
+/// A superseded catalogue entry keeps its label, marked as superseded.
 fn firmware_label(entry: &FirmwareEntry) -> String {
+    let label = catalogue_label(entry);
+    if entry.status == crate::FirmwareStatus::Superseded {
+        format!("{label} (superseded)")
+    } else {
+        label
+    }
+}
+
+fn catalogue_label(entry: &FirmwareEntry) -> String {
     let words = entry.id.replace('-', " ");
     if words.starts_with("ibm 5170 bios ") {
         format!(
@@ -572,8 +582,12 @@ mod tests {
     #[test]
     fn open_firmware_ids_get_readable_labels() {
         assert_eq!(
+            firmware_label(&crate::firmware::UNEMU_AT_BIOS_1_0_2_UNEMU_3),
+            "unemu AT BIOS 1.0.2-unemu.3"
+        );
+        assert_eq!(
             firmware_label(&crate::firmware::UNEMU_AT_BIOS_1_0_2_UNEMU_2),
-            "unemu AT BIOS 1.0.2-unemu.2"
+            "unemu AT BIOS 1.0.2-unemu.2 (superseded)"
         );
         assert_eq!(
             firmware_label(&FirmwareEntry::VGABIOS_0_8A_UNEMU_1_STD),

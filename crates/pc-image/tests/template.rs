@@ -113,7 +113,7 @@ fn two_builds_from_different_fixture_copies_give_identical_images() {
     assert_eq!(
         names,
         [
-            (Kind::Firmware, "unemu/firmware/unemu-at-bios-1.0.2-unemu.2"),
+            (Kind::Firmware, "unemu/firmware/unemu-at-bios-1.0.2-unemu.3"),
             (Kind::Firmware, "unemu/firmware/vgabios-0.8a-unemu.1-std"),
             (Kind::Firmware, "unemu/firmware/xub-r638-xtp-ata1f0"),
             (Kind::Machine, "unemu/open-at"),
@@ -138,7 +138,7 @@ fn two_builds_from_different_fixture_copies_give_identical_images() {
             );
         }
     }
-    assert_eq!(a[3].tags[0].0, "open-at:1.1.0");
+    assert_eq!(a[3].tags[0].0, "open-at:1.1.1");
     // A rebuild into the same store finds every tag in place.
     let again = template::build(&first, &vendor(), &allow, &mut |_| {}).unwrap();
     assert_eq!(identities(&again), identities(&a));
@@ -174,21 +174,21 @@ fn the_guard_sees_each_image_before_its_tags_and_a_refusal_tags_nothing_of_it() 
         .unwrap_err()
         .to_string();
     assert!(
-        error.contains("unemu/open-at-games:1.1.0 refused: synthetic refusal"),
+        error.contains("unemu/open-at-games:1.1.1 refused: synthetic refusal"),
         "{error}"
     );
     assert_eq!(
         *seen.borrow(),
         [
-            "unemu/firmware/unemu-at-bios-1.0.2-unemu.2:1.1.0",
-            "unemu/firmware/vgabios-0.8a-unemu.1-std:1.1.0",
-            "unemu/firmware/xub-r638-xtp-ata1f0:1.1.0",
-            "unemu/open-at:1.1.0",
-            "unemu/open-at-games:1.1.0",
+            "unemu/firmware/unemu-at-bios-1.0.2-unemu.3:1.1.1",
+            "unemu/firmware/vgabios-0.8a-unemu.1-std:1.1.1",
+            "unemu/firmware/xub-r638-xtp-ata1f0:1.1.1",
+            "unemu/open-at:1.1.1",
+            "unemu/open-at-games:1.1.1",
         ]
     );
-    assert!(store.tag_descriptor("open-at:1.1.0").is_ok());
-    for tag in ["open-at-games:1.1.0", "open-at-games:latest"] {
+    assert!(store.tag_descriptor("open-at:1.1.1").is_ok());
+    for tag in ["open-at-games:1.1.1", "open-at-games:latest"] {
         assert!(store.tag_descriptor(tag).is_err(), "{tag}");
     }
 }
@@ -235,7 +235,7 @@ fn template_machines_validate_lower_and_describe_themselves() {
     let t = Temp::new("template-lowering");
     let store = Store::open(t.0.join("store")).unwrap();
     template::build(&store, &vendor(), &allow, &mut |_| {}).unwrap();
-    for (tag, games) in [("open-at:1.1.0", false), ("open-at-games:latest", true)] {
+    for (tag, games) in [("open-at:1.1.1", false), ("open-at-games:latest", true)] {
         let resolved = store.resolve(tag, &pc_image::PcProvider).unwrap();
         let config: toml::Table = std::str::from_utf8(&resolved.config)
             .unwrap()
@@ -333,12 +333,12 @@ fn template_machines_validate_lower_and_describe_themselves() {
 /// changed template needs a new `pc_image::template::VERSION` and new pins.
 const PINNED: [(&str, &str); 5] = [
     (
-        "unemu/firmware/unemu-at-bios-1.0.2-unemu.2",
-        "sha256:9c482af2eafda76da436d1c99955f0d4cce253a90b188894392790508cc97daa",
+        "unemu/firmware/unemu-at-bios-1.0.2-unemu.3",
+        "sha256:e90933bfcd943907ac4077b6622078a5c6065c210d6d9b40afc21e89af4ca7c9",
     ),
     (
         "unemu/firmware/vgabios-0.8a-unemu.1-std",
-        "sha256:770f76c18475b397259ca7a5aa5f82ece5ba667de4dc33502eb8cb9a6145ac1c",
+        "sha256:8388b9f53b7bbad95be58e652fa9187bcbfa73a93f6bb3967bbca0ae08f27307",
     ),
     (
         "unemu/firmware/xub-r638-xtp-ata1f0",
@@ -346,11 +346,11 @@ const PINNED: [(&str, &str); 5] = [
     ),
     (
         "unemu/open-at",
-        "sha256:e2618810cc8fbe125627030846453f8b67a601a740ccceb86be5c491a9aa7e0f",
+        "sha256:5ca93e8abd7523afedb859f8349185eafc80a67765f69afe023935ac3b207a78",
     ),
     (
         "unemu/open-at-games",
-        "sha256:8dfa958d6a39a62256933bccb03037df26ce2e68f6f16d64d0ffc91a190d273b",
+        "sha256:b7cedbcdf8d7ee4195eeb3130c174538bbeff0275d94d3910951f0f1d7757cc9",
     ),
 ];
 
@@ -472,7 +472,7 @@ fn a_version_tag_that_names_another_image_refuses_the_build() {
     let other = pc_image::create::create(
         &store,
         &variant(&store, "Another AT"),
-        "open-at:1.1.0",
+        "open-at:1.1.1",
         None,
     )
     .unwrap();
@@ -480,12 +480,12 @@ fn a_version_tag_that_names_another_image_refuses_the_build() {
         .unwrap_err()
         .to_string();
     assert!(
-        error.contains(&format!("open-at:1.1.0 already names {}", other.digest))
+        error.contains(&format!("open-at:1.1.1 already names {}", other.digest))
             && error.contains("a version tag never moves"),
         "{error}"
     );
     assert_eq!(
-        store.tag_descriptor("open-at:1.1.0").unwrap().digest,
+        store.tag_descriptor("open-at:1.1.1").unwrap().digest,
         other.digest
     );
     assert!(store.tag_descriptor("open-at:latest").is_err());
@@ -597,7 +597,7 @@ fn only_the_judged_manifest_is_tagged() {
     assert!(store.tag_descriptor("judged/bios:1").is_err());
     // The template's own package, under its version tag, is the judged one.
     let package = store
-        .tag_descriptor("unemu/firmware/unemu-at-bios-1.0.2-unemu.2:1.1.0")
+        .tag_descriptor("unemu/firmware/unemu-at-bios-1.0.2-unemu.3:1.1.1")
         .unwrap();
     assert_eq!(
         publish("judged/bios:1", &package.digest).unwrap().digest,
