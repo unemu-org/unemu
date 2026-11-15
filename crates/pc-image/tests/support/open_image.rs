@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Open firmware packages and new empty images for zero-base tests.
-//! Only the fetched open fixtures are used: the Kiselev AT BIOS, the open VGA
+//! Only the fetched open fixtures are used: the open AT BIOS, the open VGA
 //! BIOS and XTIDE Universal BIOS.
 use image_store::Store;
 use pc_image::create::{Chs, Hardware, NewImage, Package, PackageRom, Serial, Video};
@@ -18,8 +18,8 @@ static NEXT: AtomicU64 = AtomicU64::new(0);
 pub fn source_archive(candidate: &pc_image::firmware_import::Candidate) -> &'static str {
     match candidate.distribution {
         assembly::FirmwareDistribution::Open { fetch, .. } => match fetch {
-            "vendor/kiselev-bios/fetch.sh" => {
-                "vendor/kiselev-bios/kiselev-bios-a4af458-atreset-src.tar"
+            "vendor/unemu-at-bios/fetch.sh" => {
+                "vendor/unemu-at-bios/unemu-at-bios-1.0.2-unemu.2-src.tar"
             }
             "vendor/vgabios/fetch.sh" => "vendor/vgabios/vgabios-0.8a-unemu.2-src.tar",
             "vendor/xtide-universal-bios/fetch.sh" => {
@@ -41,7 +41,7 @@ impl Open {
     pub fn new() -> Option<Self> {
         let mut roms = Vec::new();
         for (from, to) in [
-            ("kiselev-bios/bios-xi8088-atreset.bin", "bios.bin"),
+            ("unemu-at-bios/bios-unemu-at.bin", "bios.bin"),
             ("vgabios/vgabios-std.bin", "vga.bin"),
             (
                 "xtide-universal-bios/ide_xtp-r638-ata1f0-8k.bin",
@@ -51,7 +51,7 @@ impl Open {
             roms.push((fixtures::fixture(from)?, to));
         }
         for archive in [
-            "kiselev-bios/kiselev-bios-a4af458-atreset-src.tar",
+            "unemu-at-bios/unemu-at-bios-1.0.2-unemu.2-src.tar",
             "vgabios/vgabios-0.8a-unemu.2-src.tar",
             "xtide-universal-bios/xtide-universal-bios-r638-src.tar",
         ] {
@@ -113,7 +113,7 @@ impl Open {
                 disks,
             },
             firmware: vec![
-                self.rom("kiselev-xi8088-1.0.2-atreset"),
+                self.rom("unemu-at-bios-1.0.2-unemu.2"),
                 self.rom("vgabios-0.8a-unemu.1-std"),
                 self.rom("xub-r638-xtp-ata1f0"),
             ],

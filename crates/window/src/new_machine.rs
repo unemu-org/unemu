@@ -1315,7 +1315,7 @@ mod tests {
             offer_names(&fits),
             [
                 "Kiselev AT BIOS (private copy)",
-                "kiselev-xi8088-1.0.2-atreset"
+                "unemu-at-bios-1.0.2-unemu.2"
             ]
         );
         // The default is the open package, so the image stays redistributable.
@@ -1590,7 +1590,7 @@ mod tests {
         };
         let wizard = wizard(&bare);
         let notice = wizard.private_notice().unwrap();
-        assert!(notice.contains("kiselev-xi8088-1.0.2-atreset"), "{notice}");
+        assert!(notice.contains("unemu-at-bios-1.0.2-unemu.2"), "{notice}");
         assert!(notice.contains("never to unemu/"), "{notice}");
         assert!(wizard.full_reference().contains("/private/"));
         let (image, reference, expected) = wizard.request().unwrap();

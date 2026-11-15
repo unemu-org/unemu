@@ -420,7 +420,7 @@ fn leading_space_volume_label_is_rejected_before_writing() {
 #[cfg(unix)]
 fn preparing_disks_guide_override_loads_the_real_ide_profile() {
     for fixture in [
-        "kiselev-bios/bios-xi8088-atreset.bin",
+        "unemu-at-bios/bios-unemu-at.bin",
         "freedos/freedos.img",
         "xtide-universal-bios/ide_xtp-r638-ata1f0-8k.bin",
     ] {

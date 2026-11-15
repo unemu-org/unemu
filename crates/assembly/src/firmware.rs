@@ -183,9 +183,12 @@ pub enum FirmwareDistribution {
 
 /// Source archive pins, one per fetch script (`SOURCE_ARCHIVE_SHA256`): the
 /// Kiselev archive holds the source of both Xi8088 builds, the XTIDE archive
-/// that of both r638 builds.
+/// that of both r638 builds, and the open VGA and open AT BIOS archives each
+/// that of their one ROM.
 const KISELEV_SOURCE_ARCHIVE: &str =
     "ced63707661747fc045d1e6e565a5cc9be73f95a9c944accedd77b19467fb5f9";
+const UNEMU_AT_BIOS_SOURCE_ARCHIVE: &str =
+    "6c7aaace8c2bc35661ced2596bcad2fd26e77778985aab45742cee560e0fa47e";
 const VGABIOS_SOURCE_ARCHIVE: &str =
     "6304d0c24eb5289f6149b7e5a23a3feb74308f9baf8534ab1706ab953b7cd1d9";
 const XTIDE_SOURCE_ARCHIVE: &str =
@@ -399,6 +402,33 @@ pub const KISELEV_XI8088_ATRESET: FirmwareEntry = FirmwareEntry {
         license: "GPL-3.0-or-later",
         provenance: "skiselev/8088_bios a4af458a72bc33c4be066b33bd76e8af2b24111c (MACHINE_XI8088), at-reset.patch",
         source_archive_sha256: Some(KISELEV_SOURCE_ARCHIVE),
+    },
+    status: FirmwareStatus::Tested,
+    ..KISELEV_XI8088
+};
+
+/// The open AT BIOS: unemu-at-bios, the unemu fork of Kiselev 8088_bios, in
+/// its `MACHINE_UNEMU_AT` configuration, built by `vendor/unemu-at-bios/fetch.sh`.
+///
+/// IBM Personal Computer AT Technical Reference, BIOS listing: like the IBM
+/// BIOS it resumes a processor reset through the CMOS shutdown byte (POST,
+/// shutdown codes 04h, 05h, 09h and 0Ah), measures extended memory into
+/// CMOS 30h–31h, checks the CMOS (errors 161–164, checksum over 10h–2Dh),
+/// answers INT 15h AH=87h and AH=88h, leaves A20 disabled after POST and
+/// reads the System Board display switch (8042 input port bit 6) and the
+/// port 70h NMI mask with the AT polarity. The block move and the memory
+/// sizing use 80286 protected mode, so the 80286 minimum is the firmware's
+/// own. The ROM scans are those of the Xi 8088 build it starts
+/// from, and fixed disks still come from an option ROM. See
+/// `vendor/unemu-at-bios/README.md` and the firmware design §2.1.
+pub const UNEMU_AT_BIOS_1_0_2_UNEMU_2: FirmwareEntry = FirmwareEntry {
+    id: "unemu-at-bios-1.0.2-unemu.2",
+    sha256: "f8ecd4a2ad4906eb94a7595ede755019f545f40111725819eeb80e423adc8db6",
+    distribution: FirmwareDistribution::Open {
+        fetch: "vendor/unemu-at-bios/fetch.sh",
+        license: "GPL-3.0-or-later",
+        provenance: "unemu-org/unemu-at-bios v1.0.2-unemu.2, a2cf362d05ee6cf78ef03cd3cc383ba3a19c40bd (unemu-at build); fork of skiselev/8088_bios 1.0.2 by Sergey Kiselev",
+        source_archive_sha256: Some(UNEMU_AT_BIOS_SOURCE_ARCHIVE),
     },
     status: FirmwareStatus::Tested,
     ..KISELEV_XI8088
@@ -1338,7 +1368,7 @@ mod tests {
     use super::*;
     use crate::{assemble, assemble_with_options, AssemblyError, ImageSource};
 
-    const KNOWN: &str = "kiselev-xi8088-1.0.2 (open, vendor/kiselev-bios/fetch.sh), kiselev-xi8088-1.0.2-atreset (open, vendor/kiselev-bios/fetch.sh), ibm-5170-bios-1984-01-10 (user-supplied: U27 6181028 even, U47 6181029 odd or U17 6181024 even@0, U37 6181026 odd@0, U27 6181025 even@32768, U47 6181027 odd@32768; see vendor/user-roms/README.md), ibm-5170-bios-1985-06-10 (user-supplied: U27 6480090 even, U47 6480091 odd; see vendor/user-roms/README.md), ibm-5170-bios-1985-11-15 (user-supplied: U27 61X9266 even, U47 61X9265 odd; see vendor/user-roms/README.md), landmark-rom-post-at-1.2.0 (user-supplied: U27 27256 even, U47 27256 odd; see vendor/user-roms/README.md)";
+    const KNOWN: &str = "kiselev-xi8088-1.0.2 (open, vendor/kiselev-bios/fetch.sh), kiselev-xi8088-1.0.2-atreset (open, vendor/kiselev-bios/fetch.sh), unemu-at-bios-1.0.2-unemu.2 (open, vendor/unemu-at-bios/fetch.sh), ibm-5170-bios-1984-01-10 (user-supplied: U27 6181028 even, U47 6181029 odd or U17 6181024 even@0, U37 6181026 odd@0, U27 6181025 even@32768, U47 6181027 odd@32768; see vendor/user-roms/README.md), ibm-5170-bios-1985-06-10 (user-supplied: U27 6480090 even, U47 6480091 odd; see vendor/user-roms/README.md), ibm-5170-bios-1985-11-15 (user-supplied: U27 61X9266 even, U47 61X9265 odd; see vendor/user-roms/README.md), landmark-rom-post-at-1.2.0 (user-supplied: U27 27256 even, U47 27256 odd; see vendor/user-roms/README.md)";
 
     fn config() -> MachineConfig {
         crate::bios(vec![0; 32768], Some(vec![0; 1_474_560]))
@@ -1972,6 +2002,10 @@ mod tests {
                 pin(include_str!("../../../vendor/vgabios/fetch.sh")),
             ),
             (
+                "vendor/unemu-at-bios/fetch.sh",
+                pin(include_str!("../../../vendor/unemu-at-bios/fetch.sh")),
+            ),
+            (
                 "vendor/xtide-universal-bios/fetch.sh",
                 pin(include_str!(
                     "../../../vendor/xtide-universal-bios/fetch.sh"
@@ -2000,7 +2034,7 @@ mod tests {
                 entry.id
             );
         }
-        assert_eq!(open, 5);
+        assert_eq!(open, 6);
     }
 
     #[test]
@@ -2094,6 +2128,74 @@ mod tests {
         };
         assert_eq!(bytes.len() as u64, entry.size);
         assert_eq!(format!("{:x}", Sha256::digest(&bytes)), entry.sha256);
+        check_entry_requirements(&config(), BoardModel::Ibm5170, &entry, None).unwrap();
+    }
+
+    #[test]
+    fn unemu_at_bios_catalogue_entry_matches_recipe_and_fixture() {
+        let entry = UNEMU_AT_BIOS_1_0_2_UNEMU_2;
+        assert_eq!(entry.id, "unemu-at-bios-1.0.2-unemu.2");
+        assert!(BoardModel::Ibm5170.firmware_catalogue().contains(&entry));
+        assert_eq!(entry.kind, FirmwareKind::SystemBios);
+        assert_eq!(entry.size, 32768);
+        assert_eq!(entry.base, FirmwareBase::TopOfFirstMib);
+        assert_eq!(entry.scan_window, Some((0xC8000, 0xF8000)));
+        assert_eq!(entry.video_scan_window, Some((0xC0000, 0xC8000)));
+        assert_eq!(entry.provides, &[FirmwareService::Floppy]);
+        assert_eq!(entry.capabilities, &[]);
+        assert_eq!(
+            entry.requires,
+            &[
+                FirmwarePart::Kbc8042,
+                FirmwarePart::RtcCmos,
+                FirmwarePart::PicCascade
+            ]
+        );
+        assert_eq!(entry.cpu_min, FirmwareCpu::I80286);
+        assert_eq!(entry.boards, &["ibm-5170"]);
+        assert_eq!(entry.status, FirmwareStatus::Tested);
+        let script = include_str!("../../../vendor/unemu-at-bios/fetch.sh");
+        let pin = |prefix: &str| {
+            script
+                .lines()
+                .find_map(|line| line.strip_prefix(prefix)?.strip_suffix('"'))
+                .unwrap_or_else(|| panic!("fixture recipe pins {prefix}"))
+        };
+        assert_eq!(entry.sha256, pin("ROM_SHA256=\""));
+        let FirmwareDistribution::Open {
+            fetch,
+            license,
+            provenance,
+            source_archive_sha256,
+        } = entry.distribution
+        else {
+            panic!("the open AT BIOS is open firmware");
+        };
+        assert_eq!(fetch, "vendor/unemu-at-bios/fetch.sh");
+        assert_eq!(license, "GPL-3.0-or-later");
+        assert_eq!(source_archive_sha256, Some(pin("SOURCE_ARCHIVE_SHA256=\"")));
+        assert!(provenance.contains(pin("TAG=\"")), "{provenance}");
+        assert!(provenance.contains(pin("REVISION=\"")), "{provenance}");
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../vendor/unemu-at-bios/bios-unemu-at.bin");
+        let bytes = match std::fs::read(&path) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                assert!(
+                    std::env::var_os("UNEMUPC98_REQUIRE_FIXTURES").as_deref()
+                        != Some(std::ffi::OsStr::new("1")),
+                    "missing fixture {}; run vendor/unemu-at-bios/fetch.sh",
+                    path.display()
+                );
+                eprintln!("skipping: missing fixture {}", path.display());
+                return;
+            }
+            Err(error) => panic!("cannot read {}: {error}", path.display()),
+        };
+        assert_eq!(bytes.len() as u64, entry.size);
+        assert_eq!(format!("{:x}", Sha256::digest(&bytes)), entry.sha256);
+        // The IBM polarity of its display switch reading needs no override.
+        assert_eq!(bios_display_switch(&bytes), crate::DisplaySwitch::Auto);
         check_entry_requirements(&config(), BoardModel::Ibm5170, &entry, None).unwrap();
     }
 

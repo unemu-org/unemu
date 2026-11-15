@@ -525,7 +525,7 @@ names another host. It deletes its repository content afterwards.
 ## Official template images
 
 ```sh
-bash vendor/kiselev-bios/fetch.sh
+bash vendor/unemu-at-bios/fetch.sh
 bash vendor/vgabios/fetch.sh
 bash vendor/xtide-universal-bios/fetch.sh
 cargo run --offline -p cli -- image template build --store /path/to/templates --dry-run
@@ -542,11 +542,11 @@ machine-images §5.5):
 
 | Local tags | Registry repository | Image |
 | --- | --- | --- |
-| `unemu/firmware/kiselev-xi8088-1.0.2-atreset:1.0.1`, `:latest` | `unemu/firmware/kiselev-xi8088-1.0.2-atreset` | Kiselev AT-reset BIOS package with its source archive |
-| `unemu/firmware/vgabios-0.8a-unemu.1-std:1.0.1`, `:latest` | `unemu/firmware/vgabios-0.8a-unemu.1-std` | unemu LGPL VGA BIOS package with its source archive |
-| `unemu/firmware/xub-r638-xtp-ata1f0:1.0.1`, `:latest` | `unemu/firmware/xub-r638-xtp-ata1f0` | XTIDE Universal BIOS r638 package with its source archive |
-| `open-at:1.0.1`, `:latest` | `unemu/open-at` | IBM 5170-class 80286, the three ROMs, 640 KiB + 1 MiB, VGA, COM1 without a mouse, one empty 1.2M drive, a blank zero-base 504 MiB (1024/16/63) ATA disk at 1F0h, no sound card |
-| `open-at-games:1.0.1`, `:latest` | `unemu/open-at-games` | `open-at` plus SB16 (220h, IRQ 5, DMA 1/5), a Microsoft mouse on COM1 and a 2 MiB Lo-tech EMS board (260h, frame D000h) |
+| `unemu/firmware/unemu-at-bios-1.0.2-unemu.2:1.1.0`, `:latest` | `unemu/firmware/unemu-at-bios-1.0.2-unemu.2` | unemu AT BIOS package (the unemu fork of Kiselev 8088_bios) with its source archive |
+| `unemu/firmware/vgabios-0.8a-unemu.1-std:1.1.0`, `:latest` | `unemu/firmware/vgabios-0.8a-unemu.1-std` | unemu LGPL VGA BIOS package with its source archive |
+| `unemu/firmware/xub-r638-xtp-ata1f0:1.1.0`, `:latest` | `unemu/firmware/xub-r638-xtp-ata1f0` | XTIDE Universal BIOS r638 package with its source archive |
+| `open-at:1.1.0`, `:latest` | `unemu/open-at` | IBM 5170-class 80286, the three ROMs, 640 KiB + 1 MiB, VGA, COM1 without a mouse, one empty 1.2M drive, a blank zero-base 504 MiB (1024/16/63) ATA disk at 1F0h, no sound card |
+| `open-at-games:1.1.0`, `:latest` | `unemu/open-at-games` | `open-at` plus SB16 (220h, IRQ 5, DMA 1/5), a Microsoft mouse on COM1 and a 2 MiB Lo-tech EMS board (260h, frame D000h) |
 
 The local tags are the short form `image pull` writes for each repository, so
 `image push TAG` without a reference reaches the repository in the table. Each
@@ -584,24 +584,24 @@ the version tags and the aliases:
 
 ```sh
 S=/path/to/templates
-cargo run --offline -p cli -- image push unemu/firmware/kiselev-xi8088-1.0.2-atreset:1.0.1 unemu/firmware/kiselev-xi8088-1.0.2-atreset:1.0.1 --store "$S" --dry-run
-cargo run --offline -p cli -- image push unemu/firmware/vgabios-0.8a-unemu.1-std:1.0.1 unemu/firmware/vgabios-0.8a-unemu.1-std:1.0.1 --store "$S" --dry-run
-cargo run --offline -p cli -- image push unemu/firmware/xub-r638-xtp-ata1f0:1.0.1 unemu/firmware/xub-r638-xtp-ata1f0:1.0.1 --store "$S" --dry-run
-cargo run --offline -p cli -- image push open-at:1.0.1 unemu/open-at:1.0.1 --store "$S" --dry-run
-cargo run --offline -p cli -- image push open-at-games:1.0.1 unemu/open-at-games:1.0.1 --store "$S" --dry-run
-cargo run --offline -p cli -- image push unemu/firmware/kiselev-xi8088-1.0.2-atreset:latest unemu/firmware/kiselev-xi8088-1.0.2-atreset:latest --store "$S" --dry-run
+cargo run --offline -p cli -- image push unemu/firmware/unemu-at-bios-1.0.2-unemu.2:1.1.0 unemu/firmware/unemu-at-bios-1.0.2-unemu.2:1.1.0 --store "$S" --dry-run
+cargo run --offline -p cli -- image push unemu/firmware/vgabios-0.8a-unemu.1-std:1.1.0 unemu/firmware/vgabios-0.8a-unemu.1-std:1.1.0 --store "$S" --dry-run
+cargo run --offline -p cli -- image push unemu/firmware/xub-r638-xtp-ata1f0:1.1.0 unemu/firmware/xub-r638-xtp-ata1f0:1.1.0 --store "$S" --dry-run
+cargo run --offline -p cli -- image push open-at:1.1.0 unemu/open-at:1.1.0 --store "$S" --dry-run
+cargo run --offline -p cli -- image push open-at-games:1.1.0 unemu/open-at-games:1.1.0 --store "$S" --dry-run
+cargo run --offline -p cli -- image push unemu/firmware/unemu-at-bios-1.0.2-unemu.2:latest unemu/firmware/unemu-at-bios-1.0.2-unemu.2:latest --store "$S" --dry-run
 cargo run --offline -p cli -- image push unemu/firmware/vgabios-0.8a-unemu.1-std:latest unemu/firmware/vgabios-0.8a-unemu.1-std:latest --store "$S" --dry-run
 cargo run --offline -p cli -- image push unemu/firmware/xub-r638-xtp-ata1f0:latest unemu/firmware/xub-r638-xtp-ata1f0:latest --store "$S" --dry-run
 cargo run --offline -p cli -- image push open-at:latest unemu/open-at:latest --store "$S" --dry-run
 cargo run --offline -p cli -- image push open-at-games:latest unemu/open-at-games:latest --store "$S" --dry-run
 
-cargo run --offline -p cli -- image push unemu/firmware/kiselev-xi8088-1.0.2-atreset:1.0.1 unemu/firmware/kiselev-xi8088-1.0.2-atreset:1.0.1 --store "$S"
-cargo run --offline -p cli -- image push unemu/firmware/vgabios-0.8a-unemu.1-std:1.0.1 unemu/firmware/vgabios-0.8a-unemu.1-std:1.0.1 --store "$S"
-cargo run --offline -p cli -- image push unemu/firmware/xub-r638-xtp-ata1f0:1.0.1 unemu/firmware/xub-r638-xtp-ata1f0:1.0.1 --store "$S"
-cargo run --offline -p cli -- image push open-at:1.0.1 unemu/open-at:1.0.1 --store "$S"
-cargo run --offline -p cli -- image push open-at-games:1.0.1 unemu/open-at-games:1.0.1 --store "$S"
+cargo run --offline -p cli -- image push unemu/firmware/unemu-at-bios-1.0.2-unemu.2:1.1.0 unemu/firmware/unemu-at-bios-1.0.2-unemu.2:1.1.0 --store "$S"
+cargo run --offline -p cli -- image push unemu/firmware/vgabios-0.8a-unemu.1-std:1.1.0 unemu/firmware/vgabios-0.8a-unemu.1-std:1.1.0 --store "$S"
+cargo run --offline -p cli -- image push unemu/firmware/xub-r638-xtp-ata1f0:1.1.0 unemu/firmware/xub-r638-xtp-ata1f0:1.1.0 --store "$S"
+cargo run --offline -p cli -- image push open-at:1.1.0 unemu/open-at:1.1.0 --store "$S"
+cargo run --offline -p cli -- image push open-at-games:1.1.0 unemu/open-at-games:1.1.0 --store "$S"
 
-cargo run --offline -p cli -- image push unemu/firmware/kiselev-xi8088-1.0.2-atreset:latest unemu/firmware/kiselev-xi8088-1.0.2-atreset:latest --store "$S"
+cargo run --offline -p cli -- image push unemu/firmware/unemu-at-bios-1.0.2-unemu.2:latest unemu/firmware/unemu-at-bios-1.0.2-unemu.2:latest --store "$S"
 cargo run --offline -p cli -- image push unemu/firmware/vgabios-0.8a-unemu.1-std:latest unemu/firmware/vgabios-0.8a-unemu.1-std:latest --store "$S"
 cargo run --offline -p cli -- image push unemu/firmware/xub-r638-xtp-ata1f0:latest unemu/firmware/xub-r638-xtp-ata1f0:latest --store "$S"
 cargo run --offline -p cli -- image push open-at:latest unemu/open-at:latest --store "$S"
@@ -678,7 +678,7 @@ UNEMUPC98_REQUIRE_FIXTURES=1 UNEMUPC98_SCHEDULER_WALL_TIMES=1 cargo test --offli
 # DOS sessions and their final console screens (requires fetched fixtures):
 UNEMUPC98_REQUIRE_FIXTURES=1 cargo test --offline -p cli --test dos_interactive_golden -- --ignored --nocapture
 UNEMUPC98_REQUIRE_FIXTURES=1 cargo test --offline -p cli --test dos_write_golden -- --ignored --nocapture
-# FreeDOS boots A: with the AT-reset BIOS and XT+ ROM, then lists readonly C:
+# FreeDOS boots A: with the open AT BIOS and XT+ ROM, then lists readonly C:
 UNEMUPC98_REQUIRE_FIXTURES=1 cargo test --offline -p cli --test ide_freedos_golden -- --ignored --nocapture
 # Open AT protected-mode test floppy: INT 15h 88h/87h, PM entry, 8042/triple-fault resets, A20 (design/at-pm-test.md)
 UNEMUPC98_REQUIRE_FIXTURES=1 cargo test --offline -p cli --test at_pm_test_golden -- --include-ignored --nocapture
@@ -1187,7 +1187,7 @@ bash scripts/ci-gate.sh guard
 bash scripts/ci-gate.sh clippy
 bash scripts/ci-gate.sh deny                     # advisories, licences, bans, sources; all features
 bash scripts/ci-gate.sh tests
-bash scripts/ci-gate.sh fixtures                 # build/hash-check BIOS, FreeDOS, test386, XTIDE, HDD, VGA BIOS, at-pm-test, source archives
+bash scripts/ci-gate.sh fixtures                 # build/hash-check BIOSes, FreeDOS, test386, XTIDE, HDD, VGA BIOS, open AT BIOS, at-pm-test, source archives
 bash scripts/ci-gate.sh goldens                  # slow tests in the test profile; requires fixtures
 ```
 
@@ -1265,18 +1265,18 @@ UNEMUPC98_REQUIRE_USER_ROMS=1 bash scripts/ci-gate.sh user-roms
 See `vendor/user-roms/README.md` for catalogue hashes and the proprietary golden rule.
 
 The CI `fixtures` gate runs the Kiselev, FreeDOS, test386, XTIDE, hard-disk,
-open VGA BIOS and at-pm-test scripts below; each checks pinned output SHA-256
-hashes. All but the VGA BIOS rebuild offline when their pinned source commits
-and release archives are cached (Nix caches the VGA BIOS sources and store
-paths); `vendor/at-pm-test/build.sh` always builds offline, assembling the
+open VGA BIOS, open AT BIOS and at-pm-test scripts below; each checks pinned
+output SHA-256 hashes. All but the two Nix-built BIOSes rebuild offline when
+their pinned source commits and release archives are cached (Nix caches the
+VGA and AT BIOS sources and store paths); `vendor/at-pm-test/build.sh` always builds offline, assembling the
 committed program source with the devShell's nasm into a 1.2M boot floppy.
 FreeDOS also fixes the volume serial (`2895-9853`), label (`FREEDOS`) and all filesystem
 timestamps (1980-01-01 UTC). A hash mismatch requires checking the sources and
 toolchain and deliberately rebuilding the goldens' expectations before changing
 the expected hash. See each `vendor/*/README.md` for cache paths and hashes.
 
-The Kiselev, XTIDE and open VGA BIOS scripts also write the corresponding source
-of their open (GPL and LGPL) images next to them, which a published firmware
+The Kiselev, XTIDE, open VGA BIOS and open AT BIOS scripts also write the
+corresponding source of their open (GPL and LGPL) images next to them, which a published firmware
 package carries as its `source` layer:
 
 | Archive | Contents | Licence |
@@ -1284,6 +1284,7 @@ package carries as its `source` layer:
 | `vendor/kiselev-bios/kiselev-bios-a4af458-atreset-src.tar` | upstream at the pinned commit with `at-reset.patch` applied (without upstream's prebuilt `binaries/` and `xtide_r625/`), the patch, `NOTICE` | GPL-3.0-or-later |
 | `vendor/xtide-universal-bios/xtide-universal-bios-r638-src.tar` | SVN r638 trunk export, `NOTICE` | GPL-2.0-only |
 | `vendor/vgabios/vgabios-0.8a-unemu.2-src.tar` | the fork at the pinned revision (without `.beads/config.yaml`, the issue tracker's settings, which name a developer's own sync remote), `NOTICE` | LGPL-2.1-or-later |
+| `vendor/unemu-at-bios/unemu-at-bios-1.0.2-unemu.2-src.tar` | the fork at the pinned revision (without upstream's prebuilt `binaries/` and `xtide_r625/`), `NOTICE` | GPL-3.0-or-later |
 
 Each is an uncompressed POSIX ustar archive written by GNU tar (from the
 devShell) with members sorted by name, one timestamp (the source revision's
@@ -1296,9 +1297,10 @@ compressor's version and header fields out of the bytes. The `NOTICE` is the
 vendor directory's committed `source-notice.txt`; it states what the archive is,
 the upstream location and revision, the licence and the commands that rebuild
 the images. Before writing its archive, the Kiselev script assembles the AT
-reset image from the staged tree and the XTIDE script runs upstream's `make`
-on a copy of the staged trunk; both compare the result with the pinned
-hashes, so an archive always builds what is shipped. BSD tar (the macOS
+reset image from the staged tree, the open AT BIOS script runs `nix build` on
+the staged tree's own flake and the XTIDE script runs upstream's `make` on a
+copy of the staged trunk; each compares the result with the pinned hashes, so
+an archive always builds what is shipped. BSD tar (the macOS
 default outside the devShell) cannot write these archives, and the scripts stop
 with a message. The XTIDE script needs the network and Subversion only when
 `vendor/xtide-universal-bios/build/trunk-r638/` is not cached (it says so
@@ -1353,6 +1355,23 @@ The open VGA tests then do not skip: the `goldens` gate sets
 without that variable, they print a skip line. See `vendor/vgabios/README.md`
 for pins, licence and the later registry delivery. `machines/at-games-open.toml`
 needs the ROM.
+
+The open AT BIOS, the unemu fork of Kiselev 8088_bios, is built the same way
+from the sibling `unemu-at-bios` repository:
+
+```sh
+vendor/unemu-at-bios/fetch.sh                  # bios-unemu-at.bin and its source archive
+UNEMU_AT_BIOS_CHECKOUT=../unemu-at-bios vendor/unemu-at-bios/fetch.sh   # pinned revision from a local clone
+UNEMUPC98_REQUIRE_FIXTURES=1 cargo test --offline -p assembly --lib unemu_at_bios
+```
+
+It builds release `v1.0.2-unemu.2` at its pinned revision (`#unemu-at`),
+checks the ROM's SHA-256, then writes the source archive. The overrides are
+`UNEMU_AT_BIOS_FLAKE` and `UNEMU_AT_BIOS_CHECKOUT`, and `--print-flake` shows
+the reference; in CI it builds only while `unemu-at-bios` is anonymously
+readable next to this repository. `machines/at-games-open.toml`,
+`machines/at-ide.toml` and the `open-at` templates need the ROM. See
+`vendor/unemu-at-bios/README.md`.
 
 The SeaBIOS ISA fixture uses its own firmware devShell, separately from the CI
 `fixtures` gate:

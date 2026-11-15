@@ -154,7 +154,6 @@ fn kiselev_machine_files_explicitly_select_colour_and_neutral_preset_keeps_auto(
         "at-freedos.toml",
         "at-freedos.yaml",
         "at-freedos-from-preset.toml",
-        "at-ide.toml",
     ] {
         let path = root.join(name);
         let text = std::fs::read_to_string(&path).unwrap();
@@ -184,6 +183,39 @@ fn kiselev_machine_files_explicitly_select_colour_and_neutral_preset_keeps_auto(
             .display_switch,
         None
     );
+}
+
+/// The open AT BIOS reads the switch with the IBM polarity, so its machine
+/// files name the console they want: MDA on the inherited dual-card board,
+/// the only (VGA) card on the game profile.
+#[test]
+fn open_at_bios_machine_files_select_their_console_with_ibm_polarity() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../machines");
+    for (name, switch) in [
+        ("at-ide.toml", machine_file::schema::v1::DisplaySwitch::Mono),
+        (
+            "at-games-open.toml",
+            machine_file::schema::v1::DisplaySwitch::Colour,
+        ),
+    ] {
+        let (resolved, _) = machine_file::resolve(root.join(name)).unwrap();
+        assert!(
+            resolved
+                .firmware
+                .unwrap()
+                .bios
+                .unwrap()
+                .image
+                .unwrap()
+                .ends_with("vendor/unemu-at-bios/bios-unemu-at.bin"),
+            "{name}"
+        );
+        assert_eq!(
+            resolved.board.unwrap().display_switch,
+            Some(switch),
+            "{name}"
+        );
+    }
 }
 
 #[path = "../../cli/tests/support/fixtures.rs"]

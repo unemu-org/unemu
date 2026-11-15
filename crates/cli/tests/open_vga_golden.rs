@@ -24,11 +24,13 @@ const CPU_REV: &str = "060d446a883a9b2fc94b3ef91258cb4e6e98d916";
 const FETCH_SCRIPT: &str = include_str!("../../../vendor/vgabios/fetch.sh");
 
 const PROBE_GOLDEN_STOP: (u64, u64) = (0x0000, 0x880A);
-const PROBE_GOLDEN_RETIRED: u64 = 10_239_957;
+// Both counts moved with the switch from the Kiselev AT-reset BIOS to the
+// open AT BIOS (from 10,239,957 and 10,730,615); screen and frames unchanged.
+const PROBE_GOLDEN_RETIRED: u64 = 10_240_119;
 const PROBE_GOLDEN_TEXT_SHA256: &str =
     "567884f1a7356b91a49dc8be47861cd093db45402007cd48a0e5656788ff20ca";
 // The mode 13h stage moved this from 10,396,703; the 0Dh frames are unchanged.
-const SCROLL_GOLDEN_RETIRED: u64 = 10_730_615;
+const SCROLL_GOLDEN_RETIRED: u64 = 10_730_617;
 const SCROLL_FRAME_SHA256: [&str; 5] = [
     "7723e850306f8e31a0fce846b020d7ad4969c9f34093f037a807f33744d44f54",
     "4cd1269be99016a508dd720dd327b6a0cf86f51608954f05582cbf0e6d4ffad8",
@@ -93,7 +95,7 @@ fn open_profile_booting(
 ) -> Option<support::Profile> {
     let mut firmware = Vec::new();
     for relative in [
-        "kiselev-bios/bios-xi8088-atreset.bin",
+        "unemu-at-bios/bios-unemu-at.bin",
         "vgabios/vgabios-std.bin",
         "xtide-universal-bios/ide_xtp-r638-ata1f0-8k.bin",
     ] {
@@ -127,7 +129,7 @@ fn screen_rows(assembled: &mut assembly::AssembledMachine) -> Vec<String> {
 }
 
 #[test]
-#[ignore = "slow: open Kiselev/VGA/XTIDE POST, then the INT 10h probe floppy"]
+#[ignore = "slow: open AT BIOS/VGA/XTIDE POST, then the INT 10h probe floppy"]
 fn open_vga_bios_passes_the_int10_probe_floppy() {
     assert!(include_str!("../../../Cargo.lock").contains(CPU_REV));
     let Some(probe) = fixtures::fixture("vgabios/int10-probe-1200.img") else {
@@ -463,7 +465,7 @@ fn scanout_models_shift_the_pixel_stream_and_build_the_bios_palette() {
 }
 
 #[test]
-#[ignore = "slow: open Kiselev/VGA/XTIDE POST, then a mode 0Dh/13h scanout boot sector"]
+#[ignore = "slow: open AT BIOS/VGA/XTIDE POST, then a mode 0Dh/13h scanout boot sector"]
 fn open_vga_bios_mode_0d_scrolling_and_mode_13h_reach_scanout() {
     assert!(include_str!("../../../Cargo.lock").contains(CPU_REV));
     let Some(profile) = open_profile_booting("m0d-scroll-1200.img", &mode_0d_scroll_floppy(), None)

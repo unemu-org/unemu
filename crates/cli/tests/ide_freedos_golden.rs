@@ -55,7 +55,7 @@ fn freedos_lists_the_readonly_ide_marker() {
         include_str!("../../../Cargo.lock").contains("#060d446a883a9b2fc94b3ef91258cb4e6e98d916")
     );
     for path in [
-        "kiselev-bios/bios-xi8088-atreset.bin",
+        "unemu-at-bios/bios-unemu-at.bin",
         "freedos/freedos.img",
         "xtide-universal-bios/ide_xtp-r638-ata1f0-8k.bin",
         "hdd/fat16.img",
@@ -161,10 +161,10 @@ fn freedos_lists_the_readonly_ide_marker() {
     // The BIOS reads 32h=20h, so FreeDOS reports Sat 01-01-2000.
     assert_eq!(prompt_logical_hash, 0xfbd3caf6e77b879d);
     assert_eq!(prompt_retired, 15_775_575);
-    assert_eq!(prompt_hash, 0xb7d8e6cd59c50bf2);
+    assert_eq!(prompt_hash, 0xa0e8f388c37aa180);
     assert_eq!(assembled.machine.cpu().retired(), 19_746_105);
     assert_eq!(assembled.machine.virtual_time(), 21_000_000);
-    assert_eq!(screen_hash(&console), 0xa045a62f7781ffa1);
+    assert_eq!(screen_hash(&console), 0x7aae65a75645f427);
     assert_eq!(session::logical_hash(&console), 0x48d2b9699fbe5cc2);
     assert_eq!(
         post,

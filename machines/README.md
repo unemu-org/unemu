@@ -6,15 +6,19 @@ Xi8088 open BIOS, MDA and VGA text cards, an unwired COM1, and a 1.44 MB
 floppy on the µPD765 controller. Its pinned images are fetched with
 `vendor/kiselev-bios/fetch.sh` and `vendor/freedos/fetch.sh`.
 
-`at-ide.toml` extends `at-freedos.toml`, selecting the separately built
-`bios-xi8088-atreset.bin` and the pinned XTIDE Universal BIOS r638 XT+ option
-ROM configured for 16-bit ATA polling at C8000h. A primary IDE channel uses
+`at-ide.toml` extends `at-freedos.toml`, selecting the open AT BIOS
+(`vendor/unemu-at-bios/bios-unemu-at.bin`, the unemu fork of the Kiselev BIOS;
+[fixture notes](../vendor/unemu-at-bios/README.md)) and the pinned XTIDE
+Universal BIOS r638 XT+ option ROM configured for 16-bit ATA polling at C8000h. A primary IDE channel uses
 1F0h/3F6h and IRQ14.
 Its master is `vendor/hdd/fat16.img`, geometry 615/4/17, containing the
 UNEMUHDD FAT16 volume and 29-byte `MARKER.TXT`. The disk is readonly so
 the directory-listing test cannot depend on accepted writes.
-The compatibility BIOS accepts XUB's AH=00h, DL=80h reset request using IBM
-AT semantics; the original BIOS and floppy profile keep their existing bytes.
+The open AT BIOS accepts XUB's AH=00h, DL=80h reset request using IBM AT
+semantics; the original BIOS and floppy profile keep their existing bytes. It
+reads the display switch with the IBM polarity, so `at-ide.toml` sets
+`display_switch = "mono"` to keep the inherited MDA as the console (the
+Kiselev profiles set `colour`, which that BIOS reads the other way).
 The ignored `ide_freedos_golden` boots A:, types `DIR C:` through the keyboard
 and checks the completed listing, prompt instruction count, screen hashes
 and POST sequence. Run it with:
@@ -23,7 +27,8 @@ and POST sequence. Run it with:
 UNEMUPC98_REQUIRE_FIXTURES=1 cargo test --offline -p cli --test ide_freedos_golden -- --ignored --nocapture
 ```
 
-Fetch both BIOS images with `vendor/kiselev-bios/fetch.sh`, the option ROMs with
+Fetch the Kiselev BIOS images with `vendor/kiselev-bios/fetch.sh`, the open AT
+BIOS with `vendor/unemu-at-bios/fetch.sh`, the option ROMs with
 `vendor/xtide-universal-bios/fetch.sh`, and build the HDD with
 `vendor/hdd/build.sh`. See
 [`firmware-and-machine-classes.md` §9 item 11](../backlog/docs/design/firmware-and-machine-classes.md).
@@ -282,7 +287,7 @@ this command; larger/LBA images are refused even if a different BIOS could
 address them. `--chs C/H/S` creates the exact geometry instead (C=1–1024,
 H=1–16, S=1–63). Images contain no partition table or filesystem.
 
-Use the AT-reset Kiselev BIOS plus XUB option ROM from `at-ide.toml` for the
+Use the open AT BIOS plus XUB option ROM from `at-ide.toml` for the
 16×63 mapping: XUB discovers the geometry through ATA IDENTIFY. An IBM AT
 system BIOS without a fixed-disk option ROM derives only IBM types 1–14 and
 16–22; arbitrary geometry is rejected. For that path, for example, create
@@ -571,9 +576,13 @@ and the complete video container; its 2000h prefix is skipped when mapping
 C0000h. Nothing downloads these ROMs. Unlike test discovery, machine-file paths
 use these exact filenames; a local child can override them.
 
-`at-games-open.toml` needs no user ROMs. Fetch/build the Kiselev AT-reset,
-open VGA BIOS and XTIDE fixtures with `vendor/kiselev-bios/fetch.sh`,
-`vendor/vgabios/fetch.sh` and `vendor/xtide-universal-bios/fetch.sh`. It
+`at-games-open.toml` needs no user ROMs. Fetch/build the open AT BIOS, open VGA
+BIOS and XTIDE fixtures with `vendor/unemu-at-bios/fetch.sh`,
+`vendor/vgabios/fetch.sh` and `vendor/xtide-universal-bios/fetch.sh`. The open
+AT BIOS ([fixture notes](../vendor/unemu-at-bios/README.md)) is the unemu fork
+of the Kiselev BIOS with the IBM PC/AT's shutdown-byte resume, INT 15h AH=87h
+and AH=88h, measured extended memory, CMOS checks and display-switch
+polarity; the colour switch selects the VGA card, as with the IBM BIOS. It
 removes both preset text cards and adds the register-level `vga` card with
 the open VGA BIOS, the unemu fork of the LGPL VGABIOS built for the 286
 ([fixture notes](../vendor/vgabios/README.md)), at C0000h–C7FFFh; XTIDE
@@ -605,9 +614,12 @@ an empty 80287 socket. The 1 MiB extended-memory default shortens the POST memor
 test. To raise it, set `memory.extended_kib` in a local child profile; allowed
 values are 0–15232 KiB in steps of 64 KiB.
 The I286 model supports LMSW entry, 16-bit protected execution and task switches;
-the pinned IBM POST tests all 640 KiB + 1 MiB. No memory manager is supplied.
-XMS, INT 15h block move and DOS-extender use are not yet qualified. This CPU
-is an 80286, with no 386 instruction set.
+the pinned IBM POST tests all 640 KiB + 1 MiB, and the open AT BIOS measures
+the extended memory at POST. Both BIOSes pass the open protected-mode test
+floppy's INT 15h block move and reset checks
+([at-pm-test](../backlog/docs/design/at-pm-test.md)). No memory manager is
+supplied; XMS and DOS-extender use are not yet qualified. This CPU is an
+80286, with no 386 instruction set.
 
 A: is **1.2M**, with the minimal FreeDOS boot fixture, the `FDTOOLS`
 installation floppy, then a local transfer floppy. B: is omitted: the June 1985 BIOS has no 1.44M drive type
@@ -624,7 +636,7 @@ unemupc98 media create hd --chs 615/4/17 machines/local/games.img
 unemupc98 media create floppy --type 1.2M --format --label TRANSFER machines/local/transfer-1200.img
 unemupc98 machine check machines/at-games.toml
 unemupc98-window --machine machines/at-games.toml
-# Open firmware, no user ROMs (also run vendor/kiselev-bios/fetch.sh,
+# Open firmware, no user ROMs (also run vendor/unemu-at-bios/fetch.sh,
 # vendor/vgabios/fetch.sh and vendor/xtide-universal-bios/fetch.sh):
 # unemupc98 machine check machines/at-games-open.toml
 # unemupc98-window --machine machines/at-games-open.toml
@@ -753,9 +765,10 @@ C0000h layout with discovered user ROMs, the 1.2M fixture and a temporary blank
 HDD. Its stop/counter/hash and POST pins record a measured FreeDOS boot with
 both user-supplied IBM ROMs.
 
-The fixture-gated open-profile check uses the real pinned Kiselev AT-reset,
-XTIDE and FreeDOS 1.2M images with temporary local media created by `media create`.
-The ignored `open_game_profile_boots_freedos` pins its FreeDOS A: prompt's
-retired count and MDA text hash. Missing open fixtures skip unless
+The fixture-gated open-profile check uses the real pinned open AT BIOS, open
+VGA BIOS, XTIDE and FreeDOS 1.2M images with temporary local media created by
+`media create`. The ignored `open_game_profile_boots_freedos` checks the open
+AT BIOS sign-on and its 80286 line on the POST screen and pins its FreeDOS A:
+prompt's retired count and VGA text hash. Missing open fixtures skip unless
 `UNEMUPC98_REQUIRE_FIXTURES=1`; this open-firmware boot does not qualify the
 IBM fixed-disk BIOS's C: operations.

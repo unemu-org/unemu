@@ -32,10 +32,11 @@ case "$step" in
         ')
         ;;
     fixtures)
-        # The goldens gate requires every fixture its tests read. vgabios is
-        # built by Nix from the repository next to this checkout's origin.
-        # The Kiselev, XTIDE and vgabios scripts also write the pinned source
-        # archives of their open images. XTIDE runs last: it exports its
+        # The goldens gate requires every fixture its tests read. vgabios and
+        # unemu-at-bios are built by Nix from the repositories next to this
+        # checkout's origin. The Kiselev, XTIDE, vgabios and unemu-at-bios
+        # scripts also write the pinned source archives of their open
+        # images. XTIDE runs last: it exports its
         # source over the network with Subversion, which Nix supplies, so an
         # unreachable server cannot keep the other fixtures from being built.
         gate_command+=(bash -euc '
@@ -44,6 +45,7 @@ case "$step" in
             bash vendor/test386/fetch.sh
             bash vendor/hdd/build.sh
             bash vendor/vgabios/fetch.sh
+            bash vendor/unemu-at-bios/fetch.sh
             bash vendor/at-pm-test/build.sh
             bash vendor/xtide-universal-bios/fetch.sh
         ')

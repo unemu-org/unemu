@@ -77,8 +77,11 @@ Both images are 32,768 bytes and use the same pinned upstream commit:
 | `bios-xi8088-atreset.bin` | `61589573c9809273198b137d9419c87242b0a5f63c2ad834a9565950c3d6becc` |
 
 The original remains selected by `machines/at-freedos.toml` and the existing
-goldens. `machines/at-ide.toml` selects the compatibility image and the configured
-XT+ option ROM.
+goldens. No machine file selects the compatibility image any more: since
+2026-11-15 `machines/at-ide.toml` boots the open AT BIOS from
+[`vendor/unemu-at-bios`](../unemu-at-bios/README.md), the unemu fork of this
+BIOS, with the configured XT+ option ROM. The compatibility image stays
+catalogued for tests.
 
 ## Source archive
 

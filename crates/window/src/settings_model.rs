@@ -1248,7 +1248,7 @@ mod tests {
     }
 
     fn open_bios() -> Option<Vec<u8>> {
-        open_firmware("kiselev-bios/bios-xi8088-atreset.bin")
+        open_firmware("unemu-at-bios/bios-unemu-at.bin")
     }
 
     fn open_firmware(name: &str) -> Option<Vec<u8>> {

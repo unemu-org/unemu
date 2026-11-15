@@ -29,6 +29,11 @@ address bit 20 and survives CPU-only reset. See
 - **Revisit when:** Goldens need AT-faithful firmware behaviour that Kiselev
   cannot provide, or a maintainer asks.
 - **Tracked in:** upc-6le.37.
+- **Resolved 2026-11-15:** not by a port but by the project's own fork of the
+  Kiselev BIOS, unemu-at-bios, now the system BIOS of the open AT machines;
+  see [open AT BIOS candidates](design/firmware-and-machine-classes.md#24-open-at-bios-candidates)
+  and `vendor/unemu-at-bios/README.md`. Its remaining AT gaps are that
+  repository's own work.
 
 ### Protected mode, paging (386+), APIC, PCI
 

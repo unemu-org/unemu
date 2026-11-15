@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-# Open firmware only: Kiselev AT-reset system BIOS, the open VGA BIOS and XTIDE.
-# Fetch them with vendor/kiselev-bios/fetch.sh, vendor/vgabios/fetch.sh and
-# vendor/xtide-universal-bios/fetch.sh.
+# Open firmware only: the open AT BIOS (unemu-at-bios), the open VGA BIOS and
+# XTIDE. Fetch them with vendor/unemu-at-bios/fetch.sh, vendor/vgabios/fetch.sh
+# and vendor/xtide-universal-bios/fetch.sh.
 # Create local media first; see machines/README.md, Playing DOS games.
 schema = 1
 extends = "preset:ibm-5170"
@@ -9,8 +9,8 @@ name = "at-games-open"
 description = "Open-firmware 80286 AT with VGA, SB16/OPL3, COM1 mouse and journaled C:"
 
 [board]
-# The only display is the VGA card; its video BIOS sets the BIOS data area's
-# display bits itself, so Kiselev's inverted reading of this switch is moot.
+# The only display is the VGA card. The open AT BIOS reads this switch with the
+# IBM polarity, so the colour position selects it, as for the IBM BIOS.
 display_switch = "colour"
 
 [board.rtc]
@@ -26,8 +26,8 @@ conventional_kib = 640
 extended_kib = 1024
 
 [firmware.bios]
-image = "../vendor/kiselev-bios/bios-xi8088-atreset.bin"
-sha256 = "61589573c9809273198b137d9419c87242b0a5f63c2ad834a9565950c3d6becc"
+image = "../vendor/unemu-at-bios/bios-unemu-at.bin"
+sha256 = "f8ecd4a2ad4906eb94a7595ede755019f545f40111725819eeb80e423adc8db6"
 provides = ["floppy"]
 
 # 32 KiB fills the C0000h-C7FFFh video-ROM window; XTIDE follows at C8000h.

@@ -1678,7 +1678,11 @@ card. `open-at-games`: the same plus the cards of `machines/at-games-open.toml`
 without its media: SB16 at 220h (IRQ 5, DMA 1 and 5), a Microsoft mouse on
 COM1 and a 2 MiB Lo-tech EMS board at 260h with its frame at D000h. Neither
 holds an operating system or other software: disk images with an operating
-system need their own licence decision.
+system need their own licence decision. Generation 1.0.1 changed only the
+VGA BIOS package's source archive. **Generation 1.1.0** replaces the system
+BIOS package with the open AT BIOS, `unemu/firmware/unemu-at-bios-1.0.2-unemu.2`
+(the unemu fork of the Kiselev BIOS, with its source archive); the hardware is
+unchanged.
 
 **Build.** `image template build` (commands.md, Official template images)
 imports the three packages from the fetched fixtures with their pinned source

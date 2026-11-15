@@ -560,6 +560,7 @@ fn repository_machine_cpu_regions_cover_the_full_firmware_board_space() {
     for relative in [
         "kiselev-bios/bios-xi8088.bin",
         "kiselev-bios/bios-xi8088-atreset.bin",
+        "unemu-at-bios/bios-unemu-at.bin",
         "freedos/freedos.img",
         "xtide-universal-bios/ide_xtp-r638-ata1f0-8k.bin",
         "hdd/fat16.img",
@@ -974,7 +975,7 @@ fn user_rom_ibm_1985_identity() {
 fn repository_machines_and_preset_keep_effective_firmware_services() {
     for relative in [
         "kiselev-bios/bios-xi8088.bin",
-        "kiselev-bios/bios-xi8088-atreset.bin",
+        "unemu-at-bios/bios-unemu-at.bin",
         "freedos/freedos.img",
         "xtide-universal-bios/ide_xtp-r638-ata1f0-8k.bin",
         "hdd/fat16.img",

@@ -75,6 +75,7 @@ impl BoardModel {
             Self::Ibm5170 => &[
                 crate::KISELEV_XI8088,
                 crate::firmware::KISELEV_XI8088_ATRESET,
+                crate::firmware::UNEMU_AT_BIOS_1_0_2_UNEMU_2,
                 crate::firmware::IBM_5170_1984_01_10,
                 crate::firmware::IBM_5170_1985_06_10,
                 crate::firmware::IBM_5170_1985_11_15,

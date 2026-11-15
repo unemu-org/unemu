@@ -95,10 +95,7 @@ fn two_builds_from_different_fixture_copies_give_identical_images() {
     assert_eq!(
         names,
         [
-            (
-                Kind::Firmware,
-                "unemu/firmware/kiselev-xi8088-1.0.2-atreset"
-            ),
+            (Kind::Firmware, "unemu/firmware/unemu-at-bios-1.0.2-unemu.2"),
             (Kind::Firmware, "unemu/firmware/vgabios-0.8a-unemu.1-std"),
             (Kind::Firmware, "unemu/firmware/xub-r638-xtp-ata1f0"),
             (Kind::Machine, "unemu/open-at"),
@@ -122,7 +119,7 @@ fn two_builds_from_different_fixture_copies_give_identical_images() {
             );
         }
     }
-    assert_eq!(a[3].tags[0].0, "open-at:1.0.1");
+    assert_eq!(a[3].tags[0].0, "open-at:1.1.0");
     // A rebuild into the same store finds every tag in place.
     let again = template::build(&first, &vendor(), &allow, &mut |_| {}).unwrap();
     assert_eq!(identities(&again), identities(&a));
@@ -158,21 +155,21 @@ fn the_guard_sees_each_image_before_its_tags_and_a_refusal_tags_nothing_of_it() 
         .unwrap_err()
         .to_string();
     assert!(
-        error.contains("unemu/open-at-games:1.0.1 refused: synthetic refusal"),
+        error.contains("unemu/open-at-games:1.1.0 refused: synthetic refusal"),
         "{error}"
     );
     assert_eq!(
         *seen.borrow(),
         [
-            "unemu/firmware/kiselev-xi8088-1.0.2-atreset:1.0.1",
-            "unemu/firmware/vgabios-0.8a-unemu.1-std:1.0.1",
-            "unemu/firmware/xub-r638-xtp-ata1f0:1.0.1",
-            "unemu/open-at:1.0.1",
-            "unemu/open-at-games:1.0.1",
+            "unemu/firmware/unemu-at-bios-1.0.2-unemu.2:1.1.0",
+            "unemu/firmware/vgabios-0.8a-unemu.1-std:1.1.0",
+            "unemu/firmware/xub-r638-xtp-ata1f0:1.1.0",
+            "unemu/open-at:1.1.0",
+            "unemu/open-at-games:1.1.0",
         ]
     );
-    assert!(store.tag_descriptor("open-at:1.0.1").is_ok());
-    for tag in ["open-at-games:1.0.1", "open-at-games:latest"] {
+    assert!(store.tag_descriptor("open-at:1.1.0").is_ok());
+    for tag in ["open-at-games:1.1.0", "open-at-games:latest"] {
         assert!(store.tag_descriptor(tag).is_err(), "{tag}");
     }
 }
@@ -185,22 +182,22 @@ fn a_missing_fixture_or_another_source_archive_names_the_fetch_script() {
         .unwrap_err()
         .to_string();
     assert!(
-        error.contains("missing fixture") && error.contains("vendor/kiselev-bios/fetch.sh"),
+        error.contains("missing fixture") && error.contains("vendor/unemu-at-bios/fetch.sh"),
         "{error}"
     );
-    let kiselev = &template::FIRMWARE[0];
-    if !present(std::slice::from_ref(kiselev)) {
+    let bios = &template::FIRMWARE[0];
+    if !present(std::slice::from_ref(bios)) {
         return;
     }
     let copy = t.0.join("fixtures");
-    for relative in [kiselev.rom, kiselev.source_archive] {
+    for relative in [bios.rom, bios.source_archive] {
         let to = copy.join(relative);
         fs::create_dir_all(to.parent().unwrap()).unwrap();
         fs::copy(vendor().join(relative), to).unwrap();
     }
     let mut archive = vec![0_u8; 8192];
     archive[257..263].copy_from_slice(b"ustar\0");
-    fs::write(copy.join(kiselev.source_archive), archive).unwrap();
+    fs::write(copy.join(bios.source_archive), archive).unwrap();
     let error = template::build(&store, &copy, &allow, &mut |_| {})
         .unwrap_err()
         .to_string();
@@ -219,7 +216,7 @@ fn template_machines_validate_lower_and_describe_themselves() {
     let t = Temp::new("template-lowering");
     let store = Store::open(t.0.join("store")).unwrap();
     template::build(&store, &vendor(), &allow, &mut |_| {}).unwrap();
-    for (tag, games) in [("open-at:1.0.1", false), ("open-at-games:latest", true)] {
+    for (tag, games) in [("open-at:1.1.0", false), ("open-at-games:latest", true)] {
         let resolved = store.resolve(tag, &pc_image::PcProvider).unwrap();
         let config: toml::Table = std::str::from_utf8(&resolved.config)
             .unwrap()
@@ -295,8 +292,8 @@ fn template_machines_validate_lower_and_describe_themselves() {
 /// changed template needs a new `pc_image::template::VERSION` and new pins.
 const PINNED: [(&str, &str); 5] = [
     (
-        "unemu/firmware/kiselev-xi8088-1.0.2-atreset",
-        "sha256:202af98f8fff46f5a392d2103ea56bdbe6c43d88f428951f18b72c2fa95df7da",
+        "unemu/firmware/unemu-at-bios-1.0.2-unemu.2",
+        "sha256:2edb5948123ff45d4f2d8f67613ecd6fd45e2b967d94ffc52537c05f0dddfc29",
     ),
     (
         "unemu/firmware/vgabios-0.8a-unemu.1-std",
@@ -308,11 +305,11 @@ const PINNED: [(&str, &str); 5] = [
     ),
     (
         "unemu/open-at",
-        "sha256:85e095b004ca09369d95becc047e9ad53287ffdd79b5e10e576f25dbb0646592",
+        "sha256:26a177bec3fa9fa27f5bef3b4f77d54e2a9f8f93771da4429dded92d8651995d",
     ),
     (
         "unemu/open-at-games",
-        "sha256:1d092620ee9207776067aa2fcee8560df3d281979aa0c566016f882afb25576f",
+        "sha256:d71283a6d34151affdddddc3c680128e22674ac0144bacce76525a3095fb01a0",
     ),
 ];
 
@@ -335,6 +332,48 @@ fn the_published_generation_keeps_its_pinned_digests() {
     assert_eq!(
         digests, pinned,
         "the templates changed: version {VERSION} is published with the pinned digests and its tags never move; bump pc_image::template::VERSION, then update these pins"
+    );
+}
+
+/// The system BIOS package names the fork and its original author, so the
+/// generated README credits Sergey Kiselev outside the source layer too.
+#[test]
+fn the_bios_package_readme_names_the_fork_and_its_original_author() {
+    if !present(&template::FIRMWARE) {
+        return;
+    }
+    let t = Temp::new("template-readme");
+    let store = Store::open(t.0.join("store")).unwrap();
+    let built = template::build(&store, &vendor(), &allow, &mut |_| {}).unwrap();
+    let bios = &built[0];
+    assert_eq!(
+        bios.repository,
+        template::FIRMWARE[0].repository(),
+        "the system BIOS package comes first"
+    );
+    let manifest = Manifest::decode(
+        &store
+            .read_verified(&bios.descriptor, MAX_SMALL_BLOB)
+            .unwrap(),
+    )
+    .unwrap();
+    let readme = manifest
+        .layers
+        .iter()
+        .find(|d| d.decoded_media_type() == mt::MARKDOWN)
+        .expect("generated README layer");
+    let text = String::from_utf8(store.read_verified(readme, MAX_SMALL_BLOB).unwrap()).unwrap();
+    let entry = pc_image::firmware::catalogue()
+        .iter()
+        .find(|entry| entry.id == template::FIRMWARE[0].catalogue_id)
+        .unwrap();
+    let assembly::FirmwareDistribution::Open { provenance, .. } = entry.distribution else {
+        panic!("the template BIOS is open firmware");
+    };
+    assert!(text.contains(&format!("Origin: {provenance}\n")), "{text}");
+    assert!(
+        text.contains("fork of skiselev/8088_bios 1.0.2 by Sergey Kiselev"),
+        "{text}"
     );
 }
 
@@ -392,7 +431,7 @@ fn a_version_tag_that_names_another_image_refuses_the_build() {
     let other = pc_image::create::create(
         &store,
         &variant(&store, "Another AT"),
-        "open-at:1.0.1",
+        "open-at:1.1.0",
         None,
     )
     .unwrap();
@@ -400,12 +439,12 @@ fn a_version_tag_that_names_another_image_refuses_the_build() {
         .unwrap_err()
         .to_string();
     assert!(
-        error.contains(&format!("open-at:1.0.1 already names {}", other.digest))
+        error.contains(&format!("open-at:1.1.0 already names {}", other.digest))
             && error.contains("a version tag never moves"),
         "{error}"
     );
     assert_eq!(
-        store.tag_descriptor("open-at:1.0.1").unwrap().digest,
+        store.tag_descriptor("open-at:1.1.0").unwrap().digest,
         other.digest
     );
     assert!(store.tag_descriptor("open-at:latest").is_err());
@@ -494,11 +533,11 @@ fn only_the_judged_manifest_is_tagged() {
         pc_image::create::create_judged(&store, &image, "judged:1.0.0", None, &right).unwrap();
     assert_eq!(created.digest, right);
 
-    let kiselev = &template::FIRMWARE[0];
+    let bios = &template::FIRMWARE[0];
     let catalogue = pc_image::firmware::catalogue();
-    let scan = pc_image::firmware_import::scan(&[vendor().join(kiselev.rom)], catalogue).unwrap();
+    let scan = pc_image::firmware_import::scan(&[vendor().join(bios.rom)], catalogue).unwrap();
     let statement = pc_image::firmware_import::Statement {
-        source: Some(vendor().join(kiselev.source_archive)),
+        source: Some(vendor().join(bios.source_archive)),
         ..Default::default()
     };
     let publish = |tag: &str, judged: &image_store::Digest| {
@@ -520,7 +559,7 @@ fn only_the_judged_manifest_is_tagged() {
     assert!(store.tag_descriptor("judged/bios:1").is_err());
     // The template's own package, under its version tag, is the judged one.
     let package = store
-        .tag_descriptor("unemu/firmware/kiselev-xi8088-1.0.2-atreset:1.0.1")
+        .tag_descriptor("unemu/firmware/unemu-at-bios-1.0.2-unemu.2:1.1.0")
         .unwrap();
     assert_eq!(
         publish("judged/bios:1", &package.digest).unwrap().digest,

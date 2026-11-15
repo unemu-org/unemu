@@ -36,16 +36,18 @@ mod fixtures;
 
 const CPU_REV: &str = "060d446a883a9b2fc94b3ef91258cb4e6e98d916";
 const IMAGE: &str = "at-pm-test/at-pm-test-1200.img";
-const OPEN_BIOS: &str = "kiselev-bios/bios-xi8088-atreset.bin";
+const OPEN_BIOS: &str = "unemu-at-bios/bios-unemu-at.bin";
 // The BIOS image of machines/at-games-open.toml; checked against that file.
-const OPEN_BIOS_SHA256: &str = "61589573c9809273198b137d9419c87242b0a5f63c2ad834a9565950c3d6becc";
+const OPEN_BIOS_SHA256: &str = "f8ecd4a2ad4906eb94a7595ede755019f545f40111725819eeb80e423adc8db6";
 const IBM_ENTRY: &str = "ibm-5170-bios-1985-06-10";
 const ROUNDS: u32 = 16;
 
-// Each open-BIOS round cold-boots twice; the whole run stays well below this.
-const OPEN_CAP: u64 = 1_000_000_000;
-// Measured at the CPU pin above: 33 POSTs and floppy boots plus the program.
-const OPEN_GOLDEN_RETIRED: u64 = 211_167_574;
+// The open BIOS also resumes without POST; the whole run stays well below this.
+const OPEN_CAP: u64 = 300_000_000;
+// One POST (including the 8042 reset of its extended-memory sizing), one
+// floppy boot, three INT 15h block moves and 16 rounds that resume without
+// POST, with the open AT BIOS. Measured at the CPU pin above.
+const OPEN_GOLDEN_RETIRED: u64 = 6_589_934;
 // The IBM BIOS resumes without POST, so one POST and the rounds fit easily.
 const IBM_CAP: u64 = 300_000_000;
 // One POST, one floppy boot, three INT 15h block moves and 16 rounds that
@@ -53,9 +55,9 @@ const IBM_CAP: u64 = 300_000_000;
 // the CPU pin above.
 const IBM_GOLDEN_RETIRED: Option<u64> = Some(31_955_711);
 
-// Kiselev reads the AT display switch with inverted polarity: "colour" makes
-// it print on MDA, and the switch needs the preset's colour text card.
-const OPEN_BOARD: &str = "[board]\ndisplay_switch = \"colour\"";
+// The open AT BIOS reads the display switch with the IBM polarity; the mono
+// position selects the preset's MDA, where the screen check reads.
+const OPEN_BOARD: &str = "[board]\ndisplay_switch = \"mono\"";
 // The IBM BIOS follows the switch; without the colour card it selects MDA.
 // IBM Personal Computer AT Technical Reference, BIOS listing, TEST2 and
 // TEST4: on the 5170 the diskette controller shares the Fixed Disk and
@@ -74,8 +76,6 @@ const IBM_BOARD_WITHOUT_FIXED_DISK_ADAPTER: &str =
 
 /// Result word of a reset stage when the BIOS honours the shutdown byte.
 const RESUMED: &str = " ok";
-/// The open BIOS cold-boots on every processor reset; see the open golden.
-const REBOOTED: &str = " FAIL reboot";
 
 /// Result words of the three INT 15h lines: AH=88h and the AH=87h round trip
 /// before the rounds, the informational faulting AH=87h after them.
@@ -85,21 +85,13 @@ struct Int15 {
     fault: &'static str,
 }
 
-/// The IBM listing's behaviour: both counted lines pass, and the faulting
-/// move returns status 02h with no other difference.
-const INT15_IBM: Int15 = Int15 {
+/// The IBM listing's behaviour, which the open AT BIOS follows: both counted
+/// lines pass, and the faulting move returns status 02h with no other
+/// difference.
+const INT15_AT: Int15 = Int15 {
     size: " ok",
     round_trip: " ok",
     fault: " ah 02 info 0000",
-};
-/// The open BIOS answers both functions with AH=86h (unsupported) and CF set,
-/// through IRET: AH=88h fails CF and AX (3); each AH=87h call fails status,
-/// CF and ZF (7), and the round trip moves no data (200h, 400h). The faulting
-/// move gets the CF it expects but not the status or ZF (5).
-const INT15_OPEN: Int15 = Int15 {
-    size: " FAIL 0003",
-    round_trip: " FAIL 0607",
-    fault: " ah 86 info 0005",
 };
 
 /// The transcript when every `pm` and `a20` stage passes; `int15` gives the
@@ -291,7 +283,7 @@ fn run_program(file: &Path, cap: u64) -> anyhow::Result<Run> {
 #[test]
 fn open_profile_uses_the_game_profile_bios() {
     let profile = include_str!("../../../machines/at-games-open.toml");
-    assert!(profile.contains("../vendor/kiselev-bios/bios-xi8088-atreset.bin"));
+    assert!(profile.contains("../vendor/unemu-at-bios/bios-unemu-at.bin"));
     assert!(profile.contains(&format!("sha256 = \"{OPEN_BIOS_SHA256}\"")));
 }
 
@@ -450,27 +442,20 @@ fn ibm_machine_port_80h_keeps_its_latch_across_an_8042_processor_reset() {
     assert_eq!(machine.bus_mut().port_read(0x80, 1).unwrap(), 0x02);
 }
 
-/// The open profile: the at-games-open BIOS (Kiselev 8088_bios, Xi8088 with
-/// the AT reset patch) on the same board, memory and RTC seed, without the
+/// The open profile: the at-games-open BIOS (unemu-at-bios, the unemu fork of
+/// Kiselev 8088_bios) on the same board, memory and RTC seed, without the
 /// game cards (journaled IDE disk, Sound Blaster, EMS, mouse) that this test
 /// does not exercise and CI cannot provide.
 ///
-/// Expected to fail, both reset stages in every round: this BIOS starts POST
-/// from scratch on every processor reset and never reads the CMOS shutdown
-/// byte, so neither stage resumes through 0040:0067h. Each stage resumes when
-/// POST boots the floppy again; the program then finds its state in the high
-/// memory area and reports `FAIL reboot`, which proves the reset happened and
-/// memory above 1 MiB survived it. The protected-mode and A20 stages pass.
-/// Both lines become `ok` once the open BIOS dispatches codes 05h and 0Ah.
-///
-/// Also expected to fail, the two counted INT 15h lines: this BIOS (written
-/// for the 8088) has no AH=88h or AH=87h and returns AH=86h with CF set for
-/// both; see `INT15_OPEN`. They become `ok` with an open BIOS that implements
-/// both and ends AH=87h as the IBM listing does (status in AH, CF and ZF
-/// from it, IF set, A20 off).
+/// Every counted line passes, as with the IBM BIOS: the open BIOS answers
+/// INT 15h AH=88h from CMOS 31h:30h (which its POST copies from 17h:18h) and
+/// moves the block with AH=87h, ending it as the IBM listing does (status in
+/// AH, CF and ZF from it, IF set, A20 off); both reset stages resume through
+/// the shutdown byte (codes 05h and 0Ah, through 0040:0067h) without POST.
+/// The faulting move reports status 02h.
 #[test]
-#[ignore = "slow golden: open BIOS POST, then a reboot after each of 32 resets"]
-fn open_bios_runs_the_protected_mode_test_and_reboots_on_each_reset() {
+#[ignore = "slow golden: open BIOS POST, then 32 resets resumed through the shutdown byte"]
+fn open_bios_resumes_the_protected_mode_test_through_the_shutdown_byte() {
     assert!(
         include_str!("../../../Cargo.lock").contains(CPU_REV),
         "CPU pin drifted"
@@ -498,12 +483,11 @@ fn open_bios_runs_the_protected_mode_test_and_reboots_on_each_reset() {
         run.outcome, run.retired, run.com1
     );
     assert_eq!(run.outcome, RunOutcome::Halted);
-    let failures = 2 * ROUNDS + 2;
     assert_eq!(
         run.com1,
-        expected_transcript(&INT15_OPEN, REBOOTED, REBOOTED, failures)
+        expected_transcript(&INT15_AT, RESUMED, RESUMED, 0)
     );
-    assert!(run.screen.contains(&format!("failures {failures}")));
+    assert!(run.screen.contains("failures 0"));
     assert_eq!(run.retired, OPEN_GOLDEN_RETIRED);
 }
 
@@ -540,7 +524,7 @@ fn user_rom_ibm_5170_at_pm_test_resumes_through_the_shutdown_byte() {
     assert_eq!(run.outcome, RunOutcome::Halted);
     assert_eq!(
         run.com1,
-        expected_transcript(&INT15_IBM, RESUMED, RESUMED, 0)
+        expected_transcript(&INT15_AT, RESUMED, RESUMED, 0)
     );
     assert!(run.screen.contains("failures 0"));
     if let Some(expected) = IBM_GOLDEN_RETIRED {

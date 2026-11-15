@@ -2341,6 +2341,32 @@ mod user_bios_tests {
                 0x20
             );
         }
+        // The open AT BIOS reads the switch with the IBM polarity, so it keeps
+        // Auto: the preset's MDA is selected, input bit 6 set, CMOS video 11b.
+        let Some(bytes) = trace_fixtures::fixture("unemu-at-bios/bios-unemu-at.bin") else {
+            return;
+        };
+        std::fs::write(&path, bytes).unwrap();
+        let config = bios_file_config(&path, catalogue).unwrap();
+        assert_eq!(config.display_switch, assembly::DisplaySwitch::Auto);
+        assert_eq!(
+            config.primary_display().unwrap(),
+            assembly::PrimaryDisplay::Monochrome
+        );
+        let mut assembled = assembly::assemble(&config).unwrap();
+        assembled
+            .machine
+            .bus_mut()
+            .port_write(0x64, 1, 0xC0)
+            .unwrap();
+        assert_eq!(
+            assembled.machine.bus_mut().port_read(0x60, 1).unwrap(),
+            0xE0
+        );
+        assert_eq!(
+            assembly::derive_cmos_config(&config).unwrap()[0x14] & 0x30,
+            0x30
+        );
         std::fs::write(&path, vec![0xF4; 32768]).unwrap();
         let config = bios_file_config(&path, catalogue).unwrap();
         assert_eq!(config.display_switch, assembly::DisplaySwitch::Auto);

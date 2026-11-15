@@ -102,7 +102,7 @@ fn freedos_ide_journal_survives_a_fresh_assembly_without_changing_base() {
         include_str!("../../../Cargo.lock").contains("#060d446a883a9b2fc94b3ef91258cb4e6e98d916")
     );
     for path in [
-        "kiselev-bios/bios-xi8088-atreset.bin",
+        "unemu-at-bios/bios-unemu-at.bin",
         "freedos/freedos.img",
         "xtide-universal-bios/ide_xtp-r638-ata1f0-8k.bin",
         "hdd/fat16.img",

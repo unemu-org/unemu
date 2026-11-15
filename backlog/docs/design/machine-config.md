@@ -1400,9 +1400,13 @@ selects the monochrome adapter (`at_kbc.inc`, display-type initialization).
 Kiselev image, including the historical no-controller Bare POST rig.
 `assembly::bios_display_switch(bytes)` owns this catalogue-hash policy; both
 the preset and the CLI `--bios` loader call it after the ROM bytes are known.
-Other firmware keeps Auto. The four machine files using those
+Other firmware keeps Auto. The three machine files using those
 images set `board.display_switch = "colour"` explicitly: `at-freedos.toml`,
-`at-freedos.yaml`, `at-freedos-from-preset.toml` and `at-ide.toml`.
+`at-freedos.yaml` and `at-freedos-from-preset.toml`. The open AT BIOS
+(unemu-at-bios) reads the switch with the IBM polarity, so `at-ide.toml`,
+which boots it on the inherited MDA plus `vga-text` board, sets `mono` to keep
+the MDA console (derived CMOS 14h video bits 11b, 8042 input E0h), and
+`at-games-open.toml` sets `colour` for its only card, the VGA.
 The firmware-neutral `machines/presets/ibm-5170.toml` retains Auto.
 
 The switch still names the primary display according to IBM: these Kiselev

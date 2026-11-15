@@ -269,7 +269,7 @@ pub fn execute(command: CreateCommand, output: &mut impl Write) -> io::Result<u8
                 .replace('\\', "\\\\")
                 .replace('"', "\\\"");
             let image = image.replace('\\', "\\\\").replace('"', "\\\"");
-            writeln!(output, "\n# Merge into an at-ide.toml-style machine using the AT-reset BIOS and XUB.\n[[card]]\nid = \"ide\"\nkind = \"ide\"\nport = 0x1F0\nirq = 14\n\n[[card.drives]]\nchannel = \"master\"\nimage = \"{image}\"\ngeometry = {{ cylinders = {}, heads = {}, sectors = {} }}\nwrite = \"journal\"\njournal = \"{journal}\"\nkeep_generations = 10", geometry.cylinders, geometry.heads, geometry.sectors_per_track)?;
+            writeln!(output, "\n# Merge into an at-ide.toml-style machine using the open AT BIOS and XUB.\n[[card]]\nid = \"ide\"\nkind = \"ide\"\nport = 0x1F0\nirq = 14\n\n[[card.drives]]\nchannel = \"master\"\nimage = \"{image}\"\ngeometry = {{ cylinders = {}, heads = {}, sectors = {} }}\nwrite = \"journal\"\njournal = \"{journal}\"\nkeep_generations = 10", geometry.cylinders, geometry.heads, geometry.sectors_per_track)?;
         } else {
             writeln!(
                 output,

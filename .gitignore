@@ -71,6 +71,12 @@ target/
 /vendor/vgabios/vgabios-std.bin
 /vendor/vgabios/int10-probe-1200.img
 /vendor/vgabios/vgabios-*-src.tar
+# Open AT BIOS (GPL, the unemu fork of 8088_bios) and its source archive:
+# built by Nix from a pinned release by vendor/unemu-at-bios/fetch.sh, never
+# committed.
+/vendor/unemu-at-bios/build/
+/vendor/unemu-at-bios/bios-unemu-at.bin
+/vendor/unemu-at-bios/unemu-at-bios-*-src.tar
 # FAT16 hard-disk data fixture: rebuilt offline by vendor/hdd/build.sh.
 /vendor/hdd/build/
 /vendor/hdd/fat16.img

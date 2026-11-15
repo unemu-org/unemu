@@ -77,7 +77,7 @@ fn shipped_game_profiles_pin_firmware_and_select_the_intended_displays() {
         let id = if name == support::IBM {
             support::SYSTEM
         } else {
-            "kiselev-xi8088-1.0.2-atreset"
+            "unemu-at-bios-1.0.2-unemu.2"
         };
         let entry = catalogue.iter().find(|entry| entry.id == id).unwrap();
         assert_eq!(bios.sha256.unwrap().as_str(), entry.sha256);
@@ -608,7 +608,7 @@ fn synthetic_game_profiles_lower_and_pass_machine_check_without_opening_journals
 fn open_fixture_profile() -> Option<support::Profile> {
     let mut images = Vec::new();
     for relative in [
-        "kiselev-bios/bios-xi8088-atreset.bin",
+        "unemu-at-bios/bios-unemu-at.bin",
         "vgabios/vgabios-std.bin",
         "xtide-universal-bios/ide_xtp-r638-ata1f0-8k.bin",
         "freedos/freedos-1200.img",
@@ -670,7 +670,7 @@ fn open_game_profile_checks_real_pinned_fixtures_without_creating_journals() {
     let bios = profile
         .tree
         .path()
-        .join("vendor/kiselev-bios/bios-xi8088-atreset.bin");
+        .join("vendor/unemu-at-bios/bios-unemu-at.bin");
     let mut bytes = std::fs::read(&bios).unwrap();
     bytes[0] ^= 1;
     std::fs::write(bios, bytes).unwrap();
@@ -683,7 +683,7 @@ fn open_game_profile_checks_real_pinned_fixtures_without_creating_journals() {
 }
 
 #[test]
-#[ignore = "slow: open Kiselev/VGA/XTIDE POST and FreeDOS 1.2M boot with a blank type-2 HDD"]
+#[ignore = "slow: open AT BIOS/VGA/XTIDE POST and FreeDOS 1.2M boot with a blank type-2 HDD"]
 fn open_game_profile_boots_freedos() {
     use assembly::{
         ConsoleProbe, InjectionSchedule, KeyboardStimulus, ObservationPolicy, ObservationRequest,
@@ -712,8 +712,8 @@ fn open_game_profile_boots_freedos() {
     };
     let mut assembled = loaded.assemble(&policy).unwrap();
     let cap = 100_000_000;
-    // FreeDOS scrolls the POST screen away, so sample it while Kiselev's
-    // display line is visible: POST found and initialized the video BIOS.
+    // FreeDOS scrolls the POST screen away, so sample it while the open AT
+    // BIOS's display line is visible: POST found and initialized the video BIOS.
     let post_screen = loop {
         let next = assembled.machine.virtual_time() + 100_000;
         assert!(next < cap, "POST never reported the video BIOS");
@@ -734,6 +734,11 @@ fn open_game_profile_boots_freedos() {
         post_screen.contains("Bochs VGABios 0.8a-unemu"),
         "{post_screen}"
     );
+    // The open AT BIOS signs on and identifies the 80286 without the 8088
+    // interrupt warning.
+    for line in ["unemu AT BIOS, Version 1.0.2-unemu.2", "Intel 80286"] {
+        assert!(post_screen.contains(line), "{line}: {post_screen}");
+    }
     let mut outcome = assembled
         .run_session(&RunPolicy {
             retired_cap: Some(cap),

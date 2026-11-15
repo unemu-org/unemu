@@ -6,13 +6,13 @@ name = "at-ide"
 description = "PC/AT with XTIDE Universal BIOS, booting FreeDOS from A: with a readonly FAT16 C:"
 
 [board]
-# This BIOS reads the AT display switch with inverted polarity; in the colour
-# position it selects the monochrome adapter. Derived CMOS still declares colour.
-display_switch = "colour"
+# The open AT BIOS reads the display switch with the IBM polarity: the mono
+# position keeps the inherited MDA as the console, and derived CMOS declares it.
+display_switch = "mono"
 
 [firmware.bios]
-image = "../vendor/kiselev-bios/bios-xi8088-atreset.bin"
-sha256 = "61589573c9809273198b137d9419c87242b0a5f63c2ad834a9565950c3d6becc"
+image = "../vendor/unemu-at-bios/bios-unemu-at.bin"
+sha256 = "f8ecd4a2ad4906eb94a7595ede755019f545f40111725819eeb80e423adc8db6"
 
 [[firmware.option_roms]]
 image = "../vendor/xtide-universal-bios/ide_xtp-r638-ata1f0-8k.bin"

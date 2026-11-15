@@ -612,9 +612,9 @@ fn a_copyleft_rom_without_its_source_archive_keeps_a_new_image_private() {
     let Some(open) = Open::new() else {
         return;
     };
-    // The same open Kiselev ROM, from a package another program wrote: open
+    // The same open AT BIOS, from a package another program wrote: open
     // under the GPL, but without its source archive.
-    let original = open.rom("kiselev-xi8088-1.0.2-atreset");
+    let original = open.rom("unemu-at-bios-1.0.2-unemu.2");
     let package = &original.package;
     let mut config = package.config.clone();
     config.sources.clear();
@@ -638,7 +638,7 @@ fn a_copyleft_rom_without_its_source_archive_keeps_a_new_image_private() {
     let rules = pc_image::firmware::PcFirmwareRules(pc_image::firmware::catalogue());
     open.store
         .update_tag(
-            "firmware/foreign-kiselev:1",
+            "firmware/foreign-at-bios:1",
             &crafted,
             None,
             &image_store::firmware::Validator(&rules),

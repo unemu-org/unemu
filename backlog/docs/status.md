@@ -5,6 +5,52 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-15 — Open AT BIOS: unemu-at-bios `v1.0.2-unemu.2`:**
+  `vendor/unemu-at-bios/fetch.sh` builds release `v1.0.2-unemu.2` (revision
+  `a2cf362d`) of the unemu fork of Sergey Kiselev's 8088_bios
+  (GPL-3.0-or-later; `MACHINE_UNEMU_AT`) with Nix from the sibling
+  `unemu-at-bios` repository, as for vgabios, checks the ROM's SHA-256
+  (`f8ecd4a2…c8db6`) and writes its source archive
+  `unemu-at-bios-1.0.2-unemu.2-src.tar` (`6c7aaace…a47e`, the tree without
+  upstream's prebuilt `binaries/` and `xtide_r625/`), after rebuilding the ROM
+  from the staged tree's own flake. **MEASURED on aarch64-darwin:** two origin
+  runs and one local-checkout run give the same ROM and archive. The CI
+  `fixtures` gate runs it before XTIDE. Catalogue entry
+  `unemu-at-bios-1.0.2-unemu.2` (open, **Tested**; `ibm-5170`; floppy; 8042,
+  RTC/CMOS, cascaded PICs; 80286) is now the system BIOS of
+  `machines/at-games-open.toml`, `machines/at-ide.toml` and the templates.
+  READ (the fork's `README.unemu.md`): CMOS shutdown-byte resume (05h/0Ah
+  through 0040:0067h, 09h, 04h via POST), INT 15h AH=87h/88h as IBM, extended
+  memory measured into CMOS 30h–31h (one more 8042 CPU reset per POST), IBM
+  CMOS checks (161–164, checksum over 10h–2Dh), A20 off after POST, IBM
+  display-switch and port 70h NMI polarity, second 8237 initialised, 80286 and
+  80287 identified, banner "unemu AT BIOS, Version 1.0.2-unemu.2". Because of
+  the IBM switch polarity `at-ide.toml` now sets `display_switch = "mono"` to
+  keep its MDA console (derived CMOS now declares monochrome); at-games-open
+  keeps `colour` for its VGA. **MEASURED at CPU `060d446a`:** at-pm-test on
+  the open profile now passes everything: `int15 88h ok`, `int15 87h ok`, all
+  `kbc`/`tf` lines resumed, `int15 87h fault ah 02 info 0000`, `failures 0`,
+  6,589,934 retired (was `failures 34`, 211,167,574 retired, a reboot on every
+  reset). at-games-open POST shows the new banner and "Intel 80286", and
+  FreeDOS reaches `A:\>` with the retired count and text hash unchanged
+  (`15,241,264`): the goldens that stop at a virtual-time poll keep their
+  counts. ASSUMED explanation: virtual time is retired instructions plus
+  halted PIT time, and the BIOS's extra POST work only shortens its own
+  busy-wait delays. at-ide keeps 15,775,575 / 19,746,105 retired and its
+  logical hashes and POST codes; its screen hashes move with the time FreeDOS
+  shows at the prompt, `Current time is 12:00:18.78 am` with the Kiselev
+  AT-reset BIOS and `Current time is 12:00:18.83 am` with the open AT BIOS
+  (MEASURED; prompt `b7d8e6cd…` -> `a0e8f388…`, final `a045a62f…` ->
+  `7aae65a7…`). The INT 10h probe (10,240,119) and the mode 0Dh/13h scanout
+  (10,730,617) halt slightly later with the same screen and frames. The EMS,
+  journal, FreeDOS install and media goldens pass unchanged. No golden waits at
+  F1: the derived CMOS of every open profile passes the new checks. The
+  templates change their system BIOS package, so `pc_image::template::VERSION`
+  is `1.1.0` with new pinned digests. The Kiselev entries stay: the unmodified
+  Xi 8088 image boots `machines/at-freedos.toml` and its BIOS POST, FreeDOS
+  and DOS goldens; no machine uses the AT-reset build any more. See
+  [the fixture notes](../../vendor/unemu-at-bios/README.md) and
+  [open AT BIOS candidates](design/firmware-and-machine-classes.md#24-open-at-bios-candidates).
 - **2026-11-15 — Set-level metadata on `image media import`:** `--publisher P`,
   `--developer D` and `--genre G` (repeatable, order kept), `--year YYYY`,
   `--platform PLATFORM` (the software platform, one of the library dialog's

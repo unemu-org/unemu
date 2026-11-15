@@ -45,10 +45,7 @@ impl Profile {
             &format!("vendor/user-roms/{VIDEO}/ibm-vga-1987-32k.bin"),
             &option_rom(32768, 8192),
         );
-        profile.write(
-            "vendor/kiselev-bios/bios-xi8088-atreset.bin",
-            &vec![0xF4; 32768],
-        );
+        profile.write("vendor/unemu-at-bios/bios-unemu-at.bin", &vec![0xF4; 32768]);
         profile.write(
             "vendor/xtide-universal-bios/ide_xtp-r638-ata1f0-8k.bin",
             &option_rom(8192, 0),

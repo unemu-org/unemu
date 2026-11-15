@@ -360,6 +360,21 @@ const SOURCE_ARCHIVES: &[SourceArchive] = &[
         absent: &["vgabios/.beads/config.yaml"],
     },
     SourceArchive {
+        relative: "unemu-at-bios/unemu-at-bios-1.0.2-unemu.2-src.tar",
+        script: include_str!("../../../vendor/unemu-at-bios/fetch.sh"),
+        entries: &["NOTICE", "unemu-at-bios"],
+        copies: &[(
+            "NOTICE",
+            include_str!("../../../vendor/unemu-at-bios/source-notice.txt"),
+        )],
+        // The release's own version string, which the banner prints.
+        marker: (
+            "unemu-at-bios/src/config.inc",
+            "%define VERSION\t\t'1.0.2-unemu.2'",
+        ),
+        absent: &["unemu-at-bios/binaries", "unemu-at-bios/xtide_r625"],
+    },
+    SourceArchive {
         relative: "xtide-universal-bios/xtide-universal-bios-r638-src.tar",
         script: include_str!("../../../vendor/xtide-universal-bios/fetch.sh"),
         entries: &["NOTICE", "trunk"],

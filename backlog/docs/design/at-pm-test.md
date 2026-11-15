@@ -93,9 +93,9 @@ move. State that
 must survive a reset lives in the high memory area at physical `10FE00h`
 (`FFFF:FE10h`): signature, round, pending stage, a check value, the
 protected-mode results, the first unexpected vector, the 8259 masks and the
-failure count. The open BIOS cold-boots instead of resuming and tests only
-conventional memory (**READ**, its source), so the state survives that
-reboot. Each line goes to the BIOS teletype (INT 10h AH=0Eh) and the same
+failure count. A BIOS that cold-boots instead of resuming (the Kiselev
+Xi8088 build did) and tests only conventional memory leaves that state
+intact, so the program can still report the reboot. Each line goes to the BIOS teletype (INT 10h AH=0Eh) and the same
 bytes to COM1:
 
 ```text
@@ -156,8 +156,8 @@ mask registers at 21h and A1h. After 05h (the `tf` stage) they must be
 FFh/FFh, the IBM behaviour (**READ**, BIOS listing, TEST1: every line masked
 after initialization). After 0Ah (the `kbc` stage) they must equal the masks
 saved before the reset. The program then restores the saved masks after
-either code. The open BIOS patch that adds the shutdown dispatch
-(`upc-fro.11`) must match this IBM behaviour.
+either code. The open AT BIOS's shutdown dispatch matches this IBM
+behaviour (Results below).
 
 Unexpected protected-mode vectors (0–40h, other than 13 and 40h) record
 their number and pulse the 8042 reset, so a CPU fault still ends in a
@@ -238,37 +238,33 @@ block move read FFh and returned AH=FFh with CF set for every move.
 
 ## Results
 
-**Open profile — MEASURED.** The golden runs the at-games-open BIOS (Kiselev
-8088_bios 1.0.2, Xi8088 configuration with the AT reset patch) on the same
-board, memory map (640 KiB + 1 MiB extended) and RTC seed as
+**Open profile — MEASURED (since 2026-11-15, unemu-at-bios).** The golden
+runs the at-games-open BIOS, unemu-at-bios `v1.0.2-unemu.2` (the unemu fork of
+Kiselev 8088_bios, `MACHINE_UNEMU_AT`; `vendor/unemu-at-bios/README.md`), on
+the same board, memory map (640 KiB + 1 MiB extended) and RTC seed as
 `machines/at-games-open.toml`, without its game cards. Those are the journaled
 IDE disk, the Sound Blaster, EMS and the mouse; this test does not exercise
-them, and CI cannot provide the local disk. All 16 `pm` and `a20` lines pass.
-Every `kbc` and `tf` line is `FAIL reboot`. The INT 15h lines are
-`int15 88h FAIL 0003`, `int15 87h FAIL 0607` and, after the rounds,
-`int15 87h fault ah 86 info 0005`; the count is `failures 34`. The run
-halts after 211,167,574 retired instructions (33 POSTs and floppy boots).
-**READ** (the pinned Kiselev source): this BIOS was written for the 8088.
-Its INT 15h handler answers AH=87h and AH=88h, like every function it
-lacks, with AH=86h and CF set in the caller's FLAGS before IRET. So AH=88h
-fails CF and AX; each AH=87h call fails status, CF and ZF (IRET keeps the
-caller's IF, which is set, and A20 stays off as the call found it), and
-the round trip moves no data. The faulting move gets the CF it expects but
-not the status or ZF. Its reset vector always
-enters POST, POST never reads CMOS 0Fh, and it has no A20 or
-extended-memory code. So no reset resumes through
-`0040:0067h`. The resets themselves work: each
-line proves that the processor left protected mode, that the triple fault
-shut it down, and that memory above 1 MiB survived. The golden pins this
-result as expected to fail. To pass, the open BIOS needs the AT shutdown
-dispatch at its reset entry: check the 8042 system flag, read and clear
-CMOS 0Fh, and handle 05h and 0Ah as the IBM listing does; the INT 15h lines
-also need AH=88h and AH=87h (with shutdown code 09h), ending AH=87h as the
-listing does: status in AH, CMP AH,AL for CF and ZF, STI and RETF 2. Its
-existing exit, which patches CF in the stacked FLAGS and returns with IRET,
-fails ZF. That would be a
-further patch to the Kiselev BIOS, with re-measured open goldens. It is
-outside the machine model.
+them, and CI cannot provide the local disk. The display switch is `mono`: the
+BIOS reads it with the IBM polarity and prints on the preset's MDA, where the
+golden reads the screen. Every line passes, as with the IBM BIOS:
+`int15 88h ok`, `int15 87h ok`, all 16 `pm`, `kbc`, `tf` and `a20` lines
+`ok`, `int15 87h fault ah 02 info 0000` and `failures 0`. The run halts after
+6,589,934 retired instructions: one POST (with the 8042 CPU reset of its
+extended-memory sizing, shutdown code 09h) and one floppy boot, then every
+reset resumes through `0040:0067h` without POST. **READ** (the fork's
+`README.unemu.md`): its reset entry checks the 8042 system flag, reads and
+clears CMOS 0Fh and dispatches 05h, 09h and 0Ah as the IBM listing does;
+AH=88h returns CMOS 31h:30h, which its POST measures; AH=87h ends with the
+status in AH, CMP AH,AL, STI and RETF 2. Its status survives the reset in the
+saved AH on the caller's stack rather than in port 80h.
+
+Before that, the profile ran the Kiselev 8088_bios 1.0.2 Xi8088 build with
+the AT reset patch: all 16 `pm` and `a20` lines passed, every `kbc` and `tf`
+line was `FAIL reboot` (it cold-booted on every reset, never reading CMOS
+0Fh), the INT 15h lines were `int15 88h FAIL 0003`, `int15 87h FAIL 0607` and
+`int15 87h fault ah 86 info 0005` (AH=86h with CF set for both functions),
+`failures 34`, after 211,167,574 retired instructions (33 POSTs and floppy
+boots).
 
 **IBM 5170 BIOS (06/10/85) — MEASURED before the INT 15h lines.** With the
 user-supplied firmware the user-ROM golden passed: every line `ok`,

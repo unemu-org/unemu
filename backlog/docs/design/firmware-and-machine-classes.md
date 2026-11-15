@@ -106,14 +106,18 @@ The forces on the design:
 | SeaBIOS 1.17.0 (2025-06-10), QEMU `isapc` config (128 KiB, `PCIBIOS=n`, `USB=n`, `ACPI=n`) | LGPL-3.0-only | **386** (32-bit flat POST) | ISA-only 486-class PC (QEMU `isapc`) | Yes (READ: §3.6), including E801h/E820h; RAM size from CMOS without fw_cfg | Built-in ATA PIO, floppy | SeaVGABIOS through fw_cfg, or SERCON configured by fw_cfg (§3.6) | ASSUMED yes | gcc + binutils | [seabios.org](https://www.seabios.org/), QEMU `roms/config.seabios-128k` |
 | SeaBIOS 1.17.0, QEMU `pc` config | LGPL-3.0-only | 386 | i440FX + PIIX3/PIIX4, Q35 | Yes, including E801h/E820h; also PCI BIOS and ACPI | ATA, AHCI, USB, … | SeaVGABIOS: std VGA, Cirrus, Bochs VBE | ASSUMED yes | gcc | as above |
 | SeaVGABIOS / LGPL VGABIOS (video option ROMs) | LGPL-3.0 / LGPL-2.1 | ASSUMED 386 | Video option ROM | — | — | VGA; VBE with Bochs VBE | — | gcc / bcc | SeaBIOS `vgasrc/`, Bochs |
-| LGPL VGABIOS, unemu fork `v0.8a-unemu.2` (std build) | LGPL-2.1-or-later | **286** (fork's 286 check) | Video option ROM, 32 KiB at C0000h | — | — | Standard VGA, no VBE | **Yes** with the Kiselev BIOS (MEASURED, goldens; §Video ROM placement) | bcc/as86 (dev86) via Nix | `unemu-org/vgabios` on this project's forge; `vendor/vgabios/README.md` |
+| unemu-at-bios, the unemu fork of Kiselev `8088_bios` (`v1.0.2-unemu.2`, `MACHINE_UNEMU_AT`) | GPL-3.0-or-later | **286** (block move and memory sizing in protected mode) | IBM 5170-class: 2×8259, **two** 8237s, 8042, MC146818 | **Yes**: INT 15h 87h, 88h; CMOS shutdown-byte resume (04h, 05h, 09h, 0Ah); extended memory measured into CMOS 30h–31h; A20 through the 8042, off after POST; IBM CMOS checks (161–164) | None; through an option ROM (XUB) as Kiselev | As Kiselev; display switch read with the IBM polarity | **Yes** (MEASURED, goldens) | NASM via Nix | `unemu-org/unemu-at-bios` on this project's forge; `vendor/unemu-at-bios/README.md` |
+| LGPL VGABIOS, unemu fork `v0.8a-unemu.2` (std build) | LGPL-2.1-or-later | **286** (fork's 286 check) | Video option ROM, 32 KiB at C0000h | — | — | Standard VGA, no VBE | **Yes** with the Kiselev and the unemu AT BIOS (MEASURED, goldens; §Video ROM placement) | bcc/as86 (dev86) via Nix | `unemu-org/vgabios` on this project's forge; `vendor/vgabios/README.md` |
 | fysnet i440fx BIOS 1.0 (2025-02-10) | **Freeware, not open source** | — | i440FX / 440BX | — | — | — | — | NBASM | [fysnet.github.io/i440fx](https://fysnet.github.io/i440fx); excluded on license grounds |
 | IBM 5150/5160/5170 ROMs; AMI/Award/Phoenix board BIOSes | Proprietary | per board | per board | per board | per board | per board | per board | — | **User-supplied only.** Hashes are listed, the images are never shipped |
 
 **No open BIOS was found that targets a real 286 AT and provides INT 15h
 87h/89h** (READ: searches turned up none; ASSUMED none exists). Both open
 AT-service BIOSes, Bochs `rombios` and SeaBIOS, need a 386. Phase B therefore
-moves to a 386 board for firmware reasons as well as CPU reasons.
+moves to a 386 board for firmware reasons as well as CPU reasons. The
+project's own fork of the Kiselev BIOS, unemu-at-bios (§2.4), has since
+added INT 15h 87h and 88h and the shutdown-byte resume for the 286 AT; it
+has no 89h.
 
 ### 2.1 Kiselev Xi 8088 configuration, in detail (READ: pinned clone, `src/`)
 
@@ -129,9 +133,11 @@ moves to a 386 board for firmware reasons as well as CPU reasons.
   `board.display_switch = "colour"` (A0h input), so the firmware uses MDA.
   The switch still names the IBM primary: derived CMOS 14h video bits are 10b,
   colour, rather than the firmware-selected mono console. Both pinned BIOS
-  variants use this explicit setting in `presets::bios()` and in
-  `machines/at-freedos.toml`, its YAML twin, `at-freedos-from-preset.toml` and
-  `at-ide.toml`. The Rust helper matches the ROM hash, including for the
+  variants use this explicit setting in `presets::bios()`, and
+  `machines/at-freedos.toml`, its YAML twin and `at-freedos-from-preset.toml`
+  set it. The open AT BIOS (§2.4) reads the switch with the IBM polarity, so
+  `at-ide.toml`, which boots it on the same dual-card board, sets `mono` to
+  keep the MDA console. The Rust helper matches the ROM hash, including for the
   historical Bare POST rig; other firmware and the firmware-neutral board
   preset retain Auto. See [primary display](machine-config.md#primary-display).
 - **Option-ROM scan.** It scans for a video BIOS from C000h to C800h, then for
@@ -236,6 +242,27 @@ and retains 386-only INT 15h AH=87h and disk paths. Reject it for `ibm-5170`.
 
 **ASSUMED:** porting would take about 2–4 weeks for runtime/timers, disk/video paths,
 8042 A20, protected-mode services, CMOS and boot qualification; see [deferred work](../deferred.md#open-at-class-80286-system-bios).
+
+**Outcome (2026-11-15): unemu-at-bios.** Instead of a port, the project forked
+the Kiselev BIOS (`unemu-org/unemu-at-bios`, GPL-3.0-or-later; Sergey Kiselev's
+history kept, the unemu changes behind defines) and added a
+`MACHINE_UNEMU_AT` configuration for this board. Release `v1.0.2-unemu.2`
+(revision `a2cf362d`, ROM SHA-256 `f8ecd4a2…c8db6`, catalogue id
+`unemu-at-bios-1.0.2-unemu.2`, **Tested**) is the system BIOS of
+`machines/at-games-open.toml`, `machines/at-ide.toml` and the `open-at`
+templates; `vendor/unemu-at-bios/fetch.sh` builds it with Nix. READ (the
+fork's `README.unemu.md`): next to the Xi 8088 settings it resumes a reset
+through CMOS 0Fh (05h and 0Ah through 0040:0067h, 09h for the block move and
+the POST memory sizing, 04h through POST), answers INT 15h AH=87h and AH=88h
+as the IBM listing does, measures extended memory into CMOS 30h–31h in
+protected mode (one 8042 CPU reset per POST), checks the CMOS as the IBM POST
+does (161–164, checksum over 10h–2Dh, then the F1/F2 prompt), disables A20
+after the 8042 initialization, uses the IBM polarity for the display switch
+and the port 70h NMI mask, initializes the second 8237 (scratch port 8Eh
+instead of C0h) and identifies the 80286 and an 80287. The ROM scans, the
+floppy-only INT 13h and the IPL are the Xi 8088 build's (§2.1). The Kiselev
+Xi 8088 entries stay catalogued: the unmodified image still boots
+`machines/at-freedos.toml` and the BIOS POST and FreeDOS goldens.
 
 ## 3. Board models
 
@@ -1082,7 +1109,8 @@ SHA-256
 `7570ef9c66fd386450bb35fd2b6c91aba6f8ec69a565a1d7747e6e6716ea5389`, header
 `55 AA 40`, byte sum zero. It has no container offset, fills C0000h–C7FFFh and
 requires the register-level `vga`. `machines/at-games-open.toml` maps it with
-the Kiselev AT-reset BIOS and XTIDE at C8000h. The entry is **Tested**:
+the open AT BIOS (unemu-at-bios, §2.4; the Kiselev AT-reset BIOS before
+2026-11-15) and XTIDE at C8000h. The entry is **Tested**:
 **MEASURED at CPU `fe240a56ac2040e3deaebb2537e642137ee02c71`**, Kiselev POST
 calls the ROM, prints its sign-on and reports "EGA/VGA (Video BIOS Present)",
 and FreeDOS reaches `A:\>`; the fork's INT 10h probe floppy reports all 32
@@ -1095,8 +1123,8 @@ pixel and the default 256-colour DAC palette with one AX=1010h entry.
 | Open pinned result (`at_games.rs`, `open_vga_golden.rs`) | Value |
 |---|---|
 | FreeDOS prompt | `RetiredCapReached`, `15,241,264` retired, text SHA-256 `41ff081e1227af8f1a053df1b627b734de4032963cc0357c488cbbe67e01469e` |
-| INT 10h probe | `Halted`, `0000:880A`, `10,239,957` retired, text SHA-256 `567884f1a7356b91a49dc8be47861cd093db45402007cd48a0e5656788ff20ca` |
-| Mode 0Dh scroll, then mode 13h | `Halted`, `10,730,615` retired; five frame SHA-256 values pinned in the test |
+| INT 10h probe | `Halted`, `0000:880A`, `10,240,119` retired (`10,239,957` with the Kiselev AT-reset BIOS), text SHA-256 `567884f1a7356b91a49dc8be47861cd093db45402007cd48a0e5656788ff20ca` |
+| Mode 0Dh scroll, then mode 13h | `Halted`, `10,730,617` retired (`10,730,615` with the Kiselev AT-reset BIOS); five frame SHA-256 values pinned in the test, unchanged |
 
 The synthetic CLI POST test loads an offset-2000h container through the machine
 file, proves FAR CALL/RETF with POST 10h/11h/20h, pins a RAM marker and checks
@@ -1334,7 +1362,9 @@ The generic AT comes first.
     - *Status:* the new ignored `ide_freedos_golden` boots FreeDOS from A:
       and types `DIR C:` through the keyboard. `machines/at-ide.toml` extends
       the original floppy profile with the separately pinned Kiselev AT-reset
-      image, configured XT+ at C8000h and a readonly 615/4/17 FAT16 master.
+      image (since 2026-11-15 the open AT BIOS, unemu-at-bios, with the
+      `mono` display switch; §2.4), configured XT+ at C8000h and a readonly
+      615/4/17 FAT16 master.
       The completed listing contains `UNEMUHDD` and `MARKER.TXT`, 29 bytes.
       MEASURED with PIT-driven refresh, rate 8/13 and CPU `44403dd`: prompt
       retired 15,777,577, prompt FNV-1a `49bbec2d36c0bbf0`; after DIR retired
@@ -1342,6 +1372,12 @@ The generic AT comes first.
       The golden checks the completed listing, retired instruction counts,
       screen hashes and POST, with port tracing disabled.
       POST is `01 02 03 04 05 06 07 08 09 10 12 20 21 22 24 25 30 31 40 41 42 43 00`.
+      MEASURED with the open AT BIOS at CPU `060d446a`: the same retired
+      counts (prompt 15,775,575; after DIR 19,746,105 at virtual time
+      21,000,000), logical hashes and POST codes as the Kiselev AT-reset image
+      at that pin; the screen FNV-1a values move with the clock row at the
+      prompt, `Current time is 12:00:18.78 am` before and `12:00:18.83 am`
+      after (prompt `a0e8f388c37aa180`, final `7aae65a75645f427`).
       XT+ detects `UNEMU ATA-2 PIO DISK`; IDENTIFY/READ MULTIPLE and floppy
       sector reads complete without unsupported instructions.
       No CPU or device implementation changes are included.

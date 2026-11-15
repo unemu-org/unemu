@@ -26,7 +26,7 @@ use std::path::{Path, PathBuf};
 
 /// The version tag of this template generation. Version tags never move, so
 /// a changed template needs a new version here.
-pub const VERSION: &str = "1.0.1";
+pub const VERSION: &str = "1.1.0";
 /// The moving tag that follows the newest version.
 pub const ALIAS: &str = "latest";
 /// The registry namespace every template lives in.
@@ -53,9 +53,9 @@ impl FirmwareSource {
 /// order a template binds them.
 pub const FIRMWARE: [FirmwareSource; 3] = [
     FirmwareSource {
-        catalogue_id: "kiselev-xi8088-1.0.2-atreset",
-        rom: "kiselev-bios/bios-xi8088-atreset.bin",
-        source_archive: "kiselev-bios/kiselev-bios-a4af458-atreset-src.tar",
+        catalogue_id: "unemu-at-bios-1.0.2-unemu.2",
+        rom: "unemu-at-bios/bios-unemu-at.bin",
+        source_archive: "unemu-at-bios/unemu-at-bios-1.0.2-unemu.2-src.tar",
     },
     FirmwareSource {
         catalogue_id: "vgabios-0.8a-unemu.1-std",
@@ -132,7 +132,7 @@ pub const TEMPLATES: [Template; 2] = [
     Template {
         name: "open-at",
         title: "Open AT 286",
-        description: "An IBM 5170-class 80286 with open firmware only: the Kiselev AT BIOS, the unemu VGA BIOS and XTIDE Universal BIOS r638, each with its source archive. 640 KiB and 1 MiB of memory, VGA, one 1.2M diskette drive and a blank 504 MiB fixed disk. No operating system.",
+        description: "An IBM 5170-class 80286 with open firmware only: the unemu AT BIOS (after Sergey Kiselev's 8088_bios), the unemu VGA BIOS and XTIDE Universal BIOS r638, each with its source archive. 640 KiB and 1 MiB of memory, VGA, one 1.2M diskette drive and a blank 504 MiB fixed disk. No operating system.",
         games: false,
     },
     Template {
@@ -511,7 +511,7 @@ mod tests {
 
     #[test]
     fn names_follow_the_registry_grammar_and_the_pull_short_form() {
-        assert_eq!(local_tag("unemu/open-at", VERSION), "open-at:1.0.1");
+        assert_eq!(local_tag("unemu/open-at", VERSION), "open-at:1.1.0");
         assert_eq!(
             local_tag("unemu/firmware/xub-r638-xtp-ata1f0", ALIAS),
             "unemu/firmware/xub-r638-xtp-ata1f0:latest"

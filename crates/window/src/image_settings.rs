@@ -465,7 +465,7 @@ pub(crate) mod tests {
                 disks: [Some(Chs::new(615, 4, 17)), None],
             },
             firmware: vec![
-                rom("kiselev-xi8088-1.0.2-atreset"),
+                rom("unemu-at-bios-1.0.2-unemu.2"),
                 rom("vgabios-0.8a-unemu.1-std"),
                 rom("xub-r638-xtp-ata1f0"),
             ],

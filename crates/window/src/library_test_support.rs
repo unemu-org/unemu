@@ -88,8 +88,8 @@ impl Fixture {
 pub(crate) fn source_archive(candidate: &pc_image::firmware_import::Candidate) -> &'static str {
     match candidate.distribution {
         assembly::FirmwareDistribution::Open { fetch, .. } => match fetch {
-            "vendor/kiselev-bios/fetch.sh" => {
-                "vendor/kiselev-bios/kiselev-bios-a4af458-atreset-src.tar"
+            "vendor/unemu-at-bios/fetch.sh" => {
+                "vendor/unemu-at-bios/unemu-at-bios-1.0.2-unemu.2-src.tar"
             }
             "vendor/vgabios/fetch.sh" => "vendor/vgabios/vgabios-0.8a-unemu.2-src.tar",
             "vendor/xtide-universal-bios/fetch.sh" => {
@@ -101,10 +101,10 @@ pub(crate) fn source_archive(candidate: &pc_image::firmware_import::Candidate) -
     }
 }
 
-/// A store with the open firmware packages (the Kiselev AT BIOS, the open VGA
-/// BIOS and XTIDE) and, with `misfits`, a user-supplied package of the other
-/// Kiselev build plus synthetic packages that must not fit: an XT-class BIOS
-/// and one naming no board. `None` when a fetched fixture it reads is missing,
+/// A store with the open firmware packages (the open AT BIOS, the open VGA
+/// BIOS and XTIDE) and, with `misfits`, a user-supplied package of the
+/// Kiselev Xi 8088 build plus synthetic packages that must not fit: an
+/// XT-class BIOS and one naming no board. `None` when a fetched fixture it reads is missing,
 /// which skips the test.
 pub(crate) struct FirmwareStore {
     pub temp: assembly::test_support::TempDir,
@@ -122,7 +122,7 @@ impl FirmwareStore {
     fn build(misfits: bool, sources: bool) -> Option<Self> {
         let mut images = Vec::new();
         for (from, to) in [
-            ("kiselev-bios/bios-xi8088-atreset.bin", "bios.bin"),
+            ("unemu-at-bios/bios-unemu-at.bin", "bios.bin"),
             ("vgabios/vgabios-std.bin", "vga.bin"),
             (
                 "xtide-universal-bios/ide_xtp-r638-ata1f0-8k.bin",
@@ -133,8 +133,8 @@ impl FirmwareStore {
         }
         if sources {
             for archive in [
-                "kiselev-bios/kiselev-bios-a4af458-atreset-src.tar",
-                "vgabios/vgabios-0.8a-unemu.1-src.tar",
+                "unemu-at-bios/unemu-at-bios-1.0.2-unemu.2-src.tar",
+                "vgabios/vgabios-0.8a-unemu.2-src.tar",
                 "xtide-universal-bios/xtide-universal-bios-r638-src.tar",
             ] {
                 fixtures::fixture(archive)?;

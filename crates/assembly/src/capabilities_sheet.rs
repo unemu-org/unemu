@@ -495,6 +495,17 @@ fn firmware_label(entry: &FirmwareEntry) -> String {
         )
     } else if words.starts_with("ibm vga") {
         "IBM VGA BIOS (1987)".into()
+    } else if words.starts_with("unemu at bios ") {
+        format!(
+            "unemu AT BIOS {}",
+            entry.id.trim_start_matches("unemu-at-bios-")
+        )
+    } else if words.starts_with("vgabios ") {
+        let version = entry.id.trim_start_matches("vgabios-");
+        match version.strip_suffix("-std") {
+            Some(version) => format!("unemu VGA BIOS {version} (std)"),
+            None => format!("unemu VGA BIOS {version}"),
+        }
     } else {
         words
     }
@@ -551,5 +562,26 @@ pub fn firmware_binding(entry: &FirmwareEntry) -> FirmwareBinding {
         },
         offset: entry.rom_offset,
         provides: entry.provides,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn open_firmware_ids_get_readable_labels() {
+        assert_eq!(
+            firmware_label(&crate::firmware::UNEMU_AT_BIOS_1_0_2_UNEMU_2),
+            "unemu AT BIOS 1.0.2-unemu.2"
+        );
+        assert_eq!(
+            firmware_label(&FirmwareEntry::VGABIOS_0_8A_UNEMU_1_STD),
+            "unemu VGA BIOS 0.8a-unemu.1 (std)"
+        );
+        assert_eq!(
+            firmware_label(&crate::KISELEV_XI8088),
+            "Kiselev Xi 8088 BIOS 1.0.2"
+        );
     }
 }

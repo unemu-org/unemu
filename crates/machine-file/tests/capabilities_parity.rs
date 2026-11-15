@@ -186,7 +186,8 @@ fn repository_machine_file_parity() {
         ("machines/at-games-open.toml".into(), "8408bfe7e2d3d75a1044a012bad1d21a935a5d99a191a6b8398797e8d3476231".into()),
         // The video ROM is relocated by synthetic().
         ("machines/at-games.toml".into(), "5f809f39dc27e958b90c541ae3cedfa45fece732dbeb8b4ea80123509f5a4358".into()),
-        ("machines/at-ide.toml".into(), "09037a394cd85fde6fedbb1570353db342b6cd8e886b1fa9fe198f77b8df3b51".into()),
+        // The open AT BIOS's mono display switch.
+        ("machines/at-ide.toml".into(), "e42872c37de7d3674033a09efaf304ff1e47f95392af3baa9f2ed2553ab8a60d".into()),
         ("machines/presets/ibm-5170.toml".into(), "resolve:<repo>/machines/presets/ibm-5170.toml:16: firmware.bios.image: required fields are missing: firmware.bios.image (<repo>/machines/presets/ibm-5170.toml:16); inheritance chain: <repo>/machines/presets/ibm-5170.toml".into()),
     ];
     assert_eq!(observed, expected);
