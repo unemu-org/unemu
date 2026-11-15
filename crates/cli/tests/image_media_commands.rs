@@ -605,6 +605,267 @@ fn an_open_statement_goes_together_and_names_a_licence_reference_and_an_extra() 
     }
 }
 
+#[test]
+fn a_set_imported_without_metadata_flags_keeps_its_manifest_bytes() {
+    // The same inputs as the shared import's pinned set, so the command line's
+    // default title is the shared default: measured before set-level metadata
+    // flags existed.
+    let t = Temp::new();
+    let p = &t.0;
+    let disk = raw_disk(&p.join("disk.img"), 0x5a);
+    let manual = p.join("MANUAL.TXT");
+    fs::write(&manual, b"Synthetic manual").unwrap();
+    let (code, out, err) = run(
+        p,
+        &[
+            "import",
+            disk.to_str().unwrap(),
+            "--title",
+            "Pinned set",
+            "--tag",
+            "test:pinned",
+            "--extra",
+            &format!("{}:MANUAL.TXT", manual.display()),
+            "--no-compress",
+            "--create",
+        ],
+    );
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(
+        out,
+        format!(
+            "media order:\n1\t\"disk.img\"\t{disk:?}\t360K\n\
+             extra\t\"MANUAL.TXT\"\tSome(\"MANUAL.TXT\")\n\
+             test:pinned\tsha256:852615e645eac3a3bccfb7d3a30b026e4cec4bbb7fc5ee72f06ba2808b671dcf\n"
+        )
+    );
+}
+
+#[test]
+fn set_level_metadata_flags_land_in_the_metadata_blob_in_order_and_show_prints_them() {
+    use image_store::{license, metadata::Metadata};
+    let t = Temp::new();
+    let p = &t.0;
+    let disk = raw_disk(&p.join("disk.img"), 4);
+    let terms = p.join("VENDOR.TXT");
+    fs::write(&terms, b"Synthetic vendor terms").unwrap();
+    let import = |extra: &[&str]| {
+        let mut args = vec![
+            "import",
+            disk.to_str().unwrap(),
+            "--title",
+            "Synthetic catalogued set",
+            "--tag",
+            "test:catalogued",
+            "--extra",
+            terms.to_str().unwrap(),
+            "--publisher",
+            "Second Publisher",
+            "--developer",
+            "Synthetic Studio",
+            "--year",
+            " 1991 ",
+            "--publisher",
+            "First Publisher",
+            "--genre",
+            "platformer",
+            "--developer",
+            "Another Studio",
+            "--platform",
+            "DOS",
+            "--genre",
+            "puzzle",
+            "--description",
+            "A synthetic set.\nSecond line.",
+            "--open",
+            "--license",
+            "LicenseRef-synthetic-shareware",
+            "--license-text",
+            "VENDOR.TXT",
+            "--create",
+        ];
+        args.extend(extra);
+        run(p, &args)
+    };
+    let catalogue = "publisher\t\"Second Publisher\"\n\
+                     publisher\t\"First Publisher\"\n\
+                     developer\t\"Synthetic Studio\"\n\
+                     developer\t\"Another Studio\"\n\
+                     year\t1991\n\
+                     genre\t\"platformer\"\n\
+                     genre\t\"puzzle\"\n\
+                     platform\t\"DOS\"\n\
+                     description\t\"A synthetic set.\\nSecond line.\"\n";
+    let (code, preview, err) = import(&["--dry-run"]);
+    assert_eq!(code, 0, "{err}");
+    assert!(preview.contains(catalogue), "{preview}");
+    assert_eq!(blob_count(p), 0, "a dry run writes no blobs");
+    let (code, out, err) = import(&[]);
+    assert_eq!(code, 0, "{err}");
+    assert!(out.contains(catalogue), "{out}");
+
+    let store = Store::open_existing(p.join("store")).unwrap();
+    let image = store
+        .resolve("test:catalogued", &Validator(&PcMediaFormats))
+        .unwrap();
+    let metadata = Metadata::decode(&image.metadata, &image.manifest.layers).unwrap();
+    let [title] = &metadata.titles[..] else {
+        panic!("one title: {metadata:?}");
+    };
+    assert_eq!(title.title, "Synthetic catalogued set");
+    assert_eq!(title.publishers, ["Second Publisher", "First Publisher"]);
+    assert_eq!(title.developers, ["Synthetic Studio", "Another Studio"]);
+    assert_eq!(title.release_year, Some(1991));
+    assert_eq!(title.genres, ["platformer", "puzzle"]);
+    assert_eq!(title.platform.as_deref(), Some("DOS"));
+    assert_eq!(
+        title.description.as_deref(),
+        Some("A synthetic set.\nSecond line.")
+    );
+    // The library's facets read the same record.
+    let mut cache = SummaryCache::open(&store).unwrap();
+    cache.rebuild(&store, 64, &[], &[]).unwrap();
+    let facets = Facets {
+        publishers: vec!["First Publisher".into()],
+        developers: vec!["Another Studio".into()],
+        genres: vec!["puzzle".into()],
+        platforms: vec!["DOS".into()],
+        years: vec![1991],
+        ..Facets::default()
+    };
+    assert_eq!(cache.query("", &facets).len(), 1);
+
+    let (code, out, err) = run(p, &["show", "test:catalogued"]);
+    assert_eq!(code, 0, "{err}");
+    assert!(out.contains(catalogue), "{out}");
+    // The metadata stays this program's generated content: CC0-1.0 in an open set.
+    let metadata_layer = out
+        .lines()
+        .find(|l| l.starts_with("layer\tmetadata\t"))
+        .unwrap();
+    assert!(metadata_layer.ends_with("\topen\tCC0-1.0\t-"), "{out}");
+    let stored = image
+        .manifest
+        .layers
+        .iter()
+        .find(|d| d.decoded_media_type() == image_store::media_type::METADATA)
+        .unwrap();
+    assert_eq!(license::open_license(stored).unwrap().as_str(), "CC0-1.0");
+    assert!(out.ends_with("push\tany configured registry, including unemu/\n"));
+
+    // A set without the flags shows no catalogue lines.
+    let (code, _, err) = run(
+        p,
+        &[
+            "import",
+            disk.to_str().unwrap(),
+            "--title",
+            "Synthetic plain set",
+            "--tag",
+            "test:plain",
+        ],
+    );
+    assert_eq!(code, 0, "{err}");
+    let (code, out, err) = run(p, &["show", "test:plain"]);
+    assert_eq!(code, 0, "{err}");
+    for key in [
+        "publisher",
+        "developer",
+        "year",
+        "genre",
+        "platform",
+        "description",
+    ] {
+        assert!(!out.contains(&format!("\n{key}\t")), "{out}");
+    }
+}
+
+#[test]
+fn a_bad_year_an_unknown_platform_or_a_blank_value_is_refused_before_any_blob() {
+    let t = Temp::new();
+    let p = &t.0;
+    let disk = raw_disk(&p.join("disk.img"), 5);
+    let import = |flags: &[&str]| {
+        let mut args = vec![
+            "import",
+            disk.to_str().unwrap(),
+            "--title",
+            "Synthetic refused set",
+            "--tag",
+            "test:refused",
+            "--create",
+        ];
+        args.extend(flags);
+        run(p, &args)
+    };
+    for (flags, code, reason) in [
+        (
+            vec!["--year", "19x1"],
+            2,
+            "--year expects a whole number from 1 to 9999",
+        ),
+        (
+            vec!["--year", "1991", "--year", "1992"],
+            2,
+            "unknown or duplicate media option",
+        ),
+        (
+            vec!["--platform", "DOS", "--platform", "DOS"],
+            2,
+            "unknown or duplicate media option",
+        ),
+        (
+            vec!["--description", "One", "--description", "Two"],
+            2,
+            "unknown or duplicate media option",
+        ),
+        (vec!["--publisher", "  "], 2, "blank set metadata value"),
+        (vec!["--genre", "\t"], 2, "blank set metadata value"),
+        (
+            vec!["--year", "0"],
+            1,
+            "release year 0: expected a whole number from 1 to 9999",
+        ),
+        (
+            vec!["--year", "10000"],
+            1,
+            "release year 10000: expected a whole number from 1 to 9999",
+        ),
+        (
+            vec!["--year", "-1991"],
+            1,
+            "release year -1991: expected a whole number from 1 to 9999",
+        ),
+        (
+            vec!["--platform", "dos"],
+            1,
+            "software platform \"dos\": expected one of \"DOS\", \"Windows 3.x\"",
+        ),
+        (
+            vec!["--platform", "Amiga"],
+            1,
+            "software platform \"Amiga\": expected one of",
+        ),
+    ] {
+        let (status, _, err) = import(&flags);
+        assert_eq!(status, code, "{flags:?}: {err}");
+        assert!(err.contains(reason), "{flags:?}: {err}");
+        assert_eq!(
+            blob_count(p),
+            0,
+            "{flags:?}: a refused import writes no blobs"
+        );
+    }
+    let store = Store::open_existing(p.join("store")).unwrap();
+    assert!(store.tag_descriptor("test:refused").is_err());
+    // The usage names the set-level flags.
+    let (_, _, err) = import(&["--year", "19x1"]);
+    assert!(
+        err.contains("[--publisher P]... [--developer D]... [--year YYYY] [--genre G]... [--platform PLATFORM] [--description TEXT]"),
+        "{err}"
+    );
+}
+
 /// `image push LOCAL [TARGET] --dry-run` against the default registry with no
 /// configured registries: the guard's verdict for the official namespace.
 fn dry_run(root: &Path, tag: &str) -> (u8, String, String) {

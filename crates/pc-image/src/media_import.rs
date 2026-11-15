@@ -20,7 +20,7 @@ use image_store::{
     license::{self, Expression},
     media_set::{valid_text, Config, Extra, ExtraKind, MediaFormats, Medium, Validator},
     media_type as mt,
-    metadata::{Metadata, Title},
+    metadata::{Metadata, Title, SOFTWARE_PLATFORMS},
     Descriptor, Digest, Manifest, Store,
 };
 use std::{
@@ -259,6 +259,7 @@ pub fn plan_with(request: &Request, open: Option<&OpenStatement>) -> Result<Plan
     ensure(valid_text(&request.title.title), || {
         format!("invalid title {:?}", request.title.title)
     })?;
+    check_catalogue(&request.title)?;
     let empty = Digest::of(b"");
     let mut config = Config {
         schema: 1,
@@ -354,6 +355,31 @@ pub fn plan_with(request: &Request, open: Option<&OpenStatement>) -> Result<Plan
         compress: request.compress,
         open,
     })
+}
+
+/// The set-level catalogue fields the library's import dialog can state: a
+/// release year from 1 to 9999 and a software platform from its canonical
+/// choices. The metadata schema keeps other platforms readable for sets made
+/// elsewhere, but an import here never introduces one.
+fn check_catalogue(title: &Title) -> Result<()> {
+    if let Some(year) = title.release_year {
+        ensure((1..=9999).contains(&year), || {
+            format!("release year {year}: expected a whole number from 1 to 9999")
+        })?;
+    }
+    if let Some(platform) = &title.platform {
+        ensure(SOFTWARE_PLATFORMS.contains(&platform.as_str()), || {
+            let choices: Vec<String> = SOFTWARE_PLATFORMS
+                .iter()
+                .map(|p| format!("{p:?}"))
+                .collect();
+            format!(
+                "software platform {platform:?}: expected one of {}",
+                choices.join(", ")
+            )
+        })?;
+    }
+    Ok(())
 }
 
 /// The stated licence, checked, and the position of the terms-text extra.
@@ -1055,6 +1081,40 @@ mod tests {
             published.descriptor().digest.to_string(),
             "sha256:852615e645eac3a3bccfb7d3a30b026e4cec4bbb7fc5ee72f06ba2808b671dcf"
         );
+    }
+
+    #[test]
+    fn a_release_year_and_software_platform_follow_the_import_dialog_rules() {
+        let temp = Temp::new("catalogue");
+        let disk = temp.0.join("disk.img");
+        floppy(&disk, 1);
+        let with = |year: Option<i64>, platform: Option<&str>| {
+            let mut request = request(std::slice::from_ref(&disk), "Catalogued set");
+            request.title.release_year = year;
+            request.title.platform = platform.map(str::to_owned);
+            plan(&request).map(|plan| plan.metadata.titles[0].clone())
+        };
+        // Every choice the dialog offers, and its year bounds, are accepted as stated.
+        for platform in image_store::metadata::SOFTWARE_PLATFORMS {
+            let title = with(Some(1), Some(platform)).unwrap();
+            assert_eq!(title.platform.as_deref(), Some(*platform));
+        }
+        assert_eq!(with(Some(9999), None).unwrap().release_year, Some(9999));
+        for year in [0, -1, 10_000, i64::MAX] {
+            assert_eq!(
+                with(Some(year), Some("DOS")).unwrap_err().to_string(),
+                format!("release year {year}: expected a whole number from 1 to 9999")
+            );
+        }
+        for platform in ["dos", "Amiga", "", " DOS"] {
+            let refusal = with(Some(1991), Some(platform)).unwrap_err().to_string();
+            assert!(
+                refusal.starts_with(&format!(
+                    "software platform {platform:?}: expected one of \"DOS\", \"Windows 3.x\""
+                )) && refusal.ends_with("\"other\""),
+                "{refusal}"
+            );
+        }
     }
 
     #[test]

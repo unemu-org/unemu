@@ -21,7 +21,7 @@ cargo run --offline -p cli -- image workspace discard play --store /path/to/stor
 cargo run --offline -p cli -- image media import /path/to/disks --title "Installation set" --tag install:1.0 --store /path/to/store --create
 cargo run --offline -p cli -- image media import /path/to/disk1.img /path/to/disk2.img --title "Installation set" --tag install:2.0 --label '1=Setup' --extra /path/to/manual.txt:MANUAL.TXT --store /path/to/store
 cargo run --offline -p cli -- image media import /path/to/disc.iso --title "Optical set" --tag optical:1.0 --format 1=iso-2048 --store /path/to/store
-cargo run --offline -p cli -- image media import vendor/shareware/wolf3d/wolf3d-sw14-1440.img --title "Wolfenstein 3-D: Episode 1 (shareware 1.4)" --tag wolf3d-shareware:1.4 --extra vendor/shareware/wolf3d/extras/VENDOR.DOC:VENDOR.DOC --extra vendor/shareware/wolf3d/extras/ORDER.FRM:ORDER.FRM --open --license LicenseRef-apogee-vendor-v11.01.92 --license-text VENDOR.DOC --store /path/to/store --create
+cargo run --offline -p cli -- image media import vendor/shareware/wolf3d/wolf3d-sw14-1440.img --title "Wolfenstein 3-D: Episode 1 (shareware 1.4)" --tag wolf3d-shareware:1.4 --extra vendor/shareware/wolf3d/extras/VENDOR.DOC:VENDOR.DOC --extra vendor/shareware/wolf3d/extras/ORDER.FRM:ORDER.FRM --publisher "Apogee Software" --developer "id Software" --year 1992 --genre "first-person shooter" --platform DOS --open --license LicenseRef-apogee-vendor-v11.01.92 --license-text VENDOR.DOC --store /path/to/store --create
 cargo run --offline -p cli -- image media ls --store /path/to/store
 cargo run --offline -p cli -- image media show install:1.0 --store /path/to/store
 cargo run --offline -p cli -- image push wolf3d-shareware:1.4 --store /path/to/store --dry-run
@@ -87,6 +87,21 @@ before streaming any source. Sources stay
 unchanged and every copy is streamed with full SHA-256. Existing tags fail before
 reading sources; final publication uses compare-and-swap. All descriptors default
 to user-supplied. Optical storage does not enable CD-ROM emulation.
+
+Set-level catalogue metadata fills the set's one title record in its metadata
+blob ([`design/machine-images.md`](design/machine-images.md) §2.1), the fields
+the library's Import installation media… dialog writes plus developers:
+`--publisher P`, `--developer D` and `--genre G` may be repeated and keep the
+order given; `--year YYYY` is a whole number from 1 to 9999; `--platform` is the
+software platform, spelled exactly as one of `DOS`, `Windows 3.x`,
+`Windows 9x`, `CP/M`, `MSX`, `ZX Spectrum`, `C64`, `Atari 8-bit`, `Atari ST` or
+`other` (not the machine platform `ibm-pc-at`); `--description TEXT` is free
+text. Values are trimmed and must not be blank. The year and platform rules are
+the dialog's, checked in the shared import both use. Without these flags the metadata, and so the set digest, are unchanged.
+The preview and `image media show` print one `publisher`, `developer` or
+`genre` line per value and `year`, `platform` and `description` lines for the
+fields given. The metadata is generated content: in an open set it is CC0-1.0
+like the config. It is part of the set: other metadata is another set digest.
 
 A redistributable set (decision-26 amendment of 2026-11-15, for example a
 shareware release fetched under `vendor/shareware/` below: the disk image and
@@ -610,9 +625,9 @@ vendor/shareware/keen4/fetch.sh                # Commander Keen 4 1.4: keen4-sw1
 vendor/shareware/wolf3d/fetch.sh               # Wolfenstein 3-D 1.4: wolf3d-sw14-1440.img, extras/
 vendor/shareware/duke2/fetch.sh                # Duke Nukem II 1.0: duke2-sw10-1440.img, extras/
 SHAREWARE_ARCHIVE=/path/to/1wolf14.zip vendor/shareware/wolf3d/fetch.sh   # your own copy; no network
-cargo run --offline -p cli -- image media import vendor/shareware/keen4/keen4-sw14-1440.img --title "Commander Keen 4: Secret of the Oracle (shareware 1.4)" --tag keen4-shareware:1.4 --label '1=Disk 1 of 1 - Shareware v1.4 installation' --extra vendor/shareware/keen4/extras/README.DOC:README.DOC --extra vendor/shareware/keen4/extras/ORDER.FRM:ORDER.FRM --open --license LicenseRef-apogee-readme-keen4-v1.4 --license-text README.DOC --store /path/to/store --create
-cargo run --offline -p cli -- image media import vendor/shareware/wolf3d/wolf3d-sw14-1440.img --title "Wolfenstein 3-D: Episode 1 (shareware 1.4)" --tag wolf3d-shareware:1.4 --label '1=Disk 1 of 1 - Shareware v1.4 installation' --extra vendor/shareware/wolf3d/extras/VENDOR.DOC:VENDOR.DOC --extra vendor/shareware/wolf3d/extras/ORDER.FRM:ORDER.FRM --open --license LicenseRef-apogee-vendor-v11.01.92 --license-text VENDOR.DOC --store /path/to/store
-cargo run --offline -p cli -- image media import vendor/shareware/duke2/duke2-sw10-1440.img --title "Duke Nukem II: Episode 1 (shareware 1.0)" --tag duke2-shareware:1.0 --label '1=Disk 1 of 1 - Shareware v1.0 installation' --extra vendor/shareware/duke2/extras/LICENSE.DOC:LICENSE.DOC --extra vendor/shareware/duke2/extras/ORDER.FRM:ORDER.FRM --open --license LicenseRef-apogee-license-v12.01.93 --license-text LICENSE.DOC --store /path/to/store
+cargo run --offline -p cli -- image media import vendor/shareware/keen4/keen4-sw14-1440.img --title "Commander Keen 4: Secret of the Oracle (shareware 1.4)" --tag keen4-shareware:1.4 --label '1=Disk 1 of 1 - Shareware v1.4 installation' --extra vendor/shareware/keen4/extras/README.DOC:README.DOC --extra vendor/shareware/keen4/extras/ORDER.FRM:ORDER.FRM --publisher "Apogee Software" --developer "id Software" --year 1991 --genre platformer --platform DOS --open --license LicenseRef-apogee-readme-keen4-v1.4 --license-text README.DOC --store /path/to/store --create
+cargo run --offline -p cli -- image media import vendor/shareware/wolf3d/wolf3d-sw14-1440.img --title "Wolfenstein 3-D: Episode 1 (shareware 1.4)" --tag wolf3d-shareware:1.4 --label '1=Disk 1 of 1 - Shareware v1.4 installation' --extra vendor/shareware/wolf3d/extras/VENDOR.DOC:VENDOR.DOC --extra vendor/shareware/wolf3d/extras/ORDER.FRM:ORDER.FRM --publisher "Apogee Software" --developer "id Software" --year 1992 --genre "first-person shooter" --platform DOS --open --license LicenseRef-apogee-vendor-v11.01.92 --license-text VENDOR.DOC --store /path/to/store
+cargo run --offline -p cli -- image media import vendor/shareware/duke2/duke2-sw10-1440.img --title "Duke Nukem II: Episode 1 (shareware 1.0)" --tag duke2-shareware:1.0 --label '1=Disk 1 of 1 - Shareware v1.0 installation' --extra vendor/shareware/duke2/extras/LICENSE.DOC:LICENSE.DOC --extra vendor/shareware/duke2/extras/ORDER.FRM:ORDER.FRM --publisher "Apogee Software" --developer "Apogee Software" --year 1993 --genre platformer --platform DOS --open --license LicenseRef-apogee-license-v12.01.93 --license-text LICENSE.DOC --store /path/to/store
 cargo run --offline -p cli -- image push wolf3d-shareware:1.4 --store /path/to/store --dry-run   # guard verdict for unemu/wolf3d-shareware:1.4
 ```
 
@@ -634,7 +649,11 @@ amendment), so the imports above carry the licence statement: each set is open
 under the vendor document's own `LicenseRef-` (named after the document and
 its revision; Keen 4's `README.DOC` has none, so its id names the release),
 with that document as its terms text, and the push guard lets it into
-`unemu/`. Imported without `--open` a set stays user-supplied and private. Each `vendor/shareware/<title>/README.md` lists the
+`unemu/`. The set-level metadata names Apogee Software as publisher (the
+Wolfenstein 3-D and Duke Nukem II terms ask that a distributor's descriptions
+name Apogee), the developer the archive's own texts credit (id Software for
+Keen 4 and Wolfenstein 3-D, Apogee Software for Duke Nukem II), the release
+year, the genre and the DOS software platform. Imported without `--open` a set stays user-supplied and private. Each `vendor/shareware/<title>/README.md` lists the
 source and every hash and summarises the distribution terms; the full texts
 stay local, in `extras/`.
 

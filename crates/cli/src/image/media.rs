@@ -4,14 +4,17 @@
 //! `pc_image::media_import`; sources are copied by the store's streaming,
 //! full-SHA-256 ingestion path. A set is user-supplied unless `--open` states
 //! the vendor's terms (`--license LicenseRef-NAME`) and names the extra that
-//! holds their text (`--license-text`); nothing is guessed.
+//! holds their text (`--license-text`); nothing is guessed. Set-level
+//! catalogue flags fill the set's one title record (machine-images §2.1), with
+//! the year and software-platform rules the shared import applies to the
+//! library's dialog too.
 
 use image_registry::guard;
 use image_store::{
     license,
     media_set::{Config, Validator},
     media_type,
-    metadata::Title,
+    metadata::{Metadata, Title},
     Store,
 };
 use pc_image::{
@@ -29,7 +32,9 @@ pub struct MediaCommand {
     dry_run: bool,
     no_compress: bool,
     tag: String,
-    title: String,
+    /// `--title` and the set-level catalogue flags; absent fields stay unknown.
+    /// Boxed: a full title record would dwarf every other image command.
+    title: Box<Title>,
     files: Vec<PathBuf>,
     labels: BTreeMap<usize, String>,
     formats: BTreeMap<usize, String>,
@@ -56,7 +61,7 @@ pub fn parse(args: &[OsString]) -> Result<MediaCommand, &'static str> {
         dry_run: false,
         no_compress: false,
         tag: String::new(),
-        title: String::new(),
+        title: Box::default(),
         files: Vec::new(),
         labels: BTreeMap::new(),
         formats: BTreeMap::new(),
@@ -99,8 +104,8 @@ pub fn parse(args: &[OsString]) -> Result<MediaCommand, &'static str> {
             .ok_or("missing media option value")?;
         match arg.to_str() {
             Some("--store") if command.store.as_os_str().is_empty() => command.store = value.into(),
-            Some("--title") if action == "import" && command.title.is_empty() => {
-                command.title = value.to_str().ok_or("invalid title")?.into()
+            Some("--title") if action == "import" && command.title.title.is_empty() => {
+                command.title.title = value.to_str().ok_or("invalid title")?.into()
             }
             Some("--tag") if action == "import" && command.tag.is_empty() => {
                 command.tag = value.to_str().ok_or("invalid tag")?.into()
@@ -138,6 +143,28 @@ pub fn parse(args: &[OsString]) -> Result<MediaCommand, &'static str> {
                 }
                 command.extras.push((path.into(), dos));
             }
+            Some(option @ ("--publisher" | "--developer" | "--genre")) if action == "import" => {
+                let values = match option {
+                    "--publisher" => &mut command.title.publishers,
+                    "--developer" => &mut command.title.developers,
+                    _ => &mut command.title.genres,
+                };
+                values.push(catalogue_text(value)?);
+            }
+            Some("--year") if action == "import" && command.title.release_year.is_none() => {
+                command.title.release_year = Some(
+                    value
+                        .to_str()
+                        .and_then(|s| s.trim().parse().ok())
+                        .ok_or("--year expects a whole number from 1 to 9999")?,
+                )
+            }
+            Some("--platform") if action == "import" && command.title.platform.is_none() => {
+                command.title.platform = Some(catalogue_text(value)?)
+            }
+            Some("--description") if action == "import" && command.title.description.is_none() => {
+                command.title.description = Some(catalogue_text(value)?)
+            }
             Some("--license") if action == "import" && command.license.is_none() => {
                 command.license = Some(value.to_str().ok_or("invalid licence")?.into())
             }
@@ -159,7 +186,9 @@ pub fn parse(args: &[OsString]) -> Result<MediaCommand, &'static str> {
         return Err("image commands require --store DIR");
     }
     if action == "import"
-        && (command.files.is_empty() || command.title.trim().is_empty() || command.tag.is_empty())
+        && (command.files.is_empty()
+            || command.title.title.trim().is_empty()
+            || command.tag.is_empty())
     {
         return Err("media import requires files, --title and --tag");
     }
@@ -167,6 +196,40 @@ pub fn parse(args: &[OsString]) -> Result<MediaCommand, &'static str> {
         return Err("media show requires NAME:TAG");
     }
     Ok(command)
+}
+
+/// A set-level metadata value as the library's import dialog keeps it:
+/// trimmed, and never blank.
+fn catalogue_text(value: &OsString) -> Result<String, &'static str> {
+    let text = value.to_str().ok_or("invalid set metadata value")?.trim();
+    if text.is_empty() {
+        return Err("blank set metadata value");
+    }
+    Ok(text.into())
+}
+
+/// The catalogue fields a set states, one line per value in stated order;
+/// nothing for a field left unknown.
+fn write_catalogue(output: &mut impl Write, title: &Title) -> std::io::Result<()> {
+    for publisher in &title.publishers {
+        writeln!(output, "publisher\t{publisher:?}")?;
+    }
+    for developer in &title.developers {
+        writeln!(output, "developer\t{developer:?}")?;
+    }
+    if let Some(year) = title.release_year {
+        writeln!(output, "year\t{year}")?;
+    }
+    for genre in &title.genres {
+        writeln!(output, "genre\t{genre:?}")?;
+    }
+    if let Some(platform) = &title.platform {
+        writeln!(output, "platform\t{platform:?}")?;
+    }
+    if let Some(description) = &title.description {
+        writeln!(output, "description\t{description:?}")?;
+    }
+    Ok(())
 }
 
 pub fn execute(command: MediaCommand, output: &mut impl Write) -> anyhow::Result<()> {
@@ -198,8 +261,9 @@ pub fn execute(command: MediaCommand, output: &mut impl Write) -> anyhow::Result
     Ok(())
 }
 
-/// One set in full: media, extras, the terms text its layers link, every
-/// layer's class, licence and link, and where its marks allow it to be pushed.
+/// One set in full: media, extras, its catalogue fields, the terms text its
+/// layers link, every layer's class, licence and link, and where its marks
+/// allow it to be pushed.
 fn show(store: &Store, tag: &str, output: &mut impl Write) -> anyhow::Result<()> {
     let image = store.resolve(tag, &Validator(&PcMediaFormats))?;
     let config = Config::decode(&image.config)?;
@@ -227,6 +291,10 @@ fn show(store: &Store, tag: &str, output: &mut impl Write) -> anyhow::Result<()>
             e.blob,
             e.dos_name.as_deref().unwrap_or("")
         )?;
+    }
+    let metadata = Metadata::decode_for_display(&image.metadata, &image.manifest.layers)?;
+    if let Some(title) = metadata.titles.first() {
+        write_catalogue(output, title)?;
     }
     let link = |d: &image_store::Descriptor| d.annotations.get(license::TERMS).cloned();
     let mut linked: Vec<String> = Vec::new();
@@ -328,10 +396,7 @@ fn import(command: MediaCommand, output: &mut impl Write) -> anyhow::Result<()> 
     );
     let request = media_import::Request {
         tag: command.tag.clone(),
-        title: Title {
-            title: command.title.clone(),
-            ..Title::default()
-        },
+        title: (*command.title).clone(),
         labels: Vec::new(),
         media: files
             .iter()
@@ -375,6 +440,7 @@ fn import(command: MediaCommand, output: &mut impl Write) -> anyhow::Result<()> 
     for extra in &plan.config().extras {
         writeln!(output, "extra\t{:?}\t{:?}", extra.filename, extra.dos_name)?;
     }
+    write_catalogue(output, &command.title)?;
     if let Some((license, terms)) = plan.open() {
         writeln!(output, "open\t{license}\tterms\t{:?}", terms.filename)?;
     }

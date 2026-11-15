@@ -23,8 +23,15 @@ full texts are never in the repository, only in `extras/` and in the set.
 ```sh
 vendor/shareware/keen4/fetch.sh                                  # download once, then offline
 SHAREWARE_ARCHIVE=/path/to/4keen.zip vendor/shareware/keen4/fetch.sh   # never uses the network
-cargo run --offline -p cli -- image media import vendor/shareware/keen4/keen4-sw14-1440.img --title "Commander Keen 4: Secret of the Oracle (shareware 1.4)" --tag keen4-shareware:1.4 --label '1=Disk 1 of 1 - Shareware v1.4 installation' --extra vendor/shareware/keen4/extras/README.DOC:README.DOC --extra vendor/shareware/keen4/extras/ORDER.FRM:ORDER.FRM --open --license LicenseRef-apogee-readme-keen4-v1.4 --license-text README.DOC --store /path/to/store --create
+cargo run --offline -p cli -- image media import vendor/shareware/keen4/keen4-sw14-1440.img --title "Commander Keen 4: Secret of the Oracle (shareware 1.4)" --tag keen4-shareware:1.4 --label '1=Disk 1 of 1 - Shareware v1.4 installation' --extra vendor/shareware/keen4/extras/README.DOC:README.DOC --extra vendor/shareware/keen4/extras/ORDER.FRM:ORDER.FRM --publisher "Apogee Software" --developer "id Software" --year 1991 --genre platformer --platform DOS --open --license LicenseRef-apogee-readme-keen4-v1.4 --license-text README.DOC --store /path/to/store --create
 ```
+
+The import also records the set-level metadata: publisher Apogee Software
+(`README.DOC` names Apogee Software Productions as distributor; the name is
+spelled as in `ORDER.FRM`, as for the other two sets), developer id Software
+(the copyright holder: "Copyright (c) 1991, Id Software Inc."), release year
+1991, genre platformer and software platform DOS. The archive's files are dated
+1992-02-01 (version 1.4); the year is that of the copyright line.
 
 Run it inside `nix develop`, which provides mtools 4.0.49, the version that
 produced the pinned image; unzip and curl (download only) come from the

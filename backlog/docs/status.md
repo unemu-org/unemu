@@ -5,6 +5,26 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-15 — Set-level metadata on `image media import`:** `--publisher P`,
+  `--developer D` and `--genre G` (repeatable, order kept), `--year YYYY`,
+  `--platform PLATFORM` (the software platform, one of the library dialog's
+  choices: `DOS`, `Windows 3.x`, … `other`) and `--description TEXT` fill the
+  set's one §2.1 title record, the same fields the Import installation media…
+  dialog writes (plus developers, which the dialog has no field for). The year
+  (1 to 9999) and platform rules now live in `pc_image::media_import`, so the
+  dialog's worker and the command line refuse the same values with the same
+  message; the dialog keeps its own inline year hint. Values are trimmed and
+  blank ones refused. The preview and `image media show` print one line per
+  stated value. The metadata stays generated content: CC0-1.0 in an open set.
+  Without the flags the set digest is unchanged (a CLI test pins the default
+  set's digest, measured before the flags existed, equal to the shared
+  import's pin). The shareware import examples (`commands.md`, each
+  `vendor/shareware/*/README.md`) now name Apogee Software as publisher, the
+  developer (id Software for Keen 4 and Wolfenstein 3-D, Apogee Software for
+  Duke Nukem II), the year (1991, 1992, 1993), the genre and `DOS`. The
+  metadata changes those sets' digests, and the command line never moves an
+  existing tag, so a store that already holds the tags needs new ones or a
+  fresh store.
 - **2026-11-15 — Registry privacy per namespace:** one registry can serve a
   public `unemu/` and a private `private/`, as decision-25's amendment "privacy
   per namespace" and the approved registry-accounts mock-up describe.
@@ -80,7 +100,8 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   Synthetic floppies and terms texts in the tests. **MEASURED:** the three
   `vendor/shareware/` sets, imported with their statements (entry below)
   into a scratch store, pass the guard for `unemu/` in `image push
-  --dry-run`. The GUI for open sets and set-level metadata are separate work.
+  --dry-run`. The GUI for open sets is separate work; set-level metadata
+  followed (entry above).
 - **2026-11-15 — Open VGA BIOS re-pinned to `v0.8a-unemu.2`:**
   `vendor/vgabios/fetch.sh` builds fork release `v0.8a-unemu.2` (revision
   `d883bbac`), which drops upstream's prebuilt `VGABIOS-lgpl-latest*.bin`
@@ -115,9 +136,9 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
     with `LICENSE.DOC`, Commander Keen 4 under
     `LicenseRef-apogee-readme-keen4-v1.4` with `README.DOC` (its only
     distribution text, without a revision mark). Imported without the
-    statement a set stays user-supplied. The CLI import records the title and
-    medium label only; genre, year, publisher and the DOS software platform
-    need the window's import dialog.
+    statement a set stays user-supplied. Since the set-level metadata entry
+    above, the imports also record publisher, developer, year, genre and the
+    DOS software platform.
   - **Publication:** the maintainer approved on 2026-11-15 that these public
     shareware sets may be published. Imported with the statement they are
     open, and the push guard lets them into `unemu/` with their terms texts

@@ -1140,7 +1140,13 @@ The pane's Insert is reachable only once the library can be shown beside a
 running machine; the shell draws the library only while no machine runs, so
 today Media › Insert › From library… is the path into a drive.
 The dialog and `image media import` share one plan-and-publish function and its
-refusals. When the tag exists, the window writes nothing: it resolves the stored
+refusals. Both write the set's one title record: title, publishers, genres,
+release year, software platform and description, and on the command line also
+developers (`--publisher`, `--developer`, `--genre` repeatable in order,
+`--year`, `--platform`, `--description`, implemented 2026-11-15). The shared
+plan refuses a release year outside 1 to 9999 and a software platform outside
+§2.1's controlled values, the choices the dialog offers; reading keeps other
+platforms for sets made elsewhere. When the tag exists, the window writes nothing: it resolves the stored
 set, refuses at once on another artifact type or a different layout, metadata
 or title, then compares the sources' raw SHA-256 with the stored decoded
 digests, so a set stored compressed or raw reports already imported and any

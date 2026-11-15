@@ -22,8 +22,15 @@ full texts are never in the repository, only in `extras/` and in the set.
 ```sh
 vendor/shareware/wolf3d/fetch.sh                                    # download once, then offline
 SHAREWARE_ARCHIVE=/path/to/1wolf14.zip vendor/shareware/wolf3d/fetch.sh  # never uses the network
-cargo run --offline -p cli -- image media import vendor/shareware/wolf3d/wolf3d-sw14-1440.img --title "Wolfenstein 3-D: Episode 1 (shareware 1.4)" --tag wolf3d-shareware:1.4 --label '1=Disk 1 of 1 - Shareware v1.4 installation' --extra vendor/shareware/wolf3d/extras/VENDOR.DOC:VENDOR.DOC --extra vendor/shareware/wolf3d/extras/ORDER.FRM:ORDER.FRM --open --license LicenseRef-apogee-vendor-v11.01.92 --license-text VENDOR.DOC --store /path/to/store --create
+cargo run --offline -p cli -- image media import vendor/shareware/wolf3d/wolf3d-sw14-1440.img --title "Wolfenstein 3-D: Episode 1 (shareware 1.4)" --tag wolf3d-shareware:1.4 --label '1=Disk 1 of 1 - Shareware v1.4 installation' --extra vendor/shareware/wolf3d/extras/VENDOR.DOC:VENDOR.DOC --extra vendor/shareware/wolf3d/extras/ORDER.FRM:ORDER.FRM --publisher "Apogee Software" --developer "id Software" --year 1992 --genre "first-person shooter" --platform DOS --open --license LicenseRef-apogee-vendor-v11.01.92 --license-text VENDOR.DOC --store /path/to/store --create
 ```
+
+The import also records the set-level metadata: publisher Apogee Software
+(`VENDOR.DOC` asks commercial distributors to name Apogee in every
+description), developer id Software,
+release year 1992, genre first-person shooter and software platform DOS. The
+archive's files are dated 1993-01-01 (version 1.4); the year is the game's
+first release, and `VENDOR.DOC` itself is revision `[V.11.01.92]`.
 
 Run it inside `nix develop`, which provides mtools 4.0.49, the version that
 produced the pinned image; unzip and curl (download only) come from the
