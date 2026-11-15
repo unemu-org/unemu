@@ -5,6 +5,23 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-15 — Media sets carry the standard OCI annotations:** an
+  installation set's manifest now carries `org.opencontainers.image.description`,
+  `org.opencontainers.image.vendor` (the publishers) and
+  `org.opencontainers.image.authors` (the developers), lists joined with `, `
+  in the order stated, beside the title (and `org.opencontainers.image.licenses`
+  of an open set), all from the set's title record, so registry web UIs that
+  read the standard annotations show them (`design/machine-images.md` §5.2).
+  An empty field adds nothing: a set without catalogue fields keeps its digest
+  (the shared and CLI pin tests are unchanged). There is no creation time (no
+  clock) and no URL (the title record has no such field). The existing-tag
+  comparison the library's Import installation media… dialog uses checks the
+  four descriptive annotations, so an identical re-import is already imported
+  and a set stored without them is a tag conflict; the dialog shares the plan,
+  so its sets get the annotations too. The shareware import commands
+  (`commands.md`, each `vendor/shareware/*/README.md`) add a one-paragraph
+  `--description`; that changes those sets' digests again, so a store that
+  already holds the tags needs a fresh store or new tags.
 - **2026-11-15 — Open AT BIOS: unemu-at-bios `v1.0.2-unemu.2`:**
   `vendor/unemu-at-bios/fetch.sh` builds release `v1.0.2-unemu.2` (revision
   `a2cf362d`) of the unemu fork of Sergey Kiselev's 8088_bios

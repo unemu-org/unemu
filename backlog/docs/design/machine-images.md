@@ -990,6 +990,30 @@ Import and hashing never advance guest time. An insertion replay pins the medium
 bytes, format, selection, workspace state and event at a retired-instruction
 boundary, never a mutable tag or host timing.
 
+**Manifest annotations** (implemented 2026-11-15). Registry web UIs read the
+OCI image-spec's pre-defined annotations, so a set's manifest carries them,
+filled from its one title record like a firmware package's (§5.3) from its
+config:
+
+| Annotation | Value |
+|---|---|
+| `org.opencontainers.image.title` | The title. |
+| `org.opencontainers.image.description` | The description. |
+| `org.opencontainers.image.vendor` | The publishers, joined with `, ` in the order stated. |
+| `org.opencontainers.image.authors` | The developers, joined the same way. |
+| `org.opencontainers.image.licenses` | Open sets only: the conjunction of the layer licences (below). |
+
+A field the record leaves empty adds no annotation, so a set imported without
+catalogue fields keeps its manifest bytes (a test pins a default set's
+digest). There is no `org.opencontainers.image.created`, because an import has
+no clock, and no `org.opencontainers.image.url`, because §2.1's title record
+has no URL field. Like every annotation (§2) they are informational, never an
+authority. They are part of the manifest and so of the set digest: when the
+tag exists, a stored set whose title, description, vendor or authors
+annotations differ from those the import writes (one stored before they
+existed, for example) is a tag conflict, and an identical re-import is
+already imported.
+
 All descriptors default to `unemu.redistribution = "user-supplied"`, including
 metadata/artwork, unless reviewed licence/provenance proves them open (§5).
 The most restrictive local classification for a digest still wins. Restricted
@@ -1148,9 +1172,9 @@ plan refuses a release year outside 1 to 9999 and a software platform outside
 §2.1's controlled values, the choices the dialog offers; reading keeps other
 platforms for sets made elsewhere. When the tag exists, the window writes nothing: it resolves the stored
 set, refuses at once on another artifact type or a different layout, metadata
-or title, then compares the sources' raw SHA-256 with the stored decoded
-digests, so a set stored compressed or raw reports already imported and any
-other content a tag conflict (the command line keeps refusing an existing tag
+or descriptive annotation (above), then compares the sources' raw SHA-256
+with the stored decoded digests, so a set stored compressed or raw reports
+already imported and any other content a tag conflict (the command line keeps refusing an existing tag
 before reading). The transfer-medium generator remains separate work.
 
 ### 5.3. Firmware packages

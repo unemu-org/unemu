@@ -24,7 +24,7 @@ use image_store::{
     Descriptor, Digest, Manifest, Store,
 };
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     ffi::OsString,
     fmt, fs,
     path::{Path, PathBuf},
@@ -210,7 +210,8 @@ pub fn extra_kind(path: &Path) -> ExtraKind {
 #[derive(Clone, Debug)]
 pub struct Plan {
     tag: String,
-    title: String,
+    /// The manifest's descriptive annotations, read from the title record.
+    annotations: BTreeMap<String, String>,
     config: Config,
     metadata: Metadata,
     media: Vec<(PathBuf, &'static str, u64)>,
@@ -347,7 +348,7 @@ pub fn plan_with(request: &Request, open: Option<&OpenStatement>) -> Result<Plan
     metadata.encode(&[])?;
     Ok(Plan {
         tag: request.tag.clone(),
-        title: request.title.title.clone(),
+        annotations: describe(&request.title),
         config,
         metadata,
         media,
@@ -484,13 +485,47 @@ fn cancel_check(cancelled: &dyn Fn() -> bool, what: &str, path: &Path) -> Result
     })
 }
 const TITLE: &str = "org.opencontainers.image.title";
+const DESCRIPTION: &str = "org.opencontainers.image.description";
+const VENDOR: &str = "org.opencontainers.image.vendor";
+const AUTHORS: &str = "org.opencontainers.image.authors";
 const LICENSES: &str = "org.opencontainers.image.licenses";
+/// The manifest annotations [`describe`] derives from the title record.
+const DESCRIPTIVE: [&str; 4] = [TITLE, DESCRIPTION, VENDOR, AUTHORS];
+
+/// The OCI image-spec's pre-defined annotations a registry browser shows,
+/// filled from the set's title record: its title, its description, the
+/// publishers as vendor (the distributing organisation) and the developers as
+/// authors, each list joined with ", " in the order stated. A field the record
+/// leaves empty adds nothing, so a set without catalogue fields keeps its
+/// manifest bytes. There is no creation time, because an import has no clock,
+/// and no URL, because the title record has no field for one.
+fn describe(title: &Title) -> BTreeMap<String, String> {
+    let joined = |values: &[String]| {
+        values
+            .iter()
+            .filter(|v| !v.trim().is_empty())
+            .map(String::as_str)
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    [
+        (TITLE, title.title.clone()),
+        (DESCRIPTION, title.description.clone().unwrap_or_default()),
+        (VENDOR, joined(&title.publishers)),
+        (AUTHORS, joined(&title.developers)),
+    ]
+    .into_iter()
+    .filter(|(_, value)| !value.trim().is_empty())
+    .map(|(key, value)| (key.to_owned(), value))
+    .collect()
+}
 
 /// Copy and fully hash each source in order, then publish the tag last. When
 /// the tag already names a set, nothing is written: the same media, labels,
-/// formats, extras, metadata and marks are already imported, anything else is
-/// a tag conflict. `cancelled` is checked before each file and a cancelled
-/// import writes no tag. `progress` receives files done and the file total.
+/// formats, extras, metadata, descriptive annotations and marks are already
+/// imported, anything else is a tag conflict. `cancelled` is checked before
+/// each file and a cancelled import writes no tag. `progress` receives files
+/// done and the file total.
 pub fn publish(
     store: &Store,
     plan: &Plan,
@@ -572,9 +607,7 @@ pub fn publish(
     unique.push(small(mt::METADATA, &bytes)?);
     let cfg = small(mt::MEDIA_SET_CONFIG, &config.encode()?)?;
     let mut manifest = Manifest::new_media_set(&config.platform, cfg, unique)?;
-    manifest
-        .annotations
-        .insert(TITLE.into(), plan.title.clone());
+    manifest.annotations.extend(plan.annotations.clone());
     if open.is_some() {
         let licenses: Vec<Expression> = manifest
             .layers
@@ -606,10 +639,10 @@ pub fn publish(
 
 /// An existing tag is compared without writing anything. The stored set is
 /// resolved first; anything but an installation set, or a set whose metadata,
-/// title, disk count, labels, formats, extras or licence marks differ, is
-/// refused before a source is read. Only then is each source's raw SHA-256
-/// compared with the stored config's decoded digests, so how the set was
-/// stored (compressed or not) never decides the outcome.
+/// descriptive annotations, disk count, labels, formats, extras or licence
+/// marks differ, is refused before a source is read. Only then is each
+/// source's raw SHA-256 compared with the stored config's decoded digests, so
+/// how the set was stored (compressed or not) never decides the outcome.
 fn compare_existing(
     store: &Store,
     plan: &Plan,
@@ -648,9 +681,14 @@ fn compare_existing(
     for extra in &mut layout.extras {
         extra.blob.clone_from(&placeholder);
     }
+    // The descriptive annotations are part of what the tag names: a set stored
+    // without the ones this import writes (published before they existed, say)
+    // is refused like one with another title, never reported as this set.
     if layout != plan.config
         || resolved.metadata != plan.metadata.encode(&[])?
-        || resolved.manifest.annotations.get(TITLE) != Some(&plan.title)
+        || DESCRIPTIVE
+            .iter()
+            .any(|&key| resolved.manifest.annotations.get(key) != plan.annotations.get(key))
     {
         return Err(different());
     }
@@ -1080,6 +1118,106 @@ mod tests {
         assert_eq!(
             published.descriptor().digest.to_string(),
             "sha256:852615e645eac3a3bccfb7d3a30b026e4cec4bbb7fc5ee72f06ba2808b671dcf"
+        );
+    }
+
+    /// The manifest's OCI image-spec annotations, the ones registry browsers read.
+    fn oci(manifest: &Manifest) -> BTreeMap<&str, &str> {
+        manifest
+            .annotations
+            .iter()
+            .filter(|(key, _)| key.starts_with("org.opencontainers.image."))
+            .map(|(key, value)| (key.as_str(), value.as_str()))
+            .collect()
+    }
+
+    #[test]
+    fn the_title_record_fills_the_standard_oci_annotations_in_stated_order() {
+        let temp = Temp::new("annotations");
+        let disk = temp.0.join("disk.img");
+        floppy(&disk, 1);
+        let store = Store::open(temp.0.join("store")).unwrap();
+        let mut set = request(&[disk], "Catalogued set");
+        set.title.description = Some("A synthetic set.\nSecond line.".into());
+        set.title.publishers = vec!["Second Publisher".into(), "First Publisher".into()];
+        set.title.developers = vec!["Synthetic Studio".into(), "Another Studio".into()];
+        set.title.release_year = Some(1991);
+        set.title.genres = vec!["puzzle".into()];
+        set.title.platform = Some("DOS".into());
+        let import = || publish(&store, &plan(&set).unwrap(), &|_, _| {}, &|| false);
+        let published = import().unwrap();
+        let resolved = store
+            .resolve_descriptor(published.descriptor(), &Validator(&PcMediaFormats))
+            .unwrap();
+        // Lists keep the order stated, never sorted; nothing else is added,
+        // in particular no creation time.
+        assert_eq!(
+            oci(&resolved.manifest),
+            BTreeMap::from([
+                (TITLE, "Catalogued set"),
+                (DESCRIPTION, "A synthetic set.\nSecond line."),
+                (VENDOR, "Second Publisher, First Publisher"),
+                (AUTHORS, "Synthetic Studio, Another Studio"),
+            ])
+        );
+        // An identical re-import writes the identical manifest and is the same set.
+        assert_eq!(
+            import().unwrap(),
+            Outcome::AlreadyImported(published.descriptor().clone())
+        );
+        // The same media and metadata under a manifest without the annotations,
+        // as an import made before they existed stored it, is another set.
+        let mut bare = resolved.manifest.clone();
+        for key in [DESCRIPTION, VENDOR, AUTHORS] {
+            bare.annotations.remove(key);
+        }
+        let bare = store.import_manifest(&bare).unwrap();
+        store
+            .update_tag(
+                "test:set",
+                &bare,
+                Some(&published.descriptor().digest),
+                &Validator(&PcMediaFormats),
+            )
+            .unwrap();
+        let refusal = import().unwrap_err().to_string();
+        assert!(refusal.starts_with("tag conflict: test:set"), "{refusal}");
+    }
+
+    #[test]
+    fn empty_catalogue_fields_add_no_annotation_and_blank_list_entries_are_skipped() {
+        let temp = Temp::new("no-annotations");
+        let disk = temp.0.join("disk.img");
+        floppy(&disk, 1);
+        let annotations = |edit: &dyn Fn(&mut Title)| {
+            let mut set = request(std::slice::from_ref(&disk), "Plain set");
+            edit(&mut set.title);
+            plan(&set).unwrap().annotations
+        };
+        let title_only = BTreeMap::from([(TITLE.to_owned(), "Plain set".to_owned())]);
+        assert_eq!(annotations(&|_| {}), title_only);
+        // Catalogue fields the annotations do not carry add nothing either.
+        assert_eq!(
+            annotations(&|t| {
+                t.release_year = Some(1991);
+                t.genres = vec!["puzzle".into()];
+                t.platform = Some("DOS".into());
+            }),
+            title_only
+        );
+        assert_eq!(
+            annotations(&|t| {
+                t.description = Some(" \n".into());
+                t.publishers = vec![String::new(), " ".into()];
+            }),
+            title_only
+        );
+        assert_eq!(
+            annotations(&|t| t.developers = vec![" ".into(), "Studio".into(), String::new()]),
+            BTreeMap::from([
+                (TITLE.to_owned(), "Plain set".to_owned()),
+                (AUTHORS.to_owned(), "Studio".to_owned()),
+            ])
         );
     }
 

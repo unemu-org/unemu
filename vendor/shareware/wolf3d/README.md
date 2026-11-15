@@ -22,7 +22,7 @@ full texts are never in the repository, only in `extras/` and in the set.
 ```sh
 vendor/shareware/wolf3d/fetch.sh                                    # download once, then offline
 SHAREWARE_ARCHIVE=/path/to/1wolf14.zip vendor/shareware/wolf3d/fetch.sh  # never uses the network
-cargo run --offline -p cli -- image media import vendor/shareware/wolf3d/wolf3d-sw14-1440.img --title "Wolfenstein 3-D: Episode 1 (shareware 1.4)" --tag wolf3d-shareware:1.4 --label '1=Disk 1 of 1 - Shareware v1.4 installation' --extra vendor/shareware/wolf3d/extras/VENDOR.DOC:VENDOR.DOC --extra vendor/shareware/wolf3d/extras/ORDER.FRM:ORDER.FRM --publisher "Apogee Software" --developer "id Software" --year 1992 --genre "first-person shooter" --platform DOS --open --license LicenseRef-apogee-vendor-v11.01.92 --license-text VENDOR.DOC --store /path/to/store --create
+cargo run --offline -p cli -- image media import vendor/shareware/wolf3d/wolf3d-sw14-1440.img --title "Wolfenstein 3-D: Episode 1 (shareware 1.4)" --tag wolf3d-shareware:1.4 --label '1=Disk 1 of 1 - Shareware v1.4 installation' --extra vendor/shareware/wolf3d/extras/VENDOR.DOC:VENDOR.DOC --extra vendor/shareware/wolf3d/extras/ORDER.FRM:ORDER.FRM --publisher "Apogee Software" --developer "id Software" --year 1992 --genre "first-person shooter" --platform DOS --description 'Wolfenstein 3-D, episode 1, Escape from Wolfenstein, version 1.4, the shareware episode of a first-person shooter with texture-mapped VGA graphics by id Software, published by Apogee Software. As B.J. Blazkowicz the player escapes from Castle Wolfenstein through ten floors, one of them secret. It needs a 286 or better. The disk holds the files of the original Apogee shareware archive 1wolf14.zip, unmodified; INSTALL.BAT installs the game onto a chosen drive.' --open --license LicenseRef-apogee-vendor-v11.01.92 --license-text VENDOR.DOC --store /path/to/store --create
 ```
 
 The import also records the set-level metadata: publisher Apogee Software
@@ -30,7 +30,12 @@ The import also records the set-level metadata: publisher Apogee Software
 description), developer id Software,
 release year 1992, genre first-person shooter and software platform DOS. The
 archive's files are dated 1993-01-01 (version 1.4); the year is the game's
-first release, and `VENDOR.DOC` itself is revision `[V.11.01.92]`.
+first release, and `VENDOR.DOC` itself is revision `[V.11.01.92]`. The
+description is one factual paragraph: the episode, the processor the FUNET
+index names, and that the disk holds the files of Apogee's original shareware
+archive unmodified. The set's manifest repeats the title, the description,
+the publisher (as vendor) and the developer (as authors) in the standard OCI
+annotations that registry web UIs show.
 
 Run it inside `nix develop`, which provides mtools 4.0.49, the version that
 produced the pinned image; unzip and curl (download only) come from the

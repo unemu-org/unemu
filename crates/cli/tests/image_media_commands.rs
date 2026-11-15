@@ -722,6 +722,37 @@ fn set_level_metadata_flags_land_in_the_metadata_blob_in_order_and_show_prints_t
         title.description.as_deref(),
         Some("A synthetic set.\nSecond line.")
     );
+    // Registry browsers read the same record from the manifest's standard
+    // annotations, lists joined in the order given; there is no creation time.
+    let oci: Vec<(&str, &str)> = image
+        .manifest
+        .annotations
+        .iter()
+        .filter(|(key, _)| key.starts_with("org.opencontainers.image."))
+        .map(|(key, value)| (key.as_str(), value.as_str()))
+        .collect();
+    assert_eq!(
+        oci,
+        [
+            (
+                "org.opencontainers.image.authors",
+                "Synthetic Studio, Another Studio"
+            ),
+            (
+                "org.opencontainers.image.description",
+                "A synthetic set.\nSecond line."
+            ),
+            (
+                "org.opencontainers.image.licenses",
+                "LicenseRef-synthetic-shareware AND CC0-1.0"
+            ),
+            ("org.opencontainers.image.title", "Synthetic catalogued set"),
+            (
+                "org.opencontainers.image.vendor",
+                "Second Publisher, First Publisher"
+            ),
+        ]
+    );
     // The library's facets read the same record.
     let mut cache = SummaryCache::open(&store).unwrap();
     cache.rebuild(&store, 64, &[], &[]).unwrap();
@@ -778,6 +809,18 @@ fn set_level_metadata_flags_land_in_the_metadata_blob_in_order_and_show_prints_t
     ] {
         assert!(!out.contains(&format!("\n{key}\t")), "{out}");
     }
+    // Nor does its manifest carry any standard annotation but the title.
+    let plain = store
+        .resolve("test:plain", &Validator(&PcMediaFormats))
+        .unwrap();
+    let oci: Vec<&str> = plain
+        .manifest
+        .annotations
+        .keys()
+        .map(String::as_str)
+        .filter(|key| key.starts_with("org.opencontainers.image."))
+        .collect();
+    assert_eq!(oci, ["org.opencontainers.image.title"]);
 }
 
 #[test]

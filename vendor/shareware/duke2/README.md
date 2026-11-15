@@ -22,14 +22,19 @@ full texts are never in the repository, only in `extras/` and in the set.
 ```sh
 vendor/shareware/duke2/fetch.sh                                  # download once, then offline
 SHAREWARE_ARCHIVE=/path/to/4duke.zip vendor/shareware/duke2/fetch.sh   # never uses the network
-cargo run --offline -p cli -- image media import vendor/shareware/duke2/duke2-sw10-1440.img --title "Duke Nukem II: Episode 1 (shareware 1.0)" --tag duke2-shareware:1.0 --label '1=Disk 1 of 1 - Shareware v1.0 installation' --extra vendor/shareware/duke2/extras/LICENSE.DOC:LICENSE.DOC --extra vendor/shareware/duke2/extras/ORDER.FRM:ORDER.FRM --publisher "Apogee Software" --developer "Apogee Software" --year 1993 --genre platformer --platform DOS --open --license LicenseRef-apogee-license-v12.01.93 --license-text LICENSE.DOC --store /path/to/store --create
+cargo run --offline -p cli -- image media import vendor/shareware/duke2/duke2-sw10-1440.img --title "Duke Nukem II: Episode 1 (shareware 1.0)" --tag duke2-shareware:1.0 --label '1=Disk 1 of 1 - Shareware v1.0 installation' --extra vendor/shareware/duke2/extras/LICENSE.DOC:LICENSE.DOC --extra vendor/shareware/duke2/extras/ORDER.FRM:ORDER.FRM --publisher "Apogee Software" --developer "Apogee Software" --year 1993 --genre platformer --platform DOS --description 'Duke Nukem II, episode 1, version 1.0, the shareware episode of a side-scrolling platform game by Todd Replogle and Apogee Software, in which Duke fights the alien Rigelatins. It needs VGA graphics and a 286 or better. The disk holds the files of the original Apogee shareware archive 4duke.zip, unmodified; INSTALL.BAT installs the game onto a chosen drive.' --open --license LicenseRef-apogee-license-v12.01.93 --license-text LICENSE.DOC --store /path/to/store --create
 ```
 
 The import also records the set-level metadata: publisher and developer
 Apogee Software (`LICENSE.DOC`: "Copyright 1993 Apogee Software, Todd
 Replogle"; it asks commercial distributors to put "Published by Apogee" or
 "An Apogee Game" in every description), release year 1993, genre platformer
-and software platform DOS.
+and software platform DOS. The description is one factual paragraph: the
+episode, the hardware the FUNET index names, and that the disk holds the
+files of Apogee's original shareware archive unmodified. The set's manifest
+repeats the title, the description, the publisher (as vendor) and the
+developer (as authors) in the standard OCI annotations that registry web UIs
+show.
 
 Run it inside `nix develop`, which provides mtools 4.0.49, the version that
 produced the pinned image; unzip and curl (download only) come from the
