@@ -404,11 +404,7 @@ impl Shell {
                     return;
                 }
             };
-            let display = prepared.machine.devices.iter().find_map(|d| match d.kind {
-                assembly::DeviceKind::Mda(_) => Some(assembly::DeviceId::Mda),
-                assembly::DeviceKind::Vga(_) => Some(assembly::DeviceId::Vga),
-                _ => None,
-            });
+            let display = display_device(&prepared.machine.devices);
             let result = display
                 .ok_or_else(|| "Machine has no display card".to_string())
                 .and_then(|display| {
@@ -3601,8 +3597,30 @@ fn shortcuts_help(macos: bool) -> String {
     help
 }
 
+/// The display card a launched image shows. The text-only VGA and the
+/// register-level VGA share the VGA role, so both are found by role rather
+/// than by device model, as for machine files.
+fn display_device(devices: &[assembly::DeviceConfig]) -> Option<assembly::DeviceId> {
+    devices
+        .iter()
+        .map(|d| d.id)
+        .find(|id| matches!(id, assembly::DeviceId::Mda | assembly::DeviceId::Vga))
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_launched_image_finds_its_register_level_vga() {
+        use assembly::{DeviceConfig, DeviceId, DeviceKind, VgaCfg};
+        let register_vga = vec![DeviceConfig::new(
+            DeviceId::Vga,
+            DeviceKind::VgaRegisters(VgaCfg {}),
+            Vec::new(),
+        )];
+        assert_eq!(display_device(&register_vga), Some(DeviceId::Vga));
+        assert_eq!(display_device(&[]), None);
+    }
+
     use super::*;
     use ElementState::{Pressed, Released};
 
