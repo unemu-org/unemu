@@ -105,3 +105,28 @@ Point 8 stays the default; this amendment adds one exception to it:
    the pins and a paraphrase of the terms.
 5. **Rights follow the bytes**, as in [[decision-27]]: a machine image that
    embeds an open set is open only where all its other layers are.
+
+## Amendment 2026-11-15: open media under SPDX licences, with sources
+
+The maintainer asked for the official FreeDOS 1.4 Floppy Edition as open
+installation media in `unemu/media/`, published with the official templates.
+This extends the shareware amendment above:
+
+1. **Two ways to open a set.** A set is open either under a `LicenseRef-` for
+   a vendor's own terms with that terms text attached (shareware, above), or
+   under an SPDX expression that states the real licences of its contents.
+   Nothing is guessed; without either statement a set stays `user-supplied`.
+2. **Copyleft needs its source.** A set whose expression contains a copyleft
+   licence carries the corresponding source archive as an extra, and every
+   copyleft layer links it (`unemu.source`), as firmware packages do
+   ([[decision-27]]). The client guard refuses such a set for `unemu/` or any
+   public namespace without that link; a private namespace still takes it.
+3. **Every part is covered.** The open claim covers every program on the
+   disks, each with its licence recorded in a licence index shipped with the
+   set; a part without a verifiable licence or required source keeps the set
+   `user-supplied`. Documents that state no licence are not attached to an
+   open set.
+4. **Operating systems are allowed.** Open operating-system installation media
+   such as FreeDOS may be published in `unemu/media/` next to the template
+   machines; the template machines themselves still ship without an operating
+   system.
