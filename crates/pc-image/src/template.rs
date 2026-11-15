@@ -3,7 +3,8 @@
 //! fixtures; machine-images §5.5.
 //!
 //! A build imports the open firmware packages with the source archives their
-//! fetch scripts build (the archives the firmware catalogue pins), then
+//! fetch scripts build (the archives the firmware catalogue pins) and a
+//! title, description, vendor, version and labels for each, then
 //! creates each template machine through [`crate::create`], never from a
 //! machine file. Nothing depends on the clock, the host or the fixture paths:
 //! the same fixtures give the same manifests and digests on every run and
@@ -32,20 +33,43 @@ pub const ALIAS: &str = "latest";
 /// The registry namespace every template lives in.
 pub const NAMESPACE: &str = "unemu";
 
-/// One open firmware package of the templates: the catalogue entry and the
+/// One open firmware package of the templates: the catalogue entry, the
 /// fixture files, relative to the vendor directory, that its fetch script
-/// produces.
+/// produces, and the descriptive fields the package states.
 #[derive(Clone, Copy, Debug)]
 pub struct FirmwareSource {
     pub catalogue_id: &'static str,
     pub rom: &'static str,
     pub source_archive: &'static str,
+    pub title: &'static str,
+    pub description: &'static str,
+    pub vendor: &'static str,
+    /// The release tag or revision the catalogue provenance names.
+    pub version: &'static str,
+    pub labels: &'static [&'static str],
 }
 
 impl FirmwareSource {
     /// `unemu/firmware/<catalogue id>`.
     pub fn repository(&self) -> String {
         format!("{NAMESPACE}/firmware/{}", self.catalogue_id)
+    }
+
+    /// What the build states for the package, as `image firmware import`
+    /// states it with its metadata flags: the descriptive fields and the
+    /// source archive at `archive`. Registry web UIs read the title,
+    /// description, vendor and version from the manifest annotations this
+    /// gives; without them they show the raw catalogue id.
+    pub fn statement(&self, archive: PathBuf) -> Statement {
+        Statement {
+            title: Some(self.title.into()),
+            description: Some(self.description.into()),
+            vendor: Some(self.vendor.into()),
+            version: Some(self.version.into()),
+            labels: Some(self.labels.iter().map(|l| (*l).into()).collect()),
+            source: Some(archive),
+            ..Statement::default()
+        }
     }
 }
 
@@ -56,16 +80,31 @@ pub const FIRMWARE: [FirmwareSource; 3] = [
         catalogue_id: "unemu-at-bios-1.0.2-unemu.2",
         rom: "unemu-at-bios/bios-unemu-at.bin",
         source_archive: "unemu-at-bios/unemu-at-bios-1.0.2-unemu.2-src.tar",
+        title: "unemu AT BIOS 1.0.2-unemu.2",
+        description: "The system BIOS of the open AT templates: release 1.0.2-unemu.2 of unemu-at-bios, the unemu fork of 8088_bios 1.0.2 by Sergey Kiselev, its original author. Its unemu-at build is a 32 KiB ROM at F8000h-FFFFFh for IBM 5170-class 80286 boards with two 8259s, two 8237s, an 8042 and an MC146818. Unlike upstream it resumes through the CMOS shutdown byte, answers INT 15h AH=87h and AH=88h, measures extended memory into CMOS 30h-31h and checks the CMOS as the IBM PC/AT BIOS does. It serves diskettes only; fixed disks come from an option ROM such as the XTIDE Universal BIOS. Licensed under GPL-3.0-or-later; the package includes its corresponding source archive.",
+        vendor: "unemu (fork of Sergey Kiselev's 8088_bios)",
+        version: "1.0.2-unemu.2",
+        labels: &["open-source", "pc-at", "system-bios"],
     },
     FirmwareSource {
         catalogue_id: "vgabios-0.8a-unemu.1-std",
         rom: "vgabios/vgabios-std.bin",
         source_archive: "vgabios/vgabios-0.8a-unemu.2-src.tar",
+        title: "unemu VGA BIOS 0.8a-unemu.2, standard VGA",
+        description: "The video BIOS of the open AT templates: the unemu fork of the LGPL VGABIOS 0.8a, the video BIOS Bochs and QEMU use, in its standard ISA VGA build with no VBE, PCI, Cirrus or Banshee code and 80286 instructions only. The 32 KiB ROM fills the C0000h-C7FFFh video-ROM window of an IBM 5170-class board with a register-level VGA card. Release 0.8a-unemu.1 first built these bytes, and release 0.8a-unemu.2 builds them unchanged. Licensed under LGPL-2.1-or-later; the package includes its corresponding source archive.",
+        vendor: "unemu (fork of the LGPL VGABIOS project)",
+        version: "0.8a-unemu.2",
+        labels: &["open-source", "pc-at", "vga", "video-bios"],
     },
     FirmwareSource {
         catalogue_id: "xub-r638-xtp-ata1f0",
         rom: "xtide-universal-bios/ide_xtp-r638-ata1f0-8k.bin",
         source_archive: "xtide-universal-bios/xtide-universal-bios-r638-src.tar",
+        title: "XTIDE Universal BIOS r638, XT+ build for ATA at 1F0h",
+        description: "The fixed-disk option ROM of the open AT templates: the XTIDE Universal BIOS r638 XT+ build (ide_xtp.bin) with its first controller set to 16-bit ATA at 1F0h (control block 3F0h), polled without an IRQ, and diskette A: as the boot drive; every other setting keeps its upstream default. The download is padded with zeros to its declared 8 KiB and its last byte makes the byte sum zero. It serves IBM 5170-class boards with a primary ATA channel, suggested at C8000h, on an 80186 or later. Licensed under GPL-2.0-only, as the project's binary download statement says; the package includes its corresponding source archive, the r638 Subversion trunk.",
+        vendor: "XTIDE Universal BIOS project",
+        version: "r638",
+        labels: &["ata", "open-source", "option-rom", "pc-at"],
     },
 ];
 
@@ -357,10 +396,7 @@ fn build_package(
                 entry.id
             ))
         })?;
-    let statement = Statement {
-        source: Some(archive),
-        ..Statement::default()
-    };
+    let statement = source.statement(archive);
     let repository = source.repository();
     let preview = firmware_import::preview_manifest_with(&candidate, &[], &statement, catalogue)?;
     check(guard, &repository, &preview.manifest)?;

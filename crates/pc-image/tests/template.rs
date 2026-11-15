@@ -315,23 +315,23 @@ fn template_machines_validate_lower_and_describe_themselves() {
 const PINNED: [(&str, &str); 5] = [
     (
         "unemu/firmware/unemu-at-bios-1.0.2-unemu.2",
-        "sha256:2edb5948123ff45d4f2d8f67613ecd6fd45e2b967d94ffc52537c05f0dddfc29",
+        "sha256:9c482af2eafda76da436d1c99955f0d4cce253a90b188894392790508cc97daa",
     ),
     (
         "unemu/firmware/vgabios-0.8a-unemu.1-std",
-        "sha256:78d390d182157865e57c576671753c3e81ee4d04bce521ee29e6508ae7ae49c4",
+        "sha256:770f76c18475b397259ca7a5aa5f82ece5ba667de4dc33502eb8cb9a6145ac1c",
     ),
     (
         "unemu/firmware/xub-r638-xtp-ata1f0",
-        "sha256:e4dfecc8f9b7197a69c3b6064667a795d7b0ac16c56979ddb3eac778d5b9b332",
+        "sha256:240d2d4f9ac64382cca85e53a174c6ea3b327867a6589d8222b63744f68789ec",
     ),
     (
         "unemu/open-at",
-        "sha256:e3bccef9bc44d52dfffc096e195852af32bcc2f613db2860040f56ddd0033b75",
+        "sha256:e2618810cc8fbe125627030846453f8b67a601a740ccceb86be5c491a9aa7e0f",
     ),
     (
         "unemu/open-at-games",
-        "sha256:b5c48e5319f7a7e4af8bea4fae3e2d739f4dc52b61ccecd069545889d68310c9",
+        "sha256:8dfa958d6a39a62256933bccb03037df26ce2e68f6f16d64d0ffc91a190d273b",
     ),
 ];
 
@@ -558,10 +558,7 @@ fn only_the_judged_manifest_is_tagged() {
     let bios = &template::FIRMWARE[0];
     let catalogue = pc_image::firmware::catalogue();
     let scan = pc_image::firmware_import::scan(&[vendor().join(bios.rom)], catalogue).unwrap();
-    let statement = pc_image::firmware_import::Statement {
-        source: Some(vendor().join(bios.source_archive)),
-        ..Default::default()
-    };
+    let statement = bios.statement(vendor().join(bios.source_archive));
     let publish = |tag: &str, judged: &image_store::Digest| {
         pc_image::firmware_import::publish_as(
             &store,
@@ -587,4 +584,57 @@ fn only_the_judged_manifest_is_tagged() {
         publish("judged/bios:1", &package.digest).unwrap().digest,
         package.digest
     );
+}
+
+/// Each firmware package carries its title, description, vendor, version and
+/// labels in its config, and the standard OCI annotations repeat the first
+/// four, so library and registry views need not fall back to the catalogue id.
+#[test]
+fn each_firmware_package_states_its_title_description_vendor_and_version() {
+    if !present(&template::FIRMWARE) {
+        return;
+    }
+    let t = Temp::new("template-metadata");
+    let store = Store::open(t.0.join("store")).unwrap();
+    let built = template::build(&store, &vendor(), &allow, &mut |_| {}).unwrap();
+    assert!(template::FIRMWARE[0].description.contains("Sergey Kiselev"));
+    for (source, package) in template::FIRMWARE.iter().zip(&built) {
+        assert_eq!(package.repository, source.repository());
+        let manifest = Manifest::decode(
+            &store
+                .read_verified(&package.descriptor, MAX_SMALL_BLOB)
+                .unwrap(),
+        )
+        .unwrap();
+        let config = image_store::firmware::Config::decode(
+            &store
+                .read_verified(&manifest.config, MAX_SMALL_BLOB)
+                .unwrap(),
+        )
+        .unwrap();
+        assert_ne!(config.name, source.catalogue_id);
+        assert_eq!(config.name, source.title);
+        assert_eq!(config.description.as_deref(), Some(source.description));
+        assert_eq!(config.vendor.as_deref(), Some(source.vendor));
+        assert_eq!(config.version.as_deref(), Some(source.version));
+        let mut labels = source.labels.to_vec();
+        labels.sort_unstable();
+        assert_eq!(config.labels, labels, "{}", source.catalogue_id);
+        for (key, value) in [
+            ("title", source.title),
+            ("description", source.description),
+            ("vendor", source.vendor),
+            ("version", source.version),
+        ] {
+            assert_eq!(
+                manifest
+                    .annotations
+                    .get(&format!("org.opencontainers.image.{key}"))
+                    .map(String::as_str),
+                Some(value),
+                "{key} of {}",
+                source.catalogue_id
+            );
+        }
+    }
 }

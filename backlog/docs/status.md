@@ -5,6 +5,24 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-15 — Template firmware packages describe themselves:** `image
+  template build` now gives each of its three firmware packages a title
+  (`unemu AT BIOS 1.0.2-unemu.2`, `unemu VGA BIOS 0.8a-unemu.2, standard VGA`,
+  `XTIDE Universal BIOS r638, XT+ build for ATA at 1F0h`), a one-paragraph
+  description (what it is, the machines it serves, its licence and that its
+  source archive is included; the system BIOS names Sergey Kiselev as the
+  original author of 8088_bios), a vendor, a version (`1.0.2-unemu.2`,
+  `0.8a-unemu.2`, `r638`) and labels. They go through the same statement as
+  the metadata flags of `image firmware import`, so the config, the generated
+  README and the standard `org.opencontainers.image.title`, `.description`,
+  `.vendor` and `.version` annotations carry them; before, registry and
+  library views showed the catalogue id and no description. No source URL or
+  revision annotation is added (the catalogue provenance text is unchanged).
+  Generation `1.1.0` is not published yet, so it keeps its version with new
+  pins: the packages `9c482af2…7daa`, `770f76c1…ac1c`, `240d2d4f…89ec`,
+  `open-at` `e2618810…7e0f` and `open-at-games` `8dfa958d…273b` (the machines
+  record their package manifests, so they move too). See
+  [machine images §5.5](design/machine-images.md#55-official-template-images).
 - **2026-11-15 — CI on Linux: pinned download tools and CA roots, no worker
   race in window tests:** the devShell now provides `curl` and Info-ZIP
   `unzip` 6.00 and points `NIX_SSL_CERT_FILE` and `CURL_CA_BUNDLE` at the

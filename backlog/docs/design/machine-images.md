@@ -1709,15 +1709,24 @@ VGA BIOS package's source archive. **Generation 1.1.0** replaces the system
 BIOS package with the open AT BIOS, `unemu/firmware/unemu-at-bios-1.0.2-unemu.2`
 (the unemu fork of the Kiselev BIOS, with its source archive) and adds an
 empty 3.5-inch 1.44M B: drive (unit 1, which also takes 720K disks) beside the
-1.2M A:; the rest of the hardware is unchanged.
+1.2M A:; the rest of the hardware is unchanged. Its firmware packages also
+state a title, description, vendor, version and labels; earlier generations
+had only the catalogue id as their title.
 
 **Build.** `image template build` (commands.md, Official template images)
 imports the three packages from the fetched fixtures with their pinned source
 archives, then creates each machine through the New machine create API
 (§5.3, `pc_image::create`): zero-base blank disks, a generated configuration
 (CC0) and the packages' ROM and archive blobs bound by digest. Titles and
-descriptions are manifest annotations. Nothing depends on the clock, the host or
-the fixture paths, so the same fixtures give the same manifests and digests on
+descriptions are manifest annotations. Each package states its title,
+description, vendor, version (the release tag or revision its catalogue
+provenance names) and labels through the same statement as the metadata flags
+of `image firmware import`, so its config and README carry them and its
+manifest carries the standard `org.opencontainers.image.title`, `.description`,
+`.vendor` and `.version` annotations that registry web UIs show. No source URL
+is stated: the forks' forge address stays out of the repository. Nothing
+depends on the clock, the host or the fixture paths, so the same fixtures give
+the same manifests and digests on
 every run and host. Before any tag of an image is written, the build applies
 the push guard of `unemu/` on the default registry (every blob open, each
 copyleft ROM with its source archive in the closure) and stops on a refusal;
