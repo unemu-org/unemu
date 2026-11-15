@@ -187,7 +187,7 @@ pub enum FirmwareDistribution {
 const KISELEV_SOURCE_ARCHIVE: &str =
     "ced63707661747fc045d1e6e565a5cc9be73f95a9c944accedd77b19467fb5f9";
 const VGABIOS_SOURCE_ARCHIVE: &str =
-    "80eaa4d73bb221d39257f89bc99798aa4b1d2c0cbae878cacee6e0d0c8d32cb4";
+    "6304d0c24eb5289f6149b7e5a23a3feb74308f9baf8534ab1706ab953b7cd1d9";
 const XTIDE_SOURCE_ARCHIVE: &str =
     "7bbd5de269f4e1d52ae30b52531fcda842709b9ae49166ac249f9b37187b91e8";
 
@@ -296,7 +296,7 @@ impl FirmwareEntry {
         distribution: FirmwareDistribution::Open {
             fetch: "vendor/vgabios/fetch.sh",
             license: "LGPL-2.1-or-later",
-            provenance: "unemu-org/vgabios v0.8a-unemu.1, 8e154f04c5b1c8029d1ac3a3827f077352d579b7 (std build)",
+            provenance: "unemu-org/vgabios v0.8a-unemu.2, d883bbac49238a57f7dddd9ddb2ee253fb6bfe71 (std build)",
             source_archive_sha256: Some(VGABIOS_SOURCE_ARCHIVE),
         },
         parts: &[],

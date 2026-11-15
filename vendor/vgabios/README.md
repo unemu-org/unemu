@@ -3,8 +3,8 @@
 `fetch.sh` builds two files from the **unemu fork of the LGPL VGABIOS**, the
 video BIOS used by Bochs and QEMU, changed to run on an 80286. The fork is the
 `vgabios` repository in the same forge organization as this repository
-(`unemu-org/vgabios`). It is pinned at release tag **`v0.8a-unemu.1`**, source
-revision `8e154f04c5b1c8029d1ac3a3827f077352d579b7`:
+(`unemu-org/vgabios`). It is pinned at release tag **`v0.8a-unemu.2`**, source
+revision `d883bbac49238a57f7dddd9ddb2ee253fb6bfe71`:
 
 | File | Flake output | Size | SHA-256 |
 |---|---|---|---|
@@ -39,7 +39,7 @@ vendor/vgabios/fetch.sh
 ```
 
 The script runs `nix build --no-link` for both outputs of
-`<forge>/unemu-org/vgabios?ref=refs/tags/v0.8a-unemu.1&rev=8e154f04…`, checks the
+`<forge>/unemu-org/vgabios?ref=refs/tags/v0.8a-unemu.2&rev=d883bbac…`, checks the
 ROM's size, header and byte sum, checks both SHA-256 pins, and only then
 replaces the files here. The tag names the release; Nix checks out the pinned
 revision, so a moved tag cannot change the sources. Nix caches the fetched
@@ -69,15 +69,15 @@ The SHA-256 checks apply in every case. A changed ROM or probe fails them;
 investigate the change, then deliberately re-measure the goldens before
 updating a pin.
 
-The flake preprocesses `vgabios.c` with the host's `$CC -E -P`: clang 19.1.7 on
-Darwin and gcc 14.3.0 on Linux, both from its nixpkgs pin, followed by dev86
-1.0.1 `bcc`/`as86`. MEASURED on aarch64-darwin: the two preprocessors differ by
-one leading space before the first `#asm`, and assembling gcc 14.3.0's output
-with the same dev86 steps and file names gives the pinned ROM hash. The ROM
-bytes do depend on the intermediate file names, which the flake fixes. A
-complete x86_64-linux build has not been measured (no Linux builder was
-available); a Linux hash mismatch would be a vgabios-side fix, such as pinning
-one preprocessor in its flake.
+The flake preprocesses `vgabios.c` with unwrapped gcc 14.3.0 from its nixpkgs
+pin on every system, as `gcc -E -P -undef -nostdinc` (no platform macros, no
+system headers), followed by dev86 1.0.1 `bcc`/`as86`; the fork's
+`README.unemu.md`, "Reproducibility", lists what the build fixes. The ROM bytes
+do depend on the intermediate file names, which the flake fixes too. MEASURED
+on aarch64-darwin: `v0.8a-unemu.2` builds the same ROM and probe bytes as
+`v0.8a-unemu.1`. A complete x86_64-linux build has not been measured (no Linux
+builder was available); the fork's `nix flake check` compares both outputs with
+the release hashes on whichever system runs it.
 
 Only `fetch.sh`, `source-notice.txt` and this README are committed in this
 directory. The outputs, the source archive and the temporary `build/` directory
@@ -96,32 +96,33 @@ print a skip line and return. See `backlog/docs/commands.md`.
 ## Source archive
 
 After both files pass their checks, `fetch.sh` writes
-`vgabios-0.8a-unemu.1-src.tar`, their corresponding source. It is what a
+`vgabios-0.8a-unemu.2-src.tar`, their corresponding source. It is what a
 published firmware package carries as its `source` layer: the ROM is
 LGPL-2.1-or-later, so it may be published only together with it. Its root
-directory, `vgabios-0.8a-unemu.1-src/`, holds:
+directory, `vgabios-0.8a-unemu.2-src/`, holds:
 
 - `vgabios/`: the tree Nix built both files from (the flake's own source,
   read with `builtins.getFlake`), so a mirror or a local clone gives the same
-  bytes. Two parts of the pinned revision are left out because neither builds
-  the files: the five `VGABIOS-lgpl-latest*.bin` images, upstream's prebuilt
-  unmodified 0.8a binaries whose source the archive does not carry, and
-  `.beads/hooks/`, a developer's issue-tracker git hooks. Everything else is
-  unchanged.
+  bytes. One file of the pinned revision is left out: `.beads/config.yaml`,
+  the issue tracker's settings, which name a developer's own sync remote, a
+  forge address the published archive must not carry. It builds nothing.
+  Everything else is unchanged. The release no longer has upstream's prebuilt
+  `VGABIOS-lgpl-latest*.bin` images, and a source archive carries no prebuilt
+  image.
 - `NOTICE`: [`source-notice.txt`](source-notice.txt), unchanged. It names the
-  release, revision and licence, both file hashes, the parts left out and the
+  release, revision and licence, both file hashes, the file left out and the
   `nix build` commands that rebuild the files. It names the repository
   `unemu-org/vgabios` but no forge address.
 
 The whole archive is **LGPL-2.1-or-later**. It is an uncompressed POSIX ustar
 file written by GNU tar: members sorted by name, every timestamp set to the
-revision's commit time (2026-11-14 20:37:30 UTC, the flake's `lastModified`),
+revision's commit time (2026-11-15 00:34:54 UTC, the flake's `lastModified`),
 owner and group 0 with no names, and modes 0644 or 0755. Its SHA-256 is pinned
 in `fetch.sh`:
 
 | File | SHA-256 |
 |---|---|
-| `vgabios-0.8a-unemu.1-src.tar` | `80eaa4d73bb221d39257f89bc99798aa4b1d2c0cbae878cacee6e0d0c8d32cb4` |
+| `vgabios-0.8a-unemu.2-src.tar` | `6304d0c24eb5289f6149b7e5a23a3feb74308f9baf8534ab1706ab953b7cd1d9` |
 
 The archive adds no network access of its own: it reads the source Nix
 fetched for the build, which Nix caches (see Rebuild above), so only a first
@@ -140,7 +141,10 @@ give both pinned file hashes. A Linux run has not been measured.
 `FirmwareEntry::VGABIOS_0_8A_UNEMU_1_STD` identifies `vgabios-0.8a-unemu.1-std`
 as an open video BIOS for `ibm-5170`, suggested at C0000h, requiring an
 80286 and the register-level `vga` card. It occupies C0000h–C7FFFh, the whole
-video-ROM window that both the IBM and Kiselev BIOSes scan.
+video-ROM window that both the IBM and Kiselev BIOSes scan. The id keeps the
+name of the release that first built these ROM bytes; `v0.8a-unemu.2` builds
+them unchanged, and the entry's provenance and source archive pin name the
+current release.
 `machines/at-games-open.toml` maps it there with the `vga` card; its XTIDE
 option ROM follows at C8000h. The goldens in `crates/cli/tests/at_games.rs`
 and `crates/cli/tests/open_vga_golden.rs` boot FreeDOS, run the probe and pin

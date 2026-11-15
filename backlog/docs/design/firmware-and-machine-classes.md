@@ -106,7 +106,7 @@ The forces on the design:
 | SeaBIOS 1.17.0 (2025-06-10), QEMU `isapc` config (128 KiB, `PCIBIOS=n`, `USB=n`, `ACPI=n`) | LGPL-3.0-only | **386** (32-bit flat POST) | ISA-only 486-class PC (QEMU `isapc`) | Yes (READ: §3.6), including E801h/E820h; RAM size from CMOS without fw_cfg | Built-in ATA PIO, floppy | SeaVGABIOS through fw_cfg, or SERCON configured by fw_cfg (§3.6) | ASSUMED yes | gcc + binutils | [seabios.org](https://www.seabios.org/), QEMU `roms/config.seabios-128k` |
 | SeaBIOS 1.17.0, QEMU `pc` config | LGPL-3.0-only | 386 | i440FX + PIIX3/PIIX4, Q35 | Yes, including E801h/E820h; also PCI BIOS and ACPI | ATA, AHCI, USB, … | SeaVGABIOS: std VGA, Cirrus, Bochs VBE | ASSUMED yes | gcc | as above |
 | SeaVGABIOS / LGPL VGABIOS (video option ROMs) | LGPL-3.0 / LGPL-2.1 | ASSUMED 386 | Video option ROM | — | — | VGA; VBE with Bochs VBE | — | gcc / bcc | SeaBIOS `vgasrc/`, Bochs |
-| LGPL VGABIOS, unemu fork `v0.8a-unemu.1` (std build) | LGPL-2.1-or-later | **286** (fork's 286 check) | Video option ROM, 32 KiB at C0000h | — | — | Standard VGA, no VBE | **Yes** with the Kiselev BIOS (MEASURED, goldens; §Video ROM placement) | bcc/as86 (dev86) via Nix | `unemu-org/vgabios` on this project's forge; `vendor/vgabios/README.md` |
+| LGPL VGABIOS, unemu fork `v0.8a-unemu.2` (std build) | LGPL-2.1-or-later | **286** (fork's 286 check) | Video option ROM, 32 KiB at C0000h | — | — | Standard VGA, no VBE | **Yes** with the Kiselev BIOS (MEASURED, goldens; §Video ROM placement) | bcc/as86 (dev86) via Nix | `unemu-org/vgabios` on this project's forge; `vendor/vgabios/README.md` |
 | fysnet i440fx BIOS 1.0 (2025-02-10) | **Freeware, not open source** | — | i440FX / 440BX | — | — | — | — | NBASM | [fysnet.github.io/i440fx](https://fysnet.github.io/i440fx); excluded on license grounds |
 | IBM 5150/5160/5170 ROMs; AMI/Award/Phoenix board BIOSes | Proprietary | per board | per board | per board | per board | per board | per board | — | **User-supplied only.** Hashes are listed, the images are never shipped |
 
@@ -1074,9 +1074,11 @@ the full-file hash cannot identify a cropped dump.
 
 `FirmwareEntry::VGABIOS_0_8A_UNEMU_1_STD` (`vgabios-0.8a-unemu.1-std`) is the
 open counterpart: the unemu fork of the LGPL VGABIOS 0.8a, std build, release
-`v0.8a-unemu.1` (source revision `8e154f04c5b1c8029d1ac3a3827f077352d579b7`),
-LGPL-2.1-or-later. `vendor/vgabios/fetch.sh` builds it with Nix and pins the raw
-32 KiB image, SHA-256
+`v0.8a-unemu.2` (source revision `d883bbac49238a57f7dddd9ddb2ee253fb6bfe71`),
+LGPL-2.1-or-later. The id keeps the name of `v0.8a-unemu.1`, the release that
+first built these bytes; `v0.8a-unemu.2` builds the same image.
+`vendor/vgabios/fetch.sh` builds it with Nix and pins the raw 32 KiB image,
+SHA-256
 `7570ef9c66fd386450bb35fd2b6c91aba6f8ec69a565a1d7747e6e6716ea5389`, header
 `55 AA 40`, byte sum zero. It has no container offset, fills C0000h–C7FFFh and
 requires the register-level `vga`. `machines/at-games-open.toml` maps it with

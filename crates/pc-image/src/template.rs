@@ -26,7 +26,7 @@ use std::path::{Path, PathBuf};
 
 /// The version tag of this template generation. Version tags never move, so
 /// a changed template needs a new version here.
-pub const VERSION: &str = "1.0.0";
+pub const VERSION: &str = "1.0.1";
 /// The moving tag that follows the newest version.
 pub const ALIAS: &str = "latest";
 /// The registry namespace every template lives in.
@@ -60,7 +60,7 @@ pub const FIRMWARE: [FirmwareSource; 3] = [
     FirmwareSource {
         catalogue_id: "vgabios-0.8a-unemu.1-std",
         rom: "vgabios/vgabios-std.bin",
-        source_archive: "vgabios/vgabios-0.8a-unemu.1-src.tar",
+        source_archive: "vgabios/vgabios-0.8a-unemu.2-src.tar",
     },
     FirmwareSource {
         catalogue_id: "xub-r638-xtp-ata1f0",
@@ -511,7 +511,7 @@ mod tests {
 
     #[test]
     fn names_follow_the_registry_grammar_and_the_pull_short_form() {
-        assert_eq!(local_tag("unemu/open-at", VERSION), "open-at:1.0.0");
+        assert_eq!(local_tag("unemu/open-at", VERSION), "open-at:1.0.1");
         assert_eq!(
             local_tag("unemu/firmware/xub-r638-xtp-ata1f0", ALIAS),
             "unemu/firmware/xub-r638-xtp-ata1f0:latest"

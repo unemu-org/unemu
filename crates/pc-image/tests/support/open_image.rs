@@ -19,7 +19,7 @@ pub fn source_archive(candidate: &pc_image::firmware_import::Candidate) -> &'sta
             "vendor/kiselev-bios/fetch.sh" => {
                 "vendor/kiselev-bios/kiselev-bios-a4af458-atreset-src.tar"
             }
-            "vendor/vgabios/fetch.sh" => "vendor/vgabios/vgabios-0.8a-unemu.1-src.tar",
+            "vendor/vgabios/fetch.sh" => "vendor/vgabios/vgabios-0.8a-unemu.2-src.tar",
             "vendor/xtide-universal-bios/fetch.sh" => {
                 "vendor/xtide-universal-bios/xtide-universal-bios-r638-src.tar"
             }

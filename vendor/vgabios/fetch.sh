@@ -68,16 +68,17 @@ check_sha256() {
 
 # Pinned release. The tag names it; the revision is what Nix checks out, so a
 # moved tag cannot change the sources. The output hashes are the final guard.
-# MEASURED on aarch64-darwin: the flake preprocesses with clang 19.1.7 there
-# (gcc 14.3.0 on Linux, both from the flake's nixpkgs pin); feeding the same
-# dev86 1.0.1 bcc/as86 steps with gcc 14.3.0's output instead gives this same
-# ROM hash. The flake also fixes the intermediate file names, which bcc's
-# output depends on. A Linux build of the hash has not been measured.
-TAG="v0.8a-unemu.1"
-REVISION="8e154f04c5b1c8029d1ac3a3827f077352d579b7"
+# The flake preprocesses with unwrapped gcc 14.3.0 from its nixpkgs pin on
+# every system, without platform macros or system headers, then runs dev86
+# 1.0.1 bcc/as86; it also fixes the intermediate file names, which bcc's
+# output depends on. MEASURED on aarch64-darwin: this release gives the same
+# ROM and probe hashes as the one before it. A Linux build of the hashes has
+# not been measured.
+TAG="v0.8a-unemu.2"
+REVISION="d883bbac49238a57f7dddd9ddb2ee253fb6bfe71"
 ROM_SHA256="7570ef9c66fd386450bb35fd2b6c91aba6f8ec69a565a1d7747e6e6716ea5389"
 PROBE_SHA256="21b9dd1db3068bb73f3fde16058578368719f98b6d4335f45ec6681eb47beb58"
-SOURCE_ARCHIVE_SHA256="80eaa4d73bb221d39257f89bc99798aa4b1d2c0cbae878cacee6e0d0c8d32cb4"
+SOURCE_ARCHIVE_SHA256="6304d0c24eb5289f6149b7e5a23a3feb74308f9baf8534ab1706ab953b7cd1d9"
 QUERY="ref=refs/tags/$TAG&rev=$REVISION"
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -216,11 +217,9 @@ STAGE="$WORK/source/$SOURCE_NAME"
 mkdir -p "$STAGE"
 cp -R "$SOURCE_TREE" "$STAGE/vgabios"
 chmod -R u+w "$STAGE"
-# Neither builds the ROM: the VGABIOS-lgpl-latest images are prebuilt
-# unmodified 0.8a binaries whose source this archive does not carry, and
-# .beads/hooks/ holds a developer's issue-tracker git hooks.
-rm -f "$STAGE"/vgabios/VGABIOS-lgpl-latest*.bin
-rm -rf "$STAGE/vgabios/.beads/hooks"
+# The issue tracker's settings build nothing and name a developer's own sync
+# remote, an address the published archive must not carry.
+rm -f "$STAGE/vgabios/.beads/config.yaml"
 cp "$HERE/source-notice.txt" "$STAGE/NOTICE"
 # Member order, timestamps, owners and modes are fixed so the archive has the
 # same bytes on every host; ustar stores no atime or ctime.

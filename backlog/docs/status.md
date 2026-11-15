@@ -5,6 +5,19 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-15 — Open VGA BIOS re-pinned to `v0.8a-unemu.2`:**
+  `vendor/vgabios/fetch.sh` builds fork release `v0.8a-unemu.2` (revision
+  `d883bbac`), which drops upstream's prebuilt `VGABIOS-lgpl-latest*.bin`
+  images and a developer's personal git hooks, and preprocesses with the same
+  gcc 14.3.0 on every system. **MEASURED on aarch64-darwin:** the ROM and probe
+  bytes are unchanged (`7570ef9c…5389`, `21b9dd1d…eb58`), so the catalogue id
+  `vgabios-0.8a-unemu.1-std`, the machine files and the goldens stay. The source
+  archive is now `vgabios-0.8a-unemu.2-src.tar` (SHA-256 `6304d0c2…d1d9`); it
+  leaves out only `.beads/config.yaml`, whose sync remote names a developer's
+  own forge. Origin and local-checkout builds write the same archive, and the
+  extracted archive rebuilds both pinned hashes. The vgabios firmware package
+  and both template machines change, so `pc_image::template::VERSION` is
+  `1.0.1` with new pinned digests; the Kiselev and XTIDE packages keep theirs.
 - **2026-11-15 — Official template images:**
   - **`image template build --store DIR [--vendor DIR] [--dry-run]`** builds
     the open firmware packages (`unemu/firmware/<catalogue-id>`: Kiselev
@@ -13,7 +26,8 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
     create API, never from machine files: `open-at` (IBM 5170-class, the three
     ROMs, 640 KiB + 1 MiB, VGA, one empty 1.2M drive, a blank zero-base 504 MiB
     ATA disk, no sound) and `open-at-games` (plus SB16, COM1 mouse, Lo-tech EMS,
-    as `machines/at-games-open.toml` without media). Tags `1.0.0` and `latest`;
+    as `machines/at-games-open.toml` without media). Tags `1.0.1` (`1.0.0`
+    before the VGA BIOS re-pin, above) and `latest`;
     no operating system inside. Same fixtures, same digests on every run and
     host (pinned by a test). The push guard for `unemu/` judges each manifest
     before its tags are written, only the judged manifest is tagged, and a
@@ -459,7 +473,8 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   trunk export plus NOTICE; GPL-2.0-only) and `vgabios-0.8a-unemu.1-src.tar`
   (the fork's pinned tree, the one Nix builds from, without upstream's prebuilt
   `VGABIOS-lgpl-latest*.bin` and `.beads/hooks/`, plus NOTICE;
-  LGPL-2.1-or-later). Before writing them, the Kiselev and XTIDE scripts
+  LGPL-2.1-or-later; re-pinned 2026-11-15 as `vgabios-0.8a-unemu.2-src.tar`,
+  above). Before writing them, the Kiselev and XTIDE scripts
   rebuild a shipped image (AT reset BIOS) or both downloads from the staged
   source and compare the pinned hashes.
   **MEASURED on aarch64-darwin:** repeated runs reproduce each archive hash;
@@ -486,7 +501,7 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   fast-forward hold and re-anchors pacing like the menu. Headless tests cover
   each prompt path, the policy switch and the toolbar selection; native visual
   and Dock/menu-bar behaviour need manual checking.
-- **2026-11-14 — Open VGA BIOS on the open AT profile:** `vendor/vgabios/fetch.sh` builds the unemu fork of the LGPL VGABIOS (release `v0.8a-unemu.1`, revision `8e154f04`) and its INT 10h probe floppy with Nix from the sibling `vgabios` repository, deriving the forge from this repository's origin remote, and checks both SHA-256 pins; neither file is committed. Catalogue entry `vgabios-0.8a-unemu.1-std` is an open (LGPL-2.1-or-later), **Tested** video BIOS: raw 32 KiB at C0000h, requiring the register-level `vga`. `machines/at-games-open.toml` replaces its MDA/VGA-text console with that card and ROM; XTIDE stays at C8000h. **MEASURED at CPU `fe240a56`:** Kiselev POST runs the ROM, shows its sign-on and "EGA/VGA (Video BIOS Present)", and FreeDOS reaches `A:\>` (`retired=15241264`); the probe reports all 32 checks `ok`, `fails:0000` (13 screen lines, `Halted` at `0000:880A`, `retired=10239957`); a boot sector drives mode 0Dh panning, page 1 and a CRTC byte start through INT 10h and ports, then mode 13h with a BIOS pixel and DAC entry; all four 0Dh frames match planar memory and the 13h frame matches the chain-4 byte stream and the BIOS default palette, pixel for pixel (`retired=10730615`). The CI `fixtures` gate now also builds XTIDE, the FAT16 disk and these fixtures; from CI's credential-less HTTPS origin the VGA BIOS builds only while `vgabios` is anonymously readable (MEASURED readable from the LAN), otherwise the gate fails naming `UNEMU_VGABIOS_FLAKE`. Registry delivery from `registry.unemu.dev/unemu/` is later work. No game is qualified. See [the fixture notes](../../vendor/vgabios/README.md) and [Video ROM placement](design/firmware-and-machine-classes.md#video-rom-placement).
+- **2026-11-14 — Open VGA BIOS on the open AT profile:** `vendor/vgabios/fetch.sh` builds the unemu fork of the LGPL VGABIOS (release `v0.8a-unemu.1`, revision `8e154f04`; re-pinned 2026-11-15 to `v0.8a-unemu.2` with the same ROM and probe bytes, above) and its INT 10h probe floppy with Nix from the sibling `vgabios` repository, deriving the forge from this repository's origin remote, and checks both SHA-256 pins; neither file is committed. Catalogue entry `vgabios-0.8a-unemu.1-std` is an open (LGPL-2.1-or-later), **Tested** video BIOS: raw 32 KiB at C0000h, requiring the register-level `vga`. `machines/at-games-open.toml` replaces its MDA/VGA-text console with that card and ROM; XTIDE stays at C8000h. **MEASURED at CPU `fe240a56`:** Kiselev POST runs the ROM, shows its sign-on and "EGA/VGA (Video BIOS Present)", and FreeDOS reaches `A:\>` (`retired=15241264`); the probe reports all 32 checks `ok`, `fails:0000` (13 screen lines, `Halted` at `0000:880A`, `retired=10239957`); a boot sector drives mode 0Dh panning, page 1 and a CRTC byte start through INT 10h and ports, then mode 13h with a BIOS pixel and DAC entry; all four 0Dh frames match planar memory and the 13h frame matches the chain-4 byte stream and the BIOS default palette, pixel for pixel (`retired=10730615`). The CI `fixtures` gate now also builds XTIDE, the FAT16 disk and these fixtures; from CI's credential-less HTTPS origin the VGA BIOS builds only while `vgabios` is anonymously readable (MEASURED readable from the LAN), otherwise the gate fails naming `UNEMU_VGABIOS_FLAKE`. Registry delivery from `registry.unemu.dev/unemu/` is later work. No game is qualified. See [the fixture notes](../../vendor/vgabios/README.md) and [Video ROM placement](design/firmware-and-machine-classes.md#video-rom-placement).
 - **2026-11-14 — Registry push and pull:** the platform-neutral `image-registry` crate pushes and pulls tagged machine images, media sets and firmware packages to OCI distribution registries, with `image push/pull/remote ls/login` CLI commands. References resolve Docker-style against `registry.unemu.dev`; preferences list registries (host, private flag, user, no secrets); secrets come from the environment (bound to one host) or the macOS Keychain via the `security` tool. TLS is mandatory except for loopback test registries; authentication is anonymous first, then Basic, and credentials never follow a redirect to another origin. Push uploads only missing blobs, chunked and resumable above one chunk, publishes the manifest last, keeps version tags immutable and moves other tags only with `--move`. A push guard classifies each blob by the most restrictive mark any local manifest records for it and refuses user-supplied content outside private registries, anything but open content in `unemu/`, unlisted registries, and targets that are anonymously readable or answer with a Bearer challenge; `--dry-run` prints each blob's effective class and where it came from. Pull resumes interrupted blob downloads by range, verifies every digest through the store import and tags only a complete closure. Mock-registry tests cover resume, dedup, ordering, auth, digest mismatch, tag rules, paging and every guard refusal; the live round trip against registry.unemu.dev is opt-in. Firmware packages (2026-11-15) travel through the same CLI commands and guard: CLI mock-registry tests push and pull the open Xi8088 package with identical manifest and blob digests, list it in `image firmware ls` with its facets and as `firmware` (no Start) in `image ls`, show a repeat pull fetching nothing, refuse a user-supplied package to a non-private registry and to `unemu/`, and show each ROM layer's effective class in `--dry-run`. Since the licence work (entry above, 2026-11-15) a package whose every layer is open has an open config, and the guard adds the copyleft source rule. Bearer-token authentication, the GUI login and Browse registry remain separate.
 - **2026-11-14 — Open AT protected-mode return test:** `vendor/at-pm-test/`
   holds a project-owned NASM program and an offline build script for a

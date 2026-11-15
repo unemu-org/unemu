@@ -442,11 +442,11 @@ machine-images §5.5):
 
 | Local tags | Registry repository | Image |
 | --- | --- | --- |
-| `unemu/firmware/kiselev-xi8088-1.0.2-atreset:1.0.0`, `:latest` | `unemu/firmware/kiselev-xi8088-1.0.2-atreset` | Kiselev AT-reset BIOS package with its source archive |
-| `unemu/firmware/vgabios-0.8a-unemu.1-std:1.0.0`, `:latest` | `unemu/firmware/vgabios-0.8a-unemu.1-std` | unemu LGPL VGA BIOS package with its source archive |
-| `unemu/firmware/xub-r638-xtp-ata1f0:1.0.0`, `:latest` | `unemu/firmware/xub-r638-xtp-ata1f0` | XTIDE Universal BIOS r638 package with its source archive |
-| `open-at:1.0.0`, `:latest` | `unemu/open-at` | IBM 5170-class 80286, the three ROMs, 640 KiB + 1 MiB, VGA, COM1 without a mouse, one empty 1.2M drive, a blank zero-base 504 MiB (1024/16/63) ATA disk at 1F0h, no sound card |
-| `open-at-games:1.0.0`, `:latest` | `unemu/open-at-games` | `open-at` plus SB16 (220h, IRQ 5, DMA 1/5), a Microsoft mouse on COM1 and a 2 MiB Lo-tech EMS board (260h, frame D000h) |
+| `unemu/firmware/kiselev-xi8088-1.0.2-atreset:1.0.1`, `:latest` | `unemu/firmware/kiselev-xi8088-1.0.2-atreset` | Kiselev AT-reset BIOS package with its source archive |
+| `unemu/firmware/vgabios-0.8a-unemu.1-std:1.0.1`, `:latest` | `unemu/firmware/vgabios-0.8a-unemu.1-std` | unemu LGPL VGA BIOS package with its source archive |
+| `unemu/firmware/xub-r638-xtp-ata1f0:1.0.1`, `:latest` | `unemu/firmware/xub-r638-xtp-ata1f0` | XTIDE Universal BIOS r638 package with its source archive |
+| `open-at:1.0.1`, `:latest` | `unemu/open-at` | IBM 5170-class 80286, the three ROMs, 640 KiB + 1 MiB, VGA, COM1 without a mouse, one empty 1.2M drive, a blank zero-base 504 MiB (1024/16/63) ATA disk at 1F0h, no sound card |
+| `open-at-games:1.0.1`, `:latest` | `unemu/open-at-games` | `open-at` plus SB16 (220h, IRQ 5, DMA 1/5), a Microsoft mouse on COM1 and a 2 MiB Lo-tech EMS board (260h, frame D000h) |
 
 The local tags are the short form `image pull` writes for each repository, so
 `image push TAG` without a reference reaches the repository in the table. Each
@@ -484,22 +484,22 @@ the version tags and the aliases:
 
 ```sh
 S=/path/to/templates
-cargo run --offline -p cli -- image push unemu/firmware/kiselev-xi8088-1.0.2-atreset:1.0.0 unemu/firmware/kiselev-xi8088-1.0.2-atreset:1.0.0 --store "$S" --dry-run
-cargo run --offline -p cli -- image push unemu/firmware/vgabios-0.8a-unemu.1-std:1.0.0 unemu/firmware/vgabios-0.8a-unemu.1-std:1.0.0 --store "$S" --dry-run
-cargo run --offline -p cli -- image push unemu/firmware/xub-r638-xtp-ata1f0:1.0.0 unemu/firmware/xub-r638-xtp-ata1f0:1.0.0 --store "$S" --dry-run
-cargo run --offline -p cli -- image push open-at:1.0.0 unemu/open-at:1.0.0 --store "$S" --dry-run
-cargo run --offline -p cli -- image push open-at-games:1.0.0 unemu/open-at-games:1.0.0 --store "$S" --dry-run
+cargo run --offline -p cli -- image push unemu/firmware/kiselev-xi8088-1.0.2-atreset:1.0.1 unemu/firmware/kiselev-xi8088-1.0.2-atreset:1.0.1 --store "$S" --dry-run
+cargo run --offline -p cli -- image push unemu/firmware/vgabios-0.8a-unemu.1-std:1.0.1 unemu/firmware/vgabios-0.8a-unemu.1-std:1.0.1 --store "$S" --dry-run
+cargo run --offline -p cli -- image push unemu/firmware/xub-r638-xtp-ata1f0:1.0.1 unemu/firmware/xub-r638-xtp-ata1f0:1.0.1 --store "$S" --dry-run
+cargo run --offline -p cli -- image push open-at:1.0.1 unemu/open-at:1.0.1 --store "$S" --dry-run
+cargo run --offline -p cli -- image push open-at-games:1.0.1 unemu/open-at-games:1.0.1 --store "$S" --dry-run
 cargo run --offline -p cli -- image push unemu/firmware/kiselev-xi8088-1.0.2-atreset:latest unemu/firmware/kiselev-xi8088-1.0.2-atreset:latest --store "$S" --dry-run
 cargo run --offline -p cli -- image push unemu/firmware/vgabios-0.8a-unemu.1-std:latest unemu/firmware/vgabios-0.8a-unemu.1-std:latest --store "$S" --dry-run
 cargo run --offline -p cli -- image push unemu/firmware/xub-r638-xtp-ata1f0:latest unemu/firmware/xub-r638-xtp-ata1f0:latest --store "$S" --dry-run
 cargo run --offline -p cli -- image push open-at:latest unemu/open-at:latest --store "$S" --dry-run
 cargo run --offline -p cli -- image push open-at-games:latest unemu/open-at-games:latest --store "$S" --dry-run
 
-cargo run --offline -p cli -- image push unemu/firmware/kiselev-xi8088-1.0.2-atreset:1.0.0 unemu/firmware/kiselev-xi8088-1.0.2-atreset:1.0.0 --store "$S"
-cargo run --offline -p cli -- image push unemu/firmware/vgabios-0.8a-unemu.1-std:1.0.0 unemu/firmware/vgabios-0.8a-unemu.1-std:1.0.0 --store "$S"
-cargo run --offline -p cli -- image push unemu/firmware/xub-r638-xtp-ata1f0:1.0.0 unemu/firmware/xub-r638-xtp-ata1f0:1.0.0 --store "$S"
-cargo run --offline -p cli -- image push open-at:1.0.0 unemu/open-at:1.0.0 --store "$S"
-cargo run --offline -p cli -- image push open-at-games:1.0.0 unemu/open-at-games:1.0.0 --store "$S"
+cargo run --offline -p cli -- image push unemu/firmware/kiselev-xi8088-1.0.2-atreset:1.0.1 unemu/firmware/kiselev-xi8088-1.0.2-atreset:1.0.1 --store "$S"
+cargo run --offline -p cli -- image push unemu/firmware/vgabios-0.8a-unemu.1-std:1.0.1 unemu/firmware/vgabios-0.8a-unemu.1-std:1.0.1 --store "$S"
+cargo run --offline -p cli -- image push unemu/firmware/xub-r638-xtp-ata1f0:1.0.1 unemu/firmware/xub-r638-xtp-ata1f0:1.0.1 --store "$S"
+cargo run --offline -p cli -- image push open-at:1.0.1 unemu/open-at:1.0.1 --store "$S"
+cargo run --offline -p cli -- image push open-at-games:1.0.1 unemu/open-at-games:1.0.1 --store "$S"
 
 cargo run --offline -p cli -- image push unemu/firmware/kiselev-xi8088-1.0.2-atreset:latest unemu/firmware/kiselev-xi8088-1.0.2-atreset:latest --store "$S"
 cargo run --offline -p cli -- image push unemu/firmware/vgabios-0.8a-unemu.1-std:latest unemu/firmware/vgabios-0.8a-unemu.1-std:latest --store "$S"
@@ -1138,7 +1138,7 @@ package carries as its `source` layer:
 |---|---|---|
 | `vendor/kiselev-bios/kiselev-bios-a4af458-atreset-src.tar` | upstream at the pinned commit with `at-reset.patch` applied (without upstream's prebuilt `binaries/` and `xtide_r625/`), the patch, `NOTICE` | GPL-3.0-or-later |
 | `vendor/xtide-universal-bios/xtide-universal-bios-r638-src.tar` | SVN r638 trunk export, `NOTICE` | GPL-2.0-only |
-| `vendor/vgabios/vgabios-0.8a-unemu.1-src.tar` | the fork at the pinned revision (without upstream's prebuilt `VGABIOS-lgpl-latest*.bin` and `.beads/hooks/`), `NOTICE` | LGPL-2.1-or-later |
+| `vendor/vgabios/vgabios-0.8a-unemu.2-src.tar` | the fork at the pinned revision (without `.beads/config.yaml`, the issue tracker's settings, which name a developer's own sync remote), `NOTICE` | LGPL-2.1-or-later |
 
 Each is an uncompressed POSIX ustar archive written by GNU tar (from the
 devShell) with members sorted by name, one timestamp (the source revision's
@@ -1195,7 +1195,7 @@ cargo test --offline -p cli --test open_vga_golden -- --include-ignored
 
 The script derives the forge from this repository's `origin` remote (same host,
 transport and organization, repository `vgabios`), builds release
-`v0.8a-unemu.1` at its pinned revision and checks both output SHA-256 values
+`v0.8a-unemu.2` at its pinned revision and checks both output SHA-256 values
 before replacing anything, then writes the source archive of the tree it
 built from. `UNEMU_VGABIOS_FLAKE` overrides the whole flake
 reference and `--print-flake` shows the one it would build. A clone from a mirror
