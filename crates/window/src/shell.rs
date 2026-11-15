@@ -4950,6 +4950,7 @@ mod tests {
     fn minimize_restore_without_occlusion_events_discards_hidden_time() {
         use std::time::Duration;
         let mut shell = shell();
+        shell.presenter.as_mut().unwrap().full_slices = true;
         let ctx = egui::Context::default();
         shell.visibility(&ctx, true);
         shell.tick(&ctx, false, Duration::from_millis(100));
@@ -5052,7 +5053,7 @@ mod tests {
             .presenter
             .as_mut()
             .unwrap()
-            .advance(std::time::Duration::from_millis(20))
+            .advance_fully(std::time::Duration::from_millis(20))
             .unwrap();
         assert!(shell.presenter.as_ref().unwrap().error.is_some());
         assert!(!shell.stop());
@@ -5074,7 +5075,7 @@ mod tests {
             .presenter
             .as_mut()
             .unwrap()
-            .advance(std::time::Duration::from_millis(20))
+            .advance_fully(std::time::Duration::from_millis(20))
             .unwrap();
         assert!(!shell.presenter.as_ref().unwrap().running);
         assert!(shell.presenter.as_ref().unwrap().error.is_none());
@@ -6145,6 +6146,7 @@ kind='mda'
                 let mut shell = shell();
                 shell.paused = user_paused;
                 let ctx = egui::Context::default();
+                shell.presenter.as_mut().unwrap().full_slices = true;
                 shell.presenter.as_mut().unwrap().next_paint = Some(Duration::ZERO);
                 shell.tick(&ctx, false, Duration::from_millis(20));
                 let before = guest_clock(&shell);
@@ -6949,6 +6951,7 @@ kind='mda'
         };
         let before = status_pass(&ctx, &mut shell, 1600.0, Vec::new());
         assert_eq!(leds(&before), 0, "no boundary has been sampled yet");
+        shell.presenter.as_mut().unwrap().full_slices = true;
         shell.presenter.as_mut().unwrap().next_paint = Some(std::time::Duration::ZERO);
         shell.tick(&ctx, false, std::time::Duration::from_millis(20));
         // The presenter has no start instant here, so the shell's host time is zero.
@@ -7339,6 +7342,7 @@ kind='mda'
         shell.open_path = "never-opened.toml".into();
         // The dialog's Cancel button only drops the dialog.
         shell.dialog = None;
+        shell.presenter.as_mut().unwrap().full_slices = true;
         shell.presenter.as_mut().unwrap().next_paint = Some(Duration::ZERO);
         shell.tick(&ctx, false, Duration::from_millis(20));
         assert!(guest_clock(&shell) > 0);

@@ -377,7 +377,7 @@ fn presenter_reports_latched_audio_errors_once_and_recovers() {
     edges.record_level(future, [200, -200]);
     edges.record_level(host.assembled.machine.clock(), [300, -300]);
     let mut warnings = Vec::new();
-    host.advance_with_warnings(std::time::Duration::from_millis(20), &mut warnings)
+    host.advance_fully_with_warnings(std::time::Duration::from_millis(20), &mut warnings)
         .unwrap();
     assert!(host.running);
     assert!(host.error.is_none());
@@ -385,7 +385,7 @@ fn presenter_reports_latched_audio_errors_once_and_recovers() {
     assert!(host.audio.sink.ring.lock().unwrap().len > 0);
     // The mixer has now observed this time, so another old device edge is late.
     edges.record_level(future, [400, -400]);
-    host.advance_with_warnings(std::time::Duration::from_millis(40), &mut warnings)
+    host.advance_fully_with_warnings(std::time::Duration::from_millis(40), &mut warnings)
         .unwrap();
     assert!(host.running);
     assert_eq!(String::from_utf8(warnings).unwrap().lines().count(), 1);

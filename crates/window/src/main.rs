@@ -142,6 +142,11 @@ struct Presenter {
     input_log: Vec<InputLogEntry>,
     #[cfg(test)]
     mouse_log: Vec<(u64, Vec<window::MouseInput>)>,
+    /// Run every slice to its paced virtual target, as an infinitely fast host
+    /// would, so a test that drives the shell sees the same machine on a loaded
+    /// host. At Unlimited speed a slice then ends only when the guest stops.
+    #[cfg(test)]
+    full_slices: bool,
 }
 
 impl Presenter {
@@ -238,6 +243,8 @@ impl Presenter {
             input_log: Vec::new(),
             #[cfg(test)]
             mouse_log: Vec::new(),
+            #[cfg(test)]
+            full_slices: false,
         })
     }
 
@@ -250,13 +257,26 @@ impl Presenter {
         elapsed: Duration,
         warnings: &mut impl io::Write,
     ) -> Result<(), Box<dyn Error>> {
+        #[cfg(test)]
+        if self.full_slices {
+            return self.advance_fully_with_warnings(elapsed, warnings);
+        }
         let started = Instant::now();
         self.advance_with_slice_clock(elapsed, warnings, || started.elapsed())
     }
 
     #[cfg(test)]
     fn advance_fully(&mut self, elapsed: Duration) -> Result<(), Box<dyn Error>> {
-        self.advance_with_slice_clock(elapsed, &mut io::sink(), || Duration::ZERO)
+        self.advance_fully_with_warnings(elapsed, &mut io::sink())
+    }
+
+    #[cfg(test)]
+    fn advance_fully_with_warnings(
+        &mut self,
+        elapsed: Duration,
+        warnings: &mut impl io::Write,
+    ) -> Result<(), Box<dyn Error>> {
+        self.advance_with_slice_clock(elapsed, warnings, || Duration::ZERO)
     }
 
     fn advance_with_slice_clock(
@@ -1781,7 +1801,7 @@ mod tests {
             if fail {
                 presenter.assembled.persistence[0].fail_output();
                 let error = presenter
-                    .advance_with_warnings(Duration::from_millis(20), &mut diagnostics)
+                    .advance_fully_with_warnings(Duration::from_millis(20), &mut diagnostics)
                     .unwrap_err();
                 assert!(error.to_string().contains("drive 0 persistence"), "{error}");
                 assert_eq!(presenter.assembled.machine.virtual_time(), boundary);
@@ -1791,7 +1811,7 @@ mod tests {
                 assert_eq!(std::fs::read(journal).unwrap().len(), 128);
             } else {
                 presenter
-                    .advance_with_warnings(Duration::from_millis(20), &mut diagnostics)
+                    .advance_fully_with_warnings(Duration::from_millis(20), &mut diagnostics)
                     .unwrap();
                 assert_eq!(presenter.assembled.machine.virtual_time(), boundary + 2);
                 assert_eq!(presenter.assembled.machine.cpu().code_segment(), 0xF000);
@@ -1920,7 +1940,7 @@ mod tests {
                 }
                 let mut warnings = Vec::new();
                 presenter
-                    .advance_with_warnings(Duration::from_millis(20), &mut warnings)
+                    .advance_fully_with_warnings(Duration::from_millis(20), &mut warnings)
                     .unwrap();
                 assert!(!presenter.running);
                 assert!(presenter.error.is_none());
