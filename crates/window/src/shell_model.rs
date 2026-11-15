@@ -63,6 +63,8 @@ pub(crate) enum Command {
     Push,
     /// Image › Pull… of a registry image into the local store.
     Pull,
+    /// File › Get templates…: pull official templates from the default registry.
+    GetTemplates,
 }
 
 #[derive(Clone, Copy)]

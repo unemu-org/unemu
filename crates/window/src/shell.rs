@@ -1219,7 +1219,7 @@ impl Shell {
                 }
                 // A transfer runs on the library worker, which serves the
                 // running machine's session until it stops.
-                Command::Push | Command::Pull => {
+                Command::Push | Command::Pull | Command::GetTemplates => {
                     self.presenter.is_none() && self.image_library.active.is_none()
                 }
                 Command::ImportMedia => {
@@ -1228,6 +1228,45 @@ impl Shell {
                 Command::InsertSet(_) => self.image_library.selected_set().is_some(),
                 _ => true,
             }
+    }
+
+    /// Tools › Preferences… on its Registries page. Log in… of Get templates…
+    /// opens it on that registry's Log in dialog, or on Add registry… for it
+    /// when it has no entry: never on another registry's row.
+    fn open_preferences(&mut self) {
+        self.release();
+        let mut dialog = crate::preferences_sheet::PreferencesDialog::new(
+            self.preferences_path.clone(),
+            self.credential_store.clone(),
+        );
+        if let Some(host) = self.image_library.login_wanted.take() {
+            let page = &mut dialog.registries;
+            match page.rows.iter().position(|row| row.entry.host == host) {
+                Some(index) => {
+                    page.select(index);
+                    page.open_login();
+                }
+                None => page.open_add_for(&host),
+            }
+        }
+        self.preferences_dialog = Some(dialog);
+    }
+
+    /// Commands the library's dialogs asked for: Import ROM folder… of the
+    /// New machine wizard, and Preferences for a Log in… of Get templates….
+    fn library_commands(&mut self, commands: &mut Vec<Command>) {
+        if std::mem::take(&mut self.image_library.firmware_import_wanted) {
+            commands.push(Command::ImportFirmware);
+        }
+        if self.image_library.login_wanted.is_some() {
+            commands.push(Command::Preferences);
+        }
+    }
+
+    /// Get templates… lists again after a Log in… that opened Preferences.
+    fn close_preferences(&mut self) {
+        self.preferences_dialog = None;
+        self.image_library.preferences_closed();
     }
 
     /// Logins for Image › Push… and Pull…: the shared preferences file and
@@ -2093,10 +2132,11 @@ impl Shell {
             FirmwareFolders => { self.preferences_draft = self.preferences.clone(); self.rom_folder_input.clear(); self.dialog = Some(("ROM folders", "Firmware is located by SHA-256. Files are read in place; nothing is copied.".into())); },
             Settings => if self.image_library.selected.is_some() { self.release(); self.image_library.open_settings(); } else { self.open_settings() },
             SaveImage => { self.release(); self.image_library.begin_save_image(); },
-            Preferences => { self.release(); self.preferences_dialog = Some(crate::preferences_sheet::PreferencesDialog::new(self.preferences_path.clone(), self.credential_store.clone())); },
+            Preferences => self.open_preferences(),
             SaveState => {},
             Push => { self.release(); let accounts = self.registry_accounts(); self.image_library.begin_push(accounts); },
             Pull => { self.release(); let accounts = self.registry_accounts(); self.image_library.begin_pull(accounts); },
+            GetTemplates => { self.release(); let accounts = self.registry_accounts(); self.image_library.begin_templates(accounts); },
         }
         self.sync_routing();
     }
@@ -2128,6 +2168,7 @@ impl Shell {
             ui.menu_button("File", |ui| {
                 for (label, shortcut, command) in [
                     ("New machine…", "Ctrl+N", Placeholder("New machine")),
+                    ("Get templates…", "", GetTemplates),
                     (
                         "Open machine file…",
                         "Ctrl+O",
@@ -3264,9 +3305,9 @@ impl eframe::App for Shell {
         if let Some(dialog) = &mut self.preferences_dialog {
             match crate::preferences_sheet::show(&ctx, dialog, self.classic) {
                 crate::preferences_sheet::Action::None => {}
-                crate::preferences_sheet::Action::Close => self.preferences_dialog = None,
+                crate::preferences_sheet::Action::Close => self.close_preferences(),
                 crate::preferences_sheet::Action::FirmwareFolders => {
-                    self.preferences_dialog = None;
+                    self.close_preferences();
                     commands.push(Command::FirmwareFolders);
                 }
             }
@@ -3288,9 +3329,7 @@ impl eframe::App for Shell {
             self.classic,
             self.presenter.is_some(),
         );
-        if std::mem::take(&mut self.image_library.firmware_import_wanted) {
-            commands.push(Command::ImportFirmware);
-        }
+        self.library_commands(&mut commands);
         if let Some(pick) = self.image_library.media_pick.take() {
             self.pick_media(pick);
         }
@@ -3744,6 +3783,122 @@ mod tests {
             push.state,
             crate::registry_transfer::PushState::Ready
         ));
+    }
+
+    #[test]
+    fn get_templates_opens_with_the_shell_accounts_only_while_no_machine_runs() {
+        let mut shell = shell();
+        let ctx = egui::Context::default();
+        assert!(!shell.command_allowed(Command::GetTemplates));
+        shell.command(Command::GetTemplates, &ctx);
+        assert!(shell.image_library.templates.is_none());
+        shell.stop();
+        assert!(shell.command_allowed(Command::GetTemplates));
+        let temp = assembly::test_support::TempDir::new("shell-templates");
+        let path = temp.path().join("preferences.toml");
+        std::fs::write(&path, "default_registry = \"nas.example:5000\"\n").unwrap();
+        shell.preferences_path = Some(path);
+        shell.command(Command::GetTemplates, &ctx);
+        assert!(shell.has_dialog());
+        let dialog = shell.image_library.templates.as_ref().unwrap();
+        assert_eq!(dialog.default_host, "nas.example:5000");
+        // Without a store worker the listing ends at once instead of waiting.
+        assert!(
+            matches!(&dialog.state, crate::templates::TemplatesState::Failed(f) if f.message.contains("worker stopped")),
+            "{:?}",
+            dialog.state
+        );
+    }
+
+    #[test]
+    fn log_in_from_get_templates_opens_that_registry_login_and_closing_preferences_lists_again() {
+        use crate::{
+            registry_transfer::TransferEvent,
+            templates::{FailureKind, ListingFailure, TemplatesDialog, TemplatesState},
+        };
+        let mut shell = shell();
+        shell.stop();
+        let ctx = egui::Context::default();
+        let temp = assembly::test_support::TempDir::new("shell-templates-login");
+        let path = temp.path().join("preferences.toml");
+        std::fs::write(
+            &path,
+            "default_registry = \"nas.example:5000\"\n[[registries]]\nhost = \"lab.example\"\n[[registries]]\nhost = \"nas.example:5000\"\nprivate = true\n",
+        )
+        .unwrap();
+        shell.preferences_path = Some(path);
+        // The listing ended asking for a login, as the worker reports it.
+        let (mut dialog, request) = TemplatesDialog::open(shell.registry_accounts());
+        let Some(crate::registry_transfer::TransferRequest::Templates { id, .. }) = request else {
+            panic!("the dialog asks for the list")
+        };
+        dialog.on_event(&TransferEvent::Templates {
+            id,
+            result: Err(ListingFailure {
+                kind: FailureKind::LoginRequired,
+                host: "nas.example:5000".into(),
+                listed: true,
+                message: "nas.example:5000 asks for a login.".into(),
+            }),
+        });
+        shell.image_library.login_wanted = dialog.log_in();
+        shell.image_library.templates = Some(dialog);
+        // The frame turns the request into the Preferences command.
+        let mut commands = Vec::new();
+        shell.library_commands(&mut commands);
+        assert_eq!(commands, [Command::Preferences]);
+        shell.command(Command::Preferences, &ctx);
+        assert!(shell.image_library.login_wanted.is_none());
+        let page = &shell.preferences_dialog.as_ref().unwrap().registries;
+        assert_eq!(page.selected_row().unwrap().entry.host, "nas.example:5000");
+        assert_eq!(page.login.as_ref().unwrap().host, "nas.example:5000");
+        // Closing Preferences lists again; without a store worker the new
+        // listing ends at once.
+        shell.close_preferences();
+        assert!(shell.preferences_dialog.is_none());
+        let state = &shell.image_library.templates.as_ref().unwrap().state;
+        assert!(
+            matches!(state, TemplatesState::Failed(f) if f.message.contains("worker stopped")),
+            "{state:?}"
+        );
+        // Preferences from the menu opens no Log in dialog.
+        shell.command(Command::Preferences, &ctx);
+        assert!(shell
+            .preferences_dialog
+            .as_ref()
+            .unwrap()
+            .registries
+            .login
+            .is_none());
+    }
+
+    #[test]
+    fn log_in_for_a_registry_without_an_entry_opens_add_registry_and_selects_no_other_row() {
+        let mut shell = shell();
+        let ctx = egui::Context::default();
+        let temp = assembly::test_support::TempDir::new("shell-templates-add");
+        let path = temp.path().join("preferences.toml");
+        // The default registry has no [[registries]] entry, as UNEMU_REGISTRY
+        // or a bare default_registry allows.
+        std::fs::write(&path, "default_registry = \"nas.example:5000\"\n").unwrap();
+        shell.preferences_path = Some(path);
+        shell.image_library.login_wanted = Some("nas.example:5000".into());
+        let mut commands = Vec::new();
+        shell.library_commands(&mut commands);
+        assert_eq!(commands, [Command::Preferences]);
+        shell.command(Command::Preferences, &ctx);
+        let page = &shell.preferences_dialog.as_ref().unwrap().registries;
+        assert!(page
+            .rows
+            .iter()
+            .all(|row| row.entry.host != "nas.example:5000"));
+        let editor = page.editor.as_ref().expect("Add registry… is open");
+        assert_eq!(editor.original, None);
+        assert_eq!(editor.host, "nas.example:5000");
+        // Neither the built-in registry nor any other row is selected, so no
+        // login can go to another registry by mistake.
+        assert!(page.selected_row().is_none());
+        assert!(page.login.is_none() && !page.can_log_in());
     }
 
     #[test]

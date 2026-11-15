@@ -6,7 +6,7 @@ mod media;
 mod registry;
 mod template;
 
-pub use registry::{push_plan, registry_client, with_image_providers};
+pub use registry::{push_plan, registry_client, registry_probe_client, with_image_providers};
 pub use template::build as build_templates;
 
 use std::{ffi::OsString, io::Write, path::PathBuf};

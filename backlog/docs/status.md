@@ -40,7 +40,7 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
     shareware sets may be published. Marking a set redistributable, so the
     push guard lets it into `unemu/`, is tracked separately and not done
     here; until then the sets stay user-supplied.
-- **2026-11-15 — Official template images:**
+- **2026-11-15 — Official template images and File › Get templates…:**
   - **`image template build --store DIR [--vendor DIR] [--dry-run]`** builds
     the open firmware packages (`unemu/firmware/<catalogue-id>`: Kiselev
     AT-reset BIOS, unemu VGA BIOS, XTIDE r638, each with the source archive the
@@ -58,11 +58,25 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
     marks of `--store` too, and reports what a build would do to its tags.
     The build never pushes; commands.md lists the maintainer's push commands,
     dry runs first.
+  - **File › Get templates…** follows the approved get-templates mock-up;
+    the behaviour is described once, in
+    [`design/machine-images.md`](design/machine-images.md) §5.5. In
+    short: the library offers it while it holds no machine image (firmware
+    packages and media sets do not count); it lists the machine images under
+    `unemu/` of the default registry and pulls the chosen ones one after
+    another by digest on the library worker, under one progress bar that
+    counts blobs already in the store as done. Cancel stops a queued pull
+    before it contacts the registry. An unreachable registry, a refused or
+    missing login and a registry without a catalog each end the listing with
+    their own message; a login failure offers Log in…, or Add registry… when
+    the registry has no entry, and the dialog lists again once Preferences
+    closes.
   - **Code:** `pc_image::template` (definitions, the build with a guard
     callback, tag planning for dry runs, version precedence),
     `firmware_import::publish_as` and `create::create_judged` (only the judged
     manifest is tagged), `NewImage::description` (manifest description),
-    `cli::build_templates`.
+    `cli::build_templates`, `cli::registry_probe_client`; `templates.rs` in the
+    window crate.
   - **Tests:** two builds from different fixture copies give identical
     manifests and digests, and a test pins the published digests; a rebuild
     keeps every tag; the guard sees each image before its tags and a refusal
@@ -73,10 +87,38 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
     a foreign image and moves from a lower one; the dry run reports conflict,
     moves and kept; the templates validate and lower with their cards; both
     templates POST with the open BIOS (checkpoint stream through the XTIDE
-    scan) and XTIDE finds their blank disk.
+    scan) and XTIDE finds their blank disk. Get templates… against the mock
+    registry lists only machines under `unemu/` (the version `latest` names,
+    releases before pre-releases; firmware, test and broken repositories
+    skipped, and a repository this account may not read), marks templates in
+    the library and local tags naming another image, and pulls the chosen ones
+    by digest in turn under one progress whose second template starts with the
+    shared firmware counted; Cancel stops a queued pull before any request,
+    the summary counts what was added and the status bar stays quiet; an
+    unreachable registry, a missing or refused login and a registry without a
+    catalog end with their messages; Log in… routes to that registry's Log in
+    dialog, a registry without an entry gets Add registry… with no other row
+    selected, and the dialog lists again with the stored login, which goes
+    with the catalog request; closing the dialog stops the listing before the
+    next repository; every dialog stage renders headless, including the
+    dimmed rows and the click anywhere on a row; and a library with only
+    firmware and media offers the command in place of the empty table.
+  - **Mock-up departures, awaiting maintainer approval:**
+    - No "Writing tag" stage: a pull reports only blobs arriving and
+      verified, so its row reads Pulling until the pull answers.
+    - The dialog has no title-bar ×; Close, Cancel and Escape do its work.
+    - No default-button emphasis on the empty state's Get templates… or on
+      the dialog's Get, Try again and Close: egui buttons have no default
+      style.
+    - The empty state has no illustration. While machine files are listed,
+      it sits above the table instead of replacing it, so those files stay
+      reachable.
+    - A login failure for a registry with no Preferences entry (a default
+      set by `UNEMU_REGISTRY` or a bare `default_registry`) offers Add
+      registry…, opening Preferences on the Add dialog prefilled with the
+      host and no row selected, instead of the mock-up's Log in….
   - **Not done here:** publishing the templates to `registry.unemu.dev`
-    (maintainer); File › Get templates…, which lists and pulls these templates
-    in the desktop shell, waits for an approved mock-up.
+    (maintainer).
 - **2026-11-15 — Image › Push… and Image › Pull…:**
   - **Push…** works on any local image: machine image, media set or firmware
     package. It opens on the selected image, or the Push… button of the
@@ -115,8 +157,10 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
     upload and before publication; a single upload request of up to 64 MiB
     finishes first. A cancelled push never publishes its manifest and keeps
     accepted chunks for the next push. A cancelled pull never writes the local
-    tag; the next pull fetches only the missing blobs. Escape and closing the
-    dialog cancel too. Quitting while a transfer runs asks "A push is running.
+    tag; the next pull fetches only the missing blobs. A pull cancelled while
+    its job still waits behind another worker job contacts no registry and
+    reads "Cancelled before it started; nothing was fetched." Escape and
+    closing the dialog cancel too. Quitting while a transfer runs asks "A push is running.
     Cancel it and quit?" first; a transfer whose dialog closed reports its
     cancel in the status bar.
   - **Registry crate:** gains `push_cancellable` (blob and chunk progress),

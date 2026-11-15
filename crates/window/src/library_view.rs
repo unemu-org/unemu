@@ -126,6 +126,8 @@ pub(super) struct Snapshot {
     media_pending: usize,
     /// Kept apart from machine facets, whose kinds have the same names.
     media_facets: BTreeMap<String, BTreeSet<String>>,
+    /// The worker read the store, so an empty library is really empty.
+    read: bool,
 }
 
 fn facets_for(filter: &Filter) -> Facets {
@@ -172,6 +174,7 @@ pub(super) fn snapshot(cache: &SummaryCache, q: &Query) -> Snapshot {
         total: cache.tags().len(),
         pending: cache.pending().len(),
         warning: cache.library_error().map(str::to_owned),
+        read: true,
         ..Default::default()
     };
     let matches: BTreeSet<_> = cache
@@ -447,6 +450,31 @@ pub(super) fn host_last_run() -> String {
         .duration_since(std::time::UNIX_EPOCH)
         .map_or_else(|_| "Unknown".into(), |d| last_run_utc(d.as_secs()))
 }
+/// The library's empty state while it holds no machine image: where the
+/// first one comes from. Nothing contacts a registry until Get templates….
+fn empty_library(ui: &mut egui::Ui, commands: &mut Vec<Command>) {
+    ui.group(|ui| {
+        ui.strong("No machine images yet");
+        ui.add(
+            egui::Label::new(
+                "Get templates… downloads ready-made open machines from the default registry: open firmware with its source and a blank disk, no operating system.",
+            )
+            .wrap(),
+        );
+        if ui.button("Get templates…").clicked() {
+            commands.push(Command::GetTemplates);
+        }
+        ui.add(
+            egui::Label::new(
+                egui::RichText::new(
+                    "File › New machine… builds one from firmware you imported, and File › Import image… adds an image file. Nothing is downloaded until you choose.",
+                )
+                .small(),
+            )
+            .wrap(),
+        );
+    });
+}
 pub(super) fn human_size(bytes: u64) -> String {
     for (unit, divisor) in [
         ("GiB", 1u64 << 30),
@@ -552,6 +580,11 @@ pub(super) struct LibraryView {
     pub push: Option<crate::registry_transfer::PushDialog>,
     /// Image › Pull… while it is open.
     pub pull: Option<crate::registry_transfer::PullDialog>,
+    /// File › Get templates… while it is open.
+    pub templates: Option<crate::templates::TemplatesDialog>,
+    /// Log in… of Get templates…: the registry whose login the shell opens in
+    /// Preferences › Registries.
+    pub login_wanted: Option<String>,
 }
 impl LibraryView {
     pub fn new(root: Option<PathBuf>) -> Self {
@@ -590,6 +623,8 @@ impl LibraryView {
             image_settings: None,
             push: None,
             pull: None,
+            templates: None,
+            login_wanted: None,
         }
     }
     #[cfg(test)]
@@ -646,6 +681,9 @@ impl LibraryView {
             dialog.fail(&message);
         }
         if let Some(dialog) = &mut self.pull {
+            dialog.fail(&message);
+        }
+        if let Some(dialog) = &mut self.templates {
             dialog.fail(&message);
         }
     }
@@ -887,6 +925,11 @@ impl LibraryView {
                         crate::registry_transfer::TransferEvent::Pushed { .. } => {
                             self.push.is_none()
                         }
+                        // Get templates… reports its own pulls.
+                        crate::registry_transfer::TransferEvent::Pulled { id, .. } => {
+                            self.pull.is_none()
+                                && !self.templates.as_ref().is_some_and(|d| d.owns(*id))
+                        }
                         _ => self.pull.is_none(),
                     };
                     if closed {
@@ -904,6 +947,14 @@ impl LibraryView {
                     } = &dialog.state
                     {
                         self.status = Some(format!("Pulled {tag}"));
+                    }
+                }
+                if let Some(dialog) = &mut self.templates {
+                    let running = dialog.running();
+                    dialog.on_event(&event);
+                    let pulled = dialog.pulled();
+                    if running && !dialog.running() && !pulled.is_empty() {
+                        self.status = Some(format!("Got {}", pulled.join(", ")));
                     }
                 }
                 if let Some(request) = follow_up {
@@ -945,6 +996,7 @@ impl LibraryView {
         // Dropping a transfer dialog cancels its transfer at the next check.
         self.push = None;
         self.pull = None;
+        self.templates = None;
         if let Some(mut worker) = self.worker.take() {
             worker.shutdown();
         }
@@ -1099,7 +1151,9 @@ impl LibraryView {
     pub fn running_transfer(&self) -> Option<&'static str> {
         if self.push.as_ref().is_some_and(|d| d.running()) {
             Some("push")
-        } else if self.pull.as_ref().is_some_and(|d| d.running()) {
+        } else if self.pull.as_ref().is_some_and(|d| d.running())
+            || self.templates.as_ref().is_some_and(|d| d.running())
+        {
             Some("pull")
         } else {
             None
@@ -1108,6 +1162,22 @@ impl LibraryView {
     /// Image › Pull…: a reference into the local store.
     pub fn begin_pull(&mut self, accounts: crate::registry_transfer::Accounts) {
         self.pull = Some(crate::registry_transfer::PullDialog::open(accounts));
+    }
+    /// File › Get templates…: the official templates of the default registry,
+    /// listed by the worker.
+    pub fn begin_templates(&mut self, accounts: crate::registry_transfer::Accounts) {
+        let (dialog, request) = crate::templates::TemplatesDialog::open(accounts);
+        self.templates = Some(dialog);
+        if let Some(request) = request {
+            self.send(Request::Transfer(request));
+        }
+    }
+    /// Preferences closed: Get templates… lists again when its Log in…
+    /// opened them.
+    pub fn preferences_closed(&mut self) {
+        if let Some(request) = self.templates.as_mut().and_then(|d| d.after_preferences()) {
+            self.send(Request::Transfer(request));
+        }
     }
     pub fn begin_import(&mut self, path: &Path) {
         self.import = Some((path.to_string_lossy().into_owned(), String::new()));
@@ -1126,6 +1196,7 @@ impl LibraryView {
             || self.new_machine.is_some()
             || self.push.is_some()
             || self.pull.is_some()
+            || self.templates.is_some()
     }
     /// Close Disk layers, Import image, Delete tag and Import ROM folder for an
     /// exit; a running scan is cancelled. The Gaming keep-or-discard question
@@ -1144,6 +1215,7 @@ impl LibraryView {
         self.new_machine = None;
         self.push = None;
         self.pull = None;
+        self.templates = None;
     }
     /// Entering the Firmware or Installation media collection drops the machine
     /// selection, so Start never targets a machine that is no longer shown.
@@ -1575,6 +1647,10 @@ impl LibraryView {
             if let Some(warning) = &self.snapshot.warning {
                 ui.label(warning);
             }
+            let empty = self.snapshot.read && self.snapshot.total == 0;
+            if empty {
+                empty_library(ui, &mut commands);
+            }
             let visible_files: Vec<_> =
                 if matches!(self.query.filter, Filter::All | Filter::MachineFiles) {
                     let search = self.query.text.to_lowercase();
@@ -1597,6 +1673,10 @@ impl LibraryView {
                     Vec::new()
                 };
             self.rows_built = 0;
+            // The empty state replaces the table unless machine files are listed.
+            if empty && visible_files.is_empty() {
+                return;
+            }
             egui::ScrollArea::horizontal()
                 .id_salt("library-columns")
                 .show(ui, |ui| {
@@ -1916,18 +1996,29 @@ impl LibraryView {
         requests
     }
     fn transfer_modals(&mut self, ctx: &egui::Context, classic: bool, requests: &mut Vec<Request>) {
-        use crate::registry_transfer_view::{show_pull, show_push, Action};
+        use crate::registry_transfer_view::{show_pull, show_push, show_templates, Action};
         if let Some(dialog) = &mut self.push {
             match show_push(ctx, dialog, classic) {
                 Action::Send(request) => requests.push(Request::Transfer(request)),
+                Action::SendAll(list) => requests.extend(list.into_iter().map(Request::Transfer)),
                 Action::Close => self.push = None,
-                Action::None => (),
+                Action::None | Action::LogIn(_) => (),
             }
         }
         if let Some(dialog) = &mut self.pull {
             match show_pull(ctx, dialog, classic) {
                 Action::Send(request) => requests.push(Request::Transfer(request)),
+                Action::SendAll(list) => requests.extend(list.into_iter().map(Request::Transfer)),
                 Action::Close => self.pull = None,
+                Action::None | Action::LogIn(_) => (),
+            }
+        }
+        if let Some(dialog) = &mut self.templates {
+            match show_templates(ctx, dialog, classic) {
+                Action::Send(request) => requests.push(Request::Transfer(request)),
+                Action::SendAll(list) => requests.extend(list.into_iter().map(Request::Transfer)),
+                Action::Close => self.templates = None,
+                Action::LogIn(host) => self.login_wanted = Some(host),
                 Action::None => (),
             }
         }
@@ -2085,6 +2176,136 @@ pub(super) mod tests {
         assert_eq!(result.matched, 1);
         assert_eq!(result.rows[0].image.reference, "synthetic-999:one");
         assert_eq!(result.facets["Platform"], BTreeSet::from(["DOS".into()]));
+    }
+    #[test]
+    fn an_empty_library_offers_get_templates_once_the_store_is_read() {
+        let ctx = egui::Context::default();
+        let frame = |library: &mut LibraryView, events: Vec<egui::Event>| {
+            let mut selected = None;
+            let mut commands = Vec::new();
+            let mut output = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1200.0, 700.0),
+                    )),
+                    events,
+                    ..Default::default()
+                },
+                |ui| commands = library.show(ui, &[], &mut selected, None),
+            );
+            output.textures_delta.clear();
+            let mut button = None;
+            let mut texts = Vec::new();
+            for shape in &output.shapes {
+                if let egui::Shape::Text(text) = &shape.shape {
+                    if text.galley.text() == "Get templates…" {
+                        button = Some(text.visual_bounding_rect().center());
+                    }
+                    texts.push(text.galley.text().to_owned());
+                }
+            }
+            (commands, button, texts)
+        };
+        // Before the worker's first snapshot nothing says the library is empty.
+        let mut library = LibraryView::new(None);
+        assert_eq!(frame(&mut library, vec![]).1, None);
+        library.snapshot = Arc::new(Snapshot {
+            read: true,
+            ..Default::default()
+        });
+        let (_, button, texts) = frame(&mut library, vec![]);
+        let at = button.expect("the empty state shows Get templates…");
+        for wanted in [
+            "No machine images yet",
+            "Get templates… downloads ready-made open machines from the default registry: open firmware with its source and a blank disk, no operating system.",
+            "File › New machine… builds one from firmware you imported, and File › Import image… adds an image file. Nothing is downloaded until you choose.",
+        ] {
+            assert!(texts.iter().any(|t| t == wanted), "{wanted}: {texts:?}");
+        }
+        // The card replaces the empty table.
+        assert!(!texts.iter().any(|t| t == "Last run"), "{texts:?}");
+        let click = |pressed| egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::default(),
+        };
+        frame(
+            &mut library,
+            vec![egui::Event::PointerMoved(at), click(true)],
+        );
+        let (commands, _, _) = frame(&mut library, vec![click(false)]);
+        assert_eq!(commands, [Command::GetTemplates]);
+        // A library with machine images has no empty state, only its table.
+        let (_temp, store, _) = catalogue(1);
+        library.snapshot = Arc::new(snapshot(&warm(&store), &Query::default()));
+        let (_, button, texts) = frame(&mut library, vec![]);
+        assert_eq!(button, None);
+        assert!(texts.iter().any(|t| t == "Last run"), "{texts:?}");
+        // Firmware packages and installation media are not machine images, so
+        // a library holding only them still offers Get templates….
+        let (_temp, store) = firmware_and_media_only();
+        let result = snapshot(&warm(&store), &Query::default());
+        assert_eq!(
+            (result.total, result.firmware_total, result.media_total),
+            (0, 1, 1)
+        );
+        library.snapshot = Arc::new(result);
+        assert!(frame(&mut library, vec![]).1.is_some());
+    }
+    /// A store with one firmware package and one media set, and no machine image.
+    fn firmware_and_media_only() -> (assembly::test_support::TempDir, Store) {
+        let (temp, store, images) = catalogue(1);
+        let machine = Manifest::decode_for_summary(
+            &store
+                .read_verified(&images[0], image_store::MAX_SMALL_BLOB)
+                .unwrap(),
+        )
+        .unwrap();
+        let bytes = image_store::media_set::Config {
+            schema: 1,
+            platform: "synthetic".into(),
+            media: vec![image_store::media_set::Medium {
+                id: "disk-1".into(),
+                label: "Disk 1".into(),
+                format: toml::Table::new(),
+                blob: Digest::of(b"disk"),
+            }],
+            extras: Vec::new(),
+        }
+        .encode()
+        .unwrap();
+        let blob = store.import(bytes.as_slice(), None).unwrap();
+        let config = Descriptor::new(mt::MEDIA_SET_CONFIG, blob.digest, blob.size);
+        let set = Manifest::new_media_set("synthetic", config, machine.layers).unwrap();
+        let set = store.import_manifest(&set).unwrap();
+        let index = store.root().join("images/index.json");
+        let text = std::fs::read_to_string(&index).unwrap();
+        let prefix = text.trim_end().strip_suffix("]}").unwrap();
+        std::fs::write(&index,format!("{prefix},{{\"mediaType\":\"{}\",\"digest\":\"{}\",\"size\":{},\"annotations\":{{\"org.opencontainers.image.ref.name\":\"installation:one\"}}}}]}}",mt::MANIFEST,set.digest,set.size)).unwrap();
+        let bytes = vec![0xf4; 32768];
+        let source = temp.path().join("synthetic.bin");
+        std::fs::write(&source, &bytes).unwrap();
+        let digest = Digest::of(&bytes);
+        let config = image_store::firmware::Config::decode(format!("schema=1\nplatform='ibm-pc-at'\nname='Synthetic firmware'\n[[roms]]\nid='system-bios'\nrole='system-bios'\nsize=32768\nsha256='{}'\nblob='{}'\n", digest.hex(), digest).as_bytes()).unwrap();
+        let candidate = pc_image::firmware_import::Candidate {
+            catalogue_id: "synthetic".into(),
+            config,
+            sources: vec![source],
+            distribution: assembly::FirmwareDistribution::UserSupplied,
+        };
+        pc_image::firmware_import::publish(
+            &store,
+            &candidate,
+            &[],
+            pc_image::firmware::catalogue(),
+        )
+        .unwrap();
+        store
+            .remove_tag("synthetic-0:one", &images[0].digest)
+            .unwrap();
+        (temp, store)
     }
     #[test]
     fn thousand_images_build_only_visible_rows_per_frame() {

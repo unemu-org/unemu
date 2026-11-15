@@ -498,6 +498,17 @@ impl RegistriesPage {
         });
     }
 
+    /// Add registry… prefilled with `host`, for a registry that has no entry
+    /// yet. No row stays selected, so nothing acts on another registry until
+    /// the new one is added or a row is chosen.
+    pub fn open_add_for(&mut self, host: &str) {
+        self.open_add();
+        if let Some(editor) = &mut self.editor {
+            editor.host = host.into();
+        }
+        self.selected = self.rows.len();
+    }
+
     pub fn open_edit(&mut self) {
         self.reload();
         if let Some(row) = self.selected_row() {

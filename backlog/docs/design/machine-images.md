@@ -1565,6 +1565,44 @@ never from a higher version or from an image the build did not version. **The
 build never pushes**: publishing the tags is the maintainer's step, with a dry run
 of each push first.
 
+**Get templates….** File › Get templates… follows the approved get-templates
+mock-up (`mockups/get-templates.html`); this paragraph is the one description
+of its behaviour, which commands.md and status.md point to. The library offers
+it in its empty state while it holds no machine image; firmware packages and
+media sets do not count, and the empty state contacts no registry. The dialog
+lists the templates of the default registry (`UNEMU_REGISTRY`, then
+preferences): repositories the registry catalog (`/v2/_catalog`, paged with
+`n` and `Link`; zot lists the repositories the caller may read, so a stored
+login goes with the first request) names under `unemu/`, without
+`unemu/firmware/…` and `unemu/test-…`, which are not read at all, keeping
+manifests of the PC machine artifact type only. Each repository offers the
+version tag `latest` names when that is one of its 16 newest releases (its
+pre-releases when it has no release); otherwise it offers the newest of them.
+A row shows name, tag, title, description and the size of the manifest and
+its distinct blobs. A template already in the library, or whose local tag
+names another image, is dimmed and cannot be chosen; a click anywhere on any
+other row chooses it, and Get is hidden when the registry offers none. A
+repository that does not answer properly, or that this account may not read,
+is skipped. An offline or unreachable registry, a refused or a missing login,
+a registry without a catalog or an unreadable library ends the listing with
+one message and Try again, after at most the login-check timeouts (10 s to
+connect, 15 s per read); closing the dialog stops the listing before the next
+repository. A registry without a catalog would need a small well-known index
+image instead; the catalog suffices for zot, so none exists. The two login
+cases offer Log in…, which opens Tools › Preferences › Registries on that
+registry's Log in dialog; a registry with no entry there offers Add
+registry…, which opens the Add dialog prefilled with the host and no other
+row selected. Either way the dialog lists again once Preferences closes. Get
+pulls the chosen templates one after another on the library worker through
+the Pull… path, by the digest shown, so each closure is verified before its
+local tag is written. One progress bar covers them all; blobs the library
+already has, also those a template earlier in the same Get fetched, count as
+done and are not fetched again. While pulls run, Close becomes Cancel: Cancel
+and Escape stop the running pull at its next read and the queued ones before
+they contact the registry, and quitting cancels them as in Pull…. Once every
+pull answered, the dialog sums up what was added and offers Close or Back to
+the list; the status bar names the templates added.
+
 ## 6. Capabilities API sketch: validator-owned choices
 
 READ: `crates/assembly/src/validate.rs`, `validate_resolved`, resource checks,

@@ -66,6 +66,7 @@ mod settings_sheet;
 mod shell;
 mod shell_icons;
 mod shell_model;
+mod templates;
 
 const SINK_SCALE: u16 = 2;
 

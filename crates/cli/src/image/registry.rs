@@ -10,7 +10,10 @@ use image_registry::{
     accounts,
     config::{self, RegistryConfig, DEFAULT_REGISTRY_ENV},
     credential_store::{self, CredentialStore, Secret},
-    credentials::{Anonymous, EnvCredentials, HostCredentials, HOST_ENV, PASSWORD_ENV, USER_ENV},
+    credentials::{
+        Anonymous, CredentialSource, EnvCredentials, HostCredentials, HOST_ENV, PASSWORD_ENV,
+        USER_ENV,
+    },
     pull, push, Client, Reference, RegistryEntry,
 };
 use image_store::{firmware, media_set, ConfigValidator, Store};
@@ -240,6 +243,30 @@ pub fn registry_client(
     store: &Arc<dyn CredentialStore>,
     env: &EnvCredentials,
 ) -> image_registry::Result<Client> {
+    let (entry, credentials) = account(config, host, store, env);
+    Client::new(&entry, credentials)
+}
+
+/// [`registry_client`] with the short timeouts of a login check (10 s to
+/// connect, 15 s per read), for listings a person waits for, so an
+/// unreachable registry answers quickly.
+pub fn registry_probe_client(
+    config: &RegistryConfig,
+    host: &str,
+    store: &Arc<dyn CredentialStore>,
+    env: &EnvCredentials,
+) -> image_registry::Result<Client> {
+    let (entry, credentials) = account(config, host, store, env);
+    Client::for_probes(&entry, credentials)
+}
+
+/// The entry for `host` and the credentials it may receive.
+fn account(
+    config: &RegistryConfig,
+    host: &str,
+    store: &Arc<dyn CredentialStore>,
+    env: &EnvCredentials,
+) -> (RegistryEntry, Box<dyn CredentialSource>) {
     match config.entry(host) {
         Some(entry) => {
             let credentials = HostCredentials {
@@ -247,9 +274,9 @@ pub fn registry_client(
                 env: env.clone(),
                 store: store.clone(),
             };
-            Client::new(&entry, Box::new(credentials))
+            (entry, Box::new(credentials))
         }
-        None => Client::new(&config.entry_or_public(host), Box::new(Anonymous)),
+        None => (config.entry_or_public(host), Box::new(Anonymous)),
     }
 }
 

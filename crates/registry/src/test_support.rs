@@ -5,8 +5,9 @@
 //! `/v2/`, blob `HEAD`/`GET`, upload sessions (`POST`, `PATCH` with
 //! `Content-Range`, status `GET`, `PUT ?digest=`), cross-repository mount,
 //! manifest `HEAD`/`GET`/`PUT`/`DELETE`, `tags/list` and `_catalog` with `n`,
-//! `last` and `Link` paging. Basic authentication follows RFC 7617; a policy
-//! can answer with Bearer challenges instead. Blob downloads honour
+//! `last` and `Link` paging, or a registry without a catalog. Basic
+//! authentication follows RFC 7617; a policy can answer with Bearer
+//! challenges instead. Blob downloads honour
 //! `Range: bytes=<start>-` (RFC 9110 §14) unless told to ignore or misreport
 //! it, and can redirect to another server. Fault injection drops connections
 //! mid-upload and mid-download, forgets sessions and corrupts blobs, and one
@@ -38,6 +39,8 @@ pub struct Policy {
     pub anonymous_catalog: bool,
     /// Challenge with a Bearer token realm, as Docker Hub, GHCR or Forgejo do.
     pub bearer_challenge: bool,
+    /// A registry without the optional catalog endpoint, which answers it `404`.
+    pub no_catalog: bool,
 }
 
 /// Cut the next `GET` of `digest` after sending `keep` bytes of its body.
@@ -588,7 +591,11 @@ fn route(state: &mut State, request: &Request) -> Outcome {
         });
     }
     if rest == "_catalog" {
-        return Outcome::Reply(catalog(state, request));
+        return Outcome::Reply(if state.policy.no_catalog {
+            Response::error(404, "UNSUPPORTED")
+        } else {
+            catalog(state, request)
+        });
     }
     for (marker, kind) in [
         ("/blobs/uploads", Kind::Upload),

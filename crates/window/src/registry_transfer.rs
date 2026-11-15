@@ -50,6 +50,7 @@ use std::{
 const NO_OVERRIDE: &str = "There is no override for this rule.";
 const PUSH_CANCELLED: &str = "Cancelled. The manifest was not published, so the registry keeps its old tag. Accepted chunks are kept, and the next push resumes them.";
 const PULL_CANCELLED: &str = "Cancelled. The local tag was not set. Blobs already fetched stay in the store, and the next pull fetches only the rest.";
+const PULL_NOT_STARTED: &str = "Cancelled before it started; nothing was fetched.";
 const STALE: &str = "The local tag now names another image; review the dry run, then push again.";
 
 /// Where push and pull find logins: the shared preferences file and the
@@ -77,7 +78,7 @@ impl Accounts {
 
     /// The registries list and the host short names resolve to. An invalid
     /// default registry is an error, as on the command line.
-    fn settings(&self) -> Result<(RegistryConfig, String), String> {
+    pub(crate) fn settings(&self) -> Result<(RegistryConfig, String), String> {
         let config = self.config()?;
         let host = config
             .default_host(None, self.default_override.as_deref())
@@ -88,7 +89,7 @@ impl Accounts {
 
 /// Job ids are unique across dialogs, so a late event of a closed dialog
 /// never changes a newer one.
-fn next_id() -> u64 {
+pub(crate) fn next_id() -> u64 {
     static NEXT: AtomicU64 = AtomicU64::new(1);
     NEXT.fetch_add(1, Ordering::Relaxed)
 }
@@ -128,6 +129,13 @@ pub(crate) enum TransferRequest {
     },
     Push(Box<PushJob>),
     Pull(Box<PullJob>),
+    /// File › Get templates…: list the official templates of the default
+    /// registry until `cancel` is set.
+    Templates {
+        id: u64,
+        accounts: Box<Accounts>,
+        cancel: Arc<AtomicBool>,
+    },
 }
 
 pub(crate) struct PushJob {
@@ -167,6 +175,10 @@ pub(crate) enum TransferEvent {
     Pulled {
         id: u64,
         result: Result<PullReport, PullFailure>,
+    },
+    Templates {
+        id: u64,
+        result: Result<Vec<crate::templates::TemplateRow>, crate::templates::ListingFailure>,
     },
 }
 
@@ -211,6 +223,8 @@ pub(crate) enum PushFailure {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum PullFailure {
     Cancelled,
+    /// Cancelled while it waited behind another job, before any request.
+    NotStarted,
     Failed(String),
 }
 
@@ -218,6 +232,7 @@ impl PullFailure {
     pub fn message(&self) -> &str {
         match self {
             Self::Cancelled => PULL_CANCELLED,
+            Self::NotStarted => PULL_NOT_STARTED,
             Self::Failed(message) => message,
         }
     }
@@ -256,6 +271,14 @@ pub(crate) fn run(
             });
             send(TransferEvent::Pulled { id: job.id, result });
         }
+        TransferRequest::Templates {
+            id,
+            accounts,
+            cancel,
+        } => send(TransferEvent::Templates {
+            id,
+            result: crate::templates::list(store, &accounts, &cancel),
+        }),
     }
 }
 
@@ -383,6 +406,11 @@ fn run_pull(
     providers: &[&dyn ConfigValidator],
     progress: &(dyn Fn(pull::PullProgress<'_>) + Sync),
 ) -> Result<PullReport, PullFailure> {
+    // A pull queued behind others may be cancelled before its turn; it then
+    // contacts no registry at all.
+    if job.cancel.load(Ordering::SeqCst) {
+        return Err(PullFailure::NotStarted);
+    }
     let config = job.accounts.config().map_err(PullFailure::Failed)?;
     let client = cli::registry_client(
         &config,
@@ -406,7 +434,7 @@ fn run_pull(
 
 /// Failures the push and pull dialogs share. Registry errors never carry a
 /// secret, so their text may be shown.
-fn common_failure(error: &Error) -> Option<String> {
+pub(crate) fn common_failure(error: &Error) -> Option<String> {
     Some(match error {
         Error::AuthRequired { host } => {
             format!("{host} asks for a login. Log in under Tools › Preferences › Registries, then try again.")
@@ -1230,9 +1258,48 @@ pub(crate) struct PullRun {
 }
 
 impl PullRun {
+    /// A pull of `source` written as `local_tag`: the run a dialog shows and
+    /// the job for the library worker.
+    pub(crate) fn start(
+        accounts: &Accounts,
+        source: Reference,
+        local_tag: String,
+    ) -> (Self, TransferRequest) {
+        let id = next_id();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let live = Live::new(PullLive::default());
+        let job = PullJob {
+            id,
+            source: source.clone(),
+            local_tag: local_tag.clone(),
+            accounts: accounts.clone(),
+            cancel: cancel.clone(),
+            live: live.clone(),
+        };
+        let run = Self {
+            id,
+            cancel,
+            live,
+            source,
+            local_tag,
+            cancelling: false,
+        };
+        (run, TransferRequest::Pull(Box::new(job)))
+    }
+
+    pub(crate) fn id(&self) -> u64 {
+        self.id
+    }
+
     /// The progress as the worker reports it now.
     pub fn progress(&self) -> PullLive {
         self.live.read(|state| state.clone())
+    }
+
+    /// Ask the pull to stop at its next check; it reports back.
+    pub(crate) fn cancel(&mut self) {
+        self.cancel.store(true, Ordering::SeqCst);
+        self.cancelling = true;
     }
 }
 
@@ -1320,33 +1387,15 @@ impl PullDialog {
             return None;
         }
         let (source, local_tag) = self.resolve().ok()?;
-        let id = next_id();
-        let cancel = Arc::new(AtomicBool::new(false));
-        let live = Live::new(PullLive::default());
-        let job = PullJob {
-            id,
-            source: source.clone(),
-            local_tag: local_tag.clone(),
-            accounts: self.accounts.clone(),
-            cancel: cancel.clone(),
-            live: live.clone(),
-        };
-        self.state = PullState::Pulling(PullRun {
-            id,
-            cancel,
-            live,
-            source,
-            local_tag,
-            cancelling: false,
-        });
-        Some(TransferRequest::Pull(Box::new(job)))
+        let (run, request) = PullRun::start(&self.accounts, source, local_tag);
+        self.state = PullState::Pulling(run);
+        Some(request)
     }
 
     /// Ask a running pull to stop at its next check; it reports back.
     pub fn cancel(&mut self) {
         if let PullState::Pulling(run) = &mut self.state {
-            run.cancel.store(true, Ordering::SeqCst);
-            run.cancelling = true;
+            run.cancel();
         }
     }
 
@@ -1394,7 +1443,7 @@ impl PullDialog {
     }
 }
 
-fn pulled_text(source: &Reference, report: &PullReport) -> String {
+pub(crate) fn pulled_text(source: &Reference, report: &PullReport) -> String {
     match report.outcome {
         PullOutcome::Unchanged => format!(
             "{} already names this image; nothing was fetched.",
@@ -1421,7 +1470,7 @@ pub(crate) fn closed_outcome(event: &TransferEvent) -> Option<&'static str> {
             "Push cancelled: the manifest was not published, so the registry keeps its old tag.",
         ),
         TransferEvent::Pulled {
-            result: Err(PullFailure::Cancelled),
+            result: Err(PullFailure::Cancelled | PullFailure::NotStarted),
             ..
         } => Some("Pull cancelled: the local tag was not set."),
         _ => None,
