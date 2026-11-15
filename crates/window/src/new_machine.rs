@@ -356,6 +356,7 @@ impl Wizard {
             hardware: selection.hardware.clone(),
             firmware,
             title: Some(self.title.trim().to_owned()).filter(|t| !t.is_empty()),
+            description: None,
         }
     }
     pub fn image(&self) -> NewImage {

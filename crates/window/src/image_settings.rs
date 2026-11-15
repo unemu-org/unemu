@@ -470,6 +470,7 @@ pub(crate) mod tests {
                 rom("xub-r638-xtp-ata1f0"),
             ],
             title: Some("Open AT workbench".into()),
+            description: None,
         }
     }
     /// That image with 1 MiB extended memory, created as open-at:1.0.0.

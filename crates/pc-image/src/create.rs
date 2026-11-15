@@ -560,6 +560,9 @@ pub struct NewImage {
     pub firmware: Vec<PackageRom>,
     /// Library title; stored as the manifest title, never in the configuration.
     pub title: Option<String>,
+    /// A one-paragraph summary; stored as the manifest description, never in
+    /// the configuration.
+    pub description: Option<String>,
 }
 
 impl NewImage {
@@ -799,11 +802,7 @@ fn lowered(plan: &Plan, blobs: &dyn BlobSource) -> Result<crate::provider::Prepa
 }
 
 /// The generated configuration and metadata of the image: open content.
-fn finish(
-    mut plan: Plan,
-    blobs: &dyn BlobSource,
-    title: Option<&str>,
-) -> Result<(Vec<u8>, Manifest)> {
+fn finish(mut plan: Plan, blobs: &dyn BlobSource, image: &NewImage) -> Result<(Vec<u8>, Manifest)> {
     let prepared = lowered(&plan, blobs)?;
     // Freeze lowering defaults into the image identity, as import does.
     crate::defaults::materialize(&mut plan.config.machine, &prepared.machine)?;
@@ -845,10 +844,13 @@ fn finish(
         layers,
         PcProvider.payload_types(),
     )?;
-    if let Some(title) = title.map(str::trim).filter(|t| !t.is_empty()) {
-        manifest
-            .annotations
-            .insert("org.opencontainers.image.title".into(), title.into());
+    for (key, value) in [
+        ("org.opencontainers.image.title", &image.title),
+        ("org.opencontainers.image.description", &image.description),
+    ] {
+        if let Some(value) = value.as_deref().map(str::trim).filter(|v| !v.is_empty()) {
+            manifest.annotations.insert(key.into(), value.into());
+        }
     }
     manifest.annotations.insert(
         "unemu.firmware.sources".into(),
@@ -873,7 +875,7 @@ pub fn check(image: &NewImage, blobs: &dyn BlobSource) -> Result<()> {
 /// caller can apply the push guard's rule to the whole prospective closure.
 /// Nothing is written; `blobs` must hold the chosen ROMs.
 pub fn preview(image: &NewImage, blobs: &dyn BlobSource) -> Result<Manifest> {
-    Ok(finish(plan(image)?, blobs, image.title.as_deref())?.1)
+    Ok(finish(plan(image)?, blobs, image)?.1)
 }
 
 /// Build and tag a new empty image: configuration, the chosen firmware blobs
@@ -886,6 +888,28 @@ pub fn create(
     tag: &str,
     expected: Option<&Digest>,
 ) -> Result<Descriptor> {
+    create_inner(store, image, tag, expected, None)
+}
+
+/// [`create()`] that tags only the image whose manifest digest is `judged`,
+/// the one a caller checked from [`preview`], for example against a push guard.
+pub fn create_judged(
+    store: &Store,
+    image: &NewImage,
+    tag: &str,
+    expected: Option<&Digest>,
+    judged: &Digest,
+) -> Result<Descriptor> {
+    create_inner(store, image, tag, expected, Some(judged))
+}
+
+fn create_inner(
+    store: &Store,
+    image: &NewImage,
+    tag: &str,
+    expected: Option<&Digest>,
+    judged: Option<&Digest>,
+) -> Result<Descriptor> {
     store.check_tag_target(tag, expected, None)?;
     let rules = PcFirmwareRules(crate::firmware::catalogue());
     for rom in &image.firmware {
@@ -895,10 +919,16 @@ pub fn create(
     for bytes in plan.zero.values() {
         store.import(bytes.as_slice(), None)?;
     }
-    let (config, manifest) = finish(plan, store, image.title.as_deref())?;
+    let (config, manifest) = finish(plan, store, image)?;
     store.import(config.as_slice(), Some(&manifest.config.digest))?;
     store.import(EMPTY_METADATA, None)?;
     let descriptor = store.import_manifest_with_types(&manifest, PcProvider.payload_types())?;
+    if let Some(judged) = judged.filter(|judged| **judged != descriptor.digest) {
+        return Err(invalid(format!(
+            "the image is {}, not the checked {judged}",
+            descriptor.digest
+        )));
+    }
     store.update_tag(tag, &descriptor, expected, &PcProvider)?;
     Ok(descriptor)
 }

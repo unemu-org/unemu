@@ -1513,6 +1513,58 @@ ordinary OCI traversal and deduplication. This differs from today's local UI
 collections/labels. Ordering, collection metadata and missing-member behavior
 remain for a later design; no custom collection payload is specified here.
 
+### 5.5. Official template images
+
+Shipped machine files (`machines/`) are development and test fixtures. What a
+user starts from is an **official template image**: an ordinary machine image in
+the official namespace of the default registry, pulled into the local store
+like any other (§5.1), never a machine file.
+
+**Naming.** Templates and the firmware packages they use live under `unemu/` on
+`registry.unemu.dev`, with Docker-style short names (§5.1):
+
+| Repository | Content |
+| --- | --- |
+| `unemu/<name>` | a template machine, such as `unemu/open-at` |
+| `unemu/firmware/<catalogue-id>` | the open firmware package of one catalogue entry |
+
+Both follow the OCI repository grammar (`[a-z0-9]+((\.|_|__|-+)[a-z0-9]+)*` per
+component), so catalogue ids such as `kiselev-xi8088-1.0.2-atreset` need no
+mapping. Each template generation has a semantic-version tag (`1.0.0`), which
+never moves, and `latest`, which follows the newest version. The local tags of
+a template build are the short forms a pull writes: `open-at:1.0.0` for
+`unemu/open-at`, and `unemu/firmware/<id>:1.0.0` for a package (two components
+remain after `unemu/`). Media sets and future software images get their own
+names when their licence decision is made.
+
+**First generation (1.0.0).** `open-at`: an IBM 5170-class board with the
+Kiselev AT-reset BIOS, the unemu VGA BIOS and XTIDE Universal BIOS r638 (each
+with the source archive the catalogue pins), 640 KiB + 1 MiB, VGA, a COM1 UART
+without a mouse, one 1.2M drive with an empty catalogue, a blank zero-base 504
+MiB (1024/16/63, the largest INT 13h CHS disk) ATA master at 1F0h, no sound
+card. `open-at-games`: the same plus the cards of `machines/at-games-open.toml`
+without its media: SB16 at 220h (IRQ 5, DMA 1 and 5), a Microsoft mouse on
+COM1 and a 2 MiB Lo-tech EMS board at 260h with its frame at D000h. Neither
+holds an operating system or other software: disk images with an operating
+system need their own licence decision.
+
+**Build.** `image template build` (commands.md, Official template images)
+imports the three packages from the fetched fixtures with their pinned source
+archives, then creates each machine through the New machine create API
+(§5.3, `pc_image::create`): zero-base blank disks, a generated configuration
+(CC0) and the packages' ROM and archive blobs bound by digest. Titles and
+descriptions are manifest annotations. Nothing depends on the clock, the host or
+the fixture paths, so the same fixtures give the same manifests and digests on
+every run and host. Before any tag of an image is written, the build applies
+the push guard of `unemu/` on the default registry (every blob open, each
+copyleft ROM with its source archive in the closure) and stops on a refusal;
+only the judged manifest is tagged. Version tags never move; a changed template
+needs a new version, and a test pins the digests of the published one. `latest`
+moves only away from an image that lower versions of the same repository name,
+never from a higher version or from an image the build did not version. **The
+build never pushes**: publishing the tags is the maintainer's step, with a dry run
+of each push first.
+
 ## 6. Capabilities API sketch: validator-owned choices
 
 READ: `crates/assembly/src/validate.rs`, `validate_resolved`, resource checks,

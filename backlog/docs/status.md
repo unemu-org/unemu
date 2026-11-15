@@ -5,6 +5,42 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-15 — Official template images:**
+  - **`image template build --store DIR [--vendor DIR] [--dry-run]`** builds
+    the open firmware packages (`unemu/firmware/<catalogue-id>`: Kiselev
+    AT-reset BIOS, unemu VGA BIOS, XTIDE r638, each with the source archive the
+    catalogue pins) and two template machines created through the New machine
+    create API, never from machine files: `open-at` (IBM 5170-class, the three
+    ROMs, 640 KiB + 1 MiB, VGA, one empty 1.2M drive, a blank zero-base 504 MiB
+    ATA disk, no sound) and `open-at-games` (plus SB16, COM1 mouse, Lo-tech EMS,
+    as `machines/at-games-open.toml` without media). Tags `1.0.0` and `latest`;
+    no operating system inside. Same fixtures, same digests on every run and
+    host (pinned by a test). The push guard for `unemu/` judges each manifest
+    before its tags are written, only the judged manifest is tagged, and a
+    refusal stops the build. `latest` moves only away from lower versions of
+    its repository. `--dry-run` builds in a scratch store, judges with the
+    marks of `--store` too, and reports what a build would do to its tags.
+    The build never pushes; commands.md lists the maintainer's push commands,
+    dry runs first.
+  - **Code:** `pc_image::template` (definitions, the build with a guard
+    callback, tag planning for dry runs, version precedence),
+    `firmware_import::publish_as` and `create::create_judged` (only the judged
+    manifest is tagged), `NewImage::description` (manifest description),
+    `cli::build_templates`.
+  - **Tests:** two builds from different fixture copies give identical
+    manifests and digests, and a test pins the published digests; a rebuild
+    keeps every tag; the guard sees each image before its tags and a refusal
+    tags nothing of it; only the judged manifest is tagged; a store recording
+    the open BIOS as user-supplied refuses the build and its dry run; each tag
+    passes the `unemu/` push plan with every blob open; a version tag naming
+    another image refuses the build; `latest` stays on a higher version and on
+    a foreign image and moves from a lower one; the dry run reports conflict,
+    moves and kept; the templates validate and lower with their cards; both
+    templates POST with the open BIOS (checkpoint stream through the XTIDE
+    scan) and XTIDE finds their blank disk.
+  - **Not done here:** publishing the templates to `registry.unemu.dev`
+    (maintainer); File › Get templates…, which lists and pulls these templates
+    in the desktop shell, waits for an approved mock-up.
 - **2026-11-15 — Image › Push… and Image › Pull…:**
   - **Push…** works on any local image: machine image, media set or firmware
     package. It opens on the selected image, or the Push… button of the

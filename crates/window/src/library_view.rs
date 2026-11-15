@@ -2879,6 +2879,7 @@ pub(super) mod tests {
                 &package.config.roms[0],
             )],
             title: None,
+            description: None,
         };
         let created = pc_image::test_support::with_synthetic_firmware(|| {
             pc_image::create::create(&firmware.store, &image, "chips:1.0.0", None)

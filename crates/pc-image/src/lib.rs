@@ -17,6 +17,7 @@ pub mod media_import;
 pub mod media_set;
 mod provider;
 pub mod revision;
+pub mod template;
 #[cfg(feature = "test-support")]
 pub mod test_support;
 pub mod workspace;

@@ -15,7 +15,7 @@ pub mod command;
 pub mod create;
 mod image;
 
-pub use image::{push_plan, registry_client, with_image_providers};
+pub use image::{build_templates, push_plan, registry_client, with_image_providers};
 
 use anyhow::{Context, Result};
 use assembly::{

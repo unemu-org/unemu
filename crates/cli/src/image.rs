@@ -4,8 +4,10 @@
 mod firmware;
 mod media;
 mod registry;
+mod template;
 
 pub use registry::{push_plan, registry_client, with_image_providers};
+pub use template::build as build_templates;
 
 use std::{ffi::OsString, io::Write, path::PathBuf};
 
@@ -44,6 +46,7 @@ pub enum ImageCommand {
     Media(media::MediaCommand),
     Firmware(firmware::FirmwareCommand),
     Registry(registry::RegistryCommand),
+    Template(template::TemplateCommand),
     Import {
         machine: PathBuf,
         store: PathBuf,
@@ -70,6 +73,9 @@ pub fn parse(args: &[OsString]) -> Result<ImageCommand, &'static str> {
     }
     if args.first().is_some_and(|a| a == "media") {
         return media::parse(&args[1..]).map(ImageCommand::Media);
+    }
+    if args.first().is_some_and(|a| a == "template") {
+        return template::parse(&args[1..]).map(ImageCommand::Template);
     }
     if let Some(action @ ("push" | "pull" | "remote" | "login")) =
         args.first().and_then(|a| a.to_str())
@@ -272,6 +278,7 @@ pub fn execute_with_firmware_sources(
         ImageCommand::Media(command) => media::execute(command, output)?,
         ImageCommand::Firmware(command) => firmware::execute(command, output, firmware)?,
         ImageCommand::Registry(command) => registry::execute(command, output)?,
+        ImageCommand::Template(command) => template::execute(command, output)?,
         ImageCommand::Import {
             machine,
             store,

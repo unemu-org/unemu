@@ -422,6 +422,97 @@ The live test pushes to `registry.unemu.dev` (or `UNEMU_REGISTRY`) with
 rights on `unemu/test-*`; set `UNEMU_REGISTRY_HOST` as well when `UNEMU_REGISTRY`
 names another host. It deletes its repository content afterwards.
 
+## Official template images
+
+```sh
+bash vendor/kiselev-bios/fetch.sh
+bash vendor/vgabios/fetch.sh
+bash vendor/xtide-universal-bios/fetch.sh
+cargo run --offline -p cli -- image template build --store /path/to/templates --dry-run
+cargo run --offline -p cli -- image template build --store /path/to/templates
+```
+
+`image template build` is a command rather than a script around `image
+firmware import` and New machine…: the template machines come from the create
+API (`pc_image::create`), which has no command of its own, and the push guard
+must judge each manifest before its tags are written. It reads the open fixtures
+under `vendor/` in the working directory (`--vendor DIR` for another copy) and
+writes into `--store` (created when missing), in this order (design:
+machine-images §5.5):
+
+| Local tags | Registry repository | Image |
+| --- | --- | --- |
+| `unemu/firmware/kiselev-xi8088-1.0.2-atreset:1.0.0`, `:latest` | `unemu/firmware/kiselev-xi8088-1.0.2-atreset` | Kiselev AT-reset BIOS package with its source archive |
+| `unemu/firmware/vgabios-0.8a-unemu.1-std:1.0.0`, `:latest` | `unemu/firmware/vgabios-0.8a-unemu.1-std` | unemu LGPL VGA BIOS package with its source archive |
+| `unemu/firmware/xub-r638-xtp-ata1f0:1.0.0`, `:latest` | `unemu/firmware/xub-r638-xtp-ata1f0` | XTIDE Universal BIOS r638 package with its source archive |
+| `open-at:1.0.0`, `:latest` | `unemu/open-at` | IBM 5170-class 80286, the three ROMs, 640 KiB + 1 MiB, VGA, COM1 without a mouse, one empty 1.2M drive, a blank zero-base 504 MiB (1024/16/63) ATA disk at 1F0h, no sound card |
+| `open-at-games:1.0.0`, `:latest` | `unemu/open-at-games` | `open-at` plus SB16 (220h, IRQ 5, DMA 1/5), a Microsoft mouse on COM1 and a 2 MiB Lo-tech EMS board (260h, frame D000h) |
+
+The local tags are the short form `image pull` writes for each repository, so
+`image push TAG` without a reference reaches the repository in the table. Each
+source archive must be the one the catalogue pins (its fetch script builds it);
+another archive, or a missing fixture, stops the build and names the script.
+No operating system or other software goes into a template. The output is one
+`TAG<TAB>DIGEST<TAB>firmware|machine<TAB>created|present|moved:OLD|kept:CURRENT`
+line per tag, written as soon as its image is built, then `guard:allowed`. A
+tag that already names the same image stays; a version tag naming another
+image stops the build (give a changed template a new version in
+`pc_image::template::VERSION`). `latest` moves by compare-and-swap, and only
+away from an image that lower versions of the same repository name alone; it
+stays (`kept:`) on a higher version or on an image no version of the
+repository names. The same fixtures give the same digests on every run and
+host: nothing depends on the clock, the host or the fixture paths; a test pins
+the digests of the published generation.
+
+Before any tag of an image is written, the build applies the push guard for
+`unemu/` on the default registry, from the store's local marks and the firmware
+catalogue: every blob open, every copyleft ROM with its linked source archive.
+A refusal stops the build, for example in a store where another local tag
+records the same ROM bytes as user-supplied, so build into a dedicated store.
+The tag is written only for the manifest the guard judged. `--dry-run` builds
+in a scratch store under the system temporary directory, removes it, and
+reports what a build would do to each tag of `--store` (which is never written
+and need not exist): `new`, `present`, `conflict:DIGEST` (a version tag naming
+another image), `moves:DIGEST` or `kept:DIGEST` (the alias), then `dry run; no
+blobs or tag written`. When `--store` exists, the guard judges each image with
+its marks as well as the scratch store's, so a dry run refuses what the build
+would refuse.
+
+The build never pushes; publishing is the maintainer's step. Log in once
+(`image login registry.unemu.dev --user NAME`), review every dry run, then push
+the version tags and the aliases:
+
+```sh
+S=/path/to/templates
+cargo run --offline -p cli -- image push unemu/firmware/kiselev-xi8088-1.0.2-atreset:1.0.0 unemu/firmware/kiselev-xi8088-1.0.2-atreset:1.0.0 --store "$S" --dry-run
+cargo run --offline -p cli -- image push unemu/firmware/vgabios-0.8a-unemu.1-std:1.0.0 unemu/firmware/vgabios-0.8a-unemu.1-std:1.0.0 --store "$S" --dry-run
+cargo run --offline -p cli -- image push unemu/firmware/xub-r638-xtp-ata1f0:1.0.0 unemu/firmware/xub-r638-xtp-ata1f0:1.0.0 --store "$S" --dry-run
+cargo run --offline -p cli -- image push open-at:1.0.0 unemu/open-at:1.0.0 --store "$S" --dry-run
+cargo run --offline -p cli -- image push open-at-games:1.0.0 unemu/open-at-games:1.0.0 --store "$S" --dry-run
+cargo run --offline -p cli -- image push unemu/firmware/kiselev-xi8088-1.0.2-atreset:latest unemu/firmware/kiselev-xi8088-1.0.2-atreset:latest --store "$S" --dry-run
+cargo run --offline -p cli -- image push unemu/firmware/vgabios-0.8a-unemu.1-std:latest unemu/firmware/vgabios-0.8a-unemu.1-std:latest --store "$S" --dry-run
+cargo run --offline -p cli -- image push unemu/firmware/xub-r638-xtp-ata1f0:latest unemu/firmware/xub-r638-xtp-ata1f0:latest --store "$S" --dry-run
+cargo run --offline -p cli -- image push open-at:latest unemu/open-at:latest --store "$S" --dry-run
+cargo run --offline -p cli -- image push open-at-games:latest unemu/open-at-games:latest --store "$S" --dry-run
+
+cargo run --offline -p cli -- image push unemu/firmware/kiselev-xi8088-1.0.2-atreset:1.0.0 unemu/firmware/kiselev-xi8088-1.0.2-atreset:1.0.0 --store "$S"
+cargo run --offline -p cli -- image push unemu/firmware/vgabios-0.8a-unemu.1-std:1.0.0 unemu/firmware/vgabios-0.8a-unemu.1-std:1.0.0 --store "$S"
+cargo run --offline -p cli -- image push unemu/firmware/xub-r638-xtp-ata1f0:1.0.0 unemu/firmware/xub-r638-xtp-ata1f0:1.0.0 --store "$S"
+cargo run --offline -p cli -- image push open-at:1.0.0 unemu/open-at:1.0.0 --store "$S"
+cargo run --offline -p cli -- image push open-at-games:1.0.0 unemu/open-at-games:1.0.0 --store "$S"
+
+cargo run --offline -p cli -- image push unemu/firmware/kiselev-xi8088-1.0.2-atreset:latest unemu/firmware/kiselev-xi8088-1.0.2-atreset:latest --store "$S"
+cargo run --offline -p cli -- image push unemu/firmware/vgabios-0.8a-unemu.1-std:latest unemu/firmware/vgabios-0.8a-unemu.1-std:latest --store "$S"
+cargo run --offline -p cli -- image push unemu/firmware/xub-r638-xtp-ata1f0:latest unemu/firmware/xub-r638-xtp-ata1f0:latest --store "$S"
+cargo run --offline -p cli -- image push open-at:latest unemu/open-at:latest --store "$S"
+cargo run --offline -p cli -- image push open-at-games:latest unemu/open-at-games:latest --store "$S"
+```
+
+Each dry run must end in `guard:allowed` with every blob `open`. A version tag
+that already names another image on the registry is refused; push a new
+version instead. Once `latest` names an older version there, its push stops
+with both digests; repeat it with `--move` after checking them.
+
 ## Build / run / test
 
 ```sh

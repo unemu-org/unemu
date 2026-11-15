@@ -1,0 +1,439 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+//! `image template build` from the open fixtures: reproducible digests, dry
+//! runs, the push guard of the official namespace and a POST of the open-at
+//! template; machine-images §5.5. Nothing here reaches a network registry.
+#[path = "support/fixtures.rs"]
+mod fixtures;
+
+use image_registry::{guard::Redistribution, Reference, RegistryEntry, DEFAULT_REGISTRY};
+use image_store::Store;
+use std::{
+    ffi::OsString,
+    fs,
+    path::{Path, PathBuf},
+    sync::atomic::{AtomicU64, Ordering},
+};
+
+struct Temp(PathBuf);
+impl Temp {
+    fn new(name: &str) -> Self {
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let path = std::env::temp_dir().join(format!(
+            "{name}-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir_all(&path).unwrap();
+        Self(path)
+    }
+}
+impl Drop for Temp {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
+}
+
+fn vendor() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../vendor")
+}
+
+/// The open fixtures the templates need, or `None` when they are not fetched.
+fn fetched() -> Option<()> {
+    for source in &pc_image::template::FIRMWARE {
+        fixtures::fixture(source.rom)?;
+        fixtures::fixture(source.source_archive)?;
+    }
+    Some(())
+}
+
+fn run(args: &[&dyn AsRef<std::ffi::OsStr>]) -> (u8, String, String) {
+    let args: Vec<OsString> = args.iter().map(|a| a.as_ref().to_owned()).collect();
+    let (mut out, mut err) = (Vec::new(), Vec::new());
+    let code = cli::command::run_with_firmware_sources(
+        &args,
+        &mut out,
+        &mut err,
+        &cli::command::FirmwareSources::default(),
+    );
+    (
+        code,
+        String::from_utf8(out).unwrap(),
+        String::from_utf8(err).unwrap(),
+    )
+}
+
+fn build(store: &Path, dry_run: bool) -> (u8, String, String) {
+    let vendor = vendor();
+    let mut args: Vec<&dyn AsRef<std::ffi::OsStr>> = vec![
+        &"image",
+        &"template",
+        &"build",
+        &"--store",
+        &store,
+        &"--vendor",
+        &vendor,
+    ];
+    if dry_run {
+        args.push(&"--dry-run");
+    }
+    run(&args)
+}
+
+/// `(tag, digest, kind, outcome)` of each tag line.
+fn rows(output: &str) -> Vec<(String, String, String, String)> {
+    output
+        .lines()
+        .filter(|line| line.contains("\tsha256:"))
+        .map(|line| {
+            let fields: Vec<_> = line.split('\t').collect();
+            assert_eq!(fields.len(), 4, "{line}");
+            (
+                fields[0].into(),
+                fields[1].into(),
+                fields[2].into(),
+                fields[3].into(),
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn the_build_is_reproducible_all_open_for_unemu_and_its_dry_run_writes_nothing() {
+    if fetched().is_none() {
+        return;
+    }
+    let t = Temp::new("template-cli");
+    let (code, first, errors) = build(&t.0.join("a"), false);
+    assert_eq!(code, 0, "{errors}");
+    assert!(first.ends_with("guard:allowed\n"), "{first}");
+    let first = rows(&first);
+    let tags: Vec<_> = first.iter().map(|r| r.0.as_str()).collect();
+    assert_eq!(
+        tags,
+        [
+            "unemu/firmware/kiselev-xi8088-1.0.2-atreset:1.0.0",
+            "unemu/firmware/kiselev-xi8088-1.0.2-atreset:latest",
+            "unemu/firmware/vgabios-0.8a-unemu.1-std:1.0.0",
+            "unemu/firmware/vgabios-0.8a-unemu.1-std:latest",
+            "unemu/firmware/xub-r638-xtp-ata1f0:1.0.0",
+            "unemu/firmware/xub-r638-xtp-ata1f0:latest",
+            "open-at:1.0.0",
+            "open-at:latest",
+            "open-at-games:1.0.0",
+            "open-at-games:latest",
+        ]
+    );
+    assert!(first.iter().all(|r| r.3 == "created"), "{first:?}");
+    let digests = |rows: &[(String, String, String, String)]| {
+        rows.iter()
+            .map(|r| (r.0.clone(), r.1.clone(), r.2.clone()))
+            .collect::<Vec<_>>()
+    };
+
+    // Again into the same store: every tag is in place. Into another store:
+    // the same digests.
+    let (code, again, errors) = build(&t.0.join("a"), false);
+    assert_eq!(code, 0, "{errors}");
+    let again = rows(&again);
+    assert_eq!(digests(&again), digests(&first));
+    assert!(again.iter().all(|r| r.3 == "present"), "{again:?}");
+    let (code, other, errors) = build(&t.0.join("b"), false);
+    assert_eq!(code, 0, "{errors}");
+    assert_eq!(digests(&rows(&other)), digests(&first));
+
+    // The dry run compares with the store and writes neither it nor a new one.
+    let before = fs::read(t.0.join("a/images/index.json")).unwrap();
+    let (code, dry, errors) = build(&t.0.join("a"), true);
+    assert_eq!(code, 0, "{errors}");
+    assert!(dry.ends_with("dry run; no blobs or tag written\n"), "{dry}");
+    let dry = rows(&dry);
+    assert_eq!(digests(&dry), digests(&first));
+    assert!(dry.iter().all(|r| r.3 == "present"), "{dry:?}");
+    assert_eq!(fs::read(t.0.join("a/images/index.json")).unwrap(), before);
+    let (code, fresh, errors) = build(&t.0.join("missing"), true);
+    assert_eq!(code, 0, "{errors}");
+    assert!(rows(&fresh).iter().all(|r| r.3 == "new"));
+    assert!(!t.0.join("missing").exists());
+
+    // `image push` of each tag to the official namespace would pass the guard:
+    // every blob open, every copyleft ROM with its source archive.
+    let store = Store::open_existing(t.0.join("a")).unwrap();
+    let entry = RegistryEntry::builtin(DEFAULT_REGISTRY);
+    for (tag, digest, _, _) in &first {
+        let target = Reference::parse(tag, DEFAULT_REGISTRY).unwrap();
+        assert_eq!(target.namespace(), "unemu", "{tag}");
+        let plan = cli::push_plan(
+            &store,
+            tag,
+            target,
+            Some(&entry),
+            pc_image::firmware::catalogue(),
+        )
+        .unwrap();
+        assert_eq!(plan.image().digest.to_string(), *digest);
+        assert_eq!(plan.verdict(), &Ok(()), "{tag}");
+        assert!(plan
+            .closure()
+            .iter()
+            .all(|c| c.effective == Redistribution::Open));
+    }
+}
+
+#[test]
+fn a_store_that_records_an_open_rom_as_user_supplied_refuses_the_build() {
+    if fetched().is_none() {
+        return;
+    }
+    let t = Temp::new("template-cli-refused");
+    let store = t.0.join("store");
+    // Imported without its source archive, the copyleft BIOS stays
+    // user-supplied, and that mark follows its bytes into every image.
+    let roms = t.0.join("roms");
+    fs::create_dir_all(&roms).unwrap();
+    fs::copy(
+        vendor().join(pc_image::template::FIRMWARE[0].rom),
+        roms.join("bios.bin"),
+    )
+    .unwrap();
+    let (code, output, errors) = run(&[
+        &"image",
+        &"firmware",
+        &"import",
+        &roms,
+        &"--store",
+        &store,
+        &"--create",
+        &"--for",
+        &"kiselev-xi8088-1.0.2-atreset",
+    ]);
+    assert_eq!(code, 0, "{errors}");
+    assert!(output.contains("kept user-supplied"), "{output}");
+    let index = fs::read(store.join("images/index.json")).unwrap();
+    // The dry run judges with the marks of the store it reports on as well.
+    for dry_run in [true, false] {
+        let (code, output, errors) = build(&store, dry_run);
+        assert_ne!(code, 0, "{output}");
+        assert!(
+            errors.contains("unemu/firmware/kiselev-xi8088-1.0.2-atreset:1.0.0 refused")
+                && errors.contains("every blob must be open"),
+            "{errors}"
+        );
+        assert!(!output.contains("guard:allowed"), "{output}");
+        if dry_run {
+            assert_eq!(fs::read(store.join("images/index.json")).unwrap(), index);
+        }
+    }
+    let store = Store::open_existing(&store).unwrap();
+    assert!(store
+        .tag_descriptor("unemu/firmware/kiselev-xi8088-1.0.2-atreset:1.0.0")
+        .is_err());
+    assert_eq!(store.list_tags(None, 10).unwrap().tags.len(), 1);
+}
+
+#[test]
+fn both_templates_post_with_the_open_bios_and_xtide_finds_their_blank_disk() {
+    if fetched().is_none() {
+        return;
+    }
+    let t = Temp::new("template-cli-post");
+    let store = Store::open(t.0.join("store")).unwrap();
+    cli::build_templates(&store, &vendor()).unwrap();
+    for tag in ["open-at:1.0.0", "open-at-games:1.0.0"] {
+        post(&store, tag);
+    }
+}
+
+/// Run `tag`'s POST to the boot loader, then let it try A: and C:.
+fn post(store: &Store, tag: &str) {
+    let owner = store.workspace(&tag.replace([':', '.'], "-")).unwrap();
+    let prepared = pc_image::workspace::prepare_start(&owner, tag, false).unwrap();
+    let policy = assembly::ObservationPolicy {
+        trace: device::TracePolicy::Off,
+        routes: vec![
+            assembly::ObservationRequest {
+                device: assembly::DeviceId::Post,
+                output: assembly::OutputKind::Bytes(device::ByteStreamKind::PostCheckpoints),
+                byte_limit: 4096,
+            },
+            assembly::ObservationRequest {
+                device: assembly::DeviceId::Vga,
+                output: assembly::OutputKind::TextScanout,
+                byte_limit: 0,
+            },
+        ],
+        ..Default::default()
+    };
+    let mut machine = assembly::assemble_with_verified_bases(
+        &prepared.machine,
+        &policy,
+        assembly::AssemblyOptions::default(),
+        &prepared.bases,
+    )
+    .unwrap();
+    let mut post = Vec::new();
+    for step in 1..=60u64 {
+        machine
+            .run_session(&assembly::RunPolicy::natural(Some(step * 1_000_000), None))
+            .unwrap();
+        post.extend(
+            machine
+                .observation
+                .drain_bytes(
+                    assembly::DeviceId::Post,
+                    device::ByteStreamKind::PostCheckpoints,
+                )
+                .unwrap(),
+        );
+        if post.contains(&0x00) {
+            // INT 19h tries the empty A:, then C: through XTIDE.
+            let at = {
+                use cpu::Cpu;
+                machine.machine.cpu().retired()
+            };
+            machine
+                .run_session(&assembly::RunPolicy::natural(Some(at + 30_000_000), None))
+                .unwrap();
+            break;
+        }
+    }
+    // The open BIOS checkpoint stream through the option-ROM scan (40h–43h,
+    // XTIDE at C8000h) to the boot loader (Kiselev errno.inc).
+    assert_eq!(
+        post,
+        [
+            0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x10, 0x11, 0x20, 0x21, 0x22,
+            0x24, 0x25, 0x30, 0x31, 0x40, 0x41, 0x42, 0x43, 0x00
+        ],
+        "{tag}"
+    );
+    let capture = machine.capture_text(assembly::DeviceId::Vga).unwrap();
+    let video::Frame::Text(grid) = &capture.frame else {
+        panic!("expected VGA text")
+    };
+    let rows = grid.rows_as_strings();
+    let row = |text: &str| rows.iter().any(|row| row.contains(text));
+    assert!(
+        row("Master at 1F0h: UNEMU ATA-2 PIO DISK"),
+        "{tag}: {rows:#?}"
+    );
+    assert!(row("Booting C"), "{tag}: {rows:#?}");
+    assert!(row("Boot sector not found"), "{tag}: {rows:#?}");
+    machine.finish_persistence().unwrap();
+}
+
+/// The open-at template with another title, from the store's packages.
+fn variant(store: &Store, title: &str) -> pc_image::create::NewImage {
+    let packages = pc_image::create::packages(store).unwrap();
+    let firmware = pc_image::template::FIRMWARE
+        .iter()
+        .map(|source| {
+            packages
+                .iter()
+                .find_map(|p| {
+                    p.config
+                        .roms
+                        .iter()
+                        .find(|r| r.catalogue_id.as_deref() == Some(source.catalogue_id))
+                        .map(|r| pc_image::create::PackageRom::new(p, r))
+                })
+                .unwrap()
+        })
+        .collect();
+    pc_image::create::NewImage {
+        hardware: pc_image::template::TEMPLATES[0].hardware().unwrap(),
+        firmware,
+        title: Some(title.into()),
+        description: None,
+    }
+}
+
+#[test]
+fn the_dry_run_names_a_version_conflict_and_what_latest_does() {
+    if fetched().is_none() {
+        return;
+    }
+    let t = Temp::new("template-cli-states");
+    let state = |output: &str, tag: &str| {
+        rows(output)
+            .into_iter()
+            .find(|r| r.0 == tag)
+            .map(|r| r.3)
+            .unwrap_or_else(|| panic!("{tag}: {output}"))
+    };
+
+    // open-at:1.0.0 names another image before the first build.
+    let path = t.0.join("conflict");
+    let store = Store::open(&path).unwrap();
+    let firmware_only = |reference: &str, _: &image_store::Manifest| {
+        if reference.starts_with("unemu/firmware/") {
+            Ok(())
+        } else {
+            Err("machines later".to_owned())
+        }
+    };
+    assert!(pc_image::template::build(&store, &vendor(), &firmware_only, &mut |_| {}).is_err());
+    let other = pc_image::create::create(
+        &store,
+        &variant(&store, "Another AT"),
+        "open-at:1.0.0",
+        None,
+    )
+    .unwrap();
+    let (code, dry, errors) = build(&path, true);
+    assert_eq!(code, 0, "{errors}");
+    assert_eq!(
+        state(&dry, "open-at:1.0.0"),
+        format!("conflict:{}", other.digest)
+    );
+    assert_eq!(state(&dry, "open-at:latest"), "new");
+    assert_eq!(
+        state(&dry, "unemu/firmware/xub-r638-xtp-ata1f0:1.0.0"),
+        "present"
+    );
+    let (code, _, errors) = build(&path, false);
+    assert_ne!(code, 0);
+    assert!(errors.contains("a version tag never moves"), "{errors}");
+
+    // latest names a lower version, then a higher one.
+    let path = t.0.join("aliases");
+    let (code, _, errors) = build(&path, false);
+    assert_eq!(code, 0, "{errors}");
+    let store = Store::open_existing(&path).unwrap();
+    let point = |to: &image_store::Descriptor| {
+        let current = store.tag_descriptor("open-at:latest").unwrap().digest;
+        store
+            .update_tag("open-at:latest", to, Some(&current), &pc_image::PcProvider)
+            .unwrap();
+    };
+    let lower =
+        pc_image::create::create(&store, &variant(&store, "Older AT"), "open-at:0.9.0", None)
+            .unwrap();
+    point(&lower);
+    let (code, dry, errors) = build(&path, true);
+    assert_eq!(code, 0, "{errors}");
+    assert_eq!(
+        state(&dry, "open-at:latest"),
+        format!("moves:{}", lower.digest)
+    );
+    assert_eq!(state(&dry, "open-at:1.0.0"), "present");
+    let higher =
+        pc_image::create::create(&store, &variant(&store, "Newer AT"), "open-at:2.0.0", None)
+            .unwrap();
+    point(&higher);
+    let (code, dry, errors) = build(&path, true);
+    assert_eq!(code, 0, "{errors}");
+    assert_eq!(
+        state(&dry, "open-at:latest"),
+        format!("kept:{}", higher.digest)
+    );
+    let (code, output, errors) = build(&path, false);
+    assert_eq!(code, 0, "{errors}");
+    assert_eq!(
+        state(&output, "open-at:latest"),
+        format!("kept:{}", higher.digest)
+    );
+    assert_eq!(
+        store.tag_descriptor("open-at:latest").unwrap().digest,
+        higher.digest
+    );
+}

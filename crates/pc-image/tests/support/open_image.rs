@@ -103,6 +103,7 @@ impl Open {
                 self.rom("xub-r638-xtp-ata1f0"),
             ],
             title: Some("Open AT workbench".into()),
+            description: None,
         }
     }
 }

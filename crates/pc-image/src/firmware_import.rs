@@ -1300,11 +1300,14 @@ pub fn already_imported(
 
 /// Copy a plan's new payloads, its config and manifest, then publish `tag`
 /// by compare-and-swap from absent. Stored payloads are already present.
+/// With `judged`, the stored manifest must have that digest before the tag
+/// is written.
 fn store_plan(
     store: &Store,
     plan: Plan,
     tag: &str,
     catalogue: &[assembly::FirmwareEntry],
+    judged: Option<&Digest>,
 ) -> Result<Descriptor> {
     for (payload, descriptor) in &plan.payloads {
         let kind = descriptor.decoded_media_type();
@@ -1333,6 +1336,7 @@ fn store_plan(
     }
     store.import(plan.config.as_slice(), Some(&plan.manifest.config.digest))?;
     let d = store.import_manifest(&plan.manifest)?;
+    unjudged(judged, &d.digest)?;
     let validator = Validator(&PcFirmwareRules(catalogue));
     match store.update_tag(tag, &d, None, &validator) {
         Ok(()) => (),
@@ -1372,13 +1376,47 @@ pub fn publish_with(
     statement: &Statement,
     catalogue: &[assembly::FirmwareEntry],
 ) -> Result<Descriptor> {
-    let tag = candidate.tag();
+    publish_as(
+        store,
+        candidate,
+        attachments,
+        statement,
+        catalogue,
+        &candidate.tag(),
+        None,
+    )
+}
+/// [`publish_with`] under a chosen local tag instead of `firmware/<id>:1`,
+/// such as the version tag of an official template package. With `judged`,
+/// only a package with that manifest digest is tagged or reused: the one a
+/// caller checked, for example against a push guard.
+pub fn publish_as(
+    store: &Store,
+    candidate: &Candidate,
+    attachments: &[Attachment],
+    statement: &Statement,
+    catalogue: &[assembly::FirmwareEntry],
+    tag: &str,
+    judged: Option<&Digest>,
+) -> Result<Descriptor> {
     let plan = plan(candidate, attachments, statement, Some(catalogue))?;
     validate(&plan, catalogue, None)?;
-    if let Some(existing) = existing(store, &tag, &plan.manifest, catalogue)? {
+    unjudged(judged, &Digest::of(&plan.manifest.encode()?))?;
+    if let Some(existing) = existing(store, tag, &plan.manifest, catalogue)? {
+        // An earlier package with the same ROMs is kept as it is.
+        unjudged(judged, &existing.digest)?;
         return Ok(existing);
     }
-    store_plan(store, plan, &tag, catalogue)
+    store_plan(store, plan, tag, catalogue, judged)
+}
+/// Refuse a package other than the one the caller judged.
+fn unjudged(judged: Option<&Digest>, digest: &Digest) -> Result<()> {
+    match judged {
+        Some(judged) if judged != digest => Err(invalid(format!(
+            "the package is {digest}, not the checked {judged}"
+        ))),
+        _ => Ok(()),
+    }
 }
 
 /// The tag after `name:N`, for a tag whose version is a plain revision number.
@@ -1480,7 +1518,7 @@ pub fn edit(
     }
     let notes = plan.notes.clone();
     Ok(Revision {
-        descriptor: store_plan(store, plan, target, catalogue)?,
+        descriptor: store_plan(store, plan, target, catalogue, None)?,
         notes,
     })
 }
