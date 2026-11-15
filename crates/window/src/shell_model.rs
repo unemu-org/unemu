@@ -34,10 +34,13 @@ pub(crate) enum Command {
     Stop,
     Reset,
     PowerCycle,
+    /// Insert… of a floppy drive: the media picker.
     Insert(u8),
-    /// Insert into a floppy drive from the image library.
-    FromLibrary(u8),
-    /// From library… for the set selected in the library window.
+    /// Browse for an image file… of the media picker: a disk image file on
+    /// this computer, or a disk of the drive's catalogue, with its write mode.
+    InsertFile(u8),
+    /// Insert of the set selected in the library window: the media picker
+    /// with that set chosen.
     InsertSet(u8),
     /// Change the write mode of the floppy in a drive, in its Insert dialog.
     WriteMode(u8),
@@ -67,6 +70,42 @@ pub(crate) enum Command {
     Pull,
     /// File › Get templates…: pull official templates from the default registry.
     GetTemplates,
+    /// Rename… of the selected machine (F2).
+    Rename,
+    /// Duplicate… of the selected machine (Ctrl+D).
+    Duplicate,
+    /// Delete machine… of the selected machine.
+    DeleteMachine,
+    /// The Delete key: Delete machine… on a machine, Delete tag… on an image.
+    DeleteSelection,
+    /// Reset to image… of the selected machine.
+    ResetMachine,
+    /// Machine › Show source image.
+    ShowSource,
+    /// New machine from image… (Ctrl+Shift+N).
+    NewFromImage,
+    /// Image › Start…: the selected image, or the selected machine's source.
+    ImageStart,
+    /// Image › Gaming mode: a disposable copy of the image itself.
+    ImageGaming,
+    /// Image › Settings…: a new revision of the image.
+    ImageSettings,
+    /// Image › Layers…: the image's own chains.
+    ImageLayers,
+}
+
+impl Command {
+    /// The library's own keys, which an edited text field keeps for itself.
+    pub fn library_key(self) -> bool {
+        matches!(
+            self,
+            Command::Rename
+                | Command::Duplicate
+                | Command::DeleteSelection
+                | Command::NewFromImage
+                | Command::Start
+        )
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -82,7 +121,15 @@ pub(crate) struct Enablement {
 impl Enablement {
     pub fn allows(self, command: Command) -> bool {
         match command {
-            Command::Start | Command::GamingMode => self.state == State::Stopped && self.ready,
+            Command::Start | Command::GamingMode | Command::ImageStart | Command::ImageGaming => {
+                self.state == State::Stopped && self.ready
+            }
+            Command::Duplicate
+            | Command::DeleteMachine
+            | Command::DeleteSelection
+            | Command::ResetMachine
+            | Command::ShowSource
+            | Command::NewFromImage => self.state == State::Stopped,
             Command::Pause
             | Command::Stop
             | Command::Reset
@@ -90,7 +137,7 @@ impl Enablement {
             | Command::Release
             | Command::Speed(_)
             | Command::FastForward => self.state != State::Stopped,
-            Command::Insert(unit) | Command::FromLibrary(unit) | Command::Eject(unit) => {
+            Command::Insert(unit) | Command::InsertFile(unit) | Command::Eject(unit) => {
                 self.floppy.get(unit as usize).copied().unwrap_or(false)
             }
             Command::InsertSet(unit) | Command::WriteMode(unit) | Command::Next(unit) => {
@@ -109,6 +156,7 @@ pub(crate) fn logical_shortcut_key(key: &Key) -> Option<KeyCode> {
     match key {
         Key::Character(text) => match text.to_lowercase().as_str() {
             "f" => Some(KeyF),
+            "d" => Some(KeyD),
             "e" => Some(KeyE),
             "i" => Some(KeyI),
             "m" => Some(KeyM),
@@ -126,6 +174,9 @@ pub(crate) fn logical_shortcut_key(key: &Key) -> Option<KeyCode> {
         },
         Key::Named(NamedKey::End) => Some(End),
         Key::Named(NamedKey::Enter) => Some(Enter),
+        Key::Named(NamedKey::F2) => Some(F2),
+        Key::Named(NamedKey::Delete) => Some(Delete),
+        Key::Named(NamedKey::Backspace) => Some(Backspace),
         _ => None,
     }
 }
@@ -147,7 +198,13 @@ pub(crate) fn hotkey(
         if ctrl || alt {
             return None;
         }
+        // The library's keys act outside guest focus, as the machines mock-up
+        // says; whether the command applies then is its enablement's call.
+        let library = state == State::Stopped || !guest_focus;
         return match (key, shift) {
+            (KeyN, true) if library => Some(NewFromImage),
+            (KeyD, false) if library => Some(Duplicate),
+            (Backspace, false) if library => Some(DeleteSelection),
             (KeyF, _) => Some(Next(u8::from(shift))),
             (KeyE, _) => Some(Command::Eject(u8::from(shift))),
             (KeyI, _) => Some(Command::Insert(u8::from(shift))),
@@ -187,15 +244,20 @@ pub(crate) fn hotkey(
     }
     if !macos && ctrl && !alt {
         return match key {
+            KeyN if shift => Some(NewFromImage),
+            KeyD if !shift => Some(Duplicate),
             KeyN => Some(Placeholder("New machine")),
             KeyO => Some(Placeholder("Open machine file")),
             Comma => Some(Settings),
             _ => None,
         };
     }
+    let plain = !alt && !ctrl && !shift && !command;
     match key {
         F1 if !macos => Some(Shortcuts),
         Enter if state == State::Stopped && !alt && !ctrl => Some(Start),
+        F2 if plain => Some(Rename),
+        Delete if plain && !macos => Some(DeleteSelection),
         _ => None,
     }
 }
@@ -221,6 +283,9 @@ pub(crate) fn shortcut_text(shortcut: &str, macos: bool) -> &str {
         "Ctrl+Alt+Shift+I" => "⌘⇧I",
         "F1" => "⌘⇧/",
         "Ctrl+N" => "⌘N",
+        "Ctrl+Shift+N" => "⌘⇧N",
+        "Ctrl+D" => "⌘D",
+        "Delete" => "⌘⌫",
         "Ctrl+O" => "⌘O",
         "Ctrl+," => "⌘,",
         _ => shortcut,
@@ -961,14 +1026,14 @@ mod tests {
                 // A stopped machine's drives take floppies for Start.
                 for command in [
                     Command::Insert(0),
-                    Command::FromLibrary(0),
+                    Command::InsertFile(0),
                     Command::Eject(0),
                 ] {
                     assert!(model.allows(command), "{state:?} {command:?}");
                 }
                 assert!(!model.allows(Command::Eject(1)));
                 assert!(!model.allows(Command::Insert(1)));
-                assert!(!model.allows(Command::FromLibrary(1)));
+                assert!(!model.allows(Command::InsertFile(1)));
                 assert!(!model.allows(Command::WriteMode(1)));
                 assert!(!model.allows(Command::Insert(2)));
                 assert!(!model.allows(Command::SaveState));
@@ -1028,6 +1093,81 @@ mod tests {
             Some(Command::Start)
         );
     }
+    /// F2, Ctrl+D (⌘D), Delete (⌘⌫) and Ctrl+Shift+N (⌘⇧N) act outside guest
+    /// focus, stopped or not; with the guest focused they stay guest input.
+    #[test]
+    fn library_keys_act_outside_guest_focus() {
+        use KeyCode::*;
+        let none = [false; 8];
+        let ctrl = [true, false, false, false, false, false, false, false];
+        let ctrl_shift = [true, false, false, false, true, false, false, false];
+        let cmd = [false, false, false, false, false, false, true, false];
+        let cmd_shift = [false, false, false, false, true, false, true, false];
+        for state in [State::Stopped, State::Running, State::Paused] {
+            for (key, modifiers, macos, command) in [
+                (F2, none, false, Command::Rename),
+                (F2, none, true, Command::Rename),
+                (KeyD, ctrl, false, Command::Duplicate),
+                (KeyD, cmd, true, Command::Duplicate),
+                (Delete, none, false, Command::DeleteSelection),
+                (Backspace, cmd, true, Command::DeleteSelection),
+                (KeyN, ctrl_shift, false, Command::NewFromImage),
+                (KeyN, cmd_shift, true, Command::NewFromImage),
+            ] {
+                assert_eq!(
+                    super::hotkey(key, modifiers, state, false, macos),
+                    Some(command),
+                    "{key:?} {state:?} macos={macos}"
+                );
+                let focused = super::hotkey(key, modifiers, state, true, macos);
+                if state == State::Stopped {
+                    assert_eq!(focused, Some(command), "{key:?} stopped");
+                } else {
+                    assert_eq!(focused, None, "{key:?} {state:?} reaches the guest");
+                }
+            }
+        }
+        // Delete alone on macOS and Shift+Delete elsewhere are no shortcut.
+        assert_eq!(
+            super::hotkey(Delete, none, State::Stopped, false, true),
+            None
+        );
+        let shift = [false, false, false, false, true, false, false, false];
+        assert_eq!(
+            super::hotkey(Delete, shift, State::Stopped, false, false),
+            None
+        );
+        assert!(Command::DeleteSelection.library_key());
+        assert!(!Command::Stop.library_key());
+        // Whether they apply then is their enablement's call.
+        let running = Enablement {
+            state: State::Running,
+            ready: true,
+            floppy: [true, false],
+            audio: false,
+        };
+        for command in [
+            Command::Duplicate,
+            Command::DeleteMachine,
+            Command::DeleteSelection,
+            Command::ResetMachine,
+            Command::NewFromImage,
+            Command::ImageStart,
+            Command::ImageGaming,
+        ] {
+            assert!(!running.allows(command), "{command:?}");
+            assert!(
+                Enablement {
+                    state: State::Stopped,
+                    ..running
+                }
+                .allows(command),
+                "{command:?}"
+            );
+        }
+        assert!(running.allows(Command::Rename));
+    }
+
     #[test]
     fn texture_upload_preserves_dimensions_channels_and_row_order() {
         let image = texture_image(&window::PixelFrame {

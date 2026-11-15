@@ -38,6 +38,8 @@ pub(crate) enum Icon {
     Settings,
     /// Disk layers: three stacked sheets, the top one blue.
     Layers,
+    /// A machine: a monitor outline on a stand.
+    Machine,
     /// A machine image: three stacked outlines.
     Image,
     /// An installation media set: a floppy outline.
@@ -59,7 +61,7 @@ pub(crate) enum Icon {
 impl Icon {
     /// Every icon, in declaration order.
     #[cfg(test)]
-    pub(crate) const ALL: [Icon; 16] = [
+    pub(crate) const ALL: [Icon; 17] = [
         Icon::App,
         Icon::Play,
         Icon::Pause,
@@ -68,6 +70,7 @@ impl Icon {
         Icon::Eject,
         Icon::Settings,
         Icon::Layers,
+        Icon::Machine,
         Icon::Image,
         Icon::Media,
         Icon::Firmware,
@@ -235,6 +238,14 @@ pub(crate) fn paint(
             );
             pen.line(&[(2.0, 8.0), (8.0, 11.0), (14.0, 8.0)], 1.0, ink);
             pen.line(&[(2.0, 11.0), (8.0, 14.0), (14.0, 11.0)], 1.0, ink);
+        }
+        Icon::Machine => {
+            pen.frame((1.5, 2.5, 13.0, 8.5), ink);
+            pen.segments(
+                &[[(5.0, 14.0), (11.0, 14.0)], [(8.0, 11.0), (8.0, 14.0)]],
+                1.0,
+                ink,
+            );
         }
         Icon::Image => {
             pen.closed(&[(8.0, 1.5), (14.0, 4.5), (8.0, 7.5), (2.0, 4.5)], ink);
@@ -679,6 +690,7 @@ mod tests {
             Icon::Pause,
             Icon::Eject,
             Icon::Settings,
+            Icon::Machine,
             Icon::Image,
             Icon::Media,
             Icon::Firmware,

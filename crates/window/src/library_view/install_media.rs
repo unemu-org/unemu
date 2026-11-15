@@ -152,8 +152,8 @@ impl Availability {
         match self {
             Self::Ready(_) => None,
             Self::NoMachine(format) => Some(format!(
-                "No machine is running. Start one with a {format} drive, then Media › Insert › \
-                 From library… loads this set into the drive's catalogue in order."
+                "No machine is running. Insert into… puts this set into a {format} drive of a \
+                 machine for its next Start."
             )),
             Self::Unavailable(reason) => Some(reason.clone()),
         }
@@ -270,6 +270,69 @@ pub(super) fn rows(
     rows
 }
 
+/// Every set row, for the media picker and the drives a set fits.
+pub(super) fn all_rows(cache: &SummaryCache, sets: &[&Listed]) -> Vec<MediaRow> {
+    sets.iter()
+        .map(|set| {
+            let summary = cache.summary(&set.tag.manifest.digest);
+            MediaRow {
+                redistribution: summary
+                    .map(|s| Redistribution::of_payloads(s, is_set_payload))
+                    .unwrap_or_default(),
+                image: set.row(cache),
+            }
+        })
+        .collect()
+}
+
+/// A set as the media picker lists it, once its summary is read.
+pub(super) fn picker_set(row: &MediaRow) -> Option<crate::media_picker::SetEntry> {
+    use crate::media_picker::{Disk, SetEntry};
+    let summary = row.image.summary.as_ref()?;
+    let set = summary.media_set.as_ref()?;
+    let title = summary.titles.first();
+    let mut problem = row.image.failure.clone();
+    let disks: Vec<Disk> = set
+        .media
+        .iter()
+        .map(|medium| {
+            let format = match pc_image::media_set::geometry(&medium.format) {
+                Ok(Some(format)) => Some(format),
+                Ok(None) => {
+                    problem.get_or_insert("CD-ROM emulation not available yet".into());
+                    None
+                }
+                Err(error) => {
+                    problem.get_or_insert(error.to_string());
+                    None
+                }
+            };
+            Disk {
+                id: medium.id.clone(),
+                label: medium.label.clone(),
+                format,
+            }
+        })
+        .collect();
+    if summary.platform != PLATFORM {
+        problem.get_or_insert(format!("Platform {} is unavailable", summary.platform));
+    }
+    Some(SetEntry {
+        reference: row.image.reference.clone(),
+        image: row.image.descriptor.clone(),
+        title: row.image.name().to_owned(),
+        publisher: title.map(|t| t.publishers.join(", ")).unwrap_or_default(),
+        year: title.and_then(|t| t.year),
+        genre: title.map(|t| t.genres.join(", ")).unwrap_or_default(),
+        platform: title.and_then(|t| t.platform.clone()).unwrap_or_default(),
+        labels: summary.labels.clone(),
+        disks,
+        extras: set.extras.len(),
+        open: row.redistribution.open,
+        problem,
+    })
+}
+
 pub(super) const COLUMNS: [&str; 9] = [
     "Set",
     "Tag",
@@ -363,14 +426,73 @@ fn sort_value(row: &MediaRow, column: usize) -> String {
     }
 }
 
+/// What the set pane asks for.
+pub(super) enum SetAction {
+    /// Insert into a drive of the running machine.
+    Insert(u8),
+    /// Insert into…: the media picker on this machine's drive.
+    InsertInto(String, u8),
+}
+
+/// The drives of the library's machines that take every disk of the set,
+/// and the machines with none that does.
+fn fitting<'a>(
+    set: &crate::media_picker::SetEntry,
+    machines: &'a [super::machines::MachineRow],
+) -> (
+    Vec<(&'a super::machines::MachineRow, u8, FloppyGeometry)>,
+    Vec<&'a str>,
+) {
+    let mut fit = Vec::new();
+    let mut misfit = Vec::new();
+    for machine in machines {
+        let before = fit.len();
+        for &(unit, geometry) in &machine.drives {
+            if set.fits(geometry) {
+                fit.push((machine, unit, geometry));
+            }
+        }
+        if fit.len() == before {
+            misfit.push(machine.name());
+        }
+    }
+    (fit, misfit)
+}
+
+/// Why Insert into… cannot offer a drive for the set, in one short phrase:
+/// a damaged set, an optical one, or no machine with a drive that takes it.
+fn insert_reason(
+    entry: Option<&crate::media_picker::SetEntry>,
+    damaged: bool,
+    fits: bool,
+) -> Option<String> {
+    let Some(set) = entry else {
+        return Some("Reading set summary…".to_owned());
+    };
+    if damaged {
+        return Some("Damaged — repair first".to_owned());
+    }
+    if let Some(problem) = &set.problem {
+        return Some(problem.clone());
+    }
+    (!fits).then(|| {
+        format!(
+            "No machine has a drive for {} disks",
+            set.format()
+                .map_or_else(|| "these".to_owned(), crate::media_picker::format_name)
+        )
+    })
+}
+
 /// The selected-set pane, drawn from the summary alone. A set has no launch
-/// action, so the pane never offers Start. Returns the floppy unit whose Insert
-/// was pressed.
+/// action, so the pane never offers Start. Insert into… lists the drives of
+/// the library's machines that take the set.
 pub(super) fn details(
     ui: &mut egui::Ui,
     row: &MediaRow,
     drives: &[(u8, FloppyGeometry)],
-) -> Option<u8> {
+    machines: &[super::machines::MachineRow],
+) -> Option<SetAction> {
     let image = &row.image;
     let (Some(summary), Some(set)) = (image.summary.as_ref(), row.set()) else {
         ui.strong(image.name());
@@ -460,11 +582,67 @@ pub(super) fn details(
             }
             if response.clicked() {
                 if let Availability::Ready(unit) = available {
-                    insert = Some(unit);
+                    insert = Some(SetAction::Insert(unit));
                 }
             }
+            let entry = picker_set(row);
+            let (fit, misfit) = entry
+                .as_ref()
+                .map(|set| fitting(set, machines))
+                .unwrap_or_default();
+            let reason = insert_reason(entry.as_ref(), image.failure.is_some(), !fit.is_empty());
+            ui.add_enabled_ui(reason.is_none(), |ui| {
+                ui.menu_button("Insert into… ▾", |ui| {
+                    ui.add_enabled(
+                        false,
+                        egui::Label::new(
+                            "Choose a drive. The picker opens on it with this set selected.",
+                        ),
+                    );
+                    for (machine, unit, geometry) in &fit {
+                        let letter = crate::media_picker::drive_name(*unit);
+                        let pending = machine
+                            .listing
+                            .machine
+                            .pending
+                            .iter()
+                            .find(|p| p.drive == letter);
+                        let label = format!(
+                            "{} · {letter} ({}){} — at Start",
+                            machine.name(),
+                            crate::media_picker::format_name(*geometry),
+                            pending.map_or_else(String::new, |p| format!(
+                                " — holds {}",
+                                super::machines::pending_name(p)
+                            ))
+                        );
+                        if ui.button(label).clicked() {
+                            insert = Some(SetAction::InsertInto(machine.id().to_owned(), *unit));
+                            ui.close();
+                        }
+                    }
+                    if !misfit.is_empty() {
+                        ui.separator();
+                        let format = entry
+                            .as_ref()
+                            .and_then(|set| set.format())
+                            .map_or_else(String::new, crate::media_picker::format_name);
+                        for name in &misfit {
+                            ui.add_enabled(
+                                false,
+                                egui::Label::new(format!("{name}: no drive takes {format}")),
+                            );
+                        }
+                    }
+                });
+            })
+            .response
+            .on_disabled_hover_text(reason.clone().unwrap_or_default());
+            // Adding a set to a drive's catalogue as stored machine state
+            // needs machine catalogues in the store and in Save as new
+            // image…, which the store does not keep yet.
             ui.add_enabled(false, egui::Button::new("Add to machine…"))
-                .on_disabled_hover_text("Adding a set to a machine image is not available yet.");
+                .on_disabled_hover_text(reason.unwrap_or_else(|| "Not available yet".into()));
             ui.add_enabled(false, egui::Button::new("Make transfer media…"))
                 .on_disabled_hover_text(if set.extras.is_empty() {
                     "Make transfer media: this set has no extras."
@@ -1815,7 +1993,7 @@ pub(crate) mod tests {
         let pane = |row: &MediaRow| {
             let ctx = egui::Context::default();
             let output = frame(&ctx, egui::vec2(1400.0, 1000.0), 0.0, vec![], |ui| {
-                egui::CentralPanel::default().show(ui, |ui| details(ui, row, &[]));
+                egui::CentralPanel::default().show(ui, |ui| details(ui, row, &[], &[]));
             });
             texts(&output)
                 .into_iter()
@@ -1955,7 +2133,7 @@ pub(crate) mod tests {
         let mut shown = Vec::new();
         for row in &result.media_rows {
             let output = frame(&ctx, size, 0.0, vec![], |ui| {
-                egui::CentralPanel::default().show(ui, |ui| details(ui, row, &DRIVE_A));
+                egui::CentralPanel::default().show(ui, |ui| details(ui, row, &DRIVE_A, &[]));
             });
             shown.extend(texts(&output).into_iter().map(|(t, _)| t));
         }
@@ -2059,7 +2237,7 @@ pub(crate) mod tests {
         for (drives, expected) in [(&DRIVE_A[..], Some(0)), (&[][..], None)] {
             let ctx = egui::Context::default();
             let output = frame(&ctx, egui::vec2(1400.0, 1000.0), 0.0, vec![], |ui| {
-                egui::CentralPanel::default().show(ui, |ui| details(ui, row, drives));
+                egui::CentralPanel::default().show(ui, |ui| details(ui, row, drives, &[]));
             });
             let (_, rect) = texts(&output)
                 .into_iter()
@@ -2068,7 +2246,11 @@ pub(crate) mod tests {
             let mut pressed = None;
             click(&ctx, rect.center(), |ui| {
                 egui::CentralPanel::default().show(ui, |ui| {
-                    pressed = pressed.or(details(ui, row, drives));
+                    pressed =
+                        pressed.or(details(ui, row, drives, &[]).map(|action| match action {
+                            SetAction::Insert(unit) => unit,
+                            SetAction::InsertInto(..) => u8::MAX,
+                        }));
                 });
             });
             assert_eq!(pressed, expected);
@@ -2600,5 +2782,53 @@ pub(crate) mod tests {
         let failed = lead(&row(Some("missing blob")));
         assert!(failed.warning);
         assert_eq!(failed.icon, Some(crate::shell_icons::Icon::Media));
+    }
+
+    /// Insert into… lists every machine's drives that take the set and the
+    /// machines that have none, or says in one phrase why it cannot.
+    #[test]
+    fn insert_into_lists_fitting_drives_or_one_reason() {
+        use crate::media_picker::tests::set as picker_set;
+        let geometry = |name: &str| {
+            assembly::descriptors::FLOPPY_TYPES
+                .iter()
+                .find(|kind| kind.name == name)
+                .unwrap()
+                .geometry
+        };
+        let mut dos =
+            crate::library_view::machines::tests::row("dos", "DOS games", "a", &["games:1"]);
+        dos.drives = vec![(0, geometry("1.2M")), (1, geometry("1.44M"))];
+        let mut ibm = crate::library_view::machines::tests::row("ibm", "IBM AT", "b", &["ibm:1"]);
+        ibm.drives = vec![(0, geometry("1.2M"))];
+        let machines = [dos, ibm];
+        let keen = picker_set("Keen", "Apogee", 1991, "platformer", geometry("1.44M"), 1);
+        let (fit, misfit) = fitting(&keen, &machines);
+        assert_eq!(
+            fit.iter()
+                .map(|(m, unit, _)| (m.id(), *unit))
+                .collect::<Vec<_>>(),
+            [("dos", 1)]
+        );
+        assert_eq!(misfit, ["IBM AT"]);
+        assert_eq!(insert_reason(Some(&keen), false, true), None);
+        assert_eq!(
+            insert_reason(Some(&keen), false, false).as_deref(),
+            Some("No machine has a drive for 1.44M disks")
+        );
+        assert_eq!(
+            insert_reason(Some(&keen), true, true).as_deref(),
+            Some("Damaged — repair first")
+        );
+        let mut cd = keen.clone();
+        cd.problem = Some("CD-ROM emulation not available yet".into());
+        assert_eq!(
+            insert_reason(Some(&cd), false, true).as_deref(),
+            Some("CD-ROM emulation not available yet")
+        );
+        assert_eq!(
+            insert_reason(None, false, true).as_deref(),
+            Some("Reading set summary…")
+        );
     }
 }

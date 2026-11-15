@@ -326,10 +326,12 @@ impl Workspace<'_> {
         Ok(locks)
     }
 }
+/// The small documents a workspace may hold. `copy-of.toml` records what a
+/// Gaming-mode copy of a machine runs with (the pc-image machine module).
 fn document_name(name: &str) -> Result<()> {
     if matches!(
         name,
-        "session.toml" | "transaction.toml" | "discard.toml" | "desktop.toml"
+        "session.toml" | "transaction.toml" | "discard.toml" | "desktop.toml" | "copy-of.toml"
     ) {
         Ok(())
     } else {

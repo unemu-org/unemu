@@ -88,6 +88,8 @@ pub(crate) struct DriveView {
     pub medium: Option<Medium>,
     /// The session runs a machine image rather than a machine file.
     pub from_image: bool,
+    /// The medium waits for the stopped machine's next Start.
+    pub at_start: bool,
 }
 
 impl DriveView {
@@ -127,9 +129,10 @@ impl DriveView {
                 head,
                 medium.name.clone(),
                 format!(
-                    " · {} · {}",
+                    " · {} · {}{}",
                     geometry_name(medium.format.unwrap_or(*geometry)),
-                    mode_short(&medium.write)
+                    mode_short(&medium.write),
+                    if self.at_start { " · at Start" } else { "" }
                 ),
             ),
             (Bay::Fixed { .. }, Some(medium)) => (
@@ -155,7 +158,14 @@ impl DriveView {
         let letter = self.letter();
         let now = self.medium.as_ref().map_or_else(
             || "empty".to_owned(),
-            |medium| format!("{} · {}", medium.name, mode_short(&medium.write)),
+            |medium| {
+                format!(
+                    "{} · {}{}",
+                    medium.name,
+                    mode_short(&medium.write),
+                    if self.at_start { " (at Start)" } else { "" }
+                )
+            },
         );
         match self.bay {
             Bay::Floppy { geometry, .. } => {
@@ -342,6 +352,7 @@ pub(crate) fn drive_views(
                         floppy_medium(drive, slots[unit].as_ref(), *index, name, origin)
                     }),
                     from_image: matches!(origin, Origin::Image(_)),
+                    at_start: false,
                 })
             }
             (DriveKind::HardDisk { geometry }, DeviceId::Ide) => Some(DriveView {
@@ -351,6 +362,7 @@ pub(crate) fn drive_views(
                 },
                 medium: Some(fixed_medium(drive, origin)),
                 from_image: matches!(origin, Origin::Image(_)),
+                at_start: false,
             }),
             _ => None,
         })

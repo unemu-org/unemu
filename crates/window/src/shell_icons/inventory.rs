@@ -54,10 +54,6 @@ const PICKER: &str = "media-picker.html";
 const TOOLBAR_ONLY_MACHINE: &str =
     "the app has one toolbar, the main-window mock-up's machine toolbar; \
      this command is not on it (it is in the menus and the details pane)";
-const MACHINES_COLLECTION: &str =
-    "belongs to the Machines collection, which the app does not have yet";
-const MEDIA_PICKER: &str =
-    "belongs to the media picker, which the app does not have yet; the font has the glyph";
 const SYSTEM_TITLE_BAR: &str =
     "a window button; the system title bar draws it (the classic title strip has none)";
 const CLOSE: &str =
@@ -137,23 +133,23 @@ pub(super) const INVENTORY: &[Entry] = &[
     svg(MACHINES, "M8 5v6M5 8h6", "New machine from image", Place::Missing(TOOLBAR_ONLY_MACHINE)),
     svg(MACHINES, "M8 1v3M8 12v3", "Settings", Place::Painted(Icon::Settings, "toolbar Settings")),
     svg(MACHINES, "M8 1.5l6 3-6 3-6-3z\" fill=\"#4b79c1\"", "Save as new image", Place::Missing(TOOLBAR_ONLY_MACHINE)),
-    svg(MACHINES, "M5 14h6M8 11v3", "a machine", Place::Missing(MACHINES_COLLECTION)),
-    svg(MACHINES, "M8 1.5l6 3-6 3-6-3z\" fill=\"none\"", "an image", Place::Painted(Icon::Image, "tree All images, image rows, the image details heading")),
+    svg(MACHINES, "M5 14h6M8 11v3", "a machine", Place::Painted(Icon::Machine, "tree Machines, machine rows, the machine details heading")),
+    svg(MACHINES, "M8 1.5l6 3-6 3-6-3z\" fill=\"none\"", "an image", Place::Painted(Icon::Image, "tree Images, image rows, the image details heading")),
     svg(MACHINES, "x=\"2.5\" y=\"1.5\" width=\"11\" height=\"13\"", "an installation media set", Place::Painted(Icon::Media, "tree Installation media, media set rows")),
     svg(MACHINES, "M6 1v2.5M10 1v2.5", "a firmware package", Place::Painted(Icon::Firmware, "tree Firmware, firmware package rows")),
     svg(MACHINES, "M3 1.5h7l3 3v10H3z", "a machine file", Place::Painted(Icon::MachineFile, "tree Machine files, machine file rows")),
-    glyph(MACHINES, '★', "a favourite", Place::Text("after a favourite image's name in its row and its details heading")),
+    glyph(MACHINES, '★', "a favourite", Place::Text("after a favourite machine's or image's name in its row and its details heading")),
     glyph(MACHINES, '⚠', "an unfinished gaming session", Place::Text("before the library's Unfinished sessions heading")),
-    glyph(MACHINES, 'ⓘ', "machine settings and migration notes", Place::Missing(MACHINES_COLLECTION)),
-    glyph(MACHINES, '⚑', "a machine whose tag moved", Place::Missing(MACHINES_COLLECTION)),
-    glyph(MACHINES, '●', "a setting that differs from the image", Place::Missing(MACHINES_COLLECTION)),
+    glyph(MACHINES, 'ⓘ', "machine settings and migration notes", Place::Painted(Icon::Info, "the migration notice and the banner of Settings… on a machine")),
+    glyph(MACHINES, '⚑', "a machine whose tag moved", Place::Text("Source image badge in a machine's row and details")),
+    glyph(MACHINES, '●', "a setting that differs from the image", Place::Text("Settings… on a machine: the differing field's hint and its tab label")),
     glyph(MACHINES, '✓', "a finished wizard step", Place::Text("New machine wizard step list")),
     glyph(MACHINES, '−', "an expanded repository group", Place::Text("repository group rows")),
     glyph(MACHINES, '▲', "sorted ascending", Place::Text("sortable column headers")),
     glyph(MACHINES, '▼', "sorted descending", Place::Text("sortable column headers")),
     glyph(MACHINES, '⌘', "the macOS Command key", Place::Text("macOS menu shortcuts")),
     glyph(MACHINES, '⇧', "the macOS Shift key", Place::Text("macOS menu shortcuts")),
-    glyph(MACHINES, '⌫', "the macOS Delete key", Place::Missing("its shortcuts (Delete machine…, Delete tag…) come with the Machines collection; the font has the glyph")),
+    glyph(MACHINES, '⌫', "the macOS Delete key", Place::Text("macOS shortcut of Delete machine… and Delete tag…")),
     glyph(MACHINES, '×', "close", Place::Text(CLOSE)),
     glyph(MACHINES, '□', "maximise", Place::Missing(SYSTEM_TITLE_BAR)),
     // firmware.html.
@@ -207,13 +203,13 @@ pub(super) const INVENTORY: &[Entry] = &[
         PICKER,
         "fill=\"#3a3f4a\"",
         "insert into A: or B:",
-        Place::Painted(Icon::Floppy, "toolbar A:; the toolbar's B: button comes with the media picker"),
+        Place::Painted(Icon::Floppy, "toolbar A: and B:, which open the media picker"),
     ),
-    svg(PICKER, "M5 14h6M8 11v3", "a machine", Place::Missing(MACHINES_COLLECTION)),
+    svg(PICKER, "M5 14h6M8 11v3", "a machine", Place::Painted(Icon::Machine, "tree Machines and machine rows, as in the machines mock-up")),
     svg(PICKER, "x=\"2.5\" y=\"1.5\" width=\"11\" height=\"13\"", "an installation media set", Place::Painted(Icon::Media, "tree Installation media, media set rows")),
-    glyph(PICKER, '▾', "the Insert into… drive menu", Place::Missing(MEDIA_PICKER)),
-    glyph(PICKER, '↑', "the picker's arrow keys, named in the mock-up's note", Place::Missing(MEDIA_PICKER)),
-    glyph(PICKER, '↓', "the picker's arrow keys, named in the mock-up's note", Place::Missing(MEDIA_PICKER)),
+    glyph(PICKER, '▾', "the Insert into… drive menu", Place::Text("Installation media › Insert into… ▾ menu button")),
+    glyph(PICKER, '↑', "the picker's arrow keys, named in the mock-up's note", Place::Text("the media picker's key note")),
+    glyph(PICKER, '↓', "the picker's arrow keys, named in the mock-up's note", Place::Text("the media picker's key note")),
     glyph(PICKER, '⌘', "the macOS Command key", Place::Text("macOS menu shortcuts")),
     glyph(PICKER, '⇧', "the macOS Shift key", Place::Text("macOS menu shortcuts")),
     glyph(PICKER, '×', "close", Place::Text(CLOSE)),

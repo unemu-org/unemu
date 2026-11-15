@@ -21,7 +21,7 @@ pub(super) struct CatalogueEntry {
     /// Drive catalogue entry currently used for this image and write policy.
     pub index: Option<usize>,
     /// Declared by the machine file, whose write policy the dialog never changes.
-    /// Images added during the session (Browse…, From library…) may switch.
+    /// Images added during the session (a browsed file, a library set) may switch.
     pub declared: bool,
     /// Earlier catalogue entries of this image under another write policy. The
     /// drive catalogue only grows, so switching back reuses one of these.
@@ -265,6 +265,12 @@ pub(super) struct InsertDialog {
     pub journal: bool,
     pub journal_path: String,
     pub error: Option<String>,
+    /// The media picker chose the set, disk and write setting: the shell
+    /// inserts without showing this dialog once the set is verified.
+    pub automatic: bool,
+    /// Browse for an image file… of the media picker: the dialog shows only
+    /// the chosen file's step (geometry, write mode, compatibility).
+    pub browsed_only: bool,
 }
 
 impl InsertDialog {
@@ -277,6 +283,8 @@ impl InsertDialog {
             journal: false,
             journal_path: String::new(),
             error: None,
+            automatic: false,
+            browsed_only: false,
         }
     }
 
@@ -1084,7 +1092,10 @@ impl LibraryInsert {
         failure
     }
     pub fn request_entries(&mut self, slot: &FloppySlot, unit: u8) -> Option<PreparedEntries> {
-        self.poll();
+        // A set list that could not be read says why, not "Choose a set".
+        if let Some(failure) = self.poll() {
+            return Some(Err(failure));
+        }
         if let Some(ready) = self.ready.take() {
             return Some(ready);
         }
@@ -1361,9 +1372,8 @@ pub(super) fn media_compatibility(
 }
 
 impl InsertDialog {
-    /// From library…, optionally with one set chosen beforehand, as the
-    /// library window's Insert does; that set is selected once the rows are
-    /// read and checked.
+    /// The library insert of a set, optionally chosen beforehand as the media
+    /// picker does; that set is selected once the rows are read and checked.
     pub fn open_library_at(
         &mut self,
         workspace: &Path,
@@ -1689,6 +1699,10 @@ impl PendingMedia {
             .filter(|view| {
                 view.floppy_unit()
                     .is_some_and(|unit| inserted[usize::from(unit)].is_some())
+            })
+            .map(|view| crate::drive_chips::DriveView {
+                at_start: true,
+                ..view
             })
             .collect()
     }

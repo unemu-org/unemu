@@ -5,6 +5,112 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-15 — Machines in the desktop library and the media picker
+  (approved machines and media-picker mock-ups):** the library opens on
+  **Machines**. The sidebar is one Library group in the mock-up's order —
+  Machines (Recently played, Favourites, which list machines), Images,
+  Installation media, Firmware, Machine files — with the selected
+  collection's facets under it and a greyed, collapsed Remotes group. The
+  library worker runs the machine migration when it opens the store and the
+  Machines list shows a one-time notice of the adopted sessions. The Machines
+  table has the mock-up's columns (name with the machine icon and ★, source
+  image with its short digest and the ⚑ tag-moved and detached badges, the
+  backend's State with "A: insert pending", last run, size of the changes)
+  and sorts by column; Recently played lists the last run first. The details
+  pane names the workspace id and the command line, links the source image,
+  lists media per drive (the image's against the machine's writes and pending
+  disk), the settings that differ from the image by the property sheet's
+  field names, and the image's hardware, with Start, Gaming mode, Settings…,
+  Insert media…, Save as new image…, Disk layers…, Duplicate…, Rename…,
+  Reset to image… and Delete machine…; Enter and a double-click start it.
+  Start on an image makes a machine named after it and starts it, or with
+  machines opens Start… (last run first, New machine last). An image's pane
+  lists Machines from this image (N) with links and adds New machine from
+  image… (Ctrl+Shift+N), Gaming mode and Delete tag…. Settings… on a machine
+  opens the approved property sheet in machine mode (banner, differences
+  against the image, OK/Cancel/Apply, read-only while it runs) and keeps the
+  tables as the machine's overlay; Image › Settings… still publishes a
+  revision. Save as new image… of a machine asks what happens to the machine
+  (moves onto the new image by default, or keeps its changes), with the
+  repository defaulting to the machine name at 1.0.0. Gaming mode on a
+  machine plays a disposable copy of it as it is; the end dialog offers
+  Discard, Keep as new machine… and Keep as new image…, as does the
+  Unfinished sessions banner. File › New machine… also makes a machine from
+  the new image unless its Name and tag step's check box is cleared. Menus:
+  Edit (Rename… F2, Duplicate… Ctrl+D, Delete machine… / Delete tag…
+  Delete), Image (named target, Start…, New machine from image…, Gaming
+  mode, Settings… (new image revision), Layers…, Push…, Pull…), Machine
+  (named target, Insert media…, Duplicate…, Rename…, Reset to image…, Delete
+  machine…, Show source image); disabled items say why in one phrase; the
+  library keys act outside guest focus, as the mock-up says, and never
+  while a text field is edited; Help › Keyboard shortcuts lists them. **Media picker:** every
+  Insert… (Media menu, drive chip, toolbar A: and B:, Ctrl+Alt+I and
+  Ctrl+Alt+Shift+I) opens it, replacing Browse / catalogue… and From
+  library…. It shows the target (the running machine, or any stopped machine
+  with a floppy drive), the drive with its format and contents, and when the
+  disk goes in; sources This machine and This library, greyed remotes;
+  search with free words and `field:value` words (format, publisher, genre,
+  platform, label, year and year ranges) ranked title first; Format,
+  Platform, Genre, Year, Publisher and Labels facets with counts over the
+  result; the accepted-media fit rule with "N don't fit — Show" and where a
+  dimmed set would fit; the disk to insert (the next disk when the drive
+  holds one of the set), all disks in order, and the write setting in plain
+  words; ↑↓, Enter, Alt+A/Alt+B, Escape. Into a stopped machine Insert
+  stores a pending insert (replacing the drive's earlier one), shown in its
+  details, its State, the drive chips ("· at Start") and the Media menu
+  (Take out again); into a running or halted machine the disk goes in at
+  once through the existing library insert; a refused disk only says why
+  and the machine keeps running. Browse for an image file… opens the system
+  file chooser, then that file's own Insert floppy step. The Installation media pane's Insert into…
+  ▾ lists the drives of every machine that take the set, or one short
+  reason. pc-image gains `machine::prepare_copy`, `keep_copy` and
+  `publish_copy` (the copy, keep and publish steps of Gaming mode on a
+  machine, which need its crate-private journal copy, insert and overlay
+  publication). **MEASURED headless:** worker tests run a machine (its run
+  is confirmed only after the shell reports assembly), play and keep a gaming
+  copy, save a machine as a new image (and refuse a taken version), migrate
+  once; view tests draw the tree order, the list and details pane, the
+  Start… chooser, name rules; picker tests cover fit, search, facets, the
+  default disk, the summary, the pending insert and the keys' row walk; a
+  pc-image test copies, keeps and publishes a gaming copy. **Manual
+  checks:** the whole flow in a window (both skins, light and dark), on
+  macOS for ⌘D, ⌘⌫ and ⌘⇧N.
+  - **Mock-up departures, awaiting maintainer approval:**
+    - Add to machine… stays disabled ("Not available yet"); the mock-up item
+      is open, not done. Adding a set to a drive's catalogue as machine
+      state kept by Save as new image… needs a stored catalogue in the
+      machine record, applied at Start and written into the new image's
+      configuration by the workspace publication; upc-5pw.71 tracks that
+      backend work.
+    - The set pane keeps its running-machine Insert button beside Insert
+      into… ▾. It is enabled only while a machine runs, and the library is
+      not shown then, so in practice Insert into… is the way in.
+    - This machine in the picker lists a stopped machine's catalogue as
+      empty with a note (the image's own disks are in the drive at Start;
+      Next disk swaps them once it runs): a pending insert can name only a
+      set disk. Browse for an image file… into a stopped machine says to use
+      a set of the library instead.
+    - Configured remotes are not listed one by one in the picker: one greyed
+      "Remotes · after the MVP" tab, and the remote preview is a short text
+      with a disabled Pull and insert instead of a sample row.
+    - The details pane puts the two rows of actions above the media and
+      settings columns (the pane is short; below they would need scrolling),
+      and keeps a Favourite check box and a labels field where the mock-up
+      shows only label chips.
+    - Save as new image… of a machine lists what is saved as lines (drive and
+      sectors written, CMOS, settings, pending inserts), not the mock-up's
+      four-column table with new bytes per part.
+    - Settings… on a machine marks a differing field "Image: … · ● differs
+      from the image" without the "Use the image's value" link.
+    - Disk layers › Discard changes on a machine resets it (as Reset to
+      image… does) after the Disk layers dialog's own confirmation, not the
+      Reset to image… dialog.
+    - The running status line keeps today's text ("Running — click the
+      screen…") instead of "Running · NAME · REF at sha256:… · workspace ID";
+      the window title names the machine and its image as the mock-up does.
+    - The Images table keeps the library mock-up's columns; the machines
+      mock-up's Machines count column is not added (an image's details pane
+      lists Machines from this image (N)).
 - **2026-11-15 — Speaker and CPU-reset trace (opt-in diagnostic):** with
   `UNEMUPC98_TRACE_SPEAKER=1` in its environment (read once at startup; any
   other value leaves it off) the window prints one stderr line per event:
@@ -84,15 +190,16 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   left-aligned now and a repository group's rows are set in, as in the
   mock-ups (a centred egui label dropped the room the icon needs).
   **Inventory:** 34 SVG uses and 29 distinct icon characters across the
-  eleven approved mock-ups (media-picker included); 23 SVG uses are painted,
-  ⌫, ⚑, ▾ and □ are the only characters drawn nowhere. **Not drawn, with reasons:** the library and
+  eleven approved mock-ups (media-picker included); 23 SVG uses were painted
+  then (25 with the machine icon, entry above), and ⌫, ⚑, ▾ and □
+  were the only characters drawn nowhere (□ alone since). **Not drawn, with reasons:** the library and
   machines mock-ups' other toolbar buttons (New, Properties, Browse
   registry…, Push, Delete, Gaming mode, New machine from image…, Save as new
   image…), because the app has only the machine toolbar; the Machines
   collection's icons (monitor, ⚑ tag moved, ● differs, its ⓘ notes, ⌫
-  shortcuts), because that collection does not exist yet; the media
-  picker's own marks (the toolbar's B: floppy button, ▾ on Insert into…, the
-  ↑↓ keys of its note), planned with the picker (upc-5pw.67); View's ✓/● marks,
+  shortcuts) and the media picker's own marks (the toolbar's B: floppy
+  button, ▾ on Insert into…, the ↑↓ keys of its note) were drawn later with
+  those screens (entry above); View's ✓/● marks,
   which egui's check boxes and selection show; the drive menu's ● write mode
   (named as text, an accepted departure); the library mock-up's ★ rating (no
   rating field); □ window buttons (the system title bar). **MEASURED
@@ -128,10 +235,8 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   reserved ids, an unjournaled CMOS and pending inserts. The slow golden
   `machine_freedos_golden` (ignored) boots FreeDOS through a machine twice,
   checking that its floppy journal keeps a written file, then resets it.
-  Interim, until the desktop starts machines: after a migration the desktop
-  shows that image unchanged and its Start begins a new desktop workspace
-  from the pristine image; that work is adopted as a further machine by the
-  next migration. Rolling back to an older build: §3.2.
+  The desktop starts machines itself (entry above); rolling back to an older
+  build: §3.2.
 - **2026-11-15 — A halted machine takes a floppy and Ctrl+Alt+Del restarts
   it; a stopped machine takes floppies for Start:** a guest that halts with
   interrupts off (the open AT BIOS after "No ROM BASIC", when the boot code

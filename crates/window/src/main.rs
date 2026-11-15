@@ -54,6 +54,7 @@ mod logo;
 #[cfg(target_os = "macos")]
 mod macos_menu;
 mod media_dialog;
+mod media_picker;
 mod new_machine;
 mod new_machine_view;
 mod pacing;

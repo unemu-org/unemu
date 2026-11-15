@@ -9,6 +9,7 @@
 pub(crate) mod firmware;
 pub(crate) mod firmware_metadata;
 pub(crate) mod install_media;
+pub(crate) mod machines;
 
 use crate::{
     layers_dialog::LayersDialog,
@@ -38,10 +39,18 @@ pub(super) use crate::library_worker::Request;
 use crate::library_worker::{regular_name, Event, Finish, Recovery, Worker, WorkspaceKind};
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 enum Filter {
+    /// The Machines collection, where the library opens.
+    Machines,
+    /// The Images collection; the worker's first snapshot lists its rows.
     #[default]
     All,
+    /// Machines run before, the last run first.
     Recent,
+    /// Favourite machines.
     Favorites,
+    /// A facet of the Machines collection: the machine's own labels or its
+    /// source image's catalogue metadata.
+    MachineFacet(String, String),
     MachineFiles,
     Firmware,
     Facet(String, String),
@@ -63,6 +72,14 @@ impl Filter {
     fn is_media(&self) -> bool {
         matches!(self, Self::Media | Self::MediaFacet(_, _))
     }
+    /// The Machines collection, its Recently played and Favourites lists and
+    /// its facets list machines.
+    fn is_machines(&self) -> bool {
+        matches!(
+            self,
+            Self::Machines | Self::Recent | Self::Favorites | Self::MachineFacet(_, _)
+        )
+    }
 }
 #[derive(Clone, Debug, Default)]
 pub(super) struct Query {
@@ -77,6 +94,9 @@ pub(super) struct Query {
     /// So does the Installation media list.
     media_sort: usize,
     media_descending: bool,
+    /// And the Machines list.
+    machine_sort: usize,
+    machine_descending: bool,
 }
 #[derive(Clone, Debug)]
 pub(super) struct ImageRow {
@@ -227,6 +247,11 @@ pub(super) struct Snapshot {
     media_facets: BTreeMap<String, BTreeSet<String>>,
     /// The worker read the store, so an empty library is really empty.
     read: bool,
+    /// Every local tag with the manifest it names, for the save forms' checks.
+    tags: Vec<(String, Digest)>,
+    /// Every installation media set, whatever the collection, for the media
+    /// picker.
+    all_sets: Vec<install_media::MediaRow>,
 }
 
 fn facets_for(filter: &Filter) -> Facets {
@@ -275,6 +300,11 @@ pub(super) fn snapshot(cache: &SummaryCache, q: &Query) -> Snapshot {
         total: listed.len(),
         warning: cache.library_error().map(str::to_owned),
         read: true,
+        tags: cache
+            .tags()
+            .iter()
+            .map(|tag| (tag.name.clone(), tag.manifest.digest.clone()))
+            .collect(),
         ..Default::default()
     };
     let matches: BTreeSet<_> = cache
@@ -363,8 +393,7 @@ pub(super) fn snapshot(cache: &SummaryCache, q: &Query) -> Snapshot {
         };
         let filter_match = match &q.filter {
             Filter::MachineFiles => false,
-            Filter::Favorites => s.is_some_and(|s| s.favorite),
-            Filter::Recent => s.is_some_and(|s| s.last_run.is_some()),
+            filter if filter.is_machines() => false,
             Filter::Facet(_, _) => row.matched(&matches),
             _ => true,
         };
@@ -386,6 +415,7 @@ pub(super) fn snapshot(cache: &SummaryCache, q: &Query) -> Snapshot {
         result.media_rows = install_media::rows(cache, &sets, &matches, q);
         result.matched = result.media_rows.len();
     }
+    result.all_sets = install_media::all_rows(cache, &sets);
     let mut groups: Vec<_> = groups.into_values().collect();
     for images in &mut groups {
         images.sort_by_cached_key(|row| sort_value(row, q.sort));
@@ -489,6 +519,7 @@ fn image_lead(row: &ViewRow) -> Lead {
 /// The collections in the tree that the machines mock-up marks with an icon.
 fn tree_icon(filter: &Filter) -> Option<Icon> {
     match filter {
+        Filter::Machines => Some(Icon::Machine),
         Filter::All => Some(Icon::Image),
         Filter::MachineFiles => Some(Icon::MachineFile),
         Filter::Media => Some(Icon::Media),
@@ -498,10 +529,10 @@ fn tree_icon(filter: &Filter) -> Option<Icon> {
 }
 
 /// Sortable column headers; a click on the sorted column reverses it.
-fn sort_header(
+fn sort_header<const N: usize>(
     ui: &mut egui::Ui,
-    labels: &[&str; 9],
-    widths: &[f32; 9],
+    labels: &[&str; N],
+    widths: &[f32; N],
     sort: &mut usize,
     descending: &mut bool,
 ) -> bool {
@@ -529,10 +560,10 @@ fn sort_header(
     });
     changed
 }
-fn draw_cells(
+fn draw_cells<const N: usize>(
     ui: &mut egui::Ui,
-    cells: &[String; 9],
-    widths: &[f32; 9],
+    cells: &[String; N],
+    widths: &[f32; N],
     selected: bool,
     striped: bool,
     lead: Lead,
@@ -812,6 +843,32 @@ pub(super) struct LibraryView {
     /// Log in… of Get templates…: the registry whose login the shell opens in
     /// Preferences › Registries.
     pub login_wanted: Option<String>,
+    /// Every machine in the store, as the worker last listed them.
+    machines: Arc<Vec<machines::MachineRow>>,
+    /// The selected machine's id; `selected` then holds its image's row.
+    pub machine: Option<String>,
+    /// The selected machine's settings that differ from its image, by id;
+    /// `None` inside while the worker reads them.
+    machine_settings: Option<(String, Option<Result<Vec<machines::SettingDiff>>>)>,
+    /// A Machines dialog while it is open.
+    machine_dialog: Option<machines::Dialog>,
+    /// The labels field of the selected machine.
+    machine_labels: String,
+    /// The one-time notice of desktop sessions that became machines.
+    migration_notice: Option<pc_image::machine::Migration>,
+    /// The machine that runs now: its id and name.
+    pub active_machine: Option<(String, String)>,
+    /// Counts machine listings, so derived text is computed once per listing.
+    machines_revision: u64,
+    /// The default name of a new machine of an image, for its details pane:
+    /// the image digest and listing it was computed for.
+    name_hint: Option<(Digest, u64, String)>,
+    /// The machine Start on an image just made: floppies inserted into that
+    /// image before Start go into it, and into no other machine.
+    pub started_from_image: Option<String>,
+    /// Insert into… of the Installation media collection: the machine, the
+    /// drive and the set the shell opens the media picker on.
+    pub picker_wanted: Option<(String, u8, Digest)>,
 }
 impl LibraryView {
     pub fn new(root: Option<PathBuf>) -> Self {
@@ -819,7 +876,11 @@ impl LibraryView {
             root,
             worker: None,
             snapshot: Arc::default(),
-            query: Query::default(),
+            // The library opens on Machines.
+            query: Query {
+                filter: Filter::Machines,
+                ..Query::default()
+            },
             selected: None,
             readiness: None,
             checked_machine: None,
@@ -858,7 +919,48 @@ impl LibraryView {
             pull: None,
             templates: None,
             login_wanted: None,
+            machines: Arc::default(),
+            machine: None,
+            machine_settings: None,
+            machine_dialog: None,
+            machine_labels: String::new(),
+            migration_notice: None,
+            active_machine: None,
+            machines_revision: 0,
+            name_hint: None,
+            started_from_image: None,
+            picker_wanted: None,
         }
+    }
+    /// Every installation media set of the library, as the media picker lists them.
+    pub fn picker_sets(&self) -> Vec<crate::media_picker::SetEntry> {
+        self.snapshot
+            .all_sets
+            .iter()
+            .filter_map(install_media::picker_set)
+            .collect()
+    }
+    /// The name Start gives a new machine of `row`'s image, computed once per
+    /// image and machine listing rather than every frame.
+    fn default_machine_name(&mut self, row: &ImageRow) -> String {
+        let fresh = |(digest, revision, _): &(Digest, u64, String)| {
+            *digest == row.descriptor.digest && *revision == self.machines_revision
+        };
+        if !self.name_hint.as_ref().is_some_and(fresh) {
+            let name = image_store::machine::unique_among(
+                row.name(),
+                self.machines.iter().map(machines::MachineRow::name),
+            );
+            self.name_hint = Some((row.descriptor.digest.clone(), self.machines_revision, name));
+        }
+        self.name_hint
+            .as_ref()
+            .map(|(_, _, name)| name.clone())
+            .unwrap_or_default()
+    }
+    /// Every machine of the store, as the worker last listed them.
+    pub fn machine_rows(&self) -> Arc<Vec<machines::MachineRow>> {
+        self.machines.clone()
     }
     #[cfg(test)]
     pub(crate) fn synthetic(root: PathBuf) -> Self {
@@ -1082,6 +1184,15 @@ impl LibraryView {
             }
             Event::Launched(session, row, name, kind) => {
                 let row = *row;
+                self.active_machine = (kind == WorkspaceKind::Machine).then(|| {
+                    let title = self
+                        .machine_row(&name)
+                        .map_or_else(|| name.clone(), |m| m.name().to_owned());
+                    (name.clone(), title)
+                });
+                if kind == WorkspaceKind::Machine {
+                    self.machine = Some(name.clone());
+                }
                 self.selected = Some(row.clone());
                 self.active = Some((row, name, kind));
                 self.launched = Some(*session);
@@ -1091,6 +1202,8 @@ impl LibraryView {
             Event::Finished => {
                 self.busy = self.pending_operation;
                 self.active = None;
+                self.active_machine = None;
+                self.started_from_image = None;
                 if !self.pending_operation {
                     self.status = Some("Ready".into());
                 }
@@ -1171,6 +1284,14 @@ impl LibraryView {
                 }
             }
             Event::Recoveries(rows) => {
+                // The worker's record of a stopped gaming copy names the
+                // machine it was made from and its title; the question asked
+                // when it stopped takes them.
+                if let Some(decision) = &mut self.decision {
+                    if let Some(row) = rows.iter().find(|row| row.name == decision.name) {
+                        *decision = row.clone();
+                    }
+                }
                 self.recoveries = rows;
             }
             // Package refreshes never touch a busy flag: a Create may still run.
@@ -1183,11 +1304,28 @@ impl LibraryView {
                 }
             }
             Event::Created(Ok(row)) => {
+                // File › New machine… makes a machine from the image too,
+                // unless the user opted out.
+                let machine = self
+                    .new_machine
+                    .as_ref()
+                    .filter(|w| w.busy)
+                    .and_then(|w| w.machine_choice());
                 if self.new_machine.as_ref().is_some_and(|w| w.busy) {
                     self.new_machine = None;
                 }
                 self.status = Some(format!("Created {}", row.reference));
-                self.show_created(*row);
+                self.show_created((*row).clone());
+                if let Some(name) = machine {
+                    self.busy = true;
+                    self.send(Request::Machine(
+                        crate::library_worker::MachineJob::Create {
+                            image: row,
+                            name,
+                            start: false,
+                        },
+                    ));
+                }
             }
             Event::Revised(Ok(row)) => {
                 self.busy = false;
@@ -1261,6 +1399,138 @@ impl LibraryView {
                     self.send(Request::Transfer(request));
                 }
             }
+            Event::Machines(Ok(rows)) => {
+                self.machines = rows;
+                self.machines_revision += 1;
+                // A machine that is gone (deleted elsewhere) is no Start target.
+                if let Some(id) = self.machine.clone() {
+                    match self.machine_row(&id).map(machines::MachineRow::image_row) {
+                        Some(row) => {
+                            if let Some(selected) = &mut self.selected {
+                                if selected.descriptor.digest != row.descriptor.digest {
+                                    // Save as new image… moved it onto a new image.
+                                    *selected = row;
+                                    self.readiness = None;
+                                    self.recheck();
+                                } else {
+                                    selected.reference = row.reference;
+                                }
+                            }
+                        }
+                        None if !self.busy => {
+                            self.machine = None;
+                            self.selected = None;
+                            self.readiness = None;
+                        }
+                        None => (),
+                    }
+                }
+            }
+            Event::Machines(Err(error)) => self.error = Some(error),
+            Event::Migrated(migration) => self.migration_notice = Some(migration),
+            Event::MachineNote(message) => self.status = Some(message),
+            Event::MachineDone {
+                message,
+                select,
+                start,
+            } => {
+                self.busy = false;
+                self.status = Some(message);
+                // Only the Save dialog waits for its machine's reply; another
+                // job's reply never closes a dialog opened meanwhile.
+                if let (Some(machines::Dialog::Save(dialog)), Some((id, _))) =
+                    (&self.machine_dialog, &select)
+                {
+                    if dialog.id == *id {
+                        self.machine_dialog = None;
+                    }
+                }
+                if let Some((id, row)) = select {
+                    self.show_machine(id.clone(), *row);
+                    if start {
+                        self.started_from_image = Some(id);
+                        self.pending_launch = self
+                            .selected
+                            .as_ref()
+                            .map(|row| (row.descriptor.digest.clone(), WorkspaceKind::Machine));
+                    }
+                } else if let Some(id) = self.machine.clone() {
+                    // Settings, a reset or new labels change the details pane.
+                    self.machine_settings = Some((id.clone(), None));
+                    self.send(Request::Machine(
+                        crate::library_worker::MachineJob::ReadSettings(id),
+                    ));
+                    self.recheck();
+                }
+            }
+            Event::MachineSettings(id, result) => {
+                if let Some((wanted, diffs)) = &mut self.machine_settings {
+                    if *wanted == id {
+                        *diffs = Some(
+                            result
+                                .map_err(|e| e.to_string())
+                                .and_then(|settings| machines::setting_diffs(&settings)),
+                        );
+                    }
+                }
+            }
+            Event::MachineSettingsOpened(result) => {
+                self.busy = false;
+                let opened = result.and_then(|opened| {
+                    let (id, name, row, source, machine, tags) = *opened;
+                    let running = self.machine_running(&id);
+                    crate::image_settings::ImageSettings::new(row, source, tags, running)
+                        .map(|settings| settings.for_machine(id, name, machine))
+                });
+                match opened {
+                    Ok(settings) => self.image_settings = Some(settings),
+                    Err(error) => self.error = Some(error),
+                }
+            }
+            Event::MachineSettingsApplied(result) => {
+                self.busy = false;
+                match result {
+                    Ok(change) => {
+                        let name = self
+                            .image_settings
+                            .as_ref()
+                            .and_then(|s| s.machine_name())
+                            .unwrap_or("the machine")
+                            .to_owned();
+                        let mut status = format!(
+                            "Settings of \u{201c}{name}\u{201d} saved; they apply at its next start"
+                        );
+                        if !change.cmos_changes.is_empty() {
+                            status.push_str("; its CMOS bytes were recomputed");
+                        }
+                        if let Some(note) = &change.cmos_note {
+                            status.push_str("; ");
+                            status.push_str(note);
+                        }
+                        self.status = Some(status);
+                        if let Some(settings) = &mut self.image_settings {
+                            settings.applied();
+                            if settings.close_after_apply {
+                                self.image_settings = None;
+                            }
+                        }
+                        if let Some(id) = self.machine.clone() {
+                            self.machine_settings = Some((id.clone(), None));
+                            self.send(Request::Machine(
+                                crate::library_worker::MachineJob::ReadSettings(id),
+                            ));
+                        }
+                    }
+                    Err(error) => match &mut self.image_settings {
+                        Some(settings) => settings.error = Some(error),
+                        None => self.error = Some(error),
+                    },
+                }
+            }
+            Event::CommitRefused(refused) => {
+                self.busy = false;
+                self.commit_refused(refused.error, refused.tags);
+            }
             Event::Error(error) => {
                 self.busy = false;
                 self.pending_operation = false;
@@ -1312,11 +1582,18 @@ impl LibraryView {
     pub fn ready(&self) -> bool {
         !self.busy && matches!(self.readiness, Some(Ok(_)))
     }
+    /// Start (or Gaming mode, with a disposable `kind`) the selection: the
+    /// selected machine, or the selected image, which Start runs in a
+    /// machine of its own.
     pub fn launch(&mut self, kind: WorkspaceKind) {
         if self.busy {
             return;
         }
         if let Some(row) = self.selected.clone() {
+            if self.machine.is_none() && !kind.disposable() {
+                self.start_image(row);
+                return;
+            }
             if self.readiness.is_none() {
                 self.pending_launch = Some((row.descriptor.digest.clone(), kind));
                 self.recheck();
@@ -1331,14 +1608,21 @@ impl LibraryView {
             }
             self.busy = true;
             self.status = Some("Verifying image and opening workspace…".into());
-            self.send(Request::Launch(row, kind, None));
+            match self.machine.clone() {
+                Some(id) => self.send(Request::LaunchMachine(id, kind.disposable())),
+                None => self.send(Request::Launch(row, kind, None)),
+            }
         }
     }
     pub fn resume(&mut self, row: ImageRow, name: String, kind: WorkspaceKind) {
         self.pending_operation = true;
         self.busy = true;
         self.status = Some("Reopening image workspace…".into());
-        self.send(Request::Launch(row, kind, Some(name)));
+        if kind == WorkspaceKind::Machine {
+            self.send(Request::LaunchMachine(name, false));
+        } else {
+            self.send(Request::Launch(row, kind, Some(name)));
+        }
     }
     pub fn cancel_operation(&mut self) {
         self.pending_operation = false;
@@ -1354,6 +1638,7 @@ impl LibraryView {
                     image: row.descriptor.clone(),
                     title: row.name().into(),
                     recovery: true,
+                    machine: None,
                     name: name.clone(),
                 });
             }
@@ -1371,48 +1656,105 @@ impl LibraryView {
     pub fn needs_decision(&self) -> bool {
         self.decision.is_some()
     }
+    /// Check the selection again: a machine with its own journals, an image
+    /// as stored.
     pub(super) fn recheck(&mut self) {
         if let Some(row) = self.selected.clone() {
             self.readiness = None;
-            self.send(Request::Check(row.clone(), None));
+            self.send(Request::Check(row.clone(), self.machine.clone()));
         }
     }
     pub fn open_layers(&mut self) {
-        let target = self.active.clone().or_else(|| {
-            self.selected.clone().map(|row| {
+        let machine = self
+            .selected_machine_row()
+            .map(|m| (m.image_row(), m.id().to_owned(), m.name().to_owned()));
+        let target = self.active.clone().or_else(|| match &machine {
+            Some((row, id, _)) => Some((row.clone(), id.clone(), WorkspaceKind::Machine)),
+            None => self.selected.clone().map(|row| {
                 let name = regular_name(&row.descriptor.digest);
                 (row, name, WorkspaceKind::Regular)
-            })
+            }),
         });
+        let title = match (&self.active_machine, &machine, &self.active) {
+            (Some((_, name)), _, _) => name.clone(),
+            (None, Some((_, _, name)), None) => name.clone(),
+            _ => target
+                .as_ref()
+                .map_or("Machine", |(row, _, _)| row.name())
+                .to_owned(),
+        };
         self.layers = Some(LayersDialog::for_workspace(
             target.as_ref().map(|(_, name, _)| name.clone()),
             target
                 .as_ref()
                 .map_or(WorkspaceKind::Regular, |(_, _, kind)| *kind),
-            target.as_ref().map_or("Machine", |(row, _, _)| row.name()),
+            &title,
         ));
         if let Some((row, name, _)) = target {
             self.busy = true;
             self.send(Request::Layers(row, name));
         }
     }
-    /// Machine › Save as new image…: Disk layers' Save as layer… form.
+    /// Machine › Save as new image…: of the running or selected machine, its
+    /// own form with what happens to the machine afterwards; otherwise Disk
+    /// layers' Save as layer… form.
     pub fn begin_save_image(&mut self) {
+        let machine = match (&self.active_machine, &self.active) {
+            (Some((id, _)), _) => Some(id.clone()),
+            (None, None) => self.machine.clone(),
+            (None, Some(_)) => None,
+        };
+        if let Some(id) = machine {
+            self.begin_save_machine(&id);
+            return;
+        }
         self.open_layers();
         if let Some(dialog) = &mut self.layers {
             dialog.begin_save(false);
         }
     }
-    /// Settings… on the selected image; the worker reads it and the sheet
-    /// opens read-only while the image runs.
+    /// Settings… on the selected machine changes that machine; on an image it
+    /// opens the sheet of a new image revision. The worker reads either, and
+    /// the sheet opens read-only while it runs.
     pub fn open_settings(&mut self) {
+        if let Some(id) = self.machine.clone() {
+            self.send(Request::Machine(
+                crate::library_worker::MachineJob::OpenSettings(id),
+            ));
+            return;
+        }
+        self.open_image_settings();
+    }
+    /// Image › Settings…: a new revision of the selected image, or of the
+    /// selected machine's source image.
+    pub fn open_image_settings(&mut self) {
         if let Some(row) = self.selected.clone() {
             self.send(Request::OpenSettings(row));
         }
     }
+    /// Select the selected machine's source image in the Images collection.
+    pub fn show_source_image(&mut self) {
+        let Some(row) = self
+            .selected_machine_row()
+            .map(machines::MachineRow::image_row)
+        else {
+            return;
+        };
+        self.machine = None;
+        self.machine_settings = None;
+        self.query.filter = Filter::All;
+        self.query.text.clear();
+        self.query.expanded.insert(row.repository().to_owned());
+        self.selected = Some(row);
+        self.readiness = None;
+        self.send(Request::Query(self.query.clone()));
+        self.recheck();
+    }
     /// Select a created image in the machine view with no filter, search or
     /// collapsed group hiding it, so Start never targets a hidden machine.
     fn show_created(&mut self, row: ImageRow) {
+        self.machine = None;
+        self.machine_settings = None;
         self.query.filter = Filter::All;
         self.query.text.clear();
         self.query.expanded.insert(row.repository().to_owned());
@@ -1428,6 +1770,7 @@ impl LibraryView {
     /// File › New machine…: the wizard reads firmware packages and tags first.
     pub fn begin_new_machine(&mut self) {
         let mut wizard = crate::new_machine::Wizard::new();
+        wizard.machine_names = self.machines.iter().map(|m| m.name().to_owned()).collect();
         wizard.store = self
             .root
             .as_ref()
@@ -1489,7 +1832,11 @@ impl LibraryView {
     pub fn begin_import(&mut self, path: &Path) {
         self.import = Some((path.to_string_lossy().into_owned(), String::new()));
     }
+    /// Delete tag… of the selected image.
     pub fn begin_delete(&mut self) {
+        if self.machine.is_some() {
+            return;
+        }
         self.delete = self
             .selected
             .as_ref()
@@ -1510,6 +1857,7 @@ impl LibraryView {
             || self.push.is_some()
             || self.pull.is_some()
             || self.templates.is_some()
+            || self.machine_dialog.is_some()
     }
     /// Close Disk layers, Import image, Delete tag and Import ROM folder for an
     /// exit; a running scan is cancelled. The Gaming keep-or-discard question
@@ -1531,12 +1879,17 @@ impl LibraryView {
         self.push = None;
         self.pull = None;
         self.templates = None;
+        self.machine_dialog = None;
     }
     /// Entering the Firmware or Installation media collection drops the machine
-    /// selection, so Start never targets a machine that is no longer shown.
+    /// selection, so Start never targets a machine that is no longer shown;
+    /// Machines and Images each keep only their own kind of selection.
     fn set_filter(&mut self, filter: Filter, selected_file: &mut Option<usize>) {
-        if filter.is_firmware() || filter.is_media() {
+        let leaves_machines = self.query.filter.is_machines() != filter.is_machines();
+        if filter.is_firmware() || filter.is_media() || leaves_machines {
             self.selected = None;
+            self.machine = None;
+            self.machine_settings = None;
             self.readiness = None;
             self.pending_launch = None;
             *selected_file = None;
@@ -1548,6 +1901,121 @@ impl LibraryView {
             self.media_selected = None;
         }
         self.query.filter = filter;
+    }
+    /// The machines mock-up's warning banner for unfinished gaming sessions:
+    /// nothing is discarded until the user chooses.
+    fn unfinished_sessions(&mut self, ui: &mut egui::Ui, selected_file: &mut Option<usize>) {
+        if self.recoveries.is_empty() {
+            return;
+        }
+        ui.horizontal(|ui| {
+            ui.colored_label(ui.visuals().warn_fg_color, "⚠");
+            ui.strong("Unfinished sessions");
+        });
+        let recoveries = self.recoveries.clone();
+        for record in recoveries {
+            ui.horizontal(|ui| {
+                ui.label(&record.title);
+                if ui.button("Keep as new machine…").clicked() {
+                    self.begin_keep_copy(record.clone());
+                }
+                for (label, keep) in [("Keep as new image…", true), ("Discard…", false)] {
+                    if ui.button(label).clicked() {
+                        *selected_file = None;
+                        self.machine = None;
+                        self.selected = Some(record.row());
+                        let mut dialog = LayersDialog::for_workspace(
+                            Some(record.name.clone()),
+                            record.kind,
+                            &record.title,
+                        );
+                        if keep {
+                            dialog.begin_keep();
+                        } else {
+                            dialog.begin_discard();
+                        }
+                        self.layers = Some(dialog);
+                        self.busy = true;
+                        self.send(Request::Layers(record.row(), record.name.clone()));
+                    }
+                }
+            });
+        }
+    }
+    /// The facets of a collection, under it in the tree.
+    fn tree_facets(
+        &mut self,
+        ui: &mut egui::Ui,
+        collection: &Filter,
+        selected_file: &mut Option<usize>,
+    ) -> bool {
+        let mut changed = false;
+        let firmware_mode = collection.is_firmware();
+        let media_mode = collection.is_media();
+        let machine_mode = collection.is_machines();
+        let kinds: &[&str] = if firmware_mode {
+            &firmware::FACETS
+        } else if media_mode {
+            &install_media::FACETS
+        } else if machine_mode {
+            &machines::FACETS
+        } else {
+            &[
+                "Labels",
+                "Genre",
+                "Platform",
+                "Year",
+                "Developer",
+                "Publisher",
+                "Series",
+            ]
+        };
+        let label: fn(&str, &str) -> String = if firmware_mode {
+            firmware::facet_label
+        } else if media_mode {
+            install_media::facet_label
+        } else {
+            |_, value| value.to_owned()
+        };
+        let make: fn(String, String) -> Filter = if media_mode {
+            Filter::MediaFacet
+        } else if machine_mode {
+            Filter::MachineFacet
+        } else {
+            Filter::Facet
+        };
+        let snapshot = self.snapshot.clone();
+        let machine_facets;
+        let facets = if media_mode {
+            &snapshot.media_facets
+        } else if machine_mode {
+            machine_facets = machines::facets(&self.machines);
+            &machine_facets
+        } else {
+            &snapshot.facets
+        };
+        ui.indent(("facets", machine_mode, media_mode, firmware_mode), |ui| {
+            for kind in kinds {
+                let picked = egui::CollapsingHeader::new(*kind)
+                    .id_salt(("facet-group", media_mode, machine_mode, *kind))
+                    .default_open(
+                        (firmware_mode && *kind != "Board")
+                            || (media_mode && matches!(*kind, "Format" | "Labels")),
+                    )
+                    .show(ui, |ui| {
+                        facets.get(*kind).and_then(|values| {
+                            facet_list(ui, kind, values, &self.query.filter, label, make).0
+                        })
+                    })
+                    .body_returned
+                    .flatten();
+                if let Some(filter) = picked {
+                    self.set_filter(filter, selected_file);
+                    changed = true;
+                }
+            }
+        });
+        changed
     }
     pub fn show(
         &mut self,
@@ -1575,15 +2043,33 @@ impl LibraryView {
             .exact_size(230.0)
             .show(ui, |ui| {
                 ui.strong("Library");
-                let firmware_label = format!("Firmware ({})", self.snapshot.firmware_total);
-                let media_label = format!("Installation media ({})", self.snapshot.media_total);
-                for (label, filter) in [
-                    ("All images", Filter::All),
-                    ("Recently played", Filter::Recent),
-                    ("Favourites", Filter::Favorites),
-                    ("Machine files", Filter::MachineFiles),
-                    (media_label.as_str(), Filter::Media),
-                    (firmware_label.as_str(), Filter::Firmware),
+                let machines = self.machines.clone();
+                let recent = machines
+                    .iter()
+                    .filter(|m| m.listing.machine.last_run.is_some())
+                    .count();
+                let favourites = machines
+                    .iter()
+                    .filter(|m| m.listing.machine.favorite)
+                    .count();
+                // The machines mock-up's one Library group, in its order;
+                // each collection's facets sit under it while it is selected.
+                for (label, filter, indent) in [
+                    (format!("Machines ({})", machines.len()), Filter::Machines, false),
+                    (format!("Recently played ({recent})"), Filter::Recent, true),
+                    (format!("Favourites ({favourites})"), Filter::Favorites, true),
+                    (format!("Images ({})", self.snapshot.total), Filter::All, false),
+                    (
+                        format!("Installation media ({})", self.snapshot.media_total),
+                        Filter::Media,
+                        false,
+                    ),
+                    (
+                        format!("Firmware ({})", self.snapshot.firmware_total),
+                        Filter::Firmware,
+                        false,
+                    ),
+                    (format!("Machine files ({})", files.len()), Filter::MachineFiles, false),
                 ] {
                     // Collections without an icon keep the icon's room, so
                     // the names line up as in the machines mock-up's tree.
@@ -1591,68 +2077,47 @@ impl LibraryView {
                         Some(icon) => crate::shell_icons::atom(icon),
                         None => crate::shell_icons::blank(),
                     };
-                    if ui
-                        .selectable_label(self.query.filter == filter, (mark, label))
-                        .clicked()
-                    {
-                        self.set_filter(filter, selected_file);
-                        changed = true;
-                    }
-                }
-                let firmware_mode = self.query.filter.is_firmware();
-                let media_mode = self.query.filter.is_media();
-                let kinds: &[&str] = if firmware_mode {
-                    &firmware::FACETS
-                } else if media_mode {
-                    &install_media::FACETS
-                } else {
-                    &[
-                        "Labels",
-                        "Genre",
-                        "Platform",
-                        "Year",
-                        "Developer",
-                        "Publisher",
-                        "Series",
-                    ]
-                };
-                let label: fn(&str, &str) -> String = if firmware_mode {
-                    firmware::facet_label
-                } else if media_mode {
-                    install_media::facet_label
-                } else {
-                    |_, value| value.to_owned()
-                };
-                let make: fn(String, String) -> Filter = if media_mode {
-                    Filter::MediaFacet
-                } else {
-                    Filter::Facet
-                };
-                let snapshot = self.snapshot.clone();
-                let facets = if media_mode {
-                    &snapshot.media_facets
-                } else {
-                    &snapshot.facets
-                };
-                for kind in kinds {
-                    let picked = egui::CollapsingHeader::new(*kind)
-                        .id_salt(("facet-group", media_mode, *kind))
-                        .default_open(
-                            (firmware_mode && *kind != "Board")
-                                || (media_mode && matches!(*kind, "Format" | "Labels")),
-                        )
-                        .show(ui, |ui| {
-                            facets.get(*kind).and_then(|values| {
-                                facet_list(ui, kind, values, &self.query.filter, label, make).0
-                            })
+                    let picked = ui
+                        .horizontal(|ui| {
+                            if indent {
+                                ui.add_space(16.0);
+                            }
+                            ui.selectable_label(self.query.filter == filter, (mark, label.as_str()))
+                                .clicked()
                         })
-                        .body_returned
-                        .flatten();
-                    if let Some(filter) = picked {
-                        self.set_filter(filter, selected_file);
+                        .inner;
+                    if picked {
+                        self.set_filter(filter.clone(), selected_file);
                         changed = true;
                     }
+                    let current = &self.query.filter;
+                    let here = match filter {
+                        Filter::Favorites => current.is_machines(),
+                        Filter::All => {
+                            matches!(current, Filter::All)
+                                || matches!(current, Filter::Facet(kind, _) if !firmware::is_facet(kind))
+                        }
+                        Filter::Media => current.is_media(),
+                        Filter::Firmware => current.is_firmware(),
+                        _ => false,
+                    };
+                    if here {
+                        changed |= self.tree_facets(ui, &filter, selected_file);
+                    }
                 }
+                ui.add_space(6.0);
+                // Remotes come after the MVP, in their own mock-up.
+                ui.add_enabled_ui(false, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label("+");
+                        ui.strong("Remotes");
+                    })
+                    .response
+                    .on_disabled_hover_text(
+                        "Configured registries, browse and pull: after the MVP, in a separate mock-up",
+                    );
+                    ui.label(egui::RichText::new("after the MVP — separate mock-up").small());
+                });
             });
         // The split between the list and the details pane drags, as in the
         // library mock-up; egui keeps the chosen height for the session. The
@@ -1685,17 +2150,33 @@ impl LibraryView {
                         } else if self.query.filter.is_media() {
                             match &self.media_selected {
                                 Some(row) => {
-                                    if let Some(unit) =
-                                        install_media::details(ui, row, &self.running_drives)
-                                    {
-                                        commands.push(Command::InsertSet(unit));
+                                    match install_media::details(
+                                        ui,
+                                        row,
+                                        &self.running_drives,
+                                        &self.machines,
+                                    ) {
+                                        Some(install_media::SetAction::Insert(unit)) => {
+                                            commands.push(Command::InsertSet(unit))
+                                        }
+                                        Some(install_media::SetAction::InsertInto(machine, unit)) => {
+                                            self.picker_wanted = Some((
+                                                machine,
+                                                unit,
+                                                row.image.descriptor.digest.clone(),
+                                            ));
+                                        }
+                                        None => (),
                                     }
                                 }
                                 None => {
                                     ui.label("Select an installation set for details.");
                                 }
                             }
+                        } else if self.query.filter.is_machines() {
+                            self.machine_details(ui, &mut commands);
                         } else if let Some(row) = self.selected.clone() {
+                            let name_hint = self.default_machine_name(&row);
                             ui.columns(3, |columns| {
                                 egui::Frame::new()
                                     .fill(egui::Color32::from_rgb(28, 60, 116))
@@ -1827,12 +2308,59 @@ impl LibraryView {
                                         ));
                                     }
                                 }
+                                let made = self.machines_of(&row.descriptor.digest);
+                                let count = made.len();
+                                actions.strong(format!("Machines from this image ({count})"));
+                                let mut open = None;
+                                if made.is_empty() {
+                                    actions.add(
+                                        egui::Label::new(
+                                            egui::RichText::new(format!(
+                                                "None yet. Start creates one named \u{201c}{}\u{201d} and starts it; New machine from image… asks for the name first.",
+                                                name_hint
+                                            ))
+                                            .small(),
+                                        )
+                                        .wrap(),
+                                    );
+                                }
+                                for machine in &made {
+                                    actions.horizontal_wrapped(|ui| {
+                                        if ui.link(machine.name()).clicked() {
+                                            open = Some((machine.id().to_owned(), machine.image_row()));
+                                        }
+                                        ui.label(
+                                            egui::RichText::new(format!(
+                                                "— {} · last run {}",
+                                                machine.listing.state,
+                                                machine.last_run()
+                                            ))
+                                            .small(),
+                                        );
+                                    });
+                                }
+                                actions.label(
+                                    egui::RichText::new("Machines keep this image by its digest, also after its tags move or are deleted.")
+                                        .small(),
+                                );
                                 actions.horizontal_wrapped(|ui| {
                                     if ui
-                                        .add_enabled(self.ready(), egui::Button::new("Start"))
+                                        .add_enabled(
+                                            self.ready(),
+                                            egui::Button::new(if count > 0 { "Start…" } else { "Start" }),
+                                        )
                                         .clicked()
                                     {
                                         commands.push(Command::Start);
+                                    }
+                                    if ui.button("New machine from image…").clicked() {
+                                        commands.push(Command::NewFromImage);
+                                    }
+                                    if ui
+                                        .add_enabled(self.ready(), egui::Button::new("Gaming mode"))
+                                        .clicked()
+                                    {
+                                        commands.push(Command::GamingMode);
                                     }
                                     if ui
                                         .button("Settings…")
@@ -1847,7 +2375,17 @@ impl LibraryView {
                                     if ui.button("Push…").clicked() {
                                         commands.push(Command::Push);
                                     }
+                                    if ui.button("Delete tag…").clicked() {
+                                        commands.push(Command::DeleteTag);
+                                    }
                                 });
+                                actions.label(
+                                    egui::RichText::new("Settings… on an image publishes a new image revision; machines from this image keep running this one. To change one machine only, use Settings… on that machine.")
+                                        .small(),
+                                );
+                                if let Some((id, row)) = open {
+                                    self.show_machine(id, row);
+                                }
                             });
                         } else if let Some(entry) = selected_file.and_then(|i| files.get(i)) {
                             ui.columns(2, |columns| {
@@ -1957,47 +2495,17 @@ impl LibraryView {
                 ));
                 return;
             }
-            if !self.recoveries.is_empty() {
-                // The machines mock-up's warning banner for an unfinished session.
-                ui.horizontal(|ui| {
-                    ui.colored_label(ui.visuals().warn_fg_color, "⚠");
-                    ui.strong("Unfinished sessions");
-                });
-                let recoveries = self.recoveries.clone();
-                for record in recoveries {
-                    ui.horizontal(|ui| {
-                        ui.label(&record.title);
-                        if ui.button("Keep as new image…").clicked() {
-                            *selected_file = None;
-                            self.selected = Some(record.row());
-                            self.layers = Some(LayersDialog::for_workspace(
-                                Some(record.name.clone()),
-                                record.kind,
-                                &record.title,
-                            ));
-                            if let Some(dialog) = &mut self.layers {
-                                dialog.begin_keep();
-                            }
-                            self.busy = true;
-                            self.send(Request::Layers(record.row(), record.name.clone()));
-                        }
-                        if ui.button("Discard…").clicked() {
-                            *selected_file = None;
-                            self.selected = Some(record.row());
-                            self.layers = Some(LayersDialog::for_workspace(
-                                Some(record.name.clone()),
-                                record.kind,
-                                &record.title,
-                            ));
-                            if let Some(dialog) = &mut self.layers {
-                                dialog.begin_discard();
-                            }
-                            self.busy = true;
-                            self.send(Request::Layers(record.row(), record.name.clone()));
-                        }
-                    });
+            if self.query.filter.is_machines() {
+                self.machine_banners(ui);
+                self.unfinished_sessions(ui, selected_file);
+                if let Some(warning) = &self.snapshot.warning {
+                    ui.label(warning);
                 }
+                self.rows_built = 0;
+                changed |= self.machine_list(ui, &mut commands);
+                return;
             }
+            self.unfinished_sessions(ui, selected_file);
             if let Some(warning) = &self.snapshot.warning {
                 ui.label(warning);
             }
@@ -2145,6 +2653,7 @@ impl LibraryView {
                                             );
                                             if (clicked || double) && !selected {
                                                 self.pending_launch = None;
+                                                self.machine = None;
                                                 self.selected = Some(image.clone());
                                                 *selected_file = None;
                                                 self.labels = summary
@@ -2223,9 +2732,15 @@ impl LibraryView {
             return requests;
         }
         if let Some(settings) = &mut self.image_settings {
-            settings.read_only = self.active.as_ref().is_some_and(|(active, _, _)| {
-                active.descriptor.digest == settings.row.descriptor.digest
-            });
+            settings.read_only = match settings.machine_id() {
+                Some(id) => self
+                    .active_machine
+                    .as_ref()
+                    .is_some_and(|(active, _)| active == id),
+                None => self.active.as_ref().is_some_and(|(active, _, _)| {
+                    active.descriptor.digest == settings.row.descriptor.digest
+                }),
+            };
             if settings.review.is_some() {
                 match crate::settings_sheet::show_review(ctx, settings, self.busy, classic) {
                     crate::settings_sheet::ReviewAction::None => (),
@@ -2241,6 +2756,21 @@ impl LibraryView {
                 match crate::settings_sheet::show_image(ctx, settings, classic) {
                     crate::settings_sheet::ImageAction::None => (),
                     crate::settings_sheet::ImageAction::Cancel => self.image_settings = None,
+                    crate::settings_sheet::ImageAction::Apply(close) => {
+                        match settings.apply_request(close) {
+                            Some((id, table)) => {
+                                self.busy = true;
+                                requests.push(Request::Machine(
+                                    crate::library_worker::MachineJob::ApplySettings(
+                                        id,
+                                        Box::new(table),
+                                    ),
+                                ));
+                            }
+                            None if close && !settings.unsaved() => self.image_settings = None,
+                            None => (),
+                        }
+                    }
                     crate::settings_sheet::ImageAction::Review => {
                         let request = settings.begin_review();
                         requests.push(Request::PlanRevision(
@@ -2293,6 +2823,16 @@ impl LibraryView {
                         .filter(|tag| ***tag != chosen)
                         .map(|tag| tag.as_str())
                         .collect();
+                    let machines = self.machines_of(&row.descriptor.digest).len();
+                    if machines > 0 {
+                        ui.add(
+                            egui::Label::new(format!(
+                                "Its {machines} machine{} the image by its digest. With no tag left it shows as detached and stays in the store for them.",
+                                if machines == 1 { " keeps" } else { "s keep" }
+                            ))
+                            .wrap(),
+                        );
+                    }
                     ui.label(if kept.is_empty() {
                         "Only this tag is removed. Shared bases and layers stay in the store."
                             .to_owned()
@@ -2319,17 +2859,26 @@ impl LibraryView {
             self.delete = (!close).then_some(chosen);
         }
         if self.layers.is_none() {
-            if let Some(record) = self.decision.clone() {
+            if let Some(record) = self
+                .decision
+                .clone()
+                .filter(|_| self.machine_dialog.is_none())
+            {
                 let mut keep = false;
+                let mut keep_machine = false;
                 let mut discard = false;
                 egui::Modal::new(egui::Id::unique("gaming-stop")).show(ctx,|ui| {
-                    ui.heading("Keep this gaming session?");ui.label(&record.title);
-                    ui.label("Keep as a new image, or discard the isolated changes. The regular workspace is unchanged.");
+                    ui.heading(format!("Gaming mode ended — {}", record.title));
+                    ui.label("Discard removes the copy. Keep as new machine… gives it a name in Machines. Keep as new image… freezes it into a new image, then removes the copy.");
                     ui.horizontal(|ui| {
-                        keep=ui.add_enabled(!self.busy,egui::Button::new("Keep as new image…")).clicked();
                         discard=ui.add_enabled(!self.busy,egui::Button::new("Discard")).clicked();
+                        keep_machine=ui.add_enabled(!self.busy,egui::Button::new("Keep as new machine…")).clicked();
+                        keep=ui.add_enabled(!self.busy,egui::Button::new("Keep as new image…")).clicked();
                     });
                 });
+                if keep_machine {
+                    self.begin_keep_copy(record.clone());
+                }
                 if keep {
                     self.selected = Some(record.row());
                     let mut dialog = LayersDialog::for_workspace(
@@ -2349,6 +2898,7 @@ impl LibraryView {
             }
         }
         self.transfer_modals(ctx, classic, &mut requests);
+        self.machine_modals(ctx, classic, &mut requests);
         if let Some(dialog) = &mut self.layers {
             let action = dialog.show(ctx, self.busy, classic);
             match action {
@@ -2725,6 +3275,7 @@ pub(super) mod tests {
         let (_temp, store, _) = catalogue(1000);
         let cache = warm(&store);
         let mut library = LibraryView::new(None);
+        library.query.filter = Filter::All;
         library.snapshot = Arc::new(snapshot(&cache, &Query::default()));
         let ctx = egui::Context::default();
         let mut selected = None;
@@ -2796,18 +3347,20 @@ pub(super) mod tests {
         }
         let cache = warm(&store);
         let mut query = Query {
-            filter: Filter::Favorites,
+            filter: Filter::Facet("Labels".into(), "collection".into()),
             ..Default::default()
         };
         let result = snapshot(&cache, &query);
+        assert_eq!(result.matched, 2);
         assert_eq!(result.rows.len(), 1);
         assert_eq!(result.rows[0].group, Some(2));
         query.expanded.insert("synthetic-0".into());
         assert_eq!(snapshot(&cache, &query).rows.len(), 3);
-        query.filter = Filter::Facet("Labels".into(), "collection".into());
-        assert_eq!(snapshot(&cache, &query).matched, 2);
-        query.filter = Filter::Recent;
-        assert_eq!(snapshot(&cache, &query).matched, 2);
+        // Recently played and Favourites list machines, never image rows.
+        for filter in [Filter::Recent, Filter::Favorites] {
+            query.filter = filter;
+            assert_eq!(snapshot(&cache, &query).matched, 0);
+        }
         query.filter = Filter::All;
         query.sort = 1;
         query.descending = true;
@@ -3151,6 +3704,7 @@ pub(super) mod tests {
             LibraryEntry::pending("/synthetic/beta-machine.toml".into()),
         ];
         let mut library = LibraryView::new(None);
+        library.query.filter = Filter::All;
         let ctx = egui::Context::default();
         let shown = |library: &mut LibraryView| {
             library.snapshot = Arc::new(snapshot(&cache, &library.query));
@@ -4296,8 +4850,26 @@ pub(super) mod tests {
         .is_err());
         drop(owner);
         let mut view = LibraryView::synthetic(firmware.store.root().to_owned());
-        view.selected = Some(row);
+        // The desktop session made before machines existed is a machine now,
+        // and its unfinished save came with it.
+        until_view(&mut view, |view| !view.machines.is_empty());
+        let machine = view.machines[0].clone();
+        assert!(machine.listing.publication_pending);
+        assert_eq!(machine.image_row().descriptor.digest, row.descriptor.digest);
+        let name = machine.id().to_owned();
+        view.show_machine(name.clone(), machine.image_row());
+        // Save as new image… offers to finish it as it was chosen.
         view.begin_save_image();
+        assert!(matches!(
+            view.machine_dialog,
+            Some(machines::Dialog::Finish { .. })
+        ));
+        view.machine_dialog = None;
+        // So does Disk layers' save form, whose save of a machine finishes it.
+        view.open_layers();
+        if let Some(dialog) = &mut view.layers {
+            dialog.begin_save(false);
+        }
         until_view(&mut view, |view| {
             view.layers.as_ref().is_some_and(|d| d.save.is_some())
         });
@@ -4512,6 +5084,7 @@ pub(super) mod tests {
 
     #[test]
     fn the_tree_marks_the_collections_the_machines_mockup_marks() {
+        assert_eq!(tree_icon(&Filter::Machines), Some(Icon::Machine));
         assert_eq!(tree_icon(&Filter::All), Some(Icon::Image));
         assert_eq!(tree_icon(&Filter::MachineFiles), Some(Icon::MachineFile));
         assert_eq!(tree_icon(&Filter::Media), Some(Icon::Media));

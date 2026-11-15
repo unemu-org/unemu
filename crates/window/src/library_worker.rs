@@ -21,6 +21,9 @@ type Result<T> = std::result::Result<T, String>;
 pub(super) enum WorkspaceKind {
     Regular,
     Disposable,
+    /// A machine's own workspace; its record in the store, not a desktop
+    /// record, says what it is.
+    Machine,
 }
 impl WorkspaceKind {
     pub fn disposable(self) -> bool {
@@ -42,6 +45,10 @@ pub(super) struct Recovery {
     pub image: Descriptor,
     pub title: String,
     pub recovery: bool,
+    /// The machine a Gaming-mode copy was made from: keeping the copy takes
+    /// that machine's settings and labels.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub machine: Option<String>,
     #[serde(skip)]
     pub name: String,
 }
@@ -82,6 +89,12 @@ pub(super) enum Request {
     /// Settings on an image: publish a checked configuration-only revision.
     PublishRevision(Box<pc_image::revision::Plan>, Target),
     Discard(String),
+    /// Start a machine, or with `true` a disposable Gaming-mode copy of it.
+    LaunchMachine(String, bool),
+    /// The running machine assembled: its launch is confirmed in its record.
+    Assembled,
+    /// A change of the machines in the store.
+    Machine(MachineJob),
     /// Scan a picked ROM folder, reusing the persistent ROM hash index.
     ScanFirmware(
         PathBuf,
@@ -123,6 +136,57 @@ pub(super) enum Request {
     Transfer(crate::registry_transfer::TransferRequest),
     Shutdown,
 }
+/// What the library asks of the machines in the store; machine-images §3.2.
+pub(super) enum MachineJob {
+    /// Make a machine from an image; `start` launches it once it is listed.
+    Create {
+        image: Box<ImageRow>,
+        name: Option<String>,
+        start: bool,
+    },
+    Rename(String, String),
+    Favorite(String, bool),
+    Labels(String, Vec<String>),
+    Duplicate(String, String),
+    Reset(String),
+    Delete(String),
+    /// Set or clear the disk one drive of a stopped machine gets at its next
+    /// Start; the machine's other drives keep theirs.
+    SetPending {
+        id: String,
+        drive: String,
+        insert: Option<Box<image_store::machine::PendingInsert>>,
+    },
+    /// Finish an interrupted Save as new image… as it was chosen.
+    FinishCommit(String),
+    /// Read a machine's settings beside its image's, for its details pane.
+    ReadSettings(String),
+    /// Open Settings… on a machine: the property sheet's source.
+    OpenSettings(String),
+    /// Keep tables as a machine's settings from its next start.
+    ApplySettings(String, Box<toml::Table>),
+    /// Save as new image… of a machine; `keep` leaves it on its old image.
+    Commit {
+        id: String,
+        target: Target,
+        keep: bool,
+    },
+    /// Keep as new machine… of a Gaming-mode copy.
+    KeepCopy {
+        workspace: String,
+        name: String,
+    },
+}
+/// What Settings… on a machine starts from: its id and name, its image's
+/// row and source, the tables it runs with and every local tag.
+pub(super) type OpenedMachineSettings = (
+    String,
+    String,
+    ImageRow,
+    pc_image::revision::Source,
+    toml::Table,
+    Vec<(String, Digest)>,
+);
 /// Firmware packages, every local tag with its manifest digest, and the
 /// redistribution marks of every local manifest (the push guard's input).
 pub(super) type StoreChoices = (
@@ -206,6 +270,27 @@ pub(super) enum Event {
         Result<library_view::install_media::Sources>,
     ),
     MediaImported(Result<library_view::install_media::Outcome>),
+    /// Every machine in the store, or why they could not be listed.
+    Machines(std::result::Result<Arc<Vec<library_view::machines::MachineRow>>, String>),
+    /// Workspaces the store adopted as machines when the library opened.
+    Migrated(pc_image::machine::Migration),
+    /// A machine job finished: its message, and the machine to select with
+    /// its image's row, started when `start`.
+    MachineDone {
+        message: String,
+        select: Option<(String, Box<ImageRow>)>,
+        start: bool,
+    },
+    /// A small machine change was kept (favourite, labels, a pending disk):
+    /// its status line only, so no dialog or busy state of another job changes.
+    MachineNote(String),
+    /// A machine's settings beside its image's, for its details pane.
+    MachineSettings(String, Result<Box<pc_image::machine::Settings>>),
+    MachineSettingsOpened(Result<Box<OpenedMachineSettings>>),
+    /// Settings… on a machine kept its tables, or refused them.
+    MachineSettingsApplied(Result<Box<pc_image::machine::SettingsChange>>),
+    /// The store refused Save as new image… of a machine.
+    CommitRefused(Refused),
 }
 pub(super) struct Worker {
     pub send: mpsc::Sender<Request>,
@@ -318,6 +403,12 @@ fn disposable_name(store: &Store, image: &Digest) -> Result<String> {
     }
     Err("No disposable workspace name is available".into())
 }
+/// Whether a workspace belongs to a machine record.
+fn is_machine(store: &Store, name: &str) -> bool {
+    store
+        .read_machines()
+        .is_ok_and(|machines| machines.get(name).is_some())
+}
 fn read_record(store: &Store, name: &str) -> Result<Recovery> {
     use std::io::Read;
     let file = std::fs::File::open(
@@ -379,6 +470,7 @@ fn recoveries(store: &Store) -> Result<Vec<Recovery>> {
                     title: "Recovered gaming session".into(),
                     image,
                     recovery: true,
+                    machine: None,
                     name,
                 });
             }
@@ -431,6 +523,49 @@ trait Backend: Send + 'static {
     ) -> Result<library_view::install_media::Outcome> {
         library_view::install_media::import(store, request, control)
     }
+    /// A machine's launch from its own workspace.
+    fn prepare_machine(&self, owner: &Workspace<'_>) -> Result<pc_image::machine::Prepared> {
+        pc_image::machine::prepare(owner).map_err(|e| e.to_string())
+    }
+    /// A Gaming-mode copy of a stopped machine in a fresh workspace.
+    fn prepare_copy(
+        &self,
+        source: &Workspace<'_>,
+        copy: &Workspace<'_>,
+    ) -> Result<pc_image::machine::Prepared> {
+        pc_image::machine::prepare_copy(source, copy).map_err(|e| e.to_string())
+    }
+    /// A power cycle of a Gaming-mode copy of a machine.
+    fn resume_copy(&self, copy: &Workspace<'_>) -> Result<pc_image::machine::Prepared> {
+        pc_image::machine::resume_copy(copy).map_err(|e| e.to_string())
+    }
+    /// An interrupted Save as new image… of a machine, finished as chosen.
+    fn finish_commit(&self, store: &Store, id: &str) -> Result<Descriptor> {
+        pc_image::machine::finish_commit(store, id).map_err(|e| e.to_string())
+    }
+    /// Save as new image… of a machine.
+    fn commit(&self, store: &Store, id: &str, target: &Target, keep: bool) -> Result<Descriptor> {
+        pc_image::machine::commit(
+            store,
+            id,
+            &target.reference,
+            target.expected.as_ref(),
+            target.title.as_deref(),
+            keep,
+        )
+        .map_err(|e| e.to_string())
+    }
+    /// Keep as new image… of a Gaming-mode copy of a machine.
+    fn publish_copy(&self, owner: &Workspace<'_>, target: &Target) -> Result<Descriptor> {
+        pc_image::machine::publish_copy(
+            owner,
+            &target.reference,
+            target.expected.as_ref(),
+            target.flatten,
+            target.title.as_deref(),
+        )
+        .map_err(|e| e.to_string())
+    }
 }
 struct PcBackend;
 impl Backend for PcBackend {
@@ -482,6 +617,55 @@ impl Backend for SyntheticBackend {
     }
     fn with_providers<T>(&self, job: impl FnOnce(&[&dyn image_store::ConfigValidator]) -> T) -> T {
         pc_image::test_support::with_synthetic_firmware(|| cli::with_image_providers(job))
+    }
+    fn prepare_machine(&self, owner: &Workspace<'_>) -> Result<pc_image::machine::Prepared> {
+        pc_image::test_support::with_synthetic_firmware(|| {
+            pc_image::machine::prepare(owner).map_err(|e| e.to_string())
+        })
+    }
+    fn prepare_copy(
+        &self,
+        source: &Workspace<'_>,
+        copy: &Workspace<'_>,
+    ) -> Result<pc_image::machine::Prepared> {
+        pc_image::test_support::with_synthetic_firmware(|| {
+            pc_image::machine::prepare_copy(source, copy).map_err(|e| e.to_string())
+        })
+    }
+    fn resume_copy(&self, copy: &Workspace<'_>) -> Result<pc_image::machine::Prepared> {
+        pc_image::test_support::with_synthetic_firmware(|| {
+            pc_image::machine::resume_copy(copy).map_err(|e| e.to_string())
+        })
+    }
+    fn finish_commit(&self, store: &Store, id: &str) -> Result<Descriptor> {
+        pc_image::test_support::with_synthetic_firmware(|| {
+            pc_image::machine::finish_commit(store, id).map_err(|e| e.to_string())
+        })
+    }
+    fn commit(&self, store: &Store, id: &str, target: &Target, keep: bool) -> Result<Descriptor> {
+        pc_image::test_support::with_synthetic_firmware(|| {
+            pc_image::machine::commit(
+                store,
+                id,
+                &target.reference,
+                target.expected.as_ref(),
+                target.title.as_deref(),
+                keep,
+            )
+            .map_err(|e| e.to_string())
+        })
+    }
+    fn publish_copy(&self, owner: &Workspace<'_>, target: &Target) -> Result<Descriptor> {
+        pc_image::test_support::with_synthetic_firmware(|| {
+            pc_image::machine::publish_copy(
+                owner,
+                &target.reference,
+                target.expected.as_ref(),
+                target.flatten,
+                target.title.as_deref(),
+            )
+            .map_err(|e| e.to_string())
+        })
     }
 }
 #[cfg(test)]
@@ -754,6 +938,335 @@ fn storage_details(
     Ok(details)
 }
 
+/// The floppy drives of a machine configuration, by unit.
+fn floppies(config: &assembly::MachineConfig) -> Vec<(u8, assembly::FloppyGeometry)> {
+    config
+        .drives
+        .iter()
+        .filter_map(|drive| match drive.kind {
+            assembly::DriveKind::Floppy { geometry } => Some((drive.unit, geometry)),
+            _ => None,
+        })
+        .collect()
+}
+
+/// A machine as the library lists it: its listing, its image's summary and
+/// title, and the floppy drives it runs with (its settings', else its
+/// image's), read once per image.
+fn machine_row(
+    store: &Store,
+    cache: &SummaryCache,
+    listing: pc_image::machine::Listing,
+    drives_of: &mut BTreeMap<Digest, Vec<(u8, assembly::FloppyGeometry)>>,
+) -> library_view::machines::MachineRow {
+    let image = listing.machine.image.clone();
+    let described = |table: &toml::Table| {
+        crate::image_settings::describe(table)
+            .map(|draft| floppies(&draft.config))
+            .unwrap_or_default()
+    };
+    let drives = match &listing.machine.settings {
+        Some(table) => described(table),
+        None => drives_of
+            .entry(image.digest.clone())
+            .or_insert_with(|| {
+                pc_image::revision::Source::open(store, &image)
+                    .map(|source| described(source.machine()))
+                    .unwrap_or_default()
+            })
+            .clone(),
+    };
+    library_view::machines::MachineRow {
+        summary: cache.summary(&image.digest).cloned(),
+        title: pc_image::machine::image_title(store, &image).ok().flatten(),
+        drives,
+        listing,
+    }
+}
+
+fn machine_listing(store: &Store, cache: &SummaryCache) -> Event {
+    let mut drives = BTreeMap::new();
+    Event::Machines(
+        pc_image::machine::list(store)
+            .map(|listings| {
+                Arc::new(
+                    listings
+                        .into_iter()
+                        .map(|listing| machine_row(store, cache, listing, &mut drives))
+                        .collect(),
+                )
+            })
+            .map_err(|e| e.to_string()),
+    )
+}
+
+/// One machine's row, for the machine a job selects or a launch runs.
+fn machine_named(
+    store: &Store,
+    cache: &SummaryCache,
+    id: &str,
+) -> Result<library_view::machines::MachineRow> {
+    let listing = pc_image::machine::get(store, id).map_err(|e| e.to_string())?;
+    Ok(machine_row(store, cache, listing, &mut BTreeMap::new()))
+}
+
+fn selected(
+    store: &Store,
+    cache: &SummaryCache,
+    id: &str,
+) -> Result<Option<(String, Box<ImageRow>)>> {
+    let row = machine_named(store, cache, id)?;
+    Ok(Some((id.to_owned(), Box::new(row.image_row()))))
+}
+
+/// Run one machine job; a refusal becomes an error event, except for Save
+/// as new image…, whose form asks again with the store's current tags.
+fn machine_job<B: Backend>(
+    backend: &B,
+    store: &Store,
+    cache: &SummaryCache,
+    job: MachineJob,
+) -> Event {
+    use pc_image::machine;
+    let now = || Some(library_view::host_last_run());
+    let done = |message: String| Event::MachineDone {
+        message,
+        select: None,
+        start: false,
+    };
+    let result = (|| -> Result<Event> {
+        let error = |e: pc_image::Error| e.to_string();
+        Ok(match job {
+            MachineJob::Create { image, name, start } => {
+                let id = machine::create(
+                    store,
+                    &image.descriptor,
+                    &image.reference,
+                    name.as_deref(),
+                    now(),
+                )
+                .map_err(error)?;
+                let name = machine_named(store, cache, &id)?.name().to_owned();
+                Event::MachineDone {
+                    message: format!(
+                        "Created the machine \u{201c}{name}\u{201d} from {}",
+                        image.reference
+                    ),
+                    select: selected(store, cache, &id)?,
+                    start,
+                }
+            }
+            MachineJob::Rename(id, name) => {
+                let old = machine_named(store, cache, &id)?.name().to_owned();
+                machine::rename(store, &id, &name).map_err(error)?;
+                done(format!(
+                    "Renamed \u{201c}{old}\u{201d} to \u{201c}{}\u{201d}",
+                    name.trim()
+                ))
+            }
+            MachineJob::Favorite(id, favorite) => {
+                machine::set_favorite(store, &id, favorite).map_err(error)?;
+                Event::MachineNote(
+                    if favorite {
+                        "Added to Favourites"
+                    } else {
+                        "Removed from Favourites"
+                    }
+                    .into(),
+                )
+            }
+            MachineJob::Labels(id, labels) => {
+                machine::set_labels(store, &id, labels).map_err(error)?;
+                Event::MachineNote("Labels saved".into())
+            }
+            MachineJob::Duplicate(id, name) => {
+                let old = machine_named(store, cache, &id)?.name().to_owned();
+                let copy = machine::duplicate(store, &id, Some(&name), now()).map_err(error)?;
+                Event::MachineDone {
+                    message: format!(
+                        "Duplicated \u{201c}{old}\u{201d} as \u{201c}{}\u{201d}",
+                        name.trim()
+                    ),
+                    select: selected(store, cache, &copy)?,
+                    start: false,
+                }
+            }
+            MachineJob::Reset(id) => {
+                machine::reset(store, &id).map_err(error)?;
+                let row = machine_named(store, cache, &id)?;
+                done(format!(
+                    "\u{201c}{}\u{201d} is the same as {} again",
+                    row.name(),
+                    row.reference()
+                ))
+            }
+            MachineJob::Delete(id) => {
+                let name = machine_named(store, cache, &id)?.name().to_owned();
+                machine::delete(store, &id).map_err(error)?;
+                done(format!(
+                    "Deleted the machine \u{201c}{name}\u{201d}. Its image is unchanged."
+                ))
+            }
+            MachineJob::SetPending { id, drive, insert } => {
+                let name = machine_named(store, cache, &id)?.name().to_owned();
+                let message = match &insert {
+                    Some(_) => format!(
+                        "{drive} of \u{201c}{name}\u{201d} takes the disk at its next Start"
+                    ),
+                    None => {
+                        format!("Took the pending disk out of {drive} of \u{201c}{name}\u{201d}")
+                    }
+                };
+                machine::set_pending_insert(store, &id, &drive, insert.map(|insert| *insert))
+                    .map_err(error)?;
+                Event::MachineNote(message)
+            }
+            MachineJob::FinishCommit(id) => {
+                let tag = machine::pending_commit(store, &id)
+                    .map_err(error)?
+                    .map(|pending| pending.tag)
+                    .unwrap_or_default();
+                match backend.finish_commit(store, &id) {
+                    Ok(_) => Event::MachineDone {
+                        message: format!("Finished saving {tag}"),
+                        select: selected(store, cache, &id)?,
+                        start: false,
+                    },
+                    Err(error) => Event::CommitRefused(Refused {
+                        error,
+                        tags: tags_of(store),
+                    }),
+                }
+            }
+            MachineJob::ReadSettings(id) => Event::MachineSettings(
+                id.clone(),
+                machine::settings(store, &id).map(Box::new).map_err(error),
+            ),
+            MachineJob::OpenSettings(id) => {
+                let row = machine_named(store, cache, &id)?;
+                let image = row.image_row();
+                let source =
+                    pc_image::revision::Source::open(store, &image.descriptor).map_err(error)?;
+                let settings = machine::settings(store, &id).map_err(error)?;
+                Event::MachineSettingsOpened(Ok(Box::new((
+                    id,
+                    row.name().to_owned(),
+                    image,
+                    source,
+                    settings.machine,
+                    tags_of(store),
+                ))))
+            }
+            MachineJob::ApplySettings(id, table) => Event::MachineSettingsApplied(
+                machine::change_settings(store, &id, *table, true)
+                    .map(Box::new)
+                    .map_err(error),
+            ),
+            MachineJob::Commit { id, target, keep } => {
+                let row = machine_named(store, cache, &id)?;
+                match backend.commit(store, &id, &target, keep) {
+                    Ok(_) => Event::MachineDone {
+                        message: if keep {
+                            format!(
+                                "Saved {}. \u{201c}{}\u{201d} keeps its changes on {}.",
+                                target.reference,
+                                row.name(),
+                                row.reference()
+                            )
+                        } else {
+                            format!(
+                                "Saved {}. \u{201c}{}\u{201d} now runs it with fresh, empty journals.",
+                                target.reference,
+                                row.name()
+                            )
+                        },
+                        select: selected(store, cache, &id)?,
+                        start: false,
+                    },
+                    Err(error) => Event::CommitRefused(Refused {
+                        error,
+                        tags: tags_of(store),
+                    }),
+                }
+            }
+            MachineJob::KeepCopy { workspace, name } => {
+                let id = machine::keep_copy(store, &workspace, &name, now()).map_err(error)?;
+                Event::MachineDone {
+                    message: format!(
+                        "Kept the gaming copy as the machine \u{201c}{}\u{201d}",
+                        name.trim()
+                    ),
+                    select: selected(store, cache, &id)?,
+                    start: false,
+                }
+            }
+        })
+    })();
+    result.unwrap_or_else(Event::Error)
+}
+
+/// Serve the library while a session runs, until the session finishes.
+/// `None` when the program shuts down first. `assembled` runs when the
+/// shell reports that the machine assembled.
+#[allow(clippy::too_many_arguments)]
+fn serve_session<B: Backend>(
+    backend: &B,
+    store: &Store,
+    cache: &mut SummaryCache,
+    query: &Query,
+    requests: &mpsc::Receiver<Request>,
+    send: &dyn Fn(Event),
+    mut assembled: impl FnMut(),
+) -> Result<Option<Finish>> {
+    loop {
+        match requests.recv() {
+            Ok(Request::Finish(outcome)) => return Ok(Some(outcome)),
+            Ok(Request::Shutdown) | Err(_) => return Ok(None),
+            Ok(Request::Assembled) => assembled(),
+            // Machine jobs are served while a machine runs: renames, settings
+            // read read-only and new machines work; a job that needs the
+            // running machine's lock is refused by the store with a reason.
+            Ok(Request::Machine(job)) => {
+                send(machine_job(backend, store, cache, job));
+                send(machine_listing(store, cache));
+            }
+            Ok(Request::Layers(row, name)) => send(layers_event(backend, store, cache, &row, name)),
+            // Settings on any image, read-only for the running one.
+            Ok(Request::OpenSettings(row)) => {
+                send(Event::SettingsOpened(open_settings(store, row)))
+            }
+            Ok(Request::PlanRevision(row, revision, machine)) => send(Event::Planned(
+                revision,
+                plan_revision(store, &row, *machine),
+                tags_of(store),
+            )),
+            // New machine… builds images beside the running one.
+            Ok(Request::FirmwarePackages) => send(Event::Packages(store_choices(store))),
+            Ok(Request::CreateImage(image, reference, expected)) => {
+                send(Event::Created(create_image(
+                    store,
+                    &image,
+                    reference,
+                    expected.as_ref(),
+                )));
+                cache.refresh(store).map_err(|e| e.to_string())?;
+                send(Event::Snapshot(Arc::new(library_view::snapshot(
+                    cache, query,
+                ))));
+            }
+            // Settings on another, stopped image.
+            Ok(Request::PublishRevision(plan, target)) => {
+                send(Event::Revised(revise_image(backend, store, &plan, target)));
+                cache.refresh(store).map_err(|e| e.to_string())?;
+                send(Event::Snapshot(Arc::new(library_view::snapshot(
+                    cache, query,
+                ))));
+            }
+            _ => (),
+        }
+    }
+}
+
 fn run<B: Backend>(
     root: PathBuf,
     requests: mpsc::Receiver<Request>,
@@ -768,6 +1281,13 @@ fn run<B: Backend>(
     };
     let run = || -> Result<()> {
         let store = Store::open(root).map_err(|e| e.to_string())?;
+        // Desktop sessions made before machines existed become machines
+        // once, when the library first opens the store.
+        match pc_image::machine::migrate(&store) {
+            Ok(migration) if migration.adopted.is_empty() && migration.skipped.is_empty() => (),
+            Ok(migration) => send(Event::Migrated(migration)),
+            Err(error) => send(Event::Error(error.to_string())),
+        }
         let mut cache = SummaryCache::open(&store).map_err(|e| e.to_string())?;
         let mut query = Query::default();
         let mut pending_check: Option<(ImageRow, Option<String>)> = None;
@@ -778,6 +1298,7 @@ fn run<B: Backend>(
             &cache, &query,
         ))));
         send(Event::Recoveries(recoveries(&store)?));
+        send(machine_listing(&store, &cache));
         loop {
             let request = match requests.try_recv() {
                 Ok(request) => request,
@@ -822,8 +1343,10 @@ fn run<B: Backend>(
                     }
                 }
             };
-            // Previews and readings change nothing, so no new snapshot follows them.
+            // Previews and readings change nothing, so no new snapshot follows
+            // them; a search or a check changes no machine either.
             let mut quiet = false;
+            let lists_machines = !matches!(request, Request::Query(_) | Request::Check(..));
             let operation = || -> Result<bool> {
                 match request {
                     Request::Shutdown => return Ok(false),
@@ -864,21 +1387,37 @@ fn run<B: Backend>(
                             image: row.descriptor.clone(),
                             title: row.name().into(),
                             recovery: true,
+                            machine: None,
                             name: name.clone(),
                         };
+                        // A power cycle of a Gaming-mode copy of a machine
+                        // keeps its record and runs it again with what the
+                        // copy was made with, never as a plain image copy.
+                        if !is_new {
+                            if let Ok(existing) = read_record(&store, &name) {
+                                record.machine = existing.machine;
+                                record.title = existing.title;
+                                record.reference = existing.reference;
+                            }
+                        }
                         let prepared = (|| -> Result<_> {
                             record.write(&owner)?;
-                            let prepared = backend.prepare(
-                                &owner,
-                                &row.descriptor,
-                                is_new && kind.disposable(),
-                            )?;
-                            store
-                                .edit_library(&row.descriptor.digest, |entry| {
-                                    entry.last_run = Some(library_view::host_last_run());
-                                    Ok(())
-                                })
-                                .map_err(|e| e.to_string())?;
+                            let prepared = if record.machine.is_some() {
+                                backend.resume_copy(&owner)?.session
+                            } else {
+                                let prepared = backend.prepare(
+                                    &owner,
+                                    &row.descriptor,
+                                    is_new && kind.disposable(),
+                                )?;
+                                store
+                                    .edit_library(&row.descriptor.digest, |entry| {
+                                        entry.last_run = Some(library_view::host_last_run());
+                                        Ok(())
+                                    })
+                                    .map_err(|e| e.to_string())?;
+                                prepared
+                            };
                             prepared.into_transfer().map_err(|e| e.to_string())
                         })();
                         let transfer = match prepared {
@@ -898,57 +1437,20 @@ fn run<B: Backend>(
                             name,
                             kind,
                         ));
-                        let outcome = loop {
-                            match requests.recv() {
-                                Ok(Request::Finish(outcome)) => break outcome,
-                                Ok(Request::Shutdown) | Err(_) => {
-                                    record.recovery = true;
-                                    record.write(&owner)?;
-                                    drop(owner);
-                                    return Ok(false);
-                                }
-                                Ok(Request::Layers(row, name)) => {
-                                    send(layers_event(&backend, &store, &cache, &row, name))
-                                }
-                                // Settings on any image, read-only for the running one.
-                                Ok(Request::OpenSettings(row)) => {
-                                    send(Event::SettingsOpened(open_settings(&store, row)))
-                                }
-                                Ok(Request::PlanRevision(row, revision, machine)) => {
-                                    send(Event::Planned(
-                                        revision,
-                                        plan_revision(&store, &row, *machine),
-                                        tags_of(&store),
-                                    ))
-                                }
-                                // New machine… builds images beside the running one.
-                                Ok(Request::FirmwarePackages) => {
-                                    send(Event::Packages(store_choices(&store)))
-                                }
-                                Ok(Request::CreateImage(image, reference, expected)) => {
-                                    send(Event::Created(create_image(
-                                        &store,
-                                        &image,
-                                        reference,
-                                        expected.as_ref(),
-                                    )));
-                                    cache.refresh(&store).map_err(|e| e.to_string())?;
-                                    send(Event::Snapshot(Arc::new(library_view::snapshot(
-                                        &cache, &query,
-                                    ))));
-                                }
-                                // Settings on another, stopped image.
-                                Ok(Request::PublishRevision(plan, target)) => {
-                                    send(Event::Revised(revise_image(
-                                        &backend, &store, &plan, target,
-                                    )));
-                                    cache.refresh(&store).map_err(|e| e.to_string())?;
-                                    send(Event::Snapshot(Arc::new(library_view::snapshot(
-                                        &cache, &query,
-                                    ))));
-                                }
-                                _ => (),
-                            }
+                        let Some(outcome) = serve_session(
+                            &backend,
+                            &store,
+                            &mut cache,
+                            &query,
+                            &requests,
+                            &send,
+                            || (),
+                        )?
+                        else {
+                            record.recovery = true;
+                            record.write(&owner)?;
+                            drop(owner);
+                            return Ok(false);
                         };
                         if outcome == Finish::Discard {
                             owner.discard_and_remove().map_err(|e| e.to_string())?;
@@ -959,6 +1461,137 @@ fn run<B: Backend>(
                         }
                         send(Event::Finished);
                         send(Event::Recoveries(recoveries(&store)?));
+                    }
+                    Request::LaunchMachine(id, gaming) => {
+                        pending_check = None;
+                        let machine = machine_named(&store, &cache, &id)?;
+                        let row = machine.image_row();
+                        if gaming {
+                            let source =
+                                pc_image::machine::own(&store, &id).map_err(|e| e.to_string())?;
+                            let name = disposable_name(&store, &row.descriptor.digest)?;
+                            let owner = store.workspace(&name).map_err(|e| e.to_string())?;
+                            let mut record = Recovery {
+                                schema: 1,
+                                kind: WorkspaceKind::Disposable,
+                                reference: row.reference.clone(),
+                                image: row.descriptor.clone(),
+                                title: format!("{} (gaming copy)", machine.name()),
+                                recovery: true,
+                                machine: Some(id.clone()),
+                                name: name.clone(),
+                            };
+                            let prepared = (|| -> Result<_> {
+                                record.write(&owner)?;
+                                let prepared = backend.prepare_copy(&source, &owner)?;
+                                prepared.session.into_transfer().map_err(|e| e.to_string())
+                            })();
+                            drop(source);
+                            let transfer = match prepared {
+                                Ok(transfer) => transfer,
+                                Err(error) => {
+                                    owner
+                                        .discard_and_remove()
+                                        .map_err(|e| format!("{error}; cleanup: {e}"))?;
+                                    return Err(error);
+                                }
+                            };
+                            send(Event::Launched(
+                                Box::new(transfer),
+                                Box::new(row),
+                                name,
+                                WorkspaceKind::Disposable,
+                            ));
+                            let Some(outcome) = serve_session(
+                                &backend,
+                                &store,
+                                &mut cache,
+                                &query,
+                                &requests,
+                                &send,
+                                || (),
+                            )?
+                            else {
+                                record.write(&owner)?;
+                                return Ok(false);
+                            };
+                            if outcome == Finish::Discard {
+                                owner.discard_and_remove().map_err(|e| e.to_string())?;
+                            } else {
+                                record.recovery =
+                                    matches!(outcome, Finish::Deferred | Finish::Failed);
+                                record.write(&owner)?;
+                            }
+                            send(Event::Finished);
+                            send(Event::Recoveries(recoveries(&store)?));
+                        } else {
+                            let owner =
+                                pc_image::machine::own(&store, &id).map_err(|e| e.to_string())?;
+                            let prepared = backend.prepare_machine(&owner)?;
+                            let inserted = prepared.inserted;
+                            let transfer = prepared
+                                .session
+                                .into_transfer()
+                                .map_err(|e| e.to_string())?;
+                            send(Event::Launched(
+                                Box::new(transfer),
+                                Box::new(row),
+                                id,
+                                WorkspaceKind::Machine,
+                            ));
+                            // The record takes the last run and drops the
+                            // inserts only once the machine has assembled.
+                            let confirm = || {
+                                if let Err(error) = pc_image::machine::confirm(
+                                    &owner,
+                                    &inserted,
+                                    Some(library_view::host_last_run()),
+                                ) {
+                                    send(Event::Error(error.to_string()));
+                                }
+                            };
+                            let outcome = serve_session(
+                                &backend, &store, &mut cache, &query, &requests, &send, confirm,
+                            )?;
+                            drop(owner);
+                            if outcome.is_none() {
+                                return Ok(false);
+                            }
+                            send(Event::Finished);
+                        }
+                    }
+                    Request::Assembled => (),
+                    Request::Machine(job) => {
+                        // A kept gaming copy is no unfinished session any more.
+                        let kept = matches!(job, MachineJob::KeepCopy { .. });
+                        send(machine_job(&backend, &store, &cache, job));
+                        if kept {
+                            send(Event::Recoveries(recoveries(&store)?));
+                        }
+                    }
+                    // A machine's Disk layers… publishes as Save as new image…
+                    // does: onto the new image with fresh journals, or it
+                    // finishes an interrupted save as that save was chosen.
+                    Request::Publish(_, name, target) if is_machine(&store, &name) => {
+                        let pending = pc_image::machine::pending_commit(&store, &name)
+                            .map_err(|e| e.to_string())?;
+                        let published = match pending {
+                            Some(_) => backend.finish_commit(&store, &name),
+                            None => backend.commit(&store, &name, &target, false),
+                        };
+                        match published {
+                            Ok(descriptor) => send(Event::Published(Box::new(ImageRow {
+                                reference: target.reference,
+                                aliases: Vec::new(),
+                                descriptor,
+                                summary: None,
+                                failure: None,
+                            }))),
+                            Err(error) => send(Event::PublishRefused(Refused {
+                                error,
+                                tags: tags_of(&store),
+                            })),
+                        }
                     }
                     Request::Publish(row, name, target) => {
                         let owner = store.workspace(&name).map_err(|e| e.to_string())?;
@@ -971,6 +1604,7 @@ fn run<B: Backend>(
                                     image: row.descriptor.clone(),
                                     title: row.name().into(),
                                     recovery: true,
+                                    machine: None,
                                     name: name.clone(),
                                 },
                             )
@@ -982,7 +1616,12 @@ fn run<B: Backend>(
                         {
                             backend.prepare(&owner, &row.descriptor, false)?;
                         }
-                        let descriptor = match backend.publish(&owner, &target) {
+                        let published = if record.as_ref().is_some_and(|r| r.machine.is_some()) {
+                            backend.publish_copy(&owner, &target)
+                        } else {
+                            backend.publish(&owner, &target)
+                        };
+                        let descriptor = match published {
                             Ok(descriptor) => descriptor,
                             Err(error) => {
                                 send(Event::PublishRefused(Refused {
@@ -1008,6 +1647,11 @@ fn run<B: Backend>(
                             failure: None,
                         })));
                         send(Event::Recoveries(recoveries(&store)?));
+                    }
+                    // Disk layers › Discard changes on a machine is Reset to image….
+                    Request::Discard(name) if is_machine(&store, &name) => {
+                        pc_image::machine::reset(&store, &name).map_err(|e| e.to_string())?;
+                        send(Event::Done("Workspace changes discarded".into()));
                     }
                     Request::Discard(name) => {
                         store
@@ -1188,6 +1832,9 @@ fn run<B: Backend>(
             send(Event::Snapshot(Arc::new(library_view::snapshot(
                 &cache, &query,
             ))));
+            if lists_machines {
+                send(machine_listing(&store, &cache));
+            }
         }
         Ok(())
     };
@@ -1834,5 +2481,442 @@ mod tests {
         until(&w, |e| matches!(e, Event::Done(_)));
         w.shutdown();
         assert!(!f.store.workspace_path(&rows[0].name).unwrap().exists());
+    }
+
+    fn machine_done(w: &Worker) -> (String, Option<(String, Box<ImageRow>)>, bool) {
+        let Event::MachineDone {
+            message,
+            select,
+            start,
+        } = until(w, |e| matches!(e, Event::MachineDone { .. }))
+        else {
+            unreachable!()
+        };
+        (message, select, start)
+    }
+    fn run_machine(w: &Worker, f: &Fixture, id: &str, value: u8, assembled: bool) {
+        w.send
+            .send(Request::LaunchMachine(id.into(), false))
+            .unwrap();
+        let Event::Launched(transfer, row, name, kind) =
+            until(w, |e| matches!(e, Event::Launched(..)))
+        else {
+            unreachable!()
+        };
+        assert_eq!((name.as_str(), kind), (id, WorkspaceKind::Machine));
+        assert_eq!(row.descriptor.digest, f.row.descriptor.digest);
+        let prepared = transfer.restore().unwrap();
+        f.change(&prepared, value);
+        drop(prepared);
+        if assembled {
+            w.send.send(Request::Assembled).unwrap();
+        }
+        w.send.send(Request::Finish(Finish::Retain)).unwrap();
+        until(w, |e| matches!(e, Event::Finished));
+    }
+
+    /// Start runs a machine in its own workspace; its record takes the run
+    /// only once the shell reports that it assembled. Disk layers' Discard
+    /// changes on a machine resets it to its image and keeps it.
+    #[test]
+    fn a_machine_runs_in_its_own_workspace_and_its_run_counts_once_it_assembled() {
+        use pc_image::machine::State;
+        let f = Fixture::new();
+        let mut w = worker(&f);
+        w.send
+            .send(Request::Machine(MachineJob::Create {
+                image: Box::new(f.row.clone()),
+                name: Some("DOS".into()),
+                start: true,
+            }))
+            .unwrap();
+        let (message, select, start) = machine_done(&w);
+        assert!(message.contains("\u{201c}DOS\u{201d}"), "{message}");
+        let (id, row) = select.unwrap();
+        assert!(start);
+        assert_eq!(id, "dos");
+        assert_eq!(row.descriptor.digest, f.row.descriptor.digest);
+        run_machine(&w, &f, &id, 9, false);
+        let listing = pc_image::machine::get(&f.store, &id).unwrap();
+        assert_eq!(listing.machine.last_run, None, "not assembled, not run");
+        run_machine(&w, &f, &id, 9, true);
+        let listing = pc_image::machine::get(&f.store, &id).unwrap();
+        assert!(listing.machine.last_run.is_some());
+        assert!(matches!(listing.state, State::Changed { .. }));
+        assert!(!f
+            .store
+            .workspace_path(&id)
+            .unwrap()
+            .join("desktop.toml")
+            .exists());
+        w.send.send(Request::Discard(id.clone())).unwrap();
+        until(&w, |e| matches!(e, Event::Done(_)));
+        let listing = pc_image::machine::get(&f.store, &id).unwrap();
+        assert_eq!(listing.state, State::SameAsImage);
+        assert!(listing.machine.last_run.is_some());
+        w.shutdown();
+    }
+
+    /// Gaming mode on a machine plays a disposable copy of it; the machine
+    /// does not change, and Keep as new machine… renames the copy into a
+    /// machine of its own.
+    #[test]
+    fn gaming_mode_on_a_machine_plays_a_copy_that_is_kept_as_a_new_machine() {
+        use pc_image::machine::State;
+        let f = Fixture::new();
+        let mut w = worker(&f);
+        let id = pc_image::machine::create(
+            &f.store,
+            &f.row.descriptor,
+            &f.row.reference,
+            Some("DOS"),
+            None,
+        )
+        .unwrap();
+        w.send
+            .send(Request::LaunchMachine(id.clone(), true))
+            .unwrap();
+        let Event::Launched(transfer, _, name, kind) =
+            until(&w, |e| matches!(e, Event::Launched(..)))
+        else {
+            unreachable!()
+        };
+        assert_eq!(kind, WorkspaceKind::Disposable);
+        assert!(name.starts_with("disposable-"), "{name}");
+        let prepared = transfer.restore().unwrap();
+        f.change(&prepared, 3);
+        drop(prepared);
+        let rows = finish(&w, Finish::Deferred);
+        let record = rows.iter().find(|r| r.name == name).unwrap();
+        assert_eq!(record.machine.as_deref(), Some(id.as_str()));
+        assert_eq!(record.title, "DOS (gaming copy)");
+        assert_eq!(
+            pc_image::machine::get(&f.store, &id).unwrap().state,
+            State::NeverStarted
+        );
+        w.send
+            .send(Request::Machine(MachineJob::KeepCopy {
+                workspace: name.clone(),
+                name: "DOS saves".into(),
+            }))
+            .unwrap();
+        let (_, select, _) = machine_done(&w);
+        let (kept, _) = select.unwrap();
+        assert!(!f.store.workspace_path(&name).unwrap().exists());
+        let listing = pc_image::machine::get(&f.store, &kept).unwrap();
+        assert_eq!(listing.machine.name, "DOS saves");
+        assert!(matches!(listing.state, State::Changed { .. }));
+        w.shutdown();
+        assert!(recoveries(&f.store).unwrap().is_empty());
+    }
+
+    /// Save as new image… of a machine moves it onto the new image with
+    /// fresh journals by default; a version tag that exists is refused, so
+    /// the form asks again with the store's tags.
+    #[test]
+    fn save_as_new_image_of_a_machine_moves_it_and_a_taken_version_asks_again() {
+        let f = Fixture::new();
+        let mut w = worker(&f);
+        let id = pc_image::machine::create(
+            &f.store,
+            &f.row.descriptor,
+            &f.row.reference,
+            Some("Saver"),
+            None,
+        )
+        .unwrap();
+        run_machine(&w, &f, &id, 7, true);
+        w.send
+            .send(Request::Machine(MachineJob::Commit {
+                id: id.clone(),
+                target: target("saver:1.0.0", false),
+                keep: false,
+            }))
+            .unwrap();
+        let (message, select, _) = machine_done(&w);
+        assert!(message.contains("fresh, empty journals"), "{message}");
+        let (_, row) = select.unwrap();
+        assert_ne!(row.descriptor.digest, f.row.descriptor.digest);
+        let listing = pc_image::machine::get(&f.store, &id).unwrap();
+        assert_eq!(listing.machine.source, "saver:1.0.0");
+        assert!(listing.changes.is_empty());
+        w.send
+            .send(Request::Machine(MachineJob::Commit {
+                id: id.clone(),
+                target: target("saver:1.0.0", false),
+                keep: true,
+            }))
+            .unwrap();
+        let Event::CommitRefused(refused) = until(&w, |e| matches!(e, Event::CommitRefused(_)))
+        else {
+            unreachable!()
+        };
+        assert!(refused.tags.iter().any(|(tag, _)| tag == "saver:1.0.0"));
+        w.shutdown();
+    }
+
+    /// A desktop session made before machines existed becomes a machine the
+    /// first time the library opens the store, and only then.
+    #[test]
+    fn desktop_sessions_made_before_machines_become_machines_once() {
+        let f = Fixture::new();
+        let name = regular_name(&f.row.descriptor.digest);
+        {
+            let owner = f.store.workspace(&name).unwrap();
+            let prepared = pc_image::test_support::with_synthetic_firmware(|| {
+                pc_image::workspace::prepare_pinned(&owner, &f.row.descriptor, false)
+            })
+            .unwrap();
+            f.change(&prepared, 4);
+        }
+        let mut w = Worker::synthetic(f.store.root().to_owned());
+        let Event::Migrated(migration) = until(&w, |e| matches!(e, Event::Migrated(_))) else {
+            unreachable!()
+        };
+        assert_eq!(migration.adopted.len(), 1);
+        let Event::Machines(Ok(rows)) = until(&w, |e| matches!(e, Event::Machines(_))) else {
+            unreachable!()
+        };
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].id(), migration.adopted[0]);
+        assert!(!rows[0].listing.changes.is_empty());
+        assert!(!rows[0].drives.is_empty(), "its floppy drives are listed");
+        w.shutdown();
+        let mut again = Worker::synthetic(f.store.root().to_owned());
+        assert!(matches!(
+            until(&again, |e| matches!(
+                e,
+                Event::Migrated(_) | Event::Machines(_)
+            )),
+            Event::Machines(_)
+        ));
+        again.shutdown();
+    }
+
+    fn pending_a(set: &Descriptor) -> image_store::machine::PendingInsert {
+        image_store::machine::PendingInsert {
+            drive: "A:".into(),
+            set: set.clone(),
+            reference: "disks:set".into(),
+            medium: "disk-1".into(),
+            all: false,
+            journal: true,
+        }
+    }
+    /// Whether drive A: of a prepared session starts with a disk of the
+    /// store's installation sets.
+    fn starts_with_set_disk(f: &Fixture, prepared: &pc_image::workspace::PreparedSession) -> bool {
+        prepared
+            .machine
+            .drives
+            .iter()
+            .find(|d| d.unit == 0 && matches!(d.kind, assembly::DriveKind::Floppy { .. }))
+            .and_then(|d| d.media.as_ref())
+            .and_then(|list| list.entries.first())
+            .is_some_and(|m| matches!(&m.image, assembly::ImageSource::File(p) if p.starts_with(f.store.root())))
+    }
+
+    /// A stopped machine's pending disk is in its drive at Start and leaves
+    /// the record only once the machine assembled; a run that never
+    /// assembled keeps it.
+    #[test]
+    fn a_pending_disk_goes_in_at_start_and_leaves_the_record_once_assembled() {
+        let f = Fixture::new();
+        let set = f.import_set();
+        let mut w = worker(&f);
+        let id = pc_image::machine::create(
+            &f.store,
+            &f.row.descriptor,
+            &f.row.reference,
+            Some("DOS"),
+            None,
+        )
+        .unwrap();
+        w.send
+            .send(Request::Machine(MachineJob::SetPending {
+                id: id.clone(),
+                drive: "A:".into(),
+                insert: Some(Box::new(pending_a(&set))),
+            }))
+            .unwrap();
+        until(&w, |e| matches!(e, Event::MachineNote(_)));
+        for assembled in [false, true] {
+            w.send
+                .send(Request::LaunchMachine(id.clone(), false))
+                .unwrap();
+            let Event::Launched(transfer, ..) = until(&w, |e| matches!(e, Event::Launched(..)))
+            else {
+                unreachable!()
+            };
+            let prepared = transfer.restore().unwrap();
+            assert!(starts_with_set_disk(&f, &prepared));
+            drop(prepared);
+            if assembled {
+                w.send.send(Request::Assembled).unwrap();
+            }
+            w.send.send(Request::Finish(Finish::Retain)).unwrap();
+            until(&w, |e| matches!(e, Event::Finished));
+            let pending = pc_image::machine::get(&f.store, &id)
+                .unwrap()
+                .machine
+                .pending;
+            assert_eq!(pending.is_empty(), assembled, "assembled: {assembled}");
+        }
+        w.shutdown();
+    }
+
+    /// Gaming mode on a machine plays it with its settings and pending disk,
+    /// which the machine keeps; a power cycle starts the same copy again as
+    /// a copy of the machine; Keep as new image… publishes it with the
+    /// machine's settings.
+    #[test]
+    fn a_machine_copy_power_cycles_as_the_machine_and_is_kept_as_an_image() {
+        let f = Fixture::new();
+        let set = f.import_set();
+        let mut w = worker(&f);
+        let id = pc_image::machine::create(
+            &f.store,
+            &f.row.descriptor,
+            &f.row.reference,
+            Some("DOS"),
+            None,
+        )
+        .unwrap();
+        let mut tables = pc_image::machine::settings(&f.store, &id).unwrap().machine;
+        tables
+            .entry("memory")
+            .or_insert_with(|| toml::Value::Table(toml::Table::new()))
+            .as_table_mut()
+            .unwrap()
+            .insert("extended_kib".into(), 1024.into());
+        pc_image::test_support::with_synthetic_firmware(|| {
+            pc_image::machine::change_settings(&f.store, &id, tables, true)
+        })
+        .unwrap();
+        pc_image::machine::set_pending_insert(&f.store, &id, "A:", Some(pending_a(&set))).unwrap();
+        let memory = 0x100000 + 1024 * 1024;
+        w.send
+            .send(Request::LaunchMachine(id.clone(), true))
+            .unwrap();
+        let Event::Launched(transfer, row, name, kind) =
+            until(&w, |e| matches!(e, Event::Launched(..)))
+        else {
+            unreachable!()
+        };
+        assert_eq!(kind, WorkspaceKind::Disposable);
+        let prepared = transfer.restore().unwrap();
+        assert!(starts_with_set_disk(&f, &prepared));
+        assert_eq!(prepared.machine.memory.address_space_bytes, memory);
+        f.change(&prepared, 3);
+        drop(prepared);
+        // Power cycle: stop keeping the copy, start it again by its name.
+        finish(&w, Finish::Retain);
+        w.send
+            .send(Request::Launch(
+                *row.clone(),
+                WorkspaceKind::Disposable,
+                Some(name.clone()),
+            ))
+            .unwrap();
+        let Event::Launched(transfer, ..) = until(&w, |e| matches!(e, Event::Launched(..))) else {
+            unreachable!()
+        };
+        let prepared = transfer.restore().unwrap();
+        assert_eq!(prepared.machine.memory.address_space_bytes, memory);
+        assert!(starts_with_set_disk(&f, &prepared));
+        drop(prepared);
+        let rows = finish(&w, Finish::Deferred);
+        let record = rows.iter().find(|r| r.name == name).unwrap();
+        assert_eq!(record.machine.as_deref(), Some(id.as_str()));
+        assert_eq!(record.title, "DOS (gaming copy)");
+        assert_eq!(
+            pc_image::machine::get(&f.store, &id)
+                .unwrap()
+                .machine
+                .pending,
+            [pending_a(&set)]
+        );
+        // Keep as new image…: published with the machine's settings.
+        w.send
+            .send(Request::Publish(
+                *row,
+                name.clone(),
+                target("copy:1.0.0", false),
+            ))
+            .unwrap();
+        until(&w, |e| matches!(e, Event::Published(_)));
+        assert!(!f.store.workspace_path(&name).unwrap().exists());
+        let resolved = pc_image::test_support::with_synthetic_firmware(|| {
+            pc_image::resolve(&f.store, "copy:1.0.0", &f.temp.path().join("copy"))
+        })
+        .unwrap();
+        assert_eq!(resolved.memory.address_space_bytes, memory);
+        w.shutdown();
+    }
+
+    /// While a machine runs the worker still answers machine jobs: its
+    /// settings open (read-only in the window), a rename and a new machine
+    /// are made, and a change the running machine refuses says why.
+    #[test]
+    fn machine_jobs_are_answered_while_a_machine_runs() {
+        let f = Fixture::new();
+        let mut w = worker(&f);
+        let id = pc_image::machine::create(
+            &f.store,
+            &f.row.descriptor,
+            &f.row.reference,
+            Some("DOS"),
+            None,
+        )
+        .unwrap();
+        w.send
+            .send(Request::LaunchMachine(id.clone(), false))
+            .unwrap();
+        until(&w, |e| matches!(e, Event::Launched(..)));
+        w.send
+            .send(Request::Machine(MachineJob::OpenSettings(id.clone())))
+            .unwrap();
+        assert!(matches!(
+            until(&w, |e| matches!(e, Event::MachineSettingsOpened(_))),
+            Event::MachineSettingsOpened(Ok(_))
+        ));
+        w.send
+            .send(Request::Machine(MachineJob::Rename(
+                id.clone(),
+                "DOS 2".into(),
+            )))
+            .unwrap();
+        machine_done(&w);
+        w.send
+            .send(Request::Machine(MachineJob::Create {
+                image: Box::new(f.row.clone()),
+                name: Some("Second".into()),
+                start: false,
+            }))
+            .unwrap();
+        let (_, select, _) = machine_done(&w);
+        assert!(select.is_some());
+        w.send
+            .send(Request::Machine(MachineJob::Reset(id.clone())))
+            .unwrap();
+        let refused = loop {
+            match w
+                .receive
+                .recv_timeout(crate::test_wait::HANG_GUARD)
+                .unwrap()
+            {
+                Event::Error(error) => break error,
+                _ => continue,
+            }
+        };
+        assert!(refused.contains("running"), "{refused}");
+        w.send.send(Request::Finish(Finish::Retain)).unwrap();
+        until(&w, |e| matches!(e, Event::Finished));
+        assert_eq!(
+            pc_image::machine::get(&f.store, &id).unwrap().machine.name,
+            "DOS 2"
+        );
+        assert_eq!(pc_image::machine::list(&f.store).unwrap().len(), 2);
+        w.shutdown();
     }
 }

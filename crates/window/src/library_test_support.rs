@@ -35,6 +35,39 @@ impl Fixture {
         };
         Self { temp, store, row }
     }
+    /// Import a one-disk 360K installation set, `disks:set`, as the command
+    /// line does; returns its manifest.
+    pub fn import_set(&self) -> image_store::Descriptor {
+        let disk = self.temp.path().join("set-disk.img");
+        let args: Vec<std::ffi::OsString> = vec![
+            "floppy".into(),
+            "--type".into(),
+            "360K".into(),
+            "--format".into(),
+            disk.clone().into_os_string(),
+        ];
+        cli::create::execute(cli::create::parse(&args).unwrap(), &mut std::io::sink()).unwrap();
+        let args: Vec<std::ffi::OsString> = vec![
+            "image".into(),
+            "media".into(),
+            "import".into(),
+            disk.into_os_string(),
+            "--store".into(),
+            self.store.root().as_os_str().to_owned(),
+            "--title".into(),
+            "Session disks".into(),
+            "--tag".into(),
+            "disks:set".into(),
+        ];
+        let mut errors = Vec::new();
+        assert_eq!(
+            cli::command::run(&args, &mut std::io::sink(), &mut errors),
+            0,
+            "{}",
+            String::from_utf8_lossy(&errors)
+        );
+        self.store.tag_descriptor("disks:set").unwrap()
+    }
     pub fn change(&self, prepared: &pc_image::workspace::PreparedSession, value: u8) {
         let change = |source: &assembly::ImageSource, write: &assembly::WriteMode| {
             let assembly::ImageSource::File(path) = source else {

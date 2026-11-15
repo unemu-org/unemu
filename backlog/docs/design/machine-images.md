@@ -725,12 +725,63 @@ without losing data:
 - A damaged workspace is reported (`migration-skipped:NAME`) and skipped; the
   others migrate.
 
-*Interim, until the desktop starts machines itself:* the desktop of this
-build still finds its workspace for an image by the `regular-` prefix. After
-a migration it therefore shows that image without changes, its Start begins
-a new `regular-…` workspace from the pristine image, and its Save as new
-image… publishes from that new workspace. Nothing is lost: the work done
-there is adopted by the next migration as a further machine, `title (2)`.
+**Desktop library** (approved machines and media-picker mock-ups,
+2026-11-15). The library worker opens the store and runs the migration once
+per start; workspaces it adopts are named in a one-time notice above the
+Machines list. The sidebar is one Library group: Machines (with Recently
+played and Favourites, which list machines), Images, Installation media,
+Firmware and Machine files; the selected collection's facets sit under it
+(machines filter by their own labels and their image's catalogue metadata),
+and a greyed, collapsed Remotes group says it comes after the MVP. The
+library opens on Machines. Every machine change runs on the worker through
+`pc_image::machine`, never on the frame loop:
+
+- *Start* on a machine runs it in its own workspace (`own`, `prepare`); the
+  shell reports when the machine has assembled and only then the worker
+  `confirm`s the run, so a failed assembly keeps the pending inserts and the
+  last run. Start on an image without a machine creates one named after the
+  image and starts it; with machines it opens Start… with the last-run
+  machine preselected and New machine last.
+- *Gaming mode* on a machine plays a disposable copy of it as it is
+  (`prepare_copy`: its journals and session pin are copied, its settings
+  overlay and pending inserts apply, nothing is confirmed); on an image it
+  plays a fresh copy of the image, as before. The copy records what it runs
+  with (`copy-of.toml`: the machine, its tag, labels, settings overlay and
+  pending inserts), so later changes to the machine never reach it. When it
+  ends: Discard, Keep as new machine… (`keep_copy`: the disposable workspace
+  is renamed to the new machine's id, which takes the recorded settings and
+  labels) or Keep as new image… (`publish_copy`, with the recorded
+  settings); a power cycle starts it again the same way (`resume_copy`). The
+  desktop record of a copy names its machine (`machine` in `desktop.toml`).
+- *Settings…* on a machine opens the approved property sheet over the tables
+  the machine runs with, marks what differs from the image and keeps the
+  result with `change_settings` (OK, Apply); Image › Settings… still makes a
+  new image revision. *Save as new image…* asks whether the machine moves
+  onto the new image (default) or keeps its changes on the old one, with the
+  repository defaulting to the machine name's slug at 1.0.0 and the title to
+  the name; an unfinished save is finished from Disk layers' form. *Disk
+  layers…* on a machine shows its chains with its working changes; its
+  Discard changes resets the machine and its Save as layer… commits it.
+- *Insert…* of a drive opens the media picker. Into a stopped machine it
+  stores a pending insert (`set_pending_inserts`, replacing the drive's
+  earlier one); the drive chips and the Media menu show it "at Start" and
+  Take out again removes it. Into a running or halted machine the chosen
+  set goes in at once through the existing library insert path. The
+  Installation media collection's Insert into… lists the drives of every
+  machine that take the set and opens the picker there. Pending disks change
+  one drive at a time (`set_pending_insert`, on the record as it is). A disk
+  the library refuses (a damaged set, a busy store) only says why; the
+  machine keeps running.
+- *Unfinished saves.* An interrupted Save as new image… is finished with the
+  choice its intent recorded (`pending_commit`, `finish_commit`): moving onto
+  the new image, or keeping the changes on the old one.
+- *While a machine runs*, the worker still answers machine jobs: Settings…
+  opens read-only, Rename… and New machine… work, and a change that needs
+  the running machine's lock is refused with a reason.
+- File › New machine… builds the image and, unless its Name and tag step's
+  check box is cleared, a machine from it (named after the image title
+  unless named there).
+
 *Rolling back* to a build without machines: rename each machine's directory
 `workspaces/<id>` back to a `regular-…` name (any `regular-` name works; that
 desktop finds its workspace by the pinned image) and remove
@@ -1273,8 +1324,9 @@ hold the vendor's unmodified files, pinned by SHA-256 in the fetch scripts
 under `vendor/shareware/`; game files and terms texts never enter the
 repository.
 
-**Read-only bases, writable installations.** Media > Insert > From library…
-resolves a set tag once, verifies it and offers loading the whole set into the
+**Read-only bases, writable installations.** Inserting a set from the
+library (the media picker's This library) resolves a set tag once, verifies
+it and offers loading the whole set into the
 selected drive's catalogue **in config order** (default), initially inserting
 the chosen entry. With that option cleared, add only the chosen entry. Validate
 all entries being added against the selected provider/drive before changing the
@@ -1350,9 +1402,13 @@ and Import installation media… followed on 2026-11-15 from the extras mock-up
 set's ordered media and extras; Insert hands the selected set to the running
 drive's From library… view, which validates and loads it as above; Add to
 machine…, Make transfer media… and Export stay disabled until their work lands.
-The pane's Insert is reachable only once the library can be shown beside a
-running machine; the shell draws the library only while no machine runs, so
-today Media › Insert › From library… is the path into a drive.
+Since the approved media-picker mock-up (2026-11-15) one Insert… per drive
+opens the media picker, which replaces Browse / catalogue… and From
+library… (the picker's This library source runs the same validation and
+load, without its dialog); the pane's Insert into… lists the drives of the
+library's machines that take the set and opens the picker on one (§3.2,
+Desktop library). Add to machine… stays disabled: the store keeps no
+machine catalogues yet.
 The dialog and `image media import` share one plan-and-publish function and its
 refusals. Both write the set's one title record: title, publishers, genres,
 release year, software platform and description, and on the command line also

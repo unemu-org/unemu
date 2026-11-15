@@ -51,20 +51,27 @@ icons are the project's own mock-up artwork, under the project licence.
 | Mock-up | Icon | The app |
 |---|---|---|
 | main-window | application monitor | classic title strip (Windows and Linux; macOS uses its native title bar) |
-| main-window, library, machines | Start ▶ green, Pause, Stop red, A: floppy, Eject, Settings gear, Layers | toolbar; Resume reuses Start's triangle; Ctrl+Alt+Del is code text without an icon, as in the mock-up |
+| main-window, library, machines, media-picker | Start ▶ green, Pause, Stop red, A: and B: floppy, Eject, Settings gear, Layers | toolbar; Resume reuses Start's triangle; A: and B: open the media picker; Ctrl+Alt+Del is code text without an icon, as in the mock-up |
 | main-window | ▶ Ⅱ ■ | Machine menu mark column (Start, Pause/Resume, Stop); every Machine menu item keeps the column |
 | main-window | ⏏ | Media › Eject A:/B: and the floppy drive menus |
 | main-window | ⚠ after a name | rows of unreadable images, firmware packages, media sets and machine files with a problem (replaces the old `[!]` prefix) |
 | main-window | 🔊 / 🔇 | status bar audio cell, in place of the word "Audio" (`🔊 on`, `🔇 muted (user)`, `🔇 unavailable`), so the text keeps its width; 🔇 while muted or no sound device is active |
-| machines | image, media set, firmware, machine file | tree collections (All images, Installation media, Firmware, Machine files) and their rows; the image icon heads an image's details |
-| machines | ★ | after a favourite image's name, in its row and its details heading |
+| machines, media-picker | machine (a monitor on a stand) | tree Machines, machine rows, a machine's details heading |
+| machines | image, media set, firmware, machine file | tree collections (Images, Installation media, Firmware, Machine files) and their rows; the image icon heads an image's details |
+| machines | ★ | after a favourite machine's or image's name, in its row and its details heading |
+| machines | ⚑ tag moved | the Source image badge of a machine whose tag now names another image, in its row and details |
+| machines | ● differs from the image | Settings… on a machine: the hint of a differing field and its tab label |
+| machines | ⓘ | the migration notice and the banner of Settings… on a machine (painted, as everywhere) |
+| machines | ⌘ ⇧ ⌫ | macOS menu shortcuts, ⌫ for Delete machine… and Delete tag… |
 | machines | ⚠ unfinished session | before the library's Unfinished sessions heading |
 | machines, new-machine | ✓ finished step | New machine wizard step list ("!" still marks a step that needs attention) |
 | new-machine, save-as-image | ✓ free tag | the tag check line of New machine… and Save as new image… |
 | save-as-image, firmware | ⓘ | the notes of image Settings… and Edit metadata… |
 | save-as-image | ? disc, ✕ disc | Move tag? and Version tag already exists |
 | get-templates | monitor over a keyboard | the empty library card |
-| media-picker | application monitor, Start, Stop, A: floppy, installation media set | the same places as above; ⌘ ⇧ in macOS menu shortcuts |
+| media-picker | application monitor, Start, Stop, A: and B: floppy, machine, installation media set | the same places as above; ⌘ ⇧ in macOS menu shortcuts |
+| media-picker | ▾ | Installation media › Insert into… ▾ menu button |
+| media-picker | ↑ ↓ | the picker's key note (↑↓ choose) |
 | registry-accounts, get-templates, firmware, save-as-image | ● ○ ✓ ✗ ⚠ ▲ ▼ ↑ ↓ └ ─ | already in the app's text; ✓ and ✗ are visible since the font subset |
 
 The name column of the library lists is now left-aligned: a centred egui label
@@ -77,18 +84,8 @@ name cells are left-aligned. Child rows of a repository group are set in by
 - **library.html toolbar** (New, Properties, Browse registry…, Push, Delete) and
   **machines.html toolbar** (Gaming mode, New machine from image…, Save as new
   image…): the app has one toolbar, the main-window mock-up's machine toolbar,
-  and these commands are not on it. Run, Start, Stop and Settings share the
-  toolbar's icons.
-- **Machines collection** (machines.html monitor icon, ⚑ tag moved, ● differs
-  from the image, ⓘ machine settings and migration notes, ⌫ in the Delete
-  shortcuts): the collection does not exist in the app yet. ⌫ is in the font.
-- **Media picker** (media-picker.html: the toolbar's B: floppy button, ▾ on
-  the Installation media collection's Insert into… menu, ↑↓ in its key
-  note; its machine icon is the Machines collection's): the picker is not
-  built yet; it is planned with upc-5pw.67, implemented with the machines GUI
-  (upc-5pw.66). The fonts already have ▾ (Hack) and ↑↓, and a test requires
-  a glyph for every mock-up character, built or planned, except ⓘ, which is
-  painted.
+  and these commands are not on it (they are in the menus and the details
+  panes). Run, Start, Stop and Settings share the toolbar's icons.
 - **main-window welcome list monitor**: the welcome list holds images and
   machine files, which take the machines mock-up's own icons.
 - **View menu ✓ and ●**: egui's check boxes (Toolbar, Status bar) and selection

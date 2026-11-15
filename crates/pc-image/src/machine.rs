@@ -897,6 +897,27 @@ pub fn set_pending_inserts(store: &Store, id: &str, pending: Vec<PendingInsert>)
     edit(store, id, |m| m.pending = pending)
 }
 
+/// Set or clear the disk drive `drive` (`A:` or `B:`) of a stopped machine
+/// gets at its next Start, leaving its other drives' pending disks as they
+/// are. The change is made on the record as it is now, under the index lock,
+/// so two drives changed one after another both keep their disks.
+pub fn set_pending_insert(
+    store: &Store,
+    id: &str,
+    drive: &str,
+    insert: Option<PendingInsert>,
+) -> Result<()> {
+    let (_owner, _) = owner(store, id)?;
+    floppy_unit(drive)?;
+    if insert.as_ref().is_some_and(|insert| insert.drive != drive) {
+        return Err(invalid("the pending disk names another drive"));
+    }
+    edit(store, id, |m| {
+        m.pending.retain(|p| p.drive != drive);
+        m.pending.extend(insert);
+    })
+}
+
 fn floppy_unit(drive: &str) -> Result<u8> {
     match drive {
         "A:" => Ok(0),
@@ -1201,6 +1222,23 @@ pub fn commit(
     title: Option<&str>,
     keep_on_old_image: bool,
 ) -> Result<Descriptor> {
+    commit_with_hook(store, id, tag, expected, title, keep_on_old_image, |_| {
+        Ok(())
+    })
+}
+
+/// [`commit`] with a hook after each publication step, which may fail it
+/// there; fault-injection tests use it to interrupt a save.
+#[doc(hidden)]
+pub fn commit_with_hook(
+    store: &Store,
+    id: &str,
+    tag: &str,
+    expected: Option<&Digest>,
+    title: Option<&str>,
+    keep_on_old_image: bool,
+    hook: impl FnMut(workspace::PublicationStep) -> Result<()>,
+) -> Result<Descriptor> {
     let (owner, machine) = owner(store, id)?;
     let image = pinned(&owner, &machine)?;
     workspace::pin(&owner, &image)?;
@@ -1212,7 +1250,7 @@ pub fn commit(
         Some(title.unwrap_or(&machine.name)),
         machine.settings.as_ref(),
         keep_on_old_image,
-        |_| Ok(()),
+        hook,
     )?;
     if !keep_on_old_image {
         edit(store, id, |m| {
@@ -1222,6 +1260,213 @@ pub fn commit(
         })?;
     }
     Ok(published)
+}
+
+/// The target of an unfinished Save as new image…, as its durable intent
+/// records it.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize)]
+pub struct PendingCommit {
+    pub tag: String,
+    pub expected: Option<Digest>,
+    /// The machine stays on its old image with its changes.
+    #[serde(default)]
+    pub keep: bool,
+}
+
+/// The unfinished Save as new image… of a machine, if one is pending.
+pub fn pending_commit(store: &Store, id: &str) -> Result<Option<PendingCommit>> {
+    let path = store.workspace_path(id)?.join("transaction.toml");
+    let bytes = match fs::read(&path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.into()),
+    };
+    if bytes.len() as u64 > MAX_SMALL_BLOB {
+        return Err(invalid("publication intent exceeds the size limit"));
+    }
+    let text = std::str::from_utf8(&bytes).map_err(|e| invalid(e.to_string()))?;
+    Ok(Some(
+        toml::from_str(text).map_err(|e| invalid(e.to_string()))?,
+    ))
+}
+
+/// Finish an interrupted Save as new image… with the target and the choice
+/// (move onto the new image, or keep the changes on the old one) its intent
+/// recorded, so every change it was saving is kept.
+pub fn finish_commit(store: &Store, id: &str) -> Result<Descriptor> {
+    let pending = pending_commit(store, id)?
+        .ok_or_else(|| invalid(format!("machine {id} has no unfinished save")))?;
+    commit(
+        store,
+        id,
+        &pending.tag,
+        pending.expected.as_ref(),
+        None,
+        pending.keep,
+    )
+}
+
+/// What a Gaming-mode copy of a machine runs with, recorded in the copy when
+/// it is made: keeping it, publishing it or starting it again uses exactly
+/// this, even after the machine changes or goes.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CopyOf {
+    pub schema: u32,
+    /// The machine the copy was made from.
+    pub machine: String,
+    pub name: String,
+    /// The tag the machine was made from.
+    #[serde(default)]
+    pub source: String,
+    #[serde(default)]
+    pub labels: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub settings: Option<Table>,
+    #[serde(default)]
+    pub pending: Vec<PendingInsert>,
+}
+
+const COPY_OF: &str = "copy-of.toml";
+
+/// The record of the machine a Gaming-mode copy was made from, if it is one.
+pub fn copy_of(copy: &Workspace<'_>) -> Result<Option<CopyOf>> {
+    let Some(bytes) = copy.read(COPY_OF)? else {
+        return Ok(None);
+    };
+    let text = std::str::from_utf8(&bytes).map_err(|e| invalid(e.to_string()))?;
+    let record: CopyOf = toml::from_str(text).map_err(|e| invalid(e.to_string()))?;
+    if record.schema != 1 {
+        return Err(invalid("unsupported copy record schema"));
+    }
+    Ok(Some(record))
+}
+
+/// Prepare a disposable copy of a stopped machine, as Gaming mode plays it:
+/// `copy`, a fresh workspace the caller owns and later keeps or discards,
+/// takes the machine's session pin and journals and a record of its name,
+/// tag, labels, settings overlay and pending inserts ([`CopyOf`]); the
+/// session runs with that overlay and those inserts. The machine itself does
+/// not change, so nothing of the copy is ever confirmed.
+pub fn prepare_copy(source: &Workspace<'_>, copy: &Workspace<'_>) -> Result<Prepared> {
+    let store = source.store();
+    let machine = record(store, source.name())?;
+    require_settled(source)?;
+    let image = pinned(source, &machine)?;
+    copy_workspace(source.path(), copy.path())?;
+    workspace::pin(copy, &image)?;
+    let record = CopyOf {
+        schema: 1,
+        machine: source.name().to_owned(),
+        name: machine.name.clone(),
+        source: machine.source.clone(),
+        labels: machine.labels.clone(),
+        settings: machine.settings.clone(),
+        pending: machine.pending.clone(),
+    };
+    copy.write(
+        COPY_OF,
+        toml::to_string(&record)
+            .map_err(|e| invalid(e.to_string()))?
+            .as_bytes(),
+    )?;
+    resume_copy(copy)
+}
+
+/// Prepare a Gaming-mode copy again, as a power cycle restarts it: with the
+/// settings overlay and pending inserts recorded when it was made, over its
+/// own journals.
+pub fn resume_copy(copy: &Workspace<'_>) -> Result<Prepared> {
+    let record = copy_of(copy)?.ok_or_else(|| invalid("not a copy of a machine"))?;
+    let image = workspace::pinned_descriptor(copy)?
+        .map(|image| identity(&image))
+        .ok_or_else(|| invalid("the copy was never started"))?;
+    let mut session = workspace::prepare_machine(copy, &image, record.settings.as_ref())?;
+    for insert in &record.pending {
+        insert_medium(copy.store(), copy, &mut session, insert)?;
+    }
+    Ok(Prepared {
+        session,
+        inserted: Vec::new(),
+    })
+}
+
+/// Keep a disposable Gaming-mode workspace as a machine named `name`. The
+/// workspace is renamed to the new machine's id; nothing is copied. A copy of
+/// a machine ([`copy_of`]) keeps the tag, settings overlay and labels it ran
+/// with; another copy takes a tag that names its image.
+pub fn keep_copy(
+    store: &Store,
+    workspace_name: &str,
+    name: &str,
+    created: Option<String>,
+) -> Result<String> {
+    let name = validate_name(name)?;
+    let mut owner = store.workspace(workspace_name)?;
+    require_settled(&owner)?;
+    let image = workspace::pinned_descriptor(&owner)?
+        .map(|image| identity(&image))
+        .ok_or_else(|| invalid("the copy was never started"))?;
+    let template = copy_of(&owner)?;
+    let source = match &template {
+        Some(record) => record.source.clone(),
+        None => all_tags(store)?
+            .into_iter()
+            .find(|tag| tag.manifest.digest == image.digest)
+            .map(|tag| tag.name)
+            .unwrap_or_default(),
+    };
+    let id = store.edit_machines(|machines| {
+        if machines.find_name(&name).is_some() {
+            return Err(clash(machines, &name));
+        }
+        let id = store.free_machine_id(machines, &name)?;
+        let origin = if template.is_some() {
+            Origin::Duplicate
+        } else {
+            Origin::New
+        };
+        let mut machine = Machine::new(&name, image.clone(), &source, origin);
+        machine.created = created;
+        if let Some(template) = &template {
+            machine.settings = template.settings.clone();
+            machine.labels = template.labels.clone();
+        }
+        machines.insert(&id, machine)?;
+        Ok(id)
+    })?;
+    if let Err(error) = owner.rename(&id) {
+        let _ = store.edit_machines(|machines| Ok(machines.remove(&id)));
+        return Err(error.into());
+    }
+    // The machine exists now; leftovers of the copy are only tidied, so a
+    // failure here never leaves it looking like an unfinished session.
+    let _ = owner.remove("desktop.toml");
+    let _ = owner.remove(COPY_OF);
+    Ok(id)
+}
+
+/// Publish a disposable Gaming-mode workspace as a new image, as Keep as new
+/// image… does. A copy of a machine ran with that machine's settings overlay
+/// as recorded in the copy, so the new image's configuration takes it too.
+pub fn publish_copy(
+    copy: &Workspace<'_>,
+    tag: &str,
+    expected: Option<&Digest>,
+    flatten: bool,
+    title: Option<&str>,
+) -> Result<Descriptor> {
+    let settings = copy_of(copy)?.and_then(|record| record.settings);
+    workspace::publish_machine(
+        copy,
+        tag,
+        expected,
+        flatten,
+        title,
+        settings.as_ref(),
+        false,
+        |_| Ok(()),
+    )
 }
 
 /// A prepared launch of a machine and the pending inserts it puts in.

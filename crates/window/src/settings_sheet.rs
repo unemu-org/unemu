@@ -204,6 +204,9 @@ pub(crate) enum ImageAction {
     None,
     Cancel,
     Review,
+    /// Settings… on a machine: keep the draft as its settings; `true`
+    /// closes the sheet afterwards (OK), `false` keeps it open (Apply).
+    Apply(bool),
 }
 
 fn title_bar(ui: &mut egui::Ui, title: &str, classic: bool) -> bool {
@@ -247,24 +250,40 @@ pub(crate) fn show_image(
     let mut close = false;
     let reference = model.row.reference.clone();
     let digest = save_image::short(&model.row.descriptor.digest);
+    let machine = model.machine_name().map(str::to_owned);
     egui::Modal::new(egui::Id::unique("image-settings")).show(ctx, |ui| {
         ui.set_width(680.0);
-        if title_bar(ui, &format!("Settings — {reference} (image)"), classic) {
+        let heading = match &machine {
+            Some(name) => format!("Settings — {name} (machine)"),
+            None => format!("Settings — {reference} (image)"),
+        };
+        if title_bar(ui, &heading, classic) {
             close = true;
         }
-        // The save-as-image mock-up's note banner: ⓘ beside its two lines.
+        // The save-as-image mock-up's note banner: ⓘ beside its two lines;
+        // the machines mock-up's banner for Settings… on a machine.
         ui.horizontal_top(|ui| {
             crate::shell_icons::show(ui, crate::shell_icons::Icon::Info);
-            ui.vertical(|ui| {
-                ui.strong("Changes create a new image revision; disks are shared.");
-                hint(ui, format!("The image {digest} itself never changes. Its disks, firmware and media are reused as they are; only the configuration is new."));
+            ui.vertical(|ui| match &machine {
+                Some(_) => {
+                    ui.strong("These settings belong to this machine.");
+                    hint(ui, format!("Changes apply at its next start; the image {reference} never changes. Save as new image… writes them into a new image. To change the image itself, use Image › Settings…, which publishes a new image revision."));
+                }
+                None => {
+                    ui.strong("Changes create a new image revision; disks are shared.");
+                    hint(ui, format!("The image {digest} itself never changes. Its disks, firmware and media are reused as they are; only the configuration is new."));
+                }
             });
         });
-        if model.source_tag_moves() {
+        if machine.is_none() && model.source_tag_moves() {
             hint(ui, format!("{reference} is not a version tag: publishing under it moves it to the revision after a confirmation, and the old image stays reachable by its digest."));
         }
         if model.read_only {
-            ui.label("This image is running. Stop it before changing its settings.");
+            ui.label(if machine.is_some() {
+                "The machine is running, so its settings open read-only. Stop it to change them."
+            } else {
+                "This image is running. Stop it before changing its settings."
+            });
         }
         let changes = model.changes();
         ui.horizontal(|ui| {
@@ -313,7 +332,12 @@ pub(crate) fn show_image(
                         edit = Some((field.path.clone(), value));
                     }
                     if let Some((_, Some(old))) = changes.iter().find(|(f, _)| f.path == field.path) {
-                        hint(ui, format!("Was: {}", caps::value_label(&model.draft, &field.path, old)));
+                        let old = caps::value_label(&model.draft, &field.path, old);
+                        hint(ui, if machine.is_some() {
+                            format!("Image: {old} · ● differs from the image")
+                        } else {
+                            format!("Was: {old}")
+                        });
                     }
                     for diagnostic in validation.diagnostics.iter().filter(|d| caps::diagnostic_affects_field(d, &field.path)) {
                         ui.add(egui::Label::new(&diagnostic.reason).wrap());
@@ -375,6 +399,26 @@ pub(crate) fn show_image(
             ui.add(egui::Label::new(error).wrap());
         }
         ui.separator();
+        if machine.is_some() {
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.add_enabled(model.can_apply(), egui::Button::new("Apply")).clicked() {
+                    action = ImageAction::Apply(false);
+                }
+                if ui.button("Cancel").clicked() {
+                    close = true;
+                }
+                if ui.add_enabled(!model.read_only, egui::Button::new("OK")).clicked() {
+                    action = ImageAction::Apply(true);
+                }
+                let count = model.changes().len();
+                ui.label(match count {
+                    0 => "Same as the image".to_owned(),
+                    1 => "1 setting differs from the image".to_owned(),
+                    n => format!("{n} settings differ from the image"),
+                });
+            });
+            return;
+        }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if ui.button("Cancel").clicked() {
                 close = true;
@@ -403,9 +447,10 @@ pub(crate) fn show_image(
             } else {
                 ui.heading("Discard changes?");
             }
-            ui.label(format!(
-                "The changes to {reference} are not published. Discard them?"
-            ));
+            ui.label(match &machine {
+                Some(name) => format!("The changes to {name} are not saved. Discard them?"),
+                None => format!("The changes to {reference} are not published. Discard them?"),
+            });
             ui.horizontal(|ui| {
                 if ui.button("Discard changes").clicked() {
                     answer = Some(true);

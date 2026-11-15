@@ -1117,6 +1117,40 @@ fn page_name(ui: &mut egui::Ui, wizard: &mut Wizard) {
         ui.add(egui::TextEdit::singleline(&mut wizard.title).hint_text("Open AT workbench"));
     });
     small(ui, "Shown in the library; stored as the image's title.");
+    small(ui, "The image is the immutable recipe: configuration, firmware, blank disks, empty media catalogues.");
+    ui.separator();
+    // The machines mock-up: the step also names the machine made from it.
+    ui.strong("Machine");
+    ui.checkbox(&mut wizard.make_machine, "Also create a machine from it");
+    ui.add_enabled_ui(wizard.make_machine, |ui| {
+        ui.horizontal(|ui| {
+            ui.add_sized([150.0, 20.0], egui::Label::new("Machine name"));
+            let hint = if wizard.title.trim().is_empty() {
+                "the image's title".to_owned()
+            } else {
+                wizard.title.trim().to_owned()
+            };
+            ui.add(egui::TextEdit::singleline(&mut wizard.machine_name).hint_text(hint));
+        });
+    });
+    if wizard.make_machine {
+        let name = wizard
+            .machine_choice()
+            .flatten()
+            .unwrap_or_else(|| "machine".into());
+        small(
+            ui,
+            format!(
+                "Defaults to the image title. Workspace id for the command line: {}.",
+                image_store::machine::slug(&name)
+            ),
+        );
+        if let Some(problem) = wizard.machine_problem() {
+            ui.colored_label(ui.visuals().warn_fg_color, problem);
+        }
+    } else {
+        small(ui, "No machine: the image waits in Images until you start it or choose New machine from image….");
+    }
     ui.separator();
     ui.strong("Which tags can move");
     small(ui, "Version tags, shaped like x.y.z or x.y.z-pre such as 1.0.0 or 1.1.0-beta.1, never move: once 1.0.0 names an image, it always names that image.");
@@ -1129,7 +1163,17 @@ fn page_summary(ui: &mut egui::Ui, wizard: &mut Wizard) {
     ui.heading("Summary");
     small(
         ui,
-        "Create builds this empty image in your local store. Use Back to change anything.",
+        &match wizard.machine_choice() {
+            Some(name) => format!(
+                "Create builds the image {} in your local store and the machine \u{201c}{}\u{201d} from it, selected in Machines and ready to Start. Use Back to change anything.",
+                wizard.reference(),
+                name.unwrap_or_else(|| "named after the image".into())
+            ),
+            None => format!(
+                "Create builds the image {} in your local store. Use Back to change anything.",
+                wizard.reference()
+            ),
+        },
     );
     egui::Grid::new("new-machine-summary")
         .num_columns(2)

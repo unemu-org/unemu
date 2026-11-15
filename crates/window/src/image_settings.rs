@@ -55,6 +55,13 @@ pub(crate) struct ImageSettings {
     tags: Vec<(String, Digest)>,
     /// Cancel was asked with unsaved edits: confirm before discarding them.
     pub discard_prompt: bool,
+    /// Settings… on a machine: its id and name. The sheet then keeps the
+    /// tables as that machine's settings instead of publishing a revision.
+    machine_of: Option<(String, String)>,
+    /// The tables the machine keeps now; edits since are unsaved.
+    applied: Table,
+    /// OK pressed: close once the store has kept the tables.
+    pub close_after_apply: bool,
 }
 
 /// Describe hardware tables through the same lowering as a machine file.
@@ -183,6 +190,7 @@ impl ImageSettings {
         read_only: bool,
     ) -> Result<Self, String> {
         let machine = source.machine().clone();
+        let applied = machine.clone();
         let draft = describe(&machine)?;
         let original = caps::fields(&draft);
         Ok(Self {
@@ -200,7 +208,47 @@ impl ImageSettings {
             revision: 0,
             tags,
             discard_prompt: false,
+            applied,
+            machine_of: None,
+            close_after_apply: false,
         })
+    }
+
+    /// The sheet of Settings… on a machine, over the tables it runs with.
+    /// Differences stay marked against its image.
+    pub fn for_machine(mut self, id: String, name: String, machine: Table) -> Self {
+        self.machine_of = Some((id, name));
+        self.applied = machine.clone();
+        if machine != self.machine {
+            self.commit(machine);
+        }
+        self
+    }
+    pub fn machine_id(&self) -> Option<&str> {
+        self.machine_of.as_ref().map(|(id, _)| id.as_str())
+    }
+    pub fn machine_name(&self) -> Option<&str> {
+        self.machine_of.as_ref().map(|(_, name)| name.as_str())
+    }
+    /// Edits to a machine's settings that the store does not keep yet.
+    pub fn unsaved(&self) -> bool {
+        self.machine != self.applied
+    }
+    /// Whether OK or Apply may keep the draft as the machine's settings.
+    pub fn can_apply(&self) -> bool {
+        !self.read_only && self.error.is_none() && self.unsaved() && !self.validation().has_errors()
+    }
+    /// The machine and tables OK (`close`) or Apply keeps.
+    pub fn apply_request(&mut self, close: bool) -> Option<(String, Table)> {
+        if !self.can_apply() {
+            return None;
+        }
+        self.close_after_apply = close;
+        Some((self.machine_id()?.to_owned(), self.machine.clone()))
+    }
+    /// The store kept the draft.
+    pub fn applied(&mut self) {
+        self.applied = self.machine.clone();
     }
 
     fn commit(&mut self, machine: Table) {
@@ -405,7 +453,12 @@ impl ImageSettings {
     /// Cancel, Escape or ×: with unsaved edits, ask first. Returns whether
     /// the sheet may close now.
     pub fn request_close(&mut self) -> bool {
-        if self.dirty() && !self.read_only {
+        let unsaved = if self.machine_of.is_some() {
+            self.unsaved()
+        } else {
+            self.dirty()
+        };
+        if unsaved && !self.read_only {
             self.discard_prompt = true;
             false
         } else {

@@ -2133,6 +2133,7 @@ pub(crate) mod tests {
         // collection, and nothing it draws there is a Start action.
         let machines = snapshot(&cache, &Query::default());
         let mut view = LibraryView::new(None);
+        view.query.filter = Filter::All;
         view.selected = Some(machines.rows[0].image.clone());
         view.snapshot = Arc::new(machines);
         let mut file = Some(0);

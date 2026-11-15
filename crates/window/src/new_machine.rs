@@ -136,6 +136,13 @@ pub(crate) struct Wizard {
     repo_edited: bool,
     pub tag: String,
     pub title: String,
+    /// Also create a machine from the image (on by default; the Name and
+    /// tag step offers to opt out).
+    pub make_machine: bool,
+    /// The machine's name; empty follows the image title.
+    pub machine_name: String,
+    /// Every machine's name, for the uniqueness check.
+    pub machine_names: Vec<String>,
     /// Firmware packages of the local store; `None` while they are read.
     pub packages: Option<Vec<Package>>,
     /// Every local tag, for the tag rules.
@@ -235,6 +242,9 @@ impl Wizard {
             repo_edited: false,
             tag: "1.0.0".into(),
             title: String::new(),
+            make_machine: true,
+            machine_name: String::new(),
+            machine_names: Vec::new(),
             packages: None,
             tags: Vec::new(),
             restricted: BTreeSet::new(),
@@ -1236,6 +1246,27 @@ impl Wizard {
 
     // ---- create --------------------------------------------------------------
 
+    /// The name of the machine Create makes from the image: the typed name,
+    /// else the image title, else the store's default. `None` without one.
+    pub fn machine_choice(&self) -> Option<Option<String>> {
+        if !self.make_machine {
+            return None;
+        }
+        let name = if self.machine_name.trim().is_empty() {
+            self.title.trim()
+        } else {
+            self.machine_name.trim()
+        };
+        Some((!name.is_empty()).then(|| name.to_owned()))
+    }
+    /// Why the machine's name cannot be used, when Create makes one.
+    pub fn machine_problem(&self) -> Option<String> {
+        let name = self.machine_choice()??;
+        crate::library_view::machines::name_problem(
+            &name,
+            self.machine_names.iter().map(String::as_str),
+        )
+    }
     /// The image to create, its reference and the digest a confirmed move
     /// replaces. Refuses while any step has a problem.
     pub fn request(&self) -> Result<(NewImage, String, Option<Digest>), String> {
@@ -1245,6 +1276,9 @@ impl Wizard {
                 step + 1,
                 STEPS[step]
             ));
+        }
+        if let Some(problem) = self.machine_problem() {
+            return Err(format!("Machine name: {problem}"));
         }
         let check = self.tag_check();
         if let Some(current) = check.moving {

@@ -341,6 +341,8 @@ struct Shell {
     start_request: Option<usize>,
     checked_selection: Option<usize>,
     insert_dialog: Option<crate::media_dialog::InsertDialog>,
+    /// The media picker: Insert… of a drive.
+    picker: Option<crate::media_picker::Picker>,
     /// Floppies inserted while the selected machine is stopped; Start puts
     /// them into its drives before POST.
     pending_media: Option<crate::media_dialog::PendingMedia>,
@@ -438,6 +440,12 @@ impl Shell {
                 Ok(mut presenter) => {
                     presenter.audio.open(&mut io::stderr());
                     self.started(presenter);
+                    if self.image_library.active_machine.is_some() {
+                        // The machine's record takes this run only now that
+                        // it assembled: its pending disks are in its drives.
+                        self.image_library
+                            .send(crate::library_worker::Request::Assembled);
+                    }
                     if let Some((row, _, _)) = &self.image_library.active {
                         let owner =
                             crate::media_dialog::PendingOwner::Image(row.descriptor.digest.clone());
@@ -514,6 +522,7 @@ impl Shell {
             || self.stop_prompt.is_some()
             || self.transfer_prompt.is_some()
             || self.insert_dialog.is_some()
+            || self.picker.is_some()
             || self.blank_disk.is_some()
             || self.settings.is_some()
             || self.preferences_dialog.is_some()
@@ -595,6 +604,20 @@ impl Shell {
             return;
         }
         let owner = match &self.image_library.selected {
+            // A machine keeps its own pending inserts in the store. Floppies
+            // inserted into an image stay with it while Start makes the
+            // image's machine, which takes them before its first instruction.
+            Some(row) if self.image_library.machine.is_some() => self
+                .pending_media
+                .as_ref()
+                .filter(|pending| {
+                    pending.owner == PendingOwner::Image(row.descriptor.digest.clone())
+                })
+                .filter(|_| {
+                    self.image_library.started_from_image.is_some()
+                        && self.image_library.started_from_image == self.image_library.machine
+                })
+                .map(|pending| pending.owner.clone()),
             Some(row) => Some(PendingOwner::Image(row.descriptor.digest.clone())),
             None => self
                 .selected
@@ -713,6 +736,56 @@ impl Shell {
         }
     }
 
+    /// A set the media picker chose goes in without the old dialog, once the
+    /// set is verified. Meanwhile a small dialog shows the progress and can
+    /// cancel. A refusal only says why: the machine keeps running, as a
+    /// refused disk never stops a real PC.
+    fn automatic_insert(&mut self, ctx: &egui::Context) {
+        if !self.insert_dialog.as_ref().is_some_and(|d| d.automatic) {
+            return;
+        }
+        if let Some(error) = self.insert_dialog.as_mut().and_then(|d| d.error.take()) {
+            self.insert_dialog = None;
+            self.message = "The disk did not go in".into();
+            self.dialog = Some(("Insert disk", error));
+            return;
+        }
+        self.confirm_insert();
+        if self.insert_dialog.is_none() {
+            if self.message == "Verifying installation media…" {
+                self.message = "Inserted".into();
+            }
+            return;
+        }
+        let progress = self
+            .insert_dialog
+            .as_ref()
+            .and_then(|d| d.library.as_ref())
+            .map(|library| library.progress.clone())
+            .filter(|progress| !progress.is_empty())
+            .unwrap_or_else(|| "Verifying installation media…".into());
+        let mut cancel = false;
+        egui::Modal::new(egui::Id::unique("insert-progress")).show(ctx, |ui| {
+            ui.set_width(360.0);
+            if self.classic {
+                gradient_title(ui, "Insert disk");
+            } else {
+                ui.heading("Insert disk");
+            }
+            ui.horizontal(|ui| {
+                ui.spinner();
+                ui.label(&progress);
+            });
+            cancel = ui.button("Cancel").clicked() || ui.input_mut(escape_pressed);
+        });
+        if cancel {
+            // The verification thread's result is dropped with the draft.
+            self.insert_dialog = None;
+            self.message = "Insert cancelled".into();
+        }
+        ctx.request_repaint_after(std::time::Duration::from_millis(30));
+    }
+
     fn media_modals(&mut self, ctx: &egui::Context) {
         let mut insert = false;
         let mut cancel = false;
@@ -724,7 +797,8 @@ impl Shell {
             Some(_) => "Journal in this image's workspace",
             None => "Journal in this machine file's local media folder",
         };
-        if let Some(draft) = &mut self.insert_dialog {
+        self.automatic_insert(ctx);
+        if let Some(draft) = self.insert_dialog.as_mut().filter(|d| !d.automatic) {
             let title = format!(
                 "{}{}:",
                 if draft.library.is_some() {
@@ -737,9 +811,12 @@ impl Shell {
             egui::Modal::new(egui::Id::unique("insert-floppy")).show(ctx, |ui| {
                 ui.set_width(560.0);
                 if self.classic { gradient_title(ui, &title); } else { ui.heading(title); }
-                open_library |= draft.library_ui(ui);
+                if draft.library.is_some() {
+                    open_library |= draft.library_ui(ui);
+                }
                 insert |= draft.library.as_ref().is_some_and(|library| library.ready.is_some());
                 if draft.library.is_none() {
+                if !draft.browsed_only {
                 ui.label("Catalogue for this machine:");
                 let mut selected = None;
                 egui::ScrollArea::vertical().max_height(240.0).show(ui, |ui| {
@@ -762,6 +839,9 @@ impl Shell {
                             Err(error) => draft.error = Some(error.to_string()),
                         }
                     }
+                }
+                } else if let Some(entry) = draft.selected.and_then(|index| draft.slot.entries.get(index)) {
+                    ui.strong(&entry.medium.name);
                 }
                 if let Some(entry) = draft.selected.and_then(|index| draft.slot.entries.get(index)) {
                     if let Some(geometry) = entry.geometry {
@@ -977,12 +1057,338 @@ impl Shell {
                     ),
             ),
         };
+        if self.presenter.is_none() {
+            if let Some(row) = self.image_library.selected_machine_row() {
+                return machine_pending_views(row, |insert| {
+                    self.image_library.pending_label(insert)
+                });
+            }
+        }
         match &mut self.presenter {
             Some(presenter) => presenter.drive_views(&origin),
             None => self
                 .pending_media
                 .as_ref()
                 .map_or_else(Vec::new, |pending| pending.drive_views(&origin)),
+        }
+    }
+
+    /// The machines the media picker offers and the one it starts on: the
+    /// running machine alone; else every stopped machine of the library
+    /// with a floppy drive, the selected one first; else the selected image
+    /// or machine file, whose floppies wait for Start.
+    fn picker_targets(
+        &mut self,
+        sets: &[crate::media_picker::SetEntry],
+        machine: Option<&str>,
+    ) -> (Vec<crate::media_picker::Target>, usize) {
+        use crate::media_picker::{CatalogueDisk, Drive, Target, When};
+        let words = |write: &assembly::WriteMode, name: &str| match write {
+            assembly::WriteMode::ReadOnly => "write-protected".to_owned(),
+            assembly::WriteMode::Journal { .. } => format!("changes kept in {name}"),
+            assembly::WriteMode::Volatile => "changes lost at Stop".to_owned(),
+        };
+        let place = |source: &Option<image_store::media_set::CatalogueSource>| {
+            let source = source.as_ref()?;
+            let set = sets.iter().find(|s| s.image.digest == source.set)?;
+            let disk = set.disks.iter().position(|d| d.id == source.medium_id)?;
+            Some((source.set.clone(), disk))
+        };
+        let slot_drives = |slots: &[Option<crate::media_dialog::FloppySlot>; 2],
+                           inserted: [Option<usize>; 2],
+                           name: &str| {
+            (0u8..)
+                .zip(slots)
+                .filter_map(|(unit, slot)| {
+                    let slot = slot.as_ref()?;
+                    let now = inserted[usize::from(unit)];
+                    let catalogue: Vec<CatalogueDisk> = slot
+                        .entries
+                        .iter()
+                        .filter(|e| e.reason.is_none())
+                        .filter_map(|e| {
+                            Some(CatalogueDisk {
+                                name: if e.medium.name.is_empty() {
+                                    "image".into()
+                                } else {
+                                    e.medium.name.clone()
+                                },
+                                format: e.geometry.unwrap_or(slot.geometry),
+                                write: words(&e.medium.write, name),
+                                inserted: e.index.is_some() && e.index == now,
+                                index: e.index?,
+                                set: place(&e.source),
+                            })
+                        })
+                        .collect();
+                    let current = catalogue.iter().find(|e| e.inserted);
+                    Some(Drive {
+                        unit,
+                        geometry: slot.geometry,
+                        holds: current.map_or_else(|| "empty".into(), |e| e.name.clone()),
+                        current: current.and_then(|e| e.set.clone()),
+                        catalogue,
+                        catalogue_note: None,
+                    })
+                })
+                .collect::<Vec<_>>()
+        };
+        if self.presenter.is_some() {
+            let name = self.session_name().unwrap_or("the machine").to_owned();
+            let Some(presenter) = &mut self.presenter else {
+                return (Vec::new(), 0);
+            };
+            let halted = presenter.awaits_reset();
+            let inserted =
+                [0usize, 1].map(|unit| presenter.fdc().and_then(|fdc| fdc.inserted_medium(unit)));
+            let drives = slot_drives(&presenter.media_slots, inserted, &name);
+            return (
+                vec![Target {
+                    id: None,
+                    name,
+                    when: if halted { When::Halted } else { When::Now },
+                    drives,
+                    journal_unavailable: None,
+                }],
+                0,
+            );
+        }
+        let rows = self.image_library.machine_rows();
+        let wanted = machine
+            .map(str::to_owned)
+            .or_else(|| self.image_library.machine.clone());
+        if let Some(wanted) = wanted {
+            let mut targets = Vec::new();
+            let mut at = None;
+            // A machine another program runs takes no disk for its Start.
+            for row in rows.iter().filter(|row| {
+                !row.drives.is_empty() && row.listing.state != pc_image::machine::State::Running
+            }) {
+                if row.id() == wanted {
+                    at = Some(targets.len());
+                }
+                let drives = row
+                    .drives
+                    .iter()
+                    .map(|&(unit, geometry)| {
+                        let letter = crate::media_picker::drive_name(unit);
+                        let pending = row.listing.machine.pending.iter().find(|p| p.drive == letter);
+                        Drive {
+                            unit,
+                            geometry,
+                            holds: pending.map_or_else(
+                                || "as the image sets it".to_owned(),
+                                |p| format!("{} at Start", self.image_library.pending_label(p)),
+                            ),
+                            catalogue: Vec::new(),
+                            current: pending.and_then(|p| {
+                                let set = sets.iter().find(|s| s.image.digest == p.set.digest)?;
+                                Some((p.set.digest.clone(), set.disks.iter().position(|d| d.id == p.medium)?))
+                            }),
+                            catalogue_note: Some(
+                                "The image's own disks are in the drive at Start; Next disk swaps them once the machine runs.".into(),
+                            ),
+                        }
+                    })
+                    .collect();
+                targets.push(Target {
+                    id: Some(row.id().to_owned()),
+                    name: row.name().to_owned(),
+                    when: When::AtStart,
+                    drives,
+                    journal_unavailable: None,
+                });
+            }
+            // The wanted machine is the target or there is none: a disk never
+            // goes silently into another machine.
+            return match at {
+                Some(at) => (targets, at),
+                None => (Vec::new(), 0),
+            };
+        }
+        let name = self
+            .image_library
+            .selected
+            .as_ref()
+            .map(|row| row.name().to_owned())
+            .or_else(|| {
+                self.selected
+                    .and_then(|i| self.library.get(i))
+                    .map(|e| e.name.clone())
+            })
+            .unwrap_or_else(|| "the machine".into());
+        let drives = self
+            .pending_media
+            .as_ref()
+            .map_or_else(Vec::new, |pending| {
+                slot_drives(&pending.slots, [None, None], &name)
+            });
+        // An image has no workspace before Start, so its library disks go in
+        // write-protected; the picker says so instead of offering a journal.
+        let image_owned = matches!(
+            self.pending_media.as_ref().map(|pending| &pending.owner),
+            Some(crate::media_dialog::PendingOwner::Image(_))
+        );
+        (
+            vec![Target {
+                id: None,
+                name,
+                when: When::AtStart,
+                drives,
+                journal_unavailable: image_owned.then(|| {
+                    "Before Start a disk goes into an image write-protected: its changes would belong to the machine Start makes.".to_owned()
+                }),
+            }],
+            0,
+        )
+    }
+
+    /// Insert… of drive `unit`: the media picker, on `machine` when given
+    /// and with `set` chosen.
+    fn open_picker(&mut self, unit: u8, machine: Option<&str>, set: Option<image_store::Digest>) {
+        let sets = self.image_library.picker_sets();
+        let (targets, at) = self.picker_targets(&sets, machine);
+        if targets.is_empty() {
+            self.dialog = Some((
+                "Insert disk",
+                "That machine takes no disk now: it is gone, runs in another program or has no floppy drive.".into(),
+            ));
+            return;
+        }
+        if targets.iter().all(|t| t.drives.is_empty()) {
+            self.dialog = Some(("Insert disk", "This machine has no floppy drive.".into()));
+            return;
+        }
+        self.insert_dialog = None;
+        self.picker = Some(crate::media_picker::Picker::new(
+            targets,
+            at,
+            unit,
+            sets,
+            set.as_ref(),
+        ));
+    }
+
+    fn picker_modal(&mut self, ctx: &egui::Context) {
+        let Some(picker) = &mut self.picker else {
+            return;
+        };
+        if let Some(outcome) = crate::media_picker::show(ctx, picker, self.classic) {
+            self.apply_picker(outcome);
+        }
+    }
+
+    /// The Insert floppy step for one disk image file of this computer:
+    /// detected geometry, write mode and compatibility, for that file alone.
+    fn browse_into(&mut self, unit: u8, path: &std::path::Path) {
+        let Some(slot) = self.floppy_slot(unit) else {
+            return;
+        };
+        let mut draft = crate::media_dialog::InsertDialog::new(unit, slot);
+        match crate::media_dialog::browse(path, draft.slot.geometry) {
+            Ok(entry) => {
+                draft.add_browsed(entry);
+                draft.browsed_only = true;
+                self.insert_dialog = Some(draft);
+            }
+            Err(error) => self.dialog = Some(("Insert disk", error.to_string())),
+        }
+    }
+
+    /// Do what the media picker chose, and close it.
+    fn apply_picker(&mut self, outcome: crate::media_picker::Outcome) {
+        use crate::media_picker::Outcome;
+        self.picker = None;
+        match outcome {
+            Outcome::Cancel => {}
+            Outcome::Pending { id, insert } => {
+                let Some(row) = self.image_library.machine_rows().iter().find(|r| r.id() == id).cloned() else {
+                    self.dialog = Some(("Insert disk", "That machine is no longer in the library.".into()));
+                    return;
+                };
+                // Another Insert into the same drive replaces its pending
+                // disk; the machine's other drives keep theirs.
+                self.message = format!(
+                    "{} goes into {} of {} at its next Start",
+                    self.image_library.pending_label(&insert),
+                    insert.drive,
+                    row.name()
+                );
+                let drive = insert.drive.clone();
+                self.image_library.set_pending(&id, &drive, Some(insert));
+            }
+            Outcome::Set {
+                unit,
+                set,
+                first,
+                all,
+                journal,
+                ..
+            } => {
+                let Some(slot) = self.floppy_slot(unit) else {
+                    return;
+                };
+                let mut draft = crate::media_dialog::InsertDialog::new(unit, slot);
+                draft.automatic = true;
+                self.insert_dialog = Some(draft);
+                let store_root = self
+                    .image_library
+                    .root
+                    .clone()
+                    .or_else(|| self.preferences.store_root.clone());
+                self.open_insert_library_at(store_root, Some(set.digest));
+                if let Some(library) = self.insert_dialog.as_mut().and_then(|d| d.library.as_mut()) {
+                    library.first = first;
+                    library.load_all = all;
+                    if library.journal_unavailable.is_none() {
+                        library.journal = journal;
+                    }
+                }
+                self.message = "Verifying installation media…".into();
+            }
+            Outcome::Entry { unit, index } => {
+                if let Some(presenter) = &mut self.presenter {
+                    presenter
+                        .media_events
+                        .push((unit, assembly::FloppyAction::Insert(index)));
+                } else if let Some(entry) = self
+                    .floppy_slot(unit)
+                    .and_then(|slot| slot.entries.into_iter().find(|e| e.index == Some(index)))
+                {
+                    if let Some(pending) = &mut self.pending_media {
+                        self.message = format!(
+                            "{}: {} is in the drive when Start boots",
+                            crate::media_picker::drive_name(unit),
+                            entry.medium.name
+                        );
+                        pending.insert(unit, vec![entry], 0);
+                    }
+                }
+            }
+            // The system file dialog at once, then the chosen file's own
+            // Insert floppy step.
+            Outcome::Browse(unit) => match self.floppy_slot(unit) {
+                Some(_) => {
+                    let picker = rfd::FileDialog::new()
+                        .set_title("Choose a floppy image")
+                        .add_filter("Disk images", &["img", "ima", "dsk"]);
+                    let picker = if let Some(window) = &self.window {
+                        picker.set_parent(window.as_ref())
+                    } else {
+                        picker
+                    };
+                    if let Some(path) = picker.pick_file() {
+                        self.browse_into(unit, &path);
+                    }
+                }
+                None if self.image_library.machine.is_some() => {
+                    self.dialog = Some((
+                        "Insert disk",
+                        "A disk image file goes into a running machine or a machine file. For a stopped machine, choose a set of this library; Import installation media… adds an image file to it.".into(),
+                    ))
+                }
+                None => {}
+            },
         }
     }
 
@@ -1157,7 +1563,11 @@ impl Shell {
             self.marked_item(
                 ui,
                 EJECT_MARK,
-                &format!("Eject {drive}:"),
+                &if view.at_start {
+                    "Take out again (pending)".to_owned()
+                } else {
+                    format!("Eject {drive}:")
+                },
                 eject_shortcut(unit),
                 Command::Eject(unit),
                 commands,
@@ -1166,19 +1576,17 @@ impl Shell {
         self.marked_item(
             ui,
             "",
-            &format!("Insert into {drive}:…"),
+            "Insert…",
             self.insert_shortcut(unit),
             Command::Insert(unit),
             commands,
         );
-        self.marked_item(
-            ui,
-            "",
-            "From library…",
-            "",
-            Command::FromLibrary(unit),
-            commands,
-        );
+        if view.at_start {
+            ui.add_enabled(
+                false,
+                egui::Label::new("Stopped: a disk inserted now goes in at the next Start."),
+            );
+        }
         if let Some(label) = view.write_label() {
             ui.separator();
             ui.add_enabled(false, egui::Label::new(label));
@@ -1310,6 +1718,7 @@ impl Shell {
             start_request: None,
             checked_selection: None,
             insert_dialog: None,
+            picker: None,
             pending_media: None,
             blank_disk: None,
             settings: None,
@@ -1343,13 +1752,36 @@ impl Shell {
     fn command_allowed(&self, command: Command) -> bool {
         self.enablement().allows(command)
             && match command {
-                Command::GamingMode => self.image_library.selected.is_some(),
+                Command::GamingMode | Command::ImageStart | Command::ImageGaming => {
+                    self.image_library.selected.is_some()
+                }
+                Command::Rename => self.image_library.machine.is_some(),
+                Command::Duplicate
+                | Command::DeleteMachine
+                | Command::ResetMachine
+                | Command::ShowSource => {
+                    self.presenter.is_none()
+                        && self.image_library.machine.is_some()
+                        && !self.image_library.busy
+                }
+                Command::DeleteSelection => {
+                    self.presenter.is_none()
+                        && self.image_library.selected.is_some()
+                        && !self.image_library.busy
+                }
+                Command::NewFromImage | Command::ImageSettings => {
+                    self.presenter.is_none()
+                        && self.image_library.selected.is_some()
+                        && !self.image_library.busy
+                }
+                Command::ImageLayers => self.image_library.selected.is_some(),
                 Command::ImportImage => {
                     self.presenter.is_none() && self.selected.is_some() && !self.image_library.busy
                 }
                 Command::DeleteTag => {
                     self.presenter.is_none()
                         && self.image_library.selected.is_some()
+                        && self.image_library.machine.is_none()
                         && !self.image_library.busy
                 }
                 Command::ImportFirmware => {
@@ -1378,6 +1810,13 @@ impl Shell {
                             .pending_media
                             .as_ref()
                             .is_some_and(|pending| pending.has_insert(unit))
+                        || self
+                            .image_library
+                            .selected_machine_row()
+                            .is_some_and(|row| {
+                                let drive = crate::media_picker::drive_name(unit);
+                                row.listing.machine.pending.iter().any(|p| p.drive == drive)
+                            })
                 }
                 _ => true,
             }
@@ -1410,6 +1849,9 @@ impl Shell {
     fn library_commands(&mut self, commands: &mut Vec<Command>) {
         if std::mem::take(&mut self.image_library.firmware_import_wanted) {
             commands.push(Command::ImportFirmware);
+        }
+        if let Some((machine, unit, set)) = self.image_library.picker_wanted.take() {
+            self.open_picker(unit, Some(&machine), Some(set));
         }
         if self.image_library.login_wanted.is_some() {
             commands.push(Command::Preferences);
@@ -1449,9 +1891,13 @@ impl Shell {
                     presenter.media_slots.each_ref().map(Option::is_some)
                 }
                 Some(_) => [false; 2],
-                None => self.pending_media.as_ref().map_or([false; 2], |pending| {
-                    pending.slots.each_ref().map(Option::is_some)
-                }),
+                None => match self.image_library.selected_machine_row() {
+                    // A stopped machine takes disks for its next Start.
+                    Some(row) => [0u8, 1].map(|unit| row.drives.iter().any(|(u, _)| *u == unit)),
+                    None => self.pending_media.as_ref().map_or([false; 2], |pending| {
+                        pending.slots.each_ref().map(Option::is_some)
+                    }),
+                },
             },
             audio: self.presenter.as_ref().is_some_and(|p| p.audio.available()),
         }
@@ -1761,6 +2207,7 @@ impl Shell {
         self.presenter = Some(presenter);
         // A draft built before Start lists the stopped machine's catalogue.
         self.insert_dialog = None;
+        self.picker = None;
         self.paused = false;
         self.guest_focus = true;
         self.modal_paused = false;
@@ -1895,6 +2342,7 @@ impl Shell {
 
     fn stop(&mut self) -> bool {
         self.insert_dialog = None;
+        self.picker = None;
         self.blank_disk = None;
         self.stop_prompt = None;
         self.release();
@@ -1943,6 +2391,8 @@ impl Shell {
         use crate::library_view::Request;
         let target = match action {
             Request::Publish(_, name, _) | Request::Discard(name) => name,
+            // Save as new image… of the running machine stops it first.
+            Request::Machine(crate::library_worker::MachineJob::Commit { id, .. }) => id,
             _ => return true,
         };
         let matches = self
@@ -2057,6 +2507,7 @@ impl Shell {
         }
         self.dialog = None;
         self.insert_dialog = None;
+        self.picker = None;
         self.blank_disk = None;
         self.settings = None;
         self.image_library.close_dialogs();
@@ -2077,6 +2528,9 @@ impl Shell {
     }
 
     fn session_name(&self) -> Option<&str> {
+        if let Some((_, name)) = &self.image_library.active_machine {
+            return Some(name);
+        }
         self.image_library
             .active
             .as_ref()
@@ -2298,20 +2752,21 @@ impl Shell {
                     presenter.keyboard.ctrl_alt_del();
                 }
             },
-            Insert(unit) => if let Some(slot) = self.floppy_slot(unit) {
+            // One Insert… per drive opens the media picker; it replaces the
+            // catalogue dialog and From library….
+            Insert(unit) => { self.release(); self.open_picker(unit, None, None); },
+            InsertFile(unit) => if let Some(slot) = self.floppy_slot(unit) {
                 self.release();
                 self.insert_dialog = Some(crate::media_dialog::InsertDialog::new(unit, slot));
             },
-            FromLibrary(unit) => { self.command(Insert(unit), ctx); self.open_insert_library(); },
             InsertSet(unit) => {
                 let set = self.image_library.selected_set();
-                let store_root = self.image_library.root.clone().or_else(|| self.preferences.store_root.clone());
-                self.command(Insert(unit), ctx);
-                self.open_insert_library_at(store_root, set);
+                self.release();
+                self.open_picker(unit, None, set);
             },
             ImportMedia => { self.release(); self.image_library.begin_media_import(); },
             EditFirmware => { self.release(); self.image_library.begin_firmware_edit(false); },
-            WriteMode(unit) => { self.command(Insert(unit), ctx); self.select_inserted(unit); },
+            WriteMode(unit) => { self.command(InsertFile(unit), ctx); self.select_inserted(unit); },
             CreateBlank => {
                 self.release();
                 let entry = self.selected.and_then(|index| self.library.get(index));
@@ -2319,6 +2774,11 @@ impl Shell {
             },
             Next(unit) | Eject(unit) => if let Some(presenter) = &mut self.presenter {
                 presenter.media_events.push((unit, if matches!(command, Next(_)) { assembly::FloppyAction::Next } else { assembly::FloppyAction::Eject }));
+            } else if let (Eject(_), Some(row)) = (command, self.image_library.selected_machine_row().cloned()) {
+                // Take out again: the stopped machine's pending disk goes.
+                let drive = crate::media_picker::drive_name(unit);
+                self.image_library.set_pending(row.id(), &drive, None);
+                self.message = format!("Took the pending disk out of {drive} of {}", row.name());
             } else if let (Eject(_), Some(pending)) = (command, &mut self.pending_media) {
                 pending.eject(unit);
                 self.message = format!("{}: ejected before Start", if unit == 0 { "A" } else { "B" });
@@ -2341,6 +2801,20 @@ impl Shell {
             Push => { self.release(); let accounts = self.registry_accounts(); self.image_library.begin_push(accounts); },
             Pull => { self.release(); let accounts = self.registry_accounts(); self.image_library.begin_pull(accounts); },
             GetTemplates => { self.release(); let accounts = self.registry_accounts(); self.image_library.begin_templates(accounts); },
+            Rename => { self.release(); self.image_library.begin_rename(); },
+            Duplicate => { self.release(); self.image_library.begin_duplicate(); },
+            DeleteMachine => { self.release(); self.image_library.begin_delete_machine(); },
+            DeleteSelection => {
+                self.release();
+                if self.image_library.machine.is_some() { self.image_library.begin_delete_machine(); } else { self.image_library.begin_delete(); }
+            },
+            ResetMachine => { self.release(); self.image_library.begin_reset(); },
+            ShowSource => self.image_library.show_source_image(),
+            NewFromImage => { self.release(); self.image_library.begin_new_from_image(); },
+            ImageStart => self.image_library.start_selected_image(),
+            ImageGaming => self.image_library.image_gaming(),
+            ImageSettings => { self.release(); self.image_library.open_image_settings(); },
+            ImageLayers => { self.release(); self.image_library.open_image_layers(); },
         }
         self.sync_routing();
     }
@@ -2383,16 +2857,47 @@ impl Shell {
             Some(mark) => egui::Button::new((crate::shell_icons::mark(mark), label)),
             None => egui::Button::new(label),
         };
-        if ui
-            .add_enabled(
-                self.command_allowed(command),
-                button.shortcut_text(shell_model::shortcut_text(shortcut, self.macos_shortcuts)),
-            )
-            .clicked()
-        {
+        let response = ui.add_enabled(
+            self.command_allowed(command),
+            button.shortcut_text(shell_model::shortcut_text(shortcut, self.macos_shortcuts)),
+        );
+        // A disabled item says in one short phrase why.
+        let response = match self.disabled_reason(command) {
+            Some(reason) => response.on_disabled_hover_text(reason),
+            None => response,
+        };
+        if response.clicked() {
             commands.push(command);
             ui.close();
         }
+    }
+
+    /// Why a library command is unavailable now, in one short phrase.
+    fn disabled_reason(&self, command: Command) -> Option<&'static str> {
+        use Command::*;
+        let machine = self.image_library.machine.is_some();
+        let image = self.image_library.selected.is_some();
+        let running = self.presenter.is_some();
+        Some(match command {
+            Rename | Duplicate | DeleteMachine | ResetMachine | ShowSource if !machine => {
+                "Select a machine"
+            }
+            Duplicate | DeleteMachine | ResetMachine | ShowSource if running => {
+                "Stop the machine first"
+            }
+            DeleteTag if machine => "Select an image: machines are deleted with Delete machine…",
+            DeleteTag | ImageStart | ImageGaming | NewFromImage | ImageSettings | ImageLayers
+                if !image =>
+            {
+                "Select an image or a machine"
+            }
+            ImageStart | ImageGaming | NewFromImage | ImageSettings | DeleteTag if running => {
+                "Stop the machine first"
+            }
+            Start | GamingMode if running => "A machine runs already",
+            Start | GamingMode if !image && self.selected.is_none() => "Select a machine",
+            _ => return None,
+        })
     }
 
     fn menus(&mut self, ui: &mut egui::Ui, commands: &mut Vec<Command>) {
@@ -2425,16 +2930,59 @@ impl Shell {
                 );
             });
             ui.menu_button("Edit", |ui| {
-                ui.add_enabled_ui(
-                    self.image_library.selected.is_some() && self.presenter.is_none(),
-                    |ui| self.item(ui, "Delete tag…", "", DeleteTag, commands),
-                );
+                self.item(ui, "Rename…", "F2", Rename, commands);
+                self.item(ui, "Duplicate…", "Ctrl+D", Duplicate, commands);
+                self.item(ui, "Delete machine…", "Delete", DeleteMachine, commands);
+                self.item(ui, "Delete tag…", "Delete", DeleteTag, commands);
             });
             ui.menu_button("Image", |ui| {
+                // The Image menu acts on the selected image, or on the
+                // selected machine's source image, and names it first.
+                let target = match (&self.image_library.selected, &self.image_library.machine) {
+                    (Some(row), Some(_)) => format!(
+                        "For the image: {} — source of {}",
+                        row.reference,
+                        self.image_library
+                            .selected_machine_row()
+                            .map_or("the machine", |m| m.name())
+                    ),
+                    (Some(row), None) => format!("For the image: {}", row.reference),
+                    (None, _) => "Select an image or a machine".into(),
+                };
+                ui.add_enabled(false, egui::Label::new(target));
+                self.item(ui, "Start…", "Enter", ImageStart, commands);
+                self.item(
+                    ui,
+                    "New machine from image…",
+                    "Ctrl+Shift+N",
+                    NewFromImage,
+                    commands,
+                );
+                self.item(ui, "Gaming mode", "", ImageGaming, commands);
+                self.item(
+                    ui,
+                    "Settings… (new image revision)",
+                    "",
+                    ImageSettings,
+                    commands,
+                );
+                self.item(ui, "Layers…", "", ImageLayers, commands);
                 self.item(ui, "Push…", "", Push, commands);
                 self.item(ui, "Pull…", "", Pull, commands);
             });
             ui.menu_button("Machine", |ui| {
+                let target = match (
+                    &self.image_library.active_machine,
+                    self.image_library.selected_machine_row(),
+                ) {
+                    (Some((_, name)), _) => format!("For the machine: {name} (running)"),
+                    (None, Some(row)) => format!("For the machine: {}", row.name()),
+                    (None, None) if self.presenter.is_some() => {
+                        "A machine file or a gaming copy is running".into()
+                    }
+                    (None, None) => "Select a machine".into(),
+                };
+                ui.add_enabled(false, egui::Label::new(target));
                 let reset = if self.presenter.as_ref().is_some_and(Presenter::awaits_reset) {
                     "Reset halted machine"
                 } else {
@@ -2466,8 +3014,17 @@ impl Shell {
                 );
                 ui.separator();
                 self.marked_item(ui, "", "Settings…", "Ctrl+,", Settings, commands);
+                if self.presenter.is_none() && self.image_library.machine.is_some() {
+                    self.marked_item(ui, "", "Insert media…", "", Insert(0), commands);
+                }
                 self.marked_item(ui, "", "Disk layers…", "", Layers, commands);
                 self.marked_item(ui, "", "Save as new image…", "", SaveImage, commands);
+                ui.separator();
+                self.marked_item(ui, "", "Duplicate…", "Ctrl+D", Duplicate, commands);
+                self.marked_item(ui, "", "Rename…", "F2", Rename, commands);
+                self.marked_item(ui, "", "Reset to image…", "", ResetMachine, commands);
+                self.marked_item(ui, "", "Delete machine…", "Delete", DeleteMachine, commands);
+                self.marked_item(ui, "", "Show source image", "", ShowSource, commands);
             });
             ui.menu_button("Media", |ui| {
                 let drives = self.drive_views();
@@ -2490,23 +3047,20 @@ impl Shell {
                         crate::drive_chips::DriveView::menu_label,
                     );
                     ui.add_enabled(present, egui::Label::new(label));
-                    ui.add_enabled_ui(present, |ui| {
-                        let insert = format!("Insert into {drive}");
-                        ui.menu_button((crate::shell_icons::mark(""), insert), |ui| {
-                            self.item(
-                                ui,
-                                "Browse / catalogue…",
-                                self.insert_shortcut(unit),
-                                Insert(unit),
-                                commands,
-                            );
-                            self.item(ui, "From library…", "", FromLibrary(unit), commands);
-                        });
-                    });
+                    let pending = view.is_some_and(|view| view.at_start);
+                    // One Insert… per drive opens the media picker.
                     self.marked_item(
                         ui,
                         "",
-                        "Next image in catalogue",
+                        "Insert…",
+                        self.insert_shortcut(unit),
+                        Insert(unit),
+                        commands,
+                    );
+                    self.marked_item(
+                        ui,
+                        "",
+                        "Next disk in catalogue",
                         if unit == 0 {
                             "Ctrl+Alt+F"
                         } else {
@@ -2519,12 +3073,24 @@ impl Shell {
                         self.marked_item(
                             ui,
                             EJECT_MARK,
-                            &format!("Eject {drive}"),
+                            &if pending {
+                                "Take out again (pending)".to_owned()
+                            } else {
+                                format!("Eject {drive}")
+                            },
                             eject_shortcut(unit),
                             Eject(unit),
                             commands,
                         );
                     });
+                    if present && self.presenter.is_none() {
+                        ui.add_enabled(
+                            false,
+                            egui::Label::new(
+                                "Stopped: a disk inserted now goes in at the next Start.",
+                            ),
+                        );
+                    }
                     ui.separator();
                 }
                 let mut fixed = drives
@@ -2628,7 +3194,15 @@ impl Shell {
             use crate::shell_icons::Icon;
             // The main-window mock-up sets Ctrl+Alt+Del as code text, without an icon.
             for (label, icon, command) in [
-                ("Start", Some(Icon::Play), Command::Start),
+                (
+                    if self.presenter.is_none() {
+                        self.image_library.start_label()
+                    } else {
+                        "Start"
+                    },
+                    Some(Icon::Play),
+                    Command::Start,
+                ),
                 (
                     if self.paused { "Resume" } else { "Pause" },
                     Some(if self.paused { Icon::Play } else { Icon::Pause }),
@@ -2637,6 +3211,7 @@ impl Shell {
                 ("Stop", Some(Icon::Stop), Command::Stop),
                 ("Ctrl+Alt+Del", None, Command::Reset),
                 ("A:", Some(Icon::Floppy), Command::Insert(0)),
+                ("B:", Some(Icon::Floppy), Command::Insert(1)),
                 ("Eject", Some(Icon::Eject), Command::Eject(0)),
                 ("Settings", Some(Icon::Settings), Command::Settings),
                 ("Layers", Some(Icon::Layers), Command::Layers),
@@ -2703,7 +3278,16 @@ impl Shell {
 
     fn title(&self) -> String {
         if self.presenter.is_some() {
-            format!("{} — unemupc98", self.session_name().unwrap_or("Machine"))
+            match (
+                &self.image_library.active_machine,
+                &self.image_library.active,
+            ) {
+                // The machines mock-up names the machine and its image.
+                (Some((_, name)), Some((row, _, _))) => {
+                    format!("{name} — {} — unemupc98", row.reference)
+                }
+                _ => format!("{} — unemupc98", self.session_name().unwrap_or("Machine")),
+            }
         } else {
             "unemupc98".into()
         }
@@ -3077,6 +3661,8 @@ impl Shell {
                 })
                 // Quitting is never held back by an open dialog or menu.
                 .filter(|command| !blocked || *command == Command::Exit)
+                // An edited text field keeps Enter, Delete and F2.
+                .filter(|command| !(command.library_key() && ctx.egui_wants_keyboard_input()))
             {
                 self.consume_hotkey(key);
                 if command == Command::FastForward {
@@ -3516,6 +4102,7 @@ impl eframe::App for Shell {
             });
         }
         self.media_modals(&ctx);
+        self.picker_modal(&ctx);
         self.settings_modal(&ctx);
         if let Some(dialog) = &mut self.preferences_dialog {
             match crate::preferences_sheet::show(&ctx, dialog, self.classic) {
@@ -3556,6 +4143,9 @@ impl eframe::App for Shell {
                 action,
                 crate::library_view::Request::Publish(..)
                     | crate::library_view::Request::Discard(_)
+                    | crate::library_view::Request::Machine(
+                        crate::library_worker::MachineJob::Commit { .. }
+                    )
             ) && !self.stop_for_image_action(&action)
             {
                 continue;
@@ -3724,6 +4314,47 @@ fn disk_led_color(ui: &egui::Ui, on: bool) -> Color32 {
         Color32::from_rgb(74, 74, 68)
     }
 }
+/// A stopped machine's drives that hold a disk for its next Start, as the
+/// status bar and the Media menu show them.
+fn machine_pending_views(
+    row: &crate::library_view::machines::MachineRow,
+    label: impl Fn(&image_store::machine::PendingInsert) -> String,
+) -> Vec<crate::drive_chips::DriveView> {
+    row.drives
+        .iter()
+        .filter_map(|&(unit, geometry)| {
+            let letter = crate::media_picker::drive_name(unit);
+            let insert = row
+                .listing
+                .machine
+                .pending
+                .iter()
+                .find(|p| p.drive == letter)?;
+            Some(crate::drive_chips::DriveView {
+                bay: crate::drive_chips::Bay::Floppy { unit, geometry },
+                medium: Some(crate::drive_chips::Medium {
+                    name: label(insert),
+                    source: format!(
+                        "Pending insert from {}, in the drive at the next Start of {}",
+                        insert.reference,
+                        row.name()
+                    ),
+                    sha256: None,
+                    write: if insert.journal {
+                        assembly::WriteMode::journal(std::path::PathBuf::from(&insert.medium))
+                    } else {
+                        assembly::WriteMode::ReadOnly
+                    },
+                    fixed_by: Some("chosen in the media picker"),
+                    format: None,
+                }),
+                from_image: true,
+                at_start: true,
+            })
+        })
+        .collect()
+}
+
 fn drive_tooltip(ui: &mut egui::Ui, view: &crate::drive_chips::DriveView, lit: bool) {
     ui.set_max_width(360.0);
     egui::Grid::new(("drive-tooltip", view.slot()))
@@ -3860,7 +4491,8 @@ fn title_strip(ui: &mut egui::Ui, title: &str, icon: bool) {
 }
 
 fn shortcuts_help(macos: bool) -> String {
-    let mut help = String::from("Enter / double-click: start selected machine\n");
+    let mut help =
+        String::from("Enter / double-click: start the selected machine (on an image: Start…)\n");
     for (shortcut, action) in [
         ("Ctrl+Alt+P", "pause / resume"),
         ("Ctrl+Alt+T", "hold to fast-forward (Unlimited)"),
@@ -3871,13 +4503,20 @@ fn shortcuts_help(macos: bool) -> String {
         ),
         ("Ctrl+Alt+F", "next A: image (Shift for B:)"),
         ("Ctrl+Alt+E", "eject A: (Shift for B:)"),
-        ("Ctrl+Alt+I", "insert A: floppy (Shift for B:)"),
+        ("Ctrl+Alt+I", "Insert… into A: (Shift for B:)"),
         ("Ctrl+Alt+M", "toggle user mute (also while speed-muted)"),
         ("Ctrl+Alt+G", "release pointer"),
         ("Ctrl+Alt+Enter", "full screen"),
-        ("Ctrl+N", "new machine (not yet available)"),
+        ("Ctrl+N", "New machine… (makes the image and a machine)"),
+        ("Ctrl+Shift+N", "New machine from image…"),
+        ("F2", "Rename… (machine)"),
+        ("Ctrl+D", "Duplicate… (machine)"),
+        ("Delete", "Delete machine… / Delete tag… (image)"),
         ("Ctrl+O", "open machine file"),
-        ("Ctrl+,", "settings"),
+        (
+            "Ctrl+,",
+            "Settings… (the selected machine; images use Image › Settings…)",
+        ),
     ] {
         help.push_str(&format!(
             "{}: {action}\n",
@@ -3890,6 +4529,7 @@ fn shortcuts_help(macos: bool) -> String {
     } else {
         help.push_str("F1: keyboard shortcuts (outside guest focus)\nCtrl+N/O/, also require shell focus while running.\n");
     }
+    help.push_str("The library keys (F2, Duplicate, Delete, New machine from image) work only while no machine runs; while a machine has the keyboard, Ctrl, Alt and Delete reach the guest.\n");
     help.push_str("\nClick the emulated screen to focus guest input and capture the pointer.\nMenus, dialogs and focus loss release the pointer and held guest keys.");
     help
 }
@@ -3983,6 +4623,7 @@ mod tests {
             start_request: None,
             checked_selection: None,
             insert_dialog: None,
+            picker: None,
             pending_media: None,
             blank_disk: None,
             settings: None,
@@ -4343,7 +4984,7 @@ mod tests {
                     .unwrap(),
                 );
             }
-            shell.command(Command::Insert(0), &ctx);
+            shell.command(Command::InsertFile(0), &ctx);
             let draft = shell.insert_dialog.as_mut().unwrap();
             draft
                 .slot
@@ -4453,7 +5094,7 @@ mod tests {
         std::fs::write(&journal, b"invalid journal").unwrap();
         let ctx = egui::Context::default();
         let mut shell = media_shell();
-        shell.command(Command::Insert(0), &ctx);
+        shell.command(Command::InsertFile(0), &ctx);
         let draft = shell.insert_dialog.as_mut().unwrap();
         draft
             .slot
@@ -4485,7 +5126,7 @@ mod tests {
     fn media_dialog_cancel_preserves_the_medium_and_insert_and_eject_wait_for_the_boundary() {
         let ctx = egui::Context::default();
         let mut shell = media_shell();
-        shell.command(Command::Insert(0), &ctx);
+        shell.command(Command::InsertFile(0), &ctx);
         shell.insert_dialog.as_mut().unwrap().selected = Some(1);
         shell.insert_dialog = None;
         assert!(shell.presenter.as_ref().unwrap().media_events.is_empty());
@@ -4498,7 +5139,7 @@ mod tests {
                 .floppy_name(assembly::DeviceId::Fdc, 0),
             "first.img"
         );
-        shell.command(Command::Insert(0), &ctx);
+        shell.command(Command::InsertFile(0), &ctx);
         shell.insert_dialog.as_mut().unwrap().selected = Some(1);
         shell.confirm_insert();
         let presenter = shell.presenter.as_mut().unwrap();
@@ -4538,7 +5179,7 @@ mod tests {
             std::fs::write(&path, vec![0; 1_474_560]).unwrap();
             let mut shell = media_shell();
             shell.paused = true;
-            shell.command(Command::Insert(0), &ctx);
+            shell.command(Command::InsertFile(0), &ctx);
             let draft = shell.insert_dialog.as_mut().unwrap();
             draft
                 .slot
@@ -4970,7 +5611,7 @@ mod tests {
                         );
                     }
                     Command::Insert(unit) => {
-                        assert_eq!(shell.insert_dialog.as_ref().unwrap().unit, unit)
+                        assert_eq!(shell.picker.as_ref().unwrap().unit, unit)
                     }
                     Command::Mute => assert!(shell.presenter.as_ref().unwrap().audio.muted()),
                     Command::FastForward => assert_eq!(
@@ -5801,7 +6442,7 @@ mod tests {
         );
         for command in [
             Command::Insert(0),
-            Command::FromLibrary(0),
+            Command::InsertFile(0),
             Command::Next(0),
             Command::Eject(0),
             Command::Reset,
@@ -5810,7 +6451,7 @@ mod tests {
         }
         // Resume would only hide that the guest waits for a reset.
         assert!(!shell.command_allowed(Command::Pause));
-        shell.command(Command::Insert(0), &ctx);
+        shell.command(Command::InsertFile(0), &ctx);
         shell.insert_dialog.as_mut().unwrap().select(Some(1));
         shell.confirm_insert();
         shell.tick(&ctx, false, Duration::from_millis(40));
@@ -5892,7 +6533,7 @@ mod tests {
         for command in [
             Command::Insert(0),
             Command::Insert(1),
-            Command::FromLibrary(0),
+            Command::InsertFile(0),
         ] {
             assert!(shell.command_allowed(command), "{command:?}");
         }
@@ -5905,9 +6546,11 @@ mod tests {
             assert!(!shell.command_allowed(command), "{command:?}");
         }
         assert!(shell.drive_views().is_empty());
-        // From library… journals into the machine file's local media folder,
-        // as it does once the machine runs.
-        shell.command(Command::FromLibrary(0), &ctx);
+        // A set chosen in the media picker journals into the machine file's
+        // local media folder, as it does once the machine runs.
+        shell.command(Command::Insert(0), &ctx);
+        assert!(shell.picker.is_some());
+        shell.apply_picker(crate::media_picker::tests::set_outcome(0));
         let library = shell.insert_dialog.as_ref().unwrap().library.as_ref();
         assert_eq!(
             library.map(|library| (library.workspace.clone(), library.journal)),
@@ -5917,7 +6560,7 @@ mod tests {
             ))
         );
         shell.insert_dialog = None;
-        shell.command(Command::Insert(0), &ctx);
+        shell.command(Command::InsertFile(0), &ctx);
         let draft = shell.insert_dialog.as_mut().unwrap();
         assert_eq!(draft.slot.entries.len(), 1, "the machine file's catalogue");
         draft.select(Some(0));
@@ -5929,7 +6572,7 @@ mod tests {
         );
         let other = temp.path().join("other.img");
         std::fs::write(&other, vec![0; 737_280]).unwrap();
-        shell.command(Command::Insert(1), &ctx);
+        shell.command(Command::InsertFile(1), &ctx);
         let draft = shell.insert_dialog.as_mut().unwrap();
         let browsed = crate::media_dialog::browse(&other, draft.slot.geometry).unwrap();
         draft.add_browsed(browsed);
@@ -5942,8 +6585,8 @@ mod tests {
         assert_eq!(
             chips,
             [
-                "A: boot.img · 1.44M · read-only",
-                "B: other.img · 720K · read-only"
+                "A: boot.img · 1.44M · read-only · at Start",
+                "B: other.img · 720K · read-only · at Start"
             ]
         );
         assert!(shell.command_allowed(Command::Eject(1)));
@@ -5980,12 +6623,12 @@ mod tests {
         let temp = assembly::test_support::TempDir::new("shell-pending-selection");
         let (mut shell, _) = stopped_machine_file_shell(&temp);
         let ctx = egui::Context::default();
-        shell.command(Command::Insert(0), &ctx);
+        shell.command(Command::InsertFile(0), &ctx);
         shell.insert_dialog.as_mut().unwrap().select(Some(0));
         shell.confirm_insert();
         assert_eq!(shell.drive_views().len(), 1);
         // A draft of this machine's catalogue closes with the selection.
-        shell.command(Command::Insert(0), &ctx);
+        shell.command(Command::InsertFile(0), &ctx);
         assert!(shell.insert_dialog.is_some());
         shell.selected = None;
         shell.sync_pending_media();
@@ -6024,12 +6667,12 @@ mod tests {
         assert!(shell.command_allowed(Command::Insert(0)));
         // The image's workspace opens only at Start, so library disks chosen
         // before it go in write-protected.
-        shell.command(Command::FromLibrary(0), &ctx);
+        shell.apply_picker(crate::media_picker::tests::set_outcome(0));
         let library = shell.insert_dialog.as_ref().unwrap().library.as_ref();
         assert!(library
             .is_some_and(|library| !library.journal && library.journal_unavailable.is_some()));
         shell.insert_dialog = None;
-        shell.command(Command::Insert(0), &ctx);
+        shell.command(Command::InsertFile(0), &ctx);
         let draft = shell.insert_dialog.as_mut().unwrap();
         assert!(
             draft.slot.entries.is_empty(),
@@ -6045,7 +6688,7 @@ mod tests {
             .iter()
             .map(crate::drive_chips::DriveView::chip_text)
             .collect();
-        assert_eq!(chips, ["A: extra.img · 360K · read-only"]);
+        assert_eq!(chips, ["A: extra.img · 360K · read-only · at Start"]);
         shell.command(Command::Start, &ctx);
         for _ in crate::test_wait::rounds() {
             shell.poll_images(&ctx);
@@ -6160,7 +6803,7 @@ mod tests {
         for (unit, name) in [(0, "a.img"), (1, "b.img")] {
             let path = temp.path().join(name);
             std::fs::write(&path, vec![0; 1_474_560]).unwrap();
-            shell.command(Command::Insert(unit), &ctx);
+            shell.command(Command::InsertFile(unit), &ctx);
             let draft = shell.insert_dialog.as_mut().unwrap();
             let browsed = crate::media_dialog::browse(&path, draft.slot.geometry).unwrap();
             draft.add_browsed(browsed);
@@ -6195,7 +6838,7 @@ mod tests {
         std::fs::write(&other, vec![0; 1_474_560]).unwrap();
         let ctx = egui::Context::default();
         let insert_boot = |shell: &mut Shell| {
-            shell.command(Command::Insert(0), &ctx);
+            shell.command(Command::InsertFile(0), &ctx);
             let draft = shell.insert_dialog.as_mut().unwrap();
             assert_eq!(draft.slot.entries[0].medium.name, "boot.img");
             draft.select(Some(0));
@@ -6358,7 +7001,7 @@ mod tests {
             shell.presenter.as_ref().unwrap().halted
         });
         assert!(shell.message.contains("press Ctrl+Alt+Del"));
-        shell.command(Command::Insert(0), &ctx);
+        shell.command(Command::InsertFile(0), &ctx);
         shell.insert_dialog.as_mut().unwrap().select(Some(1));
         shell.confirm_insert();
         let resets = shell.presenter.as_ref().unwrap().cpu_resets;
@@ -6393,7 +7036,7 @@ mod tests {
         shell.selected = Some(0);
         shell.refresh_library();
         finish_readiness(&mut shell);
-        shell.command(Command::Insert(0), &ctx);
+        shell.command(Command::InsertFile(0), &ctx);
         shell.insert_dialog.as_mut().unwrap().select(Some(0));
         shell.confirm_insert();
         shell.command(Command::Start, &ctx);
@@ -6679,7 +7322,15 @@ kind='mda'
             })
             .collect();
         output.drop_without_applying_deltas();
-        for entry in ["Library", "All images", "Machine files"] {
+        for entry in [
+            "Library",
+            "Machines (0)",
+            "Images (0)",
+            "Installation media (0)",
+            "Firmware (0)",
+            "Machine files (0)",
+            "Remotes",
+        ] {
             assert!(texts.iter().any(|t| t == entry), "{entry}: {texts:?}");
         }
         assert!(!texts.iter().any(|t| t == "unemupc98"), "{texts:?}");
@@ -7788,7 +8439,7 @@ kind='mda'
         std::fs::write(&path, vec![0; 1_474_560]).unwrap();
         let ctx = egui::Context::default();
         let mut shell = media_shell();
-        shell.command(Command::Insert(0), &ctx);
+        shell.command(Command::InsertFile(0), &ctx);
         let draft = shell.insert_dialog.as_mut().unwrap();
         draft.add_browsed(crate::media_dialog::browse(&path, draft.slot.geometry).unwrap());
         assert_eq!(draft.selected, Some(2));
@@ -7802,7 +8453,7 @@ kind='mda'
         presenter.apply_media_events().unwrap();
 
         let dialog_text = |shell: &mut Shell, row: usize| {
-            shell.command(Command::Insert(0), &ctx);
+            shell.command(Command::InsertFile(0), &ctx);
             shell.insert_dialog.as_mut().unwrap().select(Some(row));
             let mut text = Vec::new();
             for _ in 0..2 {
@@ -8060,7 +8711,7 @@ kind='mda'
         // Any click closes the menu; the enabled items still act once reopened.
         click_status(&ctx, &mut shell, 1600.0, chip);
         let menu = status_pass(&ctx, &mut shell, 1600.0, Vec::new());
-        let insert = label_rect(&menu.text, "Insert into A:…").center();
+        let insert = label_rect(&menu.text, "Insert…").center();
         assert_eq!(
             click_status(&ctx, &mut shell, 1600.0, insert),
             [Command::Insert(0)]
@@ -8077,13 +8728,13 @@ kind='mda'
         let eject = label_rect(&text, "Eject A:").center();
         assert!(click(&ctx, &mut shell, eject).is_empty());
         let text = open_media(&mut shell);
-        let next = label_rect(&text, "Next image in catalogue").center();
+        let next = label_rect(&text, "Next disk in catalogue").center();
         assert_eq!(click(&ctx, &mut shell, next), [Command::Next(0)]);
         assert!(shell.stop());
     }
 
     #[test]
-    fn chip_from_library_queues_its_command_and_opens_the_library_view() {
+    fn chip_insert_opens_the_media_picker_and_its_set_reads_the_library_store() {
         let temp = assembly::test_support::TempDir::new("chip-from-library");
         let root = temp.path().canonicalize().unwrap();
         let ctx = egui::Context::default();
@@ -8096,11 +8747,17 @@ kind='mda'
         let chip = label_rect(&pass.text, "A: first.img · 1.44M · read-only").center();
         click_status(&ctx, &mut shell, 1600.0, chip);
         let menu = status_pass(&ctx, &mut shell, 1600.0, Vec::new());
-        let library = label_rect(&menu.text, "From library…").center();
-        let commands = click_status(&ctx, &mut shell, 1600.0, library);
-        assert_eq!(commands, [Command::FromLibrary(0)]);
-        shell.command(Command::FromLibrary(0), &ctx);
+        assert!(!shows(&menu.text, "From library…"));
+        let insert = label_rect(&menu.text, "Insert…").center();
+        let commands = click_status(&ctx, &mut shell, 1600.0, insert);
+        assert_eq!(commands, [Command::Insert(0)]);
+        shell.command(Command::Insert(0), &ctx);
+        let picker = shell.picker.as_ref().expect("the media picker");
+        assert_eq!(picker.unit, 0);
+        assert_eq!(picker.source, crate::media_picker::Source::Library);
+        shell.apply_picker(crate::media_picker::tests::set_outcome(0));
         let draft = shell.insert_dialog.as_mut().unwrap();
+        assert!(draft.automatic);
         assert_eq!(draft.unit, 0);
         let library = draft.library.as_mut().expect("the library view is open");
         assert_eq!(library.store_path, store.to_string_lossy());
@@ -8122,7 +8779,7 @@ kind='mda'
     }
 
     #[test]
-    fn library_set_insert_routes_through_from_library_and_loads_the_set_in_order() {
+    fn a_set_chosen_in_the_picker_loads_into_the_running_drive_in_order() {
         let temp = assembly::test_support::TempDir::new("library-set-insert");
         let root = temp.path().canonicalize().unwrap();
         let store = root.join("store");
@@ -8175,13 +8832,31 @@ kind='mda'
             !shell.command_allowed(Command::InsertSet(1)),
             "the machine has no drive B:"
         );
+        // The picker lists the library's sets, with the selected one chosen.
+        shell.image_library.use_snapshot(&cache);
         shell.command(Command::InsertSet(0), &ctx);
+        let picker = shell
+            .picker
+            .as_ref()
+            .expect("Insert of a set opens the media picker");
+        let Some(crate::media_picker::Choice::Set(chosen)) = picker.choice else {
+            panic!("the selected set is chosen: {:?}", picker.choice);
+        };
+        assert_eq!(picker.sets[chosen].reference, "test:set");
+        let outcome = picker.insert().expect("the chosen set goes in");
+        assert!(matches!(
+            &outcome,
+            crate::media_picker::Outcome::Set { unit: 0, reference, first: 0, all: true, journal: true, .. }
+                if reference == "test:set"
+        ));
+        shell.apply_picker(outcome);
         let draft = shell
             .insert_dialog
             .as_mut()
-            .expect("the drive's Insert dialog");
+            .expect("the drive's insert, without its dialog");
         assert_eq!(draft.unit, 0);
-        let library = draft.library.as_mut().expect("its From library… view");
+        assert!(draft.automatic);
+        let library = draft.library.as_mut().expect("the set's library insert");
         assert_eq!(library.store_path, store.to_string_lossy());
         for _ in crate::test_wait::rounds() {
             assert_eq!(library.poll(), None);
@@ -8196,14 +8871,9 @@ kind='mda'
             library.selected, chosen,
             "the library window's set is chosen"
         );
-        for _ in crate::test_wait::rounds() {
-            shell.confirm_insert();
-            if shell.insert_dialog.is_none() {
-                break;
-            }
-            assert_eq!(shell.insert_dialog.as_ref().unwrap().error, None);
-            std::thread::sleep(std::time::Duration::from_millis(5));
-        }
+        // The frames themselves finish the insert, without its dialog.
+        modal_frames(&ctx, &mut shell, |shell| shell.insert_dialog.is_none());
+        assert_eq!(shell.dialog, None);
         let presenter = shell.presenter.as_ref().unwrap();
         let names: Vec<_> = presenter.media_slots[0]
             .as_ref()
@@ -8265,8 +8935,7 @@ kind='mda'
         for item in [
             "Drive A: (1.44M) — first.img · read-only",
             "Eject A:",
-            "Insert into A:…",
-            "From library…",
+            "Insert…",
             "Write mode: Read-only, fixed by the machine file",
         ] {
             assert!(shows(&menu.text, item), "{item} missing");
@@ -8278,7 +8947,8 @@ kind='mda'
             [Command::Eject(0)]
         );
         let closed = status_pass(&ctx, &mut shell, 1600.0, Vec::new());
-        assert!(!shows(&closed.text, "Insert into A:…"));
+        assert!(!shows(&closed.text, "Insert…"));
+        assert!(!shows(&menu.text, "From library…"));
         shell.command(Command::Eject(0), &ctx);
         assert_eq!(
             shell.presenter.as_ref().unwrap().media_events,
@@ -8287,11 +8957,11 @@ kind='mda'
 
         click_status(&ctx, &mut shell, 1600.0, chip);
         let menu = status_pass(&ctx, &mut shell, 1600.0, Vec::new());
-        let insert = label_rect(&menu.text, "Insert into A:…").center();
+        let insert = label_rect(&menu.text, "Insert…").center();
         let commands = click_status(&ctx, &mut shell, 1600.0, insert);
         assert_eq!(commands, [Command::Insert(0)]);
         shell.command(Command::Insert(0), &ctx);
-        assert_eq!(shell.insert_dialog.as_ref().unwrap().unit, 0);
+        assert_eq!(shell.picker.as_ref().unwrap().unit, 0);
         assert!(shell.stop());
     }
 
@@ -8328,7 +8998,7 @@ kind='mda'
         std::fs::write(&path, vec![0; 1_474_560]).unwrap();
         let ctx = egui::Context::default();
         let mut shell = media_shell();
-        shell.command(Command::Insert(0), &ctx);
+        shell.command(Command::InsertFile(0), &ctx);
         let draft = shell.insert_dialog.as_mut().unwrap();
         draft.add_browsed(crate::media_dialog::browse(&path, draft.slot.geometry).unwrap());
         shell.confirm_insert();
@@ -8832,7 +9502,7 @@ kind='mda'
         let mut shell = media_shell();
         let ctx = egui::Context::default();
         shell.command(Command::Library, &ctx);
-        shell.command(Command::Insert(0), &ctx);
+        shell.command(Command::InsertFile(0), &ctx);
         assert!(shell.stop_prompt.is_some() && shell.insert_dialog.is_some());
         let escape = || egui::RawInput {
             events: vec![egui::Event::Key {
@@ -9109,6 +9779,7 @@ kind='mda'
             ),
             title: "Games".into(),
             recovery: true,
+            machine: None,
             name: "gaming-workspace".into(),
         });
     }
@@ -9275,35 +9946,242 @@ kind='mda'
     }
 
     /// Import a one-disk 360K installation set into the fixture's store.
-    fn import_disk_set(f: &crate::library_test_support::Fixture) {
-        let disk = f.temp.path().join("set-disk.img");
-        let args: Vec<std::ffi::OsString> = vec![
-            "floppy".into(),
-            "--type".into(),
-            "360K".into(),
-            "--format".into(),
-            disk.clone().into_os_string(),
-        ];
-        cli::create::execute(cli::create::parse(&args).unwrap(), &mut io::sink()).unwrap();
-        let args: Vec<std::ffi::OsString> = vec![
-            "image".into(),
-            "media".into(),
-            "import".into(),
-            disk.into_os_string(),
-            "--store".into(),
-            f.store.root().as_os_str().to_owned(),
-            "--title".into(),
-            "Session disks".into(),
-            "--tag".into(),
-            "disks:set".into(),
-        ];
-        let mut errors = Vec::new();
-        assert_eq!(
-            cli::command::run(&args, &mut io::sink(), &mut errors),
-            0,
-            "{}",
-            String::from_utf8_lossy(&errors)
+    fn modal_frames(ctx: &egui::Context, shell: &mut Shell, done: impl Fn(&Shell) -> bool) {
+        for _ in crate::test_wait::rounds() {
+            let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+                shell.media_modals(ui.ctx());
+            });
+            output.textures_delta.clear();
+            if done(shell) {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        panic!("the media dialogs never finished");
+    }
+
+    /// A set the picker chose that the library then refuses (here: no store)
+    /// only says why; the guest keeps running and the drives take disks.
+    #[test]
+    fn a_refused_picker_insert_keeps_the_machine_running_and_says_why() {
+        let temp = assembly::test_support::TempDir::new("refused-insert");
+        let ctx = egui::Context::default();
+        let mut shell = media_shell();
+        shell.preferences.store_root = Some(temp.path().join("no-store"));
+        shell.args.machine = temp.path().join("machine.toml");
+        assert!(shell.presenter.as_ref().unwrap().takes_media());
+        shell.apply_picker(crate::media_picker::tests::set_outcome(0));
+        assert!(shell.insert_dialog.as_ref().is_some_and(|d| d.automatic));
+        modal_frames(&ctx, &mut shell, |shell| shell.insert_dialog.is_none());
+        let presenter = shell.presenter.as_ref().unwrap();
+        assert!(presenter.running && presenter.takes_media());
+        assert!(shell.errors.borrow().is_none());
+        let (title, text) = shell.dialog.clone().expect("the reason");
+        assert_eq!(title, "Insert disk");
+        assert!(
+            !text.is_empty() && text != "Choose an installation set",
+            "{text}"
         );
+        assert!(shell.stop());
+    }
+
+    /// Browse for an image file… shows only that file's Insert floppy step;
+    /// a disk of the drive's catalogue goes in at once, also while halted.
+    #[test]
+    fn browse_shows_the_files_own_step_and_a_catalogue_disk_goes_in_now() {
+        let temp = assembly::test_support::TempDir::new("picker-browse");
+        let mut shell = media_shell();
+        let file = temp.path().join("game.img");
+        std::fs::write(&file, vec![0; 737_280]).unwrap();
+        shell.browse_into(0, &file);
+        let draft = shell.insert_dialog.as_ref().expect("the file's step");
+        assert!(draft.browsed_only);
+        let chosen = draft
+            .selected
+            .and_then(|i| draft.slot.entries.get(i))
+            .unwrap();
+        assert_eq!(chosen.medium.name, "game.img");
+        shell.insert_dialog = None;
+        shell.browse_into(0, &temp.path().join("missing.img"));
+        assert!(shell.insert_dialog.is_none());
+        assert_eq!(shell.dialog.as_ref().map(|(t, _)| *t), Some("Insert disk"));
+        shell.dialog = None;
+        shell.presenter.as_mut().unwrap().halted = true;
+        shell.apply_picker(crate::media_picker::Outcome::Entry { unit: 0, index: 1 });
+        assert_eq!(
+            shell.presenter.as_ref().unwrap().media_events,
+            [(0, assembly::FloppyAction::Insert(1))]
+        );
+        shell.presenter.as_mut().unwrap().halted = false;
+        assert!(shell.stop());
+    }
+
+    fn machine_shell(f: &crate::library_test_support::Fixture) -> (Shell, String) {
+        let mut shell = shell();
+        shell.stop();
+        shell.args.options.allow_unlisted_firmware = true;
+        shell.preferences.store_root = Some(f.temp.path().join("no-store"));
+        let id = pc_image::machine::create(
+            &f.store,
+            &f.row.descriptor,
+            &f.row.reference,
+            Some("DOS"),
+            None,
+        )
+        .unwrap();
+        shell.image_library =
+            crate::library_view::LibraryView::synthetic(f.store.root().to_owned());
+        shell
+            .image_library
+            .pump_until(|view| view.machine_rows().iter().any(|row| row.id() == id));
+        let row = shell.image_library.machine_rows()[0].image_row();
+        shell.image_library.show_machine(id.clone(), row);
+        (shell, id)
+    }
+
+    /// Pending disks of a stopped machine change one drive at a time: two
+    /// inserts in a row keep both, even before the worker lists the machine
+    /// again; the chips show them at Start; Take out again removes one.
+    #[test]
+    fn pending_disks_of_a_stopped_machine_change_one_drive_at_a_time() {
+        let f = crate::library_test_support::Fixture::new();
+        let set = f.import_set();
+        let (mut shell, id) = machine_shell(&f);
+        let insert = |drive: &str| image_store::machine::PendingInsert {
+            drive: drive.into(),
+            set: set.clone(),
+            reference: "disks:set".into(),
+            medium: "disk-1".into(),
+            all: false,
+            journal: true,
+        };
+        for drive in ["A:", "B:"] {
+            shell.apply_picker(crate::media_picker::Outcome::Pending {
+                id: id.clone(),
+                insert: insert(drive),
+            });
+        }
+        // At once, before any listing: both drives hold their disk.
+        let row = shell.image_library.selected_machine_row().unwrap().clone();
+        assert_eq!(row.listing.machine.pending, [insert("A:"), insert("B:")]);
+        let chips: Vec<_> = shell
+            .drive_views()
+            .iter()
+            .map(crate::drive_chips::DriveView::chip_text)
+            .collect();
+        assert_eq!(
+            chips.len(),
+            1,
+            "the machine has one floppy drive: {chips:?}"
+        );
+        assert!(
+            chips[0].starts_with("A: ") && chips[0].ends_with(" · at Start"),
+            "{chips:?}"
+        );
+        assert!(shell.command_allowed(Command::Eject(0)));
+        let ctx = egui::Context::default();
+        shell.command(Command::Eject(0), &ctx);
+        // The worker answers the three changes in order, then lists again.
+        shell.image_library.pump_until(|view| {
+            view.status
+                .as_deref()
+                .is_some_and(|s| s.starts_with("Took the pending disk out of A:"))
+                && view
+                    .selected_machine_row()
+                    .is_some_and(|row| row.listing.machine.pending == [insert("B:")])
+        });
+        assert_eq!(
+            pc_image::machine::get(&f.store, &id)
+                .unwrap()
+                .machine
+                .pending,
+            [insert("B:")]
+        );
+        assert!(!shell.command_allowed(Command::Eject(0)));
+        shell.image_library.shutdown();
+    }
+
+    /// Floppies inserted into an image before Start belong to the machine
+    /// Start on that image makes, never to another machine of the image.
+    #[test]
+    fn floppies_inserted_into_an_image_never_go_into_another_machine_of_it() {
+        let f = crate::library_test_support::Fixture::new();
+        let (mut shell, id) = machine_shell(&f);
+        let ctx = egui::Context::default();
+        shell.image_library.show_source_image();
+        for _ in crate::test_wait::rounds() {
+            shell.poll_images(&ctx);
+            if shell.image_library.readiness.is_some() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        shell.sync_pending_media();
+        assert!(matches!(
+            shell.pending_media.as_ref().map(|p| &p.owner),
+            Some(crate::media_dialog::PendingOwner::Image(_))
+        ));
+        let extra = f.temp.path().join("extra.img");
+        std::fs::write(&extra, vec![7; 360 * 1024]).unwrap();
+        shell.browse_into(0, &extra);
+        shell.confirm_insert();
+        assert!(shell.pending_media.as_ref().unwrap().has_insert(0));
+        // Selecting the image's existing machine drops them.
+        let row = shell.image_library.machine_rows()[0].image_row();
+        shell.image_library.show_machine(id.clone(), row.clone());
+        shell.sync_pending_media();
+        assert!(shell.pending_media.is_none());
+        // The machine Start on the image made keeps them for its Start.
+        shell.image_library.show_source_image();
+        shell.sync_pending_media();
+        shell.browse_into(0, &extra);
+        shell.confirm_insert();
+        shell.image_library.show_machine(id.clone(), row);
+        shell.image_library.started_from_image = Some(id);
+        shell.sync_pending_media();
+        assert!(shell
+            .pending_media
+            .as_ref()
+            .is_some_and(|p| p.has_insert(0)));
+        shell.image_library.shutdown();
+    }
+
+    /// A library key typed into a text field stays with the field.
+    #[test]
+    fn library_keys_never_act_while_a_text_field_has_the_keyboard() {
+        use winit::event::ElementState::*;
+        let mut shell = shell();
+        shell.stop();
+        let mut machine =
+            crate::library_view::machines::tests::row("dos", "DOS", "a", &["games:1"]);
+        machine.listing.machine.favorite = false;
+        shell.image_library.set_machines(vec![machine.clone()]);
+        shell.image_library.machine = Some("dos".into());
+        shell.image_library.selected = Some(machine.image_row());
+        let ctx = egui::Context::default();
+        ctx.memory_mut(|memory| memory.request_focus(egui::Id::unique("a text field")));
+        assert!(ctx.egui_wants_keyboard_input());
+        shell.key(KeyCode::F2, Pressed, false, &ctx);
+        shell.key(KeyCode::F2, Released, false, &ctx);
+        assert!(
+            !shell.image_library.has_dialog(),
+            "F2 stayed with the field"
+        );
+        ctx.memory_mut(|memory| memory.surrender_focus(egui::Id::unique("a text field")));
+        shell.key(KeyCode::F2, Pressed, false, &ctx);
+        shell.key(KeyCode::F2, Released, false, &ctx);
+        assert!(shell.image_library.has_dialog(), "Rename… opens");
+        // Disabled items say why.
+        let shell = self::shell();
+        assert_eq!(
+            shell.disabled_reason(Command::Rename),
+            Some("Select a machine")
+        );
+        assert_eq!(shell.disabled_reason(Command::Stop), None);
+    }
+
+    fn import_disk_set(f: &crate::library_test_support::Fixture) {
+        f.import_set();
     }
 
     #[test]
@@ -9343,7 +10221,7 @@ kind='mda'
             let media = f.store.workspace_path(&name).unwrap().join("media");
             assert_eq!(shell.library_media_dir().unwrap(), media);
 
-            shell.command(Command::Insert(0), &ctx);
+            shell.command(Command::InsertFile(0), &ctx);
             shell.open_insert_library();
             for _ in crate::test_wait::rounds() {
                 let library = shell
@@ -9402,7 +10280,7 @@ kind='mda'
             assert!(journal.is_file());
 
             // The dialog names where the journal lives.
-            shell.command(Command::Insert(0), &ctx);
+            shell.command(Command::InsertFile(0), &ctx);
             let rows = shell.insert_dialog.as_ref().unwrap().slot.entries.len();
             shell.insert_dialog.as_mut().unwrap().select(Some(rows - 1));
             let mut text = Vec::new();

@@ -701,3 +701,165 @@ fn settings_recompute_an_unjournaled_cmos_at_every_start_and_in_the_new_image() 
     // The source image keeps its own CMOS.
     assert_eq!(cmos(&fixture, &id), base);
 }
+
+/// Gaming mode on a machine plays a copy of the machine as it is: its
+/// journals and settings, while the machine stays as it was. Keep as new machine… renames the copy into a machine of its own with
+/// the source's settings and labels; Keep as new image… publishes a copy
+/// with the source's settings.
+#[test]
+fn a_gaming_copy_plays_the_machine_as_it_is_and_is_kept_as_a_machine_or_an_image() {
+    let Some(fixture) = Fixture::new() else {
+        return;
+    };
+    let store = &fixture.store;
+    let id = machine::create_from_tag(store, "test:source", Some("DOS"), None).unwrap();
+    fixture.changed(&id, 5);
+    let tables = machine::settings(store, &id).unwrap().machine;
+    machine::change_settings(store, &id, with_extended(&tables, 4096), true).unwrap();
+    machine::set_labels(store, &id, vec!["games".into()]).unwrap();
+    let before = machine::get(store, &id).unwrap();
+    let bytes = |workspace: &str, name: &str| {
+        fs::read(
+            store
+                .workspace_path(workspace)
+                .unwrap()
+                .join("media")
+                .join(name),
+        )
+        .unwrap()
+    };
+    let copy_journals = |copy: &str| {
+        journals(store, &id)
+            .iter()
+            .all(|name| bytes(copy, name) == bytes(&id, name))
+    };
+    for copy in ["disposable-copy-1", "disposable-copy-2"] {
+        let source = machine::own(store, &id).unwrap();
+        let owner = store.workspace(copy).unwrap();
+        let prepared = machine::prepare_copy(&source, &owner).unwrap();
+        assert_eq!(
+            prepared.session.machine.memory.address_space_bytes,
+            0x100000 + 4096 * 1024
+        );
+        drop(prepared);
+        assert!(copy_journals(copy));
+        // The copy records what it runs with.
+        let record = machine::copy_of(&owner).unwrap().unwrap();
+        assert_eq!(record.machine, id);
+        assert_eq!(record.name, "DOS");
+        assert_eq!(record.labels, ["games"]);
+        assert_eq!(record.settings, before.machine.settings);
+    }
+    // The machine itself is unchanged by its copies.
+    let after = machine::get(store, &id).unwrap();
+    assert_eq!(after.machine.last_run, before.machine.last_run);
+    assert_eq!(after.machine.settings, before.machine.settings);
+    assert_eq!(after.changes, before.changes);
+    // The machine changes after its copies were made, then goes: keeping and
+    // publishing a copy still use what the copy ran with.
+    machine::change_settings(store, &id, with_extended(&tables, 2048), true).unwrap();
+    machine::set_labels(store, &id, vec!["other".into()]).unwrap();
+    {
+        // A power cycle prepares the copy again with its own record.
+        let owner = store.workspace("disposable-copy-2").unwrap();
+        let again = machine::resume_copy(&owner).unwrap();
+        assert_eq!(
+            again.session.machine.memory.address_space_bytes,
+            0x100000 + 4096 * 1024
+        );
+    }
+    machine::delete(store, &id).unwrap();
+    // Keep as new machine…: the copy's workspace becomes the machine's.
+    let kept =
+        machine::keep_copy(store, "disposable-copy-1", "DOS saves", Some("now".into())).unwrap();
+    assert!(!store.workspace_path("disposable-copy-1").unwrap().exists());
+    let listing = machine::get(store, &kept).unwrap();
+    assert_eq!(listing.machine.name, "DOS saves");
+    assert_eq!(listing.machine.labels, ["games"]);
+    assert_eq!(listing.machine.settings, before.machine.settings);
+    assert_eq!(listing.machine.source, "test:source");
+    assert_eq!(listing.machine.origin, Origin::Duplicate);
+    assert!(!store
+        .workspace_path(&kept)
+        .unwrap()
+        .join("copy-of.toml")
+        .exists());
+    assert!(machine::keep_copy(store, "disposable-copy-2", "dos saves", None).is_err());
+    // Keep as new image…: the copy published with the settings it ran with.
+    let owner = store.workspace("disposable-copy-2").unwrap();
+    machine::publish_copy(&owner, "copy:1.0.0", None, false, Some("Copy")).unwrap();
+    drop(owner);
+    fixture.assert_complete("copy:1.0.0", 5);
+    let lowered = pc_image::resolve(store, "copy:1.0.0", &fixture.path.join("c")).unwrap();
+    assert_eq!(lowered.memory.address_space_bytes, 0x100000 + 4096 * 1024);
+}
+
+/// An interrupted "keeps its changes" Save as new image… is finished with the
+/// choice it recorded; the default commit, which would move the machine,
+/// refuses it.
+#[test]
+fn an_interrupted_save_that_keeps_the_changes_is_finished_as_it_was_chosen() {
+    let Some(fixture) = Fixture::new() else {
+        return;
+    };
+    let store = &fixture.store;
+    let id = machine::create_from_tag(store, "test:source", Some("Keeper"), None).unwrap();
+    fixture.changed(&id, 21);
+    let interrupted =
+        machine::commit_with_hook(store, &id, "kept:1.0.0", None, None, true, |step| {
+            if step == workspace::PublicationStep::IntentStored {
+                Err(pc_image::Error::Invalid("injected interruption".into()))
+            } else {
+                Ok(())
+            }
+        });
+    assert!(interrupted.is_err());
+    assert_eq!(
+        machine::pending_commit(store, &id).unwrap(),
+        Some(machine::PendingCommit {
+            tag: "kept:1.0.0".into(),
+            expected: None,
+            keep: true,
+        })
+    );
+    assert!(machine::get(store, &id).unwrap().publication_pending);
+    assert!(machine::commit(store, &id, "kept:1.0.0", None, None, false).is_err());
+    machine::finish_commit(store, &id).unwrap();
+    assert_eq!(machine::pending_commit(store, &id).unwrap(), None);
+    fixture.assert_complete("kept:1.0.0", 21);
+    let listing = machine::get(store, &id).unwrap();
+    assert_eq!(listing.machine.image.digest, fixture.image.digest);
+    assert!(!listing.changes.is_empty(), "the machine keeps its changes");
+    assert!(machine::finish_commit(store, &id).is_err());
+}
+
+/// Pending disks change one drive at a time on the record as it is, so
+/// setting A: and then B: keeps both, and clearing one keeps the other.
+#[test]
+fn pending_disks_change_one_drive_at_a_time() {
+    let Some(fixture) = Fixture::new() else {
+        return;
+    };
+    let store = &fixture.store;
+    let id = machine::create_from_tag(store, "test:source", Some("Drives"), None).unwrap();
+    let insert = |drive: &str, medium: &str| image_store::machine::PendingInsert {
+        drive: drive.into(),
+        set: fixture.image.clone(),
+        reference: "set:1".into(),
+        medium: medium.into(),
+        all: false,
+        journal: true,
+    };
+    machine::set_pending_insert(store, &id, "A:", Some(insert("A:", "disk-1"))).unwrap();
+    machine::set_pending_insert(store, &id, "B:", Some(insert("B:", "disk-2"))).unwrap();
+    machine::set_pending_insert(store, &id, "A:", Some(insert("A:", "disk-3"))).unwrap();
+    let pending = machine::get(store, &id).unwrap().machine.pending;
+    assert_eq!(pending, [insert("B:", "disk-2"), insert("A:", "disk-3")]);
+    machine::set_pending_insert(store, &id, "B:", None).unwrap();
+    assert_eq!(
+        machine::get(store, &id).unwrap().machine.pending,
+        [insert("A:", "disk-3")]
+    );
+    assert!(machine::set_pending_insert(store, &id, "C:", None).is_err());
+    assert!(machine::set_pending_insert(store, &id, "A:", Some(insert("B:", "disk-1"))).is_err());
+}

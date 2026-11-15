@@ -192,6 +192,46 @@ fn same_name(a: &str, b: &str) -> bool {
     fold(a) == fold(b)
 }
 
+/// The first free name from `base` among `names`, ignoring case: `base`
+/// itself, then `base (2)`, `base (3)`, … . The base is cleaned into a valid
+/// name first (control and invisible characters dropped, trimmed, at most
+/// [`MAX_NAME_CHARS`] characters, "Machine" when nothing is left) and is
+/// shortened so each suffix still fits, so every candidate is a valid name
+/// and, the names being finite, the search always ends. A frontend previews
+/// the default name with it, exactly as the store will choose it.
+pub fn unique_among<'a>(base: &str, names: impl IntoIterator<Item = &'a str> + Clone) -> String {
+    let cleaned: String = base
+        .chars()
+        .filter(|c| !c.is_control() && !invisible(*c))
+        .collect();
+    let base: String = cleaned.trim().chars().take(MAX_NAME_CHARS).collect();
+    let base = match base.trim_end() {
+        "" => "Machine".to_owned(),
+        kept => kept.to_owned(),
+    };
+    let taken = |name: &str| {
+        names
+            .clone()
+            .into_iter()
+            .any(|other| same_name(other, name))
+    };
+    if !taken(&base) {
+        return base;
+    }
+    for n in 2u64.. {
+        let suffix = format!(" ({n})");
+        let kept: String = base
+            .chars()
+            .take(MAX_NAME_CHARS - suffix.chars().count())
+            .collect();
+        let candidate = format!("{}{suffix}", kept.trim_end());
+        if !taken(&candidate) {
+            return candidate;
+        }
+    }
+    unreachable!("finitely many names leave a free suffix")
+}
+
 impl Machines {
     pub fn get(&self, id: &str) -> Option<&Machine> {
         self.machines.get(id)
@@ -216,30 +256,10 @@ impl Machines {
             .find(|(_, m)| same_name(&m.name, name))
             .map(|(id, _)| id.as_str())
     }
-    /// `base`, or the first free `base (2)`, `base (3)`, … ignoring case. A long
-    /// base is shortened so the suffix still fits the name limit.
+    /// `base`, or the first free `base (2)`, `base (3)`, … ignoring case; see
+    /// [`unique_among`].
     pub fn unique_name(&self, base: &str) -> String {
-        let base: String = base.trim().chars().take(MAX_NAME_CHARS).collect();
-        let base = if base.is_empty() {
-            "Machine".to_owned()
-        } else {
-            base
-        };
-        if self.find_name(&base).is_none() {
-            return base;
-        }
-        for n in 2u64.. {
-            let suffix = format!(" ({n})");
-            let kept: String = base
-                .chars()
-                .take(MAX_NAME_CHARS - suffix.chars().count())
-                .collect();
-            let candidate = format!("{}{suffix}", kept.trim_end());
-            if self.find_name(&candidate).is_none() {
-                return candidate;
-            }
-        }
-        unreachable!("an unbounded counter always finds a free name")
+        unique_among(base, self.machines.values().map(|m| m.name.as_str()))
     }
     /// Add a machine under `id`. The id must be new and the name free.
     pub fn insert(&mut self, id: &str, machine: Machine) -> Result<()> {
@@ -485,6 +505,32 @@ mod tests {
         machines.rename("dos", "dos games").unwrap();
         assert_eq!(machines.get("dos").unwrap().name, "dos games");
         assert!(machines.rename("missing", "Free").is_err());
+    }
+
+    /// The default name is always a valid, free name, also from a base that
+    /// is too long, invalid or taken near the limit, so a frontend preview
+    /// never searches forever.
+    #[test]
+    fn default_names_are_valid_and_free_from_any_base() {
+        let long = "x".repeat(70);
+        assert_eq!(unique_among(&long, []), "x".repeat(64));
+        let near = "y".repeat(62);
+        let taken = [near.as_str()];
+        let second = unique_among(&near, taken);
+        assert_eq!(second, format!("{} (2)", "y".repeat(60)));
+        assert!(validate_name(&second).is_ok());
+        let full = [near.clone(), second.clone()];
+        let third = unique_among(&near, full.iter().map(String::as_str));
+        assert_eq!(third, format!("{} (3)", "y".repeat(60)));
+        assert_eq!(unique_among(" \u{200B}\u{0007} ", []), "Machine");
+        assert_eq!(
+            unique_among("DOS\u{200B} games", ["dos GAMES"]),
+            "DOS games (2)"
+        );
+        for base in [long.as_str(), "\u{0007}", "Straße", ""] {
+            let name = unique_among(base, ["STRASSE", "Machine"]);
+            assert!(validate_name(&name).is_ok(), "{name:?}");
+        }
     }
 
     #[test]
