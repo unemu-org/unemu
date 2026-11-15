@@ -35,7 +35,9 @@ fn publication_exit_child() {
 }
 #[test]
 fn death_at_every_publication_boundary_preserves_layered_parents_and_both_cas_paths() {
-    let probe = Fixture::new();
+    let Some(probe) = Fixture::new() else {
+        return;
+    };
     probe.changed("seed", 70);
     workspace::publish(
         &probe.store.open_workspace("seed").unwrap(),
@@ -55,7 +57,9 @@ fn death_at_every_publication_boundary_preserves_layered_parents_and_both_cas_pa
     drop(probe);
     for present in [false, true] {
         for (stop, step) in steps.iter().enumerate() {
-            let fixture = Fixture::new();
+            let Some(fixture) = Fixture::new() else {
+                return;
+            };
             fixture.changed("seed", 70);
             let parent = workspace::publish(
                 &fixture.store.open_workspace("seed").unwrap(),
@@ -131,7 +135,9 @@ fn death_at_every_publication_boundary_preserves_layered_parents_and_both_cas_pa
 }
 
 fn death_then_tag_conflict_rolls_back_intent_and_preserves_journals() {
-    let fixture = Fixture::new();
+    let Some(fixture) = Fixture::new() else {
+        return;
+    };
     fixture.changed("seed", 80);
     let parent = workspace::publish(
         &fixture.store.open_workspace("seed").unwrap(),

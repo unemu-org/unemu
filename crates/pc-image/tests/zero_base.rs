@@ -61,7 +61,9 @@ fn no_materialized_disk(store: &Store) {
 
 #[test]
 fn blank_disk_resolves_from_a_descriptor_and_reads_zeros() {
-    let open = Open::new();
+    let Some(open) = Open::new() else {
+        return;
+    };
     let image = pc_image::create::create(
         &open.store,
         &open.image([Some(SMALL), None]),
@@ -110,7 +112,9 @@ fn blank_disk_resolves_from_a_descriptor_and_reads_zeros() {
 
 #[test]
 fn writes_journal_then_save_seals_only_written_sectors_and_flatten_stays_sparse() {
-    let open = Open::new();
+    let Some(open) = Open::new() else {
+        return;
+    };
     pc_image::create::create(
         &open.store,
         &open.image([Some(SMALL), None]),
@@ -203,7 +207,9 @@ fn writes_journal_then_save_seals_only_written_sectors_and_flatten_stays_sparse(
 
 #[test]
 fn guard_summary_and_inspection_see_a_small_open_blank_disk() {
-    let open = Open::new();
+    let Some(open) = Open::new() else {
+        return;
+    };
     let image = pc_image::create::create(
         &open.store,
         &open.image([Some(Chs::new(1024, 16, 63)), None]),
@@ -283,7 +289,9 @@ fn guard_summary_and_inspection_see_a_small_open_blank_disk() {
 
 #[test]
 fn a_blank_disk_mounts_only_through_a_journal() {
-    let open = Open::new();
+    let Some(open) = Open::new() else {
+        return;
+    };
     pc_image::create::create(
         &open.store,
         &open.image([Some(SMALL), None]),
@@ -320,15 +328,15 @@ fn a_blank_disk_mounts_only_through_a_journal() {
 #[test]
 fn an_imported_machine_file_does_not_make_a_created_open_image_private() {
     use image_registry::guard::{self, Redistribution};
-    let open = Open::new();
+    let Some(open) = Open::new() else {
+        return;
+    };
     // A machine file with another open BIOS build: import marks the user's
     // ROM user-supplied and its generated configuration and metadata open.
-    let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
-    std::fs::copy(
-        root.join("vendor/kiselev-bios/bios-xi8088.bin"),
-        open.path.join("xi8088.bin"),
-    )
-    .unwrap();
+    let Some(bios) = open_image::fixtures::fixture("kiselev-bios/bios-xi8088.bin") else {
+        return;
+    };
+    std::fs::write(open.path.join("xi8088.bin"), bios).unwrap();
     let file = open.path.join("imported.toml");
     std::fs::write(
         &file,
@@ -380,7 +388,9 @@ fn an_imported_machine_file_does_not_make_a_created_open_image_private() {
 
 #[test]
 fn disks_of_one_geometry_share_one_zero_base_and_keep_separate_journals() {
-    let open = Open::new();
+    let Some(open) = Open::new() else {
+        return;
+    };
     pc_image::create::create(
         &open.store,
         &open.image([Some(SMALL), Some(SMALL)]),
@@ -442,7 +452,9 @@ fn disks_of_one_geometry_share_one_zero_base_and_keep_separate_journals() {
 
 #[test]
 fn the_created_configuration_lowers_like_the_equivalent_machine_file() {
-    let open = Open::new();
+    let Some(open) = Open::new() else {
+        return;
+    };
     let image = open.image([Some(SMALL), None]);
     pc_image::create::create(&open.store, &image, "created:1.0.0", None).unwrap();
     // The same document as a machine file: real ROM paths, an all-zero raw
@@ -529,7 +541,9 @@ fn the_created_configuration_lowers_like_the_equivalent_machine_file() {
 
 #[test]
 fn a_compressed_sector_pack_over_a_zero_base_mounts_without_any_decoded_file() {
-    let open = Open::new();
+    let Some(open) = Open::new() else {
+        return;
+    };
     pc_image::create::create(
         &open.store,
         &open.image([Some(SMALL), None]),
@@ -595,7 +609,9 @@ fn official(store: &Store, tag: &str) -> Result<(), image_registry::guard::Refus
 
 #[test]
 fn a_copyleft_rom_without_its_source_archive_keeps_a_new_image_private() {
-    let open = Open::new();
+    let Some(open) = Open::new() else {
+        return;
+    };
     // The same open Kiselev ROM, from a package another program wrote: open
     // under the GPL, but without its source archive.
     let original = open.rom("kiselev-xi8088-1.0.2-atreset");

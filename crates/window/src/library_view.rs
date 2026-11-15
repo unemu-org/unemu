@@ -2571,7 +2571,9 @@ pub(super) mod tests {
     #[test]
     fn new_machine_creates_an_image_that_lists_validates_and_boots_the_open_bios() {
         use image_store::ConfigValidator;
-        let firmware = crate::library_test_support::FirmwareStore::new(false);
+        let Some(firmware) = crate::library_test_support::FirmwareStore::new(false) else {
+            return;
+        };
         let worker = Worker::spawn(firmware.store.root().to_owned(), egui::Context::default());
         let next = |wanted: &dyn Fn(&Event) -> bool| loop {
             match worker
@@ -2723,7 +2725,9 @@ pub(super) mod tests {
 
     #[test]
     fn new_machine_requests_are_served_while_a_session_runs() {
-        let firmware = crate::library_test_support::FirmwareStore::new(false);
+        let Some(firmware) = crate::library_test_support::FirmwareStore::new(false) else {
+            return;
+        };
         let mut wizard = crate::new_machine::Wizard::new();
         wizard.set_store(firmware.choices());
         let (image, _, _) = wizard.request().unwrap();
@@ -2774,7 +2778,9 @@ pub(super) mod tests {
 
     #[test]
     fn create_results_and_package_refreshes_touch_only_the_wizard() {
-        let firmware = crate::library_test_support::FirmwareStore::new(false);
+        let Some(firmware) = crate::library_test_support::FirmwareStore::new(false) else {
+            return;
+        };
         let mut view = LibraryView::synthetic(firmware.store.root().to_owned());
         view.query.filter = Filter::Firmware;
         view.query.text = "kiselev".into();
@@ -2822,7 +2828,9 @@ pub(super) mod tests {
 
     #[test]
     fn create_binds_a_two_chip_system_bios_by_part() {
-        let firmware = crate::library_test_support::FirmwareStore::new(false);
+        let Some(firmware) = crate::library_test_support::FirmwareStore::new(false) else {
+            return;
+        };
         let dir = firmware.temp.path().join("chips");
         std::fs::create_dir(&dir).unwrap();
         let even = vec![0xF4; 32768];
@@ -2963,7 +2971,9 @@ pub(super) mod tests {
 
     #[test]
     fn save_as_new_image_from_layers_keeps_title_and_firmware_sources() {
-        let firmware = crate::library_test_support::FirmwareStore::new(false);
+        let Some(firmware) = crate::library_test_support::FirmwareStore::new(false) else {
+            return;
+        };
         let row = crate::image_settings::tests::open_image(&firmware);
         let before = firmware
             .store
@@ -3052,7 +3062,9 @@ pub(super) mod tests {
 
     #[test]
     fn settings_revision_publishes_a_new_tag_and_leaves_the_source() {
-        let firmware = crate::library_test_support::FirmwareStore::new(false);
+        let Some(firmware) = crate::library_test_support::FirmwareStore::new(false) else {
+            return;
+        };
         let row = crate::image_settings::tests::open_image(&firmware);
         let mut view = LibraryView::synthetic(firmware.store.root().to_owned());
         view.selected = Some(row.clone());
@@ -3134,7 +3146,9 @@ pub(super) mod tests {
 
     #[test]
     fn settings_review_and_save_never_open_the_store_on_the_ui_thread() {
-        let firmware = crate::library_test_support::FirmwareStore::new(false);
+        let Some(firmware) = crate::library_test_support::FirmwareStore::new(false) else {
+            return;
+        };
         let row = crate::image_settings::tests::open_image(&firmware);
         let mut view = LibraryView::synthetic(firmware.store.root().to_owned());
         // The view's own root points nowhere: only the worker reaches the store.
@@ -3167,7 +3181,9 @@ pub(super) mod tests {
 
     #[test]
     fn a_refused_revision_asks_again_with_the_digest_another_program_moved_the_tag_to() {
-        let firmware = crate::library_test_support::FirmwareStore::new(false);
+        let Some(firmware) = crate::library_test_support::FirmwareStore::new(false) else {
+            return;
+        };
         let row = crate::image_settings::tests::open_image(&firmware);
         firmware
             .store
@@ -3238,7 +3254,9 @@ pub(super) mod tests {
 
     #[test]
     fn an_interrupted_save_is_offered_and_finished_with_its_own_tag() {
-        let firmware = crate::library_test_support::FirmwareStore::new(false);
+        let Some(firmware) = crate::library_test_support::FirmwareStore::new(false) else {
+            return;
+        };
         let row = crate::image_settings::tests::open_image(&firmware);
         let name = regular_name(&row.descriptor.digest);
         let owner = firmware.store.workspace(&name).unwrap();
@@ -3290,7 +3308,9 @@ pub(super) mod tests {
 
     #[test]
     fn image_settings_and_its_review_render_without_a_window() {
-        let firmware = crate::library_test_support::FirmwareStore::new(false);
+        let Some(firmware) = crate::library_test_support::FirmwareStore::new(false) else {
+            return;
+        };
         let row = crate::image_settings::tests::open_image(&firmware);
         let mut settings = crate::image_settings::tests::opened(&firmware, row, false);
         settings.set(

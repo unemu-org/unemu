@@ -49,7 +49,9 @@ fn files(root: &Path, found: &mut BTreeMap<PathBuf, (u64, std::time::SystemTime)
 
 #[test]
 fn create_and_start_a_504_mib_blank_disk_without_large_files_or_allocations() {
-    let open = open_image::Open::new();
+    let Some(open) = open_image::Open::new() else {
+        return;
+    };
     let image = open.image([Some(Chs::new(1024, 16, 63)), None]);
     let mut before = BTreeMap::new();
     files(&open.path, &mut before);

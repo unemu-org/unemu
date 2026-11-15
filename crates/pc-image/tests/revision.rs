@@ -19,7 +19,7 @@ use std::{
 use toml::{Table, Value};
 #[path = "support/open_image.rs"]
 mod open_image;
-use open_image::Open;
+use open_image::{fixtures, Open};
 
 static NEXT: AtomicU64 = AtomicU64::new(0);
 
@@ -43,22 +43,26 @@ fn checksum(bytes: &[u8; 64]) -> [u8; 2] {
         .to_be_bytes()
 }
 
-fn stored() -> Stored {
+/// `None` when a fetched ROM fixture is missing, which skips the test.
+fn stored() -> Option<Stored> {
+    let mut roms = Vec::new();
+    for (from, to) in [
+        ("kiselev-bios/bios-xi8088.bin", "bios.bin"),
+        (
+            "xtide-universal-bios/ide_xtp-r638-ata1f0-8k.bin",
+            "xtide.bin",
+        ),
+    ] {
+        roms.push((fixtures::fixture(from)?, to));
+    }
     let path = std::env::temp_dir().join(format!(
         "image-revision-{}-{}",
         std::process::id(),
         NEXT.fetch_add(1, Ordering::Relaxed)
     ));
     fs::create_dir(&path).unwrap();
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
-    for (from, to) in [
-        ("vendor/kiselev-bios/bios-xi8088.bin", "bios.bin"),
-        (
-            "vendor/xtide-universal-bios/ide_xtp-r638-ata1f0-8k.bin",
-            "xtide.bin",
-        ),
-    ] {
-        fs::copy(root.join(from), path.join(to)).unwrap();
+    for (bytes, to) in roms {
+        fs::write(path.join(to), bytes).unwrap();
     }
     fs::write(path.join("fixed.img"), vec![0; 32 * 512]).unwrap();
     fs::write(path.join("one.img"), vec![0; 360 * 1024]).unwrap();
@@ -96,12 +100,12 @@ fn stored() -> Stored {
     )
     .unwrap()
     .manifest;
-    Stored {
+    Some(Stored {
         path,
         store,
         image,
         cmos,
-    }
+    })
 }
 
 fn table<'a>(machine: &'a mut Table, key: &str) -> &'a mut Table {
@@ -146,7 +150,9 @@ fn cmos_blob(store: &Store, tag: &str) -> Vec<u8> {
 
 #[test]
 fn memory_revision_shares_every_blob_and_rewrites_only_memory_bytes_and_checksum() {
-    let fixture = stored();
+    let Some(fixture) = stored() else {
+        return;
+    };
     let source = Source::open(&fixture.store, &fixture.image).unwrap();
     assert!(source.stores_cmos());
     let plan = revision::plan(&fixture.store, &source, with_extended(&source, 4096)).unwrap();
@@ -204,7 +210,9 @@ fn memory_revision_shares_every_blob_and_rewrites_only_memory_bytes_and_checksum
 
 #[test]
 fn drive_revision_rewrites_only_diskette_and_equipment_bytes_and_checksum() {
-    let fixture = stored();
+    let Some(fixture) = stored() else {
+        return;
+    };
     let source = Source::open(&fixture.store, &fixture.image).unwrap();
     let mut machine = source.machine().clone();
     let mut drive = Table::new();
@@ -250,7 +258,9 @@ fn drive_revision_rewrites_only_diskette_and_equipment_bytes_and_checksum() {
 
 #[test]
 fn invalid_drafts_and_stranded_catalogue_media_cannot_publish() {
-    let fixture = stored();
+    let Some(fixture) = stored() else {
+        return;
+    };
     let source = Source::open(&fixture.store, &fixture.image).unwrap();
     assert!(revision::plan(&fixture.store, &source, with_extended(&source, 99_999)).is_err());
     let mut machine = source.machine().clone();
@@ -281,7 +291,9 @@ fn invalid_drafts_and_stranded_catalogue_media_cannot_publish() {
 
 #[test]
 fn version_tags_never_move_and_other_tags_move_only_from_the_confirmed_digest() {
-    let fixture = stored();
+    let Some(fixture) = stored() else {
+        return;
+    };
     let source = Source::open(&fixture.store, &fixture.image).unwrap();
     let first = revision::plan(&fixture.store, &source, with_extended(&source, 2048)).unwrap();
     let second = revision::plan(&fixture.store, &source, with_extended(&source, 4096)).unwrap();
@@ -322,7 +334,9 @@ fn version_tags_never_move_and_other_tags_move_only_from_the_confirmed_digest() 
 
 #[test]
 fn display_and_coprocessor_changes_rewrite_only_their_equipment_bits() {
-    let fixture = stored();
+    let Some(fixture) = stored() else {
+        return;
+    };
     let source = Source::open(&fixture.store, &fixture.image).unwrap();
     // The preset fits a monochrome adapter; without it there is no display.
     let no_display = {
@@ -363,8 +377,12 @@ fn class(manifest: &image_store::Manifest, marks: &image_registry::guard::LocalM
 
 #[test]
 fn a_revision_keeps_every_mark_and_the_redistribution_class_of_its_source() {
-    let stored = stored();
-    let open = Open::new();
+    let Some(stored) = stored() else {
+        return;
+    };
+    let Some(open) = Open::new() else {
+        return;
+    };
     let created = pc_image::create::create(
         &open.store,
         &open.image([Some(SMALL), None]),
@@ -413,7 +431,9 @@ fn annotations(store: &Store, tag: &str) -> std::collections::BTreeMap<String, S
 
 #[test]
 fn settings_revision_of_a_new_image_keeps_its_title_and_firmware_sources() {
-    let open = Open::new();
+    let Some(open) = Open::new() else {
+        return;
+    };
     let created = pc_image::create::create(
         &open.store,
         &open.image([Some(SMALL), None]),
@@ -477,7 +497,9 @@ fn write_c(prepared: &workspace::PreparedSession, sectors: &[(u64, [u8; 512])]) 
 
 #[test]
 fn a_save_without_changes_is_an_alias_of_the_same_image() {
-    let open = Open::new();
+    let Some(open) = Open::new() else {
+        return;
+    };
     let created = pc_image::create::create(
         &open.store,
         &open.image([Some(SMALL), None]),
@@ -496,7 +518,9 @@ fn a_save_without_changes_is_an_alias_of_the_same_image() {
 
 #[test]
 fn a_pending_publication_finishes_with_its_own_tag() {
-    let open = Open::new();
+    let Some(open) = Open::new() else {
+        return;
+    };
     pc_image::create::create(
         &open.store,
         &open.image([Some(SMALL), None]),
@@ -536,7 +560,9 @@ fn a_pending_publication_finishes_with_its_own_tag() {
 
 #[test]
 fn save_as_new_image_keeps_title_and_firmware_sources_and_can_retitle() {
-    let open = Open::new();
+    let Some(open) = Open::new() else {
+        return;
+    };
     pc_image::create::create(
         &open.store,
         &open.image([Some(SMALL), None]),

@@ -1306,7 +1306,9 @@ mod tests {
 
     #[test]
     fn motherboard_offers_fitting_bios_packages_and_explains_the_others() {
-        let store = FirmwareStore::new(true);
+        let Some(store) = FirmwareStore::new(true) else {
+            return;
+        };
         let mut wizard = wizard(&store);
         let (fits, misfits) = wizard.offers(Slot::Bios);
         assert_eq!(
@@ -1372,7 +1374,9 @@ mod tests {
 
     #[test]
     fn cpu_and_memory_options_and_limits_come_from_the_capabilities_api() {
-        let store = FirmwareStore::new(false);
+        let Some(store) = FirmwareStore::new(false) else {
+            return;
+        };
         let mut wizard = wizard(&store);
         let speeds = create::speeds(assembly::BoardModel::Ibm5170);
         assert_eq!(
@@ -1416,7 +1420,9 @@ mod tests {
 
     #[test]
     fn device_options_and_video_bios_fit_follow_the_validator() {
-        let store = FirmwareStore::new(false);
+        let Some(store) = FirmwareStore::new(false) else {
+            return;
+        };
         let mut wizard = wizard(&store);
         // The EMS board decodes 260h, so the Sound Blaster cannot use it.
         assert_eq!(
@@ -1450,7 +1456,9 @@ mod tests {
 
     #[test]
     fn drives_follow_firmware_services_and_option_rom_requirements() {
-        let store = FirmwareStore::new(false);
+        let Some(store) = FirmwareStore::new(false) else {
+            return;
+        };
         let mut wizard = wizard(&store);
         assert_eq!(wizard.hardware().disks[0], Some(create::BLANK_DISKS[0]));
         assert!(
@@ -1491,7 +1499,9 @@ mod tests {
 
     #[test]
     fn tags_follow_the_grammar_and_version_tags_never_move() {
-        let store = FirmwareStore::new(false);
+        let Some(store) = FirmwareStore::new(false) else {
+            return;
+        };
         let mut wizard = wizard(&store);
         let image = Digest::of(b"existing");
         wizard.tags.push(("open-at:1.0.0".into(), image.clone()));
@@ -1534,7 +1544,9 @@ mod tests {
 
     #[test]
     fn a_user_supplied_bios_makes_the_image_private() {
-        let store = FirmwareStore::new(true);
+        let Some(store) = FirmwareStore::new(true) else {
+            return;
+        };
         let mut wizard = wizard(&store);
         assert_eq!(wizard.private_notice(), None);
         assert!(wizard
@@ -1562,7 +1574,9 @@ mod tests {
 
     #[test]
     fn a_copyleft_bios_without_its_source_archive_makes_the_image_private() {
-        let open = FirmwareStore::new(false);
+        let Some(open) = FirmwareStore::new(false) else {
+            return;
+        };
         let with_sources = wizard(&open);
         assert_eq!(with_sources.private_notice(), None);
         let preview = with_sources.preview().unwrap().unwrap();
@@ -1571,7 +1585,9 @@ mod tests {
             .iter()
             .any(|d| d.decoded_media_type() == image_store::media_type::TAR));
         // The same ROMs from packages imported without their sources.
-        let bare = FirmwareStore::without_sources();
+        let Some(bare) = FirmwareStore::without_sources() else {
+            return;
+        };
         let wizard = wizard(&bare);
         let notice = wizard.private_notice().unwrap();
         assert!(notice.contains("kiselev-xi8088-1.0.2-atreset"), "{notice}");
@@ -1608,7 +1624,9 @@ mod tests {
 
     #[test]
     fn a_blob_another_manifest_marks_user_supplied_is_user_supplied_here() {
-        let store = FirmwareStore::new(false);
+        let Some(store) = FirmwareStore::new(false) else {
+            return;
+        };
         let wizard = wizard(&store);
         assert_eq!(wizard.private_notice(), None);
         // Another package records the open VGA BIOS bytes as user-supplied;
@@ -1652,7 +1670,9 @@ mod tests {
 
     #[test]
     fn a_package_refresh_keeps_the_users_choices_unless_the_bios_disappeared() {
-        let store = FirmwareStore::new(false);
+        let Some(store) = FirmwareStore::new(false) else {
+            return;
+        };
         let mut wizard = wizard(&store);
         let bios = wizard.selection().bios.clone();
         wizard.choose_option_rom(None);
@@ -1676,7 +1696,9 @@ mod tests {
 
     #[test]
     fn what_only_the_rom_bytes_decide_becomes_a_candidate_reason() {
-        let store = FirmwareStore::new(false);
+        let Some(store) = FirmwareStore::new(false) else {
+            return;
+        };
         // The open VGA BIOS package lists fine, but its ROM blob is gone.
         let vga = store
             .choices()
@@ -1722,7 +1744,9 @@ mod tests {
     fn user_rom_cmos_typed_bios_refuses_untyped_geometries_per_option() {
         let catalogue = assembly::BoardModel::Ibm5170.firmware_catalogue();
         let found = assembly::require_user_firmware!("ibm-5170-bios-1985-06-10", catalogue);
-        let store = FirmwareStore::new(false);
+        let Some(store) = FirmwareStore::new(false) else {
+            return;
+        };
         let roms = store.temp.path().join("ibm");
         std::fs::create_dir(&roms).unwrap();
         let paths = match &found.source {
@@ -1772,7 +1796,9 @@ mod tests {
 
     #[test]
     fn every_step_renders_without_a_window() {
-        let store = FirmwareStore::new(true);
+        let Some(store) = FirmwareStore::new(true) else {
+            return;
+        };
         let mut wizard = wizard(&store);
         let ctx = egui::Context::default();
         for step in 0..STEPS.len() {

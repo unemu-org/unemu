@@ -9,6 +9,9 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
+#[path = "../../cli/tests/support/fixtures.rs"]
+mod fixtures;
+
 static NEXT: AtomicU64 = AtomicU64::new(0);
 struct Temp(PathBuf);
 impl Temp {
@@ -39,19 +42,17 @@ fn recovery(id: &str, choice: RecoveryChoice) -> ImportOptions {
 fn root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
 }
-fn fixture(temp: &Temp, extra: &str) -> PathBuf {
-    fs::copy(
-        root().join("vendor/kiselev-bios/bios-xi8088.bin"),
-        temp.0.join("bios.bin"),
-    )
-    .unwrap();
+/// A machine file on the fetched open BIOS; `None` when that fixture is missing.
+fn fixture(temp: &Temp, extra: &str) -> Option<PathBuf> {
+    let bios = fixtures::fixture("kiselev-bios/bios-xi8088.bin")?;
+    fs::write(temp.0.join("bios.bin"), bios).unwrap();
     let path = temp.0.join("machine.toml");
     fs::write(
         &path,
         format!("schema=1\nextends='preset:ibm-5170'\n[firmware.bios]\nimage='bios.bin'\n{extra}"),
     )
     .unwrap();
-    path
+    Some(path)
 }
 fn floppy(journal: bool) -> String {
     format!("\n[[card]]\nid='fdc-765'\n[[card.drives]]\nunit=0\ntype='360K'\nimage='disk.img'\nwrite='{}'\n{}", if journal { "journal" } else { "volatile" }, if journal { "journal='disk.upfj'\nkeep_generations=3" } else { "" })
@@ -94,7 +95,9 @@ fn first_bytes(store: &Store, tag: &str, kind: &str) -> Vec<u8> {
 fn clean_journal_freezes_generation_and_preserves_originals() {
     let temp = Temp::new();
     let base = make_journal(&temp, false, true);
-    let path = fixture(&temp, &floppy(true));
+    let Some(path) = fixture(&temp, &floppy(true)) else {
+        return;
+    };
     let before = fs::read(temp.0.join("disk.upfj")).unwrap();
     let source = fs::read(&path).unwrap();
     let store = temp.store();
@@ -113,7 +116,9 @@ fn clean_journal_freezes_generation_and_preserves_originals() {
 fn interrupted_tail_requires_choice_and_recovers_only_private_copy() {
     let temp = Temp::new();
     let base = make_journal(&temp, false, false);
-    let path = fixture(&temp, &floppy(true));
+    let Some(path) = fixture(&temp, &floppy(true)) else {
+        return;
+    };
     let journal = temp.0.join("disk.upfj");
     let mut bytes = fs::read(&journal).unwrap();
     bytes.extend([0x55; 17]);
@@ -162,7 +167,9 @@ fn interrupted_tail_requires_choice_and_recovers_only_private_copy() {
 fn interior_corruption_and_wrong_original_base_block_import() {
     let temp = Temp::new();
     let mut base = make_journal(&temp, false, true);
-    let path = fixture(&temp, &floppy(true));
+    let Some(path) = fixture(&temp, &floppy(true)) else {
+        return;
+    };
     let journal = temp.0.join("disk.upfj");
     let original = fs::read(&journal).unwrap();
     let mut damaged = original.clone();
@@ -194,10 +201,12 @@ fn interior_corruption_and_wrong_original_base_block_import() {
 fn cmos_freezes_and_resolves_with_session_local_journal() {
     let temp = Temp::new();
     let base = make_journal(&temp, true, true);
-    let path = fixture(
+    let Some(path) = fixture(
         &temp,
         "\n[board.rtc.nvram]\nimage='cmos.bin'\nwrite='journal'\njournal='cmos.upfj'\n",
-    );
+    ) else {
+        return;
+    };
     let original = fs::read(temp.0.join("cmos.upfj")).unwrap();
     let store = temp.store();
     let record = import_machine(&store, &path, "test:cmos", &ImportOptions::default()).unwrap();
@@ -215,7 +224,9 @@ fn cmos_freezes_and_resolves_with_session_local_journal() {
 fn deterministic_import_deduplicates_and_is_self_contained() {
     let temp = Temp::new();
     fs::write(temp.0.join("disk.img"), vec![0; 360 * 1024]).unwrap();
-    let path = fixture(&temp, &floppy(false));
+    let Some(path) = fixture(&temp, &floppy(false)) else {
+        return;
+    };
     let store = temp.store();
     let a = import_machine(&store, &path, "test:a", &ImportOptions::default()).unwrap();
     let count = fs::read_dir(store.root().join("images/blobs/sha256"))
@@ -246,7 +257,9 @@ fn deterministic_import_deduplicates_and_is_self_contained() {
 #[test]
 fn missing_inputs_are_listed_together() {
     let temp = Temp::new();
-    let path = fixture(&temp, &floppy(false));
+    let Some(path) = fixture(&temp, &floppy(false)) else {
+        return;
+    };
     fs::remove_file(temp.0.join("bios.bin")).unwrap();
     let error = import_machine(
         &temp.store(),
@@ -292,6 +305,34 @@ fn normalize(mut c: assembly::MachineConfig) -> assembly::MachineConfig {
         }
     }
     c
+}
+/// The fetched fixtures a shipped machine file's firmware and drives name,
+/// relative to `vendor/`; shipped files sit next to it, in `machines/`.
+fn vendor_fixtures(doc: &machine_file::MachineFile) -> Vec<String> {
+    let firmware = doc
+        .firmware
+        .iter()
+        .flat_map(|f| f.bios.iter().chain(f.option_roms.iter().flatten()))
+        .flat_map(|rom| {
+            rom.image
+                .iter()
+                .chain(rom.parts.iter().flatten().map(|p| &p.image))
+        });
+    let drives = doc
+        .card
+        .iter()
+        .flatten()
+        .flat_map(|c| c.drives.iter().flatten())
+        .flat_map(|d| {
+            d.image
+                .iter()
+                .chain(d.media.iter().flatten().map(|m| &m.image))
+        });
+    firmware
+        .chain(drives)
+        .filter_map(|image| image.strip_prefix("../vendor/"))
+        .map(str::to_owned)
+        .collect()
 }
 #[test]
 fn shipped_open_machine_files_round_trip_effective_assembly_input() {
@@ -344,6 +385,14 @@ fn shipped_open_machine_files_round_trip_effective_assembly_input() {
             );
             continue;
         }
+        // Every open machine must round-trip, so one missing fetched fixture
+        // skips the whole test rather than leaving fewer machines tested.
+        if !vendor_fixtures(&doc)
+            .iter()
+            .all(|relative| fixtures::fixture(relative).is_some())
+        {
+            return;
+        }
         let original = machine_file::load(&path).unwrap();
         let tag = format!("shipped:t{}", tested.len());
         import_machine(&store, &path, &tag, &ImportOptions::default()).unwrap();
@@ -367,6 +416,11 @@ fn shipped_open_machine_files_round_trip_effective_assembly_input() {
 #[test]
 fn short_open_bios_checkpoint_matches_machine_file() {
     use cpu::Cpu;
+    if fixtures::fixture("kiselev-bios/bios-xi8088.bin").is_none()
+        || fixtures::fixture("freedos/freedos.img").is_none()
+    {
+        return;
+    }
     let temp = Temp::new();
     let store = temp.store();
     let path = root().join("machines/at-freedos.toml");
@@ -403,7 +457,9 @@ fn short_open_bios_checkpoint_matches_machine_file() {
 fn provider_rejects_paths_unknown_fields_geometry_and_unbound_content() {
     let temp = Temp::new();
     fs::write(temp.0.join("disk.img"), vec![0; 360 * 1024]).unwrap();
-    let path = fixture(&temp, &floppy(false));
+    let Some(path) = fixture(&temp, &floppy(false)) else {
+        return;
+    };
     let store = temp.store();
     import_machine(&store, &path, "test:valid", &ImportOptions::default()).unwrap();
     let image = store.resolve("test:valid", &PcProvider).unwrap();
@@ -461,7 +517,9 @@ fn catalogue_order_empty_slots_policies_and_unused_media_survive() {
     let temp = Temp::new();
     fs::write(temp.0.join("first.img"), vec![0x11; 360 * 1024]).unwrap();
     fs::write(temp.0.join("second.img"), vec![0x22; 360 * 1024]).unwrap();
-    let path = fixture(&temp, "\n[[card]]\nid='fdc-765'\n[[card.drives]]\nunit=1\ntype='360K'\nempty=true\n[[card.drives.media]]\nimage='second.img'\nwrite='readonly'\n[[card.drives.media]]\nimage='first.img'\nwrite='volatile'\n[[card.drives]]\nunit=0\ntype='360K'\nempty=true\nmedia=[]\n");
+    let Some(path) = fixture(&temp, "\n[[card]]\nid='fdc-765'\n[[card.drives]]\nunit=1\ntype='360K'\nempty=true\n[[card.drives.media]]\nimage='second.img'\nwrite='readonly'\n[[card.drives.media]]\nimage='first.img'\nwrite='volatile'\n[[card.drives]]\nunit=0\ntype='360K'\nempty=true\nmedia=[]\n") else {
+        return;
+    };
     let store = temp.store();
     let record =
         import_machine(&store, &path, "test:catalogue", &ImportOptions::default()).unwrap();
@@ -485,7 +543,9 @@ fn inheritance_and_symlink_origins_are_used_before_flattening() {
     let temp = Temp::new();
     fs::create_dir(temp.0.join("parent")).unwrap();
     fs::create_dir(temp.0.join("child")).unwrap();
-    let base = fixture(&temp, "");
+    let Some(base) = fixture(&temp, "") else {
+        return;
+    };
     fs::rename(&base, temp.0.join("parent/base.toml")).unwrap();
     fs::rename(temp.0.join("bios.bin"), temp.0.join("parent/bios.bin")).unwrap();
     let child = temp.0.join("child/machine.toml");
@@ -512,10 +572,12 @@ fn inheritance_and_symlink_origins_are_used_before_flattening() {
 fn volatile_cmos_and_interrupted_cmos_keep_exact_bytes() {
     let temp = Temp::new();
     let base = make_journal(&temp, true, false);
-    let path = fixture(
+    let Some(path) = fixture(
         &temp,
         "\n[board.rtc.nvram]\nimage='cmos.bin'\nwrite='journal'\njournal='cmos.upfj'\n",
-    );
+    ) else {
+        return;
+    };
     let store = temp.store();
     assert!(import_machine(
         &store,
@@ -539,10 +601,12 @@ fn volatile_cmos_and_interrupted_cmos_keep_exact_bytes() {
         first_bytes(&store, "test:recovered-cmos", pc_image::CMOS)[32],
         0xA7
     );
-    let path = fixture(
+    let Some(path) = fixture(
         &temp,
         "\n[board.rtc.nvram]\nimage='cmos.bin'\nwrite='volatile'\n",
-    );
+    ) else {
+        return;
+    };
     import_machine(
         &store,
         &path,
@@ -567,7 +631,9 @@ fn retained_journal_history_and_readonly_source_are_untouched() {
     writer.write_batch(&[(0, [0x5C; 512])]);
     writer.finish().unwrap();
     let before = fs::read(&journal).unwrap();
-    let path = fixture(&temp, &floppy(true));
+    let Some(path) = fixture(&temp, &floppy(true)) else {
+        return;
+    };
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -595,7 +661,9 @@ fn retained_journal_history_and_readonly_source_are_untouched() {
 #[test]
 fn unlisted_firmware_is_rejected_even_without_a_source_pin() {
     let temp = Temp::new();
-    let path = fixture(&temp, "");
+    let Some(path) = fixture(&temp, "") else {
+        return;
+    };
     let bios = temp.0.join("bios.bin");
     let mut bytes = fs::read(&bios).unwrap();
     bytes[0] ^= 1;
@@ -610,7 +678,9 @@ fn unlisted_firmware_is_rejected_even_without_a_source_pin() {
 #[test]
 fn split_open_firmware_preserves_chips_lanes_offsets_and_assembled_pin() {
     let temp = Temp::new();
-    let bios = fs::read(root().join("vendor/kiselev-bios/bios-xi8088.bin")).unwrap();
+    let Some(bios) = fixtures::fixture("kiselev-bios/bios-xi8088.bin") else {
+        return;
+    };
     let mut parts = Vec::new();
     for (part, chunk) in bios.chunks(16384).enumerate() {
         for (lane, name) in [(0, "even"), (1, "odd")] {
@@ -671,7 +741,7 @@ fn medium_bytes(image: &image_store::ResolvedImage, sha256: [u8; 32]) -> Vec<u8>
         .unwrap();
     bytes
 }
-fn catalogue_journals(temp: &Temp, absent_first: bool) -> PathBuf {
+fn catalogue_journals(temp: &Temp, absent_first: bool) -> Option<PathBuf> {
     for (name, value) in [("first", 0x11), ("second", 0x22)] {
         let base = vec![0; 360 * 1024];
         fs::write(temp.0.join(format!("{name}.img")), &base).unwrap();
@@ -697,7 +767,9 @@ fn catalogue_journals(temp: &Temp, absent_first: bool) -> PathBuf {
 fn recovery_choices_are_independent_and_absent_journals_use_zero() {
     for absent_first in [false, true] {
         let temp = Temp::new();
-        let path = catalogue_journals(&temp, absent_first);
+        let Some(path) = catalogue_journals(&temp, absent_first) else {
+            return;
+        };
         let store = temp.store();
         let error = import_machine(
             &store,
@@ -747,7 +819,9 @@ fn recovery_choices_are_independent_and_absent_journals_use_zero() {
 fn pulled_medium_ids_cannot_escape_or_collide_with_cmos() {
     let temp = Temp::new();
     fs::write(temp.0.join("disk.img"), vec![0; 360 * 1024]).unwrap();
-    let path = fixture(&temp, &floppy(false));
+    let Some(path) = fixture(&temp, &floppy(false)) else {
+        return;
+    };
     let store = temp.store();
     import_machine(&store, &path, "test:ids", &ImportOptions::default()).unwrap();
     let image = store.resolve("test:ids", &PcProvider).unwrap();
@@ -777,7 +851,9 @@ fn pulled_medium_ids_cannot_escape_or_collide_with_cmos() {
 fn snapshot_import_preserves_source_directory_and_sweeps_abandoned_staging() {
     let source = Temp::new();
     make_journal(&source, false, true);
-    let path = fixture(&source, &floppy(true));
+    let Some(path) = fixture(&source, &floppy(true)) else {
+        return;
+    };
     fs::remove_file(source.0.join("disk.upfj.lock")).unwrap();
     let directory = || {
         let mut names = fs::read_dir(&source.0)
@@ -802,7 +878,9 @@ fn snapshot_import_preserves_source_directory_and_sweeps_abandoned_staging() {
 fn tag_preflight_and_local_records_precede_publication() {
     let temp = Temp::new();
     fs::write(temp.0.join("disk.img"), vec![0; 360 * 1024]).unwrap();
-    let path = fixture(&temp, &floppy(false));
+    let Some(path) = fixture(&temp, &floppy(false)) else {
+        return;
+    };
     let store = temp.store();
     let record = import_machine(&store, &path, "test:occupied", &ImportOptions::default()).unwrap();
     let saved = pc_image::ImportRecord::read(&store, &record.manifest.digest)
@@ -843,7 +921,9 @@ fn tag_preflight_and_local_records_precede_publication() {
 #[test]
 fn import_uses_firmware_roots_and_public_origin_paths() {
     let temp = Temp::new();
-    let path = fixture(&temp, "");
+    let Some(path) = fixture(&temp, "") else {
+        return;
+    };
     let roms = temp.0.join("roms");
     fs::create_dir(&roms).unwrap();
     fs::rename(temp.0.join("bios.bin"), roms.join("relocated.bin")).unwrap();
@@ -866,7 +946,7 @@ fn import_uses_firmware_roots_and_public_origin_paths() {
 #[test]
 fn sb16_ems_and_materialized_defaults_round_trip() {
     for extra in ["\n[[card]]\nkind='sb16'\nbase=0x240\nirq=7\ndma8=3\ndma16=6\n[[card]]\nkind='lotech-ems'\nport=0x268\nframe=0xD000\nsize_kib=1536\n", "\n[[card]]\nkind='sb16'\n[[card]]\nkind='lotech-ems'\nframe=0xD000\n"] {
-        let temp=Temp::new();let path=fixture(&temp,extra);let store=temp.store();
+        let temp=Temp::new();let Some(path)=fixture(&temp,extra) else { return; };let store=temp.store();
         let original=machine_file::load(&path).unwrap();import_machine(&store,&path,"test:cards",&ImportOptions::default()).unwrap();
         assert_eq!(original,resolve(&store,"test:cards",&temp.0.join("session")).unwrap());
         let image=store.resolve("test:cards",&PcProvider).unwrap();let table:toml::Table=std::str::from_utf8(&image.config).unwrap().parse().unwrap();
@@ -891,12 +971,13 @@ fn journaled_ide_resolves_file_backed_and_runs_short_checkpoint() {
     .unwrap();
     journal.write_batch(&[(1, [0xA7; 512])]);
     journal.finish().unwrap();
-    fs::copy(
-        root().join("vendor/xtide-universal-bios/ide_xtp-r638-ata1f0-8k.bin"),
-        temp.0.join("xtide.bin"),
-    )
-    .unwrap();
-    let path=fixture(&temp,"\n[[firmware.option_roms]]\nimage='xtide.bin'\nbase=0xC8000\nprovides=['fixed-disk']\n[[card]]\nkind='ide'\n[[card.drives]]\nchannel='master'\ngeometry={cylinders=8,heads=2,sectors=4}\nimage='ide.img'\nwrite='journal'\njournal='ide.upfj'\n");
+    let Some(xtide) = fixtures::fixture("xtide-universal-bios/ide_xtp-r638-ata1f0-8k.bin") else {
+        return;
+    };
+    fs::write(temp.0.join("xtide.bin"), xtide).unwrap();
+    let Some(path) = fixture(&temp,"\n[[firmware.option_roms]]\nimage='xtide.bin'\nbase=0xC8000\nprovides=['fixed-disk']\n[[card]]\nkind='ide'\n[[card.drives]]\nchannel='master'\ngeometry={cylinders=8,heads=2,sectors=4}\nimage='ide.img'\nwrite='journal'\njournal='ide.upfj'\n") else {
+        return;
+    };
     let original_journal = fs::read(temp.0.join("ide.upfj")).unwrap();
     let store = temp.store();
     let record = import_machine(&store, &path, "test:ide", &ImportOptions::default()).unwrap();
@@ -933,7 +1014,9 @@ fn journaled_ide_resolves_file_backed_and_runs_short_checkpoint() {
 fn compression_preserves_machine_identity_and_resolves_mixed_payloads_without_sources() {
     use image_store::media_type as mt;
     let temp = Temp::new();
-    let path = fixture(&temp, &floppy(false));
+    let Some(path) = fixture(&temp, &floppy(false)) else {
+        return;
+    };
     fs::write(temp.0.join("disk.img"), vec![0x29; 360 * 1024]).unwrap();
     let store = temp.store();
     import_machine(
@@ -1031,15 +1114,16 @@ fn compressed_import_and_resolution_write_nothing_and_a_mount_decodes_only_the_h
     disk[512..1024].fill(0xA7);
     fs::write(temp.0.join("ide.img"), &disk).unwrap();
     fs::write(temp.0.join("disk.img"), vec![0x29; 360 * 1024]).unwrap();
-    fs::copy(
-        root().join("vendor/xtide-universal-bios/ide_xtp-r638-ata1f0-8k.bin"),
-        temp.0.join("xtide.bin"),
-    )
-    .unwrap();
-    let path = fixture(
+    let Some(xtide) = fixtures::fixture("xtide-universal-bios/ide_xtp-r638-ata1f0-8k.bin") else {
+        return;
+    };
+    fs::write(temp.0.join("xtide.bin"), xtide).unwrap();
+    let Some(path) = fixture(
         &temp,
         &format!("\n[[firmware.option_roms]]\nimage='xtide.bin'\nbase=0xC8000\nprovides=['fixed-disk']\n[[card]]\nkind='ide'\n[[card.drives]]\nchannel='master'\ngeometry={{cylinders=8,heads=2,sectors=4}}\nimage='ide.img'\nwrite='journal'\njournal='ide.upfj'\n{}", floppy(true)),
-    );
+    ) else {
+        return;
+    };
     let store = temp.store();
     let record =
         import_machine(&store, &path, "test:compressed", &ImportOptions::default()).unwrap();
@@ -1114,7 +1198,9 @@ fn compressed_import_and_resolution_write_nothing_and_a_mount_decodes_only_the_h
 fn compressing_a_machine_keeps_its_journal_retention() {
     let temp = Temp::new();
     fs::write(temp.0.join("disk.img"), vec![0x31; 360 * 1024]).unwrap();
-    let path = fixture(&temp, &floppy(true));
+    let Some(path) = fixture(&temp, &floppy(true)) else {
+        return;
+    };
     let store = temp.store();
     let raw = import_machine(
         &store,
@@ -1156,7 +1242,9 @@ fn compressing_a_machine_keeps_its_journal_retention() {
 fn a_damaged_raw_base_is_refused_and_its_receipt_rejected() {
     let temp = Temp::new();
     fs::write(temp.0.join("disk.img"), vec![0x52; 360 * 1024]).unwrap();
-    let path = fixture(&temp, &floppy(false));
+    let Some(path) = fixture(&temp, &floppy(false)) else {
+        return;
+    };
     let store = temp.store();
     import_machine(
         &store,

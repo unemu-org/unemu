@@ -8,6 +8,10 @@ use std::{
     path::PathBuf,
     sync::atomic::{AtomicUsize, Ordering},
 };
+
+#[path = "../../cli/tests/support/fixtures.rs"]
+mod fixtures;
+
 static LARGEST: AtomicUsize = AtomicUsize::new(0);
 struct Counting;
 unsafe impl GlobalAlloc for Counting {
@@ -37,19 +41,16 @@ impl Drop for Temp {
 }
 #[test]
 fn sparse_disk_import_and_resolve_bound_every_allocation() {
+    let Some(bios) = fixtures::fixture("kiselev-bios/bios-xi8088.bin") else {
+        return;
+    };
+    let Some(xtide) = fixtures::fixture("xtide-universal-bios/ide_xtp-r638-ata1f0-8k.bin") else {
+        return;
+    };
     let temp = Temp(std::env::temp_dir().join(format!("pc-image-large-{}", std::process::id())));
     fs::create_dir(&temp.0).unwrap();
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
-    fs::copy(
-        root.join("vendor/kiselev-bios/bios-xi8088.bin"),
-        temp.0.join("bios.bin"),
-    )
-    .unwrap();
-    fs::copy(
-        root.join("vendor/xtide-universal-bios/ide_xtp-r638-ata1f0-8k.bin"),
-        temp.0.join("xtide.bin"),
-    )
-    .unwrap();
+    fs::write(temp.0.join("bios.bin"), bios).unwrap();
+    fs::write(temp.0.join("xtide.bin"), xtide).unwrap();
     let disk = fs::File::create_new(temp.0.join("large.img")).unwrap();
     disk.set_len(512 * 1024 * 1024).unwrap();
     drop(disk);

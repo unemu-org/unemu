@@ -530,7 +530,9 @@ pub(crate) mod tests {
 
     #[test]
     fn closing_with_edits_asks_first_and_a_stale_check_is_ignored() {
-        let store = FirmwareStore::new(false);
+        let Some(store) = FirmwareStore::new(false) else {
+            return;
+        };
         let row = open_image(&store);
         let mut model = opened(&store, row, false);
         assert!(model.request_close(), "nothing to lose");
@@ -556,7 +558,9 @@ pub(crate) mod tests {
 
     #[test]
     fn edits_go_through_the_capabilities_api_into_the_hardware_tables() {
-        let store = FirmwareStore::new(false);
+        let Some(store) = FirmwareStore::new(false) else {
+            return;
+        };
         let row = open_image(&store);
         let mut model = opened(&store, row, false);
         assert!(!model.dirty() && !model.can_review());
@@ -586,7 +590,9 @@ pub(crate) mod tests {
 
     #[test]
     fn drive_b_can_be_installed_and_offers_only_valid_types() {
-        let store = FirmwareStore::new(false);
+        let Some(store) = FirmwareStore::new(false) else {
+            return;
+        };
         let row = open_image(&store);
         let mut model = opened(&store, row, false);
         assert_eq!(model.floppy(0).as_deref(), Some("1.2M"));
@@ -605,7 +611,9 @@ pub(crate) mod tests {
 
     #[test]
     fn running_images_are_read_only_and_invalid_drafts_cannot_review() {
-        let store = FirmwareStore::new(false);
+        let Some(store) = FirmwareStore::new(false) else {
+            return;
+        };
         let row = open_image(&store);
         let mut model = opened(&store, row.clone(), true);
         model.set("memory.extended_kib", Value::Integer(4096));
@@ -627,7 +635,9 @@ pub(crate) mod tests {
 
     #[test]
     fn review_shows_the_configuration_diff_shared_blobs_and_suggests_the_next_version() {
-        let store = FirmwareStore::new(false);
+        let Some(store) = FirmwareStore::new(false) else {
+            return;
+        };
         let row = open_image(&store);
         let mut model = opened(&store, row.clone(), false);
         model.set("memory.extended_kib", Value::Integer(2048));

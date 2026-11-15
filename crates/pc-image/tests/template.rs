@@ -11,6 +11,9 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
+#[path = "../../cli/tests/support/fixtures.rs"]
+mod fixtures;
+
 struct Temp(PathBuf);
 impl Temp {
     fn new(name: &str) -> Self {
@@ -34,6 +37,16 @@ fn vendor() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../vendor")
 }
 
+/// Whether the fetched ROMs and source archives of `sources` are present; the
+/// first missing one skips the test unless the fixture gate requires it.
+fn present(sources: &[template::FirmwareSource]) -> bool {
+    sources.iter().all(|source| {
+        [source.rom, source.source_archive]
+            .into_iter()
+            .all(|relative| fixtures::fixture(relative).is_some())
+    })
+}
+
 fn allow(_: &str, _: &Manifest) -> Result<(), String> {
     Ok(())
 }
@@ -54,6 +67,9 @@ fn identities(built: &[Built]) -> Vec<(String, String, Vec<String>)> {
 
 #[test]
 fn two_builds_from_different_fixture_copies_give_identical_images() {
+    if !present(&template::FIRMWARE) {
+        return;
+    }
     let t = Temp::new("template-determinism");
     // Only the files the build reads, at another path.
     let copy = t.0.join("fixtures");
@@ -118,6 +134,9 @@ fn two_builds_from_different_fixture_copies_give_identical_images() {
 
 #[test]
 fn the_guard_sees_each_image_before_its_tags_and_a_refusal_tags_nothing_of_it() {
+    if !present(&template::FIRMWARE) {
+        return;
+    }
     let t = Temp::new("template-guard");
     let store = Store::open(t.0.join("store")).unwrap();
     let seen = RefCell::new(Vec::new());
@@ -169,8 +188,11 @@ fn a_missing_fixture_or_another_source_archive_names_the_fetch_script() {
         error.contains("missing fixture") && error.contains("vendor/kiselev-bios/fetch.sh"),
         "{error}"
     );
-    let copy = t.0.join("fixtures");
     let kiselev = &template::FIRMWARE[0];
+    if !present(std::slice::from_ref(kiselev)) {
+        return;
+    }
+    let copy = t.0.join("fixtures");
     for relative in [kiselev.rom, kiselev.source_archive] {
         let to = copy.join(relative);
         fs::create_dir_all(to.parent().unwrap()).unwrap();
@@ -191,6 +213,9 @@ fn a_missing_fixture_or_another_source_archive_names_the_fetch_script() {
 
 #[test]
 fn template_machines_validate_lower_and_describe_themselves() {
+    if !present(&template::FIRMWARE) {
+        return;
+    }
     let t = Temp::new("template-lowering");
     let store = Store::open(t.0.join("store")).unwrap();
     template::build(&store, &vendor(), &allow, &mut |_| {}).unwrap();
@@ -293,6 +318,9 @@ const PINNED: [(&str, &str); 5] = [
 
 #[test]
 fn the_published_generation_keeps_its_pinned_digests() {
+    if !present(&template::FIRMWARE) {
+        return;
+    }
     let t = Temp::new("template-pins");
     let store = Store::open(t.0.join("store")).unwrap();
     let built = template::build(&store, &vendor(), &allow, &mut |_| {}).unwrap();
@@ -348,6 +376,9 @@ fn alias_outcome(built: &[Built], repository: &str) -> Outcome {
 
 #[test]
 fn a_version_tag_that_names_another_image_refuses_the_build() {
+    if !present(&template::FIRMWARE) {
+        return;
+    }
     let t = Temp::new("template-version-conflict");
     let store = Store::open(t.0.join("store")).unwrap();
     let firmware_only = |reference: &str, _: &Manifest| {
@@ -382,6 +413,9 @@ fn a_version_tag_that_names_another_image_refuses_the_build() {
 
 #[test]
 fn latest_moves_only_away_from_lower_versions_of_its_repository() {
+    if !present(&template::FIRMWARE) {
+        return;
+    }
     let t = Temp::new("template-alias");
     let store = Store::open(t.0.join("store")).unwrap();
     let built = template::build(&store, &vendor(), &allow, &mut |_| {}).unwrap();
@@ -434,6 +468,9 @@ fn latest_moves_only_away_from_lower_versions_of_its_repository() {
 
 #[test]
 fn only_the_judged_manifest_is_tagged() {
+    if !present(&template::FIRMWARE) {
+        return;
+    }
     let t = Temp::new("template-judged");
     let store = Store::open(t.0.join("store")).unwrap();
     template::build(&store, &vendor(), &allow, &mut |_| {}).unwrap();

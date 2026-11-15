@@ -526,7 +526,7 @@ cargo run --offline -p window --bin unemupc98-window -- --machine machines/at-fr
 cargo test --workspace                       # unit + golden + integration
 cargo test --release -p devices              # release-only device behaviour (CI runs it too)
 cargo test --workspace -- --ignored          # slow goldens: BIOS POST, FreeDOS boot, DOS sessions
-UNEMUPC98_REQUIRE_FIXTURES=1 cargo test --workspace -- --ignored # fail if a fixture is missing
+UNEMUPC98_REQUIRE_FIXTURES=1 cargo test --workspace -- --include-ignored # CI goldens lane: every fixture test and the goldens; fail if a fixture is missing
 # Corrected per-clock oracle versus production deadlines (no environment gate):
 UNEMUPC98_REQUIRE_FIXTURES=1 cargo test --offline -p cli --test scheduler_ab -- --include-ignored --nocapture
 # Opt-in host timing only, BIOS POST and FreeDOS prompt, median of three per engine:

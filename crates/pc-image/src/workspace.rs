@@ -795,9 +795,11 @@ pub struct SessionTransfer {
 }
 /// A file-backed base travels as its verified descriptor; an in-memory base,
 /// a compressed floppy, as its decoded bytes. A zero-rooted disk travels as
-/// its parts (`zero`), never as its whole decoded length.
+/// its parts (`zero`), never as its whole decoded length. The metadata is
+/// boxed because its size depends on the host, and on Linux it alone makes
+/// the file variant several times larger than the byte-buffer one.
 enum Transfer {
-    File(fs::File, media::Header, fs::Metadata),
+    File(fs::File, media::Header, Box<fs::Metadata>),
     Memory(Vec<u8>),
 }
 impl PreparedSession {
@@ -821,7 +823,7 @@ impl PreparedSession {
                         identity.clone(),
                         metadata.clone(),
                     )?;
-                    Transfer::File(file, identity, metadata)
+                    Transfer::File(file, identity, Box::new(metadata))
                 }
                 None => {
                     let mut bytes = vec![0; base.byte_len() as usize];
@@ -849,7 +851,7 @@ impl SessionTransfer {
             .map(|(path, transfer)| {
                 let base = match transfer {
                     Transfer::File(file, identity, metadata) => {
-                        VerifiedBase::from_verified_file(file, identity, metadata)?
+                        VerifiedBase::from_verified_file(file, identity, *metadata)?
                     }
                     Transfer::Memory(bytes) => {
                         VerifiedBase::from_bytes(&bytes).map_err(|e| invalid(e.to_string()))?

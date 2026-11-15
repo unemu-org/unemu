@@ -7,6 +7,9 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
+#[path = "support/fixtures.rs"]
+mod fixtures;
+
 struct RemoveDir(PathBuf);
 impl Drop for RemoveDir {
     fn drop(&mut self) {
@@ -59,6 +62,12 @@ fn image_commands_require_store_tag_and_valid_recovery_choice() {
 }
 #[test]
 fn cli_import_lists_a_tag_and_refuses_to_replace_it() {
+    // The shipped machine file names the fetched open BIOS and FreeDOS floppy.
+    if fixtures::fixture("kiselev-bios/bios-xi8088.bin").is_none()
+        || fixtures::fixture("freedos/freedos.img").is_none()
+    {
+        return;
+    }
     static NEXT: AtomicU64 = AtomicU64::new(0);
     let root = std::env::temp_dir().join(format!(
         "image-command-test-{}-{}",
@@ -257,12 +266,13 @@ fn workspace_commands_require_explicit_store_session_and_tag() {
 
 #[test]
 fn cli_workspace_run_publish_list_and_discard_are_opt_in() {
+    let Some(bios) = fixtures::fixture("kiselev-bios/bios-xi8088.bin") else {
+        return;
+    };
     let root = std::env::temp_dir().join(format!("workspace-command-test-{}", std::process::id()));
     std::fs::create_dir(&root).unwrap();
     let _cleanup = RemoveDir(root.clone());
-    let bios =
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../vendor/kiselev-bios/bios-xi8088.bin");
-    std::fs::copy(bios, root.join("bios.bin")).unwrap();
+    std::fs::write(root.join("bios.bin"), bios).unwrap();
     std::fs::write(root.join("disk.img"), vec![0; 360 * 1024]).unwrap();
     let machine = root.join("machine.toml");
     std::fs::write(

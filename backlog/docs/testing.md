@@ -106,6 +106,14 @@ the scripts, so a test and its fixture cannot disagree silently. A missing
 fixture skips its test unless `UNEMUPC98_REQUIRE_FIXTURES=1`, which the CI
 `goldens` gate sets (see [`commands.md`](commands.md)).
 
+Every test that reads a vendor fixture goes through the fixture helper
+(`fixture()` in `crates/cli/tests/support/fixtures.rs`, which other crates'
+tests include by `#[path]`), and checks it before anything else needs the
+file. That includes tests that import a shipped machine file under
+`machines/`, which names vendor images. CI's `tests` step runs before its
+`fixtures` step builds them, so a test that reads `vendor/` directly fails
+there instead of skipping.
+
 The open GPL/LGPL firmware fixtures (Kiselev BIOS, XTIDE Universal BIOS, the
 VGA BIOS fork) also get a deterministic source archive each, pinned the same
 way. In `crates/cli/tests/media_fixtures.rs`, a default-suite test checks that

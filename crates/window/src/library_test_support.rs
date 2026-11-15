@@ -3,6 +3,8 @@
 use crate::library_view::ImageRow;
 use image_store::Store;
 use std::fs;
+#[path = "../../cli/tests/support/fixtures.rs"]
+mod fixtures;
 pub(crate) struct Fixture {
     pub temp: assembly::test_support::TempDir,
     pub store: Store,
@@ -102,34 +104,53 @@ pub(crate) fn source_archive(candidate: &pc_image::firmware_import::Candidate) -
 /// A store with the open firmware packages (the Kiselev AT BIOS, the open VGA
 /// BIOS and XTIDE) and, with `misfits`, a user-supplied package of the other
 /// Kiselev build plus synthetic packages that must not fit: an XT-class BIOS
-/// and one naming no board.
+/// and one naming no board. `None` when a fetched fixture it reads is missing,
+/// which skips the test.
 pub(crate) struct FirmwareStore {
     pub temp: assembly::test_support::TempDir,
     pub store: Store,
 }
 impl FirmwareStore {
-    pub fn new(misfits: bool) -> Self {
+    pub fn new(misfits: bool) -> Option<Self> {
         Self::build(misfits, true)
     }
     /// The open packages imported without their source archives, which
     /// keeps the copyleft ones user-supplied.
-    pub fn without_sources() -> Self {
+    pub fn without_sources() -> Option<Self> {
         Self::build(false, false)
     }
-    fn build(misfits: bool, sources: bool) -> Self {
+    fn build(misfits: bool, sources: bool) -> Option<Self> {
+        let mut images = Vec::new();
+        for (from, to) in [
+            ("kiselev-bios/bios-xi8088-atreset.bin", "bios.bin"),
+            ("vgabios/vgabios-std.bin", "vga.bin"),
+            (
+                "xtide-universal-bios/ide_xtp-r638-ata1f0-8k.bin",
+                "xtide.bin",
+            ),
+        ] {
+            images.push((fixtures::fixture(from)?, to));
+        }
+        if sources {
+            for archive in [
+                "kiselev-bios/kiselev-bios-a4af458-atreset-src.tar",
+                "vgabios/vgabios-0.8a-unemu.1-src.tar",
+                "xtide-universal-bios/xtide-universal-bios-r638-src.tar",
+            ] {
+                fixtures::fixture(archive)?;
+            }
+        }
+        let misfit = if misfits {
+            Some(fixtures::fixture("kiselev-bios/bios-xi8088.bin")?)
+        } else {
+            None
+        };
         let temp = assembly::test_support::TempDir::new("new-machine-firmware");
         let roms = temp.path().join("roms");
         fs::create_dir(&roms).unwrap();
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-        for (from, to) in [
-            ("vendor/kiselev-bios/bios-xi8088-atreset.bin", "bios.bin"),
-            ("vendor/vgabios/vgabios-std.bin", "vga.bin"),
-            (
-                "vendor/xtide-universal-bios/ide_xtp-r638-ata1f0-8k.bin",
-                "xtide.bin",
-            ),
-        ] {
-            fs::copy(root.join(from), roms.join(to)).unwrap();
+        for (bytes, to) in images {
+            fs::write(roms.join(to), bytes).unwrap();
         }
         let store = Store::open(temp.path().join("store")).unwrap();
         let catalogue = pc_image::firmware::catalogue();
@@ -145,13 +166,8 @@ impl FirmwareStore {
             pc_image::firmware_import::publish_with(&store, candidate, &[], &statement, catalogue)
                 .unwrap();
         }
-        if misfits {
-            fs::copy(
-                root.join("vendor/kiselev-bios/bios-xi8088.bin"),
-                temp.path().join("xi8088.bin"),
-            )
-            .unwrap();
-            let bios = fs::read(temp.path().join("xi8088.bin")).unwrap();
+        if let Some(bios) = misfit {
+            fs::write(temp.path().join("xi8088.bin"), &bios).unwrap();
             let digest = image_store::Digest::of(&bios);
             let synthetic = vec![0xf4; 32768];
             let other = image_store::Digest::of(&synthetic);
@@ -203,7 +219,7 @@ impl FirmwareStore {
                 pc_image::firmware_import::publish(&store, &candidate, &[], catalogue).unwrap();
             }
         }
-        Self { temp, store }
+        Some(Self { temp, store })
     }
     /// Packages, tags and restricted blobs, as the worker hands them to the wizard.
     pub fn choices(&self) -> crate::library_worker::StoreChoices {

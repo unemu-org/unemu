@@ -86,7 +86,10 @@ fn child(
 
 /// The FreeDOS reference machine; import marks every blob from the user's
 /// files user-supplied and its generated configuration and metadata open.
-fn import(store: &Path, tag: &str) -> String {
+/// `None` when the fetched BIOS or FreeDOS floppy it names is missing.
+fn import(store: &Path, tag: &str) -> Option<String> {
+    fixtures::fixture("kiselev-bios/bios-xi8088.bin")?;
+    fixtures::fixture("freedos/freedos.img")?;
     let source = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../machines/at-freedos.toml");
     let (code, output, errors) = run(&os(&[
         &"image",
@@ -99,14 +102,15 @@ fn import(store: &Path, tag: &str) -> String {
         &"--create",
     ]));
     assert_eq!(code, 0, "{errors}");
-    output
+    let digest = output
         .split('\t')
         .nth(1)
         .unwrap()
         .lines()
         .next()
         .unwrap()
-        .to_owned()
+        .to_owned();
+    Some(digest)
 }
 
 fn config(dir: &Dir, registry: &MockRegistry, private: bool) -> PathBuf {
@@ -166,7 +170,9 @@ fn registry_commands_validate_their_arguments() {
 fn dry_run_lists_redistribution_marks_and_refuses_the_official_namespace_offline() {
     let dir = Dir::new("dry-run");
     let store = dir.join("store");
-    let digest = import(&store, "lab:1.0.0");
+    let Some(digest) = import(&store, "lab:1.0.0") else {
+        return;
+    };
     let preferences = dir.join("empty.toml");
     std::fs::write(&preferences, "").unwrap();
     let (code, output, errors) = run(&os(&[
@@ -208,7 +214,9 @@ fn dry_run_lists_redistribution_marks_and_refuses_the_official_namespace_offline
 fn push_refusals_happen_before_any_request() {
     let dir = Dir::new("refusals");
     let store = dir.join("store");
-    import(&store, "lab:1.0.0");
+    if import(&store, "lab:1.0.0").is_none() {
+        return;
+    }
     let registry = MockRegistry::start(Policy {
         anonymous_write: vec!["*".into()],
         ..Policy::default()
@@ -246,7 +254,9 @@ fn push_refusals_happen_before_any_request() {
 fn push_pull_and_list_through_a_private_registry() {
     let dir = Dir::new("round-trip");
     let source = dir.join("source");
-    let digest = import(&source, "lab:1.0.0");
+    let Some(digest) = import(&source, "lab:1.0.0") else {
+        return;
+    };
     let registry = MockRegistry::start(Policy {
         user: Some(("ci".into(), "synthetic-secret".into())),
         ..Policy::default()

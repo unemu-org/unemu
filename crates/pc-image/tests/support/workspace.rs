@@ -8,6 +8,8 @@ use std::{
     path::PathBuf,
     sync::atomic::{AtomicU64, Ordering},
 };
+#[path = "../../../cli/tests/support/fixtures.rs"]
+mod fixtures;
 static NEXT: AtomicU64 = AtomicU64::new(0);
 /// Bytes of a resolved medium: its file, its inline bytes, or, for a
 /// compressed floppy held in memory, its verified decoded payload.
@@ -41,22 +43,26 @@ pub struct Fixture {
     pub image: Descriptor,
 }
 impl Fixture {
-    pub fn new() -> Self {
+    /// `None` when a fetched ROM fixture is missing, which skips the test.
+    pub fn new() -> Option<Self> {
+        let mut roms = Vec::new();
+        for (from, to) in [
+            ("kiselev-bios/bios-xi8088.bin", "bios.bin"),
+            (
+                "xtide-universal-bios/ide_xtp-r638-ata1f0-8k.bin",
+                "xtide.bin",
+            ),
+        ] {
+            roms.push((fixtures::fixture(from)?, to));
+        }
         let path = std::env::temp_dir().join(format!(
             "image-workspaces-{}-{}",
             std::process::id(),
             NEXT.fetch_add(1, Ordering::Relaxed)
         ));
         fs::create_dir(&path).unwrap();
-        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
-        for (from, to) in [
-            ("vendor/kiselev-bios/bios-xi8088.bin", "bios.bin"),
-            (
-                "vendor/xtide-universal-bios/ide_xtp-r638-ata1f0-8k.bin",
-                "xtide.bin",
-            ),
-        ] {
-            fs::copy(root.join(from), path.join(to)).unwrap();
+        for (bytes, to) in roms {
+            fs::write(path.join(to), bytes).unwrap();
         }
         fs::write(path.join("fixed.img"), vec![0; 32 * 512]).unwrap();
         fs::write(path.join("one.img"), vec![0; 360 * 1024]).unwrap();
@@ -76,7 +82,7 @@ impl Fixture {
         )
         .unwrap()
         .manifest;
-        Self { path, store, image }
+        Some(Self { path, store, image })
     }
     pub fn changed(&self, name: &str, value: u8) {
         self.changed_from(name, "test:source", value);

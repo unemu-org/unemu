@@ -1305,7 +1305,9 @@ mod tests {
     }
     #[test]
     fn the_save_form_starts_from_the_image_the_workspace_session_pins() {
-        let firmware = crate::library_test_support::FirmwareStore::new(false);
+        let Some(firmware) = crate::library_test_support::FirmwareStore::new(false) else {
+            return;
+        };
         let row = crate::image_settings::tests::open_image(&firmware);
         let owner = firmware.store.workspace("pinned").unwrap();
         let prepared = pc_image::workspace::prepare_start(&owner, "open-at:1.0.0", false).unwrap();

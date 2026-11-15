@@ -10,6 +10,8 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
+#[path = "../../../cli/tests/support/fixtures.rs"]
+pub mod fixtures;
 static NEXT: AtomicU64 = AtomicU64::new(0);
 /// The source archive the open entry's fetch script builds and the catalogue
 /// pins, so the copyleft package is open together with its source.
@@ -34,7 +36,27 @@ pub struct Open {
     pub packages: Vec<Package>,
 }
 impl Open {
-    pub fn new() -> Self {
+    /// `None` when a fetched ROM or source archive is missing, which skips
+    /// the test.
+    pub fn new() -> Option<Self> {
+        let mut roms = Vec::new();
+        for (from, to) in [
+            ("kiselev-bios/bios-xi8088-atreset.bin", "bios.bin"),
+            ("vgabios/vgabios-std.bin", "vga.bin"),
+            (
+                "xtide-universal-bios/ide_xtp-r638-ata1f0-8k.bin",
+                "xtide.bin",
+            ),
+        ] {
+            roms.push((fixtures::fixture(from)?, to));
+        }
+        for archive in [
+            "kiselev-bios/kiselev-bios-a4af458-atreset-src.tar",
+            "vgabios/vgabios-0.8a-unemu.1-src.tar",
+            "xtide-universal-bios/xtide-universal-bios-r638-src.tar",
+        ] {
+            fixtures::fixture(archive)?;
+        }
         let path = std::env::temp_dir().join(format!(
             "zero-base-{}-{}",
             std::process::id(),
@@ -42,15 +64,8 @@ impl Open {
         ));
         fs::create_dir_all(path.join("roms")).unwrap();
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
-        for (from, to) in [
-            ("vendor/kiselev-bios/bios-xi8088-atreset.bin", "bios.bin"),
-            ("vendor/vgabios/vgabios-std.bin", "vga.bin"),
-            (
-                "vendor/xtide-universal-bios/ide_xtp-r638-ata1f0-8k.bin",
-                "xtide.bin",
-            ),
-        ] {
-            fs::copy(root.join(from), path.join("roms").join(to)).unwrap();
+        for (bytes, to) in roms {
+            fs::write(path.join("roms").join(to), bytes).unwrap();
         }
         let store = Store::open(path.join("store")).unwrap();
         let catalogue = pc_image::firmware::catalogue();
@@ -65,11 +80,11 @@ impl Open {
                 .unwrap();
         }
         let packages = pc_image::create::packages(&store).unwrap();
-        Self {
+        Some(Self {
             path,
             store,
             packages,
-        }
+        })
     }
     pub fn rom(&self, catalogue_id: &str) -> PackageRom {
         for package in &self.packages {
