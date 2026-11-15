@@ -84,5 +84,5 @@ fn opl3_two_operator_key_on_release_pcm_and_split_runs() {
     assert_eq!(whole, capture(&[7, 800, 4096, 8000, 10000, 18000]));
     assert_eq!(whole.0, 965);
     assert!(whole.2.iter().any(|&p| p != [0; 2]));
-    assert_eq!(whole.1, 0x31fe79c8e4314714);
+    assert_eq!(whole.1, 0x5f94c755a036c6f7);
 }

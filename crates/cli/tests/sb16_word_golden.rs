@@ -159,8 +159,9 @@ fn reference() -> Vec<[i16; 2]> {
                             531..680 => [-32768, 32767][channel],
                             _ => 0,
                         };
-                        // round(2^24 * 10^(-2/20)) and round(2^24 * 10^(-4/20)).
-                        level * [13326616, 10585708][channel] / (1 << 24)
+                        // round(2^24 * 10^(-2/20)) and round(2^24 * 10^(-4/20)),
+                        // then half of the card's voice in the host mix.
+                        level * [13326616, 10585708][channel] / (1 << 24) / 2
                     })
                     .sum();
                 (area / (end - begin) as i64) as i16
@@ -179,5 +180,5 @@ fn sb16_word_stereo_dma_has_frozen_pcm_irq_time_and_split_invariance() {
     assert_eq!(whole.0, 40);
     assert_eq!(whole.2, reference());
     assert_eq!(whole.3, [535]);
-    assert_eq!(whole.1, 0x45d03674db163436);
+    assert_eq!(whole.1, 0xa6c019b8a1e874ff);
 }

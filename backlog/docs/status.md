@@ -5,6 +5,28 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-15 — Sound card and PC speaker host levels:** the SB16 was audible
+  only at a high host volume while the PC speaker was startlingly loud. Measured
+  through the window presenter and its host sink on the open AT games machine
+  (machine file and `open-at-games` template image alike): a full-scale 8-bit
+  DSP square peaked at -28.0 dBFS, one FM channel at full output at -46.3 dBFS,
+  nine FM channels at -30.7 dBFS and the speaker at -6.0 dBFS. Nothing was
+  detached or muted: the CT1745 reset of master, voice and MIDI to level 24 (-14
+  dB per stage, -28 dB together, as Creative's guide specifies) met a host full
+  scale equal to the card's maximum, and the speaker entered unattenuated at
+  0/+16384. The CT1745 now resets to 0 dB (**ASSUMED** deviation, as 86Box and
+  DOSBox Staging do), and assembly sets fixed host mix levels: card voice × 1/2,
+  card FM × 3/4 (1.5 times the voice, the OPL gain DOSBox Staging uses after
+  finding 2.0 too high), speaker 0/+8192. Now a full-scale voice peaks at -6.0
+  dBFS, one FM channel at -20.6 dBFS, nine at -5.2 dBFS, and the speaker at
+  -12.0 dBFS; the speaker's audible swing, ±4096, is 12 dB under the voice's
+  ±16384. All three sources together peak at -1.5 dBFS without clipping. The
+  speaker, SB16 byte/word and OPL3 goldens have new PCM hashes. AdLib detection
+  (timer status 00h then C0h) passes; headless, Duke Nukem II wrote no SB16
+  mixer register before its title screen. Tests pin the levels for a synthetic
+  machine, the shipped machine file and the template image. See [audio design
+  §Host mix levels](design/audio.md#host-mix-levels).
+
 - **2026-11-15 — Tests no longer play the POST melody on the host's
   speakers:** the window's shell tests start real machines, and starting a
   machine opened the host audio output, so every test run on a developer's
@@ -154,6 +176,7 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
     - The Images table keeps the library mock-up's columns; the machines
       mock-up's Machines count column is not added (an image's details pane
       lists Machines from this image (N)).
+
 - **2026-11-15 — Speaker and CPU-reset trace (opt-in diagnostic):** with
   `UNEMUPC98_TRACE_SPEAKER=1` in its environment (read once at startup; any
   other value leaves it off) the window prints one stderr line per event:

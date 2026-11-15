@@ -72,7 +72,8 @@
 //! duplicates the result. Master and voice attenuation use constant Q24 gains,
 //! with one final division toward zero. Levels 0–31 follow the guide's -62 to
 //! 0 dB range in 2 dB steps; level zero has Q24 gain 13327, rather than mute.
-//! Reset master/voice level 24 gives -28 dB combined.
+//! Master, voice and MIDI reset to level 31 (0 dB), not the guide's level 24
+//! (-14 dB per stage); see the mixer module for this compatibility deviation.
 //! SB Pro writes map nibble n to (n << 1) | 1 (ASSUMED), retaining unity at Fh;
 //! alias reads expose upper native volume bits. Unknown
 //! indices read FFh and reserved bits read zero (ASSUMED). Other mixer controls

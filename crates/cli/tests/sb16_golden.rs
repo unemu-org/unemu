@@ -153,8 +153,8 @@ fn reference() -> Vec<[i16; 2]> {
                     801..950 => 32512,
                     _ => 0,
                 })
-                // Q24 round(2^24 * 10^(-14/20)) = 3347495 for each reset stage.
-                .map(|level| level * 3347495i64 * 3347495i64 / (1i64 << 48))
+                // The CT1745 resets to 0 dB; the host mix takes half the voice.
+                .map(|level: i64| level / 2)
                 .sum();
             [(area / (end - begin) as i64) as i16; 2]
         })
@@ -170,7 +170,7 @@ fn sb16_byte_dma_has_frozen_pcm_irq_time_and_split_invariance() {
     );
     assert_eq!(whole.0, 40);
     assert_eq!(whole.2, reference());
-    assert_eq!(whole.1, 0x9c71fd79a30a2741);
+    assert_eq!(whole.1, 0xd11fa4ee5f6d91f9);
     assert_eq!(whole.3, [805]);
 }
 
@@ -190,8 +190,8 @@ fn sb16_dma_deadlines_inside_slow_cpu_steps_deliver_samples_on_time() {
                     1209..1358 => 32512,
                     _ => 0,
                 })
-                // Q24 round(2^24 * 10^(-14/20)) = 3347495 for each reset stage.
-                .map(|level| level * 3347495i64 * 3347495i64 / (1i64 << 48))
+                // The CT1745 resets to 0 dB; the host mix takes half the voice.
+                .map(|level: i64| level / 2)
                 .sum();
             [(area / (end - begin) as i64) as i16; 2]
         })

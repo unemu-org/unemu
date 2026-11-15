@@ -1295,7 +1295,7 @@ reconfiguration clears configured last frames and preserves external subscribers
 borrowed through `Observation::captured_audio()`. It adds no device or mixer until a source is
 attached. A SysControl/PIT pair automatically attaches the AT speaker's
 timestamped `EdgeSource` through observation, including on `ibm-5170`.
-The logical drive is OUT2 AND 61h bit 1, mapped to 0/+16384 in both channels;
+The logical drive is OUT2 AND 61h bit 1, mapped to 0/+8192 in both channels;
 bit 0 controls the timer gate. Silence is exactly zero; analogue AC coupling is
 not modelled. None output propagates to the source so device edges prune their
 own history to one incomplete frame, even on direct runs without audio capture.

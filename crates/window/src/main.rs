@@ -71,6 +71,8 @@ mod settings_sheet;
 mod shell;
 mod shell_icons;
 mod shell_model;
+#[cfg(test)]
+mod sound_levels_tests;
 mod system_keys;
 mod templates;
 

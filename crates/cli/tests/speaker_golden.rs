@@ -41,9 +41,8 @@ fn reference(until: u64, high: impl Fn(u64) -> bool) -> Vec<[i16; 2]> {
         .map(|n| {
             let start = (n * 4375).div_ceil(176);
             let end = ((n + 1) * 4375).div_ceil(176);
-            let area: i64 = (start..end)
-                .map(|at| if high(at) { 16384 } else { 0 })
-                .sum();
+            // The driven speaker enters the host mix at 8192 (-12 dBFS).
+            let area: i64 = (start..end).map(|at| if high(at) { 8192 } else { 0 }).sum();
             [(area / (end - start) as i64) as i16; 2]
         })
         .collect()
@@ -69,7 +68,7 @@ fn at_speaker_mode3_tone_has_frozen_pcm() {
         reference(12000, |at| (9..11939).contains(&at)
             && (at < 10 || (at - 10) % 1193 < 597))
     );
-    assert_eq!(whole.1, 0x59df_f6b1_a480_33ed);
+    assert_eq!(whole.1, 0xe2a3_39c1_952c_c419);
 }
 
 #[test]
@@ -97,10 +96,10 @@ fn at_speaker_eight_bit1_toggles_have_exact_box_filtered_positions() {
     let whole = capture(&program, 125, &[]);
     assert_eq!(whole, capture(&program, 125, &[8, 14, 30, 49, 74, 99]));
     assert_eq!(whole.0, 5);
-    assert_eq!(whole.1, 0xd8d6_af3e_bdc2_782d);
+    assert_eq!(whole.1, 0x41b2_593d_aa7d_fc61);
     assert_eq!(
         whole.2,
-        vec![[3932; 2], [2621; 2], [2621; 2], [15728; 2], [0; 2]]
+        vec![[1966; 2], [1310; 2], [1310; 2], [7864; 2], [0; 2]]
     );
     assert_eq!(
         whole.2,

@@ -776,7 +776,12 @@ SET BLASTER=A220 I5 D1 H5 T6
 
 Select Sound Blaster at 220h/IRQ5/DMA1 (16-bit DMA5 when offered) and
 AdLib/Sound Blaster FM for music. SB16 includes OPL3 at 388h–38Bh; no separate
-OPL card is needed. Load your compatible mouse driver, such as `CTMOUSE /S1`
+OPL card is needed. The SB16 mixer starts with master, voice and FM at full
+level, so no mixer program is needed; at those levels a full-scale digitized
+sound peaks at -6 dBFS on the host, one FM voice near -21 dBFS and the PC
+speaker at -12 dBFS (its audible swing 12 dB under a full-scale voice). A game
+or mixer program that lowers the SB16 mixer lowers the card below that.
+Load your compatible mouse driver, such as `CTMOUSE /S1`
 (for a CuteMouse version supporting that option) or `MOUSE.COM` configured for
 COM1. The tools floppy supplies CTMOUSE 2.1b4; in the maintainer's manual test
 on 2026-11-15 it loaded and the mouse worked in FreeDOS EDIT (no automated

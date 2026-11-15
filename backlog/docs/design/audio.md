@@ -107,9 +107,10 @@ lowering GATE forces OUT high, so software can toggle bit 1 with GATE low.
 Mode 0 instead pauses counting while GATE is low. The board reference is
 [IBM's Technical Reference](https://www.minuszerodegrees.net/manuals/IBM_5170_Technical_Reference_6280070_SEP85.pdf).
 
-The physical drive maps to **0/+16384**, duplicated to both stereo channels:
-OUT2 AND bit 1 low means no drive, hence exactly zero PCM, including idle and
-disabled output. The fixed gain leaves mixing headroom; it is not a calibrated
+The physical drive maps to **0/+8192** (peak -12 dBFS), duplicated to both
+stereo channels: OUT2 AND bit 1 low means no drive, hence exactly zero PCM,
+including idle and disabled output. A tone's audible swing is ±4096, 12 dB under
+a full-scale sound card voice (§Host mix levels); the level is not a calibrated
 voltage or acoustic response. The real speaker's analogue AC coupling, low-pass
 filter and mechanics are not modelled, so a sustained tone still carries a DC
 component. The existing output-frame box filter integrates square waves and PWM
@@ -243,6 +244,37 @@ it starts a fresh configured epoch while retaining mixer phase and external
 subscribers. Flush to the desired epoch boundary before reconfiguring. Backwards
 rendering returns a typed error and preserves the cursor. Repeated observations
 emit no duplicate PCM, but still release source history.
+
+## Host mix levels
+
+The host's full scale is not any one device's full scale. Assembly gives each
+analogue output a fixed level so that a normal host volume suits sound cards
+and the PC speaker together:
+
+| Source | Host level | Full-scale test signal, peak |
+|---|---|---|
+| SB16 voice (DSP DAC after CT1745) | card output × 1/2 | 8-bit 00h/FFh square: 16384, **-6.0 dBFS** |
+| SB16 FM (YMF262 after CT1745) | card output × 3/4 | one channel sustained at full output: 3063, -20.6 dBFS; nine channels keyed together: ≈18050, -5.2 dBFS |
+| PC speaker | 0/+8192 | 1 kHz tone: 8192, **-12.0 dBFS**; swing ±4096 |
+
+Card levels assume the 0 dB CT1745 reset (§CT1745). The voice factor leaves
+6 dB of headroom: a full-scale voice square, a full-output FM channel and a
+speaker tone together peak at 27511, -1.5 dBFS, without clipping. The speaker
+is a one-sided square, so its audible swing is half its peak: ±4096 against
+the voice square's ±16384, 12 dB below a full-scale card voice. FM is 3/2 of
+the voice level because one YMF262 channel at full output peaks near 4084, an
+eighth of the chip's 16-bit range. DOSBox Staging uses the same 1.5 OPL gain;
+its source says the earlier 2.0 "was measured to be too high" and that the
+exact value depends on the card or clone. Nine full-output FM channels at
+their peaks on top of a full-scale voice can still exceed full scale; the
+mixer then saturates as before.
+
+The levels are integer factors applied per native sample in assembly
+(`sb16_audio::VOICE_GAIN`, `FM_GAIN`) and in the speaker's edge observer;
+division rounds toward zero. Hardware snapshots and device output are
+unchanged by them. Measured through the window presenter and its host sink
+on the open AT games profile before this calibration: voice -28.0 dBFS, one
+FM channel -46.3 dBFS, nine FM channels -30.7 dBFS and the speaker -6.0 dBFS.
 
 ## Host output
 
@@ -439,13 +471,14 @@ The synthetic ROM golden programs channel 1 at RAM 1000h and plays bytes
 last DSP argument is written at clock 204, frames begin at 354/503/652/801,
 the byte IRQ rises at **801**, the handler emits one marker at **805**, and
 the source goes silent at **950**. Capture through clock 1000 produces
-**40 frames**, FNV-1a **`9c71fd79a30a2741`**.
-The previous hash `0eb2d059128e5341` used unity gain. Only CT1745 reset
-attenuation changes the PCM: master and voice each reset to level 24 (-14 dB).
-The independent integral applies both Q24 gains before accumulating each native
-level and reproduces every new output frame; all IRQ/sample timestamps are unchanged. Whole and split runs match an
-independent per-PIT-clock integral. A second ROM run uses three PIT clocks
-per retired step to put DMA deadlines inside CPU steps.
+**40 frames**, FNV-1a **`d11fa4ee5f6d91f9`**. Earlier hashes were
+`0eb2d059128e5341` (unity gain) and `9c71fd79a30a2741` (master and voice reset
+to level 24, -14 dB each). Now the CT1745 resets to 0 dB and the host mix takes
+half of the card's voice (§Host mix levels). The independent integral halves
+each native level before accumulating it and reproduces every output frame; all
+IRQ/sample timestamps are unchanged. Whole and split runs match an independent
+per-PIT-clock integral. A second ROM run uses three PIT clocks per retired step
+to put DMA deadlines inside CPU steps.
 
 Not modelled: recording, ADPCM, high-speed legacy commands, MPU-401/MIDI,
 analogue filters, DSP execution latency and ISA contention.
@@ -493,7 +526,8 @@ The synthetic word golden programs DMA5 at physical RAM 1000h (word address
 Master is 0 dB; voice is -2 dB left, -4 dB right. The last DSP argument is at
 clock 232, frames start at **382/531**, IRQ16 rises at **531**, the handler marker
 is at **535**, and the tail ends at **680**. Capture through 1000 has **40 frames**,
-FNV-1a **`45d03674db163436`**. Split runs around each boundary agree; an independent
+FNV-1a **`a6c019b8a1e874ff`** (`45d03674db163436` before the host mix halved the
+card's voice). Split runs around each boundary agree; an independent
 clock-by-clock integral with separately specified attenuation constants checks
 every PCM frame. Stereo-order and word-fetch mutations must break this golden.
 
@@ -510,7 +544,7 @@ are **ASSUMED** where the guide does not specify a read value.
 
 | Registers | Implemented bits | Reset bytes | Effect |
 |---|---|---|---|
-| 30h–35h master, voice, MIDI L/R | 7–3 | C0h (level 24) | Master/voice and master/MIDI applied |
+| 30h–35h master, voice, MIDI L/R | 7–3 | F8h (level 31), **ASSUMED** | Master/voice and master/MIDI applied |
 | 36h–3Ah CD/line L/R, mic | 7–3 | 00h | Stored only |
 | 3Bh PC speaker | 7–6 | 00h | Stored only; board speaker is independent |
 | 3Ch output switches | 4–0 | 1Fh | Stored only |
@@ -527,8 +561,16 @@ uses Q24 gain **13327**, not digital mute. For all levels the constant Q24 table
 `round(2^24 * 10^((level - 31)/10))`, generated and checked in a test using floating
 point **only in that test**. Each channel computes
 `pcm * master_gain * voice_gain / 2^48`, dividing once toward zero. Runtime is all
-integer arithmetic. At reset this maps -32768/-16384/0/32512 to
--1304/-652/0/1294. Volume writes alter the held PCM immediately at the port-access
+integer arithmetic. At reset this maps -32768/-16384/0/32512 to themselves; at
+the guide's level 24 on both stages they would become -1304/-652/0/1294.
+
+**ASSUMED compatibility deviation:** the guide resets master, voice and MIDI to
+level 24 (C0h, -14 dB each). This model resets them to level 31 (F8h, 0 dB),
+both at power-on and on a register 00h write. On real cards Creative's
+installation runs a mixer set-up at every boot; without it a game that never
+programs the mixer plays 28 dB down. 86Box's CT1745 ("changed defaults from
+-14dB to 0dB") and DOSBox Staging's `ctmixer_reset` (level 31) make the same
+choice. Volume writes alter the held PCM immediately at the port-access
 clock, without changing the native sample grid, including direct DAC and paused
 playback on resume. Stored-only controls do not affect PCM, even output gain and
 tone controls. No board PC-speaker signal passes through this card.
@@ -554,13 +596,13 @@ box-filtered frames, release and error recovery; observation tests force a
 late device callback and verify the next capture reports it with either output
 selection. Synthetic AT ROM goldens run the real CPU and board: a Mode 3 divisor
 1193 tone enabled for 11930 PIT clocks produces **482 frames**, FNV-1a
-`59dff6b1a48033ed`, over a 12000-clock capture. A second ROM toggles bit 1 at
+`e2a339c1952cc419`, over a 12000-clock capture. A second ROM toggles bit 1 at
 clocks 7, 13, 29, 31, 48, 52, 73 and 99; its five frames hash to
-`d8d6af3ebdc2782d`. Both compare whole and split captures; an independent
+`41b2593daa7dfc61`. Both compare whole and split captures; an independent
 per-PIT-clock reference checks every PCM frame. An idle/disabled-drive ROM test
-checks exactly zero PCM. These speaker hashes replace `8ac7ec7fc5f8c7ad` and
-`b01b4e720c32724d` after changing the physical drive mapping from −8192/+8192
-to 0/+16384. Other golden expectations are unchanged.
+checks exactly zero PCM. These speaker hashes replace `59dff6b1a48033ed` and
+`d8d6af3ebdc2782d` (drive 0/+16384), which replaced `8ac7ec7fc5f8c7ad` and
+`b01b4e720c32724d` (drive −8192/+8192); the drive is now 0/+8192.
 
 A million-instruction bit-1 loop uses both direct `machine.run_bounded` and the
 CLI's `AssembledMachine::run_session` API without audio output. At 100 instructions
@@ -687,5 +729,7 @@ OPL2 waveform masking, LFO depths, feedback and all four panning buses.
 The synthetic FM ROM programs a 2-op tone through 388h/389h, runs a counted
 4000-instruction sustain, then keys off. At one retired instruction per PIT
 clock, capture through clock 24000 pins **965 frames**, FNV-1a
-**`31fe79c8e4314714`**. Whole and two differently split runs compare every captured
-frame. Existing byte/word SB16 goldens retain their original hashes.
+**`5f94c755a036c6f7`** (`31fe79c8e4314714` with master and MIDI at level 24 and
+no host mix gain). Whole and two differently split runs compare every captured
+frame. An unprogrammed OPL3 adds nothing to the byte/word SB16 goldens; their
+hashes changed only with the mixer reset and host mix levels.

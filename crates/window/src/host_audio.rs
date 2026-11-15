@@ -314,6 +314,17 @@ impl HostAudio {
         self.sink.active.store(true, Ordering::Relaxed);
     }
 
+    /// Everything the host callback would play next, ignoring the prefill wait.
+    #[cfg(test)]
+    pub(super) fn drain_for_test(&self) -> Vec<StereoFrame> {
+        let mut ring = self.sink.ring.lock().unwrap();
+        let mut frames = vec![[0; 2]; ring.len];
+        ring.primed = true;
+        let count = ring.read(&mut frames);
+        frames.truncate(count);
+        frames
+    }
+
     pub(super) fn available(&self) -> bool {
         self.sink.active.load(Ordering::Relaxed)
     }

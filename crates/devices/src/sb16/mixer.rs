@@ -7,6 +7,12 @@
 //! writes map each nibble n to (n << 1) | 1 (ASSUMED common compatibility
 //! mapping), preserving full-scale unity. Mic writes use the upper three bits
 //! and clear two low bits (ASSUMED). Native level zero is -62 dB, Q24 gain 13327.
+//!
+//! ASSUMED compatibility deviation: master, voice and MIDI (30h-35h) reset to
+//! level 31 (F8h, 0 dB) instead of the guide's level 24 (C0h, -14 dB each, so
+//! -28 dB through two stages). On a real card Creative's driver set-up programs
+//! these levels at boot; without it, games that never touch the mixer play
+//! 28 dB down. 86Box's CT1745 and DOSBox Staging's mixer reset to 0 dB too.
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct Mixer {
@@ -17,7 +23,7 @@ pub(super) struct Mixer {
 impl Default for Mixer {
     fn default() -> Self {
         let mut registers = [0; 24];
-        registers[..6].fill(0xC0);
+        registers[..6].fill(0xF8);
         registers[12..15].copy_from_slice(&[0x1F, 0x15, 0x0B]);
         registers[20..].fill(0x80);
         Self {

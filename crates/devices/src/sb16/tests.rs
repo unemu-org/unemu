@@ -691,10 +691,14 @@ fn mixer_read(bus: &mut MockBus, index: u8) -> u32 {
 #[test]
 fn ct1745_reset_masks_aliases_and_fixed_resources() {
     let (mut bus, _) = rig();
+    // Levels other than the reset value show that register 00h restores them.
+    for index in 0x30..=0x35 {
+        mixer_write(&mut bus, index, 0xC0);
+    }
     mixer_write(&mut bus, 0, 0);
     for index in 0x30..=0x47 {
         let expected = match index {
-            0x30..=0x35 => 0xC0,
+            0x30..=0x35 => 0xF8,
             0x3C => 0x1F,
             0x3D => 0x15,
             0x3E => 0x0B,
@@ -704,8 +708,13 @@ fn ct1745_reset_masks_aliases_and_fixed_resources() {
         assert_eq!(mixer_read(&mut bus, index), expected, "{index:02x}");
         mixer_write(&mut bus, index, 255);
     }
+    for index in 0x30..=0x35 {
+        mixer_write(&mut bus, index, 0);
+    }
     mixer_write(&mut bus, 0, 123);
-    assert_eq!(mixer_read(&mut bus, 0x30), 0xC0);
+    for index in 0x30..=0x35 {
+        assert_eq!(mixer_read(&mut bus, index), 0xF8, "{index:02x}");
+    }
     assert_eq!(mixer_read(&mut bus, 0x44), 0x80);
     for (old, new) in [
         (4, 0x32),
@@ -730,6 +739,25 @@ fn ct1745_reset_masks_aliases_and_fixed_resources() {
     }
     mixer_write(&mut bus, 0x7F, 42);
     assert_eq!(mixer_read(&mut bus, 0x7F), 255);
+}
+
+/// Power-on CT1745 levels: master, voice and MIDI at 0 dB (F8h, SB Pro
+/// aliases FFh), so a full-scale direct DAC byte leaves the card unattenuated.
+#[test]
+fn power_on_master_voice_and_midi_are_full_level() {
+    let events = Events::default();
+    let writer = events.clone();
+    let mut dsp = Sb16::new(0x220, 1);
+    dsp.observe_output(move |event| writer.borrow_mut().push(event));
+    let mut bus = MockBus::new(Box::new(dsp));
+    for index in 0x30..=0x35 {
+        assert_eq!(mixer_read(&mut bus, index), 0xF8, "{index:02x}");
+    }
+    for alias in [0x04, 0x22, 0x26] {
+        assert_eq!(mixer_read(&mut bus, alias), 0xFF, "{alias:02x}");
+    }
+    command(&mut bus, &[0x10, 0xFF]);
+    assert_eq!(frames(&events).last(), Some(&(0, [32512; 2])));
 }
 
 #[test]
@@ -950,8 +978,13 @@ fn mixer_attenuation_has_exact_integers_live_changes_and_stored_only_controls() 
     let (mut bus, events) = rig();
     mixer_write(&mut bus, 0, 0);
     command(&mut bus, &[0x10, 0]);
-    assert_eq!(frames(&events).last(), Some(&(0, [-1304; 2])));
+    // Power-on levels pass a full-scale byte unattenuated.
+    assert_eq!(frames(&events).last(), Some(&(0, [-32768; 2])));
     at(&mut bus, 10);
+    for index in 0x30..=0x33 {
+        mixer_write(&mut bus, index, 0xC0);
+    }
+    assert_eq!(frames(&events).last(), Some(&(10, [-1304; 2])));
     for index in 0x30..=0x33 {
         mixer_write(&mut bus, index, 0xF8);
     }
@@ -1012,9 +1045,9 @@ fn legacy_snapshot_restores_mixer_defaults_and_no_word_interrupt() {
     let mut restored = Sb16::new(0x220, 1);
     restored.observe_output(move |event| writer.borrow_mut().push(event));
     restored.restore(legacy).unwrap();
-    assert_eq!(frames(&output), [(150, [1294; 2])]);
+    assert_eq!(frames(&output), [(150, [32512; 2])]);
     restored.port_write(0x224, 1, 0x30).unwrap();
-    assert_eq!(restored.port_read(0x225, 1).unwrap(), 0xC0);
+    assert_eq!(restored.port_read(0x225, 1).unwrap(), 0xF8);
     restored.port_write(0x224, 1, 0x82).unwrap();
     assert_eq!(restored.port_read(0x225, 1).unwrap(), 0);
     assert_eq!(&restored.save()[..8], b"SB16-FM4");
@@ -1076,7 +1109,7 @@ fn mixer_reset_domains_and_paused_volume_changes_preserve_raw_level() {
     bus.port_write(0x226, 1, 0).unwrap();
     assert_eq!(mixer_read(&mut bus, 0x30), 0xF0);
     bus.device_mut().reset();
-    assert_eq!(mixer_read(&mut bus, 0x30), 0xC0);
+    assert_eq!(mixer_read(&mut bus, 0x30), 0xF8);
 }
 
 #[test]
@@ -1433,9 +1466,15 @@ fn opl3_last_pending_new_value_controls_addressing_after_snapshot() {
         fm_write(&mut bus, 0x38a, 0xb0, 0x11);
         at(&mut bus, 3000);
         bus.port_read(0x388, 1).unwrap();
-        let audible = frames(&events).iter().any(|(_, frame)| *frame != [0; 2]);
+        // At full mixer level a key-off in the key-on sample still leaves a
+        // one-step envelope residue; the sustained tone peaks near 4085.
+        let peak = frames(&events)
+            .iter()
+            .flat_map(|(_, frame)| frame.map(|level| level.unsigned_abs()))
+            .max()
+            .unwrap_or(0);
         assert_eq!(
-            audible,
+            peak > 64,
             values.last() == Some(&1),
             "NEW sequence {values:?}"
         );

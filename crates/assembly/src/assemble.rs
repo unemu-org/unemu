@@ -182,6 +182,14 @@ pub fn assemble_with_options(
     assemble_with_observation_and_options(config, &ObservationPolicy::default(), options)
 }
 
+/// Host mix level of the driven PC speaker (IBM Personal Computer AT Technical
+/// Reference, System Board, Speaker): the drive is 0 or this level, a peak of
+/// -12 dBFS. The audible swing of that one-sided square is half the level,
+/// ±4096, 12 dB under the ±16384 swing of a full-scale sound-card voice, as a
+/// case speaker sounds next to a card's line output. See
+/// `backlog/docs/design/audio.md` §Host mix levels.
+const SPEAKER_LEVEL: i16 = 8192;
+
 /// Assemble with explicit capture routes and run-only firmware permissions.
 pub fn assemble_with_observation_and_options(
     config: &MachineConfig,
@@ -484,7 +492,7 @@ fn assemble_preverified(
         let source = audio::EdgeSource::new([0; 2]);
         let writer = source.clone();
         pit.observe_speaker(move |at, high| {
-            writer.record_level(at, [if high { 16384 } else { 0 }; 2]);
+            writer.record_level(at, [if high { SPEAKER_LEVEL } else { 0 }; 2]);
         });
         observation.add_audio_source(device::VClock::ZERO, Box::new(source));
     }
