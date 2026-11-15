@@ -1476,8 +1476,9 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   endpoint/MCR line mismatches without mutation. Presets are unchanged.
   Logitech extensions, bit sampling, TX timing/interrupts, modem inputs and
   internal loopback feedback remain unmodelled. Synthetic IRQ4 ROM and mock-bus tests qualify the
-  protocol; CuteMouse, MOUSE.COM, games and Windows driver sessions have not
-  been exercised. See [serial mouse configuration](design/machine-files.md#serial-mouse).
+  protocol. Manual check (maintainer, 2026-11-15): CuteMouse 2.1b4 loads on
+  the open AT games profile and the mouse works in FreeDOS EDIT; MOUSE.COM,
+  games and Windows driver sessions have not been exercised. See [serial mouse configuration](design/machine-files.md#serial-mouse).
 
 - **2026-11-12 — CPU A20 wiring:** Assembly applies the shared 8042/92h OR
   line at construction; the machine forwards effective transitions after port

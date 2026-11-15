@@ -749,8 +749,9 @@ Select Sound Blaster at 220h/IRQ5/DMA1 (16-bit DMA5 when offered) and
 AdLib/Sound Blaster FM for music. SB16 includes OPL3 at 388h–38Bh; no separate
 OPL card is needed. Load your compatible mouse driver, such as `CTMOUSE /S1`
 (for a CuteMouse version supporting that option) or `MOUSE.COM` configured for
-COM1. The tools floppy supplies CTMOUSE 2.1b4; its execution with this profile
-is not yet qualified. Change to the installed game's directory on C: and run it.
+COM1. The tools floppy supplies CTMOUSE 2.1b4; in the maintainer's manual test
+on 2026-11-15 it loaded and the mouse worked in FreeDOS EDIT (no automated
+golden yet). Change to the installed game's directory on C: and run it.
 
 Click the window to grab the pointer; **Ctrl+Alt+G releases** it (focus loss
 also releases). **Ctrl+Alt+M** toggles host mute. **Ctrl+Alt+F** cycles the A:
