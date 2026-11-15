@@ -40,21 +40,24 @@ pub struct Policy {
     pub any_copyleft_alternative: bool,
 }
 impl Policy {
-    /// The accepted rules: every copyleft ROM, catalogue-known or not, is open
-    /// only with its source archive, and an expression needs the source only
-    /// when every choice it offers is copyleft.
+    /// The first accepted rules: every copyleft ROM, catalogue-known or not,
+    /// is open only with its source archive, and an expression needs the
+    /// source only when every choice it offers is copyleft.
     pub const ACCEPTED: Self = Self {
         catalogue_copyleft_needs_source: true,
         any_copyleft_alternative: false,
     };
-    /// Also count any copyleft identifier anywhere in an expression.
+    /// The [`Self::ACCEPTED`] rules, and any copyleft identifier anywhere in
+    /// an expression asks for the source, even after `OR`.
     pub const STRICT: Self = Self {
         catalogue_copyleft_needs_source: true,
         any_copyleft_alternative: true,
     };
 }
-/// The licence rules in force; switch to [`Policy::STRICT`] here.
-pub const ACTIVE: Policy = Policy::ACCEPTED;
+/// The licence rules in force: the conservative reading the maintainer
+/// approved with the Firmware collection design. Switch back to
+/// [`Policy::ACCEPTED`] here to let a permissive `OR` alternative stand alone.
+pub const ACTIVE: Policy = Policy::STRICT;
 
 /// Identifiers from the SPDX License List that firmware, documents and
 /// source archives commonly carry. Any other licence is written as
@@ -132,6 +135,12 @@ const EXCEPTIONS: &[&str] = &[
 /// The copyleft families the firmware decision names: GPL, LGPL, AGPL, MPL.
 const COPYLEFT_PREFIXES: &[&str] = &["GPL-", "LGPL-", "AGPL-", "MPL-"];
 const MAX_LENGTH: usize = 256;
+
+/// The licence identifiers the parser accepts besides `LicenseRef-…`, in
+/// SPDX License List order, for a frontend that offers them as choices.
+pub fn identifiers() -> &'static [&'static str] {
+    LICENSES
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Node {
@@ -245,8 +254,9 @@ impl Expression {
         &self.canonical
     }
     /// Whether distributing under this expression obliges the corresponding
-    /// source: true when every choice it offers includes a GPL, LGPL, AGPL or
-    /// MPL family licence, or, under the stricter policy, when any does.
+    /// source: under [`Policy::STRICT`] when any identifier is a GPL, LGPL,
+    /// AGPL or MPL family licence, under [`Policy::ACCEPTED`] only when every
+    /// choice it offers includes one.
     pub fn needs_source(&self, policy: Policy) -> bool {
         fn walk(node: &Node, any: bool) -> bool {
             match node {
@@ -457,6 +467,22 @@ mod tests {
     }
 
     #[test]
+    fn every_offered_identifier_parses_as_itself() {
+        assert!(identifiers().len() > 40);
+        for id in identifiers() {
+            assert_eq!(Expression::parse(id).unwrap().as_str(), *id);
+        }
+        for copyleft in [
+            "GPL-3.0-or-later",
+            "LGPL-2.1-only",
+            "AGPL-3.0-only",
+            "MPL-2.0",
+        ] {
+            assert!(identifiers().contains(&copyleft), "{copyleft}");
+        }
+    }
+
+    #[test]
     fn copyleft_families_need_the_source_and_the_strict_policy_counts_any_alternative() {
         let needs = |text: &str, policy| Expression::parse(text).unwrap().needs_source(policy);
         for text in [
@@ -478,7 +504,7 @@ mod tests {
         }
         assert!(!needs("MIT OR GPL-2.0-or-later", Policy::ACCEPTED));
         assert!(needs("MIT OR GPL-2.0-or-later", Policy::STRICT));
-        assert_eq!(ACTIVE, Policy::ACCEPTED);
+        assert_eq!(ACTIVE, Policy::STRICT);
         const { assert!(ACTIVE.catalogue_copyleft_needs_source) };
     }
 

@@ -87,8 +87,25 @@ pub(super) enum Request {
         Option<PathBuf>,
         assembly::firmware_discovery::DiscoveryControl,
     ),
-    /// Publish the named catalogue sets of the last scan.
-    ImportFirmware(Vec<String>),
+    /// The library's verdict on a set of the last scan with a statement, at a
+    /// revision of the set's editor.
+    PreviewFirmware(String, u64, Box<pc_image::firmware_import::Statement>),
+    /// Publish the named catalogue sets of the last scan, each with its statement.
+    ImportFirmware(Vec<(String, pc_image::firmware_import::Statement)>),
+    /// Edit metadata…: read a stored package.
+    OpenFirmwareEdit(String),
+    /// Edit metadata…: the dry run of a revision of the package `tag` as
+    /// `target`, at a revision of the editor.
+    PreviewFirmwareEdit(
+        String,
+        String,
+        u64,
+        Box<pc_image::firmware_import::Statement>,
+    ),
+    /// Edit metadata…: publish the new revision.
+    PublishFirmwareEdit(String, String, Box<pc_image::firmware_import::Statement>),
+    /// The package pane's README text and push-guard lines for a tag.
+    ReadFirmwarePackage(String, Digest),
     /// List picked installation images, a folder of them, or extras.
     PreviewMedia(library_view::install_media::Pick, Vec<PathBuf>),
     /// Publish a reviewed installation set as `image media import` does.
@@ -159,6 +176,20 @@ pub(super) enum Event {
     FirmwareError(String),
     FirmwareScanned(Box<library_view::firmware::ScanReport>),
     FirmwareImported(Vec<library_view::firmware::Outcome>),
+    FirmwarePreviewed(
+        String,
+        u64,
+        Result<Box<library_view::firmware_metadata::Verdict>>,
+    ),
+    FirmwareEditOpened(Result<Box<library_view::firmware_metadata::EditSource>>),
+    FirmwareEditPreviewed(u64, Result<Box<library_view::firmware_metadata::Verdict>>),
+    /// The edited tag, then the new revision's tag and the library's notes,
+    /// or the refusal.
+    FirmwareEdited(String, Result<(String, Vec<String>)>),
+    FirmwarePackage(
+        Digest,
+        Result<Box<library_view::firmware_metadata::PackageDetails>>,
+    ),
     /// A scan or import job failed; only the import dialog shows it.
     FirmwareFailed(String),
     Transfer(crate::registry_transfer::TransferEvent),
@@ -443,7 +474,9 @@ impl Worker {
         Self::spawn_backend(root, egui::Context::default(), SyntheticBackend)
     }
     /// A worker whose thread dies inside a firmware job after `survive`
-    /// successful catalogue lookups: 0 dies in the scan, 1 in the import.
+    /// successful catalogue lookups. Every scan, set or edit preview, import,
+    /// package reading, Edit metadata… opening and publication looks the
+    /// catalogue up once, so `survive` picks the job that dies.
     pub(crate) fn firmware_crash(root: PathBuf, survive: usize) -> Self {
         Self::spawn_backend(
             root,
@@ -766,6 +799,8 @@ fn run<B: Backend>(
                     }
                 }
             };
+            // Previews and readings change nothing, so no new snapshot follows them.
+            let mut quiet = false;
             let operation = || -> Result<bool> {
                 match request {
                     Request::Shutdown => return Ok(false),
@@ -1045,6 +1080,67 @@ fn run<B: Backend>(
                         }
                         firmware_candidates.clear();
                     }
+                    Request::PreviewFirmware(id, revision, statement) => {
+                        send(Event::FirmwarePreviewed(
+                            id.clone(),
+                            revision,
+                            library_view::firmware::preview_set(
+                                &firmware_candidates,
+                                &id,
+                                &statement,
+                                backend.firmware_catalogue(),
+                            )
+                            .map(Box::new),
+                        ));
+                        quiet = true;
+                    }
+                    Request::OpenFirmwareEdit(tag) => {
+                        send(Event::FirmwareEditOpened(
+                            library_view::firmware_metadata::open_edit(
+                                &store,
+                                &tag,
+                                backend.firmware_catalogue(),
+                            )
+                            .map(Box::new),
+                        ));
+                        quiet = true;
+                    }
+                    Request::PreviewFirmwareEdit(tag, target, revision, statement) => {
+                        send(Event::FirmwareEditPreviewed(
+                            revision,
+                            library_view::firmware_metadata::preview_edit(
+                                &store,
+                                &tag,
+                                &target,
+                                &statement,
+                                backend.firmware_catalogue(),
+                            )
+                            .map(Box::new),
+                        ));
+                        quiet = true;
+                    }
+                    Request::PublishFirmwareEdit(tag, target, statement) => {
+                        send(Event::FirmwareEdited(
+                            tag.clone(),
+                            library_view::firmware_metadata::publish_edit(
+                                &store,
+                                &tag,
+                                &target,
+                                &statement,
+                                backend.firmware_catalogue(),
+                            ),
+                        ))
+                    }
+                    Request::ReadFirmwarePackage(tag, digest) => {
+                        let details = library_view::firmware_metadata::read_package(
+                            &store,
+                            &tag,
+                            &digest,
+                            backend.firmware_catalogue(),
+                        );
+                        send(Event::FirmwarePackage(digest, details.map(Box::new)));
+                        quiet = true;
+                    }
                     Request::PreviewMedia(pick, paths) => send(Event::MediaSources(
                         pick,
                         library_view::install_media::inspect(pick, &paths),
@@ -1060,6 +1156,9 @@ fn run<B: Backend>(
                 Ok(false) => break,
                 Err(e) => send(Event::Error(e)),
                 Ok(true) => (),
+            }
+            if quiet {
+                continue;
             }
             cache.refresh(&store).map_err(|e| e.to_string())?;
             send(Event::Snapshot(Arc::new(library_view::snapshot(

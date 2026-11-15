@@ -309,14 +309,7 @@ pub fn scan_with_limits(
                 requires: sorted(entry.requires.iter().map(|p| firmware::device_kind(*p))),
                 parts,
             };
-            let fit = Fit {
-                boards: sorted(entry.boards.iter().copied()),
-                machine_classes: if entry.boards.contains(&"ibm-5170") {
-                    vec!["at".into()]
-                } else {
-                    Vec::new()
-                },
-            };
+            let fit = catalogue_fit(entry);
             let provenance = match entry.distribution {
                 assembly::FirmwareDistribution::Open { provenance, .. } => Some(Provenance {
                     kind: None,
@@ -439,6 +432,34 @@ pub struct Statement {
     pub source_license: Option<String>,
     /// Licences of the attachments, by position; `None` keeps one user-supplied.
     pub extra_licenses: Vec<Option<String>>,
+    /// What happens to the README layer.
+    pub readme: ReadmeChoice,
+}
+
+/// The README a statement asks for.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum ReadmeChoice {
+    /// Generate it at import. In an edit, keep a README written by hand and
+    /// generate any other again.
+    #[default]
+    Keep,
+    /// Generate it from the fields and licences, replacing one written by hand.
+    Generate,
+    /// This text, written by hand, stored with LF line ends.
+    Text(String),
+}
+
+/// README layer annotation that marks a README written by hand, so an edit
+/// keeps it and tells it apart from generated text.
+pub const README_ORIGIN: &str = "unemu.readme";
+pub const HAND_WRITTEN: &str = "hand-written";
+/// Whether a README layer holds text the user wrote by hand.
+pub fn hand_written_readme(descriptor: &Descriptor) -> bool {
+    descriptor
+        .annotations
+        .get(README_ORIGIN)
+        .map(String::as_str)
+        == Some(HAND_WRITTEN)
 }
 
 /// Where a planned layer's bytes come from.
@@ -451,6 +472,9 @@ enum Payload {
 struct Plan {
     manifest: Manifest,
     config: Vec<u8>,
+    /// The config `config` encodes, and the README text the plan stores.
+    decoded: Config,
+    readme: String,
     /// One entry per manifest layer, in layer order.
     payloads: Vec<(Payload, Descriptor)>,
     /// What the user should know, such as why open firmware stays private.
@@ -627,17 +651,8 @@ fn known(
     catalogue: Option<&[assembly::FirmwareEntry]>,
     fallback: Option<assembly::FirmwareDistribution>,
 ) -> Result<Option<assembly::FirmwareDistribution>> {
-    if let Some(catalogue) = catalogue {
-        let locked = config.roms.iter().any(|rom| {
-            firmware::proprietary(catalogue, &rom.sha256, rom.size).is_some()
-                || rom
-                    .parts
-                    .iter()
-                    .any(|p| firmware::proprietary(catalogue, &p.sha256, p.size).is_some())
-        });
-        if locked {
-            return Ok(Some(assembly::FirmwareDistribution::UserSupplied));
-        }
+    if catalogue.is_some_and(|catalogue| locked_by(config, catalogue).is_some()) {
+        return Ok(Some(assembly::FirmwareDistribution::UserSupplied));
     }
     let mut listed = Vec::new();
     for id in config.roms.iter().filter_map(|r| r.catalogue_id.as_deref()) {
@@ -671,6 +686,21 @@ fn known(
         ));
     }
     Ok(first)
+}
+
+/// The proprietary catalogue entry whose bytes a ROM or chip of the package
+/// has: such a package is user-supplied whatever its ids or marks say.
+pub fn locked_by<'a>(
+    config: &Config,
+    catalogue: &'a [assembly::FirmwareEntry],
+) -> Option<&'a assembly::FirmwareEntry> {
+    config.roms.iter().find_map(|rom| {
+        firmware::proprietary(catalogue, &rom.sha256, rom.size).or_else(|| {
+            rom.parts
+                .iter()
+                .find_map(|p| firmware::proprietary(catalogue, &p.sha256, p.size))
+        })
+    })
 }
 
 /// A source archive's own class: the licence the user states for it, the
@@ -810,9 +840,17 @@ fn rom_license(
     }
 }
 
+/// `None` for an empty or blank text, which clears an optional field.
+fn stated(text: &Option<String>) -> Option<String> {
+    text.clone().filter(|t| !t.trim().is_empty())
+}
+
 /// Apply the descriptive part of a statement to a config.
 fn apply(config: &mut Config, statement: &Statement) -> Result<()> {
     if let Some(title) = &statement.title {
+        if !image_store::media_set::valid_text(title) {
+            return Err(invalid("the title must be one line of 1 to 128 characters"));
+        }
         config.name = title.clone();
     }
     for (field, value) in [
@@ -823,8 +861,15 @@ fn apply(config: &mut Config, statement: &Statement) -> Result<()> {
         (&mut config.date, &statement.date),
     ] {
         if value.is_some() {
-            *field = value.clone();
+            *field = stated(value);
         }
+    }
+    if config
+        .date
+        .as_deref()
+        .is_some_and(|d| !image_store::firmware::valid_date(d))
+    {
+        return Err(invalid("the date must be a calendar date, YYYY-MM-DD"));
     }
     let sorted = |items: &Vec<String>| {
         let mut items = items.clone();
@@ -864,8 +909,37 @@ fn apply(config: &mut Config, statement: &Statement) -> Result<()> {
         }
         config.roms[0].requires = sorted(requires);
     }
-    if let Some(provenance) = &statement.provenance {
-        config.provenance = Some(provenance.clone());
+    if let Some(p) = &statement.provenance {
+        let p = Provenance {
+            kind: p.kind,
+            from: p.from.clone(),
+            revision: stated(&p.revision),
+            url: stated(&p.url),
+            date: stated(&p.date),
+        };
+        let blank = p.from.trim().is_empty();
+        config.provenance = if blank
+            && p.kind.is_none()
+            && p.revision.is_none()
+            && p.url.is_none()
+            && p.date.is_none()
+        {
+            None
+        } else if blank {
+            return Err(invalid(
+                "the provenance needs its details: where the bytes came from",
+            ));
+        } else if p
+            .date
+            .as_deref()
+            .is_some_and(|d| !image_store::firmware::valid_date(d))
+        {
+            return Err(invalid(
+                "the provenance date must be a calendar date, YYYY-MM-DD",
+            ));
+        } else {
+            Some(p)
+        };
     }
     Ok(())
 }
@@ -875,8 +949,23 @@ fn titled(descriptor: &mut Descriptor, name: &str) {
     descriptor.annotations.insert(TITLE.into(), name.into());
 }
 
-/// Mark every layer, generate the README, encode the config and order the
-/// layers by the config's payload traversal.
+/// A README written by hand, with CR LF and lone CR line ends turned into
+/// LF, as the generated text has.
+fn hand_written(text: &str) -> Result<String> {
+    let text = text.replace("\r\n", "\n").replace('\r', "\n");
+    if text.trim().is_empty() {
+        return Err(invalid(
+            "the README must not be empty; regenerate it from the fields instead",
+        ));
+    }
+    if text.len() as u64 > image_store::MAX_SMALL_BLOB {
+        return Err(invalid("the README must be at most 1 MiB"));
+    }
+    Ok(text)
+}
+
+/// Mark every layer, generate the README (or take the one written by hand),
+/// encode the config and order the layers by the config's payload traversal.
 fn assemble(
     mut config: Config,
     roms: Vec<(Payload, Descriptor)>,
@@ -884,6 +973,7 @@ fn assemble(
     extras: Vec<(Payload, Descriptor, Option<Expression>)>,
     rom_license: Option<Expression>,
     notes: Vec<String>,
+    readme: Option<&str>,
 ) -> Result<Plan> {
     config.readme = None;
     config.sources = Vec::new();
@@ -927,22 +1017,31 @@ fn assemble(
     let all_open = rom_license.is_some()
         && (config.sources.is_empty() || source_license.is_some())
         && marks.iter().all(Option::is_some);
-    let text = crate::firmware_readme::generate(
-        &config,
-        &crate::firmware_readme::Marks {
-            roms: rom_license.as_ref(),
-            source: source_license.as_ref(),
-            extras: &marks,
-            all_open,
-        },
-    );
+    let hand = readme.map(hand_written).transpose()?;
+    let text = match &hand {
+        Some(text) => text.clone(),
+        None => crate::firmware_readme::generate(
+            &config,
+            &crate::firmware_readme::Marks {
+                roms: rom_license.as_ref(),
+                source: source_license.as_ref(),
+                extras: &marks,
+                all_open,
+            },
+        ),
+    };
     let metadata = all_open
         .then(|| Expression::parse(firmware::METADATA_LICENSE))
         .transpose()?;
-    let bytes = text.into_bytes();
+    let bytes = text.clone().into_bytes();
     let mut readme = Descriptor::new(mt::MARKDOWN, Digest::of(&bytes), bytes.len() as u64);
     license::mark(&mut readme, metadata.as_ref());
     titled(&mut readme, "README.md");
+    if hand.is_some() {
+        readme
+            .annotations
+            .insert(README_ORIGIN.into(), HAND_WRITTEN.into());
+    }
     config.readme = Some(Readme {
         blob: readme.digest.clone(),
         size: readme.size,
@@ -975,9 +1074,57 @@ fn assemble(
     Ok(Plan {
         manifest,
         config: encoded,
+        decoded: config,
+        readme: text,
         payloads,
         notes,
     })
+}
+
+/// A stored package's ROM licence: the most restrictive ROM mark, so one
+/// user-supplied chip keeps the whole package's ROM images user-supplied.
+pub fn current_rom_license(config: &Config, manifest: &Manifest) -> Option<Expression> {
+    config
+        .payloads()
+        .iter()
+        .filter(|(_, _, kind)| *kind == mt::FIRMWARE)
+        .map(|(digest, _, _)| {
+            manifest
+                .layers
+                .iter()
+                .find(|d| d.names(digest))
+                .and_then(license::open_license)
+        })
+        .collect::<Option<Vec<_>>>()
+        .and_then(|l| l.into_iter().next())
+}
+
+/// The README the program generates for a stored package from its config
+/// and its layers' marks, as an import or edit with no hand-written README
+/// would write it; a stored README that differs was written by hand.
+pub fn generated_readme(config: &Config, manifest: &Manifest) -> String {
+    let class = |digest: &Digest| {
+        manifest
+            .layers
+            .iter()
+            .find(|d| d.names(digest))
+            .and_then(license::open_license)
+    };
+    let roms = current_rom_license(config, manifest);
+    let source = config.sources.first().and_then(|s| class(&s.blob));
+    let extras: Vec<Option<Expression>> = config.extras.iter().map(|e| class(&e.blob)).collect();
+    let all_open = roms.is_some()
+        && (config.sources.is_empty() || source.is_some())
+        && extras.iter().all(Option::is_some);
+    crate::firmware_readme::generate(
+        config,
+        &crate::firmware_readme::Marks {
+            roms: roms.as_ref(),
+            source: source.as_ref(),
+            extras: &extras,
+            all_open,
+        },
+    )
 }
 
 /// Standard OCI annotations where they fit; there is no creation time, because
@@ -1081,12 +1228,25 @@ fn validate(
 pub fn preview_manifest(candidate: &Candidate, attachments: &[Attachment]) -> Result<Manifest> {
     Ok(plan(candidate, attachments, &Statement::default(), None)?.manifest)
 }
-/// What an import with a statement would publish.
+/// What an import or edit with a statement would publish.
 #[derive(Debug)]
 pub struct Preview {
     pub manifest: Manifest,
     /// What the user should know, such as why open firmware stays private.
     pub notes: Vec<String>,
+    /// The config and the README text it would store, for a frontend to show.
+    pub config: Config,
+    pub readme: String,
+}
+impl From<Plan> for Preview {
+    fn from(plan: Plan) -> Self {
+        Self {
+            manifest: plan.manifest,
+            notes: plan.notes,
+            config: plan.decoded,
+            readme: plan.readme,
+        }
+    }
 }
 /// The package identity an import with this statement publishes, checked by
 /// the provider against `catalogue` before anything is written. Rights come
@@ -1099,10 +1259,7 @@ pub fn preview_manifest_with(
 ) -> Result<Preview> {
     let plan = plan(candidate, attachments, statement, Some(catalogue))?;
     validate(&plan, catalogue, None)?;
-    Ok(Preview {
-        manifest: plan.manifest,
-        notes: plan.notes,
-    })
+    Ok(plan.into())
 }
 
 fn plan(
@@ -1192,8 +1349,12 @@ fn plan(
         }
         _ => None,
     };
+    let readme = match &statement.readme {
+        ReadmeChoice::Text(text) => Some(text.as_str()),
+        ReadmeChoice::Keep | ReadmeChoice::Generate => None,
+    };
     decide(
-        config, roms, source, extras, known, default, statement, catalogue,
+        config, roms, source, extras, known, default, statement, catalogue, readme,
     )
 }
 
@@ -1208,6 +1369,7 @@ fn decide(
     default: Option<Expression>,
     statement: &Statement,
     catalogue: Option<&[assembly::FirmwareEntry]>,
+    readme: Option<&str>,
 ) -> Result<Plan> {
     if statement.source_license.is_some() && source.is_none() {
         return Err(invalid(
@@ -1228,7 +1390,7 @@ fn decide(
         source.as_ref().map(|(_, class)| class.is_some()),
         license::ACTIVE,
     )?;
-    assemble(config, roms, source, extras, rom_license, notes)
+    assemble(config, roms, source, extras, rom_license, notes, readme)
 }
 
 /// The ROM and document layers' decoded identities in manifest order.
@@ -1247,10 +1409,11 @@ fn bound_layers(manifest: &Manifest) -> Result<Vec<(String, Digest, u64)>> {
         .collect()
 }
 
-/// The package a tag already names for this import, verified: the identical
-/// package, or one written before packages carried licences and a README
-/// that holds the same ROM and document bytes. Any other package under the
-/// tag conflicts before anything is copied.
+/// The package a tag already names for this import, verified: one that holds
+/// the same ROM and document bytes, whatever its metadata, licences, source
+/// archive or README (an earlier version wrote it, or an import with another
+/// statement). Any other package under the tag conflicts before anything is
+/// copied. Changing an imported package's metadata is [`edit`]'s job.
 pub fn existing(
     store: &Store,
     tag: &str,
@@ -1262,13 +1425,8 @@ pub fn existing(
         Ok(existing) => {
             let image =
                 store.resolve_descriptor(&existing, &Validator(&PcFirmwareRules(catalogue)))?;
-            let older = !image
-                .manifest
-                .layers
-                .iter()
-                .any(|d| d.decoded_media_type() == mt::MARKDOWN);
             if existing.digest == digest
-                || older && bound_layers(&image.manifest)? == bound_layers(manifest)?
+                || bound_layers(&image.manifest)? == bound_layers(manifest)?
             {
                 return Ok(Some(Descriptor::new(
                     mt::MANIFEST,
@@ -1368,7 +1526,8 @@ pub fn publish(
 }
 /// [`publish`] with the user's descriptive fields and licence statement. A tag
 /// that already holds these ROMs is reused as it is: changing an imported
-/// package's metadata is [`edit`]'s job.
+/// package's metadata is [`edit`]'s job, so a statement that would change it
+/// is refused rather than dropped.
 pub fn publish_with(
     store: &Store,
     candidate: &Candidate,
@@ -1401,8 +1560,16 @@ pub fn publish_as(
 ) -> Result<Descriptor> {
     let plan = plan(candidate, attachments, statement, Some(catalogue))?;
     validate(&plan, catalogue, None)?;
-    unjudged(judged, &Digest::of(&plan.manifest.encode()?))?;
+    let digest = Digest::of(&plan.manifest.encode()?);
+    unjudged(judged, &digest)?;
     if let Some(existing) = existing(store, tag, &plan.manifest, catalogue)? {
+        if existing.digest != digest && *statement != Statement::default() {
+            return Err(invalid(format!(
+                "{tag} already holds these ROMs with other metadata or licences; an edit \
+                 (image firmware edit, or Edit metadata… in the library) publishes them as \
+                 a new revision"
+            )));
+        }
         // An earlier package with the same ROMs is kept as it is.
         unjudged(judged, &existing.digest)?;
         return Ok(existing);
@@ -1445,6 +1612,74 @@ pub fn edit(
     statement: &Statement,
     catalogue: &[assembly::FirmwareEntry],
 ) -> Result<Revision> {
+    let (plan, unchanged) = edit_plan(store, tag, target, statement, catalogue)?;
+    if unchanged {
+        return Err(invalid(
+            "the edit changes nothing; the package stays as it is",
+        ));
+    }
+    let notes = plan.notes.clone();
+    Ok(Revision {
+        descriptor: store_plan(store, plan, target, catalogue, None)?,
+        notes,
+    })
+}
+
+/// What [`edit`] with this statement would publish under `target`, checked
+/// as the edit checks it, without writing anything.
+#[derive(Debug)]
+pub struct EditPreview {
+    pub preview: Preview,
+    /// The statement changes nothing, so an edit would refuse it.
+    pub unchanged: bool,
+}
+/// The dry run of [`edit`].
+pub fn preview_edit(
+    store: &Store,
+    tag: &str,
+    target: &str,
+    statement: &Statement,
+    catalogue: &[assembly::FirmwareEntry],
+) -> Result<EditPreview> {
+    let (plan, unchanged) = edit_plan(store, tag, target, statement, catalogue)?;
+    Ok(EditPreview {
+        preview: plan.into(),
+        unchanged,
+    })
+}
+
+/// The firmware catalogue's verdict on a package's ROMs, by bytes first as
+/// import and edit decide it: `UserSupplied` when any ROM or chip has the
+/// bytes of a proprietary entry or a listed id is proprietary, `Open` when
+/// every ROM is listed open, `None` when a ROM is unlisted.
+pub fn catalogue_rights(
+    config: &Config,
+    catalogue: &[assembly::FirmwareEntry],
+) -> Result<Option<assembly::FirmwareDistribution>> {
+    known(config, Some(catalogue), None)
+}
+
+/// The fits the catalogue lists for an entry, which a package may narrow:
+/// its boards, and the AT machine class for an IBM 5170 board.
+pub fn catalogue_fit(entry: &assembly::FirmwareEntry) -> Fit {
+    Fit {
+        boards: sorted(entry.boards.iter().copied()),
+        machine_classes: if entry.boards.contains(&"ibm-5170") {
+            vec!["at".into()]
+        } else {
+            Vec::new()
+        },
+    }
+}
+
+/// An edit's plan, and whether it would publish the very same package.
+fn edit_plan(
+    store: &Store,
+    tag: &str,
+    target: &str,
+    statement: &Statement,
+    catalogue: &[assembly::FirmwareEntry],
+) -> Result<(Plan, bool)> {
     if !statement.extra_licenses.is_empty() {
         return Err(invalid("an edit keeps the package's documents as they are"));
     }
@@ -1471,12 +1706,24 @@ pub fn edit(
             roms.push((Payload::Stored, layer(&digest)?));
         }
     }
-    // The most restrictive ROM mark is the package's current ROM licence.
-    let current = roms
-        .iter()
-        .map(|(_, d)| license::open_license(d))
-        .collect::<Option<Vec<_>>>()
-        .and_then(|l| l.into_iter().next());
+    let current = current_rom_license(&config, &image.manifest);
+    // A README written by hand stays unless the statement replaces it.
+    let kept = match &statement.readme {
+        ReadmeChoice::Keep => match image
+            .manifest
+            .layers
+            .iter()
+            .find(|d| d.decoded_media_type() == mt::MARKDOWN && hand_written_readme(d))
+        {
+            Some(d) => Some(
+                String::from_utf8(store.read_verified(d, image_store::MAX_SMALL_BLOB)?)
+                    .map_err(|_| invalid("the README layer is not UTF-8 text"))?,
+            ),
+            None => None,
+        },
+        ReadmeChoice::Generate => None,
+        ReadmeChoice::Text(text) => Some(text.clone()),
+    };
     let source = match (&statement.source, config.sources.first()) {
         (Some(path), _) => Some(archive(path)?),
         (None, Some(existing)) => {
@@ -1509,18 +1756,11 @@ pub fn edit(
         current,
         statement,
         Some(catalogue),
+        kept.as_deref(),
     )?;
     validate(&plan, catalogue, Some(store))?;
-    if Digest::of(&plan.manifest.encode()?) == image.image.digest {
-        return Err(invalid(
-            "the edit changes nothing; the package stays as it is",
-        ));
-    }
-    let notes = plan.notes.clone();
-    Ok(Revision {
-        descriptor: store_plan(store, plan, target, catalogue, None)?,
-        notes,
-    })
+    let unchanged = Digest::of(&plan.manifest.encode()?) == image.image.digest;
+    Ok((plan, unchanged))
 }
 
 /// A published package revision.
@@ -1559,7 +1799,7 @@ mod tests {
     #[test]
     fn a_catalogue_open_copyleft_rom_without_open_source_stays_user_supplied() {
         let none = Statement::default();
-        assert_eq!(license::ACTIVE, license::Policy::ACCEPTED);
+        assert_eq!(license::ACTIVE, license::Policy::STRICT);
         for source in [None, Some(false)] {
             let (license, notes) = decide(Some(OPEN), &none, source, license::ACTIVE).unwrap();
             assert_eq!(license, None);

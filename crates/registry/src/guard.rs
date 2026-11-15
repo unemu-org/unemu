@@ -301,6 +301,33 @@ pub fn copyleft_without_source(closure: &[ClosureEntry]) -> Vec<Descriptor> {
         .collect()
 }
 
+/// Where rules 1, 2 and 4 let a closure go, judged by its effective classes
+/// alone, for a frontend that shows it before any push.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Reach {
+    /// Any configured registry, including `unemu/`.
+    Anywhere,
+    /// Private registries outside `unemu/` only: a user-supplied blob.
+    UserSupplied,
+    /// Private registries outside `unemu/` only: an open copyleft ROM
+    /// without its linked source archive.
+    CopyleftWithoutSource,
+}
+/// The [`Reach`] of a closure; a user-supplied blob is named before a
+/// missing source archive.
+pub fn reach(closure: &[ClosureEntry]) -> Reach {
+    if closure
+        .iter()
+        .any(|c| c.effective == Redistribution::UserSupplied)
+    {
+        Reach::UserSupplied
+    } else if !copyleft_without_source(closure).is_empty() {
+        Reach::CopyleftWithoutSource
+    } else {
+        Reach::Anywhere
+    }
+}
+
 /// Whether rule 3's anonymous-read probe applies to this closure.
 pub fn needs_private_probe(closure: &[ClosureEntry]) -> bool {
     closure
@@ -550,8 +577,18 @@ mod tests {
                 Err(Refusal::CopyleftWithoutSource { .. })
             ));
         }
-        // Permissive licences, and an expression offering one, need no source.
-        for licence in ["MIT", "LicenseRef-vendor-grant", "MIT OR GPL-2.0-or-later"] {
+        // Under the active rules any copyleft identifier, even after OR, needs
+        // the source.
+        assert!(matches!(
+            check(
+                Some(&registry(false)),
+                &target("owner/bios:1"),
+                &package("MIT OR GPL-2.0-or-later", None)
+            ),
+            Err(Refusal::CopyleftWithoutSource { .. })
+        ));
+        // Permissive licences need no source.
+        for licence in ["MIT", "LicenseRef-vendor-grant", "MIT OR Zlib"] {
             assert_eq!(
                 check(
                     Some(&registry(false)),
@@ -562,6 +599,20 @@ mod tests {
                 "{licence}"
             );
         }
+    }
+
+    #[test]
+    fn reach_names_a_user_supplied_blob_before_a_missing_source() {
+        assert_eq!(reach(&package("MIT", None)), Reach::Anywhere);
+        assert_eq!(
+            reach(&package("GPL-2.0-only", None)),
+            Reach::CopyleftWithoutSource
+        );
+        let mut both = package("GPL-2.0-only", None);
+        both.push(entry(None, mt::EXTRA, b"manual"));
+        assert_eq!(reach(&both), Reach::UserSupplied);
+        let linked = with_archive(package("GPL-2.0-only", Some(b"src")), mt::TAR, b"src");
+        assert_eq!(reach(&linked), Reach::Anywhere);
     }
 
     #[test]

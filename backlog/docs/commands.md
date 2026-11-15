@@ -106,8 +106,10 @@ SHA-256 and length against the catalogue and verifies reconstructed chip sets.
 It reports unmatched/unreadable inputs and incomplete sets with missing sockets;
 those inputs are never published. Multiple complete layouts require an explicit
 file list containing one layout; ambiguous catalogue identities require `--for`.
-Tags are `firmware/<catalogue-id>:1`; identical packages report already imported,
-while different digests conflict before copying, with CAS at publication. `--rescan` bypasses reusable persistent ROM hashes. `--dry-run`
+Tags are `firmware/<catalogue-id>:1`; a package under the tag with the same ROM
+and document bytes reports already imported whatever its metadata (an import
+whose own statement would change it is refused and names `image firmware
+edit`), while other bytes conflict before copying, with CAS at publication. `--rescan` bypasses reusable persistent ROM hashes. `--dry-run`
 previews without writing blobs/tags or creating a store. Extras require
 `--for CATALOGUE-ID` or `--unlisted ID`; repeat `--extra PATH[:DOSNAME]` using the media-set attachment
 schema and DOS naming rules above, each optionally followed by
@@ -144,10 +146,24 @@ imported when it holds the same ROM and document bytes (any other package
 under the tag is a conflict). `image firmware edit NAME:TAG [--to NAME:TAG]`
 takes the same metadata and licence flags (`--source` adds or replaces the
 archive) and publishes a new revision (`:N` becomes `:N+1` by default) with
-the same ROM and document blobs; the old tag keeps the old package. `show`
+the same ROM and document blobs; the old tag keeps the old package. A README
+written by hand in the window is kept by every edit; `--regenerate-readme`
+generates it from the fields again. `show`
 prints every layer's class and licence and, from the push guard's own
 classification (local marks and the catalogue included), where the package
 may be pushed.
+In the window, Import ROM folder… reviews the same statements per set
+(Redistribution, SPDX licence, Source archive… and the archive's own licence,
+the descriptive fields, fits, provenance and an editable README preview), and
+the package pane's Edit metadata… (or Add source archive…) publishes the next
+revision as `image firmware edit` does. Every verdict, reason and README text
+in both dialogs is the library's preview of the statement, computed on the
+library worker. Headless tests:
+
+```sh
+cargo test --offline -p window firmware
+cargo test --offline -p pc-image --test firmware_metadata
+```
 The window uses Preferences > store root, falling back to the shared unemu
 platform location, for both library media and firmware readiness. CLI `run` uses
 the shared default, accepts `--store DIR`, and disables package lookup with

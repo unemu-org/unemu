@@ -3,9 +3,11 @@
 //! Store jobs own I/O and PC readiness, launch and publication adapters.
 //! The tree, facets and virtualized rows consume platform-neutral summaries.
 //! Firmware packages (§5.3) and installation media sets (§5.2) form their own
-//! collections, see [`firmware`] and [`install_media`].
+//! collections, see [`firmware`] and [`install_media`]; a firmware package's
+//! metadata and licences are edited with [`firmware_metadata`].
 
 pub(crate) mod firmware;
+pub(crate) mod firmware_metadata;
 pub(crate) mod install_media;
 
 use crate::{
@@ -561,6 +563,17 @@ pub(super) struct LibraryView {
     /// Kept apart from `selected`: a package is never a Start target.
     firmware_selected: Option<firmware::FirmwareRow>,
     firmware_import: Option<firmware::ImportDialog>,
+    /// Edit metadata… while it is open.
+    firmware_edit: Option<firmware_metadata::EditDialog>,
+    /// Open README while it is open.
+    firmware_readme: Option<firmware_metadata::ReadmeDialog>,
+    /// A dialog asked for the source archive picker; the shell runs it.
+    pub firmware_source_pick: Option<firmware::SourceTarget>,
+    /// What the worker read for the selected package, by package digest;
+    /// `None` inside while the reading is under way.
+    firmware_package: Option<(Digest, Option<Result<firmware_metadata::PackageDetails>>)>,
+    /// A published revision to select once a snapshot lists it.
+    firmware_reselect: Option<String>,
     /// Kept apart from `selected` too: a set is never a Start target.
     media_selected: Option<install_media::MediaRow>,
     media_import: Option<install_media::ImportDialog>,
@@ -613,6 +626,11 @@ impl LibraryView {
             worker_dead: false,
             firmware_selected: None,
             firmware_import: None,
+            firmware_edit: None,
+            firmware_readme: None,
+            firmware_source_pick: None,
+            firmware_package: None,
+            firmware_reselect: None,
             media_selected: None,
             media_import: None,
             media_pick: None,
@@ -657,6 +675,8 @@ impl LibraryView {
         for event in events {
             self.on_event(event);
         }
+        self.request_firmware_previews();
+        self.retry_package();
         if disconnected && !self.worker_dead {
             self.busy = false;
             self.pending_operation = false;
@@ -706,6 +726,16 @@ impl LibraryView {
                         *selected = current.clone();
                     }
                 }
+                if let Some(reference) = self.firmware_reselect.clone() {
+                    if let Some(row) = snapshot
+                        .firmware_rows
+                        .iter()
+                        .find(|r| r.image.reference == reference && r.image.summary.is_some())
+                    {
+                        self.firmware_reselect = None;
+                        self.show_package(row.clone());
+                    }
+                }
                 if let Some(selected) = &mut self.media_selected {
                     if let Some(current) = snapshot.media_rows.iter().find(|r| r.same(selected)) {
                         *selected = current.clone();
@@ -747,6 +777,53 @@ impl LibraryView {
                     None => self.error = Some(error),
                 }
             }
+            Event::FirmwarePreviewed(id, revision, result) => {
+                if let Some(draft) = self
+                    .firmware_import
+                    .as_mut()
+                    .and_then(|d| d.drafts.get_mut(&id))
+                {
+                    draft.previewed(revision, result.map(|v| *v));
+                }
+            }
+            Event::FirmwareEditOpened(result) => {
+                if let Some(dialog) = &mut self.firmware_edit {
+                    let pick = dialog.pick_source && result.is_ok();
+                    dialog.opened(result.map(|source| *source));
+                    if pick {
+                        self.firmware_source_pick = Some(firmware::SourceTarget::Edit);
+                    }
+                }
+            }
+            Event::FirmwareEditPreviewed(revision, result) => {
+                if let Some(draft) = self.firmware_edit.as_mut().and_then(|d| d.draft.as_mut()) {
+                    draft.previewed(revision, result.map(|v| *v));
+                }
+            }
+            Event::FirmwareEdited(source, result) => {
+                self.busy = false;
+                if let Ok((target, notes)) = &result {
+                    let mut status = format!("Published {target}; {source} is unchanged");
+                    for note in notes {
+                        status.push_str("; ");
+                        status.push_str(note);
+                    }
+                    self.status = Some(status);
+                    self.firmware_edit = None;
+                    self.firmware_reselect = Some(target.clone());
+                } else if let Some(dialog) = &mut self.firmware_edit {
+                    dialog.published(&result);
+                } else {
+                    self.error = result.err();
+                }
+            }
+            Event::FirmwarePackage(digest, result) => {
+                if let Some((wanted, details)) = &mut self.firmware_package {
+                    if *wanted == digest {
+                        *details = Some(result.map(|d| *d));
+                    }
+                }
+            }
             Event::FirmwareImported(outcomes) => {
                 self.busy = false;
                 self.status = Some(
@@ -759,6 +836,8 @@ impl LibraryView {
                 if let Some(dialog) = &mut self.firmware_import {
                     dialog.finished(outcomes);
                 }
+                // An import can change the local marks the pane's Push line reads.
+                self.refresh_package();
                 if self.new_machine.is_some() {
                     self.send(Request::FirmwarePackages);
                 }
@@ -847,6 +926,7 @@ impl LibraryView {
             }
             Event::Deleted(reference) => {
                 self.busy = false;
+                self.refresh_package();
                 if self
                     .selected
                     .as_ref()
@@ -1192,6 +1272,8 @@ impl LibraryView {
             || self.delete
             || self.decision.is_some()
             || self.firmware_import.is_some()
+            || self.firmware_edit.is_some()
+            || self.firmware_readme.is_some()
             || self.media_import.is_some()
             || self.new_machine.is_some()
             || self.push.is_some()
@@ -1209,6 +1291,8 @@ impl LibraryView {
         if let Some(dialog) = self.firmware_import.take() {
             dialog.control.cancel();
         }
+        self.firmware_edit = None;
+        self.firmware_readme = None;
         if let Some(dialog) = self.media_import.take() {
             dialog.control.cancel();
         }
@@ -1347,8 +1431,16 @@ impl LibraryView {
                     .id_salt("selected-image-details")
                     .show(ui, |ui| {
                         if self.query.filter.is_firmware() {
-                            match &self.firmware_selected {
-                                Some(row) => firmware::details(ui, row),
+                            match self.firmware_selected.clone() {
+                                Some(row) => {
+                                    let action = firmware::details(
+                                        ui,
+                                        &row,
+                                        self.package_details(),
+                                        self.can_edit_firmware(),
+                                    );
+                                    self.pane_action(&row, action);
+                                }
                                 None => {
                                     ui.label("Select a firmware package for details.");
                                 }
@@ -1590,9 +1682,22 @@ impl LibraryView {
                     ui.label(warning);
                 }
                 changed |= self.firmware_list(ui, selected_file);
+                let private = self
+                    .snapshot
+                    .firmware_rows
+                    .iter()
+                    .filter(|r| r.source_missing)
+                    .count();
                 ui.label(format!(
-                    "{} of {} packages · {} pending",
-                    self.snapshot.matched, self.snapshot.firmware_total, self.snapshot.pending
+                    "{} of {} packages · {} pending{}",
+                    self.snapshot.matched,
+                    self.snapshot.firmware_total,
+                    self.snapshot.pending,
+                    if private > 0 {
+                        format!(" · {private} private only")
+                    } else {
+                        String::new()
+                    }
                 ));
                 return;
             }
@@ -2063,8 +2168,31 @@ impl LibraryView {
                         dialog.control.cancel();
                     }
                 }
+                firmware::DialogAction::PickSource(id) => {
+                    self.firmware_source_pick =
+                        Some(firmware::SourceTarget::Import(id, dialog.folder.clone()));
+                }
                 firmware::DialogAction::None => (),
             }
+        }
+        if let Some(dialog) = &mut self.firmware_edit {
+            match dialog.show(ctx, classic) {
+                firmware_metadata::EditAction::Publish => {
+                    requests.extend(self.publish_firmware_edit())
+                }
+                firmware_metadata::EditAction::PickSource => {
+                    self.firmware_source_pick = Some(firmware::SourceTarget::Edit);
+                }
+                firmware_metadata::EditAction::Close => self.firmware_edit = None,
+                firmware_metadata::EditAction::None => (),
+            }
+        }
+        if self
+            .firmware_readme
+            .as_ref()
+            .is_some_and(|dialog| dialog.show(ctx, classic))
+        {
+            self.firmware_readme = None;
         }
     }
 }

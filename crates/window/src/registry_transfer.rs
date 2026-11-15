@@ -297,7 +297,7 @@ fn record_push(rows: &mut [BlobRow], event: PushProgress<'_>) {
 
 /// The dry-run target: only the verdict depends on the target, and the
 /// dialog decides that itself as the destination changes; push decides again.
-fn dry_run_target() -> Reference {
+pub(crate) fn dry_run_target() -> Reference {
     Reference {
         host: DEFAULT_REGISTRY.into(),
         repository: format!("{OFFICIAL_NAMESPACE}/dry-run"),

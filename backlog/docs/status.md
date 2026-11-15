@@ -428,6 +428,72 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
      stays responsive and a later quit still works;
   9. Dock › Quit while a file dialog (Browse…) is open is cancelled, and works
      again once the dialog is closed.
+- **2026-11-15 — Firmware licences and metadata in the library window**
+  (mock-up revision 3): Import ROM folder… has a Redistribution choice per set
+  (catalogue-open preset open, proprietary fixed user-supplied, others open
+  only with a named SPDX licence, free expressions checked by the parser),
+  Source archive… with the user's statement that it is the corresponding
+  source and the archive's own licence statement, and a per-set details editor
+  (title, description, notes, labels, narrowing-only catalogue fits,
+  provenance, layers and licences, editable README preview). A set whose tag
+  already holds its ROM bytes is already imported, whatever statement made it.
+  The package pane shows description, labels, provenance, every layer's
+  licence, the guard's Config and Push lines (`guard::reach`, shared with
+  `image firmware show`), the source archive, the README with Open README, and
+  Edit metadata… (also File › Edit metadata…), which publishes `:N+1` with the
+  same ROM blobs. A copyleft open ROM without its source layer gets the warning
+  badge in its row and the push-guard notice with Add source archive…, and the
+  status line counts such packages as private only. Every verdict, reason and
+  README text is the library's preview of the statement, run on the library
+  worker; no ROM or archive byte is read in the frame loop, and a stopped
+  worker fails the dialogs, which can then be closed.
+  - **Library and CLI changes:** a statement's README is Keep, Generate or a
+    hand-written text; a hand-written README layer carries
+    `unemu.readme = "hand-written"`, and every edit, `image firmware edit`
+    included, keeps it unless asked to regenerate (`--regenerate-readme`). Empty
+    texts clear fields. A tag holding the same ROM and document bytes is
+    already imported (GUI and `image firmware import`); a statement that would
+    change it is refused, naming the edit. New helpers: `preview_edit`,
+    `generated_readme`, `current_rom_license`, `locked_by`,
+    `catalogue_rights`, `catalogue_fit`, `license::identifiers`,
+    `guard::reach`; `image_store::firmware::valid_date` is public.
+  - **Licence policy:** `license::ACTIVE` is now `Policy::STRICT`, as the
+    approved mock-up asks: any copyleft identifier, even after `OR`
+    (`MIT OR GPL-2.0-only`), needs the source archive, for import, edit, the
+    README and the push guard alike. The maintainer can switch back to
+    ACCEPTED in one line.
+  - **Mock-up departures, awaiting maintainer approval:**
+    1. Source archive… opens the host file picker in the scanned folder; the
+       mock-up's in-program dialog listing archive candidates (tars found in
+       the scanned folder, a package's own layer) is not built, because the
+       scan does not report archives.
+    2. The archive's own licence is an explicit Archive licence choice ("Not
+       stated" by default, as the CLI's `--source-license`); the mock-up shows
+       only the ROM licence for the archive.
+    3. Publish new revision is enabled with no field changed when the library
+       says the package would change (a package written before the current
+       rules gets a new config and README); the mock-up disables it.
+    4. The layers table has no document licence choice: an edit keeps the
+       documents as they are, and the GUI cannot add documents yet.
+    5. Boards and machine classes of an unlisted ROM are added from the
+       provider's vocabulary in a list, not typed as free ids.
+    6. While a statement is refused and none was accepted yet (a copyleft set
+       when the review opens), the layers table says "Checking the layers…"
+       and the README editor is empty and disabled; the mock-up always shows
+       both.
+    7. The Labels facet in the tree is not built.
+    8. The already-imported set's details omit its stored redistribution
+       ("Open · …, with its source archive"), which the scan does not read.
+  Headless tests cover the redistribution rules, SPDX validation, reasons
+  worded with the dialog's controls, the details round trip, README equality
+  and hand-written README keeping, the rescan after a statement import, Edit
+  metadata…'s revision, the badge and notice, and worker failure. Manual
+  checks: run Import ROM folder… on a folder with the Kiselev AT-reset BIOS and
+  its tar (Import stays disabled with the reason until Source archive… picks
+  the tar), an IBM BIOS (Open disabled) and XTIDE; edit fields and the README
+  and check the layers table; scan the folder again (all already imported);
+  publish Edit metadata… on an imported package and open its README; check
+  both skins at the default window size.
 - **2026-11-15 — Firmware licences, source archives and descriptive metadata:**
   every firmware package layer carries an SPDX licence (`unemu.license`) next to
   its redistribution mark, and an open mark without a valid licence counts as
@@ -465,9 +531,8 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   whether the image may enter `unemu/`. Summaries carry licences, labels, description, provenance,
   sources and the README, with a licence facet; `image firmware show` prints
   them with each layer's class and the guard's verdict. Stricter `OR`
-  handling is one switch, `image_store::license::ACTIVE`. The GUI for all of
-  this, including the redistribution badge (`license::open_license` and
-  `license::source_missing` are its helpers), is separate work.
+  handling is one switch, `image_store::license::ACTIVE` (now `STRICT`, see the
+  previous entry). The GUI is the previous entry.
 - **2026-11-15 — Library Firmware collection:** the library tree has a
   Firmware node with the package count and Role, Board, Machine class and
   Redistribution facets; its virtualized rows show name, roles, chip count,

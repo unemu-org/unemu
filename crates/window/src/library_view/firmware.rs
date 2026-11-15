@@ -9,15 +9,19 @@
 //! Section 1, System Board ROM: an even and an odd chip interleave into one
 //! logical ROM, so a chip's offset counts assembled bytes.
 
+use super::firmware_metadata::{
+    layer_text, provenance_lines, Catalogue, Draft, EditDialog, Facts, Fields, PackageDetails,
+    Rights, Verdict,
+};
 use super::{human_size, Filter, ImageRow, LibraryView, Query};
 use assembly::firmware_discovery::DiscoveryControl;
 use image_store::{
     firmware::Rom,
-    media_type,
+    license, media_type,
     summary::{FirmwareSummary, ImageSummary, SummaryCache},
     Descriptor, Digest, Store, Tag,
 };
-use pc_image::firmware_import::{self, Candidate};
+use pc_image::firmware_import::{self, Candidate, Statement};
 use std::{
     collections::{BTreeMap, BTreeSet},
     path::{Path, PathBuf},
@@ -36,7 +40,7 @@ pub(super) fn facet_label(kind: &str, value: &str) -> String {
         _ => value.into(),
     }
 }
-fn role_label(role: &str) -> &str {
+pub(super) fn role_label(role: &str) -> &str {
     match role {
         "system-bios" => "System BIOS",
         "option-rom" => "Option ROM",
@@ -124,7 +128,20 @@ pub(super) struct FirmwareRow {
     pub redistribution: Redistribution,
     /// Local machine tags whose own closure holds every blob of one of these ROMs.
     pub used_by: Vec<String>,
+    /// An open copyleft ROM without its source archive layer: the push guard
+    /// keeps the package in private registries (`license::source_missing`).
+    pub source_missing: bool,
 }
+/// Push-guard rule 4 from the summary's own layers.
+fn source_missing(summary: &ImageSummary) -> bool {
+    summary
+        .storage_blobs
+        .iter()
+        .filter(|d| is_rom(d))
+        .any(|d| license::source_missing(d, &summary.storage_blobs))
+}
+const NO_SOURCE_BADGE: &str = "⚠ No source · private only";
+const WORKER_UNAVAILABLE: &str = "Image store worker not available";
 impl FirmwareRow {
     fn firmware(&self) -> Option<&FirmwareSummary> {
         self.image.summary.as_ref()?.firmware.as_ref()
@@ -228,6 +245,7 @@ pub(super) fn rows(
                 .and_then(|s| s.firmware.as_ref())
                 .map(|f| machines.users(f))
                 .unwrap_or_default(),
+            source_missing: summary.is_some_and(source_missing),
             redistribution,
             image: ImageRow {
                 reference: tag.name.clone(),
@@ -329,7 +347,13 @@ pub(super) fn cells(row: &FirmwareRow) -> [String; 9] {
         version_date(f),
         fits(f),
         f.catalogue_ids.join(", "),
-        row.redistribution.label(),
+        if row.source_missing {
+            format!("{} {NO_SOURCE_BADGE}", row.redistribution.label())
+        } else if !f.sources.is_empty() {
+            format!("{} · with source archive", row.redistribution.label())
+        } else {
+            row.redistribution.label()
+        },
         row.image
             .summary
             .as_ref()
@@ -374,22 +398,72 @@ fn assembly_hint(rom: &Rom) -> String {
         )
     }
 }
-fn chip_box(ui: &mut egui::Ui, title: String, placement: String, size: u64, sha256: &str) {
+fn chip_box(
+    ui: &mut egui::Ui,
+    title: String,
+    placement: String,
+    size: u64,
+    sha256: &str,
+    license: &str,
+) {
     egui::Frame::group(ui.style()).show(ui, |ui| {
         ui.vertical(|ui| {
             ui.strong(title);
             ui.label(placement);
             ui.small(format!("{size} bytes"));
             ui.monospace(short(sha256)).on_hover_text(sha256);
+            ui.small(license);
         });
     });
 }
 
-/// The selected-package pane, drawn from the summary alone. A firmware package
-/// has no launch action, so the pane never offers Start.
-pub(super) fn details(ui: &mut egui::Ui, row: &FirmwareRow) {
+/// What the package pane asks the library view to do.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum PaneAction {
+    None,
+    OpenReadme,
+    EditMetadata,
+    /// Edit metadata… with the source archive picker.
+    AddSource,
+}
+
+/// The licence of the layer holding the raw identity `digest`, if open.
+fn layer_license(summary: &ImageSummary, digest: &Digest) -> Option<String> {
+    summary
+        .storage_blobs
+        .iter()
+        .find(|d| decoded_identity(d).as_ref() == Some(digest))
+        .and_then(license::open_license)
+        .map(|l| l.as_str().to_owned())
+}
+fn readme_layer(summary: &ImageSummary) -> Option<&Descriptor> {
+    summary
+        .storage_blobs
+        .iter()
+        .find(|d| d.decoded_media_type() == media_type::MARKDOWN)
+}
+/// The push guard's notice for a copyleft open ROM without its source layer.
+pub(super) fn guard_notice(license: &str) -> String {
+    format!(
+        "⚠ Push guard: private registries only. {license} is a copyleft licence and this \
+         package has no source archive layer. Image › Push… refuses unemu/ and every other \
+         non-private registry, for this package and for any machine image that embeds its ROM. \
+         Private registries and private exports still work."
+    )
+}
+
+/// The selected-package pane, drawn from the summary, plus what the worker
+/// read for it (`package`: the README text and the guard's Config and Push
+/// lines). A firmware package has no launch action, so it never offers Start.
+pub(super) fn details(
+    ui: &mut egui::Ui,
+    row: &FirmwareRow,
+    package: Option<&Result<PackageDetails, String>>,
+    can_edit: bool,
+) -> PaneAction {
+    let mut action = PaneAction::None;
     let image = &row.image;
-    let Some(f) = row.firmware() else {
+    let (Some(f), Some(summary)) = (row.firmware(), image.summary.as_ref()) else {
         ui.strong(image.name());
         ui.label(&image.reference);
         ui.label(
@@ -398,20 +472,61 @@ pub(super) fn details(ui: &mut egui::Ui, row: &FirmwareRow) {
                 .clone()
                 .unwrap_or_else(|| "Reading package summary…".into()),
         );
-        return;
+        return action;
+    };
+    let license = row.redistribution.licenses.join(", ");
+    let warn = ui.visuals().warn_fg_color;
+    ui.strong(image.name());
+    ui.label(format!(
+        "{} · local package · {}",
+        roles(f),
+        image.reference
+    ));
+    match &f.description {
+        Some(description) => {
+            ui.add(egui::Label::new(description).wrap());
+        }
+        None => {
+            ui.weak("No description.");
+        }
+    }
+    ui.horizontal_wrapped(|ui| {
+        if f.labels.is_empty() {
+            ui.weak("No labels.");
+        }
+        for label in &f.labels {
+            egui::Frame::group(ui.style())
+                .inner_margin(egui::Margin::symmetric(4, 1))
+                .show(ui, |ui| ui.monospace(label));
+        }
+    });
+    if row.source_missing {
+        egui::Frame::group(ui.style()).show(ui, |ui| {
+            ui.colored_label(warn, guard_notice(&license));
+            if ui
+                .add_enabled(can_edit, egui::Button::new("Add source archive…"))
+                .clicked()
+            {
+                action = PaneAction::AddSource;
+            }
+        });
+    }
+    let checked = |line: fn(&PackageDetails) -> String| match package {
+        None => "Checking…".to_owned(),
+        Some(Err(error)) => error.clone(),
+        Some(Ok(details)) => line(details),
     };
     ui.columns(3, |columns| {
         let facts = &mut columns[0];
-        facts.strong(image.name());
-        facts.label(format!(
-            "{} · local package · {}",
-            roles(f),
-            image.reference
-        ));
         egui::Grid::new("firmware-facts")
             .num_columns(2)
             .show(facts, |ui| {
                 let digest = image.descriptor.digest.hex();
+                let redistribution = if row.source_missing {
+                    format!("{} {NO_SOURCE_BADGE}", row.redistribution.label())
+                } else {
+                    row.redistribution.label()
+                };
                 for (label, value, hover) in [
                     (
                         "Vendor",
@@ -421,22 +536,37 @@ pub(super) fn details(ui: &mut egui::Ui, row: &FirmwareRow) {
                     ("Version / date", version_date(f), None),
                     ("Catalogue id", f.catalogue_ids.join(", "), None),
                     ("Package SHA-256", short(digest), Some(digest)),
-                    ("Redistribution", row.redistribution.label(), None),
+                    ("Redistribution", redistribution, None),
                     (
-                        "Stored",
-                        image
-                            .summary
-                            .as_ref()
-                            .map(|s| human_size(s.stored_size))
-                            .unwrap_or_default(),
+                        "Config",
+                        checked(|d| {
+                            if d.config_open {
+                                "Open — every layer is open".into()
+                            } else {
+                                "User-supplied — follows its user-supplied layers".into()
+                            }
+                        }),
                         None,
                     ),
+                    ("Push", checked(super::firmware_metadata::push_text), None),
+                    ("Stored", human_size(summary.stored_size), None),
                 ] {
                     ui.weak(label);
                     let response = ui.label(value);
                     if let Some(hover) = hover {
                         response.on_hover_text(hover);
                     }
+                    ui.end_row();
+                }
+            });
+        facts.strong("Provenance");
+        egui::Grid::new("firmware-provenance")
+            .num_columns(2)
+            .show(facts, |ui| {
+                let [source, from, date] = provenance_lines(f.provenance.as_ref());
+                for (label, value) in [("Source", source), ("Details", from), ("Date", date)] {
+                    ui.weak(label);
+                    ui.add(egui::Label::new(value).wrap());
                     ui.end_row();
                 }
             });
@@ -447,7 +577,14 @@ pub(super) fn details(ui: &mut egui::Ui, row: &FirmwareRow) {
                 );
             ui.add_enabled(false, egui::Button::new("Export"))
                 .on_disabled_hover_text("Package export is not available yet.");
+            if ui
+                .add_enabled(can_edit, egui::Button::new("Edit metadata…"))
+                .clicked()
+            {
+                action = PaneAction::EditMetadata;
+            }
         });
+        facts.weak("Edit metadata… creates a new package revision; ROM blobs unchanged.");
         facts.weak(
             "A machine embeds its ROM blobs and records the source package digest. \
              Source folders are not needed after import.",
@@ -463,12 +600,17 @@ pub(super) fn details(ui: &mut egui::Ui, row: &FirmwareRow) {
                         (Some(label), None) | (None, Some(label)) => label.clone(),
                         (None, None) => "Single image".into(),
                     };
+                    let license = rom
+                        .blob
+                        .as_ref()
+                        .and_then(|blob| layer_license(summary, blob));
                     chip_box(
                         ui,
                         title,
                         role_label(&rom.role).into(),
                         rom.size,
                         &rom.sha256,
+                        &layer_text(license.as_deref()),
                     );
                 }
                 for part in &rom.parts {
@@ -493,55 +635,138 @@ pub(super) fn details(ui: &mut egui::Ui, row: &FirmwareRow) {
                         ),
                         part.size,
                         &part.sha256,
+                        &layer_text(layer_license(summary, &part.blob).as_deref()),
                     );
                 }
             });
             layout.add(egui::Label::new(egui::RichText::new(assembly_hint(rom)).weak()).wrap());
         }
-
-        let fit = &mut columns[2];
-        fit.strong("Fits — boards and machine classes");
+        layout.strong("Fits — boards, machine classes and required devices");
         if f.boards.is_empty() && f.machine_classes.is_empty() {
-            fit.label("Unspecified (not universal)");
+            layout.label("Unspecified (not universal)");
         }
         for board in &f.boards {
-            fit.label(format!("Board: {board}"));
+            layout.label(format!("Board: {board}"));
         }
         for class in &f.machine_classes {
-            fit.label(format!("Machine class: {}", class.to_uppercase()));
+            layout.label(format!("Machine class: {}", class.to_uppercase()));
         }
-        fit.strong("Used by — machines in this library");
+        let mut requires: Vec<&String> = f.roms.iter().flat_map(|r| &r.requires).collect();
+        requires.sort();
+        requires.dedup();
+        for device in requires {
+            layout.label(format!("Requires: {device}"));
+        }
+        layout.strong("Used by — machines in this library");
         if row.used_by.is_empty() {
-            fit.label("No local machine image embeds these ROMs.");
+            layout.label("No local machine image embeds these ROMs.");
         }
         for reference in &row.used_by {
-            fit.label(reference);
+            layout.label(reference);
         }
-        fit.strong("Documents (extras)");
+
+        let extras = &mut columns[2];
+        extras.strong("Documents (extras)");
         if f.extras.is_empty() {
-            fit.label("No documents attached.");
+            extras.label("No documents attached.");
         }
-        let blobs = image.summary.as_ref().map(|s| &s.storage_blobs);
         for extra in &f.extras {
-            let redistribution = blobs
-                .and_then(|b| {
-                    b.iter()
-                        .find(|d| decoded_identity(d).as_ref() == Some(&extra.blob))
-                })
-                .filter(|d| image_store::license::open_license(d).is_some())
-                .map_or(USER_SUPPLIED, |_| OPEN);
-            let kind = format!("{:?}", extra.kind).to_lowercase();
-            fit.label(&extra.filename);
-            fit.small(format!(
-                "{kind} · {} · {}",
-                facet_label("Redistribution", redistribution).to_lowercase(),
+            extras.label(&extra.filename);
+            extras.small(format!(
+                "{} · {} · {}",
+                super::firmware_metadata::extra_kind(extra.kind),
+                layer_text(layer_license(summary, &extra.blob).as_deref()),
                 human_size(extra.size)
             ));
         }
+        extras.strong("Source archive");
+        match f.sources.first() {
+            Some(source) => {
+                extras.label(&source.filename);
+                extras.small(format!(
+                    "Source archive · {} · {} · {}",
+                    source.format.as_str(),
+                    layer_text(layer_license(summary, &source.blob).as_deref()),
+                    human_size(source.size)
+                ));
+            }
+            None if row.source_missing => {
+                extras.label("No source archive");
+                extras.colored_label(
+                    warn,
+                    format!("Required to publish {license} firmware outside private registries."),
+                );
+                if extras
+                    .add_enabled(can_edit, egui::Button::new("Add source archive…"))
+                    .clicked()
+                {
+                    action = PaneAction::AddSource;
+                }
+            }
+            None if row.redistribution.open => {
+                extras.weak(format!("None — optional for {license}."));
+            }
+            None => {
+                extras.weak("None — not needed for user-supplied firmware.");
+            }
+        }
+        extras.strong("README");
+        let text = match package {
+            Some(Ok(details)) => details.readme.as_deref(),
+            _ => None,
+        };
+        match (&f.readme, readme_layer(summary)) {
+            (Some(readme), layer) => {
+                extras.label("README.md");
+                extras.small(format!(
+                    "README · UTF-8 Markdown · {} · {}",
+                    layer_text(
+                        layer
+                            .and_then(license::open_license)
+                            .map(|l| l.as_str().to_owned())
+                            .as_deref()
+                    ),
+                    human_size(readme.size)
+                ));
+                if extras
+                    .add_enabled(text.is_some(), egui::Button::new("Open README"))
+                    .clicked()
+                {
+                    action = PaneAction::OpenReadme;
+                }
+                if let Some(text) = text {
+                    let mut lines: Vec<&str> = text.lines().take(9).collect();
+                    lines.push("…");
+                    extras.add(
+                        egui::Label::new(egui::RichText::new(lines.join("\n")).monospace().small())
+                            .wrap(),
+                    );
+                }
+            }
+            (None, _) => {
+                extras.label("No README layer");
+                extras.small(
+                    "Imported by an earlier version, before README and source layers existed. \
+                     Edit metadata… adds one in a new revision.",
+                );
+                extras.add_enabled(false, egui::Button::new("Open README"));
+            }
+        }
     });
     if let Some(reason) = &image.failure {
-        ui.colored_label(ui.visuals().warn_fg_color, reason);
+        ui.colored_label(warn, reason);
     }
+    action
+}
+
+/// Which statement a picked source archive belongs to.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum SourceTarget {
+    /// A set of the Import ROM folder… review, by catalogue id, and the
+    /// scanned folder the picker opens in.
+    Import(String, PathBuf),
+    /// The package in Edit metadata….
+    Edit,
 }
 
 impl LibraryView {
@@ -554,15 +779,33 @@ impl LibraryView {
             && self.active.is_none()
             && self.firmware_import.is_none()
     }
-    /// A stopped worker never answers, so a waiting import dialog stops waiting
-    /// and offers Close.
+    /// Edit metadata… reads, checks and publishes on the library worker.
+    pub fn can_edit_firmware(&self) -> bool {
+        self.worker.is_some()
+            && !self.worker_dead
+            && !self.busy
+            && self.active.is_none()
+            && self.firmware_edit.is_none()
+            && self
+                .firmware_selected
+                .as_ref()
+                .is_some_and(|row| row.firmware().is_some())
+    }
+    /// A stopped worker never answers, so a waiting import or metadata
+    /// dialog stops waiting and offers Close.
     pub(super) fn fail_firmware_import(&mut self) {
         if let Some(dialog) = self
             .firmware_import
             .as_mut()
-            .filter(|d| d.scanning() || d.importing)
+            .filter(|d| d.outcomes.is_none() && d.error.is_none())
         {
             dialog.failed("Image store worker stopped; nothing more was imported".into());
+        }
+        if let Some(dialog) = &mut self.firmware_edit {
+            dialog.stop("Image store worker stopped; no new revision was published".into());
+        }
+        if let Some((_, details @ None)) = &mut self.firmware_package {
+            *details = Some(Err("Image store worker stopped".into()));
         }
     }
     /// Start the scan of an already picked folder; hashing reuses `index`, the
@@ -583,18 +826,161 @@ impl LibraryView {
         dialog.importing = true;
         self.busy = true;
         self.status = Some("Importing firmware packages…".into());
-        Some(super::Request::ImportFirmware(
-            dialog.picks.iter().cloned().collect(),
+        Some(super::Request::ImportFirmware(dialog.statements()))
+    }
+    /// Edit metadata… on the selected package; with `pick_source`, the
+    /// source archive picker follows once the package is read.
+    pub fn begin_firmware_edit(&mut self, pick_source: bool) {
+        if !self.can_edit_firmware() {
+            return;
+        }
+        let Some(row) = self.firmware_selected.clone() else {
+            return;
+        };
+        self.firmware_edit = Some(EditDialog::new(
+            row.image.reference.clone(),
+            row.image.name().into(),
+            pick_source,
+        ));
+        self.send(super::Request::OpenFirmwareEdit(row.image.reference));
+    }
+    /// The host picker's answer for a source archive.
+    pub fn firmware_source_picked(&mut self, target: SourceTarget, path: Option<PathBuf>) {
+        let Some(path) = path else {
+            return;
+        };
+        let draft = match target {
+            SourceTarget::Import(id, _) => self
+                .firmware_import
+                .as_mut()
+                .and_then(|d| d.drafts.get_mut(&id)),
+            SourceTarget::Edit => self.firmware_edit.as_mut().and_then(|d| d.draft.as_mut()),
+        };
+        if let Some(draft) = draft {
+            draft.fields.source = Some(path);
+            draft.revision += 1;
+        }
+        self.request_firmware_previews();
+    }
+    /// Ask the worker for the library's verdict on every statement that
+    /// changed since its last preview, one preview per statement at a time.
+    pub(super) fn request_firmware_previews(&mut self) {
+        if self.worker.is_none() || self.worker_dead || self.active.is_some() {
+            return;
+        }
+        let mut requests = Vec::new();
+        if let Some(dialog) = self.firmware_import.as_mut().filter(|d| d.reviewing()) {
+            for (id, draft) in &mut dialog.drafts {
+                if let Some((revision, statement)) = draft.wants_preview() {
+                    requests.push(super::Request::PreviewFirmware(
+                        id.clone(),
+                        revision,
+                        Box::new(statement),
+                    ));
+                }
+            }
+        }
+        if let Some(dialog) = self
+            .firmware_edit
+            .as_mut()
+            .filter(|d| !d.publishing && !d.stopped)
+        {
+            if let (Some(target), Some(draft)) = (dialog.target.clone(), dialog.draft.as_mut()) {
+                if let Some((revision, statement)) = draft.wants_preview() {
+                    requests.push(super::Request::PreviewFirmwareEdit(
+                        dialog.tag.clone(),
+                        target,
+                        revision,
+                        Box::new(statement),
+                    ));
+                }
+            }
+        }
+        for request in requests {
+            self.send(request);
+        }
+    }
+    /// Publish new revision, if the editor's statement was accepted.
+    pub(super) fn publish_firmware_edit(&mut self) -> Option<super::Request> {
+        let dialog = self.firmware_edit.as_mut()?;
+        if !dialog.footer().0 {
+            return None;
+        }
+        let draft = dialog.draft.as_ref()?;
+        dialog.publishing = true;
+        dialog.error = None;
+        self.busy = true;
+        self.status = Some("Publishing the new package revision…".into());
+        Some(super::Request::PublishFirmwareEdit(
+            dialog.tag.clone(),
+            dialog.target.clone()?,
+            Box::new(draft.statement()),
         ))
     }
     /// Selecting a package drops any machine selection: with neither an image
     /// tag nor a machine file selected the shell has nothing to Start.
     pub(super) fn select_firmware(&mut self, row: &FirmwareRow, selected_file: &mut Option<usize>) {
-        self.firmware_selected = Some(row.clone());
         self.selected = None;
         self.readiness = None;
         self.pending_launch = None;
         *selected_file = None;
+        self.show_package(row.clone());
+    }
+    /// Select a package and ask the worker for what its pane reads from the store.
+    pub(super) fn show_package(&mut self, row: FirmwareRow) {
+        let digest = row.image.descriptor.digest.clone();
+        let reference = row.image.reference.clone();
+        self.firmware_selected = Some(row);
+        if self.worker.is_none() || self.worker_dead || self.active.is_some() {
+            self.firmware_package = Some((digest, Some(Err(WORKER_UNAVAILABLE.into()))));
+            return;
+        }
+        self.firmware_package = Some((digest.clone(), None));
+        self.send(super::Request::ReadFirmwarePackage(reference, digest));
+    }
+    /// Open README, Edit metadata… and Add source archive… from the pane.
+    pub(super) fn pane_action(&mut self, row: &FirmwareRow, action: PaneAction) {
+        match action {
+            PaneAction::None => (),
+            PaneAction::OpenReadme => {
+                if let Some(Ok(PackageDetails {
+                    readme: Some(text), ..
+                })) = self.package_details()
+                {
+                    self.firmware_readme = Some(super::firmware_metadata::ReadmeDialog {
+                        name: row.image.name().into(),
+                        text: text.clone(),
+                    });
+                }
+            }
+            PaneAction::EditMetadata => self.begin_firmware_edit(false),
+            PaneAction::AddSource => self.begin_firmware_edit(true),
+        }
+    }
+    /// Read the selected package's pane again, for marks that may have changed.
+    pub(super) fn refresh_package(&mut self) {
+        if let Some(row) = self.firmware_selected.clone() {
+            self.show_package(row);
+        }
+    }
+    /// A reading refused while the worker was busy with a session is asked
+    /// again once the worker is free.
+    pub(super) fn retry_package(&mut self) {
+        let unavailable = matches!(
+            &self.firmware_package,
+            Some((_, Some(Err(error)))) if error == WORKER_UNAVAILABLE
+        );
+        if unavailable && self.worker.is_some() && !self.worker_dead && self.active.is_none() {
+            self.refresh_package();
+        }
+    }
+    /// The worker's reading of the selected package, once it arrived.
+    pub(super) fn package_details(&self) -> Option<&Result<PackageDetails, String>> {
+        let row = self.firmware_selected.as_ref()?;
+        self.firmware_package
+            .as_ref()
+            .filter(|(digest, _)| digest == &row.image.descriptor.digest)
+            .and_then(|(_, details)| details.as_ref())
     }
     pub(super) fn firmware_list(
         &mut self,
@@ -672,6 +1058,10 @@ pub(crate) struct CandidateView {
     pub identity: (String, u64),
     pub redistribution: String,
     pub state: CandidateState,
+    /// The catalogue's verdict and the prefilled fields the details editor
+    /// starts from.
+    pub facts: Facts,
+    pub fields: Fields,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum CandidateState {
@@ -697,6 +1087,9 @@ impl CandidateView {
             }
             CandidateState::Refused(reason) => reason.clone(),
         }
+    }
+    fn importable(&self) -> bool {
+        matches!(self.state, CandidateState::New | CandidateState::Ambiguous)
     }
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -779,11 +1172,13 @@ pub(crate) fn scan_folder(
                 && entry.sha256 == rom.sha256
                 && entry.size == rom.size
         });
-        let state = match existing(store, candidate, catalogue) {
-            Ok(true) => CandidateState::AlreadyImported,
-            Ok(false) if ambiguous => CandidateState::Ambiguous,
-            Ok(false) => CandidateState::New,
-            Err(error) => CandidateState::Refused(error.to_string()),
+        let catalogue_kind = Catalogue::of(&candidate.config, catalogue);
+        let state = match (existing(store, candidate, catalogue), &catalogue_kind) {
+            (Err(error), _) => CandidateState::Refused(error.to_string()),
+            (_, Err(error)) => CandidateState::Refused(error.clone()),
+            (Ok(true), _) => CandidateState::AlreadyImported,
+            (Ok(false), _) if ambiguous => CandidateState::Ambiguous,
+            (Ok(false), _) => CandidateState::New,
         };
         let name = |path: &PathBuf| {
             path.strip_prefix(folder)
@@ -812,6 +1207,13 @@ pub(crate) fn scan_folder(
                 })
                 .collect()
         };
+        let fit = pc_image::firmware::Fit::decode(&candidate.config.fits).unwrap_or_default();
+        let facts = Facts {
+            catalogue: catalogue_kind.unwrap_or(Catalogue::Unlisted),
+            catalogue_fit: Some((fit.boards, fit.machine_classes)),
+            stored_source: None,
+            single_rom: candidate.config.roms.len() == 1,
+        };
         report.candidates.push(CandidateView {
             catalogue_id: candidate.catalogue_id.clone(),
             tag: candidate.tag(),
@@ -823,18 +1225,38 @@ pub(crate) fn scan_folder(
                 assembly::FirmwareDistribution::UserSupplied => "User-supplied".into(),
             },
             state,
+            fields: Fields::prefill(&candidate.config, &facts),
+            facts,
         });
     }
     Ok((report, scan.candidates))
 }
 
-/// Worker side of Import selected: verify, copy and publish each chosen set,
-/// reporting an identical existing package as already imported. A failure
-/// refuses only its own set, unlike the command line, which stops the run.
+/// Worker side of a set's preview: what Import selected would publish for
+/// the set with this statement, or the library's reason for refusing it.
+pub(crate) fn preview_set(
+    candidates: &[Candidate],
+    id: &str,
+    statement: &Statement,
+    catalogue: &[assembly::FirmwareEntry],
+) -> super::Result<Verdict> {
+    let candidate = candidates
+        .iter()
+        .find(|c| c.catalogue_id == id)
+        .ok_or("not in the last scan; scan the folder again")?;
+    firmware_import::preview_manifest_with(candidate, &[], statement, catalogue)
+        .map(|preview| Verdict::of(&preview))
+        .map_err(|e| e.to_string())
+}
+
+/// Worker side of Import selected: verify, copy and publish each chosen set
+/// with its statement, reporting an identical existing package as already
+/// imported. A failure refuses only its own set, unlike the command line,
+/// which stops the run.
 pub(crate) fn import_selected(
     store: &Store,
     candidates: &[Candidate],
-    selected: &[String],
+    selected: &[(String, Statement)],
     catalogue: &[assembly::FirmwareEntry],
 ) -> super::Result<Vec<Outcome>> {
     if candidates.is_empty() {
@@ -842,7 +1264,7 @@ pub(crate) fn import_selected(
     }
     Ok(selected
         .iter()
-        .map(|id| {
+        .map(|(id, statement)| {
             let Some(candidate) = candidates.iter().find(|c| &c.catalogue_id == id) else {
                 return Outcome::Failed(
                     id.clone(),
@@ -852,24 +1274,32 @@ pub(crate) fn import_selected(
             let tag = candidate.tag();
             match existing(store, candidate, catalogue) {
                 Ok(true) => Outcome::AlreadyImported(tag),
-                Ok(false) => match firmware_import::publish(store, candidate, &[], catalogue) {
-                    Ok(_) => Outcome::Imported(tag),
-                    Err(error) => Outcome::Failed(tag, error.to_string()),
-                },
+                Ok(false) => {
+                    match firmware_import::publish_with(store, candidate, &[], statement, catalogue)
+                    {
+                        Ok(_) => Outcome::Imported(tag),
+                        Err(error) => Outcome::Failed(tag, error.to_string()),
+                    }
+                }
                 Err(error) => Outcome::Failed(tag, error.to_string()),
             }
         })
         .collect())
 }
 
-/// Import ROM folder… review: scan progress, matched and refused sets,
-/// unmatched files, then the import outcomes. Cancel and Cancel scan stop a
-/// running scan; once Import selected is sent, the import runs to its end.
+/// Import ROM folder… review: scan progress, matched and refused sets with
+/// each set's redistribution and details, unmatched files, then the import
+/// outcomes. Cancel and Cancel scan stop a running scan; once Import selected
+/// is sent, the import runs to its end.
 pub(super) struct ImportDialog {
     pub folder: PathBuf,
     pub control: DiscoveryControl,
     pub report: Option<ScanReport>,
     pub picks: BTreeSet<String>,
+    /// The statement of every set that can be imported, by catalogue id.
+    pub drafts: BTreeMap<String, Draft>,
+    /// The set whose details the editor shows.
+    pub current: Option<String>,
     pub outcomes: Option<Vec<Outcome>>,
     pub importing: bool,
     pub error: Option<String>,
@@ -878,6 +1308,8 @@ pub(super) enum DialogAction {
     None,
     Import,
     Close,
+    /// Run the source archive picker for this set.
+    PickSource(String),
 }
 impl ImportDialog {
     fn new(folder: PathBuf, control: DiscoveryControl) -> Self {
@@ -886,6 +1318,8 @@ impl ImportDialog {
             control,
             report: None,
             picks: BTreeSet::new(),
+            drafts: BTreeMap::new(),
+            current: None,
             outcomes: None,
             importing: false,
             error: None,
@@ -901,6 +1335,23 @@ impl ImportDialog {
             .filter(|c| c.state == CandidateState::New)
             .map(|c| c.catalogue_id.clone())
             .collect();
+        self.drafts = report
+            .candidates
+            .iter()
+            .filter(|c| c.importable())
+            .map(|c| {
+                (
+                    c.catalogue_id.clone(),
+                    Draft::new(c.facts.clone(), c.fields.clone()),
+                )
+            })
+            .collect();
+        self.current = self
+            .picks
+            .iter()
+            .next()
+            .or(self.drafts.keys().next())
+            .cloned();
         self.report = Some(report);
     }
     pub fn finished(&mut self, outcomes: Vec<Outcome>) {
@@ -909,7 +1360,17 @@ impl ImportDialog {
     }
     pub fn failed(&mut self, error: String) {
         self.importing = false;
+        for draft in self.drafts.values_mut() {
+            draft.stopped();
+        }
         self.error = Some(error);
+    }
+    /// The sets can still be reviewed and changed.
+    pub fn reviewing(&self) -> bool {
+        self.report.as_ref().is_some_and(|r| !r.cancelled)
+            && self.outcomes.is_none()
+            && self.error.is_none()
+            && !self.importing
     }
     /// Two picked sets with one ROM identity would publish the same bytes
     /// under two catalogue ids; the user must choose one, as `--for` does.
@@ -930,18 +1391,106 @@ impl ImportDialog {
         }
         None
     }
+    /// Why Import selected is disabled: per picked set, the library's reason
+    /// for refusing its statement, or that its check is still running.
+    pub fn blockers(&self) -> Vec<String> {
+        let mut blockers = Vec::new();
+        if self.picks.is_empty() {
+            blockers.push("no set is picked".into());
+        }
+        if let Some(conflict) = self.conflict() {
+            blockers.push(conflict);
+        }
+        for id in &self.picks {
+            let problem = match self.drafts.get(id) {
+                Some(draft) => draft.problem(),
+                None => Some("not importable".into()),
+            };
+            if let Some(problem) = problem {
+                let title = self
+                    .drafts
+                    .get(id)
+                    .map_or(id.as_str(), |d| d.fields.title.as_str());
+                blockers.push(format!("{title}: {problem}"));
+            }
+        }
+        blockers
+    }
     pub fn can_import(&self) -> bool {
-        self.report.as_ref().is_some_and(|r| !r.cancelled)
-            && self.outcomes.is_none()
-            && self.error.is_none()
-            && !self.importing
-            && !self.picks.is_empty()
-            && self.conflict().is_none()
+        self.reviewing() && self.blockers().is_empty()
+    }
+    /// Each picked set with the statement the library accepted for it.
+    pub fn statements(&self) -> Vec<(String, Statement)> {
+        self.picks
+            .iter()
+            .filter_map(|id| Some((id.clone(), self.drafts.get(id)?.statement())))
+            .collect()
+    }
+    fn rights_cell(&mut self, ui: &mut egui::Ui, c: &CandidateView, editable: bool) {
+        let picked = self.picks.contains(&c.catalogue_id);
+        let Some(draft) = self.drafts.get_mut(&c.catalogue_id) else {
+            ui.label(&c.redistribution);
+            return;
+        };
+        let label = |rights: Rights| match (rights, &draft.facts.catalogue) {
+            (Rights::UserSupplied, _) => "User-supplied".to_owned(),
+            (Rights::Open, Catalogue::Open { license, .. }) => format!("Open · {license}"),
+            (Rights::Open, _) => "Open — state a licence…".to_owned(),
+        };
+        let proprietary = matches!(draft.facts.catalogue, Catalogue::Proprietary { .. });
+        let before = draft.fields.rights;
+        let mut rights = before;
+        ui.vertical(|ui| {
+            ui.add_enabled_ui(editable && !proprietary, |ui| {
+                egui::ComboBox::from_id_salt(("firmware-rights", &c.catalogue_id))
+                    .selected_text(label(rights))
+                    .show_ui(ui, |ui| {
+                        for choice in [Rights::UserSupplied, Rights::Open] {
+                            ui.selectable_value(&mut rights, choice, label(choice));
+                        }
+                    });
+            });
+            match &draft.facts.catalogue {
+                Catalogue::Proprietary { id } => {
+                    ui.small(format!("Catalogue: proprietary ({id})"));
+                }
+                Catalogue::Open { license, .. } if rights == Rights::Open => {
+                    ui.small(format!("Licence from the catalogue: {license}"));
+                }
+                Catalogue::Open { license, .. } => {
+                    ui.small(format!("Catalogue: open · {license}"));
+                }
+                Catalogue::Unlisted => {
+                    if let Some(license) = draft.fields.license.stated() {
+                        ui.small(format!("Stated by you: {license}"));
+                    }
+                }
+            }
+            if let (Rights::Open, Some(path)) = (rights, &draft.fields.source) {
+                ui.small(format!(
+                    "Source: {}",
+                    path.file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_default()
+                ));
+            }
+            if let Some(problem) = draft.problem().filter(|_| picked) {
+                ui.colored_label(
+                    ui.visuals().warn_fg_color,
+                    super::firmware_metadata::sentence(&problem),
+                );
+            }
+        });
+        if rights != before {
+            draft.fields.set_rights(rights);
+            draft.revision += 1;
+            self.current = Some(c.catalogue_id.clone());
+        }
     }
     pub fn show(&mut self, ctx: &egui::Context, classic: bool) -> DialogAction {
         let mut action = DialogAction::None;
         egui::Modal::new(egui::Id::unique("import-rom-folder")).show(ctx, |ui| {
-            ui.set_max_width(640.0);
+            ui.set_max_width(980.0);
             if classic {
                 crate::shell::gradient_title(ui, "Import ROM folder…");
             } else {
@@ -950,117 +1499,22 @@ impl ImportDialog {
             ui.label(format!("Folder: {}", self.folder.display()));
             ui.weak(
                 "Match full SHA-256 and size against the catalogue, then assemble complete \
-                 logical BIOS sets. Socket placement comes from the matching layout.",
+                 logical BIOS sets. Socket placement comes from the matching layout. \
+                 Descriptions, fits and licences are prefilled from the catalogue where it has \
+                 an entry.",
             );
             if let Some(error) = &self.error {
                 ui.colored_label(ui.visuals().warn_fg_color, error);
             }
-            match &self.report {
-                None if self.error.is_none() => {
-                    ui.horizontal(|ui| {
-                        ui.spinner();
-                        ui.label(format!(
-                            "Listing and hashing — {} files read",
-                            self.control.snapshot().files_read
-                        ));
-                    });
-                    if ui.button("Cancel scan").clicked() {
-                        self.control.cancel();
-                    }
-                    ctx.request_repaint_after(std::time::Duration::from_millis(100));
-                }
-                None => (),
-                Some(report) if report.cancelled => {
-                    ui.label("Scan cancelled; nothing was imported.");
-                }
-                Some(report) => {
-                    ui.label(format!(
-                        "Scan complete — {} matched, {} refused, {} other issues",
-                        report.candidates.len(),
-                        report.refused.len(),
-                        report.issues.len()
-                    ));
-                    ui.strong("Matched packages — assembled from parts");
-                    egui::ScrollArea::vertical()
-                        .id_salt("firmware-candidates")
-                        .max_height(220.0)
-                        .show(ui, |ui| {
-                            egui::Grid::new("firmware-candidate-grid")
-                                .num_columns(3)
-                                .striped(true)
-                                .show(ui, |ui| {
-                                    ui.label("Pick");
-                                    ui.label("Package / parts");
-                                    ui.label("Result");
-                                    ui.end_row();
-                                    let open = self.outcomes.is_none() && !self.importing;
-                                    for c in &report.candidates {
-                                        let mut picked = self.picks.contains(&c.catalogue_id);
-                                        let pickable = open
-                                            && matches!(
-                                                c.state,
-                                                CandidateState::New | CandidateState::Ambiguous
-                                            );
-                                        if ui
-                                            .add_enabled(
-                                                pickable,
-                                                egui::Checkbox::without_text(&mut picked),
-                                            )
-                                            .changed()
-                                        {
-                                            if picked {
-                                                self.picks.insert(c.catalogue_id.clone());
-                                            } else {
-                                                self.picks.remove(&c.catalogue_id);
-                                            }
-                                        }
-                                        ui.vertical(|ui| {
-                                            ui.label(format!("{} · {}", c.name, c.redistribution));
-                                            for chip in &c.chips {
-                                                ui.small(chip);
-                                            }
-                                        });
-                                        ui.vertical(|ui| {
-                                            ui.label(c.result());
-                                            ui.small(format!(
-                                                "SHA-256 {} · {} bytes",
-                                                short(&c.identity.0),
-                                                c.identity.1
-                                            ));
-                                            ui.small(format!("Tag {}", c.tag));
-                                        });
-                                        ui.end_row();
-                                    }
-                                    for (id, reason) in &report.refused {
-                                        ui.add_enabled(
-                                            false,
-                                            egui::Checkbox::without_text(&mut false),
-                                        );
-                                        ui.label(id);
-                                        ui.label(format!("{reason}. Import disabled."));
-                                        ui.end_row();
-                                    }
-                                });
-                        });
-                    ui.strong("Unmatched files — excluded");
-                    if report.unmatched.is_none() && report.issues.is_empty() {
-                        ui.label("None");
-                    }
-                    if let Some(unmatched) = &report.unmatched {
-                        ui.label(unmatched);
-                    }
-                    for (source, reason) in &report.issues {
-                        ui.label(format!("{source}: {reason}"));
-                    }
-                    if let Some(conflict) = self.conflict() {
-                        ui.colored_label(ui.visuals().warn_fg_color, conflict);
-                    }
-                }
-            }
+            egui::ScrollArea::vertical()
+                .id_salt("import-rom-folder-review")
+                .max_height((ctx.content_rect().height() - 260.0).max(240.0))
+                .show(ui, |ui| self.review(ui, ctx, &mut action));
             ui.colored_label(
                 ui.visuals().warn_fg_color,
-                "User-supplied by default. Only selected complete packages are copied; \
-                 unmatched files stay excluded. Source files remain unchanged.",
+                "User-supplied by default. A set is open only when the catalogue lists it as \
+                 open or you state its SPDX licence, and a copyleft set also needs its source \
+                 archive. Only selected complete sets are copied. Source files remain unchanged.",
             );
             if self.importing {
                 ui.horizontal(|ui| {
@@ -1071,12 +1525,27 @@ impl ImportDialog {
             for outcome in self.outcomes.iter().flatten() {
                 ui.label(outcome.to_string());
             }
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 if self.outcomes.is_some() || self.error.is_some() {
                     if ui.button("Close").clicked() {
                         action = DialogAction::Close;
                     }
                     return;
+                }
+                if self.reviewing() {
+                    let blockers = self.blockers();
+                    ui.weak(if blockers.is_empty() {
+                        let count = self.picks.len();
+                        format!(
+                            "{count} {} ready to import.",
+                            if count == 1 { "set" } else { "sets" }
+                        )
+                    } else {
+                        format!(
+                            "Import disabled — {}",
+                            super::firmware_metadata::stop(&blockers.join("; "))
+                        )
+                    });
                 }
                 if ui
                     .add_enabled(self.can_import(), egui::Button::new("Import selected"))
@@ -1091,8 +1560,168 @@ impl ImportDialog {
                     action = DialogAction::Close;
                 }
             });
+            if self.drafts.values().any(Draft::waiting) {
+                ctx.request_repaint_after(std::time::Duration::from_millis(100));
+            }
         });
         action
+    }
+    fn review(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, action: &mut DialogAction) {
+        let editable = self.reviewing();
+        // Taken out while drawing, so the rows can change the drafts beside it.
+        let Some(report) = self.report.take() else {
+            if self.scanning() {
+                ui.horizontal(|ui| {
+                    ui.spinner();
+                    ui.label(format!(
+                        "Listing and hashing — {} files read",
+                        self.control.snapshot().files_read
+                    ));
+                });
+                if ui.button("Cancel scan").clicked() {
+                    self.control.cancel();
+                }
+                ctx.request_repaint_after(std::time::Duration::from_millis(100));
+            }
+            return;
+        };
+        if !report.cancelled {
+            self.review_report(ui, &report, editable, action);
+        } else {
+            ui.label("Scan cancelled; nothing was imported.");
+        }
+        self.report = Some(report);
+    }
+    fn review_report(
+        &mut self,
+        ui: &mut egui::Ui,
+        report: &ScanReport,
+        editable: bool,
+        action: &mut DialogAction,
+    ) {
+        ui.label(format!(
+            "Scan complete — {} matched, {} refused, {} other issues",
+            report.candidates.len(),
+            report.refused.len(),
+            report.issues.len()
+        ));
+        ui.strong("Matched packages — assembled from parts");
+        egui::Grid::new("firmware-candidate-grid")
+            .num_columns(5)
+            .striped(true)
+            .show(ui, |ui| {
+                for heading in [
+                    "Pick",
+                    "Package / parts",
+                    "Result",
+                    "Redistribution",
+                    "Details",
+                ] {
+                    ui.strong(heading);
+                }
+                ui.end_row();
+                for c in &report.candidates {
+                    let mut picked = self.picks.contains(&c.catalogue_id);
+                    if ui
+                        .add_enabled(
+                            editable && c.importable(),
+                            egui::Checkbox::without_text(&mut picked),
+                        )
+                        .changed()
+                    {
+                        if picked {
+                            self.picks.insert(c.catalogue_id.clone());
+                        } else {
+                            self.picks.remove(&c.catalogue_id);
+                        }
+                    }
+                    ui.vertical(|ui| {
+                        let title = self
+                            .drafts
+                            .get(&c.catalogue_id)
+                            .map_or(c.name.as_str(), |d| d.fields.title.as_str());
+                        ui.label(title);
+                        for chip in &c.chips {
+                            ui.small(chip);
+                        }
+                    });
+                    ui.vertical(|ui| {
+                        ui.label(c.result());
+                        ui.small(format!(
+                            "SHA-256 {} · {} bytes",
+                            short(&c.identity.0),
+                            c.identity.1
+                        ));
+                        ui.small(format!("Tag {}", c.tag));
+                    });
+                    self.rights_cell(ui, c, editable);
+                    let current = self.current.as_deref() == Some(c.catalogue_id.as_str());
+                    if ui
+                        .add_enabled(
+                            !matches!(c.state, CandidateState::Refused(_)),
+                            egui::Button::new("Details").selected(current),
+                        )
+                        .clicked()
+                    {
+                        self.current = Some(c.catalogue_id.clone());
+                    }
+                    ui.end_row();
+                }
+                for (id, reason) in &report.refused {
+                    ui.add_enabled(false, egui::Checkbox::without_text(&mut false));
+                    ui.label(id);
+                    ui.label(format!("{reason}. Import disabled."));
+                    ui.label("—");
+                    ui.label("");
+                    ui.end_row();
+                }
+            });
+        if let Some(current) = self.current.clone() {
+            let candidate = report.candidates.iter().find(|c| c.catalogue_id == current);
+            egui::Frame::group(ui.style()).show(ui, |ui| {
+                let title = self
+                    .drafts
+                    .get(&current)
+                    .map(|d| d.fields.title.clone())
+                    .or(candidate.map(|c| c.name.clone()))
+                    .unwrap_or_default();
+                ui.strong(format!("Set details — {title}"));
+                match (self.drafts.get_mut(&current), candidate) {
+                    (Some(draft), _) => {
+                        ui.weak(format!(
+                            "Prefilled from the catalogue entry {current} and the matched chip \
+                             layout. Edits go into the package config and its README.md."
+                        ));
+                        ui.add_enabled_ui(editable, |ui| {
+                            if draft.show(ui, &format!("firmware-set-{current}"))
+                                == super::firmware_metadata::EditorAction::PickSource
+                            {
+                                *action = DialogAction::PickSource(current.clone());
+                            }
+                        });
+                    }
+                    (None, Some(c)) if c.state == CandidateState::AlreadyImported => {
+                        ui.label(format!(
+                            "Already in the store as {}. Nothing is imported again. Change its \
+                             metadata in the library with Edit metadata…, which publishes a new \
+                             revision.",
+                            c.tag
+                        ));
+                    }
+                    _ => (),
+                }
+            });
+        }
+        ui.strong("Unmatched files — excluded");
+        if report.unmatched.is_none() && report.issues.is_empty() {
+            ui.label("None");
+        }
+        if let Some(unmatched) = &report.unmatched {
+            ui.label(unmatched);
+        }
+        for (source, reason) in &report.issues {
+            ui.label(format!("{source}: {reason}"));
+        }
     }
 }
 
@@ -1104,10 +1733,10 @@ pub(crate) mod tests {
     use image_store::Digest;
     use std::{fs, sync::Arc, time::Duration};
 
-    fn leaked(text: String) -> &'static str {
+    pub(crate) fn leaked(text: String) -> &'static str {
         Box::leak(text.into_boxed_str())
     }
-    fn hash(bytes: &[u8]) -> &'static str {
+    pub(crate) fn hash(bytes: &[u8]) -> &'static str {
         leaked(Digest::of(bytes).hex().into())
     }
     fn two_chip(id: &'static str, even: u8, odd: u8) -> assembly::FirmwareEntry {
@@ -1132,7 +1761,7 @@ pub(crate) mod tests {
             ..assembly::KISELEV_XI8088
         }
     }
-    fn single(id: &'static str, byte: u8, open: bool) -> assembly::FirmwareEntry {
+    pub(crate) fn single(id: &'static str, byte: u8, open: bool) -> assembly::FirmwareEntry {
         assembly::FirmwareEntry {
             id,
             sha256: hash(&[byte; 32768]),
@@ -1150,6 +1779,19 @@ pub(crate) mod tests {
             ..assembly::KISELEV_XI8088
         }
     }
+    /// A POSIX tar archive (ustar magic at offset 257) of `size` bytes, `fill`
+    /// after the header, as the synthetic copyleft BIOS's source.
+    pub(crate) fn tar(size: usize, fill: u8) -> Vec<u8> {
+        let mut bytes = vec![fill; size.max(512)];
+        bytes[..257].fill(0);
+        bytes[..10].copy_from_slice(b"src/a.asm\0");
+        bytes[257..263].copy_from_slice(b"ustar\0");
+        bytes
+    }
+    /// The archive the synthetic catalogue pins for its copyleft BIOS.
+    pub(crate) fn pinned_tar() -> Vec<u8> {
+        tar(6000, 0x5a)
+    }
     /// The open image has the bytes of the synthetic machine BIOS, so that
     /// machine is a "Used by" entry of the open package.
     pub(crate) fn synthetic_catalogue() -> &'static [assembly::FirmwareEntry] {
@@ -1160,10 +1802,19 @@ pub(crate) mod tests {
                 two_chip("synthetic-two-chip-bios", 0x31, 0x72),
                 two_chip("synthetic-incomplete-bios", 0x41, 0x82),
                 single("synthetic-open-bios", 0xf4, true),
+                assembly::FirmwareEntry {
+                    distribution: assembly::FirmwareDistribution::Open {
+                        fetch: "synthetic/copyleft-fetch.sh",
+                        license: "GPL-3.0-or-later",
+                        provenance: "synthetic copyleft build",
+                        source_archive_sha256: Some(hash(&pinned_tar())),
+                    },
+                    ..single("synthetic-copyleft-bios", 0xc5, true)
+                },
             ]
         })
     }
-    fn chip_folder(root: &Path) -> PathBuf {
+    pub(crate) fn chip_folder(root: &Path) -> PathBuf {
         let folder = root.join("roms");
         fs::create_dir_all(&folder).unwrap();
         fs::write(folder.join("a"), [0x31; 16384]).unwrap();
@@ -1201,7 +1852,7 @@ pub(crate) mod tests {
     }
     /// A synthetic machine plus a described two-chip package with a document
     /// and an open single-image package holding the machine's BIOS bytes.
-    fn library() -> (Fixture, SummaryCache) {
+    pub(crate) fn library() -> (Fixture, SummaryCache) {
         let f = Fixture::new();
         let folder = chip_folder(f.temp.path());
         fs::write(folder.join("open.bin"), [0xf4; 32768]).unwrap();
@@ -1227,7 +1878,7 @@ pub(crate) mod tests {
         let cache = warm(&f.store);
         (f, cache)
     }
-    fn query(filter: Filter, text: &str) -> Query {
+    pub(in crate::library_view) fn query(filter: Filter, text: &str) -> Query {
         Query {
             text: text.into(),
             filter,
@@ -1241,7 +1892,7 @@ pub(crate) mod tests {
             .map(|r| r.image.name().to_owned())
             .collect()
     }
-    fn texts(output: &egui::FullOutput) -> Vec<(String, egui::Rect)> {
+    pub(crate) fn texts(output: &egui::FullOutput) -> Vec<(String, egui::Rect)> {
         fn walk(shape: &egui::Shape, out: &mut Vec<(String, egui::Rect)>) {
             match shape {
                 egui::Shape::Text(text) => out.push((
@@ -1258,7 +1909,7 @@ pub(crate) mod tests {
         }
         out
     }
-    fn frame(
+    pub(crate) fn frame(
         ctx: &egui::Context,
         size: egui::Vec2,
         time: f64,
@@ -1446,7 +2097,7 @@ pub(crate) mod tests {
         let mut shown = Vec::new();
         for row in &result.firmware_rows {
             let output = frame(&ctx, size, 0.0, vec![], |ui| {
-                egui::CentralPanel::default().show(ui, |ui| details(ui, row));
+                egui::CentralPanel::default().show(ui, |ui| details(ui, row, None, false));
             });
             shown.extend(texts(&output).into_iter().map(|(t, _)| t));
         }
@@ -1460,7 +2111,10 @@ pub(crate) mod tests {
             even.as_str(),
             "Single image",
             "manual.txt",
-            "document · user-supplied · 16 B",
+            "Document · No licence recorded · user-supplied · 16 B",
+            "MIT · open",
+            "No licence recorded · user-supplied",
+            "Checking…",
             "No documents attached.",
             "Board: ibm-5170",
             "Machine class: AT",
@@ -1564,7 +2218,7 @@ pub(crate) mod tests {
         );
     }
 
-    fn poll_until(view: &mut LibraryView, mut done: impl FnMut(&LibraryView) -> bool) {
+    pub(crate) fn poll_until(view: &mut LibraryView, mut done: impl FnMut(&LibraryView) -> bool) {
         let ctx = egui::Context::default();
         for _ in 0..5000 {
             view.poll(&ctx);
@@ -1619,6 +2273,11 @@ pub(crate) mod tests {
             dialog.picks,
             BTreeSet::from(["synthetic-two-chip-bios".into()])
         );
+        // Import selected waits for the library's verdict on the statement.
+        assert!(!dialog.can_import());
+        poll_until(&mut view, |v| {
+            v.firmware_import.as_ref().is_some_and(|d| d.can_import())
+        });
         let request = view.import_picks().expect("import allowed");
         view.send(request);
         poll_until(&mut view, |v| {
@@ -1692,7 +2351,14 @@ pub(crate) mod tests {
             .contains("pick one catalogue identity"));
         assert!(!dialog.can_import());
         dialog.picks.remove("synthetic-alias");
-        assert!(dialog.can_import());
+        assert!(dialog.conflict().is_none());
+        // Only the library's checks of the picked statements are still missing.
+        let blockers = dialog.blockers();
+        assert_eq!(blockers.len(), 2, "{blockers:?}");
+        assert!(
+            blockers.iter().all(|b| b.ends_with(": checking…")),
+            "{blockers:?}"
+        );
 
         // A chip that changes after the scan is refused, and no tag appears.
         // The import re-reads it to compute the package identity, so the
@@ -1701,7 +2367,10 @@ pub(crate) mod tests {
         let outcomes = import_selected(
             &store,
             &candidates,
-            &["synthetic-two-chip-bios".into(), "synthetic-first".into()],
+            &[
+                ("synthetic-two-chip-bios".into(), Statement::default()),
+                ("synthetic-first".into(), Statement::default()),
+            ],
             &cat,
         )
         .unwrap();
@@ -1723,7 +2392,13 @@ pub(crate) mod tests {
             .tag_descriptor("firmware/synthetic-two-chip-bios:1")
             .is_err());
         assert_eq!(
-            import_selected(&store, &candidates, &["synthetic-first".into()], &cat).unwrap(),
+            import_selected(
+                &store,
+                &candidates,
+                &[("synthetic-first".into(), Statement::default())],
+                &cat
+            )
+            .unwrap(),
             [Outcome::AlreadyImported(
                 "firmware/synthetic-first:1".into()
             )]
@@ -1735,7 +2410,7 @@ pub(crate) mod tests {
         assert!(report.cancelled && report.candidates.is_empty() && candidates.is_empty());
     }
     /// One pointer click at `at`, spread over frames as a user's would be.
-    fn click(ctx: &egui::Context, at: egui::Pos2, mut draw: impl FnMut(&mut egui::Ui)) {
+    pub(crate) fn click(ctx: &egui::Context, at: egui::Pos2, mut draw: impl FnMut(&mut egui::Ui)) {
         let button = |pressed| egui::Event::PointerButton {
             pos: at,
             button: egui::PointerButton::Primary,
@@ -1800,18 +2475,17 @@ pub(crate) mod tests {
         view.begin_firmware_import(folder.clone(), None);
         assert!(view.worker_dead);
         assert_failed_and_closable(&mut view);
-        // The worker dies inside the scan, then inside the import after a scan.
-        for survive in [0, 1] {
+        // The worker dies inside the scan, inside the preview of the set's
+        // statement, then inside the import after an accepted preview.
+        for survive in [0, 1, 2] {
             let root = temp.path().join(format!("crash-{survive}"));
             let mut view = LibraryView::new(Some(root.clone()));
             view.worker = Some(crate::library_worker::Worker::firmware_crash(root, survive));
             poll_until(&mut view, |v| v.snapshot.storage.is_some());
             view.begin_firmware_import(folder.clone(), None);
-            if survive == 1 {
+            if survive == 2 {
                 poll_until(&mut view, |v| {
-                    v.firmware_import
-                        .as_ref()
-                        .is_some_and(|d| d.report.is_some())
+                    v.firmware_import.as_ref().is_some_and(|d| d.can_import())
                 });
                 let request = view.import_picks().expect("import allowed");
                 view.send(request);
@@ -2000,6 +2674,7 @@ pub(crate) mod tests {
             },
             redistribution: Redistribution::default(),
             used_by: Vec::new(),
+            source_missing: false,
         };
         assert_eq!(cells(&row(None))[8], "Pending");
         let failed = cells(&row(Some("missing blob")));

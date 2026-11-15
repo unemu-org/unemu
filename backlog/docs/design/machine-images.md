@@ -1064,7 +1064,7 @@ before reading). The transfer-medium generator remains separate work.
 
 ### 5.3. Firmware packages
 
-Status: **codec/import/store-first resolution, the library Firmware collection, and per-layer licences, source archives, descriptive metadata, the generated README and metadata revisions (CLI, store and push guard) implemented**, 2026-11-15. The approved [Firmware collection mock-up](mockups/firmware.html) defines the UI; Use in machine…, Export, Open for documents, incomplete-import records, the GUI for licences and metadata, and GUI explicit additions of unmatched files are still pending (the CLI adds one unlisted ROM with `--unlisted`).
+Status: **codec/import/store-first resolution, the library Firmware collection, and per-layer licences, source archives, descriptive metadata, the generated README and metadata revisions (CLI, store, push guard and GUI) implemented**, 2026-11-15. The approved [Firmware collection mock-up](mockups/firmware.html) (revision 3) defines the UI; Use in machine…, Export, Open for documents, incomplete-import records, the Labels facet and GUI explicit additions of unmatched files and documents are still pending (the CLI adds one unlisted ROM with `--unlisted`).
 [decision-27](<../../decisions/decision-27 - Firmware packages are their own OCI artifact type.md>)
 accepts the artifact shape; codec, import and explicit store-first resolution
 are implemented, and so is the library's Firmware collection with Import ROM
@@ -1246,11 +1246,13 @@ written before licences existed. The rules live in `image_store::license`:
   catalogue-known or not: a catalogue-open copyleft ROM imported without one is
   kept user-supplied with a note naming the fetch script that builds its
   archive, and an explicit `open` that cannot hold is refused. An expression
-  needs the source when every choice it offers includes such a licence
-  (`MIT OR GPL-2.0-only` does not; `MIT AND GPL-2.0-only` does).
-- *One switch.* `license::ACTIVE` is `Policy::ACCEPTED` (source required for
-  every copyleft ROM; the `OR` rule above). `Policy::STRICT` also treats any
-  copyleft identifier, even one `OR` alternative, as needing the source.
+  needs the source when any of its identifiers is such a licence, even one
+  `OR` alternative (`MIT OR GPL-2.0-only` and `MIT AND GPL-2.0-only` both do),
+  as the approved Firmware collection design (mock-up revision 3) asks.
+- *One switch.* `license::ACTIVE` is `Policy::STRICT` (source required for
+  every copyleft ROM; the `OR` rule above). `Policy::ACCEPTED`, the first rule
+  set, needs the source only when every choice an expression offers is
+  copyleft; switching back is one line.
 - *Source archive.* A zip or POSIX tar file, recognized by its signature and
   identified by SHA-256 only, becomes its own layer with media type
   `application/x-tar` or `application/zip`. Tar archives of at least 4 KiB are
@@ -1275,6 +1277,12 @@ written before licences existed. The rules live in `image_store::license`:
   are open under `CC0-1.0` when every other layer is open, and user-supplied
   otherwise. The config references the README layer as `[readme]`; the text
   is generated without that reference, so it cannot depend on its own digest.
+  A README the user writes by hand (the GUI's README editor; the statement's
+  `readme`) replaces the generated text, with LF line ends, and keeps the same
+  licence rule. Its layer carries `unemu.readme = "hand-written"`, and every
+  later edit keeps it, from the GUI or `image firmware edit`, until the user
+  asks to regenerate it (Regenerate from fields, `--regenerate-readme`); a
+  generated README is generated again by every edit.
 
 The config gains optional fields, so earlier configs still decode:
 
@@ -1321,7 +1329,10 @@ kinds `kbc-8042`, `rtc-cmos`, `rtc-cmos-128`, `pic-cascade`, `video-rom`,
 provenance text without a kind, because the catalogue does not say how the
 bytes were made. Flags set the title, description, notes, vendor, version, date,
 labels, fits (catalogue fits may only be narrowed, as the provider already
-checks), required devices of unlisted ROMs, and provenance. Labels, boards,
+checks), required devices of unlisted ROMs, and provenance. In a statement an
+empty text clears an optional field and an empty provenance clears the
+provenance; an empty title, an invalid date and a provenance without details
+are refused with their own reasons. Labels, boards,
 classes and required devices are stored sorted, so equal sets have one
 spelling, and licences in their canonical SPDX form. Layers are ordered ROMs,
 source archives, extras, README. The manifest carries the standard
@@ -1339,9 +1350,11 @@ identity is known before anything is written.
 the same metadata and licence statements, can add or replace the source archive,
 and publishes a new revision under a new tag (`:N` to `:N+1` by default) that
 reuses the stored ROM and document blobs, with a new config and README. A
-package written before licences existed (no README layer) counts as already
-imported when a folder import finds the same ROM and document bytes under its
-tag, and an edit brings it up to date; any other difference under the tag is a
+package under the tag that holds the same ROM and document bytes counts as
+already imported, whatever its metadata, licences, source archive or README
+(written by an earlier version, by another statement or after a GUI review),
+and an edit changes it; an import whose statement would change such a package
+is refused and names the edit, and any other bytes under the tag are a
 conflict.
 
 *Push guard.* Besides the user-supplied rules of §5.1, rule 4 refuses an open
@@ -1484,6 +1497,34 @@ first tag conflict instead. Both use the same ambiguity rule
 (`Candidate::is_ambiguous`). Firmware rows never offer Start. Use in machine…
 and Export are shown disabled; documents are listed without Open because no
 host-open path exists yet.
+
+*Implemented (2026-11-15), mock-up revision 3:* the Import ROM folder… review
+lists a set whose tag already holds its ROM bytes as already imported, and
+gives every new set a Redistribution choice (catalogue-open sets preset open with
+the catalogue licence, proprietary ones fixed user-supplied, others open only
+with an SPDX licence from the parser's list or a free expression the parser
+checks as it is typed), Source archive… (the host file picker, opened in the
+scanned folder, next to the user's statement that the archive is the
+corresponding source; the library checks the zip or tar signature and records
+the SHA-256) with the archive's own licence statement, and a per-set details
+editor: title, description, notes,
+labels, fits (catalogue fits narrowed only, with Restore catalogue fits),
+provenance (kind, details, supplied date), the layers and licences table and an
+editable README preview. Edit metadata… (in the pane and the File menu; Add
+source archive… is the same dialog with the picker) uses the same editor on a stored package and publishes
+`:N+1` through `firmware_import::edit`. Neither dialog decides a rule: the
+library worker previews each changed statement (`preview_manifest_with`,
+`preview_edit`, one at a time per statement), and the dialog shows the verdict,
+the layers' marks, the README text and the library's reason, with its
+command-line flags named as the dialog's controls; Import selected and Publish
+new revision stay disabled until every picked statement is accepted. The
+package pane adds the description, labels, provenance, the licence of every
+chip, document, source archive and README, the guard's Config and Push lines
+(the command line's push plan, local and catalogue marks included, read on the
+worker), the README section with Open README (the text shown in the program)
+and, for a copyleft open ROM without its source layer
+(`license::source_missing`), the warning badge in the row and the pane with the
+push-guard notice and Add source archive….
 
 **Open point:** maintainer approval of this section and the Firmware collection,
 chip-details and Import ROM folder… views. The artifact shape, private default,

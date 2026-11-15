@@ -347,7 +347,8 @@ fn labels(position: &Option<String>, number: &Option<String>) -> Result<()> {
     }
     Ok(())
 }
-fn valid_date(s: &str) -> bool {
+/// An ISO 8601 calendar date, `YYYY-MM-DD`, that exists.
+pub fn valid_date(s: &str) -> bool {
     let b = s.as_bytes();
     if b.len() != 10
         || b[4] != b'-'

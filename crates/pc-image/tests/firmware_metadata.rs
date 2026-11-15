@@ -15,7 +15,7 @@ use image_store::{
 };
 use pc_image::{
     firmware::PcFirmwareRules,
-    firmware_import::{self, Attachment, Candidate, Statement},
+    firmware_import::{self, Attachment, Candidate, ReadmeChoice, Statement},
 };
 use std::{
     fs,
@@ -1033,4 +1033,299 @@ fn a_machine_image_embeds_the_source_layer_of_an_open_catalogue_rom() {
         .layers
         .iter()
         .any(|d| d.decoded_media_type() == mt::TAR));
+}
+
+#[test]
+fn a_hand_written_readme_and_cleared_fields_are_what_the_preview_shows_and_the_import_stores() {
+    let t = Temp::new();
+    let cat = catalogue();
+    let candidate = scanned(&t, OPEN_ROM, &cat);
+    assert!(candidate.config.provenance.is_some(), "catalogue prefill");
+    let source = t.file("synthetic-src.tar", &pinned());
+    let generated = with_source(source.clone());
+    let written = Statement {
+        readme: ReadmeChoice::Text("# Mine\r\n\r\nWritten by hand.\r".into()),
+        // An empty provenance clears the catalogue's prefill.
+        provenance: Some(Provenance {
+            kind: None,
+            from: "  ".into(),
+            revision: Some(String::new()),
+            url: None,
+            date: Some(String::new()),
+        }),
+        description: Some("A described BIOS.".into()),
+        ..with_source(source)
+    };
+    for (name, statement) in [("generated", &generated), ("written", &written)] {
+        let store = t.store(name);
+        let preview =
+            firmware_import::preview_manifest_with(&candidate, &[], statement, &cat).unwrap();
+        firmware_import::publish_with(&store, &candidate, &[], statement, &cat).unwrap();
+        let (manifest, config) = resolve(&store, &candidate.tag(), &cat);
+        assert_eq!(preview.manifest, manifest, "{name}");
+        assert_eq!(preview.config, config, "{name}");
+        let stored = readme(&store, &manifest);
+        assert_eq!(preview.readme, stored, "{name}");
+        let regenerated = firmware_import::generated_readme(&config, &manifest);
+        assert_eq!(
+            firmware_import::hand_written_readme(layer(&manifest, mt::MARKDOWN)),
+            name == "written"
+        );
+        if name == "generated" {
+            assert_eq!(regenerated, stored, "the generator alone wrote it");
+            assert!(config.provenance.is_some());
+        } else {
+            assert_eq!(stored, "# Mine\n\nWritten by hand.\n");
+            assert_ne!(regenerated, stored, "a hand-written README is told apart");
+            assert!(config.provenance.is_none());
+            assert_eq!(config.description.as_deref(), Some("A described BIOS."));
+        }
+    }
+    for (statement, reason) in [
+        (
+            Statement {
+                title: Some(" ".into()),
+                ..Statement::default()
+            },
+            "the title must be one line",
+        ),
+        (
+            Statement {
+                readme: ReadmeChoice::Text(" \r\n".into()),
+                ..Statement::default()
+            },
+            "the README must not be empty",
+        ),
+        (
+            Statement {
+                date: Some("1985-13-01".into()),
+                ..Statement::default()
+            },
+            "the date must be a calendar date",
+        ),
+        (
+            Statement {
+                provenance: Some(Provenance {
+                    kind: Some(ProvenanceKind::Dumped),
+                    from: String::new(),
+                    revision: None,
+                    url: None,
+                    date: None,
+                }),
+                ..Statement::default()
+            },
+            "the provenance needs its details",
+        ),
+        (
+            Statement {
+                provenance: Some(Provenance {
+                    kind: None,
+                    from: "a board".into(),
+                    revision: None,
+                    url: None,
+                    date: Some("2026-02-30".into()),
+                }),
+                ..Statement::default()
+            },
+            "the provenance date must be a calendar date",
+        ),
+    ] {
+        let err = firmware_import::preview_manifest_with(&candidate, &[], &statement, &cat)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains(reason), "{reason}: {err}");
+    }
+}
+
+#[test]
+fn an_edit_preview_is_the_revision_the_edit_publishes_and_can_clear_fields() {
+    let t = Temp::new();
+    let cat = catalogue();
+    let store = t.store("store");
+    let candidate = unlisted(&t, "previewed-rom", &cat);
+    let first = Statement {
+        description: Some("First words.".into()),
+        notes: Some("A quirk.".into()),
+        ..Statement::default()
+    };
+    firmware_import::publish_with(&store, &candidate, &[], &first, &cat).unwrap();
+    let tag = "firmware/previewed-rom:1";
+    let target = "firmware/previewed-rom:2";
+    let same =
+        firmware_import::preview_edit(&store, tag, target, &Statement::default(), &cat).unwrap();
+    assert!(same.unchanged);
+    let cleared = Statement {
+        description: Some(String::new()),
+        labels: Some(vec!["edited".into()]),
+        ..Statement::default()
+    };
+    let preview = firmware_import::preview_edit(&store, tag, target, &cleared, &cat).unwrap();
+    assert!(!preview.unchanged);
+    assert!(preview.preview.config.description.is_none(), "cleared");
+    assert_eq!(preview.preview.config.notes.as_deref(), Some("A quirk."));
+    assert!(
+        store.tag_descriptor(target).is_err(),
+        "a preview writes nothing"
+    );
+    let revision = firmware_import::edit(&store, tag, target, &cleared, &cat).unwrap();
+    let (old, _) = resolve(&store, tag, &cat);
+    let (new, config) = resolve(&store, target, &cat);
+    assert_eq!(
+        revision.descriptor.digest,
+        Digest::of(&preview.preview.manifest.encode().unwrap())
+    );
+    assert_eq!(preview.preview.config, config);
+    assert_eq!(preview.preview.readme, readme(&store, &new));
+    assert_eq!(
+        layer(&old, mt::FIRMWARE).digest,
+        layer(&new, mt::FIRMWARE).digest
+    );
+    // The new tag is checked as the edit checks it.
+    let err = firmware_import::preview_edit(&store, tag, target, &cleared, &cat)
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("exists") || err.contains("conflict"), "{err}");
+}
+
+#[test]
+fn catalogue_rights_and_fits_are_the_import_rules_own() {
+    let t = Temp::new();
+    let cat = catalogue();
+    let rights =
+        |candidate: &Candidate| firmware_import::catalogue_rights(&candidate.config, &cat).unwrap();
+    assert!(matches!(
+        rights(&scanned(&t, OPEN_ROM, &cat)),
+        Some(assembly::FirmwareDistribution::Open {
+            license: "GPL-3.0-or-later",
+            ..
+        })
+    ));
+    assert_eq!(
+        rights(&scanned(&t, VENDOR_ROM, &cat)),
+        Some(assembly::FirmwareDistribution::UserSupplied)
+    );
+    assert_eq!(rights(&unlisted(&t, "rights-rom", &cat)), None);
+    // Bytes decide: a crafted id cannot open a proprietary ROM.
+    let mut crafted = scanned(&t, VENDOR_ROM, &cat);
+    crafted.config.roms[0].catalogue_id = Some("synthetic-open-bios".into());
+    assert_eq!(
+        rights(&crafted),
+        Some(assembly::FirmwareDistribution::UserSupplied)
+    );
+    let fit = firmware_import::catalogue_fit(&cat[0]);
+    assert_eq!(fit.boards, ["ibm-5170"]);
+    assert_eq!(fit.machine_classes, ["at"]);
+    assert_eq!(
+        pc_image::firmware::Fit::decode(&scanned(&t, OPEN_ROM, &cat).config.fits).unwrap(),
+        fit
+    );
+}
+
+#[test]
+fn a_tag_holding_the_same_roms_is_already_imported_whatever_its_metadata() {
+    let t = Temp::new();
+    let cat = catalogue();
+    let store = t.store("store");
+    let candidate = scanned(&t, OPEN_ROM, &cat);
+    // The first import states a source archive and a title.
+    let stated = Statement {
+        title: Some("Described open BIOS".into()),
+        ..with_source(t.file("synthetic-src.tar", &pinned()))
+    };
+    let first = firmware_import::publish_with(&store, &candidate, &[], &stated, &cat).unwrap();
+    // A rescan previews the plain catalogue prefill: another manifest, the same ROMs.
+    let plain = firmware_import::preview_manifest(&candidate, &[]).unwrap();
+    assert_ne!(Digest::of(&plain.encode().unwrap()), first.digest);
+    assert_eq!(
+        firmware_import::existing(&store, &candidate.tag(), &plain, &cat).unwrap(),
+        Some(first.clone())
+    );
+    assert!(firmware_import::already_imported(&store, &candidate.tag(), &plain, &cat).unwrap());
+    // A plain re-import keeps the package; a statement that would change it
+    // is refused, naming the edit, instead of being dropped.
+    assert_eq!(
+        firmware_import::publish(&store, &candidate, &[], &cat)
+            .unwrap()
+            .digest,
+        first.digest
+    );
+    let other = Statement {
+        title: Some("Another title".into()),
+        ..Statement::default()
+    };
+    let err = firmware_import::publish_with(&store, &candidate, &[], &other, &cat)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        err.contains("already holds these ROMs") && err.contains("image firmware edit"),
+        "{err}"
+    );
+    // Other document bytes under the tag are still a conflict.
+    let extras = [Attachment {
+        path: t.file("added.txt", b"added later"),
+        dos_name: None,
+    }];
+    assert!(firmware_import::publish(&store, &candidate, &extras, &cat).is_err());
+    assert_eq!(
+        store.tag_descriptor(&candidate.tag()).unwrap().digest,
+        first.digest
+    );
+}
+
+#[test]
+fn an_edit_keeps_a_hand_written_readme_unless_asked_to_generate_it() {
+    let t = Temp::new();
+    let cat = catalogue();
+    let store = t.store("store");
+    let candidate = unlisted(&t, "readme-rom", &cat);
+    let written = Statement {
+        readme: ReadmeChoice::Text("# Mine\n\nWritten by hand.\n".into()),
+        ..Statement::default()
+    };
+    firmware_import::publish_with(&store, &candidate, &[], &written, &cat).unwrap();
+    let edit = |from: &str, to: &str, statement: Statement| {
+        firmware_import::edit(&store, from, to, &statement, &cat).unwrap();
+        let (manifest, config) = resolve(&store, to, &cat);
+        let text = readme(&store, &manifest);
+        let hand = firmware_import::hand_written_readme(layer(&manifest, mt::MARKDOWN));
+        (
+            text,
+            hand,
+            firmware_import::generated_readme(&config, &manifest),
+        )
+    };
+    // Another field changes; the README written by hand stays as it is.
+    let (text, hand, _) = edit(
+        "firmware/readme-rom:1",
+        "firmware/readme-rom:2",
+        Statement {
+            notes: Some("A quirk.".into()),
+            ..Statement::default()
+        },
+    );
+    assert_eq!(text, "# Mine\n\nWritten by hand.\n");
+    assert!(hand);
+    // Asked to, the edit generates it again, and later edits follow the fields.
+    let (text, hand, generated) = edit(
+        "firmware/readme-rom:2",
+        "firmware/readme-rom:3",
+        Statement {
+            readme: ReadmeChoice::Generate,
+            ..Statement::default()
+        },
+    );
+    assert!(!hand);
+    assert_eq!(text, generated);
+    assert!(text.contains("## Notes and known quirks\n\nA quirk.\n"));
+    let (text, hand, generated) = edit(
+        "firmware/readme-rom:3",
+        "firmware/readme-rom:4",
+        Statement {
+            notes: Some("Another quirk.".into()),
+            ..Statement::default()
+        },
+    );
+    assert!(!hand);
+    assert_eq!(text, generated);
+    assert!(text.contains("Another quirk."));
 }

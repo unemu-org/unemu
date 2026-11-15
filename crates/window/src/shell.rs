@@ -1214,6 +1214,9 @@ impl Shell {
                 Command::ImportFirmware => {
                     self.presenter.is_none() && self.image_library.can_import_firmware()
                 }
+                Command::EditFirmware => {
+                    self.presenter.is_none() && self.image_library.can_edit_firmware()
+                }
                 Command::SaveImage => {
                     self.image_library.selected.is_some() || self.image_library.active.is_some()
                 }
@@ -2110,6 +2113,7 @@ impl Shell {
                 self.open_insert_library_at(store_root, set);
             },
             ImportMedia => { self.release(); self.image_library.begin_media_import(); },
+            EditFirmware => { self.release(); self.image_library.begin_firmware_edit(false); },
             WriteMode(unit) => { self.command(Insert(unit), ctx); self.select_inserted(unit); },
             CreateBlank => {
                 self.release();
@@ -2177,6 +2181,7 @@ impl Shell {
                     ("Import image…", "", ImportImage),
                     ("Import installation media…", "", ImportMedia),
                     ("Import ROM folder…", "", ImportFirmware),
+                    ("Edit metadata…", "", EditFirmware),
                 ] {
                     self.item(ui, label, shortcut, command, commands);
                 }
@@ -2506,6 +2511,25 @@ impl Shell {
             visuals.selection.bg_fill = Color32::from_rgb(34, 70, 138);
         }
         ctx.set_visuals(visuals);
+    }
+
+    /// The host picker for a firmware package's source archive; the library
+    /// checks its signature and hash on the worker, never its name.
+    fn pick_firmware_source(&mut self, target: crate::library_view::firmware::SourceTarget) {
+        use crate::library_view::firmware::SourceTarget;
+        self.release();
+        let picker = rfd::FileDialog::new().set_title("Choose the source archive (zip or tar)");
+        let picker = match &target {
+            SourceTarget::Import(_, folder) => picker.set_directory(folder),
+            SourceTarget::Edit => picker,
+        };
+        let picker = if let Some(window) = &self.window {
+            picker.set_parent(window.as_ref())
+        } else {
+            picker
+        };
+        let path = picker.pick_file();
+        self.image_library.firmware_source_picked(target, path);
     }
 
     /// The host picker for Import installation media…; the worker lists the result.
@@ -3332,6 +3356,9 @@ impl eframe::App for Shell {
         self.library_commands(&mut commands);
         if let Some(pick) = self.image_library.media_pick.take() {
             self.pick_media(pick);
+        }
+        if let Some(target) = self.image_library.firmware_source_pick.take() {
+            self.pick_firmware_source(target);
         }
         for action in image_actions {
             if matches!(
@@ -6450,11 +6477,13 @@ kind='mda'
         assert!(shell.command_allowed(Command::ImportFirmware));
         shell.image_library.selected = Some(f.row.clone());
         assert!(shell.command_allowed(Command::Start));
+        assert!(!shell.command_allowed(Command::EditFirmware), "no package");
         shell
             .image_library
             .select_first_package(&cache, &mut shell.selected);
         assert!(!shell.command_allowed(Command::Start));
         assert!(!shell.command_allowed(Command::GamingMode));
+        assert!(shell.command_allowed(Command::EditFirmware));
         shell.image_library.shutdown();
     }
 

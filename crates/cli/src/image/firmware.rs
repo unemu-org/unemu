@@ -13,7 +13,7 @@ use image_store::{
 };
 use pc_image::{
     firmware::{catalogue, PcFirmwareRules},
-    firmware_import::{self, Attachment, Statement},
+    firmware_import::{self, Attachment, ReadmeChoice, Statement},
 };
 use std::{ffi::OsString, io::Write, path::PathBuf};
 
@@ -117,6 +117,14 @@ pub fn parse(args: &[OsString]) -> Result<FirmwareCommand, &'static str> {
         };
         if let Some(slot) = switch {
             flag(slot)?;
+            continue;
+        }
+        // An edit keeps a README written by hand unless asked to generate it.
+        if action == "edit" && arg.to_str() == Some("--regenerate-readme") {
+            if statement.readme != ReadmeChoice::Keep {
+                return Err("duplicate firmware option");
+            }
+            statement.readme = ReadmeChoice::Generate;
             continue;
         }
         let value = args
@@ -409,18 +417,17 @@ fn show(store: &Store, tag: &str, output: &mut impl Write) -> anyhow::Result<()>
     // The guard's own classification: local marks and the catalogue included.
     let marks = super::registry::guard_marks(store, &image.manifest, catalogue())?;
     let closure = guard::closure(&image.manifest, &marks);
-    let restricted = closure
-        .iter()
-        .any(|c| c.effective == guard::Redistribution::UserSupplied);
     writeln!(
         output,
         "push\t{}",
-        if restricted {
-            "private registries outside unemu/ only: user-supplied layers"
-        } else if !guard::copyleft_without_source(&closure).is_empty() {
-            "private registries outside unemu/ only: copyleft ROM without its source archive"
-        } else {
-            "any configured registry, including unemu/"
+        match guard::reach(&closure) {
+            guard::Reach::UserSupplied => {
+                "private registries outside unemu/ only: user-supplied layers"
+            }
+            guard::Reach::CopyleftWithoutSource => {
+                "private registries outside unemu/ only: copyleft ROM without its source archive"
+            }
+            guard::Reach::Anywhere => "any configured registry, including unemu/",
         }
     )?;
     Ok(())
@@ -579,7 +586,7 @@ fn import(
             Some(Some(older)) => {
                 writeln!(
                     output,
-                    "already imported\t{}\t{older}\tan earlier revision; image firmware edit {} adds licences and metadata",
+                    "already imported\t{}\t{older}\tthe same ROMs with other metadata or licences; image firmware edit {} changes them",
                     c.tag(),
                     c.tag()
                 )?;
@@ -668,6 +675,101 @@ mod tests {
         assert!(out.contains("already imported\tfirmware/synthetic-first:1"));
         assert!(out.contains("imported\tfirmware/synthetic-second:1"));
         assert_eq!(store.list_tags(None, 10).unwrap().tags.len(), 2);
+    }
+    #[test]
+    fn a_folder_imported_with_a_statement_is_already_imported_when_scanned_again() {
+        let temp = assembly::test_support::TempDir::new("firmware-described-reimport");
+        let root = temp.path();
+        let files = root.join("roms");
+        std::fs::create_dir(&files).unwrap();
+        std::fs::write(files.join("a"), vec![0x11; 32768]).unwrap();
+        let cat = [entry("synthetic-first", 0x11)];
+        let store = Store::open(root.join("store")).unwrap();
+        let scan = firmware_import::scan(std::slice::from_ref(&files), &cat).unwrap();
+        // As the library window imports a set whose details the user edited.
+        let described = Statement {
+            title: Some("Described first BIOS".into()),
+            ..Statement::default()
+        };
+        let first =
+            firmware_import::publish_with(&store, &scan.candidates[0], &[], &described, &cat)
+                .unwrap();
+        let mut out = Vec::new();
+        import(command(store.root(), &files), &mut out, &cat).unwrap();
+        let out = String::from_utf8(out).unwrap();
+        assert!(
+            out.contains(&format!(
+                "already imported\tfirmware/synthetic-first:1\t{}\t",
+                first.digest
+            )) && out.contains("image firmware edit firmware/synthetic-first:1"),
+            "{out}"
+        );
+        assert_eq!(
+            store
+                .tag_descriptor("firmware/synthetic-first:1")
+                .unwrap()
+                .digest,
+            first.digest
+        );
+    }
+    #[test]
+    fn edit_keeps_a_hand_written_readme_unless_regenerate_readme_is_given() {
+        let temp = assembly::test_support::TempDir::new("firmware-edit-readme");
+        let root = temp.path();
+        let rom = root.join("rom.bin");
+        std::fs::write(&rom, [0x66; 8192]).unwrap();
+        let store = Store::open(root.join("store")).unwrap();
+        let candidate = firmware_import::unlisted(&rom, "readme-rom", "option-rom", &[]).unwrap();
+        let written = Statement {
+            readme: ReadmeChoice::Text("# Mine\n\nWritten by hand.\n".into()),
+            ..Statement::default()
+        };
+        firmware_import::publish_with(&store, &candidate, &[], &written, &[]).unwrap();
+        let readme_of = |tag: &str| {
+            let image = store
+                .resolve(tag, &Validator(&PcFirmwareRules(&[])))
+                .unwrap();
+            let layer = image
+                .manifest
+                .layers
+                .iter()
+                .find(|d| d.decoded_media_type() == media_type::MARKDOWN)
+                .unwrap()
+                .clone();
+            let bytes =
+                image_store::BlobSource::read_verified(&store, &layer, image_store::MAX_SMALL_BLOB)
+                    .unwrap();
+            String::from_utf8(bytes).unwrap()
+        };
+        let run = |args: &[&str]| {
+            let args: Vec<OsString> = args.iter().map(OsString::from).collect();
+            let mut out = Vec::new();
+            edit(&store, parse(&args).unwrap(), &mut out, &[]).unwrap();
+            String::from_utf8(out).unwrap()
+        };
+        let out = run(&["edit", "firmware/readme-rom:1", "--notes", "A quirk."]);
+        assert!(out.contains("edited\tfirmware/readme-rom:1\tfirmware/readme-rom:2\t"));
+        assert_eq!(
+            readme_of("firmware/readme-rom:2"),
+            "# Mine\n\nWritten by hand.\n"
+        );
+        run(&["edit", "firmware/readme-rom:2", "--regenerate-readme"]);
+        let generated = readme_of("firmware/readme-rom:3");
+        assert!(
+            generated.starts_with("# readme-rom\n") && generated.contains("A quirk."),
+            "{generated}"
+        );
+        assert_eq!(
+            parse(
+                &["edit", "x:1", "--regenerate-readme", "--regenerate-readme"].map(OsString::from)
+            )
+            .unwrap_err(),
+            "duplicate firmware option"
+        );
+        assert_eq!(
+            parse(&["import", "rom.bin", "--regenerate-readme"].map(OsString::from)).unwrap_err(),
+            "missing firmware option value"
+        );
     }
     #[test]
     fn ambiguity_is_skipped_before_any_existing_tag_precheck() {

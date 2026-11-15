@@ -24,6 +24,8 @@ pub(crate) enum Command {
     Layers,
     ImportImage,
     ImportFirmware,
+    /// File › Edit metadata… on the selected firmware package.
+    EditFirmware,
     /// File › Import installation media….
     ImportMedia,
     DeleteTag,
