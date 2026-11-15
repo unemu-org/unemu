@@ -102,12 +102,26 @@ pub struct FirmwareSummary {
     pub readme: Option<crate::firmware::Readme>,
 }
 
+/// Installation-set layout copied from the set config, so a library lists
+/// disks, labels, formats and extras without reading a medium (§5.2). Formats
+/// stay provider-declared tables; only the provider names them.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MediaSetSummary {
+    pub media: Vec<crate::media_set::Medium>,
+    pub extras: Vec<crate::media_set::Extra>,
+}
+
 /// Immutable identities plus revisioned local data. Never used for Start hashing.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ImageSummary {
     pub kind: ArtifactKind,
     pub firmware: Option<FirmwareSummary>,
+    /// Present for every current media-set summary; a set row cached before
+    /// this field existed queues a rebuild.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub media_set: Option<MediaSetSummary>,
     pub image: Digest,
     pub metadata: Digest,
     pub metadata_schema: u32,
@@ -353,6 +367,7 @@ impl SummaryCache {
                 self.summary(&tag.manifest.digest).is_none_or(|s| {
                     s.storage_blobs.is_empty()
                         || s.firmware.as_ref().is_some_and(|f| f.roms.is_empty())
+                        || (s.kind == ArtifactKind::MediaSet && s.media_set.is_none())
                 }) && self.failure(&tag.manifest.digest).is_none()
             })
             .collect()
@@ -464,19 +479,43 @@ impl SummaryCache {
                     .ok_or_else(|| invalid("summary size overflow"))
             })?;
         let decoded_size = decoded_total(tag, &manifest)?;
+        let media_set = if manifest.artifact_type() == media_type::MEDIA_SET {
+            let config = crate::media_set::Config::decode(
+                &store.read_verified(&manifest.config, MAX_SMALL_BLOB)?,
+            )?;
+            if config.platform != metadata.platform {
+                return Err(invalid("media-set summary platform mismatch"));
+            }
+            Some(MediaSetSummary {
+                media: config.media,
+                extras: config.extras,
+            })
+        } else {
+            None
+        };
+        // Disk labels and extra names are searchable like any catalogue text.
+        let set_text = media_set.iter().flat_map(|set| {
+            set.media
+                .iter()
+                .map(|m| m.label.as_str())
+                .chain(set.extras.iter().map(|e| e.filename.as_str()))
+                .chain(set.extras.iter().filter_map(|e| e.dos_name.as_deref()))
+        });
         let tokens = tokenize(&format!(
-            "{} {} {}",
+            "{} {} {} {}",
             name,
             metadata.platform,
-            labels.join(" ")
+            labels.join(" "),
+            set_text.collect::<Vec<_>>().join(" ")
         ));
         Ok(ImageSummary {
-            kind: if manifest.artifact_type() == media_type::MEDIA_SET {
+            kind: if media_set.is_some() {
                 ArtifactKind::MediaSet
             } else {
                 ArtifactKind::Machine
             },
             firmware: None,
+            media_set,
             image: tag.manifest.digest.clone(),
             metadata: descriptor.digest.clone(),
             metadata_schema,
@@ -603,6 +642,7 @@ impl SummaryCache {
         Ok(ImageSummary {
             kind: ArtifactKind::Firmware,
             firmware: Some(facets),
+            media_set: None,
             image: tag.manifest.digest.clone(),
             metadata: manifest.config.digest.clone(),
             metadata_schema: 1,
@@ -960,6 +1000,7 @@ mod tests {
             ImageSummary {
                 kind: ArtifactKind::Machine,
                 firmware: None,
+                media_set: None,
                 image: id.clone(),
                 metadata: id.clone(),
                 machine: Some(id.clone()),

@@ -579,11 +579,21 @@ impl Shell {
     }
 
     fn open_insert_library(&mut self) {
-        let workspace = self.library_media_dir();
         let store_root = self.preferences.store_root.clone();
+        self.open_insert_library_at(store_root, None);
+    }
+
+    /// Insert of the library window's selected set: the drive's From library…
+    /// view on the library's own store, with that set chosen.
+    fn open_insert_library_at(
+        &mut self,
+        store_root: Option<std::path::PathBuf>,
+        set: Option<image_store::Digest>,
+    ) {
+        let workspace = self.library_media_dir();
         if let Some(draft) = &mut self.insert_dialog {
             match workspace {
-                Ok(workspace) => draft.open_library(&workspace, store_root.as_deref()),
+                Ok(workspace) => draft.open_library_at(&workspace, store_root.as_deref(), set),
                 Err(error) => draft.error = Some(error),
             }
         }
@@ -1212,6 +1222,10 @@ impl Shell {
                 Command::Push | Command::Pull => {
                     self.presenter.is_none() && self.image_library.active.is_none()
                 }
+                Command::ImportMedia => {
+                    self.presenter.is_none() && self.image_library.can_import_media()
+                }
+                Command::InsertSet(_) => self.image_library.selected_set().is_some(),
                 _ => true,
             }
     }
@@ -2050,6 +2064,13 @@ impl Shell {
                 self.insert_dialog = Some(crate::media_dialog::InsertDialog::new(unit, slot));
             },
             FromLibrary(unit) => { self.command(Insert(unit), ctx); self.open_insert_library(); },
+            InsertSet(unit) => {
+                let set = self.image_library.selected_set();
+                let store_root = self.image_library.root.clone().or_else(|| self.preferences.store_root.clone());
+                self.command(Insert(unit), ctx);
+                self.open_insert_library_at(store_root, set);
+            },
+            ImportMedia => { self.release(); self.image_library.begin_media_import(); },
             WriteMode(unit) => { self.command(Insert(unit), ctx); self.select_inserted(unit); },
             CreateBlank => {
                 self.release();
@@ -2113,6 +2134,7 @@ impl Shell {
                         Placeholder("Open machine file"),
                     ),
                     ("Import image…", "", ImportImage),
+                    ("Import installation media…", "", ImportMedia),
                     ("Import ROM folder…", "", ImportFirmware),
                 ] {
                     self.item(ui, label, shortcut, command, commands);
@@ -2445,7 +2467,41 @@ impl Shell {
         ctx.set_visuals(visuals);
     }
 
+    /// The host picker for Import installation media…; the worker lists the result.
+    fn pick_media(&mut self, pick: crate::library_view::install_media::Pick) {
+        use crate::library_view::install_media::Pick;
+        self.release();
+        let title = match pick {
+            Pick::Files => "Choose installation images",
+            Pick::Folder => "Choose a folder of installation images",
+            Pick::Extras => "Choose extras to store with the set",
+        };
+        let picker = rfd::FileDialog::new().set_title(title);
+        let picker = if let Some(window) = &self.window {
+            picker.set_parent(window.as_ref())
+        } else {
+            picker
+        };
+        let paths = match pick {
+            Pick::Folder => picker.pick_folder().into_iter().collect(),
+            Pick::Files | Pick::Extras => picker.pick_files().unwrap_or_default(),
+        };
+        self.image_library.media_picked(pick, paths);
+    }
+
     fn welcome(&mut self, ui: &mut egui::Ui, commands: &mut Vec<Command>) {
+        // Always empty today: the library is drawn only while no machine runs (machine-images §5.2).
+        self.image_library.running_drives = self
+            .presenter
+            .as_ref()
+            .filter(|presenter| presenter.running)
+            .map(|presenter| {
+                (0u8..)
+                    .zip(&presenter.media_slots)
+                    .filter_map(|(unit, slot)| slot.as_ref().map(|slot| (unit, slot.geometry)))
+                    .collect()
+            })
+            .unwrap_or_default();
         commands.extend(self.image_library.show(
             ui,
             &self.library,
@@ -3234,6 +3290,9 @@ impl eframe::App for Shell {
         );
         if std::mem::take(&mut self.image_library.firmware_import_wanted) {
             commands.push(Command::ImportFirmware);
+        }
+        if let Some(pick) = self.image_library.media_pick.take() {
+            self.pick_media(pick);
         }
         for action in image_actions {
             if matches!(
@@ -6190,6 +6249,37 @@ kind='mda'
         assert!(!shell.command_allowed(Command::Start));
     }
     #[test]
+    fn media_import_waits_for_a_stopped_machine_and_sets_are_never_started() {
+        let (f, cache) = crate::library_view::install_media::tests::library();
+        let ctx = egui::Context::default();
+        let mut shell = shell();
+        shell.image_library =
+            crate::library_view::LibraryView::synthetic(f.store.root().to_owned());
+        assert!(shell.presenter.is_some());
+        assert!(!shell.command_allowed(Command::ImportMedia));
+        shell.stop();
+        assert!(shell.command_allowed(Command::ImportMedia));
+        shell.command(Command::ImportMedia, &ctx);
+        assert!(shell.image_library.has_dialog());
+        assert!(
+            !shell.command_allowed(Command::ImportMedia),
+            "one import at a time"
+        );
+        shell.image_library.close_dialogs();
+        shell.image_library.selected = Some(f.row.clone());
+        assert!(shell.command_allowed(Command::Start));
+        shell
+            .image_library
+            .select_set(&cache, "example-adventure:1.0", &mut shell.selected);
+        assert!(!shell.command_allowed(Command::Start));
+        assert!(!shell.command_allowed(Command::GamingMode));
+        assert!(
+            !shell.command_allowed(Command::InsertSet(0)),
+            "no machine runs"
+        );
+        shell.image_library.shutdown();
+    }
+    #[test]
     fn firmware_import_waits_for_a_stopped_machine_and_packages_are_never_started() {
         use crate::library_test_support::Fixture;
         use crate::library_view::firmware::tests::{publish_open_package, warm};
@@ -6880,6 +6970,105 @@ kind='mda'
         }
         assert!(failure.is_some(), "a missing store reports an error");
         shell.insert_dialog = None;
+        assert!(shell.stop());
+    }
+
+    #[test]
+    fn library_set_insert_routes_through_from_library_and_loads_the_set_in_order() {
+        let temp = assembly::test_support::TempDir::new("library-set-insert");
+        let root = temp.path().canonicalize().unwrap();
+        let store = root.join("store");
+        let mut command: Vec<std::ffi::OsString> =
+            vec!["image".into(), "media".into(), "import".into()];
+        for (name, byte) in [("one.img", 1u8), ("two.img", 2)] {
+            std::fs::write(root.join(name), vec![byte; 1_474_560]).unwrap();
+            command.push(root.join(name).into_os_string());
+        }
+        for arg in [
+            "--title",
+            "Synthetic install",
+            "--tag",
+            "test:set",
+            "--label",
+            "1=Setup",
+            "--label",
+            "2=Data",
+            "--create",
+            "--store",
+        ] {
+            command.push(arg.into());
+        }
+        command.push(store.clone().into_os_string());
+        let mut errors = Vec::new();
+        assert_eq!(
+            cli::command::run(&command, &mut io::sink(), &mut errors),
+            0,
+            "{}",
+            String::from_utf8_lossy(&errors)
+        );
+        let cache = crate::library_view::install_media::tests::warm(
+            &image_store::Store::open_existing(&store).unwrap(),
+        );
+        let ctx = egui::Context::default();
+        let mut shell = media_shell();
+        shell.args.machine = root.join("machine.toml");
+        // The set lives in the library's store, whatever the preference says.
+        shell.preferences.store_root = Some(root.join("no-store"));
+        shell.image_library = crate::library_view::LibraryView::new(Some(store.clone()));
+        assert!(
+            !shell.command_allowed(Command::InsertSet(0)),
+            "no set is selected"
+        );
+        shell
+            .image_library
+            .select_set(&cache, "test:set", &mut shell.selected);
+        assert!(shell.command_allowed(Command::InsertSet(0)));
+        assert!(
+            !shell.command_allowed(Command::InsertSet(1)),
+            "the machine has no drive B:"
+        );
+        shell.command(Command::InsertSet(0), &ctx);
+        let draft = shell
+            .insert_dialog
+            .as_mut()
+            .expect("the drive's Insert dialog");
+        assert_eq!(draft.unit, 0);
+        let library = draft.library.as_mut().expect("its From library… view");
+        assert_eq!(library.store_path, store.to_string_lossy());
+        for _ in 0..4000 {
+            assert_eq!(library.poll(), None);
+            if !library.is_busy() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        let chosen = library.rows.iter().position(|row| row.tag == "test:set");
+        assert!(chosen.is_some());
+        assert_eq!(
+            library.selected, chosen,
+            "the library window's set is chosen"
+        );
+        for _ in 0..4000 {
+            shell.confirm_insert();
+            if shell.insert_dialog.is_none() {
+                break;
+            }
+            assert_eq!(shell.insert_dialog.as_ref().unwrap().error, None);
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        let presenter = shell.presenter.as_ref().unwrap();
+        let names: Vec<_> = presenter.media_slots[0]
+            .as_ref()
+            .unwrap()
+            .entries
+            .iter()
+            .map(|entry| entry.medium.name.clone())
+            .collect();
+        assert_eq!(names, ["first.img", "second.img", "Setup", "Data"]);
+        assert_eq!(
+            presenter.media_events,
+            [(0, assembly::FloppyAction::Insert(2))]
+        );
         assert!(shell.stop());
     }
 

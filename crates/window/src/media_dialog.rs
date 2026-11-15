@@ -914,6 +914,8 @@ pub(super) struct LibraryInsert {
     pending: Option<std::sync::mpsc::Receiver<LibraryMessage>>,
     pub ready: Option<PreparedEntries>,
     pub progress: String,
+    /// The set chosen in the library window, selected once the rows arrive.
+    pub preselect: Option<image_store::Digest>,
 }
 #[derive(Clone)]
 pub(super) struct LibrarySet {
@@ -940,6 +942,7 @@ impl LibraryInsert {
             pending: None,
             ready: None,
             progress: String::new(),
+            preselect: None,
         }
     }
     fn snapshot(&self) -> Self {
@@ -954,6 +957,7 @@ impl LibraryInsert {
             pending: None,
             ready: None,
             progress: String::new(),
+            preselect: None,
         }
     }
     pub fn is_busy(&self) -> bool {
@@ -990,7 +994,14 @@ impl LibraryInsert {
                 Some(LibraryMessage::Progress(progress)) => self.progress = progress,
                 Some(LibraryMessage::Rows(result)) => {
                     match result {
-                        Ok(rows) => self.rows = rows,
+                        Ok(rows) => {
+                            self.rows = rows;
+                            if let Some(wanted) = self.preselect.take() {
+                                self.selected = self.rows.iter().position(|row| {
+                                    row.image.digest == wanted && row.reason.is_none()
+                                });
+                            }
+                        }
                         Err(error) => failure = Some(error),
                     }
                     self.pending = None;
@@ -1247,13 +1258,21 @@ pub(super) fn set_compatibility(
     drive: FloppyGeometry,
     unit: u8,
 ) -> Option<String> {
-    if config.platform != "ibm-pc-at" {
-        return Some(format!(
-            "Platform {} is unavailable for this drive",
-            config.platform
-        ));
+    media_compatibility(&config.platform, &config.media, drive, unit)
+}
+
+/// The drive check of [`set_compatibility`] over a set's platform and media,
+/// as the library's set summaries hold them.
+pub(super) fn media_compatibility(
+    platform: &str,
+    media: &[image_store::media_set::Medium],
+    drive: FloppyGeometry,
+    unit: u8,
+) -> Option<String> {
+    if platform != "ibm-pc-at" {
+        return Some(format!("Platform {platform} is unavailable for this drive"));
     }
-    for medium in &config.media {
+    for medium in media {
         match pc_image::media_set::geometry(&medium.format) {
             Ok(None) => return Some("CD-ROM emulation not available yet".into()),
             Ok(Some(geometry)) if geometry != drive => {
@@ -1272,11 +1291,20 @@ pub(super) fn set_compatibility(
 }
 
 impl InsertDialog {
-    pub fn open_library(&mut self, workspace: &Path, store_root: Option<&Path>) {
+    /// From library…, optionally with one set chosen beforehand, as the
+    /// library window's Insert does; that set is selected once the rows are
+    /// read and checked.
+    pub fn open_library_at(
+        &mut self,
+        workspace: &Path,
+        store_root: Option<&Path>,
+        set: Option<image_store::Digest>,
+    ) {
         let mut library = LibraryInsert::new(workspace.to_path_buf());
         if let Some(root) = store_root {
             library.store_path = root.to_string_lossy().into_owned();
         }
+        library.preselect = set;
         library.refresh_async(self.slot.geometry, self.unit);
         self.library = Some(library);
     }

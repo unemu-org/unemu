@@ -89,6 +89,13 @@ pub(super) enum Request {
     ),
     /// Publish the named catalogue sets of the last scan.
     ImportFirmware(Vec<String>),
+    /// List picked installation images, a folder of them, or extras.
+    PreviewMedia(library_view::install_media::Pick, Vec<PathBuf>),
+    /// Publish a reviewed installation set as `image media import` does.
+    ImportMedia(
+        Box<pc_image::media_import::Request>,
+        library_view::install_media::Control,
+    ),
     /// Read the firmware packages and tags New machine… chooses from.
     FirmwarePackages,
     /// Build a new empty image under a reference, moving a tag only from the
@@ -155,6 +162,12 @@ pub(super) enum Event {
     /// A scan or import job failed; only the import dialog shows it.
     FirmwareFailed(String),
     Transfer(crate::registry_transfer::TransferEvent),
+    /// Listed picks, or the refusal; only the media import dialog shows it.
+    MediaSources(
+        library_view::install_media::Pick,
+        Result<library_view::install_media::Sources>,
+    ),
+    MediaImported(Result<library_view::install_media::Outcome>),
 }
 pub(super) struct Worker {
     pub send: mpsc::Sender<Request>,
@@ -363,6 +376,14 @@ trait Backend: Send + 'static {
     fn with_providers<T>(&self, job: impl FnOnce(&[&dyn image_store::ConfigValidator]) -> T) -> T {
         cli::with_image_providers(job)
     }
+    fn import_media(
+        &self,
+        store: &Store,
+        request: &pc_image::media_import::Request,
+        control: &library_view::install_media::Control,
+    ) -> Result<library_view::install_media::Outcome> {
+        library_view::install_media::import(store, request, control)
+    }
 }
 struct PcBackend;
 impl Backend for PcBackend {
@@ -432,6 +453,34 @@ impl Worker {
                 calls: Default::default(),
             },
         )
+    }
+    /// A worker whose thread dies inside an installation-media import.
+    pub(crate) fn media_crash(root: PathBuf) -> Self {
+        Self::spawn_backend(root, egui::Context::default(), MediaCrash)
+    }
+}
+#[cfg(test)]
+struct MediaCrash;
+#[cfg(test)]
+impl Backend for MediaCrash {
+    fn prepare(
+        &self,
+        _: &Workspace<'_>,
+        _: &Descriptor,
+        _: bool,
+    ) -> Result<pc_image::workspace::PreparedSession> {
+        Err("not used by media tests".into())
+    }
+    fn publish(&self, _: &Workspace<'_>, _: &Target) -> Result<Descriptor> {
+        Err("not used by media tests".into())
+    }
+    fn import_media(
+        &self,
+        _: &Store,
+        _: &pc_image::media_import::Request,
+        _: &library_view::install_media::Control,
+    ) -> Result<library_view::install_media::Outcome> {
+        panic!("injected worker crash in a media import");
     }
 }
 #[cfg(test)]
@@ -996,6 +1045,13 @@ fn run<B: Backend>(
                         }
                         firmware_candidates.clear();
                     }
+                    Request::PreviewMedia(pick, paths) => send(Event::MediaSources(
+                        pick,
+                        library_view::install_media::inspect(pick, &paths),
+                    )),
+                    Request::ImportMedia(request, control) => send(Event::MediaImported(
+                        backend.import_media(&store, &request, &control),
+                    )),
                     Request::Finish(_) => (),
                 }
                 Ok(true)

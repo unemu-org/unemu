@@ -9,7 +9,7 @@ imports and publication compress by default, `--no-compress` keeps raw fixtures,
 **desktop UX and toolkit accepted**, 2026-11-13 (decision-24);
 **installation media set codec/CLI/insert implemented**, 2026-11-14 (decision-26);
 **firmware package codec/import/resolution implemented; UI pending**, 2026-11-14 (decision-27).
-The installation-media library collection, Import dialog and transfer-medium generator remain.
+The installation-media library collection and Import dialog are implemented (2026-11-15); the transfer-medium generator remains.
 §5.3 and its [Firmware mock-up](mockups/firmware.html) were approved by the maintainer on 2026-11-14.
 §5.2 and its mock-up were approved by the maintainer on 2026-11-14. The local store core
 (`upc-5pw.6`), metadata codec, local overlays and summary cache (`upc-5pw.12`)
@@ -1045,10 +1045,22 @@ separate from insertion capability. No CD-ROM emulation is part of this step.
 
 **Approved:** the maintainer approved this section and the three mock-up views
 (library/details, From library… and Import installation media…) on 2026-11-14.
-The codec, CLI and From library dialog are implemented; the library collection,
-Import dialog and transfer-medium generator remain separate work.
-Extras use the accepted amendment above; their transfer generator and UI still
-require their own implementation and visual review.
+The codec, CLI and From library dialog are implemented. The library collection
+and Import installation media… followed on 2026-11-15 from the extras mock-up
+(revision 2): rows, facets and the set pane read summaries only, which carry the
+set's ordered media and extras; Insert hands the selected set to the running
+drive's From library… view, which validates and loads it as above; Add to
+machine…, Make transfer media… and Export stay disabled until their work lands.
+The pane's Insert is reachable only once the library can be shown beside a
+running machine; the shell draws the library only while no machine runs, so
+today Media › Insert › From library… is the path into a drive.
+The dialog and `image media import` share one plan-and-publish function and its
+refusals. When the tag exists, the window writes nothing: it resolves the stored
+set, refuses at once on another artifact type or a different layout, metadata
+or title, then compares the sources' raw SHA-256 with the stored decoded
+digests, so a set stored compressed or raw reports already imported and any
+other content a tag conflict (the command line keeps refusing an existing tag
+before reading). The transfer-medium generator remains separate work.
 
 ### 5.3. Firmware packages
 
@@ -1591,7 +1603,7 @@ the active emulator.
 
 | Menu | Commands and role |
 |---|---|
-| File | New machine…, Open machine file…, Import image…, Import ROM folder…, Machine library and Exit. |
+| File | New machine…, Open machine file…, Import image…, Import installation media…, Import ROM folder…, Machine library and Exit. |
 | Machine | Start, Pause/Resume, Send Ctrl+Alt+Del, Power cycle, Stop, Settings… and Disk layers…; Save state remains disabled until supported. Gaming mode is a Machine-menu action when disposable workspaces are available. |
 | Media | Per-slot inserted names, Insert…, Next image in catalogue and Eject; absent drives and unsupported CD-ROM are disabled with reasons. |
 | View | Toolbar/status-bar visibility, scale, full screen and host audio mute. |
@@ -1610,8 +1622,8 @@ for the selected image. The library must remain usable with **1,000+ local
 images**, including stores with no configured registry. The Machines view is
 Explorer-like in the same classic Win32 style: a tree pane on the left with
 All machines, Recent, Favorites, user Labels/collections, the Genre, Platform,
-Year, Developer, Publisher and Series facets (§2.1), the Firmware collection
-(§5.3) and, only when configured, Registry; a details list view fills the right pane. Sortable columns are name,
+Year, Developer, Publisher and Series facets (§2.1), the Installation media
+collection (§5.2), the Firmware collection (§5.3) and, only when configured, Registry; a details list view fills the right pane. Sortable columns are name,
 tag, last run, size and labels. A search box filters all text fields incrementally.
 Group images by repository name, with tags as child rows, for example
 `dos-lab > 1.0, 2.0, gaming`. The list is virtualized: draw only visible rows.

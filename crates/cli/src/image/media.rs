@@ -1,21 +1,19 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Installation-set CLI import and inspection; machine-images §5.2.
-//! Sources are copied by the store's streaming, full-SHA-256 ingestion path.
+//! Validation and publication are shared with the desktop library through
+//! `pc_image::media_import`; sources are copied by the store's streaming,
+//! full-SHA-256 ingestion path.
 
-use anyhow::Context;
 use image_store::{
-    media_set::{Config, Extra, ExtraKind, MediaFormats, Medium, Validator},
-    media_type as mt,
-    metadata::{Metadata, Title},
-    Descriptor, Manifest, Store,
+    media_set::{Config, Validator},
+    metadata::Title,
+    Store,
 };
-use pc_image::media_set::{self as pc, PcMediaFormats};
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    ffi::OsString,
-    io::Write,
-    path::PathBuf,
+use pc_image::{
+    media_import,
+    media_set::{self as pc, PcMediaFormats},
 };
+use std::{collections::BTreeMap, ffi::OsString, io::Write, path::PathBuf};
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct MediaCommand {
@@ -139,15 +137,6 @@ pub fn parse(args: &[OsString]) -> Result<MediaCommand, &'static str> {
     Ok(command)
 }
 
-fn descriptor(kind: &str, blob: image_store::Blob) -> Descriptor {
-    user_supplied(Descriptor::new(kind, blob.digest, blob.size))
-}
-fn user_supplied(mut d: Descriptor) -> Descriptor {
-    d.annotations
-        .insert("unemu.redistribution".into(), "user-supplied".into());
-    d
-}
-
 pub fn execute(command: MediaCommand, output: &mut impl Write) -> anyhow::Result<()> {
     if command.action == "import" {
         return import(command, output);
@@ -215,40 +204,17 @@ fn import(command: MediaCommand, output: &mut impl Write) -> anyhow::Result<()> 
         } else {
             Store::open_existing(&command.store)?
         };
+        // The command line never moves an existing tag, even to identical bytes.
         store.check_new_tag(&command.tag)?;
         Some(store)
     };
     let mut files = command.files.clone();
     if files.len() == 1 && files[0].is_dir() {
-        let directory = &files[0];
-        let mut entries = std::fs::read_dir(directory)
-            .with_context(|| format!("directory {:?}", directory))?
-            .collect::<std::io::Result<Vec<_>>>()
-            .with_context(|| format!("directory {:?}", directory))?;
-        entries.sort_by_key(|e| e.file_name());
-        let mut ordered = Vec::new();
-        for entry in entries {
-            let path = entry.path();
-            if entry.file_name().as_encoded_bytes().starts_with(b".") {
-                writeln!(output, "skipped hidden file: {:?}", entry.file_name())?;
-                continue;
-            }
-            let stat = std::fs::metadata(&path).with_context(|| format!("source {:?}", path))?;
-            anyhow::ensure!(stat.is_file(), "source {:?}: expected a regular file", path);
-            let extension = path
-                .extension()
-                .unwrap_or_default()
-                .to_string_lossy()
-                .to_ascii_lowercase();
-            anyhow::ensure!(
-                matches!(extension.as_str(), "img" | "ima" | "iso")
-                    || pc::detect(stat.len()).is_some(),
-                "source {:?}: not a media candidate; use an explicit file list",
-                path
-            );
-            ordered.push(path);
+        let listing = media_import::list_folder(&files[0]);
+        for name in &listing.hidden {
+            writeln!(output, "skipped hidden file: {:?}", name)?;
         }
-        files = ordered;
+        files = listing.files?;
     }
     anyhow::ensure!(
         !files.is_empty(),
@@ -264,123 +230,46 @@ fn import(command: MediaCommand, output: &mut impl Write) -> anyhow::Result<()> 
         "source list {:?}: medium option index out of range",
         files
     );
-    anyhow::ensure!(
-        image_store::media_set::valid_text(&command.title),
-        "invalid title {:?}",
-        command.title
-    );
-    let empty = image_store::Digest::of(b"");
-    let mut config = Config {
-        schema: 1,
-        platform: "ibm-pc-at".into(),
-        media: Vec::new(),
-        extras: Vec::new(),
+    let request = media_import::Request {
+        tag: command.tag.clone(),
+        title: Title {
+            title: command.title.clone(),
+            ..Title::default()
+        },
+        labels: Vec::new(),
+        media: files
+            .iter()
+            .enumerate()
+            .map(|(index, path)| media_import::Source {
+                path: path.clone(),
+                label: command.labels.get(&(index + 1)).cloned(),
+                format: command.formats.get(&(index + 1)).cloned(),
+            })
+            .collect(),
+        extras: command
+            .extras
+            .iter()
+            .map(|(path, dos_name)| media_import::ExtraSource {
+                path: path.clone(),
+                dos_name: dos_name.clone(),
+                kind: None,
+            })
+            .collect(),
+        compress: !command.no_compress,
     };
-    let mut kinds = Vec::new();
-    let mut sizes = Vec::new();
-    for (index, path) in files.iter().enumerate() {
-        let stat = std::fs::metadata(path).with_context(|| format!("source {:?}", path))?;
-        anyhow::ensure!(stat.is_file(), "source {:?}: expected a regular file", path);
-        let name = command
-            .formats
-            .get(&(index + 1))
-            .map(String::as_str)
-            .or_else(|| pc::detect(stat.len()))
-            .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "source {:?}: unknown media size; use --format N=FORMAT",
-                    path
-                )
-            })?;
-        let format = pc::format(name).with_context(|| format!("source {:?}", path))?;
-        kinds.push(
-            PcMediaFormats
-                .validate_format(&format, stat.len())
-                .with_context(|| format!("source {:?}", path))?,
-        );
-        sizes.push(stat.len());
-        let label = command
-            .labels
-            .get(&(index + 1))
-            .cloned()
-            .unwrap_or_else(|| {
-                path.file_name()
-                    .unwrap_or_default()
-                    .to_string_lossy()
-                    .into_owned()
-            });
-        anyhow::ensure!(
-            image_store::media_set::valid_text(&label),
-            "source {:?}: invalid label {:?}",
-            path,
-            label
-        );
-        config.media.push(Medium {
-            id: format!("disk-{}", index + 1),
-            label,
-            format,
-            blob: empty.clone(),
-        });
-    }
-    for (path, dos_name) in &command.extras {
-        let stat = std::fs::metadata(path).with_context(|| format!("extra {:?}", path))?;
-        anyhow::ensure!(stat.is_file(), "extra {:?}: expected a regular file", path);
-        let filename = path
-            .file_name()
-            .and_then(|s| s.to_str())
-            .ok_or_else(|| anyhow::anyhow!("extra {:?}: filename must be UTF-8", path))?
-            .to_owned();
-        anyhow::ensure!(
-            image_store::media_set::valid_text(&filename),
-            "extra {:?}: invalid filename",
-            path
-        );
-        if let Some(name) = dos_name {
-            PcMediaFormats
-                .validate_name(name)
-                .with_context(|| format!("extra {:?}", path))?;
-        }
-        let extension = path
-            .extension()
-            .unwrap_or_default()
-            .to_string_lossy()
-            .to_ascii_lowercase();
-        let kind = match extension.as_str() {
-            "txt" | "pdf" | "md" | "doc" => ExtraKind::Document,
-            "zip" | "7z" | "arj" | "rar" => ExtraKind::Archive,
-            "exe" | "com" | "bat" => ExtraKind::Executable,
-            _ => ExtraKind::Other,
-        };
-        config.extras.push(Extra {
-            blob: empty.clone(),
-            filename,
-            size: stat.len(),
-            kind,
-            dos_name: dos_name.clone(),
-        });
-    }
-    config
-        .encode()
-        .with_context(|| format!("source list {:?}, extras {:?}", files, command.extras))?;
-    let mut metadata = Metadata::new(&config.platform);
-    metadata.titles.push(Title {
-        id: "title".into(),
-        title: command.title.clone(),
-        ..Title::default()
-    });
-    metadata.encode(&[])?;
+    let plan = media_import::plan(&request)?;
     writeln!(output, "media order:")?;
-    for (index, path) in files.iter().enumerate() {
+    for (index, (path, medium)) in plan.media().enumerate() {
         writeln!(
             output,
             "{}\t{:?}\t{:?}\t{}",
             index + 1,
-            config.media[index].label,
+            medium.label,
             path,
-            pc::format_name(&config.media[index].format)?
+            pc::format_name(&medium.format)?
         )?;
     }
-    for extra in &config.extras {
+    for extra in &plan.config().extras {
         writeln!(output, "extra\t{:?}\t{:?}", extra.filename, extra.dos_name)?;
     }
     if command.dry_run {
@@ -388,66 +277,49 @@ fn import(command: MediaCommand, output: &mut impl Write) -> anyhow::Result<()> 
         return Ok(());
     }
     let store = store.ok_or_else(|| anyhow::anyhow!("store unavailable"))?;
-    let codecs = if command.no_compress {
-        &[]
-    } else {
-        image_store::codec::MEDIA_PAYLOAD_TYPES
-    };
-    let mut layers = Vec::new();
-    for (index, path) in files.iter().enumerate() {
-        let file = std::fs::File::open(path).with_context(|| format!("source {:?}", path))?;
-        let blob = store
-            .import_payload(file, kinds[index], sizes[index], None, codecs)
-            .with_context(|| format!("source {:?}", path))?;
-        anyhow::ensure!(
-            blob.decoded_size()? == sizes[index],
-            "source {:?}: length changed during import",
-            path
-        );
-        config.media[index].blob = blob.decoded_digest()?;
-        layers.push(user_supplied(blob));
-    }
-    for (index, (path, _)) in command.extras.iter().enumerate() {
-        let file = std::fs::File::open(path).with_context(|| format!("extra {:?}", path))?;
-        let blob = store
-            .import_payload(file, mt::EXTRA, config.extras[index].size, None, codecs)
-            .with_context(|| format!("extra {:?}", path))?;
-        anyhow::ensure!(
-            blob.decoded_size()? == config.extras[index].size,
-            "extra {:?}: length changed during import",
-            path
-        );
-        config.extras[index].blob = blob.decoded_digest()?;
-        layers.push(user_supplied(blob));
-    }
-    let mut seen = BTreeSet::new();
-    let mut unique = Vec::<Descriptor>::new();
-    for d in layers {
-        if seen.insert(d.digest.clone()) {
-            unique.push(d);
-        } else {
-            anyhow::ensure!(
-                unique.iter().any(|p| p.digest == d.digest
-                    && p.media_type == d.media_type
-                    && p.size == d.size),
-                "source list {:?}: identical bytes used with conflicting payload types",
-                files
-            );
-        }
-    }
-    let bytes = metadata.encode(&unique)?;
-    unique.push(descriptor(
-        mt::METADATA,
-        store.import(bytes.as_slice(), None)?,
-    ));
-    let bytes = config.encode()?;
-    let cfg = descriptor(mt::MEDIA_SET_CONFIG, store.import(bytes.as_slice(), None)?);
-    let mut manifest = Manifest::new_media_set(&config.platform, cfg, unique)?;
-    manifest
-        .annotations
-        .insert("org.opencontainers.image.title".into(), command.title);
-    let manifest = store.import_manifest(&manifest)?;
-    store.update_tag(&command.tag, &manifest, None, &Validator(&PcMediaFormats))?;
-    writeln!(output, "{}\t{}", command.tag, manifest.digest)?;
+    let outcome = media_import::publish(&store, &plan, &|_, _| {}, &|| false)?;
+    writeln!(output, "{}\t{}", command.tag, outcome.descriptor().digest)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_refused_folder_still_reports_the_hidden_files_skipped_before_it() {
+        let root = std::env::temp_dir().join(format!("cli-media-refused-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let folder = root.join("disks");
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(folder.join(".hidden"), b"hidden").unwrap();
+        std::fs::write(folder.join("a.img"), vec![0; 368_640]).unwrap();
+        std::fs::write(folder.join("notes.txt"), b"not a disk").unwrap();
+        let args: Vec<OsString> = [
+            "import".into(),
+            folder.clone().into_os_string(),
+            "--title".into(),
+            "Refused".into(),
+            "--tag".into(),
+            "test:refused".into(),
+            "--store".into(),
+            root.join("store").into_os_string(),
+            "--dry-run".into(),
+        ]
+        .into();
+        let mut output = Vec::new();
+        let error = execute(parse(&args).unwrap(), &mut output).unwrap_err();
+        assert_eq!(
+            String::from_utf8(output).unwrap(),
+            "skipped hidden file: \".hidden\"\n"
+        );
+        assert_eq!(
+            format!("{error:#}"),
+            format!(
+                "source {:?}: not a media candidate; use an explicit file list",
+                folder.join("notes.txt")
+            )
+        );
+        std::fs::remove_dir_all(&root).unwrap();
+    }
 }

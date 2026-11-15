@@ -79,18 +79,23 @@ impl Redistribution {
     /// The most restrictive ROM wins: one user-supplied chip keeps the whole
     /// package private, and a missing annotation means user-supplied.
     pub fn of(summary: &ImageSummary) -> Self {
-        let roms: Vec<_> = summary.storage_blobs.iter().filter(|d| is_rom(d)).collect();
-        let open = !roms.is_empty()
-            && roms.iter().all(|d| {
-                d.annotations
-                    .get("unemu.redistribution")
-                    .map(String::as_str)
-                    == Some(OPEN)
-            });
-        let mut licenses: Vec<String> = roms
+        Self::of_payloads(summary, is_rom)
+    }
+    /// The same rule over the payload layers `payload` selects. As for the
+    /// push guard, an open mark counts only with a valid SPDX licence.
+    pub fn of_payloads(summary: &ImageSummary, payload: fn(&Descriptor) -> bool) -> Self {
+        let licenses: Vec<_> = summary
+            .storage_blobs
             .iter()
+            .filter(|d| payload(d))
+            .map(image_store::license::open_license)
+            .collect();
+        let open = !licenses.is_empty() && licenses.iter().all(Option::is_some);
+        let mut licenses: Vec<String> = licenses
+            .into_iter()
+            .flatten()
             .filter(|_| open)
-            .filter_map(|d| d.annotations.get("unemu.license").cloned())
+            .map(|license| license.as_str().to_owned())
             .collect();
         licenses.sort();
         licenses.dedup();
@@ -287,7 +292,7 @@ fn fits(f: &FirmwareSummary) -> String {
         parts.join(" · ")
     }
 }
-fn short(hash: &str) -> String {
+pub(super) fn short(hash: &str) -> String {
     if hash.len() > 12 {
         format!("{}…{}", &hash[..8], &hash[hash.len() - 4..])
     } else {
@@ -523,8 +528,8 @@ pub(super) fn details(ui: &mut egui::Ui, row: &FirmwareRow) {
                     b.iter()
                         .find(|d| decoded_identity(d).as_ref() == Some(&extra.blob))
                 })
-                .and_then(|d| d.annotations.get("unemu.redistribution"))
-                .map_or(USER_SUPPLIED, String::as_str);
+                .filter(|d| image_store::license::open_license(d).is_some())
+                .map_or(USER_SUPPLIED, |_| OPEN);
             let kind = format!("{:?}", extra.kind).to_lowercase();
             fit.label(&extra.filename);
             fit.small(format!(
@@ -1936,6 +1941,52 @@ pub(crate) mod tests {
                 view.rows_built
             );
         }
+    }
+
+    #[test]
+    fn open_roms_count_only_with_a_valid_licence() {
+        let (_f, cache) = library();
+        let tag = cache
+            .tags()
+            .iter()
+            .find(|t| t.name == "firmware/synthetic-open-bios:1")
+            .unwrap();
+        let open = cache.summary(&tag.manifest.digest).unwrap().clone();
+        assert_eq!(Redistribution::of(&open).label(), "Open · MIT");
+        let with = |edit: &dyn Fn(&mut Descriptor)| {
+            let mut summary = open.clone();
+            summary
+                .storage_blobs
+                .iter_mut()
+                .filter(|d| is_rom(d))
+                .for_each(edit);
+            Redistribution::of(&summary)
+        };
+        type Edit<'a> = &'a dyn Fn(&mut Descriptor);
+        let cases: [(&str, Edit); 3] = [
+            ("no licence", &|d| {
+                d.annotations.remove("unemu.license");
+            }),
+            ("invalid licence", &|d| {
+                d.annotations
+                    .insert("unemu.license".into(), "not a licence".into());
+            }),
+            ("user-supplied mark", &|d| {
+                d.annotations
+                    .insert("unemu.redistribution".into(), "user-supplied".into());
+            }),
+        ];
+        for (case, edit) in cases {
+            let redistribution = with(edit);
+            assert!(!redistribution.open, "{case}");
+            assert_eq!(redistribution.label(), "User-supplied", "{case}");
+            assert_eq!(redistribution.value(), USER_SUPPLIED, "{case}");
+        }
+        let two = with(&|d: &mut Descriptor| {
+            d.annotations
+                .insert("unemu.license".into(), "GPL-3.0-or-later".into());
+        });
+        assert_eq!(two.label(), "Open · GPL-3.0-or-later");
     }
 
     #[test]

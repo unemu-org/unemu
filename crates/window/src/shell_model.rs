@@ -24,6 +24,8 @@ pub(crate) enum Command {
     Layers,
     ImportImage,
     ImportFirmware,
+    /// File › Import installation media….
+    ImportMedia,
     DeleteTag,
     StoreFolder,
     Pause,
@@ -33,6 +35,8 @@ pub(crate) enum Command {
     Insert(u8),
     /// Insert into a floppy drive from the image library.
     FromLibrary(u8),
+    /// From library… for the set selected in the library window.
+    InsertSet(u8),
     /// Change the write mode of the floppy in a drive, in its Insert dialog.
     WriteMode(u8),
     CreateBlank,
@@ -82,6 +86,7 @@ impl Enablement {
             | Command::FastForward => self.state != State::Stopped,
             Command::Insert(unit)
             | Command::FromLibrary(unit)
+            | Command::InsertSet(unit)
             | Command::WriteMode(unit)
             | Command::Next(unit)
             | Command::Eject(unit) => {

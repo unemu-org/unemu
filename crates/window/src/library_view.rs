@@ -2,9 +2,11 @@
 //! Explorer-style local image library; machine-images §§2.1, 3 and 7.
 //! Store jobs own I/O and PC readiness, launch and publication adapters.
 //! The tree, facets and virtualized rows consume platform-neutral summaries.
-//! Firmware packages form their own collection (§5.3), see [`firmware`].
+//! Firmware packages (§5.3) and installation media sets (§5.2) form their own
+//! collections, see [`firmware`] and [`install_media`].
 
 pub(crate) mod firmware;
+pub(crate) mod install_media;
 
 use crate::{
     layers_dialog::LayersDialog,
@@ -40,6 +42,10 @@ enum Filter {
     MachineFiles,
     Firmware,
     Facet(String, String),
+    Media,
+    /// A facet of the Installation media collection; its kinds share names
+    /// with machine facets, so the collection is part of the filter.
+    MediaFacet(String, String),
 }
 impl Filter {
     /// The Firmware collection and its facets list packages instead of machines.
@@ -49,6 +55,10 @@ impl Filter {
             Self::Facet(kind, _) => firmware::is_facet(kind),
             _ => false,
         }
+    }
+    /// The Installation media collection and its facets list sets instead of machines.
+    fn is_media(&self) -> bool {
+        matches!(self, Self::Media | Self::MediaFacet(_, _))
     }
 }
 #[derive(Clone, Debug, Default)]
@@ -61,6 +71,9 @@ pub(super) struct Query {
     /// The Firmware list has other columns, so it keeps its own sort.
     firmware_sort: usize,
     firmware_descending: bool,
+    /// So does the Installation media list.
+    media_sort: usize,
+    media_descending: bool,
 }
 #[derive(Clone, Debug)]
 pub(super) struct ImageRow {
@@ -107,11 +120,17 @@ pub(super) struct Snapshot {
     warning: Option<String>,
     firmware_rows: Vec<firmware::FirmwareRow>,
     firmware_total: usize,
+    media_rows: Vec<install_media::MediaRow>,
+    media_total: usize,
+    /// Set summaries still being built; `pending` counts every artifact.
+    media_pending: usize,
+    /// Kept apart from machine facets, whose kinds have the same names.
+    media_facets: BTreeMap<String, BTreeSet<String>>,
 }
 
 fn facets_for(filter: &Filter) -> Facets {
     let mut f = Facets::default();
-    if let Filter::Facet(kind, value) = filter {
+    if let Filter::Facet(kind, value) | Filter::MediaFacet(kind, value) = filter {
         match kind.as_str() {
             "Genre" => f.genres.push(value.clone()),
             "Platform" => f.platforms.push(value.clone()),
@@ -163,7 +182,14 @@ pub(super) fn snapshot(cache: &SummaryCache, q: &Query) -> Snapshot {
     let mut groups: BTreeMap<String, Vec<ImageRow>> = BTreeMap::new();
     let mut counted = BTreeSet::new();
     let firmware_mode = q.filter.is_firmware();
+    let media_mode = q.filter.is_media();
     let mut packages = Vec::new();
+    let mut sets = Vec::new();
+    let pending: BTreeSet<_> = cache
+        .pending()
+        .into_iter()
+        .map(|tag| tag.name.as_str())
+        .collect();
     let mut machine_roms = firmware::MachineRoms::default();
     for tag in cache.tags() {
         let s = cache.summary(&tag.manifest.digest);
@@ -185,6 +211,13 @@ pub(super) fn snapshot(cache: &SummaryCache, q: &Query) -> Snapshot {
                     firmware::add_facets(&mut result.facets, s);
                 }
                 packages.push(tag);
+            } else {
+                result.media_total += 1;
+                result.media_pending += usize::from(pending.contains(tag.name.as_str()));
+                if let Some(s) = s {
+                    install_media::add_facets(&mut result.media_facets, s);
+                }
+                sets.push(tag);
             }
             continue;
         }
@@ -215,7 +248,7 @@ pub(super) fn snapshot(cache: &SummaryCache, q: &Query) -> Snapshot {
                 }
             }
         }
-        if firmware_mode {
+        if firmware_mode || media_mode {
             continue;
         }
         let text_match = if s.is_some() {
@@ -250,6 +283,10 @@ pub(super) fn snapshot(cache: &SummaryCache, q: &Query) -> Snapshot {
     if firmware_mode {
         result.firmware_rows = firmware::rows(cache, &packages, &matches, q, &machine_roms);
         result.matched = result.firmware_rows.len();
+    }
+    if media_mode {
+        result.media_rows = install_media::rows(cache, &sets, &matches, q);
+        result.matched = result.media_rows.len();
     }
     let mut groups: Vec<_> = groups.into_values().collect();
     for images in &mut groups {
@@ -428,6 +465,7 @@ fn facet_list(
     values: &BTreeSet<String>,
     current: &Filter,
     label: fn(&str, &str) -> String,
+    make: fn(String, String) -> Filter,
 ) -> (Option<Filter>, usize) {
     let values: Vec<_> = values.iter().collect();
     let mut selected = None;
@@ -439,7 +477,7 @@ fn facet_list(
             for index in range {
                 built += 1;
                 let value = values[index];
-                let filter = Filter::Facet(kind.into(), value.clone());
+                let filter = make(kind.into(), value.clone());
                 if ui
                     .selectable_label(current == &filter, label(kind, value))
                     .clicked()
@@ -495,6 +533,13 @@ pub(super) struct LibraryView {
     /// Kept apart from `selected`: a package is never a Start target.
     firmware_selected: Option<firmware::FirmwareRow>,
     firmware_import: Option<firmware::ImportDialog>,
+    /// Kept apart from `selected` too: a set is never a Start target.
+    media_selected: Option<install_media::MediaRow>,
+    media_import: Option<install_media::ImportDialog>,
+    /// Import installation media… asked for a host picker; the shell runs it.
+    pub media_pick: Option<install_media::Pick>,
+    /// Floppy units of the running machine, for Insert on a selected set.
+    pub running_drives: Vec<(u8, assembly::FloppyGeometry)>,
     /// File › New machine… while it is open.
     pub new_machine: Option<crate::new_machine::Wizard>,
     /// The wizard asked for Import ROM folder…; the shell picks the folder.
@@ -535,6 +580,10 @@ impl LibraryView {
             worker_dead: false,
             firmware_selected: None,
             firmware_import: None,
+            media_selected: None,
+            media_import: None,
+            media_pick: None,
+            running_drives: Vec::new(),
             new_machine: None,
             firmware_import_wanted: false,
             clear_file_selection: false,
@@ -578,6 +627,7 @@ impl LibraryView {
             self.pending_operation = false;
             self.worker_dead = true;
             self.fail_firmware_import();
+            self.fail_media_import();
             if self.error.is_none() {
                 self.error = Some(
                     "Image store worker stopped; choose the Image store folder to retry".into(),
@@ -618,7 +668,28 @@ impl LibraryView {
                         *selected = current.clone();
                     }
                 }
+                if let Some(selected) = &mut self.media_selected {
+                    if let Some(current) = snapshot.media_rows.iter().find(|r| r.same(selected)) {
+                        *selected = current.clone();
+                    }
+                }
                 self.snapshot = snapshot;
+            }
+            Event::MediaSources(pick, result) => {
+                self.busy = false;
+                if let Some(dialog) = &mut self.media_import {
+                    dialog.sources(pick, result);
+                }
+            }
+            Event::MediaImported(result) => {
+                self.busy = false;
+                if let Ok(outcome) = &result {
+                    self.status = Some(outcome.to_string());
+                }
+                match &mut self.media_import {
+                    Some(dialog) => dialog.finished(result),
+                    None => self.error = result.err(),
+                }
             }
             Event::FirmwareScanned(report) => {
                 self.busy = false;
@@ -867,6 +938,7 @@ impl LibraryView {
                 Some("Image store worker stopped; choose the Image store folder to retry".into());
             self.fail_firmware_import();
             self.fail_transfers();
+            self.fail_media_import();
         }
     }
     pub fn shutdown(&mut self) {
@@ -986,6 +1058,7 @@ impl LibraryView {
         self.query.text.clear();
         self.query.expanded.insert(row.repository().to_owned());
         self.firmware_selected = None;
+        self.media_selected = None;
         self.pending_launch = None;
         self.clear_file_selection = true;
         self.selected = Some(row);
@@ -1049,6 +1122,7 @@ impl LibraryView {
             || self.delete
             || self.decision.is_some()
             || self.firmware_import.is_some()
+            || self.media_import.is_some()
             || self.new_machine.is_some()
             || self.push.is_some()
             || self.pull.is_some()
@@ -1064,14 +1138,17 @@ impl LibraryView {
         if let Some(dialog) = self.firmware_import.take() {
             dialog.control.cancel();
         }
+        if let Some(dialog) = self.media_import.take() {
+            dialog.control.cancel();
+        }
         self.new_machine = None;
         self.push = None;
         self.pull = None;
     }
-    /// Entering the Firmware collection drops the machine selection, so Start
-    /// never targets a machine that is no longer shown.
+    /// Entering the Firmware or Installation media collection drops the machine
+    /// selection, so Start never targets a machine that is no longer shown.
     fn set_filter(&mut self, filter: Filter, selected_file: &mut Option<usize>) {
-        if filter.is_firmware() && !self.query.filter.is_firmware() {
+        if filter.is_firmware() || filter.is_media() {
             self.selected = None;
             self.readiness = None;
             self.pending_launch = None;
@@ -1079,6 +1156,9 @@ impl LibraryView {
         }
         if !filter.is_firmware() {
             self.firmware_selected = None;
+        }
+        if !filter.is_media() {
+            self.media_selected = None;
         }
         self.query.filter = filter;
     }
@@ -1111,11 +1191,13 @@ impl LibraryView {
             .show(ui, |ui| {
                 ui.strong("Library");
                 let firmware_label = format!("Firmware ({})", self.snapshot.firmware_total);
+                let media_label = format!("Installation media ({})", self.snapshot.media_total);
                 for (label, filter) in [
                     ("All images", Filter::All),
                     ("Recently played", Filter::Recent),
                     ("Favourites", Filter::Favorites),
                     ("Machine files", Filter::MachineFiles),
+                    (media_label.as_str(), Filter::Media),
                     (firmware_label.as_str(), Filter::Firmware),
                 ] {
                     if ui
@@ -1127,8 +1209,11 @@ impl LibraryView {
                     }
                 }
                 let firmware_mode = self.query.filter.is_firmware();
+                let media_mode = self.query.filter.is_media();
                 let kinds: &[&str] = if firmware_mode {
                     &firmware::FACETS
+                } else if media_mode {
+                    &install_media::FACETS
                 } else {
                     &[
                         "Labels",
@@ -1142,16 +1227,32 @@ impl LibraryView {
                 };
                 let label: fn(&str, &str) -> String = if firmware_mode {
                     firmware::facet_label
+                } else if media_mode {
+                    install_media::facet_label
                 } else {
                     |_, value| value.to_owned()
                 };
+                let make: fn(String, String) -> Filter = if media_mode {
+                    Filter::MediaFacet
+                } else {
+                    Filter::Facet
+                };
                 let snapshot = self.snapshot.clone();
+                let facets = if media_mode {
+                    &snapshot.media_facets
+                } else {
+                    &snapshot.facets
+                };
                 for kind in kinds {
                     let picked = egui::CollapsingHeader::new(*kind)
-                        .default_open(firmware_mode && *kind != "Board")
+                        .id_salt(("facet-group", media_mode, *kind))
+                        .default_open(
+                            (firmware_mode && *kind != "Board")
+                                || (media_mode && matches!(*kind, "Format" | "Labels")),
+                        )
                         .show(ui, |ui| {
-                            snapshot.facets.get(*kind).and_then(|values| {
-                                facet_list(ui, kind, values, &self.query.filter, label).0
+                            facets.get(*kind).and_then(|values| {
+                                facet_list(ui, kind, values, &self.query.filter, label, make).0
                             })
                         })
                         .body_returned
@@ -1178,6 +1279,19 @@ impl LibraryView {
                                 Some(row) => firmware::details(ui, row),
                                 None => {
                                     ui.label("Select a firmware package for details.");
+                                }
+                            }
+                        } else if self.query.filter.is_media() {
+                            match &self.media_selected {
+                                Some(row) => {
+                                    if let Some(unit) =
+                                        install_media::details(ui, row, &self.running_drives)
+                                    {
+                                        commands.push(Command::InsertSet(unit));
+                                    }
+                                }
+                                None => {
+                                    ui.label("Select an installation set for details.");
                                 }
                             }
                         } else if let Some(row) = self.selected.clone() {
@@ -1367,6 +1481,7 @@ impl LibraryView {
             });
         egui::CentralPanel::default().show(ui, |ui| {
             let firmware_mode = self.query.filter.is_firmware();
+            let media_mode = self.query.filter.is_media();
             ui.horizontal(|ui| {
                 if firmware_mode
                     && ui
@@ -1377,6 +1492,21 @@ impl LibraryView {
                         .clicked()
                 {
                     commands.push(Command::ImportFirmware);
+                }
+                if media_mode {
+                    if ui
+                        .add_enabled(
+                            self.can_import_media(),
+                            egui::Button::new("Import installation media…"),
+                        )
+                        .clicked()
+                    {
+                        commands.push(Command::ImportMedia);
+                    }
+                    ui.add_enabled(false, egui::Button::new("Make transfer media…"))
+                        .on_disabled_hover_text(
+                            "Making transfer media from extras is not available yet.",
+                        );
                 }
                 ui.label("Search:");
                 if ui.text_edit_singleline(&mut self.query.text).changed() {
@@ -1391,6 +1521,17 @@ impl LibraryView {
                 ui.label(format!(
                     "{} of {} packages · {} pending",
                     self.snapshot.matched, self.snapshot.firmware_total, self.snapshot.pending
+                ));
+                return;
+            }
+            if media_mode {
+                if let Some(warning) = &self.snapshot.warning {
+                    ui.label(warning);
+                }
+                changed |= self.media_list(ui, selected_file);
+                ui.label(format!(
+                    "{} of {} sets · {} pending",
+                    self.snapshot.matched, self.snapshot.media_total, self.snapshot.media_pending
                 ));
                 return;
             }
@@ -1771,6 +1912,7 @@ impl LibraryView {
             }
         }
         self.firmware_modal(ctx, classic, &mut requests);
+        self.media_modal(ctx, classic, &mut requests);
         requests
     }
     fn transfer_modals(&mut self, ctx: &egui::Context, classic: bool, requests: &mut Vec<Request>) {
@@ -2272,7 +2414,15 @@ pub(super) mod tests {
         let values = (0..1000).map(|i| format!("Label {i}")).collect();
         let mut built = 0;
         let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
-            built = facet_list(ui, "Labels", &values, &Filter::All, |_, v| v.into()).1;
+            built = facet_list(
+                ui,
+                "Labels",
+                &values,
+                &Filter::All,
+                |_, v| v.into(),
+                Filter::Facet,
+            )
+            .1;
         });
         output.textures_delta.clear();
         assert!(built > 0 && built < 20, "built {built}");
@@ -2347,12 +2497,22 @@ pub(super) mod tests {
                 .unwrap(),
         )
         .unwrap();
-        let config = Descriptor::new(
-            mt::MEDIA_SET_CONFIG,
-            machine.config.digest.clone(),
-            machine.config.size,
-        );
-        let set = Manifest::new_media_set("synthetic", config, machine.layers).unwrap();
+        let bytes = image_store::media_set::Config {
+            schema: 1,
+            platform: "synthetic".into(),
+            media: vec![image_store::media_set::Medium {
+                id: "disk-1".into(),
+                label: "Disk 1".into(),
+                format: toml::Table::new(),
+                blob: Digest::of(b"disk"),
+            }],
+            extras: Vec::new(),
+        }
+        .encode()
+        .unwrap();
+        let blob = store.import(bytes.as_slice(), None).unwrap();
+        let config = Descriptor::new(mt::MEDIA_SET_CONFIG, blob.digest, blob.size);
+        let set = Manifest::new_media_set("synthetic", config.clone(), machine.layers).unwrap();
         let set = store.import_manifest(&set).unwrap();
         let index = store.root().join("images/index.json");
         let text = std::fs::read_to_string(&index).unwrap();
@@ -2362,7 +2522,8 @@ pub(super) mod tests {
         let summary = cache.summary(&set.digest).unwrap();
         assert_eq!(summary.kind, image_store::summary::ArtifactKind::MediaSet);
         assert!(summary.machine.is_none());
-        assert_eq!(summary.config, machine.config.digest);
+        assert_eq!(summary.config, config.digest);
+        assert_eq!(summary.media_set.as_ref().unwrap().media[0].label, "Disk 1");
         assert!(!summary.storage_blobs.is_empty());
         std::fs::rename(
             store.root().join("images/blobs"),

@@ -120,6 +120,37 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   workspace runs the new image); a revision that adds drive B: boots and the BIOS sees the
   drive; a CMOS-revision image boots without a CMOS checksum error. Firmware changes, a new fixed
   disk D:, catalogue editing and the "Keep the inserted floppies" choice remain open.
+- **2026-11-15 — Library Installation media collection and Import installation media…:** the
+  library tree has an Installation media node with the set count and Format (floppy sizes,
+  optical), Labels, Genre, Platform and Year facets; its virtualized rows show the set with its
+  disks ("4 x 1.44M"), tag, platform, extras count, stored/decoded size, redistribution, labels and
+  availability, with title search (disk labels and extra names are searchable too) and its own
+  sort. Everything comes from summaries, which now carry the set's ordered media (label, format,
+  decoded digest) and extras; older cached rows rebuild once. The set pane lists the disks in
+  catalogue order with format, geometry and short SHA-256, and the extras with kind, size, DOS
+  name and redistribution. Insert opens the running machine's matching drive's From library…
+  view with the set chosen, so insertion uses the existing verified path; optical, mixed-format
+  and mismatched sets show the reason. The shell draws the library only while no machine runs,
+  so in the app Insert currently always shows "No machine is running…"; the routing is covered by
+  a headless shell test with a running presenter. Add to machine…, Make transfer media…, Export
+  and the per-extra Open/Export… are disabled with "not available yet" reasons; sets have no
+  Start. File › Import installation media… (and the collection's toolbar) picks files or a
+  folder on the host and lists them on the library worker (a folder by the CLI's rule: hidden
+  files skipped, any other non-candidate refuses), reviews order (up/down), labels, the detected
+  format with an override, extras (kind, optional DOS 8.3 name, remove), title, tag (derived
+  from the title until edited), software platform, publisher, year, genre, labels and
+  description, then imports on the worker through `pc_image::media_import`, the code path that
+  `image media import` now uses too. Progress counts files; Cancel import stops before the next
+  file and writes no tag. Refusals read as the CLI prints them; re-importing the same review is
+  "Already imported" without writing, and a different set under an existing tag is a tag
+  conflict. A missing or stopped worker fails the dialog, which can then be closed. The command
+  line still refuses any existing tag before reading sources. Headless tests cover rows, facets,
+  search with hidden blobs, the pane, availability and Insert routing, the dialog model,
+  the worker import, refusals, cancel, re-import and worker failure. Manual checks: import a real
+  multi-disk folder and a file list with an odd-sized image (format override), add a PDF and a
+  zip as extras, re-import the same review, cancel a large import mid-way, browse the facets and
+  the pane at the default window size in both skins, and confirm Start stays disabled with a set
+  selected.
 - **2026-11-15 — New machine… wizard and zero bases:** File › New machine… (⌘N/Ctrl+N) opens a
   seven-step wizard that builds a new empty image in the local store, never a machine file:
   machine class (the closed list of seven; only AT 286 is selectable), motherboard with its
@@ -478,7 +509,7 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   and focus loss. Native visual acceptance remains manual.
 - **2026-11-14 — Disk publication review fixes:** failed CAS releases publication intent; strict artwork/metadata checks precede intent, and abandon preserves journals. Starts enforce pinned tags and fresh-session requests, retain one raw verification plus one logical-head/cache verification for layered disks, and reuse captured preparation. Discard uses a durable tombstone and generic sidecar locks, lists affected media and requires explicit confirmation. Flatten streams new raw heads at the layer depth limit; published local records preserve retention. Regression coverage includes process exits with layered parents and both CAS modes.
 - **2026-11-14 — Immutable disk layers and workspaces:** fixed disks seal deterministic sparse sector packs into parent-bound descriptors; chain reads use the existing sector interface and verify complete logical SHA-256. Named isolated workspaces retain journal policies, with a shared materialized cache for layered heads. Offline whole-machine publication includes all catalogue media and CMOS, verifies the closure, publishes by tag CAS and rebases the workspace through a durable retryable intent. Opt-in CLI commands run, list, discard and publish workspaces. Fault injection covers publication steps; tag deletion leaves shared blobs intact. GUI integration, registry transport and GC remain separate.
-- **2026-11-14 — Installation media sets:** Neutral deterministic OCI media-set codec, extras with provider-validated canonical DOS names, PC floppy/ISO storage formats, `image media import/ls/show`, and summary facets are implemented. Media > Insert offers From library, ordered catalogue loading, an initial disk selection and read-only or machine-local journals. Optical, incompatible and damaged sets remain visible with reasons. Imports preview their order and offer dry runs; preparation runs in background jobs, and transactional catalogue insertion reuses disks and verified receipts. The default store uses the shared unemu family data root directly, with store.toml and images/ inside; Preferences can override it. The library collection, Import dialog and transfer-medium generator remain deferred.
+- **2026-11-14 — Installation media sets:** Neutral deterministic OCI media-set codec, extras with provider-validated canonical DOS names, PC floppy/ISO storage formats, `image media import/ls/show`, and summary facets are implemented. Media > Insert offers From library, ordered catalogue loading, an initial disk selection and read-only or machine-local journals. Optical, incompatible and damaged sets remain visible with reasons. Imports preview their order and offer dry runs; preparation runs in background jobs, and transactional catalogue insertion reuses disks and verified receipts. The default store uses the shared unemu family data root directly, with store.toml and images/ inside; Preferences can override it. The library collection and Import dialog landed on 2026-11-15 (entry above); the transfer-medium generator remains deferred.
 - **2026-11-14 — Machine settings:** Machine > Settings… (Ctrl+, outside guest
   focus) opens the classic seven-tab property sheet from effective inherited
   values, including user-ROM machines without their image bytes. Assembly owns
@@ -494,7 +525,7 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   Saved local children edit in place with a diff and overwrite consent; firmware
   edits defer discovery to readiness checks.
 - **2026-11-14 — Firmware packages:** The neutral strict OCI codec, shared extras, PC roles/chip layouts/fit validation, ROM-folder import and `image firmware ls/show` are implemented. Import matches full hashes and lengths, rejects incomplete or ambiguous sets, preserves sources and publishes by CAS. Frontends explicitly select the store: desktop readiness honors Preferences, CLI run accepts --store/--no-store, and plain library loaders disable store lookup. Fully pinned declarations keep their image/chip shape; identical package re-import is idempotent and preselection store failures warn and fall back to declared paths and ROM folders; damaged selected packages block use. Machine-image import embeds ROMs and records package provenance. Firmware summaries expose role, board/class and catalogue facets without reading ROMs. The library's Firmware collection landed on 2026-11-15 (entry above); see [design §5.3](design/machine-images.md#53-firmware-packages).
-- **2026-11-14 — Installation media sets:** the design section and [mock-up](design/mockups/install-media.html) were approved by the maintainer. The codec, CLI and From library dialog are implemented; the library collection, Import dialog and transfer-medium generator remain deferred.
+- **2026-11-14 — Installation media sets:** the design section and [mock-up](design/mockups/install-media.html) were approved by the maintainer. The codec, CLI and From library dialog are implemented; the library collection and Import dialog followed on 2026-11-15; the transfer-medium generator remains deferred.
 - **2026-11-14 — PC machine image import:** `pc-image` imports resolved TOML/YAML machines into self-contained OCI blobs and local tags, validates PC bundle bindings and resolves them back to assembly input. Firmware, full media catalogues and CMOS are copied; journal generations freeze to whole raw bases through private recovery copies. `image import` requires an explicit store and tag, with `--create` for initialization; interrupted journals require named per-medium recovery choices. Validation and resolution keep large disks file-backed, and local import records retain policies and generation choices. Source files and journals remain unchanged. Layers, workspaces and registry transport remain separate.
 - **2026-11-14 — PC machine image import:** `pc-image` imports resolved TOML/YAML machines into self-contained OCI blobs and local tags, validates PC bundle bindings and resolves them back to assembly input. Firmware, full media catalogues and CMOS are copied; journal generations freeze to whole raw bases through private recovery copies. `image import` requires an explicit store and tag; interrupted journals require a recovery choice. Source files and journals remain unchanged. Layers, workspaces and registry transport remain separate.
 - **2026-11-14 — Firmware folder index and progress:** desktop readiness uses a

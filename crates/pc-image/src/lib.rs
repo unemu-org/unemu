@@ -13,6 +13,7 @@ pub mod firmware_import;
 mod firmware_readme;
 mod import;
 pub mod inspection;
+pub mod media_import;
 pub mod media_set;
 mod provider;
 pub mod revision;

@@ -198,8 +198,37 @@ running image workspace's `media/` directory, so discarding a Gaming-mode
 session removes them. Journal keys contain set digest and medium id, independently of drive
 unit. Store-local workspaces are allowed; immutable `images/blobs/` paths and
 aliases remain forbidden outputs. Catalogue provenance exposes set/medium GC
-roots. Write-protected new disks create no journal. The library collection,
-creation UI and extras transfer media remain deferred.
+roots. Write-protected new disks create no journal. Extras transfer media
+remain deferred.
+
+File › Import installation media… in the window validates and publishes through
+`pc_image::media_import`, the same code as `image media import`, so its refusals
+read as the CLI prints them. The CLI refuses any existing tag before reading a
+source. The window writes nothing when the tag exists: it resolves the stored set,
+refuses another artifact type or a different layout, metadata or title at once,
+and then compares the sources' raw SHA-256 with the stored decoded digests, so the
+same content reports already imported whether the set was stored compressed or
+raw, and anything else is a tag conflict with a hint to choose another tag. If
+another import publishes the same tag between the CLI's check and its publication
+with the identical set, the CLI prints that tag and digest and exits 0; a
+different set there is a tag conflict.
+
+Defaults differ where the window shows an editable value: a disk's label is the
+file name without its extension (the CLI uses the whole file name), the software
+platform is DOS (the CLI records none), the tag is derived from the title as
+`<title-words>:1.0` until edited (the CLI requires `--tag`), and publisher, year,
+genre, labels and description are optional fields (the CLI sets only the title).
+An extra's kind comes from the same extension rule and can be changed; its DOS
+name is suggested when the file name fits 8.3 and is otherwise left to the
+transfer medium. The window always compresses, like the CLI without
+`--no-compress`.
+Its headless tests, with the shared import and the CLI contract:
+
+```sh
+cargo test --offline -p window install_media
+cargo test --offline -p pc-image media_import
+cargo test --offline -p cli --test image_media_commands
+```
 
 In the Insert dialog only entries declared in the machine file show
 "fixed by the machine file". Disks added during the session with Browse… or
