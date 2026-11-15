@@ -30,7 +30,7 @@ use std::path::{Path, PathBuf};
 #[path = "support/fixtures.rs"]
 mod fixtures;
 
-const CPU_REV: &str = "fe240a56ac2040e3deaebb2537e642137ee02c71";
+const CPU_REV: &str = "060d446a883a9b2fc94b3ef91258cb4e6e98d916";
 const IMAGE: &str = "at-pm-test/at-pm-test-1200.img";
 const OPEN_BIOS: &str = "kiselev-bios/bios-xi8088-atreset.bin";
 // The BIOS image of machines/at-games-open.toml; checked against that file.

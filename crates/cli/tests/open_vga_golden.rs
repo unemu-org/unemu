@@ -20,7 +20,7 @@ mod fixtures;
 #[path = "support/at_games.rs"]
 mod support;
 
-const CPU_REV: &str = "fe240a56ac2040e3deaebb2537e642137ee02c71";
+const CPU_REV: &str = "060d446a883a9b2fc94b3ef91258cb4e6e98d916";
 const FETCH_SCRIPT: &str = include_str!("../../../vendor/vgabios/fetch.sh");
 
 const PROBE_GOLDEN_STOP: (u64, u64) = (0x0000, 0x880A);

@@ -4,7 +4,7 @@
 //! LIM Expanded Memory Specification 4.0, INT 67h AH=41h/43h/44h/45h;
 //! Intel 80286 Programmer's Reference Manual, Appendix A, Jcc and JMP.
 //! See machines/README.md §Playing DOS games. CPU revision:
-//! fe240a56ac2040e3deaebb2537e642137ee02c71.
+//! 060d446a883a9b2fc94b3ef91258cb4e6e98d916.
 
 use assembly::{
     ConsoleProbe, DeviceConfig, DeviceId, DeviceKind, ImageSource, LotechEmsCfg, MmioWindow,
@@ -161,7 +161,7 @@ fn freedos_mem_reports_lotech_expanded_memory() {
         return;
     };
     assert!(
-        include_str!("../../../Cargo.lock").contains("#fe240a56ac2040e3deaebb2537e642137ee02c71")
+        include_str!("../../../Cargo.lock").contains("#060d446a883a9b2fc94b3ef91258cb4e6e98d916")
     );
     for path in [
         "kiselev-bios/bios-xi8088-atreset.bin",

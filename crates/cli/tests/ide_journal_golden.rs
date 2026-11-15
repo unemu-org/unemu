@@ -99,7 +99,7 @@ fn session(machine: &mut AssembledMachine, command: &str) {
 #[ignore = "slow: two BIOS/FreeDOS boots and a persistent ATA write/read session"]
 fn freedos_ide_journal_survives_a_fresh_assembly_without_changing_base() {
     assert!(
-        include_str!("../../../Cargo.lock").contains("#fe240a56ac2040e3deaebb2537e642137ee02c71")
+        include_str!("../../../Cargo.lock").contains("#060d446a883a9b2fc94b3ef91258cb4e6e98d916")
     );
     for path in [
         "kiselev-bios/bios-xi8088-atreset.bin",

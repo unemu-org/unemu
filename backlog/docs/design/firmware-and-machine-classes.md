@@ -42,7 +42,7 @@ derived volatile CMOS and a pinned
 RTC. Its regression test accepts FreeCOM's date/time with Enter and polls for
 the DOS prompt, recording only verdicts, checkpoints, counts, stop location and
 the final MDA-plane hash. IBM regression expectations pin this measurement;
-the Landmark AT full-pass regression at CPU `fe240a5` is also pinned. See
+the Landmark AT full-pass regression at CPU `060d446` is also pinned. See
 [compatibility diagnostics](compatibility-diagnostics.md#3-golden-capture-rule)
 §3 for its media-equipped configuration and measured values. Other firmware
 revisions remain unqualified.
@@ -1139,7 +1139,7 @@ at 1F0h–1F7h and 3F6h on IRQ14. This works for four reasons:
 The original investigation identified two prerequisites:
 
 1. **x86jit string port I/O** (`INS`/`OUTS` with `REP`) in Real16 is now
-   available at the current pin `fe240a5`, with machine integration tests.
+   available at the current pin `060d446`, with machine integration tests.
    The historical measurement at `96a49a9` found it missing; an XUB boot
    remains a separate qualification.
 2. **Port split at 3F6h.** The FDC's decode shrinks from 3F0h–3F7h to

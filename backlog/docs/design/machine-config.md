@@ -723,17 +723,20 @@ adjacent devices reach the bus despite the pinned CPU's single-region containmen
 requirement. RAM/MMIO crossings remain a [known CPU limitation](../status.md#broken--known-defects).
 
 **READ: region-boundary exception.** At CPU pin `44403dd`, the core's
-`x86jit-core/src/memory.rs`, function `region_at`, requires a scalar access to
-fit one region; `read_mode` uses that check. The host path's `region_for` and
-`read_bytes` also require one containing region. Assembly supplies distinct
-RAM/ROM/MMIO regions; the core reports `Unmapped` for a word crossing their
-boundary even when both bytes are mapped. Tests pin today's core behavior
-for prefix-free word reads at FFFF:000F
-(FFFFFh, ROM/empty bus), at FFFF:002F with 32 bytes of extended RAM (10001Fh,
-RAM/empty bus), and a host word read at FDFFFFh in the full RAM configuration
-(RAM/high alias). Byte reads and byte DMA still work at each boundary. No core
-change is made here. Host `write_mem` bypasses ROM immutability for loading;
-high-address immutability tests use guest DMA writes and host reads.
+`x86jit-core/src/memory.rs`, function `region_at`, required a scalar access to
+fit one region; `read_mode` used that check. Assembly supplies distinct
+RAM/ROM/MMIO regions, so the core reported `Unmapped` for a guest word crossing
+their boundary even when both bytes were mapped. **MEASURED at CPU pin
+`060d446a`:** guest words crossing adjacent ROM, RAM or empty-bus regions are
+now performed. Tests pin prefix-free word reads at FFFF:000F (FFFFFh, ROM/empty
+bus) and at FFFF:002F with 32 bytes of extended RAM (10001Fh, RAM/empty bus):
+each completes with AX=FF00h, the low byte from ROM or RAM and the high byte
+from the empty-bus fill. The host read path (`region_for`, `read_bytes`) still
+requires one containing region: a host word read at FDFFFFh in the full RAM
+configuration (RAM/high alias) still reports `Unmapped`. Byte reads and byte
+DMA work at each boundary. No core change is made here. Host `write_mem`
+bypasses ROM immutability for loading; high-address immutability tests use
+guest DMA writes and host reads.
 
 ### Port window width
 

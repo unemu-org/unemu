@@ -19,7 +19,7 @@ const OPTIONS: AssemblyOptions = AssemblyOptions {
 #[path = "support/fixtures.rs"]
 mod fixtures;
 
-const CPU_REV: &str = "fe240a56ac2040e3deaebb2537e642137ee02c71";
+const CPU_REV: &str = "060d446a883a9b2fc94b3ef91258cb4e6e98d916";
 // These values moved when the open profile replaced its MDA console with the
 // VGA card and open video BIOS, and when the test began sampling POST.
 const OPEN_GOLDEN_RETIRED: u64 = 15_241_264;

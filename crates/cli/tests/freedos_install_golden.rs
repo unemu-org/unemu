@@ -232,7 +232,7 @@ fn polling_rejects_a_nonadvancing_clock() {
 #[ignore = "slow: open FreeDOS partition, format, system transfer and hard disk boot"]
 fn freedos_installs_and_boots_from_a_blank_hard_disk() {
     assert!(
-        include_str!("../../../Cargo.lock").contains("#fe240a56ac2040e3deaebb2537e642137ee02c71")
+        include_str!("../../../Cargo.lock").contains("#060d446a883a9b2fc94b3ef91258cb4e6e98d916")
     );
     for path in [
         "kiselev-bios/bios-xi8088-atreset.bin",

@@ -467,7 +467,7 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   `dos_prompt=true`, VGA text SHA-256
   `a2b73fae1c7ee569829051dea41b7c997aaeace94f3d28a8d9ee7ab89e364452`.
   The test pins these values and the complete POST checkpoint sequence against
-  CPU revision `fe240a56ac2040e3deaebb2537e642137ee02c71`.
+  CPU revision `060d446a883a9b2fc94b3ef91258cb4e6e98d916`.
   The IBM profile's measured boots are POST and guest Ctrl+Alt+Del with a blank
   type-2 disk, ending at `A:\>`. FDISK, FORMAT, copying and running from C:
   through the IBM fixed-disk BIOS on the AT adapter remain unmeasured, as does
@@ -1000,7 +1000,7 @@ smooth-scrolling timing finer than a frame remain unmodelled. See
   synthetic fast tests keep their presets.
 - **Machines are declarative.** A `MachineConfig` (the `assembly` crate) is built by one
   `assemble()` and run under a `RunPolicy`; presets replace the old hand-written runners.
-- **CPU pin:** `fe240a56ac2040e3deaebb2537e642137ee02c71` (x86jit `main`).
+- **CPU pin:** `060d446a883a9b2fc94b3ef91258cb4e6e98d916` (x86jit `main`).
   READ: real-mode I286/I386 machine execution now accepts the Application Real16
   instruction set, including AAD/AAM, BCD/SALC, x87 with MSW.EM/TS checks and
   resumable REP INS/OUTS. I286 rejects 386-only 66h/67h forms with #UD.
@@ -1279,7 +1279,7 @@ input levels. A low input may still have an ISR bit from an earlier INTA.
 
 ibm-5170 has an empty 80287 socket by default (maintainer decision 2026-11-12);
 the core reports no coprocessor (x86jit decision-25).
-The pin is `fe240a56ac2040e3deaebb2537e642137ee02c71`. The choice is carried by
+The pin is `060d446a883a9b2fc94b3ef91258cb4e6e98d916`. The choice is carried by
 `cpu.fpu = "none"` (default) or `"80287"`, and derived CMOS 14h combines the
 selected display bits with coprocessor bit 1 and the drive inventory. Explicit
 NVRAM images retain their contents.
@@ -1446,9 +1446,12 @@ wall-time comparison and historical CPU sample shares.
   [`Memory::region_at`](https://github.com/unemu-org/x86jit/blob/a92b676e081ce862dcb48c82645b3d3a8aa2364f/x86jit-core/src/memory.rs#L2512-L2534)
   requires the whole transfer inside one region before read/write paths check
   for MMIO (`memory.rs:2730`, `memory.rs:2864`). Neither part of the scalar
-  transfer is performed. Assembly coalesces adjacent MMIO device windows so
-  those crossings reach the bus, but mixed RAM/MMIO accesses need the upstream
-  CPU fix tracked by `xj-ir6.12 (x86jit)`.
+  transfer is performed. RAM/ROM crossings, empty-bus fill included, are fixed
+  at x86jit `060d446a` (MEASURED: guest boundary words complete). A span that
+  includes an MMIO (Trap) byte keeps the old exit (READ, x86jit `060d446a`
+  commit message). Assembly coalesces adjacent MMIO device windows so
+  those crossings reach the bus, but mixed RAM/MMIO accesses remain unsupported,
+  tracked as `xj-ir6.30 (x86jit)`.
 - Journal selection is available in machine-file floppy tables. The CLI and
   window frontends do not load machine files yet; that integration is in progress.
   Immutable-image export (`media commit`/`compact`) and atomic retention pruning

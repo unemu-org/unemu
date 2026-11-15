@@ -3787,8 +3787,11 @@ mod tests {
     }
 
     #[test]
-    fn firmware_region_boundary_words_keep_current_core_failure() {
-        use cpu::{Cpu, CpuError};
+    fn firmware_region_boundary_words_span_adjacent_regions() {
+        use cpu::{Cpu, CpuError, CpuReg, CpuStop};
+        // A guest word whose bytes lie in adjacent mapped regions (ROM or RAM,
+        // then the empty-bus fill) completes as one bus access would. The host
+        // read path still needs one region holding the whole span.
         for (extended, offset, address) in [(0, 0x000Fu16, 0xFFFFF), (0x20, 0x002F, 0x10001F)] {
             let mut config = crate::bios(vec![0; 0x8000], Some(Vec::new()));
             config.cpu.reset = ResetSpec::Entry { cs: 0, ip: 0x7C00 };
@@ -3806,9 +3809,10 @@ mod tests {
             }
             let result = cpu.run(Some(100));
             assert!(
-                matches!(result, Err(CpuError::Unmapped { addr }) if addr == address),
-                "{result:?}"
+                matches!(result, Ok(CpuStop::Halt)),
+                "{address:#x}: {result:?}"
             );
+            assert_eq!(cpu.reg(CpuReg::Rax) & 0xFFFF, 0xFF00, "{address:#x}");
         }
         let mut config = crate::bios(vec![0; 0x8000], Some(Vec::new()));
         config
