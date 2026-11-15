@@ -52,8 +52,11 @@
 //! sectors) plus owned [`SectorMedia`]. The four standard PC floppy formats are
 //! provided as [`FloppyGeometry`] constants — 1.44 MB (80×2×18), 1.2 MB
 //! (80×2×15), 720 KB (80×2×9), and 360 KB (40×2×9) — so drive 0 and drive 1 can
-//! differ. A CHS address maps to an image offset with the addressed drive's own
-//! geometry by `lba = (cyl * heads + head) * sectors_per_track + (sector - 1)`,
+//! differ. The installed mechanism is a separate [`DriveType`]: a 1.44 MB drive
+//! also takes 720 KB media and a 1.2 MB drive 360 KB media (see Drive and
+//! medium types below). A CHS address maps to an image offset with the
+//! inserted medium's own geometry by
+//! `lba = (cyl * heads + head) * sectors_per_track + (sector - 1)`,
 //! `offset = lba * 512`. An empty bay supplies no index pulses: READ ID and
 //! READ/WRITE DATA wait in execution until reset or insertion. An address outside mounted
 //! media's geometry terminates abnormally with a no-data status.
@@ -109,9 +112,30 @@
 //! Device::reset select 500 kbps to preserve the default high-density boot
 //! configuration. DOR reset preserves this adapter latch, separate from the
 //! FDC command reset (IBM reference, Digital Output Register, p. 12).
-//! The geometry describes both drive and medium: 1.44/1.2 MB record at 500 kbps,
-//! 720/360 KB at 250 kbps. A 360 KB disk in a 1.2 MB drive at 300 kbps is not
-//! representable without separate drive and medium types.
+//!
+//! ## Drive and medium types
+//!
+//! IBM Personal Computer AT Technical Reference, High Capacity Diskette Drive:
+//! the 1.2 MB drive spins at 360 rpm, reads 1.2 MB media at 500 kbps and
+//! 320/360 KB media at 300 kbps; the BIOS steps it twice per track for the
+//! 40-track media. A 360 KB drive reads its media at 250 kbps. ASSUMED for the 3.5-inch drives, which that reference predates:
+//! a 1.44 MB drive reads 1.44 MB media at 500 kbps and 720 KB media at
+//! 250 kbps over the same 80 cylinders, and a 720 KB drive takes only 720 KB
+//! media at 250 kbps. The inserted medium in its drive sets the rate it
+//! answers at; any other CCR rate faults with ST1 MA as below. Custom
+//! geometries form a drive type of their own that takes only that geometry;
+//! ASSUMED: they record at 500 kbps above nine sectors per track and at
+//! 250 kbps otherwise.
+//!
+//! A 1.2 MB drive has 80 physical cylinders, and a 360 KB medium has 40
+//! tracks, written at the even physical cylinders. The PCN is the head's
+//! physical cylinder: track `PCN / 2` lies under the head at an even PCN, and
+//! its ID fields carry that track number as C. At an odd PCN the head sits
+//! between tracks, so READ ID and READ/WRITE DATA find no ID field and end with
+//! ST1 MA. A command C that differs from the track's ID cylinder ends with
+//! ST1 ND and ST2 WC (NEC µPD765 datasheet, Status Register 2, Wrong Cylinder).
+//! ASSUMED, as before: with one physical cylinder per track, READ/WRITE DATA
+//! address the command's C directly, without comparing it with the PCN.
 //!
 //! NEC µPD765 datasheet, READ ID / READ DATA / WRITE DATA and Status Register 1,
 //! MA; Intel 8272A datasheet, Command Descriptions and Table 12, Status Registers:
@@ -301,9 +325,9 @@ impl FloppyGeometry {
         sectors_per_track: 9,
     };
 
-    /// Recording rate in the AT adapter's CCR encoding. The standard HD
-    /// formats use 500 kbps and DD formats 250 kbps; drive spindle speed is
-    /// not separate from medium geometry (see module coverage).
+    /// Recording rate in the AT adapter's CCR encoding in the medium's own
+    /// drive type: the standard HD formats use 500 kbps and DD formats
+    /// 250 kbps. [`DriveType`] adjusts it for a 360 KB medium in a 1.2 MB drive.
     /// ASSUMED: custom layouts use the same density split at nine sectors.
     fn recording_rate(&self) -> u8 {
         if self.sectors_per_track > 9 {
@@ -345,10 +369,81 @@ impl FloppyGeometry {
     }
 }
 
-/// A floppy mounted in one of the controller's four drive positions: its
-/// [`FloppyGeometry`] and owned sector media.
+/// CCR encoding of 300 kbps (IBM PC AT Technical Reference, Diskette Control
+/// Register (3F7h)).
+const RATE_300_KBPS: u8 = 1;
+
+/// The drive mechanism installed at a drive-select position, separate from
+/// the medium inserted in it. A type is named by its own, densest format,
+/// whose cylinder count is the drive's physical cylinder count; see the
+/// module's Drive and medium types for the media each type takes.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct DriveType {
+    native: FloppyGeometry,
+}
+
+impl DriveType {
+    /// 3.5-inch 1.44 MB drive; also takes 720 KB media.
+    pub const HD1440: Self = Self::new(FloppyGeometry::HD1440);
+    /// 5.25-inch 1.2 MB drive; also takes 360 KB media, stepped twice per track.
+    pub const HD1200: Self = Self::new(FloppyGeometry::HD1200);
+    /// 3.5-inch 720 KB drive.
+    pub const DD720: Self = Self::new(FloppyGeometry::DD720);
+    /// 5.25-inch 360 KB drive.
+    pub const DD360: Self = Self::new(FloppyGeometry::DD360);
+
+    /// The drive type whose own format is `native`.
+    #[must_use]
+    pub const fn new(native: FloppyGeometry) -> Self {
+        Self { native }
+    }
+
+    /// The drive's own format.
+    #[must_use]
+    pub const fn native(&self) -> FloppyGeometry {
+        self.native
+    }
+
+    /// The media this drive takes, its own format first.
+    pub fn media(&self) -> impl Iterator<Item = FloppyGeometry> {
+        let lower = if *self == Self::HD1440 {
+            Some(FloppyGeometry::DD720)
+        } else if *self == Self::HD1200 {
+            Some(FloppyGeometry::DD360)
+        } else {
+            None
+        };
+        std::iter::once(self.native).chain(lower)
+    }
+
+    /// Whether a medium of `geometry` fits this drive.
+    #[must_use]
+    pub fn accepts(&self, geometry: FloppyGeometry) -> bool {
+        self.media().any(|medium| medium == geometry)
+    }
+
+    /// The CCR rate an accepted `medium` answers at in this drive: a 360 KB
+    /// medium turns at 360 rpm in a 1.2 MB drive, so it reads at 300 kbps.
+    fn data_rate(&self, medium: FloppyGeometry) -> u8 {
+        if self.double_steps(medium) {
+            RATE_300_KBPS
+        } else {
+            medium.recording_rate()
+        }
+    }
+
+    /// Whether a medium of `medium` has its tracks at every second physical
+    /// cylinder of this drive (40-track media in an 80-cylinder 1.2 MB drive).
+    fn double_steps(&self, medium: FloppyGeometry) -> bool {
+        *self == Self::HD1200 && medium == FloppyGeometry::DD360
+    }
+}
+
+/// A floppy medium for one of the controller's four drive positions: its
+/// [`FloppyGeometry`] and owned sector media. The drive mechanism it sits in
+/// is the position's [`DriveType`].
 pub struct Drive {
-    /// Physical format of the mounted disk.
+    /// Physical format of the disk.
     pub geometry: FloppyGeometry,
     media: Box<dyn SectorMedia>,
     journaled: bool,
@@ -413,8 +508,8 @@ pub enum MediaChangeError {
     /// DMA must complete before opening the drive door.
     #[error("floppy DMA is still pending")]
     DmaPending,
-    /// Mixed-density mechanics are not modelled.
-    #[error("medium geometry differs from drive type")]
+    /// The drive type does not take a medium of this geometry.
+    #[error("the drive type does not take this medium geometry")]
     GeometryMismatch,
 }
 
@@ -446,6 +541,9 @@ const ST1_NOT_WRITABLE: u8 = 1 << 1;
 const ST1_END_OF_CYLINDER: u8 = 1 << 7;
 /// NEC µPD765 / Intel 8272A datasheets, Status Register 1, Overrun.
 const ST1_OVERRUN: u8 = 1 << 4;
+/// NEC µPD765 / Intel 8272A datasheets, Status Register 2, Wrong Cylinder:
+/// the ID field's C differs from the command's C.
+const ST2_WRONG_CYLINDER: u8 = 1 << 4;
 
 /// NEC µPD765 / Intel 8272A datasheets, Status Register 3, Two Side.
 const ST3_TWO_SIDE: u8 = 1 << 3;
@@ -547,8 +645,9 @@ pub struct Upd765 {
     /// Media mounted in each of the four drive positions the DOR can select.
     /// `None` supplies no index pulses; TRACK 0 depends on the installed drive.
     drives: [Option<Drive>; 4],
-    /// Drive wiring is configuration, independent of removable media and snapshots.
-    installed: [bool; 4],
+    /// Installed drive mechanisms. Drive wiring is configuration, independent of
+    /// removable media and snapshots.
+    drive_types: [Option<DriveType>; 4],
     media_lists: [Vec<Option<Drive>>; 4],
     inserted: [Option<usize>; 4],
     disk_changed: [bool; 4],
@@ -578,7 +677,7 @@ impl Upd765 {
             pending_read: None,
             pending_write: None,
             drives: [None, None, None, None],
-            installed: [false; 4],
+            drive_types: [None; 4],
             media_lists: std::array::from_fn(|_| Vec::new()),
             inserted: [None; 4],
             disk_changed: [false; 4],
@@ -601,10 +700,15 @@ impl Upd765 {
     }
 
     /// Create a controller with media mounted per drive position. Each entry
-    /// carries its own geometry, so drive 0 and drive 1 may differ.
+    /// carries its own geometry, so drive 0 and drive 1 may differ; each
+    /// position gets the drive type whose own format is its medium's geometry.
     #[must_use]
     pub fn with_drives(drives: [Option<Drive>; 4]) -> Self {
-        let installed = std::array::from_fn(|unit| drives[unit].is_some());
+        let drive_types = std::array::from_fn(|unit| {
+            drives[unit]
+                .as_ref()
+                .map(|drive| DriveType::new(drive.geometry))
+        });
         let inserted = std::array::from_fn(|unit| drives[unit].as_ref().map(|_| 0));
         let media_lists = std::array::from_fn(|unit| {
             if drives[unit].is_some() {
@@ -615,31 +719,34 @@ impl Upd765 {
         });
         Self {
             drives,
-            installed,
+            drive_types,
             inserted,
             media_lists,
             ..Self::new()
         }
     }
 
-    /// Install a drive and configure its catalogue before power-on, even if empty.
+    /// Install a drive of `drive_type` and configure its catalogue before
+    /// power-on, even if empty. Every entry must be a medium the drive takes.
     /// The `empty` flag opens the door and asserts disk change, regardless of
     /// catalogue contents (see the module's AT interface policy).
     pub fn set_media_list(
         &mut self,
         unit: usize,
+        drive_type: DriveType,
         media: Vec<Drive>,
         empty: bool,
     ) -> Result<(), MediaChangeError> {
         if unit >= 4 {
             return Err(MediaChangeError::UnknownDrive);
         }
-        if let Some(first) = media.first() {
-            if media.iter().any(|entry| entry.geometry != first.geometry) {
-                return Err(MediaChangeError::GeometryMismatch);
-            }
+        if media
+            .iter()
+            .any(|entry| !drive_type.accepts(entry.geometry))
+        {
+            return Err(MediaChangeError::GeometryMismatch);
         }
-        self.installed[unit] = true;
+        self.drive_types[unit] = Some(drive_type);
         self.drives[unit] = None;
         self.inserted[unit] = None;
         self.media_lists[unit] = media.into_iter().map(Some).collect();
@@ -660,8 +767,8 @@ impl Upd765 {
         }
     }
 
-    /// Extend an installed drive's catalogue without changing its door or medium.
-    /// Mixed-density mechanics are absent; IBM PC AT Technical Reference,
+    /// Extend an installed drive's catalogue with a medium its drive type takes,
+    /// without changing its door or medium. IBM PC AT Technical Reference,
     /// Fixed Disk and Diskette Drive Adapter, Interface Lines describes the
     /// separate door-change signal. Host catalogue edits do not assert it.
     pub fn append_medium(&mut self, unit: usize, medium: Drive) -> Result<usize, MediaChangeError> {
@@ -698,14 +805,10 @@ impl Upd765 {
         geometry: FloppyGeometry,
     ) -> Result<(), MediaChangeError> {
         self.check_media_boundary()?;
-        if !self.installed.get(unit).copied().unwrap_or(false) {
-            return Err(MediaChangeError::UnknownDrive);
-        }
-        if self.drives[unit]
-            .iter()
-            .chain(self.media_lists[unit].iter().filter_map(Option::as_ref))
-            .any(|medium| medium.geometry != geometry)
-        {
+        let drive_type = self
+            .drive_type(unit)
+            .ok_or(MediaChangeError::UnknownDrive)?;
+        if !drive_type.accepts(geometry) {
             return Err(MediaChangeError::GeometryMismatch);
         }
         Ok(())
@@ -749,6 +852,12 @@ impl Upd765 {
             self.execute();
         }
         Ok(())
+    }
+
+    /// The drive mechanism installed at `unit`, or `None` for an absent position.
+    #[must_use]
+    pub fn drive_type(&self, unit: usize) -> Option<DriveType> {
+        self.drive_types.get(unit).copied().flatten()
     }
 
     /// Catalogue entry currently inserted, or an open door.
@@ -942,7 +1051,7 @@ impl Upd765 {
         let drive_head = self.command[1] & 0b111;
         let unit = usize::from(drive_head & 0b11);
         let mut st3 = ST3_READY | drive_head;
-        if self.installed[unit] && self.present_cylinder[unit] == 0 {
+        if self.drive_types[unit].is_some() && self.present_cylinder[unit] == 0 {
             st3 |= ST3_TRACK_ZERO;
         }
         if let Some(drive) = &self.drives[unit] {
@@ -968,7 +1077,7 @@ impl Upd765 {
         self.st0 = ST0_SEEK_END | drive;
         self.step();
         self.present_cylinder[usize::from(drive)] = 0;
-        if !self.installed[usize::from(drive)] {
+        if self.drive_types[usize::from(drive)].is_none() {
             self.st0 |= ST0_ABNORMAL | ST0_EQUIPMENT_CHECK;
         }
         self.reset_poll = 0;
@@ -1025,19 +1134,25 @@ impl Upd765 {
 
     /// READ ID: report synthetic C/H/R/N on mounted media. Without index pulses,
     /// stay in execution until reset or insertion (NEC µPD765A, READ ID and ST1 MA).
+    /// A double-stepped medium's ID cylinder is the track under the head; between
+    /// tracks there is no ID field (see the module's drive and medium types).
     fn cmd_read_id(&mut self) {
         let drive_head = self.command[1];
         let drive = drive_head & 0b11;
         let head = (drive_head >> 2) & 1;
-        let cylinder = self.present_cylinder[usize::from(drive)];
-        let Some(media) = self.drives[usize::from(drive)].as_ref() else {
+        let unit = usize::from(drive);
+        let pcn = self.present_cylinder[unit];
+        let Some(media) = self.drives[unit].as_ref() else {
             self.phase = Phase::Execution;
             return;
         };
-        if self.data_rate != media.geometry.recording_rate() {
-            self.command_fault(drive, head, cylinder, 1, 2, 0, ST1_MISSING_ADDRESS_MARK);
+        let geometry = media.geometry;
+        let track = self.track_under_head(unit, geometry);
+        let Some(cylinder) = track.filter(|_| self.data_rate == self.medium_rate(unit, geometry))
+        else {
+            self.command_fault(drive, head, pcn, 1, 2, 0, ST1_MISSING_ADDRESS_MARK);
             return;
-        }
+        };
         self.st0 = (head << 2) | drive;
         self.raise_irq();
         self.result = vec![self.st0, 0, 0, cylinder, head, 1, 2];
@@ -1066,7 +1181,7 @@ impl Upd765 {
             return;
         };
         let geometry = media.geometry;
-        if self.data_rate != geometry.recording_rate() {
+        if self.data_rate != self.medium_rate(usize::from(drive), geometry) {
             self.command_fault(
                 drive,
                 head,
@@ -1076,6 +1191,11 @@ impl Upd765 {
                 0,
                 ST1_MISSING_ADDRESS_MARK,
             );
+            return;
+        }
+        if let Some((st1, st2)) = self.id_search_fault(usize::from(drive), cylinder, geometry) {
+            self.command_fault(drive, head, cylinder, sector, sector_size_code, 0, st1);
+            self.result[2] = st2;
             return;
         }
 
@@ -1160,6 +1280,46 @@ impl Upd765 {
             }
         }
         (cylinder, head, sector)
+    }
+
+    /// The CCR rate the medium of `geometry` answers at in drive `unit`.
+    fn medium_rate(&self, unit: usize, geometry: FloppyGeometry) -> u8 {
+        self.drive_types[unit].map_or_else(
+            || geometry.recording_rate(),
+            |drive_type| drive_type.data_rate(geometry),
+        )
+    }
+
+    /// The medium track under the head of drive `unit`: the PCN, or for a
+    /// double-stepped medium half an even PCN; `None` between two tracks.
+    fn track_under_head(&self, unit: usize, geometry: FloppyGeometry) -> Option<u8> {
+        let pcn = self.present_cylinder[unit];
+        if self.drive_types[unit].is_some_and(|drive_type| drive_type.double_steps(geometry)) {
+            pcn.is_multiple_of(2).then_some(pcn / 2)
+        } else {
+            Some(pcn)
+        }
+    }
+
+    /// The ID search of READ/WRITE DATA on a double-stepped medium: between
+    /// tracks no ID field is found (ST1 MA); an ID cylinder other than the
+    /// command's C ends with ST1 ND and ST2 WC (NEC µPD765 datasheet, READ
+    /// DATA and Status Registers 1 and 2). Returns the fault's ST1 and ST2.
+    /// Single-stepped media keep addressing the command's C directly.
+    fn id_search_fault(
+        &self,
+        unit: usize,
+        cylinder: u8,
+        geometry: FloppyGeometry,
+    ) -> Option<(u8, u8)> {
+        if !self.drive_types[unit].is_some_and(|drive_type| drive_type.double_steps(geometry)) {
+            return None;
+        }
+        match self.track_under_head(unit, geometry) {
+            None => Some((ST1_MISSING_ADDRESS_MARK, 0)),
+            Some(track) if track != cylinder => Some((ST1_NO_DATA, ST2_WRONG_CYLINDER)),
+            Some(_) => None,
+        }
     }
 
     /// Terminate READ ID or READ/WRITE DATA abnormally: build the seven-byte result
@@ -1278,7 +1438,7 @@ impl Upd765 {
             return;
         }
 
-        if self.data_rate != geometry.recording_rate() {
+        if self.data_rate != self.medium_rate(usize::from(drive), geometry) {
             self.command_fault(
                 drive,
                 head,
@@ -1288,6 +1448,11 @@ impl Upd765 {
                 0,
                 ST1_MISSING_ADDRESS_MARK,
             );
+            return;
+        }
+        if let Some((st1, st2)) = self.id_search_fault(usize::from(drive), cylinder, geometry) {
+            self.command_fault(drive, head, cylinder, sector, sector_size_code, 0, st1);
+            self.result[2] = st2;
             return;
         }
 
@@ -1566,13 +1731,13 @@ impl Device for Upd765 {
         let trace_policy = self.trace.policy();
         // A controller reset clears the registers but does not eject any disk.
         let drives = std::mem::take(&mut self.drives);
-        let installed = self.installed;
+        let drive_types = self.drive_types;
         let media_lists = std::mem::take(&mut self.media_lists);
         let inserted = self.inserted;
         let disk_changed = self.disk_changed;
         *self = Self {
             drives,
-            installed,
+            drive_types,
             media_lists,
             inserted,
             disk_changed,
@@ -1990,6 +2155,7 @@ mod tests {
         let mut fdc = ready_fdc(vec![0x11; SECTOR_SIZE]);
         fdc.set_media_list(
             0,
+            DriveType::HD1440,
             vec![
                 Drive::new(FloppyGeometry::HD1440, vec![0x11; SECTOR_SIZE]),
                 Drive::new_read_only(FloppyGeometry::HD1440, vec![0x22; SECTOR_SIZE]),
@@ -1999,6 +2165,7 @@ mod tests {
         .unwrap();
         fdc.set_media_list(
             1,
+            DriveType::HD1440,
             vec![Drive::new(FloppyGeometry::HD1440, vec![0x33; SECTOR_SIZE])],
             false,
         )
@@ -2126,9 +2293,16 @@ mod tests {
             for stage in 0..3 {
                 match stage {
                     1 => swap_fdc(&mut bus)
-                        .set_media_list(1, vec![Drive::new(FloppyGeometry::HD1440, vec![])], true)
+                        .set_media_list(
+                            1,
+                            DriveType::HD1440,
+                            vec![Drive::new(FloppyGeometry::HD1440, vec![])],
+                            true,
+                        )
                         .unwrap(),
-                    2 => swap_fdc(&mut bus).set_media_list(3, vec![], true).unwrap(),
+                    2 => swap_fdc(&mut bus)
+                        .set_media_list(3, DriveType::HD1440, vec![], true)
+                        .unwrap(),
                     _ => {}
                 }
                 for unit in 0..4 {
@@ -2148,7 +2322,12 @@ mod tests {
     fn floppy_media_empty_power_on_asserts_change_until_inserted_and_stepped() {
         let mut bus = swap_bus();
         swap_fdc(&mut bus)
-            .set_media_list(0, vec![Drive::new(FloppyGeometry::HD1440, vec![])], true)
+            .set_media_list(
+                0,
+                DriveType::HD1440,
+                vec![Drive::new(FloppyGeometry::HD1440, vec![])],
+                true,
+            )
             .unwrap();
         assert_eq!(bus.port_read(DIR_CCR, 1).unwrap(), 0x80);
         bus_command(&mut bus, &[7, 0]);
@@ -2188,7 +2367,7 @@ mod tests {
                 })
                 .collect();
             swap_fdc(&mut bus)
-                .set_media_list(0, entries, false)
+                .set_media_list(0, DriveType::HD1440, entries, false)
                 .unwrap();
             let saved = bus.device_mut().save();
             bus.device_mut().restore(&saved).unwrap();
@@ -3076,7 +3255,8 @@ mod tests {
     fn installed_empty_drive_recalibrates_without_equipment_check() {
         for unit in 0..4 {
             let mut fdc = ready_drives([None, None, None, None]);
-            fdc.set_media_list(usize::from(unit), vec![], true).unwrap();
+            fdc.set_media_list(usize::from(unit), DriveType::HD1440, vec![], true)
+                .unwrap();
             let mut bus = MockBus::new(Box::new(fdc));
             assert_empty_drive_recalibrates(&mut bus, unit);
         }
@@ -3111,7 +3291,9 @@ mod tests {
     #[test]
     fn installed_empty_drive_track_zero_follows_seek_and_recalibrate() {
         let mut bus = MockBus::new(Box::new(ready_drives([None, None, None, None])));
-        swap_fdc(&mut bus).set_media_list(0, vec![], true).unwrap();
+        swap_fdc(&mut bus)
+            .set_media_list(0, DriveType::HD1440, vec![], true)
+            .unwrap();
         bus_command(&mut bus, &[4, 0]);
         assert_eq!(bus_results(&mut bus, 1), [ST3_READY | ST3_TRACK_ZERO]);
         bus_command(&mut bus, &[0x0f, 0, 40]);
@@ -3140,7 +3322,9 @@ mod tests {
         bus.device_mut().reset();
         bus.device_mut().restore(&saved).unwrap();
         assert_empty_drive_recalibrates(&mut bus, 0);
-        swap_fdc(&mut bus).set_media_list(1, vec![], true).unwrap();
+        swap_fdc(&mut bus)
+            .set_media_list(1, DriveType::HD1440, vec![], true)
+            .unwrap();
         bus.device_mut().reset();
         bus.port_write(DOR, 1, 0x0d).unwrap();
         bus_command(&mut bus, &[4, 1]);
@@ -4698,5 +4882,284 @@ mod tests {
             (0x55, 0xAA),
             "the FAT12 boot sector carries the boot signature"
         );
+    }
+
+    /// A ready controller with one drive of `drive_type` holding `media` in
+    /// unit 0, the first entry inserted, at CCR `rate`.
+    fn typed_bus(drive_type: DriveType, media: Vec<Drive>, rate: u8) -> MockBus {
+        let mut fdc = ready_drives([None, None, None, None]);
+        fdc.set_media_list(0, drive_type, media, false).unwrap();
+        fdc.port_write(DIR_CCR, 1, u32::from(rate)).unwrap();
+        MockBus::new(Box::new(fdc))
+    }
+
+    fn bus_seek(bus: &mut MockBus, unit_head: u8, cylinder: u8) {
+        bus_command(bus, &[0x0F, unit_head, cylinder]);
+        bus_command(bus, &[0x08]);
+        assert_eq!(bus_results(bus, 2), [0x20 | unit_head, cylinder]);
+    }
+
+    /// READ DATA of one sector: the DMA bytes, or the seven fault result bytes.
+    fn try_read(bus: &mut MockBus, unit_head: u8, c: u8, h: u8, r: u8) -> Result<Vec<u8>, Vec<u8>> {
+        bus_command(bus, &[0x46, unit_head, c, h, r, 2, r, 0x1B, 0xFF]);
+        let Some(request) = bus.device_mut().take_dma_request() else {
+            return Err(bus_results(bus, 7));
+        };
+        let DmaOp::ToMemory(bytes) = request.op else {
+            panic!("READ DMA direction");
+        };
+        bus.device_mut().dma_complete(DmaOutcome::ToMemory {
+            transferred: bytes.len(),
+            terminal_count: true,
+        });
+        assert_eq!(bus_results(bus, 7)[..3], [unit_head, 0, 0]);
+        Ok(bytes)
+    }
+
+    #[test]
+    fn drive_types_take_their_own_and_the_lower_density_media_only() {
+        let all = [
+            FloppyGeometry::HD1440,
+            FloppyGeometry::HD1200,
+            FloppyGeometry::DD720,
+            FloppyGeometry::DD360,
+        ];
+        for (drive_type, accepted) in [
+            (
+                DriveType::HD1440,
+                &[FloppyGeometry::HD1440, FloppyGeometry::DD720][..],
+            ),
+            (
+                DriveType::HD1200,
+                &[FloppyGeometry::HD1200, FloppyGeometry::DD360][..],
+            ),
+            (DriveType::DD720, &[FloppyGeometry::DD720][..]),
+            (DriveType::DD360, &[FloppyGeometry::DD360][..]),
+        ] {
+            assert_eq!(drive_type.media().collect::<Vec<_>>(), accepted);
+            for geometry in all {
+                let mut fdc = Upd765::new();
+                let listed = fdc.set_media_list(
+                    0,
+                    drive_type,
+                    vec![Drive::new(geometry, Vec::new())],
+                    false,
+                );
+                let mut fdc = Upd765::new();
+                fdc.set_media_list(1, drive_type, Vec::new(), true).unwrap();
+                let appended = fdc.append_medium(1, Drive::new(geometry, Vec::new()));
+                if accepted.contains(&geometry) {
+                    assert_eq!(listed, Ok(()), "{drive_type:?} {geometry:?}");
+                    assert_eq!(appended, Ok(0), "{drive_type:?} {geometry:?}");
+                    assert_eq!(fdc.drive_type(1), Some(drive_type));
+                } else {
+                    assert_eq!(listed, Err(MediaChangeError::GeometryMismatch));
+                    assert_eq!(appended, Err(MediaChangeError::GeometryMismatch));
+                }
+            }
+        }
+        // A 1.44M drive's catalogue mixes 1.44M and 720K media.
+        let mut fdc = Upd765::new();
+        fdc.set_media_list(
+            0,
+            DriveType::HD1440,
+            vec![
+                Drive::new(FloppyGeometry::DD720, Vec::new()),
+                Drive::new(FloppyGeometry::HD1440, Vec::new()),
+            ],
+            false,
+        )
+        .unwrap();
+        assert_eq!(fdc.drive_type(0), Some(DriveType::HD1440));
+        assert_eq!(fdc.drive_type(1), None);
+    }
+
+    #[test]
+    fn dd720_medium_in_a_hd1440_drive_reads_at_250_and_faults_at_500() {
+        let image = patterned(FloppyGeometry::DD720, 0x3C);
+        for (rate, readable) in [(0, false), (1, false), (2, true), (3, false)] {
+            let mut bus = typed_bus(
+                DriveType::HD1440,
+                vec![Drive::new(FloppyGeometry::DD720, image.clone())],
+                rate,
+            );
+            bus_seek(&mut bus, 4, 79);
+            bus_command(&mut bus, &[0x4A, 4]);
+            let id = bus_results(&mut bus, 7);
+            let read = try_read(&mut bus, 4, 79, 1, 9);
+            if readable {
+                assert_eq!(id, [4, 0, 0, 79, 1, 1, 2]);
+                let offset = FloppyGeometry::DD720.chs_to_offset(79, 1, 9);
+                assert_eq!(read.unwrap(), image[offset..offset + SECTOR_SIZE]);
+            } else {
+                assert_eq!(id, [0x44, 1, 0, 79, 1, 1, 2], "CCR {rate}");
+                assert_eq!(read.unwrap_err(), [0x44, 1, 0, 79, 1, 9, 2], "CCR {rate}");
+            }
+        }
+        // The same drive answers its own 1.44M medium at 500 kbps only.
+        let mut bus = typed_bus(
+            DriveType::HD1440,
+            vec![
+                Drive::new(FloppyGeometry::DD720, image.clone()),
+                Drive::new(FloppyGeometry::HD1440, patterned(FloppyGeometry::HD1440, 7)),
+            ],
+            0,
+        );
+        assert!(try_read(&mut bus, 0, 0, 0, 1).is_err());
+        swap_fdc(&mut bus).insert(0, 1).unwrap();
+        assert!(try_read(&mut bus, 0, 0, 0, 18).is_ok());
+        bus.port_write(DIR_CCR, 1, 2).unwrap();
+        assert!(try_read(&mut bus, 0, 0, 0, 1).is_err());
+    }
+
+    #[test]
+    fn dd360_medium_in_a_hd1200_drive_reads_at_300_with_double_stepping() {
+        let image = patterned(FloppyGeometry::DD360, 0xC3);
+        for rate in [0, 2, 3] {
+            let mut bus = typed_bus(
+                DriveType::HD1200,
+                vec![Drive::new(FloppyGeometry::DD360, image.clone())],
+                rate,
+            );
+            bus_seek(&mut bus, 0, 6);
+            bus_command(&mut bus, &[0x4A, 0]);
+            assert_eq!(bus_results(&mut bus, 7), [0x40, 1, 0, 6, 0, 1, 2]);
+            assert_eq!(
+                try_read(&mut bus, 0, 3, 0, 1).unwrap_err(),
+                [0x40, 1, 0, 3, 0, 1, 2]
+            );
+        }
+        let mut bus = typed_bus(
+            DriveType::HD1200,
+            vec![Drive::new(FloppyGeometry::DD360, image.clone())],
+            1,
+        );
+        for track in [0, 1, 20, 39] {
+            // The BIOS seeks to twice the track; the ID field carries the track.
+            bus_seek(&mut bus, 4, track * 2);
+            bus_command(&mut bus, &[0x4A, 4]);
+            assert_eq!(bus_results(&mut bus, 7), [4, 0, 0, track, 1, 1, 2]);
+            let offset = FloppyGeometry::DD360.chs_to_offset(track, 1, 9);
+            assert_eq!(
+                try_read(&mut bus, 4, track, 1, 9).unwrap(),
+                image[offset..offset + SECTOR_SIZE]
+            );
+            // An ID cylinder other than C: no data, wrong cylinder.
+            assert_eq!(
+                try_read(&mut bus, 4, track + 1, 1, 9).unwrap_err(),
+                [0x44, 0x04, 0x10, track + 1, 1, 9, 2]
+            );
+        }
+        // Between tracks no ID field passes under the head.
+        for pcn in [1, 3, 41, 79] {
+            bus_seek(&mut bus, 0, pcn);
+            bus_command(&mut bus, &[0x4A, 0]);
+            assert_eq!(bus_results(&mut bus, 7), [0x40, 1, 0, pcn, 0, 1, 2]);
+            for c in [pcn / 2, pcn] {
+                assert_eq!(
+                    try_read(&mut bus, 0, c, 0, 1).unwrap_err(),
+                    [0x40, 1, 0, c, 0, 1, 2]
+                );
+            }
+        }
+        // Single stepping lands on the wrong track or between tracks.
+        bus_seek(&mut bus, 0, 4);
+        assert_eq!(
+            try_read(&mut bus, 0, 4, 0, 1).unwrap_err(),
+            [0x40, 0x04, 0x10, 4, 0, 1, 2]
+        );
+        assert!(bus.device_mut().take_dma_request().is_none());
+    }
+
+    #[test]
+    fn dd360_write_in_a_hd1200_drive_needs_the_double_stepped_track() {
+        let image = patterned(FloppyGeometry::DD360, 0x11);
+        let mut bus = typed_bus(
+            DriveType::HD1200,
+            vec![Drive::new(FloppyGeometry::DD360, image.clone())],
+            1,
+        );
+        bus_seek(&mut bus, 0, 5);
+        bus_command(&mut bus, &[0x45, 0, 2, 0, 1, 2, 1, 0x1B, 0xFF]);
+        assert!(bus.device_mut().take_dma_request().is_none());
+        assert_eq!(bus_results(&mut bus, 7), [0x40, 1, 0, 2, 0, 1, 2]);
+        bus_seek(&mut bus, 0, 2);
+        bus_command(&mut bus, &[0x45, 0, 2, 0, 1, 2, 1, 0x1B, 0xFF]);
+        assert!(bus.device_mut().take_dma_request().is_none());
+        assert_eq!(bus_results(&mut bus, 7), [0x40, 0x04, 0x10, 2, 0, 1, 2]);
+        bus_seek(&mut bus, 0, 4);
+        bus_command(&mut bus, &[0x45, 0, 2, 0, 1, 2, 1, 0x1B, 0xFF]);
+        let written = complete_media_write(&mut bus, vec![0xEE; SECTOR_SIZE], true);
+        assert_eq!(written, [0, 0, 0, 3, 0, 1, 2]);
+        assert_eq!(media_read(&mut bus, 2, 0, 1), [0xEE; SECTOR_SIZE]);
+        let offset = FloppyGeometry::DD360.chs_to_offset(2, 0, 2);
+        assert_eq!(
+            media_read(&mut bus, 2, 0, 2),
+            image[offset..offset + SECTOR_SIZE]
+        );
+    }
+
+    #[test]
+    fn snapshot_restores_a_double_stepped_medium_in_a_receiving_controller() {
+        let media = || {
+            vec![
+                Drive::new(
+                    FloppyGeometry::HD1200,
+                    patterned(FloppyGeometry::HD1200, 0x12),
+                ),
+                Drive::new(
+                    FloppyGeometry::DD360,
+                    patterned(FloppyGeometry::DD360, 0x36),
+                ),
+            ]
+        };
+        let mut bus = typed_bus(DriveType::HD1200, media(), 1);
+        swap_fdc(&mut bus).insert(0, 1).unwrap();
+        bus_seek(&mut bus, 0, 22);
+        let saved = bus.device().save();
+        assert_eq!(saved[0], SNAPSHOT_VERSION);
+        // The receiving controller has the same wiring and catalogue but its
+        // own selection, head position and rate.
+        let mut restored = typed_bus(DriveType::HD1200, media(), 0);
+        restored.device_mut().restore(&saved).unwrap();
+        assert_eq!(swap_fdc(&mut restored).inserted_medium(0), Some(1));
+        assert_eq!(swap_fdc(&mut restored).present_cylinder(0), 22);
+        assert_eq!(
+            swap_fdc(&mut restored).drive_type(0),
+            Some(DriveType::HD1200)
+        );
+        bus_command(&mut restored, &[0x4A, 0]);
+        assert_eq!(bus_results(&mut restored, 7), [0, 0, 0, 11, 0, 1, 2]);
+        let image = patterned(FloppyGeometry::DD360, 0x36);
+        let offset = FloppyGeometry::DD360.chs_to_offset(11, 0, 5);
+        assert_eq!(
+            try_read(&mut restored, 0, 11, 0, 5).unwrap(),
+            image[offset..offset + SECTOR_SIZE]
+        );
+    }
+
+    #[test]
+    fn sense_drive_status_follows_the_medium_in_a_mixed_density_drive() {
+        let mut bus = typed_bus(
+            DriveType::HD1200,
+            vec![Drive::new_read_only(FloppyGeometry::DD360, Vec::new())],
+            1,
+        );
+        bus_command(&mut bus, &[0x04, 0]);
+        assert_eq!(
+            bus_results(&mut bus, 1),
+            [ST3_READY | ST3_WRITE_PROTECTED | ST3_TRACK_ZERO | ST3_TWO_SIDE]
+        );
+        // TRACK 0 follows the physical cylinder, not the medium track.
+        bus_seek(&mut bus, 0, 1);
+        bus_command(&mut bus, &[0x04, 0]);
+        assert_eq!(
+            bus_results(&mut bus, 1),
+            [ST3_READY | ST3_WRITE_PROTECTED | ST3_TWO_SIDE]
+        );
+        swap_fdc(&mut bus).eject(0).unwrap();
+        bus_command(&mut bus, &[0x04, 0]);
+        assert_eq!(bus_results(&mut bus, 1), [ST3_READY]);
+        assert_eq!(bus.port_read(DIR_CCR, 1).unwrap(), 0x80);
     }
 }

@@ -160,7 +160,8 @@ fn repository_machine_file_parity() {
                             assert!(has(|k| matches!(k, assembly::DeviceKind::LotechEms(_))));
                             assert!(has(|k| matches!(k, assembly::DeviceKind::Ide(_))));
                             assert!(has(|k| matches!(k, assembly::DeviceKind::Sb16(_))));
-                            assert_eq!(config.drives.len(), 2);
+                            // A: 1.2M, the empty 1.44M B: and the fixed disk.
+                            assert_eq!(config.drives.len(), 3);
                             assert_eq!(config.images[1].base, 0xE0000);
                         }
                         fingerprint(config)
@@ -182,8 +183,8 @@ fn repository_machine_file_parity() {
         ("machines/at-freedos-from-preset.toml".into(), "3b07a7a4089cf617f743f2f7f5c80e3c85a3f7bdc0e5b6f3b6eb835946afac0c".into()),
         ("machines/at-freedos.toml".into(), "3b07a7a4089cf617f743f2f7f5c80e3c85a3f7bdc0e5b6f3b6eb835946afac0c".into()),
         ("machines/at-freedos.yaml".into(), "3b07a7a4089cf617f743f2f7f5c80e3c85a3f7bdc0e5b6f3b6eb835946afac0c".into()),
-        // Open VGA BIOS and VGA card; the video ROM is relocated by synthetic().
-        ("machines/at-games-open.toml".into(), "8408bfe7e2d3d75a1044a012bad1d21a935a5d99a191a6b8398797e8d3476231".into()),
+        // Open VGA BIOS and VGA card, an empty 1.44M B:; the video ROM is relocated by synthetic().
+        ("machines/at-games-open.toml".into(), "0f1bfd56b632ba68d3600fbcfb90abd467beb405894c2cc7cbf29dd7cfa755d5".into()),
         // The video ROM is relocated by synthetic().
         ("machines/at-games.toml".into(), "5f809f39dc27e958b90c541ae3cedfa45fece732dbeb8b4ea80123509f5a4358".into()),
         // The open AT BIOS's mono display switch.

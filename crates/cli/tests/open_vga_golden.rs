@@ -26,11 +26,13 @@ const FETCH_SCRIPT: &str = include_str!("../../../vendor/vgabios/fetch.sh");
 const PROBE_GOLDEN_STOP: (u64, u64) = (0x0000, 0x880A);
 // Both counts moved with the switch from the Kiselev AT-reset BIOS to the
 // open AT BIOS (from 10,239,957 and 10,730,615); screen and frames unchanged.
-const PROBE_GOLDEN_RETIRED: u64 = 10_240_119;
+// Both moved again by one instruction (from 10,240,119 and 10,730,617) when the
+// open profile gained its empty 1.44M B: drive; screen and frames unchanged.
+const PROBE_GOLDEN_RETIRED: u64 = 10_240_118;
 const PROBE_GOLDEN_TEXT_SHA256: &str =
     "567884f1a7356b91a49dc8be47861cd093db45402007cd48a0e5656788ff20ca";
 // The mode 13h stage moved this from 10,396,703; the 0Dh frames are unchanged.
-const SCROLL_GOLDEN_RETIRED: u64 = 10_730_617;
+const SCROLL_GOLDEN_RETIRED: u64 = 10_730_616;
 const SCROLL_FRAME_SHA256: [&str; 5] = [
     "7723e850306f8e31a0fce846b020d7ad4969c9f34093f037a807f33744d44f54",
     "4cd1269be99016a508dd720dd327b6a0cf86f51608954f05582cbf0e6d4ffad8",

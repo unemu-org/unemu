@@ -1129,14 +1129,7 @@ fn drive_image_check(drive: &DriveConfig, index: usize) -> Result<(), ConfigErro
     if let Some(list) = &drive.media {
         for medium in &list.entries {
             if let Some(actual) = medium.image.known_len() {
-                let expected = drive.kind.image_bytes();
-                if actual != expected {
-                    return Err(ConfigError::ImageGeometryMismatch {
-                        drive_index: index,
-                        expected,
-                        actual,
-                    });
-                }
+                drive.kind.check_image_len(index, actual)?;
             }
         }
     }

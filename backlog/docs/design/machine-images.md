@@ -340,7 +340,9 @@ Require exact agreement between slot bindings and config drive positions. Units
 mean controller-local FDC unit or IDE master=0/slave=1; array order cannot change
 wiring. Unremovable IDE drives accept exactly one inserted medium; a slave still
 requires a master. A medium cannot be mounted writable in two slots. Every floppy
-catalogue entry must match the drive's current exact geometry, not merely fit.
+catalogue entry's geometry must match its payload exactly and be one of the
+media the drive type takes (`FloppyGeometry::accepted_media`: 720K in a 1.44M
+drive, 360K in a 1.2M drive); any other payload that merely fits in the drive is refused.
 Unused catalogue media remain part of the image graph. The bundle loader derives
 write modes and local journal paths from policy/session metadata; there is no
 second write-policy field in config. Standalone export reconstructs a complete
@@ -1705,8 +1707,9 @@ holds an operating system or other software: disk images with an operating
 system need their own licence decision. Generation 1.0.1 changed only the
 VGA BIOS package's source archive. **Generation 1.1.0** replaces the system
 BIOS package with the open AT BIOS, `unemu/firmware/unemu-at-bios-1.0.2-unemu.2`
-(the unemu fork of the Kiselev BIOS, with its source archive); the hardware is
-unchanged.
+(the unemu fork of the Kiselev BIOS, with its source archive) and adds an
+empty 3.5-inch 1.44M B: drive (unit 1, which also takes 720K disks) beside the
+1.2M A:; the rest of the hardware is unchanged.
 
 **Build.** `image template build` (commands.md, Official template images)
 imports the three packages from the fetched fixtures with their pinned source
@@ -1816,7 +1819,7 @@ carry revisions so stale choices cannot authorize an incompatible edit.
 | EMS | Port 260h/264h/268h/26Ch with all 400h aliases; size 512/1024/1536/2048 KiB; 64 KiB frame at C000h or D000h if free. E000h blocked by system ROM on ibm-5170. No IRQ/DMA fields. |
 | Conflicts | Report half-open MMIO/RAM/ROM intervals, port width/decode aliases, actual routed IRQs and `(controller, channel)` DMA ownership, not only displayed base values. |
 | IDE / firmware | Primary 1F0h/3F6h/IRQ14 or secondary 170h/376h/IRQ15; slave requires master; fixed-disk firmware service required. |
-| Drives / ROM | Exact geometry per catalogue entry; ROM placement, container offsets, chip lanes, services, compatibility and missing hash bindings remain validator/loader checks. |
+| Drives / ROM | Each catalogue entry's exact geometry, one of the media the drive type takes; ROM placement, container offsets, chip lanes, services, compatibility and missing hash bindings remain validator/loader checks. |
 
 Hardware rules are the existing models, not additional fidelity claims. See
 [machine-files.md](machine-files.md), §§RAM rule, Cards and SB16: IBM Personal

@@ -1286,3 +1286,87 @@ fn generated_mark(d: &image_store::Descriptor) -> &'static str {
         "user-supplied"
     }
 }
+
+/// A machine image keeps each floppy medium's own format: a 1.44M drive whose
+/// catalogue lists a 720K and a 1.44M disk, and a 1.2M drive with a single
+/// 360K image, publish, resolve, assemble and republish from a session. The
+/// rule stays the drive type's accepted media: a 1.2M disk in the 1.44M
+/// catalogue is still refused.
+#[test]
+fn mixed_density_floppy_media_round_trip_through_publish_and_resolve() {
+    let temp = Temp::new();
+    let drives = "\n[[card]]\nid='fdc-765'\n[[card.drives]]\nunit=0\ntype='1.2M'\nimage='old-360.img'\nwrite='readonly'\n[[card.drives]]\nunit=1\ntype='1.44M'\nmedia=[{image='game-720.img',write='readonly'},{image='disk-1440.img',write='readonly'}]\n";
+    let Some(path) = fixture(&temp, drives) else {
+        return;
+    };
+    let images = [
+        ("old-360.img", 368_640, 0x36),
+        ("game-720.img", 737_280, 0x72),
+        ("disk-1440.img", 1_474_560, 0x14),
+        ("hd-1200.img", 1_228_800, 0x12),
+    ];
+    for (name, size, byte) in images {
+        fs::write(temp.0.join(name), vec![byte; size]).unwrap();
+    }
+    let store = temp.store();
+    import_machine(&store, &path, "test:mixed", &ImportOptions::default()).unwrap();
+    let check = |machine: &assembly::MachineConfig| {
+        let floppy = |unit| {
+            machine
+                .drives
+                .iter()
+                .find(|d| d.controller == assembly::DeviceId::Fdc && d.unit == unit)
+                .unwrap()
+        };
+        let bytes = |source: &assembly::ImageSource| match source {
+            assembly::ImageSource::File(path) => fs::read(path).unwrap(),
+            assembly::ImageSource::Inline(bytes) => bytes.clone(),
+            other => panic!("unexpected source {other:?}"),
+        };
+        let a = floppy(0);
+        assert_eq!(
+            a.kind,
+            assembly::DriveKind::Floppy {
+                geometry: assembly::FloppyGeometry::HD_1_2
+            }
+        );
+        assert_eq!(bytes(&a.image), vec![0x36; 368_640]);
+        let b = floppy(1);
+        assert_eq!(
+            b.kind,
+            assembly::DriveKind::Floppy {
+                geometry: assembly::FloppyGeometry::HD_1_44
+            }
+        );
+        let list = b.media.as_ref().unwrap();
+        assert_eq!(list.entries.len(), 2);
+        assert_eq!(bytes(&list.entries[0].image), vec![0x72; 737_280]);
+        assert_eq!(bytes(&list.entries[1].image), vec![0x14; 1_474_560]);
+        let _assembled = assembly::assemble_with_options(
+            machine,
+            assembly::AssemblyOptions {
+                allow_unlisted_firmware: true,
+            },
+        )
+        .unwrap();
+    };
+    check(&resolve(&store, "test:mixed", &temp.0.join("session-a")).unwrap());
+    let owner = store.workspace("mixed").unwrap();
+    let prepared = pc_image::workspace::prepare_start(&owner, "test:mixed", true).unwrap();
+    check(&prepared.machine);
+    pc_image::workspace::publish(&owner, "test:republished", None).unwrap();
+    drop(owner);
+    check(&resolve(&store, "test:republished", &temp.0.join("session-b")).unwrap());
+
+    let refused = fs::read_to_string(&path)
+        .unwrap()
+        .replace("image='disk-1440.img'", "image='hd-1200.img'");
+    fs::write(&path, refused).unwrap();
+    let error = import_machine(&store, &path, "test:refused", &ImportOptions::default())
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains("a 1.44M drive takes 1.44M (1474560 bytes) or 720K (737280 bytes) media"),
+        "{error}"
+    );
+}

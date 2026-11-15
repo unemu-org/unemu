@@ -1372,7 +1372,8 @@ mod tests {
                             );
                         }
                     }
-                } else {
+                } else if drive.empty != Some(true) {
+                    // An empty drive without a catalogue takes no image.
                     let (path, digest) = artifact(
                         directory,
                         &format!("drive-{drive_index}.img"),

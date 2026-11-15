@@ -714,13 +714,31 @@ Under an `fdc-765` card:
 | Field | Type | Default | Notes |
 |---|---|---|---|
 | `unit` | 0 or 1 | required | The drive-select line (µPD765 US0/US1). Lowers to `controller = Fdc, unit`. |
-| `type` | `"1.44M"`, `"1.2M"`, `"720K"`, `"360K"` | required | `FloppyGeometry::{HD_1_44, HD_1_2, DD_720K, DD_360K}` |
-| `image` | path | required | read and hashed during lowering; stored `Inline` for volatile/readonly, `File` for journal; its size must match `type` |
+| `type` | `"1.44M"`, `"1.2M"`, `"720K"`, `"360K"` | required | the drive type, `FloppyGeometry::{HD_1_44, HD_1_2, DD_720K, DD_360K}`; CMOS 10h encodes it |
+| `image` | path | required | read and hashed during lowering; stored `Inline` for volatile/readonly, `File` for journal; its size must be a medium the drive type takes (below) |
 | `sha256` | hex | none | pins the base image |
 | `write` | `"volatile"`, `"readonly"`, `"journal"` | `"volatile"` | M3 |
 | `journal` | path | required if and only if `write = "journal"` | relative to the canonical directory of its defining layer, like every machine-file path; never created implicitly (`persistent-media.md`) |
 | `keep_generations` | positive integer | 10 | journal only (`persistent-media.md`) |
 | `remove` | bool | | only in a file that `extends` |
+
+The drive type and the medium are separate. A medium's format follows from
+its image size, and a drive takes these media (`FloppyGeometry::accepted_media`,
+the floppy controller's rule):
+
+| Drive `type` | Media it takes | Rate the medium answers at |
+|---|---|---|
+| `1.44M` (3.5-inch) | 1.44M, 720K | 500 kbps, 250 kbps |
+| `1.2M` (5.25-inch) | 1.2M, 360K | 500 kbps, 300 kbps (double-stepped) |
+| `720K` (3.5-inch) | 720K | 250 kbps |
+| `360K` (5.25-inch) | 360K | 250 kbps |
+
+An image of any other size fails with `ImageGeometryMismatch`, whose message
+names the drive type and its accepted media, for example `drive 0 image is
+1228800 bytes but a 1.44M drive takes 1.44M (1474560 bytes) or 720K (737280
+bytes) media`; a catalogue entry gets the same text under its `media[N]` field.
+The firmware still decides which drive types it supports; see
+`floppy_disabled_reason`.
 
 Under an `ide` card, the fields are the same, with two replacements:
 `channel = "master" | "slave"` instead of `unit`, and
@@ -1712,8 +1730,9 @@ that replaces `media` also resets inherited `empty` unless it restates that fiel
 uses the identical entry fields in a sequence. This additive form preserves
 existing single-image machine configurations and their golden identities.
 Drive-level image/pin/write/journal fields cannot accompany `media`/`empty`.
-The declared drive `type` fixes every entry's exact geometry; 360K in a 1.2M
-drive is refused until separate mechanics and media densities are modelled.
+Every entry must be a medium the declared drive `type` takes (§Drives), and
+entries may differ: a 1.44M drive's catalogue may mix 1.44M and 720K disks, a
+1.2M drive's 1.2M and 360K disks.
 
 Media have independent write policies and journal paths. Every base is hashed
 on the actual mounted bytes and all geometries and path aliases are checked

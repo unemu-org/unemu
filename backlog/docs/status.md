@@ -5,6 +5,47 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-15 — Floppy drive and medium types are separate; open AT B: is
+  3.5-inch 1.44M:** the µPD765 model installs a `DriveType` per unit
+  (360K, 720K, 1.2M, 1.44M, or a custom geometry taking only itself),
+  separate from the inserted medium's geometry. A 1.44M drive takes 1.44M and
+  720K media, a 1.2M drive 1.2M and 360K media, 720K and 360K drives their own.
+  The medium sets the rate it answers at (1.44M/1.2M 500 kbps, 720K 250 kbps,
+  360K 300 kbps in a 1.2M drive and 250 kbps in a 360K drive); other CCR rates
+  fault with ST1 MA as before. 360K media in a 1.2M drive are double-stepped:
+  the PCN is the physical cylinder, track `PCN/2` lies under the head at an
+  even PCN and carries that track as its ID cylinder; an odd PCN finds no ID
+  field (MA) and a C other than the track's ID ends with ST1 ND + ST2 WC.
+  ASSUMED, unchanged: single-stepped media address the command's C without
+  comparing it with the PCN. TRACK 0 follows the physical cylinder; two-side
+  and write protect follow the medium; the change line stays per drive. The
+  3.5-inch rates are ASSUMED (the IBM AT reference predates those drives).
+  Drive types are wiring, not snapshot state, so the snapshot stays v5.
+  Assembly, the machine file, Media › Insert, Browse…, From library… and the
+  drive chips share one rule (`FloppyGeometry::accepted_media`): a drive image
+  or catalogue entry is accepted when the drive takes its size-derived format,
+  else `ImageGeometryMismatch` names the drive type and its accepted media
+  (for example `a 1.44M drive takes 1.44M (1474560 bytes) or 720K (737280
+  bytes) media`). A catalogue may mix the formats a drive takes; chips show the
+  medium's own format. CMOS 10h still encodes the drive types (a 720K disk in
+  a 1.44M B: leaves type 4). `machines/at-games-open.toml` and the open
+  templates (still `1.1.0`, re-pinned: `open-at` `e3bccef9…3b75`,
+  `open-at-games` `b5c48e53…10c9`) gain an empty 3.5-inch 1.44M B: (unit 1).
+  `machines/at-games.toml` keeps A: only: READ, the local IBM 06/10/85 listing
+  excerpt lacks `DSKETTE.ASM`, which holds the drive-type support (TEST1.ASM
+  lines 67–70 name it), so whether that BIOS has a 720K type 3 is not
+  verified, and `floppy_disabled_reason` still refuses only 1.44M on it.
+  **MEASURED at CPU `060d446a`:** at-games-open FreeDOS still reaches `A:\>`
+  at 15,241,264 retired with text hash `41ff081e…469e` (unchanged with B:);
+  a new golden inserts a 720K FAT12 disk into B: through Media › Insert,
+  lists it and TYPEs a file at cylinder 33, then swaps a 360K disk into the
+  1.2M A:, lists it and TYPEs a file on track 11 (the head ends at physical
+  cylinder 22): 22,988,197 retired, text hash `b9e3a1cb…f16a`. The halting
+  open VGA goldens on this profile move by one instruction with B: (INT 10h
+  probe 10,240,119 → 10,240,118; mode 0Dh/13h 10,730,617 → 10,730,616; screen
+  and frames unchanged; with the old profile on the new code they keep their
+  old counts). ASSUMED explanation, as for the BIOS switch: the BIOS's extra
+  second-drive setup shortens its own timer busy-waits.
 - **2026-11-15 — Media sets carry the standard OCI annotations:** an
   installation set's manifest now carries `org.opencontainers.image.description`,
   `org.opencontainers.image.vendor` (the publishers) and
@@ -1510,15 +1551,16 @@ smooth-scrolling timing finer than a frame remain unmodelled. See
   CCR writes at 3F7h select 500/300/250 kbps (00/01/10); reserved 11 matches
   no medium. READ ID and READ/WRITE DATA
   report abnormal termination with ST1 missing-address-mark when the selected
-  rate differs from the medium: 500 kbps for 1.44/1.2 MB, 250 kbps for
-  720/360 KB. Fault result/IRQ occurs on the final command byte, without DMA
+  rate differs from the rate the medium answers at in its drive: 500 kbps for
+  1.44/1.2 MB, 250 kbps for 720 KB and for 360 KB in a 360K drive, 300 kbps
+  for 360 KB in a 1.2M drive. Fault result/IRQ occurs on the final command byte, without DMA
   or rotational delay; DIR reads and seek/sense commands are unchanged.
   IBM PC AT Technical Reference, Fixed Disk and Diskette Drive Adapter,
   Diskette Control Register (3F7h), does not specify its reset value.
   ASSUMED: device reset selects 500 kbps; DOR reset preserves the adapter
-  rate. Snapshot v4 stores it and restores v3 using 500 kbps. Separate drive
-  and medium types (360 KB media in a 1.2 MB drive at 300 kbps) and
-  rate-dependent transfer timing are not modelled.
+  rate. Snapshot v4 stores it and restores v3 using 500 kbps. Drive and
+  medium types are separate (see the 2026-11-15 entry); rate-dependent
+  transfer timing is not modelled.
   WRITE DATA reports not-writable before rate or CHS errors on protected media.
   Per-device module matrices record the remaining unsupported cases and
   assumptions; changed expectations are listed in

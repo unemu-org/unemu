@@ -551,7 +551,7 @@ machine-images §5.5):
 | `unemu/firmware/unemu-at-bios-1.0.2-unemu.2:1.1.0`, `:latest` | `unemu/firmware/unemu-at-bios-1.0.2-unemu.2` | unemu AT BIOS package (the unemu fork of Kiselev 8088_bios) with its source archive |
 | `unemu/firmware/vgabios-0.8a-unemu.1-std:1.1.0`, `:latest` | `unemu/firmware/vgabios-0.8a-unemu.1-std` | unemu LGPL VGA BIOS package with its source archive |
 | `unemu/firmware/xub-r638-xtp-ata1f0:1.1.0`, `:latest` | `unemu/firmware/xub-r638-xtp-ata1f0` | XTIDE Universal BIOS r638 package with its source archive |
-| `open-at:1.1.0`, `:latest` | `unemu/open-at` | IBM 5170-class 80286, the three ROMs, 640 KiB + 1 MiB, VGA, COM1 without a mouse, one empty 1.2M drive, a blank zero-base 504 MiB (1024/16/63) ATA disk at 1F0h, no sound card |
+| `open-at:1.1.0`, `:latest` | `unemu/open-at` | IBM 5170-class 80286, the three ROMs, 640 KiB + 1 MiB, VGA, COM1 without a mouse, an empty 1.2M A: and an empty 1.44M B: drive, a blank zero-base 504 MiB (1024/16/63) ATA disk at 1F0h, no sound card |
 | `open-at-games:1.1.0`, `:latest` | `unemu/open-at-games` | `open-at` plus SB16 (220h, IRQ 5, DMA 1/5), a Microsoft mouse on COM1 and a 2 MiB Lo-tech EMS board (260h, frame D000h) |
 
 The local tags are the short form `image pull` writes for each repository, so

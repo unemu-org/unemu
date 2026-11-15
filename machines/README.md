@@ -339,7 +339,9 @@ sha256 = "8d91283a1c0d6fc5b5fdb5e40db5b66dd9fabbf014d37262b7892f3b150b6f63"
 write = "readonly"
 ```
 
-The drive type must change with the image. The tools floppy includes FDISK,
+The drive type must take the image: a 1.44M drive takes 1.44M and 720K images,
+a 1.2M drive 1.2M and 360K images, and 720K and 360K drives only their own
+format (see [Removable floppy media](#removable-floppy-media)). The tools floppy includes FDISK,
 FORMAT, SYS, XCOPY, EDIT, MEM and CTMOUSE; package versions, licences and CPU
 compatibility evidence are in [the fixture README](../vendor/freedos/README.md).
 Check the local file with `unemupc98 machine check FILE`, then boot it with the
@@ -414,8 +416,18 @@ The first entry is inserted at power-on unless `empty = true`, which also permit
 an empty catalogue. A configured drive with `empty = true` starts with its
 disk-change line asserted; unconfigured positions and drives starting with a
 medium keep the line clear. YAML uses the same fields and a sequence for `media`.
-List and drive-level single-image fields cannot be combined. Every medium must have
-exactly the drive type's geometry; a 360K disk in a 1.2M drive is not modelled.
+List and drive-level single-image fields cannot be combined. Every medium must be
+one the drive type takes, by its image size, and entries may differ:
+
+| Drive `type` | Images it takes |
+|---|---|
+| `1.44M` (3.5-inch) | 1.44M (1,474,560 bytes), 720K (737,280 bytes) |
+| `1.2M` (5.25-inch) | 1.2M (1,228,800 bytes), 360K (368,640 bytes; read at 300 kbps, double-stepped) |
+| `720K` (3.5-inch) | 720K |
+| `360K` (5.25-inch) | 360K |
+
+Any other image fails with a message naming the drive type and the images it
+takes. The CMOS drive types follow `type`, not the inserted disk.
 Paths belong to the layer that declares them, and `extends` replaces a media
 list as a whole; a replacement list clears inherited `empty = true` unless the
 child restates it. The inherited A: boot floppy stays unchanged in this example.
@@ -433,9 +445,10 @@ The C: summary shows its machine-file write policy; live changed-sector counts
 are not exposed by the current frontend boundary.
 
 In **Insert floppy**, select an image from this machine's catalogue or use
-**Browse…** to check an image's size and full SHA-256. Incompatible geometries
-are disabled with the image and drive types shown. The current controller requires
-an exact geometry match. Existing entries keep the write policy from the machine
+**Browse…** to check an image's size and full SHA-256. Images the drive does not
+take are disabled with the image format and the drive's accepted formats shown;
+**From library…** applies the same rule to every disk of a set. The status-bar
+chip shows the inserted disk's own format (`720K` in a 1.44M B:). Existing entries keep the write policy from the machine
 file. Browsed images default to read-only; journal mode requires an explicit
 separate journal path, defaulting to `<base>.upfj` with a Save picker. Relative
 journal paths use the selected base's directory. Retention follows the drive's
@@ -622,9 +635,13 @@ supplied; XMS and DOS-extender use are not yet qualified. This CPU is an
 80286, with no 386 instruction set.
 
 A: is **1.2M**, with the minimal FreeDOS boot fixture, the `FDTOOLS`
-installation floppy, then a local transfer floppy. B: is omitted: the June 1985 BIOS has no 1.44M drive type
-(it supports 360K, 1.2M and 720K). Each image in this A: list must be exactly
-1,228,800 bytes; mixed-density media in one drive are not modelled.
+installation floppy, then a local transfer floppy; it also takes 360K disks.
+In `at-games-open.toml`, B: is an empty **3.5-inch 1.44M** drive: insert 1.44M
+or 720K game disks with **Media › Insert…** (Shift with the hotkeys), or list
+them under unit 1 in a local child profile. `at-games.toml` keeps A: only: the
+June 1985 BIOS has no 1.44M drive type, and whether it has a 720K one is not
+verified from the IBM listing this project has (its diskette module is not
+included), so no B: is configured there.
 
 From the repository root, prepare the ignored local media and fetch the
 FreeDOS fixtures:
@@ -737,7 +754,8 @@ is not yet qualified. Change to the installed game's directory on C: and run it.
 
 Click the window to grab the pointer; **Ctrl+Alt+G releases** it (focus loss
 also releases). **Ctrl+Alt+M** toggles host mute. **Ctrl+Alt+F** cycles the A:
-media list and **Ctrl+Alt+E** ejects it; Shift selects B: if you add one. See
+media list and **Ctrl+Alt+E** ejects it; Shift selects B: (the open profile's
+1.44M drive, or one you add to the IBM profile). See
 [Removable floppy media](#removable-floppy-media) for swap and overlay behavior.
 
 Stop the emulator before using `media generations`, `media verify`,

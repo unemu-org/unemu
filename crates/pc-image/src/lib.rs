@@ -181,6 +181,38 @@ impl Geometry {
             },
         }
     }
+
+    /// The geometry of a `size`-byte medium in a drive of `kind`: a fixed
+    /// disk's own geometry, or the floppy medium of that size the drive type
+    /// takes (`FloppyGeometry::accepted_media`: 720K in a 1.44M drive, 360K in
+    /// a 1.2M drive).
+    fn of_medium(kind: assembly::DriveKind, size: u64) -> Result<Self> {
+        match kind {
+            assembly::DriveKind::Floppy { geometry } => geometry
+                .medium_for_len(size)
+                .map(|medium| Self::of(assembly::DriveKind::Floppy { geometry: medium }))
+                .ok_or_else(|| {
+                    invalid(format!(
+                        "floppy medium is {size} bytes but {}",
+                        assembly::descriptors::floppy_drive_media(geometry)
+                    ))
+                }),
+            assembly::DriveKind::HardDisk { .. } => Ok(Self::of(kind)),
+        }
+    }
+
+    /// Whether a medium of this geometry fits a drive of `kind` by the same
+    /// rule: a fixed disk needs its own geometry, a floppy drive any medium
+    /// its type takes.
+    fn fits(&self, kind: assembly::DriveKind) -> bool {
+        match kind {
+            assembly::DriveKind::Floppy { geometry } => geometry
+                .accepted_media()
+                .into_iter()
+                .any(|medium| Self::of(assembly::DriveKind::Floppy { geometry: medium }) == *self),
+            assembly::DriveKind::HardDisk { .. } => Self::of(kind) == *self,
+        }
+    }
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

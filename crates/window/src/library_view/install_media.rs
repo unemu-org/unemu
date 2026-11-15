@@ -8,8 +8,10 @@
 //!
 //! Floppy formats are the PC provider's (IBM Personal Computer AT Technical
 //! Reference, Diskette Drive Adapter): a set is offered to a drive only when
-//! every disk has that drive's exact geometry. Insertion itself goes through
-//! the drive's existing Insert dialog, which verifies every disk again.
+//! the drive type takes every disk, by the shared rule
+//! (`FloppyGeometry::accepted_media`), so a 1.44M drive takes a set mixing
+//! 1.44M and 720K disks. Insertion itself goes through the drive's existing
+//! Insert dialog, which verifies every disk again.
 
 use super::{firmware::Redistribution, human_size, Filter, ImageRow, LibraryView, Query};
 use assembly::FloppyGeometry;
@@ -164,8 +166,9 @@ fn drive_letter(unit: u8) -> &'static str {
         "B"
     }
 }
-/// Drive-independent refusals first (platform, optical, mixed formats), then
-/// the exact drive check the Insert dialog applies, unit by unit.
+/// Drive-independent refusals first (platform, optical, unknown formats), then
+/// the drive check the Insert dialog applies, unit by unit: the set is Ready
+/// on the first drive whose type takes every disk.
 pub(crate) fn availability(
     summary: &ImageSummary,
     drives: &[(u8, FloppyGeometry)],
@@ -188,11 +191,6 @@ pub(crate) fn availability(
     }
     if names.iter().any(|n| n == UNKNOWN) {
         return Availability::Unavailable("Unknown floppy geometry".into());
-    }
-    if names.iter().any(|n| n != first) {
-        return Availability::Unavailable(
-            "Disks of several formats; no single drive takes the whole set".into(),
-        );
     }
     let mut reason = None;
     for &(unit, geometry) in drives {
@@ -1721,7 +1719,10 @@ pub(crate) mod tests {
         let atlas = cells(row("sample-atlas:1.0"), &DRIVE_A);
         assert_eq!(atlas[0], "Sample Atlas (1 x 1.2M)");
         assert_eq!(atlas[4], "—");
-        assert_eq!(atlas[8], "1.2M disks; drive A: is 1.44M");
+        assert_eq!(
+            atlas[8],
+            "1.2M disks; drive A: is 1.44M, which takes 1.44M or 720K"
+        );
         let disc = cells(row("moonlit-archive:1.0"), &DRIVE_A);
         assert_eq!(disc[3], "1 x ISO-2048");
         assert_eq!(disc[8], "CD-ROM emulation not available yet");
@@ -1981,7 +1982,7 @@ pub(crate) mod tests {
             "No extras in this set.",
             "Optical · ISO-2048, 2048-byte sectors · SHA-256 ",
             "CD-ROM emulation not available yet",
-            "1.2M disks; drive A: is 1.44M",
+            "1.2M disks; drive A: is 1.44M, which takes 1.44M or 720K",
             "Insert",
             "Add to machine…",
             "Make transfer media…",
@@ -2078,6 +2079,56 @@ pub(crate) mod tests {
             });
             assert_eq!(pressed, expected);
         }
+    }
+
+    #[test]
+    fn a_mixed_density_set_is_offered_to_the_drive_type_that_takes_every_disk() {
+        let (_f, cache) = library();
+        let result = snapshot(&cache, &query(Filter::Media, ""));
+        let mut mixed = result
+            .media_rows
+            .iter()
+            .find(|r| r.image.reference == "example-adventure:1.0")
+            .unwrap()
+            .image
+            .summary
+            .clone()
+            .unwrap();
+        let set = mixed.media_set.as_mut().unwrap();
+        let mut second = set.media[0].clone();
+        second.format = pc_image::media_set::format("720K").unwrap();
+        set.media[0].format = pc_image::media_set::format("1.44M").unwrap();
+        set.media.truncate(1);
+        set.media.push(second);
+        assert_eq!(formats(&mixed), ["1.44M", "720K"]);
+        assert_eq!(
+            availability(&mixed, &[(1, FloppyGeometry::HD_1_44)]),
+            Availability::Ready(1)
+        );
+        assert_eq!(
+            availability(&mixed, &[(1, FloppyGeometry::DD_720K)]),
+            Availability::Unavailable("1.44M disks; drive B: is 720K, which takes 720K".into())
+        );
+        // A 720K B: refuses, the 1.44M A: takes the set.
+        assert_eq!(
+            availability(
+                &mixed,
+                &[(1, FloppyGeometry::DD_720K), (0, FloppyGeometry::HD_1_44)]
+            ),
+            Availability::Ready(0)
+        );
+        // A 1.2M+360K set fits the 1.2M drive only.
+        let set = mixed.media_set.as_mut().unwrap();
+        set.media[0].format = pc_image::media_set::format("1.2M").unwrap();
+        set.media[1].format = pc_image::media_set::format("360K").unwrap();
+        assert_eq!(
+            availability(&mixed, &[(0, FloppyGeometry::HD_1_2)]),
+            Availability::Ready(0)
+        );
+        assert!(matches!(
+            availability(&mixed, &[(1, FloppyGeometry::HD_1_44)]),
+            Availability::Unavailable(_)
+        ));
     }
 
     #[test]

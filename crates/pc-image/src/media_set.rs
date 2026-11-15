@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! PC installation formats; machine-images §5.2.
 //! IBM Personal Computer AT Technical Reference, Diskette Drive Adapter:
-//! exact floppy geometry is required until mixed-density mechanics are modelled.
+//! each floppy format is an exact geometry; which drives take it is the
+//! assembly rule (`FloppyGeometry::accepted_media`), applied at insertion.
 
 use image_store::{media_set::MediaFormats, media_type, Error, Result};
 use serde::{Deserialize, Serialize};

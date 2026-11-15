@@ -257,9 +257,42 @@ pub const FLOPPY_TYPES: &[FloppyType] = &[
     FloppyType::DD_360K,
 ];
 
-/// Known firmware restriction, separate from the controller's media geometries.
-/// IBM Personal Computer AT Technical Reference, Diskette BIOS, Drive Types:
-/// the June 1985 build has no 1.44 MB drive type. Unknown builds are not guessed.
+/// The standard name of a floppy geometry, if it has one.
+pub fn floppy_type_name(geometry: FloppyGeometry) -> Option<&'static str> {
+    FLOPPY_TYPES
+        .iter()
+        .find(|kind| kind.geometry == geometry)
+        .map(|kind| kind.name)
+}
+
+/// What a drive of type `drive` takes, as errors and dialogs state it:
+/// `a 1.44M drive takes 1.44M (1474560 bytes) or 720K (737280 bytes) media`.
+pub fn floppy_drive_media(drive: FloppyGeometry) -> String {
+    let name = |geometry: FloppyGeometry| {
+        floppy_type_name(geometry).map_or_else(
+            || {
+                format!(
+                    "{}/{}/{}",
+                    geometry.cylinders, geometry.heads, geometry.sectors_per_track
+                )
+            },
+            str::to_owned,
+        )
+    };
+    let media: Vec<String> = drive
+        .accepted_media()
+        .into_iter()
+        .map(|medium| format!("{} ({} bytes)", name(medium), medium.image_bytes()))
+        .collect();
+    format!("a {} drive takes {} media", name(drive), media.join(" or "))
+}
+
+/// Known firmware restriction on drive types, separate from the media a drive
+/// type takes. IBM Personal Computer AT Technical Reference, Diskette BIOS,
+/// Drive Types: the June 1985 build has no 1.44 MB drive type. Its 720 KB type
+/// is not refused: the BIOS listing excerpt checked here lacks the diskette
+/// module that sets up drive types (TEST1.ASM's module list names it), so that
+/// support is unverified, not assumed absent. Unknown builds are not guessed.
 pub fn floppy_disabled_reason(
     bios: Option<&str>,
     geometry: FloppyGeometry,

@@ -86,9 +86,10 @@ impl Template {
         format!("{NAMESPACE}/{}", self.name)
     }
 
-    /// The hardware: one 1.2M diskette drive with an empty catalogue and one
-    /// blank 504 MiB disk (1024/16/63, the largest INT 13h CHS geometry) on
-    /// the primary ATA channel, which XTIDE serves. The games template adds
+    /// The hardware: a 5.25-inch 1.2M A: and a 3.5-inch 1.44M B: diskette
+    /// drive, both with an empty catalogue (the B: drive also takes 720K
+    /// disks), and one blank 504 MiB disk (1024/16/63, the largest INT 13h CHS
+    /// geometry) on the primary ATA channel, which XTIDE serves. The games template adds
     /// the shipped open game profile's cards: SB16 at 220h, IRQ 5, DMA 1 and
     /// 5; a Microsoft mouse on the COM1 UART; a 2 MiB Lo-tech EMS board at
     /// port 260h with its page frame at D000h.
@@ -121,7 +122,7 @@ impl Template {
                 frame: 0xD000,
                 size_kib: 2048,
             }),
-            floppies: [Some("1.2M".into()), None],
+            floppies: [Some("1.2M".into()), Some("1.44M".into())],
             ide_port: 0x1F0,
             disks: [Some(Chs::new(1024, 16, 63)), None],
         })
@@ -132,7 +133,7 @@ pub const TEMPLATES: [Template; 2] = [
     Template {
         name: "open-at",
         title: "Open AT 286",
-        description: "An IBM 5170-class 80286 with open firmware only: the unemu AT BIOS (after Sergey Kiselev's 8088_bios), the unemu VGA BIOS and XTIDE Universal BIOS r638, each with its source archive. 640 KiB and 1 MiB of memory, VGA, one 1.2M diskette drive and a blank 504 MiB fixed disk. No operating system.",
+        description: "An IBM 5170-class 80286 with open firmware only: the unemu AT BIOS (after Sergey Kiselev's 8088_bios), the unemu VGA BIOS and XTIDE Universal BIOS r638, each with its source archive. 640 KiB and 1 MiB of memory, VGA, a 1.2M A: and a 1.44M B: diskette drive and a blank 504 MiB fixed disk. No operating system.",
         games: false,
     },
     Template {
@@ -572,5 +573,9 @@ mod tests {
         );
         assert_eq!(plain.rate, (8, 13));
         assert_eq!(plain.disks, [Some(Chs::new(1024, 16, 63)), None]);
+        assert_eq!(
+            plain.floppies,
+            [Some("1.2M".to_owned()), Some("1.44M".to_owned())]
+        );
     }
 }

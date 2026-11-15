@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! PC bundle-profile validation and lowering through schema 1; machine-images §2.
 //! IBM Personal Computer AT Technical Reference, System Board and Diskette Drive
-//! Adapter: controller-local units and exact geometry retain their existing wiring.
+//! Adapter: controller-local units keep their existing wiring. A fixed disk's
+//! medium has the drive's exact geometry; a floppy medium has its payload's
+//! exact geometry, one of the media the drive type takes
+//! (`FloppyGeometry::accepted_media`).
 
 use crate::*;
 use image_store::{media_type as mt, BlobSource, ConfigValidator, PayloadType, Store};
@@ -460,7 +463,7 @@ pub(crate) fn prepare(
                     },
                 };
             }
-            if m.geometry != Geometry::of(drive.kind) {
+            if !m.geometry.fits(drive.kind) {
                 return Err(invalid("medium geometry differs from hardware"));
             }
             entries.push(assembly::FloppyMedium {

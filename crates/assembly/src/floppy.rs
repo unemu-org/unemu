@@ -120,13 +120,10 @@ impl AssembledMachine {
             list.entries.push(medium.clone());
         }
         candidate.validate()?;
-        let device_geometry = devices::FloppyGeometry {
-            cylinders: geometry.cylinders,
-            heads: geometry.heads,
-            sectors_per_track: geometry.sectors_per_track,
-        };
+        // The drive's own format passes the type check; the base's size picks
+        // the medium's format once it is open.
         self.floppy(controller)?
-            .check_append_medium(usize::from(unit), device_geometry)?;
+            .check_append_medium(usize::from(unit), geometry.to_device())?;
         let count = self
             .floppy_names
             .get(&(controller, unit))
@@ -151,14 +148,8 @@ impl AssembledMachine {
                 path: path.clone(),
                 message: error.to_string(),
             })?;
-        if geometry.bytes_per_sector != 512 || base.byte_len() != geometry.image_bytes() {
-            return Err(ConfigError::ImageGeometryMismatch {
-                drive_index,
-                expected: geometry.image_bytes(),
-                actual: base.byte_len(),
-            }
-            .into());
-        }
+        let device_geometry =
+            crate::assemble::medium_geometry(&geometry, base.byte_len(), drive_index)?;
         if medium
             .expected_sha256
             .is_some_and(|expected| expected != base.identity().base_digest)
@@ -199,6 +190,7 @@ impl AssembledMachine {
                             drive_index,
                             expected: base.byte_len(),
                             actual: bytes.len() as u64,
+                            drive_type: None,
                         }
                         .into());
                     }
@@ -409,6 +401,71 @@ mod tests {
             .unwrap();
         assert_eq!(assembled.floppy_name(DeviceId::Fdc, 0), original);
         assert_eq!(std::fs::read(path).unwrap(), base);
+        assembled.finish_persistence().unwrap();
+    }
+
+    #[test]
+    fn append_floppy_takes_any_medium_the_drive_type_takes() {
+        let temp = crate::test_support::TempDir::new("append-mixed-density");
+        let mut config = crate::floppy_boot(vec![0xFA, 0xEB, 0xFE], vec![0; 1_474_560]);
+        let mut assembled = crate::assemble(&config).unwrap();
+        let medium = |name: &str, bytes: Vec<u8>| {
+            let path = temp.path().join(name);
+            std::fs::write(&path, bytes).unwrap();
+            FloppyMedium {
+                image: ImageSource::File(path),
+                expected_sha256: None,
+                write: WriteMode::ReadOnly,
+                name: name.into(),
+            }
+        };
+        let refused = assembled
+            .append_floppy(
+                DeviceId::Fdc,
+                0,
+                &mut config,
+                &medium("hd1200.img", vec![0x12; 1_228_800]),
+            )
+            .unwrap_err()
+            .to_string();
+        assert!(
+            refused
+                .contains("a 1.44M drive takes 1.44M (1474560 bytes) or 720K (737280 bytes) media"),
+            "{refused}"
+        );
+        let mut sector = vec![0x72; 737_280];
+        sector[512..1024].fill(0x27);
+        let index = assembled
+            .append_floppy(DeviceId::Fdc, 0, &mut config, &medium("dd720.img", sector))
+            .unwrap();
+        assembled
+            .change_floppy(DeviceId::Fdc, 0, FloppyAction::Insert(index))
+            .unwrap();
+        // The 720K medium answers at 250 kbps with its own nine-sector layout.
+        let fdc_index = assembled.device_index[&DeviceId::Fdc];
+        let fdc = assembled.machine.bus_mut().device_mut(fdc_index).unwrap();
+        fdc.port_write(0x3f2, 1, 0x1c).unwrap();
+        for rate in [0, 2] {
+            fdc.port_write(0x3f7, 1, rate).unwrap();
+            for byte in [6, 0, 0, 0, 2, 2, 2, 0x1b, 0xff] {
+                fdc.port_write(0x3f5, 1, byte).unwrap();
+            }
+            let request = fdc.take_dma_request();
+            if rate == 0 {
+                assert!(request.is_none());
+            } else {
+                let device::DmaOp::ToMemory(bytes) = request.unwrap().op else {
+                    panic!("READ DATA");
+                };
+                assert_eq!(bytes, vec![0x27; 512]);
+                fdc.dma_complete(device::DmaOutcome::ToMemory {
+                    transferred: 512,
+                    terminal_count: true,
+                });
+            }
+            let result: Vec<u32> = (0..7).map(|_| fdc.port_read(0x3f5, 1).unwrap()).collect();
+            assert_eq!(result[1], if rate == 0 { 1 } else { 0 });
+        }
         assembled.finish_persistence().unwrap();
     }
 

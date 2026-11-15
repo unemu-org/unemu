@@ -179,13 +179,7 @@ impl MachineConfig {
                 }
                 for medium in &list.entries {
                     if let Some(actual) = medium.image.known_len() {
-                        if actual != drive.kind.image_bytes() {
-                            return Err(ConfigError::ImageGeometryMismatch {
-                                drive_index,
-                                expected: drive.kind.image_bytes(),
-                                actual,
-                            });
-                        }
+                        drive.kind.check_image_len(drive_index, actual)?;
                     }
                     expanded.drives.push(drive.with_medium(medium));
                 }
@@ -1398,8 +1392,8 @@ impl MachineConfig {
         Ok(())
     }
 
-    /// Every drive's backing image (when its size is known without I/O) matches
-    /// its geometry.
+    /// Every drive's backing image (when its size is known without I/O) fits
+    /// it: a fixed disk's geometry, or a medium the floppy drive type takes.
     fn check_image_geometry(&self) -> Result<(), ConfigError> {
         for (drive_index, drive) in self.drives.iter().enumerate() {
             if let crate::drive::DriveKind::Floppy { geometry } = drive.kind {
@@ -1423,14 +1417,7 @@ impl MachineConfig {
                 continue;
             }
             if let Some(actual) = drive.image.known_len() {
-                let expected = drive.kind.image_bytes();
-                if actual != expected {
-                    return Err(ConfigError::ImageGeometryMismatch {
-                        drive_index,
-                        expected,
-                        actual,
-                    });
-                }
+                drive.kind.check_image_len(drive_index, actual)?;
             }
         }
         Ok(())
@@ -3535,6 +3522,7 @@ mod tests {
                 drive_index: 0,
                 expected: 1_474_560,
                 actual: 1000,
+                drive_type: Some("1.44M"),
             })
         );
     }

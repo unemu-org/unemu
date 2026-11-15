@@ -108,8 +108,8 @@ impl FloppySlot {
                     source: None,
                     receipt: None,
                     readonly_bytes: None,
+                    geometry: Some(medium_format(geometry, &medium.image)),
                     medium,
-                    geometry: Some(geometry),
                     reason: None,
                     index: Some(index),
                     declared: true,
@@ -182,16 +182,31 @@ pub(super) fn geometry_name(geometry: FloppyGeometry) -> String {
         )
 }
 
+/// The format of a catalogue medium in a drive of type `drive`: the accepted
+/// medium its image size gives, else the drive's own format.
+pub(super) fn medium_format(drive: FloppyGeometry, image: &ImageSource) -> FloppyGeometry {
+    image
+        .known_len()
+        .or_else(|| match image {
+            ImageSource::File(path) => std::fs::metadata(path).ok().map(|m| m.len()),
+            _ => None,
+        })
+        .and_then(|len| drive.medium_for_len(len))
+        .unwrap_or(drive)
+}
+
+/// Why an image of `geometry` cannot go into a drive of type `drive`, by the
+/// assembly rule ([`FloppyGeometry::accepted_media`]).
 pub(super) fn compatibility(
     geometry: Option<FloppyGeometry>,
     drive: FloppyGeometry,
 ) -> Option<String> {
     match geometry {
         None => Some("Unrecognised image size; expected 1.2M, 1.44M, 720K or 360K".into()),
-        Some(geometry) if geometry != drive => Some(format!(
-            "{} image is incompatible with a {} drive; mixed-density mechanics are unavailable",
+        Some(geometry) if !drive.accepted_media().contains(&geometry) => Some(format!(
+            "{} image does not fit: {}",
             geometry_name(geometry),
-            geometry_name(drive)
+            assembly::descriptors::floppy_drive_media(drive)
         )),
         Some(_) => None,
     }
@@ -537,7 +552,10 @@ mod tests {
         for image in assembly::descriptors::FLOPPY_TYPES {
             for drive in assembly::descriptors::FLOPPY_TYPES {
                 let reason = compatibility(Some(image.geometry), drive.geometry);
-                assert_eq!(reason.is_none(), image == drive);
+                use assembly::descriptors::FloppyType;
+                let mixed = (drive == &FloppyType::HD_1_44 && image == &FloppyType::DD_720K)
+                    || (drive == &FloppyType::HD_1_2 && image == &FloppyType::DD_360K);
+                assert_eq!(reason.is_none(), image == drive || mixed);
                 if let Some(reason) = reason {
                     assert!(reason.contains(image.name));
                     assert!(reason.contains(drive.name));
@@ -571,6 +589,43 @@ mod tests {
             .unwrap()
             .reason
             .is_some());
+    }
+
+    #[test]
+    fn browse_accepts_any_medium_the_drive_type_takes() {
+        let temp = assembly::test_support::TempDir::new("browse-mixed-density");
+        for (image, drive, fits) in [
+            (FloppyGeometry::DD_720K, FloppyGeometry::HD_1_44, true),
+            (FloppyGeometry::DD_360K, FloppyGeometry::HD_1_2, true),
+            (FloppyGeometry::DD_720K, FloppyGeometry::DD_720K, true),
+            (FloppyGeometry::HD_1_44, FloppyGeometry::DD_720K, false),
+            (FloppyGeometry::DD_360K, FloppyGeometry::HD_1_44, false),
+            (FloppyGeometry::DD_720K, FloppyGeometry::HD_1_2, false),
+        ] {
+            let path = temp.path().join("image.img");
+            std::fs::write(&path, vec![0; image.image_bytes() as usize]).unwrap();
+            let entry = browse(&path, drive).unwrap();
+            assert_eq!(entry.geometry, Some(image));
+            assert_eq!(entry.reason.is_none(), fits, "{image:?} in {drive:?}");
+            if let Some(reason) = entry.reason {
+                assert!(reason.contains(&geometry_name(drive)), "{reason}");
+                assert!(reason.contains(&geometry_name(image)), "{reason}");
+            }
+        }
+        // A declared catalogue entry shows its own format, not the drive's.
+        let path = temp.path().join("game-720.img");
+        std::fs::write(&path, vec![0; 737_280]).unwrap();
+        assert_eq!(
+            medium_format(FloppyGeometry::HD_1_44, &ImageSource::File(path)),
+            FloppyGeometry::DD_720K
+        );
+        assert_eq!(
+            medium_format(
+                FloppyGeometry::HD_1_44,
+                &ImageSource::Blank { size: 1_474_560 }
+            ),
+            FloppyGeometry::HD_1_44
+        );
     }
 
     #[test]
@@ -1229,7 +1284,7 @@ impl LibraryInsert {
                     write,
                     name: medium.label.clone(),
                 },
-                geometry: Some(slot.geometry),
+                geometry: slot.geometry.medium_for_len(metadata.len()),
                 reason: None,
                 index: None,
                 declared: false,
@@ -1275,13 +1330,19 @@ pub(super) fn media_compatibility(
     for medium in media {
         match pc_image::media_set::geometry(&medium.format) {
             Ok(None) => return Some("CD-ROM emulation not available yet".into()),
-            Ok(Some(geometry)) if geometry != drive => {
+            Ok(Some(geometry)) if !drive.accepted_media().contains(&geometry) => {
+                let accepted: Vec<String> = drive
+                    .accepted_media()
+                    .into_iter()
+                    .map(geometry_name)
+                    .collect();
                 return Some(format!(
-                    "{} disks; drive {}: is {}",
+                    "{} disks; drive {}: is {}, which takes {}",
                     geometry_name(geometry),
                     if unit == 0 { "A" } else { "B" },
-                    geometry_name(drive)
-                ))
+                    geometry_name(drive),
+                    accepted.join(" or ")
+                ));
             }
             Err(error) => return Some(error.to_string()),
             _ => {}
@@ -1530,7 +1591,7 @@ mod media_set_tests {
     fn media_set_incompatible_and_optical_rows_explain_disabled_state() {
         assert_eq!(
             set_compatibility(&config("1.2M"), FloppyGeometry::HD_1_44, 0).as_deref(),
-            Some("1.2M disks; drive A: is 1.44M")
+            Some("1.2M disks; drive A: is 1.44M, which takes 1.44M or 720K")
         );
         assert_eq!(
             set_compatibility(&config("iso-2048"), FloppyGeometry::HD_1_44, 0).as_deref(),
@@ -1540,11 +1601,22 @@ mod media_set_tests {
             set_compatibility(&config("1.44M"), FloppyGeometry::HD_1_44, 0),
             None
         );
+        // A 1.44M drive takes 720K disks too; a 1.2M disk in the set refuses it.
         let mut mixed = config("1.44M");
         mixed.media.push(config("720K").media.remove(0));
+        assert_eq!(set_compatibility(&mixed, FloppyGeometry::HD_1_44, 1), None);
+        assert_eq!(
+            set_compatibility(&mixed, FloppyGeometry::DD_720K, 1).as_deref(),
+            Some("1.44M disks; drive B: is 720K, which takes 720K")
+        );
+        mixed.media.push(config("1.2M").media.remove(0));
         assert!(set_compatibility(&mixed, FloppyGeometry::HD_1_44, 1)
             .unwrap()
             .contains("drive B:"));
+        assert_eq!(
+            set_compatibility(&config("360K"), FloppyGeometry::HD_1_2, 0),
+            None
+        );
     }
     #[test]
     fn media_set_load_all_appends_in_order_and_journals_preserve_store() {

@@ -743,7 +743,7 @@ pub fn import_machine(
                 head: d.decoded_digest()?,
                 name,
                 policy: Policy::from_write(write),
-                geometry: Geometry::of(drive.kind),
+                geometry: Geometry::of_medium(drive.kind, d.decoded_size()?)?,
             });
             catalogue.push(id);
             layers.push(d);

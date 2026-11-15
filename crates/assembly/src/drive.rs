@@ -8,11 +8,12 @@ use crate::image::ImageSource;
 
 /// The cylinders/heads/sectors geometry of a floppy disk (§7.7).
 ///
-/// The image size an FDC expects is fixed by the geometry
-/// ([`FloppyGeometry::image_bytes`]); a mismatched backing image is a
-/// [`crate::ConfigError`]. The four standard PC formats are provided as
-/// constructors. (The FDC device that *reads* this geometry is a separate task;
-/// here it is only the config type.)
+/// A drive's [`DriveKind::Floppy`] geometry names its drive type; the media it
+/// takes are [`FloppyGeometry::accepted_media`]: its own format, plus 720K
+/// media in a 1.44M drive and 360K media in a 1.2M drive. A medium's format
+/// follows from its image size ([`FloppyGeometry::medium_for_len`]); an image
+/// the drive does not take is a [`crate::ConfigError`]. The four standard PC
+/// formats are provided as constructors.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct FloppyGeometry {
     /// Cylinders (tracks per side).
@@ -51,6 +52,40 @@ impl FloppyGeometry {
             * u64::from(self.heads)
             * u64::from(self.sectors_per_track)
             * u64::from(self.bytes_per_sector)
+    }
+
+    /// The floppy controller's geometry type for this CHS shape (the controller
+    /// fixes 512-byte sectors).
+    pub fn to_device(&self) -> devices::FloppyGeometry {
+        devices::FloppyGeometry {
+            cylinders: self.cylinders,
+            heads: self.heads,
+            sectors_per_track: self.sectors_per_track,
+        }
+    }
+
+    /// The controller's drive type for a drive of this geometry.
+    pub fn drive_type(&self) -> devices::DriveType {
+        devices::DriveType::new(self.to_device())
+    }
+
+    /// The media a drive of this type takes, its own format first. The floppy
+    /// controller owns the rule and its citations ([`devices::DriveType`]).
+    pub fn accepted_media(&self) -> Vec<Self> {
+        std::iter::once(*self)
+            .chain(
+                self.drive_type().media().skip(1).map(|medium| {
+                    Self::chs(medium.cylinders, medium.heads, medium.sectors_per_track)
+                }),
+            )
+            .collect()
+    }
+
+    /// The medium a drive of this type takes whose raw image is `len` bytes.
+    pub fn medium_for_len(&self, len: u64) -> Option<Self> {
+        self.accepted_media()
+            .into_iter()
+            .find(|medium| medium.image_bytes() == len)
     }
 }
 
@@ -100,12 +135,38 @@ pub enum DriveKind {
 }
 
 impl DriveKind {
-    /// The backing-image size this drive's geometry implies, in bytes.
+    /// The backing-image size this drive's own geometry implies, in bytes.
     pub fn image_bytes(&self) -> u64 {
         match self {
             DriveKind::Floppy { geometry } => geometry.image_bytes(),
             DriveKind::HardDisk { geometry } => geometry.image_bytes(),
         }
+    }
+
+    /// Check that an image of `actual` bytes fits this drive: a fixed disk
+    /// needs its geometry's exact size, a floppy drive any medium it takes.
+    /// The error names the floppy drive type and the media it takes.
+    pub fn check_image_len(
+        &self,
+        drive_index: usize,
+        actual: u64,
+    ) -> Result<(), crate::ConfigError> {
+        let fits = match self {
+            DriveKind::Floppy { geometry } => geometry.medium_for_len(actual).is_some(),
+            DriveKind::HardDisk { geometry } => geometry.image_bytes() == actual,
+        };
+        if fits {
+            return Ok(());
+        }
+        Err(crate::ConfigError::ImageGeometryMismatch {
+            drive_index,
+            expected: self.image_bytes(),
+            actual,
+            drive_type: match self {
+                DriveKind::Floppy { geometry } => crate::descriptors::floppy_type_name(*geometry),
+                DriveKind::HardDisk { .. } => None,
+            },
+        })
     }
 }
 
@@ -169,7 +230,7 @@ impl WriteMode {
 /// Ordered floppy media and the power-on door state (machine-files.md § Drives).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FloppyMediaList {
-    /// Each image must match the drive geometry; mixed-density mechanics are absent.
+    /// Each image must be a medium the drive type takes; entries may differ.
     pub entries: Vec<FloppyMedium>,
     /// Start without a disk. The change line still starts clear.
     pub empty: bool,

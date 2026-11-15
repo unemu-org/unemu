@@ -103,6 +103,13 @@ write = "readonly"
 image = "local/transfer-1200.img"
 write = "readonly"
 
+# B: is a 3.5-inch 1.44M drive, empty at power-on; it also takes 720K disks.
+# Insert images with Media > Insert, or list them in a local child profile.
+[[card.drives]]
+unit = 1
+type = "1.44M"
+empty = true
+
 # Lo-tech 2 MiB EMS board in the ISA expansion-memory window.
 [[card]]
 kind = "lotech-ems"

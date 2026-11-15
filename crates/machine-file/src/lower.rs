@@ -858,8 +858,16 @@ impl<R: ImageReader> Context<'_, R> {
                         )?;
                         (bytes.len() as u64, digest)
                     };
-                    if length != drive_kind.image_bytes() {
-                        return Err(self.error(&field, "medium geometry differs from drive type"));
+                    if let DriveKind::Floppy { geometry } = drive_kind {
+                        if geometry.medium_for_len(length).is_none() {
+                            return Err(self.error(
+                                &field,
+                                format!(
+                                    "medium image is {length} bytes but {}",
+                                    assembly::descriptors::floppy_drive_media(geometry)
+                                ),
+                            ));
+                        }
                     }
                     let path = self
                         .origins
@@ -962,12 +970,8 @@ impl<R: ImageReader> Context<'_, R> {
             };
             let image = if journal {
                 // Assembly needs the base path to reject aliases and mount the journal.
-                if length != drive_kind.image_bytes() {
-                    return Err(self.validation_error(ConfigError::ImageGeometryMismatch {
-                        drive_index: drives.len(),
-                        expected: drive_kind.image_bytes(),
-                        actual: length,
-                    }));
+                if let Err(error) = drive_kind.check_image_len(drives.len(), length) {
+                    return Err(self.validation_error(error));
                 }
                 let field = format!("{drive_field}.image");
                 ImageSource::File(
@@ -2220,7 +2224,7 @@ mod tests {
             (ConfigError::DriveControllerMissing { drive_index: 2, controller: DeviceId::Fdc }, "drive 2 ", "card[diskette].drives[unit=1] "),
             (ConfigError::DriveControllerKind { drive_index: 2, controller: DeviceId::Uart }, "drive 2 ", "card[diskette].drives[unit=1] "),
             (ConfigError::DriveUnitUnavailable { drive_index: 2, controller: DeviceId::Fdc, unit: 1, available: 1 }, "drive 2 ", "card[diskette].drives[unit=1] "),
-            (ConfigError::ImageGeometryMismatch { drive_index: 2, expected: 512, actual: 7 }, "drive 2 ", "card[diskette].drives[unit=1] "),
+            (ConfigError::ImageGeometryMismatch { drive_index: 2, expected: 512, actual: 7, drive_type: None }, "drive 2 ", "card[diskette].drives[unit=1] "),
             (ConfigError::DuplicateDriveUnit { a: 1, b: 2, controller: DeviceId::Fdc, unit: 1 }, "drives 1 and 2 ", "card[diskette].drives[unit=1] (machine.toml:10) and card[diskette].drives[unit=1] (machine.toml:18) "),
         ] {
             let original = error.to_string();

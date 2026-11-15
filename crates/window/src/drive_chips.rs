@@ -9,7 +9,7 @@
 //! frame visible; the hold never reaches the machine, so execution stays
 //! deterministic. See `backlog/docs/design/machine-images.md` §7.
 
-use crate::media_dialog::{filename, geometry_name, FloppySlot};
+use crate::media_dialog::{filename, geometry_name, medium_format, FloppySlot};
 use assembly::{
     DeviceId, DriveConfig, DriveKind, FloppyGeometry, HardDiskGeometry, ImageSource, MachineConfig,
     WriteMode,
@@ -75,6 +75,9 @@ pub(crate) struct Medium {
     pub write: WriteMode,
     /// Why this medium's write mode cannot change in this session, if it cannot.
     pub fixed_by: Option<&'static str>,
+    /// A floppy's own format, which may differ from its drive type's
+    /// (a 720K disk in a 1.44M drive); `None` for a fixed disk.
+    pub format: Option<FloppyGeometry>,
 }
 
 /// One drive as the status bar and the Media menu show it.
@@ -125,7 +128,7 @@ impl DriveView {
                 medium.name.clone(),
                 format!(
                     " · {} · {}",
-                    geometry_name(*geometry),
+                    geometry_name(medium.format.unwrap_or(*geometry)),
                     mode_short(&medium.write)
                 ),
             ),
@@ -191,13 +194,17 @@ impl DriveView {
                     None => rows.push(("Medium", "Empty · click to insert a floppy".into())),
                     Some(medium) => {
                         medium_rows(&mut rows, medium);
+                        let medium_format = medium.format.unwrap_or(geometry);
                         rows.insert(
                             rows.len() - 1,
                             (
                                 "Format",
                                 format!(
-                                    "{format} · {}/{}/{}",
-                                    geometry.cylinders, geometry.heads, geometry.sectors_per_track
+                                    "{} · {}/{}/{}",
+                                    geometry_name(medium_format),
+                                    medium_format.cylinders,
+                                    medium_format.heads,
+                                    medium_format.sectors_per_track
                                 ),
                             ),
                         );
@@ -403,12 +410,21 @@ fn floppy_medium(
     } else {
         name.to_owned()
     };
+    let format = match drive.kind {
+        DriveKind::Floppy { geometry } => Some(
+            entry
+                .and_then(|entry| entry.geometry)
+                .unwrap_or_else(|| medium_format(geometry, image)),
+        ),
+        DriveKind::HardDisk { .. } => None,
+    };
     Medium {
         name,
         source,
         sha256,
         write: write.clone(),
         fixed_by: declared.then(|| origin.fixes_write_mode()),
+        format,
     }
 }
 
@@ -430,6 +446,7 @@ fn fixed_medium(drive: &DriveConfig, origin: &Origin) -> Medium {
         sha256: drive.expected_sha256,
         write: drive.write.clone(),
         fixed_by: Some(origin.fixes_write_mode()),
+        format: None,
     }
 }
 
@@ -613,6 +630,46 @@ mod tests {
                 .map(|view| view.floppy_unit())
                 .collect::<Vec<_>>(),
             [Some(0), Some(1), None]
+        );
+    }
+
+    #[test]
+    fn chips_name_the_medium_format_in_a_mixed_density_drive() {
+        let temp = assembly::test_support::TempDir::new("chips-mixed-density");
+        let game = temp.path().join("game.img");
+        std::fs::write(&game, vec![0; 737_280]).unwrap();
+        let mut config = machine();
+        config
+            .drives
+            .retain(|drive| drive.unit != 1 || drive.controller != DeviceId::Fdc);
+        let mut b = floppy_drive(1, FloppyGeometry::HD_1_44);
+        b.media = Some(assembly::FloppyMediaList {
+            empty: false,
+            entries: vec![FloppyMedium {
+                image: ImageSource::File(game),
+                expected_sha256: None,
+                write: WriteMode::ReadOnly,
+                name: "game.img".into(),
+            }],
+        });
+        config.drives.push(b);
+        let views = drive_views(
+            &config,
+            &slots(&config),
+            &[None, Some((0, "game.img".into()))],
+            &origin(),
+        );
+        let b = views.iter().find(|view| view.letter() == 'B').unwrap();
+        assert_eq!(b.chip_text(), "B: game.img · 720K · read-only");
+        assert_eq!(b.menu_label(), "Drive B: (1.44M) — game.img · read-only");
+        let tooltip = b.tooltip(false);
+        assert!(
+            tooltip.contains(&("Drive", "B: 3.5\" 1.44M".into())),
+            "{tooltip:?}"
+        );
+        assert!(
+            tooltip.contains(&("Format", "720K · 80/2/9".into())),
+            "{tooltip:?}"
         );
     }
 

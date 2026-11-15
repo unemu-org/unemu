@@ -815,16 +815,33 @@ pub enum ConfigError {
         unit: u8,
     },
 
-    /// A drive's backing image does not match its geometry's size.
-    #[error("drive {drive_index} image is {actual} bytes but its geometry needs {expected}")]
+    /// A drive's backing image does not fit it: a fixed disk needs its
+    /// geometry's size, a floppy drive one of the media its type takes.
+    #[error("drive {drive_index} image is {actual} bytes but {needs}", needs = image_needs(.expected, .drive_type))]
     ImageGeometryMismatch {
         /// Index of the drive in the config's drive list.
         drive_index: usize,
-        /// The size the geometry requires.
+        /// The size the drive's own geometry requires.
         expected: u64,
         /// The size the backing image actually has.
         actual: u64,
+        /// The standard floppy drive type, whose accepted media the message
+        /// names; `None` for a fixed disk or a custom geometry.
+        drive_type: Option<&'static str>,
     },
+}
+
+fn image_needs(expected: &u64, drive_type: &Option<&'static str>) -> String {
+    drive_type
+        .and_then(|name| {
+            crate::descriptors::FLOPPY_TYPES
+                .iter()
+                .find(|kind| kind.name == name)
+        })
+        .map_or_else(
+            || format!("its geometry needs {expected}"),
+            |kind| crate::descriptors::floppy_drive_media(kind.geometry),
+        )
 }
 
 fn rtc_start_range(start: &crate::RtcStart, field: &str) -> String {

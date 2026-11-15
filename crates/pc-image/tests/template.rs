@@ -282,7 +282,29 @@ fn template_machines_validate_lower_and_describe_themselves() {
                 .iter()
                 .filter(|d| matches!(d.kind, assembly::DriveKind::Floppy { .. }))
                 .count(),
-            1
+            2
+        );
+        // B: is an empty 3.5-inch 1.44M drive; A: stays the 1.2M drive.
+        let floppies: Vec<_> = machine
+            .drives
+            .iter()
+            .filter_map(|d| match d.kind {
+                assembly::DriveKind::Floppy { geometry } => Some((
+                    d.unit,
+                    geometry,
+                    d.media
+                        .as_ref()
+                        .map(|list| (list.entries.len(), list.empty)),
+                )),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            floppies,
+            [
+                (0, assembly::FloppyGeometry::HD_1_2, Some((0, true))),
+                (1, assembly::FloppyGeometry::HD_1_44, Some((0, true))),
+            ]
         );
     }
 }
@@ -305,11 +327,11 @@ const PINNED: [(&str, &str); 5] = [
     ),
     (
         "unemu/open-at",
-        "sha256:26a177bec3fa9fa27f5bef3b4f77d54e2a9f8f93771da4429dded92d8651995d",
+        "sha256:e3bccef9bc44d52dfffc096e195852af32bcc2f613db2860040f56ddd0033b75",
     ),
     (
         "unemu/open-at-games",
-        "sha256:d71283a6d34151affdddddc3c680128e22674ac0144bacce76525a3095fb01a0",
+        "sha256:b5c48e5319f7a7e4af8bea4fae3e2d739f4dc52b61ccecd069545889d68310c9",
     ),
 ];
 

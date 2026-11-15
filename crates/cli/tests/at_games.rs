@@ -528,7 +528,30 @@ fn synthetic_game_profiles_lower_and_pass_machine_check_without_opening_journals
             matches!(ide.kind, DeviceKind::Ide(cfg) if cfg.base == 0x1F0 && cfg.control == 0x3F6 && cfg.model == if name == support::IBM { assembly::AtaControllerModel::AtAdapter } else { assembly::AtaControllerModel::Ata })
         );
         assert_eq!(ide.irq, Some(14));
-        assert_eq!(config.drives.len(), 2);
+        // The open profile adds an empty 3.5-inch 1.44M B:; the June 1985 IBM
+        // BIOS profile keeps A: only.
+        assert_eq!(
+            config.drives.len(),
+            if name == support::OPEN { 3 } else { 2 }
+        );
+        let b = config
+            .drives
+            .iter()
+            .find(|drive| drive.controller == DeviceId::Fdc && drive.unit == 1);
+        if name == support::OPEN {
+            let b = b.unwrap();
+            assert_eq!(
+                b.kind,
+                assembly::DriveKind::Floppy {
+                    geometry: assembly::FloppyGeometry::HD_1_44
+                }
+            );
+            let media = b.media.as_ref().unwrap();
+            assert!(media.empty && media.entries.is_empty());
+            assert_eq!(assembly::derive_cmos_config(config).unwrap()[0x10], 0x24);
+        } else {
+            assert!(b.is_none());
+        }
         let disk = config
             .drives
             .iter()
@@ -545,7 +568,7 @@ fn synthetic_game_profiles_lower_and_pass_machine_check_without_opening_journals
         let floppy = config
             .drives
             .iter()
-            .find(|drive| drive.controller == DeviceId::Fdc)
+            .find(|drive| drive.controller == DeviceId::Fdc && drive.unit == 0)
             .unwrap();
         assert_eq!(floppy.unit, 0);
         assert_eq!(floppy.kind.image_bytes(), 1_228_800);
@@ -784,5 +807,273 @@ fn open_game_profile_boots_freedos() {
     assert!(dos_prompt, "FreeDOS did not reach the A: prompt");
     assert_eq!(retired, OPEN_GOLDEN_RETIRED);
     assert_eq!(text_hash, OPEN_GOLDEN_TEXT_SHA256);
+    assembled.finish_persistence().unwrap();
+}
+
+/// Set-1 make/break codes for a FreeDOS command line: lowercase letters,
+/// digits, space, period, colon (shifted) and Enter.
+fn keys(text: &str) -> Vec<u8> {
+    let mut keys = Vec::new();
+    for byte in text.bytes() {
+        let (code, shift) = match byte {
+            b'a'..=b'z' => (
+                [
+                    0x1e, 0x30, 0x2e, 0x20, 0x12, 0x21, 0x22, 0x23, 0x17, 0x24, 0x25, 0x26, 0x32,
+                    0x31, 0x18, 0x19, 0x10, 0x13, 0x1f, 0x14, 0x16, 0x2f, 0x11, 0x2d, 0x15, 0x2c,
+                ][usize::from(byte - b'a')],
+                false,
+            ),
+            b'1'..=b'9' => (byte - b'1' + 2, false),
+            b'0' => (0x0b, false),
+            b' ' => (0x39, false),
+            b'.' => (0x34, false),
+            b':' => (0x27, true),
+            b'\r' => (0x1c, false),
+            _ => panic!("unsupported script key {byte}"),
+        };
+        if shift {
+            keys.push(0x2a);
+        }
+        keys.extend([code, code | 0x80]);
+        if shift {
+            keys.push(0xaa);
+        }
+    }
+    keys
+}
+
+/// Add one root-directory file to a freshly formatted FAT12 floppy, its one
+/// cluster at `cluster`, so reading it moves the head away from cylinder 0.
+/// Microsoft FAT Specification, BPB, FAT12 entries and directory entries.
+fn add_fat12_file(image: &mut [u8], name: &[u8; 11], cluster: u16, data: &[u8]) {
+    let word = |offset: usize| usize::from(u16::from_le_bytes([image[offset], image[offset + 1]]));
+    let (sector, cluster_sectors, reserved) = (word(11), usize::from(image[13]), word(14));
+    let (fats, root_entries, fat_sectors) = (usize::from(image[16]), word(17), word(22));
+    let root = (reserved + fats * fat_sectors) * sector;
+    let data_start = root + root_entries * 32;
+    for fat in 0..fats {
+        let entry = (reserved + fat * fat_sectors) * sector + usize::from(cluster) * 3 / 2;
+        if cluster.is_multiple_of(2) {
+            image[entry] = 0xFF;
+            image[entry + 1] |= 0x0F;
+        } else {
+            image[entry] |= 0xF0;
+            image[entry + 1] = 0xFF;
+        }
+    }
+    let slot = (0..root_entries)
+        .map(|index| root + index * 32)
+        .find(|&offset| image[offset] == 0)
+        .unwrap();
+    image[slot..slot + 11].copy_from_slice(name);
+    image[slot + 11] = 0x20;
+    image[slot + 24..slot + 26].copy_from_slice(&0x21u16.to_le_bytes());
+    image[slot + 26..slot + 28].copy_from_slice(&cluster.to_le_bytes());
+    image[slot + 28..slot + 32].copy_from_slice(&(data.len() as u32).to_le_bytes());
+    let offset = data_start + usize::from(cluster - 2) * cluster_sectors * sector;
+    image[offset..offset + data.len()].copy_from_slice(data);
+}
+
+// MEASURED with the CPU pin above when the open profile gained its empty B:.
+const MIXED_DENSITY_RETIRED: u64 = 22_988_197;
+const MIXED_DENSITY_TEXT_SHA256: &str =
+    "b9e3a1cbed205ef8cc2e2c697a83dc79ffbd4803c3f7b7b9a67602685e8bf16a";
+
+/// FreeDOS on the open profile reads a 720K disk inserted into the empty
+/// 1.44M B: (250 kbps) and a 360K disk swapped into the 1.2M A: (300 kbps,
+/// double-stepped). Each file sits beyond cylinder 0, so TYPE seeks: the 360K
+/// file's track 11 is physical cylinder 22 of the 1.2M drive. Both disks go in
+/// through the Media › Insert path (append, then insert at a run boundary).
+#[test]
+#[ignore = "slow: open AT BIOS POST, FreeDOS 1.2M boot, then a 720K disk in B: and a 360K disk in A:"]
+fn open_game_profile_reads_720k_in_b_and_360k_in_a() {
+    use assembly::{
+        ConsoleProbe, FloppyAction, FloppyMedium, InjectionSchedule, KeyboardStimulus,
+        ObservationPolicy, ObservationRequest, OutputKind, RunPolicy, StopCondition,
+    };
+    use cpu::Cpu;
+    use machine::RunOutcome;
+
+    assert!(include_str!("../../../Cargo.lock").contains(CPU_REV));
+    let Some(profile) = open_fixture_profile() else {
+        return;
+    };
+    let directory = profile.tree.path().join("machines/local");
+    let disk = |file: &str, format: &str, label: &str, name: &[u8; 11], cluster, text: &[u8]| {
+        let path = directory.join(file);
+        let args: Vec<std::ffi::OsString> = [
+            "media", "create", "floppy", "--type", format, "--format", "--label", label,
+        ]
+        .into_iter()
+        .map(Into::into)
+        .chain([path.clone().into_os_string()])
+        .collect();
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        assert_eq!(
+            cli::command::run(&args, &mut out, &mut err),
+            0,
+            "{}",
+            String::from_utf8_lossy(&err)
+        );
+        let mut image = std::fs::read(&path).unwrap();
+        add_fat12_file(&mut image, name, cluster, text);
+        std::fs::write(&path, image).unwrap();
+        FloppyMedium {
+            image: ImageSource::File(path),
+            expected_sha256: None,
+            write: WriteMode::ReadOnly,
+            name: file.into(),
+        }
+    };
+    // 720K: data start 14, two sectors per cluster; cluster 300 is cylinder 33.
+    let dd720 = disk(
+        "games-720.img",
+        "720K",
+        "GAMES720",
+        b"GAME720 TXT",
+        300,
+        b"seven-twenty in b\r\n",
+    );
+    // 360K: data start 12, two sectors per cluster; cluster 100 is track 11.
+    let dd360 = disk(
+        "old-360.img",
+        "360K",
+        "OLD360",
+        b"OLD360  TXT",
+        100,
+        b"three-sixty in a\r\n",
+    );
+
+    let loaded =
+        machine_file::load_for_assembly(&profile.file, AssemblyOptions::default()).unwrap();
+    let mut config = loaded.config.clone();
+    assert_eq!(assembly::derive_cmos_config(&config).unwrap()[0x10], 0x24);
+    let policy = ObservationPolicy {
+        routes: vec![ObservationRequest {
+            device: DeviceId::Vga,
+            output: OutputKind::TextScanout,
+            byte_limit: 0,
+        }],
+        ..ObservationPolicy::default()
+    };
+    let mut assembled = loaded.assemble(&policy).unwrap();
+    let keyboard = assembled.device_index[&DeviceId::Keyboard];
+    let cap = 400_000_000;
+    let screen = |assembled: &mut assembly::AssembledMachine| {
+        let capture = assembled.capture_text(DeviceId::Vga).unwrap();
+        let video::Frame::Text(grid) = &capture.frame else {
+            panic!("expected VGA text");
+        };
+        let text = grid.rows_as_strings().join("\n");
+        (text, capture.frame)
+    };
+    let run_until = |assembled: &mut assembly::AssembledMachine, done: &dyn Fn(&str) -> bool| loop {
+        let (text, frame) = screen(assembled);
+        if done(&text) {
+            return (text, frame);
+        }
+        let next = assembled.machine.virtual_time() + 200_000;
+        assert!(next < cap, "budget exhausted:\n{text}");
+        let outcome = session::run_progressing(
+            assembled,
+            &RunPolicy::natural(Some(next), Some(cli::BIOS_IDLE_LIMIT)),
+        )
+        .unwrap();
+        assert_eq!(outcome, RunOutcome::RetiredCapReached, "\n{text}");
+    };
+    let type_line = |assembled: &mut assembly::AssembledMachine, line: &str| {
+        // Pace characters so the BIOS typeahead ring never fills.
+        for character in format!("{line}\r").chars() {
+            assembly::inject_scancodes(
+                &mut assembled.machine,
+                keyboard,
+                &keys(&character.to_string()),
+            );
+            let next = assembled.machine.virtual_time() + 100_000;
+            session::run_progressing(
+                assembled,
+                &RunPolicy::natural(Some(next), Some(cli::BIOS_IDLE_LIMIT)),
+            )
+            .unwrap();
+        }
+    };
+    let outcome = assembled
+        .run_session(&RunPolicy {
+            retired_cap: Some(cap),
+            idle_limit: Some(cli::BIOS_IDLE_LIMIT),
+            stop: StopCondition::PromptThen {
+                console: ConsoleProbe {
+                    device: DeviceId::Vga,
+                },
+                needle: cli::DOS_DATE_PROMPT.into(),
+                poll_step: cli::DOS_INTERACTIVE_POLL_STEP,
+                then_budget: 0,
+            },
+            stimuli: vec![KeyboardStimulus {
+                keyboard_index: keyboard,
+                scancodes: [cli::KEY_ENTER, cli::KEY_ENTER].concat(),
+                schedule: InjectionSchedule::AfterPrompt,
+            }],
+        })
+        .unwrap();
+    assert_eq!(outcome, RunOutcome::RetiredCapReached);
+    let prompt = |text: &str| text.trim_end().ends_with("A:\\>");
+    run_until(&mut assembled, &prompt);
+
+    let index = assembled
+        .append_floppy(DeviceId::Fdc, 1, &mut config, &dd720)
+        .unwrap();
+    assembled
+        .change_floppy(DeviceId::Fdc, 1, FloppyAction::Insert(index))
+        .unwrap();
+    type_line(&mut assembled, "dir b:");
+    run_until(&mut assembled, &|text| {
+        text.contains("GAME720") && prompt(text)
+    });
+    type_line(&mut assembled, "type b:game720.txt");
+    let (b_text, _) = run_until(&mut assembled, &|text| {
+        text.contains("seven-twenty in b") && prompt(text)
+    });
+    eprintln!("at-games-open B: 720K:\n{b_text}");
+    for line in [" Volume in drive B is GAMES720", "729,088 bytes free"] {
+        assert!(b_text.contains(line), "{line}: {b_text}");
+    }
+
+    let index = assembled
+        .append_floppy(DeviceId::Fdc, 0, &mut config, &dd360)
+        .unwrap();
+    assembled
+        .change_floppy(DeviceId::Fdc, 0, FloppyAction::Insert(index))
+        .unwrap();
+    type_line(&mut assembled, "dir a:");
+    run_until(&mut assembled, &|text| {
+        text.contains("OLD360") && prompt(text)
+    });
+    type_line(&mut assembled, "type a:old360.txt");
+    let (a_text, frame) = run_until(&mut assembled, &|text| {
+        text.contains("three-sixty in a") && prompt(text)
+    });
+    eprintln!("at-games-open A: 360K:\n{a_text}");
+    for line in [" Volume in drive A is OLD360", "361,472 bytes free"] {
+        assert!(a_text.contains(line), "{line}: {a_text}");
+    }
+    let fdc = assembled.device_index[&DeviceId::Fdc];
+    let fdc = assembled
+        .machine
+        .bus_mut()
+        .device_mut(fdc)
+        .unwrap()
+        .as_any_mut()
+        .unwrap()
+        .downcast_mut::<devices::Upd765>()
+        .unwrap();
+    // The 360K file's track 11 was read with the head at physical cylinder 22.
+    assert_eq!(fdc.present_cylinder(0), 22);
+    assert_eq!(fdc.drive_type(1), Some(devices::DriveType::HD1440));
+    let retired = assembled.machine.cpu().retired();
+    let text_hash = assembly::test_support::text_plane_sha256(&frame);
+    eprintln!("at-games-open mixed density: retired={retired} text_sha256={text_hash}");
+    assert_eq!(retired, MIXED_DENSITY_RETIRED);
+    assert_eq!(text_hash, MIXED_DENSITY_TEXT_SHA256);
     assembled.finish_persistence().unwrap();
 }

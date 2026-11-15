@@ -1012,7 +1012,7 @@ fn resolve_sources_preverified<'a>(
                 let verified = verify_drive_base(
                     path,
                     drive.expected_sha256,
-                    drive.kind.image_bytes(),
+                    &drive.kind,
                     index,
                     bases.get(path),
                 )?;
@@ -1059,7 +1059,7 @@ fn resolve_sources_preverified<'a>(
                         let verified = verify_drive_base(
                             path,
                             medium.expected_sha256,
-                            drive.kind.image_bytes(),
+                            &drive.kind,
                             drive_index,
                             bases.get(path),
                         )?;
@@ -1110,13 +1110,7 @@ fn resolve_sources_preverified<'a>(
                     None
                 };
                 if let Some(actual) = medium.image.known_len() {
-                    if actual != drive.kind.image_bytes() {
-                        return Err(ConfigError::ImageGeometryMismatch {
-                            drive_index,
-                            expected: drive.kind.image_bytes(),
-                            actual,
-                        });
-                    }
+                    drive.kind.check_image_len(drive_index, actual)?;
                 }
                 base_metadata.push(metadata);
             }
@@ -1128,7 +1122,7 @@ fn resolve_sources_preverified<'a>(
 fn verify_drive_base(
     path: &std::path::Path,
     expected: Option<[u8; 32]>,
-    geometry: u64,
+    kind: &DriveKind,
     drive_index: usize,
     verified: Option<&media::VerifiedBase>,
 ) -> Result<media::VerifiedBase, ConfigError> {
@@ -1143,13 +1137,7 @@ fn verify_drive_base(
     } else {
         let file = std::fs::File::open(path).map_err(image_error)?;
         let length = file.metadata().map_err(image_error)?.len();
-        if length != geometry {
-            return Err(ConfigError::ImageGeometryMismatch {
-                drive_index,
-                expected: geometry,
-                actual: length,
-            });
-        }
+        kind.check_image_len(drive_index, length)?;
         media::VerifiedBase::from_file(file).map_err(image_error)?
     };
     let actual = base.identity().base_digest;
@@ -1162,13 +1150,7 @@ fn verify_drive_base(
             });
         }
     }
-    if base.identity().base_length != geometry {
-        return Err(ConfigError::ImageGeometryMismatch {
-            drive_index,
-            expected: geometry,
-            actual: base.identity().base_length,
-        });
-    }
+    kind.check_image_len(drive_index, base.identity().base_length)?;
     Ok(base)
 }
 
@@ -1348,7 +1330,8 @@ fn build_fdc_drives(
 ///
 /// Only floppy drives are mounted here; a slot past the fourth position is
 /// ignored (validation bounds units to both declared count and hardware). The
-/// config geometry maps directly to the controller's own geometry type.
+/// mounted medium's geometry is the format its image size gives among the
+/// media the drive type takes ([`FloppyGeometry::medium_for_len`]).
 ///
 fn mount_fdc_drives(
     config: &MachineConfig,
@@ -1378,7 +1361,8 @@ fn mount_fdc_drives(
         } else {
             load_image_bytes(&drive.image)?
         };
-        let geometry = to_device_geometry(geometry);
+        let length = verified.map_or(image.len() as u64, |base| base.identity().base_length);
+        let geometry = medium_geometry(geometry, length, drive_index)?;
         slots[slot] = Some(match &drive.write {
             WriteMode::ReadOnly => Drive::new_read_only(geometry, image),
             WriteMode::Volatile => Drive::new(geometry, image),
@@ -1416,21 +1400,34 @@ fn mount_removable_fdc(
     persistence: &mut Vec<crate::PersistenceHandle>,
     metadata: &[Option<DriveBase>],
 ) -> Result<Upd765, AssemblyError> {
-    let mut fdc = Upd765::with_drives(mount_fdc_drives(config, controller, persistence, metadata)?);
+    let mut slots = mount_fdc_drives(config, controller, persistence, metadata)?;
+    let mut fdc = Upd765::new();
     let mut metadata_index = config.drives.len();
     for (drive_index, drive) in config.drives.iter().enumerate() {
-        let Some(list) = &drive.media else {
-            continue;
-        };
         let start = metadata_index;
-        metadata_index += list.entries.len();
+        metadata_index += drive.media.as_ref().map_or(0, |list| list.entries.len());
         if drive.controller != controller {
             continue;
         }
-        let DriveKind::Floppy { geometry } = drive.kind else {
+        let DriveKind::Floppy {
+            geometry: drive_geometry,
+        } = drive.kind
+        else {
             continue;
         };
-        let geometry = to_device_geometry(&geometry);
+        let unit = usize::from(drive.unit);
+        let install_error = |e: devices::upd765::MediaChangeError| ConfigError::Journal {
+            drive_index,
+            message: e.to_string(),
+        };
+        let Some(list) = &drive.media else {
+            // A single image is a one-entry catalogue with its disk inserted.
+            if let Some(medium) = slots.get_mut(unit).and_then(Option::take) {
+                fdc.set_media_list(unit, drive_geometry.drive_type(), vec![medium], false)
+                    .map_err(install_error)?;
+            }
+            continue;
+        };
         let mut entries = Vec::new();
         for (index, medium) in list.entries.iter().enumerate() {
             let verified = metadata
@@ -1442,6 +1439,8 @@ fn mount_removable_fdc(
             } else {
                 load_image_bytes(&medium.image)?
             };
+            let length = verified.map_or(image.len() as u64, |base| base.identity().base_length);
+            let geometry = medium_geometry(&drive_geometry, length, drive_index)?;
             entries.push(match &medium.write {
                 WriteMode::Volatile => Drive::new(geometry, image),
                 WriteMode::ReadOnly => Drive::new_read_only(geometry, image),
@@ -1472,23 +1471,21 @@ fn mount_removable_fdc(
                 }
             });
         }
-        fdc.set_media_list(usize::from(drive.unit), entries, list.empty)
-            .map_err(|e| ConfigError::Journal {
-                drive_index,
-                message: e.to_string(),
-            })?;
+        fdc.set_media_list(unit, drive_geometry.drive_type(), entries, list.empty)
+            .map_err(install_error)?;
     }
     Ok(fdc)
 }
 
-/// Convert a config [`FloppyGeometry`] into the floppy controller's own geometry
-/// type (both are CHS with a fixed 512-byte sector).
-fn to_device_geometry(geometry: &FloppyGeometry) -> devices::FloppyGeometry {
-    devices::FloppyGeometry {
-        cylinders: geometry.cylinders,
-        heads: geometry.heads,
-        sectors_per_track: geometry.sectors_per_track,
-    }
+/// The controller geometry of the medium whose image is `length` bytes in a
+/// drive of type `drive`: one of the media the drive type takes.
+pub(crate) fn medium_geometry(
+    drive: &FloppyGeometry,
+    length: u64,
+    drive_index: usize,
+) -> Result<devices::FloppyGeometry, ConfigError> {
+    DriveKind::Floppy { geometry: *drive }.check_image_len(drive_index, length)?;
+    Ok(drive.medium_for_len(length).unwrap_or(*drive).to_device())
 }
 
 /// Derive the CMOS seed the BIOS expects from the memory map and the attached
@@ -4253,11 +4250,11 @@ mod tests {
         let slots = build_fdc_drives(&config, DeviceId::Fdc).expect("drives mounted");
         assert_eq!(
             slots[0].as_ref().expect("slot 0 mounted").geometry,
-            to_device_geometry(&FloppyGeometry::HD_1_2)
+            FloppyGeometry::HD_1_2.to_device()
         );
         assert_eq!(
             slots[1].as_ref().expect("slot 1 mounted").geometry,
-            to_device_geometry(&FloppyGeometry::DD_720K)
+            FloppyGeometry::DD_720K.to_device()
         );
         assert!(slots[2].is_none() && slots[3].is_none());
 
@@ -4363,10 +4360,7 @@ mod tests {
             (DeviceId::Uart, FloppyGeometry::DD_720K, 0x72),
         ] {
             let slots = build_fdc_drives(&config, controller).unwrap();
-            assert_eq!(
-                slots[0].as_ref().unwrap().geometry,
-                to_device_geometry(&geometry)
-            );
+            assert_eq!(slots[0].as_ref().unwrap().geometry, geometry.to_device());
             assert!(slots[1..].iter().all(Option::is_none));
             let index = assembled.device_index[&controller];
             let fdc = assembled.machine.bus_mut().device_mut(index).unwrap();
@@ -4521,7 +4515,7 @@ mod tests {
         config.drives[0].image =
             ImageSource::File(concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml").into());
         assert!(
-            matches!(assemble_synthetic(&config), Err(AssemblyError::Config(ConfigError::ImageGeometryMismatch { drive_index: 0, expected: 1_474_560, actual })) if actual == include_bytes!("../Cargo.toml").len() as u64)
+            matches!(assemble_synthetic(&config), Err(AssemblyError::Config(ConfigError::ImageGeometryMismatch { drive_index: 0, expected: 1_474_560, actual, .. })) if actual == include_bytes!("../Cargo.toml").len() as u64)
         );
     }
 
@@ -5831,7 +5825,15 @@ mod base_length_tests {
         let path = directory.path().join("base.img");
         std::fs::write(&path, [0; 4096]).unwrap();
         let before = media::hash_passes();
-        let error = super::verify_drive_base(&path, None, 8192, 0, None).unwrap_err();
+        let kind = crate::DriveKind::HardDisk {
+            geometry: crate::HardDiskGeometry {
+                cylinders: 1,
+                heads: 1,
+                sectors_per_track: 16,
+                bytes_per_sector: 512,
+            },
+        };
+        let error = super::verify_drive_base(&path, None, &kind, 0, None).unwrap_err();
         assert!(matches!(
             error,
             crate::ConfigError::ImageGeometryMismatch {

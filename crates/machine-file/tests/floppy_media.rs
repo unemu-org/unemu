@@ -75,11 +75,78 @@ fn floppy_media_geometry_conflicts_and_ambiguous_forms_are_refused() {
         );
     }
     let yaml = "schema: 1\nboard: {model: ibm-5170}\nfirmware:\n  bios: {image: bios.bin, provides: [floppy]}\ncard:\n  - kind: fdc-765\n    drives:\n      - unit: 0\n        type: 360K\n        media: [{image: two.img}]\n";
-    assert!(load(temp.path(), "bad.yaml", yaml)
-        .unwrap_err()
-        .to_string()
-        .contains("geometry"));
+    let error = load(temp.path(), "bad.yaml", yaml).unwrap_err().to_string();
+    assert!(
+        error.contains("media[0]")
+            && error.contains(
+                "medium image is 1228800 bytes but a 360K drive takes 360K (368640 bytes) media"
+            ),
+        "{error}"
+    );
     assert!(load(temp.path(), "empty.toml", &toml("empty=true")).is_ok());
+}
+
+/// Machine-file text for one floppy drive of `drive_type` on unit 0.
+fn typed(drive_type: &str, drive: &str) -> String {
+    toml(drive).replace("type='360K'", &format!("type='{drive_type}'"))
+}
+
+#[test]
+fn floppy_drive_types_take_their_lower_density_media() {
+    let temp = files();
+    std::fs::write(temp.path().join("dd720.img"), vec![0x72; 737_280]).unwrap();
+    std::fs::write(temp.path().join("hd1440.img"), vec![0x14; 1_474_560]).unwrap();
+    std::fs::write(temp.path().join("hd1200.img"), vec![0x12; 1_228_800]).unwrap();
+    // Accepted: the drive's own format and its lower-density medium, in one catalogue.
+    for (drive_type, images) in [
+        ("1.44M", "media=[{image='dd720.img'},{image='hd1440.img'}]"),
+        ("1.2M", "media=[{image='one.img'},{image='hd1200.img'}]"),
+        ("1.44M", "image='dd720.img'"),
+        ("1.2M", "image='one.img'"),
+    ] {
+        let config = load(temp.path(), "machine.toml", &typed(drive_type, images))
+            .unwrap_or_else(|error| panic!("{drive_type} {images}: {error}"));
+        assert_eq!(
+            assembly::derive_cmos_config(&config).unwrap()[0x10] >> 4,
+            if drive_type == "1.44M" { 4 } else { 2 },
+            "CMOS 10h names the drive type, not the medium"
+        );
+        let _assembled = assembly::assemble_with_options(
+            &config,
+            assembly::AssemblyOptions {
+                allow_unlisted_firmware: true,
+            },
+        )
+        .unwrap();
+    }
+    // Refused, naming the drive type and the media it takes.
+    for (drive_type, images, needs) in [
+        (
+            "1.44M",
+            "media=[{image='dd720.img'},{image='hd1200.img'}]",
+            "medium image is 1228800 bytes but a 1.44M drive takes 1.44M (1474560 bytes) or 720K (737280 bytes) media",
+        ),
+        (
+            "720K",
+            "media=[{image='hd1440.img'}]",
+            "medium image is 1474560 bytes but a 720K drive takes 720K (737280 bytes) media",
+        ),
+        (
+            "1.2M",
+            "media=[{image='dd720.img'}]",
+            "medium image is 737280 bytes but a 1.2M drive takes 1.2M (1228800 bytes) or 360K (368640 bytes) media",
+        ),
+        (
+            "1.44M",
+            "image='one.img'",
+            "image is 368640 bytes but a 1.44M drive takes 1.44M (1474560 bytes) or 720K (737280 bytes) media",
+        ),
+    ] {
+        let error = load(temp.path(), "machine.toml", &typed(drive_type, images))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains(needs), "{drive_type} {images}: {error}");
+    }
 }
 
 #[test]
