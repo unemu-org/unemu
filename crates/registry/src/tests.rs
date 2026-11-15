@@ -7,7 +7,7 @@ use crate::{
     credentials::{Anonymous, CredentialSource, Credentials, EnvCredentials, HostCredentials},
     guard::{MarkSource, Redistribution, Refusal},
     pull, push,
-    push::{BlobOutcome, PushOptions, TagOutcome, UploadSessions, MIN_CHUNK_SIZE},
+    push::{BlobOutcome, PushOptions, PushProgress, TagOutcome, UploadSessions, MIN_CHUNK_SIZE},
     test_support::{BlobFault, MockRegistry, PatchFault, Policy, RangeSupport},
     Error, Reference, RegistryEntry,
 };
@@ -1798,4 +1798,353 @@ fn a_compressed_copy_shares_the_class_of_its_raw_content() {
         plan.verdict(),
         Err(Refusal::RegistryNotPrivate { .. })
     ));
+}
+
+#[allow(clippy::too_many_arguments)]
+fn push_cancellable_with(
+    store: &Store,
+    local: &str,
+    target: Reference,
+    entry: &RegistryEntry,
+    client: &Client,
+    options: &PushOptions,
+    progress: &mut dyn FnMut(PushProgress<'_>),
+    cancelled: &dyn Fn() -> bool,
+) -> crate::Result<push::PushReport> {
+    let plan = push::plan(store, local, target, Some(entry))?;
+    push::push_cancellable(
+        store, &plan, &PROVIDERS, client, options, progress, cancelled,
+    )
+}
+
+#[test]
+fn a_cancelled_push_stops_between_blobs_and_never_publishes_the_manifest() {
+    let dir = Temp::new();
+    let store = dir.store();
+    let image = image(
+        &store,
+        "lab:1.0.0",
+        &[
+            (b"first payload", Some("open")),
+            (b"second payload", Some("open")),
+        ],
+        Some("open"),
+    );
+    let registry = MockRegistry::start(open_policy());
+    let entry = registry.entry(false);
+    let client = client(&entry, Anonymous);
+    let done = std::sync::atomic::AtomicUsize::new(0);
+    let cancelled = push_cancellable_with(
+        &store,
+        "lab:1.0.0",
+        target(&registry, "owner/lab:1.0.0"),
+        &entry,
+        &client,
+        &PushOptions::default(),
+        &mut |event| {
+            if matches!(event, PushProgress::Blob(..)) {
+                done.fetch_add(1, Ordering::SeqCst);
+            }
+        },
+        // Cancel as soon as the first blob is on the registry.
+        &|| done.load(Ordering::SeqCst) >= 1,
+    );
+    assert!(matches!(cancelled, Err(Error::Cancelled)), "{cancelled:?}");
+    assert_eq!(done.load(Ordering::SeqCst), 1);
+    assert_eq!(registry.tag_digest("owner/lab", "1.0.0"), None);
+    assert!(
+        !registry
+            .log()
+            .iter()
+            .any(|l| l.contains("/manifests/1.0.0") && l.starts_with("PUT ")),
+        "{:?}",
+        registry.log()
+    );
+    let plan = push::plan(
+        &store,
+        "lab:1.0.0",
+        target(&registry, "owner/lab:1.0.0"),
+        Some(&entry),
+    )
+    .unwrap();
+    let on_registry = plan
+        .closure()
+        .iter()
+        .filter(|c| registry.has_blob("owner/lab", &c.descriptor.digest))
+        .count();
+    assert_eq!(on_registry, 1, "only the first blob went up");
+
+    // Cancelling before the manifest also stops a push whose blobs are all up.
+    let late = push_cancellable_with(
+        &store,
+        "lab:1.0.0",
+        target(&registry, "owner/lab:1.0.0"),
+        &entry,
+        &client,
+        &PushOptions::default(),
+        &mut |event| {
+            if matches!(event, PushProgress::Blob(..)) {
+                done.fetch_add(1, Ordering::SeqCst);
+            }
+        },
+        // `done` counts the cancelled push's blob too.
+        &|| done.load(Ordering::SeqCst) > plan.closure().len(),
+    );
+    assert!(matches!(late, Err(Error::Cancelled)), "{late:?}");
+    assert_eq!(registry.tag_digest("owner/lab", "1.0.0"), None);
+
+    let report = push_with(
+        &store,
+        "lab:1.0.0",
+        target(&registry, "owner/lab:1.0.0"),
+        &entry,
+        &client,
+        &PushOptions::default(),
+    )
+    .unwrap();
+    assert!(report
+        .blobs
+        .iter()
+        .all(|(_, outcome)| *outcome == BlobOutcome::Present));
+    assert_eq!(
+        registry.tag_digest("owner/lab", "1.0.0"),
+        Some(image.digest)
+    );
+}
+
+#[test]
+fn a_push_cancelled_between_chunks_keeps_its_session_for_the_next_push() {
+    let dir = Temp::new();
+    let store = dir.store();
+    let (image, payload) = large_image(&store, "big:1.0.0");
+    let registry = MockRegistry::start(open_policy());
+    let entry = registry.entry(false);
+    let client = client(&entry, Anonymous);
+    let big = Digest::of(&payload);
+    let mut chunks = Vec::new();
+    let mut record = |event: PushProgress<'_>| {
+        if let PushProgress::Chunk { blob, sent } = event {
+            assert_eq!(blob.digest, big);
+            chunks.push(sent);
+        }
+    };
+    let first = push_cancellable_with(
+        &store,
+        "big:1.0.0",
+        target(&registry, "owner/big:1.0.0"),
+        &entry,
+        &client,
+        &chunked_options(0),
+        &mut record,
+        // Cancel once the registry holds the first chunk of the large blob.
+        &|| {
+            registry
+                .sessions()
+                .iter()
+                .any(|&held| held >= MIN_CHUNK_SIZE as usize)
+        },
+    );
+    assert!(matches!(first, Err(Error::Cancelled)), "{first:?}");
+    assert_eq!(UploadSessions::for_store(&store).count(), 1);
+    assert_eq!(registry.sessions(), vec![MIN_CHUNK_SIZE as usize]);
+    assert_eq!(registry.tag_digest("owner/big", "1.0.0"), None);
+    registry.clear_log();
+    push_cancellable_with(
+        &store,
+        "big:1.0.0",
+        target(&registry, "owner/big:1.0.0"),
+        &entry,
+        &client,
+        &chunked_options(0),
+        &mut record,
+        &|| false,
+    )
+    .unwrap();
+    // The first push's accepted chunk, the resumed offset, then each chunk.
+    let size = payload.len() as u64;
+    assert_eq!(
+        chunks,
+        [MIN_CHUNK_SIZE, MIN_CHUNK_SIZE, 2 * MIN_CHUNK_SIZE, size]
+    );
+    let log = registry.log();
+    let patches = log.iter().filter(|l| l.starts_with("PATCH ")).count();
+    assert_eq!(
+        patches, 2,
+        "the resumed upload sends only the rest: {log:?}"
+    );
+    assert!(registry.has_blob("owner/big", &big));
+    assert_eq!(
+        registry.tag_digest("owner/big", "1.0.0"),
+        Some(image.digest)
+    );
+    assert_eq!(UploadSessions::for_store(&store).count(), 0);
+}
+
+#[test]
+fn a_cancelled_pull_never_sets_the_local_tag_and_the_next_pull_fetches_the_rest() {
+    let source = Temp::new();
+    let store = source.store();
+    let image = image(
+        &store,
+        "lab:1.0.0",
+        &[
+            (b"rom", Some("open")),
+            (b"disk", Some("open")),
+            (b"floppy", Some("open")),
+        ],
+        Some("open"),
+    );
+    let registry = MockRegistry::start(open_policy());
+    let entry = registry.entry(false);
+    let client = client(&entry, Anonymous);
+    let reference = target(&registry, "owner/lab:1.0.0");
+    push_with(
+        &store,
+        "lab:1.0.0",
+        reference.clone(),
+        &entry,
+        &client,
+        &PushOptions::default(),
+    )
+    .unwrap();
+
+    let fresh = Temp::new();
+    let pulled = fresh.store();
+    let fetched = std::sync::atomic::AtomicUsize::new(0);
+    let cancelled = pull::pull_cancellable(
+        &pulled,
+        &client,
+        &reference,
+        "copy:1.0.0",
+        &PROVIDERS,
+        &|event| {
+            if matches!(event, pull::PullProgress::Verified(_)) {
+                fetched.fetch_add(1, Ordering::SeqCst);
+            }
+        },
+        &|| fetched.load(Ordering::SeqCst) >= 1,
+    );
+    assert!(matches!(cancelled, Err(Error::Cancelled)), "{cancelled:?}");
+    assert!(matches!(
+        pulled.tag_descriptor("copy:1.0.0"),
+        Err(image_store::Error::TagNotFound(_))
+    ));
+    let received = std::sync::Mutex::new(std::collections::BTreeMap::new());
+    let verified = std::sync::Mutex::new(Vec::new());
+    let report = pull::pull_cancellable(
+        &pulled,
+        &client,
+        &reference,
+        "copy:1.0.0",
+        &PROVIDERS,
+        &|event| match event {
+            pull::PullProgress::Receiving { blob, have } => {
+                let mut received = received.lock().unwrap();
+                let last = received.entry(blob.digest.clone()).or_insert(0);
+                assert!(have >= *last, "received bytes never go back");
+                *last = have;
+            }
+            pull::PullProgress::Verified(blob) => verified.lock().unwrap().push(blob.clone()),
+        },
+        &|| false,
+    )
+    .unwrap();
+    assert_eq!(report.outcome, pull::PullOutcome::Pulled);
+    assert!(
+        !report.present.is_empty(),
+        "a blob verified before the cancel is not fetched again"
+    );
+    assert_eq!(report.present.len() + report.fetched.len(), 5);
+    let (received, mut verified) = (
+        received.into_inner().unwrap(),
+        verified.into_inner().unwrap(),
+    );
+    verified.sort_by(|a, b| a.digest.cmp(&b.digest));
+    let mut fetched = report.fetched.clone();
+    fetched.sort_by(|a, b| a.digest.cmp(&b.digest));
+    assert_eq!(verified, fetched);
+    for blob in &report.fetched {
+        assert_eq!(
+            received.get(&blob.digest),
+            Some(&blob.size),
+            "{}",
+            blob.digest
+        );
+    }
+    assert_eq!(
+        pulled.tag_descriptor("copy:1.0.0").unwrap().digest,
+        image.digest
+    );
+
+    // A cancel before anything is fetched leaves no tag either.
+    let empty = Temp::new();
+    let untouched = empty.store();
+    let refused = pull::pull_cancellable(
+        &untouched,
+        &client,
+        &reference,
+        "copy:1.0.0",
+        &PROVIDERS,
+        &|_| {},
+        &|| true,
+    );
+    assert!(matches!(refused, Err(Error::Cancelled)), "{refused:?}");
+    assert!(untouched.tag_descriptor("copy:1.0.0").is_err());
+}
+
+#[test]
+fn a_confirmed_move_applies_only_from_the_digest_the_user_saw() {
+    let dir = Temp::new();
+    let store = dir.store();
+    let first = open_image(&store, "lab:1.0.0", b"first");
+    let second = open_image(&store, "lab:2.0.0", b"second");
+    let registry = MockRegistry::start(open_policy());
+    let entry = registry.entry(false);
+    let client = client(&entry, Anonymous);
+    push_with(
+        &store,
+        "lab:1.0.0",
+        target(&registry, "o/lab:latest"),
+        &entry,
+        &client,
+        &PushOptions::default(),
+    )
+    .unwrap();
+    // Another client moves the tag after the user confirmed the first image.
+    let elsewhere = registry.seed_manifest("o/lab", "latest", br#"{"schemaVersion":2}"#);
+    registry.clear_log();
+    let confirmed = |from: &Digest| PushOptions {
+        allow_move: true,
+        move_from: Some(from.clone()),
+        ..PushOptions::default()
+    };
+    let stale = push_with(
+        &store,
+        "lab:2.0.0",
+        target(&registry, "o/lab:latest"),
+        &entry,
+        &client,
+        &confirmed(&first.digest),
+    );
+    assert!(
+        matches!(&stale, Err(Error::TagMoveNeedsConfirmation { current, new, .. })
+            if *current == elsewhere && *new == second.digest),
+        "{stale:?}"
+    );
+    assert_eq!(uploads(&registry.log()), 0, "nothing is uploaded first");
+    assert_eq!(
+        registry.tag_digest("o/lab", "latest"),
+        Some(elsewhere.clone())
+    );
+    let moved = push_with(
+        &store,
+        "lab:2.0.0",
+        target(&registry, "o/lab:latest"),
+        &entry,
+        &client,
+        &confirmed(&elsewhere),
+    )
+    .unwrap();
+    assert_eq!(moved.tag, TagOutcome::Moved { from: elsewhere });
+    assert_eq!(registry.tag_digest("o/lab", "latest"), Some(second.digest));
 }

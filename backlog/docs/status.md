@@ -5,6 +5,83 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-15 — Image › Push… and Image › Pull…:**
+  - **Push…** works on any local image: machine image, media set or firmware
+    package. It opens on the selected image, or the Push… button of the
+    selected image.
+    - The destination resolves Docker-style against the default registry
+      (preferences, overridden by `UNEMU_REGISTRY` as on the command line; an
+      invalid one stops both dialogs with its error). One-click destinations:
+      the local name, `private/` on the default registry and each other
+      configured registry.
+    - The dry run is the command line's plan (`cli::push_plan`): local marks
+      plus the firmware catalogue, built from one reading of the tag. It lists
+      every blob with its type, size, effective class and where that class was
+      recorded (this image, local tag NAME or the firmware catalogue). The
+      guard's checks and verdict follow the mock-up, with no override. The tag
+      grammar and digest destinations are refused before the guard runs.
+    - The push carries the reviewed image digest. When the local tag names
+      another image by then, nothing is sent and the dry run is built again
+      with a notice.
+    - A non-version tag moves only after a confirmation that shows the old
+      and the new digest. The move applies only while the registry's tag
+      still names the digest shown; otherwise the dialog asks again.
+    - Progress is per blob (uploaded, already there, mounted) and per
+      accepted chunk ("chunk N of M · bytes"), then the manifest and the tag.
+  - **Pull…** takes a reference and an optional local tag (default: the short
+    form). It shows bytes per downloading blob and each verified blob, and
+    resumes an interrupted blob by range. A tag conflict, an unknown reference
+    or a digest mismatch shows in the dialog.
+  - **Threads and errors:** both dialogs run on the library worker, never on
+    the frame loop, and are disabled while a machine runs. Progress is shared
+    state with a repaint request, so a slow frame never stalls a transfer;
+    only the final answer goes through the worker's queue. Logins come from
+    the account store through the command line's client
+    (`cli::registry_client`). Auth, refusal and network errors show in the
+    dialog; no secret is ever shown.
+  - **Cancel** is checked before each blob, between the chunks of a large
+    upload and before publication; a single upload request of up to 64 MiB
+    finishes first. A cancelled push never publishes its manifest and keeps
+    accepted chunks for the next push. A cancelled pull never writes the local
+    tag; the next pull fetches only the missing blobs. Escape and closing the
+    dialog cancel too. Quitting while a transfer runs asks "A push is running.
+    Cancel it and quit?" first; a transfer whose dialog closed reports its
+    cancel in the status bar.
+  - **Registry crate:** gains `push_cancellable` (blob and chunk progress),
+    `pull_cancellable` (received bytes and verified blobs), and
+    `PushOptions::move_from`. The mock registry can hold one request until a
+    test releases it. The CLI and the shell share the providers list, the
+    push plan and the client (`cli::with_image_providers`, `cli::push_plan`,
+    `cli::registry_client`).
+  - **Tests:** headless tests against the in-process mock registry cover an
+    allowed push (progress shown while the manifest is held, manifest last),
+    every guard refusal including a forged job and a registry that answers
+    anonymous reads, the local-tag and catalogue sources of a class (a package
+    marking a catalogued proprietary ROM open cannot leave), a tag moved since
+    the dry run, tag-move confirmation with a race, version-tag refusal, a pull
+    resumed by range, cancel during push and during pull, closing the dialog
+    and shutting down during a push, the quit question, the default-registry
+    override and errors, chunk status text, rendering of every stage, and that
+    registry requests and secret reads never run on the frame loop.
+  - **Manual checks (maintainer):** a real push of a user-supplied image to
+    `registry.unemu.dev/private/`, a refused push of it to `unemu/`, a pull of
+    it into a fresh store, Cancel during a multi-chunk upload followed by a
+    resumed push, quitting during a push, and the native look in both skins.
+  - **Mock-up departures, awaiting maintainer approval:**
+    - The dry run has no "On the registry" column, because whether a blob is
+      present is known only while pushing; the progress list shows it. A
+      "Recorded in" column shows where each class comes from.
+    - No Pause: Cancel stops at the next blob or chunk, and the next push
+      resumes the accepted chunks.
+    - Chunk progress reads "chunk N of M · sent of size" instead of "chunk N
+      of M · K accepted".
+    - The login line only informs: there is no Log in… inside the dialog,
+      and Push stays enabled without a recorded login. A refusal from the
+      registry points to Preferences › Registries.
+    - The private flag is per registry, as on the Registries page, not per
+      namespace.
+    - Pull… had no mock-up of its own (the mock-up shows it disabled); its
+      layout follows Push….
 - **2026-11-15 — Settings on an image and Save as new image…:** the library's Settings… (and
   Machine › Settings… with an image selected) opens a property sheet over the stopped image's
   flattened hardware; a running image opens read-only. Every option and reason comes from the
@@ -285,8 +362,8 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
     preferences file. The Keychain backend has an opt-in test on a throwaway
     keychain.
   - **Out of scope:** wiping secrets from memory. Separate later work: Secret
-    Service, Windows Credential Manager, Bearer tokens and the GUI Push…/Pull…
-    dialogs.
+    Service, Windows Credential Manager and Bearer tokens. The GUI Push… and
+    Pull… dialogs landed separately (entry above).
   - **Manual checks:** native look and the real Keychain.
   - **Mock-up departures, awaiting maintainer approval:**
     - Only the General and Registries tabs exist; the mock-up also shows

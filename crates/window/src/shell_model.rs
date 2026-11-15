@@ -55,6 +55,10 @@ pub(crate) enum Command {
     Settings,
     /// Machine › Save as new image…: the Disk layers save form.
     SaveImage,
+    /// Image › Push… of a local image to a registry.
+    Push,
+    /// Image › Pull… of a registry image into the local store.
+    Pull,
 }
 
 #[derive(Clone, Copy)]

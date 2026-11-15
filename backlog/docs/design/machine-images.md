@@ -823,6 +823,20 @@ publishing proprietary bytes by accident:
 - Pull never rewrites a local tag that names another digest; the image is then
   pulled under another local tag. Workspaces are unaffected, because they pin
   digests.
+- Push and pull can be cancelled. The transfer checks before each blob,
+  between the chunks of a large upload and before it publishes. A cancelled
+  push never writes the manifest or moves the tag, and its accepted chunks stay
+  in their persisted session. A cancelled pull never writes the local tag, and
+  its verified blobs stay in the store. A confirmed tag move is bound to the
+  digest the user was shown: if the tag names another digest when the push
+  starts, the confirmation is asked again.
+- The desktop shell's Image › Push… and Image › Pull… follow the approved
+  registry-accounts mock-up. Push… shows the dry run of the local image (every
+  blob with its effective class and where it was recorded: this image, another
+  local tag or the firmware catalogue) and the guard's verdict for the
+  destination as it is typed, with no override. It pushes only the image the
+  user reviewed. Both dialogs run on the library worker, never on the frame
+  loop, and share the command line's push plan, client and providers list.
 
 **No daemon is needed now**, for either a purely local library or registry
 push/pull. GUI and CLI call the same in-process store library directly. Its API

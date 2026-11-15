@@ -339,6 +339,21 @@ Preferences… › Registries page uses the same functions and store:
 - Set as default, and Test connection (anonymous `GET /v2/`, then Basic, with
   the result per step).
 
+The desktop shell's Image › Push… and Image › Pull… build the same push plan
+(`cli::push_plan`: local marks plus the firmware catalogue), the same client
+(`cli::registry_client`) and the same providers list as `image push` and
+`image pull`, and resolve short names against the same default registry
+(`UNEMU_REGISTRY`, then preferences). They run on the library worker thread:
+- Push… shows the `--dry-run` classification as a table and the guard's
+  verdict while the destination is typed. A non-version tag moves only after
+  a confirmation that shows both digests, and only from the digest shown. A
+  local tag that names another image than the reviewed one is not pushed.
+- Pull… writes the short form of the reference as the local tag unless
+  another one is typed.
+- Cancel (or Escape, or closing the dialog) stops a transfer before the next
+  blob or chunk. A cancelled push publishes no manifest; a cancelled pull
+  writes no tag. Quitting during a transfer asks first.
+
 Sign-in states, logins, logouts and removals run on background threads,
 because a Keychain call can wait on a system prompt. Existing Docker or oras
 logins are not reused; the Log in dialog shows the Docker credential helper as

@@ -503,6 +503,10 @@ pub(super) struct LibraryView {
     clear_file_selection: bool,
     /// Settings on an image while it is open.
     pub image_settings: Option<crate::image_settings::ImageSettings>,
+    /// Image › Push… while it is open.
+    pub push: Option<crate::registry_transfer::PushDialog>,
+    /// Image › Pull… while it is open.
+    pub pull: Option<crate::registry_transfer::PullDialog>,
 }
 impl LibraryView {
     pub fn new(root: Option<PathBuf>) -> Self {
@@ -535,6 +539,8 @@ impl LibraryView {
             firmware_import_wanted: false,
             clear_file_selection: false,
             image_settings: None,
+            push: None,
+            pull: None,
         }
     }
     #[cfg(test)]
@@ -577,6 +583,20 @@ impl LibraryView {
                     "Image store worker stopped; choose the Image store folder to retry".into(),
                 );
             }
+            self.fail_transfers();
+        }
+    }
+    /// Push… and Pull… wait for the worker; once it is gone they end.
+    fn fail_transfers(&mut self) {
+        let message = self
+            .error
+            .clone()
+            .unwrap_or_else(|| "Image store worker stopped".into());
+        if let Some(dialog) = &mut self.push {
+            dialog.fail(&message);
+        }
+        if let Some(dialog) = &mut self.pull {
+            dialog.fail(&message);
         }
     }
     fn on_event(&mut self, event: Event) {
@@ -790,6 +810,35 @@ impl LibraryView {
                 self.firmware_error = true;
                 self.error = Some(error);
             }
+            Event::Transfer(event) => {
+                if let Some(outcome) = crate::registry_transfer::closed_outcome(&event) {
+                    let closed = match &event {
+                        crate::registry_transfer::TransferEvent::Pushed { .. } => {
+                            self.push.is_none()
+                        }
+                        _ => self.pull.is_none(),
+                    };
+                    if closed {
+                        self.status = Some(outcome.into());
+                    }
+                }
+                let follow_up = self
+                    .push
+                    .as_mut()
+                    .and_then(|dialog| dialog.on_event(&event));
+                if let Some(dialog) = &mut self.pull {
+                    dialog.on_event(&event);
+                    if let crate::registry_transfer::PullState::Finished {
+                        pulled: Some(tag), ..
+                    } = &dialog.state
+                    {
+                        self.status = Some(format!("Pulled {tag}"));
+                    }
+                }
+                if let Some(request) = follow_up {
+                    self.send(Request::Transfer(request));
+                }
+            }
             Event::Error(error) => {
                 self.busy = false;
                 self.pending_operation = false;
@@ -817,9 +866,13 @@ impl LibraryView {
             self.error =
                 Some("Image store worker stopped; choose the Image store folder to retry".into());
             self.fail_firmware_import();
+            self.fail_transfers();
         }
     }
     pub fn shutdown(&mut self) {
+        // Dropping a transfer dialog cancels its transfer at the next check.
+        self.push = None;
+        self.pull = None;
         if let Some(mut worker) = self.worker.take() {
             worker.shutdown();
         }
@@ -955,6 +1008,34 @@ impl LibraryView {
             }
         }
     }
+    /// Image › Push…: the selected image (machine or firmware package), or
+    /// the first local image; the worker builds the dry run.
+    pub fn begin_push(&mut self, accounts: crate::registry_transfer::Accounts) {
+        let selected = if self.query.filter.is_firmware() {
+            self.firmware_selected
+                .as_ref()
+                .map(|row| row.image.reference.clone())
+        } else {
+            self.selected.as_ref().map(|row| row.reference.clone())
+        };
+        let (dialog, request) = crate::registry_transfer::PushDialog::open(accounts, selected);
+        self.push = Some(dialog);
+        self.send(Request::Transfer(request));
+    }
+    /// The kind of transfer a dialog runs now, for the question before quitting.
+    pub fn running_transfer(&self) -> Option<&'static str> {
+        if self.push.as_ref().is_some_and(|d| d.running()) {
+            Some("push")
+        } else if self.pull.as_ref().is_some_and(|d| d.running()) {
+            Some("pull")
+        } else {
+            None
+        }
+    }
+    /// Image › Pull…: a reference into the local store.
+    pub fn begin_pull(&mut self, accounts: crate::registry_transfer::Accounts) {
+        self.pull = Some(crate::registry_transfer::PullDialog::open(accounts));
+    }
     pub fn begin_import(&mut self, path: &Path) {
         self.import = Some((path.to_string_lossy().into_owned(), String::new()));
     }
@@ -969,6 +1050,8 @@ impl LibraryView {
             || self.decision.is_some()
             || self.firmware_import.is_some()
             || self.new_machine.is_some()
+            || self.push.is_some()
+            || self.pull.is_some()
     }
     /// Close Disk layers, Import image, Delete tag and Import ROM folder for an
     /// exit; a running scan is cancelled. The Gaming keep-or-discard question
@@ -982,6 +1065,8 @@ impl LibraryView {
             dialog.control.cancel();
         }
         self.new_machine = None;
+        self.push = None;
+        self.pull = None;
     }
     /// Entering the Firmware collection drops the machine selection, so Start
     /// never targets a machine that is no longer shown.
@@ -1235,6 +1320,9 @@ impl LibraryView {
                                     }
                                     if ui.button("Layers…").clicked() {
                                         commands.push(Command::Layers);
+                                    }
+                                    if ui.button("Push…").clicked() {
+                                        commands.push(Command::Push);
                                     }
                                 });
                             });
@@ -1649,6 +1737,7 @@ impl LibraryView {
                 }
             }
         }
+        self.transfer_modals(ctx, classic, &mut requests);
         if let Some(dialog) = &mut self.layers {
             let action = dialog.show(ctx, self.busy, classic);
             match action {
@@ -1683,6 +1772,54 @@ impl LibraryView {
         }
         self.firmware_modal(ctx, classic, &mut requests);
         requests
+    }
+    fn transfer_modals(&mut self, ctx: &egui::Context, classic: bool, requests: &mut Vec<Request>) {
+        use crate::registry_transfer_view::{show_pull, show_push, Action};
+        if let Some(dialog) = &mut self.push {
+            match show_push(ctx, dialog, classic) {
+                Action::Send(request) => requests.push(Request::Transfer(request)),
+                Action::Close => self.push = None,
+                Action::None => (),
+            }
+        }
+        if let Some(dialog) = &mut self.pull {
+            match show_pull(ctx, dialog, classic) {
+                Action::Send(request) => requests.push(Request::Transfer(request)),
+                Action::Close => self.pull = None,
+                Action::None => (),
+            }
+        }
+    }
+    /// Apply worker events until `done` holds; tests only, the frame loop polls.
+    #[cfg(test)]
+    pub(crate) fn pump_until(&mut self, mut done: impl FnMut(&Self) -> bool) {
+        while !done(self) {
+            let event = self
+                .worker
+                .as_ref()
+                .expect("a library worker")
+                .receive
+                .recv_timeout(std::time::Duration::from_secs(30))
+                .expect("worker notification");
+            if let Event::Error(error) = &event {
+                panic!("worker: {error}");
+            }
+            self.on_event(event);
+        }
+    }
+    /// Apply the events already queued, without waiting; tests only.
+    #[cfg(test)]
+    pub(crate) fn pump_queued(&mut self) {
+        while let Some(event) = self
+            .worker
+            .as_ref()
+            .and_then(|worker| worker.receive.try_recv().ok())
+        {
+            if let Event::Error(error) = &event {
+                panic!("worker: {error}");
+            }
+            self.on_event(event);
+        }
     }
     fn firmware_modal(&mut self, ctx: &egui::Context, classic: bool, requests: &mut Vec<Request>) {
         if let Some(dialog) = &mut self.firmware_import {

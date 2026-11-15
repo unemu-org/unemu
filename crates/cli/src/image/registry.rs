@@ -11,7 +11,7 @@ use image_registry::{
     config::{self, RegistryConfig, DEFAULT_REGISTRY_ENV},
     credential_store::{self, CredentialStore, Secret},
     credentials::{Anonymous, EnvCredentials, HostCredentials, HOST_ENV, PASSWORD_ENV, USER_ENV},
-    pull, push, Client, Reference,
+    pull, push, Client, Reference, RegistryEntry,
 };
 use image_store::{firmware, media_set, ConfigValidator, Store};
 use pc_image::firmware::{catalogue, PcFirmwareRules};
@@ -178,9 +178,6 @@ fn load(options: &Common) -> anyhow::Result<(RegistryConfig, String)> {
     Ok((config, host))
 }
 
-/// Secrets are offered only to configured registries (and the family
-/// default), so a pull from an arbitrary host can never receive them. The
-/// environment pair is further bound to its one host.
 /// Every local mark plus the firmware catalogue's: a blob whose bytes, stored
 /// or decoded, the catalogue lists as a proprietary image or chip stays
 /// user-supplied whatever the image's own marks say, so a pulled foreign
@@ -189,7 +186,7 @@ pub(super) fn guard_marks(
     store: &Store,
     manifest: &image_store::Manifest,
     catalogue: &[assembly::FirmwareEntry],
-) -> anyhow::Result<image_registry::guard::LocalMarks> {
+) -> image_registry::Result<image_registry::guard::LocalMarks> {
     let mut marks = image_registry::guard::LocalMarks::scan(store)?;
     for d in std::iter::once(&manifest.config).chain(&manifest.layers) {
         let mut identities = vec![(d.digest.clone(), d.size)];
@@ -205,22 +202,68 @@ pub(super) fn guard_marks(
     Ok(marks)
 }
 
+/// The push plan of `local_tag` that the command line and the desktop shell
+/// both use: every local mark, plus a restriction for each blob whose bytes
+/// the firmware catalogue lists as a proprietary image or chip, built from
+/// one reading of the tag's manifest. When the tag moves to another image
+/// meanwhile, the plan is refused as a tag conflict, so its marks always
+/// belong to the image it plans.
+pub fn push_plan(
+    store: &Store,
+    local_tag: &str,
+    target: Reference,
+    entry: Option<&RegistryEntry>,
+    catalogue: &[assembly::FirmwareEntry],
+) -> image_registry::Result<push::PushPlan> {
+    let image = store.tag_descriptor(local_tag)?;
+    let manifest = image_store::Manifest::decode_for_summary(
+        &image_store::BlobSource::read_verified(store, &image, image_store::MAX_SMALL_BLOB)?,
+    )?;
+    let marks = guard_marks(store, &manifest, catalogue)?;
+    let plan = push::plan_with_marks(store, local_tag, target, entry, marks)?;
+    if plan.image().digest != image.digest {
+        return Err(image_store::Error::Conflict {
+            current: Some(plan.image().digest.clone()),
+        }
+        .into());
+    }
+    Ok(plan)
+}
+
+/// A client for `host`. Secrets are offered only to configured registries
+/// (and the family default), so a pull from an arbitrary host can never
+/// receive them; the environment pair `env` is further bound to its one host.
+/// The command line and the desktop shell both connect through it.
+pub fn registry_client(
+    config: &RegistryConfig,
+    host: &str,
+    store: &Arc<dyn CredentialStore>,
+    env: &EnvCredentials,
+) -> image_registry::Result<Client> {
+    match config.entry(host) {
+        Some(entry) => {
+            let credentials = HostCredentials {
+                configured_user: entry.user.clone(),
+                env: env.clone(),
+                store: store.clone(),
+            };
+            Client::new(&entry, Box::new(credentials))
+        }
+        None => Client::new(&config.entry_or_public(host), Box::new(Anonymous)),
+    }
+}
+
 fn client(
     config: &RegistryConfig,
     host: &str,
     store: &Arc<dyn CredentialStore>,
 ) -> anyhow::Result<Client> {
-    Ok(match config.entry(host) {
-        Some(entry) => {
-            let credentials = HostCredentials {
-                configured_user: entry.user.clone(),
-                env: EnvCredentials::from_env(),
-                store: store.clone(),
-            };
-            Client::new(&entry, Box::new(credentials))?
-        }
-        None => Client::new(&config.entry_or_public(host), Box::new(Anonymous))?,
-    })
+    Ok(registry_client(
+        config,
+        host,
+        store,
+        &EnvCredentials::from_env(),
+    )?)
 }
 
 fn conflicting_registry(options: &Common, reference: &Reference) -> anyhow::Result<()> {
@@ -235,10 +278,26 @@ fn conflicting_registry(options: &Common, reference: &Reference) -> anyhow::Resu
 const MEDIA_SETS: media_set::Validator<'static> =
     media_set::Validator(&pc_image::media_set::PcMediaFormats);
 
-pub fn execute(command: RegistryCommand, output: &mut impl Write) -> anyhow::Result<()> {
+/// Run `job` with every platform provider a registry transfer may need: PC
+/// machine images, PC media sets and PC firmware packages. Push and pull pick
+/// the one whose artifact type and platform match the manifest. The command
+/// line and the desktop shell both take the list from here, so they accept
+/// the same artifacts.
+pub fn with_image_providers<T>(job: impl FnOnce(&[&dyn ConfigValidator]) -> T) -> T {
     let firmware_rules = PcFirmwareRules(catalogue());
     let firmware = firmware::Validator(&firmware_rules);
-    let providers: [&dyn ConfigValidator; 3] = [&pc_image::PcProvider, &MEDIA_SETS, &firmware];
+    job(&[&pc_image::PcProvider, &MEDIA_SETS, &firmware])
+}
+
+pub fn execute(command: RegistryCommand, output: &mut impl Write) -> anyhow::Result<()> {
+    with_image_providers(|providers| execute_with(command, output, providers))
+}
+
+fn execute_with(
+    command: RegistryCommand,
+    output: &mut impl Write,
+    providers: &[&dyn ConfigValidator],
+) -> anyhow::Result<()> {
     let secrets = credential_store::detect();
     match command {
         RegistryCommand::Push {
@@ -256,16 +315,7 @@ pub fn execute(command: RegistryCommand, output: &mut impl Write) -> anyhow::Res
                 conflicting_registry(&options, &target)?;
             }
             let entry = config.entry(&target.host);
-            let image = store.tag_descriptor(&local_tag)?;
-            let manifest = image_store::Manifest::decode_for_summary(
-                &image_store::BlobSource::read_verified(
-                    &store,
-                    &image,
-                    image_store::MAX_SMALL_BLOB,
-                )?,
-            )?;
-            let marks = guard_marks(&store, &manifest, catalogue())?;
-            let plan = push::plan_with_marks(&store, &local_tag, target, entry.as_ref(), marks)?;
+            let plan = push_plan(&store, &local_tag, target, entry.as_ref(), catalogue())?;
             if dry_run {
                 writeln!(output, "target:{}", plan.target())?;
                 writeln!(output, "image:{}", plan.image().digest)?;
@@ -292,7 +342,7 @@ pub fn execute(command: RegistryCommand, output: &mut impl Write) -> anyhow::Res
             let mut progress = |d: &image_store::Descriptor, o: push::BlobOutcome| {
                 let _ = writeln!(output, "{}\t{}", o.as_str(), d.digest);
             };
-            let report = push::push(&store, &plan, &providers, &client, &options, &mut progress)?;
+            let report = push::push(&store, &plan, providers, &client, &options, &mut progress)?;
             match report.tag {
                 push::TagOutcome::Unchanged => writeln!(
                     output,
@@ -334,7 +384,7 @@ pub fn execute(command: RegistryCommand, output: &mut impl Write) -> anyhow::Res
                 Store::open_existing(store)?
             };
             let client = client(&config, &source.host, &secrets)?;
-            let report = pull::pull(&store, &client, &source, &local_tag, &providers, &|_| {})?;
+            let report = pull::pull(&store, &client, &source, &local_tag, providers, &|_| {})?;
             for descriptor in &report.fetched {
                 writeln!(output, "fetched\t{}", descriptor.digest)?;
             }

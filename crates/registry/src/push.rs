@@ -12,6 +12,11 @@
 //! an interrupted upload resumes at the offset the registry reports. Bytes are
 //! streamed from the store and never held whole in memory. The manifest bytes
 //! are the store's canonical encoding, which carries no creation timestamp.
+//!
+//! A caller can cancel a push ([`push_cancellable`]): the check runs before
+//! each blob, between the chunks of a large blob and before the manifest
+//! `PUT`, so a cancelled push never publishes the manifest or moves the tag,
+//! and its accepted chunks stay in their persisted session for the next push.
 
 use crate::{
     client::{AnonymousAccess, Chunk, Started},
@@ -45,6 +50,10 @@ pub struct PushOptions {
     /// Another repository on the same registry to mount missing blobs from.
     /// Library callers only; the command line does not offer mounts yet.
     pub mount_from: Option<String>,
+    /// The digest the user saw the tag name when confirming a move. With
+    /// `allow_move`, a tag that names any other digest asks again, so the
+    /// confirmation never moves the tag away from an image nobody was shown.
+    pub move_from: Option<Digest>,
 }
 
 impl Default for PushOptions {
@@ -54,6 +63,7 @@ impl Default for PushOptions {
             allow_move: false,
             max_retries: 3,
             mount_from: None,
+            move_from: None,
         }
     }
 }
@@ -133,6 +143,16 @@ pub enum TagOutcome {
     Untagged,
 }
 
+/// What a running push reports.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PushProgress<'a> {
+    /// The blob is on the registry.
+    Blob(&'a Descriptor, BlobOutcome),
+    /// The registry accepted a chunk of a large blob, or reported where a
+    /// resumed upload stands: `sent` bytes are held.
+    Chunk { blob: &'a Descriptor, sent: u64 },
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PushReport {
     pub image: Descriptor,
@@ -203,6 +223,35 @@ pub fn push(
     options: &PushOptions,
     progress: &mut dyn FnMut(&Descriptor, BlobOutcome),
 ) -> Result<PushReport> {
+    let mut report = |event: PushProgress<'_>| {
+        if let PushProgress::Blob(descriptor, outcome) = event {
+            progress(descriptor, outcome);
+        }
+    };
+    push_cancellable(
+        store,
+        plan,
+        providers,
+        client,
+        options,
+        &mut report,
+        &|| false,
+    )
+}
+
+/// [`push`] with progress per blob and per accepted chunk, ending with
+/// [`Error::Cancelled`] once `cancelled` answers true: it is asked before each
+/// blob, between the chunks of a large blob and before the manifest is
+/// published.
+pub fn push_cancellable(
+    store: &Store,
+    plan: &PushPlan,
+    providers: &[&dyn ConfigValidator],
+    client: &Client,
+    options: &PushOptions,
+    progress: &mut dyn FnMut(PushProgress<'_>),
+    cancelled: &dyn Fn() -> bool,
+) -> Result<PushReport> {
     if plan.target.host != client.host() {
         return Err(Error::Config("client and target registry differ".into()));
     }
@@ -247,7 +296,13 @@ pub fn push(
                 new: new(),
             })
         }
-        (None, Some(tag), Some(current)) if !options.allow_move => {
+        (None, Some(tag), Some(current))
+            if !options.allow_move
+                || options
+                    .move_from
+                    .as_ref()
+                    .is_some_and(|from| from != current) =>
+        {
             return Err(Error::TagMoveNeedsConfirmation {
                 tag: tag.clone(),
                 current: current.clone(),
@@ -258,7 +313,26 @@ pub fn push(
             from: current.clone(),
         },
     };
-    finish(store, plan, client, options, progress, tag, preflight)
+    let mut watch = Watch {
+        progress,
+        cancelled,
+    };
+    finish(store, plan, client, options, &mut watch, tag, preflight)
+}
+
+/// What a running push reports, and asks whether to stop.
+struct Watch<'a> {
+    progress: &'a mut dyn FnMut(PushProgress<'_>),
+    cancelled: &'a dyn Fn() -> bool,
+}
+
+impl Watch<'_> {
+    fn check(&self) -> Result<()> {
+        if (self.cancelled)() {
+            return Err(Error::Cancelled);
+        }
+        Ok(())
+    }
 }
 
 fn finish(
@@ -266,7 +340,7 @@ fn finish(
     plan: &PushPlan,
     client: &Client,
     options: &PushOptions,
-    progress: &mut dyn FnMut(&Descriptor, BlobOutcome),
+    watch: &mut Watch<'_>,
     tag: TagOutcome,
     preflight: Option<Digest>,
 ) -> Result<PushReport> {
@@ -279,10 +353,13 @@ fn finish(
         if !seen.insert(descriptor.digest.clone()) {
             continue;
         }
+        watch.check()?;
         let outcome = if client.blob_exists(repository, descriptor)? {
             BlobOutcome::Present
         } else {
-            upload(store, client, repository, descriptor, options, &sessions)?
+            upload(
+                store, client, repository, descriptor, options, &sessions, watch,
+            )?
         };
         if outcome != BlobOutcome::Uploaded {
             // An upload interrupted earlier is no longer needed.
@@ -292,7 +369,7 @@ fn finish(
                 digest: &descriptor.digest,
             });
         }
-        progress(descriptor, outcome);
+        (watch.progress)(PushProgress::Blob(descriptor, outcome));
         blobs.push((descriptor.clone(), outcome));
     }
     for (descriptor, _) in &blobs {
@@ -313,6 +390,7 @@ fn finish(
             });
         }
     }
+    watch.check()?;
     client.put_manifest(repository, &reference, &plan.manifest_bytes)?;
     Ok(PushReport {
         image: plan.image.clone(),
@@ -328,6 +406,7 @@ fn upload(
     descriptor: &Descriptor,
     options: &PushOptions,
     sessions: &UploadSessions,
+    watch: &mut Watch<'_>,
 ) -> Result<BlobOutcome> {
     let mut mounted_session = None;
     if let Some(from) = options.mount_from.as_deref().filter(|f| *f != repository) {
@@ -361,6 +440,7 @@ fn upload(
             sessions,
             &key,
             mounted_session,
+            watch,
         )?;
     }
     Ok(BlobOutcome::Uploaded)
@@ -415,6 +495,7 @@ fn chunked(
     sessions: &UploadSessions,
     key: &SessionKey<'_>,
     fresh: Option<String>,
+    watch: &mut Watch<'_>,
 ) -> Result<()> {
     let size = descriptor.size;
     let resumed = match fresh {
@@ -431,8 +512,16 @@ fn chunked(
         None => (new_session(client, repository)?, 0),
     };
     sessions.save(key, &location)?;
+    if offset > 0 {
+        (watch.progress)(PushProgress::Chunk {
+            blob: descriptor,
+            sent: offset,
+        });
+    }
     let mut failures = 0;
     while offset < size {
+        // The session stays persisted, so the next push resumes at the offset.
+        watch.check()?;
         let len = options.chunk_size.min(size - offset);
         let outcome = client.upload_chunk(&location, file, offset, len)?;
         let (error, restart) = match outcome {
@@ -444,6 +533,10 @@ fn chunked(
                 offset = server;
                 sessions.save(key, &location)?;
                 failures = 0;
+                (watch.progress)(PushProgress::Chunk {
+                    blob: descriptor,
+                    sent: offset,
+                });
                 continue;
             }
             Chunk::Accepted { .. } => (

@@ -14,6 +14,11 @@
 //! from zero. The local tag is written by compare-and-swap only after the
 //! store has verified the complete closure. Compressed payload types are not
 //! supported yet, so only the stored bytes' digest is checked.
+//!
+//! A caller can cancel a pull ([`pull_cancellable`]): the check runs before
+//! each blob, while a blob downloads and before the local tag is written, so
+//! a cancelled pull never sets the tag. Blobs already verified stay in the
+//! store, and the next pull fetches only the rest.
 
 use crate::{client::BlobBody, Client, Error, Reference, Result};
 use image_store::{media_type, ConfigValidator, Descriptor, Digest, Manifest, Store};
@@ -30,6 +35,16 @@ use std::{
 pub const PARALLEL_DOWNLOADS: usize = 4;
 /// Further requests per blob after an interrupted download.
 pub const DOWNLOAD_RETRIES: u32 = 3;
+
+/// What a running pull reports. Downloads run in parallel, so reports of
+/// different blobs interleave.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PullProgress<'a> {
+    /// `have` bytes of the blob are staged, counting earlier attempts.
+    Receiving { blob: &'a Descriptor, have: u64 },
+    /// The blob is verified in the store.
+    Verified(&'a Descriptor),
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PullOutcome {
@@ -55,6 +70,34 @@ pub fn pull(
     local_tag: &str,
     providers: &[&dyn ConfigValidator],
     progress: &(dyn Fn(&Descriptor) + Sync),
+) -> Result<PullReport> {
+    pull_cancellable(
+        store,
+        client,
+        source,
+        local_tag,
+        providers,
+        &|event| {
+            if let PullProgress::Verified(descriptor) = event {
+                progress(descriptor);
+            }
+        },
+        &|| false,
+    )
+}
+
+/// [`pull`] with progress per blob and per received bytes, ending with
+/// [`Error::Cancelled`] once `cancelled` answers true: it is asked before each
+/// blob, while a blob downloads and before the local tag is written. Both
+/// callbacks are called from the download threads too.
+pub fn pull_cancellable(
+    store: &Store,
+    client: &Client,
+    source: &Reference,
+    local_tag: &str,
+    providers: &[&dyn ConfigValidator],
+    progress: &(dyn Fn(PullProgress<'_>) + Sync),
+    cancelled: &(dyn Fn() -> bool + Sync),
 ) -> Result<PullReport> {
     Store::validate_tag_name(local_tag)?;
     if source.host != client.host() {
@@ -121,7 +164,13 @@ pub fn pull(
             Err(error) => return Err(error.into()),
         }
     }
-    download_all(store, client, repository, &missing, progress)?;
+    // A download that failed because the cancel broke its connection is
+    // reported as the cancel it is.
+    let downloaded = download_all(store, client, repository, &missing, progress, cancelled);
+    if cancelled() {
+        return Err(Error::Cancelled);
+    }
+    downloaded?;
     store.import(fetched.bytes.as_slice(), Some(&image.digest))?;
     store.update_tag(local_tag, &image, None, validator)?;
     Ok(PullReport {
@@ -138,7 +187,8 @@ fn download_all(
     client: &Client,
     repository: &str,
     blobs: &[Descriptor],
-    progress: &(dyn Fn(&Descriptor) + Sync),
+    progress: &(dyn Fn(PullProgress<'_>) + Sync),
+    cancelled: &(dyn Fn() -> bool + Sync),
 ) -> Result<()> {
     let next = AtomicUsize::new(0);
     let stop = AtomicBool::new(false);
@@ -147,11 +197,19 @@ fn download_all(
         for _ in 0..PARALLEL_DOWNLOADS.min(blobs.len()) {
             scope.spawn(|| {
                 while !stop.load(Ordering::SeqCst) {
+                    if cancelled() {
+                        stop.store(true, Ordering::SeqCst);
+                        failure
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .get_or_insert(Error::Cancelled);
+                        break;
+                    }
                     let Some(descriptor) = blobs.get(next.fetch_add(1, Ordering::SeqCst)) else {
                         break;
                     };
-                    match download(store, client, repository, descriptor) {
-                        Ok(()) => progress(descriptor),
+                    match download(store, client, repository, descriptor, progress, cancelled) {
+                        Ok(()) => progress(PullProgress::Verified(descriptor)),
                         Err(error) => {
                             stop.store(true, Ordering::SeqCst);
                             failure
@@ -177,6 +235,8 @@ fn download(
     client: &Client,
     repository: &str,
     descriptor: &Descriptor,
+    progress: &(dyn Fn(PullProgress<'_>) + Sync),
+    cancelled: &(dyn Fn() -> bool + Sync),
 ) -> Result<()> {
     let mut retries = DOWNLOAD_RETRIES;
     let mut body = None;
@@ -191,6 +251,9 @@ fn download(
             retries: &mut retries,
             failure: None,
             restart: None,
+            blob: descriptor,
+            progress,
+            cancelled,
         };
         let imported = store.import(
             (&mut source).take(descriptor.size.saturating_add(1)),
@@ -233,6 +296,9 @@ struct ResumingBlob<'a> {
     failure: Option<Error>,
     /// The whole blob again, after the registry ignored a range request.
     restart: Option<Box<dyn Read + Send>>,
+    blob: &'a Descriptor,
+    progress: &'a (dyn Fn(PullProgress<'_>) + Sync),
+    cancelled: &'a (dyn Fn() -> bool + Sync),
 }
 
 impl ResumingBlob<'_> {
@@ -245,6 +311,10 @@ impl ResumingBlob<'_> {
 
 impl Read for ResumingBlob<'_> {
     fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        // The staged file is dropped unpublished, so a cancelled blob leaves nothing.
+        if (self.cancelled)() {
+            return Err(self.fail(Error::Cancelled));
+        }
         let mut interrupted = None;
         loop {
             if let Some(reader) = self.reader.as_mut() {
@@ -254,6 +324,10 @@ impl Read for ResumingBlob<'_> {
                     }
                     Ok(count) => {
                         self.have += count as u64;
+                        (self.progress)(PullProgress::Receiving {
+                            blob: self.blob,
+                            have: self.have,
+                        });
                         return Ok(count);
                     }
                     Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,

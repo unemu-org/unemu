@@ -94,6 +94,8 @@ pub(super) enum Request {
     /// Build a new empty image under a reference, moving a tag only from the
     /// digest the user confirmed.
     CreateImage(Box<pc_image::create::NewImage>, String, Option<Digest>),
+    /// Image › Push… and Image › Pull…: the dry run and the registry transfers.
+    Transfer(crate::registry_transfer::TransferRequest),
     Shutdown,
 }
 /// Firmware packages, every local tag with its manifest digest, and the
@@ -152,6 +154,7 @@ pub(super) enum Event {
     FirmwareImported(Vec<library_view::firmware::Outcome>),
     /// A scan or import job failed; only the import dialog shows it.
     FirmwareFailed(String),
+    Transfer(crate::registry_transfer::TransferEvent),
 }
 pub(super) struct Worker {
     pub send: mpsc::Sender<Request>,
@@ -355,6 +358,11 @@ trait Backend: Send + 'static {
     fn firmware_catalogue(&self) -> &'static [assembly::FirmwareEntry] {
         pc_image::firmware::catalogue()
     }
+    /// The platform providers registry transfers validate with, the same list
+    /// the command line uses.
+    fn with_providers<T>(&self, job: impl FnOnce(&[&dyn image_store::ConfigValidator]) -> T) -> T {
+        cli::with_image_providers(job)
+    }
 }
 struct PcBackend;
 impl Backend for PcBackend {
@@ -403,6 +411,9 @@ impl Backend for SyntheticBackend {
     }
     fn firmware_catalogue(&self) -> &'static [assembly::FirmwareEntry] {
         library_view::firmware::tests::synthetic_catalogue()
+    }
+    fn with_providers<T>(&self, job: impl FnOnce(&[&dyn image_store::ConfigValidator]) -> T) -> T {
+        pc_image::test_support::with_synthetic_firmware(|| cli::with_image_providers(job))
     }
 }
 #[cfg(test)]
@@ -943,6 +954,18 @@ fn run<B: Backend>(
                         plan_revision(&store, &row, *machine),
                         tags_of(&store),
                     )),
+                    // Every registry request of the dialogs runs here, on the
+                    // worker thread, never in the frame loop.
+                    Request::Transfer(job) => backend.with_providers(|providers| {
+                        crate::registry_transfer::run(
+                            &store,
+                            job,
+                            providers,
+                            backend.firmware_catalogue(),
+                            &|event| send(Event::Transfer(event)),
+                            &|| wake.request_repaint(),
+                        )
+                    }),
                     Request::ScanFirmware(folder, index, control) => {
                         match library_view::firmware::scan_folder(
                             &store,

@@ -58,6 +58,8 @@ mod pacing;
 mod preferences;
 mod preferences_sheet;
 mod registries_model;
+mod registry_transfer;
+mod registry_transfer_view;
 mod save_image;
 mod settings_model;
 mod settings_sheet;

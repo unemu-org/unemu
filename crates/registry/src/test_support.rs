@@ -9,7 +9,8 @@
 //! can answer with Bearer challenges instead. Blob downloads honour
 //! `Range: bytes=<start>-` (RFC 9110 §14) unless told to ignore or misreport
 //! it, and can redirect to another server. Fault injection drops connections
-//! mid-upload and mid-download, forgets sessions and corrupts blobs. Empty
+//! mid-upload and mid-download, forgets sessions and corrupts blobs, and one
+//! request can be held until the test releases it. Empty
 //! upload sessions report `Range: 0--1`, as zot does. A request log lets tests
 //! assert ordering. Never used outside tests.
 
@@ -88,6 +89,10 @@ struct State {
     redirect_blobs: Option<(String, String)>,
     relative_locations: bool,
     ambiguous_empty_range: bool,
+    /// The next request whose `METHOD path` starts with this waits.
+    hold: Option<String>,
+    /// A held request is waiting for [`MockRegistry::release`].
+    holding: bool,
 }
 
 /// A running mock registry; dropping it stops the server.
@@ -189,6 +194,23 @@ impl MockRegistry {
         self.state().ambiguous_empty_range = true;
     }
 
+    /// Hold the next request whose `METHOD path` (as [`MockRegistry::log`]
+    /// shows it) starts with `prefix`, before it is answered or logged, until
+    /// [`MockRegistry::release`]. Later requests are not held.
+    pub fn hold_next(&self, prefix: &str) {
+        self.state().hold = Some(prefix.into());
+    }
+
+    /// A request is held now.
+    pub fn held(&self) -> bool {
+        self.state().holding
+    }
+
+    /// Let the held request continue.
+    pub fn release(&self) {
+        self.state().holding = false;
+    }
+
     /// `METHOD path` of every request that carried an `Authorization` header.
     pub fn authorized_log(&self) -> Vec<String> {
         self.state().authorized.clone()
@@ -278,6 +300,7 @@ impl MockRegistry {
 
 impl Drop for MockRegistry {
     fn drop(&mut self) {
+        self.release();
         self.stop.store(true, Ordering::SeqCst);
         let _ = TcpStream::connect(self.addr);
         if let Some(thread) = self.thread.take() {
@@ -351,6 +374,19 @@ fn serve(stream: TcpStream, state: &Mutex<State>) -> io::Result<()> {
         return Ok(());
     };
     let head = request.method == "HEAD";
+    let line = format!("{} {}", request.method, request.path);
+    let lock = || state.lock().unwrap_or_else(|e| e.into_inner());
+    {
+        let mut state = lock();
+        if state.hold.as_deref().is_some_and(|p| line.starts_with(p)) {
+            state.hold = None;
+            state.holding = true;
+            drop(state);
+            while lock().holding {
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+        }
+    }
     let outcome = {
         let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
         state

@@ -360,6 +360,8 @@ struct Shell {
     stop_prompt_input: (bool, bool),
     /// Input to hand back to the guest once Cancel has closed the prompt.
     restore_input: Option<(bool, bool)>,
+    /// Quit waits for an answer while a push or pull runs: "push" or "pull".
+    transfer_prompt: Option<&'static str>,
 }
 
 /// A shell action that would end a running session, held while the user
@@ -505,6 +507,7 @@ impl Shell {
     fn has_dialog(&self) -> bool {
         self.dialog.is_some()
             || self.stop_prompt.is_some()
+            || self.transfer_prompt.is_some()
             || self.insert_dialog.is_some()
             || self.blank_disk.is_some()
             || self.settings.is_some()
@@ -1172,6 +1175,7 @@ impl Shell {
             stop_prompt: None,
             stop_prompt_input: (false, false),
             restore_input: None,
+            transfer_prompt: None,
         }
     }
 
@@ -1203,8 +1207,24 @@ impl Shell {
                 Command::SaveImage => {
                     self.image_library.selected.is_some() || self.image_library.active.is_some()
                 }
+                // A transfer runs on the library worker, which serves the
+                // running machine's session until it stops.
+                Command::Push | Command::Pull => {
+                    self.presenter.is_none() && self.image_library.active.is_none()
+                }
                 _ => true,
             }
+    }
+
+    /// Logins for Image › Push… and Pull…: the shared preferences file and
+    /// this session's credential store, as Preferences › Registries uses them.
+    fn registry_accounts(&self) -> crate::registry_transfer::Accounts {
+        crate::registry_transfer::Accounts {
+            path: self.preferences_path.clone(),
+            store: self.credential_store.clone(),
+            env: image_registry::credentials::EnvCredentials::from_env(),
+            default_override: std::env::var(image_registry::config::DEFAULT_REGISTRY_ENV).ok(),
+        }
     }
 
     fn enablement(&self) -> Enablement {
@@ -1695,6 +1715,12 @@ impl Shell {
     /// Exit, Command+Q/W and the window's close button all ask first while a
     /// machine runs; the close itself waits for the answer.
     fn request_exit(&mut self, ctx: &egui::Context) {
+        // A transfer is not stopped behind the user's back: quitting asks first.
+        if let Some(kind) = self.image_library.running_transfer() {
+            self.transfer_prompt = Some(kind);
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            return;
+        }
         self.close_dialogs_for_exit(ctx);
         if self.ask_before_stopping(StopPrompt::Exit) {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
@@ -1733,7 +1759,7 @@ impl Shell {
 
     fn exit_progress(&self) -> crate::app_menu::ExitProgress {
         use crate::app_menu::ExitProgress;
-        if self.stop_prompt == Some(StopPrompt::Exit) {
+        if self.stop_prompt == Some(StopPrompt::Exit) || self.transfer_prompt.is_some() {
             ExitProgress::Asking
         } else if self.exit_requested {
             ExitProgress::Waiting
@@ -1877,6 +1903,46 @@ impl Shell {
         }
     }
 
+    /// Cancel the running transfer and quit, or keep it running. Cancelling
+    /// drops the dialog, whose transfer stops at its next check.
+    fn answer_transfer_prompt(&mut self, quit: bool, ctx: &egui::Context) {
+        if self.transfer_prompt.take().is_none() || !quit {
+            return;
+        }
+        self.image_library.close_dialogs();
+        self.request_exit(ctx);
+    }
+
+    /// The question before quitting while a push or pull runs; `escape` is an
+    /// Escape already taken for it, so the transfer dialog beneath never sees
+    /// the key and cancels.
+    fn transfer_prompt_modal(&self, ctx: &egui::Context, escape: bool) -> Option<bool> {
+        let kind = self.transfer_prompt?;
+        let mut answer = None;
+        egui::Modal::new(egui::Id::unique("quit-during-transfer")).show(ctx, |ui| {
+            ui.set_max_width(420.0);
+            if self.classic {
+                gradient_title(ui, "unemupc98");
+            } else {
+                ui.heading("unemupc98");
+            }
+            ui.add(egui::Label::new(format!("A {kind} is running. Cancel it and quit?")).wrap());
+            ui.separator();
+            ui.horizontal(|ui| {
+                if ui.button(format!("Cancel {kind} and quit")).clicked() {
+                    answer = Some(true);
+                }
+                if ui.button(format!("Keep the {kind} running")).clicked() {
+                    answer = Some(false);
+                }
+            });
+            if escape {
+                answer = Some(false);
+            }
+        });
+        answer
+    }
+
     /// `escape` reports an Escape already taken for this prompt, the top-most
     /// dialog, before the dialogs beneath it could see the same key.
     fn stop_prompt_modal(&self, ctx: &egui::Context, escape: bool) -> Option<bool> {
@@ -2008,6 +2074,8 @@ impl Shell {
             SaveImage => { self.release(); self.image_library.begin_save_image(); },
             Preferences => { self.release(); self.preferences_dialog = Some(crate::preferences_sheet::PreferencesDialog::new(self.preferences_path.clone(), self.credential_store.clone())); },
             SaveState => {},
+            Push => { self.release(); let accounts = self.registry_accounts(); self.image_library.begin_push(accounts); },
+            Pull => { self.release(); let accounts = self.registry_accounts(); self.image_library.begin_pull(accounts); },
         }
         self.sync_routing();
     }
@@ -2064,6 +2132,10 @@ impl Shell {
                     self.image_library.selected.is_some() && self.presenter.is_none(),
                     |ui| self.item(ui, "Delete tag…", "", DeleteTag, commands),
                 );
+            });
+            ui.menu_button("Image", |ui| {
+                self.item(ui, "Push…", "", Push, commands);
+                self.item(ui, "Pull…", "", Pull, commands);
             });
             ui.menu_button("Machine", |ui| {
                 for (label, shortcut, command) in [
@@ -2949,6 +3021,7 @@ impl eframe::App for Shell {
         // The stop prompt is drawn last, above any other dialog; it takes its
         // Escape before the dialogs beneath it can read the same key.
         let stop_escape = self.stop_prompt.is_some() && ctx.input_mut(escape_pressed);
+        let transfer_escape = self.transfer_prompt.is_some() && ctx.input_mut(escape_pressed);
         let mut close_dialog = false;
         let mut open_machine = false;
         let mut save_preferences = false;
@@ -3175,6 +3248,9 @@ impl eframe::App for Shell {
         }
         if let Some(stop) = self.stop_prompt_modal(&ctx, stop_escape) {
             self.answer_stop_prompt(stop, &ctx);
+        }
+        if let Some(quit) = self.transfer_prompt_modal(&ctx, transfer_escape) {
+            self.answer_transfer_prompt(quit, &ctx);
         }
         if open_machine {
             self.open_machine();
@@ -3482,6 +3558,7 @@ mod tests {
             stop_prompt: None,
             stop_prompt_input: (false, false),
             restore_input: None,
+            transfer_prompt: None,
         }
     }
 
@@ -3577,6 +3654,68 @@ mod tests {
             dialog.registries.store_kind(),
             image_registry::credential_store::StoreKind::Session
         );
+    }
+
+    #[test]
+    fn image_push_and_pull_open_with_the_shell_accounts_only_while_no_machine_runs() {
+        let mut shell = shell();
+        let ctx = egui::Context::default();
+        shell.command(Command::Push, &ctx);
+        shell.command(Command::Pull, &ctx);
+        assert!(shell.image_library.push.is_none() && shell.image_library.pull.is_none());
+        shell.stop();
+        let temp = assembly::test_support::TempDir::new("shell-registry-transfer");
+        let path = temp.path().join("preferences.toml");
+        std::fs::write(&path, "default_registry = \"nas.example:5000\"\n[[registries]]\nhost = \"nas.example:5000\"\nprivate = true\n").unwrap();
+        shell.preferences_path = Some(path);
+        shell.command(Command::Pull, &ctx);
+        let pull = shell.image_library.pull.as_ref().unwrap();
+        assert_eq!(pull.default_host, "nas.example:5000");
+        assert!(shell.has_dialog());
+        shell.image_library.pull = None;
+        // Without a store worker the dialog ends at once instead of waiting.
+        shell.command(Command::Push, &ctx);
+        let push = shell.image_library.push.as_ref().unwrap();
+        assert_eq!(push.default_host, "nas.example:5000");
+        assert!(push
+            .error
+            .as_deref()
+            .is_some_and(|e| e.contains("worker stopped")));
+        assert!(matches!(
+            push.state,
+            crate::registry_transfer::PushState::Ready
+        ));
+    }
+
+    #[test]
+    fn quitting_during_a_push_asks_first_and_cancels_only_on_yes() {
+        let mut lab = crate::registry_transfer::tests::Lab::new(true);
+        let cancel = lab.held_push();
+        let mut shell = shell();
+        shell.stop();
+        shell.image_library =
+            std::mem::replace(&mut lab.view, crate::library_view::LibraryView::new(None));
+        let ctx = egui::Context::default();
+        shell.request_exit(&ctx);
+        assert_eq!(shell.transfer_prompt, Some("push"));
+        assert!(shell.has_dialog() && !shell.exit_requested);
+        assert!(matches!(
+            shell.exit_progress(),
+            crate::app_menu::ExitProgress::Asking
+        ));
+        assert!(!cancel.load(std::sync::atomic::Ordering::SeqCst));
+        shell.answer_transfer_prompt(false, &ctx);
+        assert!(shell.transfer_prompt.is_none() && !shell.exit_requested);
+        assert!(shell.image_library.running_transfer().is_some());
+        assert!(!cancel.load(std::sync::atomic::Ordering::SeqCst));
+
+        shell.request_exit(&ctx);
+        assert_eq!(shell.transfer_prompt, Some("push"));
+        lab.registry.release();
+        shell.answer_transfer_prompt(true, &ctx);
+        assert!(cancel.load(std::sync::atomic::Ordering::SeqCst));
+        assert!(shell.image_library.push.is_none());
+        assert!(shell.exit_requested);
     }
 
     fn keyboard_shell() -> Shell {

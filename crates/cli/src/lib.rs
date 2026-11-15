@@ -15,6 +15,8 @@ pub mod command;
 pub mod create;
 mod image;
 
+pub use image::{push_plan, registry_client, with_image_providers};
+
 use anyhow::{Context, Result};
 use assembly::{
     assemble_with_observation, AssembledMachine, ConsoleProbe, DeviceId, InjectionSchedule,

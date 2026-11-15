@@ -5,6 +5,8 @@ mod firmware;
 mod media;
 mod registry;
 
+pub use registry::{push_plan, registry_client, with_image_providers};
+
 use std::{ffi::OsString, io::Write, path::PathBuf};
 
 #[derive(Debug, PartialEq, Eq)]
