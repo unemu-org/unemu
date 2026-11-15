@@ -305,15 +305,19 @@ fn sizes(summary: &ImageSummary) -> String {
     )
 }
 
+/// A set row's icon and its warning, before and after the name.
+pub(super) fn lead(row: &MediaRow) -> super::Lead {
+    super::Lead {
+        icon: Some(crate::shell_icons::Icon::Media),
+        warning: row.image.failure.is_some(),
+        ..super::Lead::default()
+    }
+}
+
 pub(super) fn cells(row: &MediaRow, drives: &[(u8, FloppyGeometry)]) -> [String; 9] {
-    let failed = if row.image.failure.is_some() {
-        "[!] "
-    } else {
-        ""
-    };
     let (Some(summary), Some(set)) = (row.image.summary.as_ref(), row.set()) else {
         let mut cells: [String; 9] = Default::default();
-        cells[0] = format!("{failed}{}", row.image.name());
+        cells[0] = row.image.name().to_owned();
         cells[5] = if row.image.failure.is_some() {
             "Unavailable"
         } else {
@@ -324,7 +328,7 @@ pub(super) fn cells(row: &MediaRow, drives: &[(u8, FloppyGeometry)]) -> [String;
     };
     let title = summary.titles.first();
     [
-        format!("{failed}{}", set_name(row)),
+        set_name(row),
         row.image.tags(),
         title.and_then(|t| t.platform.clone()).unwrap_or_default(),
         disks_label(&formats(summary)),
@@ -625,6 +629,7 @@ impl LibraryView {
                                 &WIDTHS,
                                 selected,
                                 index % 2 == 0,
+                                lead(row),
                             );
                             if (clicked || double) && !selected {
                                 self.select_media(row, selected_file);
@@ -2588,8 +2593,12 @@ pub(crate) mod tests {
             redistribution: Redistribution::default(),
         };
         assert_eq!(cells(&row(None), &[])[5], "Pending");
+        assert!(!lead(&row(None)).warning);
         let failed = cells(&row(Some("missing blob")), &[]);
         assert_eq!(failed[5], "Unavailable");
-        assert!(failed[0].starts_with("[!] "));
+        assert_eq!(failed[0], "synthetic-set:1.0");
+        let failed = lead(&row(Some("missing blob")));
+        assert!(failed.warning);
+        assert_eq!(failed.icon, Some(crate::shell_icons::Icon::Media));
     }
 }

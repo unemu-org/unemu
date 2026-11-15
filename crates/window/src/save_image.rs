@@ -398,6 +398,15 @@ impl SaveAsImage {
 
 // ---- rendering -------------------------------------------------------------
 
+/// A dialog's message beside its mark, as the save-as-image mock-up lays out
+/// its question and refusal dialogs.
+fn alert(ui: &mut egui::Ui, icon: crate::shell_icons::Icon, body: impl FnOnce(&mut egui::Ui)) {
+    ui.horizontal_top(|ui| {
+        crate::shell_icons::show(ui, icon);
+        ui.vertical(body);
+    });
+}
+
 fn small(ui: &mut egui::Ui, text: impl Into<String>) {
     ui.add(egui::Label::new(egui::RichText::new(text.into()).small()).wrap());
 }
@@ -431,12 +440,12 @@ pub(crate) fn form(ui: &mut egui::Ui, model: &mut SaveAsImage) {
     });
     model.set_tag(tag);
     let check = model.check();
-    let text = egui::RichText::new(&check.text);
     ui.add(
         egui::Label::new(if check.level == TagLevel::Ok {
-            text
+            // The save-as-image mock-up checks a free tag off with ✓.
+            egui::RichText::new(format!("✓ {}", check.text))
         } else {
-            text.color(ui.visuals().warn_fg_color)
+            egui::RichText::new(&check.text).color(ui.visuals().warn_fg_color)
         })
         .wrap(),
     );
@@ -475,29 +484,32 @@ pub(crate) fn prompts(
         }
         match &prompt {
             Prompt::Move(current) => {
-                ui.label(format!(
-                    "{reference} already names another image. Move it to the image you are saving?"
-                ));
-                ui.monospace(format!("Now:   {}", short(current)));
-                ui.label("After: the image saved now.");
-                let others: Vec<_> = model
-                    .tags
-                    .iter()
-                    .filter(|(name, d)| d == current && name != &reference)
-                    .map(|(name, _)| name.as_str())
-                    .collect();
-                small(
-                    ui,
-                    format!(
-                        "The old image stays in the store. It remains reachable by its digest{}. Workspaces that pinned it keep running it.",
-                        if others.is_empty() {
-                            String::new()
-                        } else {
-                            format!(" and by {}", others.join(", "))
-                        }
-                    ),
-                );
-                small(ui, "Only tags that are not versions can move. The move is a compare-and-swap: if another program changed the tag meanwhile, nothing moves and this question returns with the current digest.");
+                // The save-as-image mock-up's question mark beside the text.
+                alert(ui, crate::shell_icons::Icon::Question, |ui| {
+                    ui.label(format!(
+                        "{reference} already names another image. Move it to the image you are saving?"
+                    ));
+                    ui.monospace(format!("Now:   {}", short(current)));
+                    ui.label("After: the image saved now.");
+                    let others: Vec<_> = model
+                        .tags
+                        .iter()
+                        .filter(|(name, d)| d == current && name != &reference)
+                        .map(|(name, _)| name.as_str())
+                        .collect();
+                    small(
+                        ui,
+                        format!(
+                            "The old image stays in the store. It remains reachable by its digest{}. Workspaces that pinned it keep running it.",
+                            if others.is_empty() {
+                                String::new()
+                            } else {
+                                format!(" and by {}", others.join(", "))
+                            }
+                        ),
+                    );
+                    small(ui, "Only tags that are not versions can move. The move is a compare-and-swap: if another program changed the tag meanwhile, nothing moves and this question returns with the current digest.");
+                });
                 ui.horizontal(|ui| {
                     if ui.button("Move tag").clicked() {
                         answer = Some(true);
@@ -508,12 +520,15 @@ pub(crate) fn prompts(
                 });
             }
             Prompt::Refuse(current) => {
-                ui.label(format!("{reference} already names {}.", short(current)));
-                ui.label(format!(
-                    "Tags shaped like a version (x.y.z) never move, so this image cannot use {}. There is no override.",
-                    model.tag.trim()
-                ));
-                small(ui, "Use the next version, or a tag that is not a version — such as latest, which can move after a confirmation.");
+                // The save-as-image mock-up's stop mark beside the refusal.
+                alert(ui, crate::shell_icons::Icon::Refusal, |ui| {
+                    ui.label(format!("{reference} already names {}.", short(current)));
+                    ui.label(format!(
+                        "Tags shaped like a version (x.y.z) never move, so this image cannot use {}. There is no override.",
+                        model.tag.trim()
+                    ));
+                    small(ui, "Use the next version, or a tag that is not a version — such as latest, which can move after a confirmation.");
+                });
                 ui.horizontal(|ui| {
                     if ui.button(format!("Use {}", model.suggested())).clicked() {
                         answer = Some(false);

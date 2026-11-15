@@ -886,10 +886,19 @@ impl Shell {
             &self.message
         };
         let entry = self.selected.and_then(|index| self.library.get(index));
-        let audio = self
-            .presenter
-            .as_ref()
-            .map_or("Audio stopped", |p| p.audio.status_text());
+        // The speaker stands for the word "Audio", as in the main-window
+        // mock-up's "🔊 SB16" cell, so the cell's text keeps its width.
+        let audio = match &self.presenter {
+            Some(p) => {
+                let text = p.audio.status_text();
+                format!(
+                    "{} {}",
+                    audio_mark(p.audio.audible()),
+                    text.strip_prefix("Audio ").unwrap_or(text)
+                )
+            }
+            None => format!("{} stopped", audio_mark(true)),
+        };
         let speed = self.speed_status();
         let labels = [
             message,
@@ -899,7 +908,7 @@ impl Shell {
                 .filter(|entry| !entry.rate.is_empty())
                 .map_or("CPU unknown", |entry| &entry.rate),
             entry.map_or("EMS unknown", |entry| &entry.ems),
-            audio,
+            &audio,
             &speed,
         ];
         let widths = shell_model::status_widths(ui.available_width());
@@ -1131,8 +1140,11 @@ impl Shell {
     ) {
         ui.add_enabled(false, egui::Label::new(view.menu_label()));
         let Some(unit) = view.floppy_unit() else {
-            ui.add_enabled(false, egui::Button::new(view.fixed_eject_label()));
-            self.item(ui, "Disk layers…", "", Command::Layers, commands);
+            ui.add_enabled(
+                false,
+                egui::Button::new((crate::shell_icons::mark(""), view.fixed_eject_label())),
+            );
+            self.marked_item(ui, "", "Disk layers…", "", Command::Layers, commands);
             if let Some(label) = view.write_label() {
                 ui.separator();
                 ui.add_enabled(false, egui::Label::new(label));
@@ -1141,23 +1153,26 @@ impl Shell {
         };
         let drive = view.letter();
         ui.add_enabled_ui(view.medium.is_some(), |ui| {
-            self.item(
+            self.marked_item(
                 ui,
+                EJECT_MARK,
                 &format!("Eject {drive}:"),
                 eject_shortcut(unit),
                 Command::Eject(unit),
                 commands,
             );
         });
-        self.item(
+        self.marked_item(
             ui,
+            "",
             &format!("Insert into {drive}:…"),
             self.insert_shortcut(unit),
             Command::Insert(unit),
             commands,
         );
-        self.item(
+        self.marked_item(
             ui,
+            "",
             "From library…",
             "",
             Command::FromLibrary(unit),
@@ -1171,8 +1186,9 @@ impl Shell {
                 .as_ref()
                 .is_some_and(|medium| medium.fixed_by.is_none())
             {
-                self.item(
+                self.marked_item(
                     ui,
+                    "",
                     "Change write mode…",
                     "",
                     Command::WriteMode(unit),
@@ -2312,7 +2328,7 @@ impl Shell {
             Minimize => { self.release(); ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true)); },
             Exit => self.request_exit(ctx),
             Shortcuts => self.dialog = Some(("Keyboard shortcuts", shortcuts_help(self.macos_shortcuts))),
-            About => self.dialog = Some(("About unemupc98", format!("unemupc98 {}\nIBM PC/AT emulator\nAGPL-3.0-or-later\nx86jit · egui / eframe · cpal\n\n{}\n\n{}", env!("CARGO_PKG_VERSION"), window::FONT_NOTICE, window::EGUI_FONT_NOTICE))),
+            About => self.dialog = Some(("About unemupc98", format!("unemupc98 {}\nIBM PC/AT emulator\nAGPL-3.0-or-later\nx86jit · egui / eframe · cpal\n\n{}\n\n{}\n\n{}", env!("CARGO_PKG_VERSION"), window::FONT_NOTICE, window::EGUI_FONT_NOTICE, window::SYMBOL_FONT_NOTICE))),
             Placeholder("Open machine file") => self.open_machine_dialog(),
             Placeholder("New machine") => { self.release(); self.image_library.begin_new_machine(); },
             Placeholder(title) => self.dialog = Some((title, "not yet available".into())),
@@ -2336,11 +2352,40 @@ impl Shell {
         command: Command,
         commands: &mut Vec<Command>,
     ) {
+        self.menu_item(ui, None, label, shortcut, command, commands);
+    }
+
+    /// A menu item with the main-window mock-up's mark column: the glyph
+    /// (▶ Ⅱ ■ ⏏) or "" for an empty column, so the menu's labels line up.
+    fn marked_item(
+        &self,
+        ui: &mut egui::Ui,
+        mark: &'static str,
+        label: &str,
+        shortcut: &str,
+        command: Command,
+        commands: &mut Vec<Command>,
+    ) {
+        self.menu_item(ui, Some(mark), label, shortcut, command, commands);
+    }
+
+    fn menu_item(
+        &self,
+        ui: &mut egui::Ui,
+        mark: Option<&'static str>,
+        label: &str,
+        shortcut: &str,
+        command: Command,
+        commands: &mut Vec<Command>,
+    ) {
+        let button = match mark {
+            Some(mark) => egui::Button::new((crate::shell_icons::mark(mark), label)),
+            None => egui::Button::new(label),
+        };
         if ui
             .add_enabled(
                 self.command_allowed(command),
-                egui::Button::new(label)
-                    .shortcut_text(shell_model::shortcut_text(shortcut, self.macos_shortcuts)),
+                button.shortcut_text(shell_model::shortcut_text(shortcut, self.macos_shortcuts)),
             )
             .clicked()
         {
@@ -2394,32 +2439,34 @@ impl Shell {
                 } else {
                     "Send Ctrl+Alt+Del"
                 };
-                for (label, shortcut, command) in [
-                    ("Start", "Enter", Start),
-                    ("Gaming mode", "", GamingMode),
+                for (mark, label, shortcut, command) in [
+                    (machine_menu_mark(Start), "Start", "Enter", Start),
+                    (machine_menu_mark(GamingMode), "Gaming mode", "", GamingMode),
                     (
+                        machine_menu_mark(Pause),
                         if self.paused { "Resume" } else { "Pause" },
                         "Ctrl+Alt+P",
                         Pause,
                     ),
-                    (reset, "Ctrl+Alt+End", Reset),
-                    ("Power cycle", "", PowerCycle),
-                    ("Stop", "Ctrl+Alt+Q", Stop),
+                    (machine_menu_mark(Reset), reset, "Ctrl+Alt+End", Reset),
+                    (machine_menu_mark(PowerCycle), "Power cycle", "", PowerCycle),
+                    (machine_menu_mark(Stop), "Stop", "Ctrl+Alt+Q", Stop),
                 ] {
-                    self.item(ui, label, shortcut, command, commands);
+                    self.marked_item(ui, mark, label, shortcut, command, commands);
                 }
                 ui.separator();
-                self.item(
+                self.marked_item(
                     ui,
+                    "",
                     "Save state (not yet available)",
                     "",
                     SaveState,
                     commands,
                 );
                 ui.separator();
-                self.item(ui, "Settings…", "Ctrl+,", Settings, commands);
-                self.item(ui, "Disk layers…", "", Layers, commands);
-                self.item(ui, "Save as new image…", "", SaveImage, commands);
+                self.marked_item(ui, "", "Settings…", "Ctrl+,", Settings, commands);
+                self.marked_item(ui, "", "Disk layers…", "", Layers, commands);
+                self.marked_item(ui, "", "Save as new image…", "", SaveImage, commands);
             });
             ui.menu_button("Media", |ui| {
                 let drives = self.drive_views();
@@ -2443,7 +2490,8 @@ impl Shell {
                     );
                     ui.add_enabled(present, egui::Label::new(label));
                     ui.add_enabled_ui(present, |ui| {
-                        ui.menu_button(format!("Insert into {drive}"), |ui| {
+                        let insert = format!("Insert into {drive}");
+                        ui.menu_button((crate::shell_icons::mark(""), insert), |ui| {
                             self.item(
                                 ui,
                                 "Browse / catalogue…",
@@ -2454,8 +2502,9 @@ impl Shell {
                             self.item(ui, "From library…", "", FromLibrary(unit), commands);
                         });
                     });
-                    self.item(
+                    self.marked_item(
                         ui,
+                        "",
                         "Next image in catalogue",
                         if unit == 0 {
                             "Ctrl+Alt+F"
@@ -2466,8 +2515,9 @@ impl Shell {
                         commands,
                     );
                     ui.add_enabled_ui(inserted, |ui| {
-                        self.item(
+                        self.marked_item(
                             ui,
+                            EJECT_MARK,
                             &format!("Eject {drive}"),
                             eject_shortcut(unit),
                             Eject(unit),
@@ -2494,7 +2544,7 @@ impl Shell {
                 for label in fixed {
                     ui.add_enabled(false, egui::Label::new(label));
                 }
-                self.item(ui, "Disk layers…", "", Layers, commands);
+                self.marked_item(ui, "", "Disk layers…", "", Layers, commands);
                 ui.add_enabled(
                     false,
                     egui::Button::new("CD-ROM — unsupported (no controller)"),
@@ -2574,31 +2624,21 @@ impl Shell {
 
     fn toolbar(&self, ui: &mut egui::Ui, commands: &mut Vec<Command>) {
         ui.horizontal_wrapped(|ui| {
+            use crate::shell_icons::Icon;
+            // The main-window mock-up sets Ctrl+Alt+Del as code text, without an icon.
             for (label, icon, command) in [
-                ("Start", crate::shell_icons::Icon::Play, Command::Start),
+                ("Start", Some(Icon::Play), Command::Start),
                 (
                     if self.paused { "Resume" } else { "Pause" },
-                    if self.paused {
-                        crate::shell_icons::Icon::Play
-                    } else {
-                        crate::shell_icons::Icon::Pause
-                    },
+                    Some(if self.paused { Icon::Play } else { Icon::Pause }),
                     Command::Pause,
                 ),
-                ("Stop", crate::shell_icons::Icon::Stop, Command::Stop),
-                (
-                    "Ctrl+Alt+Del",
-                    crate::shell_icons::Icon::Reset,
-                    Command::Reset,
-                ),
-                ("A:", crate::shell_icons::Icon::Floppy, Command::Insert(0)),
-                ("Eject", crate::shell_icons::Icon::Eject, Command::Eject(0)),
-                (
-                    "Settings",
-                    crate::shell_icons::Icon::Settings,
-                    Command::Settings,
-                ),
-                ("Layers", crate::shell_icons::Icon::Layers, Command::Layers),
+                ("Stop", Some(Icon::Stop), Command::Stop),
+                ("Ctrl+Alt+Del", None, Command::Reset),
+                ("A:", Some(Icon::Floppy), Command::Insert(0)),
+                ("Eject", Some(Icon::Eject), Command::Eject(0)),
+                ("Settings", Some(Icon::Settings), Command::Settings),
+                ("Layers", Some(Icon::Layers), Command::Layers),
             ] {
                 let response = ui
                     .add_enabled_ui(self.command_allowed(command), |ui| {
@@ -3270,7 +3310,7 @@ impl eframe::App for Shell {
         let mut commands = Vec::new();
         egui::Panel::top("shell-chrome").show(ui, |ui| {
             if crate::shell_icons::custom_title_bar(self.classic, cfg!(target_os = "macos")) {
-                gradient_title(ui, &self.title());
+                window_title(ui, &self.title());
             }
             self.menus(ui, &mut commands);
             if self.toolbar {
@@ -3600,6 +3640,19 @@ pub(super) fn configure_context(ctx: &egui::Context) {
         .entry(egui::FontFamily::Proportional)
         .or_default()
         .push("Hack".into());
+    // Last in both families, so it only supplies the marks no egui font has
+    // (✓ ✗ ✕ Ⅱ ⌫); without it they would render as empty boxes.
+    fonts.font_data.insert(
+        "DejaVu-symbols".into(),
+        std::sync::Arc::new(egui::FontData::from_static(window::SYMBOL_FONT)),
+    );
+    for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
+        fonts
+            .families
+            .entry(family)
+            .or_default()
+            .push("DejaVu-symbols".into());
+    }
     ctx.set_fonts(fonts);
     ctx.options_mut(|options| options.zoom_with_keyboard = false);
 }
@@ -3630,6 +3683,29 @@ fn led(ui: &mut egui::Ui, on: bool, label: &str) {
     );
     ui.label(label);
 }
+/// The Machine menu's mark column, as the main-window mock-up draws it.
+pub(crate) fn machine_menu_mark(command: Command) -> &'static str {
+    match command {
+        Command::Start => "▶",
+        Command::Pause => "Ⅱ",
+        Command::Stop => "■",
+        _ => "",
+    }
+}
+
+/// The status bar's speaker, as the main-window mock-up marks its audio cell:
+/// crossed out while no sound reaches the speakers of a running machine.
+pub(crate) fn audio_mark(audible: bool) -> &'static str {
+    if audible {
+        "🔊"
+    } else {
+        "🔇"
+    }
+}
+
+/// The eject mark of the Media menu and the drive menus.
+pub(crate) const EJECT_MARK: &str = "⏏";
+
 fn eject_shortcut(unit: u8) -> &'static str {
     if unit == 0 {
         "Ctrl+Alt+E"
@@ -3731,6 +3807,16 @@ pub(crate) fn bevel(ui: &egui::Ui, rect: egui::Rect, pressed: bool) {
 }
 
 pub(crate) fn gradient_title(ui: &mut egui::Ui, title: &str) {
+    title_strip(ui, title, false);
+}
+
+/// The main window's classic title strip: the application icon, as the
+/// main-window mock-up's title bar shows it, then the title.
+fn window_title(ui: &mut egui::Ui, title: &str) {
+    title_strip(ui, title, true);
+}
+
+fn title_strip(ui: &mut egui::Ui, title: &str, icon: bool) {
     let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 23.0), Sense::hover());
     let mut mesh = egui::Mesh::default();
     for (pos, color) in [
@@ -3744,8 +3830,23 @@ pub(crate) fn gradient_title(ui: &mut egui::Ui, title: &str) {
     mesh.add_triangle(0, 1, 2);
     mesh.add_triangle(0, 2, 3);
     ui.painter().add(mesh);
+    let mut text_left = 7.0;
+    if icon {
+        let icon_rect = egui::Rect::from_center_size(
+            rect.left_center() + Vec2::new(14.0, 0.0),
+            Vec2::splat(16.0),
+        );
+        crate::shell_icons::paint(
+            ui.painter(),
+            icon_rect,
+            crate::shell_icons::Icon::App,
+            Color32::WHITE,
+            ui.visuals(),
+        );
+        text_left = 28.0;
+    }
     ui.painter().text(
-        rect.left_center() + Vec2::new(7.0, 0.0),
+        rect.left_center() + Vec2::new(text_left, 0.0),
         egui::Align2::LEFT_CENTER,
         title,
         egui::FontId::proportional(13.0),
@@ -6341,9 +6442,11 @@ mod tests {
         let text = &shell.dialog.as_ref().unwrap().1;
         assert!(text.contains(window::FONT_NOTICE));
         assert!(text.contains(window::EGUI_FONT_NOTICE));
+        assert!(text.contains(window::SYMBOL_FONT_NOTICE));
         for option in ["--help", "--about", "--version"] {
             let output = crate::informational_output(std::ffi::OsStr::new(option)).unwrap();
             assert!(output.contains(window::EGUI_FONT_NOTICE));
+            assert!(output.contains(window::SYMBOL_FONT_NOTICE));
         }
         for credit in [
             "Ubuntu-font-1.0",
@@ -6351,6 +6454,8 @@ mod tests {
             "Source Foundry",
             "Canonical",
             "John Slegers",
+            "Bitstream Vera Fonts Copyright",
+            "Tavmjong Bah",
         ] {
             assert!(text.contains(credit));
         }
@@ -9342,5 +9447,162 @@ kind='mda'
             }
             shell.image_library.shutdown();
         }
+    }
+
+    /// Every place `label` is drawn, by its rect.
+    fn rects_of(text: &[(String, egui::Rect)], label: &str) -> Vec<egui::Rect> {
+        text.iter()
+            .filter(|(shown, _)| shown == label)
+            .map(|(_, rect)| *rect)
+            .collect()
+    }
+
+    /// The menu item `label` with its mark: the mark's rect and the label's.
+    fn mark_beside(
+        text: &[(String, egui::Rect)],
+        mark: &str,
+        label: &str,
+    ) -> (egui::Rect, egui::Rect) {
+        let marks = rects_of(text, mark);
+        rects_of(text, label)
+            .into_iter()
+            .find_map(|at| {
+                marks
+                    .iter()
+                    .find(|m| (m.center().y - at.center().y).abs() < 3.0 && m.right() <= at.left())
+                    .map(|m| (*m, at))
+            })
+            .unwrap_or_else(|| panic!("{label} has no {mark} beside it in {text:?}"))
+    }
+
+    #[test]
+    fn machine_and_media_menus_carry_the_mockup_marks() {
+        let mut shell = shell();
+        let ctx = egui::Context::default();
+        configure_context(&ctx);
+        let drawn = draw(&ctx, &mut shell, Vec::new());
+        click(
+            &ctx,
+            &mut shell,
+            label_rect(&drawn.text, "Machine").center(),
+        );
+        let menu = draw(&ctx, &mut shell, Vec::new());
+        let mut lefts = Vec::new();
+        for (mark, label) in [("▶", "Start"), ("Ⅱ", "Pause"), ("■", "Stop")] {
+            let (_, at) = mark_beside(&menu.text, mark, label);
+            lefts.push(at.left());
+        }
+        // Items without a mark keep the column, so every label lines up.
+        let unmarked = rects_of(&menu.text, "Power cycle")[0];
+        assert!(lefts
+            .iter()
+            .all(|left| (left - unmarked.left()).abs() < 0.5));
+        egui::Popup::close_all(&ctx);
+        let drawn = draw(&ctx, &mut shell, Vec::new());
+        click(&ctx, &mut shell, label_rect(&drawn.text, "Media").center());
+        let menu = draw(&ctx, &mut shell, Vec::new());
+        mark_beside(&menu.text, "⏏", "Eject A:");
+        egui::Popup::close_all(&ctx);
+    }
+
+    #[test]
+    fn the_toolbar_draws_the_mockup_icons_and_sets_ctrl_alt_del_as_code() {
+        let shell = shell();
+        let ctx = egui::Context::default();
+        configure_context(&ctx);
+        let mut commands = Vec::new();
+        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+            shell.toolbar(ui, &mut commands);
+        });
+        output.textures_delta.clear();
+        let mut fills = Vec::new();
+        let mut cad = None;
+        for clipped in &output.shapes {
+            match &clipped.shape {
+                egui::Shape::Path(path) => fills.push(path.fill),
+                egui::Shape::Rect(rect) => fills.push(rect.fill),
+                egui::Shape::Text(text) if text.galley.text() == "Ctrl+Alt+Del" => {
+                    cad = Some(text.galley.job.sections[0].format.font_id.clone());
+                }
+                _ => (),
+            }
+        }
+        output.drop_without_applying_deltas();
+        // The green Start, the red Stop, the floppy and the blue top layer.
+        for colour in [
+            Color32::from_rgb(0x2c, 0x8a, 0x3a),
+            Color32::from_rgb(0xb2, 0x3a, 0x2b),
+            Color32::from_rgb(0x3a, 0x3f, 0x4a),
+            Color32::from_rgb(0x4b, 0x79, 0xc1),
+        ] {
+            // A disabled button fades its icon; undo the fade to compare.
+            let near = |fill: &Color32| {
+                let fill = fill.to_opaque();
+                [fill.r(), fill.g(), fill.b()]
+                    .into_iter()
+                    .zip([colour.r(), colour.g(), colour.b()])
+                    .all(|(a, b)| a.abs_diff(b) <= 3)
+            };
+            assert!(fills.iter().any(near), "{colour:?} not painted");
+        }
+        assert_eq!(cad, Some(egui::FontId::monospace(11.0)));
+    }
+
+    #[test]
+    fn the_classic_title_strip_shows_the_application_icon() {
+        let ctx = egui::Context::default();
+        let strip = |icon: bool| {
+            let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+                if icon {
+                    window_title(ui, "unemupc98");
+                } else {
+                    gradient_title(ui, "Settings");
+                }
+            });
+            output.textures_delta.clear();
+            let shapes: Vec<_> = output.shapes.iter().map(|c| c.shape.clone()).collect();
+            output.drop_without_applying_deltas();
+            shapes
+        };
+        let screen = Color32::from_rgb(0x0b, 0x2a, 0x5a);
+        let window = strip(true);
+        assert!(window.iter().any(|shape| matches!(
+            shape,
+            egui::Shape::Rect(rect) if rect.fill == screen && rect.rect.size() == Vec2::new(10.0, 5.0)
+        )));
+        let text_left = |shapes: &[egui::Shape]| {
+            shapes
+                .iter()
+                .find_map(|shape| match shape {
+                    egui::Shape::Text(text) => Some(text.pos.x),
+                    _ => None,
+                })
+                .unwrap()
+        };
+        assert_eq!(text_left(&window), 28.0);
+        // Dialog title strips keep their plain title.
+        let dialog = strip(false);
+        assert!(!dialog
+            .iter()
+            .any(|shape| matches!(shape, egui::Shape::Rect(rect) if rect.fill == screen)));
+        assert_eq!(text_left(&dialog), 7.0);
+    }
+
+    #[test]
+    fn the_status_bar_audio_cell_carries_the_speaker() {
+        let mut shell = shell();
+        let ctx = egui::Context::default();
+        configure_context(&ctx);
+        // The test machine has no active sound device, so nothing is audible.
+        let pass = status_pass(&ctx, &mut shell, 1040.0, Vec::new());
+        assert!(
+            pass.text.iter().any(|(text, _)| text == "🔇 unavailable"),
+            "{:?}",
+            pass.text
+        );
+        assert!(pass.elided.is_empty(), "{:?}", pass.elided);
+        assert!(shell.stop());
+        let pass = status_pass(&ctx, &mut shell, 1040.0, Vec::new());
+        assert!(pass.text.iter().any(|(text, _)| text == "🔊 stopped"));
     }
 }

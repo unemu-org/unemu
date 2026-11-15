@@ -322,6 +322,12 @@ impl HostAudio {
         self.sink.muted.load(Ordering::Relaxed)
     }
 
+    /// Whether the guest's sound reaches the speakers: a device is active and
+    /// neither mute holds it back.
+    pub(super) fn audible(&self) -> bool {
+        self.available() && !self.speed_muted && !self.user_muted
+    }
+
     pub(super) fn status_text(&self) -> &'static str {
         if !self.available() {
             "Audio unavailable"

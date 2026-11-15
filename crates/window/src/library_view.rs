@@ -12,6 +12,7 @@ pub(crate) mod install_media;
 
 use crate::{
     layers_dialog::LayersDialog,
+    shell_icons::Icon,
     shell_model::{Command, LibraryEntry},
 };
 use image_store::{
@@ -435,12 +436,7 @@ fn row_cells(row: &ViewRow) -> [String; 9] {
     let summary = image.summary.as_ref();
     let title = summary.and_then(|s| s.titles.first());
     [
-        format!(
-            "{}{}{}",
-            if row.child { "    " } else { "" },
-            if image.failure.is_some() { "[!] " } else { "" },
-            image.name()
-        ),
+        image.name().to_owned(),
         image.tags(),
         title.and_then(|t| t.platform.clone()).unwrap_or_default(),
         title.map(|t| t.genres.join(", ")).unwrap_or_default(),
@@ -458,6 +454,49 @@ fn row_cells(row: &ViewRow) -> [String; 9] {
         summary.map(|s| s.labels.join(", ")).unwrap_or_default(),
     ]
 }
+/// What a list row's name cell shows around the name, as the machines
+/// mock-up draws it: the row kind's icon before the name, a warning and a
+/// favourite star after it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) struct Lead {
+    pub icon: Option<Icon>,
+    /// A row inside an expanded repository group, set in under its header.
+    pub child: bool,
+    /// The row cannot be used as it is: unreadable, or its firmware is missing.
+    pub warning: bool,
+    pub favourite: bool,
+}
+
+/// The warning badge after a name, as the main-window mock-up marks a
+/// machine that cannot start.
+const WARNING_BADGE: &str = " ⚠";
+const FAVOURITE_BADGE: &str = " ★";
+/// The set-in of a group's child rows.
+const CHILD_INDENT: f32 = 16.0;
+/// The icon's 16 points, its 2-point margin and the mock-up's 5-point gap
+/// (rounded) before the name.
+const NAME_ICON_ROOM: f32 = 21.0;
+
+fn image_lead(row: &ViewRow) -> Lead {
+    Lead {
+        icon: Some(Icon::Image),
+        child: row.child,
+        warning: row.image.failure.is_some(),
+        favourite: row.image.summary.as_ref().is_some_and(|s| s.favorite),
+    }
+}
+
+/// The collections in the tree that the machines mock-up marks with an icon.
+fn tree_icon(filter: &Filter) -> Option<Icon> {
+    match filter {
+        Filter::All => Some(Icon::Image),
+        Filter::MachineFiles => Some(Icon::MachineFile),
+        Filter::Media => Some(Icon::Media),
+        Filter::Firmware => Some(Icon::Firmware),
+        _ => None,
+    }
+}
+
 /// Sortable column headers; a click on the sorted column reverses it.
 fn sort_header(
     ui: &mut egui::Ui,
@@ -496,6 +535,7 @@ fn draw_cells(
     widths: &[f32; 9],
     selected: bool,
     striped: bool,
+    lead: Lead,
 ) -> (bool, bool) {
     let mut clicked = false;
     let mut double = false;
@@ -511,26 +551,84 @@ fn draw_cells(
     let selected_text = selected.then(|| ui.visuals().selection.stroke.color);
     egui::Frame::new().fill(fill).show(ui, |ui| {
         ui.horizontal(|ui| {
-            for (text, width) in cells.iter().zip(widths.iter().copied()) {
-                let rich = egui::RichText::new(text);
-                let rich = match selected_text {
-                    Some(color) => rich.color(color),
-                    None => rich,
-                };
-                let response = ui
-                    .add_sized(
+            for (column, (text, width)) in cells.iter().zip(widths.iter().copied()).enumerate() {
+                let response = if column == 0 {
+                    name_cell(ui, text, width, selected_text, lead)
+                } else {
+                    let rich = egui::RichText::new(text);
+                    let rich = match selected_text {
+                        Some(color) => rich.color(color),
+                        None => rich,
+                    };
+                    ui.add_sized(
                         [width, 20.0],
                         egui::Label::new(rich)
                             .truncate()
                             .sense(egui::Sense::click()),
                     )
-                    .on_hover_text(text);
+                };
+                let response = response.on_hover_text(text);
                 clicked |= response.clicked();
                 double |= response.double_clicked();
             }
         });
     });
     (clicked, double)
+}
+
+/// The name cell as the machines mock-up draws it: left-aligned, the row's
+/// icon (after a group's indent), the name, then its badges, truncated
+/// together to the column. It is painted rather than a centred label, because
+/// a centred egui label drops the space the icon and the indent need.
+fn name_cell(
+    ui: &mut egui::Ui,
+    text: &str,
+    width: f32,
+    selected_text: Option<egui::Color32>,
+    lead: Lead,
+) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(width, 20.0), egui::Sense::click());
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Label, ui.is_enabled(), text));
+    // The colour an interactive label's text takes; the icon shares it.
+    let ink = selected_text.unwrap_or_else(|| ui.style().interact(&response).text_color());
+    let indent = if lead.child { CHILD_INDENT } else { 0.0 };
+    let painter = ui.painter().with_clip_rect(rect.intersect(ui.clip_rect()));
+    let mut left = rect.left() + indent;
+    if let Some(icon) = lead.icon {
+        let at = egui::Rect::from_min_size(
+            egui::pos2(left + 2.0, rect.center().y - 8.0),
+            egui::Vec2::splat(16.0),
+        );
+        crate::shell_icons::paint(&painter, at, icon, ink, ui.visuals());
+        left += NAME_ICON_ROOM;
+    }
+    let font = egui::TextStyle::Body.resolve(ui.style());
+    let mut job = egui::text::LayoutJob::default();
+    job.append(text, 0.0, egui::TextFormat::simple(font.clone(), ink));
+    for (on, badge, color) in [
+        (lead.warning, WARNING_BADGE, ui.visuals().warn_fg_color),
+        (
+            lead.favourite,
+            FAVOURITE_BADGE,
+            crate::shell_icons::STAR_GOLD,
+        ),
+    ] {
+        if on {
+            job.append(
+                badge,
+                0.0,
+                egui::TextFormat::simple(font.clone(), selected_text.unwrap_or(color)),
+            );
+        }
+    }
+    job.wrap = egui::text::TextWrapping::truncate_at_width((rect.right() - left).max(0.0));
+    let galley = ui.painter().layout_job(job);
+    painter.galley(
+        egui::pos2(left, rect.center().y - galley.size().y / 2.0),
+        galley,
+        ink,
+    );
+    response
 }
 
 pub(super) fn delete_tag(store: &Store, row: &ImageRow) -> Result<()> {
@@ -561,26 +659,33 @@ pub(super) fn host_last_run() -> String {
 /// first one comes from. Nothing contacts a registry until Get templates….
 fn empty_library(ui: &mut egui::Ui, commands: &mut Vec<Command>) {
     ui.group(|ui| {
-        ui.strong("No machine images yet");
-        ui.add(
-            egui::Label::new(
-                "Get templates… downloads ready-made open machines from the default registry: open firmware with its source and a blank disk, no operating system.",
-            )
-            .wrap(),
-        );
-        if ui.button("Get templates…").clicked() {
-            commands.push(Command::GetTemplates);
-        }
-        ui.add(
-            egui::Label::new(
-                egui::RichText::new(
-                    "File › New machine… builds one from firmware you imported, and File › Import image… adds an image file. Nothing is downloaded until you choose.",
-                )
-                .small(),
-            )
-            .wrap(),
-        );
+        // The get-templates mock-up's empty card: its picture beside the text.
+        ui.horizontal_top(|ui| {
+            crate::shell_icons::show(ui, Icon::EmptyLibrary);
+            ui.vertical(|ui| empty_library_text(ui, commands));
+        });
     });
+}
+fn empty_library_text(ui: &mut egui::Ui, commands: &mut Vec<Command>) {
+    ui.strong("No machine images yet");
+    ui.add(
+        egui::Label::new(
+            "Get templates… downloads ready-made open machines from the default registry: open firmware with its source and a blank disk, no operating system.",
+        )
+        .wrap(),
+    );
+    if ui.button("Get templates…").clicked() {
+        commands.push(Command::GetTemplates);
+    }
+    ui.add(
+        egui::Label::new(
+            egui::RichText::new(
+                "File › New machine… builds one from firmware you imported, and File › Import image… adds an image file. Nothing is downloaded until you choose.",
+            )
+            .small(),
+        )
+        .wrap(),
+    );
 }
 pub(super) fn human_size(bytes: u64) -> String {
     for (unit, divisor) in [
@@ -1480,8 +1585,14 @@ impl LibraryView {
                     (media_label.as_str(), Filter::Media),
                     (firmware_label.as_str(), Filter::Firmware),
                 ] {
+                    // Collections without an icon keep the icon's room, so
+                    // the names line up as in the machines mock-up's tree.
+                    let mark = match tree_icon(&filter) {
+                        Some(icon) => crate::shell_icons::atom(icon),
+                        None => crate::shell_icons::blank(),
+                    };
                     if ui
-                        .selectable_label(self.query.filter == filter, label)
+                        .selectable_label(self.query.filter == filter, (mark, label))
                         .clicked()
                     {
                         self.set_filter(filter, selected_file);
@@ -1600,7 +1711,15 @@ impl LibraryView {
                                 columns[0].label(row.references());
                                 columns[0].monospace(&row.descriptor.digest.hex()[..12]);
                                 let meta = &mut columns[1];
-                                meta.strong(row.name());
+                                // The machines mock-up heads an image's details
+                                // with its icon, and a favourite with its star.
+                                meta.horizontal(|ui| {
+                                    crate::shell_icons::show(ui, Icon::Image);
+                                    ui.strong(row.name());
+                                    if row.summary.as_ref().is_some_and(|s| s.favorite) {
+                                        ui.colored_label(crate::shell_icons::STAR_GOLD, "★");
+                                    }
+                                });
                                 if let Some(summary) = &row.summary {
                                     if let Some(title) = summary.titles.first() {
                                         for (label, value) in [
@@ -1839,7 +1958,11 @@ impl LibraryView {
                 return;
             }
             if !self.recoveries.is_empty() {
-                ui.strong("Unfinished sessions");
+                // The machines mock-up's warning banner for an unfinished session.
+                ui.horizontal(|ui| {
+                    ui.colored_label(ui.visuals().warn_fg_color, "⚠");
+                    ui.strong("Unfinished sessions");
+                });
                 let recoveries = self.recoveries.clone();
                 for record in recoveries {
                     ui.horizontal(|ui| {
@@ -1944,11 +2067,7 @@ impl LibraryView {
                                     if let Some(&i) = visible_files.get(index) {
                                         let entry = &files[i];
                                         let cells = [
-                                            format!(
-                                                "{}{}",
-                                                if entry.has_problem() { "[!] " } else { "" },
-                                                entry.name
-                                            ),
+                                            entry.name.clone(),
                                             "Machine file".into(),
                                             String::new(),
                                             String::new(),
@@ -1964,6 +2083,11 @@ impl LibraryView {
                                             &COLUMN_WIDTHS,
                                             self.selected.is_none() && *selected_file == Some(i),
                                             index % 2 == 0,
+                                            Lead {
+                                                icon: Some(Icon::MachineFile),
+                                                warning: entry.has_problem(),
+                                                ..Lead::default()
+                                            },
                                         );
                                         if clicked || double {
                                             self.selected = None;
@@ -1994,6 +2118,7 @@ impl LibraryView {
                                                 &COLUMN_WIDTHS,
                                                 false,
                                                 index % 2 == 0,
+                                                Lead::default(),
                                             )
                                             .0
                                             {
@@ -2016,6 +2141,7 @@ impl LibraryView {
                                                 &COLUMN_WIDTHS,
                                                 selected,
                                                 index % 2 == 0,
+                                                image_lead(row),
                                             );
                                             if (clicked || double) && !selected {
                                                 self.pending_launch = None;
@@ -4344,7 +4470,7 @@ pub(super) mod tests {
                 let ctx = egui::Context::default();
                 ctx.set_visuals(visuals);
                 let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
-                    draw_cells(ui, &cells, &[80.0; 9], true, false);
+                    draw_cells(ui, &cells, &[80.0; 9], true, false, Lead::default());
                     ui.add(egui::Button::selectable(true, "selected item"));
                 });
                 output.textures_delta.clear();
@@ -4362,5 +4488,140 @@ pub(super) mod tests {
                 }
             }
         }
+    }
+
+    /// Every shape `run` paints in the light theme, flattened.
+    fn painted(run: impl FnMut(&mut egui::Ui)) -> Vec<egui::Shape> {
+        fn flatten(shape: egui::Shape, out: &mut Vec<egui::Shape>) {
+            match shape {
+                egui::Shape::Vec(shapes) => shapes.into_iter().for_each(|s| flatten(s, out)),
+                shape => out.push(shape),
+            }
+        }
+        let ctx = egui::Context::default();
+        crate::shell::configure_context(&ctx);
+        ctx.set_visuals(egui::Visuals::light());
+        let mut output = ctx.run_ui(egui::RawInput::default(), run);
+        output.textures_delta.clear();
+        let mut shapes = Vec::new();
+        for clipped in output.shapes {
+            flatten(clipped.shape, &mut shapes);
+        }
+        shapes
+    }
+
+    #[test]
+    fn the_tree_marks_the_collections_the_machines_mockup_marks() {
+        assert_eq!(tree_icon(&Filter::All), Some(Icon::Image));
+        assert_eq!(tree_icon(&Filter::MachineFiles), Some(Icon::MachineFile));
+        assert_eq!(tree_icon(&Filter::Media), Some(Icon::Media));
+        assert_eq!(tree_icon(&Filter::Firmware), Some(Icon::Firmware));
+        assert_eq!(tree_icon(&Filter::Recent), None);
+        assert_eq!(tree_icon(&Filter::Favorites), None);
+    }
+
+    #[test]
+    fn image_rows_lead_with_the_image_icon_and_flag_unreadable_images() {
+        let image = ImageRow {
+            reference: "games:1".into(),
+            aliases: Vec::new(),
+            descriptor: Descriptor::new(mt::MANIFEST, Digest::of(b"games"), 7),
+            summary: None,
+            failure: Some("missing blob".into()),
+        };
+        let row = ViewRow {
+            image,
+            group: None,
+            child: true,
+        };
+        assert_eq!(
+            image_lead(&row),
+            Lead {
+                icon: Some(Icon::Image),
+                child: true,
+                warning: true,
+                favourite: false,
+            }
+        );
+        // The name cell carries the name alone; the icon and badges are drawn.
+        assert_eq!(row_cells(&row)[0], "games:1");
+    }
+
+    /// The name cell draws the icon before the name, set in under a group,
+    /// and the warning and favourite badges after it, in the mock-up's colours.
+    #[test]
+    fn the_name_cell_draws_its_icon_and_badges() {
+        let cells: [String; 9] = std::array::from_fn(|i| format!("cell {i}"));
+        let lead = Lead {
+            icon: Some(Icon::Image),
+            child: true,
+            warning: true,
+            favourite: true,
+        };
+        let visuals = egui::Visuals::light();
+        let shapes = painted(|ui| {
+            draw_cells(ui, &cells, &[200.0; 9], false, false, lead);
+        });
+        let name = shapes
+            .iter()
+            .find_map(|shape| match shape {
+                egui::Shape::Text(text) if text.galley.text().starts_with("cell 0") => Some(text),
+                _ => None,
+            })
+            .expect("the name cell");
+        assert_eq!(name.galley.text(), "cell 0 ⚠ ★");
+        let sections = &name.galley.job.sections;
+        assert_eq!(sections[1].format.color, visuals.warn_fg_color);
+        assert_eq!(sections[2].format.color, crate::shell_icons::STAR_GOLD);
+        // Left-aligned: the name starts after the group indent and the icon.
+        assert_eq!(name.pos.x, CHILD_INDENT + NAME_ICON_ROOM);
+        let icon: Vec<_> = shapes
+            .iter()
+            .filter(|shape| !matches!(shape, egui::Shape::Text(_)))
+            .map(|shape| shape.visual_bounding_rect())
+            .filter(|rect| rect.is_positive() && rect.max.x <= name.pos.x)
+            .collect();
+        // The image icon's three outlines, in the space before the name.
+        assert_eq!(icon.len(), 3, "{icon:?}");
+        assert!(
+            icon.iter()
+                .all(|rect| rect.min.x >= CHILD_INDENT && rect.width() <= 17.0),
+            "{icon:?}"
+        );
+        // Selected, the icon and badges turn to the selection text colour.
+        let shapes = painted(|ui| {
+            draw_cells(ui, &cells, &[200.0; 9], true, false, lead);
+        });
+        let selected = egui::Visuals::light().selection.stroke.color;
+        let name = shapes
+            .iter()
+            .find_map(|shape| match shape {
+                egui::Shape::Text(text) if text.galley.text().starts_with("cell 0") => Some(text),
+                _ => None,
+            })
+            .unwrap();
+        assert!(name
+            .galley
+            .job
+            .sections
+            .iter()
+            .all(|section| section.format.color == selected));
+    }
+
+    #[test]
+    fn the_empty_library_shows_the_get_templates_picture() {
+        let visuals = egui::Visuals::light();
+        let shapes = painted(|ui| empty_library(ui, &mut Vec::new()));
+        // The picture's screen: a 28×19 rectangle in the selection colour.
+        assert!(shapes.iter().any(|shape| matches!(
+            shape,
+            egui::Shape::Rect(rect)
+                if rect.fill == visuals.selection.bg_fill
+                    && rect.rect.size() == egui::vec2(28.0, 19.0)
+        )));
+        assert!(shapes.iter().any(|shape| matches!(
+            shape,
+            egui::Shape::Text(text) if text.galley.text() == "No machine images yet"
+        )));
     }
 }

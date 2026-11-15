@@ -308,16 +308,17 @@ pub(super) fn short(hash: &str) -> String {
     }
 }
 
+/// A package row's icon and its warning, before and after the name.
+pub(super) fn lead(row: &FirmwareRow) -> super::Lead {
+    super::Lead {
+        icon: Some(crate::shell_icons::Icon::Firmware),
+        warning: row.image.failure.is_some(),
+        ..super::Lead::default()
+    }
+}
+
 pub(super) fn cells(row: &FirmwareRow) -> [String; 9] {
-    let name = format!(
-        "{}{}",
-        if row.image.failure.is_some() {
-            "[!] "
-        } else {
-            ""
-        },
-        row.image.name()
-    );
+    let name = row.image.name().to_owned();
     let Some(f) = row.firmware() else {
         let mut cells: [String; 9] = Default::default();
         cells[0] = name;
@@ -1009,6 +1010,7 @@ impl LibraryView {
                                 &WIDTHS,
                                 selected,
                                 index % 2 == 0,
+                                lead(row),
                             );
                             if (clicked || double) && !selected {
                                 self.select_firmware(row, selected_file);
@@ -2680,9 +2682,13 @@ pub(crate) mod tests {
             source_missing: false,
         };
         assert_eq!(cells(&row(None))[8], "Pending");
+        assert!(!lead(&row(None)).warning);
         let failed = cells(&row(Some("missing blob")));
         assert_eq!(failed[8], "Unavailable");
-        assert!(failed[0].starts_with("[!] "));
+        assert_eq!(failed[0], "firmware/synthetic:1");
+        let failed = lead(&row(Some("missing blob")));
+        assert!(failed.warning);
+        assert_eq!(failed.icon, Some(crate::shell_icons::Icon::Firmware));
     }
 
     #[test]

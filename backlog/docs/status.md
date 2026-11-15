@@ -5,6 +5,54 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-15 — Desktop icons follow the approved mock-ups:** the app now
+  draws the mock-ups' icons ([icons note](design/icons.md)). The inline SVGs
+  are painted with egui shapes from their own coordinates, in the text colour
+  where the SVG says `currentColor` and in the mock-up's fixed colours
+  elsewhere, so no SVG renderer or icon font enters the build: the
+  application monitor in the classic title strip; the toolbar's green Start,
+  Pause, red Stop, floppy, Eject, gear and blue-topped Layers (Ctrl+Alt+Del is
+  code text without an icon, as in the mock-up); the image, media-set,
+  firmware and machine-file icons in the tree, the list rows and an image's
+  details heading; ⓘ in the image Settings and Edit metadata notes; the ?
+  and ✕ discs of Move tag? and Version tag already exists; the empty
+  library's monitor-and-keyboard picture. Text marks: ▶ Ⅱ ■ in the Machine
+  menu's mark column, ⏏ on the Media and drive menus' Eject, ⚠ after the
+  name of a row with a problem (instead of a `[!]` prefix), ★ after a
+  favourite's name, 🔊/🔇 in place of the word "Audio" in the status bar,
+  ⚠ before Unfinished sessions, ✓ on finished wizard steps and free tags.
+  **Fixed tofu:** egui's bundled fonts have no ✓, ✗, ✕, Ⅱ or ⌫, so every ✓
+  and ✗ the app wrote (registry checks, Push… and Get templates… results,
+  Corresponding source attached, the publish validator line) drew as an
+  empty box; a five-glyph DejaVu Sans 2.37 subset (Bitstream Vera licence,
+  16 KiB, reproducible command and hashes in
+  `crates/window/assets/fonts/dejavu/NOTICE.md`) now follows egui's fonts.
+  About, `--help` and `--version` credit it, and `deny.toml` allows
+  `Bitstream-Vera` for the `window` crate only. The library's name column is
+  left-aligned now and a repository group's rows are set in, as in the
+  mock-ups (a centred egui label dropped the room the icon needs).
+  **Inventory:** 34 SVG uses and 29 distinct icon characters across the
+  eleven approved mock-ups (media-picker included); 23 SVG uses are painted,
+  ⌫, ⚑, ▾ and □ are the only characters drawn nowhere. **Not drawn, with reasons:** the library and
+  machines mock-ups' other toolbar buttons (New, Properties, Browse
+  registry…, Push, Delete, Gaming mode, New machine from image…, Save as new
+  image…), because the app has only the machine toolbar; the Machines
+  collection's icons (monitor, ⚑ tag moved, ● differs, its ⓘ notes, ⌫
+  shortcuts), because that collection does not exist yet; the media
+  picker's own marks (the toolbar's B: floppy button, ▾ on Insert into…, the
+  ↑↓ keys of its note), planned with the picker (upc-5pw.67); View's ✓/● marks,
+  which egui's check boxes and selection show; the drive menu's ● write mode
+  (named as text, an accepted departure); the library mock-up's ★ rating (no
+  rating field); □ window buttons (the system title bar). **MEASURED
+  headless:** tests read every mock-up and fail on an icon without an
+  inventory entry or an entry without its icon; check that every non-ASCII
+  character in the desktop's string literals and every mock-up text mark has
+  a glyph in the proportional and monospace families (before the subset:
+  ✓ U+2713 and ✗ U+2717 had none); paint every icon in both skins and both
+  themes; and check the toolbar, title strip, menus, rows, empty card and
+  audio cell. **Manual checks:** look at the icons in both skins and in light
+  and dark themes, on macOS and on Windows or Linux (the title strip icon is
+  drawn only there).
 - **2026-11-15 — Machines as named local instances of images (backend and
   command line):** the store keeps machine records in `local/machines.toml`
   (schema 1, atomic, index-locked; machine-images §3.2): a fixed workspace

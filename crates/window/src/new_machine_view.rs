@@ -56,13 +56,10 @@ pub(crate) fn show(ctx: &egui::Context, wizard: &mut Wizard, classic: bool) -> A
                     ui.set_width(190.0);
                     ui.strong("New machine");
                     for (index, name) in STEPS.iter().enumerate() {
-                        let attention = index != wizard.step
-                            && index <= wizard.visited
-                            && problems.iter().any(|(step, _)| *step == index);
                         let label = format!(
                             "{}. {name}{}",
                             index + 1,
-                            if attention { "  !" } else { "" }
+                            step_mark(index, wizard.step, wizard.visited, &problems)
                         );
                         let response = ui.add_enabled(
                             index <= wizard.visited,
@@ -214,6 +211,24 @@ fn move_dialog(ctx: &egui::Context, wizard: &Wizard, classic: bool) -> Option<bo
         answer = Some(false);
     }
     answer
+}
+
+/// A step's mark in the wizard's step list, as the new-machine mock-up shows
+/// it: "!" on a visited step that needs attention, ✓ on one that is done,
+/// nothing on the current step or one not reached yet.
+fn step_mark(
+    index: usize,
+    current: usize,
+    visited: usize,
+    problems: &[(usize, String)],
+) -> &'static str {
+    if index == current || index > visited {
+        ""
+    } else if problems.iter().any(|(step, _)| *step == index) {
+        "  !"
+    } else {
+        "  ✓"
+    }
 }
 
 fn small(ui: &mut egui::Ui, text: impl Into<String>) {
@@ -1082,7 +1097,8 @@ fn page_name(ui: &mut egui::Ui, wizard: &mut Wizard) {
     });
     let check = wizard.tag_check();
     match check.level {
-        TagLevel::Ok => ui.label(&check.text),
+        // The new-machine mock-up checks a free tag off with ✓.
+        TagLevel::Ok => ui.label(format!("✓ {}", check.text)),
         TagLevel::Warn | TagLevel::Bad => ui.add(
             egui::Label::new(egui::RichText::new(&check.text).color(ui.visuals().warn_fg_color))
                 .wrap(),

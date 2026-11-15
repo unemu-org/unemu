@@ -32,7 +32,9 @@ use std::{
     sync::Arc,
     time::{Duration, Instant},
 };
-use window::{HostKeyboard, HostMouse, WindowSink, EGUI_FONT_NOTICE, FONT_NOTICE};
+use window::{
+    HostKeyboard, HostMouse, WindowSink, EGUI_FONT_NOTICE, FONT_NOTICE, SYMBOL_FONT_NOTICE,
+};
 use winit::{
     event::{ElementState, MouseButton},
     keyboard::KeyCode,
@@ -753,11 +755,11 @@ impl Presenter {
 fn informational_output(arg: &OsStr) -> Option<String> {
     if arg == "--help" {
         Some(format!(
-            "usage: unemupc98-window [--machine FILE] [--display CARD] [--rom-dir DIR]... [--allow-unlisted-firmware]\n\ndefault selection: {} (opens the machine library; --machine starts immediately)\n\n{FONT_NOTICE}\n\n{EGUI_FONT_NOTICE}", default_machine().display()
+            "usage: unemupc98-window [--machine FILE] [--display CARD] [--rom-dir DIR]... [--allow-unlisted-firmware]\n\ndefault selection: {} (opens the machine library; --machine starts immediately)\n\n{FONT_NOTICE}\n\n{EGUI_FONT_NOTICE}\n\n{SYMBOL_FONT_NOTICE}", default_machine().display()
         ))
     } else if arg == "--version" || arg == "--about" {
         Some(format!(
-            "unemupc98-window {}\n\n{FONT_NOTICE}\n\n{EGUI_FONT_NOTICE}",
+            "unemupc98-window {}\n\n{FONT_NOTICE}\n\n{EGUI_FONT_NOTICE}\n\n{SYMBOL_FONT_NOTICE}",
             env!("CARGO_PKG_VERSION")
         ))
     } else {

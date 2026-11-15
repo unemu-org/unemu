@@ -252,8 +252,14 @@ pub(crate) fn show_image(
         if title_bar(ui, &format!("Settings — {reference} (image)"), classic) {
             close = true;
         }
-        ui.strong("Changes create a new image revision; disks are shared.");
-        hint(ui, format!("The image {digest} itself never changes. Its disks, firmware and media are reused as they are; only the configuration is new."));
+        // The save-as-image mock-up's note banner: ⓘ beside its two lines.
+        ui.horizontal_top(|ui| {
+            crate::shell_icons::show(ui, crate::shell_icons::Icon::Info);
+            ui.vertical(|ui| {
+                ui.strong("Changes create a new image revision; disks are shared.");
+                hint(ui, format!("The image {digest} itself never changes. Its disks, firmware and media are reused as they are; only the configuration is new."));
+            });
+        });
         if model.source_tag_moves() {
             hint(ui, format!("{reference} is not a version tag: publishing under it moves it to the revision after a confirmation, and the old image stays reachable by its digest."));
         }

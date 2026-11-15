@@ -1404,13 +1404,22 @@ impl EditDialog {
             }
             let next = self.target.clone().unwrap_or_else(|| "a new tag".into());
             ui.group(|ui| {
-                ui.strong("Changes create a new package revision; ROM blobs are unchanged.");
-                ui.label(format!(
-                    "{} itself never changes. Its ROM, document and source blobs are reused by \
-                     digest; the new revision gets a new config and README.md and is published \
-                     as {next}. Machines that recorded the old package digest keep it.",
-                    self.tag
-                ));
+                // The firmware mock-up's note banner: ⓘ beside its text.
+                ui.horizontal_top(|ui| {
+                    crate::shell_icons::show(ui, crate::shell_icons::Icon::Info);
+                    ui.vertical(|ui| {
+                        ui.strong(
+                            "Changes create a new package revision; ROM blobs are unchanged.",
+                        );
+                        ui.label(format!(
+                            "{} itself never changes. Its ROM, document and source blobs are \
+                             reused by digest; the new revision gets a new config and README.md \
+                             and is published as {next}. Machines that recorded the old package \
+                             digest keep it.",
+                            self.tag
+                        ));
+                    });
+                });
             });
             if let Some(error) = &self.error {
                 ui.colored_label(ui.visuals().warn_fg_color, gui_reason(error));
