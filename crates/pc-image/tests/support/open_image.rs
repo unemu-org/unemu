@@ -52,7 +52,7 @@ impl Open {
         }
         for archive in [
             "kiselev-bios/kiselev-bios-a4af458-atreset-src.tar",
-            "vgabios/vgabios-0.8a-unemu.1-src.tar",
+            "vgabios/vgabios-0.8a-unemu.2-src.tar",
             "xtide-universal-bios/xtide-universal-bios-r638-src.tar",
         ] {
             fixtures::fixture(archive)?;
