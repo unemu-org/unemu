@@ -48,6 +48,8 @@ mod macos_menu;
 mod media_dialog;
 mod pacing;
 mod preferences;
+mod preferences_sheet;
+mod registries_model;
 mod settings_model;
 mod settings_sheet;
 mod shell;

@@ -47,6 +47,7 @@ pub(crate) enum Command {
     Placeholder(&'static str),
     SaveState,
     FirmwareFolders,
+    Preferences,
     Settings,
 }
 

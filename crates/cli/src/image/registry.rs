@@ -1,12 +1,16 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Registry push, pull, listing and login commands; machine-images §5.1.
 //! The registries list comes from the shared preferences file (or `--config`);
-//! secrets come from the environment or the host credential store only.
+//! secrets come from the environment or the host credential store only. `image
+//! login` goes through the same accounts functions and credential store as the
+//! desktop shell's Registries page, so a login in one is visible in the other.
 
 use anyhow::Context;
 use image_registry::{
+    accounts,
     config::{self, RegistryConfig, DEFAULT_REGISTRY_ENV},
-    credentials::{keychain, Anonymous, EnvCredentials, HostCredentials},
+    credential_store::{self, CredentialStore, Secret},
+    credentials::{Anonymous, EnvCredentials, HostCredentials, HOST_ENV, PASSWORD_ENV, USER_ENV},
     pull, push, Client, Reference,
 };
 use image_store::{firmware, media_set, ConfigValidator, Store};
@@ -15,6 +19,7 @@ use std::{
     ffi::OsString,
     io::Write,
     path::{Path, PathBuf},
+    sync::Arc,
 };
 
 #[derive(Debug, PartialEq, Eq)]
@@ -162,22 +167,12 @@ fn preferences_path() -> anyhow::Result<PathBuf> {
         .context("platform config directory is unavailable")
 }
 
-fn read_preferences(path: &Path) -> anyhow::Result<toml::Table> {
-    match std::fs::read_to_string(path) {
-        Ok(text) => text
-            .parse()
-            .with_context(|| format!("invalid preferences {}", path.display())),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(toml::Table::new()),
-        Err(e) => Err(e).with_context(|| format!("cannot read {}", path.display())),
-    }
-}
-
 fn load(options: &Common) -> anyhow::Result<(RegistryConfig, String)> {
     let path = match &options.config {
         Some(path) => path.clone(),
         None => preferences_path()?,
     };
-    let config = RegistryConfig::from_table(&read_preferences(&path)?)?;
+    let config = RegistryConfig::from_table(&config::read_preferences(&path)?)?;
     let env = std::env::var(DEFAULT_REGISTRY_ENV).ok();
     let host = config.default_host(options.registry.as_deref(), env.as_deref())?;
     Ok((config, host))
@@ -186,12 +181,17 @@ fn load(options: &Common) -> anyhow::Result<(RegistryConfig, String)> {
 /// Secrets are offered only to configured registries (and the family
 /// default), so a pull from an arbitrary host can never receive them. The
 /// environment pair is further bound to its one host.
-fn client(config: &RegistryConfig, host: &str) -> anyhow::Result<Client> {
+fn client(
+    config: &RegistryConfig,
+    host: &str,
+    store: &Arc<dyn CredentialStore>,
+) -> anyhow::Result<Client> {
     Ok(match config.entry(host) {
         Some(entry) => {
             let credentials = HostCredentials {
                 configured_user: entry.user.clone(),
                 env: EnvCredentials::from_env(),
+                store: store.clone(),
             };
             Client::new(&entry, Box::new(credentials))?
         }
@@ -215,6 +215,7 @@ pub fn execute(command: RegistryCommand, output: &mut impl Write) -> anyhow::Res
     let firmware_rules = PcFirmwareRules(catalogue());
     let firmware = firmware::Validator(&firmware_rules);
     let providers: [&dyn ConfigValidator; 3] = [&pc_image::PcProvider, &MEDIA_SETS, &firmware];
+    let secrets = credential_store::detect();
     match command {
         RegistryCommand::Push {
             store,
@@ -250,7 +251,7 @@ pub fn execute(command: RegistryCommand, output: &mut impl Write) -> anyhow::Res
             plan.verdict()
                 .clone()
                 .map_err(image_registry::Error::from)?;
-            let client = client(&config, &plan.target().host)?;
+            let client = client(&config, &plan.target().host, &secrets)?;
             let options = push::PushOptions {
                 allow_move,
                 ..push::PushOptions::default()
@@ -299,7 +300,7 @@ pub fn execute(command: RegistryCommand, output: &mut impl Write) -> anyhow::Res
             } else {
                 Store::open_existing(store)?
             };
-            let client = client(&config, &source.host)?;
+            let client = client(&config, &source.host, &secrets)?;
             let report = pull::pull(&store, &client, &source, &local_tag, &providers, &|_| {})?;
             for descriptor in &report.fetched {
                 writeln!(output, "fetched\t{}", descriptor.digest)?;
@@ -323,14 +324,14 @@ pub fn execute(command: RegistryCommand, output: &mut impl Write) -> anyhow::Res
                 && (target.contains('.') || target.contains(':') || target == "localhost");
             if registry_only {
                 let host = target.to_ascii_lowercase();
-                let client = client(&config, &host)?;
+                let client = client(&config, &host, &secrets)?;
                 client.use_credentials_now()?;
                 for name in pull::list_repositories(&client, 100)? {
                     writeln!(output, "{host}/{name}")?;
                 }
             } else {
                 let (host, repository) = Reference::parse_repository(&target, &default_host)?;
-                let client = client(&config, &host)?;
+                let client = client(&config, &host, &secrets)?;
                 for tag in pull::list_tags(&client, &repository, 100)? {
                     writeln!(output, "{host}/{repository}:{tag}")?;
                 }
@@ -341,86 +342,214 @@ pub fn execute(command: RegistryCommand, output: &mut impl Write) -> anyhow::Res
                 Some(path) => path,
                 None => preferences_path()?,
             };
-            let host = host.to_ascii_lowercase();
-            record_login(&path, &host, &user, || {
-                keychain::store_interactive(&host, &user).map_err(Into::into)
-            })?;
-            writeln!(output, "stored\t{}\t{user}", keychain::service(&host))?;
+            log_in(&path, &host, &user, &*secrets, read_secret, output)?;
         }
     }
     Ok(())
 }
 
-/// Check the preferences, let `store_secret` run (it may wait on a password
-/// prompt), then record the user under the preferences lock in a fresh read
-/// of the file, so a desktop-shell save made meanwhile is kept.
-fn record_login(
+/// Check the target before asking for the secret, then let the registry
+/// accept the login before the secret is stored and the user recorded
+/// ([`accounts::log_in`]). A session-only store would forget the secret when
+/// this command exits, so scripts use the environment variables instead.
+fn log_in(
     path: &Path,
     host: &str,
     user: &str,
-    store_secret: impl FnOnce() -> anyhow::Result<()>,
+    store: &dyn CredentialStore,
+    secret: impl FnOnce(&str, &str) -> anyhow::Result<Secret>,
+    output: &mut impl Write,
 ) -> anyhow::Result<()> {
-    config::set_user(&mut read_preferences(path)?, host, user)?;
-    store_secret()?;
-    update_preferences(path, |table| Ok(config::set_user(table, host, user)?))
-}
-
-/// Read-modify-write of the shared preferences file under an advisory lock on
-/// the sibling `<file>.lock`, which the desktop shell takes for its saves too.
-fn update_preferences(
-    path: &Path,
-    change: impl FnOnce(&mut toml::Table) -> anyhow::Result<()>,
-) -> anyhow::Result<()> {
-    let parent = path
-        .parent()
-        .filter(|p| !p.as_os_str().is_empty())
-        .unwrap_or(Path::new("."));
-    std::fs::create_dir_all(parent)?;
-    let mut name = path
-        .file_name()
-        .context("preferences path has no file name")?
-        .to_owned();
-    name.push(".lock");
-    let lock = std::fs::OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .write(true)
-        .open(parent.join(name))
-        .with_context(|| format!("cannot lock {}", path.display()))?;
-    lock.lock()
-        .with_context(|| format!("cannot lock {}", path.display()))?;
-    let mut table = read_preferences(path)?;
-    change(&mut table)?;
-    write_preferences(path, &table)
-}
-
-/// Replace the preferences file atomically; the caller holds the lock.
-fn write_preferences(path: &Path, table: &toml::Table) -> anyhow::Result<()> {
-    let text = toml::to_string(table)?;
-    let parent = path
-        .parent()
-        .filter(|p| !p.as_os_str().is_empty())
-        .unwrap_or(Path::new("."));
-    std::fs::create_dir_all(parent)?;
-    let temporary = parent.join(format!(".preferences-{}.tmp", std::process::id()));
-    let result = (|| -> std::io::Result<()> {
-        let mut file = std::fs::File::create(&temporary)?;
-        file.write_all(text.as_bytes())?;
-        file.sync_all()?;
-        std::fs::rename(&temporary, path)?;
-        #[cfg(unix)]
-        std::fs::File::open(parent)?.sync_all()?;
-        Ok(())
-    })();
-    if result.is_err() {
-        let _ = std::fs::remove_file(&temporary);
+    if !store.kind().persistent() {
+        anyhow::bail!(
+            "no credential store on this host; scripts and CI set {USER_ENV}, {PASSWORD_ENV} and {HOST_ENV}"
+        );
     }
-    result.with_context(|| format!("cannot write {}", path.display()))
+    let host = config::validate_registry_host(host)?;
+    config::set_user(&mut config::read_preferences(path)?, &host, user)?;
+    let secret = secret(&host, user)?;
+    let outcome = accounts::log_in(path, &host, user, &secret, store, &|| true)?;
+    writeln!(
+        output,
+        "stored\t{}\t{user}",
+        credential_store::item_name(&host)
+    )?;
+    if outcome == accounts::LoginOutcome::Unverifiable {
+        writeln!(
+            output,
+            "unverified\t{host}\tthe registry answers without login, so it could not confirm these credentials"
+        )?;
+    }
+    Ok(())
+}
+
+/// The password or token: typed on the terminal without echo, or one line of
+/// standard input when that is not a terminal. Either way it never appears in
+/// the process list or the shell history.
+fn read_secret(host: &str, user: &str) -> anyhow::Result<Secret> {
+    use std::io::{BufRead, IsTerminal, Read};
+    let stdin = std::io::stdin();
+    if stdin.is_terminal() {
+        eprint!("Password or token for {user} at {host}: ");
+        let typed = terminal::read_password(&mut stdin.lock());
+        eprintln!();
+        return typed;
+    }
+    let mut line = String::new();
+    stdin.lock().take(64 * 1024).read_line(&mut line)?;
+    let secret = line.strip_suffix('\n').unwrap_or(&line);
+    let secret = secret.strip_suffix('\r').unwrap_or(secret);
+    if secret.is_empty() {
+        anyhow::bail!("no password or token was given");
+    }
+    Ok(Secret::new(secret))
+}
+
+/// Password entry on a terminal. While the password is typed, the terminal
+/// runs without canonical line editing, echo or signal keys (POSIX termios:
+/// `ICANON`, `ECHO` and `ISIG` cleared, `VMIN` 1), so Ctrl+C arrives as a byte
+/// that ends the prompt instead of killing the process, and the saved mode is
+/// restored on every way out, including a panic.
+mod terminal {
+    use image_registry::credential_store::Secret;
+    use std::io::Read;
+
+    /// What one typed byte does to the entry.
+    #[derive(Debug, PartialEq, Eq)]
+    pub(super) enum Step {
+        More,
+        Done,
+        Interrupted,
+    }
+
+    #[derive(Default)]
+    pub(super) struct Entry {
+        bytes: Vec<u8>,
+    }
+
+    impl Entry {
+        pub fn feed(&mut self, byte: u8) -> Step {
+            match byte {
+                // Enter as carriage return or line feed, and Ctrl+D, end the entry.
+                b'\r' | b'\n' | 0x04 => Step::Done,
+                // Ctrl+C.
+                0x03 => Step::Interrupted,
+                // Delete and backspace remove the last character with all its
+                // UTF-8 continuation bytes.
+                0x7f | 0x08 => {
+                    while let Some(last) = self.bytes.pop() {
+                        if last & 0xc0 != 0x80 {
+                            break;
+                        }
+                    }
+                    Step::More
+                }
+                // Ctrl+U discards everything typed so far.
+                0x15 => {
+                    self.bytes.clear();
+                    Step::More
+                }
+                byte => {
+                    self.bytes.push(byte);
+                    Step::More
+                }
+            }
+        }
+
+        fn finish(self) -> anyhow::Result<Secret> {
+            let text = String::from_utf8(self.bytes)
+                .map_err(|_| anyhow::anyhow!("the password is not valid UTF-8"))?;
+            if text.is_empty() {
+                anyhow::bail!("no password or token was given");
+            }
+            Ok(Secret::new(text))
+        }
+    }
+
+    /// Feed `input` byte by byte to an [`Entry`] until it is done.
+    pub(super) fn read_entry(input: &mut impl Read) -> anyhow::Result<Secret> {
+        let mut entry = Entry::default();
+        let mut byte = [0u8; 1];
+        loop {
+            match input.read(&mut byte) {
+                Ok(0) => break,
+                Ok(_) => match entry.feed(byte[0]) {
+                    Step::More => {}
+                    Step::Done => break,
+                    Step::Interrupted => anyhow::bail!("login cancelled at the password prompt"),
+                },
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
+        entry.finish()
+    }
+
+    #[cfg(unix)]
+    pub(super) fn read_password(input: &mut impl Read) -> anyhow::Result<Secret> {
+        let _raw = RawMode::enter(libc::STDIN_FILENO)?;
+        read_entry(input)
+    }
+
+    #[cfg(not(unix))]
+    pub(super) fn read_password(_: &mut impl Read) -> anyhow::Result<Secret> {
+        anyhow::bail!("cannot hide typed input here; pipe the password on standard input instead")
+    }
+
+    /// The terminal at `fd` without canonical mode, echo and signal keys until
+    /// dropped, when its saved mode returns.
+    #[cfg(unix)]
+    pub(super) struct RawMode {
+        fd: libc::c_int,
+        saved: libc::termios,
+    }
+
+    #[cfg(unix)]
+    impl RawMode {
+        pub fn enter(fd: libc::c_int) -> anyhow::Result<Self> {
+            let failed = |error: std::io::Error| {
+                anyhow::anyhow!(
+                    "cannot turn off terminal echo ({error}); pipe the password on standard input instead"
+                )
+            };
+            let mut saved = std::mem::MaybeUninit::<libc::termios>::uninit();
+            // tcgetattr fills the whole structure when it succeeds.
+            if unsafe { libc::tcgetattr(fd, saved.as_mut_ptr()) } != 0 {
+                return Err(failed(std::io::Error::last_os_error()));
+            }
+            let saved = unsafe { saved.assume_init() };
+            let mut raw = saved;
+            raw.c_lflag &= !(libc::ECHO | libc::ICANON | libc::ISIG);
+            raw.c_cc[libc::VMIN] = 1;
+            raw.c_cc[libc::VTIME] = 0;
+            // `raw` is the terminal's own settings with three flags cleared.
+            if unsafe { libc::tcsetattr(fd, libc::TCSANOW, &raw) } != 0 {
+                return Err(failed(std::io::Error::last_os_error()));
+            }
+            Ok(Self { fd, saved })
+        }
+    }
+
+    #[cfg(unix)]
+    impl Drop for RawMode {
+        fn drop(&mut self) {
+            // The saved structure came from tcgetattr on the same terminal.
+            unsafe {
+                libc::tcsetattr(self.fd, libc::TCSANOW, &self.saved);
+            }
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use image_registry::{
+        credential_store::{SessionStore, StoreKind},
+        test_support::{MockRegistry, Policy},
+    };
+
+    const SECRET: &str = "synthetic-secret";
 
     struct Dir(PathBuf);
     impl Drop for Dir {
@@ -429,31 +558,213 @@ mod tests {
         }
     }
 
+    /// A persistent store as on a desktop host, kept in memory so the test
+    /// never reaches the real Keychain.
+    #[derive(Default)]
+    struct Persistent(SessionStore);
+    impl CredentialStore for Persistent {
+        fn kind(&self) -> StoreKind {
+            StoreKind::Keychain
+        }
+        fn read(&self, host: &str, user: &str) -> image_registry::Result<Option<Secret>> {
+            self.0.read(host, user)
+        }
+        fn store(&self, host: &str, user: &str, secret: &Secret) -> image_registry::Result<()> {
+            self.0.store(host, user, secret)
+        }
+        fn delete(&self, host: &str, user: &str) -> image_registry::Result<()> {
+            self.0.delete(host, user)
+        }
+    }
+
     #[test]
-    fn a_login_keeps_a_preferences_save_made_during_the_password_prompt() {
+    fn a_login_is_checked_by_the_registry_and_keeps_a_save_made_during_the_prompt() {
         let dir =
             Dir(std::env::temp_dir().join(format!("cli-registry-login-{}", std::process::id())));
         std::fs::create_dir_all(&dir.0).unwrap();
         let path = dir.0.join("preferences.toml");
-        std::fs::write(&path, "rom_dirs = []\nreduced_motion = false\n").unwrap();
-        record_login(&path, "registry.example", "me", || {
-            // The desktop shell saves while the password prompt is open.
-            std::fs::write(&path, "rom_dirs = [\"/roms\"]\nreduced_motion = true\n")?;
-            Ok(())
-        })
+        let registry = MockRegistry::start(Policy {
+            user: Some(("ci".into(), SECRET.into())),
+            ..Policy::default()
+        });
+        let host = registry.host();
+        std::fs::write(
+            &path,
+            format!(
+                "rom_dirs = []\nreduced_motion = false\n[[registries]]\nhost = \"{host}\"\nprivate = true\nplain_http = true\n"
+            ),
+        )
         .unwrap();
-        let table = read_preferences(&path).unwrap();
+        let store = Persistent::default();
+        let mut output = Vec::new();
+        log_in(
+            &path,
+            &host,
+            "ci",
+            &store,
+            |_, _| {
+                // The desktop shell saves while the password prompt is open.
+                config::update_preferences(&path, |table| {
+                    table.insert("reduced_motion".into(), true.into());
+                    table.insert("rom_dirs".into(), vec!["/roms"].into());
+                    Ok(())
+                })?;
+                Ok(Secret::new(SECRET))
+            },
+            &mut output,
+        )
+        .unwrap();
+        let output = String::from_utf8(output).unwrap();
+        assert_eq!(output, format!("stored\tunemu-registry:{host}\tci\n"));
+        let written = std::fs::read_to_string(&path).unwrap();
+        assert!(!written.contains(SECRET) && !output.contains(SECRET));
+        let table = config::read_preferences(&path).unwrap();
         assert_eq!(table["reduced_motion"].as_bool(), Some(true));
         assert_eq!(table["rom_dirs"][0].as_str(), Some("/roms"));
-        let config = RegistryConfig::from_table(&table).unwrap();
-        assert_eq!(
-            config.entry("registry.example").unwrap().user.as_deref(),
-            Some("me")
-        );
+        let entry = RegistryConfig::from_table(&table)
+            .unwrap()
+            .entry(&host)
+            .unwrap();
+        assert_eq!(entry.user.as_deref(), Some("ci"));
+        assert!(entry.private);
+        assert_eq!(store.read(&host, "ci").unwrap(), Some(Secret::new(SECRET)));
 
-        let refused = record_login(&path, "registry.example", "a:b", || {
-            panic!("an invalid user must fail before the prompt")
+        let before = std::fs::read(&path).unwrap();
+        let refused = log_in(
+            &path,
+            &host,
+            "ci",
+            &store,
+            |_, _| Ok(Secret::new("wrong-secret")),
+            &mut Vec::new(),
+        );
+        let message = format!("{:#}", refused.unwrap_err());
+        assert!(message.contains("rejected the credentials"), "{message}");
+        assert!(!message.contains("wrong-secret"));
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        assert_eq!(store.read(&host, "ci").unwrap(), Some(Secret::new(SECRET)));
+    }
+
+    #[test]
+    fn the_password_entry_edits_ends_and_cancels_like_a_terminal_line() {
+        use terminal::{Entry, Step};
+        let feed = |bytes: &[u8]| {
+            let mut input = bytes;
+            terminal::read_entry(&mut input)
+        };
+        assert_eq!(feed(b"se\x7fecret\r").unwrap(), Secret::new("secret"));
+        // Backspace removes a whole two-byte character.
+        assert_eq!(feed(b"p\xc5\x82\x08x\n").unwrap(), Secret::new("px"));
+        assert_eq!(feed(b"wrong\x15right\r").unwrap(), Secret::new("right"));
+        assert_eq!(feed(b"ends-at-eof").unwrap(), Secret::new("ends-at-eof"));
+        assert_eq!(feed(b"ctrl-d\x04rest").unwrap(), Secret::new("ctrl-d"));
+        let cancelled = feed(b"abc\x03def\r").unwrap_err();
+        assert!(format!("{cancelled:#}").contains("cancelled"));
+        assert!(feed(b"\r").is_err());
+        let mut entry = Entry::default();
+        assert_eq!(entry.feed(b'a'), Step::More);
+        assert_eq!(entry.feed(0x03), Step::Interrupted);
+    }
+
+    /// A pseudo-terminal pair (POSIX `posix_openpt`, `grantpt`, `unlockpt`,
+    /// `ptsname`), neither of them this process's controlling terminal.
+    #[cfg(unix)]
+    fn pty() -> (std::fs::File, std::fs::File) {
+        use std::os::fd::FromRawFd;
+        let master = unsafe { libc::posix_openpt(libc::O_RDWR | libc::O_NOCTTY) };
+        assert!(master >= 0, "{}", std::io::Error::last_os_error());
+        // The descriptor is a fresh master; ptsname's buffer is copied at once.
+        let slave = unsafe {
+            assert_eq!(libc::grantpt(master), 0);
+            assert_eq!(libc::unlockpt(master), 0);
+            let name = std::ffi::CStr::from_ptr(libc::ptsname(master)).to_owned();
+            libc::open(name.as_ptr(), libc::O_RDWR | libc::O_NOCTTY)
+        };
+        assert!(slave >= 0, "{}", std::io::Error::last_os_error());
+        // Both descriptors are open and owned by nothing else.
+        unsafe {
+            (
+                std::fs::File::from_raw_fd(master),
+                std::fs::File::from_raw_fd(slave),
+            )
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn raw_mode_hides_typing_and_restores_the_terminal_on_every_exit() {
+        use std::os::fd::AsRawFd;
+        let (mut master, slave) = pty();
+        let fd = slave.as_raw_fd();
+        let lflag = || {
+            let mut mode = std::mem::MaybeUninit::<libc::termios>::uninit();
+            // tcgetattr fills the structure on success, checked here.
+            assert_eq!(unsafe { libc::tcgetattr(fd, mode.as_mut_ptr()) }, 0);
+            // PENDIN is the kernel's own note that input awaits re-reading
+            // after a mode change, not a setting the prompt restores.
+            unsafe { mode.assume_init() }.c_lflag & !libc::PENDIN
+        };
+        let hidden = libc::ECHO | libc::ICANON | libc::ISIG;
+        let before = lflag();
+        assert_eq!(before & hidden, hidden, "a new terminal echoes");
+        {
+            let _raw = terminal::RawMode::enter(fd).unwrap();
+            assert_eq!(lflag() & hidden, 0);
+            master.write_all(b"se\x7fecret\r").unwrap();
+            assert_eq!(
+                terminal::read_entry(&mut &slave).unwrap(),
+                Secret::new("secret")
+            );
+        }
+        assert_eq!(lflag(), before);
+        let cancelled = {
+            let _raw = terminal::RawMode::enter(fd).unwrap();
+            master.write_all(b"abc\x03").unwrap();
+            terminal::read_entry(&mut &slave)
+        };
+        assert!(cancelled.is_err());
+        assert_eq!(lflag(), before, "Ctrl+C restores the mode");
+        let panicked = std::panic::catch_unwind(|| {
+            let _raw = terminal::RawMode::enter(fd).unwrap();
+            panic!("injected failure while the password is typed");
         });
-        assert!(refused.is_err());
+        assert!(panicked.is_err());
+        assert_eq!(lflag(), before, "a panic restores the mode");
+    }
+
+    #[test]
+    fn invalid_logins_fail_before_the_password_prompt() {
+        let dir =
+            Dir(std::env::temp_dir()
+                .join(format!("cli-registry-login-invalid-{}", std::process::id())));
+        std::fs::create_dir_all(&dir.0).unwrap();
+        let path = dir.0.join("preferences.toml");
+        let prompt = |_: &str, _: &str| -> anyhow::Result<Secret> {
+            panic!("an invalid login must fail before the prompt")
+        };
+        for (host, user) in [("registry.example", "a:b"), ("no-dot-host", "me")] {
+            let refused = log_in(
+                &path,
+                host,
+                user,
+                &Persistent::default(),
+                prompt,
+                &mut Vec::new(),
+            );
+            assert!(refused.is_err(), "{host} {user}");
+        }
+        let refused = log_in(
+            &path,
+            "registry.example",
+            "me",
+            &SessionStore::default(),
+            prompt,
+            &mut Vec::new(),
+        );
+        assert!(
+            format!("{:#}", refused.unwrap_err()).contains(USER_ENV),
+            "a session-only store points to the environment variables"
+        );
+        assert!(!path.exists());
     }
 }

@@ -777,7 +777,15 @@ publishing proprietary bytes by accident:
 - Authentication and access policy belong to the registry. Every registry has
   its own login. Secrets come from the operating system's credential store, or
   from environment variables bound to one host for CI, and never appear in
-  images, the store, preferences, logs or diagnostics.
+  images, the store, preferences, logs or diagnostics. The store backend is
+  chosen at run time per operating system (the macOS Keychain now; Secret
+  Service and Windows Credential Manager later). Without one, the desktop
+  Preferences › Registries page keeps a login for the session only and `image
+  login` refuses, pointing to the environment variables. A login is checked
+  against the registry before it is kept. The CLI `image login` and the
+  desktop page share one accounts implementation and one preferences lock, so
+  with a system store a login in one is visible in the other. Secrets are not
+  wiped from process memory after use; that is out of scope for now.
 - **Version tags are immutable.** If a tag of semantic-version shape already
   names another image digest, refuse the push even with force; retrying the same
   digest is idempotent. Any other tag moves only after an explicit confirmation

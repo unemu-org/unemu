@@ -69,6 +69,62 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   layout, a re-import), browse the Firmware facets and the pane at the default
   window size in both skins, and confirm Start stays disabled with a package
   selected.
+- **2026-11-15 — Registry accounts:**
+  - **Preferences dialog:** Tools › Preferences… opens a tabbed dialog. General
+    links to ROM folders; Registries follows the approved mock-up.
+  - **Registries page:** lists the configured registries and the built-in
+    `registry.unemu.dev`, each with its user, signed-in state and private flag.
+    Actions: Add…, Edit…, Log in…, Log out, Remove, Set as default and Test
+    connection.
+  - **Validation:**
+    - host names need a dot, a port or `localhost`;
+    - plain HTTP is accepted only for loopback test registries;
+    - an edit of an entry that changed meanwhile is refused;
+    - un-marking private asks for confirmation, and there is no push override;
+    - the default registry cannot be removed.
+  - **Login:** checked against the registry (anonymous `GET /v2/`, then Basic,
+    short timeouts) before anything is kept. A registry that answers without
+    login cannot verify it, and the page says so. Cancel, Escape or closing
+    Preferences cancels a login in flight. The password field's undo history is
+    dropped.
+  - **Background work:** sign-in states, logins, logouts and removals run on
+    background threads, never on the UI thread.
+  - **Credential store:** chosen at run time. On macOS it is the Keychain
+    through `security`: the secret is hex-encoded on the tool's standard input,
+    never in arguments; printable ASCII, at most 1536 characters, checked before
+    any request. Without a system store the page keeps a session-only memory
+    store whose text points to the `UNEMU_REGISTRY_*` variables, and `image
+    login` refuses.
+  - **`image login`** reads the password in termios raw mode, where Ctrl+C
+    cancels and restores the terminal, and uses the same accounts functions,
+    store and preferences lock as the page.
+  - **Tests:** headless tests cover the store trait and every page action
+    against the in-process mock registry, including cancel, stale edits and the
+    thread the store runs on. They also cover the preferences merge between
+    page, CLI and shell, the raw-mode prompt on a pseudo-terminal, and that no
+    secret reaches Debug output, status text, drawn text, undo history or the
+    preferences file. The Keychain backend has an opt-in test on a throwaway
+    keychain.
+  - **Out of scope:** wiping secrets from memory. Separate later work: Secret
+    Service, Windows Credential Manager, Bearer tokens and the GUI Push…/Pull…
+    dialogs.
+  - **Manual checks:** native look and the real Keychain.
+  - **Mock-up departures, awaiting maintainer approval:**
+    - Only the General and Registries tabs exist; the mock-up also shows
+      Library, Display and Input.
+    - The Add dialog has no Display name, Namespaces or "Allow access without
+      login" fields; registry rows show no display name, and namespaces appear
+      only as an `unemu/ — open only` row under private registries.
+    - "Allow plain HTTP" is limited to a test registry on this computer, not
+      the local network.
+    - The Log in dialog says Basic authentication over TLS (or plain HTTP to a
+      loopback test registry), not a token service with refreshing tokens. It
+      also states the Keychain limit.
+    - Edit… and Test connection are added. The details pane shows the
+      connection test instead of the mock-up's access-check line.
+    - Every action applies at once: OK and Cancel both close, and Apply stays
+      disabled.
+    - Sign-in states show "Checking…" while the store is asked.
 - **2026-11-14 — No silent stop, session write modes, toolbar speed:** with a
   machine running, Machine library, Open machine file… (once a path is
   confirmed), Exit, ⌘Q/⌘W and the window's close button pause it and ask

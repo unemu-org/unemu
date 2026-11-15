@@ -9,7 +9,11 @@
 //!   ([`mod@reference`]);
 //! - a registries list without secrets comes from preferences ([`config`]),
 //!   secrets from the environment or the host credential store
-//!   ([`credentials`]);
+//!   ([`credentials`]), one store backend per operating system chosen at run
+//!   time ([`credential_store`]);
+//! - logging in, logging out and testing a connection are shared by the
+//!   command line and the desktop shell, so a login in one is visible in the
+//!   other ([`accounts`]);
 //! - TLS is mandatory except for a loopback test registry; authentication is
 //!   anonymous first, then RFC 7617 Basic ([`client`]);
 //! - push uploads only missing blobs (monolithic when small, resumable
@@ -24,8 +28,10 @@
 //! The crate knows no emulator: platform providers supply the
 //! [`image_store::ConfigValidator`] that checks a closure before it is tagged.
 
+pub mod accounts;
 pub mod client;
 pub mod config;
+pub mod credential_store;
 pub mod credentials;
 pub mod guard;
 mod http;
@@ -120,6 +126,8 @@ pub enum Error {
     DigestMismatch { expected: Digest, actual: Digest },
     #[error("invalid registry response: {0}")]
     Protocol(String),
+    #[error("cancelled")]
+    Cancelled,
 }
 
 /// Registry operations return typed errors; local store state stays consistent.

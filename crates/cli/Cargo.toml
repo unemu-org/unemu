@@ -29,6 +29,10 @@ media.workspace = true
 devices.workspace = true
 video.workspace = true
 
+# Terminal password entry: termios raw mode for `image login`.
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
 [dev-dependencies]
 testkit.workspace = true
 image-registry = { path = "../registry", version = "0.1.0", features = ["test-support"] }

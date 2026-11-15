@@ -157,17 +157,39 @@ pub(crate) trait Transport: Send + Sync {
     ) -> io::Result<Response>;
 }
 
+/// How long a transport waits to connect and for each read or write.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Timeouts {
+    pub connect: Duration,
+    pub io: Duration,
+}
+
+impl Timeouts {
+    /// Transfers: registries may take minutes to verify a multi-gigabyte blob
+    /// before answering.
+    pub const TRANSFER: Self = Self {
+        connect: Duration::from_secs(30),
+        io: Duration::from_secs(600),
+    };
+    /// Logins and connection tests, whose answers are small and immediate;
+    /// a person is waiting for them.
+    pub const PROBE: Self = Self {
+        connect: Duration::from_secs(10),
+        io: Duration::from_secs(15),
+    };
+}
+
 /// `tls`: HTTPS only; otherwise plain HTTP only (the client restricts that to loopback).
-pub(crate) fn transport(tls: bool) -> crate::Result<Box<dyn Transport>> {
+pub(crate) fn transport(tls: bool, timeouts: Timeouts) -> crate::Result<Box<dyn Transport>> {
     let mut config = ureq::Agent::config_builder()
         .http_status_as_error(false)
         .https_only(tls)
         .proxy(None)
         .max_redirects(0)
         .user_agent(concat!("unemu-image-registry/", env!("CARGO_PKG_VERSION")))
-        .timeout_connect(Some(CONNECT_TIMEOUT))
-        .timeout_per_read(Some(IO_TIMEOUT))
-        .timeout_per_write(Some(IO_TIMEOUT));
+        .timeout_connect(Some(timeouts.connect))
+        .timeout_per_read(Some(timeouts.io))
+        .timeout_per_write(Some(timeouts.io));
     if tls {
         let roots = native_roots().map_err(crate::Error::Config)?;
         config = config.tls_config(
@@ -184,10 +206,6 @@ pub(crate) fn transport(tls: bool) -> crate::Result<Box<dyn Transport>> {
         agent: ureq::Agent::new_with_config(config.build()),
     }))
 }
-
-const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
-/// Registries may take minutes to verify a multi-gigabyte blob before answering.
-const IO_TIMEOUT: Duration = Duration::from_secs(600);
 
 type Roots = Arc<Vec<ureq::tls::Certificate<'static>>>;
 

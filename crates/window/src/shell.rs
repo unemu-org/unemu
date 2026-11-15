@@ -343,6 +343,10 @@ struct Shell {
     insert_dialog: Option<crate::media_dialog::InsertDialog>,
     blank_disk: Option<crate::media_dialog::BlankDisk>,
     settings: Option<crate::settings_model::SettingsModel>,
+    preferences_dialog: Option<crate::preferences_sheet::PreferencesDialog>,
+    /// The operating system's registry credential store, shared by every
+    /// Preferences dialog of this session so session-only logins persist.
+    credential_store: Arc<dyn image_registry::credential_store::CredentialStore>,
     discovery_warnings: BTreeSet<String>,
     discovery_control: assembly::firmware_discovery::DiscoveryControl,
     firmware_cache: Option<std::path::PathBuf>,
@@ -504,6 +508,7 @@ impl Shell {
             || self.insert_dialog.is_some()
             || self.blank_disk.is_some()
             || self.settings.is_some()
+            || self.preferences_dialog.is_some()
             || self.image_library.has_dialog()
     }
 
@@ -898,6 +903,8 @@ impl Shell {
             insert_dialog: None,
             blank_disk: None,
             settings: None,
+            preferences_dialog: None,
+            credential_store: image_registry::credential_store::detect(),
             discovery_warnings: BTreeSet::new(),
             discovery_control: Default::default(),
             firmware_cache: assembly::firmware_discovery::firmware_cache_path(),
@@ -1737,6 +1744,7 @@ impl Shell {
             Placeholder(title) => self.dialog = Some((title, "not yet available".into())),
             FirmwareFolders => { self.preferences_draft = self.preferences.clone(); self.rom_folder_input.clear(); self.dialog = Some(("ROM folders", "Firmware is located by SHA-256. Files are read in place; nothing is copied.".into())); },
             Settings => self.open_settings(),
+            Preferences => { self.release(); self.preferences_dialog = Some(crate::preferences_sheet::PreferencesDialog::new(self.preferences_path.clone(), self.credential_store.clone())); },
             SaveState => {},
         }
         self.sync_routing();
@@ -1966,7 +1974,8 @@ impl Shell {
                         &format!("{title}…"),
                         "",
                         match title {
-                            "Locate firmware" | "Preferences" => FirmwareFolders,
+                            "Locate firmware" => FirmwareFolders,
+                            "Preferences" => Preferences,
                             "Media catalogue" => Insert(0),
                             "Create blank disk" => CreateBlank,
                             _ => Placeholder(title),
@@ -2869,6 +2878,16 @@ impl eframe::App for Shell {
         }
         self.media_modals(&ctx);
         self.settings_modal(&ctx);
+        if let Some(dialog) = &mut self.preferences_dialog {
+            match crate::preferences_sheet::show(&ctx, dialog, self.classic) {
+                crate::preferences_sheet::Action::None => {}
+                crate::preferences_sheet::Action::Close => self.preferences_dialog = None,
+                crate::preferences_sheet::Action::FirmwareFolders => {
+                    self.preferences_dialog = None;
+                    commands.push(Command::FirmwareFolders);
+                }
+            }
+        }
         let path = self
             .selected
             .and_then(|i| self.library.get(i))
@@ -3162,6 +3181,8 @@ mod tests {
             insert_dialog: None,
             blank_disk: None,
             settings: None,
+            preferences_dialog: None,
+            credential_store: Arc::new(image_registry::credential_store::SessionStore::default()),
             discovery_warnings: BTreeSet::new(),
             discovery_control: Default::default(),
             firmware_cache: None,
@@ -3255,6 +3276,19 @@ mod tests {
             presenter.assembled.machine.run_bounded(Some(cap)).unwrap();
         }
         panic!("keyboard queue did not drain");
+    }
+
+    #[test]
+    fn preferences_opens_the_registries_page_with_the_shell_credential_store() {
+        let mut shell = shell();
+        shell.command(Command::Preferences, &egui::Context::default());
+        assert!(shell.has_dialog());
+        let dialog = shell.preferences_dialog.as_ref().unwrap();
+        assert_eq!(dialog.tab, crate::preferences_sheet::Tab::Registries);
+        assert_eq!(
+            dialog.registries.store_kind(),
+            image_registry::credential_store::StoreKind::Session
+        );
     }
 
     fn keyboard_shell() -> Shell {

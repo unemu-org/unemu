@@ -2,14 +2,11 @@
 //! Registry secrets from the environment or the host credential store.
 //!
 //! Secrets never enter preferences, the image store, logs or error messages.
-//! On macOS the Keychain is reached only through the system `security` tool as
-//! a subprocess: an item created by that tool lists it in the item's access
-//! list, so later reads do not prompt, whereas the Keychain API called from a
-//! rebuilt, unsigned binary would prompt again after every build. Items use the
-//! service name `unemu-registry:<host>` and the user name as account.
+//! The store is the operating system's, chosen at run time
+//! ([`crate::credential_store`]); the environment pair serves scripts and CI.
 
-use crate::{Error, Result, DEFAULT_REGISTRY};
-use std::fmt;
+use crate::{credential_store::CredentialStore, Result, DEFAULT_REGISTRY};
+use std::{fmt, sync::Arc};
 
 /// Environment variables for CI and tests; both must be set to take effect.
 pub const USER_ENV: &str = "UNEMU_REGISTRY_USER";
@@ -131,6 +128,7 @@ pub struct HostCredentials {
     /// The user name from the registry entry, if one is configured.
     pub configured_user: Option<String>,
     pub env: EnvCredentials,
+    pub store: Arc<dyn CredentialStore>,
 }
 
 impl CredentialSource for HostCredentials {
@@ -144,77 +142,12 @@ impl CredentialSource for HostCredentials {
             .map(str::to_owned)
             .or_else(|| self.configured_user.clone());
         match user {
-            Some(user) => Ok(keychain::read(host, &user)?.map(|p| Credentials::new(user, p))),
+            Some(user) => Ok(self
+                .store
+                .read(host, &user)?
+                .map(|secret| Credentials::new(user, secret.expose()))),
             None => Ok(None),
         }
-    }
-}
-
-/// The macOS Keychain through `/usr/bin/security`; other hosts have no store yet.
-pub mod keychain {
-    use super::*;
-
-    /// Keychain service name of a registry host's item.
-    pub fn service(host: &str) -> String {
-        format!("unemu-registry:{host}")
-    }
-
-    /// Read a stored secret. A missing item is `None`; the secret never reaches
-    /// logs because the tool's diagnostics are discarded.
-    pub fn read(host: &str, user: &str) -> Result<Option<String>> {
-        if !cfg!(target_os = "macos") {
-            return Ok(None);
-        }
-        let output = std::process::Command::new("/usr/bin/security")
-            .args([
-                "find-generic-password",
-                "-s",
-                &service(host),
-                "-a",
-                user,
-                "-w",
-            ])
-            .stdin(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .output()
-            .map_err(|e| Error::Credentials(format!("cannot run the security tool: {e}")))?;
-        if !output.status.success() {
-            return Ok(None);
-        }
-        let mut secret = String::from_utf8(output.stdout)
-            .map_err(|_| Error::Credentials("stored secret is not UTF-8".into()))?;
-        if secret.ends_with('\n') {
-            secret.pop();
-        }
-        Ok((!secret.is_empty()).then_some(secret))
-    }
-
-    /// Create or update the item. With `-w` last, the tool itself prompts on the
-    /// terminal, so the secret never passes through this process or its arguments.
-    pub fn store_interactive(host: &str, user: &str) -> Result<()> {
-        if !cfg!(target_os = "macos") {
-            return Err(Error::Credentials(format!(
-                "no credential store on this host; set {USER_ENV} and {PASSWORD_ENV}"
-            )));
-        }
-        let status = std::process::Command::new("/usr/bin/security")
-            .args([
-                "add-generic-password",
-                "-U",
-                "-s",
-                &service(host),
-                "-a",
-                user,
-                "-w",
-            ])
-            .status()
-            .map_err(|e| Error::Credentials(format!("cannot run the security tool: {e}")))?;
-        if !status.success() {
-            return Err(Error::Credentials(format!(
-                "the security tool could not store the secret ({status})"
-            )));
-        }
-        Ok(())
     }
 }
 
@@ -240,6 +173,7 @@ pub(crate) fn base64(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::credential_store::{Secret, SessionStore};
 
     #[test]
     fn base64_matches_the_rfc_4648_test_vectors() {
@@ -276,6 +210,7 @@ mod tests {
         let source = HostCredentials {
             configured_user: None,
             env: EnvCredentials::new("a.example:5000", "ci", "synthetic-secret"),
+            store: Arc::new(SessionStore::default()),
         };
         assert_eq!(
             source.credentials("a.example:5000").unwrap(),
@@ -290,5 +225,42 @@ mod tests {
         };
         assert!(unbound.credentials_for(DEFAULT_REGISTRY).is_some());
         assert!(unbound.credentials_for("b.example").is_none());
+    }
+
+    #[test]
+    fn the_store_answers_for_the_configured_user_of_its_own_host_only() {
+        let store = Arc::new(SessionStore::default());
+        store
+            .store("a.example", "me", &Secret::new("synthetic-secret"))
+            .unwrap();
+        store
+            .store("b.example", "you", &Secret::new("other-secret"))
+            .unwrap();
+        let source = |user: Option<&str>| HostCredentials {
+            configured_user: user.map(str::to_owned),
+            env: EnvCredentials::default(),
+            store: store.clone(),
+        };
+        assert_eq!(
+            source(Some("me")).credentials("a.example").unwrap(),
+            Some(Credentials::new("me", "synthetic-secret"))
+        );
+        assert_eq!(source(Some("me")).credentials("b.example").unwrap(), None);
+        assert_eq!(source(Some("you")).credentials("a.example").unwrap(), None);
+        assert_eq!(source(None).credentials("a.example").unwrap(), None);
+        // The environment's user name selects the stored secret of its own host.
+        let named = HostCredentials {
+            configured_user: Some("you".into()),
+            env: EnvCredentials {
+                host: "a.example".into(),
+                user: Some("me".into()),
+                password: None,
+            },
+            store: store.clone(),
+        };
+        assert_eq!(
+            named.credentials("a.example").unwrap(),
+            Some(Credentials::new("me", "synthetic-secret"))
+        );
     }
 }

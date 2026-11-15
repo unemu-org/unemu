@@ -35,6 +35,9 @@ impl Temp {
     pub(crate) fn store(&self) -> Store {
         Store::open(&self.0).unwrap()
     }
+    pub(crate) fn path(&self) -> &std::path::Path {
+        &self.0
+    }
 }
 impl Drop for Temp {
     fn drop(&mut self) {
@@ -1012,6 +1015,7 @@ fn environment_credentials_never_reach_another_configured_host() {
     let source = |env| HostCredentials {
         configured_user: None,
         env,
+        store: std::sync::Arc::new(crate::credential_store::SessionStore::default()),
     };
     let refused = pull::list_tags(
         &client(&other.entry(true), source(env.clone())),
@@ -1456,6 +1460,7 @@ fn live_round_trip_through_the_default_registry() {
     let credentials = crate::credentials::HostCredentials {
         configured_user: None,
         env: crate::credentials::EnvCredentials::from_env(),
+        store: std::sync::Arc::new(crate::credential_store::SessionStore::default()),
     }
     .credentials(&host)
     .unwrap()

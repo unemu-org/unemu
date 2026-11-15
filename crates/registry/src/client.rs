@@ -19,7 +19,7 @@
 use crate::{
     config::{is_loopback, RegistryEntry},
     credentials::CredentialSource,
-    http::{Body, Method, Response, Transport},
+    http::{Body, Method, Response, Timeouts, Transport},
     reference::validate_host,
     Error, Result,
 };
@@ -129,6 +129,19 @@ pub struct Page {
     pub next: Option<String>,
 }
 
+/// What the API check `GET /v2/` answers without credentials.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ApiAccess {
+    /// `200`: the registry serves requests without login.
+    Anonymous,
+    /// `401` with a Basic challenge: requests need a login.
+    BasicLogin,
+    /// `401` with a Bearer challenge: a token service, not implemented here.
+    TokenService,
+    /// `401` with another challenge scheme, or none.
+    Unsupported(String),
+}
+
 /// Result of an anonymous access probe.
 #[derive(Debug, PartialEq, Eq)]
 pub enum AnonymousAccess {
@@ -174,6 +187,24 @@ impl Client {
     /// Connect policy: TLS for every host; plain HTTP only with the entry's
     /// loopback opt-in. Nothing is sent until the first request.
     pub fn new(entry: &RegistryEntry, credentials: Box<dyn CredentialSource>) -> Result<Self> {
+        Self::with_timeouts(entry, credentials, Timeouts::TRANSFER)
+    }
+
+    /// A client for logins and connection tests: the same policy with short
+    /// timeouts (10 s to connect, 15 s per read), so an unreachable registry
+    /// answers a waiting person quickly.
+    pub fn for_probes(
+        entry: &RegistryEntry,
+        credentials: Box<dyn CredentialSource>,
+    ) -> Result<Self> {
+        Self::with_timeouts(entry, credentials, Timeouts::PROBE)
+    }
+
+    fn with_timeouts(
+        entry: &RegistryEntry,
+        credentials: Box<dyn CredentialSource>,
+        timeouts: Timeouts,
+    ) -> Result<Self> {
         validate_host(&entry.host)?;
         let loopback = is_loopback(&entry.host);
         if entry.plain_http && !loopback {
@@ -191,7 +222,7 @@ impl Client {
             base,
             tls: !entry.plain_http,
             confidential: !entry.plain_http || loopback,
-            transport: crate::http::transport(!entry.plain_http)?,
+            transport: crate::http::transport(!entry.plain_http, timeouts)?,
             credentials,
             authorization: Mutex::new(None),
         })
@@ -676,6 +707,38 @@ impl Client {
             _ => return Err(Error::Protocol(format!("missing {field} list"))),
         };
         Ok(Page { names, next })
+    }
+
+    /// distribution-spec "Determining Support" (`GET /v2/`) without any
+    /// credentials, as a first contact with the registry.
+    pub fn probe_api(&self) -> Result<ApiAccess> {
+        let response = self.exchange(Method::Get, &self.url("/v2/")?, &[], &Body::Empty, None)?;
+        match response.status {
+            200 => Ok(ApiAccess::Anonymous),
+            401 => Ok(
+                match response.header("www-authenticate").map(Challenge::parse) {
+                    Some(Challenge::Basic { .. }) => ApiAccess::BasicLogin,
+                    Some(Challenge::Bearer { .. }) => ApiAccess::TokenService,
+                    Some(Challenge::Other(scheme)) => ApiAccess::Unsupported(scheme),
+                    None => ApiAccess::Unsupported("none".into()),
+                },
+            ),
+            _ => Err(self.status_error(Method::Get, "/v2/", response)),
+        }
+    }
+
+    /// The same check with the source's Basic credentials sent from the first
+    /// request. `Ok(false)` when the source has none; credentials the registry
+    /// refuses are [`Error::Unauthorized`].
+    pub fn check_login(&self) -> Result<bool> {
+        if !self.use_credentials_now()? {
+            return Ok(false);
+        }
+        let response = self.send(Method::Get, "/v2/", &[], &Body::Empty)?;
+        match response.status {
+            200 => Ok(true),
+            _ => Err(self.status_error(Method::Get, "/v2/", response)),
+        }
     }
 
     /// Probe anonymous reads of `repository` and of its namespace in the

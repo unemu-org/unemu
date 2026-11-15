@@ -159,7 +159,9 @@ cargo run --offline -p cli -- image pull nas.example:5000/firmware/kiselev-xi808
 cargo run --offline -p cli -- image remote ls private/dos-lab
 cargo run --offline -p cli -- image remote ls registry.unemu.dev
 cargo run --offline -p cli -- image login registry.unemu.dev --user NAME
+printf '%s\n' "$TOKEN" | cargo run --offline -p cli -- image login nas.example:5000 --user NAME
 UNEMU_REGISTRY_LIVE=1 cargo test --offline -p image-registry -- --ignored live_
+UNEMU_KEYCHAIN_TEST=1 cargo test --offline -p image-registry -- --ignored keychain_
 ```
 
 References resolve like Docker's against `registry.unemu.dev`: `name:tag` is
@@ -194,10 +196,48 @@ only for loopback test registries. Secrets come from `UNEMU_REGISTRY_USER` and
 or `registry.unemu.dev` when that is unset (so CI that points `UNEMU_REGISTRY`
 elsewhere sets `UNEMU_REGISTRY_HOST` too). Otherwise (macOS) they come from the
 Keychain item `unemu-registry:<host>` for the entry's user, read through
-`/usr/bin/security`. `image login` lets `security` prompt for the password,
-then records the user in preferences under the `preferences.toml.lock` lock that
-the desktop shell's saves also take, so neither writer drops the other's keys.
-Existing Docker or oras logins are not reused.
+`/usr/bin/security`. The credential store is chosen at run time, one backend
+per operating system; only the macOS Keychain is implemented. Elsewhere the
+desktop page keeps a login for the session only, and `image login` refuses and
+points to the environment variables. `image login` reads the password or token
+from the terminal with canonical mode, echo and signal keys off (termios),
+byte by byte: Backspace and Delete edit, Ctrl+U clears, Enter ends, and Ctrl+C
+cancels the login and restores the terminal mode; piped standard input is read
+as one line. The secret never appears in arguments. Before any request the
+store checks that it can keep the secret (for the Keychain: printable ASCII,
+at most 1536 characters). The login is then checked against the registry
+(anonymous `GET /v2/`, then Basic, with 10 s connect and 15 s read timeouts),
+and nothing is stored when the registry refuses it. A registry that already
+answers `GET /v2/` without login cannot confirm a password; the login is kept
+all the same and `image login` prints an `unverified` line saying so. Then the
+secret goes to the Keychain through `security -i`, hex-encoded on the tool's
+standard input, and the user is recorded in preferences under the
+`preferences.toml.lock` lock that the desktop shell's saves also take, so
+neither writer drops the other's keys. The desktop shell's Tools ›
+Preferences… › Registries page uses the same functions and store:
+- Add and Edit change the private flag and the loopback plain-HTTP opt-in.
+  Only changed keys are written, an entry that changed since the dialog opened
+  is refused with "reopen it", and un-marking private asks for confirmation.
+- Remove deletes the entry with its stored secret; the default registry cannot
+  be removed.
+- Log in… can be cancelled until the user name is recorded; Cancel, Escape or
+  closing Preferences cancels it.
+- Log out deletes the secret and keeps the user name.
+- Set as default, and Test connection (anonymous `GET /v2/`, then Basic, with
+  the result per step).
+
+Sign-in states, logins, logouts and removals run on background threads,
+because a Keychain call can wait on a system prompt. Existing Docker or oras
+logins are not reused; the Log in dialog shows the Docker credential helper as
+a disabled, later option. Secrets are not wiped from process memory after use.
+
+The opt-in Keychain test creates a throwaway keychain file in the temporary
+directory and never touches the login keychain's items. `security
+create-keychain` also adds that file to the user's keychain search list for the
+test's duration; the test deletes the keychain, which removes it from the list.
+If the test is interrupted, it has printed the path; remove it with `security
+delete-keychain "$TMPDIR/unemu-registry-test-<pid>.keychain-db"`, and check
+`security list-keychains -d user` afterwards.
 
 Push guard, before any upload: a blob's class is the most restrictive one any
 tagged local manifest records for its digest (absent marks count as
