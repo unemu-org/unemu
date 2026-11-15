@@ -103,7 +103,7 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
     `registry.unemu.dev/private/`, a refused push of it to `unemu/`, a pull of
     it into a fresh store, Cancel during a multi-chunk upload followed by a
     resumed push, quitting during a push, and the native look in both skins.
-  - **Mock-up departures, awaiting maintainer approval:**
+  - **Mock-up departures, accepted for now by the maintainer on 2026-11-15:**
     - The dry run has no "On the registry" column, because whether a blob is
       present is known only while pushing; the progress list shows it. A
       "Recorded in" column shows where each class comes from.
@@ -251,7 +251,7 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
     watch A:'s light while it reads; watch C: during a DOS directory listing on
     an IDE machine; open a library media set from a chip and switch a browsed
     floppy between read-only and journal from its chip.
-  - **Mock-up departures, awaiting maintainer approval:**
+  - **Mock-up departures, accepted for now by the maintainer on 2026-11-15:**
     - C:'s write mode is a label in its drive menu, not a choice between
       Journal and Read-only.
     - An empty floppy drive's menu has no "Write mode for the next floppy"
@@ -432,7 +432,7 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
     Service, Windows Credential Manager and Bearer tokens. The GUI Push… and
     Pull… dialogs landed separately (entry above).
   - **Manual checks:** native look and the real Keychain.
-  - **Mock-up departures, awaiting maintainer approval:**
+  - **Mock-up departures, accepted for now by the maintainer on 2026-11-15:**
     - Only the General and Registries tabs exist; the mock-up also shows
       Library, Display and Input.
     - The Add dialog has no Display name, Namespaces or "Allow access without
