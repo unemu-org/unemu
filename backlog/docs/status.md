@@ -18,6 +18,28 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   extracted archive rebuilds both pinned hashes. The vgabios firmware package
   and both template machines change, so `pc_image::template::VERSION` is
   `1.0.1` with new pinned digests; the Kiselev and XTIDE packages keep theirs.
+- **2026-11-15 — Shareware installation media (local only):**
+  - **`vendor/shareware/{keen4,wolf3d,duke2}/fetch.sh`** build installation
+    floppies from the original Apogee shareware archives: Commander Keen 4
+    1.4 (`4keen.zip`), Wolfenstein 3-D episode 1 1.4 (`1wolf14.zip`) and
+    Duke Nukem II episode 1 1.0 (`4duke.zip`). Pinned URL (FUNET's mirror of
+    Apogee's file area) with a byte-identical 1994 CD-ROM copy as fallback,
+    archive SHA-256 and member list checked, offline once cached or with
+    `SHAREWARE_ARCHIVE`. Each image is a 1.44M FAT12 floppy with every
+    archive member unmodified, the archive's DOS timestamps, a fixed label
+    and serial and the project's non-bootable volume sector; its SHA-256 is
+    pinned (measured on macOS). Two runs (download, then cached) give
+    identical images. The vendor and licence texts go to `extras/`; each
+    README summarises them. Everything under `vendor/shareware/` except the
+    scripts and READMEs is gitignored; the scripts are not in CI.
+  - **Media sets:** `image media import` of each floppy with its extras gives
+    user-supplied sets, which the push guard refuses for `unemu/`. The CLI
+    import records the title and medium label only; genre, year, publisher
+    and the DOS software platform need the window's import dialog.
+  - **Publication:** the maintainer approved on 2026-11-15 that these public
+    shareware sets may be published. Marking a set redistributable, so the
+    push guard lets it into `unemu/`, is tracked separately and not done
+    here; until then the sets stay user-supplied.
 - **2026-11-15 — Official template images:**
   - **`image template build --store DIR [--vendor DIR] [--dry-run]`** builds
     the open firmware packages (`unemu/firmware/<catalogue-id>`: Kiselev

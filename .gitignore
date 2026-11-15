@@ -100,3 +100,12 @@ target/
 /vendor/ltemm/LTEMM.EXE
 /vendor/ltemm/.extract.*/
 /vendor/ltemm/*.zip
+
+# Third-party shareware: archives, installation floppies, vendor-text extras and
+# anything else a user puts here (unpacked files, other spellings, symlinks)
+# stay local. Only the scripts and their READMEs are tracked.
+/vendor/shareware/**
+!/vendor/shareware/**/
+!/vendor/shareware/common.sh
+!/vendor/shareware/*/fetch.sh
+!/vendor/shareware/*/README.md

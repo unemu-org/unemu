@@ -513,6 +513,36 @@ that already names another image on the registry is refused; push a new
 version instead. Once `latest` names an older version there, its push stops
 with both digests; repeat it with `--move` after checking them.
 
+## Shareware installation media (local only)
+
+```sh
+vendor/shareware/keen4/fetch.sh                # Commander Keen 4 1.4: keen4-sw14-1440.img, extras/
+vendor/shareware/wolf3d/fetch.sh               # Wolfenstein 3-D 1.4: wolf3d-sw14-1440.img, extras/
+vendor/shareware/duke2/fetch.sh                # Duke Nukem II 1.0: duke2-sw10-1440.img, extras/
+SHAREWARE_ARCHIVE=/path/to/1wolf14.zip vendor/shareware/wolf3d/fetch.sh   # your own copy; no network
+cargo run --offline -p cli -- image media import vendor/shareware/keen4/keen4-sw14-1440.img --title "Commander Keen 4: Secret of the Oracle (shareware 1.4)" --tag keen4-shareware:1.4 --label '1=Disk 1 of 1 - Shareware v1.4 installation' --extra vendor/shareware/keen4/extras/README.DOC:README.DOC --extra vendor/shareware/keen4/extras/ORDER.FRM:ORDER.FRM --store /path/to/store --create
+cargo run --offline -p cli -- image media import vendor/shareware/wolf3d/wolf3d-sw14-1440.img --title "Wolfenstein 3-D: Episode 1 (shareware 1.4)" --tag wolf3d-shareware:1.4 --label '1=Disk 1 of 1 - Shareware v1.4 installation' --extra vendor/shareware/wolf3d/extras/VENDOR.DOC:VENDOR.DOC --extra vendor/shareware/wolf3d/extras/ORDER.FRM:ORDER.FRM --store /path/to/store
+cargo run --offline -p cli -- image media import vendor/shareware/duke2/duke2-sw10-1440.img --title "Duke Nukem II: Episode 1 (shareware 1.0)" --tag duke2-shareware:1.0 --label '1=Disk 1 of 1 - Shareware v1.0 installation' --extra vendor/shareware/duke2/extras/LICENSE.DOC:LICENSE.DOC --extra vendor/shareware/duke2/extras/ORDER.FRM:ORDER.FRM --store /path/to/store
+```
+
+Each script downloads the publisher's original shareware archive from a pinned
+URL (FUNET's mirror of Apogee's file area, with a byte-identical 1994 CD-ROM copy
+as fallback), checks its SHA-256 and member list, and caches it in `build/`, so
+later runs are offline. It copies every archive member unmodified, in archive
+order and with the archive's DOS timestamps, onto a 1.44M FAT12 floppy with a
+fixed label, serial and non-bootable volume sector, checks the image's pinned
+SHA-256, and writes the vendor and licence texts to `extras/`. Nothing from the
+archive is run. Run the scripts inside `nix develop`, which provides mtools
+4.0.49 (it produced the pinned images, measured on macOS with the host's
+Info-ZIP UnZip 6.00; Linux not measured); unzip and curl come from the host.
+They are not part of CI: they need the network and third-party content.
+Everything under `vendor/shareware/` except the scripts and READMEs is
+gitignored, so archives, images, extras and unpacked files are never committed.
+The media sets imported from them are user-supplied, so the push guard keeps
+them in private registries. Each `vendor/shareware/<title>/README.md` lists the
+source and every hash and summarises the distribution terms; the full texts
+stay local, in `extras/`.
+
 ## Build / run / test
 
 ```sh
