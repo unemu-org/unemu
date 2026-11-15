@@ -5,6 +5,16 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-15 — Tests no longer play the POST melody on the host's
+  speakers:** the window's shell tests start real machines, and starting a
+  machine opened the host audio output, so every test run on a developer's
+  Mac played the open AT BIOS POST melody at random moments (the
+  maintainer heard it at normal and at slowed speed, even with the emulator
+  closed). It sounded like stray beeps from a running guest; it was never
+  the emulator in use. In test builds the host audio output now behaves as
+  on a host without an output device; a test pins that opening it starts no
+  stream.
+
 - **2026-11-15 — macOS system shortcuts can go to the guest (opt-in):**
   macOS acts on Ctrl+arrows (Mission Control, move a Space), Ctrl+digits,
   Ctrl+F1–F8, Ctrl+Space and F11 before the window sees them, so games that

@@ -397,6 +397,13 @@ impl HostAudio {
     }
 
     fn start(&mut self, warnings: &mut impl io::Write) -> Result<(), Box<dyn Error>> {
+        // The shell tests start real machines, whose BIOS plays its POST
+        // melody: on a developer's machine that came out of the speakers at
+        // random moments during a test run. Tests behave as a host without
+        // an output device does.
+        if cfg!(test) {
+            return Err("host audio output is not opened in tests".into());
+        }
         let device = cpal::default_host()
             .default_output_device()
             .ok_or("no default output device")?;

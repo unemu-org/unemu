@@ -165,6 +165,24 @@ fn construction_is_inert_without_a_device_and_mute_discards_pending_audio() {
     assert_eq!(output, [0, 0]);
 }
 
+/// Opening host audio, as the shell does when a machine starts, never
+/// reaches the developer's speakers from a test: the sink stays disabled as
+/// on a host without an output device, and the reason is reported once.
+#[test]
+fn opening_in_a_test_never_starts_an_output_stream() {
+    let mut host = HostAudio::new();
+    let mut warnings = Vec::new();
+    host.open(&mut warnings);
+    host.open(&mut warnings);
+    assert!(host.attempted);
+    assert!(host.stream.is_none());
+    assert!(!host.available());
+    assert_eq!(
+        String::from_utf8(warnings).unwrap(),
+        "audio disabled: host audio output is not opened in tests\n"
+    );
+}
+
 #[test]
 fn stream_failure_disables_sink_and_reports_once_on_host_thread() {
     let mut host = HostAudio::new();
