@@ -542,6 +542,23 @@ impl Ata {
         self.drives.get(index)?.as_ref()
     }
 
+    /// Whether disk `index` is executing a command, for a host activity light;
+    /// reading it changes no state.
+    ///
+    /// ATA-2 §6.2.12 (Status register): BSY is set while the device owns the
+    /// task file and DRQ while a PIO data block waits for the host. ASSUMED: a
+    /// front-panel light follows BSY or DRQ, standing in for the device's
+    /// DASP- activity signal, which this model does not drive. A missing disk
+    /// is never active.
+    #[must_use]
+    pub fn activity(&self, index: usize) -> bool {
+        self.drive(index).is_some()
+            && self
+                .tasks
+                .get(index)
+                .is_some_and(|task| task.status & (BSY | DRQ) != 0)
+    }
+
     /// Submit complete sectors at an explicit persistence boundary without
     /// changing guest state. Call at finish, before CPU reset, after run errors,
     /// or before device snapshots/checkpoints, never at ordinary host stops.
@@ -1389,6 +1406,58 @@ mod tests {
         MockBus::new(Box::new(
             Ata::new().with_model(AtaControllerModel::AtAdapter),
         ))
+    }
+
+    fn activity(bus: &mut MockBus) -> [bool; 3] {
+        let ata = bus
+            .device_mut()
+            .as_any_mut()
+            .unwrap()
+            .downcast_mut::<Ata>()
+            .unwrap();
+        std::array::from_fn(|index| ata.activity(index))
+    }
+
+    #[test]
+    fn activity_follows_each_disks_bsy_and_drq_through_a_multi_block_read() {
+        let mut bus = MockBus::new(Box::new(
+            Ata::with_drives([Some(disk(0xA5)), Some(disk(0x5A))]).unwrap(),
+        ));
+        assert_eq!(activity(&mut bus), [false; 3]);
+        lba(&mut bus, 0, 2, false);
+        command(&mut bus, 0x20);
+        assert_eq!(activity(&mut bus), [true, false, false], "DRQ, first block");
+        read_sector(&mut bus);
+        assert_eq!(status(&mut bus), READY | BSY);
+        assert_eq!(
+            activity(&mut bus),
+            [true, false, false],
+            "BSY between blocks"
+        );
+        bus.tick(READ_BLOCK_CLOCK.ticks(1));
+        assert_eq!(
+            activity(&mut bus),
+            [true, false, false],
+            "DRQ, second block"
+        );
+        read_sector(&mut bus);
+        assert_eq!(activity(&mut bus), [false; 3]);
+        lba(&mut bus, 0, 1, true);
+        command(&mut bus, 0x20);
+        assert_eq!(activity(&mut bus), [false, true, false]);
+        read_sector(&mut bus);
+        assert_eq!(activity(&mut bus), [false; 3]);
+        // WRITE SECTORS holds DRQ while it waits for the host's data.
+        lba(&mut bus, 0, 1, false);
+        command(&mut bus, 0x30);
+        assert_eq!(status(&mut bus), READY | DRQ);
+        assert_eq!(activity(&mut bus), [true, false, false], "DRQ, write");
+        write_sector(&mut bus, &[0x77; SECTOR]);
+        assert_eq!(activity(&mut bus), [false; 3]);
+        let mut lone = MockBus::new(Box::new(controller()));
+        lba(&mut lone, 0, 1, true);
+        command(&mut lone, 0x20);
+        assert_eq!(activity(&mut lone), [false; 3], "no slave disk, no light");
     }
 
     #[test]

@@ -29,6 +29,9 @@ pub(super) struct CatalogueEntry {
     /// Journal location for library media: inside the machine workspace,
     /// never beside the store's immutable blob.
     pub workspace_journal: Option<PathBuf>,
+    /// The media set and disk position of a library disk, as the status
+    /// bar's drive tooltip names its source.
+    pub origin: Option<String>,
 }
 
 impl CatalogueEntry {
@@ -112,6 +115,7 @@ impl FloppySlot {
                     declared: true,
                     alternates: Vec::new(),
                     workspace_journal: None,
+                    origin: None,
                 })
                 .collect();
             Some(Self {
@@ -140,6 +144,10 @@ impl FloppySlot {
             });
             return;
         };
+        // The same disk may arrive again through another set tag.
+        if entry.origin.is_some() {
+            row.origin.clone_from(&entry.origin);
+        }
         if row.index == Some(index) {
             return;
         }
@@ -222,6 +230,7 @@ pub(super) fn browse(path: &Path, drive: FloppyGeometry) -> io::Result<Catalogue
         declared: false,
         alternates: Vec::new(),
         workspace_journal: None,
+        origin: None,
     })
 }
 
@@ -1153,7 +1162,10 @@ impl LibraryInsert {
                         .validate_media_output(path)
                         .map_err(|e| e.to_string())?;
                 }
-                entries.push(existing.clone());
+                entries.push(CatalogueEntry {
+                    origin: Some(set_origin(&row.tag, index, config.media.len())),
+                    ..existing.clone()
+                });
                 continue;
             }
             let (_, metadata) = resolved
@@ -1212,6 +1224,7 @@ impl LibraryInsert {
                 declared: false,
                 alternates: Vec::new(),
                 workspace_journal: Some(journal),
+                origin: Some(set_origin(&row.tag, index, config.media.len())),
             });
         }
         if self.journal {
@@ -1219,6 +1232,14 @@ impl LibraryInsert {
         }
         Ok((entries, if self.load_all { self.first } else { 0 }))
     }
+}
+
+/// A library disk's source as the drive tooltip names it.
+fn set_origin(tag: &str, disk: usize, disks: usize) -> String {
+    format!(
+        "Media set {tag} from the library · disk {} of {disks}",
+        disk + 1
+    )
 }
 
 pub(super) fn set_compatibility(
@@ -1556,6 +1577,10 @@ mod media_set_tests {
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[0].medium.name, "first.img");
         assert_eq!(entries[1].medium.name, "second.img");
+        assert_eq!(
+            entries[1].origin.as_deref(),
+            Some("Media set test:set from the library · disk 2 of 2")
+        );
         let indices =
             append_entries(&mut assembled, &mut machine, &mut slots, 0, &entries).unwrap();
         assert_eq!(indices, [1, 2]);
@@ -1567,6 +1592,23 @@ mod media_set_tests {
                 assembly::FloppyAction::Insert(indices[chosen]),
             )
             .unwrap();
+        let views = crate::drive_chips::drive_views(
+            &machine,
+            &slots,
+            &[
+                Some((
+                    indices[chosen],
+                    assembled.floppy_name(assembly::DeviceId::Fdc, 0),
+                )),
+                None,
+            ],
+            &crate::drive_chips::Origin::MachineFile("machine".into()),
+        );
+        assert_eq!(views[0].chip_text(), "A: second.img · 1.44M · journal");
+        assert!(views[0].tooltip(false).contains(&(
+            "Source",
+            "Media set test:set from the library · disk 2 of 2".into()
+        )));
         assert_eq!(
             assembled.floppy_name(assembly::DeviceId::Fdc, 0),
             "second.img"
@@ -1763,6 +1805,30 @@ mod review_tests {
             assembly::floppy_boot(vec![0xfa, 0xeb, 0xfe], vec![0; 1_474_560]),
         )
     }
+    #[test]
+    fn reused_library_disk_takes_the_source_of_the_set_it_came_from_again() {
+        let (_temp, mut library, mut config) = fixture();
+        let mut slots = FloppySlot::from_config(&config);
+        let mut assembled = assembly::assemble(&config).unwrap();
+        let (entries, _) = library.entries(slots[0].as_ref().unwrap(), 0).unwrap();
+        let first = "Media set review:set from the library · disk 1 of 1";
+        assert_eq!(entries[0].origin.as_deref(), Some(first));
+        let indices = append_entries(&mut assembled, &mut config, &mut slots, 0, &entries).unwrap();
+        // The same set under another tag reuses the loaded disk.
+        library.rows[0].tag = "review:other".into();
+        let (again, _) = library.entries(slots[0].as_ref().unwrap(), 0).unwrap();
+        let other = "Media set review:other from the library · disk 1 of 1";
+        assert_eq!(again[0].index, Some(indices[0]));
+        assert_eq!(again[0].origin.as_deref(), Some(other));
+        assert_eq!(
+            append_entries(&mut assembled, &mut config, &mut slots, 0, &again).unwrap(),
+            indices
+        );
+        let slot = slots[0].as_ref().unwrap();
+        assert_eq!(slot.entries.len(), 2);
+        assert_eq!(slot.entries[1].origin.as_deref(), Some(other));
+    }
+
     #[test]
     fn review_single_hash_reuse_per_medium_journal_and_gc_roots() {
         let (_temp, mut library, mut config) = fixture();

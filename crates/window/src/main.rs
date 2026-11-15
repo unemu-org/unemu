@@ -14,6 +14,10 @@
 //! ejects A:. Hold Shift for B:.
 //! These host keys queue media events for the next run boundary; their make,
 //! repeat and break codes never reach the guest. The Media menu names both media.
+//! After each run chunk the presenter reads every drive's busy state for the
+//! status-bar lights. Reaching the controllers through `device_mut` syncs them
+//! to the bus clock and clears their cached deadlines, which only repeats the
+//! settle the next run starts with; the read itself changes no device state.
 //! Audio never paces execution. See
 //! `backlog/docs/design/observation.md` § Window pacing and § Host input.
 
@@ -36,6 +40,7 @@ use winit::{
 };
 
 mod app_menu;
+mod drive_chips;
 mod host_audio;
 mod layers_dialog;
 #[cfg(test)]
@@ -113,7 +118,10 @@ struct Presenter {
     media_events: Vec<(u8, assembly::FloppyAction)>,
     media_slots: [Option<media_dialog::FloppySlot>; 2],
     media_config: assembly::MachineConfig,
-    fixed_disk: String,
+    /// Drive busy state combined over the run boundaries since the shell took it.
+    drive_busy: drive_chips::DriveBusy,
+    /// Status-bar drive lights; host UI time only, never read by the machine.
+    drive_lights: drive_chips::DriveLights,
     audio_error_reported: bool,
     window: Option<Arc<Window>>,
     running: bool,
@@ -201,8 +209,8 @@ impl Presenter {
             media_events: Vec::new(),
             media_slots,
             media_config: config.clone(),
-            fixed_disk: config.drives.iter().find(|drive| matches!(drive.kind, assembly::DriveKind::HardDisk { .. }))
-                .map_or_else(|| "C: not installed".into(), |drive| format!("C: — {}", media_dialog::write_name(&drive.write))),
+            drive_busy: [false; drive_chips::DRIVES],
+            drive_lights: drive_chips::DriveLights::default(),
             audio_error_reported: false,
             window: None,
             running: true,
@@ -296,6 +304,7 @@ impl Presenter {
             #[cfg(not(test))]
             drop(mouse_input);
             let outcome = self.assembled.machine.run_bounded(Some(cap));
+            self.sample_drive_busy();
             if outcome.is_err() {
                 self.assembled.flush_persistence()?;
             }
@@ -338,6 +347,60 @@ impl Presenter {
             return Err(error.into());
         }
         Ok(())
+    }
+
+    fn fdc(&mut self) -> Option<&mut devices::Upd765> {
+        let index = *self.assembled.device_index.get(&DeviceId::Fdc)?;
+        self.assembled
+            .machine
+            .bus_mut()
+            .device_mut(index)?
+            .as_any_mut()?
+            .downcast_mut()
+    }
+
+    fn ata(&mut self) -> Option<&mut devices::Ata> {
+        let index = *self.assembled.device_index.get(&DeviceId::Ide)?;
+        self.assembled
+            .machine
+            .bus_mut()
+            .device_mut(index)?
+            .as_any_mut()?
+            .downcast_mut()
+    }
+
+    /// Read each drive's busy state at a completed run boundary, as the
+    /// presenter's frame observation for the status-bar lights. `device_mut`
+    /// syncs each controller to the bus clock and clears its cached deadline,
+    /// which only repeats the settle the next run starts with; the accessors
+    /// themselves change no device state.
+    fn sample_drive_busy(&mut self) {
+        let floppy: [bool; 2] =
+            std::array::from_fn(|unit| self.fdc().is_some_and(|fdc| fdc.drive_active(unit)));
+        let fixed: [bool; 2] =
+            std::array::from_fn(|unit| self.ata().is_some_and(|ata| ata.activity(unit)));
+        for (seen, busy) in self
+            .drive_busy
+            .iter_mut()
+            .zip(floppy.into_iter().chain(fixed))
+        {
+            *seen |= busy;
+        }
+    }
+
+    /// Hand this frame's busy samples to the lights at host time `now`.
+    fn observe_drive_lights(&mut self, now: Duration) {
+        let busy = std::mem::replace(&mut self.drive_busy, [false; drive_chips::DRIVES]);
+        self.drive_lights.observe(busy, now);
+    }
+
+    /// Every drive with the medium it holds now.
+    fn drive_views(&mut self, origin: &drive_chips::Origin) -> Vec<drive_chips::DriveView> {
+        let inserted = std::array::from_fn(|unit| {
+            let index = self.fdc()?.inserted_medium(unit)?;
+            Some((index, self.assembled.floppy_name(DeviceId::Fdc, unit as u8)))
+        });
+        drive_chips::drive_views(&self.media_config, &self.media_slots, &inserted, origin)
     }
 
     fn apply_media_events(&mut self) -> Result<(), assembly::FloppyError> {
@@ -1360,6 +1423,197 @@ mod tests {
                 reference = Some(bytes);
             }
         }
+    }
+
+    /// A guest that starts drive A:'s motor and leaves an IDE read's data
+    /// unread, so both drives stay busy at every run boundary.
+    pub(crate) fn busy_drives_config() -> assembly::MachineConfig {
+        let mut code = vec![0xFA, 0xFC];
+        for (port, byte) in [
+            (0x3F2u16, 0x1C),
+            (0x1F6, 0xE0),
+            (0x1F2, 1),
+            (0x1F3, 0),
+            (0x1F4, 0),
+            (0x1F5, 0),
+            (0x1F7, 0x20),
+        ] {
+            code.extend([0xBA, port as u8, (port >> 8) as u8, 0xB0, byte, 0xEE]);
+        }
+        code.extend([0xEB, 0xFE]);
+        let demo = assembly::at_boot(code);
+        let mut config = assembly::bios(vec![0xF4; 32768], None);
+        config.board = assembly::BoardModel::Bare;
+        config.cpu = demo.cpu;
+        config.images = demo.images;
+        for device in &mut config.devices {
+            if device.id == DeviceId::Fdc {
+                device.ports = assembly::FdcCfg::port_windows(true);
+            }
+        }
+        let ide = assembly::IdeCfg {
+            model: assembly::AtaControllerModel::Ata,
+            base: 0x1F0,
+            control: 0x3F6,
+        };
+        config.devices.push(
+            assembly::DeviceConfig::new(
+                DeviceId::Ide,
+                assembly::DeviceKind::Ide(ide),
+                ide.port_windows(),
+            )
+            .with_irq(ide.irq()),
+        );
+        config.drives.push(assembly::DriveConfig {
+            media: None,
+            controller: DeviceId::Ide,
+            unit: 0,
+            kind: assembly::DriveKind::HardDisk {
+                geometry: assembly::HardDiskGeometry {
+                    cylinders: 8,
+                    heads: 2,
+                    sectors_per_track: 4,
+                    bytes_per_sector: 512,
+                },
+            },
+            image: assembly::ImageSource::Inline(vec![0; 8 * 2 * 4 * 512]),
+            expected_sha256: None,
+            write: assembly::WriteMode::ReadOnly,
+        });
+        config
+    }
+
+    /// A guest that loops over a four-sector IDE read (BSY between blocks) and
+    /// a floppy READ DATA through 8237 channel 2 with A:'s motor on, counting
+    /// rounds at 7C95h. Assembled from this NASM source (org 7C00h):
+    /// `cli; xor ax,ax; mov ds,ax; mov es,ax; out 3F2h<-1Ch`, then per round:
+    /// IDE 1F6h<-E0h, 1F2h<-4, LBA 0, 1F7h<-20h; four times wait for DRQ and
+    /// `rep insw` 256 words to 1000h; 8237: clear flip-flop, mode 46h, address
+    /// 2000h, page 0, count 1FFh, unmask channel 2; send READ DATA
+    /// `46 00 00 00 01 02 01 1B FF` on RQM; read seven result bytes on RQM+DIO;
+    /// `inc word [7C95h]`.
+    fn disk_and_dma_guest_config() -> assembly::MachineConfig {
+        #[rustfmt::skip]
+        let code = vec![
+            0xfa, 0x31, 0xc0, 0x8e, 0xd8, 0x8e, 0xc0, 0xba, 0xf2, 0x03, 0xb0, 0x1c,
+            0xee, 0xba, 0xf6, 0x01, 0xb0, 0xe0, 0xee, 0xba, 0xf2, 0x01, 0xb0, 0x04,
+            0xee, 0xba, 0xf3, 0x01, 0x30, 0xc0, 0xee, 0x42, 0xee, 0x42, 0xee, 0xba,
+            0xf7, 0x01, 0xb0, 0x20, 0xee, 0xb3, 0x04, 0xba, 0xf7, 0x01, 0xec, 0xa8,
+            0x08, 0x74, 0xfb, 0xba, 0xf0, 0x01, 0xbf, 0x00, 0x10, 0xb9, 0x00, 0x01,
+            0xf3, 0x6d, 0xfe, 0xcb, 0x75, 0xe9, 0x30, 0xc0, 0xe6, 0x0c, 0xb0, 0x46,
+            0xe6, 0x0b, 0x30, 0xc0, 0xe6, 0x04, 0xb0, 0x20, 0xe6, 0x04, 0x30, 0xc0,
+            0xe6, 0x81, 0xb0, 0xff, 0xe6, 0x05, 0xb0, 0x01, 0xe6, 0x05, 0xb0, 0x02,
+            0xe6, 0x0a, 0xbe, 0x8c, 0x7c, 0xb9, 0x09, 0x00, 0xba, 0xf4, 0x03, 0xec,
+            0xa8, 0x80, 0x74, 0xfb, 0x42, 0xac, 0xee, 0xe2, 0xf3, 0xb9, 0x07, 0x00,
+            0xba, 0xf4, 0x03, 0xec, 0x24, 0xc0, 0x3c, 0xc0, 0x75, 0xf9, 0x42, 0xec,
+            0xe2, 0xf2, 0xff, 0x06, 0x95, 0x7c, 0xeb, 0x81, 0x46, 0x00, 0x00, 0x00,
+            0x01, 0x02, 0x01, 0x1b, 0xff, 0x00, 0x00,
+        ];
+        let floppy: Vec<u8> = (0..1_474_560u32).map(|i| (i % 251) as u8).collect();
+        let mut config = busy_drives_config();
+        let disk = assembly::bios(vec![0xF4; 32768], Some(floppy));
+        // The DMA controllers, the wired floppy controller and its disk come
+        // from the floppy-booting board; the IDE channel stays.
+        config
+            .devices
+            .retain(|device| !matches!(device.id, DeviceId::Fdc));
+        for device in disk.devices {
+            if matches!(device.id, DeviceId::Dma | DeviceId::DmaWord | DeviceId::Fdc) {
+                let mut device = device;
+                if device.id == DeviceId::Fdc {
+                    device.ports = assembly::FdcCfg::port_windows(true);
+                }
+                config.devices.push(device);
+            }
+        }
+        config
+            .drives
+            .retain(|drive| drive.controller != DeviceId::Fdc);
+        config.drives.extend(
+            disk.drives
+                .into_iter()
+                .filter(|drive| drive.controller == DeviceId::Fdc),
+        );
+        config.images = assembly::at_boot(code).images;
+        config
+    }
+
+    #[test]
+    fn drive_sampling_leaves_disk_and_dma_guests_identical_in_any_chunking() {
+        let config = disk_and_dma_guest_config();
+        let mut paced = test_presenter(&config).unwrap();
+        let mut seen = [false; drive_chips::DRIVES];
+        for millis in [8, 16, 17, 33, 50, 66, 83, 100] {
+            paced.advance_fully(Duration::from_millis(millis)).unwrap();
+            assert!(paced.running);
+            for (seen, busy) in seen.iter_mut().zip(paced.drive_busy) {
+                *seen |= busy;
+            }
+            paced.observe_drive_lights(Duration::from_millis(millis));
+        }
+        assert_eq!(
+            seen,
+            [true, false, true, false],
+            "A: and C: were sampled busy"
+        );
+        let mut rounds = [0; 2];
+        paced
+            .assembled
+            .machine
+            .cpu()
+            .read_mem(0x7C95, &mut rounds)
+            .unwrap();
+        assert!(
+            u16::from_le_bytes(rounds) >= 3,
+            "the guest finished several IDE and floppy rounds"
+        );
+        let final_time = paced.assembled.machine.virtual_time();
+        let expected = guest_state(&mut paced.assembled);
+        for chunk in [137, 997] {
+            let mut headless = observed_machine(&config);
+            run_to(&mut headless, final_time, chunk);
+            assert_eq!(guest_state(&mut headless), expected, "chunk {chunk}");
+        }
+    }
+
+    #[test]
+    fn drive_busy_is_sampled_at_run_boundaries_and_lights_hold_in_host_time() {
+        let ms = Duration::from_millis;
+        let mut presenter = test_presenter(&busy_drives_config()).unwrap();
+        assert_eq!(presenter.drive_busy, [false; drive_chips::DRIVES]);
+        presenter.advance_fully(ms(20)).unwrap();
+        assert!(presenter.running);
+        assert_eq!(presenter.drive_busy, [true, false, true, false]);
+        presenter.observe_drive_lights(ms(20));
+        assert_eq!(presenter.drive_busy, [false; drive_chips::DRIVES]);
+        let lit = |presenter: &Presenter, now| -> Vec<bool> {
+            (0..drive_chips::DRIVES)
+                .map(|slot| presenter.drive_lights.lit(slot, now))
+                .collect()
+        };
+        assert_eq!(lit(&presenter, ms(20)), [true, false, true, false]);
+        // The host stops the motor and takes the sector, so later boundaries are idle.
+        let bus = presenter.assembled.machine.bus_mut();
+        bus.port_write(0x3F2, 1, 0x0C).unwrap();
+        for _ in 0..256 {
+            bus.port_read(0x1F0, 2).unwrap();
+        }
+        presenter.advance_fully(ms(40)).unwrap();
+        assert_eq!(presenter.drive_busy, [false; drive_chips::DRIVES]);
+        presenter.observe_drive_lights(ms(40));
+        assert_eq!(lit(&presenter, ms(219)), [true, false, true, false]);
+        assert_eq!(lit(&presenter, ms(220)), [false; drive_chips::DRIVES]);
+        let views = presenter.drive_views(&drive_chips::Origin::MachineFile("test".into()));
+        assert_eq!(
+            views
+                .iter()
+                .map(drive_chips::DriveView::chip_text)
+                .collect::<Vec<_>>(),
+            [
+                "A: disk 1 · 1.44M · volatile",
+                "C: inline image · read-only"
+            ]
+        );
     }
 
     #[test]

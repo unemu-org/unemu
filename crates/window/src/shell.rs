@@ -747,7 +747,9 @@ impl Shell {
             .map_or_else(|| "Speed 100%".into(), |p| p.speed_status())
     }
 
-    fn status(&self, ui: &mut egui::Ui) {
+    fn status(&mut self, ui: &mut egui::Ui, commands: &mut Vec<Command>) {
+        let drives = self.drive_views();
+        let now = self.elapsed();
         let message = if self.presenter.as_ref().is_some_and(|p| p.mouse.captured()) {
             if self.macos_shortcuts {
                 "Pointer captured — ⌘G releases"
@@ -766,8 +768,7 @@ impl Shell {
         let labels = [
             message,
             "Power",
-            "A:",
-            "C:",
+            "",
             entry
                 .filter(|entry| !entry.rate.is_empty())
                 .map_or("CPU unknown", |entry| &entry.rate),
@@ -785,6 +786,10 @@ impl Shell {
                 Vec2::new(width, rect.height()),
             );
             x += width;
+            if index == 2 {
+                self.drive_chips(ui, cell, &drives, now, commands);
+                continue;
+            }
             ui.scope_builder(
                 egui::UiBuilder::new()
                     .max_rect(cell.shrink(3.0))
@@ -797,13 +802,8 @@ impl Shell {
                             &self.discovery_control.snapshot(),
                             self.preferences.reduced_motion,
                         );
-                    } else if (1..=3).contains(&index) {
-                        led(ui, index == 1 && self.presenter.is_some(), label);
-                        if index > 1 {
-                            ui.response().on_hover_text(
-                                "Drive activity unavailable at the observation boundary.",
-                            );
-                        }
+                    } else if index == 1 {
+                        led(ui, self.presenter.is_some(), label);
                     } else {
                         ui.add(egui::Label::new(label).truncate())
                             .on_hover_text(label);
@@ -811,6 +811,262 @@ impl Shell {
                 },
             );
             bevel(ui, cell, true);
+        }
+    }
+
+    /// The running machine's drives, naming where its own media came from.
+    fn drive_views(&mut self) -> Vec<crate::drive_chips::DriveView> {
+        use crate::drive_chips::Origin;
+        let origin = match &self.image_library.active {
+            Some((row, _, _)) => Origin::Image(row.reference.clone()),
+            None => Origin::MachineFile(
+                self.selected
+                    .and_then(|index| self.library.get(index))
+                    .map_or_else(
+                        || {
+                            self.args
+                                .machine
+                                .file_stem()
+                                .unwrap_or_default()
+                                .to_string_lossy()
+                                .into_owned()
+                        },
+                        |entry| entry.name.clone(),
+                    ),
+            ),
+        };
+        self.presenter
+            .as_mut()
+            .map_or_else(Vec::new, |presenter| presenter.drive_views(&origin))
+    }
+
+    /// One chip per drive inside the status bar's fixed drive area: the image,
+    /// an activity light, a tooltip with its details and a click menu. The
+    /// area stays empty while no machine runs.
+    fn drive_chips(
+        &self,
+        ui: &mut egui::Ui,
+        area: egui::Rect,
+        drives: &[crate::drive_chips::DriveView],
+        now: std::time::Duration,
+        commands: &mut Vec<Command>,
+    ) {
+        const GAP: f32 = 2.0;
+        const PAD: f32 = 6.0;
+        const LED: Vec2 = Vec2::new(10.0, 6.0);
+        const LED_GAP: f32 = 5.0;
+        if drives.is_empty() {
+            bevel(ui, area, true);
+            return;
+        }
+        let font = egui::TextStyle::Body.resolve(ui.style());
+        let measure = |text: String| {
+            ui.painter()
+                .layout_no_wrap(text, font.clone(), Color32::PLACEHOLDER)
+                .size()
+                .x
+        };
+        let parts: Vec<(String, String, String)> = drives
+            .iter()
+            .map(crate::drive_chips::DriveView::chip_parts)
+            .collect();
+        let chrome = 2.0 * PAD + LED.x + LED_GAP;
+        let natural: Vec<f32> = parts
+            .iter()
+            .map(|(head, name, tail)| measure(format!("{head}{name}{tail}")) + chrome)
+            .collect();
+        // The format and write mode stay whole; only the name gives way.
+        let minimum: Vec<f32> = parts
+            .iter()
+            .zip(&natural)
+            .map(|((head, name, tail), natural)| {
+                if name.is_empty() {
+                    *natural
+                } else {
+                    measure(format!("{head}…{tail}")) + chrome
+                }
+            })
+            .collect();
+        let gaps = GAP * (drives.len() - 1) as f32;
+        let widths =
+            crate::drive_chips::chip_widths((area.width() - gaps).max(0.0), &natural, &minimum);
+        let lights = self.presenter.as_ref().map(|p| &p.drive_lights);
+        let mut x = area.left();
+        for (((view, (head, name, tail)), width), natural) in
+            drives.iter().zip(parts).zip(widths).zip(natural)
+        {
+            let text = view.chip_text();
+            let room = (width - chrome).max(0.0);
+            let shown = if natural <= width || name.is_empty() {
+                text.clone()
+            } else {
+                let mut job = egui::text::LayoutJob::single_section(
+                    name,
+                    egui::TextFormat::simple(font.clone(), Color32::PLACEHOLDER),
+                );
+                job.wrap = egui::text::TextWrapping::truncate_at_width(
+                    (room - measure(format!("{head}{tail}"))).max(0.0),
+                );
+                let short = ui
+                    .painter()
+                    .layout_job(job)
+                    .rows
+                    .first()
+                    .map(|placed| placed.row.text())
+                    .unwrap_or_default();
+                format!("{head}{short}{tail}")
+            };
+            let rect = egui::Rect::from_min_size(
+                egui::pos2(x, area.top()),
+                Vec2::new(width, area.height()),
+            );
+            x += width + GAP;
+            let lit = lights.is_some_and(|lights| lights.lit(view.slot(), now));
+            let response = ui.interact(
+                rect,
+                ui.scope_id().with(("drive-chip", view.slot())),
+                Sense::click(),
+            );
+            let open =
+                egui::Popup::is_id_open(ui.ctx(), egui::Popup::default_response_id(&response));
+            let painter = ui.painter().with_clip_rect(rect.intersect(ui.clip_rect()));
+            if response.hovered() || open {
+                painter.rect_filled(
+                    rect.shrink(1.0),
+                    0.0,
+                    ui.visuals().widgets.hovered.weak_bg_fill,
+                );
+            }
+            let led_rect = egui::Rect::from_min_size(
+                egui::pos2(rect.left() + PAD, rect.center().y - LED.y / 2.0),
+                LED,
+            );
+            painter.rect_filled(led_rect, 0.0, disk_led_color(ui, lit));
+            let color = if view.medium.is_none() {
+                ui.visuals().weak_text_color()
+            } else {
+                ui.visuals().text_color()
+            };
+            // Only when even the format and mode do not fit is the whole line cut.
+            let mut job = egui::text::LayoutJob::single_section(
+                shown,
+                egui::TextFormat::simple(font.clone(), color),
+            );
+            job.wrap = egui::text::TextWrapping::truncate_at_width(room);
+            let galley = ui.painter().layout_job(job);
+            painter.galley(
+                egui::pos2(
+                    led_rect.right() + LED_GAP,
+                    rect.center().y - galley.size().y / 2.0,
+                ),
+                galley,
+                color,
+            );
+            bevel(ui, rect, true);
+            response.widget_info(|| {
+                egui::WidgetInfo::labeled(
+                    egui::Role::Button,
+                    true,
+                    if lit {
+                        format!("Drive {text}, active")
+                    } else {
+                        format!("Drive {text}")
+                    },
+                )
+            });
+            let response = if open {
+                response
+            } else {
+                response.on_hover_ui(|ui| drive_tooltip(ui, view, lit))
+            };
+            egui::Popup::menu(&response).show(|ui| self.drive_menu(ui, view, commands));
+        }
+        if let Some(wait) = lights.and_then(|lights| lights.next_off(now)) {
+            ui.ctx().request_repaint_after(wait);
+        }
+    }
+
+    /// A drive chip's menu: the Media menu's own commands for that drive.
+    fn drive_menu(
+        &self,
+        ui: &mut egui::Ui,
+        view: &crate::drive_chips::DriveView,
+        commands: &mut Vec<Command>,
+    ) {
+        ui.add_enabled(false, egui::Label::new(view.menu_label()));
+        let Some(unit) = view.floppy_unit() else {
+            ui.add_enabled(false, egui::Button::new(view.fixed_eject_label()));
+            self.item(ui, "Disk layers…", "", Command::Layers, commands);
+            if let Some(label) = view.write_label() {
+                ui.separator();
+                ui.add_enabled(false, egui::Label::new(label));
+            }
+            return;
+        };
+        let drive = view.letter();
+        ui.add_enabled_ui(view.medium.is_some(), |ui| {
+            self.item(
+                ui,
+                &format!("Eject {drive}:"),
+                eject_shortcut(unit),
+                Command::Eject(unit),
+                commands,
+            );
+        });
+        self.item(
+            ui,
+            &format!("Insert into {drive}:…"),
+            self.insert_shortcut(unit),
+            Command::Insert(unit),
+            commands,
+        );
+        self.item(
+            ui,
+            "From library…",
+            "",
+            Command::FromLibrary(unit),
+            commands,
+        );
+        if let Some(label) = view.write_label() {
+            ui.separator();
+            ui.add_enabled(false, egui::Label::new(label));
+            if view
+                .medium
+                .as_ref()
+                .is_some_and(|medium| medium.fixed_by.is_none())
+            {
+                self.item(
+                    ui,
+                    "Change write mode…",
+                    "",
+                    Command::WriteMode(unit),
+                    commands,
+                );
+            }
+        }
+    }
+
+    fn insert_shortcut(&self, unit: u8) -> &'static str {
+        if unit == 0 {
+            "Ctrl+Alt+I"
+        } else if self.macos_shortcuts {
+            "Ctrl+Alt+Shift+I"
+        } else {
+            ""
+        }
+    }
+
+    /// Preselect the inserted floppy in a just-opened Insert dialog, so its
+    /// write-mode choice applies to that disk.
+    fn select_inserted(&mut self, unit: u8) {
+        let index = self
+            .presenter
+            .as_mut()
+            .and_then(|presenter| presenter.fdc())
+            .and_then(|fdc| fdc.inserted_medium(usize::from(unit)));
+        if let (Some(index), Some(draft)) = (index, &mut self.insert_dialog) {
+            let row = crate::drive_chips::entry_position(&draft.slot, index);
+            draft.select(row);
         }
     }
 
@@ -1725,6 +1981,8 @@ impl Shell {
                 self.release();
                 self.insert_dialog = Some(crate::media_dialog::InsertDialog::new(unit, slot));
             },
+            FromLibrary(unit) => { self.command(Insert(unit), ctx); self.open_insert_library(); },
+            WriteMode(unit) => { self.command(Insert(unit), ctx); self.select_inserted(unit); },
             CreateBlank => {
                 self.release();
                 let entry = self.selected.and_then(|index| self.library.get(index));
@@ -1832,24 +2090,14 @@ impl Shell {
                 self.item(ui, "Disk layers…", "", Layers, commands);
             });
             ui.menu_button("Media", |ui| {
+                let drives = self.drive_views();
                 for unit in 0..2 {
-                    let name = self
-                        .presenter
-                        .as_mut()
-                        .map(|p| p.assembled.floppy_name(assembly::DeviceId::Fdc, unit))
-                        .unwrap_or_else(|| "stopped".into());
                     let drive = if unit == 0 { "A:" } else { "B:" };
                     let present = self.enablement().floppy[unit as usize];
-                    let geometry = self
-                        .presenter
-                        .as_ref()
-                        .and_then(|p| p.media_slots[usize::from(unit)].as_ref())
-                        .map(|slot| crate::media_dialog::geometry_name(slot.geometry));
-                    ui.add_enabled(
-                        present,
-                        egui::Label::new(if let Some(geometry) = geometry {
-                            format!("Drive {drive} ({geometry}) — {name}")
-                        } else {
+                    let view = drives.iter().find(|view| view.floppy_unit() == Some(unit));
+                    let inserted = view.is_some_and(|view| view.medium.is_some());
+                    let label = view.map_or_else(
+                        || {
                             format!(
                                 "Drive {drive} — {}",
                                 if self.presenter.is_none() {
@@ -1858,28 +2106,20 @@ impl Shell {
                                     "not installed"
                                 }
                             )
-                        }),
+                        },
+                        crate::drive_chips::DriveView::menu_label,
                     );
+                    ui.add_enabled(present, egui::Label::new(label));
                     ui.add_enabled_ui(present, |ui| {
                         ui.menu_button(format!("Insert into {drive}"), |ui| {
                             self.item(
                                 ui,
                                 "Browse / catalogue…",
-                                if unit == 0 {
-                                    "Ctrl+Alt+I"
-                                } else if self.macos_shortcuts {
-                                    "Ctrl+Alt+Shift+I"
-                                } else {
-                                    ""
-                                },
+                                self.insert_shortcut(unit),
                                 Insert(unit),
                                 commands,
                             );
-                            if ui.button("From library…").clicked() {
-                                self.command(Insert(unit), ui.ctx());
-                                self.open_insert_library();
-                                ui.close();
-                            }
+                            self.item(ui, "From library…", "", FromLibrary(unit), commands);
                         });
                     });
                     self.item(
@@ -1893,27 +2133,35 @@ impl Shell {
                         Next(unit),
                         commands,
                     );
-                    self.item(
-                        ui,
-                        &format!("Eject {drive}"),
-                        if unit == 0 {
-                            "Ctrl+Alt+E"
-                        } else {
-                            "Ctrl+Alt+Shift+E"
-                        },
-                        Eject(unit),
-                        commands,
-                    );
+                    ui.add_enabled_ui(inserted, |ui| {
+                        self.item(
+                            ui,
+                            &format!("Eject {drive}"),
+                            eject_shortcut(unit),
+                            Eject(unit),
+                            commands,
+                        );
+                    });
                     ui.separator();
                 }
-                ui.add_enabled(
-                    false,
-                    egui::Label::new(
-                        self.presenter
-                            .as_ref()
-                            .map_or("C: — machine stopped", |p| &p.fixed_disk),
-                    ),
-                );
+                let mut fixed = drives
+                    .iter()
+                    .filter(|view| view.floppy_unit().is_none())
+                    .map(crate::drive_chips::DriveView::menu_label)
+                    .peekable();
+                if fixed.peek().is_none() {
+                    ui.add_enabled(
+                        false,
+                        egui::Label::new(if self.presenter.is_none() {
+                            "C: — machine stopped"
+                        } else {
+                            "C: — no fixed disk"
+                        }),
+                    );
+                }
+                for label in fixed {
+                    ui.add_enabled(false, egui::Label::new(label));
+                }
                 self.item(ui, "Disk layers…", "", Layers, commands);
                 ui.add_enabled(
                     false,
@@ -2529,6 +2777,7 @@ impl Shell {
                 self.show_error(error.to_string());
                 return;
             }
+            presenter.observe_drive_lights(elapsed);
             if let Some(frame) = presenter.sink.frame().as_ref() {
                 let image = shell_model::texture_image(frame);
                 if let Some(texture) = &mut self.texture {
@@ -2680,7 +2929,7 @@ impl eframe::App for Shell {
             }
         });
         if self.statusbar {
-            egui::Panel::bottom("statusbar").show(ui, |ui| self.status(ui));
+            egui::Panel::bottom("statusbar").show(ui, |ui| self.status(ui, &mut commands));
         }
         self.screen = egui::Rect::NOTHING;
         if self.presenter.is_some() {
@@ -3025,6 +3274,37 @@ fn led(ui: &mut egui::Ui, on: bool, label: &str) {
         },
     );
     ui.label(label);
+}
+fn eject_shortcut(unit: u8) -> &'static str {
+    if unit == 0 {
+        "Ctrl+Alt+E"
+    } else {
+        "Ctrl+Alt+Shift+E"
+    }
+}
+/// The amber drive light of the approved status-bar design, or its dark off state.
+fn disk_led_color(ui: &egui::Ui, on: bool) -> Color32 {
+    if on {
+        Color32::from_rgb(255, 178, 31)
+    } else if ui.visuals().dark_mode {
+        Color32::from_rgb(42, 42, 39)
+    } else {
+        Color32::from_rgb(74, 74, 68)
+    }
+}
+fn drive_tooltip(ui: &mut egui::Ui, view: &crate::drive_chips::DriveView, lit: bool) {
+    ui.set_max_width(360.0);
+    egui::Grid::new(("drive-tooltip", view.slot()))
+        .num_columns(2)
+        .show(ui, |ui| {
+            for (key, value) in view.tooltip(lit) {
+                ui.weak(key);
+                ui.add(egui::Label::new(value).wrap());
+                ui.end_row();
+            }
+        });
+    ui.separator();
+    ui.weak("Click for this drive's menu");
 }
 pub(crate) fn bevel(ui: &egui::Ui, rect: egui::Rect, pressed: bool) {
     let light = if ui.visuals().dark_mode {
@@ -5052,7 +5332,7 @@ kind='mda'
         let ctx = egui::Context::default();
         let output = ctx.run_ui(Default::default(), |ui| {
             ui.set_width(1600.0);
-            shell.status(ui);
+            shell.status(ui, &mut Vec::new());
         });
         assert!(output.shapes.iter().any(|shape| {
             matches!(&shape.shape, egui::epaint::Shape::Text(text) if text.galley.text().contains("Loading machine…"))
@@ -5474,7 +5754,7 @@ kind='mda'
                 });
             }
             let mut output = ctx.run_ui(Default::default(), |ui| {
-                shell.status(ui);
+                shell.status(ui, &mut Vec::new());
                 heights.push(ui.min_rect().height());
             });
             let single_line = output
@@ -6128,6 +6408,514 @@ kind='mda'
         let journaled = dialog_text(&mut shell, 2);
         assert!(shows(&journaled, "Separate journal path"));
         assert!(shell.insert_dialog.as_ref().unwrap().journal);
+        assert!(shell.stop());
+    }
+
+    /// What one headless status-bar pass painted and asked for.
+    struct StatusPass {
+        text: Vec<(String, egui::Rect)>,
+        /// Filled rectangles, so a drive light can be found by its colour.
+        fills: Vec<(Color32, egui::Rect)>,
+        /// Accessibility labels of the pass's widgets.
+        labels: Vec<String>,
+        commands: Vec<Command>,
+        /// Texts cut short with an ellipsis; a galley keeps its whole text.
+        elided: Vec<String>,
+    }
+
+    const AMBER: Color32 = Color32::from_rgb(255, 178, 31);
+
+    fn status_pass(
+        ctx: &egui::Context,
+        shell: &mut Shell,
+        width: f32,
+        events: Vec<egui::Event>,
+    ) -> StatusPass {
+        ctx.enable_accesskit();
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                Vec2::new(width, 400.0),
+            )),
+            events,
+            ..Default::default()
+        };
+        let mut commands = Vec::new();
+        // The same bottom panel as the running shell, margins included.
+        let mut output = ctx.run_ui(input, |ui| {
+            egui::Panel::bottom("statusbar").show(ui, |ui| shell.status(ui, &mut commands));
+        });
+        output.textures_delta.clear();
+        let mut text = Vec::new();
+        let mut fills = Vec::new();
+        let mut elided = Vec::new();
+        for shape in &output.shapes {
+            match &shape.shape {
+                egui::epaint::Shape::Text(shown) => {
+                    if shown.galley.elided {
+                        elided.push(shown.galley.text().to_owned());
+                    }
+                    text.push((
+                        shown.galley.text().to_owned(),
+                        shown.galley.rect.translate(shown.pos.to_vec2()),
+                    ));
+                }
+                egui::epaint::Shape::Rect(rect) => fills.push((rect.fill, rect.rect)),
+                _ => {}
+            }
+        }
+        let labels = output
+            .platform_output
+            .accesskit_update
+            .take()
+            .map(|update| {
+                update
+                    .nodes
+                    .iter()
+                    .filter_map(|(_, node)| node.label().map(str::to_owned))
+                    .collect()
+            })
+            .unwrap_or_default();
+        output.drop_without_applying_deltas();
+        StatusPass {
+            text,
+            fills,
+            labels,
+            commands,
+            elided,
+        }
+    }
+
+    /// Press and release at `at`; returns what both passes asked for.
+    fn click_status(
+        ctx: &egui::Context,
+        shell: &mut Shell,
+        width: f32,
+        at: egui::Pos2,
+    ) -> Vec<Command> {
+        let button = |pressed| egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Default::default(),
+        };
+        let mut commands = status_pass(
+            ctx,
+            shell,
+            width,
+            vec![egui::Event::PointerMoved(at), button(true)],
+        )
+        .commands;
+        commands.extend(status_pass(ctx, shell, width, vec![button(false)]).commands);
+        commands
+    }
+
+    fn text_starting(pass: &StatusPass, prefix: &str) -> Option<(String, egui::Rect)> {
+        pass.text
+            .iter()
+            .find(|(shown, _)| shown.starts_with(prefix))
+            .cloned()
+    }
+
+    fn busy_shell() -> Shell {
+        let mut shell = shell();
+        shell.presenter = Some(
+            Presenter::new(
+                &crate::tests::busy_drives_config(),
+                assembly::AssemblyOptions::default(),
+                &mut io::sink(),
+            )
+            .unwrap(),
+        );
+        shell
+    }
+
+    #[test]
+    fn drive_chips_appear_only_while_running_and_never_move_the_other_cells() {
+        let ctx = egui::Context::default();
+        let mut shell = media_shell();
+        let wide = status_pass(&ctx, &mut shell, 1600.0, Vec::new());
+        assert!(shows(&wide.text, "A: first.img · 1.44M · read-only"));
+        assert_eq!(text_starting(&wide, "B:"), None, "the machine has no B:");
+        let cells = |pass: &StatusPass| -> Vec<f32> {
+            ["Power", "CPU unknown", "EMS unknown", "Speed"]
+                .map(|label| text_starting(pass, label).unwrap().1.left())
+                .to_vec()
+        };
+        assert!(wide.elided.is_empty());
+        let running = status_pass(&ctx, &mut shell, 1040.0, Vec::new());
+        let (_, rect) = text_starting(&running, "A: first.img").unwrap();
+        let cpu = text_starting(&running, "CPU unknown").unwrap().1;
+        assert!(rect.right() <= cpu.left(), "the chip stays inside its area");
+        shell
+            .presenter
+            .as_mut()
+            .unwrap()
+            .assembled
+            .change_floppy(assembly::DeviceId::Fdc, 0, assembly::FloppyAction::Eject)
+            .unwrap();
+        let ejected = status_pass(&ctx, &mut shell, 1040.0, Vec::new());
+        assert!(shows(&ejected.text, "A: empty"));
+        assert!(shell.stop());
+        let stopped = status_pass(&ctx, &mut shell, 1040.0, Vec::new());
+        assert_eq!(text_starting(&stopped, "A:"), None);
+        assert_eq!(cells(&running), cells(&ejected));
+        assert_eq!(cells(&running), cells(&stopped));
+    }
+
+    #[test]
+    fn default_width_keeps_the_pointer_release_hint_readable() {
+        let ctx = egui::Context::default();
+        let mut shell = shell();
+        let hint = "Pointer captured — Ctrl+Alt+G releases";
+        shell.message = hint.into();
+        let mut entry = LibraryEntry::pending(std::path::PathBuf::from("machine.toml"));
+        entry.rate = "80286 · 32/39".into();
+        entry.ems = "EMS 2048 KiB".into();
+        shell.library.push(entry);
+        shell.selected = Some(0);
+        let pass = status_pass(&ctx, &mut shell, 1040.0, Vec::new());
+        for text in [hint, "80286 · 32/39", "EMS 2048 KiB", "Speed 100%"] {
+            label_rect(&pass.text, text);
+            assert!(!pass.elided.iter().any(|shown| shown == text), "{text}");
+        }
+    }
+
+    #[test]
+    fn default_width_chips_shorten_only_the_name_and_keep_size_and_mode() {
+        let ctx = egui::Context::default();
+        let mut shell = busy_shell();
+        let wide = status_pass(&ctx, &mut shell, 1600.0, Vec::new());
+        assert!(shows(&wide.text, "A: disk 1 · 1.44M · volatile"));
+        assert!(shows(&wide.text, "C: inline image · read-only"));
+        let pass = status_pass(&ctx, &mut shell, 1040.0, Vec::new());
+        let (a, _) = text_starting(&pass, "A: ").unwrap();
+        let (c, _) = text_starting(&pass, "C: ").unwrap();
+        assert!(a.ends_with("… · 1.44M · volatile"), "{a}");
+        assert!(c.ends_with("… · read-only"), "{c}");
+        assert!(pass.elided.is_empty(), "{:?}", pass.elided);
+        // The full line stays available to the hover and to accessibility.
+        assert!(pass
+            .labels
+            .iter()
+            .any(|label| label == "Drive A: disk 1 · 1.44M · volatile"));
+        let mut shell = media_shell();
+        let pass = status_pass(&ctx, &mut shell, 1040.0, Vec::new());
+        assert!(shows(&pass.text, "A: first.img · 1.44M · read-only"));
+        assert!(shell.stop());
+    }
+
+    #[test]
+    fn empty_drive_has_no_eject_in_its_chip_menu_or_the_media_menu() {
+        let ctx = egui::Context::default();
+        let mut shell = media_shell();
+        shell
+            .presenter
+            .as_mut()
+            .unwrap()
+            .assembled
+            .change_floppy(assembly::DeviceId::Fdc, 0, assembly::FloppyAction::Eject)
+            .unwrap();
+        let pass = status_pass(&ctx, &mut shell, 1600.0, Vec::new());
+        let chip = label_rect(&pass.text, "A: empty").center();
+        click_status(&ctx, &mut shell, 1600.0, chip);
+        let menu = status_pass(&ctx, &mut shell, 1600.0, Vec::new());
+        assert!(shows(&menu.text, "Drive A: (1.44M) — empty"));
+        assert!(!shows(&menu.text, "Write mode"));
+        let eject = label_rect(&menu.text, "Eject A:").center();
+        assert!(click_status(&ctx, &mut shell, 1600.0, eject).is_empty());
+        // Any click closes the menu; the enabled items still act once reopened.
+        click_status(&ctx, &mut shell, 1600.0, chip);
+        let menu = status_pass(&ctx, &mut shell, 1600.0, Vec::new());
+        let insert = label_rect(&menu.text, "Insert into A:…").center();
+        assert_eq!(
+            click_status(&ctx, &mut shell, 1600.0, insert),
+            [Command::Insert(0)]
+        );
+
+        let open_media = |shell: &mut Shell| {
+            egui::Popup::close_all(&ctx);
+            let drawn = draw(&ctx, shell, Vec::new());
+            click(&ctx, shell, label_rect(&drawn.text, "Media").center());
+            draw(&ctx, shell, Vec::new()).text
+        };
+        let text = open_media(&mut shell);
+        assert!(shows(&text, "Drive A: (1.44M) — empty"));
+        let eject = label_rect(&text, "Eject A:").center();
+        assert!(click(&ctx, &mut shell, eject).is_empty());
+        let text = open_media(&mut shell);
+        let next = label_rect(&text, "Next image in catalogue").center();
+        assert_eq!(click(&ctx, &mut shell, next), [Command::Next(0)]);
+        assert!(shell.stop());
+    }
+
+    #[test]
+    fn chip_from_library_queues_its_command_and_opens_the_library_view() {
+        let temp = assembly::test_support::TempDir::new("chip-from-library");
+        let root = temp.path().canonicalize().unwrap();
+        let ctx = egui::Context::default();
+        let mut shell = media_shell();
+        // A store path that does not exist: the user's own store is never read.
+        let store = root.join("no-store");
+        shell.preferences.store_root = Some(store.clone());
+        shell.args.machine = root.join("machine.toml");
+        let pass = status_pass(&ctx, &mut shell, 1600.0, Vec::new());
+        let chip = label_rect(&pass.text, "A: first.img · 1.44M · read-only").center();
+        click_status(&ctx, &mut shell, 1600.0, chip);
+        let menu = status_pass(&ctx, &mut shell, 1600.0, Vec::new());
+        let library = label_rect(&menu.text, "From library…").center();
+        let commands = click_status(&ctx, &mut shell, 1600.0, library);
+        assert_eq!(commands, [Command::FromLibrary(0)]);
+        shell.command(Command::FromLibrary(0), &ctx);
+        let draft = shell.insert_dialog.as_mut().unwrap();
+        assert_eq!(draft.unit, 0);
+        let library = draft.library.as_mut().expect("the library view is open");
+        assert_eq!(library.store_path, store.to_string_lossy());
+        assert_eq!(
+            library.workspace,
+            image_store::location::machine_media_dir(&root.join("machine.toml")).unwrap()
+        );
+        let mut failure = None;
+        for _ in 0..500 {
+            failure = library.poll();
+            if failure.is_some() || !library.is_busy() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(failure.is_some(), "a missing store reports an error");
+        shell.insert_dialog = None;
+        assert!(shell.stop());
+    }
+
+    #[test]
+    fn drive_chip_hover_shows_name_source_hash_and_write_mode() {
+        let ctx = egui::Context::default();
+        ctx.global_style_mut(|style| {
+            style.interaction.tooltip_delay = 0.0;
+            style.interaction.show_tooltips_only_when_still = false;
+        });
+        let mut shell = media_shell();
+        let pass = status_pass(&ctx, &mut shell, 1600.0, Vec::new());
+        let chip = label_rect(&pass.text, "A: first.img · 1.44M · read-only").center();
+        let mut hover = status_pass(&ctx, &mut shell, 1600.0, Vec::new());
+        for _ in 0..3 {
+            hover = status_pass(
+                &ctx,
+                &mut shell,
+                1600.0,
+                vec![egui::Event::PointerMoved(chip)],
+            );
+        }
+        for wanted in [
+            "A: 3.5\" 1.44M",
+            "first.img",
+            "Machine file at-freedos · disk 1 of 2",
+            "not pinned",
+            "1.44M · 80/2/18",
+            "Read-only — the guest's writes are refused; fixed by the machine file",
+            "Click for this drive's menu",
+        ] {
+            assert!(shows(&hover.text, wanted), "{wanted} missing");
+        }
+        assert!(!shows(&hover.text, "Activity"));
+    }
+
+    #[test]
+    fn drive_chip_click_opens_that_drives_menu_with_the_media_commands() {
+        let ctx = egui::Context::default();
+        let mut shell = media_shell();
+        let pass = status_pass(&ctx, &mut shell, 1600.0, Vec::new());
+        assert!(!shows(&pass.text, "Eject A:"));
+        let chip = label_rect(&pass.text, "A: first.img · 1.44M · read-only").center();
+        assert!(click_status(&ctx, &mut shell, 1600.0, chip).is_empty());
+        let menu = status_pass(&ctx, &mut shell, 1600.0, Vec::new());
+        for item in [
+            "Drive A: (1.44M) — first.img · read-only",
+            "Eject A:",
+            "Insert into A:…",
+            "From library…",
+            "Write mode: Read-only, fixed by the machine file",
+        ] {
+            assert!(shows(&menu.text, item), "{item} missing");
+        }
+        assert!(!shows(&menu.text, "Change write mode…"));
+        let eject = label_rect(&menu.text, "Eject A:").center();
+        assert_eq!(
+            click_status(&ctx, &mut shell, 1600.0, eject),
+            [Command::Eject(0)]
+        );
+        let closed = status_pass(&ctx, &mut shell, 1600.0, Vec::new());
+        assert!(!shows(&closed.text, "Insert into A:…"));
+        shell.command(Command::Eject(0), &ctx);
+        assert_eq!(
+            shell.presenter.as_ref().unwrap().media_events,
+            [(0, assembly::FloppyAction::Eject)]
+        );
+
+        click_status(&ctx, &mut shell, 1600.0, chip);
+        let menu = status_pass(&ctx, &mut shell, 1600.0, Vec::new());
+        let insert = label_rect(&menu.text, "Insert into A:…").center();
+        let commands = click_status(&ctx, &mut shell, 1600.0, insert);
+        assert_eq!(commands, [Command::Insert(0)]);
+        shell.command(Command::Insert(0), &ctx);
+        assert_eq!(shell.insert_dialog.as_ref().unwrap().unit, 0);
+        assert!(shell.stop());
+    }
+
+    #[test]
+    fn fixed_disk_chip_menu_offers_disk_layers_and_cannot_eject() {
+        let ctx = egui::Context::default();
+        let mut shell = busy_shell();
+        let pass = status_pass(&ctx, &mut shell, 1600.0, Vec::new());
+        let chip = label_rect(&pass.text, "C: inline image · read-only").center();
+        click_status(&ctx, &mut shell, 1600.0, chip);
+        let menu = status_pass(&ctx, &mut shell, 1600.0, Vec::new());
+        for item in [
+            "C: IDE master — inline image · read-only",
+            "Eject (fixed disk, part of the machine)",
+            "Disk layers…",
+            "Write mode: Read-only, fixed by the machine file",
+        ] {
+            assert!(shows(&menu.text, item), "{item} missing");
+        }
+        assert!(!shows(&menu.text, "From library…"));
+        let layers = label_rect(&menu.text, "Disk layers…").center();
+        assert_eq!(
+            click_status(&ctx, &mut shell, 1600.0, layers),
+            [Command::Layers]
+        );
+        assert!(shell.stop());
+    }
+
+    #[test]
+    fn session_floppy_write_mode_changes_through_its_insert_dialog() {
+        let temp = assembly::test_support::TempDir::new("chip-write-mode");
+        let root = temp.path().canonicalize().unwrap();
+        let path = root.join("extra.img");
+        std::fs::write(&path, vec![0; 1_474_560]).unwrap();
+        let ctx = egui::Context::default();
+        let mut shell = media_shell();
+        shell.command(Command::Insert(0), &ctx);
+        let draft = shell.insert_dialog.as_mut().unwrap();
+        draft.add_browsed(crate::media_dialog::browse(&path, draft.slot.geometry).unwrap());
+        shell.confirm_insert();
+        shell
+            .presenter
+            .as_mut()
+            .unwrap()
+            .apply_media_events()
+            .unwrap();
+
+        let pass = status_pass(&ctx, &mut shell, 1600.0, Vec::new());
+        let chip = label_rect(&pass.text, "A: extra.img · 1.44M · read-only").center();
+        click_status(&ctx, &mut shell, 1600.0, chip);
+        let menu = status_pass(&ctx, &mut shell, 1600.0, Vec::new());
+        assert!(shows(&menu.text, "Write mode: Read-only"));
+        assert!(!shows(&menu.text, "fixed by the machine file"));
+        let change = label_rect(&menu.text, "Change write mode…").center();
+        assert_eq!(
+            click_status(&ctx, &mut shell, 1600.0, change),
+            [Command::WriteMode(0)]
+        );
+        shell.command(Command::WriteMode(0), &ctx);
+        let draft = shell.insert_dialog.as_mut().unwrap();
+        assert_eq!(draft.selected, Some(2), "the inserted image is preselected");
+        assert!(!draft.journal);
+        draft.journal = true;
+        draft.journal_path = "extra.upfj".into();
+        shell.confirm_insert();
+        shell
+            .presenter
+            .as_mut()
+            .unwrap()
+            .apply_media_events()
+            .unwrap();
+        let pass = status_pass(&ctx, &mut shell, 1600.0, Vec::new());
+        assert!(shows(&pass.text, "A: extra.img · 1.44M · journal"));
+        shell.command(Command::WriteMode(0), &ctx);
+        let draft = shell.insert_dialog.as_ref().unwrap();
+        assert_eq!(draft.selected, Some(2));
+        assert!(draft.journal, "the dialog shows the current mode");
+        shell.insert_dialog = None;
+        assert!(shell.stop());
+    }
+
+    #[test]
+    fn media_menu_names_the_image_and_write_mode_in_each_drive() {
+        let ctx = egui::Context::default();
+        let open_media = |shell: &mut Shell| {
+            let drawn = draw(&ctx, shell, Vec::new());
+            click(&ctx, shell, label_rect(&drawn.text, "Media").center());
+            let drawn = draw(&ctx, shell, Vec::new());
+            egui::Popup::close_all(&ctx);
+            draw(&ctx, shell, Vec::new());
+            drawn.text
+        };
+        let mut shell = media_shell();
+        let text = open_media(&mut shell);
+        for label in [
+            "Drive A: (1.44M) — first.img · read-only",
+            "Drive B: — not installed",
+            "C: — no fixed disk",
+        ] {
+            assert!(shows(&text, label), "{label} missing");
+        }
+        shell.command(Command::Next(0), &ctx);
+        shell
+            .presenter
+            .as_mut()
+            .unwrap()
+            .apply_media_events()
+            .unwrap();
+        assert!(shows(
+            &open_media(&mut shell),
+            "Drive A: (1.44M) — second.img · read-only"
+        ));
+        let mut shell = busy_shell();
+        assert!(shows(
+            &open_media(&mut shell),
+            "C: IDE master — inline image · read-only"
+        ));
+        assert!(shell.stop());
+        let text = open_media(&mut shell);
+        assert!(shows(&text, "Drive A: — machine stopped"));
+        assert!(shows(&text, "C: — machine stopped"));
+    }
+
+    #[test]
+    fn chip_light_follows_the_sampled_busy_state_with_a_host_time_hold() {
+        let ctx = egui::Context::default();
+        let mut shell = busy_shell();
+        let leds = |pass: &StatusPass| {
+            pass.fills
+                .iter()
+                .filter(|(fill, rect)| *fill == AMBER && rect.width() == 10.0)
+                .count()
+        };
+        let before = status_pass(&ctx, &mut shell, 1600.0, Vec::new());
+        assert_eq!(leds(&before), 0, "no boundary has been sampled yet");
+        shell.presenter.as_mut().unwrap().next_paint = Some(std::time::Duration::ZERO);
+        shell.tick(&ctx, false, std::time::Duration::from_millis(20));
+        // The presenter has no start instant here, so the shell's host time is zero.
+        let lit = status_pass(&ctx, &mut shell, 1600.0, Vec::new());
+        assert_eq!(leds(&lit), 2, "A: motor and C: DRQ");
+        assert!(lit
+            .labels
+            .iter()
+            .any(|label| label == "Drive A: disk 1 · 1.44M · volatile, active"));
+        assert!(lit
+            .labels
+            .iter()
+            .any(|label| label == "Drive C: inline image · read-only, active"));
+        shell.presenter.as_mut().unwrap().started =
+            Some(Instant::now() - std::time::Duration::from_secs(5));
+        let held_out = status_pass(&ctx, &mut shell, 1600.0, Vec::new());
+        assert_eq!(leds(&held_out), 0, "the hold has ended without new samples");
+        assert!(held_out
+            .labels
+            .iter()
+            .any(|label| label == "Drive A: disk 1 · 1.44M · volatile"));
         assert!(shell.stop());
     }
 

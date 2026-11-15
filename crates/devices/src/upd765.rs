@@ -241,6 +241,8 @@ const DIR_CCR: u16 = 0x3F7;
 const DOR_NOT_RESET: u8 = 1 << 2;
 /// DOR bit 3: enable the DMA / interrupt path.
 const DOR_DMA_ENABLE: u8 = 1 << 3;
+/// DOR bit 4: drive 0's motor; bits 5–7 switch drives 1–3.
+const DOR_MOTOR_0: u8 = 1 << 4;
 
 /// MSR bit 7 (RQM): the data register is ready for a host transfer.
 const MSR_RQM: u8 = 1 << 7;
@@ -752,6 +754,29 @@ impl Upd765 {
     /// Catalogue entry currently inserted, or an open door.
     pub fn inserted_medium(&self, unit: usize) -> Option<usize> {
         self.inserted.get(unit).copied().flatten()
+    }
+
+    /// Whether drive `unit`'s front-panel activity light is on, for host
+    /// presentation; reading it changes no controller state.
+    ///
+    /// IBM PC AT Technical Reference, Fixed Disk and Diskette Drive Adapter,
+    /// Digital Output Register (3F2h) and Interface Lines: bits 1–0 select a
+    /// drive and bits 7–4 switch on the motors of drives 3–0; the selected,
+    /// motor-on drive is the one on the interface lines. ASSUMED: the drive's
+    /// light follows that selection, so a BIOS motor-off delay keeps it lit
+    /// after an access. A DMA transfer still pending for the drive also lights
+    /// it, because seeks complete without modelled time.
+    #[must_use]
+    pub fn drive_active(&self, unit: usize) -> bool {
+        let selected =
+            unit < 4 && usize::from(self.dor & 3) == unit && self.dor & (DOR_MOTOR_0 << unit) != 0;
+        let transferring = self
+            .pending_read
+            .is_some_and(|read| usize::from(read.drive) == unit)
+            || self
+                .pending_write
+                .is_some_and(|write| usize::from(write.drive) == unit);
+        selected || transferring
     }
 
     /// IBM PC AT High Capacity Diskette Drive, Output Signals, -Diskette Change:
@@ -1979,6 +2004,37 @@ mod tests {
         )
         .unwrap();
         MockBus::new(Box::new(fdc))
+    }
+
+    #[test]
+    fn drive_light_follows_the_selected_motor_and_a_pending_transfer() {
+        let disk = || Some(Drive::new(FloppyGeometry::HD1440, vec![0x5A; SECTOR_SIZE]));
+        let mut bus = MockBus::new(Box::new(ready_drives([disk(), disk(), None, None])));
+        let lights = |bus: &mut MockBus| -> [bool; 5] {
+            let fdc = swap_fdc(bus);
+            std::array::from_fn(|unit| fdc.drive_active(unit))
+        };
+        // The ready controller selects drive 0 with its motor on (DOR 1Ch).
+        assert_eq!(lights(&mut bus), [true, false, false, false, false]);
+        bus.port_write(DOR, 1, 0x0C).unwrap();
+        assert_eq!(lights(&mut bus), [false; 5]);
+        bus.port_write(DOR, 1, 0x2D).unwrap();
+        assert_eq!(lights(&mut bus), [false, true, false, false, false]);
+        // A running motor without the drive's selection does not light it.
+        bus.port_write(DOR, 1, 0x1D).unwrap();
+        assert_eq!(lights(&mut bus), [false; 5]);
+        bus.port_write(DOR, 1, 0x0D).unwrap();
+        bus_command(&mut bus, &[0x46, 1, 0, 0, 1, 2, 1, 0x1B, 0xFF]);
+        assert_eq!(lights(&mut bus), [false, true, false, false, false]);
+        finish_test_dma(&mut bus, SECTOR_SIZE, true);
+        assert_eq!(lights(&mut bus), [false; 5]);
+        assert_eq!(bus_results(&mut bus, 7)[0] & 3, 1);
+        // WRITE DATA waits for its bytes from memory: the pending write lights it.
+        bus_command(&mut bus, &[0x45, 1, 0, 0, 1, 2, 1, 0x1B, 0xFF]);
+        assert_eq!(lights(&mut bus), [false, true, false, false, false]);
+        finish_test_dma(&mut bus, SECTOR_SIZE, true);
+        assert_eq!(lights(&mut bus), [false; 5]);
+        assert_eq!(bus_results(&mut bus, 7)[0] & 3, 1);
     }
 
     #[test]

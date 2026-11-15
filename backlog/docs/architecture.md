@@ -645,11 +645,25 @@ The original VileR fonts and attribution stay embedded. About and informational
 CLI output also carry egui's embedded font credits and original licence texts;
 AccessKit is enabled for the shell. Integer scaling first removes the sink's
 pixel-doubling factor. Rasterisation and all
-input/pacing/session tests remain headless. The status bar shows power,
-configured instruction/PIT ratio, EMS and host audio. Drive activity lamps stay
-off because the existing observation boundary exposes no activity signal; the
-UI labels that limitation. Headless CLI runs do not depend on the shell and
-retain their existing behavior. See `design/machine-images.md` §7.
+input/pacing/session tests remain headless. The status bar shows power, one
+chip per drive, configured instruction/PIT ratio, EMS, host audio and speed.
+Drive lamps have an activity signal: after every run chunk the presenter reads
+`Upd765::drive_active` (the DOR-selected, motor-on drive or a pending DMA
+transfer) and `Ata::activity` (BSY or DRQ), both read-only, and the shell holds
+each lamp for 200 ms of host UI time, which never reaches the machine. Headless
+CLI runs do not depend on the shell and retain their existing behavior. See
+`design/machine-images.md` §7.
+
+`src/drive_chips.rs` is the pure model behind the status-bar drive chips and
+the Media menu's drive labels. It builds one view per A:–D: drive from the live
+media configuration, the Insert dialog's floppy slots and the FDC's inserted
+medium, naming the image, format, write mode, source (machine file or image,
+library media set, or a file chosen with Browse…) and short SHA-256, and owns
+the lamp hold and the chip widths. The status-bar cell widths depend only on the
+window width, so chips appearing or changing never move the other cells; a chip
+shortens only its image name, keeping format and write mode. `src/shell.rs`
+draws the chips, their tooltip and the drive menu, which reuses the Media
+menu's commands.
 
 `settings_model` resolves the selected machine's inheritance and consumes
 `MachineFile::describe`, the metadata-only path through normal machine-file

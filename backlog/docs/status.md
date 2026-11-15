@@ -28,6 +28,53 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   must keep the manifest title annotation and `unemu.firmware.sources`; workspace publication
   rebuilds manifest annotations today. Generated configurations and metadata are open in
   import, Create and publication alike; ROMs, disks, floppies and CMOS stay user-supplied.
+- **2026-11-15 — Status-bar drive chips:** while a machine runs, the status
+  bar shows one chip per drive it has, as in the approved
+  [main-window mock-up](design/mockups/main-window.html) (revision 2):
+  `A: FreeDOS 1.2 boot · 1.2M · read-only`, `B: empty`,
+  `C: open-at-dos:1.0.0 · journal`, each with an amber activity light.
+  - **Hover and click:** hover shows the drive, the full image name, its source
+    (machine file or image, library media set with disk position, or a file
+    chosen with Browse…), a short SHA-256 (or "not pinned"), the format and the
+    write mode. A click opens that drive's menu: Eject (disabled while the
+    drive is empty), Insert…, From library… and the write mode, which for a
+    session disk changes through its Insert dialog with the disk preselected; a
+    fixed disk offers Disk layers… and says it is part of the image or the
+    machine. The menu items are the Media menu's own commands, and the Media
+    menu now names each drive's image and write mode too and disables Eject
+    for an empty drive.
+  - **Lights:** they read each drive's own busy state at every completed run
+    boundary — the µPD765's selected, motor-on drive or a pending DMA transfer
+    (so a BIOS motor-off delay keeps A: lit for a moment after an access), and
+    the ATA disk's BSY or DRQ — through two new read-only device accessors; a
+    200 ms hold in host UI time keeps a short access visible and never reaches
+    the machine. A fast test runs a guest repeating multi-sector IDE reads and
+    floppy DMA reads through the sampling presenter and replays it headlessly
+    in 137- and 997-tick chunks with identical guest and device state. Any IDE
+    command whose data phase starts and ends between two 1 ms boundaries goes
+    unseen; writes have no BSY interval in this model.
+  - **Layout:** cell widths depend only on the window width, so chips
+    appearing or changing never move Power, CPU, EMS, audio or speed. CPU, EMS
+    and speed are narrower (100, 92 and 124 px) to fit their usual text, which
+    gives the drive area 298 px at the default 1040 px window (80 px at the
+    760 px minimum, at most 900 px) while the message keeps 240 px. A chip
+    shortens only its image name, so an A: and a C: chip keep format and write
+    mode at the default window; with three drives there the whole line can
+    still be cut. The hover always has the full text.
+  - **Tests:** headless tests cover chip text per drive state, tooltip rows,
+    the click menu and its commands, Media menu labels, the layout, default
+    width text, and the light's on/off transitions with the hold.
+  - **Manual checks:** look at the chips, tooltip and drive menu in both skins
+    and in light and dark themes; boot FreeDOS from a real floppy image and
+    watch A:'s light while it reads; watch C: during a DOS directory listing on
+    an IDE machine; open a library media set from a chip and switch a browsed
+    floppy between read-only and journal from its chip.
+  - **Mock-up departures, awaiting maintainer approval:**
+    - C:'s write mode is a label in its drive menu, not a choice between
+      Journal and Read-only.
+    - An empty floppy drive's menu has no "Write mode for the next floppy"
+      section; the mode is chosen in the Insert dialog.
+    - The light is steady while the drive is busy, not flickering.
 - **2026-11-14 — macOS application menu:** the global menu bar has one
   application menu: About unemupc98, Hide unemupc98 (⌘H), Hide Others (⌥⌘H),
   Show All and Quit unemupc98 (⌘Q). About opens the shell's About dialog; Quit
@@ -384,8 +431,8 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   readiness using the shared explicit-roots SHA-256 discovery. The CLI accepts
   repeatable --rom-dir. The macOS shell uses only its native title bar and the
   toolbar paints its icons without font symbols. Future editors/import/layers are placeholder dialogs, save
-  state/CD-ROM remain disabled. Drive activity observation is unavailable, so
-  only the power light changes. Last-run metadata stays blank. Existing window
+  state/CD-ROM remain disabled. Drive activity lights landed on 2026-11-15
+  with the status-bar drive chips (entry above). Last-run metadata stays blank. Existing window
   tests remain headless; new command/discovery/texture/input tests also open no
   windows. Visual appearance and physical capture/audio need manual checking.
 

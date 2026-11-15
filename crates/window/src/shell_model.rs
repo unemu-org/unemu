@@ -31,6 +31,10 @@ pub(crate) enum Command {
     Reset,
     PowerCycle,
     Insert(u8),
+    /// Insert into a floppy drive from the image library.
+    FromLibrary(u8),
+    /// Change the write mode of the floppy in a drive, in its Insert dialog.
+    WriteMode(u8),
     CreateBlank,
     Next(u8),
     Eject(u8),
@@ -70,7 +74,11 @@ impl Enablement {
             | Command::Release
             | Command::Speed(_)
             | Command::FastForward => self.state != State::Stopped,
-            Command::Insert(unit) | Command::Next(unit) | Command::Eject(unit) => {
+            Command::Insert(unit)
+            | Command::FromLibrary(unit)
+            | Command::WriteMode(unit)
+            | Command::Next(unit)
+            | Command::Eject(unit) => {
                 self.state != State::Stopped
                     && self.floppy.get(unit as usize).copied().unwrap_or(false)
             }
@@ -420,17 +428,35 @@ pub(crate) fn relative_diagnostic(text: &str, machine: &Path) -> String {
     result
 }
 
-/// Message, power, A:, C:, CPU, EMS, audio and speed cells. The message absorbs spare
-/// space; every cell is clipped independently even on a narrow client.
-pub(crate) fn status_widths(available: f32) -> [f32; 8] {
-    let fixed = [68.0, 40.0, 40.0, 156.0, 112.0, 118.0, 150.0];
+/// Narrowest drive area, the width of the former A: and C: placeholders.
+const STATUS_DRIVES_MIN: f32 = 80.0;
+/// Widest drive area: three full-width chips.
+const STATUS_DRIVES_MAX: f32 = 900.0;
+/// Spare width the message keeps before the drive area grows, so the
+/// pointer-release hint stays readable at the default window size.
+const STATUS_MESSAGE_FIRST: f32 = 240.0;
+
+/// Message, power, drive chips, CPU, EMS, audio and speed cells. The message
+/// keeps the first spare width, the drive area takes the next up to three full
+/// chips, and the rest returns to the message. Widths depend only on the window
+/// width, never on the drives' contents, so chips appearing or changing never
+/// move the other cells. CPU, EMS and speed are sized to their longest usual
+/// text ("80286 · 32/39", "EMS 2048 KiB", "Speed 100% 1.0x"), which leaves the
+/// drive area room at the default window for an A: and a C: chip with their
+/// format and write mode. Every cell is clipped independently even on a
+/// narrow client.
+pub(crate) fn status_widths(available: f32) -> [f32; 7] {
+    let fixed = [68.0, STATUS_DRIVES_MIN, 100.0, 92.0, 118.0, 124.0];
     let total: f32 = fixed.iter().sum();
     let scale = (available.max(0.0) / total).min(1.0);
-    let mut widths = [0.0; 8];
-    widths[0] = (available - total).max(0.0);
+    let mut widths = [0.0; 7];
     for (width, fixed) in widths[1..].iter_mut().zip(fixed) {
         *width = fixed * scale;
     }
+    let spare = (available - total).max(0.0);
+    let drives = (spare - STATUS_MESSAGE_FIRST).clamp(0.0, STATUS_DRIVES_MAX - STATUS_DRIVES_MIN);
+    widths[2] += drives;
+    widths[0] = spare - drives;
     widths
 }
 
@@ -793,15 +819,25 @@ mod tests {
     #[test]
     fn status_cells_fit_without_consuming_each_others_width() {
         assert_eq!(
-            &status_widths(1040.0)[1..7],
-            &[68.0, 40.0, 40.0, 156.0, 112.0, 118.0]
+            status_widths(1040.0),
+            [240.0, 68.0, 298.0, 100.0, 92.0, 118.0, 124.0]
         );
-        for available in [0.0, 200.0, 760.0, 1040.0, 2000.0] {
+        assert_eq!(
+            status_widths(760.0),
+            [178.0, 68.0, 80.0, 100.0, 92.0, 118.0, 124.0]
+        );
+        assert_eq!(status_widths(4000.0)[2], 900.0);
+        for available in [0.0, 200.0, 760.0, 1040.0, 1300.0, 2000.0, 4000.0] {
             let widths = status_widths(available);
             assert!(widths.iter().all(|width| *width >= 0.0));
             assert!((widths.iter().sum::<f32>() - available).abs() < 0.01);
             if available >= 760.0 {
-                assert_eq!(&widths[1..], &status_widths(760.0)[1..]);
+                // Power, CPU, EMS, audio and speed never change width.
+                for cell in [1, 3, 4, 5, 6] {
+                    assert_eq!(widths[cell], status_widths(760.0)[cell]);
+                }
+                assert!((80.0..=900.0).contains(&widths[2]));
+                assert!(widths[0] >= 178.0);
             }
         }
     }
@@ -901,6 +937,8 @@ mod tests {
                     Command::Reset,
                     Command::PowerCycle,
                     Command::Insert(0),
+                    Command::FromLibrary(0),
+                    Command::WriteMode(0),
                     Command::Next(0),
                     Command::Eject(0),
                     Command::Mute,
@@ -909,6 +947,8 @@ mod tests {
                 }
                 assert!(!model.allows(Command::Eject(1)));
                 assert!(!model.allows(Command::Insert(1)));
+                assert!(!model.allows(Command::FromLibrary(1)));
+                assert!(!model.allows(Command::WriteMode(1)));
                 assert!(!model.allows(Command::Insert(2)));
                 assert!(!model.allows(Command::SaveState));
             }
