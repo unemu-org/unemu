@@ -96,6 +96,12 @@ fn frontend_launch_hashes_each_disk_once_with_bounded_allocations() {
         let mut changed = OpenOptions::new().write(true).open(&path).unwrap();
         changed.seek(SeekFrom::Start(0)).unwrap();
         changed.write_all(&[1; 512]).unwrap();
+        // A coarse filesystem clock (Linux stamps files from the timer tick) can
+        // give a same-size rewrite the verified timestamps; the check can only
+        // see a change that moved them.
+        changed
+            .set_times(std::fs::FileTimes::new().set_modified(std::time::UNIX_EPOCH))
+            .unwrap();
         let error = match loaded.assemble(&assembly::ObservationPolicy::default()) {
             Ok(_) => panic!("changed verified base accepted"),
             Err(error) => error,

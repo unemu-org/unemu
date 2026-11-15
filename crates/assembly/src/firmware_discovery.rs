@@ -227,6 +227,13 @@ struct HashCache {
 }
 
 impl HashCache {
+    /// Start a scan. A hash taken while its file's timestamps were too recent to
+    /// prove that a later write would change them (see `racy_timestamp`) is
+    /// reused only within the scan that read it, then read again.
+    fn begin_scan(&mut self) {
+        self.bypass.extend(self.unpersistable.iter().cloned());
+    }
+
     fn hash(&mut self, path: &Path) -> io::Result<String> {
         if self
             .control
@@ -622,9 +629,7 @@ pub(crate) fn find_test_firmware(
     paths: &[PathBuf],
 ) -> Result<Option<FoundUserFirmware>, UserFirmwareError> {
     let roots = explicit_roots(paths);
-    let mut cache = shared_cache()
-        .lock()
-        .map_err(|_| UserFirmwareError::CacheUnavailable)?;
+    let mut cache = shared_scan()?;
     find_in_roots(entry_id, catalogue, &roots, &mut cache).map(|discovery| discovery.found)
 }
 
@@ -641,6 +646,16 @@ pub fn default_search_roots() -> Vec<PathBuf> {
 fn shared_cache() -> &'static Mutex<HashCache> {
     static CACHE: OnceLock<Mutex<HashCache>> = OnceLock::new();
     CACHE.get_or_init(|| Mutex::new(HashCache::default()))
+}
+
+/// The process-wide cache outside a discovery session. Such a call has no
+/// enclosing scan, so it is one: a racy hash never outlives the call that read it.
+fn shared_scan() -> Result<std::sync::MutexGuard<'static, HashCache>, UserFirmwareError> {
+    let mut cache = shared_cache()
+        .lock()
+        .map_err(|_| UserFirmwareError::CacheUnavailable)?;
+    cache.begin_scan();
+    Ok(cache)
 }
 
 fn explicit_roots(paths: &[PathBuf]) -> Vec<SearchRoot> {
@@ -679,9 +694,8 @@ pub fn matches_file(path: &Path, pin: &FirmwarePin) -> io::Result<bool> {
     if !pin.accepts_size(fs::metadata(path)?.len()) {
         return Ok(false);
     }
-    let mut cache = shared_cache()
-        .lock()
-        .map_err(|_| io::Error::other("firmware hash cache unavailable"))?;
+    let mut cache =
+        shared_scan().map_err(|_| io::Error::other("firmware hash cache unavailable"))?;
     Ok(cache.hash(path)? == pin.sha256)
 }
 
@@ -769,9 +783,7 @@ fn discover_user_firmware(
     catalogue: &[FirmwareEntry],
 ) -> Result<Discovery, UserFirmwareError> {
     let roots = explicit_roots(&default_search_roots());
-    let mut cache = shared_cache()
-        .lock()
-        .map_err(|_| UserFirmwareError::CacheUnavailable)?;
+    let mut cache = shared_scan()?;
     find_in_roots(entry_id, catalogue, &roots, &mut cache)
 }
 
@@ -837,6 +849,18 @@ macro_rules! require_user_firmware {
 /// Cache values are hints; store ingestion still verifies the copied bytes.
 pub fn hash_firmware_file(path: &Path) -> io::Result<String> {
     persistent::with_cache(|cache| Ok(cache.hash(path))).map_err(io::Error::other)?
+}
+
+/// Whether this process is refused access to `path` after a test removed its
+/// permission bits. Root, as in a Linux CI container, ignores them; tests then
+/// skip only the checks that need the denial.
+#[cfg(all(test, unix))]
+fn access_denied(path: &Path) -> bool {
+    if path.is_dir() {
+        fs::read_dir(path).is_err()
+    } else {
+        fs::File::open(path).is_err()
+    }
 }
 
 #[cfg(test)]
@@ -1434,6 +1458,70 @@ mod tests {
         assert!(matches_file(&path, &pin).unwrap());
         fs::write(&path, [4, 3, 2, 1]).unwrap();
         assert!(!matches_file(&path, &pin).unwrap());
+    }
+
+    /// Rewrite `path` in place with same-size `bytes` and its old mtime, then
+    /// leave the old digest in the shared cache under the file's current
+    /// metadata. A coarse filesystem clock (Linux stamps files from the timer
+    /// tick) produces exactly this when the rewrite lands in the same tick, even
+    /// for the change time; storing the entry directly reproduces it on any host.
+    #[cfg(not(windows))]
+    fn rewrite_behind_a_cached_digest(path: &Path, bytes: &[u8], racy: bool) -> String {
+        let modified = fs::metadata(path).unwrap().modified().unwrap();
+        let old = format!("{:x}", Sha256::digest(fs::read(path).unwrap()));
+        fs::write(path, bytes).unwrap();
+        fs::File::options()
+            .write(true)
+            .open(path)
+            .unwrap()
+            .set_times(fs::FileTimes::new().set_modified(modified))
+            .unwrap();
+        assert_eq!(fs::metadata(path).unwrap().modified().unwrap(), modified);
+        let canonical = path.canonicalize().unwrap();
+        let key = hash_key(canonical.clone(), &fs::metadata(path).unwrap()).unwrap();
+        let mut cache = shared_cache().lock().unwrap();
+        cache.hashes.retain(|entry, _| entry.0 != canonical);
+        cache.hashes.insert(key, old.clone());
+        if racy {
+            cache.unpersistable.insert(canonical);
+        } else {
+            cache.unpersistable.remove(&canonical);
+        }
+        old
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn racy_cached_hash_is_read_again_after_a_same_size_rewrite_with_the_same_mtime() {
+        let temp = TempDir::new("firmware-cache-racy-rewrite");
+        let path = temp.path().join("rom");
+        fs::write(&path, [1, 2, 3, 4]).unwrap();
+        rewrite_behind_a_cached_digest(&path, &[4, 3, 2, 1], true);
+        let rewritten = FirmwarePin {
+            sha256: hash(&[4, 3, 2, 1]).into(),
+            length: Some(4),
+        };
+        assert!(matches_file(&path, &rewritten).unwrap());
+        assert_eq!(hash_firmware_file(&path).unwrap(), rewritten.sha256);
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn settled_cached_hash_with_unchanged_metadata_is_served_without_reading() {
+        let temp = TempDir::new("firmware-cache-settled-entry");
+        let path = temp.path().join("rom");
+        fs::write(&path, [1, 2, 3, 4]).unwrap();
+        let cached = rewrite_behind_a_cached_digest(&path, &[4, 3, 2, 1], false);
+        // Only a cache hit can report the digest of bytes the file no longer holds.
+        assert_eq!(hash_firmware_file(&path).unwrap(), cached);
+        assert!(matches_file(
+            &path,
+            &FirmwarePin {
+                sha256: cached,
+                length: Some(4)
+            }
+        )
+        .unwrap());
     }
 
     #[test]

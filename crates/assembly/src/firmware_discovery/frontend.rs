@@ -998,19 +998,26 @@ mod tests {
         });
         let before = fs::read(&path).unwrap();
         fs::set_permissions(&locked, fs::Permissions::from_mode(0o0)).unwrap();
+        let denied = access_denied(&locked);
         let mut warnings = Vec::new();
-        with_discovery_session(Some(&path), false, &DiscoveryControl::default(), || {
-            assert!(locate_firmware_with_roots(
-                &roots(&[&root]),
-                None,
-                Some(&pin(&[1; 512], Some(512))),
-                &[],
-                &mut warnings
-            )
-            .unwrap()
-            .is_none());
-        });
+        let found =
+            with_discovery_session(Some(&path), false, &DiscoveryControl::default(), || {
+                locate_firmware_with_roots(
+                    &roots(&[&root]),
+                    None,
+                    Some(&pin(&[1; 512], Some(512))),
+                    &[],
+                    &mut warnings,
+                )
+                .unwrap()
+            });
         fs::set_permissions(&locked, fs::Permissions::from_mode(0o700)).unwrap();
+        if !denied {
+            eprintln!("skipped failed-listing checks: this host lists a directory without permission (for example, as root)");
+            assert_eq!(found, Some(ImageSource::File(file)));
+            return;
+        }
+        assert!(found.is_none());
         assert!(!warnings.is_empty());
         assert_eq!(fs::read(&path).unwrap(), before);
     }
@@ -1159,6 +1166,7 @@ mod tests {
         fs::write(&good, bytes).unwrap();
         fs::set_permissions(&locked_dir, fs::Permissions::from_mode(0o0)).unwrap();
         fs::set_permissions(&locked_file, fs::Permissions::from_mode(0o0)).unwrap();
+        let denied = access_denied(&locked_dir) && access_denied(&locked_file);
         let mut warnings = Vec::new();
         let found = find_image(
             &roots(&[temp.path()]),
@@ -1168,6 +1176,11 @@ mod tests {
         );
         fs::set_permissions(&locked_dir, fs::Permissions::from_mode(0o700)).unwrap();
         fs::set_permissions(&locked_file, fs::Permissions::from_mode(0o600)).unwrap();
+        if !denied {
+            eprintln!("skipped unreadable-entry checks: this host reads files without permission (for example, as root)");
+            assert!(found.is_some());
+            return;
+        }
         assert_eq!(found, Some(good));
         assert_eq!(warnings.len(), 2);
     }

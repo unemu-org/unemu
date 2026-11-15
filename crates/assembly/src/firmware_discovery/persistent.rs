@@ -134,9 +134,7 @@ pub(super) fn with_cache<T>(
         if let Some(cache) = session.borrow_mut().as_mut() {
             return operation(cache);
         }
-        let mut cache = shared_cache()
-            .lock()
-            .map_err(|_| UserFirmwareError::CacheUnavailable)?;
+        let mut cache = shared_scan()?;
         operation(&mut cache)
     })
 }
@@ -160,6 +158,13 @@ pub fn with_firmware_pins<T>(pins: &[FirmwarePin], operation: impl FnOnce() -> T
     }
 }
 
+/// Whether a hash taken at `hashed_at` cannot be trusted on matching metadata
+/// later. A rewrite that lands in the same filesystem clock step keeps size,
+/// inode and both timestamps, and a step can be as long as two seconds (FAT
+/// modification times). Only when the modification and change times are both
+/// older than the hash by more than that must any later write alter them; git
+/// applies the same rule to "racily clean" index entries. Racy hashes are never
+/// written to the index and are read again by every later scan.
 pub(super) fn racy_timestamp(key: &HashKey, hashed_at: SystemTime) -> bool {
     let window = Duration::from_secs(2);
     let recent = |time: SystemTime| {
@@ -247,7 +252,7 @@ fn run_session<T>(
             None => (HashCache::default(), false),
         }
     };
-    cache.bypass.extend(cache.unpersistable.iter().cloned());
+    cache.begin_scan();
     cache.retained_roots = cache
         .listings
         .iter()
@@ -1025,8 +1030,15 @@ mod tests {
         let path = temp.path().join("index");
         fs::write(&path, "preserve this index").unwrap();
         fs::set_permissions(&path, fs::Permissions::from_mode(0o0)).unwrap();
+        let denied = access_denied(&path);
         discover(&root, &path, false, &DiscoveryControl::default());
         fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+        if !denied {
+            eprintln!("skipped unreadable-index check: this host reads files without permission (for example, as root)");
+            // A readable but invalid index is rebuilt like any corrupt one.
+            assert!(load(&path).is_some());
+            return;
+        }
         assert_eq!(fs::read_to_string(&path).unwrap(), "preserve this index");
     }
 

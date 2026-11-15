@@ -1169,6 +1169,10 @@ fn preselection_lease_and_cache_save_failures_are_misses() {
     fs::create_dir_all(&cache).unwrap();
     let permissions = fs::metadata(&cache).unwrap().permissions();
     fs::set_permissions(&cache, fs::Permissions::from_mode(0o555)).unwrap();
+    // Root, as in a Linux CI container, may write to a read-only directory.
+    let probe = cache.join("permission-probe");
+    let denied = fs::write(&probe, []).is_err();
+    let _ = fs::remove_file(&probe);
     let mut warnings = Vec::new();
     let result = machine_file::prepare_for_assembly_with_firmware_store(
         &machine,
@@ -1178,10 +1182,14 @@ fn preselection_lease_and_cache_save_failures_are_misses() {
     );
     fs::set_permissions(&cache, permissions).unwrap();
     let p = result.unwrap();
-    assert!(p.firmware_sources().is_empty());
-    assert!(warnings
-        .iter()
-        .any(|w| w.contains("store index unavailable")));
+    if denied {
+        assert!(p.firmware_sources().is_empty());
+        assert!(warnings
+            .iter()
+            .any(|w| w.contains("store index unavailable")));
+    } else {
+        eprintln!("skipped cache-save failure checks: this host writes to a read-only directory (for example, as root)");
+    }
     assert!(p
         .load(assembly::AssemblyOptions {
             allow_unlisted_firmware: true

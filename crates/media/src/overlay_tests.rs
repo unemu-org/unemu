@@ -66,6 +66,11 @@ fn changed_base_is_rejected_for_base_and_overlay_reads_writes_and_finish() {
         } else {
             file.seek(SeekFrom::Start(512)).unwrap();
             file.write_all(&[3; 512]).unwrap();
+            // A coarse filesystem clock (Linux stamps files from the timer tick)
+            // can give a same-size rewrite this soon the verified timestamps;
+            // the check can only see a change that moved them.
+            file.set_times(std::fs::FileTimes::new().set_modified(std::time::UNIX_EPOCH))
+                .unwrap();
         }
         assert!(base.read_sector(0).is_err());
         assert_eq!(disk.read_sector(2), [0; 512]);

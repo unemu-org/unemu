@@ -76,6 +76,20 @@ snapshot machine state, replay an input log for reproducible debugging.
 - SingleStepTests / ProcessorTests corpus — real-mode CPU oracle (fetched, not vendored).
 - `qemu` — optional final-state differential oracle.
 
+## Host filesystem assumptions
+
+CI runs the tests **as root** in a Linux container (`.forgejo/workflows/ci.yml`).
+Root ignores permission bits, so a test that removes access with `chmod` must
+first probe the denial (try the access) and, when it succeeds, skip only the
+checks that need it with an `eprintln!` naming the reason; the rest of the test
+still runs. Never `#[ignore]` such a test.
+
+Linux also stamps file times from a coarse clock (the timer tick), so a
+same-size rewrite within one tick keeps size, inode, mtime and ctime. Tests must
+not rely on a quick rewrite changing metadata: set a distinct mtime explicitly,
+or, for the firmware hash cache, inject the stale entry or the hash time through
+the cache's test seams.
+
 ## What "done" means for a testable unit
 
 - New device: unit tests + fuzz target + its row in the coverage matrix.

@@ -570,7 +570,17 @@ fn base_mutation_stops_the_frontend_before_another_run_and_after_finish() {
         if finish_first {
             machine.finish_persistence().unwrap();
         }
-        std::fs::write(disk.root.join("base.img"), vec![0xA5; disk.base.len()]).unwrap();
+        let base = disk.root.join("base.img");
+        std::fs::write(&base, vec![0xA5; disk.base.len()]).unwrap();
+        // A coarse filesystem clock (Linux stamps files from the timer tick) can
+        // give a same-size rewrite the verified timestamps; the check can only
+        // see a change that moved them.
+        std::fs::File::options()
+            .write(true)
+            .open(&base)
+            .unwrap()
+            .set_times(std::fs::FileTimes::new().set_modified(std::time::UNIX_EPOCH))
+            .unwrap();
         let error = machine.check_persistence().unwrap_err();
         assert!(error
             .to_string()
