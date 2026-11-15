@@ -571,7 +571,7 @@ UNEMUPC98_REQUIRE_FIXTURES=1 cargo test --offline -p cli --test dos_interactive_
 UNEMUPC98_REQUIRE_FIXTURES=1 cargo test --offline -p cli --test dos_write_golden -- --ignored --nocapture
 # FreeDOS boots A: with the AT-reset BIOS and XT+ ROM, then lists readonly C:
 UNEMUPC98_REQUIRE_FIXTURES=1 cargo test --offline -p cli --test ide_freedos_golden -- --ignored --nocapture
-# Open AT protected-mode test floppy: PM entry, 8042/triple-fault resets, A20 (design/at-pm-test.md)
+# Open AT protected-mode test floppy: INT 15h 88h/87h, PM entry, 8042/triple-fault resets, A20 (design/at-pm-test.md)
 UNEMUPC98_REQUIRE_FIXTURES=1 cargo test --offline -p cli --test at_pm_test_golden -- --include-ignored --nocapture
 cargo test -p devices                        # one crate's tests
 cargo build --offline -p window --bin unemupc98-window
@@ -1133,8 +1133,9 @@ The ignored `user_rom_ibm_1985_identity` checks assembled identity, per-chip has
 and misplaced/bad-chip diagnostics through assembly and machine-file lowering,
 without executing the BIOS. It accepts either the chip pair or an assembled image.
 `user_rom_ibm_5170_at_pm_test_resumes_through_the_shutdown_byte` boots the
-open AT protected-mode test floppy with the IBM 5170 BIOS and expects every
-reset to resume through the CMOS shutdown byte (`design/at-pm-test.md`).
+open AT protected-mode test floppy with the IBM 5170 BIOS and expects the
+INT 15h AH=88h and AH=87h lines to pass and every reset to resume through
+the CMOS shutdown byte (`design/at-pm-test.md`).
 `user_rom_landmark_at_identity` similarly checks the Landmark AT assembled hash,
 mirrored halves and per-chip hashes. The CLI test
 `user_rom_landmark_at_real_mode_prefix` runs its first twelve diagnostics headlessly

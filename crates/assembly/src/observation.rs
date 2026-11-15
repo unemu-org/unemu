@@ -1327,10 +1327,14 @@ mod tests {
         for byte in [0, 0xFF] {
             bus.port_write(0x3F8, 1, byte).unwrap();
         }
-        for value in [0x1234, 0x1234, 0, 0xFF] {
+        let checkpoints = [0x1234, 0x1234, 0, 0xFF];
+        for value in checkpoints {
             bus.port_write(0x190, 4, value).unwrap();
         }
-        assert_eq!(bus.port_read(0x190, 2).unwrap(), 0xFFFF);
+        // Reads add no checkpoint. 0x190 returns its latch, the low byte of
+        // the last write; the undecoded 0x191 floats high.
+        let latch = checkpoints[3] & 0xFF;
+        assert_eq!(bus.port_read(0x190, 2).unwrap(), 0xFF00 | latch);
         for device in [DeviceId::Uart, DeviceId::Post] {
             let dev = bus.device_mut(assembled.device_index[&device]).unwrap();
             let state = dev.save();

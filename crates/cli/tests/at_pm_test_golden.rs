@@ -1,20 +1,24 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Open AT protected-mode return test: 80286 protected-mode entry, the return
-//! to real mode through an 8042 pulse reset and through a triple fault, both
-//! resumed through the CMOS shutdown byte, and A20 through the 8042.
+//! Open AT protected-mode return test: the BIOS extended-memory services
+//! (INT 15h AH=88h size, AH=87h block move), 80286 protected-mode entry, the
+//! return to real mode through an 8042 pulse reset and through a triple fault,
+//! both resumed through the CMOS shutdown byte, and A20 through the 8042.
 //!
 //! The guest is the project's own floppy, `vendor/at-pm-test/at-pm-test.asm`,
-//! built by `vendor/at-pm-test/build.sh`. It prints one line per stage and
-//! round to the BIOS teletype and to COM1, then a failure count, and halts
+//! built by `vendor/at-pm-test/build.sh`. It prints two INT 15h lines, one
+//! line per stage and round, an informational line for a faulting block
+//! move, and a failure count, to the BIOS teletype and to COM1, then halts
 //! with interrupts disabled. These goldens compare the COM1 bytes exactly.
-//! See `backlog/docs/design/at-pm-test.md` for what each stage checks.
+//! See `backlog/docs/design/at-pm-test.md` for what each line checks.
 //!
 //! IBM Personal Computer AT Technical Reference: System Board, Keyboard
 //! Controller (output port bits 0 and 1; commands D0h, D1h, FEh) and
-//! Real-Time Clock (CMOS 0Fh shutdown status byte); BIOS listing, POST reset
-//! path (shutdown codes 05h and 0Ah jump through 0040:0067h). Intel 80286
-//! Programmer's Reference Manual, Interrupts and Exceptions (double fault and
-//! shutdown) and System Control and Initialization (LMSW).
+//! Real-Time Clock (CMOS 0Fh shutdown status byte); BIOS listing, INT 15h
+//! AH=87h (BLOCKMOVE) and AH=88h (EXT_MEMORY), and the POST reset path
+//! (shutdown codes 05h and 0Ah jump through 0040:0067h, 09h resumes the
+//! block move). Intel 80286 Programmer's Reference Manual, Interrupts and
+//! Exceptions (double fault and shutdown) and System Control and
+//! Initialization (LMSW).
 
 use assembly::test_support::{FoundUserFirmware, TempDir, UserFirmwareLayout};
 use assembly::{
@@ -41,12 +45,13 @@ const ROUNDS: u32 = 16;
 // Each open-BIOS round cold-boots twice; the whole run stays well below this.
 const OPEN_CAP: u64 = 1_000_000_000;
 // Measured at the CPU pin above: 33 POSTs and floppy boots plus the program.
-const OPEN_GOLDEN_RETIRED: u64 = 211_149_814;
+const OPEN_GOLDEN_RETIRED: u64 = 211_167_574;
 // The IBM BIOS resumes without POST, so one POST and the rounds fit easily.
 const IBM_CAP: u64 = 300_000_000;
-// Measured at the CPU pin above with the user-supplied 1985-06-10 BIOS: one
-// POST, one floppy boot and 16 rounds that resume without POST.
-const IBM_GOLDEN_RETIRED: Option<u64> = Some(31_935_006);
+// One POST, one floppy boot, three INT 15h block moves and 16 rounds that
+// resume without POST, with the user-supplied 1985-06-10 BIOS. Measured at
+// the CPU pin above.
+const IBM_GOLDEN_RETIRED: Option<u64> = Some(31_955_711);
 
 // Kiselev reads the AT display switch with inverted polarity: "colour" makes
 // it print on MDA, and the switch needs the preset's colour text card.
@@ -72,10 +77,38 @@ const RESUMED: &str = " ok";
 /// The open BIOS cold-boots on every processor reset; see the open golden.
 const REBOOTED: &str = " FAIL reboot";
 
-/// The transcript when every `pm` and `a20` stage passes; `kbc` and `tf` give
-/// the result words of the two reset stages in every round.
-fn expected_transcript(kbc: &str, tf: &str, failures: u32) -> String {
+/// Result words of the three INT 15h lines: AH=88h and the AH=87h round trip
+/// before the rounds, the informational faulting AH=87h after them.
+struct Int15 {
+    size: &'static str,
+    round_trip: &'static str,
+    fault: &'static str,
+}
+
+/// The IBM listing's behaviour: both counted lines pass, and the faulting
+/// move returns status 02h with no other difference.
+const INT15_IBM: Int15 = Int15 {
+    size: " ok",
+    round_trip: " ok",
+    fault: " ah 02 info 0000",
+};
+/// The open BIOS answers both functions with AH=86h (unsupported) and CF set,
+/// through IRET: AH=88h fails CF and AX (3); each AH=87h call fails status,
+/// CF and ZF (7), and the round trip moves no data (200h, 400h). The faulting
+/// move gets the CF it expects but not the status or ZF (5).
+const INT15_OPEN: Int15 = Int15 {
+    size: " FAIL 0003",
+    round_trip: " FAIL 0607",
+    fault: " ah 86 info 0005",
+};
+
+/// The transcript when every `pm` and `a20` stage passes; `int15` gives the
+/// result words of the INT 15h lines, `kbc` and `tf` those of the two reset
+/// stages in every round.
+fn expected_transcript(int15: &Int15, kbc: &str, tf: &str, failures: u32) -> String {
     let mut text = format!("at-pm-test rounds {ROUNDS}\r\n");
+    writeln!(text, "int15 88h{}\r", int15.size).unwrap();
+    writeln!(text, "int15 87h{}\r", int15.round_trip).unwrap();
     for round in 1..=ROUNDS {
         write!(
             text,
@@ -84,6 +117,7 @@ fn expected_transcript(kbc: &str, tf: &str, failures: u32) -> String {
         )
         .unwrap();
     }
+    writeln!(text, "int15 87h fault{}\r", int15.fault).unwrap();
     writeln!(text, "failures {failures}\r").unwrap();
     text
 }
@@ -374,6 +408,48 @@ fn ibm_machine_file_answers_the_post_fixed_disk_adapter_probe() {
     assert_eq!(cylinder, [0xFF, 0xFF]);
 }
 
+/// IBM Personal Computer AT Technical Reference, BIOS listing, BLOCKMOVE and
+/// SHUT9: INT 15h AH=87h writes its status to port 80h, resets the processor
+/// through the 8042 and reads the status back once POST resumes it. On the
+/// assembled board port 80h reads FFh after power-on, and a written byte
+/// survives the 8042 processor reset. The synthetic BIOS is all HLT bytes,
+/// so the CPU stays parked at the reset vector.
+#[test]
+fn ibm_machine_port_80h_keeps_its_latch_across_an_8042_processor_reset() {
+    let temporary = TempDir::new("at-pm-test-port-80h");
+    let bios = temporary.path().join("synthetic.bin");
+    let floppy = temporary.path().join("floppy.img");
+    std::fs::write(&bios, vec![0xF4; 65536]).unwrap();
+    std::fs::write(&floppy, vec![0; 1_228_800]).unwrap();
+    let file = machine_file(
+        temporary.path(),
+        IBM_BOARD,
+        &ibm_firmware(&ImageSource::File(bios), None),
+        &floppy,
+        None,
+    );
+    let options = AssemblyOptions {
+        allow_unlisted_firmware: true,
+    };
+    let loaded = machine_file::load_for_assembly(&file, options).unwrap();
+    let mut assembled = loaded.assemble(&ObservationPolicy::default()).unwrap();
+    let machine = &mut assembled.machine;
+    assert_eq!(machine.bus_mut().port_read(0x80, 1).unwrap(), 0xFF);
+    machine.bus_mut().port_write(0x80, 1, 0x02).unwrap();
+    // 8042 command FEh pulses output-port bit 0, the processor reset line.
+    machine.bus_mut().port_write(0x64, 1, 0xFE).unwrap();
+    assert_eq!(
+        machine.run_bounded(Some(1_000_000)).unwrap(),
+        RunOutcome::ResetRequested
+    );
+    // The next run performs the reset, then halts at the reset vector.
+    assert_eq!(
+        machine.run_bounded(Some(2_000_000)).unwrap(),
+        RunOutcome::Halted
+    );
+    assert_eq!(machine.bus_mut().port_read(0x80, 1).unwrap(), 0x02);
+}
+
 /// The open profile: the at-games-open BIOS (Kiselev 8088_bios, Xi8088 with
 /// the AT reset patch) on the same board, memory and RTC seed, without the
 /// game cards (journaled IDE disk, Sound Blaster, EMS, mouse) that this test
@@ -386,6 +462,12 @@ fn ibm_machine_file_answers_the_post_fixed_disk_adapter_probe() {
 /// memory area and reports `FAIL reboot`, which proves the reset happened and
 /// memory above 1 MiB survived it. The protected-mode and A20 stages pass.
 /// Both lines become `ok` once the open BIOS dispatches codes 05h and 0Ah.
+///
+/// Also expected to fail, the two counted INT 15h lines: this BIOS (written
+/// for the 8088) has no AH=88h or AH=87h and returns AH=86h with CF set for
+/// both; see `INT15_OPEN`. They become `ok` with an open BIOS that implements
+/// both and ends AH=87h as the IBM listing does (status in AH, CF and ZF
+/// from it, IF set, A20 off).
 #[test]
 #[ignore = "slow golden: open BIOS POST, then a reboot after each of 32 resets"]
 fn open_bios_runs_the_protected_mode_test_and_reboots_on_each_reset() {
@@ -416,16 +498,19 @@ fn open_bios_runs_the_protected_mode_test_and_reboots_on_each_reset() {
         run.outcome, run.retired, run.com1
     );
     assert_eq!(run.outcome, RunOutcome::Halted);
+    let failures = 2 * ROUNDS + 2;
     assert_eq!(
         run.com1,
-        expected_transcript(REBOOTED, REBOOTED, 2 * ROUNDS)
+        expected_transcript(&INT15_OPEN, REBOOTED, REBOOTED, failures)
     );
-    assert!(run.screen.contains(&format!("failures {}", 2 * ROUNDS)));
+    assert!(run.screen.contains(&format!("failures {failures}")));
     assert_eq!(run.retired, OPEN_GOLDEN_RETIRED);
 }
 
-/// IBM 5170 BIOS of 1985-06-10: both reset stages resume through the
-/// shutdown byte without POST, so every stage passes.
+/// IBM 5170 BIOS of 1985-06-10: INT 15h AH=88h returns CMOS 31h:30h, AH=87h
+/// moves the block above 1 MiB and back, and both reset stages resume through
+/// the shutdown byte without POST, so every counted line passes. The faulting
+/// move reports status 02h.
 #[test]
 #[ignore = "requires the user-supplied IBM 5170 system ROM and the at-pm-test floppy"]
 fn user_rom_ibm_5170_at_pm_test_resumes_through_the_shutdown_byte() {
@@ -453,7 +538,10 @@ fn user_rom_ibm_5170_at_pm_test_resumes_through_the_shutdown_byte() {
         run.outcome, run.retired, run.com1
     );
     assert_eq!(run.outcome, RunOutcome::Halted);
-    assert_eq!(run.com1, expected_transcript(RESUMED, RESUMED, 0));
+    assert_eq!(
+        run.com1,
+        expected_transcript(&INT15_IBM, RESUMED, RESUMED, 0)
+    );
     assert!(run.screen.contains("failures 0"));
     if let Some(expected) = IBM_GOLDEN_RETIRED {
         assert_eq!(run.retired, expected);

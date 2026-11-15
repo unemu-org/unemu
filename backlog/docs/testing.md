@@ -50,8 +50,9 @@ instead. Their source is committed next to a build script under `vendor/`,
 the built image is gitignored and pinned by SHA-256, and the CI `fixtures`
 gate builds it. The first is the open AT protected-mode return test
 ([`design/at-pm-test.md`](design/at-pm-test.md)): 80286 protected-mode entry,
-the 8042 and triple-fault returns through the CMOS shutdown byte, and A20
-through the 8042, reported line by line on COM1.
+the 8042 and triple-fault returns through the CMOS shutdown byte, A20
+through the 8042 and the BIOS's INT 15h AH=88h and AH=87h, reported line
+by line on COM1.
 
 ### 5. Golden / trace tests
 

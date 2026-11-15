@@ -134,7 +134,7 @@ the current run reaches them. No new user-ROM result is assumed.
 | 2–3 | U27/U47 ROM checksum | Even/odd lanes | No | PASS |
 | 4–6 | U103 8254 channels 0/1/2 | Counter bits, count rate | No | PASS; rate comparison against CPU timing is a risk |
 | 7–8 | U111/U122 8237A pair | 00h–0Fh, C0h–DFh | No | PASS |
-| 9 | U124 74LS612 page registers | Patterns; 80h–8Fh range ASSUMED | No | Risk: port 80h is our POST capture port and reads FFh (READ: `crates/devices/src/post_port.rs`) |
+| 9 | U124 74LS612 page registers | Patterns; 80h–8Fh range ASSUMED | No | Risk: port 80h is our POST capture port and read FFh; since 2026-11-15 it reads back its last write, as the 74LS612 does (READ: `crates/devices/src/post_port.rs`) |
 | 10 | U126 parity detection | Port 61h bits 7/6 ASSUMED | No | PASS |
 | 11 | Critical memory | RAM 0–16 KiB | No | PASS |
 | 12 | Memory refresh | About 10-second wait | No | PASS |
@@ -421,7 +421,10 @@ handoff, not a replacement task board:
 Conditional only: file a 74LS612 page-register read-back bead for port 80h
 while retaining POST capture **if the golden demonstrates that failure**.
 The measured prefix passed this row, so no page-register implementation or
-follow-up bead is needed from this run.
+follow-up bead is needed from this run. Since 2026-11-15 the POST port at
+80h keeps POST capture and also reads back its last write, because the IBM
+INT 15h AH=87h block move reads its status there after a processor reset
+([`at-pm-test.md`](at-pm-test.md#int-15h-ah88h-and-ah87h)).
 
 ## Sources
 

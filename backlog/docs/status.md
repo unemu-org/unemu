@@ -40,6 +40,28 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
     shareware sets may be published. Marking a set redistributable, so the
     push guard lets it into `unemu/`, is tracked separately and not done
     here; until then the sets stay user-supplied.
+- **2026-11-15 — INT 15h AH=88h and AH=87h on the AT test floppy:** before
+  its rounds, `vendor/at-pm-test` now calls INT 15h AH=88h (AX must equal
+  CMOS 31h:30h) and AH=87h through a caller GDT: 128 words to `10C000h`,
+  read back directly at `FFFF:C010h`, back to a second buffer, with a guard
+  at the A20 alias. Each AH=87h call starts with A20 off (so the BIOS must
+  turn it on; the guard catches one that does not), IF set and CMOS 0Fh
+  cleared, and checks AH=00h, CF=0, ZF=1, IF=1, the other registers, DS/ES
+  and SS:SP, A20 off afterwards (8042 output port bit 1) and CMOS 0Fh =
+  00h. After the rounds, a move from a limit-0 source, outside the
+  documented entry contract, prints its status and the differences from
+  the IBM result (02h, CF=1, ZF=0) on an informational line that is never
+  counted. The image SHA-256 is re-pinned. **MEASURED (open golden):** the
+  Kiselev BIOS has neither function (AH=86h, CF=1): `int15 88h FAIL 0003`,
+  `int15 87h FAIL 0607`, pinned as expected to fail, and
+  `int15 87h fault ah 86 info 0005`; `failures 34`, 211,167,574 retired
+  instructions. The emulator's port 80h now reads back its last write, as
+  the AT's 74LS612 page latch does, also across an 8042 processor reset
+  (default-suite test); the IBM block move reads its status there after the
+  reset and saw FFh before. **MEASURED:** the IBM 5170 user-ROM golden
+  gives `int15 88h ok`, `int15 87h ok`, `int15 87h fault ah 02 info 0000`,
+  `failures 0`, 31,955,711 retired instructions (pinned). See
+  [`design/at-pm-test.md`](design/at-pm-test.md#int-15h-ah88h-and-ah87h).
 - **2026-11-15 — Official template images and File › Get templates…:**
   - **`image template build --store DIR [--vendor DIR] [--dry-run]`** builds
     the open firmware packages (`unemu/firmware/<catalogue-id>`: Kiselev
@@ -590,7 +612,8 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   AT fixed-disk controller, which the 1985 POST probes while testing the diskette adapter.
   The test machine now has an empty `at-adapter` IDE card. The private
   Windows 3.x Standard-mode acceptance steps are in
-  [`design/at-pm-test.md`](design/at-pm-test.md).
+  [`design/at-pm-test.md`](design/at-pm-test.md). The counts in this entry
+  predate the INT 15h lines (2026-11-15 entry above).
 - **2026-11-14 — Desktop image library and disk layers:** local-store summaries join machine files in an Explorer-style tree, virtualized details list and selected-image pane. Search, metadata facets, repository/tag groups, sorting, favorites and local labels use cached summaries. Store loading, bounded cache rebuilds, verification, imports and publication run in a background worker. Image launches pin the selected descriptor and reuse a regular workspace; Gaming mode isolates all writable media and CMOS, with explicit Keep as new image or Discard and startup recovery. Selection uses cancellable descriptor checks; full disk verification happens at Start. Disk layers exposes chains, sharing, working-sector counts, whole-machine publication/flatten and confirmed discard. Tag deletion preserves blobs. The store root follows platform data-directory conventions and can be changed under Tools. GUI acceptance remains manual; media-set browsing stays separate.
 - **2026-11-14 — Image blob compression (`+zstd`):** disk bases, sector packs,
   floppies, firmware, media-set payloads and firmware-package ROMs and extras

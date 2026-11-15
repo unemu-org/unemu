@@ -2,12 +2,16 @@
 ;
 ; at-pm-test: an open 80286 protected-mode return test for PC/AT machines.
 ;
-; A bootable 1.2M floppy. The boot sector loads the program, which runs a
-; fixed number of rounds. Each round enters protected mode, exercises it, and
-; comes back to real mode the two ways an 80286 can: an 8042 pulse reset and
-; a deliberate triple fault, both resumed by the BIOS through the CMOS
-; shutdown byte and the doubleword at 0040:0067h. It then switches the A20
-; gate through the 8042 output port. The machine paths are the ones a 286
+; A bootable 1.2M floppy. The boot sector loads the program. It first asks
+; the BIOS for the extended-memory size (INT 15h AH=88h) and moves a block
+; above 1 MiB and back through the BIOS (INT 15h AH=87h), staying in real
+; mode around each call. It then runs a fixed number of rounds. Each round
+; enters protected mode, exercises it, and comes back to real mode the two
+; ways an 80286 can: an 8042 pulse reset and a deliberate triple fault,
+; both resumed by the BIOS through the CMOS shutdown byte and the doubleword
+; at 0040:0067h. It then switches the A20 gate through the 8042 output port.
+; After the rounds, one block move from a source the BIOS cannot read is
+; reported for information. The machine paths are the ones a 286
 ; extended-memory manager and a 286 DOS extender use. Results go to the BIOS
 ; teletype and, byte for byte, to COM1. The program halts with interrupts
 ; disabled after its last line. See vendor/at-pm-test/README.md.
@@ -26,6 +30,18 @@
 ;   doubleword at 0040:0067h with SS:SP = 0000:0400h and DS = 0040h.
 ; - IBM Personal Computer AT Technical Reference, BIOS listing, GATE_A20
 ;   (BIOS1): command D1h, then output-port data DFh (A20 on) or DDh (A20 off).
+; - IBM Personal Computer AT Technical Reference, BIOS listing, INT 15h
+;   AH=88h (EXT_MEMORY, BIOS1): AX = CMOS 31h:30h, returned through IRET, so
+;   the other flags are the caller's.
+; - IBM Personal Computer AT Technical Reference, BIOS listing, INT 15h
+;   AH=87h (BLOCKMOVE, BIOS1): CX words from the source to the target
+;   descriptor of the caller's six-entry GDT at ES:SI, whose limits must be
+;   at least 2 * CX - 1; the BIOS fills the GDT, code and stack entries. It
+;   enables A20, sets CMOS 0Fh to 09h and returns through a processor reset;
+;   POST (TEST1) clears the byte and jumps to SHUT9 (BIOS1), which turns A20
+;   off. Status in AH: 00h done, 02h any exception during the move (every
+;   vector of its IDT). It ends with CMP, STI and RETF 2: CF=0 and ZF=1 only
+;   for 00h, IF set, and every other register restored.
 ; - Intel UPI-41A/41AH/42/42AH User's Manual, Data Bus Buffer status:
 ;   wait for IBF clear before a write, OBF set before a read.
 ; - Intel 80286 Programmer's Reference Manual, System Control and
@@ -79,6 +95,8 @@ SIG1            equ 0x3638              ; "86"
 P_NONE          equ 0
 P_KBC           equ 1
 P_TF            equ 2
+P_INT15         equ 3                   ; a round-trip block move is running
+P_INT15_FAULT   equ 4                   ; the faulting block move is running
 
 ENTRY_BOOT      equ 1
 ENTRY_VECTOR    equ 2
@@ -117,6 +135,64 @@ A20_OFF_WRAP    equ 0x0002              ; FFFF:0010 aliases 0000:0000
 A20_ON_READ     equ 0x0004              ; D0h reads bit 1 set after DFh
 A20_ON_NOWRAP   equ 0x0008              ; FFFF:0010 is distinct memory
 A20_ALL         equ 0x000F
+
+; INT 15h AH=88h checks.
+EXT_CF          equ 0x0001              ; CF set (called with CF clear)
+EXT_AX          equ 0x0002              ; AX is not CMOS 31h:30h
+
+; INT 15h AH=87h checks, ORed over the calls of a line.
+MV_STATUS       equ 0x0001              ; AH is not the expected status
+MV_CF           equ 0x0002              ; CF does not match the status
+MV_ZF           equ 0x0004              ; ZF does not match the status
+MV_IF           equ 0x0008              ; IF clear on return (called with IF set)
+MV_REGS         equ 0x0010              ; AL, BX, CX, DX, SI, DI or BP changed
+MV_SEGS         equ 0x0020              ; DS or ES changed
+MV_STACK        equ 0x0040              ; SS:SP changed
+MV_A20          equ 0x0080              ; A20 on after the call (off before it)
+MV_CMOS         equ 0x0100              ; CMOS 0Fh not 00h after the call
+MV_HIGH         equ 0x0200              ; the block above 1 MiB lacks the pattern
+MV_BACK         equ 0x0400              ; the second buffer differs
+MV_ALIAS        equ 0x0800              ; the A20 alias below 1 MiB was written
+MV_PREP         equ 0x1000              ; A20 would not turn off before the call
+MV_REARM        equ 0x2000              ; A20 would not turn on again; run stops
+
+; AH=87h status codes; see the BLOCKMOVE reference above.
+MOVE_OK         equ 0x00
+MOVE_EXCEPTION  equ 0x02
+
+; FLAGS for the AH=87h call: IF set, TF and DF clear (bit 1 is always set),
+; CF and ZF the opposite of what the expected status returns.
+FLAGS_FOR_OK    equ 0x0203              ; CF set, ZF clear
+FLAGS_FOR_ERR   equ 0x0242              ; CF clear, ZF set
+
+; Values the call must leave in the registers it does not return in.
+MARK_AL         equ 0x5A
+MARK_BX         equ 0x1BB1
+MARK_DX         equ 0x2DD2
+MARK_DI         equ 0x3DD3
+MARK_BP         equ 0x4BB4
+MARK_DS         equ 0x5DD5              ; never used to address memory
+
+; Block-move buffers, past the loaded program in its own segment. The block
+; above 1 MiB lies in the high memory area, so the program reads it back
+; directly with A20 on; its A20-masked alias, 0800:4000h, is a guard area.
+MOVE_WORDS      equ 128
+MOVE_BYTES      equ MOVE_WORDS * 2
+MOVE_SRC        equ 0x2000
+MOVE_DST        equ 0x2400
+MOVE_SRC_PHYS   equ LOAD_BASE + MOVE_SRC
+MOVE_DST_PHYS   equ LOAD_BASE + MOVE_DST
+MOVE_HIGH       equ 0x10C000
+HMA_SEG         equ 0xFFFF
+MOVE_HIGH_OFF   equ MOVE_HIGH - HMA_SEG * 16
+MOVE_GUARD      equ MOVE_HIGH - 0x100000 - LOAD_BASE
+MOVE_PATTERN    equ 0x1E87              ; first word; each next one adds 0101h
+GUARD_WORD      equ 0x6DB6
+
+; The caller's block-move GDT: six descriptors.
+MG_SOURCE       equ 0x10
+MG_TARGET       equ 0x18
+MG_SIZE         equ 0x30
 
 SEL_CODE        equ 0x08
 SEL_DATA        equ 0x10
@@ -222,8 +298,16 @@ start:
         jne .no_state
         mov ax, STATE_SEG
         mov es, ax
-        cmp word [es:ST(ST_PENDING)], P_NONE
+        mov bx, [es:ST(ST_PENDING)]
+        cmp bx, P_NONE
         je fresh_start
+        cmp bx, P_INT15
+        je .int15
+        cmp bx, P_INT15_FAULT
+        jne .reset_stage
+.int15:
+        jmp int15_reboot
+.reset_stage:
         ; A reset stage was pending, yet the BIOS booted the floppy again.
         mov dx, RF_REBOOT
         jmp resume_checks
@@ -252,6 +336,7 @@ fresh_start:
         call print_dec
         mov si, msg_crlf
         call print
+        call stage_int15
 
 round_begin:
         mov ax, STATE_SEG
@@ -291,8 +376,11 @@ next_round:
         mov es, ax
         inc word [es:ST(ST_ROUND)]
         cmp word [es:ST(ST_ROUND)], ROUNDS
-        ja finish
+        ja rounds_done
         jmp round_begin
+
+rounds_done:
+        call stage_int15_fault
 
 finish:
         mov ax, STATE_SEG
@@ -321,6 +409,27 @@ state_lost:
         call print
         mov ax, 1
         jmp print_count_and_halt
+
+; The BIOS booted the floppy during an AH=87h call instead of returning
+; from it. A reboot in the round trip fails that line and the rounds still
+; run; the faulting move comes after the rounds, so there the run ends.
+; In: ES = state segment, BX = pending stage.
+int15_reboot:
+        mov word [es:ST(ST_PENDING)], P_NONE
+        mov al, 0x0F
+        xor ah, ah
+        call cmos_write
+        call nmi_enable
+        mov dx, RF_REBOOT
+        cmp bx, P_INT15
+        jne .fault
+        mov si, name_move
+        call report_once
+        jmp round_begin
+.fault:
+        mov si, name_fault
+        call report_info
+        jmp finish
 
 ; In: AX = failure count.
 print_count_and_halt:
@@ -539,6 +648,338 @@ wrap_test:
         pop es
         pop ds
         ret
+
+;--------------------------------------------------------------------------
+; INT 15h AH=88h and the AH=87h round trip, once before the rounds. The
+; program stays in real mode; the BIOS does the protected-mode work.
+; In: DS = program segment.
+;--------------------------------------------------------------------------
+stage_int15:
+        mov ax, ds
+        mov es, ax
+        mov al, 0x30
+        call cmos_read
+        mov [ext_cmos], al
+        mov al, 0x31
+        call cmos_read
+        mov [ext_cmos + 1], al
+        call nmi_enable
+        mov ax, 0x8800
+        ; The IBM BIOS leaves CF as the caller had it.
+        clc
+        int 0x15
+        cli
+        mov dx, 0                       ; keeps CF
+        jnc .ext_cf
+        or dx, EXT_CF
+.ext_cf:
+        cmp ax, [ext_cmos]
+        je .ext_ax
+        or dx, EXT_AX
+.ext_ax:
+        mov si, name_ext
+        call report_once
+
+        ; A numbered pattern goes above 1 MiB and back to a cleared buffer.
+        mov di, MOVE_SRC
+        mov ax, MOVE_PATTERN
+        mov cx, MOVE_WORDS
+.fill:
+        stosw
+        add ax, 0x0101
+        loop .fill
+        xor ax, ax
+        mov di, MOVE_DST
+        mov cx, MOVE_WORDS
+        rep stosw
+        push es
+        mov bx, HMA_SEG
+        mov es, bx
+        mov di, MOVE_HIGH_OFF
+        mov cx, MOVE_WORDS
+        rep stosw
+        pop es
+        mov ax, GUARD_WORD
+        mov di, MOVE_GUARD
+        mov cx, MOVE_WORDS
+        rep stosw
+
+        mov word [move_line], name_move
+        mov ax, MOVE_SRC_PHYS & 0xFFFF
+        mov dl, MOVE_SRC_PHYS >> 16
+        mov cx, MOVE_BYTES - 1
+        mov bx, MOVE_HIGH & 0xFFFF
+        mov dh, MOVE_HIGH >> 16
+        call set_move_gdt
+        mov al, MOVE_OK
+        mov cx, MOVE_WORDS
+        call bios_move
+        mov [move_fails], dx
+        push es
+        mov ax, HMA_SEG
+        mov es, ax
+        mov si, MOVE_SRC
+        mov di, MOVE_HIGH_OFF
+        mov cx, MOVE_WORDS
+        repe cmpsw
+        pop es
+        je .high
+        or word [move_fails], MV_HIGH
+.high:
+        mov ax, MOVE_HIGH & 0xFFFF
+        mov dl, MOVE_HIGH >> 16
+        mov cx, MOVE_BYTES - 1
+        mov bx, MOVE_DST_PHYS & 0xFFFF
+        mov dh, MOVE_DST_PHYS >> 16
+        call set_move_gdt
+        mov al, MOVE_OK
+        mov cx, MOVE_WORDS
+        call bios_move
+        or [move_fails], dx
+        mov si, MOVE_SRC
+        mov di, MOVE_DST
+        mov cx, MOVE_WORDS
+        repe cmpsw
+        je .back
+        or word [move_fails], MV_BACK
+.back:
+        ; Each call starts with A20 off. A BIOS that moves without turning
+        ; it on writes the block to its alias.
+        mov ax, GUARD_WORD
+        mov di, MOVE_GUARD
+        mov cx, MOVE_WORDS
+        repe scasw
+        je .alias
+        or word [move_fails], MV_ALIAS
+.alias:
+        mov dx, [move_fails]
+        mov si, name_move
+        jmp report_once
+
+;--------------------------------------------------------------------------
+; INT 15h AH=87h from a source descriptor with limit 0, once after the
+; rounds, so that a BIOS that hangs on it costs only this line. The first
+; word read raises #GP inside the BIOS's move. The call breaks the entry
+; condition the IBM listing documents (limits of at least 2 * CX - 1), so
+; the result is the BIOS's own: printed against the IBM listing's status
+; 02h, never counted. In: DS = program segment.
+;--------------------------------------------------------------------------
+stage_int15_fault:
+        mov ax, ds
+        mov es, ax
+        mov word [move_line], name_fault
+        mov ax, MOVE_SRC_PHYS & 0xFFFF
+        mov dl, MOVE_SRC_PHYS >> 16
+        xor cx, cx
+        mov bx, MOVE_DST_PHYS & 0xFFFF
+        mov dh, MOVE_DST_PHYS >> 16
+        call set_move_gdt
+        mov al, MOVE_EXCEPTION
+        mov cx, 1
+        call bios_move
+        mov si, name_fault
+        jmp report_info
+
+; Build the caller's block-move GDT at move_gdt. The dummy, GDT, BIOS code
+; and stack entries are zero for the BIOS to fill; the source and target are
+; read/write data segments (access byte 93h). In: DL:AX = source base,
+; CX = source limit, DH:BX = target base (limit MOVE_BYTES - 1), ES = DS.
+set_move_gdt:
+        push ax
+        push cx
+        push di
+        mov di, move_gdt
+        mov cx, MG_SIZE / 2
+        xor ax, ax
+        rep stosw
+        pop di
+        pop cx
+        pop ax
+        mov [move_gdt + MG_SOURCE], cx
+        mov [move_gdt + MG_SOURCE + 2], ax
+        mov [move_gdt + MG_SOURCE + 4], dl
+        mov byte [move_gdt + MG_SOURCE + 5], 0x93
+        mov word [move_gdt + MG_TARGET], MOVE_BYTES - 1
+        mov [move_gdt + MG_TARGET + 2], bx
+        mov [move_gdt + MG_TARGET + 4], dh
+        mov byte [move_gdt + MG_TARGET + 5], 0x93
+        ret
+
+; One INT 15h AH=87h call with ES:SI = move_gdt. A20 is turned off first,
+; so the BIOS must turn it on for the move. IF is set; CF and ZF start
+; opposite to what the expected status returns, so a BIOS that leaves them
+; alone fails; the other registers and DS hold markers. Afterwards the
+; program's own A20 setting (on) is restored before the state block is
+; touched again; if A20 stays off, the line is reported and the run stops.
+; In: AL = expected status, CX = word count, [move_line] = line name,
+; ES = DS = program segment. Out: DX = MV_* failure bits.
+bios_move:
+        mov [move_expect], al
+        mov [move_count], cx
+        mov word [move_flags], FLAGS_FOR_OK
+        mov bx, P_INT15
+        test al, al
+        jz .flags
+        mov word [move_flags], FLAGS_FOR_ERR
+        mov bx, P_INT15_FAULT
+.flags:
+        ; A BIOS that boots the floppy instead of returning sends start to
+        ; int15_reboot instead of starting over.
+        push es
+        mov ax, STATE_SEG
+        mov es, ax
+        mov [es:ST(ST_PENDING)], bx
+        mov ax, [es:ST(ST_FAILS)]
+        mov [fails_before], ax
+        pop es
+        ; A code left from an earlier shutdown would read as the BIOS's.
+        mov al, 0x0F
+        xor ah, ah
+        call cmos_write
+        call nmi_enable
+        mov word [move_prep], 0
+        mov al, 0xDD
+        call kbc_write_output
+        jc .still_on
+        call wrap_test
+        cmp al, 1
+        je .a20_masked
+.still_on:
+        mov word [move_prep], MV_PREP
+.a20_masked:
+        mov [move_sp], sp
+        mov ah, 0x87
+        mov al, MARK_AL
+        mov bx, MARK_BX
+        mov cx, [move_count]
+        mov dx, MARK_DX
+        mov si, move_gdt
+        mov di, MARK_DI
+        mov bp, MARK_BP
+        push word [move_flags]
+        push word MARK_DS
+        pop ds
+        popf
+        int 0x15
+        ; Record the result through CS before the stack is used again.
+        mov [cs:out_ax], ax
+        mov [cs:out_bx], bx
+        mov [cs:out_cx], cx
+        mov [cs:out_dx], dx
+        mov [cs:out_si], si
+        mov [cs:out_di], di
+        mov [cs:out_bp], bp
+        mov [cs:out_ds], ds
+        mov [cs:out_es], es
+        mov [cs:out_ss], ss
+        mov [cs:out_sp], sp
+        mov ax, cs
+        mov ss, ax
+        mov sp, [cs:move_sp]
+        pushf
+        pop word [cs:out_flags]
+        cli
+        cld
+        mov ds, ax
+        mov es, ax
+        mov dx, [move_prep]
+        mov al, [out_ax + 1]
+        cmp al, [move_expect]
+        je .status
+        or dx, MV_STATUS
+.status:
+        ; Status 00h: CF clear and ZF set; any other status: the reverse.
+        mov bx, 0x0040
+        cmp byte [move_expect], MOVE_OK
+        je .want
+        mov bx, 0x0001
+.want:
+        mov ax, [out_flags]
+        xor ax, bx
+        test al, 0x01
+        jz .cf
+        or dx, MV_CF
+.cf:
+        test al, 0x40
+        jz .zf
+        or dx, MV_ZF
+.zf:
+        test ah, 0x02
+        jnz .if
+        or dx, MV_IF
+.if:
+        cmp byte [out_ax], MARK_AL
+        jne .regs
+        cmp word [out_bx], MARK_BX
+        jne .regs
+        mov ax, [move_count]
+        cmp [out_cx], ax
+        jne .regs
+        cmp word [out_dx], MARK_DX
+        jne .regs
+        cmp word [out_si], move_gdt
+        jne .regs
+        cmp word [out_di], MARK_DI
+        jne .regs
+        cmp word [out_bp], MARK_BP
+        je .regs_kept
+.regs:
+        or dx, MV_REGS
+.regs_kept:
+        cmp word [out_ds], MARK_DS
+        jne .segs
+        mov ax, cs
+        cmp [out_es], ax
+        je .segs_kept
+.segs:
+        or dx, MV_SEGS
+.segs_kept:
+        mov ax, cs
+        cmp [out_ss], ax
+        jne .stack
+        mov ax, [move_sp]
+        cmp [out_sp], ax
+        je .stack_kept
+.stack:
+        or dx, MV_STACK
+.stack_kept:
+        ; The IBM BIOS turns A20 off on the way out; a BIOS that restores
+        ; the state it found leaves it off as well.
+        call kbc_read_output
+        jc .a20_on
+        test al, 2
+        jz .a20_off
+.a20_on:
+        or dx, MV_A20
+.a20_off:
+        mov al, 0xDF
+        call kbc_write_output
+        call wrap_test
+        test al, al
+        jnz .stuck
+        mov al, 0x0F
+        call cmos_read
+        test al, al
+        jz .cmos
+        or dx, MV_CMOS
+.cmos:
+        call nmi_enable
+        push es
+        mov ax, STATE_SEG
+        mov es, ax
+        mov word [es:ST(ST_PENDING)], P_NONE
+        pop es
+        ret
+.stuck:
+        ; A20 stays masked, so the state block is out of reach: report the
+        ; line without it and stop, as the a20 stage does.
+        or dx, MV_REARM
+        mov byte [a20_stuck], 1
+        mov si, [move_line]
+        call report_once
+        mov ax, [fails_before]
+        inc ax
+        jmp print_count_and_halt
 
 ;--------------------------------------------------------------------------
 ; Prepare a reset stage: state, check values, resume vector, PIC masks and
@@ -962,8 +1403,6 @@ print_hex_digits:
 ; In: SI = stage name, DX = failure bits (0 = passed).
 report:
         pusha
-        push es
-        push si
         mov al, 'r'
         call put_char
         mov ax, [round]
@@ -976,7 +1415,16 @@ report:
         call print_dec
         mov al, ' '
         call put_char
-        pop si
+        mov bp, 1                       ; a resume mask may name a vector
+        jmp report_result
+
+; The same without the round, for the stages that run once before the
+; rounds. Their masks never name a vector.
+report_once:
+        pusha
+        xor bp, bp
+report_result:
+        push es
         call print
         test dx, dx
         jnz .fail
@@ -1000,7 +1448,10 @@ report:
         call print
         mov ax, dx
         call print_hex4
-        ; Only resume masks use this bit; stage masks stay below it.
+        ; Only resume masks use this bit with a vector; the round stage
+        ; masks stay below it.
+        test bp, bp
+        jz .eol
         test dx, RF_UNEXP
         jz .eol
         mov si, msg_vector
@@ -1012,6 +1463,35 @@ report:
         call print
 .done:
         pop es
+        popa
+        ret
+
+; Print "<stage> ah XX info XXXX", never counted: the result of a call
+; outside the BIOS's documented contract, with the bits that differ from the
+; IBM listing. A reboot prints "<stage> info reboot".
+; In: SI = stage name, DX = differing bits or RF_REBOOT.
+report_info:
+        pusha
+        call print
+        cmp dx, RF_REBOOT
+        je .reboot
+        mov si, msg_ah
+        call print
+        mov al, [out_ax + 1]
+        call print_hex2
+        mov si, msg_info
+        call print
+        mov ax, dx
+        call print_hex4
+        jmp .eol
+.reboot:
+        mov si, msg_info
+        call print
+        mov si, msg_reboot
+        call print
+.eol:
+        mov si, msg_crlf
+        call print
         popa
         ret
 
@@ -1070,6 +1550,31 @@ unexp_vector    dw 0
 fails_before    dw 0
 a20_stuck       db 0
                 db 0
+move_expect     db 0
+                db 0
+move_count      dw 0
+move_flags      dw 0
+move_sp         dw 0
+move_fails      dw 0
+move_prep       dw 0
+move_line       dw 0
+ext_cmos        dw 0
+out_ax          dw 0
+out_bx          dw 0
+out_cx          dw 0
+out_dx          dw 0
+out_si          dw 0
+out_di          dw 0
+out_bp          dw 0
+out_ds          dw 0
+out_es          dw 0
+out_ss          dw 0
+out_sp          dw 0
+out_flags       dw 0
+
+        align 8
+move_gdt:
+        times MG_SIZE db 0
 
 msg_header      db 'at-pm-test rounds ', 0
 msg_failures    db 'failures ', 0
@@ -1079,11 +1584,17 @@ msg_fail_reboot db ' FAIL reboot', 13, 10, 0
 msg_crlf        db 13, 10, 0
 msg_state_lost  db 'resume FAIL state lost', 13, 10, 0
 msg_vector      db ' vector ', 0
+msg_ah          db ' ah ', 0
+msg_info        db ' info ', 0
+msg_reboot      db 'reboot', 0
 name_pm         db 'pm', 0
 name_kbc        db 'kbc', 0
 name_tf         db 'tf', 0
 name_a20        db 'a20', 0
 name_resume     db 'resume', 0
+name_ext        db 'int15 88h', 0
+name_move       db 'int15 87h', 0
+name_fault      db 'int15 87h fault', 0
 
 prog_end:
         ; Fails to assemble if the program outgrows the sectors the boot

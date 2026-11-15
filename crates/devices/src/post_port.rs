@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! POST checkpoint port (§7.1 device seam).
 //!
-//! A tiny write-only diagnostic port. Power-on self-test firmware writes a
+//! A tiny diagnostic port. Power-on self-test firmware writes a
 //! one-byte checkpoint code here at each stage it reaches; on real hardware the
 //! byte lights a diagnostic card or a debug LED display. The emulator models it
 //! as a capture point: every accepted write emits its low byte to a semantic
@@ -18,12 +18,23 @@
 //! it executes even when the run ends on an unsupported instruction rather than a
 //! clean halt.
 //!
-//! ## Deviations from real hardware
-//! - Read-only-meaningful in one direction: reads return `0xFF` (an open bus /
-//!   unimplemented read), matching that no real POST card drives a read value.
-//! - No display or latch state beyond the trace: the byte is observed, not held.
+//! A read returns the last byte written, `0xFF` before the first write. On the
+//! AT, port 80h is one of the sixteen readable 74LS612 page-register latches
+//! (IBM Personal Computer AT Technical Reference, System Board, DMA page
+//! registers; no DMA channel uses 80h). The IBM BIOS keeps state there across
+//! a processor reset: INT 15h AH=87h (BLOCKMOVE) writes its status before the
+//! reset that ends the move and reads it back after POST resumes it.
 //!
-//! Snapshots contain the absolute trace time base; decoded-port wiring and
+//! ## Deviations from real hardware
+//! - The same latch answers reads at any configured port, although a POST card
+//!   at another port (test386's `0x190`) would not drive the bus on a read.
+//! - Power-on value: the 74LS612 contents after power-on are unspecified. The
+//!   model chooses `0xFF`, which keeps reads before any write equal to the open
+//!   bus they returned before the latch existed. The DMA controller's own copy
+//!   of the page latches, used when this port is not wired at 80h, starts at 0.
+//! - No display: the byte is observed and latched, nothing else.
+//!
+//! Snapshots contain the latch and the absolute trace time base; decoded-port wiring and
 //! the host output sink belong to the receiving instance. Historical output and
 //! access traces are not replayed. See IBM Personal Computer AT Technical
 //! Reference, System Board I/O Address Map (diagnostic port 80h).
@@ -40,12 +51,13 @@ const NAME: &str = "post-port";
 /// port. A stock PC BIOS instead uses `0x80`; see [`PostPort::with_port`].
 pub const POST_PORT: u16 = 0x190;
 
-/// Value returned for a read: an unimplemented/open-bus read.
-const OPEN_BUS: u32 = 0xFF;
+/// Latch value after power-on, the model's choice; see the module docs.
+const POWER_ON_LATCH: u8 = 0xFF;
 
-const SNAPSHOT_VERSION: u8 = 1;
+const SNAPSHOT_VERSION: u8 = 2;
 const SNAPSHOT_CLOCK: usize = 1;
-const SNAPSHOT_LEN: usize = SNAPSHOT_CLOCK + 8;
+const SNAPSHOT_LATCH: usize = SNAPSHOT_CLOCK + 8;
+const SNAPSHOT_LEN: usize = SNAPSHOT_LATCH + 1;
 
 /// The POST checkpoint port device (§7.1).
 ///
@@ -59,6 +71,8 @@ pub struct PostPort {
     /// The one port this instance decodes ([`POST_PORT`] for test386, `0x80` for
     /// a stock BIOS).
     port: u16,
+    /// The last byte written, returned by reads.
+    latch: u8,
     /// Where each accepted write's low byte is also delivered; a discarding
     /// sink unless an observation route binds one.
     sink: Box<dyn ByteSink>,
@@ -87,6 +101,7 @@ impl PostPort {
     pub fn with_port(port: u16) -> Self {
         Self {
             port,
+            latch: POWER_ON_LATCH,
             sink: Box::new(DiscardByteSink),
             trace: device::TraceBuffer::default(),
             now: VClock::ZERO,
@@ -127,18 +142,20 @@ impl Device for PostPort {
 
     fn port_read(&mut self, port: u16, size: u8) -> Result<u32, DeviceError> {
         self.check(port)?;
+        let value = u32::from(self.latch);
         self.trace.push(TraceEvent::Port {
             at: self.now,
             port,
             size,
             dir: AccessDir::Read,
-            value: OPEN_BUS,
+            value,
         });
-        Ok(OPEN_BUS)
+        Ok(value)
     }
 
     fn port_write(&mut self, port: u16, size: u8, value: u32) -> Result<(), DeviceError> {
         self.check(port)?;
+        self.latch = value as u8;
         self.sink.push(value as u8);
         self.trace.push(TraceEvent::Port {
             at: self.now,
@@ -184,11 +201,13 @@ impl Device for PostPort {
     fn reset(&mut self) {
         self.trace.clear();
         self.now = VClock::ZERO;
+        self.latch = POWER_ON_LATCH;
     }
 
     fn save(&self) -> Vec<u8> {
         let mut blob = vec![SNAPSHOT_VERSION];
         blob.extend_from_slice(&self.now.0.to_le_bytes());
+        blob.push(self.latch);
         blob
     }
 
@@ -202,6 +221,7 @@ impl Device for PostPort {
         self.now = VClock(u64::from_le_bytes(std::array::from_fn(|i| {
             snapshot[SNAPSHOT_CLOCK + i]
         })));
+        self.latch = snapshot[SNAPSHOT_LATCH];
         Ok(())
     }
 
@@ -357,10 +377,23 @@ mod tests {
         );
     }
 
+    /// IBM Personal Computer AT Technical Reference, BIOS listing, INT 15h
+    /// AH=87h (BLOCKMOVE): the move writes its status to port 80h before the
+    /// processor reset that ends it and reads it back afterwards (DONE3), so
+    /// the latch must survive a snapshot round trip; only a power-on reset
+    /// clears it.
     #[test]
-    fn read_returns_open_bus() {
-        let mut port = PostPort::new();
-        assert_eq!(port.port_read(POST_PORT, 1).unwrap(), 0xFF);
+    fn read_returns_the_last_byte_written() {
+        let mut bus = MockBus::new(Box::new(PostPort::with_port(0x80)));
+        assert_eq!(bus.port_read(0x80, 1).unwrap(), 0xFF, "before any write");
+        bus.port_write(0x80, 1, 0x0102).unwrap();
+        assert_eq!(bus.port_read(0x80, 1).unwrap(), 0x02);
+        let snapshot = bus.device().save();
+        let mut restored = MockBus::new(Box::new(PostPort::with_port(0x80)));
+        restored.device_mut().restore(&snapshot).unwrap();
+        assert_eq!(restored.port_read(0x80, 1).unwrap(), 0x02);
+        restored.device_mut().reset();
+        assert_eq!(restored.port_read(0x80, 1).unwrap(), 0xFF);
     }
 
     #[test]
