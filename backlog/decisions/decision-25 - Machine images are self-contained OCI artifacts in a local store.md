@@ -148,3 +148,20 @@ maintainer accepted the consequence:
   KWallet, KeePassXC) and the Windows Credential Manager. Without one the
   password lasts for the session only; scripts and CI use environment
   variables. A plain-text file is never used.
+
+## Amendment 2026-11-15: privacy per namespace
+
+The maintainer's registry serves two namespaces on one host: `unemu/`, the
+public namespace with open content only, which will later move to a host on
+the internet, and `private/`, which stays on the maintainer's own server and
+always requires a login. Privacy is therefore set per namespace, as the
+approved registry-accounts mock-up shows, not only per registry:
+
+1. A registry entry lists its namespaces, each public or private; an entry
+   without namespaces covers the whole registry, as before.
+2. The client guard lets user-supplied blobs go only to a namespace marked
+   private (or a registry marked private as a whole), and still refuses one
+   that answers anonymous reads. `unemu/` is never private: it takes open
+   content only, whatever the entry says.
+3. When the public namespace moves, `private/` keeps its host; the entry for
+   the new public host lists `unemu/` only.
