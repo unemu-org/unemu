@@ -60,6 +60,7 @@ mod persistence;
 mod presets;
 mod run;
 mod sb16_audio;
+mod speaker_trace;
 mod validate;
 
 pub use assemble::{
@@ -103,6 +104,7 @@ pub use run::{
     try_inject_scancode, ConsoleProbe, InjectionSchedule, KeyboardStimulus, RunError, RunPolicy,
     StopCondition,
 };
+pub use speaker_trace::{GuestStamp, ResetCause, ResetSource, SpeakerTraceEvent};
 
 /// Shared host-side fixtures for image, diagnostic and persistence tests.
 #[cfg(any(test, feature = "test-support"))]

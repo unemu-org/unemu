@@ -5,6 +5,33 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-15 — Speaker and CPU-reset trace (opt-in diagnostic):** with
+  `UNEMUPC98_TRACE_SPEAKER=1` in its environment (read once at startup; any
+  other value leaves it off) the window prints one stderr line per event:
+  `speaker on` / `speaker tone` / `speaker off` when port 61h GATE and data
+  become both set, counter 2 is reprogrammed while they are, or one drops
+  again. Each line carries the guest time, PIT clock, retired count, the
+  CS:IP after the OUT, and counter 2's mode, divisor and frequency, or how
+  long the speaker was on. A `cpu reset` line carries its source (`reset-pulse`
+  from the 8042 or port 92h, `cpu-shutdown`, or `host` for the halted-machine
+  restart), CMOS byte 0Fh and the restart CS:IP. Run it with
+  `UNEMUPC98_TRACE_SPEAKER=1 nix develop --command cargo run --release
+  --offline -p window --bin unemupc98-window 2> ~/unemupc98-speaker.log`.
+  `ObservationPolicy::speaker_trace` builds it in assembly; it only reads
+  timer, CMOS and CPU state after guest port writes and around frontend
+  resets (`AssembledMachine::reset_cpu`). With it off, assembly installs
+  nothing and a headless test shows identical clocks, retired counts and PCM.
+  A virtual second prints at most 32 speaker lines and 32 resume resets
+  (shutdown 05h, 09h or 0Ah; FDXMS286 memory moves cause many of these), then
+  one count of what it left out; resets that run POST always print. Measured
+  on the open AT: the power-on melody is five `speaker on` lines at
+  `F000:A66A` with divisors 2153, 4307, 3224, 4307 and 2875, each off after
+  0.185 s. The open VGA BIOS ignores BEL (vgabios.c, teletype case 7), so
+  on VGA machines DOS's BEL character makes no sound. Investigation of
+  spurious POST-like sounds: headless runs through the window presenter
+  (pauses, stalls up to 10 s, speed changes, mute, XMS block-move resets,
+  copying to C:) gave silence after POST; the trace is there to catch the
+  maintainer's case.
 - **2026-11-15 — FreeDOS 1.4 Floppy Edition installation sets, open with
   their source; copyleft media need their source:** `image template build`
   now also builds `unemu/media/freedos-floppy-1.44m`, `-1.2m` and `-720k`

@@ -338,6 +338,7 @@ fn assemble_preverified(
     let mut persistence = Vec::new();
     let mut native_audio = Vec::new();
     let mut ems_frame = None;
+    let mut trace_cmos = None;
 
     for dc in &config.devices {
         let boxed: Box<dyn Device> = match &dc.kind {
@@ -411,6 +412,9 @@ fn assemble_preverified(
                     start.month,
                     (start.year % 100) as u8,
                 );
+                if observation_policy.speaker_trace {
+                    trace_cmos = Some(rtc.nvram_store());
+                }
                 Box::new(rtc)
             }
             DeviceKind::LotechEms(c) => {
@@ -488,6 +492,14 @@ fn assemble_preverified(
     for source in native_audio {
         observation.add_audio_source(device::VClock::ZERO, source);
     }
+    let speaker_trace = observation_policy.speaker_trace.then(|| {
+        crate::speaker_trace::SpeakerTrace::new(
+            pit.clone(),
+            has_a20_source(config).then(|| Rc::clone(&reset_signal)),
+            trace_cmos,
+        )
+    });
+    observation.speaker_trace = speaker_trace.clone();
 
     // The machine needs exactly one controller. If the config has no PIC (an
     // interrupt-free machine), a null controller keeps the loop total.
@@ -526,14 +538,33 @@ fn assemble_preverified(
             .with_reset_signal(reset_signal)
             .with_a20_line(move || (line.change_count(), line.enabled()));
     }
+    let mut ems_map = None;
     if let Some((device, board, frame)) = ems_frame {
         // The CPU cannot fetch from a trapped region; let it hold mapped pages.
         let run = trap_runs(config)
             .into_iter()
             .find(|&(base, end)| base <= frame && frame + 0x10000 <= end)
             .ok_or(ConfigError::InvalidLotechEmsResources { device })?;
-        let mut map = crate::ems_frame::EmsFrameMap::new(board, frame, run);
-        machine = machine.with_memory_map(move |cpu, event| map.sync(cpu, event));
+        ems_map = Some(crate::ems_frame::EmsFrameMap::new(board, frame, run));
+    }
+    match (ems_map, speaker_trace) {
+        (Some(mut map), None) => {
+            machine = machine.with_memory_map(move |cpu, event| map.sync(cpu, event));
+        }
+        // The trace shares the one memory-map hook, which runs after every
+        // guest port write; it only reads state after the EMS map is applied.
+        (mut map, Some(trace)) => {
+            machine = machine.with_memory_map(move |cpu, event| {
+                if let Some(map) = &mut map {
+                    map.sync(cpu, event)?;
+                }
+                if event == ::machine::MemoryMapSync::Apply {
+                    trace.after_port_write(cpu);
+                }
+                Ok(())
+            });
+        }
+        (None, None) => {}
     }
 
     let mouse_target = config.devices.iter().find_map(|device| match &device.kind {

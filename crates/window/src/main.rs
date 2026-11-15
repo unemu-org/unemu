@@ -215,6 +215,12 @@ impl Presenter {
         for unlisted in &assembled.unlisted_firmware {
             writeln!(warnings, "{unlisted}")?;
         }
+        if assembled.observation.speaker_trace_enabled() {
+            writeln!(
+                warnings,
+                "speaker trace on: machine assembled, guest time starts at 0"
+            )?;
+        }
         let clock = &config.clock;
         // HLT must wait for an IRQ; the pacing cap already bounds idle time.
         assembled.machine.set_idle_limit(Some(u64::MAX));
@@ -378,7 +384,7 @@ impl Presenter {
                 Ok(RunOutcome::RetiredCapReached) => self.running = cap < u64::MAX,
                 Ok(RunOutcome::ResetRequested) => {
                     self.assembled.before_cpu_reset()?;
-                    self.assembled.machine.reset_cpu()?;
+                    self.assembled.reset_cpu(assembly::ResetCause::Requested)?;
                     self.record_cpu_reset(warnings);
                 }
                 Ok(RunOutcome::Halted) => {
@@ -396,6 +402,7 @@ impl Presenter {
                     self.error = Some(error.into());
                 }
             }
+            self.write_speaker_trace(warnings);
         }
         if !self.running {
             self.release_pointer();
@@ -530,14 +537,23 @@ impl Presenter {
         }
         self.apply_media_events()?;
         self.assembled.before_cpu_reset()?;
-        self.assembled.machine.reset_cpu()?;
+        self.assembled.reset_cpu(assembly::ResetCause::Host)?;
         self.record_cpu_reset(diagnostics);
+        self.write_speaker_trace(diagnostics);
         // Keys held or queued before the halt belong to the old boot; none of
         // them may reach the new POST.
         self.keyboard = HostKeyboard::default();
         self.halted = false;
         self.running = true;
         Ok(())
+    }
+
+    /// One line per traced speaker or reset event; nothing without the trace.
+    fn write_speaker_trace(&self, diagnostics: &mut impl io::Write) {
+        let clock = self.assembled.machine.clock();
+        for event in self.assembled.observation.take_speaker_trace(clock) {
+            let _ = writeln!(diagnostics, "{event}");
+        }
     }
 
     fn record_cpu_reset(&mut self, diagnostics: &mut impl io::Write) {
@@ -777,6 +793,17 @@ struct Args {
     rom_dirs: Vec<PathBuf>,
     display: Option<String>,
     options: assembly::AssemblyOptions,
+    /// Print speaker and CPU-reset events to stderr; see [`SPEAKER_TRACE_VAR`].
+    speaker_trace: bool,
+}
+
+/// Setting this to `1` makes the window print one stderr line per speaker
+/// start, tone change and CPU reset, with the guest CS:IP. It is read once
+/// at startup; any other value or its absence leaves the trace off.
+const SPEAKER_TRACE_VAR: &str = "UNEMUPC98_TRACE_SPEAKER";
+
+fn speaker_trace_requested(value: Option<&OsStr>) -> bool {
+    value == Some(OsStr::new("1"))
 }
 
 fn parse_args(args: impl IntoIterator<Item = std::ffi::OsString>) -> Result<Args, &'static str> {
@@ -785,6 +812,7 @@ fn parse_args(args: impl IntoIterator<Item = std::ffi::OsString>) -> Result<Args
         rom_dirs: Vec::new(),
         display: None,
         options: assembly::AssemblyOptions::default(),
+        speaker_trace: false,
     };
     let mut machine_seen = false;
     let mut args = args.into_iter();
@@ -888,6 +916,7 @@ fn setup_loaded(
             output: OutputKind::TextScanout,
             byte_limit: 0,
         }],
+        speaker_trace: args.speaker_trace,
         ..ObservationPolicy::default()
     })?;
     Presenter::from_assembled(&loaded.config, assembled, display, warnings)
@@ -901,7 +930,8 @@ fn run() -> Result<(), Box<dyn Error>> {
             return Ok(());
         }
     }
-    let args = parse_args(args)?;
+    let mut args = parse_args(args)?;
+    args.speaker_trace = speaker_trace_requested(std::env::var_os(SPEAKER_TRACE_VAR).as_deref());
     let autostart = std::env::args_os().skip(1).any(|arg| arg == "--machine");
     shell::run(args, autostart)?;
     Ok(())
@@ -921,6 +951,71 @@ fn main() -> std::process::ExitCode {
 mod tests {
     use super::*;
     use assembly::assemble_with_observation;
+
+    #[test]
+    fn speaker_trace_is_off_unless_the_switch_is_exactly_one() {
+        assert!(!speaker_trace_requested(None));
+        for value in ["", "0", "true", "yes", " 1", "11"] {
+            assert!(
+                !speaker_trace_requested(Some(OsStr::new(value))),
+                "{value:?}"
+            );
+        }
+        assert!(speaker_trace_requested(Some(OsStr::new("1"))));
+        assert!(!parse_args([]).unwrap().speaker_trace);
+    }
+
+    /// IBM Personal Computer AT Technical Reference, System Board, Speaker:
+    /// the guest sets counter 2 to 1193 (about 1 kHz) and port 61h bits 0-1.
+    #[test]
+    fn presenter_prints_speaker_trace_lines_only_when_enabled() {
+        let program = [
+            0xFA, 0xB0, 0xB6, 0xE6, 0x43, 0xB0, 0xA9, 0xE6, 0x42, 0xB0, 0x04, 0xE6, 0x42, 0xB0,
+            0x03, 0xE6, 0x61, 0xEB, 0xFE,
+        ];
+        let mut rom = vec![0u8; 0x8000];
+        rom[..program.len()].copy_from_slice(&program);
+        let mut config = assembly::bios(rom, None);
+        config.cpu.reset = assembly::ResetSpec::Entry { cs: 0xF800, ip: 0 };
+        for trace in [false, true] {
+            let assembled = assembly::assemble_with_observation_and_options(
+                &config,
+                &ObservationPolicy {
+                    routes: vec![ObservationRequest {
+                        device: DeviceId::Mda,
+                        output: OutputKind::TextScanout,
+                        byte_limit: 0,
+                    }],
+                    speaker_trace: trace,
+                    ..ObservationPolicy::default()
+                },
+                assembly::AssemblyOptions {
+                    allow_unlisted_firmware: true,
+                },
+            )
+            .unwrap();
+            let mut warnings = Vec::new();
+            let mut presenter =
+                Presenter::from_assembled(&config, assembled, DeviceId::Mda, &mut warnings)
+                    .unwrap();
+            presenter
+                .advance_fully_with_warnings(Duration::from_millis(20), &mut warnings)
+                .unwrap();
+            let text = String::from_utf8(warnings).unwrap();
+            if trace {
+                let lines: Vec<_> = text.lines().collect();
+                assert_eq!(lines.len(), 2, "{text}");
+                assert!(lines[0].starts_with("speaker trace on"), "{text}");
+                assert!(lines[1].starts_with("speaker on    t="), "{text}");
+                assert!(
+                    lines[1].ends_with("cs:ip=F800:0011 mode 3 divisor 1193 (1000.1 Hz)"),
+                    "{text}"
+                );
+            } else {
+                assert_eq!(text, "");
+            }
+        }
+    }
 
     fn test_presenter(config: &assembly::MachineConfig) -> Result<Presenter, Box<dyn Error>> {
         Presenter::new(
@@ -1547,6 +1642,7 @@ mod tests {
             rom_dirs: Vec::new(),
             display: None,
             options: assembly::AssemblyOptions::default(),
+            speaker_trace: false,
         };
         let error = setup(&missing, &mut io::sink()).err().unwrap().to_string();
         assert!(error.contains("missing.toml"), "{error}");

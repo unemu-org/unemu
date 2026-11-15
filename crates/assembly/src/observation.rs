@@ -50,6 +50,21 @@ impl AssembledMachine {
             .add_audio_source(self.machine.clock(), source);
     }
 
+    /// Assert the CPU reset line as [`::machine::Machine::reset_cpu`] does. With
+    /// [`ObservationPolicy::speaker_trace`] on, this also records the reset:
+    /// its cause, CMOS byte 0Fh and the restart CS:IP. Without the trace it is
+    /// exactly the machine's reset.
+    pub fn reset_cpu(&mut self, cause: crate::ResetCause) -> Result<(), ::machine::MachineError> {
+        let Some(trace) = self.observation.speaker_trace.clone() else {
+            return self.machine.reset_cpu();
+        };
+        let before =
+            crate::speaker_trace::SpeakerTrace::stamp(self.machine.cpu(), self.machine.clock());
+        self.machine.reset_cpu()?;
+        trace.reset(cause, before, self.machine.cpu());
+        Ok(())
+    }
+
     /// Settle lazy devices and deliver PCM through this completed service boundary.
     /// Direct callers of `machine.run_bounded` use this alongside display capture.
     pub fn capture_audio(&mut self) -> Result<(), AudioError> {
@@ -122,6 +137,10 @@ pub struct ObservationPolicy {
     pub trace: device::TracePolicy,
     /// Outputs to resolve and bind before guest execution.
     pub routes: Vec<ObservationRequest>,
+    /// Host diagnostic: record speaker starts, tone changes and CPU resets with
+    /// the guest CS:IP, drained through [`Observation::take_speaker_trace`].
+    /// Off by default; off, assembly installs nothing for it.
+    pub speaker_trace: bool,
 }
 
 /// An output whose device capability was checked during assembly.
@@ -180,6 +199,7 @@ pub struct Observation {
     streams: HashMap<(DeviceId, ByteStreamKind), ByteCapture>,
     displays: HashMap<DeviceId, DisplaySubscribers>,
     audio: RefCell<AudioObservation>,
+    pub(crate) speaker_trace: Option<crate::speaker_trace::SpeakerTrace>,
 }
 
 #[derive(Default)]
@@ -339,6 +359,22 @@ impl Observation {
             result?;
         }
         Ok(())
+    }
+
+    /// Whether assembly built the speaker trace ([`ObservationPolicy::speaker_trace`]).
+    #[must_use]
+    pub fn speaker_trace_enabled(&self) -> bool {
+        self.speaker_trace.is_some()
+    }
+
+    /// Take the speaker and reset events recorded so far, in order. `now` is
+    /// the machine clock; it closes a finished second's count of left-out
+    /// lines. Without the trace this returns an empty list and allocates nothing.
+    #[must_use]
+    pub fn take_speaker_trace(&self, now: device::VClock) -> Vec<crate::SpeakerTraceEvent> {
+        self.speaker_trace
+            .as_ref()
+            .map_or_else(Vec::new, |trace| trace.take(now))
     }
 
     /// Borrow the configured capture epoch without cloning retained PCM.

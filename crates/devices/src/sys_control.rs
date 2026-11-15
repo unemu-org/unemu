@@ -312,6 +312,33 @@ mod tests {
         }
     }
 
+    /// IBM Personal Computer AT Technical Reference, System Board, Speaker;
+    /// Intel 8254 datasheet, Read/Write Logic: a host reads port 61h's lines
+    /// and counter 2's complete count without moving the timer clock.
+    #[test]
+    fn speaker_controls_report_port_b_and_counter2_without_syncing() {
+        use crate::pit8253::SpeakerControls;
+        let pit = SharedPit8253::default();
+        let mut sys = MockBus::new(Box::new(SysControl::new().with_pit(pit.clone())));
+        let mut timer = MockBus::new(Box::new(pit.clone()));
+        timer.port_write(0x43, 1, 0xB6).unwrap();
+        timer.port_write(0x42, 1, 0xA9).unwrap();
+        assert_eq!(pit.speaker_controls().divisor, 0, "half a two-byte count");
+        timer.port_write(0x42, 1, 0x04).unwrap();
+        sys.tick(50);
+        sys.port_write(0x61, 1, 3).unwrap();
+        let on = SpeakerControls {
+            at: VClock(50),
+            gate: true,
+            data: true,
+            mode: 3,
+            divisor: 0x04A9,
+        };
+        assert_eq!(pit.speaker_controls(), on);
+        sys.tick(20);
+        assert_eq!(pit.speaker_controls(), on);
+    }
+
     /// IBM Personal Computer AT Technical Reference, System Board, Speaker:
     /// bit 0 controls the timer, while bit 1 independently masks its OUT pin.
     #[test]

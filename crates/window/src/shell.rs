@@ -419,6 +419,7 @@ impl Shell {
                                 output: assembly::OutputKind::TextScanout,
                                 byte_limit: 0,
                             }],
+                            speaker_trace: self.args.speaker_trace,
                             ..Default::default()
                         },
                         self.args.options,

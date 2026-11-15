@@ -1007,6 +1007,27 @@ impl Device for Pit8253 {
     }
 }
 
+/// Channel-2 speaker inputs at the timer's last synchronised clock.
+///
+/// IBM Personal Computer AT Technical Reference, System Board, Speaker: port B
+/// bit 0 drives counter 2's GATE and bit 1 enables the speaker data; Intel 8254
+/// datasheet, Control Word Format and Mode 3: the programmed mode and count
+/// register set the tone. A host diagnostic reads this without synchronising,
+/// advancing or otherwise changing the timer.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct SpeakerControls {
+    /// The PIT clock the timer state was last brought to.
+    pub at: VClock,
+    /// Port 61h bit 0, counter 2's GATE input.
+    pub gate: bool,
+    /// Port 61h bit 1, speaker data enable.
+    pub data: bool,
+    /// Counter 2's operating mode, 0 to 5.
+    pub mode: u8,
+    /// Counter 2's count register as last written; 0 means 65536.
+    pub divisor: u16,
+}
+
 /// Shared AT timer wiring (§7.4; scheduler design §Device migration inventory).
 ///
 /// Like the shared PIC faces, this handle keeps one device state behind both
@@ -1030,6 +1051,20 @@ impl SharedPit8253 {
         pit.speaker_level = pit.speaker_data && pit.out(2);
         record(pit.now, pit.speaker_level);
         pit.speaker = Some(Box::new(record));
+    }
+
+    /// Read the speaker inputs for host diagnostics; never synchronises the timer.
+    #[must_use]
+    pub fn speaker_controls(&self) -> SpeakerControls {
+        let pit = self.0.borrow();
+        let counter = &pit.counters[2];
+        SpeakerControls {
+            at: pit.now,
+            gate: pit.gate2,
+            data: pit.speaker_data,
+            mode: counter.mode,
+            divisor: counter.reload,
+        }
     }
 
     pub(crate) fn set_speaker_data(&self, now: VClock, enabled: bool) {
