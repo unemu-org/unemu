@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Neutral firmware package bindings and provider validation; machine-images §5.3.
 //! OCI Image Manifest 1.1 supplies closure identity; providers own ROM semantics.
+//! Descriptive fields, source archives and the README are plain TOML, tar or
+//! zip and UTF-8 Markdown, readable without this program.
 
 use crate::{
     invalid,
@@ -41,8 +43,89 @@ pub struct Rom {
     pub position: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub part_number: Option<String>,
+    /// Provider device kinds the ROM needs, such as the card a video BIOS drives.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub requires: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub parts: Vec<Part>,
+}
+
+/// How the package's bytes were obtained.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ProvenanceKind {
+    /// Read from chips; `from` names the board and the chip markings.
+    Dumped,
+    /// Downloaded; `from` names the source and file.
+    Downloaded,
+    /// Built; `from` names the repository, revision and patches.
+    Built,
+}
+impl ProvenanceKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Dumped => "dumped",
+            Self::Downloaded => "downloaded",
+            Self::Built => "built",
+        }
+    }
+}
+
+/// Where the bytes came from and when. The date is supplied, never the host clock.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Provenance {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kind: Option<ProvenanceKind>,
+    pub from: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub revision: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub date: Option<String>,
+}
+
+/// Container format of a source archive layer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ArchiveFormat {
+    Tar,
+    Zip,
+}
+impl ArchiveFormat {
+    pub fn media_type(self) -> &'static str {
+        match self {
+            Self::Tar => media_type::TAR,
+            Self::Zip => media_type::ZIP,
+        }
+    }
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Tar => "tar",
+            Self::Zip => "zip",
+        }
+    }
+}
+
+/// The corresponding source of one or more logical ROMs, as its own layer.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Source {
+    pub blob: Digest,
+    pub filename: String,
+    pub size: u64,
+    pub format: ArchiveFormat,
+    /// Logical ROM ids whose source this archive is.
+    pub roms: Vec<String>,
+}
+
+/// The generated plain-text README layer (UTF-8 Markdown).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Readme {
+    pub blob: Digest,
+    pub size: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -57,13 +140,25 @@ pub struct Config {
     pub version: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub date: Option<String>,
+    /// Free notes and known quirks; several lines are allowed.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub notes: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// Free labels in the media id grammar, such as `open-source` or `xt-ide`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub labels: Vec<String>,
     #[serde(default)]
     pub fits: toml::Table,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provenance: Option<Provenance>,
     pub roms: Vec<Rom>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sources: Vec<Source>,
     #[serde(default)]
     pub extras: Vec<Extra>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub readme: Option<Readme>,
 }
 impl Config {
     pub fn decode(bytes: &[u8]) -> Result<Self> {
@@ -93,19 +188,33 @@ impl Config {
         {
             return Err(invalid("invalid firmware envelope"));
         }
-        for text in [&self.vendor, &self.version, &self.notes]
-            .into_iter()
-            .flatten()
-        {
+        for text in [&self.vendor, &self.version].into_iter().flatten() {
             if !media_set::valid_text(text) {
                 return Err(invalid("invalid firmware text"));
+            }
+        }
+        for text in [&self.notes, &self.description].into_iter().flatten() {
+            if !valid_long_text(text) {
+                return Err(invalid("invalid firmware notes or description"));
             }
         }
         if self.date.as_ref().is_some_and(|s| !valid_date(s)) {
             return Err(invalid("invalid firmware calendar date"));
         }
+        ids_list(&self.labels, "label")?;
+        if let Some(p) = &self.provenance {
+            if !valid_long_text(&p.from)
+                || [&p.revision, &p.url]
+                    .into_iter()
+                    .flatten()
+                    .any(|s| !valid_line(s))
+                || p.date.as_ref().is_some_and(|s| !valid_date(s))
+            {
+                return Err(invalid("invalid firmware provenance"));
+            }
+        }
         let mut ids = BTreeSet::new();
-        let mut count = self.extras.len();
+        let mut count = self.extras.len() + self.sources.len() + usize::from(self.readme.is_some());
         for rom in &self.roms {
             if !media_set::valid_id(&rom.id)
                 || !ids.insert(&rom.id)
@@ -120,6 +229,7 @@ impl Config {
             }
             identity(rom.blob.as_ref(), &rom.sha256, rom.size)?;
             labels(&rom.position, &rom.part_number)?;
+            ids_list(&rom.requires, "required device kind")?;
             if !rom.parts.is_empty() && (rom.position.is_some() || rom.part_number.is_some()) {
                 return Err(invalid("logical split ROM cannot name a socket"));
             }
@@ -135,7 +245,36 @@ impl Config {
         if count > MAX_OBJECTS - 2 {
             return Err(invalid("firmware graph exceeds 10,000 objects"));
         }
+        let mut covered = BTreeSet::new();
+        for source in &self.sources {
+            if !media_set::valid_text(&source.filename)
+                || source.filename.contains(['/', '\\', '\0'])
+                || matches!(source.filename.as_str(), "." | "..")
+                || source.size == 0
+                || source.size > i64::MAX as u64
+                || source.roms.is_empty()
+                || source
+                    .roms
+                    .iter()
+                    .any(|id| !ids.contains(id) || !covered.insert(id))
+            {
+                return Err(invalid(
+                    "invalid source archive: name, size, or ROM ids (each ROM has one source)",
+                ));
+            }
+        }
+        if self
+            .readme
+            .as_ref()
+            .is_some_and(|r| r.size == 0 || r.size > MAX_SMALL_BLOB)
+        {
+            return Err(invalid("firmware README must be 1 byte to 1 MiB"));
+        }
         media_set::validate_extras(&self.extras)
+    }
+    /// The source archive that is the corresponding source of ROM `id`.
+    pub fn source_of(&self, id: &str) -> Option<&Source> {
+        self.sources.iter().find(|s| s.roms.iter().any(|r| r == id))
     }
     /// Exact payload traversal, retaining declared chip order.
     pub fn payloads(&self) -> Vec<(Digest, u64, &'static str)> {
@@ -149,9 +288,19 @@ impl Config {
             }
         }
         result.extend(
+            self.sources
+                .iter()
+                .map(|s| (s.blob.clone(), s.size, s.format.media_type())),
+        );
+        result.extend(
             self.extras
                 .iter()
                 .map(|e| (e.blob.clone(), e.size, media_type::EXTRA)),
+        );
+        result.extend(
+            self.readme
+                .iter()
+                .map(|r| (r.blob.clone(), r.size, media_type::MARKDOWN)),
         );
         result
     }
@@ -160,6 +309,31 @@ fn identity(blob: Option<&Digest>, hash: &str, size: u64) -> Result<()> {
     let digest: Digest = format!("sha256:{hash}").parse()?;
     if size == 0 || size > i64::MAX as u64 || blob.is_some_and(|d| d != &digest) {
         return Err(invalid("firmware digest or size mismatch"));
+    }
+    Ok(())
+}
+/// Longer descriptive text: several LF-separated lines, no other controls.
+pub fn valid_long_text(text: &str) -> bool {
+    !text.trim().is_empty()
+        && text.chars().count() <= 4096
+        && !text
+            .chars()
+            .any(|c| (c <= '\u{1f}' && c != '\n') || c == '\u{7f}')
+}
+/// One line of up to 1024 characters, for revisions and addresses.
+fn valid_line(text: &str) -> bool {
+    !text.trim().is_empty()
+        && text.chars().count() <= 1024
+        && !text.chars().any(|c| c <= '\u{1f}' || c == '\u{7f}')
+}
+fn ids_list(items: &[String], what: &str) -> Result<()> {
+    let mut unique = BTreeSet::new();
+    if items.len() > 64
+        || items
+            .iter()
+            .any(|s| !media_set::valid_id(s) || !unique.insert(s))
+    {
+        return Err(invalid(format!("invalid or duplicate firmware {what}")));
     }
     Ok(())
 }
@@ -253,6 +427,30 @@ impl ConfigValidator for Validator<'_> {
             }
             references.push(digest);
         }
+        // The push guard reads the ROM-to-source link from descriptors, so it
+        // must agree with the config.
+        for rom in &config.roms {
+            let link = config.source_of(&rom.id).map(|s| s.blob.to_string());
+            for digest in rom.blob.iter().chain(rom.parts.iter().map(|p| &p.blob)) {
+                let descriptor = descriptors
+                    .iter()
+                    .find(|d| d.names(digest))
+                    .ok_or_else(|| invalid("missing firmware payload"))?;
+                if descriptor.annotations.get(crate::license::SOURCE) != link.as_ref() {
+                    return Err(invalid("ROM source link differs from the config"));
+                }
+            }
+        }
+        if let Some(readme) = &config.readme {
+            let descriptor = descriptors
+                .iter()
+                .find(|d| d.names(&readme.blob))
+                .ok_or_else(|| invalid("missing firmware README"))?;
+            let bytes = blobs.read_verified(descriptor, MAX_SMALL_BLOB)?;
+            if std::str::from_utf8(&bytes).is_err() {
+                return Err(invalid("firmware README is not UTF-8"));
+            }
+        }
         for e in &config.extras {
             if let Some(name) = &e.dos_name {
                 self.0.validate_name(name)?;
@@ -276,7 +474,10 @@ mod tests {
             version: None,
             date: Some("2000-02-29".into()),
             notes: None,
+            description: None,
+            labels: Vec::new(),
             fits: toml::Table::new(),
+            provenance: None,
             roms: vec![Rom {
                 id: "boot".into(),
                 role: "reset".into(),
@@ -286,10 +487,92 @@ mod tests {
                 blob: Some(blob),
                 position: None,
                 part_number: None,
+                requires: Vec::new(),
                 parts: Vec::new(),
             }],
+            sources: Vec::new(),
             extras: Vec::new(),
+            readme: None,
         }
+    }
+    fn described() -> Config {
+        let mut config = sample();
+        config.notes = Some("First line.\nSecond line.".into());
+        config.description = Some("A synthetic boot ROM.".into());
+        config.labels = vec!["open-source".into(), "synthetic".into()];
+        config.provenance = Some(Provenance {
+            kind: Some(ProvenanceKind::Built),
+            from: "example/repository at a fixed revision".into(),
+            revision: Some("0123456789abcdef".into()),
+            url: None,
+            date: Some("2026-11-11".into()),
+        });
+        config.roms[0].requires = vec!["synthetic-bus".into()];
+        config.sources.push(Source {
+            blob: Digest::of(b"source tar"),
+            filename: "synthetic-src.tar".into(),
+            size: 10,
+            format: ArchiveFormat::Tar,
+            roms: vec!["boot".into()],
+        });
+        config.readme = Some(Readme {
+            blob: Digest::of(b"# Synthetic"),
+            size: 11,
+        });
+        config
+    }
+    #[test]
+    fn firmware_descriptive_fields_sources_and_readme_round_trip_in_traversal_order() {
+        let config = described();
+        let bytes = config.encode().unwrap();
+        assert_eq!(Config::decode(&bytes).unwrap(), config);
+        assert_eq!(config.encode().unwrap(), bytes);
+        let kinds = config
+            .payloads()
+            .into_iter()
+            .map(|(_, _, kind)| kind)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            kinds,
+            [media_type::FIRMWARE, media_type::TAR, media_type::MARKDOWN]
+        );
+        assert_eq!(
+            config.source_of("boot").unwrap().filename,
+            "synthetic-src.tar"
+        );
+        // A package written before these fields existed still decodes.
+        assert_eq!(
+            Config::decode(&sample().encode().unwrap()).unwrap(),
+            sample()
+        );
+        let mut bad = described();
+        bad.labels.push("open-source".into());
+        assert!(bad.encode().is_err(), "duplicate label");
+        bad = described();
+        bad.labels = vec!["Not An Id".into()];
+        assert!(bad.encode().is_err());
+        bad = described();
+        bad.roms[0].requires = vec!["a".into(), "a".into()];
+        assert!(bad.encode().is_err());
+        bad = described();
+        bad.sources[0].roms = vec!["missing".into()];
+        assert!(bad.encode().is_err(), "source of an unknown ROM");
+        bad = described();
+        let second = bad.sources[0].clone();
+        bad.sources.push(second);
+        assert!(bad.encode().is_err(), "two sources for one ROM");
+        bad = described();
+        bad.sources[0].filename = "../src.tar".into();
+        assert!(bad.encode().is_err());
+        bad = described();
+        bad.description = Some("bell\u{7}".into());
+        assert!(bad.encode().is_err());
+        bad = described();
+        bad.provenance.as_mut().unwrap().date = Some("2026-02-30".into());
+        assert!(bad.encode().is_err());
+        bad = described();
+        bad.readme.as_mut().unwrap().size = MAX_SMALL_BLOB + 1;
+        assert!(bad.encode().is_err());
     }
     #[test]
     fn firmware_codec_round_trip_is_deterministic_and_platform_neutral() {

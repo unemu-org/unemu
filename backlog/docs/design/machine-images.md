@@ -1038,7 +1038,7 @@ require their own implementation and visual review.
 
 ### 5.3. Firmware packages
 
-Status: **codec/import/store-first resolution and the library Firmware collection implemented**, 2026-11-15. The approved [Firmware collection mock-up](mockups/firmware.html) defines the UI; Use in machine…, Export, Open for documents, incomplete-import records and explicit additions of unmatched files are still pending.
+Status: **codec/import/store-first resolution, the library Firmware collection, and per-layer licences, source archives, descriptive metadata, the generated README and metadata revisions (CLI, store and push guard) implemented**, 2026-11-15. The approved [Firmware collection mock-up](mockups/firmware.html) defines the UI; Use in machine…, Export, Open for documents, incomplete-import records, the GUI for licences and metadata, and GUI explicit additions of unmatched files are still pending (the CLI adds one unlisted ROM with `--unlisted`).
 [decision-27](<../../decisions/decision-27 - Firmware packages are their own OCI artifact type.md>)
 accepts the artifact shape; codec, import and explicit store-first resolution
 are implemented, and so is the library's Firmware collection with Import ROM
@@ -1182,14 +1182,167 @@ a package never grants that permission or adds a trusted catalogue entry.
 Open-on-host document action, deterministic transfer-medium proposal and safe
 export rules. Manuals, technical references, source listings and errata stay
 with their ROMs without becoming executable firmware or guest launch commands.
-No second attachment format is introduced. All descriptors, including config
-and documents, default to `unemu.redistribution = "user-supplied"`. Proprietary
+No second attachment format is introduced. Every descriptor, including config
+and documents, defaults to `unemu.redistribution = "user-supplied"`; the rules
+below decide when a layer is `open`. Proprietary
 ROMs and restricted documents stay in private stores, registries and private
 archives; they never enter repository fixtures or public exports. Reviewed open
 firmware can be `open` with SPDX licence/provenance under §5, for example SeaBIOS,
 Kiselev BIOS or XTIDE Universal BIOS. Matching an open project name alone proves
 no licence. The most restrictive local classification per digest still wins;
 public-export recipes omit restricted bytes as §5 requires.
+
+**Licences, source archives and descriptive metadata** (decision-27, amendment
+2026-11-15). Each descriptor carries an SPDX licence expression in
+`unemu.license` next to its `unemu.redistribution` mark. A descriptor is `open`
+only with both `open` and a valid expression (SPDX 2.3 Annex D: `AND`, `OR`,
+`WITH`, parentheses, canonical non-deprecated identifiers from the program's
+accepted list, or `LicenseRef-…`); a missing, deprecated or unparsable licence
+counts as user-supplied, for the guard too. This is the safe reading of packages
+written before licences existed. The rules live in `image_store::license`:
+
+- *Rights follow the bytes.* Every ROM image and every chip is matched by
+  SHA-256 and length against all catalogue entries and their chip layouts. A
+  match with a user-supplied (proprietary) entry, such as an IBM or Landmark
+  ROM, locks it to user-supplied whatever its `catalogue_id`, the candidate or
+  any statement says, at import and in every edit. The same check refuses a
+  licence for a document or source archive with such bytes, and refuses an
+  unlisted package whose id is a catalogue id. The CLI push adds the same
+  restriction to the guard's local marks for every stored or decoded digest in
+  the closure, so a pulled package from a store whose catalogue did not know
+  the ROM cannot carry it out either.
+- *ROM images.* A ROM the catalogue lists as open (`FirmwareDistribution::Open`)
+  is open under the catalogue licence; restating another licence is refused, and
+  the user may still keep it user-supplied. Any other ROM is user-supplied
+  unless the user states `open` with a named licence; the program never
+  guesses. A package's ROM images share one licence. Under a GPL, LGPL, AGPL or
+  MPL family licence a ROM is open only together with an open source archive,
+  catalogue-known or not: a catalogue-open copyleft ROM imported without one is
+  kept user-supplied with a note naming the fetch script that builds its
+  archive, and an explicit `open` that cannot hold is refused. An expression
+  needs the source when every choice it offers includes such a licence
+  (`MIT OR GPL-2.0-only` does not; `MIT AND GPL-2.0-only` does).
+- *One switch.* `license::ACTIVE` is `Policy::ACCEPTED` (source required for
+  every copyleft ROM; the `OR` rule above). `Policy::STRICT` also treats any
+  copyleft identifier, even one `OR` alternative, as needing the source.
+- *Source archive.* A zip or POSIX tar file, recognized by its signature and
+  identified by SHA-256 only, becomes its own layer with media type
+  `application/x-tar` or `application/zip`. Tar archives of at least 4 KiB are
+  `+zstd` payloads like extras; zip archives stay raw, being deflate-compressed
+  already. The config lists it in `[[sources]]` with the ids of the ROMs it
+  covers; each covered ROM descriptor names the archive's decoded digest in
+  `unemu.source`, which the provider checks against the config. The archive
+  has its own class: it is open under the catalogue licence only when its
+  SHA-256 equals the archive the project pins for that catalogue ROM
+  (`source_archive_sha256`, the `SOURCE_ARCHIVE_SHA256` of the Kiselev,
+  vgabios and XTIDE fetch scripts, which build them reproducibly); any other
+  archive is open only by the user's statement (`--open --source-license
+  SPDX`) and is otherwise user-supplied, which keeps a copyleft ROM private.
+- *Documents.* Extras keep §5.2's schema and are user-supplied unless an
+  explicit licence marks them open.
+- *README and config.* Every import and edit writes `README.md`
+  (`text/markdown`, UTF-8, LF, generated only from the config and the layer
+  licences): title, description, platform, vendor, version and date, labels,
+  fits and required devices, each ROM with its identity and chip markings
+  (socket, part number, lane, offset, size, SHA-256), provenance, notes and
+  known quirks, and a licence section per layer. The README and the config
+  are open under `CC0-1.0` when every other layer is open, and user-supplied
+  otherwise. The config references the README layer as `[readme]`; the text
+  is generated without that reference, so it cannot depend on its own digest.
+
+The config gains optional fields, so earlier configs still decode:
+
+```toml
+name = "Kiselev 8088_bios 1.0.2 (Xi8088, AT reset)"   # the title
+notes = "Reads the AT display switch with inverted polarity."  # several lines allowed
+description = "Open-source PC BIOS by Sergey Kiselev in its Xi8088 configuration."
+labels = ["open-source", "xi8088", "at-reset"]
+
+[fits]
+boards = ["ibm-5170"]
+machine_classes = ["at"]
+
+[provenance]                  # kind: dumped | downloaded | built; omitted when unstated
+kind = "built"
+from = "skiselev/8088_bios a4af458a72bc33c4be066b33bd76e8af2b24111c (MACHINE_XI8088), at-reset.patch"
+revision = "a4af458a72bc33c4be066b33bd76e8af2b24111c"
+date = "2026-11-11"           # supplied, never the host clock
+
+[[roms]]
+id = "system-bios"
+role = "system-bios"
+catalogue_id = "kiselev-xi8088-1.0.2-atreset"
+sha256 = "61589573c9809273198b137d9419c87242b0a5f63c2ad834a9565950c3d6becc"
+size = 32768
+blob = "sha256:61589573c9809273198b137d9419c87242b0a5f63c2ad834a9565950c3d6becc"
+requires = ["kbc-8042", "rtc-cmos", "pic-cascade"]
+
+[[sources]]                   # the vendor fetch script's reproducible archive
+blob = "sha256:ced63707661747fc045d1e6e565a5cc9be73f95a9c944accedd77b19467fb5f9"
+filename = "kiselev-bios-a4af458-atreset-src.tar"
+size = 481280
+format = "tar"
+roms = ["system-bios"]
+
+[readme]                      # generated; digest and length illustrative
+blob = "sha256:<README digest>"
+size = 2215
+```
+
+Import prefills fits, required devices (`assembly::FirmwarePart` as the device
+kinds `kbc-8042`, `rtc-cmos`, `rtc-cmos-128`, `pic-cascade`, `video-rom`,
+`ata-primary` and `vga-registers`) and, for open firmware, the catalogue's
+provenance text without a kind, because the catalogue does not say how the
+bytes were made. Flags set the title, description, notes, vendor, version, date,
+labels, fits (catalogue fits may only be narrowed, as the provider already
+checks), required devices of unlisted ROMs, and provenance. Labels, boards,
+classes and required devices are stored sorted, so equal sets have one
+spelling, and licences in their canonical SPDX form. Layers are ordered ROMs,
+source archives, extras, README. The manifest carries the standard
+`org.opencontainers.image.title`, `.description`, `.vendor`, `.version`,
+`.source` (the provenance address), `.revision` and, for an all-open package,
+`.licenses` (the conjunction of the layers' distinct licences, built from their
+parsed expressions and therefore not bound by the 256-byte limit of one
+licence statement); source, README and
+extra layers carry `org.opencontainers.image.title` with their file name. There
+is no `.created`: no creation time is supplied and the host clock never enters
+a package. Two imports of the same inputs give byte-identical manifests, and the
+identity is known before anything is written.
+
+*Revisions.* A package is immutable. `image firmware edit NAME:TAG` applies
+the same metadata and licence statements, can add or replace the source archive,
+and publishes a new revision under a new tag (`:N` to `:N+1` by default) that
+reuses the stored ROM and document blobs, with a new config and README. A
+package written before licences existed (no README layer) counts as already
+imported when a folder import finds the same ROM and document bytes under its
+tag, and an edit brings it up to date; any other difference under the tag is a
+conflict.
+
+*Push guard.* Besides the user-supplied rules of §5.1, rule 4 refuses an open
+ROM layer under a licence that needs its source when the linked archive is not
+in the same closure, unless the target is a registry marked private outside
+`unemu/`. Rule 4 checks ROM layers only; documents and archives fall under the
+user-supplied rules. Its status for one layer is
+`image_store::license::source_missing`, for frontends that show it. An all-open
+package with its source may enter `unemu/`. The most restrictive
+local mark per digest still wins, so a user-supplied record of the same ROM in
+another local image keeps it private.
+
+*Machine images.* A ROM resolved from a package is embedded user-supplied, as
+before, unless the catalogue lists it as open, the package marks it open and
+the package links an archive it marks open. Then the machine config records the
+archive's digest as `source_archive` on the firmware binding, the image embeds
+the package's archive layer (the same stored blob, so it costs nothing extra),
+and the ROM is open under the catalogue licence and the archive under its own,
+linked by `unemu.source`. A ROM read from a plain file stays user-supplied. The rest of
+an imported machine image stays user-supplied, so this only keeps the ROM's
+local mark from restricting the package. New machine… (`pc_image::create`)
+binds package ROMs by digest under the same rule: a ROM open under a licence
+that obliges its source brings its package's archive layer and link, any other
+ROM keeps its package's marks without the link, and bytes the catalogue lists
+as proprietary stay user-supplied. Its generated configuration, metadata and
+zero bases are open under `CC0-1.0`, so the preview's closure, judged by the
+guard's own rules, tells whether the image may enter `unemu/`.
 
 **Identity and determinism.** Full SHA-256 identifies each exact stored blob;
 per-ROM/part hashes also verify decoded bytes (§2). The config digest identifies

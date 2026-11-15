@@ -242,11 +242,23 @@ fn guard_summary_and_inspection_see_a_small_open_blank_disk() {
     }
     let summary = cache.summary(&image.digest).unwrap();
     assert_eq!(summary.name, "Open AT workbench");
-    // Firmware blobs are shared with their packages; the disk adds a descriptor.
+    // Each copyleft ROM travels with its package's source archive, linked.
+    let archives: Vec<_> = manifest
+        .layers
+        .iter()
+        .filter(|d| d.decoded_media_type() == mt::TAR)
+        .collect();
+    assert_eq!(archives.len(), 3, "Kiselev, VGA BIOS and XTIDE sources");
+    assert!(manifest
+        .layers
+        .iter()
+        .all(|d| !image_store::license::source_missing(d, &manifest.layers)));
+    // Firmware and source blobs are shared with their packages; the disk adds
+    // a descriptor.
     let firmware: u64 = manifest
         .layers
         .iter()
-        .filter(|d| d.decoded_media_type() == mt::FIRMWARE)
+        .filter(|d| matches!(d.decoded_media_type(), mt::FIRMWARE | mt::TAR))
         .map(|d| d.size)
         .sum();
     assert!(
@@ -564,4 +576,94 @@ fn a_compressed_sector_pack_over_a_zero_base_mounts_without_any_decoded_file() {
     assert_eq!(pack.decoded_size().unwrap(), 16 * media::layer::RECORD_LEN);
     assert_eq!(zero(&flat).digest, zero(&saved).digest);
     no_materialized_disk(&open.store);
+}
+
+/// The push guard's verdict for `tag` in the official namespace.
+fn official(store: &Store, tag: &str) -> Result<(), image_registry::guard::Refusal> {
+    let manifest = store.resolve(tag, &PcProvider).unwrap().manifest;
+    let marks = image_registry::guard::LocalMarks::scan(store).unwrap();
+    let closure = image_registry::guard::closure(&manifest, &marks);
+    let target = image_registry::Reference::parse(tag, image_registry::DEFAULT_REGISTRY).unwrap();
+    image_registry::guard::check(
+        Some(&image_registry::RegistryEntry::builtin(
+            image_registry::DEFAULT_REGISTRY,
+        )),
+        &target,
+        &closure,
+    )
+}
+
+#[test]
+fn a_copyleft_rom_without_its_source_archive_keeps_a_new_image_private() {
+    let open = Open::new();
+    // The same open Kiselev ROM, from a package another program wrote: open
+    // under the GPL, but without its source archive.
+    let original = open.rom("kiselev-xi8088-1.0.2-atreset");
+    let package = &original.package;
+    let mut config = package.config.clone();
+    config.sources.clear();
+    let text = config.encode().unwrap();
+    let blob = open.store.import(text.as_slice(), None).unwrap();
+    let mut descriptor = Descriptor::new(mt::FIRMWARE_CONFIG, blob.digest, blob.size);
+    descriptor.annotations = package.manifest.config.annotations.clone();
+    let layers = package
+        .manifest
+        .layers
+        .iter()
+        .filter(|d| d.decoded_media_type() != mt::TAR)
+        .map(|d| {
+            let mut d = d.clone();
+            d.annotations.remove(image_store::license::SOURCE);
+            d
+        })
+        .collect();
+    let crafted = image_store::Manifest::new_firmware("ibm-pc-at", descriptor, layers).unwrap();
+    let crafted = open.store.import_manifest(&crafted).unwrap();
+    let rules = pc_image::firmware::PcFirmwareRules(pc_image::firmware::catalogue());
+    open.store
+        .update_tag(
+            "firmware/foreign-kiselev:1",
+            &crafted,
+            None,
+            &image_store::firmware::Validator(&rules),
+        )
+        .unwrap();
+    let foreign = pc_image::create::packages(&open.store)
+        .unwrap()
+        .into_iter()
+        .find(|p| p.descriptor.digest == crafted.digest)
+        .unwrap();
+    let mut image = open.image([None, None]);
+    image.firmware[0] = pc_image::create::PackageRom::new(&foreign, &foreign.config.roms[0]);
+    let preview = pc_image::create::preview(&image, &open.store).unwrap();
+    pc_image::create::create(&open.store, &image, "foreign-at:1.0.0", None).unwrap();
+    let created = open.store.resolve("foreign-at:1.0.0", &PcProvider).unwrap();
+    assert_eq!(
+        preview, created.manifest,
+        "the preview is what Create writes"
+    );
+    let bios = foreign.config.roms[0].blob.clone().unwrap();
+    let rom = created
+        .manifest
+        .layers
+        .iter()
+        .find(|d| d.names(&bios))
+        .unwrap();
+    assert!(image_store::license::source_missing(
+        rom,
+        &created.manifest.layers
+    ));
+    assert!(matches!(
+        official(&open.store, "foreign-at:1.0.0"),
+        Err(image_registry::guard::Refusal::CopyleftWithoutSource { ref blobs, .. }) if blobs[0].digest == rom.digest
+    ));
+    // The same ROM from the package with its source: the image may enter unemu/.
+    pc_image::create::create(
+        &open.store,
+        &open.image([None, None]),
+        "open-at:1.0.0",
+        None,
+    )
+    .unwrap();
+    assert_eq!(official(&open.store, "open-at:1.0.0"), Ok(()));
 }

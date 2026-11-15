@@ -113,6 +113,46 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
      stays responsive and a later quit still works;
   9. Dock › Quit while a file dialog (Browse…) is open is cancelled, and works
      again once the dialog is closed.
+- **2026-11-15 — Firmware licences, source archives and descriptive metadata:**
+  every firmware package layer carries an SPDX licence (`unemu.license`) next to
+  its redistribution mark, and an open mark without a valid licence counts as
+  user-supplied everywhere, in the push guard too. Rights follow the bytes: a
+  ROM, chip, document or archive the catalogue lists as proprietary by SHA-256
+  and length can never be opened, whatever its catalogue id or a hand-built
+  candidate says, and `image push` adds those digests to the guard's local
+  marks, so a pulled package cannot carry them out. Catalogue-open ROMs take
+  the catalogue licence; other ROMs stay user-supplied unless `--open
+  --license SPDX` states otherwise. A GPL, LGPL, AGPL or MPL family ROM is open
+  only with an open source archive (`--source`, zip or tar, its own `source`
+  layer linked from the ROM, tar stored `+zstd` from 4 KiB): the archive the
+  catalogue pins (`source_archive_sha256`, from the Kiselev, vgabios and XTIDE
+  fetch scripts) is open as is, any other needs `--source-license SPDX`, and a
+  catalogue-open copyleft ROM without one is imported user-supplied with a note
+  naming its fetch script. `image firmware import --unlisted ID --role ROLE`
+  adds a ROM the catalogue does not know (never under a catalogue id). Imports
+  record title, description, notes and quirks, sorted labels and fits (boards,
+  classes, required device kinds, prefilled from the catalogue) and
+  provenance (dumped, downloaded or built from, revision, address, supplied
+  date), write a generated UTF-8 Markdown README layer and the standard
+  `org.opencontainers.image.*` title, description, vendor, version, source,
+  revision and licenses annotations (no creation time). The README and config
+  are open (CC0-1.0) only when every other layer is. `image firmware edit`
+  publishes a new revision with the same ROM and document blobs; packages
+  written before licences stay readable, count as already imported when they
+  hold the same bytes, and are user-supplied for the guard where they lack a
+  licence. The push guard refuses an open copyleft ROM layer without its
+  linked source archive to a registry not marked private or into `unemu/`; an
+  all-open package with its source may enter `unemu/`. A machine image whose
+  ROM comes from such a package with an open source archive embeds the source
+  layer (the same blob) and marks both open; otherwise its ROM stays
+  user-supplied. New machine… binds package ROMs the same way, and its
+  generated content is open under CC0-1.0, so its preview tells truthfully
+  whether the image may enter `unemu/`. Summaries carry licences, labels, description, provenance,
+  sources and the README, with a licence facet; `image firmware show` prints
+  them with each layer's class and the guard's verdict. Stricter `OR`
+  handling is one switch, `image_store::license::ACTIVE`. The GUI for all of
+  this, including the redistribution badge (`license::open_license` and
+  `license::source_missing` are its helpers), is separate work.
 - **2026-11-15 — Library Firmware collection:** the library tree has a
   Firmware node with the package count and Role, Board, Machine class and
   Redistribution facets; its virtualized rows show name, roles, chip count,
@@ -234,7 +274,7 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   each prompt path, the policy switch and the toolbar selection; native visual
   and Dock/menu-bar behaviour need manual checking.
 - **2026-11-14 — Open VGA BIOS on the open AT profile:** `vendor/vgabios/fetch.sh` builds the unemu fork of the LGPL VGABIOS (release `v0.8a-unemu.1`, revision `8e154f04`) and its INT 10h probe floppy with Nix from the sibling `vgabios` repository, deriving the forge from this repository's origin remote, and checks both SHA-256 pins; neither file is committed. Catalogue entry `vgabios-0.8a-unemu.1-std` is an open (LGPL-2.1-or-later), **Tested** video BIOS: raw 32 KiB at C0000h, requiring the register-level `vga`. `machines/at-games-open.toml` replaces its MDA/VGA-text console with that card and ROM; XTIDE stays at C8000h. **MEASURED at CPU `fe240a56`:** Kiselev POST runs the ROM, shows its sign-on and "EGA/VGA (Video BIOS Present)", and FreeDOS reaches `A:\>` (`retired=15241264`); the probe reports all 32 checks `ok`, `fails:0000` (13 screen lines, `Halted` at `0000:880A`, `retired=10239957`); a boot sector drives mode 0Dh panning, page 1 and a CRTC byte start through INT 10h and ports, then mode 13h with a BIOS pixel and DAC entry; all four 0Dh frames match planar memory and the 13h frame matches the chain-4 byte stream and the BIOS default palette, pixel for pixel (`retired=10730615`). The CI `fixtures` gate now also builds XTIDE, the FAT16 disk and these fixtures; from CI's credential-less HTTPS origin the VGA BIOS builds only while `vgabios` is anonymously readable (MEASURED readable from the LAN), otherwise the gate fails naming `UNEMU_VGABIOS_FLAKE`. Registry delivery from `registry.unemu.dev/unemu/` is later work. No game is qualified. See [the fixture notes](../../vendor/vgabios/README.md) and [Video ROM placement](design/firmware-and-machine-classes.md#video-rom-placement).
-- **2026-11-14 — Registry push and pull:** the platform-neutral `image-registry` crate pushes and pulls tagged machine images, media sets and firmware packages to OCI distribution registries, with `image push/pull/remote ls/login` CLI commands. References resolve Docker-style against `registry.unemu.dev`; preferences list registries (host, private flag, user, no secrets); secrets come from the environment (bound to one host) or the macOS Keychain via the `security` tool. TLS is mandatory except for loopback test registries; authentication is anonymous first, then Basic, and credentials never follow a redirect to another origin. Push uploads only missing blobs, chunked and resumable above one chunk, publishes the manifest last, keeps version tags immutable and moves other tags only with `--move`. A push guard classifies each blob by the most restrictive mark any local manifest records for it and refuses user-supplied content outside private registries, anything but open content in `unemu/`, unlisted registries, and targets that are anonymously readable or answer with a Bearer challenge; `--dry-run` prints each blob's effective class and where it came from. Pull resumes interrupted blob downloads by range, verifies every digest through the store import and tags only a complete closure. Mock-registry tests cover resume, dedup, ordering, auth, digest mismatch, tag rules, paging and every guard refusal; the live round trip against registry.unemu.dev is opt-in. Firmware packages (2026-11-15) travel through the same CLI commands and guard: CLI mock-registry tests push and pull the open Xi8088 package with identical manifest and blob digests, list it in `image firmware ls` with its facets and as `firmware` (no Start) in `image ls`, show a repeat pull fetching nothing, refuse a user-supplied package to a non-private registry and to `unemu/`, and show each ROM layer's effective class in `--dry-run`. An open package's ROM layers are `open`, but its config is user-supplied like every config, so it still needs a private registry outside `unemu/`. Bearer-token authentication, the GUI login and Browse registry remain separate.
+- **2026-11-14 — Registry push and pull:** the platform-neutral `image-registry` crate pushes and pulls tagged machine images, media sets and firmware packages to OCI distribution registries, with `image push/pull/remote ls/login` CLI commands. References resolve Docker-style against `registry.unemu.dev`; preferences list registries (host, private flag, user, no secrets); secrets come from the environment (bound to one host) or the macOS Keychain via the `security` tool. TLS is mandatory except for loopback test registries; authentication is anonymous first, then Basic, and credentials never follow a redirect to another origin. Push uploads only missing blobs, chunked and resumable above one chunk, publishes the manifest last, keeps version tags immutable and moves other tags only with `--move`. A push guard classifies each blob by the most restrictive mark any local manifest records for it and refuses user-supplied content outside private registries, anything but open content in `unemu/`, unlisted registries, and targets that are anonymously readable or answer with a Bearer challenge; `--dry-run` prints each blob's effective class and where it came from. Pull resumes interrupted blob downloads by range, verifies every digest through the store import and tags only a complete closure. Mock-registry tests cover resume, dedup, ordering, auth, digest mismatch, tag rules, paging and every guard refusal; the live round trip against registry.unemu.dev is opt-in. Firmware packages (2026-11-15) travel through the same CLI commands and guard: CLI mock-registry tests push and pull the open Xi8088 package with identical manifest and blob digests, list it in `image firmware ls` with its facets and as `firmware` (no Start) in `image ls`, show a repeat pull fetching nothing, refuse a user-supplied package to a non-private registry and to `unemu/`, and show each ROM layer's effective class in `--dry-run`. Since the licence work (entry above, 2026-11-15) a package whose every layer is open has an open config, and the guard adds the copyleft source rule. Bearer-token authentication, the GUI login and Browse registry remain separate.
 - **2026-11-14 — Open AT protected-mode return test:** `vendor/at-pm-test/`
   holds a project-owned NASM program and an offline build script for a
   bootable 1.2M floppy (SHA-256 pinned, built by the CI `fixtures` gate). For

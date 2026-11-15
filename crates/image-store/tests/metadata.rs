@@ -584,15 +584,16 @@ fn older_summary_caches_without_decoded_sizes_are_rebuilt() {
     let store = temp.store();
     let image = publish(&store, &catalogue(), "demo:one");
     let path = store.root().join("cache/summaries/index.json");
-    // Schemas 3 and 4 (the firmware-package format) predate decoded sizes.
-    for schema in [3, 4] {
+    // Schemas 3 and 4 (the firmware-package format) predate decoded sizes,
+    // and schema 5 predates firmware licences and labels.
+    for schema in [3, 4, 5] {
         let mut cache = SummaryCache::open(&store).unwrap();
         while !cache.pending().is_empty() {
             cache.rebuild(&store, 1, &[], &[]).unwrap();
         }
         let mut value: serde_json::Value =
             serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-        assert_eq!(value["schema"], 5);
+        assert_eq!(value["schema"], 6);
         value["schema"] = schema.into();
         value["images"][image.digest.to_string()]
             .as_object_mut()
@@ -607,7 +608,7 @@ fn older_summary_caches_without_decoded_sizes_are_rebuilt() {
         let row = cache.summary(&image.digest).unwrap();
         assert_eq!(row.decoded_size, row.stored_size);
         let saved: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-        assert_eq!(saved["schema"], 5);
+        assert_eq!(saved["schema"], 6);
     }
 }
 

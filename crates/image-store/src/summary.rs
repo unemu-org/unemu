@@ -31,6 +31,8 @@ pub struct Facets {
     pub boards: Vec<String>,
     pub machine_classes: Vec<String>,
     pub catalogue_ids: Vec<String>,
+    /// SPDX expressions of open firmware ROMs.
+    pub licenses: Vec<String>,
 }
 
 /// A compact local projection. Tokens include every textual title/personal field.
@@ -79,6 +81,25 @@ pub struct FirmwareSummary {
     pub roms: Vec<crate::firmware::Rom>,
     #[serde(default)]
     pub extras: Vec<crate::media_set::Extra>,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub notes: Option<String>,
+    /// The package's own labels; [`ImageSummary::labels`] adds local ones.
+    #[serde(default)]
+    pub labels: Vec<String>,
+    #[serde(default)]
+    pub provenance: Option<crate::firmware::Provenance>,
+    /// Unique SPDX expressions of the open ROM layers, in first-use order.
+    #[serde(default)]
+    pub licenses: Vec<String>,
+    /// The config's effective mark: open only when every layer is open.
+    #[serde(default)]
+    pub open: bool,
+    #[serde(default)]
+    pub sources: Vec<crate::firmware::Source>,
+    #[serde(default)]
+    pub readme: Option<crate::firmware::Readme>,
 }
 
 /// Immutable identities plus revisioned local data. Never used for Start hashing.
@@ -148,7 +169,7 @@ struct CacheFile {
 impl Default for CacheFile {
     fn default() -> Self {
         Self {
-            schema: 5,
+            schema: 6,
             images: BTreeMap::new(),
             failures: BTreeMap::new(),
             warnings: Vec::new(),
@@ -170,8 +191,8 @@ fn read_cache(store: &Store) -> Result<CacheFile> {
                 for (id, failure) in &mut cache.failures {
                     failure.image = id.clone();
                 }
-                // Schema 5 adds decoded sizes; older rows are rebuilt.
-                if cache.schema == 5
+                // Schema 6 adds firmware licences and labels; older rows are rebuilt.
+                if cache.schema == 6
                     && cache.images.iter().all(|(id, row)| id == &row.image)
                     && cache.failures.iter().all(|(id, row)| id == &row.image)
                 {
@@ -515,8 +536,24 @@ impl SummaryCache {
             date: config.date.clone(),
             roms: config.roms.clone(),
             extras: config.extras.clone(),
+            description: config.description.clone(),
+            notes: config.notes.clone(),
+            labels: config.labels.clone(),
+            provenance: config.provenance.clone(),
+            open: crate::license::open_license(&manifest.config).is_some(),
+            sources: config.sources.clone(),
+            readme: config.readme.clone(),
             ..FirmwareSummary::default()
         };
+        for layer in &manifest.layers {
+            if layer.decoded_media_type() == media_type::FIRMWARE {
+                if let Some(license) = crate::license::open_license(layer) {
+                    if !facets.licenses.iter().any(|l| l == license.as_str()) {
+                        facets.licenses.push(license.as_str().into());
+                    }
+                }
+            }
+        }
         for rom in &config.roms {
             facets.roles.push(rom.role.clone());
             facets.hashes.push(rom.sha256.clone());
@@ -556,9 +593,13 @@ impl SummaryCache {
             .collect();
         let decoded_size = decoded_total(tag, &manifest)?;
         let value = serde_json::to_value(&config).map_err(|e| invalid(e.to_string()))?;
-        let mut text = String::new();
+        let mut text = format!("{} ", facets.licenses.join(" "));
         collect_text(&value, &mut text);
         let tokens = tokenize(&text);
+        let mut labels = config.labels.clone();
+        labels.extend(entry.labels.clone());
+        labels.sort();
+        labels.dedup();
         Ok(ImageSummary {
             kind: ArtifactKind::Firmware,
             firmware: Some(facets),
@@ -575,7 +616,7 @@ impl SummaryCache {
             stored_size,
             storage_blobs,
             decoded_size,
-            labels: entry.labels,
+            labels,
             favorite: entry.favorite,
             last_run: entry.last_run,
             overlay_revision: entry.overlay_revision,
@@ -649,11 +690,13 @@ impl SummaryCache {
                         && all_in(&facets.boards, &f.boards)
                         && all_in(&facets.machine_classes, &f.machine_classes)
                         && all_in(&facets.catalogue_ids, &f.catalogue_ids)
+                        && all_in(&facets.licenses, &f.licenses)
                 } else {
                     facets.firmware_roles.is_empty()
                         && facets.boards.is_empty()
                         && facets.machine_classes.is_empty()
                         && facets.catalogue_ids.is_empty()
+                        && facets.licenses.is_empty()
                 };
                 if !firmware_matches || !all_in(&facets.labels, &image.labels) {
                     return None;

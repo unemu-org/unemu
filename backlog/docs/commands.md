@@ -93,6 +93,9 @@ Firmware packages use the same store, with the shared default data root when
 cargo run --offline -p cli -- image firmware import /path/to/roms --store /path/to/store --create --dry-run
 cargo run --offline -p cli -- image firmware import /path/to/even.bin /path/to/odd.bin --store /path/to/store
 cargo run --offline -p cli -- image firmware import /path/to/roms --rescan --for ibm-5170-bios-1985-06-10 --extra /path/to/manual.pdf --store /path/to/store
+cargo run --offline -p cli -- image firmware import /path/to/roms --for kiselev-xi8088-1.0.2-atreset --source vendor/kiselev-bios/kiselev-bios-a4af458-atreset-src.tar --label open-source --label xi8088 --store /path/to/store
+cargo run --offline -p cli -- image firmware import /path/to/rom.bin --unlisted my-option-rom --role option-rom --open --license MIT --built-from "example/option-rom" --revision r7 --store /path/to/store
+cargo run --offline -p cli -- image firmware edit firmware/kiselev-xi8088-1.0.2:1 --source vendor/kiselev-bios/kiselev-bios-a4af458-atreset-src.tar --store /path/to/store
 cargo run --offline -p cli -- image firmware ls --store /path/to/store
 cargo run --offline -p cli -- image firmware show firmware/ibm-5170-bios-1985-06-10:1 --store /path/to/store
 ```
@@ -106,9 +109,45 @@ file list containing one layout; ambiguous catalogue identities require `--for`.
 Tags are `firmware/<catalogue-id>:1`; identical packages report already imported,
 while different digests conflict before copying, with CAS at publication. `--rescan` bypasses reusable persistent ROM hashes. `--dry-run`
 previews without writing blobs/tags or creating a store. Extras require
-`--for CATALOGUE-ID`; repeat `--extra PATH[:DOSNAME]` using the media-set attachment
-schema and DOS naming rules above. Sources remain unchanged. Catalogue-reviewed
-open ROMs retain licence/provenance; config and documents default to user-supplied.
+`--for CATALOGUE-ID` or `--unlisted ID`; repeat `--extra PATH[:DOSNAME]` using the media-set attachment
+schema and DOS naming rules above, each optionally followed by
+`--extra-license SPDX` to mark that document open. Sources remain unchanged.
+
+Every layer carries an SPDX licence next to its redistribution mark; a layer
+without a valid licence counts as user-supplied. Rights follow the bytes: a ROM,
+chip, document or archive whose SHA-256 and length the catalogue lists as
+proprietary (an IBM BIOS chip, say) can never be marked open, whatever its
+catalogue id, and `image push` keeps such bytes private in any package,
+pulled ones included. A ROM the catalogue lists as open is open under the
+catalogue's licence (`--user-supplied` keeps it private). `--unlisted ID
+--role ROLE` adds one ROM the catalogue does not know (tag `firmware/ID:1`;
+the id may not be a catalogue id); it is user-supplied unless `--open
+--license SPDX` states its licence, which is never guessed. A GPL, LGPL, AGPL
+or MPL family licence needs an open source archive: `--source ARCHIVE` (zip
+or POSIX tar, checked by signature and SHA-256 only) becomes a `source` layer
+linked from the ROM, tar archives of at least 4 KiB stored as `+zstd` frames,
+zip archives raw. The archive is open without a statement only when it is
+the one the catalogue pins for that ROM (the `*-src.tar` the vendor fetch
+script builds); any other archive needs `--open --source-license SPDX`. A
+catalogue-open copyleft ROM without an open archive is imported
+user-supplied, with a `note` line naming the fetch script; an explicit
+`--open` that cannot hold is refused. Metadata flags (`--title`,
+`--description`, `--notes`, `--vendor`, `--version`, `--date`, repeated
+`--label`, `--board`, `--class`, `--requires` for unlisted ROMs,
+`--dumped-from`/`--downloaded-from`/`--built-from` with `--revision`, `--url`
+and `--provenance-date`) need `--for` or `--unlisted`; lists are stored sorted,
+and catalogue fits are prefilled and may only be narrowed. Each import writes
+a generated `README.md` layer (UTF-8 Markdown); the README and the config are
+open, under CC0-1.0, only when every other layer is open. A package written
+before licences existed stays readable; a folder import finds it already
+imported when it holds the same ROM and document bytes (any other package
+under the tag is a conflict). `image firmware edit NAME:TAG [--to NAME:TAG]`
+takes the same metadata and licence flags (`--source` adds or replaces the
+archive) and publishes a new revision (`:N` becomes `:N+1` by default) with
+the same ROM and document blobs; the old tag keeps the old package. `show`
+prints every layer's class and licence and, from the push guard's own
+classification (local marks and the catalogue included), where the package
+may be pushed.
 The window uses Preferences > store root, falling back to the shared unemu
 platform location, for both library media and firmware readiness. CLI `run` uses
 the shared default, accepts `--store DIR`, and disables package lookup with
@@ -229,10 +268,13 @@ reference uses the local tag. `pull` tags locally in short form (no host, no
 missing store.
 
 Firmware packages (`firmware/<catalogue-id>:1`) push and pull like machine
-images and media sets; a pulled package lists in `image firmware ls`. Their
-ROM layers keep the import's mark (`open` for reviewed open firmware), but the
-package config is user-supplied like every config, so even an open package
-goes only to a private registry outside `unemu/` for now.
+images and media sets; a pulled package lists in `image firmware ls`. A
+package whose layers are all open may go to any configured registry,
+including `unemu/`, except that an open ROM under a GPL, LGPL, AGPL or MPL
+family licence also needs its linked source archive in the same image to
+leave a private registry or to enter `unemu/`; the guard refuses it
+otherwise. Any user-supplied layer keeps a package in private registries
+outside `unemu/`.
 
 Registries are listed in the shared preferences file (`unemupc98/preferences.toml`
 in the platform config directory, or `--config FILE`):

@@ -11,6 +11,23 @@ use std::{
 };
 
 static NEXT: AtomicU64 = AtomicU64::new(0);
+/// The source archive the open entry's fetch script builds and the catalogue
+/// pins, so the copyleft package is open together with its source.
+pub fn source_archive(candidate: &pc_image::firmware_import::Candidate) -> &'static str {
+    match candidate.distribution {
+        assembly::FirmwareDistribution::Open { fetch, .. } => match fetch {
+            "vendor/kiselev-bios/fetch.sh" => {
+                "vendor/kiselev-bios/kiselev-bios-a4af458-atreset-src.tar"
+            }
+            "vendor/vgabios/fetch.sh" => "vendor/vgabios/vgabios-0.8a-unemu.1-src.tar",
+            "vendor/xtide-universal-bios/fetch.sh" => {
+                "vendor/xtide-universal-bios/xtide-universal-bios-r638-src.tar"
+            }
+            other => panic!("no source archive for {other}"),
+        },
+        assembly::FirmwareDistribution::UserSupplied => panic!("not open firmware"),
+    }
+}
 pub struct Open {
     pub path: PathBuf,
     pub store: Store,
@@ -40,7 +57,12 @@ impl Open {
         let scan = pc_image::firmware_import::scan(&[path.join("roms")], catalogue).unwrap();
         assert_eq!(scan.candidates.len(), 3, "{:?}", scan.issues);
         for candidate in &scan.candidates {
-            pc_image::firmware_import::publish(&store, candidate, &[], catalogue).unwrap();
+            let statement = pc_image::firmware_import::Statement {
+                source: Some(root.join(source_archive(candidate))),
+                ..Default::default()
+            };
+            pc_image::firmware_import::publish_with(&store, candidate, &[], &statement, catalogue)
+                .unwrap();
         }
         let packages = pc_image::create::packages(&store).unwrap();
         Self {

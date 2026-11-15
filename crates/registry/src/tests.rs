@@ -68,13 +68,23 @@ impl ConfigValidator for Synthetic {
 }
 pub(crate) const PROVIDERS: [&dyn ConfigValidator; 1] = [&Synthetic];
 
+/// An open mark carries a permissive licence, as the guard requires of it.
+fn set_mark(descriptor: &mut Descriptor, mark: &str) {
+    descriptor
+        .annotations
+        .insert("unemu.redistribution".into(), mark.into());
+    if mark == "open" {
+        descriptor
+            .annotations
+            .insert("unemu.license".into(), "MIT".into());
+    }
+}
+
 fn marked(store: &Store, kind: &str, bytes: &[u8], mark: Option<&str>) -> Descriptor {
     let blob = store.import(bytes, None).unwrap();
     let mut descriptor = Descriptor::new(kind, blob.digest, blob.size);
     if let Some(mark) = mark {
-        descriptor
-            .annotations
-            .insert("unemu.redistribution".into(), mark.into());
+        set_mark(&mut descriptor, mark);
     }
     descriptor
 }
@@ -1559,8 +1569,7 @@ fn compressed(store: &Store, kind: &str, bytes: &[u8], mark: &str) -> Descriptor
         .import_payload(bytes, kind, bytes.len() as u64, None, COMPRESSED_TYPES)
         .unwrap();
     assert!(d.is_compressed());
-    d.annotations
-        .insert("unemu.redistribution".into(), mark.into());
+    set_mark(&mut d, mark);
     d
 }
 
@@ -1752,9 +1761,7 @@ fn a_compressed_copy_shares_the_class_of_its_raw_content() {
         br#"{"schema":1,"platform":"synthetic-zstd","titles":[]}"#,
         Some("open"),
     );
-    layer
-        .annotations
-        .insert("unemu.redistribution".into(), "open".into());
+    set_mark(&mut layer, "open");
     let manifest = Manifest::new_with_types(
         "synthetic-zstd",
         config,

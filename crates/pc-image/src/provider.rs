@@ -63,6 +63,11 @@ pub const PAYLOAD_TYPES: &[PayloadType] = &[
         media_type: DISK_ZERO,
         max_size: crate::zero::MAX_DESCRIPTOR,
     },
+    // A firmware source archive embedded with its open ROM.
+    PayloadType {
+        media_type: "application/x-tar+zstd",
+        max_size: image_store::codec::MAX_SOURCE_ARCHIVE,
+    },
 ];
 /// The IBM PC/AT provider; no host endpoints or inheritance are accepted.
 pub struct PcProvider;
@@ -204,7 +209,7 @@ pub(crate) fn prepare(
         {
             return Err(invalid("firmware binding differs from hardware"));
         }
-        bind(
+        let d = bind(
             &mut reader,
             &mut names,
             &binding.source,
@@ -215,6 +220,24 @@ pub(crate) fn prepare(
         )?;
         if rom.get("sha256").and_then(toml::Value::as_str) != Some(binding.blob.hex()) {
             return Err(invalid("firmware hash differs from binding"));
+        }
+        // The push guard reads the ROM's source link from its descriptor.
+        let link = d.annotations.get(image_store::license::SOURCE);
+        if link
+            != binding
+                .source_archive
+                .as_ref()
+                .map(Digest::to_string)
+                .as_ref()
+        {
+            return Err(invalid("firmware source link differs from binding"));
+        }
+        if let Some(archive) = &binding.source_archive {
+            descriptors
+                .iter()
+                .find(|d| d.names(archive) && matches!(d.decoded_media_type(), mt::TAR | mt::ZIP))
+                .ok_or_else(|| invalid("missing firmware source archive"))?;
+            references.push(archive.clone());
         }
         firmware_count += 1;
         Ok(())

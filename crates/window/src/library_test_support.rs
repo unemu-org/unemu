@@ -81,6 +81,24 @@ impl Fixture {
     }
 }
 
+/// The source archive the open entry's fetch script builds and the catalogue
+/// pins, so the copyleft package is open together with its source.
+pub(crate) fn source_archive(candidate: &pc_image::firmware_import::Candidate) -> &'static str {
+    match candidate.distribution {
+        assembly::FirmwareDistribution::Open { fetch, .. } => match fetch {
+            "vendor/kiselev-bios/fetch.sh" => {
+                "vendor/kiselev-bios/kiselev-bios-a4af458-atreset-src.tar"
+            }
+            "vendor/vgabios/fetch.sh" => "vendor/vgabios/vgabios-0.8a-unemu.1-src.tar",
+            "vendor/xtide-universal-bios/fetch.sh" => {
+                "vendor/xtide-universal-bios/xtide-universal-bios-r638-src.tar"
+            }
+            other => panic!("no source archive for {other}"),
+        },
+        assembly::FirmwareDistribution::UserSupplied => panic!("not open firmware"),
+    }
+}
+
 /// A store with the open firmware packages (the Kiselev AT BIOS, the open VGA
 /// BIOS and XTIDE) and, with `misfits`, a user-supplied package of the other
 /// Kiselev build plus synthetic packages that must not fit: an XT-class BIOS
@@ -91,6 +109,14 @@ pub(crate) struct FirmwareStore {
 }
 impl FirmwareStore {
     pub fn new(misfits: bool) -> Self {
+        Self::build(misfits, true)
+    }
+    /// The open packages imported without their source archives, which
+    /// keeps the copyleft ones user-supplied.
+    pub fn without_sources() -> Self {
+        Self::build(false, false)
+    }
+    fn build(misfits: bool, sources: bool) -> Self {
         let temp = assembly::test_support::TempDir::new("new-machine-firmware");
         let roms = temp.path().join("roms");
         fs::create_dir(&roms).unwrap();
@@ -110,7 +136,14 @@ impl FirmwareStore {
         let scan = pc_image::firmware_import::scan(std::slice::from_ref(&roms), catalogue).unwrap();
         assert_eq!(scan.candidates.len(), 3, "{:?}", scan.issues);
         for candidate in &scan.candidates {
-            pc_image::firmware_import::publish(&store, candidate, &[], catalogue).unwrap();
+            // The copyleft packages are open only with the archives their
+            // fetch scripts build, which the catalogue pins.
+            let statement = pc_image::firmware_import::Statement {
+                source: sources.then(|| root.join(source_archive(candidate))),
+                ..Default::default()
+            };
+            pc_image::firmware_import::publish_with(&store, candidate, &[], &statement, catalogue)
+                .unwrap();
         }
         if misfits {
             fs::copy(

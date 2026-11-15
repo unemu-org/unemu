@@ -352,15 +352,19 @@ fn push_pull_and_list_through_a_private_registry() {
     assert_eq!(output, format!("{host}/private/lab\n"));
 }
 
-/// The open Xi8088 BIOS as a firmware package. Its ROM layer is marked open
-/// with licence and provenance; its config, like every config, defaults to
-/// user-supplied (machine-images §5.3). Returns the tag and package digest,
-/// or `None` when the BIOS fixture is not fetched.
+/// The open Xi8088 BIOS as a firmware package with the source archive its
+/// fetch script builds, which the catalogue pins. Its ROM and archive layers
+/// are open under the catalogue licence, and, because every other layer is
+/// open, so are its README and config (machine-images §5.3). Returns the tag
+/// and package digest, or `None` when the BIOS fixtures are not fetched.
 fn import_open_firmware(dir: &Dir, store: &Path) -> Option<(String, String)> {
     let bytes = fixtures::fixture("kiselev-bios/bios-xi8088.bin")?;
+    let archive = fixtures::fixture("kiselev-bios/kiselev-bios-a4af458-atreset-src.tar")?;
     let folder = dir.join("roms");
     std::fs::create_dir_all(&folder).unwrap();
     std::fs::write(folder.join("bios.bin"), bytes).unwrap();
+    let source = dir.join("kiselev-bios-a4af458-atreset-src.tar");
+    std::fs::write(&source, archive).unwrap();
     let (code, output, errors) = run(&os(&[
         &"image",
         &"firmware",
@@ -371,6 +375,8 @@ fn import_open_firmware(dir: &Dir, store: &Path) -> Option<(String, String)> {
         &"--create",
         &"--for",
         &assembly::KISELEV_XI8088.id,
+        &"--source",
+        &source,
     ]));
     assert_eq!(code, 0, "{errors}");
     let tag = format!("firmware/{}:1", assembly::KISELEV_XI8088.id);
@@ -742,39 +748,282 @@ fn a_firmware_dry_run_shows_the_rom_layer_effective_class() {
         output.contains(&format!("{rom_layer}open\tthis image\n")),
         "{output}"
     );
+    // Every layer is open, so the config is too.
     assert!(
-        output.contains(
-            "\tapplication/vnd.unemu.firmware.config.v1+toml\tuser-supplied\tthis image\n"
-        ),
+        output.contains("\tapplication/vnd.unemu.firmware.config.v1+toml\topen\tthis image\n"),
         "{output}"
     );
     assert!(output.ends_with("guard:allowed\n"), "{output}");
 
-    // A machine image embedding the same BIOS records it as user-supplied;
-    // the most restrictive local mark decides. It holds the BIOS raw, so the
-    // package's compressed copy inherits the mark through its decoded digest.
+    // Every layer is open and the ROM carries its source, so a public
+    // registry outside unemu/ may take it too.
+    let public = config(&dir, &registry, false);
+    let (code, output, errors) = dry_run(&public);
+    assert_eq!(code, 0, "{errors}");
+    assert!(output.ends_with("guard:allowed\n"), "{output}");
+
+    // A machine image that took the same BIOS from a plain file, before the
+    // package existed, records it as user-supplied; the most restrictive
+    // local mark decides. It holds the BIOS raw, so the package's compressed
+    // copy inherits the mark through its decoded digest.
+    let restricted = dir.join("restricted");
     let machine = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../machines/at-freedos.toml");
     let (code, _, errors) = run(&os(&[
         &"image",
         &"import",
         &machine,
         &"--store",
-        &store,
+        &restricted,
+        &"--create",
         &"--tag",
         &"lab:1.0.0",
         &"--no-compress",
     ]));
     assert_eq!(code, 0, "{errors}");
-    let (code, output, errors) = dry_run(&private);
+    import_open_firmware(&dir, &restricted).unwrap();
+    let dry_run = |store: &Path, preferences: &Path| {
+        run(&os(&[
+            &"image",
+            &"push",
+            &tag,
+            &format!("{host}/{tag}"),
+            &"--store",
+            &store,
+            &"--config",
+            &preferences,
+            &"--dry-run",
+        ]))
+    };
+    let (code, output, errors) = dry_run(&restricted, &config(&dir, &registry, true));
     assert_eq!(code, 0, "{errors}");
     assert!(
         output.contains(&format!("{rom_layer}user-supplied\tlocal tag lab:1.0.0\n")),
         "{output}"
     );
-    let public = config(&dir, &registry, false);
-    let (code, output, errors) = dry_run(&public);
+    let (code, output, errors) = dry_run(&restricted, &config(&dir, &registry, false));
     assert_eq!(code, 1, "{output}");
     assert!(output.ends_with("guard:refused\n"), "{output}");
     assert!(errors.contains(&layer.digest.to_string()), "{errors}");
+    assert!(registry.log().is_empty(), "{:?}", registry.log());
+}
+
+/// An unlisted synthetic option ROM imported as open GPL-2.0-only firmware
+/// together with its source archive, large enough to be stored compressed.
+/// Returns the tag.
+fn import_copyleft_with_source(dir: &Dir, store: &Path) -> String {
+    let rom = dir.join("copyleft.bin");
+    std::fs::write(&rom, [0x3c; 8192]).unwrap();
+    let mut archive = vec![0_u8; 20 * 1024];
+    archive[257..263].copy_from_slice(b"ustar\0");
+    let source = dir.join("copyleft-src.tar");
+    std::fs::write(&source, archive).unwrap();
+    let (code, output, errors) = run(&os(&[
+        &"image",
+        &"firmware",
+        &"import",
+        &rom,
+        &"--unlisted",
+        &"copyleft-rom",
+        &"--role",
+        &"option-rom",
+        &"--open",
+        &"--license",
+        &"GPL-2.0-only",
+        &"--source",
+        &source,
+        &"--source-license",
+        &"GPL-2.0-only",
+        &"--store",
+        &store,
+        &"--create",
+    ]));
+    assert_eq!(code, 0, "{errors}");
+    assert!(
+        output.contains("imported\tfirmware/copyleft-rom:1\t"),
+        "{output}"
+    );
+    "firmware/copyleft-rom:1".into()
+}
+
+#[test]
+fn a_copyleft_package_with_its_source_round_trips_and_may_enter_the_official_namespace() {
+    let dir = Dir::new("firmware-source");
+    let store = dir.join("store");
+    let tag = import_copyleft_with_source(&dir, &store);
+    let registry = MockRegistry::start(Policy {
+        anonymous_read: vec!["*".into()],
+        anonymous_write: vec!["*".into()],
+        ..Policy::default()
+    });
+    let host = registry.host();
+    let public = config(&dir, &registry, false);
+    let reference = format!("{host}/unemu/copyleft-rom:1");
+    let push = |dry_run: bool| {
+        let mut args = os(&[
+            &"image",
+            &"push",
+            &tag,
+            &reference,
+            &"--store",
+            &store,
+            &"--config",
+            &public,
+        ]);
+        if dry_run {
+            args.push("--dry-run".into());
+        }
+        child(&args, &dir.0, None)
+    };
+    // Every layer is open and the copyleft ROM travels with its source, so
+    // even the official namespace of a public registry accepts it.
+    let (code, output, errors) = push(true);
+    assert_eq!(code, 0, "{errors}");
+    assert!(
+        output.contains("\tapplication/x-tar+zstd\topen\tthis image\n"),
+        "{output}"
+    );
+    assert!(output.ends_with("guard:allowed\n"), "{output}");
+    let (code, output, errors) = push(false);
+    assert_eq!(code, 0, "{output}{errors}");
+    let (digest, blobs) = closure(&store, &tag);
+    assert!(
+        output.ends_with(&format!("pushed\t{reference}\t{digest}\n")),
+        "{output}"
+    );
+    let target = dir.join("target");
+    let (code, output, errors) = child(
+        &os(&[
+            &"image",
+            &"pull",
+            &reference,
+            &"--store",
+            &target,
+            &"--create",
+            &"--tag",
+            &tag,
+            &"--config",
+            &public,
+        ]),
+        &dir.0,
+        None,
+    );
+    assert_eq!(code, 0, "{errors}");
+    assert!(
+        output.ends_with(&format!("pulled\t{tag}\t{digest}\n")),
+        "{output}"
+    );
+    assert_eq!(closure(&target, &tag), (digest, blobs));
+    let (code, show, errors) = run(&os(&[
+        &"image",
+        &"firmware",
+        &"show",
+        &tag,
+        &"--store",
+        &target,
+    ]));
+    assert_eq!(code, 0, "{errors}");
+    assert!(
+        show.contains("source\t\"copyleft-src.tar\"\ttar\t20480\t"),
+        "{show}"
+    );
+}
+
+#[test]
+fn an_open_copyleft_rom_without_its_source_stays_in_private_registries() {
+    let dir = Dir::new("firmware-no-source");
+    let store = dir.join("store");
+    // This program never writes such a package; another program might. Make
+    // one from an all-open MIT package by restating the ROM layer's licence.
+    let rom = dir.join("open.bin");
+    std::fs::write(&rom, [0x4d; 8192]).unwrap();
+    let (code, _, errors) = run(&os(&[
+        &"image",
+        &"firmware",
+        &"import",
+        &rom,
+        &"--unlisted",
+        &"permissive-rom",
+        &"--role",
+        &"option-rom",
+        &"--open",
+        &"--license",
+        &"MIT",
+        &"--store",
+        &store,
+        &"--create",
+    ]));
+    assert_eq!(code, 0, "{errors}");
+    let opened = image_store::Store::open_existing(&store).unwrap();
+    let image = opened
+        .resolve(
+            "firmware/permissive-rom:1",
+            &image_store::firmware::Validator(&pc_image::firmware::PcFirmwareRules(&[])),
+        )
+        .unwrap();
+    let mut manifest = image.manifest;
+    for layer in &mut manifest.layers {
+        if layer.decoded_media_type() == image_store::media_type::FIRMWARE {
+            layer
+                .annotations
+                .insert("unemu.license".into(), "GPL-2.0-only".into());
+        }
+    }
+    let crafted = opened.import_manifest(&manifest).unwrap();
+    let tag = "foreign/bios:1";
+    opened
+        .update_tag(
+            tag,
+            &crafted,
+            None,
+            &image_store::firmware::Validator(&pc_image::firmware::PcFirmwareRules(&[])),
+        )
+        .unwrap();
+    let registry = MockRegistry::start(Policy::default());
+    let host = registry.host();
+    let dry_run = |reference: String, private: bool| {
+        run(&os(&[
+            &"image",
+            &"push",
+            &tag,
+            &reference,
+            &"--store",
+            &store,
+            &"--config",
+            &config(&dir, &registry, private),
+            &"--dry-run",
+        ]))
+    };
+    for (reference, private) in [
+        (format!("{host}/owner/bios:1"), false),
+        (format!("{host}/unemu/bios:1"), false),
+        (format!("{host}/unemu/bios:1"), true),
+    ] {
+        let (code, output, errors) = dry_run(reference.clone(), private);
+        assert_eq!(code, 1, "{reference}: {output}");
+        assert!(output.ends_with("guard:refused\n"), "{output}");
+        assert!(
+            errors.contains("open copyleft ROMs have no source archive")
+                && errors.contains("image firmware edit --source adds one"),
+            "{errors}"
+        );
+    }
+    let (code, output, errors) = dry_run(format!("{host}/private/bios:1"), true);
+    assert_eq!(code, 0, "{errors}");
+    assert!(output.ends_with("guard:allowed\n"), "{output}");
+    let (code, show, errors) = run(&os(&[
+        &"image",
+        &"firmware",
+        &"show",
+        &tag,
+        &"--store",
+        &store,
+    ]));
+    assert_eq!(code, 0, "{errors}");
+    assert!(
+        show.contains(
+            "push\tprivate registries outside unemu/ only: copyleft ROM without its source archive\n"
+        ),
+        "{show}"
+    );
     assert!(registry.log().is_empty(), "{:?}", registry.log());
 }

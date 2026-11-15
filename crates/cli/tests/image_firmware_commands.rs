@@ -148,3 +148,265 @@ fn firmware_cli_rejects_missing_inputs_ambiguous_extra_targets_and_unknown_optio
     }
     assert!(!t.0.join("store").exists());
 }
+/// A POSIX tar signature at offset 257 in `size` bytes.
+fn tar(size: usize) -> Vec<u8> {
+    let mut bytes = vec![0_u8; size];
+    bytes[257..263].copy_from_slice(b"ustar\0");
+    for (i, b) in bytes.iter_mut().enumerate().skip(512) {
+        *b = (i % 53) as u8;
+    }
+    bytes
+}
+/// The `layer KIND DIGEST CLASS LICENCE` lines of `image firmware show`.
+fn layers(show: &str, kind: &str) -> Vec<String> {
+    show.lines()
+        .filter(|l| l.starts_with(&format!("layer\t{kind}\t")))
+        .map(str::to_owned)
+        .collect()
+}
+#[test]
+fn firmware_cli_states_licences_sources_and_metadata_and_edits_revisions() {
+    let t = Temp::new();
+    let rom = t.0.join("option.bin");
+    fs::write(&rom, [0x66; 8192]).unwrap();
+    let source = t.0.join("option-src.tar");
+    fs::write(&source, tar(9000)).unwrap();
+    let rom = rom.to_str().unwrap();
+    let source = source.to_str().unwrap();
+    let base = [
+        "import",
+        rom,
+        "--create",
+        "--unlisted",
+        "opt-rom",
+        "--role",
+        "option-rom",
+    ];
+    let with = |extra: &[&'static str]| -> Vec<&str> {
+        base.iter().copied().chain(extra.iter().copied()).collect()
+    };
+    // Open is a statement with a named licence; copyleft needs its source.
+    let (code, _, err) = run(&t.0, &with(&["--open"]));
+    assert_eq!(code, 1);
+    assert!(err.contains("--license"), "{err}");
+    let (code, _, err) = run(&t.0, &with(&["--open", "--license", "GPL-2.0-only"]));
+    assert_eq!(code, 1);
+    assert!(err.contains("copyleft"), "{err}");
+    let mut args = with(&[
+        "--open",
+        "--license",
+        "GPL-2.0-only",
+        "--title",
+        "Synthetic option ROM",
+        "--description",
+        "An adapter ROM for the CLI test.",
+        "--label",
+        "open-source",
+        "--label",
+        "synthetic",
+        "--board",
+        "ibm-5170",
+        "--class",
+        "at",
+        "--requires",
+        "ata-primary",
+        "--built-from",
+        "example/option-rom",
+        "--revision",
+        "r9",
+        "--provenance-date",
+        "2026-06-09",
+    ]);
+    args.extend(["--source", source]);
+    // Any archive but one the project pins needs its own licence statement.
+    let (code, _, err) = run(&t.0, &args);
+    assert_eq!(code, 1);
+    assert!(err.contains("--source-license"), "{err}");
+    args.extend(["--source-license", "GPL-2.0-only"]);
+    let (code, out, err) = run(&t.0, &args);
+    assert_eq!(code, 0, "{err}");
+    let digest = out
+        .lines()
+        .find_map(|l| l.strip_prefix("imported\tfirmware/opt-rom:1\t"))
+        .unwrap_or_else(|| panic!("{out}"))
+        .to_owned();
+    let (code, show, err) = run(&t.0, &["show", "firmware/opt-rom:1"]);
+    assert_eq!(code, 0, "{err}");
+    assert!(show.starts_with(&format!(
+        "firmware/opt-rom:1\t{digest}\t\"Synthetic option ROM\"\n"
+    )));
+    for line in [
+        "requires\toption-rom\t[\"ata-primary\"]\n",
+        "labels\t[\"open-source\", \"synthetic\"]\n",
+        "description\t\"An adapter ROM for the CLI test.\"\n",
+        "provenance\tbuilt\t\"example/option-rom\"\trevision:r9\turl:-\tdate:2026-06-09\n",
+        "source\t\"option-src.tar\"\ttar\t9000\t",
+        "push\tany configured registry, including unemu/\n",
+    ] {
+        assert!(show.contains(line), "{line:?} missing from\n{show}");
+    }
+    let rom_layer = layers(&show, "rom");
+    assert_eq!(rom_layer.len(), 1);
+    assert!(rom_layer[0].ends_with("\topen\tGPL-2.0-only"), "{show}");
+    assert!(layers(&show, "source")[0].ends_with("\topen\tGPL-2.0-only"));
+    assert!(layers(&show, "readme")[0].ends_with("\topen\tCC0-1.0"));
+    assert!(layers(&show, "config")[0].ends_with("\topen\tCC0-1.0"));
+    // An edit is a new revision of the same ROM blob.
+    let (code, out, err) = run(
+        &t.0,
+        &[
+            "edit",
+            "firmware/opt-rom:1",
+            "--label",
+            "edited",
+            "--notes",
+            "A quirk.",
+        ],
+    );
+    assert_eq!(code, 0, "{err}");
+    assert!(
+        out.starts_with("edited\tfirmware/opt-rom:1\tfirmware/opt-rom:2\tsha256:"),
+        "{out}"
+    );
+    let (code, edited, err) = run(&t.0, &["show", "firmware/opt-rom:2"]);
+    assert_eq!(code, 0, "{err}");
+    assert!(edited.contains("labels\t[\"edited\"]\n"), "{edited}");
+    assert!(edited.contains("notes\t\"A quirk.\"\n"), "{edited}");
+    assert_eq!(layers(&edited, "rom"), rom_layer);
+    assert_eq!(layers(&edited, "source"), layers(&show, "source"));
+    assert_ne!(layers(&edited, "readme"), layers(&show, "readme"));
+    let (code, unchanged, _) = run(&t.0, &["show", "firmware/opt-rom:1"]);
+    assert_eq!(code, 0);
+    assert_eq!(unchanged, show, "the first revision is immutable");
+    // Keeping a package private drops every licence mark.
+    let (code, _, err) = run(
+        &t.0,
+        &[
+            "edit",
+            "firmware/opt-rom:2",
+            "--to",
+            "private/opt-rom:1",
+            "--user-supplied",
+        ],
+    );
+    assert_eq!(code, 0, "{err}");
+    let (_, private, _) = run(&t.0, &["show", "private/opt-rom:1"]);
+    assert!(
+        private.contains("push\tprivate registries outside unemu/ only: user-supplied layers\n")
+    );
+    assert!(layers(&private, "rom")[0].ends_with("\tuser-supplied\t-"));
+}
+#[test]
+fn firmware_cli_refuses_incomplete_licence_and_metadata_options() {
+    let t = Temp::new();
+    for args in [
+        &[
+            "import",
+            "rom",
+            "--unlisted",
+            "x",
+            "--role",
+            "option-rom",
+            "--license",
+            "MIT",
+        ][..],
+        &[
+            "import",
+            "rom",
+            "--unlisted",
+            "x",
+            "--role",
+            "option-rom",
+            "--open",
+            "--user-supplied",
+        ],
+        &["import", "rom", "--unlisted", "x"],
+        &["import", "rom", "--role", "option-rom"],
+        &[
+            "import",
+            "a",
+            "b",
+            "--unlisted",
+            "x",
+            "--role",
+            "option-rom",
+        ],
+        &["import", "rom", "--title", "Needs one package"],
+        &[
+            "import",
+            "rom",
+            "--for",
+            "kiselev-xi8088-1.0.2",
+            "--extra-license",
+            "MIT",
+        ],
+        &[
+            "import",
+            "rom",
+            "--for",
+            "kiselev-xi8088-1.0.2",
+            "--revision",
+            "r1",
+        ],
+        &[
+            "import",
+            "rom",
+            "--for",
+            "kiselev-xi8088-1.0.2",
+            "--built-from",
+            "a",
+            "--dumped-from",
+            "b",
+        ],
+        &["edit", "firmware/x:1"],
+        &["edit", "--title", "No tag"],
+        &["ls", "--open"],
+        &["show", "x:1", "--label", "a"],
+        &[
+            "import",
+            "rom",
+            "--unlisted",
+            "x",
+            "--role",
+            "option-rom",
+            "--source-license",
+            "MIT",
+        ],
+        &[
+            "import",
+            "rom",
+            "--unlisted",
+            "x",
+            "--role",
+            "option-rom",
+            "--open",
+            "--source-license",
+            "MIT",
+        ],
+    ] {
+        let (code, _, err) = run(&t.0, args);
+        assert_eq!(code, 2, "{args:?}: {err}");
+    }
+    for args in [
+        &[
+            "import",
+            "rom",
+            "--unlisted",
+            "x",
+            "--role",
+            "option-rom",
+            "--open",
+            "--open",
+        ][..],
+        &["edit", "firmware/x:1", "--user-supplied", "--user-supplied"],
+        &["import", "rom", "--create", "--create"],
+    ] {
+        let (code, _, err) = run(&t.0, args);
+        assert_eq!(code, 2, "{args:?}");
+        assert!(
+            err.ends_with("duplicate firmware option\n"),
+            "{args:?}: {err}"
+        );
+    }
+    assert!(!t.0.join("store").exists());
+}

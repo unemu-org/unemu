@@ -1134,7 +1134,19 @@ impl Wizard {
             }
             return names;
         };
-        for entry in image_registry::guard::closure(&manifest, &self.marks) {
+        let closure = image_registry::guard::closure(&manifest, &self.marks);
+        // Rule 4: an open copyleft ROM without its source archive in the image.
+        for d in image_registry::guard::copyleft_without_source(&closure) {
+            let digest = d.decoded_digest().unwrap_or_else(|_| d.digest.clone());
+            if let Some(rom) = image.firmware.iter().find(|rom| {
+                rom.rom().is_ok_and(|r| {
+                    r.blob.as_ref() == Some(&digest) || r.parts.iter().any(|p| p.blob == digest)
+                })
+            }) {
+                add(format!("{} (no source archive)", rom.package.config.name));
+            }
+        }
+        for entry in closure {
             if entry.effective != image_registry::guard::Redistribution::UserSupplied {
                 continue;
             }
@@ -1650,6 +1662,52 @@ mod tests {
         let summary = wizard.summary();
         let bios = summary.iter().find(|(k, _)| *k == "BIOS").unwrap();
         assert!(bios.1.ends_with("[user-supplied]"));
+    }
+
+    #[test]
+    fn a_copyleft_bios_without_its_source_archive_makes_the_image_private() {
+        let open = FirmwareStore::new(false);
+        let with_sources = wizard(&open);
+        assert_eq!(with_sources.private_notice(), None);
+        let preview = with_sources.preview().unwrap().unwrap();
+        assert!(preview
+            .layers
+            .iter()
+            .any(|d| d.decoded_media_type() == image_store::media_type::TAR));
+        // The same ROMs from packages imported without their sources.
+        let bare = FirmwareStore::without_sources();
+        let wizard = wizard(&bare);
+        let notice = wizard.private_notice().unwrap();
+        assert!(notice.contains("kiselev-xi8088-1.0.2-atreset"), "{notice}");
+        assert!(notice.contains("never to unemu/"), "{notice}");
+        assert!(wizard.full_reference().contains("/private/"));
+        let (image, reference, expected) = wizard.request().unwrap();
+        let created =
+            pc_image::create::create(&bare.store, &image, &reference, expected.as_ref()).unwrap();
+        let manifest = image_store::Manifest::decode_for_summary(
+            &image_store::BlobSource::read_verified(
+                &bare.store,
+                &created,
+                image_store::MAX_SMALL_BLOB,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let closure = image_registry::guard::closure(
+            &manifest,
+            &image_registry::guard::LocalMarks::scan(&bare.store).unwrap(),
+        );
+        assert!(matches!(
+            image_registry::guard::check(
+                Some(&image_registry::RegistryEntry::builtin(
+                    image_registry::DEFAULT_REGISTRY
+                )),
+                &image_registry::Reference::parse(&reference, image_registry::DEFAULT_REGISTRY)
+                    .unwrap(),
+                &closure
+            ),
+            Err(image_registry::guard::Refusal::OfficialNamespaceNeedsOpen { .. })
+        ));
     }
 
     #[test]

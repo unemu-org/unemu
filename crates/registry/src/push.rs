@@ -148,6 +148,19 @@ pub fn plan(
     target: Reference,
     entry: Option<&RegistryEntry>,
 ) -> Result<PushPlan> {
+    plan_with_marks(store, local_tag, target, entry, LocalMarks::scan(store)?)
+}
+
+/// [`plan`] with marks the caller has gathered: [`LocalMarks::scan`] plus any
+/// restrictions only the frontend knows, such as firmware the platform
+/// catalogue lists as proprietary.
+pub fn plan_with_marks(
+    store: &Store,
+    local_tag: &str,
+    target: Reference,
+    entry: Option<&RegistryEntry>,
+    marks: LocalMarks,
+) -> Result<PushPlan> {
     if target.tag.is_some() && target.digest.is_some() {
         return Err(Error::Reference(format!(
             "{target} names both a tag and a digest; push to the tag or to the digest"
@@ -167,7 +180,7 @@ pub fn plan(
             image.digest
         )));
     }
-    let closure = guard::closure(&manifest, &LocalMarks::scan(store)?);
+    let closure = guard::closure(&manifest, &marks);
     let verdict = guard::check(entry, &target, &closure);
     Ok(PushPlan {
         target,

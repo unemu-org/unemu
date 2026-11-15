@@ -79,8 +79,12 @@ pub const MEDIA_PAYLOAD_TYPES: &[PayloadType] = &[
         max_size: MAX_EXTRA,
     },
 ];
-/// Firmware-package binary codecs: ROM images and the extras packages share
-/// with media sets. Each limit bounds the declared decoded size.
+/// Largest compressed source archive, 2 GiB, the extra-file limit.
+pub const MAX_SOURCE_ARCHIVE: u64 = MAX_EXTRA;
+/// Firmware-package binary codecs: ROM images, the extras packages share
+/// with media sets, and tar source archives. A zip archive is already
+/// deflate-compressed, so it is always stored raw. Each limit bounds the
+/// declared decoded size.
 pub const FIRMWARE_PAYLOAD_TYPES: &[PayloadType] = &[
     PayloadType {
         media_type: "application/vnd.unemu.firmware.v1+zstd",
@@ -89,6 +93,10 @@ pub const FIRMWARE_PAYLOAD_TYPES: &[PayloadType] = &[
     PayloadType {
         media_type: "application/vnd.unemu.media.extra.v1+zstd",
         max_size: MAX_EXTRA,
+    },
+    PayloadType {
+        media_type: "application/x-tar+zstd",
+        max_size: MAX_SOURCE_ARCHIVE,
     },
 ];
 const BUFFER: usize = 64 * 1024;

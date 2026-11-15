@@ -1135,8 +1135,9 @@ pub(crate) mod tests {
             distribution: if open {
                 assembly::FirmwareDistribution::Open {
                     fetch: "synthetic/fetch.sh",
-                    license: "GPL-3.0-or-later",
+                    license: "MIT",
                     provenance: "synthetic build",
+                    source_archive_sha256: None,
                 }
             } else {
                 assembly::FirmwareDistribution::UserSupplied
@@ -1315,7 +1316,7 @@ pub(crate) mod tests {
         assert_eq!(cells[2], "single image");
         assert_eq!(cells[3], "Unknown");
         assert_eq!(cells[4], "Version unknown / date unknown");
-        assert_eq!(cells[7], "Open · GPL-3.0-or-later");
+        assert_eq!(cells[7], "Open · MIT");
         assert_eq!(open.used_by, ["test:source"]);
         assert_eq!(
             result.facets["Role"],
@@ -1460,7 +1461,7 @@ pub(crate) mod tests {
             "Machine class: AT",
             "test:source",
             "No local machine image embeds these ROMs.",
-            "Open · GPL-3.0-or-later",
+            "Open · MIT",
             "Use in machine…",
         ] {
             assert!(
@@ -1988,7 +1989,7 @@ pub(crate) mod tests {
             .storage_blobs
             .iter()
             .any(|d| d.media_type.ends_with("+zstd")));
-        assert_eq!(Redistribution::of(&open).label(), "Open · GPL-3.0-or-later");
+        assert_eq!(Redistribution::of(&open).label(), "Open · MIT");
         let machine = summary("test:source");
         for (raw_machine, packaged) in [(true, &open), (false, &open)] {
             let mut machines = MachineRoms::default();

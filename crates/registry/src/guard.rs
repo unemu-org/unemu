@@ -2,8 +2,9 @@
 //! Client-side push guard: proprietary content never reaches a public registry.
 //!
 //! Every descriptor carries an `unemu.redistribution` mark, `open` or
-//! `user-supplied`; a missing mark means user-supplied (machine-images §2 and
-//! §5). A blob's effective class is the most restrictive one recorded for its
+//! `user-supplied`, and an open one an SPDX licence in `unemu.license`; a
+//! missing mark, or an open mark without a valid licence, means user-supplied
+//! (machine-images §2, §5 and §5.3). A blob's effective class is the most restrictive one recorded for its
 //! digest in any local manifest, so an image that labels a vendor ROM `open`
 //! cannot carry it out when another local image records it as user-supplied.
 //! A `+zstd` payload is also matched by its decoded digest, so the same ROM
@@ -14,12 +15,17 @@
 //!    marked private, and never into the official `unemu/` namespace;
 //! 2. a push into `unemu/` requires every blob to be open;
 //! 3. a restricted push additionally needs the target repository to refuse
-//!    anonymous reads (checked against the registry before the first upload).
+//!    anonymous reads (checked against the registry before the first upload);
+//! 4. an open ROM under a copyleft licence (GPL, LGPL, AGPL or MPL family)
+//!    goes to a registry not marked private, or into `unemu/`, only with its
+//!    linked source archive (`unemu.source`) in the same closure.
 //!
 //! There is no override.
 
 use crate::{config::RegistryEntry, reference::OFFICIAL_NAMESPACE, Reference};
-use image_store::{BlobSource, Descriptor, Digest, Manifest, Store, MAX_SMALL_BLOB};
+use image_store::{
+    license, media_type, BlobSource, Descriptor, Digest, Manifest, Store, MAX_SMALL_BLOB,
+};
 use std::{collections::BTreeMap, fmt};
 
 /// Redistribution class of one blob.
@@ -30,15 +36,13 @@ pub enum Redistribution {
 }
 
 impl Redistribution {
-    /// Absent or unknown evidence defaults to user-supplied.
+    /// Absent or unknown evidence defaults to user-supplied: an open mark
+    /// counts only together with a valid SPDX licence.
     pub fn of(descriptor: &Descriptor) -> Self {
-        match descriptor
-            .annotations
-            .get("unemu.redistribution")
-            .map(String::as_str)
-        {
-            Some("open") => Self::Open,
-            _ => Self::UserSupplied,
+        if license::open_license(descriptor).is_some() {
+            Self::Open
+        } else {
+            Self::UserSupplied
         }
     }
 
@@ -57,6 +61,9 @@ pub enum MarkSource {
     ThisImage,
     /// A more restrictive mark in the manifest of another local tag.
     LocalTag(String),
+    /// The bytes are a ROM or chip the firmware catalogue lists as
+    /// proprietary, whatever any manifest says about them.
+    Catalogue,
 }
 
 /// One closure member as shown by a dry run.
@@ -73,10 +80,11 @@ pub struct ClosureEntry {
 }
 
 /// Digests that some tagged local manifest records as user-supplied, each
-/// with the first such tag in name order.
+/// with the first such tag in name order, plus digests a caller restricts
+/// because the firmware catalogue lists their bytes as proprietary.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct LocalMarks {
-    restricted: BTreeMap<Digest, String>,
+    restricted: BTreeMap<Digest, MarkSource>,
 }
 
 impl LocalMarks {
@@ -94,7 +102,9 @@ impl LocalMarks {
                 for descriptor in std::iter::once(&manifest.config).chain(&manifest.layers) {
                     if Redistribution::of(descriptor) == Redistribution::UserSupplied {
                         for digest in identities(descriptor) {
-                            restricted.entry(digest).or_insert_with(|| tag.name.clone());
+                            restricted
+                                .entry(digest)
+                                .or_insert_with(|| MarkSource::LocalTag(tag.name.clone()));
                         }
                     }
                 }
@@ -108,10 +118,20 @@ impl LocalMarks {
 
     /// Record that the manifest of local tag `tag` marks `digest` user-supplied.
     pub fn restrict(&mut self, digest: Digest, tag: impl Into<String>) {
-        self.restricted.entry(digest).or_insert_with(|| tag.into());
+        self.restricted
+            .entry(digest)
+            .or_insert_with(|| MarkSource::LocalTag(tag.into()));
     }
 
-    fn restricted_by(&self, descriptor: &Descriptor) -> Option<&String> {
+    /// Record that `digest`, stored or decoded, holds bytes the firmware
+    /// catalogue lists as proprietary. The platform-neutral guard has no
+    /// catalogue; the frontend that has one restricts the closure with it, so
+    /// a pulled package marking such a ROM open still cannot leave.
+    pub fn restrict_catalogue(&mut self, digest: Digest) {
+        self.restricted.insert(digest, MarkSource::Catalogue);
+    }
+
+    fn restricted_by(&self, descriptor: &Descriptor) -> Option<&MarkSource> {
         identities(descriptor)
             .iter()
             .find_map(|digest| self.restricted.get(digest))
@@ -135,10 +155,9 @@ pub fn closure(manifest: &Manifest, local: &LocalMarks) -> Vec<ClosureEntry> {
         .map(|(role, descriptor)| {
             let mark = Redistribution::of(descriptor);
             let (effective, source) = match (mark, local.restricted_by(descriptor)) {
-                (Redistribution::Open, Some(tag)) => (
-                    Redistribution::UserSupplied,
-                    MarkSource::LocalTag(tag.clone()),
-                ),
+                (Redistribution::Open, Some(source)) => {
+                    (Redistribution::UserSupplied, source.clone())
+                }
                 (mark, _) => (mark, MarkSource::ThisImage),
             };
             ClosureEntry {
@@ -171,6 +190,13 @@ pub enum Refusal {
     AnonymousReadable { reference: String },
     #[error("{reference} answers anonymous reads with a token challenge, which does not show whether it is private; Bearer authentication is not supported yet, so it cannot receive user-supplied blobs")]
     AnonymousAccessUnverified { reference: String },
+    #[error("{target} is in unemu/ or on a registry not marked private, and these open copyleft ROMs have no source archive in the image ({hint}): {}", list(.blobs))]
+    CopyleftWithoutSource {
+        target: String,
+        /// What adds the source to this kind of artifact.
+        hint: &'static str,
+        blobs: Vec<Descriptor>,
+    },
 }
 
 fn list(blobs: &[Descriptor]) -> String {
@@ -191,6 +217,7 @@ impl fmt::Display for MarkSource {
         match self {
             Self::ThisImage => f.write_str("this image"),
             Self::LocalTag(tag) => write!(f, "local tag {tag}"),
+            Self::Catalogue => f.write_str("firmware catalogue"),
         }
     }
 }
@@ -211,9 +238,9 @@ impl fmt::Display for ClosureEntry {
     }
 }
 
-/// Rules 1 and 2, decided from configuration and the closure's effective
-/// classes alone. `entry` is `None` when the target host is neither
-/// configured nor the family default.
+/// Rules 1, 2 and 4, decided from configuration and the closure's effective
+/// classes alone; rule 3 needs the registry. `entry` is `None` when the
+/// target host is neither configured nor the family default.
 pub fn check(
     entry: Option<&RegistryEntry>,
     target: &Reference,
@@ -227,22 +254,51 @@ pub fn check(
         .filter(|c| c.effective == Redistribution::UserSupplied)
         .map(|c| c.descriptor.clone())
         .collect();
-    if restricted.is_empty() {
-        return Ok(());
-    }
-    if target.namespace() == OFFICIAL_NAMESPACE {
+    if !restricted.is_empty() && target.namespace() == OFFICIAL_NAMESPACE {
         return Err(Refusal::OfficialNamespaceNeedsOpen {
             repository: target.repository.clone(),
             blobs: restricted,
         });
     }
-    if !entry.private {
+    if !restricted.is_empty() && !entry.private {
         return Err(Refusal::RegistryNotPrivate {
             host: entry.host.clone(),
             blobs: restricted,
         });
     }
+    if entry.private && target.namespace() != OFFICIAL_NAMESPACE {
+        return Ok(());
+    }
+    let missing = copyleft_without_source(closure);
+    if !missing.is_empty() {
+        let package = closure
+            .iter()
+            .any(|c| c.descriptor.media_type == media_type::FIRMWARE_CONFIG);
+        return Err(Refusal::CopyleftWithoutSource {
+            target: target.to_string(),
+            hint: if package {
+                "image firmware edit --source adds one"
+            } else {
+                "import the machine again once its firmware package carries the source archive"
+            },
+            blobs: missing,
+        });
+    }
     Ok(())
+}
+
+/// Rule 4: effectively open ROM layers whose licence obliges the
+/// corresponding source but whose linked source archive is absent from the
+/// closure ([`license::source_missing`]). Only ROM layers are checked.
+pub fn copyleft_without_source(closure: &[ClosureEntry]) -> Vec<Descriptor> {
+    let layers: Vec<Descriptor> = closure.iter().map(|c| c.descriptor.clone()).collect();
+    closure
+        .iter()
+        .filter(|c| {
+            c.effective == Redistribution::Open && license::source_missing(&c.descriptor, &layers)
+        })
+        .map(|c| c.descriptor.clone())
+        .collect()
 }
 
 /// Whether rule 3's anonymous-read probe applies to this closure.
@@ -257,13 +313,22 @@ mod tests {
     use super::*;
     use image_store::{media_type as mt, Digest};
 
+    /// An open mark comes with a permissive licence, as an open mark requires.
     fn entry(mark: Option<&str>, kind: &str, label: &[u8]) -> ClosureEntry {
         let mut descriptor = Descriptor::new(kind, Digest::of(label), label.len() as u64);
         if let Some(mark) = mark {
             descriptor
                 .annotations
                 .insert("unemu.redistribution".into(), mark.into());
+            if mark == "open" {
+                descriptor
+                    .annotations
+                    .insert("unemu.license".into(), "MIT".into());
+            }
         }
+        classified(descriptor)
+    }
+    fn classified(descriptor: Descriptor) -> ClosureEntry {
         let mark = Redistribution::of(&descriptor);
         ClosureEntry {
             role: "layer",
@@ -356,6 +421,9 @@ mod tests {
                 .annotations
                 .insert("unemu.redistribution".into(), "open".into());
             descriptor
+                .annotations
+                .insert("unemu.license".into(), "CC0-1.0".into());
+            descriptor
         };
         let manifest = Manifest::new(
             "synthetic",
@@ -394,6 +462,146 @@ mod tests {
             Err(Refusal::RegistryNotPrivate { ref blobs, .. }) if blobs.len() == 1
         ));
         assert!(needs_private_probe(&restricted));
+    }
+
+    #[test]
+    fn an_open_mark_without_a_valid_licence_counts_as_user_supplied() {
+        // Packages written before licences were recorded mark ROMs open with
+        // no licence; the guard reads them in the safe direction.
+        for licence in [None, Some("GPL-2.0"), Some("not a licence")] {
+            let mut d = Descriptor::new(mt::FIRMWARE, Digest::of(b"old"), 3);
+            d.annotations
+                .insert("unemu.redistribution".into(), "open".into());
+            if let Some(licence) = licence {
+                d.annotations.insert("unemu.license".into(), licence.into());
+            }
+            let old = classified(d);
+            assert_eq!(old.effective, Redistribution::UserSupplied, "{licence:?}");
+            assert!(matches!(
+                check(Some(&registry(false)), &target("owner/rom:1"), &[old]),
+                Err(Refusal::RegistryNotPrivate { .. })
+            ));
+        }
+    }
+
+    /// An open ROM under `licence`, linked to `source` when given, and the
+    /// config and README a package carries.
+    fn package(licence: &str, source: Option<&[u8]>) -> Vec<ClosureEntry> {
+        let mut rom = Descriptor::new(mt::FIRMWARE, Digest::of(b"rom"), 3);
+        rom.annotations
+            .insert("unemu.redistribution".into(), "open".into());
+        rom.annotations
+            .insert("unemu.license".into(), licence.into());
+        if let Some(source) = source {
+            rom.annotations
+                .insert("unemu.source".into(), Digest::of(source).to_string());
+        }
+        vec![
+            entry(Some("open"), mt::FIRMWARE_CONFIG, b"config"),
+            classified(rom),
+            entry(Some("open"), mt::MARKDOWN, b"readme"),
+        ]
+    }
+    fn with_archive(mut closure: Vec<ClosureEntry>, kind: &str, bytes: &[u8]) -> Vec<ClosureEntry> {
+        closure.push(entry(Some("open"), kind, bytes));
+        closure
+    }
+
+    #[test]
+    fn an_open_copyleft_rom_needs_its_linked_source_outside_private_registries() {
+        let without = package("GPL-3.0-or-later", None);
+        for (private, reference) in [(false, "owner/bios:1"), (true, "bios:1"), (false, "bios:1")] {
+            let refusal =
+                check(Some(&registry(private)), &target(reference), &without).unwrap_err();
+            assert!(
+                matches!(refusal, Refusal::CopyleftWithoutSource { ref blobs, .. }
+                    if blobs.len() == 1 && blobs[0].digest == Digest::of(b"rom")),
+                "{reference}: {refusal}"
+            );
+            assert!(refusal
+                .to_string()
+                .contains(&Digest::of(b"rom").to_string()));
+        }
+        // A private registry outside the official namespace keeps the user's own copy.
+        assert_eq!(
+            check(Some(&registry(true)), &target("private/bios:1"), &without),
+            Ok(())
+        );
+        let linked = with_archive(package("GPL-3.0-or-later", Some(b"src")), mt::TAR, b"src");
+        for (private, reference) in [(false, "owner/bios:1"), (false, "bios:1"), (true, "bios:1")] {
+            assert_eq!(
+                check(Some(&registry(private)), &target(reference), &linked),
+                Ok(()),
+                "{reference}"
+            );
+        }
+        let zip = with_archive(package("LGPL-2.1-or-later", Some(b"src")), mt::ZIP, b"src");
+        assert_eq!(
+            check(Some(&registry(false)), &target("bios:1"), &zip),
+            Ok(())
+        );
+        // An archive that is not the linked one, or a link without its layer, is no source.
+        let unlinked = with_archive(package("GPL-2.0-only", None), mt::TAR, b"src");
+        let dangling = package("GPL-2.0-only", Some(b"src"));
+        let wrong_kind = with_archive(package("MPL-2.0", Some(b"src")), mt::EXTRA, b"src");
+        for closure in [unlinked, dangling, wrong_kind] {
+            assert!(matches!(
+                check(Some(&registry(false)), &target("owner/bios:1"), &closure),
+                Err(Refusal::CopyleftWithoutSource { .. })
+            ));
+        }
+        // Permissive licences, and an expression offering one, need no source.
+        for licence in ["MIT", "LicenseRef-vendor-grant", "MIT OR GPL-2.0-or-later"] {
+            assert_eq!(
+                check(
+                    Some(&registry(false)),
+                    &target("bios:1"),
+                    &package(licence, None)
+                ),
+                Ok(()),
+                "{licence}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_catalogue_restriction_overrides_an_open_mark_with_a_licence() {
+        let config = entry(Some("open"), mt::FIRMWARE_CONFIG, b"config").descriptor;
+        let rom = entry(Some("open"), mt::FIRMWARE, b"vendor rom").descriptor;
+        let manifest = Manifest::new_firmware("synthetic", config, vec![rom.clone()]).unwrap();
+        let mut local = LocalMarks::default();
+        local.restrict_catalogue(rom.digest.clone());
+        let restricted = closure(&manifest, &local);
+        assert_eq!(restricted[1].mark, Redistribution::Open);
+        assert_eq!(restricted[1].effective, Redistribution::UserSupplied);
+        assert_eq!(restricted[1].source, MarkSource::Catalogue);
+        assert!(restricted[1]
+            .to_string()
+            .ends_with("\tuser-supplied\tfirmware catalogue"));
+        assert!(matches!(
+            check(Some(&registry(false)), &target("owner/rom:1"), &restricted),
+            Err(Refusal::RegistryNotPrivate { ref blobs, .. }) if blobs[0].digest == rom.digest
+        ));
+        assert!(matches!(
+            check(Some(&registry(true)), &target("rom:1"), &restricted),
+            Err(Refusal::OfficialNamespaceNeedsOpen { .. })
+        ));
+    }
+
+    #[test]
+    fn the_copyleft_refusal_names_the_way_to_add_the_source_for_the_artifact() {
+        let hint = |closure: &[ClosureEntry]| match check(
+            Some(&registry(false)),
+            &target("owner/bios:1"),
+            closure,
+        ) {
+            Err(Refusal::CopyleftWithoutSource { hint, .. }) => hint,
+            other => panic!("{other:?}"),
+        };
+        let mut machine = package("GPL-2.0-only", None);
+        assert!(hint(&machine).contains("image firmware edit --source"));
+        machine[0] = entry(Some("open"), mt::CONFIG, b"machine config");
+        assert!(hint(&machine).contains("import the machine again"));
     }
 
     #[test]

@@ -172,10 +172,24 @@ pub enum FirmwareDistribution {
         license: &'static str,
         /// Upstream project and pinned revision.
         provenance: &'static str,
+        /// SHA-256 of the corresponding source archive the fetch script builds
+        /// reproducibly; only that archive is open source for this image
+        /// without the user's own licence statement.
+        source_archive_sha256: Option<&'static str>,
     },
     /// Identified by hash, supplied separately by the user.
     UserSupplied,
 }
+
+/// Source archive pins, one per fetch script (`SOURCE_ARCHIVE_SHA256`): the
+/// Kiselev archive holds the source of both Xi8088 builds, the XTIDE archive
+/// that of both r638 builds.
+const KISELEV_SOURCE_ARCHIVE: &str =
+    "ced63707661747fc045d1e6e565a5cc9be73f95a9c944accedd77b19467fb5f9";
+const VGABIOS_SOURCE_ARCHIVE: &str =
+    "80eaa4d73bb221d39257f89bc99798aa4b1d2c0cbae878cacee6e0d0c8d32cb4";
+const XTIDE_SOURCE_ARCHIVE: &str =
+    "7bbd5de269f4e1d52ae30b52531fcda842709b9ae49166ac249f9b37187b91e8";
 
 impl std::fmt::Display for FirmwareDistribution {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -283,6 +297,7 @@ impl FirmwareEntry {
             fetch: "vendor/vgabios/fetch.sh",
             license: "LGPL-2.1-or-later",
             provenance: "unemu-org/vgabios v0.8a-unemu.1, 8e154f04c5b1c8029d1ac3a3827f077352d579b7 (std build)",
+            source_archive_sha256: Some(VGABIOS_SOURCE_ARCHIVE),
         },
         parts: &[],
         status: FirmwareStatus::Tested,
@@ -302,6 +317,7 @@ impl FirmwareEntry {
             fetch: "vendor/xtide-universal-bios/fetch.sh",
             license: "GPL-2.0-only",
             provenance: "XTIDE Universal BIOS r638 ide_xtp.bin (16-bit ATA, polling, boot A:)",
+            source_archive_sha256: Some(XTIDE_SOURCE_ARCHIVE),
         },
         ..Self::XUB_R638_AT
     };
@@ -330,6 +346,7 @@ impl FirmwareEntry {
             fetch: "vendor/xtide-universal-bios/fetch.sh",
             license: "GPL-2.0-only",
             provenance: "XTIDE Universal BIOS r638 ide_at.bin (AT build)",
+            source_archive_sha256: Some(XTIDE_SOURCE_ARCHIVE),
         },
         parts: &[],
         status: FirmwareStatus::Listed,
@@ -365,6 +382,7 @@ pub const KISELEV_XI8088: FirmwareEntry = FirmwareEntry {
         fetch: "vendor/kiselev-bios/fetch.sh",
         license: "GPL-3.0-or-later",
         provenance: "skiselev/8088_bios a4af458a72bc33c4be066b33bd76e8af2b24111c (MACHINE_XI8088)",
+        source_archive_sha256: Some(KISELEV_SOURCE_ARCHIVE),
     },
     parts: &[],
     status: FirmwareStatus::Tested,
@@ -380,6 +398,7 @@ pub const KISELEV_XI8088_ATRESET: FirmwareEntry = FirmwareEntry {
         fetch: "vendor/kiselev-bios/fetch.sh",
         license: "GPL-3.0-or-later",
         provenance: "skiselev/8088_bios a4af458a72bc33c4be066b33bd76e8af2b24111c (MACHINE_XI8088), at-reset.patch",
+        source_archive_sha256: Some(KISELEV_SOURCE_ARCHIVE),
     },
     status: FirmwareStatus::Tested,
     ..KISELEV_XI8088
@@ -1777,6 +1796,7 @@ mod tests {
             fetch,
             license,
             provenance,
+            ..
         } = entry.distribution
         else {
             panic!("the open VGA BIOS must be fetchable");
@@ -1919,6 +1939,7 @@ mod tests {
                 fetch: "vendor/xtide-universal-bios/fetch.sh",
                 license: "GPL-2.0-only",
                 provenance: "XTIDE Universal BIOS r638 ide_at.bin (AT build)",
+                source_archive_sha256: Some(XTIDE_SOURCE_ARCHIVE),
             }
         );
         let script = include_str!("../../../vendor/xtide-universal-bios/fetch.sh");
@@ -1927,6 +1948,59 @@ mod tests {
             .find_map(|line| line.strip_prefix("OUTPUT_SHA256=\"")?.strip_suffix('"'))
             .expect("fixture script must pin its output hash");
         assert_eq!(entry.sha256, hash);
+    }
+
+    #[test]
+    fn open_entries_pin_the_source_archive_their_fetch_script_builds() {
+        let pin = |script: &str| {
+            script
+                .lines()
+                .find_map(|line| {
+                    line.strip_prefix("SOURCE_ARCHIVE_SHA256=\"")?
+                        .strip_suffix('"')
+                })
+                .expect("fixture recipe pins its source archive")
+                .to_owned()
+        };
+        let scripts = [
+            (
+                "vendor/kiselev-bios/fetch.sh",
+                pin(include_str!("../../../vendor/kiselev-bios/fetch.sh")),
+            ),
+            (
+                "vendor/vgabios/fetch.sh",
+                pin(include_str!("../../../vendor/vgabios/fetch.sh")),
+            ),
+            (
+                "vendor/xtide-universal-bios/fetch.sh",
+                pin(include_str!(
+                    "../../../vendor/xtide-universal-bios/fetch.sh"
+                )),
+            ),
+        ];
+        let mut open = 0;
+        for entry in BoardModel::Ibm5170.firmware_catalogue() {
+            let FirmwareDistribution::Open {
+                fetch,
+                source_archive_sha256,
+                ..
+            } = entry.distribution
+            else {
+                continue;
+            };
+            open += 1;
+            let (_, expected) = scripts
+                .iter()
+                .find(|(script, _)| *script == fetch)
+                .unwrap_or_else(|| panic!("{}: unknown fetch script {fetch}", entry.id));
+            assert_eq!(
+                source_archive_sha256,
+                Some(expected.as_str()),
+                "{}",
+                entry.id
+            );
+        }
+        assert_eq!(open, 5);
     }
 
     #[test]

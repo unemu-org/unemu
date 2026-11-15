@@ -1,16 +1,19 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Firmware package import and inspection; machine-images §5.3.
+//! Firmware package import, metadata revisions and inspection; machine-images §5.3.
 //! Folder hashing shares the persistent ROM index; sources remain untouched.
+//! Licences are explicit statements: `--open` needs `--license`, and the
+//! catalogue's own classification of a ROM always wins.
 
+use image_registry::guard;
 use image_store::{
-    firmware::{Config, Validator},
-    media_type,
+    firmware::{Config, Provenance, ProvenanceKind, Validator},
+    license, media_type,
     summary::{ArtifactKind, SummaryCache},
-    Store,
+    Digest, Store,
 };
 use pc_image::{
     firmware::{catalogue, PcFirmwareRules},
-    firmware_import::{self, Attachment},
+    firmware_import::{self, Attachment, Statement},
 };
 use std::{ffi::OsString, io::Write, path::PathBuf};
 
@@ -25,13 +28,50 @@ pub struct FirmwareCommand {
     rescan: bool,
     selected: Option<String>,
     extras: Vec<(PathBuf, Option<String>)>,
+    /// `--unlisted ID --role ROLE`: one ROM without a catalogue entry.
+    unlisted: Option<(String, String)>,
+    /// `edit --to`: the new revision's tag.
+    target: Option<String>,
+    statement: Box<Statement>,
 }
+
+/// Provenance flags gathered before they form one [`Provenance`].
+#[derive(Default)]
+struct ProvenanceFlags {
+    kind: Option<(ProvenanceKind, String)>,
+    revision: Option<String>,
+    url: Option<String>,
+    date: Option<String>,
+}
+
+fn text(value: &OsString) -> Result<String, &'static str> {
+    value
+        .to_str()
+        .map(str::to_owned)
+        .ok_or("firmware option values must be UTF-8")
+}
+fn once(slot: &mut Option<String>, value: String) -> Result<(), &'static str> {
+    if slot.replace(value).is_some() {
+        return Err("duplicate firmware option");
+    }
+    Ok(())
+}
+fn push(list: &mut Option<Vec<String>>, value: String) {
+    list.get_or_insert_with(Vec::new).push(value);
+}
+fn flag(slot: &mut bool) -> Result<(), &'static str> {
+    if std::mem::replace(slot, true) {
+        return Err("duplicate firmware option");
+    }
+    Ok(())
+}
+
 pub fn parse(args: &[OsString]) -> Result<FirmwareCommand, &'static str> {
     let action = args
         .first()
         .and_then(|s| s.to_str())
-        .filter(|s| matches!(*s, "import" | "ls" | "show"))
-        .ok_or("expected image firmware import, ls or show")?;
+        .filter(|s| matches!(*s, "import" | "ls" | "show" | "edit"))
+        .ok_or("expected image firmware import, edit, ls or show")?;
     let mut command = FirmwareCommand {
         action: action.into(),
         store: PathBuf::new(),
@@ -42,7 +82,15 @@ pub fn parse(args: &[OsString]) -> Result<FirmwareCommand, &'static str> {
         rescan: false,
         selected: None,
         extras: Vec::new(),
+        unlisted: None,
+        target: None,
+        statement: Box::default(),
     };
+    let describes = matches!(action, "import" | "edit");
+    let mut provenance = ProvenanceFlags::default();
+    let mut role = None;
+    let mut unlisted = None;
+    let mut extra_licenses: Vec<Option<String>> = Vec::new();
     let mut args = args[1..].iter();
     while let Some(arg) = args.next() {
         if arg.is_empty() {
@@ -51,27 +99,25 @@ pub fn parse(args: &[OsString]) -> Result<FirmwareCommand, &'static str> {
         if !arg.as_encoded_bytes().starts_with(b"--") {
             if action == "import" {
                 command.files.push(arg.into());
-            } else if action == "show" && command.tag.is_empty() {
+            } else if matches!(action, "show" | "edit") && command.tag.is_empty() {
                 command.tag = arg.to_str().ok_or("invalid firmware tag")?.into();
             } else {
                 return Err("unexpected firmware argument");
             }
             continue;
         }
-        match arg.to_str() {
-            Some("--create") if action == "import" && !command.create => {
-                command.create = true;
-                continue;
-            }
-            Some("--dry-run") if action == "import" && !command.dry_run => {
-                command.dry_run = true;
-                continue;
-            }
-            Some("--rescan") if action == "import" && !command.rescan => {
-                command.rescan = true;
-                continue;
-            }
-            _ => (),
+        let statement = &mut *command.statement;
+        let switch = match arg.to_str() {
+            Some("--create") if action == "import" => Some(&mut command.create),
+            Some("--dry-run") if action == "import" => Some(&mut command.dry_run),
+            Some("--rescan") if action == "import" => Some(&mut command.rescan),
+            Some("--open") if describes => Some(&mut statement.open),
+            Some("--user-supplied") if describes => Some(&mut statement.user_supplied),
+            _ => None,
+        };
+        if let Some(slot) = switch {
+            flag(slot)?;
+            continue;
         }
         let value = args
             .next()
@@ -82,6 +128,9 @@ pub fn parse(args: &[OsString]) -> Result<FirmwareCommand, &'static str> {
             Some("--for") if action == "import" && command.selected.is_none() => {
                 command.selected = Some(value.to_str().ok_or("invalid catalogue id")?.into())
             }
+            Some("--unlisted") if action == "import" => once(&mut unlisted, text(value)?)?,
+            Some("--role") if action == "import" => once(&mut role, text(value)?)?,
+            Some("--to") if action == "edit" => once(&mut command.target, text(value)?)?,
             Some("--extra") if action == "import" => {
                 let text = value.to_str().ok_or("invalid extra path")?;
                 let (path, name) = text
@@ -93,17 +142,104 @@ pub fn parse(args: &[OsString]) -> Result<FirmwareCommand, &'static str> {
                 }
                 command.extras.push((path.into(), name));
             }
+            Some("--extra-license") if action == "import" => {
+                let index = command
+                    .extras
+                    .len()
+                    .checked_sub(1)
+                    .ok_or("--extra-license follows the --extra it describes")?;
+                extra_licenses.resize(index + 1, None);
+                once(&mut extra_licenses[index], text(value)?)?;
+            }
+            Some("--title") if describes => once(&mut statement.title, text(value)?)?,
+            Some("--description") if describes => once(&mut statement.description, text(value)?)?,
+            Some("--notes") if describes => once(&mut statement.notes, text(value)?)?,
+            Some("--vendor") if describes => once(&mut statement.vendor, text(value)?)?,
+            Some("--version") if describes => once(&mut statement.version, text(value)?)?,
+            Some("--date") if describes => once(&mut statement.date, text(value)?)?,
+            Some("--license") if describes => once(&mut statement.license, text(value)?)?,
+            Some("--source-license") if describes => {
+                once(&mut statement.source_license, text(value)?)?
+            }
+            Some("--source") if describes && statement.source.is_none() => {
+                statement.source = Some(value.into())
+            }
+            Some("--label") if describes => push(&mut statement.labels, text(value)?),
+            Some("--board") if describes => push(&mut statement.boards, text(value)?),
+            Some("--class") if describes => push(&mut statement.machine_classes, text(value)?),
+            Some("--requires") if describes => push(&mut statement.requires, text(value)?),
+            Some(flag @ ("--dumped-from" | "--downloaded-from" | "--built-from")) if describes => {
+                let kind = match flag {
+                    "--dumped-from" => ProvenanceKind::Dumped,
+                    "--downloaded-from" => ProvenanceKind::Downloaded,
+                    _ => ProvenanceKind::Built,
+                };
+                if provenance.kind.replace((kind, text(value)?)).is_some() {
+                    return Err("give one of --dumped-from, --downloaded-from or --built-from");
+                }
+            }
+            Some("--revision") if describes => once(&mut provenance.revision, text(value)?)?,
+            Some("--url") if describes => once(&mut provenance.url, text(value)?)?,
+            Some("--provenance-date") if describes => once(&mut provenance.date, text(value)?)?,
             _ => return Err("unknown or duplicate firmware option"),
         }
+    }
+    match provenance.kind {
+        Some((kind, from)) => {
+            command.statement.provenance = Some(Provenance {
+                kind: Some(kind),
+                from,
+                revision: provenance.revision,
+                url: provenance.url,
+                date: provenance.date,
+            })
+        }
+        None if provenance.revision.is_some()
+            || provenance.url.is_some()
+            || provenance.date.is_some() =>
+        {
+            return Err(
+                "--revision, --url and --provenance-date need --dumped-from, --downloaded-from or --built-from",
+            )
+        }
+        None => (),
+    }
+    command.statement.extra_licenses = extra_licenses;
+    let statement = &command.statement;
+    if statement.license.is_some() && !statement.open {
+        return Err("--license states the licence of open ROMs; add --open");
+    }
+    if statement.open && statement.user_supplied {
+        return Err("--open and --user-supplied exclude each other");
+    }
+    if statement.source_license.is_some() && (!statement.open || statement.source.is_none()) {
+        return Err("--source-license states the licence of the --source archive; add --open");
+    }
+    match (unlisted, role) {
+        (Some(id), Some(role)) => {
+            if command.selected.is_some() || command.files.len() != 1 {
+                return Err("--unlisted takes exactly one ROM file and no --for");
+            }
+            command.unlisted = Some((id, role));
+        }
+        (None, None) => (),
+        _ => return Err("--unlisted ID and --role ROLE go together"),
     }
     if action == "import" && command.files.is_empty() {
         return Err("firmware import requires a folder or files");
     }
-    if action == "show" && command.tag.is_empty() {
-        return Err("firmware show requires NAME:TAG");
+    if matches!(action, "show" | "edit") && command.tag.is_empty() {
+        return Err("firmware show and edit require NAME:TAG");
     }
-    if !command.extras.is_empty() && command.selected.is_none() {
-        return Err("--extra requires --for CATALOGUE-ID");
+    let single = command.selected.is_some() || command.unlisted.is_some();
+    if !command.extras.is_empty() && !single {
+        return Err("--extra requires --for CATALOGUE-ID or --unlisted ID");
+    }
+    if action == "import" && *command.statement != Statement::default() && !single {
+        return Err("metadata and licence options require --for CATALOGUE-ID or --unlisted ID");
+    }
+    if action == "edit" && *command.statement == Statement::default() {
+        return Err("firmware edit needs at least one metadata or licence option");
     }
     if command
         .selected
@@ -142,32 +278,11 @@ pub fn execute(
         );
     }
     let store = Store::open_existing(&command.store)?;
+    if command.action == "edit" {
+        return edit(&store, command, output, catalogue());
+    }
     if command.action == "show" {
-        let image = store.resolve(&command.tag, &Validator(&PcFirmwareRules(catalogue())))?;
-        let config = Config::decode(&image.config)?;
-        writeln!(
-            output,
-            "{}\t{}\t{:?}",
-            command.tag, image.image.digest, config.name
-        )?;
-        writeln!(output, "fits\t{:?}", config.fits)?;
-        for rom in &config.roms {
-            writeln!(
-                output,
-                "{}\t{}\t{}\t{}",
-                rom.id, rom.role, rom.size, rom.sha256
-            )?;
-            for p in &rom.parts {
-                writeln!(
-                    output,
-                    "chip\t{:?}\t{}\t{}\t{}",
-                    p.position, p.lane, p.offset, p.blob
-                )?;
-            }
-        }
-        for e in &config.extras {
-            writeln!(output, "extra\t{:?}\t{}\t{}", e.filename, e.size, e.blob)?;
-        }
+        show(&store, &command.tag, output)?;
     } else {
         let mut summaries = SummaryCache::open(&store)?;
         while !summaries.pending().is_empty() {
@@ -200,6 +315,145 @@ pub fn execute(
     }
     Ok(())
 }
+
+/// One package in full: identity, descriptive fields, ROM bindings, every
+/// layer's licence and mark, and where its own marks allow it to be pushed.
+fn show(store: &Store, tag: &str, output: &mut impl Write) -> anyhow::Result<()> {
+    let image = store.resolve(tag, &Validator(&PcFirmwareRules(catalogue())))?;
+    let config = Config::decode(&image.config)?;
+    writeln!(output, "{}\t{}\t{:?}", tag, image.image.digest, config.name)?;
+    writeln!(output, "fits\t{:?}", config.fits)?;
+    for rom in &config.roms {
+        writeln!(
+            output,
+            "{}\t{}\t{}\t{}",
+            rom.id, rom.role, rom.size, rom.sha256
+        )?;
+        if !rom.requires.is_empty() {
+            writeln!(output, "requires\t{}\t{:?}", rom.id, rom.requires)?;
+        }
+        for p in &rom.parts {
+            writeln!(
+                output,
+                "chip\t{:?}\t{}\t{}\t{}",
+                p.position, p.lane, p.offset, p.blob
+            )?;
+        }
+    }
+    for e in &config.extras {
+        writeln!(output, "extra\t{:?}\t{}\t{}", e.filename, e.size, e.blob)?;
+    }
+    for (key, value) in [
+        ("vendor", &config.vendor),
+        ("version", &config.version),
+        ("date", &config.date),
+        ("description", &config.description),
+        ("notes", &config.notes),
+    ] {
+        if let Some(value) = value {
+            writeln!(output, "{key}\t{value:?}")?;
+        }
+    }
+    if !config.labels.is_empty() {
+        writeln!(output, "labels\t{:?}", config.labels)?;
+    }
+    if let Some(p) = &config.provenance {
+        writeln!(
+            output,
+            "provenance\t{}\t{:?}\trevision:{}\turl:{}\tdate:{}",
+            p.kind.map_or("unstated", ProvenanceKind::as_str),
+            p.from,
+            p.revision.as_deref().unwrap_or("-"),
+            p.url.as_deref().unwrap_or("-"),
+            p.date.as_deref().unwrap_or("-")
+        )?;
+    }
+    for source in &config.sources {
+        writeln!(
+            output,
+            "source\t{:?}\t{}\t{}\t{}\t{:?}",
+            source.filename,
+            source.format.as_str(),
+            source.size,
+            source.blob,
+            source.roms
+        )?;
+    }
+    if let Some(readme) = &config.readme {
+        writeln!(output, "readme\t{}\t{}", readme.blob, readme.size)?;
+    }
+    let class = |d: &image_store::Descriptor| match license::open_license(d) {
+        Some(l) => format!("open\t{l}"),
+        None => "user-supplied\t-".into(),
+    };
+    writeln!(
+        output,
+        "layer\tconfig\t{}\t{}",
+        image.manifest.config.digest,
+        class(&image.manifest.config)
+    )?;
+    for d in &image.manifest.layers {
+        let kind = match d.decoded_media_type() {
+            media_type::FIRMWARE => "rom",
+            media_type::TAR | media_type::ZIP => "source",
+            media_type::MARKDOWN => "readme",
+            _ => "extra",
+        };
+        writeln!(
+            output,
+            "layer\t{kind}\t{}\t{}",
+            d.decoded_digest()?,
+            class(d)
+        )?;
+    }
+    // The guard's own classification: local marks and the catalogue included.
+    let marks = super::registry::guard_marks(store, &image.manifest, catalogue())?;
+    let closure = guard::closure(&image.manifest, &marks);
+    let restricted = closure
+        .iter()
+        .any(|c| c.effective == guard::Redistribution::UserSupplied);
+    writeln!(
+        output,
+        "push\t{}",
+        if restricted {
+            "private registries outside unemu/ only: user-supplied layers"
+        } else if !guard::copyleft_without_source(&closure).is_empty() {
+            "private registries outside unemu/ only: copyleft ROM without its source archive"
+        } else {
+            "any configured registry, including unemu/"
+        }
+    )?;
+    Ok(())
+}
+
+fn edit(
+    store: &Store,
+    command: FirmwareCommand,
+    output: &mut impl Write,
+    catalogue: &[assembly::FirmwareEntry],
+) -> anyhow::Result<()> {
+    let target = match command.target {
+        Some(target) => target,
+        None => firmware_import::next_revision(&command.tag).ok_or_else(|| {
+            anyhow::anyhow!(
+                "{} has no numeric revision; name the new tag with --to",
+                command.tag
+            )
+        })?,
+    };
+    let revision =
+        firmware_import::edit(store, &command.tag, &target, &command.statement, catalogue)?;
+    for note in &revision.notes {
+        writeln!(output, "note\t{target}\t{note}")?;
+    }
+    writeln!(
+        output,
+        "edited\t{}\t{target}\t{}",
+        command.tag, revision.descriptor.digest
+    )?;
+    Ok(())
+}
+
 /// The `ls` facets column keeps the fields it was introduced with; the summary's
 /// descriptive fields, ROM bindings and extras belong to `show`.
 struct Listed<'a>(&'a image_store::summary::FirmwareSummary);
@@ -219,35 +473,48 @@ fn import(
     output: &mut impl Write,
     catalogue: &[assembly::FirmwareEntry],
 ) -> anyhow::Result<()> {
-    let scan = firmware_import::scan(&command.files, catalogue)?;
-    if scan.size_mismatches + scan.hash_mismatches > 0 {
-        writeln!(
-            output,
-            "unmatched: {} files ({} size mismatches, {} SHA-256 mismatches)",
-            scan.size_mismatches + scan.hash_mismatches,
-            scan.size_mismatches,
-            scan.hash_mismatches
-        )?;
-    }
-    for issue in scan.issues {
-        writeln!(output, "{:?}: {}", issue.source, issue.reason)?;
-    }
-    let candidates = scan
-        .candidates
-        .into_iter()
-        .filter(|c| {
-            command
-                .selected
-                .as_ref()
-                .is_none_or(|id| id == &c.catalogue_id)
-        })
-        .collect::<Vec<_>>();
-    if command.selected.is_some() && candidates.is_empty() {
-        anyhow::bail!("selected catalogue entry has no complete unambiguous package");
-    }
+    let candidates = if let Some((id, role)) = &command.unlisted {
+        vec![firmware_import::unlisted(
+            &command.files[0],
+            id,
+            role,
+            catalogue,
+        )?]
+    } else {
+        let scan = firmware_import::scan(&command.files, catalogue)?;
+        if scan.size_mismatches + scan.hash_mismatches > 0 {
+            writeln!(
+                output,
+                "unmatched: {} files ({} size mismatches, {} SHA-256 mismatches)",
+                scan.size_mismatches + scan.hash_mismatches,
+                scan.size_mismatches,
+                scan.hash_mismatches
+            )?;
+        }
+        for issue in scan.issues {
+            writeln!(output, "{:?}: {}", issue.source, issue.reason)?;
+        }
+        let candidates = scan
+            .candidates
+            .into_iter()
+            .filter(|c| {
+                command
+                    .selected
+                    .as_ref()
+                    .is_none_or(|id| id == &c.catalogue_id)
+            })
+            .collect::<Vec<_>>();
+        if command.selected.is_some() && candidates.is_empty() {
+            anyhow::bail!("selected catalogue entry has no complete unambiguous package");
+        }
+        candidates
+    };
     let mut eligible = Vec::new();
     for candidate in candidates {
-        if command.selected.is_none() && candidate.is_ambiguous(catalogue) {
+        if command.selected.is_none()
+            && command.unlisted.is_none()
+            && candidate.is_ambiguous(catalogue)
+        {
             writeln!(
                 output,
                 "{}: ambiguous catalogue identities; select --for CATALOGUE-ID",
@@ -285,29 +552,50 @@ fn import(
             pc_image::media_set::PcMediaFormats.validate_name(name)?;
         }
     }
+    let statement = &command.statement;
     let mut states = Vec::new();
     for candidate in &eligible {
-        let manifest = firmware_import::preview_manifest(candidate, &extras)?;
+        let preview =
+            firmware_import::preview_manifest_with(candidate, &extras, statement, catalogue)?;
+        for note in &preview.notes {
+            writeln!(output, "note\t{}\t{note}", candidate.tag())?;
+        }
+        let manifest = preview.manifest;
+        let digest = Digest::of(&manifest.encode()?);
         states.push(match &store {
             Some(store) => {
-                firmware_import::already_imported(store, &candidate.tag(), &manifest, catalogue)?
+                firmware_import::existing(store, &candidate.tag(), &manifest, catalogue)?
+                    .map(|existing| (existing.digest != digest).then_some(existing.digest))
             }
-            None => false,
+            None => None,
         });
     }
     for (c, existing) in eligible.into_iter().zip(states) {
-        if existing {
-            writeln!(output, "already imported\t{}", c.tag())?;
-            continue;
+        match existing {
+            Some(None) => {
+                writeln!(output, "already imported\t{}", c.tag())?;
+                continue;
+            }
+            Some(Some(older)) => {
+                writeln!(
+                    output,
+                    "already imported\t{}\t{older}\tan earlier revision; image firmware edit {} adds licences and metadata",
+                    c.tag(),
+                    c.tag()
+                )?;
+                continue;
+            }
+            None => (),
         }
         writeln!(output, "complete\t{}\t{}", c.tag(), c.config.roms[0].sha256)?;
         if !command.dry_run {
-            let d = firmware_import::publish(
+            let d = firmware_import::publish_with(
                 store
                     .as_ref()
                     .ok_or_else(|| anyhow::anyhow!("store unavailable"))?,
                 &c,
                 &extras,
+                statement,
                 catalogue,
             )?;
             anyhow::ensure!(
@@ -353,6 +641,9 @@ mod tests {
             rescan: false,
             selected: None,
             extras: Vec::new(),
+            unlisted: None,
+            target: None,
+            statement: Box::default(),
         }
     }
     #[test]

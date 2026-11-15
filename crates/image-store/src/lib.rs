@@ -17,6 +17,7 @@ pub mod codec;
 mod filesystem;
 pub mod firmware;
 pub mod library;
+pub mod license;
 pub mod location;
 pub mod media_set;
 pub mod metadata;

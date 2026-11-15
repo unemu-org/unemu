@@ -578,6 +578,12 @@ fn streaming_document(
 
 /// Resolve existing file inputs, freeze independent recovery points and publish a
 /// fully verified image. Source folders are read-only throughout the transaction.
+///
+/// A ROM resolved from a firmware package stays user-supplied in the machine
+/// image unless the firmware catalogue lists it as open, the package marks it
+/// open and the package carries its source archive; then the image embeds that
+/// archive's layer (the same stored blob) and marks both open under the
+/// catalogue licence. A ROM read from a plain file stays user-supplied.
 pub fn import_machine(
     store: &Store,
     path: &Path,
@@ -655,6 +661,7 @@ pub fn import_machine(
         slots: Vec::new(),
         nvram: None,
     };
+    let embedded = open_sources(store, prepared.firmware_sources())?;
     let mut layers = Vec::new();
     firmware_images(&mut config.machine, |field, rom| {
         let name = rom
@@ -686,12 +693,17 @@ pub fn import_machine(
         let source = format!("assets/firmware-{}.bin", config.firmware.len());
         rom.insert("image".into(), source.clone().into());
         rom.insert("sha256".into(), b.decoded_digest()?.hex().into());
+        let archive = embedded.get(&b.decoded_digest()?);
         config.firmware.push(Firmware {
             key: field.into(),
             source,
             blob: b.decoded_digest()?,
+            source_archive: archive.map(|e| e.archive.decoded_digest()).transpose()?,
         });
         layers.push(b);
+        if let Some(e) = archive {
+            layers.push(e.archive.clone());
+        }
         Ok(())
     })?;
     let mut freezer = Freezer {
@@ -826,6 +838,21 @@ pub fn import_machine(
                 .insert("unemu.redistribution".into(), "user-supplied".into());
         }
     }
+    // An open copyleft ROM travels with its source, so both stay open.
+    for d in &mut layers {
+        let id = d.decoded_digest()?;
+        if d.decoded_media_type() == mt::FIRMWARE {
+            if let Some(Embedded { archive, rom, .. }) = embedded.get(&id) {
+                image_store::license::mark(d, Some(rom));
+                d.annotations.insert(
+                    image_store::license::SOURCE.into(),
+                    archive.decoded_digest()?.to_string(),
+                );
+            }
+        } else if let Some(e) = embedded.values().find(|e| e.archive.digest == d.digest) {
+            image_store::license::mark(d, Some(&e.source));
+        }
+    }
     let mut manifest = image_store::Manifest::new_with_types(
         "ibm-pc-at",
         configuration,
@@ -853,4 +880,88 @@ pub fn import_machine(
     record.save(store, &scratch)?;
     store.update_tag(tag, &record.manifest, None, &PcProvider)?;
     Ok(record)
+}
+
+/// A package's source-archive layer an open ROM travels with.
+struct Embedded {
+    archive: Descriptor,
+    rom: image_store::license::Expression,
+    source: image_store::license::Expression,
+}
+/// Decoded ROM digests mapped to the source archive they travel with: ROMs of
+/// the contributing packages that the catalogue lists as open (and whose
+/// bytes it does not list as proprietary), that the package marks open, and
+/// whose linked archive the package marks open too.
+fn open_sources(store: &Store, packages: &[Digest]) -> Result<BTreeMap<Digest, Embedded>> {
+    use image_store::license;
+    let mut result = BTreeMap::new();
+    if packages.is_empty() {
+        return Ok(result);
+    }
+    let catalogue = crate::firmware::catalogue();
+    let validator = image_store::firmware::Validator(&crate::firmware::PcFirmwareRules(catalogue));
+    let mut after = None;
+    loop {
+        let page = store.list_tags(after.as_deref(), 1000)?;
+        for tag in &page.tags {
+            if !packages.contains(&tag.manifest.digest) {
+                continue;
+            }
+            let image = store.resolve_descriptor(&tag.manifest, &validator)?;
+            let config = image_store::firmware::Config::decode(&image.config)?;
+            for rom in &config.roms {
+                let Some(archive) = config.source_of(&rom.id) else {
+                    continue;
+                };
+                let Some(assembly::FirmwareDistribution::Open {
+                    license: listed, ..
+                }) = rom
+                    .catalogue_id
+                    .as_deref()
+                    .and_then(|id| catalogue.iter().find(|e| e.id == id))
+                    .map(|e| e.distribution)
+                else {
+                    continue;
+                };
+                let listed = license::Expression::parse(listed)?;
+                let layer = |digest: &Digest| {
+                    image
+                        .manifest
+                        .layers
+                        .iter()
+                        .find(|d| d.names(digest))
+                        .cloned()
+                        .ok_or_else(|| invalid("firmware package layer missing"))
+                };
+                let archive = layer(&archive.blob)?;
+                let Some(source) = license::open_license(&archive) else {
+                    continue;
+                };
+                let locked = crate::firmware::proprietary(catalogue, &rom.sha256, rom.size)
+                    .is_some()
+                    || rom.parts.iter().any(|p| {
+                        crate::firmware::proprietary(catalogue, &p.sha256, p.size).is_some()
+                    });
+                if locked {
+                    continue;
+                }
+                for digest in rom.blob.iter().chain(rom.parts.iter().map(|p| &p.blob)) {
+                    if license::open_license(&layer(digest)?).as_ref() == Some(&listed) {
+                        result.insert(
+                            digest.clone(),
+                            Embedded {
+                                archive: archive.clone(),
+                                rom: listed.clone(),
+                                source: source.clone(),
+                            },
+                        );
+                    }
+                }
+            }
+        }
+        match page.next_after {
+            Some(next) => after = Some(next),
+            None => return Ok(result),
+        }
+    }
 }

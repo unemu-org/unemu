@@ -181,6 +181,30 @@ fn load(options: &Common) -> anyhow::Result<(RegistryConfig, String)> {
 /// Secrets are offered only to configured registries (and the family
 /// default), so a pull from an arbitrary host can never receive them. The
 /// environment pair is further bound to its one host.
+/// Every local mark plus the firmware catalogue's: a blob whose bytes, stored
+/// or decoded, the catalogue lists as a proprietary image or chip stays
+/// user-supplied whatever the image's own marks say, so a pulled foreign
+/// package that marks such a ROM open still cannot leave a private registry.
+pub(super) fn guard_marks(
+    store: &Store,
+    manifest: &image_store::Manifest,
+    catalogue: &[assembly::FirmwareEntry],
+) -> anyhow::Result<image_registry::guard::LocalMarks> {
+    let mut marks = image_registry::guard::LocalMarks::scan(store)?;
+    for d in std::iter::once(&manifest.config).chain(&manifest.layers) {
+        let mut identities = vec![(d.digest.clone(), d.size)];
+        if d.is_compressed() {
+            identities.push((d.decoded_digest()?, d.decoded_size()?));
+        }
+        for (digest, size) in identities {
+            if pc_image::firmware::proprietary(catalogue, digest.hex(), size).is_some() {
+                marks.restrict_catalogue(digest);
+            }
+        }
+    }
+    Ok(marks)
+}
+
 fn client(
     config: &RegistryConfig,
     host: &str,
@@ -232,7 +256,16 @@ pub fn execute(command: RegistryCommand, output: &mut impl Write) -> anyhow::Res
                 conflicting_registry(&options, &target)?;
             }
             let entry = config.entry(&target.host);
-            let plan = push::plan(&store, &local_tag, target, entry.as_ref())?;
+            let image = store.tag_descriptor(&local_tag)?;
+            let manifest = image_store::Manifest::decode_for_summary(
+                &image_store::BlobSource::read_verified(
+                    &store,
+                    &image,
+                    image_store::MAX_SMALL_BLOB,
+                )?,
+            )?;
+            let marks = guard_marks(&store, &manifest, catalogue())?;
+            let plan = push::plan_with_marks(&store, &local_tag, target, entry.as_ref(), marks)?;
             if dry_run {
                 writeln!(output, "target:{}", plan.target())?;
                 writeln!(output, "image:{}", plan.image().digest)?;
@@ -766,5 +799,113 @@ mod tests {
             "a session-only store points to the environment variables"
         );
         assert!(!path.exists());
+    }
+
+    /// A firmware package made where the catalogue does not know its ROM,
+    /// marking it open under MIT, pushed to a registry and pulled back into
+    /// another store. There the catalogue lists the same bytes as proprietary,
+    /// so the guard keeps the pulled copy private whatever its marks say.
+    #[test]
+    fn a_pulled_package_marking_proprietary_firmware_open_cannot_leave() {
+        let temp = assembly::test_support::TempDir::new("pulled-foreign-firmware");
+        let bytes = vec![0x6b; 8192];
+        let rom = temp.path().join("rom.bin");
+        std::fs::write(&rom, &bytes).unwrap();
+        let foreign = Store::open(temp.path().join("foreign")).unwrap();
+        let candidate =
+            pc_image::firmware_import::unlisted(&rom, "foreign-rom", "option-rom", &[]).unwrap();
+        let statement = pc_image::firmware_import::Statement {
+            open: true,
+            license: Some("MIT".into()),
+            ..Default::default()
+        };
+        pc_image::firmware_import::publish_with(&foreign, &candidate, &[], &statement, &[])
+            .unwrap();
+        let rules = PcFirmwareRules(&[]);
+        let validator = firmware::Validator(&rules);
+        let providers: [&dyn ConfigValidator; 1] = [&validator];
+        let registry = MockRegistry::start(Policy {
+            anonymous_read: vec!["*".into()],
+            anonymous_write: vec!["*".into()],
+            ..Policy::default()
+        });
+        let entry = registry.entry(false);
+        let client = Client::new(&entry, Box::new(Anonymous)).unwrap();
+        let reference = Reference::parse(
+            &format!("{}/owner/rom:1", registry.host()),
+            "unused.example",
+        )
+        .unwrap();
+        let plan = push::plan(
+            &foreign,
+            "firmware/foreign-rom:1",
+            reference.clone(),
+            Some(&entry),
+        )
+        .unwrap();
+        assert_eq!(plan.verdict(), &Ok(()), "all open where the ROM is unknown");
+        push::push(
+            &foreign,
+            &plan,
+            &providers,
+            &client,
+            &push::PushOptions::default(),
+            &mut |_, _| {},
+        )
+        .unwrap();
+        let local = Store::open(temp.path().join("local")).unwrap();
+        pull::pull(
+            &local,
+            &client,
+            &reference,
+            "pulled/rom:1",
+            &providers,
+            &|_| {},
+        )
+        .unwrap();
+        let catalogue = [assembly::FirmwareEntry {
+            id: "synthetic-vendor-option-rom",
+            kind: assembly::FirmwareKind::OptionRom,
+            sha256: Box::leak(
+                image_store::Digest::of(&bytes)
+                    .hex()
+                    .to_owned()
+                    .into_boxed_str(),
+            ),
+            size: 8192,
+            distribution: assembly::FirmwareDistribution::UserSupplied,
+            ..assembly::KISELEV_XI8088
+        }];
+        let image = local.tag_descriptor("pulled/rom:1").unwrap();
+        let manifest = image_store::Manifest::decode_for_summary(
+            &image_store::BlobSource::read_verified(&local, &image, image_store::MAX_SMALL_BLOB)
+                .unwrap(),
+        )
+        .unwrap();
+        for (target, refusal) in [
+            ("owner/rom:2", "not marked private"),
+            ("unemu/rom:1", "official namespace"),
+        ] {
+            let target =
+                Reference::parse(&format!("{}/{target}", registry.host()), "unused.example")
+                    .unwrap();
+            let marks = guard_marks(&local, &manifest, &catalogue).unwrap();
+            let plan =
+                push::plan_with_marks(&local, "pulled/rom:1", target, Some(&entry), marks).unwrap();
+            let rom = plan
+                .closure()
+                .iter()
+                .find(|c| c.descriptor.decoded_media_type() == image_store::media_type::FIRMWARE)
+                .unwrap();
+            assert_eq!(rom.mark, image_registry::guard::Redistribution::Open);
+            assert_eq!(rom.source, image_registry::guard::MarkSource::Catalogue);
+            let error = plan.verdict().clone().unwrap_err().to_string();
+            assert!(error.contains(refusal), "{error}");
+        }
+        // Without the catalogue's knowledge the pulled copy reads as open.
+        let marks = guard_marks(&local, &manifest, &[]).unwrap();
+        let plan =
+            push::plan_with_marks(&local, "pulled/rom:1", reference, Some(&entry), marks).unwrap();
+        assert_eq!(plan.verdict(), &Ok(()));
     }
 }

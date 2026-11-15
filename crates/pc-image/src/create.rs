@@ -7,7 +7,9 @@
 //! firmware packages already in the store (by digest, never copied) and gives
 //! every fixed disk a zero base. The generated configuration is our own file
 //! and therefore open; the image's redistribution class still follows its
-//! firmware blobs. The IBM Personal Computer AT Technical Reference, Fixed Disk
+//! firmware blobs. A ROM that is open under a licence obliging its source
+//! travels with its package's source archive (the same blob), as in a machine
+//! image import, so an all-open image can be published with its source. The IBM Personal Computer AT Technical Reference, Fixed Disk
 //! and Diskette Drive Adapter, describes the controller and drive positions
 //! the document names.
 
@@ -15,7 +17,7 @@ use crate::firmware::{Fit, PcFirmwareRules};
 use crate::*;
 use image_store::{
     firmware::{Config as PackageConfig, Rom, Validator},
-    media_type as mt, BlobSource, ConfigValidator, Manifest, Store, MAX_SMALL_BLOB,
+    license, media_type as mt, BlobSource, ConfigValidator, Manifest, Store, MAX_SMALL_BLOB,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use toml::{Table, Value};
@@ -375,17 +377,40 @@ impl Package {
     pub fn fit(&self) -> Fit {
         Fit::decode(&self.config.fits).unwrap_or_default()
     }
-    /// Whether every blob of a ROM is marked open; absent marks are user-supplied.
+    /// Whether every blob of a ROM is open: marked open with a valid licence,
+    /// and not bytes the firmware catalogue lists as proprietary.
     pub fn open(&self, rom: &Rom) -> bool {
-        rom_blobs(rom).iter().all(|digest| {
-            self.manifest
-                .layers
+        !locked(rom)
+            && rom_blobs(rom)
                 .iter()
-                .find(|d| d.names(digest))
-                .and_then(|d| d.annotations.get("unemu.redistribution"))
-                .is_some_and(|mark| mark == "open")
-        })
+                .all(|digest| self.layer(digest).and_then(license::open_license).is_some())
     }
+    fn layer(&self, digest: &Digest) -> Option<&Descriptor> {
+        self.manifest.layers.iter().find(|d| d.names(digest))
+    }
+    /// The package's source-archive layer a ROM travels with: the ROM is open
+    /// under a licence that obliges its corresponding source, and the package
+    /// links an archive for it.
+    pub fn source_archive(&self, rom: &Rom) -> Option<&Descriptor> {
+        let source = self.config.source_of(&rom.id)?;
+        let copyleft = self.open(rom)
+            && rom_blobs(rom).iter().all(|digest| {
+                self.layer(digest)
+                    .and_then(license::open_license)
+                    .is_some_and(|l| l.needs_source(license::ACTIVE))
+            });
+        copyleft.then(|| self.layer(&source.blob)).flatten()
+    }
+}
+/// Bytes the firmware catalogue lists as proprietary stay user-supplied,
+/// whatever a package says about them.
+fn locked(rom: &Rom) -> bool {
+    let catalogue = crate::firmware::catalogue();
+    crate::firmware::proprietary(catalogue, &rom.sha256, rom.size).is_some()
+        || rom
+            .parts
+            .iter()
+            .any(|p| crate::firmware::proprietary(catalogue, &p.sha256, p.size).is_some())
 }
 fn rom_blobs(rom: &Rom) -> Vec<Digest> {
     rom.blob
@@ -607,21 +632,42 @@ fn plan(image: &NewImage) -> Result<Plan> {
     let mut machine = image.document()?;
     let mut descriptors = Vec::new();
     let mut names = BTreeMap::new();
+    let mut archives = BTreeMap::new();
     let mut sources = Vec::new();
     for (index, rom) in image.firmware.iter().enumerate() {
         if !sources.contains(&rom.package.descriptor.digest) {
             sources.push(rom.package.descriptor.digest.clone());
         }
+        let package_rom = rom.rom()?;
+        let archive = rom.package.source_archive(package_rom).cloned();
         for (name, digest) in rom.names(index)? {
-            let d = rom
+            let mut d = rom
                 .package
                 .manifest
                 .layers
                 .iter()
                 .find(|d| d.names(&digest) && d.decoded_media_type() == mt::FIRMWARE)
-                .ok_or_else(|| invalid("firmware package lacks a ROM blob"))?;
-            descriptors.push(d.clone());
+                .ok_or_else(|| invalid("firmware package lacks a ROM blob"))?
+                .clone();
+            if locked(package_rom) {
+                license::mark(&mut d, None);
+            }
+            // The ROM keeps its package's link only when its archive travels too.
+            match &archive {
+                Some(a) => {
+                    archives.insert(name.clone(), a.decoded_digest()?);
+                }
+                None => {
+                    d.annotations.remove(license::SOURCE);
+                }
+            }
+            descriptors.push(d);
             names.insert(name, digest);
+        }
+        if let Some(a) = archive {
+            if !descriptors.contains(&a) {
+                descriptors.push(a);
+            }
         }
     }
     let mut config = Config {
@@ -645,6 +691,7 @@ fn plan(image: &NewImage) -> Result<Plan> {
             key: field.into(),
             source: name.into(),
             blob: blob.clone(),
+            source_archive: archives.get(name).cloned(),
         });
         Ok(())
     })?;

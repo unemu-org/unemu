@@ -122,7 +122,8 @@ fn firmware_import_assembles_chips_reports_incomplete_unmatched_and_preserves_so
     let config = Config::decode(&image.config).unwrap();
     assert_eq!(config.roms[0].parts.len(), 2);
     assert_eq!(config.extras.len(), 1);
-    assert_eq!(image.manifest.layers.len(), 3);
+    // Two chips, the document and the generated README.
+    assert_eq!(image.manifest.layers.len(), 4);
     assert_eq!(
         machine_file::firmware_package::reconstructed(
             &config.roms[0],
@@ -1287,7 +1288,10 @@ fn split_package_presence_cannot_change_a_scalar_machine_image_digest() {
             version: None,
             date: None,
             notes: None,
+            description: None,
+            labels: Vec::new(),
             fits: toml::Table::new(),
+            provenance: None,
             roms: vec![image_store::firmware::Rom {
                 id: "system-bios".into(),
                 role: "system-bios".into(),
@@ -1297,9 +1301,12 @@ fn split_package_presence_cannot_change_a_scalar_machine_image_digest() {
                 blob: None,
                 position: None,
                 part_number: None,
+                requires: Vec::new(),
                 parts,
             }],
+            sources: Vec::new(),
             extras: Vec::new(),
+            readme: None,
         };
         let candidate = firmware_import::Candidate {
             catalogue_id: format!("open-split-{lanes}"),
@@ -1322,8 +1329,20 @@ fn compressed_and_older_raw_packages_resolve_and_summarize_both_sizes() {
     let (d, cat) = unlisted_package(&store, &root);
     let validator = Validator(&PcFirmwareRules(&cat));
     let image = store.resolve_descriptor(&d, &validator).unwrap();
-    // Package import stores each ROM chip as one deterministic frame.
-    assert!(image.manifest.layers.iter().all(|l| l.is_compressed()));
+    // Package import stores each ROM chip as one deterministic frame; the
+    // short README stays raw.
+    let readme = image
+        .manifest
+        .layers
+        .iter()
+        .find(|l| l.media_type == mt::MARKDOWN)
+        .unwrap()
+        .size;
+    assert!(image
+        .manifest
+        .layers
+        .iter()
+        .all(|l| l.is_compressed() == (l.media_type != mt::MARKDOWN)));
     let mut cache = SummaryCache::open(&store).unwrap();
     cache.rebuild(&store, 64, &[], &[]).unwrap();
     let row = cache.summary(&d.digest).unwrap();
@@ -1331,7 +1350,7 @@ fn compressed_and_older_raw_packages_resolve_and_summarize_both_sizes() {
     assert!(row.stored_size < row.decoded_size, "{row:?}");
     assert_eq!(
         row.decoded_size,
-        d.size + image.manifest.config.size + 2 * 16384
+        d.size + image.manifest.config.size + 2 * 16384 + readme
     );
 
     // A package from an older store keeps raw ROM blobs; rewrite it that way.

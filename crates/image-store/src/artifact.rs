@@ -32,6 +32,13 @@ pub mod media_type {
     pub const FLOPPY: &str = "application/vnd.unemu.media.floppy.v1";
     pub const PNG: &str = "image/png";
     pub const JPEG: &str = "image/jpeg";
+    /// A tar archive (POSIX.1-2001 pax or ustar), such as a firmware source archive.
+    pub const TAR: &str = "application/x-tar";
+    /// A zip archive (PKWARE APPNOTE), such as a firmware source archive.
+    pub const ZIP: &str = "application/zip";
+    /// UTF-8 Markdown text (RFC 7763), such as a firmware package README. The
+    /// charset parameter is left out because OCI media types carry no parameters.
+    pub const MARKDOWN: &str = "text/markdown";
 }
 
 /// A provider-declared payload codec and its maximum stored size.
@@ -448,11 +455,17 @@ impl Manifest {
             && self.layers.iter().any(|d| {
                 !matches!(
                     d.decoded_media_type(),
-                    media_type::FIRMWARE | media_type::EXTRA
+                    media_type::FIRMWARE
+                        | media_type::EXTRA
+                        | media_type::TAR
+                        | media_type::ZIP
+                        | media_type::MARKDOWN
                 )
             })
         {
-            return Err(invalid("firmware layers must be ROMs or extras"));
+            return Err(invalid(
+                "firmware layers must be ROMs, extras, source archives or a README",
+            ));
         }
         if metadata_count != usize::from(self.artifact_type != media_type::FIRMWARE) {
             return Err(invalid("exactly one metadata descriptor is required"));
@@ -464,11 +477,12 @@ impl Manifest {
 pub(crate) fn neutral_size_limit(kind: &str) -> Option<u64> {
     use media_type::*;
     match kind {
-        MANIFEST | CONFIG | MEDIA_SET_CONFIG | FIRMWARE_CONFIG | METADATA | DISK_LAYER => {
-            Some(MAX_SMALL_BLOB)
-        }
+        MANIFEST | CONFIG | MEDIA_SET_CONFIG | FIRMWARE_CONFIG | METADATA | DISK_LAYER
+        | MARKDOWN => Some(MAX_SMALL_BLOB),
         PNG | JPEG => Some(4 * MAX_SMALL_BLOB),
-        FIRMWARE | DISK_BASE | DISK_SECTORS | FLOPPY | OPTICAL | EXTRA => Some(i64::MAX as u64),
+        FIRMWARE | DISK_BASE | DISK_SECTORS | FLOPPY | OPTICAL | EXTRA | TAR | ZIP => {
+            Some(i64::MAX as u64)
+        }
         _ => None,
     }
 }
