@@ -2478,35 +2478,7 @@ impl Shell {
 
     fn skin(&self, ctx: &egui::Context) {
         let dark = ctx.global_style().visuals.dark_mode;
-        let mut visuals = if dark {
-            egui::Visuals::dark()
-        } else {
-            egui::Visuals::light()
-        };
-        if self.classic {
-            let face = if dark {
-                Color32::from_rgb(52, 54, 58)
-            } else {
-                Color32::from_rgb(214, 211, 203)
-            };
-            visuals.panel_fill = face;
-            visuals.window_fill = face;
-            visuals.window_corner_radius = egui::CornerRadius::ZERO;
-            visuals.menu_corner_radius = egui::CornerRadius::ZERO;
-            for widget in [
-                &mut visuals.widgets.inactive,
-                &mut visuals.widgets.hovered,
-                &mut visuals.widgets.active,
-                &mut visuals.widgets.open,
-                &mut visuals.widgets.noninteractive,
-            ] {
-                widget.corner_radius = egui::CornerRadius::ZERO;
-            }
-            visuals.widgets.inactive.bg_fill = face;
-            visuals.widgets.inactive.weak_bg_fill = face;
-            visuals.selection.bg_fill = Color32::from_rgb(34, 70, 138);
-        }
-        ctx.set_visuals(visuals);
+        ctx.set_visuals(skin_visuals(self.classic, dark));
     }
 
     /// The host picker for a firmware package's source archive; the library
@@ -3491,6 +3463,44 @@ fn drive_tooltip(ui: &mut egui::Ui, view: &crate::drive_chips::DriveView, lit: b
     ui.separator();
     ui.weak("Click for this drive's menu");
 }
+/// The visuals of one skin in one theme. Selected rows and items draw their
+/// text in the selection stroke colour on the selection fill, so every skin
+/// keeps that pair legible.
+pub(crate) fn skin_visuals(classic: bool, dark: bool) -> egui::Visuals {
+    let mut visuals = if dark {
+        egui::Visuals::dark()
+    } else {
+        egui::Visuals::light()
+    };
+    if classic {
+        let face = if dark {
+            Color32::from_rgb(52, 54, 58)
+        } else {
+            Color32::from_rgb(214, 211, 203)
+        };
+        visuals.panel_fill = face;
+        visuals.window_fill = face;
+        visuals.window_corner_radius = egui::CornerRadius::ZERO;
+        visuals.menu_corner_radius = egui::CornerRadius::ZERO;
+        for widget in [
+            &mut visuals.widgets.inactive,
+            &mut visuals.widgets.hovered,
+            &mut visuals.widgets.active,
+            &mut visuals.widgets.open,
+            &mut visuals.widgets.noninteractive,
+        ] {
+            widget.corner_radius = egui::CornerRadius::ZERO;
+        }
+        visuals.widgets.inactive.bg_fill = face;
+        visuals.widgets.inactive.weak_bg_fill = face;
+        visuals.selection.bg_fill = Color32::from_rgb(34, 70, 138);
+        // egui draws selected text in the selection stroke colour; the
+        // light theme's dark blue would vanish on the classic navy fill.
+        visuals.selection.stroke.color = Color32::WHITE;
+    }
+    visuals
+}
+
 pub(crate) fn bevel(ui: &egui::Ui, rect: egui::Rect, pressed: bool) {
     let light = if ui.visuals().dark_mode {
         Color32::from_gray(92)

@@ -227,3 +227,45 @@ impl FirmwareStore {
         crate::library_worker::store_choices(&self.store).unwrap()
     }
 }
+
+/// Draws a modal on a fresh context for thirty frames of one viewport and
+/// returns where it settled. egui measures a new modal in an invisible first
+/// frame and centres the next one on that guess, so the height must hold from
+/// the first visible frame and the whole rectangle from the one after. A modal
+/// lays its content out inside last frame's size: content that fills the
+/// height on offer grows the dialog frame by frame.
+pub(crate) fn settled_modal(
+    id: egui::Id,
+    size: egui::Vec2,
+    mut draw: impl FnMut(&egui::Context),
+) -> egui::Rect {
+    let ctx = egui::Context::default();
+    let viewport = egui::Rect::from_min_size(egui::Pos2::ZERO, size);
+    let mut rects = Vec::new();
+    for _ in 0..30 {
+        let mut output = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(viewport),
+                ..Default::default()
+            },
+            |ui| draw(ui.ctx()),
+        );
+        output.textures_delta.clear();
+        rects.push(ctx.memory(|m| m.area_rect(id)).expect("the modal is shown"));
+    }
+    let heights: Vec<f32> = rects.iter().map(|r| r.height()).collect();
+    assert!(
+        heights[1..].iter().all(|h| (h - heights[1]).abs() < 0.5),
+        "{id:?} at {size:?} changes height: {heights:?}"
+    );
+    let settled = rects[2];
+    assert!(
+        rects[2..].iter().all(|r| *r == settled),
+        "{id:?} at {size:?} moves: {rects:?}"
+    );
+    assert!(
+        settled.top() >= viewport.top() && settled.bottom() <= viewport.bottom(),
+        "{id:?} at {size:?} leaves the viewport: {settled:?}"
+    );
+    settled
+}

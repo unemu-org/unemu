@@ -475,7 +475,9 @@ pub(crate) fn show_review(
         ui.label(format!("From {reference} {} · stopped", save_image::short(&digest)));
         ui.strong("New revision");
         save_image::form(ui, &mut review.save);
-        egui::ScrollArea::vertical().id_salt("image-revision-review").max_height(330.0).show(ui, |ui| {
+        // Scrolled content takes the full height at once; offered the rest of
+        // last frame's dialog, it would grow the modal frame by frame.
+        egui::ScrollArea::vertical().id_salt("image-revision-review").max_height(330.0).min_scrolled_height(330.0).show(ui, |ui| {
             match &review.plan {
                 None => {
                     ui.label("Checking the revision with the image's firmware…");

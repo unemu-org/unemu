@@ -5,6 +5,37 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-15 — File › New machine… keeps one size:** an egui modal lays its
+  content out inside last frame's size, and the wizard's vertical separator
+  between the step list and the page filled all the height on offer, so the
+  dialog grew 32 px on every repaint without bound and its content left the
+  window. The body between the title and the buttons now has a fixed height,
+  the window height minus the dialog chrome, between 240 and 460 px; the page
+  scrolls inside it. **MEASURED headless (30 frames, every step, both skins,
+  1040×700 and 1040×500):** before, the wizard grew from 432 to 1360 px at
+  1040×700; now it holds 532 px at 1040×700 and 382 px at 1040×500 from the
+  first visible frame and stays inside the viewport. The same check found
+  bounded growth in Import installation media…, Import ROM folder…, Publish
+  new image revision (image Settings › Review), firmware Edit metadata and
+  README: each grew for 2 to 7 repaints, up to 56 px each, until its scroll
+  area reached its cap. Those scroll areas now take their full height at once
+  (`min_scrolled_height` equal to the cap). Machine Settings, image Settings
+  (every tab), Save as new image (Disk layers form and its prompts),
+  Preferences (both tabs), Push…, Pull… and Get templates… (every stage the
+  tests reach) already held one size. Known, unchanged: at the minimum 500 px
+  window height, Publish new image revision (538 px) and one Push stage
+  (516 px) are taller than the window.
+- **2026-11-15 — Selected rows are legible in every skin and theme:** the
+  classic skin paints selections navy but kept the light theme's dark-blue
+  selection text, and library table rows drew selected text in the ordinary
+  label grey. Library rows now take the selection stroke colour, as egui's
+  selectable items do, and the classic skin's selection text is white.
+  **MEASURED (WCAG 2.x contrast, selected text on selection fill):** classic
+  light was 1.21:1 for table rows and 1.10:1 for selectable items; now every
+  skin × theme is at least 5.03:1 (modern light 5.03, modern dark 5.32,
+  classic light and dark 9.09). Side effect: egui outlines a focused text
+  field in the selection stroke colour, so in the classic skin that outline is
+  now white.
 - **2026-11-15 — Library rows are one per manifest; machine files only under
   Machine files; resizable details pane; no logo entry:** tags of one
   repository that name the same manifest (a version tag and its `latest`

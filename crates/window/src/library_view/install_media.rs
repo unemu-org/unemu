@@ -1327,9 +1327,13 @@ impl ImportDialog {
             } else {
                 ui.heading("Import installation media…");
             }
+            // Scrolled content takes the full height at once; offered the rest of
+            // last frame's dialog, it would grow the modal frame by frame.
+            let height = (ctx.content_rect().height() - 220.0).max(240.0);
             egui::ScrollArea::vertical()
                 .id_salt("import-media-review")
-                .max_height((ctx.content_rect().height() - 220.0).max(240.0))
+                .max_height(height)
+                .min_scrolled_height(height)
                 .show(ui, |ui| self.review(ui, &mut action));
             if self.importing {
                 let (done, total) = self.control.progress();
@@ -2222,6 +2226,13 @@ pub(crate) mod tests {
         dialog.disks[1].label = "Disk 2 of 4 - World".into();
         assert!(dialog.problems().is_empty(), "{:?}", dialog.problems());
         assert!(dialog.can_import());
+        crate::library_test_support::settled_modal(
+            egui::Id::unique("import-installation-media"),
+            egui::vec2(1040.0, 700.0),
+            |ctx| {
+                let _ = dialog.show(ctx, true);
+            },
+        );
 
         dialog.sources(
             Pick::Extras,

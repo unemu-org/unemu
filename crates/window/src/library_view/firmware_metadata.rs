@@ -1425,9 +1425,13 @@ impl EditDialog {
                 None => (),
                 Some(draft) => {
                     ui.add_enabled_ui(!self.publishing, |ui| {
+                        // Scrolled content takes the full height at once; offered the rest of
+                        // last frame's dialog, it would grow the modal frame by frame.
+                        let height = (ctx.content_rect().height() - 240.0).max(240.0);
                         egui::ScrollArea::vertical()
                             .id_salt("firmware-edit-editor")
-                            .max_height((ctx.content_rect().height() - 240.0).max(240.0))
+                            .max_height(height)
+                            .min_scrolled_height(height)
                             .show(ui, |ui| {
                                 if draft.show(ui, "firmware-edit") == EditorAction::PickSource {
                                     action = EditAction::PickSource;
@@ -1488,9 +1492,13 @@ impl ReadmeDialog {
                  No host application is needed, and any text tool can read the layer after \
                  export.",
             );
+            // Scrolled content takes the full height at once; offered the rest of
+            // last frame's dialog, it would grow the modal frame by frame.
+            let height = (ctx.content_rect().height() - 200.0).max(200.0);
             egui::ScrollArea::vertical()
                 .id_salt("firmware-readme-text")
-                .max_height((ctx.content_rect().height() - 200.0).max(200.0))
+                .max_height(height)
+                .min_scrolled_height(height)
                 .show(ui, |ui| {
                     ui.add(egui::Label::new(egui::RichText::new(&self.text).monospace()).wrap());
                 });
@@ -2150,11 +2158,25 @@ mod tests {
             view.firmware_readme.as_ref().map(|d| d.text.as_str()),
             details.readme.as_deref()
         );
+        crate::library_test_support::settled_modal(
+            egui::Id::unique("firmware-readme"),
+            egui::vec2(1040.0, 700.0),
+            |ctx| {
+                view.modals(ctx, None, Vec::new(), false, false);
+            },
+        );
         view.firmware_readme = None;
 
         assert!(view.can_edit_firmware());
         view.pane_action(&row, PaneAction::EditMetadata);
         poll_until(&mut view, edit_settled);
+        crate::library_test_support::settled_modal(
+            egui::Id::unique("firmware-edit-metadata"),
+            egui::vec2(1040.0, 700.0),
+            |ctx| {
+                view.modals(ctx, None, Vec::new(), false, false);
+            },
+        );
         let dialog = view.firmware_edit.as_ref().unwrap();
         assert_eq!(
             dialog.target.as_deref(),

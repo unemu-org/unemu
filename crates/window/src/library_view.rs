@@ -506,13 +506,21 @@ fn draw_cells(
     } else {
         egui::Color32::TRANSPARENT
     };
+    // On the selection fill, text takes the selection stroke colour, as
+    // egui's own selectable items do; every skin keeps that pair legible.
+    let selected_text = selected.then(|| ui.visuals().selection.stroke.color);
     egui::Frame::new().fill(fill).show(ui, |ui| {
         ui.horizontal(|ui| {
             for (text, width) in cells.iter().zip(widths.iter().copied()) {
+                let rich = egui::RichText::new(text);
+                let rich = match selected_text {
+                    Some(color) => rich.color(color),
+                    None => rich,
+                };
                 let response = ui
                     .add_sized(
                         [width, 20.0],
-                        egui::Label::new(text)
+                        egui::Label::new(rich)
                             .truncate()
                             .sense(egui::Sense::click()),
                     )
@@ -4223,6 +4231,13 @@ pub(super) mod tests {
             }
         }
         crate::image_settings::tests::reviewed(&mut settings, &firmware.store);
+        crate::library_test_support::settled_modal(
+            egui::Id::unique("image-revision"),
+            egui::vec2(1040.0, 700.0),
+            |ctx| {
+                let _ = crate::settings_sheet::show_review(ctx, &mut settings, false, true);
+            },
+        );
         let mut last = Vec::new();
         for _ in 0..2 {
             let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
@@ -4271,5 +4286,69 @@ pub(super) mod tests {
         output.textures_delta.clear();
         assert!(!settings.discard_prompt, "Escape keeps editing");
         assert!(settings.dirty());
+    }
+
+    /// WCAG 2.x contrast ratio between two opaque sRGB colours.
+    fn contrast(a: egui::Color32, b: egui::Color32) -> f64 {
+        let luminance = |c: egui::Color32| {
+            let channel = |v: u8| {
+                let v = f64::from(v) / 255.0;
+                if v <= 0.04045 {
+                    v / 12.92
+                } else {
+                    ((v + 0.055) / 1.055).powf(2.4)
+                }
+            };
+            0.2126 * channel(c.r()) + 0.7152 * channel(c.g()) + 0.0722 * channel(c.b())
+        };
+        let (a, b) = (luminance(a), luminance(b));
+        (a.max(b) + 0.05) / (a.min(b) + 0.05)
+    }
+
+    #[test]
+    fn selected_rows_and_items_are_legible_in_every_skin_and_theme() {
+        fn walk(shape: &egui::Shape, out: &mut Vec<(String, egui::Color32)>) {
+            match shape {
+                egui::Shape::Text(text) => {
+                    let section = text.galley.job.sections[0].format.color;
+                    let color = text.override_text_color.unwrap_or(
+                        if section == egui::Color32::PLACEHOLDER {
+                            text.fallback_color
+                        } else {
+                            section
+                        },
+                    );
+                    out.push((text.galley.text().to_owned(), color));
+                }
+                egui::Shape::Vec(shapes) => shapes.iter().for_each(|s| walk(s, out)),
+                _ => (),
+            }
+        }
+        let cells: [String; 9] = std::array::from_fn(|i| format!("cell {i}"));
+        for classic in [false, true] {
+            for dark in [false, true] {
+                let visuals = crate::shell::skin_visuals(classic, dark);
+                let fill = visuals.selection.bg_fill;
+                let ctx = egui::Context::default();
+                ctx.set_visuals(visuals);
+                let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+                    draw_cells(ui, &cells, &[80.0; 9], true, false);
+                    ui.add(egui::Button::selectable(true, "selected item"));
+                });
+                output.textures_delta.clear();
+                let mut texts = Vec::new();
+                for clipped in &output.shapes {
+                    walk(&clipped.shape, &mut texts);
+                }
+                assert_eq!(texts.len(), 10, "{texts:?}");
+                for (text, color) in texts {
+                    let ratio = contrast(color, fill);
+                    assert!(
+                        ratio >= 4.5,
+                        "classic {classic}, dark {dark}: {text:?} in {color:?} on {fill:?} is {ratio:.2}:1"
+                    );
+                }
+            }
+        }
     }
 }

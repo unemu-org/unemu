@@ -1822,4 +1822,28 @@ mod tests {
         assert!(output.shapes.iter().any(|shape| matches!(&shape.shape, egui::Shape::Text(text) if text.galley.text().contains("Import ROM folder"))));
         output.textures_delta.clear();
     }
+
+    #[test]
+    fn the_wizard_keeps_one_height_inside_the_viewport() {
+        let store = FirmwareStore::new(true);
+        let mut wizard = match &store {
+            Some(store) => wizard(store),
+            None => {
+                let mut empty = Wizard::new();
+                empty.set_store(Default::default());
+                empty
+            }
+        };
+        let id = egui::Id::unique("new-machine-wizard");
+        for size in [egui::vec2(1040.0, 700.0), egui::vec2(1040.0, 500.0)] {
+            for step in 0..STEPS.len() {
+                wizard.go(step);
+                for classic in [true, false] {
+                    crate::library_test_support::settled_modal(id, size, |ctx| {
+                        let _ = crate::new_machine_view::show(ctx, &mut wizard, classic);
+                    });
+                }
+            }
+        }
+    }
 }

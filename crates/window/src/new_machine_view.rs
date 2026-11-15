@@ -42,66 +42,76 @@ pub(crate) fn show(ctx: &egui::Context, wizard: &mut Wizard, classic: bool) -> A
             }
         });
         let problems = wizard.problems();
-        ui.horizontal_top(|ui| {
-            ui.vertical(|ui| {
-                ui.set_width(190.0);
-                ui.strong("New machine");
-                for (index, name) in STEPS.iter().enumerate() {
-                    let attention = index != wizard.step
-                        && index <= wizard.visited
-                        && problems.iter().any(|(step, _)| *step == index);
-                    let label = format!(
-                        "{}. {name}{}",
-                        index + 1,
-                        if attention { "  !" } else { "" }
-                    );
-                    let response = ui.add_enabled(
-                        index <= wizard.visited,
-                        egui::Button::selectable(index == wizard.step, label),
-                    );
-                    if response.clicked() {
-                        wizard.go(index);
-                    }
-                }
-                ui.add_space(8.0);
-                ui.add(
-                    egui::Label::new(
-                        egui::RichText::new(
-                            "Creates an empty image: configuration, firmware, blank disks and empty media catalogues. No operating system yet.",
-                        )
-                        .small(),
-                    )
-                    .wrap(),
-                );
-            });
-            ui.separator();
-            ui.vertical(|ui| {
-                egui::ScrollArea::vertical()
-                    .id_salt("new-machine-page")
-                    .max_height(460.0)
-                    .show(ui, |ui| {
-                        ui.set_width(620.0);
-                        match wizard.step {
-                            0 => page_class(ui, wizard),
-                            model::MOTHERBOARD => {
-                                if page_board(ui, wizard) {
-                                    action = Action::ImportRoms;
-                                }
-                            }
-                            model::CPU_MEMORY => page_cpu_memory(ui, wizard),
-                            model::DEVICES => {
-                                if page_devices(ui, wizard) {
-                                    action = Action::ImportRoms;
-                                }
-                            }
-                            model::DRIVES => page_drives(ui, wizard),
-                            model::NAME => page_name(ui, wizard),
-                            model::SUMMARY => page_summary(ui, wizard),
-                            _ => (),
+        // A modal lays its content out inside last frame's size, and the
+        // vertical separator below fills the height on offer. Offered the
+        // whole dialog, it would make the wizard taller on every frame, so
+        // the body gets a fixed height that fits the window and the page
+        // scrolls inside it.
+        let body = (ctx.content_rect().height() - 190.0).clamp(240.0, 460.0);
+        ui.allocate_ui_with_layout(
+            egui::vec2(ui.available_width(), body),
+            egui::Layout::left_to_right(egui::Align::Min),
+            |ui| {
+                ui.vertical(|ui| {
+                    ui.set_width(190.0);
+                    ui.strong("New machine");
+                    for (index, name) in STEPS.iter().enumerate() {
+                        let attention = index != wizard.step
+                            && index <= wizard.visited
+                            && problems.iter().any(|(step, _)| *step == index);
+                        let label = format!(
+                            "{}. {name}{}",
+                            index + 1,
+                            if attention { "  !" } else { "" }
+                        );
+                        let response = ui.add_enabled(
+                            index <= wizard.visited,
+                            egui::Button::selectable(index == wizard.step, label),
+                        );
+                        if response.clicked() {
+                            wizard.go(index);
                         }
-                    });
-            });
-        });
+                    }
+                    ui.add_space(8.0);
+                    ui.add(
+                        egui::Label::new(
+                            egui::RichText::new(
+                                "Creates an empty image: configuration, firmware, blank disks and empty media catalogues. No operating system yet.",
+                            )
+                            .small(),
+                        )
+                        .wrap(),
+                    );
+                });
+                ui.separator();
+                ui.vertical(|ui| {
+                    egui::ScrollArea::vertical()
+                        .id_salt("new-machine-page")
+                        .max_height(body)
+                        .show(ui, |ui| {
+                            ui.set_width(620.0);
+                            match wizard.step {
+                                0 => page_class(ui, wizard),
+                                model::MOTHERBOARD => {
+                                    if page_board(ui, wizard) {
+                                        action = Action::ImportRoms;
+                                    }
+                                }
+                                model::CPU_MEMORY => page_cpu_memory(ui, wizard),
+                                model::DEVICES => {
+                                    if page_devices(ui, wizard) {
+                                        action = Action::ImportRoms;
+                                    }
+                                }
+                                model::DRIVES => page_drives(ui, wizard),
+                                model::NAME => page_name(ui, wizard),
+                                model::SUMMARY => page_summary(ui, wizard),
+                                _ => (),
+                            }
+                        });
+                });
+            },
+        );
         ui.separator();
         let problems = wizard.problems();
         let here = problems.iter().find(|(step, _)| *step == wizard.step);

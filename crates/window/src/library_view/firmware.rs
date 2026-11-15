@@ -1496,9 +1496,13 @@ impl ImportDialog {
             if let Some(error) = &self.error {
                 ui.colored_label(ui.visuals().warn_fg_color, error);
             }
+            // Scrolled content takes the full height at once; offered the rest of
+            // last frame's dialog, it would grow the modal frame by frame.
+            let height = (ctx.content_rect().height() - 260.0).max(240.0);
             egui::ScrollArea::vertical()
                 .id_salt("import-rom-folder-review")
-                .max_height((ctx.content_rect().height() - 260.0).max(240.0))
+                .max_height(height)
+                .min_scrolled_height(height)
                 .show(ui, |ui| self.review(ui, ctx, &mut action));
             ui.colored_label(
                 ui.visuals().warn_fg_color,
@@ -2329,6 +2333,13 @@ pub(crate) mod tests {
         assert_eq!(state("synthetic-two-chip-bios"), CandidateState::New);
         let mut dialog = ImportDialog::new(folder.clone(), control);
         dialog.scanned(report);
+        crate::library_test_support::settled_modal(
+            egui::Id::unique("import-rom-folder"),
+            egui::vec2(1040.0, 700.0),
+            |ctx| {
+                let _ = dialog.show(ctx, true);
+            },
+        );
         assert_eq!(
             dialog.picks,
             BTreeSet::from(["synthetic-two-chip-bios".into()])
